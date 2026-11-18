@@ -1,0 +1,14 @@
+[package]
+name = "bots"
+description = "Multiplayer bots (Clankers): the brain that turns what a bot sees into controller input, and the input backend that puts bot pads on free controller ports (docs/game/bots.md)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+input = { path = "../input", default-features = false }
+engine = { path = "../engine" }
+# The nav mesh's polygons come from the pathfinding generator's sectors,
+# made from the structure BSP's collision.
+tags = { path = "../tags" }
+pathfind = { path = "../pathfind" }

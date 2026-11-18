@@ -6,7 +6,7 @@ mod bench;
 mod config;
 mod event;
 mod hooks;
-mod layout;
+pub mod layout;
 mod memory;
 mod motion;
 mod pipeline;

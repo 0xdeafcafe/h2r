@@ -9,6 +9,7 @@ use anyhow::{Context, Result, bail};
 const USAGE: &str = "usage:
   h2 build <disc.iso|default.xbe> [--out DIR] [--jobs N] [--check]
   h2 run   <disc.iso> [--out DIR] [--data DIR] [--fresh-data] [--slices N] [--transfers N] [--no-stopgaps] [--no-d3d] [--no-bink] [--no-dsound] [--no-xapi] [--no-mappack] [--no-halo1]
+           [--movies DIR | --no-movies]
   h2 serve <disc.iso> [--socket PATH] [run's options]
 
 --out defaults to $TMPDIR/h2boot (generated C, objects, libh2game.dylib).
@@ -22,6 +23,10 @@ never stops the run). --no-mappack or H2_MAPPACK=0 skips it (docs/game/map-pack.
 `run` and `serve` convert a halo1.iso found next to the disc into --data when
 it is new or the converter changed (a warning never stops the run);
 --no-halo1 or H2_HALO1=0 skips it (docs/game/campaigns.md).
+The intro, attract and credits movies play when `h2 movies` has installed
+them for this disc (in --movies DIR, by default the app data directory);
+otherwise, or with --no-movies, the game skips them. The run logs which
+(`movies: playback (...)` or `movies: skip (...)`; docs/audio/bink-hle.md).
 `run` builds first when the dylib is missing or was built from another
 image or generator (its .stamp). `build --check` builds nothing: it exits 0
 when --out's dylib is current for this h2 and the image, 3 otherwise.
@@ -45,6 +50,7 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     let mut stopgaps = true;
     let mut d3d = true;
     let mut bink = true;
+    let mut movies = boot::movies_glue::default_dir();
     let mut dsound = true;
     let mut xapi = true;
     let mut fresh = false;
@@ -64,6 +70,8 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             "--no-stopgaps" => stopgaps = false,
             "--no-d3d" => d3d = false,
             "--no-bink" => bink = false,
+            "--movies" => movies = Some(PathBuf::from(val()?)),
+            "--no-movies" => movies = None,
             "--no-dsound" => dsound = false,
             "--no-xapi" => xapi = false,
             "--no-mappack" => no_mappack = true,
@@ -139,6 +147,7 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             bink,
             dsound,
             xapi,
+            movies,
         },
     );
     // The kernel's storage may outlive the run (or never drop): store its

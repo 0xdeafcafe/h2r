@@ -30,6 +30,7 @@ code { font-family: var(--font-mono); }
 .verify--bad .verify__icon { background: var(--s-bad); border-color: #ffb08a; color: #000; }
 .verify--bad { color: var(--s-bad); }
 .verify--unknown, .verify--unsigned { color: var(--s-warn); }
+.verify--redacted { color: #9d9d9d; }
 .verify-summary { font-size: 11px; color: var(--s-link); display: inline-flex; gap: 4px; align-items: center; }
 .verify-summary--bad { color: var(--s-bad); font-weight: bold; }
 

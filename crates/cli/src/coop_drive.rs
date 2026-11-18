@@ -35,24 +35,12 @@
 
 use std::collections::BTreeSet;
 
-/// Screen ids (docs/live/live-coop.md 12.1, `custom_games::SCREEN_ID`,
-/// the System Link browser in Live mode).
-pub const MAIN_MENU: u32 = 0x09;
-pub const LIVE_MENU: u32 = 0xba;
-pub const BROWSER: u32 = 0x0d;
-/// The players' screen (`boot::ui_watch::JOIN_SCREEN`) and its modes.
-pub const JOIN_SCREEN: u32 = 0x1e;
-pub const MODE_SPLIT: u32 = 1;
-pub const MODE_SYSTEM_LINK: u32 = 2;
-pub const MODE_LIVE: u32 = 3;
-pub const MODE_INVITE: u32 = 4;
-/// The campaign's screens: A on Campaign, and the one after it.
-pub const CAMPAIGN_SCREENS: [u32; 2] = [0xee, 0xd1];
-/// Live menu rows (`custom_games`).
-pub const BROWSER_ROW: u32 = 3;
-pub const COOP_ROW: u32 = 4;
-/// Main menu row of Xbox Live (Campaign is row 0).
-pub const MAIN_LIVE_ROW: u32 = 1;
+/// Screen ids, the players' screen's modes and the menu rows, shared with
+/// `h2 agent sim lobby` (`agent_proto::sim::menu`).
+pub use agent_proto::sim::menu::{
+    BROWSER, BROWSER_ROW, CAMPAIGN_SCREENS, COOP_ROW, JOIN_SCREEN, LIVE_MENU, MAIN_LIVE_ROW,
+    MAIN_MENU, MODE_INVITE, MODE_LIVE, MODE_SPLIT, MODE_SYSTEM_LINK,
+};
 
 /// Between two presses: the menus take a press per frame at a few frames
 /// a second with three games on one Mac.
@@ -773,7 +761,7 @@ pub fn parse_screen(text: &str) -> Option<(Option<u32>, Option<u32>, Option<u32>
 /// The `input.pad` params for one press: held 150 ms and two reads, so a
 /// slow frame still sees it.
 pub fn pad_params(p: &Press) -> serde_json::Value {
-    serde_json::json!({ "steps": [{ "buttons": [p.button], "ms": 150, "reads": 2 }] })
+    serde_json::json!({ "steps": [agent_proto::sim::menu::press_step(p.button)] })
 }
 
 #[cfg(test)]

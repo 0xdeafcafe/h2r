@@ -1723,49 +1723,11 @@ pub fn install(
     let live: Arc<dyn Live> = hle;
     let lobby = Arc::new(Lobby::new(levels, arm, Some(Arc::clone(&live)), skulls));
     let _ = LOBBY.set(Arc::clone(&lobby));
-    let host: Action = {
-        let lobby = Arc::clone(&lobby);
-        Arc::new(move |cx, screen| {
-            let lobby = Arc::clone(&lobby);
-            Box::pin(async move { host_start(&cx, &lobby, screen).await })
-        })
-    };
-    let ready: Action = {
-        let lobby = Arc::clone(&lobby);
-        Arc::new(move |cx, screen| {
-            let lobby = Arc::clone(&lobby);
-            Box::pin(async move { guest_ready(&cx, &lobby, screen).await })
-        })
-    };
-    let add = |r: &mut feature::Registry, c: ListClass| -> anyhow::Result<()> {
-        r.add(&c).map_err(|e| anyhow::anyhow!("coop-live: {e}"))?;
-        Ok(())
-    };
-    add(
-        registry,
-        ListClass::with_rows(
-            "coop-screen",
-            SCREEN,
-            Arc::new(HostRows(Arc::clone(&lobby))),
-        )
-        .action(host)
-        .footer(footer_id(&lobby.texts, SCREEN)),
-    )?;
-    add(
-        registry,
-        ListClass::with_rows(
-            "coop-friends",
-            FRIENDS,
-            Arc::new(FriendRows(Arc::clone(&lobby))),
-        )
-        .footer(footer_id(&lobby.texts, FRIENDS)),
-    )?;
-    add(
-        registry,
-        ListClass::with_rows("coop-join", JOIN, Arc::new(JoinRows(Arc::clone(&lobby))))
-            .action(ready)
-            .footer(footer_id(&lobby.texts, JOIN)),
-    )?;
+    for c in classes(&lobby) {
+        registry
+            .add(&c)
+            .map_err(|e| anyhow::anyhow!("coop-live: {e}"))?;
+    }
     registry
         .add(&CoopScreens {
             lobby: Arc::clone(&lobby),
@@ -1783,6 +1745,39 @@ pub fn install(
         .name("h2-coop-watch".into())
         .spawn(move || watch(weak, live, stop))?;
     Ok(true)
+}
+
+/// The three screens' classes over `lobby`: the host's (Start starts),
+/// the friends list, and the guest's (Start says ready).
+pub fn classes(lobby: &Arc<Lobby>) -> [ListClass; 3] {
+    let host: Action = {
+        let lobby = Arc::clone(lobby);
+        Arc::new(move |cx, screen| {
+            let lobby = Arc::clone(&lobby);
+            Box::pin(async move { host_start(&cx, &lobby, screen).await })
+        })
+    };
+    let ready: Action = {
+        let lobby = Arc::clone(lobby);
+        Arc::new(move |cx, screen| {
+            let lobby = Arc::clone(&lobby);
+            Box::pin(async move { guest_ready(&cx, &lobby, screen).await })
+        })
+    };
+    [
+        ListClass::with_rows("coop-screen", SCREEN, Arc::new(HostRows(Arc::clone(lobby))))
+            .action(host)
+            .footer(footer_id(&lobby.texts, SCREEN)),
+        ListClass::with_rows(
+            "coop-friends",
+            FRIENDS,
+            Arc::new(FriendRows(Arc::clone(lobby))),
+        )
+        .footer(footer_id(&lobby.texts, FRIENDS)),
+        ListClass::with_rows("coop-join", JOIN, Arc::new(JoinRows(Arc::clone(lobby))))
+            .action(ready)
+            .footer(footer_id(&lobby.texts, JOIN)),
+    ]
 }
 
 #[cfg(test)]

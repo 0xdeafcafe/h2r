@@ -1,0 +1,15 @@
+[package]
+name = "hot-tags"
+description = "Live edits of the running game's tags in guest memory, by field path from the tag definitions, with a journal to list and revert them (docs/graphics/hot-iteration.md)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+tags.workspace = true
+map.workspace = true
+runtime.workspace = true
+# The tag-index globals (engine::points::TAG_INDEX, TAG_ENTRIES).
+engine = { path = "../engine" }
+serde.workspace = true
+serde_json.workspace = true

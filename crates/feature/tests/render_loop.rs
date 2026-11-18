@@ -144,8 +144,21 @@ fn the_runtime_makes_the_calls_the_port_asks_for() {
         edi: e.edi,
         ..Default::default()
     };
+    let calls = |name: &str| {
+        feature::render_loop::path_calls()
+            .into_iter()
+            .find(|c| c.0 == name)
+            .unwrap()
+            .1
+    };
+    let before = calls("render_views");
     let mut ctx = ExecCtx::new(Arc::clone(&rt), 1);
     let t = Runner::default().run(&mut cpu, &mut ctx, points::RENDER_VIEWS.base);
+    assert_eq!(
+        calls("render_views"),
+        before + 1,
+        "the agent's render.stats sees the native path taken"
+    );
     assert!(
         matches!(ctx.event(t.event_id), Some(Event::HarnessExit)),
         "{:?}",

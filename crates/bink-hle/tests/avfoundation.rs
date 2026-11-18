@@ -107,3 +107,42 @@ fn real_transcodes_at_30_and_29_97_fps_are_accepted() {
         );
     }
 }
+
+#[test]
+#[cfg_attr(not(has_ffmpeg), ignore = "requires user's ffmpeg on PATH")]
+fn generated_sound_track_reads_as_stereo_pcm_and_rewinds() {
+    let temp = Temp::new();
+    // 0.5 s of video with a 440 Hz tone at 44.1 kHz.
+    let bytes = support::media_for(
+        &temp.0.join("s.nut"),
+        "color=blue:size=32x24:rate=30",
+        "0.5",
+    );
+    let options = InstallOptions::new(temp.0.join("data/movies"));
+    install(&mut disc(&[("s.bik", &bytes)]), &options).unwrap();
+    let source = TranscodedSource::new(&options.data_dir, Arc::new(AvFoundationDecoder));
+    let mut stream = source.open("s").unwrap();
+    let audio = stream.audio_info().expect("the AAC track is readable");
+    assert_eq!((audio.sample_rate, audio.channels), (44_100, 2));
+    let mut all = Vec::new();
+    let mut buf = vec![0i16; 441 * 2];
+    loop {
+        let n = stream.read_audio(&mut buf);
+        if n == 0 {
+            break;
+        }
+        all.extend_from_slice(&buf[..n * 2]);
+    }
+    let frames = all.len() / 2;
+    // 0.5 s, give or take the encoder's padding.
+    assert!((20_000..=25_000).contains(&frames), "{frames} frames");
+    let peak = all.iter().map(|s| s.unsigned_abs()).max().unwrap();
+    assert!(peak > 1000, "a tone, not silence: peak {peak}");
+    // Video reads do not disturb the sound, and a rewind starts it over.
+    let mut frame = vec![0; 32 * 24 * 4];
+    assert!(stream.decode(3, &mut frame));
+    assert!(stream.rewind_audio());
+    let n = stream.read_audio(&mut buf);
+    assert_eq!(n, 441);
+    assert_eq!(&buf[..], &all[..441 * 2]);
+}

@@ -52,6 +52,8 @@ use crate::list_class::{self, Action, Button, Buttons, ListClass, LiveText, Rows
 use crate::signin_keyboard::{self as keyboard, Field, Typing};
 use crate::ui::{Chosen, LABEL_SLOT};
 use crate::ui_kit::spec::{Describe, RowSpec, ScreenSpec};
+use live_hle::account_setup::SetupError;
+use live_hle::signin::{Call, Typed};
 
 /// The screen id and feature id.
 pub const SCREEN: &str = "signin-code";
@@ -119,7 +121,9 @@ impl Press {
             Input::Left => Press::Left,
             Input::Right => Press::Right,
             Input::A => Press::A,
-            Input::B => Press::B,
+            // Back closes the screen as B does, so it cancels as B does:
+            // without it the screen went and the logon stayed pending.
+            Input::B | Input::Back => Press::B,
             _ => return None,
         })
     }
@@ -148,6 +152,9 @@ pub enum Effect {
 pub struct CodeEntry {
     digits: [u8; DIGITS],
     cursor: usize,
+    /// The last error is hidden: the code was edited since (it shows
+    /// again once a new answer comes, after the next A).
+    quiet: bool,
 }
 
 impl CodeEntry {
@@ -159,26 +166,38 @@ impl CodeEntry {
         self.cursor
     }
 
+    /// The code page's error, unless the code was edited since it came.
+    pub fn error<'e>(&self, error: &'e Option<SetupError>) -> Option<&'e SetupError> {
+        error.as_ref().filter(|_| !self.quiet)
+    }
+
     /// `press` on the page of `phase`.
     pub fn press(&mut self, phase: &Phase, press: Press) -> Effect {
         match (phase, press) {
             (Phase::Code { .. }, Press::Up) => {
                 self.digits[self.cursor] = (self.digits[self.cursor] + 1) % 10;
+                self.quiet = true;
                 Effect::Redraw
             }
             (Phase::Code { .. }, Press::Down) => {
                 self.digits[self.cursor] = (self.digits[self.cursor] + 9) % 10;
+                self.quiet = true;
                 Effect::Redraw
             }
             (Phase::Code { .. }, Press::Left) if self.cursor > 0 => {
                 self.cursor -= 1;
+                self.quiet = true;
                 Effect::Redraw
             }
             (Phase::Code { .. }, Press::Right) if self.cursor + 1 < DIGITS => {
                 self.cursor += 1;
+                self.quiet = true;
                 Effect::Redraw
             }
-            (Phase::Code { .. }, Press::A) => Effect::Submit(self.code()),
+            (Phase::Code { .. }, Press::A) => {
+                self.quiet = false;
+                Effect::Submit(self.code())
+            }
             (Phase::Gamertag { .. }, Press::A) => Effect::Keyboard(Field::Gamertag),
             (Phase::Invite { .. }, Press::A) => Effect::Keyboard(Field::Invite),
             (Phase::Create { error }, Press::A) if !needs_invite(error) => Effect::Create,
@@ -251,7 +270,7 @@ pub fn page(prompt: Option<&Prompt>, entry: &CodeEntry, now: i64) -> (String, St
                 },
                 entry.shown(),
             ];
-            l.extend(match error {
+            l.extend(match entry.error(error) {
                 Some(e) => wrap(&e.to_string(), LINE_CHARS),
                 None => vec!["D-pad: digits. A: sign in. B: cancel.".into()],
             });
@@ -520,58 +539,203 @@ pub fn sample_spec() -> ScreenSpec {
     spec_for(Some(&p), &CodeEntry::default(), 0)
 }
 
-/// The prompt's pages for the preview sheet, by name: the code page empty,
-/// typed and refused, checking, the new-account pages, and the end states.
+/// The prompt's pages for the preview sheet, by name ([`SigninPage`]'s
+/// states).
 pub fn sample_states() -> Vec<(String, ScreenSpec)> {
-    use live_hle::account_setup::SetupError;
-    let p = |phase: Phase| Prompt {
-        gamertag: "Chief".into(),
-        server_url: "https://live.example.net/".into(),
-        controller: 0,
-        phase,
-    };
-    let empty = CodeEntry::default();
-    let mut typed = CodeEntry::default();
-    for press in [
-        Press::Up,
-        Press::Up,
-        Press::Right,
-        Press::Down,
-        Press::Right,
-    ] {
-        typed.press(&Phase::Code { error: None }, press);
+    crate::ui_kit::page::specs(&SigninPage)
+}
+
+/// What steps the sign-in page: the pad, the keyboard's text (`None`: backed
+/// out of), the server's answer to the call running.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SigninEvent {
+    Press(crate::ui_kit::input::Input),
+    Typed(Option<String>),
+    Answer(Result<Option<live_proto::recovery::RecoveryInfo>, SetupError>),
+}
+
+impl From<crate::ui_kit::input::Input> for SigninEvent {
+    fn from(i: crate::ui_kit::input::Input) -> Self {
+        SigninEvent::Press(i)
     }
-    let code = |error| Phase::Code { error };
-    [
-        ("code", code(None), &empty),
-        ("code-typed", code(None), &typed),
-        (
-            "code-wrong",
-            code(Some(SetupError::WrongCodeLeft { left: 2 })),
-            &typed,
-        ),
-        (
-            "code-unreachable",
-            code(Some(SetupError::Unreachable)),
-            &typed,
-        ),
-        ("checking", Phase::Working, &typed),
-        ("gamertag", Phase::Gamertag { error: None }, &empty),
-        (
-            "gamertag-bad",
-            Phase::Gamertag {
-                error: Some(SetupError::BadGamertag),
+}
+
+/// The prompt and the code being typed, with the server call running.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SigninState {
+    pub prompt: Prompt,
+    pub entry: CodeEntry,
+    /// The call an [`SigninEvent::Answer`] answers.
+    pub call: Option<Call>,
+}
+
+/// The sign-in prompt as a pure page (docs/game/ui-builder.md
+/// "Behaviour"): a press goes through [`CodeEntry::press`] as on the
+/// screen, and what the HLE does with the effect, typed text and the
+/// server's answers follow [`live_hle::signin`]'s own transitions
+/// ([`live_hle::signin::typed`], [`live_hle::signin::refused`],
+/// [`live_hle::signin::settled`]). A, X and Start all reach the row's
+/// action (X and Start are the class's action buttons); B and Back cancel.
+pub struct SigninPage;
+
+impl SigninPage {
+    fn start(state: &mut SigninState, call: Call) {
+        state.prompt.phase = Phase::Working;
+        state.call = Some(call);
+    }
+}
+
+impl crate::ui_kit::page::Page for SigninPage {
+    type State = SigninState;
+    type Event = SigninEvent;
+    type Effect = Effect;
+
+    fn step(&self, state: &mut SigninState, event: SigninEvent) -> Effect {
+        use crate::ui_kit::input::Input;
+        match event {
+            SigninEvent::Press(input) => {
+                let press = match input {
+                    Input::X | Input::Start => Some(Press::A),
+                    i => Press::from_event(i.event().0, i.event().1),
+                };
+                let Some(press) = press else {
+                    return Effect::None;
+                };
+                let effect = state.entry.press(&state.prompt.phase, press);
+                match &effect {
+                    Effect::Submit(code) => match live_hle::signin::refused(code) {
+                        Some(p) => state.prompt.phase = p,
+                        None => Self::start(state, Call::Code),
+                    },
+                    Effect::Create => Self::start(state, Call::Create),
+                    Effect::Cancel if !state.prompt.phase.finished() => {
+                        state.prompt.phase = Phase::Cancelled;
+                    }
+                    _ => {}
+                }
+                effect
+            }
+            SigninEvent::Typed(text) => {
+                match live_hle::signin::typed(&state.prompt.phase, text.as_deref()) {
+                    None | Some(Typed::Keep) => Effect::None,
+                    Some(Typed::Phase(p)) => {
+                        state.prompt.phase = p;
+                        Effect::Redraw
+                    }
+                    Some(Typed::Gamertag(tag)) => {
+                        state.prompt.gamertag = tag;
+                        Self::start(state, Call::Add { invite: false });
+                        Effect::Redraw
+                    }
+                    Some(Typed::Invite(_)) => {
+                        Self::start(state, Call::Add { invite: true });
+                        Effect::Redraw
+                    }
+                }
+            }
+            SigninEvent::Answer(result) => {
+                let Some(call) = state.call.take() else {
+                    return Effect::None;
+                };
+                if state.prompt.phase == Phase::Cancelled {
+                    return Effect::None;
+                }
+                let p = &state.prompt;
+                state.prompt.phase =
+                    live_hle::signin::settled(call, result, &p.gamertag, &p.server_url);
+                Effect::Redraw
+            }
+        }
+    }
+
+    fn spec(&self, state: &SigninState) -> ScreenSpec {
+        spec_for(Some(&state.prompt), &state.entry, 0)
+    }
+
+    /// The code page empty, typed and refused, checking, the new-account
+    /// pages, and the end states.
+    fn states(&self) -> Vec<(String, SigninState)> {
+        let at = |phase: Phase, entry: &CodeEntry| SigninState {
+            prompt: Prompt {
+                gamertag: "Chief".into(),
+                server_url: "https://live.example.net/".into(),
+                controller: 0,
+                phase,
             },
-            &empty,
-        ),
-        ("invite", Phase::Invite { error: None }, &empty),
-        ("create", Phase::Create { error: None }, &empty),
-        ("done", Phase::Done, &empty),
-        ("cancelled", Phase::Cancelled, &empty),
-    ]
-    .into_iter()
-    .map(|(name, phase, entry)| (name.to_string(), spec_for(Some(&p(phase)), entry, 0)))
-    .collect()
+            entry: entry.clone(),
+            call: None,
+        };
+        let empty = CodeEntry::default();
+        let mut typed = CodeEntry::default();
+        for press in [
+            Press::Up,
+            Press::Up,
+            Press::Right,
+            Press::Down,
+            Press::Right,
+        ] {
+            typed.press(&Phase::Code { error: None }, press);
+        }
+        // Typed, then answered: the error shows.
+        typed.quiet = false;
+        let code = |error| Phase::Code { error };
+        let mut checking = at(Phase::Working, &typed);
+        checking.call = Some(Call::Code);
+        let mut states = vec![
+            ("code", at(code(None), &empty)),
+            ("code-typed", at(code(None), &typed)),
+            (
+                "code-wrong",
+                at(code(Some(SetupError::WrongCodeLeft { left: 2 })), &typed),
+            ),
+            (
+                "code-unreachable",
+                at(code(Some(SetupError::Unreachable)), &typed),
+            ),
+            ("checking", checking),
+            ("gamertag", at(Phase::Gamertag { error: None }, &empty)),
+            (
+                "gamertag-bad",
+                at(
+                    Phase::Gamertag {
+                        error: Some(SetupError::BadGamertag),
+                    },
+                    &empty,
+                ),
+            ),
+            ("invite", at(Phase::Invite { error: None }, &empty)),
+            ("create", at(Phase::Create { error: None }, &empty)),
+            ("done", at(Phase::Done, &empty)),
+            ("cancelled", at(Phase::Cancelled, &empty)),
+        ];
+        // A new account's prompt has no gamertag yet.
+        for (name, s) in &mut states {
+            if name.starts_with("gamertag") {
+                s.prompt.gamertag.clear();
+            }
+        }
+        states
+            .into_iter()
+            .map(|(n, s)| (n.to_string(), s))
+            .collect()
+    }
+
+    /// The page's label, the code as shown, and the error shown (or `-`).
+    fn summary(&self, state: &SigninState) -> String {
+        let (label, _) = page(Some(&state.prompt), &state.entry, 0);
+        let error = match &state.prompt.phase {
+            Phase::Code { error } => state.entry.error(error).map(ToString::to_string),
+            Phase::Gamertag { error } | Phase::Invite { error } | Phase::Create { error } => {
+                error.as_ref().map(ToString::to_string)
+            }
+            _ => None,
+        };
+        format!(
+            "{label} | {} | {}",
+            state.entry.shown(),
+            error.as_deref().unwrap_or("-")
+        )
+    }
 }
 
 impl Describe for SigninRows {

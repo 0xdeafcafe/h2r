@@ -191,8 +191,14 @@ impl DrawStats {
     }
 }
 
-pub struct DiagBackend<B> {
+pub struct DiagBackend<B: Backend> {
     inner: B,
+    /// The agent's `render.frame` recorder (`agent::render::PROBE`; a
+    /// test's own in tests).
+    probe: &'static agent::render::FrameProbe,
+    /// The current pass's colour target and size, while a frame is being
+    /// recorded, so a pass asked for can be read back when it ends.
+    probe_target: Option<(B::Surface, u32, u32)>,
     stats: Arc<Mutex<DrawStats>>,
     log: Option<std::io::BufWriter<std::fs::File>>,
     frames: BTreeSet<u64>,
@@ -255,7 +261,7 @@ impl Capture {
     }
 }
 
-impl<B> DiagBackend<B> {
+impl<B: Backend> DiagBackend<B> {
     pub fn new(inner: B) -> (Self, Arc<Mutex<DrawStats>>) {
         let stats = Arc::new(Mutex::new(DrawStats::default()));
         let log = std::env::var_os("H2_BOOT_DRAWLOG").and_then(|p| match std::fs::File::create(&p) {
@@ -277,7 +283,13 @@ impl<B> DiagBackend<B> {
             Some(Capture { dir, frame, draws: 0, writes: 0, snaps: draw_set("H2_BOOT_CAPTURE_SNAP"), skips: draw_set("H2_BOOT_CAPTURE_SKIP"), lite: std::env::var_os("H2_BOOT_CAPTURE_LITE").is_some(), keep_tex: draw_set("H2_BOOT_CAPTURE_TEX") })
         });
         let sweep = crate::sweep_diag::SweepDiag::from_env();
-        (DiagBackend { inner, stats: Arc::clone(&stats), log, frames, in_frame: 1, capture, next_texture: 0, sweep, origins: BTreeMap::new() }, stats)
+        (DiagBackend { inner, probe: &agent::render::PROBE, probe_target: None, stats: Arc::clone(&stats), log, frames, in_frame: 1, capture, next_texture: 0, sweep, origins: BTreeMap::new() }, stats)
+    }
+
+    /// The same, recording frames for `render.frame` into `probe`.
+    pub fn with_probe(mut self, probe: &'static agent::render::FrameProbe) -> Self {
+        self.probe = probe;
+        self
     }
 
     /// The capture, while frame `H2_BOOT_CAPTURE_FRAME` is being drawn.
@@ -323,6 +335,66 @@ impl<B> DiagBackend<B> {
             let _ = writeln!(l, "{} {s}", self.in_frame);
         }
     }
+
+    /// `render.frame`: work is about to go to `color`; reads back the pass
+    /// it ends when that pass was asked for.
+    fn probe_enter(&mut self, color: B::Surface, depth: Option<B::Surface>, size: Option<(u32, u32)>) {
+        let probe = self.probe;
+        if !probe.armed() {
+            self.probe_target = None;
+            return;
+        }
+        let depth_name = depth.map(|d| format!("{d:?}"));
+        if let Some(ask) = probe.enter(&format!("{color:?}"), depth_name.as_deref()) {
+            self.probe_snap(ask);
+        }
+        match size {
+            Some((w, h)) => self.probe_target = Some((color, w, h)),
+            None if self.probe_target.is_some_and(|t| t.0 != color) => self.probe_target = None,
+            None => {}
+        }
+    }
+
+    /// Reads the current pass's colour target back into a PNG under the
+    /// cache directory's `frames/`, and tells the probe.
+    fn probe_snap(&mut self, ask: agent::render::SnapAsk) {
+        let result = match self.probe_target {
+            None => Err("the pass's size is unknown (no draw in it)".to_owned()),
+            Some((surface, w, h)) => {
+                let layout = GuestLayoutKind::Linear { pitch: w * 4 };
+                self.inner.read_surface(surface, D3DFormat::LinA8R8G8B8, w, h, layout).and_then(|bgra| {
+                    let rgba: Vec<u8> = bgra.chunks_exact(4).flat_map(|p| [p[2], p[1], p[0], 0xff]).collect();
+                    let dir = agent_proto::cache_dir().join("frames");
+                    let path = dir.join(format!("frame-{}-pass-{}.png", ask.seq, ask.pass));
+                    std::fs::create_dir_all(&dir)
+                        .map_err(|e| e.to_string())
+                        .and_then(|()| crate::d3d_glue::write_png(&path, &rgba, w, h).map_err(|e| e.to_string()))
+                        .map(|()| path.display().to_string())
+                })
+            }
+        };
+        self.probe.snapped(ask.pass, result);
+    }
+}
+
+/// A draw for `render.frame`.
+fn probe_draw<S: std::fmt::Debug>(color: S, depth: Option<S>, draw: &ResolvedDraw, r: &Result<DrawOutcome, String>) -> agent::render::DrawInfo {
+    let t = &draw.target;
+    let st = &draw.state.render;
+    agent::render::DrawInfo {
+        color: format!("{color:?}"),
+        depth: depth.map(|d| format!("{d:?}")),
+        target: target_name(t),
+        entry: draw.entry.to_owned(),
+        primitive: format!("{:?}", draw.primitive),
+        vertices: draw.vertex_count,
+        indices: draw.indices.as_ref().map_or(0, |i| i.len() as u32),
+        outcome: outcome_name(r),
+        textures: draw.texture_info.iter().flatten().map(|t| format!("{:?}", t.format)).collect(),
+        program: draw.shader.pixel_shader.is_some(),
+        blend: st.blend_enable,
+        depth_write: st.depth_write,
+    }
 }
 
 fn outcome_name(r: &Result<DrawOutcome, String>) -> String {
@@ -334,7 +406,7 @@ fn outcome_name(r: &Result<DrawOutcome, String>) -> String {
     }
 }
 
-impl<B> DiagBackend<B> {
+impl<B: Backend> DiagBackend<B> {
     /// Adds a draw's outcome to the stats; returns the outcome's and the
     /// target's names.
     fn count(&self, r: &Result<DrawOutcome, String>, t: &TargetInfo, info: &[Option<TextureInfo>; 4]) -> (String, String) {
@@ -542,6 +614,10 @@ impl<B: Backend> Backend for DiagBackend<B> {
         if let Some(c) = self.capturing() {
             c.append("frame.txt", &format!("clear color={color:?} depth={depth:?} {clear:?}"));
         }
+        if self.probe.armed() {
+            self.probe_enter(color, depth, None);
+            self.probe.clear(&format!("{color:?}"), depth.map(|d| format!("{d:?}")).as_deref());
+        }
         self.inner.clear(color, depth, clear)
     }
     fn draw(
@@ -578,8 +654,15 @@ impl<B: Backend> Backend for DiagBackend<B> {
         if sweep_logging && self.sweep.as_ref().is_some_and(|s| s.logged_draws() == 0) {
             self.sweep_samples(color, draw.target.width, draw.target.height, "target before the frame's first draw");
         }
+        let probing = self.probe.armed();
+        if probing {
+            self.probe_enter(color, depth, Some((draw.target.width, draw.target.height)));
+        }
         let inner: [Option<&B::Texture>; 4] = std::array::from_fn(|i| textures[i].map(|t| &t.inner));
         let r = self.inner.draw(color, depth, draw, inner);
+        if probing {
+            self.probe.draw(probe_draw(color, depth, draw, &r));
+        }
         if let Some(s) = &mut self.sweep {
             if s.dumping(self.in_frame) {
                 s.draw(draw, &format!("{color:?}"), &outcome_name(&r));
@@ -671,7 +754,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
     ) -> (Result<DrawOutcome, String>, Vec<StreamBytes>) {
         // Capturing, logging and the sweep diagnostic read the draw after
         // the inner backend has drawn it.
-        if self.capturing().is_some() || self.logging() || self.sweep.is_some() {
+        if self.capturing().is_some() || self.logging() || self.sweep.is_some() || self.probe.armed() {
             let r = self.draw(color, depth, &draw, textures);
             return (r, draw.streams);
         }
@@ -727,6 +810,14 @@ impl<B: Backend> Backend for DiagBackend<B> {
         // H2_HOST_PERF: where the frame time went (host_perf.rs), on the
         // game thread before the backend presents.
         crate::host_perf::on_present(n);
+        // render.frame: the frame's last pass is read back before the
+        // present when it was asked for.
+        if let Some(ask) = self.probe.present(n) {
+            self.probe_snap(ask);
+        }
+        if !self.probe.armed() {
+            self.probe_target = None;
+        }
         self.in_frame += 1;
         if let Some(l) = &mut self.log {
             let _ = l.flush();
@@ -736,6 +827,10 @@ impl<B: Backend> Backend for DiagBackend<B> {
     fn clear_rects(&mut self, color: Self::Surface, depth: Option<Self::Surface>, clear: &RectClear) -> Result<DrawOutcome, String> {
         if let Some(c) = self.capturing() {
             c.append("frame.txt", &format!("clear_rects color={color:?} depth={depth:?} {clear:#?}"));
+        }
+        if self.probe.armed() {
+            self.probe_enter(color, depth, None);
+            self.probe.clear(&format!("{color:?}"), depth.map(|d| format!("{d:?}")).as_deref());
         }
         let r = self.inner.clear_rects(color, depth, clear);
         self.line(format!("clear_rects {color:?} {} rects -> {}", clear.rects.len(), outcome_name(&r)));
@@ -750,6 +845,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
         layout: GuestLayoutKind,
     ) -> Result<Vec<u8>, String> {
         self.line(format!("read_surface {surface:?} {format:?} {width}x{height}"));
+        self.probe.op("read", &format!("{surface:?}"), format!("{format:?} {width}x{height}"));
         if let Some(c) = self.capturing() {
             c.append("frame.txt", &format!("read_surface {surface:?} {format:?} {width}x{height}"));
         }
@@ -764,6 +860,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
         layout: GuestLayoutKind,
     ) -> Result<Option<Vec<u8>>, String> {
         self.line(format!("read_depth {surface:?} {format:?} {width}x{height}"));
+        self.probe.op("read_depth", &format!("{surface:?}"), format!("{format:?} {width}x{height}"));
         if let Some(c) = self.capturing() {
             c.append("frame.txt", &format!("read_depth {surface:?} {format:?} {width}x{height}"));
         }
@@ -771,6 +868,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
     }
     fn copy_surface(&mut self, src: Self::Surface, dst: Self::Surface) -> Result<bool, String> {
         self.line(format!("copy_surface {src:?} -> {dst:?}"));
+        self.probe.op("copy", &format!("{src:?}"), format!("to {dst:?}"));
         if let Some(s) = &mut self.sweep
             && s.dumping(self.in_frame)
         {
@@ -877,6 +975,33 @@ mod tests {
         assert_eq!(seen, [3, 4, 5, 8]);
         assert!(s.report().ends_with("  shadow-map frames   4  3-5, 8\n"), "{}", s.report());
         assert_eq!(ranges(&[1, 2, 4, 6, 7], 2), "1-2, 4, ...");
+    }
+
+    /// `render.frame` through the wrapper: clears and copies of one frame,
+    /// in passes, between two presents; the presents themselves still
+    /// reach the backend.
+    #[test]
+    fn the_agent_probe_records_one_frame_in_passes() {
+        static PROBE: agent::render::FrameProbe = agent::render::FrameProbe::new();
+        let (d, _) = DiagBackend::new(d3d::RecordingBackend::new());
+        let mut d = d.with_probe(&PROBE);
+        let clear = Clear { color: Some([0.0; 4]), depth: None, stencil: None };
+        d.clear(1, None, clear).unwrap();
+        PROBE.arm(&agent_proto::FrameParams { arm: true, ..Default::default() }).unwrap();
+        d.clear(1, None, clear).unwrap();
+        d.present(1, 0).unwrap();
+        d.clear(2, Some(9), clear).unwrap();
+        d.copy_surface(2, 3).unwrap();
+        d.clear(1, None, clear).unwrap();
+        d.present(1, 0).unwrap();
+        d.clear(1, None, clear).unwrap();
+        let f = PROBE.reply().frame.expect("recorded");
+        assert_eq!(f.present, f.from_present + 1);
+        assert_eq!((f.totals.clears, f.totals.copies, f.totals.passes, f.totals.targets), (2, 1, 2, 2));
+        assert_eq!(f.passes[0].color, "2");
+        assert_eq!(f.passes[0].depth.as_deref(), Some("9"));
+        assert_eq!(f.ops[0].detail, "to 3");
+        assert!(!PROBE.armed());
     }
 
     /// Every `Backend` method must be forwarded by `DiagBackend`; a missed

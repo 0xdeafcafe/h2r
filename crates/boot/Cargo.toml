@@ -39,11 +39,15 @@ x87 = { path = "../x87" }
 dsound = { path = "../dsound" }
 audio = { path = "../audio", default-features = false }
 bink-hle = { path = "../bink-hle" }
+# Where `h2 movies` installs (movies_glue).
+movies.workspace = true
 xapi = { path = "../xapi" }
 live-hle = { path = "../live-hle" }
 live-telemetry = { path = "../live-telemetry" }
 live-proto.workspace = true
 input = { path = "../input", default-features = false }
+# Local bots (docs/game/bots.md).
+bots = { path = "../bots" }
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "instr_info"] }
 timeline = { path = "../timeline" }
 # The determinism harness (H2_LOCKSTEP, H2_INPUT_RECORD, H2_INPUT_REPLAY).
@@ -51,6 +55,9 @@ lockstep = { path = "../lockstep" }
 # The agent API (H2_AGENT; docs/runtime/agent-api.md).
 agent = { path = "../agent" }
 agent-proto = { path = "../agent-proto" }
+# Hot iteration on the agent (src/hot_glue.rs, docs/graphics/hot-iteration.md).
+hot-render = { path = "../hot-render" }
+hot-tags = { path = "../hot-tags" }
 # The agent glue's host methods (input.pad, profile.sample.*).
 serde_json.workspace = true
 # `H2_PERF_FROM`: a profiler/timeline session over part of a run.

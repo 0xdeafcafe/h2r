@@ -217,7 +217,8 @@ impl InputManager {
                 self.changes_rem |= 1 << i;
             }
         }
-        // Insertions, in backend order, lowest free port.
+        // Insertions, in backend order, each on the port its backend asks
+        // for or the lowest free one.
         for key in &order {
             if self
                 .ports
@@ -226,7 +227,14 @@ impl InputManager {
             {
                 continue;
             }
-            let Some(i) = self.ports.iter().position(|p| p.device.is_none()) else {
+            // The port the backend asks for when it is free, else the lowest
+            // free one.
+            let free = |i: usize| self.ports.get(i).is_some_and(|p| p.device.is_none());
+            let wanted = self.backends[key.0]
+                .preferred_port(key.1)
+                .filter(|&i| free(i));
+            let Some(i) = wanted.or_else(|| self.ports.iter().position(|p| p.device.is_none()))
+            else {
                 break; // all four ports taken
             };
             let port = &mut self.ports[i];
@@ -263,6 +271,12 @@ impl InputManager {
                 d.rumble_sent = last;
             }
             d.complete_all(ERROR_SUCCESS, &mut self.completions);
+        }
+        // Tell each backend where its pads went.
+        for (i, port) in self.ports.iter().enumerate() {
+            if let Some(d) = &port.device {
+                self.backends[d.host.0].placed(d.host.1, i);
+            }
         }
     }
 

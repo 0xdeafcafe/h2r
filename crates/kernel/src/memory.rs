@@ -151,6 +151,25 @@ fn unmap_refusal(memory: &Guest, page: u32) -> Option<&'static str> {
     }
     lifted_code(memory, page, PAGE_SIZE).then_some("freeing virtual memory that holds lifted code")
 }
+/// `sizeof(MM_STATISTICS)`: nine ULONGs.
+pub const MM_STATISTICS_SIZE: u32 = 0x24;
+
+/// Physical pages no mapping or reservation uses. `find_free_physical`
+/// jumps over each occupied run, so this costs one probe per free page.
+fn free_physical_pages(memory: &Guest) -> u32 {
+    let mut n = 0;
+    let mut cursor = 0u32;
+    while let Some(page) = memory.find_free_physical(PAGE_SIZE, cursor..RAM_SIZE as u32, PAGE_SIZE)
+    {
+        n += 1;
+        match page.checked_add(PAGE_SIZE) {
+            Some(next) => cursor = next,
+            None => break,
+        }
+    }
+    n
+}
+
 fn overlaps(a: u32, n: u32, b: u32, m: u32) -> bool {
     (a as u64) < b as u64 + m as u64 && (b as u64) < a as u64 + n as u64
 }
@@ -755,6 +774,48 @@ impl Memory {
         memory.set_u32(size_ptr, (end - start as u64) as u32)?;
         Ok(Action::status(status::SUCCESS))
     }
+    /// `MmQueryStatistics(PMM_STATISTICS)`. The caller sets `Length`; any
+    /// other length is STATUS_INVALID_PARAMETER and nothing is written.
+    /// Pages come from the same accounting the allocators use: available
+    /// pages are the physical pages Runtime has neither mapped nor reserved,
+    /// the virtual totals are the NtAllocateVirtualMemory regions, pool and
+    /// stack pages are the kernel's own. Cache and image pages are not
+    /// tracked separately and read 0. Halo 2 reaches this through
+    /// `GlobalMemoryStatus` (the movie wrapper logs the free memory).
+    fn statistics(&self, memory: &mut Guest, out: u32) -> Result<Action, GuestFault> {
+        if memory.u32(out)? != MM_STATISTICS_SIZE {
+            return Ok(Action::status(status::INVALID_PARAMETER));
+        }
+        let total = RAM_SIZE as u32 / PAGE_SIZE;
+        let available = free_physical_pages(memory);
+        let reserved: u64 = self.regions.values().map(|r| r.size as u64).sum();
+        let committed: u64 = self
+            .regions
+            .values()
+            .map(|r| r.pages.len() as u64 * PAGE_SIZE as u64)
+            .sum();
+        let pool: u32 = self.pool.values().map(|b| b.capacity / PAGE_SIZE).sum();
+        let stacks: u32 = self
+            .kernel_stacks
+            .values()
+            .map(|s| s.size.div_ceil(PAGE_SIZE))
+            .sum();
+        let fields = [
+            MM_STATISTICS_SIZE,
+            total,
+            available,
+            committed.min(u32::MAX as u64) as u32,
+            reserved.min(u32::MAX as u64) as u32,
+            0,
+            pool,
+            stacks,
+            0,
+        ];
+        for (i, v) in fields.iter().enumerate() {
+            memory.set_u32(out + 4 * i as u32, *v)?;
+        }
+        Ok(Action::status(status::SUCCESS))
+    }
     pub(crate) fn call(&mut self, memory: &mut Guest, a: &Args) -> Result<Action, GuestFault> {
         Ok(match a.export.ordinal {
             ord::EX_ALLOCATE_POOL | ord::EX_ALLOCATE_POOL_WITH_TAG => {
@@ -945,6 +1006,7 @@ impl Memory {
                     None => Action::Stop("unknown allocation size"),
                 }
             }
+            ord::MM_QUERY_STATISTICS => return self.statistics(memory, a.get(0)),
             ord::MM_SET_ADDRESS_PROTECT => return self.set_protect(memory, a),
             ord::MM_CREATE_KERNEL_STACK => {
                 if a.boolean(1) {

@@ -181,6 +181,15 @@ pub enum Button {
 /// action, the sideways steps and the Controls handler.
 pub type Buttons = Arc<dyn Fn(u32, u32) -> Button + Send + Sync>;
 
+/// [`ListClass::behaviour`].
+pub struct Behaviour<'a> {
+    pub rows: &'a Arc<dyn Rows>,
+    pub hook: Option<&'a Buttons>,
+    pub action: bool,
+    pub action_buttons: &'static [u32],
+    pub sideways: bool,
+}
+
 /// A picture of ours on the screen: a retail screen's bitmap block, copied
 /// (docs/formats/ui.md "Bitmap block") and placed with its top-left at `at`. The
 /// block is found at run time through the interface's screen list, so the
@@ -807,6 +816,19 @@ impl ListClass {
     }
     /// With sideways steps: left and right on the focused row go to
     /// [`Rows::sideways`] (the Controls list does nothing with them).
+    /// The rows, the event hook, whether there is an action, the buttons
+    /// that run it, and whether left and right step rows: what an event
+    /// does, for the offline page ([`crate::ui_kit::page::ListPage`]).
+    pub fn behaviour(&self) -> Behaviour<'_> {
+        Behaviour {
+            rows: &self.rows,
+            hook: self.buttons.as_ref(),
+            action: self.action.is_some(),
+            action_buttons: self.action_buttons,
+            sideways: self.sideways,
+        }
+    }
+
     pub fn sideways(mut self) -> Self {
         self.sideways = true;
         self
@@ -1130,6 +1152,41 @@ pub async fn row_chosen(
     Ok(Ret::new(0, 8))
 }
 
+/// Where an event goes on a class of ours once its own hook passed it
+/// ([`event_with`]); pure, so the offline page
+/// ([`crate::ui_kit::page::ListPage`]) takes the same path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Route {
+    /// X or Start (`action_buttons`): the class's action.
+    Action,
+    /// Left or right: the focused row's [`Rows::sideways`], and on to the
+    /// Controls handler when it has nothing to step.
+    Sideways { right: bool },
+    /// The Controls handler: up and down move the focus, A presses the
+    /// row, B and Back close.
+    Controls,
+}
+
+/// [`Route`] for an event's kind and button words on a class with (or
+/// without) an action, its action buttons, and sideways steps.
+pub fn route(
+    kind: u32,
+    button: u32,
+    action: bool,
+    action_buttons: &[u32],
+    sideways: bool,
+) -> Route {
+    if action && kind == BUTTON_EVENT && action_buttons.contains(&button) {
+        Route::Action
+    } else if sideways && (kind == LEFT_EVENT || kind == RIGHT_EVENT) {
+        Route::Sideways {
+            right: kind == RIGHT_EVENT,
+        }
+    } else {
+        Route::Controls
+    }
+}
+
 /// Screen slot 10 of a class with an action, sideways steps or an event
 /// hook of its own: the hook first ([`Button::Handled`]: AL 1), then X or
 /// Start runs the action, and left or right ([`LEFT_EVENT`],
@@ -1164,23 +1221,25 @@ pub async fn event_with(
     {
         return Ok(Ret::new(1, 4));
     }
-    if let Some(action) = action
-        && kind == BUTTON_EVENT
-        && action_buttons.contains(&button)
-    {
+    let routed = route(
+        kind,
+        button,
+        action.is_some(),
+        action_buttons,
+        sideways.is_some(),
+    );
+    if let (Route::Action, Some(action)) = (routed, action) {
         action(cx.clone(), screen).await?;
         return Ok(Ret::new(1, 4));
     }
-    if let Some(rows) = sideways
-        && (kind == LEFT_EVENT || kind == RIGHT_EVENT)
-    {
+    if let (Route::Sideways { right }, Some(rows)) = (routed, sideways) {
         let focused = cx
             .call(GuestCall::new(points::LIST_FOCUSED_ROW.base).eax(screen.wrapping_add(ui::LIST)))
             .await?
             .eax;
         let row = (focused != u32::MAX).then(|| DatumHandle(focused).index() as i16);
         // The rows write the store with no guest memory held.
-        if let Some(line) = row.and_then(|r| rows.sideways(r, kind == RIGHT_EVENT)) {
+        if let Some(line) = row.and_then(|r| rows.sideways(r, right)) {
             eprintln!("{line}");
             return Ok(Ret::new(1, 4));
         }

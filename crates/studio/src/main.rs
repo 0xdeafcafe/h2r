@@ -16,7 +16,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
 const USAGE: &str = "usage: h2-editor [--disc <iso> | --map <file.map> | --folder <maps dir>] \
-[--halo1 <iso|maps dir>] [--data <dir>] [--package <dir>[#H1|#H2]] [--halo1-map <map> [--convert h2|h1]] [--overlay on|off] [--tool scenario|variants|playlists] [--pick <map>] [--select <block>:<index>] [--hopper <file.dat>|default] \
+[--halo1 <iso|maps dir>] [--data <dir>] [--package <dir>[#H1|#H2]] [--halo1-map <map> [--convert h2|h1]] [--overlay on|off] [--tool scenario|variants|playlists|ui-screens] [--ui-screen <screen>/<state> [--ui-press up,a,...]] [--pick <map>] [--select <block>:<index>] [--hopper <file.dat>|default] \
 [--variant <built-in index>] [--copy-variant <name>] [--playlist <1..16>] [--preset <n>] \
 [--focus] [--camera <yaw>,<pitch>,<distance>] [--dialog unsaved|package] \
 [--no-disc] [--nudge <x>,<y>,<z>] [--page <variant settings page>] [--screenshot <out.png> [--size <w>x<h>] [--scale <s>] [--do <steps>] \
@@ -39,6 +39,9 @@ struct Args {
     scale: f32,
     pick: Option<String>,
     tool: Option<ToolKind>,
+    /// The UI Screens tool's screen and state, and presses on it.
+    ui_screen: Option<String>,
+    ui_press: Option<String>,
     hopper: Option<String>,
     variant: Option<usize>,
     playlist: Option<usize>,
@@ -76,6 +79,8 @@ fn args() -> Result<Args> {
         scale: 2.0,
         pick: None,
         tool: None,
+        ui_screen: None,
+        ui_press: None,
         hopper: None,
         variant: None,
         playlist: None,
@@ -122,11 +127,14 @@ fn args() -> Result<Args> {
             "--package" => a.package = Some(value()?),
             "--screenshot" => a.screenshot = Some(value()?.into()),
             "--pick" => a.pick = Some(value()?),
+            "--ui-screen" => a.ui_screen = Some(value()?),
+            "--ui-press" => a.ui_press = Some(value()?),
             "--tool" => {
                 a.tool = Some(match value()?.as_str() {
                     "scenario" => ToolKind::Scenario,
                     "variants" => ToolKind::Variants,
                     "playlists" => ToolKind::Playlists,
+                    "ui-screens" => ToolKind::UiScreens,
                     t => bail!("unknown tool {t}\n{USAGE}"),
                 })
             }
@@ -278,6 +286,28 @@ fn main() -> Result<()> {
     }
     if let Some(tool) = args.tool {
         app.dispatch(Action::SetTool(tool));
+    }
+    if let Some(pick) = &args.ui_screen {
+        let (screen, state) = pick.split_once('/').unwrap_or((pick, ""));
+        let state = match state {
+            "" => studio::app::UiScreens::tree()
+                .into_iter()
+                .find(|(n, _)| *n == screen)
+                .and_then(|(_, s)| s.into_iter().next())
+                .unwrap_or_default(),
+            s => s.to_owned(),
+        };
+        app.dispatch(Action::SetTool(ToolKind::UiScreens));
+        app.dispatch(Action::UiPick(studio::app::Pick::Native {
+            screen: screen.to_owned(),
+            state,
+        }));
+        for p in args.ui_press.iter().flat_map(|p| p.split(',')) {
+            match boot::ui_kit::input::Input::named(p.trim()) {
+                Some(i) => app.dispatch(Action::UiPress(i)),
+                None => bail!("--ui-press: no input {p:?}"),
+            }
+        }
     }
     if let Some(i) = args.variant {
         app.dispatch(Action::OpenVariant(variants::panel::Origin::Builtin(i)));

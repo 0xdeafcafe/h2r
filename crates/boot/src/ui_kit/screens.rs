@@ -14,6 +14,7 @@ use crate::list_class::Rows;
 use crate::skulls::{self, SKULLS, State, TOTAL};
 use crate::skulls_menu::{self, Mode, SkullsScreen};
 use crate::ui_kit::input::{Glyph, Input, Prompt};
+use crate::ui_kit::page::{AccountPage, Driven, ListPage, Live, described};
 use crate::ui_kit::spec::{Describe, ListPlace, Press, RowSpec, ScreenSpec, ValueStyle};
 
 /// The campaign page's legend: left/right change, A selects (Start Level
@@ -281,36 +282,34 @@ pub const NAMES: [&str; 10] = [
 ];
 
 /// Every named state of screen `name` for the preview sheet: a list's
-/// first, middle and last row focused; the sign-in prompt's pages.
+/// first, middle and last row focused; the sign-in prompt's pages
+/// ([`crate::ui_kit::page::Page::states`]).
 pub fn states(name: &str) -> Option<Vec<(String, ScreenSpec)>> {
-    if name == crate::signin_screen::SCREEN {
-        return Some(crate::signin_screen::sample_states());
-    }
-    let s = sample(name)?;
-    let n = s.rows.len();
-    let mut focus = vec![0, n / 2, n.saturating_sub(1)];
-    focus.dedup();
-    Some(
-        focus
-            .into_iter()
-            .map(|f| {
-                (
-                    format!("focus-{f}"),
-                    ScreenSpec {
-                        focus: f,
-                        ..s.clone()
-                    },
-                )
-            })
-            .collect(),
-    )
+    Some(live(name)?.specs())
 }
 
-/// A sample of screen `name`: the skulls pages for a profile with a few
-/// skulls collected and one turned off, the co-op screens with no Live,
-/// the sign-in prompt at its code page, the account menu, and the kit's
-/// example.
+/// A sample of screen `name` in the state it opens in.
 pub fn sample(name: &str) -> Option<ScreenSpec> {
+    Some(live(name)?.spec())
+}
+
+/// Screen `name`'s page, live: the skulls pages for a profile with a few
+/// skulls collected and one turned off, the co-op screens with no Live, the
+/// sign-in prompt at its code page, the account menu, and the kit's
+/// example. List screens step through their real classes
+/// ([`ListPage`]): their rows write an in-memory profile store, never a
+/// file.
+pub fn live(name: &str) -> Option<Box<dyn Live>> {
+    match name {
+        "signin-code" => Some(Box::new(Driven::new(crate::signin_screen::SigninPage))),
+        "account" => Some(Box::new(Driven::new(AccountPage))),
+        _ => Some(Box::new(Driven::new(list_page(name)?))),
+    }
+}
+
+/// Screen `name`'s page when it is a list screen: its real class over a
+/// sample (see [`live`]).
+pub fn list_page(name: &str) -> Option<ListPage> {
     let skull_store = || {
         let store = Arc::new(settings::Store::defaults(crate::setting_defs::ALL));
         for i in [0, 2, 4, 9, 12] {
@@ -328,34 +327,69 @@ pub fn sample(name: &str) -> Option<ScreenSpec> {
         }];
         Arc::new(Lobby::new(levels, None, None, Box::new(|_| Vec::new())))
     };
-    Some(match name {
+    let skulls_page = |s: SkullsScreen| {
+        let s = Arc::new(s);
+        let class = crate::skulls_screen::class(
+            Arc::clone(&s),
+            skulls_menu::DESCRIPTION_TEXT,
+            skulls_menu::LIST_LAYOUT,
+            skulls_menu::PICTURE,
+            Arc::new(crate::skulls_screen::PageFlow::default()),
+        );
+        ListPage::new(class, described(&s))
+    };
+    let list = Some;
+    match name {
         "skulls" => {
             let s = SkullsScreen::new(skull_store());
             s.open("Chief".into());
-            s.spec()
+            list(skulls_page(s))
         }
         "skulls.h1" => {
             let s = SkullsScreen::new(skull_store());
             s.open_with("Chief".into(), crate::h1_options::CAMPAIGN);
-            s.spec()
+            list(skulls_page(s))
         }
-        "h1-options" => crate::h1_options::OptionsScreen {
-            store: skull_store(),
-        }
-        .spec(),
         "skulls.mp" => {
-            let s = SkullsScreen::multiplayer(skull_store());
+            let s = Arc::new(SkullsScreen::multiplayer(skull_store()));
             s.open("Chief".into());
-            s.spec()
+            let class = crate::skulls_mp_row::mp_class(
+                Arc::clone(&s),
+                skulls_menu::DESCRIPTION_TEXT,
+                skulls_menu::LIST_LAYOUT,
+                skulls_menu::PICTURE,
+            );
+            list(ListPage::new(class, described(&s)))
         }
-        "coop" => HostRows(lobby()).spec(),
-        "coop.friends" => FriendRows(lobby()).spec(),
-        "coop.join" => JoinRows(lobby()).spec(),
-        "signin-code" => crate::signin_screen::sample_spec(),
-        "account" => account_spec(&crate::account_screen::AccountScreen::new(None), 0),
-        "kit.example" => crate::ui_kit::screen::example().0.spec(),
-        _ => return None,
-    })
+        "h1-options" => {
+            let s = Arc::new(crate::h1_options::OptionsScreen {
+                store: skull_store(),
+            });
+            let class = crate::h1_options_row::class(
+                Arc::clone(&s),
+                skulls_menu::DESCRIPTION_TEXT,
+                skulls_menu::LIST_LAYOUT,
+            );
+            list(ListPage::new(class, move || s.spec()))
+        }
+        "coop" | "coop.friends" | "coop.join" => {
+            let lobby = lobby();
+            let [host, friends, join] = coop_live::classes(&lobby);
+            match name {
+                "coop" => list(ListPage::new(host, described(&Arc::new(HostRows(lobby))))),
+                "coop.friends" => list(ListPage::new(
+                    friends,
+                    described(&Arc::new(FriendRows(lobby))),
+                )),
+                _ => list(ListPage::new(join, described(&Arc::new(JoinRows(lobby))))),
+            }
+        }
+        "kit.example" => {
+            let s = Arc::new(crate::ui_kit::screen::example().0);
+            list(ListPage::new(s.class(), described(&s)))
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]

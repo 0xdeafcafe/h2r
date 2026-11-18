@@ -108,7 +108,7 @@ Every crate below is on master. "Done" means it does what its row says;
 | `xapi`    | Guest XAPI service replacements over `input` ([xapi.md](runtime/xapi.md)) | done |
 | `asf`     | ASF demuxer for the retail sound permutations ([wma.md](audio/wma.md)) | done |
 | `wma`     | Native WMAv2 decoder ([wma.md](audio/wma.md)) | done |
-| `bink-hle` | High-level replacement for the statically linked Bink player ([bink-hle.md](audio/bink-hle.md)) | done, on by default (`h2 run --no-bink` turns it off) |
+| `bink-hle` | High-level replacement for the statically linked Bink player ([bink-hle.md](audio/bink-hle.md)) | done, on by default: plays the movies `h2 movies` installed (sound through the game's mixer), skips them otherwise (`--no-movies`; `h2 run --no-bink` turns it off) |
 | `input`   | XInput (XAPI) controller replacement foundation ([input.md](input/input.md)) | done, foundation only |
 | `app`     | Host shell: window, Metal surface, frame presentation, live input, audio device, guest-thread lifecycle ([app.md](runtime/app.md)) | done; `h2 play` runs the game in it |
 | `vfs`     | Xbox object-manager storage, independent of guest memory ([storage.md](runtime/storage.md)) | done |

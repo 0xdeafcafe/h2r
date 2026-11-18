@@ -118,6 +118,9 @@ fn guest(layout: Layout, store: Arc<settings::Store>) -> app::worker::GuestFn {
             bink: true,
             dsound: true,
             xapi: true,
+            // What the app's installer put in the app data directory
+            // (movies::install); skipped where there is no decoder.
+            movies: boot::movies_glue::default_dir(),
         };
         let r = boot::run_hosted_with_live(&xbe, &layout.module, &opts, hosted, &live);
         vfs::flush_pending_metadata();

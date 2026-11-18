@@ -12,6 +12,7 @@ pub mod jcs;
 pub mod mailbox;
 pub mod maps;
 pub mod motd;
+pub mod optimatch;
 pub mod pack;
 pub mod recovery;
 #[doc(hidden)]
@@ -327,6 +328,12 @@ pub mod lxm {
     pub const STORAGE_WRITE: &str = "storage.write";
     /// Every read on a `--private` server, the stream included.
     pub const READ: &str = "read";
+    /// The operator reading the log as stored, to copy it
+    /// (`GET /v1/admin/log`, `h2 live store copy --from https://`).
+    pub const LOG_READ: &str = "log.read";
+    /// The operator importing a log copied from another server
+    /// (`POST /v1/admin/log`, `h2 live store copy --to https://`).
+    pub const LOG_WRITE: &str = "log.write";
 }
 
 /// Whether a client may send a bearer token to `base_url`: always over

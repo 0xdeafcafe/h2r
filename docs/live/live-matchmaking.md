@@ -4,8 +4,11 @@ Status: phase 1 server sessions and HLE invitations are implemented. Tests use
 router memory stores and two synthetic guests against `start_embedded`, through
 HTTP delivery, acceptance, FindFromID, QoS and bidirectional UDP. The owner
 has Live working in the game (2026-11-17).
-Search also returns real sessions, with the anonymous procedure-1 filters still
-unmapped. The server matcher, ranked arbitration and NAT traversal remain design.
+Search returns real sessions, filtered by the decoded procedure-1
+parameters: playlist, the party's level window and room for the party,
+closest mean level first (§7). The game widens its own window and hosts
+when nothing is found, so OptiMatch needs no server matcher. Ranked
+arbitration and NAT traversal remain design.
 Current contracts are in [live-api.md](live-api.md#sessions) and
 [live.md](live.md#client-hle-game-invitations-and-joining). The sections below
 retain the static call trace and phased design; implemented details there defer
@@ -82,8 +85,8 @@ the exact interleaving of 3/4 with them is inferred and marked.
    `0x0008fad4`) to size the result buffer, then `XOnlineMatchSearch`
    (`0x003a072e`, confirmed; site `0x0008faea`): a procedure, a result
    limit, attributes (the query), buffer size, event/task. This is the
-   `xmatchclient.srf` search. *To confirm:* the procedure values the game
-   passes and the attribute ids it queries with (read `0x0008fa80`).
+   `xmatchclient.srf` search. Procedure 1 with twelve positional
+   parameters, decoded in §7.
 2. **Read and parse results.** `XOnlineMatchSearchGetResults`
    (`0x003a073d`, confirmed; site `0x0008fba7` in wrapper `0x0008fb30`)
    yields the result array; `XOnlineMatchSearchParse` (`0x003a0748`,
@@ -185,8 +188,8 @@ To confirm in the retail code, with addresses:
 
 | question | read |
 |---|---|
-| Attribute list written at session create/update; how the host address and key id are published | `0x0008fcc0`, `0x0008fe20`, `0x0008fd90` |
-| Search procedure values and query attributes | `0x0008fa80` |
+| ~~Attribute list written at session create/update~~: decoded (§7.1); how the host address and key id are published | `0x0008fcc0`, `0x0008fe20`, `0x0008fd90` |
+| ~~Search procedure values and query attributes~~: decoded (§7.2) | `0x0008fa80` |
 | Search result layout; which attributes the game reads back | `0x0008fb30`, `0x0008fc5c`, `0x00090160`, `0x00090282` |
 | Whether match results carry a TSADDR, or only query results do | `0x000b3a70` and its callers |
 | Order of key create/register versus session create; when QoS listening starts | `0x0007a8a0`, `0x0007a920`, `0x000731d0`, the `0x0005fb57`/`0x0005fb7c` sites |
@@ -451,8 +454,9 @@ app.
 ## 5. Open questions
 
 - The complete retail invite UI/confirmation transition remains untested.
-  Session records, seven-column parsing and accepted-invite packing are checked;
-  procedure-1 positional filter meanings still need identification.
+  Session records, seven-column parsing and accepted-invite packing are checked.
+  Procedure 1's parameters are decoded (§7); the hosting branch after an
+  empty search (`0x0005a220(6)`) is read only as far as "likely".
 - ~~The hopper record-template contents (§2)~~: decoded (§6); the server
   authors its own file (§6.8).
 - Whether the 30 s presence ping is the right session heartbeat, or
@@ -629,3 +633,109 @@ so the game's title-storage download, `GET /v1/titles/{title}/hopper` and
 the builder's `PUT` (which then publishes the edited default) all work on
 a fresh server. Nothing is written to the log until someone publishes;
 `h2 live hopper import` still replaces it with the owner's own file.
+
+## 7. OptiMatch search: procedure 1, decoded
+
+Read statically from the 5849 XBE; nothing was run. The code that applies
+it is `crates/live-proto/src/optimatch.rs`; the HLE decodes the game's
+parameters (`crates/live-hle/src/sessions.rs`, `Op::Search`) and the
+server filters `GET /v1/sessions?optimatch=` with it.
+
+### 7.1 What a session advertises
+
+Every session the title creates or updates carries fifteen integer
+attributes, built by `0x000b4b80` from a seven-dword block that a virtual
+method of the session object fills (`0x000733f0` for playlist sessions,
+`0x00073860` for custom games):
+
+| id | playlist session (`0x000733f0`, from `0x00073530` and `0x0007e210`) | custom game (`0x00073860`) |
+|---|---|---|
+| 1 | descriptor index (`[state+0x49c8]`, §6.7) | -1 |
+| 2 | mean level of the session's players | -1 |
+| 3 | public slots open | public slots open |
+| 5 | lowest level, raised to the floor of the highest player (below) | -1 |
+| 6 | highest level | -1 |
+| 7 | time since the lobby formed (`0x00321aae() - [state+0x78b4]`) | 0 |
+| 8 | room mask: bit `n-1` set when a party of `n` fits | `(1 << open) - 1` |
+| 9..15 | bit 0..6 of id 8, as 0 or 1 | same |
+| 16 | 1 when any bit 7+ of id 8 is set | same |
+
+Levels here are the per-player values the lobby summary (`0x0007e210`)
+averages, maxes and mins over players whose flags `& 3` are clear. For a
+playlist session it computes the room mask itself from the hopper's
+party and team rules (`0x00091f00` per party size; the unranked
+fallback is all sizes up to the open count).
+
+The **floor** of a level `L` is `0x001931a0(hopper, L)`: walk down from
+`L` while the hopper's skill ceiling table (`+0x51c`, §6) still lets the
+lower level play with `L`; the floor is the lowest such level. So
+`ceiling[i] >= L` for every `i` from the floor up to `L - 1`.
+
+### 7.2 What a search sends
+
+`0x00090880` starts a search from the party state (`0x00070ea0`, the
+OptiMatch screen): the playlist, the party size `[+0x7b4]`, and the
+party's mean, highest and lowest level (`[+0x960]`, `[+0x958]`,
+`[+0x95c]`, summed at `0x00072540`). It precomputes, with `hi` the
+party's highest level and `lo` its lowest:
+
+- `floor = floor(hi)`; `low = max(lo, floor)`; `cap = ceiling[low]`;
+- `max_widen = max(low - floor, cap - hi)`; the widening step starts at 0.
+
+`0x00090b30` then builds procedure 1's twelve parameters through
+`0x000b4a90` and calls `XOnlineMatchSearch(1, 50, params, 12, ..)`:
+
+| # | value | compared with |
+|---|---|---|
+| 0 | playlist (descriptor index) | id 1, equal |
+| 1 | party mean level | id 2: results ordered by distance |
+| 2 | `max(low - step, floor)`, or null when the step is -1 | id 5 must be at least this |
+| 3 | `min(hi + step, cap)`, or null when the step is -1 | id 6 must be at most this |
+| 4..10 | 1 at position `3 + n` for a party of `n` (1..7), else null | id `8 + n` must be 1 |
+| 11 | 1 for a party of 8 or more, else null | id 16 must be 1 |
+
+The custom games browser (`0x000b3100`) uses the same call with
+playlist -1, mean 0 and every other parameter null, which finds custom
+games (id 1 is -1) and nothing from a playlist.
+
+The comparison column is our reading: the parameters pair one-to-one
+with the advertised ids, and the window is exactly the levels the
+hopper's ceiling table lets the party play with. Retail Live's stored
+procedure is not in the image; the ordering by mean level is our
+choice.
+
+### 7.3 Widening, and who hosts
+
+The game widens, not the server. `0x00090f70` runs after each search:
+while the step is below `max_widen` it adds one and searches again; at
+`max_widen` an unranked playlist (type 1 or 3, `[+0x14]` clear) sets
+the step to -1, which drops the window entirely, and a ranked one stays
+at the widest window. A search also repeats while it returned a full
+page (50). When the searches end, `0x00091400` picks a result and joins
+it (`0x00059e50`); with none, the party state moves on with
+`0x0005a220(6)`, which is where the console goes on to host its own
+session (likely; the hosting branch is the next thing to read). So
+"find or form" needs no server matcher for OptiMatch: the server
+filters and orders, and an empty answer makes the searching console the
+host that the next searcher finds.
+
+### 7.4 Server and HLE
+
+- `live_proto::optimatch::Query` is the decoded search: `hopper`,
+  `average`, `lowest`/`highest` (the window, absent when widened out),
+  `party`. `Query::from_params` reads the twelve parameters; any other
+  shape falls back to an unfiltered search, as before.
+- `GET /v1/sessions?optimatch=<json>` keeps the listed sessions that
+  match and returns up to `limit`, closest mean level first, as one page
+  (`next` is null). The other filters still apply.
+- A session the title did not advertise itself (no id 1, such as a co-op
+  lobby) only shows to the browser's -1.
+- The HLE logs each distinct search once per 30 s: `live: optimatch:
+  searching playlist P for a party of N, mean level M, levels A..B` (or
+  `any level`), so a run log shows the window widen.
+
+Tests: `optimatch` unit tests in live-proto (parameter round trip,
+window, room, browser, ordering), the router test
+`optimatch_searches_filter_by_playlist_window_and_room`, and the guest
+test `optimatch_searches_find_sessions_in_the_partys_level_window`
+(two synthetic guests through `start_embedded`).

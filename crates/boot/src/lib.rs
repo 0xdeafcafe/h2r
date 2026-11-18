@@ -36,8 +36,10 @@ pub mod hud;
 pub mod hud_swap;
 pub mod h1_variants;
 pub mod precision;
+pub mod render_probe;
 pub mod render_thread;
 pub mod host_perf;
+pub mod hot_glue;
 pub mod sampling;
 pub mod icons;
 pub mod layout_glue;
@@ -52,11 +54,13 @@ pub mod lockstep_glue;
 pub mod map_bases;
 pub mod map_override;
 pub mod map_slots;
+pub mod movies_glue;
 pub mod new_maps;
 pub mod pad_speaker;
 pub use live_telemetry as telemetry;
 pub mod sha;
 pub mod shim;
+pub mod sim_bots;
 pub mod speaker_row;
 pub mod setting_defs;
 pub mod skulls;
@@ -72,6 +76,7 @@ pub mod steam_speaker;
 pub mod ui;
 pub mod ui_kit;
 pub mod ui_watch;
+pub mod bot_glue;
 pub mod video_screen;
 pub mod snapshot_probe;
 pub mod sse;
@@ -536,10 +541,15 @@ pub struct RunOpts {
     pub trace: Option<PathBuf>,
     /// Register crates/d3d's adapters (headless).
     pub d3d: bool,
-    /// Register crates/bink-hle in skip mode.
+    /// Register crates/bink-hle: playback of the movies installed in
+    /// `movies`, skip mode for the rest (movies_glue.rs).
     pub bink: bool,
     /// Register crates/dsound's overrides (headless mixer).
     pub dsound: bool,
+    /// Where `h2 movies` installed the transcoded movies
+    /// (`movies_glue::default_dir()` by default). The ones current for the
+    /// disc play; `None` skips every movie (`--no-movies`).
+    pub movies: Option<PathBuf>,
 }
 
 fn describe(ev: Option<&Event>, thread: u32) -> String {
@@ -937,6 +947,13 @@ pub fn run_hosted_with_live(
     // magnetism at each map load, from the Aim Assist setting (Auto: Strong
     // while the touch controls show). Headless runs keep retail.
     aim_assist::install(&mut features, host.settings.clone()).context("installing the aim assist")?;
+    // Local bots (docs/game/bots.md, stage 1): pads on controller ports,
+    // signed in on the players screen, their views and listeners hidden.
+    // `H2_BOTS` adds brains at boot; idle with none.
+    if opts.xapi {
+        bot_glue::add_from_env();
+        bot_glue::install(&mut features, &opts.data_root).context("installing the bots")?;
+    }
     // The iOS touch controls' game side (docs/runtime/ios.md): direct
     // look into player one's facing, and the layout from player one's
     // seat and weapon. Idle while no touch controls show.
@@ -996,6 +1013,10 @@ pub fn run_hosted_with_live(
         (true, Some(open)) => Some(dsound_glue::install_with_sinks(&loaded.runtime, &k, xbe_bytes, open, pad)?),
         (true, None) => Some(dsound_glue::install(&loaded.runtime, &k, xbe_bytes)?),
     };
+    if let Some(input) = host.input.as_mut() {
+        // Local bots' pads (docs/game/bots.md): after the host's own.
+        input.add_backend(Box::new(bots::local::global().backend()));
+    }
     let (xa, pad) = match (opts.xapi, host.input.take()) {
         (false, _) => (None, None),
         (true, Some(input)) => (Some(xapi_glue::register_with(&loaded.runtime, &k, input)?), host.keyboard.take()),
@@ -1037,6 +1058,17 @@ pub fn run_hosted_with_live(
         Some(path) => Some(agent_glue::AgentGlue::install(&mut features, path, xa.as_deref(), input_replay)?),
         None => None,
     };
+    // edit.* and render.* on the agent (hot_glue.rs, docs/graphics/hot-iteration.md).
+    if let Some(a) = &agent {
+        let maps = k.vfs().map(|vfs| -> hot_glue::MapLocator {
+            Box::new(move |map| {
+                let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
+                let file = v.host_file(&format!("\\Device\\CdRom0\\maps\\{map}.map"))?;
+                Some(telemetry::MapFile { path: file.path, offset: file.offset, len: file.len })
+            })
+        });
+        hot_glue::install(&a.agent, &loaded.runtime, maps);
+    }
     // The Rust datum, tag and locale functions, when H2_FEATURES has
     // impl.engine=on (off by default).
     features.add(&feature::leaves::EngineLeaves).map_err(|e| anyhow::anyhow!("engine leaves: {e}"))?;
@@ -1057,6 +1089,7 @@ pub fn run_hosted_with_live(
     if lockstep_on {
         pipeline = pipeline.disabled("lockstep (H2_LOCKSTEP/H2_INPUT_RECORD/H2_INPUT_REPLAY) compares serial runs");
     }
+    render_probe::set_pipeline(pipeline.clone());
     features.add(&pipeline).map_err(|e| anyhow::anyhow!("pipeline render: {e}"))?;
     // Stage 7a: the Rust render_views, when H2_FEATURES has
     // impl.render.views=on (off by default; docs/graphics/render-loop.md).
@@ -1138,8 +1171,18 @@ pub fn run_hosted_with_live(
         h.set_tick_note(why.to_owned());
     }
     if opts.bink {
-        let hle = bink_hle::BinkHle::new(None);
-        loaded.runtime.edit_dispatch(|d| bink_hle::register(d, &hle));
+        // A lockstep run compares schedules; movie pacing follows the wall
+        // clock when the sound stalls, so it skips them.
+        let why_off = lockstep_on.then_some("lockstep");
+        movies_glue::install(
+            &loaded.runtime,
+            opts.movies.as_deref(),
+            &opts.disc,
+            why_off,
+            ds.as_ref().map(dsound_glue::Audio::mixer),
+        );
+    } else {
+        eprintln!("movies: off (--no-bink: the original player runs)");
     }
     let tr = trace::install_bounded(&loaded.runtime, opts.trace.as_deref(), host.trace_limit.unwrap_or(usize::MAX))?;
     let mut m = kernel::Machine::new(

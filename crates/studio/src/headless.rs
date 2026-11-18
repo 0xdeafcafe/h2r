@@ -526,6 +526,65 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// The UI Screens tool through its widgets, as a user would: pick the
+    /// sign-in prompt's code page in the tree, press Up and A on the pad,
+    /// hover the picture. The page steps, the picture is on screen, and the
+    /// hovered widget's JSON is found. Skipped without a wgpu adapter.
+    #[test]
+    fn the_ui_screens_tool_steps_a_page_through_its_widgets() {
+        use crate::app::{Pick, ToolKind};
+        use crate::script::{Button, Step};
+        let Some((_turn, mut h)) = headless() else {
+            return;
+        };
+        let mut app = App::new();
+        app.dispatch(Action::SetTool(ToolKind::UiScreens));
+        h.frames(&mut app, 3).unwrap();
+        let click = |t: &str| Step::Click(t.into(), Button::Left);
+        for step in [
+            click("signin-code"),
+            click("code##ui-signin-code-code"),
+            click("Up##pad-Up"),
+            click("Right##pad-Right"),
+            click("Up##pad-Up"),
+        ] {
+            h.step(&mut app, &step).unwrap();
+        }
+        assert_eq!(
+            app.ui_screens.pick,
+            Some(Pick::Native {
+                screen: "signin-code".into(),
+                state: "code".into()
+            })
+        );
+        assert_eq!(
+            app.ui_screens.summary().as_deref(),
+            Some("Sign in as Chief | 1 [1] 0 - 0 0 0 | -")
+        );
+        h.step(&mut app, &click("A##pad-A")).unwrap();
+        assert_eq!(app.ui_screens.last.as_deref(), Some("A: Submit(\"110000\")"));
+        // The picture: hover the middle of the title.
+        let (origin, zoom) = h.studio.ui_screens.shown.expect("the picture is shown");
+        let title = {
+            let shot = app.ui_screens.shot().unwrap();
+            let v = shot.view.as_ref().unwrap();
+            v.widgets.iter().find(|w| w.id == "title").unwrap().pixels()
+        };
+        let at = [
+            origin[0] + (title[0] as f32 + title[2] as f32 / 2.0) * zoom,
+            origin[1] + (title[1] as f32 + title[3] as f32 / 2.0) * zoom,
+        ];
+        h.step(&mut app, &Step::Hover(format!("{},{}", at[0], at[1])))
+            .unwrap();
+        let hovered = h.studio.ui_screens.hovered.clone();
+        assert_eq!(hovered.as_deref(), Some("title"));
+        assert!(app.ui_screens.widget_json("title").is_some());
+        let (rgba, _) = h.capture(&mut app, 2).unwrap();
+        let distinct: std::collections::HashSet<[u8; 4]> =
+            rgba.as_chunks::<4>().0.iter().step_by(97).copied().collect();
+        assert!(distinct.len() > 8);
+    }
+
     /// Dear ImGui allows one context at a time: the tests take turns.
     static ONE_CONTEXT: std::sync::Mutex<()> = std::sync::Mutex::new(());
 

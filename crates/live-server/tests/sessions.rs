@@ -407,3 +407,112 @@ async fn pagination_and_presence_ping_refresh_without_events() {
         "host ping refreshes all open ads without appending events"
     );
 }
+fn optimatch_path(q: &live_proto::optimatch::Query, limit: u32) -> String {
+    let json = serde_json::to_string(q).unwrap();
+    let encoded: String = json
+        .bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() {
+                (b as char).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect();
+    format!("/v1/sessions?limit={limit}&optimatch={encoded}")
+}
+fn optimatch_session(
+    hopper: i64,
+    average: i64,
+    lowest: i64,
+    highest: i64,
+    room: u64,
+) -> NewSession {
+    let i = |v: i64| AttributeValue::Integer(v as u64);
+    NewSession {
+        flags: "hopper".into(),
+        hopper_id: Some(hopper as u32),
+        attributes: BTreeMap::from([
+            (1, i(hopper)),
+            (2, i(average)),
+            (3, i(room.count_ones() as i64)),
+            (5, i(lowest)),
+            (6, i(highest)),
+            (7, i(0)),
+            (8, AttributeValue::Integer(room)),
+        ]),
+        ..new()
+    }
+}
+/// The game's OptiMatch search (procedure 1, decoded in the HLE): the server
+/// keeps the playlist's sessions whose levels sit inside the searching
+/// party's window and that have room for the party, closest mean first.
+#[tokio::test]
+async fn optimatch_searches_filter_by_playlist_window_and_room() {
+    use live_proto::optimatch::Query;
+    let h = harness().await;
+    let a = h.create("Host").await;
+    assert_eq!(h.sign_in(&a).await.status, StatusCode::CREATED);
+    let mut ids = BTreeMap::new();
+    for (name, s) in [
+        ("near", optimatch_session(3, 11, 9, 13, 0b111)),
+        ("nearest", optimatch_session(3, 10, 9, 12, 0b11)),
+        ("one seat", optimatch_session(3, 10, 9, 12, 0b1)),
+        ("too good", optimatch_session(3, 20, 18, 22, 0b111)),
+        ("other playlist", optimatch_session(4, 10, 9, 12, 0b111)),
+        ("custom", new()),
+    ] {
+        let r = create(&h, &a, &s).await;
+        assert_eq!(r.status, StatusCode::CREATED, "{name}");
+        ids.insert(r.json()["session_id"].as_str().unwrap().to_string(), name);
+    }
+    let names = |page: Value| -> Vec<&str> {
+        page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| ids[s["session_id"].as_str().unwrap()])
+            .collect()
+    };
+    let duo = Query {
+        hopper: 3,
+        average: 10,
+        lowest: Some(8),
+        highest: Some(14),
+        party: Some(2),
+    };
+    let page = h.get(&optimatch_path(&duo, 50)).await.json();
+    assert_eq!(names(page.clone()), ["nearest", "near"]);
+    assert!(page["next"].is_null());
+    assert_eq!(
+        names(h.get(&optimatch_path(&duo, 1)).await.json()),
+        ["nearest"]
+    );
+    // Widened all the way (an unranked search drops the window): the strong
+    // lobby comes back, last.
+    let open = Query {
+        lowest: None,
+        highest: None,
+        ..duo
+    };
+    assert_eq!(
+        names(h.get(&optimatch_path(&open, 50)).await.json()),
+        ["nearest", "near", "too good"]
+    );
+    // The custom games browser's form: hopper -1 finds no playlist session.
+    let browser = Query {
+        hopper: -1,
+        average: 0,
+        lowest: None,
+        highest: None,
+        party: None,
+    };
+    assert_eq!(
+        names(h.get(&optimatch_path(&browser, 50)).await.json()),
+        ["custom"]
+    );
+    assert_eq!(
+        h.get("/v1/sessions?optimatch=not-json").await.status,
+        StatusCode::BAD_REQUEST
+    );
+}

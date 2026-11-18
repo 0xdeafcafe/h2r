@@ -1,0 +1,20 @@
+# deca: decal. Layout and evidence: docs/formats/effects.md ("deca", V the
+# disc, E the placement code). Halo 1's deca holds the same fields in the
+# same order (docs/formats/tag-definitions.md, "Decals from definitions").
+group deca 0xac align 4
+  0x0 u16 flags -- V values 0, 1, 8, 0x100, 0x108, 0x148, 0x168; Halo 1's +0 holds the same bits (8, 0x68, 0x168); meaning unreviewed
+  0x2 u16 kind -- V 0..=3, Halo 1's +2 the same range; name D
+  0x4 u16 layer -- V 1..=5; name D
+  0x6 u16 max_overlapping -- E placement (0x0017ef10) skips the decal when zero
+  0x8 tagref next_decal groups=deca -- V class
+  0x10 f32[2] radius -- E +0x14 scales the placement test (0x0017e670); V Halo 1's +0x18 pair in the same range
+  0x18 unknown 0x4 -- E read as a scale in 0x0017ef10; 0.75 on most
+  0x1c f32[3] colour_lower -- V red, green, blue in 0..1, as Halo 1's +0x34; name D
+  0x28 f32[3] colour_upper -- V as Halo 1's +0x40; name D
+  0x34 f32[2] lifetime_bounds -- V seconds (180 on most), as Halo 1's +0x78 pair; name D
+  0x3c f32[2] decay_time_bounds -- V seconds (20 on most), as Halo 1's +0x80 pair; name D
+  0x44 pad 0x44
+  0x88 tagref bitmap groups=bitm -- V class
+  0x90 pad 0x14
+  0xa4 f32 maximum_sprite_extent -- V 16.0 on every instance, as Halo 1's +0xfc; name D
+  0xa8 pad 0x4

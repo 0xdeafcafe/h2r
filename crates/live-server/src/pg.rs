@@ -51,6 +51,21 @@ impl PostgresStore {
 }
 
 impl PostgresStore {
+    /// Connects for reading only, the source of a copy: no schema is
+    /// created, and every transaction is read-only
+    /// (`default_transaction_read_only`), so nothing is written to the
+    /// database however it is used.
+    pub async fn connect_read_only(url: &str) -> Result<Self, sqlx::Error> {
+        let opts: sqlx::postgres::PgConnectOptions = url.parse()?;
+        let opts = opts.options([("default_transaction_read_only", "on")]);
+        let pool = PgPoolOptions::new()
+            .max_connections(2)
+            .acquire_timeout(std::time::Duration::from_secs(5))
+            .connect_with(opts)
+            .await?;
+        Ok(PostgresStore { pool })
+    }
+
     /// [`PostgresStore::connect`], creating the database first if the
     /// server is up but the database does not exist yet.
     pub async fn connect_creating(url: &str) -> Result<Self, sqlx::Error> {

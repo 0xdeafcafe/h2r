@@ -805,3 +805,52 @@ fn kernel_stack_guard_is_not_reused_while_the_stack_lives() {
     let pool = h.success(14, &[0x1000]);
     assert!(pool < top, "{pool:#x}");
 }
+
+#[test]
+fn query_statistics_checks_length_and_counts_what_the_allocators_hold() {
+    let mut h = Harness::new();
+    let out = DATA + 0x100;
+    let stats = |h: &Harness| -> Vec<u32> { (0..9).map(|i| h.get(out + 4 * i)).collect() };
+    // A wrong Length is refused and nothing else is written.
+    h.set(out, 0x20);
+    h.set(out + 4, 0xdead);
+    assert_eq!(h.success(181, &[out]), status::INVALID_PARAMETER);
+    assert_eq!((h.get(out), h.get(out + 4)), (0x20, 0xdead));
+
+    h.set(out, MM_STATISTICS_SIZE);
+    assert_eq!(h.success(181, &[out]), status::SUCCESS);
+    let before = stats(&h);
+    assert_eq!(before[0], 0x24);
+    assert_eq!(before[1], 64 * 1024 * 1024 / 4096, "64 MB of pages");
+    assert!(before[2] > 0 && before[2] < before[1], "{before:x?}");
+
+    // 16 KiB of contiguous memory: four pages fewer available.
+    let c = h.success(165, &[0x4000]);
+    assert_ne!(c, 0);
+    // Reserve 64 KiB, commit 8 KiB of it.
+    let (base, size) = (DATA, DATA + 4);
+    h.set(base, 0);
+    h.set(size, 0x1_0000);
+    assert_eq!(
+        h.success(184, &[base, 0, size, MEM_RESERVE, PAGE_READWRITE]),
+        status::SUCCESS
+    );
+    let region = h.get(base);
+    h.set(size, 0x2000);
+    assert_eq!(
+        h.success(184, &[base, 0, size, MEM_COMMIT, PAGE_READWRITE]),
+        status::SUCCESS
+    );
+    assert_eq!(h.get(base), region);
+    h.set(out, MM_STATISTICS_SIZE);
+    assert_eq!(h.success(181, &[out]), status::SUCCESS);
+    let after = stats(&h);
+    assert_eq!(after[1], before[1]);
+    assert_eq!(
+        before[2] - after[2],
+        4 + 2,
+        "contiguous and committed pages"
+    );
+    assert_eq!(after[3] - before[3], 0x2000, "committed bytes");
+    assert_eq!(after[4] - before[4], 0x1_0000, "reserved bytes");
+}

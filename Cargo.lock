@@ -53,12 +53,16 @@ dependencies = [
  "agent-proto",
  "engine",
  "feature",
+ "hot-render",
+ "hot-tags",
  "input",
  "live-proto",
  "live-telemetry",
+ "map",
  "runtime",
  "serde",
  "serde_json",
+ "tags",
  "timeline",
  "xapi",
 ]
@@ -544,6 +548,7 @@ dependencies = [
 name = "bink-hle"
 version = "0.1.0"
 dependencies = [
+ "audio",
  "movies",
  "runtime",
  "xiso",
@@ -626,6 +631,7 @@ dependencies = [
  "assets",
  "audio",
  "bink-hle",
+ "bots",
  "content",
  "d3d",
  "dsound",
@@ -634,6 +640,8 @@ dependencies = [
  "feature",
  "font",
  "gfx",
+ "hot-render",
+ "hot-tags",
  "iced-x86",
  "input",
  "ir",
@@ -646,6 +654,7 @@ dependencies = [
  "live-telemetry",
  "lockstep",
  "map",
+ "movies",
  "perf",
  "png",
  "runtime",
@@ -662,6 +671,16 @@ dependencies = [
  "xapi",
  "xbe",
  "xiso",
+]
+
+[[package]]
+name = "bots"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "input",
+ "pathfind",
+ "tags",
 ]
 
 [[package]]
@@ -934,6 +953,7 @@ dependencies = [
  "assets",
  "audio",
  "boot",
+ "bots",
  "cloud-saves",
  "content",
  "d3d",
@@ -965,6 +985,7 @@ dependencies = [
  "movies",
  "perf",
  "png",
+ "scenario-edit",
  "serde",
  "serde_json",
  "settings",
@@ -1367,6 +1388,7 @@ dependencies = [
  "anyhow",
  "app",
  "gfx",
+ "hot-render",
  "iced-x86",
  "ir",
  "kernel",
@@ -2505,6 +2527,7 @@ dependencies = [
  "h1convert",
  "h1map",
  "h1models",
+ "h1sounds",
  "map",
  "mopp",
  "scenario-edit",
@@ -2715,6 +2738,28 @@ dependencies = [
  "map",
  "thiserror 2.0.21",
  "variants",
+]
+
+[[package]]
+name = "hot-render"
+version = "0.1.0"
+dependencies = [
+ "naga",
+ "serde",
+ "serde_json",
+ "shaders",
+]
+
+[[package]]
+name = "hot-tags"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "map",
+ "runtime",
+ "serde",
+ "serde_json",
+ "tags",
 ]
 
 [[package]]
@@ -5613,6 +5658,8 @@ dependencies = [
  "content",
  "map",
  "pollster",
+ "serde",
+ "serde_json",
  "tags",
  "thiserror 2.0.21",
  "wgpu",
@@ -6323,6 +6370,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "app-icon",
+ "boot",
  "content",
  "dear-imgui-rs",
  "dear-imgui-wgpu",
@@ -6339,6 +6387,7 @@ dependencies = [
  "pollster",
  "rfd",
  "scenario-edit",
+ "serde_json",
  "variants",
  "wgpu",
  "winit",

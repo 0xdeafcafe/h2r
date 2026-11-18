@@ -1,0 +1,13 @@
+# udlg: unit dialogue. Layout from the schema; V: all 42 distinct retail
+# udlg on the disc round-trip byte-identical. Names from the values on
+# 05a_deltaapproach's 17 (effects_disc.rs halo2_dialogue_survey).
+group udlg 0x18 align 4
+  0x0 unknown 0x4 seen=const -- V the group word adlg on every tag (a reference to the global dialogue, its datum +4 null)
+  0x4 unknown 0x4 seen=const -- V 0xffffffff: that reference's datum
+  0x8 unknown 0x4 seen=2 -- small integers
+  0xc block vocalizations 0x10 align 4 -- V one element per vocalization name
+    0x0 unknown 0x4 seen=2 -- small integers (0 or 1)
+    0x4 string vocalization -- V 330 distinct names on 05a, Halo 2's AI dialogue vocabulary (pain_mjr, dth_fall, seefoe, ...)
+    0x8 unknown 0x4 seen=3 -- V the group word snd! where the datum is set
+    0xc datum sound groups=snd! -- V every set datum names a snd! (2,654 on 05a)
+  0x14 string string_14 -- V a distinct string per tag

@@ -10,15 +10,17 @@ use std::sync::mpsc::{SyncSender, TrySendError};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
 use crate::capture::{self, FrameSource, Sampler, TickMark, TimelineFrames};
+use crate::loads::{LoadTracker, TimelineTotals, TotalsSource};
 use crate::tap::{self as input, AgentTap, Chain, Input};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use agent_proto::{
     At, Boundary, Capture, CaptureParams, CountParams, Counters, Counts, Event, EventKind,
-    Features, GroupBy, Kind, Notification, OBJECT_FIELDS, Object, ObjectId, ObjectParams,
-    ObjectResult, PROTOCOL, PauseParams, Phase, QueryParams, QueryResult, Request, Response,
-    RpcError, Status, StepParams, SubscribeParams, Until, WaitParams, Waited, code, method,
+    Features, GroupBy, Kind, LoadParams, Loads, Notification, OBJECT_FIELDS, Object, ObjectId,
+    ObjectParams, ObjectResult, PROTOCOL, PauseParams, Phase, QueryParams, QueryResult, Request,
+    Response, RpcError, Status, StepParams, SubscribeParams, Until, WaitParams, Waited, code,
+    method,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -44,6 +46,28 @@ pub enum Access {
 /// result or error out. It runs on the game's thread with the agent's
 /// state locked, so it must be quick and must not call the [`Agent`].
 pub type HostMethod = Box<dyn FnMut(Value) -> Result<Value, RpcError> + Send>;
+
+/// A method that reads (or writes) the game at the boundary it is answered
+/// at ([`Agent::add_game_method`]): the `sim.*` methods. Like `world.*`,
+/// it waits for a tick while the game ticks.
+pub type GameMethod = Box<dyn FnMut(Value, &mut GameCtx<'_>) -> Result<Value, RpcError> + Send>;
+
+/// What a [`GameMethod`] gets besides its params.
+pub struct GameCtx<'a> {
+    /// The game at this boundary ([`Reader::with_guest`] for guest memory).
+    pub reader: &'a mut dyn Reader,
+    /// The stamp of this boundary.
+    pub at: At,
+    host: &'a mut BTreeMap<String, (Access, HostMethod)>,
+}
+
+impl GameCtx<'_> {
+    /// Answers a host method (`ui.screen`, `input.state`) as a client
+    /// would get it, when the host registered one of that name.
+    pub fn host(&mut self, name: &str, params: Value) -> Option<Result<Value, RpcError>> {
+        self.host.get_mut(name).map(|(_, f)| f(params))
+    }
+}
 
 /// With no tick for this long the game counts as loading, and world reads
 /// are answered between slices instead of waiting for a tick.
@@ -101,6 +125,8 @@ struct State {
     holding: bool,
     /// Methods the host answers, by name.
     host: BTreeMap<String, (Access, HostMethod)>,
+    /// Methods answered with the game at hand, by name.
+    game_methods: BTreeMap<String, (Access, GameMethod)>,
     /// The tick observer isn't installed (switched off, or the plan left
     /// it out): nothing can pause, and world reads come between slices.
     no_tick_hook: bool,
@@ -113,6 +139,11 @@ struct State {
     frames: Option<Box<dyn FrameSource>>,
     /// A sampling profiler, when the game was built with one.
     sampler: Option<Box<dyn Sampler>>,
+    /// Level loads and stalls, from the ticks (`load.timeline`).
+    loads: LoadTracker,
+    /// Frame-stats running totals (`timeline::phase` unless a test sets
+    /// one).
+    totals: Option<Box<dyn TotalsSource>>,
 }
 
 /// A `profile.capture` waiting for its window to pass.
@@ -277,6 +308,23 @@ impl Agent {
             .insert(name.to_owned(), (access, Box::new(f)));
     }
 
+    /// Answers `name` with `f`, given the game at the boundary
+    /// ([`GameCtx`]), as [`add_method`](Self::add_method) otherwise.
+    pub fn add_game_method(
+        &self,
+        name: &str,
+        access: Access,
+        f: impl FnMut(Value, &mut GameCtx<'_>) -> Result<Value, RpcError> + Send + 'static,
+    ) {
+        assert!(
+            !method::ALL.contains(&name),
+            "{name} is a core method of the agent API"
+        );
+        self.lock()
+            .game_methods
+            .insert(name.to_owned(), (access, Box::new(f)));
+    }
+
     /// The feature plan's text, for `features.list`.
     pub fn set_plan(&self, lines: Vec<String>) {
         self.lock().plan = lines;
@@ -346,6 +394,11 @@ impl Agent {
         self.lock().frames = Some(frames);
     }
 
+    /// Where running frame totals for `load.timeline` come from (tests).
+    pub fn set_totals_source(&self, totals: Box<dyn TotalsSource>) {
+        self.lock().totals = Some(totals);
+    }
+
     /// The sampling profiler `profile.capture {"sample": true}` runs.
     pub fn set_sampler(&self, sampler: Box<dyn Sampler>) {
         self.lock().sampler = Some(sampler);
@@ -366,6 +419,7 @@ impl Agent {
         s.ticks += 1;
         s.last_tick = Some(Instant::now());
         s.refresh(reader, Where::Tick);
+        s.track_load();
         match s.stepping {
             Some(left) if left <= 1 => {
                 s.stepping = None;
@@ -509,6 +563,38 @@ impl State {
         }
     }
 
+    fn read_totals(&mut self) -> Option<timeline::phase::Totals> {
+        self.totals
+            .get_or_insert_with(|| Box::new(TimelineTotals))
+            .totals()
+    }
+
+    /// After a tick's refresh: feeds the load tracker.
+    fn track_load(&mut self) {
+        let totals = self.read_totals();
+        let (map, bsp, present) = (self.game.map.clone(), self.game.bsp, self.presents);
+        self.loads
+            .on_tick(Instant::now(), map, bsp, present, totals);
+    }
+
+    fn loads(&mut self, p: LoadParams) -> Result<Loads, RpcError> {
+        let n = p.last.unwrap_or(LoadParams::DEFAULT);
+        if n == 0 || n > LoadParams::KEEP {
+            return Err(RpcError::new(
+                code::INVALID_PARAMS,
+                format!("last: 1 to {}", LoadParams::KEEP),
+            ));
+        }
+        let totals = self.read_totals();
+        let (loads, current) = self.loads.report(n, Instant::now(), totals);
+        Ok(Loads {
+            at: self.at(),
+            loads,
+            current,
+            no_frame_stats: self.loads.no_frame_stats || totals.is_none(),
+        })
+    }
+
     /// Reads the game's status and emits what changed.
     fn refresh(&mut self, reader: &mut dyn Reader, where_: Where) -> At {
         self.boundary = Some(match where_ {
@@ -637,7 +723,9 @@ impl State {
         let defer_world = where_ == Where::Slice && self.ticking();
         let mut keep = VecDeque::new();
         while let Some((conn, req)) = self.pending.pop_front() {
-            if defer_world && req.method.starts_with("world.") {
+            if defer_world
+                && (req.method.starts_with("world.") || self.game_methods.contains_key(&req.method))
+            {
                 keep.push_back((conn, req));
                 continue;
             }
@@ -725,6 +813,28 @@ impl State {
                 v
             }));
         }
+        if self.game_methods.contains_key(m) {
+            let at = self.at();
+            let stamp = to_value(&at);
+            let (access, f) = self.game_methods.get_mut(m)?;
+            if *access == Access::Act && self.controller.is_some_and(|c| c != conn) {
+                return Some(Err(RpcError::new(
+                    code::NOT_CONTROLLER,
+                    "another connection holds control",
+                )));
+            }
+            let mut ctx = GameCtx {
+                reader,
+                at,
+                host: &mut self.host,
+            };
+            return Some(f(p, &mut ctx).map(|mut v| {
+                if let Value::Object(o) = &mut v {
+                    o.entry("at").or_insert(stamp);
+                }
+                v
+            }));
+        }
         Some(match m {
             method::STATUS => Ok(to_value(Status {
                 at: self.at(),
@@ -738,6 +848,7 @@ impl State {
                     .iter()
                     .map(|m| (*m).to_owned())
                     .chain(self.host.keys().cloned())
+                    .chain(self.game_methods.keys().cloned())
                     .collect::<Vec<String>>(),
             )),
             method::CLAIM if self.conns.get(&conn).is_none_or(|c| c.closing) => Err(RpcError::new(
@@ -852,6 +963,9 @@ impl State {
                 params::<ObjectParams>(p).and_then(|op| self.object(reader, op).map(to_value))
             }
             method::PROFILE_COUNTERS => self.counters().map(to_value),
+            method::LOAD_TIMELINE => params::<LoadParams>(p)
+                .and_then(|lp| self.loads(lp))
+                .map(to_value),
             method::FEATURES => Ok(to_value(Features {
                 at: self.at(),
                 plan: self.plan.clone(),
