@@ -869,7 +869,7 @@ checksum. Temporary retail maps are removed after each successful case. No map
 bytes or game-derived fixtures are committed.
 
 ```sh
-H2_DISC=/path/to/halo2.iso CARGO_TARGET_DIR="$TMPDIR/map-write-target" RUSTC_WRAPPER= cargo test -p tags --test map_write -- --ignored --nocapture
+H2_DISC=/path/to/halo2.iso CARGO_TARGET_DIR="$TMPDIR/map-write-target" cargo test -p tags --test map_write -- --ignored --nocapture
 ```
 
 The demo accepts a standalone map or an ISO plus entry path. It retains its
@@ -877,13 +877,13 @@ output in `$TMPDIR`, prints its path, and checks the result after closing the
 writer:
 
 ```sh
-CARGO_TARGET_DIR="$TMPDIR/map-write-target" RUSTC_WRAPPER= cargo run -p tags --example edit_map -- /path/to/input.map
+CARGO_TARGET_DIR="$TMPDIR/map-write-target" cargo run -p tags --example edit_map -- /path/to/input.map
 ```
 
 Or run directly against the read-only ISO without extracting an input map:
 
 ```sh
-CARGO_TARGET_DIR="$TMPDIR/map-write-target" RUSTC_WRAPPER= cargo run -p tags --example edit_map -- /path/to/halo2.iso /maps/beavercreek.map
+CARGO_TARGET_DIR="$TMPDIR/map-write-target" cargo run -p tags --example edit_map -- /path/to/halo2.iso /maps/beavercreek.map
 ```
 
 ### Retail results (2026-11-15)
@@ -937,5 +937,5 @@ Validation: `cargo test -p map -p tags` (synthetic tests; the retail tests are
 ignored by default); the explicit retail test above (30 maps / 30 edits);
 `cargo clippy -p map -p tags --no-deps --all-targets -- -D warnings`; and
 `cargo check --workspace --all-targets`. Commands use
-`CARGO_TARGET_DIR=$TMPDIR/map-write-target` and an empty `RUSTC_WRAPPER`.
+`CARGO_TARGET_DIR=$TMPDIR/map-write-target`, with the configured rustc wrapper left on.
 These are file/structure/checksum checks, not an in-game playthrough.
