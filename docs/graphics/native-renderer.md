@@ -826,7 +826,16 @@ render's snapshot of the frame.
    shader (S: which section and part an object's render record names is
    not read), so a later entry of the same object and shader in the view
    is skipped without drawing again (the parts draw at the first one's
-   place in the order).
+   place in the order). On the GPU (`model_gpu`) a model keeps its
+   transparent parts in its index buffer, in their own draw table
+   (`Model::transparents`); the caller sets each transparent material's
+   base map and pass state (`GpuModels::set_transparent`; S: an
+   alpha-tested pass is refused, the models' shader has no alpha test
+   yet), and `GpuModels::encode_transparents` draws a run's object items
+   in order with the models' shading and the base map's alpha
+   (`fs_transparent`), each pass's blend and depth state, and the run's
+   node matrices in buffers of its own, so runs and the opaque objects'
+   pass in one submit do not overwrite each other's.
 5. **The live A/B**, as stage 1's: the same frame with the switch on and
    off, `external_passes_dropped` steady, and the `0x0002c19a` site's ms.
 

@@ -147,6 +147,9 @@ pub struct Model {
     pub indices: Vec<u32>,
     /// Sorted by material.
     pub draws: Vec<ModelDraw>,
+    /// The transparent parts (drawn by the sorted transparents, stage 3),
+    /// sorted by material.
+    pub transparents: Vec<ModelDraw>,
     pub inverse_binds: Vec<NodeMatrix>,
     /// Rest-space bounds.
     pub bounds: Option<Aabb>,
@@ -204,7 +207,6 @@ impl Model {
             for part in &s.parts {
                 if part.transparent {
                     m.stats.transparent_parts += 1;
-                    continue;
                 }
                 let first_index = m.indices.len() as u32;
                 for t in &part.triangles {
@@ -217,15 +219,21 @@ impl Model {
                 }
                 let index_count = m.indices.len() as u32 - first_index;
                 if index_count > 0 {
-                    m.draws.push(ModelDraw {
+                    let draw = ModelDraw {
                         material: part.material,
                         first_index,
                         index_count,
-                    });
+                    };
+                    if part.transparent {
+                        m.transparents.push(draw);
+                    } else {
+                        m.draws.push(draw);
+                    }
                 }
             }
         }
         m.draws.sort_by_key(|d| (d.material, d.first_index));
+        m.transparents.sort_by_key(|d| (d.material, d.first_index));
         m.bounds = (!bounds.is_empty()).then_some(bounds);
         m
     }
@@ -233,6 +241,13 @@ impl Model {
     /// The model-local materials its draws use, ascending.
     pub fn materials(&self) -> Vec<u16> {
         let mut v: Vec<u16> = self.draws.iter().map(|d| d.material).collect();
+        v.dedup();
+        v
+    }
+
+    /// The model-local materials its transparent parts use, ascending.
+    pub fn transparent_materials(&self) -> Vec<u16> {
+        let mut v: Vec<u16> = self.transparents.iter().map(|d| d.material).collect();
         v.dedup();
         v
     }
@@ -337,6 +352,9 @@ mod tests {
         assert_eq!(m.draws, vec![ModelDraw { material: 3, first_index: 0, index_count: 3 }]);
         assert_eq!((m.stats.transparent_parts, m.stats.dropped_triangles), (1, 1));
         assert_eq!(m.materials(), vec![3]);
+        assert_eq!(m.transparents, vec![ModelDraw { material: 1, first_index: 3, index_count: 3 }], "after the opaque part");
+        assert_eq!(m.transparent_materials(), vec![1]);
+        assert_eq!(m.indices.len(), 6);
     }
 
     #[test]
