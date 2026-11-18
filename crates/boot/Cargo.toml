@@ -36,6 +36,7 @@ gfx = { path = "../gfx" }
 png = "0.18"
 # New maps' list previews from mainmenu.map's level pictures (new_maps).
 assets = { path = "../assets" }
+native-render = { path = "../native-render" }
 serde.workspace = true
 x87 = { path = "../x87" }
 dsound = { path = "../dsound" }

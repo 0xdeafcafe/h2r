@@ -1646,7 +1646,6 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
     ) -> Result<bool, String> {
         // Both copies get the pass: the reference (what the guest reads
         // back and what repairs come from) and the view (what is shown).
-        self.settle()?;
         let shared = SharedPass(std::sync::Arc::new(std::sync::Mutex::new(pass)));
         let drawn = self
             .reference

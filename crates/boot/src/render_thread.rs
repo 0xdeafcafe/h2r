@@ -33,6 +33,12 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "off by default; the Rust ports park in Rust continuations around their guest calls",
     ),
     (
+        "native-world",
+        "*",
+        "off by default; its layer-draw observers clear and restore the item masks around the \
+         layer and hand the device a pass, not yet audited for the pipelined render",
+    ),
+    (
         "render-census",
         "*",
         "off by default, and pipelining is off with it (it watches the render on the game thread)",

@@ -786,6 +786,20 @@ impl d3d::backend::Backend for Headless {
         let r = self.0.request_depth_grid(surface, request, sink);
         self.forget(r)
     }
+    // The native renderer's pass (docs/graphics/native-renderer.md):
+    // nothing to draw into headless.
+    fn supports_external_pass(&self) -> bool {
+        self.0.supports_external_pass()
+    }
+    fn external_pass(
+        &mut self,
+        color: u32,
+        depth: u32,
+        request: d3d::ExternalPassRequest,
+        pass: Box<dyn d3d::ExternalPass>,
+    ) -> Result<bool, String> {
+        self.0.external_pass(color, depth, request, pass)
+    }
     fn warp_surface(&mut self, src: u32, dst: u32, h: [[f32; 3]; 3]) -> Result<bool, String> {
         let r = self.0.warp_surface(src, dst, h);
         self.forget(r)
@@ -949,6 +963,7 @@ pub fn install_with_report<B: d3d::backend::Backend + Send + 'static>(
     d3d::runtime_glue::map_device_memory(&mut rt.memory(), &cfg)?;
     let device = d3d::runtime_glue::shared(cfg, backend);
     install_occlusion_capture(&device);
+    crate::native_world_glue::install(&device);
     let mut out = None;
     rt.edit_dispatch(|d| {
         out = Some(d3d::register(d, Arc::clone(&device)));
