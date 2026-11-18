@@ -6161,6 +6161,7 @@ dependencies = [
  "rfd",
  "scenario-edit",
  "serde_json",
+ "tags",
  "variants",
  "wgpu",
  "winit",

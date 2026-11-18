@@ -186,6 +186,10 @@ pub struct Scenario {
     /// Scenario object names (edited only by removals).
     pub names: Names,
     pub tags: HashMap<TagId, TagInfo>,
+    /// Patches to other tags' bytes (the tag editor's field edits, kept
+    /// outside this tag): `(ordinary metadata virtual address, bytes)`,
+    /// saved with the scenario's own. See [`Self::set_tag_patches`].
+    tag_patches: Vec<(u32, Vec<u8>)>,
 }
 
 pub(crate) fn u32_at(b: &[u8], o: usize) -> u32 {
@@ -347,6 +351,7 @@ impl Scenario {
             blocks,
             names,
             tags,
+            tag_patches: Vec::new(),
         })
     }
 
@@ -479,7 +484,10 @@ impl Scenario {
     /// block that outgrew it. Unchanged bytes are never written; a removal
     /// leaves the old tail element's bytes in place as dead data.
     pub fn changes(&self) -> Changes {
-        let mut out = Changes::default();
+        let mut out = Changes {
+            patches: self.tag_patches.clone(),
+            ..Changes::default()
+        };
         for b in &self.blocks {
             let root = self.address + b.def.offset;
             if b.len() > b.capacity() {
@@ -512,6 +520,30 @@ impl Scenario {
         );
         out.patches.sort();
         out
+    }
+
+    /// Replace the patches to other tags' bytes (every changed run, not a
+    /// delta). Refused when one touches this scenario's payload, which
+    /// the placement blocks own.
+    pub fn set_tag_patches(&mut self, patches: Vec<(u32, Vec<u8>)>) -> Result<()> {
+        let (lo, hi) = (
+            u64::from(self.address),
+            u64::from(self.address) + u64::from(self.size),
+        );
+        if patches.iter().any(|(a, b)| {
+            let (a, e) = (u64::from(*a), u64::from(*a) + b.len() as u64);
+            a < hi && lo < e
+        }) {
+            return Err(Error::Refused(
+                "the scenario tag's bytes belong to the Scenario tool",
+            ));
+        }
+        self.tag_patches = patches;
+        Ok(())
+    }
+    /// The patches to other tags' bytes.
+    pub fn tag_patches(&self) -> &[(u32, Vec<u8>)] {
+        &self.tag_patches
     }
 
     /// Why entries of a block may not be removed, if they may not.

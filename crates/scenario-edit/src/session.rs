@@ -633,6 +633,15 @@ impl Session {
         }
     }
 
+    /// Replace the patches to tags other than the scenario (the tag
+    /// editor's field edits): every changed run as `(ordinary metadata
+    /// address, bytes)`. They save with the scenario's edits (map file and
+    /// package alike) and count toward [`Self::is_dirty`].
+    pub fn set_tag_patches(&mut self, patches: Vec<(u32, Vec<u8>)>) -> Result<()> {
+        let doc = self.doc.as_mut().ok_or(Error::Save("no map is open"))?;
+        doc.scenario.set_tag_patches(patches)
+    }
+
     /// Let adding grow a block past its source size. Off by default; see
     /// [`GROWTH_REFUSAL`].
     pub fn set_allow_growth(&mut self, allow: bool) {
