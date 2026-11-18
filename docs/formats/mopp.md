@@ -51,16 +51,17 @@ Coordinates are integers in a 24-bit space per axis: `full =
 so it sees the top 8 bits; rescale opcodes zoom in. Every operand of the
 axis opcodes is a byte in the current frame.
 
-The XBE has three interpreters. One byte table per interpreter maps the
-opcode to a handler, and the three tables put every opcode in the same
-handler class (E: tables at `0x00300860`, `0x003016a8`, `0x0030284c`;
-dword tables at `0x003007e0`, `0x00301628`, `0x003027cc`):
+The XBE has four interpreters. One byte table per interpreter maps the
+opcode to a handler, and the tables put every opcode in the same handler
+class (E: tables at `0x00300860`, `0x003016a8`, `0x0030284c`, `0x002fff20`;
+dword tables at `0x003007e0`, `0x00301628`, `0x003027cc`, `0x002ffea0`):
 
 | Interpreter | Query | Entry | Evidence |
 |---|---|---|---|
 | `0x00300290` | Sphere, integer. Setup `0x003008d0`: centre `round(p * scale) - 1` per axis (x87 `fistp` of an f32 product), radius `round(r * scale)`; root state: centre `>> 16`, radius `(r >> 16) + 1`, shift 16 | E |
 | `0x003009e0` | Ray between two points, float (setup `0x00301720`; scale times a constant from `0x0045dcac` for the root frame) | E (kind of query: Guess from the setup) |
 | `0x00301a60` | Segment or cast with a per-axis tolerance, float | E (kind of query: Guess from its operands) |
+| `0x002ff8b0` | Box, integer. Setup `0x00300150`: `lo = round(min * scale) - 1`, `hi = round(max * scale) - 1` per axis; per frame `L = (lo >> s) - offset`, `H = (hi >> s) + 1 - offset`. Its tests differ from the sphere VM's (see [The box query](#the-box-query)) | E |
 
 The interpreter state is 0x28 bytes (E `0x00300290`): the query in frame
 units (`+0x00..+0x0c`), frame offsets (`+0x10..+0x18`), key offset
@@ -121,11 +122,42 @@ therefore treat each frame coordinate `v` as the finer interval `[v, v +
 (below); without it, it missed 970 of 2.3 million. The sphere VM's `+ 1`
 on the diagonal radius is the engine's allowance for the same thing.
 
-## The model (`mopp::vm`)
+### The box query
+
+`0x002ff8b0` is the query that keeps a body's contacts with the
+structure (E): the BV-tree agent's collide (`0x002ea530` → `0x002e9d90`)
+takes the other body's box (`0x002e9140`: its shape's AABB at the
+collision tolerance, grown by its linear motion), queries the MOPP
+shape's slot `+0x30` (`0x002df640`, or the structure shape's override
+`0x001eea50`, which calls it and filters instanced keys), and keeps one
+child agent per key returned. A key missing from one tick's answer drops
+that surface's contact points (`0x001d06c0`); a biped's ground contact
+list (physics component `+0x88`) is filled by the contact callback
+`0x00277b80` through `0x001d0400`. The float cast `0x00301a60` is the
+static linear cast (`0x002eb670`, registered at `0x002ebc0b`), not this
+path.
+
+Its tests, with `L` and `H` as in the table (`H` is one past the box's top
+cell):
+
+| Opcode | Box VM (`0x002ff8b0`) |
+|---|---|
+| `10..1c`, `23..25` (`L_op H_op`) | low child only when `L < L_op`; high child only when `H > H_op`; a box in neither visits neither (`0x002ffa52`, `0x002ffa85`, `0x002ffafe`). Diagonals sum `L` for + terms and `−H` for − terms (lower), `H` and `−L` (upper), against `m·op − k` |
+| `20..22` (`s`) | low child when `L <= s`, high child when `H > s` (`0x002ffac7`) |
+| `26..28` (`l h`) | ends when `H < l` or `L >= h` (`0x002ffb73`) |
+| `29..2b` | ends when `hi < l24` or `lo > h24` (`0x002ffb9d`) |
+
+So `L_op` and a bound check's `h` are exclusive upper bounds here: a box
+whose low corner lies in the same frame cell as a primitive's top cell is
+cut off from it, where the sphere VM keeps it.
+
+## The model (`mopp::vm`, `mopp::boxvm`)
 
 - `query_sphere(code, centre, radius)`: `0x00300290` to the bit,
   including the centre's `- 1` and the radius's `+ 1`.
-- `query_aabb(code, aabb)`: the same opcode semantics on per-axis
+- `query_box(code, aabb)`: `0x00300150` and `0x002ff8b0` to the bit,
+  the engine's box query above.
+- `query_aabb(code, aabb)`: the sphere VM's opcode semantics on per-axis
   intervals. Each box axis becomes `[floor(min) − 1, ceil(max) + 1]` in
   full units; diagonals as above. This is not an engine function; it is
   the generalisation the compiler and the tests need.

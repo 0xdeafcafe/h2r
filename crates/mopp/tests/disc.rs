@@ -22,7 +22,7 @@ fn retail_programs_are_supersets() {
         let boxes = sample_boxes(&surfaces, BOXES, 0x5eed ^ l.bsp_index as u64);
         let m = measure(&code, &surfaces, &boxes, EPS);
         println!(
-            "retail {:>20} {} surfaces={:>5} truth={:>6} returned={:>6} ratio={:.2} bounds_ratio={:.2} misses={} sphere_misses={}",
+            "retail {:>20} {} surfaces={:>5} truth={:>6} returned={:>6} ratio={:.2} bounds_ratio={:.2} misses={} sphere_misses={} box_misses={}",
             l.name,
             l.bsp_index,
             surfaces.len(),
@@ -31,7 +31,8 @@ fn retail_programs_are_supersets() {
             m.ratio(),
             m.bounds_ratio(),
             m.misses,
-            m.sphere_misses
+            m.sphere_misses,
+            m.box_misses
         );
         total.add(&m);
     }
@@ -42,6 +43,7 @@ fn retail_programs_are_supersets() {
     );
     assert_eq!(total.misses, 0);
     assert_eq!(total.sphere_misses, 0);
+    assert_eq!(total.box_misses, 0);
 }
 
 /// Our compiler on every retail BSP's own surfaces: valid by the engine's
@@ -66,7 +68,7 @@ fn built_programs_are_supersets() {
         let boxes = sample_boxes(&surfaces, BOXES, 0x5eed ^ l.bsp_index as u64);
         let m = measure(&code, &surfaces, &boxes, EPS);
         println!(
-            "ours   {:>20} {} surfaces={:>5} truth={:>6} returned={:>6} ratio={:.2} bounds_ratio={:.2} misses={} sphere_misses={} bytes={} (retail {}) depth={}",
+            "ours   {:>20} {} surfaces={:>5} truth={:>6} returned={:>6} ratio={:.2} bounds_ratio={:.2} misses={} sphere_misses={} box_misses={} bytes={} (retail {}) depth={}",
             l.name,
             l.bsp_index,
             surfaces.len(),
@@ -76,6 +78,7 @@ fn built_programs_are_supersets() {
             m.bounds_ratio(),
             m.misses,
             m.sphere_misses,
+            m.box_misses,
             block.len(),
             l.mopp.len(),
             report.max_depth
@@ -91,6 +94,7 @@ fn built_programs_are_supersets() {
     );
     assert_eq!(total.misses, 0);
     assert_eq!(total.sphere_misses, 0);
+    assert_eq!(total.box_misses, 0);
 }
 
 /// Multiplayer levels whose rebuilt block fits over retail's.
@@ -141,16 +145,18 @@ fn replaced_retail_levels() {
             }
         }
         println!(
-            "replaced {name:>12}: block {} of {} bytes, map {} bytes; structure misses {} ratio {:.2}; other keys {} missed {}",
+            "replaced {name:>12}: block {} of {} bytes, map {} bytes; structure misses {} box misses {} ratio {:.2}; other keys {} missed {}",
             r.block.len(),
             r.retail_count,
             r.map.len(),
             m.misses,
+            m.box_misses,
             m.ratio(),
             other.0,
             other.1
         );
         assert_eq!(m.misses, 0, "{name}");
+        assert_eq!(m.box_misses, 0, "{name}");
         assert_eq!(other.1, 0, "{name}");
     }
 }
