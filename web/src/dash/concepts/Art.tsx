@@ -1,4 +1,4 @@
-import { For, createUniqueId } from "solid-js";
+import { For, createEffect, createSignal, createUniqueId, on, onCleanup } from "solid-js";
 import type { Section } from "./model";
 
 // Three folded vanes form the relay's own mark.
@@ -58,12 +58,50 @@ export function Orb() {
   </svg>;
 }
 
-export function Cables() {
-  return <svg class="cc-cables" viewBox="0 0 1200 500" preserveAspectRatio="none" aria-hidden="true">
-    <defs><path id="cc-wire" d="M-30 452C60 442 90 294 195 370S251 516 374 445S482 369 570 402S717 428 800 353S900 272 998 327S1120 428 1240 306 M75 24C170 114 237-30 399 44S597 100 707 76S920 3 1052 70S1141 146 1222 110"/></defs>
-    <use href="#cc-wire" fill="none" stroke="#14220c" stroke-width="6"/>
-    <use href="#cc-wire" fill="none" stroke="#779b4d" stroke-width="2.2"/>
-    <use class="cc-wire-glint" href="#cc-wire" fill="none" stroke="#cfee8a" stroke-width="1" stroke-dasharray="15 210"/>
+// Route the leads between physical sockets after layout. The geometry is
+// static between resizes, including while the glint travels along the wire.
+export function Cables(props: { layout: string }) {
+  let svg!: SVGSVGElement;
+  const [wire, setWire] = createSignal("");
+  createEffect(on(() => props.layout, () => {
+    const root = svg.closest(".cc")!;
+    const port = (selector: string) => root.querySelector(selector);
+    const head = port(".cc-title-plate .cc-twin") ?? port(".cc-shell");
+    const panel = port(".cc-orbit-monitor .cc-twin, .cc-orb-section .cc-panel-head .cc-twin, .cc-console .cc-panel-head .cc-twin");
+    const back = port(".cc-prompts i");
+    const select = port(".cc-prompts span i");
+    if (!head || !back || !select) return;
+    function draw() {
+      const area = svg.getBoundingClientRect();
+      const center = (el: Element) => {
+        const r = el.getBoundingClientRect();
+        return { x: r.left - area.left + r.width/2, y: r.top - area.top + r.height/2 };
+      };
+      const start = center(head!), b = center(back!), a = center(select!);
+      const paths = [
+        `M${b.x-130} ${b.y+12} Q${b.x-52} ${b.y-26} ${b.x} ${b.y} T${a.x} ${a.y}`,
+      ];
+      if (panel) {
+        const end = center(panel);
+        const loft = Math.max(6, start.y-70);
+        paths.push(`M${start.x} ${start.y} C${start.x-80} ${start.y-5},${start.x-24} ${loft-12},${start.x+68} ${loft+5} S${end.x-145} ${loft+74},${end.x-88} ${loft+29} C${end.x+40} ${loft-28},${end.x-103} ${end.y-8},${end.x} ${end.y}`);
+      } else {
+        const rim = head!.getBoundingClientRect();
+        const x = rim.right-area.left-rim.width*.12, y = rim.bottom-area.top-18;
+        paths.push(`M${x} ${y} C${x+30} ${y+60},${a.x+120} ${a.y-65},${a.x} ${a.y}`);
+      }
+      setWire(paths.join(" "));
+    }
+    const observer = new ResizeObserver(draw);
+    for (const el of [svg, head, panel, back, select]) if (el) observer.observe(el);
+    draw();
+    onCleanup(() => observer.disconnect());
+  }));
+  return <svg ref={svg} class="cc-cables" aria-hidden="true">
+    <defs><path id="cc-wire" d={wire()}/></defs>
+    <use href="#cc-wire" fill="none" stroke="#0a1609" stroke-width="4.8"/>
+    <use href="#cc-wire" fill="none" stroke="#7b9755" stroke-width="2.1"/>
+    <use class="cc-wire-glint" href="#cc-wire" fill="none" stroke="#d1e5a1" stroke-width="1" stroke-dasharray="15 210"/>
   </svg>;
 }
 
@@ -82,6 +120,8 @@ export function ChromeFrame() {
     <path d={shell} fill="url(#cc-metal)" stroke="#cfd5ca" stroke-width="2"/>
     <path d={lip} fill="url(#cc-enamel)" stroke="#414d48" stroke-width="7"/>
     <path d={lip} fill="none" stroke="#adc2a4" stroke-opacity=".8" stroke-width="1.8"/>
+    <path d="M23 73C34 12 77 12 132 23C247 48 297 75 459 57S792 18 915 26C747 16 606 65 451 63S246 54 129 30Q45 6 23 73Z" fill="#575369" opacity=".9"/>
+    <path d="M17 414Q17 480 77 478C207 500 360 452 530 448S805 482 923 477Q977 477 981 434Q961 483 918 482C765 489 695 454 528 455S205 508 72 484Q20 478 17 414Z" fill="#484959"/>
     <path d="M31 66Q50 0 148 24C280 62 301 66 425 55M511 452C670 438 816 484 920 479" fill="none" stroke="#fff" stroke-opacity=".7" stroke-width="2.6"/>
     <For each={range(48)}>{i => {
       const x = 232 + i * 4, y = 48 + 8 * Math.sin(i/26);

@@ -22,7 +22,7 @@ export function Bulletin() {
   </Panel>;
 }
 
-export function Preview(props: { selected: Section; tag: string }) {
+export function Preview(props: { selected: Section; tag: string; hint: string }) {
   const previews = {
     friends: { title: "Friends online", meta: online.length + " / " + roster.length, rows: online.map(f => [f.tag, f.state]) },
     messages: { title: "Inbox", meta: "02", rows: messages.map(m => [m.from, m.time]) },
@@ -33,7 +33,7 @@ export function Preview(props: { selected: Section; tag: string }) {
   const card = () => previews[props.selected];
   return <Panel class="cc-preview" title={card().title} meta={card().meta}>
     <Show when={props.selected === "account"}><div class="cc-id-preview">{props.tag}</div></Show>
-    <ul><For each={card().rows}>{row => <li><span>{row[0]}</span><small>{row[1]}</small></li>}</For></ul>
+    <ul><For each={card().rows}>{row => <li><span>{row[0]}</span><small>{row[1]}</small></li>}</For></ul><p class="cc-help">{props.hint}</p>
   </Panel>;
 }
 

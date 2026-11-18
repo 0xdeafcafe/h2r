@@ -1,4 +1,4 @@
-import { For, Match, Show, Switch, createEffect, createSignal, on } from "solid-js";
+import { For, Match, Show, Switch, createEffect, createSignal, on, onCleanup } from "solid-js";
 import { A, useNavigate, useParams, useSearchParams } from "@solidjs/router";
 import Tunnel from "../Tunnel";
 import { Cables, ChromeFrame, Icon, Mark, Orb } from "./Art";
@@ -30,6 +30,8 @@ export default function ConceptPage() {
     const index = concepts.findIndex(c => c.id === concept());
     navigate(href(concepts[(index+dir+concepts.length)%concepts.length]!.id));
   };
+  const originalTitle = document.title;
+  onCleanup(() => { document.title = originalTitle; });
   useControls(() => root, back, compare);
   createEffect(on([concept, screen], () => {
     document.title = (title() ?? "Dashboard")+" · "+concepts.find(c => c.id === concept())?.name+" · h2 Live";
@@ -43,7 +45,7 @@ export default function ConceptPage() {
       <button data-nav data-menu={d.id} classList={{ "cc-lit": (isHome() ? selected() : screen()) === d.id }}
         style={{ "--arc": ["0px","26px","36px","26px","0px"][i()] }}
         aria-current={screen() === d.id ? "page" : undefined}
-        onFocus={() => setSelected(d.id)} onPointerEnter={() => { if (isHome()) setSelected(d.id); }} onClick={() => open(d.id)}>
+        onFocus={() => setSelected(d.id)} onPointerMove={e => { if (e.pointerType === "mouse" && e.currentTarget !== document.activeElement) e.currentTarget.focus({ preventScroll: true }); }} onClick={() => open(d.id)}>
         <i class="cc-socket" aria-hidden="true"/><span class="cc-blade-face"><Icon name={d.id}/><strong>{d.label}</strong><span class="cc-chevron" aria-hidden="true">›</span></span>
       </button>
     }</For></nav>;
@@ -56,7 +58,7 @@ export default function ConceptPage() {
       <div class="cc-profile"><span class="cc-avatar"><Icon name="account"/></span><span><small>LIVE ID</small><b>{tag()}</b></span></div>
     </div></header>
     <main class="cc-main cc-width">
-      <Cables/>
+      <Cables layout={concept()+"/"+screen()}/>
       <Show when={concept() !== "silverline"}>
         <div class="cc-title-plate"><i class="cc-twin"/><div><small>{concept() === "switchboard" ? "RELAY CONTROL" : "PLAYER SERVICES"}</small><h1>{title()}</h1></div><span class="cc-vents" aria-hidden="true"/></div>
       </Show>
@@ -64,7 +66,7 @@ export default function ConceptPage() {
         <Match when={concept() === "orbital"}>
           <Show when={isHome()} fallback={<div class="cc-orb-section"><div class="cc-orb-module"><Orb/><span class="cc-id-stamp">NORTHLINE · NL–017</span></div>{material()}</div>}>
             <div class="cc-orbit-stage"><div class="cc-engine"><Orb/></div><Menu layout="fan"/>
-              <aside class="cc-orbit-monitor"><Preview selected={selected()} tag={tag()}/></aside>
+              <aside class="cc-orbit-monitor"><Preview selected={selected()} tag={tag()} hint={destinations.find(d => d.id === selected())!.detail}/></aside>
             </div>
           </Show>
         </Match>
@@ -78,7 +80,9 @@ export default function ConceptPage() {
         </Match>
         <Match when={concept() === "switchboard"}>
           <div class="cc-ops"><aside><div class="cc-rail-head"><span class="cc-mini-ball"/>Northline</div><Menu layout="rail"/>
-            <div class="cc-rail-status"><i class="cc-led"/>{online.length} friends online</div></aside>
+            <div class="cc-rail-status"><i class="cc-led"/>{online.length} friends online</div>
+            <Show when={isHome()}><ul class="cc-rail-roster"><For each={online}>{f => <li><span>{f.tag}</span><small>{f.state}</small></li>}</For></ul></Show>
+          </aside>
             <div class="cc-console">{material()}</div>
           </div>
         </Match>

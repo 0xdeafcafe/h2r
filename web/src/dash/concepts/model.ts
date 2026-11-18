@@ -6,11 +6,11 @@ export const concepts = [
 export type Concept = typeof concepts[number]["id"];
 
 export const destinations = [
-  { id: "friends", label: "Friends", detail: "Find your people on Northline." },
-  { id: "messages", label: "Messages", detail: "Read incoming transmissions." },
-  { id: "sessions", label: "Sessions", detail: "Browse open games on this relay." },
-  { id: "account", label: "Account", detail: "Manage your local Live ID." },
-  { id: "server", label: "Server / Admin", detail: "Inspect relay traffic and game history." },
+  { id: "friends", label: "Friends", detail: "Select a friend to see their lobby or last visit." },
+  { id: "messages", label: "Messages", detail: "Open a transmission to read the message." },
+  { id: "sessions", label: "Sessions", detail: "Check the host and available slots before playing." },
+  { id: "account", label: "Account", detail: "Change the name shown to other players." },
+  { id: "server", label: "Server / Admin", detail: "Inspect player traffic and completed games." },
 ] as const;
 export type Section = typeof destinations[number]["id"];
 export type Screen = "home" | Section;

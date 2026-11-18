@@ -32,7 +32,7 @@ References 20 and 21 arrange a whole conversation inside one piece of hardware. 
 
 ## Switchboard
 
-References 23, 26 and 27 separate the header, status, selected item and detail readout into connected pieces. Switchboard applies that arrangement to server operations. Capacity, lobby count and latency occupy three shallow panels. Below them the traffic chart and history table share a vertical reading edge. The side rail gives access to the same five destinations and becomes a small grid on phones.
+References 23, 26 and 27 separate the header, status, selected item and detail readout into connected pieces. Switchboard applies that arrangement to server operations. Capacity, lobby count and latency occupy three shallow panels. Below them the traffic chart and history table share a vertical reading edge. The side rail holds the online roster on the overview and gives access to the five destinations. It becomes a small grid on phones.
 
 **Adoption cost is mainly in the data controls.** Keep the deck work on `admin-stats` as the implementation path for real usage data. Its `StatTile`, `TimeChart`, `SeriesTable` and `DenseTable` already cover the next steps, including chart/table switching and sorting. Apply the clipped panel border, socket header and quieter tunnel around those controls. Paginate long histories and update charts at the sampling interval. Drawing more wire detail behind a table buys little.
 
