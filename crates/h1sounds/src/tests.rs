@@ -452,6 +452,37 @@ fn converted_sounds_read_back_through_tags_and_decode_identically() {
     }
 }
 
+/// A Halo 1 distance of 0 is the class's default; Halo 2 says so with the
+/// class distance flags, or the engine takes the zeros as distances and a
+/// positioned sound is inaudible past a millimetre. Cones that are the whole sphere
+/// get the no-cone flag every retail sound has.
+#[test]
+fn default_distances_and_no_cone_become_engine_flags() {
+    use crate::convert::{flags, snd};
+    let (mut s, file) = invented(1);
+    s.flags = 2;
+    // Distances of its own: only Halo 1's bits and no cone.
+    assert_eq!(flags(&s), 2 | snd::NO_CONE);
+    let both = snd::CLASS_MIN_DISTANCE | snd::CLASS_MAX_DISTANCE;
+    s.distance = [0.0, 0.0];
+    assert_eq!(flags(&s), 2 | both | snd::NO_CONE);
+    let c = convert_sound(&s, &file).unwrap();
+    assert_eq!(
+        u16::from_le_bytes([c.header[snd::FLAGS], c.header[snd::FLAGS + 1]]),
+        2 | both | snd::NO_CONE
+    );
+    // The playback element keeps the zeros; the flags send the engine to
+    // the class instead.
+    assert_eq!(&c.playback[..8], &[0; 8]);
+    s.distance = [0.0, 12.0];
+    assert_eq!(flags(&s), 2 | snd::CLASS_MIN_DISTANCE | snd::NO_CONE);
+    s.distance = [1.0, 0.0];
+    assert_eq!(flags(&s), 2 | snd::CLASS_MAX_DISTANCE | snd::NO_CONE);
+    // A real cone keeps the engine's cone path.
+    s.cone_angles = [1.0, 2.0];
+    assert_eq!(flags(&s), 2 | snd::CLASS_MAX_DISTANCE);
+}
+
 #[test]
 fn a_map_without_a_gestalt_gets_one() {
     let (s, file) = invented(1);
