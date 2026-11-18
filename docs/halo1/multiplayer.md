@@ -1279,7 +1279,18 @@ shader, and drew as an opaque grey pane over the view from inside the
 tube (`tests/model_shaders_disc.rs`). A transparent shader's map that is
 a cube is its reflection, in `one_alpha_env`'s cube slot, and the least
 tiled 2D map is its picture (`shad::transparent_maps`): the cryo glass
-lists its reflection cube first. A material with no Halo 1 base map to read names the
+lists its reflection cube first. Since converter version 76 a `soso`
+with a reflection (a cube map at `+0x164` and a brightness at `+0x144`
+or `+0x154`, `shad::soso_reflection`) is rebuilt the same way on
+`tex_bump_env` (the commonest retail object stem, 27 of Coagulation's
+weapon, vehicle and character shaders) with its cube map and Halo 1's
+tints facing the eye and grazing. Halo 1's weapons take their metal from
+that reflection over dark base maps (the sniper rifle's averages 35 of
+255); the tex_bump copy drew them near black, most visibly in first
+person. Not carried: the `soso` multipurpose map (`+0xbc`), which masks
+the reflection in Halo 1; the reflection is masked by the base map's
+alpha instead (`tests/model_shaders_disc.rs`,
+`bloodgulch_sniper_metal_reflects_its_cube_map`). A material with no Halo 1 base map to read names the
 base's model shader itself; Blood Gulch has none. The sky model's
 materials name copies of the base's sky shaders drawing Halo 1's sky
 bitmaps at Halo 1's scale (`h1convert::sky_shaders`, sky.md "The

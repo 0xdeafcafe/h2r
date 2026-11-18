@@ -122,3 +122,65 @@ fn a10_cryo_tube_glass_is_alpha_blended_with_its_own_maps() {
         report.no_home
     );
 }
+
+/// Blood Gulch's sniper rifle (`weap weapons\sniper rifle\sniper rifle`):
+/// its metal `soso` has a reflection cube map, so it is rebuilt on
+/// `tex_bump_env` drawing its own base map and that cube, with Halo 1's
+/// tints, not the tex_bump copy of its dark base map alone (the first
+/// person drew near black). A `soso` without a cube map (the assault
+/// rifle's display) keeps the tex_bump copy.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn bloodgulch_sniper_metal_reflects_its_cube_map() {
+    let h1 = h1_map("bloodgulch");
+    let mut base_map = h2_map("coagulation");
+    let library = h1convert::shad::Library::read(&mut base_map);
+    let env = library
+        .stem(&h1convert::shad::TEX_BUMP_ENV)
+        .expect("the base has tex_bump_env");
+    let bump = library
+        .stem(&h1convert::shad::TEX_BUMP)
+        .expect("the base has tex_bump");
+    let base = Base::read(&mut base_map).unwrap();
+    let mut conv = Converter::new(&h1, &base);
+    for name in ["weapons\\sniper rifle\\sniper rifle", "weapons\\assault rifle\\assault rifle"] {
+        let w = h1
+            .tags()
+            .iter()
+            .find(|t| t.group == Group::new(b"weap") && t.name == name)
+            .expect("the weapon");
+        conv.object(w).unwrap();
+    }
+    let tree = &conv.tree;
+    let named = |id: TagId| {
+        (id.0 & 0xffff_0000 == local(0).0 & 0xffff_0000)
+            .then(|| {
+                tree.tags
+                    .get((id.0 & 0xffff) as usize)
+                    .map(|(n, _)| n.as_str())
+            })
+            .flatten()
+    };
+    let shader = |name: &str| {
+        let (_, s) = tree
+            .tags
+            .iter()
+            .find(|(n, c)| n == name && c.group.0 == *b"shad")
+            .unwrap_or_else(|| panic!("{name}: a shader of the tree"));
+        let mut refs = Vec::new();
+        tag_refs(&s.root, &mut refs);
+        refs
+    };
+    let metal = shader("weapons\\sniper rifle\\shaders\\sniper rifle metal");
+    let names: Vec<&str> = metal.iter().filter_map(|&id| named(id)).collect();
+    eprintln!("sniper rifle metal: tree's references {names:?}");
+    assert!(metal.contains(&env), "drawn with tex_bump_env");
+    assert!(names.contains(&"weapons\\sniper rifle\\bitmaps\\sniper rifle"), "its base map");
+    assert!(
+        names.contains(&"vehicles\\warthog\\bitmaps\\reflection diffuse metal"),
+        "its reflection cube"
+    );
+    let display = shader("weapons\\assault rifle\\fp\\shaders\\display");
+    assert!(display.contains(&bump), "no cube map: the tex_bump copy");
+    assert!(!display.contains(&env));
+}
