@@ -440,12 +440,15 @@ changes:
   - look sensitivity `+0x102` = 3.
 
   The brain's aim spring is tuned against that sensitivity.
+- the look at block `+0x118` (colours and emblem) set to the bot's own,
+  by port (stage 7, "Their own look"), so it does not wear the human's.
 - The name the game shows comes from slot `+0xc1c` (UTF-16, 32 units,
   `0x1902c1`). The driver writes it after the sign-in.
 
 Because the file is `-1`, nothing is saved. The bot leaves through
-`0x18fc08`, called the same way, when the bot is removed or the game
-returns to the main menu.
+`0x18fc08` (`PROFILE_SIGN_OUT`, slot in EAX), called the same way, once
+it is removed and no game runs; its pad is unplugged only after that
+(stage 7, "a lower count, or Off").
 
 Whether a signed-in slot with its mask bit is enough for the game to make a
 local player in Split Screen, System Link and Live custom games is the
@@ -1443,12 +1446,17 @@ list for the user to play (§11).
      description pane, the legend in the footer). Its texts are the
      `clankers` id family. In the preview it is `h2 ui preview clankers`.
    - **The row.** A custom game's Game Setup dialog (any list with Change
-     Map) gets a "Clankers" row with action 11, under Quick Options and
+     Map) gets a "Clanker Options..." row with action 11, under Quick Options and
      the Halo 1 Options row's 10, above the "Switch To:" rows (retail
      actions 6 to 8; `h1_options_row::insert_row` writes the rows'
      actions back in that order). It uses the same three points, and each
      hook is ordered after the Halo 1 row's. A press opens the page on the dialog's own
-     stack. The row's text is the page's title slot.
+     stack. The row's text has a slot of its own after the page's footer
+     (`KitScreen::row_label`, "Clanker Options..."), so the page's title
+     stays "Clankers". The Halo 1 row does the same with its id 2
+     (`h1_options::ROW_LABEL_ID`, "Halo 1 Options..."), its screen's title
+     staying "Halo 1 Options"; both read like the dialog's other
+     "...Options..." rows.
    - **The bots.** While `enabled` is on, a driver keeps `min(count, free
      ports)` brains in the process-wide local bots, on ports 1 to 3 that no
      other bot asked for (an `H2_BOTS` or `sim` bot keeps its port). They
@@ -1458,8 +1466,16 @@ list for the user to play (§11).
        frame;
      - a higher count adds bots;
      - a lower count, or Off, takes the last added off. Taking a bot off
-       unplugs its pad, which in a game may bring up the game's
-       "controller disconnected" prompt, so change the count in the lobby.
+       does not unplug its pad (in the user's run that brought up
+       "CONTROLLER DISCONNECTED" for port 4 and the human could not move):
+       the bot leaves the books with an idle pad still plugged. Out of a
+       game (`guest::game_tick` is `None`), before `SOUND_UPDATE`, the glue
+       signs it out of its slot with the game's `PROFILE_SIGN_OUT`
+       (`0x18fc08`, slot in EAX; a guest call, then the frame runs), and
+       once the slot is empty it unplugs the pad
+       (`bots::local::leave_step`). During a game nothing is removed: the
+       bot stands idle until the game ends. Turning Clankers on again
+       before then gives the new bot the leaving bot's pad back.
 
      The setting persists, so with `enabled` left on, the bots are added
      at the next boot too, and join any players screen, campaign
@@ -1467,13 +1483,50 @@ list for the user to play (§11).
    - Past the free ports the count adds phantom peers (stage 6b), which
      join once a hosted game runs; without phantoms (tests) it adds what
      fits and says so in the log.
+   - **No `H2_BOTS` needed.** Turning Clankers On is enough: the bots
+     input backend, the bots feature and the driver are always installed
+     (with the XAPI); `H2_BOTS` only adds bots of its own at boot.
+   - **The join gate.** A bot taps A only while the players screen takes
+     player one's input, nothing sits on windows 0 to 4 (`ui_watch::dialog`:
+     a dialog, or the profile chooser that `0x24b6ea` and `0x1905bf` open
+     for one controller), and its own slot has no profile
+     (`bot_glue::join_gate`). In the user's run the hook never fired, the
+     players screen showed the human's player four times, and the human
+     was left on "which profile?": a bot tap that reaches a profile
+     chooser picks the first profile, the human's. The log now says each
+     port's gate when it changes (`bots: join gate port 1: top 0x1e,
+     dialog none, signed_in false: taps A`), each tap (`bots: Clanker 1
+     taps A on port 1`), and any bot button the players screen's unjoined
+     handler sees that is not a join.
+   - **Their own look.** The bot's block is the human's with the bot's
+     name, controls and look: the 16 bytes at block `+0x118` are the
+     appearance (`0x18fd94` copies them, from slot `+0x130`, into the
+     player properties at `+0x40`; `0x1a0540` zeroes them when
+     `0x153750` rejects the first 8: four colours below 18, a model below
+     4, an emblem foreground below 0x40 and background below 0x20, flags
+     in the low nibble). Each port has its colours and emblem
+     (`guest::BOT_LOOKS`), an armour colour the human wears is moved one
+     on, and the model is the human's.
+   - **Nav meshes early.** A map picked in the lobby's map list with
+     Clankers on, or Clankers coming on after a map was picked, asks
+     `bots::autonav::build_soon` for its mesh (`clankers::map_picked`).
    - Tests:
      - the settings in `setting_defs::ALL`, and off by default;
      - Mixed by port;
      - the driver: ports no one else asked for, the last added off first,
        only its own taken off, a difficulty change reaching the bots
-       already there, and following the store's changes;
+       already there, and following the store's changes; taken off, the
+       bots stay plugged as leaving, and on again they take their pads
+       back;
+     - leaving: nothing during a game, then sign-out, then unplug
+       (`local::leave_step`); `guest::sign_out_then` calls
+       `PROFILE_SIGN_OUT` per port, then the frame;
+     - the gate: only the bare players screen with an empty slot
+       (`bot_glue` tests, `ui_watch` dialog tests);
+     - the look: valid by `0x153750`'s checks, never the human's colours
+       or emblem, distinct per port;
      - the page: a row per setting, steps saved in the store, wrapping;
+       the row's text in its own slot, not the title's;
      - the row: only a custom game's list, once, beside the Halo 1 row;
        on the plan after the Halo 1 row's hooks;
      - the kit's own checks over the page (`ui_kit::screens`: every
@@ -1481,7 +1534,9 @@ list for the user to play (§11).
    - **Game run (the user):**
      1. Run `h2 play` (no `H2_BOTS`). Choose Split Screen (or System Link),
         then a custom game's Game Setup. Below Change Map and the others,
-        a "Clankers" row shows (after Halo 1 Options on a Halo 1 map).
+        a "Clanker Options..." row shows (after "Halo 1 Options..." on a
+        Halo 1 map). The pages they open are titled "Clankers" and "Halo 1
+        Options".
      2. Press A on it: the Clankers page opens over the dialog, with
         seven rows and a description of the focused row. B goes back to
         Game Setup.
@@ -1495,8 +1550,10 @@ list for the user to play (§11).
         difficulty chosen.
      5. Quit to the lobby, open the page, set Difficulty to Legendary,
         and play again: the bots play harder.
-     6. Set Count to 1: one bot leaves (its slot stays on the players
-        screen until the game exits). Set Clankers to Off: none play.
+     6. Set Count to 1: one bot leaves. In a game it stands idle until
+        the game ends (no "controller disconnected"); in the menus the log
+        says `bots: signing the bots on ports [2] out`, then `bots: bot N
+        left: its pad is unplugged`. Set Clankers to Off: none play.
      7. Quit and start `h2 play` again: the page shows what you left it
         at; `h2 settings` lists the `clankers.*` values.
      8. Send the `clankers:` and `ui:` log lines if the row is missing,

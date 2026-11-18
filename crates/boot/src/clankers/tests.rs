@@ -423,6 +423,11 @@ fn the_page_has_a_row_per_setting_and_its_steps_are_saved() {
     let p = page(Arc::clone(&s));
     assert_eq!(p.count(), DEFS.len());
     assert!(p.slots() <= IDS.len, "the family holds every text");
+    // The Game Setup row says "Clanker Options..."; the page is "Clankers".
+    let row = p.row_label_id();
+    assert_ne!(row, p.title());
+    assert!(IDS.owns(row) && IDS.owns(p.title()));
+    assert_eq!(ROW_LABEL, "Clanker Options...");
     let line = p.sideways(0, true).unwrap();
     assert!(line.contains("clankers.enabled -> On"), "{line}");
     assert_eq!(s.get(ENABLED.key), Some(Value::Bool(true)));

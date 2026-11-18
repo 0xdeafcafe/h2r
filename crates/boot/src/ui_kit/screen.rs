@@ -224,6 +224,8 @@ pub struct KitScreen {
     feature: &'static str,
     name: &'static str,
     title: String,
+    /// The text of a row elsewhere that opens it ([`KitScreen::row_label`]).
+    row_label: Option<String>,
     rows: Vec<Row>,
     layout: Option<ListLayout>,
     style: ValueStyle,
@@ -247,6 +249,7 @@ impl KitScreen {
             feature,
             name,
             title: title.into(),
+            row_label: None,
             rows: Vec::new(),
             layout: None,
             style: ValueStyle::Column,
@@ -295,9 +298,26 @@ impl KitScreen {
         self.scrolls = true;
         self
     }
+    /// The text of a row on another screen that opens this one ("Clanker
+    /// Options..."), in a slot of its own after the footer, so the title
+    /// keeps its name ([`KitScreen::row_label_id`]).
+    pub fn row_label(mut self, text: &str) -> Self {
+        self.row_label = Some(text.into());
+        self
+    }
+    /// The string id of the opening row's text: the [`KitScreen::row_label`]
+    /// slot, or the title's when there is none. Written with the other
+    /// texts ([`Rows::write_texts`]).
+    pub fn row_label_id(&self) -> u32 {
+        match &self.row_label {
+            Some(text) => self.texts.set(self.footer_slot() + 1, text),
+            None => self.title(),
+        }
+    }
 
     // Slots: 0 the title, then a label and a value per row, then a
-    // description per row.
+    // description per row, the footer, and the opening row's text when
+    // there is one.
     fn label_slot(row: usize) -> u32 {
         1 + 2 * row as u32
     }
@@ -310,7 +330,7 @@ impl KitScreen {
     /// The slots the screen needs: fails the build of its class when its
     /// family is too small.
     pub fn slots(&self) -> u32 {
-        self.footer_slot() + 1
+        self.footer_slot() + 1 + u32::from(self.row_label.is_some())
     }
     fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         m.lock().unwrap_or_else(|e| e.into_inner())
@@ -669,6 +689,26 @@ mod tests {
             s.spec().footer_text().unwrap(),
             "\u{e10a}  \u{e10b} CHANGE  \u{e100} START  \u{e101} BACK"
         );
+        assert!(s.slots() <= IDS.len);
+    }
+
+    #[test]
+    fn an_opening_rows_text_has_its_own_slot_and_the_title_keeps_its_name() {
+        let (s, _) = example();
+        assert_eq!(s.row_label_id(), s.title(), "none: the title's");
+        let before = s.slots();
+        let s = s.row_label("Example Options...");
+        assert_eq!(s.slots(), before + 1);
+        let id = s.row_label_id();
+        assert_eq!(id, IDS.id(before));
+        assert_ne!(id, s.title());
+        let t = |id: u32| {
+            let slots = s.texts.slots.lock().unwrap();
+            let b = &slots[(id - IDS.base) as usize].0;
+            String::from_utf8_lossy(&b[..b.len() - 1]).into_owned()
+        };
+        assert_eq!(t(id), "Example Options...");
+        assert_eq!(t(s.title()), s.title);
         assert!(s.slots() <= IDS.len);
     }
 

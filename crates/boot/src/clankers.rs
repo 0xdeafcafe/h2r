@@ -201,9 +201,13 @@ static ROWS: [ChoiceRow; 7] = [
     ChoiceRow::new(&TAUNTS, "Taunts", "Whether they taunt after a kill."),
 ];
 
+/// The Game Setup row's text; the page's title stays "Clankers".
+pub const ROW_LABEL: &str = "Clanker Options...";
+
 /// The Clankers page over `store`.
 pub fn page(store: Arc<Store>) -> KitScreen {
     let mut s = KitScreen::new(FEATURE, SCREEN, IDS, "Clankers")
+        .row_label(ROW_LABEL)
         .layout(crate::skulls_menu::LIST_LAYOUT, ValueStyle::Inline)
         .description(crate::skulls_menu::DESCRIPTION_TEXT)
         // Seven rows in a list that shows five.
@@ -923,9 +927,9 @@ fn row_text(c: &mut Call, page: &KitScreen, seen: &AtomicBool) -> Result<Flow, G
         let Some(item) = item.filter(|_| action == Some(ROW_ACTION)) else {
             return Ok(Flow::Continue);
         };
-        // The row says the page's title, from its first text slot, written
-        // before it is drawn.
-        let id = page.title();
+        // The row's own text ("Clanker Options..."), from its slot after the
+        // page's footer, written before it is drawn.
+        let id = page.row_label_id();
         if let Err(e) = page.write_texts(&mut *mem) {
             eprintln!("clankers: the row's text: {e:?}");
         }
