@@ -39,6 +39,7 @@ pub mod precision;
 pub mod render_probe;
 pub mod render_thread;
 pub mod host_perf;
+pub mod hot_glue;
 pub mod sampling;
 pub mod icons;
 pub mod layout_glue;
@@ -1038,6 +1039,17 @@ pub fn run_hosted_with_live(
         Some(path) => Some(agent_glue::AgentGlue::install(&mut features, path, xa.as_deref(), input_replay)?),
         None => None,
     };
+    // edit.* and render.* on the agent (hot_glue.rs, docs/graphics/hot-iteration.md).
+    if let Some(a) = &agent {
+        let maps = k.vfs().map(|vfs| -> hot_glue::MapLocator {
+            Box::new(move |map| {
+                let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
+                let file = v.host_file(&format!("\\Device\\CdRom0\\maps\\{map}.map"))?;
+                Some(telemetry::MapFile { path: file.path, offset: file.offset, len: file.len })
+            })
+        });
+        hot_glue::install(&a.agent, &loaded.runtime, maps);
+    }
     // The Rust datum, tag and locale functions, when H2_FEATURES has
     // impl.engine=on (off by default).
     features.add(&feature::leaves::EngineLeaves).map_err(|e| anyhow::anyhow!("engine leaves: {e}"))?;

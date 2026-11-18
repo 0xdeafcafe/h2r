@@ -65,6 +65,7 @@ goals, the two-stage plan, the crate table and milestones.
 - [occlusion-culling.md](graphics/occlusion-culling.md): how a view's objects are chosen, the per-object skip point, and Hi-Z occlusion culling against the previous frame's depth (`impl.render.occlusion`)
 - [pipelined-render.md](graphics/pipelined-render.md): the render front-end one frame behind the simulation on its own thread: design, and the `render-census` that decides it
 - [layer-draw.md](graphics/layer-draw.md): the layer draw and its entry loop, read and ported, with the `render-timing` breakdown
+- [hot-iteration.md](graphics/hot-iteration.md): live tag edits (`edit.*`) and hot WGSL overrides, parameters and toggles for the host renderer (`render.*`), without a rebuild or restart
 - [high-resolution.md](graphics/high-resolution.md): 4K and other internal resolutions (`H2_RENDER_SCALE`, the Resolution row); phases 1 and 2 built
 - [e3-lighting.md](graphics/e3-lighting.md): design for E3 2003-style stencil shadows and per-pixel lighting; phases 1 and 3 built (`H2_LIGHTING`, the Lighting row: sharper one-tap shadow maps at the render scale)
 - [pstencil.md](graphics/pstencil.md): the Digsite E3 tag set's lights (study copies, never committed), corrections to earlier readings of them, and why shadows stay shadow maps rather than stencil volumes
