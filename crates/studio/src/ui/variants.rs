@@ -201,8 +201,8 @@ pub fn settings(ui: &Ui, app: &App, st: &mut VariantsUi, fonts: &Fonts, actions:
                 }
             }
         }
-        if let Some(x) = more_options(ui, v) {
-            actions.push(Action::SetVariantExt(x));
+        if let Some(a) = more_options(ui, v) {
+            actions.push(a);
         }
     });
     disabled.end();
@@ -211,9 +211,9 @@ pub fn settings(ui: &Ui, app: &App, st: &mut VariantsUi, fonts: &Fonts, actions:
 /// Our options the record has no field for, in its extension block
 /// (docs/game/game-options.md section 3). Only the ones the game applies
 /// are shown (gravity, unlimited grenades); the rest arrive with their
-/// slices. Returns the new options
-/// when the user changed one.
-fn more_options(ui: &Ui, v: &GameVariant) -> Option<Ext> {
+/// slices. Team count (setting 93) is a record field with no retail row,
+/// shown here too. Returns the action for what the user changed.
+fn more_options(ui: &Ui, v: &GameVariant) -> Option<Action> {
     if !ui.collapsing_header("More options (h2recomp)##variant-ext", TreeNodeFlags::NONE) {
         return None;
     }
@@ -269,7 +269,41 @@ fn more_options(ui: &Ui, v: &GameVariant) -> Option<Ext> {
     if ui.checkbox("##ext-grenades", &mut on) {
         next.unlimited_grenades = on;
     }
-    (next != now).then_some(next)
+    let teams = team_count_row(ui, v);
+    if next != now {
+        return Some(Action::SetVariantExt(next));
+    }
+    teams.map(|t| Action::SetSetting(record::TEAM_COUNT, t))
+}
+
+/// Team count (setting 93, `+0xb4`): how many teams the game makes,
+/// capped by the map's; 0 is the map's own (docs/game/game-options.md,
+/// "Team count"). The new value when changed.
+fn team_count_row(ui: &Ui, v: &GameVariant) -> Option<i32> {
+    ui.table_next_row();
+    ui.table_next_column();
+    ui.align_text_to_frame_padding();
+    ui.text("Team count");
+    ui.set_item_tooltip(
+        "How many teams a team game makes, at most the map's. The game's \
+         own editor has no row for it. Played by every build.",
+    );
+    ui.table_next_column();
+    ui.set_next_item_width(-1.0);
+    let now = v.get(record::TEAM_COUNT).unwrap_or(0);
+    let label = |t: i32| match t {
+        0 => "Map default".to_string(),
+        t => t.to_string(),
+    };
+    let mut out = None;
+    if let Some(_c) = ui.begin_combo("##team-count", label(now)) {
+        for t in record::TEAM_COUNTS {
+            if ui.selectable_config(label(t)).selected(t == now).build() && t != now {
+                out = Some(t);
+            }
+        }
+    }
+    out
 }
 
 /// Keeps a typed name within the record's limit.

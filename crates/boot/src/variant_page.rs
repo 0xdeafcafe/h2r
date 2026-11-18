@@ -20,9 +20,11 @@
 //! text, and writes it back after a change ([`Rows::live_text`]), so the
 //! game's editor saves it with the record.
 //!
-//! **Which options.** Only those the game applies: gravity (slice 3) and
-//! unlimited grenades (slice 5). The others join the page with their
-//! slices.
+//! **Which options.** Only those the game applies: gravity (slice 3),
+//! unlimited grenades and the team count (slice 5). The others join the
+//! page with their slices. The team count is a retail field with no
+//! retail row (setting 93, [`variants::record::TEAM_COUNT`]), so its row
+//! writes the record's `+0xb4` rather than the block.
 
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -77,12 +79,41 @@ const GRENADES_LABELS: u32 = GRAVITY_LABELS + GRAVITY_STEPS.len() as u32 + 1;
 pub const GRENADES_DESCRIPTION: &str = "Grenades never run out: everyone keeps at least four of each. \
      Not on System Link.";
 
+pub const TEAMS_DESCRIPTION_ID: u32 = IDS.id(GRENADES_LABELS + 2);
+const TEAMS_LABELS: u32 = GRENADES_LABELS + 3;
+pub const TEAMS_DESCRIPTION: &str = "How many teams a team game makes, at most the map's. \
+     Every build plays it.";
+
 /// The page's rows.
 pub const GRAVITY_ROW: i16 = 0;
 pub const GRENADES_ROW: i16 = 1;
-pub const ROWS: usize = 2;
+pub const TEAMS_ROW: i16 = 2;
+pub const ROWS: usize = 3;
 
-const _: () = assert!(GRENADES_LABELS + 2 <= IDS.len);
+/// The team count in the edited record (`+0xb4`, an i32).
+pub const EDITED_TEAMS: u32 = EDITED_VARIANT + 0xb4;
+const TEAM_COUNTS: [i32; 8] = variants::record::TEAM_COUNTS;
+
+const _: () = assert!(TEAMS_LABELS + TEAM_COUNTS.len() as u32 <= IDS.len);
+
+/// The step of team count `t`: its place in [`TEAM_COUNTS`], or 2 teams
+/// for a value we don't offer (1).
+pub fn teams_step(t: i32) -> usize {
+    TEAM_COUNTS.iter().position(|&c| c == t).unwrap_or(1)
+}
+
+/// The label id of team count step `i`.
+pub fn teams_label_id(i: usize) -> u32 {
+    IDS.id(TEAMS_LABELS + i as u32)
+}
+
+/// Team count step `i`'s label: "Team Count: < 4 >".
+pub fn teams_label(i: usize) -> String {
+    match TEAM_COUNTS[i] {
+        0 => "Team Count: < Map Default >".into(),
+        t => format!("Team Count: < {t} >"),
+    }
+}
 
 /// The label id of the grenades row, off or on.
 pub fn grenades_label_id(on: bool) -> u32 {
@@ -131,6 +162,10 @@ pub fn strings() -> Vec<(u32, String)> {
     v.push((GRENADES_DESCRIPTION_ID, GRENADES_DESCRIPTION.to_string()));
     for on in [false, true] {
         v.push((grenades_label_id(on), grenades_label(on)));
+    }
+    v.push((TEAMS_DESCRIPTION_ID, TEAMS_DESCRIPTION.to_string()));
+    for i in 0..TEAM_COUNTS.len() {
+        v.push((teams_label_id(i), teams_label(i)));
     }
     v
 }
@@ -290,6 +325,9 @@ pub struct Page {
     block: Mutex<[u8; ext::LEN]>,
     /// An edit not yet written to the record.
     dirty: AtomicBool,
+    /// The record's team count (`+0xb4`), with our edit.
+    teams: Mutex<i32>,
+    teams_dirty: AtomicBool,
 }
 
 impl Default for Page {
@@ -297,6 +335,8 @@ impl Default for Page {
         Self {
             block: Mutex::new([0; ext::LEN]),
             dirty: AtomicBool::new(false),
+            teams: Mutex::new(0),
+            teams_dirty: AtomicBool::new(false),
         }
     }
 }
@@ -348,6 +388,46 @@ impl Page {
         format!("variant options: gravity {was}% -> {}%", e.gravity)
     }
 
+    /// The record's team count, as shown.
+    pub fn teams(&self) -> i32 {
+        *self.teams.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The record's team count, read into the page (unless an edit is
+    /// pending).
+    pub fn read_teams(&self, t: i32) {
+        if !self.teams_dirty.load(Ordering::SeqCst) {
+            *self.teams.lock().unwrap_or_else(|e| e.into_inner()) = t;
+        }
+    }
+
+    /// The team count write the record needs, once per edit.
+    pub fn pending_teams(&self) -> Option<i32> {
+        self.teams_dirty
+            .swap(false, Ordering::SeqCst)
+            .then(|| self.teams())
+    }
+
+    /// Steps the team count as gravity steps. What to log.
+    pub fn step_teams(&self, up: bool, wrap: bool) -> String {
+        let mut t = self.teams.lock().unwrap_or_else(|e| e.into_inner());
+        let i = teams_step(*t);
+        let n = TEAM_COUNTS.len();
+        let j = match (up, wrap) {
+            (true, true) => (i + 1) % n,
+            (false, true) => (i + n - 1) % n,
+            (true, false) => (i + 1).min(n - 1),
+            (false, false) => i.saturating_sub(1),
+        };
+        let was = *t;
+        if TEAM_COUNTS[j] == was {
+            return format!("variant options: team count stays {was}");
+        }
+        *t = TEAM_COUNTS[j];
+        self.teams_dirty.store(true, Ordering::SeqCst);
+        format!("variant options: team count {was} -> {}", *t)
+    }
+
     /// Turns unlimited grenades on or off. What to log.
     pub fn toggle_grenades(&self) -> String {
         let mut b = self.block.lock().unwrap_or_else(|e| e.into_inner());
@@ -379,6 +459,7 @@ impl Rows for Page {
                 LABEL_SLOT,
                 grenades_label_id(self.ext().unlimited_grenades),
             )],
+            TEAMS_ROW => vec![(LABEL_SLOT, teams_label_id(teams_step(self.teams())))],
             _ => Vec::new(),
         }
     }
@@ -386,6 +467,7 @@ impl Rows for Page {
         match row {
             GRAVITY_ROW => Chosen::Stepped(self.step_gravity(true, true)),
             GRENADES_ROW => Chosen::Stepped(self.toggle_grenades()),
+            TEAMS_ROW => Chosen::Stepped(self.step_teams(true, true)),
             _ => Chosen::Nothing,
         }
     }
@@ -393,6 +475,7 @@ impl Rows for Page {
         match row {
             GRAVITY_ROW => Some(self.step_gravity(right, false)),
             GRENADES_ROW => Some(self.toggle_grenades()),
+            TEAMS_ROW => Some(self.step_teams(right, false)),
             _ => None,
         }
     }
@@ -400,32 +483,42 @@ impl Rows for Page {
         match row {
             GRAVITY_ROW => Some(GRAVITY_DESCRIPTION_ID),
             GRENADES_ROW => Some(GRENADES_DESCRIPTION_ID),
+            TEAMS_ROW => Some(TEAMS_DESCRIPTION_ID),
             _ => None,
         }
     }
     /// An edit goes to the record before the row is drawn again.
     fn live_text(&self) -> LiveText {
+        let mut writes = Vec::new();
+        if let Some(b) = self.pending() {
+            writes.push((EDITED_BLOCK, b.to_vec()));
+        }
+        if let Some(t) = self.pending_teams() {
+            writes.push((EDITED_TEAMS, t.to_le_bytes().to_vec()));
+        }
         LiveText {
-            writes: self
-                .pending()
-                .map(|b| vec![(EDITED_BLOCK, b.to_vec())])
-                .unwrap_or_default(),
+            writes,
             redraw: false,
         }
     }
-    /// Reads the record's block (when the page opens and at each row text).
+    /// Reads the record's block and team count (when the page opens and
+    /// at each row text).
     fn write_texts(&self, m: &mut dyn GuestMemory) -> Result<(), MemFault> {
         let mut b = [0u8; ext::LEN];
         m.read(EDITED_BLOCK, &mut b)?;
         self.read(b);
+        let mut t = [0u8; 4];
+        m.read(EDITED_TEAMS, &mut t)?;
+        self.read_teams(i32::from_le_bytes(t));
         Ok(())
     }
     fn describe(&self, _count: usize) -> Option<String> {
         let e = self.ext();
         Some(format!(
-            "\"{TITLE}\"; rows: [0] \"{}\", [1] \"{}\"",
+            "\"{TITLE}\"; rows: [0] \"{}\", [1] \"{}\", [2] \"{}\"",
             gravity_label(nearest_step(e.gravity)),
-            grenades_label(e.unlimited_grenades)
+            grenades_label(e.unlimited_grenades),
+            teams_label(teams_step(self.teams()))
         ))
     }
 }
@@ -473,6 +566,21 @@ impl crate::ui_kit::spec::Describe for Page {
                 .press(Press::Step)
                 .describe(GRENADES_DESCRIPTION)
                 .ids(&[grenades_label_id(on), GRENADES_DESCRIPTION_ID]),
+        );
+        let choices: Vec<String> = TEAM_COUNTS
+            .iter()
+            .map(|&t| match t {
+                0 => "Map Default".into(),
+                t => t.to_string(),
+            })
+            .collect();
+        let choices: Vec<&str> = choices.iter().map(String::as_str).collect();
+        let i = teams_step(self.teams());
+        s.rows.push(
+            RowSpec::value("Team Count", &choices, i)
+                .press(Press::Step)
+                .describe(TEAMS_DESCRIPTION)
+                .ids(&[teams_label_id(i), TEAMS_DESCRIPTION_ID]),
         );
         s
     }
@@ -605,7 +713,7 @@ mod tests {
         assert_eq!(p.texts(0), [(LABEL_SLOT, gravity_label_id(2))]);
         p.sideways(0, true);
         assert_eq!(p.ext().gravity, 75);
-        assert_eq!(p.press(2), Chosen::Nothing);
+        assert_eq!(p.press(3), Chosen::Nothing);
     }
 
     /// The grenades row toggles the flag, beside gravity, and off again
@@ -614,7 +722,7 @@ mod tests {
     fn the_grenades_row_toggles_the_flag() {
         let p = Page::new();
         p.read([0; ext::LEN]);
-        assert_eq!(p.count(), 2);
+        assert_eq!(p.count(), ROWS);
         assert_eq!(
             p.texts(GRENADES_ROW),
             [(LABEL_SLOT, grenades_label_id(false))]
@@ -636,6 +744,43 @@ mod tests {
         assert!(p.describe(2).unwrap().contains("Unlimited Grenades: < Off >"));
     }
 
+    /// The team count row edits the record's `+0xb4`, not the block, and
+    /// steps through the counts we offer.
+    #[test]
+    fn the_team_count_row_edits_the_records_field() {
+        assert_eq!(EDITED_TEAMS, 0x0054_e554);
+        let p = Page::new();
+        p.read_teams(0);
+        assert_eq!(p.count(), 3);
+        assert_eq!(p.texts(TEAMS_ROW), [(LABEL_SLOT, teams_label_id(0))]);
+        assert_eq!(p.description(TEAMS_ROW), Some(TEAMS_DESCRIPTION_ID));
+        assert!(p.sideways(TEAMS_ROW, false).unwrap().contains("stays 0"));
+        assert!(p.sideways(TEAMS_ROW, true).unwrap().contains("0 -> 2"));
+        // A read meanwhile keeps the edit.
+        p.read_teams(0);
+        let w = p.live_text().writes;
+        assert_eq!(w, vec![(EDITED_TEAMS, 2i32.to_le_bytes().to_vec())]);
+        assert_eq!(p.pending(), None, "the block is untouched");
+        assert!(p.live_text().writes.is_empty(), "once");
+        for _ in 0..10 {
+            p.sideways(TEAMS_ROW, true);
+        }
+        assert_eq!(p.teams(), 8);
+        assert!(matches!(p.press(TEAMS_ROW), Chosen::Stepped(_)));
+        assert_eq!(p.teams(), 0, "A wraps round to the map's");
+        // A stored 1 (not offered) shows as 2 and steps from there.
+        let p = Page::new();
+        p.read_teams(1);
+        assert_eq!(p.texts(TEAMS_ROW), [(LABEL_SLOT, teams_label_id(1))]);
+        p.sideways(TEAMS_ROW, true);
+        assert_eq!(p.teams(), 3);
+        // Both edits go out together.
+        p.toggle_grenades();
+        assert_eq!(p.live_text().writes.len(), 2);
+        assert_eq!(teams_label(0), "Team Count: < Map Default >");
+        assert_eq!(teams_label(3), "Team Count: < 4 >");
+    }
+
     #[test]
     fn strings_are_ours_and_distinct() {
         let v = strings();
@@ -649,6 +794,7 @@ mod tests {
         assert_eq!(gravity_label(4), "Gravity: < Normal >");
         assert!(GRAVITY_DESCRIPTION.encode_utf16().count() <= 120);
         assert!(GRENADES_DESCRIPTION.encode_utf16().count() <= 120);
+        assert!(TEAMS_DESCRIPTION.encode_utf16().count() <= 120);
         assert_eq!(grenades_label(true), "Unlimited Grenades: < On >");
         for g in GRAVITY_STEPS {
             assert!(ext::GRAVITY.contains(&g));

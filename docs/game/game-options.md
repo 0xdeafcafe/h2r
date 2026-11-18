@@ -254,7 +254,7 @@ offer is.
 | Player speed for everyone | needs the extension | only Juggernaut and ball carrier speed exist (i16 0..2); the movement scale is not traced |
 | Unlimited grenades | needs the extension (built, slice 5) | only a starting on/off bit; the host keeps every player's unit at four or more of each type each tick (the unit's counts at `+0x23e`, as the Unlimited Grenades skull) |
 | Mixed vehicle sets | mostly offered; some storable | each slot (light, second light, heavy, flying, two turrets) is its own byte, so mixes exist today; values in range but not offered (75: 2; 76, 77: 4; 79: 2, 3; 81, 82: 2, 3; 83: 18) and setting 80 (no row, `+0xd0` 0..4) are not traced and are not offered until they are; a vehicle outside the sets needs the extension and a placement hook |
-| Team count | storable (setting 93, `+0xb4` 0..8) | the retail editor has no row for it; a row on our "More Options" page |
+| Team count | storable (setting 93, `+0xb4` 0..8; built, slice 5) | the retail editor has no row for it; a row on our "More Options" page and in Studio. Traced: the team set builder `0x157790` reads `[G+0x1f0]`, takes 0 as 8, caps it at the map's teams (`[[0x4e9ae8]+4]`, a mask) and adds the lowest unused teams to the players' until there are that many; the mask goes to `[[0x4e9ae8]+6]` |
 | Team size | needs the extension | nothing in the record; the lobby would have to enforce it |
 | More than 16 players | impossible | the engine's player limit |
 
@@ -415,6 +415,14 @@ guests"):
   `+0x23e`). The host's counts are the game's and replicate, so a guest
   writes nothing. Row 1 of "More Options" ("Unlimited Grenades: < Off >",
   left, right and A toggle) and a Studio checkbox.
+- **Team count** (slice 5, built): a retail field (setting 93, `+0xb4`)
+  with no retail row. Row 2 of "More Options" ("Team Count: < Map
+  Default >", then 2 to 8; 1 is storable but not offered and shows as 2)
+  writes the edited record's `+0xb4` (`0x54e554`) rather than the block;
+  Studio has a "Team count" box (`record::TEAM_COUNT`, `TEAM_COUNTS`).
+  Every build plays it: it is the game's own field. Whether the game's
+  wire carries it to guests is not traced (the codec's fields aren't
+  pinned); only the host builds the team set, as far as the trace shows.
 - **The stats site** today records only the engine name (`GameStarted`'s
   `variant`). Adding the variant's name and a summary of the extension
   ("Gravity 50%") to `GameStarted` is a later Live slice.
@@ -743,6 +751,11 @@ After slice 5 (unlimited grenades):
 9b. The same over Live (both on this build): host and guest both keep
     four of each (the host tops up the guest's unit). On System Link:
     normal grenades.
+9c. More Options' third row, "Team Count: < Map Default >": set 3, save,
+    and start a Team Slayer on a map with more teams. Players spread over
+    at most three teams; note what the lobby's team switch offers (not
+    traced). Studio shows "Team count" 3. Over Live, note whether the
+    guests see three teams too.
 
 After slices 6 to 8:
 
@@ -874,9 +887,10 @@ After slices 6 to 8:
   page's second row (`variant_page::GRENADES_ROW`, strings in the
   "variant page" family), Studio's checkbox. `Ext::summary` already said
   "Unlimited grenades".
+- Team count: `variants::record::{TEAM_COUNT, TEAM_COUNTS}`, the page's
+  third row (`variant_page::TEAMS_ROW`, `EDITED_TEAMS`), Studio's box.
 - Not yet: damage, shield, health and speed scales (the code is not
-  traced), weapons outside the editor's list, team size, the team count
-  row.
+  traced), weapons outside the editor's list, team size.
 
 ## Tests
 
@@ -910,7 +924,9 @@ tests:
 
 Slice 5 so far: `boot` `variant_ext::grenades_are_topped_by_a_lone_machine_or_the_host_never_a_guest`,
 `skulls_custom::tests::a_variants_unlimited_grenades_reach_every_players_unit`,
-`variant_page::tests::the_grenades_row_toggles_the_flag`.
+`variant_page::tests::the_grenades_row_toggles_the_flag`,
+`variant_page::tests::the_team_count_row_edits_the_records_field`,
+`variants` `record::tests::every_offered_team_count_is_kept`.
 
 Older builds: `live-proto`
 `presence_carries_a_build_and_capabilities_checked_and_optional`,
