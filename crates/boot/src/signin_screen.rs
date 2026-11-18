@@ -519,6 +519,60 @@ pub fn sample_spec() -> ScreenSpec {
     spec_for(Some(&p), &CodeEntry::default(), 0)
 }
 
+/// The prompt's pages for the preview sheet, by name: the code page empty,
+/// typed and refused, checking, the new-account pages, and the end states.
+pub fn sample_states() -> Vec<(String, ScreenSpec)> {
+    use live_hle::account_setup::SetupError;
+    let p = |phase: Phase| Prompt {
+        gamertag: "Chief".into(),
+        server_url: "https://live.example.net/".into(),
+        controller: 0,
+        phase,
+    };
+    let empty = CodeEntry::default();
+    let mut typed = CodeEntry::default();
+    for press in [
+        Press::Up,
+        Press::Up,
+        Press::Right,
+        Press::Down,
+        Press::Right,
+    ] {
+        typed.press(&Phase::Code { error: None }, press);
+    }
+    let code = |error| Phase::Code { error };
+    [
+        ("code", code(None), &empty),
+        ("code-typed", code(None), &typed),
+        (
+            "code-wrong",
+            code(Some(SetupError::WrongCodeLeft { left: 2 })),
+            &typed,
+        ),
+        (
+            "code-unreachable",
+            code(Some(SetupError::Unreachable)),
+            &typed,
+        ),
+        ("checking", Phase::Working, &typed),
+        ("gamertag", Phase::Gamertag { error: None }, &empty),
+        (
+            "gamertag-bad",
+            Phase::Gamertag {
+                error: Some(SetupError::BadGamertag),
+            },
+            &empty,
+        ),
+        ("invite", Phase::Invite { error: None }, &empty),
+        ("create", Phase::Create { error: None }, &empty),
+        ("done", Phase::Done, &empty),
+        ("cancelled", Phase::Cancelled, &empty),
+    ]
+    .into_iter()
+    .map(|(name, phase, entry)| (name.to_string(), spec_for(Some(&p(phase)), entry, 0)))
+    .collect()
+}
+
 impl Describe for SigninRows {
     fn spec(&self) -> ScreenSpec {
         let now = std::time::SystemTime::now()

@@ -231,6 +231,32 @@ pub const NAMES: [&str; 8] = [
     "kit.example",
 ];
 
+/// Every named state of screen `name` for the preview sheet: a list's
+/// first, middle and last row focused; the sign-in prompt's pages.
+pub fn states(name: &str) -> Option<Vec<(String, ScreenSpec)>> {
+    if name == crate::signin_screen::SCREEN {
+        return Some(crate::signin_screen::sample_states());
+    }
+    let s = sample(name)?;
+    let n = s.rows.len();
+    let mut focus = vec![0, n / 2, n.saturating_sub(1)];
+    focus.dedup();
+    Some(
+        focus
+            .into_iter()
+            .map(|f| {
+                (
+                    format!("focus-{f}"),
+                    ScreenSpec {
+                        focus: f,
+                        ..s.clone()
+                    },
+                )
+            })
+            .collect(),
+    )
+}
+
 /// A sample of screen `name`: the skulls pages for a profile with a few
 /// skulls collected and one turned off, the co-op screens with no Live,
 /// the sign-in prompt at its code page, the account menu, and the kit's
@@ -326,6 +352,32 @@ mod tests {
         assert_eq!(k["prompts"][0]["glyphs"][0], "DpadLeft");
     }
 
+    /// Without a disc: every screen in every state drawn from the synthetic
+    /// source, a PNG and a JSON each, and the sheet.
+    #[test]
+    fn every_state_draws_without_a_disc() {
+        let dir = std::env::temp_dir().join(format!("h2-ui-sheet-{}", std::process::id()));
+        let from = crate::ui_kit::preview::From::Synthetic;
+        let sheet = crate::ui_kit::preview::write_sheet(&from, &dir).unwrap();
+        assert!(sheet.exists());
+        let json: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(dir.join("signin-code-code-wrong.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(json["state"], "code-wrong");
+        assert!(
+            json["widgets"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|w| w["id"] == "title")
+        );
+        for name in NAMES {
+            assert!(!states(name).unwrap().is_empty(), "{name}");
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// With the disc (`disc/halo2.iso`, or `H2_DISC`): every screen checked
     /// against the real list geometry and fonts, and, with
     /// `H2_UI_PREVIEW_DIR` set, drawn there. Skipped without a disc.
@@ -341,6 +393,19 @@ mod tests {
             return;
         }
         let disc = crate::ui_kit::preview::Disc::open(&iso).unwrap();
+        // The geometry without a disc is the disc's, layout for layout.
+        for name in ["coop", "skulls"] {
+            let place = sample(name).unwrap().list;
+            let d = disc.geometry(place).unwrap();
+            let f = crate::ui_kit::view::Geometry::fallback(place);
+            assert_eq!(f, d, "{name}: Geometry::fallback differs from the disc");
+        }
+        if let Some(dir) = std::env::var_os("H2_UI_SHEET_DIR") {
+            let from = crate::ui_kit::preview::From::Disc(&disc);
+            let path =
+                crate::ui_kit::preview::write_sheet(&from, std::path::Path::new(&dir)).unwrap();
+            eprintln!("wrote {}", path.display());
+        }
         let out = std::env::var_os("H2_UI_PREVIEW_DIR").map(std::path::PathBuf::from);
         let mut report = Vec::new();
         for name in NAMES {
