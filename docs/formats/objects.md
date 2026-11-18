@@ -148,6 +148,12 @@ because their stride is either unproven or only an upper bound.
 
 - The resource preparation at `0x0011c840` passes `bipd +0x264` and
   `crea +0xd4` to `0x001c2390`, so both offsets hold the same embedded structure.
+  `0x001c2390` writes the Havok headers of that structure's shapes: its
+  `+0x20` block (`bipd +0x284`, `0x80` each: a sphere at `+0x20`, a
+  transform at `+0x30` whose child pointer `+0x3c` is the sphere), `+0x28`
+  (`+0x28c`, `0x50` each: a pill at `+0x20`) and `+0x30` (`+0x294`, as
+  `+0x20`). The sizes they are built from are in tag-definitions.md
+  ("Bipeds from definitions").
 - The same code passes `vehi +0x2ac` to `0x00205550`.
 
 ## `hlmt` object models

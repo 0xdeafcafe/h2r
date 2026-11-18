@@ -883,7 +883,7 @@ fn built_physics_model_round_trips_with_every_piece() {
         node("a", 0, 2, -1),
         node("b", 0, -1, -1),
     ];
-    let root = physics_model(&bodies, &nodes).unwrap();
+    let root = physics_model(&bodies, &nodes, crate::rebuild::DEVICE_BODY).unwrap();
     let def = Defs::builtin().group(map::FourCC(*b"phmo")).unwrap();
     let got = defs::from_built(def, &root).unwrap();
     let again = defs::to_built(def, &got, &mut |_| None).unwrap();
@@ -1023,6 +1023,7 @@ fn rebuilt_biped_is_the_role_with_halo_1s_header_and_words() {
             .map(|w| (w.1, (w.1 as f32).to_bits()))
             .collect(),
         seats: Vec::new(),
+        size: None,
         references: Vec::new(),
     };
     let role = RoleWords {
@@ -1040,7 +1041,14 @@ fn rebuilt_biped_is_the_role_with_halo_1s_header_and_words() {
     let hlmt = map::TagId(0xe001_0002);
     let mode = map::TagId(0xe001_0003);
     let predicted = [crate::rebuild::Predicted::RenderModel(mode)];
-    let root = crate::rebuild::biped(&unit, Some(hlmt), &predicted, &role).unwrap();
+    let root = crate::rebuild::biped(
+        &unit,
+        Some(hlmt),
+        &predicted,
+        &role,
+        &crate::rebuild::BipedParts::default(),
+    )
+    .unwrap();
     let d = Defs::builtin().group(map::FourCC(*b"bipd")).unwrap();
     let r = defs::from_built(d, &root).unwrap();
     let again = defs::to_built(d, &r, &mut |_| None).unwrap();
@@ -1066,4 +1074,105 @@ fn rebuilt_biped_is_the_role_with_halo_1s_header_and_words() {
         panic!()
     };
     assert_eq!(pr.len(), 1);
+}
+
+/// A rebuilt biped's character shapes follow Halo 1's collision size: the
+/// standing and crouching pills run from one radius up to the height less
+/// a radius, the three spheres rest on the ground at 1, 1.35 and 1.7
+/// radii; the HUD interfaces given replace the counterpart's; and the
+/// counterpart's references come with it, the model staying Halo 1's.
+#[test]
+fn rebuilt_biped_is_sized_to_halo_1_and_takes_its_counterparts_references() {
+    use crate::h1::BipedSize;
+    use crate::rebuild::{BIPD_HUD, BIPD_PILLS, BIPD_SPHERES, BipedParts, RoleWords};
+    use tags::defs::{self, Defs, Target, Val};
+    let d = Defs::builtin().group(map::FourCC(*b"bipd")).unwrap();
+    let size = BipedSize {
+        standing_height: 0.7,
+        crouching_height: 0.5,
+        radius: 0.2,
+    };
+    let unit = crate::h1::Unit {
+        group: h1map::Group::new(b"bipd"),
+        object: crate::h1::Object {
+            object_type: 0,
+            flags: 0,
+            bounding_radius: 0.7,
+            bounding_offset: [0.0; 3],
+            model: None,
+            animation: None,
+            collision: None,
+            physics: None,
+            modifier_shader: None,
+            creation_effect: None,
+            attachments: Vec::new(),
+            widgets: Vec::new(),
+        },
+        camera_field_of_view: 1.2,
+        biped_words: Vec::new(),
+        seats: Vec::new(),
+        size: Some(size),
+        references: Vec::new(),
+    };
+    // A counterpart with a foot reference, a camera track and a model.
+    let foot = map::TagId(0xe100_0010);
+    let track = map::TagId(0xe100_0011);
+    let mut c = defs::default_record(d);
+    c.set(
+        "unit.obje.foot_ref_54",
+        Val::tag(map::FourCC(*b"foot"), foot),
+    )
+    .unwrap();
+    c.set(
+        "unit.obje.model",
+        Val::tag(map::FourCC(*b"hlmt"), map::TagId(0xe100_0012)),
+    )
+    .unwrap();
+    let mut e = defs::default_record(d.child("unit.block_e8").unwrap());
+    e.set("ref_0", Val::tag(map::FourCC(*b"trak"), track))
+        .unwrap();
+    c.set("unit.block_e8", Val::Block(vec![e])).unwrap();
+    let hud = map::TagId(0xfffd_0007);
+    let hlmt = map::TagId(0xfffd_0001);
+    let parts = BipedParts {
+        counterpart: Some(c),
+        hud: Some(vec![hud, hud]),
+    };
+    let root =
+        crate::rebuild::biped(&unit, Some(hlmt), &[], &RoleWords::default(), &parts).unwrap();
+    let r = defs::from_built(d, &root).unwrap();
+    let id = |p: &str| match r.at(p) {
+        Some(Val::Ref {
+            target: Target::Id(id),
+            ..
+        }) => *id,
+        x => panic!("{p}: {x:?}"),
+    };
+    assert_eq!(id("unit.obje.model"), hlmt, "Halo 1's model");
+    assert_eq!(id("unit.obje.foot_ref_54"), foot);
+    assert_eq!(id("unit.block_e8[0].ref_0"), track);
+    assert_eq!(id(&format!("{BIPD_HUD}[1].ref_0")), hud);
+    let f = |p: &str| match r.at(p) {
+        Some(Val::Bytes(b)) => f32::from_le_bytes(b[..4].try_into().unwrap()),
+        x => panic!("{p}: {x:?}"),
+    };
+    assert_eq!(
+        [f("unknown_268"), f("unknown_26c"), f("unknown_270")],
+        [0.7, 0.5, 0.2]
+    );
+    let close = |a: f32, b: f32| (a - b).abs() < 1e-6;
+    for (i, top) in [0.5, 0.3].into_iter().enumerate() {
+        let p = format!("{BIPD_PILLS}[{i}]");
+        assert!(close(f(&format!("{p}.unknown_2c")), 0.2));
+        assert!(close(f(&format!("{p}.unknown_38")), top), "{p}");
+        assert!(close(f(&format!("{p}.unknown_48")), 0.2));
+        // The Havok header the engine writes stays zero.
+        assert_eq!(f(&format!("{p}.unknown_20")), 0.0);
+    }
+    for (i, k) in [1.0, 1.35, 1.7].into_iter().enumerate() {
+        let p = format!("{BIPD_SPHERES}[{i}]");
+        assert!(close(f(&format!("{p}.unknown_2c")), 0.2 * k));
+        assert!(close(f(&format!("{p}.unknown_78")), 0.2 * k));
+        assert_eq!(f(&format!("{p}.unknown_3c")), 0.0, "the child pointer");
+    }
 }
