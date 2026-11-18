@@ -22,6 +22,9 @@
 //! - **placement** (modals): the body at 72, a code page's body above the
 //!   main menu's logo, the cells at retail's height, a one-line status
 //!   under a one-line body ([`crate::ui_kit::dialog::placement`]).
+//! - **over the opener** (modals; flagged in [`Report::notes`], never
+//!   failed): a dialog text whose ink meets a text of the screen that
+//!   opened it ([`Note::OverOpener`]).
 //! - **contrast**: every text against what is drawn under it.
 //! - **legend**: a screen that takes more than up, down, A and B says
 //!   which buttons do what.
@@ -35,7 +38,7 @@ use tags::ui::Rect;
 use crate::ui_kit::input::Input;
 use crate::ui_kit::preview::{Canvas, Source, overflows, render_view_where};
 use crate::ui_kit::spec::ScreenSpec;
-use crate::ui_kit::view::{Art, Justify, Kind, Layer, Metrics, View, Widget};
+use crate::ui_kit::view::{Art, Backing, Justify, Kind, Layer, Metrics, View, Widget};
 
 /// What a view is held to.
 #[derive(Clone, Debug, PartialEq)]
@@ -220,6 +223,33 @@ impl fmt::Display for Issue {
 pub struct Report {
     pub issues: Vec<Issue>,
     pub skipped: Vec<&'static str>,
+    /// Flagged, not failed: see [`Note`].
+    pub notes: Vec<Note>,
+}
+
+/// What a check flags without failing the view.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Note {
+    /// A modal's text whose ink meets a text of the screen that opened
+    /// it. Flagged only: retail's own dialogs sit over the screen beneath
+    /// as it is, its texts included (the user's screenshot, 2026-11-18),
+    /// and the panel art is nearly transparent, so this says where the
+    /// two may read badly together rather than what is wrong.
+    OverOpener {
+        id: String,
+        opener: String,
+        text: String,
+    },
+}
+
+impl fmt::Display for Note {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Note::OverOpener { id, opener, text } => {
+                write!(f, "{id} is over the opener's {opener} ({text:?})")
+            }
+        }
+    }
 }
 
 /// `r`'s area, Y up.
@@ -352,6 +382,33 @@ fn opaque(w: &Widget, src: &dyn Source) -> Option<Mask> {
         }
     }
     Some((on, off))
+}
+
+/// The modal's texts (`texts`, with their ink) whose ink meets the ink of
+/// a text of `opener`, the screen beneath.
+fn over_opener(texts: &[(&Widget, Rect)], opener: Option<&View>, m: &dyn Metrics) -> Vec<Note> {
+    let Some(o) = opener else {
+        return Vec::new();
+    };
+    let theirs: Vec<(&Widget, Rect)> = o
+        .widgets
+        .iter()
+        .filter(|w| w.alpha > 0)
+        .filter_map(|w| ink(w, m).map(|r| (w, r)))
+        .collect();
+    let mut out = Vec::new();
+    for (w, r) in texts {
+        for (u, ur) in &theirs {
+            if area(intersect(*r, *ur)) > 0 {
+                out.push(Note::OverOpener {
+                    id: w.id.clone(),
+                    opener: u.id.clone(),
+                    text: u.text().unwrap_or_default().to_string(),
+                });
+            }
+        }
+    }
+    out
 }
 
 /// Runs every check on `v` drawn from `src`.
@@ -508,6 +565,10 @@ pub fn check(v: &View, src: &dyn Source, rules: &Rules) -> Report {
         for (id, rule) in crate::ui_kit::dialog::placement(v, src) {
             rep.issues.push(Issue::Placement { id, rule });
         }
+    }
+    if let Backing::Over(o) = v.backing {
+        rep.notes
+            .extend(over_opener(&texts, src.opener(&o).as_ref(), src));
     }
     for (name, area_r) in &rules.reserved {
         for w in &shown {
@@ -802,5 +863,62 @@ mod tests {
             art: "frame.1".into(),
             pixels: 200,
         }));
+    }
+
+    /// A dialog text over a text of its opener is flagged, never failed;
+    /// one clear of them is not.
+    #[test]
+    fn a_dialog_text_over_its_openers_text_is_a_note() {
+        use crate::ui_kit::view::{Justify, Opener};
+        let text = |id: &str, rect: [i16; 4]| Widget {
+            id: id.into(),
+            rect,
+            layer: Layer::Content,
+            alpha: 255,
+            kind: Kind::Text {
+                text: "Enter the code".into(),
+                font: 1,
+                justify: Justify::Left,
+                colour: [255, 255, 255],
+            },
+        };
+        let view = |w: Widget| View {
+            screen: "t".into(),
+            state: "s".into(),
+            backing: Backing::Over(Opener::MAIN_MENU),
+            widgets: vec![w],
+            focus: None,
+            list: None,
+        };
+        // The synthetic opener's rows sit from x -240, 30 apart from y 117;
+        // Xbox Live is row 1.
+        let over = check(
+            &view(text("body", [90, -243, 70, 255])),
+            &SyntheticSource,
+            &Rules::default(),
+        );
+        assert_eq!(
+            over.notes,
+            [Note::OverOpener {
+                id: "body".into(),
+                opener: "opener.row.1.label".into(),
+                text: "Xbox Live".into(),
+            }]
+        );
+        assert!(
+            !over.issues.iter().any(|i| i.to_string().contains("opener")),
+            "a note, not an issue"
+        );
+        let clear = check(
+            &view(text("body", [90, 0, 70, 255])),
+            &SyntheticSource,
+            &Rules::default(),
+        );
+        assert_eq!(clear.notes, []);
+        let none = View {
+            backing: Backing::None,
+            ..view(text("body", [90, -243, 70, 255]))
+        };
+        assert_eq!(check(&none, &SyntheticSource, &Rules::default()).notes, []);
     }
 }

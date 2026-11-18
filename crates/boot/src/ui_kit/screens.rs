@@ -578,6 +578,9 @@ mod tests {
                     &crate::ui_kit::layout::Rules::for_spec(&spec),
                 );
                 assert!(r.skipped.is_empty(), "{name}/{state}: {:?}", r.skipped);
+                for n in &r.notes {
+                    eprintln!("note: {name}/{state}: {n}");
+                }
                 issues.extend(
                     r.issues
                         .iter()

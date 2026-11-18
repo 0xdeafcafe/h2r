@@ -218,10 +218,10 @@ pub struct PictureSpec {
 /// A bitmap block definition's size.
 pub const BITMAP_BLOCK_SIZE: u32 = 0x38;
 /// A pane definition's size; its bitmaps block (count, address) at `+0x24`.
-const PANE_SIZE: u32 = 0x4c;
+pub const PANE_SIZE: u32 = 0x4c;
 const PANE_BITMAPS: u32 = 0x24;
 /// A `wgit`'s panes block (count, address).
-const SCREEN_PANES: u32 = 0x20;
+pub const SCREEN_PANES: u32 = 0x20;
 /// A bitmap block's animation, image index, top-left point and `bitm`
 /// reference (group, then datum handle).
 const BITMAP_ANIMATION: usize = 0x04;

@@ -569,6 +569,9 @@ fn preview(args: Vec<String>) -> Result<()> {
         for i in &r.issues {
             println!("{state}: layout: {i}");
         }
+        for n in &r.notes {
+            println!("{state}: note: {n}");
+        }
         if !r.skipped.is_empty() {
             println!(
                 "{state}: layout: not checked without art: {}",

@@ -78,9 +78,9 @@ digit cells and the legend. What the game's dialogs draw behind the panel
 them rather than assumed. A modal may cover the logo, as retail dialogs
 do, so for a modal the reserved-area check ignores what the panel covers.
 Everything in it must still sit inside the panel and inside the safe
-area. The preview draws a modal over a sample screen beneath (the main
-menu), so the sheet shows it in place. This replaces the earlier plan of
-an `Own` sign-in screen on the shell backing.
+area. The preview draws a modal over the screen that opened it (its
+`Opener`, below), so the sheet shows it in place. This replaces the
+earlier plan of an `Own` sign-in screen on the shell backing.
 
 **The runtime tag recipe.** Our screens are still made by the Controls
 constructor and adopted by `list_class`. The screen-tag function
@@ -166,6 +166,7 @@ state.
 | off screen (art) | no art's visible pixels fall past the screen edge |
 | reserved | nothing overlaps the reserved areas of the screen beneath (its logo and header), unless the screen is `Own`; a modal may cover them with its panel, but everything in it stays inside the panel |
 | safe area | texts and row art stay inside the title-safe area: x ±272, y 204 down to -211 (the middle 85%, down to the bottom of retail's footer rectangle, where the game's own legends sit); frame art is exempt |
+| over the opener (modals, flagged only) | a dialog text whose ink meets a text of the screen that opened it is a `Note::OverOpener` in `Report::notes`, never an issue: retail's dialogs sit over their opener as it is, texts included |
 | contrast | every text against what is drawn under it (the view rendered without its texts), WCAG ratio at least 2.5 |
 | legend | a screen that takes inputs past up, down, A and B shows a button legend (a text with a button glyph) |
 | focus | the focused row's text is drawn on screen, and more opaque than the other rows' |
@@ -263,10 +264,11 @@ height (top 6), 55 wide and 59 apart, with 12 more between the halves. A
 digit sits over each cell. The cursor's cell and digit are lit; the
 others are dimmed (the frame and row alphas). The status line (Checking...,
 the error) sits above the legend, and the legend is in layout 2's second
-rectangle. The view's backing is `Backing::Over(Beneath::MainMenu)`. On
-the disc, the preview draws the retail main menu (`render_retail`) and
-then the dialog over it, with nothing between them, as the tags have
-nothing there. Synthetic previews draw boxes for the menu's list.
+rectangle. The view's backing is `Backing::Over(opener)`, the
+`DialogSpec`'s `Opener`. On the disc, the preview draws the opener
+(`Disc::opener_view`) and then the dialog over it, with nothing between
+them, as the tags have nothing there. Synthetic previews draw the
+opener's rows as boxes and text blocks.
 
 **The modal's checks.** `Rules::panel` is set for a dialog spec
 (`DialogGeometry::area`, the panel's and corners' box,
@@ -288,14 +290,40 @@ title, body, cells, status and glyph legend:
   Back.
 
 `spec_for` keeps the one-row list the game shows today and adds the
-dialog, which the preview, the sheet and the editor draw. All 11 states
-pass every check, synthetic and on the disc. X no longer submits: only A
+dialog, which the preview, the sheet and the editor draw. The 11 states
+are over the main menu; two more (`code-over-live-menu`,
+`code-wrong-over-live-menu`) are over the Xbox Live menu. All 13 pass
+every check, synthetic and on the disc. X no longer submits: only A
 and Start do, matching the legend (`signin_screen::ACTION_BUTTONS`).
 
-**The screen beneath is drawn in full (the user, 2026-11-18).** A
-retail dialog over the main menu has the whole menu under it: its logo,
-its list and its scrolling track lines, with no dim layer. The preview
-draws exactly that, so the backdrop stays as it is.
+**A dialog is an overlay on its opener (the user, 2026-11-18, from a
+retail screenshot).** A retail dialog sits over whatever was open when
+it opened, drawn as it was: not always the main menu, and with nothing
+hidden and no dim layer. So a `DialogSpec` names its `Opener`: the
+opener's screen tag, the pane shown, its list's rows (the game's code
+fills them) and the focused row. `Disc::opener_view` makes it a `View`:
+the game shell, the pane's bitmaps and texts in the screen's own
+strings, its header, and its rows on its own list skin with the focused
+row lit (`view_of`'s list). The preview draws that under the dialog. The
+openers so far:
+
+- `Opener::MAIN_MENU`: the main menu on the Xbox Live row (rows as
+  `ui_watch` reads them: Campaign, Xbox Live, Split Screen, System
+  Link, Settings).
+- `Opener::XBOX_LIVE_MENU`: the Xbox Live menu (screen `0xba`, pane 0)
+  on Quickmatch, with our five rows.
+
+On the disc, the code pages' legend sits over the main menu's Xbox Live
+and Split Screen rows. Over the Xbox Live menu, the title and body sit
+over its rows, and the last cell's digit over "Latest news:". Those are
+notes (`over the opener` above), not failures: retail's dialogs overlap
+their opener in the same way.
+
+Not settled: on the main menu path, the Xbox Live row opens the game's
+own account picker, `dialog_live_signin` (screen 20, loader `0x24b4a9`),
+and the logon is the picker's. So when our prompt opens, the picker may
+still be up over the main menu, and then it is the real opener. The
+game run below says which.
 
 **Where retail puts dialog text, against the logo.** The main menu
 (`main_menu`, screen 6) draws its logo (`start_screen`) at
@@ -331,12 +359,80 @@ placed over the logo, and neither is retail's. The `placement` check
 Longer bodies (the gamertag page, the recovery page) still run over the
 logo, as retail's own dialogs do.
 
-**Not built yet: the runtime.** In game, the prompt is still the
-one-row list on the Controls layout. Serving the dialog needs the tag
-recipe ("Screen kinds" above): a tag copy with header layout 2, the
-panel and cell art, and our text blocks. It also needs the dialog opened
-the way the game opens its own (the window, and whether the screen
-beneath stays drawn). Both need a game run.
+## The modal dialog in game
+
+In game the prompt is still the one-row list on the Controls layout.
+What can be made without a run is built and tested; serving it waits on
+the run below.
+
+**How the game opens its dialogs** (read from the XBE, 2026-11-18).
+`0x19b527` and `0x19b5af` fill a 0x20-byte request with `0x149f49`, as
+`0x149f1e` does, and call the loader themselves. The only difference is
+the window kind at `+4`: 1 for a dialog, 5 for `0x149f1e`. The push
+(`0x147f6d`) picks the screen stack by that kind (kind 5 at `0x54d62c`,
+kind 1 at `0x54d884`, per user), so a dialog goes on a stack of its own
+and the screen that opened it is left as it is. Our class loader already
+hands `+4` and `+8` to the Controls constructor and the request to the
+push, as the retail loaders do.
+
+**Built: the pieces** (`ui_kit::dialog_tag`).
+
+- `pieces(view)` turns a dialog's `View` into what its tag carries:
+  header layout 2 in the root flags (`LAYOUT_2`), the four panel blocks
+  and the six cells as `PictureSpec`s (found at run time through the
+  screen list, as `list_class` pictures are), and a text block each for
+  the body, the six digits and the status line. The title and the legend
+  are the header's. Each piece keeps its alpha (the dimmed cells), since
+  a block has none and it has to be set on the widget.
+- `write_tag` writes the tag copy from the Controls tag: the root with
+  layout 2 (its other flag bits and header string kept), one pane with
+  only our bitmaps, our text blocks (justification flags and a string id
+  of ours each) and the one list, and every other block empty.
+- `request(window, mask, loader)` writes the request as `0x149f49` does.
+- `H2_SIGNIN_DIALOG=1` opens the sign-in prompt in the dialogs' window
+  with that request, handed to our loader directly. It's off by
+  default: the prompt opens as before through `0x149f1e`.
+
+**Not built: serving the tag.** Two things are left for after the run.
+The sign-in class's tag function has to return the `write_tag` copy
+(the panel and cell blocks resolved by screen id before the open). Its
+text blocks need string ids from the sign-in family, served from its
+text page, with alphas set once the pane is built. Whether a text
+block's string is read again on each draw, or only when the widget is
+built, decides how the digits change, and that needs the run.
+
+### The game run
+
+One run with `H2_SIGNIN_DIALOG=1`, signing in with an identity whose key
+isn't on the machine, from the main menu's Xbox Live row. Check each
+line on stderr and on screen:
+
+1. stderr: `signin prompt: opening for controller 0 (window kind 1)`,
+   then `signin-code: opened with 1 rows (our list class)`. If the
+   game crashes or nothing opens, window kind 1 doesn't take a
+   Controls-built screen; run again without the switch (`window kind 5`)
+   to compare.
+2. On screen: whatever opened the prompt stays drawn under it, with
+   nothing hidden, the way a retail error dialog sits over it. Note what
+   that is: the main menu, or the game's account picker
+   (`dialog_live_signin`) over it; the preview's opener follows. With
+   kind 5 the main menu is replaced, as today.
+3. The d-pad edits the code and A submits (`signin prompt: event ...`
+   lines as in docs/live/live.md). The dialogs' stack takes the input
+   while the prompt is up; the menu beneath doesn't move.
+4. B cancels and the prompt goes; the menu beneath is where it was, and
+   its own input works again straight away.
+5. A wrong code shows the error and the next edit clears it; a right code
+   ends on Done and A closes.
+6. Note anything drawn differently from the sheet
+   (`$RUSH_KEEP/slice6/sheet.png`): the screen is still the list layout
+   in this run, so only the backdrop and the input are expected to
+   match.
+
+What this run settles: whether our screen can go on the dialogs' stack,
+what is drawn beneath it, and input and closing there. The tag (layout 2
+header, panel, cells) and the text questions in "What stays unverifiable
+offline" need the next run, once serving the tag is built.
 
 ## Behaviour
 
