@@ -37,12 +37,15 @@ fn h2_map(name: &str) -> Map<Cursor<Vec<u8>>> {
     Map::from_reader(Cursor::new(iso.read(&e).unwrap())).unwrap()
 }
 
-/// Every tag reference in `b` and its child blocks.
+/// Every tag named in `b` and its child blocks: references (the stem)
+/// and datums (the postprocess bitmaps, `Val::Datum`).
 fn tag_refs(b: &Block, out: &mut Vec<TagId>) {
     for f in &b.fixups {
         match &f.kind {
-            FixupKind::TagRef(id) => out.push(*id),
-            FixupKind::Block { child, .. } => tag_refs(child, out),
+            FixupKind::TagRef(id) | FixupKind::TagId(id) => out.push(*id),
+            FixupKind::Block { child, .. } | FixupKind::Data(child) | FixupKind::Pointer(child) => {
+                tag_refs(child, out)
+            }
             _ => {}
         }
     }
