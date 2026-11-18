@@ -489,10 +489,19 @@ points! { ALL;
     /// countdown states. Its status line picks the text (`0x250008`).
     LOBBY_START_STATE @ 0x0019_a2ce: [fn(progress: stack 0) -> eax ret 4]; "docs/live/live-coop.md";
     /// The start state's tail after a co-op check that passed: a countdown
-    /// running (`>= 0`, state 10), else everyone ready (`0x592f0`, AL: 9,
-    /// else 8).
+    /// running (`>= 0`, state 10), else `LOBBY_ALL_READY` (AL: 9, else 8).
     LOBBY_COUNTDOWN @ 0x0006_4a60: [fn() -> eax ret 0]; "docs/live/live-coop.md";
+    /// Despite the name, not a readiness count: AL 1 when this console
+    /// leads the party (session `+0x72d8` equals `+0x50`, in states 3 to
+    /// 8). Start state 8's text is "Waiting for ... to start the game"
+    /// (docs/game/bots.md §4.2, "The start check").
     LOBBY_ALL_READY @ 0x0005_92f0: [fn() -> al ret 0]; "docs/live/live-coop.md";
+    /// The pregame lobby's input handler (ECX the screen, the event on the
+    /// stack, AL handled, `ret 4`): event `+0` the kind (5 a button), `+4`
+    /// the controller, `+8` the button (0 A, `0xc` Start). A or Start from
+    /// a controller with a profile reaches Start Game (`0x250c30`,
+    /// `0x25106c`); from one without, the profile chooser (`0x250cc3`).
+    PREGAME_LOBBY_INPUT @ 0x0025_0b1e: [fn(screen: ecx, event: stack 0) -> al ret 4]; "docs/game/bots.md";
     /// The per-tick player update (from `game_tick`, `0x13801f`): every
     /// player; a first spawn pending (flags byte `+2` bit 3) goes to
     /// `PLAYER_SPAWN`; the co-op respawn (`0x14cdd0`) runs inside it.

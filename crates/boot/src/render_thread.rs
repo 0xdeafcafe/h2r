@@ -126,6 +126,11 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "PLAYERS_SCREEN_UNJOINED",
         "a players screen event on the game thread; signs a bot in with guest calls",
     ),
+    (
+        "bots",
+        "PREGAME_LOBBY_INPUT",
+        "a lobby input event on the game thread; notes a Start press for the start-state log",
+    ),
 ];
 
 #[cfg(test)]

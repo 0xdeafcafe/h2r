@@ -463,6 +463,80 @@ Whether a signed-in slot with its mask bit is enough for the game to make a
 local player in Split Screen, System Link and Live custom games is the
 first Run item of stage 1.
 
+**Xbox Live guests (traced).** On an Xbox, every profile in an Xbox Live
+lobby is signed in to Live: the account's own player, or a guest of it
+("afr(1)"). The profile UI's Live commit (`0x24b971`, once the logon task
+succeeded) runs `0x190074(port, 1)` (sets the slot's `0x20`), the profile
+sign-in, `0x18fee9(port)` with the account record in EAX, `0x190001`
+(the gamertag into block `+0x48`; nothing for a profile with no file) and
+`0x190728`. `0x18fee9` copies the `0x70`-byte record (`XONLINE_USER`) to
+slot `+0x470`, rebuilds the display name (`0x190eb3`), takes a local user
+if the slot has none (`0x64610`), copies the record's first 12 bytes (the
+XUID: user id, then user flags) to slot `+8`, and gives them to the slot's
+local user (`0x64820`: local users at `0x4cd904`, 4 of `0xd0`, `+0` in use,
+`+1` the id). A guest's record is its host's with the guest number (1 to
+3) in the user flags' low two bits: `0x1900a5` tests `flags & 3`,
+`0x190eb3` names a guest "gamertag(n)" (string `0x2d000231`), the
+duplicate-account check `0x1900ff` (dialog `0x88`) skips guests, and when
+the host's logon fails the profile UI signs out every Live slot with the
+same user id (`0x190186`), guests included.
+
+**Design: the bots are the human's Live guests.** When a human is on Xbox
+Live as their own account (`guest::live_host`) and no game runs, the glue
+signs each bot whose slot has a profile and is not on Live in as the
+human's guest (`guest::go_live`, every 30 frames before `SOUND_UPDATE`,
+`bot_glue::to_go_live`). It writes what `0x190074` and `0x18fee9` write:
+the `0x20` flag, the host's record with the lowest free guest number
+(`guest::free_guest_number`) at `+0x470`, its XUID at `+8` and in the
+slot's local user. It leaves out the name rebuild, so the bot stays
+"Clanker 1" (not "afr(1)"), and makes no logon: the Xbox Live service, and
+our server through the Live HLE, only ever see the human's account (the
+HLE's `XOnlineChangeLogonUsers` maps a guest to its host's account by user
+id and keeps the guest number; it makes no accounts). Offline and in
+System Link with no one on Live, nothing changes. Telemetry finds the bots
+by their controller ports (`Bots { ports }`), so a guest goes out as
+`bot: true` with no xuid, never as the human. The log says it once per
+change: `bots: Clanker 1 on port 1 is on Xbox Live as guest 1 of port 0's
+account`.
+
+**The start check (traced).** Start Game (`0x251050`, from the lobby's
+handler `0x250b1e`: A or Start from a controller with a profile, A on row
+0 at `0x250fb3`) acts only when the start state `0x19a2ce` is 9, and says
+nothing otherwise; the lobby's status line (`0x24ffc9`) shows the state's
+text. With state 9 it asks for the countdown (`0x25106c` → `0x19a78e`:
+the pressing slot's local user at `+4` must not be -1, then `0x64900` →
+`0x5bf10` → `0x5df30` sets session `+0x49a8`), and only when that fails
+outside a lobby of session type 2 or 3 does it raise error dialog 2
+(`0x236299`). A or Start from a controller with **no** profile raises the
+same dialog (`0x250ccd`) when it cannot open the chooser. `0x19a2ce`'s
+checks, in order (`bots::lobby`):
+
+| state | check | text |
+|---|---|---|
+| 0 | `[0x4d8ba0]` and the session type `[0x527334]` (`0x19a279`), then a squad session in state 3 to 8 (`0x59670`, `0x58d70`) | "No established session" |
+| 1 | the session type is not 1 or 2 | "Session not in the pregame mode" |
+| 11+ | lobby mode 6, matchmaking (`0x199971`): the hopper's states (`0x19a5fd`) | "Guests are not allowed in ranked matchmade games" and the rest |
+| 4, 5, 6 | each peer's map status (peer `+0x88`, `0x652a0`): loading, a peer failed, this console failed | "Waiting for everyone to load the map...", "A player in your party failed to load the map" |
+| 7 | co-op modes (0, 2, 4): exactly two session players, both local; a team game: 1 to the map's most teams (`0x251139`) | "coop_takes_two", "You have too many teams (N maximum)" |
+| 10 | a countdown runs (`0x64a60`) | the countdown |
+| 8 | this console does not lead the party (`0x592f0`: session `+0x72d8` against `+0x50`) | "Waiting for ... to start the game" |
+| 9 | ready | "Waiting for you to start the game" |
+
+So the earlier reading, that a bot with a profile but no Live sign-in
+keeps the state from 9, does not hold: no check reads a slot's `0x20` or
+`+0x470`. `0x59670` and `0x58d70` are about the session, and
+`LOBBY_ALL_READY` (`0x592f0`) compares two peer indices (the leader
+check), not player masks. A bot can only reach state 7 (as a session
+player with a team) or, as a phantom peer, the map states. Signing the
+bots in as guests is still what an Xbox does, and the only off-retail
+state a bot was in; whether it was the cause is the game run's question.
+For that, a Start press (A or Start from a controller with a profile, on
+`PREGAME_LOBBY_INPUT`) while bots are in logs, before the next
+`SOUND_UPDATE`, the game's own start state (a guest call to
+`LOBBY_START_STATE`) with the check that holds it and each bot slot:
+`bots: start state 8, blocked by the party leader check: ...; port 1 0x30
+Live guest 1, port 2 0x30 Live guest 2`.
+
 ### 4.3 Hiding the views (traced)
 
 These read the local-user map `[0x4e8c20]+0xc` or the count `+8`:
@@ -1606,6 +1680,40 @@ list for the user to play (§11).
         at; `h2 settings` lists the `clankers.*` values.
      8. Send the `clankers:` and `ui:` log lines if the row is missing,
         draws no text, or opens the page under the lobby.
+   **Built: the bots as Xbox Live guests, and the start log** (§4.2,
+   "Xbox Live guests" and "The start check"). The user's run: in a Live
+   custom game lobby with Clankers On, Count 3, Start showed an error or
+   did nothing.
+   - Out of a game, with the human on Xbox Live as their own account,
+     each bot with a profile goes on Live as the human's guest
+     (`guest::go_live`), keeping its name; offline and in System Link
+     nothing changes.
+   - A Start press in the lobby (A or Start from a controller with a
+     profile) logs the game's start state, what holds it back, and each
+     bot slot.
+   - Tests: `-p bots --lib guest` (the guest writes: flag, record with the
+     guest number, the XUID at slot `+8` and in the local user, the name
+     kept; numbers skip taken ones and run out at 3; nothing offline;
+     the host is a human on Live as their own account; the slot summary),
+     `-p bots --lib lobby` (the leader check, the map check, states 0, 1,
+     8, 9 and 10, the press filter, the line, and the guest call then the
+     frame); `-p boot --lib bot_glue` (which ports and when) and `-p boot
+     --lib render_thread` (the new observer listed).
+   - **Game run (the user):**
+     1. `h2 play --live-local` (or `--live`), Clankers On, Count 3. Sign in
+        to Xbox Live, host a Custom Game. The log says `bots: Clanker N on
+        port N is on Xbox Live as guest N of port 0's account` for each
+        bot; the lobby shows "Clanker 1" to "Clanker 3" (not "afr(1)").
+     2. Press Start (and A on Start Game). The log says `bots: start
+        state N, blocked by ...; port 1 0x30 Live guest 1, ...`. With 9 or
+        10 the countdown should start; send the line either way.
+     3. If an error dialog shows, note its text and send the log around
+        it (dialog 2 comes from the countdown request failing, `0x25109f`,
+        or from a press by a controller with no profile, `0x250ccd`).
+     4. In the game: the bots play; the site's scoreboard marks them BOT
+        with no player link (not the human's account).
+     5. Split Screen and System Link (not signed in to Live): the bots
+        join and play as before, and no `on Xbox Live` line shows.
    **Built: bots in telemetry and the web** (§6). The user's ask: bots on
    the live game tracking, the scoreboard and the post-game record,
    marked as bots, without accounts.
