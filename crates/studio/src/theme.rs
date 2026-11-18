@@ -60,6 +60,8 @@ pub const ACCENT: [f32; 4] = rgb(56, 132, 230);
 pub const DIM: [f32; 4] = rgb(140, 145, 155);
 /// Errors in the log and status bar.
 pub const ERROR: [f32; 4] = rgb(235, 96, 88);
+/// Passing checks.
+pub const OK: [f32; 4] = rgb(110, 200, 125);
 /// Warnings (unsaved changes).
 pub const WARN: [f32; 4] = rgb(230, 180, 80);
 /// The status bar height in points.

@@ -303,6 +303,19 @@ Behaviour the tables changed:
 prints each effect and the summary, and draws where it ends as
 `<state>-pressed`.
 
+## In the editor
+
+**Built (editor slice)**: the editor's fourth tool, **UI Screens**
+(docs/editor/editor.md "UI Screens", editor-guide.md §7). It shows every
+native screen in every state and the disc's retail screens, drawn from the
+editor's disc (synthetic without one) with zoom; widget rectangles with
+the hovered widget's JSON; the checks' findings with their widgets
+outlined; the title-safe and reserved areas, each togglable; a pad that
+steps the `Page` live; and export of the PNG, the JSON and the sheet into
+a folder outside any Git checkout. The studio takes `boot` as a library
+for it: the pages step the screens' real classes, which can't leave
+`boot`.
+
 ## The fidelity loop
 
 The preview is only worth trusting once it has been measured against the

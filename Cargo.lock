@@ -6323,6 +6323,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "app-icon",
+ "boot",
  "content",
  "dear-imgui-rs",
  "dear-imgui-wgpu",
@@ -6339,6 +6340,7 @@ dependencies = [
  "pollster",
  "rfd",
  "scenario-edit",
+ "serde_json",
  "variants",
  "wgpu",
  "winit",
