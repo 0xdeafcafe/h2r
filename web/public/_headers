@@ -1,0 +1,7 @@
+# Cache rules for the web app when Cloudflare serves it as a Worker's static
+# assets (crates/live-worker/wrangler.toml), the same as live-server's own
+# (crates/live-server/src/caching.rs): built files are named by their
+# content's hash, so they are kept for a year. Everything else keeps the
+# assets' default, revalidated on every load, so a new build shows at once.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable

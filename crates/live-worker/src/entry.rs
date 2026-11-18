@@ -39,8 +39,27 @@ async fn fetch(
     env: Env,
     _ctx: Context,
 ) -> Result<http::Response<axum::body::Body>> {
-    // A co-op session's relay is its own object; everything else, the hub.
     let path = req.uri().path().to_string();
+    // Game art is a redirect or a 404 from here, without waking the hub.
+    let art_url = env
+        .var(crate::settings::GAME_ART_URL)
+        .ok()
+        .map(|v| v.to_string());
+    if let Some(art) = crate::site::game_art(art_url.as_deref(), &path, req.uri().query()) {
+        use axum::response::IntoResponse;
+        return Ok(match art {
+            crate::site::GameArt::Redirect { to, cache_control } => {
+                let mut resp = axum::response::Redirect::temporary(&to).into_response();
+                resp.headers_mut().insert(
+                    http::header::CACHE_CONTROL,
+                    http::HeaderValue::from_static(cache_control),
+                );
+                resp
+            }
+            crate::site::GameArt::NotFound(why) => live_server::app::not_found(why).into_response(),
+        });
+    }
+    // A co-op session's relay is its own object; everything else, the hub.
     let stub = match crate::relay::session_of(&path) {
         Some(session) => env
             .durable_object(RELAY)?
