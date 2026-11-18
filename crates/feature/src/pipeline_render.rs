@@ -120,6 +120,72 @@ pub struct Addrs {
     /// meanwhile, so no draw is replayed and the total stays the serial
     /// run's. Never merged as bytes.
     pub random: Option<(u32, &'static [u32])>,
+    /// Record caches both sides allocate in ([`SharedCache`]): a game-thread
+    /// call that would allocate joins the render first.
+    pub shared_caches: &'static [SharedCache],
+}
+
+/// A record cache the render and the sim both allocate in, through one
+/// function `entry` (stdcall, one argument: an object handle; returns the
+/// record's handle), which hands back the object's record when the object's
+/// `field` names a record that `owner` says is the object's, and otherwise
+/// takes a free record (or evicts the least recently used) and initializes
+/// it. A byte merge of two such allocations is unsound: both sides take the
+/// same free record from the same snapshot, the hand-back keeps the render's
+/// owner and the sim's bytes wherever the render's equal the snapshot's, and
+/// the mixed record is then reused as valid. So a game-thread call that
+/// would allocate (judged on live RAM, before it runs) joins the render
+/// first, as a sim D3D call does; a call that finds its record only reads.
+///
+/// Both arrays are Halo data arrays: the data pointer at `+0x44` of the
+/// array header the pointer word names, the index in a handle's low 16 bits.
+#[derive(Clone, Copy, Debug)]
+pub struct SharedCache {
+    pub entry: u32,
+    /// The pointer word to the object array, its record stride and where
+    /// in a record the object's body pointer is.
+    pub objects: u32,
+    pub object_stride: u32,
+    pub body_at: u32,
+    /// The body's word holding its cache record handle (`-1`: none).
+    pub field: u32,
+    /// The pointer word to the cache array, its record length and where in
+    /// a record its owner's handle is.
+    pub cache: u32,
+    pub record_len: u32,
+    pub owner: u32,
+}
+
+impl SharedCache {
+    /// Whether `entry(handle)` would allocate, on `g`: true when anything on
+    /// the way does not read.
+    pub fn would_allocate(&self, g: &Guest, handle: u32) -> bool {
+        let read = || -> Option<bool> {
+            let index = |h: u32| h & 0xffff;
+            let objects = g.u32(g.u32(self.objects).ok()?.wrapping_add(0x44)).ok()?;
+            let body = g
+                .u32(
+                    objects
+                        .wrapping_add(index(handle) * self.object_stride)
+                        .wrapping_add(self.body_at),
+                )
+                .ok()?;
+            let record = g.u32(body.wrapping_add(self.field)).ok()?;
+            if record == u32::MAX {
+                return Some(true);
+            }
+            let cache = g.u32(g.u32(self.cache).ok()?.wrapping_add(0x44)).ok()?;
+            let owner = g
+                .u32(
+                    cache
+                        .wrapping_add(index(record) * self.record_len)
+                        .wrapping_add(self.owner),
+                )
+                .ok()?;
+            Some(owner != handle)
+        };
+        read().unwrap_or(true)
+    }
 }
 
 /// The game's random step (`0x00027be8`: `imul 0x19660d`, `add
@@ -200,6 +266,23 @@ impl Addrs {
         // which the render reaches), +4 the effects seed (the render's
         // `0x00027be0` and the particles' `0x00174089`).
         random: Some((0x004e_7408, &[0, 4])),
+        // The object render-state cache (`0x0003ddd0`): the render takes a
+        // record per drawn object (its lights, its lighting, stamped with the
+        // frame counter); the effect updates in the tick (`0x001794e0`,
+        // `0x0017b5d0`) take one for an effect's object to read its
+        // lighting. Objects at `[0x004e0300]` (12-byte records, the body at
+        // +8), the record handle at body +0xcc, the cache at `[0x00509434]`
+        // (0x100-byte records, the owner at +4).
+        shared_caches: &[SharedCache {
+            entry: 0x0003_ddd0,
+            objects: 0x004e_0300,
+            object_stride: 12,
+            body_at: 8,
+            field: 0xcc,
+            cache: 0x0050_9434,
+            record_len: 0x100,
+            owner: 4,
+        }],
     };
 }
 
@@ -270,6 +353,9 @@ pub struct Stats {
     pub serviced: BTreeMap<String, u64>,
     /// Joins a sim D3D call made (the render still in flight).
     pub d3d_joins: u64,
+    /// Joins a game-thread call that would allocate in a
+    /// [`SharedCache`] made.
+    pub cache_joins: u64,
     /// D3D calls from another guest thread while a render was in flight
     /// (not ordered).
     pub d3d_other_thread: u64,
@@ -302,6 +388,7 @@ impl Stats {
             fallbacks: sub_named(&self.fallbacks, &then.fallbacks),
             serviced: sub_named(&self.serviced, &then.serviced),
             d3d_joins: self.d3d_joins - then.d3d_joins,
+            cache_joins: self.cache_joins - then.cache_joins,
             d3d_other_thread: self.d3d_other_thread - then.d3d_other_thread,
             join_wait: self.join_wait - then.join_wait,
             hand_back: self.hand_back - then.hand_back,
@@ -341,7 +428,7 @@ impl Stats {
             .map(|(k, v)| format!("{k} {v}"))
             .collect();
         format!(
-            "pipeline: frames pipelined {} completed {} serial [{}] fallbacks {} [{}] serviced {} [{}] d3d_joins {} d3d_other_thread {} join_wait {:.2}ms hand_back {:.2}ms snapshot {:.2}ms render {:.2}ms pages {:.1} conflicts {} mispredicts {}",
+            "pipeline: frames pipelined {} completed {} serial [{}] fallbacks {} [{}] serviced {} [{}] d3d_joins {} cache_joins {} d3d_other_thread {} join_wait {:.2}ms hand_back {:.2}ms snapshot {:.2}ms render {:.2}ms pages {:.1} conflicts {} mispredicts {}",
             self.pipelined,
             self.completed,
             serial.join(", "),
@@ -350,6 +437,7 @@ impl Stats {
             serviced,
             sv.join(", "),
             self.d3d_joins,
+            self.cache_joins,
             self.d3d_other_thread,
             ms(self.join_wait, joins),
             ms(self.hand_back, joins),
@@ -715,6 +803,12 @@ fn setup(me: &Arc<Shared>, ctx: &mut ExecCtx, addr: u32) -> Result<(), String> {
     // On the game thread: the sim's D3D calls join the render first; the
     // frame wait is skipped while a fallback finishes a render here.
     let generated_wait = rt.resolve_original(a.frame_wait);
+    let generated_caches: Vec<_> = me
+        .addrs
+        .shared_caches
+        .iter()
+        .map(|c| rt.resolve_original(c.entry))
+        .collect();
     rt.edit_dispatch(|d| {
         for &entry in &me.d3d_entries {
             let Some(prev) = d.override_handler(entry) else {
@@ -735,6 +829,40 @@ fn setup(me: &Arc<Shared>, ctx: &mut ExecCtx, addr: u32) -> Result<(), String> {
                     return Ok(prev.invoke(cpu, ctx, sel));
                 }
                 me.lock().stats.d3d_joins += 1;
+                let prev = Arc::clone(&prev);
+                join_then(
+                    &me,
+                    cpu,
+                    ctx,
+                    Box::new(move |cpu, ctx| Ok(prev.invoke(cpu, ctx, sel))),
+                )
+            });
+        }
+        for (c, generated) in me.addrs.shared_caches.iter().zip(generated_caches) {
+            let Some(prev) = d.override_handler(c.entry).or(generated) else {
+                continue;
+            };
+            let name = format!(
+                "{} (pipeline: an allocation joins first)",
+                d.override_name(c.entry).unwrap_or("shared cache")
+            );
+            let (me, c) = (Arc::clone(me), *c);
+            let prev = Arc::new(prev);
+            d.register_override(c.entry, name, move |cpu, ctx, sel| {
+                if !me.in_flight.load(Ordering::Acquire)
+                    || ctx.thread_id != me.game_thread.load(Ordering::Relaxed)
+                {
+                    return Ok(prev.invoke(cpu, ctx, sel));
+                }
+                let allocates = {
+                    let g = ctx.memory();
+                    let handle = g.u32(cpu.esp.wrapping_add(4)).unwrap_or(u32::MAX);
+                    c.would_allocate(&g, handle)
+                };
+                if !allocates {
+                    return Ok(prev.invoke(cpu, ctx, sel));
+                }
+                me.lock().stats.cache_joins += 1;
                 let prev = Arc::clone(&prev);
                 join_then(
                     &me,

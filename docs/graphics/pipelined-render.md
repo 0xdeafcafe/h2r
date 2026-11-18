@@ -1037,6 +1037,41 @@ the plan (layouts, d3d, kernel wrappers) are not covered: the render thread
 keeps only the D3D entries, their shadows, the port I/O stubs and marked
 overrides, so any other override it reaches is still a fallback.
 
+**The object render-state cache (dark first-person weapon).** With 0
+fallbacks, pipelined frames drew the first-person rifle and hands, and
+another object, dark: unlit, against lit brown serially. The world and the
+HUD were right. The cache is `0x0003ddd0` (object handle in, record handle
+out). Records are 0x100 bytes in the data array at `[0x00509434]`: the
+owner's handle at +4, the frame it was lit at +8 (`0x0003dfe0` relights
+when that is not the frame counter), the last use at +0xc (for eviction
+when the array is full), the lights at +0xa8..+0xb8 (`0x0003dd10`) and the
+lighting at +0x44.. and +0xc0... Object body +0xcc names the record. A
+lookup whose record is still the object's only reads. Otherwise the
+function takes a free record (`0x0016b840`) or evicts the least recently
+used, initializes it and lists its lights.
+
+Both sides call it: the render for every object it draws (`0x0003db00`
+from the object draw `0x0004b5d0`), and the tick's effect updates for an
+effect's object, to read its lighting (`0x001794e0`, `0x0017b5d0`; they
+read +0x28/+0x2c). Census v2 saw the sim's `0x0016b840` in these records
+and filed it as false sharing. It is two allocators in one array. While a
+render is in flight, both take the same free record from the same
+snapshot. The hand-back keeps the render's bytes where they differ from
+the snapshot and the sim's everywhere else, so the record carries the
+render's owner with a mix of both objects' lights and lighting. The owner
+check then passes every frame, and the object is drawn with that record
+until it is evicted.
+
+The fix is an ownership rule like the sim D3D calls': on the game thread,
+a call to the cache that would allocate joins the render first. The test
+runs on live RAM, before the call: the body's +0xcc is -1, or its record's
+owner is another object. A lookup that finds its record only reads and
+does not join. `Addrs::shared_caches` names the cache, and
+`cache_joins` in the `pipeline:` line counts the joins. Steady-state effects
+whose objects are already drawn find their records, so the joins should be
+rare. A high count would mean the sim allocates every tick (for example,
+objects that are never drawn and are evicted each frame).
+
 **What the sim reads (determinism against serial).**
 
 - The frame counter `0x004ba034` is read by the sim (the particles at
