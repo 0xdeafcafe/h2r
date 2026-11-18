@@ -32,4 +32,16 @@ pub trait HostBackend: Send {
 
     /// Drive the pad's rumble motors. Default: no rumble.
     fn set_rumble(&mut self, _id: HostPadId, _rumble: Rumble) {}
+
+    /// Pad `id` is on controller `port` (0 to 3). Called at the end of every
+    /// [`InputManager::sync`](crate::InputManager::sync) for each of this
+    /// backend's pads that has a port. Default: nothing to note.
+    fn placed(&mut self, _id: HostPadId, _port: usize) {}
+
+    /// The port (0 to 3) pad `id` should go on when it is inserted, if that
+    /// port is free; otherwise it takes the lowest free one. Default: no
+    /// preference.
+    fn preferred_port(&self, _id: HostPadId) -> Option<usize> {
+        None
+    }
 }
