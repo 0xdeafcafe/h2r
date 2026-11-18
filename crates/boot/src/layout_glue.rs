@@ -418,6 +418,17 @@ pub fn extend_panes<M: Gm>(m: &mut M, wgit: u32, alloc: &mut u32) -> Option<bool
 static PENDING_VALUE: AtomicU32 = AtomicU32::new(0);
 static ALLOC: AtomicU32 = AtomicU32::new(0);
 static STRING_ADDRS: std::sync::OnceLock<Vec<(u32, u32)>> = std::sync::OnceLock::new();
+
+/// Where our string `id` was written at install, once it was: a screen
+/// whose text changes while it is up rewrites it there
+/// (`list_class::Rows::live_text`), within the room its placeholder took.
+pub fn string_address(id: u32) -> Option<u32> {
+    STRING_ADDRS
+        .get()?
+        .iter()
+        .find(|(i, _)| *i == id)
+        .map(|(_, a)| *a)
+}
 /// The Xbox Live menu tag `custom_games::extend_tag` last extended (0:
 /// none yet). A map load replaces the tag, and the next screen build
 /// extends the new one before a pane is set.

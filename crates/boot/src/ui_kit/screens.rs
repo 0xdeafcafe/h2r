@@ -268,7 +268,8 @@ pub fn account_spec(a: &crate::account_screen::AccountScreen, now: i64) -> Scree
 }
 
 /// The screens `h2 ui preview` knows, by name.
-pub const NAMES: [&str; 11] = [
+pub const NAMES: [&str; 12] = [
+    "campaigns",
     "skulls",
     "skulls.h1",
     "skulls.mp",
@@ -327,6 +328,30 @@ pub fn choices_example(store: Arc<settings::Store>) -> crate::ui_kit::screen::Ki
         Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Change"),
         Prompt::new(&[Glyph::B], "Back"),
     ])
+}
+
+/// The campaign picker with Halo 1 installed beside the test campaign,
+/// Chief signed in, a50 finished on Heroic, the Halo 1 options at their
+/// defaults: an in-memory store and progress, never a file.
+pub fn campaign_picker_sample() -> crate::campaign_menu::PickerRows {
+    use content::campaign_list::{self as cl, CampaignManifest, FIXTURE, HALO1};
+    let ms = [
+        CampaignManifest::parse(HALO1).unwrap(),
+        CampaignManifest::parse(FIXTURE).unwrap(),
+    ];
+    let state = crate::campaigns::State {
+        built: cl::build(&ms, &[1], &[0x65]).unwrap(),
+        selection: Default::default(),
+        progress: crate::campaigns::Progress::memory(),
+        cards: Default::default(),
+    };
+    state.progress.finished("Chief", "halo1", 2, 0x1003);
+    state.selection.set_seen(crate::campaigns::Seen {
+        profiles: vec!["Chief".into()],
+        pictures: Default::default(),
+    });
+    let store = Arc::new(settings::Store::defaults(crate::setting_defs::ALL));
+    crate::campaign_menu::PickerRows::new(Arc::new(state), Some(store))
 }
 
 /// Screen `name`'s page when it is a list screen: its real class over a
@@ -405,6 +430,13 @@ pub fn list_page(name: &str) -> Option<ListPage> {
                 )),
                 _ => list(ListPage::new(join, described(&Arc::new(JoinRows(lobby))))),
             }
+        }
+        "campaigns" => {
+            let rows = Arc::new(campaign_picker_sample());
+            list(ListPage::new(
+                crate::campaign_menu::picker_class(Arc::clone(&rows)),
+                described(&rows),
+            ))
         }
         "kit.example" => {
             let s = Arc::new(crate::ui_kit::screen::example().0);

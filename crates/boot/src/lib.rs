@@ -20,6 +20,7 @@ pub mod coop_live;
 pub mod coop_players;
 pub mod coop_probe;
 pub mod campaign_cards;
+pub mod campaign_info;
 pub mod campaign_menu;
 pub mod campaigns;
 pub mod custom_games;
@@ -879,7 +880,7 @@ pub fn run_hosted_with_live(
     // installed under <data>/campaigns get their level lists and the
     // picker in front of the level select. None installed: nothing is
     // hooked and the disc is not read for it.
-    let campaigns = campaigns.map(campaign_menu::prepare);
+    let campaigns = campaigns.map(|c| campaign_menu::prepare(c, host.settings.clone()));
     layout_glue::install(&loaded.runtime, &mut features, model).context("installing the button layouts")?;
     campaign_menu::install(&loaded.runtime, &mut features, campaigns).context("installing the campaigns")?;
     // The Halo 1 / Halo 2 options (docs/game/h1-multiplayer.md "Halo 1

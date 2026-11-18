@@ -423,6 +423,35 @@ pub fn extend_with_cards<M: Gm>(
     Ok(r)
 }
 
+/// Each campaign's first level's picture in the level select's list (the
+/// picture of its smallest map id), by campaign id, as `bitm` datums of
+/// the loaded map: what the picker shows for a campaign. Empty when the
+/// loaded map has no list.
+pub fn first_pictures<M: Gm>(m: &M) -> BTreeMap<u32, u32> {
+    let mut out: BTreeMap<u32, (u32, u32)> = BTreeMap::new();
+    let Some(matg) = m.u32(GLOBALS_TAG).filter(|&a| a != 0) else {
+        return BTreeMap::new();
+    };
+    let Some(levels) = element0(m, matg, MATG_UI)
+        .and_then(|ui| block(m, ui + UI_LEVELS, UI_LEVEL_LEN as u32))
+        .and_then(|b| elements(m, &b))
+    else {
+        return BTreeMap::new();
+    };
+    for e in &levels {
+        let (campaign, map) = (u32_at(e, cl::UI_LEVEL_CAMPAIGN), u32_at(e, cl::UI_LEVEL_MAP));
+        let (group, datum) = (u32_at(e, cl::UI_LEVEL_PICTURE), u32_at(e, cl::UI_LEVEL_PICTURE + 4));
+        if campaign == FREE || map == FREE || group != CARD_GROUP || datum == FREE {
+            continue;
+        }
+        let first = out.entry(campaign).or_insert((map, datum));
+        if map < first.0 {
+            *first = (map, datum);
+        }
+    }
+    out.into_iter().map(|(c, (_, d))| (c, d)).collect()
+}
+
 /// The campaign id a map id belongs to, among `built`.
 pub fn campaign_of(built: &[Built], map_id: u32) -> Option<&Built> {
     built
@@ -440,6 +469,16 @@ pub struct Selection {
     campaign: AtomicU32,
     pass: AtomicBool,
     building: AtomicBool,
+    /// Seen as the picker opened: the signed-in profiles, and each
+    /// campaign's first level's picture (`bitm` datum) in the loaded map.
+    seen: Mutex<Seen>,
+}
+
+/// [`Selection::seen`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Seen {
+    pub profiles: Vec<String>,
+    pub pictures: BTreeMap<u32, u32>,
 }
 
 impl Default for Selection {
@@ -448,11 +487,18 @@ impl Default for Selection {
             campaign: AtomicU32::new(RETAIL_CAMPAIGN),
             pass: AtomicBool::new(false),
             building: AtomicBool::new(false),
+            seen: Mutex::new(Seen::default()),
         }
     }
 }
 
 impl Selection {
+    pub fn seen(&self) -> Seen {
+        self.seen.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+    pub fn set_seen(&self, seen: Seen) {
+        *self.seen.lock().unwrap_or_else(|e| e.into_inner()) = seen;
+    }
     pub fn campaign(&self) -> u32 {
         self.campaign.load(Ordering::SeqCst)
     }
