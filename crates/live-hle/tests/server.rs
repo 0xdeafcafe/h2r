@@ -556,6 +556,8 @@ fn the_mod_list_reads_published_maps_newest_first() {
         let doc = MapDocument {
             manifest: m,
             image: None,
+            category: None,
+            source_url: None,
         };
         let jws = sign::EventBody::new(
             &a.key,

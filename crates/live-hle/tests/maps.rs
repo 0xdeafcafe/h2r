@@ -208,6 +208,8 @@ fn installing_a_mod_counts_one_download_per_account() {
         serde_json::to_value(&MapDocument {
             manifest: m,
             image: None,
+            category: None,
+            source_url: None,
         })
         .unwrap(),
         time::OffsetDateTime::now_utc(),
