@@ -48,6 +48,7 @@ pub(crate) enum Operation {
     PresenceSubmit,
     MuteStartup,
     MuteGet,
+    Feedback,
     Stop,
 }
 
@@ -111,7 +112,7 @@ pub const ENTRIES: &[Entry] = &[
     entry(0x003a0841, "XOnlineMutelistStartup", 2, Operation::MuteStartup),
     entry(0x003a084c, "XOnlineMutelistAdd", 4, Operation::Stop),
     entry(0x003a086e, "XOnlineMutelistRemove", 4, Operation::Stop),
-    entry(0x003a0890, "XOnlineFeedbackSend", 8, Operation::Ui(crate::ui::Op::Feedback)),
+    entry(0x003a0890, "XOnlineFeedbackSend", 8, Operation::Feedback),
     entry(0x003a08c0, "XOnlineStatWrite", 4, Operation::Stats(crate::stats::Op::Write)),
     entry(0x003a08cb, "XOnlineStatRead", 4, Operation::Stats(crate::stats::Op::Read)),
     entry(0x003a08d6, "XOnlineStatReadGetResult", 5, Operation::Stats(crate::stats::Op::ReadResult)),

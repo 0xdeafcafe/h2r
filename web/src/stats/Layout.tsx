@@ -85,6 +85,7 @@ export default function StatsLayout(props: { children?: JSX.Element }) {
           <ul>
             <li><A href="/">Dashboard</A></li>
             <li><A href="/stats/players">Players</A></li>
+            <li><A href="/stats/ranks">Ranked</A></li>
             <li><A href="/stats/events">Event Log</A></li>
             <li><A href="/dash/server">{live.wellKnown()?.id ?? new URL(live.server().base).host}</A></li>
             <li>position {live.state.position}</li>

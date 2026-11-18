@@ -54,6 +54,33 @@ again, and so a screen can be seen and checked before anyone runs the game.
    page does. `.description(TextBlock)` adds the focused row's description. The
    prompts go in the footer (below). `.scrolls()` says more rows than the list shows is
    meant.
+   **Choice rows.** A row of many choices over a setting is a
+   `ui_kit::choice::ChoiceRow`, the sibling of the Halo 1 options'
+   two-choice `OptionRow`. It names a settings `Def`, a label and a
+   description; its choices come from the setting (a `Kind::Choice`'s
+   labels, a `Kind::Int`'s steps or else every number of its range, Off and
+   On for a `Kind::Bool`). `ChoiceRow::row(store)` gives the value row:
+   left and right step and wrap, A steps right, and each step is saved in
+   the store at once, so its change callbacks see it. A bots page's Count
+   and Difficulty are two of them:
+
+   ```rust
+   static COUNT: ChoiceRow = ChoiceRow::new(&BOTS_COUNT, "Count", "How many bots join.");
+   static LEVEL: ChoiceRow = ChoiceRow::new(&BOTS_LEVEL, "Difficulty", "How well they play.");
+   let page = KitScreen::new("bots", "bots", ids::family("bots"), "Clankers")
+       .layout(skulls_menu::LIST_LAYOUT, ValueStyle::Inline)
+       .description(skulls_menu::DESCRIPTION_TEXT)
+       .row(COUNT.row(Arc::clone(&store)))
+       .row(LEVEL.row(store))
+       .prompts(&[
+           Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Change"),
+           Prompt::new(&[Glyph::B], "Back"),
+       ]);
+   ```
+
+   The kit's own example is `kit.choices` (`h2 ui preview kit.choices`,
+   over example settings no profile holds); its table test is
+   `ui_kit::page::tests::kit_choices_page`.
 3. **Open it** from an `Open(name)` row on another screen of ours, or with
    `list_class::open(cx, chain, name)` (`0x149f1e(player mask, loader)`).
    `0x149f1e` always opens on window 5. A screen opened from inside a

@@ -108,18 +108,19 @@ fn signin_digits_cursor_and_submit() {
                 [Effect::Submit("290000".into())],
                 "Checking... | 2 9 [0] - 0 0 0 | -",
             ),
-            // X and Start are the row's action, as A.
+            // Start submits as A does, as the legend says.
             case(
                 "code",
                 press(&[Start]),
                 [Effect::Submit("000000".into())],
                 "Checking... | [0] 0 0 - 0 0 0 | -",
             ),
+            // X never submits: a stray X must not send a half-typed code.
             case(
-                "code",
+                "code-typed",
                 press(&[X]),
-                [Effect::Submit("000000".into())],
-                "Checking... | [0] 0 0 - 0 0 0 | -",
+                [Effect::None],
+                "Sign in as Chief | 2 9 [0] - 0 0 0 | -",
             ),
             case(
                 "code",
@@ -563,6 +564,55 @@ fn kit_example_page() {
             vec![E::Action, E::Action, E::None],
             "focus 0 Grunts = < On >",
         )],
+    );
+}
+
+/// The kit's choice rows: left and right step through every choice and
+/// wrap, A steps right, up and down move the focus, B closes. X and Start
+/// run the kit's action as on every kit screen; with no action row there
+/// is nothing pending, so they leave the value alone.
+#[test]
+fn kit_choices_page() {
+    use ListEffect as E;
+    let step = |s: &str| E::Stepped(format!("kit.choices: {s}"));
+    check(
+        || list_page("kit.choices"),
+        vec![
+            list_case(
+                "focus-0",
+                &[Right, Right, Right, Right, Right],
+                vec![
+                    step("right on row 0: kit.example_count -> 5"),
+                    step("right on row 0: kit.example_count -> 6"),
+                    step("right on row 0: kit.example_count -> 7"),
+                    step("right on row 0: kit.example_count -> 8"),
+                    step("right on row 0: kit.example_count -> 0"),
+                ],
+                "focus 0 Count = < 0 >",
+            ),
+            list_case(
+                "focus-1",
+                &[Left, Left, A],
+                vec![
+                    step("left on row 1: kit.example_level -> Easy"),
+                    step("left on row 1: kit.example_level -> Legendary"),
+                    E::Stepped("kit.example_level -> Easy".into()),
+                ],
+                "focus 1 Difficulty = < Easy >",
+            ),
+            list_case(
+                "focus-0",
+                &[Down, Down, Up, X, Start],
+                vec![E::Focus(1), E::None, E::Focus(0), E::Action, E::Action],
+                "focus 0 Count = < 4 >",
+            ),
+            list_case(
+                "focus-1",
+                &[B],
+                vec![E::Close],
+                "focus 1 Difficulty = < Normal >",
+            ),
+        ],
     );
 }
 

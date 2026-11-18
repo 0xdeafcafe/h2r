@@ -28,9 +28,11 @@ use anyhow::{Context, Result, anyhow, bail};
 use map::TagId;
 use tags::ui::{self as tui, MapSource, Rect, UiTag};
 
+use crate::ui_kit::dialog::{self, DialogGeometry, dialog_view};
 use crate::ui_kit::spec::{self, Finding, ListPlace, Room, ScreenSpec};
 use crate::ui_kit::view::{
-    Art, Backing, ItemArt, Justify, Kind, ListAt, Metrics, PaneArt, Synthetic, View, view_of,
+    Art, Backing, Beneath, ItemArt, Justify, Kind, ListAt, Metrics, PaneArt, Synthetic, View,
+    view_of,
 };
 
 /// The Controls screen whose tag our screens are built from.
@@ -133,6 +135,8 @@ pub struct Disc {
     images: RefCell<HashMap<(TagId, i16), Option<Image>>>,
     /// Every screen of `mainmenu.map` by screen id, decoded on first use.
     screens: RefCell<Option<HashMap<i16, tui::Screen>>>,
+    /// The screens drawn beneath modals, drawn once.
+    beneath: RefCell<HashMap<Beneath, Option<Canvas>>>,
 }
 
 impl Disc {
@@ -225,6 +229,7 @@ impl Disc {
             files: RefCell::new(res),
             images: RefCell::new(HashMap::new()),
             screens: RefCell::new(None),
+            beneath: RefCell::new(HashMap::new()),
         })
     }
 
@@ -379,6 +384,44 @@ impl Disc {
                 })
             })
             .collect()
+    }
+
+    /// The large dialog as the disc lays it out: `error_dialog_large`'s
+    /// header layout, panel and text block, and `dialog_live_password`'s
+    /// entry cell ([`DialogGeometry::fallback`] is this, read by `h2 ui`).
+    pub fn dialog_geometry(&self) -> Result<DialogGeometry> {
+        let large = self
+            .screen(dialog::LARGE_SCREEN_ID)
+            .context("no error_dialog_large (screen 240)")?;
+        let password = self
+            .screen(dialog::PASSWORD_SCREEN_ID)
+            .context("no dialog_live_password (screen 21)")?;
+        let layout = large.header_layout();
+        let hl = self.shared.header_layouts[layout];
+        let body = large
+            .panes
+            .first()
+            .and_then(|p| p.text_blocks.first())
+            .context("error_dialog_large has no text block")?;
+        let cell = self
+            .pane_art(&password, 0, |_| true)
+            .into_iter()
+            .find(|a| matches!(a.art, Art::Screen { index, .. } if index == dialog::PASSWORD_CELL))
+            .context("dialog_live_password has no password cell")?;
+        Ok(DialogGeometry {
+            header: hl.header,
+            header_font: self.shared.header_fonts[layout],
+            header_colour: [
+                self.shared.header_color[1],
+                self.shared.header_color[2],
+                self.shared.header_color[3],
+            ],
+            footer: hl.secondary,
+            panel: self.pane_art(&large, 0, |_| true),
+            body_font: body.font,
+            body_colour: body.text_color,
+            cell,
+        })
     }
 
     /// The screen of `mainmenu.map` with screen id `id`.
@@ -640,6 +683,15 @@ impl Disc {
     /// `s` as the builder sees it ([`view_of`]) on this disc's geometry
     /// and fonts.
     pub fn view(&self, s: &ScreenSpec, state: &str) -> Result<View> {
+        if let Some(d) = &s.dialog {
+            return Ok(dialog_view(
+                s,
+                d,
+                &self.dialog_geometry()?,
+                &self.fonts,
+                state,
+            ));
+        }
         Ok(view_of(s, &self.geometry(s.list)?, &self.fonts, state))
     }
 
@@ -723,9 +775,28 @@ impl Source for Disc {
         }))
     }
     fn backing(&self, c: &mut Canvas, b: Backing) {
-        if b == Backing::GameShell {
-            for p in &self.background.panes {
-                self.draw_blocks(c, p.bitmaps.iter());
+        match b {
+            Backing::None => {}
+            Backing::GameShell => {
+                for p in &self.background.panes {
+                    self.draw_blocks(c, p.bitmaps.iter());
+                }
+            }
+            Backing::Over(beneath) => {
+                let mut cache = self.beneath.borrow_mut();
+                let under = cache.entry(beneath).or_insert_with(|| {
+                    self.render_retail(&Retail {
+                        tag: beneath.tag(),
+                        pane: 0,
+                        text: &|_| None,
+                        cells: &[],
+                        footer: None,
+                    })
+                    .ok()
+                });
+                if let Some(under) = under {
+                    c.blit(under, 0, 0);
+                }
             }
         }
     }
@@ -779,6 +850,16 @@ impl Source for SyntheticSource {
         }
     }
     fn backing(&self, c: &mut Canvas, b: Backing) {
+        if let Backing::Over(Beneath::MainMenu) = b {
+            // The game shell, and the main menu's list as boxes on its left.
+            self.backing(c, Backing::GameShell);
+            for i in 0..5 {
+                let top = 120 - i * 30;
+                c.fill(Rect::from_xywh(-250, top, 200, 22), [40, 60, 96, 255]);
+                c.fill(Rect::from_xywh(-240, top - 6, 90, 10), [110, 130, 160, 255]);
+            }
+            return;
+        }
         if b == Backing::GameShell {
             let band = [24, 44, 72, 255];
             c.fill(
@@ -1215,9 +1296,22 @@ impl From<'_> {
             From::Synthetic => Ok(Geometry::fallback(place)),
         }
     }
+    /// `s` in state `state` as a view: a dialog's
+    /// ([`crate::ui_kit::dialog::dialog_view`]) or a list's ([`view_of`]).
+    pub fn view(&self, s: &ScreenSpec, state: &str) -> Result<View> {
+        Ok(match (&s.dialog, self) {
+            (Some(d), From::Disc(disc)) => {
+                dialog_view(s, d, &disc.dialog_geometry()?, self.source(), state)
+            }
+            (Some(d), From::Synthetic) => {
+                dialog_view(s, d, &DialogGeometry::fallback(), self.source(), state)
+            }
+            (None, _) => view_of(s, &self.geometry(s.list)?, self.source(), state),
+        })
+    }
     /// `s` in state `state`: its view and its picture.
     pub fn draw(&self, s: &ScreenSpec, state: &str) -> Result<(View, Canvas)> {
-        let v = view_of(s, &self.geometry(s.list)?, self.source(), state);
+        let v = self.view(s, state)?;
         let c = render_view(&v, self.source());
         Ok((v, c))
     }

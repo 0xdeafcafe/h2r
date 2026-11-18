@@ -103,12 +103,17 @@ async function fail(r: Response): Promise<never> {
   throw new ApiError(r.status, code, message);
 }
 
-async function call(api: string, path: string, aud: string, me: LocalAccount, init: RequestInit, fetchFn: typeof fetch): Promise<unknown> {
-  const token = await issueToken(me, aud, CONTENT_MODERATE);
+/** One admin request with a fresh token for `lxm`; the JSON answer, or an
+ *  ApiError from the server's `{error, message}`. */
+export async function adminCall(api: string, path: string, aud: string, me: LocalAccount, lxm: string, init: RequestInit, fetchFn: typeof fetch): Promise<unknown> {
+  const token = await issueToken(me, aud, lxm);
   const r = await fetchFn(`${api}${path}`, { ...init, headers: { accept: "application/json", authorization: `Bearer ${token}`, ...(init.headers as Record<string, string> | undefined) } });
   if (!r.ok) return fail(r);
   return r.json();
 }
+
+const call = (api: string, path: string, aud: string, me: LocalAccount, init: RequestInit, fetchFn: typeof fetch) =>
+  adminCall(api, path, aud, me, CONTENT_MODERATE, init, fetchFn);
 
 /** Everything to moderate. Null from a server without content (404). */
 export async function fetchContent(api: string, aud: string, me: LocalAccount, fetchFn: typeof fetch = fetch): Promise<ContentList | null> {

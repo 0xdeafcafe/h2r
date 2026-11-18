@@ -54,8 +54,10 @@ pub mod packed;
 #[cfg(feature = "native")]
 pub mod pg;
 pub mod public;
+pub mod ranks;
 pub mod recovery;
 pub mod relay;
+pub mod reports;
 pub mod rt;
 mod sessions;
 pub mod sql;
