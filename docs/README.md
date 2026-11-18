@@ -167,6 +167,7 @@ goals, the two-stage plan, the crate table and milestones.
 - [live-voice.md](live/live-voice.md): voice chat, voice messages and the mute list: how the title does voice, and the host design (design only, not built)
 - [live-gamestate.md](live/live-gamestate.md): retail game-state addresses and layouts for the scoreboard and map
 - [live-telemetry.md](live/live-telemetry.md): `crates/live-telemetry`: hooks into the game, events and frames
+- [replay-fidelity.md](live/replay-fidelity.md): what replays record today (measured), the game clock that stopped the campaign flicker, and a denser tick-exact spectator track for the viewer (design, mostly not built)
 - [live-art.md](live/live-art.md): map geometry and pre-drawn views extracted from the disc for the stats site
 
 ## Editor (`editor/`)
