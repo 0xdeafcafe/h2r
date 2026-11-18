@@ -320,6 +320,9 @@ pub struct InterpBackend<B: Backend> {
     ops: Vec<Op<B>>,
     /// The arrival of the present about to run ([`Backend::stamp_present`]).
     stamp: Option<u64>,
+    /// When the counters were last printed (every 5 s while running, so a
+    /// run stopped by a signal still leaves them in the log).
+    reported: std::time::Instant,
     prev: Option<Frame<B>>,
     cur: Option<Frame<B>>,
     /// Each real surface's private copy.
@@ -366,6 +369,7 @@ impl<B: Backend> InterpBackend<B> {
             shown: Vec::new(),
             ops: Vec::new(),
             stamp: None,
+            reported: std::time::Instant::now(),
             prev: None,
             cur: None,
             private: Vec::new(),
@@ -963,6 +967,21 @@ impl<B: Backend> InterpBackend<B> {
     }
 }
 
+impl<B: Backend> InterpBackend<B> {
+    /// Prints the counters so far once per `every` (a run ended by a signal
+    /// never reaches [`Drop`]).
+    fn report_every(&mut self, every: std::time::Duration) {
+        if self.reported.elapsed() < every {
+            return;
+        }
+        self.reported = std::time::Instant::now();
+        let s = *self.stats.lock().unwrap();
+        if s.frames > 0 {
+            eprintln!("d3d: interpolation so far: {s}");
+        }
+    }
+}
+
 impl<B: Backend> Drop for InterpBackend<B> {
     fn drop(&mut self) {
         let s = *self.stats.lock().unwrap();
@@ -1126,6 +1145,7 @@ where
     }
 
     fn present(&mut self, surface: Self::Surface, flags: u32) -> Result<(), String> {
+        self.report_every(std::time::Duration::from_secs(5));
         self.end_frame(surface, flags, None)
     }
 
@@ -1135,6 +1155,7 @@ where
         flags: u32,
         gamma: Option<&[u8; 768]>,
     ) -> Result<(), String> {
+        self.report_every(std::time::Duration::from_secs(5));
         self.end_frame(surface, flags, gamma)
     }
 
