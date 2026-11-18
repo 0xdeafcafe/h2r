@@ -352,6 +352,10 @@ fn every_level_converts_fresh() {
         print!("{}", r);
         let mut m = Map::from_reader(Cursor::new(done.bytes.clone())).unwrap();
         m.validate_checksum().unwrap();
+        // `tag_group_find` bisects the group table: unsorted, it misses
+        // groups (a10 lost `bitm` and faulted at campaign start).
+        let words: Vec<u32> = m.groups().iter().map(|g| g.class.as_u32()).collect();
+        assert!(words.is_sorted(), "{level}: group table out of order");
         let mem = memory(&mut m);
         let (refs, all_bad) = reference_sweep(&m, &mem);
         // What the pinned conversion of the same level already has (a

@@ -1532,7 +1532,12 @@ impl<'a> Builder<'a> {
         put(&mut index, 0x14, set.index_word_14);
         put(&mut index, 0x18, set.slots.len() as u32);
         index[0x1c..0x20].copy_from_slice(b"sgat");
-        for (i, g) in set.groups.iter().enumerate() {
+        // The engine finds a group by binary search (`tag_group_find`,
+        // 0x122d00, comparing the stored words), so the records go out
+        // sorted whatever order they were declared in, as retail's are.
+        let mut groups = set.groups.clone();
+        groups.sort_by_key(|g| g.class.as_u32());
+        for (i, g) in groups.iter().enumerate() {
             let at = 0x20 + i * 12;
             put(&mut index, at, g.class.as_u32());
             put(
