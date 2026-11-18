@@ -322,3 +322,159 @@ pub fn particle_postprocess(s: &ParticleShader, bitmap: Option<(TagId, u16, u16)
     set(&mut r, "parameter_scalars", Val::Block(list))?;
     Ok(r)
 }
+
+// ------------------------------------------------------------- particles
+//
+// **Particles.** A Halo 1 `part` (root `0x164`; `tests/particles_disc.rs`
+// `halo1_layout_survey`, `particle_root_survey`) becomes a `prt3` on the
+// shader template its framebuffer blend function names: the `u16` at
+// `+0xda` holds 0, 3, 6 or 7 (V), and the particles Halo 2 ships again
+// pair them with Halo 2's stems (V: smoke, blood and debris are 0 and
+// alpha blend in Halo 2; flashes and sparks 3 and additive; ice 7 and
+// alpha-multiply-add, `particle_alpha_multiply_add` holding only
+// `solids\ice`). Its bitmap (`+0x4`) is the stem's one bitmap parameter
+// (`alpha_map_texture`, the name every particle stem's parameter has on
+// the disc), its sprite sequences Halo 1's (`+0x98` first, `+0x9a`
+// initial and `+0x9c` looping counts: one random sequence per particle
+// among them, prt3 flag `0x10`), its collision and death effects
+// (`+0x48`, `+0x58`) converted. The five properties are constants as the
+// base's static particles write them ([`ParticleRole`]): white, opaque,
+// unit size (the emitter scales it), no rotation, the first sprite.
+
+/// Halo 1 `part` root size (V: all 143 distinct tags).
+pub const H1_PART_SIZE: usize = 0x164;
+
+/// A Halo 1 particle, the fields converted.
+#[derive(Clone, Debug, PartialEq)]
+pub struct H1Particle {
+    pub flags: u32,
+    /// `+0x4` bitmap.
+    pub bitmap: Option<H1TagId>,
+    /// `+0x48` collision effect (`effe` or `snd!`), `+0x58` death effect.
+    pub collision_effect: Option<H1TagId>,
+    pub death_effect: Option<H1TagId>,
+    /// `+0x98`, `+0x9a`, `+0x9c`, `+0x9e`: first sequence, then the
+    /// initial, looping and final sequence counts.
+    pub sequences: [u16; 4],
+    /// `+0xda` framebuffer blend function.
+    pub blend: u16,
+}
+
+impl H1Particle {
+    pub fn read(map: &H1Map, tag: &Tag) -> Result<Self> {
+        let b = tag_bytes(map, tag, b"part", H1_PART_SIZE)?;
+        let h = |o: usize| u16::from_le_bytes([b[o], b[o + 1]]);
+        Ok(Self {
+            flags: u32::from_le_bytes(b[0..4].try_into().expect("4")),
+            bitmap: reference(map, b, 0x4),
+            collision_effect: reference(map, b, 0x48),
+            death_effect: reference(map, b, 0x58),
+            sequences: [h(0x98), h(0x9a), h(0x9c), h(0x9e)],
+            blend: h(0xda),
+        })
+    }
+
+    /// The sequences a particle picks from: (first, count).
+    pub fn sequence_range(&self) -> (u16, u16) {
+        (self.sequences[0], (self.sequences[1] + self.sequences[2]).max(1))
+    }
+}
+
+/// The Halo 2 stem for a Halo 1 blend function, and whether the pairing
+/// is proven (V for 0, 3, 7; 6 is drawn additive, unproven).
+pub fn particle_stem(blend: u16) -> (&'static str, bool) {
+    match blend {
+        0 => ("shaders\\shader_templates\\transparent\\particle_alpha_blend", true),
+        3 => ("shaders\\shader_templates\\transparent\\particle_additive", true),
+        7 => ("shaders\\shader_templates\\transparent\\particle_alpha_multiply_add", true),
+        _ => ("shaders\\shader_templates\\transparent\\particle_additive", false),
+    }
+}
+
+/// The base's particle role: its stems' compiled shaders and the root
+/// words of a static particle (the five constant properties, the input
+/// mask, vertex shader, quad and UV window most of the base's particles
+/// with white, opaque, unit-size, unrotated constants hold).
+#[derive(Clone, Debug)]
+pub struct ParticleRole {
+    pub shaders: Vec<ParticleShader>,
+    pub statics: Vec<(&'static str, Val)>,
+}
+
+/// The root fields [`ParticleRole::statics`] holds.
+pub const STATIC_FIELDS: [&str; 9] =
+    ["color", "alpha", "size", "rotation", "frame", "input_mask", "vertex_shader", "quad", "uv_window"];
+
+fn constant(r: &Record, slot: &str) -> Option<[f32; 2]> {
+    let Some(Val::Data(b)) = r.at(&format!("{slot}.function")) else { return None };
+    let f = tags::effects::function::Function::parse(b).ok()?;
+    (f.kind == tags::effects::function::FunctionType::Constant).then_some(f.range)
+}
+
+pub fn particle_role(base: &crate::base::Base) -> Result<Option<ParticleRole>> {
+    use std::collections::BTreeMap;
+    let d = def(b"prt3")?;
+    let mut tally: BTreeMap<String, (usize, Vec<(&'static str, Val)>)> = BTreeMap::new();
+    for t in base.tags.iter().filter(|t| t.1 == FourCC(*b"prt3")) {
+        let r = base.record(d, t.0)?;
+        let white = matches!(r.at("color.function"), Some(Val::Data(b)) if b.get(4..8) == Some(&[0xff; 4][..]));
+        let frame_static = matches!(r.at("frame.function"), Some(Val::Data(b)) if b.is_empty())
+            || constant(&r, "frame") == Some([0.0, 0.0]);
+        if !(white
+            && constant(&r, "alpha") == Some([1.0, 1.0])
+            && constant(&r, "size") == Some([1.0, 1.0])
+            && constant(&r, "rotation") == Some([0.0, 0.0])
+            && frame_static)
+        {
+            continue;
+        }
+        let vals: Vec<_> = STATIC_FIELDS.iter().map(|f| (*f, r.at(f).cloned().unwrap_or(Val::Int(0)))).collect();
+        let e = tally.entry(format!("{vals:?}")).or_insert((0, vals));
+        e.0 += 1;
+    }
+    let Some((_, (_, statics))) = tally.into_iter().max_by_key(|(k, (n, _))| (*n, std::cmp::Reverse(k.clone()))) else {
+        return Ok(None);
+    };
+    Ok(Some(ParticleRole {
+        shaders: particle_shaders(base)?,
+        statics,
+    }))
+}
+
+/// The `prt3` root of a Halo 1 particle on `shader`: its bitmap (converted
+/// tag and first image's size), its collision and death effects
+/// (converted, with their groups).
+pub fn particle(
+    p: &H1Particle,
+    role: &ParticleRole,
+    shader: &ParticleShader,
+    bitmap: Option<(TagId, u16, u16)>,
+    collision_effect: Option<(FourCC, TagId)>,
+    death_effect: Option<(FourCC, TagId)>,
+) -> Result<Block> {
+    let d = def(b"prt3")?;
+    let mut r = defs::default_record(d);
+    let (first, count) = p.sequence_range();
+    set(&mut r, "flags", Val::Int(0x10))?;
+    set(&mut r, "flags_2", Val::Int(0))?;
+    set(&mut r, "first_sequence", Val::Int(first.into()))?;
+    set(&mut r, "sequence_count", Val::Int(count.into()))?;
+    set(&mut r, "shader_template", Val::tag(FourCC(*b"stem"), shader.stem))?;
+    let pd = d.child("parameters").expect("prt3 parameters");
+    let mut x = defs::default_record(pd);
+    set(&mut x, "name", Val::text("alpha_map_texture"))?;
+    set(&mut x, "bitmap", Val::tag(FourCC(*b"bitm"), bitmap.map_or(TagId::NULL, |b| b.0)))?;
+    set(&mut r, "parameters", Val::Block(vec![x]))?;
+    for (f, v) in &role.statics {
+        set(&mut r, f, v.clone())?;
+    }
+    for (f, e) in [("collision_effect", collision_effect), ("death_effect", death_effect)] {
+        let v = match e {
+            Some((g, id)) => Val::tag(g, id),
+            None => Val::tag(FourCC(*b"effe"), TagId::NULL),
+        };
+        set(&mut r, f, v)?;
+    }
+    set(&mut r, "postprocess", Val::Block(vec![particle_postprocess(shader, bitmap)?]))?;
+    defs::to_built(d, &r, &mut |_| None).map_err(|e| Error::Invalid(e.to_string()))
+}

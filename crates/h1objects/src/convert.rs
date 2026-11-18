@@ -757,6 +757,8 @@ pub struct Converter<'a> {
     decal_role: Option<Option<crate::rebuild::DecalRole>>,
     /// Decals being converted (a next-decal chain that loops ends there).
     decals_open: Vec<u32>,
+    /// The base's particle role ([`crate::particles::particle_role`]), once.
+    particle_role: Option<Option<crate::particles::ParticleRole>>,
     /// Scenery role words ([`Self::scenery_role`]), computed once.
     scenery_role: Option<Option<crate::rebuild::SceneryRole>>,
 }
@@ -782,6 +784,7 @@ impl<'a> Converter<'a> {
             loop_index: HashMap::new(),
             light_roles: HashMap::new(),
             decal_role: None,
+            particle_role: None,
             decals_open: Vec::new(),
             dialogue_bytes: 0,
             scenery_role: None,

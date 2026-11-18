@@ -130,6 +130,23 @@ Read field by field since converter version 50 (`h1::Effect`,
 `h1::attachments`): layout and evidence in
 [tag-definitions.md](tag-definitions.md), "Effects from definitions".
 
+### `part` (root `0x164`) as `prt3`
+
+`h1objects::particles::H1Particle` and `Converter::particle`: the stem
+by the framebuffer blend function at `+0xda` (0 alpha blend, 3 additive,
+7 alpha-multiply-add: V, the particles both games ship pair that way; 6,
+on three particles, is drawn additive, unproven), the bitmap (`+0x4`) as
+the stem's `alpha_map_texture` with the compiled shader built from the
+stem ([tag-definitions.md](tag-definitions.md), "The compiled particle
+shader"), Halo 1's sprite sequences (`+0x98` first, `+0x9a + +0x9c`
+counts, one picked per particle), the collision and death effects
+(`+0x48`, `+0x58`). The five properties and the input mask, vertex
+shader, quad and UV window are those of the base's static particles
+(white, opaque, unit size, unrotated, first sprite; the most common
+set). Lifespan, fade, radius and frame animation, physics and the rest
+are emitter-side in Halo 2; no effect spawns a converted particle yet
+(the effect's particle systems need the emitter's spawn rate, below).
+
 ### `cont` (root `0x144`) and contrail attachments
 
 `h1objects::particles::H1Contrail` (since converter version 55): Halo 2's
@@ -478,6 +495,13 @@ builds the map, and reads it back: every object decodes through
 ghost) and `phmo` (cyborg, warthog, ghost); every converted `coll` passes
 `tags::collision::Collision::validate`; and every reference word pair in
 the new tags (136) names a tag of that group in the built map.
+
+`tests/particles_disc.rs`: `every_particle_converts`: every Halo 1
+`part` of the campaign and multiplayer maps (2,301 conversions) reads
+back and writes the same, names its blend function's stem, its bitmap as
+parameter and compiled bitmap, Halo 1's sequences and converted effects.
+`retail_particle_shaders_compile_from_their_stems`: the compiled shader
+rule on 533 retail particles.
 
 `tests/particles_disc.rs`: `every_contrail_converts`: every Halo 1
 `cont` of the campaign and multiplayer maps (191) converts, reads back

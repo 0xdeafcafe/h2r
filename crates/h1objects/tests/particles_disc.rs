@@ -457,3 +457,142 @@ fn retail_particle_shaders_compile_from_their_stems() {
     println!("{same} retail particles compile from their stems ({values_checked} with their values), {animated} with animated parameters not compared");
     assert!(same > 0);
 }
+
+/// Survey: retail `prt3` root words and properties on `H2_BASE`, tallied:
+/// per property slot its input words and function header; the flags,
+/// vertex shader, input mask, quad and UV window. And every Halo 1 `part`
+/// (by name): its flags, sequence and blend words and its floats.
+#[test]
+#[ignore]
+fn particle_root_survey() {
+    use h1objects::base::Base;
+    use tags::defs::{Defs, Val};
+    let mut m = h2_map(&std::env::var("H2_BASE").unwrap_or_else(|_| "05a_deltaapproach".into()));
+    let base = Base::read(&mut m).unwrap();
+    let d = Defs::builtin().group(map::FourCC(*b"prt3")).unwrap();
+    let mut tally: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
+    for t in base.tags.iter().filter(|t| t.1 == map::FourCC(*b"prt3")) {
+        let r = base.record(d, t.0).unwrap();
+        for f in ["flags", "flags_2", "vertex_shader", "first_sequence", "sequence_count", "input_mask", "quad", "uv_window"] {
+            *tally.entry(f.into()).or_default().entry(format!("{:?}", r.at(f).unwrap())).or_default() += 1;
+        }
+        for p in ["color", "alpha", "size", "rotation", "frame"] {
+            let ins: Vec<String> = ["input", "range_input", "output_modifier", "modifier_input"]
+                .iter()
+                .map(|k| format!("{:?}", r.at(&format!("{p}.{k}")).unwrap()))
+                .collect();
+            let f = match r.at(&format!("{p}.function")) {
+                Some(Val::Data(b)) => {
+                    match tags::effects::function::Function::parse(b) {
+                        Ok(h) => format!("{:?} f{:#x} {:?} len {}", h.kind, h.flags, h.range, b.len()),
+                        Err(_) => format!("{} bytes", b.len()),
+                    }
+                }
+                x => format!("{x:?}"),
+            };
+            *tally.entry(format!("{p} inputs")).or_default().entry(ins.join(" ")).or_default() += 1;
+            *tally.entry(format!("{p} function")).or_default().entry(f).or_default() += 1;
+        }
+    }
+    for (k, v) in &tally {
+        let mut v: Vec<_> = v.iter().collect();
+        v.sort_by_key(|x| std::cmp::Reverse(*x.1));
+        println!("{k}:");
+        for (val, n) in v.iter().take(8) {
+            println!("  {n:4} {val}");
+        }
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for (_, m) in h1_maps() {
+        for t in m.tags().iter().filter(|t| t.group == Group::new(b"part")) {
+            if !seen.insert(t.name.clone()) {
+                continue;
+            }
+            let b = m.tag_data(t).unwrap();
+            let h = |o: usize| u16::from_le_bytes([b[o], b[o + 1]]);
+            println!(
+                "part {}: flags {:#x} seq {} {} {} {} orient {} d4 {:#x} blend {} {} dc {:#x} | {}",
+                t.name, u32_at(b, 0), h(0x98), h(0x9a), h(0x9c), h(0x9e), h(0xac), u32_at(b, 0xd4), h(0xd8), h(0xda), u32_at(b, 0xdc),
+                words(b, 0x38, 0x48) + " | " + &words(b, 0x68, 0x94) + " | " + &words(b, 0xa8, 0xac)
+            );
+        }
+    }
+}
+
+/// Every Halo 1 particle of the campaign and multiplayer maps converts to
+/// a `prt3` from the definition: it reads back and writes the same, pins
+/// nothing, names the stem its blend function pairs with (where the base
+/// has it), its converted bitmap as the shader's bitmap parameter and
+/// compiled bitmap, Halo 1's sequences, and converted effects.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn every_particle_converts() {
+    use h1objects::base::Base;
+    use h1objects::convert::Converter;
+    use h1objects::particles::{H1Particle, particle_stem};
+    use tags::defs::{self, Defs, Target, Val};
+    let d = Defs::builtin().group(map::FourCC(*b"prt3")).unwrap();
+    let (mut parts, mut stems_named) = (0usize, BTreeMap::<String, usize>::new());
+    for (base_name, levels) in level_sets() {
+        let mut base_map = h2_map(base_name);
+        let base = Base::read(&mut base_map).unwrap();
+        for level in levels {
+            let Some(m) = h1_level(&level) else { continue };
+            let mut c = Converter::new(&m, &base);
+            let mut got = Vec::new();
+            for t in m.tags().iter().filter(|t| t.group == Group::new(b"part")) {
+                let id = c
+                    .particle(t)
+                    .unwrap_or_else(|e| panic!("{level} {}: {e}", t.name))
+                    .unwrap_or_else(|| panic!("{base_name}: no particle role"));
+                got.push((t, id));
+            }
+            for (t, id) in &got {
+                let name = format!("{level} {}", t.name);
+                let p = H1Particle::read(&m, t).unwrap();
+                let built = &c.tree.tags[id.0 as usize & 0xffff].1;
+                assert_eq!(built.group, map::FourCC(*b"prt3"), "{name}");
+                assert!(built.raw.is_empty());
+                let r = defs::from_built(d, &built.root).unwrap_or_else(|e| panic!("{name}: {e}"));
+                let again = defs::to_built(d, &r, &mut |_| None).unwrap();
+                assert_eq!(defs::from_built(d, &again).unwrap(), r, "{name}: writes the same");
+                let Some(Val::Ref { target: Target::Id(stem), .. }) = r.at("shader_template") else {
+                    panic!("{name}: stem")
+                };
+                let stem_name = base.name(*stem).unwrap().1.to_owned();
+                let want = particle_stem(p.blend).0;
+                if base.find(b"stem", want).is_some() {
+                    assert_eq!(stem_name, want, "{name}");
+                }
+                *stems_named.entry(stem_name).or_default() += 1;
+                let (first, count) = p.sequence_range();
+                assert_eq!(r.at("first_sequence"), Some(&Val::Int(first.into())), "{name}");
+                assert_eq!(r.at("sequence_count"), Some(&Val::Int(count.into())), "{name}");
+                let Some(Val::Block(params)) = r.at("parameters") else { panic!() };
+                let Some(Val::Block(pp)) = r.at("postprocess") else { panic!() };
+                let Some(Val::Block(bitmaps)) = pp[0].at("bitmaps") else { panic!() };
+                let param = match params[0].at("bitmap") {
+                    Some(Val::Ref { target: Target::Id(b), .. }) => Some(*b),
+                    _ => None,
+                };
+                let compiled = match bitmaps[0].at("bitmap") {
+                    Some(Val::Datum(Target::Id(b))) => Some(*b),
+                    _ => None,
+                };
+                assert_eq!(param, compiled, "{name}: bitmap parameter and compiled bitmap");
+                assert_eq!(param.is_some(), p.bitmap.is_some(), "{name}: bitmap");
+                if let Some(b) = param {
+                    assert_eq!(c.tree.tags[b.0 as usize & 0xffff].1.group, map::FourCC(*b"bitm"), "{name}");
+                }
+                for f in ["collision_effect", "death_effect"] {
+                    if let Some(Val::Ref { target: Target::Id(e), .. }) = r.at(f) {
+                        assert!(e.0 & 0xffff_0000 != 0 || base.name(*e).is_some(), "{name}: {f}");
+                    }
+                }
+                parts += 1;
+            }
+        }
+    }
+    println!("{parts} particles converted; stems {stems_named:?}");
+    assert!(parts > 0);
+}
