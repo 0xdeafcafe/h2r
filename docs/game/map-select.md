@@ -86,6 +86,27 @@ list's slots.
   that screen is freed its destructor closes the categories under it, in
   the same window and slot (`lifecycle::AfterClose`). If AL is false, the
   list stays open and logs why.
+- **One point, two pickers.** The campaign picker swaps the loader of
+  another request at the same `0x149f49` (`campaign_menu`). The two never
+  act on the same request, but the feature plan refuses two `before`
+  hooks with no order between them, and the first integration build
+  stopped every boot on it. `map-select`'s hook is declared
+  `after_feature("campaigns")` (it sits inside theirs), and
+  `the_boot_s_features_plan_together_with_the_campaigns` plans the
+  campaigns, their picker, the map select's hook and screens and the
+  Halo 1 Options row together.
+- **The retail press's last call.** After `0x19a6f2`, the retail press
+  calls `0x22e957(3)` on `0x22eeee(list handler)`. `0x22eeee` walks the
+  widget's parents (`+0x10`) to its root, the Change Map screen itself.
+  `0x22e957` builds a message of kind 3 (`0x22e65e`) and hands it to that
+  root and its children (`+0x14` first child, `+0x18` next sibling),
+  through vtable `+0x14` for type-2 widgets. So the message stays inside
+  the pressing screen's own tree and never reaches Game Setup or the
+  lobby. It is how the retail screen leaves; ours leaves through
+  `0x14800c`. The lobby's side of a map change is all in `0x19a6f2`
+  (`0x51098c` and the flag at `0x510819`). So we don't send the message:
+  sending it to our screen would close it a second time. Game Setup
+  coming back on top is the same in both flows.
 - **The retail list's own build**, for reference: `0x19c7e0(array)`
   (stdcall, `ret 4`) collects every used slot's id, sorts them by
   `+0xc4c` (`0x321460` with comparator `0x19c9a0`, which compares the
@@ -142,10 +163,10 @@ Tests (`boot` `map_select::tests`):
    shows the new map. Start a game on it.
 5. Unchecked: whether the second close (`0x14800c` on the same window and
    slot from the maps' destructor) closes the categories, or whether a
-   screen under one that's closing needs something else. Whether
-   `0x19a6f2` alone does all the retail press does: after it, the retail
-   press sends the screen's root event 3 through `0x22eeee` and
-   `0x22e957`, which we don't send (the lobby may need it to refresh).
+   screen under one that's closing needs something else. Whether Game
+   Setup shows the new map's name as soon as it is back on top: the
+   reading above says the retail flow does nothing more for the lobby
+   than `0x19a6f2`.
    Also unchecked: the map list's preview pictures and descriptions,
    which the retail screen shows and ours doesn't, and whether the list's
    flag byte (slot `+0xc50` bit 0, collected separately by `0x19c7e0`) or

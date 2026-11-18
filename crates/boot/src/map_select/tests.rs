@@ -300,3 +300,58 @@ fn only_change_map_s_request_opens_the_categories() {
     assert_eq!(request_loader(0x002b_16f3, CHANGE_MAP_LOADER, ours), None);
     assert_eq!(request_loader(CHANGE_MAP_REQUEST_RET, 0x002b_130a, ours), None);
 }
+
+/// What boot adds when a second campaign and a map list of several
+/// categories are both installed: the campaigns' hooks and picker, the map
+/// select's hook and both its screens, and the Halo 1 Options row on the
+/// same Game Setup. It plans with no refusal: both pickers swap a loader at
+/// `0x149f49`, and a plan with no order between them stopped every boot.
+#[test]
+fn the_boot_s_features_plan_together_with_the_campaigns() {
+    use content::campaign_list::{self as cl, CampaignManifest, FIXTURE, HALO1};
+    let ms = [
+        CampaignManifest::parse(HALO1).unwrap(),
+        CampaignManifest::parse(FIXTURE).unwrap(),
+    ];
+    let campaigns = Arc::new(crate::campaigns::State {
+        built: cl::build(&ms, &[1], &[0x65]).unwrap(),
+        selection: crate::campaigns::Selection::default(),
+        progress: crate::campaigns::Progress::memory(),
+        cards: Default::default(),
+    });
+    let mut r = feature::Registry::new(feature::Switches::defaults());
+    let none: Arc<dyn Fn() -> u32 + Send + Sync> = Arc::new(|| 0);
+    r.add(&crate::campaign_menu::Campaigns {
+        state: Arc::clone(&campaigns),
+        picker: Arc::clone(&none),
+    })
+    .unwrap();
+    r.add(&crate::list_class::ListClass::with_rows(
+        "campaigns-screen",
+        crate::campaign_menu::SCREEN,
+        Arc::new(crate::campaign_menu::PickerRows {
+            picker: crate::campaigns::Picker::new(&campaigns.built),
+            state: Arc::clone(&campaigns),
+        }),
+    ))
+    .unwrap();
+    let sel = Arc::new(Selection::new(sample()));
+    for class in classes(&sel) {
+        r.add(&class).unwrap();
+    }
+    r.add(&MapSelect { loader: none }).unwrap();
+    r.add(&crate::h1_options_row::SetupRow {
+        data_root: std::env::temp_dir(),
+    })
+    .unwrap();
+    let text = match r.build(&feature::Base) {
+        Ok(p) => p.text(),
+        Err(c) => panic!(
+            "refused: {}",
+            c.iter().map(|c| c.to_string()).collect::<Vec<_>>().join("; ")
+        ),
+    };
+    let line = "0x00149f49 SCREEN_REQUEST: before [campaigns:the campaign picker first, \
+                map-select:the map categories first] -> original";
+    assert!(text.contains(line), "{text}");
+}

@@ -596,6 +596,9 @@ pub fn prepare_at_boot(data_root: &Path, disc: &Path) -> Option<Arc<Selection>> 
 /// The hook: Game Setup's Change Map opens the categories in place of the
 /// retail map list (its request's loader swapped, as the campaign picker
 /// does the level select's; window 3 kept).
+/// The feature id.
+pub const FEATURE: &str = "map-select";
+
 pub struct MapSelect {
     /// The categories' loader, once their class is built (0: the retail
     /// list opens).
@@ -604,7 +607,7 @@ pub struct MapSelect {
 
 impl feature::Feature for MapSelect {
     fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new("map-select", "The multiplayer map select by category")
+        feature::Manifest::new(FEATURE, "The multiplayer map select by category")
             .doc("docs/game/map-select.md")
     }
     fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
@@ -623,7 +626,12 @@ impl feature::Feature for MapSelect {
                 eprintln!("map select: opening the map categories in place of the map list");
             }
             Ok(feature::Flow::Continue)
-        });
+        })
+        // The campaign picker swaps another request's loader at the same
+        // point (`campaign_menu`); the two never act on the same request
+        // (return address and loader differ), so either order is right,
+        // but the plan needs one: ours sits inside theirs.
+        .after_feature(crate::campaigns::FEATURE);
         Ok(())
     }
 }
