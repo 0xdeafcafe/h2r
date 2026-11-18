@@ -7,9 +7,9 @@
 //! the level needs Halo 1's own clusters and portals, which have the same
 //! shape in both games (`tests/h1_clusters.rs`):
 //!
-//! - every rendered surface belongs to a Halo 1 cluster through its
+//! - every rendered surface belongs to the Halo 1 clusters whose
 //!   subclusters (cluster `+0x34`, `0x24` each, a surface index block at
-//!   `+0x18`), and becomes part of that cluster's section
+//!   `+0x18`) list it, and becomes part of each one's section
 //!   ([`surface_clusters`], [`pack_clusters`]);
 //! - Halo 1's portals (`sbsp +0x154`, `0x40` each) become Halo 2's
 //!   (`sbsp +0x5c`, `0x24` each) field for field, and each cluster's
@@ -78,22 +78,30 @@ pub fn cluster_count(bsp: &StructureBsp) -> Result<usize> {
         .max(1))
 }
 
-/// The Halo 1 cluster of each of `surfaces` render surfaces: the first
-/// cluster whose subclusters list it (a surface that straddles clusters is
-/// listed by each; Halo 1 draws it once). `None` for a surface no cluster
-/// lists, which Halo 1 never draws. A structure with no clusters has
-/// every surface in cluster 0.
-pub fn surface_clusters(bsp: &StructureBsp, surfaces: usize) -> Result<Vec<Option<u16>>> {
+/// The Halo 1 clusters of each of `surfaces` render surfaces: every
+/// cluster whose subclusters list it, in cluster order. A surface that
+/// crosses a portal is listed by each cluster it is in, and Halo 1 draws
+/// it when any of them is seen; Halo 2 draws a cluster's geometry only
+/// when its flood reaches that cluster, so the surface goes into each
+/// (`tests/portal_flood.rs`, `bloodgulch_surfaces_in_two_clusters`: 760
+/// of Blood Gulch's 5503 surfaces are listed twice, and drawn with the
+/// first cluster only, seen surfaces went missing in 157 of 2556 views
+/// from the spawns; drawn with each, in none). Empty for a surface no
+/// cluster lists, which Halo 1 never draws. A structure with no clusters
+/// has every surface in cluster 0.
+pub fn surface_clusters(bsp: &StructureBsp, surfaces: usize) -> Result<Vec<Vec<u16>>> {
     let clusters = bsp.space.block_at(bsp.root, H1_CLUSTERS, H1_CLUSTER)?;
     if clusters.is_empty() {
-        return Ok(vec![Some(0); surfaces]);
+        return Ok(vec![vec![0]; surfaces]);
     }
-    let mut owner = vec![None; surfaces];
+    let mut owner: Vec<Vec<u16>> = vec![Vec::new(); surfaces];
     for (c, cluster) in clusters.iter().enumerate() {
         for sub in bsp.space.block_at(cluster, H1_SUBCLUSTERS, H1_SUBCLUSTER)? {
             for ix in bsp.space.block_at(sub, H1_SUBCLUSTER_SURFACES, 4)? {
                 if let Some(o) = owner.get_mut(u32_at(ix, 0) as usize) {
-                    o.get_or_insert(c as u16);
+                    if o.last() != Some(&(c as u16)) {
+                        o.push(c as u16);
+                    }
                 }
             }
         }
@@ -330,6 +338,9 @@ pub struct Visibility {
     pub portals: Vec<Portal>,
     /// Per cluster: the portals on its boundary.
     pub clusters: Vec<Vec<u16>>,
+    /// Per cluster: the sky it shows, an index into the scenario's skies
+    /// ([`cluster_skies`]). Empty: every cluster shows sky 0.
+    pub skies: Vec<i8>,
 }
 
 impl Visibility {
@@ -399,10 +410,62 @@ pub fn portals(bsp: &StructureBsp, clusters: usize, planes: usize) -> Result<Vis
         lists.push(list);
     }
     lists.resize(clusters, Vec::new());
+    let skies = cluster_skies(bsp, &portals, clusters)?;
     Ok(Visibility {
         portals,
         clusters: lists,
+        skies,
     })
+}
+
+/// A Halo 1 cluster's sky (`+0x00`, i16): an index into the scenario's
+/// skies, -1 none (`tests/portal_flood.rs`,
+/// `halo1_clusters_name_their_sky`).
+pub const H1_CLUSTER_SKY: usize = 0x00;
+
+/// The sky each converted cluster shows (cluster `+0x6e`). Halo 2 draws
+/// one sky, the camera's cluster's (E `0x0002b865` calls `0x0014b360`,
+/// which reads `+0x6e` of the camera's cluster), where Halo 1 draws the
+/// sky of the clusters it sees. So a cluster keeps Halo 1's sky, and one
+/// with none (an interior) takes the sky of the nearest cluster through
+/// portals that has one: from inside, a window still shows the sky
+/// outside. Clusters no sky reaches, and structures with no clusters,
+/// show sky 0.
+pub fn cluster_skies(bsp: &StructureBsp, portals: &[Portal], clusters: usize) -> Result<Vec<i8>> {
+    let own: Vec<i8> = bsp
+        .space
+        .block_at(bsp.root, H1_CLUSTERS, H1_CLUSTER)?
+        .iter()
+        .map(|c| i8::try_from(i16_at(c, H1_CLUSTER_SKY)).ok().filter(|&s| s >= 0).unwrap_or(-1))
+        .collect();
+    Ok(spread_skies(own, portals, clusters))
+}
+
+/// [`cluster_skies`] over `own` (Halo 1's, -1 none): breadth first from
+/// every cluster with a sky, so each cluster without one takes its
+/// nearest's (fewest portals; on a tie, the one
+/// the search meets first).
+pub fn spread_skies(mut own: Vec<i8>, portals: &[Portal], clusters: usize) -> Vec<i8> {
+    own.resize(clusters, -1);
+    let mut next: Vec<Vec<usize>> = vec![Vec::new(); clusters];
+    for p in portals {
+        let [a, b] = p.clusters.map(usize::from);
+        if a < clusters && b < clusters {
+            next[a].push(b);
+            next[b].push(a);
+        }
+    }
+    let mut queue: std::collections::VecDeque<usize> = (0..clusters).filter(|&c| own[c] >= 0).collect();
+    while let Some(c) = queue.pop_front() {
+        let sky = own[c];
+        for &o in &next[c] {
+            if own[o] < 0 {
+                own[o] = sky;
+                queue.push_back(o);
+            }
+        }
+    }
+    own.into_iter().map(|s| s.max(0)).collect()
 }
 
 /// Each converted cluster's sound zone and each collision leaf's cluster:
@@ -443,19 +506,20 @@ pub fn sound_zones(
     Ok((zones, per_leaf))
 }
 
-/// Splits a material's triangles by the cluster of the surface each is
-/// (`clusters[first + k]` for triangle `k`), dropping those no cluster
-/// lists: one mesh per cluster, each with the material's vertices.
+/// Splits a material's triangles by the clusters of the surface each is
+/// (`clusters[first + k]` for triangle `k`; a triangle goes into each of
+/// its clusters, [`surface_clusters`]), dropping those no cluster lists:
+/// one mesh per cluster, each with the material's vertices.
 pub fn split_by_cluster(
     shader: &str,
     page: Option<u16>,
     vertices: Vec<Vertex>,
     triangles: &[[u32; 3]],
-    clusters: &[Option<u16>],
+    clusters: &[Vec<u16>],
 ) -> Vec<Mesh> {
     let mut by: BTreeMap<u16, Vec<[u32; 3]>> = BTreeMap::new();
-    for (t, c) in triangles.iter().zip(clusters) {
-        if let Some(c) = c {
+    for (t, cs) in triangles.iter().zip(clusters) {
+        for c in cs {
             by.entry(*c).or_default().push(*t);
         }
     }
