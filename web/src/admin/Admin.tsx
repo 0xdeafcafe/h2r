@@ -25,7 +25,7 @@ export default function Admin() {
   return (
     <div class="s-full">
       <Crumbs trail={[["Home", STATS_ROOT], ["Halo Admin"]]} />
-      <Title class="s-title--bar" right={<A class="adm-server-link" href={SERVER_ADMIN}>Server admin ›</A>}>
+      <Title class="s-title--bar" right={<A class="adm-server-link" href={SERVER_ADMIN}>Dashboard server admin ›</A>}>
         Halo Admin
       </Title>
       <div class="adm">

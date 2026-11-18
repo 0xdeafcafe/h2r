@@ -71,7 +71,7 @@ const LABELS: Record<SectionId, () => string> = {
   games: () => "games",
   sessions: () => "find a game",
   friends: () => "friends",
-  clans: () => "clans",
+  teams: () => "teams",
   players: () => "players",
   settings: () => "settings",
   signup: () => (identity.me() ? "profile" : "create account"),
@@ -87,7 +87,7 @@ const menuItems = (): SectionId[] => menuFor(!!identity.me());
  *  players when signed out), as they did in the original Live menu. */
 function menuHome(s: SectionId): SectionId {
   if (menuItems().includes(s)) return s;
-  if (s === "clans") return identity.me() ? "friends" : "players";
+  if (s === "teams") return identity.me() ? "friends" : "players";
   return s === "friends" ? "players" : "settings";
 }
 
@@ -148,7 +148,7 @@ export default function Dashboard() {
     if (!s) return "menu";
     if (s === "games") return "games";
     if (s === "server") return "server";
-    if (s === "friends" || s === "clans") return "social";
+    if (s === "friends" || s === "teams") return "social";
     if (s === "sessions") return "sessions";
     // /dash/recover (and the older /dash/signup/recover): a new device takes
     // an account over; /dash/account (and /dash/signup/recovery): the
@@ -202,7 +202,7 @@ export default function Dashboard() {
   const settings = createMemo(() => [
     { key: "/dash/signup", label: identity.me() ? "profile" : "sign up", glyph: "key" },
     { key: "/dash/games", label: "games", glyph: "disc" },
-    { key: statsPath("/events"), label: "event log", glyph: "history" },
+    { key: adminState.isMeAdmin() === true ? "/dash/admin/events" : statsPath("/events"), label: "event log", glyph: "history" },
     { key: "/dash/server", label: "server", glyph: "server" },
   ] satisfies (Row & { glyph: GlyphName })[]);
 
@@ -382,7 +382,7 @@ export default function Dashboard() {
     else if (s === "server" && params.tag === "import" && !identity.me()) go("/dash/signin", "back");
     else if (s === "server" && params.tag) go("/dash/server", "back");
     else if (s === "signup" || s === "server") go("/dash/settings", "back");
-    else if (s === "clans") go(`/dash/${menuHome("clans")}`, "back");
+    else if (s === "teams") go(`/dash/${menuHome("teams")}`, "back");
     else go("/", "back");
   }
 
@@ -703,7 +703,7 @@ export default function Dashboard() {
           </Match>
 
           <Match when={screen() === "social"}>
-            <SocialScreen section={section() as "friends" | "clans"} tag={params.tag ? safeDecode(params.tag) : undefined} go={go} back={back} bind={(f) => { screenAct = f; }} />
+            <SocialScreen section={section() as "friends" | "teams"} tag={params.tag ? safeDecode(params.tag) : undefined} go={go} back={back} bind={(f) => { screenAct = f; }} />
           </Match>
 
           <Match when={screen() === "signins"}>
