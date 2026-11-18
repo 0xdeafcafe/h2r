@@ -647,6 +647,9 @@ impl crate::ui_kit::spec::Describe for Page {
         s.style = ValueStyle::Inline;
         s.description = Some(crate::skulls_menu::DESCRIPTION_TEXT.into());
         s.footer = true;
+        // Six rows (gravity, grenades, teams and the three scales): the
+        // list scrolls where its room is shorter.
+        s.scrolls = true;
         s.prompts = vec![
             Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Change"),
             Prompt::new(&[Glyph::B], "Back"),
