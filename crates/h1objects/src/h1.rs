@@ -1012,3 +1012,45 @@ impl Light {
         self.cutoff_angle > 0.0 && self.cutoff_angle < std::f32::consts::PI - 1e-3
     }
 }
+
+/// Halo 1 `deca` (`0x10c`, no blocks). V (`halo1_group_word_survey`, 270
+/// decals on six maps): `+0` flags (u16) and `+2` kind (u16, 0 to 3),
+/// `+4` layer (0 to 3), `+8` the next decal, `+0x18` radius bounds,
+/// `+0x34` and `+0x40` two colours (red, green, blue), `+0x78` lifetime
+/// and `+0x80` decay time bounds (seconds), `+0xd8` the bitmap, `+0xfc`
+/// 16.0 on every decal. The order is Halo 2's (`tags::defs` `deca`).
+pub const DECA_SIZE: usize = 0x10c;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Decal {
+    pub flags: u16,
+    pub kind: u16,
+    pub layer: u16,
+    pub next: Option<TagId>,
+    pub radius: [f32; 2],
+    pub colour_lower: [f32; 3],
+    pub colour_upper: [f32; 3],
+    pub lifetime: [f32; 2],
+    pub decay_time: [f32; 2],
+    pub bitmap: Option<TagId>,
+    pub maximum_sprite_extent: f32,
+}
+
+impl Decal {
+    pub fn read(map: &H1Map, tag: &Tag) -> Result<Self> {
+        let b = tag_bytes(map, tag, b"deca", DECA_SIZE)?;
+        Ok(Self {
+            flags: u16_at(b, 0),
+            kind: u16_at(b, 2),
+            layer: u16_at(b, 4),
+            next: reference(map, b, 8),
+            radius: bounds(b, 0x18),
+            colour_lower: vec3(b, 0x34),
+            colour_upper: vec3(b, 0x40),
+            lifetime: bounds(b, 0x78),
+            decay_time: bounds(b, 0x80),
+            bitmap: reference(map, b, 0xd8),
+            maximum_sprite_extent: f32_at(b, 0xfc),
+        })
+    }
+}

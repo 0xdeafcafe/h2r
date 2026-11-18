@@ -2010,3 +2010,78 @@ pub fn light(l: &h1::Light, role: Option<&LightRole>) -> Result<Block> {
     }
     built(d, &r)
 }
+
+/// The base map's decals as a role: the majority layer, maximum
+/// overlapping count and `+0x18` scale word (the turret rule, no retail
+/// value in the source). `None` when the base has no decal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DecalRole {
+    pub layer: u16,
+    pub max_overlapping: u16,
+    pub scale_18: u32,
+}
+
+pub fn decal_role(base: &crate::base::Base) -> Result<Option<DecalRole>> {
+    let d = def(b"deca")?;
+    let mut tallies: [std::collections::BTreeMap<u32, usize>; 3] = Default::default();
+    let mut n = 0;
+    for t in base.tags.iter().filter(|t| t.1 == FourCC(*b"deca")) {
+        let b = base.head(t.0, d.size.into())?;
+        n += 1;
+        *tallies[0].entry(u16::from_le_bytes([b[4], b[5]]).into()).or_default() += 1;
+        *tallies[1].entry(u16::from_le_bytes([b[6], b[7]]).into()).or_default() += 1;
+        *tallies[2].entry(crate::base::u32_at(&b, 0x18)).or_default() += 1;
+    }
+    if n == 0 {
+        return Ok(None);
+    }
+    let top = |t: &std::collections::BTreeMap<u32, usize>| {
+        *t.iter()
+            .max_by_key(|(w, c)| (**c, std::cmp::Reverse(**w)))
+            .expect("some")
+            .0
+    };
+    Ok(Some(DecalRole {
+        layer: top(&tallies[0]) as u16,
+        max_overlapping: top(&tallies[1]) as u16,
+        scale_18: top(&tallies[2]),
+    }))
+}
+
+/// A Halo 1 decal written from the `deca` definition, no retail template
+/// read: Halo 1's flags, kind, radius, colours, lifetime, decay time and
+/// sprite extent (the two hold them in the same order), the converted
+/// next decal and bitmap, and the role's layer, overlap count and scale
+/// ([`DecalRole`]; Halo 1's layer enumeration is not Halo 2's).
+pub fn decal(
+    x: &h1::Decal,
+    next: Option<TagId>,
+    bitmap: Option<TagId>,
+    role: Option<&DecalRole>,
+) -> Result<Block> {
+    let d = def(b"deca")?;
+    let mut r = defs::default_record(d);
+    set(&mut r, "flags", Val::Int(x.flags.into()))?;
+    set(&mut r, "kind", Val::Int(x.kind.into()))?;
+    let role = role.copied().unwrap_or(DecalRole {
+        layer: 1,
+        max_overlapping: 8,
+        scale_18: 0.75f32.to_bits(),
+    });
+    set(&mut r, "layer", Val::Int(role.layer.into()))?;
+    set(&mut r, "max_overlapping", Val::Int(role.max_overlapping.into()))?;
+    set(&mut r, "unknown_18", Val::Bytes(role.scale_18.to_le_bytes().to_vec()))?;
+    set(&mut r, "next_decal", Val::tag(FourCC(*b"deca"), next.unwrap_or(TagId::NULL)))?;
+    set(&mut r, "radius", Val::floats(&x.radius))?;
+    set(&mut r, "colour_lower", Val::floats(&x.colour_lower))?;
+    set(&mut r, "colour_upper", Val::floats(&x.colour_upper))?;
+    set(&mut r, "lifetime_bounds", Val::floats(&x.lifetime))?;
+    set(&mut r, "decay_time_bounds", Val::floats(&x.decay_time))?;
+    set(&mut r, "bitmap", Val::tag(FourCC(*b"bitm"), bitmap.unwrap_or(TagId::NULL)))?;
+    set(
+        &mut r,
+        "maximum_sprite_extent",
+        Val::Float(x.maximum_sprite_extent),
+    )?;
+    built(d, &r)
+}

@@ -152,6 +152,7 @@ fn every_effect_rebuilds_from_its_definition() {
     let effe = Group::new(b"effe");
     let (mut effects, mut parts_kept, mut attached) = (0usize, 0usize, 0usize);
     let (mut lit, mut cones) = (0usize, 0usize);
+    let (mut decaled, mut unbitmapped) = (0usize, 0usize);
     let mut left: BTreeMap<String, usize> = BTreeMap::new();
     for (base_name, levels) in sets {
         let mut base_map = h2_map(base_name);
@@ -176,6 +177,11 @@ fn every_effect_rebuilds_from_its_definition() {
             for t in m.tags().iter().filter(|t| t.group == Group::new(b"ligh")) {
                 let id = c.light(t).unwrap_or_else(|e| panic!("{level} {}: {e}", t.name));
                 lights.push((t, id));
+            }
+            let mut decals = Vec::new();
+            for t in m.tags().iter().filter(|t| t.group == Group::new(b"deca")) {
+                let id = c.decal(t).unwrap_or_else(|e| panic!("{level} {}: {e}", t.name));
+                decals.push((t, id));
             }
             let mut vehicles = Vec::new();
             for t in m.tags().iter().filter(|t| t.group == Group::new(b"vehi")) {
@@ -250,6 +256,28 @@ fn every_effect_rebuilds_from_its_definition() {
                 lit += 1;
                 cones += usize::from(l.is_cone());
             }
+            for (t, id) in &decals {
+                let name = format!("{level} {}", t.name);
+                let x = h1::Decal::read(&m, t).unwrap();
+                let got = &tree.tags[id.0 as usize & 0xffff].1;
+                assert_eq!(got.group, FourCC(*b"deca"), "{name}");
+                let r = read_back(got, &name);
+                assert_eq!(r.at("radius"), Some(&Val::floats(&x.radius)), "{name}");
+                assert_eq!(r.at("lifetime_bounds"), Some(&Val::floats(&x.lifetime)), "{name}");
+                for (field, group, h1ref) in [("bitmap", *b"bitm", x.bitmap), ("next_decal", *b"deca", x.next)] {
+                    let (_, tag) = target(&r, field);
+                    match tag {
+                        Some(tag) => assert_eq!(resolve(tree, tag), Some(FourCC(group)), "{name}"),
+                        None => {
+                            assert!(h1ref.is_none() || field == "bitmap", "{name}: {field}");
+                            if h1ref.is_some() {
+                                unbitmapped += 1;
+                            }
+                        }
+                    }
+                }
+                decaled += 1;
+            }
             for (t, id) in &vehicles {
                 let name = format!("{level} {}", t.name);
                 let got = &tree.tags[id.0 as usize & 0xffff].1;
@@ -302,7 +330,7 @@ fn every_effect_rebuilds_from_its_definition() {
         }
     }
     println!(
-        "{effects} effects, {parts_kept} parts kept, {attached} vehicle attachments, {lit} lights ({cones} cones)"
+        "{effects} effects, {parts_kept} parts kept, {attached} vehicle attachments, {lit} lights ({cones} cones), {decaled} decals ({unbitmapped} without their bitmap)"
     );
     for (g, n) in &left {
         println!("{n:8} {g} parts left out");

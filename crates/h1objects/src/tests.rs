@@ -1431,3 +1431,40 @@ fn rebuilt_light_is_halo_1s_sphere_or_cone_with_its_colours() {
     assert_eq!(r.at("cutoff_distance"), Some(&Val::Float(2.5)));
     assert_eq!(r.at("radius"), Some(&Val::Float(0.0)));
 }
+
+#[test]
+fn rebuilt_decal_keeps_halo_1s_fields_and_the_roles_layer() {
+    use crate::h1::Decal;
+    use crate::rebuild::{DecalRole, decal};
+    use tags::defs::{self, Defs, Target, Val};
+    let x = Decal {
+        flags: 8,
+        kind: 2,
+        layer: 0,
+        next: None,
+        radius: [0.1, 0.2],
+        colour_lower: [0.1, 0.2, 0.3],
+        colour_upper: [0.4, 0.5, 0.6],
+        lifetime: [10.0, 12.0],
+        decay_time: [1.0, 2.0],
+        bitmap: None,
+        maximum_sprite_extent: 16.0,
+    };
+    let role = DecalRole {
+        layer: 3,
+        max_overlapping: 5,
+        scale_18: 0.5f32.to_bits(),
+    };
+    let d = Defs::builtin().group(FourCC(*b"deca")).unwrap();
+    let root = decal(&x, Some(local(1)), Some(local(2)), Some(&role)).unwrap();
+    let r = defs::from_built(d, &root).unwrap();
+    assert_eq!(r.at("flags"), Some(&Val::Int(8)));
+    assert_eq!(r.at("kind"), Some(&Val::Int(2)));
+    assert_eq!(r.at("layer"), Some(&Val::Int(3)));
+    assert_eq!(r.at("max_overlapping"), Some(&Val::Int(5)));
+    assert_eq!(r.at("radius"), Some(&Val::floats(&[0.1, 0.2])));
+    assert_eq!(r.at("decay_time_bounds"), Some(&Val::floats(&[1.0, 2.0])));
+    assert_eq!(r.at("maximum_sprite_extent"), Some(&Val::Float(16.0)));
+    assert!(matches!(r.at("bitmap"), Some(Val::Ref { target: Target::Id(id), .. }) if *id == local(2)));
+    assert!(matches!(r.at("next_decal"), Some(Val::Ref { target: Target::Id(id), .. }) if *id == local(1)));
+}

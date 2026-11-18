@@ -740,6 +740,10 @@ pub struct Converter<'a> {
     loop_index: HashMap<u32, Option<usize>>,
     /// Light role words per kind ([`crate::rebuild::light_role`]).
     light_roles: HashMap<u32, Option<crate::rebuild::LightRole>>,
+    /// The base's decal role ([`crate::rebuild::decal_role`]), once.
+    decal_role: Option<Option<crate::rebuild::DecalRole>>,
+    /// Decals being converted (a next-decal chain that loops ends there).
+    decals_open: Vec<u32>,
 }
 
 impl<'a> Converter<'a> {
@@ -759,7 +763,48 @@ impl<'a> Converter<'a> {
             sound_index: HashMap::new(),
             loop_index: HashMap::new(),
             light_roles: HashMap::new(),
+            decal_role: None,
+            decals_open: Vec::new(),
         }
+    }
+
+    /// A Halo 1 decal from the `deca` definition
+    /// ([`crate::rebuild::decal`]), converted once, with its next decal and
+    /// its bitmap (`h1bitmaps`).
+    pub fn decal(&mut self, tag: &Tag) -> Result<TagId> {
+        if let Some(id) = self.done.get(&tag.id.0) {
+            return Ok(*id);
+        }
+        let x = h1::Decal::read(self.h1, tag)?;
+        self.decals_open.push(tag.id.0);
+        let next = match x.next {
+            Some(n) if !self.decals_open.contains(&n.0) => {
+                let t = self.h1_tag(n)?;
+                Some(self.decal(t)?)
+            }
+            _ => None,
+        };
+        self.decals_open.pop();
+        let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
+        let bitmap = x.bitmap.and_then(|b| self.bitmap(b));
+        if x.bitmap.is_some() && bitmap.is_none() {
+            rep.no_home.push("bitmap: did not convert".into());
+        }
+        if self.decal_role.is_none() {
+            self.decal_role = Some(crate::rebuild::decal_role(self.base)?);
+        }
+        let root = crate::rebuild::decal(&x, next, bitmap, self.decal_role.flatten().as_ref())?;
+        self.tree.reports.push(rep);
+        let id = self.tree.push(
+            &tag.name,
+            Converted {
+                group: FourCC(*b"deca"),
+                root,
+                raw: Vec::new(),
+            },
+        );
+        self.done.insert(tag.id.0, id);
+        Ok(id)
     }
 
     /// A Halo 1 light from the `ligh` definition
@@ -861,6 +906,16 @@ impl<'a> Converter<'a> {
                 (Some(id), b"snd!") => {
                     let t = self.h1_tag(id)?;
                     self.sound(t, &mut rep)
+                }
+                (Some(id), b"deca") => {
+                    let t = self.h1_tag(id)?;
+                    match self.decal(t) {
+                        Ok(x) => Some(x),
+                        Err(err) => {
+                            rep.no_home.push(format!("deca {}: not converted ({err})", t.name));
+                            None
+                        }
+                    }
                 }
                 (Some(id), b"ligh") => {
                     let t = self.h1_tag(id)?;
