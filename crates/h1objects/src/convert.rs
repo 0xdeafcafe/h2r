@@ -1457,9 +1457,21 @@ impl<'a> Converter<'a> {
         } else {
             None
         };
+        let markers = match u.object.model {
+            Some(m) => {
+                h1models::model_from_map(self.h1, self.h1_tag(m)?, &ModelOptions::default())?
+                    .0
+                    .markers
+                    .into_iter()
+                    .map(|m| m.name)
+                    .collect()
+            }
+            None => Vec::new(),
+        };
         let parts = BipedParts {
             counterpart: Some(counterpart),
             hud,
+            markers,
         };
         let root = crate::rebuild::biped(u, hlmt, &predicted, words, &parts)?;
         let taken = crate::rebuild::reference_fields(bipd_def)

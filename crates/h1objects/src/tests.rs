@@ -1292,9 +1292,11 @@ fn rebuilt_biped_is_sized_to_halo_1_and_takes_its_counterparts_references() {
     c.set("unit.block_e8", Val::Block(vec![e])).unwrap();
     let hud = map::TagId(0xfffd_0007);
     let hlmt = map::TagId(0xfffd_0001);
+    // The model has Halo 1's head and right hand markers, but no left.
     let parts = BipedParts {
         counterpart: Some(c),
         hud: Some(vec![hud, hud]),
+        markers: vec!["head".into(), "right hand".into(), "body".into()],
     };
     let root =
         crate::rebuild::biped(&unit, Some(hlmt), &[], &RoleWords::default(), &parts).unwrap();
@@ -1310,6 +1312,16 @@ fn rebuilt_biped_is_sized_to_halo_1_and_takes_its_counterparts_references() {
     assert_eq!(id("unit.obje.foot_ref_54"), foot);
     assert_eq!(id("unit.block_e8[0].ref_0"), track);
     assert_eq!(id(&format!("{BIPD_HUD}[1].ref_0")), hud);
+    // The camera at the head, a weapon in the right hand; no left hand
+    // marker, so none named.
+    let text = |p: &str| match r.at(p) {
+        Some(Val::String(defs::Str::Text(t))) => Some(t.clone()),
+        Some(Val::String(defs::Str::Null)) | None => None,
+        x => panic!("{p}: {x:?}"),
+    };
+    assert_eq!(text("unit.string_d4").as_deref(), Some("head"));
+    assert_eq!(text("unit.string_158").as_deref(), Some("right hand"));
+    assert_eq!(text("unit.string_15c"), None);
     let f = |p: &str| match r.at(p) {
         Some(Val::Bytes(b)) => f32::from_le_bytes(b[..4].try_into().unwrap()),
         x => panic!("{p}: {x:?}"),
