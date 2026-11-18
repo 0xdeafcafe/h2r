@@ -87,18 +87,44 @@ pub enum Got {
 /// Unauthenticated GETs on the Live API (`path` like `/maps/<id>`).
 pub trait Fetch {
     fn get(&self, path: &str, cap: u64) -> Result<Got, String>;
+    /// [`Fetch::get`] as the signed-in account, so the server counts a
+    /// download (`GET /v1/maps/{id}` with a fresh `read` token,
+    /// docs/live/live-api.md "The mod repository"). Without an account it
+    /// is a plain GET.
+    fn get_counted(&self, path: &str, cap: u64) -> Result<Got, String> {
+        self.get(path, cap)
+    }
 }
 
+/// A fresh single-use `read` bearer token for each call, `None` when there
+/// is no account to make one for.
+pub type Reader = std::sync::Arc<dyn Fn() -> Option<String> + Send + Sync>;
+
 /// [`Fetch`] over HTTP with `ureq`, against an API base like
-/// `http://host:8074/v1`.
+/// `http://host:8074/v1`; `reader` makes the token of a counted GET.
 pub struct HttpFetch<'a> {
     pub agent: &'a ureq::Agent,
     pub api: &'a str,
+    pub reader: Option<Reader>,
 }
 
 impl Fetch for HttpFetch<'_> {
     fn get(&self, path: &str, cap: u64) -> Result<Got, String> {
-        match self.agent.get(&format!("{}{path}", self.api)).call() {
+        self.send(path, cap, None)
+    }
+    fn get_counted(&self, path: &str, cap: u64) -> Result<Got, String> {
+        let token = self.reader.as_ref().and_then(|r| r());
+        self.send(path, cap, token)
+    }
+}
+
+impl HttpFetch<'_> {
+    fn send(&self, path: &str, cap: u64, token: Option<String>) -> Result<Got, String> {
+        let mut req = self.agent.get(&format!("{}{path}", self.api));
+        if let Some(t) = token {
+            req = req.set("authorization", &format!("Bearer {t}"));
+        }
+        match req.call() {
             Ok(resp) => {
                 let mut bytes = Vec::new();
                 resp.into_reader()
@@ -350,6 +376,7 @@ impl MapGate {
             Need::Local(dir) => {
                 self.activate(&dir, map_id)?;
                 self.installed(&dir);
+                self.count(f, map_id);
                 return Ok(Some(dir));
             }
             Need::Download { answer, bytes } => (answer, bytes),
@@ -405,7 +432,21 @@ impl MapGate {
         }
         self.activate(&dir, map_id)?;
         self.installed(&dir);
+        self.count(f, map_id);
         Ok(Some(dir))
+    }
+
+    /// Tells the server this account has the map now: the manifest asked
+    /// for again as a counted GET ([`Fetch::get_counted`]). The server
+    /// counts each account once per package, so a reinstall or a second
+    /// join adds nothing. Its answer is not needed; a failure only goes
+    /// uncounted.
+    fn count(&self, f: &dyn Fetch, map_id: Option<MapId>) {
+        if let Some(id) = map_id
+            && let Err(e) = f.get_counted(&format!("/maps/{id}"), MAX_JSON)
+        {
+            eprintln!("live: map {id}: the download was not counted: {e}");
+        }
     }
 
     /// Names `dir` in `active.toml` for its map, so the vfs serves it
@@ -476,11 +517,16 @@ mod tests {
     struct Server {
         answers: HashMap<String, Got>,
         asked: Mutex<Vec<String>>,
+        counted: Mutex<Vec<String>>,
     }
     impl Fetch for Server {
         fn get(&self, path: &str, _cap: u64) -> Result<Got, String> {
             self.asked.lock().unwrap().push(path.into());
             Ok(self.answers.get(path).cloned().unwrap_or(Got::NotFound))
+        }
+        fn get_counted(&self, path: &str, cap: u64) -> Result<Got, String> {
+            self.counted.lock().unwrap().push(path.into());
+            self.get(path, cap)
         }
     }
 
@@ -650,6 +696,8 @@ mod tests {
         assert_eq!(std::fs::read(dir.join("patches/snipers.ips")).unwrap(), patch);
         assert_eq!(g.package_of(&id), Some(dir.clone()));
         assert_eq!(*told.lock().unwrap(), std::slice::from_ref(&dir), "the boot is told");
+        let manifest = format!("/maps/{id}");
+        assert_eq!(*s.counted.lock().unwrap(), [manifest.clone()], "the download is counted once installed");
         let active = std::fs::read_to_string(maps.join("active.toml")).unwrap();
         assert!(active.contains(&format!("lockout = \"live-{}\"", &id.to_string()[..16])), "{active}");
         // Installed already: nothing is fetched again.
@@ -658,6 +706,8 @@ mod tests {
         assert_eq!(g.install(&s, id, &mut |d, t| again.push((d, t))).unwrap(), dir);
         assert!(again.is_empty());
         assert!(!s.asked.lock().unwrap().iter().any(|p| p.starts_with("/content/")));
+        // Asked again (the server counts an account once per package).
+        assert_eq!(s.counted.lock().unwrap().len(), 2);
         std::fs::remove_dir_all(&maps).unwrap();
     }
 
@@ -668,6 +718,7 @@ mod tests {
         let m = modded(patch);
         let s = server_with(&m, patch);
         let err = gate(&maps, false).install(&s, MapId::of(&m), &mut |_, _| {}).unwrap_err();
+        assert!(s.counted.lock().unwrap().is_empty(), "nothing installed: nothing counted");
         assert_eq!(
             err,
             Refusal::NoBase {

@@ -660,6 +660,13 @@ game" below.
   Download row shows "Downloading N%" after each layer, then "Installed".
   A refusal says why: "Needs Lockout from your disc", "Taken down", "Not
   on the server", or "Failed; press A to retry" (the reason on stderr).
+- **The download count.** Once a package is installed (or found here
+  already), the gate asks for its manifest again with a fresh single-use
+  `read` token of the first account signed in (`Fetch::get_counted`,
+  `maps::Reader`), and the server counts that account once per package
+  (docs/live/live-api.md "The mod repository"). A join that installs the
+  session's map counts the same way; a search's check never does. A
+  reinstall adds nothing; a failed count is only logged.
 - **The map select.** The installed package is served for its base map at
   that map's next open. The map select's Mods category is read at boot,
   so a map installed this session is listed there after a restart; until

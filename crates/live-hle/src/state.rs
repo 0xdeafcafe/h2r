@@ -880,9 +880,11 @@ impl State {
             .content_api(
                 &session,
                 Box::new(move |r| match r {
-                    Ok(Reply::Content { api, gate: Some(gate) }) => {
-                        crate::mods::spawn_install(api, gate, id, progress, done)
-                    }
+                    Ok(Reply::Content {
+                        api,
+                        gate: Some(gate),
+                        reader,
+                    }) => crate::mods::spawn_install(api, gate, reader, id, progress, done),
                     Ok(Reply::Content { gate: None, .. }) => done(Err(ModsError::Offline)),
                     Ok(_) => done(Err(ModsError::Server("no content API".into()))),
                     Err(code) => done(Err(crate::mods::server_error(code))),

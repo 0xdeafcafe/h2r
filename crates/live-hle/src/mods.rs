@@ -85,11 +85,12 @@ pub fn server_error(code: u32) -> ModsError {
 }
 
 /// Installs `id` through `gate` from the API at `api`, on a thread of its
-/// own (a big map must not hold up the Live worker). `done` is called once
-/// either way.
+/// own (a big map must not hold up the Live worker), counting the download
+/// with `reader`'s tokens. `done` is called once either way.
 pub(crate) fn spawn_install(
     api: String,
     gate: std::sync::Arc<crate::maps::MapGate>,
+    reader: Option<crate::maps::Reader>,
     id: MapId,
     mut progress: Progress,
     done: InstallDone,
@@ -108,6 +109,7 @@ pub(crate) fn spawn_install(
             let fetch = crate::maps::HttpFetch {
                 agent: &agent,
                 api: &api,
+                reader,
             };
             let result = gate
                 .install(&fetch, id, &mut |d, t| progress(d, t))

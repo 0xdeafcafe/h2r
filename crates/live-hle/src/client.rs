@@ -122,6 +122,8 @@ pub(crate) enum Reply {
     Content {
         api: String,
         gate: Option<Arc<crate::maps::MapGate>>,
+        /// Tokens for the counted manifest GET (the download count).
+        reader: Option<crate::maps::Reader>,
     },
 }
 #[derive(Clone)]
@@ -790,6 +792,17 @@ impl Worker {
             bytes: bytes.into(),
         })
     }
+    /// Fresh single-use `read` tokens for the first account signed in on
+    /// this console, for a GET that counts a mod download
+    /// ([`crate::maps::Fetch::get_counted`]); `None` when signed out.
+    fn reader(&self) -> Option<crate::maps::Reader> {
+        let server = self.connection.as_ref()?.id.clone();
+        let user = self.active.as_ref()?.users.values().next()?.clone();
+        let author = self.author(&user);
+        Some(Arc::new(move || {
+            Some(issue_token(&user.key, &author, &server, lxm::READ, now()))
+        }))
+    }
     fn team_json<T: DeserializeOwned>(&self, user: &Identity, path: &str) -> Result<T, Error> {
         serde_json::from_slice(&self.retried(
             || self.request("GET", path, user, lxm::READ),
@@ -1017,6 +1030,8 @@ impl Worker {
         let fetch = crate::maps::HttpFetch {
             agent: &self.agent,
             api: &c.api,
+            // A join that installs the map counts as its download.
+            reader: join.then(|| self.reader()).flatten(),
         };
         let result = if join {
             gate.prepare(&fetch, &s.advertisement).map(|dir| {
@@ -1600,6 +1615,7 @@ impl Worker {
                 Ok(Reply::Content {
                     api,
                     gate: self.maps.clone(),
+                    reader: self.reader(),
                 })
             }
             Work::Wake => Ok(Reply::Done),
