@@ -14,7 +14,7 @@ const CATEGORY: Record<string, string> = {
   AccountCreated: "account", GamertagReserved: "account", TitleFilePublished: "file",
   SignedIn: "presence", PresenceChanged: "presence", SignedOut: "presence", PresenceExpired: "presence",
   GameStarted: "game", PlayerJoined: "game", PlayerLeft: "game", PlayerKilled: "kill", ScoreChanged: "score",
-  GameFrame: "frame", GameEnded: "game",
+  GameFrame: "frame", FrameChunk: "frame", GameEnded: "game",
 };
 
 export default function Events() {
@@ -160,6 +160,7 @@ function summary(e: WireEvent): string {
       const f = recordedFrame(d);
       return f ? `tick ${f.tick}, ${f.players.length} players` : `tick ${d.tick}`;
     }
+    case "FrameChunk": return `ticks ${d.from_tick}–${d.to_tick}, ${d.frames} frames, ${Math.round(Number(d.bytes) / 1024)} KiB`;
     case "GameEnded": {
       const w = d.winner as { team?: number; player?: number } | null | undefined;
       const who = w ? (w.team !== undefined ? `team ${w.team} won` : `slot ${w.player} won`) : "no winner";
