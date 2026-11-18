@@ -73,15 +73,24 @@ impl Halo1Objects for Objects<'_> {
         ObjectTags {
             hud_swaps,
             count: tags.len(),
+            // The tags first, at the datums the placements name; the
+            // sounds they play once the collections are in after them.
             install: Box::new(move |set| {
                 Tree {
                     tags: tags.clone(),
+                    ..Tree::default()
+                }
+                .install_tags(set)
+                .map_err(|e| e.to_string())
+            }),
+            after: Box::new(move |set, ids| {
+                Tree {
                     sounds: sounds.clone(),
                     loops: loops.clone(),
                     ..Tree::default()
                 }
-                .install(set)
-                .map_err(|e| e.to_string())
+                .install_audio_for(set, ids);
+                Ok(())
             }),
             notes,
         }

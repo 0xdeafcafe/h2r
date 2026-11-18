@@ -500,12 +500,19 @@ impl Tree {
 
     /// Adds every tag to `set` (built from the base map the tree was made
     /// on), in order, in the slots after the set's last, and returns their
-    /// datums; then the sounds ([`Tree::install_audio`]) after them, so
-    /// the tags' datums are known before installing (the Halo 1 sandbox's
-    /// placements name them).
+    /// datums; then the sounds after them ([`Tree::install_audio_for`]).
     pub fn install(mut self, set: &mut TagSet) -> Result<Vec<TagId>> {
-        let mut sounds = std::mem::take(&mut self.sounds);
-        let mut loops = std::mem::take(&mut self.loops);
+        let ids = self.install_tags(set)?;
+        self.install_audio_for(set, &ids);
+        Ok(ids)
+    }
+
+    /// The tags alone of [`Tree::install`]: added in order in the slots
+    /// after the set's last, their datums returned, their sound
+    /// placeholders left for [`Tree::install_audio_for`]. The Halo 1
+    /// sandbox adds its collections between the two, so the tags and the
+    /// collections hold the datums its placements name.
+    pub fn install_tags(&mut self, set: &mut TagSet) -> Result<Vec<TagId>> {
         let first = set.slots.len();
         let ids: Vec<TagId> = (0..self.tags.len())
             .map(|k| {
@@ -523,10 +530,15 @@ impl Tree {
                 )));
             }
         }
-        std::mem::swap(&mut self.sounds, &mut sounds);
-        std::mem::swap(&mut self.loops, &mut loops);
+        Ok(ids)
+    }
+
+    /// Adds the sounds and looping sounds after whatever `set` holds now
+    /// and points the placeholders of the tags installed at `ids`
+    /// ([`Tree::install_tags`]) at them.
+    pub fn install_audio_for(&mut self, set: &mut TagSet, ids: &[TagId]) {
         let (sounds, loops) = self.audio_ids(set, true);
-        for id in &ids {
+        for id in ids {
             if let Some(TagPayload::Built(root)) =
                 set.slots[id.index()].tag.as_mut().map(|e| &mut e.payload)
             {
@@ -534,7 +546,6 @@ impl Tree {
                 rewrite_audio(root, LOOP, &loops);
             }
         }
-        Ok(ids)
     }
 }
 

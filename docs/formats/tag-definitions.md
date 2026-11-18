@@ -989,7 +989,14 @@ for every decal).
 `every_map_builds_in_both_sandboxes_with_the_objects_sounds`): every
 multiplayer map on the disc through `h2 import halo1`'s path in both
 sandboxes (26 builds), every attachment of every converted vehicle (587)
-naming a tag of its group in the built map.
+naming a tag of its group in the built map. The placements name the
+objects and the collections after them by datum, so the sounds the
+objects play go in last: `ObjectTags::install` adds the tags alone
+(`Tree::install_tags`) and `ObjectTags::after`, run once the collections
+are in, adds the sounds and points the tags at them
+(`Tree::install_audio_for`). The cli's
+`every_multiplayer_job_builds_in_both_sandboxes` builds every map through
+the import's own job function (`DiscConverter::multiplayer`).
 
 ### Dialogue (`udlg`)
 
