@@ -581,6 +581,7 @@ fn motion(guest: &Guest, kind: u8, body: u32, weapon: Option<u32>) -> Motion {
         .then(|| guest.u8(body + layout::BIPED_HITBOX_OFFSET).ok())
         .flatten()
         .map(|t| t as i8);
+    let havok = havok_body(guest, body).ok().flatten();
     Motion {
         velocity,
         crouch,
@@ -594,7 +595,34 @@ fn motion(guest: &Guest, kind: u8, body: u32, weapon: Option<u32>) -> Motion {
         biped_flags,
         airborne_ticks,
         hitbox_offset,
+        havok,
     }
+}
+
+/// The first Havok rigid body's world position and linear velocity, as
+/// `0x001d08e0` and `0x000dc67d` read them; `None` without a body or when
+/// a value is not finite.
+fn havok_body(guest: &Guest, body: u32) -> ReadResult<Option<([f64; 3], [f64; 3])>> {
+    let index = guest.u32(body + layout::BODY_PHYSICS)?;
+    if index == u32::MAX {
+        return Ok(None);
+    }
+    let array = guest.u32(layout::PHYSICS_COMPONENTS_PTR)?;
+    let data = guest.u32(array + layout::DATUM_DATA)?;
+    let component = data.wrapping_add((index & 0xffff) * layout::PHYSICS_COMPONENT_SIZE);
+    let bodies = guest.u32(component + layout::COMPONENT_BODIES)?;
+    let rigid = guest.u32(bodies + layout::COMPONENT_BODY_RIGID)?;
+    if rigid == 0 {
+        return Ok(None);
+    }
+    let motion = guest.u32(rigid + layout::RIGID_MOTION)?;
+    let pos = vector(guest, motion + layout::MOTION_POSITION)?;
+    let vel = vector(guest, motion + layout::MOTION_VELOCITY)?;
+    Ok(pos
+        .iter()
+        .chain(&vel)
+        .all(|c| c.is_finite())
+        .then_some((pos, vel)))
 }
 
 /// The animation the object whose data is at `body` plays: its animation
@@ -2061,7 +2089,34 @@ mod tests {
         guest
             .set_u8(body + layout::BIPED_AIRBORNE_TICKS, 9)
             .unwrap();
+        // A Havok body: component 3 of the array, its first rigid body.
+        let (array, data, bodies, rigid, motion) =
+            (0x17_0000, 0x17_1000, 0x17_4000, 0x17_5000, 0x17_6000);
+        guest
+            .set_u32(body + layout::BODY_PHYSICS, 0xe003_0003)
+            .unwrap();
+        guest
+            .set_u32(layout::PHYSICS_COMPONENTS_PTR, array)
+            .unwrap();
+        guest.set_u32(array + layout::DATUM_DATA, data).unwrap();
+        guest
+            .set_u32(
+                data + 3 * layout::PHYSICS_COMPONENT_SIZE + layout::COMPONENT_BODIES,
+                bodies,
+            )
+            .unwrap();
+        guest
+            .set_u32(bodies + layout::COMPONENT_BODY_RIGID, rigid)
+            .unwrap();
+        guest.set_u32(rigid + layout::RIGID_MOTION, motion).unwrap();
+        guest
+            .set_f32(motion + layout::MOTION_POSITION + 8, -3.25)
+            .unwrap();
+        guest
+            .set_f32(motion + layout::MOTION_VELOCITY + 8, 12.5)
+            .unwrap();
         let m = object(&guest, unit).unwrap().unwrap().motion;
+        assert_eq!(m.havok, Some(([0.0, 0.0, -3.25], [0.0, 0.0, 12.5])));
         assert_eq!(m.unit_flags, Some(layout::UNIT_FLAG_CROUCH | 1));
         assert_eq!(m.biped_flags, Some(0x0201));
         assert_eq!(m.airborne_ticks, Some(9));

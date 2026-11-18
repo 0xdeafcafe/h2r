@@ -645,6 +645,12 @@ pub struct Physics {
     /// of that counter, world units (the body is at origin z minus this).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hitbox_offset: Option<f64>,
+    /// The object's first Havok rigid body: where the physics has it,
+    /// which can differ from `pos` (where it is drawn).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub havok_pos: Option<[f64; 3]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub havok_velocity: Option<[f64; 3]>,
 }
 
 /// Field names a query's `fields` may keep (`id` and `kind` are always
