@@ -924,10 +924,10 @@ pub(crate) fn h2_base(disc: &Path, name: &str) -> Result<map::Map<Cursor<Vec<u8>
 
 /// The first step of a multiplayer conversion: `h1` (whose file bytes are
 /// `file`) onto `base` in `sandbox`.
-pub(crate) fn prepare_mp(
+pub(crate) fn prepare_mp<R: Read + Seek>(
     h1: &H1Map,
     file: &[u8],
-    base: &mut map::Map<Cursor<Vec<u8>>>,
+    base: &mut map::Map<R>,
     base_name: &str,
     sandbox: Sandbox,
 ) -> Result<h1convert::convert::Prepared> {

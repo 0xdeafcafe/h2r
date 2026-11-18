@@ -512,6 +512,15 @@ fn panic_text(p: &Box<dyn std::any::Any + Send>) -> String {
         .unwrap_or_else(|| "(no message)".into())
 }
 
+/// Bytes several jobs read.
+struct Shared(Arc<Vec<u8>>);
+
+impl AsRef<[u8]> for Shared {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
 /// A Halo 1 map shared by the jobs that convert it.
 #[derive(Default)]
 struct H1Entry {
@@ -588,9 +597,9 @@ impl DiscConverter {
         }
     }
 
-    /// A Halo 2 map from the Halo 2 disc, opened on its own copy of the
-    /// bytes (the conversion changes it).
-    fn h2_base(&self, name: &str) -> Result<map::Map<Cursor<Vec<u8>>>> {
+    /// A Halo 2 map from the Halo 2 disc, opened on the bytes the jobs
+    /// share (a conversion reads its base, never writes it).
+    fn h2_base(&self, name: &str) -> Result<map::Map<Cursor<Shared>>> {
         let cell = self
             .bases
             .lock()
@@ -609,7 +618,7 @@ impl DiscConverter {
             .as_ref()
             .map_err(|e| anyhow!("{e}"))?;
         h1map::phase::time("open halo 2 base", || {
-            map::Map::from_reader(Cursor::new(bytes.as_ref().clone()))
+            map::Map::from_reader(Cursor::new(Shared(bytes.clone())))
                 .with_context(|| format!("reading {name}.map"))
         })
     }
@@ -838,7 +847,9 @@ pub fn import(r: &Request, say: &mut dyn FnMut(String)) -> Result<Summary> {
         );
     }
     let (size, mtime) = size_mtime(r.h1_iso)?;
-    let old = if r.force { None } else { Stamp::read(r.data) };
+    // With `--force` too: its outcomes are dropped below, but an
+    // unchanged disc's hash is still good.
+    let old = Stamp::read(r.data);
     if old
         .as_ref()
         .is_none_or(|o| o.size != size || o.mtime != mtime)
