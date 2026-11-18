@@ -753,13 +753,13 @@ fn h2_kind<R: std::io::Read + std::io::Seek>(map: &mut Map<R>, id: TagId) -> Opt
     }
 }
 
-/// Every texture a rebuilt shader binds is the kind (2D, cube, volume)
-/// its stem samples at that slot: the slot's kind on every retail
-/// instance of the stem (Halo 2 disc, one kind per slot), the base's
-/// default bitmaps the layout names, and every Halo 1 map each Halo 1
-/// shader (and each fallback) puts in a slot. A cube in a slot the stem
-/// samples as 2D stops the draw (`bumpenvmap needs a D2 texture, bound
-/// Cube`).
+/// Every texture a rebuilt shader binds is a kind (2D, cube, volume)
+/// its stem samples at that slot: a kind retail instances of the stem
+/// bind there (Halo 2 disc; one kind per slot, except `water_pool`'s
+/// reflection, a cube on 5 and 2D on 9), for the base's default bitmaps
+/// the layout names and every Halo 1 map each Halo 1 shader (and each
+/// fallback) puts in a slot. A cube in a slot the stem samples as 2D
+/// stops the draw (`bumpenvmap needs a D2 texture, bound Cube`).
 #[test]
 #[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
 fn every_rebuilt_bitmap_is_its_slots_retail_kind() {
@@ -804,9 +804,8 @@ fn every_rebuilt_bitmap_is_its_slots_retail_kind() {
         }
     }
     let mut failures = Vec::new();
-    let slot_kind = |stem: &str, k: usize| -> Option<TextureKind> {
-        let kinds = retail.get(stem)?.get(&k)?;
-        (kinds.len() == 1).then(|| kinds[0])
+    let slot_kinds = |stem: &str, k: usize| -> Option<Vec<TextureKind>> {
+        retail.get(stem)?.get(&k).cloned()
     };
     for l in shad::LAYOUTS {
         let Some(slots) = retail.get(l.stem) else {
@@ -814,14 +813,15 @@ fn every_rebuilt_bitmap_is_its_slots_retail_kind() {
             continue;
         };
         for (k, kinds) in slots {
-            if kinds.len() != 1 {
+            let mixed = l.stem == shad::WATER_POOL.stem && *k == 1;
+            if kinds.len() != 1 && !mixed {
                 failures.push(format!("{} slot {k}: retail kinds {kinds:?}", l.stem));
             }
         }
         eprintln!(
             "{}: {:?}",
             l.stem.rsplit('\\').next().unwrap(),
-            (0..l.bitmaps.len()).map(|k| slot_kind(l.stem, k)).collect::<Vec<_>>()
+            (0..l.bitmaps.len()).map(|k| slot_kinds(l.stem, k)).collect::<Vec<_>>()
         );
     }
     // The base's default bitmaps.
@@ -841,8 +841,8 @@ fn every_rebuilt_bitmap_is_its_slots_retail_kind() {
             };
             let id = find(&base, f.path()).unwrap_or_else(|| panic!("coagulation lacks {}", f.path()));
             let got = h2_kind(&mut base, id);
-            if let Some(want) = slot_kind(l.stem, k)
-                && got != Some(want)
+            if let Some(want) = slot_kinds(l.stem, k)
+                && !got.is_some_and(|g| want.contains(&g))
             {
                 failures.push(format!("{} slot {k}: default {} is {got:?}, retail {want:?}", l.stem, f.path()));
             }
@@ -876,11 +876,11 @@ fn every_rebuilt_bitmap_is_its_slots_retail_kind() {
                         failures.push(format!("{name}: {}: {role:?} has no slot", tag.name));
                         continue;
                     };
-                    let (Some(want), got) = (slot_kind(c.layout.stem, k), h1_kind(&h1, m.bitmap)) else {
+                    let (Some(want), got) = (slot_kinds(c.layout.stem, k), h1_kind(&h1, m.bitmap)) else {
                         continue;
                     };
                     checked += 1;
-                    if got != Some(want) {
+                    if !got.is_some_and(|g| want.contains(&g)) {
                         let bname = h1.tag(m.bitmap).map(|t| t.name.clone()).unwrap_or_default();
                         failures.push(format!(
                             "{name}: {} on {}: {role:?} slot {k} wants {want:?}, {bname} is {got:?}",
