@@ -81,6 +81,7 @@ pub mod ui;
 pub mod ui_kit;
 pub mod ui_watch;
 pub mod bot_glue;
+pub mod clankers;
 pub mod video_screen;
 pub mod snapshot_probe;
 pub mod sse;
@@ -982,6 +983,10 @@ pub fn run_hosted_with_live(
     if opts.xapi {
         bot_glue::add_from_env();
         bot_glue::install(&mut features, &opts.data_root).context("installing the bots")?;
+        // The Clankers page and its Game Setup row (stage 7).
+        if let Some(store) = host.settings.as_ref() {
+            clankers::install(&mut features, store).context("installing the Clankers page")?;
+        }
     }
     // The iOS touch controls' game side (docs/runtime/ios.md): direct
     // look into player one's facing, and the layout from player one's

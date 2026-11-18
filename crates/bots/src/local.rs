@@ -28,8 +28,14 @@ pub const ID_BASE: u64 = 0xc1a4_0000;
 
 /// What a source sees each frame.
 pub struct Frame<'a> {
-    /// Frames since the glue started, for timing.
+    /// Frames since the glue started: once a rendered frame, menus
+    /// included.
     pub frame: u64,
+    /// The game's tick (30 a second) while a game is loaded, `None` in the
+    /// menus ([`crate::guest::game_tick`]). Ticks are not frames: a slow
+    /// frame runs several, a fast one may run none, and they restart with
+    /// each game. Time a script by ticks to match the simulation.
+    pub tick: Option<u32>,
     /// The port the bot is on (where the input manager put it).
     pub port: u8,
     /// The game's memory, to read what the bot sees.
@@ -263,11 +269,13 @@ impl Local {
     /// One frame: asks each placed bot's source for its pad.
     /// `joining(port)` says whether that port's bot should be signing in.
     pub fn frame(&self, frame: u64, guest: &dyn GuestMemory, joining: impl Fn(u8) -> bool) {
+        let tick = crate::guest::game_tick(guest);
         let mut s = self.lock();
         for b in &mut s.bots {
             let Some(port) = b.port else { continue };
             let f = Frame {
                 frame,
+                tick,
                 port,
                 guest,
                 joining: joining(port),

@@ -757,6 +757,15 @@ pub static ALL: &[&Def] = &[
     &crate::skulls_mp::MP_FAMINE,
     &crate::skulls_mp::MP_BLIND,
     &crate::skulls_mp::MP_LOW_GRAVITY,
+    // The Clankers page of a custom game's Game Setup (crate::clankers,
+    // docs/game/bots.md section 7).
+    &crate::clankers::ENABLED,
+    &crate::clankers::COUNT,
+    &crate::clankers::DIFFICULTY,
+    &crate::clankers::TEAM,
+    &crate::clankers::AGGRESSION,
+    &crate::clankers::AIM_STYLE,
+    &crate::clankers::TAUNTS,
 ];
 
 /// `H2_PAD_SPEAKER` as the controller-speaker settings read it: `0`, `1`,
