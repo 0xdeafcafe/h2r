@@ -67,6 +67,7 @@ impl Halo1Objects for Objects<'_> {
                 Tree {
                     tags: tags.clone(),
                     reports: Vec::new(),
+                    hud_swaps: Vec::new(),
                 }
                 .install(set)
                 .map_err(|e| e.to_string())

@@ -242,12 +242,13 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
         eprintln!("player representation {e}: {name}");
         player = id;
     }
-    // The player's HUD carries Halo 1's health meter (docs/game/health.md
-    // "HUD"): every HUD interface names the converted nhdt, which has the
-    // shield meter and, after it, a widget on the body input with the
-    // shield meter's state flags and anchor, drawing the sword battery's
-    // strip just above it.
+    // The player's HUD is Halo 1's (docs/game/hud.md): every HUD
+    // interface names the converted unhi's nhdt, whose widgets draw Halo
+    // 1's own HUD bitmaps (converted, so named as on the Halo 1 disc)
+    // through Halo 2's HUD shaders, the meters on the shield and body
+    // inputs, every widget behind the shield meter's state flags.
     {
+        use h1objects::h1hud;
         use h1objects::health_hud::{self as hh, widget};
         let space = out.metadata_space().unwrap();
         let meta = out
@@ -265,68 +266,52 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
             w(&unit, hh::UNIT_HUD_INTERFACES + 4),
             count * hh::HUD_INTERFACE_SIZE,
         );
+        let h1_bitmaps: std::collections::HashSet<String> = h1
+            .tags()
+            .iter()
+            .filter(|t| t.group == h1map::Group::new(b"bitm"))
+            .map(|t| t.name.clone())
+            .collect();
         for i in 0..count {
             let id = TagId(w(&huds, i * hh::HUD_INTERFACE_SIZE + 4));
             let (grp, name) = &names[&id];
             assert_eq!(*grp, FourCC(*b"nhdt"));
-            assert!(name.ends_with(hh::NHDT_SUFFIX), "interface {i}: {name}");
+            assert!(name.ends_with(h1hud::NHDT_SUFFIX), "interface {i}: {name}");
             let root = bytes(
                 out.tag(id).unwrap().location.unwrap().address,
                 hh::NHDT_ROOT,
             );
+            // Bitmap widgets only.
+            assert!(root[0x10..hh::NHDT_ROOT].iter().all(|b| *b == 0), "{name}");
             let n = w(&root, hh::NHDT_BITMAP_WIDGETS) as usize;
+            assert!(n >= 4, "{name}: {n} widgets");
             let widgets = bytes(
                 w(&root, hh::NHDT_BITMAP_WIDGETS + 4),
                 n * hh::BITMAP_WIDGET_SIZE,
             );
-            let shield = hh::shield_meter(&widgets).expect("a shield meter");
-            let s = &widgets[shield * hh::BITMAP_WIDGET_SIZE..][..hh::BITMAP_WIDGET_SIZE];
-            let health: Vec<&[u8]> = widgets
-                .as_chunks::<{ hh::BITMAP_WIDGET_SIZE }>()
-                .0
-                .iter()
-                .filter(|x| x[widget::INPUTS] == hh::INPUT_BODY)
-                .map(|x| x.as_slice())
-                .collect();
-            assert_eq!(health.len(), 1, "{name}: one body widget");
-            let h = health[0];
-            assert_eq!(
-                h[widget::STATE..0x20],
-                s[widget::STATE..0x20],
-                "{name}: the shield's gate"
-            );
-            let name_of = |at: usize| &names[&TagId(w(h, at + 4))].1;
-            assert_eq!(name_of(widget::BITMAP), hh::STRIP_BITMAP, "{name}");
-            assert_eq!(name_of(widget::SHADER), hh::STRIP_SHADER, "{name}");
-            // The strip and the shield meter as the HUD places them: the
-            // bitmaps' first images, registered at the top left, the strip
-            // GAP pixels above the shield meter in every screen mode.
-            let image = |r: &[u8], at: usize| {
-                let bitm = TagId(w(r, at + 4));
-                let root = bytes(
-                    out.tag(bitm).unwrap().location.unwrap().address,
-                    hh::BITM_IMAGES + 8,
+            let mut inputs = Vec::new();
+            for x in widgets.as_chunks::<{ hh::BITMAP_WIDGET_SIZE }>().0 {
+                let name_of = |at: usize| names[&TagId(w(x, at + 4))].clone();
+                let (bg, bitmap) = name_of(widget::BITMAP);
+                let (sg, shader) = name_of(widget::SHADER);
+                assert_eq!(bg, FourCC(*b"bitm"));
+                assert_eq!(sg, FourCC(*b"shad"));
+                assert!(h1_bitmaps.contains(&bitmap), "{name}: {bitmap} is Halo 1's");
+                assert_eq!(x[widget::STATE..widget::STATE_END], h1hud::STATE);
+                assert_eq!(x[widget::SPECIAL..widget::SPECIAL + 2], [0, 0]);
+                let input = x[widget::INPUTS];
+                let want = if input == 0 { h1hud::STATIC_SHADER } else { h1hud::METER_SHADER };
+                assert_eq!(shader, want, "{name}: {bitmap}");
+                inputs.push(input);
+                eprintln!(
+                    "{name}: {bitmap} seq {} input {input} anchor {} offset {:?}",
+                    x[widget::SEQUENCES],
+                    x[widget::ANCHOR],
+                    hh::offset(x, widget::OFFSETS[0])
                 );
-                let im = bytes(w(&root, hh::BITM_IMAGES + 4), hh::BITM_IMAGE_SIZE);
-                let half = |o: usize| i16::from_le_bytes([im[o], im[o + 1]]);
-                (half(4), half(6))
-            };
-            assert_eq!(image(h, widget::BITMAP), hh::STRIP_SIZE, "{name}");
-            assert_eq!(image(s, widget::BITMAP), hh::SHIELD_SIZE[0], "{name}");
-            assert!(
-                s[widget::REGISTRATION..widget::REGISTRATION_END]
-                    .iter()
-                    .all(|b| *b == 0),
-                "{name}: the shield meter is registered at its top left"
-            );
-            for (mode, at) in widget::OFFSETS.iter().enumerate() {
-                let strip = hh::Rect::at(hh::offset(h, *at), hh::STRIP_SIZE);
-                let shield = hh::Rect::at(hh::offset(s, *at), hh::SHIELD_SIZE[mode]);
-                assert!(!strip.overlaps(&shield), "{name} mode {mode}");
-                assert_eq!(shield.y0 - strip.y1, hh::GAP, "{name} mode {mode}");
-                eprintln!("{name} mode {mode}: strip {strip:?}, shield {shield:?}");
             }
-            eprintln!("player HUD interface {i}: {name}, health widget after {n} widgets");
+            assert!(inputs.contains(&hh::INPUT_SHIELD), "{name}: a shield meter");
+            assert!(inputs.contains(&hh::INPUT_BODY), "{name}: a health meter");
         }
     }
     assert_eq!(

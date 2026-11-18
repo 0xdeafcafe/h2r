@@ -100,6 +100,20 @@ pub struct Variant {
     /// variants"). Not part of the `MapId`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub precision: Vec<Swap>,
+    /// HUD references the HUD setting switches in this map at game start
+    /// (`boot::hud`; docs/game/hud.md). Not part of the `MapId`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hud: Vec<HudSwap>,
+}
+
+/// One `hud` swap: the `bipd` or `weap` datum `owner` names `nhdt` datum
+/// `halo1` for Halo 1's HUD and `halo2` for Halo 2's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HudSwap {
+    pub owner: u32,
+    pub halo1: u32,
+    pub halo2: u32,
 }
 
 /// One `precision` swap: every netgame item naming tag datum `from` names

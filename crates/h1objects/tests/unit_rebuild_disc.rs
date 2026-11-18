@@ -29,7 +29,7 @@
 //!   of its group; no reference the template path held is lost where the
 //!   counterpart has one; a physics model built from Halo 1's collision
 //!   wherever the template path had one (none for a biped with no
-//!   collision); the player's HUD is health-meter copies.
+//!   collision); the player's HUD is Halo 1's (`h1hud`).
 
 use std::collections::{BTreeMap, HashSet};
 use std::fs::File;
@@ -917,7 +917,8 @@ fn bipeds_rebuilt_against_the_template_path() {
                 );
             }
 
-            // The player: the HUD interfaces are health-meter copies.
+            // The player: the HUD interfaces name Halo 1's HUD, written
+            // from scratch (docs/game/hud.md).
             if player {
                 players += 1;
                 let Some(Val::Block(hud)) = r.at(BIPD_HUD) else {
@@ -933,7 +934,7 @@ fn bipeds_rebuilt_against_the_template_path() {
                         panic!("{}: a HUD interface", t.name)
                     };
                     let name = &c.tree.tags[id.0 as usize & 0xffff].0;
-                    assert!(name.ends_with(h1objects::health_hud::NHDT_SUFFIX), "{name}");
+                    assert!(name.ends_with(h1objects::h1hud::NHDT_SUFFIX), "{name}");
                     assert_eq!(local(&c.tree, *id).unwrap().group, FourCC(*b"nhdt"));
                 }
             }

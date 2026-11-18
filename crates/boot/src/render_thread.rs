@@ -54,6 +54,7 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     ("h1-health", "BODY_RESTORE", AFTER),
     ("h1-health", "GAME_ACTIVATE", AFTER),
     ("h1-precision", "GAME_ACTIVATE", AFTER),
+    ("h1-hud", "GAME_ACTIVATE", AFTER),
     ("level-boot", "GAME_ACTIVATE", AFTER),
     ("aim-assist", "GAME_ACTIVATE", AFTER),
     ("aim-assist", "PLAYER_CONTROL_UPDATE", AFTER),
@@ -103,6 +104,7 @@ mod tests {
         crate::skulls_custom::install(&mut r, store.clone(), None, None).unwrap();
         crate::health::install(&mut r).unwrap();
         crate::precision::install(&mut r, std::path::Path::new("")).unwrap();
+        crate::hud::install(&mut r, std::path::Path::new("")).unwrap();
         crate::aim_assist::install(&mut r, store).unwrap();
         r.add(&feature::leaves::EngineLeaves).unwrap();
         r.add(&feature::render_timing::RenderTiming::new()).unwrap();

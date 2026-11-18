@@ -30,6 +30,7 @@ pub mod fallback;
 pub mod fov_row;
 pub mod game_glue;
 pub mod health;
+pub mod hud;
 pub mod precision;
 pub mod render_thread;
 pub mod host_perf;
@@ -912,6 +913,9 @@ pub fn run_hosted_with_live(
     // (docs/game/h1-multiplayer.md): the battle rifle for the SMG at game
     // activation, from the swaps each package's manifest records.
     precision::install(&mut features, &packages).context("installing the precision swaps")?;
+    // Halo 1's or Halo 2's HUD on converted Halo 1 maps (docs/game/hud.md):
+    // the player's HUD references at game activation, from `hud::mode`.
+    hud::install(&mut features, &packages).context("installing the HUD swap")?;
     // Stronger aim assist (docs/game/aim-assist.md): the weapons' autoaim and
     // magnetism at each map load, from the Aim Assist setting (Auto: Strong
     // while the touch controls show). Headless runs keep retail.

@@ -151,6 +151,7 @@ fn tree_placeholders_become_datums() {
             ("invented\\c".into(), tag(b"weap", &[(8, local(1))])),
         ],
         reports: Vec::new(),
+        hud_swaps: Vec::new(),
     };
     let check = |set: TagSet, ids: &[TagId]| {
         let (bytes, _) = set.build().unwrap();

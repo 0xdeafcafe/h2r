@@ -580,6 +580,9 @@ impl Prepared {
                     to: to.0,
                 })
                 .collect(),
+            // The player's HUD pairs (h1objects `Tree::hud_swaps`) are not
+            // carried to the package yet: Halo 1's HUD shows (docs/game/hud.md).
+            hud: Vec::new(),
         };
         // Parsed from text so the manifest's own checks run on it.
         let text = format!(

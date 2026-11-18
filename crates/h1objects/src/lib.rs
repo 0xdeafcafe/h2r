@@ -39,6 +39,7 @@ pub mod base;
 pub mod coll;
 pub mod convert;
 pub mod h1;
+pub mod h1hud;
 pub mod health_hud;
 pub mod physics;
 pub mod query;
