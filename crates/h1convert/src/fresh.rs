@@ -113,6 +113,9 @@ impl Prepared {
             }
         }
         let mut report = unpin_all(&pinned, &mut src, &mut fresh, &[section], &bounds, false)?;
+        if let Some(scenery) = &self.scenery {
+            put_scenery(&mut fresh, scenery)?;
+        }
         // The precision swaps' collections are named by no placement: kept
         // for `boot::precision` to swap in at game start.
         let keep: Vec<TagId> = self.applied.precision.iter().map(|p| p.1).collect();
@@ -708,6 +711,38 @@ fn scenario<R: Read + Seek>(
         .tag_mut(id)
         .ok_or(Error::Invalid("no scenario slot"))?
         .payload = TagPayload::Built(root);
+    Ok(())
+}
+
+/// Writes Halo 1's scenery into the fresh set's scenario
+/// ([`crate::convert::halo1::Scenery`]): its palette and placements replace
+/// the scenario's, which the conversion emptied of the base's placements.
+/// The scenario is a built tree here, so the blocks take any size.
+pub fn put_scenery(set: &mut TagSet, scenery: &crate::convert::halo1::Scenery) -> Result<()> {
+    use crate::convert::halo1::{SCENERY_PALETTE, SCENERY_PLACEMENTS};
+    let scenario = set.scenario;
+    let Some(TagPayload::Built(root)) = set.tag_mut(scenario).map(|t| &mut t.payload) else {
+        return Err(Error::Invalid("the fresh scenario is not a built tree"));
+    };
+    root.fixups
+        .retain(|f| f.offset != SCENERY_PALETTE && f.offset != SCENERY_PLACEMENTS);
+    for at in [SCENERY_PALETTE, SCENERY_PLACEMENTS] {
+        root.bytes[at as usize..at as usize + 8].fill(0);
+    }
+    if !scenery.palette.is_empty() {
+        root.block(
+            SCENERY_PALETTE,
+            scenery.palette.len() as u32,
+            scenery.palette_block(),
+        );
+    }
+    if !scenery.placements.is_empty() {
+        root.block(
+            SCENERY_PLACEMENTS,
+            scenery.placements.len() as u32,
+            scenery.placements_block(),
+        );
+    }
     Ok(())
 }
 

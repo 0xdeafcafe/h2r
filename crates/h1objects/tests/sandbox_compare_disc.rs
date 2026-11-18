@@ -45,7 +45,11 @@ fn fresh(sandbox: Sandbox) -> Vec<u8> {
         let mut objects = Objects::new(&h1, &templates);
         prepare_halo1(&h1, sha, &mut base, &mut objects).unwrap()
     } else {
-        h1convert::convert::prepare(&h1, sha, &mut base, sandbox).unwrap()
+        {
+            let templates = Base::read(&mut base).unwrap();
+            let mut objects = Objects::new(&h1, &templates);
+            h1convert::convert::halo1::prepare_halo2(&h1, sha, &mut base, &mut objects).unwrap()
+        }
     };
     let mopp = structure_mopp(&p.collision).unwrap();
     p.build_fresh(&mut base, &mopp).unwrap().bytes

@@ -410,7 +410,11 @@ fn bloodgulch_shaders_all_have_their_compiled_postprocess_in_both_sandboxes() {
             let mut objects = Objects::new(&h1, &templates);
             prepare_halo1(&h1, sha, &mut base, &mut objects).unwrap()
         } else {
-            h1convert::convert::prepare(&h1, sha, &mut base, sandbox).unwrap()
+            {
+            let templates = Base::read(&mut base).unwrap();
+            let mut objects = Objects::new(&h1, &templates);
+            h1convert::convert::halo1::prepare_halo2(&h1, sha, &mut base, &mut objects).unwrap()
+        }
         };
         let mopp = structure_mopp(&p.collision).unwrap();
         let fresh = p.build_fresh(&mut base, &mopp).unwrap();
@@ -574,7 +578,11 @@ fn every_fresh_map(
                 let mut objects = Objects::new(&h1, &templates);
                 prepare_halo1(&h1, sha, &mut base, &mut objects)
             } else {
-                h1convert::convert::prepare(&h1, sha, &mut base, sandbox)
+                {
+                let templates = Base::read(&mut base).unwrap();
+                let mut objects = Objects::new(&h1, &templates);
+                h1convert::convert::halo1::prepare_halo2(&h1, sha, &mut base, &mut objects)
+            }
             }
             .unwrap_or_else(|e| panic!("{name} {sandbox:?}: {e}"));
             let mopp = structure_mopp(&p.collision).unwrap();
@@ -668,5 +676,61 @@ fn every_starting_location_stands_on_the_converted_floor() {
             }
         }
     });
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// Halo 1's scenery in both sandboxes' fresh maps: the scenario's scenery
+/// palette (`+0x58`) is the converted `scen`s, each with a render model,
+/// and every Halo 1 placement whose palette entry converted is placed, at
+/// Halo 1's position, on its entry.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn every_map_places_halo1_s_scenery_in_both_sandboxes() {
+    let mut bad = Vec::new();
+    let mut total = 0;
+    every_fresh_map(|name, sandbox, p, fresh| {
+        let sc = p.scenery.as_ref().expect("scenery planned");
+        let mut out = Map::from_reader(Cursor::new(fresh.bytes.clone())).unwrap();
+        let ctx = tags::object::Context::read(&mut out).unwrap();
+        let s = Scenario::read(&mut out).unwrap();
+        let b = s.block(BlockKind::Scenery);
+        println!(
+            "{name} {sandbox:?}: {} scenery placements on {} palette entries ({} left out)",
+            b.len(),
+            b.palette.len(),
+            sc.dropped
+        );
+        total += b.len();
+        for u in p.applied.unresolved.iter().filter(|u| u.starts_with("scenery")) {
+            println!("{name} {sandbox:?}: not placed: {u}");
+        }
+        if b.len() != sc.placements.len() || b.palette.len() != sc.palette.len() {
+            bad.push(format!(
+                "{name} {sandbox:?}: {} of {} placements, {} of {} palette entries",
+                b.len(),
+                sc.placements.len(),
+                b.palette.len(),
+                sc.palette.len()
+            ));
+            return;
+        }
+        for (k, r) in b.palette.iter().enumerate() {
+            let ok = r.group == FourCC(*b"scen")
+                && ctx
+                    .resolve_object(r.id)
+                    .is_ok_and(|o| o.model.as_ref().is_some_and(|m| m.render_model.is_some()));
+            if !ok {
+                bad.push(format!("{name} {sandbox:?}: palette {k} {r:?}"));
+            }
+        }
+        for i in 0..b.len() {
+            let e = b.entry(i).unwrap();
+            let want = &sc.placements[i];
+            if e[..0x20] != want[..0x20] {
+                bad.push(format!("{name} {sandbox:?}: placement {i} moved"));
+            }
+        }
+    });
+    assert!(total > 0, "no scenery placed");
     assert!(bad.is_empty(), "{bad:#?}");
 }
