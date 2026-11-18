@@ -276,7 +276,12 @@ fn a10_vehicles_without_templates_are_rebuilt() {
             // What unit creation reads: the object type, the model chain,
             // the bounds.
             assert_eq!(r.at("unit.obje.object_type"), Some(&Val::Enum(1)));
-            assert_eq!(r.at("vehicle_type"), Some(&Val::Enum(ROLE_VEHICLE_TYPE)));
+            // Halo 1's vehicle type (the fighterbomber flies; the cryotube,
+            // chairs and Halo ring are turrets).
+            let b = h1.tag_data(t).unwrap();
+            let at = h1objects::rebuild::H1_VEHICLE_TYPE;
+            let h1_type = u16::from_le_bytes([b[at], b[at + 1]]);
+            assert_eq!(r.at("vehicle_type"), Some(&Val::Enum(h1_type.into())));
             let radius = match r.at("unit.obje.bounding_radius") {
                 Some(Val::Float(f)) => *f,
                 _ => panic!(),
@@ -333,8 +338,14 @@ fn a10_vehicles_without_templates_are_rebuilt() {
             assert_eq!(seats.len(), u.seats.len(), "{}: seats", t.name);
             for (k, s) in u.seats.iter().enumerate() {
                 let p = format!("{VEHI_SEATS}[{k}]");
-                assert_eq!(text(&r, &format!("{p}.label")), s.label);
-                assert_eq!(text(&r, &format!("{p}.string_8")), s.marker);
+                assert_eq!(
+                    text(&r, &format!("{p}.label")),
+                    h1models::names::map_name(&s.label).mode
+                );
+                assert_eq!(
+                    text(&r, &format!("{p}.string_8")),
+                    h1objects::coll::sid_name(&s.marker)
+                );
                 assert!(!s.label.is_empty(), "{}: seat {k} has a label", t.name);
             }
             // Predicted resources (every retail vehicle has some): the

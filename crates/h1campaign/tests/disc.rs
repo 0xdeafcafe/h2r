@@ -1497,8 +1497,10 @@ fn no_converted_model_on_any_campaign_level_has_a_none_material() {
 /// entry is the rebuilt cryotube. Read back from the converted map, the
 /// tag decodes through its definition and encodes byte-identical; its
 /// model chain resolves to tags in the map (`hlmt`, then `mode`, `coll`
-/// and `jmad`); it has one seat labelled `CT-driver`, as a10's scripts
-/// name it; and its unit fields are sane.
+/// and `jmad`); it has one seat labelled with the rider's mode for a10's
+/// `CT-driver` (`c_turret_ap_d`, as the converted graphs name it; the
+/// seat table matches the scripts' text to it); and its unit fields are
+/// sane.
 #[test]
 #[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
 fn a10_cryotubes_are_placed_and_built_from_their_definition() {
@@ -1611,7 +1613,7 @@ fn a10_cryotubes_are_placed_and_built_from_their_definition() {
         assert_eq!(seats.len(), 1, "pinned {pinned}: one seat");
         assert_eq!(
             seats[0].get("label"),
-            Some(&Val::String(Str::Text("CT-driver".into())))
+            Some(&Val::String(Str::Text("c_turret_ap_d".into())))
         );
         assert_eq!(
             seats[0].get("string_8"),

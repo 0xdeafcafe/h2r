@@ -553,7 +553,21 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
         crate::rebuild::Predicted::RenderModel(mode),
         crate::rebuild::Predicted::Bitmap(bitmap),
     ];
-    let root = crate::rebuild::vehicle(&obj, Some(hlmt), &[seat], &predicted, 1.2).unwrap();
+    let weapon = map::TagId(0xe001_0005);
+    let markers = vec!["driver".to_string(), "driver enter".to_string()];
+    let seats = [crate::rebuild::seat_names(&seat, &markers)];
+    let root = crate::rebuild::vehicle(&crate::rebuild::VehicleSpec {
+        object: &obj,
+        hlmt: Some(hlmt),
+        seats: &seats,
+        predicted: &predicted,
+        camera_field_of_view: 1.2,
+        vehicle_type: ROLE_VEHICLE_TYPE as u16,
+        flags: 0xdead_00c0,
+        weapons: &[weapon],
+        role: None,
+    })
+    .unwrap();
     let def = Defs::builtin().group(map::FourCC(*b"vehi")).unwrap();
     let got = defs::from_built(def, &root).unwrap();
     // Written again from what was read, it reads back the same and has
@@ -587,8 +601,10 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
     for (p, w) in TURRET_SEAT_ROLE {
         s.set(p, word(*w)).unwrap();
     }
-    s.set("label", Val::text("CT-driver")).unwrap();
+    // The label is the rider's mode as the converted graphs name it.
+    s.set("label", Val::text("c_turret_ap_d")).unwrap();
     s.set("string_8", Val::text("driver")).unwrap();
+    s.set("string_c", Val::text("driver_enter")).unwrap();
     s.set("string_60", Val::text("camera")).unwrap();
     want.set(VEHI_SEATS, Val::Block(vec![s])).unwrap();
     let pr = def.child("unit.obje.predicted_resources").unwrap();
@@ -610,10 +626,23 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
     want.set(VEHI_PHYSICS, Val::Block(vec![p])).unwrap();
     want.set("unit.camera_field_of_view", Val::Float(1.2))
         .unwrap();
+    // Halo 1's flags: the low half only (the turret tables have no high
+    // half).
+    want.set("vehicle_flags", Val::Int(0xc0)).unwrap();
+    let mut w = defs::default_record(def.child("unit.weapons").unwrap());
+    w.set(
+        "weapon",
+        Val::Ref {
+            group: 0,
+            target: Target::Id(weapon),
+        },
+    )
+    .unwrap();
+    want.set("unit.weapons", Val::Block(vec![w])).unwrap();
     assert_eq!(defs::diff(def, &want, &got), Vec::new());
     assert_eq!(
         got.at("block_1c8[0].label"),
-        Some(&Val::String(Str::Text("CT-driver".into())))
+        Some(&Val::String(Str::Text("c_turret_ap_d".into())))
     );
     // References a fresh vehicle must not point at tag 0: the two the
     // schema could not see are null references, not zero words.
@@ -627,6 +656,77 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
             "{r}"
         );
     }
+}
+
+/// A vehicle with a role: the role's root, block and seat words, its
+/// flags' high half under Halo 1's low half, and Halo 1's type over the
+/// role's.
+#[test]
+fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
+    use crate::rebuild::{RoleWords, VEHI_PHYSICS, VehicleRole, VehicleSpec};
+    use tags::defs::{self, Defs, Val};
+    let obj = crate::h1::Object {
+        object_type: 1,
+        flags: 0,
+        bounding_radius: 2.0,
+        bounding_offset: [0.0; 3],
+        model: None,
+        animation: None,
+        collision: None,
+        physics: None,
+        modifier_shader: None,
+        creation_effect: None,
+        attachments: Vec::new(),
+        widgets: Vec::new(),
+    };
+    let role = VehicleRole {
+        words: RoleWords {
+            members: vec!["jeep".into()],
+            root: vec![("unknown_210".into(), 0x43e1_0000)],
+            blocks: vec![(
+                VEHI_PHYSICS.into(),
+                vec![vec![("unknown_48".into(), 0xbf80_0000)]],
+            )],
+        },
+        seat: vec![("unknown_20".into(), 0x3f00_0000)],
+        flags_high: 0x0012_0000,
+    };
+    let seat = crate::h1::Seat {
+        flags: 0,
+        label: "W-driver".into(),
+        marker: "driver".into(),
+        camera_marker: String::new(),
+    };
+    let seats = [crate::rebuild::seat_names(&seat, &[])];
+    let root = crate::rebuild::vehicle(&VehicleSpec {
+        object: &obj,
+        hlmt: None,
+        seats: &seats,
+        predicted: &[],
+        camera_field_of_view: 1.0,
+        vehicle_type: 1,
+        flags: 0x0000_0cd1,
+        weapons: &[],
+        role: Some(&role),
+    })
+    .unwrap();
+    let def = Defs::builtin().group(map::FourCC(*b"vehi")).unwrap();
+    let got = defs::from_built(def, &root).unwrap();
+    let word = |w: u32| Some(Val::Bytes(w.to_le_bytes().to_vec()));
+    assert_eq!(got.at("vehicle_type"), Some(&Val::Enum(1)));
+    assert_eq!(got.at("vehicle_flags"), Some(&Val::Int(0x0012_0cd1)));
+    assert_eq!(got.at("unknown_210").cloned(), word(0x43e1_0000));
+    assert_eq!(
+        got.at("block_2f8[0].unknown_48").cloned(),
+        word(0xbf80_0000)
+    );
+    assert_eq!(got.at("block_1c8[0].unknown_20").cloned(), word(0x3f00_0000));
+    assert_eq!(
+        got.at("block_1c8[0].label"),
+        Some(&Val::text("warthog_d"))
+    );
+    // Turret words stay off a vehicle with its own role.
+    assert_eq!(got.at("unknown_23c").cloned(), word(0));
 }
 
 #[test]

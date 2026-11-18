@@ -625,6 +625,10 @@ pub struct Options {
     /// definition ([`crate::rebuild::biped`]) instead of on a template.
     /// Off by default until a rebuilt biped has run in the game.
     pub rebuild_bipeds: bool,
+    /// Build every Halo 1 vehicle from the `vehi` definition
+    /// ([`crate::rebuild::vehicle`]), not only those no template row
+    /// names.
+    pub rebuild_vehicles: bool,
 }
 
 /// Builds a [`Tree`] from Halo 1 objects on one base map.
@@ -642,6 +646,8 @@ pub struct Converter<'a> {
     health_huds: HashMap<TagId, TagId>,
     /// Biped role words, per role ([`Self::biped_role`]).
     roles: HashMap<crate::rebuild::BipedRole, Option<crate::rebuild::RoleWords>>,
+    /// Vehicle role words, per vehicle type ([`Self::vehicle_role`]).
+    vehicle_roles: HashMap<u16, Option<crate::rebuild::VehicleRole>>,
 }
 
 impl<'a> Converter<'a> {
@@ -657,6 +663,7 @@ impl<'a> Converter<'a> {
             coll_names: HashMap::new(),
             health_huds: HashMap::new(),
             roles: HashMap::new(),
+            vehicle_roles: HashMap::new(),
         }
     }
 
@@ -1769,25 +1776,81 @@ impl<'a> Converter<'a> {
         ))
     }
 
-    /// A Halo 1 vehicle no template row names, from the `vehi` definition
-    /// ([`crate::rebuild::vehicle`]): a10's cryotube, chairs,
-    /// fighterbomber and Halo ring. Before, these were dropped and their
-    /// object names pointed nowhere.
+    /// A Halo 1 vehicle from the `vehi` definition
+    /// ([`crate::rebuild::vehicle`]), no template: every vehicle with
+    /// [`Options::rebuild_vehicles`], and those no template row names
+    /// (a10's cryotube, chairs, fighterbomber and Halo ring) always.
     fn vehicle_rebuilt(&mut self, tag: &Tag, u: &Unit) -> Result<TagId> {
-        let mut rep = Self::report(tag, "none: rebuilt from tags::defs (turret role)");
+        let b = self.h1.tag_data(tag)?;
+        let word = |at: usize| {
+            b.get(at..at + 4)
+                .map_or(0, |x| u32::from_le_bytes(x.try_into().expect("4")))
+        };
+        let vehicle_type = word(crate::rebuild::H1_VEHICLE_TYPE) as u16;
+        let flags = word(crate::rebuild::H1_VEHICLE_FLAGS);
+        let role = self.vehicle_role(vehicle_type)?;
+        let mut rep = Self::report(
+            tag,
+            &match &role {
+                Some(r) => format!(
+                    "none: rebuilt from tags::defs (vehicle type {vehicle_type}, role over {} base vehicles)",
+                    r.words.members.len()
+                ),
+                None => format!(
+                    "none: rebuilt from tags::defs (vehicle type {vehicle_type}; the base has none of the type: turret role)"
+                ),
+            },
+        );
         let hlmt = self.model(&mut rep, &u.object, None, &tag.name, true)?;
         self.object_physics(&mut rep, hlmt, &u.object, &tag.name, PhysicsKind::Vehicle)?;
         let predicted = self.predicted(&u.object)?;
-        let root = crate::rebuild::vehicle(
-            &u.object,
+        let markers = match u.object.model {
+            Some(m) => {
+                h1models::model_from_map(self.h1, self.h1_tag(m)?, &ModelOptions::default())?
+                    .0
+                    .markers
+                    .into_iter()
+                    .map(|m| m.name)
+                    .collect()
+            }
+            None => Vec::new(),
+        };
+        let seats: Vec<_> = u
+            .seats
+            .iter()
+            .map(|s| crate::rebuild::seat_names(s, &markers))
+            .collect();
+        // The unit's weapons: Halo 1's, converted where they convert.
+        let mut weapons = Vec::new();
+        for r in &u.references {
+            let Some(id) = r.tag else { continue };
+            if r.group.0.to_be_bytes() != *b"weap" {
+                continue;
+            }
+            let t = self.h1_tag(id)?;
+            match self.object(t) {
+                Ok(w) if !weapons.contains(&w) => weapons.push(w),
+                Ok(_) => {}
+                Err(e) => rep
+                    .no_home
+                    .push(format!("unit weapon {}: not converted ({e})", t.name)),
+            }
+        }
+        let root = crate::rebuild::vehicle(&crate::rebuild::VehicleSpec {
+            object: &u.object,
             hlmt,
-            &u.seats,
-            &predicted,
-            u.camera_field_of_view,
-        )?;
+            seats: &seats,
+            predicted: &predicted,
+            camera_field_of_view: u.camera_field_of_view,
+            vehicle_type,
+            flags,
+            weapons: &weapons,
+            role: role.as_ref(),
+        })?;
         rep.no_home.push(format!(
-            "vehi beyond the header, {} seats (label, marker, camera marker) and the turret role: definition defaults (no template); {} Halo 1 references not converted",
+            "vehi: Halo 1's type, flags (low half), camera, {} seats (label as the rider's mode, markers) and {} weapons; the type's role words; no wheels, hover points or engine gears (Halo 2 names them by markers the Halo 1 model lacks); HUD, sounds, effects and camera tracks null; {} Halo 1 references",
             u.seats.len(),
+            weapons.len(),
             u.references.iter().filter(|r| r.tag.is_some()).count()
         ));
         self.tree.reports.push(rep);
@@ -1799,6 +1862,22 @@ impl<'a> Converter<'a> {
                 raw: Vec::new(),
             },
         ))
+    }
+
+    /// The vehicle type's role over the base's vehicles
+    /// ([`crate::rebuild::vehicle_role`]), computed once per type. The
+    /// turret type keeps the disc-wide turret tables
+    /// ([`crate::rebuild::TURRET_ROLE`]): `None`.
+    pub fn vehicle_role(&mut self, vehicle_type: u16) -> Result<Option<crate::rebuild::VehicleRole>> {
+        if u32::from(vehicle_type) == crate::rebuild::ROLE_VEHICLE_TYPE {
+            return Ok(None);
+        }
+        if let Some(w) = self.vehicle_roles.get(&vehicle_type) {
+            return Ok(w.clone());
+        }
+        let w = crate::rebuild::vehicle_role(self.base, vehicle_type)?;
+        self.vehicle_roles.insert(vehicle_type, w.clone());
+        Ok(w)
     }
 
     /// The role's words over the base's bipeds ([`crate::rebuild::biped_role`]),
@@ -2079,7 +2158,9 @@ impl<'a> Converter<'a> {
         let g: [u8; 4] = tag.group.0.to_be_bytes();
         // No template row at all (not merely one the base lacks, which a
         // donor may bring): built from the definition instead of dropped.
-        if &g == b"vehi" && template_candidates(&g, &tag.name).is_empty() {
+        if &g == b"vehi"
+            && (self.options.rebuild_vehicles || template_candidates(&g, &tag.name).is_empty())
+        {
             return self.vehicle_rebuilt(tag, &u);
         }
         if &g == b"bipd"

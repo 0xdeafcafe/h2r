@@ -65,8 +65,8 @@ struct unit 0x1c8
   0x1b8 block block_1b8 0x8 align 4
     0x0 unknown 0x4
     0x4 unknown 0x4
-  0x1c0 block block_1c0 0x8 align 4
-    0x0 tagref ref_0
+  0x1c0 block weapons 0x8 align 4 -- V the unit's weapons: every element of every vehicle on 05a_deltaapproach and coagulation that has one names a weap (the turrets' guns, the warthog's horn, the ghost's, banshee's and phantom's guns)
+    0x0 tagref weapon groups=weap -- V
 group bipd 0x314
   0x0 struct unit unit -- the unit layer
   0x1c8 block block_1c8 0xb4 align 4
@@ -327,7 +327,7 @@ group vehi 0x300
   0x1e0 unknown 0x4
   0x1e4 unknown 0x4
   0x1e8 unknown 0x4
-  0x1ec unknown 0x4
+  0x1ec u32 vehicle_flags -- E objects.md (vehicle code tests bits here, 0x000efb8c); V the low half equals Halo 1's vehi +0x2f0 on five of eight pairs (warthog, scorpion, wraith, banshee, Covenant gun turret; h1objects tests/vehicle_rebuild_disc.rs). Bits not named
   0x1f0 enum16 vehicle_type values=tank|jeep|type_2|dropship|hover|flier|turret -- E objects.md (vehicle code reads the type here); V names by the retail vehicles holding each: 0 scorpion, 1 warthog, 3 pelican, phantom and the gravity throne, 4 ghost, wraith, spectre and creep, 5 banshee, 6 the turrets (none holds 2)
   0x1f2 unknown 0x2
   0x1f4 unknown 0x4

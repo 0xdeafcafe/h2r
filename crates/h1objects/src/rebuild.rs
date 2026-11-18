@@ -288,25 +288,245 @@ fn predicted_resources(
     set(r, &format!("{path}.predicted_resources"), Val::Block(out))
 }
 
-/// A Halo 1 vehicle with no Halo 2 counterpart, written from the `vehi`
-/// definition: the object header (type, bounds, model), the turret role
-/// ([`ROLE_VEHICLE_TYPE`], [`TURRET_ROLE`]), and one seat per Halo 1 seat
-/// with its label, marker and camera marker. Everything else is the
-/// definition default. No retail template is read.
-pub fn vehicle(
-    obj: &h1::Object,
-    hlmt: Option<TagId>,
-    seats: &[h1::Seat],
-    predicted: &[Predicted],
-    camera_field_of_view: f32,
-) -> Result<Block> {
+/// `vehi +0x1f0` read from Halo 1's `vehi +0x2f4` (`u16`). V: the same
+/// value on all eight pairs of a Halo 1 vehicle and its Halo 2 counterpart
+/// (warthog 1, scorpion 0, ghost and wraith 4, banshee 5, pelican and
+/// dropship/phantom 3, Covenant gun turret 6), so the two games share the
+/// enumeration.
+pub const H1_VEHICLE_TYPE: usize = 0x2f4;
+/// Halo 1's `vehi +0x2f0` flags (`u32`), the low half of Halo 2's
+/// `vehicle_flags` (`vehi +0x1ec`). V: the low halves are equal on five of
+/// the eight pairs (warthog, scorpion, wraith, banshee, gun turret); the
+/// ghost differs in bit 8, the pelican and dropship in the bits Halo 2's
+/// fliers add. Halo 2's high half has no Halo 1 counterpart and comes from
+/// the vehicle type's role ([`VehicleRole::flags_high`]).
+pub const H1_VEHICLE_FLAGS: usize = 0x2f0;
+
+/// A seat as the rebuilt vehicle writes it: Halo 2's names for Halo 1's
+/// seat ([`seat_names`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SeatNames {
+    /// `label`: the rider's animation mode, the name the converted biped
+    /// graphs give Halo 1's seat label (`h1models::names::map_name`):
+    /// `W-driver` is `warthog_d`, an unlisted label its lower-case,
+    /// `-` to `_` form.
+    pub label: String,
+    /// `string_8`, the rider's marker, as the converted model names it.
+    pub marker: String,
+    /// `string_c`, the entry marker: `<marker> enter` when the model has
+    /// one (V: Halo 2's seats hold `driver_enter` where the model has a
+    /// `driver enter`-style marker; Halo 1's models carry `driver enter`,
+    /// `gunner enter`, `passenger enter`), else empty.
+    pub enter_marker: String,
+    /// `string_60`, the camera marker, empty for none.
+    pub camera_marker: String,
+}
+
+/// Halo 2's names for a Halo 1 seat on a model with `markers` (Halo 1's
+/// marker names). Marker names take the converted model's string ID form
+/// ([`sid_name`]).
+pub fn seat_names(seat: &h1::Seat, markers: &[String]) -> SeatNames {
+    let enter = format!("{} enter", seat.marker);
+    SeatNames {
+        label: h1models::names::map_name(&seat.label).mode,
+        marker: sid_name(&seat.marker),
+        enter_marker: if markers.iter().any(|m| m.eq_ignore_ascii_case(&enter)) {
+            sid_name(&enter)
+        } else {
+            String::new()
+        },
+        camera_marker: sid_name(&seat.camera_marker),
+    }
+}
+
+/// The words a vehicle of one type takes from the retail vehicles of that
+/// type in the base map: the turret rule ([`TURRET_ROLE`]) over every
+/// member, computed at conversion time so no retail value is kept in the
+/// source.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct VehicleRole {
+    /// The root's words and its plain-word blocks (the physics element,
+    /// `block_2f8`; `unit.block_1a8`, `unit.block_1b8`).
+    pub words: RoleWords,
+    /// Each seat's words: the majority over every seat of every member.
+    pub seat: Vec<(String, u32)>,
+    /// The high half of `vehicle_flags` most members hold.
+    pub flags_high: u32,
+}
+
+/// [`VehicleRole`] over the base map's vehicles whose `vehicle_type` is
+/// `vehicle_type`; `None` when the base has none of the type.
+pub fn vehicle_role(base: &crate::base::Base, vehicle_type: u16) -> Result<Option<VehicleRole>> {
+    let d = def(b"vehi")?;
+    let ty = field_offset(d, "vehicle_type")? as usize;
+    let flags_at = field_offset(d, "vehicle_flags")? as usize;
+    let seat_at = field_offset(d, VEHI_SEATS)? as usize;
+    let seat_def = d.child(VEHI_SEATS).expect("vehi seats");
+    let mut members = Vec::new();
+    for t in base.tags.iter().filter(|t| t.1 == FourCC(*b"vehi")) {
+        let bytes = base.root(t.0)?;
+        if u16::from_le_bytes([bytes[ty], bytes[ty + 1]]) == vehicle_type {
+            members.push((t.2.clone(), bytes));
+        }
+    }
+    if members.is_empty() {
+        return Ok(None);
+    }
+    let words = role_over(base, d, &members)?;
+    let mut sspans = Vec::new();
+    word_spans(seat_def, "", 0, &mut sspans);
+    let mut seats = Tally::new();
+    let mut flags = std::collections::BTreeMap::<u32, usize>::new();
+    for (_, bytes) in &members {
+        *flags
+            .entry(crate::base::u32_at(bytes, flags_at) & 0xffff_0000)
+            .or_default() += 1;
+        let mut i = 0;
+        while let Some(x) = base.element(bytes, seat_at, seat_def.size as usize, i)? {
+            tally_words(&x, &sspans, &mut seats);
+            i += 1;
+        }
+    }
+    let flags_high = flags
+        .iter()
+        .max_by_key(|(w, c)| (**c, std::cmp::Reverse(**w)))
+        .map_or(0, |(w, _)| *w);
+    Ok(Some(VehicleRole {
+        words,
+        seat: majority(&seats),
+        flags_high,
+    }))
+}
+
+fn field_offset(d: &StructDef, name: &str) -> Result<u32> {
+    d.fields
+        .iter()
+        .find(|f| f.name == name)
+        .map(|f| f.offset)
+        .ok_or_else(|| Error::Invalid(format!("{}: no field {name}", d.name)))
+}
+
+/// [`RoleWords`] over `members` (name, root bytes) of the group `d`
+/// defines: per 4-byte unknown span of the root and its embedded structs,
+/// the majority word; per plain-word block, the majority element count and
+/// each element's majority words.
+fn role_over(
+    base: &crate::base::Base,
+    d: &StructDef,
+    members: &[(String, Vec<u8>)],
+) -> Result<RoleWords> {
+    let mut spans = Vec::new();
+    word_spans(d, "", 0, &mut spans);
+    let mut blocks = Vec::new();
+    word_blocks(d, "", 0, &mut blocks);
+    let mut root = Tally::new();
+    let mut counts: Vec<std::collections::BTreeMap<usize, usize>> =
+        vec![Default::default(); blocks.len()];
+    let mut elements: Vec<Vec<Tally>> = vec![Vec::new(); blocks.len()];
+    for (_, bytes) in members {
+        tally_words(bytes, &spans, &mut root);
+        for (k, (_, at, e)) in blocks.iter().enumerate() {
+            let mut espans = Vec::new();
+            word_spans(e, "", 0, &mut espans);
+            let mut i = 0;
+            while let Some(x) = base.element(bytes, *at as usize, e.size as usize, i)? {
+                if elements[k].len() <= i {
+                    elements[k].push(Tally::new());
+                }
+                tally_words(&x, &espans, &mut elements[k][i]);
+                i += 1;
+            }
+            if i > 0 {
+                *counts[k].entry(i).or_default() += 1;
+            }
+        }
+    }
+    let mut out_blocks = Vec::new();
+    for (k, (path, _, _)) in blocks.iter().enumerate() {
+        let having: usize = counts[k].values().sum();
+        if 2 * having < members.len() {
+            continue;
+        }
+        let (n, _) = counts[k]
+            .iter()
+            .max_by_key(|(n, c)| (**c, **n))
+            .expect("some");
+        out_blocks.push((
+            path.clone(),
+            elements[k][..*n].iter().map(majority).collect(),
+        ));
+    }
+    Ok(RoleWords {
+        members: members.iter().map(|m| m.0.clone()).collect(),
+        root: majority(&root),
+        blocks: out_blocks,
+    })
+}
+
+/// What a rebuilt vehicle carries from Halo 1 ([`vehicle`]).
+pub struct VehicleSpec<'a> {
+    pub object: &'a h1::Object,
+    pub hlmt: Option<TagId>,
+    pub seats: &'a [SeatNames],
+    pub predicted: &'a [Predicted],
+    pub camera_field_of_view: f32,
+    /// Halo 1's vehicle type ([`H1_VEHICLE_TYPE`]).
+    pub vehicle_type: u16,
+    /// Halo 1's flags ([`H1_VEHICLE_FLAGS`]); the low half is written.
+    pub flags: u32,
+    /// The converted weapons of Halo 1's unit weapons, in order (`unit
+    /// weapons`, `+0x1c0`).
+    pub weapons: &'a [TagId],
+    /// The type's role over the base's vehicles; `None` takes the turret
+    /// tables ([`TURRET_ROLE`]), as for a type the base has none of.
+    pub role: Option<&'a VehicleRole>,
+}
+
+/// A Halo 1 vehicle written from the `vehi` definition, no retail template
+/// read: the object header (type, bounds, model, predicted resources),
+/// Halo 1's vehicle type, flags (low half) and camera field of view, one
+/// seat per Halo 1 seat ([`SeatNames`]), the unit's weapons, and the
+/// type's role words ([`VehicleRole`]; the turret tables when there is
+/// none). Everything else is the definition default.
+pub fn vehicle(v: &VehicleSpec) -> Result<Block> {
     let d = def(b"vehi")?;
     let mut r = defs::default_record(d);
-    role(&mut r, TURRET_ROLE)?;
+    match v.role {
+        Some(role) => {
+            role_words(&mut r, &role.words.root)?;
+            for (path, elems) in &role.words.blocks {
+                let e = d
+                    .child(path)
+                    .ok_or_else(|| Error::Invalid(format!("vehi {path}")))?;
+                let mut out = Vec::new();
+                for words in elems {
+                    let mut x = defs::default_record(e);
+                    role_words(&mut x, words)?;
+                    out.push(x);
+                }
+                set(&mut r, path, Val::Block(out))?;
+            }
+        }
+        None => {
+            role(&mut r, TURRET_ROLE)?;
+            let phys_def = d.child(VEHI_PHYSICS).expect("vehi physics");
+            let mut p = defs::default_record(phys_def);
+            role(&mut p, TURRET_PHYSICS_ROLE)?;
+            set(&mut r, VEHI_PHYSICS, Val::Block(vec![p]))?;
+        }
+    }
+    // Every retail vehicle has exactly one physics element.
+    if !matches!(r.at(VEHI_PHYSICS), Some(Val::Block(b)) if b.len() == 1) {
+        let phys_def = d.child(VEHI_PHYSICS).expect("vehi physics");
+        let mut p = defs::default_record(phys_def);
+        role(&mut p, TURRET_PHYSICS_ROLE)?;
+        set(&mut r, VEHI_PHYSICS, Val::Block(vec![p]))?;
+    }
+    let (obj, hlmt, predicted) = (v.object, v.hlmt, v.predicted);
     set(
         &mut r,
         "unit.camera_field_of_view",
-        Val::Float(camera_field_of_view),
+        Val::Float(v.camera_field_of_view),
     )?;
     set(&mut r, "unit.obje.object_type", Val::Enum(VEHICLE_TYPE))?;
     set(
@@ -324,26 +544,52 @@ pub fn vehicle(
         "unit.obje.model",
         Val::tag(FourCC(*b"hlmt"), hlmt.unwrap_or(TagId::NULL)),
     )?;
-    set(&mut r, "vehicle_type", Val::Enum(ROLE_VEHICLE_TYPE))?;
+    set(&mut r, "vehicle_type", Val::Enum(v.vehicle_type.into()))?;
+    let high = v.role.map_or(0, |x| x.flags_high);
+    set(
+        &mut r,
+        "vehicle_flags",
+        Val::Int(i64::from(high | (v.flags & 0xffff))),
+    )?;
     predicted_resources(b"vehi", &mut r, "unit.obje", predicted)?;
+    let wdef = d.child("unit.weapons").expect("unit weapons");
+    let weapons = v
+        .weapons
+        .iter()
+        .map(|w| {
+            let mut e = defs::default_record(wdef);
+            // The builder writes a reference fixup's group word itself.
+            set(
+                &mut e,
+                "weapon",
+                Val::Ref {
+                    group: 0,
+                    target: defs::Target::Id(*w),
+                },
+            )?;
+            Ok(e)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    set(&mut r, "unit.weapons", Val::Block(weapons))?;
     let seat_def = d.child(VEHI_SEATS).expect("vehi seats");
     let mut out = Vec::new();
-    for s in seats {
+    for s in v.seats {
         let mut e = defs::default_record(seat_def);
-        role(&mut e, TURRET_SEAT_ROLE)?;
+        match v.role {
+            Some(x) => role_words(&mut e, &x.seat)?,
+            None => role(&mut e, TURRET_SEAT_ROLE)?,
+        }
         set(&mut e, "label", Val::text(&s.label))?;
-        // D: Halo 2's seats hold the rider's marker at +8 (retail:
-        // `driver`, `gunner`, `passenger`, the words Halo 1's seat marker
-        // holds) and the camera marker at +0x60 (`camera_rider`).
+        // V: Halo 2's seats hold the rider's marker at +8 (`driver`,
+        // `gunner`), the entry marker at +0xc (`driver_enter`) and the
+        // camera marker at +0x60 (`banshee_d_camera`), each a marker of the
+        // vehicle's model.
         set(&mut e, "string_8", Val::text(&s.marker))?;
+        set(&mut e, "string_c", Val::text(&s.enter_marker))?;
         set(&mut e, "string_60", Val::text(&s.camera_marker))?;
         out.push(e);
     }
     set(&mut r, VEHI_SEATS, Val::Block(out))?;
-    let phys_def = d.child(VEHI_PHYSICS).expect("vehi physics");
-    let mut p = defs::default_record(phys_def);
-    role(&mut p, TURRET_PHYSICS_ROLE)?;
-    set(&mut r, VEHI_PHYSICS, Val::Block(vec![p]))?;
     built(d, &r)
 }
 
