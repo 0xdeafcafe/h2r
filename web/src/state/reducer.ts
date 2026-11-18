@@ -2,7 +2,7 @@
 // runs inside Solid's `produce` in the app and on plain objects in tests.
 
 import type {
-  AccountCreated, AccountSummary, GameDetail, GameKindFields, GameEnded, GamePlayer, GameStarted, GameSummary, KillKind,
+  AccountCreated, AccountSummary, BotIssued, GameDetail, GameKindFields, GameEnded, GamePlayer, GameStarted, GameSummary, KillKind,
   KillRecord, PlayerJoined, PlayerKilled, PlayerLeft, PlayerScore, PresenceData, PresenceEntry, ScoreChanged,
   WireEvent, Winner, Xuid, GameId,
 } from "../api/types";
@@ -24,6 +24,9 @@ export interface AccountState {
   online: boolean;
   presence: Presence | null;
   last_seen: string | null;
+  /** A bot account (docs/game/bots.md §6): its own page and career, no social,
+   *  never in a human's played-with or the players list. */
+  bot: boolean;
 }
 
 export interface Kill {
@@ -209,12 +212,25 @@ export function applyEvent(s: LiveState, ev: WireEvent): boolean {
         online: prev?.online ?? false,
         presence: prev?.presence ?? null,
         last_seen: prev?.last_seen ?? null,
+        bot: prev?.bot ?? false,
       };
       // Games that named this account before it was known (a replay, or an
       // account seen first through presence) now show its gamertag.
       for (const g of Object.values(s.games)) {
         for (const p of Object.values(g.players)) if (p.xuid === d.xuid && !p.bot) displayName(p, d.gamertag);
       }
+      break;
+    }
+    case "BotIssued": {
+      // A bot account (docs/game/bots.md §6). Never replaces a human account
+      // with the same xuid (the 0x000B and 0x0009 ranges can't collide).
+      const d = ev.data as BotIssued;
+      const prev = s.accounts[d.xuid];
+      if (prev && !prev.bot) break;
+      s.accounts[d.xuid] = {
+        xuid: d.xuid, gamertag: d.gamertag, created_at: prev?.created_at || ev.at,
+        online: false, presence: null, last_seen: null, bot: true,
+      };
       break;
     }
     case "SignedIn":
@@ -410,7 +426,7 @@ function ensureAccount(s: LiveState, xuid: Xuid, at: string): AccountState {
   let a = s.accounts[xuid];
   if (!a) {
     // Presence for an account we haven't seen created (stream started late).
-    a = { xuid, gamertag: xuid, created_at: at, online: false, presence: null, last_seen: null };
+    a = { xuid, gamertag: xuid, created_at: at, online: false, presence: null, last_seen: null, bot: false };
     s.accounts[xuid] = a;
   }
   return a;
@@ -553,6 +569,8 @@ export function applyAccountsSnapshot(s: LiveState, accounts: AccountSummary[]) 
       online: a.online ?? prev?.online ?? false,
       presence: prev?.presence ?? null,
       last_seen: prev?.last_seen ?? null,
+      // From the summary; a bot stays a bot once known.
+      bot: a.bot === true || prev?.bot === true,
     };
   }
 }

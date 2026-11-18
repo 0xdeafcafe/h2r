@@ -499,6 +499,44 @@ by their controller ports (`Bots { ports }`), so a guest goes out as
 change: `bots: Clanker 1 on port 1 is on Xbox Live as guest 1 of port 0's
 account`.
 
+**Design (§9.5): a bot with a bot account is its own Live player.** The
+guest sign-in above is now only the fallback until the server leases the
+bot an account (or when it leases none). Once the Clankers driver has a
+roster for the hosted session, each local bot takes one of its bot
+accounts (`Local::set_account`), and the glue signs it in as that account
+(`guest::go_live_as`): the same writes as for a guest, with
+`guest::bot_account_record` (the host's record with the bot's xuid, user
+flags with **no guest number**, and the bot's gamertag at `+0xc`, at most
+15 bytes and a NUL) in place of the guest's. A bot on Live as a guest, or
+as an older roster's account, is moved to the new one
+(`bot_glue::to_switch_account`); the slot's name becomes the gamertag.
+Game-side checks, from the traces above:
+
+- **Guest numbering** (`free_guest_number`, the game's own) counts only
+  slots with the host's user id, so a bot account takes none: a real
+  guest ("afr(1)") still gets guest 1, with up to three bots beside it
+  (all four ports are still the cap).
+- **The duplicate-account dialog** (`0x1900ff`, dialog `0x88`) compares
+  user ids; each bot's is its own, and a roster never repeats one.
+- **A failed host logon** (`0x190186`) signs out only the slots with the
+  host's user id, guests included, so it misses bot accounts: the glue
+  does it instead. Out of a game, with no human on Live any more, a bot
+  on Live as its account leaves (`bot_glue::to_leave_live`,
+  `guest::leave_live`: the flag cleared, the record zeroed, and the
+  player id its profile sign-in gave it, kept before it went on, back at
+  `+8` and in its local user; its name back to "Clanker N").
+- **The Live HLE's `XOnlineChangeLogonUsers`** maps each user id to an
+  account in the accounts file and refused any other. It now also takes a
+  bot xuid (only in the server's `0x000B` range) that a roster this logon
+  leased to this console (`State::leased`, filled when `roster_bots`
+  answers, cleared at sign-out), as an account's own player with no key.
+  The service is never asked anything for it: no logon, no presence, no
+  friends (`State::service_user` is 0 for a leased bot). Any other xuid is
+  still `INVALID_USER`.
+
+Offline and in System Link nothing changes (no human on Live: no host to
+stand beside, and no roster).
+
 **The start check (traced).** Start Game (`0x251050`, from the lobby's
 handler `0x250b1e`: A or Start from a controller with a profile, A on row
 0 at `0x250fb3`) acts only when the start state `0x19a2ce` is 9, and says
@@ -573,10 +611,10 @@ dropped.
   Retail OptiMatch allowed split-screen in some playlists. Custom games
   allow guests.
 - No more than 3 bots per machine.
-- The scoreboard shows guests as "Name(1)" style names under the host's
-  account (Run: check how our Live names guests). Bots are then not
-  separate accounts, so they cannot have their own rank. Clankermatch,
-  which needs that, uses phantoms.
+- With a roster (§9.5) a local bot is its own bot account, not a guest,
+  so it takes no guest number and has a page of its own on the web. Still
+  only 3 per machine: the controller ports are the cap. More bots than
+  free ports are phantoms, which take the roster's later bot accounts.
 
 ## 5. Way in 2: phantom peers
 
@@ -747,7 +785,7 @@ same as a full human lobby. Measure in a run (§11).
 | Views | hidden by the render window | none: not a local user |
 | Network | none | the drop and keep-alive for phantom addresses |
 | Most per host | 3 | 16 minus humans |
-| Own identity and rank | no (a guest of the host) | yes (§8) |
+| Own identity and rank | a bot account with a roster (§9.5); else a guest of the host | yes (§8) |
 | Works with remote humans | if the mode allows guests (Run) | yes: clients see a normal remote player |
 
 **Real remote players** (System Link or Live custom games): bots run only on
@@ -767,13 +805,15 @@ report and the post-game stats treat them like anyone else. Telemetry
 like anyone, with `bot: true` on their roster entries (`game::Player::bot`):
 a local-slot Clanker found by its controller port, a phantom by its machine
 id (`live_telemetry::Bots`, from `clankers::Driver::bots_in_force`). Only a
-phantom from a server roster in force has an `xuid` (§9); the rest have no
-account at all.
+bot from a server roster in force has an `xuid` (§9): a phantom's
+rostered one, or the bot account a local bot is on Live as
+(`Bots::accounts`, by port); the rest have no account at all.
 
 The web shows a small BOT mark beside a bot's name (the live scoreboard,
 the carnage report, the map legend, the map and 3D viewer labels, the
-viewer's follow list) and never links a bot to a player page, even a
-rostered one with an xuid; a bot keeps the name the game sent.
+viewer's follow list). A bot with an xuid (a bot account, §9.5) links to
+its player page, BOT mark and all; a host's own Clanker with no xuid links
+nowhere. A bot keeps the name the game sent.
 
 **Bots are game-only.** The game record keeps every bot with its kills,
 deaths and score, and every knockout between a bot and a human. Career
@@ -783,7 +823,9 @@ toward sprees, weapons or medals); games, wins and time played still count.
 This holds in the server's stats summary (`live_server::stats`, both homes;
 the web mock's fold mirrors it) and in the web's derived service record
 (`derive.ts` `careerKills`, `serviceRecord`). Bots get no stats-summary row
-and are nobody's "played with". Ranks are unchanged: a matchmade game ranks
+and are nobody's "played with". A bot account's own page (§9.5) is the
+one place its knockouts count: its service record counts all its kills
+and deaths, against humans and bots alike. Ranks are unchanged: a matchmade game ranks
 accounts only, and a rostered persistent bot's own rank is sbmm-ranked's
 (§9.4).
 
@@ -978,8 +1020,10 @@ with these additions:
 
 - `kind: "clankermatch"`, `"custom"` or `"matchmade"` on the game;
 - `bot: true` on each bot's player entry, keyed by its `xuid` when it has
-  one. A host's own Clanker (a local slot, or a phantom with a host-made
-  xuid) has `bot: true` and no `xuid` (§6).
+  one. A local-slot Clanker on Live as its bot account carries that
+  account's xuid (§9.5). A host's own Clanker with no account (a local
+  slot without a roster, or a phantom with a host-made xuid) has `bot:
+  true` and no `xuid` (§6).
 
 Per-player stats are the same as a human's. Persistent bots are ranked
 from these by the server's normal per-playlist rank update, which treats
@@ -1054,6 +1098,109 @@ Also agreed: `rank::bot_skill(level)` as the roster's `skill`, and
 `Bots::persistent`) for choosing persistent bots, which
 the roster endpoint calls; gaps are made-up bots shown at the humans'
 mean level.
+
+### 9.5 Bot accounts (the user's ask, 2026-11-18)
+
+"Bots should not be guests but fake Xbox Live users marked as bots": every
+bot the server rosters is a **bot account**, shown like an account with a
+BOT mark, for matchmaking and for local games alike.
+
+**What a bot account is** (server, both homes, shared router and read
+model, `live_server::bots`):
+
+- An xuid in the server's bot range `0x000B…` (humans `0x0009`, host-made
+  `0x000E`), issued once by the server as `BotIssued` on `bot-<xuid>`
+  (§10 stage 6c) with a gamertag from the word lists ("Rusty Lugnut":
+  `FIRST` × `SECOND`, a number past a few clashes), emblem, colours and
+  personality. Persistent bots (the operator's pool, ranked) hold their
+  gamertag as an account does; made-up ones (one roster's) do not.
+- **Read as an account**: `GET /v1/accounts/{gamertag}` answers for a bot
+  with `bot: true` (`AccountSummary::bot`), `online: false`, its
+  `created_at` (the `BotIssued` time) and its recent games. A human
+  account of the same name comes first (a made-up bot does not hold its
+  name). The accounts list (`GET /v1/accounts`) never has bots, and the
+  web keeps them out of the Players list and the account count.
+- **Never a person**: it has no keys (`/keys` 404s), so it cannot sign in
+  or post anything; recovery is by an account's gamertag and a bot is not
+  one; nobody else may write `bot-*` or `bots-*`. No presence (the HLE
+  sends none for it, §4.2).
+- **Leases.** A roster (`POST /v1/games/bots`, `BotsRostered` on
+  `bots-<session>`) is the lease: its bots are the host's for that session.
+  The console takes a bot account's xuid in a user change only if a roster
+  answered this logon named it (§4.2). A game record's `bot: true` entry
+  with an xuid is taken only for the session's roster in force at the
+  start, made by the record's host (§9.3), local slot or phantom alike; an
+  issued bot recorded as a human, or a human as a bot, is refused.
+
+**Where the bots come from.** With Live and a hosted session, the Clankers
+driver asks for a roster of the **whole count** (it used to ask for the
+phantoms only): the local bots take its first bot accounts, the phantoms
+the rest. A matchmade session asks with its playlist (`Rosters::playlist`,
+the hopper descriptor index from `Hle::matchmade`), so the server fills it
+with the persistent bots nearest the humans' level (§9.4); a custom game
+asks without, for made-up bots at the page's difficulty. Each count,
+difficulty or session change asks again, and a new roster's accounts
+replace the old (the local bots are re-signed as the new ones). Until an
+answer, or with none (refused, System Link, offline), local bots are the
+human's guests on Live and phantoms are host-made, as before. Local bots
+keep the page's skill; only phantoms take the roster's.
+
+**Web.** A bot account has a player page: the identity strip with a BOT
+mark, its service record and game history, no friend, message or other
+social actions, never online. The page finds it in the event log
+(`BotIssued`) or asks the server by gamertag. Scoreboards and carnage
+reports link a bot with an xuid to it.
+
+**Careers.** Humans' careers stay as §6 says: a kill or death with a bot
+on either side is game-only. A bot account's own service record (its
+page) counts all its kills and deaths. The server's stats summary has no
+row for any bot, so no bot is on a leaderboard; persistent bots' ranks are
+sbmm-ranked's.
+
+**Staged (not built):**
+
+1. Clankermatch's `MatchProposed` carrying the roster (stage 8, with
+   sbmm-ranked): the matchmaking path itself. The playlist roster above
+   is what it will send.
+2. Bot presence ("Playing Slayer on Lockout" while its host's game runs):
+   would need the server to derive it from the host's presence and the
+   roster, not a bot's own signed event.
+3. Keeping a local bot's account across roster changes (ask for only the
+   new bots), so a count change does not rename the bots on the ports.
+4. Made-up bot accounts pile up: one per bot per roster. A sweep (or
+   reusing a session's made-up bots) when that matters; their pages stay.
+5. Bots in the web's search lists and finder: kept for now (bots have
+   pages), filter them there if the user prefers.
+
+**Tests:** `cargo test -p live-server --test bots
+a_rostered_bot_is_an_account`, `-p live-worker
+rostered_bots_read_as_bot_accounts`, `-p live-hle --test server
+a_leased_bot_account`, `-p bots guest` (the bot-account record and
+writes, guest numbers left free, moving from guest to account, leaving),
+`-p boot --lib clankers` (rosters for every bot, locals first, playlist)
+and `bot_glue` (switching and leaving), `-p live-telemetry --lib
+a_local_bot_carries_its_bot_account`, `bun test test/bots.test.ts` in
+`web/`.
+
+**Game run (the user):** `h2 play --live-local` (or a Live server), sign
+in on port 0, host a Live custom game, Clankers On, Count 3.
+
+1. The log says `clankers: asking Live for 3 bots for session …`, then
+   `Clanker 1 is <gamertag> on Xbox Live (bot account 000b…)` for each
+   port, then `bots: <gamertag> on port 1 is on Xbox Live as its own bot
+   account, beside port 0's` (maybe a guest line first, then the move).
+2. The lobby shows the bots by their gamertags, not "Clanker N" and not
+   "afr(1)". No duplicate-account dialog.
+3. Plug in a second controller and sign in a guest of your account: it is
+   "afr(1)" (guest 1), alongside the three bots. (With 3 bots all ports
+   are taken; try Count 2.) The server log shows no refused user change.
+4. Start Slayer: does the start state reach 9 (`bots: start state …`)?
+   Play; after the game the web game page shows each bot with BOT, linked
+   to a page with the BOT mark; the server log shows no refused record.
+5. Count 5: two phantoms with bot accounts as well (6c's run).
+6. Sign out of Live (or let the host logon fail): `bots: … leaves Xbox
+   Live: no one is on it`; the bots are offline Clankers again.
+7. System Link and split screen: as before, "Clanker N", no Live.
 
 ## 10. Stages
 
@@ -1468,7 +1615,8 @@ list for the user to play (§11).
        host-made xuid, go out with `bot: true` and no xuid (§6): a
        `0x000E` xuid is never sent.
      - Not yet: `teams` is always false in the request (the page does not
-       know the gametype), and local-port Clankers are not rostered.
+       know the gametype). Local-port Clankers are rostered now, as bot
+       accounts (§9.5).
        Clankermatch's `MatchProposed` carries the same roster (stage 8,
        with sbmm-ranked).
      - Tests: `cargo test -p boot --tests clankers` (roster to identities

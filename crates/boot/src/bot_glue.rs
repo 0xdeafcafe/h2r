@@ -12,8 +12,15 @@
 //!   (`PLAYERS_SCREEN_UNJOINED`, a sim script's) is answered the same way
 //!   ([`bots::guest::sign_in`]).
 //! - With a human on Xbox Live, out of a game, each signed-in bot goes on
-//!   Live as the human's guest ([`bots::guest::go_live`], [`to_go_live`]),
-//!   as an Xbox signs in a guest. Offline and in System Link, nothing.
+//!   Live as its own bot account once the server leased it one
+//!   ([`bots::local::Local::account_on`], [`bots::guest::go_live_as`],
+//!   docs/game/bots.md §9.5), so the guest numbers stay free for real
+//!   guests; until then (or with no roster) as the human's guest
+//!   ([`bots::guest::go_live`], [`to_go_live`]), as an Xbox signs in a
+//!   guest. A guest bot moves to its account when one comes
+//!   ([`to_switch_account`]). When no human is on Live any more, a bot on
+//!   Live as its account leaves Live ([`to_leave_live`],
+//!   [`bots::guest::leave_live`]). Offline and in System Link, nothing.
 //! - A Start press in the pregame lobby (`PREGAME_LOBBY_INPUT`) while bots
 //!   are in logs the game's start state and what holds it back
 //!   ([`bots::lobby::start_state_then`]), before the next `SOUND_UPDATE`.
@@ -179,6 +186,50 @@ pub fn to_go_live(
         .collect()
 }
 
+/// The ports whose bot is on Xbox Live (`live_xuid`: the slot's record's
+/// user id, `None` when off Live or unread) as something other than its
+/// bot account (`account`: the xuid the driver gave it), so it goes on as
+/// that account now ([`bots::guest::go_live_as`]): a guest bot whose
+/// account came, or a bot whose roster changed. Only with a human on Xbox
+/// Live and out of a game.
+pub fn to_switch_account(
+    bots: u32,
+    live_xuid: impl Fn(u8) -> Option<u64>,
+    account: impl Fn(u8) -> Option<u64>,
+    host_live: bool,
+    in_game: bool,
+) -> Vec<u8> {
+    if in_game || !host_live {
+        return Vec::new();
+    }
+    (0..4u8)
+        .filter(|&p| bots & 1 << p != 0)
+        .filter(|&p| match (live_xuid(p), account(p)) {
+            (Some(on), Some(want)) => on != want,
+            _ => false,
+        })
+        .collect()
+}
+
+/// The ports whose bot is on Xbox Live as its own bot account (`slot`:
+/// the flags and record's guest number; a guest is signed out by the game
+/// itself, `0x190186`) once no human is on Live (`host_live`), out of a
+/// game: they leave Live ([`bots::guest::leave_live`]).
+pub fn to_leave_live(
+    bots: u32,
+    slot: impl Fn(u8) -> Option<(u32, u32)>,
+    host_live: bool,
+    in_game: bool,
+) -> Vec<u8> {
+    if in_game || host_live {
+        return Vec::new();
+    }
+    (0..4u8)
+        .filter(|&p| bots & 1 << p != 0)
+        .filter(|&p| slot(p).is_some_and(|(f, guest)| f & guest::SLOT_LIVE != 0 && guest == 0))
+        .collect()
+}
+
 /// The log line for what [`bots::guest::go_live`] did for the bot on
 /// `port`.
 pub fn go_live_line(port: u8, name: &str, r: guest::GoLive) -> String {
@@ -186,6 +237,9 @@ pub fn go_live_line(port: u8, name: &str, r: guest::GoLive) -> String {
     match r {
         Guest { host, number } => format!(
             "bots: {name} on port {port} is on Xbox Live as guest {number} of port {host}'s account"
+        ),
+        Account { host } => format!(
+            "bots: {name} on port {port} is on Xbox Live as its own bot account, beside port {host}'s"
         ),
         NoHost => format!("bots: {name} on port {port} stays offline: no one is on Xbox Live"),
         NoProfile => format!("bots: {name} on port {port} has no profile to take on Xbox Live"),
@@ -216,6 +270,9 @@ pub struct Bots {
     signing_out: Arc<AtomicBool>,
     /// Each port's last Xbox Live guest line, so it is logged on a change.
     live: Arc<Mutex<[String; 4]>>,
+    /// Each bot port's player id from before it went on Xbox Live (its
+    /// profile sign-in's), for [`bots::guest::leave_live`].
+    offline_ids: Arc<Mutex<[Option<[u8; guest::ID_LEN]>; 4]>>,
     /// A Start press in the lobby waits for its start-state line.
     pressed: Arc<AtomicBool>,
 }
@@ -237,6 +294,7 @@ impl Bots {
             gates: Arc::default(),
             signing_out: Arc::default(),
             live: Arc::default(),
+            offline_ids: Arc::default(),
             pressed: Arc::default(),
         }
     }
@@ -416,13 +474,14 @@ impl feature::Feature for Bots {
         // The listeners: the humans' ears only.
         // And, out of a game, the leaving bots signed out, then unplugged.
         // And on the players screen, the joining bots signed in.
-        let (local, sound, busy, frame, live, pressed) = (
+        let (local, sound, busy, frame, live, pressed, offline_ids) = (
             self.local.clone(),
             Arc::clone(&self.sound),
             Arc::clone(&self.signing_out),
             Arc::clone(&self.frame),
             Arc::clone(&self.live),
             Arc::clone(&self.pressed),
+            Arc::clone(&self.offline_ids),
         );
         b.raw().before(
             &points::SOUND_UPDATE,
@@ -447,18 +506,56 @@ impl feature::Feature for Bots {
                         })
                     });
                 }
-                // Bots with a profile go on Xbox Live as the human's guests.
+                // Bots with a profile go on Xbox Live as their bot accounts
+                // (or, with none yet, as the human's guests).
                 let joined = local.joining_mask();
                 if joined != 0 && frame.load(Ordering::Relaxed) % SIGN_IN_EVERY == 0 {
                     let mut mem = rt.memory();
                     let bots = local.port_mask();
                     let host_live = guest::live_host(&*mem, bots).ok().flatten().is_some();
-                    let ports = to_go_live(
+                    let in_game = guest::game_tick(&*mem).is_some();
+                    let account = |p: u8| local.account_on(u32::from(p));
+                    let mut ports = to_go_live(
                         joined,
                         |p| guest::slot_flags(&*mem, u32::from(p)).ok(),
                         host_live,
-                        guest::game_tick(&*mem).is_some(),
+                        in_game,
                     );
+                    let live_xuid = |p: u8| {
+                        let p = u32::from(p);
+                        guest::on_live(&*mem, p)
+                            .ok()
+                            .filter(|on| *on)
+                            .and_then(|_| guest::account(&*mem, p).ok())
+                            .map(|a| guest::account_xuid(&a))
+                    };
+                    ports.extend(to_switch_account(
+                        joined,
+                        live_xuid,
+                        |p| account(p).map(|a| a.xuid),
+                        host_live,
+                        in_game,
+                    ));
+                    // No one on Live any more: bot accounts leave it.
+                    for p in to_leave_live(
+                        joined,
+                        |p| {
+                            let p = u32::from(p);
+                            let f = guest::slot_flags(&*mem, p).ok()?;
+                            let g = guest::account(&*mem, p).ok()?;
+                            Some((f, guest::guest_number(&g)))
+                        },
+                        host_live,
+                        in_game,
+                    ) {
+                        let name = local.name_on(u32::from(p)).unwrap_or_default();
+                        let Some(id) = lock(&offline_ids)[usize::from(p)] else {
+                            continue;
+                        };
+                        if let Ok(true) = guest::leave_live(&mut *mem, u32::from(p), &id, &name) {
+                            eprintln!("bots: {name} on port {p} leaves Xbox Live: no one is on it");
+                        }
+                    }
                     let mut said = lock(&live);
                     for p in 0..4u8 {
                         if !ports.contains(&p) {
@@ -467,7 +564,17 @@ impl feature::Feature for Bots {
                     }
                     for p in ports {
                         let name = local.name_on(u32::from(p)).unwrap_or_default();
-                        let line = match guest::go_live(&mut *mem, u32::from(p), bots, &name) {
+                        // The player id it had offline, kept for leaving.
+                        if let Ok(false) = guest::on_live(&*mem, u32::from(p))
+                            && let Ok(id) = guest::slot_id(&*mem, u32::from(p))
+                        {
+                            lock(&offline_ids)[usize::from(p)] = Some(id);
+                        }
+                        let r = match account(p) {
+                            Some(a) => guest::go_live_as(&mut *mem, u32::from(p), bots, &a),
+                            None => guest::go_live(&mut *mem, u32::from(p), bots, &name),
+                        };
+                        let line = match r {
                             Ok(r) => go_live_line(p, &name, r),
                             Err(e) => format!(
                                 "bots: {name} on port {p}: Xbox Live: fault at {:#x}",
@@ -765,11 +872,61 @@ mod tests {
     }
 
     #[test]
+    fn a_bot_moves_to_its_bot_account_when_one_comes_and_leaves_with_the_human() {
+        const BOT: u64 = 0x000b_0000_0000_0042;
+        const HOST: u64 = 0x0009_0000_0000_0afa;
+        // Port 1 a guest (the host's id), port 2 already its account, port 3
+        // off Live.
+        let on = |p: u8| match p {
+            1 => Some(HOST),
+            2 => Some(BOT + 2),
+            _ => None,
+        };
+        let account = |p: u8| Some(BOT + u64::from(p));
+        assert_eq!(
+            to_switch_account(0b1110, on, account, true, false),
+            vec![1],
+            "the guest moves; the one on its account stays; one off Live is to_go_live's"
+        );
+        assert!(
+            to_switch_account(0b1110, on, |_| None, true, false).is_empty(),
+            "no account yet"
+        );
+        assert!(to_switch_account(0b1110, on, account, false, false).is_empty());
+        assert!(
+            to_switch_account(0b1110, on, account, true, true).is_empty(),
+            "not in a game"
+        );
+        assert!(to_switch_account(0b0100, on, account, true, false).is_empty());
+
+        // The human leaves Live: the bot accounts leave too; a guest is the
+        // game's own to sign out, an offline bot has nothing to leave.
+        let slots = |p: u8| match p {
+            1 => Some((LIVE, 1)),
+            2 => Some((LIVE, 0)),
+            _ => Some((PROFILE, 0)),
+        };
+        assert_eq!(to_leave_live(0b1110, slots, false, false), vec![2]);
+        assert!(
+            to_leave_live(0b1110, slots, true, false).is_empty(),
+            "the human is still on"
+        );
+        assert!(
+            to_leave_live(0b1110, slots, false, true).is_empty(),
+            "not in a game"
+        );
+    }
+
+    #[test]
     fn the_go_live_line_says_whose_guest() {
         use guest::GoLive;
         assert_eq!(
             go_live_line(1, "Clanker 1", GoLive::Guest { host: 0, number: 1 }),
             "bots: Clanker 1 on port 1 is on Xbox Live as guest 1 of port 0's account"
+        );
+        assert_eq!(
+            go_live_line(2, "Rusty Lugnut", GoLive::Account { host: 0 }),
+            "bots: Rusty Lugnut on port 2 is on Xbox Live as its own bot account, beside port 0's"
         );
         assert_eq!(
             go_live_line(3, "Clanker 3", GoLive::Full),
