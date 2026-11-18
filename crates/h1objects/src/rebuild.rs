@@ -984,6 +984,9 @@ pub struct VehicleSpec<'a> {
     pub points: &'a [Point],
     /// Halo 1's attachments that convert ([`object_effects`]).
     pub attachments: &'a [AttachmentSpec],
+    /// The object's functions, Halo 1's ([`crate::functions`]), which
+    /// the attachments' primary scales name.
+    pub functions: &'a [crate::functions::FunctionSpec],
     /// Halo 1's creation effect, converted.
     pub creation_effect: Option<TagId>,
 }
@@ -1058,6 +1061,7 @@ pub fn vehicle(v: &VehicleSpec) -> Result<Block> {
         v.attachments,
         v.creation_effect,
     )?;
+    object_functions(b"vehi", &mut r, "unit.obje", v.functions)?;
     let wdef = d.child("unit.weapons").expect("unit weapons");
     let weapons = v
         .weapons
@@ -2331,12 +2335,46 @@ pub fn effect(
 }
 
 /// One attachment of a rebuilt object: the attached tag (`ligh`, `lsnd`,
-/// `effe` or `cont`; E `0x000bed2a` builds these) and its marker.
+/// `effe` or `cont`; E `0x000bed2a` builds these), its marker and its
+/// primary scale.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AttachmentSpec {
     pub group: [u8; 4],
     pub tag: TagId,
     pub marker: String,
+    /// `+0x10`: the name the attachment is scaled by
+    /// ([`crate::functions`]); empty for none (1, always on). Only an
+    /// object whose functions block holds the name may set it: a name
+    /// nothing evaluates is 0, and a looping sound at 0 is off.
+    pub primary_scale: String,
+    /// Halo 1's primary scale (`+0x30`): 0 none, 1 to 4 output A to D.
+    pub h1_primary: u16,
+}
+
+/// The attachment primary scale field (`obje +0x94` element `+0x10`).
+pub const ATTACHMENT_PRIMARY_SCALE: &str = "string_10";
+
+/// Sets `path.functions` (`obje +0x64`) on a rebuilt record.
+pub fn object_functions(
+    group: &[u8; 4],
+    r: &mut Record,
+    path: &str,
+    functions: &[crate::functions::FunctionSpec],
+) -> Result<()> {
+    let e = def(group)?
+        .child(&format!("{path}.functions"))
+        .expect("obje functions");
+    let mut out = Vec::new();
+    for f in functions {
+        let mut x = defs::default_record(e);
+        set(&mut x, "unknown_0", Val::Bytes(f.flags.to_le_bytes().to_vec()))?;
+        set(&mut x, "string_4", Val::text(&f.import))?;
+        set(&mut x, "output", Val::text(&f.export))?;
+        set(&mut x, "string_c", Val::text(&f.turn_off_with))?;
+        set(&mut x, "data_14", Val::Data(f.data.clone()))?;
+        out.push(x);
+    }
+    set(r, &format!("{path}.functions"), Val::Block(out))
 }
 
 /// Sets `path.attachments` (the object header's, `obje +0x94`) and
@@ -2356,6 +2394,7 @@ pub fn object_effects(
         let mut x = defs::default_record(e);
         set(&mut x, "type", Val::tag(FourCC(a.group), a.tag))?;
         set(&mut x, "marker", Val::text(&a.marker))?;
+        set(&mut x, ATTACHMENT_PRIMARY_SCALE, Val::text(&a.primary_scale))?;
         out.push(x);
     }
     set(r, &format!("{path}.attachments"), Val::Block(out))?;

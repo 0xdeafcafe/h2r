@@ -305,8 +305,35 @@ things the engine reads at a vehicle's base, proved in
   at Halo 1's placement it began 0.14 into the floor, where Halo 1's
   hover mass points lifted it and Halo 2 left it. The Halo 1 sandbox
   raises each vehicle spawn by how far its model reaches below its
-  origin (`h1convert::convert::halo1::vehicle_depth`); the Halo 2
-  sandbox's retail vehicles keep Halo 1's spot (not checked).
+  origin (`h1convert::convert::halo1::vehicle_depth`). The Halo 2
+  sandbox raises each retail vehicle the same way, by the lowest z of
+  its render model's position bounds
+  (`h1convert::placements::retail_vehicle_depth`: the retail ghost
+  0.15, the warthog 0.02, the wraith none).
+
+**Functions and what they scale (vehicles).** Halo 1 scales an
+attachment (a looping engine sound, a headlight) by one of the object's
+four outputs (attachment `+0x30`: 1 to 4, A to D); output *k* is the
+object's function *k*, on every Halo 1 vehicle "one" scaled by an input
+and bounded. An input is the vehicle's source where it names one
+(`vehi +0x31c`), else the unit's (`unit +0x198`): the warthog's
+headlights the unit's driver's seat power, its taillights the vehicle's
+jump, its engine the vehicle's engine hack; the pelican's three sounds
+engine hack, hover and thrust. Halo 2 names it instead: the attachment's
+`+0x10` is evaluated (`0x000bab40`) as `one`/`zero`, then as an import
+name of the object's type handlers (`0x00108d90`: vehicle `0x000f6d10`,
+unit `0x000c6b90`, object `0x000bcc20`), then as a function's export
+(`obje +0x64`, `+8`); a name nothing knows is 0, and a looping sound at 0
+is off. So each Halo 1 function becomes a Halo 2 function
+(`h1objects::functions`): its input's Halo 2 import name (Halo 2 keeps
+Halo 1's names: the retail warthog's taillights scale by `jump`), export
+`a_out` to `d_out`, Halo 1's invert and always-active flags, turn-off by
+the export of the function Halo 1 names, and data an identity or linear
+function whose range is Halo 1's bounds. Each attachment then names its
+output's export. An output that doesn't convert leaves its attachments
+unscaled (1, as before), with a note. Before this, every rebuilt
+vehicle's attachments were unscaled: the engine sounds a constant hum
+and the lights always on (tests: `h1objects/tests/object_functions_disc.rs`).
 
 Each object is built on the **retail Halo 2 tag that plays the same role**
 in the base map (`convert::TEMPLATES`): assault rifle on the SMG, pistol

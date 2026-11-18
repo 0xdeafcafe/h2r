@@ -1231,6 +1231,8 @@ impl<'a> Converter<'a> {
                     group: g,
                     tag,
                     marker: a.marker,
+                    primary_scale: String::new(),
+                    h1_primary: a.primary_scale,
                 });
             }
         }
@@ -1978,9 +1980,23 @@ impl<'a> Converter<'a> {
                     .push(format!("unit weapon {}: not converted ({e})", t.name)),
             }
         }
-        let (attachments, creation_effect) = self.object_effects(b, &u.object, &mut rep)?;
+        let (mut attachments, creation_effect) = self.object_effects(b, &u.object, &mut rep)?;
+        // Halo 1's functions, and the attachments' primary scales naming
+        // their outputs (`crate::functions`).
+        let mut notes = Vec::new();
+        let inputs = h1::FunctionInputs::read(b, u.object.object_type);
+        let converted = crate::functions::convert(&h1::functions(self.h1, b)?, &inputs, &mut notes);
+        for a in &mut attachments {
+            a.primary_scale = crate::functions::primary_scale(a.h1_primary, &converted);
+            if a.h1_primary != 0 && a.primary_scale.is_empty() {
+                notes.push(format!("attachment at {:?}: output {} not converted, always on", a.marker, a.h1_primary));
+            }
+        }
+        let functions: Vec<_> = converted.into_iter().flatten().collect();
+        rep.no_home.extend(notes.into_iter().map(|n| format!("vehi {n}")));
         let root = crate::rebuild::vehicle(&crate::rebuild::VehicleSpec {
             attachments: &attachments,
+            functions: &functions,
             creation_effect,
             object: &u.object,
             bounds,

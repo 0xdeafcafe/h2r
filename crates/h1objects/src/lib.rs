@@ -38,6 +38,7 @@
 pub mod arsenal;
 pub mod base;
 pub mod coll;
+pub mod functions;
 pub mod convert;
 pub mod h1;
 pub mod h1hud;
