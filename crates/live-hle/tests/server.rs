@@ -3538,14 +3538,25 @@ fn arbitration_registers_and_reports_the_round_as_the_signed_in_account() {
     let account = server.account("Arbiter");
     let mut w = World::new(&server.embedded.url, &[&account]);
     w.logon();
-    let session_id = 0x8877_6655_4433_2211u64;
-    w.put(ROUND, &session_id.to_le_bytes());
+    // A round of a session the server knows: the one this console hosts.
+    attr(&w, MATCH_ATTR, 1, 101);
+    assert_eq!(
+        w.call(
+            "XOnlineMatchSessionCreate",
+            &[1, 7, 0, 0, 1, MATCH_ATTR, 0, OUT]
+        ),
+        0
+    );
+    let create = w.u32(OUT);
+    assert_eq!(w.wait(create), TASK_SUCCESS);
+    let session_hex = w.hle.hosted_session().expect("the advertised session");
+    let session_id: Vec<u8> = (0..8)
+        .map(|i| u8::from_str_radix(&session_hex[2 * i..2 * i + 2], 16).unwrap())
+        .collect();
+    w.put(ROUND, &session_id);
     assert_eq!(w.call("XOnlineArbitrationCreateRoundID", &[ROUND + 8]), OK);
     let round_id = u64::from_le_bytes(w.bytes(ROUND + 8, 8).try_into().unwrap());
-    let (session_hex, round_hex) = (
-        sign::hex(&session_id.to_le_bytes()),
-        sign::hex(&round_id.to_le_bytes()),
-    );
+    let round_hex = sign::hex(&round_id.to_le_bytes());
 
     assert_eq!(
         w.call("XOnlineArbitrationRegister", &[ROUND, 300, 0xc, 0, OUT]),
