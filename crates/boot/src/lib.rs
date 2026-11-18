@@ -1116,7 +1116,10 @@ pub fn run_hosted_with_live(
     // microphone is chosen on the Voice screen.
     let mut voice_link = xa
         .as_ref()
-        .and_then(|x| voice_glue::install(&loaded.runtime, x, host.settings.as_ref(), host.voice_io.take()));
+        .and_then(|x| {
+            let game_mix = ds.as_ref().map(dsound_glue::Audio::mixer);
+            voice_glue::install(&loaded.runtime, x, host.settings.as_ref(), host.voice_io.take(), game_mix)
+        });
     if let Some(keyboard) = pad.as_ref() {
         keyboard_glue::install(&loaded.runtime, keyboard.clone()).context("installing host keyboard entry")?;
     }
