@@ -1268,7 +1268,18 @@ reads `soso` (base `+0xa4`, detail `+0xdc`), `senv`, `swat`, `smet`,
 (`h1bitmaps`) and names the copies in the model's materials;
 campaign scenery goes through `h1objects` too, so it gets them as well.
 On Blood Gulch's sandbox 17 models are converted and 81 materials draw
-Halo 1 textures. A material with no Halo 1 base map to read names the
+Halo 1 textures. Since converter version 73 a model shader that is not
+`senv` or `soso` (glass, chicago, generic, meter, plasma, water) is
+rebuilt first as the structure's shaders are (`shad::read_h1`, its own
+blended, additive or self-illuminated stem and maps); the `tex_bump`
+copy is what's left when that finds no stem or map. Before, a10's cryo
+tube glass (`sotr` `levels\a10\shaders\cryo glass`, no map at the
+offset `h1_maps_of` reads) named the stand-in below, a marine's head
+shader, and drew as an opaque grey pane over the view from inside the
+tube (`tests/model_shaders_disc.rs`). A transparent shader's map that is
+a cube is its reflection, in `one_alpha_env`'s cube slot, and the least
+tiled 2D map is its picture (`shad::transparent_maps`): the cryo glass
+lists its reflection cube first. A material with no Halo 1 base map to read names the
 base's model shader itself; Blood Gulch has none. The sky model's
 materials name copies of the base's sky shaders drawing Halo 1's sky
 bitmaps at Halo 1's scale (`h1convert::sky_shaders`, sky.md "The

@@ -1369,7 +1369,19 @@ fn read_h1_maps(h1: &h1map::H1Map, tag: &h1map::Tag) -> Option<H1Shader> {
                 crate::sky_shaders::Recipe::Picture(k) | crate::sky_shaders::Recipe::Additive(k) => k,
                 crate::sky_shaders::Recipe::Clouds { tile, .. } => tile,
             };
-            let m = s.maps[k];
+            let maps: Vec<(H1Bound, Option<h1map::bitmap::ImageKind>)> = s
+                .maps
+                .iter()
+                .map(|m| {
+                    (
+                        H1Bound {
+                            bitmap: m.bitmap,
+                            scale: m.scale,
+                        },
+                        h1_texture_kind(h1, m.bitmap),
+                    )
+                })
+                .collect();
             Some(H1Shader {
                 name: tag.name.clone(),
                 group,
@@ -1378,19 +1390,53 @@ fn read_h1_maps(h1: &h1map::H1Map, tag: &h1map::Tag) -> Option<H1Shader> {
                 } else {
                     &ONE_ALPHA_ENV
                 },
-                maps: vec![(
-                    Role::Base,
-                    H1Bound {
-                        bitmap: m.bitmap,
-                        scale: m.scale,
-                    },
-                )],
+                maps: transparent_maps(&maps, k, s.additive),
                 extras: Extras::default(),
                 fallback: None,
             })
         }
         _ => None,
     }
+}
+
+/// The maps of a Halo 1 transparent shader (`schi`, `scex`, `sotr`;
+/// `maps`, each with its texture kind) for [`ONE_ALPHA_ENV`] or, when
+/// `additive`, [`ONE_ADD_ILLUM`]; `picture` is the map
+/// [`crate::sky_shaders::recipe`] chose, the least tiled.
+///
+/// The picture is a 2D map: when the chosen one is a cube (a glass's
+/// reflection, often its first map and at the same 1×1 scale as the
+/// glass's own texture), the least tiled 2D map stands in. An alpha
+/// blended shader's cube map is its reflection, in [`ONE_ALPHA_ENV`]'s
+/// cube slot. D: a10's `levels\a10\shaders\cryo glass` (blend 7) has the
+/// cube `cube map glass` first and the 2D `cryo glass` (DXT3, alpha about
+/// 10%) second, both 1×1. With the cube as the picture the base slot kept
+/// its default and the glass drew as a flat opaque pane: the grey slab
+/// over the view from inside a10's cryo tube.
+pub fn transparent_maps(
+    maps: &[(H1Bound, Option<h1map::bitmap::ImageKind>)],
+    picture: usize,
+    additive: bool,
+) -> Vec<(Role, H1Bound)> {
+    use h1map::bitmap::ImageKind;
+    let flat = |k: usize| maps[k].1 == Some(ImageKind::D2);
+    let area = |k: usize| (maps[k].0.scale[0] * maps[k].0.scale[1]).abs();
+    let base = if picture < maps.len() && flat(picture) {
+        Some(picture)
+    } else {
+        (0..maps.len())
+            .filter(|&k| flat(k))
+            .min_by(|&a, &b| area(a).total_cmp(&area(b)))
+            .or((picture < maps.len()).then_some(picture))
+    };
+    let mut out: Vec<(Role, H1Bound)> = base.map(|k| (Role::Base, maps[k].0)).into_iter().collect();
+    if !additive
+        && let Some(c) =
+            (0..maps.len()).find(|&k| Some(k) != base && maps[k].1 == Some(ImageKind::Cube))
+    {
+        out.push((Role::Cube, maps[c].0));
+    }
+    out
 }
 
 /// `swat`'s reflection map (D: a cube on each of the eight distinct
@@ -1573,6 +1619,78 @@ pub fn h1_lod_offset(h1: &h1map::H1Map, id: h1map::TagId) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn h1_bound(id: u32, scale: f32) -> H1Bound {
+        H1Bound {
+            bitmap: h1map::TagId(id),
+            scale: [scale, scale],
+        }
+    }
+
+    /// a10's cryo glass: a 1×1 reflection cube first, the 1×1 glass
+    /// texture second. The glass is the picture, the cube its reflection.
+    #[test]
+    fn a_glass_whose_first_map_is_a_cube_draws_its_2d_map_and_reflects_the_cube() {
+        use h1map::bitmap::ImageKind;
+        let maps = [
+            (h1_bound(1, 1.0), Some(ImageKind::Cube)),
+            (h1_bound(2, 1.0), Some(ImageKind::D2)),
+        ];
+        assert_eq!(
+            transparent_maps(&maps, 0, false),
+            vec![
+                (Role::Base, h1_bound(2, 1.0)),
+                (Role::Cube, h1_bound(1, 1.0))
+            ]
+        );
+        // Additive: no reflection slot; the 2D map still draws.
+        assert_eq!(
+            transparent_maps(&maps, 0, true),
+            vec![(Role::Base, h1_bound(2, 1.0))]
+        );
+    }
+
+    /// A 2D picture stays the picture; with several 2D maps and a cube
+    /// chosen, the least tiled 2D map is taken.
+    #[test]
+    fn a_2d_picture_is_kept_and_a_cube_choice_falls_to_the_least_tiled_2d_map() {
+        use h1map::bitmap::ImageKind;
+        let maps = [
+            (h1_bound(1, 8.0), Some(ImageKind::D2)),
+            (h1_bound(2, 1.0), Some(ImageKind::D2)),
+        ];
+        assert_eq!(
+            transparent_maps(&maps, 1, false),
+            vec![(Role::Base, h1_bound(2, 1.0))]
+        );
+        let maps = [
+            (h1_bound(1, 1.0), Some(ImageKind::Cube)),
+            (h1_bound(2, 8.0), Some(ImageKind::D2)),
+            (h1_bound(3, 4.0), Some(ImageKind::D2)),
+        ];
+        assert_eq!(
+            transparent_maps(&maps, 0, false),
+            vec![
+                (Role::Base, h1_bound(3, 4.0)),
+                (Role::Cube, h1_bound(1, 1.0))
+            ]
+        );
+    }
+
+    /// With no 2D map, the chosen map stays (fit_kinds then moves a cube
+    /// to the cube slot), and an unreadable kind is not a reflection.
+    #[test]
+    fn with_no_2d_map_the_chosen_map_stays() {
+        use h1map::bitmap::ImageKind;
+        let maps = [
+            (h1_bound(1, 1.0), Some(ImageKind::Cube)),
+            (h1_bound(2, 1.0), None),
+        ];
+        assert_eq!(
+            transparent_maps(&maps, 0, false),
+            vec![(Role::Base, h1_bound(1, 1.0))]
+        );
+    }
 
     fn library() -> Library {
         let stems: Vec<(&'static str, TagId)> = LAYOUTS
