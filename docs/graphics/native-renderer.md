@@ -794,9 +794,12 @@ render's snapshot of the frame.
    leaves blend enable, its factors or depth write to whatever the
    previous draw left (S: the states it does not set are taken at the
    D3D defaults).
-3. **The world's transparent parts.** Load the kind-4 parts the world
-   builder now only counts into a draw table keyed by (cluster or
-   placement, part), in the world's vertex buffer; the run's pass draws,
+3. **The world's transparent parts.** The draw table is built
+   (`world::TransparentDraw`, `World::transparent(owner, part)`): the
+   kind-4 parts in the world's vertex and index buffers, keyed by
+   (cluster or placement, the part's index in its section; the loader now
+   keeps every part in place, a part not drawn as an empty one), their
+   lightmap pages in the lightmap array. Left: the run's pass draws,
    per entry in order, that part with each layer-15 pass's program and
    blend, depth tested, writing depth only where the state says so. Boot's
    host accepts an entry when its part and material are loaded.

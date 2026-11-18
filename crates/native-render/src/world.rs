@@ -84,6 +84,26 @@ pub struct WorldDraw {
     pub batch: u32,
 }
 
+/// One transparent part (kind 4) of a section, placed in the world: what
+/// a sorted transparent entry names by its owner and part index
+/// (docs/graphics/native-renderer.md, "Stage 3: transparents"). Not in
+/// any batch: the transparents draw them one entry at a time.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TransparentDraw {
+    pub owner: Owner,
+    /// The part's index in its section (opaque parts counted too): the low
+    /// byte of the entry's render argument (S: the build `0x0004cbf0`
+    /// reads it as the section's part).
+    pub part: u8,
+    /// Index into the BSP's materials (`sbsp+0xa4`), `u16::MAX` none.
+    pub material: u16,
+    pub lightmap: Option<LightmapKey>,
+    /// Range in [`World::indices`] (absolute vertex indices).
+    pub first_index: u32,
+    pub index_count: u32,
+    pub bounds: Aabb,
+}
+
 /// A run of draws sharing material and lightmap: one bind group and one
 /// multi-draw over `first_draw .. first_draw + draw_count` slots.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -175,6 +195,9 @@ pub struct World {
     /// Sorted by batch.
     pub draws: Vec<WorldDraw>,
     pub batches: Vec<Batch>,
+    /// The transparent parts, sorted by (owner, part) for
+    /// [`World::transparent`].
+    pub transparents: Vec<TransparentDraw>,
     pub bounds: Option<Aabb>,
     pub stats: BuildStats,
 }
@@ -185,6 +208,7 @@ pub struct WorldBuilder {
     vertices: Vec<WorldVertex>,
     indices: Vec<u32>,
     draws: Vec<WorldDraw>,
+    transparents: Vec<TransparentDraw>,
     stats: BuildStats,
 }
 
@@ -193,8 +217,9 @@ impl WorldBuilder {
         Self::default()
     }
 
-    /// Adds a section's opaque parts, placed by `place`, lit by
-    /// `lightmap` (ignored when the section has no lightmap coordinates).
+    /// Adds a section's parts, placed by `place`, lit by `lightmap`
+    /// (ignored when the section has no lightmap coordinates): the opaque
+    /// ones as batched draws, the transparent ones as [`TransparentDraw`]s.
     pub fn add_section(
         &mut self,
         owner: Owner,
@@ -223,10 +248,9 @@ impl WorldBuilder {
                 lighting: turn(&section.lighting),
             });
         }
-        for part in &section.parts {
+        for (index, part) in section.parts.iter().enumerate() {
             if part.transparent {
                 self.stats.transparent_parts += 1;
-                continue;
             }
             let first_index = self.indices.len() as u32;
             let mut bounds = Aabb::EMPTY;
@@ -247,6 +271,21 @@ impl WorldBuilder {
             }
             let index_count = self.indices.len() as u32 - first_index;
             if index_count == 0 {
+                continue;
+            }
+            if part.transparent {
+                // Past 255 parts the entry's byte cannot name it.
+                if let Ok(part_index) = u8::try_from(index) {
+                    self.transparents.push(TransparentDraw {
+                        owner,
+                        part: part_index,
+                        material: part.material,
+                        lightmap,
+                        first_index,
+                        index_count,
+                        bounds,
+                    });
+                }
                 continue;
             }
             self.draws.push(WorldDraw {
@@ -283,11 +322,13 @@ impl WorldBuilder {
             bounds.add(d.bounds.min);
             bounds.add(d.bounds.max);
         }
+        self.transparents.sort_by_key(|t| (t.owner, t.part));
         World {
             vertices: self.vertices,
             indices: self.indices,
             draws: self.draws,
             batches,
+            transparents: self.transparents,
             bounds: (!bounds.is_empty()).then_some(bounds),
             stats: self.stats,
         }
@@ -295,13 +336,34 @@ impl WorldBuilder {
 }
 
 impl World {
-    /// The lightmap pages the draws use, in a fixed order: index `i` is
-    /// layer `i` of the lightmap array.
+    /// The lightmap pages the draws and the transparent parts use, in a
+    /// fixed order: index `i` is layer `i` of the lightmap array.
     pub fn lightmap_keys(&self) -> Vec<LightmapKey> {
-        let mut keys: Vec<LightmapKey> = self.batches.iter().filter_map(|b| b.lightmap).collect();
+        let mut keys: Vec<LightmapKey> = self
+            .batches
+            .iter()
+            .filter_map(|b| b.lightmap)
+            .chain(self.transparents.iter().filter_map(|t| t.lightmap))
+            .collect();
         keys.sort();
         keys.dedup();
         keys
+    }
+
+    /// The transparent part `part` of `owner`'s section.
+    pub fn transparent(&self, owner: Owner, part: u8) -> Option<&TransparentDraw> {
+        self.transparents
+            .binary_search_by_key(&(owner, part), |t| (t.owner, t.part))
+            .ok()
+            .map(|i| &self.transparents[i])
+    }
+
+    /// The materials the transparent parts use, ascending, deduplicated.
+    pub fn transparent_materials(&self) -> Vec<u16> {
+        let mut m: Vec<u16> = self.transparents.iter().map(|t| t.material).collect();
+        m.sort_unstable();
+        m.dedup();
+        m
     }
 
     /// The materials the draws use, ascending.
@@ -370,9 +432,14 @@ mod tests {
         b.add_section(Owner::Cluster(0), &s, &Placement::IDENTITY, PAGE);
         let w = b.finish();
         assert_eq!(w.vertices.len(), 4);
-        assert_eq!(w.indices, vec![0, 1, 2, 1, 3, 2]);
+        assert_eq!(w.indices, vec![0, 1, 2, 1, 3, 2, 0, 1, 2], "the transparent part's after");
         assert_eq!(w.draws.len(), 1);
         assert_eq!(w.stats.transparent_parts, 1);
+        let t = w.transparent(Owner::Cluster(0), 1).expect("part 1");
+        assert_eq!((t.first_index, t.index_count, t.material, t.lightmap), (6, 3, 4, PAGE));
+        assert_eq!(w.transparent(Owner::Cluster(0), 0), None, "part 0 is opaque");
+        assert_eq!(w.transparent_materials(), vec![4]);
+        assert!(!w.batches.iter().any(|b| b.material == 4), "not batched");
         let d = w.draws[0];
         assert_eq!((d.first_index, d.index_count, d.material, d.lightmap), (0, 6, 3, PAGE));
         assert_eq!(d.bounds, Aabb { min: [0.0; 3], max: [1.0, 1.0, 0.0] });

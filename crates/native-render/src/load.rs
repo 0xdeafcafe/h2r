@@ -71,14 +71,23 @@ pub fn section_input(s: &Section) -> Option<SectionInput> {
         return None;
     }
     Some(SectionInput {
+        // Every part, in the section's order, so a part's position is its
+        // index (what a transparent entry names); a part not drawn has no
+        // triangles and becomes no draw.
         parts: s
             .parts
             .iter()
-            .filter(|p| p.is_drawn())
-            .map(|p| PartInput {
-                material: p.material,
-                transparent: p.kind == PART_TRANSPARENT,
-                triangles: s.part_triangles(p),
+            .map(|p| match p.is_drawn() {
+                true => PartInput {
+                    material: p.material,
+                    transparent: p.kind == PART_TRANSPARENT,
+                    triangles: s.part_triangles(p),
+                },
+                false => PartInput {
+                    material: p.material,
+                    transparent: false,
+                    triangles: Vec::new(),
+                },
             })
             .collect(),
         positions: v.positions,
