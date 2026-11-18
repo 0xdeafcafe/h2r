@@ -22,6 +22,7 @@ pub mod cull;
 #[cfg(feature = "gpu")]
 pub mod gpu;
 pub mod instances;
+pub mod lights;
 #[cfg(feature = "gpu")]
 pub mod load;
 #[cfg(feature = "gpu")]

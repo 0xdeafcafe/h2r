@@ -846,6 +846,136 @@ render's snapshot of the frame.
 5. **The live A/B**, as stage 1's: the same frame with the switch on and
    off, `external_passes_dropped` steady, and the `0x0002c19a` site's ms.
 
+## Stage 4: lights and shadows (design)
+
+The dynamic lights are not layers of the scene list either: after layer
+7, `render_scene_passes` calls `render_dynamic_lights` (`0x00031c80`,
+`points::RENDER_DYNAMIC_LIGHTS`), which gathers each visible light's
+geometry into a list of its own and draws layers 10 to 14 over it, one
+light at a time. The game has two more shadow paths beside it: object
+shadows before layer 7, and the first-person view's lights after the
+scene. What follows is the light path in the order the game draws it
+(e3-lighting.md, "The light render path", has the light records and the
+definition flags).
+
+### The path (Code, `h2 disasm`)
+
+- **Visible lights.** `0x00031c80` builds the visible-light list
+  (`0x00031910`, from the candidates at `[0x00547f98]`; entries of `0x14`
+  bytes, `+0` the light datum, `+8` a weight; sorted and trimmed by
+  `0x0004a7c0`/`0x0004ac30`), then walks it. For each light above the
+  weight threshold (`[0x0045dc58]`) it re-poses an attached light
+  (`0x00031dac`), records it for the first-person pass (`0x004c6b00`,
+  stride `0x408`, at most eight, count `[0x00509440]`), decides the
+  shadow (`0x00031e02`), gathers the light's geometry into the light's
+  list `0x004c1a60` (`0x000c1d90`, `0x001320f0`, `0x00031660`, and the
+  extra call `0x00031c20` for definition bit 22), runs the objects'
+  render records for it (`0x00133390`, `0x00133520`, `0x00133720`), and
+  calls `render_light_passes` once.
+- **One light's passes.** `0x00031170` (`points::RENDER_LIGHT_PASSES`; its
+  only caller is `0x00031f26`): EAX the `ligh` datum, ECX a context from
+  `0x000c17f0` (its first word sets per-light flag bit 0), stack `(light
+  datum, &position, shadow byte, weight)`, `ret 0x10`. It sets the light's
+  constants (`0x0004a1e0`, which takes 1024.0) and the flags
+  `[0x004ba014]` and `[0x004ba018]`, then: with the shadow bit, the shadow
+  projection (`0x00048ee0`, `0x28` dwords at `0x004c9798`) and layer 10
+  (shadow generate into target 9, cleared to depth 1.0); layer 11 (shadow
+  apply, `ShadowFunc GREATER`) when shadowed, bit 1 or definition bit 5;
+  `0x00030ed0` when shadowed, the byte at `[0x00510c50]+5` set and
+  `[0x004ba134]` positive (not traced); layer 14 (opaque,
+  depth write, role unknown); layer 12 (diffuse) and, with bits 0 and 1,
+  layer 13 (specular), each on `0x004c1a60` through the layer draw
+  (`0x00044550`). It ends by turning stencil off, clearing the scissor,
+  setting the view's target back (`0x00014bc0`) and zeroing both flag
+  words.
+- **Object shadows.** `0x000335e0(mode)` (from `0x0002c021`, before layer
+  7) picks up to 32 casters (`0x00033400`, entries of `0x14` bytes) and
+  calls `0x00032350` (stdcall, two words of the entry, `ret 8`) for each:
+  its constants and projection (`0x0004a1e0`, `0x00048ee0`), layer 10
+  into target 10 (S: 128x128,
+  flags `0x14`: bit 4 picks that target) and layer 11 over what the
+  shadow falls on.
+- **First-person lights.** `0x000404b0` (from `0x0002c2b9`, after the
+  first-person draw `0x0003fdf0`) draws the recorded lights again over the
+  first-person view, with its own constants (`0x0004a1e0`) and layers on
+  `0x004c1a60`.
+
+### Skip point and order
+
+One `before` on `RENDER_LIGHT_PASSES`, context-only: for a light the
+host draws (`native_render::lights::Light`, the record copied with
+`feature::native_lights::read_light` and its checks), it answers
+`ret 0x10`, so none of the light's layers is built or drawn and no guest
+memory changes. The flag words it would have set stay at the zero it
+leaves them at, and the D3D state it resets at its end (stencil,
+scissor, target) is the state it found. The gather before the call still
+runs (its CPU, 1.88 ms on the census run, is the next target, below).
+
+Order uses the external pass as stage 3 does: consecutive native lights
+join one `lights::Run`, whose pass the device issues at its next entry,
+the next D3D light's first draw or what follows the lights; the pass
+seals the run then. An observer before `RENDER_DYNAMIC_LIGHTS` forgets the
+open run. The light's frame is read at the call, after the re-pose, from
+the render's snapshot, so a run draws this frame's lights. Lights add, so
+their order matters only through the shadow target each one reuses; the
+runs keep the game's order anyway.
+
+Both hooks are context-only with nothing after a body, so the pipelined
+render runs them on its own thread. With `render-timing` on the feature
+places nothing: its timer on the light passes needs their end, which a
+skipped light never reaches.
+
+### What a native light draws
+
+- **What it lights.** The light's list `0x004c1a60` is gathered before
+  the call, so the hook can copy its entries (render records, as the
+  layer entries name them) into the run, with the objects' node matrices
+  as stage 3 does: BSP clusters and placements through the native world's
+  draw tables, objects through the models'. Until then the host can light
+  the world's parts whose bounds meet the light's sphere (S: more than the
+  game lights, never less).
+- **Shading.** Each lit material's layer-12 and layer-13 passes compiled
+  as stage 3 compiles layer 15 (`look`, `program::compile_pass`, the
+  passes' render states: additive, no depth write, `LessEqual` against
+  the game's W depth), drawn with the light's constants. Those constants
+  are `0x0004a1e0`'s and its callees' (position, frustum or sphere
+  falloff, colour, the gel's projection), not traced yet (e3-lighting.md,
+  "What is still unknown"); tracing them into a pure function of the
+  copied light and its `ligh` definition is the first research step. A
+  material with layer-14 passes keeps the light on the D3D path until
+  layer 14 is understood.
+- **Shadows.** Layer 10's casters into a depth texture of our own from
+  the light's projection (`0x00048ee0`, skipped with the call, so ported
+  as a pure function), then the shadow term sampled in the light's own
+  pass (`GREATER`, one tap as the D3D path's), instead of layer 11's
+  stencil and alpha marks. Lights whose shadow cannot be drawn keep their
+  D3D passes.
+
+### Order of work
+
+1. **The skip and the runs** (built: `feature::native_lights`,
+   `native_render::lights`, `impl.render.native_lights`, off by default;
+   points `RENDER_DYNAMIC_LIGHTS` and `RENDER_LIGHT_PASSES`). No host yet,
+   so every light keeps its D3D passes.
+2. **The light's constants**: trace `0x0004a1e0` and `0x00048ee0` and
+   port them as pure functions of `Light` and the `ligh` definition, with
+   tests against invented lights.
+3. **Unshadowed lights over the native world**: the host takes lights
+   without the shadow bit, the light's list copied at the hook, and draws
+   the world's lit parts with their materials' layer-12 and 13 passes.
+4. **Objects**, through the models as stage 3's objects.
+5. **Shadows**: layer 10 into our depth texture, the term in the light's
+   pass.
+6. **Object shadows** (`0x00032350`, the same skip and run shape) and
+   the **first-person lights** (`0x000404b0`, with stage 2's first
+   person).
+7. **The gather**: once every light is native, skip `0x00031c80`'s gather
+   too and build the visible lights from the light array ourselves; the
+   first-person records at `0x004c6b00` then need writing, so this is not
+   a pure skip.
+8. **The live A/B**, as the other stages': the same frame with the switch
+   on and off, `external_passes_dropped` steady, and the light site's ms.
+
 ## Open
 
 - Seams: the drawn world is welded (no T-junctions, shared edges

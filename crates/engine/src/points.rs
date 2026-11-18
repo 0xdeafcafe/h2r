@@ -283,8 +283,15 @@ points! { ALL;
     RENDER_GAME_VIEW @ 0x0002_b790: [opaque]; "docs/engine/engine-map.md";
     /// `render_scene_passes`: the scene pass sequence of one view.
     RENDER_SCENE_PASSES @ 0x0002_bcd0: [opaque]; "docs/graphics/e3-lighting.md";
-    /// `render_light_passes`: draws one dynamic light's passes.
-    RENDER_LIGHT_PASSES @ 0x0003_1170: [opaque]; "docs/graphics/e3-lighting.md";
+    /// `render_dynamic_lights`: the visible lights, each gathered and drawn
+    /// with `RENDER_LIGHT_PASSES` (`render_scene_passes` calls it after
+    /// layer 7).
+    RENDER_DYNAMIC_LIGHTS @ 0x0003_1c80: [opaque]; "docs/graphics/native-renderer.md";
+    /// `render_light_passes`: draws one dynamic light's passes (layers 10,
+    /// 11, 14, 12, 13 on the light's list). EAX the `ligh` datum, ECX a
+    /// context, stack `(light datum, &position, shadow byte, weight)`,
+    /// `ret 0x10`; its only caller is `RENDER_DYNAMIC_LIGHTS`.
+    RENDER_LIGHT_PASSES @ 0x0003_1170: [fn(definition: eax, context: ecx, light: stack 0, position: stack 1, shadow: stack 2, weight: stack 3) ret 16]; "docs/graphics/e3-lighting.md";
     /// Draws the current layer (`[0x00467130]`) of the current list: layer
     /// setup, then `LAYER_ENTRIES` for the layers in its mask.
     LAYER_DRAW @ 0x0004_4550: [opaque]; "docs/graphics/layer-draw.md";
