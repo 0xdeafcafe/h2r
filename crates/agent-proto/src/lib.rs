@@ -20,6 +20,7 @@ mod load;
 mod pad;
 mod render;
 pub mod sim;
+pub mod trace;
 pub use client::{CallError, Client};
 pub use endpoint::Endpoint;
 pub use load::{LoadParams, LoadRecord, LoadSegment, Loads};

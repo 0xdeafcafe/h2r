@@ -25,6 +25,9 @@
 //! * [`sim`] answers `sim.*`: simulated players (through the bots),
 //!   host writes to player state, and expectations over one view of the
 //!   game ([`Agent::add_game_method`]).
+//! * `trace` answers `trace.*` and `flight.*`: rows of chosen objects
+//!   taken at every tick, streamed to a file or kept in a ring with the
+//!   tick's controller reads.
 //!
 //! The observer adds dispatch transfers to every tick, as `lockstep`'s
 //! does: compare runs that all have the agent on, or all off.
@@ -40,6 +43,7 @@ pub mod render;
 mod server;
 pub mod sim;
 mod tap;
+mod trace;
 
 pub use capture::{FrameSource, Sampler, TickMark, summarise, write_csv};
 pub use exec::{Access, Agent, ConnId, GameCtx, GameMethod, HostMethod, Page, TICK_STALE, query};

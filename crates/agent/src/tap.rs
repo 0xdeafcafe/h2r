@@ -83,6 +83,19 @@ pub struct Input {
     pub(crate) tap: bool,
     /// Where input logs (and captures) go; the cache directory unless set.
     pub(crate) dir: Option<PathBuf>,
+    /// The flight recorder's reads since the last tick (`crate::trace`);
+    /// `None` while it isn't running.
+    pub(crate) flight: Option<FlightReads>,
+}
+
+/// Controller reads as the game got them, kept for the flight recorder
+/// until the next tick takes them.
+#[derive(Default)]
+pub(crate) struct FlightReads {
+    /// Port (when known), handle, status, packet.
+    pub reads: Vec<(Option<u32>, u32, u32, [u8; PACKET])>,
+    /// Reads past `InputRead::MAX_PER_TICK`, not kept.
+    pub dropped: u32,
 }
 
 impl Input {
@@ -221,6 +234,14 @@ impl Input {
         if let Mode::Recording { recorder, .. } = &mut self.mode {
             recorder.read(handle, status, packet);
         }
+        if let Some(f) = &mut self.flight {
+            if f.reads.len() < agent_proto::trace::InputRead::MAX_PER_TICK {
+                let port = self.ports.get(&handle).copied();
+                f.reads.push((port, handle, *status, *packet));
+            } else {
+                f.dropped += 1;
+            }
+        }
     }
 
     /// The handle's port's current step merges over the read, which counts
@@ -323,7 +344,7 @@ impl InputTap for AgentTap {
 
 // ---- the methods ----
 
-const DIGITAL: &[(&str, Buttons)] = &[
+pub(crate) const DIGITAL: &[(&str, Buttons)] = &[
     ("up", Buttons::DPAD_UP),
     ("down", Buttons::DPAD_DOWN),
     ("left", Buttons::DPAD_LEFT),
@@ -335,7 +356,7 @@ const DIGITAL: &[(&str, Buttons)] = &[
 ];
 
 /// Pressure buttons and their `bAnalogButtons` index.
-const ANALOG: &[(&str, usize)] = &[
+pub(crate) const ANALOG: &[(&str, usize)] = &[
     ("a", 0),
     ("b", 1),
     ("x", 2),

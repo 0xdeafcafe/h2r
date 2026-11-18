@@ -311,8 +311,11 @@ mod tests {
         }
         let list = isl + 0x400;
         g.set_u32(isl + layout::ISLAND_CONSTRAINTS, list).unwrap();
-        g.set_u32(isl + layout::ISLAND_CONSTRAINTS + 4, constraints.len() as u32)
-            .unwrap();
+        g.set_u32(
+            isl + layout::ISLAND_CONSTRAINTS + 4,
+            constraints.len() as u32,
+        )
+        .unwrap();
         for (n, c) in constraints.iter().enumerate() {
             g.set_u32(list + 4 * n as u32, *c).unwrap();
         }
@@ -327,16 +330,19 @@ mod tests {
         g.set_u32(layout::HAVOK_WORLD_PTR, WORLD).unwrap();
         g.set_u32(WORLD + layout::WORLD_ACTIVE_ISLANDS, ISLANDS)
             .unwrap();
-        g.set_u32(WORLD + layout::WORLD_ACTIVE_ISLANDS + 4, 1).unwrap();
+        g.set_u32(WORLD + layout::WORLD_ACTIVE_ISLANDS + 4, 1)
+            .unwrap();
         g.set_u32(ISLANDS, island(0)).unwrap();
         g.set_u32(WORLD + layout::WORLD_INACTIVE_ISLANDS, ISLANDS + 0x10)
             .unwrap();
         g.set_u32(WORLD + layout::WORLD_INACTIVE_ISLANDS + 4, 1)
             .unwrap();
         g.set_u32(ISLANDS + 0x10, island(1)).unwrap();
-        g.set_u32(WORLD + layout::WORLD_FIXED_ISLAND, island(2)).unwrap();
+        g.set_u32(WORLD + layout::WORLD_FIXED_ISLAND, island(2))
+            .unwrap();
 
-        g.set_u32(layout::PHYSICS_COMPONENTS_PTR, COMPONENTS).unwrap();
+        g.set_u32(layout::PHYSICS_COMPONENTS_PTR, COMPONENTS)
+            .unwrap();
         g.set_u32(COMPONENTS + layout::DATUM_DATA, COMPONENT_DATA)
             .unwrap();
         for (index, object) in [(3, 0xe001_0001), (5, 0xe002_0002)] {
@@ -356,8 +362,10 @@ mod tests {
         g.set_u32(joint, 0x0041_0000).unwrap();
         let c = CONSTRAINT;
         g.set_u32(c, layout::CONTACT_CONSTRAINT_VTABLE).unwrap();
-        g.set_u32(c + layout::CONSTRAINT_ENTITY_A, entity(2)).unwrap();
-        g.set_u32(c + layout::CONSTRAINT_ENTITY_B, entity(0)).unwrap();
+        g.set_u32(c + layout::CONSTRAINT_ENTITY_A, entity(2))
+            .unwrap();
+        g.set_u32(c + layout::CONSTRAINT_ENTITY_B, entity(0))
+            .unwrap();
         let pts = c + 0x200;
         let props = c + 0x400;
         g.set_u32(c + layout::CONTACT_POINTS, pts).unwrap();

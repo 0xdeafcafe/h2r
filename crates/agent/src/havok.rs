@@ -33,7 +33,10 @@ fn hex(v: u32) -> String {
 /// The object datum behind an API object: a player's unit, else the id's.
 fn datum_of(o: &Object) -> Option<u32> {
     match o.kind {
-        Kind::Player => o.unit.as_deref().and_then(|u| u32::from_str_radix(u, 16).ok()),
+        Kind::Player => o
+            .unit
+            .as_deref()
+            .and_then(|u| u32::from_str_radix(u, 16).ok()),
         _ => ObjectId::parse(&o.id).map(|id| id.key),
     }
 }
@@ -101,8 +104,10 @@ fn contacts_method(v: Value, ctx: &mut GameCtx<'_>) -> Result<Value, RpcError> {
     let raw = read(ctx, hk::contacts)?;
     let bodies = read(ctx, hk::bodies)?;
     let objects = objects(ctx)?;
-    Ok(serde_json::to_value(answer_contacts(&raw, &bodies, &objects, &p)?)
-        .expect("contacts serialise"))
+    Ok(
+        serde_json::to_value(answer_contacts(&raw, &bodies, &objects, &p)?)
+            .expect("contacts serialise"),
+    )
 }
 
 fn wire_body(b: &hk::Body, ids: &HashMap<u32, String>) -> Body {
@@ -248,9 +253,24 @@ mod tests {
 
     fn world() -> (Vec<hk::Body>, Vec<Object>) {
         let bodies = vec![
-            body(0x0080_1000, IslandState::Active, Some(0xe001_0001), [0.0, 0.0, 1.0]),
-            body(0x0080_2000, IslandState::Inactive, Some(0xe002_0002), [3.0, 0.0, 1.0]),
-            body(0x0080_3000, IslandState::Active, Some(0xe003_0003), [9.0, 0.0, 1.0]),
+            body(
+                0x0080_1000,
+                IslandState::Active,
+                Some(0xe001_0001),
+                [0.0, 0.0, 1.0],
+            ),
+            body(
+                0x0080_2000,
+                IslandState::Inactive,
+                Some(0xe002_0002),
+                [3.0, 0.0, 1.0],
+            ),
+            body(
+                0x0080_3000,
+                IslandState::Active,
+                Some(0xe003_0003),
+                [9.0, 0.0, 1.0],
+            ),
             body(0x0080_4000, IslandState::Fixed, None, [0.0; 3]),
         ];
         let objects = vec![
@@ -412,7 +432,10 @@ mod tests {
         }
         a.between_slices(&mut NoGuest, 0);
         let line = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
-        assert!(line.contains(method::BODIES) && line.contains(method::CONTACTS), "{line}");
+        assert!(
+            line.contains(method::BODIES) && line.contains(method::CONTACTS),
+            "{line}"
+        );
         // Without guest memory the reads are unavailable, not a panic.
         a.submit(
             conn,
