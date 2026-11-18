@@ -110,7 +110,7 @@ fn resolve(app: &mut App, p: &P) -> Result<TagId, agent_proto::RpcError> {
     if let Some(e) = &app.tags.error {
         return Err(err(code::FAILED, format!("the tag editor could not read the map: {e}")));
     }
-    if let Some(s) = p.opt_str("tag")?
+    if let Some(s) = p.get("tag").and_then(Value::as_str)
         && let Some(id) = tag_api::find_tag(&app.tags, s)
     {
         return Ok(id);
