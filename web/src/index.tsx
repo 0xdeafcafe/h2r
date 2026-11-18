@@ -54,7 +54,6 @@ const SignIn = lazy(parts.signin);
 const DeckStyle = lazy(parts.deckStyle);
 const Usage = lazy(parts.usage);
 const EventLog = lazy(parts.eventLog);
-const Viewer3DPage = lazy(() => import("./viewer/Popout"));
 
 const idle = (f: () => void) =>
   "requestIdleCallback" in globalThis ? requestIdleCallback(f, { timeout: 3000 }) : setTimeout(f, 1500);
@@ -68,6 +67,15 @@ function NotFound() {
 }
 
 const OldGame = () => <Navigate href={statsPath(`/games/${useParams().id}`)} />;
+// The 3D view had a pop-out window of its own here; it is in the game page
+// now: the same game with the 3D view showing (its `cam`, `cut`, `see` and
+// `ao` settings kept), which brings the viewer into view.
+const Old3dView = () => {
+  const at = useLocation();
+  const q = new URLSearchParams(at.search);
+  q.set("view", "3d");
+  return <Navigate href={`${statsPath(`/games/${useParams().id}`)}?${q}`} />;
+};
 // Clans were called teams here first (the protocol still says team).
 const OldTeam = () => <Navigate href={statsPath(`/clans/${useParams().id}`)} />;
 const OldPlayer = () => <Navigate href={statsPath(`/players/${useParams().tag}`)} />;
@@ -109,7 +117,7 @@ render(
         <Route path="/admin" component={Admin} />
         <Route path="*404" component={NotFound} />
       </Route>
-      <Route path={statsPath("/games/:id/3d")} component={Viewer3DPage} />
+      <Route path={statsPath("/games/:id/3d")} component={Old3dView} />
       <Route path={[OLD_STATS_ROOT, `${OLD_STATS_ROOT}/*rest`]} component={OldStats} />
       <Route path={GAMES_ROOT} component={() => <Navigate href={STATS_ROOT} />} />
       <Route path="/signin" component={SignIn} />

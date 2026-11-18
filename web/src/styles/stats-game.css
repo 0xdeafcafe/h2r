@@ -37,6 +37,8 @@
 .s-viewer-status i { width: 5px; height: 5px; border-radius: 50%; background: #8fdc5d; }
 .s-viewer { display: grid; grid-template-columns: minmax(0, 1fr) 314px; gap: 8px; padding: 8px; background: #202020; border-bottom: 1px solid #3a3a3a; align-items: start; }
 .s-viewer-side { display: grid; gap: 8px; min-width: 0; }
+/* Under the viewer: the scoreboard (or a campaign's players) beside the field report. */
+.s-viewer--below { grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); border-bottom: 0; }
 .s-game .s-sec { min-width: 0; }
 .s-game .s-sec > header { min-height: 24px; padding: 3px 7px; font: bold 11px/16px var(--font-ui); }
 .s-game .s-sec > header .s-block-right { font: 10px/13px var(--font-ui); color: #9d9d9d; }

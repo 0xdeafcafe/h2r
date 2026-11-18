@@ -4,7 +4,6 @@ import { ReplayClock, ReplayTimeline } from "../src/state/replay";
 import { TICKS_PER_SECOND, type SampledPlayer } from "../src/state/frames";
 import { applyClock, clockAgrees, isSyncMessage, nextCamera, readClock, smoothPlayers, syncChannelName, type SmoothPlayer } from "../src/viewer/sync";
 import { EYE_HEIGHT, FOLLOW_DISTANCE, cameraFit, eyeView, followDistance, markerScale } from "../src/viewer/camera";
-import { MIN_H, MIN_W, placeWindow } from "../src/viewer/window";
 
 function frames(seconds: number): Frame[] {
   return Array.from({ length: seconds + 1 }, (_, s) => ({
@@ -172,27 +171,6 @@ describe("camera", () => {
     // A capsule is drawn bigger on a big map, and is followed from as much farther back.
     expect(followDistance(900, 4, false, 2.4)).toBe(FOLLOW_DISTANCE * 4);
     expect(followDistance(900, 1, false, 0.6)).toBe(FOLLOW_DISTANCE);
-  });
-});
-
-describe("window placement", () => {
-  const view = { w: 1280, h: 800 };
-
-  test("opens in the lower right, inside the viewport", () => {
-    const r = placeWindow(null, view);
-    expect(r.x + r.w).toBeLessThanOrEqual(view.w);
-    expect(r.y + r.h).toBeLessThanOrEqual(view.h);
-    expect(r.x).toBeGreaterThan(view.w / 3);
-  });
-
-  test("a dragged window can't leave the screen or shrink below its minimum", () => {
-    expect(placeWindow({ x: -500, y: 5000, w: 600, h: 400 }, view)).toEqual({ x: 8, y: 392, w: 600, h: 400 });
-    expect(placeWindow({ x: 100, y: 100, w: 10, h: 10 }, view)).toMatchObject({ w: MIN_W, h: MIN_H });
-  });
-
-  test("a window bigger than a phone's screen is cut to fit", () => {
-    const r = placeWindow({ x: 900, y: 300, w: 760, h: 520 }, { w: 390, h: 700 });
-    expect(r).toEqual({ x: 8, y: 172, w: 374, h: 520 });
   });
 });
 
