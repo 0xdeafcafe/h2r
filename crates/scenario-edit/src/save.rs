@@ -28,6 +28,11 @@ pub struct MapSource {
     /// `(offset, length)` inside `path`, or `None` for the whole file.
     pub region: Option<(u64, u64)>,
     pub bytes: Option<Arc<[u8]>>,
+    /// Where the shared caches (`shared`, `mainmenu`, `single_player_shared`)
+    /// are found when not beside the map itself: a disc image (their
+    /// `/maps/`) or a directory of `.map` files. A Map Pack map leans on the
+    /// Halo 2 disc's caches, not its own.
+    pub shared: Option<PathBuf>,
 }
 
 /// A map's reader: a host file, or bytes in memory.
@@ -58,6 +63,7 @@ impl MapSource {
             path: path.into(),
             region: None,
             bytes: None,
+            shared: None,
         }
     }
     /// `length` bytes at `offset` in `path` (a map inside a disc image).
@@ -66,11 +72,18 @@ impl MapSource {
             path: path.into(),
             region,
             bytes: None,
+            shared: None,
         }
+    }
+    /// This source with its shared caches taken from `shared` (a disc image
+    /// or a directory of maps).
+    pub fn with_shared(mut self, shared: Option<PathBuf>) -> Self {
+        self.shared = shared;
+        self
     }
     /// This source without its in-memory bytes: the base map on disk.
     pub fn base(&self) -> Self {
-        Self::region(self.path.clone(), self.region)
+        Self::region(self.path.clone(), self.region).with_shared(self.shared.clone())
     }
     /// The base map's bytes (the file or region, never `bytes`).
     pub fn read_base(&self) -> Result<Vec<u8>> {

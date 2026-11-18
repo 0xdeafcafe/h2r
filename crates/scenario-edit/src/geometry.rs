@@ -10,6 +10,7 @@ use crate::save::MapSource;
 use crate::scenario::{Scenario, Value};
 use map::{Map, RawPointer, ResourceFile, TagId};
 use std::io::{Read, Seek};
+use std::path::Path;
 use tags::geometry::{RawSource, Section, TagView};
 use tags::structure::{Lightmap, LightmapRenderInfo, StructureRender};
 
@@ -95,34 +96,46 @@ impl<R: Read + Seek> RawSource for RawFiles<R> {
     }
 }
 
-/// Open the shared caches next to a map: siblings in the same directory for
-/// a file, other maps on the same disc for a disc map. Missing ones are
-/// skipped; sections that need them then fail to load and are counted.
+/// Open the shared caches a map reads: from `source.shared` when it names
+/// one (a Map Pack map's are the Halo 2 disc's), else siblings in the same
+/// directory for a file, or other maps on the same disc for a disc map.
+/// Missing ones are skipped; sections that need them then fail to load and
+/// are counted.
 pub fn shared_sources(source: &MapSource) -> Vec<(ResourceFile, MapSource)> {
+    if let Some(shared) = &source.shared {
+        return shared_in(shared, shared.is_dir());
+    }
+    match source.region {
+        Some(_) => shared_in(&source.path, false),
+        None => shared_in(source.path.parent().unwrap_or(Path::new("")), true),
+    }
+}
+
+/// The shared caches in `place`: a directory of `.map` files when `dir`,
+/// else a disc image's `/maps/`.
+fn shared_in(place: &Path, dir: bool) -> Vec<(ResourceFile, MapSource)> {
     let names = [
         (ResourceFile::MainMenu, "mainmenu"),
         (ResourceFile::Shared, "shared"),
         (ResourceFile::SinglePlayerShared, "single_player_shared"),
     ];
-    match source.region {
-        Some(_) => {
-            let maps = MapSource::disc_maps(&source.path).unwrap_or_default();
-            names
-                .iter()
-                .filter_map(|(f, n)| {
-                    let (_, s) = maps.iter().find(|(m, _)| m.eq_ignore_ascii_case(n))?;
-                    Some((*f, s.clone()))
-                })
-                .collect()
-        }
-        None => names
+    if dir {
+        return names
             .iter()
             .filter_map(|(f, n)| {
-                let p = source.path.with_file_name(format!("{n}.map"));
+                let p = place.join(format!("{n}.map"));
                 p.is_file().then(|| (*f, MapSource::file(p)))
             })
-            .collect(),
+            .collect();
     }
+    let maps = MapSource::disc_maps(place).unwrap_or_default();
+    names
+        .iter()
+        .filter_map(|(f, n)| {
+            let (_, s) = maps.iter().find(|(m, _)| m.eq_ignore_ascii_case(n))?;
+            Some((*f, s.clone()))
+        })
+        .collect()
 }
 
 /// The scenario's structure BSP tags (`scnr+0x210`, stride 0x44, tag ID at

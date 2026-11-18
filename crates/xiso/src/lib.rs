@@ -4,6 +4,8 @@
 //! images, where the game partition starts at a fixed offset after the
 //! video partition.
 
+pub mod mappack;
+
 use std::collections::HashSet;
 use std::io::{Read, Seek, SeekFrom};
 

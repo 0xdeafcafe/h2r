@@ -21,7 +21,7 @@ pub use library::{Compare, block_of, kind_of, markers as library_markers, tris a
 pub use tag_doc::{BlockOp, TagAction, TagDoc, TagWrite};
 pub use ui_screens::{Pick, UiScreens};
 
-use editor_core::{MapSource, Status, variant_sources};
+use editor_core::{MapPack, MapSource, Status, variant_sources};
 use hopper_edit::HopperSession;
 use scenario_edit::{BlockKind, MapSource as EditSource, PackageForm, Session};
 use variants::panel::Origin;
@@ -265,6 +265,9 @@ pub struct App {
     packages: Vec<editor_core::packages::PackageEntry>,
     /// The package entry open in the scenario tool.
     opened_package: Option<String>,
+    /// The open Map Pack, beside the Halo 2 source (its maps resolve their
+    /// shared caches from that source).
+    mappack: Option<MapPack>,
     /// The open Halo 1 source and its maps.
     h1: Option<editor_core::halo1::H1Source>,
     h1_maps: Vec<String>,
@@ -318,6 +321,7 @@ impl App {
             package_image: String::new(),
             packages: Vec::new(),
             opened_package: None,
+            mappack: None,
             h1: None,
             h1_maps: Vec::new(),
             h1_view: None,
@@ -350,6 +354,20 @@ impl App {
     /// The maps of the opened source, in its order.
     pub fn maps(&self) -> &[String] {
         &self.maps
+    }
+    /// The open Map Pack, if any: its maps are their own group in the Maps
+    /// list and open and save like the disc's.
+    pub fn mappack(&self) -> Option<&MapPack> {
+        self.mappack.as_ref()
+    }
+    /// The Map Pack's maps, sorted; empty with none open.
+    pub fn mappack_maps(&self) -> Vec<String> {
+        self.mappack.as_ref().map(MapPack::map_names).unwrap_or_default()
+    }
+    /// Whether `name` is a Map Pack map (and not one of the source's own).
+    pub fn is_mappack_map(&self, name: &str) -> bool {
+        self.mappack.as_ref().is_some_and(|p| p.has(name))
+            && !self.maps.iter().any(|m| m.eq_ignore_ascii_case(name))
     }
     /// The map open in the scenario tool.
     pub fn loaded_map(&self) -> Option<&str> {
@@ -952,6 +970,11 @@ impl App {
     }
 
     fn open_source(&mut self, path: &Path) {
+        // The Map Pack is told by its contents. It joins the open source
+        // rather than replacing it: its maps need the Halo 2 disc's caches.
+        if self.try_open_mappack(path) {
+            return;
+        }
         if self.try_open_halo1(path) {
             return;
         }
@@ -987,13 +1010,30 @@ impl App {
     }
 
     fn select_map(&mut self, name: &str) {
-        let Some(source) = &self.source else {
+        let located = if self.is_mappack_map(name) {
+            // A Map Pack map: its own bytes, the Halo 2 source's caches.
+            let shared = self.shared_caches();
+            if shared.is_none() {
+                self.info(format!(
+                    "{name} needs the Halo 2 disc's shared maps for its textures and geometry: open the disc too"
+                ));
+            }
+            self.mappack.as_ref().map(|pack| {
+                pack.location(name)
+                    .map(|(path, region)| EditSource::region(path, region).with_shared(shared))
+            })
+        } else {
+            self.source.as_ref().map(|source| {
+                source
+                    .location(name)
+                    .map(|(path, region)| EditSource::region(path, region))
+            })
+        };
+        let Some(located) = located else {
             self.error("open a disc, map or folder first");
             return;
         };
-        let opened = source
-            .location(name)
-            .map(|(path, region)| EditSource::region(path, region))
+        let opened = located
             .map_err(|e| e.to_string())
             .and_then(|s| self.session.open_named(s, name).map_err(|e| e.to_string()));
         match opened {

@@ -16,11 +16,13 @@
 
 pub mod halo1;
 pub mod halo1_art;
+pub mod mappack;
 pub mod packages;
 pub mod source;
 pub mod undo;
 pub mod variant_sources;
 
+pub use mappack::MapPack;
 pub use source::{Disc, MapSource, Resources, default_disc};
 pub use undo::UndoStack;
 
