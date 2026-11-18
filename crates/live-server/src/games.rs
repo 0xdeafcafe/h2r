@@ -450,7 +450,7 @@ impl Live {
         }
         // The batch's events share its JWS (one copy, not one an event).
         let jws: Arc<str> = jws.into();
-        let events = bodies
+        let events: Vec<NewEvent> = bodies
             .into_iter()
             .enumerate()
             .map(|(i, body)| NewEvent {
@@ -459,9 +459,14 @@ impl Live {
                 body,
             })
             .collect();
+        let ends = events_end(&events);
         let recorded = self.store.append(events, &[]).await?;
         let last = recorded.last().map_or(0, |e| e.position);
         self.wait_applied(last).await?;
+        if ends {
+            // A finished ranked game ranks its players (crate::ranks).
+            self.rank_game(game_id).await?;
+        }
         Ok(last)
     }
 
@@ -919,6 +924,12 @@ impl Live {
             Err(e) => eprintln!("live: sweep: {e}"),
         }
     }
+}
+
+fn events_end(events: &[NewEvent]) -> bool {
+    events
+        .last()
+        .is_some_and(|e| e.body.kind == game::GAME_ENDED)
 }
 
 /// An ingest refusal as the socket reports it.
