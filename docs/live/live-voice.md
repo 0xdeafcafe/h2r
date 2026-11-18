@@ -255,11 +255,11 @@ lane's device trait (section 4):
 
 ```
 trait Capture: Send {
-    /// 20 ms mono frames at 48 kHz, after input volume.
+    /// 20 ms mono frames at 48 kHz, as captured.
     fn read(&mut self, frame: &mut [i16; 960]) -> bool;
 }
 trait Playback: Send {
-    /// One mixed 20 ms frame, before output volume.
+    /// One mixed 20 ms frame, after output volume.
     fn write(&mut self, frame: &[i16; 960]);
 }
 trait VoiceIo {
@@ -666,6 +666,11 @@ Each is its own slice, with tests:
      game last got for that port (`Xapi::last_input_state`, no guest
      call); with no pad holding it nobody talks. `voice.mic_muted`
      silences it in either mode.
+   - **Volumes.** `voice.input_volume` and `voice.output_volume` (and the
+     two mutes) reach the media objects as gains
+     (`MediaObjects::set_gains`, from `VoiceHandles::capture_gain` and
+     `playback_gain`): the microphone frame is scaled before it fills the
+     talker's packets, the headphone mix before it is played.
    - **Devices.** The chosen devices open through the host's opener
      (`Host::voice_io`). `h2 play` uses `voice::host::HostVoiceIo`, which
      runs cpal on its own thread. Output plays on its own stream only when
@@ -679,7 +684,6 @@ Each is its own slice, with tests:
      Before this, every port's remote voice was on mixbin 0, the left
      speaker.
    - **Still to do:**
-     - the input and output volume settings;
      - "Same as Game" through the DirectSound side sink.
 5. **Voice messages**: the voice-mail mode on the same objects, blob storage
    with the size and header check, inbox delivery (this depends on the

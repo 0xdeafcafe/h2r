@@ -16,13 +16,16 @@
 //! mode it is the first such port whose pad holds the chosen button, as the
 //! game last read it (`Xapi::last_input_state`); nobody talks while no pad
 //! holds it. `voice.mic_muted` silences it in either mode.
+//!
+//! **Volumes.** The input and output volumes (and the two mutes) reach the
+//! media objects as gains (`VoiceHandles::capture_gain`, `playback_gain`).
 
 use crate::voice_settings::{
     MODE_OPEN, MODE_PUSH, PTT_BACK, PTT_DPAD_DOWN, PTT_DPAD_LEFT, PTT_DPAD_RIGHT, PTT_DPAD_UP,
     VoiceHandles, device_defs,
 };
-use input::gamepad::Buttons;
 use audio::voice::SYSTEM_DEFAULT;
+use input::gamepad::Buttons;
 use settings::{Kind, Store};
 use std::sync::{Arc, Mutex, MutexGuard};
 use voice::{
@@ -69,7 +72,10 @@ pub fn push_to_talk_button(value: i64) -> Option<Buttons> {
 }
 
 /// The ports whose pad holds `button`, from each port's last state.
-pub fn held(button: Option<Buttons>, state: impl Fn(usize) -> Option<input::gamepad::State>) -> u32 {
+pub fn held(
+    button: Option<Buttons>,
+    state: impl Fn(usize) -> Option<input::gamepad::State>,
+) -> u32 {
     let Some(button) = button else { return 0 };
     (0..4)
         .filter(|&port| state(port).is_some_and(|s| s.gamepad.buttons.contains(button)))
@@ -100,6 +106,8 @@ pub struct Link {
     /// The devices open now: (input key, output key).
     opened: Option<(i64, i64)>,
     last: Option<Plan>,
+    /// The input and output gains last given to the media objects.
+    gains: Option<(f32, f32)>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -127,6 +135,7 @@ pub fn install(
         open,
         opened: None,
         last: None,
+        gains: None,
     })
 }
 
@@ -173,6 +182,12 @@ impl Link {
             let _ = voice.objects.set_present(plan.ports);
             voice.objects.set_talker(plan.talker);
             self.last = Some(plan);
+        }
+
+        let gains = (self.handles.capture_gain(), self.handles.playback_gain());
+        if self.gains != Some(gains) {
+            lock(&self.voice).objects.set_gains(gains.0, gains.1);
+            self.gains = Some(gains);
         }
     }
 }
@@ -245,7 +260,11 @@ mod tests {
         assert_eq!(held(push_to_talk_button(PTT_DPAD_DOWN), state), 0b1001);
         assert_eq!(held(push_to_talk_button(PTT_BACK), state), 0b0100);
         assert_eq!(held(push_to_talk_button(PTT_DPAD_UP), state), 0);
-        assert_eq!(held(push_to_talk_button(99), state), 0, "an unknown value holds nothing");
+        assert_eq!(
+            held(push_to_talk_button(99), state),
+            0,
+            "an unknown value holds nothing"
+        );
         for (value, button) in [
             (PTT_DPAD_DOWN, Buttons::DPAD_DOWN),
             (PTT_DPAD_UP, Buttons::DPAD_UP),

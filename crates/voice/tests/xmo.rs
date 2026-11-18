@@ -313,6 +313,50 @@ fn headphones_mix_into_one_output() {
 }
 
 #[test]
+fn the_volumes_scale_the_microphone_and_the_mix() {
+    let mut o = MediaObjects::new();
+    let mut ram = Ram::new();
+    let mut io = FakeVoiceIo::new();
+    o.set_present(0b0011);
+    let mic = open(&mut o, Kind::Microphone, 0);
+    let phone = open(&mut o, Kind::Headphone, 1);
+    o.set_talker(Some(0));
+    // Input at 50%, output at 25%.
+    o.set_gains(0.5, 0.25);
+    for i in 0..2 {
+        submit(&mut o, &mut ram, mic, 0x1000 + i * 0x280, i);
+        ram.put_samples(0x2000 + i * 0x280, &[400; 320]);
+        submit(&mut o, &mut ram, phone, 0x2000 + i * 0x280, i);
+        io.speak(constant(1000));
+    }
+    o.tick(&mut ram, &mut io).unwrap();
+    o.tick(&mut ram, &mut io).unwrap();
+    assert!(ram.samples(0x1000, 320).iter().all(|&s| s == 500));
+    let played = io.take_played();
+    assert!(played[1].iter().all(|&s| s == 100), "{:?}", &played[1][..3]);
+
+    // Muted (gain 0) is silence each way; full is unchanged.
+    for (gains, mic_want, out_want) in [((0.0, 0.0), 0, 0), ((1.0, 1.0), 1000, 400)] {
+        o.set_gains(gains.0, gains.1);
+        for i in 0..2 {
+            submit(&mut o, &mut ram, mic, 0x1000 + i * 0x280, i);
+            submit(&mut o, &mut ram, phone, 0x2000 + i * 0x280, i);
+            io.speak(constant(1000));
+        }
+        o.tick(&mut ram, &mut io).unwrap();
+        o.tick(&mut ram, &mut io).unwrap();
+        assert!(
+            ram.samples(0x1280, 320).iter().all(|&s| s == mic_want),
+            "{gains:?}"
+        );
+        assert!(
+            io.take_played()[1].iter().all(|&s| s == out_want),
+            "{gains:?}"
+        );
+    }
+}
+
+#[test]
 fn the_mix_saturates() {
     let mut o = MediaObjects::new();
     let mut ram = Ram::new();
