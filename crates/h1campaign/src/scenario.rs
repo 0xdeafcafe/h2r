@@ -2023,15 +2023,46 @@ fn install_looping_sounds(
         counted.extend(l.sounds.iter().map(|(s, _)| s.clone()));
         loops.push(l);
     }
-    let mut trial = set.clone();
-    match h1sounds::looping::install_looping(&mut trial, &loops) {
-        Ok(ids) => {
-            *set = trial;
-            (ids, dropped, bytes)
-        }
+    match on_trial(set, |trial| {
+        h1sounds::looping::install_looping(trial, &loops)
+    }) {
+        Ok(ids) => (ids, dropped, bytes),
         Err(e) => {
             dropped.extend(loops.iter().map(|l| format!("{}: {e}", l.name)));
             (Vec::new(), dropped, 0)
+        }
+    }
+}
+
+/// `f` on a copy of `set`, which becomes `set` when it succeeds; when it
+/// fails `set` is as it was. The pinned base's file (the biggest part of a
+/// set, which nothing but the builder reads) is moved into the copy and
+/// back, not copied.
+fn on_trial<T, E>(
+    set: &mut TagSet,
+    f: impl FnOnce(&mut TagSet) -> std::result::Result<T, E>,
+) -> std::result::Result<T, E> {
+    let file = set.pinned.as_mut().map(|p| std::mem::take(&mut p.file));
+    let mut trial = set.clone();
+    if let (Some(p), Some(file)) = (trial.pinned.as_mut(), file) {
+        p.file = file;
+    }
+    match f(&mut trial) {
+        Ok(v) => {
+            *set = trial;
+            Ok(v)
+        }
+        Err(e) => {
+            if let Some(p) = set.pinned.as_mut() {
+                p.file = std::mem::take(
+                    &mut trial
+                        .pinned
+                        .as_mut()
+                        .expect("a trial keeps the pinned image it was given")
+                        .file,
+                );
+            }
+            Err(e)
         }
     }
 }
@@ -2082,10 +2113,10 @@ fn install_named_sounds(
         converted.push((n.clone(), cs));
     }
     while take > 0 {
-        let mut trial = set.clone();
-        match h1sounds::install_sounds(&mut trial, converted[..take].to_vec()) {
+        match on_trial(set, |trial| {
+            h1sounds::install_sounds(trial, converted[..take].to_vec())
+        }) {
             Ok(ids) => {
-                *set = trial;
                 let out = converted[..take]
                     .iter()
                     .map(|(n, _)| n.clone())

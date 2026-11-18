@@ -581,7 +581,7 @@ impl AsRef<[u8]> for Shared {
 struct H1Entry {
     /// Its jobs not yet done.
     jobs: usize,
-    map: Arc<OnceLock<Result<Arc<(Vec<u8>, H1Map)>, String>>>,
+    map: Arc<OnceLock<Result<Arc<(content::Sha256, H1Map)>, String>>>,
     /// What a level's two variants share beyond the map (its BSPs).
     campaign: Arc<h1campaign::Shared>,
 }
@@ -688,11 +688,11 @@ impl DiscConverter {
         sandbox: Sandbox,
     ) -> Result<(h1convert::convert::Prepared, h1convert::fresh::Fresh)> {
         let source = self.h1_map(name)?;
-        let (file, h1) = (&source.0, &source.1);
+        let (sha, h1) = (source.0, &source.1);
         let base_name = known(name).map_or("beavercreek", |k| k.1);
         let mut base = self.h2_base(base_name)?;
         let p = h1map::phase::time("convert", || {
-            h1_cmd::prepare_mp(h1, file, &mut base, base_name, sandbox)
+            h1_cmd::prepare_mp_with(h1, sha, &mut base, base_name, sandbox)
         })?;
         let mopp = h1map::phase::time("mopp", || structure_mopp(&p.collision))?;
         let f = h1map::phase::time("build map", || p.build_fresh(&mut base, &mopp))?;
@@ -701,7 +701,7 @@ impl DiscConverter {
 
     /// A Halo 1 map off the disc, read once while [`Self::expect`]ed jobs
     /// still need it.
-    fn h1_map(&self, name: &str) -> Result<Arc<(Vec<u8>, H1Map)>> {
+    fn h1_map(&self, name: &str) -> Result<Arc<(content::Sha256, H1Map)>> {
         let cell = self
             .h1_maps
             .lock()
@@ -716,7 +716,9 @@ impl DiscConverter {
             .map_err(|e| anyhow!("{e}"))
     }
 
-    fn read(&self, name: &str) -> Result<(Vec<u8>, H1Map)> {
+    /// A Halo 1 map off the disc, inflated, and its file's SHA-256 (the
+    /// file itself let go).
+    fn read(&self, name: &str) -> Result<(content::Sha256, H1Map)> {
         let e = self
             .disc
             .map(name)
@@ -728,7 +730,7 @@ impl DiscConverter {
         let m = h1map::phase::time("open halo 1 map", || {
             H1Map::from_bytes(&bytes).with_context(|| e.path.clone())
         })?;
-        Ok((bytes, m))
+        Ok((content::Sha256::of(&bytes), m))
     }
 
     fn card_ui(&self) -> Option<&H1Map> {
