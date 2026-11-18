@@ -30,10 +30,14 @@ pub(crate) const MAX_QUEUED: usize = 256;
 /// Damage reports a folded tick keeps (oldest dropped past it), as the
 /// damage hook keeps between ticks.
 pub(crate) const MAX_FOLDED_HITS: usize = 256;
-/// How long work queued without a wake may wait: a tick between frames
-/// does not wake the worker (on the game thread a wake is a system call),
-/// the next frame tick or anything else does, or this.
-const LAZY_WAKE: std::time::Duration = std::time::Duration::from_millis(100);
+/// How often a worker in a game looks for ticks. Ticks do not wake it: on
+/// the game thread a wake is a system call (a futex wake on Linux), so in a
+/// game the worker polls instead, and a tick waits at most this long. One
+/// game tick.
+const POLL: std::time::Duration = std::time::Duration::from_millis(33);
+/// A worker with no work for this long parks (waits with no deadline)
+/// until the next work wakes it, so a menu or a paused game costs nothing.
+const PARK_AFTER: std::time::Duration = std::time::Duration::from_secs(1);
 /// Cleared snapshots kept for the game thread to reuse.
 const SPARE_SNAPSHOTS: usize = 4;
 
@@ -92,6 +96,8 @@ pub(crate) struct Kill {
     pub victim: u32,
     pub betrayal: bool,
     pub object: Option<ObjectState>,
+    /// A HaloScript cinematic was playing: the kill is not counted.
+    pub cinematic: bool,
 }
 
 #[derive(Default)]
@@ -100,7 +106,16 @@ struct Queue {
     ticks: usize,
     /// The worker holds a batch.
     busy: bool,
+    /// The worker waits with no deadline: only a wake gets it going.
+    parked: bool,
     stop: bool,
+}
+
+/// Whether queuing `work` wakes the worker: a start, kill, end or setting
+/// always does (they are rare); a tick only a parked worker, which would
+/// otherwise not look. A worker in a game polls ([`POLL`]).
+fn wakes(work: &Work, parked: bool) -> bool {
+    parked || !matches!(work, Work::Tick(_))
 }
 
 #[derive(Default)]
@@ -113,6 +128,8 @@ struct Shared {
     #[allow(clippy::vec_box, reason = "each goes back into a Work::Tick unmoved")]
     spare: Mutex<Vec<Box<Snapshot>>>,
     error: Mutex<Option<String>>,
+    /// `error` is set: the game thread checks this, not the lock.
+    failed: AtomicBool,
     folded: AtomicU64,
     /// Time the worker spent on work, for the bench.
     work_ns: AtomicU64,
@@ -138,6 +155,7 @@ impl Shared {
 
     fn fail(&self, error: String) {
         self.error.lock().unwrap().get_or_insert(error);
+        self.failed.store(true, Ordering::Release);
     }
 }
 
@@ -154,8 +172,7 @@ pub(crate) fn fold(queued: &mut Box<Snapshot>, mut newer: Box<Snapshot>) -> Box<
     }
     let gone = &mut newer;
     for (weapon, n) in &gone.shots {
-        let count = queued.shots.entry(*weapon).or_insert(0);
-        *count = count.saturating_add(*n);
+        queued.shots.add(*weapon, *n);
     }
     if keep_queued {
         queued.hits.append(&mut gone.hits);
@@ -198,14 +215,14 @@ impl Pipeline {
 
     /// Queues `work` for the worker. A tick past [`MAX_QUEUED_TICKS`] is
     /// folded into the last queued one when that is a tick; anything else
-    /// past [`MAX_QUEUED`] is an error. All but a tick between frames wake
-    /// the worker ([`LAZY_WAKE`]).
+    /// past [`MAX_QUEUED`] is an error. A tick wakes only a parked worker
+    /// ([`wakes`]), so a steady game's ticks make no system call.
     pub(crate) fn push(&self, work: Work) -> Result<(), String> {
         if let Some(error) = self.worker_error() {
             return Err(error);
         }
-        let lazy = matches!(&work, Work::Tick(s) if !s.tick.is_multiple_of(2));
         let mut queue = self.shared.queue.lock().unwrap();
+        let wake = wakes(&work, queue.parked);
         let full = queue.work.len() >= MAX_QUEUED;
         match work {
             Work::Tick(snapshot) => {
@@ -232,7 +249,7 @@ impl Pipeline {
             work => queue.work.push_back(work),
         }
         drop(queue);
-        if !lazy {
+        if wake {
             self.shared.wake.notify_one();
         }
         Ok(())
@@ -277,6 +294,10 @@ impl Pipeline {
     }
 
     pub fn worker_error(&self) -> Option<String> {
+        // The game thread asks every tick: an atomic load while all is well.
+        if !self.shared.failed.load(Ordering::Acquire) {
+            return None;
+        }
         self.shared.error.lock().unwrap().clone()
     }
 
@@ -305,13 +326,21 @@ impl Drop for Pipeline {
 fn run(shared: &Shared, session: &Mutex<Session>, sink: &mut dyn Sink) {
     let mut batch = VecDeque::new();
     let mut failed = false;
+    // When the worker last had work; parked until the first.
+    let mut active: Option<Instant> = None;
     loop {
         {
             let mut queue = shared.queue.lock().unwrap();
             queue.busy = false;
             while queue.work.is_empty() && !queue.stop {
                 shared.idle.notify_all();
-                queue = shared.wake.wait_timeout(queue, LAZY_WAKE).unwrap().0;
+                if active.is_some_and(|at| at.elapsed() < PARK_AFTER) {
+                    queue = shared.wake.wait_timeout(queue, POLL).unwrap().0;
+                } else {
+                    queue.parked = true;
+                    queue = shared.wake.wait(queue).unwrap();
+                    queue.parked = false;
+                }
             }
             if queue.work.is_empty() {
                 shared.idle.notify_all();
@@ -322,6 +351,7 @@ fn run(shared: &Shared, session: &Mutex<Session>, sink: &mut dyn Sink) {
             queue.busy = true;
         }
         let start = Instant::now();
+        active = Some(start);
         let mut session = session.lock().unwrap();
         for work in batch.drain(..) {
             if failed {
@@ -385,8 +415,9 @@ fn apply(session: &mut Session, work: Work) -> Option<Box<Snapshot>> {
                 victim,
                 betrayal,
                 object,
+                cinematic,
             } = *kill;
-            session.kill(tick, attacker, victim, betrayal, object);
+            session.kill(tick, attacker, victim, betrayal, object, cinematic);
         }
         Work::End(snapshot) => {
             session.end(&snapshot);
@@ -422,6 +453,7 @@ mod tests {
             pos: None,
             body: 0.0,
             shield: 0.0,
+            tick: None,
         }
     }
 
@@ -465,6 +497,18 @@ mod tests {
         assert_eq!(queued.hits.len(), MAX_FOLDED_HITS);
         assert_eq!(codes(&queued)[0], 300 - MAX_FOLDED_HITS as u32);
         assert_eq!(*codes(&queued).last().unwrap(), 299);
+    }
+
+    #[test]
+    fn a_tick_wakes_only_a_parked_worker() {
+        // In a game the worker polls: a tick makes no system call.
+        assert!(!wakes(&Work::Tick(tick(2, &[], &[])), false));
+        assert!(!wakes(&Work::Tick(tick(3, &[], &[])), false));
+        // After a pause or a menu it is parked: the first tick wakes it.
+        assert!(wakes(&Work::Tick(tick(4, &[], &[])), true));
+        // Kills, starts, ends and settings always wake it.
+        assert!(wakes(&kill(5), false));
+        assert!(wakes(&Work::Configure(Box::new(started)), false));
     }
 
     /// Blocks in its first frame until released; records everything.
@@ -519,6 +563,7 @@ mod tests {
             victim: 0,
             betrayal: false,
             object: None,
+            cinematic: false,
         }))
     }
 
@@ -569,7 +614,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tick_between_frames_waits_at_most_the_lazy_wake() {
+    fn a_tick_waits_at_most_a_poll() {
         let pipeline = Pipeline::new(
             Session::new("test", None),
             Gate {
@@ -583,10 +628,10 @@ mod tests {
         pipeline.settle();
         pipeline.push(Work::Tick(tick(3, &[], &[]))).unwrap();
         // Nothing wakes the worker, and it still takes the tick.
-        let deadline = Instant::now() + LAZY_WAKE * 20;
+        let deadline = Instant::now() + POLL * 60;
         while pipeline.shared.spare.lock().unwrap().is_empty() {
             assert!(Instant::now() < deadline, "the tick waits");
-            std::thread::sleep(LAZY_WAKE / 10);
+            std::thread::sleep(POLL / 10);
         }
         assert_eq!(pipeline.session().current_tick(), Some(3));
     }

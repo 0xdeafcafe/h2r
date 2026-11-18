@@ -36,6 +36,7 @@ fn lobby() -> NewSession {
         skulls: None,
         campaign: None,
         ping_ms: None,
+        variant_ext: None,
     }
 }
 
@@ -409,4 +410,38 @@ async fn persistent_bots_come_from_the_operator_and_fill_playlist_rosters_first(
         let (_, bot) = s.rostered(&session, persistent[0], u64::MAX).unwrap();
         assert!(bot.persistent && bot.level == 1);
     });
+}
+
+#[tokio::test]
+async fn only_the_sessions_host_records_its_roster() {
+    let h = harness().await;
+    let a = h.create("Host").await;
+    let session = host(&h, &a).await;
+    let b = roster(&h, &a, json!({"session_id": session, "count": 1}))
+        .await
+        .bots[0]
+        .xuid;
+    // Another account names a's session for a game of its own: a's bots
+    // are not its to record, at the start or by a mid-game join.
+    let c = h.create("Other").await;
+    let r = try_start(&h, &c, custom(&c, &session, json!([bot_entry(1, b)]))).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    let r = try_start(&h, &c, custom(&c, &session, json!([]))).await;
+    assert_eq!(r.status, StatusCode::CREATED);
+    let id = r.json()["game_id"].as_str().unwrap().to_string();
+    let late = h.batch(
+        &c,
+        &id,
+        &[(
+            "PlayerJoined",
+            json!({"tick": 10, "player": bot_entry(1, b)}),
+        )],
+    );
+    assert_eq!(
+        h.post_batch(&c, &id, late).await.status,
+        StatusCode::BAD_REQUEST
+    );
+    // The host can.
+    let r = try_start(&h, &a, custom(&a, &session, json!([bot_entry(1, b)]))).await;
+    assert_eq!(r.status, StatusCode::CREATED);
 }

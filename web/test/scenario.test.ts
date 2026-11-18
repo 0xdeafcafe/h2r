@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { KIND_LABELS, ScenarioObjects, objectKinds, objectOf } from "../src/viewer/scenario3d";
-import { TEXTURES_KEY, TextureSwap, deferTextures, flatOf, loadFlats, pictureReady, pictureUrl, savePref, streamTextures, texturesPref, texturesSharing, type PendingTexture } from "../src/viewer/textures3d";
+import { TEXTURES_KEY, TextureSwap, deferTextures, flatOf, loadFlats, mapAnisotropy, pictureReady, pictureUrl, savePref, streamTextures, texturesPref, texturesSharing, type PendingTexture } from "../src/viewer/textures3d";
 import { meshRole } from "../src/viewer/cutaway";
 
 class MemoryStore {
@@ -245,6 +245,14 @@ describe("textures", () => {
 });
 
 describe("pictures beside the glb", () => {
+  test("pictures take the GPU's most anisotropic filtering, up to 16", () => {
+    expect(mapAnisotropy(16)).toBe(16);
+    expect(mapAnisotropy(8)).toBe(8);
+    expect(mapAnisotropy(32)).toBe(16);
+    expect(mapAnisotropy(0)).toBe(1);
+    expect(mapAnisotropy(Number.NaN)).toBe(1);
+  });
+
   test("a picture's file is beside the glb and carries its version stamp", () => {
     expect(pictureUrl("/art/game/map/lockout/map.glb?v=abc", "tex/0000002a.jpg")).toBe("/art/game/map/lockout/tex/0000002a.jpg?v=abc");
     expect(pictureUrl("map.glb", "tex/1.png")).toBe("tex/1.png");

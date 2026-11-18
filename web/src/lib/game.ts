@@ -34,6 +34,7 @@ export function liveFrameSource(gameId: string, roster: () => Map<number, Roster
       bsp: buf.sampleBsp(now),
       machines: buf.sampleMachines(now),
       objects: buf.sampleObjects(now),
+      cinematic: buf.cinematic(now),
       markers: buf.liveMarkers(now, MARKER_TTL_MS).map((m) => ({
         x: m.x, y: m.y, z: m.z,
         alpha: 1 - (now - m.bornAt) / MARKER_TTL_MS,

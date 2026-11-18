@@ -11,6 +11,7 @@ import { Panel, playerHref } from "./Layout";
 import { ClanEmblem } from "./clanBits";
 import { clanHref } from "./modes";
 import "../styles/social.css";
+import { statsPath } from "../routes";
 
 export function PlayerFriends(props: { account: AccountState }) {
   const doc = () => social.friendsOf(props.account.xuid, props.account.gamertag);
@@ -37,7 +38,7 @@ export function PlayerFriends(props: { account: AccountState }) {
 export function PlayerClans(props: { account: AccountState }) {
   const teams = () => social.teamsOf(props.account.xuid).filter((t) => !!t.members[props.account.xuid]);
   return (
-    <Panel title="Clans" sub="clans they're in" right={<A href="/stats/clans" class="s-soc-link">all clans</A>} class="s-soc-box">
+    <Panel title="Clans" sub="clans they're in" right={<A href={statsPath("/clans")} class="s-soc-link">all clans</A>} class="s-soc-box">
       <Show when={teams().length} fallback={<p class="s-recent-empty">{social.teamsLoaded() ? "Not in a clan." : "Loading clans…"}</p>}>
         <ul class="s-mini-list">
           <For each={teams()}>

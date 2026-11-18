@@ -1,4 +1,4 @@
-// A player's campaign service record (/stats/players/:tag/campaign): the
+// A player's campaign service record (/games/halo2/players/:tag/campaign): the
 // other tab of the service record. Levels played, how far they got, time
 // played, deaths, co-op partners. Nothing here counts towards multiplayer.
 
@@ -16,6 +16,7 @@ import { Derived, Title, playerHref } from "./Layout";
 import { MapPreview, MapThumb, PeopleFinder, Pills, RecentGames } from "./Side";
 import { ModeTabs, PlayedWith, PlayerFrame } from "./Player";
 import { hms, num, usDate } from "./fmt";
+import { STATS_ROOT, statsPath } from "../routes";
 
 export default function CampaignRecordPage() {
   return (
@@ -32,7 +33,7 @@ export default function CampaignRecordPage() {
               <Pills label="Campaign record" items={[
                 { label: "Multiplayer Record", href: base() },
                 { label: `Campaign History (${rec().games})`, href: `${base()}/history?tab=campaign` },
-                { label: "Players & Leaderboards", href: "/stats/players" },
+                { label: "Players & Leaderboards", href: statsPath("/players") },
               ]} />
               <RecentGames games={rows().slice(0, 12).map((r) => r.game)} title="Recent Campaign Games" empty="No campaign games on record yet." />
               <PlayedWith account={a()} mode="campaign" />
@@ -44,7 +45,7 @@ export default function CampaignRecordPage() {
                 <Show when={latest()} fallback={<span class="s-dim">Latest campaign game</span>}>
                   {(r) => (
                     <>
-                      <A href={`/stats/games/${r().game.game_id}`}>{gameMapTitle(r().game)}</A>
+                      <A href={`${STATS_ROOT}/games/${r().game.game_id}`}>{gameMapTitle(r().game)}</A>
                       <span class="s-dim">{gameTypeLine(r().game)}</span>
                       <span class="s-capbar-right">{r().outcome === "playing" ? "playing now" : `${OUTCOME_WORDS[r().outcome]}, ${usDate(r().game.started_at)}`}</span>
                     </>

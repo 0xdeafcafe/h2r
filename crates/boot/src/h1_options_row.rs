@@ -226,7 +226,7 @@ fn row_text(c: &mut Call, seen: &AtomicBool) -> Result<Flow, GuestFault> {
     once(seen, "h1 options: Game Setup row text");
     c.answer_async(move |cx| -> EntryFuture {
         Box::pin(async move {
-            list_class::draw_texts(&cx, item, vec![(0, h1_options::TITLE_ID)]).await?;
+            list_class::draw_texts(&cx, item, vec![(0, h1_options::ROW_LABEL_ID)]).await?;
             Ok(Ret::new(0, 8))
         })
     })

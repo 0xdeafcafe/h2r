@@ -14,6 +14,10 @@
 //   decode  FrameDecoder.decode of one packed record (deltas and keyframes)
 //   reduce  FrameHub.push of one decoded frame (state/frames.ts; the live
 //           "stream reducer" for frames: ring buffer, machines, bounds, clock)
+//   chunk   decodeChunk of one ten second recorded chunk (150 frames, one
+//           keyframe then deltas, raw deflate; api/chunk.ts), per chunk:
+//           the replay target is at most 2 ms in V8 on one core
+//           (docs/live/replay-fidelity.md, "Compression")
 //   derive  the per-rendered-frame pure sampling the map/3D viewers do each
 //           repaint (lib/game.ts liveFrameSource: sample, sampleActors,
 //           sampleVehicles, sampleHits, sampleBsp, sampleMachines,
@@ -23,6 +27,8 @@
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { deflateRawSync } from "node:zlib";
+import { decodeChunk } from "../src/api/chunk";
 import { FrameDecoder, OBJECT_KINDS } from "../src/api/pack";
 import type { Frame } from "../src/api/types";
 import { FrameBuffer, FrameHub } from "../src/state/frames";
@@ -349,6 +355,22 @@ for (let pass = -WARMUP_PASSES; pass < PASSES; pass++) {
   }
 }
 
+// 4. chunk: the first 150 frames as one recorded chunk.
+const CHUNK_FRAMES = 150;
+const chunkEnc = new Encoder();
+const chunkRecs = model.slice(0, CHUNK_FRAMES).map((m, i) => chunkEnc.encode(m, i === 0 ? null : model[i - 1]!, i === 0));
+const leb = (n: number): number[] => { const out: number[] = []; for (;;) { const b = n & 0x7f; n = Math.floor(n / 128); if (n === 0) return [...out, b]; out.push(b | 0x80); } };
+const rawChunk = Uint8Array.from(chunkRecs.flatMap((r) => [...leb(r.length), ...r]));
+const deflated = new Uint8Array(deflateRawSync(rawChunk, { level: 6 }));
+const chunkBytes = Uint8Array.from([0x48, 0x32, 0x43, 0x4b, 1, 1, ...leb(rawChunk.length), ...leb(CHUNK_FRAMES), ...leb(0), ...leb((CHUNK_FRAMES - 1) * TICKS_PER_FRAME), ...deflated]);
+const chunkMs: number[] = [];
+for (let pass = -WARMUP_PASSES; pass < PASSES; pass++) {
+  const a = performance.now();
+  const got = await decodeChunk(chunkBytes);
+  if (pass >= 0) chunkMs.push(performance.now() - a);
+  if (got.length !== CHUNK_FRAMES) throw new Error("chunk decoded short");
+}
+
 const result = {
   bun: Bun.version,
   input: {
@@ -360,6 +382,7 @@ const result = {
   },
   decode: { all: row(decAll), delta: row(decDelta), keyframe: row(decKey) },
   reduce: row(reduce),
+  chunk: { ...row(chunkMs), frames: CHUNK_FRAMES, rawBytes: rawChunk.length, storedBytes: chunkBytes.length },
   derive: { perRepaint: row(derive), parts: Object.fromEntries(names.map((n) => [n, row(parts[n])])) },
   heap: { decodeLeakBytes: heapAfterDecode - heapBeforeDecode, hubRetainedBytes: retained },
   setupMs: Math.round(setupMs),
@@ -371,6 +394,7 @@ console.log(`decode  all      ${fmt(result.decode.all)}`);
 console.log(`decode  delta    ${fmt(result.decode.delta)}`);
 console.log(`decode  keyframe ${fmt(result.decode.keyframe)}`);
 console.log(`reduce  push     ${fmt(result.reduce)}`);
+console.log(`chunk   decode   ${fmt(result.chunk)}  (${CHUNK_FRAMES} frames, ${result.chunk.rawBytes} B raw, ${result.chunk.storedBytes} B stored; per chunk)`);
 console.log(`derive  repaint  ${fmt(result.derive.perRepaint)}`);
 for (const n of names) console.log(`   ${n.padEnd(15)}${fmt(result.derive.parts[n]!)}`);
 console.log(`heap: decode retained ${result.heap.decodeLeakBytes} B after gc; hub of 48 frames retains ${(result.heap.hubRetainedBytes / 1024).toFixed(0)} KiB`);

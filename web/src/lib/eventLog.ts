@@ -45,6 +45,7 @@ export function eventSummary(e: WireEvent): string {
       const f = recordedFrame(d);
       return f ? `tick ${f.tick}, ${f.players.length} players` : `tick ${d.tick}`;
     }
+    case "FrameChunk": return `ticks ${d.from_tick}–${d.to_tick}, ${d.frames} frames, ${Math.round(Number(d.bytes) / 1024)} KiB`;
     case "GameEnded": {
       const w = d.winner as { team?: number; player?: number } | null | undefined;
       const who = w ? (w.team !== undefined ? `team ${w.team} won` : `slot ${w.player} won`) : "no winner";

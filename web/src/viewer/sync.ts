@@ -4,7 +4,7 @@
 // view lays over sampled player positions. Pure, so it can be tested.
 
 import type { ReplayClock } from "../state/replay";
-import { aimOf, lerpAngle, nlerpAim, SNAP_DISTANCE, TICKS_PER_SECOND, type Aim, type SampledPlayer, type Stance } from "../state/frames";
+import { aimOf, lerpAngle, nlerpAim, SNAP_DISTANCE, TICKS_PER_SECOND, type Aim, type SampledAnim, type SampledPlayer, type Stance } from "../state/frames";
 
 /** A replay clock's state at one moment, as it travels between windows. */
 export interface ClockState {
@@ -96,13 +96,21 @@ export interface SmoothPlayer {
   /** How they are moving and how fast, when the frame says. */
   stance: Stance | null;
   speed: number | null;
+  /** Velocity (game units a second), the game's animation and seat, when the frame says. */
+  vel: Aim | null;
+  anim: SampledAnim | null;
+  seat: number | null;
 }
 
-/** Eases shown players towards the sampled ones. Sampling already blends
- *  recorded frames linearly; this rounds the corners where one second's
- *  heading turns into the next, and settles live updates. A big jump (a
- *  respawn, a teleport, a seek) or `snap` moves at once. `rate` is per
- *  second. Players no longer sampled are dropped. */
+/** Eases shown players towards the sampled ones. Sampling blends recorded
+ *  frames linearly when they have no velocity; easing rounds the corners
+ *  where one second's heading turns into the next, and settles live
+ *  updates. A sample with a velocity is already on the game's curved path
+ *  (Hermite, frames.ts), and easing it would only put it behind where the
+ *  game had it (lagging down a slope reads as floating): it is taken as it
+ *  is, its aim still eased. A big jump (a respawn, a teleport, a seek) or
+ *  `snap` moves at once. `rate` is per second. Players no longer sampled
+ *  are dropped. */
 export function smoothPlayers(
   shown: Map<number, SmoothPlayer>, sampled: readonly SampledPlayer[], dtMs: number,
   opts: { rate?: number; snap?: boolean } = {},
@@ -115,13 +123,15 @@ export function smoothPlayers(
     const aim = aimOf(p), species = p.species ?? null, weapon = p.weapon ?? null;
     const vehicle = p.vehicle ?? null, actor = p.actor ?? null;
     const stance = p.stance ?? null, speed = p.speed ?? null;
-    if (!s) { shown.set(p.index, { x: p.x, y: p.y, z: p.z, yaw: p.yaw, alive: p.alive, aim, species, weapon, vehicle, actor, stance, speed }); continue; }
+    const vel = p.vel ?? null, anim = p.anim ?? null, seat = p.seat ?? null;
+    if (!s) { shown.set(p.index, { x: p.x, y: p.y, z: p.z, yaw: p.yaw, alive: p.alive, aim, species, weapon, vehicle, actor, stance, speed, vel, anim, seat }); continue; }
     const far = (p.x - s.x) ** 2 + (p.y - s.y) ** 2 + (p.z - s.z) ** 2 > SNAP_DISTANCE * SNAP_DISTANCE;
     const k = far || !s.alive || !p.alive ? 1 : t;
-    s.x += (p.x - s.x) * k;
-    s.y += (p.y - s.y) * k;
-    s.z += (p.z - s.z) * k;
-    s.yaw = lerpAngle(s.yaw, p.yaw, k);
+    const kp = vel ? 1 : k;
+    s.x += (p.x - s.x) * kp;
+    s.y += (p.y - s.y) * kp;
+    s.z += (p.z - s.z) * kp;
+    s.yaw = lerpAngle(s.yaw, p.yaw, kp);
     s.aim = k >= 1 ? aim : nlerpAim(s.aim, aim, k);
     s.alive = p.alive;
     s.species = species;
@@ -130,6 +140,9 @@ export function smoothPlayers(
     s.actor = actor;
     s.stance = stance;
     s.speed = speed;
+    s.vel = vel;
+    s.anim = anim;
+    s.seat = seat;
   }
   for (const index of shown.keys()) if (!seen.has(index)) shown.delete(index);
 }

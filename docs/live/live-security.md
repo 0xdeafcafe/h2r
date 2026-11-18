@@ -34,7 +34,8 @@ in Rust through `ed25519-dalek` and in browsers through WebCrypto).
 
 A key lives on one device. To use the account on another (a second game
 install, a browser) or after losing every device, the account has a
-**recovery code**: a TOTP (RFC 6238: HMAC-SHA1, 30 s steps, six digits,
+**sign-in code** (the API and log call it recovery; people see "sign-in
+code"): a TOTP (RFC 6238: HMAC-SHA1, 30 s steps, six digits,
 shown `123-456`), the same scheme authenticator apps use.
 
 - **The secret.** Made by the server at account creation, 160 random
@@ -180,9 +181,18 @@ admins (grant and revoke stay operator-only), and a stolen admin key
 could mint at most ten invites, then one a minute, each visible in the
 log and revocable.
 
+**Signing a device out.** Each device's key is its sign-in, so ending one
+is revoking its key: `KeyRevoked` (client-signed through `POST
+/v1/events`, or server-signed for the account through the sign-ins
+endpoints, live-api.md "Sign-ins"). The check above looks the key up in
+memory on every request, so the revoked key's next token is refused (401)
+with no session table and no extra lookup.
+
 `lxm` values: `events.write`, `games.write` (game events and ingest),
 `titles.write` (operator or admin), `invites.write` (operator or admin),
-`admin.read` (an admin's status and invite reads), and `read` (every
+`admin.read` (an admin's status and invite reads), `recovery.read` and
+`recovery.write` (the sign-in code), `signins.read` and `signins.write`
+(the account's own sign-ins), and `read` (every
 read, including the stream, on a `--private` server).
 
 The server id is fixed on first start and stored with the server key,

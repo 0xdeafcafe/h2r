@@ -8,15 +8,13 @@
 //! loop `0x0003bc30` ([`engine::render_loop::layer`], docs/graphics/layer-draw.md);
 //! `impl.render.game_view` and `impl.render.scene_passes`, `render_game_view`
 //! `0x0002b790` and `render_scene_passes` `0x0002bcd0`
-//! ([`engine::render_loop::scene`]); `impl.render.layer_sort`, the layer
-//! entries' qsort `0x0013da70` with the layer comparators in Rust
-//! ([`engine::render_loop::sort`]); `impl.render.states`, the shader
+//! ([`engine::render_loop::scene`]); `impl.render.states`, the shader
 //! draw's render-state list `0x0001a170` ([`engine::render_loop::states`]),
 //! exact, and `impl.render.states_skip`, the same with the redundant
 //! `SetRenderState_Simple` calls skipped against the D3D shadow `0x00407498`
-//! (it wins over `impl.render.states`); `impl.render.transparent_sort`, the
-//! transparents' index sort `0x0013df80` with comparator `0x0001e700` in Rust
-//! ([`engine::render_loop::sort_indexed`]).
+//! (it wins over `impl.render.states`). The layer sort and the
+//! transparents' index sort were ported too and removed: about 0.01 ms a
+//! frame (docs/graphics/render-switches.md, "Removed").
 //! The driver runs the port to each
 //! guest call, makes it with `call_guest` (the callee returns into a
 //! continuation that resumes the port), and returns to the caller when the
@@ -31,8 +29,6 @@ use engine::memory::{GuestMemory, MemFault};
 use engine::points;
 use engine::render_loop::layer::{Draw, Entries};
 use engine::render_loop::scene::{GameView, ScenePasses};
-use engine::render_loop::sort::Sort;
-use engine::render_loop::sort_indexed::IndexSort;
 use engine::render_loop::states::{Counts, Mode, RenderStates};
 use engine::render_loop::{Machine, Regs, Step};
 use runtime::guest::{Access, FaultReason};
@@ -43,15 +39,13 @@ use crate::{BuildError, Builder, Feature, Manifest};
 pub const ID: &str = "render-loop";
 
 /// Each native path this feature can place, by its implementation's name.
-pub const PATHS: [&str; 8] = [
+pub const PATHS: [&str; 6] = [
     "render_views",
     "layer_draw",
     "layer_entries",
     "render_game_view",
     "render_scene_passes",
-    "layer_sort",
     "render_states",
-    "transparent_sort",
 ];
 
 static CALLS: [AtomicU64; PATHS.len()] = [const { AtomicU64::new(0) }; PATHS.len()];
@@ -120,13 +114,6 @@ impl Feature for RenderLoop {
                 },
             );
         }
-        if b.switches().implementation("render.layer_sort", false) {
-            b.raw()
-                .implement(&points::LAYER_SORT, "layer_sort", |cpu, ctx, _| {
-                    called(5);
-                    run(cpu, ctx, Sort::start)
-                });
-        }
         let skip = b.switches().implementation("render.states_skip", false);
         if skip || b.switches().implementation("render.states", false) {
             let mode = if skip {
@@ -138,21 +125,9 @@ impl Feature for RenderLoop {
                 &points::RENDER_STATES,
                 "render_states",
                 move |cpu, ctx, _| {
-                    called(6);
+                    called(5);
                     let fcw = cpu.x87.control;
                     run(cpu, ctx, |r, m| RenderStates::start(r, m, fcw, mode))
-                },
-            );
-        }
-        if b.switches()
-            .implementation("render.transparent_sort", false)
-        {
-            b.raw().implement(
-                &points::TRANSPARENT_SORT,
-                "transparent_sort",
-                |cpu, ctx, _| {
-                    called(7);
-                    run(cpu, ctx, IndexSort::start)
                 },
             );
         }
@@ -231,16 +206,6 @@ impl Port for GameView {
 impl Port for ScenePasses {
     fn resume(&mut self, r: &mut Regs, m: &mut dyn GuestMemory) -> Result<Step, MemFault> {
         ScenePasses::resume(self, r, m)
-    }
-}
-impl Port for Sort {
-    fn resume(&mut self, r: &mut Regs, m: &mut dyn GuestMemory) -> Result<Step, MemFault> {
-        Sort::resume(self, r, m)
-    }
-}
-impl Port for IndexSort {
-    fn resume(&mut self, r: &mut Regs, m: &mut dyn GuestMemory) -> Result<Step, MemFault> {
-        IndexSort::resume(self, r, m)
     }
 }
 impl Port for RenderStates {

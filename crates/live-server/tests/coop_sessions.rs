@@ -40,6 +40,7 @@ fn coop(visibility: session::Visibility) -> NewSession {
             difficulty: 2,
         }),
         ping_ms: None,
+        variant_ext: None,
     }
 }
 
@@ -582,6 +583,9 @@ async fn coop_seen_by(visibility: session::Visibility) -> [(&'static str, Seen);
         let detail = read(u, format!("/v1/games/{game}")).await.status;
         assert!(matches!(detail, StatusCode::OK | StatusCode::NOT_FOUND));
         let frames = read(u, format!("/v1/games/{game}/frames")).await.status;
+        // Chunks follow the game's visibility as its frames do.
+        let chunks = read(u, format!("/v1/games/{game}/chunks")).await.status;
+        assert_eq!(chunks, frames, "{name}");
         let log = log_streams(&h, u).await;
         let (stream, caught_up) = stream_streams(addr, &h, u).await;
         // Hidden events or not, the reader catches up to the head.

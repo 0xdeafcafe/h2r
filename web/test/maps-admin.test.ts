@@ -132,7 +132,9 @@ describe("the mock's packages", async () => {
   test("lists the published packages and answers 200, 410 and 404 like the server", async () => {
     const list = await get("/v1/maps");
     const items = parseMapSummaries((list.body as { items: unknown[] }).items);
-    expect(items.map((m) => m.name)).toEqual(["Orchard Towers", "Teacup Crates"]);
+    // Newest first; the blocked package is not listed.
+    expect(items.map((m) => m.name).slice(0, 2)).toEqual(["Orchard Towers", "Teacup Crates"]);
+    expect(items.some((m) => m.name === "Lighthouse Party")).toBe(false);
     const crates = items.find((m) => m.name === "Teacup Crates")!;
     expect((await get(`/v1/maps/${crates.map_id}`)).status).toBe(200);
     expect((await get(`/v1/maps/${crates.map_id}/image`)).status).toBe(200);

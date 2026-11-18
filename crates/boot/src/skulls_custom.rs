@@ -310,6 +310,12 @@ pub struct LocalUnit {
 /// The local players' units: listed players with a local user and a live
 /// unit.
 pub fn local_units(m: &dyn GuestMemory) -> Result<Vec<LocalUnit>, MemFault> {
+    player_units(m, true)
+}
+
+/// Every listed player's live unit (`local_only`: those with a local user).
+/// A remote player's `user` is negative.
+pub fn player_units(m: &dyn GuestMemory, local_only: bool) -> Result<Vec<LocalUnit>, MemFault> {
     let Some(array) = players::array(m)? else {
         return Ok(Vec::new());
     };
@@ -319,7 +325,7 @@ pub fn local_units(m: &dyn GuestMemory) -> Result<Vec<LocalUnit>, MemFault> {
     let mut out = Vec::new();
     for (_, p) in array.live(m, 16)? {
         let user = p.local_user(m)?;
-        if user < 0 || !p.listed(m)? {
+        if (local_only && user < 0) || !p.listed(m)? {
             continue;
         }
         let Some(unit) = p.unit(m)? else { continue };
@@ -444,6 +450,32 @@ pub fn topped(counts: [i8; 2]) -> [i8; 2] {
     counts.map(|c| c.max(GRENADE_CAP))
 }
 
+/// Unlimited Grenades on one unit's body: its two counts [`topped`].
+/// Whether anything changed.
+pub fn top_grenades(m: &mut dyn GuestMemory, body: u32) -> Result<bool, MemFault> {
+    let now = [
+        m.u8(body.wrapping_add(UNIT_GRENADES))? as i8,
+        m.u8(body.wrapping_add(UNIT_GRENADES + 1))? as i8,
+    ];
+    let want = topped(now);
+    if want != now {
+        m.set_u8(body.wrapping_add(UNIT_GRENADES), want[0] as u8)?;
+        m.set_u8(body.wrapping_add(UNIT_GRENADES + 1), want[1] as u8)?;
+    }
+    Ok(want != now)
+}
+
+/// A variant's Unlimited Grenades (docs/game/game-options.md section 2):
+/// every player's unit, not only the local ones, since the host's counts
+/// are the game's and they replicate. How many units changed.
+pub fn variant_grenades(m: &mut dyn GuestMemory) -> Result<usize, MemFault> {
+    let mut n = 0;
+    for u in player_units(m, false)? {
+        n += usize::from(top_grenades(m, u.body)?);
+    }
+    Ok(n)
+}
+
 /// Unlimited Ammo for one weapon: each magazine's reserve to its
 /// definition's maximum; for a weapon with none, its charge to full.
 /// Returns whether anything changed.
@@ -546,15 +578,7 @@ pub fn apply_units(
             }
         }
         if active.has(UNLIMITED_GRENADES) {
-            let now = [
-                m.u8(b.wrapping_add(UNIT_GRENADES))? as i8,
-                m.u8(b.wrapping_add(UNIT_GRENADES + 1))? as i8,
-            ];
-            let want = topped(now);
-            if want != now {
-                m.set_u8(b.wrapping_add(UNIT_GRENADES), want[0] as u8)?;
-                m.set_u8(b.wrapping_add(UNIT_GRENADES + 1), want[1] as u8)?;
-            }
+            top_grenades(m, b)?;
         }
         if active.has(UNLIMITED_AMMO) {
             for w in weapons_of(m, b)? {
@@ -854,6 +878,16 @@ impl Custom {
                     );
                 }
             }
+        }
+        // The variant's Unlimited Grenades: the host's (or a lone
+        // machine's) units, every player's.
+        if mode == Some(crate::skulls_mp::MODE_MULTIPLAYER)
+            && variant.unlimited_grenades()
+            && let Err(e) = variant_grenades(m)
+        {
+            self.say_once(UNLIMITED_GRENADES, || {
+                format!("variant options: unlimited grenades could not read the players: {e:?}")
+            });
         }
         if mode != Some(skulls::MODE_CAMPAIGN) {
             return;

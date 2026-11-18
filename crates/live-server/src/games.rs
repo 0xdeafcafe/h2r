@@ -1,5 +1,6 @@
 //! Games (docs/live/live-api.md): starting one, appending its signed event
-//! batches, live telemetry frames, recorded `GameFrame`s, map outlines, and
+//! batches, live telemetry frames, recorded frame chunks (and the
+//! `GameFrame`s older games recorded), map outlines, and
 //! the presence and game managers that write `PresenceExpired` and
 //! `GameEnded {reason: "lost"}` when clients go quiet.
 
@@ -12,6 +13,7 @@ use crate::rt::Instant;
 use live_proto::game::{
     self, Frame, GameCreated, GameDetail, GameEnded, GameStarted, GameSummary, NewGame, Outline,
 };
+use live_proto::chunk::{self, Chunk, ChunkMeta, ChunkWriter};
 use live_proto::pack;
 use live_proto::sign::{self, MAX_EVENT_SKEW_S, SignedEvent, parse_time};
 use live_proto::{Author, Page, lxm, streams, types};
@@ -28,6 +30,15 @@ use crate::store::{NewEvent, Query, StoreError};
 const FRAME_INTERVAL: Duration = Duration::from_millis(1000 / 15);
 /// `GET /v1/games/{id}/frames` page size.
 pub const FRAMES_PAGE: usize = 600;
+
+/// Where a game's frame chunks live in the private blob store:
+/// `frames/<game id>/<first tick>` (docs/live/live-api.md, "Frame chunks").
+pub fn chunk_key(game_id: &str, from_tick: u64) -> String {
+    format!("{}{game_id}/{from_tick}", crate::blobs::FRAMES_PREFIX)
+}
+
+/// A chunk's content type (`GET /v1/games/{id}/chunks/{tick}`).
+pub const CHUNK_TYPE: &str = "application/x-h2-chunk";
 
 /// A keyframe on the packed live stream at least this often (one a second
 /// at 15 Hz): what a reader that joins or falls behind waits for at most.
@@ -114,16 +125,14 @@ impl IngestState {
 
 struct FrameClock {
     last_sent: Instant,
-    /// Unix second of the last recorded `GameFrame`.
-    last_recorded: i64,
     /// What throttled frames carried (shots, actions, hits, machines),
     /// handed to the next frame sent so none is lost.
     unsent: game::FrameCarry,
-    /// What sent frames carried since the last recorded one, handed to the
-    /// next recorded frame so a replay covers its whole second.
-    unrecorded: game::FrameCarry,
-    /// Every machine's latest state, by id: recorded frames carry them all.
+    /// Every machine's latest state, by id: a chunk's first frame carries
+    /// them all, so a reader that starts there has every door.
     machines: BTreeMap<String, game::FrameMachine>,
+    /// The sent frames being cut into chunks for the recording.
+    chunks: ChunkWriter,
     /// The game's packed live stream.
     pack: pack::Encoder,
     /// Its frames since the last keyframe, for readers that join.
@@ -136,10 +145,9 @@ impl FrameClock {
     fn new(now: Instant, sid: u64) -> Self {
         FrameClock {
             last_sent: now - FRAME_INTERVAL,
-            last_recorded: 0,
             unsent: game::FrameCarry::default(),
-            unrecorded: game::FrameCarry::default(),
             machines: BTreeMap::new(),
+            chunks: ChunkWriter::default(),
             pack: pack::Encoder::new(sid, STREAM_KEYFRAME_EVERY),
             since_key: Vec::new(),
             pending: Default::default(),
@@ -175,13 +183,10 @@ impl FrameClock {
         live
     }
 
-    /// Throttles a validated frame: `None` when it is dropped (what it
-    /// carried goes to the next sent frame), else `Some` with the frame to
-    /// record if this is the first sent in a new second. The sent frame's
-    /// shots, actions and hits cover the frames dropped before it; the
-    /// recorded one's every frame since the last recorded, and it lists
-    /// every machine seen so far.
-    fn admit(&mut self, frame: &mut Frame, now: Instant, now_s: i64) -> Option<Option<Frame>> {
+    /// Throttles a validated frame: false when it is dropped (what it
+    /// carried goes to the next sent frame). A sent frame's shots, actions
+    /// and hits cover the frames dropped before it.
+    fn admit(&mut self, frame: &mut Frame, now: Instant) -> bool {
         for m in &frame.machines {
             if self.machines.len() < game::MAX_FRAME_MACHINES || self.machines.contains_key(&m.id) {
                 self.machines.insert(m.id.clone(), m.clone());
@@ -189,51 +194,34 @@ impl FrameClock {
         }
         if now.duration_since(self.last_sent) < FRAME_INTERVAL {
             self.unsent.add(frame);
-            return None;
+            return false;
         }
         self.last_sent = now;
         frame.absorb(std::mem::take(&mut self.unsent));
-        if self.last_recorded >= now_s {
-            self.unrecorded.add(frame);
-            return Some(None);
+        true
+    }
+
+    /// Adds a sent frame to the recording; the chunk it closed, if any. A
+    /// chunk's first frame lists every machine seen so far.
+    fn record(&mut self, frame: &Frame) -> Option<Chunk> {
+        if self.chunks.starts_chunk(frame) {
+            let mut first = frame.clone();
+            first.machines = self.machines.values().cloned().collect();
+            self.chunks.push(&first)
+        } else {
+            self.chunks.push(frame)
         }
-        self.last_recorded = now_s;
-        let mut recorded = frame.clone();
-        recorded.absorb(std::mem::take(&mut self.unrecorded));
-        recorded.machines = self.machines.values().cloned().collect();
-        Some(Some(recorded))
     }
 }
 
 /// What a frame turned into.
 #[derive(Debug, PartialEq, Eq)]
 pub enum FrameOutcome {
-    /// Fanned out (and maybe recorded).
+    /// Fanned out and added to the recording; `recorded` when it closed a
+    /// chunk, which was stored.
     Sent { recorded: bool },
     /// Dropped: faster than 15 Hz.
     Throttled,
-}
-
-/// A recorded `GameFrame`'s data: its tick, who sent it and the frame
-/// packed on its own as base64url (the signature covers those bytes).
-/// Older recordings hold the JSON frame itself with `source`.
-fn recorded_data(frame: &Frame, author: &Author) -> Value {
-    match pack::encode_keyframe(frame) {
-        Ok(bytes) => json!({
-            "tick": frame.tick,
-            "source": author.to_string(),
-            "packed": pack::to_base64(&bytes),
-        }),
-        Err(e) => {
-            eprintln!(
-                "live: recorded frame of {} does not pack: {e}",
-                frame.game_id
-            );
-            let mut data = serde_json::to_value(frame).expect("serializes");
-            data["source"] = json!(author.to_string());
-            data
-        }
-    }
 }
 
 /// A recorded frame's packed bytes (packing an old JSON recording now);
@@ -245,25 +233,6 @@ pub fn recorded_packed(data: &Value) -> Option<Vec<u8>> {
             let frame: Frame = serde_json::from_value(data.clone()).ok()?;
             pack::encode_keyframe(&frame).ok()
         }
-    }
-}
-
-/// A recorded frame as JSON (`GET /v1/games/{id}/frames`): the frame plus
-/// `source`, whichever form it was stored in.
-pub fn recorded_json(data: &Value) -> Value {
-    let Some(text) = data.get("packed").and_then(Value::as_str) else {
-        return data.clone();
-    };
-    let frame = pack::from_base64(text).and_then(|bytes| pack::decode_keyframe(&bytes));
-    match frame {
-        Ok(frame) => {
-            let mut out = serde_json::to_value(frame).expect("serializes");
-            if let Some(source) = data.get("source") {
-                out["source"] = source.clone();
-            }
-            out
-        }
-        Err(_) => data.clone(),
     }
 }
 
@@ -350,8 +319,13 @@ impl Live {
         game::validate_new(&new).map_err(invalid)?;
         // Bots (docs/game/bots.md §9.3): the session's roster as it is now,
         // which is the one in force when GameStarted lands.
+        let host = match &author {
+            Author::Account { xuid, .. } => Some(*xuid),
+            _ => None,
+        };
         crate::bots::check_players(
             &self.model.read(),
+            host,
             new.session_id.as_deref(),
             u64::MAX,
             &new.players,
@@ -416,6 +390,14 @@ impl Live {
             return Err(conflict("nonce already used"));
         }
         // Validate in order against the players as the batch changes them.
+        // The host's record is trusted (docs/live/live-matchmaking.md
+        // §8.4): it adds anyone and ends the game. A player only joins as
+        // itself, and leaves rather than ending the game.
+        let by_host = author.to_string() == game.started.host;
+        let host = match Author::parse(&game.started.host) {
+            Some(Author::Account { xuid, .. }) => Some(xuid),
+            _ => None,
+        };
         let mut players = game.players.clone();
         for (i, b) in bodies.iter().enumerate() {
             let at = parse_time(&b.at)
@@ -442,8 +424,16 @@ impl Live {
                 game::PLAYER_JOINED => {
                     let p: game::Player =
                         serde_json::from_value(b.data["player"].clone()).expect("validated");
+                    let itself = matches!(author, Author::Account { xuid, .. }
+                        if p.xuid == Some(*xuid) && !p.is_bot());
+                    if !by_host && !itself {
+                        return Err(forbidden(format!(
+                            "event {i}: a player joins as itself; the host adds others"
+                        )));
+                    }
                     crate::bots::check_players(
                         &self.model.read(),
+                        host,
                         game.started.game.session_id.as_deref(),
                         game.position,
                         [&p],
@@ -453,6 +443,11 @@ impl Live {
                 }
                 game::PLAYER_LEFT => {
                     players.retain(|p| Some(p.index as u64) != b.data["index"].as_u64())
+                }
+                game::GAME_ENDED if !by_host => {
+                    return Err(forbidden(format!(
+                        "event {i}: only the host ends the game; a player leaves with PlayerLeft"
+                    )));
                 }
                 game::GAME_ENDED if i + 1 != bodies.len() => {
                     return Err(invalid("GameEnded must be the batch's last event"));
@@ -482,6 +477,10 @@ impl Live {
             })
             .collect();
         let ends = events_end(&events);
+        if ends {
+            // The last frames' chunk goes in before the end.
+            self.flush_frames(game_id).await;
+        }
         let recorded = self.store.append(events, &[]).await?;
         let last = recorded.last().map_or(0, |e| e.position);
         self.wait_applied(last).await?;
@@ -493,8 +492,9 @@ impl Live {
     }
 
     /// A telemetry frame from the ingest socket: fanned out to stream
-    /// readers at up to 15 Hz per game, and recorded as a server-signed
-    /// `GameFrame` (with `data.source`) once a second.
+    /// readers at up to 15 Hz per game, and every frame sent recorded in
+    /// the game's frame chunks ([`live_proto::chunk`]): a chunk is stored
+    /// when a frame lands in the next ten seconds, or the game ends.
     pub async fn ingest_frame(
         &self,
         author: &Author,
@@ -508,25 +508,140 @@ impl Live {
         game::normalize_frame(&mut frame);
         let now_s = now();
         self.model.touch_game(&frame.game_id, now_s);
-        let clock = self.ingest.clock(&frame.game_id);
-        let record = {
+        let game_id = frame.game_id.clone();
+        let clock = self.ingest.clock(&game_id);
+        let closed = {
             let mut clock = clock.lock().unwrap();
-            let now = Instant::now();
-            let record = match clock.admit(&mut frame, now, now_s) {
-                None => return Ok(FrameOutcome::Throttled),
-                Some(record) => record,
-            };
+            if !clock.admit(&mut frame, Instant::now()) {
+                return Ok(FrameOutcome::Throttled);
+            }
+            let closed = clock.record(&frame);
             // Sent under the game's lock: its frames go out in order.
             let _ = self.frames.send(clock.publish(frame));
-            record
+            closed
         };
-        let recorded = record.is_some();
-        if let Some(frame) = record {
-            let data = recorded_data(&frame, author);
-            let event = self.server_event(game::stream(&frame.game_id), game::GAME_FRAME, data);
-            self.store.append(vec![event], &[]).await?;
+        let recorded = closed.is_some();
+        if let Some(c) = closed {
+            self.store_chunk(&game_id, c).await?;
         }
         Ok(FrameOutcome::Sent { recorded })
+    }
+
+    /// Stores game `id`'s open chunk, if it has frames: at the game's end
+    /// (its `GameEnded`, or the sweep ending it as lost). Failures are
+    /// logged; the chunk is lost, the game is not.
+    pub async fn flush_frames(&self, id: &str) {
+        let clock = self.ingest.games.lock().unwrap().get(id).cloned();
+        let Some(clock) = clock else {
+            return;
+        };
+        let chunk = clock.lock().unwrap().chunks.finish();
+        if let Some(c) = chunk
+            && let Err(e) = self.store_chunk(id, c).await
+        {
+            eprintln!("live: frame chunk of {id}: {}", e.message);
+        }
+    }
+
+    /// Puts a chunk's bytes in the private blob store (R2 on the Worker,
+    /// the data directory natively; the event store's blobs on a server
+    /// with neither), then its index entry in the log as a server-signed
+    /// `FrameChunk`.
+    async fn store_chunk(&self, id: &str, c: Chunk) -> Result<(), ApiError> {
+        match self.blobs() {
+            Some(b) => {
+                let meta = crate::blobs::Meta {
+                    content_type: Some(CHUNK_TYPE.into()),
+                    content_encoding: None,
+                    cache_control: None,
+                };
+                b.private
+                    .put(&chunk_key(id, c.meta.from_tick), c.bytes.into(), &meta)
+                    .await
+                    .map_err(|e| {
+                        eprintln!("live: frame chunk of {id}: {e}");
+                        ApiError::new(
+                            live_proto::ErrorCode::Unavailable,
+                            "the blob store is unavailable",
+                        )
+                    })?;
+            }
+            None => self.store.put_blob(&c.meta.sha256, &c.bytes).await?,
+        }
+        let data = serde_json::to_value(&c.meta).expect("serializes");
+        let event = self.server_event(game::stream(id), chunk::FRAME_CHUNK, data);
+        self.store.append(vec![event], &[]).await?;
+        Ok(())
+    }
+
+    /// `GET /v1/games/{id}/chunks`: the game's frame chunk index, oldest
+    /// first: each `FrameChunk` event's data. Empty for a game recorded
+    /// before chunks (its frames are `GameFrame`s, read with
+    /// [`Live::recorded_frame_data`]).
+    pub async fn frame_chunks(&self, id: &str) -> Result<Vec<ChunkMeta>, ApiError> {
+        if !self.model.read().games.contains_key(id) {
+            return Err(not_found("no such game"));
+        }
+        let mut query = Query {
+            after: 0,
+            limit: FRAMES_PAGE,
+            stream: Some(game::stream(id)),
+            types: vec![chunk::FRAME_CHUNK.into()],
+            exclude: Vec::new(),
+        };
+        let mut out = Vec::new();
+        loop {
+            let batch = self.store.read(&query).await?;
+            for e in &batch {
+                match serde_json::from_value::<ChunkMeta>(e.body.data.clone()) {
+                    Ok(meta) => out.push(meta),
+                    Err(err) => eprintln!("live: frame chunk {} of {id}: {err}", e.position),
+                }
+            }
+            match batch.last() {
+                Some(last) if batch.len() == query.limit => query.after = last.position,
+                _ => break,
+            }
+        }
+        out.sort_by_key(|m| m.from_tick);
+        Ok(out)
+    }
+
+    /// `GET /v1/games/{id}/chunks/{from_tick}`: one chunk's bytes, checked
+    /// against the hash its signed index entry holds.
+    pub async fn frame_chunk(&self, id: &str, from_tick: u64) -> Result<Vec<u8>, ApiError> {
+        let index = self.frame_chunks(id).await?;
+        let meta = index
+            .iter()
+            .find(|m| m.from_tick == from_tick)
+            .ok_or_else(|| not_found("no such chunk"))?;
+        let mut bytes = None;
+        if let Some(b) = self.blobs() {
+            match b.private.get(&chunk_key(id, from_tick)).await {
+                Ok(found) => bytes = found.map(|b| b.to_vec()),
+                Err(e) => eprintln!("live: frame chunk of {id}: {e}"),
+            }
+        }
+        if bytes.is_none() {
+            bytes = self.store.blob(&meta.sha256).await?;
+        }
+        let bytes = bytes.ok_or_else(|| not_found("the chunk is not stored"))?;
+        if sign::hex(&Sha256::digest(&bytes)) != meta.sha256 {
+            eprintln!("live: frame chunk {from_tick} of {id} does not match its hash");
+            return Err(not_found("the chunk is not stored"));
+        }
+        Ok(bytes)
+    }
+
+    /// Every recorded frame of a game in chunks, decoded: for tests and
+    /// the parity suite.
+    pub async fn chunk_frames(&self, id: &str) -> Result<Vec<Frame>, ApiError> {
+        let mut out = Vec::new();
+        for meta in self.frame_chunks(id).await? {
+            let bytes = self.frame_chunk(id, meta.from_tick).await?;
+            out.extend(chunk::frames(&bytes).map_err(|e| invalid(e.to_string()))?);
+        }
+        Ok(out)
     }
 
     pub fn frames(&self) -> tokio::sync::broadcast::Receiver<Arc<LiveFrame>> {
@@ -726,26 +841,11 @@ impl Live {
         })
     }
 
-    /// `GET /v1/games/{id}/frames`: recorded frames with `from_tick <= tick
-    /// <= to_tick` as JSON (each the frame plus `source`, however it was
-    /// stored), oldest first; the cursor is a log position.
-    pub async fn recorded_frames(
-        &self,
-        id: &str,
-        from_tick: Option<u64>,
-        to_tick: Option<u64>,
-        after: u64,
-        limit: usize,
-    ) -> Result<Page<Value>, ApiError> {
-        let mut page = self
-            .recorded_frame_data(id, from_tick, to_tick, after, limit)
-            .await?;
-        page.items = page.items.iter().map(recorded_json).collect();
-        Ok(page)
-    }
-
-    /// [`Live::recorded_frames`] as stored: each `GameFrame`'s data, packed
-    /// (`{tick, source, packed}`) or, for older games, the JSON frame.
+    /// `GET /v1/games/{id}/frames`: a game's recorded `GameFrame`s with
+    /// `from_tick <= tick <= to_tick`, oldest first (the cursor is a log
+    /// position): each one's data, packed (`{tick, source, packed}`) or,
+    /// for the oldest games, the JSON frame. Games recorded before frame
+    /// chunks have these; newer ones have [`Live::frame_chunks`].
     pub async fn recorded_frame_data(
         &self,
         id: &str,
@@ -921,6 +1021,7 @@ impl Live {
             ));
         }
         for (id, tick, players) in idle {
+            self.flush_frames(&id).await;
             let ended = GameEnded {
                 tick,
                 reason: "lost".into(),
@@ -992,38 +1093,19 @@ mod tests {
     }
 
     #[test]
-    fn recorded_frames_sum_the_shots_of_their_second() {
+    fn sent_frames_carry_what_throttled_frames_had() {
         let start = Instant::now();
         let mut clock = FrameClock::new(start, 0);
         let at = |ms: u64| start + Duration::from_millis(ms);
 
-        // Second 10: sent at 0, 100, 200 ms (one throttled at 120 ms).
         let mut f = frame(1, 0);
-        let recorded = clock.admit(&mut f, at(0), 10).unwrap().unwrap();
-        assert_eq!(shots(&recorded), (Some(1), None));
-        let mut f = frame(2, 1);
-        assert_eq!(clock.admit(&mut f, at(100), 10), Some(None));
-        assert_eq!(shots(&f), (Some(2), Some(1)));
+        assert!(clock.admit(&mut f, at(0)));
+        assert_eq!(shots(&f), (Some(1), None));
         let mut f = frame(4, 0);
-        assert_eq!(clock.admit(&mut f, at(120), 10), None, "throttled");
+        assert!(!clock.admit(&mut f, at(20)), "throttled");
         let mut f = frame(0, 3);
-        assert_eq!(clock.admit(&mut f, at(200), 10), Some(None));
+        assert!(clock.admit(&mut f, at(100)));
         assert_eq!(shots(&f), (Some(4), Some(3)), "carries the throttled frame");
-
-        // Second 11: the recorded frame covers everything since the last one.
-        let mut f = frame(1, 1);
-        let recorded = clock.admit(&mut f, at(1000), 11).unwrap().unwrap();
-        assert_eq!(shots(&f), (Some(1), Some(1)), "live frame: its own shots");
-        assert_eq!(shots(&recorded), (Some(2 + 4 + 1), Some(1 + 3 + 1)));
-
-        // Capped at 64 per shooter.
-        for i in 0..5 {
-            let mut f = frame(30, 30);
-            assert!(clock.admit(&mut f, at(1100 + i * 100), 11).is_some());
-        }
-        let mut f = frame(0, 0);
-        let recorded = clock.admit(&mut f, at(2000), 12).unwrap().unwrap();
-        assert_eq!(shots(&recorded), (Some(64), Some(64)));
     }
 
     fn machine(id: &str, position: f64) -> live_proto::game::FrameMachine {
@@ -1039,128 +1121,75 @@ mod tests {
     }
 
     #[test]
-    fn recorded_frames_carry_the_seconds_actions_hits_and_every_machine() {
-        use live_proto::game::FrameHit;
+    fn every_sent_frame_is_recorded_and_a_chunks_first_frame_lists_every_machine() {
         let start = Instant::now();
         let mut clock = FrameClock::new(start, 0);
         let at = |ms: u64| start + Duration::from_millis(ms);
-        let hit = |amount| FrameHit {
-            amount: Some(amount),
-            ..FrameHit::default()
+        let mut chunks = Vec::new();
+        let mut send = |clock: &mut FrameClock, mut f: Frame, ms: u64| {
+            if clock.admit(&mut f, at(ms)) {
+                chunks.extend(clock.record(&f));
+            }
         };
 
-        // Second 10: the first frame is recorded with both machines.
+        // Window 0: both doors in the first frame, door a moving after.
         let mut f = frame(0, 0);
+        f.tick = 10;
         f.machines = vec![machine("a", 0.0), machine("b", 0.0)];
-        let recorded = clock.admit(&mut f, at(0), 10).unwrap().unwrap();
-        assert_eq!(recorded.machines.len(), 2);
-        // A sent frame with a reload, one hit and door a moving.
+        send(&mut clock, f, 0);
         let mut f = frame(0, 0);
-        f.players[0].actions = Some(vec!["reload".into()]);
-        f.hits = vec![hit(0.1)];
-        f.machines = vec![machine("a", 0.5)];
-        assert_eq!(clock.admit(&mut f, at(100), 10), Some(None));
-        // A throttled one with a jump and a hit: carried into the next sent.
+        f.tick = 12;
+        f.machines = vec![machine("a", 1.0)];
+        send(&mut clock, f, 100);
+        // Throttled: its shots go to the next sent frame.
+        let mut f = frame(2, 0);
+        f.tick = 14;
+        send(&mut clock, f, 120);
         let mut f = frame(0, 0);
-        f.actors[0].actions = Some(vec!["jump".into()]);
-        f.hits = vec![hit(0.2)];
-        assert_eq!(clock.admit(&mut f, at(120), 10), None);
+        f.tick = 16;
+        send(&mut clock, f, 200);
+        // The next window: closes the first chunk; its first frame lists
+        // both doors though neither moved in it.
         let mut f = frame(0, 0);
-        assert_eq!(clock.admit(&mut f, at(200), 10), Some(None));
-        assert_eq!(f.actors[0].actions, Some(vec!["jump".into()]));
-        assert_eq!(f.hits, [hit(0.2)]);
-
-        // Second 11's recorded frame has all of it, and both machines' latest
-        // state though neither moved in it.
-        let mut f = frame(0, 0);
-        f.hits = vec![hit(0.3)];
-        let recorded = clock.admit(&mut f, at(1000), 11).unwrap().unwrap();
-        assert_eq!(f.hits, [hit(0.3)], "the live frame keeps its own");
-        assert_eq!(recorded.players[0].actions, Some(vec!["reload".into()]));
-        assert_eq!(recorded.actors[0].actions, Some(vec!["jump".into()]));
-        assert_eq!(recorded.hits, [hit(0.1), hit(0.2), hit(0.3)]);
-        let machines: Vec<_> = recorded
+        f.tick = chunk::CHUNK_TICKS + 2;
+        send(&mut clock, f, 300);
+        assert_eq!(chunks.len(), 1);
+        let first = chunk::frames(&chunks[0].bytes).unwrap();
+        assert_eq!(first.iter().map(|f| f.tick).collect::<Vec<_>>(), [10, 12, 16]);
+        assert_eq!(first[2].players[0].shots, Some(2));
+        assert_eq!(chunks[0].meta.shots, 2);
+        let next = clock.chunks.finish().unwrap();
+        let next = chunk::frames(&next.bytes).unwrap();
+        let machines: Vec<_> = next[0]
             .machines
             .iter()
             .map(|m| (m.id.as_str(), m.position))
             .collect();
-        assert_eq!(machines, [("a", Some(0.5)), ("b", Some(0.0))]);
-    }
-
-    fn author() -> Author {
-        Author::parse("acct:0009a1b2c3d4e5f6@live.test").unwrap()
+        // Device positions travel in 1023 steps: 0 and 1 are exact.
+        assert_eq!(machines, [("a", Some(1.0)), ("b", Some(0.0))]);
     }
 
     #[test]
-    fn old_json_recordings_stay_readable() {
+    fn old_recordings_stay_readable() {
         let mut frame = live_proto::samples::campaign(1).remove(0);
         game::normalize_frame(&mut frame);
         // A GameFrame as servers before packed frames stored it.
         let mut old = serde_json::to_value(&frame).unwrap();
         old["source"] = json!("acct:0009a1b2c3d4e5f6@live.test");
-        assert_eq!(recorded_json(&old), old, "JSON stays as it was");
         let packed = recorded_packed(&old).expect("old frames pack on the way out");
         assert_eq!(
             pack::decode_keyframe(&packed).unwrap(),
             pack::quantize(&frame).unwrap()
         );
-
-        // A packed recording: tick and source in the clear, the frame packed.
-        let new = recorded_data(&frame, &author());
-        assert_eq!(new["tick"], frame.tick);
-        assert!(new.get("players").is_none());
-        let back = recorded_json(&new);
-        assert_eq!(back["source"], old["source"]);
-        let decoded: Frame = serde_json::from_value(back).unwrap();
-        assert_eq!(decoded, pack::quantize(&frame).unwrap());
+        // A packed one, as servers before chunks stored it.
+        let new = json!({
+            "tick": frame.tick,
+            "source": "acct:0009a1b2c3d4e5f6@live.test",
+            "packed": pack::to_base64(&packed),
+        });
         assert_eq!(recorded_packed(&new), Some(packed));
         // Damaged data is passed through, not invented.
         let broken = json!({"tick": 1, "packed": "***"});
-        assert_eq!(recorded_json(&broken), broken);
         assert_eq!(recorded_packed(&broken), None);
-    }
-
-    /// What one recorded frame costs at rest: its signed event's JWS, the
-    /// string the store keeps.
-    fn stored_bytes(data: Value) -> usize {
-        let key = live_proto::sign::KeyPair::generate();
-        let body = live_proto::sign::EventBody::new(
-            &key,
-            "server:live.test",
-            "game-c4a1d2e3f4a5b6c7d8e9f0a1b2c3d4e5",
-            game::GAME_FRAME,
-            data,
-            time::OffsetDateTime::now_utc(),
-        );
-        body.sign(&key).len()
-    }
-
-    #[test]
-    fn recorded_frames_cost_less_at_rest() {
-        for (name, frames) in [
-            ("multiplayer", live_proto::samples::multiplayer(450)),
-            ("campaign", live_proto::samples::campaign(450)),
-        ] {
-            let recorded: Vec<Frame> = frames.into_iter().step_by(15).collect();
-            let json: usize = recorded
-                .iter()
-                .map(|f| {
-                    let mut d = serde_json::to_value(f).unwrap();
-                    d["source"] = json!(author().to_string());
-                    stored_bytes(d)
-                })
-                .sum();
-            let packed: usize = recorded
-                .iter()
-                .map(|f| stored_bytes(recorded_data(f, &author())))
-                .sum();
-            let n = recorded.len();
-            println!(
-                "{name}: stored JWS per recorded frame: JSON {} B, packed {} B",
-                json / n,
-                packed / n
-            );
-            assert!(packed * 4 < json, "{name}: {packed} vs {json}");
-        }
     }
 }

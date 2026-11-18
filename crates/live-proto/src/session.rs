@@ -155,6 +155,56 @@ pub struct NewSession {
     /// Left out until there is a guest and a measurement.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ping_ms: Option<u16>,
+    /// The game variant's h2recomp options for the game the host starts
+    /// next (docs/game/game-options.md section 3): the record's extension
+    /// block and the key of the variant it belongs to. Guests write it into
+    /// their own copy when their variant has the same key. Left out by a
+    /// host that sends none (System Link, every build before this field).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant_ext: Option<VariantExt>,
+}
+/// The bytes of a variant's extension block ([`VariantExt::block`]).
+pub const VARIANT_EXT_LEN: usize = 0x24;
+/// A game variant's extension block on a session ([`NewSession::variant_ext`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VariantExt {
+    /// The record's bytes `+0x10c..+0x12f`, lowercase hex; all zero for a
+    /// variant without extras. The server checks the form, not the
+    /// contents: the game checks its magic and CRC.
+    pub block: String,
+    /// Which variant: 16 lowercase hex digits the host and its guests
+    /// compute alike from the record the game sends.
+    pub key: String,
+}
+impl VariantExt {
+    pub fn validate(&self) -> Result<(), String> {
+        let hex = |s: &str, n: usize| {
+            s.len() == n
+                && s.bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        };
+        if !hex(&self.block, 2 * VARIANT_EXT_LEN) || !hex(&self.key, 16) {
+            return Err("variant_ext is a 72-digit block and a 16-digit key, lowercase hex".into());
+        }
+        Ok(())
+    }
+    /// The block's bytes, if it is well formed.
+    pub fn bytes(&self) -> Option<[u8; VARIANT_EXT_LEN]> {
+        self.validate().ok()?;
+        let mut out = [0u8; VARIANT_EXT_LEN];
+        for (i, o) in out.iter_mut().enumerate() {
+            *o = u8::from_str_radix(&self.block[2 * i..2 * i + 2], 16).ok()?;
+        }
+        Some(out)
+    }
+    /// From the block's bytes and the variant's key.
+    pub fn new(block: &[u8; VARIANT_EXT_LEN], key: u64) -> Self {
+        Self {
+            block: crate::sign::hex(block),
+            key: format!("{key:016x}"),
+        }
+    }
 }
 /// The highest round trip a session reports; anything slower is this.
 pub const PING_MAX_MS: u16 = 9_999;
@@ -246,6 +296,10 @@ pub struct Update {
     /// A new round trip ([`NewSession::ping_ms`]); 0 clears it (no guest).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ping_ms: Option<u16>,
+    /// The variant's options for the next game ([`NewSession::variant_ext`]);
+    /// absent keeps them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant_ext: Option<VariantExt>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -302,6 +356,9 @@ impl NewSession {
         }
         if self.ping_ms.is_some_and(|p| p == 0 || p > PING_MAX_MS) {
             return Err(format!("ping_ms is 1 to {PING_MAX_MS}"));
+        }
+        if let Some(v) = &self.variant_ext {
+            v.validate()?;
         }
         if let Some(c) = &self.campaign {
             if !self.is_coop() {
@@ -364,6 +421,9 @@ impl Session {
         }
         if let Some(v) = u.ping_ms {
             next.ping_ms = (v != 0).then_some(v);
+        }
+        if let Some(v) = &u.variant_ext {
+            next.variant_ext = Some(v.clone());
         }
         next.validate()?;
         let changed = next != self.advertisement;
@@ -456,6 +516,7 @@ mod tests {
             skulls: None,
             campaign: None,
             ping_ms: None,
+            variant_ext: None,
         }
     }
     #[test]
@@ -601,6 +662,53 @@ mod tests {
         assert_eq!(s.advertisement.map_id, Some(other));
         assert!(!s.apply(UPDATED, &json!({}), "", 103).unwrap());
         assert_eq!(s.advertisement.map_id, Some(other));
+    }
+    #[test]
+    fn variant_options_are_optional_checked_and_updated() {
+        let old = json!({"addr":null,"port":3074,"host_address":vec![0u8;36],
+            "slots":{"public_filled":1,"public_open":7,"private_filled":0,"private_open":0},
+            "attributes":{},"map":"lockout"});
+        let n: NewSession = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(n.variant_ext, None);
+        assert!(serde_json::to_value(&n).unwrap().get("variant_ext").is_none());
+        let mut block = [0u8; VARIANT_EXT_LEN];
+        block[0] = b'h';
+        block[1] = b'x';
+        let v = VariantExt::new(&block, 0x0123_4567_89ab_cdef);
+        assert_eq!(v.key, "0123456789abcdef");
+        assert_eq!(v.bytes(), Some(block));
+        let mut with = old;
+        with["variant_ext"] = serde_json::to_value(&v).unwrap();
+        let n: NewSession = serde_json::from_value(with.clone()).unwrap();
+        assert_eq!(n.validate(), Ok(()));
+        for (b, k) in [
+            ("00", "0123456789abcdef"),
+            (&"0".repeat(72)[..], "0123"),
+            (&"A".repeat(72)[..], "0123456789abcdef"),
+            (&"0".repeat(72)[..], "0123456789ABCDEF"),
+        ] {
+            with["variant_ext"] = json!({"block": b, "key": k});
+            let n: NewSession = serde_json::from_value(with.clone()).unwrap();
+            assert!(n.validate().is_err(), "{b} {k}");
+            assert_eq!(n.variant_ext.unwrap().bytes(), None);
+        }
+        with["variant_ext"] = json!({"block": "0".repeat(72), "key": "0".repeat(16), "x": 1});
+        assert!(serde_json::from_value::<NewSession>(with).is_err());
+        // Updates: absent keeps it, a new one replaces it.
+        let mut s = session("observed", "203.0.113.5", Visibility::Public);
+        let up = serde_json::to_value(Update {
+            variant_ext: Some(v.clone()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(s.apply(UPDATED, &up, "", 102).unwrap());
+        assert_eq!(s.advertisement.variant_ext, Some(v.clone()));
+        assert!(!s.apply(UPDATED, &json!({}), "", 103).unwrap());
+        assert_eq!(s.advertisement.variant_ext, Some(v));
+        assert!(
+            s.apply(UPDATED, &json!({"variant_ext": {"block": "1", "key": "2"}}), "", 104)
+                .is_err()
+        );
     }
     #[test]
     fn skulls_are_optional_checked_and_updated() {

@@ -271,3 +271,9 @@
   .dx-btn, .dx-menu .dx-btn { width: calc(var(--u) * 46); height: calc(var(--u) * 46); }
   .dx-btn b, .dx-menu .dx-btn b { font-size: calc(var(--u) * 16); }
 }
+
+/* ---- the Game Content Usage Rules notice (src/legal.ts) under the menu ---- */
+.dx-legal { position: absolute; z-index: 4; left: 50%; bottom: calc(var(--u) * 6); transform: translateX(-50%); width: min(94%, calc(var(--u) * 900)); margin: 0; text-align: center; font-size: max(9px, calc(var(--u) * 9.5)); line-height: 1.35; letter-spacing: .04em; text-transform: none; color: var(--g-ink-soft); opacity: .78; text-shadow: 0 calc(var(--u) * 1) calc(var(--u) * 2) #000; pointer-events: none; }
+.dx-legal a { color: var(--g-pale); pointer-events: auto; }
+.dx-legal a:hover, .dx-legal a:focus-visible { color: var(--g-bright); }
+.dx--boot .dx-legal { animation: dx-fade .6s 1.3s both; }

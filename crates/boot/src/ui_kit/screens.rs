@@ -268,7 +268,7 @@ pub fn account_spec(a: &crate::account_screen::AccountScreen, now: i64) -> Scree
 }
 
 /// The screens `h2 ui preview` knows, by name.
-pub const NAMES: [&str; 14] = [
+pub const NAMES: [&str; 16] = [
     "campaigns",
     "skulls",
     "skulls.h1",
@@ -282,6 +282,8 @@ pub const NAMES: [&str; 14] = [
     "account",
     "kit.example",
     "kit.choices",
+    "kit.dialog",
+    "kit.dialog.large",
     "clankers",
 ];
 
@@ -308,6 +310,51 @@ pub fn live(name: &str) -> Option<Box<dyn Live>> {
         "signin-code" => Some(Box::new(Driven::new(crate::signin_screen::SigninPage))),
         "account" => Some(Box::new(Driven::new(AccountPage))),
         _ => Some(Box::new(Driven::new(list_page(name)?))),
+    }
+}
+
+/// The kit's choice rows as a dialog (docs/game/ui-builder.md "The Dialog
+/// kind"): on the game's own settings dialog (the lobby's Quick Options,
+/// `quick_options`) with the description in its help line's place, as a bots page could
+/// be, or on the large dialog, the one the game maps have too (a pause
+/// menu's screen).
+pub fn dialog_example(
+    store: Arc<settings::Store>,
+    base: crate::ui_kit::dialog::DialogBase,
+) -> crate::ui_kit::screen::KitScreen {
+    use crate::list_class::TextBlock;
+    use crate::ui_kit::choice::example::{COUNT, LEVEL};
+    use crate::ui_kit::dialog::{DialogBase, QUICK_HELP};
+    let (feature, name) = match base {
+        DialogBase::QuickOptions => ("kit-dialog", "kit.dialog"),
+        DialogBase::Large => ("kit-dialog-large", "kit.dialog.large"),
+    };
+    let s = crate::ui_kit::screen::KitScreen::new(
+        feature,
+        name,
+        crate::ui_kit::ids::family(name),
+        "Choices",
+    )
+    .dialog(base, crate::ui_kit::view::Opener::MAIN_MENU)
+    .row(COUNT.row(Arc::clone(&store)))
+    .row(LEVEL.row(store))
+    .prompts(&[
+        Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Change"),
+        Prompt::new(&[Glyph::B], "Back"),
+    ]);
+    match base {
+        DialogBase::QuickOptions => s.description(TextBlock {
+            rect: [
+                QUICK_HELP.top,
+                QUICK_HELP.left,
+                QUICK_HELP.bottom,
+                QUICK_HELP.right,
+            ],
+            font: 1,
+            colour: [0.388235, 0.580392, 0.756863],
+            animation: 0,
+        }),
+        DialogBase::Large => s,
     }
 }
 
@@ -460,6 +507,18 @@ pub fn list_page(name: &str) -> Option<ListPage> {
             let s = Arc::new(choices_example(crate::ui_kit::choice::example::store()));
             list(ListPage::new(s.class(), described(&s)))
         }
+        "kit.dialog" | "kit.dialog.large" => {
+            let base = if name == "kit.dialog" {
+                crate::ui_kit::dialog::DialogBase::QuickOptions
+            } else {
+                crate::ui_kit::dialog::DialogBase::Large
+            };
+            let s = Arc::new(dialog_example(
+                crate::ui_kit::choice::example::store(),
+                base,
+            ));
+            list(ListPage::new(s.class(), described(&s)))
+        }
         "clankers" => {
             let store = Arc::new(settings::Store::defaults(&crate::clankers::DEFS));
             let s = Arc::new(crate::clankers::page(store));
@@ -520,10 +579,20 @@ mod tests {
         assert_eq!(k["prompts"][0]["glyphs"][0], "DpadLeft");
     }
 
-    /// Findings left on purpose, each with its reason. None today: the
-    /// sign-in prompt, the last, became a dialog with a glyph legend.
-    fn known(_screen: &str, _issue: &crate::ui_kit::layout::Issue) -> bool {
-        false
+    /// Findings left on purpose, each with its reason.
+    ///
+    /// - The dialog samples' unfocused rows (white at 40%) against what
+    ///   is under them: the large dialog's panel is see-through, retail's
+    ///   way, and the sample opens it over the main menu, whose logo is
+    ///   under its rows (its real users open it over a pause menu); the
+    ///   Quick Options sample passes on the disc's art, but the synthetic
+    ///   source has no `fs_dialog` to cover its opener's rows.
+    fn known(screen: &str, issue: &crate::ui_kit::layout::Issue) -> bool {
+        use crate::ui_kit::layout::Issue;
+        matches!(
+            (screen, issue),
+            ("kit.dialog" | "kit.dialog.large", Issue::Contrast { id, .. }) if id.starts_with("row.")
+        )
     }
 
     /// Without a disc: every screen in every state drawn from the synthetic
@@ -606,11 +675,16 @@ mod tests {
             let f = crate::ui_kit::view::Geometry::fallback(place);
             assert_eq!(f, d, "{name}: Geometry::fallback differs from the disc");
         }
-        assert_eq!(
-            crate::ui_kit::dialog::DialogGeometry::fallback(),
-            disc.dialog_geometry().unwrap(),
-            "DialogGeometry::fallback differs from the disc"
-        );
+        for base in [
+            crate::ui_kit::dialog::DialogBase::Large,
+            crate::ui_kit::dialog::DialogBase::QuickOptions,
+        ] {
+            assert_eq!(
+                crate::ui_kit::dialog::DialogGeometry::fallback_for(base),
+                disc.dialog_geometry_for(base).unwrap(),
+                "DialogGeometry::fallback_for({base:?}) differs from the disc"
+            );
+        }
         // Every state passes the layout checks on the disc's art and fonts,
         // the art ones included.
         let mut issues = Vec::new();
@@ -637,13 +711,14 @@ mod tests {
         for i in &issues {
             eprintln!("layout: {i}");
         }
-        assert!(issues.is_empty(), "{} layout findings", issues.len());
+        // The sheet first, so a finding can be looked at.
         if let Some(dir) = std::env::var_os("H2_UI_SHEET_DIR") {
             let from = crate::ui_kit::preview::From::Disc(&disc);
             let path =
                 crate::ui_kit::preview::write_sheet(&from, std::path::Path::new(&dir)).unwrap();
             eprintln!("wrote {}", path.display());
         }
+        assert!(issues.is_empty(), "{} layout findings", issues.len());
         let out = std::env::var_os("H2_UI_PREVIEW_DIR").map(std::path::PathBuf::from);
         let mut report = Vec::new();
         for name in NAMES {

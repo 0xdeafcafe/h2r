@@ -9,6 +9,7 @@ use live_proto::{
 use serde::de::DeserializeOwned;
 use serde_json::json;
 use std::{
+    cell::Cell,
     collections::BTreeMap,
     io::Read,
     sync::{
@@ -31,6 +32,20 @@ pub struct ServerOptions {
     /// are left out of searches, and finding one by id (a join) downloads
     /// its missing layers first. None: sessions are taken as they come.
     pub maps: Option<Arc<crate::maps::MapGate>>,
+    /// How a request that is safe to repeat is retried through a short
+    /// outage: a Worker deploy, a dropped connection (docs/live/live.md
+    /// "Outages").
+    pub retry: Retry,
+    /// How long the heartbeat may keep failing before the persistent
+    /// connection is lost. A refused account (a ban, a bad key) ends it at
+    /// once.
+    pub connection_grace: Duration,
+    /// This console's build (its git short hash, [`live_proto::valid_build`])
+    /// and what it can do ([`live_proto::capability`]), sent with every
+    /// presence set (docs/game/game-options.md section 3, "Older builds").
+    /// A build that isn't valid is left out, as are bad capabilities.
+    pub build: Option<String>,
+    pub capabilities: Vec<String>,
 }
 impl Default for ServerOptions {
     fn default() -> Self {
@@ -38,6 +53,33 @@ impl Default for ServerOptions {
             request_timeout: Duration::from_secs(5),
             heartbeat_interval: Duration::from_secs(30),
             maps: None,
+            retry: Retry::default(),
+            connection_grace: Duration::from_secs(90),
+            build: None,
+            capabilities: Vec::new(),
+        }
+    }
+}
+/// Retries of a request that is safe to repeat: a read, a keep-alive, a
+/// PUT or DELETE, or a signed event (the server takes an event once by its
+/// nonce, so a resend of one whose answer was lost is refused as a replay,
+/// which is taken as success). Transport failures, 5xx and 429 are retried;
+/// any other answer is final.
+#[derive(Debug, Clone, Copy)]
+pub struct Retry {
+    /// Attempts in all, the first included: 1 is no retry.
+    pub attempts: u32,
+    /// The wait before the first retry; it doubles after each.
+    pub backoff: Duration,
+    /// The longest wait between attempts, a server's `Retry-After` included.
+    pub max_wait: Duration,
+}
+impl Default for Retry {
+    fn default() -> Self {
+        Self {
+            attempts: 3,
+            backoff: Duration::from_millis(500),
+            max_wait: Duration::from_secs(5),
         }
     }
 }
@@ -68,6 +110,21 @@ pub(crate) enum Reply {
     /// A mute list, oldest first.
     Mutes(Vec<u64>),
     Ranks(Vec<live_proto::rank::LeaderboardRow>),
+    /// A bot roster for the host's session (docs/game/bots.md §9.1), not
+    /// yet checked.
+    Roster(live_proto::bots::Roster),
+    /// Everyone's presence, as `GET /v1/presence` shows this console.
+    Presence(Vec<live_proto::Presence>),
+    /// A page of the mod repository (docs/game/maps.md §5, "Mod downloads").
+    Mods(crate::mods::ModPage),
+    /// Where content is fetched from (the API base) and the map gate that
+    /// installs it, for a download on a thread of its own.
+    Content {
+        api: String,
+        gate: Option<Arc<crate::maps::MapGate>>,
+        /// Tokens for the counted manifest GET (the download count).
+        reader: Option<crate::maps::Reader>,
+    },
 }
 #[derive(Clone)]
 pub(crate) struct Pending(Arc<Mutex<Option<Result<Reply, u32>>>>);
@@ -186,13 +243,27 @@ enum Work {
     Ranks {
         leaderboards: Vec<u32>,
         xuids: Vec<u64>,
+        game_session: Option<String>,
     },
+    /// `POST /games/bots` (docs/game/bots.md §9.1), as the host of the
+    /// request's session.
+    Bots(live_proto::bots::RosterRequest),
+    /// `GET /v1/presence`.
+    ReadPresence,
+    /// `GET /v1/maps?sort=new` (the mod repository), as the first account
+    /// signed in on this console.
+    Mods { limit: u32, cursor: Option<String> },
+    /// The API base and map gate, for a mod download.
+    ContentApi,
     Wake,
 }
+/// Called on the worker with a command's result, once it has one.
+pub(crate) type Then = Box<dyn FnOnce(Result<Reply, u32>) + Send>;
 struct Command {
     session: Session,
     work: Work,
     result: Pending,
+    then: Option<Then>,
 }
 pub(crate) struct Service {
     sender: SyncSender<Command>,
@@ -221,11 +292,15 @@ impl Service {
                 let mut worker = Worker {
                     base,
                     maps: options.maps.clone(),
+                    software: Software::from_options(&options),
                     agent,
                     connection: None,
                     active: None,
                     metrics: counters,
                     seen: seen_by_worker,
+                    retry: options.retry,
+                    grace: options.connection_grace,
+                    retry_after: Cell::new(None),
                 };
                 let mut next_ping = Instant::now() + options.heartbeat_interval;
                 loop {
@@ -236,23 +311,25 @@ impl Service {
                     }
                     let wait = next_ping.saturating_duration_since(Instant::now());
                     match receiver.recv_timeout(wait) {
-                        Ok(command) => {
+                        Ok(mut command) => {
                             let result = worker.run(&command);
+                            if result.is_ok()
+                                && let Work::Presence { user, .. } = &command.work
+                                && let Some(active) = worker.active.as_mut()
+                            {
+                                // A newer presence went through: nothing older is owed.
+                                active.unsent.remove(user);
+                            }
                             if let Err(error) = result
                                 && !command.session.cancelled()
                             {
                                 worker.metrics.last_error.store(error, Ordering::Release);
-                                if matches!(command.work, Work::Presence { .. })
-                                    && matches!(
-                                        error,
-                                        CANNOT_ACCESS_SERVICE
-                                            | INVALID_USER
-                                            | SERVERS_BUSY
-                                            | ACCOUNT_REQUIRES_MANAGEMENT
-                                    )
-                                {
-                                    command.session.status.store(lost(error), Ordering::Release);
+                                if let Work::Presence { user, value } = &command.work {
+                                    worker.presence_failed(&command.session, *user, value, error);
                                 }
+                            }
+                            if let Some(then) = command.then.take() {
+                                then(result.clone());
                             }
                             command.result.finish(result);
                         }
@@ -271,15 +348,36 @@ impl Service {
         })
     }
     fn submit(&self, session: &Session, work: Work) -> Result<Pending, u32> {
+        self.submit_then(session, work, None)
+    }
+    fn submit_then(
+        &self,
+        session: &Session,
+        work: Work,
+        then: Option<Then>,
+    ) -> Result<Pending, u32> {
         let result = Pending::new();
         self.sender
             .try_send(Command {
                 session: session.clone(),
                 work,
                 result: result.clone(),
+                then,
             })
             .map_err(|_| TASK_BUSY)?;
         Ok(result)
+    }
+    /// Asks the server for a bot roster for the host's session
+    /// (`POST /games/bots`, docs/game/bots.md §9.1); `then` gets the
+    /// answer on the worker.
+    pub fn bots(
+        &self,
+        s: &Session,
+        request: live_proto::bots::RosterRequest,
+        then: Then,
+    ) -> Result<(), u32> {
+        self.submit_then(s, Work::Bots(request), Some(then))
+            .map(|_| ())
     }
     pub fn logon(&self, s: &Session, accounts: Vec<Account>) -> Result<Pending, u32> {
         self.submit(s, Work::Logon(accounts))
@@ -337,20 +435,45 @@ impl Service {
         self.submit(s, Work::Mute { user, target, mute })
     }
     /// The standings the game's stats read asks for: every player on every
-    /// leaderboard (docs/live/live-matchmaking.md §8.1).
+    /// leaderboard (docs/live/live-matchmaking.md §8.3). `game_session`,
+    /// the Live session this console is in (hex), lets made-up bots answer
+    /// with the level their roster showed (§8.4).
     pub fn ranks(
         &self,
         s: &Session,
         leaderboards: Vec<u32>,
         xuids: Vec<u64>,
+        game_session: Option<String>,
     ) -> Result<Pending, u32> {
         self.submit(
             s,
             Work::Ranks {
                 leaderboards,
                 xuids,
+                game_session,
             },
         )
+    }
+    /// Everyone's presence (`GET /v1/presence`), read as the first account
+    /// signed in on this console.
+    pub fn read_presence(&self, s: &Session) -> Result<Pending, u32> {
+        self.submit(s, Work::ReadPresence)
+    }
+    /// A page of the mod repository; `then` gets it on the worker.
+    pub fn mods(
+        &self,
+        s: &Session,
+        limit: u32,
+        cursor: Option<String>,
+        then: Then,
+    ) -> Result<(), u32> {
+        self.submit_then(s, Work::Mods { limit, cursor }, Some(then))
+            .map(|_| ())
+    }
+    /// The API base and map gate; `then` gets them on the worker.
+    pub fn content_api(&self, s: &Session, then: Then) -> Result<(), u32> {
+        self.submit_then(s, Work::ContentApi, Some(then))
+            .map(|_| ())
     }
     pub fn cancel(&self, s: &Session) {
         s.cancel();
@@ -378,15 +501,43 @@ struct Active {
     users: BTreeMap<u64, Identity>,
     presence: BTreeMap<u64, Presence>,
     matches: BTreeMap<String, u64>,
+    /// Presence the game set that the server has not taken yet (it could
+    /// not be reached): sent after the next good heartbeat.
+    unsent: BTreeMap<u64, Presence>,
+    /// When the heartbeat (or a presence change) began failing; the
+    /// connection is lost once this is [`Worker::grace`] old.
+    failing_since: Option<Instant>,
+}
+/// What this console's presence says it runs ([`ServerOptions::build`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Software {
+    pub build: Option<String>,
+    pub capabilities: Vec<String>,
+}
+impl Software {
+    pub fn from_options(o: &ServerOptions) -> Self {
+        Self {
+            build: o.build.clone().filter(|b| live_proto::valid_build(b)),
+            capabilities: Some(o.capabilities.clone())
+                .filter(|c| live_proto::valid_capabilities(c))
+                .unwrap_or_default(),
+        }
+    }
 }
 struct Worker {
     base: String,
     maps: Option<Arc<crate::maps::MapGate>>,
+    software: Software,
     agent: ureq::Agent,
     connection: Option<Connection>,
     active: Option<Active>,
     metrics: Arc<Metrics>,
     seen: Seen,
+    retry: Retry,
+    /// How long the heartbeat may fail before the connection is lost.
+    grace: Duration,
+    /// The last error answer's `Retry-After`, for [`Worker::retried`].
+    retry_after: Cell<Option<Duration>>,
 }
 #[derive(Clone, Copy)]
 enum Error {
@@ -398,6 +549,8 @@ enum Error {
     /// The server refused the account: it is banned
     /// (docs/live/live-admin.md "Bans").
     Banned,
+    /// 409 "nonce already used": the server already has this signed event.
+    Replayed,
 }
 impl Error {
     fn result(self) -> u32 {
@@ -410,6 +563,19 @@ impl Error {
             _ => CANNOT_ACCESS_SERVICE,
         }
     }
+    /// A failure that may pass: the server could not be reached, was
+    /// restarting (a deploy), or asked to be called back later.
+    fn retryable(self) -> bool {
+        matches!(
+            self,
+            Self::Transport | Self::Status(429 | 500 | 502 | 503 | 504)
+        )
+    }
+}
+/// Results that mean the server refused the account itself rather than
+/// could not be reached: they end the connection at once, with no grace.
+fn refused(result: u32) -> bool {
+    matches!(result, INVALID_USER | ACCOUNT_REQUIRES_MANAGEMENT)
 }
 fn now() -> i64 {
     time::OffsetDateTime::now_utc().unix_timestamp()
@@ -437,11 +603,24 @@ impl Worker {
         }
         .map_err(|e| match e {
             ureq::Error::Status(code, response) => {
+                self.retry_after.set(
+                    response
+                        .header("retry-after")
+                        .and_then(|v| v.trim().parse::<u64>().ok())
+                        .map(Duration::from_secs),
+                );
                 let mut data = Vec::new();
                 let _ = response.into_reader().take(4096).read_to_end(&mut data);
                 let body = serde_json::from_slice::<serde_json::Value>(&data).ok();
                 if body.as_ref().is_some_and(|v| v["error"] == "banned") {
                     return Error::Banned;
+                }
+                if code == 409
+                    && body
+                        .as_ref()
+                        .is_some_and(|v| v["message"] == "nonce already used")
+                {
+                    return Error::Replayed;
                 }
                 let team = body
                     .and_then(|v| v.get("team_error").cloned())
@@ -461,12 +640,45 @@ impl Worker {
         }
         Ok(data)
     }
-    fn json<T: DeserializeOwned>(
+    /// [`Worker::response`] for a request that is safe to repeat, retried
+    /// through a short outage under [`Retry`]. `build` makes each attempt's
+    /// request afresh: a bearer token is spent by the first.
+    fn retried(
         &self,
-        req: ureq::Request,
+        build: impl Fn() -> ureq::Request,
         body: Option<&str>,
-    ) -> Result<T, Error> {
-        serde_json::from_slice(&self.response(req, body, 64 * 1024)?).map_err(|_| Error::Protocol)
+        limit: usize,
+    ) -> Result<Vec<u8>, Error> {
+        let attempts = self.retry.attempts.max(1);
+        let mut wait = self.retry.backoff;
+        // The server's own answer says more than a later failure to reach it.
+        let mut answered = None;
+        let mut attempt = 1;
+        loop {
+            self.retry_after.set(None);
+            let error = match self.response(build(), body, limit) {
+                Ok(bytes) => return Ok(bytes),
+                // An earlier attempt landed and its answer was lost.
+                Err(Error::Replayed) if attempt > 1 => return Ok(Vec::new()),
+                Err(Error::Replayed) => return Err(Error::Status(409)),
+                Err(e) if !e.retryable() => return Err(e),
+                Err(e) => e,
+            };
+            if !matches!(error, Error::Transport) {
+                answered = Some(error);
+            }
+            if attempt >= attempts {
+                return Err(answered.unwrap_or(error));
+            }
+            let pause = self.retry_after.get().unwrap_or(wait);
+            std::thread::sleep(pause.min(self.retry.max_wait));
+            wait = wait.saturating_mul(2);
+            attempt += 1;
+        }
+    }
+    /// A GET's JSON, retried.
+    fn json<T: DeserializeOwned>(&self, build: impl Fn() -> ureq::Request) -> Result<T, Error> {
+        serde_json::from_slice(&self.retried(build, None, 64 * 1024)?).map_err(|_| Error::Protocol)
     }
     fn discover(&mut self) -> Result<(), Error> {
         let base = Url::parse(&self.base).map_err(|_| Error::Protocol)?;
@@ -485,7 +697,7 @@ impl Worker {
             "{}/.well-known/h2live.json",
             self.base.trim_end_matches('/')
         );
-        let discovery: Discovery = self.json(self.agent.get(&url), None)?;
+        let discovery: Discovery = self.json(|| self.agent.get(&url))?;
         let directory = Url::parse(&format!("{}/", self.base.trim_end_matches('/')))
             .map_err(|_| Error::Protocol)?;
         let api = directory
@@ -531,15 +743,8 @@ impl Worker {
                 gamertag: a.gamertag.clone(),
                 key: a.key.clone().ok_or(Error::Status(401))?,
             };
-            let keys: AccountKeys = self.json(
-                self.request(
-                    "GET",
-                    &format!("/accounts/by-xuid/{}/keys", Xuid(a.xuid)),
-                    &user,
-                    lxm::READ,
-                ),
-                None,
-            )?;
+            let path = format!("/accounts/by-xuid/{}/keys", Xuid(a.xuid));
+            let keys: AccountKeys = self.json(|| self.request("GET", &path, &user, lxm::READ))?;
             if !keys.keys.iter().any(|k| {
                 k.valid_to.is_none()
                     && k.kid == user.key.kid()
@@ -557,26 +762,28 @@ impl Worker {
             &self.author(user),
             &streams::presence(Xuid(user.xuid)),
             kind,
-            presence_data(Xuid(user.xuid), presence),
+            presence_data(
+                Xuid(user.xuid),
+                presence,
+                (kind != types::SIGNED_OUT).then_some(&self.software),
+            ),
             time::OffsetDateTime::now_utc(),
         )
         .sign(&user.key);
-        self.response(
-            self.request("POST", "/events", user, lxm::EVENTS_WRITE)
-                .set("content-type", "application/jose"),
+        self.retried(
+            || {
+                self.request("POST", "/events", user, lxm::EVENTS_WRITE)
+                    .set("content-type", "application/jose")
+            },
             Some(&body),
             64 * 1024,
         )?;
         Ok(())
     }
     fn fetch(&self, user: &Identity, name: &'static str, id: u32) -> Result<File, Error> {
-        let bytes = self.response(
-            self.request(
-                "GET",
-                &format!("/titles/4D530064/files/{name}"),
-                user,
-                lxm::READ,
-            ),
+        let path = format!("/titles/4D530064/files/{name}");
+        let bytes = self.retried(
+            || self.request("GET", &path, user, lxm::READ),
             None,
             MAX_FILE,
         )?;
@@ -585,9 +792,20 @@ impl Worker {
             bytes: bytes.into(),
         })
     }
+    /// Fresh single-use `read` tokens for the first account signed in on
+    /// this console, for a GET that counts a mod download
+    /// ([`crate::maps::Fetch::get_counted`]); `None` when signed out.
+    fn reader(&self) -> Option<crate::maps::Reader> {
+        let server = self.connection.as_ref()?.id.clone();
+        let user = self.active.as_ref()?.users.values().next()?.clone();
+        let author = self.author(&user);
+        Some(Arc::new(move || {
+            Some(issue_token(&user.key, &author, &server, lxm::READ, now()))
+        }))
+    }
     fn team_json<T: DeserializeOwned>(&self, user: &Identity, path: &str) -> Result<T, Error> {
-        serde_json::from_slice(&self.response(
-            self.request("GET", path, user, lxm::READ),
+        serde_json::from_slice(&self.retried(
+            || self.request("GET", path, user, lxm::READ),
             None,
             MAX_FILE,
         )?)
@@ -660,9 +878,11 @@ impl Worker {
                     time::OffsetDateTime::now_utc(),
                 )
                 .sign(&user.key);
-                self.response(
-                    self.request("POST", "/events", user, lxm::EVENTS_WRITE)
-                        .set("content-type", "application/jose"),
+                self.retried(
+                    || {
+                        self.request("POST", "/events", user, lxm::EVENTS_WRITE)
+                            .set("content-type", "application/jose")
+                    },
                     Some(&body),
                     MAX_FILE,
                 )?;
@@ -810,6 +1030,8 @@ impl Worker {
         let fetch = crate::maps::HttpFetch {
             agent: &self.agent,
             api: &c.api,
+            // A join that installs the map counts as its download.
+            reader: join.then(|| self.reader()).flatten(),
         };
         let result = if join {
             gate.prepare(&fetch, &s.advertisement).map(|dir| {
@@ -868,14 +1090,12 @@ impl Worker {
             time::OffsetDateTime::now_utc(),
         );
         let jws = live_proto::sign::sign_batch(&user.key, &[body]);
-        self.response(
-            self.request(
-                "POST",
-                &format!("/sessions/{id}/events"),
-                user,
-                lxm::SESSIONS_WRITE,
-            )
-            .set("content-type", "application/jose"),
+        let path = format!("/sessions/{id}/events");
+        self.retried(
+            || {
+                self.request("POST", &path, user, lxm::SESSIONS_WRITE)
+                    .set("content-type", "application/jose")
+            },
             Some(&jws),
             MAX_FILE,
         )?;
@@ -898,9 +1118,11 @@ impl Worker {
             time::OffsetDateTime::now_utc(),
         )
         .sign(&user.key);
-        self.response(
-            self.request("POST", "/events", user, lxm::EVENTS_WRITE)
-                .set("content-type", "application/jose"),
+        self.retried(
+            || {
+                self.request("POST", "/events", user, lxm::EVENTS_WRITE)
+                    .set("content-type", "application/jose")
+            },
             Some(&body),
             MAX_FILE,
         )?;
@@ -1045,6 +1267,8 @@ impl Worker {
                     presence: users.keys().map(|u| (*u, Presence::default())).collect(),
                     users,
                     matches: BTreeMap::new(),
+                    unsent: BTreeMap::new(),
+                    failing_since: None,
                 });
                 c.session.status.store(CONNECTED, Ordering::Release);
                 Ok(Reply::Logon)
@@ -1236,16 +1460,9 @@ impl Worker {
                     .filter(|a| a.session.id == c.session.id)
                     .ok_or(NO_SESSION)?;
                 let user = active.users.get(user).ok_or(NO_USER)?;
+                let path = format!("/accounts/by-xuid/{}/mutes", Xuid(user.xuid));
                 let list: live_proto::mutes::MuteList = self
-                    .json(
-                        self.request(
-                            "GET",
-                            &format!("/accounts/by-xuid/{}/mutes", Xuid(user.xuid)),
-                            user,
-                            lxm::READ,
-                        ),
-                        None,
-                    )
+                    .json(|| self.request("GET", &path, user, lxm::READ))
                     .map_err(Error::result)?;
                 Ok(Reply::Mutes(list.items.iter().map(|e| e.xuid.0).collect()))
             }
@@ -1280,17 +1497,14 @@ impl Worker {
                     .filter(|a| a.session.id == c.session.id)
                     .ok_or(NO_SESSION)?;
                 let user = active.users.get(user).ok_or(NO_USER)?;
-                self.response(
-                    self.request(
-                        if *mute { "PUT" } else { "DELETE" },
-                        &format!(
-                            "/accounts/by-xuid/{}/mutes/{}",
-                            Xuid(user.xuid),
-                            Xuid(*target)
-                        ),
-                        user,
-                        lxm::MUTES_WRITE,
-                    ),
+                let path = format!(
+                    "/accounts/by-xuid/{}/mutes/{}",
+                    Xuid(user.xuid),
+                    Xuid(*target)
+                );
+                let method = if *mute { "PUT" } else { "DELETE" };
+                self.retried(
+                    || self.request(method, &path, user, lxm::MUTES_WRITE),
                     Some(""),
                     64 * 1024,
                 )
@@ -1311,6 +1525,7 @@ impl Worker {
             Work::Ranks {
                 leaderboards,
                 xuids,
+                game_session,
             } => {
                 let active = self
                     .active
@@ -1320,11 +1535,14 @@ impl Worker {
                 let user = active.users.values().next().ok_or(NO_USER)?;
                 let boards: Vec<String> = leaderboards.iter().map(u32::to_string).collect();
                 let xuids: Vec<String> = xuids.iter().map(|x| Xuid(*x).to_string()).collect();
-                let path = format!(
+                let mut path = format!(
                     "/rank-stats?leaderboards={}&xuids={}",
                     boards.join(","),
                     xuids.join(","),
                 );
+                if let Some(id) = game_session {
+                    path.push_str(&format!("&session={id}"));
+                }
                 #[derive(serde::Deserialize)]
                 struct Rows {
                     items: Vec<live_proto::rank::LeaderboardRow>,
@@ -1332,6 +1550,73 @@ impl Worker {
                 self.team_json::<Rows>(user, &path)
                     .map(|r| Reply::Ranks(r.items))
                     .map_err(Error::result)
+            }
+            Work::Bots(request) => {
+                let active = self
+                    .active
+                    .as_ref()
+                    .filter(|a| a.session.id == c.session.id)
+                    .ok_or(NO_SESSION)?;
+                // The account that made the session hosts it.
+                let user = active
+                    .matches
+                    .get(&request.session_id)
+                    .and_then(|x| active.users.get(x))
+                    .or_else(|| active.users.values().next())
+                    .ok_or(NO_USER)?;
+                let body = serde_json::to_string(request).map_err(|_| INVALID_ARGUMENT)?;
+                // Sent once: a roster request is not safe to repeat.
+                self.response(
+                    self.request("POST", "/games/bots", user, lxm::GAMES_WRITE)
+                        .set("content-type", "application/json"),
+                    Some(&body),
+                    64 * 1024,
+                )
+                .and_then(|b| {
+                    serde_json::from_slice::<live_proto::bots::Roster>(&b)
+                        .map_err(|_| Error::Protocol)
+                })
+                .map(Reply::Roster)
+                .map_err(|e| match e {
+                    Error::Status(404 | 409) => MATCH_INVALID_SESSION,
+                    Error::Status(400 | 413 | 422) => INVALID_ARGUMENT,
+                    _ => e.result(),
+                })
+            }
+            Work::ReadPresence => {
+                let active = self
+                    .active
+                    .as_ref()
+                    .filter(|a| a.session.id == c.session.id)
+                    .ok_or(NO_SESSION)?;
+                let user = active.users.values().next().ok_or(NO_USER)?;
+                self.team_json::<live_proto::Page<live_proto::Presence>>(user, "/presence")
+                    .map(|p| Reply::Presence(p.items))
+                    .map_err(Error::result)
+            }
+            Work::Mods { limit, cursor } => {
+                let active = self
+                    .active
+                    .as_ref()
+                    .filter(|a| a.session.id == c.session.id)
+                    .ok_or(NO_SESSION)?;
+                let user = active.users.values().next().ok_or(NO_USER)?;
+                let path = crate::mods::list_path(*limit, cursor.as_deref());
+                self.team_json::<crate::mods::ModPage>(user, &path)
+                    .map(Reply::Mods)
+                    .map_err(Error::result)
+            }
+            Work::ContentApi => {
+                self.active
+                    .as_ref()
+                    .filter(|a| a.session.id == c.session.id)
+                    .ok_or(NO_SESSION)?;
+                let api = self.connection.as_ref().ok_or(NO_SESSION)?.api.clone();
+                Ok(Reply::Content {
+                    api,
+                    gate: self.maps.clone(),
+                    reader: self.reader(),
+                })
             }
             Work::Wake => Ok(Reply::Done),
         }
@@ -1358,27 +1643,116 @@ impl Worker {
             }
         }
     }
+    /// The heartbeat. A failed one is not yet a lost connection: a Worker
+    /// deploy or a blip passes, and the connection is lost only once the
+    /// heartbeat has failed for [`Worker::grace`] (docs/live/live.md
+    /// "Outages"). A refused account ends it at once.
     fn ping(&mut self) {
         let Some(active) = &self.active else {
             return;
         };
-        for user in active.users.values() {
-            match self.response(
-                self.request("POST", "/presence/ping", user, lxm::EVENTS_WRITE),
-                Some(""),
-                64 * 1024,
-            ) {
-                Ok(_) => {
+        let users: Vec<Identity> = active.users.values().cloned().collect();
+        let mut failure = None;
+        for user in &users {
+            match self.keep_alive(user) {
+                Ok(()) => {
                     self.metrics.pings.fetch_add(1, Ordering::AcqRel);
                 }
                 Err(e) => {
-                    self.metrics.last_error.store(e.result(), Ordering::Release);
-                    active
-                        .session
-                        .status
-                        .store(lost(e.result()), Ordering::Release);
+                    let result = e.result();
+                    self.metrics.last_error.store(result, Ordering::Release);
+                    if failure.is_none_or(|f| !refused(f)) {
+                        failure = Some(result);
+                    }
                 }
             }
+        }
+        self.health(failure);
+    }
+    /// One account's heartbeat, and the presence the game set while the
+    /// server could not be reached.
+    fn keep_alive(&mut self, user: &Identity) -> Result<(), Error> {
+        let ping = self.retried(
+            || self.request("POST", "/presence/ping", user, lxm::EVENTS_WRITE),
+            Some(""),
+            64 * 1024,
+        );
+        match ping {
+            // The server has no presence for the player: it expired while
+            // the server could not be reached. The player never left: it
+            // signs in again, as it is.
+            Err(Error::Status(404)) => self.announce(user)?,
+            other => {
+                other?;
+            }
+        }
+        let unsent = self
+            .active
+            .as_mut()
+            .and_then(|a| a.unsent.remove(&user.xuid));
+        if let Some(presence) = unsent {
+            if let Err(e) = self.event(user, types::PRESENCE_CHANGED, &presence) {
+                if let Some(a) = self.active.as_mut() {
+                    a.unsent.entry(user.xuid).or_insert(presence);
+                }
+                return Err(e);
+            }
+            if let Some(a) = self.active.as_mut() {
+                a.presence.insert(user.xuid, presence);
+            }
+        }
+        Ok(())
+    }
+    /// Signs `user` in again with the presence the server last took.
+    fn announce(&self, user: &Identity) -> Result<(), Error> {
+        let presence = self
+            .active
+            .as_ref()
+            .and_then(|a| a.presence.get(&user.xuid))
+            .cloned()
+            .unwrap_or_default();
+        self.event(user, types::SIGNED_IN, &Presence::default())?;
+        if presence != Presence::default() {
+            self.event(user, types::PRESENCE_CHANGED, &presence)?;
+        }
+        Ok(())
+    }
+    /// A presence change the server did not take: kept for the next good
+    /// heartbeat, and counted as a failed heartbeat.
+    fn presence_failed(&mut self, session: &Session, user: u64, value: &Presence, error: u32) {
+        let Some(active) = self
+            .active
+            .as_mut()
+            .filter(|a| a.session.id == session.id)
+        else {
+            return;
+        };
+        if refused(error) {
+            return self.health(Some(error));
+        }
+        // Anything else is the game's own mistake, not an outage.
+        if !matches!(error, CANNOT_ACCESS_SERVICE | SERVERS_BUSY) {
+            return;
+        }
+        if active.users.contains_key(&user) {
+            active.unsent.insert(user, value.clone());
+        }
+        self.health(Some(error));
+    }
+    /// Notes a heartbeat's outcome (`None`: it was answered) and loses the
+    /// connection when the account was refused or the grace has run out.
+    fn health(&mut self, failure: Option<u32>) {
+        let grace = self.grace;
+        let Some(active) = self.active.as_mut() else {
+            return;
+        };
+        let Some(result) = failure else {
+            active.failing_since = None;
+            return;
+        };
+        let since = *active.failing_since.get_or_insert_with(Instant::now);
+        if refused(result) || since.elapsed() >= grace {
+            active.session.status.store(lost(result), Ordering::Release);
         }
     }
 }
@@ -1396,12 +1770,25 @@ fn path_part(s: &str) -> String {
     out
 }
 
-/// A presence event's data. `activity` is left out when there is none, so a
-/// server that predates it reads the same bytes.
-pub(crate) fn presence_data(xuid: Xuid, presence: &Presence) -> serde_json::Value {
+/// A presence event's data. `activity`, `build` and `capabilities` are
+/// left out when there are none, so a server that predates them reads the
+/// same bytes. `software` is None for a sign-out.
+pub(crate) fn presence_data(
+    xuid: Xuid,
+    presence: &Presence,
+    software: Option<&Software>,
+) -> serde_json::Value {
     let mut data = json!({"xuid": xuid, "state": presence.state, "game_id": presence.game_id});
     if let Some(a) = &presence.activity {
         data["activity"] = json!(a);
+    }
+    if let Some(s) = software {
+        if let Some(b) = &s.build {
+            data["build"] = json!(b);
+        }
+        if !s.capabilities.is_empty() {
+            data["capabilities"] = json!(s.capabilities);
+        }
     }
     data
 }

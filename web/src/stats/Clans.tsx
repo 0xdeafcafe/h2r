@@ -1,3 +1,7 @@
+// Clans on the stats site: the clan directory (/games/halo2/clans) and a clan's
+// page (/games/halo2/clans/:id) with its roster and a service record from games
+// its members played together. Team management is the dashboard's.
+
 import { gameMapTitle } from "../state/maps";
 import { For, Show, createMemo, createSignal } from "solid-js";
 import { A, useParams } from "@solidjs/router";
@@ -17,6 +21,7 @@ import { num, ratio, usDate } from "./fmt";
 import "../styles/social.css";
 
 import { clanHref } from "./modes";
+import { STATS_ROOT, statsPath } from "../routes";
 
 export default function Clans() {
   const [q, setQ] = createSignal("");
@@ -27,7 +32,7 @@ export default function Clans() {
   });
   return (
     <>
-      <Crumbs trail={[["Home", "/stats"], ["Clans"]]} />
+      <Crumbs trail={[["Home", STATS_ROOT], ["Clans"]]} />
       <Strip kind="players" />
       <div class="s-cols s-cols--over">
         <aside class="s-left">
@@ -35,7 +40,7 @@ export default function Clans() {
           <Pills label="Clans" items={[
             { label: `Clan Directory (${all().length})`, href: "#directory" },
             { label: "Manage Xbox Live Teams", href: "/dash/teams" },
-            { label: "Players & Leaderboards", href: "/stats/players" },
+            { label: "Players & Leaderboards", href: statsPath("/players") },
           ]} />
           <PeopleFinder />
         </aside>
@@ -82,11 +87,11 @@ export function ClanPage() {
   return (
     <Show when={team()} fallback={
       <>
-        <Crumbs trail={[["Home", "/stats"], ["Clans", "/stats/clans"], [id()]]} />
+        <Crumbs trail={[["Home", STATS_ROOT], ["Clans", statsPath("/clans")], [id()]]} />
         <Show when={social.teamsLoaded()} fallback={<div class="s-loading">Loading clan…</div>}>
           <div class="s-full">
             <Title class="s-title--bar">Clan Not Found</Title>
-            <p class="s-pad">There's no clan {id()} on this server. It may have been disbanded. <A href="/stats/clans">Browse clans</A></p>
+            <p class="s-pad">There's no clan {id()} on this server. It may have been disbanded. <A href={statsPath("/clans")}>Browse clans</A></p>
           </div>
         </Show>
       </>
@@ -104,7 +109,7 @@ function ClanBody(props: { team: Team }) {
   const lead = () => leaderOf(t());
   return (
     <>
-      <Crumbs trail={[["Home", "/stats"], ["Clans", "/stats/clans"], [t().properties.name]]} />
+      <Crumbs trail={[["Home", STATS_ROOT], ["Clans", statsPath("/clans")], [t().properties.name]]} />
       <div class="s-id s-team-id">
         <span class="s-id-emblem s-team-emblem"><ClanEmblem team={t()} size={68} /></span>
         <div class="s-id-name s-team-name">
@@ -127,7 +132,7 @@ function ClanBody(props: { team: Team }) {
             { label: `Roster (${members().length})`, href: "#roster" },
             { label: "Clan Service Record", href: "#combined" },
             { label: `Games Together (${rec().together})`, href: "#games" },
-            { label: "Clan Directory", href: "/stats/clans" },
+            { label: "Clan Directory", href: statsPath("/clans") },
             { label: "Manage Xbox Live Team", href: `/dash/teams/${t().id}` },
           ]} />
           <PeopleFinder />
@@ -181,7 +186,7 @@ function ClanBody(props: { team: Team }) {
                   <For each={rec().games.slice(0, 15)} fallback={<tr><td colspan="6" class="s-dim">No games with two members on the same side yet.</td></tr>}>
                     {(g) => (
                       <tr>
-                        <td><A href={`/stats/games/${g.game.game_id}`}>{gameTitle(g.game)} on {gameMapTitle(g.game)}</A></td>
+                        <td><A href={`${STATS_ROOT}/games/${g.game.game_id}`}>{gameTitle(g.game)} on {gameMapTitle(g.game)}</A></td>
                         <td class="hide-s">{g.game.status === "live" ? "playing now" : usDate(g.game.started_at)}</td>
                         <td>{g.slots.map((i) => g.game.players[i]?.name).filter(Boolean).join(", ")}</td>
                         <td class="num">{g.kills}</td>
@@ -204,7 +209,7 @@ function ClanBody(props: { team: Team }) {
                     <For each={rec().campaign.slice(0, 10)}>
                       {(g) => (
                         <tr>
-                          <td><A href={`/stats/games/${g.game_id}`}>{gameMapTitle(g)}</A> <span class="s-dim">{gameTypeLine(g)}</span></td>
+                          <td><A href={`${STATS_ROOT}/games/${g.game_id}`}>{gameMapTitle(g)}</A> <span class="s-dim">{gameTypeLine(g)}</span></td>
                           <td class="hide-s">{g.status === "live" ? "playing now" : usDate(g.started_at)}</td>
                           <td>{fireteam(g)}</td>
                           <td>{g.status === "live" ? <span class="s-soc-live">Live</span> : OUTCOME_WORDS[campaignOutcome(g)]}</td>

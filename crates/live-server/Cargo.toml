@@ -41,6 +41,13 @@ hmac = "0.12"
 getrandom = "0.3"
 time = "0.3"
 tower-http = { version = "0.6", features = ["fs"], optional = true }
+# Packing extracted game art for the web (art_pack.rs): meshoptimizer's
+# codecs for glb geometry, Brotli and gzip copies of everything else.
+meshopt = { version = "0.7", optional = true }
+brotli = { version = "9", optional = true }
+flate2 = { version = "1", optional = true }
+# The extractor's pictures (surface textures, pre-drawn views) as WebP.
+webp = { version = "0.3", default-features = false, optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.3", features = ["wasm_js"] }
@@ -63,6 +70,10 @@ native = [
     "dep:sqlx",
     "dep:reqwest",
     "dep:tower-http",
+    "dep:meshopt",
+    "dep:brotli",
+    "dep:flate2",
+    "dep:webp",
     "object_store/fs",
     "object_store/aws-base",
     "object_store/reqwest",

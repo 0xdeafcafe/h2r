@@ -1,7 +1,8 @@
 // Shots as the views draw them. A frame says how many rounds a player fired
 // since their last frame; a view watches the sampled players go by, turns
 // each new burst into a few short-lived shots (a flash and a tracer each)
-// and fades them out. Pure: the 2D maps and the 3D scene each keep a queue
+// and fades them out. Frames with fire masks (version 3) say the tick of
+// each shot: each is drawn as the clock passes its tick. Pure: the 2D maps and the 3D scene each keep a queue
 // and draw its shots their own way.
 
 import { aimOf, type Aim, type SampledPlayer } from "../state/frames";
@@ -14,6 +15,8 @@ export const SHOT_GAP_MS = 40;
 export const MAX_SHOTS_PER_BURST = 3;
 /** At most this many shots alive at once, over all players. */
 export const MAX_LIVE_SHOTS = 32;
+/** A shot tick this far before the last one drawn means the clock went back (a seek). */
+export const BACK_TICKS = 60;
 /** With reduced motion nothing flashes: the aim ray shows "firing" instead,
  *  and holds it this long after the last shot so it doesn't flicker. */
 export const FIRING_HOLD_MS = 600;
@@ -41,6 +44,8 @@ export class ShotQueue {
   /** The burst last seen per player: its frame tick. */
   private seen = new Map<number, number>();
   private fired = new Map<number, number>();
+  /** The last shot tick drawn per player, for frames with fire masks. */
+  private lastTick = new Map<number, number>();
   private nextId = 1;
 
   /** Looks at this moment's players and queues any burst not seen before.
@@ -48,6 +53,20 @@ export class ShotQueue {
   observe(players: readonly SampledPlayer[], now: number, opts: { quiet?: boolean } = {}): number[] {
     const firedNow: number[] = [];
     for (const p of players) {
+      if (p.fireTicks?.length) {
+        // Each shot on its own tick: new ones are after the last seen (or
+        // well before it: the clock went back).
+        const last = this.lastTick.get(p.index);
+        const fresh = p.fireTicks.filter((t) => last === undefined || t > last || t < last - BACK_TICKS);
+        if (!fresh.length) continue;
+        this.lastTick.set(p.index, fresh[fresh.length - 1]!);
+        if (opts.quiet || !p.alive) continue;
+        const aim = aimOf(p);
+        for (const _ of fresh.slice(-MAX_SHOTS_PER_BURST)) this.shots.push({ id: this.nextId++, index: p.index, born: now, x: p.x, y: p.y, z: p.z, aim });
+        this.fired.set(p.index, now);
+        firedNow.push(p.index);
+        continue;
+      }
       if (!p.shots || p.shotTick === undefined) continue;
       if (this.seen.get(p.index) === p.shotTick) continue;
       this.seen.set(p.index, p.shotTick);
@@ -101,6 +120,7 @@ export class ShotQueue {
     this.shots = [];
     this.seen.clear();
     this.fired.clear();
+    this.lastTick.clear();
   }
 }
 

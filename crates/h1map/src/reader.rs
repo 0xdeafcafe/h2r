@@ -3,7 +3,6 @@
 use std::collections::BTreeMap;
 use std::io::Read;
 
-use flate2::read::ZlibDecoder;
 
 use crate::format::*;
 use crate::{Error, Result};
@@ -75,23 +74,49 @@ impl H1Map {
     /// zlib stream, which must inflate to exactly the header's decompressed
     /// length less the header. Bytes after the stream are ignored.
     pub fn from_reader(mut r: impl Read) -> Result<Self> {
-        let mut head = vec![0u8; HEADER_LEN];
-        r.read_exact(&mut head)?;
-        let header = parse_header(&head)?;
-        let want = header.file_length as usize - HEADER_LEN;
-        let mut data = head;
-        data.reserve_exact(want);
-        // One byte over the limit tells "too long" from "exactly right".
-        ZlibDecoder::new(r)
-            .take(want as u64 + 1)
-            .read_to_end(&mut data)?;
-        let got = data.len() - HEADER_LEN;
+        let mut file = Vec::new();
+        r.read_to_end(&mut file)?;
+        Self::from_bytes(&file)
+    }
+
+    /// [`Self::from_reader`] of a map file already in memory.
+    ///
+    /// The stream is inflated in one pass straight into the map's buffer
+    /// (no window to copy out of, no buffer grown as it goes), by zlib-rs.
+    pub fn from_bytes(file: &[u8]) -> Result<Self> {
+        let Some((head, stream)) = file.split_at_checked(HEADER_LEN) else {
+            return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
+        };
+        let header = parse_header(head)?;
+        let want = (header.file_length as usize).saturating_sub(HEADER_LEN);
+        // One byte over the length tells "too long" from "exactly right".
+        let mut data = vec![0u8; HEADER_LEN + want + 1];
+        data[..HEADER_LEN].copy_from_slice(head);
+        let (out, code) = zlib_rs::decompress_slice(
+            &mut data[HEADER_LEN..],
+            stream,
+            zlib_rs::InflateConfig::default(),
+        );
+        let got = out.len();
+        match code {
+            // `BufError` with the buffer full: the stream goes on past
+            // the length.
+            zlib_rs::ReturnCode::Ok | zlib_rs::ReturnCode::BufError => {}
+            e => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("corrupt or short zlib stream: {e:?}"),
+                )
+                .into());
+            }
+        }
         if got != want {
             return Err(Error::Invalid(format!(
                 "zlib stream inflates to {got:#x} bytes; the header says {want:#x} ({:#x} with the header)",
                 header.file_length
             )));
         }
+        data.truncate(HEADER_LEN + want);
         Self::parse(data, header)
     }
 

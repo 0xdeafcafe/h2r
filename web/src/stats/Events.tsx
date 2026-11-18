@@ -8,12 +8,14 @@ import { Crumbs, Panel, Title } from "./Layout";
 import { Pills } from "./Side";
 import { num } from "./fmt";
 import { STATS_EVENT_KINDS, isStatsEvent } from "./eventKinds";
+import { STATS_NAME } from "../brand";
+import { STATS_ROOT, statsPath } from "../routes";
 
 export default function Events() {
   const scope = () => JSON.stringify([live.server().api, identity.me()?.xuid]);
   return (
     <>
-      <Crumbs trail={[["Home", "/stats"], ["Event Log"]]} />
+      <Crumbs trail={[["Home", STATS_ROOT], ["Event Log"]]} />
       <Show when={scope()} keyed>{(_scope) => <StatsEventLog />}</Show>
     </>
   );
@@ -65,8 +67,8 @@ function StatsEventLog() {
       <aside class="s-left">
         <Title>Event Log</Title>
         <Pills label="Event log" items={[
-          { label: "h2 live Online", href: "/stats" },
-          { label: "Players & Leaderboards", href: "/stats/players" },
+          { label: STATS_NAME, href: STATS_ROOT },
+          { label: "Players & Leaderboards", href: statsPath("/players") },
           { label: "Server Details", href: "/dash/server" },
         ]} />
         <Panel title="Signature Check" sub="game record events on this page">

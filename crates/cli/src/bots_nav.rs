@@ -1,13 +1,14 @@
 //! `h2 bots nav`: build the bots' nav mesh and walls for disc maps, cached
 //! under the data root (docs/game/bots.md, stage 2). Derived from the
-//! user's disc, so the files stay on this machine.
-use std::path::PathBuf;
+//! user's disc, so the files stay on this machine. The game builds the
+//! same files by itself (`bots::autonav`); this is the same worker, run in
+//! the foreground.
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use map::TagId;
-use tags::geometry::TagView;
+use bots::autonav::{Region, Source, Worker};
 
-const USAGE: &str = "usage: h2 bots nav <map-name-or-file|all> [--disc disc.iso] [--data DIR]\n\nBuilds each structure BSP's nav mesh and line-of-sight walls from its\ncollision and writes <data>/bots/<map>.<bsp>.bots, which the bots load\nwhen the map does. --data defaults to the data root `h2 play` uses.";
+const USAGE: &str = "usage: h2 bots nav <map-name-or-file|all> [--force] [--disc disc.iso] [--data DIR]\n\nBuilds each structure BSP's nav mesh and line-of-sight walls from its\ncollision and writes <data>/bots/<map>.<bsp>.bots, which the bots load\nwhen the map does. `all` builds the disc's multiplayer maps whose file is\nmissing or stale (another generator version, or another map file); add\n--force to build them all. A named map is always built. The game does\nthis by itself when it runs (H2_BOTS_NAV_AUTO=0 turns that off).\n--data defaults to the data root `h2 play` uses.";
 
 pub(super) fn run(args: Vec<String>) -> Result<()> {
     let mut args = args.into_iter();
@@ -19,7 +20,7 @@ pub(super) fn run(args: Vec<String>) -> Result<()> {
         }
         Some(other) => bail!("unknown bots command {other}\n{USAGE}"),
     }
-    let (mut positional, mut disc, mut data) = (Vec::new(), None, None);
+    let (mut positional, mut disc, mut data, mut force) = (Vec::new(), None, None, false);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--disc" => {
@@ -32,6 +33,7 @@ pub(super) fn run(args: Vec<String>) -> Result<()> {
                     args.next().context("--data needs a directory")?,
                 ))
             }
+            "--force" => force = true,
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return Ok(());
@@ -47,91 +49,97 @@ pub(super) fn run(args: Vec<String>) -> Result<()> {
         .unwrap_or_else(content::store::default_data_root)
         .join("bots");
     std::fs::create_dir_all(&out).with_context(|| format!("creating {}", out.display()))?;
-    let names = if map == "all" {
-        all_maps(&disc)?
+    let all = map == "all";
+    let sources = if all {
+        disc_maps(&disc.map(Ok).unwrap_or_else(super::default_disc)?)?
     } else {
-        vec![map.clone()]
+        vec![one(map, disc)?]
     };
-    let mut failed = 0;
-    for name in &names {
-        if let Err(e) = one(name, disc.clone(), &out) {
-            eprintln!("{name}: {e:#}");
-            failed += 1;
-        }
-    }
-    if failed > 0 {
-        bail!("{failed} of {} maps failed", names.len());
+    let mut sources = Some(sources);
+    let (worker, _) = Worker::new(out, Box::new(move || sources.take().unwrap_or_default()));
+    let sum = worker
+        .force(force || !all)
+        .any_kind(!all)
+        .log(|l| println!("{l}"))
+        .run();
+    if !sum.failed.is_empty() {
+        bail!("{} maps failed", sum.failed.len());
     }
     Ok(())
 }
 
-fn all_maps(disc: &Option<PathBuf>) -> Result<Vec<String>> {
-    let disc_path = disc.clone().map(Ok).unwrap_or_else(super::default_disc)?;
-    let mut iso = super::open_iso(&disc_path)?;
+/// The disc's `maps\*.map`, each a region of the image.
+pub(super) fn disc_maps(disc: &Path) -> Result<Vec<Box<dyn Source>>> {
+    let mut iso = super::open_iso(disc)?;
+    let partition = iso.partition_offset();
     Ok(iso
         .entries()?
         .iter()
         .filter(|e| {
-            !e.is_dir
-                && e.path.to_ascii_lowercase().starts_with("/maps/")
-                && e.path.to_ascii_lowercase().ends_with(".map")
+            let p = e.path.to_ascii_lowercase();
+            !e.is_dir && p.starts_with("/maps/") && p.ends_with(".map") && p.matches('/').count() == 2
         })
-        .map(|e| {
-            e.path
-                .rsplit('/')
-                .next()
-                .unwrap_or(&e.path)
-                .trim_end_matches(".map")
-                .to_owned()
-        })
-        .filter(|n| !n.contains('/'))
+        .map(|e| disc_region(disc, partition, e))
         .collect())
 }
 
-fn one(name: &str, disc: Option<PathBuf>, out: &std::path::Path) -> Result<()> {
-    let mut map = crate::maps::load_map(name, disc)?;
-    let short = map.header().name.clone();
-    let scenario = map.scenario().context("no scenario")?.clone();
-    let location = scenario.location.context("the scenario has no payload")?;
-    let bytes = map.read_tag_bytes(scenario.id)?;
-    let view = TagView::new(&bytes, location.address);
-    // The scenario's structure BSPs: block +0x210, 0x44 each, the sbsp at +0x14.
-    let bsps: Vec<TagId> = view
-        .block(view.at(0, 0x218)?, 0x210, 0x44)?
-        .into_iter()
-        .map(|b| TagId(u32::from_le_bytes([b[0x14], b[0x15], b[0x16], b[0x17]])))
-        .collect();
-    for (k, id) in bsps.into_iter().enumerate() {
-        let tag = map.tag(id)?.clone();
-        let loc = tag.location.context("the BSP has no payload")?;
-        let b = map.read_tag_bytes(id)?;
-        let v = TagView::new(&b, loc.address);
-        let h = v.at(0, 0x200)?;
-        let coll = v.block(
-            h,
-            tags::pathfinding::SBSP_COLLISION_FIELD,
-            tags::collision::Bsp::STRUCTURE_SIZE,
-        )?;
-        let at = coll.first().context("the BSP has no collision")?.as_ptr() as usize
-            - b.as_ptr() as usize;
-        let bsp = tags::collision::Bsp::decode_structure(&b, loc.address, at)?;
-        let data = bots::cache::build(&bsp).map_err(anyhow::Error::msg)?;
-        let jumps = data
-            .nav
-            .edges
-            .iter()
-            .filter(|e| e.kind != bots::nav::Kind::Walk)
-            .count();
-        let file = out.join(bots::cache::file_name(&short, k));
-        std::fs::write(&file, data.to_bytes())
-            .with_context(|| format!("writing {}", file.display()))?;
-        println!(
-            "{name} bsp {k}: {} polygons, {} links ({jumps} drops and jumps), {} wall triangles -> {}",
-            data.nav.polys.len(),
-            data.nav.edges.len(),
-            data.walls.tris.len(),
-            file.display()
-        );
+fn disc_region(disc: &Path, partition: u64, e: &xiso::Entry) -> Box<dyn Source> {
+    let name = e.path.rsplit('/').next().unwrap_or(&e.path);
+    let key = name[..name.len() - ".map".len()].to_owned();
+    let disc = disc.to_path_buf();
+    Box::new(Region::new(
+        key,
+        partition + u64::from(e.sector) * xiso::SECTOR,
+        e.size.into(),
+        Box::new(move || {
+            Ok(Box::new(std::io::BufReader::new(std::fs::File::open(&disc)?)))
+        }),
+    ))
+}
+
+/// A map file, or a disc map by name.
+fn one(name: &str, disc: Option<PathBuf>) -> Result<Box<dyn Source>> {
+    if Path::new(name).is_file() {
+        return Ok(Box::new(Region::file(PathBuf::from(name))));
     }
-    Ok(())
+    let disc = disc.map(Ok).unwrap_or_else(super::default_disc)?;
+    let mut iso = super::open_iso(&disc)?;
+    let mut path = name.trim_start_matches('/').to_owned();
+    if !path.to_ascii_lowercase().ends_with(".map") {
+        path.push_str(".map");
+    }
+    if !path.contains('/') {
+        path = format!("maps/{path}");
+    }
+    let entry = iso.find(&path)?;
+    Ok(disc_region(&disc, iso.partition_offset(), &entry))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Against the user's disc (`H2_DISC` or `disc/`), read in place: every
+    /// multiplayer map builds into a scratch directory, then a second pass
+    /// finds them all up to date.
+    #[test]
+    #[ignore = "needs the user's disc"]
+    fn every_multiplayer_map_builds_then_is_up_to_date() {
+        let disc = super::super::default_disc().unwrap();
+        let out = std::env::temp_dir().join(format!("cli-bots-nav-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&out);
+        let pass = || {
+            let mut s = Some(disc_maps(&disc).unwrap());
+            let (w, _) = Worker::new(out.clone(), Box::new(move || s.take().unwrap_or_default()));
+            w.log(|l| println!("{l}")).run()
+        };
+        let first = pass();
+        assert!(first.failed.is_empty(), "{:?}", first.failed);
+        assert!(first.built.len() >= 12, "{:?}", first.built);
+        assert!(first.built.iter().any(|m| m == "lockout"));
+        let again = pass();
+        assert!(again.built.is_empty(), "{:?}", again.built);
+        assert_eq!(again.fresh, first.built.len());
+        std::fs::remove_dir_all(&out).unwrap();
+    }
 }

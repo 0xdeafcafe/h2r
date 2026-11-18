@@ -1,10 +1,13 @@
 import { defineConfig } from "vite";
 import solid from "vite-plugin-solid";
+import { fillNames } from "./src/brand";
 
 const mock = process.env.H2_LIVE_URL ?? "http://127.0.0.1:8075";
 
 export default defineConfig({
-  plugins: [solid()],
+  // The product names into index.html (src/brand.ts), where the server
+  // also reads them for link previews.
+  plugins: [solid(), { name: "h2-brand-names", transformIndexHtml: fillNames }],
   base: "/",
   server: {
     port: 5174,

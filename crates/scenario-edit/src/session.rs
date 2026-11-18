@@ -14,6 +14,9 @@ use map::{ResourceFile, TagId};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+mod multi;
+pub use multi::FieldEdit;
+
 /// An open map.
 struct Doc {
     source: MapSource,
@@ -75,6 +78,8 @@ pub struct Session {
     disc_maps: Vec<(String, MapSource)>,
     status: String,
     selected: Option<(BlockKind, usize)>,
+    /// The rest of a multi-selection ([`multi`]), beside [`Self::selected`].
+    extra: Vec<(BlockKind, usize)>,
     camera: Camera,
     markers: Vec<Marker>,
     /// Bumped whenever the markers or the selection change, so a viewport
@@ -114,6 +119,7 @@ impl Session {
             disc_maps: Vec::new(),
             status: "Open a .map file, or a disc image to pick a map from it.".into(),
             selected: None,
+            extra: Vec::new(),
             camera: Camera::default(),
             markers: Vec::new(),
             markers_rev: 0,
@@ -470,6 +476,7 @@ impl Session {
         }
         let mut b = SceneBuilder::new(map, raw, crate::scene::resource_files(source));
         b.world(parts, lightmaps);
+        b.sky();
         // Every palette entry, so a placement switched to another entry
         // has its model too, and each placement's own reference.
         let objects: Vec<TagId> = scenario
@@ -533,6 +540,7 @@ impl Session {
         self.selected
     }
     pub fn select(&mut self, selection: Option<(BlockKind, usize)>) {
+        self.extra.clear();
         if selection != self.selected
             && let Some(doc) = self.doc.as_mut()
         {
@@ -623,6 +631,15 @@ impl Session {
         if let Some(doc) = self.doc.as_mut() {
             doc.history.seal();
         }
+    }
+
+    /// Replace the patches to tags other than the scenario (the tag
+    /// editor's field edits): every changed run as `(ordinary metadata
+    /// address, bytes)`. They save with the scenario's edits (map file and
+    /// package alike) and count toward [`Self::is_dirty`].
+    pub fn set_tag_patches(&mut self, patches: Vec<(u32, Vec<u8>)>) -> Result<()> {
+        let doc = self.doc.as_mut().ok_or(Error::Save("no map is open"))?;
+        doc.scenario.set_tag_patches(patches)
     }
 
     /// Let adding grow a block past its source size. Off by default; see
@@ -839,6 +856,18 @@ impl Session {
         if cmd.ops.is_empty() {
             return Ok(());
         }
+        // The rest of a multi-selection moves and turns with it.
+        let moved = if cmd.ops.iter().any(|o| is_role(o, def, Role::Position)) {
+            geometry::sub(position, before.position)
+        } else {
+            [0.0; 3]
+        };
+        let turned = if cmd.label == "rotate" {
+            geometry::sub(ypr, before.ypr())
+        } else {
+            [0.0; 3]
+        };
+        cmd.ops.extend(self.ride_along(moved, turned));
         self.apply(cmd)
     }
 
@@ -894,6 +923,11 @@ fn set_op(kind: BlockKind, index: usize, field: &'static str, value: Value) -> c
         field,
         value,
     })
+}
+
+/// Whether `op` sets the field with `role` of a block laid out as `def`.
+fn is_role(op: &crate::edit::Op, def: &crate::layout::BlockDef, role: Role) -> bool {
+    matches!(op, crate::edit::Op::Set(s) if def.role(role).is_some_and(|f| f.name == s.field))
 }
 
 fn close3(a: Vec3, b: Vec3) -> bool {

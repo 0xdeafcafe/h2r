@@ -47,6 +47,10 @@ pub struct Presence {
     pub state: String,
     pub game_id: Option<String>,
     pub activity: Option<String>,
+    /// The console's build and capabilities ([`live_proto::Presence::build`]);
+    /// public, unlike the game id and activity.
+    pub build: Option<String>,
+    pub capabilities: Vec<String>,
     pub since: String,
     /// Unix seconds of the last presence event or ping; the presence
     /// manager expires it a TTL later.
@@ -292,16 +296,7 @@ struct KeyRevoked {
     kid: String,
 }
 
-#[derive(Deserialize)]
-struct PresenceData {
-    xuid: Xuid,
-    #[serde(default)]
-    state: Option<String>,
-    #[serde(default)]
-    game_id: Option<String>,
-    #[serde(default)]
-    activity: Option<String>,
-}
+use live_proto::PresenceData;
 
 fn data<T: DeserializeOwned>(e: &RecordedEvent) -> Option<T> {
     match serde_json::from_value(e.body.data.clone()) {
@@ -338,6 +333,30 @@ impl Model {
             .get_mut(&xuid)
             .map(|p| p.last_seen = p.last_seen.max(now))
             .is_some()
+    }
+
+    /// A (re)start: every presence, open session and live game is given
+    /// a fresh deadline from `now`. Pings and game frames are not in the
+    /// log, so a replay rebuilds their deadlines from the last event's `at`,
+    /// and a player who sat in a lobby for longer than the TTL would be
+    /// expired by the first sweep after a restart (a Worker deploy restarts
+    /// the hub) while still connected. A restart is not an absence: whoever
+    /// is really gone still expires a TTL after it.
+    pub fn renew_deadlines(&self, now: i64) {
+        let mut s = self.state.write().unwrap();
+        for p in s.presence.values_mut() {
+            p.last_seen = p.last_seen.max(now);
+        }
+        for item in s.sessions.values_mut() {
+            if item.state == "open" {
+                item.last_activity = item.last_activity.max(now);
+            }
+        }
+        for g in s.games.values_mut() {
+            if g.ended.is_none() {
+                g.last_activity = g.last_activity.max(now);
+            }
+        }
     }
 
     pub fn touch_host_sessions(&self, xuid: Xuid, now: i64) {
@@ -447,6 +466,11 @@ impl Model {
             game::GAME_FRAME => {
                 if let Some(tick) = b.data.get("tick").and_then(|t| t.as_u64()) {
                     g.last_tick = Some(tick);
+                }
+            }
+            live_proto::chunk::FRAME_CHUNK => {
+                if let Some(tick) = b.data.get("to_tick").and_then(|t| t.as_u64()) {
+                    g.last_tick = Some(g.last_tick.map_or(tick, |t| t.max(tick)));
                 }
             }
             game::GAME_ENDED => {
@@ -574,6 +598,8 @@ impl Model {
                         state,
                         game_id: d.game_id,
                         activity: d.activity,
+                        build: d.build,
+                        capabilities: d.capabilities,
                         since,
                         last_seen: at,
                         private_sessions,

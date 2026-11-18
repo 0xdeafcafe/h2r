@@ -12,6 +12,8 @@ scripts and stored in Git LFS (see CONTRIBUTING.md).
 
 Public repo: <https://github.com/0xdeafcafe/h2r>.
 
+h2recomp was created under Microsoft's "[Game Content Usage Rules](https://www.xbox.com/en-US/developers/rules)" using assets from Halo 2 and Halo: Combat Evolved, and it is not endorsed by or affiliated with Microsoft. Halo © Microsoft Corporation. This is a free, non-commercial fan project.
+
 ## Where it is
 
 The recompiled game boots to the main menu and runs campaign levels and
@@ -47,6 +49,7 @@ Heretic on an M-series Mac, against a target of 30
 | | Campaign skulls per profile, a Skulls page, our own skulls | Built | [skulls](docs/game/skulls.md) |
 | | Twelve community game variants (Zombies, SWAT and more) as built-ins | Built | [variants](docs/game/community-gametypes.md) |
 | | Aim assist strength setting | Built | [aim assist](docs/game/aim-assist.md) |
+| | Multiplayer bots (Clankers) on free controller ports; their nav meshes build themselves in the background, again when a map or the generator changes (`H2_BOTS_NAV_AUTO=0` turns that off) | Built | [bots](docs/game/bots.md) |
 | | Multiplayer Map Pack installed from your own disc | Built | [map pack](docs/game/map-pack.md) |
 | | New, edited and patched maps as packages | Built | [maps](docs/game/maps.md) |
 | | More than one campaign: picker and per-campaign progress | Built | [campaigns](docs/halo1/campaign-picker.md) |

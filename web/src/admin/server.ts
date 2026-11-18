@@ -15,6 +15,7 @@ import { ApiError } from "../api/http";
 import type { LocalAccount } from "../state/account";
 import { eventBody, signEvent } from "../state/sign";
 import { issueToken, randomId } from "./token";
+import { STATS_ROOT, statsPath } from "../routes";
 
 export const ADMIN_READ = "admin.read";
 export const INVITES_WRITE = "invites.write";
@@ -276,7 +277,7 @@ export type ServerView = "overview" | "invites" | "accounts" | "import" | "repor
  *  playlists, custom content). Everything about the service (invites,
  *  accounts and admins, importing an account, the server) is on the
  *  dashboard. */
-export const HALO_ADMIN = "/stats/admin";
+export const HALO_ADMIN = statsPath("/admin");
 
 /** The Live admin's usage screen (docs/live/web-boundary.md §5), in the dense style. */
 export const LIVE_ADMIN_USAGE = "/dash/admin/usage";
@@ -291,9 +292,9 @@ export function serverPods(view: ServerView, admin: boolean | null): ServerPod[]
       case "overview":
         return [
           { label: "another server", glyph: "server", to: "/dash/server/connect" },
-          { label: "event log", glyph: "history", to: "/stats/events" },
+          { label: "event log", glyph: "history", to: statsPath("/events") },
           { label: "players", glyph: "career", to: "/dash/players" },
-          { label: "stats site", glyph: "record", to: "/stats" },
+          { label: "stats site", glyph: "record", to: STATS_ROOT },
         ];
       case "import":
         return [

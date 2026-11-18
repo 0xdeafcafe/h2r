@@ -10,9 +10,10 @@ mod config;
 mod feedback;
 mod invites;
 pub mod maps;
+pub mod mods;
 mod messages;
 mod mutes;
-pub use client::{ServerOptions, ServerStatus};
+pub use client::{Retry, ServerOptions, ServerStatus};
 pub use messages::{ATTACHMENT_CAP, SUMMARY_SIZE};
 pub mod entries;
 #[cfg(unix)]
@@ -135,6 +136,33 @@ pub enum HostSkulls {
         skulls: Vec<u8>,
         refreshed: bool,
     },
+}
+
+/// What a guest knows of its host's variant options
+/// ([`Hle::host_variant_ext`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostVariantExt {
+    /// No session joined.
+    NotJoined,
+    /// Joined `session`, whose advertisement was never read.
+    Unknown { session: String },
+    /// Joined `session`, whose host advertised `ext` (None: a host that
+    /// sends none, an older build); `refreshed` when read just now.
+    Known {
+        session: String,
+        ext: Option<live_proto::session::VariantExt>,
+        refreshed: bool,
+    },
+}
+
+/// What a host knows of its players' builds ([`Hle::players_lacking`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Lacking {
+    /// Nothing known: not signed in to a server, or no answer in time; why.
+    Unknown(&'static str),
+    /// The gamertags of the players whose presence lacks the capability,
+    /// in the order asked; empty when every player with a presence has it.
+    Known(Vec<String>),
 }
 
 /// A friend, as the co-op screen's friends list shows them
@@ -396,6 +424,48 @@ impl Hle {
         let keys = self.network.registered_keys();
         self.lock().matchmade(&keys)
     }
+    /// The Live session this console hosts (16 lowercase hex digits),
+    /// while its advertisement stands. Never waits on the server.
+    pub fn hosted_session(&self) -> Option<String> {
+        self.lock().hosted_session()
+    }
+    /// Asks the server for a bot roster for this console's session
+    /// (`POST /v1/games/bots` with a `games.write` token, docs/game/bots.md
+    /// §9.1). Returns at once; `done` is called on the Live worker with the
+    /// roster, already [`live_proto::bots::Roster::check`]ed, or why there
+    /// is none. A later roster for the same session replaces this one.
+    pub fn roster_bots(
+        &self,
+        request: live_proto::bots::RosterRequest,
+        done: Box<dyn FnOnce(Result<live_proto::bots::Roster, String>) + Send>,
+    ) -> Result<(), String> {
+        self.lock().roster_bots(request, done)
+    }
+    /// A page of the mod repository, newest first (`GET /v1/maps?sort=new`
+    /// with a `read` token, docs/game/maps.md §5 "Mod downloads"). Returns
+    /// at once; `done` is called on the Live worker with the page, or why
+    /// there is none. Never touches guest memory.
+    pub fn mod_list(
+        &self,
+        limit: u32,
+        cursor: Option<String>,
+        done: mods::ListDone,
+    ) -> Result<(), mods::ModsError> {
+        self.lock().mod_list(limit, cursor, done)
+    }
+    /// Downloads and installs published map `id` into `<data>/maps`
+    /// through the map gate (the join's checks: the disc's base, every
+    /// layer's SHA-256, `active.toml`), on a thread of its own. Returns at
+    /// once; `progress` is told the bytes written and the bytes in all,
+    /// `done` the package directory or why not.
+    pub fn install_mod(
+        &self,
+        id: content::MapId,
+        progress: mods::Progress,
+        done: mods::InstallDone,
+    ) -> Result<(), mods::ModsError> {
+        self.lock().install_mod(id, progress, done)
+    }
     /// What the host of the session this console joined advertised as its
     /// skulls: [`Hle::joined`]'s answer, for the skulls.
     pub fn host_skulls(&self, wait: std::time::Duration) -> HostSkulls {
@@ -408,6 +478,69 @@ impl Hle {
                 refreshed,
             },
         }
+    }
+    /// What the host of the session this console joined advertised as its
+    /// variant options for the next game: [`Hle::joined`]'s answer.
+    pub fn host_variant_ext(&self, wait: std::time::Duration) -> HostVariantExt {
+        match self.joined(wait) {
+            Joined::NotJoined => HostVariantExt::NotJoined,
+            Joined::Unknown { session } => HostVariantExt::Unknown { session },
+            Joined::Known { session, refreshed } => HostVariantExt::Known {
+                session: session.session_id.clone(),
+                ext: session.advertisement.variant_ext.clone(),
+                refreshed,
+            },
+        }
+    }
+    /// Which of `xuids` (the players of this console's game: the session's
+    /// roster, or the game's own player list) are on a build without
+    /// `capability`, from their presence ([`live_proto::lacking`]). Waits at
+    /// most `wait` for the server; call with no guest memory held, it never
+    /// takes guest memory. A player with no presence (a bot) is not named.
+    pub fn players_lacking(
+        &self,
+        capability: &str,
+        xuids: &[live_proto::Xuid],
+        wait: std::time::Duration,
+    ) -> Lacking {
+        if xuids.is_empty() {
+            return Lacking::Known(Vec::new());
+        }
+        let Some(pending) = self
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .read_presence()
+        else {
+            return Lacking::Unknown("not signed in to a Live server");
+        };
+        let until = std::time::Instant::now() + wait;
+        loop {
+            match pending.take() {
+                Some(Ok(client::Reply::Presence(all))) => {
+                    return Lacking::Known(
+                        live_proto::lacking(capability, xuids, &all)
+                            .iter()
+                            .map(|p| p.gamertag.as_str().to_string())
+                            .collect(),
+                    );
+                }
+                Some(_) => return Lacking::Unknown("the server's presence read failed"),
+                None if std::time::Instant::now() >= until => {
+                    return Lacking::Unknown("the server did not answer in time");
+                }
+                None => std::thread::sleep(std::time::Duration::from_millis(5)),
+            }
+        }
+    }
+    /// The host's variant options for the game it starts (docs/game/
+    /// game-options.md section 3): advertisements carry them from now, and
+    /// open ones are updated at once. No guest memory access.
+    pub fn set_session_variant_ext(&self, ext: Option<live_proto::session::VariantExt>) {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_session_variant_ext(ext)
     }
     /// Arms (Some) or leaves (None) a co-op campaign on this console's lobby
     /// (docs/live/live-coop.md, "Co-op over Live"): its advertisements become
@@ -673,6 +806,11 @@ fn invoke(
     // The accepted-invitation read stamps the record in the guest's clock;
     // the kernel's clock lock comes before guest memory, so read it first.
     // (The kernel's epoch is 0: its system time is this counter.)
+    // A stat read names the session this console is in; the joined one
+    // comes from the network's keys, read before the state lock as
+    // `Hle::matchmade` does.
+    let read_keys = matches!(e.operation, Operation::Stats(crate::stats::Op::Read))
+        .then(|| hle.network.registered_keys());
     let guest_now = (e.operation == Operation::AcceptedInvite)
         .then(|| ctx.runtime().guest_time())
         .flatten();
@@ -680,6 +818,7 @@ fn invoke(
         let mut m = ctx.memory();
         let mut state = hle.state.lock().unwrap_or_else(|e| e.into_inner());
         state.set_guest_now(guest_now);
+        state.set_read_keys(read_keys);
         let result = state.invoke(e.operation, &args, &mut m);
         let cleanup = if matches!(result, Ok(0)) {
             hle.network.lifecycle(e.operation)
