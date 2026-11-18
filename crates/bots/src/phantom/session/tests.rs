@@ -126,17 +126,36 @@ fn only_the_host_of_a_running_multiplayer_game_takes_phantoms() {
 
     let mut client = hosted();
     client.put_u32(SIM + SIM_MODE, 4);
-    assert_eq!(host_session(&client), Err(NotNow::NotHost));
+    assert!(
+        matches!(host_session(&client), Err(NotNow::NotHost(w)) if w.contains("distributed server (mode 4")),
+        "{:?}",
+        host_session(&client)
+    );
 
     // States 6 to 8 tear the simulation down: never a running game.
     let mut leaving = hosted();
     leaving.put_u32(S + STATE, 6);
-    assert_eq!(host_session(&leaving), Err(NotNow::NotHost));
+    assert!(
+        matches!(host_session(&leaving), Err(NotNow::NotHost(w)) if w.contains("not live (state 6")),
+        "{:?}",
+        host_session(&leaving)
+    );
     assert_eq!(live_session(&leaving), None);
 
     let mut local = hosted();
     local.put_u8(points::NETWORK_READY.base, 0);
-    assert_eq!(host_session(&local), Err(NotNow::NotHost));
+    assert!(
+        matches!(host_session(&local), Err(NotNow::NotHost(w)) if w.starts_with("no network session")),
+        "{:?}",
+        host_session(&local)
+    );
+
+    let mut class = hosted();
+    class.put_u32(S + CLASS, 3);
+    assert_eq!(
+        host_session(&class),
+        Err(NotNow::NotHost("the session's class is 3, not 4".into()))
+    );
 }
 
 #[test]
@@ -442,15 +461,47 @@ mod books {
     }
 
     #[test]
-    fn a_client_fails_its_phantoms_and_a_full_session_fails_the_extra() {
+    fn a_phantom_waits_while_this_console_is_not_the_host_then_joins() {
+        // The user's run: "phantom Clanker 4 failed: not the host" for
+        // good, from a check made before this console hosted the game.
         let ph = Phantoms::default();
-        ph.add(who(1, "A"), None, firing()).unwrap();
-        let mut client = hosted();
-        client.put_u32(SIM + SIM_MODE, 4);
-        ph.tick(&mut client, 0).unwrap();
-        assert!(matches!(ph.list()[0].state, State::Failed(_)));
-        assert_eq!(client.u32(S + PEER_COUNT).unwrap(), 1);
+        ph.add(who(1, "Clanker 4"), None, firing()).unwrap();
+        let mut g = hosted();
+        g.put_u32(SIM + SIM_MODE, 4);
+        let log = ph.tick(&mut g, 0).unwrap();
+        assert_eq!(
+            log,
+            vec![
+                "bots: phantom Clanker 4 waits: this console is not the game's host yet \
+                 (the simulation is not the distributed server (mode 4, the server's is 5))"
+                    .to_owned()
+            ]
+        );
+        assert_eq!(ph.list()[0].state, State::Pending, "not failed");
+        assert_eq!(g.u32(S + PEER_COUNT).unwrap(), 1, "nothing written");
 
+        // Said once: the same reason the next frames says nothing.
+        for f in 1..5 {
+            assert!(ph.tick(&mut g, f).unwrap().is_empty());
+        }
+        // Another reason is said.
+        g.put_u32(SIM + SIM_MODE, MODE_DIST_SERVER)
+            .put_u32(S + STATE, 6);
+        let log = ph.tick(&mut g, 5).unwrap();
+        assert!(
+            log[0].contains("the session is not live (state 6"),
+            "{log:?}"
+        );
+
+        // Hosting is established: it joins.
+        g.put_u32(S + STATE, STATE_LIVE);
+        let log = ph.tick(&mut g, 6).unwrap();
+        assert!(log[0].contains("Clanker 4 joins (peer 1)"), "{log:?}");
+        assert_eq!(g.u32(S + PEER_COUNT).unwrap(), 2);
+    }
+
+    #[test]
+    fn a_full_session_fails_the_extra() {
         let ph = Phantoms::default();
         ph.add(who(1, "A"), None, firing()).unwrap();
         ph.add(who(2, "B"), None, firing()).unwrap();

@@ -1122,6 +1122,7 @@ impl Live {
             created_at: a.created_at.clone(),
             online: s.presence.contains_key(&a.xuid),
             admin: self.admins.is_admin_of(&a.gamertag, a.xuid),
+            bot: false,
         }
     }
 
@@ -1149,9 +1150,9 @@ impl Live {
     ) -> Result<AccountDetail, ApiError> {
         let position = self.position();
         let s = self.model.read();
-        let a = s
-            .account_by_tag(tag)
-            .ok_or_else(|| not_found("no such account"))?;
+        let Some(a) = s.account_by_tag(tag) else {
+            return self.bot_account(&s, tag, viewer, position);
+        };
         Ok(AccountDetail {
             summary: self.summary(&s, a),
             id: Author::Account {
@@ -1162,6 +1163,46 @@ impl Live {
             recent_games: s
                 .games_newest()
                 .filter(|g| g.xuids.contains(&a.xuid))
+                .filter(|g| g.shows_to(viewer, |x, y| s.is_friends(x, y)))
+                .take(RECENT_GAMES)
+                .map(|g| g.summary())
+                .collect(),
+            position,
+        })
+    }
+
+    /// A bot account by its gamertag, shown as an account with `bot: true`
+    /// (docs/game/bots.md §9.5): its games, no keys, never online. A
+    /// human's account of the same name (a made-up bot does not hold its
+    /// name) comes first, in [`Live::account`].
+    fn bot_account(
+        &self,
+        s: &State,
+        tag: &Gamertag,
+        viewer: crate::sessions::Viewer,
+        position: u64,
+    ) -> Result<AccountDetail, ApiError> {
+        let b = s
+            .bots
+            .by_gamertag(tag)
+            .ok_or_else(|| not_found("no such account"))?;
+        Ok(AccountDetail {
+            summary: AccountSummary {
+                xuid: b.xuid,
+                gamertag: b.gamertag.clone(),
+                created_at: s.bots.issued_at.get(&b.xuid).cloned().unwrap_or_default(),
+                online: false,
+                admin: false,
+                bot: true,
+            },
+            id: Author::Account {
+                xuid: b.xuid,
+                server: self.identity.id.clone(),
+            }
+            .to_string(),
+            recent_games: s
+                .games_newest()
+                .filter(|g| g.xuids.contains(&b.xuid))
                 .filter(|g| g.shows_to(viewer, |x, y| s.is_friends(x, y)))
                 .take(RECENT_GAMES)
                 .map(|g| g.summary())

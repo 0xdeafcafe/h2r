@@ -269,12 +269,16 @@ type Done = Box<dyn FnOnce(Result<Roster, String>) + Send>;
 #[derive(Default)]
 struct FakeLive {
     session: Mutex<Option<String>>,
+    playlist: Mutex<Option<String>>,
     asked: Mutex<Vec<(RosterRequest, Option<Done>)>>,
 }
 
 impl Rosters for FakeLive {
     fn session(&self) -> Option<String> {
         self.session.lock().unwrap().clone()
+    }
+    fn playlist(&self) -> Option<String> {
+        self.playlist.lock().unwrap().clone()
     }
     fn ask(&self, request: RosterRequest, done: Done) -> Result<(), String> {
         self.asked.lock().unwrap().push((request, Some(done)));
@@ -311,7 +315,7 @@ fn rostered_driver(session: Option<&str>) -> (Arc<Store>, Arc<FakeLive>, Phantom
 }
 
 #[test]
-fn past_the_free_ports_the_host_asks_live_for_bots_and_runs_its_roster() {
+fn with_live_every_bot_is_a_server_bot_account_locals_first() {
     const SESSION: &str = "0123456789abcdef";
     let (s, live, ph, d) = rostered_driver(Some(SESSION));
     on(&s, 5, 2);
@@ -321,35 +325,63 @@ fn past_the_free_ports_the_host_asks_live_for_bots_and_runs_its_roster() {
         vec![RosterRequest {
             session_id: SESSION.into(),
             playlist: None,
-            count: 2,
+            count: 5,
             skill: Some(live_proto::bots::HEROIC),
             teams: false,
         }],
-        "the phantoms only, at the page's difficulty"
+        "every bot, local and phantom, at the page's difficulty"
     );
-    // Until the answer, host-made phantoms; the game record names none.
+    // Until the answer, host-made phantoms and local bots with no account;
+    // the game record names none.
     assert!(
         ph.list()
             .iter()
             .all(|p| live_proto::bots::is_local_xuid(Xuid(p.identity.xuid)))
     );
+    let local_accounts = |d: &Driver| -> Vec<Option<u64>> {
+        d.seats()
+            .into_iter()
+            .filter_map(|s| match s {
+                Seat::Port(_, h) => Some(d.local.account_of(h).map(|a| a.xuid)),
+                Seat::Phantom(..) => None,
+            })
+            .collect()
+    };
+    assert_eq!(local_accounts(&d), vec![None, None, None]);
     let before = d.bots_in_force().expect("the bots, as bots");
     assert_eq!(before.session_id, None, "no roster yet: no session named");
     assert_eq!(before.ports, 0b1110, "the local bots by port");
+    assert_eq!(before.accounts, vec![]);
     assert_eq!(before.machines.len(), 2);
     assert!(
         before.machines.iter().all(|(_, x)| x.0 == 0),
         "no xuid without a roster"
     );
 
-    live.answer(0, Ok(roster(SESSION, 2, 0.67)));
+    live.answer(0, Ok(roster(SESSION, 5, 0.67)));
+    // The local bots take the first three as their accounts.
+    let x = |n: u64, i: u64| SERVER_XUID_MARK | (0x100 * n + i);
+    assert_eq!(
+        local_accounts(&d),
+        vec![Some(x(5, 1)), Some(x(5, 2)), Some(x(5, 3))]
+    );
+    let acct = d.local.account_of(match d.seats()[0] {
+        Seat::Port(_, h) => h,
+        Seat::Phantom(..) => unreachable!(),
+    });
+    assert_eq!(acct.unwrap().gamertag, "Rusty Lugnut 1");
+    // The phantoms the rest.
     let l = ph.list();
     let tags: Vec<&str> = l.iter().map(|p| p.identity.gamertag.as_str()).collect();
-    assert_eq!(tags, ["Rusty Lugnut 1", "Rusty Lugnut 2"]);
-    assert_eq!(l[1].team, Some(1));
+    assert_eq!(tags, ["Rusty Lugnut 4", "Rusty Lugnut 5"]);
     let bots = d.bots_in_force().expect("the roster in force");
     assert_eq!(bots.session_id.as_deref(), Some(SESSION));
     assert_eq!(bots.ports, 0b1110);
+    assert_eq!(
+        bots.accounts,
+        vec![(1, Xuid(x(5, 1))), (2, Xuid(x(5, 2))), (3, Xuid(x(5, 3)))],
+        "each local bot by its port, with its bot account"
+    );
     assert_eq!(
         bots.machines,
         l.iter()
@@ -368,31 +400,46 @@ fn past_the_free_ports_the_host_asks_live_for_bots_and_runs_its_roster() {
     s.set(DIFFICULTY.key, Value::Int(3)).unwrap();
     assert_eq!(live.requests().len(), 2);
     assert_eq!(live.requests()[1].skill, Some(live_proto::bots::LEGENDARY));
+    assert_eq!(
+        local_accounts(&d),
+        vec![None, None, None],
+        "no account while a new roster is asked for"
+    );
     s.set(COUNT.key, Value::Int(6)).unwrap();
     assert_eq!(live.requests().len(), 3, "a count change asks again");
-    assert_eq!(live.requests()[2].count, 3);
-    live.answer(1, Ok(roster(SESSION, 2, 1.0)));
+    assert_eq!(live.requests()[2].count, 6);
+    live.answer(1, Ok(roster(SESSION, 5, 1.0)));
     assert_eq!(ph.list().len(), 3, "an old answer is dropped");
     assert!(
         ph.list()
             .iter()
             .all(|p| live_proto::bots::is_local_xuid(Xuid(p.identity.xuid)))
     );
-    live.answer(2, Ok(roster(SESSION, 3, 1.0)));
+    live.answer(2, Ok(roster(SESSION, 6, 1.0)));
     let l = ph.list();
     assert_eq!(l.len(), 3);
     assert!(
         l.iter()
-            .all(|p| p.identity.xuid >> 8 & 0xff == 3 && p.identity.gamertag.starts_with("Rusty")),
+            .all(|p| p.identity.xuid >> 8 & 0xff == 6 && p.identity.gamertag.starts_with("Rusty")),
         "the new roster's bots: {l:?}"
+    );
+    assert_eq!(
+        local_accounts(&d),
+        vec![Some(x(6, 1)), Some(x(6, 2)), Some(x(6, 3))]
     );
     assert_eq!(d.bots_in_force().unwrap().machines.len(), 3);
 
-    // Fewer than the free ports: no phantoms, nothing asked.
+    // Fewer than the free ports: no phantoms, and the local bots still
+    // ask for their accounts.
     s.set(COUNT.key, Value::Int(2)).unwrap();
     assert!(ph.list().is_empty());
-    assert_eq!(live.requests().len(), 3);
-    assert_eq!(d.bots_in_force().unwrap().machines, vec![]);
+    assert_eq!(live.requests().len(), 4);
+    assert_eq!(live.requests()[3].count, 2);
+    live.answer(3, Ok(roster(SESSION, 2, 1.0)));
+    assert_eq!(local_accounts(&d), vec![Some(x(2, 1)), Some(x(2, 2))]);
+    let bots = d.bots_in_force().unwrap();
+    assert_eq!(bots.machines, vec![]);
+    assert_eq!(bots.accounts.len(), 2);
 }
 
 #[test]
@@ -430,10 +477,14 @@ fn a_session_made_after_the_page_was_set_gets_its_roster() {
     d.refresh();
     assert_eq!(live.requests().len(), 1);
     assert_eq!(live.requests()[0].session_id, "00000000000000aa");
-    assert_eq!(live.requests()[0].count, 1);
+    assert_eq!(
+        live.requests()[0].count,
+        4,
+        "the local bots and the phantom"
+    );
     assert!(d.refresh().is_empty(), "asked once");
-    live.answer(0, Ok(roster("00000000000000aa", 1, 0.0)));
-    assert_eq!(ph.list()[0].identity.gamertag, "Rusty Lugnut 1");
+    live.answer(0, Ok(roster("00000000000000aa", 4, 0.0)));
+    assert_eq!(ph.list()[0].identity.gamertag, "Rusty Lugnut 4");
     // Without Live, nothing to refresh.
     let plain = Driver::with_phantoms(Local::default(), Phantoms::default());
     assert!(plain.refresh().is_empty());
@@ -496,4 +547,18 @@ fn the_row_goes_after_the_halo1_row_on_the_plan() {
         );
         assert!(h1 < ours, "{line}");
     }
+}
+
+/// A matchmade session's bots are its playlist's (docs/game/bots.md §9.4,
+/// §9.5): the roster asks with the playlist, so the server fills it with
+/// the persistent bot accounts nearest the humans' level.
+#[test]
+fn a_matchmade_session_asks_for_its_playlists_bots() {
+    let (s, live, _ph, _d) = rostered_driver(Some("0123456789abcdef"));
+    *live.playlist.lock().unwrap() = Some("3".into());
+    on(&s, 2, 1);
+    let r = live.requests();
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].playlist.as_deref(), Some("3"));
+    assert_eq!(r[0].count, 2);
 }

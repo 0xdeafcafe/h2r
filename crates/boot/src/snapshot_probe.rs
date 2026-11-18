@@ -6,7 +6,9 @@
 //! runtime to end the slice right after each one (`request_preempt`), as
 //! `state.save` would. Between slices, at most once per tick, the boot
 //! loop asks [`kernel::Machine::quiescent`], every feature's snapshot
-//! policy and the host subsystems, and feeds the answers to a
+//! policy and the host subsystems (`snapshot_glue::Host::blockers`: d3d,
+//! dsound and its output, XAPI, a Bink movie, Xbox Live, co-op), and
+//! feeds the answers to a
 //! [`kernel::quiesce::Tally`]. Every line it prints starts with
 //! `snapshot-probe:`.
 //!
@@ -61,8 +63,6 @@ pub struct Probe {
     ticks: Arc<AtomicU64>,
     checked: u64,
     tally: Tally,
-    /// Host subsystems installed outside the feature plan, none audited yet.
-    host: Vec<&'static str>,
 }
 
 impl Probe {
@@ -95,19 +95,18 @@ impl Probe {
             ticks,
             checked: 0,
             tally: Tally::default(),
-            host: Vec::new(),
         }))
     }
 
-    /// Host subsystems running outside the feature plan (d3d, dsound,
-    /// xapi, ...). Each counts as an unaudited blocker until it reports
-    /// its own state.
-    pub fn set_host(&mut self, host: Vec<&'static str>) {
-        self.host = host;
-    }
-
     /// Between slices: check once if a tick ended since the last check.
-    pub fn after_slice(&mut self, m: &kernel::Machine, plan: &feature::Plan) {
+    /// `host` gives the host subsystems' blockers as `(owner, why)`; it is
+    /// only asked when a check is due.
+    pub fn after_slice(
+        &mut self,
+        m: &kernel::Machine,
+        plan: &feature::Plan,
+        host: impl FnOnce() -> Vec<(String, String)>,
+    ) {
         let tick = self.ticks.load(Ordering::Relaxed);
         if tick == self.checked {
             return;
@@ -122,9 +121,9 @@ impl Probe {
                     why,
                 }),
         );
-        blockers.extend(self.host.iter().map(|name| Blocker::Host {
-            owner: format!("host {name}"),
-            why: "not audited for snapshots".into(),
+        blockers.extend(host().into_iter().map(|(owner, why)| Blocker::Host {
+            owner: format!("host {owner}"),
+            why,
         }));
         for line in self
             .tally

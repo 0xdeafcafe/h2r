@@ -1,6 +1,7 @@
 # Machine snapshots (design)
 
-Status: phases 1 to 4 built; phase 5 (wiring) left. Phase 1
+Status: phases 1 to 5 built; the first check on a running game is the
+user's ([steps](#the-first-real-check)). Phase 1
 ([below](#phase-1-what-was-built)): the file format, the guest RAM page
 codec, the store, the guest layout and RAM restore, and the time-stamp
 counter, in `crates/snapshot` and `crates/runtime`, with the input tap's
@@ -12,8 +13,10 @@ VFS's read-only open files, the raw disk, XAPI's pads and the input tap's
 cursor, feature sections (`h1-health`, skulls, lockstep), and a policy
 for every feature ([third round](#third-round-every-feature)). Phase 4
 ([below](#phase-4-what-was-built)): the `d3d`, `audio`, `dsound`,
-`audioout` and `wma` sections. Nothing saves or loads a running game yet.
-Whatever is not marked built on this page is design.
+`audioout` and `wma` sections. Phase 5 ([below](#phase-5-what-was-built)):
+`state.save`, `load`, `list`, `drop` and `fork` through the agent API,
+run by the boot loop between slices. None of it has run against the game
+yet. Whatever is not marked built on this page is design.
 
 This is phase 5 of the [agent API](agent-api.md): `state.save {name}` and
 `state.load {name}`. A user plays to a heavy fight and saves; agents load
@@ -381,12 +384,12 @@ None needs a game run until the last step of phase 5.
    over the D3D null backend and the audio crate's synthetic voices:
    render, snapshot, render more; load, render the same, compare draw
    streams and mixed PCM.
-5. **Wiring.** `state.save`, `state.load`, `state.list`, `state.drop`,
-   `state.fork` in `agent` and `agent-proto`, the save request in the tick
-   observer and the save itself between slices in the boot loop. Tests:
-   the agent crate's executor with a fake machine. Last: the user saves a
-   fight in `h2 serve`, an agent loads it repeatedly and checks the
-   lockstep hash and N replayed ticks.
+5. **Wiring.** Built (below). `state.save`, `state.load`, `state.list`,
+   `state.drop`, `state.fork` in `agent` and `agent-proto`, the save
+   request in the tick observer and the save itself between slices in the
+   boot loop. Tests: the agent crate's executor with a fake machine. Last:
+   the user saves a fight in `h2 serve`, an agent loads it repeatedly and
+   checks the lockstep hash and N replayed ticks.
 
 ## Risks and unknowns
 
@@ -497,9 +500,10 @@ snapshot-probe: top host <count> (<%>) feature <id>: not audited for snapshots
   changes, at most 200 of them; a `progress` line every 1800 checks; the
   `summary` and up to ten `top machine` and ten `top host` lines at exit.
 - **Machine** blockers are the hard question this phase exists to answer.
-  **Host** blockers are features and subsystems (d3d, dsound, xapi, bink,
-  live, lockstep) that haven't been audited yet. Every one is unaudited
-  today, so `fully_quiescent` is 0 until phase 3 and 4 audit them.
+  **Host** blockers are features' live predicates and, since phase 5,
+  the host subsystems' own (`snapshot_glue::Host::blockers`: d3d, dsound
+  and its output, XAPI, a Bink movie open, Xbox Live signed in, co-op),
+  each as `host <owner>`.
 
 ### Rebuildable continuations
 
@@ -633,9 +637,8 @@ Second round (branch `snapshot-phase3b`):
 
 Left:
 
-- The boot calls none of the new sections yet: phase 5 adds
-  `Xapi::save_snapshot`/`load_snapshot`, `Plan::save_sections` through
-  `snapshot::features` and the kernel's sections to `state.save`.
+- Done in phase 5: the boot saves and loads the kernel's, XAPI's and the
+  features' sections.
 - Every feature now has a policy ([third round](#third-round-every-feature)).
 - A load into a running game drops the old contexts' fast-memory views and
   direct-call blocks with them; untested outside synthetic machines.
@@ -763,7 +766,7 @@ Audio (`audio/src/snap.rs`, `dsound/src/state/snap.rs`,
   half a packet of input and an overlap tail decodes on identically; a
   loaded codec instance decodes the rest of a stream like the saved one.
 
-Left (phase 5 wiring):
+Wired in phase 5 (below), as planned here:
 
 - Save order between slices: `ThreadedBackend::finish`, then
   `Device::save_snapshot` (D3D writes guest memory), then
@@ -782,6 +785,95 @@ Left (phase 5 wiring):
 - Frame pixels could be saved through `Backend::read_surface` and
   `write_surface` if the first frame after a load matters to
   `render.compare`.
+
+## Phase 5: what was built
+
+Branch `snapshot-phase5`. Tests over fakes; nothing here has run against
+the game.
+
+- `agent-proto::state`: method names, params (`name`, `replace`,
+  `max_ticks`; `from` for a fork), results (`Saved`: path, bytes, section
+  tags, retries, ms; `Loaded`: tick, presents, notes, parts applied, the
+  RAM hash check) and `code::BUSY` (7), whose `data` lists the blockers.
+- `agent` (`exec/snap.rs`): `state.list` and `state.drop` are answered at
+  once from the store; a name to load must exist and a name to save must
+  not (unless `replace`), checked before anything waits. A save, load or
+  fork is queued; at the next tick `Agent::on_tick` returns true and the
+  `agent` feature's observer calls `Runtime::request_preempt`, so the
+  slice ends a few transfers after the tick. A paused game lets the job
+  through to that slice end and holds again at the next tick (so a load
+  while paused shows the loaded tick plus one). The boot loop calls
+  `Agent::run_snapshots` between slices; a job that finds a blocker waits
+  for the next tick, up to `max_ticks` (90 by default), then answers
+  `BUSY`. With no ticks (loading, or `-agent`) every slice boundary is a
+  try. The machine is driven without the agent's lock held: the agent's
+  own feature section locks it.
+- `boot::snapshot_glue`: the parts and their orders. Save: `d3d` (drains
+  the render thread through the new `Backend::drain`, then
+  `Device::save_snapshot`), `dsound` (and the mixer's `audio`),
+  `audioout`, `wma`, `guest` (layout, RAM, TSC), `kernel` (`kcore`,
+  `machine`), `xapi`, `features`, then `ramhash`, `lockstep::hash_guest`
+  of the RAM saved. Load: `guest`, `kernel`, `d3d`, `dsound`, `audioout`,
+  `wma`, `xapi`, `features`, then the RAM hash compared (the MiBs that
+  differ are named). Blockers: `Machine::quiescent`, every feature's
+  policy, each part's own, a Bink stream open, Xbox Live signed in on any
+  controller, a co-op session. The audio output is logical, advanced only
+  by the boot loop, so it stands still while a save runs. Feature
+  policies are asked again after the save: one that went live meanwhile
+  (a co-op thread) throws the file away. A load that fails part way says
+  which parts were already loaded.
+- The build key is the running tier's stamp (`boot::build_stamp`, or
+  `tier::fast_stamp`), `Switches::spec` (canonical
+  switch text), the installed feature IDs and the host parts present, so
+  a run with other switches, features or subsystems has its own store
+  directory. Snapshots are written to the store under `$H2_SNAPSHOTS` or
+  the cache directory, never the repository.
+- The probe (`H2_SNAPSHOT_PROBE`) reports the same host blockers.
+- `h2 agent state save NAME [replace]`, `state load NAME`, `state list`,
+  `state drop NAME`, `state fork FROM NAME [replace]`.
+- Tests: `agent`'s `exec/snap/tests.rs` (a save waits for a tick; retries
+  per tick then `BUSY`; load, fork, drop; name checks; control; a paused
+  game; exit) and `boot`'s `snapshot_glue/tests.rs` (through the agent
+  over fake parts: save and load orders, the file in the store and its
+  header, a RAM hash mismatch naming the MiB, blockers by owner, a
+  blocker that appears during the save, the build key).
+
+Not covered: the boot loop's own wiring (`lib.rs`) has no test; the
+first check below is it.
+
+### The first real check
+
+On the user's machine, with `h2 serve` (or `h2 play` with `H2_AGENT`)
+running the image as usual:
+
+1. Play or drive to a fight. Optionally run with `H2_SNAPSHOT_PROBE=1`
+   to see how often a tick boundary is quiescent.
+2. `h2 agent state save oldmombasa.fight`. A `BUSY` answer lists what
+   stayed live; send it back if it repeats.
+3. Load it twice and compare the same N ticks after each load, on one
+   connection:
+
+   ```sh
+   h2 agent - <<'EOF'
+   claim
+   pause
+   state load oldmombasa.fight
+   trace start player.0
+   step 300
+   trace stop
+   state load oldmombasa.fight
+   trace start player.0
+   step 300
+   trace stop
+   release
+   EOF
+   ```
+
+   Each `state load` answer should say `"hash": {"checked": true,
+   "equal": true}`. Then `h2 agent flight show <file>` on the two trace
+   files `trace stop` named; their rows should match tick for tick.
+4. Repeat the loads a few times, and once after playing on for a while,
+   and report the `ms` of saves and loads and the file `bytes`.
 
 ## Related
 

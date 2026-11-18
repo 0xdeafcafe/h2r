@@ -396,9 +396,10 @@ impl ViewportView {
             over = gizmo.is_over();
             using = gizmo.is_using();
             if changed {
-                let r = if op == Operation::SCALE_UNIFORM {
+                // Through the command layer, as the agent API's edits.
+                let action = if op == Operation::SCALE_UNIFORM {
                     let x = [model[0], model[1], model[2]];
-                    app.session.gesture_scale(geometry::dot(x, x).sqrt())
+                    Action::GestureScale(geometry::dot(x, x).sqrt())
                 } else {
                     let (pos, ypr) = geometry::decompose(&model);
                     let ypr = match t.rotation {
@@ -412,15 +413,13 @@ impl ViewportView {
                     } else {
                         pos
                     };
-                    app.session.gesture_set(pos, ypr)
+                    Action::GestureSet { position: pos, ypr }
                 };
-                if let Err(e) = r {
-                    app.error(e.to_string());
-                }
+                app.dispatch(action);
             }
         }
         if !using && app.session.in_gesture() {
-            app.session.end_gesture();
+            app.dispatch(Action::EndGesture);
             let what = selection_label(app);
             let verb = match self.op {
                 GizmoOp::Translate => "moved",

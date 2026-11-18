@@ -20,7 +20,8 @@ function Row(props: { g: GameState; s: Standing; rank: number; onHover?: (i: num
       <td class="score-rank">{props.rank}</td>
       <td class="score-name">
         <span class="swatch" style={{ background: colourFor(props.g, props.s.team, props.s.index) }} />
-        <Show when={!props.s.bot && props.s.xuid} fallback={props.s.name}>
+        {/* A bot with an xuid is a server bot account and has a page (bots.md §6). */}
+        <Show when={props.s.xuid} fallback={props.s.name}>
           {(x) => <A href={`${STATS_ROOT}/players/${encodeURIComponent(props.s.name)}`} title={props.s.game_name ? `${x()} · in game as ${props.s.game_name}` : x()}>{props.s.name}</A>}
         </Show>
         <Show when={props.s.bot}><BotTag /></Show>

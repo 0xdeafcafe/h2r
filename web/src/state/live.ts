@@ -4,7 +4,7 @@
 
 import { batch, createRoot, createSignal } from "solid-js";
 import { createStore, produce, reconcile } from "solid-js/store";
-import type { WireEvent, PlayerKilled, GameSummary } from "../api/types";
+import type { WireEvent, PlayerKilled, GameSummary, AccountSummary } from "../api/types";
 import { api, type Api } from "../api/http";
 import { fetchWellKnown, initialBase, remember, targetFor, wsUrl, type ServerTarget, type WellKnown } from "../api/server";
 import {
@@ -195,6 +195,10 @@ function createLive() {
 
   /** Loads one game's detail into the store (deep links, profiles). */
   const loading = new Map<string, Promise<boolean>>();
+  /** Accounts the stream doesn't list (a bot's, from a lookup by gamertag). */
+  function addAccounts(list: AccountSummary[]) {
+    setState(produce((s) => applyAccountsSnapshot(s, list)));
+  }
   function ensureGame(id: string): Promise<boolean> {
     // Known well enough: live (the stream fills it in), or ended with its end
     // known (from GameEnded or a detail read). A game known only from a
@@ -275,6 +279,7 @@ function createLive() {
     verifySummary,
     loadMode,
     ensureGame,
+    addAccounts,
     ingestGames,
     checkGameEvents,
     useServer,

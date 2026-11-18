@@ -19,6 +19,10 @@
 //! [`crate::render_probe`] and the draw wrapper in [`crate::d3d_diag`]).
 //! `sim.*` ([`install_sim`]) gets its session kind from `coop_probe`'s
 //! readers ([`session_view`]).
+//!
+//! `state.*` (machine snapshots) is the boot loop's: it installs the store
+//! on the agent and runs due saves and loads between slices
+//! ([`crate::snapshot_glue`]).
 
 use std::path::PathBuf;
 use std::sync::Mutex;

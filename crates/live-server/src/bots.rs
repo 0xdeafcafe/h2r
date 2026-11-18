@@ -40,12 +40,23 @@ pub struct Bots {
     pub persistent: BTreeSet<Xuid>,
     /// Session id -> its rosters, oldest first, with their log positions.
     pub rosters: HashMap<String, Vec<(u64, Rostered)>>,
+    /// When each bot was issued (its `BotIssued`'s `at`): its account's
+    /// `created_at`.
+    pub issued_at: HashMap<Xuid, String>,
+    /// Gamertag key -> the bot that holds it. Issuing never gives two
+    /// bots one name, so this is one bot per name.
+    pub by_tag: HashMap<String, Xuid>,
 }
 
 impl Bots {
     /// The server issued `xuid` as a bot.
     pub fn bot(&self, xuid: Xuid) -> Option<&Issued> {
         self.issued.get(&xuid)
+    }
+
+    /// The bot account called `tag`, if the server issued one.
+    pub fn by_gamertag(&self, tag: &Gamertag) -> Option<&Issued> {
+        self.issued.get(self.by_tag.get(&tag.key())?)
     }
 
     /// The session's roster in force just before log position `before`
@@ -84,6 +95,8 @@ pub(crate) fn project(s: &mut State, e: &RecordedEvent) {
             if d.persistent {
                 s.bots.persistent.insert(d.xuid);
             }
+            s.bots.issued_at.insert(d.xuid, b.at.clone());
+            s.bots.by_tag.insert(d.gamertag.key(), d.xuid);
             s.bots.issued.insert(d.xuid, d);
         }
         ROSTERED => {

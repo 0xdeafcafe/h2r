@@ -750,6 +750,10 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
     type Surface = u32;
     type Texture = ProxyTexture<B>;
 
+    fn drain(&mut self) -> Result<(), String> {
+        self.finish()
+    }
+
     fn create_surface(
         &mut self,
         format: D3DFormat,

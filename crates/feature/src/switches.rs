@@ -48,6 +48,17 @@ impl Switches {
         Ok(Switches { set })
     }
 
+    /// Every switch set, sorted, as `name=on` or `name=off` joined by
+    /// commas: the same text for the same switches, however `H2_FEATURES`
+    /// spelled them (a machine snapshot's build key).
+    pub fn spec(&self) -> String {
+        self.set
+            .iter()
+            .map(|(name, on)| format!("{name}={}", if *on { "on" } else { "off" }))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
     /// Sets one switch (`id` or `impl.x`).
     pub fn with(mut self, name: &str, on: bool) -> Self {
         self.set.insert(name.to_owned(), on);
@@ -94,5 +105,14 @@ mod tests {
         assert!(!s.implementation("ui", false));
         assert!(Switches::parse("a=maybe").is_err());
         assert!(Switches::parse("-").is_err());
+    }
+
+    #[test]
+    fn the_spec_is_canonical() {
+        let a = Switches::parse("lockstep, -live-telemetry,impl.engine=1").unwrap();
+        let b = Switches::parse("impl.engine=on,live-telemetry=off,lockstep=true").unwrap();
+        assert_eq!(a.spec(), "impl.engine=on,live-telemetry=off,lockstep=on");
+        assert_eq!(a.spec(), b.spec());
+        assert_eq!(Switches::default().spec(), "");
     }
 }

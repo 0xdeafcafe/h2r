@@ -139,7 +139,7 @@ export default function Dashboard() {
   const section = createMemo((): SectionId | null => SECTION_IDS.find((s) => s === params.section) ?? null);
   const viewed = createMemo((): AccountState | null => {
     const s = section();
-    if (s === "signup") { const me = identity.me(); return me ? live.state.accounts[me.xuid] ?? { xuid: me.xuid, gamertag: me.gamertag, created_at: "", online: false, presence: null, last_seen: null } : null; }
+    if (s === "signup") { const me = identity.me(); return me ? live.state.accounts[me.xuid] ?? { xuid: me.xuid, gamertag: me.gamertag, created_at: "", online: false, presence: null, last_seen: null, bot: false } : null; }
     if ((s === "players" || s === "friends") && params.tag) { const tag = safeDecode(params.tag); return Object.values(live.state.accounts).find((a) => a.gamertag === tag) ?? null; }
     return null;
   });

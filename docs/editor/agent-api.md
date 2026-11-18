@@ -71,22 +71,20 @@ What goes through actions now, from both sides:
 | Open a source, map, package, Halo 1 map | `OpenSource`, `SelectMap`, `OpenPackageEntry` | menus, Maps list | `source.open`, `doc.open` |
 | A placement's field | `EditSelection {field, edit, merge}` (every selected placement), `SetField {block, index, field, value, merge}` (one), `SealEdit` | the inspector dispatches `EditSelection` (a drag merges under one key, sealed when it ends) | `scenario.set`, `tag.set` |
 | Any tag's field or block | `Tag(TagAction)` built by `app::tag_api::{set_field, block}` | the Tags tool | `tag.set`, `tag.block.*` |
-| Move and turn a placement | `MovePlacement` | (the gizmo still drives `Session` gestures) | `scenario.move` |
+| Move and turn a placement | `MovePlacement` (one step); `GestureSet {position, ypr}`, `GestureScale`, `EndGesture` (a drag: one step, a multi-selection riding along) | the viewport gizmo dispatches the gesture actions every frame of a drag | `scenario.move` |
 | Add, duplicate, delete | `Add`, `DuplicateEntry`, `DeleteEntry` | outliner, toolbar, keys | `scenario.add`, `.duplicate`, `.delete`, `tag.block.*` |
 | Select, frame | `Select`, `FocusSelected`, `FrameAll` | outliner, viewport, keys | `scenario.select`, `view.camera` |
 | Undo, redo | `Undo`, `Redo` (the tool shown), `UndoIn(tool)`, `RedoIn(tool)` | Edit menu, keys | `doc.undo`, `doc.redo` |
 | Save | `SaveMapAs`, `SaveVariant`, `SaveHopper(As)`, `ExportVariant` | File menu, prompt | `doc.save`, `doc.save_as` |
 | Variant edits | `OpenVariant`, `NewVariant`, `CopyBuiltin`, `SetVariantName`, `SetSetting`, `ImportVariant*`, `DeleteVariant` | the variant tool | `doc.open`, `variant.*` |
-| Playlist edits | `EditPlaylist(PlaylistEdit)`, `SetEntryVariant` | the table's row buttons, weights and Add apply the same `PlaylistEdit`s | `playlist.set`, `playlist.entry`, `playlist.entry_variant` |
+| Playlist edits | `EditPlaylist(PlaylistEdit)`, `SetEntryVariant` | the title and description fields, the table's row buttons, weights and Add apply the same `PlaylistEdit`s | `playlist.set`, `playlist.entry`, `playlist.entry_variant` |
 | UI screens | `UiPick`, `UiPress` | the UI Screens tool | `ui.pick`, `ui.press` |
 
-Not yet through actions: the gizmo's frame-by-frame gesture
-(`Session::gesture_set`, merged into one undo step by the session), and
-the playlist table's map pickers and its title and description text boxes,
-which edit the working copy in place inside the frame's
-`HopperSession::edit_with` (one undo step per typing run, as before).
-`PlaylistEdit::Title` and `::Description` are the API's path to the same
-fields.
+The playlist fields apply their `PlaylistEdit`s inside the frame's
+`HopperSession::edit_with`, so a typing run stays one undo step (merged
+under the field's key) where the API's `playlist.set` is one step per
+call. Not yet through actions: the playlist table's map pickers, which
+edit the working copy in place the same way.
 
 The tests check that the window's path and the API's path make the same
 document: the same scenario changes and byte-identical saved maps for a
@@ -226,12 +224,95 @@ the window and the API stay one path.
   the source or into Git. `doc.*` with `"doc": "hud"` undoes, redoes,
   diffs (patches by widget and field) and saves the same session. String
   IDs are the Tags tool's to edit (`REFUSED`).
-- **Player models (planned, not started).** `model.list` (bipeds, `hlmt`
-  model variants), `model.read` (regions, permutations, change colours),
-  `model.render` (a variant with colours from a camera, to a PNG),
-  `model.colors` and `model.emblem` (a player's colours and emblem).
-- **Customisation (later).** `custom.list` (armour permutations per
-  region and what unlocks them), `custom.set` (pick one).
+- **Player models (planned, not started).** See "Planned: player
+  models and customisation" below.
+- **Customisation (later).** Same section.
+
+## Planned: player models and customisation
+
+Design notes for the `model.*` and `custom.*` providers. Nothing here is
+built; the table's stubs answer `NOT_YET` with these lanes. Each part
+says what it reads, what it edits, through which action, and what is
+still to establish.
+
+### What there is to build on
+
+- `tags::object` resolves an object to its model: `Context::resolve_object`
+  gives the object's `hlmt` and `Context::resolve_model(id, variant)` a
+  variant's regions and the permutations each picks (`RegionChoice`,
+  `PermutationChoice`), with the render, collision, physics and animation
+  tags linked.
+- `native-render::model_load` loads a `mode` and picks a variant's
+  sections (`pick_sections`): what a preview draws.
+- `bots::guest` has the player look bytes the game checks
+  (`0x153750`): four colour indices (armour primary and secondary,
+  emblem primary and secondary, each below 18), the model (below 4), the
+  emblem foreground (below 0x40), background (below 0x20) and flags.
+- The Tags tool (`app::tag_doc`) writes any tag field with undo and saves
+  with the map; the scenario viewport renders offscreen (`view.snapshot`).
+
+### `model.*` (lane: player models)
+
+A Models tool (`ToolKind::Models`, its state beside the HUD tool's) over
+the map open in the scenario tool, and a provider in `api/models.rs`:
+
+- `model.list {group?}`: bipeds (and with `group`, any object group)
+  with their `hlmt`, variant names and region count, from
+  `Catalog::from_map` and `resolve_object`. Read-only.
+- `model.read {tag, variant?}`: the variant's regions, each with its
+  permutations and probabilities, the change colours the object's
+  shaders take, and the render model's node count. Read-only.
+- `model.render {tag, variant?, colors?, camera?, out?}`: the variant
+  drawn offscreen with the scenario viewport's renderer (wgpu headless,
+  `NO_GPU` where there is none) at the player colours given, to a PNG
+  under `studio/model/`, never into a Git checkout. The preview state
+  (variant, colours, camera) is an action (`ModelPreview`), not an edit:
+  no undo, no dirty mark.
+- `model.colors {player?, colors?}` and `model.emblem {player?, emblem?}`:
+  read or set a player's four colour indices and emblem. These are not
+  tag edits: they are the profile's look bytes, so they edit a profile
+  document (`doc: "profile"`) with its own undo and a save into the
+  user's save storage under the data root, never the map. The bounds are
+  `0x153750`'s, refused with `INVALID_PARAMS` and the range.
+
+To establish first: where the profile's look bytes live in a save (the
+variant store's save layout covers game variants only), and which
+shader parameters take the change colours (so a render matches the
+game).
+
+Edits to a model's tags (a variant's permutation pick, a region's
+probability) are not new methods: they are `tag.set` on the `hlmt`
+through the Tags tool, so they share its undo and save. `model.read`
+returns the `tag.set` path of each editable value so an agent can go
+straight there.
+
+### `custom.*` (lane: customisation, after models)
+
+Retail Halo 2 has no armour choice: a player's model is one of four and
+its permutations are picked by the variant's probabilities. Armour
+customisation is therefore an h2recomp extension, like the variant
+extension block (`variants::ext`):
+
+- `custom.list {biped?}`: for each region of the biped's player variant,
+  the permutations a player may pick (from `model.read`), and which are
+  locked and why.
+- `custom.set {biped, region, permutation}`: pick one for the profile,
+  stored in the profile's h2recomp extension (not the map, not the
+  retail look bytes), one undo step in the `profile` document.
+
+It needs the game side first: the runtime choosing a player's
+permutation from the profile instead of by probability, and the network
+carrying the choice. Until that lands the methods stay planned; the
+editor side is small once the profile document exists.
+
+### Tests each lane brings
+
+As the HUD provider's: every method runs its example in
+`every_method_in_methods_has_a_test` (on an invented map with a biped,
+`hlmt` and `mode`, no game data); `model.render` refused in a Git
+checkout; colour and emblem bounds refused; profile edits undone and
+redone as their document; and the window's actions and the API's make
+identical profiles.
 
 ## Code
 
@@ -246,7 +327,10 @@ the window and the API stay one path.
   `api/hud.rs` the Tags and HUD tools'.
 - `app/commands.rs`: the actions added for the API and the window
   (`SetField`, `EditSelection`, `MovePlacement`, `EditPlaylist`,
-  `UndoIn`), `PlaylistEdit`, and `App::perform`.
+  `UndoIn`), `PlaylistEdit`, and `App::perform`. The viewport gizmo
+  dispatches `GestureSet`, `GestureScale` and `EndGesture` (one undo step
+  per drag); the playlist title and description fields apply
+  `PlaylistEdit`s; the inspector dispatches `EditSelection`.
 
 Tests (`api::tests`, on the scenario crate's invented map, the playlist
 crate's sample file and the fallback variant schema; outputs in the
@@ -261,7 +345,9 @@ system temp directory):
   (and the header checksum); a notification gets no answer, a bad line a
   parse error; the socket is 0600 and goes with the listener;
 - undo and redo through the API for the map, a variant and playlists;
-- the window's path and the API's make identical documents;
+- the window's path and the API's make identical documents, the gizmo's
+  drag and `scenario.move` included (one undo step each), and the
+  playlist text fields' edits and `playlist.set`;
 - growth refused with its reason, unsaved edits never dropped without
   `discard`, outputs refused in a Git checkout or over the source;
 - tags listed, read (raw and through the registry), referenced and
