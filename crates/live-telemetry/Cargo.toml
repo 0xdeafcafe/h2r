@@ -21,3 +21,4 @@ webpki-roots = "1"
 
 [dev-dependencies]
 runtime-test-probe = { path = "../runtime/test-probe" }
+live-server = { path = "../live-server" }

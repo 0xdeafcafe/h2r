@@ -3232,6 +3232,7 @@ dependencies = [
  "engine",
  "feature",
  "live-proto",
+ "live-server",
  "map",
  "runtime",
  "runtime-test-probe",

@@ -10,6 +10,9 @@ use crate::event::GameEvent;
 
 /// Output transport. Calls are made only by the pipeline's worker, never by
 /// the guest thread. `flush` batches events where the transport supports it.
+/// An `Err` stops telemetry for the rest of the process, so a transport that
+/// can recover (the Live sink reconnects) keeps its outages to itself and
+/// errs only when it never will.
 pub trait Sink: Send + 'static {
     fn event(&mut self, event: GameEvent) -> Result<(), String>;
     fn frame(&mut self, frame: Frame) -> Result<(), String>;
