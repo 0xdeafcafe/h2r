@@ -265,4 +265,35 @@ mod tests {
             assert_eq!(live[round as usize * 4096 + 1], 0);
         }
     }
+
+    /// What a snapshot and the first writes after it cost: the copy of a
+    /// 64 MB block with 16 MB touched, then one write per 4 KB page of the
+    /// touched part from the live side (each first write to a 16 KB host
+    /// page is a copy-on-write fault).
+    /// `cargo test -p runtime --release --lib cow_copy_cost -- --ignored --nocapture`
+    #[test]
+    #[ignore = "benchmark"]
+    fn cow_copy_cost() {
+        let mut live = Ram::zeroed(LEN);
+        let touched = 16 * 1024 * 1024;
+        live[..touched].fill(1);
+        for _ in 0..5 {
+            let t = std::time::Instant::now();
+            let (copy, kind) = live.cow_copy();
+            let copy_us = t.elapsed().as_secs_f64() * 1e6;
+            let t = std::time::Instant::now();
+            for p in (0..touched).step_by(4096) {
+                live[p] = 2;
+            }
+            let write_us = t.elapsed().as_secs_f64() * 1e6;
+            let t = std::time::Instant::now();
+            drop(copy);
+            let drop_us = t.elapsed().as_secs_f64() * 1e6;
+            println!(
+                "{kind:?}: copy {copy_us:.0} us, {} first writes {write_us:.0} us ({:.2} us each), drop {drop_us:.0} us",
+                touched / 4096,
+                write_us / (touched / 4096) as f64
+            );
+        }
+    }
 }

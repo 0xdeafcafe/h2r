@@ -1,6 +1,7 @@
 # A second executor
 
-Status: **inventory; the view and the executor are being built.** It is the prerequisite for pipelined rendering
+Status: **runtime building block, tested on synthetic code, not wired
+into the game.** It is the prerequisite for pipelined rendering
 (docs/graphics/pipelined-render.md): run guest code on a second host
 thread, at the same time as the game thread, against a copy-on-write
 snapshot of guest RAM.
@@ -111,3 +112,165 @@ module.
 | Kernel logical clock | advanced from `take_slice_spent` on the game thread; the executor's accesses are returned to the caller (`CallOutcome::accesses`) to charge at the join |
 | HLE overrides (D3D, XAPI, feature hooks) | shared mutable, each with its own state and locking story. **Refused** unless the caller allows that override address; an allowed one runs on the executor's thread with the executor's `ExecCtx` and memory |
 | D3D device | its own lock; reachable only through allowed D3D overrides |
+
+## 2. Guest memory view
+
+`Guest::cow_snapshot` (and `Guest::cow_refresh`, which reuses a view's
+page table) gives a `Guest` with the same mappings and permissions over a
+copy-on-write copy of physical RAM. Writes to either side stay on that
+side; the view reads the bytes as they were at the snapshot.
+
+**How.** Guest RAM is one 64 MB heap allocation (`vec![0; 64 MB]`). On
+macOS a block that size is its own VM region, page-aligned, so
+`mach_vm_remap(copy = TRUE)` of it gives a second mapping with copy
+semantics: the kernel shares the physical pages, write-protects both
+sides and copies a host page (16 KB on Apple silicon) on the first write
+to it from either side. Setup is a VM map operation, not a 64 MB copy.
+The view's RAM is then a mapping the runtime owns (`cow::Ram`, freed with
+`mach_vm_deallocate`); the live Guest's stays the heap block it was, so
+nothing on the live path changed. If the block is not page-aligned, or
+off macOS, the copy falls back to a plain 64 MB `memcpy`
+(`CopyKind::Copied`), correct but slower.
+
+Why not the alternatives: RAM is not file-backed (no memfd/shm), so
+`mmap(MAP_PRIVATE)` of a shared object would mean moving the live RAM to
+one first, which changes the live path for every build. `vm_copy` would
+work too but needs a destination allocated first; remap does both.
+Software COW through the fast page table (pipelined-render.md) races a
+sim write against a render read of the same page; host COW has no race.
+
+**The page table.** A view has its own fast page table, built from the
+same mappings (8 MB, a pass over the mapped pages). `cow_refresh` keeps
+it when the source's layout has not changed since the last refresh, so a
+per-frame refresh is the RAM remap alone.
+
+**Written pages and lines.** The view's write watch watches all of RAM, so
+every store (Rust, or C's inline dirty bits, published at the next memory
+guard) marks its physical page. A second COW copy, `base`, keeps the
+bytes as they were at the snapshot and is never written. At the join,
+`SecondExecutor::written` compares each marked page of the view with
+`base` 64 bytes at a time: a `WrittenPage { physical, lines }` per marked
+page, `lines` the 64-bit mask of 64-byte lines whose bytes changed. A
+page stored to with the bytes it already held is listed with
+`lines == 0`. `hand_back` then merges into the live Guest byte by byte
+over those lines: a byte the view changed takes the view's value; a byte
+it did not keeps whatever the live side has (so a sim write to another
+byte of the same line survives); a byte both changed differently is a
+conflict, counted, view wins.
+
+## 3. The executor
+
+`runtime::executor::SecondExecutor` is its own `Runtime` (own gate, own
+page table, own TSC, own interrupt queue) over a view Guest, with its own
+`ExecCtx` and a `Dispatch` copied once from the main runtime:
+
+- generated handlers and resumes: copied (function pointers into the
+  same loaded module);
+- every override the caller's `allow` list does not name, and every
+  kernel import token: a refusal handler, which records what was called
+  and ends the run (`ExecutorError::Refused { target, name, ordinal,
+  return_pc }`), never runs the main thread's HLE;
+- allowed overrides: the main runtime's handler, run on the executor's
+  thread.
+
+A run is one guest call: `snapshot(&main)` (it reads the main runtime's
+guest time first, which takes the kernel lock, then takes the main
+runtime's memory guard, so no store is in flight while RAM is copied),
+then `call(cpu, entry, args)`
+pushes the arguments and a return to `HARNESS_EXIT` on the executor's
+stack and runs the runner to completion on the calling thread (any
+thread: `SecondExecutor` is `Send`). No kernel scheduler, no interrupts,
+no slice expiry: the context is armed for host requests only, which
+counts its accesses (`CallOutcome::accesses`, for the caller to charge to
+the game thread's clock at the join) and lets `cancel_handle()` stop it at
+the next safe point from another thread.
+
+## 4. Tests and measurements
+
+Unit tests in `crates/runtime` (Rust stores only): `cow` (a copy keeps
+the bytes of its moment and each side its own writes, repeated copies),
+`guest::view` (a view reads the snapshot with the source's permissions;
+refresh keeps the page table until the layout moves; the written-line
+set is exactly the changed lines, a same-value store is a page with no
+lines, and the byte merge keeps the live side's other bytes and counts
+conflicts), `executor` (private writes and hand-back; kernel calls,
+registered on the main runtime or not, and disallowed HLE refused by
+name; an allowed override runs; cancel).
+
+`crates/emit/tests/second_executor.rs`, on synthetic x86 lifted, emitted
+with the inline RAM path (`H2_FASTMEM`) and access accounting, compiled
+and run through the real runtime:
+
+- `the_executor_runs_generated_code_on_a_frozen_snapshot_while_main_mutates_live_ram`:
+  each round, snapshot; the executor sums a 16 KB array 32 times on its
+  own thread while the main context, on the test thread, adds 1 to every
+  word of it one to four times. Every round: the executor's sum is the
+  frozen array's; its stores never reach live RAM before the hand-back;
+  `written()` is exactly the three lines it stored plus its stack line;
+  the hand-back merges three lines with no conflict and keeps the main
+  side's store to another line of the same page; the main context is
+  charged exactly what a lone run charges. 200 rounds by default
+  (`H2_EXECUTOR_ROUNDS`); the test asserts the two actually overlapped
+  (179 of 200 and 1,896 of 2,000 rounds did, debug build).
+- `a_kernel_call_from_generated_code_is_refused`: an indirect call to a
+  kernel import token from generated code ends the run with
+  `Refused { ordinal: 128, name: "KeQuerySystemTime", return_pc }`.
+
+No loom or TSAN: the two executors share no mutable runtime state by
+construction (section 1); the stress test is the evidence.
+
+**Costs** (`cargo test -p runtime --release --lib cow_copy_cost -- --ignored --nocapture`,
+Apple silicon, loaded machine): a COW copy of the 64 MB RAM block with
+16 MB resident is 0.43-0.60 ms; afterwards the first write to each 16 KB
+host page from the live side faults, about 2.8 us a host page (0.7 us
+per 4 KB guest page written at a 4 KB stride); dropping the copy 0.06
+ms. A snapshot takes two copies (view and base), so about 1 ms a frame,
+plus 2.8 us for every host page the sim writes while a render runs.
+
+The live path: the only change on it is `Guest`'s RAM field, now a
+`cow::Ram` (pointer and length, `Deref` to `[u8]`) instead of a
+`Box<[u8]>`; the runner and C paths are unchanged.
+`runner_transfer_benchmark` after the change, minimum of 9 trials, ns per
+transfer: 41.1 (16 callees), 41.7 (256), 45.0 (1,024), 53.8 (4,096; median
+92.9, the machine was busy), against 39.2, 40.4, 42.2, 45.4 in
+docs/perf/performance.md, within the noise of a shared machine.
+
+## What remains before the render front-end can run on it
+
+1. **The launch point.** An override at `render_frame_and_present`
+   (`0x00223240`) that joins render `k-1`, calls `snapshot`, and hands
+   `call(cpu, 0x00223240, [])` to a long-lived render host thread with a
+   copy of the entry CPU state, then returns to the game as the original
+   would (pipelined-render.md, "Design"). Nothing here starts a thread;
+   the caller owns it.
+2. **The allowlist.** Which HLE the render front-end reaches: D3D entries
+   (the device has its own lock, but the sim must make no D3D calls while
+   a render runs: `sim_d3d_hits`), and the kernel calls the census or an
+   HLE-call count per scope finds (time reads, critical sections). Allowed
+   kernel calls need executor-safe handlers (answer time from the
+   snapshot's frozen clock, no waits), not the kernel's own, which are
+   single-threaded; today every kernel call is refused, which ends the
+   run with its name, the signal to fall back to a serial render.
+3. **Hand-back policy.** `written()` lists every page; the join needs the
+   census's split: drop the stack, copy `rw` pages, merge `ww` pages
+   (`hand_back` does the byte merge), and decide the `rs_core` pages.
+   `HandBack::conflicts` is the count to watch.
+4. **Write-watch subscribers on the live side.** `hand_back` reports the
+   merged pages to the live Guest's watch (D3D's resource barrier sees
+   them), but the view's own D3D-side subscriptions (if D3D runs on the
+   executor) are the view Guest's, not the live one's: the D3D layer's
+   dirty tracking has to be told which Guest it is reading.
+5. **Logical time.** `CallOutcome::accesses` has to be charged to the
+   game thread's clock at the join (the kernel's `take_slice_spent`
+   path), at a fixed point, so the schedule stays deterministic
+   (pipelined and serial runs are not lockstep-compatible).
+6. **Cost on the real working set.** About 1 ms of snapshot a frame and
+   2.8 us per 16 KB host page the sim writes during a render (section 4):
+   the census's `sim_written` decides whether that eats the 6-8 ms
+   pipelining saves. The base copy could be dropped (diff against nothing
+   and copy pages whole) if the merge is not needed. A layout change (a
+   map or protect) rebuilds the view's page table (8 MB).
+7. **Quiescence.** Snapshots, checkpoints and the agent API's pause must
+   join a running executor first (docs/runtime/snapshots.md).
+8. **Timeline phases.** Phase accounting is per host thread; render-timing
+   and frame stats have to fold the render thread's in.
