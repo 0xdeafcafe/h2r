@@ -531,6 +531,12 @@ impl Live {
         }
     }
 
+    /// Whether a live game has an ingest clock, so packed frames may come
+    /// and [`Live::publish_packed`] has a tick to run.
+    pub fn packed_active(&self) -> bool {
+        !self.ingest.games.lock().unwrap().is_empty()
+    }
+
     /// The packed fan-out, for stream readers.
     pub fn packed(&self) -> &crate::packed::Hub {
         &self.packed
@@ -823,6 +829,30 @@ impl Live {
             .blob(&sha)
             .await?
             .ok_or_else(|| not_found("outline bytes are missing"))
+    }
+
+    /// When [`Live::sweep`] next has something to do (unix seconds): the
+    /// earliest presence to expire, game to end as lost or co-op session
+    /// to expire; `None` with nothing to watch.
+    pub fn sweep_due(&self) -> Option<i64> {
+        let policy = self.policy();
+        let s = self.model.read();
+        // The sweep acts once a deadline is strictly behind it.
+        let presence = s
+            .presence
+            .values()
+            .map(|p| p.last_seen + policy.presence_ttl_s);
+        let games = s
+            .games
+            .values()
+            .filter(|g| g.ended.is_none())
+            .map(|g| g.last_activity + policy.game_idle_s);
+        let sessions = s
+            .sessions
+            .values()
+            .filter(|v| v.state == "open")
+            .map(|v| v.last_activity + policy.session_idle_s);
+        presence.chain(games).chain(sessions).min().map(|d| d + 1)
     }
 
     /// The managers: expire quiet presence and end idle games, as the

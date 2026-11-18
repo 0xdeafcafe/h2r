@@ -1266,6 +1266,64 @@ texture and geometry caches (build plan 3.5); the game-time bracket
 ports on the render thread (they are refused at their entry); the render
 thread's frame stats; the COW fault cost on the real working set.
 
+**I/O without stalls.** The render's cache requests go through the async
+I/O pool: `0x001208b0` waits on the pool mutex `[0x004e0358]`, pops a
+request off the free list `0x004e28e8` and releases the mutex. `0x001209c0`
+waits on the queue mutex `[0x004e035c]`, queues the request, releases the
+mutex and releases the worker's semaphore `[0x004e0360]`. It passes a
+previous-count local that nothing reads. Each of those kernel calls used to
+stop the render (a serviced call). The render then waited for the game
+thread to reach its join at the end of the tick, and the game thread then
+waited for the rest of the render. In loading-heavy stretches that put
+every frame in series. Headless runs under load measured 72 to 82 ms a
+frame against about 30 ms stock.
+
+Now the render does not stop for them. `Addrs::io_handles` names the three
+handle words. On the render thread a wait on one of those handles with no
+timeout, a mutex release with no previous count, and a semaphore release
+(previous count given as 0) return success at once and are logged. The
+render carries on against its snapshot. At the join (`settle`), the game
+thread first pushes what the render wrote to live RAM, as before a service,
+so the worker sees the request. It then makes the logged calls for real,
+in the render's order (`replay`, `replay_next`), and pulls the live ranges
+back into the view. A real result other than the one the render was given
+is counted (`io_mismatches`).
+
+Two rules keep this deterministic and in serial order:
+
+- A game-thread wait on a pool handle while a render is in flight joins the
+  render first (`io_joins`). The render's requests reach the pool before
+  the tick's, as in the serial run, where render k runs before tick k + 1,
+  whatever either thread's timing. Before this change the serviced path
+  queued the render's request after the tick's. The rig shows the worker
+  completing the sim's `0x205` before render 4's `0x104`, where the serial
+  run completes `0x104` first.
+- A frame pipelines only when every request is on the free list
+  (`Addrs::io_free`: the head `0x004e28e8`, linked at +0x3c, 150 requests
+  from `0x004e0368`). Otherwise it runs serially (`io_busy`). The worker's
+  own pool calls happen while the game thread waits, and they are not
+  ordered against the render's, so the worker has to be idle at the
+  launch. It wakes only through a semaphore release, either the render's
+  (replayed at the join) or the sim's (after the join).
+
+`H2_PIPELINE_DEFER_IO=0` restores the serviced path for an A/B. The
+`pipeline:` line now ends with
+`io_stalls N (T ms) io_deferred D io_joins J io_mismatches M io_other_thread O`.
+
+- `io_stalls` counts frames in which one side waited for the other because
+  of the pool: a pool call the render stopped at, or a game-thread pool
+  wait that joined.
+- `T` is the total time of those waits in the print window: the render
+  stopped until the game thread made the call, the game thread waiting for
+  the rest of the render after it, and the joins.
+
+Rig tests:
+
+- `the_renders_pool_requests_overlap_the_sim_and_complete_in_the_serial_order`
+- `a_render_queueing_io_every_frame_never_stalls`
+- `with_deferral_off_each_pool_call_stops_the_render_and_counts_a_stall`
+- `a_request_off_the_free_list_makes_the_frame_serial`
+
 ## Related
 
 - docs/perf/frame-budget.md, "Render front-end versus simulation": the

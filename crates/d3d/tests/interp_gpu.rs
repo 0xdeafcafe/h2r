@@ -57,8 +57,9 @@ fn share(ctx: &GfxContext) -> GfxContext {
     }
 }
 
-/// `r0 = c0..c3 * v0`, divided by `w`, then `oPos.xyz = r0 * c-38 + c-37`,
-/// `oPos.w = v0.w`, `oD0 = v3`.
+/// `oPos = c0..c3 * v0`, then the XDK's epilogue: `mul oPos.xyz, r12,
+/// c-38 : rcc r1.w, r12.w` and `mad oPos.xyz, r12, r1.w, c-37`;
+/// `oD0 = v3`.
 fn program_words() -> Vec<u32> {
     let mut insts = Vec::new();
     for (i, mask) in [8u8, 4, 2, 1].into_iter().enumerate() {
@@ -69,32 +70,24 @@ fn program_words() -> Vec<u32> {
                 Some(Operand::c(CAM as u8 + i as u8)),
                 None,
             )
-            .to_temp(0, mask),
+            .to_out(false, OutReg::Pos, mask),
         );
     }
-    insts.push(Inst::ilu(IluOp::Rcp, Operand::r(0).swz("w")).ilu_to_temp(1, 8));
+    insts.push(
+        Inst::mac(MacOp::Mul, Some(Operand::r(12)), Some(Operand::c(58)), None)
+            .to_out(false, OutReg::Pos, 0xE)
+            .with_ilu(IluOp::Rcc, Operand::r(12).swz("w"))
+            .ilu_to_temp(1, 1),
+    );
     insts.push(
         Inst::mac(
-            MacOp::Mul,
-            Some(Operand::r(0)),
-            Some(Operand::r(1).swz("x")),
-            None,
+            MacOp::Mad,
+            Some(Operand::r(12)),
+            Some(Operand::r(1).swz("w")),
+            Some(Operand::c(59)),
         )
-        .to_temp(0, 0xE),
+        .to_out(false, OutReg::Pos, 0xE),
     );
-    // One constant per instruction: scale, then offset.
-    insts.push(
-        Inst::mac(MacOp::Mul, Some(Operand::r(0)), Some(Operand::c(58)), None).to_temp(0, 0xE),
-    );
-    insts.push(
-        Inst::mac(MacOp::Add, Some(Operand::r(0)), None, Some(Operand::c(59))).to_out(
-            false,
-            OutReg::Pos,
-            0xE,
-        ),
-    );
-    insts
-        .push(Inst::mac(MacOp::Mov, Some(Operand::v(0)), None, None).to_out(false, OutReg::Pos, 1));
     insts.push(
         Inst::mac(MacOp::Mov, Some(Operand::v(3)), None, None)
             .to_out(false, OutReg::D0, 0xF)

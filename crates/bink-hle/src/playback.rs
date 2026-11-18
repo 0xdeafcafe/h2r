@@ -2,7 +2,8 @@
 //! and the callee pops them, so each body ends in `ret(cpu, 4 * nargs)`.
 use crate::Request;
 use crate::addr::*;
-use crate::source::{Clock, MovieSource, MovieStream, StreamInfo, SystemClock};
+use crate::audio_out::{MovieAudioOut, MovieVoice};
+use crate::source::{AudioInfo, Clock, MovieSource, MovieStream, StreamInfo, SystemClock};
 use runtime::{CpuAbi, ExecCtx, GuestFault, TransferAbi, guest::Permissions};
 use std::sync::{Arc, Mutex};
 
@@ -36,13 +37,99 @@ const SURFACE_32R: u32 = 4;
 const SURFACE_32A: u32 = 5;
 const SURFACE_32RA: u32 = 6;
 
+/// Sound queued ahead of the play position.
+const AUDIO_LEAD_MS: u64 = 500;
+/// Sound is handed over in packets this long.
+const AUDIO_PACKET_MS: u64 = 10;
+/// The sound clock counts as stalled (and the wall clock takes over from
+/// where it stopped) after this long without progress.
+pub const AUDIO_STALL_MS: u64 = 250;
+
+/// A movie's sound: the voice it plays on and how much has been fed.
+struct Sound {
+    voice: Box<dyn MovieVoice>,
+    info: AudioInfo,
+    /// Frames queued on the voice since open or the last loop.
+    queued: u64,
+    /// The stream has no more sound.
+    ended: bool,
+    /// Frames played at the last look, and the wall time it last moved.
+    played: u64,
+    moved_ms: u64,
+    pcm: Vec<i16>,
+}
+
 struct Slot {
     stream: Box<dyn MovieStream>,
     info: StreamInfo,
     frame: Vec<u8>,
     decoded: bool,
-    due_ms: u64,
-    frame_ms: u64,
+    /// Wall time at which the movie position was 0. With sound it follows
+    /// the sound, so the wall clock carries on from the sound's position
+    /// when the sound ends or stalls.
+    anchor_ms: u64,
+    sound: Option<Sound>,
+}
+
+impl Slot {
+    /// When frame `n` (1-based) is due, in ms of movie time.
+    fn due_ms(&self, n: u32) -> u64 {
+        n.saturating_sub(1) as u64 * 1000 * self.info.fps_den as u64 / self.info.fps_num as u64
+    }
+    /// The 1-based frame whose time has come at movie time `pos`.
+    fn frame_at(&self, pos: u64) -> u64 {
+        pos * self.info.fps_num as u64 / (1000 * self.info.fps_den as u64) + 1
+    }
+    /// Movie time now: the sound's play position while it plays, else the
+    /// wall clock from the anchor.
+    fn position_ms(&mut self, now: u64) -> u64 {
+        if let Some(s) = self.sound.as_mut() {
+            let played = s.voice.played_frames();
+            if played != s.played {
+                s.played = played;
+                s.moved_ms = now;
+            }
+            let drained = s.ended && played >= s.queued;
+            let stalled = now.saturating_sub(s.moved_ms) > AUDIO_STALL_MS;
+            if !drained && !stalled {
+                let pos = played * 1000 / s.info.sample_rate as u64;
+                self.anchor_ms = now.saturating_sub(pos);
+                return pos;
+            }
+        }
+        now.saturating_sub(self.anchor_ms)
+    }
+    /// Keep [`AUDIO_LEAD_MS`] of sound queued.
+    fn feed(&mut self) {
+        let Some(s) = self.sound.as_mut() else {
+            return;
+        };
+        let rate = s.info.sample_rate as u64;
+        let ch = s.info.channels as usize;
+        let lead = rate * AUDIO_LEAD_MS / 1000;
+        let packet = (rate * AUDIO_PACKET_MS / 1000).max(1) as usize;
+        s.pcm.resize(packet * ch, 0);
+        while !s.ended && s.queued.saturating_sub(s.played) < lead {
+            let n = self.stream.read_audio(&mut s.pcm).min(packet);
+            if n == 0 || !s.voice.queue(&s.pcm[..n * ch]) {
+                s.ended = true;
+                break;
+            }
+            s.queued += n as u64;
+        }
+    }
+    /// A loop: movie time and the sound start over.
+    fn restart(&mut self, now: u64) {
+        self.anchor_ms = now;
+        if let Some(s) = self.sound.as_mut() {
+            s.voice.flush();
+            s.ended = !self.stream.rewind_audio();
+            s.queued = 0;
+            s.played = 0;
+            s.moved_ms = now;
+        }
+        self.feed();
+    }
 }
 
 struct Inner {
@@ -53,6 +140,8 @@ struct Inner {
 pub struct BinkHle {
     source: Option<Arc<dyn MovieSource>>,
     clock: Arc<dyn Clock>,
+    /// Where movie sound plays; `None` plays movies silent.
+    audio: Mutex<Option<Arc<dyn MovieAudioOut>>>,
     /// Where to start the search for a free page.
     arena_hint: u32,
     /// The page we mapped, once we have.
@@ -87,6 +176,7 @@ impl BinkHle {
         Arc::new(Self {
             source,
             clock,
+            audio: Mutex::new(None),
             arena_hint: if HLE_RESERVED.contains(&hint) {
                 hint & !0xfff
             } else {
@@ -98,6 +188,11 @@ impl BinkHle {
                 requests: Vec::new(),
             }),
         })
+    }
+    /// Play movie sound here (the game's mixer, [`crate::MixerAudio`]).
+    /// Movies opened before this call stay silent.
+    pub fn set_audio_out(&self, out: Arc<dyn MovieAudioOut>) {
+        *self.audio.lock().unwrap_or_else(|e| e.into_inner()) = Some(out);
     }
     pub fn has_source(&self) -> bool {
         self.source.is_some()
@@ -182,7 +277,6 @@ impl BinkHle {
                 {
                     {
                         let h = arena + i as u32 * SLOT_SIZE;
-                        let frame_ms = (1000 * info.fps_den as u64 / info.fps_num as u64).max(1);
                         mem.set_u32(h + F_WIDTH, info.width)?;
                         mem.set_u32(h + F_HEIGHT, info.height)?;
                         mem.set_u32(h + F_FRAMES, info.frames)?;
@@ -190,14 +284,18 @@ impl BinkHle {
                         mem.set_u32(h + F_LAST_FRAME, 0)?;
                         mem.set_u32(h + F_RATE, info.fps_num)?;
                         mem.set_u32(h + F_RATE_DIV, info.fps_den)?;
-                        inner.slots[i] = Some(Slot {
+                        let now = self.clock.now_ms();
+                        let sound = self.open_sound(&*stream, now);
+                        let mut slot = Slot {
                             stream,
                             info,
                             frame: vec![0; info.width as usize * info.height as usize * 4],
                             decoded: false,
-                            due_ms: self.clock.now_ms(),
-                            frame_ms,
-                        });
+                            anchor_ms: now,
+                            sound,
+                        };
+                        slot.feed();
+                        inner.slots[i] = Some(slot);
                         handle = h;
                         played = true;
                     }
@@ -213,6 +311,26 @@ impl BinkHle {
         mem.ret(cpu, 8)
     }
 
+    fn open_sound(&self, stream: &dyn MovieStream, now: u64) -> Option<Sound> {
+        let info = stream
+            .audio_info()
+            .filter(|a| a.sample_rate > 0 && (1..=8).contains(&a.channels))?;
+        let out = self
+            .audio
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()?;
+        Some(Sound {
+            voice: out.open(info)?,
+            info,
+            queued: 0,
+            ended: false,
+            played: 0,
+            moved_ms: now,
+            pcm: Vec::new(),
+        })
+    }
+
     pub(crate) fn close(&self, cpu: &mut CpuAbi, ctx: &mut ExecCtx) -> R {
         let mut mem = ctx.memory();
         let h = mem.u32(cpu.esp.wrapping_add(4))?;
@@ -226,18 +344,23 @@ impl BinkHle {
         mem.ret(cpu, 4)
     }
 
-    /// `BinkWait(bnk)`: nonzero while the next frame is not yet due.
+    /// `BinkWait(bnk)`: nonzero while the current frame (`FrameNum`) is not
+    /// yet due on the movie's clock (the sound's position, else the wall).
     pub(crate) fn wait(&self, cpu: &mut CpuAbi, ctx: &mut ExecCtx) -> R {
         let mem = ctx.memory();
         let h = mem.u32(cpu.esp.wrapping_add(4))?;
         let now = self.clock.now_ms();
-        cpu.eax = match self
-            .slot_index(h)
-            .and_then(|i| self.lock().slots[i].as_ref().map(|s| s.due_ms))
-        {
-            Some(due) if now < due => 1,
-            _ => 0,
-        };
+        cpu.eax = 0;
+        if let Some(i) = self.slot_index(h) {
+            let n = mem.u32(h + F_FRAME_NUM)?;
+            let mut inner = self.lock();
+            if let Some(s) = inner.slots[i].as_mut() {
+                s.feed();
+                if s.position_ms(now) < s.due_ms(n) {
+                    cpu.eax = 1;
+                }
+            }
+        }
         mem.ret(cpu, 4)
     }
 
@@ -251,13 +374,16 @@ impl BinkHle {
             if let Some(s) = inner.slots[i].as_mut() {
                 let idx = n.saturating_sub(1).min(s.info.frames - 1);
                 s.decoded = s.stream.decode(idx, &mut s.frame) || s.decoded;
+                s.feed();
             }
         }
         cpu.eax = 0;
         mem.ret(cpu, 4)
     }
 
-    /// `BinkNextFrame(bnk)`: advance, never past the last frame.
+    /// `BinkNextFrame(bnk)`: advance one frame, or, when the clock has run
+    /// more than a frame ahead, to the frame now due (frames are dropped to
+    /// stay with the sound, as Bink does), never past the last frame.
     pub(crate) fn next_frame(&self, cpu: &mut CpuAbi, ctx: &mut ExecCtx) -> R {
         let mut mem = ctx.memory();
         let h = mem.u32(cpu.esp.wrapping_add(4))?;
@@ -266,14 +392,21 @@ impl BinkHle {
             let mut inner = self.lock();
             if let Some(s) = inner.slots[i].as_mut() {
                 mem.set_u32(h + F_LAST_FRAME, n)?;
-                // Like the original (0x3e2fb9..0x3e2fc8): past the last frame
-                // NextFrame wraps to frame 1, which is what makes loops loop.
-                // Non-looping callers stop on `FrameNum == Frames` first.
-                mem.set_u32(h + F_FRAME_NUM, if n >= s.info.frames { 1 } else { n + 1 })?;
                 let now = self.clock.now_ms();
-                let next = s.due_ms + s.frame_ms;
-                // Fell more than a frame behind: resync rather than burst.
-                s.due_ms = if now > next + s.frame_ms { now } else { next };
+                if n >= s.info.frames {
+                    // Like the original (0x3e2fb9..0x3e2fc8): past the last
+                    // frame NextFrame wraps to frame 1, which is what makes
+                    // loops loop. Non-looping callers stop on
+                    // `FrameNum == Frames` first.
+                    mem.set_u32(h + F_FRAME_NUM, 1)?;
+                    s.restart(now);
+                } else {
+                    let pos = s.position_ms(now);
+                    let due = s.frame_at(pos);
+                    let next = (n as u64 + 1).max(due).min(s.info.frames as u64);
+                    mem.set_u32(h + F_FRAME_NUM, next as u32)?;
+                    s.feed();
+                }
             }
         }
         cpu.eax = 0;

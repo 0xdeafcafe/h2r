@@ -1,0 +1,82 @@
+# effe: effect. Layout and evidence: docs/formats/effects.md (strides V by
+# tiling every effe payload on the disc; E addresses there). A property is
+# i16 input, i16 range input, u16 output modifier, i16 modifier input, then
+# the function bytes (E 0x00246cd0).
+struct property 0x10
+  0x0 i16 input -- E 0x00246cd0 evaluates the function at inputs[input]
+  0x2 i16 range_input -- E 0x00246cd0
+  0x4 u16 output_modifier -- E 0x00246cd0: 1 add, 2 multiply
+  0x6 i16 modifier_input -- E 0x00246cd0; negative ignores the modifier
+  0x8 data function align 4 -- E 0x0013b390 evaluates these bytes (docs/formats/effects.md, Function data)
+group effe 0x30 align 4
+  0x0 u32 flags -- V values only; meaning unknown
+  0x4 i16 loop_start_event -- V -1, 0 or 1; name D (an event index or none)
+  0x6 unknown 0x2 seen=9
+  0x8 unknown 0x4 seen=8 -- floats
+  0xc block locations 0x4 align 4 -- E 0x0017a380 checks a part's location against this count
+    0x0 string marker -- V: a marker name of the object the effect plays on; name D
+  0x14 block events 0x38 align 4 -- E 0x0017a380 and 0x00178eb0 step 0x38
+    0x0 pad 0x4
+    0x4 f32 skip_fraction -- V range 0..1; name D
+    0x8 f32[2] delay_bounds -- V seconds; name D
+    0x10 f32[2] duration_bounds -- V 1/30 on most; name D
+    0x18 block parts 0x38 align 4 -- E 0x0017a380 reads the count at +0x18 and the array at +0x1c
+      0x0 u16 disposition -- E a four-way switch (0x0017a888) decides creation; V 0 on the disc
+      0x2 u16 create_in -- E compared with the effect's underwater flag: 1 skips the part underwater, 2 above
+      0x4 i16 location -- E negative or past the location count skips the part
+      0x6 u16 flags -- E bit 0 world axis as direction, bit 1 random offset (+0x28), bits 2 and 4 orientation
+      0x8 u32 type_group -- E 0x0017a8a0 dispatches on this group word; V the reference's group, or obje for any object
+      0xc tagref reference -- E the datum at +0x10 is tested for null; V of the group at +8 (a concrete object group for obje)
+      0x14 f32[2] velocity_bounds -- name D
+      0x1c f32 velocity_cone_angle -- name D
+      0x20 f32[2] angular_velocity_bounds -- name D
+      0x28 f32[2] radius_modifier_bounds -- E passed to the two-bound random helper 0x000259d0
+      0x30 u32 a_scales -- E bit 5 scales by the effect's first scalar
+      0x34 u32 b_scales -- E bit 5 scales by the second scalar
+    0x20 block beams 0x3c align 4 -- V tiling only (three tags); no consumer traced
+      0x0 tagref shader groups=shad -- V class
+      0x8 unknown 0x4 seen=many
+      0xc data function_c align 4
+      0x14 data function_14 align 4
+      0x1c data function_1c align 4
+      0x24 data function_24 align 8
+      0x2c data function_2c align 4
+      0x34 data function_34 align 4
+    0x28 block accelerations 0x14 align 4 -- V tiling; consumer not traced
+      0x0 u16 create_in -- V values as the part's; name D
+      0x2 u16 disposition -- name D
+      0x4 i16 location -- V in range of the locations; name D
+      0x6 pad 0x2
+      0x8 f32 acceleration -- name D
+      0xc f32 inner_cone_angle -- name D
+      0x10 f32 outer_cone_angle -- name D
+    0x30 block particle_systems 0x38 align 4 -- E 0x00178eb0 reads the array at event +0x34
+      0x0 tagref particle groups=prt3|PRTM -- E 0x00173cb0 accepts only prt3 and PRTM
+      0x8 i32 location -- E read as 32 bits; -1 none
+      0xc u16 unknown_c -- E +0xc != 0 is passed as a flag
+      0xe u16 unknown_e -- E passed to a compatibility check
+      0x10 u16 unknown_10
+      0x12 u16 unknown_12 -- E passed to the location lookup
+      0x14 i16 unknown_14
+      0x16 unknown 0x2 seen=many -- nonzero on 347 instances
+      0x18 f32[3] fade -- V (a, b, 1/b) on every instance
+      0x24 f32[3] lod -- V (distance, range, 1/range) on every instance
+      0x30 block emitters 0xb8 align 4 -- V tiling
+        0x0 tagref movement groups=pmov -- V class
+        0x8 struct property_8 property
+        0x18 struct lifespan property -- E 0x00249170: the particle lifespan, 1 / max(value, minimum)
+        0x28 struct property_28 property
+        0x38 struct property_38 property
+        0x48 struct property_48 property
+        0x58 struct property_58 property
+        0x68 struct property_68 property
+        0x78 u32 emission_shape -- E 0x00249170 switches on it (jump table 0x00249a74)
+        0x7c struct shape_input property -- E 0x00249170
+        0x8c struct velocity_input property -- E 0x00249170
+        0x9c unknown 0x14 seen=many
+        0xb0 unknown 0x4 seen=8 -- small integers
+        0xb4 unknown 0x4 seen=many -- small integers
+  0x1c tagref looping_sound groups=lsnd -- V class
+  0x24 i16 unknown_24
+  0x26 pad 0x2
+  0x28 unknown 0x8 seen=2

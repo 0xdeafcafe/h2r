@@ -14,6 +14,7 @@ import { useSessions } from "../state/sessions";
 import { useStatsSummary, type SummaryStatus } from "../state/statsSummary";
 import { endedGames, isCampaign, liveGames, type GameState } from "../state/reducer";
 import { gameMapTitle } from "../state/maps";
+import { isHalo1Map } from "../state/gameart";
 import { gameTypeLine } from "../state/gametype";
 import { OUTCOME_WORDS, campaignOutcome, countMedals, gameMedals, MEDAL_BY_ID, type MedalId } from "../state/derive";
 import {
@@ -460,7 +461,7 @@ export function HomeView(props: { win: StatsWindow; week: StatsSummary | null; w
                     <section class="s-sec">
                       <header><h3>Most Played Maps</h3><small>games</small></header>
                       <Bars rows={mapRows()} value={(m) => m.games} name={(m) => mapTitleOf(m)} unit="games" empty={`No games ${label()}.`}
-                        label={(m) => <span class="s-who"><MapPreview map={m.map} mapId={m.map_id} />{mapTitleOf(m)}{m.campaign ? <small class="s-dim"> campaign</small> : null}</span>} />
+                        label={(m) => <span class="s-who"><MapPreview map={m.map} mapId={m.map_id} />{mapTitleOf(m)}{isHalo1Map(m.map) ? <small class="s-dim s-h1"> Halo 1</small> : null}{m.campaign ? <small class="s-dim"> campaign</small> : null}</span>} />
                     </section>
                     <section class="s-sec">
                       <header><h3>Most Used Weapons</h3><small>kills</small></header>

@@ -539,6 +539,9 @@ pub fn install(
     // The campaign picker (docs/game/multiple-campaigns.md), when a second
     // campaign is installed.
     let with_campaigns = crate::campaign_menu::class().is_some();
+    // The Halo 1 options' texts (crate::h1_options): the campaign page's
+    // option rows and the Game Setup row and screen, wherever settings are.
+    let with_h1_options = model.is_some();
     if !layouts
         && !with_speaker
         && !with_controls
@@ -546,6 +549,7 @@ pub fn install(
         && !with_custom_games
         && !with_skulls
         && !with_campaigns
+        && !with_h1_options
     {
         return Ok(());
     }
@@ -574,6 +578,9 @@ pub fn install(
         }
         if with_skulls {
             served.extend(skulls_menu::strings());
+        }
+        if with_h1_options {
+            served.extend(crate::h1_options::strings());
         }
         served.extend(crate::campaign_menu::strings());
         let (addrs, used) = write_strings(&mut *mem, DATA_BASE, &served)
@@ -636,7 +643,8 @@ pub fn install(
         .chain(fov_hooks.into_iter().filter(|_| with_fov))
         .chain(video_hooks.into_iter().filter(|_| with_video))
         .chain(text_hooks.into_iter().filter(|_| layouts))
-        .chain(controls_hooks.into_iter().filter(|_| extra_rows > 0))
+        // Also for our classes' taller lists (`list_class::extra_items`).
+        .chain(controls_hooks)
         .chain(custom_games_hooks.into_iter().filter(|_| with_custom_games))
         .chain(skulls_hooks.into_iter().filter(|_| with_skulls))
         .collect();
@@ -955,7 +963,9 @@ pub fn install(
         }
         // The Controls list's added item widgets, one per added row, and the
         // Xbox Live menu's fifth item widget.
-        if let (Some(o), true) = (originals.remove(&speaker_row::ADD_ITEMS), extra_rows > 0 || with_custom_games) {
+        // Our classes' lists laid out taller than six rows get theirs too
+        // (`list_class::extra_items`).
+        if let Some(o) = originals.remove(&speaker_row::ADD_ITEMS) {
             let sh = alias(d, &mut next_shadow, &o, speaker_row::ADD_ITEMS);
             let seen = AtomicBool::new(false);
             let slots = Arc::new(std::sync::Mutex::new((Vec::new(), 0u32)));
@@ -988,7 +998,11 @@ pub fn install(
                         let size = LIVE_ITEM_SLOTS * speaker_row::ITEM_SIZE;
                         vec![speaker_row::extra_slot(table, next, handler, live.1, size, 1)]
                     } else {
-                        return Ok(TransferAbi::ret(ret_pc));
+                        let ours = crate::list_class::extra_items(handler, vtable);
+                        if ours.is_empty() {
+                            return Ok(TransferAbi::ret(ret_pc));
+                        }
+                        ours
                     };
                     let player = u32::from(mem.u16(handler + 8)?);
                     let saved = (cpu.ebx, cpu.esi, cpu.edi, cpu.ebp);

@@ -1,5 +1,5 @@
 //! The small unsafe boundary to the system AVFoundation reader.
-use crate::{MovieDecoder, MovieStream, StreamInfo};
+use crate::{AudioInfo, MovieDecoder, MovieStream, StreamInfo};
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
@@ -28,10 +28,16 @@ unsafe extern "C" {
     ) -> *mut c_void;
     fn h2_movie_decode(handle: *mut c_void, index: u32, dest: *mut u8, len: usize) -> i32;
     fn h2_movie_close(handle: *mut c_void);
+    fn h2_movie_audio_rate(handle: *mut c_void) -> u32;
+    fn h2_movie_audio_read(handle: *mut c_void, dest: *mut i16, frames: usize) -> usize;
+    fn h2_movie_audio_rewind(handle: *mut c_void) -> i32;
 }
+/// The bridge always hands out two channels.
+const AUDIO_CHANNELS: u16 = 2;
 struct Stream {
     handle: NonNull<c_void>,
     info: StreamInfo,
+    audio: Option<AudioInfo>,
 }
 // SAFETY: The bridge owns its AVAssetReader, retains no thread-affine UI
 // objects, uses an autorelease pool per call, and is only called with &mut self.
@@ -58,8 +64,14 @@ impl AvFoundationDecoder {
             let error = unsafe { CStr::from_ptr(error.as_ptr()) };
             io::Error::other(error.to_string_lossy().into_owned())
         })?;
+        // SAFETY: handle is the live reader just opened.
+        let rate = unsafe { h2_movie_audio_rate(handle.as_ptr()) };
         Ok(Box::new(Stream {
             handle,
+            audio: (rate > 0).then_some(AudioInfo {
+                sample_rate: rate,
+                channels: AUDIO_CHANNELS,
+            }),
             info: StreamInfo {
                 width: info.width,
                 height: info.height,
@@ -84,6 +96,27 @@ impl MovieStream for Stream {
         // SAFETY: handle is live, uniquely accessed; bgra is writable for len
         // bytes. The bridge checks dimensions before copying and stores no pointer.
         unsafe { h2_movie_decode(self.handle.as_ptr(), index, bgra.as_mut_ptr(), bgra.len()) != 0 }
+    }
+    fn audio_info(&self) -> Option<AudioInfo> {
+        self.audio
+    }
+    fn read_audio(&mut self, pcm: &mut [i16]) -> usize {
+        let frames = Self::audio_frames(pcm);
+        if self.audio.is_none() || frames == 0 {
+            return 0;
+        }
+        // SAFETY: handle is live and uniquely accessed; pcm holds `frames`
+        // stereo frames, which is all the bridge writes.
+        unsafe { h2_movie_audio_read(self.handle.as_ptr(), pcm.as_mut_ptr(), frames) }
+    }
+    fn rewind_audio(&mut self) -> bool {
+        // SAFETY: handle is live and uniquely accessed.
+        self.audio.is_some() && unsafe { h2_movie_audio_rewind(self.handle.as_ptr()) != 0 }
+    }
+}
+impl Stream {
+    fn audio_frames(pcm: &[i16]) -> usize {
+        pcm.len() / AUDIO_CHANNELS as usize
     }
 }
 impl Drop for Stream {

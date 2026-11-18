@@ -621,8 +621,20 @@ const FRAME_GRID: usize = 64;
 /// every group with at least 15% of the largest group's triangles is kept,
 /// grown by a cell. z spans the kept centroids, less a few outliers cut off
 /// by a wide gap ([`z_range`]). Everything is padded by 3% and kept inside
-/// the bounds.
+/// the bounds. A cell needs at least 3 triangles to be dense.
 pub fn frame(mesh: &LevelMesh) -> Bounds {
+    frame_with(mesh, DENSE_LEAST)
+}
+
+/// [`frame`]'s least triangles in a dense cell.
+const DENSE_LEAST: usize = 3;
+/// The same for a low-poly level (Halo 1's): any triangle, so its large
+/// terrain triangles (a canyon floor in a few dozen) are not framed out.
+pub const SPARSE_LEAST: usize = 1;
+
+/// [`frame`] with `least` triangles making a cell dense (when a tenth of
+/// the 90th percentile is fewer).
+pub fn frame_with(mesh: &LevelMesh, least: usize) -> Bounds {
     let b = mesh.bounds;
     let centroids: Vec<[f32; 3]> = mesh
         .primitives
@@ -651,7 +663,7 @@ pub fn frame(mesh: &LevelMesh) -> Bounds {
     let mut filled: Vec<usize> = count.iter().copied().filter(|&n| n > 0).collect();
     filled.sort_unstable();
     let p90 = filled[filled.len() * 9 / 10];
-    let dense = |i: usize| count[i] >= (p90 / 10).max(3);
+    let dense = |i: usize| count[i] >= (p90 / 10).max(least);
     // 8-connected groups of dense cells, with their triangle counts.
     let mut group = vec![usize::MAX; g * g];
     let mut sizes = Vec::new();
@@ -1370,6 +1382,13 @@ pub struct MapEntry {
     /// Structure BSPs in `map.glb` (one node each).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bsps: Option<usize>,
+    /// `halo1` for a converted Halo 1 map (`crate::live_halo1`); absent for
+    /// Halo 2's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub game: Option<String>,
+    /// Its display name, when the catalog does not have it (Halo 1 maps).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 /// Counts and timings for one map.
@@ -1808,7 +1827,7 @@ pub(crate) fn object_model(
         .and_then(|r| r.tag_ref("render_model"))
         .filter(|r| r.id != TagId::NULL)
         .ok_or_else(|| anyhow::Error::new(NothingDrawn("no render model".into())))?;
-    let model = tags::model::RenderModelGeometry::read(map, mode.id, &mut Raw(files))
+    let model = tags::model::RenderModelGeometry::read_in(map, mode.id, &mut Raw(files), Some(&ctx.meta))
         .with_context(|| format!("{name}: render model"))?;
     let surfaces: Vec<Surface> = model
         .materials
@@ -2043,6 +2062,14 @@ impl Level {
             self.shadow = live_render::shadow_map(&self.mesh, &self.frame);
         }
         self.cinematic = cinematic;
+        self
+    }
+
+    /// Frames the views for a low-poly level ([`SPARSE_LEAST`]): a
+    /// converted Halo 1 map. Call after [`Level::with_cinematic`].
+    pub fn with_sparse_frame(mut self) -> Level {
+        self.frame = frame_with(&self.mesh, SPARSE_LEAST);
+        self.shadow = live_render::shadow_map(&self.mesh, &self.frame);
         self
     }
 
@@ -2588,6 +2615,9 @@ fn load_level(disc: &Disc, m: &MapFile, kind: MapKind, stats: &mut MapStats) -> 
             }
         }
     }
+    if m.halo1.is_some() {
+        level = level.with_sparse_frame();
+    }
     let mut skipped = BTreeMap::new();
     let lifts = kind == MapKind::Multiplayer;
     match read_features(&mut map, &mut files, m.name(), lifts, &mut skipped) {
@@ -2683,6 +2713,26 @@ pub fn extract(disc: &Disc, out: &Path) -> Extracted {
             disc.maps_of(CacheType::Campaign)
                 .map(|m| (m, MapKind::Campaign)),
         )
+        .chain(disc.halo1_maps().filter_map(|m| Some((m, halo1_kind(m)?))))
+        .collect();
+    extract_maps(disc, &maps, out)
+}
+
+/// A converted Halo 1 map's kind, by its cache type.
+fn halo1_kind(m: &MapFile) -> Option<MapKind> {
+    match m.cache_type()? {
+        CacheType::Multiplayer => Some(MapKind::Multiplayer),
+        CacheType::Campaign => Some(MapKind::Campaign),
+        _ => None,
+    }
+}
+
+/// [`extract`] for the given maps only.
+pub(crate) fn extract_maps(disc: &Disc, maps: &[(&MapFile, MapKind)], out: &Path) -> Extracted {
+    // A Halo 1 map's manifest entry says so, and names it.
+    let halo1: HashMap<String, String> = maps
+        .iter()
+        .filter_map(|(m, _)| Some((m.name().to_string(), m.halo1.as_ref()?.name.clone())))
         .collect();
     let workers = std::thread::available_parallelism().map_or(4, |n| n.get());
     let mut result = Extracted::default();
@@ -2783,6 +2833,10 @@ pub fn extract(disc: &Disc, out: &Path) -> Extracted {
             views: None,
             kind: Some(level.kind),
             bsps: Some(level.bsps.len()),
+            game: halo1
+                .contains_key(&level.stem)
+                .then(|| crate::live_halo1::GAME.to_string()),
+            name: halo1.get(&level.stem).filter(|n| !n.is_empty()).cloned(),
         };
         let views: Vec<ViewEntry> = plan
             .into_iter()

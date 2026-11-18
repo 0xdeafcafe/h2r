@@ -93,6 +93,8 @@ pub struct Fresh {
     /// The precision swaps' collections, as this map's datums (for
     /// [`Prepared::manifest_with`]).
     pub precision: Vec<(TagId, TagId)>,
+    /// The HUD pairs (owner, Halo 1 HUD, Halo 2 HUD), as this map's datums.
+    pub hud: Vec<[TagId; 3]>,
 }
 
 impl Prepared {
@@ -118,13 +120,17 @@ impl Prepared {
         }
         // The precision swaps' collections are named by no placement: kept
         // for `boot::precision` to swap in at game start.
-        let keep: Vec<TagId> = self.applied.precision.iter().map(|p| p.1).collect();
+        // So is each owner's Halo 2 HUD, for `boot::hud_swap` (docs/game/hud.md).
+        let huds = self.hud_swaps();
+        let mut keep: Vec<TagId> = self.applied.precision.iter().map(|p| p.1).collect();
+        keep.extend(huds.iter().map(|h| h[2]));
         report.pruned = prune(&mut fresh, base.index_slots() as usize, &keep);
         check_refused(&mut fresh, &report)?;
         drop(src);
         // Then from scratch: the base's tags by path, only what is reached,
         // on a dense index. The pruned set is the fallback.
         let mut precision = self.applied.precision.clone();
+        let mut hud = huds.clone();
         match from_scratch(base, &pinned, &bytes, &fresh, &keep) {
             Ok((set, r)) => {
                 // The swaps' datums, in the new index (the manifest's).
@@ -146,6 +152,11 @@ impl Prepared {
                     .map(|&(a, b)| Some((new(a)?, new(b)?)))
                     .collect::<Option<Vec<_>>>()
                     .ok_or_else(|| Error::Fresh("a precision swap's tag left out".into()))?;
+                hud = huds
+                    .iter()
+                    .map(|h| Some([new(h[0])?, new(h[1])?, new(h[2])?]))
+                    .collect::<Option<Vec<_>>>()
+                    .ok_or_else(|| Error::Fresh("a HUD pair's tag left out".into()))?;
                 fresh = set;
                 report.scratch = Some(r);
             }
@@ -157,6 +168,7 @@ impl Prepared {
             bytes,
             report,
             precision,
+            hud,
         })
     }
 }

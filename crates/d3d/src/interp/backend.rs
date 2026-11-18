@@ -2,18 +2,20 @@
 //! surface and replays the newest one with interpolated matrices into
 //! surfaces of its own, at the display rate, on the render thread.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
 
 use gfx::texture::{DecodedTexture, TextureDesc};
 use gfx::{Clear, D3DFormat};
 
+use super::epilogue::Epilogue;
 use super::model::{FrameModel, Kind, Substituted, Tuning, match_draws, substitute};
 use super::pacing::{Rate, Schedule, alpha, blendable, defer};
 use super::reproject::{self, Screen};
 use crate::backend::{
     Backend, DrawJudge, DrawOutcome, GuestLayoutKind, RectClear, ResolvedDraw, StreamBytes,
 };
-use crate::shader::Constants;
+use crate::shader::{Constants, Microcode, VertexProcessing};
 
 /// Counters, shared with whoever wants to print them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -49,14 +51,31 @@ pub struct InterpStats {
     pub warp_ns: u64,
     pub warp_max_ns: u64,
     /// Frames held because a made frame would not have matched the
-    /// guest's: its surface's host size differs, or (E1) the world draws do
-    /// not all map onto the whole target the same way.
+    /// guest's: the sum of the four below.
     pub size_mismatch: u64,
+    /// Of those: the made frame's host size differs from the guest's.
+    pub mismatch_extent: u64,
+    /// E1: a world draw's screen mapping (its program's viewport
+    /// transform) is not one the replay can read, differs from the
+    /// camera's, does not cover the target, or is scissored; or a partial
+    /// clear in the world.
+    pub mismatch_mapping: u64,
+    /// E1: a world draw in screen space (pre-transformed, fixed function,
+    /// or without a centred perspective: an orthographic quad, a
+    /// perspective into pixels): it is not part of the turning world.
+    pub mismatch_screen: u64,
+    /// E1: a draw that uses the camera after the overlay starts: it would
+    /// go on top of the warped world unwarped.
+    pub mismatch_overlay: u64,
     /// Frames held because the classification was not sure of a gameplay
-    /// view: a camera that is not a centred perspective (menus, screen
-    /// space), or draws that read a render target the replay could not
-    /// keep a copy of.
+    /// view: the sum of the two below.
     pub unsure: u64,
+    /// Of those: a camera that is not a centred perspective (menus, screen
+    /// space).
+    pub unsure_camera: u64,
+    /// Of those: draws that read something the replay could not keep (a
+    /// render target it could not copy, a surface copied in).
+    pub unsure_unpinned: u64,
     /// In-between frames dropped (and guest frames shown as drawn) because
     /// the GPU had not finished the last made frame.
     pub dropped: u64,
@@ -80,6 +99,27 @@ impl InterpStats {
         self.warp_ns += ns;
         self.warp_max_ns = self.warp_max_ns.max(ns);
     }
+
+    fn held(&mut self, why: Hold) {
+        match why {
+            Hold::Unsure(u) => {
+                self.unsure += 1;
+                match u {
+                    Unsure::Camera => self.unsure_camera += 1,
+                    Unsure::Unpinned => self.unsure_unpinned += 1,
+                }
+            }
+            Hold::SizeMismatch(m) => {
+                self.size_mismatch += 1;
+                match m {
+                    Mismatch::Extent => self.mismatch_extent += 1,
+                    Mismatch::Mapping => self.mismatch_mapping += 1,
+                    Mismatch::Screen => self.mismatch_screen += 1,
+                    Mismatch::Overlay => self.mismatch_overlay += 1,
+                }
+            }
+        }
+    }
 }
 
 fn avg_ms(total: u64, n: u64) -> f64 {
@@ -94,7 +134,7 @@ impl std::fmt::Display for InterpStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "frames {} blended {} held {} replays {} substituted draws {} snapped {} deferred {} size_mismatch {} unsure {} dropped {}",
+            "frames {} blended {} held {} replays {} substituted draws {} snapped {} deferred {} size_mismatch {} (extent {} mapping {} screen {} overlay {}) unsure {} (camera {} unpinned {}) dropped {}",
             self.frames,
             self.blended_frames,
             self.held_frames,
@@ -103,7 +143,13 @@ impl std::fmt::Display for InterpStats {
             self.snapped,
             self.deferred,
             self.size_mismatch,
+            self.mismatch_extent,
+            self.mismatch_mapping,
+            self.mismatch_screen,
+            self.mismatch_overlay,
             self.unsure,
+            self.unsure_camera,
+            self.unsure_unpinned,
             self.dropped
         )?;
         if self.replay_frames > 0 {
@@ -193,6 +239,8 @@ struct Frame<B: Backend> {
     world_end: usize,
     /// E1: where the world draws' coordinates land on the target.
     screen: Option<Screen>,
+    /// E1: each draw's viewport transform (the world image scales it).
+    epilogues: Vec<Option<Epilogue>>,
     /// E1: this frame's world image has been drawn.
     captured: bool,
     /// Why the frame may not be made again, if it may not.
@@ -203,10 +251,96 @@ struct Frame<B: Backend> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Hold {
     /// Not sure it is a gameplay view ([`InterpStats::unsure`]).
-    Unsure,
+    Unsure(Unsure),
     /// It would not land where the guest's frame does
     /// ([`InterpStats::size_mismatch`]).
-    SizeMismatch,
+    SizeMismatch(Mismatch),
+}
+
+/// Why a frame is [`Hold::Unsure`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Unsure {
+    Camera,
+    Unpinned,
+}
+
+/// Why a made frame would not land where the guest's does
+/// ([`InterpStats::mismatch_extent`] and the rest).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Mismatch {
+    Extent,
+    Mapping,
+    Screen,
+    Overlay,
+}
+
+/// E1: the screen mapping the frame's world image is warped through, or
+/// why the warp could not be shown to put the world where the guest drew
+/// it. The world image is the ops before `world_end` again with every
+/// program's viewport scale times the overscan; that moves a draw with
+/// the rest only when its program's viewport transform is known, is the
+/// camera's and covers the whole target, unscissored. Screen-space draws
+/// (pre-transformed, fixed function, no centred perspective: an
+/// orthographic quad, a perspective into pixels) would shrink with the
+/// overscan and then turn with the world, partial clears are in pixels, and a
+/// draw after the overlay starts that uses the camera would go on top of
+/// the turned world unturned.
+fn world_screen<B: Backend>(
+    ops: &[Op<B>],
+    world_end: usize,
+    model: &FrameModel,
+    epilogues: &[Option<Epilogue>],
+) -> Result<Screen, Mismatch> {
+    let draws: Vec<(usize, &ResolvedDraw)> = ops
+        .iter()
+        .enumerate()
+        .filter_map(|(i, o)| match o {
+            Op::Draw { draw, .. } => Some((i, &**draw)),
+            _ => None,
+        })
+        .collect();
+    let blocks = |k: usize| model.draws[k].blocks.iter().map(|b| b.kind);
+    let first = (0..draws.len())
+        .find(|&k| blocks(k).any(|b| matches!(b, Kind::Camera)))
+        .ok_or(Mismatch::Mapping)?;
+    let e = epilogues[first].as_ref().ok_or(Mismatch::Mapping)?;
+    let screen = Screen::of(draws[first].1, e);
+    if !screen.covers_target() {
+        return Err(Mismatch::Mapping);
+    }
+    let (w, h) = (screen.size[0] as u32, screen.size[1] as u32);
+    for o in &ops[..world_end] {
+        if let Op::ClearRects { clear, .. } = o
+            && clear.rects.iter().any(|r| !r.is_whole(w, h))
+        {
+            return Err(Mismatch::Mapping);
+        }
+    }
+    for (k, &(i, d)) in draws.iter().enumerate() {
+        if i >= world_end {
+            if blocks(k).any(|b| matches!(b, Kind::Camera | Kind::World(_))) {
+                return Err(Mismatch::Overlay);
+            }
+            continue;
+        }
+        let perspective = blocks(k).any(|b| matches!(b, Kind::Camera | Kind::World(_)))
+            || blocks(k).any(|b| matches!(b, Kind::Local(p) if p.centred()));
+        if d.layout.pretransformed
+            || matches!(d.shader.vertex, VertexProcessing::FixedFunction { .. })
+            || !perspective
+            || blocks(k).any(|b| matches!(b, Kind::Local(p) if !p.centred()))
+        {
+            return Err(Mismatch::Screen);
+        }
+        let e = epilogues[k].as_ref().ok_or(Mismatch::Mapping)?;
+        if !screen.same(&Screen::of(d, e))
+            || d.clip.is_some_and(|c| !c.is_whole(w, h))
+            || !d.clip_rects.is_empty()
+        {
+            return Err(Mismatch::Mapping);
+        }
+    }
+    Ok(screen)
 }
 
 /// Runs `ops` on `inner`, each surface through `to`, draw `k` (counting
@@ -341,15 +475,17 @@ pub struct InterpBackend<B: Backend> {
     failed: bool,
     stats: Arc<Mutex<InterpStats>>,
     /// Textures that are views of render targets (their contents change
-    /// when the target is drawn again), with the surface and whether it is
-    /// a depth surface.
-    live: Vec<(Weak<B::Texture>, B::Surface, bool)>,
+    /// when the target is drawn again), with the surface.
+    live: Vec<(Weak<B::Texture>, B::Surface)>,
     /// Copies of render targets taken for recorded draws that sampled them,
     /// valid until the surface is written.
     snaps: Vec<(B::Surface, Arc<B::Texture>)>,
     /// The frame being recorded read something the replay cannot keep: a
     /// render target it could not copy, or a surface copied in.
     unpinned: bool,
+    /// E1: each vertex program's viewport transform, as read from its
+    /// microcode ([`Epilogue::of`]; `None`: not one E1 can follow).
+    epilogues: HashMap<Microcode, Option<Epilogue>>,
     /// Whether the GPU has finished the last made frame.
     fence: Option<Box<dyn Fn() -> bool + Send>>,
 }
@@ -385,6 +521,7 @@ impl<B: Backend> InterpBackend<B> {
             live: Vec::new(),
             snaps: Vec::new(),
             unpinned: false,
+            epilogues: HashMap::new(),
             fence: None,
         }
     }
@@ -464,17 +601,13 @@ impl<B: Backend> InterpBackend<B> {
     /// since: a smaller pass, the next frame). Marks the frame unpinned
     /// when no copy can be made.
     fn pin(&mut self, t: &Arc<B::Texture>) -> Arc<B::Texture> {
-        let Some(&(_, surface, depth)) = self
+        let Some(&(_, surface)) = self
             .live
             .iter()
-            .find(|(w, _, _)| std::ptr::eq(w.as_ptr(), Arc::as_ptr(t)))
+            .find(|(w, _)| std::ptr::eq(w.as_ptr(), Arc::as_ptr(t)))
         else {
             return Arc::clone(t);
         };
-        if depth {
-            self.unpinned = true;
-            return Arc::clone(t);
-        }
         if let Some((_, c)) = self.snaps.iter().find(|(s, _)| *s == surface) {
             return Arc::clone(c);
         }
@@ -501,9 +634,21 @@ impl<B: Backend> InterpBackend<B> {
     }
 
     /// Notes a texture that views render target `s`.
-    fn note_live(&mut self, t: &Arc<B::Texture>, s: B::Surface, depth: bool) {
-        self.live.retain(|(w, _, _)| w.strong_count() > 0);
-        self.live.push((Arc::downgrade(t), s, depth));
+    fn note_live(&mut self, t: &Arc<B::Texture>, s: B::Surface) {
+        self.live.retain(|(w, _)| w.strong_count() > 0);
+        self.live.push((Arc::downgrade(t), s));
+    }
+
+    /// The viewport transform `d`'s vertex program applies, if E1 can
+    /// follow it (read once per program).
+    fn epilogue(&mut self, d: &ResolvedDraw) -> Option<Epilogue> {
+        match &d.shader.vertex {
+            VertexProcessing::Program { microcode, .. } => *self
+                .epilogues
+                .entry(microcode.clone())
+                .or_insert_with(|| Epilogue::of(microcode)),
+            VertexProcessing::FixedFunction { .. } => None,
+        }
     }
 
     /// Whether the GPU is still on the last made frame.
@@ -596,10 +741,12 @@ impl<B: Backend> InterpBackend<B> {
         targets.extend(depths_in(&cur.ops[..end]));
         let world_draws = draws_in(&cur.ops[..end]);
         let constants = constants_of(&cur.ops);
-        let subs =
-            reproject::overscan(&cur.model, world_draws, reproject::overscan_scale(), &|i| {
-                constants[i].clone()
-            });
+        let subs = reproject::overscan(
+            &cur.epilogues,
+            world_draws,
+            reproject::overscan_scale(),
+            &|i| constants[i].clone(),
+        );
         drop(constants);
         let mut map = Vec::with_capacity(targets.len());
         for t in targets {
@@ -778,50 +925,37 @@ impl<B: Backend> InterpBackend<B> {
             .as_ref()
             .map(|p| match_draws(&p.model, &model))
             .unwrap_or_default();
-        // E1: where the overlay starts (as an op index), and the screen
-        // mapping of the first draw that uses the camera.
+        // E1: where the overlay starts (as an op index), each draw's
+        // viewport transform, and the screen mapping the warp goes through.
         let overlay = reproject::overlay_start(&model);
-        let (mut world_end, mut screen, mut k) = (ops.len(), None, 0);
+        let reproject = self.mode != Mode::Replay;
+        let mut epilogues = Vec::new();
+        let mut world_end = ops.len();
+        let mut k = 0;
         for (i, o) in ops.iter().enumerate() {
             if let Op::Draw { draw, .. } = o {
-                if k == overlay {
+                if k == overlay && world_end == ops.len() {
                     world_end = i;
-                    break;
                 }
-                if screen.is_none()
-                    && model.draws[k]
-                        .blocks
-                        .iter()
-                        .any(|b| matches!(b.kind, Kind::Camera))
-                {
-                    screen = Some(Screen::of(draw));
+                if reproject {
+                    epilogues.push(self.epilogue(draw));
                 }
                 k += 1;
             }
         }
-        let hold = if unpinned || !model.cameras.iter().all(|c| c.camera.centred()) {
-            Some(Hold::Unsure)
-        } else if self.mode != Mode::Replay
-            && let Some(sc) = screen
-        {
-            // E1 zooms and turns the world image about the screen's
-            // centre: every world draw must map onto the whole target the
-            // way the screen does.
-            let mut k = 0;
-            let mut same = sc.covers_target();
-            for o in &ops[..world_end] {
-                if let Op::Draw { draw, .. } = o {
-                    let moves = model.draws[k]
-                        .blocks
-                        .iter()
-                        .any(|b| matches!(b.kind, Kind::Camera | Kind::World(_) | Kind::Local(_)));
-                    if moves && !sc.same(&Screen::of(draw)) {
-                        same = false;
-                    }
-                    k += 1;
+        let mut screen = None;
+        let hold = if unpinned {
+            Some(Hold::Unsure(Unsure::Unpinned))
+        } else if !model.cameras.iter().all(|c| c.camera.centred()) {
+            Some(Hold::Unsure(Unsure::Camera))
+        } else if reproject {
+            match world_screen(&ops, world_end, &model, &epilogues) {
+                Ok(s) => {
+                    screen = Some(s);
+                    None
                 }
+                Err(m) => Some(Hold::SizeMismatch(m)),
             }
-            (!same).then_some(Hold::SizeMismatch)
         } else {
             None
         };
@@ -837,6 +971,7 @@ impl<B: Backend> InterpBackend<B> {
             matches,
             world_end,
             screen,
+            epilogues,
             captured: false,
             hold,
         });
@@ -851,16 +986,13 @@ impl<B: Backend> InterpBackend<B> {
                     && match mode {
                         Mode::Replay => true,
                         // E1 is for a single gameplay view with a world.
-                        Mode::Reproject { .. } => {
-                            c.model.cameras.len() == 1 && c.screen.is_some() && c.world_end > 0
-                        }
+                        Mode::Reproject { .. } => c.model.cameras.len() == 1 && c.world_end > 0,
                     }
             });
         if blend {
             let mut st = self.stats.lock().unwrap();
             match hold {
-                Some(Hold::Unsure) => st.unsure += 1,
-                Some(Hold::SizeMismatch) => st.size_mismatch += 1,
+                Some(why) => st.held(why),
                 None if self.behind() => st.dropped += 1,
                 None => {}
             }
@@ -870,7 +1002,8 @@ impl<B: Backend> InterpBackend<B> {
             let a = alpha(now, self.prev.as_ref().unwrap().at, at);
             match self.make(a) {
                 Ok((p, _, _)) if !self.same_extent(p, surface) => {
-                    self.stats.lock().unwrap().size_mismatch += 1;
+                    let mut st = self.stats.lock().unwrap();
+                    st.held(Hold::SizeMismatch(Mismatch::Extent));
                 }
                 Ok((p, s, t)) => {
                     // The present is the guest's own (its frame boundary
@@ -934,7 +1067,9 @@ impl<B: Backend> InterpBackend<B> {
         let real = self.cur.as_ref().map(|c| c.surface);
         match self.make(a) {
             Ok((p, _, _)) if real.is_some_and(|r| !self.same_extent(p, r)) => {
-                self.stats.lock().unwrap().size_mismatch += 1;
+                let mut st = self.stats.lock().unwrap();
+                st.held(Hold::SizeMismatch(Mismatch::Extent));
+                drop(st);
                 self.last = Some((cur_id, 1.0));
                 None
             }
@@ -1042,7 +1177,7 @@ where
         self.shown.retain(|s| *s != surface);
         self.surfaces.retain(|(s, _)| *s != surface);
         self.wrote(surface);
-        self.live.retain(|(_, s, _)| *s != surface);
+        self.live.retain(|(_, s)| *s != surface);
         if let Some(i) = self.private.iter().position(|(r, _)| *r == surface) {
             let (_, p) = self.private.remove(i);
             self.inner.destroy_surface(p)?;
@@ -1306,7 +1441,7 @@ where
     fn surface_texture(&mut self, surface: Self::Surface) -> Result<Option<Self::Texture>, String> {
         let t = self.inner.surface_texture(surface)?.map(Arc::new);
         if let Some(t) = &t {
-            self.note_live(t, surface, false);
+            self.note_live(t, surface);
         }
         Ok(t)
     }
@@ -1330,11 +1465,10 @@ where
         &mut self,
         surface: Self::Surface,
     ) -> Result<Option<Self::Texture>, String> {
-        let t = self.inner.depth_level_texture(surface)?.map(Arc::new);
-        if let Some(t) = &t {
-            self.note_live(t, surface, true);
-        }
-        Ok(t)
+        // The level's texels as of now, made by the backend (a copy, not a
+        // view of the surface: `Backend::depth_level_texture`), so a draw
+        // that samples it replays as drawn.
+        Ok(self.inner.depth_level_texture(surface)?.map(Arc::new))
     }
 
     fn judge(&self) -> Option<Box<dyn DrawJudge>> {

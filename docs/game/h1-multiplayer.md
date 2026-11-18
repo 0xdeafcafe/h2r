@@ -25,7 +25,9 @@ invented data, or read real maps at run time in `#[ignore]` tests
     tags and running on Halo 2's physics, with a health bar and health
     packs from the health subsystem ([campaigns.md](campaigns.md) §6).
 - The import writes both variants of every map. The setting picks which one
-  is served.
+  is served. It is chosen per game, on the pregame screen next to the map
+  and game type options, and applies at the map's next load with no
+  restart ("Serving the chosen sandbox" below).
 
 ## Pipeline
 
@@ -741,16 +743,86 @@ other manifests parse and resolve unchanged (the existing content
 tests).
 
 **The setting (Built):** `multiplayer.halo1_sandbox` in
-`boot::setting_defs` (`HALO1_SANDBOX`: `h1` default or `h2`, `Restart`,
-`H2_HALO1_SANDBOX`). `boot::new_maps::install` reads it and opens the
-library with `content::Library::open_with_sandbox`, so the next boot
-installs that variant of each converted map
-(`new_maps::tests::a_converted_map_installs_the_sandbox_the_setting_names`).
-Its row is "Halo 1 Maps" (Halo 1 Sandbox / Halo 2 Sandbox), the last on
-our Video screen; a change says "(restart)" until the next launch
-(`video_screen::tests::the_halo1_maps_row_picks_the_sandbox_for_the_next_launch`).
+`boot::setting_defs` (`HALO1_SANDBOX`: `h1` default or `h2`, `Live`,
+`H2_HALO1_SANDBOX`). `boot::new_maps::install` reads it at boot and
+writes that variant of each converted map into its content directory
+(`new_maps::tests::a_converted_map_installs_the_sandbox_the_setting_names`);
+a change after boot reaches `boot::h1_variants` through the setting's
+change callback (`h1_options::install_switches`) and counts from the
+map's next load (below). It is not on the Settings or Video screens: it
+is chosen on the Halo 1 options screen ("Halo 1 options" below).
 `h2 settings set multiplayer.halo1_sandbox h2` and `settings.toml` set it
 too.
+
+## Halo 1 options (**Built**, tests only: `boot::h1_options`, `boot::h1_options_row`)
+
+The per-game Halo 1 or Halo 2 choices, as rows of one list
+(`h1_options::OptionRow`: a two-choice setting, its label and what each
+choice means). Adding an option is a setting in `setting_defs` (choices
+1 Halo 1, 2 Halo 2), a row, and a switch in `h1_options::switch`.
+
+| Row | Setting | Where | Switch |
+|---|---|---|---|
+| Sandbox | `multiplayer.halo1_sandbox` (`H2_HALO1_SANDBOX`) | multiplayer | `h1_variants::set_mp_sandbox` |
+| Assets | `campaign.halo1_assets` (`H2_HALO1_ASSETS`) | campaign | `h1_variants::set_campaign_assets` |
+| HUD | `halo1.hud` (`H2_HALO1_HUD`) | both | `hud::set_choice` |
+
+- **Multiplayer:** the pregame Game Setup dialog (squad settings, screen
+  23; list ctor `0x2bb4d2`, row text `0x2bb74f`, row chosen `0x2bb801`)
+  gets a "Halo 1 Options" row after Change Map when the lobby's map
+  (`0x51098c`, set by `0x19a6f2`) is a converted map: its content
+  package's `h2recomp-map.toml` names an `h1_` map
+  (`h1_options_row::converted_map_name`). Only custom lobbies have Change
+  Map (action 0), so only they get the row. Choosing it opens the
+  options screen (`h1-options`, a list class of ours) on the dialog's own
+  window and slot, the way the skulls row opened its page. Left, right or
+  A changes a row; B backs out.
+- **Campaign:** a Halo 1 level's Game Options page (the skulls page after
+  the difficulty, docs/game/skulls.md) lists Assets and HUD under Start
+  Level, above the skulls, and opens even with no skull collected.
+- Each choice is saved to `settings.toml` at once and applies from the
+  next game or level load; an environment variable locks it ("locked").
+- **HUD:** `boot::hud` is the switch only: each game start picks
+  `HudStyle::Halo1` on a Halo 1 map (an `h1_` map or a Halo 1 campaign
+  level) with Halo 1's chosen, else Halo 2's, and logs
+  `hud: <map>: Halo 1 HUD`. `boot::hud_swap` draws it: at game
+  activation it points the converted owners' HUD references at Halo 1's
+  or Halo 2's `nhdt` by the same rule (docs/game/hud.md).
+
+**Serving the chosen sandbox (Built, tests only).** The choice is
+`boot::h1_variants` (`set_mp_sandbox`, set from the setting at boot and
+by the pregame screen's row). 1.0 opens a new map from its content
+package, `T:\$c\<offer>\h1_<map>.map` (map-pack.md "Loading"), which
+`boot::new_maps` still writes once with the setting's variant. The install
+also registers, for each converted map, that path and both variant files
+(`new_maps::variant_pair`, `content_path`) in a `vfs::ContentVariants`
+table, and the data partition is mounted through `vfs::VariantFiles`
+over its host backend, which serves the registered path from the variant
+chosen when it is opened. Nothing is copied when the choice changes.
+
+- A file open now keeps its variant until its last handle closes
+  (`opened`, `closed`).
+- `map_changed` is true for a closed map last opened in the other
+  variant. `boot::map_slots` reads content package slots too
+  (`t:\$c\<offer>\<map>.map`, `map_slots::slot_file`), so the game's
+  cached copy of the old variant (slot 3) is dropped once that slot isn't
+  the current map's, and the next load copies the chosen one.
+- `health::set_halo1_sandbox` follows the switch, so the health model and
+  the precision hook (`boot::precision`) are the chosen sandbox's at the
+  next game start.
+- `map_id` of the path is the served variant's `MapId`. The map probe the
+  Live advertisement and telemetry use asks for `d:\maps\<map>.map`, which
+  a new map has none of, so they send no `MapId` for a converted map,
+  before this change and after it. A guest loads its own setting's
+  variant: the host's choice is not carried to guests (not solved).
+- The other variant's file is served as the package has it; its hash is
+  checked at import, not again when the choice switches to it.
+
+Tests: `vfs` `variants::tests::the_served_variant_follows_the_choice_at_the_next_open`,
+`boot` `new_maps::tests::a_converted_map_is_served_in_the_sandbox_chosen_per_game`
+(the install's table through a whole `Vfs`),
+`map_slots::tests::a_content_package_slot_names_its_file_on_the_data_partition`,
+`h1_variants::tests`.
 
 **One list ID per map (Built).** `content::Package::list_key` is
 `Manifest::variants_key` for a package with variants (from its origin's
@@ -956,7 +1028,8 @@ by `h2 import halo1`, and by `h2 play` itself when the disc is there:
 3. The maps are `h1_<map>` in the multiplayer map list, under Halo 1's
    names (Blood Gulch, Hang 'Em High, ...). The
    `multiplayer.halo1_sandbox` setting picks which variant plays (Halo 1's
-   objects by default); it applies at the next start.
+   objects by default); the pregame screen changes it per game, from the
+   map's next load.
 
 Each map is `<data>/maps/h1_<map>/` with `h2/h1_<map>.map`,
 `h1/h1_<map>.map` and one `manifest.toml` listing both, on the map's
@@ -966,12 +1039,24 @@ converter version to bump (`CONVERTER_VERSION`, `crates/cli/src/h1_import.rs`),
 [campaigns.md](campaigns.md) §10. `h2 h1 convert` still converts one map
 by hand, into any `--out`.
 
+## On the stats site and in the viewers (**Built**: `cli::live_halo1`)
+
+`h2 live assets extract` (and `h2 play --live-local`) draws every converted
+map, multiplayer and campaign, like a Halo 2 map: geometry, sky, the five
+views and a preview, keyed by the name the game reports (`h1_<map>`, or
+the campaign level's), so live games and recordings on them plot on their
+map ([live-art.md](../live/live-art.md#halo-1-maps)). The manifest marks
+them `"game": "halo1"`; the site labels them Halo 1, names them from the
+manifest, and does not call a converted map "modded" or its geometry
+changed. The native viewer (`viewer`, `bsp`, `shadowlab`) opens them by
+the same name from the data root (`$H2_DATA`, else the default), or any
+`.map` by path, with the Halo 2 disc's shared maps.
+
 ## The setting and the map list (design)
 
 - **Row:** `multiplayer.halo1_sandbox`, a choice `halo1` (default) /
-  `halo2`, one `settings::Def` in `boot::setting_defs` with a row on the
-  multiplayer settings screen, `Restart` (it applies when maps are
-  installed at boot), per [settings-menu.md](settings-menu.md).
+  `halo2`, one `settings::Def` in `boot::setting_defs`, on the Halo 1
+  options screen from the Game Setup dialog ("Halo 1 options" above).
 - **Packaging:** each converted map is a new map in the sense of
   [maps.md](maps.md) §4: Halo 1's maps aren't on the Halo 2 disc, so
   `boot::new_maps` installs each as a content package with its
@@ -1089,9 +1174,9 @@ markers of its render model.
 
 **The health model per variant (Built, `boot::health`).** At each game
 start the loaded map's name (`0x547898`) picks the model
-(`health::model_for_map`): `h1_<map>` is Halo 1's when the converted
-maps were installed in the Halo 1 sandbox (the boot reads
-`multiplayer.halo1_sandbox` once, as `new_maps` does), Halo 2's in the
+(`health::model_for_map`): `h1_<map>` is Halo 1's when the Halo 1
+sandbox is chosen for the game (`boot::h1_variants::set_mp_sandbox`
+keeps `health::set_halo1_sandbox` in step), Halo 2's in the
 Halo 2 sandbox; Halo 1's campaign level names (`a10` to `d40`) are Halo
 1's. `H2_HEALTH_MODEL` still overrides. The HUD meter is the window's
 until a converted HUD has a body widget.

@@ -7,7 +7,10 @@
 - make your own game variants (custom Slayer, CTF and other game
   settings) and use them in game;
 - edit the matchmaking playlists file (`multiplayer_hopper.dat`) for a
-  Live server.
+  Live server;
+- look at h2recomp's own game screens (the Game Options page, the co-op
+  screens, the Xbox Live sign-in) in every state, press buttons on them,
+  and see what the layout checks find.
 
 This guide shows how to use it. If you want to know how it works inside,
 see [editor.md](editor.md), [scenario-editor.md](scenario-editor.md) and
@@ -16,7 +19,7 @@ see [editor.md](editor.md), [scenario-editor.md](scenario-editor.md) and
 The screenshots were taken from a retail Halo 2 disc. Your window shows
 whatever is on your own disc. Whole-window pictures are JPEGs; close-ups
 of a single panel, menu or tooltip are cropped from the same window at
-full resolution so their text reads. Section 10 says how they are made.
+full resolution so their text reads. Section 11 says how they are made.
 
 ## Contents
 
@@ -26,10 +29,11 @@ full resolution so their text reads. Section 10 says how they are made.
 4. [Scenario: editing what is on a map](#4-scenario-editing-what-is-on-a-map)
 5. [Game variants](#5-game-variants)
 6. [Playlists (hoppers)](#6-playlists-hoppers)
-7. [Undo and redo](#7-undo-and-redo)
-8. [Where files go](#8-where-files-go)
-9. [Troubleshooting](#9-troubleshooting)
-10. [Regenerating the screenshots](#10-regenerating-the-screenshots)
+7. [UI Screens](#7-ui-screens)
+8. [Undo and redo](#8-undo-and-redo)
+9. [Where files go](#9-where-files-go)
+10. [Troubleshooting](#10-troubleshooting)
+11. [Regenerating the screenshots](#11-regenerating-the-screenshots)
 
 ## 1. What you need
 
@@ -90,8 +94,8 @@ map...**, or drop a disc image, `.map` file or folder onto the window.
 
 The window is made of panels that dock together:
 
-- **Tools** (top left): the three tools, **Scenario**, **Game variants**
-  and **Playlists**. Click one to switch to it. A tool with unsaved
+- **Tools** (top left): the four tools, **Scenario**, **Game variants**,
+  **Playlists** and **UI Screens**. Click one to switch to it. A tool with unsaved
   changes shows a `*` after its name. Switching tools never loses
   anything: each tool keeps its state while hidden. Under the tools,
   **Maps** has **Open...** (a disc image or `.map`) and **Folder...** (a
@@ -780,7 +784,50 @@ h2 live hopper import <file>
 
 Players get the new playlists the next time they sign in.
 
-## 7. Undo and redo
+## 7. UI Screens
+
+**UI Screens** shows the screens h2recomp adds to the game (the Game
+Options page before a campaign level, the Halo 1 options, multiplayer
+skulls, the co-op screens, the Xbox Live sign-in and account screens)
+the way the game draws them, without starting the game. Use it to see a
+screen in each of its states, try its buttons, and check its layout.
+
+- **Screens** (left): **Our screens**, each with its named states (a
+  list's first, middle and last row focused; the sign-in prompt's pages,
+  such as `code-wrong` or `checking`). Click a state to show it. Under
+  them, **Retail screens** lists the game's own screens from your disc
+  (type in the filter to find one). Those are drawn for comparison only.
+- **Preview** (centre): the screen at the game's 640 by 480. **Zoom**
+  makes it bigger. **Rects** outlines every widget, **Title safe** the
+  area a TV always shows (green), and **Reserved** the areas a screen
+  must leave alone (amber). Widgets a check complains about are outlined
+  in red. Hover a widget to see its name. With a disc open the pictures
+  use the disc's own art and fonts; without one they are placeholders
+  ("synthetic"), and the checks that need the art are skipped.
+- **Inspector** (right):
+  - **Page**: what the screen shows now, and a pad: **Up**, **Down**,
+    **Left**, **Right**, **A**, **B**, **X**, **Y**, **Start** and
+    **Back**. Each press steps the screen as the game would, and the
+    line under the pad says what it did (`Down: Focus(1)`,
+    `A: Submit("120000")`). Press as many as you like; picking the state
+    again on the left starts over. The screens change nothing on your
+    machine: their settings live in a scratch profile.
+  - **Checks**: what the layout checks found (text that doesn't fit, text
+    on top of other text or art, art off the screen, low contrast, a
+    missing button legend). Hover one to outline its widgets in the
+    picture. "every check passes" when there is nothing.
+  - **Widget**: the hovered widget's details (its name, rectangle, text
+    or art), as the exported JSON has them.
+  - **Export...**: pick a folder. The editor writes the picture
+    (`<screen>-<state>.png`), its widgets (`<screen>-<state>.json`) and
+    `sheet.png` with every screen in every state. It refuses a folder
+    inside a Git checkout, so pictures of your disc's art never end up in
+    a repository.
+
+To open the editor straight on a screen: `h2-editor --ui-screen
+signin-code/code-wrong --ui-press up,right`.
+
+## 8. Undo and redo
 
 Each tool has its own history; **Edit > Undo** and **Edit > Redo** (and
 Cmd+Z, Cmd+Shift+Z) act on the tool you're in.
@@ -801,7 +848,7 @@ Cmd+Z, Cmd+Shift+Z) act on the tool you're in.
 
 *The log records each undo (`undid set position`).*
 
-## 8. Where files go
+## 9. Where files go
 
 `<data>` is the data folder: `--data`, or by default the one `h2 play`
 uses, `$TMPDIR/h2boot-data`.
@@ -817,7 +864,7 @@ uses, `$TMPDIR/h2boot-data`.
 
 Your disc image is only ever read.
 
-## 9. Troubleshooting
+## 10. Troubleshooting
 
 **"Unsaved changes" window.** Anything that would throw away a tool's
 unsaved changes asks first: opening another disc or map (Scenario),
@@ -908,7 +955,7 @@ section 3).
 renderer. Check that your GPU driver supports Metal (macOS), Vulkan or
 DirectX 12.
 
-## 10. Regenerating the screenshots
+## 11. Regenerating the screenshots
 
 The pictures in this guide are rendered by the editor itself, offscreen,
 from your own disc image (no window opens and the game does not run):

@@ -41,6 +41,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use settings::Store;
 
+use crate::h1_options::OptionRow;
 use crate::layout_glue::Gm;
 #[cfg(test)]
 use crate::layout_glue::ID_BASE;
@@ -86,6 +87,15 @@ const ROW_LABEL_BASE: u32 = crate::ui_kit::ids::family("skull row labels").base;
 /// a value left and right step.
 const ARROW_LABELS: u32 = ROW_LABEL_BASE + 0x80;
 pub const TITLE: &str = "Skulls";
+/// The campaign page's title: the level's options and its skulls.
+pub const PAGE_TITLE: &str = "Game Options";
+pub const PAGE_TITLE_ID: u32 = SKULLS_ID_BASE + 0x14;
+/// The campaign page's first row, and what it says.
+pub const START: &str = "Start Level";
+pub const START_ID: u32 = SKULLS_ID_BASE + 0x15;
+pub const START_DESCRIPTION: &str =
+    "Start the level with the options and skulls below. Change one with the D-pad or A.";
+pub const START_DESCRIPTION_ID: u32 = SKULLS_ID_BASE + 0x16;
 pub const MP_TITLE: &str = "Multiplayer Skulls";
 pub const LOCKED: &str = "Locked";
 /// The campaign page's buttons, in the footer band where the game's own
@@ -93,11 +103,13 @@ pub const LOCKED: &str = "Locked";
 /// retail's `a_select_b_back`): the font's button glyphs (U+E10A and
 /// U+E10B the d-pad's left and right, U+E100 A, U+E101 B; each icon set
 /// draws its own), the words in capitals as retail's. Left or right
-/// toggles the focused skull; A (or X or Start) starts the level
-/// (`skulls_screen::continue_level`). Under the descriptions they ran 10
-/// of the 21 past the description's five lines (`ui_kit` preview,
-/// 2026-11-17).
-pub const PROMPT: &str = "\u{e10a}\u{e10b} TOGGLE  \u{e100} START LEVEL  \u{e101} BACK";
+/// changes the focused row; A selects it, as on the game's own lists: on
+/// the Start Level row (the first) it starts the level
+/// (`skulls_screen::action`), on any other row it changes it. X and Start
+/// do nothing here (X going on to the level read as a mystery). Under the
+/// descriptions the legend ran 10 of the 21 past the description's five
+/// lines (`ui_kit` preview, 2026-11-17).
+pub const PROMPT: &str = "\u{e10a}\u{e10b} CHANGE  \u{e100} SELECT  \u{e101} BACK";
 /// The footer legend's id.
 pub const FOOTER_ID: u32 = SKULLS_ID_BASE + 0x13;
 
@@ -113,8 +125,45 @@ pub const FOOTER_ID: u32 = SKULLS_ID_BASE + 0x13;
 pub const LIST_LAYOUT: ListLayout = ListLayout {
     skin: 0,
     anchor: [-215, 130],
-    bitmaps_left_of: 0,
+    bitmaps_left_of: i16::MIN,
+    visible: VISIBLE_ROWS,
 };
+
+/// The level select's own screen id.
+pub const LEVEL_SELECT_SCREEN_ID: i16 = 11;
+
+/// The list's frame: the level select's left bracket (`ul_02`, its pane 0
+/// bitmap 1, `[177 -259 -79 -131]`, 128 by 256), at its own place, made
+/// for this list at this anchor. The Controls tag's bracket (`ul_03`) was
+/// made for the Controls list, 39 units further left and on another skin:
+/// kept under this list it framed an empty box and the first row's end cap
+/// cut its arm off (docs/game/ui-builder.md, slice 3), so none of the
+/// Controls frame art is kept ([`LIST_LAYOUT`]`.bitmaps_left_of`).
+pub const FRAME: PictureSpec = PictureSpec {
+    screen_id: LEVEL_SELECT_SCREEN_ID as u32,
+    pane: 0,
+    bitmap: 1,
+    image: 0,
+    at: [-259, 177],
+    animation: FRAME_ANIMATION,
+};
+/// [`FRAME`]'s animation: the bracket's own in the level select (read off
+/// the disc), so it slides with the page as there.
+pub const FRAME_ANIMATION: u16 = 2;
+/// [`FRAME`]'s image size.
+pub const FRAME_SIZE: [u16; 2] = [128, 256];
+
+/// Rows the page's list lays out before it scrolls: from the anchor down to
+/// the footer band, one skin-0 item (22 units) each. The Controls tag's six
+/// stopped the list a third of the way down the page (the skulls page's
+/// "doesn't use the full height"); the level select's own list block says
+/// 16, which runs into the footer at our anchor. 13 rows end at y -156,
+/// clear of the footer band (the Controls tag's header layout, `wigl`
+/// header layout 0, puts its second rectangle at top -187; a 14th row would
+/// end at -178, against it).
+pub const VISIBLE_ROWS: i16 = 13;
+/// A skin-0 item's height (docs/game/ui-screens.md "Item spacing").
+pub const ITEM_HEIGHT: i16 = 22;
 /// The level select's picture box: `top, left, bottom, right`.
 pub const PICTURE_BOX: [i16; 4] = [177, 39, -30, 259];
 
@@ -125,7 +174,16 @@ pub const DESCRIPTION_TEXT: TextBlock = TextBlock {
     rect: [-30, 39, -133, 260],
     font: 1,
     colour: [0.388235, 0.580392, 0.756863],
+    animation: DESCRIPTION_ANIMATION,
 };
+
+/// The level select's description and picture animations, as its tag
+/// stores them (1-based, `tags::ui::AnimationRef`; its text block's and its
+/// picture bitmap's, read off the disc): our two widgets slide in and out
+/// with the page as the level select's do. With none (0), B left the skull
+/// drawn over the difficulty screen's own while the page animated out.
+pub const DESCRIPTION_ANIMATION: u16 = 11;
+pub const PICTURE_ANIMATION: u16 = 13;
 
 /// The visible part of the skull art inside its 256 by 256 image:
 /// `left, top, right, bottom` in image pixels from its top-left (measured
@@ -143,6 +201,7 @@ pub const PICTURE: PictureSpec = PictureSpec {
     bitmap: 0,
     image: 3,
     at: picture_at(PICTURE_BOX, SKULL_ART),
+    animation: PICTURE_ANIMATION,
 };
 
 /// Where the skull image's top-left goes so its visible part `art` is
@@ -303,6 +362,9 @@ pub fn strings() -> Vec<(u32, &'static str)> {
         .map(|(i, d)| (label_id(i), d.label))
         .collect();
     v.push((TITLE_ID, TITLE));
+    v.push((PAGE_TITLE_ID, PAGE_TITLE));
+    v.push((START_ID, START));
+    v.push((START_DESCRIPTION_ID, START_DESCRIPTION));
     v.push((LOCKED_ID, LOCKED));
     v.push((MP_TITLE_ID, MP_TITLE));
     v.push((FOOTER_ID, PROMPT));
@@ -442,8 +504,22 @@ pub enum Mode {
 pub struct SkullsScreen {
     store: Arc<Store>,
     open: Mutex<Option<(String, Mode)>>,
+    /// The campaign page's options above the skulls: Halo 1's for a Halo 1
+    /// level (`h1_options::CAMPAIGN`), none for Halo 2's.
+    options: Mutex<&'static [&'static OptionRow]>,
     /// What this instance lists, whoever opens it.
     fixed: Mode,
+}
+
+/// What a campaign page row is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PageRow {
+    /// The first: A starts the level.
+    Start,
+    /// A Halo 1 option.
+    Option(&'static OptionRow),
+    /// A skull, by index.
+    Skull(usize),
 }
 
 impl SkullsScreen {
@@ -452,6 +528,7 @@ impl SkullsScreen {
         SkullsScreen {
             store,
             open: Mutex::new(None),
+            options: Mutex::new(&[]),
             fixed: Mode::Campaign,
         }
     }
@@ -465,7 +542,32 @@ impl SkullsScreen {
     /// The screen shows `profile`'s skulls from now (the pressing player's;
     /// one screen of each instance is open at a time).
     pub fn open(&self, profile: String) {
+        self.open_with(profile, &[]);
+    }
+    /// The campaign page from now: `profile`'s skulls under `options`.
+    pub fn open_with(&self, profile: String, options: &'static [&'static OptionRow]) {
         *self.open.lock().unwrap_or_else(|e| e.into_inner()) = Some((profile, self.fixed));
+        *self.options.lock().unwrap_or_else(|e| e.into_inner()) = options;
+    }
+    /// The options the page shows above the skulls.
+    pub fn options(&self) -> &'static [&'static OptionRow] {
+        *self.options.lock().unwrap_or_else(|e| e.into_inner())
+    }
+    /// Campaign row `row`: Start, an option, a skull (gold first).
+    pub fn page_row(&self, row: i16) -> Option<PageRow> {
+        let r = usize::try_from(row).ok()?;
+        let options = self.options();
+        if r == 0 {
+            return Some(PageRow::Start);
+        }
+        if let Some(o) = options.get(r - 1) {
+            return Some(PageRow::Option(o));
+        }
+        ORDER.get(r - 1 - options.len()).map(|i| PageRow::Skull(*i))
+    }
+    /// The campaign page's row of skull `i`.
+    pub fn row_of_skull(&self, i: usize) -> Option<i16> {
+        row_of(i).map(|r| r + 1 + self.options().len() as i16)
     }
     pub fn profile(&self) -> Option<String> {
         self.open
@@ -473,6 +575,10 @@ impl SkullsScreen {
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
             .map(|(p, _)| p.clone())
+    }
+    /// The store the screen reads and writes.
+    pub fn store(&self) -> Arc<Store> {
+        Arc::clone(&self.store)
     }
     pub fn mode(&self) -> Mode {
         self.fixed
@@ -485,10 +591,11 @@ impl SkullsScreen {
     }
     /// Campaign row `row`'s skull: gold ones first,
     /// then silver ([`skulls::by_tier`]).
-    fn skull(row: i16) -> Option<usize> {
-        usize::try_from(row)
-            .ok()
-            .and_then(|r| ORDER.get(r).copied())
+    fn skull(&self, row: i16) -> Option<usize> {
+        match self.page_row(row)? {
+            PageRow::Skull(i) => Some(i),
+            _ => None,
+        }
     }
     /// Skull `i`'s state for the open profile; Locked with none.
     pub fn state(&self, i: usize) -> State {
@@ -510,8 +617,9 @@ impl SkullsScreen {
             if right { "right" } else { "left" }
         ))
     }
-    /// A toggle of row `row` (A on the multiplayer screen, left or right
-    /// on the campaign page): what to log, `None` for no such row.
+    /// A toggle of row `row` (A on the multiplayer screen, left, right or
+    /// A on the campaign page): what to log, `None` for no such row or the
+    /// Start row.
     pub fn press_line(&self, row: i16) -> Option<String> {
         if self.mode() == Mode::Multiplayer {
             let r = usize::try_from(row)
@@ -523,7 +631,10 @@ impl SkullsScreen {
             crate::skulls_mp::changed(&profile);
             return line;
         }
-        let i = Self::skull(row)?;
+        if let PageRow::Option(o) = self.page_row(row)? {
+            return Some(crate::h1_options::step(&self.store, o));
+        }
+        let i = self.skull(row)?;
         let Some(profile) = self.profile() else {
             return Some("skulls menu: no profile for this screen; nothing changed".into());
         };
@@ -534,13 +645,13 @@ impl SkullsScreen {
 impl Rows for SkullsScreen {
     fn count(&self) -> usize {
         match self.mode() {
-            Mode::Campaign => TOTAL,
+            Mode::Campaign => 1 + self.options().len() + TOTAL,
             Mode::Multiplayer => crate::skulls_mp::MP.len(),
         }
     }
     fn title(&self) -> u32 {
         match self.mode() {
-            Mode::Campaign => TITLE_ID,
+            Mode::Campaign => PAGE_TITLE_ID,
             Mode::Multiplayer => MP_TITLE_ID,
         }
     }
@@ -557,17 +668,28 @@ impl Rows for SkullsScreen {
                 row_label_id(crate::skulls_mp::MP[r].index, self.mp_state(r)),
             )];
         }
-        let Some(i) = Self::skull(row) else {
-            return Vec::new();
-        };
-        vec![(LABEL_SLOT, arrow_label_id(i, self.state(i)))]
+        match self.page_row(row) {
+            Some(PageRow::Start) => vec![(LABEL_SLOT, START_ID)],
+            Some(PageRow::Option(o)) => vec![(
+                LABEL_SLOT,
+                crate::h1_options::label_id(o, crate::h1_options::is_halo1(&self.store, o)),
+            )],
+            Some(PageRow::Skull(i)) => vec![(LABEL_SLOT, arrow_label_id(i, self.state(i)))],
+            None => Vec::new(),
+        }
     }
-    /// A on the campaign page goes on to the level (the class's action,
-    /// as X and Start), whatever the row; on the multiplayer screen it
-    /// toggles.
+    /// A on the campaign page's Start row goes on to the level (the
+    /// class's action); on an option or a skull it changes it, as left
+    /// and right do. On the multiplayer screen it toggles.
     fn press(&self, row: i16) -> Chosen {
         match self.mode() {
-            Mode::Campaign => Self::skull(row).map_or(Chosen::Nothing, |_| Chosen::Act),
+            Mode::Campaign => match self.page_row(row) {
+                Some(PageRow::Start) => Chosen::Act,
+                Some(_) => self
+                    .press_line(row)
+                    .map_or(Chosen::Nothing, Chosen::Stepped),
+                None => Chosen::Nothing,
+            },
             Mode::Multiplayer => self
                 .press_line(row)
                 .map_or(Chosen::Nothing, Chosen::Stepped),
@@ -583,14 +705,18 @@ impl Rows for SkullsScreen {
                 .filter(|r| *r < crate::skulls_mp::MP.len())
                 .map(mp_description_id);
         }
-        Self::skull(row).map(description_id)
+        match self.page_row(row)? {
+            PageRow::Start => Some(START_DESCRIPTION_ID),
+            PageRow::Option(o) => Some(crate::h1_options::description_id(o)),
+            PageRow::Skull(i) => Some(description_id(i)),
+        }
     }
     fn tint(&self, row: i16) -> Option<[f32; 3]> {
         let r = usize::try_from(row).ok()?;
         let (index, state) = match self.mode() {
             Mode::Multiplayer => (crate::skulls_mp::MP.get(r)?.index, self.mp_state(r)),
             Mode::Campaign => {
-                let i = Self::skull(row)?;
+                let i = self.skull(row)?;
                 (i, self.state(i))
             }
         };
@@ -649,10 +775,14 @@ mod tests {
             .map_or_else(|| format!("{id:#x}"), |(_, t)| t.to_string())
     }
 
-    /// Each skull row as drawn: its one label, split into the name and the
-    /// state.
+    /// Each skull row as drawn, in order (the campaign page's Start Level
+    /// and option rows left out): its one label, split into the name and
+    /// the state.
     fn drawn(s: &SkullsScreen) -> Vec<(String, String)> {
         (0..s.count() as i16)
+            .filter(|r| {
+                s.mode() == Mode::Multiplayer || matches!(s.page_row(*r), Some(PageRow::Skull(_)))
+            })
             .map(|r| {
                 let t = s.texts(r);
                 assert_eq!(t.len(), 1, "one text: the list skin has one");
@@ -676,7 +806,9 @@ mod tests {
     fn every_skull_is_listed_gold_first() {
         let s = SkullsScreen::new(store());
         s.open("Chief".into());
-        assert_eq!(s.count(), TOTAL, "every skull and nothing else");
+        assert_eq!(s.count(), 1 + TOTAL, "Start Level, then every skull");
+        assert_eq!(s.texts(0), [(LABEL_SLOT, START_ID)]);
+        assert_eq!(text(START_ID), "Start Level");
         let names: Vec<_> = drawn(&s).into_iter().map(|(n, _)| n).collect();
         assert_eq!(
             names,
@@ -707,10 +839,10 @@ mod tests {
                 "Invincible",
             ]
         );
-        assert!(s.texts(TOTAL as i16 + 1).is_empty());
+        assert!(s.texts(s.count() as i16).is_empty());
         assert!(s.texts(-1).is_empty());
-        assert_eq!(s.title(), TITLE_ID);
-        assert_eq!(text(TITLE_ID), "Skulls");
+        assert_eq!(s.title(), PAGE_TITLE_ID);
+        assert_eq!(text(PAGE_TITLE_ID), "Game Options");
     }
 
     #[test]
@@ -745,34 +877,34 @@ mod tests {
         let st = store();
         let s = SkullsScreen::new(Arc::clone(&st));
         assert_eq!(
-            s.press_line(row_of(0).unwrap()).as_deref(),
+            s.press_line(s.row_of_skull(0).unwrap()).as_deref(),
             Some("skulls menu: no profile for this screen; nothing changed")
         );
         s.open("Chief".into());
         assert_eq!(
-            s.press_line(row_of(11).unwrap()).as_deref(),
+            s.press_line(s.row_of_skull(11).unwrap()).as_deref(),
             Some(
                 "skulls menu: Iron is locked for Chief: not collected yet (found on High Charity, Legendary only)"
             )
         );
         assert_eq!(
-            s.press_line(row_of(6).unwrap()).as_deref(),
+            s.press_line(s.row_of_skull(6).unwrap()).as_deref(),
             Some("skulls menu: Blind is locked for Chief: not collected yet (found on Outskirts)")
         );
         assert_eq!(s.state(11), State::Locked, "a locked press changes nothing");
         assert_eq!(skulls::collected(&st, "Chief"), []);
         skulls::record_pickup(&st, &names(&["Chief"]), 11);
         assert_eq!(
-            s.press_line(row_of(11).unwrap()).as_deref(),
+            s.press_line(s.row_of_skull(11).unwrap()).as_deref(),
             Some("skulls: Iron off for Chief")
         );
         assert_eq!(s.state(11), State::Off);
         assert_eq!(
-            s.press_line(row_of(11).unwrap()).as_deref(),
+            s.press_line(s.row_of_skull(11).unwrap()).as_deref(),
             Some("skulls: Iron on for Chief")
         );
         assert_eq!(s.state(11), State::On);
-        assert_eq!(s.press_line(TOTAL as i16), None);
+        assert_eq!(s.press_line(s.count() as i16), None);
         assert_eq!(s.press_line(-1), None);
     }
 
@@ -788,8 +920,8 @@ mod tests {
         }
         skulls::record_pickup(&st, &names(&["Arbiter"]), 7);
         s.open("Chief".into());
-        s.press_line(row_of(3).unwrap()); // Thunderstorm off
-        s.press_line(row_of(9).unwrap()); // Catch: locked, nothing
+        s.press_line(s.row_of_skull(3).unwrap()); // Thunderstorm off
+        s.press_line(s.row_of_skull(9).unwrap()); // Catch: locked, nothing
         let mut want = [false; COUNT];
         want[0] = true;
         want[12] = true;
@@ -797,15 +929,15 @@ mod tests {
         // Co-op: the other player turns theirs off on their own screen; the
         // start takes the union of both.
         s.open("Arbiter".into());
-        s.press_line(row_of(7).unwrap());
+        s.press_line(s.row_of_skull(7).unwrap());
         let both = names(&["Chief", "Arbiter"]);
         assert_eq!(skulls::selection(&st, &both), Some(want));
-        s.press_line(row_of(7).unwrap());
+        s.press_line(s.row_of_skull(7).unwrap());
         want[7] = true;
         assert_eq!(skulls::selection(&st, &both), Some(want));
         // Toggling back restores it.
         s.open("Chief".into());
-        s.press_line(row_of(3).unwrap());
+        s.press_line(s.row_of_skull(3).unwrap());
         want[3] = true;
         assert_eq!(skulls::selection(&st, &both), Some(want));
     }
@@ -814,7 +946,7 @@ mod tests {
     fn each_description_says_what_it_does_where_and_if_legendary() {
         let s = SkullsScreen::new(store());
         for (i, a) in ABOUT.iter().enumerate() {
-            let id = s.description(row_of(i).unwrap()).unwrap();
+            let id = s.description(s.row_of_skull(i).unwrap()).unwrap();
             assert_eq!(id, description_id(i));
             let shown = text(id);
             // The buttons are the footer's, not under the description;
@@ -845,7 +977,7 @@ mod tests {
             "Gold skull: A hard landing hurts: past a jump's speed, a fall drains your shields, then \
              your health. Found on Metropolis, any difficulty."
         );
-        assert_eq!(s.description(TOTAL as i16), None);
+        assert_eq!(s.description(s.count() as i16), None);
     }
 
     #[test]
@@ -912,10 +1044,11 @@ mod tests {
     fn strings_are_ours_distinct_and_clear_of_the_models() {
         let all = strings();
         // Labels and descriptions for all, a found message for each of
-        // ours, the titles, Locked and the footer legend.
+        // ours, the titles (Skulls, Game Options, the multiplayer one),
+        // Locked, the footer legend and Start Level with its description.
         assert_eq!(
             all.len(),
-            2 * TOTAL + 4 + 5 * TOTAL + crate::skulls_mp::MP.len() + crate::skulls_custom::OURS
+            2 * TOTAL + 7 + 5 * TOTAL + crate::skulls_mp::MP.len() + crate::skulls_custom::OURS
         );
         let mut ids: Vec<u32> = all.iter().map(|(i, _)| *i).collect();
         assert!(ids.iter().all(|i| is_ours(*i)));
@@ -989,13 +1122,13 @@ mod tests {
         // The campaign screen still lists all of them, its own states.
         let s = SkullsScreen::new(Arc::clone(&st));
         s.open("Chief".into());
-        assert_eq!(s.count(), TOTAL, "every skull");
+        assert_eq!(s.count(), 1 + TOTAL, "Start Level and every skull");
         assert_eq!(
             s.state(6),
             State::On,
             "the pickup turned it on for the campaign"
         );
-        assert_eq!(s.title(), TITLE_ID);
+        assert_eq!(s.title(), PAGE_TITLE_ID);
     }
 
     /// The picture follows the focused skull: gold or silver by tier,
@@ -1011,12 +1144,19 @@ mod tests {
         let st = Arc::new(Store::defaults(crate::setting_defs::ALL));
         let s = SkullsScreen::new(Arc::clone(&st));
         s.open("Chief".into());
-        // Row 0 is the first gold skull; the last row a silver one.
+        // Start Level shows no skull; the first skull row is the first gold
+        // skull, the last row a silver one.
+        let first = s.row_of_skull(ORDER[0]).unwrap();
         let last = (s.count() - 1) as i16;
-        assert_eq!(s.tint(0), Some(tint(Gold, State::Locked)));
+        assert_eq!(s.tint(0), None, "Start Level: no picture");
+        assert_eq!(s.tint(first), Some(tint(Gold, State::Locked)));
         assert_eq!(s.tint(last), Some(tint(Silver, State::Locked)));
         skulls::record_pickup(&st, &names(&["Chief"]), ORDER[0]);
-        assert_eq!(s.tint(0), Some(tint(Gold, State::On)), "collected and on");
+        assert_eq!(
+            s.tint(first),
+            Some(tint(Gold, State::On)),
+            "collected and on"
+        );
         assert_eq!(s.tint(s.count() as i16), None);
         let mp = SkullsScreen::multiplayer(Arc::clone(&st));
         mp.open("Chief".into());
@@ -1058,10 +1198,10 @@ mod tests {
     }
 
     /// The list (default skin rows: text and background to 210 right of the
-    /// anchor) stays left of the picture column; the frame art kept is the
-    /// Controls tag's left of the centre (`ul_03`, `[170 -280 42 -24]`), and
-    /// its bottom-right piece (`br_06`, `[-30 150 -286 406]`, which the old
-    /// description ran into) is left out by `bitmaps_left_of`.
+    /// anchor) stays left of the picture column; none of the Controls
+    /// frame art is kept (`ul_03` `[170 -280 42 -24]`, `br_06`
+    /// `[-30 150 -286 406]`), and the level select's bracket frames the list
+    /// from its left.
     #[test]
     fn the_columns_do_not_overlap_and_the_frame_stays_clear() {
         const ROW_RIGHT: i16 = 210;
@@ -1072,17 +1212,13 @@ mod tests {
             "list {list_right} left of the picture {bl}"
         );
         assert!(list_right < DESCRIPTION_TEXT.rect[1]);
-        let (ul_03_right, br_06_left) = (-24, 150);
-        assert!(
-            ul_03_right < LIST_LAYOUT.bitmaps_left_of,
-            "the left frame is kept"
-        );
-        assert!(
-            br_06_left >= LIST_LAYOUT.bitmaps_left_of,
-            "the right frame is not"
-        );
-        assert!(PICTURE.at[0] >= LIST_LAYOUT.bitmaps_left_of);
-        assert!(DESCRIPTION_TEXT.rect[1] >= LIST_LAYOUT.bitmaps_left_of);
+        // No Controls frame art is kept: every bitmap's x is at least the
+        // least there is.
+        assert_eq!(LIST_LAYOUT.bitmaps_left_of, i16::MIN);
+        // The bracket's left edge is left of the list, and its right edge
+        // over the list's first column, as on the level select.
+        assert!(FRAME.at[0] < LIST_LAYOUT.anchor[0]);
+        assert!(FRAME.at[0] + FRAME_SIZE[0] as i16 > LIST_LAYOUT.anchor[0]);
         let [top, left, bottom, right] = DESCRIPTION_TEXT.rect;
         assert!(
             top <= 240 && bottom >= -240 && left >= -320 && right <= 320,
@@ -1134,15 +1270,15 @@ mod tests {
 
     /// The campaign page: left and right flip a collected skull (either
     /// way, both steps), its row then reads the new value; a locked one
-    /// stays locked. A goes on (the class's action) on any skull row. The
+    /// stays locked. A changes a skull too; only Start Level goes on. The
     /// multiplayer screen keeps A as its toggle and has no sideways step.
     #[test]
-    fn left_and_right_toggle_and_a_goes_on() {
+    fn left_right_and_a_toggle_and_start_level_goes_on() {
         let st = store();
         let s = SkullsScreen::new(Arc::clone(&st));
         s.open("Chief".into());
         skulls::record_pickup(&st, &names(&["Chief"]), 12);
-        let mythic = row_of(12).unwrap();
+        let mythic = s.row_of_skull(12).unwrap();
         let label = |row: i16| text(s.texts(row)[0].1);
         assert_eq!(label(mythic), "Mythic: < On >");
         assert_eq!(
@@ -1171,7 +1307,7 @@ mod tests {
         );
         assert_eq!(s.state(12), State::On);
         // Locked: says so, stays.
-        let iron = row_of(11).unwrap();
+        let iron = s.row_of_skull(11).unwrap();
         assert!(
             s.sideways(iron, true)
                 .unwrap()
@@ -1179,14 +1315,17 @@ mod tests {
         );
         assert_eq!(s.state(11), State::Locked);
         assert_eq!(label(iron), "Iron: Locked");
-        assert_eq!(s.sideways(TOTAL as i16, true), None);
+        assert_eq!(s.sideways(s.count() as i16, true), None);
         assert_eq!(s.sideways(-1, false), None);
-        // A: on to the level, from a collected row or a locked one, and
-        // nothing toggled.
-        assert_eq!(s.press(mythic), Chosen::Act);
-        assert_eq!(s.press(iron), Chosen::Act);
-        assert_eq!(s.press(TOTAL as i16), Chosen::Nothing);
-        assert_eq!(s.state(12), State::On);
+        // A on a skull changes it, as right does (a locked one says so);
+        // only Start Level, the first row, goes on to the level.
+        assert!(matches!(s.press(mythic), Chosen::Stepped(_)));
+        assert_eq!(s.state(12), State::Off, "A flipped it");
+        assert!(matches!(s.press(iron), Chosen::Stepped(_)));
+        assert_eq!(s.state(11), State::Locked);
+        assert_eq!(s.press(0), Chosen::Act);
+        assert_eq!(s.sideways(0, true), None, "Start Level has no value");
+        assert_eq!(s.press(s.count() as i16), Chosen::Nothing);
         // The multiplayer screen.
         let m = SkullsScreen::multiplayer(Arc::clone(&st));
         m.open("Chief".into());
@@ -1292,5 +1431,30 @@ mod disc {
             .map(|b| b.top_left.x)
             .collect();
         assert_eq!(xs, [-280, 150], "ul_03 kept, br_06 left out");
+        // Our picture and description slide with the page as the level
+        // select's own do.
+        assert_eq!(p.text_blocks[0].animation.0, DESCRIPTION_ANIMATION);
+        assert_eq!(p.bitmaps[0].animation.0, PICTURE_ANIMATION);
+        let f = &p.bitmaps[FRAME.bitmap as usize];
+        assert_eq!(f.animation.0, FRAME_ANIMATION, "the bracket's own");
+        assert_eq!([f.top_left.x, f.top_left.y], FRAME.at);
+        // The rows end above the footer band of the tag the page copies.
+        let path = std::env::var_os("H2_DISC")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../disc/halo2.iso")
+            });
+        let d = crate::ui_kit::preview::Disc::open(&path).unwrap();
+        let footer = d.shared.header_layouts[d.controls.header_layout()].secondary;
+        let last_bottom = LIST_LAYOUT.anchor[1] - VISIBLE_ROWS * ITEM_HEIGHT;
+        assert!(
+            last_bottom > footer.top,
+            "{last_bottom} runs into the footer at {}",
+            footer.top
+        );
+        assert!(
+            VISIBLE_ROWS < l.visible_items,
+            "the level select's own runs further"
+        );
     }
 }

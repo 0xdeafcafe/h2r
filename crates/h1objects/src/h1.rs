@@ -53,7 +53,7 @@ pub fn reference(map: &H1Map, b: &[u8], at: usize) -> Option<TagId> {
     map.tag(r.id).ok().map(|t| t.id)
 }
 
-fn elements<'a>(map: &'a H1Map, b: &[u8], at: usize, stride: usize) -> Result<Vec<&'a [u8]>> {
+pub fn elements<'a>(map: &'a H1Map, b: &[u8], at: usize, stride: usize) -> Result<Vec<&'a [u8]>> {
     let blk = Block::read(b, at).ok_or(Error::Truncated("block field"))?;
     Ok(map.block(blk, stride)?.chunks_exact(stride).collect())
 }
@@ -848,5 +848,303 @@ impl H1Object {
             Self::Equipment(e) => &e.object,
             Self::Unit(u) => &u.object,
         }
+    }
+}
+
+/// Halo 1 `effe` root size (V: every effect's first child block starts
+/// here, on every map of the disc).
+pub const EFFE_SIZE: usize = 0x40;
+/// `effe +0x28` locations (`0x20`: a marker name), `+0x34` events.
+pub const EFFE_LOCATION: usize = 0x20;
+pub const EFFE_EVENT: usize = 0x44;
+/// An event's parts (`event +0x2c`) and particles (`event +0x38`).
+pub const EFFE_PART: usize = 0x68;
+pub const EFFE_PARTICLE: usize = 0xe8;
+
+/// One part of a Halo 1 effect event (`0x68`). V (every part on every
+/// map, `tests/effects_disc.rs`): the reference at `+0x18` resolves to a
+/// tag of its own group word (`snd!`, `deca`, `ligh`, `jpt!`, `pctl`,
+/// `garb`, `proj`), and the floats from `+0x40` on hold the same
+/// quantities in the same order as Halo 2's part from `+0x14` (velocity
+/// bounds, cone angle in radians, angular velocity bounds, radius
+/// modifier bounds, then the two scale words, `0x20` on the same parts in
+/// both).
+#[derive(Clone, Debug, PartialEq)]
+pub struct EffectPart {
+    /// `+0` (0 or 1 on the disc), as Halo 2's `create_in`.
+    pub create_in: u16,
+    /// `+2` (0 or 1): Halo 1 only; no Halo 2 home.
+    pub violence_mode: u16,
+    /// `+4` index into the effect's locations.
+    pub location: i16,
+    /// `+6` (bit 0 on 289 parts), as Halo 2's part flags.
+    pub flags: u16,
+    /// `+0x18` the reference's group word and tag.
+    pub group: Group,
+    pub reference: Option<TagId>,
+    pub velocity_bounds: [f32; 2],
+    pub velocity_cone_angle: f32,
+    pub angular_velocity_bounds: [f32; 2],
+    pub radius_modifier_bounds: [f32; 2],
+    pub a_scales: u32,
+    pub b_scales: u32,
+}
+
+/// One event of a Halo 1 effect (`0x44`): `+4` skip fraction, `+8`
+/// delay bounds, `+0x10` duration bounds (V: the order and ranges of
+/// Halo 2's event; `+0..4` and `+0x18..0x2c` zero everywhere).
+#[derive(Clone, Debug, PartialEq)]
+pub struct EffectEvent {
+    pub skip_fraction: f32,
+    pub delay_bounds: [f32; 2],
+    pub duration_bounds: [f32; 2],
+    pub parts: Vec<EffectPart>,
+    /// `+0x38` particles (`0xe8`, a `part` reference at `+0x54`): counted,
+    /// not converted (Halo 2's particles are `prt3` on shader templates).
+    pub particles: usize,
+}
+
+/// A Halo 1 effect: `+0` flags, `+4`/`+6` loop start and stop events
+/// (-1 none), the locations' marker names and the events.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Effect {
+    pub flags: u32,
+    pub loop_start_event: i16,
+    pub loop_stop_event: i16,
+    pub locations: Vec<String>,
+    pub events: Vec<EffectEvent>,
+}
+
+impl Effect {
+    pub fn read(map: &H1Map, tag: &Tag) -> Result<Self> {
+        let b = tag_bytes(map, tag, b"effe", EFFE_SIZE)?;
+        let locations = elements(map, b, 0x28, EFFE_LOCATION)?
+            .into_iter()
+            .map(|e| name32(e, 0))
+            .collect();
+        let mut events = Vec::new();
+        for e in elements(map, b, 0x34, EFFE_EVENT)? {
+            let parts = elements(map, e, 0x2c, EFFE_PART)?
+                .into_iter()
+                .map(|p| EffectPart {
+                    create_in: u16_at(p, 0),
+                    violence_mode: u16_at(p, 2),
+                    location: i16_at(p, 4),
+                    flags: u16_at(p, 6),
+                    group: Group(u32_at(p, 0x18)),
+                    reference: reference(map, p, 0x18),
+                    velocity_bounds: bounds(p, 0x40),
+                    velocity_cone_angle: f32_at(p, 0x48),
+                    angular_velocity_bounds: bounds(p, 0x4c),
+                    radius_modifier_bounds: bounds(p, 0x54),
+                    a_scales: u32_at(p, 0x60),
+                    b_scales: u32_at(p, 0x64),
+                })
+                .collect();
+            let particles = Block::read(e, 0x38).map_or(0, |k| k.count as usize);
+            events.push(EffectEvent {
+                skip_fraction: f32_at(e, 4),
+                delay_bounds: bounds(e, 8),
+                duration_bounds: bounds(e, 0x10),
+                parts,
+                particles,
+            });
+        }
+        Ok(Self {
+            flags: u32_at(b, 0),
+            loop_start_event: i16_at(b, 4),
+            loop_stop_event: i16_at(b, 6),
+            locations,
+            events,
+        })
+    }
+}
+
+/// One attachment of a Halo 1 object (`obje +0x140`, `0x48`): the
+/// attached tag at `+0` and the model marker it rides at `+0x10` (32
+/// characters).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Attachment {
+    pub group: Group,
+    pub tag: Option<TagId>,
+    pub marker: String,
+}
+
+/// Every attachment of the object in `b` (a tag's bytes from `obje +0`).
+pub fn attachments(map: &H1Map, b: &[u8]) -> Result<Vec<Attachment>> {
+    Ok(elements(map, b, 0x140, 0x48)?
+        .into_iter()
+        .map(|e| Attachment {
+            group: Group(u32_at(e, 0)),
+            tag: reference(map, e, 0),
+            marker: name32(e, 0x10),
+        })
+        .collect())
+}
+
+/// Halo 1 `ligh` (`0x160`, no blocks). V (`effects_disc.rs`
+/// `halo1_group_word_survey`, 304 lights on six maps): `+4` a radius in
+/// world units (0.05 to 15) on every light; `+0x10`, `+0x14` two angles in
+/// radians (20 to 180 degrees; 180 on most, a full sphere); `+0x38` and
+/// `+0x48` two colours as alpha then red, green, blue (each 0 to 1);
+/// `+0xac` a `lens` reference; `+0xf4` a duration on 59 lights, values
+/// that are multiples of three ticks (3 to 180). Names D.
+pub const LIGH_SIZE: usize = 0x160;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Light {
+    pub flags: u32,
+    pub radius: f32,
+    /// `+0x10` where a cone starts to fade, `+0x14` where it ends
+    /// (radians, full angle; pi for a sphere).
+    pub falloff_angle: f32,
+    pub cutoff_angle: f32,
+    /// `+0x38` and `+0x48`: alpha, red, green, blue.
+    pub colour_lower: [f32; 4],
+    pub colour_upper: [f32; 4],
+    /// `+0xf4` ticks (0: not timed).
+    pub duration_ticks: f32,
+    pub lens_flare: Option<TagId>,
+}
+
+impl Light {
+    pub fn read(map: &H1Map, tag: &Tag) -> Result<Self> {
+        let b = tag_bytes(map, tag, b"ligh", LIGH_SIZE)?;
+        let argb = |at| std::array::from_fn(|i| f32_at(b, at + 4 * i));
+        Ok(Self {
+            flags: u32_at(b, 0),
+            radius: f32_at(b, 4),
+            falloff_angle: f32_at(b, 0x10),
+            cutoff_angle: f32_at(b, 0x14),
+            colour_lower: argb(0x38),
+            colour_upper: argb(0x48),
+            duration_ticks: f32_at(b, 0xf4),
+            lens_flare: reference(map, b, 0xac),
+        })
+    }
+
+    /// A cone rather than a sphere: a cutoff angle under a half turn.
+    pub fn is_cone(&self) -> bool {
+        self.cutoff_angle > 0.0 && self.cutoff_angle < std::f32::consts::PI - 1e-3
+    }
+}
+
+/// Halo 1 `deca` (`0x10c`, no blocks). V (`halo1_group_word_survey`, 270
+/// decals on six maps): `+0` flags (u16) and `+2` kind (u16, 0 to 3),
+/// `+4` layer (0 to 3), `+8` the next decal, `+0x18` radius bounds,
+/// `+0x34` and `+0x40` two colours (red, green, blue), `+0x78` lifetime
+/// and `+0x80` decay time bounds (seconds), `+0xd8` the bitmap, `+0xfc`
+/// 16.0 on every decal. The order is Halo 2's (`tags::defs` `deca`).
+pub const DECA_SIZE: usize = 0x10c;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Decal {
+    pub flags: u16,
+    pub kind: u16,
+    pub layer: u16,
+    pub next: Option<TagId>,
+    pub radius: [f32; 2],
+    pub colour_lower: [f32; 3],
+    pub colour_upper: [f32; 3],
+    pub lifetime: [f32; 2],
+    pub decay_time: [f32; 2],
+    pub bitmap: Option<TagId>,
+    pub maximum_sprite_extent: f32,
+}
+
+impl Decal {
+    pub fn read(map: &H1Map, tag: &Tag) -> Result<Self> {
+        let b = tag_bytes(map, tag, b"deca", DECA_SIZE)?;
+        Ok(Self {
+            flags: u16_at(b, 0),
+            kind: u16_at(b, 2),
+            layer: u16_at(b, 4),
+            next: reference(map, b, 8),
+            radius: bounds(b, 0x18),
+            colour_lower: vec3(b, 0x34),
+            colour_upper: vec3(b, 0x40),
+            lifetime: bounds(b, 0x78),
+            decay_time: bounds(b, 0x80),
+            bitmap: reference(map, b, 0xd8),
+            maximum_sprite_extent: f32_at(b, 0xfc),
+        })
+    }
+}
+
+/// `udlg`: `0x1010` bytes, a fixed table of `snd!` references, one per
+/// line a character can say, `0x10` apart from `+0x10`. V: all 102
+/// distinct dialogue tags on the disc are `0x1010` bytes and hold only
+/// `snd!` references; the slot names below are the last component of
+/// the sound names the tags put there (`tests/effects_disc.rs`
+/// `halo1_dialogue_survey`), so each offset is one line whatever the
+/// character (`0x0f0` holds `deathquiet` on 68 tags and `death_quiet`
+/// on 17).
+pub const UDLG_SIZE: usize = 0x1010;
+
+/// A Halo 1 dialogue tag: its sounds by slot offset ([`UDLG_SIZE`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Dialogue {
+    /// The slots that name a sound, by offset.
+    pub lines: Vec<(usize, TagId)>,
+}
+
+impl Dialogue {
+    pub fn read(map: &H1Map, tag: &Tag) -> Result<Self> {
+        let b = tag_bytes(map, tag, b"udlg", UDLG_SIZE)?;
+        let snd = Group::new(b"snd!");
+        let lines = (0x10..UDLG_SIZE)
+            .step_by(0x10)
+            .filter(|at| TagRef::read(b, *at).is_some_and(|r| r.group == snd))
+            .filter_map(|at| reference(map, b, at).map(|t| (at, t)))
+            .collect();
+        Ok(Self { lines })
+    }
+
+    /// The sound in slot `at`.
+    pub fn line(&self, at: usize) -> Option<TagId> {
+        self.lines.iter().find(|l| l.0 == at).map(|l| l.1)
+    }
+}
+
+/// `foot`: material effects. `+0` a block of kinds (`0x1c` each), each
+/// with `+0` a block of materials (`0x30` each: `+0` an `effe`, `+0x10`
+/// a `snd!`), one per Halo 1 material type in
+/// [`crate::arsenal::MATERIALS`] order. V (`halo1_foot_survey`): every
+/// unit's holds six kinds of 32 materials, the kinds named by their
+/// sounds (0 `walk`, 1 `run`, 2 none, 3 `shuffle`, 4 `jump_up` /
+/// `genericjump`, 5 `jump`, the landing), the water material (28) the
+/// one with `footsteps water`.
+pub const FOOT_KIND_SIZE: usize = 0x1c;
+pub const FOOT_MATERIAL_SIZE: usize = 0x30;
+
+/// One material's effect and sound in a [`Foot`] kind.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FootMaterial {
+    pub effect: Option<TagId>,
+    pub sound: Option<TagId>,
+}
+
+/// A Halo 1 `foot`: per kind, per material.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Foot {
+    pub kinds: Vec<Vec<FootMaterial>>,
+}
+
+impl Foot {
+    pub fn read(map: &H1Map, tag: &Tag) -> Result<Self> {
+        let b = tag_bytes(map, tag, b"foot", 0xc)?;
+        let kinds = elements(map, b, 0, FOOT_KIND_SIZE)?
+            .into_iter()
+            .map(|k| {
+                Ok(elements(map, k, 0, FOOT_MATERIAL_SIZE)?
+                    .into_iter()
+                    .map(|m| FootMaterial {
+                        effect: reference(map, m, 0),
+                        sound: reference(map, m, 0x10),
+                    })
+                    .collect())
+            })
+            .collect::<Result<_>>()?;
+        Ok(Self { kinds })
     }
 }

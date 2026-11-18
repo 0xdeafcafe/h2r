@@ -26,13 +26,18 @@ mod avfoundation;
 pub use avfoundation::AvFoundationDecoder;
 
 pub mod addr;
+mod audio_out;
 mod playback;
+pub mod select;
 mod source;
 
-pub use playback::{BinkHle, DEFAULT_ARENA_HINT, HLE_RESERVED};
+pub use audio_out::{MixerAudio, MovieAudioOut, MovieVoice};
+pub use movies::status::{DiscMovie, disc_movies};
+pub use playback::{AUDIO_STALL_MS, BinkHle, DEFAULT_ARENA_HINT, HLE_RESERVED};
+pub use select::{Selection, platform_decoder, select};
 pub use source::{
-    Clock, MovieDecoder, MovieSource, MovieStream, Mp4Source, StreamInfo, SyntheticDecoder,
-    SystemClock, TranscodedSource,
+    AudioInfo, Clock, MovieDecoder, MovieSource, MovieStream, Mp4Source, StreamInfo,
+    SyntheticDecoder, SystemClock, TranscodedSource, synthetic_audio_frames, synthetic_sample,
 };
 
 use runtime::{Dispatch, GuestFault, dispatch::Override};

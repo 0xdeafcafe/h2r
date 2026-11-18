@@ -4,7 +4,12 @@
 # (smoke.ts). The cold start is measured twice: on an empty log, and after
 # a restart with the log `--seed` grew.
 #
-#   crates/live-worker/smoke/run.sh [SEED_PAIRS] [OUT_DIR]
+#   [WAKE=S] crates/live-worker/smoke/run.sh [SEED_PAIRS] [OUT_DIR]
+#
+# BUSY=N: also follow the log with N sockets while 60 events are appended
+# (smoke.ts, step 11).
+# WAKE=S: also idle S seconds with a socket open, and check that the hub
+# hibernated and woke (smoke.ts, step 8).
 #
 # Needs build/ from `worker-build --release` in crates/live-worker. Keeps
 # its state (the hub's storage, a dev server key) under
@@ -25,6 +30,9 @@ if [ ! -f "$work/.dev.vars" ]; then
     printf 'H2_LIVE_SERVER_KEY=%s\n' "$key" > "$work/.dev.vars"
     chmod 600 "$work/.dev.vars"
 fi
+# A fresh admin gamertag each run: the state persists, and the smoke test
+# signs up as the admin to publish a title file.
+admin=SmokeA$(openssl rand -hex 3)
 cat > "$work/wrangler.toml" <<EOF
 name = "h2-live-dev"
 main = "$here/build/index.js"
@@ -33,18 +41,26 @@ compatibility_date = "2026-11-01"
 [vars]
 H2_LIVE_ID = "live.test"
 H2_LIVE_PUBLIC_URL = "http://127.0.0.1:$port"
-H2_LIVE_ADMINS = "SmokeAdmin"
+H2_LIVE_ADMINS = "$admin"
 
 [[r2_buckets]]
 binding = "BLOBS"
 bucket_name = "h2-live-dev"
 
 [durable_objects]
-bindings = [{ name = "LIVE_HUB", class_name = "LiveHub" }]
+bindings = [
+    { name = "LIVE_HUB", class_name = "LiveHub" },
+    # One per co-op session: its relay (src/relay.rs).
+    { name = "COOP_RELAY", class_name = "CoopRelay" },
+]
 
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["LiveHub"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["CoopRelay"]
 EOF
 
 start() {
@@ -69,10 +85,12 @@ stop() {
 trap stop EXIT
 
 start first
-bun "$here/smoke/smoke.ts" "http://127.0.0.1:$port" --seed "$seed" | tee "$out/first.json"
+bun "$here/smoke/smoke.ts" "http://127.0.0.1:$port" --seed "$seed" --wake "${WAKE:-0}" --admin "$admin" --busy "${BUSY:-0}" | tee "$out/first.json"
+grep -q '"ok": true' "$out/first.json" || { echo "smoke test failed" >&2; exit 1; }
 stop
 start restart
 bun "$here/smoke/smoke.ts" "http://127.0.0.1:$port" --cold-only | tee "$out/restart.json"
+grep -q '"ok": true' "$out/restart.json" || { echo "smoke test failed after the restart" >&2; exit 1; }
 stop
 cp "$work/wrangler-first.log" "$work/wrangler-restart.log" "$out/"
 echo "results in $out" >&2

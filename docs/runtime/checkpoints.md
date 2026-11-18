@@ -9,7 +9,7 @@ the test never writes the disc.
 Run from the repository with clang available:
 
 ```sh
-RUSTC_WRAPPER= CARGO_TARGET_DIR="$TMPDIR/checkpoints-target" CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_BUILD_JOBS=2 H2_XBE=/absolute/path/default.xbe cargo test -p xapi --test checkpoints -- --ignored --nocapture
+CARGO_TARGET_DIR="$TMPDIR/checkpoints-target" CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_BUILD_JOBS=2 H2_XBE=/absolute/path/default.xbe cargo test -p xapi --test checkpoints -- --ignored --nocapture
 ```
 
 The harness checks these separate contracts:

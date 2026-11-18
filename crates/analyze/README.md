@@ -11,7 +11,7 @@ The seeds live in `src/pointer_seeds.rs`; switch sizing remains in `lib.rs`.
 For the six campaign systems, run the address-only TSV report:
 
 ```sh
-RUSTC_WRAPPER= H2_XBE=/path/to/default.xbe cargo run -p analyze --release --example dispatch_coverage
+H2_XBE=/path/to/default.xbe cargo run -p analyze --release --example dispatch_coverage
 ```
 
 Append `-- --unseeded` for the baseline. Use release mode for retail analysis.
@@ -20,7 +20,7 @@ slots and missing entries. Read [dispatch coverage](../../docs/lifter/dispatch-c
 for its evidence levels, limitations, reproduction and runtime diagnosis.
 
 ```sh
-RUSTC_WRAPPER= cargo test -p analyze
-RUSTC_WRAPPER= cargo clippy -p analyze --all-targets -- -D warnings
-RUSTC_WRAPPER= H2_XBE=/path/to/default.xbe cargo test -p analyze --release --test dispatch_coverage -- --ignored --nocapture
+cargo test -p analyze
+cargo clippy -p analyze --all-targets -- -D warnings
+H2_XBE=/path/to/default.xbe cargo test -p analyze --release --test dispatch_coverage -- --ignored --nocapture
 ```

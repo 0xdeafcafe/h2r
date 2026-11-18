@@ -441,3 +441,47 @@ fn real_import_is_found_by_the_game() {
         let _ = std::fs::remove_dir_all(&data);
     }
 }
+
+/// Every multiplayer map on the disc in both sandboxes through the
+/// import's own conversion (`DiscConverter::multiplayer`, what a
+/// multiplayer job builds before writing it), in memory: each builds.
+/// The Halo 1 sandbox's objects, collections and the sounds the objects
+/// play must keep the datums the placements name (a sound installed
+/// before the collections moved them).
+///
+/// `H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso cargo test --release -p cli
+/// --bin h2 h1_import::tests::every_multiplayer_job -- --ignored`
+/// (H1_MAPS=bloodgulch,sidewinder for some).
+#[test]
+#[ignore = "reads the discs named by H1_ISO and H2_DISC; converts every multiplayer map"]
+fn every_multiplayer_job_builds_in_both_sandboxes() {
+    let h1 = PathBuf::from(std::env::var("H1_ISO").expect("H1_ISO"));
+    let h2 = PathBuf::from(std::env::var("H2_DISC").expect("H2_DISC"));
+    let only = std::env::var("H1_MAPS").ok();
+    let f = File::open(&h1).unwrap();
+    let mut iso = Xiso::open(BufReader::new(f)).unwrap();
+    let disc = Disc::open(&mut iso).unwrap();
+    let stems: Vec<String> = disc.maps.iter().map(|e| map_stem(e).to_owned()).collect();
+    let mut conv = DiscConverter {
+        h1_path: h1.clone(),
+        iso,
+        disc,
+        h2,
+        data: PathBuf::new(),
+        scripting: None,
+        donors: None,
+        card_ui: None,
+    };
+    let mut built = 0;
+    for job in jobs(&stems) {
+        let Job::Multiplayer(name, sandbox) = job else { continue };
+        if only.as_deref().is_some_and(|o| !o.split(',').any(|m| m == name)) {
+            continue;
+        }
+        conv.multiplayer(name, sandbox)
+            .unwrap_or_else(|e| panic!("{name} {sandbox:?}: {e:#}"));
+        built += 1;
+    }
+    println!("{built} multiplayer jobs built");
+    assert!(built > 0);
+}

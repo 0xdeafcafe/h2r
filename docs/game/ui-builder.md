@@ -65,9 +65,22 @@ Page   ── state + input ──▶ step() ──▶ (new state, Effect)    pu
 **Backing.** A `Dialog` or `CodeEntry` is `Over` (drawn over the screen
 beneath, as the game's own dialogs are) or `Own` (it carries the game shell
 backing, `framing_center` from screen 5, under its panel, so the screen
-beneath doesn't matter). The sign-in prompt is `Own`: it opens over the
-title screen, in-game menus or the main menu, and must not depend on any
-of them.
+beneath doesn't matter).
+
+**Decision (2026-11-18, the user): sign-in is a modal.** The sign-in
+prompt and its new-account gamertag and invite pages are `Over` dialogs,
+not full screens. They sit over whatever is beneath (the title screen, the
+main menu, in game) the way the game's own dialogs do, in the large dialog
+layout of `error_dialog_large` and `dialog_live_password` (header layout
+2, about 536 wide): that dialog's own `dialog1`/`dialog2` panel art, the
+digit cells and the legend. What the game's dialogs draw behind the panel
+(a dim layer or nothing) is copied from the retail dialog tags, read off
+them rather than assumed. A modal may cover the logo, as retail dialogs
+do, so for a modal the reserved-area check ignores what the panel covers.
+Everything in it must still sit inside the panel and inside the safe
+area. The preview draws a modal over a sample screen beneath (the main
+menu), so the sheet shows it in place. This replaces the earlier plan of
+an `Own` sign-in screen on the shell backing.
 
 **The runtime tag recipe.** Our screens are still made by the Controls
 constructor and adopted by `list_class`. The screen-tag function
@@ -109,11 +122,31 @@ directions are taken before the list sees them (`list_class::Buttons`).
 Commands (output only to a directory you name, never the repository):
 
 ```sh
-h2 ui preview <screen> [--state NAME|all] [--out DIR]   # PNG + JSON per state
-h2 ui sheet [--out DIR]                                  # every screen x state, one contact sheet
+h2 ui preview list                                       # screens and their states
+h2 ui preview <screen> [--state NAME|all] [--focus N] [--synthetic] [--out DIR]
+h2 ui sheet [--synthetic] [--out DIR]                    # every screen x state, and sheet.png
 ```
 
-The sheet goes to `$RUSH_KEEP/ui-builder/` by default.
+`preview` writes to `$TMPDIR` by default, and `sheet` to
+`$RUSH_KEEP/ui-builder/`. `--synthetic` draws without a disc.
+
+**Built (slice 2).**
+
+- `ui_kit::view` holds `View`, `Widget`, `Art`, `Metrics` and `Synthetic`,
+  plus `Geometry` and its disc-free `Geometry::fallback`. The disc test
+  checks the fallback against the disc, field for field.
+- `view_of` turns today's `ScreenSpec`s into views.
+- `preview::Source` has two implementations: `Disc` and `SyntheticSource`.
+  `render_view` draws a view from either; `write_states` and `write_sheet`
+  write the files.
+- `screens::states` names each screen's states: a list's first, middle and
+  last focus, and the sign-in prompt's 11 pages.
+- Sheet labels use a built-in 3 by 5 pixel font, so a synthetic sheet is
+  readable too. `cargo test` draws the synthetic sheet; the disc test with
+  `H2_UI_SHEET_DIR=<dir>` draws the real one.
+
+The dialog kinds are not built yet. Today's screens come in as
+`ScreenSpec`s, from their `Page` (slice 4, below).
 
 ## The checks
 
@@ -126,13 +159,80 @@ state.
 | Check | Rule |
 |---|---|
 | fit | every text fits its rect at its font (width per line, lines times line height) |
-| overlap | no two widgets' rects overlap, except declared layers (a digit over its cell, text over its row bar) |
-| reserved | nothing overlaps the reserved areas of the screen beneath (its logo and header), unless the screen is `Own` |
-| safe area | every widget is inside the title-safe area: the middle 85%, 544 by 408 (retail headers start at its edge, y 204, x -272) |
-| legend | a screen that takes a button has a legend naming it, and the legend fits |
-| focus | the focused element (row or cell) is inside the visible window and drawn bright |
+| overlap | no two texts' ink overlaps; a text that belongs to no row (description, legend, title) sits on no row's art (a row's frame reaches into its neighbours by design) |
+| frame provenance | frame art borrowed from a retail screen with a list sits with that list where that screen puts it (same anchor and skin) |
+| covered (art) | frame art from a screen without a list is covered by other art or text over at most 24 visible pixels (alpha at least 24) |
+| off screen (art) | no art's visible pixels fall past the screen edge |
+| reserved | nothing overlaps the reserved areas of the screen beneath (its logo and header), unless the screen is `Own`; a modal may cover them with its panel, but everything in it stays inside the panel |
+| safe area | texts and row art stay inside the title-safe area: x ±272, y 204 down to -211 (the middle 85%, down to the bottom of retail's footer rectangle, where the game's own legends sit); frame art is exempt |
+| contrast | every text against what is drawn under it (the view rendered without its texts), WCAG ratio at least 2.5 |
+| legend | a screen that takes inputs past up, down, A and B shows a button legend (a text with a button glyph) |
+| focus | the focused row's text is drawn on screen, and more opaque than the other rows' |
 | glyphs | every character exists in its font (the kit's `Finding::Glyph`) |
 | ids | every string id is in a registered family (the kit's `Finding::Id`) |
+
+The art checks need the images' pixels, so the synthetic source skips
+them, and says so (`Report::skipped`). The provenance check runs without a
+disc for the screens our art comes from (Controls 39, level select 11).
+
+**Built (slice 3)**: `ui_kit::layout::check(view, source, rules)`, and
+`h2 ui preview` prints it per state. The tests:
+
+- unit tests with synthetic metrics, plus one with a solid-image source
+  for the two pixel checks;
+- every screen in every state passes with synthetic metrics (CI);
+- every screen in every state passes against the disc with nothing
+  skipped (the disc test).
+
+One finding is left on purpose: sign-in has no legend until it is rebuilt
+(slice 6).
+
+The checks' first findings, fixed:
+
+- **Unfocused rows nearly invisible.** The preview dimmed row text to 55%
+  of the skin's blue. The game draws row text white, and unfocused rows
+  at about 40% alpha: the 2026-11-16 screenshot peaks at (229, 230, 231)
+  focused and (103, 109, 118) unfocused over a (27, 37, 56) bar. Rows now
+  measure a contrast of 2.9 to 3.1 on the real bars, and the old model
+  about 1.5. `view::UNFOCUSED_ALPHA` is observed, not traced.
+- **The skulls page's frame.** It kept the Controls bracket (`ul_03`)
+  under a list moved 39 units right on another skin. The bracket framed an
+  empty box, and the first row's end cap cut its arm off. The frame
+  provenance check names it. The page now keeps none of the Controls art
+  and copies the level select's own bracket (`ul_02`) at run time
+  (`ListClass::frame`). Its view also draws the skull picture now
+  (`ScreenSpec::art`), untinted.
+- **The account menu's legend** was in the description block, on top of
+  rows 1 and 2. It is in the footer now.
+- **The co-op screens had no legend.** They now have footers (`A SELECT`,
+  `START START GAME` or `READY`, `B BACK`), set in game from the co-op
+  text table (`coop_live::prompts`).
+
+**The full-height Game Options list (master's 13 rows).** The skulls
+page became the Game Options page, and its list now lays out 13 rows
+(`skulls_menu::VISIBLE_ROWS`), down to y -156. The level select's bracket
+(`ul_02`, `[177 -259 -79 -131]`) ends at -79, so rows 8 to 13 run past
+the bottom of its image, and its visible art ends sooner, about the fourth
+row. Nothing is flagged, and that is right: the bracket is a top-left
+corner piece, not a box. The level select itself lays out 16 rows at the
+same anchor under the same bracket (its list block's visible count), so
+rows running past it are retail's own composition. A "list longer than
+its frame" check would flag the game's screen, so there is none.
+`ListPlace::Moved` carries the layout's visible count, and both
+geometries (synthetic and disc) draw that many rows. The bracket now also
+plays its own animation from the level select (2, read off the disc,
+`skulls_menu::FRAME_ANIMATION`), so it slides out with the page and isn't
+left drawn over the screen coming back on B. The sheet's files are named
+by the preview's screen name, not the spec's: `skulls.h1` and `skulls`
+are both `skulls` specs, and the Halo 1 page's tiles overwrote the
+campaign page's.
+
+Calibrations the checks needed, each against the game's own screens:
+
+- the safe area's bottom is retail's footer rectangle (-211);
+- the contrast floor is 2.5 (the game's own rows sit at about 2.9);
+- synthetic text is 6 units per character (about the disc fonts' mean),
+  so the CI checks don't flag text that fits on the disc.
 
 ## Behaviour
 
@@ -149,6 +249,72 @@ sign-in that covers:
 
 The glue (`list_class` events, `TEXT_SET`, tints) keeps its runner tests
 (`engine::entry::testing::run`).
+
+**Built (slice 4)**: `ui_kit::page`.
+
+- **`Page`**: `step(&mut State, Event) -> Effect`, `spec(&State)` (the
+  `ScreenSpec` the preview turns into a `View`), `states()` and a
+  `summary(&State)` line for tables. Events are at least the pad's
+  `Input`s; pages that wait on the keyboard or a server take those too.
+  `Live` drives any page behind one type (`Driven<P>`), for the editor and
+  `h2 ui preview --press`. `screens::live(name)` is every native screen's
+  page, and `screens::states` and `sample` come from it, so the sheet
+  draws exactly the states the tables start from.
+- **`ListPage`**: every list screen (Game Options, the Halo 1 options and
+  multiplayer skulls, the three co-op screens, the kit's example) is its
+  real `ListClass` stepped offline. An event goes through the class's own
+  hook, then `list_class::route` (the same pure function the runtime's
+  `event_with` now uses: action buttons, then sideways steps), then the
+  Controls handler: up and down move the focus, A presses the row
+  (`Rows::press`), B and Back close. Effects: `Focus`, `Hook`, `Action`,
+  `Stepped(line)`, `Open(screen)`, `Retail(line)`, `Close`. The rows keep
+  their own state (an in-memory profile store, a lobby without Live), so
+  each table case builds a fresh page. Whether the game wraps the focus
+  at either end is not traced; the page stops it there, and the fidelity
+  loop will settle it.
+- **`AccountPage`**: the account screen (`AccountScreen`, already pure),
+  with typed text and server answers as events.
+- **`SigninPage`** (`signin_screen`): the prompt plus the code being
+  typed. A press goes through `CodeEntry::press` as on the screen; what the
+  HLE then does follows `live_hle::signin`'s own transitions, now pure
+  functions the HLE uses too: `typed` (keyboard text on a page), `refused`
+  (a code that isn't six digits) and `settled` (the page after a server
+  call ends). Typed text and server answers are events.
+
+The tables (`ui_kit/page/tests.rs`, `live_hle::signin` tests) cover every
+row of the list above, plus Game Options (Start Level's A runs the action,
+X and Start don't, left, right and A step a skull, a locked skull stays
+locked), the co-op screens (Start starts or readies, Invite a Friend opens
+the friends list), the account menu, and every screen taking every input
+in every state with its spec still passing the kit's checks.
+
+Behaviour the tables changed:
+
+- **An error clears on the next edit** (`CodeEntry::error`): the code page
+  hid nothing before, so "Wrong code" stayed up while a new code was typed.
+  It shows again with the next answer, the same error included.
+- **Back cancels sign-in.** Back closed the screen through the Controls
+  handler without telling the HLE, so the logon stayed pending. The hook
+  now takes Back as B.
+- **X checks the code**, as Start does: both are the class's action
+  buttons. The legend will say A only (slice 6).
+
+`h2 ui preview <screen> [--state S] --press up,right,a` steps a page,
+prints each effect and the summary, and draws where it ends as
+`<state>-pressed`.
+
+## In the editor
+
+**Built (editor slice)**: the editor's fourth tool, **UI Screens**
+(docs/editor/editor.md "UI Screens", editor-guide.md §7). It shows every
+native screen in every state and the disc's retail screens, drawn from the
+editor's disc (synthetic without one) with zoom; widget rectangles with
+the hovered widget's JSON; the checks' findings with their widgets
+outlined; the title-safe and reserved areas, each togglable; a pad that
+steps the `Page` live; and export of the PNG, the JSON and the sheet into
+a folder outside any Git checkout. The studio takes `boot` as a library
+for it: the pages step the screens' real classes, which can't leave
+`boot`.
 
 ## The fidelity loop
 

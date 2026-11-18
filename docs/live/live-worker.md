@@ -24,7 +24,7 @@ without the crate's `native` feature, so the routes are not forked.
 | Game ingest (`/v1/ingest`) | `LiveHub` | Frames feed the read model and the stream. A per-game object is the fallback if one hub's CPU is not enough. |
 | Co-op relay (`/v1/sessions/{id}/relay`) | `CoopRelay`, one object per session id | Its traffic stays off the hub's thread, and the object can sit near the players (location hint). |
 | Content, cloud saves, published art | R2 bucket `BLOBS` (published art in a public bucket) | `BlobStore` over R2 (`crates/live-worker/src/r2.rs`). |
-| Title files | The hub's `blobs` table today; move to R2 | A Durable Object's SQLite row holds at most 2 MB, but a title file may be up to 2 MiB (`MAX_TITLE_FILE`). |
+| Title files | R2, under `title/<sha256>` (`live_server::titleblobs`) | A Durable Object's SQLite row holds at most 2 MB, but a title file may be up to 2 MiB (`MAX_TITLE_FILE`). Ones already in the log's `blobs` table are still read from there. |
 | Server key | Worker secret `H2_LIVE_SERVER_KEY` | `ServerIdentity::from_secret`. The id is the variable `H2_LIVE_ID` ([Settings](#settings)). |
 | Web app | Workers static assets (`web/dist`) | Served by Cloudflare ahead of the Worker; it is immutable and cached at the edge. |
 
@@ -60,6 +60,7 @@ Worker variables (`[vars]` in wrangler.toml) and secrets. The names are
 | `H2_LIVE_ADMINS` | variable | Admin gamertags, comma-separated. |
 | `H2_LIVE_INVITE_ONLY` | variable | `1`: account creation needs an invite. |
 | `H2_LIVE_PRIVATE` | variable | `1`: reads need a token too. |
+| `H2_LIVE_GAME_ART_URL` | variable | Published game art, `<public bucket URL>/art/<stamp>` (what `h2 live assets publish` prints). `/art/game/*` redirects there; unset, it is a JSON 404 and the web app uses its own art pack. |
 
 A missing id or key, or a bad value, fails the hub's start. The request then
 answers 500 with the reason; the hub never runs as some other server.
@@ -107,7 +108,7 @@ On wasm32 it uses getrandom's JavaScript backends (0.2 `js` and 0.3 `wasm_js`) a
 - **`dosql`** (slice 2; it replaced slice 1's `d1`): the hub's own storage as `Sql`.
 - **`r2`**: R2 as an `ObjectStore`. It covers get, range, head, put (overwrite, create-only, if-match), delete and list; multipart and copy are not done yet.
 - **`entry`**: the fetch handler and the `LiveHub` object, which starts `Live` on its first request and answers with the router.
-- **`wrangler.toml`**: a sketch with no ids in it.
+- **`wrangler.toml`**: the local defaults and the `staging`, `cutover` and `production` environments ([Deploy](#deploy)).
 
 ### Building and running on this machine
 
@@ -140,6 +141,12 @@ checks, in order:
 - sign-up;
 - a token-signed read (sign-in);
 - an event append, read back from the log;
+- the stream: a socket subscribed before the append receives the event live,
+  a replay from a position, a token-authed reader, a bad token closed with
+  4401, and a plain GET refused with 400;
+- with `WAKE=S`, a hibernation wake with a socket open;
+- game ingest, to JSON and packed readers;
+- R2: a multipart content upload, a cloud save and a 2 MiB title file;
 - warm timings;
 - with `--seed N`, 2N more events so a restart has a log to replay.
 
@@ -168,6 +175,157 @@ heavy with GameFrames, which are larger to decode. Read-model snapshots
 
 The hub reports its own start on the request that caused it, in a
 `server-timing: start;dur=<ms>, events;desc=<head>` header.
+
+## Slice 3 results
+
+These come from `smoke/run.sh 200` under local `wrangler dev`, as in slice 2.
+
+| What | Result |
+|---|---|
+| Open `/v1/stream` and get `caught_up` | 24 ms |
+| Append to the event reaching the subscribed socket | 23 ms, the same as the append's own round trip |
+| Replay from a position (one event, then `caught_up`) | 8 ms |
+| `?auth=1` with a fresh read token | let in; a bad token closes with 4401 |
+
+Read tokens are single-use, so a reader needs a fresh one for each socket.
+
+## Slice 4 results
+
+These come from `WAKE=15 smoke/run.sh 20` under local `wrangler dev`, with
+R2 simulated locally by miniflare.
+
+| What | Result |
+|---|---|
+| Hibernation wake | With a stream socket open and 15 s idle, the next request found a new hub (`start;dur=7`), and the socket got the next event, its session rebuilt from the attachment |
+| Ingest | A game started, a frame sent on `/v1/ingest`, the frame reached a JSON reader and a packed reader (the packed tick on demand): 79 ms in all |
+| Content upload, 9 MiB | 636 ms streamed into a two-part upload; read back whole in 541 ms; a body that does not hash to its path is refused and not stored |
+| Cloud save, 300 KiB | 62 ms to write and read back |
+| Title file, 2 MiB | 243 ms to publish and read back (too big for a SQLite row) |
+
+`run.sh` makes a fresh admin gamertag each run (`H2_LIVE_ADMINS`); the
+smoke test signs up as it to publish the title file.
+
+## Slice 5 results
+
+Under local `wrangler dev`, as before.
+
+**Attachments on a busy stream** (`BUSY=100`: 100 sockets follow the log
+while 60 events are appended; one run each, so the tails are noisy):
+
+| Attachment written | Append p50 | Append p90 | Append max |
+|---|---|---|---|
+| Per event (slice 4) | 21.3 ms | 35.2 ms | 210 ms |
+| On a change of state only | 18.4 ms | 23.4 ms | 32.1 ms |
+| The same, in the full run below | 13.2 ms | 34.0 ms | 121 ms |
+
+Every socket had each event within 0.3 ms of the append's answer.
+
+**The co-op relay** (`WAKE=15 BUSY=100 smoke/run.sh 20`: two members of
+a real co-op session, through the `CoopRelay` object):
+
+| What | Result |
+|---|---|
+| Both members in and told of each other | 296 ms (two tickets from the hub) |
+| A stranger | closed with 4403 |
+| Round trip, 300 datagrams | p50 6.0 ms, p99 11.3 ms |
+| 30 a second each way for 17 s | 1,020 of 1,020 delivered; each member's ticket renewed once (`relay: renewed` in the log) |
+| 200 a second each way for 5 s | 2,000 of 2,000 delivered |
+
+The relay's own ceiling was not reached: 200 a second each way is the
+sender's pacing, under `relay_rate` (240 a second a socket).
+
+## The stream on the hub
+
+`live_server::stream` holds `/v1/stream` with no socket underneath it:
+- `StreamFilter` is the query string.
+- `StreamSession` turns what happens into messages for the reader (`Out`:
+  text, binary, or a close). The things that happen are: the reader being let
+  in, its auth message, a new event, a JSON frame, a packed tick, falling
+  behind, and a token running out.
+- `Resume` is a session's lasting state as plain data: the filter, the last
+  position the reader has, who it is and when its token ends.
+
+Two drivers run the session:
+- **axum** (`http::run_stream`), on a machine. It is one task per socket,
+  selecting over the socket, the feeds and the token deadline, as before.
+- **The hub** (`crates/live-worker/src/sockets.rs`).
+  - Each socket is accepted with `state.accept_web_socket`, and its `Resume`
+    is kept as the socket's attachment. The attachment is written when that
+    state changes (let in, a new token), not per event: every open session
+    is level with the log whenever the hub is idle, the only time it
+    hibernates, so a session rebuilt after a wake starts at the log's head.
+    Writing it per event cost about 3 ms an append at p50 and 12 ms at p90
+    with 100 sockets ([Slice 5 results](#slice-5-results)).
+  - One pump task fans the hub's feeds out to every session. Expired tokens,
+    and readers that sent no auth message within 10 s, are closed from the
+    hub's alarm ([Timers and hibernation](#timers-and-hibernation)).
+  - Reader messages come in through `websocket_message`. A socket's
+    messages are handled one at a time and in order, each session behind an
+    async lock, so none is lost while an earlier one awaits the store.
+  - The pump skips a session that is busy. Before the session is let go it
+    is caught up again until it is level with the log (`settle`).
+  - The code is generic over a `Socket` trait, so it is tested on a machine
+    with a fake socket.
+  - After a wake (a new instance with the sockets still open), `adopt`
+    rebuilds each session from its attachment.
+
+`/v1/ingest` works the same way: `live_server::ingest::IngestSession` is
+the game socket's logic, driven by axum's task on a machine and by the hub
+(`crates/live-worker/src/ingest.rs`). The hub handles each ingest socket's
+messages one at a time, behind an async lock, since a message's work awaits
+the store. Its attachment keeps the author and the token's end; the packed
+decoder is not kept, so after a wake the sender's next keyframe picks its
+frames up again.
+
+## Timers and hibernation
+
+A Durable Object with a timer pending does not hibernate. On a machine
+the server spawns loops: the dispatcher's poll, the sweep every 5 s and the
+100 ms packed tick. The hub starts the server with `Timers::Driven`
+instead, which spawns none of them:
+- The dispatcher waits only for the store's wake. The hub's store has one
+  writer, and its wake sees every append.
+- After every request, socket message and alarm, the hub sets its one
+  alarm (`LiveHub::schedule`) for the earliest of:
+  - `Live::sweep_due`: the next presence to expire, game to end as lost,
+    or co-op session to expire;
+  - each stream or ingest socket's auth deadline or token end.
+
+  With nothing due there is no alarm. The alarm runs the sweep and the
+  sockets' checks, then sets the next one.
+- The packed tick runs only while a game is live (`Live::packed_active`),
+  and stops by itself when none is.
+
+So an idle hub, sockets open or not, has nothing pending, and hibernates.
+
+## The co-op relay
+
+`/v1/sessions/{id}/relay` goes to a `CoopRelay` Durable Object named by
+the session id (`crates/live-worker/src/relay.rs`), so a session's
+datagrams never touch the hub. The client speaks the machine's protocol:
+its first message is `{kind: "auth", token}` with `sessions.relay`.
+
+- **Membership.** The relay hands the token to the hub as
+  `POST /v1/sessions/{id}/relay/ticket`. The hub spends the token's `jti`,
+  checks the account is the host or an accepted guest of an open co-op
+  session, and signs a ticket: session, xuid, author, the token's `exp`,
+  and the ticket's own end, 15 s on (`relay::TICKET_S`). The relay checks
+  it with the server's public key.
+- **Rechecks.** On a machine the relay rechecks membership every 5 s. Here,
+  a member whose ticket has run out gets a new one from the hub with the
+  old ticket (`{"ticket": ...}`, no token), in the background, so no
+  datagram waits for it. If the hub says no, the socket closes with 4403.
+- **The room** (`crates/live-worker/src/relayroom.rs`, generic and tested on
+  a machine): two accounts; the same account again replaces its old socket
+  (4409); a third is refused (4409); messages over 1,200 bytes close with
+  4413, faster than `relay_rate` with 4429; `{kind: "peer", present}`
+  when the other arrives or leaves.
+- **Hibernation.** Sockets are hibernatable, with the ticket as the
+  attachment; the room is rebuilt from them after a wake. The token's end
+  and the 10 s auth deadline are the object's alarm.
+
+The ticket endpoint is public: a client could fetch a ticket itself, but
+it carries nothing the account could not learn anyway.
 
 ## Cost of the relay
 
@@ -203,20 +361,21 @@ large share of the day's requests.
    - Built with `worker-build`, run with `bunx wrangler@4 dev --local`.
    - [Settings](#settings) come from variables and secrets, and `CF-Connecting-IP` is trusted at the edge.
    - The smoke test passes, and the cold start is measured ([Slice 2 results](#slice-2-results)).
-3. **The event stream.**
-   - Hibernatable WebSockets on the hub.
-   - `run_stream`, `catch_up` and the frame feeds go behind a small socket trait, so axum's WebSocket and the object's share one implementation.
+3. **The event stream (done).**
+   - Hibernatable WebSockets on the hub ([The stream on the hub](#the-stream-on-the-hub)).
+   - One stream implementation, `live_server::stream::StreamSession`, run by axum's per-socket task and by the hub.
    - JSON and packed readers, auth messages and token expiry.
-4. **Ingest, timers and uploads.**
-   - The game's ingest socket on the hub.
-   - The spawned loops (dispatcher poll, presence sweep, the 100 ms packed tick) become an alarm plus work done on demand, so an idle hub can be evicted.
-   - Content and cloud-save uploads stream into R2 instead of a temporary file.
-   - Title files move to R2.
-5. **The co-op relay object.**
-   - `CoopRelay` per session.
-   - Membership: the hub checks it once and signs a short ticket; the relay checks the ticket.
+4. **Ingest, timers and uploads (done).**
+   - The game's ingest socket on the hub, one session shared with axum.
+   - No timers on the hub: an alarm plus work done on demand ([Timers and hibernation](#timers-and-hibernation)). A real hibernation wake is shown under `wrangler dev`.
+   - Content and cloud-save uploads stream into the blob store (R2 on the hub, multipart past 8 MiB) instead of a temporary file, on a machine too.
+   - Title files are in R2.
+   - Results: [Slice 4 results](#slice-4-results).
+5. **The co-op relay object (done).**
+   - Stream sockets got ingest's per-socket lock; attachments are written on a change of state only.
+   - `CoopRelay` per session, membership by the hub's signed ticket ([The co-op relay](#the-co-op-relay)).
    - The forwarding, rate buckets and close codes of `relay.rs`.
-   - Tested with two `coop` peers against `wrangler dev`.
+   - Two relay clients in the smoke test: [Slice 5 results](#slice-5-results).
 6. **Cold start.**
    - Snapshot the read model at a log position in the hub's storage (or R2), and replay only the tail.
    - Needed if the replay is slow at today's log size; see [Slice 2 results](#slice-2-results) for the rate.
@@ -229,6 +388,100 @@ large share of the day's requests.
    - Deploy to a staging hostname (`live-staging.forbes.red`), playing against a copy.
    - Then cut over, as below.
 9. **Later.** The menu bar app gets a "worker" mode: deploy, tail and status in place of a local server.
+
+## Deploy
+
+`crates/live-worker/deploy.sh` builds and deploys; never run a bare
+`wrangler deploy`. Each environment in wrangler.toml is its own Worker, with
+its own Durable Objects (so its own log), bucket and key:
+
+| Environment | Worker | Id | Bucket | Reached at |
+|---|---|---|---|---|
+| `staging` | `h2-live-staging` | `live-staging.forbes.red` (fresh; nothing from production is valid there) | `h2-live-blobs-staging` | `https://h2-live-staging.<subdomain>.workers.dev` |
+| `cutover` | `h2-live` | `live.forbes.red` (the Mac's, from its discovery document) | `h2-live-blobs` | workers.dev only: no route |
+| `production` | `h2-live` | `live.forbes.red` | `h2-live-blobs` | the route `live.forbes.red/*`, and workers.dev |
+
+`cutover` and `production` are one Worker deployed two ways: `cutover`
+without the route (to copy the log into before the switch), `production`
+with it (the switch). Both need `--yes-production`.
+
+`deploy.sh` prints each step as it goes:
+
+1. **Toolchain.** Rust from rust-toolchain.toml with the wasm32 target and
+   `worker-build` 0.9.0, in a rustup of its own under
+   `~/.cache/h2-live-worker` (`$H2_WORKER_HOME`). `~/.rustup` and
+   `~/.cargo` are not touched. The first run installs it.
+2. **Web.** `bun install --frozen-lockfile` and `bun run build` into
+   `web/dist`, the Worker's static assets.
+3. **Wasm.** `worker-build --release` into `crates/live-worker/build`.
+4. **Sign-in.** `wrangler whoami`; if you are not signed in, it stops and
+   says to run `bunx wrangler@4 login`.
+5. **Bucket.** It creates the environment's R2 bucket if it is missing.
+6. **Key.** It asks for the key only if the Worker has no
+   `H2_LIVE_SERVER_KEY` secret:
+   - **staging:** it makes a fresh one;
+   - **cutover and production:** it reads `$H2_LIVE_KEY_FILE`, or asks for
+     the Mac's `server.key` without echoing it. It then checks that the
+     key's public half is the one `https://live.forbes.red/.well-known/h2live.json`
+     publishes.
+
+   The key goes to `wrangler secret put` on stdin, after the deploy (the
+   Worker has to exist to hold it). It is never printed.
+7. **Deploy.** `wrangler deploy --env <env>`.
+8. **Health.** `/healthz` and the discovery document's id.
+
+`--dry-run` builds and bundles without signing in or uploading.
+`--skip-build` deploys what `build/` and `web/dist` already hold.
+
+### Staging
+
+```
+crates/live-worker/deploy.sh staging
+# discovery's url: the workers.dev address the first deploy printed
+H2_LIVE_PUBLIC_URL=https://h2-live-staging.<subdomain>.workers.dev \
+  crates/live-worker/deploy.sh staging --skip-build
+```
+
+Staging is invite-only with `afr` as its admin, like production. Its log
+starts empty, until slice 7's copy fills it.
+
+### The site
+
+What the Mac's server serves, and where it comes from on the Worker:
+
+| Path | Mac | Worker |
+|---|---|---|
+| `/v1/*`, `/healthz`, `/.well-known/h2live.json` | the router | the router, in the hub (`run_worker_first`) |
+| `/assets/*` | `web/dist`, `public, max-age=31536000, immutable` | static assets, the same header from `web/public/_headers` |
+| `index.html`, any app route | `web/dist`, `no-cache` | static assets with SPA fallback, Cloudflare's default (`public, max-age=0, must-revalidate`) |
+| `/art/*` (the web's own art pack) | `web/dist` | static assets |
+| `/art/game/*` (art from the owner's disc) | served from `game-art/` (`--share-game-art`) | a redirect to the published copy (`H2_LIVE_GAME_ART_URL`), answered by the Worker without waking the hub, else a JSON 404 |
+
+The `/v1/` cache rules (`public, … s-maxage=5` with an `ETag` for
+anonymous reads, `private, no-store` for the rest) are the router's, so
+they hold on the Worker too.
+
+The disc's art can't be in the Worker, so the Worker redirects to a
+published copy. Publishing it once from the Mac:
+
+```
+export H2_LIVE_S3_PUBLIC_ENDPOINT=https://<account id>.r2.cloudflarestorage.com \
+       H2_LIVE_S3_PUBLIC_ACCESS_KEY_ID=… H2_LIVE_S3_PUBLIC_SECRET_ACCESS_KEY=…
+h2 live assets publish --to s3://h2-live-art --url https://<the bucket's public URL>
+# prints: H2_LIVE_GAME_ART_URL = "https://…/art/<stamp>"
+```
+
+Put that line in each environment's `vars` in wrangler.toml and deploy
+again. The bucket needs public access (its r2.dev address or a custom
+domain), and a CORS rule allowing `GET` from any origin. The web app
+fetches `manifest.json` with `fetch`, which follows the redirect
+cross-origin:
+
+```
+bunx wrangler@4 r2 bucket cors set h2-live-art --file crates/live-worker/art-cors.json
+```
+
+A new extraction is a new stamp: publish it again and change the variable.
 
 ## Migrating the current data
 

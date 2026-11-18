@@ -129,15 +129,23 @@ const USAGE: &str = "usage: h2 live <command> [options]
                           upload and delete in a scratch prefix, pass or fail
                           for each (docs/live/live-hosting.md)
   assets extract [--disc PATH] [--out DIR] [--mappack ISO] [--installed DATA]
+                 [--halo1 ISO]
                           decode the stats site's art (emblems, ranks, game
                           types, weapons, map previews) from your own disc to
                           PNGs and a manifest.json; --out defaults to
-                          game-art/ in the server directory
+                          game-art/ in the server directory; Halo 1 maps
+                          converted under DATA are drawn too (--halo1
+                          converts what is missing first)
   assets check [--out DIR]
                           exit 0 when DIR holds art from this h2's extractor,
                           1 when it is missing or from an older one (then
                           extract again: the viewer's animated models and
                           materials need the current extractor)
+  assets publish --to s3://BUCKET[/PREFIX] --url URL [--out DIR]
+                          share the art: upload it to a public bucket that
+                          anyone reads at URL (its custom domain or r2.dev
+                          address), then print the address the Worker's
+                          H2_LIVE_GAME_ART_URL takes (docs/live/live-worker.md)
   maps publish DIR [--server URL] [--as GAMERTAG]
                           upload a map package and publish it (docs/game/maps.md §5)
   maps list [--server URL] [--base MAP] [--author GAMERTAG] [--json]
@@ -176,6 +184,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         ("q", _) => crate::live_query::run(rest),
         ("assets", Some("extract")) => assets_extract(rest.shift()),
         ("assets", Some("check")) => assets_check(rest.shift()),
+        ("assets", Some("publish")) => assets_publish(rest.shift()),
         ("motd", Some("set")) => motd_set(rest.shift()),
         ("invite", Some("create")) => crate::live_recovery::invite_create(rest.shift()),
         ("invite", Some("list")) => crate::live_recovery::invite_list(rest.shift()),
@@ -457,13 +466,42 @@ fn assets_extract(mut args: Args) -> Result<()> {
     let installed = args
         .take("--installed")?
         .map_or_else(content::store::default_data_root, PathBuf::from);
+    // Halo 1 maps `h2 import halo1` converted there are read too; with
+    // --halo1, the import runs first.
+    let halo1 = args.take("--halo1")?.map(PathBuf::from);
     args.positional()?;
     let disc = disc.map_or_else(crate::default_disc, Ok)?;
     let out = out.map_or_else(
         || Ok(game_art_dir(&data_dir(None)?)),
         Ok::<_, anyhow::Error>,
     )?;
-    crate::live_art::run(disc, out, mappack, Some(installed))
+    crate::live_art::run(disc, out, mappack, Some(installed), halo1)
+}
+
+/// `h2 live assets publish`: [`live_server::art::publish_to`].
+fn assets_publish(mut args: Args) -> Result<()> {
+    let to = args.take("--to")?;
+    let url = args.take("--url")?;
+    let out = args.take("--out")?.map(PathBuf::from);
+    args.positional()?;
+    let (Some(to), Some(url)) = (to, url) else {
+        bail!("assets publish needs --to s3://BUCKET and --url (the bucket's public address)")
+    };
+    let out = out.map_or_else(
+        || Ok(game_art_dir(&data_dir(None)?)),
+        Ok::<_, anyhow::Error>,
+    )?;
+    let (report, base) = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("starting tokio")?
+        .block_on(live_server::art::publish_to(&out, &to, &url, &env))?;
+    println!(
+        "game art {} published ({} of {} files uploaded now)",
+        report.stamp, report.uploaded, report.files
+    );
+    println!("H2_LIVE_GAME_ART_URL = \"{base}\"");
+    Ok(())
 }
 
 fn assets_check(mut args: Args) -> Result<()> {

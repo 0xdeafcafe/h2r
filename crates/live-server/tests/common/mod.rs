@@ -66,9 +66,24 @@ pub struct User {
 }
 
 pub async fn start(store: Arc<dyn EventStore>, policy: Policy) -> Harness {
+    start_with(store, policy, live_server::app::Timers::Spawned).await
+}
+
+#[allow(dead_code)]
+pub async fn start_driven(store: Arc<dyn EventStore>, policy: Policy) -> Harness {
+    start_with(store, policy, live_server::app::Timers::Driven).await
+}
+
+pub async fn start_with(
+    store: Arc<dyn EventStore>,
+    policy: Policy,
+    timers: live_server::app::Timers,
+) -> Harness {
     let dir = temp_dir();
     let identity = ServerIdentity::open(&dir, Some("live.test")).unwrap();
-    let live = Live::start(store, identity, policy).await.unwrap();
+    let live = Live::start_with(store, identity, policy, timers)
+        .await
+        .unwrap();
     Harness {
         app: http::router(live.clone()),
         live,
@@ -270,4 +285,40 @@ pub fn two_player_game(host: &User) -> Value {
             {"index": 1, "name": "Guest", "team": 1}
         ]
     })
+}
+
+/// Every event on `/v1/stream` from the start, as `auth` (a read token).
+pub async fn streamed(addr: std::net::SocketAddr, token: Option<String>) -> Vec<Value> {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+    let q = if token.is_some() {
+        "?from=0&auth=1"
+    } else {
+        "?from=0"
+    };
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/v1/stream{q}"))
+        .await
+        .unwrap();
+    if let Some(t) = token {
+        ws.send(Message::Text(
+            json!({"kind": "auth", "token": t}).to_string().into(),
+        ))
+        .await
+        .unwrap();
+    }
+    let mut out = Vec::new();
+    loop {
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next())
+            .await
+            .expect("a message in time")
+            .unwrap()
+            .unwrap();
+        let Message::Text(t) = msg else { continue };
+        let v: Value = serde_json::from_str(&t).unwrap();
+        match v["kind"].as_str() {
+            Some("event") => out.push(v["event"].clone()),
+            Some("caught_up") => return out,
+            _ => {}
+        }
+    }
 }

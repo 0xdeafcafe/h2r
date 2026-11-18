@@ -336,6 +336,22 @@ struct DiscConverter {
 }
 
 impl DiscConverter {
+    /// A multiplayer job's map, converted and built as the import writes
+    /// it (fresh: nothing of the base pinned), with its preparation.
+    fn multiplayer(
+        &mut self,
+        name: &str,
+        sandbox: Sandbox,
+    ) -> Result<(h1convert::convert::Prepared, h1convert::fresh::Fresh)> {
+        let (file, h1) = self.read(name)?;
+        let base_name = known(name).map_or("beavercreek", |k| k.1);
+        let mut base = h1_cmd::h2_base(&self.h2, base_name)?;
+        let p = h1_cmd::prepare_mp(&h1, &file, &mut base, base_name, sandbox)?;
+        let mopp = structure_mopp(&p.collision)?;
+        let f = p.build_fresh(&mut base, &mopp)?;
+        Ok((p, f))
+    }
+
     fn read(&mut self, name: &str) -> Result<(Vec<u8>, H1Map)> {
         let e = self
             .disc
@@ -377,7 +393,13 @@ impl Converter for DiscConverter {
                 let opts = h1_cmd::campaign_options(scripting, self.donors.as_ref());
                 let done = h1campaign::convert(&h1, &mut base, &opts)?;
                 let dir = campaign_dir(&self.data);
-                h1_cmd::write_campaign_level(&self.out(dir.clone())?, &dir, level, &done.bytes)?;
+                h1_cmd::write_campaign_level(
+                    &self.out(dir.clone())?,
+                    &dir,
+                    level,
+                    &done.bytes,
+                    &done.report.scenario.hud_swaps,
+                )?;
                 // Its picture for the level select (boot::campaign_cards).
                 if self.card_ui.is_none() {
                     self.card_ui = Some(self.read("ui").ok().map(|(_, m)| m));
@@ -396,15 +418,9 @@ impl Converter for DiscConverter {
                 }
             }
             Job::Multiplayer(name, sandbox) => {
-                let (file, h1) = self.read(name)?;
-                let base_name = known(name).map_or("beavercreek", |k| k.1);
-                let mut base = h1_cmd::h2_base(&self.h2, base_name)?;
-                let p = h1_cmd::prepare_mp(&h1, &file, &mut base, base_name, sandbox)?;
-                let mopp = structure_mopp(&p.collision)?;
-                // Fresh: nothing of the base pinned.
-                let f = p.build_fresh(&mut base, &mopp)?;
+                let (p, f) = self.multiplayer(name, sandbox)?;
                 let done = h1convert::convert::Converted {
-                    manifest: p.manifest_with(&f.bytes, &f.precision),
+                    manifest: p.manifest_fresh(&f),
                     name: f.name,
                     bytes: f.bytes,
                 };

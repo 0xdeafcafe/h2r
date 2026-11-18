@@ -340,7 +340,7 @@ How it works (crates/cli `follow.rs`):
   worktree's. Anything else there is refused and left alone. It runs `nice -n 15 cargo build
   --release -p cli` with `CARGO_TARGET_DIR=<cache>/target`, and
   `CARGO_BUILD_JOBS` set to half the cores unless you have set it.
-  `RUSTC_WRAPPER` (sccache) and the rest of your environment pass through.
+  A rustc wrapper (`RUSTC_WRAPPER`, such as kache or sccache) and the rest of your environment pass through.
   The new `h2` decides whether the newest generated game is still its own:
   `h2 build <disc> --out <previous> --check` compares the dylib's `.stamp`
   (image hash, generator sources hash including the boot bridge, module

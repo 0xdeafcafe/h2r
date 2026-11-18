@@ -363,6 +363,36 @@ const HOST_SLOTS: u32 = 0;
 const FRIEND_SLOTS: u32 = 16;
 const JOIN_SLOTS: u32 = 64;
 const LINE_SLOT: u32 = 96;
+/// The three screens' footer legends: host, friends, join.
+const FOOTER_SLOTS: [u32; 3] = [97, 98, 99];
+
+/// A co-op screen's button legend, for its footer (as the game's own
+/// screens give theirs, docs/game/ui-screens.md): A on a row, Start (or X)
+/// for the screen's action, B back.
+pub fn prompts(screen: &str) -> Vec<crate::ui_kit::input::Prompt> {
+    use crate::ui_kit::input::{Glyph, Prompt};
+    let action = match screen {
+        SCREEN => Some("Start Game"),
+        JOIN => Some("Ready"),
+        _ => None,
+    };
+    let mut p = vec![Prompt::new(&[Glyph::A], "Select")];
+    if let Some(a) = action {
+        p.push(Prompt::new(&[Glyph::Start], a));
+    }
+    p.push(Prompt::new(&[Glyph::B], "Back"));
+    p
+}
+
+/// Screen `screen`'s footer legend's string id, its text set.
+fn footer_id(texts: &Texts, screen: &str) -> u32 {
+    let slot = match screen {
+        SCREEN => FOOTER_SLOTS[0],
+        FRIENDS => FOOTER_SLOTS[1],
+        _ => FOOTER_SLOTS[2],
+    };
+    texts.set(slot, &crate::ui_kit::input::footer_legend(&prompts(screen)))
+}
 /// Rows a friends screen lists at most.
 pub const MAX_FRIENDS: usize = 20;
 
@@ -1693,46 +1723,11 @@ pub fn install(
     let live: Arc<dyn Live> = hle;
     let lobby = Arc::new(Lobby::new(levels, arm, Some(Arc::clone(&live)), skulls));
     let _ = LOBBY.set(Arc::clone(&lobby));
-    let host: Action = {
-        let lobby = Arc::clone(&lobby);
-        Arc::new(move |cx, screen| {
-            let lobby = Arc::clone(&lobby);
-            Box::pin(async move { host_start(&cx, &lobby, screen).await })
-        })
-    };
-    let ready: Action = {
-        let lobby = Arc::clone(&lobby);
-        Arc::new(move |cx, screen| {
-            let lobby = Arc::clone(&lobby);
-            Box::pin(async move { guest_ready(&cx, &lobby, screen).await })
-        })
-    };
-    let add = |r: &mut feature::Registry, c: ListClass| -> anyhow::Result<()> {
-        r.add(&c).map_err(|e| anyhow::anyhow!("coop-live: {e}"))?;
-        Ok(())
-    };
-    add(
-        registry,
-        ListClass::with_rows(
-            "coop-screen",
-            SCREEN,
-            Arc::new(HostRows(Arc::clone(&lobby))),
-        )
-        .action(host),
-    )?;
-    add(
-        registry,
-        ListClass::with_rows(
-            "coop-friends",
-            FRIENDS,
-            Arc::new(FriendRows(Arc::clone(&lobby))),
-        ),
-    )?;
-    add(
-        registry,
-        ListClass::with_rows("coop-join", JOIN, Arc::new(JoinRows(Arc::clone(&lobby))))
-            .action(ready),
-    )?;
+    for c in classes(&lobby) {
+        registry
+            .add(&c)
+            .map_err(|e| anyhow::anyhow!("coop-live: {e}"))?;
+    }
     registry
         .add(&CoopScreens {
             lobby: Arc::clone(&lobby),
@@ -1750,6 +1745,39 @@ pub fn install(
         .name("h2-coop-watch".into())
         .spawn(move || watch(weak, live, stop))?;
     Ok(true)
+}
+
+/// The three screens' classes over `lobby`: the host's (Start starts),
+/// the friends list, and the guest's (Start says ready).
+pub fn classes(lobby: &Arc<Lobby>) -> [ListClass; 3] {
+    let host: Action = {
+        let lobby = Arc::clone(lobby);
+        Arc::new(move |cx, screen| {
+            let lobby = Arc::clone(&lobby);
+            Box::pin(async move { host_start(&cx, &lobby, screen).await })
+        })
+    };
+    let ready: Action = {
+        let lobby = Arc::clone(lobby);
+        Arc::new(move |cx, screen| {
+            let lobby = Arc::clone(&lobby);
+            Box::pin(async move { guest_ready(&cx, &lobby, screen).await })
+        })
+    };
+    [
+        ListClass::with_rows("coop-screen", SCREEN, Arc::new(HostRows(Arc::clone(lobby))))
+            .action(host)
+            .footer(footer_id(&lobby.texts, SCREEN)),
+        ListClass::with_rows(
+            "coop-friends",
+            FRIENDS,
+            Arc::new(FriendRows(Arc::clone(lobby))),
+        )
+        .footer(footer_id(&lobby.texts, FRIENDS)),
+        ListClass::with_rows("coop-join", JOIN, Arc::new(JoinRows(Arc::clone(lobby))))
+            .action(ready)
+            .footer(footer_id(&lobby.texts, JOIN)),
+    ]
 }
 
 #[cfg(test)]

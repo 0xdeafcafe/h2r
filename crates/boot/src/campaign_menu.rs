@@ -69,6 +69,12 @@ pub fn prepare(state: State) -> Arc<State> {
     state
 }
 
+/// The key of the installed campaign map id `map_id` belongs to (`halo1`),
+/// once [`prepare`]d; `None` for Halo 2's own levels.
+pub fn campaign_key_of(map_id: u32) -> Option<String> {
+    PREPARED.get()?.key_of(map_id).map(str::to_owned)
+}
+
 /// The picker's strings, once [`prepare`]d.
 pub fn strings() -> Vec<(u32, &'static str)> {
     STRINGS.get().cloned().unwrap_or_default()

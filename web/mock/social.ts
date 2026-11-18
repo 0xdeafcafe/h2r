@@ -282,7 +282,16 @@ export class Social {
     if ((m = path.match(/^\/v1\/accounts\/([^/]+)\/(friends|teams)$/))) {
       const a = this.world.accountByTag(decodeURIComponent(m[1]!));
       if (!a) return fail(404, "not_found", "no such account");
-      return m[2] === "friends" ? json(this.presenceDoc(this.friendsOf(a.xuid))) : page(live().filter((t) => t.members[a.xuid] || t.recruits[a.xuid]));
+      if (m[2] === "friends") {
+        // Friendships are public; pending requests only to the player
+        // (mock: the bearer's issuer, parsed, not verified).
+        const doc = this.presenceDoc(this.friendsOf(a.xuid));
+        const auth = req.headers.get("authorization");
+        const iss = auth?.startsWith("Bearer ") ? (parseJws(auth.slice(7).trim())?.payload as { iss?: string } | undefined)?.iss : undefined;
+        const own = !!iss && authorXuid(iss) === a.xuid;
+        return json(own ? doc : { ...doc, requests_in: [], requests_out: [] });
+      }
+      return page(live().filter((t) => t.members[a.xuid] || t.recruits[a.xuid]));
     }
     if (path === "/v1/teams") {
       const limit = Math.min(100, Math.max(1, Number(u.searchParams.get("limit") ?? 50) || 50));

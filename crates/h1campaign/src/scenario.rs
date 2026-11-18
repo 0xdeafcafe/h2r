@@ -339,8 +339,20 @@ pub struct ScenarioReport {
     /// Object tags added by `h1objects` (models, collisions, animations,
     /// projectiles included).
     pub object_tags: usize,
+    /// Sounds and looping sounds the objects' effects and attachments play
+    /// (`h1objects::convert::Tree::install_audio`), installed with the
+    /// gestalt, and their sample bytes.
+    pub object_sounds: usize,
+    pub object_loops: usize,
+    pub object_sound_bytes: u64,
+    /// Of those, the sample bytes of the sounds only the rebuilt bipeds'
+    /// dialogue plays (within the size ladder's dialogue budget).
+    pub dialogue_bytes: u64,
     /// The player biped, converted and set as the campaign players' unit.
     pub player_biped: Option<String>,
+    /// HUD pairs `boot::hud` switches between (owner, Halo 1 HUD, Halo 2
+    /// HUD; docs/game/hud.md), as this set's datums.
+    pub hud_swaps: Vec<[TagId; 3]>,
     /// `None` when the scenario was rebuilt from the base's relocated tree
     /// (the base scenario's old bytes freed); else why it was written over
     /// them.
@@ -442,6 +454,11 @@ impl std::fmt::Display for ScenarioReport {
             f,
             "  object tags added: {}, player biped: {:?}, names: {}, base trigger volumes parked: {}",
             self.object_tags, self.player_biped, self.names, self.parked_volumes
+        )?;
+        writeln!(
+            f,
+            "  object sounds: {}, looping sounds: {} ({:#x} sample bytes, {:#x} of dialogue)",
+            self.object_sounds, self.object_loops, self.object_sound_bytes, self.dialogue_bytes
         )?;
         writeln!(
             f,
@@ -740,7 +757,8 @@ pub fn fresh_root() -> Block {
 /// Writes the scenario layers into `set` (built from the base), leaving
 /// out what `lean` says ([`crate::Lean`]; object textures are left out in
 /// `lib.rs`). Unless `lean` leaves out the music, `music` caps the looping
-/// sounds' sample bytes (the map file's own bound).
+/// sounds' sample bytes (the map file's own bound) and `dialogue` the
+/// rebuilt bipeds' dialogue sounds'.
 /// `bsps[k]` is Halo 1 BSP `k`, converted.
 #[allow(clippy::too_many_arguments)]
 pub fn write(
@@ -752,7 +770,7 @@ pub fn write(
     objects: Option<&h1objects::base::Base>,
     opts: &Options,
     lean: crate::Lean,
-    music: u64,
+    [music, dialogue]: [u64; 2],
     report: &mut Report,
 ) -> Result<()> {
     // A fresh level's scenario is written from nothing ([`fresh_root`]);
@@ -903,6 +921,7 @@ pub fn write(
                 groups,
                 opts.devices,
                 opts.rebuild_bipeds,
+                dialogue,
             )?
         }
         None => HashMap::new(),
@@ -1225,9 +1244,11 @@ fn place_objects(
     device_groups: bool,
     devices: crate::Devices,
     rebuild_bipeds: bool,
+    dialogue: u64,
 ) -> Result<HashMap<(i16, i16), (i16, i16)>> {
     let mut conv = h1objects::convert::Converter::new(h1, base);
     conv.options.rebuild_bipeds = rebuild_bipeds;
+    conv.options.dialogue_budget = dialogue;
     let mut palettes = Vec::new();
     for k in &KINDS {
         let mut pal = Vec::new();
@@ -1327,12 +1348,28 @@ fn place_objects(
             projectile: one(g.projectile, "projectile"),
         });
     }
-    let tree = std::mem::take(&mut conv.tree);
+    rep.dialogue_bytes = conv.dialogue_bytes;
+    let mut tree = std::mem::take(&mut conv.tree);
     rep.object_tags = tree.tags.len();
+    let hud_swaps = std::mem::take(&mut tree.hud_swaps);
+    // The sounds the objects' effects and attachments play, with the
+    // gestalt, before the tags that name them.
+    rep.object_sounds = tree.sounds.len();
+    rep.object_loops = tree.loops.len();
+    let raw_before: u64 = set.raw.iter().map(|r| r.bytes.len() as u64).sum();
+    tree.install_audio(set, true);
+    rep.object_sound_bytes = set.raw.iter().map(|r| r.bytes.len() as u64).sum::<u64>() - raw_before;
+    dropped.extend(tree.audio_notes.drain(..).map(|n| format!("object sounds: {n}")));
     let ids = tree
         .install(set)
         .map_err(|e| invalid(format!("objects: {e}")))?;
     let real = |t: TagId| ids[(t.0 & 0xffff) as usize];
+    // A pair's Halo 2 HUD may be a base-map tag (a weapon's counterpart's).
+    let resolve = |t: TagId| h1objects::convert::local_index(t).map_or(t, |k| ids[k]);
+    rep.hud_swaps = hud_swaps
+        .iter()
+        .map(|s| [resolve(s.owner), resolve(s.halo1), resolve(s.halo2)])
+        .collect();
     let palette_id = |p: &Pal| match *p {
         Pal::Converted(t) => real(t),
         Pal::Retail(t) => t,

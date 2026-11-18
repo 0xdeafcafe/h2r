@@ -272,18 +272,10 @@ fn redirect_for(
     uri_path: &str,
     headers: &HeaderMap,
 ) -> Option<String> {
-    let rel = uri_path.strip_prefix(PREFIX)?.strip_prefix('/')?;
+    let rel = art_rel(uri_path)?;
     let rel = percent_encoding::percent_decode_str(rel)
         .decode_utf8()
         .ok()?;
-    if rel.is_empty()
-        || rel
-            .split('/')
-            .any(|s| s.is_empty() || s == "." || s == ".." || s.contains('\\'))
-        || rel.ends_with(".gz")
-    {
-        return None;
-    }
     let plain = dir.join(&*rel);
     if !plain.is_file() {
         return None;
@@ -292,6 +284,72 @@ fn redirect_for(
         return None;
     }
     published.url(&rel)
+}
+
+#[cfg(feature = "native")]
+/// `h2 live assets publish`: publishes the art in `dir` to the public store
+/// at `to` (`s3://BUCKET[/PREFIX]` with the `H2_LIVE_S3_PUBLIC_*` or
+/// `H2_LIVE_S3_*` settings from `env`, or a directory), readable by anyone
+/// at `url`, for a server with no art files of its own (the Worker). The
+/// art is shared by doing so. Returns what was done and the published
+/// extraction's address, the Worker's `H2_LIVE_GAME_ART_URL`.
+pub async fn publish_to(
+    dir: &Path,
+    to: &str,
+    url: &str,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> anyhow::Result<(PublishReport, String)> {
+    use anyhow::Context;
+    let Some(art) = GameArt::found(dir, true) else {
+        anyhow::bail!(
+            "{} has no {MANIFEST}; extract the art into it with \
+             `h2 live assets extract --out DIR` (docs/live/live-art.md)",
+            dir.display()
+        );
+    };
+    crate::blobs::check_public_url(url)?;
+    let store = crate::blobs::BlobStore::open(&crate::blobs::Location::parse(to)?, env, true)
+        .context("opening the public store")?
+        .with_public_url(url);
+    let report = publish(&art, &store)
+        .await
+        .with_context(|| format!("publishing {} to {}", dir.display(), store.describe()))?;
+    let base = store
+        .public_url(&format!("{ART_PREFIX}{}", report.stamp))
+        .expect("the store has a public URL");
+    Ok((report, base))
+}
+
+/// The relative path a request for `uri_path` (under [`PREFIX`]) names,
+/// still percent-encoded as it came, if it is one a published extraction
+/// can hold: no empty, `.` or `..` segment, no backslash, not a `.gz`
+/// copy.
+fn art_rel(uri_path: &str) -> Option<&str> {
+    let rel = uri_path.strip_prefix(PREFIX)?.strip_prefix('/')?;
+    let decoded = percent_encoding::percent_decode_str(rel)
+        .decode_utf8()
+        .ok()?;
+    let bad = decoded.is_empty()
+        || decoded
+            .split('/')
+            .any(|s| s.is_empty() || s == "." || s == ".." || s.contains('\\'))
+        || decoded.ends_with(".gz");
+    (!bad).then_some(rel)
+}
+
+/// For a server with no art files of its own (the Worker): where a request
+/// for `uri_path` goes, given `base`, the published extraction's public
+/// address (`<public bucket URL>/art/<stamp>`, what [`publish`] printed).
+/// The redirect's `Cache-Control` is [`cache_control`] of the request's
+/// query, as on a server that has the files.
+pub fn published_redirect(
+    base: &str,
+    uri_path: &str,
+    query: Option<&str>,
+) -> Option<(String, &'static str)> {
+    let rel = art_rel(uri_path)?;
+    let to = format!("{}/{rel}", base.trim_end_matches('/'));
+    Some((to, cache_control(versioned(query))))
 }
 
 fn accepts_gzip(headers: &HeaderMap) -> bool {
@@ -621,6 +679,80 @@ mod tests {
         std::fs::write(dir.join("emblem.png"), b"png2!").unwrap();
         assert_ne!(super::stamp(&dir).unwrap(), stamp);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// `h2 live assets publish`: the art goes to the named store, and the
+    /// address it returns is where the Worker's redirects find each file.
+    #[tokio::test]
+    async fn publishing_for_the_worker_names_the_address() {
+        let root = std::env::temp_dir().join(format!("h2-art-to-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (dir, bucket) = (root.join("art"), root.join("bucket"));
+        std::fs::create_dir_all(dir.join("map/x")).unwrap();
+        std::fs::create_dir_all(&bucket).unwrap();
+        std::fs::write(dir.join(MANIFEST), r#"{"source":"s"}"#).unwrap();
+        std::fs::write(dir.join("map/x/map.glb"), b"glTF").unwrap();
+        let none = |_: &str| None;
+        let to = format!("file:{}", bucket.display());
+        let (report, base) = publish_to(&dir, &to, "https://art.example.net/", &none)
+            .await
+            .unwrap();
+        assert_eq!((report.uploaded, report.files), (2, 2));
+        assert_eq!(
+            base,
+            format!("https://art.example.net/art/{}", report.stamp)
+        );
+        let (to_url, _) = published_redirect(&base, "/art/game/map/x/map.glb", None).unwrap();
+        let key = to_url.strip_prefix("https://art.example.net/").unwrap();
+        assert_eq!(std::fs::read(bucket.join(key)).unwrap(), b"glTF");
+        // Again: nothing to upload, the same address.
+        let (again, base2) = publish_to(&dir, &to, "https://art.example.net", &none)
+            .await
+            .unwrap();
+        assert_eq!((again.uploaded, base2), (0, base));
+        // No art, or no public address: refused.
+        assert!(
+            publish_to(&bucket, &to, "https://a.example.net", &none)
+                .await
+                .is_err()
+        );
+        assert!(publish_to(&dir, &to, "ftp://a", &none).await.is_err());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A server with no files of its own (the Worker) redirects to the
+    /// published extraction by path alone, with the same cache rules, and
+    /// refuses the paths a server with files refuses.
+    #[test]
+    fn redirects_without_the_files() {
+        let base = "https://art.example.net/art/0123456789abcdef/";
+        assert_eq!(
+            published_redirect(base, "/art/game/map/x%20y/map.glb", Some("v=abc")),
+            Some((
+                "https://art.example.net/art/0123456789abcdef/map/x%20y/map.glb".into(),
+                "private, max-age=31536000, immutable"
+            ))
+        );
+        assert_eq!(
+            published_redirect(base, "/art/game/manifest.json", None),
+            Some((
+                "https://art.example.net/art/0123456789abcdef/manifest.json".into(),
+                "no-cache"
+            ))
+        );
+        for bad in [
+            "/art/game/",
+            "/art/game",
+            "/art/gamex/a.png",
+            "/art/game/map/../manifest.json",
+            "/art/game/map/%2e%2e/manifest.json",
+            "/art/game/map//a.png",
+            "/art/game/map/a%5Cb.png",
+            "/art/game/map/x/map.glb.gz",
+            "/art/game/%ff.png",
+        ] {
+            assert_eq!(published_redirect(base, bad, None), None, "{bad}");
+        }
     }
 
     #[test]

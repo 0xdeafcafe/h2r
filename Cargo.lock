@@ -544,6 +544,7 @@ dependencies = [
 name = "bink-hle"
 version = "0.1.0"
 dependencies = [
+ "audio",
  "movies",
  "runtime",
  "xiso",
@@ -646,6 +647,7 @@ dependencies = [
  "live-telemetry",
  "lockstep",
  "map",
+ "movies",
  "perf",
  "png",
  "runtime",
@@ -2505,6 +2507,7 @@ dependencies = [
  "h1convert",
  "h1map",
  "h1models",
+ "h1sounds",
  "map",
  "mopp",
  "scenario-edit",
@@ -3557,6 +3560,7 @@ dependencies = [
  "live-server",
  "object_store",
  "send_wrapper",
+ "serde",
  "serde_json",
  "sqlx",
  "tokio",
@@ -6322,6 +6326,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "app-icon",
+ "boot",
  "content",
  "dear-imgui-rs",
  "dear-imgui-wgpu",
@@ -6338,6 +6343,7 @@ dependencies = [
  "pollster",
  "rfd",
  "scenario-edit",
+ "serde_json",
  "variants",
  "wgpu",
  "winit",

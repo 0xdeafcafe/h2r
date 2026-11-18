@@ -8,6 +8,7 @@
 //! [`Action`]s.
 
 mod playlists;
+mod ui_screens;
 mod variants;
 use std::path::PathBuf;
 
@@ -89,6 +90,7 @@ pub struct Studio {
     pub dialogs: bool,
     pub variants: variants::VariantsUi,
     playlists: playlists::PlaylistsUi,
+    pub ui_screens: ui_screens::UiScreensUi,
 }
 
 impl Studio {
@@ -106,6 +108,7 @@ impl Studio {
             dialogs: true,
             variants: variants::VariantsUi::default(),
             playlists: playlists::PlaylistsUi::default(),
+            ui_screens: ui_screens::UiScreensUi::default(),
         }
     }
 
@@ -125,6 +128,7 @@ impl Studio {
             }
             ToolKind::Variants => self.variant_windows(ui, app, &mut actions),
             ToolKind::Playlists => self.playlist_windows(ui, app, &mut actions),
+            ToolKind::UiScreens => self.ui_screen_windows(ui, app, gpu, &mut actions),
         }
         self.log_window(ui, app);
         self.status_bar(ui, app);
@@ -157,7 +161,7 @@ impl Studio {
                 ToolKind::Playlists if app.hoppers.is_open() => {
                     playlists::save(app, self.dialogs, actions)
                 }
-                ToolKind::Playlists => {}
+                ToolKind::Playlists | ToolKind::UiScreens => {}
             }
         }
         if cmd && ui.is_key_pressed(Key::Q) {
@@ -436,7 +440,7 @@ impl Studio {
     /// The File menu's items for the variant and playlist tools.
     fn tool_file_menu(&mut self, ui: &Ui, app: &App, actions: &mut Vec<Action>) {
         match app.tool {
-            ToolKind::Scenario => {}
+            ToolKind::Scenario | ToolKind::UiScreens => {}
             ToolKind::Variants => {
                 let e = app.variants.as_ref();
                 let can_save = e.is_some_and(|e| e.is_dirty() && !e.is_read_only());
@@ -523,6 +527,26 @@ impl Studio {
         let st = &mut self.playlists;
         ui.window(&self.keys.inspector)
             .build(|| playlists::inspector(ui, app, st, fonts, dialogs, actions));
+    }
+
+    /// The UI Screens tool in the outliner, centre and inspector windows.
+    fn ui_screen_windows(
+        &mut self,
+        ui: &Ui,
+        app: &mut App,
+        gpu: &mut Gpu<'_>,
+        actions: &mut Vec<Action>,
+    ) {
+        let fonts = &self.fonts;
+        let st = &mut self.ui_screens;
+        ui.window(self.keys.outliner.label(format!("{} Screens", icon::TREE)))
+            .build(|| ui_screens::tree(ui, app, st, fonts, actions));
+        ui.window(self.keys.viewport.label(format!("{} Preview", icon::EYE)))
+            .flags(WindowFlags::HORIZONTAL_SCROLLBAR)
+            .build(|| ui_screens::preview(ui, app, st, gpu));
+        let dialogs = self.dialogs;
+        ui.window(&self.keys.inspector)
+            .build(|| ui_screens::inspector(ui, app, st, fonts, dialogs, actions));
     }
 
     fn heading(&self, ui: &Ui, text: &str) {
@@ -969,6 +993,7 @@ impl Studio {
                 ToolKind::Scenario => app.loaded_map().unwrap_or("The map").to_owned(),
                 ToolKind::Variants => "The open game variant".to_owned(),
                 ToolKind::Playlists => "The playlist file".to_owned(),
+                ToolKind::UiScreens => "The UI screen".to_owned(),
             };
             ui.text(format!("{} {who} has unsaved edits.", icon::ALERT));
             ui.text_disabled(format!("Save them before {what}?"));
@@ -1001,6 +1026,7 @@ impl Studio {
                         answer = Some(Answer::SaveAs(p));
                     }
                 }
+                ToolKind::UiScreens => {}
             }
             ui.same_line();
             if ui.button("Discard") {
@@ -1193,6 +1219,7 @@ fn tool_icon(tool: ToolKind) -> &'static str {
         ToolKind::Scenario => icon::MAP,
         ToolKind::Variants => icon::SLIDERS,
         ToolKind::Playlists => icon::LAYERS,
+        ToolKind::UiScreens => icon::EYE,
     }
 }
 

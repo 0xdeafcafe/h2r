@@ -181,6 +181,15 @@ pub enum Button {
 /// action, the sideways steps and the Controls handler.
 pub type Buttons = Arc<dyn Fn(u32, u32) -> Button + Send + Sync>;
 
+/// [`ListClass::behaviour`].
+pub struct Behaviour<'a> {
+    pub rows: &'a Arc<dyn Rows>,
+    pub hook: Option<&'a Buttons>,
+    pub action: bool,
+    pub action_buttons: &'static [u32],
+    pub sideways: bool,
+}
+
 /// A picture of ours on the screen: a retail screen's bitmap block, copied
 /// (docs/formats/ui.md "Bitmap block") and placed with its top-left at `at`. The
 /// block is found at run time through the interface's screen list, so the
@@ -197,6 +206,13 @@ pub struct PictureSpec {
     pub image: i16,
     /// Top-left, `x, y` (Y up, origin at the screen centre).
     pub at: [i16; 2],
+    /// The widget's animation (a 1-based index into the `wigl` animation
+    /// collections, docs/formats/ui.md "Animations and transitions"): what
+    /// its screen's in and out transitions play on it. Zero is none, and a
+    /// widget with none stays fully drawn while its screen animates out:
+    /// the skulls page's skull stayed over the difficulty screen's own
+    /// coming back in, on B.
+    pub animation: u16,
 }
 
 /// A bitmap block definition's size.
@@ -219,8 +235,8 @@ const BITMAP_HANDLE: usize = 0x1c;
 pub const WIDGET_TINT: u32 = 0x28;
 
 /// The bitmap block `spec` names, from the screen tag whose datum handle
-/// is `handle` (`SCREEN_TAG_BY_ID`), ready for the pane builder: no
-/// animation, at `spec.at`. Says why when there is none.
+/// is `handle` (`SCREEN_TAG_BY_ID`), ready for the pane builder: with
+/// `spec.animation`, at `spec.at`. Says why when there is none.
 pub fn picture_block(
     m: &dyn GuestMemory,
     handle: u32,
@@ -273,6 +289,7 @@ pub fn picture_block(
         ));
     }
     b[BITMAP_ANIMATION..BITMAP_ANIMATION + 4].fill(0);
+    b[BITMAP_ANIMATION..BITMAP_ANIMATION + 2].copy_from_slice(&spec.animation.to_le_bytes());
     b[BITMAP_POINT..BITMAP_POINT + 2].copy_from_slice(&spec.at[0].to_le_bytes());
     b[BITMAP_POINT + 2..BITMAP_POINT + 4].copy_from_slice(&spec.at[1].to_le_bytes());
     Ok(b)
@@ -294,6 +311,69 @@ pub struct ListLayout {
     /// A retail bitmap of the pane is kept only when its top-left `x` is
     /// less than this: the picture column on the right stays clear.
     pub bitmaps_left_of: i16,
+    /// Rows the list lays out before it scrolls (the list block's visible
+    /// count, `+6`); 0 keeps the Controls tag's six. The layout (`0x24bc12`)
+    /// places one item widget per row up to this count, and the Controls
+    /// handler embeds six, so a class asking for more gets the rest as item
+    /// widgets of ours ([`extra_items`], linked by the "add items" hook in
+    /// `layout_glue`). With six the skulls page's list stopped a third of
+    /// the way down the page.
+    pub visible: i16,
+}
+
+/// Item widgets the Controls list handler embeds (`+0x88`, 0x80 bytes
+/// each); a layout's rows past these are item widgets of ours.
+pub const EMBEDDED_ITEMS: i16 = 6;
+
+impl ListLayout {
+    /// Item widgets of ours a list with this layout needs past the six
+    /// embedded ones.
+    pub const fn extra_items(&self) -> u32 {
+        if self.visible > EMBEDDED_ITEMS {
+            (self.visible - EMBEDDED_ITEMS) as u32
+        } else {
+            0
+        }
+    }
+}
+
+/// Our classes' extra item widgets: by list vtable, how many each list
+/// needs, the pool they come from, and which list holds which slot.
+struct ExtraItems {
+    list_vtable: u32,
+    extra: u32,
+    pool: u32,
+    size: u32,
+    slots: Vec<(u32, u32)>,
+    next: u32,
+}
+
+static EXTRA_ITEMS: Mutex<Vec<ExtraItems>> = Mutex::new(Vec::new());
+
+/// Room for this many screens of a class at once (one closing as another
+/// opens), each with its extra items.
+const EXTRA_SCREENS: u32 = 2;
+
+/// The item widgets of ours the list handler `handler` (whose vtable is
+/// `list_vtable`) gets after its six, in order: empty for a list that is not
+/// one of our classes' or needs none. A handler keeps its slot while it
+/// lives; slots are reused in turn, as `speaker_row::extra_slot` does.
+pub fn extra_items(handler: u32, list_vtable: u32) -> Vec<u32> {
+    let mut v = EXTRA_ITEMS.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(e) = v.iter_mut().find(|e| e.list_vtable == list_vtable) else {
+        return Vec::new();
+    };
+    let slot = crate::speaker_row::extra_slot(
+        &mut e.slots,
+        &mut e.next,
+        handler,
+        e.pool,
+        e.size,
+        e.extra,
+    );
+    (0..e.extra)
+        .map(|i| slot + i * crate::speaker_row::ITEM_SIZE)
+        .collect()
 }
 
 /// A `wgit` root's size, and its panes block (count, address).
@@ -303,6 +383,7 @@ pub const SCREEN_ROOT_SIZE: u32 = 0x68;
 const PANE_LISTS: u32 = 0x0c;
 pub const LIST_BLOCK_SIZE: u32 = 0x18;
 const LIST_SKIN: u32 = 0x04;
+const LIST_VISIBLE: u32 = 0x06;
 const LIST_ANCHOR: u32 = 0x08;
 /// Frame bitmaps kept at most.
 const KEPT_BITMAPS: u32 = 4;
@@ -314,7 +395,7 @@ const TAG_SOURCE: u32 = 0x1fc;
 pub const TAG_COPY_SIZE: u32 =
     SCREEN_ROOT_SIZE + PANE_SIZE + LIST_BLOCK_SIZE + KEPT_BITMAPS * BITMAP_BLOCK_SIZE;
 const _: () = assert!(TAG_SOURCE + 4 <= TAG_COPY && TAG_COPY + TAG_COPY_SIZE <= 0x1000);
-const _: () = assert!(PICTURE_BLOCK + BITMAP_BLOCK_SIZE <= TAG_SOURCE);
+const _: () = assert!(FRAME_BLOCK + BITMAP_BLOCK_SIZE <= TAG_SOURCE);
 
 /// Writes at `at` a copy of the retail screen tag at `retail` with one pane
 /// (its pane 0): the first list block moved to `layout.anchor` on skin
@@ -353,6 +434,9 @@ pub fn copy_tag(
     if lists > 0 {
         copy(m, list_from, list, LIST_BLOCK_SIZE)?;
         m.set_u16(list + LIST_SKIN, layout.skin as u16)?;
+        if layout.visible > 0 {
+            m.set_u16(list + LIST_VISIBLE, layout.visible as u16)?;
+        }
         m.set_u16(list + LIST_ANCHOR, layout.anchor[0] as u16)?;
         m.set_u16(list + LIST_ANCHOR + 2, layout.anchor[1] as u16)?;
         m.set_u32(pane + PANE_LISTS, 1)?;
@@ -438,6 +522,9 @@ pub struct TextBlock {
     pub font: i16,
     /// Red, green, blue.
     pub colour: [f32; 3],
+    /// The widget's animation, as [`PictureSpec::animation`]: zero leaves
+    /// the text fully drawn through its screen's out transition.
+    pub animation: u16,
 }
 
 /// A text block definition's size.
@@ -445,10 +532,11 @@ pub const TEXT_BLOCK_SIZE: u32 = 0x2c;
 
 impl TextBlock {
     /// The block's bytes: left-justified (flags bit 0), the larger text
-    /// widget (bit 4 clear), no animation, the null string id.
+    /// widget (bit 4 clear), its animation, the null string id.
     pub fn bytes(&self) -> [u8; TEXT_BLOCK_SIZE as usize] {
         let mut b = [0u8; TEXT_BLOCK_SIZE as usize];
         b[0..4].copy_from_slice(&1u32.to_le_bytes());
+        b[0x4..0x6].copy_from_slice(&self.animation.to_le_bytes());
         b[0xa..0xc].copy_from_slice(&self.font.to_le_bytes());
         for (i, c) in self.colour.iter().enumerate() {
             b[0x10 + 4 * i..0x14 + 4 * i].copy_from_slice(&c.to_le_bytes());
@@ -534,6 +622,8 @@ const DESCRIPTION_BLOCK: u32 = 0x100;
 /// Where the picture's bitmap block goes, after the text block.
 const PICTURE_BLOCK: u32 = 0x140;
 const _: () = assert!(PICTURE_BLOCK >= DESCRIPTION_BLOCK + TEXT_BLOCK_SIZE);
+/// Where the frame's bitmap block goes, after the picture's.
+const FRAME_BLOCK: u32 = PICTURE_BLOCK + BITMAP_BLOCK_SIZE;
 
 /// Where a class's description block goes, the block, and where to keep
 /// each screen's widget.
@@ -545,6 +635,10 @@ pub struct Description {
     /// A picture beside it, its block written at `picture_at`.
     pub picture: Option<PictureSpec>,
     pub picture_at: u32,
+    /// Frame art of another retail screen for the list, its block written
+    /// at `frame_at` ([`ListClass::frame`]).
+    pub frame: Option<PictureSpec>,
+    pub frame_at: u32,
 }
 
 /// A screen of the `ui` model.
@@ -641,12 +735,14 @@ pub struct ListClass {
     rows: Arc<dyn Rows>,
     description: Option<TextBlock>,
     picture: Option<PictureSpec>,
+    frame: Option<PictureSpec>,
     layout: Option<ListLayout>,
     action: Option<Action>,
     buttons: Option<Buttons>,
     sideways: bool,
     on_free: Option<OnFree>,
     footer: Option<u32>,
+    action_buttons: &'static [u32],
     loader: Arc<AtomicU32>,
 }
 
@@ -663,12 +759,14 @@ impl ListClass {
             rows,
             description: None,
             picture: None,
+            frame: None,
             layout: None,
             action: None,
             buttons: None,
             sideways: false,
             on_free: None,
             footer: None,
+            action_buttons: &ACTION_BUTTONS,
             loader: Arc::new(AtomicU32::new(0)),
         }
     }
@@ -683,6 +781,15 @@ impl ListClass {
         self.picture = Some(spec);
         self
     }
+    /// With frame art for its list: a retail screen's bitmap block placed
+    /// as `spec` says, as [`ListClass::picture`]'s is, but never tinted.
+    /// A moved list takes the frame of the screen whose layout it copies
+    /// (the skulls page: the level select's bracket). Only a class with a
+    /// description shows one.
+    pub fn frame(mut self, spec: PictureSpec) -> Self {
+        self.frame = Some(spec);
+        self
+    }
     /// With its list placed and skinned by `layout` ([`ListLayout`]).
     pub fn layout(mut self, layout: ListLayout) -> Self {
         self.layout = Some(layout);
@@ -694,6 +801,13 @@ impl ListClass {
         self.action = Some(action);
         self
     }
+    /// The buttons that run the action besides A on an action row:
+    /// [`ACTION_BUTTONS`] (X and Start) unless set. The skulls page takes
+    /// none: A on its Start row goes on, as the game's own menus do.
+    pub fn action_buttons(mut self, buttons: &'static [u32]) -> Self {
+        self.action_buttons = buttons;
+        self
+    }
     /// With buttons of its own, asked first on each button event (screen
     /// slot 10): the sign-in prompt's d-pad digits.
     pub fn buttons(mut self, buttons: Buttons) -> Self {
@@ -702,6 +816,19 @@ impl ListClass {
     }
     /// With sideways steps: left and right on the focused row go to
     /// [`Rows::sideways`] (the Controls list does nothing with them).
+    /// The rows, the event hook, whether there is an action, the buttons
+    /// that run it, and whether left and right step rows: what an event
+    /// does, for the offline page ([`crate::ui_kit::page::ListPage`]).
+    pub fn behaviour(&self) -> Behaviour<'_> {
+        Behaviour {
+            rows: &self.rows,
+            hook: self.buttons.as_ref(),
+            action: self.action.is_some(),
+            action_buttons: self.action_buttons,
+            sideways: self.sideways,
+        }
+    }
+
     pub fn sideways(mut self) -> Self {
         self.sideways = true;
         self
@@ -1025,6 +1152,41 @@ pub async fn row_chosen(
     Ok(Ret::new(0, 8))
 }
 
+/// Where an event goes on a class of ours once its own hook passed it
+/// ([`event_with`]); pure, so the offline page
+/// ([`crate::ui_kit::page::ListPage`]) takes the same path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Route {
+    /// X or Start (`action_buttons`): the class's action.
+    Action,
+    /// Left or right: the focused row's [`Rows::sideways`], and on to the
+    /// Controls handler when it has nothing to step.
+    Sideways { right: bool },
+    /// The Controls handler: up and down move the focus, A presses the
+    /// row, B and Back close.
+    Controls,
+}
+
+/// [`Route`] for an event's kind and button words on a class with (or
+/// without) an action, its action buttons, and sideways steps.
+pub fn route(
+    kind: u32,
+    button: u32,
+    action: bool,
+    action_buttons: &[u32],
+    sideways: bool,
+) -> Route {
+    if action && kind == BUTTON_EVENT && action_buttons.contains(&button) {
+        Route::Action
+    } else if sideways && (kind == LEFT_EVENT || kind == RIGHT_EVENT) {
+        Route::Sideways {
+            right: kind == RIGHT_EVENT,
+        }
+    } else {
+        Route::Controls
+    }
+}
+
 /// Screen slot 10 of a class with an action, sideways steps or an event
 /// hook of its own: the hook first ([`Button::Handled`]: AL 1), then X or
 /// Start runs the action, and left or right ([`LEFT_EVENT`],
@@ -1038,6 +1200,18 @@ pub async fn event(
     buttons: Option<Buttons>,
     sideways: Option<Arc<dyn Rows>>,
 ) -> Result<Ret, EntryError> {
+    event_with(cx, original, action, &ACTION_BUTTONS, buttons, sideways).await
+}
+
+/// [`event`] with the buttons that run the action given.
+pub async fn event_with(
+    cx: Cx,
+    original: u32,
+    action: Option<Action>,
+    action_buttons: &[u32],
+    buttons: Option<Buttons>,
+    sideways: Option<Arc<dyn Rows>>,
+) -> Result<Ret, EntryError> {
     let screen = cx.entry().ecx;
     let ev = cx.arg(0)?;
     let (kind, button) =
@@ -1047,23 +1221,25 @@ pub async fn event(
     {
         return Ok(Ret::new(1, 4));
     }
-    if let Some(action) = action
-        && kind == BUTTON_EVENT
-        && ACTION_BUTTONS.contains(&button)
-    {
+    let routed = route(
+        kind,
+        button,
+        action.is_some(),
+        action_buttons,
+        sideways.is_some(),
+    );
+    if let (Route::Action, Some(action)) = (routed, action) {
         action(cx.clone(), screen).await?;
         return Ok(Ret::new(1, 4));
     }
-    if let Some(rows) = sideways
-        && (kind == LEFT_EVENT || kind == RIGHT_EVENT)
-    {
+    if let (Route::Sideways { right }, Some(rows)) = (routed, sideways) {
         let focused = cx
             .call(GuestCall::new(points::LIST_FOCUSED_ROW.base).eax(screen.wrapping_add(ui::LIST)))
             .await?
             .eax;
         let row = (focused != u32::MAX).then(|| DatumHandle(focused).index() as i16);
         // The rows write the store with no guest memory held.
-        if let Some(line) = row.and_then(|r| rows.sideways(r, kind == RIGHT_EVENT)) {
+        if let Some(line) = row.and_then(|r| rows.sideways(r, right)) {
             eprintln!("{line}");
             return Ok(Ret::new(1, 4));
         }
@@ -1181,7 +1357,10 @@ pub async fn setup_pane_footer(
         } else {
             d.shown.set_widget(screen, widget);
             if let Some(spec) = d.picture {
-                add_picture(&cx, screen, &spec, d.picture_at, &d.shown, name).await?;
+                add_picture(&cx, screen, &spec, d.picture_at, Some(&d.shown), name).await?;
+            }
+            if let Some(spec) = d.frame {
+                add_picture(&cx, screen, &spec, d.frame_at, None, name).await?;
             }
         }
     }
@@ -1191,14 +1370,15 @@ pub async fn setup_pane_footer(
 /// Said once per run: the picture could not be made (the line says why).
 static PICTURE_MISSING: AtomicBool = AtomicBool::new(false);
 
-/// The picture: its block found through the screen list, copied to `at`,
-/// and made a bitmap widget of `screen` by the pane builder's bitmap step.
+/// The picture (or the frame): its block found through the screen list,
+/// copied to `at`, and made a bitmap widget of `screen` by the pane
+/// builder's bitmap step; a picture's widget is kept in `shown` to tint.
 async fn add_picture(
     cx: &Cx,
     screen: u32,
     spec: &PictureSpec,
     at: u32,
-    shown: &Shown,
+    shown: Option<&Shown>,
     name: &str,
 ) -> Result<(), EntryError> {
     let handle = cx
@@ -1226,7 +1406,7 @@ async fn add_picture(
             &PICTURE_MISSING,
             &format!("{name}: no picture (no memory for the widget)"),
         );
-    } else {
+    } else if let Some(shown) = shown {
         shown.set_picture(screen, widget);
     }
     Ok(())
@@ -1273,13 +1453,14 @@ impl feature::Feature for ListClass {
         let sideways = self.sideways.then(|| Arc::clone(&rows));
         let event_at = if self.action.is_some() || sideways.is_some() || self.buttons.is_some() {
             let (action, buttons) = (self.action.clone(), self.buttons.clone());
+            let action_buttons = self.action_buttons;
             b.entry("event", move |cx| -> EntryFuture {
                 let (action, buttons, sideways) =
                     (action.clone(), buttons.clone(), sideways.clone());
                 Box::pin(async move {
                     let original =
                         cx.read(|m| ui::slot(m, CONTROLS_SCREEN_VTABLE.base, SCREEN_EVENT_SLOT))?;
-                    event(cx, original, action, buttons, sideways).await
+                    event_with(cx, original, action, action_buttons, buttons, sideways).await
                 })
             })?
         } else {
@@ -1307,6 +1488,8 @@ impl feature::Feature for ListClass {
                 shown,
                 picture: self.picture,
                 picture_at: tables + PICTURE_BLOCK,
+                frame: self.frame,
+                frame_at: tables + FRAME_BLOCK,
             });
         let footer = self.footer;
         let setup_pane_at = b.entry("set up pane", move |cx| -> EntryFuture {
@@ -1338,6 +1521,21 @@ impl feature::Feature for ListClass {
             let mut v = LAYOUTS.lock().unwrap_or_else(|e| e.into_inner());
             v.retain(|(vt, _, _)| *vt != tables);
             v.push((tables, tables, layout));
+            let extra = layout.extra_items();
+            if extra > 0 {
+                let size = (EXTRA_SCREENS * extra * crate::speaker_row::ITEM_SIZE + 0xfff) & !0xfff;
+                let pool = b.guest_alloc(size, Permissions::RW)?;
+                let mut x = EXTRA_ITEMS.lock().unwrap_or_else(|e| e.into_inner());
+                x.retain(|x| x.list_vtable != e.list_vtable);
+                x.push(ExtraItems {
+                    list_vtable: e.list_vtable,
+                    extra,
+                    pool,
+                    size,
+                    slots: Vec::new(),
+                    next: 0,
+                });
+            }
         }
         LOADERS
             .lock()
@@ -1622,8 +1820,9 @@ mod tests {
         assert_eq!(run.result, Ok(Ret::new(SCREEN, 4)));
         assert_eq!(Screen::at(SCREEN).vtable(&run.guest), Ok(TABLES));
         // While the constructor ran, the Controls rows' array was asked for
-        // our seven rows; any other array, and anything after, as asked.
-        assert_eq!(*during.lock().unwrap(), Some((7, 7)));
+        // our six rows (the Video screen's); any other array, and anything
+        // after, as asked.
+        assert_eq!(*during.lock().unwrap(), Some((6, 7)));
         assert_eq!(array_count(crate::speaker_row::LIST_NAME, 7), 7);
     }
 
@@ -1871,6 +2070,7 @@ mod tests {
             rect: [200, 80, 140, 310],
             font: 1,
             colour: [0.5, 0.25, 1.0],
+            animation: 10,
         }
         .bytes();
         assert_eq!(b.len(), 0x2c);
@@ -1879,7 +2079,7 @@ mod tests {
             &1u32.to_le_bytes(),
             "left justified, larger widget"
         );
-        assert_eq!(&b[4..6], &[0, 0], "no animation");
+        assert_eq!(&b[4..6], &10u16.to_le_bytes(), "its animation");
         assert_eq!(&b[0xa..0xc], &1i16.to_le_bytes());
         assert_eq!(&b[0x10..0x14], &0.5f32.to_le_bytes());
         assert_eq!(&b[0x18..0x1c], &1.0f32.to_le_bytes());
@@ -1921,6 +2121,7 @@ mod tests {
             rect: [1, 2, 3, 4],
             font: 1,
             colour: [1.0; 3],
+            animation: 0,
         };
         let shown = Arc::new(Shown::default());
         let d = Description {
@@ -1929,6 +2130,8 @@ mod tests {
             shown: Arc::clone(&shown),
             picture: None,
             picture_at: 0,
+            frame: None,
+            frame_at: 0,
         };
         let f =
             move |cx| -> EntryFuture { Box::pin(setup_pane(cx, 0x77, Some(d.clone()), "test")) };
@@ -2107,6 +2310,7 @@ mod tests {
                 rect: [1, 2, 3, 4],
                 font: 1,
                 colour: [1.0; 3],
+                animation: 0,
             });
         r.add(&class).unwrap();
         let plan = r.build(&feature::Base).unwrap();
@@ -2126,6 +2330,7 @@ mod tests {
             bitmap: 1,
             image: 3,
             at: [56, 150],
+            animation: 12,
         }
     }
 
@@ -2155,7 +2360,8 @@ mod tests {
         g
     }
 
-    /// The block is the retail one, placed at ours with no animation; one
+    /// The block is the retail one, placed at ours with our animation (the
+    /// retail block's own, 11 here, is not kept); one
     /// that is not the bitmap meant is refused, with why.
     #[test]
     fn the_picture_is_a_copy_of_the_retail_bitmap_block_placed_at_ours() {
@@ -2163,7 +2369,7 @@ mod tests {
         let b = picture_block(&g, 0x1234_0005, &spec()).unwrap();
         let word = |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
         let half = |o: usize| i16::from_le_bytes([b[o], b[o + 1]]);
-        assert_eq!(word(4), 0, "no animation");
+        assert_eq!(word(4), 12, "our animation, so it fades with its screen");
         assert_eq!((half(0xc), half(0xe)), (56, 150));
         assert_eq!(half(0xa), 3);
         assert_eq!(word(0x1c), 0xe588_0368, "the map's own bitmap");
@@ -2209,10 +2415,13 @@ mod tests {
                 rect: [1, 2, 3, 4],
                 font: 1,
                 colour: [1.0; 3],
+                animation: 0,
             },
             shown: Arc::clone(&shown),
             picture: Some(spec()),
             picture_at: TABLES + PICTURE_BLOCK,
+            frame: None,
+            frame_at: TABLES + FRAME_BLOCK,
         };
         let f =
             move |cx| -> EntryFuture { Box::pin(setup_pane(cx, 0x77, Some(d.clone()), "test")) };
@@ -2242,6 +2451,66 @@ mod tests {
         let want = picture_block(&screen_tag(), 0x1234_0005, &spec()).unwrap();
         assert_eq!(run.guest.bytes(TABLES + PICTURE_BLOCK, 0x38).unwrap(), want);
         assert_eq!(shown.picture(SCREEN), Some(0x9800));
+    }
+
+    /// The frame comes after the picture: its own screen's tag, its block
+    /// at the frame's place, the bitmap step on it, and no tint kept.
+    #[test]
+    fn the_pane_set_up_adds_the_frame_after_the_picture() {
+        let mut g = screen_tag();
+        g.put_u32(STACK + 4, 0x55);
+        let shown = Arc::new(Shown::default());
+        let frame = PictureSpec {
+            at: [-259, 177],
+            ..spec()
+        };
+        let d = Description {
+            at: TABLES + DESCRIPTION_BLOCK,
+            block: TextBlock {
+                rect: [1, 2, 3, 4],
+                font: 1,
+                colour: [1.0; 3],
+                animation: 0,
+            },
+            shown: Arc::clone(&shown),
+            picture: Some(spec()),
+            picture_at: TABLES + PICTURE_BLOCK,
+            frame: Some(frame),
+            frame_at: TABLES + FRAME_BLOCK,
+        };
+        let f =
+            move |cx| -> EntryFuture { Box::pin(setup_pane(cx, 0x77, Some(d.clone()), "test")) };
+        let regs = Regs {
+            esp: STACK,
+            ecx: SCREEN,
+            ..Default::default()
+        };
+        let mut bitmaps = 0x9800;
+        let run = testing::run(&f, g, regs, |c, _| Regs {
+            eax: match c.target {
+                t if t == points::PANE_TEXT_ADD.base => 0x9000,
+                t if t == points::SCREEN_TAG_BY_ID.base => 0x1234_0005,
+                t if t == points::PANE_BITMAP_ADD.base => {
+                    bitmaps += 0x100;
+                    bitmaps
+                }
+                _ => 0,
+            },
+            ..Default::default()
+        });
+        assert_eq!(
+            &run.calls[5..],
+            [
+                Gc::new(points::SCREEN_TAG_BY_ID.base).args([12]),
+                Gc::new(points::PANE_BITMAP_ADD.base)
+                    .esi(SCREEN)
+                    .args([TABLES + FRAME_BLOCK]),
+            ]
+        );
+        let want = picture_block(&screen_tag(), 0x1234_0005, &frame).unwrap();
+        assert_eq!(run.guest.bytes(TABLES + FRAME_BLOCK, 0x38).unwrap(), want);
+        // The picture keeps the tint, not the frame.
+        assert_eq!(shown.picture(SCREEN), Some(0x9900));
     }
 
     /// Row text tints the picture for the focused row when the focus moves.
@@ -2319,7 +2588,48 @@ mod tests {
         skin: 0,
         anchor: [-215, 130],
         bitmaps_left_of: 0,
+        visible: 0,
     };
+
+    /// A layout asking for more rows than the six embedded item widgets:
+    /// the copy's list block lays out that many, and the class's list gets
+    /// the rest as item widgets of ours, a slot per live list.
+    #[test]
+    fn a_taller_layout_lays_out_more_rows_with_items_of_ours() {
+        let mut g = guest();
+        let retail = controls_tag(&mut g);
+        let at = TABLES + TAG_COPY;
+        let tall = ListLayout {
+            visible: 15,
+            ..LAYOUT
+        };
+        assert_eq!(copy_tag(&mut g, retail, at, &tall), Ok(Some(at)));
+        let pane = g.u32(at + 0x24).unwrap();
+        let list = g.u32(pane + 0x10).unwrap();
+        assert_eq!(g.u16(list + 6), Ok(15), "the rows the page has room for");
+        assert_eq!(tall.extra_items(), 9);
+        assert_eq!(LAYOUT.extra_items(), 0);
+
+        const VT: u32 = 0x00c0_0070;
+        const POOL: u32 = 0x00c1_0000;
+        EXTRA_ITEMS.lock().unwrap().push(ExtraItems {
+            list_vtable: VT,
+            extra: 9,
+            pool: POOL,
+            size: 0x1000,
+            slots: Vec::new(),
+            next: 0,
+        });
+        let first = extra_items(0x5000, VT);
+        assert_eq!(first.len(), 9);
+        assert_eq!(first[0], POOL);
+        assert_eq!(first[8], POOL + 8 * 0x80);
+        assert_eq!(extra_items(0x5000, VT), first, "the same list keeps its slot");
+        let second = extra_items(0x6000, VT);
+        assert_eq!(second[0], POOL + 9 * 0x80, "another list, the next slot");
+        assert!(extra_items(0x5000, VT + 4).is_empty(), "not one of ours");
+        EXTRA_ITEMS.lock().unwrap().retain(|e| e.list_vtable != VT);
+    }
 
     #[test]
     fn the_tag_copy_moves_and_reskins_the_list_and_drops_the_right_frame() {

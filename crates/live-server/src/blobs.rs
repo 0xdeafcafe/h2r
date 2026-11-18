@@ -375,6 +375,21 @@ impl BlobStore {
         self.put_file_parts(k, file, meta).await
     }
 
+    /// A writer for `key` that takes the object as it arrives: an upload
+    /// streams into it with no temporary file. Nothing shows under `key`
+    /// until [`BlobWriter::finish`]; [`BlobWriter::abort`] leaves the key
+    /// as it was.
+    pub fn writer(&self, key: &str, meta: &Meta) -> Result<BlobWriter> {
+        Ok(BlobWriter {
+            store: self.store.clone(),
+            key: Self::key(key)?,
+            options: self.options(meta, PutMode::Overwrite),
+            buf: Vec::new(),
+            upload: None,
+            size: 0,
+        })
+    }
+
     /// [`BlobStore::put_file`] to an object store: in parts, as it is read.
     #[cfg(feature = "native")]
     async fn put_file_parts(&self, k: Key, file: &Path, meta: &Meta) -> Result<()> {
@@ -632,7 +647,7 @@ impl Blobs {
 }
 
 #[cfg(feature = "native")]
-fn check_public_url(url: &str) -> Result<()> {
+pub(crate) fn check_public_url(url: &str) -> Result<()> {
     let ok = (url.starts_with("https://") || url.starts_with("http://"))
         && !url.contains('?')
         && !url.contains('#');
@@ -642,6 +657,89 @@ fn check_public_url(url: &str) -> Result<()> {
         Err(BlobError::Config(format!(
             "--public-blobs-url wants https://HOST[/PATH], got {url:?}"
         )))
+    }
+}
+
+/// How much a [`BlobWriter`] holds before it sends a part. R2 and S3 take
+/// parts of at least 5 MiB (all but the last), and all the same size.
+pub const PART_BYTES: usize = 8 << 20;
+
+/// An object written as it arrives ([`BlobStore::writer`]). An object
+/// under [`PART_BYTES`] goes up in one put at the end; a larger one as a
+/// multipart upload, a part at a time, completed at the end. It holds at
+/// most one part in memory.
+pub struct BlobWriter {
+    store: Arc<dyn ObjectStore>,
+    key: Key,
+    options: PutOptions,
+    buf: Vec<u8>,
+    upload: Option<Box<dyn object_store::MultipartUpload>>,
+    size: u64,
+}
+
+impl BlobWriter {
+    /// Bytes written so far.
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+
+    pub async fn write(&mut self, data: &[u8]) -> Result<()> {
+        self.size += data.len() as u64;
+        let mut data = data;
+        while !data.is_empty() {
+            let take = (PART_BYTES - self.buf.len()).min(data.len());
+            self.buf.extend_from_slice(&data[..take]);
+            data = &data[take..];
+            if self.buf.len() == PART_BYTES {
+                let part = std::mem::take(&mut self.buf);
+                self.put_part(part).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn put_part(&mut self, part: Vec<u8>) -> Result<()> {
+        if self.upload.is_none() {
+            let opts = object_store::PutMultipartOptions {
+                attributes: self.options.attributes.clone(),
+                ..Default::default()
+            };
+            self.upload = Some(self.store.put_multipart_opts(&self.key, opts).await?);
+        }
+        let upload = self.upload.as_mut().expect("started");
+        upload.put_part(PutPayload::from(Bytes::from(part))).await?;
+        Ok(())
+    }
+
+    /// Stores what was written under the key.
+    pub async fn finish(mut self) -> Result<()> {
+        let rest = std::mem::take(&mut self.buf);
+        let Some(mut upload) = self.upload.take() else {
+            let payload = PutPayload::from(Bytes::from(rest));
+            self.store
+                .put_opts(&self.key, payload, self.options.clone())
+                .await?;
+            return Ok(());
+        };
+        let done = async {
+            if !rest.is_empty() {
+                upload.put_part(PutPayload::from(Bytes::from(rest))).await?;
+            }
+            upload.complete().await
+        }
+        .await;
+        if let Err(e) = done {
+            let _ = upload.abort().await;
+            return Err(e.into());
+        }
+        Ok(())
+    }
+
+    /// Drops what was written; the key keeps what it had.
+    pub async fn abort(mut self) {
+        if let Some(mut upload) = self.upload.take() {
+            let _ = upload.abort().await;
+        }
     }
 }
 
@@ -790,6 +888,59 @@ pub(crate) mod tests {
         );
         assert!(root.join("content/ff/ffff").is_file());
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A writer's object shows only when finished, whole, in one put or in
+    /// parts; an abort leaves what the key had.
+    async fn writes_as_it_arrives(store: &BlobStore) {
+        let meta = Meta::default();
+        // Small: one put at the end.
+        let mut w = store.writer("content/aa/small", &meta).unwrap();
+        w.write(b"hello ").await.unwrap();
+        w.write(b"world").await.unwrap();
+        assert_eq!(w.size(), 11);
+        assert_eq!(store.get("content/aa/small").await.unwrap(), None);
+        w.finish().await.unwrap();
+        assert_eq!(
+            store.get("content/aa/small").await.unwrap().unwrap(),
+            &b"hello world"[..]
+        );
+
+        // Large: parts, in writes that do not line up with them.
+        let big: Vec<u8> = (0..PART_BYTES * 2 + 12345)
+            .map(|i| (i % 251) as u8)
+            .collect();
+        let mut w = store.writer("content/bb/big", &meta).unwrap();
+        for chunk in big.chunks(1 << 20 | 7) {
+            w.write(chunk).await.unwrap();
+        }
+        assert_eq!(store.get("content/bb/big").await.unwrap(), None);
+        w.finish().await.unwrap();
+        assert_eq!(
+            store.get("content/bb/big").await.unwrap().unwrap(),
+            &big[..]
+        );
+
+        // An abort, past a part: the key keeps what it had.
+        let mut w = store.writer("content/aa/small", &meta).unwrap();
+        w.write(&big[..PART_BYTES + 1]).await.unwrap();
+        w.abort().await;
+        assert_eq!(
+            store.get("content/aa/small").await.unwrap().unwrap(),
+            &b"hello world"[..]
+        );
+    }
+
+    #[tokio::test]
+    async fn memory_writes_as_it_arrives() {
+        writes_as_it_arrives(&BlobStore::memory()).await;
+    }
+
+    #[tokio::test]
+    async fn a_directory_writes_as_it_arrives() {
+        let root = temp_dir("writer");
+        writes_as_it_arrives(&BlobStore::dir(&root).unwrap()).await;
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[tokio::test]
