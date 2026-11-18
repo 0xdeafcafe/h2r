@@ -1451,3 +1451,110 @@ fn every_starting_weapon_is_held_by_the_halo1_player_graph() {
     assert!(checked > 0);
     assert!(bad.is_empty(), "{bad:#?}");
 }
+
+/// Every marker the engine looks up by name resolves on the converted
+/// object's render model (`mode +0x58`, searched by `0x001d8f00`; a name
+/// it cannot find fails the lookup, an empty name is the origin):
+///
+/// - the names written in its code ([`h1models::mode::ENGINE_MARKERS`]:
+///   `left_hand`, where a thrown grenade leaves the hand, `0x000e7730`;
+///   `primary_trigger`, `ground_point`, ...) on every model with the Halo 1
+///   marker each stands for, and `head`, `body` and `left_hand` on the
+///   cyborg;
+/// - the names the converted tags write: each attachment's marker (`obje
+///   +0x94`, `0x18` each, `+8`), a unit's camera and hand markers (`+0xd4`,
+///   `+0x158`, `+0x15c`), and a vehicle seat's rider, entry and camera
+///   markers (`vehi +0x1c8`, `0xb0` each, `+8`, `+0xc`, `+0x60`).
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn every_engine_marker_resolves_on_the_converted_objects() {
+    let mut bad = Vec::new();
+    let mut checked = 0;
+    every_fresh_map(|name, sandbox, _, fresh| {
+        if sandbox != Sandbox::Halo1 {
+            return;
+        }
+        let mut out = Map::from_reader(Cursor::new(fresh.bytes.clone())).unwrap();
+        let mem = memory(&mut out);
+        let strings = out.strings().to_vec();
+        let s = |v: u32| -> String {
+            if v == 0 {
+                return String::new();
+            }
+            strings
+                .get((v & 0xff_ffff) as usize)
+                .cloned()
+                .flatten()
+                .unwrap_or_default()
+        };
+        let tags = out.tags().to_vec();
+        let at = |id: u32| {
+            tags.iter()
+                .find(|t| t.id.0 == id && id != u32::MAX)
+                .and_then(|t| t.location.map(|l| l.address))
+        };
+        let mut cyborgs = 0;
+        for t in &tags {
+            let group = &t.group.0;
+            if ![b"bipd", b"weap", b"vehi", b"eqip"].contains(&group) {
+                continue;
+            }
+            let n = t.name.as_deref().unwrap_or("");
+            if n.starts_with("objects\\") {
+                continue;
+            }
+            let Some(o) = t.location.map(|l| l.address) else { continue };
+            let Some(mode) = at(rw(&mem, o + 0x38)).and_then(|h| at(rw(&mem, h + 4))) else {
+                continue;
+            };
+            checked += 1;
+            let markers: Vec<String> = (0..rw(&mem, mode + 0x58))
+                .map(|k| s(rw(&mem, rw(&mem, mode + 0x5c) + k * 0xc)))
+                .collect();
+            let has = |m: &str| markers.iter().any(|x| x == m);
+            let what = format!("{name}: {n}");
+            println!("{what}: {markers:?}");
+            for h1 in &markers {
+                let h2 = h1models::mode::h2_marker_name(h1);
+                if h1models::mode::ENGINE_MARKERS.contains(&h2.as_str()) && !has(&h2) {
+                    bad.push(format!("{what}: has {h1:?} but no {h2:?} in {markers:?}"));
+                }
+            }
+            if group == b"bipd" && n.contains("cyborg") {
+                cyborgs += 1;
+                for h2 in ["head", "body", "left_hand"] {
+                    if !has(h2) {
+                        bad.push(format!("{what}: the cyborg has no {h2:?} in {markers:?}"));
+                    }
+                }
+            }
+            let mut named = Vec::new();
+            for k in 0..rw(&mem, o + 0x94) {
+                named.push(("attachment", s(rw(&mem, rw(&mem, o + 0x98) + k * 0x18 + 8))));
+            }
+            if group == b"bipd" || group == b"vehi" {
+                for (f, at) in [("camera", 0xd4), ("right hand", 0x158), ("left hand", 0x15c)] {
+                    named.push((f, s(rw(&mem, o + at))));
+                }
+            }
+            if group == b"vehi" {
+                for k in 0..rw(&mem, o + 0x1c8) {
+                    let e = rw(&mem, o + 0x1cc) + k * 0xb0;
+                    for (f, at) in [("seat rider", 8), ("seat entry", 0xc), ("seat camera", 0x60)] {
+                        named.push((f, s(rw(&mem, e + at))));
+                    }
+                }
+            }
+            for (f, m) in named {
+                if !m.is_empty() && !has(&m) {
+                    bad.push(format!("{what}: {f} marker {m:?} not in {markers:?}"));
+                }
+            }
+        }
+        if cyborgs == 0 {
+            bad.push(format!("{name}: no converted cyborg"));
+        }
+    });
+    assert!(checked > 0);
+    assert!(bad.is_empty(), "{bad:#?}");
+}

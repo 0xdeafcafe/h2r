@@ -214,7 +214,18 @@ fn compare_model(src: &h1::Model, bytes: Vec<u8>, id: TagId) -> ModelDiff {
     let u32_at = |o: usize| u32::from_le_bytes(tag[o..o + 4].try_into().unwrap());
     let f32_at = |o: usize| f32::from_bits(u32_at(o));
     let (count, at) = (u32_at(0x58) as usize, (u32_at(0x5c) - base) as usize);
-    assert_eq!(count, src.markers.len());
+    // Halo 1's markers, then the engine's name for `primary trigger`
+    // (`mode::marker_aliases`) with the same instances.
+    assert_eq!(count, src.markers.len() + 1);
+    let alias = at + src.markers.len() * 0xc;
+    assert_eq!(resolve(tags::StringId(u32_at(alias))), "primary_trigger");
+    let n = u32_at(at + 4) as usize;
+    assert_eq!(u32_at(alias + 4) as usize, n);
+    let insts = |g: usize| {
+        let a = (u32_at(g + 8) - base) as usize;
+        tag[a..a + n * 0x24].to_vec()
+    };
+    assert_eq!(insts(alias), insts(at));
     for (k, mk) in src.markers.iter().enumerate() {
         let g = at + k * 0xc;
         assert_eq!(resolve(tags::StringId(u32_at(g))), mk.name);
@@ -1469,4 +1480,18 @@ fn h1_disc_compressed_animations_decode() {
     println!("failures: {failures:#?}");
     assert!(failures.is_empty());
     assert_eq!(compressed, 186);
+}
+
+/// Halo 2's engine looks some markers up by names written in its code
+/// (`left_hand` for a thrown grenade); a converted model carries each under
+/// that name too when it has the Halo 1 marker (`left hand`), keeping the
+/// Halo 1 name the converted tags write.
+#[test]
+fn a_converted_model_carries_the_engine_s_marker_names() {
+    let names = ["left hand", "Primary Trigger", "head", "antenna", "driver enter"];
+    assert_eq!(
+        crate::mode::marker_aliases(&names),
+        [("left_hand", 0), ("primary_trigger", 1)]
+    );
+    assert!(crate::mode::marker_aliases(&["left_hand", "head"]).is_empty());
 }
