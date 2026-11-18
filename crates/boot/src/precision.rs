@@ -169,7 +169,10 @@ impl feature::Feature for Precision {
                     Err(e) => eprintln!("precision: {name}: items unreadable ({e:?})"),
                 }
                 Ok(Flow::Continue)
-            });
+            })
+            // Aim assist scales weapon tags and the swap moves item
+            // spawns; neither reads the other, but the plan wants an order.
+            .after_feature(crate::aim_assist::FEATURE);
         Ok(())
     }
 }

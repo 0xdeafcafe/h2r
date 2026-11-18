@@ -157,3 +157,15 @@ fn the_table_holds_the_h2_sandbox_swaps_by_map() {
     assert_eq!(t["h1_bloodgulch"], [content::Swap { from: SMG, to: BR }]);
     assert!(read_table(&dir).is_empty());
 }
+
+/// Aim assist and the precision swap both hook game activation before
+/// it: the plan must order them, or every boot refuses its features.
+#[test]
+fn precision_and_aim_assist_plan_together() {
+    let mut r = feature::Registry::new(feature::Switches::defaults());
+    let store = settings::Store::defaults(crate::setting_defs::ALL);
+    r.add(&crate::aim_assist::AimAssist::new(&store)).unwrap();
+    assert!(install(&mut r, std::path::Path::new("/nonexistent")).unwrap());
+    let plan = r.build(&feature::Base).unwrap_or_else(|e| panic!("{e:?}"));
+    assert!(plan.text().contains(FEATURE), "{}", plan.text());
+}
