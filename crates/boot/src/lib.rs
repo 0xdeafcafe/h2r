@@ -86,6 +86,7 @@ pub mod variant_options;
 pub mod bot_glue;
 pub mod clankers;
 pub mod video_screen;
+pub mod voice_glue;
 pub mod voice_settings;
 pub mod pause_menu;
 pub mod snapshot_probe;
@@ -634,6 +635,10 @@ pub struct Host {
     /// Where the logical-time audio output plays (an audio device), instead
     /// of a `NullSink` (`dsound_glue::install_with_sink`).
     pub audio_sink: Option<dsound_glue::SinkOpener>,
+    /// Opens the host's microphone and voice output for voice chat
+    /// (`voice_glue`, docs/live/live-voice.md). `None`: the communicator
+    /// still works when a microphone is chosen, with a silent microphone.
+    pub voice_io: Option<voice::io::OpenIo>,
     /// The controller speaker (docs/audio/playstation-audio.md): a second sink
     /// for the sounds its routes pick, and the sound index built from each
     /// map the game opens. Needs `audio_sink`'s logical output; ignored
@@ -1090,6 +1095,11 @@ pub fn run_hosted_with_live(
             (Some(x), Some(pad))
         }
     };
+    // Voice chat's communicator (docs/live/live-voice.md): off until a
+    // microphone is chosen on the Voice screen.
+    let mut voice_link = xa
+        .as_ref()
+        .and_then(|x| voice_glue::install(&loaded.runtime, x, host.settings.as_ref(), host.voice_io.take()));
     if let Some(keyboard) = pad.as_ref() {
         keyboard_glue::install(&loaded.runtime, keyboard.clone()).context("installing host keyboard entry")?;
     }
@@ -1390,6 +1400,9 @@ pub fn run_hosted_with_live(
         // slice that just delivered vblank.
         if dsound_glue::ran_guest_thread(&m, ran_before) {
             audio_idle = 0;
+        }
+        if let Some(link) = voice_link.as_mut() {
+            link.pump();
         }
         if let Some(x) = &xa
             && timeline::host::INPUT

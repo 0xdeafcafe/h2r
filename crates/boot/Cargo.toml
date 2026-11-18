@@ -39,6 +39,8 @@ assets = { path = "../assets" }
 serde.workspace = true
 x87 = { path = "../x87" }
 dsound = { path = "../dsound" }
+# Voice chat's media objects (voice_glue); devices come from the host.
+voice.workspace = true
 audio = { path = "../audio", default-features = false }
 bink-hle = { path = "../bink-hle" }
 # Where `h2 movies` installs (movies_glue).

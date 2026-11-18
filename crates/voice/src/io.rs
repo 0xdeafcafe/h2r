@@ -96,3 +96,33 @@ impl VoiceIo for FakeVoiceIo {
         self
     }
 }
+
+/// No devices: the microphone is silent and the output is dropped.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NullVoiceIo;
+
+impl Capture for NullVoiceIo {
+    fn read(&mut self, frame: &mut Frame) -> bool {
+        frame.fill(0);
+        false
+    }
+}
+
+impl Playback for NullVoiceIo {
+    fn write(&mut self, _frame: &Frame) {}
+}
+
+impl VoiceIo for NullVoiceIo {
+    fn capture(&mut self) -> &mut dyn Capture {
+        self
+    }
+    fn playback(&mut self) -> &mut dyn Playback {
+        self
+    }
+}
+
+/// Opens the host's voice devices: the microphone's host id (`None` for
+/// the system default) and the output's (`None`: no separate output).
+/// The host supplies it (boot's `Host::voice_io`), so boot itself needs no
+/// device backend.
+pub type OpenIo = Arc<dyn Fn(Option<&str>, Option<&str>) -> Box<dyn VoiceIo> + Send + Sync>;
