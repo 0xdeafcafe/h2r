@@ -474,13 +474,6 @@ impl GfxBackend {
         self
     }
 
-    /// Removes the shader translator: only draws the built-in shader handles
-    /// render; the rest are skipped.
-    pub fn without_shaders(mut self) -> Self {
-        self.shaders = None;
-        self
-    }
-
     /// The surface shown by the last `Swap`.
     pub fn last_presented(&self) -> Option<SurfaceId> {
         self.presented

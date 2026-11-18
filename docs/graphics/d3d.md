@@ -1161,7 +1161,7 @@ let runtime = runtime::Runtime::new(guest, dispatch);
    included, runs on a render thread; see [render-thread.md](render-thread.md). Blit it with
    `gfx::surface::present_surface`.
 6. **Shaders.** `GfxBackend::new` installs `Nv2aShaders`; replace it with
-   `GfxBackend::with_shaders`, or drop it with `without_shaders`.
+   `GfxBackend::with_shaders`.
 
 ## Fragments and NV2A registers
 
