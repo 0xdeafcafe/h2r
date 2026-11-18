@@ -211,3 +211,9 @@ impl Core {
         Ok(Action::Complete(Value::Void))
     }
 }
+
+crate::snapshot::persist_struct!(EncoderState {
+    blanked,
+    flicker_filter,
+    luma_filter,
+});

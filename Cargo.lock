@@ -3272,6 +3272,7 @@ dependencies = [
  "libloading",
  "lift",
  "runtime",
+ "snapshot",
  "thiserror 2.0.21",
  "timeline",
  "vfs",

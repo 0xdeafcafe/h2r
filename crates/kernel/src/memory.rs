@@ -1080,3 +1080,25 @@ impl crate::Core {
         Ok(Action::Complete(Value::Void))
     }
 }
+
+crate::snapshot::persist_struct!(Region {
+    base,
+    size,
+    allocation_protect,
+    pages,
+});
+crate::snapshot::persist_struct!(PoolBlock {
+    size,
+    capacity,
+    tag,
+    live,
+});
+crate::snapshot::persist_struct!(KernelStack { size });
+crate::snapshot::persist_struct!(Memory {
+    regions,
+    pool,
+    contiguous,
+    contiguous_pages,
+    kernel_stacks,
+    guards,
+});

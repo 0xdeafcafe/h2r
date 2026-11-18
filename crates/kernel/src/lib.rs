@@ -26,6 +26,7 @@ pub mod quiesce;
 pub mod rawdisk;
 mod rtl;
 mod sections;
+pub mod snapshot;
 pub mod status;
 mod strings;
 mod sync;

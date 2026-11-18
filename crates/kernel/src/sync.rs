@@ -1042,3 +1042,63 @@ mod review_tests {
         assert_eq!(runtime.memory().u32(address + 4).unwrap(), 1);
     }
 }
+
+crate::snapshot::persist_struct!(Critical { owner, recursion });
+
+impl crate::snapshot::Persist for Object {
+    fn put(&self, w: &mut snapshot::codec::Writer) {
+        match *self {
+            Object::Event { manual } => w.u8(0).bool(manual),
+            Object::Semaphore { limit } => w.u8(1).u32(limit as u32),
+            Object::Thread { tid } => w.u8(2).u32(tid),
+            Object::Timer { synchronization } => w.u8(3).bool(synchronization),
+            Object::Mutant => w.u8(4),
+        };
+    }
+    fn get(r: &mut snapshot::codec::Reader<'_>) -> Result<Self, crate::snapshot::CodecError> {
+        Ok(match r.u8()? {
+            0 => Object::Event { manual: r.bool()? },
+            1 => Object::Semaphore {
+                limit: r.u32()? as i32,
+            },
+            2 => Object::Thread { tid: r.u32()? },
+            3 => Object::Timer {
+                synchronization: r.bool()?,
+            },
+            4 => Object::Mutant,
+            _ => return Err(crate::snapshot::corrupt("object kind")),
+        })
+    }
+}
+
+impl crate::snapshot::Persist for Wait {
+    fn put(&self, w: &mut snapshot::codec::Writer) {
+        match self {
+            Wait::Objects {
+                objects,
+                all,
+                deadline,
+            } => {
+                w.u8(0);
+                objects.put(w);
+                all.put(w);
+                deadline.put(w);
+            }
+            Wait::Critical(address) => {
+                w.u8(1).u32(*address);
+            }
+        }
+    }
+    fn get(r: &mut snapshot::codec::Reader<'_>) -> Result<Self, crate::snapshot::CodecError> {
+        use crate::snapshot::Persist;
+        Ok(match r.u8()? {
+            0 => Wait::Objects {
+                objects: Persist::get(r)?,
+                all: r.bool()?,
+                deadline: Persist::get(r)?,
+            },
+            1 => Wait::Critical(r.u32()?),
+            _ => return Err(crate::snapshot::corrupt("wait kind")),
+        })
+    }
+}

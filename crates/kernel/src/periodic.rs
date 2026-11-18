@@ -178,3 +178,81 @@ impl Periodic {
         true
     }
 }
+
+/// A source's schedule without its handler, for a snapshot: the handler
+/// is a Rust closure the boot registers, so a load puts the saved schedule
+/// onto the booted source of the same ID and name.
+pub(crate) struct Schedule {
+    pub name: String,
+    rate: Rate,
+    origin: u64,
+    next: u64,
+    owed: u64,
+    missed: u64,
+    queued: bool,
+    max_catch_up: u64,
+    max_owed: u64,
+    stats: Stats,
+}
+crate::snapshot::persist_struct!(Schedule {
+    name,
+    rate,
+    origin,
+    next,
+    owed,
+    missed,
+    queued,
+    max_catch_up,
+    max_owed,
+    stats,
+});
+crate::snapshot::persist_struct!(Rate { num, den });
+crate::snapshot::persist_struct!(Stats {
+    delivered,
+    dropped,
+    owed,
+    next_deadline,
+});
+
+impl Periodic {
+    pub(crate) fn save(&self, w: &mut snapshot::codec::Writer) {
+        use crate::snapshot::Persist;
+        let Self {
+            name,
+            rate,
+            origin,
+            next,
+            owed,
+            missed,
+            queued,
+            max_catch_up,
+            max_owed,
+            handler: _,
+            stats,
+        } = self;
+        Schedule {
+            name: (*name).to_owned(),
+            rate: *rate,
+            origin: *origin,
+            next: *next,
+            owed: *owed,
+            missed: *missed,
+            queued: *queued,
+            max_catch_up: *max_catch_up,
+            max_owed: *max_owed,
+            stats: *stats,
+        }
+        .put(w);
+    }
+    pub(crate) fn restore(&mut self, s: Schedule) {
+        self.rate = s.rate;
+        self.origin = s.origin;
+        self.next = s.next;
+        self.owed = s.owed;
+        self.missed = s.missed;
+        self.queued = s.queued;
+        self.max_catch_up = s.max_catch_up;
+        self.max_owed = s.max_owed;
+        self.stats = s.stats;
+    }
+}
