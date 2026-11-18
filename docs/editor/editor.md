@@ -12,11 +12,13 @@ the workspace's wgpu 30, `dear-imgui-winit` for the window,
 `dear-imguizmo` for the 3D gizmo, `rfd` for the system's file dialogs. No
 web views, no scripting. It runs unbundled, so it sets its own Dock icon
 (`app_icon::set_dock_icon`, [art/app-icon](../../art/app-icon/README.md)).
-It hosts four tools:
+It hosts five tools:
 
 - **Scenario**: the scenario editor (`crates/scenario-edit`,
   [scenario-editor.md](scenario-editor.md)): placements on a map, in a 3D
   viewport, saved as a map package or a whole `.map`.
+- **Tags**: every field of every tag of the open map, labelled and
+  edited in place, saved with the map (below).
 - **Game variants**: the game variant editor (`crates/variants`,
   [variants.md](variants.md)).
 - **Playlists**: `multiplayer_hopper.dat`, the 16 matchmaking playlists
@@ -71,33 +73,59 @@ boxes and numbers are drawn by the headless renderer's `--callout`.*
 - **Main menu**: File (open a disc or map, open a folder of maps, save the
   map as a new `.map`, save as or open a package, the variant and
   playlist tools' file commands, quit), Edit (undo, redo, duplicate,
-  delete, allow growing full blocks), View (frame the map, focus the
-  selection, gizmo mode and axes, reset layout).
-- **Tools** (left, top): the tools (Scenario, Game variants, Playlists; a
+  delete, allow growing full blocks), View (frame the map, frame the
+  selection, gizmo mode (move, rotate, scale) and local or world axes,
+  grid and angle snapping, reset layout).
+- **Tools** (left, top): the tools (Scenario, Tags, Game variants,
+  Playlists, UI Screens; a
   `*` marks one with unsaved edits), then **Maps**: the opened source and
   its maps. The outliner, centre and inspector windows show the active
   tool: below for the scenario tool, then [Game variants](#game-variants)
   and [Playlists](#playlists). Each tool's windows keep their dock slot
   (`WindowKey::label` retitles a window without changing its ID).
-- **Outliner** (left, bottom): the placement blocks as a tree, a filter,
-  Duplicate and Delete. Right-click an entry for Duplicate, Delete and
-  Add; right-click a block for Add. A button is disabled, with the reason
-  as its tooltip, when the editor refuses (scenario-editor.md §6).
-  Double-click an entry to focus the camera on it.
-- **Viewport** (centre): the map's art and a marker per placement, drawn
-  by `scenario_edit::render::Viewport` into an offscreen texture that
-  ImGui shows as an image. Left click picks; right-drag orbits, with WASD
-  and QE flying while it is held; middle-drag pans; the wheel zooms. The
+- **Outliner** (left, bottom, `ui/outliner.rs`): the placement blocks as
+  a tree, a filter (every word must match the block, the tag name or
+  `#<index>`; blocks with no match hide, the rest open, with "x of y"
+  counts), Duplicate and Delete. Click selects one entry, Cmd/Ctrl+click
+  adds or removes one, Shift+click takes the shown run from the selected
+  entry. Right-click an entry for Duplicate, Delete, Add and "Place a
+  copy with the mouse"; right-click a block for Add and "Place new with
+  the mouse" (the next click in the viewport puts it where the cursor
+  meets the level). A button is disabled, with the reason as its
+  tooltip, when the editor refuses (scenario-editor.md §6). Double-click
+  an entry to frame the camera on it.
+- **Viewport** (centre): the map's art, its sky and a marker per
+  placement, drawn by `scenario_edit::render::Viewport` into an offscreen
+  texture that ImGui shows as an image. Left click picks, Cmd/Ctrl+click
+  adds to or takes from the selection, double-click focuses (a
+  placement, or the point of the level under the cursor). The camera
+  (`camera.rs`, plain maths with unit tests): hold the right button to
+  look and fly with WASD, Q down and E up, the wheel setting the fly
+  speed (shown in the status bar) and Shift four times faster; Alt+left
+  drag orbits about the selection, else about the point of the level
+  under the cursor; middle drag pans; the wheel dollies; F frames the
+  selection to its size. Motion eases in and out by elapsed time, the
+  same at any frame rate, and the camera glides to a new focus. The
   selection has an ImGuizmo gizmo: W moves, E rotates (facing-only
-  placements turn about z); one drag is one undo step.
-- **Inspector** (right): the selection's typed fields. The palette index
-  is a combo of the palette's tag names, tag references a combo of the
-  map's item tags; positions, rotations (in degrees) and scale are drags;
-  flags and other integers are bounded drags. Read-only fields are
-  disabled; each field's tooltip gives its offset and evidence.
+  placements turn about z), R scales (objects with a scale field); X
+  switches local and world axes. Grid and angle snapping (toolbar
+  toggles, right-click one for its step) apply to the gizmo and to
+  placing with the mouse. Other selected placements ride along with the
+  primary's move and turn; one drag is one undo step.
+- **Inspector** (right, `ui/inspector.rs`): the selection's typed fields
+  under Transform, Object, Spawn and Settings. Position is x, y, z;
+  rotation yaw, pitch and roll in degrees; facing in degrees; the
+  palette index and tag references are searchable combos of tag names;
+  flags are a checkbox per bit and the netgame flag type a named combo;
+  other integers are bounded drags (team, respawn time). Read-only fields
+  are disabled; each field's tooltip gives its offset and evidence. With
+  several placements selected it shows the fields they all have; a field
+  whose values differ is marked `*`, and an edit (one component, one bit
+  or the whole value) applies to all of them as one undo step
+  (`Session::edit_selection`).
 - **Log** (bottom): every action's result, errors in red.
 - **Status bar**: the last message, unsaved state, a summary of what is
-  open, frame rate.
+  open, the camera's fly speed, frame rate.
 - **Unsaved changes**: anything that would drop a tool's unsaved edits
   asks first, naming the tool: another source or map (scenario), another,
   new or imported variant, or an entry's variant opened from a playlist
@@ -108,9 +136,11 @@ boxes and numbers are drawn by the headless renderer's `--callout`.*
 Shortcuts: Cmd/Ctrl+O open, Cmd/Ctrl+S save (the map as a new file, the
 variant, the playlist file), Cmd/Ctrl+Z undo and Shift+Cmd/Ctrl+Z or
 Cmd/Ctrl+Y redo (in the active tool), and in the scenario tool
-Cmd/Ctrl+D duplicate, Delete or Backspace delete, F focus, Home frame all, W/E gizmo
-mode, F5 Play and Shift+F5 stop the game, T (over the viewport, paired)
-teleport the player to the cursor; Cmd/Ctrl+Q quit. Dropping a disc image, map or folder on the window
+Cmd/Ctrl+D duplicate and Delete or Backspace delete (the whole
+selection), F frame the selection, Home frame all, W/E/R gizmo mode, X
+local or world axes, F5 Play and Shift+F5 stop the game, T (over the
+viewport, paired) teleport the player to the cursor; Cmd/Ctrl+Q quit.
+Dropping a disc image, map or folder on the window
 opens it.
 
 ## Scenario
@@ -201,22 +231,29 @@ renderer as Halo 2's (`editor_core::halo1_art`, then
   the 13: three glass shaders and a monitor glow name no base map) and
   some parts lit.
 
-Not drawn yet: the sky and scenery models, detail and bump maps, and
+Not drawn yet: the sky and scenery models (a Halo 1 map's sky is a
+`mod2` model behind its `sky ` tag; `editor_core::halo1` has no reader
+for either yet, so the gradient stands in), detail and bump maps, and
 `senv`'s blended types (the base map's alpha blends two detail maps,
 which shows as dark patches on Sidewinder's snow, for example).
 
 **Convert to Halo 2** (`app/convert.rs`). The inspector of a Halo 1 map
 offers the sandbox (Halo 2, or Halo 1, whose `Error::Halo1Sandbox` is
-shown as it comes) and names the base: `h1convert::convert::known`'s
-default for the map (`convert::MAPS`; Beaver Creek, or Lockout for the
-snowy ones), as `h2 h1 convert` without `--base`, read from the open
-Halo 2 source; without it the button is disabled with the reason. The
-button starts a thread that reads the base's bytes and runs
-`h1convert::convert::convert(&h1, sha256 of the stored file, &mut base,
-sandbox)`, then writes the result as `h2 h1 convert` does:
-`<data>/maps/h1_<map>/<sandbox>/h1_<map>.map` and the `Converted`
-manifest, keeping the other sandbox's `[[variant]]` from a manifest
-already there (no manifest text is made here). Each frame `poll_convert`
+shown as it comes) and a button that builds a new map, `h1_<map>`, from
+scratch (`convert::from_scratch`: `prepare_halo2` or `prepare_halo1`,
+`structure_mopp`, then `build_fresh`). The new map still takes Halo 2's
+shaders, objects and globals from a retail multiplayer map, read
+silently from the open Halo 2 source (`retail_sources`: `known`'s
+default for the map, else any multiplayer map the source has); the user
+never picks one, and without a Halo 2 source the button is disabled
+with the reason. A thread reads those bytes, builds the map, and writes
+it as `h2 h1 convert` does: `<data>/maps/h1_<map>/<sandbox>/h1_<map>.map`
+and the `Converted` manifest, keeping the other sandbox's `[[variant]]`
+from a manifest already there. When the Halo 1 source has its `ui` map,
+the map's card (its picture, name and description, `h1convert::ui`)
+goes in as `preview.png` and the package's name, description and image;
+the converter's notes (a structure that fell back) are logged. Each
+frame `poll_convert`
 picks up the result: the Maps list is re-read and the new variant opened
 (`OpenPackageEntry`, guarded as usual), or the error is logged and shown
 under the button in plain words (`explain`: `TooManySurfaces(n)` is
@@ -260,8 +297,18 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   their `1f` lightmap coordinates: base map × lightmap × 2 in gamma space,
   plus a faint fill light so no texel is pure black. Parts without a page,
   and object models, keep one sun and the sky, with dark base maps lifted.
-- **Sky.** Behind a map with art, a gradient from the zenith to a pale
-  horizon (not the scenario's sky model). Solid surfaces are
+- **Sky.** The scenario's sky (its skies block, `scnr +0x8`: the first
+  `sky ` whose render model builds, `scene::scenario_skies` and
+  `Scene::sky`) is drawn at infinity in its own pass before the level:
+  the view's translation is dropped (`Camera::sky_view_proj`, an
+  infinite far plane), so it turns with the camera and never comes
+  nearer, and the level's pass clears depth over it. Its parts are
+  textured as object models are; see-through parts blend over the
+  opaque ones. Behind it, or alone when there is none, a gradient from
+  the zenith to a pale horizon. `tests::skies_are_read_from_the_scenario_root`,
+  `tests::the_sky_turns_with_the_camera_and_never_comes_nearer` and
+  `tests::the_sky_model_is_drawn_behind_the_level_wherever_the_eye_is`
+  (GPU) hold it. Solid surfaces are
   one-sided, as in the game, so the camera sees into a level through the
   backs of the cliffs and walls around it.
 - **Blends.** Templates in a `transparent` or `water` folder, plain
@@ -306,8 +353,8 @@ compares the window's pixels with the viewport's own, and
 (ignored; needs the disc) checks that under 2 % of either map's
 viewport is black (a quarter of Coagulation's was).
 
-Not yet: the scenario's
-sky model; the bucket streams (types `2f` and `30`: per-vertex colour and
+Not yet: the sky's node transforms, its tag's rotation and scale, and
+skies after the first; the bucket streams (types `2f` and `30`: per-vertex colour and
 light direction, not interpreted); detail and bump maps, animated or
 self-illuminated shaders, model variants and permutations other than the
 first, and node transforms of skinned models (models are drawn in their
@@ -550,6 +597,121 @@ To put a saved file on a Live server, run `h2 live hopper import <file>`
 on the server's machine (docs/live/live-admin.md); the editor does not
 publish by itself.
 
+## Tags
+
+Every field of any tag of the open map (a disc map, a package, a
+converted Halo 1 map), labelled, with a widget per type. Edits save with
+the map: **Save map as...** and **Save as package...** write them through
+the same lossless `MapEditor` path as the scenario's.
+
+### The field registry
+
+`tags::registry` (`crates/tags/src/registry.rs`) gives every group's root
+and block elements as fields tiling every byte, merged from:
+
+- the **schema** (`tags::schema`, `schema/layouts.txt`, inferred from
+  retail data): every group's structure (element sizes, blocks, data
+  references, tag references, datums, string IDs, raw pointers), no names;
+- the **definitions** (`tags::defs`, `defs/*.txt`): typed, named fields
+  for the groups the converters use (28 groups), with their evidence.
+
+A definition's field is used where its size matches the schema's
+element; its name counts as a name unless it is only its type and offset
+(`string_1c`). A schema field no definition covers keeps the schema's
+type, labelled by type and offset (`tagref +0x3c`). Every byte nothing
+describes becomes an unnamed span labelled by its offset (`+0x14`), in
+words where the alignment allows; the panel shows it as its value
+suggests (a float, an integer, hex) and its context menu switches. Float
+arrays get a hint from their name and note: colours (`colour`/`color`,
+3 floats), angles (`angle`, `field_of_view`, `_yaw`, `_pitch`, or
+"radians" in the note; shown in degrees), bounds (`bounds`, `_range`, 2
+floats). Names come only from our definitions (their evidence is the
+XBE's readers and the disc), never from community tools or plugins;
+`tags::object::layouts` carries some Assembly-sourced names (the weapon
+aim-assist fields), which the registry does not read.
+
+Coverage of the built-in registry: 996 named fields and 13,121 unnamed
+(by offset or type only), over 78 groups; per byte, 5,450 named, 10,895
+typed (references, blocks, string IDs whose role is not known), 502
+padding and 45,625 unknown. The names grow as definitions do: a name
+added to `defs/*.txt` shows in the editor with no other change.
+
+### The document
+
+`app/tag_doc.rs` (`TagDoc`) holds the open map's tags and its ordinary
+metadata, read once when the tool is first shown for a map
+(`App::sync_tags`, keyed by the session's map revision), with the edits
+as a byte overlay. Every edit is an undo step (a drag is one step: writes
+merge by key until `TagAction::Seal`); each change hands every changed
+run to the session (`Session::set_tag_patches`), which keeps them on the
+scenario (`Scenario::set_tag_patches`) so `changes()` includes them: the
+map's dirty mark, map files and packages all count them. Undo and redo in
+the Tags tool step the tag edits only.
+
+What can be written, and what not (the reason shows in the panel and as
+the refusal's text):
+
+| What | Why |
+| --- | --- |
+| Fields of any tag in the ordinary metadata whose group has a layout | Editable: fixed-length patches in place. |
+| Counts, addresses, raw pointers and sizes, BSP descriptors | Shown only: changing them by hand corrupts the map. Blocks change through add / remove / duplicate. |
+| The scenario tag | Read-only: its bytes belong to the Scenario tool (its placement edits would overlap). Shown as in the source. |
+| Tags in a structure BSP region (`sbsp`, `ltmp`) | Not shown yet: they have their own address space. |
+| Tags with no data in the map (shared-map tags) | Nothing to show. |
+| A group with no layout, a tag shorter than its layout | Read-only (hex only without a layout). |
+| String IDs | Any string the map's string table has; adding strings is not supported yet. |
+| Data references | Their bytes, in place (same length), up to 4 KiB shown and edited. |
+
+**Blocks** change only within the elements they had in the source:
+remove moves later elements down (the last slot keeps its bytes, dead
+until re-added), duplicate inserts a copy after the element, add appends
+a blank one (zero, null references). A block is full when it has as many
+elements as in the source and still points where it did; growing it would
+mean appending to the metadata and repointing it, which the tag editor
+does not do (and the engine's headroom for more tag memory is not
+established, the same reason scenario growth is off by default,
+[scenario-editor.md](scenario-editor.md) §6). An element with nonempty
+child blocks or data is not duplicated: the copy would share them.
+Elsewhere in the map, indices into a block are not updated when its
+elements move.
+
+### The windows and the panel
+
+`ui/tags.rs` draws the tool: the **tag tree** (groups, then tags, with a
+search on group or name; `*` marks an edited tag), the **fields** of the
+selected tag, and the **bytes** of the element under the mouse with the
+hovered field lit and edited bytes marked.
+
+`fields.rs` is the field panel, reusable by any tool:
+`fields::panel(ui, &app.tags, tag, path, &mut PanelState, &mut actions)`
+draws the element at `path` (per step, a block field's offset and the
+element index; empty is the root) and pushes `Action::Tag` commands.
+Numbers drag; enums are combos; flags are checkboxes (unnamed bits that
+are set show as `bit N`); colours pick; angles show degrees; bounds drag
+as a pair; string IDs are text; tag references and datums pick from the
+map's tags of the allowed groups (and their child groups) with a button
+to show the tag; blocks are tree nodes with an element picker and Add,
+Duplicate and Remove (disabled with the reason as tooltip); data is hex.
+
+`app/tag_api.rs` is the same editor as plain functions, for scripts and
+the agent API: `read_tag(doc, tag)` (the fields as JSON by name),
+`resolve(doc, tag, "parts[1].speed")`, `set_field(doc, tag, path, json)`
+and `block(doc, tag, path, BlockOp)` build the `TagAction` to dispatch,
+`find_tag(doc, "weap:objects\\...")`.
+
+Tests: `tags::registry::tests` (every schema group's fields tile every
+byte of every element at every depth with the schema's fields at their
+offsets; the definitions merge with no conflict; named definition fields
+sit at their offsets; an invented group), `tests/tag_registry.rs`
+(opt-in, `H2_DISC`: every tag of every disc map walks through the
+registry with its blocks inside the metadata),
+`scenario_edit::tests::other_tags_patches_save_with_the_scenario_s`,
+`app::tag_tests` (listing and refusals, a field edit saved byte-exactly
+then undone, drag merging, blocks within capacity; opt-in
+`disc_a_retail_tag_field_saves_byte_exactly`), and
+`headless::tests::the_tags_tool_edits_a_field_through_its_widgets`,
+which clicks the tree and a flag through the test-engine hooks.
+
 ## UI Screens
 
 The UI builder's preview, checks and pages (docs/game/ui-builder.md) in
@@ -611,7 +773,9 @@ studio crate only draws them and turns input into actions.
   `halo1` (Halo 1 sources and what is shown of a map).
 - `crates/scenario-edit`: `Session` holds the scenario editor's state and
   every command (open, select, add, remove, plane drags, gizmo gestures,
-  undo, save, packages). `render` and `geometry` draw it offscreen with
+  undo, save, packages); `session/multi.rs` holds the multi-selection
+  and its edits (`edit_selection`, `remove_selection`,
+  `duplicate_selection`, `add_entry_at`, `surface_hit`). `render` and `geometry` draw it offscreen with
   wgpu (the camera gives separate view and projection matrices for
   ImGuizmo; `geometry::decompose` turns a gizmo matrix back into position
   and yaw/pitch/roll).
@@ -629,12 +793,21 @@ studio crate only draws them and turns input into actions.
     holds the packages, the Halo 1 source and the overlay. Tested without
     a window (`app/tests.rs`).
   - `ui.rs`: the ImGui shell and the scenario tool's windows; it only
-    turns input into `Action`s and draws `App`. `ui/variants.rs` and
-    `ui/playlists.rs` draw the other two tools.
-  - `app/convert.rs`: Convert to Halo 2 (the background conversion and
-    its plain-words errors).
+    turns input into `Action`s and draws `App`. `ui/inspector.rs` and
+    `ui/outliner.rs` hold the inspector's typed fields and the
+    outliner's filter and click rules; `ui/variants.rs`,
+    `ui/playlists.rs`, `ui/ui_screens.rs` and `ui/tags.rs` draw the
+    other tools.
+  - `app/tag_doc.rs`, `app/tag_api.rs`, `fields.rs`: the Tags tool's
+    document, its plain-function API and the reusable field panel
+    ([Tags](#tags)).
+  - `app/convert.rs`: Convert to Halo 2 (the background build of a new
+    map and its plain-words errors). `app/editing.rs`: multi-selection
+    delete and duplicate, placing at the cursor, framing the selection.
+  - `camera.rs`: the camera controller's maths (fly, orbit, pan, dolly,
+    easing, framing), with unit tests and no UI.
   - `viewport.rs`: the viewport texture (`register_external_texture`),
-    camera input, picking and the gizmo.
+    camera input, picking, placing, snapping and the gizmo.
   - `play.rs` and `play/`: Play and pair (above): the `h2 play` command
     and socket discovery (`launch`), the agent link thread (`link`), the
     placement diff sent as `edit.set` (`sync`); `ui/play.rs` draws the
@@ -658,13 +831,14 @@ last. The flags that set the scene up:
 | Flag | Effect |
 | --- | --- |
 | `--pick <map>` | open this map in the scenario tool |
+| `--tool tags --tag <group>:<path>` | show a tag of the open map in the Tags tool |
 | `--halo1 <iso\|dir>` | open a Halo 1 source (else `$H1_ISO`, `$H1_MAP_DIR`, `disc/halo1.iso`) |
 | `--halo1-map <map>` | show a map of it, read-only |
 | `--package <dir>[#H1\|#H2]` | open a package from the Maps list (a converted map's variant by its sandbox) |
 | `--convert h2\|h1` | with `--halo1-map`, run Convert to Halo 2 with that sandbox, wait for it and open the result (writes under `--data`) |
 | `--overlay on\|off` | switch the Halo 1 overlay |
 | `--select <block>:<index>` | select a placement (`vehicles:0`, `netgameequipment:3`) |
-| `--focus` | focus the camera on the selection |
+| `--focus` | frame the camera on the selection (F) |
 | `--camera <yaw>,<pitch>,<distance>` | orbit the camera (degrees, world units), after `--focus` |
 | `--tool scenario\|variants\|playlists\|ui-screens` | show that tool |
 | `--ui-screen <screen>/<state>` | show a screen of ours in the UI Screens tool |
@@ -713,7 +887,7 @@ h2-editor --disc disc/halo2.iso --pick ascension --select netgameequipment:0 \
 the script, cropped to the menu.*
 
 `scripts/editor-screenshots.sh` renders the user guide's pictures this way
-from your disc, into `docs/images/editor/` (editor-guide.md §11).
+from your disc, into `docs/images/editor/` (editor-guide.md §12).
 `headless::tests::renders_the_studio_offscreen` does the same over the
 scenario crate's invented test map, and skips when the machine has no
 wgpu adapter.

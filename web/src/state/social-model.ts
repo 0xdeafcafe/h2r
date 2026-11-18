@@ -7,6 +7,7 @@ import type { WireEvent, Xuid } from "../api/types";
 import {
   byTag, memberProperties, normalizeTeam, teamProperties, type FriendsDoc, type Team, type TeamIdentity,
 } from "../api/social";
+import { countMedals, gameMedals, type MedalId } from "./derive";
 import { authorXuid } from "./verify";
 import { isCampaign, isWinner, type GameState, type LiveState } from "./reducer";
 
@@ -137,6 +138,7 @@ export interface TeamGame {
 
 export interface TeamRecord {
   games: TeamGame[]; together: number; wins: number; kills: number; deaths: number;
+  medals: Map<MedalId, number>;
   /** Campaign games two or more members played in co-op, newest first.
    *  They count for nothing above: wins and K/D are multiplayer only. */
   campaign: GameState[];
@@ -149,6 +151,7 @@ export interface TeamRecord {
 export function teamRecord(s: LiveState, members: Iterable<Xuid>): TeamRecord {
   const ids = new Set(members);
   const out: TeamGame[] = [];
+  const medals = new Map<MedalId, number>();
   const campaign: GameState[] = [];
   for (const gid of s.gameOrder) {
     const g = s.games[gid];
@@ -167,7 +170,13 @@ export function teamRecord(s: LiveState, members: Iterable<Xuid>): TeamRecord {
     let kills = 0, deaths = 0, score = 0;
     for (const p of side) { const sc = g.scores[p.index]; kills += sc?.kills ?? 0; deaths += sc?.deaths ?? 0; score += sc?.score ?? 0; }
     const won = g.status === "ended" && side.some((p) => isWinner(g, p));
-    out.push({ game: g, slots: side.map((p) => p.index), won, kills, deaths, score });
+    const slots = side.map((p) => p.index);
+    if (g.status === "ended") {
+      for (const [medal, count] of countMedals(gameMedals(g.kills), new Set(slots))) {
+        medals.set(medal, (medals.get(medal) ?? 0) + count);
+      }
+    }
+    out.push({ game: g, slots, won, kills, deaths, score });
   }
   return {
     games: out,
@@ -175,6 +184,7 @@ export function teamRecord(s: LiveState, members: Iterable<Xuid>): TeamRecord {
     wins: out.filter((x) => x.won).length,
     kills: out.reduce((n, x) => n + x.kills, 0),
     deaths: out.reduce((n, x) => n + x.deaths, 0),
+    medals,
     campaign,
   };
 }

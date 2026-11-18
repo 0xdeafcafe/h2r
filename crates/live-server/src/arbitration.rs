@@ -3,7 +3,8 @@
 //! call as the signed-in account; the server writes it, server-signed, on
 //! the round's `round-<session>-<round>` stream with that account's xuid.
 //! Nobody else writes those streams. [`Live::rank_game`] ranks a game's
-//! humans only if their own account registered its round.
+//! humans only if their own account registered its round, and marks the
+//! round used (`ArbitrationUsed`) so it ranks no other game.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -13,7 +14,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use live_proto::arbitration::{
     self, EXTENDED, Extend, MAX_PROCEDURES, REGISTERED, REPORTED, Register, Registered, Report,
-    Reported,
+    Reported, USED, Used,
 };
 use live_proto::{Author, Xuid, lxm};
 use serde_json::json;
@@ -42,13 +43,15 @@ impl Rounds {
     }
 
     /// The round a game in `session` hosted by `host` was played as: of
-    /// the rounds `host` registered there that have not ranked a game
-    /// (`used`, `{session}-{round}`), the one it registered last. `None`
-    /// when there is none.
+    /// the rounds `host` registered there before the game started (log
+    /// position `before`) that have not ranked a game (`used`,
+    /// `{session}-{round}`), the one it registered last. `None` when there
+    /// is none.
     pub fn for_game(
         &self,
         session: &str,
         host: Xuid,
+        before: u64,
         used: &BTreeSet<String>,
     ) -> Option<(String, &Round)> {
         self.sessions
@@ -56,6 +59,7 @@ impl Rounds {
             .iter()
             .filter(|(id, _)| !used.contains(&format!("{session}-{id}")))
             .filter_map(|(id, r)| Some((*r.registered.get(&host)?, id, r)))
+            .filter(|(at, _, _)| *at < before)
             .max_by_key(|(at, _, _)| *at)
             .map(|(_, id, r)| (id.clone(), r))
     }
@@ -63,6 +67,15 @@ impl Rounds {
 
 pub(crate) fn project(s: &mut State, e: &RecordedEvent) {
     let b = &e.body;
+    if b.kind == USED {
+        if let Ok(d) = serde_json::from_value::<Used>(b.data.clone()) {
+            s.ranks
+                .rounds
+                .insert(format!("{}-{}", d.session_id, d.round_id));
+            s.ranks.games.insert(d.game_id);
+        }
+        return;
+    }
     let (session, round, xuid) = match b.kind.as_str() {
         REGISTERED => match serde_json::from_value::<Registered>(b.data.clone()) {
             Ok(d) => (d.session_id, d.round_id, d.xuid),
@@ -97,10 +110,17 @@ pub enum Call {
 
 impl Live {
     /// `POST /v1/arbitration/{session}/{round}/{register|extend|report}` by
-    /// an account with a `games.write` token. Registering twice, or
-    /// reporting twice, writes nothing; extending or reporting a round the
-    /// account did not register is a conflict. The event's position, or
-    /// `None` when nothing was written.
+    /// an account with a `games.write` token, in a Live session the server
+    /// knows (404 otherwise). Registering twice, or reporting twice, writes
+    /// nothing; extending or reporting a round the account did not register
+    /// is a conflict. The event's position, or `None` when nothing was
+    /// written.
+    ///
+    /// Anyone may register a known session's round: a registration alone
+    /// ranks nobody. [`Live::rank_game`] ranks only the players in the
+    /// session host's own game record, which the server trusts (the HLE
+    /// does not post session membership yet, so `players` cannot be
+    /// checked here).
     pub async fn arbitrate(
         &self,
         bearer: Option<&str>,
@@ -119,6 +139,9 @@ impl Live {
         let _guard = self.round_writes.lock().await;
         let (registered, reported) = {
             let s = self.model.read();
+            if !s.sessions.contains_key(session) {
+                return Err(not_found("no such session"));
+            }
             let r = s.arbitration.round(session, round);
             (
                 r.is_some_and(|r| r.registered.contains_key(&xuid)),

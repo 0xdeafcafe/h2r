@@ -30,10 +30,11 @@ full resolution so their text reads. Section 11 says how they are made.
 5. [Game variants](#5-game-variants)
 6. [Playlists (hoppers)](#6-playlists-hoppers)
 7. [UI Screens](#7-ui-screens)
-8. [Undo and redo](#8-undo-and-redo)
-9. [Where files go](#9-where-files-go)
-10. [Troubleshooting](#10-troubleshooting)
-11. [Regenerating the screenshots](#11-regenerating-the-screenshots)
+8. [Tags: every field of a tag](#8-tags-every-field-of-a-tag)
+9. [Undo and redo](#9-undo-and-redo)
+10. [Where files go](#10-where-files-go)
+11. [Troubleshooting](#11-troubleshooting)
+12. [Regenerating the screenshots](#12-regenerating-the-screenshots)
 
 ## 1. What you need
 
@@ -185,14 +186,21 @@ could be drawn.
   **Delete**, and one group per kind of object with its count, for
   example `Netgame equipment (33)`. Click a group to expand it, and an
   entry to select it; double-click an entry to point the camera at it.
-- **Viewport**: the level in 3D with its textures and baked lighting, the placed objects'
-  models, and a small coloured marker for each placement. The toolbar
-  above it has **Move (W)**, **Rotate (E)**, **Local** (gizmo in the
-  object's own axes), **Frame** and **Focus**.
-- **Inspector**: the selected object's fields: where it is, which way it
-  faces (in degrees), which item or object it is, and the rest. Fields you
-  can't change are greyed out. Hover over a field's name for its offset
-  and where its meaning comes from.
+  Cmd/Ctrl+click adds an entry to the selection (or takes it out), and
+  Shift+click selects every shown entry between the selected one and
+  the one you click.
+- **Viewport**: the level in 3D with its textures and baked lighting, its
+  sky, the placed objects' models, and a small coloured marker for each
+  placement. The toolbar above it has **Move (W)**, **Rotate (E)**,
+  **Scale (R)**, **Local/World (X)** (the gizmo in the object's own axes
+  or the world's), **Grid** and **°** snapping (right-click either to
+  pick its step), **Frame** and **Focus**.
+- **Inspector**: the selected object's fields, grouped under Transform,
+  Object, Spawn and Settings: where it is (x, y, z), which way it faces
+  (yaw, pitch and roll in degrees), which item or object it is (a list
+  you can type into to search), its flags as checkboxes, its team, and
+  the rest. Fields you can't change are greyed out. Hover over a field's
+  name for its offset and where its meaning comes from.
 
 
 ![The Outliner with Netgame equipment (33) expanded: entries 0: battle_rifle, 1: battle_rifle, 2: magnum, 3: needler and on down](../images/editor/outliner-open.png)
@@ -207,13 +215,23 @@ Moving around the viewport:
 
 | Input | Action |
 |---|---|
-| Right-drag | Orbit around the focus point |
-| W, A, S, D (while right-dragging) | Fly forward, left, back, right |
-| Q, E (while right-dragging) | Fly down, up |
+| Hold right button and move | Look around |
+| W, A, S, D (holding the right button) | Fly forward, left, back, right |
+| Q, E (holding the right button) | Fly down, up |
+| Scroll (holding the right button) | Fly faster or slower (the status bar shows the speed) |
+| Shift (while flying) | Fly four times as fast |
+| Alt + left-drag | Orbit around the selection, or the spot under the pointer |
 | Middle-drag | Pan |
-| Scroll | Zoom |
+| Scroll | Move in and out |
+| F | Frame the selection |
+| Double-click | Focus on the placement or the spot under the pointer |
 | Left-click | Select the placement under the pointer |
-| Drag the gizmo | Move or rotate the selection |
+| Cmd/Ctrl + left-click | Add it to the selection, or take it out |
+| Drag the gizmo | Move, rotate or scale the selection |
+
+The camera eases in and out rather than jumping, at the same speed
+whatever the frame rate. With **Grid** on, moves snap to the grid step;
+with **°** on, turns snap to the angle step.
 
 
 ![Close up on Ascension: a battle rifle spawn selected with the move gizmo, red, green and blue arrows](../images/editor/gizmo-move.jpg)
@@ -300,21 +318,29 @@ gets a `*`, and the status bar says `unsaved`.
 
 - **Delete**: select an entry and click **Delete** (or press Delete). The
   last entry of that group moves into the deleted one's place, so the
-  numbers in the list change. Undo puts everything back exactly.
+  numbers in the list change. Undo puts everything back exactly. With
+  several entries selected, all of them go, as one undo step.
 - **Duplicate**: select an entry and click **Duplicate** (Cmd+D). The copy
   is added at the end of the group and selected: drag it where you want
-  it.
+  it. With several selected, each is copied where it stands and the
+  copies are selected.
 - **Add new**: right-click a group's name (or an entry) and choose **Add
-  new at the camera focus**.
+  new at the camera focus**, or **Place new with the mouse** (**Place a
+  copy with the mouse** on an entry), then click the level where it
+  should go. Esc cancels.
+- **Edit many at once**: with several entries selected, the inspector
+  shows the fields they all have. A field marked `*` differs between
+  them; changing it (or one of its x, y, z, or one flag) changes it on
+  every selected entry, and one undo takes it back.
 
 
-![The outliner's context menu on an entry under Netgame equipment: Duplicate, Delete and Add new at the camera focus](../images/editor/outliner-menu.png)
+![The outliner's context menu on an entry under Netgame equipment: Duplicate, Delete, Add new at the camera focus and Place a copy with the mouse](../images/editor/outliner-menu.png)
 
-*Right-click an entry for **Duplicate**, **Delete** and **Add new at the camera focus**.*
+*Right-click an entry for **Duplicate**, **Delete**, **Add new at the camera focus** and **Place a copy with the mouse**.*
 
-![The context menu on the Netgame equipment group's name, with only Add new at the camera focus](../images/editor/outliner-add.png)
+![The context menu on the Netgame equipment group's name, with only Add new at the camera focus and Place new with the mouse](../images/editor/outliner-add.png)
 
-*On a group's name, the menu has only **Add new at the camera focus**.*
+*On a group's name, the menu has only **Add new at the camera focus** and **Place new with the mouse**.*
 
 ![The Delete button greyed out with nothing selected, and its tooltip: select a placement](../images/editor/delete-refused.png)
 
@@ -455,11 +481,11 @@ edit it like any map. Saving it with **File > Save as package...** makes a
 new package (its **Directory** starts as `<map>-edit`), listed under
 **Packages**; the imported map is left as it was.
 
-![Blood Gulch converted with the Halo 2 sandbox, open in the Scenario tool: the canyon drawn with Halo 2 textures from Coagulation, its spawn points and item spawns, a spawn point selected and Converted from Halo 1's bloodgulch, H2 sandbox in the inspector](../images/editor/halo1-converted.jpg)
+![Blood Gulch converted with the Halo 2 sandbox, open in the Scenario tool: the canyon drawn with Halo 2 stand-in textures, its spawn points and item spawns, a spawn point selected and Converted from Halo 1's bloodgulch, H2 sandbox in the inspector](../images/editor/halo1-converted.jpg)
 
 *Blood Gulch converted to Halo 2. Its surfaces wear Halo 2 stand-in
-textures from its base map, Coagulation, and have no lightmaps yet, so
-they are lit by a plain sun.*
+textures from your Halo 2 disc and have no lightmaps yet, so they are lit
+by a plain sun.*
 
 **Comparing with the original.** If the editor can find the Halo 1 map a
 converted map was made from (on the Halo 1 disc or folder you opened, or
@@ -494,27 +520,29 @@ read only`): nothing can be moved or saved.
 *A Halo 1 map's outliner: read only, grouped by kind.*
 
 **Converting a Halo 1 map.** With a Halo 1 map on show and your Halo 2
-disc open, the inspector's **Convert to Halo 2** section turns it into a
-Halo 2 map:
+disc open, the inspector's **Convert to Halo 2** section builds a new
+Halo 2 map from it:
 
 1. Pick the **Sandbox**: **Halo 2** (Halo 2's nearest weapons and
    vehicles) or **Halo 1** (its own; not built yet, so it says so).
-2. The line under it says which Halo 2 map the conversion starts from
-   (`Onto coagulation, from your Halo 2 disc`): it gives the sky, the
-   weapons and vehicles and everything else a Halo 2 level needs. The
-   editor picks it; your Halo 2 disc must be open.
+2. The line under it names the new map (`Builds a new map,
+   h1_bloodgulch`). It is built from scratch out of the Halo 1 level;
+   the shaders, weapons and vehicles it needs come from your Halo 2
+   disc, which must be open (the button says so when it isn't).
 3. Click **Convert to Halo 2**. It runs in the background
-   (`Converting bloodgulch (h2 sandbox)...` with the seconds so far) and
-   writes the converted map into the data folder, as the importer does.
-   When it is done, the map appears under **Halo 1** in **Maps** (for
-   example **Blood Gulch (H2 sandbox)**) and opens, ready to edit.
+   (`Building h1_bloodgulch (h2 sandbox)...` with the seconds so far)
+   and writes the new map into the data folder, as the importer does,
+   with the map's picture and description from your Halo 1 disc when
+   it has them. When it is done, the map appears under **Halo 1** in
+   **Maps** (for example **Blood Gulch (H2 sandbox)**) and opens, ready
+   to edit.
 
 
-![The Inspector for Halo 1's bloodgulch: the read-only banner, then Convert to Halo 2 with the Sandbox choice (Halo 2 selected), Onto coagulation, from your Halo 2 disc, and the Convert to Halo 2 button](../images/editor/convert-controls.png)
+![The Inspector for Halo 1's bloodgulch: the read-only banner, then Convert to Halo 2 with the Sandbox choice (Halo 2 selected), Builds a new map, h1_bloodgulch, and the Convert to Halo 2 button](../images/editor/convert-controls.png)
 
 *The **Convert to Halo 2** section, before converting.*
 
-![The same section while converting: Converting bloodgulch (h2 sandbox)... 0 s under the greyed-out button](../images/editor/convert-running.png)
+![The same section while converting: Building h1_bloodgulch (h2 sandbox)... 0 s under the greyed-out button](../images/editor/convert-running.png)
 
 *While it converts, the button is greyed out and the line under it counts the seconds.*
 
@@ -858,7 +886,60 @@ screen in each of its states, try its buttons, and check its layout.
 To open the editor straight on a screen: `h2-editor --ui-screen
 signin-code/code-wrong --ui-press up,right`.
 
-## 8. Undo and redo
+## 8. Tags: every field of a tag
+
+**Tags** shows every tag of the open map and lets you change any field of
+it: a weapon's numbers, a projectile's flags, the tag a vehicle's weapon
+points at. Open a map in **Maps** first (a disc map, one of your
+packages, or a converted Halo 1 map), then pick **Tags** in **Tools**.
+
+- **The tag tree** (left) lists the map's tags by group (`weap`, `proj`,
+  `vehi`, ...). Type in the search box to find a tag by its group or by
+  part of its name. A `*` marks a tag you have edited; `(read-only)` one
+  you can look at but not change.
+- **The fields** (centre) are the selected tag's fields, top to bottom.
+  Fields we have a name for show it in white; the rest show grey, named
+  by where they are (`+0x14`), with their value shown the way it looks
+  most likely (a decimal number, a whole number or hex). Right-click a
+  grey field to see it another way. Hover a field for its type, where it
+  is and what we know about it.
+- **The bytes** (right) show the raw bytes of the part of the tag under
+  the mouse, the hovered field lit in blue and bytes you changed in
+  orange.
+
+How to change things:
+
+- **Numbers**: drag left or right, or double-click and type. Angles show
+  in degrees.
+- **Choices** (a list of named values): pick from the list.
+- **Flags**: tick or untick. A bit with no name shows only when it is
+  set.
+- **Colours**: click the swatch.
+- **Names (string IDs)**: type a name and press Enter. It has to be a
+  name the map already has somewhere; new names are not supported yet.
+- **References to other tags**: open the list, type to narrow it, pick
+  one (or `none`). Only tags of the right kind are listed. The button
+  next to it jumps to that tag.
+- **Lists inside a tag (blocks)**: open the list, pick an element number,
+  then edit its fields. **Add**, **Duplicate** and **Remove** change the
+  list, but a list can never get longer than it was on the disc (remove
+  something first). Hover a greyed-out button for the reason. Other
+  things in the map that point at a list entry by its number are not
+  updated when entries move.
+- **Data** (raw bytes inside a tag): edit the hex; the length must stay
+  the same.
+
+Some things are shown but cannot be changed, with the reason shown:
+counts and addresses (use Add/Remove instead), the scenario tag (use the
+Scenario tool for what is placed on the map), and tags of the level's
+structure (not shown yet).
+
+Every change is an undo step (one drag is one step). Save as with the
+Scenario tool: **File > Save map as...** or **Save as package...** writes
+your tag edits and your placement edits together. The Scenario tool's
+`*` shows when the map has unsaved edits of either kind.
+
+## 9. Undo and redo
 
 Each tool has its own history; **Edit > Undo** and **Edit > Redo** (and
 Cmd+Z, Cmd+Shift+Z) act on the tool you're in.
@@ -879,7 +960,7 @@ Cmd+Z, Cmd+Shift+Z) act on the tool you're in.
 
 *The log records each undo (`undid set position`).*
 
-## 9. Where files go
+## 10. Where files go
 
 `<data>` is the data folder: `--data`, or by default the one `h2 play`
 uses, `$TMPDIR/h2boot-data`.
@@ -895,7 +976,7 @@ uses, `$TMPDIR/h2boot-data`.
 
 Your disc image is only ever read.
 
-## 10. Troubleshooting
+## 11. Troubleshooting
 
 **"Unsaved changes" window.** Anything that would throw away a tool's
 unsaved changes asks first: opening another disc or map (Scenario),
@@ -986,7 +1067,7 @@ section 3).
 renderer. Check that your GPU driver supports Metal (macOS), Vulkan or
 DirectX 12.
 
-## 11. Regenerating the screenshots
+## 12. Regenerating the screenshots
 
 The pictures in this guide are rendered by the editor itself, offscreen,
 from your own disc image (no window opens and the game does not run):

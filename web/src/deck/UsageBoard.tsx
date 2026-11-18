@@ -8,8 +8,9 @@ import { bytes, compact, shortDay } from "./chart";
 import { seriesColor } from "./palette";
 import { sortCol, tileValue, type UsageView } from "./usageView";
 import { UPLOAD_KINDS, type AccountUsage } from "../admin/usage";
+import { STATS_ROOT } from "../routes";
 
-export const playerHref = (tag: string) => `/stats/players/${encodeURIComponent(tag)}`;
+export const playerHref = (tag: string) => `${STATS_ROOT}/players/${encodeURIComponent(tag)}`;
 
 export default function UsageBoard(props: { view: UsageView; range: number; accounts: readonly AccountUsage[]; accountsNote: string; sort: string }) {
   const v = () => props.view;

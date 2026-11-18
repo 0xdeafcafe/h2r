@@ -10,8 +10,8 @@
 .dx-bg-glow {
   position: absolute; inset: 0; transition: filter .5s;
   background:
-    radial-gradient(ellipse 26% 38% at var(--vx) var(--vy), rgba(104, 196, 36, .3) 0, rgba(58, 150, 22, .12) 55%, transparent 100%),
-    radial-gradient(ellipse 88% 112% at var(--vx) var(--vy), #0d400a 0, #093207 22%, #062505 44%, #031803 68%, #010c01 100%);
+    radial-gradient(ellipse 47% 65% at var(--vx) var(--vy), #53882a80, #234e1e4d 54%, transparent),
+    radial-gradient(ellipse 92% 115% at var(--vx) var(--vy), #163b18, #092610 40%, #020e08 78%, #010704);
 }
 .dx:not([data-screen="menu"]) .dx-bg-glow { filter: brightness(.42) saturate(1.15); }
 /* Wide soft arcs, as if the tube's wall caught the light in bands. */
@@ -23,12 +23,13 @@
     radial-gradient(ellipse 36% 52% at calc(var(--vx) + 7%) calc(var(--vy) + 2%), transparent 0 78%, rgba(70, 170, 40, .08) 84%, transparent 92%);
 }
 .dx:not([data-screen="menu"]) .dx-bg-bands { opacity: .35; }
-.dx-tunnel { position: absolute; inset: 0; width: 100%; height: 100%; mix-blend-mode: screen; }
+.dx-tunnel { position: absolute; inset: 0; width: 100%; height: 100%; mix-blend-mode: screen;
+  mask-image: conic-gradient(from 25deg at var(--vx) var(--vy), #0003, #000d 65deg, #0003 135deg, #000a 214deg, #000 276deg, #0003); }
 .dx-bg-vignette { position: absolute; inset: 0; background: radial-gradient(ellipse 82% 85% at var(--vx) var(--vy), transparent 32%, #03181230 68%, #010c0ad9); }
 
 /* ---- corner ornaments of the list and pod screens ---- */
 .dx-orn { position: absolute; left: 50%; top: 50%; width: calc(var(--u) * 1280); height: calc(var(--u) * 720); transform: translate(-50%, -50%); pointer-events: none; opacity: 0; transition: opacity .22s; }
-.dx:not([data-screen="menu"]) .dx-orn { opacity: 1; transition-duration: .5s; }
+.dx:not([data-screen="menu"]) .dx-orn { opacity: .55; transition-duration: .5s; }
 .dx-orn-art { position: absolute; background: 50% 50% / contain no-repeat; }
 .dx-orn-art--twin { left: calc(var(--u) * 720); top: calc(var(--u) * -200); width: calc(var(--u) * 860); height: calc(var(--u) * 571); background-image: url("/art/dashboard/twin-tubes@2x.webp"); transform: rotate(24deg); opacity: .62; animation: dx-sway 13s ease-in-out infinite alternate; }
 .dx-orn-art--cable { left: calc(var(--u) * 520); top: calc(var(--u) * 356); width: calc(var(--u) * 660); height: calc(var(--u) * 438); background-image: url("/art/dashboard/cable@2x.webp"); transform: rotate(-6deg); opacity: .6; }
@@ -57,10 +58,10 @@
 .dx--back .dx-screen { animation-name: dx-in-back; }
 .dx--leaving .dx-screen { animation: dx-out .2s ease-in both; }
 .dx--leaving.dx--back .dx-screen { animation-name: dx-out-back; }
-@keyframes dx-in { from { opacity: 0; transform: scale(.8); filter: blur(calc(var(--u) * 5)) brightness(1.6); } }
-@keyframes dx-in-back { from { opacity: 0; transform: scale(1.18); filter: blur(calc(var(--u) * 5)) brightness(1.6); } }
-@keyframes dx-out { to { opacity: 0; transform: scale(1.22); filter: blur(calc(var(--u) * 4)) brightness(1.5); } }
-@keyframes dx-out-back { to { opacity: 0; transform: scale(.82); filter: blur(calc(var(--u) * 4)) brightness(1.5); } }
+@keyframes dx-in { from { opacity: 0; transform: perspective(1200px) translateX(3%) rotateY(-5deg) scale(.94); } }
+@keyframes dx-in-back { from { opacity: 0; transform: translateX(-2%) scale(1.05); } }
+@keyframes dx-out { to { opacity: 0; transform: translateX(-2%) scale(1.06); } }
+@keyframes dx-out-back { to { opacity: 0; transform: translateX(3%) scale(.94); } }
 @keyframes dx-fade { from { opacity: 0; } }
 @keyframes dx-spin { to { transform: rotate(360deg); } }
 @keyframes dx-podpulse { 50% { filter: brightness(1.22); } }
@@ -84,16 +85,22 @@
 
 /* ---- the orb ---- */
 .dx-orb { position: absolute; left: calc(var(--u) * 444); top: calc(var(--u) * 318); width: calc(var(--u) * 268); height: calc(var(--u) * 268); margin: calc(var(--u) * -134) 0 0 calc(var(--u) * -134); }
+/* A split retaining ring seats the moving skins in the arc of selectors. */
+.dx-orb::before, .dx-orb::after {
+  content: ""; position: absolute; inset: -18%; border-radius: 50%; pointer-events: none;
+  background: conic-gradient(from -40deg, #9dc970 0deg, #203b22 56deg, transparent 57deg 66deg, #729953 67deg, #1b421b 135deg, transparent 136deg 175deg, #74964b 176deg, #264522 270deg, #9dc970);
+  mask-image: radial-gradient(closest-side, transparent 96%, black 96.5% 98%, transparent 99%);
+}
+.dx-orb::after { inset: -23%; transform: rotate(16deg); opacity: .45; }
 .dx-orb i { position: absolute; border-radius: 50%; }
 .dx-orb-halo { inset: -44%; background: radial-gradient(circle, rgba(170, 245, 60, .32) 0, rgba(110, 215, 40, .16) 38%, rgba(70, 180, 30, .06) 58%, transparent 70%); animation: dx-pulse 6s ease-in-out infinite; }
 /* The drawing is 340 units across with the ball 200 of them. */
 .dx-orb-svg { position: absolute; inset: -35%; width: 170%; height: 170%; overflow: visible; }
-.dx-orb-body { filter: drop-shadow(0 0 calc(var(--u) * 6) #b6fa4f66); }
+.dx-orb-core { filter: hue-rotate(18deg) saturate(1.16); }
 .dx-mem { animation: dx-spin 80s linear infinite; }
 .dx-mem path { stroke: rgba(196, 255, 150, .5); stroke-width: .8; animation: dx-wobble 9s ease-in-out infinite alternate; }
 /* A second, fainter outline just inside each skin, like a fold in it. */
 .dx-mem .dx-mem-fold { fill: none; stroke-opacity: .45; stroke-width: .6; animation-name: dx-wobble-in; }
-.dx-orb-rim { fill: none; stroke: #edffb3; stroke-width: 1.25; }
 .dx-mem--back1 path { stroke: rgba(150, 235, 100, .42); }
 .dx-mem--back2 { animation-duration: 117s; animation-direction: reverse; }
 .dx-mem--back2 path { stroke: rgba(150, 235, 100, .34); animation-duration: 13s; animation-delay: -4s; }
@@ -103,13 +110,7 @@
 .dx-mem--front2 path { stroke: rgba(220, 255, 180, .36); animation-duration: 15s; animation-delay: -2s; }
 @keyframes dx-wobble { from { transform: scale(1.05, .96); } to { transform: scale(.97, 1.05); } }
 @keyframes dx-wobble-in { from { transform: scale(.94, .9) rotate(5deg); } to { transform: scale(.9, .96) rotate(-4deg); } }
-.dx-orb-cells { animation: dx-cells 19s ease-in-out infinite alternate; }
-.dx-orb-cells path { fill: rgba(52, 168, 26, .5); stroke: rgba(214, 255, 168, .5); stroke-width: .9; }
-.dx-orb-cells path + path { fill: rgba(84, 190, 40, .26); stroke: rgba(214, 255, 168, .32); }
-@keyframes dx-cells { from { transform: rotate(-7deg) translate(-2px, 3px); } to { transform: rotate(9deg) translate(4px, -3px); } }
-.dx-orb-sheen { fill: #ffffdc42; }
-.dx-orb-glint { fill: #fff; opacity: .9; }
-.dx-orb-ribbons { animation: dx-ribbon 14s ease-in-out infinite alternate; }
+.dx-orb-ribbons { opacity: .28; animation: dx-ribbon 14s ease-in-out infinite alternate; }
 .dx-orb-ribbons path + path { fill: none; stroke: rgba(150, 240, 90, .3); stroke-width: 1; }
 @keyframes dx-ribbon { from { transform: rotate(-3deg); } to { transform: rotate(4deg); } }
 @keyframes dx-pulse { 50% { transform: scale(1.08); opacity: .78; } }
@@ -170,34 +171,32 @@
 .dx-bar {
   position: absolute; left: var(--bx); top: calc(var(--u) * var(--dr) - var(--bh) / 2); width: var(--bw); height: var(--bh);
   display: flex; align-items: center; padding: 0 calc(var(--u) * 16) calc(var(--u) * 2) calc(var(--u) * 15);
-  border: calc(var(--u) * 1) solid; border-radius: calc(var(--u) * 2) calc(var(--u) * 8) calc(var(--u) * 8) calc(var(--u) * 5);
-  border-color: #91b46c #385337 #203c23 #739551;
-  background: linear-gradient(175deg, #638152, #335b33 14%, #234826 46%, #1b3e20 53%, #244727 89%, #4e7141);
-  box-shadow: inset 0 1px #c6e59e55, inset 0 -2px #09260f, 1px 2px 3px #03120470;
+  border: solid transparent; border-width: 0 calc(var(--u) * 24);
+  border-image: url("/art/dashboard/menu-bar-normal.webp") 0 64 fill / 0 calc(var(--u) * 32);
+  padding-inline: 0; filter: drop-shadow(0 calc(var(--u) * 3) calc(var(--u) * 2) #001003);
   transition: filter .16s;
 }
 .dx-item.on:not(.dx-item--locked) .dx-bar::after {
-  content: ""; position: absolute; z-index: 2; right: calc(var(--u) * 9);
+  content: ""; position: absolute; z-index: 2; right: calc(var(--u) * -5);
   width: calc(var(--u) * 5); height: calc(var(--u) * 8);
   background: #395025; clip-path: polygon(0 0, 100% 50%, 0 100%);
 }
 .dx-item.hov .dx-bar { filter: brightness(1.28); }
-.dx-bracket { position: absolute; left: calc(var(--u) * -13); top: calc(var(--u) * -14); width: calc(var(--u) * 124); height: calc(var(--u) * 56); overflow: visible; fill: none; stroke: rgba(150, 214, 100, .5); stroke-width: 1; stroke-linejoin: round; opacity: calc(1 - var(--lit) * .35); }
+.dx-bracket { position: absolute; left: calc(var(--u) * -36); top: calc(var(--u) * -14); width: calc(var(--u) * 124); height: calc(var(--u) * 56); overflow: visible; fill: none; stroke: rgba(150, 214, 100, .5); stroke-width: 1; stroke-linejoin: round; opacity: calc(1 - var(--lit) * .35); }
 .dx-bracket-in { stroke-width: .7; opacity: .55; }
 .dx-bar-lit {
-  position: absolute; z-index: 1; inset: calc(var(--u) * -1); opacity: var(--lit); border-radius: inherit;
-  border: calc(var(--u) * 1) solid;
-  border-color: #f2ffb1 #a1b959 #6d913b #e2f497;
-  background: linear-gradient(175deg, #f5ffb5, #dbef75 17%, #cadd5c 48%, #b3ce47 56%, #c8df60 88%, #e2ee84);
-  box-shadow: inset 3px 0 #ecffb38c, inset 0 -2px #789538, 0 0 calc(var(--u) * 8) #bcde4e48;
+  position: absolute; inset: 0 calc(var(--u) * -24); opacity: var(--lit);
+  border: solid transparent; border-width: 0 calc(var(--u) * 24);
+  border-image: url("/art/dashboard/menu-bar-selected.webp") 0 64 fill / 0 calc(var(--u) * 32);
+  filter: brightness(1.16);
 }
 .dx-bar-text {
-  position: relative; z-index: 2; font-family: "Michroma", var(--f-tech); font-weight: 400; font-size: calc(var(--u) * 17.5); letter-spacing: .1em; text-transform: uppercase; white-space: nowrap;
-  color: color-mix(in srgb, #2c4a12 calc(var(--lit) * 100%), #cfe9a0);
-  /* Michroma has one weight; a stroke in the text's own colour, painted under the fill, makes it bold. */
-  -webkit-text-stroke: calc(var(--u) * 1.45) currentColor; paint-order: stroke fill;
-  text-shadow: 0 calc(var(--u) * 1) calc(var(--u) * 1) rgba(4, 40, 2, calc(.7 - var(--lit) * .7));
+  position: relative; z-index: 2; font: 650 calc(var(--u) * 17.5)/1 var(--f-tech);
+  letter-spacing: .055em; text-transform: uppercase; white-space: nowrap;
+  color: color-mix(in srgb, #1a350a calc(var(--lit) * 100%), #d7eda9);
 }
+.dx-item:focus-visible .dx-bracket { stroke: #f4ffc8; opacity: 1; }
+.dx-item.on .dx-vine { filter: drop-shadow(0 0 calc(var(--u) * 3) #ceff65); }
 
 /* ---- a / b prompts: a lettered ring pod and a thin label ---- */
 .dx-prompt { position: absolute; z-index: 4; display: flex; align-items: center; gap: calc(var(--u) * 11); outline: none; }
@@ -217,8 +216,8 @@
 .dx-btn b { font-family: var(--f-tech); font-weight: 800; font-size: calc(var(--u) * 19); line-height: 1; text-transform: uppercase; color: #d4eeaa; text-shadow: 0 calc(var(--u) * 1) calc(var(--u) * 1) rgba(0, 50, 0, .6); }
 /* The keyboard's prompt: the same jelly as a wider keycap, the key's name on it. */
 .dx-btn.dx-btn--keyboard, .dx-menu .dx-btn.dx-btn--keyboard {
-  width: auto; min-width: calc(var(--u) * 58); height: calc(var(--u) * 40); padding: 0 calc(var(--u) * 12); border-radius: calc(var(--u) * 13);
-  border: calc(var(--u) * 5) solid rgba(156, 212, 106, .88);
+  width: auto; min-width: calc(var(--u) * 51); height: calc(var(--u) * 33); padding: 0 calc(var(--u) * 10); border-radius: calc(var(--u) * 9);
+  border: calc(var(--u) * 2) solid #89ac66;
   background: linear-gradient(180deg, rgba(214, 240, 170, .16) 0, rgba(214, 240, 170, 0) 40%), #2f7a1c;
   box-shadow: 0 0 0 calc(var(--u) * 1.5) rgba(96, 176, 56, .5), 0 0 calc(var(--u) * 5) rgba(80, 170, 44, .35), inset 0 0 calc(var(--u) * 3) rgba(40, 110, 24, .9);
 }
@@ -253,21 +252,29 @@
   .dx-orn-art--cable, .dx-orn-art--cable2, .dx-tubes { display: none; }
 
   /* The ring doesn't turn here: the items stack under the orb and the focus moves down them. */
-  .dx-screen.dx-menu { transform-origin: calc(var(--u) * 200) calc(var(--u) * 176); }
-  .dx-orb { left: calc(var(--u) * 200); top: calc(var(--u) * 176); width: calc(var(--u) * 196); height: calc(var(--u) * 196); margin: calc(var(--u) * -98) 0 0 calc(var(--u) * -98); }
-  .dx-orb-count { left: calc(var(--u) * 16); top: calc(var(--u) * 306); width: calc(var(--u) * 368); }
-  .dx-orb-me { left: calc(var(--u) * 16); top: calc(var(--u) * 284); width: calc(var(--u) * 368); font-size: calc(var(--u) * 15); }
+  .dx-screen.dx-menu { transform-origin: 50% calc(var(--u) * 123); }
+  .dx-orb { left: 50%; top: calc(var(--u) * 123); width: calc(var(--u) * 152); height: calc(var(--u) * 152); margin: calc(var(--u) * -76) 0 0 calc(var(--u) * -76); }
+  .dx-orb-me, .dx-orb-count, .dx-motd { left: 4%; width: 92%; }
+  .dx-orb-me { top: calc(var(--u) * 226); font-size: calc(var(--u) * 16); }
+  .dx-orb-count { top: calc(var(--u) * 249); }
+  .dx-motd { top: calc(var(--u) * 267); font-size: calc(var(--u) * 14); -webkit-line-clamp: 1; line-clamp: 1; }
   .dx-prompt--x { left: calc(var(--u) * 150); top: calc(var(--u) * 700); z-index: 6; }
-  .dx-bar-hint { font-size: calc(var(--u) * 10.5); }
-  .dx-motd { left: calc(var(--u) * 24); top: calc(var(--u) * 326); width: calc(var(--u) * 352); font-size: calc(var(--u) * 13); -webkit-line-clamp: 1; line-clamp: 1; }
-  .dx-arc { --bx: calc(var(--u) * 48); --bw: calc(var(--u) * 272); --bh: calc(var(--u) * min(36, 288 / var(--n))); --pitch: calc(var(--u) * min(68, 320 / var(--n))); }
-  .dx-item { --dr: 12 !important; opacity: 1; pointer-events: auto; transform: translate(calc(var(--u) * 44 + var(--u) * 22 * cos((var(--i) - (var(--n) - 1) / 2) * 14deg) - var(--u) * 22), calc(var(--u) * 392 + var(--i) * var(--pitch))); }
-  .dx-pod { left: calc(var(--u) * -40); top: calc(var(--u) * -40); width: calc(var(--u) * 80); height: calc(var(--u) * 80); }
-  .dx-vine { left: calc(var(--u) * 14); top: calc(var(--u) * -34); transform: scale(.82); transform-origin: 0 100%; }
-  .dx-bar-text { font-size: calc(var(--u) * 13.5); }
+  .dx-arc { --bx: calc(var(--u) * 31); --bw: calc(var(--u) * 294); --bh: calc(var(--u) * 40); --pitch: calc(var(--u) * min(52, 368 / (var(--n) - 1))); }
+  .dx-item { --dr: 0 !important; opacity: 1; pointer-events: auto; transform: translate(calc(var(--u) * 47 + var(--u) * 12 * cos((var(--i) - (var(--n) - 1) / 2) * 20deg)), calc(var(--u) * 314 + var(--i) * var(--pitch))); }
+  .dx-pod { left: calc(var(--u) * -25); top: calc(var(--u) * -25); width: calc(var(--u) * 50); height: calc(var(--u) * 50); }
+  .dx-vine { left: calc(var(--u) * 11); top: calc(var(--u) * -23); transform: scale(.58); transform-origin: 0 50%; }
+  .dx-vine i { height: calc(var(--u) * 22); }
+  .dx-bar-text { font-size: calc(var(--u) * 14.5); }
+  .dx-bar-hint { font-size: calc(var(--u) * 11.5); letter-spacing: .025em; }
   .dx-prompt--a, .dx-menu .dx-prompt--a { left: auto; right: calc(var(--u) * 16); top: calc(var(--u) * 700); z-index: 6; }
   .dx-prompt--b { left: calc(var(--u) * 16); top: calc(var(--u) * 700); flex-direction: row; z-index: 6; }
   .dx-menu .dx-prompt--a::after { display: none; }
   .dx-btn, .dx-menu .dx-btn { width: calc(var(--u) * 46); height: calc(var(--u) * 46); }
   .dx-btn b, .dx-menu .dx-btn b { font-size: calc(var(--u) * 16); }
 }
+
+/* ---- the Game Content Usage Rules notice (src/legal.ts) under the menu ---- */
+.dx-legal { position: absolute; z-index: 4; left: 50%; bottom: calc(var(--u) * 6); transform: translateX(-50%); width: min(94%, calc(var(--u) * 900)); margin: 0; text-align: center; font-size: max(9px, calc(var(--u) * 9.5)); line-height: 1.35; letter-spacing: .04em; text-transform: none; color: var(--g-ink-soft); opacity: .78; text-shadow: 0 calc(var(--u) * 1) calc(var(--u) * 2) #000; pointer-events: none; }
+.dx-legal a { color: var(--g-pale); pointer-events: auto; }
+.dx-legal a:hover, .dx-legal a:focus-visible { color: var(--g-bright); }
+.dx--boot .dx-legal { animation: dx-fade .6s 1.3s both; }

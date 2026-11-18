@@ -331,3 +331,73 @@ async fn invite_only_coop_presence_shows_to_players_and_admins() {
     ];
     assert_eq!(seen, want);
 }
+
+/// A console's build and capabilities ride on its presence and show to
+/// every reader, friend or not, so a host can read its guests' before a
+/// game; the server keeps their shape and refuses anything else.
+#[tokio::test]
+async fn build_and_capabilities_show_to_everyone_and_are_checked() {
+    let h = start(
+        std::sync::Arc::new(live_server::store::MemoryStore::new()),
+        live_server::Policy::default(),
+    )
+    .await;
+    let a = h.create("Host").await;
+    let old = h.create("Oldie").await;
+    let c = h.create("Stranger").await;
+    let presence = |u: &User, extra: Value| {
+        let mut d = json!({"xuid": u.xuid, "state": "online", "game_id": null});
+        for (k, v) in extra.as_object().unwrap() {
+            d[k] = v.clone();
+        }
+        h.event(u, &streams::presence(u.xuid), types::SIGNED_IN, d)
+    };
+    let r = h
+        .post_event(
+            &a,
+            presence(
+                &a,
+                json!({"build": "a65fa01", "capabilities": [live_proto::capability::VARIANT_EXT]}),
+            ),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.error());
+    // An older build sends neither.
+    let r = h.post_event(&old, presence(&old, json!({}))).await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.error());
+
+    for bad in [
+        json!({"build": "A65FA01"}),
+        json!({"build": "a65f"}),
+        json!({"build": "unknown"}),
+        json!({"capabilities": ["Variant-Ext/1"]}),
+        json!({"capabilities": ["variant-ext"]}),
+        json!({"capabilities": vec!["variant-ext/1"; 17]}),
+        json!({"capabilities": [format!("{}/1", "a".repeat(40))]}),
+    ] {
+        let r = h.post_event(&c, presence(&c, bad.clone())).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{bad}");
+    }
+
+    for u in [None, Some(&c), Some(&old)] {
+        let headers: Vec<_> = u.map(|u| h.bearer(u, lxm::READ)).into_iter().collect();
+        let r = h
+            .call(Method::GET, "/v1/presence", &headers, Body::empty())
+            .await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.error());
+        let items: Vec<live_proto::Presence> =
+            serde_json::from_value(r.json()["items"].clone()).unwrap();
+        let host = items.iter().find(|p| p.xuid == a.xuid).unwrap();
+        assert_eq!(host.build.as_deref(), Some("a65fa01"));
+        assert!(host.has(live_proto::capability::VARIANT_EXT));
+        let lacking: Vec<_> = live_proto::lacking(
+            live_proto::capability::VARIANT_EXT,
+            &[a.xuid, old.xuid],
+            &items,
+        )
+        .iter()
+        .map(|p| p.gamertag.as_str().to_string())
+        .collect();
+        assert_eq!(lacking, ["Oldie"]);
+    }
+}

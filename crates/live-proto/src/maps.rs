@@ -25,17 +25,29 @@ pub const CONTENT_REPORTED: &str = "ContentReported";
 /// `ContentUploadsSet`: an admin switched an account's uploads on or off
 /// (server-signed, on the account's stream). Data: [`UploadsSet`].
 pub const CONTENT_UPLOADS_SET: &str = "ContentUploadsSet";
+/// `MapDownloaded`: a signed-in account fetched a package's manifest for
+/// the first time (server-signed, on [`package_stream`]; private: admins
+/// read it, everyone else reads only the count). Data: [`Downloaded`].
+pub const MAP_DOWNLOADED: &str = "MapDownloaded";
 
 /// Every event type of this module; only the server's own endpoints write
 /// them.
-pub const KINDS: [&str; 6] = [
+pub const KINDS: [&str; 7] = [
     CONTENT_STORED,
     MAP_PUBLISHED,
     CONTENT_MODERATED,
     CONTENT_REPORTED,
     CONTENT_UPLOADS_SET,
     HOPPER_PINS_SET,
+    MAP_DOWNLOADED,
 ];
+
+/// A package's kind of change, for browsing the repository. Display data:
+/// not part of the `MapId`.
+pub const CATEGORIES: [&str; 6] = ["gameplay", "weapons", "vehicles", "visuals", "maps", "other"];
+
+/// The longest `source_url` kept.
+pub const MAX_SOURCE_URL: usize = 300;
 
 /// The stream a blob's events are on.
 pub fn content_stream(sha256: &Sha256) -> String {
@@ -90,6 +102,50 @@ pub struct MapDocument {
     pub manifest: Manifest,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<Sha256>,
+    /// One of [`CATEGORIES`], for the repository's filters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    /// Where the mod came from (an `http`/`https` URL), for credit when the
+    /// publisher is not its author.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_url: Option<String>,
+}
+
+impl MapDocument {
+    /// A document with no repository extras.
+    pub fn new(manifest: Manifest, image: Option<Sha256>) -> Self {
+        Self {
+            manifest,
+            image,
+            category: None,
+            source_url: None,
+        }
+    }
+
+    /// The extras' checks (the manifest has its own): a known category, a
+    /// short `http`/`https` source URL with no spaces or controls.
+    pub fn validate_extras(&self) -> Result<(), String> {
+        if let Some(c) = &self.category
+            && !CATEGORIES.contains(&c.as_str())
+        {
+            return Err(format!(
+                "category {c:?} is not one of {}",
+                CATEGORIES.join(", ")
+            ));
+        }
+        if let Some(u) = &self.source_url {
+            let scheme = u.starts_with("https://") || u.starts_with("http://");
+            if !scheme
+                || u.len() > MAX_SOURCE_URL
+                || u.chars().any(|c| c.is_whitespace() || c.is_control())
+            {
+                return Err(format!(
+                    "source_url must be an http or https URL of at most {MAX_SOURCE_URL} characters"
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// What an admin did to a blob or package.
@@ -175,6 +231,13 @@ pub struct Reported {
     pub reason: String,
 }
 
+/// `MapDownloaded` data.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Downloaded {
+    pub map_id: MapId,
+    pub by: crate::Xuid,
+}
+
 /// The longest report reason kept.
 pub const MAX_REASON: usize = 500;
 
@@ -229,6 +292,21 @@ pub struct MapSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub geometry: Option<Sha256>,
     pub published_at: String,
+    /// The `MapPublished` event's log position: a client that remembers
+    /// the highest it has seen counts the packages above it as new.
+    #[serde(default)]
+    pub position: u64,
+    /// Distinct signed-in accounts that fetched the manifest.
+    #[serde(default)]
+    pub downloads: u64,
+    /// `[package] author`: who made the mod, as its manifest says (the
+    /// publisher is `author`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_url: Option<String>,
 }
 
 /// `GET /v1/maps/{map_id}`.
@@ -355,10 +433,7 @@ mod tests {
         assert_eq!(image_type(b"GIF89a"), None);
         assert!(!is_image(b""));
         let h = Sha256([3; 32]);
-        let doc = MapDocument {
-            manifest: Manifest::retail("lockout", h),
-            image: None,
-        };
+        let doc = MapDocument::new(Manifest::retail("lockout", h), None);
         let v = serde_json::to_value(&doc).unwrap();
         assert!(v.get("image").is_none());
         assert_eq!(v["manifest"]["base"]["map"], "lockout");
@@ -371,7 +446,48 @@ mod tests {
             package_stream(&MapId([4; 32])),
             format!("package-{}", "04".repeat(32))
         );
-        assert_eq!(KINDS.len(), 6);
+        assert_eq!(KINDS.len(), 7);
+    }
+
+    #[test]
+    fn document_extras_are_optional_and_checked() {
+        let h = Sha256([3; 32]);
+        let mut doc = MapDocument::new(Manifest::retail("lockout", h), None);
+        let v = serde_json::to_value(&doc).unwrap();
+        assert!(v.get("category").is_none() && v.get("source_url").is_none());
+        assert!(doc.validate_extras().is_ok());
+        doc.category = Some("weapons".into());
+        doc.source_url = Some("https://example.invalid/mods/1".into());
+        assert!(doc.validate_extras().is_ok());
+        let v = serde_json::to_value(&doc).unwrap();
+        assert_eq!(v["category"], "weapons");
+        assert_eq!(serde_json::from_value::<MapDocument>(v).unwrap(), doc);
+        doc.category = Some("cheats".into());
+        assert!(doc.validate_extras().is_err());
+        doc.category = None;
+        for bad in [
+            "javascript:alert(1)",
+            "ftp://example.invalid/x",
+            "https://example.invalid/a b",
+        ] {
+            doc.source_url = Some(bad.into());
+            assert!(doc.validate_extras().is_err(), "{bad}");
+        }
+        doc.source_url = Some(format!("https://{}", "a".repeat(MAX_SOURCE_URL)));
+        assert!(doc.validate_extras().is_err());
+    }
+
+    #[test]
+    fn summaries_from_older_servers_read_with_no_counts() {
+        let v = json!({
+            "map_id": "05".repeat(32), "name": "x",
+            "author": {"xuid": "0009000000000001", "gamertag": "Modder"},
+            "base": {"map": "lockout", "derived": false},
+            "layers": [], "size": 0, "published_at": "2026-11-18T00:00:00Z"
+        });
+        let s: MapSummary = serde_json::from_value(v).unwrap();
+        assert_eq!((s.position, s.downloads), (0, 0));
+        assert!(s.credit.is_none() && s.category.is_none());
     }
 
     #[test]

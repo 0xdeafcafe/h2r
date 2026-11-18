@@ -6,7 +6,10 @@
 //! - [`app`]: the state and commands, testable without a window.
 //! - [`ui`]: the shell (menus, dockspace, tools, outliner, inspector, log,
 //!   status bar, modals).
+//! - [`fields`]: the tag field panel (every field of a tag element,
+//!   labelled, a widget per type), for the Tags tool and any other.
 //! - [`viewport`]: the 3D view with picking and the ImGuizmo gizmo.
+//! - [`camera`]: the viewport's camera controls as plain maths.
 //! - [`play`]: Play and pair: the game started on the edited map, or a
 //!   running one attached, through its agent socket.
 //! - [`theme`]: the dark theme, bundled fonts and icons.
@@ -20,6 +23,8 @@
 
 pub mod api;
 pub mod app;
+pub mod camera;
+pub mod fields;
 pub mod headless;
 pub mod play;
 pub mod probe;

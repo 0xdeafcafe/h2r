@@ -43,6 +43,7 @@ import { actionHooks } from "./action";
 import { machineHooks } from "./fixtures";
 import { Admin } from "./admin";
 import { MockRecovery } from "./recovery";
+import { MockSignIns } from "./signins";
 import { Content, customFor } from "./content";
 import { Reports } from "./reports";
 import { Bans } from "./bans";
@@ -59,8 +60,15 @@ const customMaps = process.env.H2_MOCK_CUSTOM_MAPS !== "0";
 if (customMaps) world.customMap = customFor;
 const historyMin = Number(process.env.H2_MOCK_HISTORY_MIN ?? 20);
 const t0 = performance.now();
+const quiet = !!process.env.H2_MOCK_QUIET && process.env.H2_MOCK_QUIET !== "0";
+// Quiet with no history: not even the game the first step would start.
+if (quiet && historyMin <= 0) world.quiet = true;
 world.seed(historyMin * 60_000);
 console.log(`[mock] seeded ${world.log.length} events (${historyMin} min of history) in ${Math.round(performance.now() - t0)} ms`);
+// H2_MOCK_QUIET=1: the games in progress end and no more start, so the
+// stats home shows its "nothing live" panel (with H2_MOCK_HISTORY_MIN=0, no
+// games at all).
+if (quiet) world.hush();
 // Friends and teams (mock/social.ts): seeded before the world goes live.
 const social = new Social(world);
 social.seed();
@@ -125,6 +133,8 @@ world.run();
 const admin = new Admin(world, !!process.env.H2_MOCK_ADMIN && process.env.H2_MOCK_ADMIN !== "0");
 // Account recovery (mock/recovery.ts): TOTP codes and taking an account over.
 const recovery = new MockRecovery(world);
+// Where accounts are signed in (mock/signins.ts).
+const signins = new MockSignIns(world, recovery);
 const content = new Content(world, admin);
 // Player reports and the admin queue (mock/reports.ts).
 const reports = new Reports(world, admin);
@@ -189,7 +199,7 @@ world.listeners.add({
 
 const CORS = {
   "access-control-allow-origin": "*",
-  "access-control-allow-methods": "GET, HEAD, POST, OPTIONS",
+  "access-control-allow-methods": "GET, HEAD, POST, DELETE, OPTIONS",
   "access-control-allow-headers": "content-type, authorization",
 };
 
@@ -227,6 +237,8 @@ async function handle(req: Request, server: Bun.Server<WsData>): Promise<Respons
 
   const rec = await recovery.handle(req, u);
   if (rec) return json(rec.body, rec.status);
+  const sig = await signins.handle(req, u);
+  if (sig) return json(sig.body, sig.status);
   const soc = await social.handle(req, u);
   if (soc) return json(soc.body, soc.status);
   const ses = sessions.handle(req, u);
@@ -306,6 +318,11 @@ async function handle(req: Request, server: Bun.Server<WsData>): Promise<Respons
     if (!Array.isArray(b)) return err(400, "invalid", "array of {type, data} expected");
     world.append(`game-${m[1]}`, b, null);
     return json({ ok: true, position: world.log.length });
+  }
+  if ((m = path.match(/^\/v1\/games\/([^/]+)\/chunks$/))) {
+    // The mock keeps JSON frames: no chunks, so the viewer reads /frames.
+    if (!world.games.get(m[1]!)) return err(404, "not_found", "no such game");
+    return json({ game_id: m[1], chunk_ticks: 300, ended: false, items: [] });
   }
   if ((m = path.match(/^\/v1\/games\/([^/]+)\/frames$/))) {
     const g = world.games.get(m[1]!);

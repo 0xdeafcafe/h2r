@@ -3,7 +3,11 @@
    the authenticator QR code, and the recover form. Our own geometry. */
 
 .dx-recovery .dx-centre { top: calc(var(--u) * 30); left: calc(var(--u) * 530); width: calc(var(--u) * 220); height: calc(var(--u) * 220); }
-.dx-pages.dx-recovery .dx-plate--main { top: calc(var(--u) * 262); padding-bottom: calc(var(--u) * 22); }
+/* The plate sits between the lower pods: their labels (up to 210 wide,
+   centred on 262 and 1018) end at 367 and start at 913, so a plate from
+   390 to 890 never runs under one. */
+.dx .dx-pages.dx-recovery .dx-plate--main { left: calc(var(--u) * 390); width: calc(var(--u) * 500); top: calc(var(--u) * 262); padding-bottom: calc(var(--u) * 22); }
+.dx .dx-pages.dx-recover .dx-plate--main { left: calc(var(--u) * 390); width: calc(var(--u) * 500); }
 
 /* The code in the pod. */
 .dx-rcode { position: relative; width: 100%; height: 100%; display: grid; place-items: center; align-content: center; gap: calc(var(--u) * 4); }
@@ -17,6 +21,9 @@
   font-variant-numeric: tabular-nums;
 }
 .dx-rcode small { font: 600 calc(var(--u) * 15) var(--f-cond); letter-spacing: .14em; color: #b9ec86; font-variant-numeric: tabular-nums; }
+.dx-rcode--hidden b { letter-spacing: .02em; opacity: .85; }
+.dx-rcode--hidden .dx-rcode-left { opacity: .35; }
+.dx-rcode-inline--hidden { letter-spacing: 0 !important; opacity: .85; }
 
 /* The plate. */
 .dx-recovery-body { display: grid; gap: calc(var(--u) * 8); }
@@ -34,17 +41,22 @@
 .dx-pods--form .dx-form > .dx-forget { grid-column: 1 / -1; }
 
 @media (max-aspect-ratio: 4/5) {
-  .dx-recovery .dx-centre { left: calc(var(--u) * 130); top: calc(var(--u) * 40); width: calc(var(--u) * 140); height: calc(var(--u) * 140); }
-  .dx-rcode b { font-size: calc(var(--u) * 26); }
-  .dx-rcode small { font-size: calc(var(--u) * 12); }
-  .dx-pages.dx-recovery .dx-plate--main { top: calc(var(--u) * 182); }
+  /* Phone: the pod, then the four small pods in two rows, then the plate
+     below their labels (the lower row's end at 381). */
+  .dx-recovery .dx-centre { left: calc(var(--u) * 140); top: calc(var(--u) * 40); width: calc(var(--u) * 120); height: calc(var(--u) * 120); }
+  .dx .dx-pages.dx-recovery .dx-sat--0, .dx .dx-pages.dx-recovery .dx-sat--3 { top: calc(var(--u) * 172); }
+  .dx .dx-pages.dx-recovery .dx-sat--1, .dx .dx-pages.dx-recovery .dx-sat--2 { top: calc(var(--u) * 276); }
+  .dx-rcode b { font-size: calc(var(--u) * 22); }
+  .dx-rcode small { font-size: calc(var(--u) * 11); }
+  .dx .dx-pages.dx-recovery .dx-plate--main { left: calc(var(--u) * 10); width: calc(var(--u) * 380); top: calc(var(--u) * 390); }
+  /* The sign-in-with-a-code form is the screen, as sign-up's is: its
+     pods are pictures, so they give way to it. */
+  .dx-pages.dx-recover .dx-sat { display: none; }
+  .dx .dx-pages.dx-recover .dx-plate--main { left: calc(var(--u) * 10); width: calc(var(--u) * 380); top: calc(var(--u) * 172); }
   .dx-recovery-grid--qr { grid-template-columns: 1fr; justify-items: center; }
   .dx-qr { width: calc(var(--u) * 200); height: calc(var(--u) * 200); }
 }
 
-/* The account plate's devices: one quiet line per key. */
-.dx-devices { list-style: none; margin: 0; padding: 0; display: grid; gap: calc(var(--u) * 2); }
-.dx-devices li { white-space: normal; }
-.dx-devices code { font: 500 .9em ui-monospace, Menlo, monospace; color: #e8ffd0; }
-.dx-devices .dx-device--old { opacity: .6; }
+/* The account plate's "signed in" line wraps rather than clips. */
+.dx-pages .dx-plate dd.dx-signins-summary { white-space: normal; }
 .dx-pages .dx-plate dd.dx-secret { white-space: normal; overflow-wrap: anywhere; font: 500 .9em ui-monospace, Menlo, monospace; letter-spacing: .04em; color: #e8ffd0; }

@@ -71,6 +71,8 @@ cloud-saves.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+# `h2 live maps import` reads a mod's mod.toml.
+toml = "0.9"
 # map.glb's surface pictures are JPEG where opaque (live_looks.rs).
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 # map.glb.gz beside map.glb, for the art server to send compressed.

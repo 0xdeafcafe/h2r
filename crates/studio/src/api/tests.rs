@@ -607,19 +607,10 @@ fn tags_list_read_and_follow_references() {
     assert_eq!(all["total"], 4);
     let scnr = call(&mut api, &mut app, m::TAG_LIST, json!({"group": "scnr"}));
     assert_eq!(scnr["tags"][0]["name"], "levels\\test\\fixture");
-    let byname = call(
-        &mut api,
-        &mut app,
-        m::TAG_READ,
-        json!({"tag": "levels\\test\\fixture"}),
-    );
-    let bygroup = call(&mut api, &mut app, m::TAG_READ, json!({"tag": "scnr"}));
-    let byid = call(
-        &mut api,
-        &mut app,
-        m::TAG_READ,
-        json!({"tag": scnr["tags"][0]["id"]}),
-    );
+    let raw = |t: Value| json!({"tag": t, "raw": true});
+    let byname = call(&mut api, &mut app, m::TAG_READ, raw(json!("levels\\test\\fixture")));
+    let bygroup = call(&mut api, &mut app, m::TAG_READ, raw(json!("scnr")));
+    let byid = call(&mut api, &mut app, m::TAG_READ, raw(scnr["tags"][0]["id"].clone()));
     assert_eq!(byname, bygroup);
     assert_eq!(byname, byid);
     assert_eq!(byname["layout"], "schema");
@@ -632,42 +623,32 @@ fn tags_list_read_and_follow_references() {
         .iter()
         .position(|r| r["name"] == "objects\\test\\blaster")
         .expect("the palette's reference");
-    let to = call(
-        &mut api,
-        &mut app,
-        m::TAG_FOLLOW,
-        json!({"tag": "scnr", "ref": blaster}),
-    );
+    let to = call(&mut api, &mut app, m::TAG_FOLLOW, json!({"tag": "scnr", "ref": blaster}));
     assert_eq!(to["group"], "weap");
     let path = refs[blaster]["path"].clone();
-    assert_eq!(
-        call(
-            &mut api,
-            &mut app,
-            m::TAG_FOLLOW,
-            json!({"tag": "scnr", "ref": path})
-        ),
-        to
-    );
-    // Fields of other tags wait on the studio-tags registry.
+    assert_eq!(call(&mut api, &mut app, m::TAG_FOLLOW, json!({"tag": "scnr", "ref": path})), to);
+
+    // Any tag's fields through the Tags tool's registry and commands.
+    let kit = call(&mut api, &mut app, m::TAG_READ, json!({"tag": "itmc:objects\\test\\kit"}));
+    assert_eq!(kit["access"], "edit", "{kit}");
+    assert_eq!(kit, call(&mut api, &mut app, m::TAG_READ, json!({"tag": "itmc"})));
+    let v = call(&mut api, &mut app, m::TAG_SET, json!({"tag": "itmc", "path": "+0x8", "value": 7}));
+    assert_eq!(v["value"], 7);
+    assert!(app.is_dirty(), "a tag edit is the map's to save");
+    let diff = call(&mut api, &mut app, m::DOC_DIFF, json!({"doc": "tags"}));
+    assert_eq!(diff["patches"][0]["tag"], "itmc:objects\\test\\kit", "{diff}");
+    assert_eq!(diff["patches"][0]["offset"], "0x8");
+    call(&mut api, &mut app, m::DOC_UNDO, json!({"doc": "tags"}));
+    assert!(!app.is_dirty());
+    call(&mut api, &mut app, m::DOC_REDO, json!({"doc": "tags"}));
+    assert_eq!(call(&mut api, &mut app, m::TAG_READ, json!({"tag": "itmc"}))["edited"], true);
+    // A tag too short for its group's layout is refused with the reason.
     let e = api
-        .call(
-            &mut app,
-            m::TAG_SET,
-            json!({"tag": "weap", "path": "0x4", "value": 1}),
-        )
+        .call(&mut app, m::TAG_SET, json!({"tag": "weap", "path": "+0x4", "value": 1}))
         .unwrap_err();
-    assert_eq!(
-        (e.code, e.data.unwrap()["lane"].clone()),
-        (code::NOT_YET, json!("studio-tags"))
-    );
-    // The scenario's placements edit through tag.set as scenario.set.
-    call(
-        &mut api,
-        &mut app,
-        m::TAG_SET,
-        json!({"tag": "scnr", "path": "netgame_flags[0].position", "value": [7, 7, 7]}),
-    );
+    assert_eq!(e.code, code::INVALID_PARAMS, "{}", e.message);
+    // The scenario's placements still edit as scenario.set.
+    call(&mut api, &mut app, m::TAG_SET, json!({"tag": "scnr", "path": "netgame_flags[0].position", "value": [7, 7, 7]}));
     assert_eq!(flag_position(&app), [7.0, 7.0, 7.0]);
     assert_eq!(
         code_of(api.call(&mut app, m::TAG_READ, json!({"tag": "nope"}))),

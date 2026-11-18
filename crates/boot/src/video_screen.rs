@@ -169,13 +169,15 @@ pub fn model(store: Arc<Store>, on: Switches) -> Result<Model, String> {
             );
     }
     let settings = ui::extend(List::Settings, SETTINGS_ROWS).row(Row::open(SCREEN));
-    // The Voice screen (crate::voice_settings), opened from the pause menus.
+    // The Voice screen (crate::voice_settings), opened from the pause menu's
+    // Settings.
     let mut voice = Screen::new(VOICE_SCREEN).title("Voice");
     if on.voice_screen {
         voice = voice.rows_from_settings(&store.defs());
     }
     let mut extensions = vec![controls, settings];
-    // Video and Voice on both pause menus (crate::pause_menu); a row whose
+    // Video and Voice at the end of the pause menu's Settings dialog
+    // (crate::pause_menu), after the Controller Speaker row; a row whose
     // screen has no rows is left out by the model.
     if on.pause_rows {
         let rows = |list, retail| {
@@ -183,14 +185,10 @@ pub fn model(store: Arc<Store>, on: Switches) -> Result<Model, String> {
                 .row(Row::open(SCREEN))
                 .row(Row::open(VOICE_SCREEN))
         };
-        // Below Controller Settings: on the campaign menu by index (the
-        // retail rows after it move down), on the multiplayer menu by the
-        // rows' order (`pause_menu::order_actions`).
-        extensions.push(
-            rows(List::Pause, crate::pause_menu::PAUSE_ROWS)
-                .at(crate::pause_menu::PAUSE_CONTROLLER_ROW as u32 + 1),
-        );
-        extensions.push(rows(List::MpPause, crate::pause_menu::MP_ACTIONS));
+        extensions.push(rows(
+            List::GameSettings,
+            u32::from(crate::pause_menu::FIRST_VALUE),
+        ));
     }
     Model::with_ids(
         store,

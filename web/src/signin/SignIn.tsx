@@ -11,6 +11,7 @@ import type { LocalAccount } from "../state/account";
 import { adminState } from "../admin/state";
 import { clearOnce, redeem } from "./redeem";
 import "./signin.css";
+import { statsPath } from "../routes";
 
 type Step =
   | { s: "working" }
@@ -27,7 +28,7 @@ export default function SignIn() {
   async function keep(account: LocalAccount, admin: boolean): Promise<void> {
     await identity.add(account);
     adminState.reset();
-    navigate(admin ? "/stats/admin" : "/", { replace: true });
+    navigate(admin ? statsPath("/admin") : "/", { replace: true });
   }
 
   onMount(async () => {

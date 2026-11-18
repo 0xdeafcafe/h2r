@@ -68,7 +68,8 @@ What goes through actions now, from both sides:
 | Edit | Action | Window | API |
 |---|---|---|---|
 | Open a source, map, package, Halo 1 map | `OpenSource`, `SelectMap`, `OpenPackageEntry` | menus, Maps list | `source.open`, `doc.open` |
-| A placement's field | `SetField {block, index, field, value, merge}`, `SealEdit` | the inspector (a drag merges under one key, sealed when it ends) | `scenario.set`, `tag.set` |
+| A placement's field | `EditSelection {field, edit, merge}` (every selected placement), `SetField {block, index, field, value, merge}` (one), `SealEdit` | the inspector dispatches `EditSelection` (a drag merges under one key, sealed when it ends) | `scenario.set`, `tag.set` |
+| Any tag's field or block | `Tag(TagAction)` built by `app::tag_api::{set_field, block}` | the Tags tool | `tag.set`, `tag.block.*` |
 | Move and turn a placement | `MovePlacement` | (the gizmo still drives `Session` gestures) | `scenario.move` |
 | Add, duplicate, delete | `Add`, `DuplicateEntry`, `DeleteEntry` | outliner, toolbar, keys | `scenario.add`, `.duplicate`, `.delete`, `tag.block.*` |
 | Select, frame | `Select`, `FocusSelected`, `FrameAll` | outliner, viewport, keys | `scenario.select`, `view.camera` |
@@ -90,11 +91,14 @@ The tests check that the window's path and the API's path make the same
 document: the same scenario changes and byte-identical saved maps for a
 dragged field against `scenario.set`, and equal playlists for the row
 buttons against `playlist.entry` (`api::tests::the_window_and_the_api_make_identical_documents`).
+Tag edits are the Tags tool's own `TagAction`s, so they are the same by
+construction.
 
 ## Documents
 
-A `doc` param names one: `map` (the scenario tool's map), `variant`,
-`playlists`, `ui`. Without one, a `doc.*` call means the tool shown.
+A `doc` param names one: `map` (the scenario tool's map), `tags` (the
+Tags tool's edits to the same map: their own undo stack; they save and
+diff with the map), `variant`, `playlists`, `ui`. Without one, a `doc.*` call means the tool shown.
 `doc.list` says, for each, whether it is open, its name, dirty, and
 whether it can undo and redo.
 
@@ -144,12 +148,17 @@ Notes on some:
   from its source, with the layout schema (`tags::schema`): blocks with
   their elements (`depth` levels, `elements` per block), tag references,
   datums and string IDs, labelled by offset. `tag.follow` takes a
-  `tag.refs` path (`"0x98[0].0x0"`) or its position in that list. Field
-  names and edits for every group are the studio-tags lane's registry
-  (below); until it registers, `tag.set` and `tag.block.*` edit the
-  scenario's placement blocks (paths `netgame_flags[0].position` and
-  `netgame_flags`) as the matching `scenario.*` calls and answer `NOT_YET`
-  for anything else.
+  `tag.refs` path (`"0x98[0].0x0"`) or its position in that list.
+  `tag.read`, `tag.set` and `tag.block.*` are the Tags tool's
+  (`api/tag_fields.rs` over `app::tag_api`, the registry
+  `tags::registry`): every field by its label, paths from the root
+  (`parts[1].speed`, `+0x14` for an unnamed field), values as `tag.read`
+  shows them (`"group:name"` for references), each edit one undo step on
+  the `tags` document and a patch the map save writes. A `tag` may also be
+  `group:name` as the Tags tool writes it. `tag.read {"raw": true}` gives
+  the schema's structural view instead. The scenario tag's edits stay with
+  the Scenario tool: `tag.set` paths `netgame_flags[0].position` and
+  `tag.block.*` on `netgame_flags` run as the matching `scenario.*` calls.
 - **Placements.** `scenario.set` takes a number, `[x, y, z]`, or for a tag
   reference `{"id": "0x..."}` (or `null` for none). The scenario checks it
   first: read-only fields, integer ranges, finite floats, palette indices,
@@ -195,13 +204,11 @@ reach it already checked against its shape. Its edits go through the
 tool's own actions and `App::perform`, as the built-in namespaces do, so
 the window and the API stay one path.
 
-- **Tags (studio-tags lane).** Register a provider answering `tag.read`
-  with `tags::registry`'s labelled fields, and `tag.set`,
-  `tag.block.add`, `tag.block.remove`, `tag.block.duplicate` through the
-  tag document's actions (`TagAction` through `App::perform`). Return
-  `None` for the scenario tag's placement paths, which stay with
-  `scenario.*`. `tag.list`, `tag.refs` and `tag.follow` need nothing from
-  the registry.
+- **Tags (studio-tags, landed).** `api/tag_fields.rs` is the first
+  provider: `tag.read` through `tag_api::read_tag`, `tag.set` through
+  `tag_api::set_field`, `tag.block.*` through `tag_api::block`, applied as
+  `Action::Tag` with `App::perform`; it returns `None` for the scenario
+  tag's edits and for `tag.read {"raw": true}`.
 - **HUDs (studio-hud lane).** `hud.list` (the map's `nhdt` tags and who
   names them), `hud.read` (a HUD's widgets: placement, state gates,
   fields), `hud.set` (a widget field, one undo step through the HUD
@@ -226,8 +233,8 @@ the window and the API stay one path.
 - `api/server.rs`: the socket. `api/{docs,scenario,tags,variants,playlists,ui_screens,view}.rs`:
   the namespaces. `api/seams.rs`: providers.
 - `app/commands.rs`: the actions added for the API and the window
-  (`SetField`, `MovePlacement`, `EditPlaylist`, `UndoIn`), `PlaylistEdit`,
-  and `App::perform`.
+  (`SetField`, `EditSelection`, `MovePlacement`, `EditPlaylist`,
+  `UndoIn`), `PlaylistEdit`, and `App::perform`.
 
 Tests (`api::tests`, on the scenario crate's invented map, the playlist
 crate's sample file and the fallback variant schema; outputs in the
@@ -245,8 +252,9 @@ system temp directory):
 - the window's path and the API's make identical documents;
 - growth refused with its reason, unsaved edits never dropped without
   `discard`, outputs refused in a Git checkout or over the source;
-- tags listed, read, referenced and followed; `tag.set` on a non-scenario
-  tag answers `NOT_YET` for studio-tags;
+- tags listed, read (raw and through the registry), referenced and
+  followed; `tag.set` on a tag through the Tags tool, diffed, undone and
+  redone as the `tags` document; a tag too short for its layout refused;
 - a registered provider answers a planned method;
 - the window's loop answers a client between frames.
 

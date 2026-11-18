@@ -393,9 +393,17 @@ impl Disc {
     /// header layout, panel and text block, and `dialog_live_password`'s
     /// entry cell ([`DialogGeometry::fallback`] is this, read by `h2 ui`).
     pub fn dialog_geometry(&self) -> Result<DialogGeometry> {
+        self.dialog_geometry_for(dialog::DialogBase::Large)
+    }
+
+    /// Dialog `base` as the disc lays it out: its tag's header layout,
+    /// panel art (the null placeholders left out), first text block's
+    /// font and colour, and list, and `dialog_live_password`'s entry cell
+    /// ([`DialogGeometry::fallback_for`] is this).
+    pub fn dialog_geometry_for(&self, base: dialog::DialogBase) -> Result<DialogGeometry> {
         let large = self
-            .screen(dialog::LARGE_SCREEN_ID)
-            .context("no error_dialog_large (screen 240)")?;
+            .screen(base.screen_id())
+            .with_context(|| format!("no dialog screen {}", base.screen_id()))?;
         let password = self
             .screen(dialog::PASSWORD_SCREEN_ID)
             .context("no dialog_live_password (screen 21)")?;
@@ -405,13 +413,27 @@ impl Disc {
             .panes
             .first()
             .and_then(|p| p.text_blocks.first())
-            .context("error_dialog_large has no text block")?;
+            .context("the dialog has no text block")?;
+        let l = large
+            .panes
+            .first()
+            .and_then(|p| p.lists.first())
+            .context("the dialog has no list")?;
+        let list = ListAt {
+            anchor: [l.anchor.x, l.anchor.y],
+            skin: l.skin,
+        };
+        let items = usize::try_from(l.visible_items).unwrap_or(0);
         let cell = self
             .pane_art(&password, 0, |_| true)
             .into_iter()
             .find(|a| matches!(a.art, Art::Screen { index, .. } if index == dialog::PASSWORD_CELL))
             .context("dialog_live_password has no password cell")?;
         Ok(DialogGeometry {
+            screen_id: large.screen_id,
+            list,
+            list_items: items,
+            rows: self.geometry(DialogGeometry::list_place(list, items))?,
             header: hl.header,
             header_font: self.shared.header_fonts[layout],
             header_colour: [
@@ -420,7 +442,17 @@ impl Disc {
                 self.shared.header_color[3],
             ],
             footer: hl.secondary,
-            panel: self.pane_art(&large, 0, |_| true),
+            panel: self
+                .pane_art(&large, 0, |b| {
+                    b.top_left.x.abs() < 1000 && b.top_left.y.abs() < 1000
+                })
+                .into_iter()
+                .filter(|a| a.size[0] > 2 && a.size[1] > 2)
+                .filter(|a| {
+                    !matches!(a.art, Art::Screen { index, .. }
+                    if base.content_bitmaps().contains(&index))
+                })
+                .collect(),
             body_font: body.font,
             body_colour: body.text_color,
             cell,
@@ -846,7 +878,7 @@ impl Disc {
             return Ok(dialog_view(
                 s,
                 d,
-                &self.dialog_geometry()?,
+                &self.dialog_geometry_for(d.base)?,
                 &self.fonts,
                 state,
             ));
@@ -1500,12 +1532,20 @@ impl From<'_> {
     /// ([`crate::ui_kit::dialog::dialog_view`]) or a list's ([`view_of`]).
     pub fn view(&self, s: &ScreenSpec, state: &str) -> Result<View> {
         Ok(match (&s.dialog, self) {
-            (Some(d), From::Disc(disc)) => {
-                dialog_view(s, d, &disc.dialog_geometry()?, self.source(), state)
-            }
-            (Some(d), From::Synthetic) => {
-                dialog_view(s, d, &DialogGeometry::fallback(), self.source(), state)
-            }
+            (Some(d), From::Disc(disc)) => dialog_view(
+                s,
+                d,
+                &disc.dialog_geometry_for(d.base)?,
+                self.source(),
+                state,
+            ),
+            (Some(d), From::Synthetic) => dialog_view(
+                s,
+                d,
+                &DialogGeometry::fallback_for(d.base),
+                self.source(),
+                state,
+            ),
             (None, _) => view_of(s, &self.geometry(s.list)?, self.source(), state),
         })
     }

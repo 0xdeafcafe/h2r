@@ -30,10 +30,11 @@ pub fn parse_doc(d: &str) -> Result<ToolKind, RpcError> {
         "variant" | "variants" => ToolKind::Variants,
         "playlists" | "playlist" | "hopper" => ToolKind::Playlists,
         "ui" | "ui-screens" => ToolKind::UiScreens,
+        "tags" => ToolKind::Tags,
         other => {
             return Err(err(
                 code::INVALID_PARAMS,
-                format!("no document {other:?} (map, variant, playlists, ui)"),
+                format!("no document {other:?} (map, tags, variant, playlists, ui)"),
             ));
         }
     })
@@ -45,6 +46,7 @@ pub fn doc_name(t: ToolKind) -> &'static str {
         ToolKind::Variants => "variant",
         ToolKind::Playlists => "playlists",
         ToolKind::UiScreens => "ui",
+        ToolKind::Tags => "tags",
     }
 }
 
@@ -54,6 +56,7 @@ fn is_open(app: &App, t: ToolKind) -> bool {
         ToolKind::Variants => app.variants.as_ref().is_some_and(|e| e.current().is_some()),
         ToolKind::Playlists => app.hoppers.is_open(),
         ToolKind::UiScreens => app.ui_screens.pick.is_some(),
+        ToolKind::Tags => app.session.is_open(),
     }
 }
 
@@ -66,6 +69,7 @@ fn can(app: &App, t: ToolKind) -> (bool, bool) {
             .map_or((false, false), |e| (e.can_undo(), e.can_redo())),
         ToolKind::Playlists => (app.hoppers.can_undo(), app.hoppers.can_redo()),
         ToolKind::UiScreens => (false, false),
+        ToolKind::Tags => (app.tags.can_undo(), app.tags.can_redo()),
     }
 }
 
@@ -84,6 +88,7 @@ fn name_of(app: &App, t: ToolKind) -> Option<String> {
                 .unwrap_or_else(|| "untitled playlists".into())
         }),
         ToolKind::UiScreens => app.ui_screens.pick.as_ref().map(|p| format!("{p:?}")),
+        ToolKind::Tags => app.loaded_map().map(str::to_owned),
     }
 }
 
@@ -160,12 +165,12 @@ pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
         })),
         m::DOC_LIST => Ok(list(app)),
         m::DOC_OPEN => open(app, p),
-        m::DOC_SAVE => save(app, doc_kind(app, p)?),
+        m::DOC_SAVE => save(app, map_for_tags(doc_kind(app, p)?)),
         m::DOC_SAVE_AS => {
-            let t = doc_kind(app, p)?;
+            let t = map_for_tags(doc_kind(app, p)?);
             save_as(app, t, PathBuf::from(p.str("path")?))
         }
-        m::DOC_DIFF => diff(app, doc_kind(app, p)?),
+        m::DOC_DIFF => diff(app, map_for_tags(doc_kind(app, p)?)),
         m::DOC_UNDO | m::DOC_REDO => {
             let t = doc_kind(app, p)?;
             let undo = method == m::DOC_UNDO;
@@ -314,6 +319,14 @@ pub fn game_type(t: &str) -> Result<GameType, RpcError> {
         })
 }
 
+/// Tag edits save and diff with the map: the session writes them.
+fn map_for_tags(t: ToolKind) -> ToolKind {
+    match t {
+        ToolKind::Tags => ToolKind::Scenario,
+        t => t,
+    }
+}
+
 fn need_open(app: &App, t: ToolKind) -> Result<(), RpcError> {
     if is_open(app, t) {
         Ok(())
@@ -434,6 +447,13 @@ fn diff(app: &mut App, t: ToolKind) -> Reply {
                     {
                         v["block"] = json!(block_name(b.def.kind));
                         v["fields"] = json!(["count"]);
+                    } else if let Some(t) = app.tags.tags().iter().find(|t| {
+                        *address >= t.address
+                            && (*address as u64) < t.address as u64 + t.size as u64
+                    }) {
+                        // A Tags tool edit.
+                        v["tag"] = json!(format!("{}:{}", tags::defs::fourcc_text(t.group), t.name));
+                        v["offset"] = json!(format!("{:#x}", address - t.address));
                     }
                     v
                 })

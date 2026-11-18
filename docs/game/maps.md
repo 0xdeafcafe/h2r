@@ -554,6 +554,159 @@ Deviations from the design above:
 Still open: a `--private` server's reads need a token, which the gate's
 fetches do not send yet.
 
+### The mod repository (Live)
+
+**Built** (lane "mod-repo-web": the server, web and publishing side).
+
+- **Browsing.** `GET /v1/maps` sorts newest first (`sort=new`) or most
+  downloaded first (`sort=popular`), filters by base map, category,
+  publisher and text (`q`), and pages by cursor. Each item carries its
+  `MapPublished` log `position` and its `downloads`. The exact API, for
+  the game's Xbox Live menu, is in [live-api.md](../live/live-api.md),
+  "The mod repository". "New" needs no server state: the client keeps the
+  highest `position` it has seen.
+- **Downloads** count the accounts that fetched a manifest with a `read`
+  token (the console's join-time or menu download), once each, as
+  server-signed `MapDownloaded` events (admins-only in the log).
+- **Display data** beyond the manifest: `MapPublished` data takes
+  `category` (gameplay, weapons, vehicles, visuals, maps, other) and
+  `source_url`; the manifest's `[package] author` is shown as the credit,
+  beside the account that published it. None of it is in the `MapId`.
+- **Web.** The stats site's "Mods" tab (`/games/halo2/mods`): Newest and
+  Most Downloaded, base map, category and text filters, and a page per mod
+  (picture or base map art, base map, size to download, layers, date,
+  downloads, source link, report button). The web never sends a token on
+  `GET /v1/maps/{id}`, so viewing a mod page is no download.
+
+### Importing a mod
+
+Many old mods are whole modded `.map` files: they hold the retail map's
+bytes and may not be shared. `h2 live maps import FILE [--base MAP]
+[--disc ISO] [--out DIR] [--name NAME] [--info mod.toml] [--category C]
+[--no-publish]` (`crates/cli/src/live_mod_import.rs`) makes a package that
+shares only the difference:
+
+1. The base map (`--base`, else `base_map` in the sidecar) is read from
+   the user's own disc through `vfs::open_disc` (an image or a directory
+   of its files), and its SHA-256 is the package's `[base] sha256`.
+2. A whole map becomes one patch layer from that base,
+   `content::patch::diff`: PPF3 when the length is unchanged (the resolver
+   lays it over the disc's map as it streams), BPS otherwise. The patch is
+   applied back to the base and must give the mod exactly. A `.ppf`,
+   `.ips` or `.bps` mod is applied to the base to check it fits (a BPS's
+   source CRC, a PPF's checks) and kept as it is.
+3. Refused: a mod that changes nothing, and a result that is byte for
+   byte one of the disc's maps (another retail map passed off as a mod,
+   whose bytes would fill the delta; only disc maps of the same size are
+   hashed).
+4. The package directory (`--out`, else `<stem>.package` beside the file)
+   gets `manifest.toml`, `mod.<ppf|bps|ips>`, the preview and a `mod.toml`
+   with the repository's extras; then it is published as `h2 live maps
+   publish DIR` would (`--no-publish` stops before that).
+
+The sidecar, `mod.toml` beside the file (or `--info`), every key optional
+and unknown keys ignored: `name`, `author` (the credit), `description`,
+`source_url`, `format` (`map`, `ppf`, `ips` or `bps`; else the file's
+signature decides), `base_map`, `category`, `image` (a PNG or JPEG beside
+it, at most 512 KiB). `h2 live maps publish DIR` reads `category` and
+`source_url` from `DIR/mod.toml`; `--category` and `--source-url` win.
+
+Limits: a mod built on a different build of the base map than the user's
+disc still imports (the delta reproduces it exactly) but is larger, and
+players need the same disc map to use it. A delta can carry bytes that
+also appear in some retail map (new content copied from another level);
+only a whole retail map is caught.
+
+### Mod downloads (in game)
+
+**Built** (lane "mod-repo-game"; the server and web side is lane
+"mod-repo-web"). Nothing here has run in the game yet: see "To check in
+game" below.
+
+- **The row.** The Xbox Live menu's last row, where retail had Content
+  Download, reads **Mods**, or **Mods (3 new)** when maps were published
+  since the player last opened the screen. Its pane's help text says what
+  it is (`custom_games::MODS_HELP`). Without Live or the map gate (or with
+  `H2_NO_MODS_ROW=1`) the row is Content Download again, with its Map
+  Pack dialog ([live-custom-games.md](../live/live-custom-games.md) §5).
+- **New.** An entry is new when its `position` (the event-log position it
+  was published at) is above the last-seen position, kept in
+  `<data>/live-mods.toml` (`seen = N`). Opening the screen sets it to the
+  newest listed entry's; the entries keep their "New" tag for that visit.
+  An entry without a `position` (a server from before the repository) is
+  never new. A player who never opened the screen sees every entry as new.
+- **The list.** `GET /v1/maps?sort=new&limit=40` with the signed-in
+  account's `read` token, through the Live worker's retrying GET
+  (`live_hle::Hle::mod_list`, `live_hle::mods`). It reads both the
+  repository's shape (`{items: [{id, name, author, base, image, size,
+  position, downloads, published_at}], cursor, position}`) and the content
+  API's (`map_id`, `{gamertag}`, `{map}`, `next`). A thread of ours
+  (`h2-mods`) asks for it when the Live menu draws the row or the screen
+  opens (at most every 30 s), every 5 minutes otherwise, and 15 s after a
+  failure; the game thread never waits on it.
+- **The screens** (`boot::mods_screen`, our list class). **Mods**: one row
+  per map (at most 40, newest first), its name and "New", "Installed",
+  "Downloading N%" or its size. A press opens the map's page. With no
+  list the one row says why: "Loading...", "Sign in to Live first", "Live
+  is off", "Live is busy" or "Can't reach the server"; A asks again. The
+  **map's page** is titled with its name: Download (first, so A on
+  opening downloads), Author, Map (the disc map it is built on), Size, and
+  Downloads (or Published, when the server does not count them).
+- **Installing.** Download runs `MapGate::install` on a thread of its own
+  (`h2-live-mod`): the join's own checks and path (the manifest from
+  `/v1/maps/{id}`, the base checked against the disc, each layer from
+  `/v1/content/{sha256}` checked against its SHA-256, the package written
+  as `<data>/maps/live-<id>/`, `active.toml`, then the VFS rescan). The
+  Download row shows "Downloading N%" after each layer, then "Installed".
+  A refusal says why: "Needs Lockout from your disc", "Taken down", "Not
+  on the server", or "Failed; press A to retry" (the reason on stderr).
+- **The download count.** Once a package is installed (or found here
+  already), the gate asks for its manifest again with a fresh single-use
+  `read` token of the first account signed in (`Fetch::get_counted`,
+  `maps::Reader`), and the server counts that account once per package
+  (docs/live/live-api.md "The mod repository"). A join that installs the
+  session's map counts the same way; a search's check never does. A
+  reinstall adds nothing; a failed count is only logged.
+- **The map select.** The installed package is served for its base map at
+  that map's next open. The map select's Mods category is read at boot,
+  so a map installed this session is listed there after a restart; until
+  then it plays as its base map's entry.
+- **Not built.** The preview image (the server serves it; the game would
+  need it as a bitmap tag), the map's description, paging past 40, and
+  the ui_kit preview of these two screens.
+
+**To check in game** (Live on, signed in, a server with at least two
+published maps, one on a disc map you have and one you can make fail, for
+example by publishing one built on a map whose hash differs from your
+disc's):
+
+1. Xbox Live menu: six rows, all on screen, no scroll bar: Quickmatch,
+   OptiMatch, Custom Game, Custom Game Browser, Co-op Campaign, Mods.
+   - The first row sits a little under the header (21 units), the hint
+     texts and the Y callout under the list sit lower than retail, and
+     nothing overlaps the footer. stderr: `custom games: xbox live menu
+     tag has 6 panes and room for 6 rows`.
+   - The last row reads "Mods (N new)" (N = maps published since you last
+     opened it; all of them the first time), and its help text reads
+     "Download maps other players made and shared on your Live server."
+     stderr: `mods: N on the server, M new`.
+2. Press A on Mods: stderr `mods: opening the mods screen`; the screen
+   titled "Mods" lists the maps newest first, the new ones tagged "New".
+   B goes back to the Live menu, whose row now reads "Mods"; leaving the
+   Live menu and coming back keeps "Mods". `<data>/live-mods.toml` holds
+   the newest position.
+3. A on a map: its page, titled with its name; Download "Press A",
+   Author, Map, Size, Downloads.
+4. A on Download: "Downloading N%", then "Installed"; stderr `mods: <id>
+   installed`; `<data>/maps/live-<16 hex>/` exists and `active.toml`
+   names it. B, B, then host a custom game on that base map: the mod
+   loads. After a restart it is listed under the map select's Mods.
+5. The map whose base you lack: "Needs <Map> from your disc"; nothing
+   written under `<data>/maps`.
+6. Signed out (or the server stopped): Mods shows one row, "Sign in to
+   Live first" or "Can't reach the server"; A on it logs `mods: reading
+   the list again`.
+
 ## 6. Plan
 
 | Lane | Work | Depends on |

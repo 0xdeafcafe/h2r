@@ -142,6 +142,9 @@ export function watchGamepads(act: (a: Action) => void): () => void {
   const states = new Map<number, PadState>();
   let raf = 0;
   const pads = () => Array.from(navigator.getGamepads()).filter((p): p is Gamepad => !!p && p.connected);
+  // A screen opened by a pad button starts with that press already held.
+  // Do not fire it a second time on the new screen.
+  for (const p of pads()) states.set(p.index, padStep(p, new Map(), performance.now()).state);
   const poll = (t: number) => {
     const list = pads();
     if (!list.length) { raf = 0; states.clear(); if (mode() === "gamepad") setMode("keyboard"); return; }

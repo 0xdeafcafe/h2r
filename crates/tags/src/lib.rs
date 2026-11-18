@@ -23,6 +23,9 @@ pub mod rgba_bitmap;
 pub mod defs;
 /// Tag layout schemas inferred from retail maps; relocation of any tag.
 pub mod schema;
+/// Every group's fields, labelled and typed, for editors: the schema's
+/// structure merged with the definitions' names.
+pub mod registry;
 /// The loose tag repository: one position-independent file per tag, extracted
 /// from retail maps and built back into maps; see `docs/formats/tag-repo.md`.
 pub mod repo;

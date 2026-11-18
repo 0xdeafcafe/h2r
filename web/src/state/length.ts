@@ -14,8 +14,12 @@ export function elapsedSeconds(g: GameState, now: number): number {
 
 /** How long the match itself ran, in game time: the game's tick count at 30
  *  ticks a second, the clock the replay timeline uses. Falls back to the
- *  wall clock while live or when no tick after the start is known. */
+ *  wall clock while live or when no tick after the start is known, except
+ *  for a `lost` game: one that never reported a tick (it went quiet before
+ *  its first frame) played nothing the server saw, and its wall clock is
+ *  only the server's idle wait, so it counts as no time at all. */
 export function gameSeconds(g: GameState, now: number): number {
   if (g.status === "ended" && g.last_tick > g.start_tick) return (g.last_tick - g.start_tick) / TICKS_PER_SECOND;
+  if (g.status === "ended" && g.end_reason === "lost") return 0;
   return elapsedSeconds(g, now);
 }

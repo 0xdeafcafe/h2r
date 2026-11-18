@@ -466,3 +466,11 @@ fn a_map_pressed_with_no_categories_under_it_closes_nothing() {
     assert_eq!(f.picked(0x2614), None);
     assert_eq!(f.freed(0x2000), None);
 }
+
+#[test]
+fn a_maps_short_name_is_its_file_without_the_ending() {
+    let m = map(0x0a, "Lockout", 10, "scenarios\\multi\\lockout\\lockout");
+    assert_eq!(m.short_name(), "lockout");
+    let m = map(0x1001, "Blood Gulch", 1, "maps\\H1_BloodGulch.map");
+    assert_eq!(m.short_name(), "h1_bloodgulch");
+}

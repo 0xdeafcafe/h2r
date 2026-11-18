@@ -11,7 +11,9 @@
 //!
 //! The golden test (not ignored) runs each scene for a few ticks and
 //! compares a hash of every event and frame the session produced, so a
-//! speed-up that changes the output fails.
+//! speed-up that changes the output fails. Another (not ignored) fails if
+//! the game thread's tick allocates once steady:
+//! `cargo test -p live-telemetry --lib bench::the_game_threads_tick_does_not_allocate`.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -466,7 +468,11 @@ impl World {
             );
             set_vec(g, at + layout::BODY_FORWARD, [-sin, cos, 0.0]);
             set_vec(g, at + layout::UNIT_AIM, [-sin, cos, 0.0]);
-            set_vec(g, at + layout::BODY_VELOCITY, [-sin / 7.5, cos / 7.5, 0.0]);
+            // World units a second (layout::BODY_VELOCITY), about the
+            // speed of the circle's four units a second.
+            set_vec(g, at + layout::BODY_VELOCITY, [-sin * 4.0, cos * 4.0, 0.0]);
+            g.set_f32(at + layout::BODY_VITALITY, 1.0).unwrap();
+            g.set_f32(at + layout::BODY_SHIELD_VITALITY, 1.0).unwrap();
         }
         for (i, s) in self.vehicles.iter().enumerate() {
             let at = body(*s);
@@ -475,6 +481,7 @@ impl World {
                 at + layout::BODY_POSITION,
                 [i as f32 * 8.0 + t * 6.0, 0.0, 1.0],
             );
+            set_vec(g, at + layout::BODY_VELOCITY, [6.0, 0.0, 0.0]);
         }
         for (i, s) in self.turrets.iter().enumerate() {
             let (cos, sin) = circle(t * 2.0 + i as f32);
@@ -514,6 +521,7 @@ impl World {
                 pos: Some([1.0, 2.0, 3.0]),
                 body: 0.1,
                 shield: 0.05,
+                tick: None,
             });
         }
     }
@@ -573,9 +581,9 @@ fn fnv(text: &str) -> u64 {
 /// Each scene's output for its first 12 ticks, as hashed by [`fnv`] over
 /// [`output_json`]: what a change to the guest-side path must keep.
 const GOLDEN: [(&str, u64); 3] = [
-    ("mp16", 0xe7c385799bca4930),
-    ("mp16_1000", 0x84e54907e5073b6c),
-    ("campaign100", 0xc97a71e1f8889f43),
+    ("mp16", 0x5f87e00e72613693),
+    ("mp16_1000", 0xf840a9fe4aec3427),
+    ("campaign100", 0xd8a08e706180ce67),
 ];
 
 #[test]
@@ -601,6 +609,76 @@ fn scenes_produce_the_golden_output() {
                 "{name}: output changed (TELEMETRY_GOLDEN_UPDATE=1 writes it to $TMPDIR)"
             );
         }
+    }
+}
+
+/// The scenes' frames carry what capture fills (docs/live/live-telemetry.md,
+/// "Velocity, seat, vitality and fire"), so the wire numbers count it.
+#[test]
+fn scenes_fill_velocity_and_vitality() {
+    for scene in &SCENES {
+        let (outputs, _) = outputs(scene, 4);
+        let frames: Vec<&Frame> = outputs
+            .iter()
+            .filter_map(|o| match o {
+                Output::Frame(f) => Some(f),
+                Output::Event(_) => None,
+            })
+            .collect();
+        assert!(!frames.is_empty(), "{}", scene.name);
+        for f in frames {
+            for p in &f.players {
+                assert!(p.vel.is_some(), "{}: player {} vel", scene.name, p.index);
+                assert_eq!(p.body, Some(1.0), "{}", scene.name);
+                assert_eq!(p.shield, Some(1.0), "{}", scene.name);
+                assert_eq!(p.seat.is_some(), p.vehicle.is_some(), "{}", scene.name);
+            }
+        }
+    }
+}
+
+/// The game thread's half of a tick (the weapon-fire and damage hooks'
+/// entry points, the tick's guest reads and the queue push) allocates
+/// nothing once its lists have grown, in every scene, frame ticks and the
+/// ticks between alike. The worker's allocations are its own thread's and
+/// are not counted (the counter is per thread).
+#[test]
+fn the_game_threads_tick_does_not_allocate() {
+    // Long enough for every recycled list to have grown.
+    const WARM: u32 = 40;
+    const COUNTED: u32 = 60;
+    for scene in &SCENES {
+        let mut world = World::new(scene);
+        let telemetry = start(&world, NullSink);
+        let mut allocating = Vec::new();
+        for tick in 2..2 + WARM + COUNTED {
+            world.advance(tick);
+            let (a0, b0) = allocs();
+            world.hooks(&telemetry, scene, tick);
+            let observed = telemetry.observe_tick(&world.guest);
+            let (a1, b1) = allocs();
+            assert_eq!(observed, Ok(true), "{}: tick {tick}", scene.name);
+            telemetry.pipeline.settle();
+            if tick >= 2 + WARM && a1 > a0 {
+                allocating.push((tick, a1 - a0, b1 - b0));
+            }
+        }
+        // An unchanged tick reads only the clock.
+        let (a0, _) = allocs();
+        assert_eq!(telemetry.observe_tick(&world.guest), Ok(false));
+        assert_eq!(
+            allocs().0,
+            a0,
+            "{}: an unchanged tick allocated",
+            scene.name
+        );
+        assert!(
+            allocating.is_empty(),
+            "{}: ticks that allocated on the game thread (tick, allocations, bytes): {allocating:?}",
+            scene.name
+        );
+        assert_eq!(telemetry.pipeline.folded_ticks(), 0);
+        assert!(!telemetry.disabled());
     }
 }
 

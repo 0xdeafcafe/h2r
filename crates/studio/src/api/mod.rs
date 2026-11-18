@@ -30,6 +30,7 @@ mod playlists;
 mod scenario;
 pub mod seams;
 pub mod server;
+mod tag_fields;
 mod tags;
 mod ui_screens;
 mod variants;
@@ -769,5 +770,6 @@ pub fn tool_name(t: crate::ToolKind) -> &'static str {
         crate::ToolKind::Variants => "variants",
         crate::ToolKind::Playlists => "playlists",
         crate::ToolKind::UiScreens => "ui-screens",
+        crate::ToolKind::Tags => "tags",
     }
 }

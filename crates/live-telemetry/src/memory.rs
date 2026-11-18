@@ -2,8 +2,9 @@ use live_proto::game::{Player, TeamScore};
 use runtime::{Guest, GuestFault};
 
 use crate::event::{
-    ActorState, Appearance, GameInfo, HitRecord, MachineState, Motion, ObjectState, PlacedObject,
-    Placements, PlayerState, PlayerStats, Pose, Snapshot, VehicleState, Weapon, World,
+    ActorState, Animation, Appearance, GameInfo, HitRecord, MachineState, Motion, ObjectState,
+    PlacedObject, Placements, PlayerState, PlayerStats, Pose, Snapshot, VehicleState, Weapon,
+    World,
 };
 use crate::layout;
 use engine::DatumHandle;
@@ -194,7 +195,22 @@ fn players_into(
     let statborg = engine + layout::ENGINE_STATBORG;
     let has_stats = guest.u32(statborg)? != 0;
     let mut units = [0; players::NAME_UNITS];
-    for (handle, player) in players.live(guest, 16).map_err(fault)? {
+    // `Datums::live`'s walk (salt non-zero below the high-water mark, at
+    // most 16 slots) without its list: this runs on the game thread every
+    // tick, which must not allocate.
+    let high_water = players
+        .array
+        .header_field(guest, engine::datum::layout::HIGH_WATER)
+        .map_err(fault)?
+        .clamp(0, 16);
+    for slot in 0..high_water {
+        let elem = players.array.element_addr(guest, slot).map_err(fault)?;
+        let salt = guest.u16(elem)?;
+        if salt == 0 {
+            continue;
+        }
+        let handle = DatumHandle::new(salt, slot as u32);
+        let player = players::Player::at(elem);
         if !player.listed(guest).map_err(fault)? {
             continue;
         }
@@ -236,6 +252,7 @@ fn players_into(
             local_user: u8::try_from(local_user)
                 .ok()
                 .filter(|u| u32::from(*u) < layout::PLAYER_SLOT_COUNT),
+            machine: player.machine(guest).map_err(fault)?,
             unit: engine::handle::raw_or_none(player.unit(guest).map_err(fault)?),
             stats,
         });
@@ -433,6 +450,8 @@ pub(crate) fn object_in(objects: &Objects, datum: u32) -> ReadResult<Option<Obje
     let [mut pos, mut forward, mut up] = pose(guest, body)?;
     let mut vehicle_definition = None;
     let mut mount = None;
+    // Whose transform `pos` is: the unit's, else what it rides.
+    let mut moving = body;
     let parent = guest.u32(body + layout::BODY_PARENT)?;
     let vehicle = match objects.body(parent)? {
         Some((layout::OBJECT_TYPE_VEHICLE, parent_body)) => {
@@ -445,10 +464,21 @@ pub(crate) fn object_in(objects: &Objects, datum: u32) -> ReadResult<Option<Obje
             let at = mounted.map_or(parent_body, |(_, b)| b);
             mount = mounted.map(|(m, _)| m);
             [pos, forward, up] = pose(guest, at)?;
+            moving = at;
             Some(parent)
         }
         _ => None,
     };
+    let velocity = vector(guest, moving + layout::BODY_VELOCITY)
+        .ok()
+        .filter(|v| v.iter().all(|c| c.is_finite()));
+    let seat = guest
+        .u16(body + layout::UNIT_SEAT)
+        .ok()
+        .map(|s| s as i16)
+        .filter(|s| *s >= 0)
+        .map(|s| s as u16);
+    let vitality = vitality(guest, body).ok().flatten();
     if !pos.iter().chain(forward.iter()).all(|v| v.is_finite()) {
         return Ok(None);
     }
@@ -464,7 +494,22 @@ pub(crate) fn object_in(objects: &Objects, datum: u32) -> ReadResult<Option<Obje
         vehicle_definition,
         team,
         motion,
+        velocity,
+        seat,
+        vitality,
     }))
+}
+
+/// Body and shield vitality of the object whose data is at `body`, as
+/// `object_get_health` and `object_get_shield` read them: both 0 once the
+/// body is depleted; `None` when either is not finite.
+fn vitality(guest: &Guest, body: u32) -> ReadResult<Option<(f64, f64)>> {
+    if guest.u16(body + layout::BODY_DAMAGE_FLAGS)? & layout::BODY_DEPLETED != 0 {
+        return Ok(Some((0.0, 0.0)));
+    }
+    let health = f64::from(guest.f32(body + layout::BODY_VITALITY)?);
+    let shield = f64::from(guest.f32(body + layout::BODY_SHIELD_VITALITY)?);
+    Ok((health.is_finite() && shield.is_finite()).then_some((health, shield)))
 }
 
 /// The vehicle a vehicle (body at `body`) is mounted on, and that one's
@@ -532,6 +577,11 @@ fn motion(guest: &Guest, kind: u8, body: u32, weapon: Option<u32>) -> Motion {
         .then(|| guest.u8(body + layout::BIPED_AIRBORNE_TICKS).ok())
         .flatten()
         .map(|t| t as i8);
+    let hitbox_offset = biped
+        .then(|| guest.u8(body + layout::BIPED_HITBOX_OFFSET).ok())
+        .flatten()
+        .map(|t| t as i8);
+    let havok = havok_body(guest, body).ok().flatten();
     Motion {
         velocity,
         crouch,
@@ -540,10 +590,65 @@ fn motion(guest: &Guest, kind: u8, body: u32, weapon: Option<u32>) -> Motion {
         grenades,
         weapons,
         magazine,
+        animation: animation(guest, body).ok().flatten(),
         unit_flags,
         biped_flags,
         airborne_ticks,
+        hitbox_offset,
+        havok,
     }
+}
+
+/// The first Havok rigid body's world position and linear velocity, as
+/// `0x001d08e0` and `0x000dc67d` read them; `None` without a body or when
+/// a value is not finite.
+fn havok_body(guest: &Guest, body: u32) -> ReadResult<Option<([f64; 3], [f64; 3])>> {
+    let index = guest.u32(body + layout::BODY_PHYSICS)?;
+    if index == u32::MAX {
+        return Ok(None);
+    }
+    let array = guest.u32(layout::PHYSICS_COMPONENTS_PTR)?;
+    let data = guest.u32(array + layout::DATUM_DATA)?;
+    let component = data.wrapping_add((index & 0xffff) * layout::PHYSICS_COMPONENT_SIZE);
+    let bodies = guest.u32(component + layout::COMPONENT_BODIES)?;
+    let rigid = guest.u32(bodies + layout::COMPONENT_BODY_RIGID)?;
+    if rigid == 0 {
+        return Ok(None);
+    }
+    let motion = guest.u32(rigid + layout::RIGID_MOTION)?;
+    let pos = vector(guest, motion + layout::MOTION_POSITION)?;
+    let vel = vector(guest, motion + layout::MOTION_VELOCITY)?;
+    Ok(pos
+        .iter()
+        .chain(&vel)
+        .all(|c| c.is_finite())
+        .then_some((pos, vel)))
+}
+
+/// The animation the object whose data is at `body` plays: its animation
+/// manager's first channel. `None` without a manager, a graph or an
+/// animation, or when the frame reads as nonsense.
+pub fn animation(guest: &Guest, body: u32) -> ReadResult<Option<Animation>> {
+    let offset = guest.u16(body + layout::OBJECT_ANIMATION_MANAGER)? as i16;
+    if !layout::MANAGER_OFFSETS.contains(&offset) {
+        return Ok(None);
+    }
+    let channel = body + offset as u32 + layout::MANAGER_CHANNEL;
+    let graph = guest.u32(channel + layout::CHANNEL_GRAPH)?;
+    let inherited = guest.u16(channel + layout::CHANNEL_ANIMATION)? as i16;
+    let index = guest.u16(channel + layout::CHANNEL_ANIMATION + 2)? as i16;
+    let frame = guest.f32(channel + layout::CHANNEL_FRAME)?;
+    Ok((graph != u32::MAX
+        && index >= 0
+        && inherited >= -1
+        && frame.is_finite()
+        && (0.0..32768.0).contains(&frame))
+    .then_some(Animation {
+        graph,
+        inherited,
+        index,
+        frame,
+    }))
 }
 
 /// Every live AI-controlled biped: object type biped, an actor datum at
@@ -865,6 +970,17 @@ pub fn active_bsp(guest: &Guest) -> ReadResult<Option<u32>> {
     Ok(u32::try_from(bsp).ok())
 }
 
+/// Whether a HaloScript cinematic is playing (between `cinematic_start`
+/// and `cinematic_stop`): the cinematic block's in-progress byte, false
+/// with no block, as the game's own `0x0013cb40` reads it.
+pub fn cinematic(guest: &Guest) -> ReadResult<bool> {
+    let block = guest.u32(layout::CINEMATIC_GLOBALS_PTR)?;
+    if block == 0 {
+        return Ok(false);
+    }
+    Ok(guest.u8(block + layout::CINEMATIC_IN_PROGRESS)? != 0)
+}
+
 /// What the damage hook records: the report at `report` for `victim`, with
 /// the victim's position (its own `+0x64`) when it is a live object.
 pub fn hit(guest: &Guest, report: u32, victim: u32) -> ReadResult<HitRecord> {
@@ -882,6 +998,7 @@ pub fn hit(guest: &Guest, report: u32, victim: u32) -> ReadResult<HitRecord> {
         pos,
         body: guest.f32(report + layout::REPORT_BODY)?,
         shield: guest.f32(report + layout::REPORT_SHIELD)?,
+        tick: game_tick(guest).ok(),
     })
 }
 
@@ -914,6 +1031,7 @@ pub fn snapshot_after(guest: &Guest, previous: &mut [PlayerState]) -> ReadResult
         bodies: Vec::new(),
         bsp: active_bsp(guest).ok().flatten(),
         hits: Vec::new(),
+        cinematic: cinematic(guest).unwrap_or(false),
     })
 }
 
@@ -942,6 +1060,7 @@ pub fn snapshot_into(
     out.tick = game_tick(guest)?;
     out.has_stats = guest.u32(engine + layout::ENGINE_STATBORG)? != 0;
     out.bsp = active_bsp(guest).ok().flatten();
+    out.cinematic = cinematic(guest).unwrap_or(false);
     Ok(())
 }
 
@@ -968,6 +1087,23 @@ pub(crate) mod fixture {
     pub const OBJECTS: u32 = 0x140000;
     pub const OBJECT_DATA: u32 = 0x141000;
     pub const BODY: u32 = 0x150000;
+    /// The cinematic block (only where a test points
+    /// [`super::layout::CINEMATIC_GLOBALS_PTR`] at it).
+    pub const CINEMATIC: u32 = 0x118000;
+
+    /// Points the game at a cinematic block and sets its in-progress byte
+    /// (`playing`) or clears it.
+    pub fn set_cinematic(guest: &mut Guest, playing: bool) {
+        guest
+            .set_u32(super::layout::CINEMATIC_GLOBALS_PTR, CINEMATIC)
+            .unwrap();
+        guest
+            .set_u8(
+                CINEMATIC + super::layout::CINEMATIC_IN_PROGRESS,
+                u8::from(playing),
+            )
+            .unwrap();
+    }
     /// Bodies of slots past [`LOW_BODIES`] (only in [`large_memory`]).
     pub const HIGH_BODY: u32 = 0x0100_0000;
     /// Object slots whose bodies fit below the 0x200000 end of [`memory`].
@@ -1948,18 +2084,95 @@ mod tests {
             .unwrap();
         guest.set_u16(body + layout::BIPED_FLAGS, 0x0201).unwrap();
         guest
+            .set_u8(body + layout::BIPED_HITBOX_OFFSET, (-44i8) as u8)
+            .unwrap();
+        guest
             .set_u8(body + layout::BIPED_AIRBORNE_TICKS, 9)
             .unwrap();
+        // A Havok body: component 3 of the array, its first rigid body.
+        let (array, data, bodies, rigid, motion) =
+            (0x17_0000, 0x17_1000, 0x17_4000, 0x17_5000, 0x17_6000);
+        guest
+            .set_u32(body + layout::BODY_PHYSICS, 0xe003_0003)
+            .unwrap();
+        guest
+            .set_u32(layout::PHYSICS_COMPONENTS_PTR, array)
+            .unwrap();
+        guest.set_u32(array + layout::DATUM_DATA, data).unwrap();
+        guest
+            .set_u32(
+                data + 3 * layout::PHYSICS_COMPONENT_SIZE + layout::COMPONENT_BODIES,
+                bodies,
+            )
+            .unwrap();
+        guest
+            .set_u32(bodies + layout::COMPONENT_BODY_RIGID, rigid)
+            .unwrap();
+        guest.set_u32(rigid + layout::RIGID_MOTION, motion).unwrap();
+        guest
+            .set_f32(motion + layout::MOTION_POSITION + 8, -3.25)
+            .unwrap();
+        guest
+            .set_f32(motion + layout::MOTION_VELOCITY + 8, 12.5)
+            .unwrap();
         let m = object(&guest, unit).unwrap().unwrap().motion;
+        assert_eq!(m.havok, Some(([0.0, 0.0, -3.25], [0.0, 0.0, 12.5])));
         assert_eq!(m.unit_flags, Some(layout::UNIT_FLAG_CROUCH | 1));
         assert_eq!(m.biped_flags, Some(0x0201));
         assert_eq!(m.airborne_ticks, Some(9));
+        assert_eq!(m.hitbox_offset, Some(-44));
         assert_eq!(m.crouch, Some(0.75));
         assert_eq!(m.physics_mode, Some(2));
         assert_eq!(m.velocity, [0.0, 0.0, 0.5]);
         assert_eq!(m.grenade, Some(1));
         assert_eq!(m.grenades, Some(3));
         assert_eq!(m.magazine, Some((96, 32)));
+        assert_eq!(m.animation, None, "no manager");
+        // The manager at +0x300, playing animation 5 of the graph's
+        // second parent at frame 12.5.
+        guest
+            .set_u16(body + layout::OBJECT_ANIMATION_MANAGER, 0x300)
+            .unwrap();
+        let channel = body + 0x300 + layout::MANAGER_CHANNEL;
+        guest
+            .set_u32(channel + layout::CHANNEL_GRAPH, 0xe123_0456)
+            .unwrap();
+        guest
+            .set_u16(channel + layout::CHANNEL_ANIMATION, 1)
+            .unwrap();
+        guest
+            .set_u16(channel + layout::CHANNEL_ANIMATION + 2, 5)
+            .unwrap();
+        guest
+            .set_f32(channel + layout::CHANNEL_FRAME, 12.5)
+            .unwrap();
+        let m = object(&guest, unit).unwrap().unwrap().motion;
+        assert_eq!(
+            m.animation,
+            Some(Animation {
+                graph: 0xe123_0456,
+                inherited: 1,
+                index: 5,
+                frame: 12.5
+            })
+        );
+        // No animation, a nonsense frame, no manager: nothing.
+        guest
+            .set_u16(channel + layout::CHANNEL_ANIMATION + 2, 0xffff)
+            .unwrap();
+        assert_eq!(animation(&guest, body).unwrap(), None);
+        guest
+            .set_u16(channel + layout::CHANNEL_ANIMATION + 2, 5)
+            .unwrap();
+        guest
+            .set_f32(channel + layout::CHANNEL_FRAME, f32::NAN)
+            .unwrap();
+        assert_eq!(animation(&guest, body).unwrap(), None);
+        guest.set_f32(channel + layout::CHANNEL_FRAME, 1.0).unwrap();
+        guest
+            .set_u16(body + layout::OBJECT_ANIMATION_MANAGER, 0xffff)
+            .unwrap();
+        assert_eq!(animation(&guest, body).unwrap(), None);
         assert_eq!(
             m.weapons,
             Some([fixture::object_datum(2), u32::MAX, u32::MAX, u32::MAX])
@@ -1974,6 +2187,87 @@ mod tests {
             .unwrap();
         let m = object(&guest, unit).unwrap().unwrap().motion;
         assert_eq!((m.crouch, m.physics_mode, m.grenade), (None, None, None));
+    }
+
+    #[test]
+    fn the_cinematic_byte_says_whether_a_cutscene_plays() {
+        let mut guest = fixture::memory();
+        fixture::put_player(&mut guest, 0, "A", 1, true, u32::MAX);
+        // No block yet (before the game state is set up): no cinematic.
+        assert!(!cinematic(&guest).unwrap());
+        assert!(!snapshot(&guest).unwrap().cinematic);
+        fixture::set_cinematic(&mut guest, true);
+        assert!(cinematic(&guest).unwrap());
+        assert!(snapshot(&guest).unwrap().cinematic);
+        let mut out = Snapshot::default();
+        snapshot_into(&guest, &mut out, &mut Vec::new()).unwrap();
+        assert!(out.cinematic);
+        // `+4` (also set by cinematic_start) is not the one read.
+        guest
+            .set_u8(fixture::CINEMATIC + layout::CINEMATIC_IN_PROGRESS, 0)
+            .unwrap();
+        guest.set_u8(fixture::CINEMATIC + 4, 1).unwrap();
+        assert!(!cinematic(&guest).unwrap());
+        snapshot_into(&guest, &mut out, &mut Vec::new()).unwrap();
+        assert!(!out.cinematic);
+    }
+
+    #[test]
+    fn unit_velocity_seat_and_vitality() {
+        let mut guest = fixture::memory();
+        let unit = fixture::object_datum(1);
+        fixture::put_object(&mut guest, 1, u32::MAX);
+        let body = fixture::BODY + 0x1000;
+        for (i, v) in [3.0f32, -4.0, 0.5].into_iter().enumerate() {
+            guest
+                .set_f32(body + layout::BODY_VELOCITY + 4 * i as u32, v)
+                .unwrap();
+        }
+        guest.set_u16(body + layout::UNIT_SEAT, u16::MAX).unwrap();
+        guest.set_f32(body + layout::BODY_VITALITY, 0.75).unwrap();
+        guest
+            .set_f32(body + layout::BODY_SHIELD_VITALITY, 2.5)
+            .unwrap();
+        let o = object(&guest, unit).unwrap().unwrap();
+        assert_eq!(o.velocity, Some([3.0, -4.0, 0.5]), "world units a second");
+        assert_eq!(o.seat, None, "-1: in no seat");
+        assert_eq!(o.vitality, Some((0.75, 2.5)));
+        // A depleted body has none left, as the game's getters say.
+        guest
+            .set_u16(body + layout::BODY_DAMAGE_FLAGS, layout::BODY_DEPLETED)
+            .unwrap();
+        let o = object(&guest, unit).unwrap().unwrap();
+        assert_eq!(o.vitality, Some((0.0, 0.0)));
+        guest.set_u16(body + layout::BODY_DAMAGE_FLAGS, 0).unwrap();
+        guest
+            .set_f32(body + layout::BODY_SHIELD_VITALITY, f32::NAN)
+            .unwrap();
+        let o = object(&guest, unit).unwrap().unwrap();
+        assert_eq!(o.vitality, None, "not finite: not read");
+        // In a vehicle's third seat: the seat, and the vehicle's velocity
+        // (its transform is where the rider is).
+        fixture::put_vehicle(&mut guest, 2);
+        let vehicle = fixture::BODY + 2 * 0x1000;
+        for (i, v) in [10.0f32, 0.0, -1.0].into_iter().enumerate() {
+            guest
+                .set_f32(vehicle + layout::BODY_VELOCITY + 4 * i as u32, v)
+                .unwrap();
+        }
+        guest
+            .set_u32(body + layout::BODY_PARENT, fixture::object_datum(2))
+            .unwrap();
+        guest.set_u16(body + layout::UNIT_SEAT, 2).unwrap();
+        let o = object(&guest, unit).unwrap().unwrap();
+        assert_eq!(o.vehicle, Some(fixture::object_datum(2)));
+        assert_eq!(o.seat, Some(2));
+        assert_eq!(o.velocity, Some([10.0, 0.0, -1.0]));
+        assert_eq!(o.motion.velocity, [3.0, -4.0, 0.5], "motion keeps its own");
+        // A velocity that is not finite is not read.
+        guest
+            .set_f32(vehicle + layout::BODY_VELOCITY, f32::INFINITY)
+            .unwrap();
+        let o = object(&guest, unit).unwrap().unwrap();
+        assert_eq!(o.velocity, None);
     }
 
     #[test]

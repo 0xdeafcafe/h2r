@@ -152,9 +152,16 @@ picking a weapon up) is not traced: the game-run checklist covers it.
 ### Any weapon as the starting or secondary weapon
 
 - **Storable:** values 15, 16 and 20 are slots of the same globals list the
-  editor doesn't offer. They are real references on the disc (random picks
-  15 and 16). Our editor names them by reading the slot's tag at run time,
-  as the schema does; nothing is listed here.
+  editor doesn't offer (list entries 11, 15 and 17 by the jump table).
+  They are real references on the disc (random picks 15 and 16). Our
+  editor names them by reading the slot's tag at run time, as the schema
+  does; nothing is listed here. Built in Studio
+  (`variants::schema::{weapon_slots, weapon_label, add_weapon_slots}`):
+  the main menu map's `mulg` tag, universal element 0, list `+0x68`; the
+  label is the tag path's last part (a path ending
+  `\beam_rifle\beam_rifle` reads "Beam Rifle"). The game's own editor doesn't offer
+  them yet: its lists take our labels from fixed strings
+  (`boot::variant_options`), and these need the disc's names.
 - **Needs the extension:** a weapon that isn't in that list (one of the
   other weapon tags the map has). The byte can't hold it past 0x14. An
   extension field names it, and a hook at `0x19eda0` returns that tag for
@@ -242,19 +249,19 @@ offer is.
 | Fast respawn | storable (1 s, 2 s) | offered by us (decided: no hooks, retail's 1 s floor stays); respawn 0 with cycling refused |
 | Gravity | needs the extension | scale `[0x51e9c4]` at game start, as Low Gravity |
 | Bounce Practice magnum, Bumper Cars | offered; Bumper Cars needs our "None" | built-ins (slice 2) |
-| Any weapon, from the globals list | storable (15, 16, 20) | name them from the disc; offer them |
+| Any weapon, from the globals list | storable (15, 16, 20) | name them from the disc; offer them (Studio built) |
 | Any weapon, outside that list | needs the extension | extension names the tag; hook `0x19eda0`; record keeps a fallback |
 | Score above 250 | storable to 0x7fff | offer more steps |
 | Time above 1 h | storable to 0x7fff s (9 h 6 min) | offer more steps |
 | Lives above 99 | storable to 0x7fff | offer more steps |
 | Respawn above 30 s | storable to 0x7fff s | offer more steps |
 | Suicide and betrayal penalties beyond retail's | storable to 0x7fff s | offer more steps |
-| Damage multipliers beyond on/off | needs the extension | the record has two booleans (flag bits 12, 13), read through the trait query `0x24dda0` (trait 2 extra damage, 3 resistance) and per-engine overrides (`0x1926c0`); the scale they apply is in the damage code, not traced |
-| Shield and health multipliers | needs the extension | shields are a 0..2 choice (`+0x88`); a vitality scale needs the damage path above |
+| Damage multipliers beyond on/off | needs the extension (built, slice 5) | the record has two booleans (flag bits 12, 13), read through the trait query `0x24dda0` (trait 2 extra damage, 3 resistance; the engines' vtables at `0x453cb0` and `0x45c650` hold it at `+0x114`) and per-engine overrides (`0x1926c0`). Ours scales the amount of each damage instance on a player instead ("Damage, shield and health" below) |
+| Shield and health multipliers | needs the extension (built, slice 5) | shields are a 0..2 choice (`+0x88`); ours scales the amount the shield and body steps take |
 | Player speed for everyone | needs the extension | only Juggernaut and ball carrier speed exist (i16 0..2); the movement scale is not traced |
-| Unlimited grenades | needs the extension | only a starting on/off bit; host refills each unit's counts each tick (unit offsets not traced) |
+| Unlimited grenades | needs the extension (built, slice 5) | only a starting on/off bit; the host keeps every player's unit at four or more of each type each tick (the unit's counts at `+0x23e`, as the Unlimited Grenades skull) |
 | Mixed vehicle sets | mostly offered; some storable | each slot (light, second light, heavy, flying, two turrets) is its own byte, so mixes exist today; values in range but not offered (75: 2; 76, 77: 4; 79: 2, 3; 81, 82: 2, 3; 83: 18) and setting 80 (no row, `+0xd0` 0..4) are not traced and are not offered until they are; a vehicle outside the sets needs the extension and a placement hook |
-| Team count | storable (setting 93, `+0xb4` 0..8) | the retail editor has no row for it; a row on our "More Options" page |
+| Team count | storable (setting 93, `+0xb4` 0..8; built, slice 5) | the retail editor has no row for it; a row on our "More Options" page and in Studio. Traced: the team set builder `0x157790` reads `[G+0x1f0]`, takes 0 as 8, caps it at the map's teams (`[[0x4e9ae8]+4]`, a mask) and adds the lowest unused teams to the players' until there are that many; the mask goes to `[[0x4e9ae8]+6]` |
 | Team size | needs the extension | nothing in the record; the lobby would have to enforce it |
 | More than 16 players | impossible | the engine's player limit |
 
@@ -338,15 +345,30 @@ guests"):
     logs `variant options: none from the host: the host's build sends no
     variant options (an older build)`. An older host never applies a block,
     so both play the game's own rules and agree.
-  - **An older guest of a new host is not detected (not built).** The plan
-    was for clients to send their capabilities with the session join, but
-    no join reaches the host's session: the HLE never writes
-    `PlayerJoined` (the server accepts it only from the host), and guests
-    can't write to the host's stream. A capability needs a channel of its
-    own first: for example the guest's HLE writing a signed
-    `{session, capabilities}` note the host's HLE reads with the session,
-    or a field on presence. Until then the host's lobby can't name the
-    older player, and the desync below goes unannounced.
+  - **An older guest of a new host** (built): the host names it in its
+    log. Each console's presence carries its build (the git short hash,
+    7 to 12 lowercase hex digits) and its capabilities (`name/version`,
+    at most 16 of 32 characters each; this build sends `variant-ext/1`)
+    on every `SignedIn` and `PresenceChanged` (`live_proto::PresenceData`;
+    the HLE's `ServerOptions.build` and `capabilities`, which boot fills
+    from the binary's own build metadata, `app::BuildInfo`, and
+    `live_glue::CAPABILITIES`). The server checks their shape and returns
+    them on `GET /v1/presence` and in friends lists. **Privacy:** they
+    show to every reader, anonymous included, as `state` does: they name
+    the console's software, not where its player is, and a host must read
+    its guests' whether or not they are friends (the game id and activity
+    keep their own rule). At a multiplayer start with options, a Live host
+    reads its guests' XUIDs from the squad session's players
+    (`variant_ext::session_guests`: mask `S+0x111c`, 16 players at
+    `S+0x1120`, `0x13c` each, XUID at `+0`, peer at `+0xc`; docs/game/
+    bots.md) and asks the server (`Hle::players_lacking`, at most 0.5 s;
+    `live_proto::lacking`). Each guest whose presence lacks
+    `variant-ext/1` gets a line: `variant options: <gamertag> plays this
+    variant with the game's own rules (older build)`. A player with no
+    presence (a bot) is not named. The check takes XUIDs, so the Live
+    session's roster can feed it once the HLE writes `PlayerJoined`.
+    Not built: the lobby text (log lines only), and telling the older
+    player (its build can't).
 
   **The desync risk.** Halo 2's host simulates and its guests predict. A
   guest playing retail rules against a host with extras predicts wrong
@@ -392,6 +414,43 @@ guests"):
   It shows only what the game applies (gravity in slice 3); a block the
   game would ignore shows a warning and an `Issue::Ext`. `issues()` also
   has our own rule (respawn 0 with cycling).
+- **Unlimited grenades** (slice 5, built): flag bit 1. After each tick a
+  lone machine or a Live host (`Decision::unlimited_grenades`; never a
+  guest, never System Link) tops up every player's unit, remote ones too,
+  to at least four of each grenade type (`skulls_custom::variant_grenades`,
+  the Unlimited Grenades skull's `top_grenades` on the unit's two counts at
+  `+0x23e`). The host's counts are the game's and replicate, so a guest
+  writes nothing. Row 1 of "More Options" ("Unlimited Grenades: < Off >",
+  left, right and A toggle) and a Studio checkbox.
+- **Damage, shield and health** (slice 5, built; traced statically).
+  `0xd7b80` applies one damage instance; it calls the shield step
+  `0xd9110` (stdcall: object datum, ?, damage data, record; `ret 0x10`) at
+  `0xd80de` and the body step `0xd8cb0` (record in EDI; stdcall: object
+  datum, ?, damage data; `ret 0xc`) at `0xd8184`, each its only caller.
+  Both read the amount left to apply at `record+0x1c`: the shield step
+  takes `amount × material scale / shield vitality` (`0xd5d80` gives the
+  vitality) off the shield and leaves the rest at `+0x1c`; the body step
+  reads it through `0xd9020`. Our feature `variant-vitality`
+  (`variant_ext::Vitality`, points `SHIELD_DAMAGE` and `BODY_DAMAGE`), for
+  an object that is a player's unit, multiplies the amount by damage ÷
+  shield before the shield step, puts what the shield left back to the
+  game's units after it, and multiplies by damage ÷ health before the
+  body step. So a hit takes damage/shield of the game's shield share and
+  damage/health of the body's, whether or not the shield took part. It
+  applies wherever `Decision::vitality` says: alone, the host and a guest
+  with its host's block (a guest predicts the hits too), never System
+  Link. Vehicles, AI and objects keep the game's rules. Rows 3 to 5 of
+  "More Options" (gravity's steps, 10% to 400%) and Studio sliders. What
+  else reads `+0x1c` after the steps (`0xd82e0`, called between them, and
+  the damage report) sees the scaled amount; not traced further.
+- **Team count** (slice 5, built): a retail field (setting 93, `+0xb4`)
+  with no retail row. Row 2 of "More Options" ("Team Count: < Map
+  Default >", then 2 to 8; 1 is storable but not offered and shows as 2)
+  writes the edited record's `+0xb4` (`0x54e554`) rather than the block;
+  Studio has a "Team count" box (`record::TEAM_COUNT`, `TEAM_COUNTS`).
+  Every build plays it: it is the game's own field. Whether the game's
+  wire carries it to guests is not traced (the codec's fields aren't
+  pinned); only the host builds the team set, as far as the trace shows.
 - **The stats site** today records only the engine name (`GameStarted`'s
   `variant`). Adding the variant's name and a summary of the extension
   ("Gravity 50%") to `GameStarted` is a later Live slice.
@@ -627,14 +686,15 @@ own slice (8 below):
    Tests: round trips, a bad CRC ignored, the block surviving
    `record::check`, portable files and a hopper slot; gravity on synthetic
    physics memory.
-4. **Done except the older-build warnings and the lobby texts** (section 3,
+4. **Done except the lobby texts** (section 3,
    "How it reaches every player"). **Live transport:** `variant_ext` and the key on the session, the
    guest's apply at activation, capabilities on join and the warnings (the
    host's lobby, the older player where it can), System Link off with its
    warning. Tests in live-proto, live-server (both homes) and live-hle: a
    mismatched key ignored, an older member warned about, System Link never
    applying.
-5. **The other extension options**, each traced when reached: damage,
+5. **The other extension options** (unlimited grenades built, "Built:
+   slice 5"), each traced when reached: damage,
    shield and health scales, movement speed, unlimited grenades, any
    weapon (slots 15, 16 and 20 named from the disc, other tags through
    `0x19eda0`), team size and the team count row.
@@ -700,12 +760,38 @@ After slice 4 (two machines on Live, both on this build):
    `variant options: the host's for this game: Gravity 50%` and then
    `variant options: Gravity 50% (guest, the host's)`. A second game on a
    retail variant: normal gravity on both (the host sends "none").
-8. A guest on an older build joins that game: nothing warns yet (not
-   built); note how its game feels (the desync above). A new guest of an
-   older host: its log says the host's build sends none.
+8. A guest on an older build joins that game: the host's log says
+   `variant options: <gamertag> plays this variant with the game's own
+   rules (older build)` at the start; note how the older guest's game
+   feels (the desync above). Two consoles on this build: no such line. A
+   new guest of an older host: its log says the host's build sends none.
 9. Low Gravity skull with gravity 50%: a quarter of normal, on both.
 10. The same variant over System Link: normal gravity on both, and each
     log says the options are off on System Link.
+
+After slice 5 (unlimited grenades):
+
+9a. Edit a Slayer copy: More Options has a second row, "Unlimited
+    Grenades: < Off >"; left, right or A turns it On. Save, reopen: On.
+    Studio shows the box ticked. A local game on it: throw all your
+    grenades; you have four of each again on the next tick. The log says
+    `variant options: Unlimited grenades (local game)`.
+9b. The same over Live (both on this build): host and guest both keep
+    four of each (the host tops up the guest's unit). On System Link:
+    normal grenades.
+9d. Damage 200%: two magnum body shots after the shield is down kill where
+    they wouldn't; Health 400%: a full clip barely kills; Shields 10%: one
+    shot pops the shield. Vehicles take normal damage. Over Live with both
+    on this build, the guest's hit markers and kills agree with the host.
+9c. More Options' third row, "Team Count: < Map Default >": set 3, save,
+    and start a Team Slayer on a map with more teams. Players spread over
+    at most three teams; note what the lobby's team switch offers (not
+    traced). Studio shows "Team count" 3. Over Live, note whether the
+    guests see three teams too.
+9e. Studio, with the disc: a Slayer's starting and secondary weapon lists
+    show three more weapons after the retail ones they sort between (15,
+    16, 20), named from their tag paths. Pick each, save, play: you spawn
+    with it. Note the names, so the game's editor can offer them later.
 
 After slices 6 to 8:
 
@@ -825,8 +911,43 @@ After slices 6 to 8:
   guest), `heard` and `wait_for_host` (the guest's poll), the `Transport`
   feature (`variant-ext-live`) on `GAME_ACTIVATE`, and `decide` applying a
   guest's block when it came from its host.
-- Not built: telling the host about an older guest (no channel), and lobby
-  texts for that and for System Link (log lines only).
+- Older guests (built after slice 4): build and capabilities on presence,
+  the host's check at a multiplayer start and its log line (section 3,
+  "Older builds"). Not built: lobby texts for that and for System Link
+  (log lines only).
+
+## Built: slice 5 (so far)
+
+- Unlimited grenades: `variant_ext::Decision::unlimited_grenades`,
+  `skulls_custom::{player_units, top_grenades, variant_grenades}`, the
+  page's second row (`variant_page::GRENADES_ROW`, strings in the
+  "variant page" family), Studio's checkbox. `Ext::summary` already said
+  "Unlimited grenades".
+- Team count: `variants::record::{TEAM_COUNT, TEAM_COUNTS}`, the page's
+  third row (`variant_page::TEAMS_ROW`, `EDITED_TEAMS`), Studio's box.
+- Damage, shield and health: `variant_ext::{Vitality, shield_factor,
+  body_factor, scale_amount, is_player_unit}`, `Decision::vitality`,
+  `engine::points::{SHIELD_DAMAGE, BODY_DAMAGE}`, page rows 3 to 5
+  (`variant_page::Scale`), Studio sliders.
+- Weapon slots 15, 16 and 20 in Studio: `variants::schema::{weapon_slots,
+  weapon_label, add_weapon_slots, UNOFFERED_WEAPONS}`, called from
+  `Schema::from_map`. Not in the game's editor yet (section 2, "Any
+  weapon").
+- Not yet:
+  - movement speed: not traced. The Juggernaut's speed (`G+0x234`,
+    record `+0xf8`, setting 96) has no reader a linear search finds; the
+    likely route is the unit's movement code, not the variant.
+  - damage through the engine's trait query (`0x24dda0`, slot `+0x114`
+    of the engine vtables at `0x453cb0` and `0x45c650`) was not used: no
+    direct call site, so the scales hook the damage steps instead
+    (`0xd9110`, `0xd8cb0`).
+  - weapons outside the globals list: the extension's `+0x11a`/`+0x11c`
+    ids need our table of tag paths, checked against each map's tags,
+    and a hook on `0x19eda0` (stdcall: default tag, value byte, other
+    weapon's tag; `ret 0xc`). Primary or secondary is told by the return
+    address (`0x19f056`/`0x19f063` primary, `0x19f042`/`0x19f07b`
+    secondary; `0x19ee18` is its own random retry).
+  - team size: lobby enforcement not traced.
 
 ## Tests
 
@@ -857,6 +978,24 @@ tests:
   `the_row_and_the_page_are_on_the_plan`; `ui_kit::screens` checks the
   page (`variant-more-options`) with the other screens. Run
   `cargo test -p boot --tests` (the plan goldens are integration tests).
+
+Slice 5 so far: `boot` `variant_ext::grenades_are_topped_by_a_lone_machine_or_the_host_never_a_guest`,
+`skulls_custom::tests::a_variants_unlimited_grenades_reach_every_players_unit`,
+`variant_page::tests::the_grenades_row_toggles_the_flag`,
+`variant_page::tests::the_team_count_row_edits_the_records_field`,
+`variants` `record::tests::every_offered_team_count_is_kept`,
+`variant_ext::damage_shield_and_health_scale_the_amount`,
+`variant_page::tests::the_scale_rows_step_their_percents`,
+`variants` `schema::weapon_tests::{the_unoffered_weapons_are_read_from_the_globals_list,
+a_short_or_missing_list_gives_nothing, weapon_labels_come_from_the_tag_path,
+the_weapon_slots_join_both_weapon_settings_in_order_once}`.
+
+Older builds: `live-proto`
+`presence_carries_a_build_and_capabilities_checked_and_optional`,
+`lacking_names_the_players_whose_build_cannot_and_skips_the_unknown`;
+`live-server` `presence_privacy::build_and_capabilities_show_to_everyone_and_are_checked`;
+`live-hle` `server::presence_says_what_a_build_can_do_and_the_host_names_older_players`;
+`boot` `variant_ext::the_host_names_its_guests_from_the_sessions_players`.
 
 The slice 4 tests: `live-proto`
 `session::variant_options_are_optional_checked_and_updated`; `live-server`

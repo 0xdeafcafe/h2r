@@ -1,6 +1,6 @@
 import { lazy } from "solid-js";
 import { render } from "solid-js/web";
-import { Navigate, Route, Router, useParams } from "@solidjs/router";
+import { Navigate, Route, Router, useLocation, useParams } from "@solidjs/router";
 import "./styles/theme.css";
 import "./styles/app.css";
 import "./styles/dash.css";
@@ -10,6 +10,8 @@ import Veil from "./dash/Veil";
 import StatsLayout, { Title } from "./stats/Layout";
 import { live } from "./state/live";
 import { startGameArt } from "./state/gameart";
+import { ThemeColor } from "./themeColor";
+import { GAMES_ROOT, OLD_STATS_ROOT, STATS_ROOT, movedStatsPath, statsPath } from "./routes";
 
 // The dashboard (the front page) is in the main chunk; the stats pages,
 // admin and sign-in are chunks of their own that come in once the browser
@@ -25,10 +27,12 @@ const parts = {
   events: () => import("./stats/Events"),
   clans: () => import("./stats/Clans"),
   ranks: () => import("./stats/Ranks"),
+  mods: () => import("./stats/Mods"),
   admin: () => import("./admin/Admin"),
   signin: () => import("./signin/SignIn"),
   deckStyle: () => import("./deck/StylePage"),
   usage: () => import("./deck/UsagePage"),
+  eventLog: () => import("./dash/EventLog"),
 };
 const Game = lazy(parts.game);
 const Games = lazy(parts.games);
@@ -43,10 +47,13 @@ const Ranks = lazy(parts.ranks);
 const PlayerRanksPage = lazy(() => parts.ranks().then((m) => ({ default: m.PlayerRanksPage })));
 const Clans = lazy(parts.clans);
 const ClanPage = lazy(() => parts.clans().then((m) => ({ default: m.ClanPage })));
+const Mods = lazy(parts.mods);
+const ModPage = lazy(() => parts.mods().then((m) => ({ default: m.ModPage })));
 const Admin = lazy(parts.admin);
 const SignIn = lazy(parts.signin);
 const DeckStyle = lazy(parts.deckStyle);
 const Usage = lazy(parts.usage);
+const EventLog = lazy(parts.eventLog);
 const Viewer3DPage = lazy(() => import("./viewer/Popout"));
 
 const idle = (f: () => void) =>
@@ -60,21 +67,28 @@ function NotFound() {
   return <div class="s-full"><Title class="s-title--bar">Page Not Found</Title><p class="s-pad">That page isn't here. Try the links above.</p></div>;
 }
 
-const OldGame = () => <Navigate href={`/stats/games/${useParams().id}`} />;
+const OldGame = () => <Navigate href={statsPath(`/games/${useParams().id}`)} />;
 // Clans were called teams here first (the protocol still says team).
-const OldTeam = () => <Navigate href={`/stats/clans/${useParams().id}`} />;
-const OldPlayer = () => <Navigate href={`/stats/players/${useParams().tag}`} />;
+const OldTeam = () => <Navigate href={statsPath(`/clans/${useParams().id}`)} />;
+const OldPlayer = () => <Navigate href={statsPath(`/players/${useParams().tag}`)} />;
+// The stats site was at /stats first: the same page where it is now, in
+// place of the old entry (the servers answer these with a 301 too).
+const OldStats = () => {
+  const at = useLocation();
+  return <Navigate href={`${movedStatsPath(at.pathname) ?? STATS_ROOT}${at.search}${at.hash}`} />;
+};
 
 render(
   () => (
-    <Router root={Veil}>
-      <Route path="/dash/teams" component={() => <Navigate href="/dash/clans" />} />
-      <Route path="/dash/teams/:tag" component={() => <Navigate href={`/dash/clans/${useParams().tag}`} />} />
+    <Router root={(p) => <><ThemeColor /><Veil {...p} /></>}>
+      <Route path="/dash/clans" component={() => <Navigate href="/dash/teams" />} />
+      <Route path="/dash/clans/:tag" component={() => <Navigate href={`/dash/teams/${useParams().tag}`} />} />
       <Route path="/dash/admin/style" component={DeckStyle} />
       <Route path="/dash/admin/usage" component={Usage} />
+      <Route path="/dash/admin/events" component={EventLog} />
       <Route path="/dash/admin" component={() => <Navigate href="/dash/admin/usage" />} />
       <Route path={["/", "/dash/:section", "/dash/:section/:tag"]} component={Dashboard} />
-      <Route path="/stats" component={StatsLayout}>
+      <Route path={STATS_ROOT} component={StatsLayout}>
         <Route path="/" component={Home} />
         <Route path="/games" component={Games} />
         <Route path="/games/:id" component={Game} />
@@ -87,18 +101,22 @@ render(
         <Route path={["/ranks", "/ranks/:playlist"]} component={Ranks} />
         <Route path="/clans" component={Clans} />
         <Route path="/clans/:id" component={ClanPage} />
-        <Route path="/teams" component={() => <Navigate href="/stats/clans" />} />
+        <Route path="/teams" component={() => <Navigate href={statsPath("/clans")} />} />
         <Route path="/teams/:id" component={OldTeam} />
+        <Route path="/mods" component={Mods} />
+        <Route path="/mods/:id" component={ModPage} />
         <Route path="/events" component={Events} />
         <Route path="/admin" component={Admin} />
         <Route path="*404" component={NotFound} />
       </Route>
-      <Route path="/stats/games/:id/3d" component={Viewer3DPage} />
+      <Route path={statsPath("/games/:id/3d")} component={Viewer3DPage} />
+      <Route path={[OLD_STATS_ROOT, `${OLD_STATS_ROOT}/*rest`]} component={OldStats} />
+      <Route path={GAMES_ROOT} component={() => <Navigate href={STATS_ROOT} />} />
       <Route path="/signin" component={SignIn} />
       <Route path="/games/:id" component={OldGame} />
       <Route path="/players/:tag" component={OldPlayer} />
       <Route path="/players" component={() => <Navigate href="/dash/players" />} />
-      <Route path="/events" component={() => <Navigate href="/stats/events" />} />
+      <Route path="/events" component={() => <Navigate href={statsPath("/events")} />} />
       <Route path="*404" component={() => <Navigate href="/" />} />
     </Router>
   ),

@@ -186,6 +186,51 @@ fn moving_a_weapon_patches_only_its_position_and_the_checksum() {
     assert_eq!(out[e + 0x24..e + 0x54], src[e + 0x24..e + 0x54]);
 }
 
+/// Another tag's bytes (the tag editor's edits) save with the scenario's
+/// edits and change nothing else but the checksum; the scenario's own
+/// payload is refused.
+#[test]
+fn other_tags_patches_save_with_the_scenario_s() {
+    let src = fixture();
+    let mut s = read(src.clone());
+    // The weapon tag's payload (slot 2, at metadata +0x1100).
+    let weap = META + 0x1100;
+    s.set_tag_patches(vec![(weap + 4, vec![1, 2, 3])]).unwrap();
+    s.set(
+        BlockKind::Weapons,
+        0,
+        "position",
+        Value::Vec3([7.0, 1.0, 2.0]),
+    )
+    .unwrap();
+    let out = write(&src, &s);
+    let d = diff(&src, &out);
+    let at = META_FILE + 0x1100 + 4;
+    assert_eq!(out[at..at + 3], [1, 2, 3]);
+    let x = sfile(WEAPONS_AT + 8);
+    for (lo, hi) in &d {
+        let ok = (*lo >= at && *hi <= at + 3)
+            || (*lo >= x && *hi <= x + 4)
+            || *lo >= 0x2d0 && *hi <= 0x2d4;
+        assert!(ok, "{lo:#x}..{hi:#x} changed");
+    }
+    open(out).validate_checksum().unwrap();
+    assert!(matches!(
+        s.set_tag_patches(vec![(META + SCNR as u32 + 0x10, vec![0])]),
+        Err(Error::Refused(_))
+    ));
+    // Cleared: nothing is left of them.
+    s.set_tag_patches(Vec::new()).unwrap();
+    s.set(
+        BlockKind::Weapons,
+        0,
+        "position",
+        Value::Vec3([0.0, 1.0, 2.0]),
+    )
+    .unwrap();
+    assert_eq!(write(&src, &s), src);
+}
+
 #[test]
 fn every_editable_field_writes_only_its_own_bytes() {
     let src = fixture();
@@ -632,7 +677,7 @@ fn viewport_renders_markers_offscreen() {
         scale: 1.0,
         object: None,
     };
-    vp.set_markers(&device, &crate::render::marker_vertices(&[marker], None));
+    vp.set_markers(&device, &crate::render::marker_vertices(&[marker], &[]));
     vp.render(&device, &queue, &cam, size);
     let drawn = pixel(&vp);
     assert_ne!(empty, drawn);
@@ -1794,4 +1839,199 @@ mod packages {
             second.patch_len
         );
     }
+}
+
+// ---------- The sky ----------
+
+#[test]
+fn skies_are_read_from_the_scenario_root() {
+    let address = 0x9000_0000u32;
+    let mut b = vec![0u8; 0x40];
+    put(&mut b, 0x8, 2);
+    put(&mut b, 0xc, address + 0x20);
+    for (k, id) in [0xe001_0002u32, 0xffff_ffff].into_iter().enumerate() {
+        put(&mut b, 0x20 + 8 * k, FourCC(*b"sky ").as_u32());
+        put(&mut b, 0x24 + 8 * k, id);
+    }
+    assert_eq!(
+        crate::scene::skies_in(&b, address),
+        [map::TagId(0xe001_0002), map::TagId::NULL]
+    );
+    // A block running off the payload, or a root too short, names none.
+    put(&mut b, 0x8, 9);
+    assert!(crate::scene::skies_in(&b, address).is_empty());
+    assert!(crate::scene::skies_in(&b[..0xc], address).is_empty());
+    // The invented map has no sky.
+    let mut m = open(fixture());
+    assert!(crate::scene::scenario_skies(&mut m).is_empty());
+}
+
+#[test]
+fn the_sky_turns_with_the_camera_and_never_comes_nearer() {
+    let a = Camera {
+        target: [10.0, -4.0, 3.0],
+        distance: 25.0,
+        yaw: 0.7,
+        pitch: 0.2,
+        ..Camera::default()
+    };
+    let b = Camera {
+        target: [-300.0, 80.0, 40.0],
+        distance: 2.0,
+        ..a
+    };
+    // Moving the eye leaves the sky where it was.
+    assert_eq!(a.sky_view_proj(1.5), b.sky_view_proj(1.5));
+    // What is straight ahead is in the middle of the view, however far.
+    let f = a.forward();
+    let m = a.sky_view_proj(1.5);
+    let mut last = 0.0;
+    for d in [1.0f32, 100.0, 1e5] {
+        let c = geometry::transform(&m, [f[0] * d, f[1] * d, f[2] * d, 1.0]);
+        let (x, y, z) = (c[0] / c[3], c[1] / c[3], c[2] / c[3]);
+        assert!(x.abs() < 1e-4 && y.abs() < 1e-4, "{x} {y}");
+        assert!(z > last && z < 1.0, "depth {z} after {last}");
+        last = z;
+    }
+    // Turning moves it.
+    let turned = Camera { yaw: 1.2, ..a };
+    assert_ne!(turned.sky_view_proj(1.5), m);
+}
+
+/// A box of `half` round the origin, in one batch with texture 0.
+fn sky_box(half: f32) -> crate::scene::Mesh {
+    let mut part = geometry::WorldPart::default();
+    for z in [-half, half] {
+        for y in [-half, half] {
+            for x in [-half, half] {
+                part.positions.push([x, y, z]);
+                part.normals.push([0.0, 0.0, 1.0]);
+                part.uvs.push([0.5, 0.5]);
+            }
+        }
+    }
+    // Two triangles per face, any winding: the sky is not culled.
+    for [a, b, c, d] in [
+        [0, 1, 3, 2],
+        [4, 5, 7, 6],
+        [0, 1, 5, 4],
+        [2, 3, 7, 6],
+        [0, 2, 6, 4],
+        [1, 3, 7, 5],
+    ] {
+        part.tris.push([a, b, c]);
+        part.tris.push([a, c, d]);
+    }
+    let mut mesh = crate::scene::Mesh::default();
+    mesh.push(Some(0), None, crate::scene::Blend::Opaque, &part);
+    mesh
+}
+
+#[test]
+fn the_sky_model_is_drawn_behind_the_level_wherever_the_eye_is() {
+    use crate::scene::{Image, Scene, SceneSky};
+    let instance = wgpu::Instance::default();
+    let Ok(adapter) =
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+    else {
+        eprintln!("no wgpu adapter; skipping");
+        return;
+    };
+    let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+    let size = [64u32, 64];
+    let center = |vp: &crate::render::Viewport| -> [u8; 4] {
+        let tex = vp.color_texture().unwrap();
+        let row = 256u32;
+        let buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: u64::from(row * size[1]),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut enc = device.create_command_encoder(&Default::default());
+        enc.copy_texture_to_buffer(
+            tex.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buf,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(row),
+                    rows_per_image: Some(size[1]),
+                },
+            },
+            wgpu::Extent3d {
+                width: size[0],
+                height: size[1],
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit([enc.finish()]);
+        buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let data = buf.slice(..).get_mapped_range().unwrap();
+        let at = (32 * row + 32 * 4) as usize;
+        [data[at], data[at + 1], data[at + 2], data[at + 3]]
+    };
+    let red = Image {
+        width: 1,
+        height: 1,
+        rgba: vec![230, 10, 10, 255],
+    };
+    // A small sky box (5 units): drawn at infinity, so a level 20 units
+    // away still covers it, and the eye can be anywhere.
+    let mut scene = Scene {
+        textures: vec![red],
+        lifts: vec![1.0],
+        sky: Some(SceneSky {
+            name: "test_sky".into(),
+            mesh: sky_box(5.0),
+        }),
+        ..Scene::default()
+    };
+    let mut vp = crate::render::Viewport::new(&device);
+    for target in [[0.0, 0.0, 0.0], [5000.0, -300.0, 900.0]] {
+        let cam = Camera {
+            target,
+            distance: 40.0,
+            ..Camera::default()
+        };
+        vp.set_scene(&device, &queue, &scene);
+        assert!(vp.has_sky());
+        vp.render(&device, &queue, &cam, size);
+        let px = center(&vp);
+        assert!(px[0] > 180 && px[1] < 60 && px[2] < 60, "the sky: {px:?}");
+    }
+    // A wall of the level in front of the camera hides the sky.
+    let cam = Camera {
+        target: [0.0; 3],
+        distance: 40.0,
+        ..Camera::default()
+    };
+    let mut wall = geometry::WorldPart::default();
+    let (c, f) = (cam.target, cam.forward());
+    let r = geometry::normalize(geometry::cross(f, [0.0, 0.0, 1.0]));
+    let u = geometry::cross(r, f);
+    for (dx, dy) in [(-20.0, -20.0), (20.0, -20.0), (20.0, 20.0), (-20.0, 20.0)] {
+        wall.positions.push(geometry::add(
+            c,
+            geometry::add(geometry::scale(r, dx), geometry::scale(u, dy)),
+        ));
+        wall.normals.push(geometry::scale(f, -1.0));
+        wall.uvs.push([0.0; 2]);
+    }
+    wall.tris = vec![[0, 1, 2], [0, 2, 3], [0, 2, 1], [0, 3, 2]];
+    scene
+        .world
+        .push(None, None, crate::scene::Blend::Opaque, &wall);
+    vp.set_scene(&device, &queue, &scene);
+    vp.render(&device, &queue, &cam, size);
+    let px = center(&vp);
+    assert!(
+        !(px[0] > 180 && px[1] < 60),
+        "the level is in front: {px:?}"
+    );
+    // Without a sky model, the gradient.
+    scene.sky = None;
+    vp.set_scene(&device, &queue, &scene);
+    assert!(!vp.has_sky());
 }

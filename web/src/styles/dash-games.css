@@ -126,6 +126,19 @@
 
 @media (max-aspect-ratio: 4/5) {
   .dx-games .dx-plate .dx-game-tile { width: calc(var(--u) * 52); height: calc(var(--u) * 52); top: calc(var(--u) * -48); }
+  /* Let the saves determine the height. The A/B controls follow the last
+     row even when the user opens its delete confirmation. */
+  .dx:has(.dx-games) { position: relative; min-height: 100dvh; overflow: clip; }
+  .dx:has(.dx-games) .dx-stage { position: relative; inset: auto; margin: auto; height: auto; transform: none; }
+  .dx-screen.dx-games {
+    position: relative; display: grid; grid-template-columns: 1fr 1fr;
+    padding: calc(var(--u) * 62) calc(var(--u) * 10) calc(var(--u) * 24);
+    gap: calc(var(--u) * 12);
+  }
+  .dx-games > div:not(.dx-preview) { grid-column: 1 / -1; min-width: 0; }
+  .dx-games .dx-panel, .dx-games .dx-plate { position: relative; inset: auto; width: 100%; }
+  .dx-games .dx-prompt { position: static; justify-self: start; }
+  .dx-games .dx-prompt--a { justify-self: end; }
   .dx-game-saves { max-height: none; }
   .dx-game-saves li > button { min-height: 44px; }
 }

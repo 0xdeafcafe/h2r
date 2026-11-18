@@ -17,16 +17,20 @@ use crate::live_geometry::MapReader;
 use crate::live_layers::Texture;
 use crate::live_models::{self, BitmapRole, Image};
 
-/// The largest side of a surface picture in `map.glb`.
-pub const MAX_SURFACE_TEXTURE: u32 = 512;
+/// The largest side of a surface picture in `map.glb`: above any retail
+/// bitmap (the discs' largest are 1024), so every picture keeps the disc's
+/// full resolution.
+pub const MAX_SURFACE_TEXTURE: u32 = 2048;
 /// The smallest side the budget may shrink pictures to.
 pub const MIN_SURFACE_TEXTURE: u32 = 64;
 /// The most bytes of surface pictures one level's `map.glb` holds: past
 /// it, every picture of the level is halved until they fit (or reach
 /// [`MIN_SURFACE_TEXTURE`]).
-pub const TEXTURE_BUDGET: usize = 6 << 20;
-/// JPEG quality of opaque pictures.
-pub const JPEG_QUALITY: u8 = 80;
+/// At full resolution the largest retail level's pictures are about 6 MiB
+/// as WebP.
+pub const TEXTURE_BUDGET: usize = 32 << 20;
+/// WebP quality of surface pictures (libwebp's 0 to 100).
+pub const WEBP_QUALITY: f32 = 90.0;
 
 /// How a surface's picture is drawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -55,7 +59,7 @@ pub struct Look {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Encoded {
     pub bytes: Vec<u8>,
-    /// `image/jpeg` or `image/png`.
+    /// `image/webp`.
     pub mime: &'static str,
     pub width: u32,
     pub height: u32,
@@ -225,7 +229,13 @@ impl Looks {
                 distinct.push((key, &l.texture.image));
             }
         }
-        let mut cap = MAX_SURFACE_TEXTURE;
+        // From the largest picture's side, so the first halving shrinks it.
+        let mut cap = distinct
+            .iter()
+            .map(|(_, img)| img.width.max(img.height))
+            .max()
+            .unwrap_or(1)
+            .min(MAX_SURFACE_TEXTURE);
         loop {
             let out: HashMap<(u32, Cutout), Encoded> = distinct
                 .iter()
@@ -240,45 +250,18 @@ impl Looks {
     }
 }
 
-/// A picture as JPEG when every pixel is opaque, else PNG.
+/// A picture as WebP ([`live_server::art_pack::webp`]): lossy at
+/// [`WEBP_QUALITY`], the alpha of a cut-out kept exactly.
 pub fn encode_image(image: &Image) -> Encoded {
-    let opaque = image.rgba.as_chunks::<4>().0.iter().all(|p| p[3] == 255);
-    if opaque {
-        let rgb: Vec<u8> = image
-            .rgba
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .flat_map(|p| [p[0], p[1], p[2]])
-            .collect();
-        let mut bytes = Vec::new();
-        let encoded = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, JPEG_QUALITY)
-            .encode(
-                &rgb,
-                image.width,
-                image.height,
-                image::ExtendedColorType::Rgb8,
-            );
-        if encoded.is_ok() {
-            return Encoded {
-                bytes,
-                mime: "image/jpeg",
-                width: image.width,
-                height: image.height,
-            };
-        }
-    }
-    let mut bytes = Vec::new();
-    assets::png::write_rgba_fast(&mut bytes, image.width, image.height, &image.rgba)
-        .expect("PNG into memory");
+    let bytes = live_server::art_pack::webp(&image.rgba, image.width, image.height, WEBP_QUALITY)
+        .expect("a decoded picture encodes");
     Encoded {
         bytes,
-        mime: "image/png",
+        mime: "image/webp",
         width: image.width,
         height: image.height,
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -391,14 +374,16 @@ mod tests {
     }
 
     #[test]
-    fn opaque_pictures_are_jpeg_and_cut_outs_png() {
-        let j = encode_image(&image(64, 32, 255));
-        assert_eq!(j.mime, "image/jpeg");
-        assert_eq!(&j.bytes[..2], &[0xff, 0xd8]);
-        assert_eq!((j.width, j.height), (64, 32));
-        let p = encode_image(&image(64, 32, 0));
-        assert_eq!(p.mime, "image/png");
-        assert_eq!(&p.bytes[1..4], b"PNG");
+    fn pictures_are_webp_at_full_size() {
+        for alpha in [255, 0] {
+            let e = encode_image(&image(1024, 512, alpha));
+            assert_eq!(e.mime, "image/webp");
+            assert_eq!(&e.bytes[8..12], b"WEBP");
+            assert_eq!((e.width, e.height), (1024, 512));
+        }
+        // A disc-sized picture is not shrunk on its way to the glb.
+        let big = surface_image(image(1024, 1024, 255), Cutout::Opaque);
+        assert_eq!((big.width, big.height), (1024, 1024));
     }
 
     #[test]

@@ -13,7 +13,7 @@ use axum::extract::{DefaultBodyLimit, Path, Query as Params, Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{any, get, post};
+use axum::routing::{any, delete, get, post};
 use live_proto::{ClientMessage, ErrorBody, ErrorCode, Gamertag, Health, TitleId, Xuid, lxm};
 
 use crate::app::{ApiError, Live, MAX_TITLE_FILE, not_found};
@@ -262,6 +262,18 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
         )
         .route("/v1/accounts/by-xuid/{xuid}/keys", get(keys_by_xuid))
         .route(
+            "/v1/accounts/by-xuid/{xuid}/signins",
+            get(crate::signins::get_signins),
+        )
+        .route(
+            "/v1/accounts/by-xuid/{xuid}/signins/sign-out-others",
+            post(crate::signins::post_sign_out_others),
+        )
+        .route(
+            "/v1/accounts/by-xuid/{xuid}/signins/{kid}",
+            delete(crate::signins::delete_signin),
+        )
+        .route(
             "/v1/accounts/by-xuid/{xuid}",
             get(crate::teams::account_identity),
         )
@@ -294,6 +306,7 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
         )
         .route("/v1/server", get(crate::status::get_server))
         .route("/v1/stats/summary", get(crate::stats::get_summary))
+        .route("/v1/page-meta", get(page_meta))
         .route("/v1/ranks/{playlist}", get(crate::ranks::leaderboard))
         .route("/v1/rank-stats", get(crate::ranks::stats))
         .route(
@@ -324,6 +337,8 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
         .route("/v1/games/bots", post(crate::bots::post_roster))
         .route("/v1/games/{id}", get(game))
         .route("/v1/games/{id}/frames", get(game_frames))
+        .route("/v1/games/{id}/chunks", get(game_chunks))
+        .route("/v1/games/{id}/chunks/{tick}", get(game_chunk))
         .route("/v1/games/{id}/events", post(game_events))
         .route("/v1/local/signin", any(crate::local_signin::redeem))
         .route(
@@ -387,6 +402,7 @@ pub fn router_with_web(live: Arc<Live>, dir: Option<&std::path::Path>) -> Router
 /// when there is no game art.
 pub fn router_with_site(live: Arc<Live>, site: &Site) -> Router {
     let published = live.published_art().cloned();
+    let pages = live.clone();
     let mut api = api_router(
         live,
         crate::status::SiteFacts {
@@ -403,23 +419,78 @@ pub fn router_with_site(live: Arc<Live>, site: &Site) -> Router {
     };
     #[cfg(not(feature = "native"))]
     let _ = published;
-    with_web(api, site.web.as_deref()).layer(middleware::from_fn(crate::caching::layer))
+    with_web(api, pages, site.web.as_deref()).layer(middleware::from_fn(crate::caching::layer))
 }
 
 /// The built web app's files beside the API, `index.html` for any other
 /// path; or, with none, a JSON 404.
 #[cfg(feature = "native")]
-fn with_web(api: Router, dir: Option<&std::path::Path>) -> Router {
+fn with_web(api: Router, live: Arc<Live>, dir: Option<&std::path::Path>) -> Router {
     let Some(dir) = dir else {
         return api.fallback(|| async { not_found("no such endpoint") });
     };
-    let index = tower_http::services::ServeFile::new(dir.join("index.html"));
-    api.fallback_service(tower_http::services::ServeDir::new(dir).fallback(index))
+    let index = dir.join("index.html");
+    let page = get(move |State(live): Shared, req: Request| {
+        let index = index.clone();
+        async move { app_page(&live, &index, req).await }
+    })
+    .with_state(live);
+    // `/` too: the app's HTML is always the page's, never the bare file.
+    let files = tower_http::services::ServeDir::new(dir)
+        .append_index_html_on_directories(false)
+        .fallback(page);
+    api.fallback_service(files)
+}
+
+/// The app's HTML for a page: `index.html` with the page's link preview
+/// ([`crate::page_meta`]), read afresh so a new build shows at once.
+#[cfg(feature = "native")]
+async fn app_page(live: &Live, index: &std::path::Path, req: Request) -> Response {
+    // The stats site's first address: the same page where it is now.
+    if let Some(to) = crate::page_meta::moved(req.uri().path(), req.uri().query())
+        && let Ok(to) = HeaderValue::from_str(&to)
+    {
+        return (StatusCode::MOVED_PERMANENTLY, [(header::LOCATION, to)]).into_response();
+    }
+    let Ok(html) = tokio::fs::read_to_string(index).await else {
+        return not_found("no web app").into_response();
+    };
+    let path = req.uri().path();
+    let sent = |name: &str| req.headers().get(name).and_then(|v| v.to_str().ok());
+    let origin = crate::page_meta::origin(
+        live.policy().public.get().as_deref(),
+        sent("host"),
+        sent("x-forwarded-proto"),
+    );
+    let meta = crate::page_meta::describe(live, path);
+    let body = crate::page_meta::page_html(&html, &meta, &origin, path);
+    (
+        [(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/html; charset=utf-8"),
+        )],
+        body,
+    )
+        .into_response()
+}
+
+/// `GET /v1/page-meta?path=`: what a page of the web app is, for its link
+/// preview ([`crate::page_meta`]). The Worker asks this for pages that
+/// name a player, game or clan; the machine's server reads it directly.
+async fn page_meta(
+    State(live): Shared,
+    Params(p): Params<HashMap<String, String>>,
+) -> ApiResult<Response> {
+    let path = p.get("path").map_or("/", String::as_str);
+    Ok(json(
+        StatusCode::OK,
+        &crate::page_meta::describe(&live, path),
+    ))
 }
 
 /// A Worker serves the web app as static assets, ahead of this router.
 #[cfg(not(feature = "native"))]
-fn with_web(api: Router, _dir: Option<&std::path::Path>) -> Router {
+fn with_web(api: Router, _live: Arc<Live>, _dir: Option<&std::path::Path>) -> Router {
     api.fallback(|| async { not_found("no such endpoint") })
 }
 
@@ -506,9 +577,11 @@ async fn list_accounts(
 
 async fn create_account(
     State(live): Shared,
+    headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> ApiResult<Response> {
-    let created = live.create_account(&jws_body(body)?).await?;
+    let device = crate::signins::device_of(&headers);
+    let created = live.create_account_on(&jws_body(body)?, device).await?;
     Ok(json(StatusCode::CREATED, &created))
 }
 
@@ -1018,18 +1091,15 @@ async fn game_frames(
     } else {
         crate::games::FRAMES_PAGE
     };
-    let packed = match p.get("format").map(String::as_str) {
-        None | Some("") | Some("json") => false,
-        Some("packed") => true,
-        Some(_) => return Err(invalid("format must be json or packed")),
-    };
-    if !packed {
-        return Ok(json(
-            StatusCode::OK,
-            &live
-                .recorded_frames(game_id(&id)?, from_tick, to_tick, paging.after, limit)
-                .await?,
-        ));
+    // The JSON read is gone (docs/live/live-api.md, "Frame chunks"):
+    // games since then are read as chunks, older ones packed.
+    match p.get("format").map(String::as_str) {
+        None | Some("") | Some("packed") => {}
+        Some(_) => {
+            return Err(invalid(
+                "format must be packed; frames are read as chunks (/v1/games/{id}/chunks)",
+            ));
+        }
     }
     let page = live
         .recorded_frame_data(game_id(&id)?, from_tick, to_tick, paging.after, limit)
@@ -1058,6 +1128,62 @@ async fn game_frames(
         h.insert("x-next", next);
     }
     h.insert("x-position", HeaderValue::from(page.position));
+    Ok(resp)
+}
+
+/// `GET /v1/games/{id}/chunks`: the game's frame chunk index, oldest first
+/// (docs/live/live-api.md, "Frame chunks").
+async fn game_chunks(
+    State(live): Shared,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult<Response> {
+    let viewer = live.read_viewer(bearer(&headers))?;
+    let id = game_id(&id)?;
+    live.check_game_shows(id, viewer)?;
+    let items = live.frame_chunks(id).await?;
+    let ended = live.game(id)?.end_reason.is_some();
+    Ok(json(
+        StatusCode::OK,
+        &serde_json::json!({
+            "game_id": id,
+            "chunk_ticks": live_proto::chunk::CHUNK_TICKS,
+            "ended": ended,
+            "items": items,
+        }),
+    ))
+}
+
+/// `GET /v1/games/{id}/chunks/{tick}`: one chunk, by its first tick. Never
+/// rewritten, so an anonymous read (a game anyone may see) is cached for
+/// good; a read with a token stays private.
+async fn game_chunk(
+    State(live): Shared,
+    headers: HeaderMap,
+    Path((id, tick)): Path<(String, String)>,
+) -> ApiResult<Response> {
+    let token = bearer(&headers);
+    let viewer = live.read_viewer(token)?;
+    let id = game_id(&id)?;
+    live.check_game_shows(id, viewer)?;
+    let tick: u64 = tick
+        .parse()
+        .map_err(|_| invalid("the chunk is named by its first tick"))?;
+    let bytes = live.frame_chunk(id, tick).await?;
+    let mut resp = (
+        [(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static(crate::games::CHUNK_TYPE),
+        )],
+        bytes,
+    )
+        .into_response();
+    if token.is_none() {
+        resp.headers_mut().insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static(crate::caching::IMMUTABLE),
+        );
+    }
     Ok(resp)
 }
 

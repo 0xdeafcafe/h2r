@@ -109,7 +109,7 @@ export default function ContentAdmin() {
             </table>
           </Show>
         </Panel>
-        <Panel title="Reports" sub="newest first">
+        <Panel title="Mod Reports" sub="map packages and blobs, newest first">
           <Show when={content()?.reports.length} fallback={<p class="adm-preset-note">No reports.</p>}>
             <ul class="adm-reports">
               <For each={content()!.reports}>

@@ -492,13 +492,17 @@ async fn the_server_serves_content_saves_and_art_from_a_bucket() {
     std::fs::write(art_dir.join("ui/a.png"), b"\x89PNG not really").unwrap();
     std::fs::write(art_dir.join("ui/app.js"), b"plain").unwrap();
     std::fs::write(art_dir.join("ui/app.js.gz"), b"gzipped-bytes").unwrap();
+    // A packed glb (art_pack): its Brotli copy goes up, not the gzip one.
+    std::fs::write(art_dir.join("ui/m.glb"), b"glTF").unwrap();
+    std::fs::write(art_dir.join("ui/m.glb.gz"), b"gz-glb").unwrap();
+    std::fs::write(art_dir.join("ui/m.glb.br"), b"br-glb").unwrap();
     let art = GameArt {
         dir: art_dir,
         share: true,
     };
     let published = PublishedArt::new(public.clone());
     let report = published.publish(&art).await.unwrap();
-    assert_eq!((report.files, report.uploaded), (3, 3));
+    assert_eq!((report.files, report.uploaded), (4, 4));
     let again = published.publish(&art).await.unwrap();
     assert_eq!(again.uploaded, 0);
     let base = format!("public/art/{}", report.stamp);
@@ -530,6 +534,22 @@ async fn the_server_serves_content_saves_and_art_from_a_bucket() {
         a(&png, Attribute::ContentType).as_deref(),
         Some("image/png")
     );
+    assert_eq!(a(&png, Attribute::ContentEncoding), None);
+    let glb = b
+        .raw()
+        .get(&b.raw_key(&format!("{base}/ui/m.glb")))
+        .await
+        .unwrap();
+    assert_eq!(a(&glb, Attribute::ContentEncoding).as_deref(), Some("br"));
+    assert_eq!(
+        a(&glb, Attribute::ContentType).as_deref(),
+        Some("model/gltf-binary")
+    );
+    assert_eq!(
+        a(&glb, Attribute::CacheControl).as_deref(),
+        Some(PUBLISHED_CACHE)
+    );
+    assert_eq!(&glb.bytes().await.unwrap()[..], b"br-glb");
 
     b.clean().await;
 }

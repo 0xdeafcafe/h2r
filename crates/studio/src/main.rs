@@ -17,7 +17,7 @@ use winit::window::{Window, WindowId};
 
 const USAGE: &str = "usage: h2-editor call <call> [args] | h2-editor --serve [--socket PATH] [...]
        h2-editor [--socket PATH | --no-listen] [--disc <iso> | --map <file.map> | --folder <maps dir>] \
-[--halo1 <iso|maps dir>] [--data <dir>] [--package <dir>[#H1|#H2]] [--halo1-map <map> [--convert h2|h1]] [--overlay on|off] [--tool scenario|variants|playlists|ui-screens] [--ui-screen <screen>/<state> [--ui-press up,a,...]] [--pick <map>] [--select <block>:<index>] [--hopper <file.dat>|default] \
+[--halo1 <iso|maps dir>] [--data <dir>] [--package <dir>[#H1|#H2]] [--halo1-map <map> [--convert h2|h1]] [--overlay on|off] [--tool scenario|tags|variants|playlists|ui-screens] [--tag <group>:<path>] [--ui-screen <screen>/<state> [--ui-press up,a,...]] [--pick <map>] [--select <block>:<index>] [--hopper <file.dat>|default] \
 [--variant <built-in index>] [--copy-variant <name>] [--playlist <1..16>] [--preset <n>] \
 [--focus] [--camera <yaw>,<pitch>,<distance>] [--dialog unsaved|package] \
 [--no-disc] [--nudge <x>,<y>,<z>] [--page <variant settings page>] [--screenshot <out.png> [--size <w>x<h>] [--scale <s>] [--do <steps>] \
@@ -46,6 +46,8 @@ struct Args {
     /// The UI Screens tool's screen and state, and presses on it.
     ui_screen: Option<String>,
     ui_press: Option<String>,
+    /// The Tags tool's tag, `group:path`.
+    tag: Option<String>,
     hopper: Option<String>,
     variant: Option<usize>,
     playlist: Option<usize>,
@@ -91,6 +93,7 @@ fn args() -> Result<Args> {
         tool: None,
         ui_screen: None,
         ui_press: None,
+        tag: None,
         hopper: None,
         variant: None,
         playlist: None,
@@ -142,12 +145,14 @@ fn args() -> Result<Args> {
             "--pick" => a.pick = Some(value()?),
             "--ui-screen" => a.ui_screen = Some(value()?),
             "--ui-press" => a.ui_press = Some(value()?),
+            "--tag" => a.tag = Some(value()?),
             "--tool" => {
                 a.tool = Some(match value()?.as_str() {
                     "scenario" => ToolKind::Scenario,
                     "variants" => ToolKind::Variants,
                     "playlists" => ToolKind::Playlists,
                     "ui-screens" => ToolKind::UiScreens,
+                    "tags" => ToolKind::Tags,
                     t => bail!("unknown tool {t}\n{USAGE}"),
                 })
             }
@@ -327,6 +332,13 @@ fn main() -> Result<()> {
                 Some(i) => app.dispatch(Action::UiPress(i)),
                 None => bail!("--ui-press: no input {p:?}"),
             }
+        }
+    }
+    if let Some(t) = &args.tag {
+        app.dispatch(Action::SetTool(ToolKind::Tags));
+        match studio::app::tag_api::find_tag(&app.tags, t) {
+            Some(id) => app.dispatch(Action::Tag(studio::app::TagAction::Select(id))),
+            None => bail!("--tag: no tag {t:?} in the open map"),
         }
     }
     if let Some(i) = args.variant {

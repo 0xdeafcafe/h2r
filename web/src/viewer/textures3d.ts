@@ -5,7 +5,7 @@
 // (`{class, flat}`, docs/live/live-art.md, "Textures"); both are kept per mesh,
 // so the switch is instant. The choice is remembered in localStorage.
 //
-// The pictures are files beside the glb (`tex/<bitmap>.jpg`): the glb
+// The pictures are files beside the glb (`tex/<bitmap>.webp`): the glb
 // loads without them ([`deferTextures`]), the level is drawn in its class
 // colours at once, and each picture is fetched, decoded off the main thread
 // and put on its surfaces as it arrives ([`streamTextures`]).
@@ -171,6 +171,12 @@ class DeferredTextures implements GLTFLoaderPlugin {
     this.out.push({ url: pictureUrl(this.glbUrl, image.uri), texture });
     return Promise.resolve(texture);
   }
+}
+
+/** The anisotropic filtering level for a level's pictures, given the
+ *  GPU's most: all of it, up to 16 (where the gain stops). */
+export function mapAnisotropy(max: number): number {
+  return Number.isFinite(max) && max >= 1 ? Math.min(16, Math.floor(max)) : 1;
 }
 
 /** Makes `loader` leave a glb's picture files for later: the returned list

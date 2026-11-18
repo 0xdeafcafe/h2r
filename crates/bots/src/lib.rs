@@ -8,6 +8,7 @@
 //! ([`guest::hide`]). The second, phantom peers ([`phantom`]), is stage 6.
 //! The boot glue (`boot::bot_glue`) places the hooks.
 
+pub mod autonav;
 pub mod brain;
 pub mod cache;
 pub mod emote;

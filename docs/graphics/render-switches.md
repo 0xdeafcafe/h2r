@@ -27,9 +27,7 @@ environment variable is then only the in-game A/B for a recent default.
 | `impl.render.views` | Rust `render_views` (`engine::render_loop`) | off | orchestrator: no saving, one runner round trip per call ([render-loop.md](render-loop.md)) | `feature::render_loop` | ask |
 | `impl.render.layer_draw`, `impl.render.layer_entries` | the layer draw `0x00044550` and its entry loop ([layer-draw.md](layer-draw.md)) | off | none in game; hooked calls leave the direct path | `feature::render_loop` | ask |
 | `impl.render.game_view`, `impl.render.scene_passes` | Rust `render_game_view` and `render_scene_passes` (stage 7a) | off | "change no draw and save no time on their own" ([render-loop.md](render-loop.md)) | `feature::render_loop`; D and E1 name the pass tag seam | ask |
-| `impl.render.layer_sort` | the layer sort `0x0013da70` in Rust | off | expected `render` minus the sort's share; not measured in game | `feature::render_loop` | ask |
 | `impl.render.states`, `impl.render.states_skip` | the shader draw's render-state list `0x0001a170`, exact or skipping redundant `SetRenderState_Simple` calls | off | synthetic: 12-53% of Simple calls skipped depending on draw order; the hook costs one exit from the direct path per draw; not measured in game | `feature::render_loop` | ask |
-| `impl.render.transparent_sort` | the transparents' index sort | off | about 0.01 ms a frame (30 samples over 142 s, [render-loop.md](render-loop.md)) | `feature::render_loop` | ask |
 | `render-timing` (and `render-timing.deep`) | times the render front-end stages and sites against the frame stats | off | the tool that measured the above ([gameplay-budget.md](../perf/gameplay-budget.md)) | `h2 play`, agent capture, profiling | keep |
 | `render-census` | the guest-memory census that decided pipelined rendering ([pipelined-render.md](pipelined-render.md)) | off | its own results | pipelined-render work | keep |
 | `render-loop` | the feature that places the `impl.render.*` ports above | on (places nothing unless a port is switched on) | | boot | keep (with the ports) |
@@ -114,14 +112,14 @@ here.
 ## Ask: recommendations
 
 - **Stage 7a ports** (`impl.render.views`, `layer_draw`, `layer_entries`,
-  `game_view`, `scene_passes`, `layer_sort`, `states`, `states_skip`,
-  `transparent_sort`). None is on, none saved measurable time (the sort
-  about 0.01 ms; the orchestrators add a round trip per call), and each
+  `game_view`, `scene_passes`, `states`, `states_skip`). None is on,
+  none saved measurable time (the orchestrators add a round trip per
+  call), and each
   adds a hook. Recommendation: keep `game_view` and `scene_passes` until
   the native renderer lane (crates/native-render, docs/graphics/native-renderer.md)
   says whether it hooks the pass sequence there (`ScenePasses::at()` is
-  the pass tag D and E1 want); remove `layer_sort` and `transparent_sort`
-  (proven no win); measure `states_skip` once in game, and remove
+  the pass tag D and E1 want); measure `states_skip` once in game
+  (the coordinator is measuring it live), and remove
   `states`, `states_skip`, `layer_draw` and `layer_entries` if it shows no
   `render` drop. `views` goes with `game_view` either way.
 - **D (`impl.render.interpolate`) against E1.** E1 is the choice and
@@ -151,3 +149,4 @@ numbers.
 | `ce288e75` | `H2_GFX_SUBMIT=batch\|<us>`, `GfxBackend::set_submit_after`, `set_submit_per_pass`, `SUBMIT_AFTER_PASSES` | slower in game: Old Mombasa 4x 30.2 against 33.5 fps per pass (3e8276b2); off since |
 | `2d562b08` | the lazy 1x reference at render scale (`H2_LAZY_REFERENCE`, `ScaledBackend::set_lazy_reference`), `scale_bench` | 1-10% saved on unread frames, 15-25% lost on frames with a back-buffer snapshot, which Halo's frames take (09590f5c); off since |
 | `7e4529f0` | `GfxBackend::without_shaders` | no caller |
+| `ff6f7d6b` | `impl.render.layer_sort` and `impl.render.transparent_sort`: `engine::render_loop::sort` and `sort_indexed`, their differential tests, the `render-loop` feature's two placements and path counters | the profile puts both sorts at about 0.01 ms a frame (30 samples over 142 s, Old Mombasa 2026-11-17), and each port cost a hooked call per sort; off since built. The points `LAYER_SORT` and `TRANSPARENT_SORT` stay in `engine::points` as research notes |

@@ -5,9 +5,15 @@ The web app (`web/`, live.forbes.red) has two faces:
 - **the dashboard** (`/`, `/dash/...`, `web/src/dash`): the "Live" side, in
   the style of the original console dashboard: green light on black, the
   orb, glass pods, bevelled plates, blade lists;
-- **the stats site** (`/stats/...`, `web/src/stats`): the game's record, in
+- **the stats site** (`/games/halo2/...`, `web/src/stats`): the game's record, in
   the style of the Halo 2 and Halo 3 era stats sites: a navy fixed column,
   blue title bars, dense tables.
+
+The stats site is Halo 2's, under `/games/` so another game's can sit
+beside it (`STATS_ROOT` in `web/src/routes.ts`; `/games` alone goes to
+it). It was at `/stats` first: the servers answer `/stats/*` with a 301 to
+the same page under `/games/halo2` (`page_meta::moved` in
+`crates/live-server`, both homes), and the app redirects the old paths too.
 
 Both recreate a look and a layout language only. No real logos, marks,
 wordmarks, emblems, medal art or proprietary fonts; the site is "h2 live".
@@ -41,7 +47,7 @@ Three consequences:
 1. **One home per thing.** A thing lives on one side. The other side may
    link to it, or show a one-line teaser that links to it, but does not
    rebuild it. (Today "who's online" is built three times; §2.)
-2. **A live game's page is on the stats site.** `/stats/games/:id` is the
+2. **A live game's page is on the stats site.** `/games/halo2/games/:id` is the
    same URL before and after the game ends, and after it ends it is the
    carnage report: the record. The dashboard's "live now" list links to it.
 3. **Actions are the dashboard's.** A stats page can show that two players
@@ -51,7 +57,7 @@ Three consequences:
 
 ### 1.1 Two admins
 
-- **Halo Admin** (`/stats/admin`, stats site): the game's configuration.
+- **Halo Admin** (`/games/halo2/admin`, stats site): the game's configuration.
   Playlists (hoppers), the message of the day, custom content and mods.
   It stays where it is, in the stats site's style.
 - **Live admin** (`/dash/admin`, dashboard, in the dense style of §3): the
@@ -70,10 +76,9 @@ The protocol has one thing, Xbox Live Teams; the site has two faces of it.
 
 - **Teams** are the dashboard's: the service feature. Creating a team,
   recruiting, answering, roles, leaving; the team list on your account.
-- **Clans** are the stats site's: a team seen as a Halo record. Roster,
-  combined numbers, standings. Clans get Halo features over time (ideas,
-  not built):
-  - a clan service record: games together, wins, kills, medals, maps;
+- **Clans** are the stats site's: a team seen as a Halo record, with its roster
+  and a service record with shared games, wins, kills and medals derived
+  from loaded game data. Other ideas for the clan record:
   - clan versus clan history, from games where two clans' members met;
   - clan leaderboards by window, beside the player ones;
   - a clan's game history and "clan of the week";
@@ -81,12 +86,15 @@ The protocol has one thing, Xbox Live Teams; the site has two faces of it.
 
 ### 1.3 The event log, twice
 
-- **Stats: the game record's events** (`/stats/events`): a public view of
+- **Stats: the game record's events** (`/games/halo2/events`): a public view of
   only the events that make the record: games, players joining and
-  leaving, results, kills, scores. It is the "show your working" for the
-  carnage reports.
+  leaving games, results, kills, scores and rank changes.
+  `web/src/stats/eventKinds.ts` defines the allowed event kinds and streams.
+  Medals are derived from game kills.
 - **Dashboard: the raw log** (`/dash/admin/events`): every event, every
-  stream, admin-only *in the web UI*.
+  stream the API makes available to the signed-in admin. Open **Event Log**
+  from dashboard Settings. The log opens at the latest page, with
+  older and newer pages and expandable event data.
 
 The API does not change: `GET /v1/events` keeps its access rules (the
 privacy redaction in `crates/live-server/src/sessions.rs` decides what
@@ -104,37 +112,38 @@ Every route and every page-level component, checked against §1.
 | Screen | Route | Verdict | Why |
 |---|---|---|---|
 | Main menu (orb, ring of pods) | `/` | stays | The front door. |
-| Live now | `/dash/live` | stays | Live state; rows link to `/stats/games/:id`. |
+| Live now | `/dash/live` | stays | Live state; rows link to `/games/halo2/games/:id`. |
 | Find a game | `/dash/sessions`, `/dash/sessions/:id` | stays | Live state. |
 | Friends | `/dash/friends` | stays | Your account, with actions. |
-| Clans | `/dash/clans` | stays, renamed **teams** | The Xbox Live Teams feature: create, recruit, answer, roles (§1.2). A clan's record is the stats site's. |
+| Teams | `/dash/teams` | stays | The Xbox Live Teams feature: create, recruit, answer, roles (§1.2). A clan's record is the stats site's. |
 | Players | `/dash/players`, `/dash/players/:tag` | stays | Presence ("who's online"). The player pod links to the service record. |
-| Game history | `/dash/history` | stays, as a launcher | A list of recent games, each opening its stats page. It must not grow its own report. |
+| Game history | `/dash/history` | removed | The Games tab (`/dash/games`) shows recent games; the full history is the stats site's (`/games/halo2/games`, a player's `/history`). |
 | Settings, profile, create account | `/dash/settings`, `/dash/signup` | stays | Your account. |
 | Account and recovery, recover, sign in | `/dash/account`, `/dash/recover`, `/dash/signin` | stays | Your account. |
 | Server overview | `/dash/server` | stays | Running the service. |
 | Invites, accounts, import, connect | `/dash/server/{invites,accounts,import,connect}` | stays | Running the service. |
 | Live admin: usage (new) | `/dash/admin`, `/dash/admin/usage` | new | Usage accounting (§5), in the dense style. |
-| Live admin: accounts, messages, reports, raw event log | `/dash/admin/{accounts,messages,reports,events}` | to build | §1.1. Reports is the home for the player-report queue. |
+| Live admin: accounts and player reports | `/dash/server/{accounts,reports}` | stays | Service administration. |
+| Live admin: Event Log | `/dash/admin/events` | stays | The raw event log, admin-only in the web UI (§1.3). |
 | Dense style page (new) | `/dash/admin/style` | new | The dense style on fixed data (§3). |
 
 ### The stats site (`web/src/stats`)
 
 | Page or part | Route | Verdict | Why |
 |---|---|---|---|
-| Home: leaderboards, tallies (24 hours, all time), of the week, maps, weapons, game types, skulls, activity heatmap, clan standings, recent games, Server Report | `/stats` | stays | The record, summed. |
-| Home: "Live Now" live game cards | `/stats` | stays, as a teaser | They link to the live game pages (§1.2). Keep it to the cards. |
-| Home: "Open Games" table (open sessions) | `/stats` | **moves** to the dashboard | Live state, and a copy of "find a game". Replace it with a count that links to `/dash/sessions`. |
-| Header Welcome box: "Players Online (n)", "Friends Online (n)", "Games Live (n)" | all | stays, as links | One-line teasers. "Players Online" should open `/dash/players`, not `/stats/players`. |
-| Games | `/stats/games` | stays | The record; its live tab links to live game pages. |
-| A game, carnage report, campaign report | `/stats/games/:id` | stays | The record. |
-| 3D replay window | `/stats/games/:id/3d` | stays | Part of a game's record. |
-| Players directory and leaderboards | `/stats/players` | stays, **splits** | Leaderboards and finding a service record are the record. The online-first sort and presence column are live state: sort by name or rank here, and leave presence to `/dash/players`. |
-| Service record, history, career, campaign | `/stats/players/:tag[/history,/career,/campaign]` | stays | The record. |
-| Player page: Friends and Teams boxes (`PlayerSocial.tsx`) | `/stats/players/:tag` | **splits** | Clan membership and the friend list are public facts and can stay as links. Live presence on them and the add / accept / cancel friend button move to the dashboard (`/dash/players/:tag`); the stats page links there. |
-| Clans directory, a clan's page | `/stats/clans`, `/stats/clans/:id` | stays, **splits** | Roster and combined numbers are the record and grow Halo features (§1.2). The team actions (join, leave, recruit, answer) move to the dashboard's teams screen; the clan page links there. |
-| Event log | `/stats/events` | stays, **narrows** | Becomes the public view of the game record's events only (§1.3). The full raw log moves to `/dash/admin/events`, admin-only in the UI. |
-| Halo Admin: message of the day, playlists, custom content | `/stats/admin` | stays | Game configuration (§1.1). |
+| Home: leaderboards, tallies (24 hours, all time), of the week, maps, weapons, game types, skulls, activity heatmap, clan standings, recent games, Server Report | `/games/halo2` | stays | The record, summed. |
+| Home: "Live Now" live game cards | `/games/halo2` | stays, as a teaser | They link to the live game pages (§1.2). Keep it to the cards. |
+| Home: "Open Games" table (open sessions) | `/games/halo2` | **moves** to the dashboard | Live state, and a copy of "find a game". Replace it with a count that links to `/dash/sessions`. |
+| Header Welcome box: "Players Online (n)", "Friends Online (n)", "Games Live (n)" | all | stays, as links | One-line teasers. "Players Online" should open `/dash/players`, not `/games/halo2/players`. |
+| Games | `/games/halo2/games` | stays | The record; its live tab links to live game pages. |
+| A game, carnage report, campaign report | `/games/halo2/games/:id` | stays | The record. |
+| 3D replay window | `/games/halo2/games/:id/3d` | stays | Part of a game's record. |
+| Players directory and leaderboards | `/games/halo2/players` | stays, **splits** | Leaderboards and finding a service record are the record. The online-first sort and presence column are live state: sort by name or rank here, and leave presence to `/dash/players`. |
+| Service record, history, career, campaign | `/games/halo2/players/:tag[/history,/career,/campaign]` | stays | The record. |
+| Player page: Friends and Clans boxes (`PlayerSocial.tsx`) | `/games/halo2/players/:tag` | stays | Public friends and clan membership. The friends box links to the dashboard's friend controls. |
+| Clans directory, a clan's page | `/games/halo2/clans`, `/games/halo2/clans/:id` | stays | Roster and clan service record (§1.2). Management links go to dashboard Teams. |
+| Event Log | `/games/halo2/events` | stays | The game record's events (§1.3). |
+| Halo Admin: message of the day, playlists, custom content | `/games/halo2/admin` | stays | Game configuration (§1.1). |
 | Nav tabs "Event Log", "Halo Admin", "Server" | all | stay | "Event Log" now opens the game events view; "Halo Admin" stays for admins; "Server" leaves for the dashboard. |
 | Sign-in link redemption | `/signin` | neither | A one-shot utility; no chrome. |
 
@@ -145,18 +154,11 @@ the scoreboard, the kill feed and the map canvas are drawn on both sides
 and stay shared. `clanBits.tsx` (clan emblem, presence words) is shared
 too and could move to `components/` when it next changes.
 
-### What moves, in order
+### Remaining page moves
 
-1. Live admin with the usage screens (`/dash/admin/usage`), in the dense
-   style. The "halo admin" pod on `/dash/server` stays; a "live admin" one
-   joins it.
-2. The raw event log to `/dash/admin/events`; `/stats/events` narrows to
-   the game record's events.
-3. The splits: open sessions off the stats home; presence, friend and
-   team action buttons off the player and clan pages, with links across;
-   the dashboard's clans screen becomes teams.
-4. Live admin's accounts, messages and reports screens (reports once the
-   report queue lands).
+- Replace the stats home's open sessions table with a link to dashboard
+  sessions. Put live presence on the dashboard's player directory.
+- Add dashboard message management when there is a web messages screen.
 
 ## 3. The dense dashboard style ("deck")
 

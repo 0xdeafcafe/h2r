@@ -134,7 +134,9 @@ pub struct VertexUniforms {
     /// size takes `(2 s - 1) / (4 s)` (`gfx::renderer::window_shift`), so
     /// an edge on a guest pixel centre covers whole blocks of host pixels,
     /// as it covers whole pixels at 1x (docs/graphics/high-resolution.md,
-    /// "Half-pixel and texel offsets").
+    /// "Half-pixel and texel offsets"). Above 0 it also turns the 1/16
+    /// truncation off, so seams between draws stay closed at scale
+    /// ("Subpixel snapping and cracks").
     pub shift: f32,
 }
 
@@ -289,8 +291,16 @@ fn xvs_lit(s: vec4f) -> vec4f {
 // usual full-screen pass) off the last host columns and rows. It is off at
 // 1x (no shift), where such a position covers the last pixel as the edge
 // does: holding it there changes no coverage the guest would see.
+//
+// Scaled, x and y are not truncated: the host rasterizer's own sub-pixel
+// grid (much finer than a host pixel) applies. On the guest's 1/16 grid a
+// vertex that two draws compute a few ulps apart, or a T-junction vertex,
+// lands up to 1/16 of a guest pixel off the neighbouring draw's edge: at
+// 1x that sliver covers few pixel centres, at 4x it is a quarter of a host
+// pixel wide and shows as a see-through line along the seam
+// (docs/graphics/high-resolution.md, "Subpixel snapping and cracks").
 fn xvs_fixup(p: vec4f) -> vec4f {
-    let t = trunc(p.xy * 16.0) / 16.0;
+    let t = select(trunc(p.xy * 16.0) / 16.0, p.xy, xvs.viewport.w > 0.0);
     let size = xvs.viewport.xy;
     let far = vec2<bool>(xvs.viewport.w > 0.0) & (t > size - 0.5);
     let xy = select(t - xvs.viewport.w, max(t - xvs.viewport.w, size), far);

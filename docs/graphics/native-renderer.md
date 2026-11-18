@@ -277,6 +277,13 @@ The crate `native-render` (`crates/native-render`), no game wiring yet:
 
 ## Open
 
+- Seams: the drawn world is welded (no T-junctions, shared edges
+  bit-identical; `viewer`'s `bsp_cracks`), so no load-time T-junction
+  repair is needed. Draw every material's parts from one vertex buffer
+  with one position transform, and don't snap to a 1/16 grid at scale, so
+  shared edges match bit for bit (high-resolution.md, "Subpixel snapping
+  and cracks"). Re-run `bsp_cracks` on the instanced geometry (not covered
+  yet) and on the campaign BSPs before relying on it.
 - What reads the stencil marks of modes 1 and 2.
 - E1 reprojection: a replayed frame must redraw the native pass with its
   warped camera; the interpolating backend records draws, not passes.

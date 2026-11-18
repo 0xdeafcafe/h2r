@@ -17,7 +17,8 @@ It is on in `h2 play` and `h2 run` windows unless `H2_DEBUG_MENU=0`.
 
 | | DualSense / DualShock 4 | Any pad | Keyboard |
 |---|---|---|---|
-| Open or close | touchpad click + Options together | | `` ` `` (backquote) |
+| Open | touchpad click (or touchpad click + Options) | | `` ` `` (backquote) |
+| Close | two-finger tap at the top, or touchpad click + Options | Circle / B at the top | `` ` ``, Escape at the top |
 | Move the selection | swipe up / down on the touchpad | D-pad up / down | arrows up / down |
 | Change a value | swipe left / right | D-pad left / right | arrows left / right |
 | Select or enter | touchpad click | Cross / A | Enter, Space |
@@ -26,6 +27,10 @@ It is on in `h2 play` and `h2 run` windows unless `H2_DEBUG_MENU=0`.
 The D-pad and face-button fallback means a pad without a touchpad can still
 use the menu once it is open, but only a DualSense, a DualShock 4 or the
 keyboard can open it.
+
+- **The click alone.** The game has no use for the touchpad click, so a
+  click on a closed menu opens it. That press neither selects a row nor,
+  with Options added, closes the menu again; the next click selects.
 
 - **The chord.** A pad with a touchpad holds Options back for 80 ms
   (`debug_menu::gate::CHORD`) in case the click follows. If the click doesn't

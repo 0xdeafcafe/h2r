@@ -208,6 +208,10 @@ impl Pads {
             .set(HostButton::South, pressed);
     }
 
+    pub fn button(&self, button: HostButton, pressed: bool) {
+        self.0.lock().unwrap()[0].state.buttons.set(button, pressed);
+    }
+
     pub fn rumble(&self, supported: bool) {
         self.0.lock().unwrap()[0].supports_rumble = supported;
     }

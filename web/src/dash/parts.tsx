@@ -15,8 +15,6 @@ const MEMBRANES = {
   back2: blobPath(23, 7, 117, 0.13),
   front1: blobPath(5, 6, 107, 0.09),
   front2: blobPath(42, 9, 108, 0.07),
-  cell1: blobPath(8, 6, 37, 0.16),
-  cell2: blobPath(19, 6, 26, 0.18),
 };
 
 /** The orb: a soft yellow-green ball wrapped in drifting jelly. It carries no mark.
@@ -28,14 +26,6 @@ export function Orb(props: { turn?: number }) {
       <i class="dx-orb-halo" />
       <svg class="dx-orb-svg" viewBox="-170 -170 340 340">
         <defs>
-          <radialGradient id="dxo-body" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="104" fx="16" fy="26">
-            <stop offset="0" stop-color="#ffffbb" />
-            <stop offset=".24" stop-color="#e9fa71" />
-            <stop offset=".5" stop-color="#cde848" />
-            <stop offset=".7" stop-color="#8cc52f" />
-            <stop offset=".87" stop-color="#439429" />
-            <stop offset="1" stop-color="#194e22" />
-          </radialGradient>
           <radialGradient id="dxo-back" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="128">
             <stop offset=".5" stop-color="#0c4a08" stop-opacity=".5" />
             <stop offset=".8" stop-color="#17720f" stop-opacity=".8" />
@@ -47,16 +37,10 @@ export function Orb(props: { turn?: number }) {
             <stop offset=".94" stop-color="#7fe644" stop-opacity=".36" />
             <stop offset="1" stop-color="#c8ff90" stop-opacity=".2" />
           </radialGradient>
-          <radialGradient id="dxo-shade" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="100" fx="10" fy="14">
-            <stop offset=".72" stop-color="#0d4a06" stop-opacity="0" />
-            <stop offset="1" stop-color="#0d4a06" stop-opacity=".5" />
-          </radialGradient>
           <linearGradient id="dxo-ribbon" x1="0" y1="0" x2="1" y2="1">
             <stop offset="0" stop-color="#6fd838" stop-opacity=".34" />
             <stop offset="1" stop-color="#1c6f10" stop-opacity="0" />
           </linearGradient>
-          <clipPath id="dxo-clip"><circle r="100" /></clipPath>
-          <filter id="dxo-blur" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="5" /></filter>
         </defs>
         <g transform={turned()}>
         <g class="dx-orb-ribbons">
@@ -66,21 +50,11 @@ export function Orb(props: { turn?: number }) {
         <g class="dx-mem dx-mem--back1"><path d={MEMBRANES.back1} fill="url(#dxo-back)" /><path class="dx-mem-fold" d={MEMBRANES.back1} /></g>
         <g class="dx-mem dx-mem--back2"><path d={MEMBRANES.back2} fill="url(#dxo-back)" /><path class="dx-mem-fold" d={MEMBRANES.back2} /></g>
         </g>
-        <circle class="dx-orb-body" r="100" fill="url(#dxo-body)" />
-        <g clip-path="url(#dxo-clip)">
-          <g transform={turned()}><g class="dx-orb-cells">
-            <path d={MEMBRANES.cell1} transform="translate(-44 -46)" />
-            <path d={MEMBRANES.cell2} transform="translate(52 -58)" />
-          </g></g>
-          <circle r="100" fill="url(#dxo-shade)" />
-          <ellipse class="dx-orb-sheen" cx="-34" cy="-52" rx="50" ry="26" transform="rotate(-32 -34 -52)" filter="url(#dxo-blur)" />
-        </g>
-        <circle class="dx-orb-rim" r="99.4" />
+        <image class="dx-orb-core" href="/art/dashboard/orb.webp" x="-114" y="-114" width="228" height="228" />
         <g transform={turned()}>
         <g class="dx-mem dx-mem--front1"><path d={MEMBRANES.front1} fill="url(#dxo-front)" /><path class="dx-mem-fold" d={MEMBRANES.front1} /></g>
         <g class="dx-mem dx-mem--front2"><path d={MEMBRANES.front2} fill="url(#dxo-front)" /></g>
         </g>
-        <circle class="dx-orb-glint" cx="-52" cy="-56" r="3.2" />
       </svg>
     </div>
   );
@@ -122,9 +96,9 @@ export function Pod(props: { seed: number }) {
             <stop offset="1" stop-color="#3f8a22" stop-opacity=".55" />
           </radialGradient>
           <radialGradient id={`${id}-lit`}>
-            <stop offset="0" stop-color="#d2d0c6" />
-            <stop offset=".5" stop-color="#bcc0a8" />
-            <stop offset=".8" stop-color="#9aad78" stop-opacity=".85" />
+            <stop offset="0" stop-color="#f4ffab" />
+            <stop offset=".5" stop-color="#d3ee71" />
+            <stop offset=".8" stop-color="#a3d04e" stop-opacity=".85" />
             <stop offset="1" stop-color="#86a85a" stop-opacity="0" />
           </radialGradient>
         </defs>

@@ -49,11 +49,19 @@ new_sqlite_classes = ["CoopRelay"]
 # The web app (web/dist, `bun run build` in web/), served by Cloudflare
 # ahead of the Worker: any path that is not a file is index.html (the app
 # routes in the browser). The API, discovery, the health check and the
-# game art go to the Worker first. Cache rules: web/public/_headers.
+# game art go to the Worker first; so do the app's pages, which the Worker
+# answers with index.html (read through ASSETS) carrying the page's link
+# preview (live_server::page_meta; keep this list to its `is_page`).
+# Cache rules: web/public/_headers.
 [assets]
 directory = "../../web/dist"
+binding = "ASSETS"
 not_found_handling = "single-page-application"
-run_worker_first = ["/v1/*", "/.well-known/*", "/healthz", "/art/game", "/art/game/*"]
+run_worker_first = [
+    "/v1/*", "/.well-known/*", "/healthz", "/art/game", "/art/game/*",
+    "/", "/dash", "/dash/*", "/stats", "/stats/*", "/players", "/players/*",
+    "/games", "/games/*", "/events", "/events/*", "/signin", "/signin/*",
+]
 
 # ---- staging: a server of its own, never confused with production ----
 # A fresh id (no account, game or token from production is valid here) and
@@ -69,7 +77,7 @@ H2_LIVE_ID = "live-staging.forbes.red"
 H2_LIVE_INVITE_ONLY = "1"
 H2_LIVE_ADMINS = "afr"
 # Published game art (`h2 live assets publish`), shared with production:
-H2_LIVE_GAME_ART_URL = "https://live-art.forbes.red/art/04fd85d4d82e9434"
+H2_LIVE_GAME_ART_URL = "https://live-art.forbes.red/art/ef5dacb4f7872864"
 
 [[env.staging.r2_buckets]]
 binding = "BLOBS"
@@ -108,7 +116,7 @@ H2_LIVE_ID = "live.forbes.red"
 H2_LIVE_PUBLIC_URL = "https://live.forbes.red"
 H2_LIVE_INVITE_ONLY = "1"
 H2_LIVE_ADMINS = "afr"
-H2_LIVE_GAME_ART_URL = "https://live-art.forbes.red/art/04fd85d4d82e9434"
+H2_LIVE_GAME_ART_URL = "https://live-art.forbes.red/art/ef5dacb4f7872864"
 
 [[env.cutover.r2_buckets]]
 binding = "BLOBS"
@@ -143,7 +151,7 @@ H2_LIVE_ID = "live.forbes.red"
 H2_LIVE_PUBLIC_URL = "https://live.forbes.red"
 H2_LIVE_INVITE_ONLY = "1"
 H2_LIVE_ADMINS = "afr"
-H2_LIVE_GAME_ART_URL = "https://live-art.forbes.red/art/04fd85d4d82e9434"
+H2_LIVE_GAME_ART_URL = "https://live-art.forbes.red/art/ef5dacb4f7872864"
 
 [[env.production.r2_buckets]]
 binding = "BLOBS"

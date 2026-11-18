@@ -39,12 +39,13 @@ pub trait Provider {
     fn call(&mut self, app: &mut App, method: &str, params: &Value) -> Option<Reply>;
 }
 
-/// Registers every tool's provider. Each lane adds its line here:
+/// Registers every tool's provider. Each lane adds its line here, e.g.
+/// the HUD editor's:
 ///
 /// ```ignore
-/// api.register(Box::new(crate::api::tags_registry::Fields::default()));  // studio-tags
-/// api.register(Box::new(crate::api::hud::Hud::default()));                // studio-hud
+/// api.register(Box::new(crate::api::hud::Hud::default())); // studio-hud
 /// ```
 pub fn register(api: &mut Api) {
-    let _ = api;
+    // studio-tags: every field of any tag through the Tags tool's commands.
+    api.register(Box::new(super::tag_fields::TagFields));
 }

@@ -34,6 +34,8 @@ pub fn install_with_network(
     }
     let options = ServerOptions {
         maps,
+        build: build(),
+        capabilities: CAPABILITIES.iter().map(|c| c.to_string()).collect(),
         ..ServerOptions::default()
     };
     let hle = Hle::with_server_options(config.clone(), network, options)
@@ -45,6 +47,27 @@ pub fn install_with_network(
         kernel::net::LINK_UP | kernel::net::LINK_100_MBPS | kernel::net::LINK_FULL_DUPLEX;
     k.set_console_config(console);
     Ok(Some(hle))
+}
+
+/// What this build tells Live it can do, on every presence set
+/// (docs/game/game-options.md section 3, "Older builds").
+pub const CAPABILITIES: [&str; 1] = [live_proto::capability::VARIANT_EXT];
+
+static BUILD: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// This build's id (its git short hash), from the binary's own build
+/// metadata (`app::BuildInfo`): the binary sets it once before the game
+/// starts, and Live presence carries it. A value that isn't a short hash
+/// ("unknown", a source tarball) is ignored.
+pub fn set_build(sha: &str) {
+    if live_proto::valid_build(sha) {
+        let _ = BUILD.set(sha.to_string());
+    }
+}
+
+/// The build id [`set_build`] gave, if any.
+pub fn build() -> Option<String> {
+    BUILD.get().cloned()
 }
 
 /// The HLE visibility for a `live.visibility` value.
