@@ -469,3 +469,51 @@ fn sound_impulse_time_waits_on_the_playing_sound() {
     assert_eq!(f.evaluate(), 0x002a_9fe0);
     assert_eq!(types, ["sound"]);
 }
+
+/// Halo 1's `(sleep -1 [script])` sleeps until woken; Halo 2's `sleep`
+/// ignores a negative duration (E `0x002087e0`), so every one is compiled
+/// as Halo 2's `sleep_forever` (`0x00208750`). On every level: as many
+/// `sleep_forever` calls as Halo 1 has negative sleeps, and no Halo 2
+/// `sleep` left with a negative literal. a10's continuous
+/// `dialog_flavor_captain` is eight lines with `(sleep -1)` between them;
+/// with the sleeps ignored it started every line each tick.
+#[test]
+#[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
+fn negative_sleeps_sleep_forever_on_every_level() {
+    use h1scripts::compile::{Missing, compile};
+    let (catalog, maps) = h1();
+    let target = h2();
+    let forever = target.builtins["sleep_forever"].clone();
+    let sleep = target.builtins["sleep"].clone();
+    // E: the evaluators of 19 and 20 are 0x002087e0 and 0x00208750.
+    assert_eq!((sleep.index, forever.index), (19, 20));
+    let table = h1scripts::translate::Table::build(&catalog, &target);
+    let mut total = 0;
+    for (name, map) in &maps {
+        let t = Tables::read(map).unwrap();
+        let source = decompile(&t, &catalog).unwrap().source;
+        let negative = source.matches("(sleep -").count();
+        let c = compile(&t, &catalog, &table, &target, Missing::Stub, &[]).unwrap();
+        assert_eq!(c.forever.len(), negative, "{name}");
+        let s = hs::Scenario::decode(&c.scenario_bytes(0x8010_0000), 0x8010_0000).unwrap();
+        for n in s.nodes().iter().filter(|n| !n.atom() && !n.script_call() && n.opcode() == sleep.index) {
+            let head = s.node(hs::Datum(n.data())).unwrap();
+            let d = *s.node(head.next()).unwrap();
+            assert!(
+                !(d.atom() && !d.global() && (d.data() as u16 as i16) < 0),
+                "{name}: a negative sleep is left"
+            );
+        }
+        let calls = s
+            .nodes()
+            .iter()
+            .filter(|n| !n.atom() && !n.script_call() && n.opcode() == forever.index)
+            .count();
+        assert_eq!(calls, negative, "{name}");
+        let scripts: std::collections::BTreeSet<&str> =
+            c.forever.iter().map(|u| u.definition.as_str()).collect();
+        println!("{name}: {negative} negative sleeps -> sleep_forever, in {scripts:?}");
+        total += negative;
+    }
+    assert!(total > 0);
+}

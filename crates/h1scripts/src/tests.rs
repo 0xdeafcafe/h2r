@@ -52,7 +52,7 @@ fn f(name: &str, ret: u16, parse: u32, params: &[u16]) -> Function {
 }
 
 /// 0 begin, 1 print, 2 ai_place, 3 !=, 4 game_save_totally_unsafe,
-/// 5 gone, 6 objects_attach, 7 actor_thing.
+/// 5 gone, 6 objects_attach, 7 actor_thing, 8 sleep.
 fn h1_catalog() -> Catalog {
     Catalog::new(
         vec![
@@ -64,6 +64,7 @@ fn h1_catalog() -> Catalog {
             f("gone", BOOL, ORDINARY, &[SHORT]),
             f("objects_attach", VOID, ORDINARY, &[OBJECT, STRING]),
             f("actor_thing", VOID, ORDINARY, &[ACTOR_VARIANT]),
+            f("sleep", VOID, 0x4000, &[]),
         ],
         h1_types(),
         ["startup", "dormant", "continuous", "static", "stub"]
@@ -118,6 +119,8 @@ fn h2_target() -> Target {
             b(31, VOID, &[H2_OBJECT, H2_STRING_ID], false),
         ),
         ("actor_thing", b(32, VOID, &[H2_OBJECT], false)),
+        ("sleep", b(19, VOID, &[], true)),
+        ("sleep_forever", b(20, VOID, &[], true)),
     ] {
         t.builtins.insert(name.into(), builtin);
     }
@@ -1408,4 +1411,55 @@ fn none_unsafe_calls_are_guarded_against_none() {
         assert_eq!(f, builtin);
         assert_eq!(s.node(arg[0]).unwrap().value_type(), H2_UNIT);
     }
+}
+
+/// Halo 1's `(sleep -1)` and `(sleep -1 <script>)` sleep until a `wake`;
+/// Halo 2's `sleep` ignores a negative duration, so both become
+/// `sleep_forever`, with the script kept. A positive sleep stays a sleep.
+#[test]
+fn negative_sleeps_become_sleep_forever() {
+    const SCRIPT: u16 = 10;
+    let mut b = Builder::default();
+    let minus_one = b.atom(SHORT, SHORT, "-1", 0xffff);
+    let forever = b.call(8, VOID, "sleep", &[minus_one]);
+    let a = b.atom(STRING, STRING, "a", 0);
+    let print = b.call(1, VOID, "print", &[a]);
+    let ten = b.atom(SHORT, SHORT, "10", 10);
+    let sleep = b.call(8, VOID, "sleep", &[ten]);
+    let minus_one = b.atom(SHORT, SHORT, "-1", 0xffff);
+    let helper = b.atom(SCRIPT, SCRIPT, "helper", 1);
+    let other = b.call(8, VOID, "sleep", &[minus_one, helper]);
+    let root = b.call(0, VOID, "begin", &[forever, print, sleep, other]);
+    let x = b.atom(STRING, STRING, "x", 0);
+    let print_x = b.call(1, VOID, "print", &[x]);
+    let helper_root = b.call(0, VOID, "begin", &[print_x]);
+    let scripts = vec![("flavor", 2, VOID, root), ("helper", 1, VOID, helper_root)];
+    let t = read(&scenario(&b, &scripts, &[])).unwrap();
+    let c = h1_catalog();
+    let h2 = h2_target();
+    let table = Table::build(&c, &h2);
+    let out = compile(&t, &c, &table, &h2, Missing::Stub, &[]).unwrap();
+    assert_eq!(out.forever.len(), 2);
+    assert!(out.forever.iter().all(|u| u.definition == "flavor"));
+    let s = hs::Scenario::decode(&out.scenario_bytes(BASE), BASE).unwrap();
+    let args = |call: &hs::Node| -> Vec<hs::Node> {
+        let mut a = s.node(Datum(call.data())).unwrap().next();
+        let mut v = Vec::new();
+        while a != Datum::NULL {
+            let x = *s.node(a).unwrap();
+            v.push(x);
+            a = x.next();
+        }
+        v
+    };
+    let main = s.script("flavor").unwrap();
+    let body = args(s.node(main.root()).unwrap());
+    let ops: Vec<u16> = body.iter().map(|n| n.opcode()).collect();
+    assert_eq!(ops, [20, 5, 19, 20]);
+    assert!(args(&body[0]).is_empty());
+    let kept = args(&body[2]);
+    assert_eq!((kept.len(), kept[0].data()), (1, 10));
+    let other = args(&body[3]);
+    assert_eq!(other.len(), 1);
+    assert_eq!((other[0].value_type(), other[0].data() as u16), (SCRIPT, 1));
 }

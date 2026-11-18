@@ -252,6 +252,9 @@ pub struct Compiled {
     /// [`NONE_UNSAFE`] calls compiled inside a guard that skips them when
     /// their unit is `none`.
     pub guarded: Vec<Unresolved>,
+    /// Halo 1 `(sleep <negative> [script])` calls compiled as Halo 2's
+    /// `sleep_forever`: Halo 2 takes a negative duration as no sleep.
+    pub forever: Vec<Unresolved>,
 }
 
 /// Compiles every global and script of `t`.
@@ -854,6 +857,11 @@ impl Compiler<'_> {
         {
             return Ok(d);
         }
+        if f.name == "sleep"
+            && let Some(d) = self.sleep_forever(&args, expected)?
+        {
+            return Ok(d);
+        }
         let Some((h2_name, b)) = tr.target.clone().filter(|_| tr.kind != Kind::Missing) else {
             self.out.missing.push(Unresolved {
                 definition: self.definition.clone(),
@@ -961,6 +969,49 @@ impl Compiler<'_> {
             return Ok(self.call(iff.index, CALL, expected, b"if", &[guard, call]));
         }
         Ok(call)
+    }
+
+    /// Halo 1's `(sleep -1)` sleeps until a `wake` (S: Halo 1's scripting
+    /// reference; a10's continuous `dialog_flavor_captain` is eight
+    /// `(sleep -1)`-separated lines that `flavor_intercom` wakes one at a
+    /// time, and a50's `kill_all_continuous` is `(sleep -1 <script>)` once
+    /// per continuous script). Halo 2's `sleep` takes a negative duration
+    /// as no sleep at all (E `0x002087e0`, docs/engine/hs_vm.md), so the
+    /// call fell through: a continuous script restarted every tick and
+    /// a10's captain started all eight lines thirty times a second, a
+    /// loud whirr over the whole level and its cutscenes. Halo 2's
+    /// `sleep_forever` (`0x00208750`: wake -2 on this thread, or on the
+    /// script its optional argument names; `wake` resumes after it) is the
+    /// same thing. `None` unless the duration is a negative literal and
+    /// Halo 2 has `sleep_forever`.
+    fn sleep_forever(&mut self, args: &[Datum], expected: u16) -> Result<Option<Datum>> {
+        let Some((&duration, rest)) = args.split_first() else {
+            return Ok(None);
+        };
+        let n = *self.t.node(duration)?;
+        let negative = n.atom()
+            && !n.global()
+            && match self.h1.type_name(n.opcode()) {
+                Ok("short") => (n.data() as u16 as i16) < 0,
+                Ok("long") => (n.data() as i32) < 0,
+                _ => false,
+            };
+        let Some(b) = self.h2.builtins.get("sleep_forever").cloned() else {
+            return Ok(None);
+        };
+        if !negative || rest.len() > 1 {
+            return Ok(None);
+        }
+        let mut out = Vec::new();
+        for &a in rest {
+            let ty = self.ty(self.t.node(a)?.value_type())?;
+            out.push(self.expr(a, ty)?);
+        }
+        self.out.forever.push(Unresolved {
+            definition: self.definition.clone(),
+            name: "sleep".into(),
+        });
+        Ok(Some(self.call(b.index, CALL, expected, b"sleep_forever", &out)))
     }
 
     /// `(> (list_count x) 0)`: true when Halo 1 argument `arg` is an
