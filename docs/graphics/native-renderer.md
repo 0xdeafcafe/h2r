@@ -986,7 +986,30 @@ skipped light never reaches.
    so every light keeps its D3D passes.
 2. **The light's constants**: trace `0x0004a1e0` and `0x00048ee0` and
    port them as pure functions of `Light` and the `ligh` definition, with
-   tests against invented lights.
+   tests against invented lights. Started (Code):
+   - `0x0004a1e0` (`ret 0x10`, about 250 instructions): EAX the light
+     record's `+0x84` (so `[EAX+0x50]` is the record's colour A at
+     `+0xd4`, `+0x5c` colour B, `+0x68`..`+0x84` the record's words
+     `+0xec`..`+0x108`), EDX the light datum (-1 for the first-person
+     pass's own), ECX the context (its word into `[0x004858c8]`), stack
+     `(ligh definition address, 1024.0, shadow byte, weight)`. It writes
+     the light's globals: `[0x004858bc]` 1 (the tail's zero),
+     `[0x004858c4]` the definition, `[0x004858cc]` the driver object,
+     colour A and B at `0x00485944` and `0x00485950` scaled by the
+     weight-scaled record words, `0x00485a30`..`0x00485a40` (falloff and
+     cutoff words; `0x00485a40` is the one `0x00031170` compares for the
+     shadow), the bounding sphere at `0x00485934`..`0x00485940`, the
+     screen rectangle at `0x00485964`..`0x00485978` (the sphere projected
+     with the view at `[0x00547f88]` through `0x001650a0`), the shadow
+     byte at `0x00485a44`, and calls `0x000497a0` (about 560
+     instructions, `ret 0x20`: the light's frustum and gel projection
+     into `0x0048597c`, `0x00485a0c`, `0x00485a1c`, `0x00485a2c`) and
+     `0x0003a550` (the scissor from that rectangle, through D3D).
+   - `0x00048ee0` (about 400 instructions): the shadow projection, `0x28`
+     dwords at `0x004c9798`.
+   These globals are what the layer-12/13 templates' engine inputs read,
+   so the port's output is that block, compared word for word with the
+   game's in a test that runs on recorded inputs.
 3. **Unshadowed lights over the native world**: the host takes lights
    without the shadow bit, the light's list copied at the hook, and draws
    the world's lit parts with their materials' layer-12 and 13 passes.
