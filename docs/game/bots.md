@@ -352,8 +352,9 @@ The bot may emote only when:
   (a flag at risk, a bomb armed, a hill or territory contested);
 - it has not emoted in the last 30 s.
 
-When it does, it presses crouch 3 to 6 times at a human rhythm (120 to
-220 ms per press), for 2 s at most, and stops at once if an enemy appears.
+When it does, it presses crouch 3 to 6 times at a human rhythm (built:
+130 to 200 ms per press), for 2 s at most, and stops at once if an enemy
+appears. Built in stage 4 for self-kills and betrayals (§10).
 
 How often it happens:
 
@@ -1113,11 +1114,44 @@ list for the user to play (§11).
      8. Send the `bots:` log lines, and anything that looks wrong: the eye
         and chest heights (0.6 and 0.4 over the unit's origin) and the
         stick's direction are guesses a run settles.
-4. **Emotes.**
-   - The dumb-death detector and the emote layer (§3.5), with the Taunts
-     setting.
-   - Tests: each trigger from synthetic events; the safety gates; the press
-     rhythm.
+4. **Emotes.** Built: `bots::emote`, in every brain (`Mind::emote`).
+   - **Deaths** come from the game's kill function (`PLAYER_KILLED`,
+     `0x15ce70`): `boot::bot_glue` observes it on the game thread and logs
+     the attacker and victim players, the betrayal flag and where the
+     victim's unit lies (`emote::kills()`); each brain reads the log from
+     its own cursor.
+   - **Dumb** (`emote::classify`): killed by themselves or by the world
+     (own grenade, fall, suicide: the kill function does not tell them
+     apart; severity 0.8) and a betrayal (1.0). Not yet: stuck on
+     geometry, point-blank misses, out of ammo and the lost 1v1 with a big
+     advantage, which need the shots hook, ammo and shields.
+   - Each dumb death with a body rolls `taunt × severity` once. The bot
+     emotes over it only when the body is within 8 m (2.67 units), no enemy
+     has been in its view for 1.5 s, no objective is live (always, until
+     stage 5), and it has not emoted for 30 s; a death waits at most 5 s
+     for that.
+   - **The burst**: the bot stands still and clicks the left stick
+     (crouch, Halo 2's default layout) 3 to 6 times, a press every 4 to 6
+     ticks (130 to 200 ms) held for half of it, 2 s at most, and stops at
+     once when an enemy comes into view.
+   - **Taunt**: 0.3 (§9.1's default personality) for every brain; the
+     Clankers page's Taunts off makes it 0 for its bots at their next
+     frame. Phantoms do not emote yet: their actions carry no buttons
+     (§5.1).
+   - Tests (`cargo test -p bots emote`): the classification; the log's
+     cursors and size; taunts off never, the chance following taunt and
+     severity; the burst's presses, rhythm and length; each gate (near,
+     clear for 1.5 s, objective, 30 s, the 5 s window); an enemy stopping
+     the burst; a kill read from the kill function's arguments over
+     synthetic players and objects; the mind crouching and standing still.
+     In boot: Taunts reaching the bots already there; the kill hook on the
+     render-thread plan as a game-thread point.
+   - **Game run (the user)**: `H2_BOTS=1 h2 play`, Slayer with the bot. Throw
+     a grenade at your own feet or jump off the map near the bot, out of
+     its view's fight: within a few seconds it may walk on and crouch 3 to
+     6 times over the spot (about one time in four: 0.3 × 0.8). It never
+     does it while it sees you shooting at it, and not twice in 30 s. With
+     Taunts off on the Clankers page it never does.
 5. **Objectives.** CTF, Oddball, then King of the Hill, Assault and
    Territories: roles, carrier logic and defence spots from the netgame
    flags. Tests: role assignment and goal choice per gametype state.

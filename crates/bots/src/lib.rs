@@ -10,6 +10,7 @@
 
 pub mod brain;
 pub mod cache;
+pub mod emote;
 pub mod guest;
 pub mod local;
 pub mod los;
@@ -39,12 +40,15 @@ pub fn from_env_value(v: Option<&str>) -> Result<usize, String> {
 /// ([`cache::current`]), idle anywhere else.
 pub struct Brain {
     pub mind: mind::Mind,
+    /// The last death heard from [`emote::kills`].
+    kills_seen: u64,
 }
 
 impl Brain {
     pub fn new(skill: mind::Skill, seed: u64) -> Self {
         Brain {
             mind: mind::Mind::new(skill, seed),
+            kills_seen: emote::kills().since(u64::MAX).1,
         }
     }
 }
@@ -64,6 +68,9 @@ impl local::PadSource for Brain {
             Some(id) => guest::Who::Machine(id),
             None => guest::Who::Port(u32::from(f.port)),
         };
+        let (kills, cursor) = emote::kills().since(self.kills_seen);
+        self.kills_seen = cursor;
+        self.mind.emote.hear(&kills);
         match guest::perceive_as(f.guest, who) {
             Ok(p) => self.mind.step(&p, cache::current().as_deref()),
             Err(_) => HostPadState::default(),
