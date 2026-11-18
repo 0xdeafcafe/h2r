@@ -53,6 +53,7 @@ pub mod live_notice;
 pub mod agent_glue;
 pub mod lockstep_glue;
 pub mod map_bases;
+pub mod map_copy;
 pub mod map_override;
 pub mod map_select;
 pub mod map_slots;
@@ -816,6 +817,9 @@ pub fn run_hosted_with_live(
         }
         features.add(&map_slots::MapSlots { vfs }).map_err(|e| anyhow::anyhow!("map slots: {e}"))?;
     }
+    // Maps copy to their cache slots several steps a loading frame, not one
+    // (docs/runtime/cache-slots.md, "Copy speed on the loading screen").
+    features.add(&map_copy::MapCopy).map_err(|e| anyhow::anyhow!("map copy: {e}"))?;
     // Frame species and weapon names come from the loaded map's tag names,
     // which stay on disc: let telemetry find the map file through the VFS.
     // Which map exactly (docs/game/maps.md §5): a package's MapId, None for the
