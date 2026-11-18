@@ -48,6 +48,54 @@ pub async fn close_slot(cx: &Cx, window: u32, slot: u32) -> Result<(), EntryErro
     Ok(())
 }
 
+/// A screen's message entry: `0x22e957(kind)`, ECX the screen, stdcall.
+/// It hands a message of `kind` to the screen and its children. The close
+/// (`0x14800c`) ends in the window's `0x2351d4`, which sends kind
+/// [`MESSAGE_CLOSE`] to the window's top screen unless it is closing.
+pub const SCREEN_MESSAGE: u32 = 0x0022_e957;
+/// The close message's kind.
+pub const MESSAGE_CLOSE: u32 = 2;
+/// A screen's state byte; bit 1 set while it is closing.
+pub const SCREEN_STATE: u32 = 0x42;
+/// The window's top screen word (`0x2351d4` reads it).
+pub const WINDOW_TOP: u32 = 0x8;
+
+/// The window object `0x14800c` closes through for `window` and `slot`:
+/// window 2's one at `0x54dba8`, window 3's `0x38`-byte ones from
+/// `0x54d76c`, window 5's `0x40`-byte ones from `0x54d62c`. Any other
+/// window: none (the close does nothing).
+pub fn window_object(window: u32, slot: u32) -> Option<u32> {
+    match window {
+        2 => Some(0x0054_dba8),
+        3 => Some(0x0054_d76c + slot.wrapping_mul(0x38)),
+        5 => Some(0x0054_d62c + slot.wrapping_mul(0x40)),
+        _ => None,
+    }
+}
+
+/// Whether `screen` takes a close message: not already closing.
+pub fn takes_close(m: &dyn engine::memory::GuestMemory, screen: u32) -> Result<bool, MemFault> {
+    Ok(m.u8(screen + SCREEN_STATE)? & 2 == 0)
+}
+
+/// Closes `screen` itself, whether or not it is its window's top: the
+/// close message `0x2351d4` sends, sent to the screen directly. For a
+/// screen under one being freed: while the stack frees a screen
+/// (`0x2351ea`) the window's top word is 0 until the window's next update,
+/// and the close by window and slot ([`close_slot`]) reads `0 + 0x42`.
+pub async fn close_screen(cx: &Cx, screen: u32) -> Result<(), EntryError> {
+    if !cx.read(|m| takes_close(m, screen))? {
+        return Ok(());
+    }
+    cx.call(
+        GuestCall::new(SCREEN_MESSAGE)
+            .ecx(screen)
+            .args([MESSAGE_CLOSE]),
+    )
+    .await?;
+    Ok(())
+}
+
 /// Work waiting for screens to be freed, by screen address: queued by
 /// [`AfterClose::then`] when a screen is closed, taken by
 /// [`AfterClose::freed`] from the class's destructor slot. A screen freed
@@ -91,6 +139,37 @@ impl<T> AfterClose<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use engine::memory::GuestMemory;
+
+    /// The crash picking a map in Select Map's second step: the categories
+    /// were closed by window and slot from the maps screen's destructor.
+    /// The stack (`0x2351ea`) had zeroed the window's top word for the
+    /// screen it was freeing, so `0x2351d4` read the state byte at
+    /// `0 + 0x42` (`MemoryFault ... addr: 42`, ESI `0x54d84c`: window 3,
+    /// slot 4). The screen itself still reads.
+    #[test]
+    fn a_screen_under_one_being_freed_closes_by_itself_not_by_its_window() {
+        let mut g = engine::testing::FakeGuest::new();
+        let window = window_object(3, 4).unwrap();
+        assert_eq!(window, 0x0054_d84c, "the ESI of the crash");
+        g.map(0x0054_d000, 0x1000);
+        let categories = 0x8253_0000;
+        g.map(categories, 0x1000);
+        // Mid-free: the top word is 0.
+        g.set_u32(window + WINDOW_TOP, 0).unwrap();
+        let top = g.u32(window + WINDOW_TOP).unwrap();
+        assert!(
+            g.u8(top + SCREEN_STATE).is_err(),
+            "the close by window reads 0x42"
+        );
+        // By the screen: it takes the close, once.
+        assert_eq!(takes_close(&g, categories), Ok(true));
+        g.set_u8(categories + SCREEN_STATE, 2).unwrap();
+        assert_eq!(takes_close(&g, categories), Ok(false), "already closing");
+        assert_eq!(window_object(4, 0), None);
+        assert_eq!(window_object(2, 7), Some(0x0054_dba8));
+        assert_eq!(window_object(5, 1), Some(0x0054_d66c));
+    }
 
     #[test]
     fn work_runs_once_for_the_screen_closed_and_only_it() {

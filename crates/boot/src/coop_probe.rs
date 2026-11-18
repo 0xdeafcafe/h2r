@@ -668,6 +668,22 @@ struct State {
     log_error: bool,
     last_tick_at: Option<Instant>,
     last_tick: Option<u32>,
+    /// "game end" was said since the last game start. The game-end path
+    /// (`GAME_END`) can return on every tick, latch set or not (a log had
+    /// the line once a tick, thousands of times); it is said once.
+    end_said: bool,
+}
+
+impl State {
+    /// A game started: its end is said again.
+    fn started(&mut self) {
+        self.end_said = false;
+    }
+    /// The game-end path returned: whether to say so (the first time
+    /// since the last start).
+    fn end_first(&mut self) -> bool {
+        !std::mem::replace(&mut self.end_said, true)
+    }
 }
 
 /// The feature id of the co-op over Live hooks (`H2_FEATURES=-coop-live`
@@ -1017,6 +1033,7 @@ impl feature::Feature for Probe {
         let dir = self.dir.clone();
         let arm = Arc::clone(&self.arm);
         b.game().on_start("open the hash log", move |o| {
+            lock(&st).started();
             if !arm.active() {
                 return;
             }
@@ -1024,9 +1041,16 @@ impl feature::Feature for Probe {
             on_start(&st, &g, &dir);
         });
         let st = Arc::clone(&self.state);
+        let arm = Arc::clone(&self.arm);
         b.game().on_end("close the hash log", move |o| {
             let g = o.guest();
-            event(&st, &g, "game end");
+            let say_it = {
+                let mut s = lock(&st);
+                (arm.active() || s.log.is_some()) && s.end_first()
+            };
+            if say_it {
+                event(&st, &g, "game end");
+            }
             if let Some(mut log) = lock(&st).log.take() {
                 let _ = log.out.flush();
                 say(&format!(
@@ -1389,7 +1413,10 @@ pub fn install_live(
         return Ok(None);
     }
     let arm = Arm::session();
-    match registry.add(&Probe::armed(Arc::clone(&arm), data_root.join("coop-probe"))) {
+    match registry.add(&Probe::armed(
+        Arc::clone(&arm),
+        data_root.join("coop-probe"),
+    )) {
         Ok(true) => {
             // Players 3 to 16 (docs/live/live-coop.md section 12), on the
             // same arm.
