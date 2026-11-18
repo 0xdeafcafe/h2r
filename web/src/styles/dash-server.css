@@ -59,6 +59,8 @@
 .dx-report-form select { height: calc(var(--u) * 26); border: 1px solid #64983f; border-radius: 2px; background: #0a2307; color: #e1edc7; font: 500 calc(var(--u) * 16) var(--f-cond); }
 .dx-ban-control { margin-top: calc(var(--u) * 6); }
 .dx-ban-notice { margin-top: calc(var(--u) * 6); }
+.dx-mutes ul { list-style: none; margin: 0; padding: 0; display: grid; gap: calc(var(--u) * 4); }
+.dx-mutes, .dx-mute { margin-top: calc(var(--u) * 6); }
 
 @media (max-aspect-ratio: 4/5) {
   .dx-pages.dx-invites-screen .dx-plate--main { top: calc(var(--u) * 182); }

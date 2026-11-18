@@ -33,6 +33,7 @@ import { defaultBase, fetchWellKnown, normalizeBase, recentServers } from "../ap
 import { AccountsPlate, ConnectPlate, ImportPlate, InvitesPlate, ServerPlate, createServerInfo, type InviteControls } from "./Server";
 import { ReportsQueue } from "./Reports";
 import { BanControl, BanNotice, BansList } from "./Bans";
+import { MuteButton, MutedList } from "./Mutes";
 import { adminState } from "../admin/state";
 import type { BladeControls } from "./Blades";
 import { fetchServerFacts, serverPods } from "../admin/server";
@@ -882,7 +883,10 @@ function PlayerPlate(props: { account: AccountState; main?: boolean; mine?: bool
         <dt>rank</dt><dd>{rec().rank}</dd>
         <Show when={props.mine}><dt>key</dt><dd>kept in this browser</dd></Show>
       </dl>
-      <Show when={props.mine && props.main}><BanNotice /></Show>
+      <Show when={props.mine && props.main}><BanNotice /><MutedList /></Show>
+      <Show when={!props.mine && props.main && identity.me()}>
+        <MuteButton target={{ xuid: props.account.xuid, gamertag: props.account.gamertag }} />
+      </Show>
       <Show when={!props.mine && props.main && adminState.isMeAdmin() === true}>
         <BanControl target={{ xuid: props.account.xuid, gamertag: props.account.gamertag }} />
       </Show>

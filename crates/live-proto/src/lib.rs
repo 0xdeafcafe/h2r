@@ -14,6 +14,7 @@ pub mod jcs;
 pub mod mailbox;
 pub mod maps;
 pub mod motd;
+pub mod mutes;
 pub mod optimatch;
 pub mod pack;
 pub mod rank;
@@ -330,6 +331,8 @@ pub mod lxm {
     pub const REPORTS_WRITE: &str = "reports.write";
     /// Admins reading and reviewing player reports.
     pub const REPORTS_MODERATE: &str = "reports.moderate";
+    /// Changing one's own mute list (docs/live/live-voice.md §3.6).
+    pub const MUTES_WRITE: &str = "mutes.write";
     /// Reading one's own cloud saves (docs/live/live-cloud-saves.md).
     pub const STORAGE_READ: &str = "storage.read";
     /// Writing and deleting one's own cloud saves.

@@ -3171,3 +3171,84 @@ fn a_ban_mid_session_reaches_the_persistent_connection_task() {
         ACCOUNT_REQUIRES_MANAGEMENT
     );
 }
+
+impl Server {
+    /// `who`'s mute list on the server, as the operator reads it.
+    fn mutes(&self, who: &Account) -> Vec<Xuid> {
+        let list: live_proto::mutes::MuteList =
+            self.get_as_operator(&format!("/v1/accounts/by-xuid/{}/mutes", who.xuid));
+        list.items.into_iter().map(|e| e.xuid).collect()
+    }
+}
+
+/// `XOnlineMutelistGet` for controller 0 as the title calls it (0x58b70):
+/// the 250-entry buffer and the count, then the task run to its end. The
+/// entries, as (XUID, flags).
+fn mute_get(w: &mut World) -> Vec<(u64, u32)> {
+    let (buffer, count) = (DATA + 0x8000, DATA + 0x7ff0);
+    w.word(count, u32::MAX);
+    assert_eq!(
+        w.call("XOnlineMutelistGet", &[0, 250, 0, OUT, buffer, count]),
+        0
+    );
+    let task = w.u32(OUT);
+    assert_eq!(w.wait(task), TASK_SUCCESS);
+    assert_eq!(w.call("XOnlineTaskClose", &[task]), 0);
+    (0..w.u32(count))
+        .map(|i| {
+            let e = w.bytes(buffer + i * 16, 16);
+            (
+                u64::from_le_bytes(e[..8].try_into().unwrap()),
+                u32::from_le_bytes(e[8..12].try_into().unwrap()),
+            )
+        })
+        .collect()
+}
+
+fn mute_change(w: &mut World, name: &str, who: Xuid, flags: u32) -> u32 {
+    w.call(name, &[0, who.0 as u32, (who.0 >> 32) as u32, flags])
+}
+
+#[test]
+fn the_mute_list_is_the_servers_and_get_returns_what_add_was_given() {
+    let server = Server::new();
+    let me = server.account("Muter");
+    let loud = server.account("Loud");
+    let rude = server.account("Rude");
+    let mut w = World::new(&server.embedded.url, &[&me]);
+    w.logon();
+
+    // Startup loads the list (empty); Get reads it.
+    assert_eq!(w.call("XOnlineMutelistStartup", &[0, OUT]), 0);
+    let task = w.u32(OUT);
+    assert_eq!(w.wait(task), TASK_SUCCESS);
+    assert_eq!(w.call("XOnlineTaskClose", &[task]), 0);
+    assert_eq!(mute_get(&mut w), []);
+
+    // Add answers at once and Get reflects it straight away, flags and all;
+    // the server has it soon after.
+    assert_eq!(
+        mute_change(&mut w, "XOnlineMutelistAdd", loud.xuid, 0x40),
+        0
+    );
+    assert_eq!(mute_get(&mut w), [(loud.xuid.0, 0x40)]);
+    server.until(|| server.mutes(&me) == [loud.xuid]);
+    assert_eq!(mute_change(&mut w, "XOnlineMutelistAdd", rude.xuid, 0), 0);
+    assert_eq!(
+        mute_change(&mut w, "XOnlineMutelistRemove", loud.xuid, 0x40),
+        0
+    );
+    assert_eq!(mute_get(&mut w), [(rude.xuid.0, 0)]);
+    server.until(|| server.mutes(&me) == [rude.xuid]);
+    // Muting yourself is refused at the call.
+    assert_eq!(
+        mute_change(&mut w, "XOnlineMutelistAdd", me.xuid, 0),
+        INVALID_ARGUMENT
+    );
+    drop(w);
+
+    // Another machine signs in with the same account and loads it.
+    let mut other = World::new(&server.embedded.url, &[&me]);
+    other.logon();
+    assert_eq!(mute_get(&mut other), [(rude.xuid.0, 0)]);
+}

@@ -686,8 +686,9 @@ The immediate follow-up tasks have these local behaviors:
 | XOnlinePresenceInit | Returns a task; with a server it waits for the controller's presence request. |
 | XOnlinePresenceAdd | Stores a bounded watch group of packed 12-byte XUIDs. |
 | XOnlinePresenceSubmit | Queues the controller's current presence; its pump waits for the server acknowledgement. |
-| XOnlineMutelistStartup | Returns an empty task that completes successfully. |
-| XOnlineMutelistGet | Writes count zero and returns a completing task; no mute entries are written. |
+| XOnlineMutelistStartup | Loads every signed-in player's mute list from the server; the task completes when they are in. See "Client HLE: mute list". |
+| XOnlineMutelistGet | Writes the controller's mute list and count, at once when it is loaded, else when it loads. |
+| XOnlineMutelistAdd, XOnlineMutelistRemove | Change the list at once and send the change to the server behind it. |
 
 Work-event handles other than NULL and unobserved QoS lookup flags stop with a
 named unverified-contract diagnostic. Guest pointer faults use the runtime's
@@ -1014,6 +1015,37 @@ Unlike retail, a send that failed is forgotten, so a retry is sent. Types
 the title never sends (7, 8, 9, over 12) are refused with
 INVALID_ARGUMENT; with no server the call returns NO_SESSION and makes no
 task.
+
+## Client HLE: mute list
+
+The three mute-list calls (`crates/live-hle/src/mutes.rs`) keep each
+signed-in player's list in the HLE and back it with the server's
+([live-api.md](live-api.md) "Mute list"), so a mute follows the player to
+other machines and the website.
+
+- `XOnlineMutelistStartup(event, &task)` (`0x003a0841`, from `0x6c1a0`)
+  starts loading every signed-in player's list (`GET
+  /v1/accounts/by-xuid/{xuid}/mutes`). Its task completes with TASK_SUCCESS
+  when all are in, or with the mapped error of one that failed.
+- `XOnlineMutelistGet(controller, max, event, &task, buffer, &count)`
+  (`0x003a0832`, called with 250 from `0x58b70`) writes up to `max` entries
+  of 16 bytes (the XUID, its 4-byte flags, 4 bytes of zero) and the count.
+  A loaded list is written during the call and the task completes on its
+  first pump; a list still loading is written when it arrives.
+- `XOnlineMutelistAdd` and `Remove(controller, xuid lo, xuid hi, flags)`
+  (`0x003a084c`, `0x003a086e`) change the cached list during the call and
+  return S_OK, then send the change (`PUT` or `DELETE
+  /v1/accounts/by-xuid/{xuid}/mutes/{target}`, `mutes.write`). The game
+  waits on no task. A change the server did not take is sent again before
+  the player's next load, and a list loaded while changes were in flight
+  has them applied on top. Adding the 251st player, or the player
+  themselves, returns INVALID_ARGUMENT.
+
+The game's matrix builder (`0x541a0`) compares the 12 bytes byte for byte,
+so Get returns the flags Add was given for that XUID. A list loaded from the
+server has flags 0 for players this machine never muted, which is what
+every h2 live account's XUID carries. Signed in without a server, the lists
+start empty and stay on the machine until sign-out.
 
 ## Client HLE: bans
 

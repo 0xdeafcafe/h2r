@@ -34,7 +34,6 @@ enum EmptyKind {
     Friends,
     Offering,
     Presence,
-    Mute,
 }
 #[derive(Clone)]
 enum Task {
@@ -140,6 +139,7 @@ pub(crate) struct State {
     service: Option<Service>,
     menu: crate::ui::Menu,
     feedback: crate::feedback::Feedback,
+    mutes: crate::mutes::Mutes,
     invites: crate::invites::Invites,
     files: crate::storage_api::Files,
     stats: crate::stats::Stats,
@@ -185,6 +185,7 @@ impl State {
             service,
             menu: crate::ui::Menu::default(),
             feedback: Default::default(),
+            mutes: Default::default(),
             invites: Default::default(),
             files: crate::storage_api::Files::default(),
             stats: crate::stats::Stats::default(),
@@ -288,6 +289,7 @@ impl State {
         self.game_id = None;
         self.menu.clear();
         self.feedback.clear();
+        self.mutes.clear();
         self.invites.clear();
         self.files.clear();
         self.stats.clear_tasks();
@@ -986,6 +988,27 @@ impl State {
                 },
             );
         }
+        if matches!(op, MuteStartup | MuteGet | MuteAdd | MuteRemove) {
+            if self.online_refs == 0 {
+                return Ok(NOT_INITIALIZED);
+            }
+            if !self.connected() {
+                return Ok(NO_SESSION);
+            }
+            let session = self.session();
+            let ctx = crate::mutes::Context {
+                storage: &mut self.storage,
+                service: self.service.as_ref(),
+                session: session.as_ref(),
+                users: &self.user_ids,
+            };
+            return match op {
+                MuteStartup => self.mutes.startup(a, m, ctx),
+                MuteGet => self.mutes.get(a, m, ctx),
+                MuteAdd => Ok(self.mutes.change(a, ctx, true)),
+                _ => Ok(self.mutes.change(a, ctx, false)),
+            };
+        }
         if op == Feedback {
             if self.online_refs == 0 {
                 return Ok(NOT_INITIALIZED);
@@ -1312,6 +1335,9 @@ impl State {
                 if let Some(status) = self.feedback.poll(a[0]) {
                     return Ok(status);
                 }
+                if let Some(status) = self.mutes.poll(a[0], m)? {
+                    return Ok(status);
+                }
                 let Some(task) = self.tasks.get(&a[0]).cloned() else {
                     return Ok(INVALID_ARGUMENT);
                 };
@@ -1474,6 +1500,9 @@ impl State {
                 if self.feedback.close(a[0]) {
                     return Ok(OK);
                 }
+                if self.mutes.close(a[0]) {
+                    return Ok(OK);
+                }
                 if !self.tasks.contains_key(&a[0]) {
                     return Ok(INVALID_ARGUMENT);
                 }
@@ -1579,7 +1608,7 @@ impl State {
                     Err(e) => e,
                 })
             }
-            FriendsStartup | Offering | PresenceInit | MuteStartup | MuteGet => {
+            FriendsStartup | Offering | PresenceInit => {
                 if !self.connected() {
                     return Ok(NO_SESSION);
                 }
@@ -1591,15 +1620,6 @@ impl State {
                             return Ok(INVALID_ARGUMENT);
                         }
                         (a[1], a[2], EmptyKind::Presence)
-                    }
-                    MuteStartup => (a[0], a[1], EmptyKind::Mute),
-                    MuteGet => {
-                        if a[0] >= 4 || a[1] > 250 {
-                            return Ok(INVALID_ARGUMENT);
-                        }
-                        writable(m, a[5], 4)?;
-                        writable(m, a[4], a[1] as usize * 16)?;
-                        (a[2], a[3], EmptyKind::Mute)
                     }
                     _ => unreachable!(),
                 };
@@ -1638,9 +1658,6 @@ impl State {
                 )?;
                 if op == PresenceInit && result == 0 {
                     self.menu.presence_init(m.u32(output)?);
-                }
-                if op == MuteGet && result == OK {
-                    m.set_u32(a[5], 0)?;
                 }
                 Ok(result)
             }
