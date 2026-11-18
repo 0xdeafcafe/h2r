@@ -29,7 +29,8 @@ use serde_json::{Value, json};
 /// The agent attached to one run.
 pub struct AgentGlue {
     pub agent: agent::Agent,
-    server: agent::Server,
+    /// `None` for [`AgentGlue::local`]: no socket, only in-process clients.
+    server: Option<agent::Server>,
 }
 
 /// The socket path from `H2_AGENT`, when set and not empty.
@@ -97,7 +98,24 @@ impl AgentGlue {
             "agent: listening on {} (docs/runtime/agent-api.md)",
             server.path().display()
         );
-        Ok(AgentGlue { agent, server })
+        Ok(AgentGlue {
+            agent,
+            server: Some(server),
+        })
+    }
+
+    /// An agent with no socket, for in-process clients (the debug menu,
+    /// docs/runtime/debug-menu.md) when `H2_AGENT` is unset: the host
+    /// methods, answered between slices. No tick observer (the tick plan
+    /// is what it would be without it), no input tap, nothing listening.
+    pub fn local() -> AgentGlue {
+        let agent = agent::Agent::new();
+        add_host_methods(&agent);
+        agent.set_no_tick_hook();
+        AgentGlue {
+            agent,
+            server: None,
+        }
     }
 
     /// The installed plan, for `features.list`.

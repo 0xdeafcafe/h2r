@@ -16,6 +16,8 @@
 //! * [`render`] records one frame's passes and draws for `render.frame`
 //!   (boot's backend wrapper feeds [`render::PROBE`]) and answers
 //!   `render.stats` from what the host registers.
+//! * [`menu`] connects the debug menu as an in-process client, and adds
+//!   `settings.*` and `perf.overlay` for it (docs/runtime/debug-menu.md).
 //! * [`Reader`] is what it reads: [`GuestReader`] over `live-telemetry`'s
 //!   readers in the game, a fake in tests.
 //!
@@ -26,6 +28,7 @@ mod capture;
 mod exec;
 pub mod hot;
 mod loads;
+pub mod menu;
 mod reader;
 pub mod render;
 mod server;
