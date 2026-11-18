@@ -22,6 +22,7 @@ use map::{FourCC, TagId};
 use crate::base::Base;
 use crate::coll::{convert_collision, put_sid};
 use crate::h1::{self, Equipment, Projectile, Unit, Weapon};
+use crate::health_hud;
 use crate::{Error, Result};
 
 /// Retail Halo 2 template per Halo 1 object: Halo 1 group, words that must
@@ -596,6 +597,8 @@ pub struct Converter<'a> {
     done: HashMap<u32, TagId>,
     colls: HashMap<(u32, bool), TagId>,
     coll_names: HashMap<(u32, bool), Vec<(String, Vec<String>)>>,
+    /// Each template `nhdt` given the health meter.
+    health_huds: HashMap<TagId, TagId>,
 }
 
 impl<'a> Converter<'a> {
@@ -609,6 +612,7 @@ impl<'a> Converter<'a> {
             done: HashMap::new(),
             colls: HashMap::new(),
             coll_names: HashMap::new(),
+            health_huds: HashMap::new(),
         }
     }
 
@@ -1699,6 +1703,14 @@ impl<'a> Converter<'a> {
         if &g == b"vehi" && quiet_stand_in(&tag.name) {
             self.drop_looping_attachments(&mut rep, &mut root, &tpl_root)?;
         }
+        if &g == b"bipd" && health_hud::is_player_biped(&tag.name) {
+            match self.health_hud(&mut root, &tpl_root) {
+                Ok(n) => rep.no_home.push(format!(
+                    "HUD: the template's with Halo 1's health meter ({n} interfaces; docs/game/health.md)"
+                )),
+                Err(e) => rep.no_home.push(format!("HUD: no health meter: {e}")),
+            }
+        }
         self.stopgaps(&mut rep, &tpl_root, &[h2::MODEL]);
         self.tree.reports.push(rep);
         Ok(self.tree.push(
@@ -1709,6 +1721,77 @@ impl<'a> Converter<'a> {
                 raw: Vec::new(),
             },
         ))
+    }
+}
+
+impl Converter<'_> {
+    /// Points the player biped's HUD interfaces (`unit +0x1a0`) at copies
+    /// of their `nhdt` with the health meter ([`health_hud`]). Returns how
+    /// many interfaces it points.
+    fn health_hud(&mut self, root: &mut Block, tpl_root: &[u8]) -> Result<usize> {
+        use health_hud::{HUD_INTERFACE_SIZE, UNIT_HUD_INTERFACES};
+        let count = crate::base::u32_at(tpl_root, UNIT_HUD_INTERFACES) as usize;
+        if count == 0 {
+            return Err(Error::Invalid("the template unit has no HUD".into()));
+        }
+        let mut elements = Block::new(vec![0; count * HUD_INTERFACE_SIZE]);
+        for i in 0..count {
+            let e = self
+                .base
+                .element(tpl_root, UNIT_HUD_INTERFACES, HUD_INTERFACE_SIZE, i)?
+                .ok_or(Error::Truncated("unit HUD interfaces"))?;
+            // Unchanged unless every interface resolves: a null here would
+            // leave the player with no HUD at all.
+            let nhdt = self.base.reference(&e, 0).ok_or_else(|| {
+                Error::Invalid(format!("HUD interface {i} names no nhdt in the base map"))
+            })?;
+            let id = self.health_nhdt(nhdt)?;
+            elements.tag_ref((i * HUD_INTERFACE_SIZE) as u32, id);
+        }
+        root.block(UNIT_HUD_INTERFACES as u32, count as u32, elements);
+        Ok(count)
+    }
+
+    /// The template `nhdt` with the health widget added, built once.
+    fn health_nhdt(&mut self, nhdt: TagId) -> Result<TagId> {
+        use health_hud::{BITMAP_WIDGET_SIZE, NHDT_BITMAP_WIDGETS, NHDT_ROOT};
+        if let Some(id) = self.health_huds.get(&nhdt) {
+            return Ok(*id);
+        }
+        let name = self
+            .base
+            .name(nhdt)
+            .map(|(_, n)| n.to_owned())
+            .ok_or_else(|| Error::NoTemplate(format!("nhdt {nhdt:?}")))?;
+        let root = self.base.head(nhdt, NHDT_ROOT as u64)?;
+        let count = crate::base::u32_at(&root, NHDT_BITMAP_WIDGETS) as usize;
+        let address = crate::base::u32_at(&root, NHDT_BITMAP_WIDGETS + 4);
+        let widgets = self
+            .base
+            .meta
+            .slice(address, (count * BITMAP_WIDGET_SIZE) as u64)?
+            .to_vec();
+        let find = |group: &[u8; 4], name: &str| {
+            self.base
+                .find(group, name)
+                .ok_or_else(|| Error::NoTemplate(name.into()))
+        };
+        let bitmap = find(b"bitm", health_hud::STRIP_BITMAP)?;
+        let shader = find(b"shad", health_hud::STRIP_SHADER)?;
+        let (block, n) = health_hud::widgets_with_health(&widgets, bitmap, shader)
+            .ok_or_else(|| Error::Invalid(format!("{name} has no shield meter")))?;
+        let mut out = Block::new(root);
+        out.block(NHDT_BITMAP_WIDGETS as u32, n, block);
+        let id = self.tree.push(
+            &format!("{name}{}", health_hud::NHDT_SUFFIX),
+            Converted {
+                group: FourCC(*b"nhdt"),
+                root: out,
+                raw: Vec::new(),
+            },
+        );
+        self.health_huds.insert(nhdt, id);
+        Ok(id)
     }
 }
 

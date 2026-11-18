@@ -17,10 +17,11 @@
 //!   already has a health case (equipment powerup type 5), which calls
 //!   [`BODY_RESTORE`](feature::points::BODY_RESTORE) (`0xd6790`, body to
 //!   full; refused when full or dead). An observer logs each use.
-//! - **HUD.** A converted Halo 1 map's HUD draws the meter itself (a widget
-//!   on HUD input 17, the unit's body). For a map whose HUD does not
-//!   (a retail level under the debug switch), the window draws one over
-//!   the game: [`overlay_meter`] is what it shows.
+//! - **HUD.** The meter is part of Halo 2's HUD: the map converter gives
+//!   the converted Halo 1 player a copy of its `nhdt` with a widget on HUD
+//!   input 17, the unit's body (`h1objects::health_hud`), so the game draws,
+//!   places and hides it with the shield meter. Nothing here draws it. A
+//!   retail map under the debug switch has no meter.
 //!
 //! **The switch.** At each game start [`set_mode`] gets [`model_for_map`]
 //! of the loaded map's name: converted Halo 1 maps (`h1_<map>` in the Halo
@@ -28,7 +29,7 @@
 //! override `H2_HEALTH_MODEL=halo1|halo2` beats it, so the model can be
 //! tried on a retail level.
 
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
 use engine::handle::DatumHandle;
@@ -47,7 +48,7 @@ pub enum HealthModel {
     /// Retail: the body regenerates after the shield.
     Halo2,
     /// The body does not regenerate; health packs refill it; a health
-    /// meter under the shield meter.
+    /// meter beside the shield meter (in the converted map's HUD).
     Halo1,
 }
 
@@ -88,11 +89,6 @@ impl HealthModel {
 static MAP_MODE: AtomicU8 = AtomicU8::new(0);
 /// The debug override (`H2_HEALTH_MODEL`); 0 means none.
 static FORCED: AtomicU8 = AtomicU8::new(0);
-/// The loaded map's HUD draws the health meter itself.
-static HUD_HAS_METER: AtomicBool = AtomicBool::new(false);
-/// The health meter to draw: `f32` bits, NaN for none.
-static METER: AtomicU32 = AtomicU32::new(NO_METER);
-const NO_METER: u32 = 0x7fc0_0000;
 
 /// Sets the model for the game being started, from the map's identity: a
 /// Halo 1 map is [`HealthModel::Halo1`], anything else
@@ -160,13 +156,6 @@ pub fn loaded_map_name(m: &dyn GuestMemory) -> Result<String, MemFault> {
     Ok(String::from_utf8_lossy(&name).into_owned())
 }
 
-/// Whether the loaded map's own HUD has the health meter (a converted
-/// Halo 1 map whose HUD has a widget on the body input). While it does,
-/// the window's meter is not drawn. Set it with [`set_mode`].
-pub fn set_hud_has_meter(on: bool) {
-    HUD_HAS_METER.store(on, Ordering::SeqCst);
-}
-
 /// The model in force: the debug override if set, else the map's.
 pub fn mode() -> HealthModel {
     HealthModel::from_code(FORCED.load(Ordering::Relaxed))
@@ -193,18 +182,6 @@ pub fn parse_override(v: Option<&str>) -> Result<Option<HealthModel>, String> {
             .map(Some)
             .ok_or_else(|| format!("{ENV}={s:?} is neither halo1 nor halo2")),
     }
-}
-
-/// The local player's health fraction for the window's meter: `Some` only
-/// in the Halo 1 model, with a local player alive, and when the map's HUD
-/// does not draw the meter itself.
-pub fn overlay_meter() -> Option<f32> {
-    let v = f32::from_bits(METER.load(Ordering::Relaxed));
-    (!v.is_nan()).then_some(v)
-}
-
-fn publish_meter(v: Option<f32>) {
-    METER.store(v.map_or(NO_METER, f32::to_bits), Ordering::Relaxed);
 }
 
 // ---- the guest layout (docs/game/health.md "Layouts") ----
@@ -276,31 +253,6 @@ pub fn apply_hold(
     Ok(Some(health))
 }
 
-/// Local user 0's unit's health (for the window's meter), if it has one
-/// alive.
-pub fn local_health(m: &dyn GuestMemory) -> Result<Option<f32>, MemFault> {
-    let units = crate::skulls_custom::local_units(m)?;
-    let Some(u) = units.iter().find(|u| u.user == 0).or(units.first()) else {
-        return Ok(None);
-    };
-    let flags = m.u16(u.body.wrapping_add(0x10a))?;
-    if flags & 0x4 != 0 {
-        // Body depleted: dead.
-        return Ok(None);
-    }
-    Ok(Some(
-        m.f32(u.body.wrapping_add(BODY_HEALTH))?.clamp(0.0, 1.0),
-    ))
-}
-
-/// What the meter shows now, from the model and the guest.
-pub fn meter_now(m: &dyn GuestMemory) -> Option<f32> {
-    if mode() != HealthModel::Halo1 || HUD_HAS_METER.load(Ordering::Relaxed) {
-        return None;
-    }
-    local_health(m).ok().flatten()
-}
-
 // ---- the feature ----
 
 #[derive(Default)]
@@ -317,8 +269,8 @@ struct State {
 impl State {
     /// Why a snapshot can't be taken now: a damage update or a body restore
     /// is between its two hooks. Otherwise the model is a function of the
-    /// loaded map (`set_mode` at game start, from guest memory) and the
-    /// meter is published again every tick, so a load rebuilds them.
+    /// loaded map (`set_mode` at game start, from guest memory), so a load
+    /// rebuilds it.
     fn live(&self) -> Option<String> {
         if self.armed.load(Ordering::Relaxed) || self.pending.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
             return Some("a damage update is between its hooks".into());
@@ -330,8 +282,8 @@ impl State {
     }
 }
 
-/// The feature: hooks on the damage update and the body restore, a tick
-/// observer for the meter, a game-start line.
+/// The feature: hooks on the damage update and the body restore, a
+/// game-start line.
 pub struct H1Health {
     state: Arc<State>,
 }
@@ -409,10 +361,6 @@ impl feature::Feature for H1Health {
                     );
                 });
         }
-        b.frame().on_tick("publish the health meter", |o| {
-            let v = meter_now(&*o.guest());
-            publish_meter(v);
-        });
         {
             let s = Arc::clone(&self.state);
             b.snapshot(feature::SnapshotPolicy::forbid_while(move || s.live()));
@@ -432,14 +380,7 @@ impl feature::Feature for H1Health {
                             "health: the map's name could not be read ({e:?}); model unchanged"
                         ),
                     }
-                    eprintln!(
-                        "{}",
-                        start_line(
-                            mode(),
-                            forced().is_some(),
-                            HUD_HAS_METER.load(Ordering::Relaxed)
-                        )
-                    );
+                    eprintln!("{}", start_line(mode(), forced().is_some()));
                 });
         }
         Ok(())
@@ -469,7 +410,7 @@ pub fn restore_line(
 }
 
 /// The game-start line.
-pub fn start_line(model: HealthModel, forced: bool, hud_meter: bool) -> String {
+pub fn start_line(model: HealthModel, forced: bool) -> String {
     let source = if forced {
         format!(" (debug override {ENV})")
     } else {
@@ -478,12 +419,7 @@ pub fn start_line(model: HealthModel, forced: bool, hud_meter: bool) -> String {
     match model {
         HealthModel::Halo2 => format!("health: game start: Halo 2 model{source}"),
         HealthModel::Halo1 => format!(
-            "health: game start: Halo 1 model{source}: no body regeneration; meter {}",
-            if hud_meter {
-                "from the map's HUD"
-            } else {
-                "drawn by the window"
-            }
+            "health: game start: Halo 1 model{source}: no body regeneration; the health meter is in a converted Halo 1 map's HUD"
         ),
     }
 }

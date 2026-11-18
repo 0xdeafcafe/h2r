@@ -653,12 +653,9 @@ and `audio: false` (boot's output owns the device).
 
 ## Health meter
 
-`AppConfig::health_meter` (`health_meter.rs`) draws a Halo 1 style row of
-eight segments over the game image while its value is `Some`, with the
-banner's sprite pass. `h2 play` sets it; `H2_HEALTH_METER_AT` places it.
-It shows only for a level whose own HUD has no health meter (a retail level
-under `H2_HEALTH_MODEL=halo1`); a converted Halo 1 map's HUD draws its own.
-See [health.md](../game/health.md) "HUD".
+The window draws no health meter. Halo 1's health meter is a widget in the
+converted Halo 1 player's HUD, drawn by the game (see
+[health.md](../game/health.md) "HUD").
 
 ## Known gaps
 

@@ -736,10 +736,6 @@ pub fn run(args: Vec<String>) -> Result<()> {
             std::env::var("H2_RENDER_THREAD").ok().as_deref(),
         )));
     }
-    // The Halo 1 health meter, drawn while the Halo 1 health model runs on
-    // a level whose HUD has none (docs/game/health.md "HUD");
-    // H2_HEALTH_METER_AT=right,top moves it (fractions of the image).
-    config.health_meter = Some(health_meter(std::env::var("H2_HEALTH_METER_AT").ok().as_deref()));
     if let Some(c) = frame_stats {
         timeline::phase::start(c).context("starting frame stats")?;
         // The follow banner wins the corner; the stats still log.
@@ -961,21 +957,6 @@ fn play_watermark(render_thread: bool) -> app::Watermark {
             "render thread off"
         })
         .with_map(kernel::level::last_map)
-}
-
-/// The window's health meter over boot's published value, placed by
-/// `H2_HEALTH_METER_AT` when it holds `right,top` fractions.
-fn health_meter(at: Option<&str>) -> app::HealthMeter {
-    let m = app::HealthMeter::new(boot::health::overlay_meter);
-    match at.and_then(app::health_meter::parse_at) {
-        Some((r, t)) => m.at(r, t),
-        None => {
-            if let Some(v) = at {
-                eprintln!("health: H2_HEALTH_METER_AT={v:?} is not `right,top` fractions; using the default");
-            }
-            m
-        }
-    }
 }
 
 /// A banner showing the frame stats' rolling window, refreshed once a

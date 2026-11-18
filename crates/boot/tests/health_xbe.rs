@@ -146,6 +146,48 @@ fn the_hud_has_a_body_input_beside_the_shield() {
     mem(&x.at(0x0013_adc1), Mnemonic::Movss, Register::EDX, 0x2c);
 }
 
+/// Why the converted HUD's health widget shows and hides with the shield
+/// meter (docs/game/health.md "HUD"): the HUD render asks HUD_SHOWN first
+/// and draws no `nhdt` when it says no (Blind's hook answers there); each
+/// `nhdt` draw walks every bitmap widget through one state gate, its
+/// inputs and one draw; the shield meter's own code is special type 5.
+#[test]
+#[ignore = "needs the retail default.xbe in $H2_XBE"]
+fn every_hud_widget_is_drawn_behind_the_same_gates() {
+    let x = Image::load();
+    // The HUD render 0x13954b: HUD_SHOWN, then out when it says no.
+    call(&x.at(0x0013_9554), 0x0013_939b);
+    assert_eq!(x.at(0x0013_955b).mnemonic(), Mnemonic::Je);
+    assert_eq!(x.at(0x0013_955b).near_branch32(), 0x0013_96ba);
+    // ...then the HUD state (0x13992a) and the nhdt draws (0x1394b9).
+    call(&x.at(0x0013_95b7), 0x0013_992a);
+    call(&x.at(0x0013_95cd), 0x0013_94b9);
+    call(&x.at(0x0013_95f5), 0x0013_94b9);
+    // HUD_SHOWN reads the campaign Blind skull's byte.
+    mem(
+        &x.at(0x0013_93e1),
+        Mnemonic::And,
+        Register::None,
+        0x004f_55e2,
+    );
+    // One nhdt's draw 0x13a532: bitmap widgets (+0x08 count, +0x0c
+    // address), each: the state gate on widget +0x08, the inputs from
+    // widget +0x04, the draw; stride 0x64.
+    mem(&x.at(0x0013_a5d8), Mnemonic::Mov, Register::EDI, 0x08);
+    mem(&x.at(0x0013_a5e8), Mnemonic::Mov, Register::EDI, 0x0c);
+    mem(&x.at(0x0013_a5fa), Mnemonic::Lea, Register::ESI, 0x08);
+    call(&x.at(0x0013_a5fd), 0x0013_ac87);
+    mem(&x.at(0x0013_a610), Mnemonic::Lea, Register::ESI, 0x04);
+    call(&x.at(0x0013_a617), 0x0013_ad48);
+    call(&x.at(0x0013_a625), 0x0022_aff1);
+    let i = x.at(0x0013_a62a);
+    assert_eq!((i.mnemonic(), i.immediate(1)), (Mnemonic::Add, 0x64));
+    // The widget draw switches on the special type (+0x60); type 5 reads
+    // the HUD state's shield (+0x2c) itself.
+    mem(&x.at(0x0022_b2d0), Mnemonic::Movzx, Register::ECX, 0x60);
+    mem(&x.at(0x0022_b411), Mnemonic::Movss, Register::EAX, 0x2c);
+}
+
 #[test]
 #[ignore = "needs the retail default.xbe in $H2_XBE"]
 fn shield_overflow_bleeds_into_the_body() {
