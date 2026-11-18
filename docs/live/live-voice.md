@@ -424,7 +424,8 @@ confirmed in the disassembly, **I** means inferred):
      ready, it moves the read position to write − 0x280. So remote voice
      reaches a headphone object only if the host's DirectSound runs those
      effects and their output rings. That is a slice 4 dependency on
-     crates/dsound; the slice 3 objects do not depend on it.
+     crates/dsound (built: `dsound::voice_rings`); the slice 3 objects do
+     not depend on it.
    - **The XMO vtable is at 0x417544 (C).** Slots: AddRef 0x41058f,
      Release 0x4112dc, GetInfo 0x4105ab, GetStatus 0x410603, Process
      0x410e77, Discontinuity 0x4105fe (S_OK) and Flush 0x4105f6
@@ -666,17 +667,15 @@ Each is its own slice, with tests:
      (`Host::voice_io`). `h2 play` uses `voice::host::HostVoiceIo`, which
      runs cpal on its own thread. Output plays on its own stream only when
      a voice output device is chosen; "Same as Game" plays nothing extra.
-   - **DirectSound.** It does not run the per-port voice effects; the
-     effects image is dry. The descriptor now gives effects 0xb..=0xe a
-     zeroed output ring. Without one, the headphone feed divides by zero
-     as soon as a headphone object exists. The headphone therefore plays
-     silence.
-   - **Where remote voice is heard.** Probably through the engine's
-     DirectSound voice streams, on mixbin index 0 (dsound.md, "Dry effects
-     image"). This has not been checked in a run.
+   - **DirectSound.** It runs the per-port voice effects on the host
+     (dsound.md, "Dry effects image"). Each port's voice streams get a
+     mix bin of their own (`0x1b + port`), which the mixer captures
+     instead of playing; after every render the capture goes into the
+     port's ring at 16 kHz and the write offset at state +0x34 moves on.
+     The headphone feed therefore reads the remote talkers of its port.
+     Before this, every port's remote voice was on mixbin 0, the left
+     speaker.
    - **Still to do:**
-     - a real voice effect that converts the voice streams into the rings,
-       so headphone output and the volume settings apply;
      - push-to-talk from the pad;
      - the input and output volume settings;
      - "Same as Game" through the DirectSound side sink.
