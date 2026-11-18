@@ -821,6 +821,9 @@ built from it, and a mute holds both ways: neither player hears the other.
   (`{by, target}`) on `mutes-<by>`, readable by the muting account, admins
   and the operator ([Private events](#private-events)). Nobody posts them by
   hand.
+- The dashboard lists the signed-in player's mutes on their own screen
+  with Unmute, and offers Mute or Unmute on other players' screens. The
+  game reads the list at sign-in, so a change made there reaches it then.
 
 ## Cloud saves
 

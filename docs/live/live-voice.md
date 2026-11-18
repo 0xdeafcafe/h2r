@@ -406,8 +406,11 @@ HLE ([live.md](live.md) "Client HLE: mute list"):
 - When the cache changes, the game rebuilds its matrix the next time it calls
   Get; the wrappers at 0x58c10/0x58c60 already do that.
 
-The website gets a mute list under the account's privacy settings, so a player
-can review and remove mutes outside the game.
+The dashboard shows the list on the signed-in player's own screen, with
+Unmute on each, and Mute or Unmute on any other player's screen
+(`web/src/dash/Mutes.tsx` over `web/src/admin/mutes.ts`), so a player can
+review and change mutes outside the game. A change there reaches the game at
+its next sign-in.
 
 Blocking, as distinct from muting, is not a game concept. If a block list is
 wanted later it should feed the same mute list (blocked implies muted) plus
@@ -495,7 +498,7 @@ the branch before voice code is written.
 Each is its own slice, with tests:
 
 1. **Mute list**: server events, endpoints in both homes, HLE Add, Remove
-   and Get (built), then the website list. Useful on its own: the game's
+   and Get, and the dashboard list (built). Useful on its own: the game's
    muted icons work, and it needs nothing from the codec.
 2. **Trace the codec** (3.3, "What to trace") and write it up here: where it
    lives, the frame layout, the bitrate, the PCM format and the voice-mail
@@ -545,8 +548,6 @@ Still open, each with this design's recommendation marked **proposed**:
 3. Which UI reads the friend-row voice bit, and what tag 0x581 holds on game
    invites. **Proposed:** leave until slice 5; presence already forwards
    the flag.
-4. A website mute list under the account's privacy settings (3.6).
-   **Proposed:** build it with the mute-list slice.
-5. If pause-settings adds a per-player mute row: **proposed** that it writes
+4. If pause-settings adds a per-player mute row: **proposed** that it writes
    through to the Live mute list when signed in rather than keeping its own
    (4).
