@@ -24,12 +24,26 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+/// The `dsound` snapshot section.
+mod snap;
+pub use snap::{SECTION, SnapshotError};
+
 /// A kernel event pinned independently of its guest handle. Dropping it
 /// releases the pin. Called and dropped with no guest memory or DirectSound
 /// guard held.
 pub trait EventRef: Send {
     /// Signals the event even if the guest has since closed its handle.
     fn signal(&mut self) -> Result<(), String>;
+    /// The pinned object's guest address, for a machine snapshot: a load
+    /// makes the pin again with [`Events::adopt`]. `None` (the default)
+    /// means this pin cannot be saved, and a save refuses while it is held.
+    fn address(&self) -> Option<u32> {
+        None
+    }
+    /// Drops the pin without releasing it: a snapshot load replaced the
+    /// kernel state that counted it. The default simply drops it, for pins
+    /// that hold no count.
+    fn forget(self: Box<Self>) {}
 }
 
 /// Kernel event signalling for `XMEDIAPACKET.hCompletionEvent`. Called with
@@ -45,6 +59,13 @@ pub trait Events: Send {
     /// exactly one completion, in queue order per handle, then dropped; a
     /// packet that never completes drops its pin when its stream is released.
     fn reference(&mut self, _guest_handle: u32) -> Option<Result<Box<dyn EventRef>, String>> {
+        None
+    }
+    /// Makes a pin again at a snapshot load, for the object at guest
+    /// `address` ([`EventRef::address`]) that the loaded kernel already
+    /// counts as pinned: no count is added. `None` (the default) means this
+    /// sink cannot, and a load of a snapshot holding pins refuses.
+    fn adopt(&mut self, _address: u32) -> Option<Result<Box<dyn EventRef>, String>> {
         None
     }
 }

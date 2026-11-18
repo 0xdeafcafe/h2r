@@ -397,6 +397,7 @@ name = "audio"
 version = "0.1.0"
 dependencies = [
  "cpal",
+ "snapshot",
  "thiserror 2.0.21",
 ]
 
@@ -1804,6 +1805,7 @@ dependencies = [
  "kernel",
  "runtime",
  "serde",
+ "snapshot",
  "thiserror 2.0.21",
  "toml",
  "wma",
@@ -7919,6 +7921,7 @@ version = "0.1.0"
 dependencies = [
  "asf",
  "sha2 0.10.9",
+ "snapshot",
  "thiserror 2.0.21",
  "xbe",
 ]

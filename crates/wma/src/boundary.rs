@@ -45,6 +45,7 @@
 //! - **A packet start mid-packet** (the callback's return 3 with bytes still
 //!   owed) drops the partial packet.
 use crate::{Decoder, Format, Tables};
+use snapshot::codec::{Reader, Writer};
 use std::collections::VecDeque;
 use std::sync::Arc;
 
@@ -265,6 +266,96 @@ impl Session {
         self.stats.pcm_frames += pcm.len() as u64 / 2;
         self.pcm.extend(pcm);
     }
+
+    /// Machine snapshots (docs/runtime/snapshots.md, phase 4): the whole
+    /// instance, decoder included (overlap, reservoir packet, exponents,
+    /// block sizes), so [`Session::load_state`] gives a session that
+    /// produces exactly this one's PCM from the same input.
+    pub fn save_state(&self, w: &mut Writer) {
+        let Session {
+            // Keep: the loading process's tables (the same verified XBE).
+            tables: _,
+            format,
+            decoder,
+            partial,
+            pcm,
+            next_sequence,
+            ended,
+            // Diagnostics: the error itself is not data.
+            last_error: _,
+            stats,
+        } = self;
+        let Format {
+            bytes_per_second,
+            block_align,
+        } = format;
+        w.u32(*bytes_per_second).u32(u32::from(*block_align));
+        decoder.save(w);
+        w.blob(partial);
+        let queued: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
+        w.blob(&queued);
+        w.bool(next_sequence.is_some());
+        w.u8(next_sequence.unwrap_or(0));
+        w.bool(*ended);
+        let Stats {
+            packets,
+            pcm_frames,
+            restarts,
+            errors,
+            dropped_partials,
+        } = stats;
+        for v in [packets, pcm_frames, restarts, errors, dropped_partials] {
+            w.u64(*v);
+        }
+    }
+
+    /// A session saved with [`Session::save_state`], decoding with
+    /// `tables`.
+    pub fn load_state(tables: Arc<Tables>, r: &mut Reader<'_>) -> Result<Self, snapshot::Error> {
+        let bad = |what: &str| snapshot::Error::Corrupt("wma", what.to_owned());
+        let bytes_per_second = r.u32()?;
+        let block_align = u16::try_from(r.u32()?).map_err(|_| bad("block align"))?;
+        let format = Format {
+            bytes_per_second,
+            block_align,
+        };
+        let decoder = Decoder::load(Arc::clone(&tables), format, r)?;
+        let partial = r.blob()?.to_vec();
+        let queued = r.blob()?;
+        if !queued.len().is_multiple_of(4) {
+            return Err(bad("PCM is not whole stereo frames"));
+        }
+        let pcm = queued
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| i16::from_le_bytes(*b))
+            .collect();
+        let has_sequence = r.bool()?;
+        let sequence = r.u8()?;
+        if sequence > 15 {
+            return Err(bad("packet sequence over 15"));
+        }
+        let ended = r.bool()?;
+        let stats = Stats {
+            packets: r.u64()?,
+            pcm_frames: r.u64()?,
+            restarts: r.u64()?,
+            errors: r.u64()?,
+            dropped_partials: r.u64()?,
+        };
+        Ok(Self {
+            tables,
+            format,
+            decoder,
+            partial,
+            pcm,
+            next_sequence: has_sequence.then_some(sequence),
+            ended,
+            last_error: None,
+            stats,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -311,6 +402,68 @@ mod tests {
         for (i, c) in packet.chunks(128).enumerate() {
             s.feed(c, i == 0);
         }
+    }
+
+    /// Everything a session gives the game from here on: per begin, its
+    /// status, then all its PCM.
+    fn play_out(s: &mut Session, packets: &[Vec<u8>]) -> Vec<(u32, Vec<i16>)> {
+        let mut out = Vec::new();
+        for p in packets {
+            feed(s, p);
+            let status = s.begin(false);
+            out.push((status, s.take_pcm(usize::MAX)));
+        }
+        let status = s.begin(true);
+        out.push((status, s.take_pcm(usize::MAX)));
+        out
+    }
+
+    #[test]
+    fn a_loaded_session_decodes_on_exactly_like_the_saved_one() {
+        let mut a = session();
+        for seq in 0..3 {
+            feed(&mut a, &silent(seq));
+            assert_eq!(a.begin(false), OK);
+        }
+        // Half a packet in hand, PCM not yet taken, and an overlap tail
+        // the next block adds to its output.
+        a.feed(&silent(3)[..2000], true);
+        a.take_pcm(1000);
+        a.decoder.fill_overlap(|i| (i as i32 % 300) - 150);
+        let mut w = Writer::new();
+        a.save_state(&mut w);
+        let bytes = w.into_bytes();
+
+        let rest = |s: &mut Session| {
+            s.feed(&silent(3)[2000..], false);
+            assert_eq!(s.begin(false), OK);
+            let mut out = vec![(OK, s.take_pcm(usize::MAX))];
+            out.extend(play_out(s, &[silent(4), silent(5), silent(9)]));
+            (out, s.stats, s.wants(), s.queued_frames())
+        };
+        let want = rest(&mut a);
+        assert!(
+            want.0.iter().any(|(_, pcm)| pcm.iter().any(|v| *v != 0)),
+            "the overlap tail is heard"
+        );
+
+        let mut r = Reader::new(&bytes, "wma");
+        let mut b = Session::load_state(Arc::new(Tables::synthetic()), &mut r).unwrap();
+        r.finish().unwrap();
+        assert_eq!(rest(&mut b), want);
+    }
+
+    #[test]
+    fn a_damaged_session_is_refused() {
+        let mut w = Writer::new();
+        session().save_state(&mut w);
+        let mut bytes = w.into_bytes();
+        // The first block size (after the format and an empty decoder's
+        // pending flag and two empty exponent lists).
+        let at = 8 + 1 + 2 * 8;
+        bytes[at] = 3;
+        let mut r = Reader::new(&bytes, "wma");
+        assert!(Session::load_state(Arc::new(Tables::synthetic()), &mut r).is_err());
     }
 
     #[test]

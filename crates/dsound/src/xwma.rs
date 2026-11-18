@@ -122,6 +122,79 @@ impl WmaHle {
     }
 }
 
+/// The codec instances' snapshot section.
+pub const SECTION: snapshot::Tag = snapshot::Tag::new("wma");
+const SECTION_VERSION: u32 = 1;
+
+impl WmaHle {
+    /// Adds the `wma` section (docs/runtime/snapshots.md, phase 4): every
+    /// live instance under its handle, with the game's input callback and
+    /// context and the whole session (decoder overlap, held packet, partial
+    /// input, queued PCM), and the next handle. A begin packet that is
+    /// pulling input keeps its state in a guest call continuation, which
+    /// `kernel::Machine::quiescent` refuses; between calls an instance is
+    /// plain data.
+    pub fn save_snapshot(&self, out: &mut snapshot::SnapshotWriter) -> Result<(), snapshot::Error> {
+        let WmaHle {
+            // Keep: the loading process's tables.
+            tables: _,
+            streams,
+            next,
+            // Diagnostics.
+            refusals: _,
+            totals: _,
+        } = self;
+        let mut w = snapshot::codec::Writer::new();
+        w.u32(*lock(next));
+        let streams = lock(streams);
+        let mut handles: Vec<u32> = streams.keys().copied().collect();
+        handles.sort_unstable();
+        w.u32(handles.len() as u32);
+        for h in handles {
+            let Stream {
+                session,
+                callback,
+                context,
+            } = &streams[&h];
+            w.u32(h).u32(*callback).u32(*context);
+            session.save_state(&mut w);
+        }
+        out.section(
+            SECTION,
+            SECTION_VERSION,
+            snapshot::Codec::Zstd,
+            w.into_bytes(),
+        )?;
+        Ok(())
+    }
+
+    /// Replaces every instance and the handle counter with the `wma`
+    /// section's. Decoded first: on an error nothing changes.
+    pub fn load_snapshot(&self, snapshot: &snapshot::Snapshot<'_>) -> Result<(), snapshot::Error> {
+        let bytes = snapshot.require(SECTION, SECTION_VERSION..=SECTION_VERSION)?;
+        let mut r = snapshot::codec::Reader::new(&bytes, "wma");
+        let next = r.u32()?;
+        let loaded = r.list(12, |r| {
+            let handle = r.u32()?;
+            let callback = r.u32()?;
+            let context = r.u32()?;
+            let session = Session::load_state(Arc::clone(&self.tables), r)?;
+            Ok((
+                handle,
+                Stream {
+                    session,
+                    callback,
+                    context,
+                },
+            ))
+        })?;
+        r.finish()?;
+        *lock(&self.streams) = loaded.into_iter().collect();
+        *lock(&self.next) = next;
+        Ok(())
+    }
+}
+
 fn add(t: &mut boundary::Stats, s: &boundary::Stats) {
     t.packets += s.packets;
     t.pcm_frames += s.pcm_frames;

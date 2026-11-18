@@ -1,4 +1,5 @@
 use crate::{Error, Result, Tables, bits::Bits};
+use snapshot::codec::{Reader, Writer};
 use std::sync::Arc;
 
 /// The two finite CBR profiles observed on the retail disc.
@@ -400,6 +401,118 @@ impl<'a> Decoder<'a> {
         Ok(())
     }
 }
+/// Machine snapshots (docs/runtime/snapshots.md, phase 4): the decoder's
+/// whole state, so a loaded decoder emits exactly the PCM this one would.
+impl Decoder<'static> {
+    pub(crate) fn save(&self, w: &mut Writer) {
+        let Decoder {
+            // Keep: the loading session's share of the same tables.
+            tables: _,
+            // Saved once by the session.
+            format: _,
+            pending,
+            channels,
+            exponent_size,
+            previous,
+            current,
+            next,
+            overlap,
+            skip_samples,
+            finished,
+            frames,
+            blocks,
+            nonzero_coefficients,
+            // Cleared by every push and finish.
+            frame_boundaries: _,
+        } = self;
+        w.bool(pending.is_some());
+        if let Some(p) = pending {
+            // The rest of the packet is parsed again from its bytes.
+            let Packet {
+                data,
+                header: _,
+                offset: _,
+                frames: _,
+                sequence: _,
+            } = p;
+            w.blob(data);
+        }
+        for ch in channels {
+            let Channel { exponents, maximum } = ch;
+            w.list(exponents, |w, e| {
+                w.u32(*e as u32);
+            });
+            w.u32(*maximum as u32);
+        }
+        for v in [exponent_size, previous, current, next] {
+            w.u64(*v as u64);
+        }
+        for o in overlap {
+            w.list(o, |w, v| {
+                w.u32(*v as u32);
+            });
+        }
+        w.bool(skip_samples.is_some());
+        w.u64(skip_samples.unwrap_or(0) as u64);
+        w.bool(*finished);
+        w.u64(*frames).u64(*blocks).u64(*nonzero_coefficients);
+    }
+
+    /// Tests: a recognisable tail in the overlap, so the next silent
+    /// block's PCM shows whether the overlap was carried.
+    #[cfg(test)]
+    pub(crate) fn fill_overlap(&mut self, f: impl Fn(usize) -> i32) {
+        for (ch, o) in self.overlap.iter_mut().enumerate() {
+            for (i, v) in o.iter_mut().enumerate() {
+                *v = f(i + ch * 7);
+            }
+        }
+    }
+
+    pub(crate) fn load(
+        tables: Arc<Tables>,
+        format: Format,
+        r: &mut Reader<'_>,
+    ) -> std::result::Result<Self, snapshot::Error> {
+        let bad = |what: String| snapshot::Error::Corrupt("wma", what);
+        let mut d = Self::new_shared(tables, format).map_err(|e| bad(e.to_string()))?;
+        if r.bool()? {
+            let p = Packet::parse(r.blob()?, format).map_err(|e| bad(e.to_string()))?;
+            d.pending = Some(p);
+        }
+        for ch in &mut d.channels {
+            ch.exponents = r.list(4, |r| Ok(r.u32()? as i32))?;
+            ch.maximum = r.u32()? as i32;
+        }
+        for v in [
+            &mut d.exponent_size,
+            &mut d.previous,
+            &mut d.current,
+            &mut d.next,
+        ] {
+            let n = r.u64()?;
+            if !matches!(n, 128 | 256 | 512 | 1024 | 2048) {
+                return Err(bad(format!("block size {n}")));
+            }
+            *v = n as usize;
+        }
+        for o in &mut d.overlap {
+            *o = r.list(4, |r| Ok(r.u32()? as i32))?;
+            if o.len() != 4096 {
+                return Err(bad(format!("overlap of {} samples", o.len())));
+            }
+        }
+        let some = r.bool()?;
+        let skip = r.u64()?;
+        d.skip_samples = some.then_some(skip as usize);
+        d.finished = r.bool()?;
+        d.frames = r.u64()?;
+        d.blocks = r.u64()?;
+        d.nonzero_coefficients = r.u64()?;
+        Ok(d)
+    }
+}
+
 fn read_size(bits: &mut Bits<'_>) -> Result<usize> {
     let d = bits.read(3)?;
     if d > 4 {

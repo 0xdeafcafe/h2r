@@ -26,6 +26,9 @@ use crate::mixbins::VoiceBins;
 use crate::padroute::{Classified, PadRouter, next_output};
 use crate::voice_rings::{self, VoiceRings};
 
+/// The `dsound` snapshot section's DirectSound half.
+mod snap;
+
 /// Why the shim cannot continue. Distinct from an HRESULT failure, which the
 /// game is allowed to see and handle.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]

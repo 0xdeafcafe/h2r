@@ -1,6 +1,6 @@
 # Machine snapshots (design)
 
-Status: phases 1, 2 and 3 built; phase 4 built for D3D, audio left. Phase 1
+Status: phases 1 to 4 built; phase 5 (wiring) left. Phase 1
 ([below](#phase-1-what-was-built)): the file format, the guest RAM page
 codec, the store, the guest layout and RAM restore, and the time-stamp
 counter, in `crates/snapshot` and `crates/runtime`, with the input tap's
@@ -11,8 +11,8 @@ kernel's `Core`, the machine's threads and their continuation pools, the
 VFS's read-only open files, the raw disk, XAPI's pads and the input tap's
 cursor, feature sections (`h1-health`, skulls, lockstep), and a policy
 for every feature ([third round](#third-round-every-feature)). Phase 4
-([below](#phase-4-what-was-built)): the `d3d` section. Nothing saves or
-loads a running game yet.
+([below](#phase-4-what-was-built)): the `d3d`, `audio`, `dsound`,
+`audioout` and `wma` sections. Nothing saves or loads a running game yet.
 Whatever is not marked built on this page is design.
 
 This is phase 5 of the [agent API](agent-api.md): `state.save {name}` and
@@ -94,7 +94,7 @@ on this page; guest addresses appear only as named research points.
 | The D3D frame wait | `d3d/src/vblank.rs`, `Wait { saved: CpuAbi, ret_pc, … }` | Rust state kept across yields by an override. |
 | Vblank delivery | `d3d/src/vblank.rs` `deliver_then_return` | A continuation. |
 | A WMA begin-packet callback | `dsound/src/xwma.rs` | A guest callback with Rust state around it. |
-| dsound stream callbacks and event ops not yet run | `dsound` `Hle::callbacks`, `outbox` | Queued Rust work. Can be drained. |
+| dsound event ops not yet delivered | `dsound` `Hle::outbox` | Queued Rust work, delivered before every call returns. (Queued stream callbacks are plain data and saved.) |
 | Deferred signals | `Kernel::deferred` | Drained at the start of every slice; empty right after one only if no host thread queued since. |
 
 ### The rule (**S**)
@@ -226,19 +226,25 @@ memory, so a load uses the host-only `Device::drop_host_caches` instead.
 
 ### audio (dsound, audio, wma)
 
+Built in phase 4 (below); decisions per field are in the `snap` modules.
+
 | State | Where | Decision | Why |
 |---|---|---|---|
-| Buffer and stream objects: format, guest data pointer, volume, pitch, 3D, mix bins, packet records | `DirectSound::objects`, `dsound/src/state.rs` | Save | Keyed by guest pointer. |
-| Mixer: buffers' play cursors, loop state, effect state | `audio::Mixer`, `SoundBuffer`, `fx.rs` | Save | `SoundBuffer` holds a copy of guest bytes taken at `Unlock`/`Play`; Save the copy for bit-exact audio. |
-| Stream packet queues | `audio::Stream` | Save | Hold decoded frames; the guest buffer address is not kept, so they cannot be re-read. |
-| Reverb tails | `Reverb` | Save or reset | A reset is a short audible glitch, not a guest-visible change. |
-| Arena bookkeeping | `Hle::arena` | Save | Bytes in guest RAM; the allocator lists are host-side. |
-| Event pins | `Hle::pins` | Save | Token to kernel handle; re-pin on load. |
-| Callbacks, outbox | `Hle::callbacks`, `outbox` | Quiesce | Drain at the boundary. |
-| WMA decoder sessions | `WmaHle::streams`, `wma/src/decoder.rs` | Save | Overlap buffers and partial packets cannot be derived from guest RAM. |
-| Output grid (logical pacing) | `output.rs` `Grid` | Save | |
-| Output device, PCM ring, resampler | `DeviceSink`, `sink.rs` | Rebuild | Output only. |
-| Pump and output threads | `dsound-pump`, output thread | Quiesce | Device pacing runs on wall time: refuse unless logical pacing is on. |
+| Guest objects: buffers and streams (format, data pointer, volume, 3D, effects, mix bins, gates, packet records, mixer ids), root, headroom, effects image, listener, voice rings, token counter | `DirectSound`, `dsound/src/state.rs` | Save | Keyed by guest pointer. Built. |
+| Layout (stream vtable, effect count) | `DirectSound::layout` | Check | Fixed by the build. Built. |
+| Mixer consumer, lease counter, `frames_per_do_work`, pad router | `DirectSound` | Keep | The loading process's wiring. |
+| Mixer: every buffer (with its copy of the guest bytes), stream (queued packets as decoded frames, history), mix-in, effect state, master volume, listener, ids, render clock, tapped samples | `audio::Mixer`, `fx.rs` | Save | Bit-exact PCM after a load. Built. |
+| Reverb | `Reverb` | Save | Delay lines and every derived gain, saved exactly. Built. |
+| Mixer rate | `Mixer::sample_rate` | Check | Built. |
+| Decoded buffer copies, filter coefficient caches, scratch | `SoundBuffer::decoded`, `FxState::coeffs` | Rebuild | Recomputed from the same inputs, bit-equal. |
+| Arena bookkeeping | `Hle::arena` | Save | Bytes in guest RAM; the allocator lists are host-side. Built. |
+| Event pins | `Hle::pins` | Save | Token and object address; a load adopts them from the loaded kernel's count (`Kernel::adopt_reference`). Built. |
+| Stream callbacks queued by a host render | `Hle::callbacks` | Save | Plain data. Built. |
+| Event ops published, not delivered | `Hle::outbox` | Quiesce | Built (`Hle::snapshot_blockers`). |
+| WMA codec instances | `WmaHle::streams`, `wma` `Session`, `Decoder` | Save | Whole session and decoder state. Built. |
+| Output grid (logical pacing) | `output.rs` `Grid` | Save | Origin and frames rendered. Built. |
+| Output device, PCM ring, resampler, rendered queue | `DeviceSink`, `sink.rs`, `Shared::queue` | Rebuild | Output only. |
+| Pump and device-paced output | `dsound-pump`, output thread | Quiesce | Wall time: `Output::snapshot_blockers`. |
 
 ### Features, boot glue and the rest
 
@@ -370,7 +376,7 @@ None needs a game run until the last step of phase 5.
    synthetic multi-threaded guest for N slices, snapshot, run M more and
    hash; load into a freshly booted machine, run M and compare hashes
    tick by tick.
-4. **Devices.** D3D built (below). D3D save, drop caches, restore;
+4. **Devices.** Built (below). D3D save, drop caches, restore;
    dsound, mixer, WMA. Tests
    over the D3D null backend and the audio crate's synthetic voices:
    render, snapshot, render more; load, render the same, compare draw
@@ -718,38 +724,61 @@ D3D (`d3d/src/device/snap.rs`, tests in `d3d/tests/snapshot.rs`):
   A device created with other present parameters refuses the section
   unchanged; a save inside Begin/End is refused.
 
-Left:
+Audio (`audio/src/snap.rs`, `dsound/src/state/snap.rs`,
+`dsound/src/register/snap.rs`, `dsound/src/output.rs`, `dsound/src/xwma.rs`,
+`wma` `Session::save_state`; tests in `audio/tests/snapshot.rs`,
+`dsound/tests/snapshot.rs`, `dsound/tests/xwma.rs` and `wma`'s
+`boundary.rs`):
 
-- Audio. Audited, not built (**Code**, decisions for the next lane):
-  - `audio::Mixer`: master volume, listener, `buffers`, `streams`,
-    `mix_ins` (by id) and `next_id`, the render `clock`: Save.
-    `scratch`, `reverb_in`, `direct`: Rebuild. `health`: Ignore. `taps`:
-    Quiesce (samples not yet taken) or Save. `sample_rate`: Check.
-  - `SoundBuffer`: format, the guest-byte copy `data` (Save, for
-    bit-exact audio), `params`, play and loop state, cursor `pos`,
-    `fx_state`; `decoded` and `frames` Rebuild from `data`.
-  - `Stream`: format, params, packet queue (decoded frames, ids),
-    `history`, `pos`, `paused`, `next_id`, `completed`, `fx_state`,
-    `dry_at`: Save. `MixIn`: input bin, params, playing, `fx_state`.
-  - `FxState`: clock, envelope start, Doppler, biquad and shelf memory,
-    `phase_off` Save; `coeffs` and `cached` Rebuild.
-  - `Reverb` is plain delay lines and poles (`Clone`), so Save is exact
-    and cheaper to get right than a reset that breaks PCM comparison.
-  - `dsound::Hle`: `ds` (the `DirectSound` state), `arena` and `pins`
-    Save (pins re-made from kernel handles); `callbacks` and `outbox`
-    Quiesce; `stops`, `signal_failures` Ignore. `Output` `Grid` Save
-    under logical pacing; device pacing Quiesce.
-  - `dsound::xwma::WmaHle`: `streams` (a `wma` boundary `Session` per
-    handle, with callback and context) and `next` Save; the decoder's
-    overlap buffers and partial packets need a `wma` save of their own.
-    `refusals`, `totals` Ignore.
-  - Test plan: the audio crate's synthetic voices (buffers, a stream with
-    queued packets, a mix-in, a filter and envelope, reverb on) render N
-    blocks, save, render M; a fresh mixer loads and renders M; the PCM is
-    bit-equal.
-- Phase 5 wiring: call `save_snapshot` after `ThreadedBackend::finish`
-  and before the RAM section; call `load_snapshot` after the RAM is
-  loaded; report `snapshot_blockers` as `host d3d` in the probe.
+- `Mixer::save_snapshot` adds `audio`; `load_snapshot` is
+  `check_snapshot` (decode, check the rate, change nothing) then
+  `apply_snapshot`. Every struct is destructured without `..`.
+- `Hle::save_snapshot` adds `dsound` and `audio`: the `DirectSound`
+  objects and settings, the arena's lists, the pins as (token, object
+  address) and the queued stream callbacks. Refused while event batches
+  are undelivered or a pin cannot name its object (`EventRef::address`).
+  `Hle::load_snapshot` decodes and checks both sections and adopts the
+  pins (`Events::adopt`) before changing anything; the loading run's own
+  pins are dropped with `EventRef::forget`, which takes no count, because
+  the loaded kernel's `references` are the saved run's. Boot's kernel
+  pins implement all three (`Kernel::adopt_reference`,
+  `DispatcherReference::forget`).
+- `Output::save_snapshot` adds `audioout` (the logical grid's origin and
+  frames rendered); device pacing refuses (`Output::snapshot_blockers`).
+- `WmaHle::save_snapshot` adds `wma`: every codec instance by handle with
+  its callback, context and whole `Session` (decoder overlap, held
+  reservoir packet, exponents, block sizes, partial input, queued PCM),
+  and the next handle. Exact state turned out small, so no
+  refuse-while-decoding policy is needed: a begin packet pulling input
+  is a guest call continuation, which the machine check refuses.
+- Tests: a mixer with looping, filtered, enveloped, occluded and 3D
+  buffers, a stream with queued packets and a pitch LFO, a 3D mix-in, a
+  tapped bin and the reverb renders, is saved and renders on; a fresh
+  mixer loads it and renders the same PCM bit for bit (and a mixer at
+  another rate refuses unchanged). Through the registered overrides, a
+  world with a packet half played, an event pinned and a callback queued
+  is saved with guest RAM; a second world with other objects and a pin of
+  its own loads it and plays on with the same PCM, statuses, signals,
+  callbacks and arena allocations. A WMA session with a held packet,
+  half a packet of input and an overlap tail decodes on identically; a
+  loaded codec instance decodes the rest of a stream like the saved one.
+
+Left (phase 5 wiring):
+
+- Save order between slices: `ThreadedBackend::finish`, then
+  `Device::save_snapshot` (D3D writes guest memory), then
+  `Hle::save_snapshot`, `Output::save_snapshot`,
+  `WmaHle::save_snapshot`, then guest RAM and the kernel. Hold the
+  output between `advance_to` calls (logical pacing) while saving.
+- Load order: guest RAM, `kcore` and `machine`, then
+  `Device::load_snapshot`, `Hle::load_snapshot` (after `kcore`: it
+  adopts the saved pins), `Output::load_snapshot`,
+  `WmaHle::load_snapshot`, XAPI and feature sections.
+- Report `Device::snapshot_blockers`, `Hle::snapshot_blockers` and
+  `Output::snapshot_blockers` as host blockers in the probe; `bink-hle`
+  (which adds voices to the same mixer) must refuse while a movie plays.
+- Not covered: movie voices in the mixer (Bink refuses), the pad
+  router's labels (host setting, kept), stream health counters (kept).
 - Frame pixels could be saved through `Backend::read_surface` and
   `write_surface` if the first frame after a load matters to
   `render.compare`.
