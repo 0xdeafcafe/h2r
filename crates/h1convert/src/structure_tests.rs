@@ -274,7 +274,7 @@ fn a_converted_structure_reads_back_through_halo_2s_decoders() {
     let tris: Vec<[u16; 3]> = s.parts.iter().flat_map(|p| s.part_triangles(p)).collect();
     assert_eq!(tris, [[0, 1, 2], [0, 2, 3], [4, 5, 6]]);
 
-    // Cluster fields the engine reads (docs/game/h1-multiplayer.md).
+    // Cluster fields the engine reads (docs/halo1/multiplayer.md).
     assert_eq!(c.raw[0x6e], 0, "the scenario's first sky");
     assert_eq!(&c.raw[0x6f..0x72], [0xff; 3]);
     assert_eq!(&c.raw[0x72..0x78], [0xff; 6]);

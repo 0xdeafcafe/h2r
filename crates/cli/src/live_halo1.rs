@@ -1,6 +1,6 @@
 //! Halo 1 maps for the stats site's art (docs/live/live-art.md, "Halo 1
 //! maps"): the levels `h2 import halo1` converted into Halo 2 maps under a
-//! runtime data root (docs/game/campaigns.md "Importing"). They are real
+//! runtime data root (docs/halo1/campaign.md "Importing"). They are real
 //! Halo 2 cache files, so the extractor draws them like the disc's own:
 //! geometry, views, sky and a preview, each map under the name the game
 //! reports it by (the cache header's short name: `h1_<map>` for a

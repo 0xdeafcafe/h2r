@@ -1,6 +1,6 @@
 //! A whole conversion: one Halo 1 multiplayer map onto a Halo 2 base map,
 //! as the bytes of `h1_<map>.map` and its package manifest
-//! (docs/game/h1-multiplayer.md, "Converting a map").
+//! (docs/halo1/multiplayer.md, "Converting a map").
 //!
 //! [`prepare`] does everything that needs no MOPP code and reports it;
 //! [`Prepared::build`] writes the map from it with given MOPP bytes;
@@ -35,7 +35,7 @@ pub const COLLECTION_ENTRY: usize = 0x10;
 pub enum Sandbox {
     /// Halo 1's weapons, vehicles and equipment (phase 4; not built).
     Halo1,
-    /// Halo 2's nearest equivalents (docs/game/h1-multiplayer.md).
+    /// Halo 2's nearest equivalents (docs/halo1/multiplayer.md).
     Halo2,
 }
 

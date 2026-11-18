@@ -61,7 +61,7 @@ pub fn add_from_env() {
 pub struct Bots {
     local: Local,
     phantoms: bots::phantom::Phantoms,
-    /// Where `h2 bots nav` writes each map's data.
+    /// Where each map's data is written (`h2 bots nav`, `bots_nav_auto`).
     dir: std::path::PathBuf,
     map: Arc<Mutex<String>>,
     frame: Arc<AtomicU64>,
@@ -236,10 +236,13 @@ impl feature::Feature for Bots {
 /// The loaded map's short name (the cache header's, `0x547898`).
 const MAP_NAME: u32 = 0x0054_7898;
 
-/// When the loaded map changes, loads its bot data (`h2 bots nav`) on a
-/// thread of its own; until then, and without a file, the bots walk
-/// straight and see through walls.
+/// When the loaded map changes, loads its bot data on a thread of its own
+/// and asks the nav builder (`crate::bots_nav_auto`) to look at the map
+/// next. Until then, and without a file, the bots walk straight and see
+/// through walls; a mesh built while the map runs goes in when it lands
+/// ([`bots::autonav::offer`]).
 fn load_map_data(seen: &Mutex<String>, dir: &std::path::Path, mem: &runtime::Guest) {
+    use bots::autonav;
     use engine::memory::GuestMemory;
     let Ok(raw) = mem.cstr(MAP_NAME, 32) else {
         return;
@@ -250,30 +253,39 @@ fn load_map_data(seen: &Mutex<String>, dir: &std::path::Path, mem: &runtime::Gue
         return;
     }
     last.clone_from(&name);
-    bots::cache::set_current(None);
+    autonav::map_loaded(&name);
     if name.is_empty() {
         return;
     }
+    let auto = autonav::handle();
+    if let Some(h) = auto {
+        h.want(&name);
+    }
     let file = dir.join(bots::cache::file_name(&name, 0));
-    std::thread::spawn(move || match std::fs::read(&file) {
-        Ok(b) => match bots::cache::MapData::from_bytes(&b) {
-            Some(d) => {
-                eprintln!(
-                    "bots: {name}: {} polygons, {} links, {} wall triangles",
-                    d.nav.polys.len(),
-                    d.nav.edges.len(),
-                    d.walls.tris.len()
-                );
-                bots::cache::set_current(Some(Arc::new(d)));
+    std::thread::spawn(move || {
+        let read = std::fs::read(&file);
+        let data = read.as_ref().ok().and_then(|b| bots::cache::MapData::from_bytes(b));
+        match (data, read.is_ok(), auto.is_some()) {
+            (Some((d, _)), ..) => {
+                let (polys, links, walls) = (d.nav.polys.len(), d.nav.edges.len(), d.walls.tris.len());
+                if autonav::offer(&name, d, false) {
+                    eprintln!("bots: {name}: {polys} polygons, {links} links, {walls} wall triangles");
+                }
             }
-            None => eprintln!(
-                "bots: {}: not a bot data file; run `h2 bots nav {name}`",
+            (None, false, true) => eprintln!(
+                "bots: no nav mesh for {name} yet; building it (bots walk straight until it lands)"
+            ),
+            (None, true, true) => eprintln!(
+                "bots: {name}: the nav mesh file is from an older version; building it (bots walk straight until it lands)"
+            ),
+            (None, false, false) => eprintln!(
+                "bots: no nav mesh for {name}; run `h2 bots nav {name}` (bots walk straight until then)"
+            ),
+            (None, true, false) => eprintln!(
+                "bots: {}: not a bot data file of this version; run `h2 bots nav {name}`",
                 file.display()
             ),
-        },
-        Err(_) => eprintln!(
-            "bots: no nav mesh for {name}; run `h2 bots nav {name}` (bots walk straight until then)"
-        ),
+        }
     });
 }
 

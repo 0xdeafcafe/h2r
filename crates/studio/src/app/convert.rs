@@ -1,7 +1,7 @@
 //! "Convert to Halo 2": a read-only Halo 1 map converted by `h1convert`
 //! onto its Halo 2 base map, off the UI thread, and written as the Halo 1
 //! import's package (`<data>/maps/h1_<map>/`, one `[[variant]]` per
-//! sandbox; docs/game/h1-multiplayer.md, "Converting a map").
+//! sandbox; docs/halo1/multiplayer.md, "Converting a map").
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;

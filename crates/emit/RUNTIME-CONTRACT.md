@@ -331,7 +331,7 @@ uint64_t x87_helpers)`. Each handler accumulates local counters and sends them
 once at its shared exit. A host bridge forwards this to `runtime::ffi`.
 Without that build flag, generated objects require no extension symbol and
 perform no profiling work. ABI layouts are unchanged. See
-[performance](../../docs/perf/performance.md).
+[performance](../../docs/perf/guest-memory.md).
 
 ### 1.7 Nothing else
 

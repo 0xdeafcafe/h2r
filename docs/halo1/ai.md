@@ -1,6 +1,6 @@
 # Halo 1 AI data, and Halo 2's
 
-`crates/h1ai` is step 5 of the campaigns work ([campaigns.md](../game/campaigns.md)):
+`crates/h1ai` is step 5 of the campaigns work ([campaign.md](campaign.md)):
 it reads Halo 1's AI data out of an Xbox cache file (through `h1map`),
 decodes Halo 2's scenario AI blocks and `char` tags out of a v8 map, and
 converts the first into the second as `map::build` blocks. Halo 2's AI then
@@ -12,7 +12,7 @@ unchanged, and sits on the pathfinding generated from the converted
 collision. Not yet loaded by the game: what only a game run can prove is
 listed at the end.
 
-Evidence labels, as in [h1-map-format.md](h1-map-format.md):
+Evidence labels, as in [map-format.md](map-format.md):
 
 - **V (verified on disc):** checked by the `#[ignore]` tests in
   `crates/h1ai/tests/disc.rs` on the owner's discs. Strides were read off
@@ -178,7 +178,7 @@ decoded on all 15 campaign levels with `check_indices` clean).
 | `240` | orders | `7c` |
 
 These fit the field order of the scenario definition, anchored by the
-structure BSP block at `210` ([pathfinding.md](pathfinding.md)) and the
+structure BSP block at `210` ([pathfinding.md](../formats/pathfinding.md)) and the
 placement blocks in [scenario-editor.md](../editor/scenario-editor.md).
 
 Squad group (`24`): name `char[32]`, parent `i16` `20`, initial order
@@ -279,7 +279,7 @@ them into a map with `map::build::TagSet` and reads them back through
 | squad | squad `encounter/squad` (Halo 1 scripts' own spelling, cut to 31 characters), in the encounter's group and zone; counts, delay and major upgrade carried over |
 | squad's attacking groups | an order of the squad's name over the areas of those letters (every area when none match), set as the squad's initial order |
 | squad starting location | starting location: position, facing as yaw; a location's own actor becomes its own character |
-| squad with no starting locations | kept, empty: no starting locations and counts 0, with a note. It can never spawn, but scripts name it (on a30 these are mostly the attack/defend/retreat squads Halo 1 maneuvers actors into). Retail Halo 2 has such squads too (06b: 28 of 170, `squad_flag_bits`). Until 2026-11-17 they were left out and their script names stayed `none`. The converter keeps only those the scripts name, and only while the level stays under the engine's squad cap (335, `h1campaign::scenario::MAX_SQUADS`, campaigns.md §9): a50 (309 placed + 75 named empty) and b40 (283 + 67) leave them out, and their names resolve to a sibling squad: the encounter's first converted squad (`<encounter>/...`), or its squad group if it has none. Not the group first: Halo 2's `ai_migrate` (function 308, evaluator `0x002a54a0`) returns without moving anyone when the destination has either top bit set (`test ecx,0C0000000h` at `0x002a54cc`), so a squad group destination is a no-op, and `ai_attach_units` (287, through `0x002730c0` to `0x00273040`) reads the value's low 16 bits as a squad index (bounded by `scnr+0x160` at `0x0027305e`), so a group would name an unrelated squad |
+| squad with no starting locations | kept, empty: no starting locations and counts 0, with a note. It can never spawn, but scripts name it (on a30 these are mostly the attack/defend/retreat squads Halo 1 maneuvers actors into). Retail Halo 2 has such squads too (06b: 28 of 170, `squad_flag_bits`). Until 2026-11-17 they were left out and their script names stayed `none`. The converter keeps only those the scripts name, and only while the level stays under the engine's squad cap (335, `h1campaign::scenario::MAX_SQUADS`, campaign.md §9): a50 (309 placed + 75 named empty) and b40 (283 + 67) leave them out, and their names resolve to a sibling squad: the encounter's first converted squad (`<encounter>/...`), or its squad group if it has none. Not the group first: Halo 2's `ai_migrate` (function 308, evaluator `0x002a54a0`) returns without moving anyone when the destination has either top bit set (`test ecx,0C0000000h` at `0x002a54cc`), so a squad group destination is a no-op, and `ai_attach_units` (287, through `0x002730c0` to `0x00273040`) reads the value's low 16 bits as a squad index (bounded by `scnr+0x160` at `0x0027305e`), so a group would name an unrelated squad |
 | actor variant | a retail character ([`character_for`]): one palette entry per distinct character |
 | command list | a point set of its name (points `p0`..), an order stub of its name, and a `CommandScript` (atoms by name, with their points) for the scripts lane |
 | conversations, platoons, move positions, respawn | not converted (noted) |
@@ -359,7 +359,7 @@ retail scripts place every squad with `ai_place`. So `h1campaign` adds a
 startup script, `h1_initial_encounters`, placing the squad group of every
 encounter with bit 0 clear (a30: `mid_cliff_1`), and Halo 1's own
 `ai_place` calls keep one argument, as most retail calls do
-(h1-scripts.md). Squad flags stay 0.
+(scripts.md). Squad flags stay 0.
 
 Zone firing positions and areas are written as shared arrays keyed by
 their bytes: Halo 1 encounters repeat firing positions (b40's 20,789 hold

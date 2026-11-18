@@ -655,7 +655,7 @@ Each pair the same frame with `H2_LIGHTING=retail` and `=e3`, at
 `H2_RENDER_SCALE=2` (and once at 1 to see E3 at 640x480):
 
 1. **The Heretic** (`00a_introduction`), the cinematic's opening shots:
-   `H2_LEVEL=00a_introduction`, or the menu route of frame-budget.md
+   `H2_LEVEL=00a_introduction`, or the menu route of docs/perf/gameplay-budget.md
    (presents 4220 to 4520). Headless, `h2 run` with `H2_BOOT_GFX=<dir>` and
    `H2_BOOT_GFX_EVERY=30` writes `frame-NNNNN.png` (the view) and
    `frame-NNNNN-1x.png` (the reference, which must be identical between
@@ -725,7 +725,7 @@ Observer rules:
 - An observer reads guest memory and writes nothing: no guest memory, no CPU
   state, no device state.
 - Its reads must not be charged. The runtime counts guest accesses and turns
-  them into logical time (`H2_ACCESS_COUNT`, [perf-budget.md](../perf/perf-budget.md)),
+  them into logical time (`H2_ACCESS_COUNT`, [menu-budget.md](../perf/menu-budget.md)),
   so a charged read would shift the schedule. Observers need a read path
   outside that accounting.
 - It runs at a point where the data is settled: the guest's own call, not a

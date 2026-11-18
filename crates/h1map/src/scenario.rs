@@ -2,7 +2,7 @@
 //!
 //! Offsets and strides were read off retail multiplayer maps (a block's
 //! stride is the gap to the next block over its count; semantics from the
-//! values). Evidence per field is in `docs/formats/h1-map-format.md`,
+//! values). Evidence per field is in `docs/halo1/map-format.md`,
 //! "Scenario".
 
 use crate::format::*;

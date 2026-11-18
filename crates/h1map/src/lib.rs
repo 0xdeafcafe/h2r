@@ -14,7 +14,7 @@
 //! where their pixels are. [`disc`] recognises the Halo 1 disc and picks its maps.
 //!
 //! No game data is in this crate or its tests: the tests build invented maps
-//! in memory. See `docs/formats/h1-map-format.md` for the format, with the
+//! in memory. See `docs/halo1/map-format.md` for the format, with the
 //! evidence for each fact.
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -22,6 +22,7 @@
 pub mod bitmap;
 pub mod bsp;
 pub mod disc;
+pub mod phase;
 mod format;
 mod reader;
 pub mod scenario;

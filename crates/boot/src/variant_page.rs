@@ -238,12 +238,17 @@ impl feature::Feature for MoreRow {
             &VARIANT_OPTIONS_ROW_TEXT,
             "the More Options row's text",
             row_text,
-        );
+        )
+        // The Skulls row hooks both points too. The two act on different
+        // rows (more_row() sits after the Skulls row), so the order is
+        // only for the plan: ours runs inside the Skulls row's hooks.
+        .after_feature(crate::skulls_mp_row::ROW_FEATURE);
         b.raw().before(
             &VARIANT_OPTIONS_ROW_CHOSEN,
             "the More Options row's press",
             move |c| row_chosen(c, request_at),
-        );
+        )
+        .after_feature(crate::skulls_mp_row::ROW_FEATURE);
         ROW_ON.store(true, Ordering::SeqCst);
         Ok(())
     }
@@ -552,6 +557,25 @@ mod tests {
         assert!(GRAVITY_DESCRIPTION.encode_utf16().count() <= 120);
         for g in GRAVITY_STEPS {
             assert!(ext::GRAVITY.contains(&g));
+        }
+    }
+
+    /// The Skulls row hooks the same two points; with both on, the plan
+    /// builds and runs the Skulls row's hook first (a refused plan stops
+    /// the game at boot).
+    #[test]
+    fn the_row_plans_beside_the_skulls_row() {
+        let mut r = feature::Registry::new(feature::Switches::defaults());
+        let store = Arc::new(settings::Store::defaults(crate::setting_defs::ALL));
+        let mp = Arc::new(skulls_menu::SkullsScreen::multiplayer(store));
+        r.add(&crate::skulls_mp_row::VariantRow(mp)).unwrap();
+        r.add(&MoreRow).unwrap();
+        let text = r.build(&feature::Base).unwrap().text();
+        for point in ["VARIANT_OPTIONS_ROW_TEXT", "VARIANT_OPTIONS_ROW_CHOSEN"] {
+            let line = text.lines().find(|l| l.contains(point)).unwrap();
+            let skulls = line.find("skulls-mp-row").unwrap();
+            let more = line.find("variant-more-options-row").unwrap();
+            assert!(skulls < more, "{line}");
         }
     }
 

@@ -86,6 +86,7 @@ pub mod variant_ext;
 pub mod variant_options;
 pub mod variant_page;
 pub mod bot_glue;
+pub mod bots_nav_auto;
 pub mod clankers;
 pub mod video_screen;
 pub mod voice_glue;
@@ -789,9 +790,9 @@ pub fn run_hosted_with_live(
     let _ = map_select::prepare_at_boot(&opts.data_root, &opts.disc);
     // The Halo 1 maps' sandbox and the campaign's assets start as the
     // settings say; the pregame screen changes them per game, and the VFS
-    // and the health model follow (h1_variants, docs/game/h1-multiplayer.md).
+    // and the health model follow (h1_variants, docs/halo1/multiplayer.md).
     let halo1_sandbox = h1_variants::init_from_store(&setting_defs::load(&opts.data_root, &[]).0);
-    // A second campaign (docs/game/multiple-campaigns.md): read before the
+    // A second campaign (docs/halo1/campaign-picker.md): read before the
     // VFS mounts, which serves its converted maps.
     let campaigns = campaigns::boot_state(&opts.data_root, &opts.disc);
     let campaign_maps = campaigns.as_ref().map(|s| campaigns::host_maps(&opts.data_root, s)).unwrap_or_default();
@@ -801,7 +802,7 @@ pub fn run_hosted_with_live(
     let maps = map_override::dir();
     let packages = map_override::packages_dir(&opts.data_root);
     // Our campaigns' level pictures, added to mainmenu as the VFS serves it
-    // (docs/game/multiple-campaigns.md, "Pictures").
+    // (docs/halo1/campaign-picker.md, "Pictures").
     let cards = campaigns.as_ref().and_then(|s| {
         let levels: Vec<(String, String)> =
             s.built.iter().flat_map(|b| b.levels.iter().map(|l| (b.key.clone(), l.map.clone()))).collect();
@@ -916,7 +917,7 @@ pub fn run_hosted_with_live(
         )),
         None => None,
     };
-    // More than one campaign (docs/game/multiple-campaigns.md): campaigns
+    // More than one campaign (docs/halo1/campaign-picker.md): campaigns
     // installed under <data>/campaigns get their level lists and the
     // picker in front of the level select. None installed: nothing is
     // hooked and the disc is not read for it.
@@ -924,7 +925,7 @@ pub fn run_hosted_with_live(
     layout_glue::install(&loaded.runtime, &mut features, model).context("installing the button layouts")?;
     campaign_menu::install(&loaded.runtime, &mut features, campaigns).context("installing the campaigns")?;
     map_select::install(&mut features).context("installing the map select")?;
-    // The Halo 1 / Halo 2 options (docs/game/h1-multiplayer.md "Halo 1
+    // The Halo 1 / Halo 2 options (docs/halo1/multiplayer.md "Halo 1
     // options"): the switches follow the settings, the HUD style is picked
     // at each game start, and a custom game's Game Setup gets the Halo 1
     // Options row while its map is a converted Halo 1 map.
@@ -1001,15 +1002,15 @@ pub fn run_hosted_with_live(
     });
     let skulls_custom_on = skulls_custom::install(&mut features, host.settings.clone(), _telemetry.clone(), custom_maps)
         .context("installing our skulls")?;
-    // Halo 1's health model on Halo 1 maps (docs/game/health.md): no body
+    // Halo 1's health model on Halo 1 maps (docs/halo1/health.md): no body
     // regeneration, health packs, a health meter. Off (Halo 2's) until the
     // map's identity or the H2_HEALTH_MODEL debug override says Halo 1.
     let health_on = health::install(&mut features).context("installing the health model")?;
     // Precision variants on converted Halo 1 maps in the Halo 2 sandbox
-    // (docs/game/h1-multiplayer.md): the battle rifle for the SMG at game
+    // (docs/halo1/multiplayer.md): the battle rifle for the SMG at game
     // activation, from the swaps each package's manifest records.
     precision::install(&mut features, &packages).context("installing the precision swaps")?;
-    // Halo 1's or Halo 2's HUD on converted Halo 1 maps (docs/game/hud.md):
+    // Halo 1's or Halo 2's HUD on converted Halo 1 maps (docs/halo1/hud.md):
     // the owners' HUD references at game activation, by `hud::style_for_map`.
     hud_swap::install(&mut features, &packages, &opts.data_root).context("installing the HUD swap")?;
     // Stronger aim assist (docs/game/aim-assist.md): the weapons' autoaim and
@@ -1021,7 +1022,12 @@ pub fn run_hosted_with_live(
     // `H2_BOTS` adds brains at boot; idle with none.
     if opts.xapi {
         bot_glue::add_from_env();
-        bot_glue::install(&mut features, &opts.data_root).context("installing the bots")?;
+        let bots_on = bot_glue::install(&mut features, &opts.data_root).context("installing the bots")?;
+        // Their nav meshes, built in the background where missing or stale
+        // (docs/game/bots.md §10 stage 2); H2_BOTS_NAV_AUTO=0 turns it off.
+        if let (true, Some(vfs)) = (bots_on, k.vfs()) {
+            bots_nav_auto::start(&opts.data_root, &opts.disc, vfs, level_name.clone());
+        }
         // The Clankers page and its Game Setup row (stage 7).
         if let Some(store) = host.settings.as_ref() {
             clankers::install(&mut features, store, _live.clone(), _telemetry.as_ref()).context("installing the Clankers page")?;
@@ -1325,7 +1331,7 @@ pub fn run_hosted_with_live(
     // 5 s of where frame time goes on this host (host_perf.rs); it starts
     // frame stats quietly if nothing else has.
     let host_perf = host_perf::start_from_env(host.render_thread || d3d_glue::render_thread_requested());
-    // H2_FRAME_STATS=1: frame times split by phase (docs/perf/frame-budget.md).
+    // H2_FRAME_STATS=1: frame times split by phase (docs/perf/gameplay-budget.md).
     // `h2 play --frame-stats` may have started them already.
     let frame_stats = timeline::phase::enabled() || timeline::phase::start_from_env();
     let gpu = !headless || std::env::var_os("H2_BOOT_GFX").is_some();

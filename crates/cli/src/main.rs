@@ -129,12 +129,12 @@ const USAGE: &str = "usage: h2 <command> [disc]
                           convert the Halo 1 disc (default disc/halo1.iso): its ten
                           campaign levels and its multiplayer maps, into the data
                           root `h2 play` reads; `h2 play` does it by itself when
-                          halo1.iso is next to the disc (docs/game/campaigns.md)
+                          halo1.iso is next to the disc (docs/halo1/campaign.md)
   h1 info <iso|map> [map] Halo 1 map header, tag index and tag counts by group
   h1 tags <iso|map> [map] [--group G]
-                          Halo 1 map's tags (docs/formats/h1-map-format.md)
+                          Halo 1 map's tags (docs/halo1/map-format.md)
   h1 bitmap <iso|map> [map] <tag> --out DIR [--mips]
-                          Halo 1 bitmap's images as PNGs (docs/formats/h1-bitmaps.md)
+                          Halo 1 bitmap's images as PNGs (docs/halo1/bitmaps.md)
   import-mappack <iso> [--data DIR]
                           install the Multiplayer Map Pack disc's maps into the
                           emulated hard disk (docs/game/map-pack.md)
@@ -209,7 +209,7 @@ const USAGE: &str = "usage: h2 <command> [disc]
 
   profile <scenario> [--out DIR] [--seconds S] [--timeline FILE] ...   (--features perf)
                           sample a benchmark scenario: guest-aware folded stacks,
-                          top-N table, optional Chrome/Perfetto timeline (docs/perf/perf.md)
+                          top-N table, optional Chrome/Perfetto timeline (docs/perf/profiling.md)
   bench [run|list|compare] [--out DIR] [--only PATTERN] ...   (--features perf)
                           repeatable benchmarks as JSON; compare flags regressions
 

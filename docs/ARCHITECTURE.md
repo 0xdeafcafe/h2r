@@ -124,8 +124,8 @@ Every crate below is on master. "Done" means it does what its row says;
 | `d3d`     | Guest-facing Direct3D 8 over `gfx`, including push-buffer execution ([d3d.md](graphics/d3d.md)) | in progress: the menu and the first level render |
 | `boot`    | Builds the whole XBE into a dylib and runs it with every HLE crate registered ([BOOT.md](runtime/BOOT.md)) | done |
 | `engine`  | Hand-written Rust overrides over guest memory: checked tag lookup, datum arrays, localized-string lookup, with per-function adapters ([engine/README.md](engine/README.md)) | in progress; the game installs the leaves through the `engine-leaves` feature (locale group on by default) |
-| `timeline` | Dependency-free timeline events (frames, slices, waits, interrupts, drains, submits) to Chrome/Perfetto JSON; one atomic load per hook when off ([perf.md](perf/perf.md)) | done |
-| `perf`    | Guest-aware sampling profiler, timeline sessions, benchmark harness behind `h2 profile` and `h2 bench` ([perf.md](perf/perf.md)) | done |
+| `timeline` | Dependency-free timeline events (frames, slices, waits, interrupts, drains, submits) to Chrome/Perfetto JSON; one atomic load per hook when off ([profiling.md](perf/profiling.md)) | done |
+| `perf`    | Guest-aware sampling profiler, timeline sessions, benchmark harness behind `h2 profile` and `h2 bench` ([profiling.md](perf/profiling.md)) | done |
 | `cli`     | `h2` binary: `build`, `run`, `play`, `info`, `ls`, `extract`, `analyze`, `symbols`, `lift`, `emit`, the tag decoders and more (`cargo h2` lists them) | done |
 | `opt`     | IR-to-IR optimisation passes between lifting and emission | done |
 | `feature` | The feature registry: named points, hook chains, switches, the frame and game bridges ([feature-engine.md](engine/feature-engine.md)) | in progress |
@@ -145,10 +145,10 @@ Every crate below is on master. "Done" means it does what its row says;
 | `apple-host` | The tvOS and iOS apps' Rust half: a static library the UIKit hosts in `platform/tvos` and `platform/ios` call to boot the game ([tvos.md](runtime/tvos.md), [ios.md](runtime/ios.md)) | in progress |
 | `uwp-host` | The Xbox (Dev Mode) UWP app, `h2uwp.exe`, and its packaging helpers (`platform/xbox`, [xbox.md](runtime/xbox.md)) | in progress: boots on a Series X (DX12, audio); out of memory in App mode |
 | `cloud-saves` | Cloud saves on the Live service: merge an account's saves at sign-in, push changes as the game writes them ([live-cloud-saves.md](live/live-cloud-saves.md)) | in progress |
-| `h1map`   | Halo 1 Xbox cache (v5) reader ([h1-map-format.md](formats/h1-map-format.md)) | done |
-| `h1bitmaps` | Halo 1 bitmaps decoded to RGBA8 and converted to Halo 2 `bitm` tags ([h1-bitmaps.md](formats/h1-bitmaps.md)) | done |
-| `h1models` | Halo 1 render models and animation graphs as Halo 2 tags ([h1-models.md](formats/h1-models.md)) | in progress |
-| `h1convert` | Halo 1 multiplayer maps converted to Halo 2 tags: collision, shaders, objects ([h1-multiplayer.md](game/h1-multiplayer.md)) | in progress: all 13 disc maps convert |
+| `h1map`   | Halo 1 Xbox cache (v5) reader ([map-format.md](halo1/map-format.md)) | done |
+| `h1bitmaps` | Halo 1 bitmaps decoded to RGBA8 and converted to Halo 2 `bitm` tags ([bitmaps.md](halo1/bitmaps.md)) | done |
+| `h1models` | Halo 1 render models and animation graphs as Halo 2 tags ([models.md](halo1/models.md)) | in progress |
+| `h1convert` | Halo 1 multiplayer maps converted to Halo 2 tags: collision, shaders, objects ([multiplayer.md](halo1/multiplayer.md)) | in progress: all 13 disc maps convert |
 | `mopp`    | Havok MOPP code for structure BSPs: the engine's interpreter as a query model, and an offline compiler ([mopp.md](formats/mopp.md)) | done |
 | `pathfind` | AI pathfinding data: decode retail, generate from collision geometry, compare, emit `map::build` blocks ([pathfinding.md](formats/pathfinding.md)) | in progress |
 | `fastmem-proto` | Isolated Mach exception write-watch prototype ([fastmem-proto.md](perf/fastmem-proto.md)) | prototype, not used by the runtime |
@@ -207,4 +207,4 @@ operation-wide accessors (`crates/emit/RUNTIME-CONTRACT.md`).
 5. Draw the first frame (`mainmenu.map`) through the D3D replacement. *(done)*
 6. Reach and render the first campaign level. *(done: The Heretic renders
    past 8,000 frames)*
-7. 30 fps ([perf-budget.md](perf/perf-budget.md)).
+7. 30 fps ([menu-budget.md](perf/menu-budget.md)).

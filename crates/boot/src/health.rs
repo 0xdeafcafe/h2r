@@ -1,4 +1,4 @@
-//! The Halo 1 health model on Halo 2's engine (docs/game/health.md).
+//! The Halo 1 health model on Halo 2's engine (docs/halo1/health.md).
 //!
 //! Halo 2 regenerates a player's body vitality once the body's stun timer
 //! runs out; Halo 1 does not, and has health packs instead. For a Halo 1
@@ -184,7 +184,7 @@ pub fn parse_override(v: Option<&str>) -> Result<Option<HealthModel>, String> {
     }
 }
 
-// ---- the guest layout (docs/game/health.md "Layouts") ----
+// ---- the guest layout (docs/halo1/health.md "Layouts") ----
 
 /// Object body: health (body vitality) and shield, fractions (1.0 full),
 /// as `object_get_health` (`0x2a1a20`) and `object_get_shield`
@@ -291,7 +291,7 @@ pub struct H1Health {
 impl feature::Feature for H1Health {
     fn manifest(&self) -> feature::Manifest {
         feature::Manifest::new(FEATURE, "Halo 1's health model on Halo 1 maps")
-            .doc("docs/game/health.md")
+            .doc("docs/halo1/health.md")
     }
     fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
         use feature::points::{BODY_RESTORE, OBJECT_DAMAGE_UPDATE};
@@ -432,7 +432,7 @@ pub fn install(registry: &mut feature::Registry) -> anyhow::Result<bool> {
         Ok(Some(m)) => {
             force(Some(m));
             eprintln!(
-                "health: DEBUG OVERRIDE {ENV}={}: the {} health model on every map (not for play; docs/game/health.md)",
+                "health: DEBUG OVERRIDE {ENV}={}: the {} health model on every map (not for play; docs/halo1/health.md)",
                 env.as_deref().unwrap_or_default().trim(),
                 m.name()
             );

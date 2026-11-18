@@ -1,6 +1,6 @@
 //! Where a converted level goes: `<data>/campaigns/halo1/<level>.map`,
 //! listed by that folder's `campaign.toml` (`content::campaign_list`,
-//! docs/game/multiple-campaigns.md). The VFS serves the file as
+//! docs/halo1/campaign-picker.md). The VFS serves the file as
 //! `maps\<level>.map`, the name the level's start record's scenario path
 //! ends in.
 

@@ -22,9 +22,61 @@ pub fn current() -> Option<std::sync::Arc<MapData>> {
     CURRENT.read().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
-/// The file's first bytes and version.
+/// The file's first bytes and format version. Version 1 had no
+/// [`Stamp`]; it reads as stale ([`crate::autonav::Status::OldFormat`]).
 pub const MAGIC: &[u8; 4] = b"H2BT";
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
+
+/// The nav generator's version. **Bump it whenever the data a map builds
+/// changes**: `bots::nav`, `bots::los`, [`build`] or `crates/pathfind`'s
+/// generator. Every file built by another version is stale and is built
+/// again (`crate::autonav`); the `generator_output_is_pinned` test in
+/// `nav/tests.rs` fails when the output changes and this does not.
+pub const GENERATOR: u32 = 1;
+
+/// The header's length: magic, format version, [`Stamp`].
+pub const HEADER_LEN: usize = 20;
+
+/// What a file was built by and from: the generator version and the
+/// source map's fingerprint ([`crate::autonav::fingerprint`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Stamp {
+    pub generator: u32,
+    pub fingerprint: u64,
+}
+
+impl Stamp {
+    /// This generator, for the map with `fingerprint`.
+    pub fn now(fingerprint: u64) -> Self {
+        Stamp {
+            generator: GENERATOR,
+            fingerprint,
+        }
+    }
+}
+
+/// A file's format version and, for this format, its stamp, from its
+/// first [`HEADER_LEN`] bytes. `None`: not a bot data file.
+pub fn read_header(b: &[u8]) -> Option<(u32, Option<Stamp>)> {
+    let u32_at = |at: usize| -> Option<u32> {
+        Some(u32::from_le_bytes(b.get(at..at + 4)?.try_into().ok()?))
+    };
+    if b.get(..4)? != MAGIC {
+        return None;
+    }
+    let version = u32_at(4)?;
+    if version != VERSION {
+        return Some((version, None));
+    }
+    let fingerprint = u64::from_le_bytes(b.get(12..20)?.try_into().ok()?);
+    Some((
+        version,
+        Some(Stamp {
+            generator: u32_at(8)?,
+            fingerprint,
+        }),
+    ))
+}
 
 /// One structure BSP's bot data.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -65,11 +117,14 @@ pub fn build(bsp: &Bsp) -> Result<MapData, String> {
 }
 
 impl MapData {
-    pub fn to_bytes(&self) -> Vec<u8> {
+    /// The file: magic, version, `stamp`, the mesh, the walls.
+    pub fn to_bytes(&self, stamp: Stamp) -> Vec<u8> {
         let nav = self.nav.to_bytes();
-        let mut o = Vec::with_capacity(nav.len() + 36 * self.walls.tris.len() + 16);
+        let mut o = Vec::with_capacity(nav.len() + 36 * self.walls.tris.len() + 28);
         o.extend_from_slice(MAGIC);
         o.extend_from_slice(&VERSION.to_le_bytes());
+        o.extend_from_slice(&stamp.generator.to_le_bytes());
+        o.extend_from_slice(&stamp.fingerprint.to_le_bytes());
         o.extend_from_slice(&(nav.len() as u32).to_le_bytes());
         o.extend_from_slice(&nav);
         o.extend_from_slice(&(self.walls.tris.len() as u32).to_le_bytes());
@@ -83,16 +138,18 @@ impl MapData {
         o
     }
 
-    pub fn from_bytes(b: &[u8]) -> Option<Self> {
+    /// The data and its stamp; `None` for another format or a damaged
+    /// file.
+    pub fn from_bytes(b: &[u8]) -> Option<(Self, Stamp)> {
         let u32_at = |at: usize| -> Option<u32> {
             Some(u32::from_le_bytes(b.get(at..at + 4)?.try_into().ok()?))
         };
-        if b.get(..4)? != MAGIC || u32_at(4)? != VERSION {
-            return None;
-        }
-        let n = u32_at(8)? as usize;
-        let nav = NavMesh::from_bytes(b.get(12..12usize.checked_add(n)?)?)?;
-        let mut at = 12 + n;
+        let (_, stamp) = read_header(b)?;
+        let stamp = stamp?;
+        let h = HEADER_LEN;
+        let n = u32_at(h)? as usize;
+        let nav = NavMesh::from_bytes(b.get(h + 4..(h + 4).checked_add(n)?)?)?;
+        let mut at = h + 4 + n;
         let count = u32_at(at)? as usize;
         at += 4;
         if b.len() != at.checked_add(count.checked_mul(36)?)? {
@@ -109,10 +166,13 @@ impl MapData {
             }
             tris.push(t);
         }
-        Some(MapData {
-            nav,
-            walls: Walls::new(tris),
-        })
+        Some((
+            MapData {
+                nav,
+                walls: Walls::new(tris),
+            },
+            stamp,
+        ))
     }
 }
 
@@ -136,10 +196,23 @@ mod tests {
             nav: NavMesh::new(vec![floor, other], vec![e]),
             walls: Walls::new(vec![[[5.0, 0.0, 0.0], [5.0, 1.0, 0.0], [5.0, 0.0, 1.0]]]),
         };
-        let b = d.to_bytes();
-        assert_eq!(MapData::from_bytes(&b), Some(d));
+        let stamp = Stamp::now(0x0123_4567_89ab_cdef);
+        let b = d.to_bytes(stamp);
+        assert_eq!(MapData::from_bytes(&b), Some((d, stamp)));
+        assert_eq!(read_header(&b), Some((VERSION, Some(stamp))));
         assert_eq!(MapData::from_bytes(&b[..b.len() - 1]), None);
         assert_eq!(MapData::from_bytes(&[]), None);
+    }
+
+    #[test]
+    fn a_version_1_file_is_another_format() {
+        // Version 1: magic, version, then the mesh's length; no stamp.
+        let mut b = MAGIC.to_vec();
+        b.extend_from_slice(&1u32.to_le_bytes());
+        b.extend_from_slice(&0u32.to_le_bytes());
+        assert_eq!(read_header(&b), Some((1, None)));
+        assert_eq!(MapData::from_bytes(&b), None);
+        assert_eq!(read_header(b"NOPE\x02\0\0\0"), None);
     }
 
     #[test]

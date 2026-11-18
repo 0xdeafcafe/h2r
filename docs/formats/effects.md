@@ -233,7 +233,7 @@ Further **E** (the emitter update `0x00247470`, the particle creator
   (`[0x45dc54]`) against a random azimuth times `2 pi`.
 
 The Halo 1 converter writes Halo 1's effect particles on these slots
-(docs/formats/h1-objects.md, "Effect particles").
+(docs/halo1/objects.md, "Effect particles").
 
 `prt3` tags embed the same particle-system and emitter records (`prt3` block at
 `+0x84`), decoded with the same types.

@@ -416,7 +416,7 @@ that package. (The disc that has the package's map must be open.)
 The editor can show Halo 1 maps too.
 
 **Converted maps.** Once you have imported Halo 1 multiplayer maps
-([h1-multiplayer.md](../game/h1-multiplayer.md)), each is listed under
+([multiplayer.md](../halo1/multiplayer.md)), each is listed under
 **Halo 1** twice, once per sandbox: for example **Blood Gulch (H1
 sandbox)** (Halo 1's weapons and vehicles) and **Blood Gulch (H2
 sandbox)** (Halo 2's). Click one to open it in the Scenario tool and

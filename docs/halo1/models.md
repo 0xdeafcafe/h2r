@@ -7,11 +7,11 @@ Status: **Built** (2026-11-16) for Halo 1 Xbox `mode` -> Halo 2 `mode` and
 loaded by the game yet ("Needs a game run").
 
 This is the model and animation step of the Halo 1 campaign work
-([campaigns.md](../game/campaigns.md) §2). The Halo 1 cache container is in
-[h1-map-format.md](h1-map-format.md), the Halo 2 targets in
-[map-format.md](map-format.md) ("Render-model geometry"),
-[structure-bsp.md](structure-bsp.md) and [animation.md](animation.md), and
-the builder the output feeds in [map-builder.md](map-builder.md).
+([campaign.md](campaign.md) §2). The Halo 1 cache container is in
+[map-format.md](map-format.md), the Halo 2 targets in
+[map-format.md](../formats/map-format.md) ("Render-model geometry"),
+[structure-bsp.md](../formats/structure-bsp.md) and [animation.md](../formats/animation.md), and
+the builder the output feeds in [map-builder.md](../formats/map-builder.md).
 
 No map bytes, tag dumps or extracted assets are in the repository. The
 tests build invented tags in memory. The `#[ignore]` tests read real maps at
@@ -543,7 +543,7 @@ order.
 What broke the first person was the arms: the converted game used Halo
 2's, whose nodes (`l_upperarm`, ...) match no node of a Halo 1 graph
 (`frame l upperarm`, ...). From converter version 54 the Halo 1 sandbox
-and campaign use Halo 1's arms (docs/game/h1-multiplayer.md,
+and campaign use Halo 1's arms (docs/halo1/multiplayer.md,
 "First-person arms"), whose 37 names all occur in every Halo 1
 first-person graph.
 

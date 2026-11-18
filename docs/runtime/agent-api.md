@@ -1098,7 +1098,7 @@ write there makes the runs differ by design.
 At the addresses Live telemetry reads (`live_telemetry::layout`, now
 public, and `engine::view`): the player record's team (`+0xc0`); the
 unit's position (body `+0x64`, its velocity `+0x88` zeroed), team
-(`+0x138`), body and shield vitality (`+0xec`, `+0xf0`, docs/game/health.md;
+(`+0x138`), body and shield vitality (`+0xec`, `+0xf0`, docs/halo1/health.md;
 added to `engine::view::objects::Body`), grenade counts (`+0x23e`) and
 the held weapon's first magazine (`+0x22c` loaded, `+0x22a` reserve).
 Not built: spawning a player between lives (that needs the game's
@@ -1163,7 +1163,7 @@ bed6c8dc's. Never point a sim run at live.forbes.red.
 - [feature-engine.md](../engine/feature-engine.md): switches, hooks, Sim
   labels, native UI screens
 - [high-framerate.md](../game/high-framerate.md): `lockstep` and `xapi::tap`
-- [perf.md](../perf/perf.md), [frame-budget.md](../perf/frame-budget.md)
+- [profiling.md](../perf/profiling.md), [gameplay-budget.md](../perf/gameplay-budget.md)
 - [level-boot.md](level-boot.md), [checkpoints.md](checkpoints.md)
 - [lab.md](lab.md): `h2 lab`, runs on a second Mac over SSH with replays and frame stats
 - [hot-iteration.md](../graphics/hot-iteration.md): `edit.*` (live tag edits) and `render.*` (hot WGSL overrides, parameters, toggles)

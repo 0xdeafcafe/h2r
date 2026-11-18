@@ -1,4 +1,4 @@
-//! Halo 1's cutscenes in a converted level (docs/game/campaigns.md §9,
+//! Halo 1's cutscenes in a converted level (docs/halo1/campaign.md §9,
 //! Cutscenes): what the scripts' cinematic calls need besides the
 //! translation `h1scripts` does.
 //!

@@ -215,7 +215,7 @@ impl Library {
     /// [`Self::open`], loading `sandbox`'s variant (`h1` or `h2`) of each
     /// package that has variants ([`Manifest::select_variant`]; the
     /// default's when it has none of that sandbox). `boot::new_maps` passes
-    /// the `multiplayer.halo1_sandbox` setting (docs/game/h1-multiplayer.md).
+    /// the `multiplayer.halo1_sandbox` setting (docs/halo1/multiplayer.md).
     pub fn open_with_sandbox(root: impl AsRef<Path>, sandbox: Option<&str>) -> Self {
         let root = root.as_ref();
         let mut lib = Self {
@@ -416,7 +416,7 @@ fn load(dir: &Path, sandbox: Option<&str>) -> Result<Package, ResolveError> {
             why: e.to_string(),
         })?;
     // A converted map with one whole map per sandbox: load the chosen
-    // variant, else the default (docs/game/h1-multiplayer.md).
+    // variant, else the default (docs/halo1/multiplayer.md).
     let full = Manifest::from_toml(&text)?;
     let manifest = full.select_variant(sandbox);
     manifest.validate_in(&dir)?;

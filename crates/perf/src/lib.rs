@@ -1,4 +1,4 @@
-//! Performance tooling for h2recomp (docs/perf/perf.md):
+//! Performance tooling for h2recomp (docs/perf/profiling.md):
 //!
 //! - [`sample`] and [`profile`]: a sampling profiler for the game thread
 //!   that maps generated code back to guest functions and instructions

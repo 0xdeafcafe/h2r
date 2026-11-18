@@ -1,6 +1,6 @@
 //! Format constants and the records the reader returns.
 //!
-//! Field offsets, with their evidence, are in `docs/formats/h1-map-format.md`.
+//! Field offsets, with their evidence, are in `docs/halo1/map-format.md`.
 
 use std::fmt;
 

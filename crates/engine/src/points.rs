@@ -243,11 +243,11 @@ points! { ALL;
     /// anything changed. Called once per object per tick by
     /// `object_update` (`0xbc470`, its only caller): stun timers, shield
     /// recharge, and the body's regeneration (`0xd63de`..`0xd64b5`).
-    OBJECT_DAMAGE_UPDATE @ 0x000d_5de0: [fn(object: stack 0) -> al ret 4]; "docs/game/health.md";
+    OBJECT_DAMAGE_UPDATE @ 0x000d_5de0: [fn(object: stack 0) -> al ret 4]; "docs/halo1/health.md";
     /// Restore an object's body to full (EAX the object datum), AL 1 when
     /// it did (refused when full or depleted). Its only caller is the
     /// powerup pickup's health case (`0x151f73`).
-    BODY_RESTORE @ 0x000d_6790: [fn(object: eax) -> al ret 0]; "docs/game/health.md";
+    BODY_RESTORE @ 0x000d_6790: [fn(object: eax) -> al ret 0]; "docs/halo1/health.md";
     /// `locale_string_id_find`: the string for the packed id in EDI, its
     /// address in EAX.
     LOCALE_FIND @ 0x001a_02d0: [fn(id: edi) -> eax ret 0], Hot; "docs/engine/locale_string_id_find.md";
@@ -375,13 +375,13 @@ points! { ALL;
     /// `squad_settings_dialog`): ESI the handler, one stack argument. Fills
     /// the "squad setting list" rows (action word at datum `+2`) for the
     /// lobby's kind.
-    SQUAD_SETTINGS_LIST_CTOR @ 0x002b_b4d2: [fn(list: esi, a: stack 0) ret 4]; "docs/game/h1-multiplayer.md";
+    SQUAD_SETTINGS_LIST_CTOR @ 0x002b_b4d2: [fn(list: esi, a: stack 0) ret 4]; "docs/halo1/multiplayer.md";
     /// The Game Setup list's row text: looks the row's action up in a table
     /// of nine; an unknown action leaves the text as it was.
-    SQUAD_SETTINGS_ROW_TEXT @ 0x002b_b74f: [fn(list: ecx, item: stack 0, word: stack 1) ret 8]; "docs/game/h1-multiplayer.md";
+    SQUAD_SETTINGS_ROW_TEXT @ 0x002b_b74f: [fn(list: ecx, item: stack 0, word: stack 1) ret 8]; "docs/halo1/multiplayer.md";
     /// The Game Setup list's row chosen: jumps through a ten-entry table by
     /// the row's action with no bounds check.
-    SQUAD_SETTINGS_ROW_CHOSEN @ 0x002b_b801: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/game/h1-multiplayer.md";
+    SQUAD_SETTINGS_ROW_CHOSEN @ 0x002b_b801: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/halo1/multiplayer.md";
     /// The multiplayer level list's data array (`[0x4ee4e4]`, 8-byte
     /// elements, the map id at `+4`), or 0 without UI level data. The
     /// Select Map list's constructor (`0x2c9928`, list handler in ESI)
@@ -548,34 +548,34 @@ points! { ALL;
     /// The level select's list: one campaign's map ids from the start-level
     /// list, sorted, into the data array (stdcall `(array, campaign id)`).
     /// 1.0 asks for campaign 1 only (`0x19c190`).
-    CAMPAIGN_LEVEL_LIST @ 0x0019_c6d0: [fn(array: stack 0, campaign: stack 1) ret 8]; "docs/game/multiple-campaigns.md";
+    CAMPAIGN_LEVEL_LIST @ 0x0019_c6d0: [fn(array: stack 0, campaign: stack 1) ret 8]; "docs/halo1/campaign-picker.md";
     /// The menu's campaign start: options from the selection globals
     /// `0x54e7c0`-`0x54e7c8`, the level looked up by `(campaign, map)`.
-    CAMPAIGN_START @ 0x0023_643f: [fn() ret 0]; "docs/game/multiple-campaigns.md";
+    CAMPAIGN_START @ 0x0023_643f: [fn() ret 0]; "docs/halo1/campaign-picker.md";
     /// The next level of a campaign: the smallest map id above `map` with
     /// that campaign id in the start-level list (stdcall, EAX, -1 none).
     /// The game-won path (`0x18e960`) and `0x163610` ask it.
-    NEXT_LEVEL @ 0x0019_c440: [fn(campaign: stack 0, map: stack 1) -> eax ret 8]; "docs/game/multiple-campaigns.md";
+    NEXT_LEVEL @ 0x0019_c440: [fn(campaign: stack 0, map: stack 1) -> eax ret 8]; "docs/halo1/campaign-picker.md";
     /// The start-level record of `(campaign, map)`: the first with both ids
     /// in the loaded globals' start-level list (stdcall, EAX, 0 none). Some
     /// callers pass campaign 1 whatever the map: the level select's press
     /// (`0x2c5118`), which faults on 0, and Continue (`0x199ab7`).
-    CAMPAIGN_LEVEL_LOOKUP @ 0x0019_c270: [fn(campaign: stack 0, map: stack 1) -> eax ret 8]; "docs/game/multiple-campaigns.md";
+    CAMPAIGN_LEVEL_LOOKUP @ 0x0019_c270: [fn(campaign: stack 0, map: stack 1) -> eax ret 8]; "docs/halo1/campaign-picker.md";
     /// A finished level raises one slot's profile progress for a difficulty
     /// to map id ESI (stdcall `(slot, difficulty)`).
-    PROGRESS_RAISE @ 0x0019_043f: [fn(map: esi, slot: stack 0, difficulty: stack 1) ret 8]; "docs/game/multiple-campaigns.md";
+    PROGRESS_RAISE @ 0x0019_043f: [fn(map: esi, slot: stack 0, difficulty: stack 1) ret 8]; "docs/halo1/campaign-picker.md";
     /// The last level started (map id EAX) into every signed-in profile and
     /// `0x510840`.
-    LAST_LEVEL_SET @ 0x0019_040d: [fn(map: eax) ret 0]; "docs/game/multiple-campaigns.md";
+    LAST_LEVEL_SET @ 0x0019_040d: [fn(map: eax) ret 0]; "docs/halo1/campaign-picker.md";
     /// The level select screen's constructor (thiscall; the lobby's passes
     /// 1 in its second argument). Sets `0x54e7c0` to 1.
-    LEVEL_SELECT_NEW @ 0x002c_4ea0: [fn(screen: ecx, a: stack 0, lobby: stack 1) -> eax ret 8]; "docs/game/multiple-campaigns.md";
+    LEVEL_SELECT_NEW @ 0x002c_4ea0: [fn(screen: ecx, a: stack 0, lobby: stack 1) -> eax ret 8]; "docs/halo1/campaign-picker.md";
     /// The highest map id the signed-in profiles finished, any difficulty
     /// (EAX, -1 for none).
-    PROGRESS_MAX @ 0x0019_0565: [fn() -> eax ret 0]; "docs/game/multiple-campaigns.md";
+    PROGRESS_MAX @ 0x0019_0565: [fn() -> eax ret 0]; "docs/halo1/campaign-picker.md";
     /// Fill a screen request (ECX): the player mask, two words and the
     /// loader; `OPEN_SCREEN` and the menus' own opens call it.
-    SCREEN_REQUEST @ 0x0014_9f49: [fn(request: ecx, mask: stack 0, a: stack 1, b: stack 2, loader: stack 3) ret 16]; "docs/game/multiple-campaigns.md";
+    SCREEN_REQUEST @ 0x0014_9f49: [fn(request: ecx, mask: stack 0, a: stack 1, b: stack 2, loader: stack 3) ret 16]; "docs/halo1/campaign-picker.md";
     /// One local player's control update (look input to the player's
     /// action): stdcall, the local user index first of five stack words,
     /// the player's local controller index (player `+0x24`) in EDX. Its

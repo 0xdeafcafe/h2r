@@ -3,9 +3,9 @@
 Status: not on master. The experiment is on the `fastmem-4k` branch
 (`894f2a3` over master `c00124d`); on master `H2_FASTMEM` takes only `0` or
 `1`, and phase 1 (the inline RAM path) is on by default
-([performance.md](performance.md), "Inline RAM path").
+([guest-memory.md](guest-memory.md), "Inline RAM path").
 Master has since built its own boot bridge v3 (the `exit` slot,
-[performance.md](performance.md#one-exit-call-and-a-callee-on-its-callers-view-2026-11-17)),
+[guest-memory.md](guest-memory.md#one-exit-call-and-a-callee-on-its-callers-view-2026-11-17)),
 so the branch's installer v4 below would need rebasing onto it.
 
 This extends phase 1 without changing the default memory path or the

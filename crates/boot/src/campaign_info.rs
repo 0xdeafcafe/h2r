@@ -1,5 +1,5 @@
 //! What the campaign picker says about the focused campaign
-//! (docs/game/multiple-campaigns.md "The picker's detail pane"): a line
+//! (docs/halo1/campaign-picker.md "The picker's detail pane"): a line
 //! about it, the plain facts (release year and studio, its levels), the
 //! player's progress, and for Halo 1 the Halo 1 / Halo 2 options the
 //! level will start with. Pure: [`Info`] from the built campaigns, the

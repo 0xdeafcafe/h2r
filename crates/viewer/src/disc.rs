@@ -102,7 +102,7 @@ pub fn data_root() -> PathBuf {
 }
 
 /// A converted Halo 1 map under `data` by the name the game knows it by
-/// (docs/game/campaigns.md "Importing"): a campaign level at
+/// (docs/halo1/campaign.md "Importing"): a campaign level at
 /// `campaigns/halo1/<name>.map`, a multiplayer map at
 /// `maps/<name>/h1/<name>.map` (the Halo 1 sandbox), else its Halo 2
 /// sandbox's `h2/`. The level geometry is the same in both sandboxes.

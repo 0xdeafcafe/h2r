@@ -1,4 +1,4 @@
-//! Halo 1 campaign levels as Halo 2 v8 maps (docs/game/campaigns.md, step
+//! Halo 1 campaign levels as Halo 2 v8 maps (docs/halo1/campaign.md, step
 //! 3 onward).
 //!
 //! A level is converted onto a **pinned retail Halo 2 campaign map** (the
@@ -38,6 +38,7 @@ pub mod structure;
 use std::io::{Read, Seek};
 
 use h1map::H1Map;
+use h1map::phase;
 use map::{Map, TagId};
 use std::collections::HashMap;
 
@@ -60,7 +61,7 @@ pub const BASE: &str = "05a_deltaapproach";
 /// characters donors bring. b40 is the tightest (0xc24000 of 0xc24000).
 /// 05a is also the only campaign base with the pelican, phantom, wraith
 /// and Covenant turret templates next to the warthog, ghost, scorpion and
-/// banshee; the alternatives with more room each lack several of them (docs/game/campaigns.md §9). A level
+/// banshee; the alternatives with more room each lack several of them (docs/halo1/campaign.md §9). A level
 /// moves only when a measured reason says so.
 pub fn base_for(_level: &str) -> &'static str {
     BASE
@@ -169,7 +170,7 @@ pub struct Options<'a> {
     pub donors: Option<&'a donor::Donors>,
     /// Halo 1's cinematics and the a10 tutorial: played or skipped. `None`
     /// (the default) takes each level's own choice
-    /// ([`cutscenes::default_for`]; docs/game/campaigns.md, Cutscenes).
+    /// ([`cutscenes::default_for`]; docs/halo1/campaign.md, Cutscenes).
     pub cutscenes: Option<h1scripts::compile::Cutscenes>,
     /// The animation graphs and recorded animations the scripts name
     /// ([`cutscenes`]); off measures what they cost.
@@ -191,7 +192,7 @@ pub struct Options<'a> {
     /// b40 and d40).
     pub devices: Devices,
     /// Halo 1's characters, weapons and vehicles, or Halo 2's nearest
-    /// ([`h2assets`], docs/game/campaigns.md §5).
+    /// ([`h2assets`], docs/halo1/campaign.md §5).
     pub assets: h2assets::Assets,
 }
 
@@ -543,9 +544,12 @@ fn convert_with<R: Read + Seek>(
     let scnr = scenario::BaseScenario::read(base)?;
     let mut ambience = h1convert::ambience::read(h1);
     report.ambience_silenced = scenario::bound_ambience(&mut ambience, ambience_budget);
-    let bsps = structure::prepare_all(h1, base, &scnr, &ambience, &mut report)?;
+    let bsps = phase::time("bsp", || {
+        structure::prepare_all(h1, base, &scnr, &ambience, &mut report)
+    })?;
     let objects_base = if opts.objects {
-        let mut b = h1objects::base::Base::read(base).map_err(|e| invalid(format!("base: {e}")))?;
+        let mut b = phase::time("base templates", || h1objects::base::Base::read(base))
+            .map_err(|e| invalid(format!("base: {e}")))?;
         if lean.leaves_out(Lean::ObjectTextures) {
             b.model_shader = None;
         }
@@ -553,7 +557,7 @@ fn convert_with<R: Read + Seek>(
     } else {
         None
     };
-    let mut set = TagSet::from_map(base)?;
+    let mut set = phase::time("tag set", || TagSet::from_map(base))?;
     let scenario_path = manifest::scenario_path(&level);
     set.name = level.clone();
     set.scenario_path = scenario_path.clone();
@@ -563,7 +567,7 @@ fn convert_with<R: Read + Seek>(
     // The level's background sounds and sound environments, which the
     // clusters and the scenario's palettes name.
     let raw_before: u64 = set.raw.iter().map(|r| r.bytes.len() as u64).sum();
-    let sounds = ambience.install(&mut set)?.bounded();
+    let sounds = phase::time("ambience", || ambience.install(&mut set))?.bounded();
     report.ambience_bytes = set.raw.iter().map(|r| r.bytes.len() as u64).sum::<u64>() - raw_before;
 
     // Every Halo 1 BSP: the base's slots first, then new sbsp/ltmp tags
@@ -577,7 +581,7 @@ fn convert_with<R: Read + Seek>(
                 set.add_tag(map::FourCC(*b"ltmp"), &b.name, TagPayload::Empty)?,
             ),
         };
-        let section = b.write(&mut set, sbsp, ltmp, &sounds)?;
+        let section = phase::time("bsp", || b.write(&mut set, sbsp, ltmp, &sounds))?;
         if !opts.pinned {
             // A fresh level's BSPs are Halo 1's, named so in every slot.
             for id in [sbsp, ltmp] {
@@ -601,20 +605,22 @@ fn convert_with<R: Read + Seek>(
         if opts.objects && opts.assets == h2assets::Assets::Halo2 {
             wanted.extend(h2assets::wanted(h1, &set, d)?);
         }
-        donor::bring(d, &mut set, &wanted, &mut report)?;
+        phase::time("donors", || donor::bring(d, &mut set, &wanted, &mut report))?;
     }
-    scenario::write(
-        h1,
-        &mut set,
-        &scnr,
-        &slots,
-        &sounds,
-        objects_base.as_ref(),
-        opts,
-        lean,
-        [music, dialogue],
-        &mut report,
-    )?;
+    phase::time("scenario", || {
+        scenario::write(
+            h1,
+            &mut set,
+            &scnr,
+            &slots,
+            &sounds,
+            objects_base.as_ref(),
+            opts,
+            lean,
+            [music, dialogue],
+            &mut report,
+        )
+    })?;
 
     // Built without the bound, so an overflow can say by how much and
     // where the bytes went.
@@ -622,14 +628,16 @@ fn convert_with<R: Read + Seek>(
     set.check_file_size = false;
     // The rebuilt scenario and sound gestalt first, into their old ranges.
     set.largest_built_first = true;
-    let (mut bytes, mut layout) = set.build()?;
+    let built_map = phase::time("build map", || set.build());
+    let (mut bytes, mut layout) = built_map?;
+    let _build = phase::start("build map");
     if !opts.pinned {
         let sections: Vec<usize> = slots.iter().map(|s| s.section).collect();
         // From scratch ([`scratch`]); the base pruned ([`fresh`]) when
         // that fails.
         let file = scratch::file_bytes(base)?;
         // Each Halo 2 HUD is named by nothing but the HUD pairs: kept for
-        // `boot::hud` (docs/game/hud.md).
+        // `boot::hud` (docs/halo1/hud.md).
         let keep: Vec<TagId> = report.scenario.hud_swaps.iter().map(|h| h[2]).collect();
         let out = match scratch::build(&file, &set, &bytes, &keep) {
             Ok((out, r)) => {

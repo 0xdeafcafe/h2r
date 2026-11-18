@@ -280,7 +280,11 @@ triangle cut from the bottom-right corner, its edge opaque.
 `map_list::preview_alpha` draws that shape and the ignored test below
 checks it against all nine Map Pack records. A PNG or JPEG (`png`,
 `zune-jpeg`) is scaled to cover 220x207 (bilinear) and cropped to its
-centre. The base's picture is the level element's bitmap (tag reference at
+centre. The frame's colour is in a retail preview's pixels too (the pale
+border Select Map shows), so a preview made from an image or a plain card
+takes the colours of the list's first retail map's preview on that
+one-pixel frame (`map_list::with_frame`), read from the user's disc at
+install. Without it the Halo 1 maps showed no border. The base's picture is the level element's bitmap (tag reference at
 `+0x4`, datum `+0x8`), decoded by `assets::decode_image` with
 `mainmenu.map` and `shared.map` as its resource files, then given the same
 treatment. The plain card is a vertical gradient in a colour from the
@@ -597,7 +601,7 @@ variant per sandbox. `Manifest::select_variant` turns one variant into a
 plain derived manifest, so each has its own `MapId` (`origin` is in no id),
 and the resolver loads the default variant (`h1` if present, else the
 first). The form and the package layout are in
-[h1-multiplayer.md](h1-multiplayer.md#converting-a-map-built-h1convertconvert-h2-h1-convert).
+[multiplayer.md](../halo1/multiplayer.md#converting-a-map-built-h1convertconvert-h2-h1-convert).
 Nothing yet picks a variant by a setting.
 
 **Choice rule: one package per map name.**

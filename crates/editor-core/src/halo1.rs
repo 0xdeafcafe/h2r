@@ -3,7 +3,7 @@
 //! (its structure BSPs' triangles and its multiplayer placements).
 //!
 //! Nothing here writes. Converting a map to Halo 2 is `h1convert`'s job
-//! (docs/game/h1-multiplayer.md).
+//! (docs/halo1/multiplayer.md).
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};

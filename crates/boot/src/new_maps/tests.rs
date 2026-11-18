@@ -333,7 +333,10 @@ fn images_defaults_and_the_map_pack_template() {
     let mut d = disc();
     let r = install(data, &mut d).unwrap();
     assert_eq!(r.installed.len(), 2, "{r:?}");
-    assert_eq!(d.previews_asked, 0, "an image, or no base found");
+    assert_eq!(
+        d.previews_asked, 1,
+        "an image, or no base found: retail's frame, once"
+    );
     assert!(r.notices.iter().any(|n| n.contains("nowhere")));
     for (name, offer, _) in &r.installed {
         let dir = vfs::Config::new(data, HALO2_TITLE).content_dir(*offer);
@@ -356,20 +359,28 @@ fn images_defaults_and_the_map_pack_template() {
         if name == "pic" {
             assert_eq!(std::fs::read(dir.join("shot.png")).unwrap(), png);
             assert_eq!(&e.preview[(9 * 220 + 9) * 4..][..4], [30, 20, 10, 0xbf]);
+            // The border is retail's (the disc's preview), as a retail
+            // row's picture: Select Map showed ours with none.
+            for (x, y) in [(0, 0), (219, 0), (0, 206), (100, 206), (219, 100)] {
+                assert_eq!(
+                    &e.preview[(y * 220 + x) * 4..][..4],
+                    [0x42, 0x42, 0x42, 0xff],
+                    "{x},{y}"
+                );
+            }
             assert_eq!(e.sort, map_list::DEFAULT_SORT);
         } else {
             assert_eq!(e.sort, 77);
-            assert_eq!(
-                e.preview,
-                map_list::generated_card(
-                    &content::Library::open(data.join("maps"))
-                        .packages()
-                        .iter()
-                        .find(|p| p.dir_name() == "plain")
-                        .unwrap()
-                        .id
-                )
+            let mut card = map_list::generated_card(
+                &content::Library::open(data.join("maps"))
+                    .packages()
+                    .iter()
+                    .find(|p| p.dir_name() == "plain")
+                    .unwrap()
+                    .id,
             );
+            map_list::with_frame(&mut card, &[0x42; PREVIEW_LEN]);
+            assert_eq!(e.preview, card, "a generated card in retail's frame");
         }
     }
     // The Map Pack's package is left alone.

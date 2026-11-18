@@ -1,7 +1,7 @@
 //! The map packages under a data root (`<data>/maps/<dir>/manifest.toml`,
 //! docs/game/maps.md), as the editor's Maps list shows them: user packages
 //! (edits of disc maps and new maps), and Halo 1 maps converted to Halo 2
-//! (docs/game/h1-multiplayer.md), one entry per sandbox variant.
+//! (docs/halo1/multiplayer.md), one entry per sandbox variant.
 //!
 //! The manifest is read here as plain TOML, not through
 //! `content::Manifest`, so that fields this build's resolver does not know

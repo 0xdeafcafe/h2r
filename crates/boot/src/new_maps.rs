@@ -25,12 +25,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use content::{
+    Library, MapId, Package,
     manifest::LANGUAGES,
     map_list::{self, BaseEntry, Entry},
     patch::Source,
-    Library, MapId, Package,
 };
 
 pub const HALO2_TITLE: u32 = 0x4D53_0064;
@@ -176,15 +176,20 @@ pub fn install(data_root: &Path, disc: &mut dyn Disc) -> Result<Report> {
         let taken: Vec<u32> = bases.iter().map(|(b, _)| b.map_id).collect();
         // A converted map's list ID is the same in both sandboxes
         // (`Package::list_key`).
-        let ids = map_list::list_ids(&chosen.iter().map(|p| p.list_key).collect::<Vec<_>>(), &taken);
+        let ids = map_list::list_ids(
+            &chosen.iter().map(|p| p.list_key).collect::<Vec<_>>(),
+            &taken,
+        );
         let template = map_pack_meta(&content_root);
         // Without a base of its own, a map takes its flags and team counts
         // from the list's first retail map (lowest sort order): what the
         // user's own disc has, never a table of ours.
-        let first = bases
-            .iter()
-            .min_by_key(|(b, _)| (b.sort, b.map_id))
-            .map(|(b, _)| b);
+        let first_slot = bases.iter().min_by_key(|(b, _)| (b.sort, b.map_id));
+        let first = first_slot.map(|(b, _)| b);
+        // Retail's frame for a preview not taken from the disc (an image,
+        // a generated card): the first retail map's preview, read once
+        // when a package needs it.
+        let mut frame: Option<Option<Vec<u8>>> = None;
         for (p, id) in chosen.iter().zip(ids) {
             let base = p
                 .manifest
@@ -202,11 +207,28 @@ pub fn install(data_root: &Path, disc: &mut dyn Disc) -> Result<Report> {
                     found
                 });
             let base = base.flatten().map(|(b, s)| (b, s.as_slice()));
-            match install_one(lib, &cfg, p, id, base, first, disc, template.as_deref()) {
+            if (p.manifest.package.image.is_some() || base.is_none()) && frame.is_none() {
+                frame = Some(first_slot.and_then(|(_, s)| match disc.preview(s) {
+                    Ok(px) => Some(px),
+                    Err(e) => {
+                        report.notices.push(format!(
+                            "retail's preview frame unread ({e:#}); new maps' pictures have none"
+                        ));
+                        None
+                    }
+                }));
+            }
+            let looks = Looks {
+                template: template.as_deref(),
+                frame: frame.as_ref().and_then(|f| f.as_deref()),
+            };
+            match install_one(lib, &cfg, p, id, base, first, disc, looks) {
                 Ok((offer, wrote)) => {
                     keep.insert(offer);
                     if let Some(pair) = variant_pair(p) {
-                        report.variants.push((content_path(offer, &p.manifest.base.map), pair));
+                        report
+                            .variants
+                            .push((content_path(offer, &p.manifest.base.map), pair));
                     }
                     if wrote {
                         report.materialised.push(p.manifest.base.map.clone());
@@ -249,7 +271,7 @@ pub fn content_path(offer: u64, map: &str) -> String {
 }
 
 /// A converted map's two sandbox variants, when its package has both
-/// files (docs/game/h1-multiplayer.md): read from its manifest, each with
+/// files (docs/halo1/multiplayer.md): read from its manifest, each with
 /// the `MapId` it has when loaded.
 pub fn variant_pair(p: &Package) -> Option<vfs::VariantPair> {
     let text = std::fs::read_to_string(p.dir.join(content::manifest::MANIFEST_FILE)).ok()?;
@@ -337,6 +359,15 @@ impl Source for NoDisc {
     }
 }
 
+/// What a package's records take from the user's own disc and Map Pack.
+#[derive(Clone, Copy, Default)]
+struct Looks<'a> {
+    /// An installed Map Pack package's `ContentMeta.xbx`.
+    template: Option<&'a [u8]>,
+    /// A retail preview, for its frame ([`map_list::with_frame`]).
+    frame: Option<&'a [u8]>,
+}
+
 /// One package. Returns its offer ID and whether the map was written.
 #[allow(clippy::too_many_arguments)]
 fn install_one(
@@ -347,8 +378,9 @@ fn install_one(
     base: Option<(&BaseEntry, &[u8])>,
     first: Option<&BaseEntry>,
     disc: &mut dyn Disc,
-    template: Option<&[u8]>,
+    looks: Looks<'_>,
 ) -> Result<(u64, bool)> {
+    let template = looks.template;
     let map = p.manifest.base.map.clone();
     let offer = vfs::offer_id(HALO2_TITLE, map_list::offer_content(id));
     let dir = cfg.content_dir(offer);
@@ -411,8 +443,13 @@ fn install_one(
         },
         _ => None,
     };
-    let preview = map_list::preview_for(&p.manifest, &p.dir, base_preview)
+    let from_disc = base_preview.is_some();
+    let mut preview = map_list::preview_for(&p.manifest, &p.dir, base_preview)
         .map_err(|e| anyhow!("preview: {e}"))?;
+    // A disc preview has retail's frame in its pixels; ours take it.
+    if let (false, Some(frame)) = (from_disc, looks.frame) {
+        map_list::with_frame(&mut preview, frame);
+    }
     let entry = Entry::for_manifest(&p.manifest, id, base.map(|(b, _)| b).or(first), preview);
     write_file(&dir.join(LVL), &entry.to_v2()?)?;
     let mut meta = content_meta(&entry.names, offer, template);

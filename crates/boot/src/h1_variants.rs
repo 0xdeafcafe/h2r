@@ -1,6 +1,6 @@
 //! Which variant of a converted Halo 1 map the next game loads: Halo 1's
-//! sandbox (or assets) or Halo 2's (docs/game/h1-multiplayer.md "Setting,
-//! Halo 1 maps sandbox", docs/game/campaigns.md §5).
+//! sandbox (or assets) or Halo 2's (docs/halo1/multiplayer.md "Setting,
+//! Halo 1 maps sandbox", docs/halo1/campaign.md §5).
 //!
 //! The choice is made per game on the pregame screen and applies at the
 //! map's next open, with no restart:
@@ -68,7 +68,7 @@ pub fn campaign_choice() -> vfs::SandboxChoice {
 /// Where a campaign level's Halo 2-assets map goes, beside its Halo 1 map
 /// `<data>/campaigns/<key>/<level>.map`: `<data>/campaigns/<key>/h2/<level>.map`
 /// (the multiplayer packages' `h2` folder). The importer does not write it
-/// yet (docs/game/campaigns.md §5).
+/// yet (docs/halo1/campaign.md §5).
 pub fn campaign_alternate(level_map: &Path) -> Option<PathBuf> {
     let name = level_map.file_name()?;
     Some(level_map.parent()?.join("h2").join(name))

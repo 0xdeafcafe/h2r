@@ -21,8 +21,8 @@ tools to convert Halo 1's maps into Halo 2's engine.
 
 Speed is the big gap: about 11-16 fps in the main menu and about 15 in The
 Heretic on an M-series Mac, against a target of 30
-([perf-budget.md](docs/perf/perf-budget.md),
-[frame-budget.md](docs/perf/frame-budget.md)).
+([menu-budget.md](docs/perf/menu-budget.md),
+[gameplay-budget.md](docs/perf/gameplay-budget.md)).
 
 ## Features
 
@@ -31,7 +31,7 @@ Heretic on an M-series Mac, against a target of 30
 | Area | Feature | State | Docs |
 | --- | --- | --- | --- |
 | Recompiler | XBE analysis (about 18,700 functions), x86 to IR to C11, clang build with source and object caches | Built | [LIFTER](docs/lifter/LIFTER.md), [cache](docs/lifter/BUILD-CACHE.md) |
-| | Native x87 and SSE fast paths, inline guest RAM, direct calls (all on by default) | Built | [x87](docs/lifter/x87-native.md), [memory](docs/perf/performance.md) |
+| | Native x87 and SSE fast paths, inline guest RAM, direct calls (all on by default) | Built | [x87](docs/lifter/x87-native.md), [memory](docs/perf/guest-memory.md) |
 | Runtime | Xbox kernel, XAPI, saves and storage replaced in Rust, on a deterministic logical clock with checkpoints | Built | [BOOT](docs/runtime/BOOT.md), [storage](docs/runtime/storage.md) |
 | | Direct3D 8 on wgpu (push buffer, NV2A shaders to WGSL), render thread, merged passes | Built | [d3d](docs/graphics/d3d.md), [graphics](docs/graphics/graphics.md) |
 | | DirectSound mixer, native WMA, Bink replacement (cutscenes skipped; optional MP4 conversion) | Built | [audio](docs/audio/audio.md), [movies](docs/audio/movies.md) |
@@ -47,13 +47,14 @@ Heretic on an M-series Mac, against a target of 30
 | | Campaign skulls per profile, a Skulls page, our own skulls | Built | [skulls](docs/game/skulls.md) |
 | | Twelve community game variants (Zombies, SWAT and more) as built-ins | Built | [variants](docs/game/community-gametypes.md) |
 | | Aim assist strength setting | Built | [aim assist](docs/game/aim-assist.md) |
+| | Multiplayer bots (Clankers) on free controller ports; their nav meshes build themselves in the background, again when a map or the generator changes (`H2_BOTS_NAV_AUTO=0` turns that off) | Built | [bots](docs/game/bots.md) |
 | | Multiplayer Map Pack installed from your own disc | Built | [map pack](docs/game/map-pack.md) |
 | | New, edited and patched maps as packages | Built | [maps](docs/game/maps.md) |
-| | More than one campaign: picker and per-campaign progress | Built | [campaigns](docs/game/multiple-campaigns.md) |
-| | Halo 1 health model and meter | Built | [health](docs/game/health.md) |
+| | More than one campaign: picker and per-campaign progress | Built | [campaigns](docs/halo1/campaign-picker.md) |
+| | Halo 1 health model and meter | Built | [health](docs/halo1/health.md) |
 | | Forge, saved films and theater | Design | [forge](docs/game/forge.md), [theater](docs/game/theater.md) |
-| Halo 1 | All 13 Halo 1 multiplayer maps convert to Halo 2 maps (collision, BSP, MOPP, objects, shaders) | Built | [h1 multiplayer](docs/game/h1-multiplayer.md) |
-| | Halo 1 maps, bitmaps, models and animations read and converted to Halo 2 tags | Built | [h1 format](docs/formats/h1-map-format.md), [models](docs/formats/h1-models.md) |
+| Halo 1 | All 13 Halo 1 multiplayer maps convert to Halo 2 maps (collision, BSP, MOPP, objects, shaders) | Built | [h1 multiplayer](docs/halo1/multiplayer.md) |
+| | Halo 1 maps, bitmaps, models and animations read and converted to Halo 2 tags | Built | [h1 format](docs/halo1/map-format.md), [models](docs/halo1/models.md) |
 | Input | Remappable bindings, input timelines, typing into the game's keyboard | Built | [input](docs/input/input.md) |
 | | Button icons that follow the pad (Xbox, PlayStation, keyboard); extra button layouts | Built | [icons](docs/input/button-icons.md), [layouts](docs/input/controller-layouts.md) |
 | | DualSense: speaker and mute button | Built | [PlayStation](docs/audio/playstation-audio.md) |
@@ -64,7 +65,7 @@ Heretic on an M-series Mac, against a target of 30
 | | Web app: dashboard, stats, live top-down map, replays, admin | Built | [web](web/README.md), [art](docs/live/live-art.md) |
 | | Hosting for friends: Docker, Cloudflare Tunnel, SQLite and R2 | Built | [hosting](docs/live/live-hosting.md) |
 | Editor | `h2-editor`: 3D viewport, placements, game variants, playlists, Halo 1 maps | Built | [guide](docs/editor/editor-guide.md) |
-| Tools | Tag decoders (`h2 bitmap`, `sound`, `ui`, `hs`, ...), map builder, profiler, benchmarks | Built | [formats](docs/README.md), [perf](docs/perf/perf.md) |
+| Tools | Tag decoders (`h2 bitmap`, `sound`, `ui`, `hs`, ...), map builder, profiler, benchmarks | Built | [formats](docs/README.md), [perf](docs/perf/profiling.md) |
 
 ## Proof
 
@@ -156,7 +157,7 @@ cargo run --release -p cli --features perf -- bench --only hot-loop
 cargo run --release -p cli --features perf -- profile hot-loop/memory --seconds 5 --out $TMPDIR/prof
 ```
 
-See [docs/perf/perf.md](docs/perf/perf.md).
+See [docs/perf/profiling.md](docs/perf/profiling.md).
 
 ## Play
 

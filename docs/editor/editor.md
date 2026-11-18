@@ -129,7 +129,7 @@ after a save), then Halo 1:
   `shared.map` region as the place the shared caches come from. Saving
   either replaces that package.
 - **Halo 1**: maps converted by the Halo 1 import
-  ([h1-multiplayer.md](../game/h1-multiplayer.md)), one entry per sandbox
+  ([multiplayer.md](../halo1/multiplayer.md)), one entry per sandbox
   variant, `Blood Gulch (H1 sandbox)` and `(H2 sandbox)`. Then, with a
   Halo 1 source open, its maps, read-only.
 

@@ -1044,20 +1044,84 @@ list for the user to play (§11).
      (1 s), jumps once, then asks for a new path.
    - **Walls** (`los::Walls`): every collision surface as triangles on a
      2 m grid, for line of sight (stage 3).
-   - **The file.** `h2 bots nav <map|all> [--disc ISO] [--data DIR]` writes
-     `<data>/bots/<map>.<bsp>.bots` (mesh and walls; magic `H2BT`). The
-     data comes from the disc, so it stays on this machine and out of git.
-     When the loaded map's name (`0x547898`) changes, the glue loads
-     `<map>.0.bots` on a thread of its own. Until then, or with no file,
-     the bots walk straight at their goal and see through walls, as in
-     stage 1, and the log says to run `h2 bots nav <map>`.
+   - **The file.** `<data>/bots/<map>.<bsp>.bots`: magic `H2BT`, format
+     version 2, the **stamp** (the generator version
+     `cache::GENERATOR` and the source map's fingerprint), then the mesh
+     and the walls. The data comes from the disc, so it stays on this
+     machine and out of git. When the loaded map's name (`0x547898`)
+     changes, the glue loads `<map>.0.bots` on a thread of its own. Until
+     then, or with no file, the bots walk straight at their goal and see
+     through walls, as in stage 1.
+   - **Built for you** (`bots::autonav`, `boot::bots_nav_auto`). At boot a
+     worker thread (named `bots-nav`, at utility QoS on Apple systems)
+     looks at every map the game can load, as the VFS serves it: the
+     disc's `D:\maps\*.map` (so a package or `H2_MAP_DIR` map in a disc
+     map's place is what counts) and the content packages'
+     `T:\$c\<offer>\*.map` (the Map Pack, new maps, converted Halo 1
+     maps). A multiplayer map whose `<map>.0.bots` is missing, damaged, of
+     an older format, built by another generator version, or built from
+     another map file is **stale** and is built; the rest are left alone.
+     The boot never waits for it.
+     - **The fingerprint** is FNV-1a (64-bit) over the map's 2 KiB cache
+       header, which holds its size, the tag index's offsets, its name and
+       the XOR checksum of the rest (every map writer here recomputes it).
+       Reading it costs 2 KiB a map, so a boot with every file up to date
+       does almost nothing. A converted Halo 1 map's two sandbox variants
+       are two map files: switching sandbox builds that map again (about
+       a second).
+     - **The generator version** (`cache::GENERATOR`) is bumped whenever
+       `bots::nav`, `bots::los`, `cache::build` or `crates/pathfind`'s
+       generator change what a map builds. The test
+       `generator_output_is_pinned` records its output on a small scene
+       with the version, so changing the output without the bump fails.
+     - **Order.** The level being booted (`H2_LEVEL`) first, then the scan
+       in order. When a map loads, the glue asks for it
+       (`Handle::want`): the worker scans again (a map installed since
+       boot is found), looks at that map next, and builds it if stale.
+       The bots walk straight until it lands, then take the new mesh
+       without a reload (`autonav::offer`; a file read as the map loaded
+       never replaces data the worker built after it).
+     - **Picked with Clankers on.** `bots::autonav::build_soon(map)` asks
+       for a map the same way, from the Clankers page and the map pick
+       (Clankers turned on, or a map picked with them on), so a stale
+       mesh is usually built by the time the game starts.
+     - **Writes** are atomic: each file is written to
+       `.<file>.<pid>.tmp` beside it, synced and renamed over it, the
+       other BSPs first and `<map>.0.bots` (the one checked) last. A crash
+       leaves the old file or the new one, never half of one.
+     - **Log**: one line a map built (`bots: built the nav mesh for
+       lockout (none yet): 590 polygons, ... in 0.0 s`), and one summary
+       after the pass (`bots: nav meshes: 12 built, 0 up to date (0.5 s)`).
+     - **Off**: `H2_BOTS_NAV_AUTO=0` (or `off`). The worker also stays
+       off when the bots feature is (`H2_FEATURES=-bots`).
+   - **By hand**: `h2 bots nav <map|all> [--force] [--disc ISO] [--data DIR]`
+     runs the same worker in the foreground over the disc. `all` builds
+     the disc's multiplayer maps that are stale and skips the rest;
+     `--force` builds them all. A named map (or a map file) is always
+     built, whatever its kind. Measured on an M-series Mac: the retail
+     disc's 12 multiplayer maps build in about half a second together;
+     every map on the disc, campaign included (80 BSPs), in about 20 s.
    - Tests (`cargo test -p bots`): synthetic collision through the real
      generator (two floors sharing an edge, an L-shaped corridor, a ledge
      dropped off but not climbed, a low ledge jumped onto, a narrow gap
      jumped and a wide one not); locating the floor under a biped; the
      funnel turning at the inner corner; the follower walking the
      waypoints, jumping at a jump, and jumping once then re-planning when
-     stuck; the file round trip, refusing damaged files.
+     stuck; the file round trip, refusing damaged files and version 1;
+     the generator's output pinned to `GENERATOR`. The automatic build
+     (`bots::autonav` tests): the off switch; the header's name, kind and
+     fingerprint; staleness (missing, fresh, other map, old generator,
+     old format, damaged); the atomic write leaving no temporary file and
+     the old file when the rename fails; BSP 0 written last; the queue
+     (the booted map first, one source per map); a pass building the
+     stale multiplayer maps only, then nothing, then only an edited one;
+     a map installed after boot built when wanted; the worker's data
+     winning over a late file read. `cargo test -p boot --lib
+     bots_nav_auto`: the scan finding content maps through the VFS, a
+     map read through the VFS in chunks, nothing started when off.
+     Against the disc (ignored, `--ignored`): `cargo test -p cli
+     bots_nav -- --ignored` builds every multiplayer map into a scratch
+     directory, then finds them all up to date.
    - **Game run (the user):** see stage 3, which uses the same run.
 3. **Combat.** Built: `bots::mind` (`Mind`, the `H2_BOTS` brain).
    - **Seeing.** An enemy is seen when it is inside 65 degrees of the
@@ -1098,12 +1162,15 @@ list for the user to play (§11).
      teammate never a target; a dead bot lets go of every input; grenades
      rare and spaced.
    - **Game run (the user), stages 2 and 3:**
-     1. Once: `h2 bots nav all` (or `h2 bots nav lockout`). It prints each
-        map's polygons, links and wall triangles, and writes
-        `bots/<map>.0.bots` under the data root.
+     1. Nothing to do first: the game builds the meshes itself. On the
+        first boot after this change the log says `bots: built the nav
+        mesh for <map> (...)` for each multiplayer map, then `bots: nav
+        meshes: N built, ...`; on the next boot only the summary, with
+        every map up to date.
      2. `H2_BOTS=1 h2 play`, Split Screen, Slayer on Lockout. The log says
         `bots: lockout: N polygons, ...` when the map loads (not "no nav
-        mesh").
+        mesh"). If the map loads before its mesh is built, the log says
+        `building it`, then `bots: lockout: the new nav mesh is in use`.
      3. Hide behind a wall: the bot does not turn to you or shoot through
         the wall. It walks around the wall to where it last saw you.
      4. Stand still out of its sight: within a few seconds it roams the
