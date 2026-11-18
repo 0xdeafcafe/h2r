@@ -785,34 +785,66 @@ cannot claim a human as a bot, or a bot as a human.
 Each stage ends in tests that can be run without the game, plus a short
 list for the user to play (§11).
 
-1. **Minimal bot (local slot).**
-   - The bots backend puts 1 to 3 bot pads on the ports after the human's
-     (§4.1).
-   - On the players screen, the driver signs each bot in with `0x18fb34`
-     and sets its bit in the screen mask (§4.2). It signs them out with
-     `0x18fc08`.
-   - The render and listener windows hide the bots' views (§4.3).
-   - The brain is trivial:
-     - turn toward the nearest living enemy and walk at it;
-     - hold the trigger while that enemy is within 15 degrees of the aim
+1. **Minimal bot (local slot).** Built: `crates/bots` (the brain, the pads,
+   the guest memory work) and `boot::bot_glue` (the hooks).
+   - Bots live in `bots::local` (the library surface below). Its input
+     backend is added after the host's own pads. Each bot pad asks for its
+     port (`HostBackend::preferred_port`), and gets the lowest free one if a
+     real pad holds it. `HostBackend::placed` reports where it went.
+     `H2_BOTS=<n>` (1 to 3) adds `n` brains on ports 1 up at boot.
+   - **Joining.** While the players screen `0x1e` is on top and a bot's slot
+     has no profile, the bot taps A (6 frames in every 60).
+     - The A reaches the screen's handler for a controller with no profile,
+       `0x252a67` (`PLAYERS_SCREEN_UNJOINED`; its caller `0x252ad7` sends a
+       controller with a profile to `0x25286d` instead).
+     - For a bot's port, a hook answers in the handler's place. It copies
+       the human's block with the bot's name and fixed controls, calls the
+       game's `0x18fb34(port, block, -1)`, writes the slot's display name,
+       and sets the port's bit in the screen mask.
+     - Once signed in, the bot never presses A again, so it cannot move the
+       human's menus on.
+     - The bots stay signed in until the game exits.
+     - `H2_BOTS` bots also join a split-screen campaign from its players
+       screen; there their pads are idle (perception reads multiplayer
+       only), so leave `H2_BOTS` unset for campaign.
+   - **Views and listeners.** The bots' local users are taken out of the
+     local player map (§4.3) around two game-thread points:
+     - `RENDER_FRAME`: with the pipelined render, its snapshot is taken
+       inside this point, so it has them hidden too;
+     - `SOUND_UPDATE` (`0x125b40`).
+     
+     Both are listed in `boot::render_thread::REFUSED`, as game-thread
+     points. Both take no arguments and return with a plain `ret` (the
+     main loop calls them back to back, `0x12b659` and `0x12b65e`), so the
+     points now carry that signature, `fn() ret 0`, which a `before` hook
+     needs.
+   - **The brain** (`bots::brain`), once a frame, before `RENDER_FRAME`:
+     - it turns toward the nearest living enemy (everyone in free-for-all,
+       the other teams in a team game) and walks at it once it is within
+       60 degrees;
+     - it holds the trigger while that enemy is within 15 degrees of the aim
        and 10 world units (about 30 m);
-     - there is no line of sight yet, so it walks into walls.
-   - Switched on by `H2_BOTS=<n>` (1 to 3) for this stage; the Clankers
-     page replaces that in stage 7.
-   - Tests over synthetic guest memory:
-     - the view window: count and map in, the bot users hidden, the same
-       values restored after, the human's order kept;
-     - the sign-in block: the human's block copied, the name and control
-       fields set, everything else untouched;
-     - the slot and screen-mask writes;
-     - the backend: the pads come after the real ones and carry the
-       brain's state;
-     - the brain: stick and trigger output from synthetic positions and
-       facings.
+     - outside a multiplayer game, and on any screen but the players screen,
+       its pad is idle.
+
+     Stages 2 and 3 replaced it as the `H2_BOTS` brain with `bots::mind`;
+     `bots::brain` stays as the perception types and the simplest source.
+   - Tests (`cargo test -p bots`, synthetic guest memory):
+     - the backend: the port order and the pad the game reads;
+     - the bot users and the hide/restore window: humans kept in order;
+       nothing hidden without bots or without a human;
+     - perception: me, the living others, teams, nothing outside
+       multiplayer;
+     - the bot block: name, controls, and the rest the human's;
+     - the join check;
+     - the async sign-in against a fake game sign-in;
+     - the brain's turning, walking and firing, and `H2_BOTS` parsing.
+     
+     In boot: the render-thread plan test covers the new hooks.
    - **Game run (the user):**
      1. `H2_BOTS=1 h2 play`, then Split Screen. On the players screen a
-        second player appears, named "Clanker 1", without anyone pressing
-        anything.
+        second player, "Clanker 1", joins by itself within a second or two
+        (the log says `bots: signing Clanker 1 in on port 1`).
      2. Start a Slayer game on a small map (Lockout or Ivory Tower). The
         screen is not split: you see one full-screen view and your own HUD.
      3. You hear only what is near you, not what is near the bot.
@@ -822,24 +854,109 @@ list for the user to play (§11).
         the carnage report.
      6. Repeat with `H2_BOTS=3`: three bots, one view, all on the
         scoreboard.
-     7. Back at the main menu, Split Screen shows one player again (the
-        bots are signed out).
-     8. Send the log lines starting `bots:`.
-2. **Navigation.**
-   - The nav mesh tool runs on BSP collision, with a cache.
-   - Path following and stuck recovery.
-   - Tests: synthetic collision (rooms, ramps, a gap to jump, a drop, a
-     teleporter pair); A\* and the funnel; a steering simulation with a
-     simple biped model.
-3. **Combat.**
-   - Perception with line of sight, the utility layer, and the aim model
-     with skill levels.
-   - Weapon choice and grenades.
-   - Tests:
-     - the aim model's error and reaction statistics per skill, against a
-       fixed seed;
-     - grenade arcs over synthetic collision;
-     - utility choices in scripted situations.
+     7. Back on the players screen, the bots are still joined; pressing A
+        yourself goes on as usual.
+     8. If step 1 fails (no second player, or a profile chooser appears),
+        send the log lines starting `bots:` and `ui:`.
+2. **Navigation.** Built: `bots::nav`, `bots::los`, `bots::cache`,
+   `h2 bots nav`, and the map loading in `boot::bot_glue`.
+   - **The mesh** (`nav::NavMesh`) comes from `crates/pathfind`'s generator
+     over each structure BSP's collision: its sectors are the walkable
+     polygons, its links the edges walked across. Then:
+     - polygon edges that do not meet another polygon look for a floor
+       beyond them: a floor up to 0.12 higher is walked onto (a seam or a
+       step), up to 1.6 lower is a **drop**, up to 0.35 higher is a
+       **jump**, and a floor up to 0.8 across a gap is a **jump**;
+     - a drop goes one way only; a jump links both ways only if each way
+       qualifies.
+
+     Not yet: teleporters, lifts and crouch-jumps (later, with objectives);
+     headroom (a ceiling over a floor is walked under as if it were not
+     there).
+   - **Paths**: A\* over the polygons, then the funnel (simple stupid
+     funnel) over the edges' portals, with a drop or jump as a forced
+     corner. `nav::Follower` steers along the waypoints: it moves on 0.3
+     from each, jumps at a jump, and when no progress is made for 30 frames
+     (1 s), jumps once, then asks for a new path.
+   - **Walls** (`los::Walls`): every collision surface as triangles on a
+     2 m grid, for line of sight (stage 3).
+   - **The file.** `h2 bots nav <map|all> [--disc ISO] [--data DIR]` writes
+     `<data>/bots/<map>.<bsp>.bots` (mesh and walls; magic `H2BT`). The
+     data comes from the disc, so it stays on this machine and out of git.
+     When the loaded map's name (`0x547898`) changes, the glue loads
+     `<map>.0.bots` on a thread of its own. Until then, or with no file,
+     the bots walk straight at their goal and see through walls, as in
+     stage 1, and the log says to run `h2 bots nav <map>`.
+   - Tests (`cargo test -p bots`): synthetic collision through the real
+     generator (two floors sharing an edge, an L-shaped corridor, a ledge
+     dropped off but not climbed, a low ledge jumped onto, a narrow gap
+     jumped and a wide one not); locating the floor under a biped; the
+     funnel turning at the inner corner; the follower walking the
+     waypoints, jumping at a jump, and jumping once then re-planning when
+     stuck; the file round trip, refusing damaged files.
+   - **Game run (the user):** see stage 3, which uses the same run.
+3. **Combat.** Built: `bots::mind` (`Mind`, the `H2_BOTS` brain).
+   - **Seeing.** An enemy is seen when it is inside 65 degrees of the
+     aim, or within 3 units anywhere, and the walls leave a clear line from
+     the bot's eye to its chest or head. Teammates in a team game are never
+     targets.
+   - **Deciding**, every frame: fight the target it has while it is still
+     seen, else the nearest seen; with no one seen, chase the last place it
+     saw someone (forgotten after 10 s); else roam to a random polygon it
+     can reach. The full utility layer (§3.3: weapons, health, objectives,
+     flee) waits for stages 4 and 5.
+   - **Aim** (`mind::Skill`, from `H2_BOTS_SKILL`: easy, normal, heroic,
+     legendary; default normal). The right stick turns by the aim error
+     times a gain, plus a slowly wandering error; the bot leads a moving
+     target by part of the lead a 90 unit/s shot needs.
+
+     | | Easy | Normal | Heroic | Legendary |
+     |---|---|---|---|---|
+     | reaction (ticks; 30 a second) | 14 | 10 | 7 | 5 |
+     | error spread (radians) | 0.10 | 0.06 | 0.035 | 0.02 |
+     | lead | 0.3 | 0.6 | 0.85 | 1.0 |
+     | stick gain | 1.6 | 2.5 | 3.5 | 4.5 |
+     | fires within | 10° | 7° | 5° | 4° |
+     | trigger | 12 on, 18 off | 24 on, 8 off | held | held |
+     | grenades a minute | 0.5 | 1 | 2 | 3 |
+
+     Until its reaction time has passed the bot stands still and does not
+     turn. It fires within 25 units, melees (B) within 0.9, and throws a
+     grenade (left trigger) at a target 3 to 12 units away, at most once
+     every 8 s. While fighting it strafes, kept on the nav mesh.
+   - Not yet: weapon choice by range, grenade arcs against collision, and
+     radar or sound awareness.
+   - Tests (`cargo test -p bots`): the skills get better in order; a wall
+     hides an enemy, and so does the bot's back; the reaction time before
+     turning and firing; firing on target and not off it; Easy's bursts;
+     more lead at a higher skill, with a fixed seed; chasing the last
+     known position, then forgetting it; roaming to a reachable polygon; a
+     teammate never a target; a dead bot lets go of every input; grenades
+     rare and spaced.
+   - **Game run (the user), stages 2 and 3:**
+     1. Once: `h2 bots nav all` (or `h2 bots nav lockout`). It prints each
+        map's polygons, links and wall triangles, and writes
+        `bots/<map>.0.bots` under the data root.
+     2. `H2_BOTS=1 h2 play`, Split Screen, Slayer on Lockout. The log says
+        `bots: lockout: N polygons, ...` when the map loads (not "no nav
+        mesh").
+     3. Hide behind a wall: the bot does not turn to you or shoot through
+        the wall. It walks around the wall to where it last saw you.
+     4. Stand still out of its sight: within a few seconds it roams the
+        map along floors and ramps, drops off ledges, and does not stay
+        stuck on a wall for more than a second or two (it jumps, then picks
+        a new path).
+     5. Step into its view: it pauses briefly (its reaction), then turns,
+        strafes and fires. Get close: it melees. At mid range it sometimes
+        throws a grenade.
+     6. Repeat with `H2_BOTS_SKILL=easy` and `H2_BOTS_SKILL=legendary`:
+        Easy is slow to react, sprays in bursts and misses a lot; Legendary
+        turns fast and hits most shots.
+     7. Run Ivory Tower and Midship too (jumps and drops). Note any spot a
+        bot gets stuck in for good, with the map and roughly where.
+     8. Send the `bots:` log lines, and anything that looks wrong: the eye
+        and chest heights (0.6 and 0.4 over the unit's origin) and the
+        stick's direction are guesses a run settles.
 4. **Emotes.**
    - The dumb-death detector and the emote layer (§3.5), with the Taunts
      setting.
@@ -871,6 +988,43 @@ list for the user to play (§11).
    - The server side is sbmm-ranked's.
 9. **Vehicles** (later). Mounting, driving along the nav mesh's vehicle
    graph, and gunner roles.
+
+## 10.1 Library surface (for the agent API)
+
+`crates/bots` gives other code, such as the agent API's `sim.*` calls, a
+small surface. Everything in it is controller input.
+
+- `bots::local::add(port, Box<dyn PadSource>) -> Result<BotHandle, Error>`
+  puts a bot on controller port `port` (0 to 3), named "Clanker <port>".
+  - Errors: `NoSuchPort`, `PortTaken` (another bot asked for it), and
+    `Full` (3 bots already).
+  - If a real pad holds the port, the bot goes to the lowest free one.
+- `bots::local::remove(handle)` unplugs the bot's pad at the next input
+  sync. Its slot stays signed in until the game exits.
+- `bots::local::list() -> Vec<BotInfo>` gives each bot's handle, name, the
+  port it asked for, and the port it got (`None` until the input manager
+  has placed it).
+- `trait PadSource: Send { fn pad(&mut self, f: &Frame) -> HostPadState }`
+  - It is called once a frame on the game thread, before `RENDER_FRAME`,
+    only for placed bots.
+  - `Frame` carries the frame count, the port, the guest memory and
+    `joining`: the players screen is on top and the bot's slot has no
+    profile, so A signs it in.
+  - A source must not call `add` or `remove` from inside `pad`.
+  - Closures `FnMut(&Frame) -> HostPadState` are sources.
+  - Three sources come with the crate:
+    - `Scripted`: timed steps, optionally looping;
+    - `Recorded`: one pad per frame, played once;
+    - `bots::Brain`: the brain. It presses A while `joining`, uses its
+      `mind::Mind` (with the loaded map's nav mesh and walls) in a
+      multiplayer game, and is idle elsewhere.
+- `bots::phantom::add(Identity, team: Option<u8>, Box<dyn PadSource>)`
+  and `bots::phantom::remove(handle)` have their final signatures but
+  return `Err(NotBuilt)` until stage 6. `Identity` is the roster's xuid,
+  gamertag, emblem and colours (§9.1).
+- `bots::local::Local` is the same API on an instance. The free functions
+  use the process-wide one (`local::global()`), which the boot glue drives
+  and whose backend boot adds to the input manager. Tests make their own.
 
 ## 11. What needs a game run
 

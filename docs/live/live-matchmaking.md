@@ -739,3 +739,84 @@ window, room, browser, ordering), the router test
 `optimatch_searches_filter_by_playlist_window_and_room`, and the guest
 test `optimatch_searches_find_sessions_in_the_partys_level_window`
 (two synthetic guests through `start_embedded`).
+
+## 8. Ranks: what the game does, and what the server does
+
+### 8.1 In the retail game (static reading)
+
+Read statically from the 5849 XBE; nothing was run. Addresses are guest
+VAs.
+
+- **Where a rank lives.** Xbox Live stats: one leaderboard per playlist,
+  whose id is the descriptor's playlist id (`+0x08`, §6), with six stats,
+  ids 1..6. Stat 1 is experience (0..2^30-1), stat 2 the level (stored
+  0..49; the 1..50 shown is likely stored + 1), stat 3 the highest level
+  reached (likely), and stats 4..6 per-player game counters whose meaning
+  is not decoded.
+- **The cache.** `0x00074aa0`, the stats manager, keeps a per-user,
+  per-hopper rank cache at `0x00509454` (4 users x 16 hoppers). For every
+  valid hopper of type 1..5 not yet read, or stale for longer than the
+  network configuration's re-read age, it adds a `XONLINE_STAT_SPEC`
+  (leaderboard = playlist id, stats 1..6) to its one `XOnlineStatRead`
+  batch, beside the recent-players read on leaderboard `0x61`
+  (`0x00080940`). Results return through `0x00092330`; `0x00075790` maps a
+  leaderboard back to a hopper. `0x00073a10` reads a cached stat
+  (0 experience, 1 level).
+- **Into the lobby.** `0x00065530` copies the selected hopper's level and
+  experience (and the best level across ranked hoppers) into the local
+  player's properties block (`0x004cd918 + user * 0xd0`): hopper index
+  at `+0x84`, level at `+0x8a`, experience at `+0x8c`. The session's
+  player record carries those properties at `+0x18`, which is how
+  `0x00072540` reads them at record `+0x12c/+0x132/+0x134` (§7.2). The
+  network encoder `0x0007c5a0` sends the level in 7 bits and experience
+  in 30.
+- **After a ranked game the console works out the change itself.**
+  `0x00073ca0` (only for the hopper and round that were arbitrated)
+  builds per player: experience earned or lost against each opponent by
+  level difference, scaled by the player's level, averaged over
+  opponents and clamped (`0x00074800`, `0x00074720`, `0x000746b0`); the
+  level from experience through a threshold table with hysteresis (a
+  one-level drop only below the midpoint, `0x00074970`). The tuning
+  tables come from the downloaded `network_configuration.dat`
+  (`0x004ce040`, defaults from `0x00066330`), not the hopper file. It
+  updates its own cache, marks it stale (re-read soon after) and sends
+  the result with `XOnlineArbitrationReport` (`0x000925c0`): a flat stat
+  array per player on the playlist's leaderboard (and playlist id + 0x20,
+  + 0x40) and stat procedures `0x8001`, `0x8003` and `0x8007` (shapes
+  read, meanings not mapped). Experience and counters likely go as
+  increments, the level as an absolute value.
+- Not found yet: the lobby, post-game and service-record rank icon
+  readers.
+
+### 8.2 On this server
+
+The server is authoritative: it ranks from the games log, not from the
+console's arithmetic. The rules are in `crates/live-proto/src/rank.rs`:
+the game's mechanism (points per opponent by level difference, scaled
+by level, averaged, clamped to ±200; level from a threshold table with
+the same drop rule), with our own numbers rather than the game's
+tables. Every player starts each ranked playlist at level 1.
+
+- When a game batch ends a game (`GameEnded`) with `reason: "finished"`,
+  `kind: "matchmaking"` and a `playlist_id` (the hopper descriptor index)
+  whose hopper is ranked (type 2, 4 or 5) in the served hopper file, the
+  same request ranks it: one server-signed `RankChanged`
+  `{xuid, playlist, game_id, before, after}` on `rank-<xuid>` for each
+  player with an account whose standing moved. Players who left before
+  the end count as last. A game is ranked once. Nothing runs in the
+  background.
+- No one else may write `rank-*` streams or `RankChanged`.
+- The read model keeps every standing per playlist and the last 100
+  changes per player and playlist; a replay rebuilds them from the
+  events without re-running the rules.
+- Reads: `GET /v1/accounts/{who}/ranks`,
+  `GET /v1/accounts/{who}/ranks/{playlist}` and `GET /v1/ranks/{playlist}`
+  ([live-api.md](live-api.md#ranks)). The stats site shows them at
+  `/stats/ranks/{playlist}` and `/stats/players/{tag}/ranks`.
+
+Still to do (next slice): serve the standings to the game through
+`XOnlineStatRead` (leaderboard = playlist id, stats 1..6) so the lobby
+shows them and they feed the search window (§7); accept and check
+`XOnlineArbitrationRegister`/`Report` against the games log; and set
+`playlist_id` on games from the session the console hosted or joined
+(telemetry has the field; nothing sets it yet).

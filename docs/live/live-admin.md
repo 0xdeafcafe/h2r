@@ -597,3 +597,43 @@ The Halo Admin's **Custom content** tab (`/stats/admin?tab=content`, linked
 from the dashboard's "halo admin" pod) lists packages and blobs with their state and
 report counts, the actions valid for each, the reports and the upload
 switch; the playlist builder pins published packages per hopper.
+
+## 8. Player reports
+
+Players report each other from the game's player-details screens
+(`XOnlineFeedbackSend`, [live-api.md](live-api.md) "Player reports"), and
+any account can report another through the API. Only admins and the
+operator read the reports: neither the reporter nor the reported player
+sees them, in the log or anywhere else. Admins review them with tokens for
+`lxm` `reports.moderate`:
+
+| endpoint | does |
+|---|---|
+| `GET /v1/admin/reports?state=open\|closed\|all` | `{items, players, position}`: the reports newest first, and a record for every reported player in them |
+| `POST /v1/admin/reports/{id}/dismiss` `{note?}` | closes a complaint: nothing to act on |
+| `POST /v1/admin/reports/{id}/note` `{note}` | closes a complaint with a note kept on the player's record |
+
+`state=open` (the default) lists complaints nobody has reviewed;
+`closed` the reviewed ones; `all` everything, the commendations
+(`good_attitude`, `good_session`) included, which are never reviewed. An
+item is `{id, target, by, kind, negative, reason?, game_id?, at, review?}`:
+`id` is the report's log position, `target` and `by` are `{xuid, gamertag}`,
+`game_id` the game the reporter was in when the game said, and `review`
+`{action, note?, by?, at}` once an admin acted (`by` absent when the operator
+did). A player's record is `{complaints, open, commendations, notes}`, over
+every report against them, with the admins' notes oldest first. A note
+needs text; either is at most 500 characters. Reviewing a commendation is
+400, a report already reviewed 409.
+
+Each report is a server-signed `PlayerReported` event and each review a
+`ReportReviewed` event, both on the reported player's `reports-<xuid>`
+stream, so the queue replays from the log. Nothing here bans or mutes
+anyone; bans are not built.
+
+Player reports are the service's, not the game's, so they are on the
+dashboard's server screens (§5), not the Halo Admin: **player reports** on
+the accounts screen opens `/dash/server/reports`, which shows the open
+complaints with each player's record, a note field, and Note and Dismiss;
+closed and everything list the rest. The queue is one component
+(`web/src/dash/Reports.tsx`) over `web/src/admin/reports.ts`, laid out
+plainly for now.

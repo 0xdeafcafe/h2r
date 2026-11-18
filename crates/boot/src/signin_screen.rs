@@ -51,7 +51,10 @@ use crate::account_screen::{LINE_CHARS, layout, recovery_lines, wrap};
 use crate::list_class::{self, Action, Button, Buttons, ListClass, LiveText, Rows, TextBlock};
 use crate::signin_keyboard::{self as keyboard, Field, Typing};
 use crate::ui::{Chosen, LABEL_SLOT};
+use crate::ui_kit::dialog::{Cells, DialogSpec};
+use crate::ui_kit::input::{Glyph, Prompt as Legend};
 use crate::ui_kit::spec::{Describe, RowSpec, ScreenSpec};
+use crate::ui_kit::view::Beneath;
 use live_hle::account_setup::SetupError;
 use live_hle::signin::{Call, Typed};
 
@@ -503,9 +506,161 @@ impl Rows for SigninRows {
     }
 }
 
+/// The prompt as a modal over the screen beneath (docs/game/ui-builder.md
+/// "Screen kinds"): its title, body, code cells, status line and legend.
+/// `call` is the server call a [`Phase::Working`] page waits on: the code
+/// stays in its cells while it is checked.
+pub fn dialog_for(
+    prompt: Option<&Prompt>,
+    entry: &CodeEntry,
+    call: Option<Call>,
+    now: i64,
+) -> (String, Vec<Legend>, DialogSpec) {
+    let a = |t: &str| Legend::new(&[Glyph::A], t);
+    let b = |t: &str| Legend::new(&[Glyph::B], t);
+    let cells = |cursor: Option<usize>| Cells {
+        text: entry.code().chars().map(String::from).collect(),
+        cursor,
+        gap_after: Some(DIGITS / 2 - 1),
+    };
+    let dialog = |body: String, cells: Option<Cells>, status: Option<String>| DialogSpec {
+        body,
+        cells,
+        status,
+        beneath: Beneath::MainMenu,
+    };
+    let Some(p) = prompt else {
+        return (
+            "Sign-in closed".into(),
+            vec![b("Back")],
+            dialog("Nothing is waiting to sign in.".into(), None, None),
+        );
+    };
+    let host = host(&p.server_url);
+    let tag = &p.gamertag;
+    let error = |e: &Option<SetupError>| e.as_ref().map(ToString::to_string);
+    match &p.phase {
+        Phase::Code { error } => (
+            format!("Sign in as {tag}"),
+            vec![
+                Legend::new(&[Glyph::DpadUp, Glyph::DpadDown], "Digit"),
+                Legend::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Move"),
+                a("Sign in"),
+                b("Cancel"),
+            ],
+            dialog(
+                format!("Enter the 6-digit code from Account on {host}/dash, or your app."),
+                Some(cells(Some(entry.cursor()))),
+                entry.error(error).map(ToString::to_string),
+            ),
+        ),
+        Phase::Working => {
+            let (title, body) = match call {
+                Some(Call::Create) => (
+                    "Make the account".into(),
+                    format!("Making {tag} on {host}."),
+                ),
+                Some(Call::Add { .. }) => (
+                    "New Xbox Live account".into(),
+                    format!("Making {tag} on {host}."),
+                ),
+                Some(Call::Code) | None => (
+                    format!("Sign in as {tag}"),
+                    format!("Checking the code with {host}."),
+                ),
+            };
+            (
+                title,
+                vec![b("Cancel")],
+                dialog(
+                    body,
+                    (call == Some(Call::Code)).then(|| cells(None)),
+                    Some("Checking...".into()),
+                ),
+            )
+        }
+        Phase::Gamertag { error: e } => (
+            "New Xbox Live account".into(),
+            vec![a("Type it"), b("Cancel")],
+            dialog(
+                format!("Pick a gamertag for {host}. Taken? Yours signs in with its code instead."),
+                None,
+                error(e),
+            ),
+        ),
+        Phase::Invite { error: e } => (
+            "Invite code".into(),
+            vec![a("Type it"), b("Cancel")],
+            dialog(
+                format!("{host} needs an invite to make {tag}."),
+                None,
+                error(e),
+            ),
+        ),
+        Phase::Create { error: e } if needs_invite(e) => (
+            "Make the account".into(),
+            vec![b("Back")],
+            dialog(
+                format!(
+                    "{tag} isn't on {host} yet. Make it at {host}/dash, or play with h2 play --invite CODE."
+                ),
+                None,
+                error(e),
+            ),
+        ),
+        Phase::Create { error: e } => (
+            "Make the account".into(),
+            vec![
+                a(if e.is_some() { "Try again" } else { "Make it" }),
+                b("Cancel"),
+            ],
+            dialog(format!("{tag} isn't on {host} yet."), None, error(e)),
+        ),
+        Phase::Created { info: Some(info) } => (
+            "Write this down".into(),
+            vec![a("Done")],
+            dialog(
+                crate::account_screen::recovery_lines(info, now).join("\n"),
+                None,
+                None,
+            ),
+        ),
+        Phase::Created { info: None } => (
+            "Signed in".into(),
+            vec![a("Done")],
+            dialog(
+                format!("{tag} is made on {host}. Set up recovery on /dash."),
+                None,
+                None,
+            ),
+        ),
+        Phase::Done => (
+            "Signed in".into(),
+            vec![a("Done")],
+            dialog(
+                format!("{tag} is on this machine now. Signing in to Xbox Live."),
+                None,
+                None,
+            ),
+        ),
+        Phase::Cancelled => (
+            "Cancelled".into(),
+            vec![b("Back")],
+            dialog("Sign-in cancelled.".into(), None, None),
+        ),
+    }
+}
+
 /// The prompt as the kit describes it (docs/game/ui-screens.md): one row,
-/// the description, the d-pad as digits and cursor.
-pub fn spec_for(prompt: Option<&Prompt>, entry: &CodeEntry, now: i64) -> ScreenSpec {
+/// the description, the d-pad as digits and cursor (the list the game
+/// shows today), and the modal it becomes ([`dialog_for`]), which the
+/// preview draws.
+pub fn spec_for(
+    prompt: Option<&Prompt>,
+    entry: &CodeEntry,
+    call: Option<Call>,
+    now: i64,
+) -> ScreenSpec {
     use crate::ui_kit::input::Input;
     let (label, body) = page(prompt, entry, now);
     let mut s = ScreenSpec::new(SCREEN, TITLE);
@@ -525,6 +680,10 @@ pub fn spec_for(prompt: Option<&Prompt>, entry: &CodeEntry, now: i64) -> ScreenS
             .describe(&body.replace("\r\n", "\n"))
             .ids(&[TEXT_IDS[0], TEXT_IDS[2]]),
     ];
+    let (title, legend, dialog) = dialog_for(prompt, entry, call, now);
+    s.title = title;
+    s.prompts = legend;
+    s.dialog = Some(dialog);
     s
 }
 
@@ -536,7 +695,7 @@ pub fn sample_spec() -> ScreenSpec {
         controller: 0,
         phase: Phase::Code { error: None },
     };
-    spec_for(Some(&p), &CodeEntry::default(), 0)
+    spec_for(Some(&p), &CodeEntry::default(), None, 0)
 }
 
 /// The prompt's pages for the preview sheet, by name ([`SigninPage`]'s
@@ -574,8 +733,8 @@ pub struct SigninState {
 /// screen, and what the HLE does with the effect, typed text and the
 /// server's answers follow [`live_hle::signin`]'s own transitions
 /// ([`live_hle::signin::typed`], [`live_hle::signin::refused`],
-/// [`live_hle::signin::settled`]). A, X and Start all reach the row's
-/// action (X and Start are the class's action buttons); B and Back cancel.
+/// [`live_hle::signin::settled`]). A and Start reach the row's action
+/// ([`ACTION_BUTTONS`]); X does nothing; B and Back cancel.
 pub struct SigninPage;
 
 impl SigninPage {
@@ -595,7 +754,8 @@ impl crate::ui_kit::page::Page for SigninPage {
         match event {
             SigninEvent::Press(input) => {
                 let press = match input {
-                    Input::X | Input::Start => Some(Press::A),
+                    // Start submits as A does; X is nothing here.
+                    Input::Start => Some(Press::A),
                     i => Press::from_event(i.event().0, i.event().1),
                 };
                 let Some(press) = press else {
@@ -649,7 +809,7 @@ impl crate::ui_kit::page::Page for SigninPage {
     }
 
     fn spec(&self, state: &SigninState) -> ScreenSpec {
-        spec_for(Some(&state.prompt), &state.entry, 0)
+        spec_for(Some(&state.prompt), &state.entry, state.call, 0)
     }
 
     /// The code page empty, typed and refused, checking, the new-account
@@ -744,7 +904,7 @@ impl Describe for SigninRows {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs() as i64);
         let entry = self.lock().entry.clone();
-        spec_for(self.hle.signin().as_ref(), &entry, now)
+        spec_for(self.hle.signin().as_ref(), &entry, None, now)
     }
 }
 
@@ -759,6 +919,11 @@ pub fn string_at(base: u32, id: u32) -> Option<u32> {
         .position(|t| *t == id)
         .map(|i| base + BUFFER * (1 + i as u32))
 }
+
+/// The class's action buttons besides A: only Start, as the legend says.
+/// The class default takes X too, and a stray X would send a half-typed
+/// code.
+pub const ACTION_BUTTONS: [u32; 1] = [list_class::START_BUTTON];
 
 /// The class: one row, the description, our buttons, A as its action.
 pub fn class(rows: Arc<SigninRows>, block: TextBlock) -> ListClass {
@@ -790,10 +955,11 @@ pub fn class(rows: Arc<SigninRows>, block: TextBlock) -> ListClass {
     ListClass::with_rows(FEATURE, SCREEN, rows as Arc<dyn Rows>)
         .description(block)
         .action(action)
+        .action_buttons(&ACTION_BUTTONS)
         .buttons(buttons)
 }
 
-/// A on the row (or Start): the press, then closing the screen when it is
+/// A on the row (or Start, never X): the press, then closing the screen when it is
 /// done with.
 async fn act(cx: &Cx, rows: &SigninRows, screen: u32) -> Result<(), EntryError> {
     let effect = rows.press(Press::A);
@@ -1101,6 +1267,64 @@ mod tests {
             Some(base + BUFFER * (KEYBOARD_TITLES + 1))
         );
         assert_eq!(rows.string(base, keyboard::INVITE_TITLE_ID), None);
+    }
+
+    /// The code page as a dialog: six cells in two halves, the cursor's
+    /// lit, the error in the status line, and a legend of A and B with no
+    /// X; checking keeps the code in its cells with no cursor.
+    #[test]
+    fn the_pages_are_dialogs() {
+        use crate::ui_kit::input::Glyph;
+        let mut entry = CodeEntry::default();
+        let code = Phase::Code {
+            error: Some(SetupError::WrongCodeLeft { left: 2 }),
+        };
+        entry.press(&code, Press::Up);
+        entry.press(&code, Press::Right);
+        entry.quiet = false;
+        let at = |phase: Phase| Prompt {
+            gamertag: "Chief".into(),
+            server_url: "https://live.example.net/".into(),
+            controller: 0,
+            phase,
+        };
+        let (title, legend, d) = dialog_for(Some(&at(code.clone())), &entry, None, 0);
+        assert_eq!(title, "Sign in as Chief");
+        let c = d.cells.as_ref().unwrap();
+        assert_eq!(c.text, ["1", "0", "0", "0", "0", "0"]);
+        assert_eq!((c.cursor, c.gap_after), (Some(1), Some(2)));
+        assert_eq!(d.status.as_deref(), Some("Wrong code. 2 tries left."));
+        let glyphs: Vec<Glyph> = legend.iter().flat_map(|p| p.glyphs.clone()).collect();
+        assert!(glyphs.contains(&Glyph::A) && glyphs.contains(&Glyph::B));
+        assert!(!glyphs.contains(&Glyph::X));
+
+        let (_, legend, d) = dialog_for(Some(&at(Phase::Working)), &entry, Some(Call::Code), 0);
+        assert_eq!(d.cells.unwrap().cursor, None);
+        assert_eq!(d.status.as_deref(), Some("Checking..."));
+        assert_eq!(legend.len(), 1, "only B while checking");
+
+        let (title, _, d) = dialog_for(Some(&at(Phase::Gamertag { error: None })), &entry, None, 0);
+        assert_eq!(title, "New Xbox Live account");
+        assert!(d.cells.is_none());
+        let s = spec_for(Some(&at(Phase::Done)), &entry, None, 0);
+        assert!(s.dialog.is_some());
+        assert_eq!(
+            s.rows.len(),
+            1,
+            "the list the game shows today keeps its row"
+        );
+    }
+
+    /// On the class, Start runs the action as A does; X is not an action
+    /// button, so a stray X can't send a half-typed code.
+    #[test]
+    fn only_a_and_start_submit_on_the_class() {
+        use list_class::{BUTTON_EVENT, Route, START_BUTTON, X_BUTTON, route};
+        let c = class(Arc::new(SigninRows::new(test_hle())), TEXT_BLOCK);
+        let b = c.behaviour();
+        let at = |button| route(BUTTON_EVENT, button, b.action, b.action_buttons, b.sideways);
+        assert!(matches!(at(START_BUTTON), Route::Action));
+        assert!(matches!(at(X_BUTTON), Route::Controls));
     }
 
     #[test]

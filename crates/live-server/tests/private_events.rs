@@ -1,6 +1,6 @@
 //! Private event kinds in the log: game invitations show only to their two
 //! players, friend events only to the two accounts and their friends,
-//! content reports only to admins. The operator and admins see all of them;
+//! content and player reports only to admins. The operator and admins see all of them;
 //! anonymous readers none, on `/v1/events`, the `/v1/snapshot` tail and
 //! `/v1/stream` alike.
 mod common;
@@ -12,6 +12,7 @@ use common::*;
 use live_proto::{
     lxm, mailbox,
     maps::CONTENT_REPORTED,
+    reports::PLAYER_REPORTED,
     session::{NewSession, Slots},
     sign::KeyPair,
     streams, types,
@@ -21,12 +22,13 @@ use std::collections::{BTreeMap, BTreeSet};
 
 const FRIEND: [&str; 2] = [types::FRIEND_REQUESTED, types::FRIEND_ACCEPTED];
 const INVITE: [&str; 2] = [mailbox::SENT, mailbox::ANSWERED];
-const PRIVATE: [&str; 5] = [
+const PRIVATE: [&str; 6] = [
     types::FRIEND_REQUESTED,
     types::FRIEND_ACCEPTED,
     mailbox::SENT,
     mailbox::ANSWERED,
     CONTENT_REPORTED,
+    PLAYER_REPORTED,
 ];
 
 fn created(r: Resp) {
@@ -191,6 +193,16 @@ async fn invites_friends_and_reports_show_only_to_who_they_concern() {
             &format!("/v1/content/{sha}/report"),
             &[h.bearer(&stranger, lxm::CONTENT_WRITE)],
             json!({"reason": "not mine"}).to_string(),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.error());
+    // And reports Guest, the player.
+    let r = h
+        .call(
+            Method::POST,
+            &format!("/v1/accounts/by-xuid/{}/report", guest.xuid),
+            &[h.bearer(&stranger, lxm::REPORTS_WRITE)],
+            json!({"kind": "gameplay"}).to_string(),
         )
         .await;
     assert_eq!(r.status, StatusCode::CREATED, "{}", r.error());

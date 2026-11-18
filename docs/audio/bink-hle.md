@@ -5,18 +5,20 @@
 [movies.md](movies.md) for the optional install-time MOV transcode.
 Every host (`h2 run`, `h2 serve`, `h2 play`, the apps) makes the same choice
 at startup (`crates/boot/src/movies_glue.rs`): **playback** when `h2 movies`
-has installed transcodes that are current for the disc, **skip** otherwise,
-and logs it as one line:
+has installed transcodes that are current for the disc, **skip** otherwise
+and, by default, on headless runs and level boots, and logs it as one line:
 
 ```text
 movies: playback (3 transcoded: attract_60, credits_60, intro_60)
 movies: skip (none installed in ~/Library/Application Support/h2recomp/movies; `h2 movies <disc.iso>` installs them)
 movies: skip (stale: intro_60 was transcoded from another disc (re-run `h2 movies`))
 movies: skip (off: --no-movies)
+movies: skip (off: headless run; --movies DIR plays them)
+movies: skip (off: level boot 01a_tutorial; --movies DIR plays them)
 ```
 
-`--movies DIR` points `h2 run`/`h2 play` at another install, `--no-movies`
-forces skip mode, and `--no-bink` (run only) leaves the original player in
+`--movies DIR` points `h2 run`/`h2 play` at another install and plays from
+it even headless or on a level boot, `--no-movies` forces skip mode, and `--no-bink` (run only) leaves the original player in
 place. Campaign scenes rendered by the engine are separate from disc Bink
 files.
 
@@ -188,7 +190,7 @@ missing file is a skip in this mode too.
 - **Sound.** If the stream has a sound track (`MovieStream::audio_info`) and
   the host set an output (`BinkHle::set_audio_out`), `BinkOpen` opens a
   voice and the player keeps 500 ms of PCM queued on it, in 10 ms packets,
-  topping it up on every Wait, DoFrame and NextFrame. `MixerAudio` makes the
+  topping it up on every DoFrame and NextFrame (not on Wait, see Pacing). `MixerAudio` makes the
   voice a stream in the `audio` crate's `Mixer`, the one the DirectSound HLE
   renders (`dsound_glue::Audio::mixer`), so movie sound goes out through the
   game's own output and device, at the track's rate (resampled by the
@@ -198,15 +200,36 @@ missing file is a skip in this mode too.
   for the movie are ignored).
 - **Pacing.** `BinkWait` returns 1 until frame `FrameNum` is due:
   `(FrameNum - 1) * 1000 * den / num` ms of movie time. Movie time is the
-  sound's play position (frames the mixer has consumed) while it plays.
-  When the sound ends, or stops moving for `AUDIO_STALL_MS` (250 ms, an
-  output that is not rendering), the wall clock (`SystemClock`, injectable
-  as `Clock`) carries on from the last sound position; a movie without sound
-  runs on the wall clock from `BinkOpen`. The wall clock matters for the
-  service's spin (`0x155fc2..0x155fd0` calls `BinkWait` until it returns 0):
-  that loop always ends. `BinkNextFrame` moves to the frame now due when the
-  clock has run more than a frame ahead (dropping frames to stay with the
-  sound, as Bink does), never past the last frame.
+  wall clock (`SystemClock`, injectable as `Clock`) from `BinkOpen` or the
+  last loop; the sound starts at the same moment and plays at its own rate.
+  `BinkNextFrame` moves to the frame now due when the clock has run more
+  than a frame ahead (dropping frames to keep time, as Bink does), never
+  past the last frame. `BinkWait` only reads the clock: no feeding and no
+  mixer lock.
+
+  Why not the sound's position: the first playback build used it, and the
+  intro ran at 0.3 to 0.5 fps with about 1.4 s of game CPU per present
+  (`mean ms cpu 1408.8`, d3d 0.1; 240 to 400 fps over the same presents
+  with `--no-movies`). The wrapper's service spins on `BinkWait`
+  (`0x155fc2..0x155fd0`) until it returns 0, and the mixer renders on the
+  kernel's logical clock, which moves by executed guest work (1 ns per
+  access). One spin iteration charges about 4 ns, so the sound took about
+  8 million `BinkWait` calls to cover one 33 ms frame. On the wall clock a
+  spin ends within one frame of real time
+  (`a_spin_on_bink_wait_ends_on_the_wall_clock_with_the_sound_frozen`). In
+  a paced run (`h2 play`) logical time keeps to the wall, so picture and
+  sound stay together.
+- **Cost.** Measured in release by the tests below on the development Mac: `BinkWait`
+  about 1.3 us a call through the test runner; `CopyToBuffer` 33 us at
+  640x480 and 75 us at 1280x720 (one `write_bytes` for the whole picture
+  when the rows line up, else one per row through a reused row buffer;
+  per-pixel-row writes were 54 and 182 us); synthetic decode plus copy and
+  NextFrame 0.2 ms and 0.6 ms; AVFoundation 1.1 to 1.6 ms a frame at
+  640x480 in order. `DoFrame` never decodes the picture already in the
+  buffer, and the AVFoundation stream keeps its last picture: asking for it
+  again used to restart the reader from frame 0 (201 ms at frame 90, and
+  growing), now 28 us. Copy and decode were not the cause of the slow
+  intro.
 
 `BinkHle::requests()` lists every movie asked for and whether it was played.
 
@@ -236,12 +259,14 @@ Read from the retail image (2026-11-18), addresses only:
 
 ## Host integration
 
-`boot::movies_glue::install` does the whole thing; `RunOpts::movies` is the
-directory (`boot::movies_glue::default_dir()`, the app data directory, unless
-`--movies DIR` or `--no-movies`):
+`boot::movies_glue::install` does the whole thing. `RunOpts::movies` is a
+`movies_glue::Movies`: `Auto` (the default: the app data directory,
+`default_dir()`), `Dir(path)` (`--movies DIR`) or `Off` (`--no-movies`).
+`movies_glue::why_off` gives the reason a run skips regardless:
 
 ```rust
-let selection = boot::movies_glue::choose(opts.movies.as_deref(), &opts.disc, why_off);
+let why_off = boot::movies_glue::why_off(&opts.movies, lockstep, level_name, headless);
+let selection = boot::movies_glue::choose(opts.movies.dir().as_deref(), &opts.disc, why_off);
 // movies::status::availability over the disc's .bik files (ISO or directory)
 let hle = boot::movies_glue::hle(&selection, ds.as_ref().map(dsound_glue::Audio::mixer));
 // BinkHle::new(selection.source(AvFoundationDecoder)) + set_audio_out(MixerAudio)
@@ -257,8 +282,13 @@ eprintln!("movies: {selection}");
   are not current are left out of the source (`TranscodedSource::only`), so
   only they skip.
 - A lockstep run (`H2_LOCKSTEP`, `H2_INPUT_RECORD`, `H2_INPUT_REPLAY`) is
-  forced to skip (`movies: skip (off: lockstep)`): movie pacing can follow
-  the wall clock, which a schedule comparison must not see.
+  forced to skip (`movies: skip (off: lockstep)`): movie pacing follows the
+  wall clock, which a schedule comparison must not see.
+- With `Auto`, a direct-to-level boot (`h2 play --level`, `H2_LEVEL`) and a
+  headless run (no window: `h2 run`, `h2 serve`, benchmarks) skip, with the
+  reason in the log line: nothing there wants the intro, and a benchmark
+  should not spend its first presents on it. `--movies DIR` plays them
+  there; lockstep still skips.
 - Platforms without a decoder (`bink_hle::platform_decoder()`: AVFoundation
   on macOS only) skip with `no movie decoder on this platform`.
 - Register after the generated handlers; overrides replace the generated
@@ -320,17 +350,26 @@ and blit, the service's `FrameNum == Frames` and skip button, close):
 - `a_skip_mid_movie_closes_cleanly`: the voice is gone and the mixer silent
   at once, late calls on the old handle do nothing, and the handle is reused
   from frame 1 and the start of the sound;
-- `sound_plays_at_the_movie_rate_through_the_mixer_and_paces_the_video`:
-  1 s of 48 kHz mixer output consumes 44100 (less one 10 ms packet) frames
-  of the 44.1 kHz track, the output is the track, the video clock follows
-  the sound with the wall clock frozen, NextFrame catches up, and a stalled
-  output hands over to the wall clock.
+- `sound_plays_at_the_movie_rate_through_the_mixer`: 1 s of 48 kHz mixer
+  output consumes 44100 (less one 10 ms packet) frames of the 44.1 kHz
+  track without starving, the output is the track, the video is at the same
+  second, and NextFrame catches up;
+- `a_spin_on_bink_wait_ends_on_the_wall_clock_with_the_sound_frozen`: with
+  the mixer never rendering, every spin on `BinkWait` ends within one frame
+  of wall time and every picture is shown;
+- `bink_wait_call_cost` and `decode_and_blit_cost_per_frame` (640x480 and
+  1280x720 into a contiguous-window texture with the write watch on) print
+  the per-call and per-frame costs; the latter asserts one dirty range of
+  the picture's size and a copy under 20 ms.
 
 `tests/avfoundation.rs` also reads a generated movie's AAC track
 (`generated_sound_track_reads_as_stereo_pcm_and_rewinds`): 44.1 kHz stereo,
-the right length, a tone, unaffected by video reads, and rewindable.
+the right length, a tone, unaffected by video reads, and rewindable;
+`real_decoder_cost_per_frame_at_640x480` times in-order decoding (under
+15 ms a frame) and a repeat of the last picture (a copy, not a rewind).
 `movies::status` has its own tests for none, current, partial and stale
-installs and extracted-disc listing, `boot::movies_glue` for off and none, and
+installs and extracted-disc listing, `boot::movies_glue` for off and none
+and for level boots and headless runs skipping unless a directory is named, and
 `kernel` for `MmQueryStatistics`.
 
 `tests/loader_arena.rs` builds a tiny XBE, loads it with the runtime's
@@ -354,9 +393,11 @@ run in the full lifted game. Until a live run:
 2. The wrapper's allocation (`0x12d2f0`, 4 or 20 MiB from the game's cache)
    succeeding at the intro, main menu idle and credits.
 3. Sound level and latency: the movie voice plays at full volume with no
-   mix bins (the game's `BinkSetMixBinVolumes` is ignored) and the clock is
-   the mixer's consumption, which leads what is heard by the output's
-   queue (tens of ms).
+   mix bins (the game's `BinkSetMixBinVolumes` is ignored), and picture and
+   sound both start at `BinkOpen` and run on their own clocks (wall and
+   mixer). They stay together only while logical time keeps to the wall;
+   a run that falls behind drops frames to keep the picture on time while
+   the sound lags.
 4. `H2_PIPELINE_RENDER=1`: the Bink overrides are not on the render
    thread's allow list, and the stop path is reachable from the render
    (`0x2c8a0`); [pipelined-render.md](../graphics/pipelined-render.md) says

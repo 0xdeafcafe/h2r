@@ -13,10 +13,12 @@ use std::collections::BTreeMap;
 
 mod client;
 mod endpoint;
+pub mod expect;
 pub mod hot;
 mod load;
 mod pad;
 mod render;
+pub mod sim;
 pub use client::{CallError, Client};
 pub use endpoint::Endpoint;
 pub use load::{LoadParams, LoadRecord, LoadSegment, Loads};
