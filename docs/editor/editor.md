@@ -12,7 +12,7 @@ the workspace's wgpu 30, `dear-imgui-winit` for the window,
 `dear-imguizmo` for the 3D gizmo, `rfd` for the system's file dialogs. No
 web views, no scripting. It runs unbundled, so it sets its own Dock icon
 (`app_icon::set_dock_icon`, [art/app-icon](../../art/app-icon/README.md)).
-It hosts five tools:
+It hosts six tools:
 
 - **Scenario**: the scenario editor (`crates/scenario-edit`,
   [scenario-editor.md](scenario-editor.md)): placements on a map, in a 3D
@@ -26,6 +26,9 @@ It hosts five tools:
 - **UI Screens**: our native game screens drawn, stepped and checked
   offline (`boot::ui_kit`, [ui-builder.md](../game/ui-builder.md);
   below).
+- **HUD**: a map's HUDs (`nhdt`) drawn as the engine places them, checked
+  for overlaps and spills, edited and saved as a patched `.map`
+  (`crates/hud-edit`, [hud-editor.md](hud-editor.md)).
 
 Nothing in the editor contains game data. Map names and everything else
 it shows come from your own disc at run time.
@@ -896,6 +899,15 @@ refusal; `with_the_disc` is ignored without `H2_DISC`), and
 which clicks the tree, the pad and hovers the title through the
 test-engine hooks.
 
+## HUD
+
+The developer's page is [hud-editor.md](hud-editor.md): the placement
+rules and their proof, the checks, the save, and how the widget fields
+use the generic field panel (`fields.rs`, named by
+`tags/src/defs/nhdt.txt`) with the HUD tool's own history. `app/hud.rs` (`HudTool`) holds the tool's state
+and its `Hud*` actions; `ui/hud.rs` draws it; the logic is
+`crates/hud-edit`.
+
 ## Code
 
 The tools' logic lives in UI-free crates with their own tests; the
@@ -918,6 +930,9 @@ studio crate only draws them and turns input into actions.
   and yaw/pitch/roll).
 - `crates/variants`: the variant record, schema, saves and
   `VariantEditor` (state and commands).
+- `crates/hud-edit`: the HUD tool's logic (the `nhdt` layout and field
+  tables, placement, the preview, checks, `HudSession`;
+  [hud-editor.md](hud-editor.md)).
 - `crates/hopper-edit`: the playlist editor's logic (working copy,
   validation, presets, catalog, the variant picker's sources) and
   `HopperSession` (file handling, undo).
@@ -978,7 +993,10 @@ last. The flags that set the scene up:
 | `--select <block>:<index>` | select a placement (`vehicles:0`, `netgameequipment:3`) |
 | `--focus` | frame the camera on the selection (F) |
 | `--camera <yaw>,<pitch>,<distance>` | orbit the camera (degrees, world units), after `--focus` |
-| `--tool scenario\|variants\|playlists\|ui-screens` | show that tool |
+| `--tool scenario\|variants\|playlists\|ui-screens\|hud` | show that tool |
+| `--hud-map <map>`, `--hud-package <key>` | open a map of the source (or a package) in the HUD tool |
+| `--hud <nhdt>` | show that HUD (its full name, or its last part: `masterchief`) |
+| `--hud-widget <name>` | select that widget |
 | `--ui-screen <screen>/<state>` | show a screen of ours in the UI Screens tool |
 | `--ui-press <inputs>` | then press these on it (`up,right,a`) |
 | `--variant <n>` | open built-in variant `n` |

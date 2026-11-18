@@ -14,6 +14,7 @@ mod play;
 mod playlists;
 pub mod tags;
 mod ui_screens;
+mod hud;
 mod variants;
 use std::path::PathBuf;
 
@@ -97,6 +98,7 @@ pub struct Studio {
     pub variants: variants::VariantsUi,
     playlists: playlists::PlaylistsUi,
     pub ui_screens: ui_screens::UiScreensUi,
+    pub hud: hud::HudUi,
     inspector: inspector::InspectorState,
     /// Play and pair (the Game panel; `crate::play`).
     pub play: play::PlayUi,
@@ -122,6 +124,7 @@ impl Studio {
             variants: variants::VariantsUi::default(),
             playlists: playlists::PlaylistsUi::default(),
             ui_screens: ui_screens::UiScreensUi::default(),
+            hud: hud::HudUi::default(),
             inspector: inspector::InspectorState::default(),
             play: play::PlayUi::default(),
             tags: tags::TagsUi::default(),
@@ -149,6 +152,7 @@ impl Studio {
             ToolKind::Variants => self.variant_windows(ui, app, &mut actions),
             ToolKind::Playlists => self.playlist_windows(ui, app, &mut actions),
             ToolKind::UiScreens => self.ui_screen_windows(ui, app, gpu, &mut actions),
+            ToolKind::Hud => self.hud_windows(ui, app, gpu, &mut actions),
             ToolKind::Tags => self.tag_windows(ui, app, &mut actions),
         }
         self.log_window(ui, app);
@@ -181,6 +185,11 @@ impl Studio {
                 ToolKind::Variants => actions.push(Action::SaveVariant),
                 ToolKind::Playlists if app.hoppers.is_open() => {
                     playlists::save(app, self.dialogs, actions)
+                }
+                ToolKind::Hud => {
+                    if let Some(p) = hud::save_dialog(self.dialogs, app) {
+                        actions.push(Action::HudSaveAs(p));
+                    }
                 }
                 ToolKind::Playlists | ToolKind::UiScreens => {}
             }
@@ -483,6 +492,18 @@ impl Studio {
     /// The File menu's items for the variant and playlist tools.
     fn tool_file_menu(&mut self, ui: &Ui, app: &App, actions: &mut Vec<Action>) {
         match app.tool {
+            ToolKind::Hud => {
+                let can = app.hud.session.as_ref().is_some_and(|s| !s.edited().is_empty());
+                if ui.menu_item_enabled_selected_with_shortcut(
+                    format!("{} Save map with HUD edits as...", icon::SAVE),
+                    "Cmd+S",
+                    false,
+                    can,
+                ) && let Some(p) = hud::save_dialog(self.dialogs, app)
+                {
+                    actions.push(Action::HudSaveAs(p));
+                }
+            }
             ToolKind::Scenario | ToolKind::UiScreens | ToolKind::Tags => {}
             ToolKind::Variants => {
                 let e = app.variants.as_ref();
@@ -590,6 +611,20 @@ impl Studio {
         let dialogs = self.dialogs;
         ui.window(&self.keys.inspector)
             .build(|| ui_screens::inspector(ui, app, st, fonts, dialogs, actions));
+    }
+
+    /// The HUD tool in the outliner, centre and inspector windows.
+    fn hud_windows(&mut self, ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>, actions: &mut Vec<Action>) {
+        let fonts = &self.fonts;
+        let st = &mut self.hud;
+        ui.window(self.keys.outliner.label(format!("{} HUDs", icon::TREE)))
+            .build(|| hud::tree(ui, app, st, fonts, actions));
+        ui.window(self.keys.viewport.label(format!("{} HUD", icon::EYE)))
+            .flags(WindowFlags::HORIZONTAL_SCROLLBAR)
+            .build(|| hud::preview(ui, app, st, fonts, gpu, actions));
+        let dialogs = self.dialogs;
+        ui.window(&self.keys.inspector)
+            .build(|| hud::inspector(ui, app, st, fonts, dialogs, actions));
     }
 
     /// The Tags tool: the tag tree, the fields, the raw bytes.
@@ -1050,6 +1085,7 @@ impl Studio {
                 ToolKind::Variants => "The open game variant".to_owned(),
                 ToolKind::Playlists => "The playlist file".to_owned(),
                 ToolKind::UiScreens => "The UI screen".to_owned(),
+                ToolKind::Hud => "The HUD map".to_owned(),
                 ToolKind::Tags => "The map's tags".to_owned(),
             };
             ui.text(format!("{} {who} has unsaved edits.", icon::ALERT));
@@ -1079,6 +1115,13 @@ impl Studio {
                         }
                     } else if ui.button(format!("{} Save as...", icon::SAVE))
                         && let Some(p) = playlists::save_dialog(self.dialogs, app)
+                    {
+                        answer = Some(Answer::SaveAs(p));
+                    }
+                }
+                ToolKind::Hud => {
+                    if ui.button(format!("{} Save as...", icon::SAVE))
+                        && let Some(p) = hud::save_dialog(self.dialogs, app)
                     {
                         answer = Some(Answer::SaveAs(p));
                     }
@@ -1344,6 +1387,7 @@ fn tool_icon(tool: ToolKind) -> &'static str {
         ToolKind::Variants => icon::SLIDERS,
         ToolKind::Playlists => icon::LAYERS,
         ToolKind::UiScreens => icon::EYE,
+        ToolKind::Hud => icon::CROSSHAIR,
         ToolKind::Tags => icon::BOX,
     }
 }

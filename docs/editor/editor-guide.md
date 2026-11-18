@@ -19,7 +19,7 @@ see [editor.md](editor.md), [scenario-editor.md](scenario-editor.md) and
 The screenshots were taken from a retail Halo 2 disc. Your window shows
 whatever is on your own disc. Whole-window pictures are JPEGs; close-ups
 of a single panel, menu or tooltip are cropped from the same window at
-full resolution so their text reads. Section 11 says how they are made.
+full resolution so their text reads. Section 13 says how they are made.
 
 ## Contents
 
@@ -30,11 +30,12 @@ full resolution so their text reads. Section 11 says how they are made.
 5. [Game variants](#5-game-variants)
 6. [Playlists (hoppers)](#6-playlists-hoppers)
 7. [UI Screens](#7-ui-screens)
-8. [Tags: every field of a tag](#8-tags-every-field-of-a-tag)
-9. [Undo and redo](#9-undo-and-redo)
-10. [Where files go](#10-where-files-go)
-11. [Troubleshooting](#11-troubleshooting)
-12. [Regenerating the screenshots](#12-regenerating-the-screenshots)
+8. [HUD](#8-hud)
+9. [Tags: every field of a tag](#9-tags-every-field-of-a-tag)
+10. [Undo and redo](#10-undo-and-redo)
+11. [Where files go](#11-where-files-go)
+12. [Troubleshooting](#12-troubleshooting)
+13. [Regenerating the screenshots](#13-regenerating-the-screenshots)
 
 ## 1. What you need
 
@@ -107,8 +108,8 @@ map...**, or drop a disc image, `.map` file or folder onto the window.
 
 The window is made of panels that dock together:
 
-- **Tools** (top left): the four tools, **Scenario**, **Game variants**,
-  **Playlists** and **UI Screens**. Click one to switch to it. A tool with unsaved
+- **Tools** (top left): the tools, **Scenario**, **Tags**, **Game
+  variants**, **Playlists**, **UI Screens** and **HUD**. Click one to switch to it. A tool with unsaved
   changes shows a `*` after its name. Switching tools never loses
   anything: each tool keeps its state while hidden. Under the tools,
   **Maps** has **Open...** (a disc image or `.map`) and **Folder...** (a
@@ -928,7 +929,88 @@ screen in each of its states, try its buttons, and check its layout.
 To open the editor straight on a screen: `h2-editor --ui-screen
 signin-code/code-wrong --ui-press up,right`.
 
-## 8. Tags: every field of a tag
+## 8. HUD
+
+**HUD** shows a map's HUDs the way the game places them on the screen,
+from the map's own art and the disc's fonts, and lets you fix their
+layout: move a piece, change where it hangs from, swap its art, and save
+the map. Use it when something on a HUD sits in the wrong place, such as
+a converted Halo 1 map's shield bar over its health bar or a grenade
+count spilling out of its box.
+
+![The HUD tool on Lockout: the Master Chief's HUD drawn at 640 by 480 with the HUD frame in green and the widgets outlined and the checks in the inspector](../images/editor/hud-masterchief.jpg)
+
+- **HUDs** (left):
+  - **Map** (the menu at the top): the maps of the disc or folder you
+    opened, then your packages under the data folder, among them the
+    converted Halo 1 maps (a mountain). Pick one to open it in the HUD
+    tool. Type in the filter at the top of the menu to find one.
+  - **HUDs**: every HUD of that map, grouped by who uses it: players and
+    bipeds, weapons, vehicles, the globals, and the converted Halo 1
+    HUDs. Hover one to see who names it. Click one to show it. A `*`
+    marks a HUD with unsaved edits.
+  - **Widgets**: the HUD's pieces in the order the game draws them, art
+    (a box) then text (a page). Click one to select it.
+- **HUD** (centre): the HUD on a 640 by 480 screen.
+  - The menu at the top picks **fullscreen**, **half screen** or
+    **quarter screen** (split screen; each widget has its own placement
+    for each). **Zoom** makes it bigger. **Rects** outlines every widget
+    (blue: this HUD; amber: a HUD drawn with it; grey: hidden by its
+    state flags). **HUD frame** draws the frame the game hangs widgets
+    from (green): its corners and centre are the anchors.
+  - Click a widget to select it (white outline). Drag it to move it: that
+    edits its offset for the screen mode shown, and the whole drag is one
+    undo step. Hover to see the HUD pixel under the mouse and the widget
+    there.
+  - **State**, under the picture: shield and health, grenade counts and
+    which type is selected, zoomed, rounds loaded and the magazine, heat
+    and battery. Meters fill from these. **Gate widgets by their state
+    flags** hides what the game would hide in that state (off: every
+    widget is drawn). The game's state words are mostly not known yet, so
+    with the gate on you can type them in (Word A to D); the grenade type
+    and zoom set the bits that are known. **Inputs** lists the values the
+    HUD's widgets read; the ones the editor does not know are 1 until you
+    type a value.
+- **Inspector** (right):
+  - **Widget**: the selected widget's fields, in the same field panel as
+    the **Tags** tool (section 9): its name, inputs, the words that show
+    and hide it, anchor (which corner of the frame, or the centre),
+    flags, bitmap and shader (pick from the map's tags), the sequence,
+    offset and registration for each screen mode, and its special type;
+    a text widget has its string, fonts and offsets instead of art.
+    Hover a field for what it means and where that comes from. A text's
+    **Justification** sits above the panel under **HUD fields** (the
+    panel shows those bytes as a size it cannot change). Each change is
+    an undo step of the HUD tool (typing in one field is one step).
+  - **Checks**: art that half covers other art, art off the screen or
+    outside the frame, and text that spills out of the art it sits on, or
+    over other text. Hover one to outline its widgets in red. Art that
+    sits wholly inside another piece (a panel over its meter) is a layer,
+    not a problem, and is not listed. Under the checks, notes about what
+    could not be drawn (a missing sequence, art that did not decode).
+  - **Draw with (weapon held, vehicle seat)**: the game draws the
+    player's HUD and the weapon's together. Tick a weapon's or vehicle's
+    HUD to draw it with this one (read-only; open it from the list to
+    edit it). The checks then also catch the two overlapping.
+  - **Placement rules and their proof**: how the editor places
+    widgets, each rule marked E (read in the game's code), V (seen on the
+    disc or in a frame of the game) or D (assumed, not proven yet). The
+    frame's top and right edges and the split-screen frames are D: if a
+    widget near those edges looks wrong in the game, that is why.
+  - **Save map as...**: writes a new `.map`, the source byte for byte
+    except the fields you edited. It never writes over the map it opened.
+    Play it with `H2_MAP_DIR=<that folder> h2 play` (section 11); the
+    file must have the disc's map name.
+
+What the picture does not show: widgets' animations and flashes, the
+shaders' colours (art is drawn in its own colours, text in light blue),
+and text other than numbers (a text shows its string ID's name in angle
+brackets).
+
+To open the editor straight on a HUD: `h2-editor --hud-map lockout --hud
+masterchief`; add `--hud-widget <name>` to select a widget by its name.
+
+## 9. Tags: every field of a tag
 
 **Tags** shows every tag of the open map and lets you change any field of
 it: a weapon's numbers, a projectile's flags, the tag a vehicle's weapon
@@ -984,7 +1066,7 @@ Scenario tool: **File > Save map as...** or **Save as package...** writes
 your tag edits and your placement edits together. The Scenario tool's
 `*` shows when the map has unsaved edits of either kind.
 
-## 9. Undo and redo
+## 10. Undo and redo
 
 Each tool has its own history; **Edit > Undo** and **Edit > Redo** (and
 Cmd+Z, Cmd+Shift+Z) act on the tool you're in.
@@ -1005,7 +1087,7 @@ Cmd+Z, Cmd+Shift+Z) act on the tool you're in.
 
 *The log records each undo (`undid set position`).*
 
-## 10. Where files go
+## 11. Where files go
 
 `<data>` is the data folder: `--data`, or by default the one `h2 play`
 uses, `$TMPDIR/h2boot-data`.
@@ -1022,7 +1104,7 @@ uses, `$TMPDIR/h2boot-data`.
 
 Your disc image is only ever read.
 
-## 11. Troubleshooting
+## 12. Troubleshooting
 
 **"Unsaved changes" window.** Anything that would throw away a tool's
 unsaved changes asks first: opening another disc or map (Scenario),
@@ -1113,7 +1195,7 @@ section 3).
 renderer. Check that your GPU driver supports Metal (macOS), Vulkan or
 DirectX 12.
 
-## 12. Regenerating the screenshots
+## 13. Regenerating the screenshots
 
 The pictures in this guide are rendered by the editor itself, offscreen,
 from your own disc image (no window opens and the game does not run):

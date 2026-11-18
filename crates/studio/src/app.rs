@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 
 pub(crate) mod convert;
+pub mod hud;
 mod editing;
 mod library;
 pub mod map_pack;
@@ -20,6 +21,7 @@ pub use convert::{
 };
 pub use h1convert::convert::Sandbox as ConvertSandbox;
 pub use library::{Compare, block_of, kind_of, markers as library_markers, tris as library_tris};
+pub use hud::HudTool;
 pub use tag_doc::{BlockOp, TagAction, TagDoc, TagWrite};
 pub use ui_screens::{Pick, UiScreens};
 
@@ -41,17 +43,21 @@ pub enum ToolKind {
     /// Our native game screens, drawn and stepped offline
     /// (docs/game/ui-builder.md).
     UiScreens,
+    /// A map's HUDs, drawn as the game places them and edited
+    /// (docs/editor/hud-editor.md).
+    Hud,
     /// Every field of every tag of the open map (docs/editor/editor.md).
     Tags,
 }
 
 impl ToolKind {
-    pub const ALL: [ToolKind; 5] = [
+    pub const ALL: [ToolKind; 6] = [
         ToolKind::Scenario,
         ToolKind::Tags,
         ToolKind::Variants,
         ToolKind::Playlists,
         ToolKind::UiScreens,
+        ToolKind::Hud,
     ];
     pub fn title(self) -> &'static str {
         match self {
@@ -59,6 +65,7 @@ impl ToolKind {
             ToolKind::Variants => "Game variants",
             ToolKind::Playlists => "Playlists",
             ToolKind::UiScreens => "UI Screens",
+            ToolKind::Hud => "HUD",
             ToolKind::Tags => "Tags",
         }
     }
@@ -153,6 +160,31 @@ pub enum Action {
     /// a Git checkout).
     UiExport(PathBuf),
 
+    // HUD.
+    /// Open a map of the source in the HUD tool.
+    HudOpenMap(String),
+    /// Open a package from the Maps list (by key) in the HUD tool.
+    HudOpenPackage(String),
+    /// Show and edit one of the open map's HUDs.
+    HudPick(map::TagId),
+    /// Draw another HUD with it (a weapon held, a vehicle seat), or stop.
+    HudWith(map::TagId, bool),
+    HudSelect(Option<hud_edit::WidgetKey>),
+    /// Set a widget field (by its key in the field table); with `merge`
+    /// the step joins the last one of the same field.
+    HudSet(hud_edit::WidgetKey, String, hud_edit::Value, bool),
+    /// Move a widget in the screen mode shown (a drag merges its moves).
+    HudMove(hud_edit::WidgetKey, (i16, i16), bool),
+    /// The state the HUD is drawn at.
+    HudState(Box<hud_edit::HudState>),
+    /// Write the map with the HUD edits as a new `.map`.
+    HudSaveAs(PathBuf),
+    /// A write from the generic field panel into the selected widget's
+    /// element (an HUD edit, with the HUD tool's undo).
+    HudWrite(TagWrite),
+    /// The field panel asked for something the HUD tool leaves to the Tags
+    /// tool: why.
+    HudRefused(String),
     // Tags.
     /// A tag editor command: select a tag, write a field, change a block.
     Tag(TagAction),
@@ -210,6 +242,7 @@ impl Action {
             Action::OpenHopper(_) | Action::NewHopper | Action::NewDefaultHopper => {
                 dirty(ToolKind::Playlists)
             }
+            Action::HudOpenMap(_) | Action::HudOpenPackage(_) => dirty(ToolKind::Hud),
             _ => None,
         }
     }
@@ -301,6 +334,8 @@ pub struct App {
     pub convert_sandbox: ConvertSandbox,
     /// The UI Screens tool.
     pub ui_screens: UiScreens,
+    /// The HUD tool.
+    pub hud: HudTool,
     /// The tag editor's document over the open map.
     pub tags: TagDoc,
     /// The selected tag's shared-map line, for the tag and revision.
@@ -352,6 +387,7 @@ impl App {
             converter: from_scratch,
             convert_sandbox: ConvertSandbox::Halo2,
             ui_screens: UiScreens::default(),
+            hud: HudTool::default(),
             tags: TagDoc::default(),
             tag_homes: Default::default(),
         }
@@ -407,6 +443,7 @@ impl App {
             ToolKind::Scenario => self.session.is_dirty(),
             ToolKind::Variants => self.variants.as_ref().is_some_and(|e| e.is_dirty()),
             ToolKind::Playlists => self.hoppers.is_dirty(),
+            ToolKind::Hud => self.hud.is_dirty(),
             // The tag editor's edits are the map's: the scenario session
             // saves them and its dirty mark counts them.
             ToolKind::UiScreens | ToolKind::Tags => false,
@@ -431,6 +468,7 @@ impl App {
             ToolKind::Variants => self.variants.as_ref().is_some_and(|e| e.can_undo()),
             ToolKind::Playlists => self.hoppers.can_undo(),
             ToolKind::UiScreens => false,
+            ToolKind::Hud => self.hud.session.as_ref().is_some_and(|s| s.can_undo()),
             ToolKind::Tags => self.tags.can_undo(),
         }
     }
@@ -440,6 +478,7 @@ impl App {
             ToolKind::Variants => self.variants.as_ref().is_some_and(|e| e.can_redo()),
             ToolKind::Playlists => self.hoppers.can_redo(),
             ToolKind::UiScreens => false,
+            ToolKind::Hud => self.hud.session.as_ref().is_some_and(|s| s.can_redo()),
             ToolKind::Tags => self.tags.can_redo(),
         }
     }
@@ -474,6 +513,10 @@ impl App {
             ToolKind::UiScreens => self.ui_screens.pick.as_ref().map(|p| match p {
                 Pick::Native { screen, state } => format!("{screen} / {state}"),
                 Pick::Retail(tag) => tag.clone(),
+            }),
+            ToolKind::Hud => self.hud.session.as_ref().map(|s| {
+                let hud = s.hud().map(|h| h.name.clone()).unwrap_or_default();
+                format!("{} / {hud}", s.name)
             }),
             ToolKind::Tags => self.loaded.clone(),
         };
@@ -544,12 +587,14 @@ impl App {
                 ToolKind::Scenario => self.error("save the map with Save as..."),
                 ToolKind::Variants => self.run(Action::SaveVariant),
                 ToolKind::Playlists => self.run(Action::SaveHopper),
+                ToolKind::Hud => self.error("save the HUD edits with Save as..."),
                 ToolKind::UiScreens | ToolKind::Tags => {}
             },
             Answer::SaveAs(path) => match tool {
                 ToolKind::Scenario => self.run(Action::SaveMapAs(path)),
                 ToolKind::Playlists => self.run(Action::SaveHopperAs(path)),
                 ToolKind::Variants => self.run(Action::SaveVariant),
+                ToolKind::Hud => self.run(Action::HudSaveAs(path)),
                 ToolKind::UiScreens | ToolKind::Tags => {}
             },
         }
@@ -575,6 +620,7 @@ impl App {
                 }
             }
             ToolKind::Playlists => self.hoppers.close(),
+            ToolKind::Hud => self.hud = HudTool::default(),
             ToolKind::UiScreens | ToolKind::Tags => {}
         }
     }
@@ -677,6 +723,38 @@ impl App {
                 Ok(files) => self.info(format!("wrote {} files to {}", files.len(), dir.display())),
                 Err(e) => self.error(format!("{e:#}")),
             },
+            Action::HudOpenMap(name) => self.hud_open_map(&name),
+            Action::HudOpenPackage(key) => self.hud_open_package(&key),
+            Action::HudPick(id) => {
+                let r = self.hud.pick(id);
+                self.hud_result(r);
+            }
+            Action::HudWith(id, on) => {
+                let r = match self.hud.session.as_mut() {
+                    Some(s) => s.set_with(id, on),
+                    None => Err(anyhow::anyhow!("no HUD open")),
+                };
+                self.hud_result(r);
+            }
+            Action::HudSelect(key) => self.hud.selected = key,
+            Action::HudSet(key, field, v, merge) => self.hud_set(key, &field, v, merge),
+            Action::HudMove(key, to, merge) => {
+                let mode = self.hud.state.mode;
+                self.hud_move(key, mode, to, merge);
+            }
+            Action::HudState(st) => {
+                self.hud.state = *st;
+                self.hud.redraw();
+            }
+            Action::HudSaveAs(path) => self.hud_save_as(&path),
+            Action::HudWrite(w) => {
+                let r = match self.hud.session.as_mut() {
+                    Some(s) => s.write(w.address, &w.bytes, &w.label, w.merge).map(drop),
+                    None => Err(anyhow::anyhow!("no HUD open")),
+                };
+                self.hud_result(r);
+            }
+            Action::HudRefused(why) => self.error(why),
             Action::Tag(a) => self.run_tag(a),
             a @ (Action::OpenVariant(_)
             | Action::NewVariant(_)
@@ -720,6 +798,7 @@ impl App {
                 }
             }
             ToolKind::UiScreens => false,
+            ToolKind::Hud => self.hud_undo_redo(undo),
             ToolKind::Tags => {
                 self.sync_tags();
                 let r = if undo {
@@ -738,7 +817,7 @@ impl App {
         match (done, undo) {
             (false, true) => self.info("nothing to undo"),
             (false, false) => self.info("nothing to redo"),
-            (true, _) if !matches!(self.tool, ToolKind::Scenario | ToolKind::Tags) => {
+            (true, _) if !matches!(self.tool, ToolKind::Scenario | ToolKind::Tags | ToolKind::Hud) => {
                 self.info(if undo { "undone" } else { "redone" })
             }
             _ => {}
@@ -752,6 +831,7 @@ impl App {
             ToolKind::Variants => self.ensure_variants(),
             ToolKind::Playlists => self.refresh_playlist_sources(),
             ToolKind::UiScreens => self.sync_ui_disc(),
+            ToolKind::Hud => {}
             ToolKind::Tags => self.sync_tags(),
         }
     }
@@ -1043,8 +1123,8 @@ impl App {
                     ToolKind::Variants => self.ensure_variants(),
                     ToolKind::Playlists => self.refresh_playlist_sources(),
                     ToolKind::UiScreens => self.sync_ui_disc(),
+                    ToolKind::Scenario | ToolKind::Hud => {}
                     ToolKind::Tags => self.sync_tags(),
-                    ToolKind::Scenario => {}
                 }
             }
             Err(e) => self.error(format!("{}: {e:#}", path.display())),

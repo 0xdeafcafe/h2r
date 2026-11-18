@@ -85,6 +85,7 @@ pub const FILES: &[(&str, &str)] = &[
     ("fpch.txt", include_str!("defs/fpch.txt")),
     ("snde.txt", include_str!("defs/snde.txt")),
     ("fog_.txt", include_str!("defs/fog_.txt")),
+    ("nhdt.txt", include_str!("defs/nhdt.txt")),
 ];
 
 /// One array element's layout (a group's root, a block's element, or a
