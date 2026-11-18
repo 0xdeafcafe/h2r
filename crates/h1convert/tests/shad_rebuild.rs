@@ -415,14 +415,14 @@ fn every_halo1_shader_and_sky_shader_rebuilds() {
 }
 
 /// Halo 1's `senv` detail blend for one texel: the base map's alpha
-/// blends the secondary detail (alpha 0) into the primary (alpha 1), the
+/// blends the primary detail (alpha 0) into the secondary (alpha 1), the
 /// blend is multiplied into the base's colour and the micro detail into
 /// that, each a biased multiply (`2 × a × b`, saturated; detail function
 /// 0, the "double biased multiply" of 394 of 395 retail `senv`).
 fn halo1_blend(base: [f32; 4], primary: [f32; 4], secondary: [f32; 4], micro: [f32; 4]) -> [f32; 3] {
     let a = base[3];
     std::array::from_fn(|i| {
-        let detail = secondary[i] * (1.0 - a) + primary[i] * a;
+        let detail = primary[i] * (1.0 - a) + secondary[i] * a;
         let c = (2.0 * detail * base[i]).clamp(0.0, 1.0);
         (2.0 * c * micro[i]).clamp(0.0, 1.0)
     })

@@ -54,10 +54,10 @@ pub enum Role {
     /// layer's map.
     Base,
     /// A surface's detail map; with [`Role::Secondary`], Halo 1's primary
-    /// detail, shown where the base map's alpha is 1.
+    /// detail, shown where the base map's alpha is 0.
     Detail,
     /// Halo 1's secondary detail map, shown where the base map's alpha is
-    /// 0 (`senv` type blended).
+    /// 1 (`senv` type blended).
     Secondary,
     /// Halo 1's micro detail map, multiplied over the blend.
     Micro,
@@ -311,8 +311,9 @@ pub const TEX_BUMP: Layout = Layout {
 
 /// Opaque bumped surfaces with Halo 1's detail blend: stage 0 the base
 /// (bitmap 1, `c[18]` vector 3), stage 1 the detail shown where the base
-/// alpha is 0 (bitmap 2, `c[19]` vector 0), stage 2 the one shown where
-/// it is 1 (bitmap 3, `c[20].xy` vector 1), stage 3 a micro detail
+/// alpha is 0 (bitmap 2, `c[19]` vector 0; Halo 1's primary), stage 2
+/// the one shown where it is 1 (bitmap 3, `c[20].xy` vector 1; the
+/// secondary), stage 3 a micro detail
 /// (bitmap 4, `c[20].zw` vector 2); layer 1 is `lerp(t1, t2, t0.a) ×
 /// t0 × 2 × t3 × 2`, Halo 1's `senv` blend with biased multiplies
 /// (`tests/shad_rebuild.rs`). The bump is bitmap 0 (`c[20]` vector 4 in
@@ -328,16 +329,16 @@ pub const TEX_BUMP_DETAIL_BLEND_DETAIL: Layout = Layout {
     bitmaps: &[
         Bm::Role(Role::Bump, Fixed::DefaultVector),
         Bm::Role(Role::Base, Fixed::ColorWhite),
-        Bm::Role(Role::Secondary, Fixed::DefaultDetail),
         Bm::Role(Role::Detail, Fixed::DefaultDetail),
+        Bm::Role(Role::Secondary, Fixed::DefaultDetail),
         Bm::Role(Role::Micro, Fixed::DefaultDetail),
         Bm::Fixed(Fixed::CornerFade),
         Bm::Fixed(Fixed::DefaultDetail),
     ],
     colors: &[WHITE, 0, 0, 0],
     vectors: &[
-        Vector::Tile(Role::Secondary),
         Vector::Tile(Role::Detail),
+        Vector::Tile(Role::Secondary),
         Vector::Zw(Role::Micro),
         Vector::Tile(Role::Base),
         Vector::Tile(Role::Bump),
@@ -1091,8 +1092,11 @@ impl H1Shader {
 pub const SENV_FLAGS: usize = 0x28;
 /// `senv` type (`+0x2a`): 0 normal, 1 blended (the base map's alpha
 /// blends the primary and secondary detail maps), 2 blended with the
-/// base specular. V (395 `senv` on the disc): 0 or 1; Blood Gulch's
-/// ground (primary sand, secondary grass) is 1.
+/// base specular. V (395 `senv` on the disc): 0 or 1. Blood Gulch's
+/// ground (primary sand, secondary grass) is 1: its base alpha is 1 on
+/// 80% of the texels, the grass, and 0 on 16%, the sand paths, so the
+/// secondary detail shows where the alpha is 1 (a real run with the
+/// primary there drew the canyon floor as sand).
 pub const SENV_TYPE: usize = 0x2a;
 /// `senv` primary detail map (`+0xb8`, its scale the f32 before it).
 pub const SENV_PRIMARY: usize = 0xb8;
@@ -1257,8 +1261,8 @@ pub fn read_h1(h1: &h1map::H1Map, tag: &h1map::Tag) -> Option<H1Shader> {
 /// The maps of an `senv` (`d`, its data) for
 /// [`TEX_BUMP_DETAIL_BLEND_DETAIL`], from `single`, its maps for
 /// [`TEX_BUMP`] (base and bump): Halo 1's primary detail where the base
-/// alpha is 1 ([`Role::Detail`]) and, for a blended type, its secondary
-/// where it is 0 ([`Role::Secondary`]); a normal one (or one missing
+/// alpha is 0 ([`Role::Detail`]) and, for a blended type, its secondary
+/// where it is 1 ([`Role::Secondary`]); a normal one (or one missing
 /// either) shows the one it has everywhere. The micro detail is
 /// [`Role::Micro`]. `None` when it names no detail map.
 fn senv_blend(h1: &h1map::H1Map, d: &[u8], single: &[(Role, H1Bound)]) -> Option<Vec<(Role, H1Bound)>> {
@@ -1538,11 +1542,11 @@ mod tests {
         let bm = |k: usize| rec.at(&format!("postprocess[0].bitmaps[{k}].bitmap")).cloned();
         let id = |n: u32| Some(Val::Datum(Target::Id(TagId(n))));
         assert_eq!(bm(1), id(0xe3000001), "base, stage 0");
-        assert_eq!(bm(2), id(0xe3000003), "secondary, stage 1 (base alpha 0)");
-        assert_eq!(bm(3), id(0xe3000002), "primary, stage 2 (base alpha 1)");
+        assert_eq!(bm(2), id(0xe3000002), "primary, stage 1 (base alpha 0)");
+        assert_eq!(bm(3), id(0xe3000003), "secondary, stage 2 (base alpha 1)");
         assert_eq!(bm(4), id(0xe3000004), "micro, stage 3");
-        assert_eq!(vec(0), [60.0, 60.0, 0.0, 0.0]);
-        assert_eq!(vec(1), [100.0, 100.0, 0.0, 0.0]);
+        assert_eq!(vec(0), [100.0, 100.0, 0.0, 0.0]);
+        assert_eq!(vec(1), [60.0, 60.0, 0.0, 0.0]);
         assert_eq!(vec(2), [0.0, 0.0, 12.0, 12.0], "c[20].zw");
         assert_eq!(vec(3), [1.0, 1.0, 0.0, 0.0]);
         assert_eq!(vec(7), [0.0, 0.0, 0.0, 0.0], "no specular");
