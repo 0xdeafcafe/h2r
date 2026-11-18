@@ -1156,8 +1156,22 @@ On the disc every multiplayer map's elements are none, none,
 elements 2 and 3 at the converted cyborg and clears the word;
 `Players::Campaign` does elements 0 and 1, for `h1campaign`. The
 sandbox's disc test checks both elements name the added cyborg, which
-decodes with a render model. The first-person arms stay Halo 2's (element
-`+0x0`).
+decodes with a render model.
+
+**First-person arms (converter version 54).** The element's `+0x0` is the
+first-person arms model (`+0x8` the first-person body). The Halo 1
+sandbox and the Halo 1 campaign put Halo 1's arms there
+(`globals::set_player_hands`; the arms Halo 1's globals name at
+`matg +0x17c`, element `+0x0`, `characters\cyborg\fp\fp` on every map,
+converted on their own by `h1objects`). The engine binds the arms' nodes
+and the weapon's first-person model's nodes to the weapon's first-person
+graph **by name** (E `0x001dd4c0`, called from `0x001680eb` for the
+weapon model and `0x00168083` for the arms): Halo 2's arms name no node
+of a converted Halo 1 graph (`l_upperarm` against `frame l upperarm`), so
+until version 54 every converted first-person graph drove the arms with
+no node bound. Halo 2's arms stay in the Halo 2 sandbox. The first-person
+body stays Halo 2's (Halo 1 has none; its nodes bind to no node of a
+Halo 1 graph either).
 
 **The player's camera and hands (converter version 52).** A rebuilt
 biped names its model's Halo 1 markers in the unit's marker fields

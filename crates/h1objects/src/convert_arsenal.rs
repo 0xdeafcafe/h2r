@@ -72,6 +72,21 @@ impl Converter<'_> {
         )
     }
 
+    /// Halo 1's first-person arms (the model its globals name,
+    /// `h1convert::globals::h1_first_person_hands`), converted on its own
+    /// like a weapon's first-person model, once. The player
+    /// representation names it (`h1convert::globals::set_player_hands`):
+    /// the engine binds the arms' nodes to a weapon's first-person graph
+    /// by name (docs/formats/h1-models.md, "First-person graphs"), and
+    /// Halo 1's graphs name Halo 1's arms' nodes.
+    pub fn first_person_arms(&mut self, id: h1map::TagId) -> Result<TagId> {
+        let t = self.h1_tag(id)?;
+        let mut rep = Self::report(t, "none: a render model on its own");
+        let out = self.render_model(&mut rep, id);
+        self.tree.reports.push(rep);
+        out
+    }
+
     /// A converted render model on its own (the first-person model), with
     /// its shaders, once.
     fn render_model(&mut self, rep: &mut ObjectReport, id: h1map::TagId) -> Result<TagId> {

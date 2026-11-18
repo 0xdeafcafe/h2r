@@ -512,25 +512,37 @@ carries:
 
 The rotation error is the i16 re-quantisation of normalised quaternions.
 
-### First-person graphs (open)
+### First-person graphs
 
-V5/V2, `skin_tests`: every retail first-person `jmad` on 05a (14 graphs)
-lists the arms model's 37 nodes first, in the arms model's own order
-(`base`, `l_upperarm`, ...), then the weapon's nodes (`gun`, ...) and
-`camera_control`. Halo 1's first-person graphs hold the same two sets
-sorted together (the assault rifle's `frame gun` is node 7, between the
-wrists and the fingers), and the converted graph keeps that order. The
-converted game also keeps Halo 2's arms model (h1-multiplayer.md, "The
-first-person arms stay Halo 2's"), whose node names, proportions and rest
-frames are not Halo 1's. If the engine binds arms nodes to graph nodes by
-position, as the retail order suggests, every arm node from the fingers on
-takes another node's transform; either way Halo 1's frames are applied to
-Halo 2's skeleton. The rotation fix above does not cover this. The fix
-needs (1) Halo 1's arms (`characters\cyborg\fp\fp`, converted like any
-model) in the player representation's first-person slot, (2) each
-first-person graph's nodes reordered to the arms' order then the weapon
-model's, and (3) the engine's rule for the weapon model's nodes (by
-position after the arms, or by name), from the XBE.
+**The engine binds by name** (E). When a weapon's first-person state is
+set up (`0x00167e86`), `0x001dd4c0` builds one table per model, the
+arms (the player representation's `+0x0`, `0x00168083`) and the weapon's
+first-person model (`weap +0x2a8` element `+0x0`, `0x001680eb`): for each
+`mode` node (`+0x48`, stride `0x60`), the index of the `jmad` node
+(`+0x0c`, stride `0x20`) whose string-ID name is equal, else -1; it
+returns whether every node was found, which sets the state's flag `4`
+(arms) or `2` (weapon). `0x0016774f` then seeds each bound graph node's
+pose from the model node's default rotation and translation. Node order
+does not matter: retail graphs list the arms' 37 nodes first, then the
+weapon's and `camera_control` (V2, 14 graphs on 05a), but that is the
+tool's order, not a rule the engine needs. Halo 1's graphs interleave
+them (the assault rifle's `frame gun` is node 7) and are kept in their
+order.
+
+What broke the first person was the arms: the converted game used Halo
+2's, whose nodes (`l_upperarm`, ...) match no node of a Halo 1 graph
+(`frame l upperarm`, ...). From converter version 54 the Halo 1 sandbox
+and campaign use Halo 1's arms (docs/game/h1-multiplayer.md,
+"First-person arms"), whose 37 names all occur in every Halo 1
+first-person graph.
+
+V5 (`h1_disc_first_person_skin`): Halo 1's arms and five weapons'
+first-person models on Blood Gulch, with each weapon's converted graph,
+bound by name, posed at the middle frame of base animations and skinned
+both ways as for the bipeds. Every node of both models finds its graph
+node. Largest vertex error per weapon over 5 to 8 animations: assault
+rifle 1.2e-4, pistol 1.5e-4, plasma rifle 5.4e-5, needler 6.0e-5,
+rocket launcher 6.3e-5 (the i16 quantisation).
 
 ## Needs a game run
 

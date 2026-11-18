@@ -41,6 +41,19 @@ pub const PLAYER_REPRESENTATION_SIZE: usize = 0xbc;
 pub const REPRESENTATION_UNIT: usize = 0xb0;
 /// The word read beside the unit (`0x14f0c9`); 0 on every disc map.
 pub const REPRESENTATION_UNIT_WORD: usize = 0xb8;
+/// The element's first-person arms: a `mode` reference (datum at `+0x4`).
+/// E: `0x001676aa` takes `[representation + index * 0xbc + 4]` as the
+/// arms model whose nodes `0x001dd4c0` binds to the weapon's
+/// first-person graph by name. V: every retail element names
+/// `...\fp\fp` (or the elite's `fp_arms`) here and its `fp_body` at
+/// `+0x8`.
+pub const REPRESENTATION_HANDS: usize = 0x0;
+
+/// Halo 1's `matg +0x17c`: the first-person interface block; its
+/// element's `+0x0` is the first-person arms (a 16-byte reference, datum
+/// at `+0xc`). V: one element on a10 and Blood Gulch, naming
+/// `characters\cyborg\fp\fp`.
+pub const H1_FIRST_PERSON: usize = 0x17c;
 
 /// Which game's player representations a map spawns from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -114,6 +127,101 @@ pub fn set_player_unit_in(
         bytes[w..w + 4].fill(0);
     }
     Ok(old)
+}
+
+/// Makes `hands` (a `mode`) the first-person arms of every player of
+/// `players` in the globals of `set` (pinned). Returns the arms it
+/// replaced.
+pub fn set_player_hands(set: &mut TagSet, hands: TagId, players: Players) -> Result<Vec<TagId>> {
+    let globals = set.globals;
+    let tag = set
+        .tag_mut(globals)
+        .ok_or(Error::Invalid("the set has no globals"))?;
+    let TagPayload::Pinned { address, bytes } = &mut tag.payload else {
+        return Err(Error::Invalid("the base globals should be pinned"));
+    };
+    set_player_hands_in(bytes, *address, hands, players)
+}
+
+/// [`set_player_hands`] on the globals' bytes, whose first byte is at
+/// virtual `address`.
+pub fn set_player_hands_in(
+    bytes: &mut [u8],
+    address: u32,
+    hands: TagId,
+    players: Players,
+) -> Result<Vec<TagId>> {
+    let mut old = Vec::new();
+    for at in representation_fields(bytes, address, players, REPRESENTATION_HANDS)? {
+        old.push(TagId(u32::from_le_bytes(bytes[at + 4..at + 8].try_into().unwrap())));
+        bytes[at..at + 4].copy_from_slice(&FourCC(*b"mode").as_u32().to_le_bytes());
+        bytes[at + 4..at + 8].copy_from_slice(&hands.0.to_le_bytes());
+    }
+    Ok(old)
+}
+
+/// The byte offsets of field `field` (a reference) of `players`' player
+/// representations in the globals' bytes.
+fn representation_fields(
+    bytes: &[u8],
+    address: u32,
+    players: Players,
+    field: usize,
+) -> Result<Vec<usize>> {
+    let word = |at: usize| -> Result<u32> {
+        bytes
+            .get(at..at + 4)
+            .map(|w| u32::from_le_bytes(w.try_into().unwrap()))
+            .ok_or(Error::Invalid("the globals are too short"))
+    };
+    let count = word(PLAYER_REPRESENTATION)? as usize;
+    let first = word(PLAYER_REPRESENTATION + 4)?
+        .checked_sub(address)
+        .ok_or(Error::Invalid(
+            "the player representations lie outside the globals",
+        ))? as usize;
+    players
+        .elements()
+        .into_iter()
+        .map(|e| {
+            if e >= count {
+                return Err(Error::Invalid(
+                    "the globals have too few player representations",
+                ));
+            }
+            let at = first + e * PLAYER_REPRESENTATION_SIZE + field;
+            if at + 8 > bytes.len() {
+                return Err(Error::Invalid(
+                    "the player representations lie outside the globals",
+                ));
+            }
+            Ok(at)
+        })
+        .collect()
+}
+
+/// Halo 1's first-person arms: the model its globals' first-person
+/// interface names ([`H1_FIRST_PERSON`]), if any.
+pub fn h1_first_person_hands(h1: &h1map::H1Map) -> Result<Option<h1map::TagId>> {
+    let Some(t) = h1
+        .tags()
+        .iter()
+        .find(|t| t.group == h1map::Group::new(b"matg"))
+    else {
+        return Ok(None);
+    };
+    let b = h1.tag_data(t)?;
+    let Some(blk) = h1map::Block::read(b, H1_FIRST_PERSON) else {
+        return Ok(None);
+    };
+    if blk.count == 0 {
+        return Ok(None);
+    }
+    // Only element 0's leading reference is read.
+    let e = h1.read(blk.address, 16)?;
+    Ok(h1map::TagRef::read(e, 0)
+        .map(|r| r.id)
+        .filter(|id| !id.is_none()))
 }
 
 /// `matg +0x100`: the grenades block (count, then address).
@@ -383,6 +491,29 @@ mod tests {
         set_player_unit_in(&mut c, 0x8000_1000, TagId(0xe123_0042), Players::Campaign).unwrap();
         assert_eq!(unit(&c, 0), (bipd, 0xe123_0042, 0));
         assert_eq!(unit(&c, 2), (0, 0xe000_0012, 7));
+    }
+
+    #[test]
+    fn the_players_arms_are_set_and_the_rest_of_the_element_kept() {
+        let mut b = globals(0x8000_1000);
+        let old = set_player_hands_in(&mut b, 0x8000_1000, TagId(0xe123_0050), Players::Campaign).unwrap();
+        assert_eq!(old, [TagId(0), TagId(0)]);
+        let mode = FourCC(*b"mode").as_u32();
+        let hands = |b: &[u8], e: usize| {
+            let at = 0x284 + e * PLAYER_REPRESENTATION_SIZE + REPRESENTATION_HANDS;
+            (
+                u32::from_le_bytes(b[at..at + 4].try_into().unwrap()),
+                u32::from_le_bytes(b[at + 4..at + 8].try_into().unwrap()),
+            )
+        };
+        for e in [0, 1] {
+            assert_eq!(hands(&b, e), (mode, 0xe123_0050));
+            assert_eq!(unit(&b, e), (0, 0xe000_0010 + e as u32, 7));
+        }
+        for e in [2, 3] {
+            assert_eq!(hands(&b, e), (0, 0));
+        }
+        assert!(set_player_hands_in(&mut b, 0x8000_2000, TagId(1), Players::Campaign).is_err());
     }
 
     #[test]
