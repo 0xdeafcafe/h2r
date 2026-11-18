@@ -18,6 +18,7 @@ import { DASHBOARD_EXIT, STATS_HOME, statsNav } from "./modes";
 import { gameImage } from "../state/gameart";
 import { bannerKey } from "../lib/gameart";
 import { STATS_NAME } from "../brand";
+import Legal from "../components/Legal";
 
 const playerHref = (tag: string) => `/stats/players/${encodeURIComponent(tag)}`;
 
@@ -84,15 +85,15 @@ export default function StatsLayout(props: { children?: JSX.Element }) {
         </nav>
         <main class="s-main">{props.children}</main>
         <footer class="s-foot">
-          <p>h2 live is an independent community service for h2recomp. Not affiliated with any game publisher.</p>
+          <Legal name={STATS_NAME} class="s-legal" />
           <ul>
             <li><A href="/">Dashboard</A></li>
             <li><A href="/stats/players">Players</A></li>
             <li><A href="/stats/ranks">Ranked</A></li>
             <li><A href="/stats/events">Event Log</A></li>
             <li><A href="/dash/server">{live.wellKnown()?.id ?? new URL(live.server().base).host}</A></li>
-            <li>position {live.state.position}</li>
           </ul>
+          <small class="s-foot-pos">position {live.state.position}</small>
         </footer>
       </div>
     </div>
