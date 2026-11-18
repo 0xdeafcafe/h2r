@@ -605,13 +605,12 @@ guest time 7a-7d can move at all.
 `render_scene_passes` are ported (`engine::render_loop`, placed by the
 `render-loop` feature under `impl.render.views`, `impl.render.game_view`
 and `impl.render.scene_passes`, off by default) and agree with the lifted
-originals call for call. The first bookkeeping port under them is the
-layer entries' sort (`impl.render.layer_sort`). Two more are built:
-
-- the transparents' sort (`impl.render.transparent_sort`);
-- the shader draw's render-state list (`impl.render.states`, and
-  `impl.render.states_skip`, which skips `SetRenderState_Simple` calls
-  for values D3D's shadow already holds).
+originals call for call. One bookkeeping port under them is built:
+the shader draw's render-state list (`impl.render.states`, and
+`impl.render.states_skip`, which skips `SetRenderState_Simple` calls for
+values D3D's shadow already holds). Ports of the layer entries' sort and
+the transparents' sort were built and removed: about 0.01 ms a frame
+([render-switches.md](../graphics/render-switches.md), "Removed").
 
 The reads, the measured
 cost of each scene-pass call site and the next targets are in

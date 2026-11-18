@@ -821,8 +821,7 @@ adds them; types in `crates/agent-proto/src/render.rs`, logic in
   `fallbacks` by call, joins, times in ms); `paths` is calls into each
   native render path since the start (`feature::render_loop::path_calls`:
   `render_views`, `layer_draw`, `layer_entries`, `render_game_view`,
-  `render_scene_passes`, `layer_sort`, `render_states`,
-  `transparent_sort`); `counters` the frame-stats window's line. Each is
+  `render_scene_passes`, `render_states`); `counters` the frame-stats window's line. Each is
   `null` where that piece isn't running.
 - **Interp on a headless serve.** `interp` is there when in-between
   frames run: in `h2 play`, or in an `h2 serve` that renders on the GPU
