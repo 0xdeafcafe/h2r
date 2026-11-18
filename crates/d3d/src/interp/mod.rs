@@ -15,6 +15,8 @@
 //! - [`epilogue`]: where a vertex program puts its clip position on the
 //!   target (its own viewport transform, read from its microcode), which
 //!   E1 warps through and overscans.
+//! - [`screen_space`]: E1's pass-through world draws (window pixels:
+//!   sprites, full-target layers) moved with the overscanned world.
 //! - [`holds`]: which draws held E1's frames, kind by kind (the
 //!   diagnostic behind `render.stats`'s `interp.holds`).
 //! - [`camera`] and [`math`]: perspective matrices split and rebuilt.
@@ -27,6 +29,7 @@ pub mod math;
 pub mod model;
 pub mod pacing;
 pub mod reproject;
+pub mod screen_space;
 
 pub use backend::{InterpBackend, InterpStats, Mode};
 pub use holds::HoldLog;
