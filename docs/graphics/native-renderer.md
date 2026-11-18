@@ -377,10 +377,11 @@ placement, so bits 18..28 are `0x7ff`. The structure draw's layer-3 part
 
 Stage 1 took every section's own `lightmap_texcoords`. That is right for
 clusters and wrong for placements: a definition has no `1f` of its own,
-so every instanced placement drew at lightmap coordinate zero (one flat
-colour). Fixed: placements read their run of the bucket
-(`load::instance_lightmap_uvs`). The lighting vectors follow the same
-rule.
+so every instanced placement lost its lightmap (the builder leaves a
+section without coordinates unlit). Fixed: placements read their run of
+the bucket (`load::instance_run`, `load::bucket_slice`); the lighting
+vectors (`30`) the same way (S: the bucket's `30` stream is indexed like
+its `1f`).
 
 The per-view constants (`c[0..17]`) are the same for every draw of a
 view, and nothing in layer 3 writes them per draw (the per-draw uploads

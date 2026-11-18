@@ -7,6 +7,7 @@ use std::io::{Read, Seek};
 
 use map::{Map, TagId};
 use tags::geometry::{RawSource, Section, TagView};
+use tags::lighting::{VertexLighting, vertex_lighting};
 use tags::structure::{Lightmap, LightmapGroup, LightmapRenderInfo, StructureRender, load_bucket};
 
 use crate::world::{LightmapKey, Owner, PartInput, Placement, SectionInput, World, WorldBuilder};
@@ -84,7 +85,22 @@ pub fn section_input(s: &Section) -> Option<SectionInput> {
         uvs: v.texcoords,
         lightmap_uvs: v.lightmap_texcoords,
         normals: v.normals,
+        binormals: v.binormals,
+        tangents: v.tangents,
+        lighting: lighting_vectors(s),
     })
+}
+
+/// A section's signed lighting vectors (stream `30`,
+/// `tags::lighting::vertex_lighting`); empty without that stream.
+pub fn lighting_vectors(s: &Section) -> Vec<[f32; 3]> {
+    s.vertex_buffers
+        .iter()
+        .find_map(|vb| match vertex_lighting(s, vb) {
+            Ok(Some(VertexLighting::Vector(v))) => Some(v),
+            _ => None,
+        })
+        .unwrap_or_default()
 }
 
 fn key(info: Option<&LightmapRenderInfo>) -> Option<LightmapKey> {
@@ -143,18 +159,23 @@ pub fn load_world<R: Read + Seek>(
         .collect();
     // An instance's lightmap coordinates are its own, in a bucket of the
     // lightmap group, not the definition's (which every placement shares).
-    let buckets = group.as_ref().map(|g| bucket_lightmap_uvs(g, raw)).unwrap_or_default();
+    let buckets = group.as_ref().map(|g| bucket_streams(g, raw)).unwrap_or_default();
     for (ii, inst) in bsp.instances.iter().enumerate() {
         let Some(Some(def)) = usize::try_from(inst.definition).ok().and_then(|i| defs.get(i)) else {
             continue;
         };
-        let own = group
-            .as_ref()
-            .and_then(|g| instance_lightmap_uvs(g, &buckets, ii, def.positions.len()));
+        let n = def.positions.len();
+        let own = group.as_ref().and_then(|g| instance_run(g, &buckets, ii));
         let with_own;
         let def = match own {
-            Some(uvs) => {
-                with_own = SectionInput { lightmap_uvs: uvs.to_vec(), ..def.clone() };
+            Some((b, first)) => {
+                let lightmap_uvs = bucket_slice(&b.lightmap_uvs, first, n).map(<[_]>::to_vec);
+                let lighting = bucket_slice(&b.lighting, first, n).map(<[_]>::to_vec);
+                with_own = SectionInput {
+                    lightmap_uvs: lightmap_uvs.unwrap_or_else(|| def.lightmap_uvs.clone()),
+                    lighting: lighting.unwrap_or_else(|| def.lighting.clone()),
+                    ..def.clone()
+                };
                 &with_own
             }
             None => def,
@@ -180,41 +201,52 @@ pub fn load_world<R: Read + Seek>(
     })
 }
 
-/// Each of `group`'s buckets' lightmap coordinates (stream `1f`), loaded
-/// once; empty for a bucket the engine does not patch (flag bit 0), one
-/// with no such stream, or one that does not load.
-pub fn bucket_lightmap_uvs(group: &LightmapGroup, raw: &mut dyn RawSource) -> Vec<Vec<[f32; 2]>> {
+/// One lightmap bucket's per-vertex streams.
+#[derive(Clone, Debug, Default)]
+pub struct BucketStreams {
+    /// Stream `1f`.
+    pub lightmap_uvs: Vec<[f32; 2]>,
+    /// Stream `30`.
+    pub lighting: Vec<[f32; 3]>,
+}
+
+/// Each of `group`'s buckets' streams, loaded once; empty for a bucket the
+/// engine does not patch (flag bit 0), or one that does not load.
+pub fn bucket_streams(group: &LightmapGroup, raw: &mut dyn RawSource) -> Vec<BucketStreams> {
     group
         .buckets
         .iter()
         .map(|b| {
             if !b.is_patched() {
-                return Vec::new();
+                return BucketStreams::default();
             }
             match load_bucket(b, raw) {
-                Ok(Some(s)) => s.vertices(None).map(|v| v.lightmap_texcoords).unwrap_or_default(),
-                _ => Vec::new(),
+                Ok(Some(s)) => BucketStreams {
+                    lightmap_uvs: s.vertices(None).map(|v| v.lightmap_texcoords).unwrap_or_default(),
+                    lighting: lighting_vectors(&s),
+                },
+                _ => BucketStreams::default(),
             }
         })
         .collect()
 }
 
-/// Instance `index`'s lightmap coordinates, as the structure draw binds
-/// them (`0x0004d367`..`0x0004d3a4`): its bucket reference (group `+0x54`,
-/// one per instance), that bucket's coordinates from the reference's first
-/// offset, `vertices` of them. `None` when it has none.
-pub fn instance_lightmap_uvs<'a>(
-    group: &LightmapGroup, buckets: &'a [Vec<[f32; 2]>], index: usize, vertices: usize,
-) -> Option<&'a [[f32; 2]]> {
+/// Instance `index`'s bucket and first vertex in it, as the structure draw
+/// binds them (`0x0004d367`..`0x0004d3a4`): its bucket reference (group
+/// `+0x54`, one per instance) and the reference's first offset (`None`
+/// is the disc's `0xffff`).
+pub fn instance_run<'a>(
+    group: &LightmapGroup, buckets: &'a [BucketStreams], index: usize,
+) -> Option<(&'a BucketStreams, Option<u16>)> {
     let r = group.instance_bucket_refs.get(index)?;
-    bucket_slice(buckets.get(usize::from(r.bucket))?, *r.section_offsets.first()?, vertices)
+    Some((buckets.get(usize::from(r.bucket))?, *r.section_offsets.first()?))
 }
 
-/// `vertices` coordinates of a bucket's from `offset` (`None` is the
+/// `vertices` values of a bucket stream from `offset` (`None` is the
 /// disc's `0xffff`), or `None` when they do not fit.
-pub fn bucket_slice(uvs: &[[f32; 2]], offset: Option<u16>, vertices: usize) -> Option<&[[f32; 2]]> {
+pub fn bucket_slice<T>(stream: &[T], offset: Option<u16>, vertices: usize) -> Option<&[T]> {
     let first = usize::from(offset?);
-    uvs.get(first..first.checked_add(vertices)?).filter(|s| !s.is_empty())
+    stream.get(first..first.checked_add(vertices)?).filter(|s| !s.is_empty())
 }
 
 /// A P8 lightmap page's indices (one byte per texel) through a palette of
@@ -294,7 +326,7 @@ mod tests {
         assert_eq!(bucket_slice(&uvs, Some(2), 3), Some(&uvs[2..5]));
         assert_eq!(bucket_slice(&uvs, Some(4), 3), None, "past the bucket");
         assert_eq!(bucket_slice(&uvs, None, 3), None, "0xffff: no lightmap vertices");
-        assert_eq!(bucket_slice(&[], Some(0), 0), None, "nothing to take");
+        assert_eq!(bucket_slice::<[f32; 2]>(&[], Some(0), 0), None, "nothing to take");
     }
 
     #[test]

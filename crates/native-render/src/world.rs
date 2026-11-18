@@ -5,7 +5,11 @@
 
 use bytemuck::{Pod, Zeroable};
 
-/// One world vertex (40 bytes): what the lightmap pass reads.
+/// One world vertex (76 bytes): what the lightmap pass reads. The first
+/// four fields are what stage 1's own program reads; the rest are what the
+/// game's world programs read (docs/graphics/native-renderer.md, "What a
+/// world pass reads"): `v2..v4` the tangent frame, `v5` the lighting
+/// vector.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
 pub struct WorldVertex {
@@ -15,6 +19,10 @@ pub struct WorldVertex {
     /// Lightmap page coordinates (stream `1f`), zero without a lightmap.
     pub lightmap_uv: [f32; 2],
     pub normal: [f32; 3],
+    pub binormal: [f32; 3],
+    pub tangent: [f32; 3],
+    /// The lightmap's signed lighting vector (stream `30`), zero without one.
+    pub lighting: [f32; 3],
 }
 
 /// Axis-aligned bounds in world space.
@@ -94,6 +102,11 @@ pub struct SectionInput {
     /// Empty when the section has no lightmap coordinates.
     pub lightmap_uvs: Vec<[f32; 2]>,
     pub normals: Vec<[f32; 3]>,
+    /// Empty when the section has no tangent frame.
+    pub binormals: Vec<[f32; 3]>,
+    pub tangents: Vec<[f32; 3]>,
+    /// The signed lighting vectors (stream `30`); empty without them.
+    pub lighting: Vec<[f32; 3]>,
     pub parts: Vec<PartInput>,
 }
 
@@ -196,11 +209,18 @@ impl WorldBuilder {
         let base = self.vertices.len() as u32;
         for i in 0..n {
             let normal = section.normals.get(i).copied().unwrap_or([0.0, 0.0, 1.0]);
+            let turn = |v: &Vec<[f32; 3]>| v.get(i).map_or([0.0; 3], |&v| place.normal(v));
             self.vertices.push(WorldVertex {
                 position: place.point(section.positions[i]),
                 uv: section.uvs.get(i).copied().unwrap_or([0.0; 2]),
                 lightmap_uv: if lit { section.lightmap_uvs[i] } else { [0.0; 2] },
                 normal: place.normal(normal),
+                binormal: turn(&section.binormals),
+                tangent: turn(&section.tangents),
+                // S: in the section's own space like the tangent frame, so
+                // it turns with the placement (the game's program dots the
+                // two together).
+                lighting: turn(&section.lighting),
             });
         }
         for part in &section.parts {
@@ -308,10 +328,35 @@ mod tests {
                 transparent,
                 triangles: vec![[0, 1, 2], [1, 3, 2]],
             }],
+            ..Default::default()
         }
     }
 
     const PAGE: Option<LightmapKey> = Some(LightmapKey { page: 2, palette: 1 });
+
+    #[test]
+    fn the_tangent_frame_and_lighting_vector_turn_with_the_placement() {
+        let mut s = quad(0, false, true);
+        s.binormals = vec![[1.0, 0.0, 0.0]; 4];
+        s.tangents = vec![[0.0, 1.0, 0.0]; 4];
+        s.lighting = vec![[0.5, 0.0, 0.0]; 4];
+        // A quarter turn about z: local x goes to y, y to -x.
+        let place = Placement {
+            scale: 1.0,
+            basis: [[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+            position: [0.0; 3],
+        };
+        let mut b = WorldBuilder::new();
+        b.add_section(Owner::Instance(0), &s, &place, PAGE);
+        let v = b.finish().vertices[0];
+        assert_eq!(v.binormal, [0.0, 1.0, 0.0]);
+        assert_eq!(v.tangent, [-1.0, 0.0, 0.0]);
+        assert_eq!(v.lighting, [0.0, 0.5, 0.0], "turned, length kept");
+        let mut b = WorldBuilder::new();
+        b.add_section(Owner::Cluster(0), &quad(0, false, true), &Placement::IDENTITY, PAGE);
+        let v = b.finish().vertices[0];
+        assert_eq!((v.binormal, v.tangent, v.lighting), ([0.0; 3], [0.0; 3], [0.0; 3]), "none: zero");
+    }
 
     #[test]
     fn a_section_becomes_one_draw_per_opaque_part() {

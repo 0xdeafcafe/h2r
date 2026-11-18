@@ -21,6 +21,7 @@ fn wall(x: f32, material: u16) -> SectionInput {
             transparent: false,
             triangles: vec![[0, 1, 2], [1, 3, 2]],
         }],
+        ..Default::default()
     }
 }
 
