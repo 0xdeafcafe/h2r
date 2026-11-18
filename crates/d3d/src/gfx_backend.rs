@@ -40,15 +40,13 @@
 //! same colour and depth surfaces are recorded into one pending render
 //! pass, their vertex, index and uniform bytes packed into the renderer's
 //! and the shader provider's upload rings. A draw to another target encodes
-//! the pending pass into a command encoder kept open across target
-//! switches; anything else that touches surfaces (partial clears, surface
-//! reads, writes, copies and snapshots, destruction, present) first encodes
-//! the pending pass and submits everything encoded, so the GPU sees the
-//! same operations in the same order as one pass per draw would give it,
-//! in one submission instead of one per target switch. That batching is
-//! opt-in ([`GfxBackend::set_submit_after`], `H2_GFX_SUBMIT=batch`): by
-//! default every pass is submitted on its own at a target switch
-//! ([`GfxBackend::set_submit_per_pass`]), which was faster in game. GPU-only
+//! the pending pass and submits it with everything encoded before it, as
+//! does anything else that touches surfaces (partial clears, surface reads,
+//! writes, copies and snapshots, destruction, present), so the GPU sees the
+//! same operations in the same order as one pass per draw would give it.
+//! (Batching the passes of several targets into one submission was slower
+//! in game, 30.2 against 33.5 fps on Old Mombasa at 4x, and was removed;
+//! docs/graphics/render-switches.md.) GPU-only
 //! side work (the alias mirror's stores and loads, depth-alias and
 //! depth-level textures, pixel-counter clears) goes into the open encoder
 //! after the pending pass and waits for the next submission
@@ -134,11 +132,6 @@ struct PendingPass {
 /// render pass loads what the one before it stored.
 const MAX_ENCODED_PASSES: usize = 1024;
 
-/// Render passes encoded at target switches after which they are submitted
-/// without waiting for anything else to need it, so the GPU starts on a
-/// long frame before it ends.
-const SUBMIT_AFTER_PASSES: usize = 128;
-
 
 /// Rendering through `gfx`.
 pub struct GfxBackend {
@@ -214,12 +207,6 @@ pub struct GfxBackend {
     /// pending pass here instead of submitting it), and the render passes
     /// they hold.
     open: Option<(wgpu::CommandEncoder, usize)>,
-    /// [`set_submit_per_pass`](Self::set_submit_per_pass).
-    submit_per_pass: bool,
-    /// [`set_submit_after`](Self::set_submit_after).
-    submit_after: Option<std::time::Duration>,
-    /// When the last submission was made.
-    submitted_at: std::time::Instant,
     /// [`set_defer_side_passes`](Self::set_defer_side_passes).
     defer_side_passes: bool,
 }
@@ -334,53 +321,8 @@ impl GfxBackend {
             prev_frame_end: None,
             swap_finish: SwapFinish::from_env(),
             open: None,
-            submit_per_pass: true,
-            submit_after: None,
-            submitted_at: std::time::Instant::now(),
             defer_side_passes: std::env::var_os("H2_GFX_SIDE_SUBMIT").is_none_or(|v| v != "1"),
         }
-        .with_submit_policy(std::env::var("H2_GFX_SUBMIT").ok().as_deref())
-    }
-
-    /// `H2_GFX_SUBMIT`: `pass` (the default) submits every pass on its own,
-    /// `batch` only when something needs the work or
-    /// [`SUBMIT_AFTER_PASSES`] render passes have built up, and a number
-    /// `N` batches but also submits at the first target switch `N`
-    /// microseconds after the last submission.
-    fn with_submit_policy(mut self, value: Option<&str>) -> Self {
-        match value {
-            Some("batch") => self.set_submit_after(None),
-            Some(v) => match v.parse() {
-                Ok(us) => self.set_submit_after(Some(std::time::Duration::from_micros(us))),
-                Err(_) => self.set_submit_per_pass(true),
-            },
-            None => self.set_submit_per_pass(true),
-        }
-        self
-    }
-
-    /// Batch the passes of several targets into one submission
-    /// (`H2_GFX_SUBMIT=batch`, or a number of microseconds for `after`): a
-    /// target switch only encodes the pending pass, and the passes go to
-    /// the GPU when anything else needs them submitted ([`flush`]: a
-    /// read-back, a copy, a write to a surface, a present), when
-    /// [`SUBMIT_AFTER_PASSES`] render passes have built up, or, with
-    /// `after`, at the first target switch `after` the last submission (so
-    /// the GPU starts on a frame while the render thread is still encoding
-    /// it).
-    ///
-    /// [`flush`]: Self::flush
-    pub fn set_submit_after(&mut self, after: Option<std::time::Duration>) {
-        self.submit_per_pass = false;
-        self.submit_after = after;
-    }
-
-    /// Submit every pending pass on its own at a target switch (the
-    /// default; `H2_GFX_SUBMIT=pass`). `false` batches with no deadline,
-    /// as [`set_submit_after(None)`](Self::set_submit_after).
-    pub fn set_submit_per_pass(&mut self, on: bool) {
-        self.submit_per_pass = on;
-        self.submit_after = None;
     }
 
     /// Record the GPU-only side work (the alias mirror's stores and loads,
@@ -937,7 +879,6 @@ impl GfxBackend {
             r.submitted(index.clone());
         }
         self.last_submit = Some(index.clone());
-        self.submitted_at = std::time::Instant::now();
         self.renderer.submitted();
         if let Some(s) = self.shaders.as_mut() {
             s.submitted();
@@ -964,10 +905,8 @@ impl GfxBackend {
         }))
     }
 
-    /// Encodes the pending pass if it is for another target (submits it
-    /// under [`set_submit_per_pass`](Self::set_submit_per_pass), or when
-    /// the passes not yet submitted reach [`SUBMIT_AFTER_PASSES`] or the
-    /// [`set_submit_after`](Self::set_submit_after) deadline). Must run
+    /// Encodes and submits the pending pass if it is for another target,
+    /// with everything encoded before it ([`flush`](Self::flush)). Must run
     /// before anything for a draw on `color` and `depth` is staged (the
     /// shader provider's uniforms included): a submit lets every ring reuse
     /// what was staged before it.
@@ -977,21 +916,7 @@ impl GfxBackend {
             .as_ref()
             .is_some_and(|p| p.color != color || p.depth != depth)
         {
-            if self.submit_per_pass {
-                self.flush()?;
-            } else {
-                self.encode_pending()?;
-                let due = self
-                    .submit_after
-                    .is_some_and(|after| self.submitted_at.elapsed() >= after);
-                if self
-                    .open
-                    .as_ref()
-                    .is_some_and(|&(_, n)| due || n >= SUBMIT_AFTER_PASSES)
-                {
-                    self.submit_open();
-                }
-            }
+            self.flush()?;
         }
         Ok(())
     }
@@ -1596,13 +1521,13 @@ impl Backend for GfxBackend {
         }
         // After the draws into it, in the same submission: the pass writes
         // only buffers and a texture of its own, so nothing else needs it
-        // on the GPU sooner (under `submit_per_pass`, submitted now).
+        // on the GPU sooner (unless side passes are deferred, submitted now).
         let (mut enc, passes) = self.take_open()?;
         let ctx = &self.ctx;
         let bits = self.depth_bits.get_or_insert_with(|| gfx::depth_bits::DepthBits::new(ctx));
         let out = bits.convert(ctx, &mut enc, &texture, (d.width, d.height));
         self.open = Some((enc, passes));
-        if self.submit_per_pass && !self.defer_side_passes {
+        if !self.defer_side_passes {
             self.submit_open();
         }
         Ok(Some(self.host_texture(out, TextureKind::D2)))
@@ -1638,7 +1563,7 @@ impl Backend for GfxBackend {
         let grid = self.depth_grid.get_or_insert_with(|| gfx::depth_grid::DepthGrid::new(ctx));
         let pending = grid.reduce(ctx, &mut enc, &texture, rect, request.width, request.height);
         self.open = Some((enc, passes));
-        if self.submit_per_pass && !self.defer_side_passes {
+        if !self.defer_side_passes {
             self.submit_open();
         }
         self.depth_grids.push((pending, request.tag, sink));
@@ -2000,14 +1925,14 @@ impl Backend for GfxBackend {
 
     fn clear_pixel_count(&mut self) -> Result<(), String> {
         // After the counted draws before it, in the same submission (the
-        // report that reads the counter submits; under `submit_per_pass`,
-        // submitted now).
+        // report that reads the counter submits; unless side passes are
+        // deferred, submitted now).
         let (mut enc, passes) = self.take_open()?;
         let ctx = &self.ctx;
         let counter = self.counter.get_or_insert_with(|| PixelCounter::new(ctx));
         counter.clear(&mut enc);
         self.open = Some((enc, passes));
-        if self.submit_per_pass && !self.defer_side_passes {
+        if !self.defer_side_passes {
             self.submit_open();
         }
         Ok(())
