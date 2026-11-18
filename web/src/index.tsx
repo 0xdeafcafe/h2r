@@ -27,6 +27,7 @@ const parts = {
   events: () => import("./stats/Events"),
   clans: () => import("./stats/Clans"),
   ranks: () => import("./stats/Ranks"),
+  mods: () => import("./stats/Mods"),
   admin: () => import("./admin/Admin"),
   signin: () => import("./signin/SignIn"),
   deckStyle: () => import("./deck/StylePage"),
@@ -45,6 +46,8 @@ const Ranks = lazy(parts.ranks);
 const PlayerRanksPage = lazy(() => parts.ranks().then((m) => ({ default: m.PlayerRanksPage })));
 const Clans = lazy(parts.clans);
 const ClanPage = lazy(() => parts.clans().then((m) => ({ default: m.ClanPage })));
+const Mods = lazy(parts.mods);
+const ModPage = lazy(() => parts.mods().then((m) => ({ default: m.ModPage })));
 const Admin = lazy(parts.admin);
 const SignIn = lazy(parts.signin);
 const DeckStyle = lazy(parts.deckStyle);
@@ -97,6 +100,8 @@ render(
         <Route path="/clans/:id" component={ClanPage} />
         <Route path="/teams" component={() => <Navigate href={statsPath("/clans")} />} />
         <Route path="/teams/:id" component={OldTeam} />
+        <Route path="/mods" component={Mods} />
+        <Route path="/mods/:id" component={ModPage} />
         <Route path="/events" component={Events} />
         <Route path="/admin" component={Admin} />
         <Route path="*404" component={NotFound} />

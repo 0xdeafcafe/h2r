@@ -51,6 +51,7 @@ export function statsNav(me: { gamertag: string } | null, admin: boolean): NavIt
     { label: "Games", href: statsPath("/games") },
     { label: "Players", href: statsPath("/players"), end: true },
     { label: "Clans", href: statsPath("/clans") },
+    { label: "Mods", href: statsPath("/mods") },
     { label: "Event Log", href: statsPath("/events") },
     ...(admin ? [{ label: "Halo Admin", href: statsPath("/admin"), end: true }] : []),
     { label: "Server", href: "/dash/server" },

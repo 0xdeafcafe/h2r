@@ -554,6 +554,69 @@ Deviations from the design above:
 Still open: a `--private` server's reads need a token, which the gate's
 fetches do not send yet.
 
+### The mod repository (Live)
+
+**Built** (lane "mod-repo-web": the server, web and publishing side).
+
+- **Browsing.** `GET /v1/maps` sorts newest first (`sort=new`) or most
+  downloaded first (`sort=popular`), filters by base map, category,
+  publisher and text (`q`), and pages by cursor. Each item carries its
+  `MapPublished` log `position` and its `downloads`. The exact API, for
+  the game's Xbox Live menu, is in [live-api.md](../live/live-api.md),
+  "The mod repository". "New" needs no server state: the client keeps the
+  highest `position` it has seen.
+- **Downloads** count the accounts that fetched a manifest with a `read`
+  token (the console's join-time or menu download), once each, as
+  server-signed `MapDownloaded` events (admins-only in the log).
+- **Display data** beyond the manifest: `MapPublished` data takes
+  `category` (gameplay, weapons, vehicles, visuals, maps, other) and
+  `source_url`; the manifest's `[package] author` is shown as the credit,
+  beside the account that published it. None of it is in the `MapId`.
+- **Web.** The stats site's "Mods" tab (`/games/halo2/mods`): Newest and
+  Most Downloaded, base map, category and text filters, and a page per mod
+  (picture or base map art, base map, size to download, layers, date,
+  downloads, source link, report button). The web never sends a token on
+  `GET /v1/maps/{id}`, so viewing a mod page is no download.
+
+### Importing a mod
+
+Many old mods are whole modded `.map` files: they hold the retail map's
+bytes and may not be shared. `h2 live maps import FILE [--base MAP]
+[--disc ISO] [--out DIR] [--name NAME] [--info mod.toml] [--category C]
+[--no-publish]` (`crates/cli/src/live_mod_import.rs`) makes a package that
+shares only the difference:
+
+1. The base map (`--base`, else `base_map` in the sidecar) is read from
+   the user's own disc through `vfs::open_disc` (an image or a directory
+   of its files), and its SHA-256 is the package's `[base] sha256`.
+2. A whole map becomes one patch layer from that base,
+   `content::patch::diff`: PPF3 when the length is unchanged (the resolver
+   lays it over the disc's map as it streams), BPS otherwise. The patch is
+   applied back to the base and must give the mod exactly. A `.ppf`,
+   `.ips` or `.bps` mod is applied to the base to check it fits (a BPS's
+   source CRC, a PPF's checks) and kept as it is.
+3. Refused: a mod that changes nothing, and a result that is byte for
+   byte one of the disc's maps (another retail map passed off as a mod,
+   whose bytes would fill the delta; only disc maps of the same size are
+   hashed).
+4. The package directory (`--out`, else `<stem>.package` beside the file)
+   gets `manifest.toml`, `mod.<ppf|bps|ips>`, the preview and a `mod.toml`
+   with the repository's extras; then it is published as `h2 live maps
+   publish DIR` would (`--no-publish` stops before that).
+
+The sidecar, `mod.toml` beside the file (or `--info`), every key optional
+and unknown keys ignored: `name`, `author` (the credit), `description`,
+`source_url`, `format` (`map`, `ppf`, `ips` or `bps`; else the file's
+signature decides), `base_map`, `category`, `image` (a PNG or JPEG beside
+it, at most 512 KiB). `h2 live maps publish DIR` reads `category` and
+`source_url` from `DIR/mod.toml`; `--category` and `--source-url` win.
+
+Limits: a mod built on a different build of the base map than the user's
+disc still imports (the delta reproduces it exactly) but is larger, and
+players need the same disc map to use it. A delta can carry bytes that
+also appear in some retail map (new content copied from another level);
+only a whole retail map is caught.
+
 ## 6. Plan
 
 | Lane | Work | Depends on |

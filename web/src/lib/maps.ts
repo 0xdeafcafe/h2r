@@ -34,6 +34,16 @@ export interface MapSummary {
   /** The manifest's `[result] geometry`, only when the mod changed geometry. */
   geometry?: string;
   published_at: string;
+  /** The package's log position (the list's `sort=new` order); 0 when absent. */
+  position: number;
+  /** Distinct signed-in accounts that fetched the manifest; 0 when absent. */
+  downloads: number;
+  /** The mod's original author, as the manifest names it. */
+  credit?: string;
+  /** One of lib/mods.ts MOD_CATEGORIES, as the server sends it. */
+  category?: string;
+  /** Where the mod came from; kept only when it is http or https. */
+  source_url?: string;
 }
 
 /** `GET /v1/maps/{map_id}`'s `map`. */
@@ -46,6 +56,18 @@ export function isMapId(v: unknown): v is MapId {
 const obj = (v: unknown): Record<string, unknown> | null => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null);
 const text = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : null);
 const bytes = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.floor(v) : 0);
+
+/** A source URL fit to link: http or https only, else null. */
+export function safeSourceUrl(v: unknown): string | null {
+  const t = text(v);
+  if (!t) return null;
+  try {
+    const u = new URL(t);
+    return u.protocol === "http:" || u.protocol === "https:" ? u.toString() : null;
+  } catch {
+    return null;
+  }
+}
 
 /** Reads one package as the server sends it; null without a valid id, a
  *  name and a base map. Optional fields are left out when absent. */
@@ -69,12 +91,18 @@ export function parseMapSummary(raw: unknown): MapDetail | null {
     layers,
     size: bytes(r.size) || layers.reduce((n, l) => n + l.size, 0),
     published_at: text(r.published_at) ?? "",
+    position: bytes(r.position),
+    downloads: bytes(r.downloads),
   };
   const description = text(r.description);
   if (description) out.description = description;
   if (typeof base?.sha256 === "string") out.base.sha256 = base.sha256;
   if (typeof r.image === "string" && r.image) out.image = r.image;
   if (typeof r.geometry === "string" && r.geometry) out.geometry = r.geometry;
+  const credit = text(r.credit), category = text(r.category), source = safeSourceUrl(r.source_url);
+  if (credit) out.credit = credit;
+  if (category) out.category = category.toLowerCase();
+  if (source) out.source_url = source;
   if (obj(r.manifest)) out.manifest = r.manifest as Record<string, unknown>;
   return out;
 }
