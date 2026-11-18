@@ -365,6 +365,23 @@ points! { ALL;
     /// The Game Setup list's row chosen: jumps through a ten-entry table by
     /// the row's action with no bounds check.
     SQUAD_SETTINGS_ROW_CHOSEN @ 0x002b_b801: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/game/h1-multiplayer.md";
+    /// The multiplayer level list's data array (`[0x4ee4e4]`, 8-byte
+    /// elements, the map id at `+4`), or 0 without UI level data. The
+    /// Select Map list's constructor (`0x2c9928`, list handler in ESI)
+    /// calls it at `0x2c9980` and copies every element into its own list.
+    MP_LEVEL_ARRAY @ 0x0019_c6a0: [fn() -> eax ret 0]; "docs/game/map-select.md";
+    /// A multiplayer list slot's name in the current language (stdcall:
+    /// `slot + 0xc + 0x40 * language`). The Select Map row text calls it at
+    /// `0x2c9afc`.
+    MP_LEVEL_NAME @ 0x002a_fd70: [fn(slot: stack 0) -> eax ret 4]; "docs/game/map-select.md";
+    /// The Select Map list's row text (list handler in ECX): the row's map
+    /// id, its slot, then [`MP_LEVEL_NAME`] for the text.
+    MAP_LIST_ROW_TEXT @ 0x002c_9ac4: [fn(list: ecx, item: stack 0, word: stack 1) ret 8]; "docs/game/map-select.md";
+    /// The Select Map list's row chosen (list handler in ECX, at its
+    /// screen's `+0x614`): the map, then message 3 to its own screen.
+    MAP_LIST_ROW_CHOSEN @ 0x002c_9b17: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/game/map-select.md";
+    /// The Select Map screen's destructor (screen vtable `0x45c650` slot 0).
+    MAP_SCREEN_FREE @ 0x002b_b384: [fn(screen: ecx, flags: stack 0) -> eax ret 4]; "docs/game/map-select.md";
     /// Whether the HUD draws (AL); 0 in a campaign with Blind on.
     HUD_SHOWN @ 0x0013_939b: [fn() -> al ret 0]; "docs/game/skulls.md";
     /// Draws the first-person weapons of one local user (stdcall, four
