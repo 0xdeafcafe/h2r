@@ -694,3 +694,169 @@ fn character_physics_words() {
         println!("  h2 +{o:#x}: {:>12.6} {w:#010x}", f32::from_bits(w));
     }
 }
+
+/// Whether `p` (on or near the surface's plane) lies inside the ring's
+/// polygon, within `tol`, projected on the plane's dominant axis.
+fn inside_ring(ring: &[[f32; 3]], n: [f32; 4], p: [f32; 3], tol: f32) -> bool {
+    if ring.len() < 3 {
+        return false;
+    }
+    let drop = (0..3)
+        .max_by(|&a, &b| n[a].abs().total_cmp(&n[b].abs()))
+        .unwrap();
+    let (u, v) = match drop {
+        0 => (1, 2),
+        1 => (2, 0),
+        _ => (0, 1),
+    };
+    // Signed distance from each edge, inward positive for either winding.
+    let mut area = 0.0f32;
+    for k in 0..ring.len() {
+        let (a, b) = (ring[k], ring[(k + 1) % ring.len()]);
+        area += a[u] * b[v] - b[u] * a[v];
+    }
+    let sign = area.signum();
+    (0..ring.len()).all(|k| {
+        let (a, b) = (ring[k], ring[(k + 1) % ring.len()]);
+        let (ex, ey) = (b[u] - a[u], b[v] - a[v]);
+        let len = (ex * ex + ey * ey).sqrt().max(1e-9);
+        sign * (ex * (p[v] - a[v]) - ey * (p[u] - a[u])) / len >= -tol
+    })
+}
+
+/// What Havok sees of the +x ramp, where the live repro (recording
+/// `bg-ramp-fall`) lost the ground: running up at y -79.33 and -78.92, the
+/// ramp's contact goes away at x 43.6 and the capsule sinks through the
+/// ramp's top metre (contacts then show the ramp's back face). The game's
+/// vector test still finds the ramp there, so the question is Havok's own
+/// view: the surface's ring polygon (the shape `0x001edd00` builds by the
+/// same edge walk), its flags and breakable byte (the key filter
+/// `0x001ef451` drops breakable surfaces whose bit is clear), and the
+/// structure MOPP's keys for a capsule-sized box at each step.
+///
+/// Also, over the whole base, every point the vector test puts on a surface
+/// must lie inside that surface's ring, in Halo 1 and converted alike.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO)"]
+fn blue_base_ramp_havok_view() {
+    let h1 = bloodgulch();
+    let r = h1.structure_bsps().unwrap();
+    let s = h1.structure_bsp(&r[0]).unwrap();
+    let bsp = s.collision_bsps().unwrap().remove(0);
+    let conv = round_trip(&bsp);
+    let code = mopp::Code::parse(&mopp::build_structure(&conv)).unwrap();
+
+    // Rings: converted against Halo 1, every surface.
+    let mut ring_diffs = Vec::new();
+    for i in 0..bsp.surface_count() {
+        let (a, b) = (bsp.ring(i), conv.ring(i));
+        let same = a.len() == b.len()
+            && a.iter()
+                .zip(&b)
+                .all(|(p, q)| (0..3).all(|k| (p[k] - q[k]).abs() < 1e-3));
+        if !same {
+            ring_diffs.push(i);
+        }
+    }
+    println!(
+        "{} of {} surface rings differ from Halo 1's: {:?}",
+        ring_diffs.len(),
+        bsp.surface_count(),
+        &ring_diffs[..ring_diffs.len().min(20)]
+    );
+
+    // The surfaces around the ramp, as Havok gets them.
+    for i in 0..conv.surface_count() {
+        let ring = conv.ring(i);
+        if ring.is_empty() {
+            continue;
+        }
+        let c: [f32; 3] =
+            std::array::from_fn(|k| ring.iter().map(|p| p[k]).sum::<f32>() / ring.len() as f32);
+        if c[0] > 42.0 && c[0] < 46.0 && c[1] > -80.2 && c[1] < -78.0 && c[2] > -0.5 && c[2] < 2.0 {
+            let sf = conv.surfaces[i];
+            println!(
+                "surface {i}: n {:?} flags {:#x} breakable {:#x} first edge {} ring ({}) {:?}",
+                &facing(&conv, i)[..3],
+                sf.flags,
+                sf.breakable_surface,
+                sf.first_edge,
+                ring.len(),
+                ring
+            );
+        }
+    }
+
+    // Up the ramp along the repro's lines.
+    let mut problems = Vec::new();
+    for y in [-79.33f32, -79.1, -78.92] {
+        println!("up the ramp at y {y}");
+        for i in 0..=46 {
+            let x = 45.15 - 0.05 * i as f32;
+            let Some(&(z, s, nz)) = column(&conv, x, y).iter().find(|c| c.2 > 0.8 && c.2 < 0.9)
+            else {
+                problems.push(format!("({x:.2},{y}): no ramp in the column"));
+                continue;
+            };
+            let n = facing(&conv, s);
+            let ring = conv.ring(s);
+            let inside = inside_ring(&ring, n, [x, y, z], 0.01);
+            let sf = conv.surfaces[s];
+            let filtered = sf.flags & 8 != 0 && sf.breakable_surface != 0xff;
+            let aabb = mopp::Aabb {
+                min: [x - 0.3, y - 0.3, z - 0.2],
+                max: [x + 0.3, y + 0.3, z + 1.8],
+            };
+            let keys = mopp::query_aabb(&code, &aabb).unwrap();
+            let keyed = keys.contains(&(0x2000_0000 | s as u32));
+            let tiny = mopp::query_sphere(&code, [x, y, z], 0.01).unwrap();
+            let keyed_tiny = tiny.contains(&(0x2000_0000 | s as u32));
+            println!(
+                "  x {x:.2}: z {z:.3} surface {s} (nz {nz:.3}) in ring {inside} mopp box {keyed} sphere {keyed_tiny} filtered {filtered}"
+            );
+            if !inside || !keyed || !keyed_tiny || filtered {
+                problems.push(format!(
+                    "({x:.2},{y},{z:.3}) surface {s}: in ring {inside}, mopp box {keyed}, sphere {keyed_tiny}, filtered {filtered}"
+                ));
+            }
+        }
+    }
+
+    // Every vector-test hit over the base lies in its surface's ring.
+    let mut outside = Vec::new();
+    hits_in_rings("halo1", &bsp, &mut outside);
+    hits_in_rings("converted", &conv, &mut outside);
+    for o in &outside {
+        println!("  outside: {o}");
+    }
+    assert!(problems.is_empty(), "{problems:#?}");
+}
+
+/// Walks a 5 cm grid of vertical lines over the blue base, every hit top
+/// down, and notes the hits that fall outside their surface's ring.
+fn hits_in_rings(name: &str, b: &impl Surfaces, outside: &mut Vec<String>) {
+    let (mut n, mut out) = (0, 0);
+    for ix in 0..=240 {
+        for iy in 0..=240 {
+            let (x, y) = (33.0 + 0.05 * ix as f32, -85.0 + 0.05 * iy as f32);
+            let mut top = 6.0f32;
+            for _ in 0..8 {
+                let t = q::vector(b, [x, y, top], [x, y, -3.0]);
+                let Outcome::Hit(h) = t.outcome else { break };
+                let z = top + (-3.0 - top) * h.t;
+                n += 1;
+                if !inside_ring(&b.ring(h.surface), facing(b, h.surface), [x, y, z], 0.02) {
+                    out += 1;
+                    if outside.len() < 40 {
+                        outside.push(format!(
+                            "{name} ({x:.2},{y:.2},{z:.3}) surface {}",
+                            h.surface
+                        ));
+                    }
+                }
+                top = z - 1e-3;
+            }
+        }
+    }
+    println!("{name}: {n} hits over the base, {out} outside their surface's ring");
+}
