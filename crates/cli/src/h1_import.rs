@@ -383,6 +383,7 @@ impl Converter for DiscConverter {
                     level,
                     &done.bytes,
                     &done.report.scenario.hud_swaps,
+                    done.report.scenario.hud_sensor,
                 )?;
                 // Its picture for the level select (boot::campaign_cards).
                 if self.card_ui.is_none() {

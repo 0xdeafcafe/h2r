@@ -27,3 +27,5 @@ content.workspace = true
 scenario-edit = { path = "../scenario-edit", default-features = false }
 # The motion sensor's alpha-scaled copy decoded back from the built map.
 assets.workspace = true
+# Halo 2's motion sensor table read from the disc's XBE.
+xbe.workspace = true

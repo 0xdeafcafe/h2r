@@ -1075,6 +1075,7 @@ fn convert_campaign(a: &ConvertArgs, h1: &H1Map) -> Result<()> {
         &level,
         &done.bytes,
         &done.report.scenario.hud_swaps,
+        done.report.scenario.hud_sensor,
     )?;
     println!(
         "wrote {} ({} bytes)",
@@ -1121,6 +1122,7 @@ pub(crate) fn write_campaign_level(
     level: &str,
     bytes: &[u8],
     hud: &[[map::TagId; 3]],
+    sensor: Option<[i16; 2]>,
 ) -> Result<Vec<PathBuf>> {
     let manifest_name = h1campaign::manifest::file_name();
     let existing = std::fs::read_to_string(out_dir.join(manifest_name)).ok();
@@ -1137,6 +1139,7 @@ pub(crate) fn write_campaign_level(
                 halo2: halo2.0,
             })
             .collect(),
+        sensor,
     };
     written.push(out.write(&[content::LevelHud::file_name(level)], pairs.to_toml().as_bytes())?);
     if existing.as_deref() != Some(manifest.as_str()) {

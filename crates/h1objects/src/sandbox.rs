@@ -72,12 +72,12 @@ impl Halo1Objects for Objects<'_> {
             .collect();
         ObjectTags {
             hud_swaps,
+            hud_sensor: tree.hud_sensor,
             count: tags.len(),
             install: Box::new(move |set| {
                 Tree {
                     tags: tags.clone(),
-                    reports: Vec::new(),
-                    hud_swaps: Vec::new(),
+                    ..Default::default()
                 }
                 .install(set)
                 .map_err(|e| e.to_string())
