@@ -182,15 +182,23 @@ impl ChunkWriter {
         self.open.is_none()
     }
 
+    /// Whether `frame` would be the first of a chunk: nothing is open, or
+    /// it closes the open one.
+    pub fn starts_chunk(&self, frame: &Frame) -> bool {
+        self.open.as_ref().is_none_or(|o| self.closes(o, frame))
+    }
+
+    fn closes(&self, o: &Open, frame: &Frame) -> bool {
+        frame.tick / self.span != o.from_tick / self.span
+            || frame.tick < o.to_tick
+            || frame.game_id != o.game_id
+    }
+
     /// Adds a frame. Returns the chunk it closed, if it is the first of a
     /// new window (or of another game, or its tick went back). A frame
     /// that does not pack is skipped, as the live stream skips it.
     pub fn push(&mut self, frame: &Frame) -> Option<Chunk> {
-        let closes = self.open.as_ref().is_some_and(|o| {
-            frame.tick / self.span != o.from_tick / self.span
-                || frame.tick < o.to_tick
-                || frame.game_id != o.game_id
-        });
+        let closes = self.open.as_ref().is_some_and(|o| self.closes(o, frame));
         let done = if closes { self.finish() } else { None };
         let open = self.open.get_or_insert_with(|| Open {
             game_id: frame.game_id.clone(),
