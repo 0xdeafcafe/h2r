@@ -444,15 +444,17 @@ pub const ONE_ADD_ILLUM: Layout = Layout {
     animation: None,
 };
 
-/// Alpha blended: stage 0 a reflection cube (black: none), stage 1 a
-/// multiplier (neutral), stages 2 and 3 the picture (bitmap 2) and the
-/// additive default (bitmap 4); the picture's rows vectors 4 and 5.
+/// Alpha blended: stage 0 a reflection cube (black: none; a Halo 1 cube
+/// map when the shader's map is one), stage 1 a multiplier (neutral),
+/// stages 2 and 3 the picture (bitmap 2) and the additive default (bitmap
+/// 4); the picture's rows vectors 4 and 5. V: bitmap 0 is a cube on every
+/// retail instance, 1 to 4 2D (`every_rebuilt_bitmap_is_its_slots_retail_kind`).
 pub const ONE_ALPHA_ENV: Layout = Layout {
     stem: "shaders\\shader_templates\\transparent\\one_alpha_env",
     word_14: 5,
     ints: [0, 0],
     bitmaps: &[
-        Bm::Fixed(Fixed::DefaultCube),
+        Bm::Role(Role::Cube, Fixed::DefaultCube),
         Bm::Fixed(Fixed::DefaultMultiplicative),
         Bm::Role(Role::Base, Fixed::DefaultAdditive),
         Bm::Fixed(Fixed::ColorWhite),
@@ -744,7 +746,7 @@ impl Library {
         let scroll = match (layout.animation, extras.scroll) {
             (Some(_), Some(offset)) if offset.iter().any(Option::is_some) => {
                 let r = layout.bitmaps.iter().find_map(|b| match b {
-                    Bm::Role(r, _) if *r != Role::Mask => Some(*r),
+                    Bm::Role(r, _) if *r != Role::Mask && *r != Role::Cube => Some(*r),
                     _ => None,
                 });
                 Some(TextureScroll {
@@ -1078,6 +1080,38 @@ impl H1Shader {
         self.fallback.as_deref().and_then(|f| f.choose(library))
     }
 
+    /// Puts each map where its texture kind goes, in this and every
+    /// fallback: a cube map in the layout's cube slot (a Halo 1 glass or
+    /// water whose one map is a reflection cube), and any map whose kind
+    /// its slot doesn't sample (a cube or volume in a 2D slot) dropped,
+    /// so the slot keeps its default. The stems sample each slot as one
+    /// kind; a cube where a 2D texture is sampled stops the draw.
+    pub fn fit_kinds(&mut self, h1: &h1map::H1Map) {
+        use h1map::bitmap::ImageKind;
+        let has_cube = self
+            .layout
+            .bitmaps
+            .iter()
+            .any(|b| matches!(b, Bm::Role(Role::Cube, _)));
+        let mut out: Vec<(Role, H1Bound)> = Vec::new();
+        for (role, m) in std::mem::take(&mut self.maps) {
+            let role = match (role, h1_texture_kind(h1, m.bitmap)) {
+                (Role::Cube, Some(ImageKind::Cube)) => Role::Cube,
+                (Role::Cube, _) => continue,
+                (r, Some(ImageKind::D2)) => r,
+                (Role::Base, Some(ImageKind::Cube)) if has_cube => Role::Cube,
+                _ => continue,
+            };
+            if !out.iter().any(|(r, _)| *r == role) {
+                out.push((role, m));
+            }
+        }
+        self.maps = out;
+        if let Some(f) = self.fallback.as_mut() {
+            f.fit_kinds(h1);
+        }
+    }
+
     /// This and its fallbacks, first choice first.
     pub fn chain(&self) -> Vec<&H1Shader> {
         let mut out = vec![self];
@@ -1108,7 +1142,8 @@ pub const SENV_MICRO: usize = 0xfc;
 pub const SPLA_MAP: usize = 0xd4;
 
 /// Reads the Halo 1 shader `tag` (any of [`H1_GROUPS`]). `None` for
-/// another group or one with no map this reads.
+/// another group or one with no map this reads. Each map goes where its
+/// texture kind is sampled ([`H1Shader::fit_kinds`]).
 ///
 /// - `senv` not alpha-tested, with a detail map:
 ///   [`TEX_BUMP_DETAIL_BLEND_DETAIL`] (`senv_blend`), falling back to the
@@ -1125,6 +1160,24 @@ pub const SPLA_MAP: usize = 0xd4;
 ///   ([`crate::sky_shaders::recipe`]), [`ONE_ADD_ILLUM`] when the
 ///   framebuffer blend is additive, else [`ONE_ALPHA_ENV`].
 pub fn read_h1(h1: &h1map::H1Map, tag: &h1map::Tag) -> Option<H1Shader> {
+    let mut s = read_h1_maps(h1, tag)?;
+    s.fit_kinds(h1);
+    if s.maps.is_empty() { None } else { Some(s) }
+}
+
+/// The texture kind of the Halo 1 bitmap `id` (its first image); Halo 1's
+/// "white" placeholder is 2D.
+pub fn h1_texture_kind(h1: &h1map::H1Map, id: h1map::TagId) -> Option<h1map::bitmap::ImageKind> {
+    use h1map::bitmap::ImageKind;
+    let t = h1.tag(id).ok()?;
+    let b = h1map::bitmap::Bitmap::read(h1, t).ok()?;
+    Some(match b.images.first()?.kind {
+        ImageKind::White => ImageKind::D2,
+        k => k,
+    })
+}
+
+fn read_h1_maps(h1: &h1map::H1Map, tag: &h1map::Tag) -> Option<H1Shader> {
     let group = tag.group.to_string();
     let one = |layout: &'static Layout, id: Option<h1map::TagId>| {
         Some(H1Shader {

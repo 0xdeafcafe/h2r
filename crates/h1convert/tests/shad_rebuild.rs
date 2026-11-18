@@ -19,6 +19,10 @@
 //!   checked: its template is the layout's stem, every datum in it is the
 //!   stem, a default bitmap of the base, or a Halo 1 map's (so nothing of
 //!   a Halo 2 shader instance is in it), and its tiling is Halo 1's.
+//! - **Texture kinds** (`every_rebuilt_bitmap_is_its_slots_retail_kind`):
+//!   each slot of each layout's stem is one kind (2D, cube, volume) on
+//!   every retail instance; the base's default bitmaps and every Halo 1
+//!   map a rebuilt shader binds are that kind.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
@@ -31,7 +35,7 @@ use map::{FourCC, Map, TagId};
 use tags::defs::{self, Target, Val};
 use tags::material::ShaderLibrary;
 use tags::shader::SHAD;
-use tags::{DecodedTag, TagData};
+use tags::{DecodedTag, TagData, TextureKind};
 
 fn h2_maps(disc: &str) -> Vec<(String, u64, u64)> {
     let mut iso = xiso::Xiso::open(BufReader::new(File::open(disc).unwrap())).unwrap();
@@ -727,4 +731,171 @@ fn cloud_scroll_matches_retail_animated_instances() {
     }
     eprintln!("{checked} animated cloud layers");
     assert!(checked > 0);
+}
+
+/// A texture's kind as the slot needs it: Halo 1's "white" placeholder
+/// is a 2D texture.
+fn h1_kind(h1: &H1Map, id: h1map::TagId) -> Option<TextureKind> {
+    let t = h1.tag(id).ok()?;
+    let b = h1map::bitmap::Bitmap::read(h1, t).ok()?;
+    Some(match b.images.first()?.kind {
+        h1map::bitmap::ImageKind::D2 | h1map::bitmap::ImageKind::White => TextureKind::D2,
+        h1map::bitmap::ImageKind::D3 => TextureKind::D3,
+        h1map::bitmap::ImageKind::Cube => TextureKind::Cube,
+        h1map::bitmap::ImageKind::Other(v) => TextureKind::Unknown(v),
+    })
+}
+
+fn h2_kind<R: std::io::Read + std::io::Seek>(map: &mut Map<R>, id: TagId) -> Option<TextureKind> {
+    match DecodedTag::read(map, id).ok()?.data {
+        TagData::Bitmap(b) => Some(b.images.first()?.kind),
+        _ => None,
+    }
+}
+
+/// Every texture a rebuilt shader binds is the kind (2D, cube, volume)
+/// its stem samples at that slot: the slot's kind on every retail
+/// instance of the stem (Halo 2 disc, one kind per slot), the base's
+/// default bitmaps the layout names, and every Halo 1 map each Halo 1
+/// shader (and each fallback) puts in a slot. A cube in a slot the stem
+/// samples as 2D stops the draw (`bumpenvmap needs a D2 texture, bound
+/// Cube`).
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn every_rebuilt_bitmap_is_its_slots_retail_kind() {
+    let h1_iso = std::env::var("H1_ISO").expect("set H1_ISO");
+    let disc = std::env::var("H2_DISC").expect("set H2_DISC");
+    // Stem -> slot -> kinds seen on retail instances.
+    let mut retail: HashMap<&str, BTreeMap<usize, Vec<TextureKind>>> = HashMap::new();
+    let mut seen = HashSet::new();
+    let mut coag = None;
+    for (name, base, size) in h2_maps(&disc) {
+        if name == "coagulation" {
+            coag = Some((base, size));
+        }
+        let mut map = open(&disc, base, size);
+        let Ok(lib) = ShaderLibrary::read(&mut map) else { continue };
+        let ids: Vec<(TagId, String)> = map
+            .tags()
+            .iter()
+            .filter(|t| t.group == SHAD && t.location.is_some())
+            .map(|t| (t.id, t.name.clone().unwrap_or_default()))
+            .collect();
+        for (id, sname) in ids {
+            let Ok(sh) = lib.shader(id) else { continue };
+            let stem = map.tag(sh.template.id).ok().and_then(|t| t.name.clone()).unwrap_or_default();
+            let Some(layout) = shad::LAYOUTS.iter().find(|l| l.stem == stem) else { continue };
+            if !seen.insert(sname) {
+                continue;
+            }
+            let Ok(p) = sh.compiled() else { continue };
+            let bitmaps: Vec<TagId> = p.bitmaps.iter().map(|b| b.bitmap).collect();
+            for (k, b) in bitmaps.into_iter().enumerate() {
+                if b == TagId::NULL || b.0 == u32::MAX {
+                    continue;
+                }
+                if let Some(kind) = h2_kind(&mut map, b) {
+                    let v = retail.entry(layout.stem).or_default().entry(k).or_default();
+                    if !v.contains(&kind) {
+                        v.push(kind);
+                    }
+                }
+            }
+        }
+    }
+    let mut failures = Vec::new();
+    let slot_kind = |stem: &str, k: usize| -> Option<TextureKind> {
+        let kinds = retail.get(stem)?.get(&k)?;
+        (kinds.len() == 1).then(|| kinds[0])
+    };
+    for l in shad::LAYOUTS {
+        let Some(slots) = retail.get(l.stem) else {
+            failures.push(format!("{}: no retail instance", l.stem));
+            continue;
+        };
+        for (k, kinds) in slots {
+            if kinds.len() != 1 {
+                failures.push(format!("{} slot {k}: retail kinds {kinds:?}", l.stem));
+            }
+        }
+        eprintln!(
+            "{}: {:?}",
+            l.stem.rsplit('\\').next().unwrap(),
+            (0..l.bitmaps.len()).map(|k| slot_kind(l.stem, k)).collect::<Vec<_>>()
+        );
+    }
+    // The base's default bitmaps.
+    let (b, s) = coag.expect("coagulation");
+    let mut base = open(&disc, b, s);
+    let find = |base: &Map<_>, path: &str| {
+        base.tags()
+            .iter()
+            .find(|t| t.group == FourCC(*b"bitm") && t.name.as_deref() == Some(path))
+            .map(|t| t.id)
+    };
+    for l in shad::LAYOUTS {
+        for (k, bm) in l.bitmaps.iter().enumerate() {
+            let f = match bm {
+                Bm::Role(_, f) | Bm::Fixed(f) => *f,
+                Bm::Null => continue,
+            };
+            let id = find(&base, f.path()).unwrap_or_else(|| panic!("coagulation lacks {}", f.path()));
+            let got = h2_kind(&mut base, id);
+            if let Some(want) = slot_kind(l.stem, k)
+                && got != Some(want)
+            {
+                failures.push(format!("{} slot {k}: default {} is {got:?}, retail {want:?}", l.stem, f.path()));
+            }
+        }
+    }
+    // Every Halo 1 shader's maps, in every link of its chain.
+    let mut iso = xiso::Xiso::open(BufReader::new(File::open(&h1_iso).unwrap())).unwrap();
+    let h1disc = h1map::disc::Disc::open(&mut iso).unwrap();
+    let names: Vec<&str> = CAMPAIGN
+        .iter()
+        .copied()
+        .chain(h1convert::convert::MAPS.iter().map(|m| m.0))
+        .collect();
+    let mut checked = 0;
+    for name in names {
+        let Some(e) = h1disc.map(name).cloned() else { continue };
+        let h1 = H1Map::from_reader(Cursor::new(iso.read(&e).unwrap())).unwrap();
+        for tag in h1.tags() {
+            if !shad::H1_GROUPS.contains(&tag.group.to_string().as_str()) {
+                continue;
+            }
+            let Some(s) = shad::read_h1(&h1, tag) else { continue };
+            for c in s.chain() {
+                for (role, m) in &c.maps {
+                    let Some(k) = c
+                        .layout
+                        .bitmaps
+                        .iter()
+                        .position(|b| matches!(b, Bm::Role(r, _) if r == role))
+                    else {
+                        failures.push(format!("{name}: {}: {role:?} has no slot", tag.name));
+                        continue;
+                    };
+                    let (Some(want), got) = (slot_kind(c.layout.stem, k), h1_kind(&h1, m.bitmap)) else {
+                        continue;
+                    };
+                    checked += 1;
+                    if got != Some(want) {
+                        let bname = h1.tag(m.bitmap).map(|t| t.name.clone()).unwrap_or_default();
+                        failures.push(format!(
+                            "{name}: {} on {}: {role:?} slot {k} wants {want:?}, {bname} is {got:?}",
+                            tag.name,
+                            c.layout.stem.rsplit('\\').next().unwrap()
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("{checked} Halo 1 maps checked, {} failures", failures.len());
+    for f in failures.iter().take(60) {
+        eprintln!("  {f}");
+    }
+    assert!(checked > 0);
+    assert!(failures.is_empty(), "{} failures", failures.len());
 }
