@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 pub(crate) mod convert;
 mod editing;
 mod library;
+pub mod map_pack;
 pub mod tag_api;
 pub mod tag_doc;
 pub mod ui_screens;
@@ -265,6 +266,11 @@ pub struct App {
     packages: Vec<editor_core::packages::PackageEntry>,
     /// The package entry open in the scenario tool.
     opened_package: Option<String>,
+    /// The installed Map Pack, the map of it open, and the problems with
+    /// it already logged.
+    pack: Vec<map_pack::PackMap>,
+    opened_pack: Option<String>,
+    pack_notes: Vec<String>,
     /// The open Halo 1 source and its maps.
     h1: Option<editor_core::halo1::H1Source>,
     h1_maps: Vec<String>,
@@ -318,6 +324,9 @@ impl App {
             package_image: String::new(),
             packages: Vec::new(),
             opened_package: None,
+            pack: Vec::new(),
+            opened_pack: None,
+            pack_notes: Vec::new(),
             h1: None,
             h1_maps: Vec::new(),
             h1_view: None,
@@ -1036,5 +1045,7 @@ impl App {
 
 #[cfg(test)]
 pub(crate) mod tag_tests;
+#[cfg(test)]
+mod map_pack_tests;
 #[cfg(test)]
 mod tests;

@@ -142,6 +142,7 @@ impl App {
     /// Re-read the packages under the data root.
     pub fn refresh_packages(&mut self) {
         self.packages = packages::list(&self.session.maps_dir());
+        self.refresh_map_pack();
     }
 
     pub(super) fn set_overlay(&mut self, on: bool) {
@@ -168,6 +169,7 @@ impl App {
     /// Leave whatever the scenario tool showed that is not a disc map.
     pub(super) fn forget_library_state(&mut self) {
         self.opened_package = None;
+        self.opened_pack = None;
         self.h1_view = None;
         self.h1_loaded = None;
         self.convert_error = None;
