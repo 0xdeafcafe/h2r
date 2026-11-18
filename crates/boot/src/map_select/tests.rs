@@ -8,6 +8,7 @@ fn map(id: u32, name: &str, sort: i32, path: &str) -> Map {
         name: name.into(),
         sort,
         path: path.into(),
+        replaces: None,
     }
 }
 
@@ -290,16 +291,6 @@ fn named_states_replay_their_presses() {
     );
 }
 
-#[test]
-fn only_change_map_s_request_opens_the_categories() {
-    let ours = 0xa000_1000;
-    assert_eq!(request_loader(CHANGE_MAP_REQUEST_RET, CHANGE_MAP_LOADER, ours), Some(ours));
-    // The class off or not built: the retail list.
-    assert_eq!(request_loader(CHANGE_MAP_REQUEST_RET, CHANGE_MAP_LOADER, 0), None);
-    // Another request for the same loader, or Change Map's for another.
-    assert_eq!(request_loader(0x002b_16f3, CHANGE_MAP_LOADER, ours), None);
-    assert_eq!(request_loader(CHANGE_MAP_REQUEST_RET, 0x002b_130a, ours), None);
-}
 
 /// What boot adds when a second campaign and a map list of several
 /// categories are both installed: the campaigns' hooks and picker, the map
@@ -335,11 +326,11 @@ fn the_boot_s_features_plan_together_with_the_campaigns() {
         }),
     ))
     .unwrap();
-    let sel = Arc::new(Selection::new(sample()));
-    for class in classes(&sel) {
-        r.add(&class).unwrap();
-    }
-    r.add(&MapSelect { loader: none }).unwrap();
+    r.add(&MapSelect {
+        sel: Arc::new(Selection::new(sample())),
+        flow: Arc::default(),
+    })
+    .unwrap();
     r.add(&crate::h1_options_row::SetupRow {
         data_root: std::env::temp_dir(),
     })
@@ -351,7 +342,121 @@ fn the_boot_s_features_plan_together_with_the_campaigns() {
             c.iter().map(|c| c.to_string()).collect::<Vec<_>>().join("; ")
         ),
     };
-    let line = "0x00149f49 SCREEN_REQUEST: before [campaigns:the campaign picker first, \
-                map-select:the map categories first] -> original";
-    assert!(text.contains(line), "{text}");
+    for line in [
+        "0x00149f49 SCREEN_REQUEST: observe_before [map-select:change map arms the categories] -> before [campaigns:the campaign picker first] -> original",
+        "0x0019c6a0 MP_LEVEL_ARRAY: before [map-select:a Select Map of ours lists ours] -> original",
+        "0x002afd70 MP_LEVEL_NAME: before [map-select:category and package names] -> original",
+        "0x002c9ac4 MAP_LIST_ROW_TEXT: observe_before [map-select:note the list drawing] -> original",
+        "0x002c9b17 MAP_LIST_ROW_CHOSEN: before [map-select:categories open their maps] -> original",
+        "0x002bb384 MAP_SCREEN_FREE: before [map-select:the categories close after a map] -> original",
+    ] {
+        assert!(text.contains(line), "{line}\n{text}");
+    }
+}
+
+// ---- the retail Select Map in two modes ----
+
+#[test]
+fn category_mode_lists_each_category_s_first_map_and_maps_mode_its_maps() {
+    let cat = sample();
+    let locked = |id: u32| u8::from(id == 0x14);
+    let first = |c| cat.maps(c)[0].id;
+    assert_eq!(
+        list_for(&cat, Mode::Categories, &locked),
+        [
+            (first(Category::Halo2), 0),
+            (first(Category::MapPack), 0),
+            (first(Category::Mods), 0),
+            (first(Category::Halo1), 0),
+        ]
+    );
+    let halo2 = list_for(&cat, Mode::Maps(Category::Halo2), &locked);
+    let ids: Vec<u32> = cat.maps(Category::Halo2).iter().map(|m| m.id).collect();
+    assert_eq!(halo2.iter().map(|(i, _)| *i).collect::<Vec<_>>(), ids);
+    // The retail lock byte goes with its map (Ascension here).
+    assert_eq!(halo2[1], (0x14, 1));
+}
+
+#[test]
+fn a_written_list_reads_back_as_the_game_reads_the_retail_one() {
+    let mut g = engine::testing::FakeGuest::new();
+    g.map(0x5000_0000, 0x1000);
+    let items = [(0x0a, 0), (0x14, 1), (0x2_0001, 0)];
+    write_list(&mut g, 0x5000_0000, 0x5000_0800, &items).unwrap();
+    assert_eq!(read_flags(&g, 0x5000_0000), items);
+    let a = engine::datum::DatumArray::at(0x5000_0000);
+    let h = a.header(&g).unwrap();
+    assert_eq!((h.element_size, h.high_water, h.active_count), (8, 3, 3));
+    // Written again with fewer: only those.
+    write_list(&mut g, 0x5000_0000, 0x5000_0800, &items[..1]).unwrap();
+    assert_eq!(read_flags(&g, 0x5000_0000), &items[..1]);
+}
+
+#[test]
+fn rows_show_the_category_or_the_replacing_package_and_nothing_else() {
+    let cat = Catalogue::with_mods(
+        [
+            map(0x0a, "Lockout", 10, "scenarios\\multi\\lockout\\lockout"),
+            map(0x3e8, "Containment", 130, "t:\\$C\\4D53006400000101\\triplicate"),
+            map(0x46, "Containment", 70, "scenarios\\multi\\containment\\containment"),
+        ],
+        &[("containment".into(), "Containment (Rockets)".into())],
+    );
+    let first = |c| cat.maps(c)[0].id;
+    assert_eq!(
+        row_label(&cat, Mode::Categories, first(Category::Mods)),
+        Some((2, "Mods".into()))
+    );
+    assert_eq!(row_label(&cat, Mode::Categories, 0x0a), Some((0, "Halo 2".into())));
+    // A map's own name is the slot's: no label, unless a package replaces it.
+    assert_eq!(row_label(&cat, Mode::Maps(Category::Halo2), 0x0a), None);
+    let (n, text) = row_label(&cat, Mode::Maps(Category::Mods), 0x46).unwrap();
+    assert_eq!(text, "Containment (Rockets)");
+    assert!(n >= 4);
+    assert_eq!(utf16z("Mods"), b"M\0o\0d\0s\0\0\0");
+    assert_eq!(utf16z(&"x".repeat(40)).len(), 64, "31 units and the NUL");
+}
+
+#[test]
+fn a_disc_map_a_package_replaces_is_listed_under_mods_by_the_package_name() {
+    let cat = Catalogue::with_mods(
+        [
+            map(0x0a, "Lockout", 10, "scenarios\\multi\\lockout\\lockout"),
+            map(0x46, "Containment", 70, "scenarios\\multi\\Containment\\Containment"),
+            // A Map Pack map of the same file name is not the disc's.
+            map(0x3e8, "Containment", 130, "t:\\$C\\4D53006400000101\\containment"),
+        ],
+        &[("containment".into(), "Rocket Containment".into())],
+    );
+    assert_eq!(cat.categories(), [Category::Halo2, Category::MapPack, Category::Mods]);
+    assert_eq!(cat.maps(Category::Halo2).len(), 1, "the disc's slot serves the package");
+    let m = &cat.maps(Category::Mods)[0];
+    assert_eq!((m.id, m.name.as_str()), (0x46, "Rocket Containment"));
+    assert_eq!(m.replaces.as_deref(), Some("Containment"));
+    assert_eq!(cat.maps(Category::MapPack)[0].name, "Containment");
+}
+
+#[test]
+fn the_flow_lists_categories_then_the_picked_maps_and_closes_after_a_map() {
+    let f = Flow::default();
+    // A Select Map opened another way: retail.
+    assert_eq!(f.building(0x100), None);
+    f.change_map();
+    assert_eq!(f.building(0x1614), Some(Mode::Categories));
+    assert_eq!(f.building(0x9999), None, "taken once");
+    assert_eq!(f.mode_of(0x1614), Some(Mode::Categories));
+    f.pick(Category::Halo1);
+    assert_eq!(f.building(0x2614), Some(Mode::Maps(Category::Halo1)));
+    // B on the maps: freed with nothing to close; the categories stay ours.
+    assert_eq!(f.freed(0x2000), None);
+    assert_eq!(f.mode_of(0x2614), None);
+    assert_eq!(f.mode_of(0x1614), Some(Mode::Categories));
+    // Another category, then a map: the categories close once it's freed.
+    f.pick(Category::Halo2);
+    assert_eq!(f.building(0x3614), Some(Mode::Maps(Category::Halo2)));
+    f.picked(0x3614, 3, 4);
+    assert_eq!(f.freed(0x3000), Some((3, 4)));
+    assert_eq!(f.freed(0x3000), None, "once");
+    assert_eq!(f.freed(0x1000), None, "the categories: nothing after");
+    assert_eq!(f.mode_of(0x1614), None);
 }

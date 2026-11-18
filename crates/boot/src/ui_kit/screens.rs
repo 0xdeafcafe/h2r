@@ -268,7 +268,7 @@ pub fn account_spec(a: &crate::account_screen::AccountScreen, now: i64) -> Scree
 }
 
 /// The screens `h2 ui preview` knows, by name.
-pub const NAMES: [&str; 12] = [
+pub const NAMES: [&str; 11] = [
     "skulls",
     "skulls.h1",
     "skulls.mp",
@@ -280,7 +280,6 @@ pub const NAMES: [&str; 12] = [
     "account",
     "kit.example",
     "kit.choices",
-    "map-select",
 ];
 
 /// Every named state of screen `name` for the preview sheet: a list's
@@ -305,10 +304,6 @@ pub fn live(name: &str) -> Option<Box<dyn Live>> {
     match name {
         "signin-code" => Some(Box::new(Driven::new(crate::signin_screen::SigninPage))),
         "account" => Some(Box::new(Driven::new(AccountPage))),
-        "map-select" => {
-            let sel = Arc::new(crate::map_select::Selection::new(crate::map_select::sample()));
-            Some(Box::new(Driven::new(crate::map_select::page(&sel))))
-        }
         _ => Some(Box::new(Driven::new(list_page(name)?))),
     }
 }

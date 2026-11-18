@@ -539,9 +539,6 @@ pub fn install(
     // The campaign picker (docs/game/multiple-campaigns.md), when a second
     // campaign is installed.
     let with_campaigns = crate::campaign_menu::class().is_some();
-    // The map select by category (docs/game/map-select.md), when the map
-    // list has more than one.
-    let with_map_select = crate::map_select::installed_classes().is_some();
     // The Halo 1 options' texts (crate::h1_options): the campaign page's
     // option rows and the Game Setup row and screen, wherever settings are.
     let with_h1_options = model.is_some();
@@ -552,7 +549,6 @@ pub fn install(
         && !with_custom_games
         && !with_skulls
         && !with_campaigns
-        && !with_map_select
         && !with_h1_options
     {
         return Ok(());
@@ -587,7 +583,6 @@ pub fn install(
             served.extend(crate::h1_options::strings());
         }
         served.extend(crate::campaign_menu::strings());
-        served.extend(crate::map_select::strings());
         let (addrs, used) = write_strings(&mut *mem, DATA_BASE, &served)
             .ok_or_else(|| anyhow::anyhow!("layouts: strings"))?;
         let mut alloc = (used + 0xff) & !0xff;
@@ -1338,15 +1333,6 @@ pub fn install(
         registry
             .add(&crate::skulls_mp_row::VariantRow(mp))
             .map_err(|e| anyhow::anyhow!("skulls variant row: {e}"))?;
-    }
-    if let Some(classes) = crate::map_select::installed_classes() {
-        for class in classes {
-            match registry.add(&class) {
-                Ok(true) => {}
-                Ok(false) => eprintln!("map select: features.{} is off", class.id),
-                Err(e) => eprintln!("map select: {e}"),
-            }
-        }
     }
     if let Some(class) = crate::campaign_menu::class() {
         match registry.add(&class) {

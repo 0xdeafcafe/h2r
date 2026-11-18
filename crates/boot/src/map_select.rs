@@ -6,12 +6,14 @@
 //!
 //! - The model is pure: [`category_of`] reads a map's category from the
 //!   path the game loads it from, [`Catalogue`] groups and sorts.
-//! - The two screens are list screens of ours ([`crate::list_class`]) built
-//!   with the kit, their rows [`CategoryRows`] and [`MapRows`]; the
-//!   categories open the maps on their own stack ([`Chosen::Push`]), so B
-//!   comes back.
-//! - Offline, [`page`] is the pair as one [`StackPage`], stepped by the
-//!   table tests and drawn by `h2 ui preview`.
+//! - In the game both steps are the retail Select Map dialog (screen
+//!   `0xce`), with its pictures and descriptions ([`MapSelect`]): first in
+//!   category mode (a row a category, standing on its first map, labelled
+//!   with the category), then a second Select Map pushed on the same stack
+//!   with the category's maps. Each lists an array of ours in place of the
+//!   retail one.
+//! - Offline, [`page`] models the two steps as one [`StackPage`] over
+//!   [`CategoryRows`] and [`MapRows`], stepped by the table tests.
 //!
 //! The catalogue is read at boot ([`read`]): `mainmenu.map`'s multiplayer
 //! list from the disc, then each content package's `patch.lvl`, as 1.0
@@ -26,7 +28,7 @@ use crate::list_class::{ListClass, Rows};
 use crate::ui::Chosen;
 use crate::ui_kit::ids::{self, Family};
 use crate::ui_kit::input::{Glyph, Input, Prompt, footer_legend};
-use crate::ui_kit::lifecycle::{self, AfterClose};
+use crate::ui_kit::lifecycle;
 use crate::ui_kit::page::{ListPage, StackPage};
 use crate::ui_kit::spec::{Describe, Press, RowSpec, ScreenSpec};
 
@@ -133,7 +135,7 @@ pub fn category_of(path: &str) -> Category {
 }
 
 /// One map of the multiplayer list.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Map {
     /// Its list id (slot `+0`), what the lobby's map is set to.
     pub id: u32,
@@ -143,11 +145,27 @@ pub struct Map {
     pub sort: i32,
     /// Where the game loads it from (slot `+0xb4c`).
     pub path: String,
+    /// A disc map a package in `<data>/maps` replaces: the disc's own name
+    /// (the slot's), `name` being the package's ([`Catalogue::with_mods`]).
+    pub replaces: Option<String>,
 }
 
 impl Map {
+    /// [`category_of`] its path, but Mods for a disc map a package replaces.
     pub fn category(&self) -> Category {
-        category_of(&self.path)
+        match self.replaces {
+            Some(_) => Category::Mods,
+            None => category_of(&self.path),
+        }
+    }
+
+    /// The map file's name: the path's basename, lower case.
+    pub fn file(&self) -> String {
+        self.path
+            .rsplit('\\')
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase()
     }
 }
 
@@ -189,6 +207,23 @@ impl Catalogue {
             })
             .collect();
         Catalogue { groups }
+    }
+
+    /// [`Catalogue::new`], with the disc maps a package replaces
+    /// (`mods`: map file name, the package's name) listed under Mods by
+    /// the package's name. The vfs serves one map per name
+    /// (docs/game/maps.md §7, "Choice rule"), so while a package is chosen
+    /// for a disc map its slot loads the package, and the disc's own map
+    /// can't be offered beside it.
+    pub fn with_mods(maps: impl IntoIterator<Item = Map>, mods: &[(String, String)]) -> Self {
+        Self::new(maps.into_iter().map(|mut m| {
+            if category_of(&m.path) == Category::Halo2
+                && let Some((_, package)) = mods.iter().find(|(f, _)| f.eq_ignore_ascii_case(&m.file()))
+            {
+                m.replaces = Some(std::mem::replace(&mut m.name, package.clone()));
+            }
+            m
+        }))
     }
 
     /// The categories with maps, in order.
@@ -263,6 +298,7 @@ pub fn map_of_slot(slot: &[u8]) -> Option<Map> {
         name: String::from_utf16_lossy(&units),
         sort: u32_at(SLOT_SORT) as i32,
         path: String::from_utf8_lossy(path).into_owned(),
+        replaces: None,
     })
 }
 
@@ -279,6 +315,7 @@ pub fn map_of_package(dir: &Path) -> Option<Map> {
         name: e.names[0].clone(),
         sort: e.sort,
         path: format!("t:\\$C\\{offer}\\{base}"),
+        replaces: None,
     })
 }
 
@@ -286,13 +323,19 @@ pub fn map_of_package(dir: &Path) -> Option<Map> {
 /// package's record under `content_root` (`TDATA\4D530064\$c`), in
 /// directory order.
 pub fn read(slots: &[Vec<u8>], content_root: &Path) -> Catalogue {
+    read_with_mods(slots, content_root, &[])
+}
+
+/// [`read`], with the disc maps packages replace listed under Mods
+/// ([`Catalogue::with_mods`]).
+pub fn read_with_mods(slots: &[Vec<u8>], content_root: &Path, mods: &[(String, String)]) -> Catalogue {
     let mut maps: Vec<Map> = slots.iter().filter_map(|s| map_of_slot(s)).collect();
     let mut dirs: Vec<_> = std::fs::read_dir(content_root)
         .map(|d| d.flatten().map(|e| e.path()).collect())
         .unwrap_or_default();
     dirs.sort();
     maps.extend(dirs.iter().filter_map(|d| map_of_package(d)));
-    Catalogue::new(maps)
+    Catalogue::with_mods(maps, mods)
 }
 
 // ---- the screens ----
@@ -444,132 +487,466 @@ fn screen_spec(name: &str, title: &str, footer: u32) -> ScreenSpec {
     s
 }
 
-// ---- the classes ----
+// ---- the retail Select Map, in two modes ----
 
-/// `0x19a6f2`: sets the lobby's map (map id in ESI, the campaign id on the
-/// stack, -1 for multiplayer; stdcall, `ret 4`; AL whether it took). The
-/// Change Map list's press (`0x2c9b5d`) calls it so.
-pub const SET_LOBBY_MAP: u32 = 0x0019_a6f2;
-/// Game Setup's Change Map (`0x2bb8ac`): its request for the map list's
+/// Game Setup's Change Map (`0x2bb8ac`): its request for Select Map's
 /// loader `0x2bb2db` (`0x149f49`, window 3, slot 4), returning here.
 pub const CHANGE_MAP_REQUEST_RET: u32 = 0x002b_b8d7;
 pub const CHANGE_MAP_LOADER: u32 = 0x002b_b2db;
+/// Where the Select Map list's constructor asks for the level array
+/// (`0x2c9980`, list handler in ESI).
+pub const LIST_ARRAY_RET: u32 = 0x002c_9985;
+/// Where the Select Map row text asks for a slot's name (`0x2c9afc`).
+pub const ROW_NAME_RET: u32 = 0x002c_9b01;
+/// The list handler's place in its screen (`0x2bb29f`: `screen + 0x614`).
+pub const SCREEN_LIST: u32 = 0x614;
+/// The retail level array (`0x19c6a0` returns it).
+pub const LEVEL_ARRAY: u32 = 0x004e_e4e4;
 
-/// Work for the maps' screen once it is freed: close the categories under
-/// it (the same window and slot).
-type CloseUnder = (u32, u32);
-
-/// The two classes over `sel`.
-pub fn classes(sel: &Arc<Selection>) -> [ListClass; 2] {
-    let categories = ListClass::with_rows(
-        CATEGORIES_FEATURE,
-        CATEGORIES,
-        Arc::new(CategoryRows(Arc::clone(sel))),
-    )
-    .footer(IDS.id(CATEGORIES_FOOTER));
-    let waiting: Arc<AfterClose<CloseUnder>> = Arc::default();
-    let pick = {
-        let sel = Arc::clone(sel);
-        let waiting = Arc::clone(&waiting);
-        Arc::new(move |cx: Cx, screen: u32| {
-            let sel = Arc::clone(&sel);
-            let waiting = Arc::clone(&waiting);
-            Box::pin(async move { pick_map(&cx, screen, &sel, &waiting).await })
-                as std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), EntryError>> + Send>>
-        })
-    };
-    let freed = Arc::new(move |cx: Cx, screen: u32| {
-        let waiting = Arc::clone(&waiting);
-        Box::pin(async move {
-            if let Some((window, slot)) = waiting.freed(screen) {
-                eprintln!("map select: the maps closed; closing the categories");
-                lifecycle::close_slot(&cx, window, slot).await?;
-            }
-            Ok(())
-        }) as std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), EntryError>> + Send>>
-    });
-    let maps = ListClass::with_rows(MAPS_FEATURE, MAPS, Arc::new(MapRows(Arc::clone(sel))))
-        .footer(IDS.id(MAPS_FOOTER))
-        .action(pick)
-        .action_buttons(&[])
-        .on_free(freed);
-    [categories, maps]
+/// What a Select Map screen of ours lists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    /// One row a category, each standing on its first map (its picture and
+    /// description), labelled with the category.
+    Categories,
+    /// The category's maps, in its order.
+    Maps(Category),
 }
 
-/// A on a map: the lobby's map becomes it, as the retail list's press does,
-/// then both screens close (the maps now, the categories once the maps are
-/// freed).
-async fn pick_map(
-    cx: &Cx,
-    screen: u32,
-    sel: &Selection,
-    waiting: &AfterClose<CloseUnder>,
-) -> Result<(), EntryError> {
-    let Some(id) = sel.take_pressed() else {
-        return Ok(());
+/// The element ids and lock bytes a Select Map in `mode` is built from
+/// (`flags`: the retail array's byte `+2` by map id, which the list's
+/// constructor tests with the profiles' progress at `0x2c99cc`).
+pub fn list_for(cat: &Catalogue, mode: Mode, flags: &dyn Fn(u32) -> u8) -> Vec<(u32, u8)> {
+    match mode {
+        Mode::Categories => cat
+            .categories()
+            .iter()
+            .filter_map(|&c| cat.maps(c).first().map(|m| (m.id, 0)))
+            .collect(),
+        Mode::Maps(c) => cat.maps(c).iter().map(|m| (m.id, flags(m.id))).collect(),
+    }
+}
+
+/// The level-array shape a list is built from: 8-byte elements, the
+/// lock byte at `+2`, the map id at `+4`.
+const ELEMENT: i32 = 8;
+const CAPACITY: i32 = 64;
+
+/// Writes a data array at `at` (named by the string at `name`) holding
+/// `items`, as `0x19c7e0` fills the retail one.
+pub fn write_list(
+    m: &mut dyn engine::memory::GuestMemory,
+    at: u32,
+    name: u32,
+    items: &[(u32, u8)],
+) -> Result<(), engine::memory::MemFault> {
+    let a = engine::datum::DatumArray::at(at);
+    a.initialize_contiguous(m, name, CAPACITY, ELEMENT, 0, 0)?;
+    a.make_valid(m)?;
+    a.delete_all(m)?;
+    for &(id, flag) in items.iter().take(CAPACITY as usize) {
+        let Some(h) = a.new_datum(m)? else { break };
+        let e = a.element_addr(m, h.index() as i32)?;
+        m.set_u8(e + 2, flag)?;
+        m.set_u32(e + 4, id)?;
+    }
+    Ok(())
+}
+
+/// The retail array's lock byte by map id.
+pub fn read_flags(m: &dyn engine::memory::GuestMemory, array: u32) -> Vec<(u32, u8)> {
+    let a = engine::datum::DatumArray::at(array);
+    let mut out = Vec::new();
+    let Ok(hw) = a.header_field(m, engine::datum::layout::HIGH_WATER) else {
+        return out;
     };
-    if waiting.closing(screen) {
-        return Ok(());
+    for i in 0..hw.clamp(0, 256) {
+        if let Ok(Some(e)) = a.get_absolute(m, i)
+            && let (Ok(flag), Ok(id)) = (m.u8(e + 2), m.u32(e + 4))
+        {
+            out.push((id, flag));
+        }
     }
-    let r = cx
-        .call(GuestCall::new(SET_LOBBY_MAP).esi(id).args([u32::MAX]))
-        .await?;
-    if r.eax & 0xff == 0 {
-        eprintln!("map select: map {id:#x} was not taken (0x19a6f2 said no); staying");
-        return Ok(());
+    out
+}
+
+/// The flow over Select Map screens: what the next one built lists, and
+/// what each built one is.
+#[derive(Default)]
+pub struct Flow {
+    /// The next Select Map built lists this (`None`: retail).
+    next: Mutex<Option<Mode>>,
+    /// Built screens of ours, by list handler.
+    screens: Mutex<Vec<(u32, Mode)>>,
+    /// The list handler whose rows are being drawn (`0x2c9ac4`).
+    drawing: std::sync::atomic::AtomicU32,
+    /// Maps screens whose map was pressed: the categories' window and slot,
+    /// closed once that screen is freed.
+    closing: Mutex<Vec<(u32, (u32, u32))>>,
+}
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+impl Flow {
+    /// Change Map was pressed: the next Select Map lists the categories.
+    pub fn change_map(&self) {
+        *lock(&self.next) = Some(Mode::Categories);
     }
-    eprintln!("map select: the lobby's map is now {id:#x}");
-    let (window, slot) = lifecycle::window_slot(cx, screen)?;
-    waiting.then(screen, (window, slot));
-    lifecycle::close_slot(cx, window, slot).await
+    /// A Select Map list (`handler`) is being built: what it lists, now
+    /// taken.
+    pub fn building(&self, handler: u32) -> Option<Mode> {
+        let mode = lock(&self.next).take()?;
+        let mut s = lock(&self.screens);
+        s.retain(|(h, _)| *h != handler);
+        s.push((handler, mode));
+        Some(mode)
+    }
+    pub fn mode_of(&self, handler: u32) -> Option<Mode> {
+        lock(&self.screens).iter().find(|(h, _)| *h == handler).map(|(_, m)| *m)
+    }
+    /// A category was pressed: the Select Map pushed next lists its maps.
+    pub fn pick(&self, c: Category) {
+        *lock(&self.next) = Some(Mode::Maps(c));
+    }
+    /// A map was pressed on `handler`'s screen: the categories (at
+    /// `window`, `slot`) close once it is freed.
+    pub fn picked(&self, handler: u32, window: u32, slot: u32) {
+        let mut c = lock(&self.closing);
+        c.retain(|(h, _)| *h != handler);
+        c.push((handler, (window, slot)));
+    }
+    /// `screen` is being freed: forget it; the categories to close, if a
+    /// map was pressed on it.
+    pub fn freed(&self, screen: u32) -> Option<(u32, u32)> {
+        let handler = screen.wrapping_add(SCREEN_LIST);
+        lock(&self.screens).retain(|(h, _)| *h != handler);
+        let mut c = lock(&self.closing);
+        let i = c.iter().position(|(h, _)| *h == handler)?;
+        Some(c.remove(i).1)
+    }
+}
+
+/// UTF-16 labels in our memory: one 0x40-byte slot each (the slots' own
+/// name width, 32 units), the four categories first, then the maps.
+const LABEL_LEN: u32 = 0x40;
+
+/// The label a row shows instead of its slot's name: the category's in
+/// category mode, a package's name for a disc map it replaces. Its index
+/// in the label table, and the text.
+pub fn row_label(cat: &Catalogue, mode: Mode, id: u32) -> Option<(u32, String)> {
+    match mode {
+        Mode::Categories => {
+            let c = cat
+                .categories()
+                .into_iter()
+                .find(|&c| cat.maps(c).first().is_some_and(|m| m.id == id))?;
+            Some((c.index(), c.label().to_string()))
+        }
+        Mode::Maps(_) => {
+            let n = cat.all().position(|m| m.id == id)?;
+            let m = cat.all().nth(n)?;
+            m.replaces.as_ref()?;
+            Some((4 + n as u32, m.name.clone()))
+        }
+    }
+}
+
+fn utf16z(text: &str) -> Vec<u8> {
+    let mut b: Vec<u8> = text
+        .encode_utf16()
+        .take((LABEL_LEN / 2 - 1) as usize)
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    b.extend([0, 0]);
+    b
+}
+
+/// Our memory: the list array, its name, then the labels.
+const ARRAY_AT: u32 = 0;
+const NAME_AT: u32 = 0x400;
+const LABELS_AT: u32 = 0x1000;
+const REGION: u32 = 0x3000;
+
+/// The hooks (feature `map-select`).
+pub struct MapSelect {
+    pub sel: Arc<Selection>,
+    pub flow: Arc<Flow>,
+}
+
+/// The feature id.
+pub const FEATURE: &str = "map-select";
+
+impl feature::Feature for MapSelect {
+    fn manifest(&self) -> feature::Manifest {
+        feature::Manifest::new(FEATURE, "The multiplayer map select by category")
+            .doc("docs/game/map-select.md")
+    }
+    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
+        use engine::points::{
+            MAP_LIST_ROW_CHOSEN, MAP_LIST_ROW_TEXT, MAP_SCREEN_FREE, MP_LEVEL_ARRAY, MP_LEVEL_NAME,
+            SCREEN_REQUEST,
+        };
+        use feature::Flow as F;
+        let region = b.guest_alloc(REGION, runtime::guest::Permissions::RW)?;
+
+        // Change Map: arm the next Select Map for the categories.
+        let flow = Arc::clone(&self.flow);
+        b.raw().observe_before(&SCREEN_REQUEST, "change map arms the categories", move |o| {
+            let mem = o.guest();
+            let word = |n: u32| mem.u32(o.cpu.esp + 4 * n).ok();
+            if word(0) == Some(CHANGE_MAP_REQUEST_RET) && word(4) == Some(CHANGE_MAP_LOADER) {
+                flow.change_map();
+            }
+        });
+
+        // The list's array: ours for a Select Map of ours.
+        let (flow, sel) = (Arc::clone(&self.flow), Arc::clone(&self.sel));
+        b.raw().before(&MP_LEVEL_ARRAY, "a Select Map of ours lists ours", move |c| {
+            let rt = Arc::clone(c.ctx.runtime());
+            {
+                let mem = rt.memory();
+                if mem.u32(c.cpu.esp).ok() != Some(LIST_ARRAY_RET)
+                    || mem.u32(LEVEL_ARRAY).unwrap_or(0) == 0
+                {
+                    return Ok(F::Continue);
+                }
+            }
+            let Some(mode) = flow.building(c.cpu.esi) else {
+                return Ok(F::Continue);
+            };
+            let mut mem = rt.memory();
+            let retail = mem.u32(LEVEL_ARRAY).unwrap_or(0);
+            let flags = read_flags(&*mem, retail);
+            let flag = |id: u32| flags.iter().find(|(i, _)| *i == id).map_or(0, |(_, f)| *f);
+            let items = list_for(&sel.catalogue, mode, &flag);
+            let written = engine::memory::GuestMemory::write(
+                &mut *mem,
+                region + NAME_AT,
+                b"map select list\0",
+            )
+            .and_then(|()| write_list(&mut *mem, region + ARRAY_AT, region + NAME_AT, &items));
+            drop(mem);
+            match written {
+                Ok(()) => {
+                    eprintln!("map select: Select Map lists {mode:?} ({} rows)", items.len());
+                    c.cpu.eax = region + ARRAY_AT;
+                    c.ret(0).map(F::Return)
+                }
+                Err(e) => {
+                    eprintln!("map select: the list was not written ({e:?}); the retail list");
+                    Ok(F::Continue)
+                }
+            }
+        });
+
+        // Which list is drawing its rows.
+        let flow = Arc::clone(&self.flow);
+        b.raw().observe_before(&MAP_LIST_ROW_TEXT, "note the list drawing", move |o| {
+            flow.drawing.store(o.cpu.ecx, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        // A row's name: the category's, or a replacing package's.
+        let (flow, sel) = (Arc::clone(&self.flow), Arc::clone(&self.sel));
+        b.raw().before(&MP_LEVEL_NAME, "category and package names", move |c| {
+            let rt = Arc::clone(c.ctx.runtime());
+            let mut mem = rt.memory();
+            if mem.u32(c.cpu.esp).ok() != Some(ROW_NAME_RET) {
+                return Ok(F::Continue);
+            }
+            let handler = flow.drawing.load(std::sync::atomic::Ordering::SeqCst);
+            let Some(mode) = flow.mode_of(handler) else {
+                return Ok(F::Continue);
+            };
+            let Some(id) = mem.u32(c.cpu.esp + 4).and_then(|slot| mem.u32(slot)).ok() else {
+                return Ok(F::Continue);
+            };
+            let Some((n, text)) = row_label(&sel.catalogue, mode, id) else {
+                return Ok(F::Continue);
+            };
+            let at = region + LABELS_AT + n * LABEL_LEN;
+            if engine::memory::GuestMemory::write(&mut *mem, at, &utf16z(&text)).is_err() {
+                return Ok(F::Continue);
+            }
+            drop(mem);
+            c.cpu.eax = at;
+            c.ret(4).map(F::Return)
+        });
+
+        // A press: a category pushes its maps; a map goes on as retail and
+        // the categories close once its screen is freed.
+        let (flow, sel) = (Arc::clone(&self.flow), Arc::clone(&self.sel));
+        let request_at = region + NAME_AT + 0x100;
+        b.raw().before(&MAP_LIST_ROW_CHOSEN, "categories open their maps", move |c| {
+            let handler = c.cpu.ecx;
+            let Some(mode) = flow.mode_of(handler) else {
+                return Ok(F::Continue);
+            };
+            let screen = handler.wrapping_sub(SCREEN_LIST);
+            let (id, chain, stack) = {
+                let mem = c.ctx.runtime().memory();
+                let chain = mem.u32(c.cpu.esp + 4).ok();
+                let row = mem.u32(c.cpu.esp + 8).and_then(|p| mem.u32(p)).ok();
+                let id = row.filter(|r| *r != u32::MAX).and_then(|r| {
+                    let data = mem.u32(mem.u32(handler + 0x70).ok()? + 0x44).ok()?;
+                    mem.u32(data + (r & 0xffff) * 8 + 4).ok()
+                });
+                let stack = (
+                    mem.u32(screen + lifecycle::SCREEN_WINDOW).ok(),
+                    mem.u32(screen + lifecycle::SCREEN_SLOT).ok(),
+                );
+                (id, chain, stack)
+            };
+            let (Some(id), (Some(window), Some(slot))) = (id, stack) else {
+                return Ok(F::Continue);
+            };
+            match mode {
+                Mode::Maps(_) => {
+                    // The categories under this screen: same window, same slot.
+                    flow.picked(handler, window, slot);
+                    eprintln!("map select: map {id:#x} pressed; the categories close after");
+                    Ok(F::Continue)
+                }
+                Mode::Categories => {
+                    let Some(cat) = sel
+                        .catalogue
+                        .categories()
+                        .into_iter()
+                        .find(|&k| sel.catalogue.maps(k).first().is_some_and(|m| m.id == id))
+                    else {
+                        return c.ret(8).map(F::Return);
+                    };
+                    flow.pick(cat);
+                    let mask = {
+                        let mem = c.ctx.runtime().memory();
+                        chain.and_then(|ch| crate::list_class::player_mask(&*mem, ch).ok().flatten())
+                    };
+                    let Some(mask) = mask else {
+                        return c.ret(8).map(F::Return);
+                    };
+                    eprintln!(
+                        "map select: {} picked; its maps on window {window}, slot {slot}",
+                        cat.label()
+                    );
+                    let request =
+                        crate::skulls_mp::open_request(mask as u16, window, slot, CHANGE_MAP_LOADER);
+                    c.answer_async(move |cx| -> engine::entry::EntryFuture {
+                        Box::pin(async move {
+                            cx.write(|m| m.write(request_at, &request))?;
+                            cx.call(GuestCall::new(CHANGE_MAP_LOADER).args([request_at]))
+                                .await?;
+                            Ok(engine::entry::Ret::new(0, 8))
+                        })
+                    })
+                }
+            }
+        });
+
+        // A maps screen freed after its press: close the categories.
+        let flow = Arc::clone(&self.flow);
+        b.raw().before(&MAP_SCREEN_FREE, "the categories close after a map", move |c| {
+            let screen = c.cpu.ecx;
+            let Some((window, slot)) = flow.freed(screen) else {
+                return Ok(F::Continue);
+            };
+            let flags = {
+                let mem = c.ctx.runtime().memory();
+                mem.u32(c.cpu.esp + 4).unwrap_or(0)
+            };
+            c.answer_async(move |cx| -> engine::entry::EntryFuture {
+                Box::pin(async move {
+                    // The destructor itself (this hook passes it now: the
+                    // screen is forgotten), then the close.
+                    let r = cx
+                        .call(GuestCall::new(MAP_SCREEN_FREE_AT).ecx(screen).args([flags]))
+                        .await?;
+                    eprintln!("map select: the maps closed; closing the categories");
+                    lifecycle::close_slot(&cx, window, slot).await?;
+                    Ok(engine::entry::Ret::new(r.eax, 4))
+                })
+            })
+        });
+        Ok(())
+    }
+}
+
+const MAP_SCREEN_FREE_AT: u32 = 0x002b_b384;
+
+/// Adds the hooks when the boot [`prepare`]d a catalogue. Returns whether
+/// they were added.
+pub fn install(registry: &mut feature::Registry) -> anyhow::Result<bool> {
+    let Some(sel) = PREPARED.get() else {
+        return Ok(false);
+    };
+    let added = registry
+        .add(&MapSelect {
+            sel: Arc::clone(sel),
+            flow: Arc::default(),
+        })
+        .map_err(|e| anyhow::anyhow!("map select: {e}"))?;
+    if !added {
+        eprintln!("map select: features.map-select is off; the retail map list");
+    }
+    Ok(added)
 }
 
 // ---- prepared at boot ----
 
 static PREPARED: OnceLock<Arc<Selection>> = OnceLock::new();
-static STRINGS: OnceLock<Vec<(u32, &'static str)>> = OnceLock::new();
 
-/// Keeps the boot's catalogue; [`strings`] and [`installed_classes`] answer
-/// after. With one category or none the retail list opens unchanged.
+/// Keeps the boot's catalogue for [`install`]. With one category or none
+/// the retail list opens unchanged.
 pub fn prepare(catalogue: Catalogue) -> Option<Arc<Selection>> {
     if catalogue.categories().len() < 2 {
         return None;
     }
-    let strings = catalogue
-        .strings()
-        .into_iter()
-        // Once a boot: the labels live as long as the game.
-        .map(|(id, t)| (id, &*Box::leak(t.into_boxed_str())))
-        .collect();
-    let _ = STRINGS.set(strings);
     let sel = Arc::new(Selection::new(catalogue));
     let _ = PREPARED.set(Arc::clone(&sel));
     Some(sel)
 }
 
-/// The two screens' strings, once [`prepare`]d.
-pub fn strings() -> Vec<(u32, &'static str)> {
-    STRINGS.get().cloned().unwrap_or_default()
-}
-
-/// The two classes, once [`prepare`]d.
-pub fn installed_classes() -> Option<[ListClass; 2]> {
-    Some(classes(PREPARED.get()?))
+/// The disc maps a package in `<data>/maps` replaces: `(map file name,
+/// package name)` for each name whose chosen package (the vfs's choice
+/// rule, `Library::choose`) isn't a derived (new) map.
+pub fn replacing_packages(data_root: &Path) -> Vec<(String, String)> {
+    let maps = crate::map_override::packages_dir(data_root);
+    if !maps.is_dir() {
+        return Vec::new();
+    }
+    let (store, _) = crate::setting_defs::load(data_root, &[]);
+    let sandbox = crate::setting_defs::halo1_sandbox(&store);
+    let mut lib = content::Library::open_with_sandbox(&maps, Some(sandbox));
+    let names: std::collections::BTreeSet<String> = lib
+        .packages()
+        .iter()
+        .filter(|p| !p.manifest.base.derived)
+        .map(|p| p.manifest.base.map.to_ascii_lowercase())
+        .collect();
+    let mut out = Vec::new();
+    for name in names {
+        if let Some(p) = lib.choose(&name).filter(|p| !p.manifest.base.derived) {
+            out.push((name, p.manifest.package.name.clone()));
+        }
+    }
+    out
 }
 
 /// Reads the list at boot (the disc's `mainmenu.map` slots, then the
-/// content packages under `<data>/disk/.../$c`) and [`prepare`]s it. Never
-/// fails: says why the retail list stays.
+/// content packages under `<data>/disk/.../$c`, and the packages that
+/// replace disc maps) and [`prepare`]s it. Never fails: says why the retail
+/// list stays.
 pub fn prepare_at_boot(data_root: &Path, disc: &Path) -> Option<Arc<Selection>> {
     use crate::new_maps::Disc as _;
     let content_root = vfs::Config::new(data_root, crate::new_maps::HALO2_TITLE)
         .title_data_dir()
         .join(vfs::CONTENT_DIR);
+    let mods = replacing_packages(data_root);
     // Nothing installed: one category, the retail list; the disc unread.
     let any = std::fs::read_dir(&content_root)
         .map(|d| d.flatten().any(|e| e.path().join("patch.lvl").is_file()))
         .unwrap_or(false);
-    if !any {
+    if !any && mods.is_empty() {
         return None;
     }
     let slots = match crate::new_maps::IsoDisc::new(disc).slots() {
@@ -579,7 +956,7 @@ pub fn prepare_at_boot(data_root: &Path, disc: &Path) -> Option<Arc<Selection>> 
             return None;
         }
     };
-    let cat = read(&slots, &content_root);
+    let cat = read_with_mods(&slots, &content_root, &mods);
     let line: Vec<String> = cat
         .categories()
         .iter()
@@ -593,73 +970,6 @@ pub fn prepare_at_boot(data_root: &Path, disc: &Path) -> Option<Arc<Selection>> 
     sel
 }
 
-/// The hook: Game Setup's Change Map opens the categories in place of the
-/// retail map list (its request's loader swapped, as the campaign picker
-/// does the level select's; window 3 kept).
-/// The feature id.
-pub const FEATURE: &str = "map-select";
-
-pub struct MapSelect {
-    /// The categories' loader, once their class is built (0: the retail
-    /// list opens).
-    pub loader: Arc<dyn Fn() -> u32 + Send + Sync>,
-}
-
-impl feature::Feature for MapSelect {
-    fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new(FEATURE, "The multiplayer map select by category")
-            .doc("docs/game/map-select.md")
-    }
-    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
-        use engine::points::SCREEN_REQUEST;
-        let loader = Arc::clone(&self.loader);
-        b.raw().before(&SCREEN_REQUEST, "the map categories first", move |c| {
-            let rt = Arc::clone(c.ctx.runtime());
-            let mut mem = rt.memory();
-            let word = |m: &dyn engine::memory::GuestMemory, n: u32| m.u32(c.cpu.esp + 4 * n).ok();
-            let (Some(ret), Some(was)) = (word(&*mem, 0), word(&*mem, 4)) else {
-                return Ok(feature::Flow::Continue);
-            };
-            if let Some(ours) = request_loader(ret, was, loader())
-                && mem.set_u32(c.cpu.esp + 16, ours).is_ok()
-            {
-                eprintln!("map select: opening the map categories in place of the map list");
-            }
-            Ok(feature::Flow::Continue)
-        })
-        // The campaign picker swaps another request's loader at the same
-        // point (`campaign_menu`); the two never act on the same request
-        // (return address and loader differ), so either order is right,
-        // but the plan needs one: ours sits inside theirs.
-        .after_feature(crate::campaigns::FEATURE);
-        Ok(())
-    }
-}
-
-/// The loader a `0x149f49` request returning to `ret` for `loader` should
-/// open instead: the categories' (`ours`, 0 until their class is built)
-/// for Game Setup's Change Map, else none.
-pub fn request_loader(ret: u32, loader: u32, ours: u32) -> Option<u32> {
-    (ret == CHANGE_MAP_REQUEST_RET && loader == CHANGE_MAP_LOADER && ours != 0).then_some(ours)
-}
-
-/// Adds the hook when the boot [`prepare`]d a catalogue. Returns whether it
-/// was added.
-pub fn install(registry: &mut feature::Registry) -> anyhow::Result<bool> {
-    if PREPARED.get().is_none() {
-        return Ok(false);
-    }
-    let loader: Arc<dyn Fn() -> u32 + Send + Sync> =
-        Arc::new(|| crate::list_class::loader_of(CATEGORIES).unwrap_or(0));
-    let added = registry
-        .add(&MapSelect { loader })
-        .map_err(|e| anyhow::anyhow!("map select: {e}"))?;
-    if !added {
-        eprintln!("map select: features.map-select is off; the retail map list");
-    }
-    Ok(added)
-}
-
 // ---- offline ----
 
 /// A catalogue of every category for the previews and tests: names only,
@@ -670,12 +980,14 @@ pub fn sample() -> Catalogue {
         name: name.into(),
         sort,
         path: format!("scenarios\\multi\\{}\\{}", name.to_lowercase(), name.to_lowercase()),
+        replaces: None,
     };
     let package = |id: u32, offer: u32, name: &str, map: &str, sort: i32| Map {
         id,
         name: name.into(),
         sort,
         path: format!("t:\\$C\\4d530064{offer:08x}\\{map}"),
+        replaces: None,
     };
     let new_map = |id: u32, name: &str, map: &str| {
         package(id, content::map_list::offer_content(id), name, map, 1000)
@@ -696,6 +1008,24 @@ pub fn sample() -> Catalogue {
         new_map(0x2_0004, "Hang 'Em High", "h1_hangemhigh"),
         new_map(0x2_0005, "Battle Creek", "h1_beavercreek"),
     ])
+}
+
+/// The two steps as list classes, for the offline model only: the game
+/// shows both in the retail Select Map ([`MapSelect`]).
+pub fn classes(sel: &Arc<Selection>) -> [ListClass; 2] {
+    let categories = ListClass::with_rows(
+        "map-categories-model",
+        CATEGORIES,
+        Arc::new(CategoryRows(Arc::clone(sel))),
+    );
+    let pick: crate::list_class::Action = Arc::new(|_cx: Cx, _screen: u32| {
+        Box::pin(async { Ok(()) })
+            as std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), EntryError>> + Send>>
+    });
+    let maps = ListClass::with_rows("map-list-model", MAPS, Arc::new(MapRows(Arc::clone(sel))))
+        .action(pick)
+        .action_buttons(&[]);
+    [categories, maps]
 }
 
 /// The pair as one page: the categories, A opening a category's maps, B
