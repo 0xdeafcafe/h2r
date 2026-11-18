@@ -168,10 +168,10 @@ size and the rasteriser does the rest.
 
 Three details:
 
-- **Subpixel truncation.** The fixup truncates x and y to 1/16 of a guest
-  pixel, as the NV2A does. At 4x that is a quarter of a host pixel. Keeping it
-  preserves the retail triangle edges. Snapping to 1/16 of a host pixel is a
-  possible view-only refinement and is not proposed for the first cut.
+- **Subpixel truncation.** At 1x the fixup truncates x and y to 1/16 of a
+  pixel, as the NV2A does. Scaled, it does not truncate at all: on the
+  guest's grid, seams between draws opened into see-through lines (see
+  "Subpixel snapping and cracks" below).
 - **Slope-scaled depth bias.** The W-buffer path computes the polygon offset
   from screen-space derivatives (`max(|dpdx|, |dpdy|)`). Derivatives per host
   pixel are smaller by the scale, so the slope term shrinks. That is the
@@ -180,6 +180,72 @@ Three details:
 - **Stipple.** The pattern is indexed by pixel position ([d3d.md](d3d.md),
   `SetStipple`). The view must index it by guest pixel (`floor(position /
   scale)`), or the pattern becomes finer than retail.
+
+### Subpixel snapping and cracks
+
+Reported on Burial Mounds at about 4K: a thin see-through line along a seam
+in the terrain, over the clear colour, not seen at 640x480.
+
+**The geometry is closed.** `viewer`'s `bsp_cracks` (reads your disc,
+prints counts only) welds a BSP's drawn cluster triangles by their exact
+position bits and classifies every edge one triangle uses. Burial Mounds
+(9,666 triangles, 27 clusters): no T-junction and no near-coincident
+unwelded edge at a 0.001 or 0.05 world-unit tolerance; 58 open edges, all
+the level's border. 1,964 shared edges lie between triangles drawn by
+different draws (1,083 between clusters, 882 between parts with other
+materials), every one with bit-identical ends. Zanzibar and Ascension are
+the same: no T-junctions, no unwelded seams.
+
+**So the crack is the projection, not the mesh.** Two draws transform the
+same world vertex and land a few ulps apart in window coordinates. The
+likely route, not yet confirmed in a capture: another material's template
+has another vertex program, or the host compiler contracts the same
+`dp4`s differently in two pipelines. The NV2A, and
+the fixup at every scale before this change, truncate x and y to 1/16 of a
+guest pixel. Where the exact value sits just under a grid line, a few ulps
+move one copy a whole step: the two sides of the seam then disagree by
+1/16 of a guest pixel along the whole edge. At 1x that sliver covers about
+one pixel centre in sixteen along it (retail's occasional sparkle). At a
+render scale `s` it is `s/16` of a host pixel wide, a quarter at 4x and
+three eighths at 6x, so it covers that share of the host pixels along the
+seam: a dashed line. A T-junction on the guest's grid behaves the same,
+the T vertex rounded off the long edge by up to 1/16 of a guest pixel.
+
+**Fix: the view does not truncate.** Scaled (`VertexUniforms::shift`
+above 0), `xvs_fixup` passes x and y through unrounded, and the host
+rasterizer's own sub-pixel precision (Metal and D3D11-class hardware: at
+least 8 bits, 1/256 of a host pixel) decides coverage. Two copies a few
+ulps apart then disagree by about 1e-5 guest pixels, which covers no
+sample in practice. The built-in pre-transformed shader never truncated.
+At 1x the expression is unchanged (the `select` takes the truncated
+value), so the reference, and everything the guest can observe, is
+identical. The shift's tie-free sampling holds without the grid: host
+samples sit `(k + 1/4) / s` from a guest pixel centre, so an edge a few
+ulps off a centre covers the same samples as one on it.
+
+Snapping to 1/16 of a host pixel instead (the guest's grid times the
+scale) only narrows the sliver. Measured by
+`crates/d3d/tests/seams_gpu.rs` (a 64x64 frame, a strip meeting a long
+edge at 47 T-junction vertices, and a seam whose two draws hold an end one
+ulp apart), clear-colour pixels inside the mesh:
+
+| Fixup | 2x | 3x | 4x | 6x |
+|---|---|---|---|---|
+| guest grid (before) | 8 + 0 | 14 + 22 | 29 + 0 | 56 + 0 |
+| 1/16 host pixel | 3 + 0 | 6 + 0 | 5 + 0 | 8 + 0 |
+| none (built) | 0 | 0 | 0 | 0 |
+
+(T-junctions + ulp seam.) At 1x the image is, pixel for pixel, the mesh's
+with its positions truncated on the CPU first, before and after.
+
+Not chosen: MSAA (narrows a sliver, does not close it, and costs every
+pipeline, see "Filtering, anisotropy and MSAA"), a conservative edge
+expansion (fattens every edge, alpha-blended ones too), and T-junction
+repair on the D3D path (there are none in the drawn world, and the guest's
+index buffers cannot be changed). A renderer that owns the world geometry
+(the native renderer) loads the same welded mesh; it should draw shared
+edges from one vertex buffer with one position transform for every
+material, and not snap, so seams match bit for bit.
 
 ### Scissor, clears and viewport
 
@@ -584,9 +650,9 @@ with synthetic frames, not captures.
   surface. Geometry keeps guest window coordinates (`surface` stays the guest
   size; the built-in pre-transformed shader takes `gfx::Draw::window`).
 - **Half-pixel shift** (new, see below): at scale `s` positions move by
-  `(2s - 1) / (4s)` guest pixels after the 1/16 truncation
-  (`gfx::renderer::window_shift`, `VertexUniforms::shift`, the built-in
-  shader's `shift_x/y`). It is 0 at 1x, so the reference's shaders compute
+  `(2s - 1) / (4s)` guest pixels (`gfx::renderer::window_shift`,
+  `VertexUniforms::shift`, the built-in shader's `shift_x/y`), with no
+  1/16 truncation at scale (see "Subpixel snapping and cracks"). It is 0 at 1x, so the reference's shaders compute
   what they did.
 - **Failures**: a view error is counted (`ScaleStats`), never returned, and
   that frame is shown from the reference (`present_reference` calls the
@@ -874,4 +940,3 @@ ones about the renderer's structure:
 - Does Halo 2 draw lines outside debug paths?
 - How large is the second backend's CPU cost on current master, with merged
   passes?
-- Whether the view should snap vertices to the host's subpixel grid.
