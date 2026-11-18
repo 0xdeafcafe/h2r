@@ -337,6 +337,8 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
         .route("/v1/games/bots", post(crate::bots::post_roster))
         .route("/v1/games/{id}", get(game))
         .route("/v1/games/{id}/frames", get(game_frames))
+        .route("/v1/games/{id}/chunks", get(game_chunks))
+        .route("/v1/games/{id}/chunks/{tick}", get(game_chunk))
         .route("/v1/games/{id}/events", post(game_events))
         .route("/v1/local/signin", any(crate::local_signin::redeem))
         .route(
@@ -1089,18 +1091,15 @@ async fn game_frames(
     } else {
         crate::games::FRAMES_PAGE
     };
-    let packed = match p.get("format").map(String::as_str) {
-        None | Some("") | Some("json") => false,
-        Some("packed") => true,
-        Some(_) => return Err(invalid("format must be json or packed")),
-    };
-    if !packed {
-        return Ok(json(
-            StatusCode::OK,
-            &live
-                .recorded_frames(game_id(&id)?, from_tick, to_tick, paging.after, limit)
-                .await?,
-        ));
+    // The JSON read is gone (docs/live/live-api.md, "Frame chunks"):
+    // games since then are read as chunks, older ones packed.
+    match p.get("format").map(String::as_str) {
+        None | Some("") | Some("packed") => {}
+        Some(_) => {
+            return Err(invalid(
+                "format must be packed; frames are read as chunks (/v1/games/{id}/chunks)",
+            ));
+        }
     }
     let page = live
         .recorded_frame_data(game_id(&id)?, from_tick, to_tick, paging.after, limit)
@@ -1129,6 +1128,62 @@ async fn game_frames(
         h.insert("x-next", next);
     }
     h.insert("x-position", HeaderValue::from(page.position));
+    Ok(resp)
+}
+
+/// `GET /v1/games/{id}/chunks`: the game's frame chunk index, oldest first
+/// (docs/live/live-api.md, "Frame chunks").
+async fn game_chunks(
+    State(live): Shared,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult<Response> {
+    let viewer = live.read_viewer(bearer(&headers))?;
+    let id = game_id(&id)?;
+    live.check_game_shows(id, viewer)?;
+    let items = live.frame_chunks(id).await?;
+    let ended = live.game(id)?.end_reason.is_some();
+    Ok(json(
+        StatusCode::OK,
+        &serde_json::json!({
+            "game_id": id,
+            "chunk_ticks": live_proto::chunk::CHUNK_TICKS,
+            "ended": ended,
+            "items": items,
+        }),
+    ))
+}
+
+/// `GET /v1/games/{id}/chunks/{tick}`: one chunk, by its first tick. Never
+/// rewritten, so an anonymous read (a game anyone may see) is cached for
+/// good; a read with a token stays private.
+async fn game_chunk(
+    State(live): Shared,
+    headers: HeaderMap,
+    Path((id, tick)): Path<(String, String)>,
+) -> ApiResult<Response> {
+    let token = bearer(&headers);
+    let viewer = live.read_viewer(token)?;
+    let id = game_id(&id)?;
+    live.check_game_shows(id, viewer)?;
+    let tick: u64 = tick
+        .parse()
+        .map_err(|_| invalid("the chunk is named by its first tick"))?;
+    let bytes = live.frame_chunk(id, tick).await?;
+    let mut resp = (
+        [(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static(crate::games::CHUNK_TYPE),
+        )],
+        bytes,
+    )
+        .into_response();
+    if token.is_none() {
+        resp.headers_mut().insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static(crate::caching::IMMUTABLE),
+        );
+    }
     Ok(resp)
 }
 

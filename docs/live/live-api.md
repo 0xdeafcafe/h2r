@@ -55,7 +55,8 @@ Event types so far (payload fields):
 | `game-<id>` | `PlayerJoined`, `PlayerLeft` | `player` (below) / `index` |
 | `game-<id>` | `PlayerKilled` | `tick`, `victim`, `killer?`, `weapon?`, `kind` (`kill`/`suicide`/`betrayal`/`world`) |
 | `game-<id>` | `ScoreChanged` | `tick`, `players: [{index, score, kills, deaths, assists}]`, `teams?: [{team, score}]` |
-| `game-<id>` | `GameFrame` | a frame (below), recorded at 1 Hz for replays |
+| `game-<id>` | `FrameChunk` | a stored chunk of the game's recorded frames ([Frame chunks](#frame-chunks)) |
+| `game-<id>` | `GameFrame` | a frame (below), recorded at 1 Hz for replays by servers before frame chunks |
 | `game-<id>` | `GameEnded` | `tick`, `reason` (`finished`/`quit`/`lost`), `winner?`, final `players` |
 
 A player: `{ "index": 0, "name": "Sneaky Pete", "xuid": "...?", "team": 1,
@@ -262,12 +263,56 @@ game it is; all five fields are optional and old senders leave them out:
 Game summaries and `GET /v1/games/{id}` always carry `kind` (inferred for old
 games) and the others when the start had them.
 
-`GameFrame` events hold a frame at 1 Hz. Live frames go out on the stream at
-up to 15 Hz and are not stored. A live frame's `shots` count since the
-previous live frame; a recorded frame's since the previous recorded frame
-(the sum over the frames it stands for, capped at 64 per player or actor), so
-replays show the firing of the whole second; the same goes for `actions` and
-`hits`.
+Live frames go out on the stream at up to 15 Hz, and every frame sent is
+recorded in the game's [frame chunks](#frame-chunks). A frame's `shots`
+count since the previous frame sent (the sum over the frames the throttle
+dropped, capped at 64 per player or actor); the same goes for `actions` and
+`hits`. Games recorded before frame chunks have `GameFrame` events instead,
+a frame at 1 Hz whose `shots`, `actions` and `hits` cover its whole second.
+
+### Frame chunks
+
+The server records a game's frames in chunks of ten seconds of game time
+(`crates/live-proto/src/chunk.rs`): every frame sent in an aligned window
+of 300 ticks, packed as one stream (a keyframe, then deltas; [packed
+frames](live-telemetry.md#packed-frames)) and compressed with raw deflate.
+A chunk is stored when a frame lands in the next window, and when the game
+ends (its `GameEnded`, or the idle sweep ending it as `lost`); there is no
+timer. A server that stops mid-window loses at most that window.
+
+Each chunk is an immutable blob in the private blob store,
+`frames/<game id>/<first tick>` (R2 on the Worker, the data directory
+natively; the event store's blobs on a server with neither), and a
+server-signed `FrameChunk` event in the game's stream is its index entry:
+
+```json
+{ "from_tick": 9000, "to_tick": 9298, "frames": 150, "bytes": 38211,
+  "sha256": "…", "codec": "deflate", "raw_bytes": 41022, "versions": [4],
+  "players": [0, 1, 2], "cuts": [9120], "hits": 37, "shots": 210 }
+```
+
+`versions` are the packed frame versions inside (a reader that knows none
+skips the chunk), `players` every player index a frame lists, `cuts` the
+ticks of frames that carry a `cut`, `hits` and `shots` totals. The
+signature covers `sha256`, so a chunk is verifiable. Kills, scores and the
+rest stay ordinary events: stats never read frames.
+
+A chunk's bytes:
+
+| field | bytes |
+|---|---|
+| magic | `H2CK` |
+| format | `u8`, 1 |
+| codec | `u8`: 0 stored, 1 raw deflate (RFC 1951) |
+| raw length, frames, first tick, last tick | LEB128 each |
+| body | the codec's bytes of a container of packed frame records |
+
+A chunk carries packed records as they are, so a new packed frame version
+changes nothing here. A chunk inflates to at most 16 MiB. `GET
+/v1/games/{id}/chunks` lists a game's chunks and `GET
+/v1/games/{id}/chunks/{first tick}` returns one, with the same visibility
+check as the game. A seek reads the index once and fetches the one chunk
+whose window holds the tick.
 
 ## Read endpoints
 
@@ -283,7 +328,9 @@ replays show the firing of the whole second; the same goes for `actions` and
 | `GET /v1/coop/games?player=` | finished co-op campaign games, newest first ([Co-op games](#co-op-games), below) |
 | `GET /v1/games?state=live\|ended&map=&map_id=&skulls=` | game summaries: `{game_id, map, mode, kind, variant, playlist?, playlist_id?, difficulty?, online?, team_play, started_at, ended_at?, players, teams?, map_id?, skulls?}`; `map` keeps games on that base map, modded or not, `map_id` one exact map (`none`: games with no `map_id`), `skulls` (comma-separated indices, `4,6`) games that had every one of them on; without the co-op games the reader may not see ([Co-op games](#co-op-games)) |
 | `GET /v1/games/{id}` | summary plus scoreboard and the last 50 kills; 404, as for no game, for a co-op game the reader may not see ([Co-op games](#co-op-games)) |
-| `GET /v1/games/{id}/frames?from_tick=&to_tick=&format=` | recorded frames, for replay: `format=json` (the default) a page of JSON frames; `format=packed` an `application/x-h2-frames` container of packed keyframes (docs/live/live-telemetry.md, "Packed frames"), the next cursor in `x-next` and the head position in `x-position` |
+| `GET /v1/games/{id}/chunks` | the game's [frame chunk](#frame-chunks) index: `{game_id, chunk_ticks, ended, items}`, `items` the `FrameChunk` data oldest first; empty for a game recorded before chunks |
+| `GET /v1/games/{id}/chunks/{tick}` | one chunk by its first tick, `application/x-h2-chunk`; checked against its index entry's hash. Anonymous reads are `public, max-age=31536000, immutable` (it is never rewritten) |
+| `GET /v1/games/{id}/frames?from_tick=&to_tick=` | a game recorded before frame chunks: its `GameFrame`s as an `application/x-h2-frames` container of packed keyframes (docs/live/live-telemetry.md, "Packed frames"), the next cursor in `x-next` and the head position in `x-position`. The JSON read (`format=json`) is gone: `400` |
 | `GET /v1/maps/{map}/outline` | top-down map outline (see below), 404 until a console has uploaded it |
 | `GET /v1/snapshot` | what a page needs on load, in one read at one log position: `{position, accounts, presence, live, ended, details, tail}`. `accounts` is `/v1/accounts?limit=1000`, `presence` is `/v1/presence`, `live` and `ended` are `/v1/games?state=…&limit=100`, `details` is `/v1/games/{id}` for every live game and the 40 newest ended ones, and `tail` is the last 300 log events up to `position` without `GameFrame` (as on the stream). Each part has the reader's visibility applied, as at its own endpoint ([Co-op games](#co-op-games)) |
 | `GET /v1/events?from=&type=&stream=&limit=` | raw log, oldest first, at most 200 a page; without the events of co-op games and sessions the reader may not see ([Co-op games](#co-op-games), "The log"): a page can be short or empty with a `next`; without network addresses for anyone but the operator ([Network addresses](#network-addresses)); invitations, friend events, content and player reports and bans only to whom they concern ([Private events](#private-events)) |
@@ -847,7 +894,7 @@ server; without one, only public games show. The same rule holds for a
 Live co-op campaign game's telemetry (`kind: "campaign"`, `online: true`):
 when it starts, the server links it to the open `coop` session its host
 (or, failing that, a player) is in and records that session's host and
-visibility, and `GET /v1/games`, `GET /v1/games/{id}`, its `/frames` and
+visibility, and `GET /v1/games`, `GET /v1/games/{id}`, its `/frames`, `/chunks` and
 an account's `recent_games` leave it out for readers who may not see it
 (those who were in it are its players). A campaign game with no such
 session stays public. While the game runs it follows its session: when the
@@ -1256,13 +1303,13 @@ JSON text messages.
 `{ "kind": "frame", "frame": {...} }` and
 `{ "kind": "events", "game_id": "...", "events": [{type, data}] }`. Frames
 may also come as binary messages: containers of packed frame records, one
-stream per socket. The server fans frames out to readers, records one per
-second per game as a `GameFrame`, and appends events.
+stream per socket. The server fans frames out to readers, records them in
+[frame chunks](#frame-chunks), and appends events.
 
-A `GameFrame` recorded now holds `{tick, source, packed}`: `packed` is the
-frame as one packed keyframe, base64url without padding, so the event's
-signature covers the packed bytes. Older recordings hold the JSON frame
-plus `source`; both read the same through `/frames`.
+A `GameFrame` recorded before frame chunks holds `{tick, source, packed}`:
+`packed` is the frame as one packed keyframe, base64url without padding, so
+the event's signature covers the packed bytes. The oldest hold the JSON
+frame plus `source`; both read the same through `/frames`.
 
 ## Map outline
 
@@ -1379,9 +1426,10 @@ Settled after the first client was built against this page.
    `{ "player": index }` otherwise, or null for a draw or quit.
 7. **`GameEnded.players`** is the final scoreboard: `[{index, score, kills,
    deaths, assists}]`.
-8. **Frames** are `GET /v1/games/{id}/frames?from_tick=&to_tick=&cursor=`
-   returning a list (item 3) of frames, at most 600 per page, oldest first.
-   `GameFrame.data` is the frame plus `source` (the ingesting author id).
+8. **Frames** are [frame chunks](#frame-chunks) (`GET
+   /v1/games/{id}/chunks`). Games recorded before them are read with `GET
+   /v1/games/{id}/frames?from_tick=&to_tick=&cursor=`, packed, at most 600
+   per page, oldest first.
 9. **`PlayerKilled`** carries `pos`, the victim's position.
 10. **Who writes a game** (2026-11-18). The server trusts the host's
     record. Only the host ends the game (`GameEnded`; 403 from anyone

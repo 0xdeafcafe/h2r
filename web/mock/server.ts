@@ -319,6 +319,11 @@ async function handle(req: Request, server: Bun.Server<WsData>): Promise<Respons
     world.append(`game-${m[1]}`, b, null);
     return json({ ok: true, position: world.log.length });
   }
+  if ((m = path.match(/^\/v1\/games\/([^/]+)\/chunks$/))) {
+    // The mock keeps JSON frames: no chunks, so the viewer reads /frames.
+    if (!world.games.get(m[1]!)) return err(404, "not_found", "no such game");
+    return json({ game_id: m[1], chunk_ticks: 300, ended: false, items: [] });
+  }
   if ((m = path.match(/^\/v1\/games\/([^/]+)\/frames$/))) {
     const g = world.games.get(m[1]!);
     if (!g) return err(404, "not_found", "no such game");

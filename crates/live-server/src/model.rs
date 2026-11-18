@@ -468,6 +468,11 @@ impl Model {
                     g.last_tick = Some(tick);
                 }
             }
+            live_proto::chunk::FRAME_CHUNK => {
+                if let Some(tick) = b.data.get("to_tick").and_then(|t| t.as_u64()) {
+                    g.last_tick = Some(g.last_tick.map_or(tick, |t| t.max(tick)));
+                }
+            }
             game::GAME_ENDED => {
                 let Some(d) = data::<GameEnded>(e) else {
                     return;

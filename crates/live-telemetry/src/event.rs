@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use live_proto::game::{Frame, ObjectKind, PlayerScore, TeamScore, Winner};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -288,6 +286,89 @@ impl GameInfo {
     }
 }
 
+/// Shots by weapon object datum, in datum order (as a `BTreeMap` iterates):
+/// a sorted list, so clearing it keeps its room and the game thread's
+/// weapon-fire hook does not allocate once it has grown.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Shots(Vec<(u32, u32)>);
+
+impl Shots {
+    /// Room the first shot reserves: more weapons than fire in one tick.
+    const ROOM: usize = 64;
+
+    pub fn get(&self, weapon: &u32) -> Option<&u32> {
+        self.find(*weapon).ok().map(|i| &self.0[i].1)
+    }
+
+    pub fn contains_key(&self, weapon: &u32) -> bool {
+        self.find(*weapon).is_ok()
+    }
+
+    /// Adds `n` shots of `weapon` (saturating).
+    pub fn add(&mut self, weapon: u32, n: u32) {
+        match self.find(weapon) {
+            Ok(i) => self.0[i].1 = self.0[i].1.saturating_add(n),
+            Err(i) => {
+                if self.0.capacity() == 0 {
+                    self.0.reserve(Self::ROOM);
+                }
+                self.0.insert(i, (weapon, n));
+            }
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Empties it, keeping its room.
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&u32, &u32)> {
+        self.0.iter().map(|(w, n)| (w, n))
+    }
+
+    fn find(&self, weapon: u32) -> Result<usize, usize> {
+        self.0.binary_search_by_key(&weapon, |(w, _)| *w)
+    }
+}
+
+impl<'a> IntoIterator for &'a Shots {
+    type Item = (&'a u32, &'a u32);
+    type IntoIter = std::iter::Map<
+        std::slice::Iter<'a, (u32, u32)>,
+        fn(&'a (u32, u32)) -> (&'a u32, &'a u32),
+    >;
+
+    fn into_iter(self) -> Self::IntoIter {
+        let pair: fn(&'a (u32, u32)) -> (&'a u32, &'a u32) = |(w, n)| (w, n);
+        self.0.iter().map(pair)
+    }
+}
+
+/// Later counts of the same weapon add up.
+impl FromIterator<(u32, u32)> for Shots {
+    fn from_iter<I: IntoIterator<Item = (u32, u32)>>(iter: I) -> Self {
+        let mut shots = Shots::default();
+        for (weapon, n) in iter {
+            shots.add(weapon, n);
+        }
+        shots
+    }
+}
+
+impl<const N: usize> From<[(u32, u32); N]> for Shots {
+    fn from(shots: [(u32, u32); N]) -> Self {
+        shots.into_iter().collect()
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Snapshot {
     pub tick: u64,
@@ -297,7 +378,7 @@ pub struct Snapshot {
     pub objects: Vec<Option<ObjectState>>,
     /// Shots fired since the previous snapshot, by weapon object datum
     /// (from the weapon-fire hook; empty when it is not installed).
-    pub shots: BTreeMap<u32, u32>,
+    pub shots: Shots,
     /// AI-controlled bipeds; read on frame ticks only, empty otherwise.
     pub actors: Vec<ActorState>,
     /// Every vehicle; frame ticks only.

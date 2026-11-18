@@ -42,7 +42,11 @@ use object_store::{
 /// The key prefixes that hold the server's blobs, which `h2 live store copy`
 /// moves. Nothing else in the data directory (the key, the database) is a
 /// blob.
-pub const PREFIXES: &[&str] = &["content/", "storage/", "art/"];
+pub const PREFIXES: &[&str] = &["content/", "storage/", "art/", FRAMES_PREFIX];
+
+/// Recorded games' frame chunks: `frames/<game id>/<first tick>`
+/// (crate::games::chunk_key).
+pub const FRAMES_PREFIX: &str = "frames/";
 
 /// Environment variables for an `s3://` store. The `_PUBLIC_` forms
 /// configure the public one, falling back to these.

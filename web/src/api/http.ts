@@ -4,6 +4,7 @@ import type { AccountKeyEntry, Frame, GameDetail, GameSummary, MapOutline, WireE
 import type { ServerTarget } from "./server";
 import { formatSkullsParam } from "../lib/skulls";
 import { decodeKeyframes } from "./pack";
+import { CHUNK_TYPE, chunkFrames, chunkIndex, chunksIn, type ChunkIndex, type ChunkMeta } from "./chunk";
 
 export class ApiError extends Error {
   constructor(readonly status: number, readonly code: string, message: string) {
@@ -120,6 +121,28 @@ export function api(t: ServerTarget, reader: Reader = async () => null) {
     }
     return { items: out, next: cursor, position };
   }
+  /** A read with the reader's token, if any. */
+  const reading = async (url: string, init: RequestInit): Promise<Response> => {
+    const token = await who();
+    return token
+      ? fetch(withAuthMark(url), { ...init, headers: { ...(init.headers as Record<string, string>), authorization: `Bearer ${token}` } })
+      : fetch(url, init);
+  };
+  async function chunks(id: string, s?: AbortSignal): Promise<ChunkIndex | null> {
+    try {
+      return chunkIndex(await getJson<unknown>(u("/games/" + encodeURIComponent(id) + "/chunks"), s, await who()));
+    } catch (e) {
+      // A server before chunks answers 404 for the route, as a missing
+      // game does: read both as no chunks and let `/frames` say which.
+      if (e instanceof ApiError && e.status === 404) return null;
+      throw e;
+    }
+  }
+  async function chunk(id: string, c: ChunkMeta, s?: AbortSignal): Promise<Uint8Array> {
+    const r = await reading(u("/games/" + encodeURIComponent(id) + "/chunks/" + c.from_tick), { signal: s, headers: { accept: CHUNK_TYPE } });
+    if (!r.ok) throw new ApiError(r.status, "http_" + r.status, `frame chunk ${c.from_tick}: ${r.statusText}`);
+    return new Uint8Array(await r.arrayBuffer());
+  }
   return {
     health: (s?: AbortSignal) => getJson<{ ok: boolean; position: number }>(t.base + "/healthz", s),
     accounts: (s?: AbortSignal) => all<AccountSummary>("/accounts", { limit: 1000 }, s),
@@ -136,18 +159,27 @@ export function api(t: ServerTarget, reader: Reader = async () => null) {
      *  who may not see it); `bearer` overrides the reader's token. */
     game: async (id: string, s?: AbortSignal, bearer?: string | null) =>
       getJson<GameDetail>(u("/games/" + encodeURIComponent(id)), s, bearer === undefined ? await who() : bearer),
-    /** All recorded frames in a tick range, following cursors (600 per page). */
-    frames: (id: string, from_tick?: number, to_tick?: number, s?: AbortSignal) =>
-      packedFrames(
+    /** All recorded frames in a tick range: from the game's frame chunks
+     *  (docs/live/live-api.md, "Frame chunks"), or, for a game recorded
+     *  before them (its index is empty, or the server has none), its
+     *  recorded keyframes from `/frames`, following cursors. */
+    frames: async (id: string, from_tick?: number, to_tick?: number, s?: AbortSignal): Promise<Frame[]> => {
+      const index = await chunks(id, s);
+      if (index && index.items.length) {
+        const frames = await chunkFrames(chunksIn(index.items, from_tick, to_tick), (c) => chunk(id, c, s));
+        return frames.filter((f) => (from_tick === undefined || f.tick >= from_tick) && (to_tick === undefined || f.tick <= to_tick));
+      }
+      return packedFrames(
         (cursor) => u("/games/" + encodeURIComponent(id) + "/frames", { from_tick, to_tick, cursor, format: "packed" }),
-        async (url, init) => {
-          const token = await who();
-          return token
-            ? fetch(withAuthMark(url), { ...init, headers: { ...(init.headers as Record<string, string>), authorization: `Bearer ${token}` } })
-            : fetch(url, init);
-        },
+        reading,
         s,
-      ),
+      );
+    },
+    /** A game's frame chunk index, oldest first; null from a server
+     *  without chunks. */
+    chunks,
+    /** One chunk's bytes (decode with `decodeChunk`). */
+    chunk,
     outline: async (map: string, s?: AbortSignal): Promise<MapOutline | null> => {
       try {
         return await getJson<MapOutline>(u("/maps/" + encodeURIComponent(map) + "/outline"), s);

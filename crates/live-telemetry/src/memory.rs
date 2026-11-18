@@ -195,7 +195,22 @@ fn players_into(
     let statborg = engine + layout::ENGINE_STATBORG;
     let has_stats = guest.u32(statborg)? != 0;
     let mut units = [0; players::NAME_UNITS];
-    for (handle, player) in players.live(guest, 16).map_err(fault)? {
+    // `Datums::live`'s walk (salt non-zero below the high-water mark, at
+    // most 16 slots) without its list: this runs on the game thread every
+    // tick, which must not allocate.
+    let high_water = players
+        .array
+        .header_field(guest, engine::datum::layout::HIGH_WATER)
+        .map_err(fault)?
+        .clamp(0, 16);
+    for slot in 0..high_water {
+        let elem = players.array.element_addr(guest, slot).map_err(fault)?;
+        let salt = guest.u16(elem)?;
+        if salt == 0 {
+            continue;
+        }
+        let handle = DatumHandle::new(salt, slot as u32);
+        let player = players::Player::at(elem);
         if !player.listed(guest).map_err(fault)? {
             continue;
         }
