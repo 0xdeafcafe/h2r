@@ -79,6 +79,18 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
     let mopp = structure_mopp(&p.collision).unwrap();
     let done = p.build(&mut base_map, &mopp).unwrap();
     assert_eq!(done.manifest.variants[0].origin.sandbox, "h1");
+    // The player's Halo 1 HUD centres the motion sensor where its unhi's
+    // placement (+0x35c) does, recorded for boot::hud_swap.
+    let cyborg_hud = h1
+        .tags()
+        .iter()
+        .find(|t| t.group == h1map::Group::new(b"unhi") && t.name.contains("cyborg"))
+        .expect("the cyborg's unhi");
+    let centre = h1objects::h1hud::sensor_centre(h1.tag_data(cyborg_hud).unwrap()).unwrap();
+    eprintln!("motion sensor centre {centre:?} (Halo 2's own (41, -42))");
+    assert_eq!(done.manifest.variants[0].hud_sensor, Some(centre));
+    let text = done.manifest.to_toml();
+    assert!(text.contains(&format!("hud_sensor = [{}, {}]", centre[0], centre[1])), "{text}");
 
     let built: std::sync::Arc<[u8]> = done.bytes.clone().into();
     let mut out = Map::from_reader(Cursor::new(done.bytes)).unwrap();
@@ -1183,4 +1195,32 @@ fn every_halo1_weapon_is_held_by_the_halo1_player_graph() {
     });
     assert!(checked > 0);
     assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// Halo 2's motion sensor blips centre on its own table (`.data`
+/// `0x47ff40`, `boot::hud_swap::SENSOR_CENTRES`): (41, -42) fullscreen,
+/// (31, -31) half and quarter screen, the centre of the retail 83 x 83
+/// `motion_sensor` background (masterchief widget 5, offset (-1, -84)).
+#[test]
+#[ignore = "reads the Halo 2 disc ($H2_DISC)"]
+fn halo2s_motion_sensor_table() {
+    let path = std::env::var("H2_DISC").expect("set H2_DISC");
+    let mut iso = xiso::Xiso::open(BufReader::new(File::open(path).unwrap())).unwrap();
+    let e = iso
+        .entries()
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            e.path
+                .rsplit(['/', '\\'])
+                .next()
+                .is_some_and(|n| n.eq_ignore_ascii_case("default.xbe"))
+        })
+        .unwrap();
+    let bytes = iso.read(&e).unwrap();
+    let x = xbe::Xbe::parse(&bytes).unwrap();
+    assert_eq!(x.section_containing(0x0047_ff40).unwrap().name, ".data");
+    let t = x.bytes_at(0x0047_ff40, 16).unwrap();
+    let words: Vec<i16> = t.chunks(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect();
+    assert_eq!(words, [41, -42, 31, -31, 31, -31, 0, 0]);
 }

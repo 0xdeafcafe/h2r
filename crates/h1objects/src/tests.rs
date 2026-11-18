@@ -155,6 +155,7 @@ fn tree_placeholders_become_datums() {
         ],
         reports: Vec::new(),
         ..Tree::default()
+        ..Default::default()
     };
     let check = |set: TagSet, ids: &[TagId]| {
         let (bytes, _) = set.build().unwrap();

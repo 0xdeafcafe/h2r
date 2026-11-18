@@ -323,6 +323,9 @@ pub struct Tree {
     /// The HUD each owner (the player biped) can switch between at game
     /// start (`boot::hud`; docs/game/hud.md).
     pub hud_swaps: Vec<HudSwap>,
+    /// Where the player's Halo 1 HUD centres the motion sensor's blips
+    /// ([`crate::h1hud::sensor_centre`]), for `boot::hud_swap`.
+    pub hud_sensor: Option<[i16; 2]>,
 }
 
 /// One owner's two HUDs: Halo 1's ([`crate::h1hud`]), which the owner
@@ -2181,6 +2184,10 @@ impl<'a> Converter<'a> {
                     ));
                     match self.unit_hud(u) {
                         Ok((h1, n)) => {
+                            match self.sensor_centre(u) {
+                                Ok(c) => self.tree.hud_sensor = Some(c),
+                                Err(e) => rep.no_home.push(format!("HUD: motion sensor centre: {e}")),
+                            }
                             rep.no_home.push(format!(
                                 "HUD: Halo 1's ({n} widgets; docs/game/hud.md), Halo 2's at the switch"
                             ));
@@ -2547,6 +2554,20 @@ impl Converter<'_> {
     /// Halo 1's unit HUD of `u` (its `unhi`) as an `nhdt` written from
     /// scratch ([`crate::h1hud`]), built once per `unhi`. Returns the tag
     /// and its widget count.
+    /// Where the unit's Halo 1 HUD (`unhi`) centres the motion sensor
+    /// ([`crate::h1hud::sensor_centre`]).
+    pub fn sensor_centre(&self, u: &crate::h1::Unit) -> Result<[i16; 2]> {
+        let unhi = u
+            .references
+            .iter()
+            .filter(|r| r.group == h1map::Group::new(b"unhi"))
+            .find_map(|r| r.tag)
+            .ok_or_else(|| Error::Invalid("no unhi".into()))?;
+        let tag = self.h1.tag(unhi)?;
+        let b = crate::h1::tag_bytes(self.h1, tag, b"unhi", crate::h1hud::unhi::SIZE)?;
+        crate::h1hud::sensor_centre(b)
+    }
+
     pub fn unit_hud(&mut self, u: &crate::h1::Unit) -> Result<(TagId, usize)> {
         let unhi = u
             .references

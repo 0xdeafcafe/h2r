@@ -113,9 +113,33 @@ pub mod unhi {
     pub const HEALTH_METER: usize = 0x1e4;
     pub const MOTION_BACKGROUND: usize = 0x26c;
     pub const MOTION_FOREGROUND: usize = 0x2d4;
+    /// The motion sensor's placement: an offset (two `i16`) and scale (two
+    /// `f32`), as an element's, placed by `0x000e07a0` from the sensor's
+    /// stand-in anchor (bottom left, `0x000dd5ab`); the sweep and blips are
+    /// drawn around that point (E `0x000dd658`..`0x000dd691`, `0x000da1e0`
+    /// reads the point).
+    pub const MOTION_SENSOR: usize = 0x35c;
     /// The root's size (V: every `unhi` is at least this long, the
     /// cyborg's with its blocks after it).
     pub const SIZE: usize = 0x56c;
+}
+
+/// Where Halo 1 centres the motion sensor's sweep and blips (the
+/// placement [`unhi::MOTION_SENSOR`] from the bottom-left corner), as a
+/// Halo 2 offset from the same corner: what Halo 2's blip centre table
+/// (`0x47ff40`, anchor 2) holds, (41, -42) for its own sensor in
+/// fullscreen. A scaled placement is refused, as for the elements.
+pub fn sensor_centre(b: &[u8]) -> Result<[i16; 2]> {
+    let at = unhi::MOTION_SENSOR;
+    if b.len() < at + 12 {
+        return Err(Error::Truncated("unhi"));
+    }
+    let scale = [f32_at(b, at + 4), f32_at(b, at + 8)];
+    if !unscaled(scale) {
+        return Err(Error::Invalid(format!("motion sensor scaled {scale:?}")));
+    }
+    let (x, y) = to_halo2_offset(Anchor::BottomLeft, (i16_at(b, at), i16_at(b, at + 2)));
+    Ok([x, y])
 }
 
 /// What a Halo 1 element shows.
@@ -1245,6 +1269,20 @@ mod tests {
         assert!(kinds.contains(&(0x20, FixupKind::TagRef(TagId(7)))));
         assert!(kinds.contains(&(0x28, FixupKind::StringId(TEXT_INPUT1.into()))));
         assert!(kinds.contains(&(0x00, FixupKind::StringId("h1_grenade_count_1".into()))));
+    }
+
+    #[test]
+    fn the_motion_sensor_centre_is_halo1s_placement_up_from_the_bottom_left() {
+        let mut b = vec![0u8; unhi::SIZE];
+        let at = unhi::MOTION_SENSOR;
+        b[at..at + 2].copy_from_slice(&45i16.to_le_bytes());
+        b[at + 2..at + 4].copy_from_slice(&43i16.to_le_bytes());
+        b[at + 4..at + 8].copy_from_slice(&1.0f32.to_le_bytes());
+        b[at + 8..at + 12].copy_from_slice(&1.0f32.to_le_bytes());
+        assert_eq!(sensor_centre(&b).unwrap(), [45, -43]);
+        b[at + 4..at + 8].copy_from_slice(&2.0f32.to_le_bytes());
+        assert!(sensor_centre(&b).is_err());
+        assert!(sensor_centre(&b[..at]).is_err());
     }
 
     #[test]

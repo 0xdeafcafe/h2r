@@ -243,22 +243,39 @@ constant reaches the pixel shader's last-stage `c0`; which `colors` entry
 or animation binding feeds it is not yet established
 (`docs/formats/shader-instances.md`: E `0x0001717b`).
 
+## The motion sensor's centre
+
+Halo 2's `nhdt` does not place the sensor's blips: the retail
+`ui\hud\masterchief` sensor is only bitmap widgets 5 and 7
+(`motion_sensor`, anchor 2, offset (-1, -84), no special type). The game
+draws the blips (`0x1a2823`) around a point of its own (E
+`0x00139614`..`0x00139685`): anchor 2 (bottom left) through `0x1396c7`,
+plus an entry of the table at `0x47ff40` (`.data`) for the screen mode,
+two `i16` each: (41, -42) fullscreen, (31, -31) half and quarter screen
+(V: the disc's XBE), the centre of the 83 x 83 background.
+
+Halo 1 draws its sweep and blips (`0x000da1e0`) around the point its
+`unhi` motion sensor placement `+0x35c` gives (an offset and scale, placed
+by `0x000e07a0` from the sensor's stand-in anchor, bottom left;
+E `0x000dd658`..`0x000dd691`). `h1hud::sensor_centre` turns it into the
+table's terms (y up from the bottom); the converter records it beside the
+HUD pairs, `hud_sensor = [x, y]` in a package's `[[variant]]`, `sensor`
+in a campaign level's `.hud.toml`.
+
+`boot::hud_swap` writes it into all three entries of the table at each
+game activation while Halo 1's HUD is shown (the Halo 1 widgets use one
+offset in every screen mode), and at every other activation, any map,
+puts back what the table held before its first write (`hud_swap::Sensor`).
+
 ## Not converted yet
 
 - **Weapon numbers** (`hud#`, the ammunition counts) and **HUD globals**
   (`hudg`).
-- **Motion sensor sweep and blips**: Halo 1 draws them (E `0x000da1e0`)
-  around the point its `unhi` motion sensor placement `+0x35c` gives
-  through the element placement `0x000e07a0` (E `0x000dd658`..`0x000dd691`).
-  Halo 2's `nhdt` does not place them: the retail `ui\hud\masterchief`
-  sensor is only bitmap widgets 5 and 7 (`motion_sensor`, anchor 2,
-  offset (-1, -84), no special type). Its blips are drawn by `0x1a2823`
-  around a point from the code (E `0x00139614`..`0x00139685`: anchor 2
-  through `0x1396c7`, plus a table at `0x47ff40` by screen mode, two
-  `i16` each: (41, -42) fullscreen, (31, -31) half and quarter), the
-  centre of the 83 x 83 background. Carrying Halo 1's placement over
-  means moving that point while the Halo 1 HUD is shown (the HUD swap's
-  runtime side), not writing a field; not done yet.
+- **Motion sensor sweep**: Halo 1 draws a sweep around its sensor
+  centre; Halo 2's sensor draws its own blips only. The sweep is not
+  carried.
+- **Motion sensor range**: the blips keep Halo 2's radius (its 83 x 83
+  background); Halo 1's centre is carried, its sensor size is not.
 
 ## Tests
 
@@ -280,7 +297,11 @@ or animation binding feeds it is not yet established
   sensor background's copy, decoded back from the built map, has a mean
   alpha inside its circle within 1 of `0x28/255` of Halo 1's; the
   grenade counts are two number texts on inputs 20 and 21 reading
-  `hud_input1` through `text_flash`.
+  `hud_input1` through `text_flash`; the manifest's `hud_sensor` is the
+  cyborg `unhi`'s sensor centre. `halo2s_motion_sensor_table` checks the
+  XBE's table.
+- `cargo test -p boot --lib hud`: also the sensor table both ways, and
+  Halo 2's back on a map without a Halo 1 centre.
 - `H1_ISO=... cargo test -p h1objects --test hud_disc -- --ignored
   weapon_huds_read --nocapture`: prints every `wphi` chain of `$H1_MAPS`
   as read.

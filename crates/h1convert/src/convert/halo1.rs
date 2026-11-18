@@ -73,6 +73,9 @@ pub struct ObjectTags {
     /// HUD pairs `boot::hud_swap` switches between (docs/game/hud.md): the
     /// owner, its Halo 1 HUD and its Halo 2 HUD.
     pub hud_swaps: Vec<[HudTag; 3]>,
+    /// Where the player's Halo 1 HUD centres the motion sensor's blips
+    /// (`h1objects::h1hud::sensor_centre`), for `boot::hud_swap`.
+    pub hud_sensor: Option<[i16; 2]>,
 }
 
 /// A tag of a HUD pair: one [`ObjectTags::install`] adds (its index among
@@ -406,6 +409,7 @@ fn with_collections(
         after,
         mut notes,
         hud_swaps,
+        hud_sensor,
     } = objects;
     for c in &collections {
         notes.push(format!(
@@ -419,6 +423,7 @@ fn with_collections(
     ObjectTags {
         // The collections come after the objects: the pairs' indices hold.
         hud_swaps,
+        hud_sensor,
         count: count + collections.len(),
         install: Box::new(move |set| {
             let mut ids = install(set)?;

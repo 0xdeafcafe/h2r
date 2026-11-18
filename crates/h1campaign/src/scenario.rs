@@ -353,6 +353,9 @@ pub struct ScenarioReport {
     /// HUD pairs `boot::hud` switches between (owner, Halo 1 HUD, Halo 2
     /// HUD; docs/game/hud.md), as this set's datums.
     pub hud_swaps: Vec<[TagId; 3]>,
+    /// Where the player's Halo 1 HUD centres the motion sensor's blips
+    /// (`h1objects::h1hud::sensor_centre`), for `boot::hud_swap`.
+    pub hud_sensor: Option<[i16; 2]>,
     /// `None` when the scenario was rebuilt from the base's relocated tree
     /// (the base scenario's old bytes freed); else why it was written over
     /// them.
@@ -1360,6 +1363,7 @@ fn place_objects(
     tree.install_audio(set, true);
     rep.object_sound_bytes = set.raw.iter().map(|r| r.bytes.len() as u64).sum::<u64>() - raw_before;
     dropped.extend(tree.audio_notes.drain(..).map(|n| format!("object sounds: {n}")));
+    rep.hud_sensor = tree.hud_sensor;
     let ids = tree
         .install(set)
         .map_err(|e| invalid(format!("objects: {e}")))?;
