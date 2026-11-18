@@ -8,6 +8,7 @@
 //!                         line leave `jws` out)
 //! <dir>/blobs/<sha256>    title-file bytes, content-addressed
 //! <dir>/checkpoints.json  {"name": position}
+//! <dir>/usage.json        [{day, account, metric, n}], the usage counters
 //! <dir>/lock              held exclusively while the store is open
 //! ```
 //!
@@ -27,7 +28,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::store::{
-    BatchDecoder, EventStore, MemoryStore, NewEvent, Query, RecordedEvent, StoreError, Wake,
+    BatchDecoder, EventStore, MemoryStore, NewEvent, Query, RecordedEvent, StoreError, UsageRow,
+    Wake,
 };
 
 #[derive(Serialize, Deserialize)]
@@ -149,6 +151,14 @@ impl FileStore {
                 mem.save_checkpoint(&name, position).await?;
             }
         }
+        if let Ok(raw) = fs::read(dir.join("usage.json")) {
+            let rows: Vec<UsageRow> =
+                serde_json::from_slice(&raw).map_err(|e| StoreError::Corrupt {
+                    position: 0,
+                    reason: format!("usage.json: {e}"),
+                })?;
+            mem.add_usage(&rows, "").await?;
+        }
         Ok(FileStore {
             dir: dir.to_path_buf(),
             mem,
@@ -269,6 +279,23 @@ impl EventStore for FileStore {
         self.mem.wake().await
     }
 
+    /// Written whole, through a temporary file and a rename, as
+    /// checkpoints.json is: the server flushes at most once a minute.
+    async fn add_usage(&self, rows: &[UsageRow], keep_from: &str) -> Result<(), StoreError> {
+        let _log = self.log.lock().await;
+        self.mem.add_usage(rows, keep_from).await?;
+        let all = self.mem.usage().await?;
+        replace(
+            &self.dir.join("usage.json"),
+            &serde_json::to_vec(&all).expect("serializes"),
+        )
+        .map_err(io)
+    }
+
+    async fn usage(&self) -> Result<Vec<UsageRow>, StoreError> {
+        self.mem.usage().await
+    }
+
     async fn blob_names(&self) -> Result<Vec<String>, StoreError> {
         let mut names = Vec::new();
         for entry in fs::read_dir(self.dir.join("blobs")).map_err(io)? {
@@ -307,6 +334,36 @@ mod tests {
     async fn file_store_conforms() {
         let d = dir("conform");
         conformance::run(&FileStore::open(&d).await.unwrap(), "file").await;
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[tokio::test]
+    async fn usage_survives_a_reopen() {
+        let d = dir("usage");
+        let row = |day: &str, n| crate::store::UsageRow {
+            day: day.into(),
+            account: "a".into(),
+            metric: "up.frames".into(),
+            n,
+        };
+        {
+            let s = FileStore::open(&d).await.unwrap();
+            s.add_usage(&[row("2026-11-17", 3), row("2026-11-18", 4)], "2026-01-01")
+                .await
+                .unwrap();
+        }
+        let s = FileStore::open(&d).await.unwrap();
+        assert_eq!(
+            s.usage().await.unwrap(),
+            [row("2026-11-17", 3), row("2026-11-18", 4)]
+        );
+        s.add_usage(&[row("2026-11-18", 1)], "2026-11-18")
+            .await
+            .unwrap();
+        drop(s);
+        let s = FileStore::open(&d).await.unwrap();
+        assert_eq!(s.usage().await.unwrap(), [row("2026-11-18", 5)]);
+        drop(s);
         fs::remove_dir_all(&d).unwrap();
     }
 

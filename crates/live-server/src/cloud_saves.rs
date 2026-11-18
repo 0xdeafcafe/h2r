@@ -497,6 +497,14 @@ impl Live {
             } else {
                 StatusCode::OK
             };
+            use crate::usage::metric;
+            self.meter(Some(xuid), metric::UP_SAVES, size).await;
+            self.meter_signed(
+                Some(xuid),
+                metric::STORED_SAVES,
+                size as i64 - replaced as i64,
+            )
+            .await;
             Ok((status, item))
         }
         .await;
@@ -552,6 +560,13 @@ impl Live {
         {
             let _ = store.delete(&blob_key(xuid, &h)).await;
         }
+        drop(accounts);
+        self.meter_signed(
+            Some(xuid),
+            crate::usage::metric::STORED_SAVES,
+            -(live.size as i64),
+        )
+        .await;
         Ok(tomb)
     }
 }

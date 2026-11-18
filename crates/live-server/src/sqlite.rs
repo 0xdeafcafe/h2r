@@ -31,7 +31,7 @@ use tokio::sync::watch;
 
 use crate::store::{
     BatchDecoder, BatchRows, EventStore, ImportCheck, NewEvent, Query, RecordedEvent, StoreError,
-    Wake,
+    UsageRow, Wake,
 };
 
 use crate::sql::{self, SCHEMA, json_list};
@@ -413,6 +413,44 @@ impl EventStore for SqliteStore {
             .fetch_all(&self.pool)
             .await?;
         Ok(rows.into_iter().map(|(n, p)| (n, p as u64)).collect())
+    }
+
+    async fn add_usage(&self, rows: &[UsageRow], keep_from: &str) -> Result<(), StoreError> {
+        let rows = rows.to_vec();
+        let keep_from = keep_from.to_string();
+        self.write(move |tx| {
+            Box::pin(async move {
+                for r in &rows {
+                    sqlx::query(sql::ADD_USAGE)
+                        .bind(&r.day)
+                        .bind(&r.account)
+                        .bind(&r.metric)
+                        .bind(r.n)
+                        .execute(&mut *tx)
+                        .await?;
+                }
+                sqlx::query(sql::PRUNE_USAGE)
+                    .bind(&keep_from)
+                    .execute(&mut *tx)
+                    .await?;
+                Ok(())
+            })
+        })
+        .await
+    }
+
+    async fn usage(&self) -> Result<Vec<UsageRow>, StoreError> {
+        let rows: Vec<(String, String, String, i64)> =
+            sqlx::query_as(sql::USAGE).fetch_all(&self.pool).await?;
+        Ok(rows
+            .into_iter()
+            .map(|(day, account, metric, n)| UsageRow {
+                day,
+                account,
+                metric,
+                n,
+            })
+            .collect())
     }
 }
 

@@ -245,6 +245,8 @@ replays show the firing of the whole second; the same goes for `actions` and
 | `GET /v1/server` | the server's public facts: `{id, software, url, invite_only, private, federation, counts: {accounts, online, live_games, sessions}, position}` ([live-admin.md](live-admin.md) §5) |
 | `GET /v1/stats/summary?window=today\|7d\|30d\|all` | server-wide totals, per-player rows, maps, weapons, playlists, skulls and hourly activity over a window ([Stats summary](#stats-summary), below) |
 | `GET /v1/admin/status` | admins only (`admin.read` token): the facts plus uptime, tunnel, game art, admins, log, invites; the data directory only to this machine (live-admin.md §5) |
+| `GET /v1/admin/usage?days=` | admins only (`admin.read`): the server's usage per UTC day, events by type, stored bytes ([Usage](#usage), below) |
+| `GET /v1/admin/usage/accounts?days=&sort=&limit=` | admins only (`admin.read`): the accounts using the most ([Usage](#usage)) |
 | `GET /v1/invites` | admins only (`admin.read` token): the invites admins made, newest first, open ones with their code (live-admin.md §5) |
 
 ### Caching
@@ -296,6 +298,94 @@ capped at 12 hours a game. `players` lists accounts only (a player with an
 `activity` lists hours with any game starts or kills, within the window
 and at most 30 days back. There are no headshots or medals: the events do
 not carry them (the web app derives medals itself).
+
+## Usage
+
+The Live admin's usage screens (`/dash/admin/usage`,
+[web-boundary.md](web-boundary.md) §5) read two endpoints, both for
+admins only: an `admin.read` token from an admin account, or the
+operator's (401 without one, 403 for anyone else). The numbers live in
+`crates/live-server/src/usage.rs`; a read walks only the days it asks
+for, in memory, and never the log.
+
+**Where the counts come from.** Two books, merged when read:
+
+- *From the log*, folded as events are applied and replayed at startup
+  like the read model: `events` (every event, by its author; the
+  server's own under no account), `up.events` (the bytes of each event an
+  account signed, its JWS as received; a batch once), `messages.*`
+  (`friend_requests`: `FriendRequested`; `invites`: `GameInviteSent`, for
+  its sender), `games` (once per game, for the host and the players it
+  began with or who joined), `sessions_hosted` (`SessionCreated`),
+  `sign_ins` (`SignedIn`), `reports.sent` and `reports.received`
+  (`PlayerReported`, for its `by` and its `target`), `stored.events` and
+  `stored.content` (`ContentStored`, for its uploader). Other events the
+  server signs for itself (`GameFrame`, `RankChanged`, `ReportReviewed`,
+  `PresenceExpired`, ...) count as events by type and nothing more.
+- *Metered* at the request, for bytes that never reach the log, each the
+  accepted body's size as received: `up.frames` (live frames on
+  `/v1/ingest`, text and packed), `up.content` (content uploads, title
+  files, map outlines), `up.saves` (cloud save bodies), and
+  `stored.saves` (a running total: a write adds its size less what it
+  replaced, a delete takes its size off; saves written before counting
+  began are not in it). These are counters in the store (the `usage`
+  table; `usage.json` in a file store), added to in memory at once and
+  written at most once a minute by whichever write or sweep comes next.
+  Nothing runs on a timer, so a Durable Object still sleeps; a crash loses
+  at most that minute. `h2 live store copy` does not copy them yet: the
+  log's book rebuilds on the other side, the metered one starts again.
+
+Days are UTC, from an event's signed time (`at`) or the server's clock
+when metered, and are kept for 400 days; the write on a new day drops
+older ones. Stored totals have no day and are never dropped. An account
+is *active* on a day when anything above counts for it, other than what
+it stores or reports made about it. The co-op relay is not metered: in
+the Worker it is a Durable Object of its own, with no line to the hub's
+store. A later sink (Cloudflare Analytics Engine) could take the metered
+counts behind the same call, beside the in-process ones.
+
+### `GET /v1/admin/usage?days=30`
+
+`days` is 1 to 400 (default 30), the range ending today.
+
+```json
+{ "from": "2026-10-20", "to": "2026-11-18", "keep_days": 400,
+  "days": [ { "day": "2026-11-18",
+              "up": { "events": 1145, "frames": 133, "content": 0, "saves": 0 },
+              "events": 5, "messages": { "friend_requests": 1, "invites": 0 },
+              "games": 1, "sessions_hosted": 0, "sign_ins": 1, "reports": 0,
+              "active_accounts": 1 } ],
+  "totals": { "day": "", "up": { ... }, "events": 5, ...,
+              "active_accounts": 1 },
+  "accounts_active": 1,
+  "event_types": [ { "type": "GameStarted", "count": 1 } ],
+  "stored": { "events": 2290, "content": 0, "saves": 0 } }
+```
+
+`days` lists only days with something in them, oldest first (fill the
+rest with zeros). `totals` sums them (its `active_accounts` is a sum of
+days; `accounts_active` counts distinct accounts). `event_types` is
+largest first, counts only. `stored` is what is stored now, over every
+account.
+
+### `GET /v1/admin/usage/accounts?days=30&sort=uploaded&limit=50`
+
+Every account with anything in the range or anything stored, sorted
+largest first by `sort` (`uploaded`, `stored`, `events`, `messages`,
+`games`, `sessions_hosted`, `sign_ins`, `reports_sent`,
+`reports_received`, `active_days`; ties by xuid), at most `limit` (1 to
+500, default 50). `total` counts them all.
+
+```json
+{ "days": 30, "sort": "uploaded", "total": 1,
+  "items": [ { "xuid": "00097a94c4494c72", "gamertag": "Alpha",
+               "up": { "events": 1145, "frames": 133, "content": 0, "saves": 0 }, "uploaded": 1278,
+               "stored": { "events": 1145, "content": 0, "saves": 0 }, "stored_total": 1145,
+               "events": 2, "messages": { "friend_requests": 1, "invites": 0 }, "messages_total": 1,
+               "games": 1, "sessions_hosted": 0, "sign_ins": 1,
+               "reports_sent": 0, "reports_received": 0,
+               "active_days": 1, "last_active": "2026-11-18" } ] }
+```
 
 ## Write endpoints
 

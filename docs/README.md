@@ -157,6 +157,7 @@ goals, the two-stage plan, the crate table and milestones.
 - [live-security.md](live/live-security.md): identity, signing, tokens and federation (built except federation)
 - [live-cloud-saves.md](live/live-cloud-saves.md): cloud saves: profiles, variants, campaign saves and profile settings follow the account; the merge and conflict rules
 - [live-admin.md](live/live-admin.md): who may publish title files, and the web MOTD editor and playlist builder
+- [web-boundary.md](live/web-boundary.md): what goes on the dashboard and what on the stats site, and the dashboard's dense style for admin and ops screens
 - [live-hosting.md](live/live-hosting.md): hosting a server for friends (Cloudflare Tunnel, docker compose)
 - [live-boundary.md](live/live-boundary.md): static inventory of the retail XOnline/XNet entry points and the sign-in sequence
 - [live-motd.md](live/live-motd.md): how retail fetches and parses `message_of_the_day.dat` and `multiplayer_hopper.dat`

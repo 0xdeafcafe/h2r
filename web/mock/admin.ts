@@ -2,7 +2,9 @@
 // GET /v1/server, GET /v1/admin/status, and admin invites (GET/POST
 // /v1/invites, POST /v1/invites/{jti}/revoke). Invite codes are short:
 // generated ones 25 characters in five groups, or the admin's own (sent as
-// JSON {event, code}), matched ignoring case, spaces and dashes.
+// JSON {event, code}), matched ignoring case, spaces and dashes. The usage
+// reads (GET /v1/admin/usage, /v1/admin/usage/accounts) answer from the
+// deck's seeded sample, not the mock's own traffic.
 //
 // H2_MOCK_ADMIN=1 makes every account signed up in the browser an admin
 // (their account reads carry `admin: true`, so the dashboard and the stats
@@ -11,6 +13,8 @@
 
 import { HOST, type World } from "./world";
 import { parseJws } from "../src/state/verify";
+import { mockOverview, usageMock } from "../src/deck/mock";
+import { ACCOUNT_SORTS, type AccountUsage } from "../src/admin/usage";
 
 const MAX_DAYS = 30;
 
@@ -103,6 +107,11 @@ export class Admin {
         data_dir: "~/Library/Application Support/h2recomp/live/server",
       });
     }
+    if ((path === "/v1/admin/usage" || path === "/v1/admin/usage/accounts") && req.method === "GET") {
+      const c = this.caller(auth, "admin.read");
+      if (!c.ok) return c.reply;
+      return usageReply(path, u.searchParams);
+    }
     if (path === "/v1/invites" && req.method === "GET") {
       const c = this.caller(auth, "admin.read");
       if (!c.ok) return c.reply;
@@ -157,4 +166,22 @@ export class Admin {
     }
     return null;
   }
+}
+
+/** The usage endpoints (docs/live/live-api.md "Usage") on the deck's fixed
+ *  sample, ending today: plausible numbers to lay the screen out against,
+ *  not this mock's own traffic. */
+export function usageReply(path: string, q: URLSearchParams, today = new Date().toISOString().slice(0, 10)): Reply {
+  const days = q.has("days") ? Number(q.get("days")) : 30;
+  if (!Number.isInteger(days) || days < 1 || days > 400) return fail(400, "bad_request", "days is 1 to 400");
+  const sample = usageMock(today, 400);
+  if (path === "/v1/admin/usage") return ok(mockOverview(sample, days));
+  const sort = (q.get("sort") ?? "uploaded") as (typeof ACCOUNT_SORTS)[number];
+  if (!ACCOUNT_SORTS.includes(sort)) return fail(400, "bad_request", `sort is one of ${ACCOUNT_SORTS.join(", ")}`);
+  const limit = q.has("limit") ? Number(q.get("limit")) : 50;
+  if (!Number.isInteger(limit) || limit < 1 || limit > 500) return fail(400, "bad_request", "limit is 1 to 500");
+  const key = (a: AccountUsage): number =>
+    sort === "stored" ? a.stored_total : sort === "messages" ? a.messages_total : (a[sort] as number);
+  const items = [...sample.accounts].sort((a, b) => key(b) - key(a));
+  return ok({ days, sort, total: items.length, items: items.slice(0, limit) });
 }
