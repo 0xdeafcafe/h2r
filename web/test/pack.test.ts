@@ -10,7 +10,7 @@ const load = (name: string) => ({
 });
 
 describe("packed frames", () => {
-  for (const name of ["multiplayer", "campaign", "odd", "v1-multiplayer", "v2-multiplayer", "v3-multiplayer"]) {
+  for (const name of ["multiplayer", "campaign", "odd", "cinematic", "v1-multiplayer", "v2-multiplayer", "v3-multiplayer"]) {
     test(`decodes the Rust encoder's ${name} stream exactly`, () => {
       const { bin, json } = load(name);
       const d = new FrameDecoder();
@@ -49,6 +49,17 @@ describe("packed frames", () => {
     const mixed = new FrameDecoder();
     mixed.decode(records(load("multiplayer").bin)[0]!);
     expect(() => mixed.decode(records(load("v2-multiplayer").bin)[1]!)).toThrow(PackError);
+  });
+
+  test("cinematic frames are version 5 keyframes in and out; the rest stay version 4", () => {
+    const recs = records(load("cinematic").bin);
+    // Version in the low four bits, the keyframe bit next.
+    expect(recs.map((r) => r[0]! & 0xf)).toEqual([4, 5, 5, 4]);
+    expect(recs.map((r) => (r[0]! >> 4) & 1)).toEqual([1, 1, 0, 1]);
+    const d = new FrameDecoder();
+    const frames = recs.map((r) => d.decode(r).frame);
+    expect(frames.map((f) => f.cinematic === true)).toEqual([false, true, true, false]);
+    expect(frames.every((f) => f.players.length === 0 && f.actors === undefined)).toBe(true);
   });
 
   test("a dropped delta waits for the next keyframe", () => {

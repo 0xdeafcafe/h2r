@@ -720,6 +720,7 @@ async fn campaign_frames_carry_vehicles_and_actors() {
         }],
         bsp: Some(1),
         cut: Some(61),
+        cinematic: false,
         machines: vec![live_proto::game::FrameMachine {
             node: Some("scarab_0".into()),
             id: "90090009".into(),

@@ -13,6 +13,9 @@ import type { Frame, FrameActor, FrameHit, FrameMachine, FrameObject, FramePlaye
  *  ticks and the frame's cut; versions 1 (vehicles without a parent and
  *  aim), 2 and 3 still read. */
 export const PACK_VERSION = 4;
+/** A cinematic frame's version: version 4 with the cinematic bit after the
+ *  cut. Only frames with `cinematic` are written in it. */
+export const CINEMATIC_VERSION = 5;
 const POS_SCALE = 512;
 const ANGLE_BITS = 12;
 const DIR_BITS = 12;
@@ -152,13 +155,14 @@ const LISTS: [Field[], number][] = [[PLAYER, 16], [VEHICLE, 64], [ACTOR, 128], [
 const LISTS_V3: [Field[], number][] = [[PLAYER_V3, 16], [VEHICLE, 64], [ACTOR_V3, 128], [MACHINE, 128], [OBJECT, 2048]];
 const LISTS_V2: [Field[], number][] = [[PLAYER_V2, 16], [VEHICLE, 64], [ACTOR_V2, 128], [MACHINE, 128], [OBJECT, 2048]];
 const LISTS_V1: [Field[], number][] = [[PLAYER_V2, 16], [VEHICLE_V1, 64], [ACTOR_V2, 128], [MACHINE, 128], [OBJECT, 2048]];
-/** What a version this decoder reads has: its lists, its hits, and whether the header carries a cut. */
-interface Schema { lists: [Field[], number][]; hit: Field[]; cut: boolean }
+/** What a version this decoder reads has: its lists, its hits, and whether the header carries a cut and the cinematic bit. */
+interface Schema { lists: [Field[], number][]; hit: Field[]; cut: boolean; cinematic: boolean }
 const SCHEMAS: Record<number, Schema> = {
-  1: { lists: LISTS_V1, hit: HIT_V2, cut: false },
-  2: { lists: LISTS_V2, hit: HIT_V2, cut: false },
-  3: { lists: LISTS_V3, hit: HIT, cut: true },
-  [PACK_VERSION]: { lists: LISTS, hit: HIT, cut: true },
+  1: { lists: LISTS_V1, hit: HIT_V2, cut: false, cinematic: false },
+  2: { lists: LISTS_V2, hit: HIT_V2, cut: false, cinematic: false },
+  3: { lists: LISTS_V3, hit: HIT, cut: true, cinematic: false },
+  [PACK_VERSION]: { lists: LISTS, hit: HIT, cut: true, cinematic: false },
+  [CINEMATIC_VERSION]: { lists: LISTS, hit: HIT, cut: true, cinematic: true },
 };
 
 type Entity = Val[];
@@ -468,6 +472,7 @@ export class FrameDecoder {
       if (r.bit()) state.bsp = r.bit() ? r.eg(1) : null;
     }
     const cut = schema.cut && r.bit() ? r.eg(16) : null;
+    const cinematic = schema.cinematic && r.bit();
     const fresh = r.eg(1);
     if (fresh > MAX_NEW_STRINGS || state.strings.length + fresh > MAX_STRINGS) throw new PackError("too many strings");
     // The table is shared with the frame before until it grows.
@@ -491,6 +496,7 @@ export class FrameDecoder {
     if (machines.length) frame.machines = machines;
     if (objects.length) frame.objects = objects;
     if (cut !== null) frame.cut = cut;
+    if (cinematic) frame.cinematic = true;
     this.streams.set(sid, state);
     return { sid, seq, keyframe, frame };
   }

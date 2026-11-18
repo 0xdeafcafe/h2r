@@ -169,6 +169,46 @@ that puts the first one past the last tick sent. Before, the reverted run's
 ticks overlapped the first's, a replay sorted them together and the player
 flicked between the two runs.
 
+## Cinematics
+
+In a campaign cutscene the scripts own the world: they teleport the
+players, hide or freeze them, move AI bipeds and vehicles as puppets and
+kill whom the story needs. Before, telemetry sent all of it as play, so a
+replay or the live view showed players jumping about, frozen in place or
+gone, and a scripted death counted. Now telemetry reads, every tick, the
+byte the game itself asks whether a cinematic is playing: `[0x00510c50]+5`,
+set by HaloScript's `cinematic_start` and cleared by `cinematic_stop`
+([live-gamestate.md](live-gamestate.md), "Cinematics (cutscenes)"). It is
+in the game state, so it is right across checkpoint reverts too.
+
+While it is set:
+
+- Frames keep coming on frame ticks, on the game's clock (reverts and all,
+  as above), but each is only the tick, the BSP, a `cut` if one is due and
+  `cinematic: true`: no players, actors, vehicles, hits, machines or
+  objects. The game thread skips the world scan for them. A frame of
+  nothing costs a few bytes, and keeps the live view and the 1 Hz recording
+  told, where no frames would look like a stalled game.
+- Kills are not sent (the kill hook reads the byte as the kill happens, and
+  the worker also drops one queued in a cutscene); hits and shots counted
+  in it are dropped, and actors' shots with them.
+- Scores and the roster are read as ever: they are the game's own record.
+- Each unit's last frame is forgotten, so the first frame after the
+  cutscene works out no speed or actions across it (a `pickup` for the
+  weapon the scripts handed over, a run at the speed of a teleport).
+  Machines are sent from their last sent state, so the doors the cutscene
+  moved are sent in that first frame.
+
+The web viewer ([live-api.md](live-api.md) frames) draws a "Cutscene" card
+over the map and the 3D view for a cinematic frame and never draws the
+entities of the frames around it into it. A replay marks each cutscene on
+the scrubber and, playing, skips from its start to the first frame after
+it; seeking into one shows the card.
+
+The packed format carries the mark as version 5 ([Packed frames](#packed-frames)),
+written for cinematic frames alone, so a server or page from before it
+still reads every other frame.
+
 Tag names are (likely) not in guest memory: nothing in the XBE refers to
 the cache header's tag-name fields, and the loader reads the tag index and
 metadata. On map activation telemetry asks the boot for the
@@ -493,7 +533,7 @@ when present.
 
 | field | wire |
 |---|---|
-| version | `u(4)`, 4 (3 still reads: no anim; 2: none of version 3's fields either; 1: vehicles without parent and aim) |
+| version | `u(4)`, 4, or 5 for a cinematic frame (4 with the cinematic bit; 3 still reads: no anim; 2: none of version 3's fields either; 1: vehicles without parent and aim) |
 | keyframe | `u(1)` |
 | stream id | `eg(0)` |
 | sequence | `eg(8)`, one more each frame of the stream |
@@ -503,6 +543,7 @@ when present.
 | **delta:** tick | `eg(2)`, the difference from the previous frame (never negative) |
 | bsp | `u(1)` changed; if so `u(1)` present, then `eg(1)` |
 | **both (version 3):** cut | `u(1)` present, then `eg(16)`: the engine tick a campaign revert or restart came back to; on that one frame only |
+| **both (version 5):** cinematic | `u(1)`: a cinematic is playing ([Cinematics](#cinematics)); version 5 is written only for such frames, so it is always 1 |
 | new strings | `eg(1)` count (at most 1024), then each a `str` literal, appended to the table (a keyframe starts an empty one) |
 | players | list |
 | vehicles | list |
@@ -549,7 +590,12 @@ encoder as it was.
 ### Compatibility
 
 The version is the first four bits; a decoder refuses versions it does not
-know. Version 4 (units' animation) is written now; version 3 added units'
+know. Version 5 is version 4 with the frame's cinematic bit, and only a
+cinematic frame is written in it: an encoder moving between the two sends
+a keyframe (a delta follows a frame of its own version), and a decoder from
+before version 5 refuses only the cutscene's frames, waits for the next
+keyframe and reads on. `web/test/fixtures/pack/cinematic` is a stream in
+and out of a cutscene. Version 4 (units' animation) is written now; version 3 added units'
 velocity, fire ticks, vitality, seat and action ticks, hits' ticks and the
 frame's cut. Decoders still read versions 3, 2 and 1 (recorded frames, an older game's stream), and a delta only
 applies to a frame of its own version. `web/test/fixtures/pack/v1-multiplayer`
@@ -825,3 +871,9 @@ relying on live output, check in this order:
     on respawn (`+0xaf`); scenery destroyed (for example glass or barrels)
     goes gone; that `+0x1a` indexes match map.glb's `scenario` children (a
     moved crate moves the right model).
+13. Cinematics: that `[0x00510c50]+5` is set for the whole of each
+    cutscene (`00a_introduction`, the opening and closing cinematics of a
+    mission, the mid-level ones) and only then; that a level's first ticks,
+    before its opening cinematic starts, send ordinary frames; that a
+    skipped cutscene ends the cinematic frames; and that the player is
+    where they should be in the first frame after one.

@@ -435,6 +435,14 @@ pub struct Frame {
     /// this is the one place the two meet (version 3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cut: Option<u64>,
+    /// A campaign cinematic is playing (between HaloScript's
+    /// `cinematic_start` and `cinematic_stop`): the game sends no players,
+    /// actors, vehicles, hits, machines or objects, only the tick and the
+    /// BSP, so a viewer shows a cutscene rather than the puppets the
+    /// scripts move about (docs/live/live-telemetry.md, "Cinematics";
+    /// packed version 5).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub cinematic: bool,
 }
 
 /// Which scenario block a [`FrameObject`] is placed by. The order is the

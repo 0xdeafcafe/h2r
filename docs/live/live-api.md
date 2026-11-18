@@ -226,6 +226,13 @@ A frame may carry `cut`: a campaign checkpoint revert or restart happened
 just before it, and the engine's clock came back to that tick (the game's
 ticks keep counting; see below). Only the first frame of the new run has it.
 
+A frame may carry `cinematic: true`: a campaign cutscene is playing. The
+game sends such frames on its clock as ever, with the tick and `bsp` (and a
+`cut` when one is due) but no players, actors, vehicles, hits, machines or
+objects, and sends no kills meanwhile (docs/live/live-telemetry.md,
+"Cinematics"). A viewer shows a cutscene and draws nothing from the frames
+either side of it into it. Absent means false.
+
 Shots, actions and hits of frames that are dropped (the 15 Hz throttle, a
 full sink queue) go to the next delivered frame (`fire`, `actions_ago` and
 hits' `ago` placed again against that frame's tick, those older than they

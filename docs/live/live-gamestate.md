@@ -148,6 +148,25 @@ Engine indices, verified against the retail dispatch and matching Xbox engine im
 
 For the web API, use the short map name plus the scenario path for disambiguation, and send `G+0x02` with every map/BSP change.
 
+### Cinematics (cutscenes)
+
+HaloScript's `cinematic_start` and `cinematic_stop` (builtins 554 and 555, evaluators `0x002a9740` and `0x002a9760`, `engine::points::CINEMATIC_START`/`STOP`) each call one engine function, `0x0013bff0` and `0x0013ca80`. Between them the scripts own the players: units are teleported, hidden or frozen, AI bipeds and vehicles are puppets, and scripted deaths happen. Telemetry reads one byte to know it is in one.
+
+```text
+C = read_u32(0x00510c50)        // cinematic block, 0x24 bytes, in the game state
+playing = C != 0 && read_u8(C + 5) != 0
+```
+
+| Field | Offset | Type | Confidence | Evidence |
+|---|---:|---|---|---|
+| block pointer | `0x00510c50` | `u32` | confirmed | Allocated from the game-state allocator (cursor `0x004e6084`) by `0x0013bf00`, size `0x24` (`0x0013bf27`), zeroed and stored at `0x0013bf4e`: a checkpoint saves and restores it with the game state |
+| cinematic in progress | `C+0x05` | `u8` | confirmed | `0x0013bff0` (`cinematic_start`) writes 1 to `+4` and `+5` (`0x0013c01b`, `0x0013c01e`); `0x0013ca80` (`cinematic_stop`) writes 0 to both (`0x0013caa9`, `0x0013cac2`). The accessor `0x0013cb40` returns `+5`, 0 when the pointer is null. Readers of `+5`: the campaign pause menu refuses to open (docs/game/settings-menu.md), the tick budget `0x00146660`, the camera projection's aspect (`0x0002fc96`, `0x0002fcba`), and more than a dozen others (`0x0001ded0`, `0x00025931`, `0x000311e5`, `0x00031361`, `0x000335c9`, `0x0004ac53`, `0x000d4e43`, `0x000e452f`, `0x0012e4b6`, `0x0014672f`, `0x0016ce4a`) |
+| companion flag | `C+0x04` | `u8` | likely | Set and cleared with `+5` by the same two functions, but not only by them: the map reset `0x0013bf60` sets it to 1 in a campaign (options mode 1, `0x0013bfa6..0x0013bfb0`), and `0x0013bfc0` clears `+5` and `+0x22` always but `+4` only outside a campaign. So `+4` can be on with no cinematic playing; telemetry does not read it |
+
+The same two functions also write the `0x84`-byte block at `[0x004de2f4]` (`+0x80` and `+0x81` set and cleared; builtins 208 and 209 set them from a boolean argument, the shape of `cinematic_show_letterbox` and its immediate form), the players globals' `+6`, the game globals' `+0x11f8` and the AI globals' `+0x20` (cleared by start, set by stop). Those are effects of a cinematic; `+5` above is the state the game itself tests. The main menu's background also runs `cinematic_start`; telemetry is only on in a game.
+
+The agent API (`crates/agent`) and the co-op straggler fix (`crates/boot/src/coop_players.rs`) instead observe the two HaloScript calls; the byte stays right across a checkpoint revert taken inside a cinematic, which observing the calls does not.
+
 ## 4. Players datum array
 
 `players_initialize` at `0x0014b4b0` allocates **16 entries of stride `0x21c`** and publishes `P` at `0x004e8c24`. Element `i` is at `read_u32(P+0x44) + i*0x21c`. Iterate only below `P+0x38`, using the bitmap at `P+0x48` or the nonzero salt, and compose the current salted player datum from the salt and slot.
