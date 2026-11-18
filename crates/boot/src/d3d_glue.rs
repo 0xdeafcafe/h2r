@@ -25,12 +25,6 @@ pub struct Installed {
     pub vblank: Option<kernel::periodic::Handler>,
 }
 
-impl Installed {
-    /// Where the write barrier moved `entry`'s real handler.
-    pub fn barrier_shadow(&self, entry: u32) -> Option<u32> {
-        self.barrier.iter().position(|&e| e == entry).map(|i| BARRIER_SHADOW + 4 * i as u32)
-    }
-}
 
 /// `d3d::register` on a headless `RecordingBackend`, or, with
 /// `H2_BOOT_GFX=<dir>`, on a headless `GfxBackend` with the nv2a shader
@@ -1118,9 +1112,6 @@ pub fn back_surfaces(mem: &mut runtime::Guest, device: u32) {
 }
 
 
-/// Shadow page for the d3d entries the write barrier wraps (4 bytes each).
-const BARRIER_SHADOW: u32 = 0xa0ff_4000;
-
 /// The write barrier's write-watch owner: it drains its subscription by id
 /// through whichever Guest the entry runs against, so a pipelined render
 /// thread takes it over at each snapshot (`pipeline-render`).
@@ -1129,8 +1120,8 @@ pub const WATCH_OWNER: &str = "boot:d3d";
 /// `pipeline-render` (docs/graphics/pipelined-render.md, "The prototype")
 /// with this D3D layer: the game's D3D entries (the sim's calls there join
 /// the render first), and every D3D override the render thread may run
-/// (the entries, the barrier's and CreateDevice's shadows, the port I/O
-/// stubs). Off unless `H2_PIPELINE_RENDER=1`.
+/// (the entries with their write barrier, CreateDevice's shadow, the port
+/// I/O stubs). Off unless `H2_PIPELINE_RENDER=1`.
 pub fn pipeline_render(i: Option<&Installed>) -> feature::pipeline_render::PipelineRender {
     let entries: Vec<u32> = match i {
         Some(i) => i.barrier.clone(),
@@ -1146,30 +1137,27 @@ pub fn pipeline_render(i: Option<&Installed>) -> feature::pipeline_render::Pipel
 
 /// The overrides the pipelined render thread may run besides those marked
 /// context-only (`Dispatch::mark_context_only`; other features' render-safe
-/// hooks, docs/graphics/pipelined-render.md): the D3D entries and their
-/// shadows, and the port I/O stubs.
+/// hooks, docs/graphics/pipelined-render.md): the D3D entries,
+/// CreateDevice's shadow, and the port I/O stubs.
 pub fn pipeline_allow(entries: &[u32]) -> impl Fn(u32, &str) -> bool + Send + Sync + 'static {
     let allowed: std::collections::BTreeSet<u32> =
         entries.iter().copied().chain(d3d::abi::PORT_IO.iter().map(|p| p.0)).collect();
-    let shadows = [BARRIER_SHADOW, D3D_SHADOW];
-    move |addr, _| {
-        allowed.contains(&addr)
-            || shadows.iter().any(|&s| (s..s + 0x1000).contains(&addr))
-    }
+    move |addr, _| allowed.contains(&addr) || (D3D_SHADOW..D3D_SHADOW + 0x1000).contains(&addr)
 }
 
 /// The D3D write barrier (docs/graphics/d3d.md "Integration", step 3) on the
 /// runtime's write watch: one subscriber watches all of RAM in the folded
-/// view, and every d3d entry is wrapped so that
+/// view, and every d3d entry is wrapped ([`barrier_handler`]) so that
 ///
 /// - on entry, the pages written since the last drain (lifted code, the
 ///   interpreter, kernel and HLE copies) go to
 ///   `Device::note_written_pages`, before the device reads any resource;
-/// - nothing is drained on return. The entry is a guest call: runner safe
-///   points, interrupts and other contexts can store between the entry
-///   drain and the return, and dropping the pages then would lose those
-///   stores. The device's own stores are therefore reported back to it at
-///   the next entry, which costs a re-check of a page it already has (its
+/// - nothing is drained on return. An entry may call guest code before it
+///   returns (a push-buffer callback, `D3D_DestroyResource`, the vblank
+///   callback), and runner safe points, interrupts and other contexts can
+///   store in between, so dropping the pages then would lose those stores.
+///   The device's own stores are therefore reported back to it at the next
+///   entry, which costs a re-check of a page it already has (its
 ///   render-target writebacks it invalidates itself).
 ///
 /// The device's tracker keeps only the pages it watches, so watching all of
@@ -1182,36 +1170,55 @@ fn install_write_barrier<B: d3d::backend::Backend + Send + 'static>(
     use runtime::watch::CONTIGUOUS_BASE;
     let id = {
         let mut mem = rt.memory();
-        mem.map_zeroed(BARRIER_SHADOW, 0x1000, runtime::guest::Permissions::RX)?;
         let id = mem.subscribe_writes(WATCH_OWNER);
         mem.watch_writes(id, CONTIGUOUS_BASE, 0x0400_0000).map_err(|e| anyhow::anyhow!("{e}"))?;
         id
     };
-    anyhow::ensure!(entries.len() <= 0x400, "too many d3d entries for the shadow page");
     rt.edit_dispatch(|d| {
-        for (i, &addr) in entries.iter().enumerate() {
-            let shadow = BARRIER_SHADOW + 4 * i as u32;
-            let dev = Arc::clone(device);
-            let Some(prev) = d.register_override(addr, "boot:d3d write barrier", move |cpu, ctx, _| {
-                let rt = Arc::clone(ctx.runtime());
-                let mut mem = rt.memory();
-                let dirty = mem.take_dirty(id).unwrap_or_default();
-                if !dirty.is_empty() {
-                    let mut dv = dev.lock().unwrap();
-                    for r in dirty {
-                        dv.note_written_pages(r.addr, r.len);
-                    }
-                }
-                let ret_pc = mem.u32(cpu.esp)?;
-                cpu.esp = cpu.esp.wrapping_add(4);
-                ctx.call_guest(cpu, &mut mem, shadow, move |_, _| Ok(runtime::TransferAbi::ret(ret_pc)))
-            }) else {
+        for &addr in entries {
+            let Some(prev) = d.override_handler(addr) else {
                 continue;
             };
-            d.restore_override(shadow, prev);
+            let dev = Arc::clone(device);
+            let note = move |dirty: &[runtime::DirtyRange]| {
+                let mut dv = dev.lock().unwrap();
+                for r in dirty {
+                    dv.note_written_pages(r.addr, r.len);
+                }
+            };
+            d.register_override(addr, "boot:d3d write barrier", barrier_handler(prev, id, note));
         }
     });
     Ok(())
+}
+
+/// One entry's write barrier: drains watch `id` into `note` (when anything
+/// is dirty), then runs the entry's own handler `prev` in place, as the
+/// dispatcher would have.
+///
+/// Until 2026-11 the barrier moved `prev` to a shadow address and reached it
+/// as a guest call whose Rust continuation returned to the caller: two more
+/// runner transfers, a boxed continuation and a token on every D3D call
+/// (thousands a frame). Running `prev` in place gives the guest the same
+/// registers, memory and return; the only difference is the dead stack word
+/// under the caller's `ESP` afterwards, which keeps the caller's return
+/// address, as on the Xbox, instead of a continuation token.
+pub fn barrier_handler(
+    prev: runtime::exec::OriginalHandler,
+    id: runtime::WatchId,
+    note: impl Fn(&[runtime::DirtyRange]) + Send + Sync + 'static,
+) -> impl Fn(&mut runtime::CpuAbi, &mut runtime::ExecCtx, u32) -> Result<runtime::TransferAbi, runtime::GuestFault>
++ Send
++ Sync
++ 'static {
+    move |cpu, ctx, selector| {
+        // The guard goes before `prev` runs: it takes memory itself.
+        let dirty = ctx.runtime().memory().take_dirty(id).unwrap_or_default();
+        if !dirty.is_empty() {
+            note(&dirty);
+        }
+        Ok(prev.invoke(cpu, ctx, selector))
+    }
 }
 
 /// The occlusion feature's depth capture (docs/graphics/occlusion-culling.md):

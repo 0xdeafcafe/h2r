@@ -785,8 +785,8 @@ plain `ret`). On the game thread, at each entry:
 
 On the render thread the executor's dispatch has the generated original
 at `0x00223240` and a no-op at `0x0012b2e0`; it may run the D3D layer's
-overrides (the entries, the write barrier's and CreateDevice's shadow
-pages, the port I/O stubs). Everything else (kernel imports, XAPI, other
+overrides (the entries with their write barrier, CreateDevice's shadow
+page, the port I/O stubs). Everything else (kernel imports, XAPI, other
 features' hooks, plan chains) is refused, which ends the render there.
 
 **Hand-back** (join of a completed render): the render stack pages are
