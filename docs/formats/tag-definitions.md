@@ -1170,6 +1170,27 @@ grenades); powerups (Halo 2's handling of over shield and camouflage
 types with Halo 1's times); the first-person arms, since Halo 1's
 first-person graph animates Halo 1's arm nodes.
 
+## Particles and contrails (`prt3`, `cont`)
+
+`crates/tags/src/defs/prt3.txt`: all 2,021 distinct retail `prt3` (4,988
+instances) round-trip byte-identical. The root's fields are named from
+the engine's reader, the particle draw callback `0x00224550`
+([effects.md](effects.md), "prt3 root"): the five properties are colour,
+alpha, size, rotation and sprite frame; the flags, the sequence range,
+the collision and death effects, the input mask, the quad and the UV
+window. The nested particle systems are `effe`'s record (and use its
+`struct property`, so the file follows `effe.txt`); the compiled shader
+at `+0x8c` is `shad`'s postprocess layout but for two strides (V, the
+schema: lod elements `0x8` and pass elements `0x4` where `shad`'s are
+`0x6` and `0x2`). Two words the schema reads as raw in `prt3` are `raw`
+here: an emitter's `+0x68` (the input pair of its seventh property) and an
+implementation's `+0x4` (its stage-state and pixel-constant ranges).
+
+`crates/tags/src/defs/cont.txt`: all 34 distinct retail `cont`
+round-trip; the layout from `crates/tags/src/effects/contrail.rs`
+(a `0xf0` root, the bitmap at `+0x30`, `0x40` points each with a `pphy`
+at `+0x10`). Most of the root is unknown spans yet.
+
 ## Which converted objects use the definitions
 
 | Groups | Path | Why |
