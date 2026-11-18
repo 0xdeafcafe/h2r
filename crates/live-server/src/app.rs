@@ -181,6 +181,7 @@ pub struct Live {
     pub(crate) catalog: Arc<crate::content::Catalog>,
     /// Server-wide stats for the stats home (`GET /v1/stats/summary`).
     pub(crate) stats: Arc<crate::stats::Stats>,
+    pub(crate) usage: Arc<crate::usage::Usage>,
     pub(crate) uploads: RateLimiter,
     pub(crate) content_writes: tokio::sync::Mutex<()>,
     /// Player reports and their reviews (docs/live/live-admin.md).
@@ -482,6 +483,9 @@ impl Live {
         dispatcher.subscribe(bans.clone());
         let stats = Arc::new(crate::stats::Stats::with_model(model.clone()));
         dispatcher.subscribe(stats.clone());
+        let usage = Arc::new(crate::usage::Usage::default());
+        usage.load(&store.usage().await?);
+        dispatcher.subscribe(usage.clone());
         let mut applied = dispatcher.applied();
         let feed = dispatcher.feed();
         let wake = store.wake().await?;
@@ -511,6 +515,7 @@ impl Live {
             recovery,
             catalog,
             stats,
+            usage,
             uploads: RateLimiter::new(policy.content.upload_rate.0, policy.content.upload_rate.1),
             content_writes: Default::default(),
             reports,

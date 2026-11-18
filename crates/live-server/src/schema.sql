@@ -43,3 +43,14 @@ create table if not exists blobs (
     sha256 text primary key,
     bytes bytea not null
 );
+
+-- Usage counters (src/usage.rs): what each account uploaded and did, per
+-- UTC day. `day` is empty for a running total, `account` for the server's
+-- own. Added to at write time; days older than the keep are dropped then.
+create table if not exists usage (
+    day text not null,
+    account text not null,
+    metric text not null,
+    n bigint not null,
+    primary key (day, account, metric)
+);
