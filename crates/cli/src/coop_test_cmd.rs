@@ -530,8 +530,23 @@ fn test(opts: Opts) -> Result<()> {
         games[0].tag
     );
     let mut waiting: Vec<&Game> = games[1..].iter().collect();
+    let mut said = false;
     loop {
         let ready = sup.pump(Duration::from_millis(200))?;
+        // Before the stop check: games that end on Ctrl-C didn't crash.
+        if interrupted.load(std::sync::atomic::Ordering::Relaxed) {
+            sup.note_interrupt();
+        }
+        if let Some((i, why)) = sup.crash() {
+            let tag = games.get(i).map_or("a game", |g| g.tag.as_str());
+            eprintln!("coop test: {tag}'s game stopped ({why}); closing the others");
+            waiting.clear();
+            sup.close_others(i);
+            // The others' last lines, then the checklist now: the stopped
+            // game's window stays open until it is closed.
+            sup.pump(Duration::from_millis(500))?;
+            said = print_verdict(&merged, opts.auto)?;
+        }
         if ready.contains(&0) && !waiting.is_empty() {
             for g in waiting.drain(..) {
                 sup.spawn(&exe, g)?;
@@ -548,17 +563,25 @@ fn test(opts: Opts) -> Result<()> {
             );
             waiting.clear();
         }
-        if interrupted.load(std::sync::atomic::Ordering::Relaxed) {
-            sup.note_interrupt();
-        }
     }
     drop(embedded);
-    let text = fs::read_to_string(&merged)?;
-    if let Some(v) = coop_verdict::verdict(&text, opts.auto) {
-        print!("{}", v.render());
+    if !said {
+        print_verdict(&merged, opts.auto)?;
     }
     println!("log: {}", merged.display());
     Ok(())
+}
+
+/// Prints the checklist the merged log makes; whether there was one.
+fn print_verdict(merged: &Path, auto: bool) -> Result<bool> {
+    let text = fs::read_to_string(merged)?;
+    Ok(match coop_verdict::verdict(&text, auto) {
+        Some(v) => {
+            print!("{}", v.render());
+            true
+        }
+        None => false,
+    })
 }
 
 /// Who hosts, who joins in the lobby and who (`late`: the last guest)
@@ -729,7 +752,15 @@ pub struct Supervisor {
     rx: mpsc::Receiver<Event>,
     ready: HashMap<usize, bool>,
     interrupted: bool,
+    /// A game that stopped, and why, until [`Supervisor::crash`] says so.
+    crashed: Option<(usize, String)>,
+    /// A stop was said: the rest is the closing.
+    stopping: bool,
 }
+
+/// The line the game prints when its guest thread stops (a crash or an
+/// unimplemented call); its window stays open on the last frame.
+const GUEST_EXITED: &str = "app: guest thread exited";
 
 /// Game `tag`'s line saying it is signed in (after any build).
 fn signed_in(tag: &str, line: &str) -> bool {
@@ -750,6 +781,8 @@ impl Supervisor {
             rx,
             ready: HashMap::new(),
             interrupted: false,
+            crashed: None,
+            stopping: false,
         })
     }
 
@@ -824,6 +857,9 @@ impl Supervisor {
                     if signed_in(tag, &line) && self.ready.insert(i, true).is_none() {
                         ready.push(i);
                     }
+                    if line.contains(GUEST_EXITED) && self.crashed.is_none() {
+                        self.crashed = Some((i, "its guest thread exited".into()));
+                    }
                 }
                 Event::Closed(i) => {
                     let g = &mut self.games[i];
@@ -844,6 +880,53 @@ impl Supervisor {
 
     pub fn all_exited(&mut self) -> bool {
         (0..self.games.len()).all(|i| self.exited(i))
+    }
+
+    /// A game that stopped while others still run, once: its guest thread
+    /// exited, or its process ended in failure (a crash, a signal). A game
+    /// closed normally (exit 0) is no stop; nor is anything after an
+    /// interrupt or a stop already said.
+    pub fn crash(&mut self) -> Option<(usize, String)> {
+        if self.stopping || self.interrupted {
+            return None;
+        }
+        if self.crashed.is_none() {
+            for (i, (_, child, _, _)) in self.games.iter_mut().enumerate() {
+                if let Ok(Some(status)) = child.try_wait()
+                    && !status.success()
+                {
+                    self.crashed = Some((i, format!("it ended: {status}")));
+                    break;
+                }
+            }
+        }
+        let (i, why) = self.crashed.take()?;
+        if (0..self.games.len()).all(|j| j == i || self.exited(j)) {
+            // Nothing else to close.
+            return None;
+        }
+        self.stopping = true;
+        Some((i, why))
+    }
+
+    /// Asks every game but `except` to close (SIGTERM), as closing its
+    /// window would.
+    pub fn close_others(&mut self, except: usize) {
+        for (i, (_, child, _, _)) in self.games.iter_mut().enumerate() {
+            if i == except || !matches!(child.try_wait(), Ok(None)) {
+                continue;
+            }
+            #[cfg(unix)]
+            {
+                let Ok(pid) = libc::pid_t::try_from(child.id()) else {
+                    continue;
+                };
+                // SAFETY: a signal to our own running child's pid.
+                unsafe { libc::kill(pid, libc::SIGTERM) };
+            }
+            #[cfg(not(unix))]
+            let _ = child.kill();
+        }
     }
 
     fn note_interrupt(&mut self) {

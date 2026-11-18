@@ -180,6 +180,9 @@ pub(crate) struct Network {
     state: Mutex<State>,
     listeners: qos::Listeners,
     pings: qos::Pings,
+    /// The last QoS lookup said in the log, so a title that repeats one
+    /// (a browser refreshing) logs it once.
+    said: Mutex<String>,
 }
 pub(crate) struct Cleanup {
     sockets: BTreeMap<u32, Arc<Socket>>,
@@ -203,6 +206,7 @@ impl Network {
             }),
             listeners: Arc::default(),
             pings: Arc::default(),
+            said: Mutex::default(),
         }
     }
     /// Update transport references while the caller still owns the sign-in
@@ -450,6 +454,7 @@ impl Network {
                     return Err(10055);
                 }
                 s.keys.insert(kid, key);
+                eprintln!("live: xnet: key for session {} registered", hex(&kid));
                 Ok(0)
             }
             UnregisterKey => {
@@ -460,6 +465,7 @@ impl Network {
                 }
                 s.peers.retain(|_, p| p.kid != kid);
                 lock(&self.listeners).remove(&kid);
+                eprintln!("live: xnet: key for session {} unregistered", hex(&kid));
                 Ok(0)
             }
             XnToIn => {
@@ -470,7 +476,17 @@ impl Network {
                 let ip = ip_word(*remote.ip());
                 let mut s = lock(&self.state);
                 if !s.keys.contains_key(&kid) {
+                    eprintln!(
+                        "live: join: {remote} for session {}: no key registered for it",
+                        hex(&kid)
+                    );
                     return Err(10022);
+                }
+                if !s.peers.contains_key(&ip) {
+                    eprintln!(
+                        "live: join: {remote} for session {}: address made",
+                        hex(&kid)
+                    );
                 }
                 if let Some(old) = s.peers.get(&ip)
                     && endpoint(&old.xna).ok().is_some_and(|old| old != remote)
@@ -514,6 +530,13 @@ impl Network {
             ConnectAddress => {
                 let mut s = lock(&self.state);
                 let p = s.peers.get_mut(&a[0]).ok_or(10022u32)?;
+                if !p.connected {
+                    eprintln!(
+                        "live: join: connecting to {} for session {}",
+                        endpoint(&p.xna).map_or_else(|_| "?".to_owned(), |e| e.to_string()),
+                        hex(&p.kid)
+                    );
+                }
                 p.connected = true;
                 Ok(0)
             }
@@ -805,24 +828,39 @@ impl Network {
         };
         let mut s = lock(&self.state);
         if a[4] & 0x10 != 0 {
-            lock(&self.listeners).remove(&kid);
+            if lock(&self.listeners).remove(&kid).is_some() {
+                eprintln!("live: qos: stopped listening for session {}", hex(&kid));
+            }
             return Ok(0);
         }
         if !s.keys.contains_key(&kid) {
+            eprintln!(
+                "live: qos: can't listen for session {}: no key registered for it",
+                hex(&kid)
+            );
             return Err(10022);
         }
         if s.responder.is_none() {
-            s.responder = Some(host(qos::Responder::start(
+            let started = qos::Responder::start(
                 self.config.address,
                 self.listeners.clone(),
                 self.pings.clone(),
-            ))?);
+            );
+            if let Err(e) = &started {
+                eprintln!(
+                    "live: qos: can't answer on {}:{}: {e}; guests will see network problems",
+                    self.config.address.ip(),
+                    self.config.address.port() + 2
+                );
+            }
+            s.responder = Some(host(started)?);
         }
         let mut listeners = lock(&self.listeners);
         let entry = listeners.entry(kid).or_insert_with(|| qos::Listener {
             bandwidth: 10_000_000,
             ..qos::Listener::default()
         });
+        let was = (entry.enabled, entry.data.len());
         if a[4] & 1 != 0 {
             entry.enabled = true;
         }
@@ -835,7 +873,30 @@ impl Network {
         if a[4] & 8 != 0 {
             entry.bandwidth = a[3];
         }
+        if (entry.enabled, entry.data.len()) != was {
+            eprintln!(
+                "live: qos: listening for session {} on {}:{}: {}, {} bytes of data",
+                hex(&kid),
+                self.config.address.ip(),
+                self.config.address.port() + 2,
+                if entry.enabled { "on" } else { "off" },
+                entry.data.len()
+            );
+        }
         Ok(0)
+    }
+    /// One log line per lookup, unless it repeats the last.
+    fn say_lookup(
+        &self,
+        targets: &[(SocketAddrV4, [u8; 8])],
+        results: &[std::io::Result<qos::Info>],
+    ) {
+        let line = lookup_line(targets, results);
+        let mut said = lock(&self.said);
+        if *said != line {
+            eprintln!("{line}");
+            *said = line;
+        }
     }
     fn qos_lookup(&self, a: &[u32], rt: &Runtime) -> Result<u32> {
         if a[0] > 64
@@ -874,9 +935,19 @@ impl Network {
             }
         }
         // All guest input is copied and outputs checked before the bounded I/O.
-        let infos: Vec<_> = targets
+        let results: Vec<_> = targets
+            .iter()
+            .map(|&(address, kid)| qos::query_why(address, kid, a[7] as u16))
+            .collect();
+        self.say_lookup(&targets, &results);
+        let infos: Vec<_> = results
             .into_iter()
-            .map(|(address, kid)| qos::query(address, kid, a[7] as u16))
+            .map(|r| {
+                r.unwrap_or(qos::Info {
+                    flags: 1,
+                    ..qos::Info::default()
+                })
+            })
             .collect();
         let size = 8 + infos.len() * 24 + infos.iter().map(|i| i.data.len()).sum::<usize>();
         let mut m = rt.memory();
@@ -906,6 +977,46 @@ impl Network {
         Ok(0)
     }
 }
+fn hex(kid: &[u8; 8]) -> String {
+    live_proto::sign::hex(kid)
+}
+/// What a QoS lookup found, per target: `contacted` with the data the
+/// host listens with, `off` for a host that stopped listening, or why no
+/// answer came (the title shows "network problems" for those).
+pub(crate) fn lookup_line(
+    targets: &[(SocketAddrV4, [u8; 8])],
+    results: &[std::io::Result<qos::Info>],
+) -> String {
+    let each: Vec<_> = targets
+        .iter()
+        .zip(results)
+        .map(|((address, kid), r)| {
+            let qos = SocketAddrV4::new(*address.ip(), address.port().saturating_add(2));
+            let what = match r {
+                Ok(i) if i.flags & 4 != 0 => "contacted, not listening (off)".to_owned(),
+                Ok(i) => format!("contacted, {} bytes of data", i.data.len()),
+                Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => {
+                    "no answer: nothing on that port".to_owned()
+                }
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    format!(
+                        "no answer in {} tries (the host doesn't listen for that session, or \
+                         isn't there)",
+                        qos::QUERY_TRIES
+                    )
+                }
+                Err(e) => format!("no answer: {e}"),
+            };
+            format!("{qos} session {}: {what}", hex(kid))
+        })
+        .collect();
+    format!("live: join: qos lookup: {}", each.join("; "))
+}
 pub(crate) fn random(len: usize) -> Result<Vec<u8>> {
     let mut bytes = vec![0; len];
     std::fs::File::open("/dev/urandom")
@@ -931,4 +1042,40 @@ fn fdset(rt: &Runtime, p: u32) -> Result<Vec<u32>> {
     values.sort_unstable();
     values.dedup();
     Ok(values)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_lookup_says_per_target_whether_the_host_answered() {
+        let host = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 31000);
+        let kid = [0x86, 0x87, 0xb4, 0x10, 0x9b, 0x1c, 0x02, 0x94];
+        let targets = [(host, kid), (host, kid), (host, kid), (host, kid)];
+        let results = [
+            Ok(qos::Info {
+                flags: 0xb,
+                data: vec![0; 12],
+                ..qos::Info::default()
+            }),
+            Ok(qos::Info {
+                flags: 7,
+                ..qos::Info::default()
+            }),
+            Err(io::Error::from(io::ErrorKind::WouldBlock)),
+            Err(io::Error::from(io::ErrorKind::ConnectionRefused)),
+        ];
+        let line = lookup_line(&targets, &results);
+        let at = "127.0.0.1:31002 session 8687b4109b1c0294";
+        assert_eq!(
+            line,
+            format!(
+                "live: join: qos lookup: {at}: contacted, 12 bytes of data; \
+                 {at}: contacted, not listening (off); \
+                 {at}: no answer in 3 tries (the host doesn't listen for that session, or isn't \
+                 there); {at}: no answer: nothing on that port"
+            )
+        );
+    }
 }

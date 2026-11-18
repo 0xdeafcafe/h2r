@@ -750,6 +750,49 @@ fn qos_unreachable_and_disabled_peers_complete_without_inventing_lobby_data() {
     assert_eq!(a.call("XNetQosLookup", &args), 0);
     assert_eq!(a.get(a.u32(OUT) + 8, 1), vec![7]);
 }
+/// The UNABLE TO JOIN ("network problems") case: a guest asks about a
+/// session the host doesn't listen for (one it re-advertised under a new
+/// id), and the host's responder stays silent, so the lookup completes
+/// uncontacted after its tries. The host's current session is answered.
+#[test]
+fn qos_for_a_session_the_host_left_is_uncontacted_and_the_current_one_answers() {
+    let (mut a, mut b) = pair();
+    b.key();
+    let current = b.get(KID, 8);
+    let mut left = current.clone();
+    left[7] ^= 0x5a;
+    b.put(DATA, b"synthetic-lobby");
+    assert_eq!(
+        b.call("XNetQosListen", &[KID, DATA, 15, 2000000, 1 | 4 | 8]),
+        0
+    );
+    a.put(KID, &left);
+    a.put(KEY, &b.get(KEY, 16));
+    assert_eq!(a.call("XNetRegisterKey", &[KID, KEY]), 0);
+    a.peer(&b);
+    a.word(SET, XNA);
+    a.word(SET + 4, KID);
+    a.word(SET + 8, KEY);
+    let args = [1, SET, SET + 4, SET + 8, 0, 0, 0, 3, 0, 0, 0, OUT];
+    let started = std::time::Instant::now();
+    assert_eq!(a.call("XNetQosLookup", &args), 0);
+    assert!(
+        started.elapsed() >= std::time::Duration::from_millis(200),
+        "tried more than once: {:?}",
+        started.elapsed()
+    );
+    let q = a.u32(OUT);
+    assert_eq!(a.get(q + 8, 1), vec![1], "complete, never contacted");
+    assert_eq!(a.u32(q + 16), 0);
+    assert_eq!(a.call("XNetQosRelease", &[q]), 0);
+    // The current session: contacted, with its data.
+    a.put(KID, &current);
+    assert_eq!(a.call("XNetRegisterKey", &[KID, KEY]), 0);
+    assert_eq!(a.call("XNetQosLookup", &args), 0);
+    let q = a.u32(OUT);
+    assert_eq!(a.get(q + 8, 1), vec![0xb]);
+    assert_eq!(a.get(a.u32(q + 16), 15), b"synthetic-lobby");
+}
 #[test]
 fn qos_rejects_invalid_counts_flags_pointers_and_cleans_up_allocations() {
     let mut w = World::new();

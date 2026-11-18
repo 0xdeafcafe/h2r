@@ -644,9 +644,16 @@ fn invoke(
         cpu.eax = 0;
         return ctx.memory().ret(cpu, e.stack_words * 4);
     }
+    // The accepted-invitation read stamps the record in the guest's clock;
+    // the kernel's clock lock comes before guest memory, so read it first.
+    // (The kernel's epoch is 0: its system time is this counter.)
+    let guest_now = (e.operation == Operation::AcceptedInvite)
+        .then(|| ctx.runtime().guest_time())
+        .flatten();
     let (result, cleanup) = {
         let mut m = ctx.memory();
         let mut state = hle.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.set_guest_now(guest_now);
         let result = state.invoke(e.operation, &args, &mut m);
         let cleanup = if matches!(result, Ok(0)) {
             hle.network.lifecycle(e.operation)

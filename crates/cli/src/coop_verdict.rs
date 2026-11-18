@@ -16,7 +16,7 @@ use std::fmt::Write as _;
 pub fn wanted(line: &str) -> bool {
     const DROP: [&str; 3] = ["feature plan:", "feature: ", "health: "];
     const DROP_ANY: [&str; 1] = ["hooks installed via feature plan"];
-    const KEEP: [&str; 11] = [
+    const KEEP: [&str; 15] = [
         "coop-live",
         "coop-jip",
         "coop-probe",
@@ -28,6 +28,11 @@ pub fn wanted(line: &str) -> bool {
         "custom games",
         "agent: listening",
         "panicked",
+        // The join's steps (live-hle): lookup, QoS, keys.
+        "live: join",
+        "live: qos",
+        "live: xnet",
+        "guest thread exited",
     ];
     !DROP.iter().any(|d| line.starts_with(d))
         && !DROP_ANY.iter().any(|d| line.contains(d))
