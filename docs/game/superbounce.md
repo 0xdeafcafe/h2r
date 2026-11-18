@@ -24,8 +24,10 @@ established).
   ceiling) is real. So is a crouch term that moves a mid-air biped by its
   height change. Neither was involved in any recorded bounce: all five
   were standing, 3.5 to 28 seconds after the last crouch. **Code**, **Trace**
-- Whether a crouch long before a bounce leaves a hidden offset is not
-  ruled out. The test is in [Open](#open). **Open**
+- A forced crouch leaves nothing behind: in a third trace the player
+  forced a crouch under the lip, walked out (standing up on the ground in
+  six ticks, every crouch field back to normal) and bounced on a later
+  standing jump. **Trace**
 
 ## Forced crouch (Code)
 
@@ -125,6 +127,12 @@ The five bounces:
   has a small −y component.
 - Crouch was 0 with no request on every bounce tick.
 
+A third trace (fresh game, tick 2928) adds a sixth bounce: −5.40 in,
+0.084 below the floor, +11.89 out, 359 ticks after a forced crouch that
+had ended on the ground at tick 2569. Unit flags were back to
+`00000003` and the hitbox offset 0 from then on. Two melee swings with
+no target did not lunge (mode stayed 1, offset 0).
+
 ## The geometry (Code, from the map)
 
 The structure collision BSP of `ascension` at the patch (surface indices
@@ -149,10 +157,6 @@ rest on the ramp side of the crease.
   pushed into a concave crease next to a coplanar seam. Decoding it means
   reading the solver in the Havok library code (the step at `0x00311100`
   and its contact managers).
-- **A hidden crouch offset.** The traces show no drift in standing height
-  and no crouch near any bounce. They cannot see a state from before
-  they started. To rule it out: start a fresh game, never crouch, and
-  jump onto the patch until it bounces.
 - **Lunges.** Whether a landing on the crease during the 1.5 s after a
   lunge (body offset from the origin) bounces differently is not
   traced.
