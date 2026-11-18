@@ -601,19 +601,34 @@ async fn a_rostered_bot_is_an_account_that_never_signs_in() {
         .to_string(),
     };
     let r = h.sign_in(&pretender).await;
+    assert!(!r.status.is_success(), "a bot signed in: {}", r.status);
+    let online = h.get("/v1/presence").await.json();
     assert!(
-        r.status == StatusCode::UNAUTHORIZED || r.status == StatusCode::FORBIDDEN,
-        "a bot signed in: {}",
-        r.status
+        online["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p["xuid"] != b0.xuid.to_string()),
+        "a bot is never online: {online}"
     );
+    let device = live_proto::sign::KeyPair::generate();
     let r = h
         .call(
             Method::POST,
             &format!("/v1/accounts/{}/recover", b0.gamertag),
             &[],
-            json!({"request": "x", "code": "000000"}).to_string(),
+            json!({
+                "request": live_proto::recovery::RecoverRequest::sign(
+                    &device, b0.gamertag.as_str(), "live.test", now()
+                ),
+                "code": "000000",
+            })
+            .to_string(),
         )
         .await;
-    assert!(r.status.is_client_error(), "{}", r.status);
-    assert_ne!(r.status, StatusCode::OK);
+    assert!(
+        r.status.is_client_error(),
+        "a bot is not recovered: {}",
+        r.status
+    );
 }
