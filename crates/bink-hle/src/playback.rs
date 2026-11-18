@@ -41,9 +41,6 @@ const SURFACE_32RA: u32 = 6;
 const AUDIO_LEAD_MS: u64 = 500;
 /// Sound is handed over in packets this long.
 const AUDIO_PACKET_MS: u64 = 10;
-/// The sound clock counts as stalled (and the wall clock takes over from
-/// where it stopped) after this long without progress.
-pub const AUDIO_STALL_MS: u64 = 250;
 
 /// A movie's sound: the voice it plays on and how much has been fed.
 struct Sound {
@@ -53,9 +50,6 @@ struct Sound {
     queued: u64,
     /// The stream has no more sound.
     ended: bool,
-    /// Frames played at the last look, and the wall time it last moved.
-    played: u64,
-    moved_ms: u64,
     pcm: Vec<i16>,
 }
 
@@ -63,12 +57,13 @@ struct Slot {
     stream: Box<dyn MovieStream>,
     info: StreamInfo,
     frame: Vec<u8>,
-    decoded: bool,
-    /// Wall time at which the movie position was 0. With sound it follows
-    /// the sound, so the wall clock carries on from the sound's position
-    /// when the sound ends or stalls.
+    /// The 0-based frame `frame` holds, once one is decoded.
+    decoded: Option<u32>,
+    /// Wall time (the [`Clock`]) at which the movie position was 0.
     anchor_ms: u64,
     sound: Option<Sound>,
+    /// One destination row, reused by CopyToBuffer when it must convert.
+    row: Vec<u8>,
 }
 
 impl Slot {
@@ -80,26 +75,20 @@ impl Slot {
     fn frame_at(&self, pos: u64) -> u64 {
         pos * self.info.fps_num as u64 / (1000 * self.info.fps_den as u64) + 1
     }
-    /// Movie time now: the sound's play position while it plays, else the
-    /// wall clock from the anchor.
-    fn position_ms(&mut self, now: u64) -> u64 {
-        if let Some(s) = self.sound.as_mut() {
-            let played = s.voice.played_frames();
-            if played != s.played {
-                s.played = played;
-                s.moved_ms = now;
-            }
-            let drained = s.ended && played >= s.queued;
-            let stalled = now.saturating_sub(s.moved_ms) > AUDIO_STALL_MS;
-            if !drained && !stalled {
-                let pos = played * 1000 / s.info.sample_rate as u64;
-                self.anchor_ms = now.saturating_sub(pos);
-                return pos;
-            }
-        }
+    /// Movie time now, on the wall clock from the open (or the last loop).
+    ///
+    /// Not the sound's play position: the mixer renders on the kernel's
+    /// logical clock, which moves by executed guest work, and the wrapper's
+    /// service spins on BinkWait (`0x155fc2..0x155fd0`) until a frame is
+    /// due. A spin charges a few ns of logical time per call, so a clock
+    /// that waits for the sound needs millions of calls per frame (the
+    /// 0.3 fps of the first playback build). The sound plays at its own
+    /// rate from the same start; in a paced run (`h2 play`) logical time
+    /// keeps to the wall, and the two stay together.
+    fn position_ms(&self, now: u64) -> u64 {
         now.saturating_sub(self.anchor_ms)
     }
-    /// Keep [`AUDIO_LEAD_MS`] of sound queued.
+    /// Keep [`AUDIO_LEAD_MS`] of sound queued ahead of what has played.
     fn feed(&mut self) {
         let Some(s) = self.sound.as_mut() else {
             return;
@@ -107,9 +96,13 @@ impl Slot {
         let rate = s.info.sample_rate as u64;
         let ch = s.info.channels as usize;
         let lead = rate * AUDIO_LEAD_MS / 1000;
+        if s.ended || s.queued.saturating_sub(s.voice.played_frames()) >= lead {
+            return;
+        }
         let packet = (rate * AUDIO_PACKET_MS / 1000).max(1) as usize;
         s.pcm.resize(packet * ch, 0);
-        while !s.ended && s.queued.saturating_sub(s.played) < lead {
+        let played = s.voice.played_frames();
+        while !s.ended && s.queued.saturating_sub(played) < lead {
             let n = self.stream.read_audio(&mut s.pcm).min(packet);
             if n == 0 || !s.voice.queue(&s.pcm[..n * ch]) {
                 s.ended = true;
@@ -125,8 +118,6 @@ impl Slot {
             s.voice.flush();
             s.ended = !self.stream.rewind_audio();
             s.queued = 0;
-            s.played = 0;
-            s.moved_ms = now;
         }
         self.feed();
     }
@@ -285,14 +276,15 @@ impl BinkHle {
                         mem.set_u32(h + F_RATE, info.fps_num)?;
                         mem.set_u32(h + F_RATE_DIV, info.fps_den)?;
                         let now = self.clock.now_ms();
-                        let sound = self.open_sound(&*stream, now);
+                        let sound = self.open_sound(&*stream);
                         let mut slot = Slot {
                             stream,
                             info,
                             frame: vec![0; info.width as usize * info.height as usize * 4],
-                            decoded: false,
+                            decoded: None,
                             anchor_ms: now,
                             sound,
+                            row: Vec::new(),
                         };
                         slot.feed();
                         inner.slots[i] = Some(slot);
@@ -311,7 +303,7 @@ impl BinkHle {
         mem.ret(cpu, 8)
     }
 
-    fn open_sound(&self, stream: &dyn MovieStream, now: u64) -> Option<Sound> {
+    fn open_sound(&self, stream: &dyn MovieStream) -> Option<Sound> {
         let info = stream
             .audio_info()
             .filter(|a| a.sample_rate > 0 && (1..=8).contains(&a.channels))?;
@@ -325,8 +317,6 @@ impl BinkHle {
             info,
             queued: 0,
             ended: false,
-            played: 0,
-            moved_ms: now,
             pcm: Vec::new(),
         })
     }
@@ -345,7 +335,9 @@ impl BinkHle {
     }
 
     /// `BinkWait(bnk)`: nonzero while the current frame (`FrameNum`) is not
-    /// yet due on the movie's clock (the sound's position, else the wall).
+    /// yet due on the movie's clock. The wrapper's service calls this in a
+    /// tight loop until it returns 0, so it only reads the clock: no sound
+    /// feeding, no mixer lock (DoFrame and NextFrame feed, once a frame).
     pub(crate) fn wait(&self, cpu: &mut CpuAbi, ctx: &mut ExecCtx) -> R {
         let mem = ctx.memory();
         let h = mem.u32(cpu.esp.wrapping_add(4))?;
@@ -353,12 +345,11 @@ impl BinkHle {
         cpu.eax = 0;
         if let Some(i) = self.slot_index(h) {
             let n = mem.u32(h + F_FRAME_NUM)?;
-            let mut inner = self.lock();
-            if let Some(s) = inner.slots[i].as_mut() {
-                s.feed();
-                if s.position_ms(now) < s.due_ms(n) {
-                    cpu.eax = 1;
-                }
+            let inner = self.lock();
+            if let Some(s) = inner.slots[i].as_ref()
+                && s.position_ms(now) < s.due_ms(n)
+            {
+                cpu.eax = 1;
             }
         }
         mem.ret(cpu, 4)
@@ -373,7 +364,12 @@ impl BinkHle {
             let mut inner = self.lock();
             if let Some(s) = inner.slots[i].as_mut() {
                 let idx = n.saturating_sub(1).min(s.info.frames - 1);
-                s.decoded = s.stream.decode(idx, &mut s.frame) || s.decoded;
+                // The picture already in the buffer is not decoded again: a
+                // platform decoder may only go forward cheaply (AVFoundation
+                // restarts its reader for anything earlier).
+                if s.decoded != Some(idx) && s.stream.decode(idx, &mut s.frame) {
+                    s.decoded = Some(idx);
+                }
                 s.feed();
             }
         }
@@ -383,7 +379,7 @@ impl BinkHle {
 
     /// `BinkNextFrame(bnk)`: advance one frame, or, when the clock has run
     /// more than a frame ahead, to the frame now due (frames are dropped to
-    /// stay with the sound, as Bink does), never past the last frame.
+    /// keep time, as Bink does), never past the last frame.
     pub(crate) fn next_frame(&self, cpu: &mut CpuAbi, ctx: &mut ExecCtx) -> R {
         let mut mem = ctx.memory();
         let h = mem.u32(cpu.esp.wrapping_add(4))?;
@@ -428,28 +424,39 @@ impl BinkHle {
             _ => None,
         };
         if let (Some(swap), Some(i)) = (order, self.slot_index(h)) {
-            let inner = self.lock();
-            if let Some(s) = inner.slots[i].as_ref().filter(|s| s.decoded) {
+            let mut inner = self.lock();
+            if let Some(s) = inner.slots[i].as_mut().filter(|s| s.decoded.is_some()) {
                 let (w, hh) = (s.info.width as usize, s.info.height as usize);
                 let rows = hh.min((height as usize).saturating_sub(y as usize));
                 let cols = w.min((pitch as usize / 4).saturating_sub(x as usize));
-                let mut line = vec![0u8; cols * 4];
-                let mut ok = true;
-                for r in 0..rows {
-                    line.copy_from_slice(&s.frame[r * w * 4..r * w * 4 + cols * 4]);
-                    if swap {
-                        for px in line.as_chunks_mut::<4>().0 {
-                            px.swap(0, 2);
-                        }
-                    }
-                    let at = dst
-                        .wrapping_add((y + r as u32).wrapping_mul(pitch))
-                        .wrapping_add(x * 4);
-                    if mem.write_bytes(at, &line, 1).is_err() {
-                        ok = false;
-                        break;
-                    }
-                }
+                let row_at = |r: usize| {
+                    dst.wrapping_add((y + r as u32).wrapping_mul(pitch))
+                        .wrapping_add(x * 4)
+                };
+                // Bulk writes through Guest::write_bytes (one memcpy and one
+                // write-watch note each): the whole picture at once when the
+                // destination rows are the source rows, else one per row,
+                // converted in a reused row buffer when red and blue swap.
+                let ok = if !swap && cols == w && pitch as usize == w * 4 {
+                    mem.write_bytes(row_at(0), &s.frame[..rows * w * 4], 1)
+                        .is_ok()
+                } else {
+                    let Slot { frame, row, .. } = s;
+                    row.resize(cols * 4, 0);
+                    (0..rows).all(|r| {
+                        let src = &frame[r * w * 4..r * w * 4 + cols * 4];
+                        let line = if swap {
+                            row.copy_from_slice(src);
+                            for px in row.as_chunks_mut::<4>().0 {
+                                px.swap(0, 2);
+                            }
+                            &row[..]
+                        } else {
+                            src
+                        };
+                        mem.write_bytes(row_at(r), line, 1).is_ok()
+                    })
+                };
                 if ok {
                     result = 0;
                 }

@@ -38,6 +38,9 @@ struct Stream {
     handle: NonNull<c_void>,
     info: StreamInfo,
     audio: Option<AudioInfo>,
+    /// The last picture handed out and its index: asking for it again is a
+    /// copy, not a reader restart from frame 0.
+    last: Option<(u32, Vec<u8>)>,
 }
 // SAFETY: The bridge owns its AVAssetReader, retains no thread-affine UI
 // objects, uses an autorelease pool per call, and is only called with &mut self.
@@ -68,6 +71,7 @@ impl AvFoundationDecoder {
         let rate = unsafe { h2_movie_audio_rate(handle.as_ptr()) };
         Ok(Box::new(Stream {
             handle,
+            last: None,
             audio: (rate > 0).then_some(AudioInfo {
                 sample_rate: rate,
                 channels: AUDIO_CHANNELS,
@@ -86,16 +90,31 @@ impl MovieStream for Stream {
     fn info(&self) -> StreamInfo {
         self.info
     }
-    /// Sequential decoding is cheap. Going backwards (a loop rewind) is O(n):
+    /// Sequential decoding is cheap, and the last picture is kept, so
+    /// repeating it is a copy. Going further back (a loop rewind) is O(n):
     /// the reader restarts at frame 0 and decodes forward to `index`.
     fn decode(&mut self, index: u32, bgra: &mut [u8]) -> bool {
         let size = self.info.width as usize * self.info.height as usize * 4;
         if index >= self.info.frames || bgra.len() != size {
             return false;
         }
+        if let Some((i, pic)) = &self.last
+            && *i == index
+        {
+            bgra.copy_from_slice(pic);
+            return true;
+        }
         // SAFETY: handle is live, uniquely accessed; bgra is writable for len
         // bytes. The bridge checks dimensions before copying and stores no pointer.
-        unsafe { h2_movie_decode(self.handle.as_ptr(), index, bgra.as_mut_ptr(), bgra.len()) != 0 }
+        let ok = unsafe {
+            h2_movie_decode(self.handle.as_ptr(), index, bgra.as_mut_ptr(), bgra.len()) != 0
+        };
+        if ok {
+            let (_, pic) = self.last.get_or_insert_with(|| (index, vec![0; size]));
+            pic.copy_from_slice(bgra);
+            self.last.as_mut().expect("set").0 = index;
+        }
+        ok
     }
     fn audio_info(&self) -> Option<AudioInfo> {
         self.audio
