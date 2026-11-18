@@ -86,6 +86,7 @@ pub mod variant_ext;
 pub mod variant_options;
 pub mod variant_page;
 pub mod bot_glue;
+pub mod bots_nav_auto;
 pub mod clankers;
 pub mod video_screen;
 pub mod voice_glue;
@@ -1021,7 +1022,12 @@ pub fn run_hosted_with_live(
     // `H2_BOTS` adds brains at boot; idle with none.
     if opts.xapi {
         bot_glue::add_from_env();
-        bot_glue::install(&mut features, &opts.data_root).context("installing the bots")?;
+        let bots_on = bot_glue::install(&mut features, &opts.data_root).context("installing the bots")?;
+        // Their nav meshes, built in the background where missing or stale
+        // (docs/game/bots.md §10 stage 2); H2_BOTS_NAV_AUTO=0 turns it off.
+        if let (true, Some(vfs)) = (bots_on, k.vfs()) {
+            bots_nav_auto::start(&opts.data_root, &opts.disc, vfs, level_name.clone());
+        }
         // The Clankers page and its Game Setup row (stage 7).
         if let Some(store) = host.settings.as_ref() {
             clankers::install(&mut features, store).context("installing the Clankers page")?;
