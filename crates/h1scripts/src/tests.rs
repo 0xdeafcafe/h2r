@@ -770,6 +770,12 @@ mod level_and_seats {
     #[test]
     fn halo1_seat_roles_match_halo2_labels() {
         assert!(h2_label_matches("driver", "warthog_d"));
+        // Rebuilt vehicles: the rider's mode, from Halo 1's label in any
+        // case.
+        assert!(h2_label_matches("GT-gunner", "guntower_d"));
+        assert!(h2_label_matches("gt-gunner", "guntower_d"));
+        assert!(h2_label_matches("pchair-driver", "pchair_driver"));
+        assert!(h2_label_matches("driver lifepod", "driver"));
         assert!(h2_label_matches("W-driver", "scorpion_d"));
         assert!(!h2_label_matches("driver", "warthog_b_d"));
         assert!(h2_label_matches("gunner", "warthog_g"));

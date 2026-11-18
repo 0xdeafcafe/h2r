@@ -769,8 +769,8 @@ unrunnable on every level.
   Halo 1's BSP switch volumes, which Halo 2's engine is expected to
   switch on as it does for its own;
 - the copied characters (hunter, flood, monitor) and their sounds, and
-  lifepods on the pelican template (h1-objects.md), flown by a30's
-  recordings;
+  lifepods (built from the `vehi` definition since converter version 49,
+  tag-definitions.md), flown by a30's recordings;
 - the placement tail (`+0x34` on): zeros except the head, scenery
   included.
 

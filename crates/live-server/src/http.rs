@@ -275,6 +275,7 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
         .route("/v1/sessions/{id}", get(crate::sessions::detail))
         .route("/v1/sessions/{id}/events", post(crate::sessions::append))
         .route("/v1/sessions/{id}/relay", get(crate::relay::relay))
+        .route("/v1/snapshot", get(snapshot))
         .route("/v1/games", get(list_games).post(start_game))
         .route("/v1/games/{id}", get(game))
         .route("/v1/games/{id}/frames", get(game_frames))
@@ -337,11 +338,15 @@ pub fn router_with_site(live: Arc<Live>, site: &Site) -> Router {
             get(|| async { not_found("no game art on this server") }),
         ),
     };
+    let caching = middleware::from_fn(crate::caching::layer);
     let Some(dir) = &site.web else {
-        return api.fallback(|| async { not_found("no such endpoint") });
+        return api
+            .fallback(|| async { not_found("no such endpoint") })
+            .layer(caching);
     };
     let index = tower_http::services::ServeFile::new(dir.join("index.html"));
     api.fallback_service(tower_http::services::ServeDir::new(dir).fallback(index))
+        .layer(caching)
 }
 
 trait WithStatus {
@@ -971,6 +976,11 @@ async fn create_invite(
     live.authorize_operator(bearer(&headers), lxm::INVITES_WRITE)?;
     let v = crate::invites::create_operator(&live, days, p.get("code").map(String::as_str)).await?;
     Ok(json(StatusCode::CREATED, &v))
+}
+
+async fn snapshot(State(live): Shared, headers: HeaderMap) -> ApiResult<Response> {
+    let viewer = live.read_viewer(bearer(&headers))?;
+    Ok(json(StatusCode::OK, &live.snapshot(viewer).await?))
 }
 
 async fn list_games(
