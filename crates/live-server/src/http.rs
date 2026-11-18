@@ -450,7 +450,7 @@ async fn app_page(live: &Live, index: &std::path::Path, req: &Request) -> Respon
     let path = req.uri().path();
     let sent = |name: &str| req.headers().get(name).and_then(|v| v.to_str().ok());
     let origin = crate::page_meta::origin(
-        live.public.get().as_deref(),
+        live.policy().public.get().as_deref(),
         sent("host"),
         sent("x-forwarded-proto"),
     );
