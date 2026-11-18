@@ -99,17 +99,16 @@ at 0x56130 (queue at 0x525a00). The per-peer packet builder (call site
 the mute words.
 
 Incoming: the session message handler at 0x93577 reads a voice field (length
-at +0x620, data at +0x624) and passes it to 0x54810. 0x564c0 walks up to 15
-entries behind a flags byte. Each entry (0x55e10) is a byte below 2, an
-optional u16 forward mask, then a 10-byte frame. 0x53890 and 0x553b0 then
+at +0x620, data at +0x624) and passes it to 0x54810. 0x55e10 walks up to 16
+entries behind a flags byte and a count. Each entry is a byte below 2, an
+optional u16 forward mask, then a 10-byte frame (3.3). 0x53890 and 0x553b0 then
 call SubmitIncomingVoicePacket. The host of a game forwards frames to other
 peers using the forward mask (0x55b40).
 
 The game never looks inside the 10 bytes. They are the engine's codec frames:
-one frame per DPC tick, so about 4 kbps if a frame is 20 ms. That is the
-original voice codec's budget, and this design keeps it: the frames are the
-real audio (section 3.3). The frame length, and so the bitrate, is still to
-be confirmed by trace (section 3.3, "What to trace").
+a 2-byte sequence header and 8 bytes of payload per 20 ms, so 4 kbps (traced,
+section 3.3). That is the original voice codec's budget, and this design
+keeps it: the frames are the real audio.
 
 Remote talkers are registered under synthetic XUIDs built from the 32-bit
 session player id, not from account XUIDs.
@@ -246,10 +245,8 @@ Nothing in the XHV wrappers is intercepted. The host's audio threads hand
 PCM to and from ring buffers; only the XMO entries, called on guest threads,
 touch guest memory.
 
-Whether the codec really is in the title (as playstation-audio.md says) or
-is a media object the host must also provide is the first thing to trace
-(3.3). If it is not in the title, the host implements it bit-exact as a
-codec XMO under the same factory, and the rest of this design stands.
+The codec is in the title (traced, 3.3): XVOICE code linked into .text
+encodes and decodes. The host needs no codec of its own.
 
 ### 3.2 Capture and playback
 
@@ -271,9 +268,8 @@ trait VoiceIo {
 }
 ```
 
-The XMOs resample between the device's 48 kHz and the rate the engine's
-packets use (traced in 3.3; 8 or 16 kHz 16-bit mono per public XDK
-descriptions).
+The XMOs resample between the device's 48 kHz and the engine's 16 kHz
+16-bit mono packets of 640 bytes (traced, 3.3).
 
 macOS first, on cpal over CoreAudio like `crates/audio/src/output.rs`. A fake
 `VoiceIo` (scripted frames in, recorded frames out) is what the tests use.
@@ -309,29 +305,116 @@ masks, team voice and the bidirectional mute rule decide who hears whom, as
 on the original service, because only the packets the game sends carry
 audio.
 
-**What to trace before the communicator slice (2) and the voice-message
-slice (5):**
+**Trace results** (slice 2, from the disc's default.xbe; **C** means
+confirmed in the disassembly, **I** means inferred):
 
-1. **Where the codec lives.** Whether the encoder and decoder are recompiled
-   title code reached from the XHV engine, or a media object created
-   through 0x411143 that the host must provide. Name the entry points
-   either way.
-2. **The frame layout.** The 10-byte frame: which bytes are codec payload,
-   whether any are a header (a sequence, a talker or a silence marker), and
-   how silence or a dropped frame is represented. Confirm against the
-   reader at 0x55e10 and SubmitIncomingVoicePacket (0x332df4, size 10).
-3. **The bitrate.** The frame duration (one frame per 20 ms DPC tick, or
-   longer), so the bitrate exactly; the PCM format the engine asks the
-   microphone XMO for (rate, bits, packet size); and how many frames a
-   session packet carries each tick (the 0x200-byte budget at 0x765c0 and
-   the 15-entry walk at 0x564c0).
-4. **The voice-message WAVE header.** The RIFF/WAVE `fmt ` chunk the
-   voice-mail mode writes into the buffer at 0x504948 and that 0x53db0
-   checks: format tag, channels, sample rate, block align, bits per sample,
-   any extra bytes, and the `data` chunk; also how the format at 0x484290
-   relates, and what message property 0x3c2's codec value 1 names.
-5. How the engine reports a frame lost or late, so the headphone XMO keeps
-   time when the network does not.
+1. **Where the codec lives (C).** In the title. The encoder, decoder,
+   voice detection and voice-mail writer are XVOICE library code linked
+   into .text (0x3345xx to 0x337fxx) and run recompiled. The host provides
+   only the two USB media objects.
+   - Encoder 0x336d98 (pcm, sequence, out), one call per 20 ms frame, around
+     the codec core 0x3377e0. From a DPC (fs:[0x58] set) it runs on the
+     stack at [0x484394] with the FP state saved (0x336d39). Encoder state
+     is 0x70 bytes, made at 0x3349da and set up at 0x336e7c.
+   - Voice detection 0x336ea6: a 200 ms hangover (20 ms per quiet frame
+     up to 0xc8). It passes 600 to the detector while quiet and 800 while
+     talking (I: a level threshold).
+   - Decoder side: 0x335838 splits a buffer into 10-byte frames and queues
+     each with 0x336bed. Each tick, 0x336ae5 takes the frame that is due.
+   - "SC.01.08.00" sits at 0x417580 beside the WAVE fourccs (I: a
+     Voxware SC-family codec, version 1.8).
+   - The media-object slots the engine calls: +0x04 Release (0x334bc6) and
+     +0x10 Process(this, src, dst) (0x334d0c). The microphone gets a null
+     src and a packet as dst; the headphone gets a packet as src. An
+     XMEDIAPACKET is 24 bytes: +0x00 buffer, +0x04 max size 0x280, +0x10
+     the packet index as context (0x334c43, 0x334c74). Each object has two
+     packets (maxAttachedPackets 2, 0x500-byte buffers from 0x3351d7). The
+     completion callbacks 0x3351a9 (mic) and 0x3351c0 (headphone) take
+     (stream context, packet context, status). They act only on status 0
+     and pass the packet to 0x334ca5 or 0x334d1f, which fill or drain it and
+     submit it again with Process.
+   - The factory 0x411143 takes (type, port, max packets, format, callback,
+     context, out), calls XPP's 0x410f0c, then stores the callback at
+     object +0x10 and the context at +0x14. 0x410f0c wants a rate from the
+     table at 0x408890 within mask 0x1f (8 to 24 kHz). It fails with
+     0x8007048f when the port has no device, 0x80070020 when the object is
+     already open, and 0x8007000e when XPP's device counts (0x408888 mic,
+     0x408884 headphone) are zero. The engine opens the microphone at
+     0x335466 with 2 packets, the format at 0x484290, callback 0x3351a9 and
+     out [port object +4]. It opens the headphone with 0x3351c0 and out
+     [+8], only when [0x484390] is set (0x332f86, from the engine config).
+2. **The 10-byte frame (C).** A little-endian u16 header, then 8 bytes of
+   codec payload (0x336dd7 sets the payload size to 8).
+   - Header = sequence << 4 | spurt. The sequence is 12 bits and wraps at
+     0xfff (0x33481b). The spurt is a 4-bit counter at encoder +4; voice
+     detection bumps it when talk starts again after silence (0x336f00).
+   - The receiver (0x336bed) takes the sequence from the high 12 bits. When
+     the low nibble changes, it resets the decoder (0x3365bb).
+   - Silence is not sent at all: detection stops the frames. The frame has
+     no silence marker (I: none found).
+   - The game's voice record (0x55e10): byte 0 is flags and byte 1 is an
+     entry count of 1 to 16. Each entry is 11 bytes (u8 talker below 2,
+     then the frame) or, when relayed, 13 bytes (u8 talker, u16 forward
+     mask, frame). A peer clears its own bit, plays the frame
+     (0x53890(frame, 10)) and forwards the rest (0x55b40). This corrects
+     1.3: the 16-entry walk is 0x55e10. 0x564c0 walks a different list
+     (0x170-byte entries).
+3. **The bitrate and PCM (C).** Frames are 20 ms: the DPC 0x332f4c calls
+   0x332b6d(20). Ten bytes per 20 ms is 4000 bps on the wire, 3200 bps of
+   it payload.
+   - The microphone and headphone objects use 16 kHz 16-bit mono PCM: the
+     WAVEFORMATEX at 0x484290, filled by the engine init 0x332f67 (tag 1,
+     1 channel, 16000 Hz, 32000 bytes/s, align 2, 16 bits).
+   - Packets are 640 bytes, which is 320 samples or 20 ms. The encoder
+     copies 640 bytes a frame (0x33469f). The headphone packet is built
+     from a 32-bit mix, taking the high 16 bits of each sample (0x334d1f).
+   - The decoder's own output packets are 320 bytes (0x33586d). (I: the
+     codec runs at 8 kHz inside, and the engine converts.)
+   - A voice record carries at most 16 frames (0x55e10). (I: one frame per
+     talker per tick in practice.)
+4. **The voice-message WAVE header (C).** XVOICE writes it at 0x337004
+   (called from 0x33482b). It is 92 bytes:
+   - `RIFF`, size, `WAVE`, `fmt ` with chunk size 64.
+   - Format tag 0x000a, 1 channel, 8000 Hz, 625 bytes/s (5 kbps), the
+     codec's block align, 16 bits, cbSize 46.
+   - 46 bytes of codec parameters, then `data` and its size.
+
+   0x3370ca sets 8000 Hz, 1 channel, 625 bytes/s and a parameter of 5
+   before it opens the voice-mail codec (0x337ece). 0x53db0 checks only
+   `RIFF`, `WAVE`, `fmt ` and a length over 16.
+
+   0x484290 is not the message format: it is the headset's 16 kHz PCM
+   (item 3). (I: property 0x3c2's value 1 is Live's codec id for this
+   format, not the WAVE tag, which is 0x000a.)
+
+   (I: 15 s at 625 bytes/s is 9375 bytes plus the 92-byte header, well
+   under 0x499a. 0x499a is 92 bytes plus 30 s.)
+5. **Lost and late frames (C).** 0x336384 places a frame by its sequence,
+   in a window worked out from the clock (0x320d00 divides the time by the
+   frame period at +0x0c). Frames outside the window are counted at
+   +0xa4; enough of them in a row reset the timeline to the new sequence
+   (0x336a85). Old frames from the same spurt are counted at +0x88.
+
+   Each tick, 0x336ae5 takes the frame that is due. If it is missing, the
+   previous frame is played once more with its sequence plus one (flag
+   +0xa0, 0x336b23). After that there is nothing, so silence, until frames
+   come again.
+
+   The engine keeps its own time, so the host must complete headphone and
+   microphone packets on a steady 20 ms cadence and need not report loss.
+6. **The gates.**
+   - 0x4c99b8 (C) is set to 1 at 0x5327f, at the end of the game's voice
+     init 0x53210 (called from the game init at 0x8dd36). Every voice
+     wrapper checks it, together with 0x476fcc.
+   - 0x4c99a8 (C) is one dword per controller, written by 0x54fc0 and read
+     by 0x54f90. 0x536b0 refuses voice when it is 3. (I: 3 means voice is
+     off or banned for that player.)
+
+What this means for slice 3: no codec work. The host implements the
+factory 0x411143 as two media objects per port with a vtable whose
+Process takes 640-byte 16 kHz packets and calls the stored callback with
+status 0 when one completes. The XPP code under it (0x410f0c) stays
+unused.
 
 ### 3.4 Transport
 
@@ -500,9 +583,9 @@ Each is its own slice, with tests:
 1. **Mute list**: server events, endpoints in both homes, HLE Add, Remove
    and Get, and the dashboard list (built). Useful on its own: the game's
    muted icons work, and it needs nothing from the codec.
-2. **Trace the codec** (3.3, "What to trace") and write it up here: where it
-   lives, the frame layout, the bitrate, the PCM format and the voice-mail
-   WAVE header. No code.
+2. **Trace the codec** (3.3, "Trace results"): where it lives, the frame
+   layout, the bitrate, the PCM format and the voice-mail WAVE header. No
+   code (done: the codec is in the title).
 3. **Communicator presence and the media objects with a fake `VoiceIo`**:
    the game offers voice, the real engine encodes scripted PCM into frames
    that go out in its packets, a second machine's engine decodes them to
@@ -514,9 +597,6 @@ Each is its own slice, with tests:
    with the size and header check, inbox delivery (this depends on the
    inbox HLE delivering messages at all).
 6. **Voice-message reports and admin playback.**
-
-If the trace (2) finds the codec is not in the title, slice 3 grows a
-bit-exact codec object before anything else in it.
 
 ## 6. Decisions and open questions
 
@@ -538,16 +618,12 @@ Decided by the user on 2026-11-18:
 
 Still open, each with this design's recommendation marked **proposed**:
 
-1. The codec trace (3.3, "What to trace"): where the codec lives, the frame
-   layout, the bitrate and PCM format, and the voice-mail WAVE header.
-   **Proposed:** do it as its own slice (5, step 2) before any media-object
-   code, and record the results in this document.
-2. What 0x4c99b8 (the global gate) and 0x4c99a8 (value 3 blocks voice) are
-   set by, and what port value 4 means in the engine calls. **Proposed:**
-   trace alongside the codec; until then leave both as the game sets them.
-3. Which UI reads the friend-row voice bit, and what tag 0x581 holds on game
+1. What port value 4 means in the engine calls, and which of the game's
+   states writes 3 to 0x4c99a8 (the gates themselves are traced in 3.3,
+   item 6). **Proposed:** leave both as the game sets them.
+2. Which UI reads the friend-row voice bit, and what tag 0x581 holds on game
    invites. **Proposed:** leave until slice 5; presence already forwards
    the flag.
-4. If pause-settings adds a per-player mute row: **proposed** that it writes
+3. If pause-settings adds a per-player mute row: **proposed** that it writes
    through to the Live mute list when signed in rather than keeping its own
    (4).
