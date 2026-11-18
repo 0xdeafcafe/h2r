@@ -553,7 +553,22 @@ bound by name, posed at the middle frame of base animations and skinned
 both ways as for the bipeds. Every node of both models finds its graph
 node. Largest vertex error per weapon over 5 to 8 animations: assault
 rifle 1.2e-4, pistol 1.5e-4, plasma rifle 5.4e-5, needler 6.0e-5,
-rocket launcher 6.3e-5 (the i16 quantisation).
+rocket launcher 6.3e-5 (the i16 quantisation). Until converter version
+59 the arms and the weapons' first-person models carried the transposed
+inverse frames (Nodes, above), so the engine drew them as a large flat
+shape over the view.
+
+**The first-person body** (the representation's `+0x8`) stays Halo 2's,
+and the engine skips it for a Halo 1 player (E). The first-person draw
+list (`0x00165f16`) reads the representation's arms (`+0x4`) and body
+(`+0xc`) datums (`0x00165fdb`, `0x00165fde`), adds the arms when the
+state's flag `4` is set and each weapon when its flag `2` is, and adds the
+body last, posed with the third-person unit's own node matrices
+(`0x000b8c00`), only when the body's `mode` and the unit's have the same
+node count (`+0x48`, `0x001661d8`) and the same `+0x44` (`0x001661e0`).
+Halo 2's body has the Chief's 33 nodes and his `+0x44` (V5, 05a); a converted Halo 1 biped (the
+cyborg, 19 nodes) does not, so the body is never drawn. Halo 1 has no
+first-person body.
 
 ## Needs a game run
 

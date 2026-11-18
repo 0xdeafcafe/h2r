@@ -226,6 +226,22 @@ fn retail_h2_biped_skinning() {
         .map(|(_, _, id)| node_names(&mut map, *id, 0x48, 0x60))
         .unwrap_or_default();
     println!("fp arms nodes {}: {arms:?}", arms.len());
+    // The first-person body is drawn with the third-person unit's node
+    // matrices, only when the two `mode`s agree on the node count (+0x48)
+    // and +0x44 (E 0x001661d8, 0x001661e0): the Chief's do.
+    let header = |map: &mut map::Map<std::io::Cursor<Vec<u8>>>, suffix: &str| {
+        tags_list.iter().find(|(g, n, _)| g.0 == *b"mode" && n.ends_with(suffix)).map(|(_, _, id)| {
+            let tag = map.read_tag_bytes(*id).unwrap();
+            (h1::u32_at(&tag, 0x48), h1::u32_at(&tag, 0x44))
+        })
+    };
+    if let (Some(body), Some(chief)) = (
+        header(&mut map, "masterchief\\fp_body\\fp_body"),
+        header(&mut map, "masterchief\\masterchief"),
+    ) {
+        println!("fp_body (nodes, +0x44) {body:?}, the Chief's {chief:?}");
+        assert_eq!(body, chief);
+    }
     for (g, name, id) in &tags_list {
         if g.0 == *b"mode" && name.contains("\\fp\\") {
             let n = node_names(&mut map, *id, 0x48, 0x60);
