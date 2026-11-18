@@ -117,7 +117,7 @@ impl Prepared {
         let mut report = unpin_all(&pinned, &mut src, &mut fresh, &[section], &bounds, false)?;
         // The precision swaps' collections are named by no placement: kept
         // for `boot::precision` to swap in at game start.
-        // So is each owner's Halo 2 HUD, for `boot::hud` (docs/game/hud.md).
+        // So is each owner's Halo 2 HUD, for `boot::hud_swap` (docs/game/hud.md).
         let huds = self.hud_swaps();
         let mut keep: Vec<TagId> = self.applied.precision.iter().map(|p| p.1).collect();
         keep.extend(huds.iter().map(|h| h[2]));

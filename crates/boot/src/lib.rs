@@ -30,7 +30,11 @@ pub mod fallback;
 pub mod fov_row;
 pub mod game_glue;
 pub mod health;
+pub mod h1_options;
+pub mod h1_options_row;
 pub mod hud;
+pub mod hud_swap;
+pub mod h1_variants;
 pub mod precision;
 pub mod render_thread;
 pub mod host_perf;
@@ -712,7 +716,9 @@ pub fn run_hosted_with_live(
     // is unreachable (docs/live/live.md, "Client HLE: Live not set up").
     live_notice::install(&loaded.runtime, live).context("installing the Live notice")?;
     std::fs::create_dir_all(&opts.data_root)?;
-    let cfg = vfs::Config::new(&opts.data_root, x.certificate.title_id);
+    let mut cfg = vfs::Config::new(&opts.data_root, x.certificate.title_id);
+    // Converted Halo 1 maps follow the sandbox chosen per game (h1_variants).
+    cfg.variants = h1_variants::mp_variants();
     if opts.xapi && host.input.is_none() {
         let (input, keyboard) = input::InputManager::with_keyboard_pad(Default::default())?;
         host.input = Some(input);
@@ -729,15 +735,10 @@ pub fn run_hosted_with_live(
     // under T:\$c, which the main menu reads for its map list
     // (docs/game/maps.md §4); before the VFS lists that folder.
     new_maps::install_at_boot(&opts.data_root, &opts.disc);
-    // The health model follows the sandbox the converted Halo 1 maps were
-    // just installed in (docs/game/health.md).
-    // The VFS serves the same variant (docs/game/h1-multiplayer.md).
-    let halo1_sandbox = {
-        let (store, _) = setting_defs::load(&opts.data_root, &[]);
-        let sandbox = setting_defs::halo1_sandbox(&store);
-        health::set_halo1_sandbox(sandbox == "h1");
-        sandbox
-    };
+    // The Halo 1 maps' sandbox and the campaign's assets start as the
+    // settings say; the pregame screen changes them per game, and the VFS
+    // and the health model follow (h1_variants, docs/game/h1-multiplayer.md).
+    let halo1_sandbox = h1_variants::init_from_store(&setting_defs::load(&opts.data_root, &[]).0);
     // A second campaign (docs/game/multiple-campaigns.md): read before the
     // VFS mounts, which serves its converted maps.
     let campaigns = campaigns::boot_state(&opts.data_root, &opts.disc);
@@ -854,6 +855,22 @@ pub fn run_hosted_with_live(
     let campaigns = campaigns.map(campaign_menu::prepare);
     layout_glue::install(&loaded.runtime, &mut features, model).context("installing the button layouts")?;
     campaign_menu::install(&loaded.runtime, &mut features, campaigns).context("installing the campaigns")?;
+    // The Halo 1 / Halo 2 options (docs/game/h1-multiplayer.md "Halo 1
+    // options"): the switches follow the settings, the HUD style is picked
+    // at each game start, and a custom game's Game Setup gets the Halo 1
+    // Options row while its map is a converted Halo 1 map.
+    if let Some(store) = host.settings.as_ref() {
+        h1_options::install_switches(store);
+        let screen = Arc::new(h1_options::OptionsScreen { store: Arc::clone(store) });
+        let class = h1_options_row::class(screen, skulls_menu::DESCRIPTION_TEXT, skulls_menu::LIST_LAYOUT);
+        if let Err(e) = features.add(&class) {
+            eprintln!("h1 options: {e}");
+        }
+        features
+            .add(&h1_options_row::SetupRow { data_root: opts.data_root.clone() })
+            .map_err(|e| anyhow::anyhow!("h1 options row: {e}"))?;
+    }
+    features.add(&hud::Hud).map_err(|e| anyhow::anyhow!("hud: {e}"))?;
     // The party privacy as the Live session's visibility, and the Live
     // menu's Custom Game Browser and Content Download rows (registered with the layouts above;
     // docs/live/live-custom-games.md).
@@ -914,8 +931,8 @@ pub fn run_hosted_with_live(
     // activation, from the swaps each package's manifest records.
     precision::install(&mut features, &packages).context("installing the precision swaps")?;
     // Halo 1's or Halo 2's HUD on converted Halo 1 maps (docs/game/hud.md):
-    // the player's HUD references at game activation, from `hud::mode`.
-    hud::install(&mut features, &packages, &opts.data_root).context("installing the HUD swap")?;
+    // the owners' HUD references at game activation, by `hud::style_for_map`.
+    hud_swap::install(&mut features, &packages, &opts.data_root).context("installing the HUD swap")?;
     // Stronger aim assist (docs/game/aim-assist.md): the weapons' autoaim and
     // magnetism at each map load, from the Aim Assist setting (Auto: Strong
     // while the touch controls show). Headless runs keep retail.

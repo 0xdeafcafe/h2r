@@ -185,6 +185,7 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
         .collect();
     let s = Scenario::read(&mut out).unwrap();
     let block = s.block(BlockKind::NetgameEquipment);
+    let mem = memory(&mut out);
     let mut ours = std::collections::BTreeMap::<String, usize>::new();
     for i in 0..block.len() {
         let e = block.entry(i).unwrap();
@@ -193,22 +194,56 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
             FourCC(w(NETGAME_ITEM).to_be_bytes()),
             TagId(w(NETGAME_ITEM + 4)),
         );
-        let (g, name) = names
+        let (g, cname) = names
             .get(&id)
             .unwrap_or_else(|| panic!("spawn {i}: {group} {id:?} is no tag"));
-        assert_eq!(*g, group, "spawn {i}: {name}");
-        // Every spawn names a tag this conversion added: no Halo 2 item.
-        let slot = (id.0 & 0xffff) as usize;
-        assert!(slot >= first, "spawn {i} keeps the base's {group} {name}");
-        assert_eq!(id, added_datum(slot), "spawn {i}: {name}");
-        let o = ctx
-            .resolve_object(id)
-            .unwrap_or_else(|e| panic!("spawn {i}: {name}: {e}"));
+        assert_eq!(*g, group, "spawn {i}: {cname}");
+        // Every spawn names a collection this conversion added: the
+        // spawner `0x0015aad0` places only what an `itmc` or `vehc` rolls.
         assert!(
-            o.model.as_ref().is_some_and(|m| m.render_model.is_some()),
-            "spawn {i}: {name} has no render model"
+            group == FourCC(*b"itmc") || group == FourCC(*b"vehc"),
+            "spawn {i}: {group} {cname} is no collection"
         );
-        *ours.entry(format!("{group} {name}")).or_default() += 1;
+        let slot = (id.0 & 0xffff) as usize;
+        assert!(slot >= first, "spawn {i} keeps the base's {group} {cname}");
+        assert_eq!(id, added_datum(slot), "spawn {i}: {cname}");
+        // Its entries (`+0`, `0x10` each, the object at `+4`) name objects
+        // this conversion added, each with a render model.
+        let at = out.tag(id).unwrap().location.unwrap().address;
+        let n = rw(&mem, at) as usize;
+        let entries = rw(&mem, at + 4);
+        assert!(n > 0, "spawn {i}: {cname} is empty");
+        for k in 0..n as u32 {
+            let e = entries + k * 0x10;
+            let (og, oid) = (FourCC(rw(&mem, e + 4).to_be_bytes()), TagId(rw(&mem, e + 8)));
+            let (g, name) = names
+                .get(&oid)
+                .unwrap_or_else(|| panic!("spawn {i}: {cname} entry {k} is no tag"));
+            assert_eq!(*g, og, "{cname} entry {k}: {name}");
+            let want: &[&[u8; 4]] = if group == FourCC(*b"vehc") {
+                &[b"vehi"]
+            } else {
+                &[b"weap", b"eqip"]
+            };
+            assert!(
+                want.iter().any(|w| FourCC(**w) == *g),
+                "{cname} entry {k}: {g} {name}"
+            );
+            assert!(
+                (oid.0 & 0xffff) as usize >= first,
+                "{cname} entry {k}: the base's {name}"
+            );
+            let o = ctx
+                .resolve_object(oid)
+                .unwrap_or_else(|e| panic!("spawn {i}: {name}: {e}"));
+            assert!(
+                o.model.as_ref().is_some_and(|m| m.render_model.is_some()),
+                "spawn {i}: {name} has no render model"
+            );
+            if k == 0 {
+                *ours.entry(format!("{g} {name}")).or_default() += 1;
+            }
+        }
     }
     assert_eq!(block.len(), placed);
     for (n, c) in &ours {
@@ -241,6 +276,24 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
         assert!(o.model.as_ref().is_some_and(|m| m.render_model.is_some()));
         eprintln!("player representation {e}: {name}");
         player = id;
+    }
+    // The player's camera sits at its model's head marker and its weapons
+    // attach at the hand markers (h1objects::rebuild::UNIT_MARKERS): each
+    // names a marker group of the converted render model.
+    {
+        let strings = out.strings().to_vec();
+        let s = |v: u32| strings.get((v & 0xff_ffff) as usize).cloned().flatten();
+        let bipd = out.tag(player).unwrap().location.unwrap().address;
+        let hlmt = out.tag(TagId(rw(&mem, bipd + 0x38))).unwrap().location.unwrap().address;
+        let mode = out.tag(TagId(rw(&mem, hlmt + 4))).unwrap().location.unwrap().address;
+        let markers: Vec<String> = (0..rw(&mem, mode + 0x58))
+            .filter_map(|k| s(rw(&mem, rw(&mem, mode + 0x5c) + k * 0xc)))
+            .collect();
+        for (at, want) in [(0xd4, "head"), (0x158, "right hand"), (0x15c, "left hand")] {
+            let got = s(rw(&mem, bipd + at));
+            assert_eq!(got.as_deref(), Some(want), "player unit +{at:#x}");
+            assert!(markers.iter().any(|m| m == want), "{want} in {markers:?}");
+        }
     }
     // The player's HUD is Halo 1's (docs/game/hud.md): every HUD
     // interface names the converted unhi's nhdt, whose widgets draw Halo
@@ -449,6 +502,13 @@ fn bloodgulch_shaders_all_have_their_compiled_postprocess_in_both_sandboxes() {
         );
     }
     assert!(bad.is_empty(), "{} shaders: {bad:#?}", bad.len());
+}
+
+/// The word at virtual address `a`.
+fn rw(mem: &tags::schema::Memory, a: u32) -> u32 {
+    mem.slice(a, 4)
+        .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+        .unwrap_or_else(|| panic!("{a:#x} is outside the metadata"))
 }
 
 /// The metadata of `m` as one region, for reading blocks wherever they lie.

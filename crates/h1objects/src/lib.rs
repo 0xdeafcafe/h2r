@@ -21,9 +21,9 @@
 //!   template's `phmo`), and everything else (effects, sounds, HUD, first
 //!   person, physics) stays the template's, listed in the report.
 //! - [`rebuild`] writes objects from typed definitions ([`tags::defs`])
-//!   with no template bytes instead: a vehicle no template row names
-//!   (a10's cryotube, chairs, fighterbomber, Halo ring; always), and
-//!   scenery (opt-in, [`convert::Options::rebuild`]).
+//!   with no template bytes instead: every vehicle, machine, control,
+//!   light fixture and scenery object, and bipeds with a role
+//!   ([`convert::Options::rebuild_bipeds`]).
 //!
 //! The output is a [`convert::Tree`] of [`h1models::Converted`] tags,
 //! installed together into a [`map::build::TagSet`] made from the base map
@@ -35,6 +35,7 @@
 //! `#[ignore]` tests.
 #![forbid(unsafe_code)]
 
+pub mod arsenal;
 pub mod base;
 pub mod coll;
 pub mod convert;

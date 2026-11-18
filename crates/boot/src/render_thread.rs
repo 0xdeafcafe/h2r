@@ -104,7 +104,7 @@ mod tests {
         crate::skulls_custom::install(&mut r, store.clone(), None, None).unwrap();
         crate::health::install(&mut r).unwrap();
         crate::precision::install(&mut r, std::path::Path::new("")).unwrap();
-        crate::hud::install(&mut r, std::path::Path::new(""), std::path::Path::new("")).unwrap();
+        crate::hud_swap::install(&mut r, std::path::Path::new(""), std::path::Path::new("")).unwrap();
         crate::aim_assist::install(&mut r, store).unwrap();
         r.add(&feature::leaves::EngineLeaves).unwrap();
         r.add(&feature::render_timing::RenderTiming::new()).unwrap();

@@ -80,14 +80,14 @@ of the reference at `+0x2b0`), a unit's from its HUD interfaces. Both are
 loaded tag data, so rewriting the datum before the game starts changes what
 is drawn.
 
-`boot::hud` (feature `h1-hud`):
+`boot::hud` is the switch (the player's choice, `halo1.hud` on the Halo 1
+options screens: `set_choice`, `style_for_map`, `style`; Halo 1's by
+default, on Halo 1 maps only). `boot::hud_swap` (feature `h1-hud`) draws
+it:
 
-- `set_mode(HudMode::Halo1 | HudMode::Halo2)`, `mode()`: the pre-game
-  option calls `set_mode`; Halo 1 is the default. It stays until set
-  again.
 - Before `GAME_ACTIVATE`, `apply` points every recorded owner's HUD
   references (a `bipd`'s HUD interfaces, a `weap`'s `+0x2b0`) at the HUD
-  the mode asks for, both ways; a target that is not a loaded `nhdt`, or
+  of `hud::style_for_map(map, hud::halo1_chosen())`, both ways; a target that is not a loaded `nhdt`, or
   an owner that is not a loaded `bipd`/`weap`, is left alone.
 - The pairs come from the package manifest, `[[variant]] hud = [{ owner,
   halo1, halo2 }]` (`content::HudSwap`), read for Halo 1 sandbox variants,
@@ -127,7 +127,7 @@ through the from-scratch rebuild by group and name (`h1convert::fresh`,
   widget bytes (inputs, shader, state, no special type or effects,
   sequences, offsets, registration), the `nhdt` holding only its widgets.
 - `cargo test -p boot --lib hud`: the swap both ways on bipeds and
-  weapons, other HUDs left alone, refused targets, the mode.
+  weapons, other HUDs left alone, refused targets, the campaign tables.
 - `H1_ISO=... cargo test -p h1objects --test hud_disc -- --ignored`: every
   `unhi` on every Halo 1 map reads (root at least `0x56c`), each element a
   sprite or image of a `bitm`.

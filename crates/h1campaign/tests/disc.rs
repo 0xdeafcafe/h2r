@@ -1052,6 +1052,16 @@ fn every_campaign_level_converts() {
                 if !bad.is_empty() {
                     failed.push(format!("{level}: sweep {bad:#?}"));
                 }
+                // The globals' grenades are Halo 1's, converted.
+                let grenades = globals_grenades(&mut m);
+                println!("  grenades: {grenades:?}");
+                if grenades.len() != 2
+                    || !grenades
+                        .iter()
+                        .all(|(e, p)| e.starts_with("weapons\\") && p.starts_with("weapons\\"))
+                {
+                    failed.push(format!("{level}: grenades {grenades:?}"));
+                }
                 for g in done.report.groups.iter().take(8) {
                     println!("  memory: {} built {:#x} pinned {:#x}", g.0, g.1, g.2);
                 }
@@ -1063,6 +1073,29 @@ fn every_campaign_level_converts() {
         }
     }
     assert!(failed.is_empty(), "{failed:#?}");
+}
+
+/// The equipment and projectile names of each grenade type of a map's
+/// globals (`h1convert::globals`).
+fn globals_grenades(m: &mut Map<Cursor<Vec<u8>>>) -> Vec<(String, String)> {
+    use h1convert::globals::{GRENADE_EQUIPMENT, GRENADE_PROJECTILE, GRENADE_SIZE, GRENADES};
+    let t = m.tags().iter().find(|t| t.group.0 == *b"matg").unwrap().clone();
+    let b = m.read_tag_bytes(t.id).unwrap();
+    let address = t.location.unwrap().address;
+    let word = |at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
+    let first = (word(GRENADES + 4) - address) as usize;
+    let name = |m: &Map<Cursor<Vec<u8>>>, at: usize| {
+        m.tag(TagId(word(at + 4)))
+            .ok()
+            .and_then(|t| t.name.clone())
+            .unwrap_or_default()
+    };
+    (0..word(GRENADES) as usize)
+        .map(|i| {
+            let e = first + i * GRENADE_SIZE;
+            (name(m, e + GRENADE_EQUIPMENT), name(m, e + GRENADE_PROJECTILE))
+        })
+        .collect()
 }
 
 struct Mem(Vec<u8>);

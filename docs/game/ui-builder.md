@@ -109,11 +109,31 @@ directions are taken before the list sees them (`list_class::Buttons`).
 Commands (output only to a directory you name, never the repository):
 
 ```sh
-h2 ui preview <screen> [--state NAME|all] [--out DIR]   # PNG + JSON per state
-h2 ui sheet [--out DIR]                                  # every screen x state, one contact sheet
+h2 ui preview list                                       # screens and their states
+h2 ui preview <screen> [--state NAME|all] [--focus N] [--synthetic] [--out DIR]
+h2 ui sheet [--synthetic] [--out DIR]                    # every screen x state, and sheet.png
 ```
 
-The sheet goes to `$RUSH_KEEP/ui-builder/` by default.
+`preview` writes to `$TMPDIR` by default, and `sheet` to
+`$RUSH_KEEP/ui-builder/`. `--synthetic` draws without a disc.
+
+**Built (slice 2).**
+
+- `ui_kit::view` holds `View`, `Widget`, `Art`, `Metrics` and `Synthetic`,
+  plus `Geometry` and its disc-free `Geometry::fallback`. The disc test
+  checks the fallback against the disc, field for field.
+- `view_of` turns today's `ScreenSpec`s into views.
+- `preview::Source` has two implementations: `Disc` and `SyntheticSource`.
+  `render_view` draws a view from either; `write_states` and `write_sheet`
+  write the files.
+- `screens::states` names each screen's states: a list's first, middle and
+  last focus, and the sign-in prompt's 11 pages.
+- Sheet labels use a built-in 3 by 5 pixel font, so a synthetic sheet is
+  readable too. `cargo test` draws the synthetic sheet; the disc test with
+  `H2_UI_SHEET_DIR=<dir>` draws the real one.
+
+`Page` (the state machine) and the dialog kinds are not built yet. Today's
+screens come in as `ScreenSpec`s.
 
 ## The checks
 

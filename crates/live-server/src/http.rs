@@ -14,14 +14,11 @@ use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get, post};
-use live_proto::sign::TOKEN_LEEWAY_S;
-use live_proto::{
-    ClientMessage, ErrorBody, ErrorCode, Gamertag, Health, StreamMessage, TitleId, Xuid, lxm,
-};
+use live_proto::{ClientMessage, ErrorBody, ErrorCode, Gamertag, Health, TitleId, Xuid, lxm};
 
 use crate::app::{ApiError, Live, MAX_TITLE_FILE, not_found};
-use crate::sessions::Viewer;
 use crate::store::Query;
+use crate::stream::{Out, StreamFilter, StreamSession};
 
 /// Every request body but title files.
 pub const MAX_BODY: usize = 64 * 1024;
@@ -32,7 +29,7 @@ const MAX_LIMIT: usize = 1000;
 /// How long a `--private` stream waits for its auth message.
 pub(crate) const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
 /// WebSocket close code for a missing, bad or expired token.
-pub(crate) const CLOSE_UNAUTHORIZED: u16 = 4401;
+pub(crate) const CLOSE_UNAUTHORIZED: u16 = crate::stream::CLOSE_UNAUTHORIZED;
 
 type Shared = State<Arc<Live>>;
 
@@ -199,7 +196,8 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
             post(crate::admin::grant_admin).delete(crate::admin::revoke_admin),
         )
         .layer(DefaultBodyLimit::max(MAX_TITLE_FILE));
-    // Uploads stream to disk under their own caps (ContentLimits).
+    // Uploads stream into the blob store under their own caps
+    // (ContentLimits, StorageLimits).
     let uploads = Router::new()
         .route(
             "/v1/content/{sha256}",
@@ -603,63 +601,13 @@ async fn put_file(
     Ok(json(StatusCode::OK, &published))
 }
 
-/// What a stream reader asked for.
-struct StreamFilter {
-    from: Option<u64>,
-    /// `?stream=`: events of one stream only.
-    stream: Option<String>,
-    types: Vec<String>,
-    exclude: Vec<String>,
-    /// `?games=`: live frames only for these games (default: all).
-    games: Vec<String>,
-    /// `?frames=packed`: live frames as packed binary messages
-    /// (docs/live/live-telemetry.md, Packed frames); JSON otherwise.
-    packed: bool,
-    /// `?auth=1`: the first message is a `read` token, on a public server
-    /// too, so the reader sees what that account may (a private server
-    /// always asks for one).
-    auth: bool,
-}
-
-impl StreamFilter {
-    fn query(&self, after: u64, limit: usize) -> Query {
-        Query {
-            after,
-            limit,
-            stream: self.stream.clone(),
-            types: self.types.clone(),
-            exclude: self.exclude.clone(),
-        }
-    }
-}
-
 #[cfg(feature = "native")]
 async fn stream(
     State(live): Shared,
     Params(p): Params<HashMap<String, String>>,
     ws: Result<WebSocketUpgrade, axum::extract::ws::rejection::WebSocketUpgradeRejection>,
 ) -> ApiResult<Response> {
-    let from = p
-        .get("from")
-        .filter(|v| !v.is_empty())
-        .map(|v| {
-            v.parse::<u64>()
-                .map_err(|_| invalid("from must be a position"))
-        })
-        .transpose()?;
-    let filter = StreamFilter {
-        from,
-        stream: p.get("stream").filter(|s| !s.is_empty()).cloned(),
-        types: list_param(&p, &["types", "type"]),
-        exclude: list_param(&p, &["exclude"]),
-        games: list_param(&p, &["games"]),
-        packed: match p.get("frames").map(String::as_str) {
-            None | Some("") | Some("json") => false,
-            Some("packed") => true,
-            Some(_) => return Err(invalid("frames must be json or packed")),
-        },
-        auth: matches!(p.get("auth").map(String::as_str), Some("1" | "true")),
-    };
+    let filter = StreamFilter::from_params(&p)?;
     let ws = ws.map_err(|_| invalid("/v1/stream is a WebSocket"))?;
     Ok(ws
         .max_message_size(MAX_WS_MESSAGE)
@@ -668,21 +616,6 @@ async fn stream(
                 eprintln!("live: stream closed: {reason}");
             }
         }))
-}
-
-#[cfg(feature = "native")]
-pub(crate) async fn send_json<T: serde::Serialize>(
-    socket: &mut WebSocket,
-    msg: &T,
-) -> Result<(), axum::Error> {
-    let text = serde_json::to_string(msg).expect("serializes");
-    socket.send(Message::Text(text.into())).await
-}
-
-#[cfg(feature = "native")]
-async fn send(socket: &mut WebSocket, msg: &StreamMessage) -> Result<(), axum::Error> {
-    let text = serde_json::to_string(msg).expect("serializes");
-    socket.send(Message::Text(text.into())).await
 }
 
 #[cfg(feature = "native")]
@@ -705,225 +638,119 @@ pub(crate) fn auth_message(live: &Live, text: &str, method: &str) -> Result<i64,
     }
 }
 
-/// An auth message's `read` token: who reads, and when the token expires.
-fn stream_auth(live: &Live, text: &str) -> Result<(Viewer, i64), ApiError> {
-    match serde_json::from_str::<ClientMessage>(text) {
-        Ok(ClientMessage::Auth { token }) => live.read_viewer_until(&token),
-        _ => Err(ApiError::new(
-            ErrorCode::Unauthorized,
-            "expected {\"kind\":\"auth\",\"token\":...}",
-        )),
+/// Sends a session's messages. `Ok(false)`: it closed the socket.
+#[cfg(feature = "native")]
+pub(crate) async fn send_all(socket: &mut WebSocket, out: Vec<Out>) -> Result<bool, String> {
+    for o in out {
+        if !send_out(socket, o).await? {
+            return Ok(false);
+        }
     }
+    Ok(true)
 }
 
 #[cfg(feature = "native")]
-/// Sends every stored event after `last` that the filter keeps, then
-/// moves `last` to at least the position the read model had reached.
-async fn catch_up(
-    live: &Live,
-    socket: &mut WebSocket,
-    filter: &StreamFilter,
-    viewer: Viewer,
-    last: &mut u64,
-) -> Result<(), String> {
-    const PAGE: usize = 500;
-    let target = live.position();
-    loop {
-        let batch = live
-            .store()
-            .read(&filter.query(*last, PAGE))
-            .await
-            .map_err(|e| e.to_string())?;
-        for e in &batch {
-            // A hidden event is skipped, but the reader's place moves past it.
-            if let Some(w) = live.wire_for(e, viewer) {
-                send(socket, &StreamMessage::Event { event: Box::new(w) })
-                    .await
-                    .map_err(|e| e.to_string())?;
-            }
-            *last = e.position;
+async fn send_out(socket: &mut WebSocket, o: Out) -> Result<bool, String> {
+    let msg = match o {
+        Out::Text(t) => Message::Text(t),
+        Out::Binary(b) => Message::Binary(b),
+        Out::Close(code, reason) => {
+            close(socket, code, &reason).await;
+            return Ok(false);
         }
-        if batch.len() < PAGE {
-            *last = (*last).max(target);
-            return Ok(());
-        }
-    }
+    };
+    socket.send(msg).await.map_err(|e| e.to_string())?;
+    Ok(true)
 }
 
 #[cfg(feature = "native")]
-/// Replays from `from` (default: the head), says `caught_up`, then
-/// follows the dispatcher's feed. On a `--private` server the first
-/// message must be a token, and the socket closes when it expires unless
-/// the client sends a fresh one.
+/// Drives a [`StreamSession`] over axum's WebSocket: waits for the auth
+/// message when one is due, subscribes, lets the reader in, then follows
+/// the dispatcher's feed and the frame feeds. On a `--private` server the
+/// socket closes when the token expires unless the client sends a fresh
+/// one.
 async fn run_stream(
     live: Arc<Live>,
     mut socket: WebSocket,
     filter: StreamFilter,
 ) -> Result<(), String> {
-    let mut expires: Option<i64> = None;
-    let mut viewer = Viewer::Anonymous;
-    if live.policy().private || filter.auth {
+    let mut session = StreamSession::new(live.clone(), filter);
+    if session.awaits_auth() {
         let first = tokio::time::timeout(AUTH_TIMEOUT, socket.recv()).await;
         let result = match first {
-            Ok(Some(Ok(Message::Text(text)))) => stream_auth(&live, &text),
-            _ => Err(ApiError::new(
-                ErrorCode::Unauthorized,
-                "send an auth message first",
-            )),
+            Ok(Some(Ok(Message::Text(text)))) => session.on_text(&text),
+            _ => Err(StreamSession::auth_timed_out()),
         };
-        match result {
-            Ok((v, exp)) => {
-                viewer = v;
-                // A public server's reader keeps the socket past its
-                // token; a private one must send fresh tokens.
-                expires = live.policy().private.then_some(exp);
-            }
-            Err(e) => {
-                close(&mut socket, CLOSE_UNAUTHORIZED, &e.message).await;
-                return Ok(());
-            }
+        if let Err(close) = result {
+            send_out(&mut socket, close).await?;
+            return Ok(());
         }
     }
     // Subscribe before replaying, so nothing falls between the two. A
     // packed reader of one game hears only that game's batches; of more,
     // every tick. JSON readers take every frame as it comes.
+    let filter = session.filter().clone();
     let mut feed = live.feed();
     let mut packed = filter.packed.then(|| match filter.games.as_slice() {
         [one] => PackedFeed::Game(live.packed().subscribe_game(one)),
         _ => PackedFeed::All(live.packed().subscribe_all()),
     });
     let mut frames = (!filter.packed).then(|| live.frames());
-    let mut last = filter.from.unwrap_or_else(|| live.position());
-    catch_up(&live, &mut socket, &filter, viewer, &mut last).await?;
-    send(&mut socket, &StreamMessage::CaughtUp { position: last })
-        .await
-        .map_err(|e| e.to_string())?;
-    let probe = filter.query(0, 1);
-    let mut follow = crate::packed::Follow::default();
-    if filter.packed {
-        // Start each live game's stream at its last keyframe.
-        since_keyframes(&live, &mut socket, &filter, viewer, &mut follow).await?;
+    if !send_all(&mut socket, session.open().await?).await? {
+        return Ok(());
     }
     // The token's end: one timer, moved when a fresh token comes (not
     // made anew for every message).
-    let token_end = |exp: i64| {
-        let wait = (exp + TOKEN_LEEWAY_S - crate::app::now()).max(0) as u64;
+    let at = |deadline: i64| {
+        let wait = (deadline - crate::app::now()).max(0) as u64;
         tokio::time::Instant::now() + Duration::from_secs(wait)
     };
+    let mut deadline_for = session.deadline();
     let deadline =
-        tokio::time::sleep_until(expires.map_or_else(tokio::time::Instant::now, token_end));
+        tokio::time::sleep_until(deadline_for.map_or_else(tokio::time::Instant::now, at));
     tokio::pin!(deadline);
-    let mut deadline_for = expires;
     loop {
-        if deadline_for != expires {
-            deadline_for = expires;
-            if let Some(exp) = expires {
-                deadline.as_mut().reset(token_end(exp));
+        if deadline_for != session.deadline() {
+            deadline_for = session.deadline();
+            if let Some(d) = deadline_for {
+                deadline.as_mut().reset(at(d));
             }
         }
-        tokio::select! {
+        let out: Vec<Out> = tokio::select! {
             event = feed.recv() => match event {
-                Ok(e) => {
-                    if e.position > last {
-                        last = e.position;
-                        if let Some(w) = probe.matches(&e).then(|| live.wire_for(&e, viewer)).flatten() {
-                            send(&mut socket, &StreamMessage::Event { event: Box::new(w) }).await.map_err(|e| e.to_string())?;
-                        }
-                    }
-                }
+                Ok(e) => session.on_event(&e).into_iter().collect(),
                 // Fell behind the feed: re-read from the store.
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    catch_up(&live, &mut socket, &filter, viewer, &mut last).await?;
-                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => session.catch_up().await?,
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(()),
             },
             frame = recv_frame(&mut frames) => match frame {
-                Ok(f) if (filter.games.is_empty() || filter.games.contains(&f.frame.game_id)) && live.frame_shows(&f, viewer) => {
-                    socket.send(Message::Text(f.json_message())).await.map_err(|e| e.to_string())?;
-                }
+                Ok(f) => session.on_frame(&f).into_iter().collect(),
                 // Frames are best effort: a slow reader skips some.
-                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => Vec::new(),
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(()),
             },
-            batch = recv_packed(&mut packed) => {
-                let bytes = match batch {
-                    Packed::Tick(tick) => {
-                        let ids = tick.games.iter().map(|b| b.game_id.as_str());
-                        let shown: Vec<bool> = live
-                            .games_show(ids, viewer)
-                            .into_iter()
-                            .zip(&tick.games)
-                            .map(|(shows, b)| shows && (filter.games.is_empty() || filter.games.contains(&b.game_id)))
-                            .collect();
-                        follow.take_tick(&tick, &shown)
-                    }
-                    Packed::Game(b) => {
-                        if live.games_show([b.game_id.as_str()], viewer)[0] {
-                            follow.take_batch(&b)
-                        } else {
-                            None
-                        }
-                    }
-                    // A slow reader skips some, and picks its streams up
-                    // again from their last keyframes.
-                    Packed::Lagged => {
-                        since_keyframes(&live, &mut socket, &filter, viewer, &mut follow).await?;
-                        None
-                    }
-                    Packed::Closed => return Ok(()),
-                };
-                if let Some(bytes) = bytes {
-                    socket.send(Message::Binary(bytes)).await.map_err(|e| e.to_string())?;
-                }
+            batch = recv_packed(&mut packed) => match batch {
+                Packed::Tick(tick) => session.on_tick(&tick).into_iter().collect(),
+                Packed::Game(b) => session.on_game_batch(&b).into_iter().collect(),
+                Packed::Lagged => session.rejoin().into_iter().collect(),
+                Packed::Closed => return Ok(()),
             },
             msg = socket.recv() => match msg {
-                // Fresh tokens on a private stream; public streams ignore
-                // what clients send.
-                Some(Ok(Message::Text(text))) if expires.is_some() => match stream_auth(&live, &text) {
-                    Ok((v, exp)) => {
-                        viewer = v;
-                        expires = Some(exp);
-                    }
-                    Err(e) => {
-                        close(&mut socket, CLOSE_UNAUTHORIZED, &e.message).await;
-                        return Ok(());
-                    }
+                Some(Ok(Message::Text(text))) => match session.on_text(&text) {
+                    Ok(_) => Vec::new(),
+                    Err(close) => vec![close],
                 },
                 Some(Ok(Message::Close(_))) | Some(Err(_)) | None => return Ok(()),
-                Some(Ok(_)) => {}
+                Some(Ok(_)) => Vec::new(),
             },
-            _ = &mut deadline, if expires.is_some() => {
-                close(&mut socket, CLOSE_UNAUTHORIZED, "token expired").await;
-                return Ok(());
+            _ = &mut deadline, if deadline_for.is_some() => {
+                session.expired(crate::app::now()).into_iter().collect()
             }
+        };
+        if !send_all(&mut socket, out).await? {
+            return Ok(());
         }
     }
-}
-
-#[cfg(feature = "native")]
-/// Sends a packed reader each of its games' frames since the last
-/// keyframe that it does not have yet ([`crate::packed::Follow`]), in one
-/// message.
-async fn since_keyframes(
-    live: &Live,
-    socket: &mut WebSocket,
-    filter: &StreamFilter,
-    viewer: Viewer,
-    follow: &mut crate::packed::Follow,
-) -> Result<(), String> {
-    let mut out = Vec::new();
-    for f in live.frames_since_keyframe(&filter.games) {
-        if live.frame_shows(&f, viewer) {
-            follow.take_frame(&f, &mut out);
-        }
-    }
-    if out.is_empty() {
-        return Ok(());
-    }
-    socket
-        .send(Message::Binary(out.into()))
-        .await
-        .map_err(|e| e.to_string())
 }
 
 #[cfg(feature = "native")]

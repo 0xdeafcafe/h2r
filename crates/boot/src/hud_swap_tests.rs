@@ -75,24 +75,24 @@ fn huds(m: &FlatMemory) -> [u32; 3] {
 #[test]
 fn halo2_points_every_owner_at_halo2s_hud() {
     let mut m = world(H1_HUD, H1_HUD);
-    assert_eq!(apply(&mut m, &swaps(), HudMode::Halo2).unwrap(), 3);
+    assert_eq!(apply(&mut m, &swaps(), HudStyle::Halo2).unwrap(), 3);
     assert_eq!(huds(&m), [H2_HUD; 3]);
     // Again: nothing left to swap.
-    assert_eq!(apply(&mut m, &swaps(), HudMode::Halo2).unwrap(), 0);
+    assert_eq!(apply(&mut m, &swaps(), HudStyle::Halo2).unwrap(), 0);
 }
 
 #[test]
 fn halo1_puts_halo1s_hud_back() {
     // Guest memory outlives a game when the map stays loaded.
     let mut m = world(H2_HUD, H2_HUD);
-    assert_eq!(apply(&mut m, &swaps(), HudMode::Halo1).unwrap(), 3);
+    assert_eq!(apply(&mut m, &swaps(), HudStyle::Halo1).unwrap(), 3);
     assert_eq!(huds(&m), [H1_HUD; 3]);
 }
 
 #[test]
 fn a_reference_to_another_hud_is_left_alone() {
     let mut m = world(OTHER_HUD, H1_HUD);
-    assert_eq!(apply(&mut m, &swaps(), HudMode::Halo2).unwrap(), 1);
+    assert_eq!(apply(&mut m, &swaps(), HudStyle::Halo2).unwrap(), 1);
     assert_eq!(huds(&m), [OTHER_HUD, OTHER_HUD, H2_HUD]);
 }
 
@@ -100,19 +100,10 @@ fn a_reference_to_another_hud_is_left_alone() {
 fn a_target_that_is_not_a_loaded_nhdt_changes_nothing() {
     let mut m = world(H1_HUD, H1_HUD);
     let bad = [content::HudSwap { owner: CYBORG, halo1: H1_HUD, halo2: CYBORG }];
-    assert_eq!(apply(&mut m, &bad, HudMode::Halo2).unwrap(), 0);
+    assert_eq!(apply(&mut m, &bad, HudStyle::Halo2).unwrap(), 0);
     let gone = [content::HudSwap { owner: 0xe1f7_0007, halo1: H1_HUD, halo2: H2_HUD }];
-    assert_eq!(apply(&mut m, &gone, HudMode::Halo2).unwrap(), 0);
+    assert_eq!(apply(&mut m, &gone, HudStyle::Halo2).unwrap(), 0);
     assert_eq!(huds(&m), [H1_HUD; 3]);
-}
-
-#[test]
-fn the_mode_defaults_to_halo1_and_stays_until_set() {
-    assert_eq!(HudMode::from_code(0), HudMode::Halo1);
-    set_mode(HudMode::Halo2);
-    assert_eq!(mode(), HudMode::Halo2);
-    set_mode(HudMode::Halo1);
-    assert_eq!(mode(), HudMode::Halo1);
 }
 
 #[test]

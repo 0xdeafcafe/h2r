@@ -530,6 +530,51 @@ async fn invites_and_pings() {
     assert_eq!(r.json(), json!({"ok": true, "expires_in": 90}));
 }
 
+/// A Durable Object's server runs nothing on a timer: it says when the
+/// sweep is due, and sweeps when called.
+#[tokio::test]
+async fn a_driven_server_sweeps_when_called_at_the_time_it_gives() {
+    let policy = Policy {
+        presence_ttl_s: 1,
+        game_idle_s: 1,
+        sweep_every: Duration::from_millis(50),
+        ..Policy::default()
+    };
+    let h = start_driven(Arc::new(MemoryStore::new()), policy).await;
+    assert_eq!(h.live.sweep_due(), None, "nothing to watch");
+    assert!(!h.live.packed_active());
+    let pete = h.create("Pete").await;
+    assert_eq!(h.sign_in(&pete).await.status, StatusCode::CREATED);
+    let due = h.live.sweep_due().expect("presence to expire");
+    assert!(due > now() && due <= now() + 3, "{due} vs {}", now());
+    let id = h.start_game(&pete, two_player_game(&pete)).await;
+    let r = h
+        .post_batch(&pete, &id, h.batch(&pete, &id, &[score(60, 1, 0)]))
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED);
+
+    // Past the deadlines, nothing happens on its own.
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert!(h.live.sweep_due().unwrap() <= now());
+    assert_eq!(
+        h.get("/v1/presence").await.json()["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    // The host's alarm calls the sweep.
+    h.live.sweep().await;
+    assert_eq!(h.get("/v1/presence").await.json()["items"], json!([]));
+    let g = h.get(&format!("/v1/games/{id}")).await.json();
+    assert_eq!(
+        (g["state"].as_str(), g["end_reason"].as_str()),
+        (Some("ended"), Some("lost"))
+    );
+    assert_eq!(h.live.sweep_due(), None, "nothing left to watch");
+    assert!(!h.live.packed_active());
+}
+
 #[tokio::test]
 async fn quiet_presence_expires_and_idle_games_are_lost() {
     let policy = Policy {

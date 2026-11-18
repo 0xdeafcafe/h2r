@@ -28,7 +28,10 @@ use anyhow::{Context, Result, anyhow, bail};
 use map::TagId;
 use tags::ui::{self as tui, MapSource, Rect, UiTag};
 
-use crate::ui_kit::spec::{self, Finding, ListPlace, Room, ScreenSpec, ValueStyle};
+use crate::ui_kit::spec::{self, Finding, ListPlace, Room, ScreenSpec};
+use crate::ui_kit::view::{
+    Art, Backing, ItemArt, Justify, Kind, Metrics, PaneArt, Synthetic, View, view_of,
+};
 
 /// The Controls screen whose tag our screens are built from.
 pub const CONTROLS_TAG: &str =
@@ -44,25 +47,7 @@ pub const BACKGROUND_TAG: &str = r"ui\screens\game_shell\main_menu_screen\game_s
 /// smaller.
 pub const SHOWN: usize = 5;
 
-/// Where a list's items and texts go, from the tags.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Geometry {
-    pub anchor: [i16; 2],
-    pub visible: usize,
-    /// Each item is this much lower than the one before (the item's
-    /// bounding box over its texts and its bitmaps without flag bit 0).
-    pub item_height: i32,
-    /// The skin's text blocks, relative to an item's origin: label, then
-    /// value when the skin has two; font and justification.
-    pub label: (Rect, i16, u8),
-    pub value: Option<(Rect, i16, u8)>,
-    pub item_colour: [f32; 3],
-    pub header: Rect,
-    pub header_font: i16,
-    pub header_colour: [f32; 3],
-    /// The footer legend's rectangle (the header layout's second one).
-    pub footer: Rect,
-}
+pub use crate::ui_kit::view::Geometry;
 
 /// The disc's fonts by `font_table.txt` line: a text block's font index is
 /// the engine font id (`0x2537d7` keeps the block's `+0xa`), and every
@@ -146,6 +131,8 @@ pub struct Disc {
     map: RefCell<map::Map<BufReader<File>>>,
     files: RefCell<assets::ResourceFiles>,
     images: RefCell<HashMap<(TagId, i16), Option<Image>>>,
+    /// Every screen of `mainmenu.map` by screen id, decoded on first use.
+    screens: RefCell<Option<HashMap<i16, tui::Screen>>>,
 }
 
 impl Disc {
@@ -237,6 +224,7 @@ impl Disc {
             map: RefCell::new(m),
             files: RefCell::new(res),
             images: RefCell::new(HashMap::new()),
+            screens: RefCell::new(None),
         })
     }
 
@@ -265,7 +253,7 @@ impl Disc {
         img
     }
 
-    fn skin(&self, place: ListPlace) -> Result<(&tui::List, &tui::Skin, [i16; 2])> {
+    fn skin(&self, place: ListPlace) -> Result<(&tui::List, &tui::Skin, [i16; 2], i16)> {
         let list = self
             .controls
             .panes
@@ -280,7 +268,7 @@ impl Disc {
             .skins
             .get(&index)
             .with_context(|| format!("no list skin {index}"))?;
-        Ok((list, skin, anchor))
+        Ok((list, skin, anchor, index))
     }
 
     /// An item bitmap's extent above the item's origin: `y` to `y` plus
@@ -294,7 +282,7 @@ impl Disc {
 
     /// The list of `place` (the Controls one, or moved and reskinned).
     pub fn geometry(&self, place: ListPlace) -> Result<Geometry> {
-        let (list, skin, anchor) = self.skin(place)?;
+        let (list, skin, anchor, skin_index) = self.skin(place)?;
         let texts: Vec<(Rect, i16, u8, [f32; 3])> = skin
             .text_blocks
             .iter()
@@ -316,6 +304,12 @@ impl Disc {
         }
         let layout = self.controls.header_layout();
         let hl = self.shared.header_layouts[layout];
+        let cut = match place {
+            ListPlace::Controls => i16::MAX,
+            ListPlace::Moved {
+                bitmaps_left_of, ..
+            } => bitmaps_left_of,
+        };
         Ok(Geometry {
             anchor,
             visible: usize::try_from(list.visible_items).unwrap_or(0).min(SHOWN),
@@ -331,7 +325,105 @@ impl Disc {
                 self.shared.header_color[3],
             ],
             footer: hl.secondary,
+            skin: skin_index,
+            item_art: skin
+                .bitmaps
+                .iter()
+                .enumerate()
+                .filter_map(|(k, b)| {
+                    let img = self.image(b.bitmap, b.image)?;
+                    Some(ItemArt {
+                        index: k as u16,
+                        image: b.image,
+                        at: [b.top_left.x, b.top_left.y],
+                        size: [img.width as u16, img.height as u16],
+                        frame: b.flags & 1 != 0,
+                        depth: b.render_depth_bias,
+                    })
+                })
+                .collect(),
+            frame_art: self.pane_art(&self.controls, 0, |b| b.top_left.x < cut),
         })
+    }
+
+    /// Pane `pane`'s bitmaps of `screen` that `keep` keeps, as art by
+    /// reference, at their image sizes.
+    fn pane_art(
+        &self,
+        screen: &tui::Screen,
+        pane: usize,
+        keep: impl Fn(&tui::BitmapBlock) -> bool,
+    ) -> Vec<PaneArt> {
+        let Some(p) = screen.panes.get(pane) else {
+            return Vec::new();
+        };
+        p.bitmaps
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| keep(b))
+            .filter_map(|(k, b)| {
+                let img = self.image(b.bitmap, b.image)?;
+                Some(PaneArt {
+                    art: Art::Screen {
+                        screen_id: screen.screen_id,
+                        pane: pane as u16,
+                        index: k as u16,
+                        image: b.image,
+                    },
+                    at: [b.top_left.x, b.top_left.y],
+                    size: [img.width as u16, img.height as u16],
+                    depth: b.render_depth_bias,
+                })
+            })
+            .collect()
+    }
+
+    /// The screen of `mainmenu.map` with screen id `id`.
+    pub fn screen(&self, id: i16) -> Option<tui::Screen> {
+        if self.screens.borrow().is_none() {
+            let mut all = HashMap::new();
+            let mut m = self.map.borrow_mut();
+            let ids: Vec<TagId> = m
+                .tags()
+                .iter()
+                .filter(|t| t.group == tui::SCREEN)
+                .map(|t| t.id)
+                .collect();
+            let mut src = MapSource::new(&mut m);
+            for t in ids {
+                if let Ok(d) = src.decode_tag(t)
+                    && let UiTag::Screen(sc) = d.tag
+                {
+                    all.insert(sc.screen_id, sc);
+                }
+            }
+            *self.screens.borrow_mut() = Some(all);
+        }
+        self.screens.borrow().as_ref()?.get(&id).cloned()
+    }
+
+    /// The image `a` names.
+    pub fn art(&self, a: &Art) -> Option<Image> {
+        match *a {
+            Art::Skin { skin, index, image } => {
+                let b = self.skins.get(&skin)?.bitmaps.get(usize::from(index))?;
+                self.image(b.bitmap, image)
+            }
+            Art::Screen {
+                screen_id,
+                pane,
+                index,
+                image,
+            } => {
+                let sc = self.screen(screen_id)?;
+                let b = sc
+                    .panes
+                    .get(usize::from(pane))?
+                    .bitmaps
+                    .get(usize::from(index))?;
+                self.image(b.bitmap, image)
+            }
+        }
     }
 
     /// [`spec::check`] against this disc's geometry and fonts.
@@ -528,138 +620,15 @@ impl Disc {
         Ok(c)
     }
 
-    /// `s` drawn at 640 by 480; findings outlined in red.
+    /// `s` as the builder sees it ([`view_of`]) on this disc's geometry
+    /// and fonts.
+    pub fn view(&self, s: &ScreenSpec, state: &str) -> Result<View> {
+        Ok(view_of(s, &self.geometry(s.list)?, &self.fonts, state))
+    }
+
+    /// `s` drawn at 640 by 480; texts that overflow outlined in red.
     pub fn render(&self, s: &ScreenSpec) -> Result<Canvas> {
-        let g = self.geometry(s.list)?;
-        let (_, skin, _) = self.skin(s.list)?;
-        let mut c = Canvas::new(640, 480, [0, 0, 0, 255]);
-        let rgb = |v: [f32; 3]| v.map(|x| (x.clamp(0.0, 1.0) * 255.0) as u8);
-        // The background screen, then the Controls frame art (all of it
-        // for the Controls place, left of the cut for a moved list).
-        for p in &self.background.panes {
-            self.draw_blocks(&mut c, p.bitmaps.iter());
-        }
-        let cut = match s.list {
-            ListPlace::Controls => i16::MAX,
-            ListPlace::Moved {
-                bitmaps_left_of, ..
-            } => bitmaps_left_of,
-        };
-        if let Some(p) = self.controls.panes.first() {
-            self.draw_blocks(&mut c, p.bitmaps.iter().filter(|b| b.top_left.x < cut));
-        }
-        // Header and footer.
-        c.text(
-            &self.fonts,
-            g.header_font,
-            &s.title,
-            g.header,
-            0,
-            rgb(g.header_colour),
-        );
-        if let Some(f) = s.footer_text() {
-            c.text(
-                &self.fonts,
-                g.header_font,
-                &f,
-                g.footer,
-                1,
-                rgb(g.header_colour),
-            );
-            if self.fonts.width(g.header_font, &f) > g.footer.width() {
-                c.outline(g.footer, [230, 40, 40, 255]);
-            }
-        }
-        // Rows: the window of `visible` around the focus.
-        let first = s.focus.saturating_sub(g.visible.saturating_sub(1));
-        let style = match g.value {
-            Some(_) => s.style,
-            None => ValueStyle::Inline,
-        };
-        for (slot, (i, row)) in s
-            .rows
-            .iter()
-            .enumerate()
-            .skip(first)
-            .take(g.visible)
-            .enumerate()
-        {
-            let ox = i32::from(g.anchor[0]);
-            let oy = i32::from(g.anchor[1]) - slot as i32 * g.item_height;
-            let focused = i == s.focus;
-            let mut bitmaps: Vec<&tui::BitmapBlock> = skin.bitmaps.iter().collect();
-            bitmaps.sort_by_key(|b| b.render_depth_bias);
-            for b in bitmaps {
-                if let Some((top, _, img)) = self.item_bitmap_span(b) {
-                    // The frame (flag bit 0, left out of the height) is
-                    // every row's, lit on the focused one.
-                    let alpha = if b.flags & 1 != 0 && !focused {
-                        110
-                    } else {
-                        255
-                    };
-                    c.image(&img, ox + i32::from(b.top_left.x), oy + top, alpha);
-                }
-            }
-            let at = |r: Rect| Rect {
-                top: (i32::from(r.top) + oy) as i16,
-                bottom: (i32::from(r.bottom) + oy) as i16,
-                left: (i32::from(r.left) + ox) as i16,
-                right: (i32::from(r.right) + ox) as i16,
-            };
-            let colour = rgb(if focused {
-                g.item_colour
-            } else {
-                g.item_colour.map(|v| v * 0.55)
-            });
-            let (label, value) = row.cells(style);
-            let (lr, lf, lj) = g.label;
-            c.text(&self.fonts, lf, &label, at(lr), lj, colour);
-            if self.fonts.width(lf, &label) > lr.width() {
-                c.outline(at(lr), [230, 40, 40, 255]);
-            }
-            if let (Some(v), Some((vr, vf, vj))) = (value, g.value) {
-                c.text(&self.fonts, vf, &v, at(vr), vj, colour);
-                if self.fonts.width(vf, &v) > vr.width() {
-                    c.outline(at(vr), [230, 40, 40, 255]);
-                }
-            }
-        }
-        if s.rows.len() > g.visible && !s.scrolls {
-            let y = i32::from(g.anchor[1]) - g.visible as i32 * g.item_height;
-            c.fill(
-                Rect {
-                    top: y as i16,
-                    bottom: (y - 3) as i16,
-                    left: g.anchor[0],
-                    right: g.anchor[0] + 40,
-                },
-                [230, 40, 40, 255],
-            );
-        }
-        // Description.
-        if let (Some(d), Some(text)) = (s.description, s.description_text()) {
-            let rect = Rect {
-                top: d.rect[0],
-                left: d.rect[1],
-                bottom: d.rect[2],
-                right: d.rect[3],
-            };
-            let lines = spec::wrap(&text, rect.width(), &|t| self.fonts.width(d.font, t));
-            let fits = (rect.height() / self.fonts.line_height(d.font).max(1)) as usize;
-            c.text(
-                &self.fonts,
-                d.font,
-                &lines.join("\n"),
-                rect,
-                0,
-                rgb(d.colour),
-            );
-            if lines.len() > fits {
-                c.outline(rect, [230, 40, 40, 255]);
-            }
-        }
-        Ok(c)
+        Ok(render_view(&self.view(s, "sample")?, self))
     }
 }
 
@@ -674,6 +643,252 @@ pub struct Retail<'a> {
     /// The table cells' texts (player names), one per filled slot.
     pub cells: &'a [String],
     pub footer: Option<String>,
+}
+
+impl Metrics for Fonts {
+    fn width(&self, font: i16, text: &str) -> i32 {
+        Fonts::width(self, font, text)
+    }
+    fn line_height(&self, font: i16) -> i32 {
+        Fonts::line_height(self, font)
+    }
+}
+
+impl Metrics for Disc {
+    fn width(&self, font: i16, text: &str) -> i32 {
+        self.fonts.width(font, text)
+    }
+    fn line_height(&self, font: i16) -> i32 {
+        self.fonts.line_height(font)
+    }
+}
+
+/// What a [`View`] is drawn from: the disc ([`Disc`]) or nothing
+/// ([`SyntheticSource`]).
+pub trait Source: Metrics {
+    /// The image art names; `None` draws a placeholder box.
+    fn art(&self, a: &Art) -> Option<Image>;
+    fn backing(&self, c: &mut Canvas, b: Backing);
+    #[allow(clippy::too_many_arguments)]
+    fn text(
+        &self,
+        c: &mut Canvas,
+        font: i16,
+        text: &str,
+        r: Rect,
+        j: Justify,
+        rgb: [u8; 3],
+        alpha: u8,
+    );
+}
+
+fn justify_flag(j: Justify) -> u8 {
+    match j {
+        Justify::Left => 0,
+        Justify::Right => 1,
+        Justify::Centre => 2,
+    }
+}
+
+impl Source for Disc {
+    fn art(&self, a: &Art) -> Option<Image> {
+        Disc::art(self, a)
+    }
+    fn backing(&self, c: &mut Canvas, b: Backing) {
+        if b == Backing::GameShell {
+            for p in &self.background.panes {
+                self.draw_blocks(c, p.bitmaps.iter());
+            }
+        }
+    }
+    fn text(
+        &self,
+        c: &mut Canvas,
+        font: i16,
+        text: &str,
+        r: Rect,
+        j: Justify,
+        rgb: [u8; 3],
+        alpha: u8,
+    ) {
+        c.text_alpha(&self.fonts, font, text, r, justify_flag(j), rgb, alpha);
+    }
+}
+
+/// A source without a disc: art as outlined boxes of its declared size,
+/// text as blocks on [`Synthetic`]'s 8 by 16 grid, button glyphs as green
+/// squares. Layout only: what CI can draw.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SyntheticSource;
+
+impl Metrics for SyntheticSource {
+    fn width(&self, font: i16, text: &str) -> i32 {
+        Synthetic.width(font, text)
+    }
+    fn line_height(&self, font: i16) -> i32 {
+        Synthetic.line_height(font)
+    }
+}
+
+impl Source for SyntheticSource {
+    fn art(&self, _a: &Art) -> Option<Image> {
+        None
+    }
+    fn backing(&self, c: &mut Canvas, b: Backing) {
+        if b == Backing::GameShell {
+            let band = [24, 44, 72, 255];
+            c.fill(
+                Rect {
+                    top: 240,
+                    left: -320,
+                    bottom: 172,
+                    right: 320,
+                },
+                band,
+            );
+            c.fill(
+                Rect {
+                    top: -172,
+                    left: -320,
+                    bottom: -240,
+                    right: 320,
+                },
+                band,
+            );
+            c.fill(
+                Rect {
+                    top: 172,
+                    left: -320,
+                    bottom: -172,
+                    right: 320,
+                },
+                [14, 24, 40, 255],
+            );
+        }
+    }
+    fn text(
+        &self,
+        c: &mut Canvas,
+        font: i16,
+        text: &str,
+        r: Rect,
+        j: Justify,
+        rgb: [u8; 3],
+        alpha: u8,
+    ) {
+        for (n, line) in text.split('\n').enumerate() {
+            let w = Synthetic.width(font, line);
+            let mut x = i32::from(r.left)
+                + match j {
+                    Justify::Left => 0,
+                    Justify::Right => r.width() - w,
+                    Justify::Centre => (r.width() - w) / 2,
+                };
+            let top = i32::from(r.top) - n as i32 * Synthetic::LINE;
+            for ch in line.chars() {
+                if ('\u{e000}'..='\u{e3ff}').contains(&ch) {
+                    c.fill(
+                        Rect::from_xywh(x + 1, top - 1, 14, 14),
+                        [60, 170, 70, alpha],
+                    );
+                    x += Synthetic::GLYPH;
+                } else {
+                    if !ch.is_whitespace() {
+                        c.fill(
+                            Rect::from_xywh(x + 1, top - 4, 6, 10),
+                            [rgb[0], rgb[1], rgb[2], alpha],
+                        );
+                    }
+                    x += Synthetic::ADVANCE;
+                }
+            }
+        }
+    }
+}
+
+trait FromXywh {
+    fn from_xywh(x: i32, top: i32, w: i32, h: i32) -> Rect;
+}
+impl FromXywh for Rect {
+    /// `x`, `top` the top-left (Y up), `w` by `h`.
+    fn from_xywh(x: i32, top: i32, w: i32, h: i32) -> Rect {
+        Rect {
+            top: top as i16,
+            left: x as i16,
+            bottom: (top - h) as i16,
+            right: (x + w) as i16,
+        }
+    }
+}
+
+/// Whether text widget `w`'s text overflows its rect in `m`: a line wider
+/// than it, or more lines than its height holds.
+pub fn overflows(w: &crate::ui_kit::view::Widget, m: &dyn Metrics) -> bool {
+    let Kind::Text { text, font, .. } = &w.kind else {
+        return false;
+    };
+    let r = w.rect();
+    let lines = text.split('\n').count() as i32;
+    m.width(*font, text) > r.width() || (lines > 1 && lines * m.line_height(*font) > r.height())
+}
+
+/// `v` drawn at 640 by 480 from `src`: the backing, then its widgets by
+/// layer (frame art, row and cell art, texts), each with its alpha. Texts
+/// that overflow are outlined in red; art the source lacks is an outlined
+/// box.
+pub fn render_view(v: &View, src: &dyn Source) -> Canvas {
+    let mut c = Canvas::new(640, 480, [0, 0, 0, 255]);
+    src.backing(&mut c, v.backing);
+    let mut order: Vec<&crate::ui_kit::view::Widget> = v.widgets.iter().collect();
+    order.sort_by_key(|w| w.layer);
+    for w in order.into_iter().filter(|w| w.alpha > 0) {
+        let r = w.rect();
+        match &w.kind {
+            Kind::Art { art, .. } => match src.art(art) {
+                Some(img) => c.image(&img, i32::from(r.left), i32::from(r.top), w.alpha),
+                None => {
+                    c.fill(r, [70, 100, 150, w.alpha / 3]);
+                    c.outline(r, [120, 160, 220, w.alpha]);
+                }
+            },
+            Kind::Text {
+                text,
+                font,
+                justify,
+                colour,
+            } => {
+                src.text(&mut c, *font, text, r, *justify, *colour, w.alpha);
+                if overflows(w, src) {
+                    c.outline(r, [230, 40, 40, 255]);
+                }
+            }
+        }
+    }
+    c
+}
+
+/// A contact sheet: each tile at half size under its label (in
+/// [`Canvas::label`]'s pixel font, whatever the source), `columns` across.
+pub fn sheet(tiles: &[(String, Canvas)], columns: usize) -> Canvas {
+    const GAP: u32 = 8;
+    const LABEL: u32 = 22;
+    let (tw, th) = (320, 240);
+    let columns = columns.max(1);
+    let rows = tiles.len().div_ceil(columns) as u32;
+    let mut out = Canvas::new(
+        columns as u32 * (tw + GAP) + GAP,
+        rows * (th + LABEL + GAP) + GAP,
+        [40, 40, 40, 255],
+    );
+    for (i, (label, c)) in tiles.iter().enumerate() {
+        let (x, y) = (
+            GAP + (i % columns) as u32 * (tw + GAP),
+            GAP + (i / columns) as u32 * (th + LABEL + GAP),
+        );
+        out.label(label, x + 2, y + 6, [230, 230, 230]);
+        out.blit(&c.half(), x, y + LABEL);
+    }
+    out
 }
 
 /// An RGBA canvas in UI units: 640 by 480, origin at the centre, Y up.
@@ -776,6 +991,21 @@ impl Canvas {
     /// their own colours. Not clipped: what runs out of the rectangle
     /// shows.
     pub fn text(&mut self, fonts: &Fonts, index: i16, text: &str, r: Rect, just: u8, rgb: [u8; 3]) {
+        self.text_alpha(fonts, index, text, r, just, rgb, 255);
+    }
+    /// [`Canvas::text`] at `alpha`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn text_alpha(
+        &mut self,
+        fonts: &Fonts,
+        index: i16,
+        text: &str,
+        r: Rect,
+        just: u8,
+        rgb: [u8; 3],
+        alpha: u8,
+    ) {
+        let shadow = (160 * u32::from(alpha) / 255) as u8;
         let Some(font) = fonts.font(index) else {
             return;
         };
@@ -802,12 +1032,61 @@ impl Canvas {
             for (icon, s) in runs {
                 let units: Vec<u16> = s.encode_utf16().collect();
                 if !icon {
-                    self.run(&font, &units, pen + 1, y + 1, [0, 0, 0, 160], false);
+                    self.run(&font, &units, pen + 1, y + 1, [0, 0, 0, shadow], false);
                 }
-                self.run(&font, &units, pen, y, [rgb[0], rgb[1], rgb[2], 255], icon);
+                self.run(&font, &units, pen, y, [rgb[0], rgb[1], rgb[2], alpha], icon);
                 pen += fonts.width(index, &s);
             }
         }
+    }
+    /// `other` copied in with its top-left at pixel `(x, y)`.
+    pub fn blit(&mut self, other: &Canvas, x: u32, y: u32) {
+        for row in 0..other.height.min(self.height.saturating_sub(y)) {
+            let w = other.width.min(self.width.saturating_sub(x)) as usize * 4;
+            let i = (row * other.width * 4) as usize;
+            let o = (((y + row) * self.width + x) * 4) as usize;
+            self.rgba[o..o + w].copy_from_slice(&other.rgba[i..i + w]);
+        }
+    }
+    /// `text` in a 3 by 5 pixel font at twice its size, its top-left at
+    /// pixel `(x, y)`: letters (either case), digits and `-./_`; anything
+    /// else is a gap. For sheet labels, readable with no disc.
+    pub fn label(&mut self, text: &str, x: u32, y: u32, rgb: [u8; 3]) {
+        for (n, ch) in text.chars().enumerate() {
+            let rows = tiny_glyph(ch.to_ascii_lowercase());
+            for (r, bits) in rows.iter().enumerate() {
+                for col in 0..3 {
+                    if bits & (0b100 >> col) != 0 {
+                        for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                            self.blend(
+                                (x + n as u32 * 8 + col * 2 + dx) as i32,
+                                (y + r as u32 * 2 + dy) as i32,
+                                [rgb[0], rgb[1], rgb[2], 255],
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    /// Half size, each pixel the mean of four.
+    pub fn half(&self) -> Canvas {
+        let (w, h) = (self.width / 2, self.height / 2);
+        let mut out = Canvas::new(w, h, [0, 0, 0, 255]);
+        for y in 0..h {
+            for x in 0..w {
+                for ch in 0..4 {
+                    let at = |dx: u32, dy: u32| {
+                        u32::from(
+                            self.rgba[(((2 * y + dy) * self.width + 2 * x + dx) * 4 + ch) as usize],
+                        )
+                    };
+                    out.rgba[((y * w + x) * 4 + ch) as usize] =
+                        ((at(0, 0) + at(1, 0) + at(0, 1) + at(1, 1)) / 4) as u8;
+                }
+            }
+        }
+        out
     }
     /// `self` and `other` side by side, `other` scaled to this height.
     pub fn beside(&self, other: &Canvas) -> Canvas {
@@ -856,5 +1135,119 @@ impl Canvas {
         e.set_depth(png::BitDepth::Eight);
         e.write_header()?.write_image_data(&self.rgba)?;
         Ok(())
+    }
+}
+
+/// What a preview is drawn from: the disc, or the synthetic source and
+/// [`Geometry::fallback`].
+pub enum From<'a> {
+    Disc(&'a Disc),
+    Synthetic,
+}
+
+impl From<'_> {
+    pub fn source(&self) -> &dyn Source {
+        match self {
+            From::Disc(d) => *d,
+            From::Synthetic => &SyntheticSource,
+        }
+    }
+    pub fn geometry(&self, place: ListPlace) -> Result<Geometry> {
+        match self {
+            From::Disc(d) => d.geometry(place),
+            From::Synthetic => Ok(Geometry::fallback(place)),
+        }
+    }
+    /// `s` in state `state`: its view and its picture.
+    pub fn draw(&self, s: &ScreenSpec, state: &str) -> Result<(View, Canvas)> {
+        let v = view_of(s, &self.geometry(s.list)?, self.source(), state);
+        let c = render_view(&v, self.source());
+        Ok((v, c))
+    }
+}
+
+/// Writes `<screen>-<state>.png` and `<screen>-<state>.json` (the view,
+/// every widget's rect) into `dir` for each of `states`, and returns the
+/// pictures by `screen/state`.
+pub fn write_states(
+    from: &From<'_>,
+    dir: &Path,
+    states: &[(String, ScreenSpec)],
+) -> Result<Vec<(String, Canvas)>> {
+    std::fs::create_dir_all(dir).with_context(|| dir.display().to_string())?;
+    let mut out = Vec::new();
+    for (state, s) in states {
+        let (v, c) = from.draw(s, state)?;
+        let stem = format!("{}-{state}", s.name);
+        c.write_png(&dir.join(format!("{stem}.png")))?;
+        std::fs::write(
+            dir.join(format!("{stem}.json")),
+            serde_json::to_string_pretty(&v.json())?,
+        )?;
+        out.push((format!("{}/{state}", s.name), c));
+    }
+    Ok(out)
+}
+
+/// Every screen of [`crate::ui_kit::screens::NAMES`] in every state of
+/// [`crate::ui_kit::screens::states`] into `dir`, and `sheet.png`, all of
+/// them on one page. Returns the sheet's path.
+pub fn write_sheet(from: &From<'_>, dir: &Path) -> Result<std::path::PathBuf> {
+    use crate::ui_kit::screens;
+    let mut tiles = Vec::new();
+    for name in screens::NAMES {
+        let states = screens::states(name).with_context(|| format!("no states for {name}"))?;
+        tiles.extend(write_states(from, dir, &states)?);
+    }
+    let path = dir.join("sheet.png");
+    sheet(&tiles, 4).write_png(&path)?;
+    Ok(path)
+}
+
+/// A character of [`Canvas::label`]'s font: five rows of three bits, the
+/// left pixel the high bit.
+fn tiny_glyph(c: char) -> [u8; 5] {
+    match c {
+        '0' => [7, 5, 5, 5, 7],
+        '1' => [2, 6, 2, 2, 7],
+        '2' => [7, 1, 7, 4, 7],
+        '3' => [7, 1, 7, 1, 7],
+        '4' => [5, 5, 7, 1, 1],
+        '5' => [7, 4, 7, 1, 7],
+        '6' => [7, 4, 7, 5, 7],
+        '7' => [7, 1, 1, 1, 1],
+        '8' => [7, 5, 7, 5, 7],
+        '9' => [7, 5, 7, 1, 7],
+        'a' => [2, 5, 7, 5, 5],
+        'b' => [6, 5, 6, 5, 6],
+        'c' => [3, 4, 4, 4, 3],
+        'd' => [6, 5, 5, 5, 6],
+        'e' => [7, 4, 6, 4, 7],
+        'f' => [7, 4, 6, 4, 4],
+        'g' => [3, 4, 5, 5, 3],
+        'h' => [5, 5, 7, 5, 5],
+        'i' => [7, 2, 2, 2, 7],
+        'j' => [1, 1, 1, 5, 2],
+        'k' => [5, 5, 6, 5, 5],
+        'l' => [4, 4, 4, 4, 7],
+        'm' => [5, 7, 7, 5, 5],
+        'n' => [6, 5, 5, 5, 5],
+        'o' => [2, 5, 5, 5, 2],
+        'p' => [6, 5, 6, 4, 4],
+        'q' => [2, 5, 5, 6, 3],
+        'r' => [6, 5, 6, 5, 5],
+        's' => [3, 4, 2, 1, 6],
+        't' => [7, 2, 2, 2, 2],
+        'u' => [5, 5, 5, 5, 7],
+        'v' => [5, 5, 5, 5, 2],
+        'w' => [5, 5, 7, 7, 5],
+        'x' => [5, 5, 2, 5, 5],
+        'y' => [5, 5, 2, 2, 2],
+        'z' => [7, 1, 2, 4, 7],
+        '-' => [0, 0, 7, 0, 0],
+        '.' => [0, 0, 0, 0, 2],
+        '/' => [1, 1, 2, 4, 4],
+        '_' => [0, 0, 0, 0, 7],
+        _ => [0; 5],
     }
 }

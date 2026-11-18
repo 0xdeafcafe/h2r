@@ -197,8 +197,9 @@ impl Query {
     }
 }
 
-/// A hint that the log may have grown. Best effort: the dispatcher polls
-/// as well, so a lost wake costs latency only.
+/// A hint that the log may have grown. Best effort where the dispatcher
+/// polls as well (a lost wake costs latency only); a store run with
+/// `Timers::Driven` must wake on every append, as one writer's can.
 #[async_trait]
 pub trait Wake: Send {
     async fn wait(&mut self);
