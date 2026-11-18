@@ -793,6 +793,9 @@ impl<B: Backend> Backend for DiagBackend<B> {
     fn idle(&mut self) -> Option<std::time::Instant> {
         self.inner.idle()
     }
+    fn drain(&mut self) -> Result<(), String> {
+        self.inner.drain()
+    }
     fn present_with_gamma(&mut self, surface: Self::Surface, flags: u32, gamma: Option<&[u8; 768]>) -> Result<(), String> {
         self.line(format!("present {surface:?} flags={flags:#x}"));
         if let Some(s) = &mut self.sweep {

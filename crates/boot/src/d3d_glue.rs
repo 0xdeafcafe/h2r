@@ -776,6 +776,9 @@ impl d3d::backend::Backend for Headless {
     fn idle(&mut self) -> Option<std::time::Instant> {
         self.0.idle()
     }
+    fn drain(&mut self) -> Result<(), String> {
+        self.0.drain()
+    }
     // Occlusion culling's depth grid (d3d::occlusion).
     fn request_depth_grid(
         &mut self,

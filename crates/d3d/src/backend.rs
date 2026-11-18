@@ -623,6 +623,13 @@ pub trait Backend: Send {
     fn idle(&mut self) -> Option<std::time::Instant> {
         None
     }
+    /// Waits until a render thread has run everything queued so far
+    /// (`ThreadedBackend::finish`). Host-only: a machine snapshot drains
+    /// the render thread before it saves (docs/runtime/snapshots.md). The
+    /// default has no thread to wait for.
+    fn drain(&mut self) -> Result<(), String> {
+        Ok(())
+    }
     /// Shows `surface` (`Swap`). `flags` are the guest's `D3DSWAP_*` flags.
     fn present(&mut self, surface: Self::Surface, flags: u32) -> Result<(), String>;
     /// Presents with the current DAC ramp. Backends without a display may ignore it.
