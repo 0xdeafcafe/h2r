@@ -128,6 +128,7 @@ fn an_unplaced_bot_is_not_asked() {
 fn frame_at(n: u64, g: &FakeGuest) -> Frame<'_> {
     Frame {
         frame: n,
+        tick: None,
         port: 1,
         guest: g,
         joining: false,
@@ -163,4 +164,33 @@ fn a_recording_plays_once_from_its_first_frame() {
 fn the_join_pad_taps_a() {
     let a = |f| join_pad(f).buttons.contains(HostButton::South);
     assert!(a(0) && a(JOIN_HOLD - 1) && !a(JOIN_HOLD) && !a(JOIN_EVERY - 1) && a(JOIN_EVERY));
+}
+
+#[test]
+fn a_source_is_told_the_game_tick_in_a_game_only() {
+    let l = Local::default();
+    let seen = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let s2 = std::sync::Arc::clone(&seen);
+    let h = l
+        .add(
+            1,
+            "a",
+            Box::new(move |f: &Frame<'_>| {
+                s2.lock().unwrap().push((f.frame, f.tick));
+                HostPadState::default()
+            }),
+        )
+        .unwrap();
+    let mut m = manager(&l, 1);
+    m.sync();
+    assert!(l.list().iter().any(|b| b.handle == h && b.port.is_some()));
+    let mut g = FakeGuest::new();
+    l.frame(0, &g, |_| false);
+    let time = engine::points::GAME_TIME.base;
+    g.map(time & !0xfff, 0x1000)
+        .map(0x0068_0000, 0x10)
+        .put_u32(time, 0x0068_0000)
+        .put_u32(0x0068_0000 + crate::guest::GAME_TIME_TICK, 42);
+    l.frame(1, &g, |_| false);
+    assert_eq!(*seen.lock().unwrap(), vec![(0, None), (1, Some(42))]);
 }

@@ -213,6 +213,16 @@ pub struct Addrs {
     /// Record caches both sides allocate in ([`SharedCache`]): a game-thread
     /// call that would allocate joins the render first.
     pub shared_caches: &'static [SharedCache],
+    /// Guest functions the game thread joins the render in flight before
+    /// entering (`sim_joins`): the sim code that reads state the render
+    /// writes. Serially, tick `k + 1` runs after render `k` and sees what it
+    /// wrote; pipelined, the render's writes reach live RAM only at the
+    /// join, and the hand-back keeps the sim's word where both wrote. So
+    /// the sim must not read such state before the join, and these entries
+    /// are where it starts to (the game tick, until the subsystems the
+    /// render writes are ported: docs/graphics/pipelined-render.md, "Two
+    /// writers").
+    pub sim_joins: &'static [u32],
 }
 
 /// A record cache the render and the sim both allocate in, through one
@@ -385,6 +395,13 @@ impl Addrs {
             record_len: 0x100,
             owner: 4,
         }],
+        // `game_tick` (`0x00137fe0`, the `GAME_TICK` point): its updates
+        // read what the render writes in place (the particle systems
+        // `0x00174420` updates as it draws them, the animation cache's use
+        // stamps from `animation_resource_get` `0x001237e0`, and the
+        // render's object and effect state), so the first tick after a
+        // launch joins first.
+        sim_joins: &[0x0013_7fe0],
     };
 }
 
@@ -458,10 +475,16 @@ pub struct Stats {
     /// Joins a game-thread call that would allocate in a
     /// [`SharedCache`] made.
     pub cache_joins: u64,
+    /// Joins a game-thread call of an [`Addrs::sim_joins`] entry made (the
+    /// render still in flight).
+    pub sim_joins: u64,
     /// D3D calls from another guest thread while a render was in flight
     /// (not ordered).
     pub d3d_other_thread: u64,
     pub join_wait: Duration,
+    /// The game thread's time from each launch to its join: the work the
+    /// render overlapped (`lead`, per frame on the line).
+    pub lead: Duration,
     pub hand_back: Duration,
     pub snapshot: Duration,
     pub render: Duration,
@@ -531,8 +554,10 @@ impl Stats {
             serviced: sub_named(&self.serviced, &then.serviced),
             d3d_joins: self.d3d_joins - then.d3d_joins,
             cache_joins: self.cache_joins - then.cache_joins,
+            sim_joins: self.sim_joins - then.sim_joins,
             d3d_other_thread: self.d3d_other_thread - then.d3d_other_thread,
             join_wait: self.join_wait - then.join_wait,
+            lead: self.lead - then.lead,
             hand_back: self.hand_back - then.hand_back,
             snapshot: self.snapshot - then.snapshot,
             render: self.render - then.render,
@@ -583,7 +608,7 @@ impl Stats {
             .map(|(k, v)| format!("{k} {v}"))
             .collect();
         format!(
-            "pipeline: frames pipelined {} completed {} serial [{}] fallbacks {} [{}] serviced {} [{}] d3d_joins {} cache_joins {} d3d_other_thread {} join_wait {:.2}ms hand_back {:.2}ms snapshot {:.2}ms render {:.2}ms pages {:.1} conflicts {} (render-owned {}) mispredicts {} io_stalls {} ({:.2}ms) [render {} ({:.2}ms), sim_join {} ({:.2}ms)] io_deferred {} io_refused {} io_joins {} io_sim_first {} io_mismatches {} io_other_thread {}",
+            "pipeline: frames pipelined {} completed {} serial [{}] fallbacks {} [{}] serviced {} [{}] d3d_joins {} cache_joins {} sim_joins {} d3d_other_thread {} lead {:.2}ms join_wait {:.2}ms hand_back {:.2}ms snapshot {:.2}ms render {:.2}ms pages {:.1} conflicts {} (render-owned {}) mispredicts {} io_stalls {} ({:.2}ms) [render {} ({:.2}ms), sim_join {} ({:.2}ms)] io_deferred {} io_refused {} io_joins {} io_sim_first {} io_mismatches {} io_other_thread {}",
             self.pipelined,
             self.completed,
             serial.join(", "),
@@ -593,7 +618,9 @@ impl Stats {
             sv.join(", "),
             self.d3d_joins,
             self.cache_joins,
+            self.sim_joins,
             self.d3d_other_thread,
+            ms(self.lead, joins),
             ms(self.join_wait, joins),
             ms(self.hand_back, joins),
             ms(self.snapshot, joins),
@@ -646,6 +673,7 @@ struct Flight {
     rx: Receiver<Done>,
     /// Presents added to live at the launch.
     predicted: u64,
+    launched: Instant,
 }
 
 /// Built once, at the first frame that pipelines.
@@ -1216,6 +1244,11 @@ fn setup(me: &Arc<Shared>, ctx: &mut ExecCtx, addr: u32) -> Result<(), String> {
         .iter()
         .map(|c| rt.resolve_original(c.entry))
         .collect();
+    let generated_sim_joins: Vec<_> = a
+        .sim_joins
+        .iter()
+        .map(|&e| rt.resolve_original(e))
+        .collect();
     rt.edit_dispatch(|d| {
         // A pool wait on the game thread while a render that has used the
         // pool is in flight joins it first: the render's deferred pool
@@ -1350,6 +1383,34 @@ fn setup(me: &Arc<Shared>, ctx: &mut ExecCtx, addr: u32) -> Result<(), String> {
                 )
             });
         }
+        // The sim code that reads what the render writes: joins first, so
+        // it reads the render's words as serially (`Addrs::sim_joins`).
+        for (&entry, generated) in a.sim_joins.iter().zip(generated_sim_joins) {
+            let Some(prev) = d.override_handler(entry).or(generated) else {
+                continue;
+            };
+            let name = format!(
+                "{} (pipeline: reads the render's state, joins first)",
+                d.override_name(entry).unwrap_or("sim")
+            );
+            let me = Arc::clone(me);
+            let prev = Arc::new(prev);
+            d.register_override(entry, name, move |cpu, ctx, sel| {
+                if !me.in_flight.load(Ordering::Acquire)
+                    || ctx.thread_id != me.game_thread.load(Ordering::Relaxed)
+                {
+                    return Ok(prev.invoke(cpu, ctx, sel));
+                }
+                me.lock().stats.sim_joins += 1;
+                let prev = Arc::clone(&prev);
+                join_then(
+                    &me,
+                    cpu,
+                    ctx,
+                    Box::new(move |cpu, ctx| Ok(prev.invoke(cpu, ctx, sel))),
+                )
+            });
+        }
         if let Some(prev) = d.override_handler(a.frame_wait) {
             let name = format!(
                 "{} (pipeline: skipped in a fallback)",
@@ -1436,6 +1497,7 @@ fn join_then(
         return k(cpu, ctx);
     };
     let t = Instant::now();
+    let lead = t - flight.launched;
     let done = flight.rx.recv();
     let wait = t.elapsed();
     me.in_flight.store(false, Ordering::Release);
@@ -1455,6 +1517,7 @@ fn join_then(
     {
         let mut inner = me.lock();
         inner.stats.join_wait += wait;
+        inner.stats.lead += lead;
         inner.stats.render += render;
     }
     settle(me, cpu, ctx, exec, result, flight.predicted, None, k)
@@ -2536,7 +2599,11 @@ fn launch(
     inner.stats.snapshot += snap;
     inner.stats.pipelined += 1;
     let jobs = inner.setup.as_ref().expect("set up").jobs.clone();
-    inner.flight = Some(Flight { rx, predicted });
+    inner.flight = Some(Flight {
+        rx,
+        predicted,
+        launched: Instant::now(),
+    });
     inner.pool = PoolUse::Free;
     me.in_flight.store(true, Ordering::Release);
     drop(inner);

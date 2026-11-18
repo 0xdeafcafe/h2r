@@ -440,7 +440,9 @@ pub fn pipeline_json(s: &feature::pipeline_render::Stats) -> Value {
         "serviced": s.serviced,
         "d3d_joins": s.d3d_joins,
         "cache_joins": s.cache_joins,
+        "sim_joins": s.sim_joins,
         "d3d_other_thread": s.d3d_other_thread,
+        "lead_ms": ms(s.lead),
         "join_wait_ms": ms(s.join_wait),
         "hand_back_ms": ms(s.hand_back),
         "snapshot_ms": ms(s.snapshot),
@@ -451,6 +453,16 @@ pub fn pipeline_json(s: &feature::pipeline_render::Stats) -> Value {
         "owned_conflicts": s.owned_conflicts,
         "mispredicts": s.mispredicts,
         "accesses": s.accesses,
+        "io_stalls": s.io_stalls,
+        "io_stall_ms": ms(s.io_stall),
+        "io_stalls_render": s.io_stalls_render,
+        "io_stalls_join": s.io_stalls_join,
+        "io_deferred": s.io_deferred,
+        "io_refused": s.io_refused,
+        "io_joins": s.io_joins,
+        "io_sim_first": s.io_sim_first,
+        "io_mismatches": s.io_mismatches,
+        "io_other_thread": s.io_other_thread,
     })
 }
 

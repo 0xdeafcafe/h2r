@@ -92,6 +92,20 @@ pub struct HostPadState {
     /// does), so `to_gamepad` only sanitises and scales instead of cutting a
     /// second deadzone on top.
     pub prefiltered: bool,
+    /// The touchpad of a DualSense or DualShock 4, `None` on pads without
+    /// one. The guest never sees it ([`HostPadState::to_gamepad`] ignores
+    /// it); the debug menu's gestures read it ([`crate::touchpad`]).
+    pub touchpad: Option<Touchpad>,
+}
+
+/// A PlayStation touchpad as GameController reports it: the click, and up
+/// to two fingers. Positions are -1..=1 on each axis with +y up; `None` is
+/// a lifted finger.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Touchpad {
+    pub click: bool,
+    pub primary: Option<(f32, f32)>,
+    pub secondary: Option<(f32, f32)>,
 }
 
 /// One connected host pad as reported by a backend.

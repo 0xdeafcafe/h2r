@@ -6,6 +6,8 @@ runs Cancel/Back. Arrows keep their existing pad bindings, so they navigate the
 on-screen keyboard. Outside this screen all keyboard pad bindings behave as
 before. Cmd shortcuts and the F3/F5/F6 host controls remain available.
 
+Backquote (`` ` ``) opens and closes the debug menu (docs/runtime/debug-menu.md). It is bound to nothing in the default table. While the menu is open the arrows, Enter, Space, Escape and Backspace drive it, and other keys are swallowed.
+
 Text comes from winit's logical committed text, not physical key names: Shift,
 dead keys and keyboard layouts work. IME is enabled while a field is active;
 only committed text is submitted, never composition/preedit. The OS owns its
