@@ -10,8 +10,10 @@
 //! - **Any other length: BPS.** SourceRead where the bytes match in place,
 //!   SourceCopy where they match elsewhere in the source (moved or
 //!   duplicated data, such as a block `MapEditor::append_metadata` copied
-//!   to the end), TargetRead for new bytes. The resolver materialises it
-//!   once into its cache.
+//!   to the end), TargetCopy where new bytes repeat new bytes written
+//!   earlier (a bitmap or sound a mod added twice, runs of padding),
+//!   TargetRead for the rest. The resolver materialises it once into its
+//!   cache.
 //!
 //! Both reproduce `edited` exactly, header checksum included: a patch made
 //! from a map whose checksum is right (as `map::writer` leaves it) carries
@@ -175,26 +177,39 @@ fn block_hash(b: &[u8]) -> u64 {
         })
 }
 
-/// The first source position of each `BLOCK`-aligned block, by hash (one
-/// slot per hash; a collision keeps the first).
+/// The first position of each `BLOCK`-aligned block, by hash (one slot per
+/// hash; a collision keeps the first).
 struct Index {
     mask: usize,
     slots: Vec<u32>,
+    /// Blocks before this are in.
+    upto: usize,
 }
 impl Index {
-    fn new(source: &[u8]) -> Self {
-        let n = source.len() / BLOCK;
-        let size = (n * 2).next_power_of_two().max(16);
-        let mut slots = vec![u32::MAX; size];
-        for p in (0..n * BLOCK).step_by(BLOCK) {
-            let slot = block_hash(&source[p..p + BLOCK]) as usize & (size - 1);
-            if slots[slot] == u32::MAX {
-                slots[slot] = p as u32;
-            }
-        }
+    /// Room for the blocks of `len` bytes, none in yet.
+    fn with_room(len: usize) -> Self {
+        let size = (len / BLOCK * 2).next_power_of_two().max(16);
         Self {
             mask: size - 1,
-            slots,
+            slots: vec![u32::MAX; size],
+            upto: 0,
+        }
+    }
+    /// Every block of `source`.
+    fn new(source: &[u8]) -> Self {
+        let mut index = Self::with_room(source.len());
+        index.add_upto(source, source.len());
+        index
+    }
+    /// The blocks of `bytes` that end at or before `end`, not yet in.
+    fn add_upto(&mut self, bytes: &[u8], end: usize) {
+        while self.upto + BLOCK <= end {
+            let p = self.upto;
+            let slot = block_hash(&bytes[p..p + BLOCK]) as usize & self.mask;
+            if self.slots[slot] == u32::MAX {
+                self.slots[slot] = p as u32;
+            }
+            self.upto += BLOCK;
         }
     }
     fn find(&self, block: &[u8]) -> Option<usize> {
@@ -224,8 +239,11 @@ pub fn bps(source: &[u8], target: &[u8]) -> Vec<u8> {
             out.extend(&target[f..to]);
         }
     };
-    // The SourceCopy cursor, as the reader keeps it.
+    // The SourceCopy and TargetCopy cursors, as the reader keeps them.
     let mut cursor = 0usize;
+    let mut target_cursor = 0usize;
+    // The target's blocks before `at`, for TargetCopy: made on first use.
+    let mut written: Option<Index> = None;
     let mut at = 0;
     while at < target.len() {
         let in_place = if at < source.len() {
@@ -253,13 +271,39 @@ pub fn bps(source: &[u8], target: &[u8]) -> Vec<u8> {
                 }
             }
         }
-        if copy.1 >= MIN_COPY {
+        // New bytes that repeat new bytes before them: continue the last
+        // TargetCopy, else look the block up among the blocks written.
+        // The copy may run into the bytes it writes (the reader copies byte
+        // by byte), so a run of one repeated block is one action.
+        let mut again = (
+            target_cursor,
+            if target_cursor < at {
+                common(&target[target_cursor..], &target[at..])
+            } else {
+                0
+            },
+        );
+        if copy.1 < MIN_COPY && again.1 < MIN_COPY && at + BLOCK <= target.len() {
+            let index = written.get_or_insert_with(|| Index::with_room(target.len()));
+            index.add_upto(target, at);
+            if let Some(p) = index.find(&target[at..at + BLOCK]) {
+                let n = common(&target[p..], &target[at..]);
+                if n > again.1 {
+                    again = (p, n);
+                }
+            }
+        }
+        if copy.1 >= MIN_COPY || again.1 >= MIN_COPY {
             flush(&mut out, &mut literal_from, at);
-            let (from, n) = copy;
-            varint(&mut out, ((n - 1) as u64) << 2 | 2);
-            let delta = from as i64 - cursor as i64;
+            let (kind, from, n, cursor) = if copy.1 >= again.1 {
+                (2, copy.0, copy.1, &mut cursor)
+            } else {
+                (3, again.0, again.1, &mut target_cursor)
+            };
+            varint(&mut out, ((n - 1) as u64) << 2 | kind);
+            let delta = from as i64 - *cursor as i64;
             varint(&mut out, delta.unsigned_abs() << 1 | u64::from(delta < 0));
-            cursor = from + n;
+            *cursor = from + n;
             at += n;
             continue;
         }
@@ -369,6 +413,27 @@ mod tests {
         assert!(p.len() < 100, "{} bytes", p.len());
         assert_eq!(apply(&base, &p), e);
         assert_eq!(Bps::parse(&p).unwrap().target_size, e.len() as u64);
+    }
+
+    #[test]
+    fn bps_copies_new_bytes_that_repeat_new_bytes() {
+        let mut rng = Rng::new(11);
+        let base = rng.bytes(16 * 1024);
+        // A new 8 KiB block twice, then 20 KiB of padding: TargetCopy.
+        let added = rng.bytes(8 * 1024);
+        let mut e = base.clone();
+        e.extend_from_slice(&added);
+        e.extend_from_slice(b"between");
+        e.extend_from_slice(&added);
+        e.resize(e.len() + 20 * 1024, 0);
+        e.extend_from_slice(b"end");
+        let p = bps(&base, &e);
+        assert!(p.len() < added.len() + 400, "{} bytes", p.len());
+        assert_eq!(apply(&base, &p), e);
+        // The same with no source at all.
+        let p = bps(&[], &e[base.len()..]);
+        assert!(p.len() < added.len() + 400, "{} bytes", p.len());
+        assert_eq!(apply(&[], &p), &e[base.len()..]);
     }
 
     /// Random edits: same-length (PPF3) and resized (BPS), anywhere,

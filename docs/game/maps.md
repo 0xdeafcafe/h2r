@@ -898,7 +898,13 @@ one layer:
   1-byte record, so it never does.
 - any other length (a grown block): **BPS**: SourceRead where bytes match
   in place, SourceCopy that continues the last copy or finds a 64-byte
-  source block through a hash index, TargetRead for new bytes.
+  source block through a hash index, TargetCopy the same way over the new
+  bytes already written (data a mod added twice, padding), TargetRead for
+  the rest. For Night Ops (a 95.7 MiB map over 47.6 MiB Containment)
+  about 7.8 MiB of the new bytes repeat earlier new bytes, so TargetCopy
+  takes the 68.2 MiB delta to about 60 MiB; 03a_oldmombasa holds 65.7 MiB
+  of its blocks, but a package's base is the map it replaces, so that
+  cannot be its source.
 
 Both reproduce the edited bytes exactly, **header checksum included**. The
 editor's map writer leaves the checksum right, so the resolver's repair at
