@@ -1011,7 +1011,13 @@ impl Compiler<'_> {
             definition: self.definition.clone(),
             name: "sleep".into(),
         });
-        Ok(Some(self.call(b.index, CALL, expected, b"sleep_forever", &out)))
+        Ok(Some(self.call(
+            b.index,
+            CALL,
+            expected,
+            b"sleep_forever",
+            &out,
+        )))
     }
 
     /// `(> (list_count x) 0)`: true when Halo 1 argument `arg` is an

@@ -496,7 +496,11 @@ fn negative_sleeps_sleep_forever_on_every_level() {
         let c = compile(&t, &catalog, &table, &target, Missing::Stub, &[]).unwrap();
         assert_eq!(c.forever.len(), negative, "{name}");
         let s = hs::Scenario::decode(&c.scenario_bytes(0x8010_0000), 0x8010_0000).unwrap();
-        for n in s.nodes().iter().filter(|n| !n.atom() && !n.script_call() && n.opcode() == sleep.index) {
+        for n in s
+            .nodes()
+            .iter()
+            .filter(|n| !n.atom() && !n.script_call() && n.opcode() == sleep.index)
+        {
             let head = s.node(hs::Datum(n.data())).unwrap();
             let d = *s.node(head.next()).unwrap();
             assert!(
@@ -516,4 +520,112 @@ fn negative_sleeps_sleep_forever_on_every_level() {
         total += negative;
     }
     assert!(total > 0);
+}
+
+/// The cinematic calls of a10's opening (`x10` and the scripts it calls:
+/// fades, camera moves, letterbox, BSP switches, looping sounds) carry
+/// over one for one: each is the Halo 2 builtin of the same name with the
+/// same parameter types, so a duration stays a `short` count of ticks on
+/// both sides. Retail Halo 2's own scripts pass those durations as ticks
+/// too (on the disc the commonest literals are `fade_in` 15, 60, 30,
+/// `fade_out` 0, 15, 30 and `camera_set` 0, 500, 60: as seconds a
+/// 500-second camera move, as ticks 17 seconds).
+#[test]
+#[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
+fn cinematic_calls_keep_halo1_s_ticks() {
+    use h1scripts::translate::{Kind, Table};
+    const CALLS: &[&str] = &[
+        "fade_in",
+        "fade_out",
+        "camera_set",
+        "camera_control",
+        "camera_time",
+        "cinematic_start",
+        "cinematic_stop",
+        "cinematic_show_letterbox",
+        "switch_bsp",
+        "sound_looping_start",
+        "sound_looping_stop",
+        "sound_class_set_gain",
+        "sound_impulse_start",
+        "object_set_scale",
+    ];
+    let (catalog, _) = h1();
+    let target = h2();
+    let table = Table::build(&catalog, &target);
+    let h2_type = |t: u16| target.types[t as usize].clone();
+    for name in CALLS {
+        let i = (0..catalog.functions().len() as u16)
+            .find(|&i| catalog.function(i).unwrap().name == *name)
+            .unwrap();
+        let f = catalog.function(i).unwrap();
+        let tr = table.builtin(i).unwrap();
+        assert_eq!(tr.kind, Kind::Direct, "{name}");
+        let (h2_name, b) = tr.target.clone().unwrap();
+        assert_eq!(h2_name, *name);
+        let h1_params: Vec<_> = f
+            .parameters
+            .iter()
+            .map(|&p| catalog.type_name(p).unwrap().to_owned())
+            .collect();
+        let h2_params: Vec<_> = b.parameters.iter().map(|&p| h2_type(p)).collect();
+        assert_eq!(h1_params, h2_params, "{name}");
+        println!("{name}: ({}) both", h1_params.join(" "));
+    }
+    // Retail Halo 2's literal durations.
+    let path = disc("H2_ISO", "halo2.iso");
+    let mut iso = xiso::Xiso::open(BufReader::new(File::open(&path).unwrap())).unwrap();
+    let mut seen: std::collections::BTreeMap<(&str, i16), usize> = Default::default();
+    for e in iso
+        .entries()
+        .unwrap()
+        .iter()
+        .filter(|e| !e.is_dir && e.path.ends_with(".map"))
+    {
+        let base = iso.partition_offset() + u64::from(e.sector) * xiso::SECTOR;
+        let mut map = map::Map::from_region(
+            BufReader::new(File::open(&path).unwrap()),
+            base,
+            e.size.into(),
+        )
+        .unwrap();
+        let s = hs::Scenario::read(&mut map).unwrap();
+        for n in s
+            .nodes()
+            .iter()
+            .filter(|n| n.live() && !n.atom() && !n.script_call())
+        {
+            let head = s.node(hs::Datum(n.data())).unwrap();
+            let Ok(name) = s.string(head.string_offset()) else {
+                continue;
+            };
+            let Some(&call) = ["fade_in", "fade_out", "camera_set"]
+                .iter()
+                .find(|c| **c == name)
+            else {
+                continue;
+            };
+            let mut a = head.next();
+            let mut last = None;
+            while a != hs::Datum::NULL {
+                let x = *s.node(a).unwrap();
+                last = Some(x);
+                a = x.next();
+            }
+            if let Some(x) = last.filter(|x| x.atom() && !x.global()) {
+                *seen.entry((call, x.data() as u16 as i16)).or_default() += 1;
+            }
+        }
+    }
+    for call in ["fade_in", "fade_out", "camera_set"] {
+        let mut v: Vec<_> = seen.iter().filter(|((c, _), _)| *c == call).collect();
+        v.sort_by(|a, b| b.1.cmp(a.1));
+        let top: Vec<_> = v
+            .iter()
+            .take(6)
+            .map(|((_, d), n)| format!("{d} x{n}"))
+            .collect();
+        println!("retail {call} durations: {}", top.join(", "));
+        assert!(v.iter().take(3).all(|((_, d), _)| d % 5 == 0), "{call}");
+    }
 }

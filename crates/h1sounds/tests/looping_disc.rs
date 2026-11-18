@@ -92,10 +92,18 @@ fn every_looping_sound_and_environment_converts() {
 fn character(p: &h1sounds::decode::Pcm) -> (f64, f64, f64, f64) {
     let ch = p.channels;
     let n = p.frames().max(1);
-    let x: Vec<f64> = p.samples.iter().step_by(ch).map(|&s| f64::from(s) / 32768.0).collect();
+    let x: Vec<f64> = p
+        .samples
+        .iter()
+        .step_by(ch)
+        .map(|&s| f64::from(s) / 32768.0)
+        .collect();
     let rms = (x.iter().map(|v| v * v).sum::<f64>() / n as f64).sqrt();
     let d = (x.windows(2).map(|w| (w[1] - w[0]).powi(2)).sum::<f64>() / n as f64).sqrt();
-    let zc = x.windows(2).filter(|w| (w[0] < 0.0) != (w[1] < 0.0)).count();
+    let zc = x
+        .windows(2)
+        .filter(|w| (w[0] < 0.0) != (w[1] < 0.0))
+        .count();
     let secs = p.seconds();
     (
         secs,
@@ -199,9 +207,14 @@ fn level_loops_and_their_character() {
             let w = |at: usize| i16::from_le_bytes([c[at], c[at + 1]]);
             *uses.entry((w(4), w(6))).or_default() += 1;
         }
-        println!("bsp {k} {}: clusters by (background, environment): {uses:?}", bsp.name);
+        println!(
+            "bsp {k} {}: clusters by (background, environment): {uses:?}",
+            bsp.name
+        );
         for e in s.space.block_at(s.root, 0x1fc, 0x74).unwrap() {
-            let n = String::from_utf8_lossy(&e[..32]).trim_end_matches('\0').to_string();
+            let n = String::from_utf8_lossy(&e[..32])
+                .trim_end_matches('\0')
+                .to_string();
             println!("{}: {n}", bsp.name);
             if let Some(t) = h1map::TagRef::read(e, 0x20).and_then(|r| h1.tag(r.id).ok()) {
                 looping(t, "  ");
@@ -222,7 +235,9 @@ fn level_loops_and_their_character() {
         let Some(blk) = h1map::Block::read(b, 0x140) else {
             continue;
         };
-        let Ok(es) = h1.block(blk, 0x48) else { continue };
+        let Ok(es) = h1.block(blk, 0x48) else {
+            continue;
+        };
         for a in es.chunks_exact(0x48) {
             if u32_at(a, 0) != u32::from_be_bytes(*b"lsnd") {
                 continue;
