@@ -652,7 +652,10 @@ campaign only (options mode `[[0x4e6948]+8] == 1`).
   slowly; crouching drops out; a jump's own speed is never lowered. Get
   airborne with a jump. The jump button held was not traced (the control
   latch at `[0x4ed284]+4` is the action test, not the held state), which
-  is why it is the view and not the button. If the physics rewrites the
+  is why it is the view and not the button. Since traced for the `fly`
+  cheat (docs/runtime/debug-menu.md): the unit's control flags at
+  `+0x148` hold it, bit 1 jump and bit 0 crouch, so the skull could move
+  to the cheat's controls; it has not been changed. If the physics rewrites the
   velocity before it is used, the effect is weaker than meant: the in-game
   check says.
 - **Low Gravity** (confirmed address, likely effect). The physics
