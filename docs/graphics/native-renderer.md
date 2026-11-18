@@ -349,6 +349,32 @@ and these constants (hardware numbering, D3D register + 96):
 | `c[50..52]` | model transform rows | `0x0004d830` from the render record's matrix, skipped for clusters (`[record+8] == -1`) | identity for clusters; the instance's matrix for instanced geometry |
 | `c[170..172]` | position and texcoord decompression (scale, offset) | `0x0001cdd0`; `0x0004d7c0` passes no compression for the BSP, so the default upload (`0x0001cf29`, scale 1, offset 0) | `(1, 1, 0, 0)`: BSP vertices are uncompressed |
 
+`v5` and `v6` come from the lightmap group's buckets, not from the
+cluster's own section. In layer 3 the structure draw (`0x0004d285`..
+`0x0004d420`) splits the item's argument (`item+0xc`, the render key)
+into bits 9..17 and bits 18..28:
+
+- bits 18..28 `== 0x7ff`: no bucket. The cluster render info at bits
+  9..17 (group `+0x2c`) picks the lightmap page and palette.
+- a cluster (`[record+4] == -1`, record `+8` not an instance): the bucket
+  reference is `cluster_bucket_refs[bits 18..28]` (group `+0x64`); the
+  first vertex is its offsets block at entry bits 9..17, times 4 bytes,
+  written into the bucket's first descriptor when bucket flag bit 0 is set
+  (`0x0004d331`). `0x0004dc60` then binds the bucket's streams.
+- an instance: `instance_bucket_refs[bits 18..28]` (group `+0x54`), its
+  first offset; the page and palette from `instance_render_info[bits
+  18..28]` (group `+0x4c`).
+
+So the native world needs, per section part, the render key the game
+queues it with (bits 18..28 come from the record built at `0x00133390` and
+queued by `0x00041040`; not traced yet), and the bucket's `1f` and `30`
+streams from that first vertex (`tags::structure::load_bucket`,
+`tags::lighting::vertex_lighting`). Stage 1 takes `lightmap_texcoords`
+from the cluster section itself; where a cluster section has no `1f`
+stream that is empty, and those clusters draw with lightmap coordinate
+zero. Check this in the stage-1 A/B (flat-lit clusters) before reading
+anything else into it.
+
 The per-view constants (`c[0..17]`) are the same for every draw of a
 view, and nothing in layer 3 writes them per draw (the per-draw uploads
 found are `c[18..]`, `c[21]`, `c[22]`, `c[24]`, `c[25]`, `c[31]`,
