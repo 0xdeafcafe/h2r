@@ -5,8 +5,8 @@ Status: phase 1 built ([below](#phase-1-what-was-built)): the socket,
 `features.list`, `h2 serve` and `h2 agent`. Raw and recorded input and
 `profile.capture` built too ([below](#phase-3-and-4-what-was-built)).
 Phase 5 ([plan and what was built](#phase-5-testing-in-the-lightest-way-plan)):
-`render.frame`, `render.stats`, spike causes, `profile.fallbacks` and
-`load.timeline`.
+`render.frame`, `render.stats`, spike causes, `profile.fallbacks`,
+`load.timeline` and `h2 testmap`.
 Everything else on this page is design; its Rust and JSON blocks are
 sketches, not code that compiles. The front end is the `h2 agent` CLI
 only: the MCP server is dropped (decided 2026-11-17).
@@ -742,8 +742,8 @@ a separate effort; this phase leaves their names free and builds neither.
 | Render pipeline | frame counters (`draws`, `passes`, pass splits); `H2_BOOT_CAPTURE`, `H2_BOOT_DRAWLOG` at launch only | a frame's passes, draws and targets on request; interp and pipelined-render counters and hold reasons; which native paths a frame took; one pass's image | `render.frame` and `render.stats` (built) |
 | Features | `features.list` (the plan text) | state as data; setting a switch live | `features.list` grows `{name, on, sim, live}` per switch; a `features.set` for the `Host`/`View` switches whose hooks read a flag each call, and for the rest the reason a restart is needed (the switch places or removes hooks at build) |
 | Loading | `present N: last 100 at X fps` lines; `read_bytes` per frame | a load's timeline; stalls; loading a named level or BSP | `load.timeline` (built: stall and settle with bytes, uploads, compiles, phase times); seeks and cache hits need kernel I/O counters (later); `load.level` needs a runtime level switch (the game's own map change, through `hs.eval` once it exists) |
-| Editing, test maps | `scenario-edit` (placements, undo, save), `h2-editor`, `h2 map testbuild` | a scripted, headless way to make a small test map | `h2 testmap`: a JSON edit script (clear blocks, add, move, set fields, spawn) over `scenario-edit`, saved to a new `.map` (slice 4, on disk only) |
-| Lightest testing | unit tests over synthetic data; `h2 agent -` scripts | assertions; one call that runs a scenario and returns a verdict | `h2 agent run script.txt`: the `-` script with `expect` lines (JSON-pointer comparisons on the last answer) and one JSON verdict with each call's timing (slice 5) |
+| Editing, test maps | `scenario-edit` (placements, undo, save), `h2-editor`, `h2 map testbuild` | a scripted, headless way to make a small test map | `h2 testmap`: a JSON edit script (clear blocks, keep, add, set, remove) over `scenario-edit`, saved to a new `.map` (built, on disk only) |
+| Lightest testing | unit tests over synthetic data; `h2 agent -` scripts | assertions; one call that runs a scenario and returns a verdict | `h2 agent run script.txt`: the `-` script with `expect` lines (JSON-pointer comparisons on the last answer) and one JSON verdict with each call's timing (next) |
 
 What to reach for first, cheapest first:
 
@@ -871,6 +871,35 @@ h2 agent wait '{"phase":"gameplay","map_ticks":30}' && h2 agent loads 1
 - Seeks and cache hits aren't counted (the kernel's file I/O counts bytes
   only), and per-frame I/O stalls are the `read_bytes` and `file_io`
   spike cause above.
+
+### Test maps on disk
+
+```sh
+h2 testmap ~/maps/zanzibar.map one-weapon.json --out $TMPDIR/tm/zanzibar.map
+```
+
+`h2 testmap <source.map> <script.json | -> --out <new.map> [--force]`
+(`crates/cli/src/testmap_cmd.rs`) runs a JSON edit script
+(`scenario_edit::script`, `crates/scenario-edit/src/script.rs`) over the
+source's placement blocks through the editor's own `Session`, so every
+edit is checked as the editor checks it, and saves a new map (the source
+is never written). It prints what each operation did and the entries
+left per block. Operations: `clear` (blocks, or `"all"`; a block the
+editor won't empty is reported and left), `keep` (these entries of a
+block, renumbered from 0), `add` (a copy of `like`, or a zeroed entry
+with the palette's first item, then `set`), `set` (fields by the
+editor's names: `position` `[x, y, z]`, `rotation`, `facing`, `team`,
+palette `type`, …), `remove`. `allow_growth` lets a block grow past its
+source size, as the editor's switch. Blocks: `scenery`, `vehicles`,
+`equipment`, `weapons`, `machines`, `sound_scenery`, `crates`,
+`starting_locations`, `netgame_flags`, `netgame_equipment`,
+`starting_equipment`. Tested on the editor's invented fixture map
+(`crates/scenario-edit`); no game data.
+
+The user or coordinator loads the result (`H2_MAP_DIR`); agents don't.
+Not covered: AI (squads and their spawn points aren't in the editor's
+blocks yet), and tag references other than through a palette index.
+Live edits in a running game are the separate `edit.*` effort.
 
 Not built in phase 5 so far: per-subsystem guest time (engine-phase
 spans), A/B of feature sets, features set live, kernel I/O seeks and
