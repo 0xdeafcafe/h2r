@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 
-use crate::store::{EventStore, NewEvent, Query, RecordedEvent, StoreError, Wake};
+use crate::store::{EventStore, NewEvent, Query, RecordedEvent, StoreError, UsageRow, Wake};
 
 /// The checkpoint that keeps the hold: 1 held, 0 (or none) not.
 pub const HOLD: &str = "live.import-hold";
@@ -105,6 +105,14 @@ impl EventStore for HeldStore {
         let mut all = self.inner.checkpoints().await?;
         all.retain(|(name, _)| name != HOLD);
         Ok(all)
+    }
+
+    async fn add_usage(&self, rows: &[UsageRow], keep_from: &str) -> Result<(), StoreError> {
+        self.inner.add_usage(rows, keep_from).await
+    }
+
+    async fn usage(&self) -> Result<Vec<UsageRow>, StoreError> {
+        self.inner.usage().await
     }
 }
 

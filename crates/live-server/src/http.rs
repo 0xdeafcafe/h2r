@@ -286,6 +286,8 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
             get(crate::ranks::player_history),
         )
         .route("/v1/admin/status", get(crate::status::get_admin_status))
+        .route("/v1/admin/usage", get(crate::usage::get_overview))
+        .route("/v1/admin/usage/accounts", get(crate::usage::get_accounts))
         .route("/v1/events", get(list_events).post(post_event))
         .route(
             "/v1/sessions",
@@ -649,6 +651,12 @@ async fn put_file(
     let published = live
         .publish_file(bearer(&headers), title, &name, &bytes)
         .await?;
+    live.meter(
+        crate::usage::bearer_xuid(bearer(&headers)),
+        crate::usage::metric::UP_CONTENT,
+        bytes.len() as u64,
+    )
+    .await;
     Ok(json(StatusCode::OK, &published))
 }
 
@@ -1069,8 +1077,12 @@ async fn put_outline(
     body: Result<Bytes, BytesRejection>,
 ) -> ApiResult<Response> {
     let bytes = body_bytes(body)?;
-    Ok(json(
-        StatusCode::OK,
-        &live.put_outline(bearer(&headers), &map, &bytes).await?,
-    ))
+    let stored = live.put_outline(bearer(&headers), &map, &bytes).await?;
+    live.meter(
+        crate::usage::bearer_xuid(bearer(&headers)),
+        crate::usage::metric::UP_CONTENT,
+        bytes.len() as u64,
+    )
+    .await;
+    Ok(json(StatusCode::OK, &stored))
 }

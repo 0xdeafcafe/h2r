@@ -865,6 +865,7 @@ impl Live {
     /// restart (rebuilt from the events' `at`).
     pub async fn sweep(&self) {
         let now = now();
+        self.flush_usage().await;
         self.sweep_sessions(now).await;
         let policy = self.policy();
         let (expired, idle): (Vec<_>, Vec<_>) = {
