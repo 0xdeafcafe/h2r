@@ -609,6 +609,36 @@ pub fn check(v: &GameVariant) -> Vec<Problem> {
     c.out
 }
 
+/// Respawn time (setting 17).
+pub const RESPAWN: SettingId = SettingId(17);
+/// Respawn time modifier (setting 25): 0 inheritance, 1 cycling, 2 none.
+pub const RESPAWN_MODIFIER: SettingId = SettingId(25);
+/// The modifier's cycling value.
+pub const CYCLING: i32 = 1;
+
+/// Our own rules, beyond the game's clean-up: records the clean-up keeps
+/// but the game cannot play (docs/game/game-options.md). Cycling rounds
+/// each wait up to a multiple of the respawn time, dividing by it
+/// (`0x15d11f`): with a respawn time of 0 the host divides by zero.
+pub fn ours(v: &GameVariant) -> Vec<Problem> {
+    let mut out = Vec::new();
+    if v.get(RESPAWN) == Some(0) && v.get(RESPAWN_MODIFIER) == Some(CYCLING) {
+        out.push(Problem {
+            offset: field(RESPAWN).unwrap().offset,
+            what: "a respawn time of 0 with cycling respawns divides by zero in the game".into(),
+        });
+    }
+    out
+}
+
+/// Everything our editors refuse to save or link: the clean-up's rules,
+/// then [`ours`].
+pub fn refused(v: &GameVariant) -> Vec<Problem> {
+    let mut out = check(v);
+    out.extend(ours(v));
+    out
+}
+
 struct Checker<'a> {
     v: &'a GameVariant,
     out: Vec<Problem>,
@@ -843,6 +873,22 @@ mod tests {
                 assert!(!check(&v).is_empty(), "{id}={bad} should be refused");
             }
         }
+    }
+
+    #[test]
+    fn respawn_zero_with_cycling_is_refused() {
+        let mut v = GameVariant::blank(GameType::Slayer);
+        v.set(RESPAWN, 0).unwrap();
+        for (modifier, refused_) in [(0, false), (CYCLING, true), (2, false)] {
+            v.set(RESPAWN_MODIFIER, modifier).unwrap();
+            assert!(check(&v).is_empty(), "the game keeps it");
+            assert_eq!(!refused(&v).is_empty(), refused_, "modifier {modifier}");
+        }
+        v.set(RESPAWN, 1).unwrap();
+        assert!(
+            refused(&v).is_empty(),
+            "1 s with cycling divides by one second"
+        );
     }
 
     /// docs/game/game-options.md, "Where the extension lives": the bytes

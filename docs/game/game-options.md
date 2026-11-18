@@ -1,8 +1,9 @@
 # Game options the game doesn't allow (design)
 
-Status: design (slice 1). Nothing here is built except two tests in
-`crates/variants/src/record.rs` that pin the record facts the design relies
-on (see "Tests").
+Status: decided; slice 2 built (tests only). The user's answers are in
+"Decisions"; section 5 has the slices. Built so far: the record tests
+(slice 1) and our added choices, Bounce Practice's magnum and Bumper Cars
+(slice 2, "Built: slice 2").
 
 The asks:
 
@@ -160,7 +161,7 @@ picking a weapon up) is not traced: the game-run checklist covers it.
   our value; the record keeps a fallback weapon in `+0xd6` so an older build
   gets something sensible.
 
-### Instant respawn (storable value, needs hooks; confirmed)
+### Fast respawn (decided: 1 s, no hooks; confirmed)
 
 Respawn time 0 is storable, but the death code doesn't honour it:
 
@@ -178,20 +179,13 @@ Respawn time 0 is storable, but the death code doesn't honour it:
   loop adding `esi`). With 0 that is a division by zero; the lifted code
   would fault or, where the host's divide returns 0, loop forever.
 
-So the plan:
-
-1. Our editor and built-ins may store 0, but `record`-level validation
-   (ours, not the game's) refuses respawn 0 with cycling. That also keeps
-   an older build safe: it plays respawn 0 as the one-second floor, which
-   is the nearest it can do, and never divides by zero.
-2. A hook on our builds lifts the floor to 0 ticks and skips the 32-tick
-   slot for players whose countdown was set from a 0 respawn. "Instant" is
-   then the next tick, plus whatever the spawn itself needs.
-3. The inheritance modifier (0) goes through `0x15d6c0`, not traced; the
-   hook leaves it alone until it is.
-
-Where respawn is decided (host only, or every machine) is not traced; the
-hooks go on every machine, which is right either way.
+Decided (3b): no hooks. Retail's one-second floor and its 32-tick slot
+stay, and the fastest choice we offer is **1 s** (with 2 s, beside
+retail's 3 s and up). Respawn 0 is never offered, and our editors refuse
+any record with respawn 0 and the cycling modifier (`record::ours`, used
+by Studio's save, the hopper tool's link and checks, and portable import),
+since that is the one combination that divides by zero. With 1 s, cycling
+divides by one second and is safe.
 
 ### Gravity (needs the extension; confirmed address)
 
@@ -209,27 +203,31 @@ multiply (Low Gravity on a 50% variant is 25%). Gravity is simulated on
 every machine, so a machine without the scale disagrees with the host;
 section 3 keeps such a machine out of the game.
 
-### Bounce Practice gets a magnum (offered values; confirmed)
+### Bounce Practice's magnum and Bumper Cars (built)
 
 Bounce Practice is the eleventh community built-in
-(`community_variants::VARIANTS`, Slayer). Today it sets no weapons, so
-players get the map's. The change adds `StartingWeapon(Weapon::Magnum)` and
-`SecondaryWeapon(None)` (magnum only) and says so in the description. Both
-are offered values, so `usable()` keeps the variant on every disc and no
-hook is needed. Glitch Hunt keeps its sword and rockets.
+(`community_variants::VARIANTS`, Slayer). It now starts with a magnum and
+nothing else (`StartingWeapon(Some(Weapon::Magnum))`,
+`SecondaryWeapon(None)`; decided 1a), and its description says so. Both
+are retail choices, so `usable()` keeps it on every disc. Glitch Hunt
+keeps its sword and rockets.
 
-The same "None" start makes **Bumper Cars** possible, which
-community-gametypes.md left out for want of it (optional; a decision
-below).
+The "None" start also makes **Bumper Cars** possible (decided 2a): a
+Slayer built-in with no weapons, no grenades, nothing on the map, Warthogs
+and Ghosts and nothing else to drive, 25 points. Its unarmed start is one
+of our choices, so `usable()` keeps it only when the option lists carry
+ours (`variant_options`, on by default); with `H2_NO_VARIANT_OPTIONS=1` it
+is left out with a log line, as any variant with a value the game doesn't
+offer is.
 
 ### More options the game doesn't allow
 
 | Option | Standing | How |
 |---|---|---|
 | Starting weapon "None" | storable (primary 1) | offer it; retail code handles it |
-| Instant respawn | storable (0), needs hooks | floor and slot hooks; refuse 0 with cycling |
+| Fast respawn | storable (1 s, 2 s) | offered by us (decided: no hooks, retail's 1 s floor stays); respawn 0 with cycling refused |
 | Gravity | needs the extension | scale `[0x51e9c4]` at game start, as Low Gravity |
-| Bounce Practice magnum | offered | change the built-in |
+| Bounce Practice magnum, Bumper Cars | offered; Bumper Cars needs our "None" | built-ins (slice 2) |
 | Any weapon, from the globals list | storable (15, 16, 20) | name them from the disc; offer them |
 | Any weapon, outside that list | needs the extension | extension names the tag; hook `0x19eda0`; record keeps a fallback |
 | Score above 250 | storable to 0x7fff | offer more steps |
@@ -242,7 +240,7 @@ below).
 | Player speed for everyone | needs the extension | only Juggernaut and ball carrier speed exist (i16 0..2); the movement scale is not traced |
 | Unlimited grenades | needs the extension | only a starting on/off bit; host refills each unit's counts each tick (unit offsets not traced) |
 | Mixed vehicle sets | mostly offered; some storable | each slot (light, second light, heavy, flying, two turrets) is its own byte, so mixes exist today; values in range but not offered (75: 2; 76, 77: 4; 79: 2, 3; 81, 82: 2, 3; 83: 18) and setting 80 (no row, `+0xd0` 0..4) are not traced and are not offered until they are; a vehicle outside the sets needs the extension and a placement hook |
-| Team count | storable (setting 93, `+0xb4` 0..8) | the retail editor has no row for it; offer one |
+| Team count | storable (setting 93, `+0xb4` 0..8) | the retail editor has no row for it; a row on our "More Options" page |
 | Team size | needs the extension | nothing in the record; the lobby would have to enforce it |
 | More than 16 players | impossible | the engine's player limit |
 
@@ -303,15 +301,29 @@ guests"):
   host has it the moment it picks the entry; the rest is the custom-game
   path. The server's hopper model and the editor's hopper tool carry it
   untouched (both copy the record whole).
-- **Older builds:** a session with a non-zero block also advertises
-  `requires: ["variant-ext/1"]`. The server refuses a join from a client
-  that doesn't list the capability, with a message that says why. Without
-  this, an older build would play the game with normal gravity and damage
-  against a host that doesn't.
-- **System Link** has no server. A host with an extension shows a warning
-  in the lobby and the guests play without it (or, later, a peer-to-peer
-  message on the QoS port as co-op's ping does; docs/live/live-coop.md
-  section 10.6). A decision below.
+- **Older builds** (decided 5): they may join. Clients send their build's
+  capabilities with the session join; when the host's session carries a
+  block and a member lacks `variant-ext/1`, the host's lobby shows a
+  warning naming the player ("plays this variant with retail rules"), and
+  the older client is told the same if its build can show it (a new build
+  joining an older host cannot happen the other way round: an older host
+  never publishes a block). There is no refusal.
+
+  **The desync risk.** Halo 2's host simulates and its guests predict. A
+  guest playing retail rules against a host with extras predicts wrong
+  wherever the rules differ: with gravity it predicts its own jumps and
+  every falling object at the wrong height, and the host corrects it
+  (rubber-banding, grenades landing short or long on its screen); with
+  speed, its own movement snaps back; with damage, shield or health scales,
+  it shows hits and kills the host does not agree with until the host's
+  update arrives. Unlimited grenades and other weapons are host-side and
+  replicate, so they look right. Nothing crashes and the host's result
+  stands, but the older player's game feels broken, which is what the
+  warning says.
+- **System Link** (decided 6a): extras are off. A host on System Link
+  never applies its variant's block (every machine plays retail rules, so
+  nobody disagrees) and its lobby says the variant's extras are off on
+  System Link.
 
 ### Showing them
 
@@ -319,9 +331,10 @@ guests"):
   we copy each `sily` options block into our page, append our options
   (value and a label id in our private string range, served by the
   `community_variants` string hook) and repoint it, the way
-  `community_variants` extends the `goof` block. Respawn gets "Instant",
-  primary weapon "None", score, time and lives more steps. The game's own
-  editor then shows and stores them; nothing new to draw.
+  `community_variants` extends the `goof` block. Respawn gets 1 s and 2 s,
+  primary weapon "None", score, time, lives and penalties more steps. The
+  game's own editor then shows and stores them; nothing new to draw.
+  Built in slice 2 (`boot::variant_options`).
 - **Extension options** (gravity, multipliers, grenades, other weapons,
   team size) have no setting number the setter can store (its descriptor
   table at `0x470828` has 0x70 entries). They go on a kit page of ours,
@@ -427,149 +440,182 @@ About 394 units in all, plus the icon glyphs `boot::icons` adds. The
 of Greek and Cyrillic) but are not known to draw names. U+2699 (the bot gear,
 bots.md section 8.2) is in none yet.
 
-### The plan
+### The plan (decided)
 
 1. **One drawable set.** `font::coverage(&Font)` returns the units with a
    glyph of their own. The name set is the intersection over every font that
-   can draw a name, after our patches, minus controls, surrogates, `|` and
-   the scanner's alignment units (U+E405..U+E407). Computed at boot from the
-   user's fonts, never shipped.
+   can draw a name, after our patches, minus controls, surrogates, `|`
+   (decided 9a) and the scanner's alignment units (U+E405..U+E407).
+   Computed at boot from the user's fonts, never shipped. **No new glyphs**
+   (decided 10/11): the set is what the game's fonts already draw (about
+   394 units, above) plus the icon glyphs; nothing is rasterised or drawn
+   for names.
 2. **The Done check.** A wrapper on `0x238114` replaces the
    letters-digits-spaces rule (flag 2) with "every unit is in the drawable
    set" for profile, variant and clan names; the rest of the check
    (non-empty, uniqueness, the gamertag rule for contexts 12 and 13) runs
-   as retail. Lengths stay as retail (16 units) unless decided otherwise.
-3. **The accents and symbols pages** are shown in every context (the
+   as retail.
+3. **Lengths** (decided 7b): gametype names take up to 31 characters, the
+   record's whole field. The keyboard's cut to 17 units on open
+   (`0x2381de`) becomes 32 for the variant contexts 5..7, and context 7's
+   two-unit cut goes. Every other name keeps retail's length.
+4. **The accents and symbols pages** are shown in every context (the
    gating at `0x237a46`).
-4. **Characters the keyboard has no key for** (`` ` ``, `|` excepted, `~`,
-   the Latin-1 letters missing from the accents page, the symbols, the
-   icons): a kit page "More Characters", a grid of the drawable set by
-   block, opened from the keyboard (a free button), inserting through
-   INSERT as `keyboard_glue` does. Host typing already reaches INSERT; its
-   filter becomes the drawable set.
-5. **Icons in names** (U+E0xx, U+E1xx): the game draws them, the web
-   doesn't (a box). Allowing them means lifting the U+25A1 mapping for names
-   and drawing them on the site from our own icon pictures. A decision
-   below.
-6. **Adding glyphs.** `font::patch` adds units at the end of a font (as
-   `boot::icons` does). The first set worth adding: the rest of Latin
-   Extended-A, Greek and Cyrillic (the European names), arrows and the
-   common symbols (™ and friends where missing), and U+2699. The pixels come
-   from an OFL font rasterised at run time or drawn by hand like our icons;
-   which font is a licence decision (keyboard-charset.md "Adding a glyph").
-7. **Byte for byte.** The game's text is UTF-16 and BMP-only. Names stay
+5. **Characters the keyboard has no key for** (`` ` ``, `~`, the Latin-1
+   letters missing from the accents page, the symbols, the icons): a kit
+   page "More Characters", a grid of the drawable set by block, opened from
+   the keyboard (a free button), inserting through INSERT as
+   `keyboard_glue` does. Host typing already reaches INSERT; its filter
+   becomes the drawable set.
+6. **Icons in names** (decided 8b): allowed, in the game and on the site.
+   The U+25A1 mapping (`0x140420`, and its copy in `keyboard_glue`) is
+   lifted for names. The site draws them from the user's own disc: the
+   glyph images are exported at asset-extract time (the
+   `h2 live assets extract` game-art path) and served like the other game
+   art, never committed; without the art the site shows a neutral
+   fallback. Any other glyph the site needs comes from the same export.
+7. **The bot gear** (U+2699, bots.md section 8.2) stays as that design
+   has it: a glyph patch of its own, untouched here.
+8. **Byte for byte.** The game's text is UTF-16 and BMP-only. Names stay
    as typed through the save (signed by the game; directories are hashed,
    so no host path holds a name), the record, the wire and telemetry
    (`String::from_utf16_lossy`, which loses only lone surrogates, which
    the drawable set excludes). Fix the places that change names: drop the
    kit's and sign-in's `.trim()` (refuse leading or trailing spaces
-   instead), clip Studio's names to the game's 16, sanitise only the export
-   file name, escape `##` in Studio labels, and count bytes in Studio's
-   hopper clip. On the site, stop `text-transform` on names (it turns ß into
-   SS on screen).
-8. **Map names:** display names follow the same set, checked by the map
+   instead), sanitise only Studio's export file name, escape `##` in
+   Studio labels, and count bytes in Studio's hopper clip. On the site,
+   stop `text-transform` on names (it turns ß into SS on screen).
+9. **Map names:** display names follow the same set, checked by the map
    builder with a warning; ids stay ASCII (they are file names).
 
-### Live and gamertags (a proposal; the server decides)
+### Gamertags and display names (decided 12a)
 
-Gamertags stay as they are in slice 1. The proposal for later: keep the
-account's gamertag ASCII (it is a login, a case-insensitive key, a stream
-name, a URL path and an 8-bit field in the XOnline structures the game
-reads), and add a **display name** on the account: UTF-16, up to 16 units,
-from the drawable set, shown in games and on the site. Widening the gamertag
-itself would need Unicode case folding and NFKC for the key, a confusables
-check against impersonation (UTS #39), percent-encoded URLs, and wider
-fields in the HLE's XOnline structures; the game's own gamertag contexts
-would still refuse it.
+Gamertags stay ASCII: a gamertag is a login, a case-insensitive key, a
+stream name, a URL path and an 8-bit field in the XOnline structures the
+game reads. Each account gets a **display name** beside it, which can hold
+any character (BMP, the drawable set when typed in the game; the server
+stores what it is given, byte for byte). It is a Live server change and its
+own slice (8 below):
+
+- **Both homes.** The native server and the Worker store and serve it the
+  same way, behind the existing account store traits, with a parity test
+  (docs/live, "two homes").
+- **API.** Account create and update take it; every response that carries a
+  player for people to read (rosters, games, leaderboards, friends, the
+  stats endpoints) carries it next to the gamertag, which stays the key.
+- **Game.** The HLE writes the display name into the player's UTF-16 name
+  (player `+0x44`, which the lobby, scoreboard and carnage report draw)
+  where it writes the gamertag today; the XOnline 8-bit fields keep the
+  gamertag.
+- **Site.** Shows the display name wherever a name is shown, the gamertag in
+  URLs and as a secondary line; icon glyphs drawn from the exported art.
+- **Rules.** 1..16 UTF-16 units, no controls, no surrogates, no `|`; no
+  uniqueness (the gamertag is unique). Impersonation is the risk a
+  display name brings: the site shows the gamertag beside it on profile
+  pages.
 
 ## 5. Slices
 
-1. This document and the two record tests.
-2. **Variant values, no hooks:** Bounce Practice's magnum; `variants`
-   gains our validation (respawn 0 with cycling) and names for weapon
-   slots 15, 16 and 20 from the disc; Studio offers the storable values;
-   the `sily` option extension shows them in the game's editor. Tests:
-   option extension on synthetic tags (retail options byte for byte, ours
-   appended), encode and decode of every new value, the validation rule.
-3. **Instant respawn hooks** (floor, slot) with tests on synthetic player
-   and game-time memory, and the cycling guard.
-4. **The extension block:** `variants::ext` (encode, decode, CRC, zero means
-   none), Studio's section, the "More Options" kit page, gravity first
-   (reusing the Low Gravity code). Tests: round trips, a bad CRC ignored,
-   the block surviving `record::check`, portable files and a hopper slot.
-5. **Live transport:** `variant_ext` and the key on the session, the
-   guest's apply at activation, the `requires` gate. Tests in live-proto,
-   live-server and live-hle (an older client refused, a mismatched key
-   ignored).
-6. **Names:** `font::coverage`, the Done-check wrapper, the page gating,
-   "More Characters", the byte-for-byte fixes. Tests: coverage on synthetic
-   fonts, the check as a table over contexts and character classes, the
-   keyboard filter, Gamertag validation unchanged.
-7. **Glyphs** for the chosen ranges; the multipliers, grenades and weapon
-   extension once their engine paths are traced.
+1. **Done:** this document and the two record tests.
+2. **Done** ("Built: slice 2"): our added choices in the game's editor and
+   Studio, `record::ours` (respawn 0 with cycling refused), Bounce
+   Practice's magnum, Bumper Cars.
+3. **The extension block and gravity:** `variants::ext` (encode, decode,
+   CRC, zero means none), Studio's section, the hopper tool carrying it,
+   gravity applied at game start (the Low Gravity code), and the in-game
+   "More Options" kit page (tracing the variant editor's list hooks first).
+   Tests: round trips, a bad CRC ignored, the block surviving
+   `record::check`, portable files and a hopper slot; gravity on synthetic
+   physics memory.
+4. **Live transport:** `variant_ext` and the key on the session, the
+   guest's apply at activation, capabilities on join and the warnings (the
+   host's lobby, the older player where it can), System Link off with its
+   warning. Tests in live-proto, live-server (both homes) and live-hle: a
+   mismatched key ignored, an older member warned about, System Link never
+   applying.
+5. **The other extension options**, each traced when reached: damage,
+   shield and health scales, movement speed, unlimited grenades, any
+   weapon (slots 15, 16 and 20 named from the disc, other tags through
+   `0x19eda0`), team size and the team count row.
+6. **Names in the game:** `font::coverage` and the drawable set, the
+   Done-check wrapper, the page gating, 31-character gametype names, "More
+   Characters", icons allowed, the byte-for-byte fixes. Tests: coverage on
+   synthetic fonts, the check as a table over contexts and character
+   classes, the keyboard filter and lengths, Gamertag validation unchanged.
+7. **Names on the site:** the icon glyph export at asset-extract time and
+   the site drawing it (with the fallback), the variant's name on
+   `GameStarted`, no `text-transform` on names.
+8. **Display names** (Live): the account field in both homes, the API, the
+   HLE writing it into the game's player name, the site.
 
 ## 6. To check in the game (the user's run)
 
 After slice 2:
 
-1. Settings, Game Variants: Bounce Practice shows its description with
-   the magnum; a custom game on it spawns everyone with a magnum and
-   nothing else.
-2. Edit a Slayer copy: respawn time offers "Instant"; starting weapon
-   offers "None"; score, time and lives offer the new steps; each saves,
-   and the saved variant loads again after a restart.
-3. Starting weapon None, secondary None: players spawn unarmed. Note what
-   melee, the HUD and picking up a weapon do.
-4. A variant with a storable value made by Studio (say score 500) shows in
-   the game's editor; note what label the row shows.
+1. Settings, Game Variants: the list ends with the community variants,
+   Bumper Cars last. Bounce Practice's description mentions the magnum; a
+   custom game on it spawns everyone with a magnum and nothing else.
+2. Bumper Cars: everyone spawns unarmed, no grenades; only Warthogs and
+   Ghosts on the map. Note what melee, the HUD and picking a weapon up do
+   for an unarmed player (not traced).
+3. Edit a Slayer copy: starting weapon offers "None" after "Map Default";
+   respawn time offers 1 and 2 seconds before retail's 3; score, time,
+   lives and the penalties offer the new steps. Each saves, and the saved
+   variant loads again after a restart. The boot log says `variant
+   options: N choices added to M option lists`.
+4. Respawn 1 s in a game: back in after about one to two seconds (retail's
+   floor and its 32-tick slot).
+5. With `H2_NO_VARIANT_OPTIONS=1` the lists are retail and the log says
+   Bumper Cars was left out.
+6. Studio: the new choices show with "(h2recomp)"; respawn 0 with cycling
+   (typed in by hand) can't be saved.
 
-After slice 3:
-
-5. Respawn Instant, modifier none: dying puts you back in at once (under a
-   second). With the Bounce Practice variant, bounces still behave.
-6. Respawn Instant can't be saved with cycling (our editor refuses it).
-
-After slices 4 and 5:
+After slices 3 and 4:
 
 7. Gravity 50% in a custom game on Live with a second machine: both jump
    the same height; the log says the block was applied on the guest.
-8. An older build can't join that game and is told why.
+8. An older build joins that game: the host's lobby warns that it plays
+   retail rules.
 9. Low Gravity skull with gravity 50%: a quarter of normal.
+10. The same variant over System Link: normal gravity on both, and the
+    lobby says the extras are off.
 
-After slice 6:
+After slices 6 to 8:
 
-10. Name a profile "Bob!" and a variant "Wheeeeee! 2": both are accepted,
-    show in the lobby, the scoreboard and the carnage report as typed, and
-    a Live game's player and stats pages show them unchanged.
-11. "More Characters" from the keyboard types `~` and an accented letter.
-12. A name with a character no font draws can't be entered.
+11. Name a profile "Bob!" and a variant "Wheeeeee! with 31 characters": both
+    are accepted, show in the lobby, the scoreboard and the carnage report
+    as typed, and a Live game's player and stats pages show them unchanged.
+12. "More Characters" from the keyboard types `~`, an accented letter and a
+    button icon; the site draws the icon (or the fallback without the
+    extracted art).
+13. A name with a character no font draws can't be entered.
+14. A display name with an icon shows in a Live lobby and on the site,
+    with the gamertag in the URL.
 
-## Decisions for the user
+## Decisions (answered 2026-11-18)
 
-1. **Bounce Practice:** magnum only (secondary None), or magnum plus the
-   map's secondary?
-2. **Bumper Cars:** add it now that "None" exists?
-3. **Respawn floor:** truly instant (next tick, our hook), or keep retail's
-   one-second floor and only allow 0 as "as fast as retail allows"?
-4. **Extension storage:** in the record's spare bytes (recommended), or a
-   side table keyed by the variant?
-5. **Older builds:** refuse their join to a game with an extension
-   (recommended), or let them in with retail rules?
-6. **System Link:** extensions off with a warning, or build a peer-to-peer
-   channel?
-7. **Name lengths:** keep 16 everywhere, or allow variant names up to the
-   record's 31?
-8. **Icons in names** (button and HUD glyphs): allowed in game only, also on
-   the site (we draw them), or not at all?
-9. **`|` in names:** leave it out (recommended), or allow it and escape it
-   when drawn?
-10. **Glyph source** for new characters: which OFL font, or hand-drawn?
-11. **Which glyph ranges first** (Latin Extended-A, Greek, Cyrillic,
-    symbols)?
-12. **Gamertags:** keep ASCII and add a display name (proposed), or widen
-    the gamertag itself? A Live server decision.
-13. **Which "more options" to build after gravity:** damage, shields,
-    health, speed, unlimited grenades, any weapon, team size.
+1. Bounce Practice: a magnum and nothing else (secondary None).
+2. Bumper Cars: added as a built-in.
+3. Respawn: retail's 1 s floor stays; 1 s is the fastest choice; no floor
+   or tick hooks; our editors refuse respawn 0 with cycling.
+4. Extras live in the record's spare bytes.
+5. Older builds may join a game with extras, with a warning to the host
+   (and to the older player where its build can show it); no refusal. The
+   desync risk is in section 3.
+6. System Link: extras off, with a warning.
+7. Gametype names up to 31 characters.
+8. Icon glyphs in names, in the game and on the site; the site's images
+   come from the user's disc at asset-extract time, never committed, with
+   a neutral fallback.
+9. `|` stays out of names.
+10, 11. No new glyphs: names use what the game's fonts already draw. The bot
+    gear's patch stays as designed. Any glyph the site needs comes from the
+    same export.
+12. Gamertags stay ASCII; a separate display name holds any character, in
+    both homes, shown by the game, the API and the site.
+13. All the extension options: gravity, damage, shield, health and speed
+    scales, unlimited grenades, any weapon, team size; each traced when
+    reached.
 
 ## Open questions
 
@@ -577,8 +623,8 @@ After slice 6:
   assumes `conduit` and `handel_gothic`.
 - What the game's editor shows for a storable value it doesn't list.
 - The variant editor screen's list hooks, for the "More Options" row.
-- Whether respawn runs on the host only; the inheritance modifier
-  (`0x15d6c0`).
+- What the game does for an unarmed player (Bumper Cars, starting weapon
+  None): melee, the HUD, picking a weapon up.
 - The unoffered vehicle values and setting 80.
 - The damage, vitality and movement multipliers' code and constants.
 - The unit's grenade counts.
@@ -587,9 +633,47 @@ After slice 6:
 - Host migration: a new host holds only the wire fields, so it would need
   the block from the session as a guest does.
 
+## Built: slice 2
+
+- `variants::extra::OPTIONS`: our added choices (setting, value, label),
+  and `merge`, which puts them among a definition's retail values (before
+  the first larger value, never a value the disc already has). Starting
+  weapon "None"; respawn 1, 2, 45, 60 and 120 s; more score steps per game
+  type; time limits to 9 h; lives 4, 5, 10, 25, 50; longer suicide and
+  betrayal penalties. Every one passes `record::refused`.
+- `variants::schema::with_extras`: the disc's choices with ours merged
+  (`Choice::ours`); Studio marks ours "(h2recomp)".
+- `variants::record::ours` and `refused`: respawn 0 with cycling. Studio's
+  save, the hopper tool's link and its checks, and portable import use
+  `refused`; `Schema::validate` reports it as `Issue::Ours`.
+- `boot::variant_options`: inside the community variants' wrapper on
+  `0x149f88`, before their check, each `sily` definition with choices of
+  ours gets a merged copy of its options block in our page at
+  `0xa0fd4000` (retail options byte for byte), labels in the "variant
+  options" string family (`0x00ffe100..`, answered by the community
+  string hook). A definition already pointing into the page is skipped; one
+  that doesn't fit stays retail. `H2_NO_VARIANT_OPTIONS=1` turns it off.
+- `community_variants`: `StartingWeapon` takes `Option<Weapon>`; Bounce
+  Practice has the magnum; Bumper Cars is the thirteenth variant
+  (description number 92).
+
 ## Tests
 
-`cargo test -p variants --lib record`:
+`cargo test -p variants`, `cargo test -p hopper-edit`,
+`cargo test -p boot --lib` (community_variants, variant_options,
+string_ids). The slice 2 tests:
+
+- `extra::every_added_choice_is_one_the_game_keeps`,
+  `added_choices_go_in_value_order_and_never_twice`,
+  `the_schema_shows_ours_beside_the_discs`;
+- `record::respawn_zero_with_cycling_is_refused`;
+- `variant_options::our_choices_join_the_retail_lists_in_value_order`
+  (retail blocks unwritten, a repeated definition extended once, a second
+  load a no-op), `a_list_the_page_cannot_hold_stays_retail`,
+  `every_added_choice_has_a_label_id_of_ours`;
+- `community_variants::bumper_cars_needs_our_none_and_bounce_practice_has_a_magnum`.
+
+Slice 1, `cargo test -p variants --lib record`:
 
 - `the_cleanup_keeps_values_the_editor_never_offers`: weapon 1, 15 and 20,
   respawn 0, score, time, lives and penalties at 0x7fff and team count 8

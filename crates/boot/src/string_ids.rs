@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use crate::{
     campaign_menu, community_variants, coop_live, custom_games, layout_glue, skulls_menu,
-    video_screen,
+    variant_options, video_screen,
 };
 
 struct Family {
@@ -68,6 +68,13 @@ fn families() -> Vec<Family> {
             name: "community variants",
             ids: community,
             claims: |id| community_variants::is_ours(id) || community_variants::text(id).is_some(),
+        },
+        Family {
+            name: "variant options",
+            ids: (0..variants::extra::OPTIONS.len())
+                .map(variant_options::label_id)
+                .collect(),
+            claims: |id| variant_options::text(id).is_some(),
         },
         Family {
             name: "co-op texts",

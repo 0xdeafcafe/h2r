@@ -78,6 +78,7 @@ pub mod steam_speaker;
 pub mod ui;
 pub mod ui_kit;
 pub mod ui_watch;
+pub mod variant_options;
 pub mod bot_glue;
 pub mod video_screen;
 pub mod snapshot_probe;
