@@ -121,6 +121,16 @@ impl Guest {
         changed_lines(&self.ram, base.bytes(), physical as usize)
     }
 
+    /// Put physical `[physical, physical + len)` back to `base`'s bytes,
+    /// without telling the write watch: a view's change there is then no
+    /// change at all ([`changed_lines`](Self::changed_lines) and
+    /// [`hand_back`](Self::hand_back) skip it). The range is clipped to RAM.
+    pub fn restore_from(&mut self, base: &FrozenRam, physical: u32, len: u32) {
+        let start = (physical as usize).min(RAM_SIZE);
+        let end = (physical as usize + len as usize).min(RAM_SIZE);
+        self.ram[start..end].copy_from_slice(&base.bytes()[start..end]);
+    }
+
     /// Merge what a view changed into this (live) Guest, over `written`
     /// (from the view's write watch and [`changed_lines`](Self::changed_lines)):
     /// every byte of a listed line where `view` differs from `base` takes

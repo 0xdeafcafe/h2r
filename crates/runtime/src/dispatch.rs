@@ -107,6 +107,21 @@ impl Dispatch {
         self.generated.insert(addr, handler);
         Ok(())
     }
+    /// A Rust function in generated code's place at `addr`: it is the
+    /// "original" there (overrides displace it, `resolve_original` finds
+    /// it) and an owner for [`register_resume`](Self::register_resume),
+    /// which hands it the resume's `start_pc` as the selector. For
+    /// synthetic fixtures whose state must live in guest memory and
+    /// registers only, as generated code's does.
+    pub fn register_generated_rust<F>(&mut self, addr: u32, f: F) -> Result<(), RegistrationError>
+    where
+        F: Fn(&mut CpuAbi, &mut ExecCtx, u32) -> Result<TransferAbi, GuestFault>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.register_generated_handler(addr, Handler::Rust(Arc::new(f)))
+    }
     pub(crate) fn register_override_handler(
         &mut self,
         addr: u32,

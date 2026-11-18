@@ -179,6 +179,13 @@ impl ExecCtx {
     pub fn take_slice_spent(&mut self) -> u64 {
         std::mem::take(&mut self.slice.spent)
     }
+    /// Charge `accesses` made elsewhere (a second executor's call, at its
+    /// join) to this context, as if its own generated code had made them:
+    /// they count toward [`slice_spent`](Self::slice_spent) and may expire
+    /// the slice.
+    pub fn charge_accesses(&mut self, accesses: u64) {
+        self.spend_accesses(accesses);
+    }
     /// The bits set on this context's own word.
     pub fn preempt_pending(&self) -> u32 {
         self.word.pending()
