@@ -14,7 +14,9 @@ use std::io::{BufReader, Cursor};
 use h1convert::apply::NETGAME_ITEM;
 use h1convert::convert::halo1::{added_datum, prepare_halo1};
 use h1convert::convert::{Sandbox, structure_mopp};
-use h1convert::globals::{PLAYER_REPRESENTATION, PLAYER_REPRESENTATION_SIZE, REPRESENTATION_UNIT};
+use h1convert::globals::{
+    PLAYER_REPRESENTATION, PLAYER_REPRESENTATION_SIZE, REPRESENTATION_HANDS, REPRESENTATION_UNIT,
+};
 use h1map::H1Map;
 use h1objects::base::Base;
 use h1objects::sandbox::Objects;
@@ -276,6 +278,18 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
         assert!(o.model.as_ref().is_some_and(|m| m.render_model.is_some()));
         eprintln!("player representation {e}: {name}");
         player = id;
+    }
+    // Their first-person arms are Halo 1's (element +0x0), converted:
+    // the engine binds them to a weapon's first-person graph by name, and
+    // Halo 1's graphs name Halo 1's arms' nodes (h1-models.md).
+    for e in [2, 3] {
+        let at = reps + e * PLAYER_REPRESENTATION_SIZE + REPRESENTATION_HANDS;
+        let id = TagId(gw(at + 4));
+        let (grp, name) = &names[&id];
+        assert_eq!(*grp, FourCC(*b"mode"), "arms {e}");
+        assert!(name.contains("cyborg") && name.contains("fp"), "arms {e}: {name}");
+        assert!((id.0 & 0xffff) as usize >= first, "arms {e}: the base's {name}");
+        eprintln!("player representation {e} arms: {name}");
     }
     // The player's camera sits at its model's head marker and its weapons
     // attach at the hand markers (h1objects::rebuild::UNIT_MARKERS): each

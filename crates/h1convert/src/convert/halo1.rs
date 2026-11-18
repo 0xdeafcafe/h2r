@@ -50,6 +50,11 @@ pub trait Halo1Objects {
     /// can't be converted.
     fn object(&mut self, group: [u8; 4], name: &str) -> std::result::Result<usize, String>;
 
+    /// The converted render model for Halo 1's first-person arms `id`
+    /// (its globals' first-person interface), converting it the first
+    /// time: its index among the tags [`ObjectTags::install`] adds.
+    fn first_person_arms(&mut self, id: h1map::TagId) -> std::result::Result<usize, String>;
+
     /// Everything converted so far, ready to add to a map.
     fn take(&mut self) -> ObjectTags;
 }
@@ -333,6 +338,19 @@ pub fn prepare_halo1<R: Read + Seek>(
             None
         }
     };
+    // The player's first-person arms: Halo 1's, which Halo 1's
+    // first-person graphs name node for node (the engine binds them by
+    // name; Halo 2's arms match no node of them).
+    let player_hands = match crate::globals::h1_first_person_hands(h1)? {
+        Some(id) => match objects.first_person_arms(id) {
+            Ok(k) => Some(added_datum(first + k)),
+            Err(w) => {
+                applied.unresolved.push(format!("first-person arms: {w}"));
+                None
+            }
+        },
+        None => None,
+    };
     // Halo 1's grenade types, converted like the objects.
     let mut grenades = Vec::new();
     for g in crate::globals::h1_grenades(h1)? {
@@ -387,6 +405,7 @@ pub fn prepare_halo1<R: Read + Seek>(
     p.objects = Some(tags_out);
     p.objects_first = first;
     p.player_biped = player_biped;
+    p.player_hands = player_hands;
     p.grenades = grenades;
     Ok(p)
 }
