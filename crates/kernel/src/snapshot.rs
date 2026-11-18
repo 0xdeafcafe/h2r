@@ -21,6 +21,7 @@ use snapshot::codec::{Reader, Writer};
 use snapshot::{Codec, Snapshot, SnapshotWriter, Tag};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
+use vfs::{SavedFile, VfsState};
 
 pub use snapshot::Error as CodecError;
 
@@ -258,6 +259,33 @@ persist_struct!(LiveRecord {
 persist_struct!(SlotRecord { generation, live });
 persist_struct!(ContinuationLayout { slots, reusable });
 
+impl Persist for vfs::Handle {
+    fn put(&self, w: &mut Writer) {
+        w.u64(self.raw());
+    }
+    fn get(r: &mut Reader<'_>) -> Result<Self, CodecError> {
+        Ok(vfs::Handle::from_raw(r.u64()?))
+    }
+}
+persist_struct!(SavedFile {
+    id,
+    device,
+    path,
+    access,
+    share,
+    disposition,
+    want_directory,
+    attributes,
+    position,
+    directory,
+    search,
+});
+persist_struct!(VfsState {
+    next_handle,
+    handles,
+    objects,
+});
+
 impl Persist for Value {
     fn put(&self, w: &mut Writer) {
         match *self {
@@ -336,6 +364,8 @@ fn save_core(core: &Core, w: &mut Writer) -> Result<(), SnapshotError> {
         references,
         files,
         file_handles,
+        // Saved through the VFS's own state: open objects by path.
+        storage,
         links,
         timers,
         mutant_owners,
@@ -355,7 +385,6 @@ fn save_core(core: &Core, w: &mut Writer) -> Result<(), SnapshotError> {
         // Kept from the booted machine: boot configuration and host handles.
         tls: _,
         console: _,
-        storage: _,
         sections: _,
         // Diagnostics.
         log: _,
@@ -366,13 +395,16 @@ fn save_core(core: &Core, w: &mut Writer) -> Result<(), SnapshotError> {
         deferred_failures: _,
         dropped_deferred_failures: _,
     } = core;
-    if !files.is_empty() || !file_handles.is_empty() {
-        // VFS re-open is the next step (docs/runtime/snapshots.md, phase 3).
-        return Err(SnapshotError::Busy(vec![format!(
-            "{} open files: VFS re-open is not built",
-            files.len().max(file_handles.len())
-        )]));
-    }
+    let vfs = match storage {
+        Some(storage) => Some(
+            storage
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .state()
+                .map_err(|e| SnapshotError::Busy(vec![format!("vfs: {e}")]))?,
+        ),
+        None => None,
+    };
     (kpcr, bridge, data).put_all(w);
     (title_id, utility_partition, memory).put_all(w);
     (handles, objects, owned_objects).put_all(w);
@@ -383,6 +415,7 @@ fn save_core(core: &Core, w: &mut Writer) -> Result<(), SnapshotError> {
     (launch_page, references, links).put_all(w);
     (timers, mutant_owners, guest_references).put_all(w);
     (dpcs, next_periodic, dpc_complete).put_all(w);
+    (files, file_handles, &vfs).put_all(w);
     (shutdown, persistent, &periodic.len()).put_all(w);
     for (id, p) in periodic {
         id.put(w);
@@ -434,6 +467,9 @@ fn load_core(core: &mut Core, bytes: &[u8]) -> Result<(), SnapshotError> {
     let dpcs = Persist::get(r)?;
     let next_periodic = Persist::get(r)?;
     let dpc_complete = Persist::get(r)?;
+    let files = Persist::get(r)?;
+    let file_handles = Persist::get(r)?;
+    let vfs: Option<VfsState> = Persist::get(r)?;
     let shutdown = Persist::get(r)?;
     let persistent = Persist::get(r)?;
     // Periodic sources are registered by the boot with Rust handlers: the
@@ -460,6 +496,20 @@ fn load_core(core: &mut Core, bytes: &[u8]) -> Result<(), SnapshotError> {
         }
     }
     r.finish()?;
+    // The VFS checks every saved file before it changes anything.
+    match (&vfs, &core.storage) {
+        (Some(state), Some(storage)) => storage
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .restore_state(state)
+            .map_err(|e| SnapshotError::Mismatch(format!("vfs: {e}")))?,
+        (None, None) => {}
+        _ => {
+            return Err(SnapshotError::Mismatch(
+                "storage is attached on one machine only".into(),
+            ));
+        }
+    }
     core.memory = memory;
     core.handles = handles;
     core.objects = objects;
@@ -478,8 +528,8 @@ fn load_core(core: &mut Core, bytes: &[u8]) -> Result<(), SnapshotError> {
     core.encoder = encoder;
     core.launch_page = launch_page;
     core.references = references;
-    core.files.clear();
-    core.file_handles.clear();
+    core.files = files;
+    core.file_handles = file_handles;
     core.links = links;
     core.timers = timers;
     core.mutant_owners = mutant_owners;
