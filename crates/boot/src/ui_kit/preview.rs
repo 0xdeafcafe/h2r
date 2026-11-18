@@ -30,7 +30,7 @@ use tags::ui::{self as tui, MapSource, Rect, UiTag};
 
 use crate::ui_kit::spec::{self, Finding, ListPlace, Room, ScreenSpec};
 use crate::ui_kit::view::{
-    Art, Backing, ItemArt, Justify, Kind, Metrics, PaneArt, Synthetic, View, view_of,
+    Art, Backing, ItemArt, Justify, Kind, ListAt, Metrics, PaneArt, Synthetic, View, view_of,
 };
 
 /// The Controls screen whose tag our screens are built from.
@@ -680,6 +680,9 @@ pub trait Source: Metrics {
         rgb: [u8; 3],
         alpha: u8,
     );
+    /// The list of retail screen `screen_id`'s pane `pane`: `Some(None)`
+    /// when it has none, `None` when the source doesn't know the screen.
+    fn list_of(&self, screen_id: i16, pane: u16) -> Option<Option<ListAt>>;
 }
 
 fn justify_flag(j: Justify) -> u8 {
@@ -693,6 +696,14 @@ fn justify_flag(j: Justify) -> u8 {
 impl Source for Disc {
     fn art(&self, a: &Art) -> Option<Image> {
         Disc::art(self, a)
+    }
+    fn list_of(&self, screen_id: i16, pane: u16) -> Option<Option<ListAt>> {
+        let s = self.screen(screen_id)?;
+        let p = s.panes.get(usize::from(pane))?;
+        Some(p.lists.first().map(|l| ListAt {
+            anchor: [l.anchor.x, l.anchor.y],
+            skin: l.skin,
+        }))
     }
     fn backing(&self, c: &mut Canvas, b: Backing) {
         if b == Backing::GameShell {
@@ -716,7 +727,7 @@ impl Source for Disc {
 }
 
 /// A source without a disc: art as outlined boxes of its declared size,
-/// text as blocks on [`Synthetic`]'s 8 by 16 grid, button glyphs as green
+/// text as blocks on [`Synthetic`]'s 6 by 16 grid, button glyphs as green
 /// squares. Layout only: what CI can draw.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SyntheticSource;
@@ -733,6 +744,22 @@ impl Metrics for SyntheticSource {
 impl Source for SyntheticSource {
     fn art(&self, _a: &Art) -> Option<Image> {
         None
+    }
+    /// The lists of the retail screens whose art our screens borrow, as
+    /// `h2 ui` reads them (the disc test holds these to the disc): the
+    /// Controls screen (39) and the level select (11).
+    fn list_of(&self, screen_id: i16, pane: u16) -> Option<Option<ListAt>> {
+        match (screen_id, pane) {
+            (crate::ui_kit::view::CONTROLS_SCREEN_ID, 0) => Some(Some(ListAt {
+                anchor: [-254, 130],
+                skin: 2,
+            })),
+            (crate::skulls_menu::LEVEL_SELECT_SCREEN_ID, 0) => Some(Some(ListAt {
+                anchor: [-215, 130],
+                skin: 0,
+            })),
+            _ => None,
+        }
     }
     fn backing(&self, c: &mut Canvas, b: Backing) {
         if b == Backing::GameShell {
@@ -837,17 +864,30 @@ pub fn overflows(w: &crate::ui_kit::view::Widget, m: &dyn Metrics) -> bool {
 /// that overflow are outlined in red; art the source lacks is an outlined
 /// box.
 pub fn render_view(v: &View, src: &dyn Source) -> Canvas {
+    render_view_where(v, src, &|_| true, true)
+}
+
+/// [`render_view`] of the widgets `keep` keeps, with the overflow outlines
+/// when `marks` (the contrast check draws what is under the texts).
+pub fn render_view_where(
+    v: &View,
+    src: &dyn Source,
+    keep: &dyn Fn(&crate::ui_kit::view::Widget) -> bool,
+    marks: bool,
+) -> Canvas {
     let mut c = Canvas::new(640, 480, [0, 0, 0, 255]);
     src.backing(&mut c, v.backing);
     let mut order: Vec<&crate::ui_kit::view::Widget> = v.widgets.iter().collect();
     order.sort_by_key(|w| w.layer);
-    for w in order.into_iter().filter(|w| w.alpha > 0) {
+    for w in order.into_iter().filter(|w| w.alpha > 0 && keep(w)) {
         let r = w.rect();
         match &w.kind {
             Kind::Art { art, .. } => match src.art(art) {
                 Some(img) => c.image(&img, i32::from(r.left), i32::from(r.top), w.alpha),
                 None => {
-                    c.fill(r, [70, 100, 150, w.alpha / 3]);
+                    // Over the synthetic backing this is about the
+                    // Controls row bar's mean colour in game (27, 37, 56).
+                    c.fill(r, [50, 70, 110, w.alpha / 4]);
                     c.outline(r, [120, 160, 220, w.alpha]);
                 }
             },
@@ -858,7 +898,7 @@ pub fn render_view(v: &View, src: &dyn Source) -> Canvas {
                 colour,
             } => {
                 src.text(&mut c, *font, text, r, *justify, *colour, w.alpha);
-                if overflows(w, src) {
+                if marks && overflows(w, src) {
                     c.outline(r, [230, 40, 40, 255]);
                 }
             }

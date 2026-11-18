@@ -146,13 +146,61 @@ state.
 | Check | Rule |
 |---|---|
 | fit | every text fits its rect at its font (width per line, lines times line height) |
-| overlap | no two widgets' rects overlap, except declared layers (a digit over its cell, text over its row bar) |
+| overlap | no two texts' ink overlaps; a text that belongs to no row (description, legend, title) sits on no row's art (a row's frame reaches into its neighbours by design) |
+| frame provenance | frame art borrowed from a retail screen with a list sits with that list where that screen puts it (same anchor and skin) |
+| covered (art) | frame art from a screen without a list is covered by other art or text over at most 24 visible pixels (alpha at least 24) |
+| off screen (art) | no art's visible pixels fall past the screen edge |
 | reserved | nothing overlaps the reserved areas of the screen beneath (its logo and header), unless the screen is `Own` |
-| safe area | every widget is inside the title-safe area: the middle 85%, 544 by 408 (retail headers start at its edge, y 204, x -272) |
-| legend | a screen that takes a button has a legend naming it, and the legend fits |
-| focus | the focused element (row or cell) is inside the visible window and drawn bright |
+| safe area | texts and row art stay inside the title-safe area: x ±272, y 204 down to -211 (the middle 85%, down to the bottom of retail's footer rectangle, where the game's own legends sit); frame art is exempt |
+| contrast | every text against what is drawn under it (the view rendered without its texts), WCAG ratio at least 2.5 |
+| legend | a screen that takes inputs past up, down, A and B shows a button legend (a text with a button glyph) |
+| focus | the focused row's text is drawn on screen, and more opaque than the other rows' |
 | glyphs | every character exists in its font (the kit's `Finding::Glyph`) |
 | ids | every string id is in a registered family (the kit's `Finding::Id`) |
+
+The art checks need the images' pixels, so the synthetic source skips
+them, and says so (`Report::skipped`). The provenance check runs without a
+disc for the screens our art comes from (Controls 39, level select 11).
+
+**Built (slice 3)**: `ui_kit::layout::check(view, source, rules)`, and
+`h2 ui preview` prints it per state. The tests:
+
+- unit tests with synthetic metrics, plus one with a solid-image source
+  for the two pixel checks;
+- every screen in every state passes with synthetic metrics (CI);
+- every screen in every state passes against the disc with nothing
+  skipped (the disc test).
+
+One finding is left on purpose: sign-in has no legend until it is rebuilt
+(slice 6).
+
+The checks' first findings, fixed:
+
+- **Unfocused rows nearly invisible.** The preview dimmed row text to 55%
+  of the skin's blue. The game draws row text white, and unfocused rows
+  at about 40% alpha: the 2026-11-16 screenshot peaks at (229, 230, 231)
+  focused and (103, 109, 118) unfocused over a (27, 37, 56) bar. Rows now
+  measure a contrast of 2.9 to 3.1 on the real bars, and the old model
+  about 1.5. `view::UNFOCUSED_ALPHA` is observed, not traced.
+- **The skulls page's frame.** It kept the Controls bracket (`ul_03`)
+  under a list moved 39 units right on another skin. The bracket framed an
+  empty box, and the first row's end cap cut its arm off. The frame
+  provenance check names it. The page now keeps none of the Controls art
+  and copies the level select's own bracket (`ul_02`) at run time
+  (`ListClass::frame`). Its view also draws the skull picture now
+  (`ScreenSpec::art`), untinted.
+- **The account menu's legend** was in the description block, on top of
+  rows 1 and 2. It is in the footer now.
+- **The co-op screens had no legend.** They now have footers (`A SELECT`,
+  `START START GAME` or `READY`, `B BACK`), set in game from the co-op
+  text table (`coop_live::prompts`).
+
+Calibrations the checks needed, each against the game's own screens:
+
+- the safe area's bottom is retail's footer rectangle (-211);
+- the contrast floor is 2.5 (the game's own rows sit at about 2.9);
+- synthetic text is 6 units per character (about the disc fonts' mean),
+  so the CI checks don't flag text that fits on the disc.
 
 ## Behaviour
 

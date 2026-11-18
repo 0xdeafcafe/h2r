@@ -25,6 +25,29 @@ pub fn skulls_prompts() -> Vec<Prompt> {
     ]
 }
 
+/// The skulls pages' own art: the level select's bracket for the list
+/// ([`skulls_menu::FRAME`]) and the skull picture ([`skulls_menu::PICTURE`],
+/// drawn untinted here).
+pub fn skulls_art() -> Vec<crate::ui_kit::view::PaneArt> {
+    use crate::list_class::PictureSpec;
+    use crate::ui_kit::view::{Art, PaneArt};
+    let art = |p: PictureSpec, size: [u16; 2]| PaneArt {
+        art: Art::Screen {
+            screen_id: p.screen_id as i16,
+            pane: p.pane as u16,
+            index: p.bitmap as u16,
+            image: p.image,
+        },
+        at: p.at,
+        size,
+        depth: 0,
+    };
+    vec![
+        art(skulls_menu::FRAME, skulls_menu::FRAME_SIZE),
+        art(skulls_menu::PICTURE, [256, 256]),
+    ]
+}
+
 /// A string the skulls pages serve.
 fn skull_text(id: u32) -> Option<String> {
     skulls_menu::strings()
@@ -50,6 +73,7 @@ impl Describe for SkullsScreen {
         s.style = ValueStyle::Inline;
         s.description = Some(skulls_menu::DESCRIPTION_TEXT.into());
         s.scrolls = true;
+        s.art = skulls_art();
         if campaign {
             s.prompts = skulls_prompts();
             s.footer = true;
@@ -127,6 +151,8 @@ fn coop_spec(
 ) -> ScreenSpec {
     let mut s = ScreenSpec::new(name, &title);
     s.inputs = coop_inputs();
+    s.prompts = coop_live::prompts(name);
+    s.footer = true;
     for (label, value, press) in rows {
         let r = if value.is_empty() && press != Press::Nothing {
             RowSpec::action(&label)
@@ -211,6 +237,9 @@ pub fn account_spec(a: &crate::account_screen::AccountScreen, now: i64) -> Scree
                 Prompt::new(&[Glyph::A], "Select"),
                 Prompt::new(&[Glyph::B], "Back"),
             ];
+            // In the footer, not the description block: there it sat on
+            // rows 1 and 2 (the first layout check's first finding).
+            s.footer = true;
         }
         _ => {
             s.rows = vec![RowSpec::action(a.title()).describe(&a.text(now).replace("\r\n", "\n"))];
@@ -352,6 +381,13 @@ mod tests {
         assert_eq!(k["prompts"][0]["glyphs"][0], "DpadLeft");
     }
 
+    /// Findings left on purpose, each with its reason: the sign-in prompt's
+    /// help is words in its description, not a legend; the prompt is
+    /// rebuilt as a dialog with one (docs/game/ui-builder.md, slice 6).
+    fn known(screen: &str, issue: &crate::ui_kit::layout::Issue) -> bool {
+        screen == crate::signin_screen::SCREEN && *issue == crate::ui_kit::layout::Issue::NoLegend
+    }
+
     /// Without a disc: every screen in every state drawn from the synthetic
     /// source, a PNG and a JSON each, and the sheet.
     #[test]
@@ -372,9 +408,27 @@ mod tests {
                 .iter()
                 .any(|w| w["id"] == "title")
         );
+        // And every state passes the layout checks that need no art.
+        let mut issues = Vec::new();
         for name in NAMES {
-            assert!(!states(name).unwrap().is_empty(), "{name}");
+            let all = states(name).unwrap();
+            assert!(!all.is_empty(), "{name}");
+            for (state, spec) in all {
+                let (v, _) = from.draw(&spec, &state).unwrap();
+                let r = crate::ui_kit::layout::check(
+                    &v,
+                    from.source(),
+                    &crate::ui_kit::layout::Rules::for_spec(&spec),
+                );
+                issues.extend(
+                    r.issues
+                        .iter()
+                        .filter(|i| !known(name, i))
+                        .map(|i| format!("{name}/{state}: {i}")),
+                );
+            }
         }
+        assert!(issues.is_empty(), "{issues:#?}");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -400,6 +454,30 @@ mod tests {
             let f = crate::ui_kit::view::Geometry::fallback(place);
             assert_eq!(f, d, "{name}: Geometry::fallback differs from the disc");
         }
+        // Every state passes the layout checks on the disc's art and fonts,
+        // the art ones included.
+        let mut issues = Vec::new();
+        for name in NAMES {
+            for (state, spec) in states(name).unwrap() {
+                let v = disc.view(&spec, &state).unwrap();
+                let r = crate::ui_kit::layout::check(
+                    &v,
+                    &disc,
+                    &crate::ui_kit::layout::Rules::for_spec(&spec),
+                );
+                assert!(r.skipped.is_empty(), "{name}/{state}: {:?}", r.skipped);
+                issues.extend(
+                    r.issues
+                        .iter()
+                        .filter(|i| !known(name, i))
+                        .map(|i| format!("{name}/{state}: {i}")),
+                );
+            }
+        }
+        for i in &issues {
+            eprintln!("layout: {i}");
+        }
+        assert!(issues.is_empty(), "{} layout findings", issues.len());
         if let Some(dir) = std::env::var_os("H2_UI_SHEET_DIR") {
             let from = crate::ui_kit::preview::From::Disc(&disc);
             let path =

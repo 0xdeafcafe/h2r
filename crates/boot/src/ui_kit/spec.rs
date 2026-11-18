@@ -227,6 +227,9 @@ pub struct ScreenSpec {
     pub footer: bool,
     /// The screen's own ids (title and the like).
     pub ids: Vec<u32>,
+    /// Retail art the screen adds of its own (a frame, a picture), drawn
+    /// over the frame art the layout keeps.
+    pub art: Vec<crate::ui_kit::view::PaneArt>,
 }
 
 impl ScreenSpec {
@@ -244,6 +247,7 @@ impl ScreenSpec {
             scrolls: false,
             footer: false,
             ids: Vec::new(),
+            art: Vec::new(),
         }
     }
     /// The footer legend as drawn, when the prompts go there.

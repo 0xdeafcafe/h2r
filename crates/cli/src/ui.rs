@@ -436,7 +436,7 @@ impl<'a> Printer<'a> {
     }
 }
 
-const PREVIEW_USAGE: &str = "usage: h2 ui preview <screen|list> [--state NAME|all] [--focus N] [--synthetic] [--disc disc.iso] [--out DIR]\n\nDraws one of our screens (boot::ui_kit::screens::NAMES) in its named\nstates (boot::ui_kit::screens::states; default all), or its sample with\nthe focus on row N, from the disc's tags, art and fonts (or, with\n--synthetic, from layout numbers and block text, no disc). Writes\n<screen>-<state>.png and <screen>-<state>.json (every widget's rect) into\nDIR (default $TMPDIR) and prints the kit's checks. Nothing is written into\nthe repository. docs/game/ui-builder.md.";
+const PREVIEW_USAGE: &str = "usage: h2 ui preview <screen|list> [--state NAME|all] [--focus N] [--synthetic] [--disc disc.iso] [--out DIR]\n\nDraws one of our screens (boot::ui_kit::screens::NAMES) in its named\nstates (boot::ui_kit::screens::states; default all), or its sample with\nthe focus on row N, from the disc's tags, art and fonts (or, with\n--synthetic, from layout numbers and block text, no disc). Writes\n<screen>-<state>.png and <screen>-<state>.json (every widget's rect) into\nDIR (default $TMPDIR) and prints the kit's checks and the layout checks\n(boot::ui_kit::layout). Nothing is written into\nthe repository. docs/game/ui-builder.md.";
 
 const SHEET_USAGE: &str = "usage: h2 ui sheet [--synthetic] [--disc disc.iso] [--out DIR]\n\nEvery screen of ours in every state, as `h2 ui preview` draws them, and\nsheet.png with all of them on one page, into DIR (default\n$RUSH_KEEP/ui-builder). docs/game/ui-builder.md.";
 
@@ -534,6 +534,21 @@ fn preview(args: Vec<String>) -> Result<()> {
             for f in d.check(spec)? {
                 println!("{state}: check: {f}");
             }
+        }
+        let (view, _) = from.draw(spec, state)?;
+        let r = boot::ui_kit::layout::check(
+            &view,
+            from.source(),
+            &boot::ui_kit::layout::Rules::for_spec(spec),
+        );
+        for i in &r.issues {
+            println!("{state}: layout: {i}");
+        }
+        if !r.skipped.is_empty() {
+            println!(
+                "{state}: layout: not checked without art: {}",
+                r.skipped.join(", ")
+            );
         }
     }
     for (label, _) in preview::write_states(&from, &dir, &states)? {
