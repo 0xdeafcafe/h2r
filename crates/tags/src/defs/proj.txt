@@ -1,0 +1,69 @@
+# Projectiles: the object header, then the projectile layer 0xbc..0x1a4
+# (root size from the schema). Names: docs/formats/tag-definitions.md
+# (Weapons, equipment, projectiles and damage).
+group proj 0x1a4
+  0x0 struct object obje -- the obje layer
+  0xbc unknown 0x4 seen=14 -- small integers
+  0xc0 unknown 0x4 seen=12
+  0xc4 unknown 0x4 seen=2 -- floats
+  0xc8 f32 collision_radius -- V: equals Halo 1's proj +0x1a0 on the retail pairs (weapon_rebuild_disc)
+  0xcc unknown 0x4 seen=2 -- floats
+  0xd0 unknown 0x4 seen=6 -- floats
+  0xd4 unknown 0x4 seen=6 -- floats
+  0xd8 unknown 0x4 seen=7 -- floats
+  0xdc unknown 0x4 seen=2 -- floats
+  0xe0 f32 maximum_range -- V: world units; equals Halo 1's proj +0x1c8 on three retail pairs
+  0xe4 unknown 0x4 seen=5
+  0xe8 tagref ref_e8
+  0xf0 tagref ref_f0
+  0xf8 tagref ref_f8
+  0x100 tagref detonation_damage groups=jpt! -- V: retail rocket_launcher_explosion, needler_shard_detonation
+  0x108 tagref ref_108
+  0x110 tagref ref_110
+  0x118 tagref super_detonation_damage groups=jpt! -- V: retail needler_shard_super_detonation
+  0x120 tagref ref_120
+  0x128 unknown 0x4 seen=27 -- small integers
+  0x12c tagref attached_super_detonation_damage groups=jpt! -- V: retail needler_shard_attached_super_detonation
+  0x134 unknown 0x4 seen=3 -- floats
+  0x138 tagref ref_138
+  0x140 tagref ref_140
+  0x148 tagref impact_damage groups=jpt! -- V: every retail bullet's and bolt's damage effect (smg_bullet, magnum_bullet, ...), rocket_launcher_impact, needler_shard_impact
+  0x150 unknown 0x4 seen=2 -- floats
+  0x154 tagref ref_154
+  0x15c tagref ref_15c
+  0x164 unknown 0x4 seen=7 -- floats
+  0x168 unknown 0x4 seen=3 -- floats
+  0x16c unknown 0x4 seen=13 -- floats
+  0x170 unknown 0x4 seen=6 -- floats
+  0x174 unknown 0x4 seen=2 -- floats
+  0x178 unknown 0x4 seen=5 -- floats
+  0x17c unknown 0x4 seen=18 -- floats
+  0x180 unknown 0x4 seen=18 -- floats
+  0x184 unknown 0x4 seen=6 -- floats
+  0x188 unknown 0x4 seen=7 -- floats
+  0x18c unknown 0x4 seen=5 -- floats
+  0x190 unknown 0x4 seen=7 -- floats
+  0x194 unknown 0x4 seen=7 -- floats
+  0x198 unknown 0x4 seen=4 -- floats
+  0x19c block material_responses 0x58 align 4 -- V: one element per global material the projectile meets differently; the field order is Halo 1's proj +0x240 element (0xa0) with the padding gone (weapon_rebuild_disc)
+    0x0 u16 flags -- V: zero on every retail element seen
+    0x2 u16 response -- V: Halo 1's response through arsenal::response on the retail pairs (bounce 4, attach 3, overpenetrate 2, impact 0)
+    0x4 tagref effect groups=effe
+    0xc string material_name -- V: a global material's name (default_material, hard_terrain, liquid_thin, ...)
+    0x10 i16 material -- V: material_name's position in the globals' materials (matg +0x150, stride 0xb4) on every retail element
+    0x12 unknown 0x2 seen=zero
+    0x14 u16 potential_response -- V: the plasma grenade's Halo 1 attach chance (potential 4, flags 1) is retail's 3, flags 1
+    0x16 u16 potential_flags
+    0x18 f32 chance -- V: one less Halo 1's skip fraction (+0x28): the plasma grenade's 0 is retail's 1
+    0x1c f32[2] angle_bounds -- V: radians (the needle's 0.96)
+    0x24 f32[2] velocity_bounds
+    0x2c tagref potential_effect groups=effe
+    0x34 u16 scale_effects_by
+    0x36 unknown 0x2 seen=zero
+    0x38 f32 angular_noise -- V: radians, the needle's 4 degrees
+    0x3c f32 velocity_noise
+    0x40 tagref detonation_effect groups=effe
+    0x48 f32 initial_friction -- V: the liquids' (0.5, 0.75)
+    0x4c f32 maximum_distance -- V: the liquids' (5, 2.5)
+    0x50 f32 parallel_friction -- V: the grenades' (0.5 to 0.8)
+    0x54 f32 perpendicular_friction -- V: the grenades' (0.7 to 0.9)

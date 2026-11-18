@@ -3558,6 +3558,7 @@ dependencies = [
  "live-server",
  "object_store",
  "send_wrapper",
+ "serde",
  "serde_json",
  "sqlx",
  "tokio",

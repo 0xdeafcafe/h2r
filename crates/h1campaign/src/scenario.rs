@@ -367,6 +367,9 @@ pub struct ScenarioReport {
     pub simulation: usize,
     /// Halo 1 player starting profiles written.
     pub profiles: usize,
+    /// Globals grenade types written from Halo 1's
+    /// (`h1convert::globals::set_grenades`).
+    pub grenades: usize,
     /// AI: squads, zones, characters (and substitutions made).
     pub ai: Option<AiReport>,
     /// Scripts: scripts, globals, nodes, hooks resolved and left.
@@ -1323,6 +1326,25 @@ fn place_objects(
         },
         None => None,
     };
+    // Halo 1's grenade types (the globals), through the same converter.
+    let mut grenades = Vec::new();
+    for g in h1convert::globals::h1_grenades(h1).map_err(|e| invalid(format!("grenades: {e}")))? {
+        let mut one = |id: Option<h1map::TagId>, what: &str| -> Option<TagId> {
+            let tag = h1.tag(id?).ok()?;
+            match conv.object(tag) {
+                Ok(id) => Some(id),
+                Err(e) => {
+                    dropped.push(format!("grenade {what} {}: {e}", tag.name));
+                    None
+                }
+            }
+        };
+        grenades.push(h1convert::globals::Grenade {
+            maximum: g.maximum,
+            equipment: one(g.equipment, "equipment"),
+            projectile: one(g.projectile, "projectile"),
+        });
+    }
     rep.dialogue_bytes = conv.dialogue_bytes;
     let mut tree = std::mem::take(&mut conv.tree);
     rep.object_tags = tree.tags.len();
@@ -1348,6 +1370,17 @@ fn place_objects(
         h1convert::globals::set_player_unit(set, real(p), h1convert::globals::Players::Campaign)
             .map_err(|e| invalid(format!("player unit: {e}")))?;
     }
+
+    let grenades: Vec<_> = grenades
+        .iter()
+        .map(|g| h1convert::globals::Grenade {
+            maximum: g.maximum,
+            equipment: g.equipment.map(real),
+            projectile: g.projectile.map(real),
+        })
+        .collect();
+    rep.grenades = h1convert::globals::set_grenades(set, &grenades)
+        .map_err(|e| invalid(format!("grenades: {e}")))?;
 
     let profile_blocks =
         crate::profiles::elements(&profiles, |w| profile_weapons.get(&w).map(palette_id));

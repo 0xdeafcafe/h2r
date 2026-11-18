@@ -343,6 +343,7 @@ pub fn convert_graph(g: &Graph, skeleton: Option<&[AnimNode]>) -> Result<(Conver
         })
         .collect::<Vec<_>>();
 
+    let modes_any: Vec<String> = tree.keys().cloned().collect();
     let modes = tree
         .into_iter()
         .map(|(mode, classes)| {
@@ -392,7 +393,18 @@ pub fn convert_graph(g: &Graph, skeleton: Option<&[AnimNode]>) -> Result<(Conver
     h.tag_ref(0, map::TagId::NULL);
     h.block(0x0c, node_blocks.len() as u32, array(node_blocks, NODE_LEN));
     h.block(0x2c, records.len() as u32, array(records, ANIMATION_LEN));
+    // A first-person graph (every tree mode `any`): one string-ID pair at
+    // `+0x54`, `(any, any)`, as every retail first-person graph holds (V3:
+    // tests/weapon_rebuild_disc.rs in h1objects). Other graphs leave it
+    // empty, as before (its meaning in unit graphs is not established).
+    let first_person = !modes_any.is_empty() && modes_any.iter().all(|m| m == crate::names::FIRST_PERSON_MODE);
     h.block(0x34, modes.len() as u32, array(modes, MODE_LEN));
+    if first_person {
+        let mut p = Block::zeroed(8);
+        p.string_id(0, crate::names::FIRST_PERSON_MODE)
+            .string_id(4, crate::names::FIRST_PERSON_MODE);
+        h.block(0x54, 1, p);
+    }
     h.block(0xac, 1, res);
     Ok((
         Converted {

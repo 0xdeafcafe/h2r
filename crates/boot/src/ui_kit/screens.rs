@@ -16,11 +16,12 @@ use crate::skulls_menu::{self, Mode, SkullsScreen};
 use crate::ui_kit::input::{Glyph, Input, Prompt};
 use crate::ui_kit::spec::{Describe, ListPlace, Press, RowSpec, ScreenSpec, ValueStyle};
 
-/// The campaign page's legend: left/right toggle, A starts, B backs out.
+/// The campaign page's legend: left/right change, A selects (Start Level
+/// goes on), B backs out.
 pub fn skulls_prompts() -> Vec<Prompt> {
     vec![
-        Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Toggle"),
-        Prompt::new(&[Glyph::A], "Start Level"),
+        Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Change"),
+        Prompt::new(&[Glyph::A], "Select"),
         Prompt::new(&[Glyph::B], "Back"),
     ]
 }
@@ -61,11 +62,30 @@ impl Describe for SkullsScreen {
                 Input::Right,
                 Input::A,
                 Input::B,
-                Input::X,
-                Input::Start,
             ];
+            let ids = |row: i16| -> Vec<u32> {
+                let mut ids: Vec<u32> = self.texts(row).into_iter().map(|(_, id)| id).collect();
+                ids.extend(Rows::description(self, row));
+                ids
+            };
+            s.rows.push(
+                RowSpec::action(skulls_menu::START)
+                    .press(Press::Act)
+                    .describe(skulls_menu::START_DESCRIPTION)
+                    .ids(&ids(0)),
+            );
+            for (n, o) in self.options().iter().enumerate() {
+                let row = 1 + n as i16;
+                let halo1 = crate::h1_options::is_halo1(&self.store(), o);
+                s.rows.push(
+                    RowSpec::value(o.label, &["Halo 1", "Halo 2"], usize::from(!halo1))
+                        .press(Press::Step)
+                        .describe(&crate::h1_options::description(o))
+                        .ids(&ids(row)),
+                );
+            }
             let mut order: Vec<(i16, usize)> = (0..TOTAL)
-                .filter_map(|i| Some((skulls_menu::row_of(i)?, i)))
+                .filter_map(|i| Some((self.row_of_skull(i)?, i)))
                 .collect();
             order.sort();
             for (row, i) in order {
@@ -75,12 +95,10 @@ impl Describe for SkullsScreen {
                     State::Off => RowSpec::value(label, &["On", "Off"], 1),
                     State::Locked => RowSpec::info(label, skulls_menu::LOCKED),
                 };
-                let mut ids: Vec<u32> = self.texts(row).into_iter().map(|(_, id)| id).collect();
-                ids.extend(Rows::description(self, row));
                 s.rows.push(
-                    r.press(Press::Act)
+                    r.press(Press::Step)
                         .describe(&skulls_menu::description(i))
-                        .ids(&ids),
+                        .ids(&ids(row)),
                 );
             }
         } else {
@@ -220,9 +238,11 @@ pub fn account_spec(a: &crate::account_screen::AccountScreen, now: i64) -> Scree
 }
 
 /// The screens `h2 ui preview` knows, by name.
-pub const NAMES: [&str; 8] = [
+pub const NAMES: [&str; 10] = [
     "skulls",
+    "skulls.h1",
     "skulls.mp",
+    "h1-options",
     "coop",
     "coop.friends",
     "coop.join",
@@ -231,14 +251,39 @@ pub const NAMES: [&str; 8] = [
     "kit.example",
 ];
 
+/// Every named state of screen `name` for the preview sheet: a list's
+/// first, middle and last row focused; the sign-in prompt's pages.
+pub fn states(name: &str) -> Option<Vec<(String, ScreenSpec)>> {
+    if name == crate::signin_screen::SCREEN {
+        return Some(crate::signin_screen::sample_states());
+    }
+    let s = sample(name)?;
+    let n = s.rows.len();
+    let mut focus = vec![0, n / 2, n.saturating_sub(1)];
+    focus.dedup();
+    Some(
+        focus
+            .into_iter()
+            .map(|f| {
+                (
+                    format!("focus-{f}"),
+                    ScreenSpec {
+                        focus: f,
+                        ..s.clone()
+                    },
+                )
+            })
+            .collect(),
+    )
+}
+
 /// A sample of screen `name`: the skulls pages for a profile with a few
 /// skulls collected and one turned off, the co-op screens with no Live,
 /// the sign-in prompt at its code page, the account menu, and the kit's
 /// example.
 pub fn sample(name: &str) -> Option<ScreenSpec> {
     let skull_store = || {
-        let defs: Vec<&'static settings::Def> = SKULLS.iter().collect();
-        let store = Arc::new(settings::Store::defaults(&defs));
+        let store = Arc::new(settings::Store::defaults(crate::setting_defs::ALL));
         for i in [0, 2, 4, 9, 12] {
             skulls::record_pickup(&store, &["Chief".to_string()], i);
         }
@@ -260,6 +305,15 @@ pub fn sample(name: &str) -> Option<ScreenSpec> {
             s.open("Chief".into());
             s.spec()
         }
+        "skulls.h1" => {
+            let s = SkullsScreen::new(skull_store());
+            s.open_with("Chief".into(), crate::h1_options::CAMPAIGN);
+            s.spec()
+        }
+        "h1-options" => crate::h1_options::OptionsScreen {
+            store: skull_store(),
+        }
+        .spec(),
         "skulls.mp" => {
             let s = SkullsScreen::multiplayer(skull_store());
             s.open("Chief".into());
@@ -326,6 +380,32 @@ mod tests {
         assert_eq!(k["prompts"][0]["glyphs"][0], "DpadLeft");
     }
 
+    /// Without a disc: every screen in every state drawn from the synthetic
+    /// source, a PNG and a JSON each, and the sheet.
+    #[test]
+    fn every_state_draws_without_a_disc() {
+        let dir = std::env::temp_dir().join(format!("h2-ui-sheet-{}", std::process::id()));
+        let from = crate::ui_kit::preview::From::Synthetic;
+        let sheet = crate::ui_kit::preview::write_sheet(&from, &dir).unwrap();
+        assert!(sheet.exists());
+        let json: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(dir.join("signin-code-code-wrong.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(json["state"], "code-wrong");
+        assert!(
+            json["widgets"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|w| w["id"] == "title")
+        );
+        for name in NAMES {
+            assert!(!states(name).unwrap().is_empty(), "{name}");
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// With the disc (`disc/halo2.iso`, or `H2_DISC`): every screen checked
     /// against the real list geometry and fonts, and, with
     /// `H2_UI_PREVIEW_DIR` set, drawn there. Skipped without a disc.
@@ -341,6 +421,19 @@ mod tests {
             return;
         }
         let disc = crate::ui_kit::preview::Disc::open(&iso).unwrap();
+        // The geometry without a disc is the disc's, layout for layout.
+        for name in ["coop", "skulls"] {
+            let place = sample(name).unwrap().list;
+            let d = disc.geometry(place).unwrap();
+            let f = crate::ui_kit::view::Geometry::fallback(place);
+            assert_eq!(f, d, "{name}: Geometry::fallback differs from the disc");
+        }
+        if let Some(dir) = std::env::var_os("H2_UI_SHEET_DIR") {
+            let from = crate::ui_kit::preview::From::Disc(&disc);
+            let path =
+                crate::ui_kit::preview::write_sheet(&from, std::path::Path::new(&dir)).unwrap();
+            eprintln!("wrote {}", path.display());
+        }
         let out = std::env::var_os("H2_UI_PREVIEW_DIR").map(std::path::PathBuf::from);
         let mut report = Vec::new();
         for name in NAMES {

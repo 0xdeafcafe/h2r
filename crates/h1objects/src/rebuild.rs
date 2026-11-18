@@ -1,11 +1,13 @@
-//! Scenery written field by field from typed definitions
-//! ([`tags::defs`]), with no retail template bytes: the `scen`, its
-//! `hlmt`, and its `mode`'s material list. Every field starts at its
-//! definition's default (zero, null or empty; unknown spans zero) and only
-//! what the conversion knows is set. Opt-in ([`crate::convert::Options`]);
-//! the template path stays the default until this one has run in the game.
-//! The field-by-field comparison with the template path is in
-//! `tests/rebuild_disc.rs` and `docs/formats/tag-definitions.md`.
+//! Objects written field by field from typed definitions
+//! ([`tags::defs`]), with no retail template bytes. Every field starts at
+//! its definition's default (zero, null or empty; unknown spans zero) and
+//! only what the conversion knows is set, plus, for unknown spans where
+//! zero is not neutral, the words most retail tags of the same role hold
+//! (computed from the base map at conversion time). Scenery: the `scen`,
+//! its `hlmt` and its `mode`'s material list, the only scenery path since
+//! converter version 50. The field-by-field comparison with the removed
+//! template path is in `tests/rebuild_disc.rs` and
+//! `docs/formats/tag-definitions.md`.
 
 use map::build::{Block, FixupKind};
 use map::{FourCC, TagId};
@@ -33,11 +35,18 @@ fn built(d: &StructDef, r: &Record) -> Result<Block> {
     defs::to_built(d, r, &mut |_| None).map_err(|e| Error::Invalid(e.to_string()))
 }
 
-/// The `scen` root: the object header with Halo 1's bounding sphere and
-/// the model, everything else at its default.
-pub fn scenery(obj: &h1::Object, hlmt: Option<TagId>) -> Result<Block> {
+/// The `scen` root: the object header with Halo 1's bounding sphere, the
+/// model and the predicted resources, the role's words ([`SceneryRole`])
+/// in its unknown spans, everything else at its default.
+pub fn scenery(
+    obj: &h1::Object,
+    hlmt: Option<TagId>,
+    predicted: &[Predicted],
+    words: &[(String, u32)],
+) -> Result<Block> {
     let d = def(b"scen")?;
     let mut r = defs::default_record(d);
+    role_words(&mut r, words)?;
     set(&mut r, "object.object_type", Val::Enum(SCENERY_TYPE))?;
     set(
         &mut r,
@@ -54,7 +63,52 @@ pub fn scenery(obj: &h1::Object, hlmt: Option<TagId>) -> Result<Block> {
         "object.model",
         Val::tag(FourCC(*b"hlmt"), hlmt.unwrap_or(TagId::NULL)),
     )?;
+    predicted_resources(b"scen", &mut r, "object", predicted)?;
     built(d, &r)
+}
+
+/// Scenery's role words: per 4-byte unknown span of the `scen` and of the
+/// `hlmt` its model is, the word at least half the base map's scenery
+/// holds there when it is not zero (the rule of [`TURRET_ROLE`] and
+/// [`RoleWords`]). Computed from the map at conversion time, so no retail
+/// value is kept in the source.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SceneryRole {
+    /// Scenery tags the words were taken from, and how many had a model.
+    pub members: usize,
+    pub models: usize,
+    pub scen: Vec<(String, u32)>,
+    pub hlmt: Vec<(String, u32)>,
+}
+
+/// [`SceneryRole`] over every `scen` the base map holds; `None` when it
+/// has none.
+pub fn scenery_role(base: &crate::base::Base) -> Result<Option<SceneryRole>> {
+    let (ds, dh) = (def(b"scen")?, def(b"hlmt")?);
+    let (mut ss, mut hs) = (Vec::new(), Vec::new());
+    word_spans(ds, "", 0, &mut ss);
+    word_spans(dh, "", 0, &mut hs);
+    let model = crate::convert::h2::MODEL;
+    let (mut st, mut ht) = (Tally::new(), Tally::new());
+    let (mut members, mut models) = (0, 0);
+    for t in base.tags.iter().filter(|t| t.1 == FourCC(*b"scen")) {
+        let bytes = base.root(t.0)?;
+        tally_words(&bytes, &ss, &mut st);
+        members += 1;
+        if let Some(h) = base.reference(&bytes, model) {
+            tally_words(&base.root(h)?, &hs, &mut ht);
+            models += 1;
+        }
+    }
+    if members == 0 {
+        return Ok(None);
+    }
+    Ok(Some(SceneryRole {
+        members,
+        models,
+        scen: majority(&st),
+        hlmt: majority(&ht),
+    }))
 }
 
 /// One `hlmt` region: name, collision region (-1 none), physics region,
@@ -75,12 +129,16 @@ pub struct Model {
     /// Node count and the node array ([`h1models::mode::hlmt_nodes`]).
     pub nodes: (u32, Block),
     pub regions: Vec<Region>,
+    /// Role words for the unknown spans ([`SceneryRole::hlmt`]); empty
+    /// leaves them zero.
+    pub words: Vec<(String, u32)>,
 }
 
 /// The `hlmt`.
 pub fn model(m: &Model) -> Result<Block> {
     let d = def(b"hlmt")?;
     let mut r = defs::default_record(d);
+    role_words(&mut r, &m.words)?;
     set(&mut r, "render_model", Val::tag(FourCC(*b"mode"), m.render))?;
     set(
         &mut r,
@@ -268,7 +326,7 @@ impl Predicted {
 
 /// Writes `list` as the predicted resources of the object header at `path`
 /// in a record of `group`.
-fn predicted_resources(
+pub(crate) fn predicted_resources(
     group: &[u8; 4],
     r: &mut Record,
     path: &str,
@@ -1363,11 +1421,11 @@ pub struct RoleWords {
 /// One block element's role words, as (path in the element, word).
 pub type RoleElement = Vec<(String, u32)>;
 
-type Tally = std::collections::BTreeMap<String, std::collections::BTreeMap<u32, usize>>;
+pub(crate) type Tally = std::collections::BTreeMap<String, std::collections::BTreeMap<u32, usize>>;
 
 /// The 4-byte unknown spans of `d` and the structs it embeds (not its
 /// blocks), as (path, offset).
-fn word_spans(d: &StructDef, prefix: &str, at: u32, out: &mut Vec<(String, u32)>) {
+pub(crate) fn word_spans(d: &StructDef, prefix: &str, at: u32, out: &mut Vec<(String, u32)>) {
     for f in &d.fields {
         let p = format!("{prefix}{}", f.name);
         match &f.kind {
@@ -1402,7 +1460,7 @@ fn word_blocks<'d>(
     }
 }
 
-fn tally_words(bytes: &[u8], spans: &[(String, u32)], t: &mut Tally) {
+pub(crate) fn tally_words(bytes: &[u8], spans: &[(String, u32)], t: &mut Tally) {
     for (p, o) in spans {
         let o = *o as usize;
         if o + 4 <= bytes.len() {
@@ -1412,7 +1470,7 @@ fn tally_words(bytes: &[u8], spans: &[(String, u32)], t: &mut Tally) {
     }
 }
 
-fn majority(t: &Tally) -> Vec<(String, u32)> {
+pub(crate) fn majority(t: &Tally) -> Vec<(String, u32)> {
     let mut out = Vec::new();
     for (p, vals) in t {
         let n: usize = vals.values().sum();
@@ -1657,7 +1715,35 @@ pub struct BipedParts {
     /// HUD interfaces in place of the counterpart's ([`BIPD_HUD`]): the
     /// player's, with the health meter.
     pub hud: Option<Vec<TagId>>,
+    /// The converted model's marker names ([`UNIT_MARKERS`]).
+    pub markers: Vec<String>,
 }
+
+/// The unit's marker names, each the Halo 1 marker the Halo 1 engine uses
+/// for it, written when the converted model has that marker:
+///
+/// - `unit +0xd4`, the camera marker: `head`. V: `head` on the retail
+///   `masterchief` and `masterchief_mp`, whose models have a `head`
+///   marker. Left empty, the camera sits at the biped's origin, its feet
+///   (a converted cyborg through converter version 49: "the camera sits
+///   low, the feet are visible").
+/// - `unit +0x158` and `+0x15c`, the markers a held weapon attaches to,
+///   right and left hand: `right hand`, `left hand`. E `0x000d0870`: a
+///   weapon is attached with `0x0010cec0` (to `0x000b8ee0`) at the unit's
+///   `+0x158` marker, or `+0x15c` for the left hand, the weapon's own
+///   marker named by unit `+0x160` (else weapon `+0x284`). V: retail
+///   `right_hand`/`left_hand` (Chief) and `right_hand_elite`/
+///   `left_hand_elite`, each a marker of their models. Halo 1's units hold
+///   no marker names (the cyborg's `bipd` has none: its engine uses fixed
+///   ones), and its models name them with spaces.
+///
+/// `+0x160` stays empty: the weapon's own marker (`right_hand_mc` on the
+/// Chief) is not on a Halo 1 weapon model.
+pub const UNIT_MARKERS: [(&str, &str); 3] = [
+    ("unit.string_d4", "head"),
+    ("unit.string_158", "right hand"),
+    ("unit.string_15c", "left hand"),
+];
 
 /// The Halo 2 biped a Halo 1 biped takes its references from, by words in
 /// the Halo 1 path (all must appear), first match the base holds. The
@@ -1767,6 +1853,11 @@ pub fn biped(
         "unit.camera_field_of_view",
         Val::Float(unit.camera_field_of_view),
     )?;
+    for (path, marker) in UNIT_MARKERS {
+        if parts.markers.iter().any(|m| m == marker) {
+            set(&mut r, path, Val::text(marker))?;
+        }
+    }
     for (path, at) in BIPED_WORDS {
         if let Some((_, w)) = unit.biped_words.iter().find(|x| x.0 == *at) {
             set(&mut r, path, Val::Bytes(w.to_le_bytes().to_vec()))?;

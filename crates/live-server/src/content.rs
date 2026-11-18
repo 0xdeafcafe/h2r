@@ -26,7 +26,6 @@
 //! on (the `events` table in Postgres), and replayed at startup.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
@@ -407,15 +406,16 @@ pub struct Stored {
     pub stored: bool,
 }
 
-/// Reads a request body into a temporary file, hashing as it goes, and
-/// stops at the cap: `layer` bytes, or `map` bytes when it starts as a
-/// whole map does.
-async fn receive(body: Body, tmp: &Path, layer: u64, map: u64) -> ApiResult<(Sha256, u64, bool)> {
+/// Streams a request body into `out` (nothing is stored until the caller
+/// finishes it), hashing as it goes, and stops at the cap: `layer` bytes,
+/// or `map` bytes when it starts as a whole map does.
+async fn receive(
+    body: Body,
+    out: &mut crate::blobs::BlobWriter,
+    layer: u64,
+    map: u64,
+) -> ApiResult<(Sha256, u64, bool)> {
     let mut body = body;
-    let mut file = std::fs::File::create(tmp).map_err(|e| {
-        eprintln!("live: content: {}: {e}", tmp.display());
-        unavailable("the content store cannot write")
-    })?;
     let mut hasher = ::content::Hasher::default();
     let mut head = Vec::new();
     let mut size = 0u64;
@@ -440,15 +440,15 @@ async fn receive(body: Body, tmp: &Path, layer: u64, map: u64) -> ApiResult<(Sha
             return Err(over(whole));
         }
         hasher.update(&data);
-        file.write_all(&data)
-            .map_err(|_| unavailable("the content store cannot write"))?;
+        out.write(&data).await.map_err(|e| {
+            eprintln!("live: content: {e}");
+            unavailable("the content store cannot write")
+        })?;
     }
     let whole = maps::is_whole_map(&head);
     if !whole && size > layer {
         return Err(over(false));
     }
-    file.sync_data()
-        .map_err(|_| unavailable("the content store cannot write"))?;
     Ok((hasher.finish(), size, whole))
 }
 
@@ -536,15 +536,20 @@ impl Live {
             }
             quota(n)?;
         }
-        let tmp = self.upload_file().ok_or_else(|| {
-            unavailable("this server keeps no custom content (no data directory)")
-        })?;
-        let tmp_dir = tmp.parent().expect("in a directory");
-        std::fs::create_dir_all(tmp_dir).map_err(|e| {
-            eprintln!("live: content: {}: {e}", tmp_dir.display());
+        // Content is stored under its hash, which the path names, so the
+        // body streams straight to its key; it shows there only once it
+        // has checked out.
+        let key = blob_key(&h);
+        let meta = crate::blobs::Meta {
+            content_type: Some("application/octet-stream".into()),
+            ..Default::default()
+        };
+        let mut out = store.writer(&key, &meta).map_err(|e| {
+            eprintln!("live: content: {key}: {e}");
             unavailable("the content store cannot write")
         })?;
-        let got = receive(body, &tmp, limits.layer_bytes, limits.map_bytes).await;
+        let got = receive(body, &mut out, limits.layer_bytes, limits.map_bytes).await;
+        let mut out = Some(out);
         let result = async {
             let (actual, size, whole) = got?;
             if actual != h {
@@ -560,12 +565,8 @@ impl Live {
             if let Some(have) = known(&self.catalog.read())? {
                 return Ok((StatusCode::OK, have));
             }
-            let key = blob_key(&h);
-            let meta = crate::blobs::Meta {
-                content_type: Some("application/octet-stream".into()),
-                ..Default::default()
-            };
-            store.put_file(&key, &tmp, &meta).await.map_err(|e| {
+            let out = out.take().expect("not finished yet");
+            out.finish().await.map_err(|e| {
                 eprintln!("live: content: {key}: {e}");
                 unavailable("the content store cannot write")
             })?;
@@ -592,7 +593,9 @@ impl Live {
             ))
         }
         .await;
-        let _ = std::fs::remove_file(&tmp);
+        if let Some(out) = out {
+            out.abort().await;
+        }
         result
     }
 

@@ -29,8 +29,6 @@
 //!   server's, and is written through a temporary file and a rename.
 
 use std::collections::{BTreeMap, HashMap};
-use std::io::Write;
-use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -183,11 +181,6 @@ fn too_large(m: impl Into<String>) -> ApiError {
     ApiError::new(ErrorCode::TooLarge, m)
 }
 
-fn cannot_write(what: &Path, e: impl std::fmt::Display) -> ApiError {
-    eprintln!("live: cloud saves: {}: {e}", what.display());
-    unavailable("cloud saves cannot be written right now")
-}
-
 fn blob_failed(key: &str, e: impl std::fmt::Display, write: bool) -> ApiError {
     eprintln!("live: cloud saves: {key}: {e}");
     unavailable(if write {
@@ -277,10 +270,14 @@ async fn write_index(store: &BlobStore, key: &str, account: &mut Account) -> Api
     Ok(())
 }
 
-/// Reads a request body into `tmp`, hashing as it goes; stops past `cap`.
-async fn receive(body: Body, tmp: &Path, cap: u64) -> ApiResult<(Sha256, u64)> {
+/// Streams a request body into `out` (nothing is stored until the caller
+/// finishes it), hashing as it goes; stops past `cap`.
+async fn receive(
+    body: Body,
+    out: &mut crate::blobs::BlobWriter,
+    cap: u64,
+) -> ApiResult<(Sha256, u64)> {
     let mut body = body;
-    let mut file = std::fs::File::create(tmp).map_err(|e| cannot_write(tmp, e))?;
     let mut hasher = ::content::Hasher::default();
     let mut size = 0u64;
     while let Some(frame) = std::future::poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await {
@@ -296,9 +293,10 @@ async fn receive(body: Body, tmp: &Path, cap: u64) -> ApiResult<(Sha256, u64)> {
             )));
         }
         hasher.update(&data);
-        file.write_all(&data).map_err(|e| cannot_write(tmp, e))?;
+        out.write(&data)
+            .await
+            .map_err(|e| blob_failed("the upload", e, true))?;
     }
-    file.sync_data().map_err(|e| cannot_write(tmp, e))?;
     Ok((hasher.finish(), size))
 }
 
@@ -419,14 +417,21 @@ impl Live {
                 ));
             }
         }
-        let tmp = self
-            .upload_file()
-            .ok_or_else(|| unavailable("this server keeps no cloud saves (no data directory)"))?;
-        if let Some(dir) = tmp.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| cannot_write(dir, e))?;
-        }
+        // Blobs are stored under their hash, which X-H2-SHA256 names, so
+        // the body streams straight to its key; it shows there only once
+        // it has checked out.
+        let bkey = blob_key(xuid, &said);
+        let meta = crate::blobs::Meta {
+            content_type: Some("application/octet-stream".into()),
+            ..Default::default()
+        };
+        let mut out = Some(
+            store
+                .writer(&bkey, &meta)
+                .map_err(|e| blob_failed(&bkey, e, true))?,
+        );
         let result = async {
-            let (h, size) = receive(body, &tmp, limits.item_bytes).await?;
+            let (h, size) = receive(body, out.as_mut().expect("open"), limits.item_bytes).await?;
             if h != said {
                 return Err(
                     invalid(format!("the body's SHA-256 is {h}, not X-H2-SHA256's")).into(),
@@ -455,18 +460,13 @@ impl Live {
                 ))
                 .into());
             }
-            let bkey = blob_key(xuid, &h);
             let have = store
                 .head(&bkey)
                 .await
                 .map_err(|e| blob_failed(&bkey, e, true))?;
             if have.is_none_or(|i| i.size != size) {
-                let meta = crate::blobs::Meta {
-                    content_type: Some("application/octet-stream".into()),
-                    ..Default::default()
-                };
-                store
-                    .put_file(&bkey, &tmp, &meta)
+                let out = out.take().expect("not finished yet");
+                out.finish()
                     .await
                     .map_err(|e| blob_failed(&bkey, e, true))?;
             }
@@ -500,7 +500,9 @@ impl Live {
             Ok((status, item))
         }
         .await;
-        let _ = std::fs::remove_file(&tmp);
+        if let Some(out) = out {
+            out.abort().await;
+        }
         result
     }
 

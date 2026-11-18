@@ -5,35 +5,21 @@
 //! batch is answered with `appended` or `error`; frames are answered only
 //! when refused. The socket closes when the token expires unless the client
 //! sends a fresh `auth`.
+//!
+//! [`IngestSession`] is the socket's logic with no socket under it, as
+//! [`crate::stream::StreamSession`] is the stream's: axum's task drives it
+//! here, and the Worker's `LiveHub` drives it on hibernatable WebSockets.
 
 use std::sync::Arc;
-use std::time::Duration;
 
-use axum::extract::State;
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::response::Response;
 use live_proto::sign::{TOKEN_LEEWAY_S, Token};
 use live_proto::{Author, ClientMessage, ErrorCode, IngestReply, lxm, pack};
+use serde::{Deserialize, Serialize};
 
-use crate::app::{ApiError, Live, now};
+use crate::app::{ApiError, Live};
 use crate::games::reply_error;
-use crate::http::{
-    AUTH_TIMEOUT, CLOSE_UNAUTHORIZED, MAX_WS_MESSAGE, auth_message, close, send_json,
-};
-
-pub async fn ingest(
-    State(live): State<Arc<Live>>,
-    ws: Result<WebSocketUpgrade, axum::extract::ws::rejection::WebSocketUpgradeRejection>,
-) -> Result<Response, ApiError> {
-    let ws = ws.map_err(|_| ApiError::new(ErrorCode::Invalid, "/v1/ingest is a WebSocket"))?;
-    Ok(ws
-        .max_message_size(MAX_WS_MESSAGE)
-        .on_upgrade(move |socket| async move {
-            if let Err(reason) = run(live, socket).await {
-                eprintln!("live: ingest closed: {reason}");
-            }
-        }))
-}
+use crate::http::auth_message;
+use crate::stream::{CLOSE_UNAUTHORIZED, Out};
 
 fn author_of(token_text: &str) -> Option<Author> {
     let ClientMessage::Auth { token } = serde_json::from_str(token_text).ok()? else {
@@ -42,64 +28,103 @@ fn author_of(token_text: &str) -> Option<Author> {
     Author::parse(&Token::parse(&token).ok()?.claims.iss)
 }
 
-async fn run(live: Arc<Live>, mut socket: WebSocket) -> Result<(), String> {
-    let first = tokio::time::timeout(AUTH_TIMEOUT, socket.recv()).await;
-    let Ok(Some(Ok(Message::Text(text)))) = first else {
-        close(
-            &mut socket,
-            CLOSE_UNAUTHORIZED,
-            "send an auth message first",
-        )
-        .await;
-        return Ok(());
-    };
-    let (mut expires, author) = match auth_message(&live, &text, lxm::GAMES_WRITE) {
-        Ok(exp) => (exp, author_of(&text).expect("authenticated")),
-        Err(e) => {
-            close(&mut socket, CLOSE_UNAUTHORIZED, &e.message).await;
-            return Ok(());
+fn json(reply: &IngestReply) -> Out {
+    Out::Text(serde_json::to_string(reply).expect("serializes").into())
+}
+
+/// What an ingest socket keeps between messages, as plain data: who it
+/// writes as, and when its token ends.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IngestResume {
+    /// `None` until the auth message.
+    pub author: Option<String>,
+    pub expires: i64,
+}
+
+pub struct IngestSession {
+    live: Arc<Live>,
+    /// Who the socket writes as, and its token's `exp`; `None` until the
+    /// auth message.
+    author: Option<(Author, i64)>,
+    /// The packed frames' decoder. Not kept across a wake: a resumed
+    /// socket's frames are refused until the sender's next keyframe, as
+    /// after any gap.
+    decoder: pack::Decoder,
+}
+
+impl IngestSession {
+    pub fn new(live: Arc<Live>) -> Self {
+        IngestSession {
+            live,
+            author: None,
+            decoder: pack::Decoder::new(),
         }
-    };
-    let mut decoder = pack::Decoder::new();
-    loop {
-        let wait = Duration::from_secs((expires + TOKEN_LEEWAY_S - now()).max(0) as u64);
-        let msg = tokio::select! {
-            m = socket.recv() => m,
-            _ = tokio::time::sleep(wait) => {
-                close(&mut socket, CLOSE_UNAUTHORIZED, "token expired").await;
-                return Ok(());
-            }
-        };
-        let text = match msg {
-            Some(Ok(Message::Text(text))) => text,
-            Some(Ok(Message::Binary(bytes))) => {
-                // Packed frames (docs/live/live-telemetry.md, Packed frames): a
-                // container of this socket's stream. Only refusals reply.
-                for reply in ingest_packed(&live, &author, &mut decoder, &bytes).await {
-                    send_json(&mut socket, &reply_error(&reply))
-                        .await
-                        .map_err(|e| e.to_string())?;
+    }
+
+    pub fn resumed(live: Arc<Live>, r: IngestResume) -> Self {
+        let mut s = IngestSession::new(live);
+        s.author = r
+            .author
+            .as_deref()
+            .and_then(Author::parse)
+            .map(|a| (a, r.expires));
+        s
+    }
+
+    pub fn resume(&self) -> IngestResume {
+        IngestResume {
+            author: self.author.as_ref().map(|(a, _)| a.to_string()),
+            expires: self.author.as_ref().map_or(0, |(_, e)| *e),
+        }
+    }
+
+    /// Whether the first message, the auth message, is still owed.
+    pub fn awaits_auth(&self) -> bool {
+        self.author.is_none()
+    }
+
+    /// When the token runs out (unix seconds, leeway included).
+    pub fn deadline(&self) -> Option<i64> {
+        self.author.as_ref().map(|(_, exp)| exp + TOKEN_LEEWAY_S)
+    }
+
+    /// `Some` when the token has run out at `now`.
+    pub fn expired(&self, now: i64) -> Option<Out> {
+        self.deadline()
+            .filter(|d| now >= *d)
+            .map(|_| Out::Close(CLOSE_UNAUTHORIZED, "token expired".into()))
+    }
+
+    pub fn auth_timed_out() -> Out {
+        Out::Close(CLOSE_UNAUTHORIZED, "send an auth message first".into())
+    }
+
+    /// A text message: the auth message, a fresh token, a frame, an
+    /// events batch or a ping. What to send back; a close ends it.
+    pub async fn on_text(&mut self, text: &str) -> Vec<Out> {
+        let Some((author, _)) = &self.author else {
+            return match auth_message(&self.live, text, lxm::GAMES_WRITE) {
+                Ok(exp) => {
+                    self.author = Some((author_of(text).expect("authenticated"), exp));
+                    Vec::new()
                 }
-                continue;
-            }
-            Some(Ok(Message::Close(_))) | Some(Err(_)) | None => return Ok(()),
-            Some(Ok(_)) => continue,
+                Err(e) => vec![Out::Close(CLOSE_UNAUTHORIZED, e.message)],
+            };
         };
-        let reply = match serde_json::from_str::<ClientMessage>(&text) {
-            Ok(ClientMessage::Auth { .. }) => match auth_message(&live, &text, lxm::GAMES_WRITE) {
+        let author = author.clone();
+        let live = &self.live;
+        let reply = match serde_json::from_str::<ClientMessage>(text) {
+            Ok(ClientMessage::Auth { .. }) => match auth_message(live, text, lxm::GAMES_WRITE) {
                 // A fresh token must be the same author's.
-                Ok(exp) if author_of(&text).as_ref() == Some(&author) => {
-                    expires = exp;
+                Ok(exp) if author_of(text).as_ref() == Some(&author) => {
+                    self.author = Some((author, exp));
                     None
                 }
                 Ok(_) => Some(Err(ApiError::new(
                     ErrorCode::Forbidden,
                     "a socket keeps its author",
                 ))),
-                Err(e) => {
-                    close(&mut socket, CLOSE_UNAUTHORIZED, &e.message).await;
-                    return Ok(());
-                }
+                Err(e) => return vec![Out::Close(CLOSE_UNAUTHORIZED, e.message)],
             },
             Ok(ClientMessage::Frame { frame }) => {
                 live.ingest_frame(&author, *frame).await.err().map(Err)
@@ -115,36 +140,97 @@ async fn run(live: Arc<Live>, mut socket: WebSocket) -> Result<(), String> {
                 format!("message: {e}"),
             ))),
         };
-        let reply = match reply {
-            None => continue,
-            Some(Ok(r)) => r,
-            Some(Err(e)) => reply_error(&e),
+        match reply {
+            None => Vec::new(),
+            Some(Ok(r)) => vec![json(&r)],
+            Some(Err(e)) => vec![json(&reply_error(&e))],
+        }
+    }
+
+    /// A binary message: packed frames (docs/live/live-telemetry.md, Packed
+    /// frames), a container of this socket's stream, oldest first. Only
+    /// refusals reply. A frame that does not decode (a gap after a refused
+    /// or lost frame) is refused until the sender's next keyframe.
+    pub async fn on_binary(&mut self, bytes: &[u8]) -> Vec<Out> {
+        let Some((author, _)) = &self.author else {
+            return vec![Self::auth_timed_out()];
         };
-        send_json(&mut socket, &reply)
-            .await
-            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for record in pack::records(bytes) {
+            let decoded = record.and_then(|r| self.decoder.decode(r));
+            let result = match decoded {
+                Ok(d) => self.live.ingest_frame(author, d.frame).await.map(|_| ()),
+                Err(e) => Err(ApiError::new(ErrorCode::Invalid, format!("frame: {e}"))),
+            };
+            if let Err(e) = result {
+                out.push(json(&reply_error(&e)));
+            }
+        }
+        out
     }
 }
 
-/// Decodes and ingests a binary message's packed frames, oldest first;
-/// returns the refusals. A frame that does not decode (a gap after a
-/// refused or lost frame) is refused until the sender's next keyframe.
-async fn ingest_packed(
-    live: &Live,
-    author: &Author,
-    decoder: &mut pack::Decoder,
-    bytes: &[u8],
-) -> Vec<ApiError> {
-    let mut refusals = Vec::new();
-    for record in pack::records(bytes) {
-        let decoded = record.and_then(|r| decoder.decode(r));
-        let result = match decoded {
-            Ok(d) => live.ingest_frame(author, d.frame).await.map(|_| ()),
-            Err(e) => Err(ApiError::new(ErrorCode::Invalid, format!("frame: {e}"))),
+#[cfg(feature = "native")]
+pub use native::ingest;
+
+#[cfg(feature = "native")]
+mod native {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use axum::extract::State;
+    use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+    use axum::response::Response;
+    use live_proto::ErrorCode;
+
+    use super::IngestSession;
+    use crate::app::{ApiError, Live, now};
+    use crate::http::{AUTH_TIMEOUT, MAX_WS_MESSAGE, send_all};
+
+    pub async fn ingest(
+        State(live): State<Arc<Live>>,
+        ws: Result<WebSocketUpgrade, axum::extract::ws::rejection::WebSocketUpgradeRejection>,
+    ) -> Result<Response, ApiError> {
+        let ws = ws.map_err(|_| ApiError::new(ErrorCode::Invalid, "/v1/ingest is a WebSocket"))?;
+        Ok(ws
+            .max_message_size(MAX_WS_MESSAGE)
+            .on_upgrade(move |socket| async move {
+                if let Err(reason) = run(live, socket).await {
+                    eprintln!("live: ingest closed: {reason}");
+                }
+            }))
+    }
+
+    async fn run(live: Arc<Live>, mut socket: WebSocket) -> Result<(), String> {
+        let mut session = IngestSession::new(live);
+        let first = tokio::time::timeout(AUTH_TIMEOUT, socket.recv()).await;
+        let Ok(Some(Ok(Message::Text(text)))) = first else {
+            send_all(&mut socket, vec![IngestSession::auth_timed_out()]).await?;
+            return Ok(());
         };
-        if let Err(e) = result {
-            refusals.push(e);
+        if !send_all(&mut socket, session.on_text(&text).await).await? {
+            return Ok(());
+        }
+        loop {
+            let deadline = session.deadline().unwrap_or(0);
+            let wait = Duration::from_secs((deadline - now()).max(0) as u64);
+            let msg = tokio::select! {
+                m = socket.recv() => m,
+                _ = tokio::time::sleep(wait) => {
+                    let out = session.expired(now()).into_iter().collect();
+                    send_all(&mut socket, out).await?;
+                    return Ok(());
+                }
+            };
+            let out = match msg {
+                Some(Ok(Message::Text(text))) => session.on_text(&text).await,
+                Some(Ok(Message::Binary(bytes))) => session.on_binary(&bytes).await,
+                Some(Ok(Message::Close(_))) | Some(Err(_)) | None => return Ok(()),
+                Some(Ok(_)) => continue,
+            };
+            if !send_all(&mut socket, out).await? {
+                return Ok(());
+            }
         }
     }
-    refusals
 }

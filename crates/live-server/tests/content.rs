@@ -218,11 +218,9 @@ async fn blobs_are_checked_stored_once_and_served() {
         bytes,
         "<data>/content/<aa>/<hash>"
     );
+    // Uploads stream to their key: no temporary files, then or now.
     assert!(
-        std::fs::read_dir(h.dir.join("tmp"))
-            .unwrap()
-            .next()
-            .is_none(),
+        std::fs::read_dir(h.dir.join("tmp")).map_or(true, |mut d| d.next().is_none()),
         "no temporary files left"
     );
 

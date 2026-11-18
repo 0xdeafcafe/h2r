@@ -4,14 +4,16 @@
 //!
 //! What `BlobStore` uses is here: whole and ranged reads, heads, puts
 //! (overwrite, create-only, and if-the-ETag-still-matches), deletes and
-//! listing. Multipart uploads, copies and renames are not yet: a Worker
-//! takes a request body whole (the 100 MB request limit), so uploads are
-//! single puts for now (docs/live/live-worker.md, slice 4).
+//! listing, and multipart uploads, which uploads stream into as the
+//! request body arrives (`BlobWriter`). Copies and renames are not here:
+//! nothing uses them.
 //!
 //! The binding is JavaScript and not `Send`; a Worker has one thread, so
 //! it and its futures are wrapped ([`SendWrapper`]) to meet the trait.
 
+use std::cell::{Cell, RefCell};
 use std::fmt;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -21,10 +23,10 @@ use object_store::path::Path;
 use object_store::{
     Attribute, AttributeValue, Attributes, CopyOptions, Error, GetOptions, GetRange, GetResult,
     GetResultPayload, ListResult, MultipartUpload, ObjectMeta, ObjectStore, PutMode,
-    PutMultipartOptions, PutOptions, PutPayload, PutResult, Result,
+    PutMultipartOptions, PutOptions, PutPayload, PutResult, Result, UploadPart,
 };
 use send_wrapper::SendWrapper;
-use worker::{Bucket, Conditional, HttpMetadata, Object, Range as R2Range};
+use worker::{Bucket, Conditional, HttpMetadata, Object, Range as R2Range, UploadedPart};
 
 const STORE: &str = "R2";
 
@@ -255,6 +257,70 @@ async fn list_all(bucket: &Bucket, prefix: Option<String>, delimit: bool) -> Res
     }
 }
 
+/// An R2 multipart upload: parts numbered as they are handed in, and
+/// completed in number order.
+struct Upload {
+    upload: RefCell<Option<Rc<worker::MultipartUpload>>>,
+    parts: RefCell<Vec<UploadedPart>>,
+    next: Cell<u16>,
+}
+
+struct R2Upload(Arc<SendWrapper<Upload>>);
+
+impl fmt::Debug for R2Upload {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "R2Upload({} parts)", self.0.next.get() - 1)
+    }
+}
+
+fn finished() -> Error {
+    generic("the multipart upload is already finished")
+}
+
+#[async_trait]
+impl MultipartUpload for R2Upload {
+    fn put_part(&mut self, data: PutPayload) -> UploadPart {
+        let state = self.0.clone();
+        let n = state.next.get();
+        state.next.set(n + 1);
+        Box::pin(SendWrapper::new(async move {
+            let bytes: Vec<u8> = data.iter().flat_map(|b| b.iter().copied()).collect();
+            let upload = state.upload.borrow().clone().ok_or_else(finished)?;
+            let part = upload.upload_part(n, bytes).await.map_err(generic)?;
+            state.parts.borrow_mut().push(part);
+            Ok(())
+        }))
+    }
+
+    async fn complete(&mut self) -> Result<PutResult> {
+        let state = self.0.clone();
+        SendWrapper::new(async move {
+            let upload = state.upload.borrow_mut().take().ok_or_else(finished)?;
+            // Every part has been awaited by now, so this is the only handle.
+            let upload =
+                Rc::try_unwrap(upload).map_err(|_| generic("a part is still uploading"))?;
+            let mut parts = std::mem::take(&mut *state.parts.borrow_mut());
+            parts.sort_by_key(UploadedPart::part_number);
+            let o = upload.complete(parts).await.map_err(generic)?;
+            Ok(PutResult {
+                e_tag: Some(o.http_etag()),
+                version: Some(o.version()),
+                extensions: Default::default(),
+            })
+        })
+        .await
+    }
+
+    async fn abort(&mut self) -> Result<()> {
+        let state = self.0.clone();
+        SendWrapper::new(async move {
+            let upload = state.upload.borrow_mut().take().ok_or_else(finished)?;
+            upload.abort().await.map_err(generic)
+        })
+        .await
+    }
+}
+
 #[async_trait]
 impl ObjectStore for R2 {
     async fn put_opts(
@@ -268,13 +334,25 @@ impl ObjectStore for R2 {
 
     async fn put_multipart_opts(
         &self,
-        _location: &Path,
-        _opts: PutMultipartOptions,
+        location: &Path,
+        opts: PutMultipartOptions,
     ) -> Result<Box<dyn MultipartUpload>> {
-        Err(Error::NotImplemented {
-            operation: "multipart upload to R2 from a Worker".into(),
-            implementer: STORE.into(),
+        let bucket = self.bucket.clone();
+        let key = location.to_string();
+        let upload = SendWrapper::new(async move {
+            bucket
+                .create_multipart_upload(key)
+                .http_metadata(http_metadata(&opts.attributes))
+                .execute()
+                .await
+                .map_err(generic)
         })
+        .await?;
+        Ok(Box::new(R2Upload(Arc::new(SendWrapper::new(Upload {
+            upload: RefCell::new(Some(Rc::new(upload))),
+            parts: RefCell::new(Vec::new()),
+            next: Cell::new(1),
+        })))))
     }
 
     async fn get_opts(&self, location: &Path, options: GetOptions) -> Result<GetResult> {

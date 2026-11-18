@@ -255,7 +255,7 @@ impl Live {
 }
 /// Who reads a list of finished games: what a co-op game's session
 /// visibility is judged against (docs/live/live-api.md, "Co-op games").
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Viewer {
     /// No bearer: only public games.
     Anonymous,

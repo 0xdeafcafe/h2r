@@ -14,6 +14,7 @@ mod path;
 mod rewrite;
 mod status;
 mod types;
+mod variants;
 mod write_behind;
 
 pub use backend::Backend;
@@ -27,6 +28,7 @@ pub use rewrite::{Chain, MAX_REWRITE_BYTES, Rewrite, RewriteBackend};
 pub use path::{Namespace, validate_fatx_name, validate_fatx_path, wildcard_matches};
 pub use status::{Error, Result};
 pub use types::*;
+pub use variants::{ContentVariants, SandboxChoice, VariantFile, VariantFiles, VariantPair};
 
 use std::{
     collections::{BTreeMap, HashSet},
@@ -58,6 +60,9 @@ pub struct Config {
     pub title_id: u32,
     /// Retail utility area is selected from cache partitions 3..=5.
     pub utility_partition: u8,
+    /// Converted maps on the data partition served by a sandbox choice
+    /// ([`VariantFiles`]); empty unless the boot registers some.
+    pub variants: ContentVariants,
 }
 impl Config {
     pub fn new(data_root: impl Into<PathBuf>, title_id: u32) -> Self {
@@ -65,6 +70,7 @@ impl Config {
             data_root: data_root.into(),
             title_id,
             utility_partition: 5,
+            variants: ContentVariants::default(),
         }
     }
     /// Host directory behind `T:`: `<data_root>/disk/Partition1/TDATA/<TITLE>`.
@@ -193,7 +199,12 @@ impl Vfs {
                     }
                 }
             }
-            vfs.mount(&format!("\\Device\\Harddisk0\\{name}"), backend)?;
+            let device = format!("\\Device\\Harddisk0\\{name}");
+            if partition == 1 {
+                vfs.mount(&device, VariantFiles::new(backend, config.variants.clone()))?;
+            } else {
+                vfs.mount(&device, backend)?;
+            }
         }
         Ok(vfs)
     }

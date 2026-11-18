@@ -112,20 +112,23 @@ group weap 0x31c
   0x29c unknown 0x4
   0x2a0 unknown 0x4
   0x2a4 unknown 0x4
-  0x2a8 block block_2a8 0x10 align 4
-    0x0 tagref ref_0
-    0x8 tagref ref_8
-  0x2b0 tagref ref_2b0
+  0x2a8 block first_person 0x10 align 4 -- V: one element per player character (retail: the Chief's, then the Arbiter's)
+    0x0 tagref model groups=mode -- V: the weapon's first-person render model (retail fp_<weapon>, the same in both elements)
+    0x8 tagref animations groups=jmad -- V: the first-person animation graph (retail characters\masterchief\fp\weapons\..., characters\dervish\fp\...)
+  0x2b0 tagref hud groups=nhdt -- V: the weapon's HUD interface (retail ui\hud\<weapon>)
   0x2b8 block block_2b8 0x8 align 4
     0x0 unknown 0x4
     0x4 datum datum_4
   0x2c0 block magazines 0x5c align 4 -- V2 (docs/formats/h1-objects.md): magazine elements, stride 0x5c
     0x0 unknown 0x4
-    0x4 unknown 0x4
-    0x8 unknown 0x4
+    0x4 unknown 0x2
+    0x6 i16 rounds_total_initial -- V: equals Halo 1's magazine +0x6 on the retail pairs (weapon_rebuild_disc)
+    0x8 i16 rounds_total_maximum -- V: equals Halo 1's magazine +0x8 on the retail pairs
+    0xa i16 rounds_loaded_maximum -- V: equals Halo 1's magazine +0xa on five retail pairs (pistol and magnum, sniper rifles, rocket launchers, shotguns, ...)
     0xc unknown 0x4
-    0x10 unknown 0x4
-    0x14 unknown 0x4
+    0x10 f32 reload_time -- V: seconds; equals Halo 1's magazine +0x14 on the retail pairs
+    0x14 i16 rounds_reloaded -- V: equals Halo 1's magazine +0x18 on four retail pairs (one round at a time on both shotguns)
+    0x16 unknown 0x2
     0x18 unknown 0x4
     0x1c unknown 0x4
     0x20 unknown 0x4
@@ -172,7 +175,8 @@ group weap 0x31c
     0x28 unknown 0x4
     0x2c unknown 0x4
     0x30 string string_30
-    0x34 unknown 0x4
+    0x34 unknown 0x2
+    0x36 i16 firing_noise -- V: equals Halo 1's trigger +0x2e (the AI's hearing of a shot: silent, medium, loud, ...) on eight retail pairs
     0x38 unknown 0x4
     0x3c unknown 0x4
     0x40 unknown 0x4
@@ -239,6 +243,7 @@ group weap 0x31c
   0x318 unknown 0x4
 group eqip 0x13c
   0x0 struct item item -- the item layer
-  0x12c unknown 0x4
-  0x130 unknown 0x4
+  0x12c i16 powerup_type -- V: Halo 1's eqip +0x308 values on the retail pairs (over shield 2, active camouflage 3, grenades 6); health 5 (docs/game/health.md)
+  0x12e i16 grenade_type -- V: Halo 1's eqip +0x30a (frag 0, plasma 1) on the grenade pairs
+  0x130 f32 powerup_time -- V: seconds; Halo 1's eqip +0x30c on the powerup pairs (over shield 60, active camouflage 45)
   0x134 tagref snd_ref_134 -- V

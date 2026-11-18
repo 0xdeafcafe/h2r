@@ -354,6 +354,17 @@ points! { ALL;
     /// The variant editor's category list row chosen: words 0 to 5 open a
     /// category's screen; any other word returns having done nothing.
     VARIANT_OPTIONS_ROW_CHOSEN @ 0x002b_75e8: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/game/skulls.md";
+    /// The Game Setup dialog's list handler constructor (screen 23,
+    /// `squad_settings_dialog`): ESI the handler, one stack argument. Fills
+    /// the "squad setting list" rows (action word at datum `+2`) for the
+    /// lobby's kind.
+    SQUAD_SETTINGS_LIST_CTOR @ 0x002b_b4d2: [fn(list: esi, a: stack 0) ret 4]; "docs/game/h1-multiplayer.md";
+    /// The Game Setup list's row text: looks the row's action up in a table
+    /// of nine; an unknown action leaves the text as it was.
+    SQUAD_SETTINGS_ROW_TEXT @ 0x002b_b74f: [fn(list: ecx, item: stack 0, word: stack 1) ret 8]; "docs/game/h1-multiplayer.md";
+    /// The Game Setup list's row chosen: jumps through a ten-entry table by
+    /// the row's action with no bounds check.
+    SQUAD_SETTINGS_ROW_CHOSEN @ 0x002b_b801: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/game/h1-multiplayer.md";
     /// Whether the HUD draws (AL); 0 in a campaign with Blind on.
     HUD_SHOWN @ 0x0013_939b: [fn() -> al ret 0]; "docs/game/skulls.md";
     /// Draws the first-person weapons of one local user (stdcall, four
