@@ -9,6 +9,8 @@ license.workspace = true
 runtime.workspace = true
 engine = { path = "../engine", features = ["runtime-glue"] }
 timeline = { path = "../timeline" }
+# The world skip and camera read (pure: no GPU, no map reader).
+native-render = { path = "../native-render", default-features = false }
 
 [dev-dependencies]
 runtime-test-probe = { path = "../runtime/test-probe" }

@@ -179,9 +179,77 @@ pub fn expand_page(indices: &[u8], palette: &[u32; 256]) -> Vec<u8> {
         .collect()
 }
 
+/// A shader's template name and its bitmaps in parameter order: `shad +4`
+/// the template's datum, `shad +0x20` the compiled postprocess (first
+/// element, `0x7c` bytes) whose `+4` block lists the bitmap parameters
+/// (`0xc` bytes, datum first; docs/formats/shader-instances.md).
+pub fn shader_bitmaps<R: Read + Seek>(map: &mut Map<R>, shader: TagId) -> Result<(String, Vec<TagId>), Error> {
+    let tag = map.tag(shader)?.clone();
+    if tag.group != map::FourCC(*b"shad") {
+        return Err("not a shader".into());
+    }
+    let address = tag.location.ok_or("shader has no payload")?.address;
+    let bytes = map.read_tag_bytes(shader)?;
+    let view = TagView::new(&bytes, address);
+    let word = |b: &[u8], o: usize| -> Option<u32> { Some(u32::from_le_bytes(b.get(o..o + 4)?.try_into().ok()?)) };
+    let template = word(&bytes, 4)
+        .and_then(|id| map.tag(TagId(id)).ok())
+        .and_then(|t| t.name.clone())
+        .unwrap_or_default();
+    let root = view.at(0, 0x54)?;
+    let post = view.block(root, 0x20, 0x7c)?;
+    let post = post.first().ok_or("no compiled postprocess")?;
+    let ids = view
+        .block(post, 4, 0xc)?
+        .iter()
+        .filter_map(|b| word(b, 0).map(TagId))
+        .filter(|id| *id != TagId::NULL)
+        .collect();
+    Ok((template, ids))
+}
+
+/// Whether a bitmap's tag name reads as a base (diffuse) map: not a
+/// default, detail, bump, reflection, change-colour, self-illumination,
+/// specular or mask map. A name rule, stage 1's stand-in until each
+/// template's own program draws its material (docs/graphics/native-renderer.md,
+/// "Match the look").
+pub fn is_base_map_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    let last = lower.rsplit('\\').next().unwrap_or(&lower);
+    let folders = ["default_bitmaps", "rasterizer", "detail_maps", "reflection_maps", "cube"];
+    let words = [
+        "_cc", "change_color", "change_colour", "color_change", "colour_change", "bump", "_bmp", "detail", "reflection",
+        "cube", "fade", "normal", "illum", "self", "specular", "mask",
+    ];
+    !(lower.split('\\').any(|c| folders.contains(&c)) || words.iter().any(|w| last.contains(w)))
+}
+
+/// A material's base map: the first bitmap of its shader whose name reads
+/// as one ([`is_base_map_name`]).
+pub fn base_map<R: Read + Seek>(map: &mut Map<R>, shader: TagId) -> Option<TagId> {
+    let (_, bitmaps) = shader_bitmaps(map, shader).ok()?;
+    bitmaps
+        .into_iter()
+        .find(|&b| map.tag(b).ok().and_then(|t| t.name.clone()).is_some_and(|n| is_base_map_name(&n)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn base_map_names() {
+        assert!(is_base_map_name("scenarios\\bitmaps\\oldmombasa\\walls\\concrete_wall"));
+        for other in [
+            "shaders\\default_bitmaps\\bitmaps\\gray_50_percent",
+            "scenarios\\bitmaps\\x\\concrete_wall_bump",
+            "scenarios\\bitmaps\\x\\detail_maps\\grit",
+            "scenarios\\bitmaps\\x\\light_illum",
+            "scenarios\\bitmaps\\x\\metal_cc",
+        ] {
+            assert!(!is_base_map_name(other), "{other}");
+        }
+    }
 
     #[test]
     fn a_page_expands_through_its_palette() {
