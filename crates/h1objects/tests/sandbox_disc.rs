@@ -361,17 +361,25 @@ fn bloodgulch_shaders_all_have_their_compiled_postprocess_in_both_sandboxes() {
         };
         let mopp = structure_mopp(&p.collision).unwrap();
         let fresh = p.build_fresh(&mut base, &mopp).unwrap();
-        let manifest = p.manifest(&fresh.bytes);
+        // The fresh map is built from scratch on a new index, so the swaps
+        // are named by its own datums (`Fresh::precision`), as the importer
+        // writes them (`manifest_with`).
+        let manifest = p.manifest_with(&fresh.bytes, &fresh.precision);
         let mut out = Map::from_reader(Cursor::new(fresh.bytes)).unwrap();
         if sandbox == Sandbox::Halo2 {
             // The precision swap: the SMG and the battle rifle collections,
-            // both in the fresh map (the BR kept by the prune), and the
-            // manifest records it.
-            let swaps = &p.applied.precision;
+            // both in the fresh map (the BR kept by the prune), the same
+            // tags the plan swapped on the base, and the manifest records
+            // it.
+            let planned = &p.applied.precision;
+            let swaps = &fresh.precision;
+            assert_eq!(planned.len(), 1, "{planned:?}");
             assert_eq!(swaps.len(), 1, "{swaps:?}");
-            for id in [swaps[0].0, swaps[0].1] {
-                let t = out.tag(id).unwrap();
+            for (id, was) in [(swaps[0].0, planned[0].0), (swaps[0].1, planned[0].1)] {
+                let t = out.tag(id).unwrap().clone();
                 assert_eq!(t.group, FourCC(*b"itmc"));
+                let base_name = base.tag(was).unwrap().name.clone();
+                assert_eq!(t.name, base_name, "the swap names the planned collection");
                 eprintln!("precision: {:#x} {:?}", id.0, t.name);
             }
             assert_eq!(
@@ -396,13 +404,19 @@ fn bloodgulch_shaders_all_have_their_compiled_postprocess_in_both_sandboxes() {
             .filter(|t| t.group == FourCC(*b"mode") && t.location.is_some())
             .map(|t| (t.id, t.name.clone().unwrap_or_default()))
             .collect();
+        // Read through the whole metadata: a fresh map may place a tag's
+        // blocks away from its root (shared or rehomed blocks).
+        let mem = memory(&mut out);
+        let w = |a: u32| {
+            let (start, b) = mem.region(a).expect("address in the metadata");
+            let o = (a - start) as usize;
+            u32::from_le_bytes(b[o..o + 4].try_into().unwrap())
+        };
         for (id, name) in &modes {
-            let b = out.read_tag_bytes(*id).unwrap();
             let at = out.tag(*id).unwrap().location.unwrap().address;
-            let w = |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
-            let (count, start) = (w(0x60) as usize, w(0x64));
+            let (count, start) = (w(at + 0x60) as usize, w(at + 0x64));
             for k in 0..count {
-                let shader = w((start - at) as usize + 0x20 * k + 0xc);
+                let shader = w(start + 0x20 * k as u32 + 0xc);
                 if shader == u32::MAX {
                     bad.push(format!("{sandbox:?} {name}: material {k} names no shader"));
                 }
