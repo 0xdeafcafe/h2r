@@ -203,16 +203,17 @@ fn a_mod_downloads_from_its_page_with_progress_then_shows_installed() {
     let rows: Vec<(String, String)> = (0..DETAIL_COUNT as i16)
         .map(|r| repo.detail_row(r).unwrap())
         .collect();
-    assert_eq!(
-        rows,
-        [
-            ("Download".into(), "Press A".into()),
-            ("Author".into(), "Modder".into()),
-            ("Map".into(), "Lockout".into()),
-            ("Size".into(), "3.4 MB".into()),
-            ("Published".into(), "2026-11-18".into()),
-        ]
-    );
+    let want: Vec<(String, String)> = [
+        ("Download", "Press A"),
+        ("Author", "Modder"),
+        ("Map", "Lockout"),
+        ("Size", "3.4 MB"),
+        ("Published", "2026-11-18"),
+    ]
+    .into_iter()
+    .map(|(l, v)| (l.to_string(), v.to_string()))
+    .collect();
+    assert_eq!(rows, want);
     assert_eq!(repo.detail_row(DETAIL_COUNT as i16), None);
     assert_eq!(repo.press_detail(ROW_AUTHOR), Chosen::Nothing);
     assert!(matches!(
