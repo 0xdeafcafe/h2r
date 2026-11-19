@@ -128,9 +128,11 @@ pub const SWITCH_TO_MATCHMAKING: u32 = 0x002b_ba8c;
 
 /// Whether a Game Setup list with these actions gets "Switch To:
 /// Clankermatch": it has retail's "Switch To: Matchmaking", the server
-/// has clanker hoppers, and the row is not there yet.
-pub fn wants_switch_row(actions: &[i16], clanker_hoppers: bool) -> bool {
+/// has clanker hoppers, the party isn't on Clankermatch already
+/// (`on_clankermatch`, [`active`]), and the row is not there yet.
+pub fn wants_switch_row(actions: &[i16], clanker_hoppers: bool, on_clankermatch: bool) -> bool {
     clanker_hoppers
+        && !on_clankermatch
         && actions.iter().any(|a| MATCHMAKING_SWITCHES.contains(a))
         && !actions.contains(&SWITCH_ACTION)
 }
@@ -262,7 +264,7 @@ impl feature::Feature for SwitchRow {
                 let rt = Arc::clone(c.ctx.runtime());
                 let mut mem = rt.memory();
                 let actions = h1row::setup_actions(&*mem, list).unwrap_or_default();
-                if !wants_switch_row(&actions, marks) {
+                if !wants_switch_row(&actions, marks, active()) {
                     return Ok(());
                 }
                 match h1row::insert_row_ordered(&mut *mem, list, switch_placed) {
@@ -536,15 +538,17 @@ mod tests {
         // (constructor 0x2bb4d2): kind 4 (2, 3, 7, 8), kind 5 (Change Map,
         // Change Rules, Quick Options, Switch To: Co-Op, Switch To:
         // Matchmaking) and kind 6 (9, 6).
-        assert!(wants_switch_row(&[2, 3, 7, 8], true));
-        assert!(wants_switch_row(&[0, 1, 4, 6, 8], true));
-        assert!(wants_switch_row(&[9, 6], true));
+        assert!(wants_switch_row(&[2, 3, 7, 8], true, false));
+        assert!(wants_switch_row(&[0, 1, 4, 6, 8], true, false));
+        assert!(wants_switch_row(&[9, 6], true, false));
         // No matchmaking switch (kinds 0 to 3), no clanker hoppers, or
         // already there: no row.
-        assert!(!wants_switch_row(&[0, 1, 4, 6], true));
-        assert!(!wants_switch_row(&[2, 3, 7], true));
-        assert!(!wants_switch_row(&[0, 1, 4, 6, 8], false));
-        assert!(!wants_switch_row(&[0, 1, 4, 6, 8, SWITCH_ACTION], true));
+        assert!(!wants_switch_row(&[0, 1, 4, 6], true, false));
+        assert!(!wants_switch_row(&[2, 3, 7], true, false));
+        assert!(!wants_switch_row(&[0, 1, 4, 6, 8], false, false));
+        assert!(!wants_switch_row(&[0, 1, 4, 6, 8, SWITCH_ACTION], true, false));
+        // Already on Clankermatch: no row to switch to it.
+        assert!(!wants_switch_row(&[2, 3, 7, 8], true, true));
 
         assert_eq!(switch_placed(&[2, 3, 7, 8]), [2, 3, 7, 8, SWITCH_ACTION]);
         assert_eq!(switch_placed(&[9, 6]), [9, SWITCH_ACTION, 6]);
