@@ -556,6 +556,77 @@ impl Pairing {
     }
 }
 
+/// The glyph cache's ring of shelves (`0x0001f5c0`): halfwords at
+/// `+0x2`, `+0x4`, `+0x6` and `+0xa` of these three words change whenever
+/// a glyph is added (and may evict another). A native text segment is
+/// only extended while they hold what they held when it was reserved.
+pub const GLYPH_RING: u32 = 0x004b_62a0;
+pub const GLYPH_RING_WORDS: usize = 3;
+
+/// The ring's words now; `None` when they do not read.
+pub fn glyph_ring(mem: &dyn GuestRead) -> Option<[u32; GLYPH_RING_WORDS]> {
+    let mut out = [0; GLYPH_RING_WORDS];
+    for (i, w) in out.iter_mut().enumerate() {
+        *w = mem.read_u32(GLYPH_RING + 4 * i as u32)?;
+    }
+    Some(out)
+}
+
+/// The glyph cache's texels: `LIN_A4R4G4B4`, `GLYPH_SIZE` square, one
+/// level (`0x0001eff0`; `d3d::glyph`, `docs/formats/fonts.md`).
+pub const GLYPH_SIZE: u32 = 256;
+
+/// One corner of a native text quad: where the D3D path's vertex program
+/// would put it in the target's guest pixels (window coordinates, before
+/// the rasterizer's snapping), its normalised coordinate in the glyph
+/// cache, and its diffuse colour.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct TextVertex {
+    pub window: [f32; 2],
+    pub coords: [f32; 2],
+    pub color: [f32; 4],
+}
+
+/// The six corners a four-vertex fan draws as two triangles (`Begin(7)`,
+/// `0, 1, 2` and `0, 2, 3`), as indices into its four.
+pub const FAN_INDICES: [u32; 6] = [0, 1, 2, 0, 2, 3];
+
+/// `0x000363a0`'s four corners as the batch draws them.
+///
+/// S, the screen-transform assumption (docs/graphics/native-renderer.md,
+/// "Native text"): the batch's vertex program takes `oPos` from the
+/// begin's rows ([`ScreenTransform`]) and then to the viewport `(x, y,
+/// width, height)` (guest pixels) as Xbox D3D's viewport constants do,
+/// `x' = x + (n.x + 1) w / 2`, `y' = y + (1 - n.y) h / 2`; and it scales
+/// the coordinate by the record's `+0x40`, `+0x44`, which for the glyph
+/// cache (linear) leaves texels, normalised here by the bitmap's size as
+/// the D3D path's `tex_scale` does. The colour is the pushed bytes
+/// (`SET_VERTEX_DATA4UB`, R, G, B, A) over 255.
+pub fn text_quad(batch: &Batch, viewport: [f32; 4], quad: &[Vertex; 4]) -> [TextVertex; 4] {
+    let [vx, vy, vw, vh] = viewport;
+    let (sw, sh) = if batch.bitmap.linear {
+        (
+            f32::from(batch.bitmap.width),
+            f32::from(batch.bitmap.height),
+        )
+    } else {
+        (1.0, 1.0)
+    };
+    quad.map(|v| {
+        let n = batch.transform.apply(v.x, v.y);
+        let byte = |shift: u32| ((v.argb >> shift) & 0xff) as f32 / 255.0;
+        TextVertex {
+            window: [vx + (n[0] + 1.0) * vw / 2.0, vy + (1.0 - n[1]) * vh / 2.0],
+            coords: [
+                v.u * batch.coordinate_scale[0] / sw,
+                v.v * batch.coordinate_scale[1] / sh,
+            ],
+            color: [byte(16), byte(8), byte(0), byte(24)],
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -687,6 +758,87 @@ mod tests {
         let a = o.apply(0.5, 0.5);
         assert!((a[0] - (-1.0 + 20.0 / 640.0)).abs() < 1e-6, "{a:?}");
         assert!((a[1] - (1.0 - 40.0 / 480.0)).abs() < 1e-6, "{a:?}");
+    }
+
+    /// The screen-transform assumption ([`text_quad`]): with the begin's
+    /// rows, the viewport and the record's coordinate scale, a glyph
+    /// whose corners the string draw puts on pixel centres `x + 0.5`
+    /// covers exactly pixels `x..` in the target (window coordinates on
+    /// the pixel edges), wherever the viewport is; the coordinate is the
+    /// texel over the cache's size and the colour the pushed bytes.
+    #[test]
+    fn text_corners_on_pixel_centres_land_on_pixel_edges_of_the_viewport() {
+        let mut m = Mem::default();
+        text(&mut m);
+        let b = Batch::read(&m, RECORD).unwrap();
+        let corner = |x: f32, y: f32, u: f32, v: f32| Vertex {
+            x,
+            y,
+            u,
+            v,
+            argb: 0x80ff_4020,
+        };
+        let quad = [
+            corner(10.5, 20.5, 16.0, 32.0),
+            corner(18.5, 20.5, 24.0, 32.0),
+            corner(18.5, 36.5, 24.0, 48.0),
+            corner(10.5, 36.5, 16.0, 48.0),
+        ];
+        for viewport in [[0.0, 0.0, 640.0, 480.0], [32.0, 24.0, 640.0, 480.0]] {
+            let t = text_quad(&b, viewport, &quad);
+            let want = [[10.0, 20.0], [18.0, 20.0], [18.0, 36.0], [10.0, 36.0]];
+            for (v, w) in t.iter().zip(want) {
+                let w = [w[0] + viewport[0], w[1] + viewport[1]];
+                assert!(
+                    (v.window[0] - w[0]).abs() < 1e-3 && (v.window[1] - w[1]).abs() < 1e-3,
+                    "{viewport:?}: {:?} for {w:?}",
+                    v.window
+                );
+            }
+            assert_eq!(t[0].coords, [16.0 / 256.0, 32.0 / 256.0]);
+            assert_eq!(t[2].coords, [24.0 / 256.0, 48.0 / 256.0]);
+            assert_eq!(t[1].color, [1.0, 64.0 / 255.0, 32.0 / 255.0, 128.0 / 255.0]);
+        }
+        // The record's offset moves every corner by its pixels.
+        let shifted = ScreenTransform::of((640.0, 480.0), (2.0, -2.0, 0.5), Some((3.0, -4.0)));
+        let moved = text_quad(
+            &Batch {
+                transform: shifted,
+                ..b
+            },
+            [0.0, 0.0, 640.0, 480.0],
+            &quad,
+        );
+        assert!((moved[0].window[0] - 13.0).abs() < 1e-3, "{:?}", moved[0]);
+        assert!((moved[0].window[1] - 16.0).abs() < 1e-3, "{:?}", moved[0]);
+    }
+
+    #[test]
+    fn a_swizzled_bitmap_keeps_its_coordinates() {
+        let mut m = Mem::default();
+        text(&mut m);
+        let mut b = Batch::read(&m, RECORD).unwrap();
+        b.bitmap.linear = false;
+        b.coordinate_scale = [0.5, 0.25];
+        let v = Vertex {
+            x: 0.5,
+            y: 0.5,
+            u: 0.5,
+            v: 1.0,
+            argb: 0,
+        };
+        let t = text_quad(&b, [0.0, 0.0, 640.0, 480.0], &[v; 4]);
+        assert_eq!(t[0].coords, [0.25, 0.25]);
+    }
+
+    #[test]
+    fn the_glyph_ring_reads_three_words() {
+        let mut m = Mem::default();
+        assert_eq!(glyph_ring(&m), None);
+        for i in 0..GLYPH_RING_WORDS as u32 {
+            m.w(GLYPH_RING + 4 * i, 7 + i);
+        }
+        assert_eq!(glyph_ring(&m), Some([7, 8, 9]));
     }
 
     #[test]
