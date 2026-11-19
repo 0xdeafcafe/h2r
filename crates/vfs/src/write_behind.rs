@@ -323,6 +323,11 @@ impl WriteBehind {
     pub(crate) fn clear_errors(&self) {
         self.queue.lock().errors.clear();
     }
+
+    /// Keep errors for files that may still exist after a partial format.
+    pub(crate) fn retain_errors(&self, mut keep: impl FnMut(&Path) -> bool) {
+        self.queue.lock().errors.retain(|path, _| keep(path));
+    }
 }
 
 impl Drop for WriteBehind {

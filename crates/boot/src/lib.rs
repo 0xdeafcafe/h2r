@@ -62,8 +62,11 @@ pub mod mods_screen;
 pub mod movies_glue;
 pub mod native_first_person_glue;
 pub mod native_first_person_load;
+pub mod native_gels_glue;
+mod native_gels_load;
 pub mod native_lights_glue;
 pub mod native_objects_glue;
+pub mod native_particles_glue;
 pub mod native_post_glue;
 pub mod native_post_load;
 pub mod native_transparents_glue;
@@ -1245,10 +1248,11 @@ pub fn run_hosted_with_live(
         )?),
         (true, None) => Some(dsound_glue::install(&loaded.runtime, &k, xbe_bytes)?),
     };
-    if let Some(audio) = &ds
-        && features.switches().audio_hrtf()
-    {
-        audio.mixer().lock().unwrap().set_hrtf(true);
+    if let Some(audio) = &ds {
+        let mixer = audio.mixer();
+        let mut mixer = mixer.lock().unwrap_or_else(|e| e.into_inner());
+        mixer.set_hrtf(features.switches().audio_hrtf());
+        mixer.set_distance_reverb(features.switches().distance_reverb());
     }
     if let Some(input) = host.input.as_mut() {
         // Local bots' pads (docs/game/bots.md): after the host's own.
@@ -1339,6 +1343,9 @@ pub fn run_hosted_with_live(
     )?;
     let mut harness = late.harness;
     let agent = late.agent;
+    if let (Some(a), Some(audio)) = (&agent, &ds) {
+        dsound_glue::add_agent_methods(&a.agent, audio.mixer());
+    }
     let mut snapshot_probe = late.snapshot_probe;
     // edit.* and render.* on the agent (hot_glue.rs, docs/graphics/hot-iteration.md).
     if let Some(a) = &agent {

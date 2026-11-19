@@ -116,6 +116,13 @@ lightmap `0x004e0344`, [structure-bsp.md](../formats/structure-bsp.md)):
   triangles cover that guest pixel through the render camera, nearest
   first: owner (cluster or placement), part, material, view depth and the
   distance to the triangle's nearest edge (under a pixel: an edge tie).
+  Pass numbers are not frame numbers (views left to the D3D path, a
+  cinematic's several views), so each trace, probe and dump line names
+  its frame: the device's swap count at the layer-3 call plus one
+  (`Device::swap_count`), the number of the frame shot that shows it.
+  `H2_NATIVE_WORLD_PROBE=x,y@first-last` probes every pass of those
+  frames without the trace, and `H2_NATIVE_WORLD_DUMP=...#frame` arms
+  no earlier than that frame.
   `H2_NATIVE_WORLD_OWNERS=clusters` (or `placements`) draws only that
   kind natively and leaves the other's items to the D3D path. At 03000
   the probe put the 43 px girder line on placement 282's edge (0.23 px
@@ -943,12 +950,11 @@ highest level loaded, and a distant object's records named a section the
 pass had no parts for: its items were skipped and nothing drawn (a thin
 object on 03a's rubble, gone at frames 3000 and 4000).
 
-An object whose records still name a section none of its native parts
-come from (another permutation than the one loaded, or a section whose
-parts did not load) is left to D3D at the hook, before its items' skip is
-kept (`NativeSet::sections`, `NativeSet::missing_section`), logged once
-per definition and section. The base-map stand-in for transparent parts
-still draws the highest level's.
+An item whose record names a (section, part) none of the native parts
+is (another permutation than the one loaded, or a part that did not
+load) is not offered at all (`NativeSet::parts`, below): it keeps its D3D
+draw. The base-map stand-in for transparent parts still draws the
+highest level's.
 
 ### Permutations and regions
 
@@ -1143,26 +1149,24 @@ implementation samples engine texture 3.
     the resolver left 0 by 0 for an engine texture) get it
     (`texaccum_dimensions`).
 - **The probe.** `H2_NATIVE_OBJECTS_PROBE=x,y` (guest pixels) prints, on
-  the first eight passes and every 250th after, each object of the pass
-  whose bounding sphere covers that pixel: its definition and handle,
-  the (section, implementation) its records draw, the sections its native
-  parts come from, whether it samples the texture accumulation target,
-  and the level's size. A section in the first list but not the second
-  is drawn by nothing. Then, per lit part of each such object, how the
-  pass draws it (`LitObjects::describe_parts`): its section and shader,
-  the implementation its records pick and that program's depth, blend,
-  alpha test, cull and colour writes, and for a part sampling the texture
-  accumulation target its stages, the level's guest size and the size
-  constants it gets; or why it is not drawn.
+  the first eight passes and every 250th after, for each object of the
+  pass whose bounding sphere covers that pixel, each of its items the
+  pass draws (`LitObjects::describe`: part, section, shader,
+  implementation, indices and the resolved depth, cull, winding, colour
+  writes, alpha test and clamp) and each it left to D3D with why; then
+  the texture accumulation level's size.
   `H2_NATIVE_OBJECTS_EXCEPT=0xe92207ad,...` leaves those definitions to
   D3D (the load refuses them), to tell which one a difference is.
 - **The comparison.** `H2_NATIVE_OBJECTS_COMPARE=definition:part[:after]`
-  (e.g. `0xe92207ad:2:30`) is the objects' `H2_NATIVE_WORLD_DUMP`: the
-  definition's objects keep their D3D draws (`NativeSet::shadowed`: the
-  host gets their frames, their items are not skipped), and on the pass
-  after `after` holding one, its first object's part is armed in
-  `d3d::uniform_compare` with what the pass would draw it with
-  (`LitObjects::part_uniforms`: program words, vertex and pixel uniforms
+  (e.g. `0xe92207ad:2:30`; `part` written `0x...` picks the first item
+  whose shader is that tag, `0xe92207ad:0xe5da0465:30` for the rebar) is
+  the objects' `H2_NATIVE_WORLD_DUMP`: the
+  definition's items keep their D3D draws (`NativeSet::shadowed`: the
+  host gets them as shadow items, plans them and draws none), and on the
+  pass after `after` that plans lit part `part` of the model (an index
+  into its lit parts), that draw is armed in `d3d::uniform_compare` as
+  the pass would issue it (`LitObjects::part_uniforms`: program words,
+  vertex and pixel uniforms
   with the object's rows, decompression, lighting and texture
   accumulation constants, translation options, pixel shader and options,
   samplers, primitive, depth). The D3D draws with the same rows
@@ -1170,16 +1174,64 @@ implementation samples engine texture 3.
   with another program (the object's other parts, and its earlier
   layers, which wrote the depth a later `Equal` pass tests) are named
   with their cull, winding, depth state and `c[0..4]`.
-- **The inherited cull.** A lit part whose layer-3 implementation does
-  not set `CULLMODE` (`object_program::sets_cull`; 03a's
-  `concrete_rebar` part of `concrete_chunk_j`) draws on the D3D path
-  with the device's cull and winding at the layer-3 call, as a world
-  pass does. Its program is marked (`MaterialProgram::inherits_cull`);
-  the host reads `Device::cull_state` when the feature asks for the set,
-  and the pass draws those parts with it
-  (`LitObjects::set_inherited_cull`, through `program::pipeline_state`;
-  the cull is part of the pipeline key). Before, they culled nothing.
-  `H2_NATIVE_OBJECTS_INHERIT_CULL=0` turns it off.
+- **By item, in the list's order.** The skip is per item, not per
+  object or section: `objects::clear_objects` reads each item's key
+  (`objects::ItemKey`: the record, the item's shader, the record key's
+  section and part, bits 9..17 and 0..3, and the implementation its `+0`
+  picks), and offers it only when the definition's native part at that
+  (section, part) has that shader and implementation
+  (`NativeSet::parts`, published per (definition, section, part) with
+  the implementations that sample the texture accumulation target). A
+  lit part is one geometry part of a section (`LitPart::part`; the
+  section's parts share its programs). The feature hands the host the
+  accepted items in the list's order (`objects::ItemDraw`: the item, its
+  object's frame, its key and its record's node rows,
+  `objects::record_rows`); one whose object, rows or texture
+  accumulation target (`object_nodes::texaccum_bound`, for an
+  implementation sampling it) do not read goes back first.
+- **Planned before the skip is kept.** `Host::draw` plans every item
+  before the hook returns (`plan_view` in the glue,
+  `LitObjects::plan`/`object_program_gpu::plan_part`): its model on the
+  GPU, exactly its part and implementation, every per-object constant
+  (lighting, defaults, rows, decompression) and every state field
+  resolved, the device W-buffered, and for a part sampling the texture
+  accumulation target a device that samples levels in place. It says
+  per item whether it is drawn, and the feature gives every other item
+  its bit back (`objects::keep_items`) before the layer draws. The pass
+  issues exactly the planned draws in that order (`LitObjects::encode`
+  puts in only the view's constants and clip and the level's size). What
+  only the issue knows (the level the device resolves after the drain,
+  the view's constants) cannot be planned: a planned draw the encode
+  cannot issue is counted and its reason logged once (`shortfall`);
+  the issue-time guarantee waits on the device's prepare/commit
+  contract.
+- **The state, field by field** (`object_state::resolve`). The host
+  reads the render states the device holds at the layer-3 call from the
+  guest's render-state array (`object_state::EntryStates`: depth
+  enable, function and write; alpha test, function and reference;
+  blend and its factors; colour writes; cull and winding; fill modes;
+  stencil enable, function, reference, masks and operations; fog;
+  solid offset and its biases; depth clip control). A draw takes its
+  implementation's own value for each field it sets and the device's
+  for the rest, nothing from defaults: a field it depends on that does
+  not read or decode refuses it, as does one the pass does not draw
+  (blending, fog, the stencil test with its reference and writes, a
+  depth bias, a fill mode other than solid, Z-buffering its own
+  `ZENABLE` sets) or an alpha test other than the one its program was
+  compiled with. The W clip's clamp is the draw's
+  (`D3DRS_DEPTHCLIPCONTROL`); its range the device's at the issue. This
+  takes in the inherited cull: 03a's `concrete_rebar` part of
+  `concrete_chunk_j` sets no `CULLMODE` and draws with the device's cull
+  and winding (before, it culled nothing). S: the layer's earlier draws
+  leave those fields as at the layer-3 call; the comparison prints the
+  D3D draws' own.
+- **One load per map, BSP and generation.** The host keys a load by the
+  map's name, the active BSP's address and its index (as the world's);
+  another key starts a new load (new models, a new worker, a new
+  generation the set carries). A worker publishes only to the load it
+  was started for (its own `Models`), so a worker of an earlier load of
+  the same map (A, B, A again) publishes nothing, and `Host::draw`
+  refuses a view planned against another generation.
 
 - **The vertex block.** What the game's upload would hold for one drawn
   object: `c[0..18]` the view's; `c[18 + i]` the implementation's
@@ -1291,17 +1343,16 @@ implementation samples engine texture 3.
 - **Which implementations a map draws.** The observer counts live layer-3
   object items by their record's implementation and logs the counts once
   per map, after 600 views.
-- **The node rows at the hook** (`objects::attach_node_rows`). The
-  observer copies, for each record a drawn object's items name, the rows
-  that record's draw would upload, one set per mode section (two records
-  of a section that would upload different rows refuse the object). Under
+- **The node rows at the hook** (`objects::record_rows`). The observer
+  copies, for each accepted item, the rows its record's draw would
+  upload; an item whose rows do not read keeps its D3D draw. Under
   the pipelined render this reads the render's snapshot, as the rest of
   the observer does (below): the node blocks at `0x00487b1c..` are guest
   RAM, so they are frame `k`'s. An object of a definition with lit parts
-  is drawn only with its lighting (and the root value inputs 40 and 37
-  read) and every record's rows; else all of it stays on D3D.
-- **The draw** (`LitObjects::encode`). After the models pass, one render
-  pass over the same targets: per drawn (object, lit part) its vertex
+  is drawn only where its implementation's lighting inputs (and the
+  root value inputs 40 and 37) read; else that item stays on D3D.
+- **The draw** (`LitObjects::encode`). One render pass over the same
+  targets: per planned item, in the list's order, its vertex
   block (`object_vertex_uniforms` over the view's `c[0..18]`) and pixel
   block in one buffer at dynamic offsets, as the lights do; the viewport
   is the whole target, as the programs' own fix-up expects.

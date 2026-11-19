@@ -37,6 +37,7 @@ pub mod colour_pass;
 pub mod datum;
 pub mod entry;
 pub mod function_eval;
+pub mod gel;
 pub mod glow;
 pub mod handle;
 pub mod light_constants;
