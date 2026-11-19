@@ -12,6 +12,7 @@ pub mod arms;
 pub mod autonav;
 pub mod brain;
 pub mod cache;
+pub mod decisions;
 pub mod emote;
 pub mod guest;
 pub mod lobby;
@@ -26,6 +27,7 @@ pub mod roam;
 pub mod stuck;
 pub mod tactics;
 
+use decisions::radio;
 use input::host::HostPadState;
 
 /// `H2_BOTS`: how many local bots to add at boot, 0 to
@@ -50,14 +52,56 @@ pub struct Brain {
     pub mind: mind::Mind,
     /// The last death heard from [`emote::kills`].
     kills_seen: u64,
+    seed: u64,
+    epoch: u64,
 }
 
 impl Brain {
     pub fn new(skill: mind::Skill, seed: u64) -> Self {
         Brain {
             mind: mind::Mind::new(skill, seed),
+            seed,
+            epoch: radio::lock(radio::host()).epoch,
             kills_seen: emote::kills().since(u64::MAX).1,
         }
+    }
+
+    /// One observer and one pad. The radio lock covers the exchange only.
+    fn play(
+        &mut self,
+        p: &brain::Perception,
+        map: Option<&cache::MapData>,
+        kills: &[emote::Kill],
+        channel: &std::sync::Mutex<radio::Radio>,
+    ) -> HostPadState {
+        let (epoch, inbox) = {
+            let mut board = radio::lock(channel);
+            if p.observations.player.is_some() {
+                board.advance(p.tick);
+                if board.epoch == self.epoch {
+                    board.forget_deaths(kills);
+                }
+            }
+            (board.epoch, board.listen(p))
+        };
+        if self.epoch != epoch {
+            let taunt = self.mind.emote.taunt;
+            self.mind = mind::Mind::new(self.mind.skill, self.seed);
+            self.mind.emote.taunt = taunt;
+            self.epoch = epoch;
+        } else {
+            self.mind.hear_deaths(p, kills);
+            self.mind.emote.hear(kills);
+        }
+        self.mind.decisions.inbox = inbox;
+        let pad = self.mind.step(p, map);
+        if let Some(call) = self.mind.decisions.report {
+            let mut board = radio::lock(channel);
+            if board.epoch == epoch {
+                board.publish(call);
+            }
+        }
+        pad
     }
 }
 
@@ -76,13 +120,12 @@ impl local::PadSource for Brain {
             Some(id) => guest::Who::Machine(id),
             None => guest::Who::Port(u32::from(f.port)),
         };
+        let Ok(p) = guest::perceive_as(f.guest, who) else {
+            return HostPadState::default();
+        };
         let (kills, cursor) = emote::kills().since(self.kills_seen);
         self.kills_seen = cursor;
-        self.mind.emote.hear(&kills);
-        match guest::perceive_as(f.guest, who) {
-            Ok(p) => self.mind.step(&p, cache::current().as_deref()),
-            Err(_) => HostPadState::default(),
-        }
+        self.play(&p, cache::current().as_deref(), &kills, radio::host())
     }
 }
 

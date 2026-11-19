@@ -29,6 +29,7 @@ fn look(
 ) -> HostPadState {
     m.step(
         &Perception {
+            observations: Default::default(),
             me: me([0.0; 3], aim),
             others,
             teams: false,
@@ -107,6 +108,7 @@ fn a_wall_hides_an_enemy_and_so_does_its_back() {
         walls: wall(),
     };
     let p = |aim, at| Perception {
+        observations: Default::default(),
         me: me([0.0, 0.0, 0.0], aim),
         others: vec![enemy(1, at)],
         teams: false,
@@ -221,6 +223,7 @@ fn with_a_nav_mesh_it_roams_somewhere_it_can_reach() {
     };
     let mut m = Mind::new(Skill::Normal, 42);
     let p = Perception {
+        observations: Default::default(),
         me: me([1.0, 1.0, 0.0], X),
         others: vec![],
         teams: false,
@@ -240,6 +243,7 @@ fn with_a_nav_mesh_it_roams_somewhere_it_can_reach() {
 fn a_teammate_is_never_a_target() {
     let mut m = Mind::new(Skill::Legendary, 1);
     let p = Perception {
+        observations: Default::default(),
         me: me([0.0; 3], X),
         others: vec![Seen {
             id: 1,
@@ -330,6 +334,7 @@ fn with(
 ) -> HostPadState {
     m.step(
         &Perception {
+            observations: Default::default(),
             me: Some(Me {
                 position: at,
                 aim: X,
@@ -498,6 +503,7 @@ fn without_grenades_it_throws_none() {
 fn shields_down_it_backs_off_instead_of_chasing() {
     let mut m = Mind::new(Skill::Normal, 1);
     let p = |shield, others, tick| Perception {
+        observations: Default::default(),
         me: Some(Me {
             position: [0.0; 3],
             aim: X,
@@ -571,6 +577,7 @@ fn a_bot_that_gets_free_walks_on() {
     // Moved on toward it: walking straight again.
     let pad = m.step(
         &Perception {
+            observations: Default::default(),
             me: me([1.0, 0.0, 0.0], X),
             others: vec![],
             teams: false,
@@ -656,6 +663,7 @@ fn roaming_goes_where_it_last_saw_an_enemy() {
     };
     let mut m = Mind::new(Skill::Legendary, 5);
     let p = |others, tick| Perception {
+        observations: Default::default(),
         me: me([2.0, 5.0, 0.0], X),
         others,
         teams: false,
@@ -680,6 +688,7 @@ fn it_chases_someone_last_seen_in_the_air() {
     };
     let mut m = Mind::new(Skill::Normal, 1);
     let p = |others, tick| Perception {
+        observations: Default::default(),
         me: me([2.0, 5.0, 0.0], X),
         others,
         teams: false,
@@ -716,6 +725,7 @@ fn fighting_on_a_narrow_bridge_it_does_not_strafe_off() {
     for t in 0..120 {
         let pad = m.step(
             &Perception {
+                observations: Default::default(),
                 me: me([0.0, 0.0, 2.0], X),
                 others: vec![enemy(1, [6.0, 0.0, 2.0])],
                 teams: false,
@@ -775,6 +785,7 @@ fn play(
 ) -> HostPadState {
     m.step(
         &Perception {
+            observations: Default::default(),
             me: Some(Me {
                 position: at,
                 aim,
@@ -885,6 +896,7 @@ fn without_the_flag_a_dry_bot_still_rearms_first() {
     let mut m = Mind::new(Skill::Normal, 3);
     m.step(
         &Perception {
+            observations: Default::default(),
             me: Some(Me {
                 position: [10.0, 5.0, 0.0],
                 ..me

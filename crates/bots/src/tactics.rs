@@ -210,6 +210,16 @@ fn angle_between(a: Vec3, b: Vec3) -> f32 {
 /// `aim`: the cheapest by distance plus [`TURN_COST`] per radian off the
 /// aim, the current one's cost scaled by [`STICK`].
 pub fn choose(seen: &[Seen], eye: Vec3, aim: Vec3, current: Option<u32>) -> Option<Seen> {
+    choose_weighted(seen, eye, aim, current, |_| 1.0)
+}
+
+pub(crate) fn choose_weighted(
+    seen: &[Seen],
+    eye: Vec3,
+    aim: Vec3,
+    current: Option<u32>,
+    weight: impl Fn(Seen) -> f32,
+) -> Option<Seen> {
     seen.iter()
         .map(|o| {
             let to = sub([o.position[0], o.position[1], o.position[2] + CHEST], eye);
@@ -217,7 +227,7 @@ pub fn choose(seen: &[Seen], eye: Vec3, aim: Vec3, current: Option<u32>) -> Opti
             if current == Some(o.id) {
                 cost *= STICK;
             }
-            (cost, *o)
+            (cost * weight(*o), *o)
         })
         .min_by(|a, b| a.0.total_cmp(&b.0))
         .map(|(_, o)| o)
