@@ -1,4 +1,4 @@
-# Theater: saved films, free camera and spectating (design, nothing built)
+# Theater: saved films, free camera and spectating
 
 This is the design for a Halo 3-style Theater in h2recomp: record a game
 as a film, then watch it again with pause, fast forward, rewind, a free
@@ -56,6 +56,159 @@ Evidence labels used throughout:
 - **[community]**: public sources, cited and summarised.
 - **[guess]**: my inference or speculation; needs a check before anyone
   builds on it.
+
+## 0. The plan (2026-11-19)
+
+Dedicated hosts change this design. A dedicated host is authoritative
+and has **no local players**. Its only inputs from outside are network
+receives and randomness. That makes its film the simplest one to record
+and the most complete one: everyone's game, from the machine that
+decided it. So Theater is built in three tiers. Each tier is useful on
+its own.
+
+| tier | what you get | built from | state |
+|---|---|---|---|
+| **A. Web Theater** | Every Live game, in the browser: a film library, the 3D viewer with a transport, player POVs, camera modes, kill bookmarks, clips with share links | the spectator track the server already archives (v8 telemetry, [replay-fidelity.md](../live/replay-fidelity.md)) and the web viewer (`web/src/viewer`) | building now |
+| **B. Host films** | Exact `.h2film` films recorded by dedicated hosts, played back in the game with its own renderer and director cameras | sections 2–3 below, cut down to the host case | first slice building now: format, host recorder, exact playback |
+| **C. Live spectating** | A tier-B film streamed with a 30–120 s delay | section 4B | later |
+
+### Tier A: Web Theater (simple, now)
+
+A **film** on the web is a game's archived spectator track. Nothing new
+is recorded.
+
+- A dedicated-host game has a complete track, because the host is the
+  only frame source and it sees every player (`frames_from_host`).
+- Peer-hosted games keep today's track.
+
+The server keeps:
+
+- **Recent films**: each player's last 25 games, derived from the games
+  they played. Nothing is copied.
+- **Saved films**: a player pins a game. It's kept past archive pruning.
+- **Clips**: `{id, game, from_tick, to_tick, title, by, pov?, camera?}`.
+  A clip is a range of a film, not a copy.
+
+Routes:
+
+| route | auth | does |
+|---|---|---|
+| `GET /v1/films?player=<xuid>&kind=recent\|saved` | public (redaction as games) | film list: game id, map, variant, date, length, result for that player |
+| `POST /v1/films/{game}/save`, `DELETE /v1/films/{game}/save` | the player | pin or unpin |
+| `GET /v1/films/{game}/clips` | public | the game's clips |
+| `POST /v1/films/{game}/clips` | a signed-in player | body `{from_tick, to_tick, title, pov?, camera?}`, 30 s to 5 min, 20 per player per day |
+| `GET /v1/clips/{id}`, `DELETE /v1/clips/{id}` | public / owner or admin | one clip |
+
+Pages:
+
+- `/theater/<game>` and `/theater/<game>/clip/<id>`, linked from the game
+  page ("Watch in Theater") and from a new **Films** tab on the player
+  page (Recent, Saved, Clips).
+- A clip URL opens at its range, looping, with an OG card.
+
+### Tier B: host films (first slice)
+
+The dedicated host records a machine-level film from `h2 host run`. Its
+streams, from section 2:
+
+- `HEAD`: the image stamp, disc identity, map, variant, lease id and roster.
+- `DATA`: the start manifest.
+- `NETR`: every receive and HLE result, by call index.
+- `RAND`: randomness.
+- `HASH`: the simulation hash every 30 ticks.
+- `INDX`: the index.
+
+There's no `INPT`, because there are no pads. The host uploads the film
+to the server's blob store at match end, under the game id.
+
+Playback is `h2 theater play <film>`:
+
+- It boots the same image.
+- It replays `NETR`/`RAND` into the HLE.
+- It disconnects live sources.
+- It reports the first hash mismatch with its tick.
+- Controls are pause, 0.25–4× speed and restart.
+- Agent methods let tests and the UI drive it.
+
+Two experiments decide the rest:
+
+1. **Rendering during playback.** The light host never renders. The
+   render consumes the shared RNG at `0x001032a0`, so a rendered
+   playback can diverge from the unrendered recording. The first
+   playback runs with `render_every = 0` and checks hashes. Then
+   rendered playback runs and is compared. If the hashes diverge, the
+   render's RNG draws get their own stream, in recording as well as in
+   playback.
+2. **Keyframes.** Use machine snapshots (`state.save`/`load`,
+   [snapshots.md](../runtime/snapshots.md)) as `KEYF`, every 30 s. The
+   light host's clock-only audio holds no samples, so snapshots in that
+   profile need the audio section to save its clock alone. Seek means
+   loading the nearest snapshot, then replaying `NETR` forward.
+   Snapshot-then-run must match the straight run's hashes, which is
+   section 5, risk 1.
+
+Free camera, follow, orbit and POV come after both experiments pass.
+They use the guest director (section 3, "Free camera").
+
+### UI plan
+
+**In the game** (ui_kit screens, the way the Mods screens are built):
+
+- The main menu gains a **Theater** row, added the way the Clankermatch
+  rows are.
+- **Films screen**: a list in the Mods list class. It has three tabs,
+  Recent, Saved and Clips. Each row shows the map, game type, date,
+  length and your result. Rows that can't play on this build are marked.
+- **Film page**, on the pregame lobby layout like a mod's page:
+  - the map picture;
+  - a players table with team, score, kills and deaths;
+  - a facts table with variant, length, host and build;
+  - actions: Watch, Save/Unsave, Delete, Open on the web (shows the URL
+    as text and a QR code).
+- **Playback overlay**, drawn by the host compositor, not as a guest
+  screen:
+  - bottom: the transport (play/pause, speed, back and forward 5 s/30 s,
+    a timeline with kill and bookmark marks);
+  - left: a player list with live scores that picks the POV;
+  - top right: the camera mode (First person, Follow, Orbit, Free) and
+    a HUD toggle;
+  - clip in/out marks and a screenshot.
+- **Pad:**
+  - A: play/pause.
+  - LT/RT: speed.
+  - D-pad left/right: skip 5 s. Hold for 30 s.
+  - D-pad up/down: the POV player.
+  - Y: camera mode.
+  - X: mark clip in/out.
+  - Back: hide the overlay.
+  - B: leave.
+  - Sticks: the free camera.
+- **Keyboard:** space, arrows, `[`/`]` for speed, `C` for camera, `H` to
+  hide.
+- Until tier B's experiments pass, Watch opens exact playback from the
+  host's view. That's the host's observer camera, Follow on the selected
+  player. The Free camera is greyed out with "after keyframes".
+
+**On the web** (tier A, the stats look):
+
+- `/theater/<game>`: the 3D viewer large. Under it is the transport,
+  with the existing scrubber, kill marks and speeds. On the right is the
+  scoreboard, which doubles as the POV picker. Camera chips: First
+  person (from aim), Follow, Orbit, Free (flycam), Top-down (tactical
+  map).
+- **Clip** button: mark in and out on the timeline, give a title, get a
+  share link.
+- Player page **Films** tab: Recent (25), Saved, Clips, as cards with
+  the map picture, game type, result and length.
+
+### Lanes (code only, one combined test pass)
+
+| lane | owns |
+|---|---|
+| `theater-server` | films/clips routes and storage in live-server (both homes), the saved-film archive pin, tests |
+| `theater-web` | `/theater/*` pages, the Films tab, camera chips, the clip flow, tests |
+| `theater-film` | a `film` crate: `.h2film` writer/reader (chunks above), the host recorder taps (`NETR`, `RAND`, `HASH`) behind `H2_FILM_OUT` / `h2 host run --film`, upload at match end, `h2 theater play` exact playback + agent methods `theater.play/state/pause/speed/seek/camera` |
+| `theater-ui` | the in-game Theater row, Films screen, film page and playback overlay, against the `film` crate's `Library` API and the agent methods |
 
 ## 1. How Halo 3's Theater works, and whether Halo 2 fits
 
