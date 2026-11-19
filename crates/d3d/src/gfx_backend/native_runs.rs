@@ -19,12 +19,18 @@ impl GfxBackend {
         std::array::from_fn(|i| PASSES[i].load(Ordering::Relaxed))
     }
 
-    pub(super) fn append_native(&mut self, copy: TargetCopy, targets: (SurfaceId, SurfaceId),
+    pub(super) fn append_native(&mut self, copy: TargetCopy, setup: wgpu::CommandBuffer, targets: (SurfaceId, SurfaceId),
         color: wgpu::TextureView, depth: wgpu::TextureView, stencil: bool, draws: ExternalBundles) {
         let key = (draws.run, targets.0, targets.1);
         if self.native_run.as_ref().is_some_and(|r| r.key != key || r.copy != copy) {
             self.finish_native_run();
         }
+        // Setup commands may initialize this packet's private uniform
+        // buffers. All members of a run promise immutable draw resources.
+        if let Some((enc, _)) = self.open.take() {
+            self.external_prefix.push(enc.finish());
+        }
+        self.external_prefix.push(setup);
         self.native_run.get_or_insert_with(|| Run {
             key, copy, color, depth, stencil, draws: Vec::new(),
         }).draws.push(draws);

@@ -457,8 +457,8 @@ impl ExternalPass for Paint {
         Ok(())
     }
 
-    fn take_bundles(&mut self, copy: d3d::TargetCopy) -> Option<d3d::backend::ExternalBundles> {
-        self.bundles[usize::from(copy == d3d::TargetCopy::Display)].take()
+    fn record_bundles(&mut self, target: &mut ExternalTarget<'_>) -> Option<d3d::backend::ExternalBundles> {
+        self.bundles[usize::from(target.copy == d3d::TargetCopy::Display)].take()
     }
 }
 

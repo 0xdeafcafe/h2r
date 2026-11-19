@@ -467,7 +467,7 @@ impl LightSet {
         draws: &[LightDraw<'_>],
         stage_image: &mut dyn FnMut(usize, LightStage) -> Option<Image>,
         gel_image: &mut dyn FnMut(u32) -> Option<Image>,
-    ) -> Option<(wgpu::BindGroup, Vec<Prepared>)> {
+    ) -> Option<(wgpu::BindGroup, Vec<Prepared>, wgpu::Buffer, Vec<u8>)> {
         let mut ready = Vec::new();
         for d in draws {
             if d.ranges.is_empty() {
@@ -508,7 +508,6 @@ impl LightSet {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        queue.write_buffer(&buffer, 0, &bytes);
         let entry = |binding: u32, size: usize| wgpu::BindGroupEntry {
             binding,
             resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
@@ -533,7 +532,7 @@ impl LightSet {
                 ranges: d.ranges.clone(),
             })
             .collect();
-        Some((group, prepared))
+        Some((group, prepared, buffer, bytes))
     }
 
     /// Record each blend group before the guest can consume any entries.
@@ -544,7 +543,7 @@ impl LightSet {
         draws: &[LightDraw<'_>], stage_image: &mut dyn FnMut(usize, LightStage) -> Option<Image>,
         gel_image: &mut dyn FnMut(u32) -> Option<Image>,
     ) -> Option<LightBundles> {
-        let (uniforms, prepared) = self.prepare(device, queue, color, depth, view, draws, stage_image, gel_image)?;
+        let (uniforms, prepared, buffer, bytes) = self.prepare(device, queue, color, depth, view, draws, stage_image, gel_image)?;
         if vertices.size() == 0 || indices.size() == 0 { return None; }
         let mut groups = Vec::with_capacity(prepared.len());
         let mut ranges = 0;
@@ -568,13 +567,23 @@ impl LightSet {
             }
             groups.push((draw.blend_constant, bundle.finish(&Default::default())));
         }
-        Some(LightBundles { groups, ranges })
+        Some(LightBundles { groups, ranges, buffer, bytes })
     }
 }
 
 pub struct LightBundles {
+    buffer: wgpu::Buffer,
+    bytes: Vec<u8>,
     pub groups: Vec<(wgpu::Color, wgpu::RenderBundle)>,
     pub ranges: usize,
+}
+
+impl LightBundles {
+    /// Initialize the private uniform buffer from the submission arena.
+    /// Each member of a merged light run retains a distinct destination.
+    pub fn upload(&self, uploads: &mut gfx::ring::EncoderUploads<'_>) {
+        uploads.write(&self.buffer, 0, &self.bytes);
+    }
 }
 
 #[cfg(test)]

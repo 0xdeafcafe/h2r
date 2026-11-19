@@ -286,7 +286,7 @@ pub trait ExternalPass: Send {
 
     /// Fully recorded bundles for an ordered run on the bound attachments.
     /// The per-copy reservation checks their range count before commit.
-    fn take_bundles(&mut self, _copy: TargetCopy) -> Option<ExternalBundles> { None }
+    fn record_bundles(&mut self, _target: &mut ExternalTarget<'_>) -> Option<ExternalBundles> { None }
 
     /// Potential guest-visible writes. Read-only probes use the default.
     fn writes(&self) -> ExternalWrites {
@@ -371,8 +371,15 @@ pub struct ExternalTarget<'a> {
     pub sampled: &'a [Option<SampledLevel>],
     /// Indexed live colour surfaces in the same order as the plan's slots.
     pub slots: &'a [Option<ExternalColor>],
+    pub uploads: &'a gfx::ring::SubmissionUploads,
     pub copy: TargetCopy,
     pub stages: [Option<&'a wgpu::TextureView>; 4],
+}
+
+impl ExternalTarget<'_> {
+    pub fn encoder_uploads(&mut self) -> gfx::ring::EncoderUploads<'_> {
+        gfx::ring::EncoderUploads { device: self.device, queue: self.queue, arena: self.uploads, encoder: self.encoder }
+    }
 }
 
 /// Bound colour and depth/stencil writes. RTT mirrors and aliases follow these writes.
@@ -454,6 +461,7 @@ impl<S> ExternalSurfaces<S> {
 /// GPU handles pinned for a complete prepare/record transaction.
 pub struct ExternalAttachments {
     pub targets: (gfx::surface::SurfaceId, gfx::surface::SurfaceId),
+    pub uploads: gfx::ring::SubmissionUploads,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub color: wgpu::TextureView,
@@ -473,7 +481,7 @@ impl ExternalAttachments {
             device: &self.device, queue: &self.queue, encoder, color: &self.color, color_format: self.color_format,
             depth: &self.depth, depth_format: self.depth_format, viewport: external_viewport(&request, self.size),
             z_scale: request.z_scale, guest_size: request.surface_size, size: self.size, sampled: &self.sampled,
-            slots: &self.slots, stages: self.stages.each_ref().map(Option::as_ref), copy: self.copy,
+            uploads: &self.uploads, slots: &self.slots, stages: self.stages.each_ref().map(Option::as_ref), copy: self.copy,
         }
     }
 }
@@ -483,6 +491,7 @@ pub struct ExternalRecording {
     pub copy: TargetCopy,
     pub ranges: usize,
     pub commands: ExternalCommands,
+    pub uploads: gfx::ring::SubmissionUploads,
 }
 
 pub struct ExternalBundles {
@@ -495,6 +504,7 @@ pub struct ExternalBundles {
 pub enum ExternalCommands {
     Standalone(wgpu::CommandBuffer),
     Bundles {
+        setup: wgpu::CommandBuffer,
         targets: (gfx::surface::SurfaceId, gfx::surface::SurfaceId),
         color: wgpu::TextureView,
         depth: wgpu::TextureView,
@@ -999,9 +1009,10 @@ pub trait Backend: Send {
         let mut recordings = Vec::with_capacity(prepared.len());
         for (target, mut encoder) in prepared {
             let scope = target.device.push_error_scope(wgpu::ErrorFilter::Validation);
-            let (ranges, commands) = match pass.take_bundles(target.copy) {
+            let bundles = pass.record_bundles(&mut target.target(request, &mut encoder));
+            let (ranges, commands) = match bundles {
                 Some(draws) => (draws.ranges, ExternalCommands::Bundles {
-                    targets: target.targets, color: target.color.clone(), depth: target.depth.clone(),
+                    setup: encoder.finish(), targets: target.targets, color: target.color.clone(), depth: target.depth.clone(),
                     stencil: target.depth_format.has_stencil_aspect(), draws,
                 }),
                 None => {
@@ -1012,7 +1023,7 @@ pub trait Backend: Send {
             if pollster::block_on(scope.pop()).is_some() || !plan.complete(target.copy, ranges) {
                 return Ok(None);
             }
-            recordings.push(ExternalRecording { copy: target.copy, ranges, commands });
+            recordings.push(ExternalRecording { copy: target.copy, ranges, commands, uploads: target.uploads });
         }
         Ok(Some(recordings))
     }

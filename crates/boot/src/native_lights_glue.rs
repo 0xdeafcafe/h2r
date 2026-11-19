@@ -892,7 +892,7 @@ struct RunPass {
     view: Option<[[f32; 4]; d3d::VIEW_CONSTANTS]>,
     clip: Option<d3d::DepthClip>,
     key: u64,
-    bundles: [Option<d3d::backend::ExternalBundles>; 2],
+    bundles: [Option<(native_render::light_gpu::LightBundles, [u32; 4])>; 2],
     refusal: Arc<Mutex<Option<Keep>>>,
 }
 
@@ -904,8 +904,10 @@ impl d3d::ExternalPass for RunPass {
         }
     }
 
-    fn take_bundles(&mut self, copy: d3d::TargetCopy) -> Option<d3d::backend::ExternalBundles> {
-        self.bundles[usize::from(copy == d3d::TargetCopy::Display)].take()
+    fn record_bundles(&mut self, target: &mut d3d::ExternalTarget<'_>) -> Option<d3d::backend::ExternalBundles> {
+        let (recorded, scissor) = self.bundles[usize::from(target.copy == d3d::TargetCopy::Display)].take()?;
+        recorded.upload(&mut target.encoder_uploads());
+        Some(d3d::backend::ExternalBundles { run: self.key, scissor, groups: recorded.groups, ranges: recorded.ranges })
     }
 
     fn view_constants(&mut self, constants: &[[f32; 4]; d3d::VIEW_CONSTANTS]) {
@@ -950,9 +952,7 @@ impl RunPass {
             },
             &mut |g| lw.gels.get(&g).cloned(),
         ).ok_or("incomplete GPU resources or ranges")?;
-        self.bundles[copy] = Some(d3d::backend::ExternalBundles {
-            run: self.key, scissor, groups: recorded.groups, ranges: recorded.ranges,
-        });
+        self.bundles[copy] = Some((recorded, scissor));
         Ok(())
     }
 }

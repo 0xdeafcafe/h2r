@@ -210,6 +210,9 @@ pub struct GfxBackend {
     open: Option<(wgpu::CommandEncoder, usize)>,
     /// Ordered segments before the current open encoder.
     external_prefix: Vec<wgpu::CommandBuffer>,
+    upload_pool: gfx::ring::UploadPool,
+    current_uploads: Option<gfx::ring::SubmissionUploads>,
+    submitted_uploads: Vec<gfx::ring::SubmissionUploads>,
     /// [`set_defer_side_passes`](Self::set_defer_side_passes).
     defer_side_passes: bool,
     /// The scratch depth a colour-only external pass gets, by size.
@@ -328,6 +331,7 @@ impl GfxBackend {
             swap_finish: SwapFinish::from_env(),
             open: None,
             external_prefix: Vec::new(),
+            upload_pool: Default::default(), current_uploads: None, submitted_uploads: Vec::new(),
             defer_side_passes: std::env::var_os("H2_GFX_SIDE_SUBMIT").is_none_or(|v| v != "1"),
             scratch_depth: None,
         }
@@ -611,6 +615,12 @@ impl GfxBackend {
             return Ok(None);
         }
         Ok(Some((cv, cf, dv, df, size, sampled)))
+    }
+
+    fn retain_uploads(&mut self, uploads: gfx::ring::SubmissionUploads) {
+        if !self.submitted_uploads.iter().any(|b| b.same_submission(&uploads)) {
+            self.submitted_uploads.push(uploads);
+        }
     }
 
     /// Submits the pending pass, if any, and every pass encoded before it.
@@ -923,6 +933,9 @@ impl GfxBackend {
     /// submission.
     fn submit(&mut self, enc: wgpu::CommandEncoder) -> wgpu::SubmissionIndex {
         let open = self.open.take().map(|(e, _)| e.finish());
+        self.current_uploads.take();
+        let uploads = std::mem::take(&mut self.submitted_uploads);
+        for batch in &uploads { batch.flush(&self.ctx.queue); }
         self.renderer.flush_uploads(&self.ctx.queue);
         if let Some(s) = self.shaders.as_mut() {
             s.flush_uploads(&self.ctx);
@@ -937,6 +950,9 @@ impl GfxBackend {
                 .queue
                 .submit(copies.into_iter().chain(self.external_prefix.drain(..)).chain(open).chain([enc.finish()]))
         };
+        if !uploads.is_empty() {
+            self.ctx.queue.on_submitted_work_done(move || drop(uploads));
+        }
         for r in self.unsubmitted_reports.drain(..) {
             r.submitted(index.clone());
         }
@@ -1668,8 +1684,10 @@ impl Backend for GfxBackend {
         }
         let stages = textures.map(|t| t.and_then(|t| t.view.clone()));
         if (0..4).any(|i| textures[i].is_some() && stages[i].is_none()) { return Ok(None); }
+        let uploads = self.current_uploads.get_or_insert_with(|| self.upload_pool.begin()).clone();
         Ok(Some(vec![crate::backend::ExternalAttachments {
             targets: (surfaces.color, surfaces.depth),
+            uploads,
             device: self.ctx.device.clone(), queue: self.ctx.queue.clone(), color: cv, color_format: cf,
             depth: dv, depth_format: df, size, sampled, slots, copy, stages,
         }]))
@@ -1677,8 +1695,8 @@ impl Backend for GfxBackend {
 
     fn commit_external(&mut self, recording: crate::ExternalRecording) {
         match recording.commands {
-            crate::backend::ExternalCommands::Bundles { targets, color, depth, stencil, draws } =>
-                self.append_native(recording.copy, targets, color, depth, stencil, draws),
+            crate::backend::ExternalCommands::Bundles { setup, targets, color, depth, stencil, draws } =>
+                self.append_native(recording.copy, setup, targets, color, depth, stencil, draws),
             crate::backend::ExternalCommands::Standalone(commands) => {
                 self.finish_native_run();
                 if let Some((enc, _)) = self.open.take() {
@@ -1687,6 +1705,7 @@ impl Backend for GfxBackend {
                 self.external_prefix.push(commands);
             }
         }
+        self.retain_uploads(recording.uploads);
     }
 
     fn supports_external_pass(&self) -> bool {
@@ -1707,7 +1726,9 @@ impl Backend for GfxBackend {
         let _p = timeline::phase::enter(timeline::phase::Phase::Encode);
         // After the draws recorded so far, in the same submission.
         let (mut enc, passes) = self.take_open()?;
+        let uploads = self.current_uploads.get_or_insert_with(|| self.upload_pool.begin()).clone();
         pass.encode(crate::backend::ExternalTarget {
+            uploads: &uploads,
             device: &self.ctx.device,
             queue: &self.ctx.queue,
             encoder: &mut enc,
@@ -1724,6 +1745,7 @@ impl Backend for GfxBackend {
             copy: crate::TargetCopy::Reference,
             stages: [None; 4],
         });
+        self.retain_uploads(uploads);
         self.open = Some((enc, passes + 1));
         Ok(true)
     }
