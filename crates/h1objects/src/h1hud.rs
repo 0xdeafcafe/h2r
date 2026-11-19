@@ -340,6 +340,12 @@ pub mod wphi {
     pub const OVERLAYS: usize = 0x90;
     /// The crosshair types any of the chain uses, a mask (`0x000da6c3`).
     pub const CROSSHAIR_TYPES: usize = 0x9c;
+    /// The low thresholds (four `i16`): rounds in reserve, rounds loaded,
+    /// heat (percent), battery (percent) (E `0x000db6e7`.., and the
+    /// warning tests `0x000da7ab`..`0x000da9cf`, which read `+0x14`,
+    /// `+0x16`, `+0x18`, `+0x1a` of the weapon's own `wphi`).
+    pub const LOW: usize = 0x14;
+    pub const LOW_LOADED: usize = 1;
     pub const SIZE: usize = 0xa0;
     pub const STATIC_SIZE: usize = 0xb4;
     pub const METER_SIZE: usize = 0xb4;
@@ -349,6 +355,11 @@ pub mod wphi {
     pub const NUMBER_MAGAZINES: usize = 0x78;
     pub const CROSSHAIR_SIZE: usize = 0x68;
     pub const OVERLAY_SIZE: usize = 0x68;
+
+    /// A `wphi`'s low thresholds ([`LOW`]).
+    pub fn low(b: &[u8]) -> [i16; 4] {
+        std::array::from_fn(|i| i16::from_le_bytes([b[LOW + 2 * i], b[LOW + 2 * i + 1]]))
+    }
 
     /// A static, meter or number entry's head: the weapon state it reads
     /// (`i16`, an index into the states, `0x000dbe85`), its flags (bit 0:
@@ -467,6 +478,41 @@ impl WeaponState {
 pub mod crosshair_type {
     pub const AIM: i16 = 0;
     pub const ZOOM_LEVEL: i16 = 1;
+    /// Warnings, each with when the table at `0x000daa18` makes it active
+    /// (the weapon state as [`super::WeaponState`] reads it; the thresholds
+    /// are the weapon's own `wphi`'s, `+0x14..+0x1a`, [`super::wphi::LOW`])
+    /// and what its sprite says (V: `hud_reticle_warnings`, the sequence
+    /// each disc warning draws):
+    ///
+    /// - 3 (`0x000da7ab`): rounds in reserve, and rounds loaded at or
+    ///   below the loaded threshold. "Reload", sequence 1.
+    /// - 4 (`0x000da7d0`): the heat against its threshold. None on the disc.
+    /// - 5 (`0x000da7f6`): rounds in reserve at or below their threshold, no
+    ///   reload under way. None on the disc.
+    /// - 6 (`0x000da814`): the battery below 1 and at or below its threshold
+    ///   (percent). "Low battery", sequence 0 (the plasma pistol and rifle).
+    /// - 7 (`0x000da7a1`): a reload under way (state `+0x0c`). The arrows,
+    ///   sequence 9 (the Banshee's and Scorpion's guns).
+    /// - 8 (`0x000da874`): no rounds loaded and none in reserve. "No
+    ///   ammo", sequence 2 (`ui\hud\empty` draws "No weapon", sequence 6).
+    /// - 9 (`0x000da889`): no grenades of either type, with the throw
+    ///   pressed (the unit's `+0x1b8` bit `0x2000`). "No grenades", sequence 5.
+    /// - 10 (`0x000da8e7`): rounds loaded, none in reserve, and the loaded
+    ///   at or below their threshold. "Low ammo", sequence 7.
+    /// - 18 (`0x000da855`): the battery spent (age 1.0) with the trigger
+    ///   held (`+0x1b8` bit `0x800`). "Battery depleted", sequence 10.
+    ///
+    /// Halo 1 shows a warning for its flash time after it turns active
+    /// (`0x000db052`: overlay `+0x2c`, 3 s on the disc's, three flashes of
+    /// the flash colour `+0x28`, `0x000e04b0`), again while the trigger or
+    /// throw is held for 8, 9 and 18.
+    pub const RELOAD: i16 = 3;
+    pub const LOW_BATTERY: i16 = 6;
+    pub const RELOADING: i16 = 7;
+    pub const NO_AMMO: i16 = 8;
+    pub const NO_GRENADES: i16 = 9;
+    pub const LOW_AMMO: i16 = 10;
+    pub const BATTERY_DEPLETED: i16 = 18;
 }
 
 /// The conditions a weapon HUD overlay shows on (overlay `+0x4a`), as
@@ -509,6 +555,13 @@ pub enum WeaponEntryKind {
     Meter(WeaponState, [u8; 3]),
     /// A crosshair overlay: its crosshair's type, the overlay's flags.
     Crosshair(i16, u32),
+    /// An overlay of a warning crosshair (types 2 and up,
+    /// [`crosshair_type`]): its type, the overlay's flags, and the rounds
+    /// loaded threshold of the weapon's own `wphi` (`+0x16`; Halo 1's
+    /// warning test reads the weapon's `wphi`, not the child the warning is
+    /// in, `0x000da67b`; V: the warnings are in the shared `master rounds`,
+    /// whose thresholds are 0, the assault rifle's own 10).
+    Warning(i16, u32, i16),
     /// A number (`wphi +0x78`, drawn by the number draw `0x000e1a60` as the
     /// grenade count is, E `0x000dbf1e`..`0x000dc0f0`): the state whose
     /// value it shows, the number element (its anchor the `wphi`'s, its
@@ -529,13 +582,17 @@ pub enum WeaponEntryKind {
 pub fn weapon_entries(map: &H1Map, tag: H1TagId) -> Result<Vec<WeaponEntry>> {
     let mut out = Vec::new();
     let mut seen = Vec::new();
-    weapon_chain(map, tag, &mut out, &mut seen)?;
+    let t = map.tag(tag)?;
+    let b = crate::h1::tag_bytes(map, t, b"wphi", wphi::SIZE)?;
+    let low = wphi::low(b);
+    weapon_chain(map, tag, low, &mut out, &mut seen)?;
     Ok(out)
 }
 
 fn weapon_chain(
     map: &H1Map,
     tag: H1TagId,
+    low: [i16; 4],
     out: &mut Vec<WeaponEntry>,
     seen: &mut Vec<H1TagId>,
 ) -> Result<()> {
@@ -546,7 +603,7 @@ fn weapon_chain(
     let t = map.tag(tag)?;
     let b = crate::h1::tag_bytes(map, t, b"wphi", wphi::SIZE)?;
     if let Some(child) = crate::h1::reference(map, b, wphi::CHILD) {
-        weapon_chain(map, child, out, seen)?;
+        weapon_chain(map, child, low, out, seen)?;
     }
     let raw = u16::from_le_bytes([b[wphi::ANCHOR], b[wphi::ANCHOR + 1]]);
     let anchor =
@@ -629,11 +686,17 @@ fn weapon_chain(
     use wphi::{crosshair, overlay};
     for c in crate::h1::elements(map, b, wphi::CROSSHAIRS, wphi::CROSSHAIR_SIZE)? {
         let bitmap = crate::h1::reference(map, c, crosshair::BITMAP);
+        let kind = i16_at(c, crosshair::TYPE);
         for o in crate::h1::elements(map, c, crosshair::OVERLAYS, crosshair::OVERLAY_SIZE)? {
             let flags = u32::from_le_bytes(o[overlay::FLAGS..overlay::FLAGS + 4].try_into().unwrap());
             out.push(WeaponEntry {
                 wphi: tag,
-                kind: WeaponEntryKind::Crosshair(i16_at(c, crosshair::TYPE), flags),
+                kind: match kind {
+                    crosshair_type::AIM | crosshair_type::ZOOM_LEVEL => {
+                        WeaponEntryKind::Crosshair(kind, flags)
+                    }
+                    _ => WeaponEntryKind::Warning(kind, flags, low[wphi::LOW_LOADED]),
+                },
                 screen: c[crosshair::SCREEN],
                 hidden: flags & 0x80 != 0,
                 // Crosshairs are placed from the centre (E `0x000dad9e`: the
@@ -691,6 +754,132 @@ pub const ZOOM_STATE: [u8; 20] = [
     0x90, 0x01, 0, 0, 0x01, 0, 0, 0, 0x40, 0, 0, 0, 0x04, 0, 0, 0, 0, 0, 0, 0,
 ];
 
+/// Halo 2's state word C (`+0x0c` show, `+0x14` hide), as the HUD draw
+/// builds it for a weapon HUD (E `0x0013a050`, `edi`; the weapon's HUD
+/// state from `0x0013afa9`, filled by `0x00100520` from the weapon object)
+/// and the gate `0x0013ac87` finishes it from the widget's thresholds:
+///
+/// - `0x01`, `0x02`, `0x04`: which of the unit's weapon HUDs is drawn (1,
+///   2, 3; V: retail single-weapon widgets show on `0x01` and hide on
+///   `0x06`, the dual-wielded left ones show on `0x02`);
+/// - `0x08`: threshold `+0x18` (a byte, as a float) above the battery's
+///   age, a fraction (`0x0013ac8f`): set at any threshold of 1 or more
+///   while the battery lasts, so it is no "low battery";
+/// - `0x10`: rounds loaded (`[ws+6]`) below threshold `+0x19`
+///   (`0x0013aca8`);
+/// - `0x20`: rounds in reserve (`[ws+8]`) below threshold `+0x1a`
+///   (`0x0013acbd`);
+/// - `0x40`: the weapon overheated (`[ws+0x20]`, the weapon object's
+///   `+0x16c` bit 1, set at `0x000fe324` when the heat reaches the
+///   definition's `+0x154`, with the overheat event);
+/// - `0x80`: nothing to fire: a magazine with no rounds loaded and none in
+///   reserve, or the battery spent, age 1.0 (`0x0013a22b`..`0x0013a257`;
+///   V: every retail weapon's `*_out` widgets show on it and the rest hide
+///   on it);
+/// - `0x100`, `0x200`, `0x400`: lock-on (V: the rocket launcher's
+///   lockable, locking and locked widgets).
+///
+/// No bit says a reload is under way (`[ws+0x21]`, the first magazine's
+/// state 1..6, is read only by Halo 2's own low-ammunition message,
+/// `0x0013ab3e`), and none says the battery is low.
+pub mod weapon_word_c {
+    pub const LOADED_BELOW: u16 = 0x10;
+    pub const RESERVE_BELOW: u16 = 0x20;
+    pub const OVERHEATED: u16 = 0x40;
+    pub const NOTHING_TO_FIRE: u16 = 0x80;
+}
+
+/// The gate state of a warning shown while `show` (word C) is set and
+/// `hide` is not, with thresholds `loaded` (`+0x19`) and `reserve`
+/// (`+0x1a`). Hidden where the aim crosshair is ([`AIM_STATE`]: word B
+/// `0x11`, word C `0x04`).
+pub const fn warning_state(show: u16, hide: u16, loaded: u8, reserve: u8) -> [u8; 20] {
+    let hide = hide | 0x04;
+    [
+        0, 0, 0, 0, show as u8, (show >> 8) as u8, 0, 0, 0, 0, 0x11, 0, hide as u8,
+        (hide >> 8) as u8, 0, 0, 0, loaded, reserve, 0,
+    ]
+}
+
+/// Halo 1's "Reload" (warning 3: rounds in reserve, loaded at or below the
+/// weapon's threshold `low`) as Halo 2's gate: shown on rounds loaded
+/// below `low + 1`, hidden on rounds in reserve below 1.
+pub fn reload_state(low: i16) -> [u8; 20] {
+    use weapon_word_c::*;
+    let loaded = (i32::from(low) + 1).clamp(1, 255) as u8;
+    warning_state(LOADED_BELOW, RESERVE_BELOW, loaded, 1)
+}
+
+/// Halo 1's "No ammo" (8) and "Battery depleted" (18) as Halo 2's gate:
+/// shown while there is nothing to fire.
+pub const EMPTY_STATE: [u8; 20] = warning_state(weapon_word_c::NOTHING_TO_FIRE, 0, 0, 0);
+
+/// The zoom levels Halo 2's state words tell apart: word A `0x80` at zoom
+/// level 0, `0x100` at level 1, `0x40` unzoomed (E `0x0013a0df`..
+/// `0x0013a127`, the unit's zoom level `+0x3c`).
+pub const ZOOM_LEVELS: usize = 2;
+
+/// The state of the zoom-level readout at each level: Halo 2's own (V:
+/// `ui\hud\sniper_rifle` widgets 7 and 8, its "5x" and "10x": shown on
+/// word A `0x90` and hidden on `0x140`, shown on `0x110` and hidden on
+/// `0xc0`; word C `0x01`, hidden on `0x04`).
+pub const ZOOM_LEVEL_STATES: [[u8; 20]; ZOOM_LEVELS] = [
+    [0x90, 0, 0, 0, 0x01, 0, 0, 0, 0x40, 0x01, 0, 0, 0x04, 0, 0, 0, 0, 0, 0, 0],
+    [0x10, 0x01, 0, 0, 0x01, 0, 0, 0, 0xc0, 0, 0, 0, 0x04, 0, 0, 0, 0, 0, 0, 0],
+];
+
+/// The widget of Halo 1's zoom-level readout (crosshair type 1) at zoom
+/// level `level`, `bitmap` a copy of the overlay's bitmap whose sequence
+/// starts at the level's sprite.
+///
+/// Halo 1 draws one overlay whose sprite is picked by the zoom level: the
+/// type's value is the level plus 2 (`0x000da775`, the unit's zoom level
+/// from `0x000f8c80`; 1 unzoomed), kept less one (`0x000da9e5`), and an
+/// overlay with flag bit 2 draws only while it is above 0 and takes the
+/// sprite one less again (`0x000dae69`, `0x000daf55`..`0x000daf60`): sprite
+/// `level` of its sequence (V: the sniper rifle's `hud_reticles_scope`
+/// sequence 1, "2x" then "10x"). A Halo 2 widget draws its sequence's first
+/// sprite, so there is one widget per level, each on its own copy of the
+/// bitmap and shown at that level only ([`ZOOM_LEVEL_STATES`]).
+pub fn zoom_widget(
+    e: &WeaponEntry,
+    level: usize,
+    bitmap: Option<TagId>,
+    plain: TagId,
+) -> std::result::Result<Widget, Skip> {
+    let WeaponEntryKind::Crosshair(crosshair_type::ZOOM_LEVEL, flags) = e.kind else {
+        return Err(Skip::NothingDrawn);
+    };
+    if e.hidden {
+        return Err(Skip::Hidden);
+    }
+    if e.screen == SPLIT_SCREEN_ONLY {
+        return Err(Skip::SplitScreen);
+    }
+    if !unscaled(e.scale) {
+        return Err(Skip::Scaled(e.scale));
+    }
+    // Without bit 2 the unzoomed value picks a sprite too: not converted.
+    if flags & OVERLAY_WHEN_ZOOMED == 0 {
+        return Err(Skip::CrosshairType(crosshair_type::ZOOM_LEVEL));
+    }
+    let state = *ZOOM_LEVEL_STATES.get(level).ok_or(Skip::ZoomLevel(level))?;
+    let bitmap = bitmap.ok_or(Skip::NothingDrawn)?;
+    Ok(Widget {
+        name: format!("h1_zoom_level_{level}"),
+        inputs: [0; 4],
+        state,
+        anchor: e.anchor,
+        flags: 0,
+        bitmap,
+        shader: plain,
+        sequence: e.sequence.clamp(0, i8::MAX as i16) as i8,
+        offset: to_halo2_offset(e.anchor, e.offset),
+        registration: registration(e.anchor),
+        special: 0,
+    })
+}
+
 /// Crosshair overlay flags (`wphi` crosshair overlay `+0x48`): bit 2 draws
 /// only while the type's value is above 0, bit 6 only while it is 0
 /// (`0x000dae69`, `0x000dae7c`). On the aim type that value is the zoom
@@ -741,6 +930,15 @@ pub enum Skip {
     MeterState(WeaponState),
     /// A crosshair of a type not converted.
     CrosshairType(i16),
+    /// The zoom-level readout: one widget per level ([`zoom_widget`]).
+    ZoomLevels,
+    /// A zoom level past those Halo 2's state words tell apart
+    /// ([`ZOOM_LEVELS`]).
+    ZoomLevel(usize),
+    /// A warning Halo 2's gate has no state for ([`weapon_word_c`]): low
+    /// ammunition with none in reserve (an "and" of two words' bits),
+    /// low battery, a reload under way, no grenades.
+    Warning(i16),
     /// An aim overlay drawn only unzoomed: no Halo 2 state flags for it
     /// are established.
     UnzoomedOnly,
@@ -818,7 +1016,17 @@ pub fn weapon_widget(
                 ("h1_scope", [0; 4], plain, ZOOM_STATE)
             }
             crosshair_type::AIM => ("h1_crosshair", [0; 4], plain, AIM_STATE),
+            crosshair_type::ZOOM_LEVEL => return Err(Skip::ZoomLevels),
             t => return Err(Skip::CrosshairType(t)),
+        },
+        // Shown while Halo 1's condition holds, not for Halo 1's flash
+        // time after it starts: a Halo 2 widget has no timer.
+        WeaponEntryKind::Warning(t, _, low) => match *t {
+            crosshair_type::RELOAD => ("h1_warning_reload", [0; 4], plain, reload_state(*low)),
+            crosshair_type::NO_AMMO | crosshair_type::BATTERY_DEPLETED => {
+                ("h1_warning_empty", [0; 4], plain, EMPTY_STATE)
+            }
+            t => return Err(Skip::Warning(t)),
         },
         WeaponEntryKind::Number(..) => unreachable!("refused above"),
     };
@@ -1685,6 +1893,156 @@ mod tests {
         assert_eq!(weapon_widget(&c, Some(TagId(1)), TagId(2), TagId(3)), Err(Skip::UnzoomedOnly));
         c.kind = WeaponEntryKind::Crosshair(9, 1);
         assert_eq!(weapon_widget(&c, Some(TagId(1)), TagId(2), TagId(3)), Err(Skip::CrosshairType(9)));
+    }
+
+    /// Halo 2's gate (E `0x0013ac87`) over a widget's 20 state bytes, for a
+    /// weapon HUD drawn first (word C `0x01`) whose weapon has `loaded`
+    /// and `reserve` rounds and a battery of `age`: word C's threshold bits
+    /// as the gate sets them, `0x80` as `0x0013a22b` does (a magazine of
+    /// 60), the overheat bit given.
+    fn gate(state: &[u8; 20], loaded: i16, reserve: i16, age: f32, overheated: bool) -> bool {
+        let word = |i: usize| u16::from_le_bytes([state[2 * i], state[2 * i + 1]]);
+        let mut c: u16 = 0x01;
+        if f32::from(state[16]) > age {
+            c |= 0x08;
+        }
+        if loaded < i16::from(state[17]) {
+            c |= 0x10;
+        }
+        if reserve < i16::from(state[18]) {
+            c |= 0x20;
+        }
+        if overheated {
+            c |= 0x40;
+        }
+        if (loaded == 0 && reserve == 0) || age >= 1.0 {
+            c |= 0x80;
+        }
+        // Words A, B and D as for an unzoomed player with the weapon out
+        // (none of the warnings' words).
+        let w = [0x0040u16, 0, c, 0];
+        let any = |base: usize| (0..4).any(|i| word(base + i) & w[i] != 0);
+        any(0) && !any(4)
+    }
+
+    #[test]
+    fn the_gate_model_answers_as_retail_widgets_do() {
+        // V: the retail shotgun's ammo meter (shows on C 0x01, hides on
+        // C 0x06) and its `weapon_background_out` (shows on C 0x80).
+        let meter = [0x10, 0, 0, 0, 0x01, 0, 0, 0, 0x20, 0x04, 0, 0, 0x06, 0, 0, 0, 0, 60, 10, 0];
+        let out = [0, 0, 0, 0, 0x80, 0, 0, 0, 0x20, 0x04, 0, 0, 0x06, 0, 0, 0, 0, 0, 0, 0];
+        assert!(gate(&meter, 6, 12, 0.0, false) && !gate(&out, 6, 12, 0.0, false));
+        assert!(gate(&out, 0, 0, 0.0, false), "nothing to fire");
+        assert!(gate(&out, 0, 0, 1.0, false) && gate(&out, 5, 5, 1.0, false), "battery spent");
+    }
+
+    #[test]
+    fn reload_shows_with_rounds_in_reserve_at_or_below_the_threshold() {
+        // V: the assault rifle's `wphi`, rounds loaded threshold 10.
+        let st = reload_state(10);
+        assert_eq!((st[17], st[18]), (11, 1));
+        assert!(!gate(&st, 60, 180, 0.0, false), "full");
+        assert!(!gate(&st, 11, 180, 0.0, false));
+        assert!(gate(&st, 10, 180, 0.0, false), "at the threshold, as Halo 1's <=");
+        assert!(gate(&st, 0, 1, 0.0, false));
+        assert!(!gate(&st, 5, 0, 0.0, false), "nothing in reserve: no reload");
+        assert!(!gate(&st, 0, 0, 0.0, false));
+        // Threshold 0 (none set): only an empty magazine; huge ones clamp.
+        assert!(gate(&reload_state(0), 0, 4, 0.0, false));
+        assert!(!gate(&reload_state(0), 1, 4, 0.0, false));
+        assert_eq!(reload_state(i16::MAX)[17], 255);
+        assert_eq!(reload_state(-3)[17], 1);
+    }
+
+    #[test]
+    fn no_ammo_and_battery_depleted_show_with_nothing_to_fire() {
+        assert!(gate(&EMPTY_STATE, 0, 0, 0.0, false));
+        assert!(!gate(&EMPTY_STATE, 1, 0, 0.0, false));
+        assert!(!gate(&EMPTY_STATE, 0, 1, 0.0, false));
+        assert!(gate(&EMPTY_STATE, 0, 0, 1.0, false), "battery spent");
+        assert!(!gate(&EMPTY_STATE, 4, 0, 0.99, false), "battery left");
+        // Hidden where the aim crosshair hides (AIM_STATE's hide words).
+        assert_eq!(&EMPTY_STATE[8..16], &AIM_STATE[8..16]);
+        assert_eq!(reload_state(4)[10..12], AIM_STATE[10..12]);
+        assert_eq!(reload_state(4)[12] & 0x04, 0x04);
+    }
+
+    #[test]
+    fn warnings_become_widgets_where_halo2_has_a_state() {
+        // V: `master rounds`' Reload (type 3, sequence 1 at (-30, 30)), on
+        // the assault rifle (threshold 10).
+        let mut w = entry(WeaponEntryKind::Warning(crosshair_type::RELOAD, 1, 10));
+        w.anchor = Anchor::Centre;
+        w.offset = (-30, 30);
+        w.sequence = 1;
+        w.colour = 0;
+        let x = weapon_widget(&w, Some(TagId(1)), TagId(2), TagId(3)).unwrap();
+        assert_eq!((x.anchor, x.offset, x.registration), (Anchor::Centre, (-30, 30), [0.5, 0.5]));
+        assert_eq!((x.state, x.shader, x.sequence, x.inputs), (reload_state(10), TagId(3), 1, [0; 4]));
+        assert_eq!(x.name, "h1_warning_reload");
+        for t in [crosshair_type::NO_AMMO, crosshair_type::BATTERY_DEPLETED] {
+            w.kind = WeaponEntryKind::Warning(t, 1, 10);
+            assert_eq!(weapon_widget(&w, Some(TagId(1)), TagId(2), TagId(3)).unwrap().state, EMPTY_STATE);
+        }
+        for t in [
+            crosshair_type::LOW_AMMO,
+            crosshair_type::LOW_BATTERY,
+            crosshair_type::RELOADING,
+            crosshair_type::NO_GRENADES,
+            4,
+            5,
+        ] {
+            w.kind = WeaponEntryKind::Warning(t, 1, 10);
+            assert_eq!(weapon_widget(&w, Some(TagId(1)), TagId(2), TagId(3)), Err(Skip::Warning(t)));
+        }
+        // Not drawn (overlay flag bit 7) and split screen: no widget.
+        w.kind = WeaponEntryKind::Warning(crosshair_type::RELOAD, 1, 10);
+        w.hidden = true;
+        assert_eq!(weapon_widget(&w, Some(TagId(1)), TagId(2), TagId(3)), Err(Skip::Hidden));
+        w.hidden = false;
+        w.screen = SPLIT_SCREEN_ONLY;
+        assert_eq!(weapon_widget(&w, Some(TagId(1)), TagId(2), TagId(3)), Err(Skip::SplitScreen));
+    }
+
+    #[test]
+    fn the_zoom_level_readout_is_a_widget_per_level() {
+        // V: the sniper rifle's readout, `hud_reticles_scope` sequence 1 at
+        // (150, 104), flag bit 2 (zoomed only).
+        let mut z = entry(WeaponEntryKind::Crosshair(crosshair_type::ZOOM_LEVEL, 4));
+        z.anchor = Anchor::Centre;
+        z.offset = (150, 104);
+        z.sequence = 1;
+        assert_eq!(weapon_widget(&z, Some(TagId(1)), TagId(2), TagId(3)), Err(Skip::ZoomLevels));
+        for level in 0..ZOOM_LEVELS {
+            let w = zoom_widget(&z, level, Some(TagId(10 + level as u32)), TagId(3)).unwrap();
+            assert_eq!((w.bitmap, w.shader, w.sequence), (TagId(10 + level as u32), TagId(3), 1));
+            assert_eq!((w.anchor, w.offset, w.registration), (Anchor::Centre, (150, 104), [0.5, 0.5]));
+            assert_eq!(w.state, ZOOM_LEVEL_STATES[level]);
+        }
+        // Shown at its own level only: word A 0x80 at level 0, 0x100 at
+        // level 1, 0x40 unzoomed (the gate's show-then-hide on word A).
+        let a = |st: &[u8; 20], word: u16| {
+            let show = u16::from_le_bytes([st[0], st[1]]);
+            let hide = u16::from_le_bytes([st[8], st[9]]);
+            show & word != 0 && hide & word == 0
+        };
+        assert!(a(&ZOOM_LEVEL_STATES[0], 0x80) && !a(&ZOOM_LEVEL_STATES[0], 0x100 | 0x10));
+        assert!(a(&ZOOM_LEVEL_STATES[1], 0x100) && !a(&ZOOM_LEVEL_STATES[1], 0x80 | 0x10));
+        assert!(!a(&ZOOM_LEVEL_STATES[0], 0x40 | 0x10) && !a(&ZOOM_LEVEL_STATES[1], 0x40 | 0x10));
+        assert_eq!(zoom_widget(&z, 2, Some(TagId(1)), TagId(3)), Err(Skip::ZoomLevel(2)));
+        assert_eq!(zoom_widget(&z, 0, None, TagId(3)), Err(Skip::NothingDrawn));
+        // Without bit 2, or on a split screen: none.
+        z.kind = WeaponEntryKind::Crosshair(crosshair_type::ZOOM_LEVEL, 0);
+        assert_eq!(
+            zoom_widget(&z, 0, Some(TagId(1)), TagId(3)),
+            Err(Skip::CrosshairType(crosshair_type::ZOOM_LEVEL))
+        );
+        z.kind = WeaponEntryKind::Crosshair(crosshair_type::ZOOM_LEVEL, 4);
+        z.screen = SPLIT_SCREEN_ONLY;
+        assert_eq!(zoom_widget(&z, 0, Some(TagId(1)), TagId(3)), Err(Skip::SplitScreen));
+        // Not a zoom readout.
+        let aim = entry(WeaponEntryKind::Crosshair(crosshair_type::AIM, 1));
+        assert_eq!(zoom_widget(&aim, 0, Some(TagId(1)), TagId(3)), Err(Skip::NothingDrawn));
     }
 
     #[test]

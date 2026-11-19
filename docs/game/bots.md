@@ -316,6 +316,71 @@ The follower's own stall check (`nav::Follower`, a jump after 30 frames
 without getting closer to the waypoint, then a fresh path) still runs
 under this; the state machine is what escalates and blacklists.
 
+**Corners and doorways** (`nav::NavMesh::portal`, built). A path never
+aims at a wall corner itself: each portal end that is a corner of the
+mesh (a vertex on a side nobody walks across: a wall or a ledge) is
+pulled 0.3 world units in (`nav::CLEARANCE`), so a bot turns a body's
+width off the corner instead of catching its shoulder on it. A link
+the builder made between surfaces that do not share an edge (a doorway
+off a long wall) spans the near polygon's whole side; the portal is cut
+to the part the far polygon lies along, so the path goes through the
+door and not through the wall beside it. Nearing a corner (0.8) the
+follower bends toward the next leg, so a turn is a curve, not a stop
+and a pivot (never into a jump or a drop, which start at their edge).
+
+**Off the mesh** (`nav::NavMesh::nearest`, built). A start or goal no
+polygon is under (a bot on a crate or knocked off an edge, someone seen
+mid-jump) snaps to the nearest polygon within 3 world units whose floor
+is at most 0.6 over it or 3 under it: the bot walks (or jumps up) onto
+the mesh first, and a chase to someone seen in the air goes to the floor
+under them instead of giving up. A bot whose next waypoint's floor is
+more than 1.2 (plus its distance) over it has fallen below its path and
+plans again at once.
+
+**Moving in a fight** (`crates/bots/src/moves.rs`, built). The feet in a
+fight, apart from the aim:
+
+| | Easy | Normal | Heroic | Legendary |
+|---|---|---|---|---|
+| holds a strafe (ticks) | 40 to 80 | 20 to 50 | 12 to 35 | 8 to 26 |
+| a new strafe is standing still | 35% | 15% | 5% | never |
+| on a hit: reverses the strafe (juke) | never | 20% | 50% | 70% |
+| on a hit: jumps | never | 10% | 25% | 35% |
+| on a hit beyond 8: crouches a moment | never | never | 10% | 15% |
+| backs off inside its range | no | 0.6 | 0.85 | full |
+| backs off to cover | no (straight back) | yes | yes | yes |
+
+- A hit is a shield drop of more than 0.03 in a tick; one reaction at
+  most every 20 ticks, a jump at most every 45.
+- **Range**: closes in beyond the far end of its range and backs off
+  inside the near end. The range comes from `moves::preferred_range`,
+  today 2.5 to 8 for every weapon: the seam for the weapons decision to
+  give a shotgun a short range and a sniper a long one.
+- **Shields down or reloading**: backs away, reloading at half the pace
+  and never closing in. With cover allowed it looks (every 15 ticks) at
+  16 spots 1.5 and 3 away, walkable in a straight line, for one where the
+  enemy's eye cannot see its chest through the walls (`los::Walls`), and
+  goes to the nearest such, favouring ones away from the enemy; with none,
+  straight back.
+- **Footing**: every step is checked 0.5 and 1 ahead on the nav mesh:
+  no drop or rise over 0.5 (no strafing off a bridge) and no wall at
+  knee height. Blocked, it strafes the other way, else steps forward or
+  back, else stands.
+- **Stuck in a fight**: pushing a way for 15 ticks without moving 0.15
+  reverses the strafe and jumps.
+
+**Roaming** (`crates/bots/src/roam.rs`, built). With nobody to fight or
+chase, a bot goes to likely places: each candidate is scored, the best
+it can reach and has not been blacklisted wins.
+
+- a place it saw an enemy in the last 60 s (4.5, fading to 0.5);
+- a weapon lying in the world worth taking (1.5);
+- six polygons picked at random (0.5), so it still explores;
+- less 2.5 for a place within 5 it was at in the last 40 s (fading), and
+  2 for one under 4 away;
+- plus a random wobble: 8 on Easy (it wanders nearly at random), 2 on
+  Normal, 1 on Heroic, 0.4 on Legendary (it goes where the fight was).
+
 ### 3.3 Decision
 
 A utility layer runs about 5 times a second. It scores each action and
@@ -477,19 +542,68 @@ ones alike. A pickup is **useful** when it is a gun with something in it.
 A fault while reading weapons leaves the bot playing without the weapons
 layer (`Me::arms` is `None`); it never blinds it.
 
-**The decision** (`arms::plan`, pure, in order):
+**Handling.** What kind of gun a weapon is comes from fields of its
+`weap` tag other docs already traced; nothing new was traced for it
+(`arms::WeaponDef::profile`, `arms::Profile`):
 
-1. the held gun is dry (no rounds anywhere, or a battery under 2%):
+| Field | Where | Confidence | From |
+|---|---|---|---|
+| zoom levels | `D+0x1fe` (`i16`) | checked on Zanzibar's tags | `boot::touch_glue` (sniper and beam rifle 2; battle rifle, carbine, rocket launcher 1) |
+| aim assist reach | `D+0x20c` `cone_range`, `D+0x214` `pull_range` (`f32`, world units) | confirmed (engine) | [aim-assist.md](aim-assist.md) (`0x1a50a0`) |
+| triggers block | `D+0x2c8` count, `+0x2cc` pointer, `0x40` each; `+6` the behaviour (`u16`: 0 while held, 1/4/5 once per pull, 2/3 charge) | checked on Zanzibar's tags | `boot::touch_glue`; [halo1/objects.md](../halo1/objects.md). None on the energy sword |
+| rounds a second | barrel `+8` (`f32`, the most) | checked on Zanzibar's tags | `boot::touch_glue` |
+| projectiles per shot | barrel `+0x6a` (`i16`) | field order from data, value pattern on retail | [halo1/objects.md](../halo1/objects.md) |
+| projectile | barrel `+0x8c` (tag reference, datum at `+0x90`) | field order from data, value pattern on retail | [halo1/objects.md](../halo1/objects.md); the bot accepts it only when the entry's group is `proj` |
+| projectile speed | `proj+0x17c` (`f32`, world units a second) | confirmed (engine) | `live-telemetry` (`0xf8487`) |
+
+The first trigger and the first barrel speak for the weapon. A fault
+reading any of them leaves the gun weapon-blind (as before), not unread.
+The **role** (`arms::Role`) follows: two zoom levels a **sniper**; once
+per pull with a projectile under 100 a second a **blast** weapon (rocket
+launcher, fuel rod, brute shot); once per pull with 4 or more
+projectiles a **scatter** gun (shotgun); once per pull otherwise
+**precise** (magnum, battle rifle, carbine); held or charged **spray**
+(SMG, plasma rifle, needler, plasma pistol); no trigger but aim assist a
+**blade** (energy sword; the flag, ball and bomb are expected to have no
+aim assist, not checked). Each role has a band it is best at and a range
+it shoots to (world units):
+
+| Role | Band (`arms::preferred_range`) | Shoots from, to | Rating |
+|---|---|---|---|
+| unknown (not read) | 2.5 to 15 | 0 to 25 | 1 |
+| blade | 0 to 1.5 | (melee) | 4 |
+| scatter | 0 to 4 | 0 to 8 | 4 |
+| spray | 1.5 to 9 | 0 to 18 | 2 |
+| precise | 5 to 28 | 0 to 40 | 3 |
+| sniper | 12 to 60 | 0 to 80 | 5 |
+| blast | 5 to 25 | 2.5 to 35 | 5 |
+
+**The decision** (`arms::plan`, pure, in order). "By range" is Normal
+skill and up:
+
+1. a blade in hand: keep it; by range, with the enemy out of its reach
+   and a ready gun in the other hand, **switch**;
+2. the held gun is dry (no rounds anywhere, or a battery under 2%):
    - the other has something: **switch** (Y);
    - an enemy in view within 2.5 world units: **melee** (run in, B);
-   - a useful pickup within 30 world units, not blacklisted: **seek** it;
+   - a useful pickup within 30 world units, not blacklisted: **seek**
+     the best near one (each rating point counts as 3 units nearer);
    - an enemy in view: **melee**; else nothing;
-2. an empty magazine with a reserve: **reload** (X), in a fight or not;
-3. calm (no enemy in view for 1.5 s) and under 35% of a magazine with a
-   reserve: **reload**;
-4. calm, the held gun under 20% of all it can carry and the other one too
+3. an empty magazine with a reserve: **reload** (X), in a fight or not;
+   by range, with the other gun loaded and the enemy in its band,
+   **switch** instead (faster than a reload);
+4. by range: the enemy clearly outside the held gun's band (by more than
+   30% of it) and inside the other's: **switch**;
+5. **reload**: calm (no enemy in view for 1.5 s) and under 35% of a
+   magazine with a reserve; or a lull (no enemy in view for 0.5 s) and
+   under 60%; or the enemy beyond the gun's range and under 35%;
+6. no enemy in view, calm or a lull, and no power weapon (rating 4 and
+   up) carried: a power weapon within 25 it does not carry: **seek** it;
+   holding the better of two guns, **switch** first, so the one dropped
+   for it is the worse;
+7. calm, the held gun under 20% of all it can carry and the other one too
    (or none): **seek** a useful pickup within 12;
-5. otherwise nothing.
+8. otherwise nothing.
 
 Seeking walks there along the nav mesh. A weapon of a kind it already
 carries is walked over: the game moves its ammunition across by itself
@@ -2079,6 +2193,58 @@ list for the user to play (§11).
      bots_nav -- --ignored` builds every multiplayer map into a scratch
      directory, then finds them all up to date.
    - **Game run (the user):** see stage 3, which uses the same run.
+   **Built: movement boost** (2026-11-19, §3.2). The user's run: "bots
+   kinda suck, they get stuck ... give the ai a nice big boost". This is
+   the feet; weapons, targets and grenades are the fight lane's.
+   - **Corners and doorways** (`bots::nav`): paths keep 0.3 off wall
+     corners, a seam or step link's portal is cut to the polygon beyond
+     (no path through the wall beside a door), and the follower curves
+     into a turn. No mesh file changes: `cache::GENERATOR` stays 1.
+   - **Off the mesh**: a start or goal off the mesh snaps to the nearest
+     floor (3 across, 0.6 up, 3 down); a bot on a crate walks off it, a
+     chase to someone seen mid-jump goes on. A bot that falls below its
+     path plans again at once, not after the 2 s stall.
+   - **Fight footwork** (`bots::moves`): strafe rhythm by skill, jukes,
+     jumps and crouches when hit, range keeping, backing to cover with the
+     shields down, moving (not standing) while reloading, no strafing off
+     ledges or into walls, a jump and the other way when pinned.
+   - **Roaming** (`bots::roam`): to recent sightings and weapons, away
+     from where it has just been, not to random polygons.
+   - `mind.rs` holds two hooks only: the fight branch's movement calls
+     `Moves::fight`, and `roam_goal` asks `Roam::pick`.
+   - Tests (`cargo test -p bots --lib nav`, `moves`, `roam`, `mind`): the
+     L corridor turning off its corner; corners found (not inside a ring);
+     a doorway walked through, not around; a start and a goal off the mesh;
+     a start below a floor's edge jumping up; the follower's bend and not
+     into a jump; a fall below the path; the skills' styles in order;
+     Legendary changing direction more than Easy, Easy standing; range
+     kept, and the range given honoured; jukes and jumps when hit
+     (none on Easy); a crouch at range; never off a bridge; a wall turning
+     the strafe; cover behind a wall (Easy straight back); moving while
+     reloading; pinned, it flips and jumps; roaming to a fresh sighting,
+     forgetting an old one, Easy wandering; not back where it has been;
+     the memory bounded; and in the mind, roaming to where it last saw
+     someone, chasing someone seen in the air, and a fight on a bridge.
+   - **Game run (the user):** `h2 play` with Clankers (or `H2_BOTS=3`),
+     Slayer on Lockout, then Ivory Tower and Midship.
+     1. Doorways and corners: bots walk through doors and round corners
+        without scraping or stopping on the frame; none stands stuck on a
+        corner for more than a moment.
+     2. Fight a Legendary bot (`H2_BOTS_SKILL=legendary`): it strafes in
+        short, uneven bursts, jumps or reverses when you hit it, and with
+        its shields popped backs round a wall rather than straight back
+        in the open. An Easy bot strafes in long, even sweeps and sometimes
+        just stands.
+     3. On a bridge or ledge (Ivory Tower's, Midship's walkways) a bot in
+        a fight does not strafe off the edge.
+     4. Empty its magazine (or watch one reload): it keeps moving, backing
+        off, while it reloads.
+     5. Hide after a fight: the bots come back to where they saw you, and
+        between fights they visit weapon spawns and do not pace one room.
+     6. Knock a bot off a ledge or let one stand on a crate: it finds the
+        floor and goes on.
+     7. Note any spot where a bot still gets stuck for good (map, roughly
+        where) and send the `bots:` lines.
 3. **Combat.** Built: `bots::mind` (`Mind`, the `H2_BOTS` brain).
    - **Seeing.** An enemy is seen when it is inside 65 degrees of the
      aim, or within 3 units anywhere, and the walls leave a clear line from
@@ -2899,6 +3065,87 @@ list for the user to play (§11).
      5. The same in a System Link custom game.
      6. Send the `bots:` lines if a bot stays in the list, the lobby
         shows an error, or the human's own player leaves.
+   **Built: combat boost** (2026-11-19). The user, after playing the
+   bots: "bots kinda suck, ... don't know when they have no ammo ...
+   give the ai a nice big boost". This slice is the fighting decisions
+   (`bots::arms`, the new `bots::tactics`, small hooks in `bots::mind`);
+   the movement (getting stuck, strafing, cover) is another lane's.
+   - **The weapon is known** (§3.6, "Handling"): role, band, the range
+     it shoots to, its trigger, its rate and its projectile's speed.
+   - **The trigger.** A once-per-pull weapon (magnum, battle rifle,
+     carbine, shotgun, sniper, rockets, the plasma pistol's quick
+     shots) fired one shot and then held the trigger for nothing: now it
+     is pulled for 2 ticks and let go, every `30 / rate` ticks (at least
+     4; 8 when the rate is unknown) plus the skill's pace (Easy 12,
+     Normal 6, Heroic 3, Legendary 1 tick). Automatics keep the skill's
+     bursts. A blade never pulls; it swings (B) within 1.5.
+   - **No dry fire.** The trigger stays up with an empty magazine or a
+     dead battery; it reloads or switches instead. It fires only in the
+     weapon's range: a shotgun no further than 8, rockets never nearer
+     than 2.5.
+   - **Weapon choice** (Normal and up): switches to the gun that suits
+     the distance; draws the other gun rather than reload in a fight;
+     puts rockets away close up and the sword away for a far enemy;
+     reloads in a lull or when the enemy is out of reach; goes for a
+     power weapon (sniper, rockets, shotgun, sword) within 25 when out of
+     a fight, dropping the worse gun for it; dry, goes for the best
+     nearby gun, not merely the nearest.
+   - **Targets** (`tactics::choose`): the nearest and most in front
+     (distance plus 4 per radian off the aim), sticking with the one it
+     has (its cost times 0.6), so a close threat takes over from a far
+     target but two at about the same range do not flip-flop. An enemy
+     back in view within 1.5 s of being seen needs no new reaction (it
+     no longer froze each time someone strafed past a pillar); a new one
+     in the middle of a fight takes half the reaction.
+   - **Aim.** Lead uses the held weapon's projectile speed (400 a second
+     for a bullet) in place of 90 for every gun, so bullets are no longer
+     led four times too far. Heroic and Legendary aim at the head with a
+     precise weapon or a sniper rifle, and at the feet with a blast
+     weapon; Easy and Normal at the chest.
+   - **Grenades** (Normal and up): none at a target with a teammate
+     within 3 of it.
+   - **Pre-aim** (Normal and up): chasing, it looks where the enemy went
+     out of view (within 15, and not more than 100 degrees off the way it
+     walks), not where its feet go.
+   - **Signals for the movement** (`Mind::fight`): `fight.band`, the
+     range to keep the target at (the held gun's band; arm's length with
+     nothing to shoot), also `arms::preferred_range(&arms)`; and
+     `fight.wants_cover`: shields down, or reloading or switching with
+     the enemy within the band.
+   - Tests: `-p bots --lib arms` (`roles_come_from_the_handling`,
+     `the_preferred_range_is_the_held_guns_band`,
+     `by_range_it_switches_to_the_gun_that_suits_the_distance`,
+     `rockets_are_put_away_close_up`,
+     `an_empty_magazine_in_a_fight_switches_when_that_is_faster`,
+     `a_lull_reloads_a_half_empty_magazine`,
+     `an_enemy_out_of_reach_is_time_to_reload`,
+     `a_power_weapon_nearby_is_taken_and_the_worse_gun_dropped`,
+     `dry_it_goes_for_the_better_gun_a_little_further_off`,
+     `a_blade_is_kept_close_up_and_put_away_for_a_far_enemy`,
+     `the_handling_reads_from_the_weapon_and_projectile_tags`), `-p bots
+     --lib tactics`, `-p bots --lib mind::fight_tests`; the rest of
+     `-p bots --lib mind` unchanged.
+   - **Not traced, wanted next:** who is shooting the bot (the shots
+     hook `0x104150` to Perception), the targets' shields, a projectile's
+     gravity for lobbed weapons, the energy sword's lunge range from its
+     tag, and the flag, ball and bomb tags' aim assist (assumed none).
+   - **Game run (the user):** `H2_BOTS_SKILL=heroic`, Slayer on
+     Lockout and on a map with a sniper rifle and rockets.
+     1. A bot with a battle rifle or magnum fires steadily (bursts at
+        its rate), not one shot and then nothing.
+     2. A bot never clicks an empty gun: it reloads behind cover or
+        draws its other gun; it does not stand reloading in your face
+        when its other gun is loaded.
+     3. At range it uses its battle rifle, close up its SMG or shotgun;
+        it does not fire rockets at its feet.
+     4. Out of a fight, a bot near the sniper rifle or rockets goes and
+        takes them.
+     5. Strafe in and out of a bot's view behind a pillar: it keeps
+        turning to you without a pause each time.
+     6. In a team game a bot does not throw a grenade where its
+        teammate stands.
+     7. Easy still sprays and misses; Legendary is sharp but still has
+        its reaction time.
 8. **Clankermatch.** First slice built (§8.3, §8.4; run checklist §8.5).
    - Built: the Live menu row (row 2; the rest moved down), the playlist
      filter at `0x00192db0`, the clanker hoppers in the default set and

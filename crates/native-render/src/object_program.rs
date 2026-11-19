@@ -123,6 +123,7 @@ pub fn object_pass(
     imp: &ResolvedImplementation,
     microcode: &[u8],
     provided: u16,
+    fetch: [shaders::vsh::InputFetch; 16],
     lightmap: bool,
 ) -> Result<ObjectPass, String> {
     let state = object_pass_state(imp)?;
@@ -130,7 +131,7 @@ pub fn object_pass(
     if !lightmap && look.textures.contains(&crate::look::Stage::Lightmap) {
         return Err("a stage samples the lightmap, and the object's (the globals' default) is not uniform or does not load".into());
     }
-    let mut program = compile_object_stages(&look, EngineBound { normalization, texaccum }, microcode, state.alpha_test, provided)?;
+    let mut program = compile_object_stages(&look, EngineBound { normalization, texaccum }, microcode, state.alpha_test, provided, fetch)?;
     program.state = Some(state);
     Ok(ObjectPass { program, implementation: imp.clone(), normalization, texaccum })
 }
@@ -260,7 +261,7 @@ pub fn compile_object(
     alpha_test: Option<(wgpu::CompareFunction, u8)>,
     provided_inputs: u16,
 ) -> Result<MaterialProgram, String> {
-    compile_object_stages(look, EngineBound::default(), microcode, alpha_test, provided_inputs)
+    compile_object_stages(look, EngineBound::default(), microcode, alpha_test, provided_inputs, [shaders::vsh::InputFetch::Float; 16])
 }
 
 /// [`compile_object`] with the stages the host binds an engine texture at
@@ -271,6 +272,7 @@ pub fn compile_object_stages(
     microcode: &[u8],
     alpha_test: Option<(wgpu::CompareFunction, u8)>,
     provided_inputs: u16,
+    input_fetch: [shaders::vsh::InputFetch; 16],
 ) -> Result<MaterialProgram, String> {
     let program = vsh::Program::parse(microcode).map_err(|e| format!("vertex program: {e:?}"))?;
     for i in &program.instructions {
@@ -304,7 +306,7 @@ pub fn compile_object_stages(
         vertex_defaults: &look.vertex_defaults,
         alpha_test,
         provided_inputs,
-        input_fetch: [shaders::vsh::InputFetch::Float; 16],
+        input_fetch,
         w_buffer: true,
     })?;
     let mut vertex = t.vertex;
@@ -521,7 +523,7 @@ pub(crate) mod tests {
         assert_eq!(bound.texaccum, [false, false, true, false]);
         assert_eq!(bound.normalization, [false; 4]);
         assert_eq!(look.textures[2], Stage::Empty, "bound by the host");
-        let p = compile_object_stages(&look, bound, &rigid_program(), None, WORLD).unwrap();
+        let p = compile_object_stages(&look, bound, &rigid_program(), None, WORLD, [shaders::vsh::InputFetch::Float; 16]).unwrap();
         assert_eq!(p.dims[2], Some(shaders::psh::TextureDim::D2));
         let mut u = p.vertex.clone();
         texaccum_dimensions(&mut u, &imp, bound.texaccum, (640, 480));

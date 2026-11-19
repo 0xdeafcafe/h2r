@@ -239,6 +239,37 @@ pub struct StreamData<'a> {
     pub stride: usize,
 }
 
+/// Bytes a register's slot holds in [`gather`]: the widest attribute
+/// (`FLOAT4`), and room for the four-wide read of a three-wide one.
+pub const SLOT: usize = 16;
+
+/// The declaration's registers for `count` vertices as the guest stores
+/// them: per vertex, per element in `declaration`'s order, the element's
+/// bytes at the start of a zeroed [`SLOT`]. The vertex unit converts them
+/// as the D3D path's fetch does (`object_program_gpu::vertex_fetch`), not
+/// the CPU: a depth-equal pass must reproduce, bit for bit, the depth an
+/// earlier D3D pass wrote with the same program. An error when an
+/// element's stream is missing or too short.
+pub fn gather(declaration: &[Element], streams: &[Option<StreamData<'_>>], count: usize) -> Result<Vec<[u8; SLOT]>, String> {
+    let mut out = Vec::with_capacity(count * declaration.len());
+    for v in 0..count {
+        for e in declaration {
+            let s = streams
+                .get(e.stream)
+                .copied()
+                .flatten()
+                .ok_or_else(|| format!("v{} reads stream {}, which has no data", e.register, e.stream))?;
+            let at = v * s.stride + e.offset;
+            let size = e.format.size();
+            let bytes = s.bytes.get(at..at + size).ok_or_else(|| format!("v{} reads past stream {} at vertex {v}", e.register, e.stream))?;
+            let mut slot = [0u8; SLOT];
+            slot[..size].copy_from_slice(bytes);
+            out.push(slot);
+        }
+    }
+    Ok(out)
+}
+
 /// The declaration's registers for `count` vertices as float4s, vertex
 /// after vertex, each vertex its elements in `declaration`'s order. An
 /// error when an element's stream is missing or too short.
@@ -389,6 +420,14 @@ mod tests {
         assert_eq!(v, vec![[1.0, 2.0, 0.0, 1.0], [1.0, 0.0, 0.0, 1.0], [3.0, 4.0, 0.0, 1.0], [0.0, 0.0, 0.0, 1.0]]);
         assert!(expand(&d, &streams, 3).unwrap_err().contains("past stream 0"));
         assert!(expand(&d, &[streams[0], None], 1).unwrap_err().contains("no data"));
+        // Gathered: the same bytes, each in its slot, decoding as expanded.
+        let g = gather(&d, &streams, 2).unwrap();
+        assert_eq!(g[0][..4], [1, 0, 2, 0]);
+        assert_eq!(g[0][4..], [0; 12]);
+        assert_eq!(g[1][..2], [255, 0], "the PByte and the slot's zeros");
+        let decoded: Vec<[f32; 4]> = g.iter().zip(d.iter().cycle()).map(|(s, e)| e.format.decode(s)).collect();
+        assert_eq!(decoded, v);
+        assert!(gather(&d, &streams, 3).unwrap_err().contains("past stream 0"));
     }
 
     #[test]
