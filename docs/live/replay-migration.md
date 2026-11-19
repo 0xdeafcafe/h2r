@@ -12,7 +12,7 @@ Run the local dry run first.
 h2 live frames migrate --dry-run --server http://127.0.0.1:8074
 ```
 
-Then measure the production store. The expected object counts and sizes for that deployment come from this command. It prints each game's decoded frame count and source and compressed segment byte totals, followed by counts of original chunk objects, legacy frame rows, and output segments. Index objects and backup copies have their own storage overhead. Both dry runs construct and verify in memory. They write a local progress file.
+Then measure the production store. The expected object counts and sizes for that deployment come from this command. It prints each game's decoded frame count and source, compressed segment and immutable index byte totals, followed by counts of original chunk objects, legacy frame rows, and output segments. Source bytes count the stored H2CK blobs, decoded base64 record bytes, and serialized JSON frame payloads. Backup copies and the surrounding event-log rows have additional storage overhead. Both dry runs construct and verify in memory. They write a local progress file.
 
 ```sh
 h2 live frames migrate --dry-run --server https://live.forbes.red --as "${H2_LIVE_ADMIN:?set the local admin gamertag}"
@@ -58,4 +58,4 @@ Publication records both the archive index SHA-256 and backup index SHA-256. The
 h2 live frames rollback "${GAME_ID:?set the game ID}" --archive-sha256 "${ARCHIVE_SHA256:?set the archive digest}" --backup-sha256 "${BACKUP_SHA256:?set the backup digest}" --server https://live.forbes.red --as "${H2_LIVE_ADMIN:?set the local admin gamertag}"
 ```
 
-For local rollback use the local server URL and the operator's `--data` directory. Keep the backup prefix available after rollback. Runtime decoder retirement and backup lifecycle changes are separate rollout steps gated on the operator's production verification.
+For local rollback use the local server URL and the operator's `--data` directory. Keep the backup prefix available after rollback. Runtime decoder retirement and backup lifecycle changes are separate rollout steps gated on the operator's production verification. At that gate, the planned ingest policy is to reject v1–v6 with an upgrade-required message and accept v7 from reinstalled clients.

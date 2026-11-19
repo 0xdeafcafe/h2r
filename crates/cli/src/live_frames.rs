@@ -45,6 +45,8 @@ struct Totals {
     frames: u64,
     source_bytes: u64,
     archive_bytes: u64,
+    #[serde(default)]
+    index_bytes: u64,
     segments: u64,
 }
 impl Totals {
@@ -60,6 +62,7 @@ impl Totals {
         field!(frames);
         field!(source_bytes);
         field!(archive_bytes);
+        field!(index_bytes);
         field!(segments);
         Ok(())
     }
@@ -85,11 +88,7 @@ struct Reply {
     done: bool,
     next: Option<String>,
     source_position: u64,
-    source_bytes: u64,
-    archive_bytes: u64,
-    frames: u64,
-    segment: Option<serde_json::Value>,
-    totals: Option<Totals>,
+    totals: Totals,
     archive_sha256: Option<String>,
     backup_sha256: Option<String>,
 }
@@ -194,29 +193,17 @@ impl Checkpoint {
                 "missing verified archive or backup"
             );
         }
-        if let Some(totals) = response.totals {
-            job.totals = totals;
-        } else {
-            ensure!(
-                self.mode == Mode::DryRun,
-                "server omitted cumulative counts"
-            );
-            job.totals.add(&Totals {
-                frames: response.frames,
-                source_bytes: response.source_bytes,
-                archive_bytes: response.archive_bytes,
-                segments: response.segment.is_some() as u64,
-            })?;
-        }
+        job.totals = response.totals;
         job.cursor = response.next;
         if response.done {
             self.totals.add(&job.totals)?;
             println!(
-                "{}  {} frames  {} -> {} B  archive={}  backup={}",
+                "{}  {} frames  {} -> {} segment B + {} index B  archive={}  backup={}",
                 job.game.game_id,
                 job.totals.frames,
                 job.totals.source_bytes,
                 job.totals.archive_bytes,
+                job.totals.index_bytes,
                 response.archive_sha256.as_deref().unwrap_or("-"),
                 response.backup_sha256.as_deref().unwrap_or("-")
             );
@@ -404,7 +391,7 @@ pub(crate) fn migrate(mut args: Args) -> Result<()> {
         save(&path, &state)?;
     }
     println!(
-        "{} games complete, {} skipped, {} failed; {} chunk objects, {} legacy rows; {} segments, {} frames, {} -> {} bytes",
+        "{} games complete, {} skipped, {} failed; {} chunk objects, {} legacy rows; {} segments, {} frames, {} source bytes -> {} segment + {} index bytes",
         state.migrated,
         state.skipped,
         state.failed.len(),
@@ -413,7 +400,8 @@ pub(crate) fn migrate(mut args: Args) -> Result<()> {
         state.totals.segments,
         state.totals.frames,
         state.totals.source_bytes,
-        state.totals.archive_bytes
+        state.totals.archive_bytes,
+        state.totals.index_bytes
     );
     if mode == Mode::Verify {
         println!(
@@ -479,16 +467,13 @@ mod tests {
             done,
             next: (!done).then(|| "opaque".into()),
             source_position: 12,
-            source_bytes: 70,
-            archive_bytes: 20,
-            frames: 4,
-            segment: Some(serde_json::json!(0)),
-            totals: Some(Totals {
+            totals: Totals {
+                index_bytes: if done { 14 } else { 7 },
                 source_bytes: if done { 140 } else { 70 },
                 archive_bytes: if done { 40 } else { 20 },
                 frames: if done { 8 } else { 4 },
                 segments: if done { 2 } else { 1 },
-            }),
+            },
             archive_sha256: Some("a".repeat(64)),
             backup_sha256: Some("b".repeat(64)),
         }
@@ -522,17 +507,17 @@ mod tests {
         assert_eq!(s.totals.frames, 0);
     }
     #[test]
-    fn dry_run_accumulates_per_step_and_verify_visits_published() {
+    fn dry_run_uses_verified_cumulative_totals_and_verify_visits_published() {
         let mut s = state(Mode::DryRun);
         for done in [false, true] {
             let mut r = reply(done);
-            r.totals = None;
             r.archive_sha256 = None;
             r.backup_sha256 = None;
             s.accept(r).unwrap();
         }
         assert_eq!(s.totals.frames, 8);
         assert_eq!(s.totals.segments, 2);
+        assert_eq!(s.totals.index_bytes, 14);
         let v = state(Mode::Verify);
         assert!(v.pending.iter().any(|j| j.game.state == "published"));
         assert_eq!(v.pending.len(), 1);
