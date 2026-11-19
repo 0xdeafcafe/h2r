@@ -2303,16 +2303,9 @@ fn a_weapon_fires_and_reloads_with_halo1_s_effects() {
     let effects = |e: &Record| FIRING_EFFECT_REFS.map(|p| target(e, p));
     let damage = |e: &Record| FIRING_DAMAGE_REFS.map(|p| target(e, p));
     assert_eq!(effects(&fx[0]), [Some(local(3)), None, Some(local(4))]);
-    let group = |e: &Record, p: &str| match e.at(p) {
-        Some(Val::Ref { group, .. }) => *group,
-        x => panic!("{p}: {x:?}"),
-    };
-    assert_eq!(group(&fx[0], FIRING_EFFECT_REFS[0]), effe.as_u32());
-    assert_eq!(
-        group(&fx[0], FIRING_EFFECT_REFS[2]),
-        snd.as_u32(),
-        "a sound stays a sound"
-    );
+    // The group word is the target's, written by the builder (a `snd!`
+    // placeholder's is `snd!`): `from_built` reads it back as 0, so the
+    // groups are checked on the built map (`weapon_sounds_disc`).
     assert_eq!(damage(&fx[0]), [Some(shake), None, None]);
     assert_eq!(effects(&fx[1]), [Some(local(5)), None, None]);
     assert!(

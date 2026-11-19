@@ -45,6 +45,11 @@ pub enum Error {
         /// Exclusive upper bound.
         limit: u64,
     },
+    /// A built map's tag memory (its index, BSP region and metadata,
+    /// header `+0x1c`) is over the engine's for its cache type; says by how
+    /// much and which tag groups take the most.
+    #[error("metadata exceeds the engine's tag memory for this cache type: {0}")]
+    TagMemory(String),
     /// An allocation or configured table-size limit was exceeded.
     #[error("map allocation exceeds supported limits")]
     Limit,

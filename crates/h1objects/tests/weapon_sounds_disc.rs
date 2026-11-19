@@ -249,16 +249,14 @@ fn every_weapon_fires_its_halo1_sounds() {
         let mopp = structure_mopp(&p.collision).unwrap();
         let fresh = p.build_fresh(&mut base, &mopp).unwrap();
         // The tag memory the map takes, against the engine's (the build
-        // refuses a map over it), and the pinned map it was read from.
+        // refuses a map over it, saying which groups take the most).
         let word = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
         let budget = map::writer::max_metadata_size(map::CacheType::Multiplayer).unwrap();
         let memory = word(&fresh.bytes, 0x1c);
         println!(
-            "{name}: metadata {:#x}, tag memory {memory:#x} of {budget:#x} ({:#x} free); pinned map read from: metadata {:#x}, tag memory {:#x}",
+            "{name}: metadata {:#x}, tag memory {memory:#x} of {budget:#x} ({:#x} free)",
             word(&fresh.bytes, 0x18),
             budget.saturating_sub(memory),
-            fresh.report.assembled.0,
-            fresh.report.assembled.1,
         );
         assert!(memory <= budget, "{name}: over the engine's tag memory");
         let built = Map::from_reader(Cursor::new(fresh.bytes.clone())).unwrap();
@@ -543,4 +541,108 @@ fn retail_animation_sound_events() {
         "{graphs} graphs with {events} sound events; {zero} with an empty word; words {words:?}"
     );
     assert!(events > 0);
+}
+
+/// What the weapons' Halo 1 effects and sounds add to a map's metadata,
+/// measured: on each map in `$H1_MAPS` (default Blood Gulch), every Halo 1
+/// weapon's firing, misfire and empty effects, magazine effects, own
+/// effect and sound slots (`WEAPON_EFFECTS`) and first-person animation
+/// sounds, converted alone (a fresh `Converter`, so nothing else the map
+/// converts is counted), as tags and tree bytes per group, the largest
+/// tags, and the sounds' `snd!` and gestalt rows (permutations `0x10`,
+/// pitch ranges `0xc`, chunks `0xc`, parameters `0xa`). Before converter
+/// version 84 none of this was in the map (the counterparts' were, from
+/// the base). Prints only.
+#[test]
+#[ignore = "reads the Halo 1 and Halo 2 discs ($H1_ISO, $H2_DISC)"]
+fn weapon_effects_metadata() {
+    use h1objects::convert::{Converter, ObjectReport};
+    let maps = std::env::var("H1_MAPS").unwrap_or_else(|_| "bloodgulch".into());
+    for name in maps.split(',') {
+        let (_, _, base_name) = h1convert::convert::MAPS
+            .iter()
+            .find(|m| m.0 == name)
+            .unwrap_or_else(|| panic!("{name}: not a multiplayer map"));
+        let Some(h1) = h1_map(name) else {
+            println!("{name}: not on the disc");
+            continue;
+        };
+        let mut base = h2_map(base_name);
+        let templates = Base::read(&mut base).unwrap();
+        let mut c = Converter::new(&h1, &templates);
+        let mut rep = ObjectReport::default();
+        let (mut effects, mut sounds) = (BTreeSet::new(), BTreeSet::new());
+        for t in h1.tags() {
+            if t.group != Group::new(b"weap") {
+                continue;
+            }
+            let w = h1::Weapon::read(&h1, t).unwrap();
+            let bytes = h1objects::arsenal::weapon_bytes(&h1, t).unwrap();
+            let mut ids: Vec<Option<h1map::TagId>> = Vec::new();
+            for tr in &w.triggers {
+                for f in &tr.firing_effects {
+                    ids.extend(f.effects);
+                }
+            }
+            for m in &w.magazines {
+                ids.extend([m.reloading_effect, m.chambering_effect]);
+            }
+            for (_, at) in WEAPON_EFFECTS {
+                ids.push(h1::reference(&h1, &bytes, *at));
+            }
+            if let Some(a) = w.first_person_animations {
+                let s = h1models::sounds::read(&h1, h1.tag(a).unwrap()).unwrap();
+                ids.extend(s.refs);
+            }
+            for id in ids.into_iter().flatten() {
+                let tag = h1.tag(id).unwrap();
+                if tag.group == Group::new(b"snd!") {
+                    c.sound(tag, &mut rep);
+                    sounds.insert(tag.name.clone());
+                } else if tag.group == Group::new(b"effe") {
+                    if let Err(e) = c.effect(tag) {
+                        println!("{name} {}: {e}", tag.name);
+                    }
+                    effects.insert(tag.name.clone());
+                }
+            }
+        }
+        let mut groups: std::collections::BTreeMap<String, (usize, u64)> = Default::default();
+        let mut sizes = Vec::new();
+        for (n, t) in &c.tree.tags {
+            let len = t.root.tree_len();
+            let g = groups.entry(t.group.to_string()).or_default();
+            g.0 += 1;
+            g.1 += len;
+            sizes.push((len, t.group.to_string(), n.clone()));
+        }
+        let (mut rows, mut perms, mut chunks) = (0u64, 0usize, 0usize);
+        for (_, s) in &c.tree.sounds {
+            rows += 0x14 + 0x38 + 0x14;
+            for r in &s.ranges {
+                rows += 0xc + 0xa;
+                perms += r.permutations.len();
+                chunks += r.permutations.iter().map(|p| p.chunks.len()).sum::<usize>();
+            }
+        }
+        rows += 0x10 * perms as u64 + 0xc * chunks as u64;
+        let tags_total: u64 = groups.values().map(|g| g.1).sum();
+        println!(
+            "{name}: {} Halo 1 weapon effects and {} sounds named; adds {} tags, {tags_total:#x} bytes, and {} sounds ({perms} permutations, {chunks} chunks), about {rows:#x} bytes of snd! and gestalt rows; {:#x} in all (padding not counted)",
+            effects.len(),
+            sounds.len(),
+            c.tree.tags.len(),
+            c.tree.sounds.len(),
+            tags_total + rows,
+        );
+        let mut by: Vec<_> = groups.into_iter().collect();
+        by.sort_by(|a, b| b.1.1.cmp(&a.1.1));
+        for (g, (n, b)) in by {
+            println!("  {g}: {n} tags, {b:#x} bytes");
+        }
+        sizes.sort_by(|a, b| b.0.cmp(&a.0));
+        for (len, g, n) in sizes.iter().take(15) {
+            println!("  {len:#7x} {g} {n}");
+        }
+    }
 }

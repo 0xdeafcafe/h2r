@@ -1566,9 +1566,13 @@ impl<'a> Builder<'a> {
         });
         let bound = u64::from(max_metadata_size(set.cache_type)?).max(source);
         if set.check_tag_memory && u64::from(memory_size) > bound {
-            return Err(Error::Invalid(
-                "metadata exceeds the engine's tag memory for this cache type",
-            ));
+            return Err(Error::TagMemory(tag_memory_report(
+                set,
+                &tag_layout,
+                memory_size,
+                metadata_size,
+                bound,
+            )));
         }
 
         // String-ID tables: fixed 128-byte slots, offsets, blob.
@@ -1782,4 +1786,55 @@ impl<'a> Builder<'a> {
             .filter_map(|s| s.tag.as_ref().map(|t| (t.id, t.group)))
             .collect()
     }
+}
+
+/// Why a map is over its tag memory: the numbers (used, bound, the
+/// metadata's share) and the groups taking the most metadata, each as
+/// tags and bytes, built and pinned apart.
+fn tag_memory_report(
+    set: &TagSet,
+    layout: &[(u32, u32)],
+    memory_size: u32,
+    metadata_size: u32,
+    bound: u64,
+) -> String {
+    let mut groups: HashMap<FourCC, [u64; 4]> = HashMap::new();
+    for (slot, &(_, size)) in set.slots.iter().zip(layout) {
+        let Some(t) = &slot.tag else { continue };
+        let g = groups.entry(t.group).or_default();
+        let k = if matches!(t.payload, TagPayload::Pinned { .. }) {
+            2
+        } else {
+            0
+        };
+        g[k] += 1;
+        g[k + 1] += u64::from(size);
+    }
+    let mut v: Vec<_> = groups.into_iter().collect();
+    v.sort_by(|a, b| {
+        (b.1[1] + b.1[3])
+            .cmp(&(a.1[1] + a.1[3]))
+            .then(a.0.as_u32().cmp(&b.0.as_u32()))
+    });
+    let (built, pinned) = v.iter().fold((0, 0), |a, (_, g)| (a.0 + g[1], a.1 + g[3]));
+    let top: Vec<String> = v
+        .iter()
+        .take(12)
+        .map(|(g, n)| {
+            format!(
+                "{g} {:#x} ({} built {:#x}, {} pinned {:#x})",
+                n[1] + n[3],
+                n[0],
+                n[1],
+                n[2],
+                n[3]
+            )
+        })
+        .collect();
+    format!(
+        "{memory_size:#x} used of {bound:#x} ({:#x} over); metadata {metadata_size:#x} (built {built:#x}, pinned {pinned:#x}), index and BSP region {:#x}; most: {}",
+        u64::from(memory_size) - bound,
+        memory_size - metadata_size,
+        top.join(", ")
+    )
 }

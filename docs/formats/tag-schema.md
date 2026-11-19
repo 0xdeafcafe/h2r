@@ -358,12 +358,6 @@ conversion:
 
 1. Run the pinned pipeline (`Prepared::assemble`): the base map with the
    converted structure, objects and sky added, as a `TagSet` and its bytes.
-   It is not held to the engine's tag memory (`check_tag_memory` off):
-   it keeps every base tag, reached or not, with the conversion's after
-   them, and is never written. The fresh map built from it is held to it.
-   `FreshReport::assembled` has its metadata size and tag memory. (The
-   pinned map that `Prepared::build` writes is held to it, so it can
-   refuse a level the fresh build fits.)
 2. Copy that set's index (groups, slots, datums, string table, globals,
    scenario, BSP sections) into a new set with no `PinnedImage`. Datums
    and string IDs keep their values, so nothing needs remapping. The base

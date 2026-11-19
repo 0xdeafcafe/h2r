@@ -79,11 +79,6 @@ pub struct FreshReport {
     /// set is written instead).
     pub scratch: Option<crate::scratch::ScratchReport>,
     pub scratch_failed: Option<String>,
-    /// The pinned map the fresh one is read from: its header's metadata
-    /// size and tag memory (`+0x18`, `+0x1c`). It holds every base tag,
-    /// reached or not, so it may be over the engine's tag memory; it is
-    /// never written, and the fresh map is checked instead.
-    pub assembled: (u32, u32),
 }
 
 /// A fresh map.
@@ -105,15 +100,7 @@ pub struct Fresh {
 impl Prepared {
     /// The converted map with nothing pinned (see the module docs).
     pub fn build_fresh<R: Read + Seek>(&self, base: &mut Map<R>, mopp: &[u8]) -> Result<Fresh> {
-        // Not held to the tag memory: the base's unreached tags are still
-        // in it (`check_tag_memory`); the fresh map built below is.
-        let (pinned, bytes, section) = self.assemble(base, mopp, false)?;
-        let word = |at: usize| {
-            bytes
-                .get(at..at + 4)
-                .map_or(0, |w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]))
-        };
-        let assembled = (word(0x18), word(0x1c));
+        let (pinned, bytes, section) = self.assemble(base, mopp)?;
         let mut src = Map::from_reader(Cursor::new(&bytes[..]))?;
         let mut fresh = unpinned_copy(&pinned);
         // The pinned map keeps the base's file prefix, so the base's own
@@ -128,7 +115,6 @@ impl Prepared {
             }
         }
         let mut report = unpin_all(&pinned, &mut src, &mut fresh, &[section], &bounds, false)?;
-        report.assembled = assembled;
         if let Some(scenery) = &self.scenery {
             put_scenery(&mut fresh, scenery)?;
         }
