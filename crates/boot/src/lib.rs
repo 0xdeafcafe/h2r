@@ -62,6 +62,7 @@ pub mod mods_screen;
 pub mod movies_glue;
 pub mod native_gels_glue;
 mod native_gels_load;
+mod native_gels_replace;
 pub mod native_lights_glue;
 pub mod native_objects_glue;
 pub mod native_post_glue;

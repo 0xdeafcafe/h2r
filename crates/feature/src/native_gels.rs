@@ -1,6 +1,6 @@
 //! Shader-gel production at its original template/quad sites. Off by
-//! default. Guest setup and geometry always execute in the first slice;
-//! the host produces a separate native target for comparison/consumers.
+//! default. Guest setup and geometry assembly execute; draw admission
+//! transactionally replaces only complete target-13 packets.
 
 use crate::{BuildError, Builder, Feature, Flow, Manifest};
 use engine::{memory::GuestMemory, points};
