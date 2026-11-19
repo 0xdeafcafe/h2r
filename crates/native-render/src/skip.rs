@@ -244,6 +244,7 @@ mod tests {
         // Two BSP items of one shader, cluster 37's parts 4 and 5: only
         // part 4 is native (part 5's material is left to D3D).
         let mut m = scene();
+        m.w(RENDER_RECORDS + 0x20 * 2, 0);
         m.w(RENDER_RECORDS + 0x20 * 2 + 0xc, 0x7ff << 18 | 37 << 9);
         m.w(ITEMS + 0xc, 2 << 8 | 4);
         let second = ITEMS + ITEM_SIZE * 2;
