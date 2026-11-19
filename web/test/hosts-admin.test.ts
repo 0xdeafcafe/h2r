@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { fetchHosts, formatHostCost, formatHostUptime, hostEndReason, hostStateBadge, stopHost, type HostsAdmin } from "../src/admin/hosts";
-import { dedicatedHostLabel, type HostState } from "../src/lib/hosts";
+import { dedicatedHostLabel, type AdminHosts, type EndedHost, type HostState, type RunningHost } from "../src/lib/hosts";
 import { parseJws } from "../src/state/verify";
 
 const CTX: HostsAdmin = {
@@ -66,10 +66,10 @@ describe("hosts inventory", () => {
   });
 
   test("loads active and ended rows with their metered costs", async () => {
-    const lease = { id: "hl-a", provider: "fly", region: "lhr", class: "small", max_players: 8 };
-    const running = { lease, state: "playing", players: 4, uptime_ms: 42000, cost_usd: 0.001 };
-    const recent = { lease: { ...lease, id: "hl-b" }, state: "ended", reason: "match_over", cost_usd: 0.06 };
-    const data = { running: [running], recent: [recent], month_to_date_usd: 0.061, budget_usd: 5 };
+    const lease = { id: "hl-a", provider: "fly", region: "lhr", class: "small", max_players: 8 } as const;
+    const running: RunningHost = { lease, state: "playing", players: 4, uptime_ms: 42000, cost_usd: 0.001 };
+    const recent: EndedHost = { lease: { ...lease, id: "hl-b" }, state: "ended", reason: "match_over", cost_usd: 0.06 };
+    const data: AdminHosts = { running: [running], recent: [recent], month_to_date_usd: 0.061, budget_usd: 5 };
     const read = recorder(Response.json(data));
     expect(await fetchHosts(CTX, read.fetchFn)).toEqual(data);
   });
