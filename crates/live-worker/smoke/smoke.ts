@@ -40,6 +40,8 @@
 //      refused; the round trip of a datagram, and datagrams a second at
 //      co-op's rate (30 a second each way, for longer than a ticket lasts,
 //      so it is renewed) and near the relay's limit.
+//  13. OptiMatch QoS queue: four clients submit synthetic measurements,
+//      the lowest-worst-RTT peer publishes, and the session exposes its RTT table.
 // It prints one JSON object and exits non-zero if a step fails.
 //
 // --seed N: then grows the log by 2N events (friend requests, declined),
@@ -786,6 +788,71 @@ if (busy > 0) {
   };
   host!.ws.close();
   guest!.ws.close();
+}
+
+// 13. Same queue and assignment handoff as the native router.
+{
+  const players = [a!, b!, await createAccount(api, base, aud, tag()), await createAccount(api, base, aud, tag())];
+  const ports = new Map(players.map((p, i) => [p.xuid, 31100 + i * 10] as const));
+  const host = players[1];
+  const hopper = 2; // Built-in Team Skirmish.
+  const write = async (
+    user: LocalAccount, method: string, path: string, data: unknown, assignment?: string,
+  ) => {
+    const headers: Record<string, string> = {
+      authorization: `Bearer ${await issueToken(user, aud, "sessions.write")}`,
+      "content-type": "application/json",
+    };
+    // Local workerd has no edge IP. The native listener ignores this header.
+    if (["localhost", "127.0.0.1"].includes(new URL(base).hostname)) {
+      headers["cf-connecting-ip"] = "127.0.0.1";
+    }
+    if (assignment) headers["x-h2-match"] = assignment;
+    return timed(api + path, { method, headers, body: JSON.stringify(data) });
+  };
+  const ticket = async (p: LocalAccount, samples: unknown[] = []) => {
+    const r = await write(p, "PUT", "/matchmaking/queue", {
+      hopper, port: ports.get(p.xuid), samples,
+    });
+    if (!r.r.ok) fail("matchmaking-ticket", `${r.r.status} ${r.body}`);
+    return JSON.parse(r.body);
+  };
+
+  for (const p of players) await ticket(p);
+  let assignment: { id: string; host: string; rtt_ms: Record<string, number>; teams: Record<string, number> } | undefined;
+  for (const p of players) {
+    const candidates = (await ticket(p)).candidates as { xuid: string; generation: string }[];
+    if (!candidates || candidates.filter((c) => ports.has(c.xuid)).length !== 3) {
+      fail("matchmaking-candidates", candidates);
+    }
+    const answer = await ticket(p, candidates.map((c) => ({
+      target: c.xuid,
+      generation: c.generation,
+      rtt_ms: c.xuid === host.xuid ? 18 : 65,
+    })));
+    if (answer.state === "waiting" || answer.state === "host") assignment = answer.assignment;
+  }
+  if (!assignment || assignment.host !== host.xuid) fail("matchmaking-host", JSON.stringify(assignment));
+  const id = assignment!.id;
+  const elected = await ticket(host);
+  if (elected.state !== "host" || elected.assignment.id !== id) fail("matchmaking-lease", JSON.stringify(elected));
+  const publish = await write(host, "POST", "/sessions", {
+    port: ports.get(host.xuid),
+    host_address: Array(36).fill(0),
+    slots: { public_filled: 1, public_open: 3, private_filled: 0, private_open: 0 },
+    attributes: { "1": { type: "integer", value: hopper } },
+  }, id);
+  if (publish.r.status !== 201) fail("matchmaking-publish", `${publish.r.status} ${publish.body}`);
+  const join = await ticket(players[0]);
+  if (join.state !== "join" || join.session_id !== id) fail("matchmaking-join", JSON.stringify(join));
+  const detail = await timed(api + `/sessions/${id}`);
+  const session = JSON.parse(detail.body).session;
+  if (!detail.r.ok || session.endpoint || session.matchmaking.host !== host.xuid
+    || players.some((p) => session.matchmaking.rtt_ms[p.xuid] !== (p.xuid === host.xuid ? 0 : 18))
+    || Object.values(session.matchmaking.teams).filter((t) => t === 0).length !== 2) {
+    fail("matchmaking-session", detail.body);
+  }
+  out.matchmaking = { host: host.xuid, session: id, worst_ms: 18, players: players.length };
 }
 
 if (seed > 0) {

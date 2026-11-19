@@ -179,6 +179,7 @@ pub struct Live {
     team_writes: tokio::sync::Mutex<()>,
     pub(crate) sim_writes: tokio::sync::Mutex<()>,
     pub(crate) session_writes: tokio::sync::Mutex<()>,
+    pub(crate) matchmaking: std::sync::Mutex<crate::matchmaking::Matchmaker>,
     /// Serializes ranking, so a game is ranked once.
     pub(crate) rank_writes: tokio::sync::Mutex<()>,
     /// Serializes arbitration writes, so a round is registered once per account.
@@ -550,6 +551,7 @@ impl Live {
             team_writes: Default::default(),
             sim_writes: Default::default(),
             session_writes: Default::default(),
+            matchmaking: Default::default(),
             rank_writes: Default::default(),
             round_writes: Default::default(),
             local_signin: Default::default(),

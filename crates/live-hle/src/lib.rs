@@ -22,6 +22,7 @@ mod host;
 #[cfg(windows)]
 #[path = "host_windows.rs"]
 mod host;
+mod matchmaking;
 mod network;
 mod network_config;
 mod outbox;
@@ -844,6 +845,12 @@ fn invoke(
         let value = hle.network.invoke(op, &args, ctx.thread_id, ctx.runtime());
         cpu.eax = value;
         return ctx.memory().ret(cpu, e.stack_words * 4);
+    }
+    if matches!(e.operation, Operation::Sessions(crate::sessions::Op::Search))
+        && crate::matchmaking::config().is_some()
+        && let Err(e) = hle.network.ensure_responder()
+    {
+        eprintln!("live: matchmaking: could not start QoS responder: {e}");
     }
     if e.operation == Operation::QosRelease && hle.network.release_qos(args[0]) {
         cpu.eax = 0;

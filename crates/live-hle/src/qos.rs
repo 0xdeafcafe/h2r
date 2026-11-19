@@ -69,6 +69,56 @@ pub(crate) fn ping(address: SocketAddrV4, report: u16, timeout: Duration) -> Opt
         }
     }
 }
+/// Probe the queue's targets concurrently on one socket. Accept an echo
+/// only from the endpoint and for the nonce sent for that target.
+pub(crate) fn measure(
+    candidates: Vec<live_proto::matchmaking::Candidate>,
+    timeout: Duration,
+) -> std::io::Result<Vec<live_proto::matchmaking::Sample>> {
+    use live_proto::matchmaking::Sample;
+    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?;
+    let started = Instant::now();
+    let mut pending = BTreeMap::new();
+    let mut samples = Vec::with_capacity(candidates.len());
+    for target in candidates {
+        let addr = SocketAddrV4::new(*target.endpoint.ip(), target.endpoint.port() + 2);
+        let nonce = NONCE.fetch_add(1, Ordering::Relaxed);
+        let sent = Instant::now();
+        if socket.send_to(&ping_packet(nonce, 0), addr).is_ok() {
+            pending.insert(nonce, (addr, sent, samples.len()));
+        }
+        samples.push(Sample {
+            target: target.xuid,
+            generation: target.generation,
+            rtt_ms: None,
+        });
+    }
+    let mut buffer = [0; 64];
+    while !pending.is_empty() {
+        let Some(left) = timeout.checked_sub(started.elapsed()) else {
+            break;
+        };
+        socket.set_read_timeout(Some(left.max(Duration::from_millis(1))))?;
+        let (len, sender) = match socket.recv_from(&mut buffer) {
+            Ok(packet) => packet,
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock) => break,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        if len != PONG_LEN || &buffer[..8] != PONG {
+            continue;
+        }
+        let nonce = u64::from_le_bytes(buffer[8..16].try_into().unwrap());
+        if let Some(&(addr, sent, index)) = pending.get(&nonce)
+            && sender == SocketAddr::V4(addr)
+        {
+            samples[index].rtt_ms = Some(round_trip_ms(sent.elapsed()));
+            pending.remove(&nonce);
+        }
+    }
+    Ok(samples)
+}
+
 /// A round trip in whole milliseconds as sessions carry it: at least 1.
 pub fn round_trip_ms(d: Duration) -> u16 {
     u16::try_from(d.as_millis())
@@ -287,6 +337,37 @@ mod tests {
         // Anything else is not a ping.
         assert!(answer_ping(&[0; PING_LEN], sender, &pings).is_none());
         assert!(answer_ping(&ping_packet(1, 1)[..17], sender, &pings).is_none());
+    }
+
+    #[test]
+    fn matchmaking_measures_the_same_echo_as_coop() {
+        use live_proto::{Xuid, matchmaking::Candidate};
+
+        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let base = socket.local_addr().unwrap().port() - 2;
+        let responder = std::thread::spawn(move || {
+            let mut bytes = [0; PING_LEN];
+            let (len, sender) = socket.recv_from(&mut bytes).unwrap();
+            let SocketAddr::V4(sender) = sender else { unreachable!() };
+            let pings = Pings::default();
+            let response = answer_ping(&bytes[..len], *sender.ip(), &pings).unwrap();
+            socket.send_to(&response, sender).unwrap();
+            assert!(pings.lock().unwrap().is_empty());
+        });
+        let samples = measure(
+            vec![Candidate {
+                xuid: Xuid(1),
+                endpoint: SocketAddrV4::new(Ipv4Addr::LOCALHOST, base),
+                generation: "8000000000000001".into(),
+            }],
+            Duration::from_secs(2),
+        )
+        .unwrap();
+        responder.join().unwrap();
+        assert_eq!(samples[0].target, Xuid(1));
+        assert_eq!(samples[0].generation, "8000000000000001");
+        assert!(samples[0].rtt_ms.is_some_and(|ms| ms > 0));
     }
 
     #[test]

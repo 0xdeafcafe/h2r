@@ -7,7 +7,8 @@ has Live working in the game (2026-11-17).
 Search returns real sessions, filtered by the decoded procedure-1
 parameters: playlist, the party's level window and room for the party,
 closest mean level first (§7). The game widens its own window and hosts
-when nothing is found, so OptiMatch needs no server matcher. Ranked games
+when nothing is found. Solo clients can opt into the ping-aware server
+queue in [§9](#9-ping-aware-optimatch-assignments). Ranked games
 are ranked by the server from the games log, for the players who
 registered the game's arbitration round (§8.4); comparing arbitration
 reports, and NAT traversal, remain design.
@@ -1136,3 +1137,72 @@ Register, and again for Report.
 If `session` matches neither, the first 8 bytes are not the session id.
 Then rounds cannot be linked this way, and nobody is ranked: send the
 log lines.
+
+## 9. Ping-aware OptiMatch assignments
+
+Enable the queue on each participating game client with
+`H2_LIVE_PING_MATCHMAKING=1`. The HLE uses it for solo OptiMatch searches.
+Parties, Clankermatch and the custom-games browser use their existing
+search paths. The server uses the active hopper's **minimum** player count
+and the entrants' current server ranks for that hopper. Team hoppers fill
+equal-sized teams by distributing the highest-to-lowest ranks in alternating
+team order. The planned teams are in the assignment. The retail title still
+owns the final in-game team placement.
+
+Clients keep the existing XNet QoS responder available and measure each
+candidate's actual round trip at its XNet base port plus two. This uses the
+[co-op echo](live-coop.md#106-ping) with a 450 ms reply window. It leaves the
+title's separate lobby-data lookup intact. Set `H2_LIVE_NAT` to `open`,
+`moderate` or `strict` and `H2_LIVE_UPLOAD_KBPS` to the known upload rate.
+Omit unknown values. The HLE does not infer NAT type or capacity from a
+successful small-packet echo.
+
+A cohort needs one eligible host that every member can reach. The oldest
+matchable ticket starts with a five-level skill spread and a 90 ms RTT
+limit. Every five seconds of wait add three levels and 20 ms, up to 49
+levels and 350 ms. A strict NAT or known upload below 1,000 kbit/s makes a
+candidate ineligible to host. Missing measurements wait for a probe.
+Explicit timeouts exclude that route. When all routes fail or exceed the
+maximum window, the clients continue searching until the search ends.
+
+Once Live has formed a cohort and planned its teams, it minimises worst
+RTT, then median over remote members, then host XUID. A registered
+[dedicated host](dedicated-host.md#routing-assignment-and-arbitration)
+wins over a peer only by improving worst RTT. The chosen peer receives
+the empty search that lets the title advertise its lobby. The other
+clients keep their async searches pending until that advertisement and
+its title QoS lobby data are ready. Opted-out clients continue to search
+the legacy lobby list without discovering queued assignments.
+
+### Queue API
+
+Both the native router and the Worker's LiveHub serve the same routes.
+Each write uses a fresh `sessions.write` token.
+
+- `PUT /v1/matchmaking/queue` refreshes the signed account's ticket with
+  `hopper`, the XNet base `port`, optional `connectivity` and `samples`.
+  The server takes the IPv4 address from the connection. The `probing`
+  response gives each target's XUID, endpoint and ticket generation.
+  Report `target`, `generation` and `rtt_ms` for each target. Use
+  `rtt_ms: null` for a timeout. Replies from a replaced endpoint or
+  expired generation are ignored.
+- An operator can enable a service account as a dedicated candidate with
+  `PUT /v1/matchmaking/dedicated/{xuid}`. That account keeps its endpoint
+  available by refreshing a ticket with `dedicated: true`. It occupies no
+  entrant seat. Dedicated registration lasts one hour and is renewed by the
+  operator. The game HLE queues as a player. A dedicated process must use
+  the service API and bring up a compatible game session when elected.
+- An elected account receives `state: host` and an `assignment` from the
+  queue. It publishes with the normal `POST /v1/sessions` and the header
+  `X-H2-Match: <assignment.id>`. Live checks the publishing identity,
+  probed endpoint, hopper and available seats. Retrying with the same ID
+  returns the existing session. Members receive `state: waiting` until
+  the session is published, then `state: join` and its session ID.
+- Tickets expire after ten seconds without a refresh. An assignment is
+  reserved for sixty seconds. Each hopper admits up to 32 live candidates.
+  Tickets, assignments awaiting publication and dedicated registration
+  are transient, so a restart starts a fresh search. Published sessions
+  retain `matchmaking` in their signed `SessionCreated` event and session
+  detail. It includes the host, whether it was dedicated, the roster,
+  planned teams and the per-member RTT table. A peer host has zero RTT
+  to itself. The public debug record omits network addresses.

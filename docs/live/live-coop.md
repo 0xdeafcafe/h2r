@@ -2485,7 +2485,7 @@ look inputs. Measure the time to the first displayed turn and the size
 and frequency of corrections when the authoritative aim catches up.
 Check that a cut or reconnect clears stale prediction and that the
 simulation sees the same inputs. Ping-aware host selection is being
-added to SBMM for distributed matches. [Matchmaking](live-matchmaking.md#ping-aware-host-selection-in-progress)
+added to SBMM for distributed matches. [Matchmaking](live-matchmaking.md#9-ping-aware-optimatch-assignments)
 
 `h2 coop test --players 2 --auto`. In a level, read the two `coop-live: latency`
 lines once a second and the `coop-live: ping` line:

@@ -130,14 +130,14 @@ Compare with `h2 lockstep` as in the [sim checks](../runtime/sim.md#first-runs).
 
 **Game traffic.** System Link discovers pregame hosts by UDP broadcast. Live discovers through a session ID, XNADDR/key and QoS description. Both reach the game over XNet’s UDP mapping. Keep base through base+6 reachable (game channels +0/+1/+5/+6, QoS +2). On a home router this generally requires port forwarding. The HLE provides no general NAT traversal or transport encryption. Existing public/friends listings use the observed HTTP source address. A successful XNetConnect only records an address mapping. Cloud egress and public UDP ingress can differ. Verify the advertised endpoint externally and allow an authenticated managed ingress separate from the local bind address. The existing WebSocket relay admits an open **co-op** host and one guest for messages up to 1,200 bytes. It cannot carry a retail multiplayer match today. A multiplayer fallback needs authenticated multi-peer channel mapping, datagram boundaries, expiry, limits and real route measurements. [XNet transport](live.md#client-hle-sockets-and-system-link) · [Join and address restrictions](live-custom-games.md) · [Relay](../../crates/live-server/src/relay.rs) · [Worker counterpart](../../crates/live-worker/src/relayroom.rs)
 
-**Proposed assignment.** Current OptiMatch searches compatible sessions
-and lets a party form one on an empty search. The hosted path would add
-a per-match lease in both Live deployments. Probe each candidate's
-actual game route. The title's successful QoS result reports a fixed
-5 ms, while the separate UDP echo measures elapsed time. Include relay
-routes in the comparison. Reserve seats, start the host and return join
-information once it is ready. Expire stale leases and requeue the party
-on startup failure. [Ping-aware host selection](live-matchmaking.md#ping-aware-host-selection-in-progress) ·
+**Assignment.** [Ping-aware OptiMatch](live-matchmaking.md#9-ping-aware-optimatch-assignments)
+can reserve an opted-in solo cohort for a registered dedicated endpoint.
+Each client measures the actual UDP route with the existing QoS echo.
+The operator registers the service account and the service keeps its endpoint
+live in the queue. The lease names the selected host, roster and RTT table.
+A dedicated process still needs to start the compatible title lobby and
+publish it under that lease. A playerless lobby, automatic fleet startup,
+jitter and loss limits, and relay-backed multiplayer are separate work.
 [QoS implementation](../../crates/live-hle/src/qos.rs)
 
 **Ranked admission.** Today rank processing requires a finished
