@@ -64,6 +64,7 @@ pub mod native_decals_glue;
 pub mod native_gels_glue;
 mod native_gels_load;
 mod native_gels_replace;
+pub mod native_hud_glue;
 pub mod native_lights_glue;
 mod native_shadows_draw;
 mod native_shadows_scope;

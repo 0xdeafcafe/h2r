@@ -213,6 +213,8 @@ pub struct GfxBackend {
     open: Option<(wgpu::CommandEncoder, usize)>,
     /// Ordered segments before the current open encoder.
     external_prefix: Vec<wgpu::CommandBuffer>,
+    /// Callbacks for the recordings in `external_prefix`.
+    external_on_submit: Vec<Box<dyn FnOnce() + Send>>,
     upload_pool: gfx::ring::UploadPool,
     current_uploads: Option<gfx::ring::SubmissionUploads>,
     submitted_uploads: Vec<gfx::ring::SubmissionUploads>,
@@ -335,6 +337,7 @@ impl GfxBackend {
             swap_finish: SwapFinish::from_env(),
             open: None,
             external_prefix: Vec::new(),
+            external_on_submit: Vec::new(),
             upload_pool: Default::default(), current_uploads: None, submitted_uploads: Vec::new(),
             defer_side_passes: std::env::var_os("H2_GFX_SIDE_SUBMIT").is_none_or(|v| v != "1"),
             scratch_depth: None,
@@ -964,6 +967,9 @@ impl GfxBackend {
             let _p = timeline::phase::enter(timeline::phase::Phase::Submit);
             timeline::phase::count(timeline::phase::Counter::Submits, 1);
             let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "queue submit");
+            for callback in self.external_on_submit.drain(..) {
+                callback();
+            }
             self.ctx
                 .queue
                 .submit(copies.into_iter().chain(self.external_prefix.drain(..)).chain(open).chain([enc.finish()]))
@@ -1728,7 +1734,11 @@ impl Backend for GfxBackend {
         }
         self.external_prefix.push(recording.commands);
         self.retain_uploads(recording.uploads);
-        if self.external_prefix.len() >= MAX_ENCODED_PASSES { self.submit_open(); }
+        // The pass limit can submit this recording immediately.
+        self.external_on_submit.extend(recording.on_submit);
+        if self.external_prefix.len() >= MAX_ENCODED_PASSES {
+            self.submit_open();
+        }
     }
 
     fn supports_external_pass(&self) -> bool {
@@ -1767,6 +1777,7 @@ impl Backend for GfxBackend {
             slots: &[],
             copy: crate::TargetCopy::Reference,
             stages: [None; 4],
+            on_submit: None,
         });
         self.retain_uploads(uploads);
         self.open = Some((enc, passes + 1));
