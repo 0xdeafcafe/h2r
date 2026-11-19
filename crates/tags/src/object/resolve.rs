@@ -56,6 +56,17 @@ pub struct RegionChoice {
     pub permutations: Vec<PermutationChoice>,
 }
 
+/// An object a model variant attaches (hlmt variant `+0x1c`): a vehicle's
+/// turret is its own vehicle tag, on the hull's `turret` marker.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct VariantObject {
+    /// The parent's render-model marker it sits on; empty for its origin.
+    pub parent_marker: String,
+    /// The child's own marker placed there; empty for its origin.
+    pub child_marker: String,
+    pub object: TagId,
+}
+
 #[derive(Clone, Debug)]
 pub struct ResolvedModel {
     pub id: TagId,
@@ -68,6 +79,9 @@ pub struct ResolvedModel {
     pub variant: VariantChoice,
     /// The chosen variant's regions, in its own order.
     pub regions: Vec<RegionChoice>,
+    /// The objects the chosen variant attaches, in its order (a null
+    /// reference left out).
+    pub objects: Vec<VariantObject>,
     pub variant_count: usize,
     pub region_count: usize,
     pub node_count: u32,
@@ -150,6 +164,16 @@ impl Context {
                     .collect()
             })
             .unwrap_or_default();
+        let objects = choice
+            .index()
+            .map(|i| {
+                variants[i]
+                    .elements("objects")
+                    .iter()
+                    .filter_map(variant_object)
+                    .collect()
+            })
+            .unwrap_or_default();
         Ok(ResolvedModel {
             id,
             name: tag.name.clone(),
@@ -159,6 +183,7 @@ impl Context {
             animation: self.link(root.tag_ref("animation")),
             variant: choice,
             regions,
+            objects,
             variant_count: variants.len(),
             region_count: model_regions.len(),
             node_count: root.block("nodes").map_or(0, |b| b.count),
@@ -176,6 +201,20 @@ fn i16_of(r: &Record, n: &str) -> i16 {
 }
 fn name_of(r: &Record, n: &str) -> Option<StringId> {
     r.sid(n).map(|s| s.0)
+}
+
+fn variant_object(r: &Record) -> Option<VariantObject> {
+    let object = r.tag_ref("object")?.id;
+    let name = |n: &str| {
+        r.sid(n)
+            .and_then(|s| s.1.map(str::to_owned))
+            .unwrap_or_default()
+    };
+    (object != TagId::NULL).then(|| VariantObject {
+        parent_marker: name("parent_marker"),
+        child_marker: name("child_marker"),
+        object,
+    })
 }
 
 fn region_choice(vr: &Record, model_regions: &[Record]) -> RegionChoice {

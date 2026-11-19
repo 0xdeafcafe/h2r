@@ -2288,22 +2288,19 @@ For a clanker hopper (`live_hle::clankermatch`):
    §8.2.3; `teams: true` in a team playlist) and seats the bots one at a
    time on `clankermatch::schedule` (each 0.5 to 3 s after the last,
    seeded by the session id), up to the playlist's most players less one
-   human. **Local bots first** (since 2026-11-19, phase 2): the first
-   `clankers::max_local` bots go on the free controller ports 1 to 3 and
-   sign in to the lobby as local players (the bot glue's lobby gate, as in
-   a Live custom game), with the roster's first bot accounts and its
-   skills; the rest are phantoms, which join the lobby this console hosts
-   as peers (§5.1, "Phantoms in the pregame lobby"; with
-   `H2_PHANTOM_LOBBY=0`, once the game runs). `max_local` is up to three in free for all and, in a team
-   playlist, no more than fill the human's team (`players / teams - 1`:
-   three in Clanker Teams, one in Clanker Doubles), since a console's
-   players are one party on one team. Nobody is seated before the roster
+   human. **Phantoms only** (since 2026-11-19, below): every bot is a
+   phantom with the roster's bot account and skill, joining the match's
+   target session as a peer (§5.1, "Phantoms in the pregame lobby"; with
+   `H2_PHANTOM_LOBBY=0`, once the game runs), as the players a search
+   finds are. `clankers::MATCH_LOCAL` is 0: no bot takes a controller
+   port. (Phase 2 put the first three on ports 1 to 3 as local players;
+   they showed in the human's party and failed the matchmade start's
+   controller check.) Nobody is seated before the roster
    comes (no host-made bot for it to replace, no local bot on Live as the
    human's guest first); if Live refuses it, host-made bots.
    In a team playlist each phantom without a roster team goes to the team
    with the fewest players, then the lowest total skill
-   (`clankermatch::balance`), around the human and its local bots (all on
-   the human's team): the host's first
+   (`clankermatch::balance`), around the human: the host's first
    local listed player's configuration team (player `+0xd4 + 0x7c`,
    `bots::phantom::session::host_team`), read twice a second by the bots'
    frame hook (`clankers::frame`) and followed until the first bot sits,
@@ -2460,8 +2457,8 @@ lobby never started.
   session's state and host in types 6 and 7, and
   `lobby::matchmaking_host` is a matchmaking lobby this console hosts
   (type 6 or 7, the target session in a lobby state, its host peer this
-  console's). The join gate opens on `lobby::joinable` (a pregame lobby or
-  that), so the local bots sign in there, with no screen pressed. The
+  console's). (The join gate opened there for local bots for a time;
+  "Phantoms only" below closed it.) The
   phantoms' `host_lobby`, `live_session`, `owned_session` and the in-game
   `host_session` read the game session too, so a Clankermatch's phantoms
   join the target session (its hopper statuses are the host's, so
@@ -2487,6 +2484,44 @@ lobby never started.
   full says the start is held elsewhere.
 - **Live.** The match's bots went to the party's Live session too, and
   each was refused there (§9.5): now only the roster's session is told.
+
+**Phantoms only (2026-11-19, the user's run on f5d3010c; built, no run
+yet).** The user saw the Clankers in their own party before the search,
+and once the match was made the game said "Player 2's controller is not
+plugged in" and went back to the lobby.
+
+- **Why in the party.** A local bot is a local user, and the local-player
+  pass (`0x63d80` → `0x65770`) adds a signed-in local user to every
+  session with a state: the party's squad session as well as the match's
+  target session. A bot cannot be in the match alone that way.
+- **Why the controller.** The matchmade start checks each local player's
+  controller, and a bot's port has no device. Which function reads it
+  (an `XGetDevices`/`XInputGetCapabilities` mask or the game's own pad
+  flags) is not traced: phantoms have no local player, so nothing reaches
+  the check.
+- **The choice: phantoms only.** A matched player is a remote peer, and
+  so is a phantom: it is listed in the match's lobby only (the target
+  session), never in the party, has no controller, and carries a roster
+  bot account (its gamertag, emblem, rank) as a local bot did. Hiding the
+  bots from the squad pass would mean hooking the pass per session and
+  the controller check besides, and would still leave the bots this
+  console's own party in the game's eyes (one team in a team playlist,
+  the host's guests on the scoreboard). What phantoms lose against local
+  bots: buttons. Their action records carry sticks, triggers and the
+  weapon, but no jump, crouch or melee bits yet (§5.1, "The action from a
+  pad"), and none of the pad-press glitches (§3.8).
+- **Built.** `clankers::MATCH_LOCAL` = 0: the fill seats every bot as a
+  phantom (`clankermatch: 0 local bots join the lobby on free controller
+  ports; 7 phantoms join the lobby as peers (...), in the match only`).
+  While a fill runs, `Phantoms::set_match_only(true)`: its phantoms join
+  only a session of the matchmaking life cycle (types 6 to 9,
+  `lobby::matchmaking_cycle`), wait in the party's lobby (`bots: phantom
+  G waits: not a lobby it can join (the party's lobby: a Clankermatch's
+  bots join the match the search hosted, never the party)`) and leave it
+  if they were in one; the flag clears once the fill's bots are gone.
+  The bot glue's join gate opens in a pregame lobby only again, never a
+  matchmaking one, so the Clankers page's local bots never sign in there
+  either.
 
 **Grep the run's log** (`h2 play ... 2>&1 | tee run.log`), in order:
 
@@ -2533,9 +2568,9 @@ panes, texts, cursor rows), `-p boot --lib coop_live` (the seven-row
 menu), `-p boot --lib clankermatch` (the filter, the schedule, the
 balance, Quickmatch's hopper, the Switch To: Clankermatch row's place,
 press and plan order), `-p boot --lib clankers::tests::a_clankermatch`
-(the fill: one roster, local bots first then phantoms, one bot at a
-time, `max_local`, balanced teams around the host's party, the handoff,
-the end with the local bots off, a refused roster), `-p boot --lib
+(the fill: one roster, phantoms only, one bot at a time, no controller
+port, balanced teams around the host, the handoff, the end, a refused
+roster, the match-only flag), `-p boot --lib
 bot_mark`, `-p font gear` (the glyph on a synthetic font),
 `-p bots phantom::session` (the marked name within 15 units, the host's
 team; `phantom::session::tests::lobby`: the lobby this console hosts, the
@@ -4866,13 +4901,14 @@ the game, checks the playlist asked for is marked and on the row the plan
 expects (the Clankermatch list shows only the clanker hoppers, in index
 order: rows 0, 1, 2), and stops at once if not. The game runs with
 `--set clankers.enabled=false`: the page's Clankers stay off and only the
-fill seats bots. The plan, from the lineup and `max_local`:
+fill seats bots. The plan, from the lineup and `MATCH_LOCAL` (phantoms
+only, §8.4):
 
 | `--playlist` | Hopper | Row | Players | Bots | Local | Phantoms |
 |---|---|---|---|---|---|---|
-| slayer | 8 Clanker Slayer (FFA) | 0 | 2 to 8 | 7 | 3 | 4 |
-| teams | 9 Clanker Teams (2 teams) | 1 | 2 to 8 | 7 | 3 | 4 |
-| doubles | 10 Clanker Doubles (2 teams) | 2 | 2 to 4 | 3 | 1 | 2 |
+| slayer | 8 Clanker Slayer (FFA) | 0 | 2 to 8 | 7 | 0 | 7 |
+| teams | 9 Clanker Teams (2 teams) | 1 | 2 to 8 | 7 | 0 | 7 |
+| doubles | 10 Clanker Doubles (2 teams) | 2 | 2 to 4 | 3 | 0 | 3 |
 
 **The drive** (`crates/cli/src/bots_drive/clankermatch.rs`): boot, sign-in
 and the Xbox Live menu as above, then row 2 (Clankermatch), A. The playlist
@@ -4900,9 +4936,11 @@ again first is waited out. The game runs to its own end: Rumble Slayer's
 | 3 | The Clankermatch row opened the clanker playlists | `clankermatch: the playlists are the clanker hoppers`, and no `the server named no clanker hoppers: the list is empty` |
 | 4 | The clanker search started | `live: clankermatch: searching clanker playlist H` with the plan's H |
 | 5 | The search ended with this console hosting | `live: session S advertised` after the search, and `clankers: clankermatch: hosting clanker playlist H (session S)` |
-| 6 | Local bots planned for the lobby | `clankers: clankermatch: N local bots join the lobby` with the plan's N |
-| 7 | Local bots seated and signed in, in the lobby | per local port, after the hosting line: `clankers: Clanker P on`, `bots: join gate port P: ...: signs in`, `bots: signing ... on port P ...`; it says whether in the lobby |
-| 8 | Local bots on Xbox Live as bot accounts | per port, `Clanker P is G on Xbox Live (bot account 000b...)` and `G on port P is on Xbox Live as its own bot account` |
+| 6 | Local bots planned for the lobby | `clankers: clankermatch: N local bots join the lobby` with the plan's N (0 now: phantoms only) |
+| 7 | With no local bot planned: no bot in the party | no `bots: signing ...` line anywhere (a bot signed in on a controller port shows in the party and fails the matchmade start's controller check) |
+| 7 (with local bots) | Local bots seated and signed in, in the lobby | per local port, after the hosting line: `clankers: Clanker P on`, `bots: join gate port P: ...: signs in`, `bots: signing ... on port P ...`; it says whether in the lobby |
+| 8 | With no local bot planned: the phantoms are the roster's bot accounts | a `clankers: G (phantom, rostered) on (...)` line per planned phantom; fewer says Live's roster was refused (host-made bots) |
+| 8 (with local bots) | Local bots on Xbox Live as bot accounts | per port, `Clanker P is G on Xbox Live (bot account 000b...)` and `G on port P is on Xbox Live as its own bot account` |
 | 9 | The lobby reached the playlist's fewest players | the most players the game's own session had (`bots: lobby players: N in the game's session`, the game session's `+0x1118`) between the hosting line and the start; the Live server's count (`bots-test: session ...`) is what the host told it and no longer counts (cm-run2 listed "4 joined" with no bot in the lobby) |
 | 10 | The countdown ran and the game started | `session.status` phase `loading` or `gameplay` on a multiplayer map after the hosting line: not `map mainmenu` or mode `main_menu` (cm-run2's `loading` was the main menu coming back) |
 | 11 | Gameplay on a map | phase `gameplay`, not campaign, after the start |

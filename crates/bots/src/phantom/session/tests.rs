@@ -1342,6 +1342,49 @@ mod lobby {
         assert_eq!(g.u32(PARTY + PEER_COUNT).unwrap(), 1, "never the party's");
     }
 
+    /// A Clankermatch's phantoms in the party's lobby (a pregame lobby
+    /// this console hosts, life cycle 2, before the search): they wait,
+    /// and join only once the search hosts the match (type 6). The user's
+    /// run on f5d3010c showed bots in the party.
+    #[test]
+    fn a_clankermatchs_phantoms_never_join_the_party() {
+        let ph = Phantoms::default();
+        ph.set_match_only(true);
+        let h = ph.add(who(1, "Widget Rotor"), None, idle()).unwrap();
+        // The party's lobby: [`lobby`]'s session, type 2.
+        let mut g = lobby();
+        let log = ph.tick(&mut g, 0).unwrap();
+        assert_eq!(
+            log,
+            vec![format!(
+                "bots: phantom Widget Rotor waits: not a lobby it can join ({})",
+                crate::phantom::NOT_THE_MATCH
+            )]
+        );
+        assert_eq!(g.u32(S + PEER_COUNT).unwrap(), 1, "nothing written");
+        assert!(ph.tick(&mut g, 1).unwrap().is_empty(), "said once");
+        // The search hosted the match: it joins the target session.
+        let mut g = matchmaking();
+        let log = ph.tick(&mut g, 2).unwrap();
+        assert_eq!(
+            log,
+            vec!["bots: phantom Widget Rotor joins (peer 1, in the pregame lobby)".to_owned()]
+        );
+        assert_eq!(find_peer(&g, S, machine_id(h)).unwrap(), Some(1));
+        assert_eq!(g.u32(PARTY + PEER_COUNT).unwrap(), 1, "never the party's");
+        // The game over, back to the party (type 2, the squad session
+        // the game's again): its peer leaves whatever session it is in.
+        g.put_u32(l::SESSION_TYPE, 2)
+            .put_u32(points::SQUAD_SESSION.base, S);
+        ph.tick(&mut g, 3).unwrap();
+        assert_eq!(find_peer(&g, S, machine_id(h)).unwrap(), None);
+        assert_eq!(g.u32(S + PEER_COUNT).unwrap(), 1);
+        // Not a Clankermatch's: the same party lobby takes it.
+        ph.set_match_only(false);
+        let log = ph.tick(&mut g, 4).unwrap();
+        assert!(log.iter().any(|l| l.contains("joins (peer 1")), "{log:?}");
+    }
+
     /// The matchmade game (life cycle 8) runs in the target session: the
     /// phantoms stay in it, and a game this console hosts takes them.
     #[test]

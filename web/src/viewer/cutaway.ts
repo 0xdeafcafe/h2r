@@ -11,10 +11,10 @@ import type { Vec3 } from "../map/views";
 /** `level`: the structure (one node, or several `bsp_<n>`), single-sided
  *  and facing into the playable space, so its back faces are culled and it
  *  can be seen into from outside. `machine`: placed device machines under a
- *  `machines` node; ordinary outward-facing models, left as the glb has
- *  them. `hidden`: collision geometry, never drawn. Both kinds that are
- *  drawn take the height cut; only the level takes the see-through
- *  (machines, like players and vehicles, are always drawn whole). */
+ *  `machines` node, and the scenario's placed objects; ordinary
+ *  outward-facing models, left as the glb has them. `hidden`: collision
+ *  geometry, never drawn. Both kinds that are drawn take the height cut and
+ *  the see-through alike ([`takesSeeThrough`]). */
 export type MeshRole = "level" | "machine" | "hidden";
 
 /** A mesh's role from its own and its ancestors' names, outermost first. */
@@ -23,6 +23,17 @@ export function meshRole(names: readonly string[]): MeshRole {
   // Placed objects are drawn whole like machines.
   if (names.some((n) => /^(machines?|scenario)(_\d+)?$/i.test(n))) return "machine";
   return "level";
+}
+
+/** Whether a drawn mesh of the map takes the see-through. The level, its
+ *  machines (doors, lifts, platforms) and the scenario's placed objects
+ *  are all cut the same way, in world space, so a lift or a crate in front
+ *  of a player goes with the wall behind it instead of standing whole in
+ *  the hole. A vehicle placement is the exception (`vehicle`): a player
+ *  may be riding it, and the frames' own vehicles and the players are
+ *  never cut either. */
+export function takesSeeThrough(role: MeshRole, vehicle = false): boolean {
+  return role !== "hidden" && !vehicle;
 }
 
 // ---- the height cut ----
@@ -99,10 +110,11 @@ export const SEE_GRAZE = 0.15;
  *  and a wall running beside the line all have the target in front of
  *  them, so they stay. `normal` is the surface's, either way round (the
  *  face towards the eye when left out); one within [`SEE_LEVEL`] of
- *  vertical is taken as level. `rim` (0..1) is the dither value; the outer
- *  fifth of the cone thins out by it instead of ending in a hard edge. The
- *  shader below is this, line for line. */
-export function seeThroughHides(p: Vec3, s: SeeThrough, rim = 1, normal?: Vec3): boolean {
+ *  vertical is taken as level. The cone ends in a clean edge: it used to
+ *  thin out through a per-pixel dither, which speckled the rim, crawled as
+ *  the camera moved and, read back from the depth, freckled the occlusion
+ *  along it. The shader below is this, line for line. */
+export function seeThroughHides(p: Vec3, s: SeeThrough, normal?: Vec3): boolean {
   if (!(s.radius > 0) || p[1] <= s.floor) return false;
   const ax: Vec3 = [s.target[0] - s.eye[0], s.target[1] - s.eye[1], s.target[2] - s.eye[2]];
   const len = Math.hypot(ax[0], ax[1], ax[2]);
@@ -112,7 +124,7 @@ export function seeThroughHides(p: Vec3, s: SeeThrough, rim = 1, normal?: Vec3):
   const t = rel[0] * dir[0] + rel[1] * dir[1] + rel[2] * dir[2];
   if (t <= 0 || t >= len - s.radius * 0.5) return false;
   const d = Math.hypot(rel[0] - dir[0] * t, rel[1] - dir[1] * t, rel[2] - dir[2] * t);
-  if (!(d < s.radius * (t / len) * (0.8 + 0.2 * rim))) return false;
+  if (!(d < s.radius * (t / len))) return false;
   // The surface's normal, turned to face the eye; level when near vertical.
   let n: Vec3 = normal ?? [-dir[0], -dir[1], -dir[2]];
   const nl = Math.hypot(n[0], n[1], n[2]);
@@ -158,14 +170,25 @@ export function nextSee(m: SeeMode): SeeMode {
 }
 
 /** Whether any of several see-throughs removes a point. */
-export function seeThroughHidesAny(p: Vec3, list: readonly SeeThrough[], rim = 1, normal?: Vec3): boolean {
-  return list.some((s) => seeThroughHides(p, s, rim, normal));
+export function seeThroughHidesAny(p: Vec3, list: readonly SeeThrough[], normal?: Vec3): boolean {
+  return list.some((s) => seeThroughHides(p, s, normal));
 }
 
 export const SEE_VERTEX_HEAD = /* glsl */ `varying vec3 vSeeWorld;\n`;
-/** After `project_vertex`, where `transformed` is final. */
+/** After `project_vertex`, where `transformed` is final: the point in
+ *  world space as `project_vertex` places it, through an instanced
+ *  batch's per-instance matrix (the scenario's placed objects are drawn
+ *  that way) and a batched mesh's, so an instance is cut where it stands
+ *  and not where its model sits at the origin. */
 export const SEE_VERTEX_BODY = /* glsl */ `
-vSeeWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;
+vec4 seeLocal = vec4(transformed, 1.0);
+#ifdef USE_BATCHING
+seeLocal = batchingMatrix * seeLocal;
+#endif
+#ifdef USE_INSTANCING
+seeLocal = instanceMatrix * seeLocal;
+#endif
+vSeeWorld = (modelMatrix * seeLocal).xyz;
 `;
 export const SEE_FRAGMENT_HEAD = /* glsl */ `
 varying vec3 vSeeWorld;
@@ -181,7 +204,6 @@ uniform int uSeeCount;
 export const SEE_FRAGMENT_BODY = /* glsl */ `
 vec3 seeFace = cross(dFdx(vSeeWorld), dFdy(vSeeWorld));
 if (uSeeCount > 0) {
-  float seeRim = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
   float seeFaceLen = length(seeFace);
   vec3 seeN = seeFaceLen > 1e-12 ? seeFace / seeFaceLen : vec3(0.0);
   if (dot(seeN, cameraPosition - vSeeWorld) < 0.0) seeN = -seeN;
@@ -199,7 +221,7 @@ if (uSeeCount > 0) {
     float seeT = dot(seeRel, seeDir);
     if (seeT <= 0.0 || seeT >= seeLen - seeTarget.w * 0.5) continue;
     float seeD = length(seeRel - seeDir * seeT);
-    if (!(seeD < seeTarget.w * (seeT / seeLen) * (0.8 + 0.2 * seeRim))) continue;
+    if (!(seeD < seeTarget.w * (seeT / seeLen))) continue;
     if (seeFaceLen <= 1e-12) continue;
     float seeBehind = dot(seeTarget.xyz - vSeeWorld, seeN);
     if (!(seeEyeSide > 0.0) || !(seeBehind < -${SEE_BEHIND.toFixed(2)})) continue;
