@@ -529,6 +529,18 @@ pub fn signed_channels(color_sign: u32) -> [bool; 4] {
     [bit(29), bit(30), bit(31), bit(28)]
 }
 
+/// What an image is uploaded as on a device that takes BC textures
+/// (`bc`) or not ([`crate::gpu::texture`]): format, size, levels and an
+/// FNV-1a hash of level 0's bytes, for the uniform compare.
+pub fn describe_image(image: &Image, bc: bool) -> String {
+    let (format, level0, levels) = match &image.blocks {
+        Some(b) if bc => (format!("{:?}", b.format), &b.levels[0], b.levels.len()),
+        _ => ("Rgba8Unorm".to_string(), &image.rgba, 1 + image.mips.len()),
+    };
+    let hash = level0.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3));
+    format!("{format} {}x{} levels {levels} level 0 {hash:016x}", image.width, image.height)
+}
+
 /// Stores the signed channels of an RGBA8 image as `s + 128`, so that
 /// filtering interpolates signed values (`shaders::psh::PixelOptions::color_sign`).
 pub fn bias_signed(image: &mut Image, signed: [bool; 4]) {
@@ -536,6 +548,9 @@ pub fn bias_signed(image: &mut Image, signed: [bool; 4]) {
     if flip == [0; 4] {
         return;
     }
+    // A signed channel keeps a DXT image off BC, as on the D3D path
+    // (`gfx::texture::DecodeOptions::signed`).
+    image.blocks = None;
     for level in std::iter::once(&mut image.rgba).chain(image.mips.iter_mut()) {
         for px in level.chunks_exact_mut(4) {
             for (b, f) in px.iter_mut().zip(flip) {
@@ -696,6 +711,8 @@ pub(crate) struct Gpu {
     pub(crate) uniforms: wgpu::BindGroup,
     samplers: [wgpu::Sampler; 4],
     stage_views: [Option<wgpu::TextureView>; 4],
+    /// What each stage's bitmap was uploaded as ([`describe_image`]).
+    stage_info: [Option<String>; 4],
     pub(crate) pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat), wgpu::RenderPipeline>,
     /// The world's pipelines, by target formats and the stencil state the
     /// layer draws with ([`ProgramSet::pipelines`]).
@@ -735,6 +752,7 @@ impl Gpu {
         stage_image: &mut dyn FnMut(Stage) -> Option<Image>,
     ) -> Option<Self> {
         let mut stage_views: [Option<wgpu::TextureView>; 4] = Default::default();
+        let mut stage_info: [Option<String>; 4] = Default::default();
         for (n, s) in program.stages.iter().enumerate() {
             if let Stage::Bitmap { .. } = s
                 && program.dims[n].is_some()
@@ -742,6 +760,7 @@ impl Gpu {
                 let mut image = stage_image(*s)?;
                 bias_signed(&mut image, program.signed[n]);
                 stage_views[n] = Some(texture(device, queue, &image, "native world stage"));
+                stage_info[n] = Some(describe_image(&image, device.features().contains(wgpu::Features::TEXTURE_COMPRESSION_BC)));
             }
         }
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -815,6 +834,7 @@ impl Gpu {
             uniforms,
             samplers,
             stage_views,
+            stage_info,
             pipelines: HashMap::new(),
             world_pipelines: HashMap::new(),
         })
@@ -1175,6 +1195,7 @@ impl ProgramSet {
                     options: VertexOptions { provided_inputs: INPUT_MASK, input_fetch: WORLD_FETCH, ..Default::default() },
                     def: program.def.clone(),
                     pixel_options: program.pixel_options,
+                    textures: self.materials.get(&material)?.stage_info.clone(),
                 })
             })
             .collect();
@@ -1198,6 +1219,9 @@ pub struct RigidUniforms {
     /// The pixel shader definition and options.
     pub def: PixelShaderDef,
     pub pixel_options: PixelOptions,
+    /// Each stage's bitmap as uploaded ([`describe_image`]; `None`: the
+    /// lightmap, an engine texture or nothing).
+    pub textures: [Option<String>; 4],
 }
 
 #[cfg(test)]
@@ -1363,6 +1387,15 @@ mod tests {
         bias_signed(&mut i, [true, false, false, true]);
         assert_eq!(i.rgba, vec![0xff, 0x01, 0xff, 0x00, 0x80, 0, 0, 0x80]);
         assert_eq!(i.mips, vec![vec![0x01, 0, 0, 0x80]], "every level");
+        // A signed channel keeps a DXT image off BC, as on the D3D path.
+        let dxt = || Image::from_levels(vec![(4, 4, vec![0; 64])]).unwrap().with_blocks(wgpu::TextureFormat::Bc1RgbaUnorm, vec![vec![0; 8]]);
+        let mut d = dxt();
+        bias_signed(&mut d, [false; 4]);
+        assert!(d.blocks.is_some(), "nothing signed: the blocks stay");
+        assert!(describe_image(&d, true).starts_with("Bc1RgbaUnorm 4x4 levels 1"), "{}", describe_image(&d, true));
+        assert!(describe_image(&d, false).starts_with("Rgba8Unorm 4x4 levels 1"));
+        bias_signed(&mut d, [true, false, false, false]);
+        assert_eq!(d.blocks, None);
     }
 
     #[test]

@@ -42,6 +42,8 @@ pub struct Expected {
     /// The pixel shader definition and the options it is translated with.
     pub def: PixelShaderDef,
     pub pixel_options: PixelOptions,
+    /// What it binds at each stage, described (`None`: not known).
+    pub textures: [Option<String>; 4],
     /// Each stage it samples, with its sampler (`None`: not sampled).
     pub samplers: [Option<SamplerKey>; 4],
     /// Draws with the same program to compare before it disarms.
@@ -243,11 +245,12 @@ pub fn compare(
             || "none".to_string(),
             |t| format!("{:?} {}x{} levels {}", t.format, t.width, t.height, t.levels),
         );
+        let o = e.textures[n].as_deref().unwrap_or("not known");
         let d = &samplers[n];
         if d == other {
-            out.push(format!("  stage {n} d3d texture {t}, the same sampler"));
+            out.push(format!("  stage {n} d3d texture {t}, other {o}, the same sampler"));
         } else {
-            out.push(format!("  stage {n} d3d texture {t}, sampler d3d {d:?} other {other:?}"));
+            out.push(format!("  stage {n} d3d texture {t}, other {o}, sampler d3d {d:?} other {other:?}"));
         }
     }
     out
@@ -282,6 +285,7 @@ mod tests {
             options: VertexOptions { provided_inputs: 0x7f, ..Default::default() },
             def: PixelShaderDef::default(),
             pixel_options: PixelOptions::default(),
+            textures: [None, Some("Rgba8Unorm 4x4".into()), None, None],
             samplers,
             draws: 1,
         }
@@ -318,7 +322,7 @@ mod tests {
         let mut def = e.def.clone();
         assert_eq!(
             compare(&e, &e.words, &v, &p, &options, (&def, &e.pixel_options), &samplers, &textures)[1..],
-            ["  0 constants the program does not read differ", "  stage 1 d3d texture none, the same sampler"]
+            ["  0 constants the program does not read differ", "  stage 1 d3d texture none, other Rgba8Unorm 4x4, the same sampler"]
         );
         v.constants[0] = [2.0; 4];
         v.constants[60] = [3.0; 4];
@@ -336,7 +340,7 @@ mod tests {
         assert!(lines[5].starts_with("  c0 d3d"), "{}", lines[5]);
         assert!(lines[6].starts_with("  pixel shader d3d PixelShaderDef"), "{}", lines[6]);
         assert!(lines[6].contains("compare_mode: 1") && lines[6].contains("compare_mode: 0"), "{}", lines[6]);
-        assert!(lines[7].starts_with("  stage 1 d3d texture none, sampler d3d SamplerKey"), "{}", lines[7]);
+        assert!(lines[7].starts_with("  stage 1 d3d texture none, other Rgba8Unorm 4x4, sampler d3d SamplerKey"), "{}", lines[7]);
         assert!(lines[7].contains("min: Nearest") && lines[7].contains("min: Linear"), "{}", lines[7]);
         assert_eq!(lines.len(), 8);
     }
