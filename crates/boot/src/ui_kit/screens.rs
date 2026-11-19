@@ -765,7 +765,9 @@ mod tests {
         for w in v.widgets.iter().filter(|w| w.id.starts_with("page.")) {
             let r = w.rect;
             assert!(
-                r[1] >= l::TABLE_LEFT || w.id == "page.body",
+                r[1] >= l::TABLE_LEFT
+                    || w.id == "page.body"
+                    || (w.id.starts_with("page.check.") && r[1] >= l::CHECK_LEFT),
                 "{}: in the table column",
                 w.id
             );
@@ -996,9 +998,12 @@ mod tests {
             let r = body.rect;
             assert_eq!([r.top, r.left, r.right], [135, -258, 45]);
             assert_eq!(l::BODY.rect[..2], [r.top, r.left]);
+            // The lobby's status text is conduit-13 (font 4); the page sets
+            // its body in conduit-12 (font 1) on purpose, so four lines fit.
+            assert_eq!((body.font, l::BODY.font), (4, 1));
             assert_eq!(
-                (body.font, body.text_color, body.animation.0),
-                (l::BODY.font, l::BODY.colour, l::BODY.animation)
+                (body.text_color, body.animation.0),
+                (l::BODY.colour, l::BODY.animation)
             );
             assert_eq!(body.render_depth_bias, l::TEXT_BIAS);
             // The table column's first row: a value (right) and a name.
