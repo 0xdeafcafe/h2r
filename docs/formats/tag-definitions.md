@@ -571,14 +571,19 @@ Halo ring were already built this way.
   tire node's default position). A point that grips the ground (Halo 1
   powered mass point flag bit 0: the warthog's tires, the scorpion's
   treads; the ghost's antigravity points hold bit 6) rides the root node
-  (0) and faces out along its axle, +y on the left, -y on the right; any
-  other point rides its own node, unrotated. V: the retail warthog's four
-  tire markers are on node 0, 0.23 below it (the wheel centres, 0.19
-  above the origin, where Halo 1's tire points are), facing out; the
-  scorpion's tread markers are on node 0 too. Through converter version
-  74 the tire markers rode the tire nodes, which the spin and suspension
-  animations move, and faced forward. The marker has one instance per
-  permutation of the model's first region (D).
+  (0); any other point rides its own node. No marker is rotated. V: the
+  retail warthog's four tire markers are on node 0, 0.23 below it (the
+  wheel centres, 0.19 above the origin, where Halo 1's tire points are),
+  facing out along their axles; the scorpion's tread markers are on
+  node 0 too, unrotated. Through converter version 75 the tire markers
+  rode the tire nodes, which the spin and suspension animations move. In
+  a game run (2026-11-19, converted Blood Gulch) neither change stopped
+  the warthog being thrown from its spawn: edited live before it
+  spawned, on node 0, 0.23 below it and facing out, it left its spawn
+  on the same path to the same rest, so the axle rotation (which one
+  rule would give the scorpion's gripping treads too) is not taken.
+  The marker has one instance per permutation of the model's first
+  region (D).
   The Halo 2 point names that marker (`+0`) and the collision region of
   the collision node named as the model node (friction `+0x44`, hover
   `+0x34`: the warthog's `tire`; the ghost's collision has one region,

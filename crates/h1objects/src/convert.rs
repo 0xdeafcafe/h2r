@@ -661,14 +661,12 @@ struct PoweredPoint {
     position: [f32; 3],
     /// The point's object-space x (forward).
     x: f32,
-    /// The marker's rotation (i, j, k, w).
-    rotation: [f32; 4],
 }
 
 /// Adds a marker per powered point to a Halo 1 model before conversion:
 /// named as the point, on its node, one instance per permutation of the
 /// first region (D: so whichever permutation the object shows carries
-/// it), with the point's rotation.
+/// it), no rotation.
 fn add_point_markers(model: &mut h1models::h1::Model, points: &[PoweredPoint]) {
     let perms = model.regions.first().map_or(1, |r| r.permutations.len().max(1));
     for p in points {
@@ -683,7 +681,7 @@ fn add_point_markers(model: &mut h1models::h1::Model, points: &[PoweredPoint]) {
                     permutation: k as i8,
                     node: p.node as i8,
                     translation: p.position,
-                    rotation: p.rotation,
+                    rotation: [0.0, 0.0, 0.0, 1.0],
                 })
                 .collect(),
         });
@@ -2256,17 +2254,13 @@ impl<'a> Converter<'a> {
             } else {
                 0
             };
-            // A wheel's marker faces out along its axle, as the retail
-            // warthog's do (left (0, 0, 0.707, 0.707), right (0, 0,
-            // -0.707, 0.707): forward turned to +y and -y); a point on
-            // the middle line, or one that does not grip, keeps no
-            // rotation.
-            let h = std::f32::consts::FRAC_1_SQRT_2;
-            let rotation = match (grips, m.position[1]) {
-                (true, y) if y > 1e-2 => [0.0, 0.0, h, h],
-                (true, y) if y < -1e-2 => [0.0, 0.0, -h, h],
-                _ => [0.0, 0.0, 0.0, 1.0],
-            };
+            // The marker keeps no rotation, as the retail scorpion's
+            // treads (V). The retail warthog's wheels face out along
+            // their axles, but turning the converted warthog's that way
+            // changed nothing in a game run (2026-11-19: the warthog left
+            // its spawn the same way with or without), and Halo 1's
+            // scorpion treads grip too, so one rule would turn them as
+            // well.
             let (r, t) = world
                 .get(node as usize)
                 .copied()
@@ -2296,7 +2290,6 @@ impl<'a> Converter<'a> {
                 node,
                 position: local,
                 x: m.position[0],
-                rotation,
             });
         }
         // A point ahead of the points' middle steers (the warthog's front
