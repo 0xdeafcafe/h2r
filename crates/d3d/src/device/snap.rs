@@ -705,7 +705,7 @@ impl<B: Backend> Device<B> {
             events: _,
             last_stop: _,
             stats: _,
-            queued_world_stats: _,
+            queued_external_stats: _,
             hw,
             // Quiesce.
             pending_grid: _,
