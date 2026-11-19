@@ -228,3 +228,26 @@ pub fn implementation(layer: u32, flags: u32, definition_byte: u8, int_input: u1
         _ => None,
     }
 }
+
+/// The light definition's dword `+0x7c`: its gel bitmap's datum.
+pub const DEFINITION_GEL: u32 = 0x7c;
+/// The definition's dword `+0xe0`: the datum of a shader drawn into render
+/// target 13 as the gel (-1: none).
+pub const DEFINITION_GEL_SHADER: u32 = 0xe0;
+/// Definition flag: engine texture 10 is texture 18 instead.
+pub const DEFINITION_TEXTURE_18: u32 = 0x0008_0000;
+
+/// The bitmap engine texture 10 binds during a light's passes
+/// (`0x00019530`'s case for id 10, `0x00019553`..`0x000196c7`): with the
+/// context's first word non-zero (`[0x004858c8]`, which `0x0004a1e0`
+/// copies; flag bit 0 clear), the definition's flag `0x80000` clear and no
+/// gel shader (`+0xe0` -1; `[0x00485a77]`, set only while that shader
+/// draws, is clear), image 0 of the bitmap at `+0x7c` through
+/// `0x000144f0`. `None` for the other cases (texture 18, render target 13,
+/// the context-zero case at `0x000196d3`) and for no bitmap (-1: the
+/// rasterizer's default). S: `0x000144f0` binds the default too when the
+/// image's word `+0xa` is not 0; the host decodes the image as 2D.
+pub fn gel(flags: u32, definition_flags: u32, gel_shader: u32, gel: u32) -> Option<u32> {
+    let other = flags & flag::CONTEXT_ZERO != 0 || definition_flags & DEFINITION_TEXTURE_18 != 0 || gel_shader != u32::MAX;
+    (!other && gel != u32::MAX).then_some(gel)
+}

@@ -206,6 +206,7 @@ mod tests {
             definition_8a: 0,
             definition_80: 0,
             falloff_0: 0,
+            gel: None,
         };
         let light = |constants| Light {
             handle: 1,

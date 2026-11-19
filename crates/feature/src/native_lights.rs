@@ -193,16 +193,24 @@ pub fn light_constants(mem: &dyn GuestMemory, e: &Entry) -> Option<LightConstant
     };
     let g = lc::light_globals(mem, &call, fpu, &mut |_| None).ok()?;
     let f = lp::pass_flags(mem, &g, shadow as u8, e.mxcsr).ok()?;
+    let definition_flags = mem.u32(definition).ok()?;
+    let gel = lp::gel(
+        f.flags,
+        definition_flags,
+        mem.u32(definition.wrapping_add(lp::DEFINITION_GEL_SHADER)).ok()?,
+        mem.u32(definition.wrapping_add(lp::DEFINITION_GEL)).ok()?,
+    );
     Some(LightConstants {
         frame: g.frame_constants(mem).ok()?,
         flags: f.flags,
         colour_a: g.colour_a_input(),
         colour_b: g.colour_b_input(),
         mode: g.mode,
-        definition_flags: mem.u32(definition).ok()?,
+        definition_flags,
         definition_8a: mem.u16(definition.wrapping_add(0x8a)).ok()?,
         definition_80: mem.u16(definition.wrapping_add(0x80)).ok()?,
         falloff_0: g.falloff[0],
+        gel,
     })
 }
 

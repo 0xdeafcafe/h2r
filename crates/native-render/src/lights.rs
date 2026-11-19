@@ -107,6 +107,10 @@ pub struct LightConstants {
     pub definition_80: u16,
     /// Falloff word 0 (`[0x00485a30]`, scalar 16).
     pub falloff_0: u32,
+    /// The `bitm` datum engine texture 10 (the gel) binds, image 0
+    /// (`engine::light_passes::gel`); `None`: something else, which the
+    /// host does not draw.
+    pub gel: Option<u32>,
 }
 
 impl LightConstants {

@@ -149,6 +149,17 @@ fn layer_13_needs_context_zero_specular_and_the_input() {
 }
 
 #[test]
+fn the_gel_is_the_definitions_bitmap_only_for_a_plain_frustum_light() {
+    let g = 0xe123_0456;
+    assert_eq!(lp::gel(0, 0, u32::MAX, g), Some(g));
+    assert_eq!(lp::gel(flag::SPECULAR | flag::SHADOW, 0x20, u32::MAX, g), Some(g), "other bits leave it");
+    assert_eq!(lp::gel(flag::CONTEXT_ZERO, 0, u32::MAX, g), None, "context-zero case");
+    assert_eq!(lp::gel(0, lp::DEFINITION_TEXTURE_18, u32::MAX, g), None, "texture 18");
+    assert_eq!(lp::gel(0, 0, 0xe000_0001, g), None, "the gel shader's target");
+    assert_eq!(lp::gel(0, 0, u32::MAX, u32::MAX), None, "no bitmap");
+}
+
+#[test]
 fn write_stores_the_flags_and_a_zeroed_colour_b() {
     let mut m = memory(0.5);
     let cb = engine::light_constants::global::COLOUR_B;

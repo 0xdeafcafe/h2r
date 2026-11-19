@@ -534,6 +534,7 @@ mod tests {
             definition_8a: 0xffff,
             definition_80: 3,
             falloff_0: 2.0f32.to_bits(),
+            gel: None,
         };
         let l = LightInputs::from_constants(&c);
         assert_eq!(l.colour_a, [0.5, 0.25, 1.0]);
