@@ -2255,6 +2255,25 @@ its own thread, and render-timing does not matter (the call runs).
      (`PassParts::w_buffer` off). Pixel constants from the engine (the
      blur's second pass, from the effect's values) are refused
      (`ScreenRefusal::EnginePixelConstants`) until they are traced.
+   - **Built: the GPU pass, unarmed** (`native_render::screen_gpu`,
+     `native_post_glue`'s `ScreenPass` and `ScreenProbe`): each strip a
+     triangle strip of `StripVertex` (attribute 0 the position, z and w
+     `[0x0045dd40]`; 1..4 the texture coordinates), the translated
+     program with the target's guest size as its surface and the
+     device's depth scale as its `z_max`, each render-target stage
+     fetched in its texels (`tex_scale`, as a linear texture), no depth,
+     no culling (S: the D3D path's cull mode is inherited; the A/B checks
+     the facing), the pass's blend and colour writes. Of the engine
+     textures only the view's (5) is supplied, as a copy of the bound
+     colour taken before each pass that samples it (S: 5 and `kind` 0
+     both resolve to target 0 while `[0x004858b8]` is clear). The host
+     strikes `TemplatePass` from `missing` for a pass whose program
+     loaded and whose stages are all bound (`pass_drawable`), and arms a
+     call with nothing missing as the glow is armed: one swallow of its
+     strips (slot 0, `SET_BEGIN_END` 6, twice the columns), a probe
+     first, then the pass in place of the strips; a mismatch after a
+     screen swallow keeps every later call on D3D. Every call still
+     misses the stand-ins, so none is armed yet.
 5. **`0x0002df00`, and `0x0002dd30`** before layer 17, which has the
    same shape and gets its own skip point.
 6. **Layer 17** (S: bloom), as stage 1b draws the world's other layers.
