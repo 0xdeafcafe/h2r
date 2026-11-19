@@ -2672,16 +2672,17 @@ impl<B: Backend> Device<B> {
 
     /// Verify that an upcoming resource operation cannot destroy, refill
     /// or alias a surface with pending draws. Direct sampling of an exact
-    /// lazy RTT level is ordered with the original draws on replay.
+    /// lazy RTT level is ordered with the original draws on replay. Returns
+    /// true if the caller must bind that level without a write-back.
     fn swallow_resource(
         &mut self,
         mem: &dyn GuestMemory,
         header: u32,
         sample_sign: Option<u32>,
-    ) -> Result<(), D3dError> {
-        let Some(s) = self.swallowing.as_ref() else { return Ok(()) };
+    ) -> Result<bool, D3dError> {
+        let Some(s) = self.swallowing.as_ref() else { return Ok(false) };
         if s.packets.is_empty() || header == 0 {
-            return Ok(());
+            return Ok(false);
         }
         let live = PixelContainer::read(mem, header).ok();
         let desc = live.and_then(|pc| crate::texdesc::from_header(pc.format, pc.size).ok());
@@ -2693,6 +2694,7 @@ impl<B: Backend> Device<B> {
                 a < b + u64::from(bytes) && b < a + n as u64
             })
         };
+        let mut samples_held = false;
         let conflicts = s.surfaces.iter().flatten().any(|t| {
             let Ok(current) = PixelContainer::read(mem, t.header) else { return true };
             if current.identity() != t.identity {
@@ -2707,23 +2709,37 @@ impl<B: Backend> Device<B> {
                 {
                     return true;
                 }
-                if sample_sign.is_none() {
-                    return header != t.header;
+                if self.cfg.upload != UploadPolicy::Tracked
+                    && self.rtt_synced.get(&t.header).is_none_or(|synced| {
+                        mem.read_vec(level.data, level.len() as usize).ok().as_ref() != Some(synced)
+                    })
+                {
+                    return true;
                 }
-                let aliases = self.rtt.iter().any(|(&other, candidate)| {
-                    other != t.header && overlaps(candidate.data, candidate.len())
-                });
-                return aliases || !self.rtt_lazy()
-                    || sample_sign.is_some_and(|bits| bits & COLOR_SIGN_MASK != 0)
-                    || t.header == self.render_target
-                    || start != Some(u64::from(level.data))
-                    || !desc.as_ref().is_some_and(|d| {
-                        d.kind == gfx::texture::TextureKind::D2 && d.levels == 1
-                            && matches!(d.format, D3DFormat::A8R8G8B8 | D3DFormat::LinA8R8G8B8)
-                            && (d.width, d.height, d.format) == (level.width, level.height, level.format)
-                            && (d.format.layout() == gfx::format::Layout::Swizzled
-                                || level.layout == GuestLayoutKind::Linear { pitch: d.pitch.max(d.width * 4) })
+                if sample_sign.is_none() {
+                    return header != t.header || self.dirty_level_overlap(header, level);
+                }
+                let direct = live.zip(desc.as_ref()).and_then(|(pc, desc)| {
+                    let map = self.cfg.address_map;
+                    let data = map.to_virtual(pc.resource.data);
+                    let within = |base| data.wrapping_sub(map.to_virtual(base)) < FRAME_DATA_SPAN;
+                    let frame_memory = self.swap.as_ref().is_some_and(|sw| {
+                        (self.depth.is_some() && within(DEPTH_BUFFER_DATA))
+                            || sw.buffers.iter().any(|&(base, _)| within(base))
                     });
+                    if pc.resource.kind() != ResourceType::Texture || frame_memory {
+                        return None;
+                    }
+                    self.direct_color_level(data, desc, sample_sign?)
+                });
+                // Resolving an exact direct sample never reads the guest
+                // pixels. A clean alias cannot trigger a write-back.
+                let same = direct.is_some_and(|(selected, source)| {
+                    selected == t.header && source.surface == t.surface
+                        && !self.dirty_level_overlap(selected, &source)
+                });
+                samples_held |= same;
+                return !same;
             }
             // A frame-buffer sample makes an immediate snapshot: it must
             // see any queued draw into that memory before the snapshot.
@@ -2732,8 +2748,9 @@ impl<B: Backend> Device<B> {
         });
         if conflicts {
             self.swallow_abort(SwallowRefusal::Resource, || format!("resource {header:#010x} needs the original post pixels"))?;
+            return Ok(false);
         }
-        Ok(())
+        Ok(samples_held)
     }
 
     fn swallow_target_switch(
@@ -2749,7 +2766,8 @@ impl<B: Backend> Device<B> {
             self.swallow_abort(SwallowRefusal::Dependency, || "target switch writes back the original post pixels".into())?;
         }
         self.swallow_resource(mem, target, None)?;
-        self.swallow_resource(mem, depth, None)
+        self.swallow_resource(mem, depth, None)?;
+        Ok(())
     }
 
     fn swallow_before_destroy(&mut self, header: u32) -> Result<(), D3dError> {
@@ -5382,9 +5400,8 @@ impl<B: Backend> Device<B> {
                     bound[stage] = 0;
                     continue;
                 }
-                if self.swallowing.is_some() && sampled[stage] {
-                    self.swallow_resource(mem, header, Some(extras[stage].color_sign))?;
-                }
+                let samples_held = self.swallowing.is_some() && sampled[stage]
+                    && self.swallow_resource(mem, header, Some(extras[stage].color_sign))?;
                 match self.frame_texture(mem, header, sampled[stage], extras[stage].color_sign)? {
                     FrameTexture::No => {}
                     FrameTexture::Snapshot(info, t) => {
@@ -5402,7 +5419,7 @@ impl<B: Backend> Device<B> {
                         continue;
                     }
                     FrameTexture::Skip(reason) if sampled[stage] => {
-                        self.swallow_abort(SwallowRefusal::Resource, || "post draw's sampled frame texture is unavailable".into())?;
+                        self.swallow_abort(SwallowRefusal::Resource, || format!("post sample at stage {stage}: {reason}"))?;
                         self.stats.draws += 1;
                         self.events.push(Event::DrawSkipped { entry, reason });
                         return Ok(());
@@ -5417,6 +5434,9 @@ impl<B: Backend> Device<B> {
                     texture_info[stage] = Some(info);
                     snapshots[stage] = Some(t);
                     continue;
+                }
+                if samples_held {
+                    self.swallow_abort(SwallowRefusal::Resource, || format!("post stage {stage} could not bind held level {header:#010x}"))?;
                 }
                 if let Some((info, level)) =
                     self.rtt_depth_texture(mem, header, extras[stage].color_sign)?
