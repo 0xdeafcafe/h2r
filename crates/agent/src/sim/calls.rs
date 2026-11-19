@@ -29,15 +29,7 @@
 //!   user`, `+0x10` and `+0x14`, as `0x2a022a` calls it), then
 //!   `object_set_position` (`0xb75a0`: EAX position or 0, ECX forward, EDX
 //!   up, stdcall `(object, 0, 0)`, `ret 0xc`; `0x2a0269`) with no position
-//!   for the orientation. That alone doesn't hold the view: the tick then
-//!   runs the action the frame built before it from the old control
-//!   angles (`0x186ab0`, `0x18701d`), putting the old aim back, and while
-//!   biped flag `+0x348` bit 5 is set the next frame copies the unit's
-//!   aiming vector (`+0x168`) into the control yaw and pitch
-//!   (`0x186f8b..0x18700b`). So after the tick the answer writes the
-//!   facing again, the aiming vector and the control angles included
-//!   ([`face_after_tick`]), and the next frame's look and action start
-//!   from it.
+//!   for the orientation.
 //! - **Give** is how a starting profile (`0xcce78..0xcceae`) and an AI's
 //!   equipment (`0x1e05c8..0x1e05f2`) give a weapon: `placement_data_new`
 //!   (`0xb7930`, ESI the `0xc4`-byte placement, stdcall `(definition,
@@ -81,19 +73,6 @@ pub mod addr {
     /// Unit: desired facing, aiming and looking vectors, which the
     /// teleport writes (`0x2a01a2`, `0x2a01b8`, `0x2a01ce`).
     pub const UNIT_FACINGS: [u32; 3] = [0x150, 0x15c, 0x180];
-    /// Unit: the aiming vector, which the next frame's player-control
-    /// update copies into the control yaw and pitch while biped flag
-    /// `+0x348` bit 5 is set (`0x186f8b..0x18700b`).
-    pub const UNIT_AIM: u32 = 0x168;
-    /// The player-control records: `[PLAYER_CONTROLS] + 0x14 + 0x94 *
-    /// local user`, yaw at `+0x10` and pitch at `+0x14` (radians), which
-    /// the frame's look adds to (`0x187560`) and the action carries
-    /// (`0x18701d`).
-    pub const PLAYER_CONTROLS: u32 = 0x004e_d284;
-    pub const CONTROL_HEADER: u32 = 0x14;
-    pub const CONTROL_STRIDE: u32 = 0x94;
-    pub const CONTROL_YAW: u32 = 0x10;
-    pub const CONTROL_PITCH: u32 = 0x14;
     /// `unit_add_weapon` modes (module doc).
     pub const MODE_ADD: u32 = 1;
     pub const MODE_REPLACE: u32 = 2;
@@ -275,57 +254,6 @@ pub fn up_of(f: [f32; 3]) -> [f32; 3] {
         return [1.0, 0.0, 0.0];
     }
     u.map(|v| v / len)
-}
-
-/// Yaw (about +z from +x, in `[0, 2pi)`) and pitch (up from level), in
-/// radians, of the unit vector `f`, as `0x1874b0` turns a forward into the
-/// player-control angles.
-pub fn view_angles(f: [f32; 3]) -> (f32, f32) {
-    let mut yaw = f[1].atan2(f[0]);
-    if yaw < 0.0 {
-        yaw += std::f32::consts::TAU;
-    }
-    let pitch = f[2].atan2((f[0] * f[0] + f[1] * f[1]).sqrt());
-    (yaw, pitch)
-}
-
-/// A teleport's facing again, after the tick it was made in: the unit's
-/// desired facing, aiming and looking vectors, its aiming vector
-/// ([`addr::UNIT_AIM`]) and, for a local player, the player-control yaw
-/// and pitch. The tick ran the action built before it, from the old
-/// control angles, which put the old aim back; and with biped flag
-/// `+0x348` bit 5 set the next frame copies the unit's aim into the
-/// control angles. Written here, the next frame's look and action start
-/// from the new facing. True when the view was turned; false for a seated
-/// unit (its seat's facing) or a player with no local user.
-pub fn face_after_tick(m: &mut dyn GuestMemory, player: u32, f: [f32; 3]) -> Result<bool, String> {
-    let fault = |e: engine::MemFault| format!("guest memory at {:#x} faulted", e.addr);
-    let Some((_, body, user)) = player_unit(&*m, player)? else {
-        return Err("the player has no unit now (between lives)".into());
-    };
-    if objects::Body::at(body)
-        .parent(&*m)
-        .map_err(fault)?
-        .is_some()
-    {
-        return Ok(false);
-    }
-    for o in addr::UNIT_FACINGS.into_iter().chain([addr::UNIT_AIM]) {
-        put_vec(m, body + o, f).map_err(fault)?;
-    }
-    if user < 0 {
-        return Ok(false);
-    }
-    let base = m.u32(addr::PLAYER_CONTROLS).map_err(fault)?;
-    if base == 0 {
-        return Ok(false);
-    }
-    let record = base + addr::CONTROL_HEADER + addr::CONTROL_STRIDE * user as u32;
-    let (yaw, pitch) = view_angles(f);
-    m.set_f32(record + addr::CONTROL_YAW, yaw).map_err(fault)?;
-    m.set_f32(record + addr::CONTROL_PITCH, pitch)
-        .map_err(fault)?;
-    Ok(true)
 }
 
 fn put_vec(m: &mut dyn GuestMemory, at: u32, v: [f32; 3]) -> Result<(), engine::MemFault> {
