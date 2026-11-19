@@ -49,11 +49,9 @@ pub fn mp_class(
     layout: ListLayout,
     picture: PictureSpec,
 ) -> ListClass {
-    ListClass::with_rows(MP_FEATURE, MP_SCREEN, screen)
+    skulls_menu::level_select_list(ListClass::with_rows(MP_FEATURE, MP_SCREEN, screen), layout)
         .description(block)
         .picture(picture)
-        .frame(crate::skulls_menu::FRAME)
-        .layout(layout)
 }
 
 /// Whether the row's hooks are on the plan: the list is grown only then.

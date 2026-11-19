@@ -45,7 +45,7 @@ use crate::h1_options::OptionRow;
 use crate::layout_glue::Gm;
 #[cfg(test)]
 use crate::layout_glue::ID_BASE;
-use crate::list_class::{ListLayout, PictureSpec, Rows, TextBlock};
+use crate::list_class::{ListClass, ListLayout, PictureSpec, Rows, ScrollArrows, TextBlock};
 use crate::skulls::{self, ABOUT, COUNT, SKULLS, State, TOTAL};
 use crate::ui::{Chosen, LABEL_SLOT};
 
@@ -164,6 +164,27 @@ pub const FRAME_SIZE: [u16; 2] = [128, 256];
 pub const VISIBLE_ROWS: i16 = 13;
 /// A skin-0 item's height (docs/game/ui-screens.md "Item spacing").
 pub const ITEM_HEIGHT: i16 = 22;
+/// Level select's skin 0 uses the same arrow art as this page, but its
+/// 15 retail levels fit without scrolling. Its arrow offsets (-30, 24)
+/// and (-30, -44) put our up arrow over the bracket and our down arrow
+/// beside the upper rows. Use the gutter before the picture column and
+/// place the arrows above the first and below the last visible row.
+pub(crate) const SCROLL_ARROWS: ScrollArrows = ScrollArrows {
+    up: [224, 46],
+    down: [224, -(VISIBLE_ROWS - 1) * ITEM_HEIGHT - 8],
+};
+
+/// The level select's frame and list, with room for the active arrows on
+/// lists long enough to scroll. Skin overrides keep their own arrows.
+pub(crate) fn level_select_list(class: ListClass, layout: ListLayout) -> ListClass {
+    let class = class.layout(layout).frame(FRAME);
+    if layout.skin == LIST_LAYOUT.skin {
+        class.scroll_arrows(SCROLL_ARROWS)
+    } else {
+        class
+    }
+}
+
 /// The level select's picture box: `top, left, bottom, right`.
 pub const PICTURE_BOX: [i16; 4] = [177, 39, -30, 259];
 
