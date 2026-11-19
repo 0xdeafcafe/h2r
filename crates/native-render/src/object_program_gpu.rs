@@ -153,6 +153,7 @@ struct LitModel {
     programs: Vec<LitProgram>,
     buffers: Vec<LitBuffer>,
     parts: Vec<LitPart>,
+    part_index: HashMap<(u16, u8), usize>,
 }
 
 /// Every model's lit parts on the GPU.
@@ -289,7 +290,8 @@ impl LitObjects {
         let Some(programs) = input.programs.into_iter().map(|p| self.program(device, queue, p)).collect::<Option<Vec<_>>>() else {
             return;
         };
-        self.models.insert(index, LitModel { programs, buffers, parts: input.parts });
+        let part_index = index_parts(&input.parts);
+        self.models.insert(index, LitModel { programs, buffers, parts: input.parts, part_index });
     }
 
     fn program(&self, device: &wgpu::Device, queue: &wgpu::Queue, input: LitProgramInput) -> Option<LitProgram> {
@@ -368,7 +370,8 @@ impl LitObjects {
     /// the item keeps its D3D draw.
     pub fn plan(&self, index: u32, frame: &ObjectFrame, key: &ItemKey, rows: &[Row], entry: &EntryStates) -> Result<PlannedDraw, String> {
         let m = self.models.get(&index).ok_or("its model is not uploaded")?;
-        plan_part(&m.parts, &|program| m.programs.get(program).map(|p| &p.pass), frame, key, rows, entry)
+        let part = m.part_index.get(&(key.section, key.part)).copied();
+        plan_indexed_part(&m.parts, part, &|program| m.programs.get(program).map(|p| &p.pass), frame, key, rows, entry)
     }
 
     /// The blocks `d` (of model `index`) is issued with in `view`, and the
@@ -630,10 +633,23 @@ pub fn plan_part<'a>(
     rows: &[Row],
     entry: &EntryStates,
 ) -> Result<PlannedDraw, String> {
-    let part = parts
-        .iter()
-        .position(|p| p.section == key.section && p.part == key.part)
-        .ok_or_else(|| format!("section {} part {} is not a native part", key.section, key.part))?;
+    let part = parts.iter().position(|p| p.section == key.section && p.part == key.part);
+    plan_indexed_part(parts, part, pass_of, frame, key, rows, entry)
+}
+
+fn index_parts(parts: &[LitPart]) -> HashMap<(u16, u8), usize> {
+    let mut index = HashMap::with_capacity(parts.len());
+    for (i, p) in parts.iter().enumerate() {
+        index.entry((p.section, p.part)).or_insert(i);
+    }
+    index
+}
+
+fn plan_indexed_part<'a>(
+    parts: &[LitPart], part: Option<usize>, pass_of: &dyn Fn(usize) -> Option<&'a ObjectPass>,
+    frame: &ObjectFrame, key: &ItemKey, rows: &[Row], entry: &EntryStates,
+) -> Result<PlannedDraw, String> {
+    let part = part.ok_or_else(|| format!("section {} part {} is not a native part", key.section, key.part))?;
     let p = &parts[part];
     if p.shader_tag as u16 != key.shader as u16 {
         return Err(format!("the item names shader {:#010x}, the part's is {:#010x}", key.shader, p.shader_tag));
@@ -1255,6 +1271,17 @@ mod tests {
             lighting: Some(Lighting { words: [0u32; 30], root: Some(0) }),
             defaults: Some(Default::default()),
         }
+    }
+
+    #[test]
+    fn model_index_matches_the_first_part_in_each_section_and_is_rebuilt_per_model() {
+        let p = |section, number| part(section, number, [None; IMPLEMENTATIONS]);
+        let index = index_parts(&[p(0, 2), p(1, 2), p(0, 2)]);
+        assert_eq!(index.get(&(0, 2)), Some(&0));
+        assert_eq!(index.get(&(1, 2)), Some(&1));
+        let replacement = index_parts(&[p(1, 2)]);
+        assert_eq!(replacement.get(&(1, 2)), Some(&0));
+        assert!(!replacement.contains_key(&(0, 2)));
     }
 
     fn key(section: u16, part: u8, implementation: usize) -> ItemKey {
