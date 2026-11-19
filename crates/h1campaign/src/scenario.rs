@@ -805,6 +805,7 @@ pub fn write(
     opts: &Options,
     lean: crate::Lean,
     [music, dialogue]: [u64; 2],
+    level_text: &h1text::scenario::LevelText,
     report: &mut Report,
 ) -> Result<()> {
     // A fresh level's scenario is written from nothing ([`fresh_root`]);
@@ -815,6 +816,7 @@ pub fn write(
         Some(t) => t.clone(),
         None => Block::new(base.bytes[..ROOT].to_vec()),
     };
+    level_text.write(&mut root);
     let rep = &mut report.scenario;
 
     // BSP descriptors: exactly Halo 1's BSPs, in order, so its BSP
@@ -1075,6 +1077,21 @@ pub fn write(
     // ([`MAX_SQUADS`]; a50 and b40 would): the scripts then name the
     // squad's encounter, its squad group ([`hook_value`]).
     named.extend(h1ai::control::maneuver_targets(&ai_src, &requests));
+    // A destination platoon can consist entirely of empty maneuver squads.
+    // Keep its members so control::prepare can pair the source actors with
+    // the destination squads before lowering a group migration.
+    let mut platoon_groups = std::collections::BTreeSet::new();
+    for encounter in &ai_src.encounters {
+        for (index, platoon) in encounter.platoons.iter().enumerate() {
+            let token = format!("{}/{}", encounter.name, platoon.name).to_ascii_lowercase();
+            if named.contains(&token) {
+                platoon_groups.insert(token);
+                for squad in encounter.squads.iter().filter(|q| q.platoon == index as i16) {
+                    named.insert(format!("{}/{}", encounter.name, squad.name).to_ascii_lowercase());
+                }
+            }
+        }
+    }
     let empty_named = |e: &h1ai::h1::Encounter, q: &h1ai::h1::Squad| {
         q.starting_locations.is_empty()
             && named.contains(&format!("{}/{}", e.name, q.name).to_ascii_lowercase())
@@ -1106,7 +1123,10 @@ pub fn write(
                     && named.contains(&format!("{encounter}/{}", q.name).to_ascii_lowercase()))
         });
     }
-    let ai_options = h1ai::convert::Options::default();
+    let ai_options = h1ai::convert::Options {
+        platoon_groups,
+        ..Default::default()
+    };
     let mut plan = h1map::phase::time("ai", || h1ai::convert::convert(&retained, &ai_options));
     let ai_control = h1ai::control::prepare(&ai_src, &mut plan, &ai_options, &requests);
     if plan.ai.squads.len() > MAX_SQUADS || plan.ai.squad_groups.len() > MAX_SQUAD_GROUPS {
@@ -1191,9 +1211,8 @@ pub fn write(
                 ai_src
                     .encounters
                     .iter()
-                    .zip(&plan.ai.squad_groups)
-                    .filter(|(e, _)| e.flags & 1 == 0)
-                    .map(|(_, g)| g.name.clone())
+                    .filter(|e| e.flags & 1 == 0)
+                    .map(|e| e.name.clone())
                     .collect()
             } else {
                 Vec::new()
@@ -1214,6 +1233,7 @@ pub fn write(
                 },
                 &initial,
                 &ai_control,
+                level_text,
                 opts.sounds,
                 !lean.leaves_out(crate::Lean::LevelData),
                 !lean.leaves_out(crate::Lean::SeatTable),
@@ -1792,6 +1812,7 @@ fn install_scripts(
     targets: &Targets,
     initial: &[String],
     ai_control: &h1ai::control::Control,
+    level_text: &h1text::scenario::LevelText,
     max_sounds: usize,
     level_data: bool,
     seat_table: bool,
@@ -1898,7 +1919,9 @@ fn install_scripts(
     } else {
         Default::default()
     };
-    for (at, stride, elements) in level.blocks() {
+    let blocks = level.blocks(level_text.chapter_text_ids())
+        .map_err(|e| invalid(format!("script level data: {e}")))?;
+    for (at, stride, elements) in blocks {
         put_block(root, at, stride, elements);
     }
     let (at, stride) = h1scripts::seats::MAPPINGS;

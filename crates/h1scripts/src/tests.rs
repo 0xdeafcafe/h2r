@@ -463,6 +463,28 @@ fn compiled(policy: Missing) -> (Tables, crate::compile::Compiled) {
 }
 
 #[test]
+fn global_uses_its_declaration_even_when_the_reference_lacks_a_type() {
+    for opcode in [0, u16::MAX] {
+        let mut b = Builder::default();
+        let initial = b.atom(SHORT, SHORT, "5", 5);
+        let name = b.string("g_count");
+        let reference = b.node(opcode, SHORT, 13, name, 0);
+        let t = read(&scenario(
+            &b, &[("read", 3, SHORT, reference)], &[("g_count", SHORT, initial)],
+        )).unwrap();
+        let h1 = h1_catalog();
+        let h2 = h2_target();
+        let table = Table::build(&h1, &h2);
+        let out = compile(&t, &h1, &table, &h2, Missing::Stub, &[]).unwrap();
+        let s = hs::Scenario::decode(&out.scenario_bytes(BASE), BASE).unwrap();
+        let node = s.node(s.script("read").unwrap().root()).unwrap();
+        assert!(node.global());
+        assert_eq!(node.opcode(), s.globals()[0].value_type());
+        assert_eq!(node.data(), 0);
+    }
+}
+
+#[test]
 fn compiled_tables_round_trip_through_the_halo2_decoder() {
     for policy in [Missing::Stub, Missing::Extension] {
         let (t, out) = compiled(policy);
@@ -606,8 +628,20 @@ fn install_writes_the_halo2_scenario_fields() {
 }
 
 #[test]
-fn startup_placements_decode_as_a_startup_script() {
+fn initial_placement_starts_its_own_thread_when_there_is_no_startup() {
     let (_, mut out) = compiled(Missing::Stub);
+    let roots = out.scripts.clone();
+    crate::compile::add_startup_placements(&mut out, &h2_target(), "initial", &["first".into()]).unwrap();
+    assert_eq!(&out.scripts[..roots.len()], roots.as_slice());
+    let s = hs::Scenario::decode(&out.scenario_bytes(BASE), BASE).unwrap();
+    assert_eq!(s.script("initial").unwrap().kind(), 0);
+}
+
+#[test]
+fn startup_places_encounters_before_the_authored_body() {
+    let (_, mut out) = compiled(Missing::Stub);
+    // Make the fixture's dormant void helper a startup script.
+    out.scripts[1][32..34].copy_from_slice(&0u16.to_le_bytes());
     let hooks = out.hooks.len();
     let scripts = out.scripts.len();
     crate::compile::add_startup_placements(
@@ -620,7 +654,13 @@ fn startup_placements_decode_as_a_startup_script() {
     let s = hs::Scenario::decode(&out.scenario_bytes(BASE), BASE).unwrap();
     assert_eq!(s.scripts().len(), scripts + 1);
     let script = s.script("h1_initial").unwrap();
-    assert_eq!((script.kind(), script.return_type()), (0, VOID));
+    assert_eq!((script.kind(), script.return_type()), (3, VOID));
+    let startup = s.scripts().iter().find(|sc| sc.kind() == 0).unwrap();
+    let begin = s.node(startup.root()).unwrap();
+    let first = s.node(s.node(Datum(begin.data())).unwrap().next()).unwrap();
+    assert!(first.script_call());
+    assert_eq!(usize::from(first.opcode()), scripts);
+    assert_ne!(first.next(), Datum::NULL);
     assert_eq!(s.reachable(s.roots()).unwrap().len(), out.nodes.len());
     // Two one-argument ai_place calls inside begin, each squad hooked.
     let places: Vec<_> = s
@@ -699,7 +739,12 @@ mod level_and_seats {
             h1::CAMERA_POINTS,
             vec![named(4, "cam", &[(0x28, 3.0), (0x34, 0.25)])],
         );
-        add(&mut space, h1::TITLES, vec![named(4, "arrival", &[])]);
+        let mut title = named(4, "arrival", &[(0x44, 15.0), (0x48, 90.0), (0x4c, 30.0)]);
+        title[0x28..0x30].copy_from_slice(&[12, 0, 40, 0, 60, 0, 90, 0]);
+        title[0x30] = 3;
+        title[0x34] = 1;
+        title[0x3c..0x40].copy_from_slice(&0xff112233u32.to_le_bytes());
+        add(&mut space, h1::TITLES, vec![title]);
         add(
             &mut space,
             h1::DEVICE_GROUPS,
@@ -720,7 +765,7 @@ mod level_and_seats {
         assert_eq!(l.flags[1].position, [0.0, 2.0, 0.0]);
         assert_eq!(l.camera_points[0].position, [3.0, 0.0, 0.0]);
         assert_eq!(l.camera_points[0].orientation, [0.25, 0.0, 0.0]);
-        assert_eq!(l.titles, ["arrival"]);
+        assert_eq!(l.titles[0].name, "arrival");
         assert_eq!(l.device_groups[0].initial, 1.0);
         assert_eq!(l.resolve(&hook("cutscene_flag", "second_flag")), Some(1));
         assert_eq!(l.resolve(&hook("cutscene_camera_point", "cam")), Some(0));
@@ -738,7 +783,7 @@ mod level_and_seats {
 
     #[test]
     fn halo2_blocks_take_halo2_layouts() {
-        let blocks = level().blocks();
+        let blocks = level().blocks(&[0, 0, 0, 0x0500_0033]).unwrap();
         let field = |at: u32| blocks.iter().find(|b| b.0 == at).unwrap();
         let (_, stride, flags) = field(h2::FLAGS.0);
         assert_eq!(*stride, 0x38);
@@ -757,7 +802,16 @@ mod level_and_seats {
             0.25
         );
         let (_, _, titles) = field(h2::TITLES.0);
-        assert!(matches!(&titles[0].fixups[0].kind, FixupKind::StringId(s) if s == "arrival"));
+        assert!(level().blocks(&[0, 1, 2]).is_err());
+        assert_eq!(titles[0].bytes[..4], 0x0500_0033u32.to_le_bytes());
+        assert_eq!(level().titles[0].text_index, 3);
+        let row = &titles[0].bytes;
+        assert_eq!(&row[4..12], &[12, 0, 40, 0, 60, 0, 90, 0]);
+        assert_eq!(&row[12..16], &[1, 0, 9, 0]);
+        assert_eq!(&row[16..20], &0xff112233u32.to_le_bytes());
+        for (i, seconds) in [0.5f32, 3.0, 1.0].into_iter().enumerate() {
+            assert_eq!(row[24+4*i..28+4*i], seconds.to_le_bytes());
+        }
         let (_, stride, groups) = field(h2::DEVICE_GROUPS.0);
         assert_eq!(*stride, 0x28);
         assert_eq!(&groups[0].bytes[..4], b"door");

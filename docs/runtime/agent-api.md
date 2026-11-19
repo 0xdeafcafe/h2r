@@ -413,19 +413,20 @@ Snapshots never enter the repository: they contain game data.
   the first version compiles one expression with `crates/hs` and runs it
   through the guest's evaluator. How to inject a node into the guest's
   script pool is a research point (**S**).
-- `hs.threads`, `hs.globals` (**Built**, crates/agent's `hs_state`): read
-  script state, so "has the courtyard fight started" is a global, not a
-  guess. `hs.threads` answers every live script thread — its script, kind,
-  category and wake tick (`-1` finished, `-2` dormant) — and `hs.globals`
-  every scenario global with its type and value:
-  ```json
-  {"threads": [{"script": "mission_lz", "kind": "dormant", "category": 0,
-                "wake": -1, "slot": 3}],
-   "globals": [{"name": "global_timer", "type": "long",
-                "value": {"bits": 3600, "number": 3600}}]}
-  ```
-  Both are game methods, answered at a tick boundary; with no scenario
-  loaded they answer an "unreadable" error.
+### HaloScript state
+
+Both read methods take an empty parameter object and sample the loaded
+scenario at a tick boundary. They return `UNAVAILABLE` while its interpreter
+tables are uninitialized or unreadable.
+
+- `hs.threads` returns a `threads` array of live slots. Each row has
+  `slot`, numeric thread `category`, and signed `wake` tick. Scenario
+  script threads also have their definition's `script` name and `kind`.
+  These two fields are null for transient evaluation threads.
+- `hs.globals` returns a `globals` array in scenario declaration order.
+  Each row has `name`, `type`, `type_index`, and `value.bits`. For scalar
+  types the value also includes `boolean`, `real`, or signed `number`.
+  Scenario declarations start after the interpreter's external-global cells.
 
 ### `input`: act like a player
 

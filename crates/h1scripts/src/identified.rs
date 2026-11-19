@@ -115,12 +115,6 @@ pub const IDENTIFIED: &[Identified] = &[
         "void",
         &["unit", "vehicle", "string_id"],
     ),
-    // Halo 1 121, between vehicle_unload (233) and vehicle_driver (237) as
-    // in Halo 1 (117, 122): the only `(unit) -> object_list` there, and
-    // the standard fixed-signature wrapper into each game's argument
-    // evaluator (Halo 1 `0xf1190`, Halo 2 `0x2a4230`). a30's checkpoints
-    // free who rides the jeep through it.
-    id("vehicle_riders", 236, "object_list", &["unit"]),
     // After unit_has_weapon (242), as in Halo 1's table (a30's sniper
     // tutorial).
     id(
@@ -166,29 +160,9 @@ pub const IDENTIFIED: &[Identified] = &[
         "void",
         &["cutscene_title", "real"],
     ),
-    // Halo 1 306 and 307, the two `() -> boolean` after game_safe_to_save
-    // (585 = 305) and before game_is_cooperative. game_all_quiet's callee
-    // builds the same recent-damage query Halo 1's does (`0x86868686`,
-    // window `0x20`, `-1`: Halo 1 `0x108b50`, Halo 2 `0xfa9a0` through the
-    // builtin's own body `0x2a9bd0`), and game_safe_to_speak keeps the one
-    // call returning AL (Halo 1 `0x108880`, Halo 2 `0x225fe0`). a30's
-    // checkpoints wait on both before saving.
-    id("game_all_quiet", 586, "boolean", &[]),
-    id("game_safe_to_speak", 587, "boolean", &[]),
     // Halo 1 336, after sound_class_set_gain (615) as in Halo 1 (335): the
     // only (vehicle, boolean) builtin there.
     id("vehicle_hover", 621, "void", &["vehicle", "boolean"]),
-    // Halo 1 406, after cinematic_screen_effect_stop (709 = 405) and before
-    // Halo 2's own cinematic_set_far_clip_distance (711; Halo 1 has no far
-    // clip): the same body — the argument evaluated, the camera globals'
-    // near clip written (Halo 1 `[0x2e3504] + 0x74`, Halo 2
-    // `[0x5093e0] + 0x190`).
-    id(
-        "cinematic_set_near_clip_distance",
-        710,
-        "void",
-        &["real"],
-    ),
     // Halo 1 356, 357 (show_hud, show_hud_help_text, both boolean ->
     // boolean): the first of the three such builtins after
     // hud_cinematic_fade (624). The first is the one Halo 1's order gives.
@@ -251,6 +225,6 @@ mod tests {
             }
         }
         assert!(IDENTIFIED.windows(2).all(|w| w[0].index < w[1].index));
-        assert_eq!(IDENTIFIED.len(), 29);
+        assert_eq!(IDENTIFIED.len(), 25);
     }
 }

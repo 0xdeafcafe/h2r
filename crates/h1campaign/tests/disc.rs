@@ -2,6 +2,9 @@
 //! `$H2_DISC`), and read back. Nothing is written to disk; counts go to
 //! stdout.
 
+#[path = "disc/a30_flow.rs"]
+mod a30_flow;
+
 use std::fs::File;
 use std::io::{BufReader, Cursor};
 
@@ -769,7 +772,6 @@ fn a30_converts_onto_its_base_and_reads_back() {
 
     // Scripts: decode, codec symmetry, validation against Halo 2's table.
     if let Some(sc) = &s {
-        let _ = sc;
         let hs_s = hs::Scenario::read(&mut m).unwrap();
         println!(
             "scripts read back: {} scripts, {} globals, {} nodes",
@@ -780,34 +782,18 @@ fn a30_converts_onto_its_base_and_reads_back() {
         let r = done.report.scenario.scripts.as_ref().unwrap();
         assert_eq!(hs_s.scripts().len(), r.scripts);
         assert_eq!(hs_s.nodes().len(), r.nodes);
-        // Halo 1's initially created encounters: a startup script places
-        // their squad groups, each argument resolved to a group.
-        if opts.ai && !r.initial.is_empty() {
-            let sc = hs_s.script(h1campaign::scenario::INITIAL_SCRIPT).unwrap();
-            assert_eq!(sc.kind(), 0, "startup");
-            let mut placed = Vec::new();
-            for n in hs_s.nodes() {
-                if n.atom() || n.data() == u32::MAX {
-                    continue;
-                }
-                let Ok(head) = hs_s.node(hs::Datum(n.data())) else {
-                    continue;
-                };
-                if hs_s.string(head.string_offset()).ok() != Some("ai_place") {
-                    continue;
-                }
-                let arg = hs_s.node(head.next()).unwrap();
-                // One argument, as most retail calls (no count).
-                assert_eq!(arg.next(), hs::Datum::NULL);
-                placed.push(arg.data());
-            }
+        let original = h1scripts::Tables::read(&h1).unwrap();
+        assert_eq!(original.globals.len(), 108);
+        for (index, global) in original.globals.iter().enumerate() {
+            let written = &hs_s.globals()[index];
+            assert_eq!(written.name().unwrap(), global.name);
+            assert_eq!(Some(written.value_type()), sc.table.ty(global.value_type));
+        }
+        a30_flow::titles(&mut m, &bytes, addr, &h1);
+        if opts.ai {
             let view = tags::geometry::TagView::new(&bytes, addr);
             let ai = h1ai::h2::ScenarioAi::read(&view).unwrap();
-            for g in &r.initial {
-                let i = ai.squad_groups.iter().position(|x| &x.name == g).unwrap();
-                assert!(placed.contains(&(0x4000_0000 | i as u32)), "group {g}");
-            }
-            println!("placed at startup: {:?}", r.initial);
+            a30_flow::mission(&hs_s, &ai, &h1);
         }
     }
 

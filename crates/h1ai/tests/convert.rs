@@ -339,7 +339,6 @@ fn named_platoons_become_child_squad_groups() {
     // encounter's.
     e.squads[0].platoon = 0;
     e.squads[1].platoon = 0;
-    drop(e);
     let named = ["first/lz_toon".to_string()].into_iter().collect();
     let plan = convert(
         &src,

@@ -1221,11 +1221,11 @@ fn h1_atoms_by_token() {
             }
         }
     }
-    let bytes: usize = lv
-        .blocks()
-        .iter()
-        .map(|(_, stride, e)| stride * e.len())
-        .sum();
+    use h1scripts::level::h2;
+    let bytes = lv.flags.len() * h2::FLAGS.1
+        + lv.camera_points.len() * h2::CAMERA_POINTS.1
+        + lv.titles.len() * h2::TITLES.1
+        + lv.device_groups.len() * h2::DEVICE_GROUPS.1;
     println!(
         "{level}: {} flags, {} camera points, {} titles, {} device groups: {bytes:#x} bytes in Halo 2's blocks",
         flags.len(),

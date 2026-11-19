@@ -2452,6 +2452,7 @@ dependencies = [
  "h1scripts",
  "h1sky",
  "h1sounds",
+ "h1text",
  "hs",
  "map",
  "mopp",

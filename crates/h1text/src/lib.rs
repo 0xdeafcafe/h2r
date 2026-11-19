@@ -13,6 +13,7 @@
 
 pub mod convert;
 pub mod h1;
+pub mod scenario;
 
 /// Conversion failures.
 #[derive(Debug, thiserror::Error)]
@@ -23,6 +24,9 @@ pub enum Error {
     /// The Halo 2 map builder failed.
     #[error("map builder: {0}")]
     Build(#[from] map::Error),
+    /// Installing a converted tag failed.
+    #[error(transparent)]
+    Install(#[from] h1models::Error),
     /// A string list is malformed.
     #[error("invalid {0}")]
     Invalid(String),

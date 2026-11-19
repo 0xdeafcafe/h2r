@@ -17,8 +17,9 @@
 //! own button glyphs).
 
 use h1models::Converted;
-use map::FourCC;
-use map::build::{Block, TagSet};
+use map::{FourCC, Map};
+use map::build::{Block, TagPayload, TagSet};
+use std::io::{Read, Seek};
 use tags::StringId;
 
 use crate::h1::{Hmt, Ustr};
@@ -31,6 +32,7 @@ pub const UNIC_SIZE: usize = 0x34;
 const RANGES: usize = 0x10;
 /// The `matg` locale descriptors: nine, from `+0x188`, `0x1c` each.
 const MATG_DESCRIPTORS: usize = 0x188;
+const SECTOR: usize = 0x200;
 
 /// A map's English locale table under construction: the global row index
 /// and blob every converted string list feeds into.
@@ -68,6 +70,65 @@ impl Locales {
             return Err(Error::Invalid("locale row past its blob".into()));
         }
         Ok(Self { rows, blob })
+    }
+
+    /// Reads the existing English rows and blob so that all of the base's
+    /// `unic` ranges, including those with repeated keys, keep their rows.
+    pub fn from_map<R: Read + Seek>(map: &mut Map<R>) -> Result<Self> {
+        let globals = map.globals().ok_or_else(|| Error::Invalid("no globals".into()))?;
+        let location = globals.location.ok_or_else(|| Error::Invalid("no globals data".into()))?;
+        if (location.size as usize) < MATG_DESCRIPTORS + 0x1c {
+            return Err(Error::Invalid("globals shorter than their English locale".into()));
+        }
+        let desc = map.read_file_range(location.file_offset()? + MATG_DESCRIPTORS as u64, 0x1c)?;
+        let field = |at: usize| u32::from_le_bytes(desc[at..at + 4].try_into().expect("word"));
+        let index_size = u64::from(field(8)) * 8;
+        let blob_size = u64::from(field(0xc));
+        let index = if index_size > 0 {
+            map.read_file_range(u64::from(field(0x10)), index_size)?
+        } else {
+            Vec::new()
+        };
+        let blob = if blob_size > 0 {
+            map.read_file_range(u64::from(field(0x14)), blob_size)?
+        } else {
+            Vec::new()
+        };
+        Self::extending(&index, blob)
+    }
+
+    /// Places the rebuilt English resources in the pinned file prefix. The
+    /// globals are still pinned while the scenario is written. Scratch and
+    /// prune builds relocate the resulting map's globals and resources.
+    pub fn install_pinned(&self, set: &mut TagSet) -> Result<()> {
+        let globals = set.globals;
+        let Some(TagPayload::Pinned { bytes, .. }) = set.tag(globals).map(|tag| &tag.payload) else {
+            return Err(Error::Invalid("expected pinned globals".into()));
+        };
+        if bytes.len() < MATG_DESCRIPTORS + 0x1c {
+            return Err(Error::Invalid("globals shorter than their English locale".into()));
+        }
+        let pin = set.pinned.as_mut().ok_or_else(|| Error::Invalid("expected pinned map".into()))?;
+        // The prefix starts immediately after the sector-aligned header.
+        let header_len = pin.header.len();
+        let index_at = append_locale(&mut pin.file, header_len, &self.index())?;
+        let blob_at = append_locale(&mut pin.file, header_len, self.blob())?;
+        let Some(TagPayload::Pinned { bytes, .. }) = set.tag_mut(globals).map(|tag| &mut tag.payload)
+        else {
+            unreachable!("checked globals before appending the resources");
+        };
+        let descriptor = &mut bytes[MATG_DESCRIPTORS..MATG_DESCRIPTORS + 0x1c];
+        descriptor[..8].fill(0);
+        descriptor[0x18] = 0;
+        for (at, word) in [
+            (8, self.rows.len() as u32),
+            (0xc, self.blob.len() as u32),
+            (0x10, index_at),
+            (0x14, blob_at),
+        ] {
+            descriptor[at..at + 4].copy_from_slice(&word.to_le_bytes());
+        }
+        Ok(())
     }
 
     /// Mints one row: `name` interned into `set` as the string ID, `text`
@@ -186,4 +247,17 @@ impl Locales {
         matg.put_u32(at + 0x10, index_offset);
         matg.put_u32(at + 0x14, blob_offset);
     }
+}
+
+fn append_locale(prefix: &mut Vec<u8>, header_len: usize, bytes: &[u8]) -> Result<u32> {
+    let start = prefix.len().next_multiple_of(SECTOR);
+    let offset = start + header_len;
+    let end = (start + bytes.len()).next_multiple_of(SECTOR);
+    if end + header_len >= 1 << 30 {
+        return Err(Error::Invalid("locale exceeds the map's raw address space".into()));
+    }
+    prefix.resize(start, 0);
+    prefix.extend_from_slice(bytes);
+    prefix.resize(end, 0);
+    Ok(offset as u32)
 }

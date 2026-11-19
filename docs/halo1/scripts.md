@@ -425,9 +425,12 @@ token at its index). Halo 2, 01b, 03a and 05a (the same, with the schema's
 strides). Two of 03a's six camera points put the position at `+0x24`
 instead; the two its scripts use (`e8_prediction`, `e1_prediction`) have it
 at `+0x28` and the orientation after it, the layout written here. Titles:
-the name string ID is the key into the level's text, which is not converted,
-so a title shows nothing yet; bounds, colour and timing are this crate's own
-defaults.
+Halo 1 stores the displayed-text index at title `+0x30` in its scenario
+help list (`scnr +0x584`). The script token names the title record. Its
+Halo 2 record uses the localized string ID at that index, from the
+`unic` referenced at `scnr +0x200`. Bounds, justification and both
+colours come from the Halo 1 title. The three durations are converted
+from 30 Hz ticks to seconds. The chapter font is 9 on 01b, 03a and 05a.
 
 **Seats.** A unit's seats block is `vehi +0x1c8`, `0xb0` each, the label
 string ID at `+4` (V: every `vehi` on 05a). A mapping element is a unit
@@ -460,17 +463,29 @@ models (`h1objects`' shader copies and bitmaps; `h1campaign::convert`).
 b40, which sat at the bound, takes the third step since the models gained
 those textures (tag memory `0xc23000` of `0xc24000`), so its hooks are as
 before and its objects draw with the base's model shader.
-Most `ai` hooks still left name Halo 1 platoons (`…_toon`) or encounters
-used as squads; Halo 2 has no platoons.
+Each referenced platoon becomes a child squad group of its encounter.
+A placement or actor list receives the encoded group index. Migration
+into a platoon uses the compatible destination squads chosen by
+`h1ai::control`, including empty squads. On a30, the first dropship
+places and loads the same landing platoon containing Grunts and Elites.
+
+**a30 mission flow.** Halo 1's 139 script definitions and 108 globals
+keep their indices. Each scenario-global reference takes its source type
+from its declaration. On disc, a30 contains references with opcode 0 and
+set targets with opcode 0xffff. The initial placement helper runs before
+the authored startup body and places only `mid_cliff_1`. The opening
+cutscene, both chapter titles, checkpoint waits, the eleven mission wakes
+and all three extraction branches are checked in the converted-map disc
+test. The extraction branches each call `game_time` three times. Two of
+the calls participate in waits. The clock and danger gates come from the
+unit/miscellaneous builtin family, while the recording, vehicle and HUD
+operations use their respective families. Mission flow adds no builtin slots.
 
 ## Open questions
 
 - The `unit_exit_vehicle` mode 1 default is not checked against Halo 2's
   evaluator (it is a hook, so the converter can change it). `ai_place`
   no longer passes a count (above).
-- `compile::add_startup_placements` appends a startup script of one-argument
-  `ai_place` calls, each squad an `ai` hook: h1campaign places Halo 1's
-  initially created encounters with it (ai.md).
 - Halo 2's string literals are fixed up at load from `+0xc`; the compiled
   string atoms put the same offset in the data word. Untested in the engine.
 - Salts: `0x8000 | slot`. The engine rebuilds occupancy from salts at load;
@@ -478,8 +493,6 @@ used as squads; Halo 2 has no platoons.
 - Names: Halo 2's 521 unnamed builtins may cover some "missing" Halo 1 names.
   Aligning the two tables by signature between named anchors could name
   some of them; not attempted.
-- Halo 1 encounter semantics (`ai` values name encounters, squads or
-  platoons) need the AI lane's mapping before AI hooks can be filled.
 
 ## Use
 

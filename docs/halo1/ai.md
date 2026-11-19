@@ -281,7 +281,7 @@ them into a map with `map::build::TagSet` and reads them back through
 | squad with no starting locations | kept, empty: no starting locations and counts 0, with a note. It can never spawn, but scripts name it (on a30 these are mostly the attack/defend/retreat squads Halo 1 maneuvers actors into). Retail Halo 2 has such squads too (06b: 28 of 170, `squad_flag_bits`). Until 2026-11-17 they were left out and their script names stayed `none`. The converter keeps only those the scripts name, and only while the level stays under the engine's squad cap (335, `h1campaign::scenario::MAX_SQUADS`, campaign.md §9): a50 (309 placed + 75 named empty) and b40 (283 + 67) leave them out, and their names resolve to a sibling squad: the encounter's first converted squad (`<encounter>/...`), or its squad group if it has none. Not the group first: Halo 2's `ai_migrate` (function 308, evaluator `0x002a54a0`) returns without moving anyone when the destination has either top bit set (`test ecx,0C0000000h` at `0x002a54cc`), so a squad group destination is a no-op, and `ai_attach_units` (287, through `0x002730c0` to `0x00273040`) reads the value's low 16 bits as a squad index (bounded by `scnr+0x160` at `0x0027305e`), so a group would name an unrelated squad |
 | actor variant | a retail character ([`character_for`]): one palette entry per distinct character |
 | command list | a point set of its name (points `p0`..), an order stub of its name, and a `CommandScript` (atoms by name, with their points) for the scripts lane |
-| conversations, platoons, move positions, respawn | not converted (noted) |
+| conversations, move positions, respawn | not converted (noted) |
 
 Values Halo 1 has no counterpart for come from the census (`Options`):
 firing position flags `0x42`, zone flags 1, area type 0, order style `-1`.
@@ -355,7 +355,8 @@ initially created") is set; on the ten levels almost all are set (a30:
 such default: no squad on any retail campaign map sets a placement flag
 (survey `squad_flag_bits`: only bits 8, 9 and 13, on a few squads), and
 retail scripts place every squad with `ai_place`. So `h1campaign` adds a
-startup script, `h1_initial_encounters`, placing the squad group of every
+helper, `h1_initial_encounters`, called first by the earliest authored
+startup script (or registered as startup when there is none). It places the group of every
 encounter with bit 0 clear (a30: `mid_cliff_1`), and Halo 1's own
 `ai_place` calls keep one argument, as most retail calls do
 (scripts.md). Squad flags stay 0.
@@ -376,7 +377,7 @@ out in `0xfe618`.
 - That the chosen characters, pulled into a Halo 1 level from other maps,
   load with their units, weapons and animations.
 - That orders with no endings, and order stubs with no areas, are harmless.
-- Halo 1 behaviour carried by the dropped data: platoons, move positions,
+- Halo 1 behaviour carried by the dropped data: move positions,
   respawning, maneuvers into the empty squads, conversations.
 
 ## Open questions

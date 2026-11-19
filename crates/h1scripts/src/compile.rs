@@ -372,7 +372,7 @@ pub fn compile_with_ai(
     Ok(c.out)
 }
 
-/// Appends a startup script `name` that places each of `squads` with a
+/// Adds a script `name` run at startup that places each of `squads` with a
 /// one-argument `ai_place`, each squad an `ai` atom hooked with its name
 /// (the converter resolves it like any other). Halo 1 creates an encounter
 /// at load unless it is flagged "not initially created"; Halo 2 places
@@ -402,6 +402,15 @@ pub fn add_startup_placements(
         .first()
         .ok_or_else(|| invalid("ai_place takes no squad"))?;
     let type_name = h2.types.get(ai as usize).cloned().unwrap_or_default();
+    let startup = out.scripts.iter().position(|row| row[32..34] == [0, 0]);
+    let i = out.scripts.len();
+    let index = u16::try_from(i).map_err(|_| invalid("too many HS scripts"))?;
+    let kind = if startup.is_some() { 3 } else { 0 };
+    let mut helper = definition(name, kind, h2t::VOID, Datum::NULL, i)?;
+    let added = squads.len().saturating_mul(3).saturating_add(2 + 4 * usize::from(startup.is_some()));
+    if out.nodes.len().saturating_add(added) > MAX_NODES {
+        return Err(invalid(format!("startup placements exceed Halo 2's {MAX_NODES} nodes")));
+    }
     let push = |out: &mut Compiled, opcode: u16, ty: u16, flags: u16, token: &[u8], data: u32| {
         let string = out.strings.len() as u32;
         out.strings.extend_from_slice(token);
@@ -449,14 +458,17 @@ pub fn add_startup_placements(
         calls.push(call(out, &place, b"ai_place", &[atom]));
     }
     let body = call(out, &begin, b"begin", &calls);
-    let i = out.scripts.len();
-    out.scripts.push(definition(name, 0, h2t::VOID, body, i)?);
-    if out.nodes.len() > MAX_NODES {
-        return Err(invalid(format!(
-            "{} nodes, Halo 2 holds {MAX_NODES}",
-            out.nodes.len()
-        )));
+    helper[36..40].copy_from_slice(&body.0.to_le_bytes());
+    // Keep every authored script index. Run the placements before the
+    // first startup script can inspect an encounter or wake a mission.
+    if let Some(startup) = startup {
+        let original = Datum(u32::from_le_bytes(out.scripts[startup][36..40].try_into().unwrap()));
+        let head = push(out, index, h2t::FUNCTION_NAME, ATOM, name.as_bytes(), 0);
+        let invoke = push(out, index, h2t::VOID, SCRIPT_CALL, b"", head.0);
+        let root = call(out, &begin, b"begin", &[invoke, original]);
+        out.scripts[startup][36..40].copy_from_slice(&root.0.to_le_bytes());
     }
+    out.scripts.push(helper);
     Ok(())
 }
 
@@ -1097,9 +1109,15 @@ impl Compiler<'_> {
             let index = n.data() as u16;
             let name = String::from_utf8_lossy(&token).into_owned();
             if index & 0x8000 == 0 {
+                // A reference can carry 0 or 0xffff as its source opcode,
+                // particularly on the left of set. The declaration owns the type.
+                let global = self.t.globals.get(usize::from(index)).ok_or_else(|| {
+                    invalid(format!("{}: global index {index} out of range", self.definition))
+                })?;
+                let source = self.ty(global.value_type)?;
                 let string = self.intern(&token);
                 return Ok(self.push(New {
-                    opcode: self.table.ty(n.opcode()).unwrap_or(n.opcode()),
+                    opcode: source,
                     ty: expected,
                     flags: GLOBAL,
                     string,
