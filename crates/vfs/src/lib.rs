@@ -1,7 +1,7 @@
 //! Xbox object-manager storage, independent of guest memory and kernel ABI packing.
 //!
 //! See `docs/runtime/storage.md` for mappings, supported semantics, and the integration contract.
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 mod backend;
 mod campaign_maps;

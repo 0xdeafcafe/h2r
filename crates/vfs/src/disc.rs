@@ -184,6 +184,8 @@ impl<R: Read + Seek + Send> Backend for DiscBackend<R> {
 
 /// Only the DVD input in the immutable-disc profile is mapped. The title
 /// may replace or truncate its writable cache files and installed maps.
+// The crate denies unsafe code; this read-only map is its one exception.
+#[allow(unsafe_code)]
 pub(crate) fn map_read_only(file: &File) -> Option<memmap2::Mmap> {
     if !file.metadata().ok()?.is_file() {
         return None;
