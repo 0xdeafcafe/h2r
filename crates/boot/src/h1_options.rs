@@ -105,7 +105,7 @@ pub static ASSETS: OptionRow = OptionRow {
         "its characters, weapons and vehicles.",
         "Halo 2's; cutscenes stay Halo 1's. From the next level.",
     ],
-    help: "Characters, weapons and vehicles, from the next level.",
+    help: "Characters, weapons, vehicles: from the next level.",
 };
 
 pub static HUD: OptionRow = OptionRow {
