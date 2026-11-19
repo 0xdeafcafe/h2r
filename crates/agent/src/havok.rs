@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 
 use agent_proto::havok::{
-    Bodies, BodiesParams, Body, Contact, Contacts, ContactsParams, Point, Side, method,
+    Bodies, BodiesParams, Body, Contact, Contacts, ContactsParams, Point, Shape, Side, method,
 };
 use agent_proto::{Kind, Object, ObjectId, RpcError, code};
 use live_telemetry::havok::{self as hk, IslandState};
@@ -50,7 +50,10 @@ fn ids(objects: &[Object]) -> HashMap<u32, String> {
 }
 
 /// The datum an id names, among the listed objects.
-fn resolve(objects: &[Object], id: &str) -> Result<(u32, Option<[f64; 3]>), RpcError> {
+pub(crate) fn resolve(
+    objects: &[Object],
+    id: &str,
+) -> Result<(u32, Option<[f64; 3]>), RpcError> {
     if ObjectId::parse(id).is_none() {
         return Err(RpcError::new(
             code::INVALID_PARAMS,
@@ -124,7 +127,49 @@ fn wire_body(b: &hk::Body, ids: &HashMap<u32, String>) -> Body {
         friction: b.friction,
         restitution: b.restitution,
         distance: None,
+        shape: b.shape.as_ref().map(wire_shape),
     }
+}
+
+fn wire_shape(s: &hk::Shape) -> Shape {
+    let mut out = Shape {
+        addr: hex(s.addr),
+        vtable: hex(s.vtable),
+        ..Default::default()
+    };
+    let kind = match &s.kind {
+        hk::ShapeKind::Capsule { a, b, radius } => {
+            out.a = Some(*a);
+            out.b = Some(*b);
+            out.radius = Some(*radius);
+            out.height = Some(dist(*a, *b) + 2.0 * radius);
+            "capsule"
+        }
+        hk::ShapeKind::Sphere { radius } => {
+            out.radius = Some(*radius);
+            "sphere"
+        }
+        hk::ShapeKind::Transform {
+            translation,
+            child,
+            child_shape,
+        } => {
+            out.translation = Some(*translation);
+            out.child = Some(Box::new(match child_shape {
+                Some(c) => wire_shape(c),
+                // A child that did not read: its address only.
+                None => Shape {
+                    addr: hex(*child),
+                    kind: "unread".into(),
+                    ..Default::default()
+                },
+            }));
+            "transform"
+        }
+        hk::ShapeKind::Other => "other",
+    };
+    out.kind = kind.to_owned();
+    out
 }
 
 fn dist(a: [f64; 3], b: [f64; 3]) -> f64 {
@@ -248,6 +293,7 @@ mod tests {
             inv_mass: 0.0125,
             friction: 0.6,
             restitution: 0.1,
+            shape: None,
         }
     }
 
@@ -308,6 +354,44 @@ mod tests {
         assert_eq!(r.bodies[2].datum.as_deref(), Some("e0030003"));
         assert_eq!(r.bodies[3].state, "fixed");
         assert_eq!(r.bodies[3].datum, None);
+    }
+
+    #[test]
+    fn bodies_carry_their_shape() {
+        let (mut raw, objects) = world();
+        raw[0].shape = Some(hk::Shape {
+            addr: 0x0070_0000,
+            vtable: 0x0045_5500,
+            kind: hk::ShapeKind::Capsule {
+                a: [0.0, 0.0, 0.175],
+                b: [0.0, 0.0, 0.375],
+                radius: 0.175,
+            },
+        });
+        raw[1].shape = Some(hk::Shape {
+            addr: 0x0070_1000,
+            vtable: 0x0045_5498,
+            kind: hk::ShapeKind::Transform {
+                translation: [0.0, 0.0, 0.3],
+                child: 0x0070_2000,
+                child_shape: None,
+            },
+        });
+        let r = answer_bodies(&raw, &objects, &BodiesParams::default()).unwrap();
+        let s = r.bodies[0].shape.as_ref().unwrap();
+        assert_eq!((s.addr.as_str(), s.vtable.as_str()), ("00700000", "00455500"));
+        assert_eq!(s.kind, "capsule");
+        assert_eq!(s.radius, Some(0.175));
+        // 0.2 between the ends, 0.35 of caps: the crouching pill's 0.55.
+        assert!((s.height.unwrap() - 0.55).abs() < 1e-9);
+        let t = r.bodies[1].shape.as_ref().unwrap();
+        assert_eq!(t.kind, "transform");
+        assert_eq!(t.translation, Some([0.0, 0.0, 0.3]));
+        let c = t.child.as_ref().unwrap();
+        assert_eq!((c.addr.as_str(), c.kind.as_str()), ("00702000", "unread"));
+        assert!(r.bodies[2].shape.is_none());
+        let v = serde_json::to_value(&r.bodies[2]).unwrap();
+        assert!(v.get("shape").is_none(), "{v}");
     }
 
     #[test]

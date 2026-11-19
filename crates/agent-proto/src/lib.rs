@@ -18,6 +18,7 @@ pub mod havok;
 pub mod hot;
 mod load;
 mod pad;
+pub mod raw;
 mod render;
 pub mod sim;
 pub mod state;

@@ -11,6 +11,8 @@ mod agent_flight;
 #[cfg(unix)]
 mod agent_hot_cmd;
 #[cfg(unix)]
+mod agent_raw;
+#[cfg(unix)]
 mod agent_run;
 mod agent_sim;
 mod testmap_cmd;

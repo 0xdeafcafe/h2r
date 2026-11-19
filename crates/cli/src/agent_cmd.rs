@@ -88,6 +88,7 @@ or a short form:
 {HOT}
 {SIM}
 {FLIGHT}
+{RAW}
 
 Input calls need no claim while nobody holds control; once a connection
 does, only it may send them. Queued steps outlive the connection and play out.
@@ -105,6 +106,7 @@ fn usage() -> String {
         .replace("{HOT}", crate::agent_hot_cmd::USAGE)
         .replace("{SIM}", crate::agent_sim::USAGE)
         .replace("{FLIGHT}", crate::agent_flight::USAGE)
+        .replace("{RAW}", crate::agent_raw::USAGE)
 }
 
 pub fn run(args: Vec<String>) -> Result<()> {
@@ -147,6 +149,9 @@ pub fn run(args: Vec<String>) -> Result<()> {
     // Reads a file; no game needed.
     if first == "flight" && rest.get(1).is_some_and(|w| w == "show") {
         return crate::agent_flight::show(&rest[2..]);
+    }
+    if first == "raw-diff" {
+        return crate::agent_raw::diff_files(&rest[1..]);
     }
     let path = socket.unwrap_or_else(agent_proto::default_socket);
     let mut c = Client::connect(&path).with_context(|| {
@@ -505,6 +510,9 @@ fn parse_call(words: &[String]) -> Result<(String, Value)> {
         return hot;
     }
     if let Some(r) = crate::agent_flight::parse(words) {
+        return r;
+    }
+    if let Some(r) = crate::agent_raw::parse(words) {
         return r;
     }
     let name = words[0].as_str();
