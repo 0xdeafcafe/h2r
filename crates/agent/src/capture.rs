@@ -426,7 +426,11 @@ mod tests {
     fn the_csv_has_a_row_per_frame_with_its_tick_and_map() {
         let dir = std::env::temp_dir().join(format!("h2-agent-csv-{}", std::process::id()));
         let path = dir.join("rows.csv");
-        let frames = [frame(7, 10, 10, 2, 3), frame(8, 1_200, 30, 20, 5)];
+        let mut frames = [frame(7, 10, 10, 2, 3), frame(8, 1_200, 30, 20, 5)];
+        let field = "native_particles_v1_display_ranges";
+        let (slot, _) = timeline::phase::counter_columns().find(|(_, label)| *label == field).unwrap();
+        frames[1].counts[slot] = 21;
+        assert_eq!(summarise(&frames, &marks(), 33.3, 2).counts[field].total, 21);
         write_csv(&path, &frames, &marks()).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
@@ -440,5 +444,7 @@ mod tests {
         );
         assert!(lines[2].starts_with("8,1200.000,530,"), "{}", lines[2]);
         assert_eq!(lines[1].split(',').count(), 6 + PHASES + COUNTERS);
+        let column = lines[0].split(',').position(|s| s == field).unwrap();
+        assert_eq!(lines[2].split(',').nth(column), Some("21"));
     }
 }

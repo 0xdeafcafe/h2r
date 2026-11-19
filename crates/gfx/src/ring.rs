@@ -202,6 +202,7 @@ impl SubmissionUploads {
     /// Allocate immutable bytes for a run. Returns a COPY_SRC region usable in
     /// this copy's encoder. A buffer is allocated only when a pass uploads data.
     pub fn stage(&self, device: &wgpu::Device, queue: &wgpu::Queue, bytes: &[u8]) -> (wgpu::Buffer, u64) {
+        crate::churn::upload_bytes(bytes.len());
         let mut guard = self.0.ring.lock().unwrap_or_else(|e| e.into_inner());
         let ring = guard.get_or_insert_with(|| {
             self.0.pool.0.lock().unwrap_or_else(|e| e.into_inner()).pop().unwrap_or_else(|| {
