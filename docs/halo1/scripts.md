@@ -200,7 +200,22 @@ descriptors with plausible signatures (241 `(unit) -> short`, 600
 `(sound) -> long`, 586 and 587 `() -> boolean`) are not named: their
 neighbours do not pin them down. Each is added only when that index is
 unnamed and its signature matches. The neighbours and reasons are in the
-module. Only the recordings have more than position as evidence.
+module.
+
+**Recording builtins. Built.** The six translations use Halo 2's native
+evaluators. The rebuilt recording block retains the Halo 1 indices.
+
+| Halo 1 call | Halo 2 opcode | Xbox evaluator evidence |
+|---|---:|---|
+| `recording_play` | 138 | `0x2a2d1c` calls the scenario recording player at `0x1fb360` with flags 0 |
+| `recording_play_and_delete` | 139 | `0x2a2d7c` calls the same player with flag 8. Completion tests it at `0x1fb6a9` |
+| `recording_play_and_hover` | 140 | `0x2a2ddc` calls the player with flag `0x10`. Completion calls the vehicle hover function at `0x1fb6d2` |
+| `recording_kill` | 141 | `0x2a2e30` finds the unit's active recording. `0x2a2e3a` sets its stop flags |
+| `recording_time` | 142 | `0x2a2e84` calls the remaining-ticks query at `0x1fb4c0` |
+| `vehicle_hover` | 621 | `0x2aa4ae` calls `0xf0fd0`, also used by play-and-hover completion |
+
+The disc test `script_calls_reach_the_native_recording_player` checks the
+translations, evaluator addresses and call targets against the two XBEs.
 
 Object, AI, device, trigger volume, cutscene, tag, enum and string ID values
 keep their Halo 1 token and become hooks (step 3); AI encounters map to

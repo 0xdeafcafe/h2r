@@ -1,0 +1,10 @@
+# Scenario +0x110. The disc scenarios leave this block empty.
+struct recorded_animation 0x34
+  0x0 u8[32] name -- V Halo 1 recording names resolve by index in the scripts
+  0x20 u8 version -- E 0x001fb402 selects the decoder
+  0x21 pad 1 -- E 0x001fb402 and 0x001fb422 read the adjacent version bytes
+  0x22 u8 control_version -- E 0x001fb422 selects the initial unit control layout
+  0x23 pad 1
+  0x24 i16 ticks -- E 0x001fb3f4 loads the remaining ticks
+  0x26 pad 6
+  0x2c data stream align 4 -- E 0x001fb3fc takes the event stream pointer

@@ -379,7 +379,7 @@ pub enum Lean {
     ObjectTextures,
     /// The looping sounds (music and ambience) the scripts name.
     Music,
-    /// The cutscenes' animation graphs and recorded animations
+    /// The cutscenes' animation graphs. Gameplay recordings stay installed
     /// ([`cutscenes`]).
     CutsceneData,
     /// The level data the scripts name (cutscene flags, camera points,

@@ -124,8 +124,8 @@ Each step is proven with tests; the user plays the result.
    `Missing::Stub`, hooks resolved to the placed names, trigger volumes,
    squads and the sounds the scripts name.
 7. **Cutscenes, sound and dialogue, text and HUD, checkpoints.**
-   Until cutscene animation and recordings are converted, the converter
-   skips Halo 1's cinematics and a10's tutorial (§9, Cutscenes).
+   The converter rebuilds cutscene graphs and recordings. Per-level
+   policy selects the cinematics and a10 tutorial path (§9, Cutscenes).
 8. **Menus.** The campaign picker and its level list (§4), and progress
    saved per campaign. **Built** ([campaign-picker.md](campaign-picker.md)),
    confirmed in the game.
@@ -515,7 +515,7 @@ compiles every call of the level's `cinematic_skip_start` guard as
 | a10 | `PlayShortPaths` | every cutscene converts; the tutorial is the progression lane's |
 | a30, a50, b30, c20, d20 | `Play` | every cutscene converts |
 | c10, c40 | `Play` | every cutscene converts; the command lists that walk actors through x50 and c40's cinematics are stubbed (they stand) |
-| b40 | `Skip` | at the tag memory bound: converted without level data, graphs and recordings (`Lean::LevelData`), so its cinematics would have no camera points, flags or animations |
+| b40 | `Skip` | at the tag memory bound: converted without level data and graphs (`Lean::LevelData`), so its cinematics would have no camera points, flags or animations |
 | d40 | `Skip` | over the campaign cache's file size (`0x11800000`) with its cutscene graphs: they need `0x1baa00` bytes of animation data and `0x7c000` are left, so its characters would not animate |
 
 What a cutscene needed (survey `cutscene_survey`, h1campaign
@@ -539,40 +539,44 @@ What a cutscene needed (survey `cutscene_survey`, h1campaign
   characters already have their own Halo 1 model and graph (h1objects'
   placed bipeds, on the Chief's template), so a cinematic graph animates
   the skeleton it was made for. 9 graphs on a10, 2 to 9 elsewhere.
-- **Recorded animations.** Halo 2 keeps them: E, `0x001fb360` (called by
-  builtins 138, 139 and 140 with play flags 0, 8 and `0x10`) bounds the
-  index by `scnr +0x110` and reads `0x34`-byte elements at `+0x114`:
-  version `+0x20`, unit control data version `+0x22`, length `+0x24`, the
-  event stream's pointer `+0x30`. That is Halo 1's element (`scnr
-  +0x36c`, `0x40`) with Halo 2's 8-byte data reference. No retail Halo 2
-  scenario has one. `read_recordings`/`recordings_block` copy the first
-  `0x2c` bytes and the stream as they are; `cutscene_recording` hooks
-  are the index in Halo 1's order. Every recording on the ten levels is
-  version 4 (Halo 2's decoder table at `0x0046fd5c` has four versions);
-  unit control versions 0, 3 and 4. `recording_play`, `_and_delete`,
-  `_and_hover`, `recording_kill` and `recording_time` are 138 to 142.
-  **Streams rewritten (converter version 28).** Copied as they are,
-  Halo 1's streams faulted Halo 2's player (a30 and a50 headless: calls
-  to pc 4 and pc 1 from `0x0029f13d`, under `0x001fb61e`), and version
-  27 held the five builtins as stubs. Both games' version-4 players are
-  the same loop: a header byte whose low two bits give the delay (none,
-  one tick, a byte, a short) and whose upper six bits are the event type,
-  dispatched through a handler table with no bound (Halo 2 `0x004710f0`,
-  24 types; Halo 1 `0x00232538`, 23). The payloads differ in one place:
-  control flags (type 4) are two bytes in Halo 1 and four in Halo 2, so
-  Halo 2 lost its place in 189 of the 349 streams, most of them then
-  reading a payload byte as a type past the table (the word after it is
-  `0x00000001`). The
-  initial unit control state differs too (Halo 2's fields are wider).
-  `h1campaign::recordings` rewrites each stream: the state field by
-  field, flag events widened, animation-state events (Halo 2's state is
-  a mode string ID a byte cannot carry) folded into the initial mode,
-  and only Halo 1's movement and stance flags (bits 0 to 9) kept: Halo 2
-  moved the weapon actions to its high half, so recorded units move and
-  look but do not fire. The disc test `every_converted_recording_walks_in_halo_2`
-  walks every rewritten stream through Halo 2's table, and
-  `decoder_tables_match_the_executables` checks the tables against both
-  `default.xbe` files.
+- **Recorded animations. Built.** Halo 2's player at `0x1fb360` bounds the
+  index by `scnr +0x110`. Each row is `0x34` bytes, with stream version
+  at `+0x20`, unit control version at `+0x22`, duration at `+0x24` and
+  the event-stream pointer at `+0x30`. The writer reads the Halo 1 rows
+  at `scnr +0x36c` (stride `0x40`) and builds fresh rows from the
+  `recorded_animation` definition. Script references use the original
+  ordering. Each stream gets a relocatable Halo 2 data reference. The
+  writer includes the block when building without scripts and throughout
+  the lean ladder.
+- **Control streams and playback. Built.** The ten Halo 1 campaign levels
+  contain 349 version-4 streams, using unit control versions 0, 3 and 4.
+  The Xbox decoder loops at H1 `0x119910` and H2 `0x29f0c0` agree on
+  event types and delays. The initial layouts differ, and a flag event
+  grows from two payload bytes to four. Reading the original encoding
+  directly loses event framing on 189 streams. The encoder rebuilds the
+  initial state, translates the flags and preserves each delay, control
+  delta and end event. An unsupported stream fails conversion with its name.
+  H1 control bits 2, 3, 14 and 15 have no observed campaign use and are
+  rejected if encountered.
+
+  All 73 timed animation-state changes retain their original tick. The
+  Halo 2 type-2 handler (`0x29ec30`) sign-extends a single byte. A
+  converted stream carries the low byte of the target mode, which the
+  playback adapter expands to its full string ID. Only calls from the
+  recording player (`0x1fb630`) carrying both single-weapon markers take
+  this path. At that boundary the adapter also resolves inventory
+  generation and the other hand's current slot. H1's `-1` slot means
+  keep the current weapon (H1 `0x3b3d3`, H2 `0xc6e2b`).
+  Crouch, jump, throttle, facing, aim, weapon triggers and reload go
+  through the native unit control reader. The biped's held-facing and the forced-alert
+  overrides apply to a private copy of the current tick. Grenade and
+  seat-exit requests use the ordinary Halo 2 unit actions (`0x14fe58`,
+  `0x14fb55`). The decoder keeps its own state across ticks.
+- **Recording script calls. Built.** The existing signature-checked
+  translations select the native play, play-and-delete, play-and-hover,
+  kill and time builtins (138–142), and vehicle hover (621). The Xbox
+  evaluators and their native call targets are listed in
+  [scripts.md](scripts.md#builtins-named-by-position).
 - **Camera.** `camera_set`, `camera_control`, `camera_time` map directly;
   `camera_set_relative` (451), `camera_set_first_person` (456) and
   `camera_set_dead` (457, an object in Halo 2) by position. No level
@@ -592,7 +596,7 @@ What a cutscene needed (survey `cutscene_survey`, h1campaign
   `object_set_facing` (106), `object_pvs_set_camera` (471), `show_hud`
   (625, the first of three boolean-to-boolean builtins there),
   `unit_open`/`unit_close` (194, 195), `unit_suspended` (249),
-  `unit_enter_vehicle` (216) and `vehicle_hover` (621) by position.
+  and `unit_enter_vehicle` (216) by position.
 
 Still stubbed inside cinematics (`cutscenes_convert_and_read_back` lists
 them per level; none is waited on): `object_beautify`,
@@ -671,8 +675,8 @@ crew, the hangar marines. Skipped cinematics never create them.
 
 **Tag memory and file size.** Graphs put their animation data in the
 map file (raw; the campaign cache bounds the file at `0x11800000`),
-recordings their streams in tag memory, inside the scenario. Per level, tag memory and file with them, and tag memory
-without (`Options::cutscene_data` off):
+recordings their streams in tag memory, inside the scenario. These
+measurements predate the change to keep recordings on every lean step. The Without column uses `Options::cutscene_data` off.
 
 | Level | Graph data | Recordings (bytes) | Tag memory | Without | File |
 |---|---|---|---|---|---|
@@ -694,11 +698,11 @@ d40 keep everything.
 
 a10's jump (`0x7f000`) is its scenario no longer fitting the base
 scenario's old range and being appended (`0xb512c` bytes). The lean
-ladder (`h1campaign::Lean`) drops the graphs and recordings
+ladder (`h1campaign::Lean`) drops the graphs
 (`CutsceneData`) after the music and before the level data; a level over
 the campaign cache's file size is converted again with less music, then
 without the background sounds, then without the graphs (Engine caps, "Music, ambience and the map file"). To play b40's cutscenes, b40 needs
-its level data plus the cinematics' graphs and 24 recordings back, which
+its level data plus the cinematics' graphs back, which
 is what dropping the base level's unreachable tags (`h1convert::fresh`'s
 prune, for campaign) would free; d40 needs `0x1baa00` bytes of file, which
 the same prune frees from the base's raw.
@@ -714,8 +718,7 @@ Proof: `skipped_cutscenes_take_halo1_s_skip_path`,
 `skipped_cutscenes_on_every_level` (h1scripts disc);
 `cutscenes_convert_and_read_back` (h1campaign disc, `H1_LEVELS` for
 some): per level, played, it converts, reopens the map and checks that
-`scnr +0x110` holds Halo 1's recordings in order with their streams byte
-for byte, and that every graph it converted is a `jmad` under its name;
+`scnr +0x110` holds the named recording rows in order with their re-encoded streams, and that every graph it converted is a `jmad` under its name;
 `every_level_s_scripts_run_on_the_retail_interpreter` with the
 identified builtins; `a30_converts_onto_its_base_and_reads_back` checks
 every placement's flags against Halo 1's; `h1_placement_flags` and
@@ -726,7 +729,7 @@ version-4 event streams and unit control data as recorded; that
 `custom_animation` takes a converted graph on a converted biped (node
 list checksums are Halo 1's on both); every identified builtin's
 behaviour (they are found by position and signature, E only for the
-recordings); the dialogue sleeps lining up with the converted sounds.
+recordings and vehicle hover); the dialogue sleeps lining up with the converted sounds.
 
 **Proof.** `H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso cargo test
 --release -p h1campaign --test disc -- --ignored --nocapture`.
@@ -846,8 +849,8 @@ The bound is `0xc24000`; the base alone is `0xaed000`.
   it is converted again leaner (`h1campaign::convert`, `Lean`), dropping
   in turn: the empty squads kept for their names (`EmptySquads`), the
   seat table (`SeatTable`), Halo 1's textures on object models
-  (`ObjectTextures`), the music (`Music`), the cutscenes' graphs and
-  recordings (`CutsceneData`), the level data (`LevelData`). A level
+  (`ObjectTextures`), the music (`Music`), the cutscenes' graphs
+  (`CutsceneData`), the level data (`LevelData`). A level
   still over this bound or the file's (below) places fewer devices
   (`Options::devices`): no light fixtures (lamp models that give no
   light in Halo 2), then none. b40 still
