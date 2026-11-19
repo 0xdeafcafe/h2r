@@ -785,35 +785,17 @@ impl GpuWorld {
     /// draw's index ranges from the active gathered cluster items),
     /// added into the target over the depth
     /// (loaded and kept), in order. Nothing without [`Self::set_lights`].
-    /// Returns how many ranges were drawn.
-    #[allow(clippy::too_many_arguments)]
+    /// Returns the bundles and their range count.
     pub fn prepare_lights(
         &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        color_format: wgpu::TextureFormat,
-        depth_format: wgpu::TextureFormat,
+        target: &d3d::ExternalTarget<'_>,
         view: &ViewInputs,
         draws: &[LightDraw<'_>],
-        batch: Option<u64>,
-        copy: d3d::TargetCopy,
         stage_image: &mut dyn FnMut(usize, LightStage) -> Option<Image>,
         gel_image: &mut dyn FnMut(u32) -> Option<Image>,
     ) -> Option<crate::light_gpu::LightBundles> {
-        let set = self.lights.as_mut()?;
-        set.bundles(
-            device,
-            queue,
-            &self.program_vertices,
-            &self.indices,
-            color_format,
-            depth_format,
-            view,
-            draws,
-            batch,
-            copy,
-            stage_image,
-            gel_image,
+        self.lights.as_mut()?.bundles(
+            target, &self.program_vertices, &self.indices, view, draws, stage_image, gel_image,
         )
     }
 

@@ -122,37 +122,45 @@ struct DrawCmd {
 /// The pending batch, shared with the texture proxies so that their drops
 /// keep their place in the order.
 struct Queue<B: Backend> {
-    pending: Mutex<Vec<Cmd<B>>>,
-    /// Changes at every command outside the pinned external run.
-    order: AtomicU64,
+    pending: Mutex<PendingBatch<B>>,
     tx: mpsc::Sender<Vec<Cmd<B>>>,
+}
+
+struct PendingBatch<B: Backend> {
+    commands: Vec<Cmd<B>>,
+    /// Changes at every command outside the pinned external run.
+    order: u64,
 }
 
 impl<B: Backend> Queue<B> {
     /// Queues `cmd`; hands the batch over once it is [`BATCH`] long.
     fn push(&self, cmd: Cmd<B>) -> Result<(), ()> {
         let mut p = self.pending.lock().unwrap();
-        p.push(cmd);
-        self.order.fetch_add(1, Ordering::Relaxed);
-        if p.len() >= BATCH {
-            return self.send(&mut p);
+        p.commands.push(cmd);
+        p.order = p.order.wrapping_add(1);
+        if p.commands.len() >= BATCH {
+            return self.send(&mut p.commands);
         }
         Ok(())
     }
     fn push_external(&self, recording: ExternalRecording) -> Result<(), ()> {
         let mut pending = self.pending.lock().unwrap();
-        if let Some(Cmd::ExternalRun(run)) = pending.last_mut() {
+        if let Some(Cmd::ExternalRun(run)) = pending.commands.last_mut() {
             run.push(recording);
         } else {
-            pending.push(Cmd::ExternalRun(vec![recording]));
+            pending.commands.push(Cmd::ExternalRun(vec![recording]));
         }
-        if pending.len() >= BATCH { self.send(&mut pending)?; }
+        if pending.commands.len() >= BATCH { self.send(&mut pending.commands)?; }
         Ok(())
+    }
+
+    fn order(&self) -> u64 {
+        self.pending.lock().unwrap().order
     }
 
     /// Hands the pending batch to the render thread.
     fn flush(&self) -> Result<(), ()> {
-        self.send(&mut self.pending.lock().unwrap())
+        self.send(&mut self.pending.lock().unwrap().commands)
     }
     /// Sends under the lock, so batches leave in the order they filled.
     fn send(&self, p: &mut Vec<Cmd<B>>) -> Result<(), ()> {
@@ -561,8 +569,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
             })?;
         Ok(Self {
             queue: Arc::new(Queue {
-                pending: Mutex::new(Vec::with_capacity(BATCH)),
-                order: AtomicU64::new(0),
+                pending: Mutex::new(PendingBatch { commands: Vec::with_capacity(BATCH), order: 0 }),
                 tx,
             }),
             spare: Vec::new(),
@@ -739,7 +746,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
     ) -> Result<ExternalCopies<Arc<[ExternalAttachments]>>, String> {
         self.check()?;
         let key = (run, surfaces.color, surfaces.depth, copy);
-        let order = self.queue.order.load(Ordering::Relaxed);
+        let order = self.queue.order();
         if let Some(pinned) = self.pinned_external_run.as_ref()
             && (pinned.key, pinned.order) == (key, order)
         {
@@ -752,7 +759,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
             ExternalCopies::Ready(attachments) => {
                 let attachments: Arc<[_]> = attachments.into();
                 self.pinned_external_run = Some(PinnedExternalRun {
-                    key, order: self.queue.order.load(Ordering::Relaxed),
+                    key, order: self.queue.order(),
                     attachments: Arc::clone(&attachments),
                 });
                 ExternalCopies::Ready(attachments)
@@ -1273,11 +1280,11 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         })
     }
 
-    fn queue_world_draw(
-        &mut self, candidate: crate::backend::QueuedWorldDraw<u32>,
+    fn queue_external_draw(
+        &mut self, candidate: crate::backend::QueuedExternalDraw<u32>,
         textures: [Option<&Self::Texture>; 4],
     ) -> bool {
-        if candidate.plan.stage != timeline::native::Stage::World || !self.external_pass
+        if !self.external_pass
             || self.check().is_err() || self.judge.is_none()
             || self.judge_draw(&candidate.fallback, textures) != DrawOutcome::Drawn
         {
@@ -1287,7 +1294,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         self.post(move |w| {
             let draw = candidate.fallback;
             let color = w.surface(candidate.surfaces.color)?;
-            let depth = w.surface(candidate.surfaces.depth)?;
+            let depth = w.depth(candidate.fallback_depth)?;
             let mut textures = [None; 4];
             for (slot, id) in textures.iter_mut().zip(ids) {
                 if let Some(id) = id {
@@ -1304,7 +1311,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
                 (candidate.finished)(None);
                 return Ok(());
             }
-            let result = w.inner.draw(color, Some(depth), &draw, textures);
+            let result = w.inner.draw(color, depth, &draw, textures);
             (candidate.finished)(Some(&result));
             let outcome = result?;
             if outcome != DrawOutcome::Drawn {

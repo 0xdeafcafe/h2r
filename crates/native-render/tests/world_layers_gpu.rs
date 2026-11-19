@@ -389,7 +389,7 @@ fn queued_world_draws_choose_native_or_d3d_in_order_without_waiting() {
             if queued {
                 let pass = IndexedPass::new(&draw, cache.clone(), 1, None).unwrap();
                 let results = outcomes.clone();
-                let candidate = d3d::backend::QueuedWorldDraw {
+                let candidate = d3d::backend::QueuedExternalDraw {
                     surfaces: ExternalSurfaces {
                         color,
                         depth,
@@ -409,12 +409,13 @@ fn queued_world_draws_choose_native_or_d3d_in_order_without_waiting() {
                         slots: vec![],
                     },
                     fallback: pass.resolved_fallback().unwrap(),
+                    fallback_depth: Some(depth),
                     pass: Arc::new(Mutex::new(Box::new(pass))),
                     finished: Box::new(move |fallback| {
                         results.lock().unwrap().push((i, fallback.cloned()));
                     }),
                 };
-                assert!(backend.queue_world_draw(candidate, [None; 4]));
+                assert!(backend.queue_external_draw(candidate, [None; 4]));
             } else {
                 assert_eq!(
                     backend.draw(color, Some(depth), &draw, [None; 4]),

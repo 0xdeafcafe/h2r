@@ -949,7 +949,7 @@ impl PreparedLight {
             gel: c.gel,
             gel_view: None,
             gel_scale: self.binding.map(Binding::tex_scale),
-            ranges: p.ranges.clone(),
+            ranges: &p.ranges,
         }
     }
 }
@@ -997,7 +997,7 @@ impl d3d::ExternalPass for RunPass {
 
     fn record_bundles(&mut self, target: &mut d3d::ExternalTarget<'_>) -> Option<d3d::backend::ExternalBundles> {
         let (recorded, scissor) = self.bundles[usize::from(target.copy == d3d::TargetCopy::Display)].take()?;
-        Some(recorded.into_packet(target, self.key, scissor))
+        Some(recorded.into_packet(self.key, scissor))
     }
 
     fn view_constants(&mut self, constants: &[[f32; 4]; d3d::VIEW_CONSTANTS]) {
@@ -1044,8 +1044,7 @@ impl RunPass {
             draw
         }).collect();
         let recorded = gpu.prepare_lights(
-            t.device, t.queue, t.color_format, t.depth_format, &view, &draws,
-            self.batch.then_some(self.key), t.copy,
+            t, &view, &draws,
             &mut |stage, s| match s {
                 LightStage::Bitmap { bitmap, image } => lw.images.get(&(stage, bitmap, image)).cloned(),
                 _ => None,
