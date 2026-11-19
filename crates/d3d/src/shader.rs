@@ -1,6 +1,6 @@
 //! What the device needs from the shader translator.
 //!
-//! [`crate::nv2a::Nv2aShaders`] implements [`ShaderProvider`] over
+//! `crate::nv2a::Nv2aShaders` implements `ShaderProvider` over
 //! `crates/shaders` (NV2A vertex microcode and `D3DPIXELSHADERDEF`
 //! register-combiner programs to WGSL, joined by `shaders::link`);
 //! `GfxBackend::new` installs it. A draw it cannot translate is reported as
@@ -10,6 +10,7 @@
 //! needs into [`ShaderInputs`] at draw time, from the device model (program
 //! memory, constants) and the guest arrays (combiner state is render state).
 
+#[cfg(feature = "gpu")]
 use gfx::pipeline::ShaderId;
 
 /// NV2A vertex program slots.
@@ -192,6 +193,7 @@ pub struct ShaderInputs {
     pub affine_projection: bool,
 }
 
+#[cfg(feature = "gpu")]
 /// A compiled program plus the per-draw resources it reads.
 pub struct PreparedShader {
     /// Registered gfx shader id.
@@ -208,6 +210,7 @@ pub struct PreparedShader {
     pub writes_depth: bool,
 }
 
+#[cfg(feature = "gpu")]
 /// Turns a draw into a registered gfx shader.
 ///
 /// `Send` because the device lives behind the runtime's `Send + Sync`
@@ -274,6 +277,7 @@ pub trait ShaderProvider: Send {
     }
 }
 
+#[cfg(feature = "gpu")]
 /// Predicts [`ShaderProvider::prepare`]'s verdict on the device's side, so a
 /// render thread can answer a draw's outcome when it is issued
 /// (`crate::threaded`).
@@ -316,6 +320,7 @@ mod tests {
         assert!(found);
     }
 
+    #[cfg(feature = "gpu")]
     /// Shared microcode prints, serializes (so persisted program ids) and
     /// compares as the words it holds, shared or not.
     #[test]

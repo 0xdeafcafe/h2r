@@ -934,6 +934,35 @@ impl TextureStageState {
     }
 }
 
+/// Which attachments a pass clears (D3D `Clear` flags, typed).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Clear {
+    /// Clear colour (`D3DCLEAR_TARGET`).
+    pub color: Option<[f32; 4]>,
+    /// Clear depth (`D3DCLEAR_ZBUFFER`).
+    pub depth: Option<f32>,
+    /// Clear stencil (`D3DCLEAR_STENCIL`).
+    pub stencil: Option<u8>,
+}
+
+impl Clear {
+    /// Clear nothing.
+    pub const NONE: Self = Self {
+        color: None,
+        depth: None,
+        stencil: None,
+    };
+
+    /// Clear everything: `color`, depth 1.0, stencil 0.
+    pub fn all(color: [f32; 4]) -> Self {
+        Self {
+            color: Some(color),
+            depth: Some(1.0),
+            stencil: Some(0),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

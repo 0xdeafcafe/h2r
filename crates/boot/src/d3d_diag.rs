@@ -519,18 +519,18 @@ fn depth_record(draw: &ResolvedDraw) -> agent_proto::DepthRecord {
             DepthBufferMode::W => "w",
         }
         .into(),
-        w: d3d::nv2a::w_buffered(draw),
+        w: d3d::hw::w_buffered(draw),
         func: format!("{:?}", st.depth_func),
         write: st.depth_write,
         viewport: [draw.viewport.min_z, draw.viewport.max_z],
         scale: [hw.viewport_scale[2], hw.viewport_offset[2]],
         clip: [hw.clip_min, hw.clip_max],
         full: if draw.target.depth_format.is_some() {
-            gfx::renderer::d3dz_max(draw.target.depth_format)
+            gfx::format::d3dz_max(draw.target.depth_format)
         } else {
             0.0
         },
-        clamp: d3d::nv2a::draw_clamps_depth(draw),
+        clamp: d3d::hw::draw_clamps_depth(draw),
     }
 }
 
@@ -1438,7 +1438,7 @@ mod tests {
         let table = RenderStateTable::default();
         let mut words = d3d::state::StateWords::defaults(true);
         let clip_control = table
-            .canonical_to_guest(d3d::nv2a::RS_DEPTHCLIPCONTROL)
+            .canonical_to_guest(d3d::hw::RS_DEPTHCLIPCONTROL)
             .expect("DEPTHCLIPCONTROL has a guest slot");
         words.render[clip_control as usize] = 0x10;
         let mut state = words.translate(&table);
@@ -1448,7 +1448,7 @@ mod tests {
         constants[96 - 38] = [0.0, 0.0, 16384.0, 1.0];
         constants[96 + 58] = [320.0, -240.0, 16777215.0, 0.0];
         let mut hw = d3d::hw::HwState {
-            control0: Some(0x0010_0001 | d3d::nv2a::CONTROL0_Z_PERSPECTIVE),
+            control0: Some(0x0010_0001 | d3d::hw::CONTROL0_Z_PERSPECTIVE),
             clip_min: 0.0,
             clip_max: 16777215.0,
             ..Default::default()

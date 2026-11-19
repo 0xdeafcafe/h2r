@@ -64,11 +64,17 @@ pub mod map_slots;
 pub mod mod_slots;
 pub mod mods_screen;
 pub mod movies_glue;
+#[cfg(feature = "gpu")]
 pub mod native_lights_glue;
+#[cfg(feature = "gpu")]
 pub mod native_objects_glue;
+#[cfg(feature = "gpu")]
 pub mod native_post_glue;
+#[cfg(feature = "gpu")]
 pub mod native_post_load;
+#[cfg(feature = "gpu")]
 pub mod native_transparents_glue;
+#[cfg(feature = "gpu")]
 pub mod native_world_glue;
 pub mod new_maps;
 pub mod pad_speaker;
@@ -104,6 +110,7 @@ pub mod snapshot_probe;
 pub mod speaker_row;
 pub mod speaker_setting;
 pub mod sse;
+#[cfg(feature = "local-io")]
 pub mod steam_speaker;
 pub mod stopgaps;
 pub mod sweep_diag;
@@ -117,6 +124,7 @@ pub mod variant_ext;
 pub mod variant_options;
 pub mod variant_page;
 pub mod video_screen;
+#[cfg(feature = "local-io")]
 pub mod voice_glue;
 pub mod voice_settings;
 pub mod wrappers;
@@ -750,9 +758,11 @@ pub struct Host {
     pub host_light: bool,
     /// Opt in to bot support on a light host.
     pub host_bots: bool,
+    #[cfg(feature = "gpu")]
     /// D3D renders here (present hook attached) instead of the headless
     /// backend; `H2_BOOT_GFX` is then ignored.
     pub gfx: Option<d3d::GfxBackend>,
+    #[cfg(feature = "gpu")]
     /// With `gfx`: a second backend on the same device that renders the
     /// frame buffers at this scale and presents, while `gfx` stays at the
     /// guest's size and answers the guest (`d3d::ScaledBackend`,
@@ -760,17 +770,21 @@ pub struct Host {
     /// present hook; the view has it. At 1 the view sleeps; with
     /// `settings`, the scale follows the Resolution setting during the run.
     pub gfx_view: Option<(d3d::GfxBackend, u32)>,
+    #[cfg(feature = "gpu")]
     /// Run `gfx`'s work on a render thread (`d3d::ThreadedBackend`,
     /// docs/graphics/render-thread.md); off in `Host::default()`. Hosts set it from
     /// [`d3d_glue::render_thread_requested`].
     pub render_thread: bool,
+    #[cfg(feature = "local-io")]
     /// Where the logical-time audio output plays (an audio device), instead
     /// of a `NullSink` (`dsound_glue::install_with_sink`).
     pub audio_sink: Option<dsound_glue::SinkOpener>,
+    #[cfg(feature = "local-io")]
     /// Opens the host's microphone and voice output for voice chat
     /// (`voice_glue`, docs/live/live-voice.md). `None`: the communicator
     /// still works when a microphone is chosen, with a silent microphone.
     pub voice_io: Option<voice::io::OpenIo>,
+    #[cfg(feature = "local-io")]
     /// The controller speaker (docs/audio/playstation-audio.md): a second sink
     /// for the sounds its routes pick, and the sound index built from each
     /// map the game opens. Needs `audio_sink`'s logical output; ignored
@@ -900,12 +914,13 @@ fn run_configured(
             "light host starts in the network lobby; unset H2_LEVEL"
         );
     }
+    #[cfg(feature = "gpu")]
+    let host_graphics = host.gfx.is_some() || host.gfx_view.is_some() || host.render_thread;
+    #[cfg(not(feature = "gpu"))]
+    let host_graphics = false;
     if host_light || sim_mode.is_some() {
         anyhow::ensure!(
-            host.gfx.is_none()
-                && host.gfx_view.is_none()
-                && !host.render_thread
-                && std::env::var_os("H2_BOOT_GFX").is_none(),
+            !host_graphics && std::env::var_os("H2_BOOT_GFX").is_none(),
             "light host and sim require a headless backend (unset H2_BOOT_GFX)"
         );
         anyhow::ensure!(
@@ -1028,8 +1043,8 @@ fn run_configured(
     cfg.content_maps = new_maps::mounted_packages();
     let uploading_sim = upload.is_some();
     if opts.xapi && host.input.is_none() {
-        if sim_mode.is_some() {
-            // No keyboard pad: all four ports are the bots'.
+        if sim_mode.is_some() || !cfg!(feature = "local-io") {
+            // Start without a local pad. Sim can attach its bots below.
             host.input = Some(input::InputManager::new(Default::default())?);
         } else {
             let (input, keyboard) = input::InputManager::with_keyboard_pad(Default::default())?;
@@ -1290,12 +1305,13 @@ fn run_configured(
         }));
     }
     // Sample the render thread too when profiling.
-    #[cfg(feature = "perf")]
+    #[cfg(all(feature = "perf", feature = "gpu"))]
     let _ = d3d::RENDER_THREAD_START.set(|| perf::register_current_thread("render"));
     // In-between frames at the display rate (docs/game/high-framerate.md,
     // "Phase 2" and "E1"): `impl.render.interpolate` or
     // `impl.render.reproject`, render thread only; in a window, or on the
     // headless GPU backend (`H2_BOOT_GFX`, paced on the wall clock).
+    #[cfg(feature = "gpu")]
     let interp = if opts.d3d {
         d3d_glue::interp_render_thread(
             host.gfx.is_some(),
@@ -1308,7 +1324,11 @@ fn run_configured(
         None
     };
     // No window: a headless run, which skips the movies by default.
+    #[cfg(feature = "gpu")]
     let headless = host.gfx.is_none();
+    #[cfg(not(feature = "gpu"))]
+    let headless = true;
+    #[cfg(feature = "gpu")]
     let mut d3d_calls = match (opts.d3d, host.gfx.take()) {
         (false, _) => None,
         (true, Some(b)) => Some(match host.gfx_view.take() {
@@ -1341,6 +1361,14 @@ fn run_configured(
         (true, None) if host_light => Some(d3d_glue::install_light(&loaded.runtime)?),
         (true, None) => Some(d3d_glue::install_headless(&loaded.runtime, interp)?),
     };
+    #[cfg(not(feature = "gpu"))]
+    let mut d3d_calls = opts.d3d.then(|| {
+        if host_light {
+            d3d_glue::install_light(&loaded.runtime)
+        } else {
+            d3d_glue::install(&loaded.runtime)
+        }
+    }).transpose()?;
     // Vblanks on the 60 Hz logical clock (docs/graphics/d3d.md "Vertical blank"),
     // delivered as DPCs; the frame wait above is the clocked one.
     if let Some(handler) = d3d_calls.as_mut().and_then(|i| i.vblank.take()) {
@@ -1355,8 +1383,20 @@ fn run_configured(
     if d3d_calls.is_some() && uses.is_some() {
         d3d_glue::install_back_surfaces(&loaded.runtime)?;
     }
+    #[cfg(feature = "local-io")]
     let pad = host.pad_speaker.take();
-    let clock_only_audio = host_light;
+    // Use the same audio path in a deterministic sim A/B without the LAN
+    // lobby, the map mount changes, or a rendered control.
+    #[cfg(feature = "local-io")]
+    let clock_only_audio = host_light
+        || (sim_mode.is_some() && features.switches().feature("audio.clock-only", false));
+    #[cfg(not(feature = "local-io"))]
+    let clock_only_audio = true;
+    #[cfg(not(feature = "local-io"))]
+    let ds = opts.dsound
+        .then(|| dsound_glue::install_clock_only(&loaded.runtime, &k, xbe_bytes))
+        .transpose()?;
+    #[cfg(feature = "local-io")]
     let ds = if opts.dsound && clock_only_audio {
         Some(dsound_glue::install_clock_only(&loaded.runtime, &k, xbe_bytes)?)
     } else {
@@ -1398,6 +1438,7 @@ fn run_configured(
     };
     // Voice chat's communicator (docs/live/live-voice.md): off until a
     // microphone is chosen on the Voice screen.
+    #[cfg(feature = "local-io")]
     let mut voice_link = xa.as_ref().filter(|_| !host_light).and_then(|x| {
         let game_mix = ds
             .as_ref()
@@ -1439,6 +1480,7 @@ fn run_configured(
     let coop_probe = coop_probe::parse(|k| std::env::var(k).ok()).map_err(anyhow::Error::msg)?;
     // The native world's map file (native_world_glue.rs): read from the
     // loaded map's file, found through the VFS.
+    #[cfg(feature = "gpu")]
     if let Some(vfs) = k.vfs() {
         native_world_glue::set_locator(Box::new(move |map| {
             let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
@@ -1676,12 +1718,16 @@ fn run_configured(
     // H2_HOST_PERF=1 (the Xbox app's default): a line every 100 frames or
     // 5 s of where frame time goes on this host (host_perf.rs); it starts
     // frame stats quietly if nothing else has.
-    let host_perf =
-        host_perf::start_from_env(host.render_thread || d3d_glue::render_thread_requested());
+    #[cfg(feature = "gpu")]
+    let threaded = host.render_thread || d3d_glue::render_thread_requested();
+    #[cfg(not(feature = "gpu"))]
+    let threaded = false;
+    let host_perf = host_perf::start_from_env(threaded);
     // H2_FRAME_STATS=1: frame times split by phase (docs/perf/gameplay-budget.md).
     // `h2 play --frame-stats` may have started them already.
     let frame_stats = timeline::phase::enabled() || timeline::phase::start_from_env();
-    let gpu = !headless || std::env::var_os("H2_BOOT_GFX").is_some();
+    let gpu = cfg!(feature = "gpu")
+        && (!headless || std::env::var_os("H2_BOOT_GFX").is_some());
     if let Some(note) = d3d_glue::frame_stats_gpu_note(frame_stats && d3d_calls.is_some(), gpu) {
         eprintln!("{note}");
     }
@@ -1772,6 +1818,7 @@ fn run_configured(
         if dsound_glue::ran_guest_thread(&m, ran_before) {
             audio_idle = 0;
         }
+        #[cfg(feature = "local-io")]
         if let Some(link) = voice_link.as_mut() {
             link.pump();
         }

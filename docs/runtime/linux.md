@@ -6,6 +6,27 @@ System V AMD64 C ABI. The image uses baseline x86-64 instructions. The
 `--arch x86_64-linux` selector chooses this target even on a Mac. On a
 64-bit Intel or AMD Linux machine, `--arch host` selects it automatically.
 
+## Headless host build
+
+From the repository root, cross-build the Linux x86-64 `h2` binary with
+cargo-zigbuild and Zig.
+
+```sh
+cargo zigbuild -p cli --no-default-features --features host --target x86_64-unknown-linux-gnu
+```
+
+The binary supports `h2 serve --system-link --host-light`, `h2 host run`,
+`h2 sim` and `h2 agent`. Supply the matching Linux `libh2game.so` and the
+owner's game data separately. See the
+[dedicated-host build contract](../live/dedicated-host-build.md#10-linux-x86-64-build-owned-by-dh-linux-).
+Keep `H2_OPT` consistent with the module build.
+
+The `host` feature keeps the software D3D recorder, the DirectSound clock,
+the Bink movie-start skip stub and the guest input model (including bots
+and agent-injected input). The default `desktop` feature adds the windowed
+app, wgpu presenter and native GPU passes, physical controllers, cpal
+devices, movie playback, app icon and editor client commands.
+
 ## Cross-build on macOS
 
 Use LLVM clang, ld.lld and llvm-ar on the Mac, with an **amd64 Debian
@@ -55,8 +76,9 @@ permits unresolved references in input shared libraries. At load time
 libloading requests `RTLD_NOW | RTLD_LOCAL`. A missing import therefore
 fails the load immediately, and module symbols stay local to its handle.
 
-The shipped bridge tables work without exporting symbols from the
-executable. To support modules that import a host function **by name**,
+The module defines the generated code's `h2abi_v1_*`, `h2shim_v1_*`
+and `h2x87_v1_*` shims as hidden ELF symbols. The shipped bridge tables
+work without exporting symbols from the executable. To support modules that import a host function **by name**,
 the Linux **h2 executable** must export that function from its dynamic
 symbol table. Pass `-rdynamic` to its final C linker driver to export the
 executable's visible globals, or export the individual symbol. With a

@@ -8,10 +8,16 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+#[cfg(feature = "movie-playback")]
 /// Where `h2 movies` installs by default (the app data directory), if the
 /// platform has one.
 pub fn default_dir() -> Option<PathBuf> {
     movies::install::app_movies_dir().ok()
+}
+
+#[cfg(not(feature = "movie-playback"))]
+pub fn default_dir() -> Option<PathBuf> {
+    None
 }
 
 /// Which movies a run may play.
@@ -43,6 +49,9 @@ impl Movies {
 /// `h2 serve`, benchmarks), where nothing wants the intro and its wall-clock
 /// pacing only costs time. `--movies DIR` still plays them there.
 pub fn why_off(movies: &Movies, lockstep: bool, level: Option<&str>, headless: bool) -> Option<String> {
+    if !cfg!(feature = "movie-playback") {
+        return Some("movie playback disabled at build time".into());
+    }
     if lockstep {
         return Some("lockstep".into());
     }
@@ -55,6 +64,7 @@ pub fn why_off(movies: &Movies, lockstep: bool, level: Option<&str>, headless: b
     headless.then(|| "headless run; --movies DIR plays them".into())
 }
 
+#[cfg(feature = "movie-playback")]
 /// Pick the mode for `disc` from `dir` (`None`: off). `why_off` names the
 /// reason when the run must skip regardless (a lockstep run, whose
 /// schedule must not depend on wall time).
@@ -70,6 +80,7 @@ pub fn choose(dir: Option<&Path>, disc: &Path, why_off: Option<&str>) -> bink_hl
     bink_hle::select(dir, &listed, bink_hle::platform_decoder().is_some())
 }
 
+#[cfg(feature = "movie-playback")]
 /// The Bink HLE for `selection`, with movie sound in `mixer` when there is
 /// one (`None`: movies play silent).
 pub fn hle(
@@ -84,6 +95,7 @@ pub fn hle(
     hle
 }
 
+#[cfg(feature = "movie-playback")]
 /// [`choose`], [`hle`] and registration, with the log line.
 pub fn install(
     rt: &runtime::Runtime,
@@ -100,7 +112,24 @@ pub fn install(
     (mode, hle)
 }
 
-#[cfg(test)]
+/// Registers the wrapper's skip stub in a build without movie playback.
+#[cfg(not(feature = "movie-playback"))]
+pub fn install(
+    rt: &runtime::Runtime,
+    _movies: &Movies,
+    _disc: &Path,
+    why_off: Option<&str>,
+    _mixer: Option<Arc<std::sync::Mutex<audio::Mixer>>>,
+) -> (bink_hle::Mode, Arc<bink_hle::BinkHle>) {
+    let hle = bink_hle::BinkHle::skip_only();
+    rt.edit_dispatch(|d| {
+        bink_hle::register_skip(d, &hle);
+    });
+    eprintln!("movies: skip ({})", why_off.unwrap_or("movie playback disabled at build time"));
+    (bink_hle::Mode::Skip, hle)
+}
+
+#[cfg(all(test, feature = "movie-playback"))]
 mod tests {
     use super::*;
 

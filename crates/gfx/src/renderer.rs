@@ -90,34 +90,8 @@ pub enum DrawError {
     CountDepthNotCopyable,
 }
 
-/// Which attachments a pass clears (D3D `Clear` flags, typed).
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Clear {
-    /// Clear colour (`D3DCLEAR_TARGET`).
-    pub color: Option<[f32; 4]>,
-    /// Clear depth (`D3DCLEAR_ZBUFFER`).
-    pub depth: Option<f32>,
-    /// Clear stencil (`D3DCLEAR_STENCIL`).
-    pub stencil: Option<u8>,
-}
-
-impl Clear {
-    /// Clear nothing.
-    pub const NONE: Self = Self {
-        color: None,
-        depth: None,
-        stencil: None,
-    };
-
-    /// Clear everything: `color`, depth 1.0, stencil 0.
-    pub fn all(color: [f32; 4]) -> Self {
-        Self {
-            color: Some(color),
-            depth: Some(1.0),
-            stencil: Some(0),
-        }
-    }
-}
+pub use crate::format::{D3DZ_MAX_16, D3DZ_MAX_24, D3DZ_MAX_F16, D3DZ_MAX_F24, d3dz_max};
+pub use crate::state::Clear;
 
 /// A wgpu viewport for one draw: clip space maps to this rectangle (target
 /// pixels, origin top left) and depth to `[min_depth, max_depth]`.
@@ -524,31 +498,6 @@ impl RecordedDraw {
     /// Sets or clears [`start_pass`](Self::start_pass).
     pub fn set_start_pass(&mut self, on: bool) {
         self.new_pass = on;
-    }
-}
-
-/// `D3DZ_MAX` for a 24-bit integer depth buffer: the range of
-/// pre-transformed z.
-pub const D3DZ_MAX_24: f32 = 16_777_215.0;
-/// `D3DZ_MAX` for a 16-bit integer depth buffer.
-pub const D3DZ_MAX_16: f32 = 65_535.0;
-/// `D3DZ_MAX` for the Xbox 16-bit float depth format (4-bit exponent,
-/// 12-bit mantissa): its largest value, `(2 - 2^-12) * 2^8`.
-pub const D3DZ_MAX_F16: f32 = 511.9375;
-/// `D3DZ_MAX` for the Xbox 24-bit float depth format (8-bit exponent,
-/// 16-bit mantissa): its largest value, `(2 - 2^-16) * 2^127`.
-pub const D3DZ_MAX_F24: f32 = 3.402_797_7e38;
-
-/// The full scale of window-space z for a depth buffer format
-/// (`D3DZ_MAX_*`): pre-transformed and vertex-program z is divided by it
-/// to get the host depth in 0..1. No depth buffer counts as D24S8.
-pub fn d3dz_max(depth: Option<crate::D3DFormat>) -> f32 {
-    use crate::D3DFormat as F;
-    match depth {
-        Some(F::D16 | F::LinD16) => D3DZ_MAX_16,
-        Some(F::F16 | F::LinF16) => D3DZ_MAX_F16,
-        Some(F::F24S8 | F::LinF24S8) => D3DZ_MAX_F24,
-        _ => D3DZ_MAX_24,
     }
 }
 

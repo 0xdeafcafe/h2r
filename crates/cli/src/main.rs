@@ -1,8 +1,14 @@
+#[cfg(feature = "desktop")]
 use std::fs::{self, File};
+#[cfg(feature = "desktop")]
 use std::io::{BufReader, Read};
+#[cfg(feature = "desktop")]
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+#[cfg(feature = "desktop")]
+use anyhow::Context;
+use anyhow::{Result, bail};
+#[cfg(feature = "desktop")]
 use xiso::Xiso;
 
 #[cfg(unix)]
@@ -16,84 +22,164 @@ mod agent_raw;
 mod agent_run;
 mod agent_sim;
 mod sim_cmd;
+#[cfg(feature = "desktop")]
 mod anim;
+#[cfg(feature = "desktop")]
 mod bitmap;
 mod boot_cmd;
+#[cfg(feature = "desktop")]
 mod bots_drive;
+#[cfg(feature = "desktop")]
 mod bots_nav;
+#[cfg(feature = "desktop")]
 mod bots_progress;
+#[cfg(feature = "desktop")]
 mod bots_test_cmd;
+#[cfg(feature = "desktop")]
 mod bots_verdict;
+#[cfg(feature = "desktop")]
 mod collision;
+#[cfg(feature = "desktop")]
 mod coop_drive;
+#[cfg(feature = "desktop")]
 mod coop_probe_cmd;
+#[cfg(feature = "desktop")]
 mod coop_test_cmd;
+#[cfg(feature = "desktop")]
 mod coop_verdict;
+#[cfg(feature = "desktop")]
 mod effects;
+#[cfg(feature = "desktop")]
 mod emit_cache;
+#[cfg(feature = "desktop")]
 mod emit_output;
+#[cfg(feature = "desktop")]
 mod extract_shaders;
-#[cfg(unix)]
+#[cfg(all(unix, feature = "desktop"))]
 mod follow;
+#[cfg(feature = "desktop")]
 mod fonts;
+#[cfg(feature = "desktop")]
 mod h1_cmd;
+#[cfg(feature = "desktop")]
 mod h1_import;
 mod host_cmd;
-#[cfg(unix)]
+#[cfg(all(unix, feature = "desktop"))]
 mod lab;
+#[cfg(feature = "desktop")]
 mod lighting;
+#[cfg(feature = "desktop")]
 mod lights;
 mod live_accounts;
+#[cfg(feature = "desktop")]
 mod live_admin;
+#[cfg(feature = "desktop")]
 mod live_art;
+#[cfg(feature = "desktop")]
 mod live_basemap;
+#[cfg(feature = "desktop")]
 mod live_catalog;
+#[cfg(feature = "desktop")]
 mod live_cmd;
+#[cfg(feature = "desktop")]
 mod live_features;
+#[cfg(feature = "desktop")]
 mod live_frames;
+#[cfg(feature = "desktop")]
 mod live_geometry;
+#[cfg(feature = "desktop")]
 mod live_halo1;
+#[cfg(feature = "desktop")]
 mod live_layers;
+#[cfg(feature = "desktop")]
 mod live_looks;
+#[cfg(feature = "desktop")]
 mod live_mappack;
+#[cfg(feature = "desktop")]
 mod live_maps;
+#[cfg(feature = "desktop")]
 mod live_maps_details;
+#[cfg(feature = "desktop")]
 mod live_mod_contents;
+#[cfg(feature = "desktop")]
 mod live_mod_features;
+#[cfg(feature = "desktop")]
 mod live_mod_import;
+#[cfg(feature = "desktop")]
 mod live_models;
+#[cfg(feature = "desktop")]
 mod live_mods;
+#[cfg(feature = "desktop")]
 mod live_plasma;
+#[cfg(feature = "desktop")]
 mod live_query;
+#[cfg(feature = "desktop")]
 mod live_recovery;
+#[cfg(feature = "desktop")]
 mod live_render;
+#[cfg(feature = "desktop")]
 mod live_scenario;
+#[cfg(feature = "desktop")]
 mod live_scripted;
+#[cfg(feature = "desktop")]
 mod live_sky;
+#[cfg(feature = "desktop")]
 mod live_weapons;
+#[cfg(feature = "desktop")]
 mod live_weather;
+#[cfg(feature = "desktop")]
 mod lockstep_cmd;
+#[cfg(feature = "desktop")]
 mod map_testbuild;
+#[cfg(feature = "desktop")]
 mod mappack_cmd;
+#[cfg(feature = "desktop")]
 mod maps;
+#[cfg(feature = "desktop")]
 mod server_map;
+#[cfg(feature = "desktop")]
 mod movies_cmd;
+#[cfg(feature = "desktop")]
 mod object;
+#[cfg(feature = "desktop")]
 mod play_cloud;
+#[cfg(feature = "desktop")]
 mod play_cmd;
+#[cfg(feature = "desktop")]
 mod play_live;
+#[cfg(feature = "desktop")]
 mod safe_out;
+#[cfg(feature = "desktop")]
 mod scripts;
+#[cfg(feature = "desktop")]
 mod settings_cmd;
+#[cfg(feature = "desktop")]
 mod shader;
+#[cfg(feature = "desktop")]
 mod sound;
+#[cfg(feature = "desktop")]
 mod strings;
+#[cfg(feature = "desktop")]
 mod tag_repo_cmd;
+#[cfg(feature = "desktop")]
 mod testmap_cmd;
+#[cfg(feature = "desktop")]
 mod tunnel;
+#[cfg(feature = "desktop")]
 mod ui;
+#[cfg(feature = "desktop")]
 mod web_build;
 
+#[cfg(not(feature = "desktop"))]
+const USAGE: &str = "usage: h2 <command>
+
+  serve <disc> --system-link --host-light
+                          run a light host with the agent API
+  host run --lease ID ... run a dedicated match for a Live lease
+  sim <run|batch|compare> run or compare bot matches
+  agent <call>            call a running game's agent API";
+
+#[cfg(feature = "desktop")]
 const USAGE: &str = "usage: h2 <command> [disc]
 
   build <disc> [--arch TARGET]  lift, emit and compile the whole XBE (docs/runtime/BOOT.md)
@@ -246,7 +332,7 @@ const USAGE: &str = "usage: h2 <command> [disc]
 [disc] is an .iso or a default.xbe. Without it, h2 uses $H2_DISC, then the
 first .iso in the repo's disc/ folder.";
 
-#[cfg(feature = "perf")]
+#[cfg(all(feature = "desktop", feature = "perf"))]
 fn perf_cmd(cmd: &str, args: Vec<String>) -> Result<()> {
     let code = match cmd {
         "profile" => perf::cli::profile(args)?,
@@ -255,7 +341,7 @@ fn perf_cmd(cmd: &str, args: Vec<String>) -> Result<()> {
     std::process::exit(code);
 }
 
-#[cfg(not(feature = "perf"))]
+#[cfg(all(feature = "desktop", not(feature = "perf")))]
 fn perf_cmd(cmd: &str, _: Vec<String>) -> Result<()> {
     bail!(
         "h2 {cmd} needs the perf feature: cargo run --release -p cli --features perf -- {cmd} ..."
@@ -264,11 +350,29 @@ fn perf_cmd(cmd: &str, _: Vec<String>) -> Result<()> {
 
 fn main() -> Result<()> {
     // Live presence says which build this is (docs/game/game-options.md 3).
+    #[cfg(feature = "desktop")]
     boot::live_glue::set_build(app::BuildInfo::baked().sha);
     let mut args = std::env::args().skip(1);
     let Some(cmd) = args.next() else {
         bail!("{USAGE}")
     };
+    match cmd.as_str() {
+        "serve" => boot_cmd::run(&cmd, args.collect()),
+        "sim" => sim_cmd::run(args.collect()),
+        "host" => host_cmd::run(args.collect()),
+        #[cfg(unix)]
+        "agent" => agent_cmd::run(args.collect()),
+        #[cfg(not(unix))]
+        "agent" => bail!("h2 agent needs Unix sockets"),
+        #[cfg(feature = "desktop")]
+        _ => desktop_command(cmd, args),
+        #[cfg(not(feature = "desktop"))]
+        _ => bail!("{USAGE}"),
+    }
+}
+
+#[cfg(feature = "desktop")]
+fn desktop_command(cmd: String, mut args: impl Iterator<Item = String>) -> Result<()> {
     if cmd == "lighting" {
         return lighting::run(args.collect());
     }
@@ -334,9 +438,6 @@ fn main() -> Result<()> {
     if cmd == "live" {
         return live_cmd::run(args.collect());
     }
-    if cmd == "sim" {
-        return sim_cmd::run(args.collect());
-    }
     if cmd == "lockstep" {
         std::process::exit(lockstep_cmd::run(args.collect())?);
     }
@@ -352,20 +453,13 @@ fn main() -> Result<()> {
         #[cfg(not(unix))]
         bail!("h2 lab needs Unix sockets");
     }
-    if cmd == "agent" {
-        #[cfg(unix)]
-        return agent_cmd::run(args.collect());
-        #[cfg(not(unix))]
-        bail!("h2 agent needs Unix sockets");
-    }
-    if cmd == "host" { return host_cmd::run(args.collect()); } // dh-supervisor and dh-provision
     if cmd == "studio" {
         return studio_proto::cli::run("h2 studio", args.collect());
     }
     if cmd == "testmap" {
         return testmap_cmd::run(args.collect());
     }
-    if matches!(cmd.as_str(), "build" | "run" | "serve") {
+    if matches!(cmd.as_str(), "build" | "run") {
         return boot_cmd::run(&cmd, args.collect());
     }
     if cmd == "bitmap" {
@@ -493,6 +587,7 @@ fn main() -> Result<()> {
     }
 }
 
+#[cfg(feature = "desktop")]
 fn is_disc(p: &Path) -> bool {
     let ext = p
         .extension()
@@ -501,11 +596,13 @@ fn is_disc(p: &Path) -> bool {
     p.is_file() && matches!(ext.as_deref(), Some("iso" | "xbe"))
 }
 
+#[cfg(feature = "desktop")]
 fn repo_root() -> PathBuf {
     // crates/cli -> repo root
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
+#[cfg(feature = "desktop")]
 fn default_disc() -> Result<PathBuf> {
     if let Some(p) = std::env::var_os("H2_DISC") {
         return Ok(p.into());
@@ -529,6 +626,7 @@ fn default_disc() -> Result<PathBuf> {
 /// The Halo 2 disc among `isos`: `halo2.iso` when present, else the first
 /// by name that isn't another game's disc this repo also reads (`halo1.iso`,
 /// the Map Pack's `mappack.iso`).
+#[cfg(feature = "desktop")]
 fn pick_default_disc(mut isos: Vec<PathBuf>) -> Option<PathBuf> {
     const OTHER_DISCS: [&str; 2] = ["halo1.iso", "mappack.iso"];
     let name = |p: &PathBuf| {
@@ -545,6 +643,7 @@ fn pick_default_disc(mut isos: Vec<PathBuf>) -> Option<PathBuf> {
         .find(|p| !OTHER_DISCS.contains(&name(p).as_str()))
 }
 
+#[cfg(feature = "desktop")]
 fn open_iso(path: &Path) -> Result<Xiso<BufReader<File>>> {
     safe_out::protect(path);
     let f = File::open(path).with_context(|| format!("opening {}", path.display()))?;
@@ -552,6 +651,7 @@ fn open_iso(path: &Path) -> Result<Xiso<BufReader<File>>> {
 }
 
 /// Accepts a raw XBE or a disc image, returning the XBE bytes.
+#[cfg(feature = "desktop")]
 fn load_xbe(path: &Path) -> Result<Vec<u8>> {
     safe_out::protect(path);
     let mut magic = [0u8; 4];
@@ -566,6 +666,7 @@ fn load_xbe(path: &Path) -> Result<Vec<u8>> {
     Ok(iso.read(&entry)?)
 }
 
+#[cfg(feature = "desktop")]
 fn info(path: &Path) -> Result<()> {
     let data = load_xbe(path)?;
     let x = xbe::Xbe::parse(&data)?;
@@ -604,6 +705,7 @@ fn info(path: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "desktop")]
 fn ls(path: &Path) -> Result<()> {
     let mut iso = open_iso(path)?;
     for e in iso.entries()? {
@@ -616,11 +718,13 @@ fn ls(path: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "desktop")]
 fn extract(path: &Path, out: &Path, force: bool) -> Result<()> {
     let mut iso = open_iso(path)?;
     extract_to(&mut iso, path, out, force)
 }
 
+#[cfg(feature = "desktop")]
 fn extract_to<R: Read + std::io::Seek>(
     iso: &mut Xiso<R>,
     path: &Path,
@@ -664,6 +768,7 @@ fn extract_to<R: Read + std::io::Seek>(
 
 /// Write one file through the guarded [`safe_out::OutDir`]: no overwrite
 /// without `force`, never the disc being read, never a disc image.
+#[cfg(feature = "desktop")]
 fn write_guarded(dest: &Path, source: &Path, force: bool, bytes: &[u8]) -> Result<()> {
     safe_out::guard_target(dest, Some(source))?;
     let name = dest
@@ -683,6 +788,7 @@ fn write_guarded(dest: &Path, source: &Path, force: bool, bytes: &[u8]) -> Resul
     Ok(())
 }
 
+#[cfg(feature = "desktop")]
 fn disasm(disc: &Path, addr: &Path, count: Option<&PathBuf>) -> Result<()> {
     use iced_x86::{Decoder, DecoderOptions, Formatter, IntelFormatter};
     let parse = |p: &Path| -> Result<u32> {
@@ -717,6 +823,7 @@ fn disasm(disc: &Path, addr: &Path, count: Option<&PathBuf>) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "desktop")]
 fn extract_xbe(disc: &Path, out: &Path, force: bool) -> Result<()> {
     // Check before doing any work, so a swapped argument costs nothing.
     safe_out::guard_target(out, Some(disc))?;
@@ -726,6 +833,7 @@ fn extract_xbe(disc: &Path, out: &Path, force: bool) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "desktop")]
 fn run_symbols(path: &Path, list: bool, xcheck: bool, db_dir: Option<PathBuf>) -> Result<()> {
     use std::collections::BTreeSet;
     use symbols::Kind;
@@ -835,6 +943,7 @@ fn run_symbols(path: &Path, list: bool, xcheck: bool, db_dir: Option<PathBuf>) -
     Ok(())
 }
 
+#[cfg(feature = "desktop")]
 fn run_fpstats(path: &Path, roots: &[String]) -> Result<()> {
     let roots = roots
         .iter()
@@ -850,6 +959,7 @@ fn run_fpstats(path: &Path, roots: &[String]) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "desktop")]
 fn run_analyze(
     path: &Path,
     functions_out: Option<PathBuf>,
@@ -927,6 +1037,7 @@ fn run_analyze(
     Ok(())
 }
 
+#[cfg(feature = "desktop")]
 #[derive(Default)]
 struct LiftOpts {
     stats: bool,
@@ -943,10 +1054,12 @@ struct LiftOpts {
     passes: Option<String>,
 }
 
+#[cfg(feature = "desktop")]
 fn parse_hex(s: &str) -> Result<u32> {
     u32::from_str_radix(s.trim_start_matches("0x"), 16).with_context(|| format!("bad hex: {s}"))
 }
 
+#[cfg(feature = "desktop")]
 fn run_lift(path: &Path, opts: &LiftOpts) -> Result<()> {
     let data = load_xbe(path)?;
     let x = xbe::Xbe::parse(&data)?;
@@ -1009,6 +1122,7 @@ fn run_lift(path: &Path, opts: &LiftOpts) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "desktop")]
 fn run_emit(path: &Path, opts: &LiftOpts) -> Result<()> {
     use std::time::Instant;
     let arches = emit::compile::architectures(opts.arch.as_deref())?;
@@ -1156,6 +1270,7 @@ fn run_emit(path: &Path, opts: &LiftOpts) -> Result<()> {
 
 /// Run the image's entry through a generated host dylib, with the same
 /// initial state as the interpreter harness.
+#[cfg(feature = "desktop")]
 fn emit_run_entry(
     x: &xbe::Xbe,
     dylib: &Path,
@@ -1168,7 +1283,7 @@ fn emit_run_entry(
     Ok((cpu, t, ctx))
 }
 
-#[cfg(test)]
+#[cfg(all(feature = "desktop", test))]
 mod tests {
     use super::*;
 
