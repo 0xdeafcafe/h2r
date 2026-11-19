@@ -1964,6 +1964,7 @@ dependencies = [
  "native-render",
  "runtime",
  "runtime-test-probe",
+ "tags",
  "timeline",
 ]
 

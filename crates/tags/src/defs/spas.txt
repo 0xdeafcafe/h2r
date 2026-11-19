@@ -64,5 +64,5 @@ group spas 0x24 align 4
       0x14 u32 constant1 -- PSConstant1 (shader.rs:1034)
       0x18 unknown 0x8
     0x38 block engine_bindings 0x4 align 4 -- engine-driven bindings, meaning by the selecting implementation range; E 0x00019be0, 0x00019ca0, 0x0001a170, 0x0001ab50 (shader.rs:1039)
-      0x0 unknown 0x4
+      0x0 u8[4] bytes -- interpretation depends on the selecting range
     0x40 unknown 0x18

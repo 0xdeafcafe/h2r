@@ -451,45 +451,33 @@ The base's old BSP region stays in the file, unused.
   collision material per
   Halo 1 collision material, copies of the base's first (no pointers in
   it), `+0x0a` = -1.
-- **Halo 1's own textures** (`h1convert::textures`). For each Halo 1
-  environment (`senv`) or water (`swat`) shader, its bitmaps by role:
-  `senv` base map `+0x88`, primary detail `+0xb8` (else micro detail
-  `+0xfc`), bump `+0x128`; `swat` base `+0x4c` (offsets from a sweep of
-  every shader on the 13 maps). The chosen base shader's roles come from
-  its compiled passes (`tags::material`): base is stage 0 of the first
-  pass with a bitmap, detail its stage 1, bump any parameter bitmap in
-  `P8Bump` (format 17 in both games; a Halo 1 bump is swapped only when
-  it is `P8Bump` too). The Halo 1 bitmaps are converted by
-  `h1bitmaps::convert_bitmap` and added as new `bitm` tags under their
-  Halo 1 names; a new `shad`, named after the Halo 1 shader, is the
-  chosen shader's whole tree (the schema's depth-first copy,
-  `Relocator::to_built`) in which every bitmap parameter (postprocess
-  `+0x20`, its parameters `+0x04`, stride `0xc`, datum at `+0`) holding
-  a swapped role's datum names the Halo 1 bitmap. The copy points at
-  nothing of the chosen shader's, so it holds in the fresh build too
-  (`tests/fresh.rs`: every reference of the fresh Blood Gulch
-  resolves); the blocks on the path to the parameters drop their
-  sharing key, the rest keep it. A material head is appended per
-  copy and the structure material points at it. `textures::plan` runs in
-  `prepare`, `Retexture::install` in `assemble` after the tags whose
-  datums are predicted (objects, collections). Shaders of other types
-  (`soso`, `schi`, `sgla`, ...) keep the base's, and the CLI says so.
-  Tiling: the copy's instance vectors that scale a swapped role's
-  texture coordinates take Halo 1's tiling, the base map 1× (Halo 1's
-  base map has no scale; Coagulation's ground tiled it 60×), the detail
-  and bump maps the `senv` scale before each reference (primary detail
-  `+0xb4`, micro `+0xf8`, bump `+0x124`; V: 1 wherever the map is null).
-  A role's vector is the one the template binds to vertex constant
-  `c[18 + stage]` with its x and y (`textures::stage_vector`); the disc
-  test resolves every copy on the converted map and finds each scale in
-  that constant. A role left as the base's (its bump map, when Halo 1's
-  isn't `P8Bump`) keeps the base's tiling.
-  Left out: the detail blend function, and the shader's `+0x2c` block (it still
-  names the chosen shader's bitmaps; the draw path reads the
-  parameters). On blend-detail templates (`tex_bump_detail_blend_detail`,
-  Coagulation's ground) stage 1 of the first pass is the second blended
-  base (`coag_grass`), so Halo 1's detail map lands there: a game run
-  shows whether that reads well.
+- **Halo 1's own textures** (`h1convert::textures`). The structure's
+  shaders are rebuilt as `shad` records from the definition, with the
+  appropriate Halo 2 `stem` and Halo 1's converted bitmaps. An `senv`
+  supplies base `+0x88`, primary detail `+0xb8`, secondary detail
+  `+0xcc`, micro detail `+0xfc` and bump `+0x128`. The base is sampled
+  at 1× and each other map uses the scale before its reference. On
+  `tex_bump_detail_blend_detail`, the colour pass uses the base alpha
+  to blend the primary and secondary details, then applies the micro
+  detail. The installer adds the rebuilt shader and a material head
+  that points to it (`textures::plan`, `Retexture::install`).
+- **Terrain detail blend and shader image list (Built).** Halo 1's
+  `senv +0xb0` and `+0xf4` select the operations for the detail
+  blend and micro detail independently (E `0x0007785d`.. `0x000778dd`).
+  For surface colour `c` and detail colour `d`, the XBE emits
+  `2*c*d`, `c*d` or `c+2*d-1` for values 0, 1 and 2. Where the
+  opaque blend-detail layout is available, the installer emits a
+  colour pass for non-default operations and connects it with the
+  existing light, shadow and fog passes. The pass bypasses an operation
+  when it has no detail bitmap. On the owner's disc both fields are
+  zero except for the shaft cover in `b30`, which uses value 1 in both
+  and has neither detail map. The rebuild also fills the `shad +0x2c`
+  image list with the new compiled bitmap datums, numbering repeats
+  from zero (V, the retail instance layout in
+  [shader-instances.md](../formats/shader-instances.md)).
+  `terrain_detail_modes_are_read_and_installed` checks the non-default
+  program against both discs, and `every_halo1_shader_and_sky_shader_rebuilds`
+  checks `+0x2c` against the rebuilt bindings.
 - **The sky is Halo 1's** (`h1convert::sky`). Cluster `+0x6e` is the
   cluster's sky index into the scenario's skies (`scnr+0x8`, 8-byte
   references; E `0x0014b38d`..`0x0014b3c4`, where -1 also falls back to

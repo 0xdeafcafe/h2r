@@ -92,6 +92,7 @@ pub const FILES: &[(&str, &str)] = &[
         "recorded_animation.txt",
         include_str!("defs/recorded_animation.txt"),
     ),
+    ("egor.txt", include_str!("defs/egor.txt")),
     ("trak.txt", include_str!("defs/trak.txt")),
 ];
 

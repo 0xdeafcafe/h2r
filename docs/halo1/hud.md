@@ -373,6 +373,68 @@ coverage and compositing for each viewport, and draw it behind the
 scope lines at the weapon's zoom levels. Retail Halo 2 draws a
 centred, zoom-gated `scope_mask` bitmap widget for its sniper rifle.
 
+### Scope mask (**Built**)
+
+Halo 1 looks at the first screen effect in the weapon's own
+`wphi +0xac`, before drawing the weapon HUD (E `0x000d6b37` and
+`0x000d6e33`). The effect is `0xb8` bytes. Flag 0 at `+0x04` gates
+the mask on zoom. The references at `+0x18` and `+0x28` select the
+first image of the full- and split-screen bitmap respectively
+(E `0x000d6b85`.. `0x000d6bb2`). The pistol and rocket launcher share
+the pistol art. The sniper rifle has its own masks (V, Blood Gulch).
+The mask's luminance describes the dark surround, transparent opening
+and brighter edge (V, both screen modes from the disc).
+
+`h1hud::scope` converts those images into one `bitm` with a sequence per
+mode. The rebuilt `nhdt` puts the effect at `+0x20`. Halo 2 gates it
+before the weapon widgets (E `0x0013a57d`.. `0x0013a5d8`) and selects
+the bitmap sequence and `egor` reference by mode (E `0x0022b8e2`).
+The new `egor`, `shad`, `stem` and `spas` use the layer-15
+screen-effect draw. The pass samples the HUD's engine texture 16
+(E `0x0022bb20`, `0x0022bb9f`, `0x00019817`) and blends black
+into the view by the mask's luminance. Its UVs come from the position
+normalized inside the current viewport (E `0x0002d5e0`), so each view
+gets the whole mask.
+
+### Zoom blur and colour filters (**Built**)
+
+The same Halo 1 effect has a separate zoom gate and two
+angle/radius pairs at `+0x40`. The draw interpolates between them
+using the rendered camera's FOV, clamps to the endpoints and skips blur
+in split screen (E `0x000d6bd2`–`0x000d6c63`). The pistol, rocket
+launcher and sniper rifle specify the curve (V, Blood Gulch). The
+converted full-screen effect copies the current view to target 1,
+uses Halo 2's screen convolution (`0x0002da96` → `0x000211a0`)
+with the interpolated spread, and blends that result by mask alpha
+before the mask's luminance overlay. It uses Halo 2's four-tap
+convolution kernel, with two steps, at half resolution. Halo 1 used
+radially spaced taps (E `0x0006bacc`–`0x0006bc36`).
+
+Desaturation at `+0x6c` and tint at `+0x8c` have independent
+zoom and night-vision gates and strengths. The colour pass averages
+the scene's RGB for desaturation and uses that luminance for the
+additive or blended tint. Each filter can limit its coverage using
+the scope mask's luminance (E `0x000d6c6e`–`0x000d6e23`,
+`0x0006cb9d`–`0x0006cde8`). The sniper uses both filters, with green
+additive tint, in full and split screen (V, Blood Gulch and a30).
+The four Halo 1 script channels start at 1 (E `0x000805bf`,
+`0x0011a8fe`), and the retail maps leave them at that value. The
+converted draw uses those initial values for the valid channels.
+
+The `h1-scope-zoom` feature reads the profile only on converted HUD
+effect draws (`0x0022bbbb`). It supplies the current view's blur radius
+and the two colour strengths. The local flashlight button toggles
+night vision on supported scopes. The unit-light update at
+`0x000c50a0` advances its fade with simulation time, using Halo 1's
+rise and fall rates (`0x00045c6c`, `0x00045cae`). State follows the
+local unit and resets when the game activates.
+
+The synthetic checks cover the gates, the FOV curve, the per-view
+runtime inputs, the fade and the pixel combiner. The ignored disc
+check `scope_masks_use_the_hud_screen_effect_in_each_view` resolves
+the rebuilt shader passes and checks the mask images and zoom
+profiles against the discs. In-game appearance remains to be verified.
+
 ### The sniper rifle's angle ticks
 
 The sniper rifle's own `wphi` has two statics on `weapons\sniper
@@ -768,8 +830,9 @@ weapon's threshold (assault rifle 10 rounds) with rounds in reserve, gone
 after reloading or with nothing in reserve; "No ammo" there with nothing
 at all, "Battery depleted" on a spent plasma weapon (shown as long as
 the condition holds, not flashing for 3 s as Halo 1's do). Zoomed with
-the sniper rifle: "2x" at the first zoom, "10x" at the second, neither
-unzoomed. Nothing of
+the sniper rifle: the view darkened around the scope, "2x" at the first
+zoom and "10x" at the second. The pistol and rocket launcher show
+their scope mask when zoomed too. Nothing of
 `hud_ammo_alphas` under the ammunition panel (colour 0: Halo 1 does not
 draw it; v66's first cut did); the panel itself slightly translucent, as
 Halo 1's (alpha `0xdc`). With the shield

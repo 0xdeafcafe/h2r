@@ -7,7 +7,8 @@
 //! vectors (postprocess `+0x04`, `+0x0c`, `+0x14`). Each Halo 1 shader
 //! type draws with a retail stem chosen for it ([`Layout`]); every stem
 //! used here but the three sky ones is in `shared.map`, so every base map
-//! has it. We write no shader programs.
+//! has it. The structure installer emits a colour pass for non-default
+//! terrain detail modes, and the HUD scope has its own screen-effect pass.
 //!
 //! **The parameters.** A [`Layout`] says, per instance parameter of its
 //! stem, where the value comes from: a role of the Halo 1 shader (its base,
@@ -48,6 +49,11 @@ use tags::shader::SHAD;
 use tags::{DecodedTag, TagData};
 
 use crate::{Error, Result};
+
+mod detail;
+pub mod program;
+
+pub use detail::DetailBlend;
 
 /// What a Halo 1 shader supplies to a stem.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -1039,6 +1045,9 @@ pub struct Extras {
     /// of [`AMMUNITION_DIGITS`] ([`counter_properties`]); over
     /// [`Self::scroll`]. `None`: no counter.
     pub counter: Option<&'static str>,
+    /// Separate Halo 1 operations after the details are blended, then
+    /// after sampling the micro detail. The retail stem already does [0, 0].
+    pub detail_blend: [DetailBlend; 2],
 }
 
 impl Extras {
@@ -1059,6 +1068,7 @@ impl Extras {
 pub struct Library {
     stems: HashMap<&'static str, TagId>,
     fixed: HashMap<Fixed, Bound>,
+    detail: Option<detail::Program>,
 }
 
 impl Library {
@@ -1108,6 +1118,7 @@ impl Library {
         Self {
             stems: stems.iter().copied().collect(),
             fixed: fixed.iter().copied().collect(),
+            detail: None,
         }
     }
 
@@ -1138,8 +1149,18 @@ impl Library {
         maps: &HashMap<Role, Bound>,
         extras: &Extras,
     ) -> Result<Record> {
-        let colors = extras.colors_of(layout);
         let stem = self.stem(layout).ok_or(Error::Invalid("the base lacks the stem"))?;
+        self.record_on_stem(layout, maps, extras, stem)
+    }
+
+    fn record_on_stem(
+        &self,
+        layout: &Layout,
+        maps: &HashMap<Role, Bound>,
+        extras: &Extras,
+        stem: TagId,
+    ) -> Result<Record> {
+        let colors = extras.colors_of(layout);
         let fixed = |f: &Fixed| {
             self.fixed
                 .get(f)
@@ -1253,6 +1274,39 @@ impl Library {
             }
         }
         Ok(rec)
+    }
+
+    /// Read the terrain's other layer connections once when a map uses
+    /// a non-default detail program.
+    pub(crate) fn load_detail_program<R: Read + Seek>(&mut self, base: &mut Map<R>) -> Result<()> {
+        if self.detail.is_none() {
+            let stem = self
+                .stem(&TEX_BUMP_DETAIL_BLEND_DETAIL)
+                .ok_or(Error::Invalid("the base lacks the detail-blend stem"))?;
+            self.detail = Some(detail::Program::read(base, stem)?);
+        }
+        Ok(())
+    }
+
+    /// Rebuild a structure shader with the detail mode selected by its senv.
+    pub(crate) fn build_surface(
+        &self,
+        set: &mut map::build::TagSet,
+        layout: &Layout,
+        maps: &HashMap<Role, Bound>,
+        extras: &Extras,
+    ) -> Result<Block> {
+        if !uses_detail_program(layout, extras) {
+            return self.build_with(layout, maps, extras);
+        }
+        let program = self
+            .detail
+            .as_ref()
+            .ok_or(Error::Invalid("missing terrain detail program"))?;
+        let stem = program.install(set, detail::active(extras.detail_blend, maps))?;
+        let record = self.record_on_stem(layout, maps, extras, stem)?;
+        defs::to_built(shad_def(), &record, &mut |_| None)
+            .map_err(|e| Error::Textures(format!("shad: {e}")))
     }
 
     /// The `shad` tree for `layout` drawing `maps`.
@@ -1816,8 +1870,13 @@ fn read_h1_maps(h1: &h1map::H1Map, tag: &h1map::Tag) -> Option<H1Shader> {
             // Last resort first: each choice falls back to the one before.
             let mut out = mk(layout, maps.clone(), Extras::default());
             if group == "senv" && !alpha_tested {
-                if let Some(blend) = senv_blend(h1, d, &maps) {
-                    let mut b = mk(&TEX_BUMP_DETAIL_BLEND_DETAIL, blend, Extras::default());
+                let detail_blend = DetailBlend::read(d);
+                if let Some(blend) = senv_blend(h1, d, &maps, detail_blend) {
+                    let extras = Extras {
+                        detail_blend,
+                        ..Extras::default()
+                    };
+                    let mut b = mk(&TEX_BUMP_DETAIL_BLEND_DETAIL, blend, extras);
                     b.fallback = Some(Box::new(out));
                     out = b;
                 }
@@ -1826,7 +1885,10 @@ fn read_h1_maps(h1: &h1map::H1Map, tag: &h1map::Tag) -> Option<H1Shader> {
                 let blended = d
                     .get(SENV_TYPE..SENV_TYPE + 2)
                     .is_some_and(|b| u16::from_le_bytes([b[0], b[1]]) != 0);
-                if !blended && let Some((cube, extras)) = senv_reflection(h1, d) {
+                if !blended
+                    && !uses_detail_program(out.layout, &out.extras)
+                    && let Some((cube, extras)) = senv_reflection(h1, d)
+                {
                     let mut env = maps.clone();
                     env.push((Role::Cube, cube));
                     let mut e = mk(&TEX_BUMP_ENV, env, extras);
@@ -2643,14 +2705,25 @@ fn swat_water(d: &[u8]) -> Option<(Vec<(Role, H1Bound)>, Extras)> {
     Some((maps, extras))
 }
 
+pub(crate) fn uses_detail_program(layout: &Layout, extras: &Extras) -> bool {
+    layout.stem == TEX_BUMP_DETAIL_BLEND_DETAIL.stem
+        && extras.detail_blend != [DetailBlend::default(); 2]
+}
+
 /// The maps of an `senv` (`d`, its data) for
 /// [`TEX_BUMP_DETAIL_BLEND_DETAIL`], from `single`, its maps for
 /// [`TEX_BUMP`] (base and bump): Halo 1's primary detail where the base
 /// alpha is 0 ([`Role::Detail`]) and, for a blended type, its secondary
 /// where it is 1 ([`Role::Secondary`]); a normal one (or one missing
 /// either) shows the one it has everywhere. The micro detail is
-/// [`Role::Micro`]. `None` when it names no detail map.
-fn senv_blend(h1: &h1map::H1Map, d: &[u8], single: &[(Role, H1Bound)]) -> Option<Vec<(Role, H1Bound)>> {
+/// [`Role::Micro`]. With the default modes and no detail map, the
+/// simpler opaque layout is enough.
+fn senv_blend(
+    h1: &h1map::H1Map,
+    d: &[u8],
+    single: &[(Role, H1Bound)],
+    detail_blend: [DetailBlend; 2],
+) -> Option<Vec<(Role, H1Bound)>> {
     let at = |o: usize| {
         let r = h1map::TagRef::read(d, o)?;
         if r.group != h1map::Group::new(b"bitm") || r.id.is_none() || h1.tag(r.id).is_err() {
@@ -2672,7 +2745,11 @@ fn senv_blend(h1: &h1map::H1Map, d: &[u8], single: &[(Role, H1Bound)]) -> Option
     let primary = at(SENV_PRIMARY);
     let secondary = if blended { at(SENV_SECONDARY) } else { None };
     let micro = at(SENV_MICRO);
-    if primary.is_none() && secondary.is_none() && micro.is_none() {
+    if primary.is_none()
+        && secondary.is_none()
+        && micro.is_none()
+        && detail_blend == [DetailBlend::default(); 2]
+    {
         return None;
     }
     let mut maps: Vec<(Role, H1Bound)> = single

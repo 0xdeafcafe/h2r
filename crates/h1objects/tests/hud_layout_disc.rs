@@ -683,3 +683,181 @@ fn no_overlay_on_the_disc_is_shown_on_a_condition() {
     eprintln!("{overlays} overlays on {} maps, all shown always", maps.len());
     assert!(overlays >= 3 && maps.len() >= 10);
 }
+
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn scope_masks_use_the_hud_screen_effect_in_each_view() {
+    use h1objects::base::Base;
+    use h1objects::convert::{Converter, local_index};
+    use h1objects::h1hud::scope::ScopeMask;
+    use map::{FourCC, Map};
+    use tags::defs::{Defs, Target, Val};
+    use tags::material::{EngineInputs, TextureSource};
+    use tags::scope_zoom::{Blur, WORDS};
+
+    let h1 = h1("bloodgulch");
+    let mut retail = Map::from_reader(Cursor::new(h2_file("/coagulation.map"))).unwrap();
+    let base = Base::read(&mut retail).unwrap();
+    let mut conv = Converter::new(&h1, &base);
+    let mut scopes = Vec::new();
+    for (weapon, max_radius) in [
+        ("pistol", 15.0),
+        ("sniper rifle", 11.0),
+        ("rocket launcher", 11.0),
+    ] {
+        let wphi = h1
+            .tags()
+            .iter()
+            .find(|t| {
+                t.group == Group::new(b"wphi")
+                    && t.name.starts_with(&format!("weapons\\{weapon}\\"))
+            })
+            .unwrap();
+        let mask = ScopeMask::read(&h1, wphi.id).unwrap().unwrap();
+        assert!(mask.filters.blur.zoom_only);
+        assert_eq!(mask.filters.blur.fov, [1.1234161, 0.114633225]);
+        assert_eq!(mask.filters.blur.radius, [0.0, max_radius]);
+        let colours = weapon == "sniper rifle";
+        assert_eq!(mask.filters.desaturation.enabled(), colours);
+        assert_eq!(mask.filters.tint.enabled(), colours);
+        if colours {
+            assert_eq!(mask.filters.desaturation.flags, 3);
+            assert_eq!(mask.filters.desaturation.channel, 1);
+            assert_eq!(mask.filters.tint.flags, 15);
+            assert_eq!(mask.filters.tint.channel, 1);
+            assert_eq!(mask.filters.tint_rgb, [0.0, 1.0, 0.0]);
+        }
+        let images = [mask.full, mask.split].map(|id| {
+            let source = Bitmap::read(&h1, h1.tag(id.unwrap()).unwrap()).unwrap();
+            let image = &source.images[0];
+            [image.width, image.height, image.depth]
+        });
+        let (hud, _) = conv.weapon_hud(wphi.id).unwrap();
+        scopes.push((local_index(hud).unwrap(), images, mask.filters));
+    }
+    assert_eq!(
+        conv.tree
+            .tags
+            .iter()
+            .filter(|(_, t)| t.group == FourCC(*b"egor"))
+            .count(),
+        6
+    );
+
+    let mut set = map::build::TagSet::from_map(&mut retail).unwrap();
+    let ids = conv.tree.install_tags(&mut set).unwrap();
+    let (bytes, _) = set.build().unwrap();
+    let mut built = Map::from_reader(Cursor::new(bytes)).unwrap();
+    let converted = Base::read(&mut built).unwrap();
+    let defs = Defs::builtin();
+    let nhdt = defs.group(FourCC(*b"nhdt")).unwrap();
+    let egor = defs.group(FourCC(*b"egor")).unwrap();
+    let mut lib = tags::material::ShaderLibrary::read(&mut built).unwrap();
+    for (hud, images, source_profile) in scopes {
+        let record = converted.record(nhdt, ids[hud]).unwrap();
+        let id = |p: &str| match record.at(p) {
+            Some(Val::Ref {
+                target: Target::Id(id),
+                ..
+            }) => *id,
+            other => panic!("{p}: {other:?}"),
+        };
+        let full = id("screen_effects[0].effect_full");
+        let split = id("screen_effects[0].effect_half");
+        assert_ne!(full, split);
+        assert_eq!(id("screen_effects[0].effect_quarter"), split);
+        for (datum, single_view) in [(full, true), (split, false)] {
+            let mut profile = source_profile;
+            if !single_view {
+                profile.blur = Blur::default();
+            }
+            let effect = converted.record(egor, datum).unwrap();
+            let Some(Val::Ref {
+                target: Target::Id(shader),
+                ..
+            }) = effect.at("shader")
+            else {
+                panic!("scope effect is missing its shader")
+            };
+            let words = if profile.enabled() {
+                profile.words()
+            } else {
+                [0; WORDS]
+            };
+            assert_eq!(
+                effect.at("h1_zoom_profile"),
+                Some(&Val::List(
+                    words.into_iter().map(|n| Val::Int(n.into())).collect()
+                )),
+            );
+            assert_eq!(
+                effect.at("passes[0].render_target"),
+                Some(&Val::Int(profile.enabled() as i64)),
+            );
+            assert_eq!(
+                effect.at("passes[0].filters[0].resolution_scale"),
+                single_view.then_some(&Val::Float(0.5)),
+            );
+
+            let mut inputs = EngineInputs::default();
+            inputs.scalars[41] = 0.25;
+            inputs.scalars[42] = 0.5;
+            let mat = lib.material(*shader, Some(inputs)).unwrap();
+            assert_eq!(mat.layers.len(), 1);
+            assert_eq!(mat.layers[0].layer, 15);
+            let passes = &mat.layers[0].passes;
+            let sources = |i: usize| {
+                passes[i].implementations[0]
+                    .textures
+                    .iter()
+                    .flatten()
+                    .map(|stage| stage.source)
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(passes.len(), if profile.enabled() { 3 } else { 1 });
+            assert_eq!(sources(passes.len() - 1), vec![TextureSource::Engine(16)]);
+            if profile.enabled() {
+                assert_eq!(sources(0), vec![TextureSource::Engine(5)]);
+                let mut expected = vec![TextureSource::Engine(3)];
+                if single_view {
+                    expected.push(TextureSource::Engine(24));
+                }
+                expected.push(TextureSource::Engine(16));
+                assert_eq!(sources(1), expected);
+                let implementation = &passes[1].implementations[0];
+                if profile.tint.enabled() {
+                    assert_eq!(implementation.input_reads.scalars, (1 << 41) | (1 << 42));
+                    let pixel = &implementation.pixel_shader;
+                    assert_eq!(pixel[0x2f], 64); // stage 1 c0.a, scalar 41
+                    assert_eq!(pixel[0x37], 128); // stage 3 c0.a, scalar 42
+                }
+            }
+        }
+
+        let bitmap = id("screen_effects[0].bitmap");
+        let tags::TagData::Bitmap(art) = tags::DecodedTag::read(&mut built, bitmap).unwrap().data
+        else {
+            panic!("scope effect is missing its mask bitmap")
+        };
+        assert_eq!(
+            art.images
+                .iter()
+                .map(|im| im.dimensions)
+                .collect::<Vec<_>>(),
+            images
+        );
+        assert_eq!(
+            record.at("screen_effects[0].sequences"),
+            Some(&Val::List(vec![Val::Int(0), Val::Int(1), Val::Int(1)]))
+        );
+        assert_eq!(
+            record.at("screen_effects[0].hide_when"),
+            Some(&Val::List(vec![
+                Val::Int(0x40),
+                Val::Int(0),
+                Val::Int(4),
+                Val::Int(0)
+            ]))
+        );
+    }
+}
