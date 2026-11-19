@@ -110,7 +110,17 @@ lightmap `0x004e0344`, [structure-bsp.md](../formats/structure-bsp.md)):
   constants `c[0..3]`, the cull's count), and `H2_NATIVE_WORLD_NO_CULL=1`
   draws every part without the CPU cull. A view whose draws are not
   W-buffered (`SET_CONTROL0` without z-perspective) is left to the D3D
-  path (counted in the log): the programs write and clip w. A placement's placed copy is
+  path (counted in the log): the programs write and clip w. The trace
+  found it: every cinematic pass culled 0 of 1449 draws (and drawing
+  them all changed no pixel), because the world was the wrong BSP. A
+  level's BSPs load at one address (03a's intro and its first play space
+  both at `0x800e6010`), and the glue loaded the first scenario BSP at
+  the active BSP's address. The play space's parts matched some of the
+  cinematic BSP's items by cluster, part and shader, so those items were
+  skipped and nothing drew them: the slivers. The world is now keyed and
+  loaded by the game's active BSP index (game globals `+2`, `i16`;
+  `native_world_glue::active_bsp_index`), which must load at that
+  address. A placement's placed copy is
   unscaled, as the game draws it (`load`), so its bounds are where it
   draws. The
   result is written as `instance_count` 0 or 1 into the indirect buffer

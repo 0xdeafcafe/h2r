@@ -98,7 +98,11 @@ pub struct Ready {
 }
 
 /// The current (map, BSP) and its world.
-pub(crate) type State = Arc<Mutex<(Option<(String, u32)>, Load)>>;
+/// The current (map, BSP address, BSP index) and its world. The index
+/// matters: a level's BSPs load at one address (03a's intro cinematic and
+/// its first play space share `0x800e6010`), so the address alone loaded
+/// the play space's world for the cinematic's BSP.
+pub(crate) type State = Arc<Mutex<(Option<(String, u32, u16)>, Load)>>;
 
 pub(crate) enum Load {
     Idle,
@@ -119,7 +123,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         if name.is_empty() || bsp == 0 {
             return None;
         }
-        let key = (name, bsp);
+        let index = active_bsp_index(mem)?;
+        let key = (name, bsp, index);
         let ready = 'ready: {
             {
                 let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -142,7 +147,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                     .name("native-world load".into())
                     .spawn(move || {
                         let t0 = std::time::Instant::now();
-                        let out = load_ready(&key.0, key.1, palettes);
+                        let out = load_ready(&key.0, key.1, key.2, palettes);
                         let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
                         if st.0.as_ref() != Some(&key) {
                             return;
@@ -159,8 +164,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                                     cpu.as_ref().map_or((0, 0), |c| (c.world.draws.len(), c.world.batches.len()))
                                 };
                                 eprintln!(
-                                    "native-world: {} BSP at {:#010x}: {} draws in {} batches, {} parts native, in {:.1} s",
+                                    "native-world: {} BSP {} at {:#010x}: {} draws in {} batches, {} parts native, in {:.1} s",
                                     key.0,
+                                    key.2,
                                     key.1,
                                     draws,
                                     batches,
@@ -170,7 +176,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                                 Load::Ready(Arc::new(r))
                             }
                             Err(e) => {
-                                eprintln!("native-world: {} BSP at {:#010x}: not loaded ({e}); the D3D path draws it", key.0, key.1);
+                                eprintln!("native-world: {} BSP {} at {:#010x}: not loaded ({e}); the D3D path draws it", key.0, key.2, key.1);
                                 Load::Failed
                             }
                         };
@@ -548,7 +554,26 @@ pub(crate) fn region(f: &MapFile) -> assets::Region {
 }
 
 /// Loads the world of map `name`'s BSP whose tag data sits at `bsp`.
-fn load_ready(name: &str, bsp: u32, palettes: StagePalettes) -> Result<Ready, load::Error> {
+/// The active structure BSP's index in the scenario's BSP block: the
+/// game globals' (`engine::points::GAME_GLOBALS`) `i16` at `+2`, as
+/// `0x0011c1b0` and `0x00137d40` index the block with it
+/// (`live_telemetry::layout::GLOBALS_ACTIVE_BSP`). `None` when negative
+/// or unread.
+fn active_bsp_index(mem: &dyn GuestMemory) -> Option<u16> {
+    let globals = mem.u32(engine::points::GAME_GLOBALS.base).ok().filter(|&g| g != 0)?;
+    u16::try_from(mem.u16(globals + 2).ok()? as i16).ok()
+}
+
+/// Which of the scenario's BSPs (`addresses`: each one's load address, in
+/// block order) is the active one: the game's index, when that BSP loads
+/// at the active BSP's address. Not the first BSP at that address: a
+/// level's BSPs share it.
+fn active_scenario_bsp(addresses: &[Option<u32>], index: u16, bsp: u32) -> Option<usize> {
+    let i = usize::from(index);
+    (addresses.get(i).copied().flatten() == Some(bsp)).then_some(i)
+}
+
+fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Result<Ready, load::Error> {
     let file = locate(name).ok_or("the map's file is not found")?;
     let mut map = Map::from_region(BufReader::new(std::fs::File::open(&file.path)?), file.offset, file.len)?;
     let mut files = assets::ResourceFiles::new();
@@ -563,10 +588,11 @@ fn load_ready(name: &str, bsp: u32, palettes: StagePalettes) -> Result<Ready, lo
         }
     }
     let bsps = load::scenario_bsps(&mut map)?;
-    let index = bsps
+    let addresses: Vec<Option<u32>> = bsps
         .iter()
-        .position(|(id, _)| map.tag(*id).ok().and_then(|t| t.location).is_some_and(|l| l.address == bsp))
-        .ok_or("no scenario BSP at the active BSP's address")?;
+        .map(|(id, _)| map.tag(*id).ok().and_then(|t| t.location).map(|l| l.address))
+        .collect();
+    let index = active_scenario_bsp(&addresses, active, bsp).ok_or("the active BSP index is not a scenario BSP at the active BSP's address")?;
     let mut raw = Raw(files);
     let LoadedWorld {
         world,
@@ -1246,6 +1272,34 @@ mod tests {
         assert_eq!(parts, want);
         let owners: Vec<_> = w.draws.iter().map(|d| (d.owner, d.batch)).collect();
         assert_eq!(owners, vec![(Owner::Cluster(0), 0), (Owner::Instance(3), 0)]);
+    }
+
+    /// 03a's intro cinematic: the level's BSPs load at one address, and the
+    /// game's index says which is active. The first BSP at the address is
+    /// not it (the address alone gave the play space's world, whose parts
+    /// matched some of the cinematic BSP's items by cluster, part and
+    /// shader: those items were skipped and nothing drew them).
+    #[test]
+    fn the_active_bsp_is_the_game_s_index_not_the_first_at_its_address() {
+        let at = 0x800e_6010;
+        let addresses = [Some(at), Some(at), Some(0x8010_0000), None];
+        assert_eq!(active_scenario_bsp(&addresses, 1, at), Some(1));
+        assert_eq!(active_scenario_bsp(&addresses, 0, at), Some(0));
+        assert_eq!(active_scenario_bsp(&addresses, 2, at), None, "loads elsewhere");
+        assert_eq!(active_scenario_bsp(&addresses, 3, at), None, "no location");
+        assert_eq!(active_scenario_bsp(&addresses, 4, at), None, "past the block");
+    }
+
+    #[test]
+    fn the_active_bsp_index_reads_the_game_globals() {
+        let mut m = engine::memory::FlatMemory::new(0x0040_0000, 0x0021_0000);
+        assert_eq!(active_bsp_index(&m), None, "no globals yet");
+        let globals = 0x0050_0000;
+        m.set_u32(engine::points::GAME_GLOBALS.base, globals).unwrap();
+        m.set_u32(globals, 0x0001_0000).unwrap();
+        assert_eq!(active_bsp_index(&m), Some(1));
+        m.set_u32(globals, 0xffff_0000).unwrap();
+        assert_eq!(active_bsp_index(&m), None, "-1: none active");
     }
 
     #[test]
