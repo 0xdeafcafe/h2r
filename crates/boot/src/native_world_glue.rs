@@ -85,6 +85,8 @@ pub struct Ready {
     /// The parts the native pass draws, with their shaders: what the skip
     /// clears.
     parts: Arc<PartSet>,
+    part_bounds: HashMap<(Owner, u8), native_render::world::Aabb>,
+    programs_on: bool,
     /// The transparent parts the native pass draws, with their shader's
     /// tag index (`native_transparents_glue`).
     pub(crate) transparent_parts: Arc<HashMap<(Owner, u8), u16>>,
@@ -189,6 +191,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         if !d.can_external_pass() || !d.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)).ok()? {
             return None;
         }
+        let planning = timeline::native::Timer::start(timeline::native::Stage::World, timeline::native::Metric::PrepareNs);
         // The programs write w as depth and clip w (`xps_w_depth`): a view
         // whose draws store z instead (`SET_CONTROL0` without
         // z-perspective) is the D3D path's.
@@ -216,6 +219,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             }
             return None;
         };
+        let drained_plan = native_render::skip::stencil_plan(&feature::native_world::Mem(mem), native_render::skip::LIGHTMAP_LAYER)?;
+        if &drained_plan != plan { return None; }
         let Some(stencil) = pass_stencil(&stencil, plan) else {
             let n = STENCIL_REFUSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if n % 600 == 0 {
@@ -229,9 +234,12 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         // The cull layer 3 starts in: what the passes that do not set
         // `CULLMODE` inherit (`native_render::look::WorldPass::inherits_cull`).
         let cull = d.cull_state(&ReadMemory(mem)).map(inherited_cull);
-        let owners = Diagnostics::get().owners;
+        let diag = Diagnostics::get();
+        let frustum = (!diag.no_cull).then(|| GpuWorld::draw_frustum(&camera.view_projection(), ready.programs_on));
         let (masks, cleared, selected) = feature::native_world::plan_parts(
-            &feature::native_world::Mem(mem), &ready.parts, |owner| owners.keeps(owner),
+            &feature::native_world::Mem(mem), &ready.parts, |owner, part| {
+                diag.owners.keeps(owner) && frustum.is_none_or(|f| ready.part_bounds.get(&(owner, part)).is_some_and(|b| f.may_see(b)))
+            },
         )?;
         let ranges = selected.len();
         if ranges == 0 { return None; }
@@ -248,13 +256,13 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             stencil,
             cull,
         });
+        drop(planning);
         let reservation = d.prepare_external_bound(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass, Vec::new()).ok()??;
         if !masks.apply(&mut feature::native_world::Mem(mem)) {
             timeline::native::Stage::World.count(timeline::native::Metric::RefusedMasks, ranges as u64);
             return None;
         }
         reservation.commit();
-        timeline::native::Stage::World.count(timeline::native::Metric::Suppressed, ranges as u64);
         Some(cleared)
     }
 }
@@ -364,6 +372,26 @@ pub(crate) fn inherited_cull((cull, front): (gfx::state::CullMode, gfx::state::F
     (p.cull_mode, p.front_face)
 }
 
+impl WorldPass {
+    fn configure(&self, gpu: &mut GpuWorld, t: &d3d::ExternalTarget<'_>) {
+        let diag = Diagnostics::get();
+        gpu.set_cull(!diag.no_cull);
+        gpu.set_owners(diag.owners);
+        let (placements, clusters) = diag.inherit_cull;
+        gpu.set_inherited_cull(native_render::program::InheritedCull {
+            device: self.cull,
+            placements,
+            clusters,
+        });
+        let (state, marked) = &self.stencil;
+        let mut stencil = PassStencil::from_device(state, t.depth_format);
+        if stencil != PassStencil::default() {
+            stencil.marked = marked.clone();
+        }
+        gpu.set_stencil(stencil);
+    }
+}
+
 impl d3d::ExternalPass for WorldPass {
     fn view_constants(&mut self, constants: &[[f32; 4]; d3d::VIEW_CONSTANTS]) {
         self.view = Some(*constants);
@@ -372,6 +400,15 @@ impl d3d::ExternalPass for WorldPass {
     fn depth_clip(&mut self, clip: d3d::DepthClip) {
         self.w_clip = Some((clip.range, clip.clamp));
         self.clip = Some(clip);
+    }
+
+    fn prepare_copy(&mut self, t: &d3d::ExternalTarget<'_>) -> Result<(), &'static str> {
+        let mut guard = upload(&self.ready, t);
+        let gpu = guard.as_mut().ok_or("world geometry unavailable")?;
+        if gpu.has_programs() && self.view.is_none() { return Err("world view constants unavailable"); }
+        self.configure(gpu, t);
+        gpu.prepare_parts(t.device, t.color_format, t.depth_format, &self.selected, &self.camera)
+            .then_some(()).ok_or("world part or program binding unavailable")
     }
 
     fn writes(&self) -> d3d::ExternalWrites {
@@ -383,12 +420,7 @@ impl d3d::ExternalPass for WorldPass {
     fn record_ranges(&mut self, mut t: d3d::ExternalTarget<'_>) -> usize {
         let mut gpu = upload(&self.ready, &t);
         let Some(gpu) = gpu.as_mut() else { return 0 };
-        let (placements, clusters) = Diagnostics::get().inherit_cull;
-        gpu.set_inherited_cull(native_render::program::InheritedCull {
-            device: self.cull,
-            placements,
-            clusters,
-        });
+        self.configure(gpu, &t);
         if gpu.has_programs() {
             // The programs read the view from the device's constants: a
             // pass issued without them draws nothing rather than a world
@@ -412,9 +444,6 @@ impl d3d::ExternalPass for WorldPass {
             }
         }
         let diag = Diagnostics::get();
-        // The guest list already did visibility selection for these exact parts.
-        gpu.set_cull(false);
-        gpu.set_owners(diag.owners);
         let full_scale = t.z_scale;
         let culled = gpu.prepare(
             &mut t.encoder_uploads(),
@@ -433,12 +462,6 @@ impl d3d::ExternalPass for WorldPass {
             let hits = probe(gpu.world(), &self.camera.view_projection(), (width, height), at);
             eprintln!("native-world probe at {at:?}: {} parts: {hits:?}", hits.len());
         }
-        let (state, marked) = &self.stencil;
-        let mut stencil = PassStencil::from_device(state, t.depth_format);
-        if stencil != PassStencil::default() {
-            stencil.marked = marked.clone();
-        }
-        gpu.set_stencil(stencil);
         let [x, y, width, height] = t.viewport;
         let recorded = gpu.encode_parts(
             t.device,
@@ -1021,7 +1044,9 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Res
     // rigid program: the rest keeps its D3D draws.
     let world = keep_draws(world, &|d| native.contains(&d.material) && drawn_natively(d, &rigid));
     let parts = part_set(&world, &shaders);
+    let part_bounds = world.draws.iter().map(|d| ((d.owner, d.part), d.bounds)).collect();
     Ok(Ready {
+        part_bounds, programs_on,
         cpu: Mutex::new(Some(CpuWorld {
             world,
             base_maps,
@@ -1075,7 +1100,7 @@ fn whole_shader_materials(materials: &[u16], shaders: &[TagId], native: &HashSet
 }
 
 /// The skip's table: each part the world draws (by owner and part index),
-/// with its material's shader by tag index. `world` holds only native
+/// with its material's full shader datum. `world` holds only native
 /// materials' draws ([`keep_draws`]).
 fn part_set(world: &World, shaders: &[TagId]) -> PartSet {
     world

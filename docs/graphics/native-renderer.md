@@ -121,7 +121,9 @@ World placement transforms are initialized once at map load.
 `V` is player view `0` through `3`, or `other`. `C` is `reference` or
 `display`. Confirmed passes account for both physical copies and count a
 suppressed guest item once. Stage ownership filters count items they reject
-before calling the device. New stage implementations use
+before calling the device. Single-stage draw admissions can override
+`DrawAdmission::stage() -> Option<timeline::native::Stage>` to meter their
+selection time and ownership refusals automatically. New stage implementations use
 `gfx::churn::{create_buffer, create_buffer_init, create_bind_group, create_render_pipeline, upload_bytes}`
 for resource accounting. Legacy enqueues have no suppression promise.
 
@@ -610,21 +612,11 @@ The crate `native-render` (`crates/native-render`):
 
 ### Wired into the game
 
-- **`d3d` external pass** (`crates/d3d`). `Device::request_external_pass`
-  holds a boxed `ExternalPass` and issues it at the next push-buffer drain
-  (the next D3D entry), with the bound colour target, the bound depth and
-  the current viewport, like `request_depth_grid`; `can_external_pass`
-  asks the backend first. `GfxBackend::external_pass` encodes the pending
-  pass, then hands the pass the open encoder, single-mip views of the two
-  surfaces, their formats, the viewport in texels and the device's depth
-  full scale (`+0x948`). `ThreadedBackend` posts it to the render thread;
-  `ScaledBackend` runs it into both copies (the 1x reference and the
-  scaled view: `encode` is called once per copy); `InterpBackend` (E1)
-  forwards it and holds the frame (`unpinned`), since a replay redraws
-  draws, not passes. `DiagBackend` and boot's headless backend forward it.
-  Counters: `external_passes`, `external_passes_dropped`. Test:
-  `crates/d3d/tests/external_pass.rs` (direct, render thread, E1, and a
-  backend that cannot).
+- **`d3d` external pass.** World and object replacements use the ordered
+  reservation above. `Device::request_external_pass` still schedules
+  legacy passes, including comparison probes, at the next push-buffer
+  drain. `crates/d3d/tests/external_pass.rs` covers both entry points,
+  direct and threaded recording, scaled attachment refusal, and replay.
 - **The feature `native-world`** (`crates/feature/src/native_world.rs`,
   off by default (the A/B on screen showed the stage 1 look, base map
   times lightmap, far from the D3D path), `H2_FEATURES=impl.render.native_world=on`
@@ -642,10 +634,10 @@ The crate `native-render` (`crates/native-render`):
   the item masks, the camera, the active BSP, the map name); the host's
   load state (a mutex only `ask` takes, and only the render reaches it;
   the loader is a host thread that opens the map through the VFS's
-  mutex and never touches guest memory); the D3D device's pending
-  external pass, which the render owns while it is in flight (the sim's
-  D3D calls join first) and which is issued at the render's next D3D
-  entry, in render order, with that entry's memory.
+  mutex and never touches guest memory); the D3D device's current
+  targets, which the render owns while it is in flight (the sim's D3D
+  calls join first). The host drains previous commands, previews the list
+  and confirms one batched reservation for the view before applying masks.
   Tests: `crates/feature/tests/native_world.rs` (the plan with
   `render-timing`, deep, and the layer-draw port all on; alone, the chain
   runs on the render thread; off by default, and on with pipelining placed; the
@@ -705,8 +697,9 @@ and behind it as before); `cpu` and the `0x0002bed0` site (layer 3) drop
 by most of the world's share of the 8.26 ms, and `encode` and `submit`
 drop with the D3D draws that are gone, in proportion to the parts the
 coverage line says are native.
-A frame where the device's `external_passes_dropped` grows has a world
-hole: it means the pass was asked for and could not be drawn.
+A refused world reservation leaves the affected guest items in layer 3.
+Use the stage's refusal reasons, per-copy range counts and invariant
+failures to distinguish D3D fallback from native coverage.
 
 The stage 1 look (base map times lightmap, on by default until
 2026-11-19) was far from the D3D path on screen, lighting most of all:

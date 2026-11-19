@@ -839,6 +839,18 @@ impl d3d::ExternalPass for ObjectsPass {
         if self.texaccum { vec![native_render::object_program::TEXACCUM_HEADER] } else { Vec::new() }
     }
 
+    fn prepare_copy(&mut self, t: &d3d::ExternalTarget<'_>) -> Result<(), &'static str> {
+        if self.view.is_none() { return Err("object view constants unavailable"); }
+        if self.texaccum && texaccum_level(t.sampled, t.guest_size, t.size).is_none() {
+            return Err("object texture accumulation unavailable");
+        }
+        let gpu = upload_pending(&self.models, t);
+        let index = self.models.index.lock().unwrap_or_else(|e| e.into_inner());
+        if self.objects.iter().all(|o| {
+            index.get(&(o.definition as u16)).and_then(|&i| gpu.as_ref()?.model(i)).is_some()
+        }) { Ok(()) } else { Err("object model unavailable") }
+    }
+
     fn writes(&self) -> d3d::ExternalWrites {
         d3d::ExternalWrites { color: true, depth_stencil: true }
     }
@@ -862,8 +874,9 @@ impl d3d::ExternalPass for ObjectsPass {
             .collect();
         if inputs.len() != self.objects.len() { return 0; }
         let full_scale = t.z_scale;
+        let device = t.device;
         gpu.prepare(
-            t.device,
+            device,
             &mut t.encoder_uploads(),
             &self.camera,
             DepthRule {

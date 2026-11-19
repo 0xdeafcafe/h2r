@@ -416,6 +416,8 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         }
         false
     };
+    use timeline::native::{Metric, Stage};
+    let planning = timeline::native::Timer::start(Stage::Objects, Metric::PrepareNs);
     let Some(mut preview) = native_render::skip::MaskPreview::new(&m) else {
         stop(Stop::NoList, || "the current list does not read".to_owned());
         return;
@@ -424,8 +426,7 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         stop(Stop::NoList, || "the current list does not read".to_owned());
         return;
     };
-    use timeline::native::{Stage, Metric};
-    Stage::Objects.count(Metric::Examined, cleared.walk.walked as u64);
+    Stage::Objects.count(Metric::Examined, (cleared.walk.walked - cleared.walk.accepted) as u64);
     Stage::Objects.count(Metric::RefusedOwnership, (cleared.walk.walked - cleared.walk.accepted) as u64);
     add_walk(&cleared.walk);
     count_implementations(&set.map, &cleared.walk);
@@ -451,7 +452,11 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
     // gets its frames (`NativeSet::shadowed`).
     let drawn: HashSet<u32> = frames.iter().filter(|f| !set.shadowed.contains(&(f.definition as u16))).map(|f| f.handle).collect();
     let accepted = cleared.handles.len();
+    let provisional = cleared.items.len();
     objects::keep_only(&mut preview, &mut cleared, &|h: u32| drawn.contains(&h));
+    let retained = (provisional - cleared.items.len()) as u64;
+    Stage::Objects.count(Metric::Examined, retained);
+    Stage::Objects.count(Metric::RefusedInputs, retained);
     if frames.is_empty() {
         stop(Stop::NoneRead, || {
             format!("{accepted} accepted objects, none read with its model's node count (node block at body +0x114/+0x116)")
@@ -460,12 +465,12 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
     }
     let count = frames.len() as u64;
     let Some(masks) = preview.finish() else { return };
+    drop(planning);
     if !host.draw(m.0, &camera, frames, &masks, cleared.items.len()) {
         stop(Stop::DrawRefused, || "the device cannot take an external pass".to_owned());
         return;
     }
     stop(Stop::Drawn, || format!("{count} objects, {} items", cleared.items.len()));
-    Stage::Objects.count(Metric::Suppressed, cleared.items.len() as u64);
     DRAWN.fetch_add(1, Ordering::Relaxed);
     OBJECTS.fetch_add(count, Ordering::Relaxed);
     ITEMS.fetch_add(cleared.items.len() as u64, Ordering::Relaxed);

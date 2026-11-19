@@ -4832,8 +4832,11 @@ impl<B: Backend> Device<B> {
                 palette_entries: std::array::from_fn(|i| self.stage_palette(mem, i)),
                 color_header: self.render_target, depth_header: self.depth_stencil,
             };
-            if let Some((_, stage)) = &scoped { stage.admit(&snapshot) }
-            else { self.admissions.iter().find_map(|a| a.admit(&snapshot)) }
+            if let Some((_, stage)) = &scoped {
+                crate::backend::admit_draw(stage.as_ref(), &snapshot)
+            } else {
+                self.admissions.iter().find_map(|stage| crate::backend::admit_draw(stage.as_ref(), &snapshot))
+            }
         };
         let replacement = admission.and_then(|(plan, mut pass)| {
             use timeline::native::Metric;

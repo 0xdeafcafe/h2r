@@ -513,7 +513,25 @@ pub struct DrawSnapshot<'a> {
 }
 
 pub trait DrawAdmission: Send + Sync {
+    /// Attribute selection time and draws declined by this ownership filter.
+    /// A dispatcher spanning several stages can account for its own filters.
+    fn stage(&self) -> Option<timeline::native::Stage> { None }
+
     fn admit(&self, snapshot: &DrawSnapshot<'_>) -> Option<(ExternalPlan, Box<dyn ExternalPass>)>;
+}
+
+pub(crate) fn admit_draw(
+    admission: &dyn DrawAdmission, snapshot: &DrawSnapshot<'_>,
+) -> Option<(ExternalPlan, Box<dyn ExternalPass>)> {
+    use timeline::native::{Metric, Timer};
+    let stage = admission.stage();
+    let _timer = stage.map(|s| Timer::start(s, Metric::PrepareNs));
+    let candidate = admission.admit(snapshot);
+    if candidate.is_none() && let Some(s) = stage {
+        s.count(Metric::Examined, 1);
+        s.count(Metric::RefusedOwnership, 1);
+    }
+    candidate
 }
 
 /// A render-to-texture level an [`ExternalPass`] samples
