@@ -9,6 +9,12 @@ use serde::{Deserialize, Serialize};
 
 pub use content::{Manifest, MapId, Sha256};
 
+pub use crate::map_details::{
+    ClassChange, Contents, Detailed, Details, MAP_DETAILED, MAP_PACK_SET, MAX_DETAIL_IMAGES,
+    MAX_DETAILS_DESCRIPTION, MapImage, PackInfo, PackListed, PackSet, PlacementChange,
+    StatChange, Swap, pack_id_ok, pack_stream,
+};
+
 /// `ContentStored`: a blob's bytes are kept (server-signed, on
 /// [`content_stream`]). Data: [`ContentStored`].
 pub const CONTENT_STORED: &str = "ContentStored";
@@ -38,7 +44,7 @@ pub const MAP_CREDITED: &str = "MapCredited";
 
 /// Every event type of this module; only the server's own endpoints write
 /// them.
-pub const KINDS: [&str; 8] = [
+pub const KINDS: [&str; 10] = [
     CONTENT_STORED,
     MAP_PUBLISHED,
     CONTENT_MODERATED,
@@ -47,6 +53,8 @@ pub const KINDS: [&str; 8] = [
     HOPPER_PINS_SET,
     MAP_DOWNLOADED,
     MAP_CREDITED,
+    MAP_DETAILED,
+    MAP_PACK_SET,
 ];
 
 /// A package's kind of change, for browsing the repository. Display data:
@@ -239,7 +247,7 @@ pub const GAMETYPES: [&str; 7] = [
 pub const MAX_VERSION: usize = 24;
 
 /// Whether `list` is ids of `known`, each once.
-fn known_ids(list: &[String], known: &[&str]) -> Result<(), String> {
+pub(crate) fn known_ids(list: &[String], known: &[&str]) -> Result<(), String> {
     for (i, f) in list.iter().enumerate() {
         if !known.contains(&f.as_str()) {
             return Err(format!("{f:?} is not one of {}", known.join(", ")));
@@ -578,6 +586,23 @@ pub struct MapSummary {
     /// ([`MapDocument::credit`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credits: Option<Credit>,
+    /// An admin's screenshots (`MapDetailed`), each served at
+    /// `/v1/maps/{id}/images/{n}`. `description` is the admin's when one
+    /// is set, `features` likewise, and `image` falls back to the first
+    /// of these when the package has no preview of its own.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<MapImage>,
+    /// What the mod contains, in words ([`Contents::lines`]); the whole
+    /// report is on [`MapDetail::report`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub contents: Vec<String>,
+    /// The map pack it came out in, by id ([`Details::pack`]), and the
+    /// pack's name when the server has its info. A list's page carries
+    /// the info of the packs its items name (`packs`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pack: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pack_name: Option<String>,
 }
 
 /// `GET /v1/maps/{map_id}`.
@@ -586,6 +611,12 @@ pub struct MapDetail {
     #[serde(flatten)]
     pub summary: MapSummary,
     pub manifest: Manifest,
+    /// The admin's contents report, whole.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report: Option<Contents>,
+    /// The pack's info, when it names one the server has.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pack_info: Option<PackListed>,
 }
 
 /// `GET /v1/maps/{map_id}`'s whole answer.
@@ -717,7 +748,7 @@ mod tests {
             package_stream(&MapId([4; 32])),
             format!("package-{}", "04".repeat(32))
         );
-        assert_eq!(KINDS.len(), 8);
+        assert_eq!(KINDS.len(), 10);
     }
 
     #[test]

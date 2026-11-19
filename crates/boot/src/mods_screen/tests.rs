@@ -57,6 +57,10 @@ fn entry(n: u8, name: &str, position: Option<u64>) -> ModEntry {
         features: Vec::new(),
         gametypes: Vec::new(),
         version: None,
+        images: Vec::new(),
+        contents: Vec::new(),
+        pack: None,
+        pack_info: None,
     }
 }
 

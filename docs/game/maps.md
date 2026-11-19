@@ -656,6 +656,33 @@ Open (each needs a live run or a design choice):
   live.forbes.red (all imported by "afr"), researched from the original
   releases; `h2 live maps credit --file docs/game/mod-credits.toml`
   applies it, skipping packages already credited so.
+- **Details.** An admin adds what a publisher's manifest lacks, again
+  outside the `MapId` (`live_proto::maps::Details`, `PUT
+  /v1/maps/{id}/details`, a server-signed `MapDetailed`): a longer
+  description (shown instead of the manifest's), screenshots (content
+  blobs, PNG or JPEG, each with a caption, who made it, its licence and
+  the page it came from; served at `/v1/maps/{id}/images/{n}`, the first
+  standing in as the preview when the package has none), a features list
+  that replaces the published one, a contents report and the map pack
+  the mod came out in. A pack's own info (name, description, authors,
+  date, source, images) is said once (`PUT /v1/mappacks/{id}`, a
+  server-signed `MapPackSet`; `GET /v1/mappacks`); a map list page
+  carries the packs its items name (`packs`) and a map's answer its
+  pack (`pack_info`), so the game can group a pack's maps. The
+  contents report (`live_proto::maps::Contents`) is read off the patched
+  map against its base (`cli::live_mod_contents`, `h2 live maps
+  analyze`): per tag class how many tags are new, changed or removed;
+  each reference of a tag both maps have that names another tag now,
+  classified by what it names (projectile, model, render model,
+  collision, physics, animation, shader, texture, damage, effect, sound,
+  weapon, vehicle, sky, palette); the weapon, projectile and damage stats
+  whose meaning is established; per placed tag how many the base and the
+  mod place, moved, and replaced in place; scripts. In words
+  (`lines`, e.g. "projectile swap: battle rifle fires fuel rod (was
+  battle rifle bullet)", "new vehicle placements: 4 banshees") and as
+  fields. `docs/game/mod-details.toml` is every published package's
+  details and packs; `h2 live maps details --file` applies it (dry run
+  first), uploading the screenshots kept outside git.
 - **Web.** The stats site's "Mods" tab (`/games/halo2/mods`): Newest and
   Most Downloaded, base map, category and text filters, and a page per mod
   (picture or base map art, author(s), original release and date, base
