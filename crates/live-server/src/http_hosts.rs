@@ -26,8 +26,11 @@ use live_proto::ErrorCode;
 use live_proto::hosts::{EndReason, HostEndpoint, HostLease, HostState};
 use serde::Deserialize;
 
-use crate::app::{ApiError, Live};
-use crate::http::{ApiResult, Shared, bearer, body_bytes, invalid, json};
+use crate::app::{ApiError, Live, invalid};
+use crate::http::{bearer, body_bytes, json};
+
+type Shared = State<Arc<Live>>;
+type ApiResult<T> = Result<T, ApiError>;
 
 const MAX_REGISTER_BODY: usize = 8 * 1024;
 const MAX_REPORT_BODY: usize = 1024;
