@@ -293,6 +293,8 @@ impl Telemetry {
                 machines: std::mem::take(&mut snapshot.machines),
                 placed: std::mem::take(&mut snapshot.placed),
                 bodies: std::mem::take(&mut snapshot.bodies),
+                projectiles: std::mem::take(&mut snapshot.projectiles),
+                items: std::mem::take(&mut snapshot.items),
             };
             // A failed scan sends none rather than stopping telemetry.
             let _ = memory::world_into(guest, buffers, &mut world);
@@ -301,6 +303,8 @@ impl Telemetry {
             snapshot.machines = world.machines;
             snapshot.placed = world.placed;
             snapshot.bodies = world.bodies;
+            snapshot.projectiles = world.projectiles;
+            snapshot.items = world.items;
         }
         self.pipeline.push(Work::Tick(snapshot))?;
         Ok(true)

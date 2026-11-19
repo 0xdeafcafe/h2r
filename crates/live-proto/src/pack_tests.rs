@@ -1,7 +1,7 @@
 use super::*;
 use crate::game::{
-    Frame, FrameAnim, FrameHit, FrameObject, FramePlayer, ObjectKind, normalize_frame,
-    validate_frame,
+    Frame, FrameAnim, FrameHit, FrameItem, FrameObject, FramePlayer, FrameProjectile, ObjectKind,
+    normalize_frame, validate_frame,
 };
 use crate::samples;
 
@@ -41,6 +41,56 @@ fn bits_and_exp_golomb_codes_round_trip() {
 }
 
 #[test]
+fn writer_preserves_bit_order_across_word_boundaries() {
+    for offset in 0..64 {
+        let mut writer = BitWriter::new();
+        let mut bits = vec![false; offset];
+        writer.bits(0, offset as u32);
+        for n in 0..=64 {
+            let word = 0xb88e_3a71_92c6_f111u64.rotate_left(n);
+            let value = word & 1u64.checked_shl(n).unwrap_or(0).wrapping_sub(1);
+            writer.bits(value, n);
+            bits.extend((0..n).map(|i| value & (1 << i) != 0));
+        }
+        assert_eq!(writer.bit_len(), bits.len());
+        let mut expected = vec![0; bits.len().div_ceil(8)];
+        for (i, bit) in bits.into_iter().enumerate() {
+            expected[i / 8] |= u8::from(bit) << (i % 8);
+        }
+        assert_eq!(writer.finish(), expected);
+    }
+}
+
+#[test]
+fn unit_mask_can_toggle_every_nonkey_field() {
+    for (i, (schema, _)) in LISTS.iter().enumerate() {
+        let Some(layout) = unit_mask(i) else {
+            continue;
+        };
+        let mut masks = vec![0];
+        let mut all = 0;
+        for (i, field) in schema.iter().enumerate() {
+            if !field.key {
+                let bit = 1 << i;
+                all |= bit;
+                masks.push(bit);
+                masks.push(all);
+            }
+        }
+        let mut writer = BitWriter::new();
+        for &mask in &masks {
+            layout.write(&mut writer, mask);
+        }
+        let bytes = writer.finish();
+        let mut reader = BitReader::new(&bytes);
+        for mask in masks {
+            assert_eq!(layout.read(&mut reader).unwrap(), mask);
+        }
+        assert!(layout.read(&mut BitReader::new(&[0xff; 4])).is_err());
+    }
+}
+
+#[test]
 fn quantisation_stays_inside_its_steps() {
     for i in 0..2000 {
         let x = (i as f64 * 0.7371).sin() * 900.0;
@@ -50,7 +100,7 @@ fn quantisation_stays_inside_its_steps() {
         let back = dyaw(qyaw(yaw).unwrap());
         let diff = (back - yaw).rem_euclid(TAU);
         let diff = diff.min(TAU - diff);
-        assert!(diff <= PI / 4096.0 + 1e-9, "yaw {yaw}: {diff}");
+        assert!(diff <= PI / 16384.0 + 1e-9, "yaw {yaw}: {diff}");
         assert!(back > -PI && back <= PI);
         let a = i as f64 * 0.31;
         let b = (i as f64 * 0.17).sin() * 1.5;
@@ -58,7 +108,7 @@ fn quantisation_stays_inside_its_steps() {
         let u = unoct(oct(v).unwrap());
         let dot: f64 = v.iter().zip(u).map(|(p, q)| p * q).sum();
         let angle = dot.clamp(-1.0, 1.0).acos();
-        assert!(angle < 0.0015, "direction off by {angle} rad");
+        assert!(angle.to_degrees() <= 0.02, "direction off by {angle} rad");
         let len: f64 = u.iter().map(|c| c * c).sum::<f64>().sqrt();
         assert!((len - 1.0).abs() < 1e-12);
     }
@@ -149,22 +199,67 @@ fn several_streams_decode_side_by_side() {
 }
 
 #[test]
-fn machine_position_trailer_leaves_the_existing_frame_bytes_intact() {
+fn machine_position_trailer_round_trips_without_changing_world_poses() {
     let base = odd_frame();
     let old = encode_keyframe(&base).unwrap();
     let with = Frame {
-        machine_positions: vec![
-            crate::game::MachinePosition { i: 7, p: 0 },
-            crate::game::MachinePosition { i: 0x1234, p: 255 },
-        ],
-        ..base
+        machine_positions: vec![MachinePosition { i: 205, p: 128 }],
+        ..base.clone()
     };
     let bytes = encode_keyframe(&with).unwrap();
-    assert_eq!(&bytes[..old.len()], old.as_slice());
-    assert_eq!(&bytes[old.len()..], &[b'M', 2, 7, 0, 0, 0x34, 0x12, 255]);
+    assert!((2..=3).contains(&(bytes.len() - old.len())));
     assert_eq!(decode_keyframe(&bytes).unwrap(), quantize(&with).unwrap());
     assert!(decode_keyframe(&old).unwrap().machine_positions.is_empty());
     assert!(decode_keyframe(&bytes[..bytes.len() - 1]).is_err());
+
+    let mut bad = with;
+    bad.machine_positions.push(bad.machine_positions[0]);
+    assert!(encode_keyframe(&bad).is_err());
+    bad.machine_positions[1].i = 8;
+    assert!(encode_keyframe(&bad).is_err());
+    bad.machine_positions[1].i = 0x8000;
+    assert!(encode_keyframe(&bad).is_err());
+}
+
+#[test]
+fn machine_position_trailer_rejects_bad_counts_indices_and_padding() {
+    let bad = |write: fn(&mut BitWriter)| {
+        let mut w = BitWriter::new();
+        write(&mut w);
+        let bytes = w.finish();
+        read_machine_positions(&mut BitReader::new(&bytes)).unwrap_err()
+    };
+    assert!(matches!(
+        bad(|w| w.eg(255, 2)),
+        PackError::Bad("too many machine positions")
+    ));
+    assert!(matches!(
+        bad(|w| {
+            w.eg(1, 2);
+            w.eg(0x7fff, 3);
+            w.bits(1, 8);
+            w.eg(0, 3);
+            w.bits(1, 8);
+        }),
+        PackError::Bad("machine position index out of range")
+    ));
+    assert!(matches!(
+        bad(|w| {
+            w.eg(1, 2);
+            w.eg(0, 3);
+            w.bits(1, 8);
+        }),
+        PackError::Short
+    ));
+    for extra in [1, 8] {
+        let mut w = BitWriter::new();
+        write_machine_positions(&mut w, [MachinePosition { i: 0, p: 128 }].iter());
+        w.bits(u64::from(extra == 1), extra);
+        assert!(matches!(
+            read_machine_positions(&mut BitReader::new(&w.finish())),
+            Err(PackError::Bad("bad machine position padding"))
+        ));
+    }
 }
 
 #[test]
@@ -270,6 +365,30 @@ fn odd_frame() -> Frame {
                 gone: true,
             },
         ],
+        projectiles: vec![
+            FrameProjectile {
+                id: "e90c0001".into(),
+                kind: "plasma_grenade".into(),
+                pos: [1.5, -2.25, 1000.5],
+                vel: None,
+                parent: Some("p15".into()),
+            },
+            FrameProjectile {
+                id: "e90c0002".into(),
+                kind: "rocket".into(),
+                pos: [-3.0, 4.0, 5.0],
+                vel: Some([-99.0, 0.5, -0.015625]),
+                parent: None,
+            },
+        ],
+        items: vec![FrameItem {
+            id: "a10d0001".into(),
+            kind: "powerup".into(),
+            pos: [0.0, -0.5, 0.25],
+            forward: [0.0, 1.0, 0.0],
+            up: [0.0, 0.0, -1.0],
+            equipment: true,
+        }],
         ..Frame::default()
     }
 }
@@ -288,7 +407,7 @@ fn keyframes_carry_every_field_alone() {
         "not a canonical player"
     );
     assert_eq!(back.hits[0].to.as_deref(), Some("p10"));
-    assert_eq!(back.players[0].pos[2], 171.0 / 512.0);
+    assert_eq!(back.players[0].pos[2], 341.0 / 1024.0);
     // Quantising twice changes nothing.
     assert_eq!(quantize(&back).unwrap(), back);
 }
@@ -298,6 +417,7 @@ fn deltas_of_odd_frames_round_trip() {
     let mut a = odd_frame();
     let mut b = odd_frame();
     b.tick += 2;
+    b.cut = None;
     b.bsp = Some(4);
     b.players.swap(0, 1);
     b.players[0].pos[0] += 0.5;
@@ -311,8 +431,9 @@ fn deltas_of_odd_frames_round_trip() {
     a.objects[1].gone = true;
     let mut e = Encoder::new(0, 100);
     let mut d = Decoder::new();
-    for f in [&a, &b, &c, &a] {
-        let (bytes, _) = e.encode(f).unwrap();
+    for (f, expected_key) in [(&a, true), (&b, false), (&c, false), (&a, true)] {
+        let (bytes, key) = e.encode(f).unwrap();
+        assert_eq!(key, expected_key);
         assert_eq!(d.decode(&bytes).unwrap().frame, quantize(f).unwrap());
     }
 }
@@ -432,13 +553,77 @@ fn frame_sizes_stay_under_budget() {
     // Budgets: the live stream at most a tenth of JSON, keyframes at most a
     // quarter. Version 3's velocity, shield and fire ticks cost about a
     // fifth more (226 to 282 B multiplayer live, 651 to 788 B campaign);
-    // version 4's animation on every unit another sixth (324 B, 931 B; the
-    // frame is sent whole each frame until the chunk codec predicts it).
+    // version 4's animation on every unit another sixth (324 B, 931 B).
+    // Version 6 adds grenades, dropped weapons and vehicles' velocity to
+    // the samples and predicts moving positions from their velocity, which
+    // pays for them in a delta (estimated: about 300 B and 860 B); its
+    // keyframes carry them whole.
     assert!(mp.live < 360.0, "multiplayer live {}", mp.live);
-    assert!(mp.keyframe < 960.0, "multiplayer keyframe {}", mp.keyframe);
+    assert!(mp.keyframe < 1100.0, "multiplayer keyframe {}", mp.keyframe);
     assert!(cp.live < 1000.0, "campaign live {}", cp.live);
-    assert!(cp.keyframe < 2700.0, "campaign keyframe {}", cp.keyframe);
+    assert!(cp.keyframe < 3000.0, "campaign keyframe {}", cp.keyframe);
     assert!(mp.live * 10.0 < mp.json && cp.live * 10.0 < cp.json);
+}
+
+/// Includes the LEB record lengths, all entities and one keyframe every
+/// ten seconds. 16 players, 30 seconds at 15 Hz, with the fixed match RNG.
+#[test]
+fn bytes_per_player_second_stay_under_budget() {
+    let mut frames = samples::multiplayer(450);
+    let encoded_len = |frames: &[Frame]| {
+        let mut bytes = Vec::new();
+        for (record, _) in stream(frames, 150) {
+            push_record(&mut bytes, &record);
+        }
+        bytes.len()
+    };
+    let base = encoded_len(&frames);
+    let rate = base as f64 / (16.0 * 30.0);
+    println!("{rate:.2} B/player/s including projectiles, vehicles, items and hits");
+    // The ten-minute bench measures 145.25 B/player/s on the same RNG.
+    assert!(rate < 147.0, "{rate:.2} B/player/s");
+
+    // One door changes once per second. Frames with a position include
+    // the three scheduled keyframes, so the stream can join at any of them.
+    for (second, f) in frames.iter_mut().step_by(15).enumerate() {
+        f.machine_positions.push(MachinePosition {
+            i: 7,
+            p: if second % 2 == 0 { 0 } else { 255 },
+        });
+    }
+    let total = encoded_len(&frames);
+    let added = total - base;
+    let rate = total as f64 / (16.0 * 30.0);
+    println!("{rate:.2} B/player/s with travel (+{added} bytes over 30 seconds)");
+    // At most two bytes for each 15-bit update, plus one if the container
+    // length crosses a LEB128 boundary.
+    assert!((30..=90).contains(&added), "{added} travel bytes");
+    assert!(rate < 147.0, "{rate:.2} B/player/s with travel");
+}
+
+/// Empty old-v7 records, sparse deltas, an empty periodic baseline and a
+/// cut with a fresh baseline. The web test also starts at the cut.
+fn machine_position_stream() -> Vec<Frame> {
+    let m = |i, p| MachinePosition { i, p };
+    [
+        (10, None, vec![]),
+        (12, None, vec![m(7, 64), m(23, 200)]),
+        (14, None, vec![m(7, 128)]),
+        (16, None, vec![]),
+        (18, None, vec![m(7, 255)]),
+        (20, Some(2), vec![m(23, 40)]),
+        (22, None, vec![]),
+        (24, None, vec![m(23, 168)]),
+    ]
+    .into_iter()
+    .map(|(tick, cut, machine_positions)| Frame {
+        game_id: "g".into(),
+        tick,
+        cut,
+        machine_positions,
+        ..Frame::default()
+    })
+    .collect()
 }
 
 /// The golden vectors `web/test/fixtures/pack` holds: the TypeScript
@@ -449,17 +634,22 @@ fn golden_vectors_match_the_encoder() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/test/fixtures/pack");
     let mut odd_b = odd_frame();
     odd_b.tick += 2;
+    odd_b.cut = None;
     odd_b.players[1].pos[1] -= 3.0;
     odd_b.players[0].alive = true;
     odd_b.objects[0].gone = true;
     odd_b.objects[0].p = None;
     odd_b.objects[0].f = None;
     odd_b.objects[0].u = None;
-    let cases: [(&str, Vec<Frame>, u64); 4] = [
-        ("multiplayer", samples::multiplayer(6), 4),
-        ("campaign", samples::campaign(4), 3),
-        ("odd", vec![odd_frame(), odd_b], 15),
-        ("cinematic", cinematic_stream(), 100),
+    odd_b.projectiles[1].pos = [-9.5, 4.25, 4.75];
+    odd_b.items.clear();
+    let cases: [(&str, Vec<Frame>, u64); 6] = [
+        ("v7-multiplayer", samples::multiplayer(6), 4),
+        ("v7-campaign", samples::campaign(4), 3),
+        ("v7-odd", vec![odd_frame(), odd_b], 15),
+        ("v7-cinematic", cinematic_stream(), 100),
+        ("v7-motion", motion_stream(), 100),
+        ("v7-machine-positions", machine_position_stream(), 3),
     ];
     let update = std::env::var_os("H2_UPDATE_GOLDEN").is_some();
     for (name, frames, every) in cases {
@@ -469,7 +659,9 @@ fn golden_vectors_match_the_encoder() {
         let mut d = Decoder::new();
         for f in &frames {
             let bytes = e.encode(f).unwrap().0;
-            decoded.push(d.decode(&bytes).unwrap().frame);
+            let frame = d.decode(&bytes).unwrap().frame;
+            assert_eq!(frame, quantize(f).unwrap(), "{name} tick {}", f.tick);
+            decoded.push(frame);
             push_record(&mut container, &bytes);
         }
         let json = serde_json::to_string_pretty(&decoded).unwrap() + "\n";
@@ -495,8 +687,171 @@ fn golden_vectors_match_the_encoder() {
     }
 }
 
-/// A game going into a cinematic and out again: a version 4 frame, two
-/// cinematic ones (version 5), a version 4 one.
+/// Check the public frame after encoding and decoding as well as each
+/// quantizer. All transforms share the same position and direction grids.
+#[test]
+fn entity_transforms_stay_inside_the_v7_error_bounds() {
+    fn axes(a: [f64; 3], b: [f64; 3], max: f64) {
+        for i in 0..3 {
+            assert!((a[i] - b[i]).abs() <= max, "{a:?} -> {b:?}");
+        }
+    }
+    fn direction(a: [f64; 3], b: [f64; 3]) {
+        let dot: f64 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+        assert!(
+            dot.clamp(-1.0, 1.0).acos().to_degrees() < 0.02,
+            "{a:?} -> {b:?}"
+        );
+    }
+    let mut f = samples::multiplayer(1).pop().unwrap();
+    let mut encoder = Encoder::new(0, 30);
+    let mut decoder = Decoder::new();
+    let mut odd = odd_frame();
+    f.objects = std::mem::take(&mut odd.objects);
+    f.projectiles = std::mem::take(&mut odd.projectiles);
+    f.items = std::mem::take(&mut odd.items);
+    for i in 0..120 {
+        f.tick += 2;
+        let t = i as f64 * 0.071;
+        let pos = [t.sin() * 271.7, t.cos() * 12.03, -0.551 * t];
+        let vel = [1.713 * t.sin(), -8.31 * t.cos(), t * 0.89];
+        let (sy, cy) = t.sin_cos();
+        let (sp, cp) = (t * 0.83).sin_cos();
+        let forward = [cp * cy, cp * sy, sp];
+        let up = [-sp * cy, -sp * sy, cp];
+        f.players[0].pos = pos;
+        f.players[0].aim = Some(forward);
+        f.players[0].vel = Some(vel);
+        f.vehicles[0].pos = pos;
+        f.vehicles[0].forward = forward;
+        f.vehicles[0].up = up;
+        f.vehicles[0].vel = Some(vel);
+        f.objects[0].p = Some(pos);
+        f.objects[0].f = Some(forward);
+        f.objects[0].u = Some(up);
+        f.items[0].pos = pos;
+        f.items[0].forward = forward;
+        f.items[0].up = up;
+        f.projectiles[1].pos = pos;
+        f.projectiles[1].vel = Some(vel);
+        let record = encoder.encode(&f).unwrap().0;
+        let back = decoder.decode(&record).unwrap().frame;
+        let (p, v, o, item, rocket) = (
+            &back.players[0],
+            &back.vehicles[0],
+            &back.objects[0],
+            &back.items[0],
+            &back.projectiles[1],
+        );
+        for got in [p.pos, v.pos, o.p.unwrap(), item.pos, rocket.pos] {
+            axes(pos, got, 0.5 / 1024.0);
+        }
+        for got in [p.vel, v.vel, rocket.vel] {
+            axes(vel, got.unwrap(), 0.5 / 128.0);
+        }
+        for got in [p.aim.unwrap(), v.forward, o.f.unwrap(), item.forward] {
+            direction(forward, got);
+        }
+        for got in [v.up, o.u.unwrap(), item.up] {
+            direction(up, got);
+        }
+        let pitch_error = (p.aim.unwrap()[2].clamp(-1.0, 1.0).asin() - sp.asin()).abs();
+        assert!(pitch_error.to_degrees() < 0.02);
+    }
+}
+
+#[test]
+fn hit_positions_can_refer_to_any_player_in_the_same_frame() {
+    let mut frames = samples::multiplayer(4);
+    let mut encoder = Encoder::new(0, 150);
+    let mut decoder = Decoder::new();
+    for (i, f) in frames.iter_mut().enumerate() {
+        f.players.reverse();
+        if i == 2 {
+            f.players.clear();
+        }
+        // First and last ordinals work after a reorder. The off-player
+        // position and the no-player frame use absolute coordinates.
+        f.hits = f
+            .players
+            .iter()
+            .rev()
+            .map(|p| FrameHit {
+                pos: p.pos,
+                ..FrameHit::default()
+            })
+            .collect();
+        f.hits.push(FrameHit {
+            pos: [-200.0004, 1.0, 0.0],
+            ..FrameHit::default()
+        });
+        let record = encoder.encode(f).unwrap().0;
+        assert_eq!(decoder.decode(&record).unwrap().frame, quantize(f).unwrap());
+    }
+}
+
+/// Two units move through an irregular run, correct a single axis, swap
+/// slots, cross the yaw seam and then seek to a cut.
+fn motion_stream() -> Vec<Frame> {
+    [0, 1, 3, 10, 42, 44, 45]
+        .into_iter()
+        .enumerate()
+        .map(|(i, tick)| {
+            let t = tick as f64;
+            let mut players: Vec<_> = (0..2)
+                .map(|index| FramePlayer {
+                    index,
+                    alive: true,
+                    pos: [
+                        index as f64 - t / 30.0,
+                        if i == 2 { 0.003 } else { 0.0 },
+                        t / 40.0,
+                    ],
+                    yaw: (if i < 2 { TAU - 0.0003 } else { 0.0003 }) + t * 0.001,
+                    aim: Some([1.0, t * 0.001, 0.01]),
+                    vel: Some([-1.0, 0.0, 0.75]),
+                    fire: (i == 3).then_some(0b10),
+                    ..FramePlayer::default()
+                })
+                .collect();
+            if i == 3 {
+                players.swap(0, 1);
+            }
+            Frame {
+                tick,
+                game_id: "motion".into(),
+                players,
+                cut: (i == 5).then_some(3),
+                ..Frame::default()
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn irregular_motion_and_cuts_reconstruct_the_sample_at_its_tick() {
+    let frames = motion_stream();
+    let records = stream(&frames, 100);
+    let mut decoder = Decoder::new();
+    for (i, (bytes, key)) in records.iter().enumerate() {
+        assert_eq!(*key, i == 0 || i == 5);
+        if *key {
+            decoder = Decoder::new();
+        }
+        let back = decoder.decode(bytes).unwrap().frame;
+        for (p, q) in frames[i].players.iter().zip(&back.players) {
+            for axis in 0..3 {
+                assert!((p.pos[axis] - q.pos[axis]).abs() <= 0.5 / POS_SCALE);
+                assert!((p.vel.unwrap()[axis] - q.vel.unwrap()[axis]).abs() <= 0.5 / VEL_SCALE);
+            }
+            assert_eq!(p.fire, q.fire);
+        }
+        assert_eq!(back, quantize(&frames[i]).unwrap());
+    }
+}
+
+/// A game going into a cinematic and out again: an ordinary frame, two
+/// cinematic ones, an ordinary one.
 fn cinematic_stream() -> Vec<Frame> {
     [
         (100, 1, false),
@@ -515,11 +870,11 @@ fn cinematic_stream() -> Vec<Frame> {
     .collect()
 }
 
-/// Only a cinematic frame is version 5: every other frame stays version 4,
-/// which a reader from before version 5 reads. A change of version is a
-/// keyframe each way, since a delta follows a frame of its own version.
+/// Version 6 carries the cinematic bit on every frame, so going into a
+/// cutscene and out again is a delta each way (version 5, written only
+/// for cinematic frames, made each change a keyframe).
 #[test]
-fn cinematic_frames_alone_are_version_five() {
+fn cinematic_frames_remain_deltas() {
     let mut frames = samples::campaign(6);
     for f in &mut frames[2..4] {
         *f = Frame {
@@ -538,6 +893,7 @@ fn cinematic_frames_alone_are_version_five() {
         let back = d.decode(&bytes).unwrap().frame;
         assert_eq!(back.cinematic, f.cinematic);
         assert_eq!(back.tick, f.tick);
+        assert_eq!(back, quantize(f).unwrap());
         seen.push((u64::from(bytes[0] & 0xf), key));
     }
     assert_eq!(
@@ -545,9 +901,9 @@ fn cinematic_frames_alone_are_version_five() {
         [
             (VERSION, true),
             (VERSION, false),
-            (CINEMATIC_VERSION, true),
-            (CINEMATIC_VERSION, false),
-            (VERSION, true),
+            (VERSION, false),
+            (VERSION, false),
+            (VERSION, false),
             (VERSION, false),
         ]
     );
@@ -563,6 +919,185 @@ fn cinematic_frames_alone_are_version_five() {
             .is_none()
     );
     assert_eq!(validate_frame(&frames[2]), Ok(()));
+}
+
+/// Version 4 and 5 streams (every game before version 6, and its chunks)
+/// still decode: `v4-multiplayer` is the multiplayer golden stream and
+/// `v4-cinematic` the cinematic one (versions 4, 5, 5, 4) as version 4's
+/// encoder wrote them. A version 4 delta never applies to a version 6
+/// frame.
+#[test]
+fn version_four_and_five_frames_still_decode() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/test/fixtures/pack");
+    for (name, versions) in [
+        ("v4-multiplayer", &[4u8; 6][..]),
+        ("v4-cinematic", &[4, 5, 5, 4][..]),
+    ] {
+        let bin = std::fs::read(dir.join(format!("{name}.bin"))).unwrap();
+        let want: Vec<Frame> = serde_json::from_str(
+            &std::fs::read_to_string(dir.join(format!("{name}.json"))).unwrap(),
+        )
+        .unwrap();
+        let recs: Vec<&[u8]> = records(&bin).collect::<Result<_>>().unwrap();
+        let got_versions: Vec<u8> = recs.iter().map(|r| r[0] & 0xf).collect();
+        assert_eq!(got_versions, versions, "{name}");
+        let mut d = Decoder::new();
+        let got: Vec<Frame> = recs.iter().map(|r| d.decode(r).unwrap().frame).collect();
+        assert_eq!(got, want, "{name}");
+        assert!(
+            got.iter()
+                .all(|f| f.projectiles.is_empty() && f.items.is_empty())
+        );
+        assert!(
+            got.iter()
+                .flat_map(|f| &f.vehicles)
+                .all(|v| v.vel.is_none())
+        );
+    }
+    let bin = std::fs::read(dir.join("v4-multiplayer.bin")).unwrap();
+    let recs: Vec<&[u8]> = records(&bin).collect::<Result<_>>().unwrap();
+    let mut e = Encoder::new(5, 100);
+    let mut d = Decoder::new();
+    d.decode(recs[0]).unwrap();
+    let frames = samples::multiplayer(2);
+    let _ = e.encode(&frames[0]).unwrap();
+    let (delta, key) = e.encode(&frames[1]).unwrap();
+    assert!(!key);
+    assert!(matches!(d.decode(&delta), Err(PackError::Gap { .. })));
+}
+
+#[test]
+fn version_six_streams_still_decode() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/test/fixtures/pack");
+    for name in ["multiplayer", "campaign", "odd", "cinematic"] {
+        let bin = std::fs::read(dir.join(format!("v6-{name}.bin"))).unwrap();
+        let want: Vec<Frame> =
+            serde_json::from_slice(&std::fs::read(dir.join(format!("v6-{name}.json"))).unwrap())
+                .unwrap();
+        let mut decoder = Decoder::new();
+        let mut frames = Vec::new();
+        for record in records(&bin) {
+            let record = record.unwrap();
+            assert_eq!(record[0] & 15, 6);
+            frames.push(decoder.decode(record).unwrap().frame);
+        }
+        assert_eq!(frames, want, "{name}");
+    }
+}
+
+/// Version 6's projectiles and items round trip, quantised, through
+/// keyframes and deltas, and the server's checks refuse what they can't
+/// hold.
+#[test]
+fn projectiles_and_items_round_trip() {
+    let frame = odd_frame();
+    let back = decode_keyframe(&encode_keyframe(&frame).unwrap()).unwrap();
+    assert_eq!(back, quantize(&frame).unwrap());
+    assert_eq!(back.projectiles.len(), 2);
+    let stuck = &back.projectiles[0];
+    assert_eq!(
+        (stuck.parent.as_deref(), stuck.vel),
+        (Some("p15"), None),
+        "a stuck grenade keeps what it stuck to"
+    );
+    assert_eq!(back.projectiles[1].vel, Some([-99.0, 0.5, -0.015625]));
+    assert!(back.items[0].equipment);
+    assert_eq!(back.items[0].up, [0.0, 0.0, -1.0]);
+    assert_eq!(validate_frame(&frame), Ok(()));
+    let mut f = odd_frame();
+    f.projectiles[0].parent = Some(f.projectiles[0].id.clone());
+    assert!(validate_frame(&f).is_err(), "its own parent");
+    let mut f = odd_frame();
+    f.projectiles[1].vel = Some([2000.0, 0.0, 0.0]);
+    assert!(validate_frame(&f).is_err(), "too fast");
+    let mut f = odd_frame();
+    f.items[0].forward = [0.0; 3];
+    assert!(validate_frame(&f).is_err());
+    let mut f = odd_frame();
+    f.items[0].kind = "Flag".into();
+    assert!(validate_frame(&f).is_err());
+    // Through a stream: the samples' grenades come and go, the dropped
+    // weapons stay, the vehicles carry their velocity.
+    let frames = samples::multiplayer(60);
+    let mut e = Encoder::new(2, 15);
+    let mut d = Decoder::new();
+    for f in &frames {
+        let back = d.decode(&e.encode(f).unwrap().0).unwrap().frame;
+        assert_eq!(back, quantize(f).unwrap());
+    }
+    assert!(frames.iter().any(|f| !f.projectiles.is_empty()));
+    assert!(frames.iter().any(|f| f.projectiles.is_empty()));
+    assert!(frames.iter().all(|f| f.items.len() >= 4));
+    assert!(
+        frames[0]
+            .vehicles
+            .iter()
+            .all(|v| v.kind == "chaingun" || v.vel.is_some())
+    );
+}
+
+/// Version 6 predicts a moving entity's position from its velocity: ten
+/// projectiles at constant speed cost a few bits each in a delta, where the
+/// plain difference of a fast one is twenty-odd bits an axis.
+#[test]
+fn a_steady_mover_costs_almost_nothing() {
+    let frame = |tick: u64, at: f64| Frame {
+        game_id: "predict".into(),
+        tick,
+        projectiles: (1..=10u32)
+            .map(|k| FrameProjectile {
+                id: format!("{:08x}", 0xa000_0000u32 + k),
+                kind: "rocket".into(),
+                // 15k units a second: k units a frame (two ticks).
+                pos: [f64::from(k) * at, -f64::from(k), 2.0],
+                vel: Some([15.0 * f64::from(k), 0.0, 0.0]),
+                parent: None,
+            })
+            .collect(),
+        ..Frame::default()
+    };
+    let mut e = Encoder::new(1, 100);
+    let mut d = Decoder::new();
+    let (key, _) = e.encode(&frame(100, 0.0)).unwrap();
+    d.decode(&key).unwrap();
+    let next = frame(102, 1.0);
+    let (delta, is_key) = e.encode(&next).unwrap();
+    assert!(!is_key);
+    assert_eq!(d.decode(&delta).unwrap().frame, quantize(&next).unwrap());
+    // All ten predicted positions are exact: one unchanged run plus header.
+    assert!(delta.len() <= 10, "{} bytes", delta.len());
+    // A gap past a second codes the plain difference, and still decodes.
+    let far = frame(140, 2.0);
+    let (delta, _) = e.encode(&far).unwrap();
+    assert_eq!(d.decode(&delta).unwrap().frame, quantize(&far).unwrap());
+    // Velocity changes, appears and goes; positions jump: every delta
+    // decodes to the frame.
+    let mut moving = frame(150, 3.0);
+    let mut e = Encoder::new(4, 100);
+    let mut d = Decoder::new();
+    for step in 0..40u64 {
+        for (i, p) in moving.projectiles.iter_mut().enumerate() {
+            let i = i as u64;
+            p.vel = match (step + i) % 5 {
+                0 => None,
+                1 => Some([0.0, 0.0, 0.0]),
+                _ => Some([
+                    (step * 7 + i) as f64 % 90.0 - 45.0,
+                    (step * 3) as f64 % 20.0,
+                    -(i as f64),
+                ]),
+            };
+            p.pos[0] += ((step * 13 + i * 5) % 11) as f64 - 5.0;
+            p.pos[2] -= 0.3 * i as f64;
+        }
+        moving.tick += 2 + 7 * (step % 6);
+        let (bytes, _) = e.encode(&moving).unwrap();
+        assert_eq!(
+            d.decode(&bytes).unwrap().frame,
+            quantize(&moving).unwrap(),
+            "step {step}"
+        );
+    }
 }
 
 /// CPU per frame: what the game's sink worker spends serialising (JSON)

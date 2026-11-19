@@ -176,6 +176,7 @@ fn frame(game_id: &str, n: u64) -> Frame {
                 occupied: moving,
                 parent: None,
                 aim: None,
+                vel: None,
             }
         })
         .collect();
@@ -188,6 +189,7 @@ fn frame(game_id: &str, n: u64) -> Frame {
         occupied: true,
         parent: Some(format!("{:08x}", 0x9000_0000u32 + i)),
         aim: Some(dir(0.8 * (t * 1.7 + f64::from(i)).sin(), 0.1)),
+        vel: None,
     }));
     let actors = (0..100u32)
         .map(|i| {

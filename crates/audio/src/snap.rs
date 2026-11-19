@@ -11,10 +11,9 @@
 //!   moved on since); a stream keeps its queued packets as decoded frames,
 //!   since nothing remembers where in guest memory they came from. Effect
 //!   state (clocks, envelope start, Doppler, filter and shelf memory, the
-//!   pitch offset) and the reverb's delay lines are saved bit for bit, so
+//!   pitch offset), the reverb and the binaural filters are saved bit for bit, so
 //!   a load renders exactly the PCM the saving mixer would have.
-//! * **Check**: the sample rate. A load into a mixer at another rate is
-//!   refused.
+//! * **Check**: the sample rate and whether binaural filtering is enabled.
 //! * **Rebuild**: the decoded copy of a buffer's bytes (decoded again),
 //!   cached filter coefficients (recomputed from the same inputs on the
 //!   next frame, so bit-equal), and the render scratch.
@@ -36,12 +35,14 @@ use crate::format::{Codec, WaveFormat};
 use crate::fx::{
     BiquadState, EnvSpec, FilterKind, FilterSpec, FxState, I3dl2Source, LfoSpec, Stage, VoiceFx,
 };
+use crate::hrtf::{Hrtf, Parameters};
 use crate::mixer::{MixInId, Mixer, Tap};
 use crate::reverb::{Allpass, Delay, I3dl2Listener, Reverb};
 
 /// The section's tag.
 pub const SECTION: Tag = Tag::new("audio");
 const VERSION: u32 = 1;
+const VERSION_HRTF: u32 = 2;
 
 type Error = snapshot::Error;
 
@@ -659,19 +660,116 @@ fn put_mix_in(w: &mut Writer, m: &MixIn) {
         params,
         playing,
         fx_state,
+        hrtf,
     } = m;
     w.u32(*input_bin);
     put_params(w, params);
     w.bool(*playing);
     put_fx_state(w, fx_state);
+    if let Some(hrtf) = hrtf {
+        put_hrtf(w, hrtf);
+    }
 }
 
-fn get_mix_in(r: &mut Reader<'_>) -> Result<MixIn, Error> {
+fn get_mix_in(r: &mut Reader<'_>, hrtf: bool, rate: u32) -> Result<MixIn, Error> {
     let mut m = MixIn::new(r.u32()?);
     m.params = get_params(r)?;
     m.playing = r.bool()?;
     m.fx_state = get_fx_state(r)?;
+    if hrtf {
+        m.hrtf = Some(get_hrtf(r, rate)?);
+    }
     Ok(m)
+}
+
+fn put_hrtf_parameters(w: &mut Writer, p: &Parameters) {
+    let Parameters {
+        delay,
+        shadow,
+        rear,
+        front_weight,
+        pinna_delay,
+        pinna_mix,
+    } = *p;
+    for v in delay
+        .into_iter()
+        .chain(shadow)
+        .chain([rear, front_weight, pinna_delay, pinna_mix])
+    {
+        put_f32(w, v);
+    }
+}
+
+fn get_hrtf_parameters(r: &mut Reader<'_>, max_delay: f32) -> Result<Parameters, Error> {
+    let p = Parameters {
+        delay: [get_f32(r)?, get_f32(r)?],
+        shadow: [get_f32(r)?, get_f32(r)?],
+        rear: get_f32(r)?,
+        front_weight: get_f32(r)?,
+        pinna_delay: get_f32(r)?,
+        pinna_mix: get_f32(r)?,
+    };
+    if !(0.0..=max_delay).contains(&p.pinna_delay)
+        || p.delay.iter().any(|&d| {
+            d < 0.0 || !(0.0..=max_delay).contains(&(d + p.pinna_delay))
+        })
+        || p.shadow.iter().any(|&v| !(-1.0..=2.0).contains(&v))
+        || !(0.0..=0.35).contains(&p.rear)
+        || !(0.0..=1.0).contains(&p.front_weight)
+        || !(0.0..=0.3).contains(&p.pinna_mix)
+    {
+        return Err(corrupt("invalid binaural filter parameters"));
+    }
+    Ok(p)
+}
+
+fn put_hrtf(w: &mut Writer, h: &Hrtf) {
+    let Hrtf {
+        history,
+        write,
+        rear_low,
+        ear_low,
+        current,
+        target,
+        remaining,
+        rate: _,
+        shadow_coefficient: _,
+        rear_coefficient: _,
+        ramp_frames: _,
+    } = h;
+    put_f32s(w, history);
+    w.u32(*write as u32);
+    put_f32(w, *rear_low);
+    put_f32(w, ear_low[0]);
+    put_f32(w, ear_low[1]);
+    put_opt(w, current, put_hrtf_parameters);
+    put_opt(w, target, put_hrtf_parameters);
+    w.u32(*remaining);
+}
+
+fn get_hrtf(r: &mut Reader<'_>, rate: u32) -> Result<Hrtf, Error> {
+    let history = get_f32s(r)?;
+    if history.len() != Hrtf::history_len(rate) || !history.iter().all(|s| s.is_finite()) {
+        return Err(corrupt("invalid binaural filter history"));
+    }
+    let max_delay = (history.len() - 2) as f32;
+    let mut h = Hrtf::with_history(rate, history);
+    h.write = r.u32()? as usize;
+    h.rear_low = get_f32(r)?;
+    h.ear_low = [get_f32(r)?, get_f32(r)?];
+    h.current = get_opt(r, |r| get_hrtf_parameters(r, max_delay))?;
+    h.target = get_opt(r, |r| get_hrtf_parameters(r, max_delay))?;
+    h.remaining = r.u32()?;
+    if h.write >= h.history.len()
+        || !h.rear_low.is_finite()
+        || !h.ear_low.iter().all(|s| s.is_finite())
+        || h.current.is_some() != h.target.is_some()
+        || (h.current.is_none() && h.remaining != 0)
+        || h.remaining > h.ramp_frames
+    {
+        return Err(corrupt("invalid binaural filter state"));
+    }
+    Ok(h)
 }
 
 // ---- reverb ----------------------------------------------------------------
@@ -867,7 +965,8 @@ impl Mixer {
     pub fn save_snapshot(&self, out: &mut SnapshotWriter) -> Result<(), SnapshotError> {
         let mut w = Writer::new();
         self.put(&mut w);
-        out.section(SECTION, VERSION, SectionCodec::Zstd, w.into_bytes())?;
+        let version = if self.hrtf { VERSION_HRTF } else { VERSION };
+        out.section(SECTION, version, SectionCodec::Zstd, w.into_bytes())?;
         Ok(())
     }
 
@@ -876,6 +975,7 @@ impl Mixer {
             // Checked: the loading mixer runs at the host's rate.
             sample_rate,
             master_mb,
+            hrtf: _,
             listener,
             buffers,
             streams,
@@ -920,13 +1020,13 @@ impl Mixer {
         }
     }
 
-    fn get(r: &mut Reader<'_>) -> Result<LoadedMixer, Error> {
+    fn get(r: &mut Reader<'_>, hrtf: bool) -> Result<LoadedMixer, Error> {
         let sample_rate = r.u32()?;
         let master_mb = get_i32(r)?;
         let listener = get_listener(r)?;
         let buffers = r.list(5, |r| Ok((BufferId(r.u32()?), get_buffer(r)?)))?;
         let streams = r.list(5, |r| Ok((StreamId(r.u32()?), get_stream(r)?)))?;
-        let mix_ins = r.list(5, |r| Ok((MixInId(r.u32()?), get_mix_in(r)?)))?;
+        let mix_ins = r.list(5, |r| Ok((MixInId(r.u32()?), get_mix_in(r, hrtf, sample_rate)?)))?;
         let next_id = r.u32()?;
         let reverb = get_opt(r, get_reverb)?;
         let clock = r.u64()?;
@@ -972,9 +1072,18 @@ impl Mixer {
     /// check other sections too before it changes anything: decodes the
     /// section and checks it fits this mixer. Changes nothing.
     pub fn check_snapshot(&self, snapshot: &Snapshot<'_>) -> Result<LoadedMixer, SnapshotError> {
-        let bytes = snapshot.require(SECTION, VERSION..=VERSION)?;
+        let (version, bytes) = snapshot.section(SECTION)?.ok_or(Error::MissingSection(SECTION))?;
+        if !matches!(version, VERSION | VERSION_HRTF) {
+            return Err(Error::SectionVersion(SECTION, version).into());
+        }
+        let hrtf = version == VERSION_HRTF;
+        if hrtf != self.hrtf {
+            return Err(SnapshotError::Mismatch(
+                "different binaural filtering setting".into(),
+            ));
+        }
         let mut r = Reader::new(&bytes, "audio");
-        let s = Self::get(&mut r)?;
+        let s = Self::get(&mut r, hrtf)?;
         r.finish()?;
         if s.sample_rate != self.sample_rate {
             return Err(SnapshotError::Mismatch(format!(
@@ -994,6 +1103,7 @@ impl Mixer {
         let Mixer {
             sample_rate: _,
             master_mb,
+            hrtf: _,
             listener,
             buffers,
             streams,

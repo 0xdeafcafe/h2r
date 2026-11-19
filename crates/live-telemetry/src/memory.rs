@@ -2,9 +2,9 @@ use live_proto::game::{Player, TeamScore};
 use runtime::{Guest, GuestFault};
 
 use crate::event::{
-    ActorState, Animation, Appearance, CharacterContact, GameInfo, HitRecord, MachineState, Motion,
-    ObjectState, PlacedObject, Placements, PlayerState, PlayerStats, Pose, Snapshot, Support,
-    VehicleState, Weapon, World,
+    ActorState, Animation, Appearance, CharacterContact, GameInfo, HitRecord, ItemState,
+    MachineState, Motion, ObjectState, PlacedObject, Placements, PlayerState, PlayerStats, Pose,
+    ProjectileState, Snapshot, Support, VehicleState, Weapon, World,
 };
 use crate::layout;
 use engine::DatumHandle;
@@ -758,6 +758,8 @@ fn clear(world: &mut World) {
     world.machines.clear();
     world.placed.clear();
     world.bodies.clear();
+    world.projectiles.clear();
+    world.items.clear();
 }
 
 fn scan(guest: &Guest, buffers: &mut ScanBuffers, out: &mut World) -> ReadResult<()> {
@@ -782,9 +784,11 @@ fn scan(guest: &Guest, buffers: &mut ScanBuffers, out: &mut World) -> ReadResult
             continue;
         }
         let datum = (u32::from(salt) << 16) | slot as u32;
+        // Not from a placement or a spawn, and no parent: loose.
+        let mut loose = false;
         if let Some(kind) = placed_kind(kind) {
             // A fault skips the object, as below.
-            let _ = placed(guest, kind, body, &mut out.placed);
+            loose = placed(guest, kind, body, &mut out.placed).unwrap_or(false);
         }
         match kind {
             layout::OBJECT_TYPE_BIPED => {
@@ -831,7 +835,18 @@ fn scan(guest: &Guest, buffers: &mut ScanBuffers, out: &mut World) -> ReadResult
                         occupied: false,
                         parent,
                         aim: aim(guest, body).ok().flatten(),
+                        velocity: finite_velocity(guest, body),
                     });
+                }
+            }
+            layout::OBJECT_TYPE_PROJECTILE => {
+                if let Ok(Some(p)) = projectile(&objects, datum, body) {
+                    out.projectiles.push(p);
+                }
+            }
+            layout::OBJECT_TYPE_WEAPON | layout::OBJECT_TYPE_EQUIPMENT if loose => {
+                if let Ok(Some(i)) = item(guest, datum, kind, body) {
+                    out.items.push(i);
                 }
             }
             layout::OBJECT_TYPE_MACHINE => {
@@ -861,6 +876,56 @@ fn scan(guest: &Guest, buffers: &mut ScanBuffers, out: &mut World) -> ReadResult
         v.occupied = ridden.binary_search(&v.datum).is_ok();
     }
     Ok(())
+}
+
+/// Body `+0x88` when it reads and is finite.
+fn finite_velocity(guest: &Guest, body: u32) -> Option<[f64; 3]> {
+    vector(guest, body + layout::BODY_VELOCITY)
+        .ok()
+        .filter(|v| v.iter().all(|c| c.is_finite()))
+}
+
+/// A projectile: its definition, position and velocity; a stuck one (with
+/// a parent) at its parent's position, its own being parent-relative.
+fn projectile(objects: &Objects, datum: u32, body: u32) -> ReadResult<Option<ProjectileState>> {
+    let guest = objects.guest;
+    let (definition, [mut pos, _, _]) = transform(guest, body)?;
+    let parent = Some(guest.u32(body + layout::BODY_PARENT)?).filter(|p| *p != u32::MAX);
+    let mut velocity = finite_velocity(guest, body);
+    if let Some(p) = parent {
+        let Some((_, parent_body)) = objects.body(p)? else {
+            return Ok(None);
+        };
+        pos = vector(guest, parent_body + layout::BODY_POSITION)?;
+        velocity = None;
+    }
+    if !pos.iter().all(|c| c.is_finite()) {
+        return Ok(None);
+    }
+    Ok(Some(ProjectileState {
+        datum,
+        definition,
+        pos,
+        velocity,
+        parent,
+    }))
+}
+
+/// A weapon or equipment object lying loose ([`placed`] found it has no
+/// parent and neither a scenario placement nor a netgame spawn made it).
+fn item(guest: &Guest, datum: u32, kind: u8, body: u32) -> ReadResult<Option<ItemState>> {
+    let (definition, [pos, forward, up]) = transform(guest, body)?;
+    if !pos.iter().chain(&forward).chain(&up).all(|c| c.is_finite()) {
+        return Ok(None);
+    }
+    Ok(Some(ItemState {
+        datum,
+        definition,
+        equipment: kind == layout::OBJECT_TYPE_EQUIPMENT,
+        pos,
+        forward,
+        up,
+    }))
 }
 
 /// The placement kind of an object type whose placements frames track.
@@ -903,23 +968,24 @@ pub fn object_kind(object_type: u8) -> Option<ObjectKind> {
 }
 
 /// Notes an object that came from a scenario placement (`+0x1a`) or a
-/// netgame equipment entry (`+0xaf`).
+/// netgame equipment entry (`+0xaf`). True for one that came from neither
+/// and has no parent: lying loose (a dropped weapon), from the same reads.
 fn placed(
     guest: &Guest,
     kind: ObjectKind,
     body: u32,
     out: &mut Vec<PlacedObject>,
-) -> ReadResult<()> {
+) -> ReadResult<bool> {
     // The parent and the placement index in one read.
     const PARENT: usize = 0;
     const INDEX: usize = (layout::BODY_PLACEMENT_INDEX - layout::BODY_PARENT) as usize;
     let b = guest.read::<{ INDEX + 2 }>(body + layout::BODY_PARENT)?;
     let index = i16::from_le_bytes([b[INDEX], b[INDEX + 1]]);
     let netgame = guest.u8(body + layout::BODY_NETGAME_EQUIPMENT)? as i8;
-    if index < 0 && netgame < 0 {
-        return Ok(());
-    }
     let parented = u32::from_le_bytes(b[PARENT..PARENT + 4].try_into().unwrap()) != u32::MAX;
+    if index < 0 && netgame < 0 {
+        return Ok(!parented);
+    }
     let [pos, forward, up] = pose(guest, body)?;
     let mut push = |kind, index| {
         out.push(PlacedObject {
@@ -937,7 +1003,7 @@ fn placed(
     if netgame >= 0 {
         push(ObjectKind::NetgameEquipment, netgame as u16);
     }
-    Ok(())
+    Ok(false)
 }
 
 /// Forward and up of a scenario rotation (yaw, pitch, roll in radians):
@@ -1090,6 +1156,8 @@ pub fn snapshot_after(guest: &Guest, previous: &mut [PlayerState]) -> ReadResult
         machines: Vec::new(),
         placed: Vec::new(),
         bodies: Vec::new(),
+        projectiles: Vec::new(),
+        items: Vec::new(),
         bsp: active_bsp(guest).ok().flatten(),
         hits: Vec::new(),
         cinematic: cinematic(guest).unwrap_or(false),
@@ -2555,6 +2623,74 @@ mod tests {
         assert_eq!(placed[0].pos, [5.0, 6.0, 7.0]);
         assert_eq!(placed[0].forward, [0.0, 1.0, 0.0]);
         assert_eq!(placed[0].up, [0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn world_scan_finds_projectiles_and_loose_items() {
+        let mut guest = fixture::memory();
+        let weapon = layout::OBJECT_TYPE_WEAPON;
+        // A weapon from a placement, a held one, a dropped one and dropped
+        // equipment: only the last two are loose.
+        fixture::put_placed(&mut guest, 1, weapon, 7, -1, [1.0, 1.0, 1.0], u32::MAX);
+        let held_by = fixture::object_datum(6);
+        fixture::put_placed(&mut guest, 2, weapon, -1, -1, [0.0; 3], held_by);
+        fixture::put_placed(&mut guest, 3, weapon, -1, -1, [4.0, 5.0, 6.0], u32::MAX);
+        let equipment = layout::OBJECT_TYPE_EQUIPMENT;
+        fixture::put_placed(&mut guest, 4, equipment, -1, -1, [7.0, 8.0, 9.0], u32::MAX);
+        // A grenade in flight, and one stuck to the biped at slot 6 (its
+        // own transform parent-relative).
+        let projectile = layout::OBJECT_TYPE_PROJECTILE;
+        fixture::put_placed(&mut guest, 5, projectile, -1, -1, [2.0, 3.0, 4.0], u32::MAX);
+        let flying = fixture::body(5) + layout::BODY_VELOCITY;
+        guest.set_f32(flying, 5.0).unwrap();
+        guest.set_f32(flying + 8, -1.5).unwrap();
+        fixture::put_object(&mut guest, 6, u32::MAX);
+        fixture::put_placed(&mut guest, 7, projectile, -1, -1, [0.1, 0.0, 0.2], held_by);
+        let world = world(&guest).unwrap();
+        let items: Vec<_> = world
+            .items
+            .iter()
+            .map(|i| (i.datum, i.equipment, i.pos))
+            .collect();
+        assert_eq!(
+            items,
+            [
+                (fixture::object_datum(3), false, [4.0, 5.0, 6.0]),
+                (fixture::object_datum(4), true, [7.0, 8.0, 9.0]),
+            ]
+        );
+        assert_eq!(world.items[0].forward, [0.0, 1.0, 0.0]);
+        assert_eq!(world.items[0].up, [0.0, 0.0, 1.0]);
+        let projectiles: Vec<_> = world
+            .projectiles
+            .iter()
+            .map(|p| (p.datum, p.pos, p.velocity, p.parent))
+            .collect();
+        assert_eq!(
+            projectiles,
+            [
+                (
+                    fixture::object_datum(5),
+                    [2.0, 3.0, 4.0],
+                    Some([5.0, 0.0, -1.5]),
+                    None
+                ),
+                (
+                    fixture::object_datum(7),
+                    [1.0, 2.0, 3.0],
+                    None,
+                    Some(held_by)
+                ),
+            ],
+            "a stuck grenade is where it stuck"
+        );
+        // The vehicle scan reads velocity too.
+        fixture::put_vehicle(&mut guest, 8);
+        guest
+            .set_f32(fixture::body(8) + layout::BODY_VELOCITY + 4, 7.5)
+            .unwrap();
+        let world = super::world(&guest).unwrap();
+        assert_eq!(world.vehicles[0].velocity, Some([0.0, 7.5, 0.0]));
     }
 
     #[test]

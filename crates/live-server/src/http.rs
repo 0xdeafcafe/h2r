@@ -1113,19 +1113,37 @@ async fn game_frames(
     } else {
         crate::games::FRAMES_PAGE
     };
-    // The JSON read is gone (docs/live/live-api.md, "Frame chunks"):
-    // games since then are read as chunks, older ones packed.
-    match p.get("format").map(String::as_str) {
-        None | Some("") | Some("packed") => {}
-        Some(_) => {
-            return Err(invalid(
-                "format must be packed; frames are read as chunks (/v1/games/{id}/chunks)",
-            ));
-        }
-    }
+    let as_json = match p.get("format").map(String::as_str) {
+        None | Some("" | "packed") => false,
+        Some("json") => true,
+        Some(_) => return Err(invalid("format must be packed or json")),
+    };
     let page = live
         .recorded_frame_data(game_id(&id)?, from_tick, to_tick, paging.after, limit)
         .await?;
+    if as_json {
+        let items: Vec<live_proto::game::Frame> = page
+            .items
+            .into_iter()
+            .filter_map(
+                |item| match item.get("packed").and_then(serde_json::Value::as_str) {
+                    Some(data) => live_proto::pack::decode_keyframe(
+                        &live_proto::pack::from_base64(data).ok()?,
+                    )
+                    .ok(),
+                    None => serde_json::from_value(item).ok(),
+                },
+            )
+            .collect();
+        return Ok(json(
+            StatusCode::OK,
+            &live_proto::Page {
+                items,
+                next: page.next,
+                position: page.position,
+            },
+        ));
+    }
     // A container of keyframes; the page's cursor and head in headers.
     let mut body = Vec::new();
     for item in &page.items {
@@ -1183,6 +1201,7 @@ async fn game_chunk(
     State(live): Shared,
     headers: HeaderMap,
     Path((id, tick)): Path<(String, String)>,
+    Params(query): Params<HashMap<String, String>>,
 ) -> ApiResult<Response> {
     let token = bearer(&headers);
     let viewer = live.read_viewer(token)?;
@@ -1191,15 +1210,26 @@ async fn game_chunk(
     let tick: u64 = tick
         .parse()
         .map_err(|_| invalid("the chunk is named by its first tick"))?;
+    let as_json = match query.get("format").map(String::as_str) {
+        None | Some("" | "packed") => false,
+        Some("json") => true,
+        Some(_) => return Err(invalid("format must be packed or json")),
+    };
     let bytes = live.frame_chunk(id, tick).await?;
-    let mut resp = (
-        [(
-            header::CONTENT_TYPE,
-            HeaderValue::from_static(crate::games::CHUNK_TYPE),
-        )],
-        bytes,
-    )
-        .into_response();
+    // The query keeps the representations distinct for URL-keyed edge caches.
+    let mut resp = if as_json {
+        let frames = live_proto::chunk::frames(&bytes).map_err(|e| invalid(e.to_string()))?;
+        json(StatusCode::OK, &frames)
+    } else {
+        (
+            [(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static(crate::games::CHUNK_TYPE),
+            )],
+            bytes,
+        )
+            .into_response()
+    };
     if token.is_none() {
         resp.headers_mut().insert(
             header::CACHE_CONTROL,

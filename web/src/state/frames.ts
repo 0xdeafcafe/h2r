@@ -1,6 +1,7 @@
 // Frame buffering and interpolation. Frames are not reactive state: they
 // arrive at up to 15 Hz per game and are read directly by the canvas loop.
 
+import { isMachineBaseline } from "../api/pack";
 import type { Frame, FrameHit, FrameMachine, FrameObject, FramePlayer, FrameVehicle } from "../api/types";
 
 export const TICKS_PER_SECOND = 30;
@@ -317,7 +318,7 @@ export function fromFramePlayer(p: FramePlayer, tick?: number, shotsFrom: FrameP
 /** Blends two frames at `tick`. Players missing from `b` hold their
  *  position from `a`; players only in `b` appear when t >= 0.5. */
 export function interpolateFrames(a: Frame, b: Frame | undefined, tick: number): SampledPlayer[] {
-  return blendPlayers(a.players, b && b.tick > a.tick ? b.players : undefined, a.tick, b?.tick ?? a.tick, tick);
+  return blendPlayers(a.players, b && b.cut == null && b.tick > a.tick ? b.players : undefined, a.tick, b?.tick ?? a.tick, tick);
 }
 
 function blendPlayers(from: readonly FramePlayer[], to: readonly FramePlayer[] | undefined, tickA: number, tickB: number, tick: number): SampledPlayer[] {
@@ -326,7 +327,7 @@ function blendPlayers(from: readonly FramePlayer[], to: readonly FramePlayer[] |
   const fired = (s: SampledPlayer, p: FramePlayer, at: number, after: number) => {
     if (p.fire == null || !p.alive) return;
     const ticks = fireTicks(p.fire, at, after, tick);
-    if (ticks.length) s.fireTicks = ticks;
+    if (ticks.length) s.fireTicks = s.fireTicks ? s.fireTicks.concat(ticks) : ticks;
   };
   if (!to) return a.players.map((p) => { const s = fromFramePlayer(p, a.tick); fired(s, p, a.tick, a.tick - 32); return s; });
   const b = { tick: tickB, players: to };
@@ -348,8 +349,8 @@ function blendPlayers(from: readonly FramePlayer[], to: readonly FramePlayer[] |
     // Everything but the place comes from the nearer frame; shots from `a`,
     // or with masks each on its tick: the later frame's as the clock passes them.
     const s = fromFramePlayer(t < 0.5 ? pa : pb, a.tick, pa);
-    if (pb.fire != null) fired(s, pb, b.tick, a.tick);
-    else fired(s, pa, a.tick, a.tick - 32);
+    fired(s, pa, a.tick, a.tick - 32);
+    fired(s, pb, b.tick, a.tick);
     const va = cleanVel(pa.vel), vb = cleanVel(pb.vel);
     if (va && vb && b.tick - a.tick <= HERMITE_MAX_TICKS) {
       // Both samples say how they were moving: the path that leaves `a`
@@ -412,7 +413,7 @@ export function cinematicAt(frames: readonly Frame[], tick: number): boolean {
  *  towards a cutscene, nor do the ones after it show up early. */
 function nextOf(frames: readonly Frame[], i: number): Frame | undefined {
   const b = frames[i + 1];
-  return b?.cinematic ? undefined : b;
+  return b?.cinematic || b?.cut != null ? undefined : b;
 }
 
 /** Samples a sorted frame list at a (fractional) tick. */
@@ -444,7 +445,7 @@ function actorsOf(f: Frame): { players: FramePlayer[]; info: Map<number, { id: s
     players.push({
       index, alive: true, pos: a.pos, yaw: a.yaw, vehicle: cleanId(a.vehicle), species: a.species, aim: a.aim, weapon: a.weapon, shots: a.shots,
       stance: a.stance, speed: a.speed, actions: a.actions, grenade: a.grenade,
-      vel: a.vel, anim: a.anim, seat: a.seat,
+      vel: a.vel, fire: a.fire, anim: a.anim, seat: a.seat,
     });
   }
   return { players, info };
@@ -549,7 +550,7 @@ export function vehiclePath(frames: readonly Frame[], i: number, a: SampledVehic
       hermite(a.z, a.vel[2] * k, b.z, b.vel[2] * k, t),
     ];
   }
-  const fp = i > 0 ? frames[i - 1] : undefined, fn = frames[i + 2];
+  const fp = i > 0 && fa.cut == null ? frames[i - 1] : undefined, fn = nextOf(frames, i + 1);
   const p = fp ? near(fp, a, fa.tick - fp.tick) : null;
   const n = fn ? near(fn, b, fn.tick - fb.tick) : null;
   // Velocities per tick at a and b.
@@ -691,12 +692,14 @@ interface TravelSample {
  *  position through quiet frames, including when a replay seeks there. */
 export class MachinePositionHistory {
   private readonly positions = new Map<number, TravelSample[]>();
-  private readonly cuts: { tick: number }[] = [];
+  private readonly resets: { tick: number }[] = [];
 
-  push(frame: Frame): void {
-    if (frame.cut != null) this.cuts.push({ tick: frame.tick });
+  push(frame: Frame, tick = frame.tick, rewind = false): void {
+    if (this.positions.size && (rewind || frame.cut != null || isMachineBaseline(frame))) {
+      this.resets.push({ tick });
+    }
     if (!Array.isArray(frame.machine_positions)) return;
-    const cut = this.cuts.at(-1)?.tick ?? -Infinity;
+    const reset = this.resets.at(-1)?.tick ?? -Infinity;
     for (let n = 0; n < Math.min(frame.machine_positions.length, MAX_MACHINE_POSITIONS); n++) {
       const m = frame.machine_positions[n];
       if (!m || !Number.isInteger(m.i) || m.i < 0 || m.i > 0x7fff ||
@@ -705,20 +708,20 @@ export class MachinePositionHistory {
       if (!samples) { samples = []; this.positions.set(m.i, samples); }
       const position = m.p / 255;
       const last = samples.at(-1);
-      if (last?.tick === frame.tick) last.position = position;
-      else if (!last || last.tick < cut || last.position !== position) samples.push({ tick: frame.tick, position });
+      if (last?.tick === tick) last.position = position;
+      else if (!last || last.tick < reset || last.position !== position) samples.push({ tick, position });
     }
   }
 
   /** Live only: keep the last word before the buffer's first frame. */
   prune(tick: number): void {
-    const cutAt = findFrame(this.cuts, tick);
-    const cut = this.cuts[cutAt]?.tick ?? -Infinity;
-    if (cutAt > 0) this.cuts.splice(0, cutAt);
+    const resetAt = findFrame(this.resets, tick);
+    const reset = this.resets[resetAt]?.tick ?? -Infinity;
+    if (resetAt > 0) this.resets.splice(0, resetAt);
     for (const [i, samples] of this.positions) {
       const last = findFrame(samples, tick);
       if (last > 0) samples.splice(0, last);
-      if (samples[0]!.tick < cut) samples.shift();
+      if (samples[0]!.tick < reset) samples.shift();
       if (!samples.length) this.positions.delete(i);
     }
   }
@@ -727,7 +730,7 @@ export class MachinePositionHistory {
     if (!this.positions.size) return;
     const at = findFrame(frames, tick);
     if (at < 0 || frames[at]!.cinematic) return;
-    const cut = this.cuts[findFrame(this.cuts, tick)]?.tick ?? -Infinity;
+    const reset = this.resets[findFrame(this.resets, tick)]?.tick ?? -Infinity;
     const before = frames[at]!.tick;
     const next = frames[at + 1];
     const blend = next && next.cut == null && !next.cinematic && next.tick > before;
@@ -736,7 +739,7 @@ export class MachinePositionHistory {
     for (const [i, samples] of this.positions) {
       const index = findFrame(samples, tick);
       const a = samples[index];
-      if (!a || a.tick < cut) continue;
+      if (!a || a.tick < reset) continue;
       const b = samples[index + 1];
       const follows = blend && b?.tick === next.tick;
       out.set(i, { from: a.position, to: follows ? b.position : a.position, mix: follows ? mix : 0 });
@@ -774,7 +777,7 @@ function objectsCached(f: Frame) {
 export function sampleObjects(frames: readonly Frame[], tick: number): FrameObject[] | null {
   const i = findFrame(frames, tick);
   if (i < 0) return null;
-  const a = frames[i]!, b = frames[i + 1];
+  const a = frames[i]!, b = nextOf(frames, i);
   const { list, keys } = objectsCached(a);
   const next = b && b.tick > a.tick ? objectsCached(b).there : undefined;
   const t = b && b.tick > a.tick ? Math.min(1, Math.max(0, (tick - a.tick) / (b.tick - a.tick))) : 0;
@@ -816,15 +819,33 @@ export class FrameBuffer {
   /** Every machine heard of, as last sent. */
   private machines = new Map<string, SampledMachine>();
   private travel = new MachinePositionHistory();
+  private historyReaders = 0;
 
   constructor(readonly capacity = 48, readonly delayTicks = 5) {}
+
+  /** Keep about 30 seconds at the live stream's maximum of 15 fps while
+   *  a viewer has a scrubber open. Other games keep their shorter buffer. */
+  keepPlaybackHistory(): () => void {
+    this.historyReaders++;
+    return () => {
+      this.historyReaders--;
+      this.trim();
+    };
+  }
+
+  private trim(): void {
+    const capacity = this.historyReaders ? Math.max(450, this.capacity) : this.capacity;
+    if (this.frames.length > capacity) {
+      this.frames.splice(0, this.frames.length - capacity);
+      this.travel.prune(this.frames[0]?.tick ?? this.lastTick);
+    }
+  }
 
   get lastTick(): number {
     return this.frames.length ? this.frames[this.frames.length - 1]!.tick : 0;
   }
 
   push(frame: Frame, now: number): void {
-    frame = withoutUnplaced(frame);
     const last = this.frames[this.frames.length - 1];
     if (last && frame.tick <= last.tick) {
       if (frame.tick < last.tick - TICKS_PER_SECOND * 5) {
@@ -835,17 +856,15 @@ export class FrameBuffer {
         this.offset = null;
       } else return;
     }
-    this.frames.push(frame);
     this.travel.push(frame);
+    frame = withoutUnplaced(frame);
+    this.frames.push(frame);
     // Machines are only sent when they move: keep the last word on each.
     for (const raw of (frame.machines ?? []).slice(0, MAX_MACHINES)) {
       const m = fromFrameMachine(raw);
       if (m && (this.machines.has(m.id) || this.machines.size < MAX_MACHINES)) this.machines.set(m.id, m);
     }
-    if (this.frames.length > this.capacity) {
-      this.frames.splice(0, this.frames.length - this.capacity);
-      this.travel.prune(this.frames[0]?.tick ?? frame.tick);
-    }
+    this.trim();
     for (const p of frame.players) {
       const [x, y, z] = p.pos;
       const b = this.bounds;

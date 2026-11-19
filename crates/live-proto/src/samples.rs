@@ -4,8 +4,8 @@
 //! game would send them at 15 Hz (every second tick). Deterministic.
 
 use crate::game::{
-    Frame, FrameActor, FrameAnim, FrameHit, FrameMachine, FrameObject, FramePlayer, FrameVehicle,
-    ObjectKind,
+    Frame, FrameActor, FrameAnim, FrameHit, FrameItem, FrameMachine, FrameObject, FramePlayer,
+    FrameProjectile, FrameVehicle, ObjectKind,
 };
 
 /// A small deterministic generator (xorshift).
@@ -170,7 +170,68 @@ fn vehicle(id: u32, kind: &str, m: &Mover, t: f64, occupied: bool) -> FrameVehic
         occupied,
         parent: None,
         aim: None,
+        vel: Some(if occupied {
+            r3(m.vel(t))
+        } else {
+            [0.0, 0.0, 0.0]
+        }),
     }
+}
+
+/// Gravity in the samples' grenade arcs, world units a second squared.
+const GRAVITY: f64 = 4.17;
+
+/// Grenades in flight at frame `n`: one thrown every `every` frames from
+/// `from(throw, seconds)` (where the thrower was when it threw), each
+/// flying 30 frames (2 s) on an arc. Deterministic,
+/// and drawn from no random stream (the other values stay as they were).
+fn grenades(
+    n: usize,
+    every: usize,
+    base: u32,
+    kind: &str,
+    from: impl Fn(usize, f64) -> [f64; 3],
+) -> Vec<FrameProjectile> {
+    let first = n.saturating_sub(29).div_ceil(every) * every;
+    (first..=n)
+        .step_by(every)
+        .map(|at| {
+            let throw = at / every;
+            let tau = (n - at) as f64 / 15.0;
+            let start = from(throw, at as f64 / 15.0);
+            let heading = throw as f64 * 2.3;
+            let v0 = [6.0 * heading.cos(), 6.0 * heading.sin(), 4.0];
+            FrameProjectile {
+                id: format!("{:08x}", base + throw as u32 * 0x10001),
+                kind: kind.into(),
+                pos: r3([
+                    start[0] + v0[0] * tau,
+                    start[1] + v0[1] * tau,
+                    start[2] + 0.5 + v0[2] * tau - 0.5 * GRAVITY * tau * tau,
+                ]),
+                vel: Some(r3([v0[0], v0[1], v0[2] - GRAVITY * tau])),
+                parent: None,
+            }
+        })
+        .collect()
+}
+
+/// Weapons lying where they were dropped: `count` of them, two more each
+/// minute, still once they land.
+fn dropped(n: usize, count: usize, base: u32, extent: f64) -> Vec<FrameItem> {
+    (0..count + n / 900 * 2)
+        .map(|i| {
+            let a = i as f64 * 1.7;
+            FrameItem {
+                id: format!("{:08x}", base + i as u32 * 0x10001),
+                kind: WEAPONS[i % WEAPONS.len()].into(),
+                pos: r3([extent * a.cos() * 0.7, extent * a.sin() * 0.7, 0.1]),
+                forward: r3([a.sin(), a.cos(), 0.0]),
+                up: [0.0, 0.0, 1.0],
+                equipment: false,
+            }
+        })
+        .collect()
 }
 
 /// The Warthog's chaingun: a turret riding vehicle `parent`, its position
@@ -186,6 +247,7 @@ fn turret(id: u32, parent: u32, t: f64) -> FrameVehicle {
         occupied: true,
         parent: Some(format!("{parent:08x}")),
         aim: Some(r3(aim(yaw, 0.1))),
+        vel: None,
     }
 }
 
@@ -236,6 +298,22 @@ pub fn multiplayer(frames: usize) -> Vec<Frame> {
                     gone: true,
                 })
                 .collect();
+            // A grenade every three seconds, and the flag lying at its
+            // stand for the first half minute of each minute.
+            let projectiles = grenades(n, 45, 0xa00c_0000, "frag_grenade", |throw, at| {
+                movers[throw % 16].at(at).0
+            });
+            let mut items = dropped(n, 4, 0xa10d_0000, 40.0);
+            if n % 900 < 450 {
+                items.push(FrameItem {
+                    id: "a2f00f00".into(),
+                    kind: "flag".into(),
+                    pos: [20.0, -12.0, 0.5],
+                    forward: [1.0, 0.0, 0.0],
+                    up: [0.0, 0.0, 1.0],
+                    equipment: false,
+                });
+            }
             Frame {
                 game_id: "7f3c0b5e2a9d4c1f8e6b3a2d1c0f9e8d".into(),
                 tick,
@@ -249,6 +327,8 @@ pub fn multiplayer(frames: usize) -> Vec<Frame> {
                 objects,
                 cut: None,
                 cinematic: false,
+                projectiles,
+                items,
             }
         })
         .collect()
@@ -423,6 +503,11 @@ pub fn campaign(frames: usize) -> Vec<Frame> {
                 gone: true,
             }));
             objects.sort_by_key(|o| (o.k, o.i));
+            // Grunts lob plasma grenades: one every two seconds.
+            let projectiles = grenades(n, 30, 0xe90c_0000, "plasma_grenade", |throw, at| {
+                actors[throw % 60].0.at(at).0
+            });
+            let items = dropped(n, 12, 0xe20d_0000, 60.0);
             Frame {
                 game_id: "c4a1d2e3f4a5b6c7d8e9f0a1b2c3d4e5".into(),
                 tick,
@@ -436,6 +521,8 @@ pub fn campaign(frames: usize) -> Vec<Frame> {
                 objects,
                 cut: None,
                 cinematic: false,
+                projectiles,
+                items,
             }
         })
         .collect()

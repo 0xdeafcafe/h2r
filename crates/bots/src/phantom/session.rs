@@ -1109,12 +1109,16 @@ pub struct Action {
     pub trigger2: f32,
     /// The current weapon index, -1 for none.
     pub weapon: i8,
+    pub secondary: Option<u8>,
+    pub weapon_set: u16,
+    pub buttons: u16,
+    pub grenade: Option<u8>,
+    pub zoom: Option<u8>,
 }
 
 impl Action {
     /// The record's bytes, every field the validator (`0x14d0a0`) checks in
-    /// range: the second weapon, grenade and `+0x24` -1, the target and aim
-    /// block zero.
+    /// range. Empty selections and object handles use the guest sentinels.
     pub fn bytes(&self) -> [u8; ACTION_SIZE] {
         let mut b = [0u8; ACTION_SIZE];
         let f = |b: &mut [u8; ACTION_SIZE], o: usize, v: f32| {
@@ -1127,14 +1131,21 @@ impl Action {
         f(&mut b, 0x10, self.strafe.clamp(-1.0, 1.0));
         f(&mut b, 0x14, self.trigger.clamp(0.0, 1.0));
         f(&mut b, 0x18, self.trigger2.clamp(0.0, 1.0));
+        b[0x1c..0x1e].copy_from_slice(&self.buttons.to_le_bytes());
+        b[0x1e..0x20].copy_from_slice(&self.weapon_set.to_le_bytes());
         b[0x20] = if (0..4).contains(&self.weapon) {
             self.weapon as u8
         } else {
             0xff
         };
-        b[0x21] = 0xff;
-        b[0x22..0x24].copy_from_slice(&u16::MAX.to_le_bytes());
-        b[0x24..0x26].copy_from_slice(&u16::MAX.to_le_bytes());
+        b[0x21] = self
+            .secondary
+            .filter(|&s| s < 4 && s != b[0x20])
+            .unwrap_or(0xff);
+        let index = |v: Option<u8>, count: u8| v.filter(|&x| x < count).map_or(u16::MAX, u16::from);
+        b[0x22..0x24].copy_from_slice(&index(self.grenade, 2).to_le_bytes());
+        b[0x24..0x26].copy_from_slice(&index(self.zoom, 4).to_le_bytes());
+        b[0x2c..0x40].fill(0xff);
         b
     }
 }
@@ -1156,8 +1167,8 @@ pub const TURN_RATE: f32 = crate::mind::TURN_RATE;
 /// weapon `weapon`, over `dt` seconds. The right stick turns from the
 /// current facing as the brain expects (+x turns right, +y looks up); the
 /// left stick is (right, forward); the right trigger fires and the left
-/// throws. Buttons are not mapped yet (jump, crouch, melee: §5.1).
-pub fn action_from_pad(
+/// throws. The button adapter fills the discrete controls and selections.
+pub(super) fn motion_from_pad(
     pad: &input::host::HostPadState,
     aim: [f32; 3],
     weapon: i8,
@@ -1167,15 +1178,15 @@ pub fn action_from_pad(
     let (rx, ry) = crate::mind::turn_rate(pad.right_stick);
     let (lx, ly) = pad.left_stick;
     Action {
-        flags: 0,
         yaw: yaw - rx * dt,
         pitch: pitch + ry * dt,
         forward: ly,
-        // [guess] the action's strafe is positive to the left.
+        // Default stick layout at 0x21838a: the action's strafe is positive left.
         strafe: -lx,
         trigger: pad.right_trigger,
         trigger2: pad.left_trigger,
         weapon,
+        ..Action::default()
     }
 }
 

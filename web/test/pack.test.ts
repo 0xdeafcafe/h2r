@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { BitReader, FrameDecoder, PackError, decodeKeyframe, fromBase64, records, recordedFrame, unoct } from "../src/api/pack";
+import { BitReader, FrameDecoder, PackError, decodeKeyframe, fromBase64, isMachineBaseline, records, recordedFrame, unoct } from "../src/api/pack";
+
+import type { Frame } from "../src/api/types";
 
 const dir = join(import.meta.dir, "fixtures", "pack");
 const load = (name: string) => ({
@@ -9,8 +11,31 @@ const load = (name: string) => ({
   json: JSON.parse(readFileSync(join(dir, name + ".json"), "utf8")),
 });
 
+/** V7 delta header for malformed-record tests. */
+function deltaHeader(key: { sid: number; seq: number }) {
+  const bits: number[] = [];
+  const u = (n: number, width: number) => {
+    for (let i = 0; i < width; i++) bits.push((n >> i) & 1);
+  };
+  const eg = (n: number, k: number) => {
+    const x = n + 2 ** k;
+    const width = Math.floor(Math.log2(x));
+    u(0, width - k);
+    u(1, 1);
+    u(x, width);
+  };
+  u(7, 4); u(0, 1); eg(key.sid, 0); eg(key.seq + 1, 8);
+  eg(1, 2); u(0, 3); eg(0, 1); // dt, no BSP change, cut or cinematic, zero strings
+  const bytes = () => {
+    const record = new Uint8Array(Math.ceil(bits.length / 8));
+    bits.forEach((bit, i) => { record[i >> 3]! |= bit << (i & 7); });
+    return record;
+  };
+  return { eg, u, bytes };
+}
+
 describe("packed frames", () => {
-  for (const name of ["multiplayer", "campaign", "odd", "cinematic", "v1-multiplayer", "v2-multiplayer", "v3-multiplayer"]) {
+  for (const name of ["multiplayer", "campaign", "odd", "cinematic", "v1-multiplayer", "v2-multiplayer", "v3-multiplayer", "v4-multiplayer", "v4-cinematic", "v6-multiplayer", "v6-campaign", "v6-odd", "v6-cinematic", "v7-multiplayer", "v7-campaign", "v7-odd", "v7-cinematic", "v7-motion"]) {
     test(`decodes the Rust encoder's ${name} stream exactly`, () => {
       const { bin, json } = load(name);
       const d = new FrameDecoder();
@@ -19,16 +44,40 @@ describe("packed frames", () => {
     });
   }
 
-  test("decodes a standalone three-byte machine position after the original frame", () => {
-    const base = records(load("odd").bin)[0]!;
-    const bytes = new Uint8Array(base.length + 8);
-    bytes.set(base);
-    bytes.set([0x4d, 2, 7, 0, 0, 0x34, 0x12, 255], base.length);
-    expect(decodeKeyframe(bytes)).toEqual({
-      ...decodeKeyframe(base),
-      machine_positions: [{ i: 7, p: 0 }, { i: 0x1234, p: 255 }],
-    });
-    expect(() => decodeKeyframe(bytes.subarray(0, -1))).toThrow("bad machine positions trailer");
+  test("mixed v7 machine records decode within each container boundary", () => {
+    const { bin, json } = load("v7-machine-positions");
+    const d = new FrameDecoder();
+    const frames: Frame[] = [];
+    d.forEachRecord(bin, (frame) => frames.push(frame));
+    expect(frames).toEqual(json);
+    expect(frames.map(isMachineBaseline)).toEqual([true, false, false, true, false, true, false, false]);
+
+    const rs = records(bin);
+    const seek = new FrameDecoder();
+    expect(seek.decode(rs[5]!).frame.machine_positions).toEqual([{ i: 23, p: 40 }]);
+    expect(seek.decode(rs[6]!).frame.machine_positions).toBeUndefined();
+    expect(seek.decode(rs[7]!).frame.machine_positions).toEqual([{ i: 23, p: 168 }]);
+  });
+
+  test("v7 rejects malformed machine counts, gaps, truncation and padding", () => {
+    const rs = records(load("v7-machine-positions").bin);
+    const tryDelta = (tail: (w: ReturnType<typeof deltaHeader>) => void) => {
+      const d = new FrameDecoder();
+      const w = deltaHeader(d.decode(rs[0]!));
+      for (let n = 0; n < 8; n++) w.eg(0, 2);
+      tail(w);
+      return () => d.decode(w.bytes());
+    };
+    expect(tryDelta(w => w.eg(255, 2))).toThrow("too many machine positions");
+    expect(tryDelta(w => { w.eg(0, 2); w.eg(0x8000, 3); w.u(1, 8); }))
+      .toThrow("machine position index out of range");
+    expect(tryDelta(w => { w.eg(1, 2); w.eg(0x7fff, 3); w.u(1, 8); w.eg(0, 3); w.u(1, 8); }))
+      .toThrow("machine position index out of range");
+    expect(tryDelta(w => { w.eg(1, 2); w.eg(0, 3); w.u(1, 8); })).toThrow("ends early");
+    expect(tryDelta(w => { w.eg(0, 2); w.eg(0, 3); w.u(1, 8); w.u(1, 1); }))
+      .toThrow("bad machine position padding");
+    expect(tryDelta(w => { w.eg(0, 2); w.eg(0, 3); w.u(1, 8); w.u(0, 8); }))
+      .toThrow("bad machine position padding");
   });
 
   test("a turret keeps its parent and aim; version 1 vehicles have neither", () => {
@@ -63,8 +112,8 @@ describe("packed frames", () => {
     expect(() => mixed.decode(records(load("v2-multiplayer").bin)[1]!)).toThrow(PackError);
   });
 
-  test("cinematic frames are version 5 keyframes in and out; the rest stay version 4", () => {
-    const recs = records(load("cinematic").bin);
+  test("before version 6, cinematic frames were version 5 keyframes in and out; the rest version 4", () => {
+    const recs = records(load("v4-cinematic").bin);
     // Version in the low four bits, the keyframe bit next.
     expect(recs.map((r) => r[0]! & 0xf)).toEqual([4, 5, 5, 4]);
     expect(recs.map((r) => (r[0]! >> 4) & 1)).toEqual([1, 1, 0, 1]);
@@ -72,6 +121,35 @@ describe("packed frames", () => {
     const frames = recs.map((r) => d.decode(r).frame);
     expect(frames.map((f) => f.cinematic === true)).toEqual([false, true, true, false]);
     expect(frames.every((f) => f.players.length === 0 && f.actors === undefined)).toBe(true);
+  });
+
+  test("version 6: every frame carries the cinematic bit, so a cutscene is deltas", () => {
+    const recs = records(load("v6-cinematic").bin);
+    expect(recs.map((r) => r[0]! & 0xf)).toEqual([6, 6, 6, 6]);
+    expect(recs.map((r) => (r[0]! >> 4) & 1)).toEqual([1, 0, 0, 0]);
+    const d = new FrameDecoder();
+    expect(recs.map((r) => d.decode(r).frame.cinematic === true)).toEqual([false, true, true, false]);
+  });
+
+  test("version 6 projectiles, items and vehicle velocity; version 4 frames have none", () => {
+    const d = new FrameDecoder();
+    const odd = d.decode(records(load("v6-odd").bin)[0]!).frame;
+    expect(odd.projectiles).toHaveLength(2);
+    expect(odd.projectiles![0]!.parent).toBe("p15");
+    expect(odd.projectiles![0]!.vel).toBeUndefined();
+    expect(odd.projectiles![1]!.vel).toEqual([-99, 0.5, -0.015625]);
+    expect(odd.items![0]!.equipment).toBe(true);
+    const mp = new FrameDecoder();
+    const frames = records(load("v6-multiplayer").bin).map((r) => mp.decode(r).frame);
+    expect(frames.every((f) => (f.items ?? []).length >= 4)).toBe(true);
+    expect(frames[0]!.vehicles!.filter((v) => v.kind !== "chaingun").every((v) => v.vel !== undefined)).toBe(true);
+    const v4 = new FrameDecoder();
+    const old = records(load("v4-multiplayer").bin).map((r) => v4.decode(r).frame);
+    expect(old.every((f) => f.projectiles === undefined && f.items === undefined && (f.vehicles ?? []).every((v) => v.vel === undefined))).toBe(true);
+    // A version 4 delta never follows on from a version 6 frame.
+    const mixed = new FrameDecoder();
+    mixed.decode(records(load("v6-multiplayer").bin)[0]!);
+    expect(() => mixed.decode(records(load("v4-multiplayer").bin)[1]!)).toThrow(PackError);
   });
 
   test("a dropped delta waits for the next keyframe", () => {
@@ -87,6 +165,50 @@ describe("packed frames", () => {
     expect(() => d.decode(recs[3]!)).toThrow();
     expect(d.decode(recs[4]!).frame).toEqual(json[4]);
     expect(d.decode(recs[5]!).frame).toEqual(json[5]);
+  });
+
+  test("v7 shares unchanged vectors and seeks at the cut after an irregular gap", () => {
+    const { bin, json } = load("v7-motion");
+    const d = new FrameDecoder();
+    const sequence: ReturnType<typeof d.decode>[] = [];
+    d.forEachRecord(bin, (frame, sid, seq, keyframe) => sequence.push({ frame, sid, seq, keyframe }));
+    expect(sequence.map(f => f.frame.tick)).toEqual([0, 1, 3, 10, 42, 44, 45]);
+    expect(sequence.map(f => f.frame)).toEqual(json);
+    expect(sequence[1]!.frame.players[0]!.vel).toBe(sequence[0]!.frame.players[0]!.vel);
+    const seek = new FrameDecoder();
+    const rs = records(bin);
+    expect(seek.decode(rs[5]!).frame).toEqual(json[5]);
+    expect(seek.decode(rs[6]!).frame).toEqual(json[6]);
+  });
+
+  test("a unit edit mask must end by its fifth group", () => {
+    const d = new FrameDecoder();
+    const key = d.decode(records(load("v7-motion").bin)[0]!);
+    const { eg, u, bytes } = deltaHeader(key);
+    eg(1, 2); u(1, 1); // one matched player at the previous cursor
+    for (let i = 0; i < 5; i++) u(16, 5);
+    expect(() => d.decode(bytes())).toThrow("unit mask too long");
+    // A rejected delta leaves the stream usable at the same sequence.
+    expect(d.decode(records(load("v7-motion").bin)[1]!).frame.tick).toBe(1);
+  });
+
+  test("a hit-position reference is bounded by this frame's player count", () => {
+    const d = new FrameDecoder();
+    const key = d.decode(records(load("v7-motion").bin)[0]!);
+    const { eg, u, bytes } = deltaHeader(key);
+    eg(1, 2); u(0, 2); eg(0, 2); // keep only the first player
+    eg(0, 2); eg(0, 2); // vehicles and actors
+    eg(1, 2); u(0, 3); // one hit without source, target or weapon
+    u(1, 1); u(15, 4);
+    expect(() => d.decode(bytes())).toThrow("hit refers past the player list");
+  });
+
+  test("container reads cannot borrow bytes from the following record", () => {
+    const good = records(load("multiplayer").bin)[0]!;
+    const bad = new Uint8Array(3 + good.length);
+    bad.set([1, good[0]!, 0]);
+    bad.set(good, 3);
+    expect(() => new FrameDecoder().forEachRecord(bad, () => { throw new Error("unexpected record"); })).toThrow("ends early");
   });
 
   test("keyframes decode alone; deltas do not", () => {

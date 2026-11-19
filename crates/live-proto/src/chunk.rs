@@ -24,7 +24,7 @@
 //! body      the codec's bytes of a container (crate::pack::push_record)
 //! ```
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
 
 use serde::{Deserialize, Serialize};
@@ -198,6 +198,17 @@ impl ChunkWriter {
     /// new window (or of another game, or its tick went back). A frame
     /// that does not pack is skipped, as the live stream skips it.
     pub fn push(&mut self, frame: &Frame) -> Option<Chunk> {
+        self.push_with_machine_baseline(frame, None, false)
+    }
+
+    /// Supplies the current travel for any keyframe the encoder writes,
+    /// including an unexpected keyframe when its string table fills up.
+    pub fn push_with_machine_baseline(
+        &mut self,
+        frame: &Frame,
+        baseline: Option<&BTreeMap<u16, crate::game::MachinePosition>>,
+        reset: bool,
+    ) -> Option<Chunk> {
         let closes = self.open.as_ref().is_some_and(|o| self.closes(o, frame));
         let done = if closes { self.finish() } else { None };
         let open = self.open.get_or_insert_with(|| Open {
@@ -215,7 +226,10 @@ impl ChunkWriter {
             hits: 0,
             shots: 0,
         });
-        match open.encoder.encode(frame) {
+        if reset {
+            open.encoder.force_keyframe();
+        }
+        match open.encoder.encode_with_machine_baseline(frame, baseline) {
             Ok((record, _)) => {
                 pack::push_record(&mut open.container, &record);
                 open.versions.insert(record[0] & 0x0f);
@@ -500,7 +514,7 @@ mod tests {
         assert_eq!(frames(&bytes).unwrap(), quantized(&src));
     }
 
-    /// The golden chunk `web/test/fixtures/pack/chunk.bin`: the TypeScript
+    /// The golden chunk `web/test/fixtures/pack/v7-chunk.bin`: the TypeScript
     /// reader must read it into `chunk.json`'s frames.
     /// `H2_UPDATE_GOLDEN=1` writes them.
     #[test]
@@ -512,19 +526,29 @@ mod tests {
         let json = serde_json::to_string_pretty(&frames(&got.bytes).unwrap()).unwrap() + "\n";
         if std::env::var_os("H2_UPDATE_GOLDEN").is_some() {
             std::fs::create_dir_all(&dir).unwrap();
-            std::fs::write(dir.join("chunk.bin"), &got.bytes).unwrap();
-            std::fs::write(dir.join("chunk.json"), &json).unwrap();
+            std::fs::write(dir.join("v7-chunk.bin"), &got.bytes).unwrap();
+            std::fs::write(dir.join("v7-chunk.json"), &json).unwrap();
         }
         assert_eq!(
-            std::fs::read(dir.join("chunk.bin")).ok().as_deref(),
+            std::fs::read(dir.join("v7-chunk.bin")).ok().as_deref(),
             Some(&got.bytes[..]),
             "chunk.bin is stale: run with H2_UPDATE_GOLDEN=1"
         );
         assert_eq!(
-            std::fs::read_to_string(dir.join("chunk.json")).ok(),
+            std::fs::read_to_string(dir.join("v7-chunk.json")).ok(),
             Some(json),
             "chunk.json is stale"
         );
+    }
+
+    #[test]
+    fn version_six_chunks_still_decode() {
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/test/fixtures/pack");
+        let bin = std::fs::read(dir.join("v6-chunk.bin")).unwrap();
+        let expected: Vec<Frame> =
+            serde_json::from_slice(&std::fs::read(dir.join("v6-chunk.json")).unwrap()).unwrap();
+        assert_eq!(frames(&bin).unwrap(), expected);
     }
 
     /// Bytes a minute of play stored as chunks, per mode, against the

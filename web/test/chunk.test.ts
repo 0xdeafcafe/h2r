@@ -70,6 +70,13 @@ describe("frame chunks", () => {
     expect(await decodeChunk(new Uint8Array(readFileSync(golden)))).toEqual(want);
   });
 
+  for (const name of ["v6-chunk", "v7-chunk"]) {
+    test(`the stored Rust ${name} decodes to its original frames`, async () => {
+      const want = JSON.parse(readFileSync(join(dir, name + ".json"), "utf8"));
+      expect(await decodeChunk(readFileSync(join(dir, name + ".bin")))).toEqual(want);
+    });
+  }
+
   test("a seek picks the chunk that holds the tick", () => {
     const index = [meta(0, 298), meta(300, 598), meta(600, 640)];
     expect(chunkAt(index, -1)).toBeNull();

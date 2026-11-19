@@ -1,10 +1,11 @@
 use std::collections::BTreeMap;
 
 use live_proto::game::{
-    Frame, FrameActor, FrameAnim, FrameHit, FrameMachine, FrameObject, FramePlayer, FrameVehicle,
-    GameEnded, MAX_FRAME_ACTORS, MAX_FRAME_HITS, MAX_FRAME_MACHINES, MAX_FRAME_OBJECTS,
-    MAX_FRAME_SEAT, MAX_FRAME_SHIELD, MAX_FRAME_SHOTS, MAX_FRAME_SPEED, MAX_FRAME_VEHICLES,
-    MAX_MACHINE_POSITIONS, MachinePosition, ObjectKind, PlayerKilled, PlayerLeft, ScoreChanged,
+    Frame, FrameActor, FrameAnim, FrameHit, FrameItem, FrameMachine, FrameObject, FramePlayer,
+    FrameProjectile, FrameVehicle, GameEnded, MAX_FRAME_ACTORS, MAX_FRAME_HITS, MAX_FRAME_ITEMS,
+    MAX_FRAME_MACHINES, MAX_FRAME_OBJECTS, MAX_FRAME_PROJECTILES, MAX_FRAME_SEAT, MAX_FRAME_SHIELD,
+    MAX_FRAME_SHOTS, MAX_FRAME_SPEED, MAX_FRAME_VEHICLES, MAX_MACHINE_POSITIONS,
+    MAX_PROJECTILE_SPEED, MachinePosition, ObjectKind, PlayerKilled, PlayerLeft, ScoreChanged,
 };
 
 use crate::event::{
@@ -775,6 +776,8 @@ impl Session {
             let machine_positions =
                 frame_machine_positions(snapshot, &mut current.machine_positions_sent);
             let objects = frame_objects(&current.placements, &snapshot.placed, &mut current.found);
+            let projectiles = frame_projectiles(snapshot, tags);
+            let items = frame_items(snapshot, tags);
             current.sent_tick = current.sent_tick.max(clock);
             self.output.push(Output::Frame(Frame {
                 game_id,
@@ -793,6 +796,8 @@ impl Session {
                 objects,
                 cut: current.cut.take(),
                 cinematic: false,
+                projectiles,
+                items,
             }));
         }
     }
@@ -1196,6 +1201,9 @@ fn frame_vehicles(
                     .or_else(|| scanned.get(&id).and_then(|v| v.parent))
                     .map(hex),
                 aim: aim(id),
+                // The rider read what it rides: the vehicle's, or for a
+                // gunner the mount's.
+                vel: frame_vel(o),
             })
         })
         .collect::<Vec<_>>();
@@ -1217,6 +1225,7 @@ fn frame_vehicles(
             occupied: v.occupied,
             parent: v.parent.map(hex),
             aim: aim(v.datum),
+            vel: v.velocity.filter(|v| speed_of(*v) <= MAX_FRAME_SPEED),
         })
         .collect();
     world.sort_by_key(|v| !v.occupied);
@@ -1251,6 +1260,104 @@ fn frame_machine_positions(
         }
     }
     changed
+}
+
+fn speed_of(v: [f64; 3]) -> f64 {
+    v.iter().map(|c| c * c).sum::<f64>().sqrt()
+}
+
+/// The squared distance from `pos` to the nearest player (any position a
+/// frame has for one), for nearest-first caps; 0 without players.
+fn nearest_player(snapshot: &Snapshot) -> impl Fn([f64; 3]) -> f64 + '_ {
+    move |pos| {
+        snapshot
+            .objects
+            .iter()
+            .flatten()
+            .map(|o| (0..3).map(|i| (o.pos[i] - pos[i]).powi(2)).sum::<f64>())
+            .fold(None, |m: Option<f64>, d| Some(m.map_or(d, |m| m.min(d))))
+            .unwrap_or(0.0)
+    }
+}
+
+/// Projectiles a viewer can see fly: slower than [`MAX_PROJECTILE_SPEED`]
+/// (a bullet lives a tick or two; the viewer draws it from `fire`), or
+/// stuck to something. Past the cap the nearest to a player are kept;
+/// `unknown` kind without the map's names.
+fn frame_projectiles(snapshot: &Snapshot, tags: Option<&TagNames>) -> Vec<FrameProjectile> {
+    let near = nearest_player(snapshot);
+    let mut out: Vec<(f64, FrameProjectile)> = snapshot
+        .projectiles
+        .iter()
+        .filter(|p| p.pos.iter().all(|c| c.is_finite()))
+        .filter(|p| {
+            p.parent.is_some()
+                || p.velocity
+                    .is_some_and(|v| speed_of(v) < MAX_PROJECTILE_SPEED)
+        })
+        .map(|p| {
+            (
+                near(p.pos),
+                FrameProjectile {
+                    id: hex(p.datum),
+                    kind: p
+                        .definition
+                        .zip(tags)
+                        .and_then(|(d, t)| t.projectile(d))
+                        .unwrap_or_else(|| UNKNOWN.into()),
+                    pos: p.pos,
+                    vel: p.velocity,
+                    parent: p.parent.map(hex),
+                },
+            )
+        })
+        .collect();
+    if out.len() > MAX_FRAME_PROJECTILES {
+        out.sort_by(|a, b| a.0.total_cmp(&b.0));
+        out.truncate(MAX_FRAME_PROJECTILES);
+        out.sort_by(|a, b| a.1.id.cmp(&b.1.id));
+    }
+    // In object table order, as the scan found them, so a delta matches
+    // each in place.
+    out.into_iter().map(|(_, p)| p).collect()
+}
+
+/// Loose weapons and equipment (dropped guns, a dropped flag, ball or
+/// bomb). Past the cap the nearest to a player are kept, in object table
+/// order so a delta matches each in place.
+fn frame_items(snapshot: &Snapshot, tags: Option<&TagNames>) -> Vec<FrameItem> {
+    let near = nearest_player(snapshot);
+    let mut out: Vec<(f64, &crate::event::ItemState)> = snapshot
+        .items
+        .iter()
+        .filter(|i| finite_direction(i.forward) && finite_direction(i.up))
+        .map(|i| (near(i.pos), i))
+        .collect();
+    if out.len() > MAX_FRAME_ITEMS {
+        out.sort_by(|a, b| a.0.total_cmp(&b.0));
+        out.truncate(MAX_FRAME_ITEMS);
+    }
+    out.sort_by_key(|(_, i)| i.datum & 0xffff);
+    out.into_iter()
+        .map(|(_, i)| FrameItem {
+            id: hex(i.datum),
+            kind: i
+                .definition
+                .zip(tags)
+                .and_then(|(d, t)| {
+                    if i.equipment {
+                        t.equipment(d)
+                    } else {
+                        t.weapon(d)
+                    }
+                })
+                .unwrap_or_else(|| UNKNOWN.into()),
+            pos: i.pos,
+            forward: i.forward,
+            up: i.up,
+            equipment: i.equipment,
+        })
+        .collect()
 }
 
 /// The machines that moved since they were last sent (all of them the
@@ -1564,6 +1671,8 @@ mod tests {
             machines: Vec::new(),
             placed: Vec::new(),
             bodies: Vec::new(),
+            projectiles: Vec::new(),
+            items: Vec::new(),
             bsp: None,
             hits: Vec::new(),
             cinematic: false,
@@ -2670,6 +2779,7 @@ mod tests {
                 occupied: true,
                 parent: None,
                 aim: None,
+                vel: None,
             }]
         );
         assert_eq!(live_proto::game::validate_frame(&frame), Ok(()));
@@ -3248,6 +3358,100 @@ mod tests {
     }
 
     #[test]
+    fn frames_carry_slow_projectiles_and_loose_items() {
+        use crate::event::{ItemState, ProjectileState};
+        let names = TagNames::new(
+            0,
+            [
+                (
+                    0xe100_0060,
+                    *b"proj",
+                    "objects\\weapons\\grenade\\plasma_grenade\\plasma_grenade".to_string(),
+                ),
+                (
+                    0xe100_0070,
+                    *b"weap",
+                    "objects\\weapons\\multiplayer\\flag\\flag".to_string(),
+                ),
+                (
+                    0xe100_0080,
+                    *b"eqip",
+                    "objects\\powerups\\overshield\\overshield".to_string(),
+                ),
+            ],
+        );
+        let mut state = snapshot(2, Vec::new());
+        let datum = |slot: u32| 0x9000_0000 | (slot << 16) | slot;
+        let projectile = |slot: u32, velocity, parent| ProjectileState {
+            datum: datum(slot),
+            definition: Some(0xe100_0060),
+            pos: [slot as f64, 0.0, 1.0],
+            velocity,
+            parent,
+        };
+        state.projectiles = vec![
+            projectile(1, Some([5.0, 0.0, 2.0]), None),
+            // A bullet: the viewer draws it from its shooter's fire.
+            projectile(2, Some([400.0, 0.0, 0.0]), None),
+            projectile(3, None, Some(0x9001_0001)),
+            // No velocity read and not stuck: left out.
+            projectile(4, None, None),
+        ];
+        let item = |slot: u32, definition: u32, equipment: bool| ItemState {
+            datum: datum(slot),
+            definition: Some(definition),
+            equipment,
+            pos: [slot as f64, 1.0, 0.0],
+            forward: [1.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+        };
+        state.items = vec![
+            item(5, 0xe100_0070, false),
+            item(6, 0xe100_0080, true),
+            item(7, 0xe100_0099, false),
+        ];
+        let projectiles = frame_projectiles(&state, Some(&names));
+        let seen: Vec<_> = projectiles
+            .iter()
+            .map(|p| (p.id.as_str(), p.kind.as_str(), p.parent.as_deref()))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                ("90010001", "plasma_grenade", None),
+                ("90030003", "plasma_grenade", Some("90010001")),
+            ]
+        );
+        assert_eq!(projectiles[0].vel, Some([5.0, 0.0, 2.0]));
+        let items = frame_items(&state, Some(&names));
+        let seen: Vec<_> = items
+            .iter()
+            .map(|i| (i.id.as_str(), i.kind.as_str(), i.equipment))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                ("90050005", "flag", false),
+                ("90060006", "overshield", true),
+                ("90070007", "unknown", false),
+            ]
+        );
+        let frame = Frame {
+            game_id: "g".into(),
+            projectiles,
+            items,
+            ..Frame::default()
+        };
+        assert_eq!(live_proto::game::validate_frame(&frame), Ok(()));
+        // Without the map's names every kind is unknown.
+        assert!(
+            frame_projectiles(&state, None)
+                .iter()
+                .all(|p| p.kind == "unknown")
+        );
+    }
+
+    #[test]
     fn frames_carry_bsp_hits_vehicles_and_moved_machines() {
         use crate::event::{HitRecord, VehicleState};
         let mut session = Session::new("test", None);
@@ -3272,6 +3476,7 @@ mod tests {
             occupied,
             parent: None,
             aim: None,
+            velocity: Some([0.0, 2.0, 0.0]),
         };
         // Vehicle 9 is vehicle 6's turret, aiming up and left.
         let mut turret = vehicle(9, true);

@@ -337,6 +337,7 @@ fn main() {
                 occupied: true,
                 parent: None,
                 aim: None,
+                vel: Some([-6.0 * (t * 0.3).sin(), 6.0 * (t * 0.3).cos(), 0.0]),
             }],
             // Player 0 hits the first grunt during each burst.
             hits: (tick % 60 < 9)
@@ -355,6 +356,8 @@ fn main() {
             cut: None,
             cinematic: false,
             machine_positions: Vec::new(),
+            projectiles: Vec::new(),
+            items: Vec::new(),
             // A door opening and closing every eight seconds.
             machines: vec![live_proto::game::FrameMachine {
                 node: None,

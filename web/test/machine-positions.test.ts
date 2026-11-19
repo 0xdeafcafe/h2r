@@ -1,4 +1,6 @@
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { FrameDecoder, markMachineBaseline, records } from "../src/api/pack";
 import type { Frame } from "../src/api/types";
 import { FrameBuffer, TICKS_PER_SECOND } from "../src/state/frames";
 import { ReplayTimeline } from "../src/state/replay";
@@ -50,4 +52,39 @@ test("a map with 195 moving parts fits in a single travel baseline", () => {
     machine_positions: Array.from({ length: 195 }, (_, i) => ({ i, p: 128 })),
   }), 0);
   expect(buf.sampleMachinePositions(1)?.size).toBe(195);
+});
+
+test("packed v7 baselines clear unknown devices in joined and seeked playback", () => {
+  const bin = new Uint8Array(readFileSync(new URL("./fixtures/pack/v7-machine-positions.bin", import.meta.url)));
+  const all: Frame[] = [];
+  new FrameDecoder().forEachRecord(bin, f => all.push(f));
+  const timeline = new ReplayTimeline(all, []);
+  const at = (t: number) => timeline.sampleMachinePositions(t);
+  expect(at(11)).toBeUndefined();
+  expect(at(13)?.get(7)).toEqual({ from: 64 / 255, to: 128 / 255, mix: 0.5 });
+  expect(at(14)?.get(23)?.from).toBe(200 / 255);
+  expect(at(16)).toBeUndefined();
+  expect(at(19)?.get(7)?.from).toBe(1);
+  expect(at(20)?.has(7)).toBe(false);
+  expect(at(23)?.get(23)).toEqual({ from: 40 / 255, to: 168 / 255, mix: 0.5 });
+  expect(at(14)?.get(23)?.from).toBe(200 / 255);
+
+  const joined = new FrameBuffer(4, 0);
+  const decoder = new FrameDecoder();
+  for (const record of records(bin).slice(5)) {
+    const f = decoder.decode(record).frame;
+    joined.push(f, f.tick * 1000 / TICKS_PER_SECOND);
+  }
+  const t23 = 23 * 1000 / TICKS_PER_SECOND;
+  expect(joined.sampleMachinePositions(t23)).toEqual(at(23));
+});
+
+test("archive metadata restores an empty baseline without changing sparse JSON", () => {
+  const initial = frame(10, { machine_positions: [{ i: 4, p: 255 }] });
+  const empty = frame(12);
+  markMachineBaseline(empty);
+  const tl = new ReplayTimeline([initial, empty], []);
+  expect(JSON.stringify(empty)).toBe('{"game_id":"g","tick":12,"players":[]}');
+  expect(tl.sampleMachinePositions(11)?.get(4)?.from).toBe(1);
+  expect(tl.sampleMachinePositions(12)).toBeUndefined();
 });

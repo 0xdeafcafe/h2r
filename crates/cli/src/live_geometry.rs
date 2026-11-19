@@ -158,6 +158,8 @@ pub enum Surface {
     /// decals and overlays, glows, light volumes, waterfalls
     /// ([`crate::live_layers`]).
     Layer(Layer),
+    /// Additive plasma with a textured pass and a glass class for static views.
+    Plasma,
     /// Nothing; the triangle's facing decides.
     Unknown,
 }
@@ -242,9 +244,13 @@ pub fn surface_from_name(name: &str) -> Surface {
 /// - other cloud templates (`..._clouds`: waterfalls, spray, smoke cards)
 ///   are alpha-blended `effect` layers;
 /// - templates in a `water` folder or named for water or waves are water;
+/// - the plasma template uses its own additive pass;
 /// - other templates in a `transparent` folder blend over what is behind
 ///   them: glass, unless the shader's name says otherwise.
 pub fn surface_from_template(template: &str) -> Option<Surface> {
+    if crate::live_plasma::is_template(template) {
+        return Some(Surface::Plasma);
+    }
     let mut parts = template.rsplit(['\\', '/']);
     let own = parts.next().unwrap_or(template).to_ascii_lowercase();
     let folder = parts.next().unwrap_or_default().to_ascii_lowercase();
@@ -276,7 +282,7 @@ pub fn surface_of(name: Option<&str>, template: Option<&str>) -> Surface {
     let by_name = name.map_or(Surface::Unknown, surface_from_name);
     match (by_template, by_name) {
         (Some(Surface::Sky), _) | (_, Surface::Sky) => Surface::Sky,
-        (Some(t @ (Surface::Layer(_) | Surface::Class(Class::Water))), _) => t,
+        (Some(t @ (Surface::Layer(_) | Surface::Plasma | Surface::Class(Class::Water))), _) => t,
         (_, n @ Surface::Class(_)) => n,
         (Some(t), _) => t,
         (None, n) => n,
@@ -288,6 +294,7 @@ pub fn surface_of(name: Option<&str>, template: Option<&str>) -> Surface {
 /// overhangs and ceilings are `default`.
 pub fn classify(surface: Surface, face_normal: [f32; 3]) -> Class {
     match surface {
+        Surface::Plasma => return Class::Glass,
         Surface::Class(c @ (Class::Water | Class::Foliage | Class::Glass)) => return c,
         _ if face_normal[2] >= 0.6 => return Class::Floor,
         Surface::Class(c) => return c,
@@ -534,7 +541,8 @@ const WELD: f32 = 1024.0;
 /// share a position and normal (and texture coordinate, 1/4096, when
 /// textured) within a class and look. A vertex normal that is missing or
 /// points against its triangle is replaced by the face normal. Glass and
-/// water keep their class's look: they are never textured.
+/// water keep their class colours. Plasma shares the static glass class
+/// and carries a look for the web viewer.
 pub fn build_mesh(tris: &[Tri]) -> LevelMesh {
     /// Grid position, normal and texture coordinate.
     type WeldKey = ([i32; 3], [i8; 3], [i32; 2]);
@@ -556,7 +564,7 @@ pub fn build_mesh(tris: &[Tri]) -> LevelMesh {
         }
         let face = face.map(|v| v / len);
         let class = classify(t.surface, face);
-        let look = t.look.filter(|_| !class.transparent());
+        let look = t.look.filter(|_| !class.transparent() || t.surface == Surface::Plasma);
         let uv_ok = t.uv.iter().flatten().all(|v| v.is_finite());
         let b = builders.entry((class, look)).or_insert_with(|| Builder {
             prim: Primitive {
@@ -918,12 +926,12 @@ impl<'a> Pictures<'a> {
     }
 
     /// A picture's file, relative to the glb: `tex/<bitmap>.webp` (eight
-    /// hex digits; `<bitmap>m.webp` for a cut-out picture).
+    /// hex digits, with an `m` suffix for cutouts and `p` for plasma).
     pub fn file(key: (u32, crate::live_looks::Cutout), e: &crate::live_looks::Encoded) -> String {
-        let cut = if key.1 == crate::live_looks::Cutout::Mask {
-            "m"
-        } else {
-            ""
+        let cut = match key.1 {
+            crate::live_looks::Cutout::Opaque => "",
+            crate::live_looks::Cutout::Mask => "m",
+            crate::live_looks::Cutout::Plasma => "p",
         };
         let ext = match e.mime {
             "image/webp" => "webp",
@@ -1188,13 +1196,8 @@ pub fn write_nodes_with(
                 "mode": 4
             })
         }
-        /// The material of look `k`, written the first time.
-        fn look_material(&mut self, k: u32) -> Option<usize> {
-            if let Some(&m) = self.look_material_of.get(&k) {
-                return Some(m);
-            }
-            let look = self.pictures.looks.get(k as usize)?;
-            let key = (look.texture.bitmap, look.cutout);
+        /// A picture shared by every material that samples it.
+        fn picture(&mut self, key: (u32, crate::live_looks::Cutout)) -> Option<usize> {
             let texture = match self.picture_of.get(&key) {
                 Some(&t) => t,
                 None => {
@@ -1221,6 +1224,17 @@ pub fn write_nodes_with(
                     self.textures.len() - 1
                 }
             };
+            Some(texture)
+        }
+
+        /// The material of look `k`, written the first time.
+        fn look_material(&mut self, k: u32) -> Option<usize> {
+            if let Some(&m) = self.look_material_of.get(&k) {
+                return Some(m);
+            }
+            let pictures = self.pictures;
+            let look = pictures.looks.get(k as usize)?;
+            let texture = self.picture((look.texture.bitmap, look.cutout))?;
             let mut base = json!({"index": texture});
             if look.scale != [1.0, 1.0] {
                 base["extensions"] = json!({"KHR_texture_transform": {"scale": look.scale}});
@@ -1239,6 +1253,22 @@ pub fn write_nodes_with(
                 m["alphaMode"] = json!("MASK");
                 m["alphaCutoff"] = json!(0.5);
                 m["doubleSided"] = json!(true);
+            }
+            if let Some((plasma, [a, b])) = &look.plasma {
+                let noise = [
+                    self.picture((a.bitmap, look.cutout))?,
+                    self.picture((b.bitmap, look.cutout))?,
+                ];
+                m["alphaMode"] = json!("BLEND");
+                m["extensions"] = json!({"KHR_materials_unlit": {}});
+                m["pbrMetallicRoughness"]["baseColorFactor"] = json!([
+                    srgb_to_linear(plasma.colors[0][0]),
+                    srgb_to_linear(plasma.colors[0][1]),
+                    srgb_to_linear(plasma.colors[0][2]),
+                    1.0
+                ]);
+                m["extras"] = json!({"plasma": plasma, "noise": noise});
+                self.unlit = true;
             }
             self.materials.push(m);
             self.look_material_of.insert(k, self.materials.len() - 1);
@@ -1324,7 +1354,9 @@ pub fn write_nodes_with(
                 }));
                 out["attributes"]["TEXCOORD_0"] = json!(base + 3);
                 out["material"] = json!(m);
-                out["extras"] = json!({"class": class.name(), "flat": flat});
+                if self.materials[m]["extras"]["plasma"].is_null() {
+                    out["extras"] = json!({"class": class.name(), "flat": flat});
+                }
             }
             if !p.skin.is_empty() {
                 let joints: Vec<_> = p
@@ -1967,7 +1999,8 @@ pub fn model_triangles(
                 .get(usize::from(part.material))
                 .copied()
                 .unwrap_or(Surface::Class(Class::Metal));
-            // Machines are drawn solid only: their decals and glows are left out.
+            // Decals and ordinary effect layers are separate from the model.
+            // Plasma travels with its placement like the rest of its mesh.
             if !surface.is_level() {
                 continue;
             }
@@ -2947,7 +2980,7 @@ fn load_level(disc: &Disc, m: &MapFile, kind: MapKind, stats: &mut MapStats) -> 
             stats.materials += surfaces.len();
             let bsp = StructureRender::read(&mut map, bsp_id)
                 .with_context(|| format!("reading BSP {bsp_id}"))?;
-            // Solid surfaces' pictures (glass and water keep their colour).
+            // Pictures for solid surfaces and the plasma pass.
             let material_looks: Vec<Option<u32>> = material_shader_ids(&mut map, bsp_id)
                 .unwrap_or_default()
                 .into_iter()

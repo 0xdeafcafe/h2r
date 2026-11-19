@@ -1,18 +1,17 @@
-// One replay of an ended game: its recorded frames and events, a clock, and
-// the play / pause / seek / speed controls. The game page's 2D map, its
-// scrubber and the 3D window all read the same session, so they move
-// together; a popped-out 3D window runs a session of its own and the two
-// keep in step over a BroadcastChannel (viewer/sync.ts).
+// The game page's 2D map, 3D view and scrubber share one playback session
+// from the live buffer through to the finished recording.
 
-import { createEffect, createSignal, on, onCleanup, type Accessor } from "solid-js";
-import type { WireEvent } from "../api/types";
+import { batch, createEffect, createMemo, createSignal, on, onCleanup, type Accessor } from "solid-js";
+import type { Frame, WireEvent } from "../api/types";
 import type { MapFrame } from "../components/MapCanvas";
+import { liveFrameSource } from "../lib/game";
 import type { RosterEntry } from "../map/render";
 import { onAnimationFrame } from "../map/scheduler";
-import { TICKS_PER_SECOND } from "../state/frames";
-import { live } from "../state/live";
+import { TICKS_PER_SECOND, type FrameBuffer } from "../state/frames";
+import { frameHub, live } from "../state/live";
 import type { GameState } from "../state/reducer";
-import { ReplayClock, ReplayTimeline, fetchRecording, type ReplayKill } from "../state/replay";
+import { ReplayTimeline, fetchRecording, type ReplayKill } from "../state/replay";
+import { ViewerPlayback } from "./playback";
 import { applyClock, clockAgrees, isSyncMessage, nextCamera, readClock, syncChannelName, type CameraRequest, type SyncMessage } from "./sync";
 
 export interface ReplaySession {
@@ -22,6 +21,9 @@ export interface ReplaySession {
   tick: Accessor<number>;
   playing: Accessor<boolean>;
   speed: Accessor<number>;
+  isLive: Accessor<boolean>;
+  followingLive: Accessor<boolean>;
+  goLive(): void;
   toggle(): void;
   seek(tick: number): void;
   setSpeed(speed: number): void;
@@ -42,154 +44,219 @@ export interface ReplaySession {
 
 export const SPEEDS = [0.25, 0.5, 1, 2, 4, 8];
 
-export function createReplaySession(game: Accessor<GameState>, roster: Accessor<Map<number, RosterEntry>>): ReplaySession {
+export function createReplaySession(
+  game: Accessor<GameState>,
+  roster: Accessor<Map<number, RosterEntry>>,
+  startTime: Accessor<string | string[] | undefined>,
+): ReplaySession {
   const [timeline, setTimeline] = createSignal<ReplayTimeline | null>(null);
   const [error, setError] = createSignal<string | null>(null);
   const [tick, setTick] = createSignal(0);
   const [playing, setPlaying] = createSignal(false);
   const [speed, setSpeedSignal] = createSignal(1);
+  const [followingLive, setFollowingLive] = createSignal(false);
   const [camera, setCamera] = createSignal<CameraRequest | null>(null);
-  let clock: ReplayClock | null = null;
+  const gameId = createMemo(() => game().game_id);
+  const isLive = createMemo(() => game().status === "live");
+  let playback = new ViewerPlayback(false);
+  let liveEdge = (_now: number) => 0;
+  let liveFrame: ReturnType<typeof liveFrameSource> | null = null;
   let sought = 0;
+  const tickAt = (now: number) => playback.tickAt(now, playback.followingLive ? liveEdge(now) : 0);
 
-  // Other windows showing this game.
+  // Explicit replay controls also apply in other tabs on this game. A new
+  // tab takes its initial position from its own link.
   const me = Math.random().toString(36).slice(2);
   let channel: BroadcastChannel | null = null;
-  /** True while this window made the last change: it then repeats its state now and again. */
-  let leading = false;
   const post = (m: SyncMessage) => { try { channel?.postMessage(m); } catch { /* closed */ } };
-  const announce = () => {
-    if (!clock) return;
-    leading = true;
-    post({ kind: "state", from: me, state: readClock(clock, performance.now()) });
+  const announce = (now: number) => {
+    if (playback.clock) post({ kind: "state", from: me, state: readClock(playback.clock, now) });
   };
-  const reflect = () => {
-    if (!clock) return;
-    const n = performance.now();
-    setTick(clock.tickAt(n));
-    setPlaying(clock.playing);
-    setSpeedSignal(clock.speed);
-  };
+  const reflect = (now: number) => batch(() => {
+    setTimeline(playback.clock?.timeline ?? null);
+    setTick(tickAt(now));
+    setPlaying(playback.playing);
+    setSpeedSignal(playback.clock?.speed ?? 1);
+    setFollowingLive(playback.followingLive);
+  });
 
-  createEffect(on(() => game().game_id, (id) => {
+  createEffect(on(gameId, (id) => {
     const ac = new AbortController();
-    setTimeline(null);
+    const openedLive = isLive();
+    playback = new ViewerPlayback(openedLive);
+    liveFrame = liveFrameSource(id, roster);
+    liveEdge = (now) => frameHub.get(id).renderTick(now);
+    let buffer: FrameBuffer | undefined;
+    let releaseHistory: (() => void) | undefined;
+    let lastFrames: Frame[] | undefined;
+    let newest: Frame | undefined;
+    const refreshLive = (now: number) => {
+      const active = frameHub.get(id);
+      if (buffer !== active) {
+        releaseHistory?.();
+        buffer = active;
+        releaseHistory = buffer.keepPlaybackHistory();
+      }
+      const frames = buffer.frames;
+      const first = frames[0], last = frames.at(-1);
+      if (last === newest) return;
+      if (newest && lastFrames !== frames) {
+        // The live buffer was reset on a checkpoint/restart or reconnect.
+        playback = new ViewerPlayback(true);
+        sought = now;
+      }
+      lastFrames = frames;
+      newest = last;
+      if (!first || !last) return;
+      const events = eventsFromState(game(), first.tick, last.tick);
+      playback.updateLive(new ReplayTimeline(frames, events), now);
+    };
+    setCamera(null);
     setError(null);
-    clock = null;
-    if (typeof BroadcastChannel !== "undefined") {
-      channel = new BroadcastChannel(syncChannelName(id));
-      channel.onmessage = (e) => {
-        const m: unknown = e.data;
-        if (!isSyncMessage(m) || m.from === me || !clock) return;
-        if (m.kind === "hello") { post({ kind: "state", from: me, state: readClock(clock, performance.now()) }); return; }
-        if (m.kind === "camera") { setCamera(m.camera); return; }
-        leading = false;
-        const n = performance.now();
-        if (clockAgrees(clock, m.state, n)) return;
-        applyClock(clock, m.state, n);
-        sought = n;
-        reflect();
+    sought = performance.now();
+    reflect(sought);
+
+    createEffect(on(isLive, (matchIsLive) => {
+      const n = performance.now();
+      if (matchIsLive) {
+        refreshLive(n);
+        reflect(n);
+        return;
+      }
+      if (openedLive) {
+        refreshLive(n);
+        playback.endLive(n, liveEdge(n));
+        releaseHistory?.();
+        releaseHistory = undefined;
+      }
+      reflect(n);
+      const time = startTime();
+      const open = (recording: ReplayTimeline) => {
+        const now = performance.now();
+        playback.openRecording(recording, now, time);
+        sought = now;
+        reflect(now);
       };
-    }
-    const a = live.api();
-    fetchRecording(a, id, ac.signal).then(({ frames, events }) => {
-      // The game's whole stream: also what the Game Record's signature
-      // count covers, since a snapshot-loaded game knows no event positions.
-      if (events?.length) live.checkGameEvents(id, events);
-      const t = new ReplayTimeline(frames, events?.length ? events : eventsFromState(game()));
-      clock = new ReplayClock(t);
-      setTimeline(t);
-      // Open on the final moment (before the closing cutscene, if the game
-      // ended in one); play is the viewer's choice. Another window already
-      // showing this game answers the hello with where it is.
-      clock.seek(t.openTick, performance.now());
-      sought = performance.now();
-      setTick(t.openTick);
-      post({ kind: "hello", from: me });
-    }, (e: Error) => { if (e.name !== "AbortError") setError(e.message); });
-    onCleanup(() => { ac.abort(); channel?.close(); channel = null; });
+      fetchRecording(live.api(), id, ac.signal).then(({ frames, events }) => {
+        if (ac.signal.aborted) return;
+        // The recording's event log covers the Game Record's signatures too.
+        if (events?.length) live.checkGameEvents(id, events);
+        const recording = new ReplayTimeline(frames, events?.length ? events : eventsFromState(game()));
+        open(recording.frames.length ? recording : playback.clock?.timeline ?? recording);
+        if (typeof BroadcastChannel === "undefined") return;
+        channel = new BroadcastChannel(syncChannelName(id));
+        channel.onmessage = (e) => {
+          const m: unknown = e.data;
+          const clock = playback.clock;
+          if (!isSyncMessage(m) || m.from === me || !clock) return;
+          if (m.kind === "camera") { setCamera(m.camera); return; }
+          if (m.kind !== "state") return;
+          const now = performance.now();
+          if (clockAgrees(clock, m.state, now)) return;
+          applyClock(clock, m.state, now);
+          sought = now;
+          reflect(now);
+        };
+      }, (e: Error) => {
+        if (ac.signal.aborted || e.name === "AbortError") return;
+        if (playback.clock) open(playback.clock.timeline);
+        setError(e.message);
+      });
+    }));
+
+    // The controls need only about ten updates a second. The canvases
+    // read the interpolated live frame or replay clock directly.
+    let last = -Infinity;
+    const stop = onAnimationFrame((now) => {
+      if (now - last < 100) return;
+      last = now;
+      if (isLive()) refreshLive(now);
+      reflect(now);
+    });
+    onCleanup(() => {
+      stop();
+      releaseHistory?.();
+      ac.abort();
+      channel?.close();
+      channel = null;
+    });
   }));
 
-  // Push the clock's tick into Solid ~10 times a second for the UI; the
-  // canvases read the clock directly every frame.
-  let last = 0, lastPost = 0;
-  const stop = onAnimationFrame((t) => {
-    if (!clock || t - last < 100) return;
-    last = t;
-    setTick(clock.tickAt(t));
-    if (playing() !== clock.playing) setPlaying(clock.playing);
-    if (leading && clock.playing && t - lastPost > 2000) { lastPost = t; announce(); }
-  });
-  onCleanup(stop);
+  const frame = (now: number): MapFrame => {
+    if (playback.followingLive && liveFrame) return liveFrame(now);
+    const tl = playback.clock?.timeline;
+    if (!tl) return { players: [], markers: [], seen: null };
+    return replayFrame(tl, tickAt(now), roster());
+  };
 
-  const frame = (t: number): MapFrame => {
-    const tl = timeline();
-    if (!tl || !clock) return { players: [], markers: [], seen: null };
-    return replayFrame(tl, clock.tickAt(t), roster());
+  const changed = (now: number) => {
+    sought = now;
+    reflect(now);
+    announce(now);
   };
 
   return {
-    timeline, error, tick, playing, speed, frame,
+    timeline, error, tick, playing, speed, isLive, followingLive, frame,
     soughtAt: () => sought,
+    goLive() {
+      if (!isLive()) return;
+      const now = performance.now();
+      playback.goLive(now);
+      changed(now);
+    },
     toggle() {
+      const clock = playback.clock;
       if (!clock) return;
-      const n = performance.now();
-      if (clock.playing) clock.pause(n); else clock.play(n);
-      // `play` from the end starts over, which is a jump.
-      sought = n;
-      reflect();
-      announce();
+      const now = performance.now();
+      if (playback.followingLive) playback.seek(tickAt(now), now);
+      else if (clock.playing) clock.pause(now);
+      else clock.play(now);
+      changed(now);
     },
     seek(t) {
-      if (!clock) return;
-      const n = performance.now();
-      clock.seek(t, n);
-      sought = n;
-      reflect();
-      announce();
+      if (!playback.clock) return;
+      const now = performance.now();
+      playback.seek(t, now);
+      changed(now);
     },
     setSpeed(v) {
-      if (!clock) return;
-      clock.setSpeed(v, performance.now());
-      reflect();
-      announce();
+      if (!playback.clock || playback.followingLive) return;
+      const now = performance.now();
+      playback.clock.setSpeed(v, now);
+      reflect(now);
+      announce(now);
     },
     stepFrame(dir) {
-      const tl = timeline();
-      if (!clock || !tl) return;
-      const n = performance.now();
-      if (clock.playing) clock.pause(n);
-      clock.seek(tl.frameStep(clock.tickAt(n), dir), n);
-      sought = n;
-      reflect();
-      announce();
+      const clock = playback.clock;
+      if (!clock) return;
+      const now = performance.now();
+      const at = tickAt(now);
+      clock.pause(now);
+      playback.seek(clock.timeline.frameStep(at, dir), now);
+      changed(now);
     },
     stepMark(dir) {
-      const tl = timeline();
-      if (!clock || !tl) return;
-      const n = performance.now();
-      const t = tl.markStep(clock.tickAt(n), dir);
+      const clock = playback.clock;
+      if (!clock) return;
+      const now = performance.now();
+      const t = clock.timeline.markStep(tickAt(now), dir);
       if (t === null) return;
-      clock.seek(t, n);
-      sought = n;
-      reflect();
-      announce();
+      playback.seek(t, now);
+      changed(now);
     },
     watchKill(kill) {
-      const tl = timeline();
-      if (!clock || !tl) return;
-      const k = tl.killcam(kill);
-      const n = performance.now();
-      if (clock.playing) clock.pause(n);
-      clock.setSpeed(k.speed, n);
-      clock.seek(k.from, n);
-      clock.play(n);
-      sought = n;
+      const clock = playback.clock;
+      if (!clock) return;
+      const k = clock.timeline.killcam(kill);
+      const now = performance.now();
+      clock.pause(now);
+      clock.setSpeed(k.speed, now);
+      playback.seek(k.from, now);
+      clock.play(now);
       const c = nextCamera(camera(), "eyes", k.follow);
       setCamera(c);
       post({ kind: "camera", from: me, camera: c });
-      reflect();
-      announce();
+      changed(now);
     },
     camera,
   };
@@ -232,8 +299,8 @@ function boundsOf(tl: ReplayTimeline): MapFrame["seen"] {
 }
 
 /** Kill and score events rebuilt from client state, if the REST log is unavailable. */
-export function eventsFromState(g: GameState): WireEvent[] {
-  return g.kills.map((k) => ({
+export function eventsFromState(g: GameState, from = -Infinity, to = Infinity): WireEvent[] {
+  return g.kills.filter((k) => k.tick >= from && k.tick <= to).map((k) => ({
     position: k.position, stream: "game-" + g.game_id, version: 0, type: "PlayerKilled", at: k.at,
     data: { tick: k.tick, victim: k.victim, killer: k.killer, weapon: k.weapon, kind: k.kind },
   }));

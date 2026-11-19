@@ -270,6 +270,13 @@ pub const BODY_NETGAME_EQUIPMENT: u32 = 0xaf;
 /// is bipd, vehi, weap, eqip, garb, proj, scen, mach, ctrl, lifi, ssce,
 /// bloc, crea (docs/formats/objects.md); the scarab of `03a`/`03b` is a `mach` tag.
 pub const OBJECT_TYPE_MACHINE: u8 = 7;
+/// Object type 3 is equipment and 5 a projectile (the same type table at
+/// `0x00468630`). A projectile's position (`+0x64`) and velocity (`+0x88`)
+/// are the ones the projectile update moves ([`BODY_VELOCITY`]); a stuck
+/// one (a plasma grenade on a unit) has a parent and a parent-relative
+/// transform, as every attached object.
+pub const OBJECT_TYPE_EQUIPMENT: u8 = 3;
+pub const OBJECT_TYPE_PROJECTILE: u8 = 5;
 
 /// The loaded scenario tag (`scnr` root), confirmed (cache loader
 /// publication; `0x000bb702` and `0x0015aad6` read placement blocks

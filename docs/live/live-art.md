@@ -56,7 +56,7 @@ entry; a single BSP of a level that could not be read is listed as
 `map/<stem>/bsp_<index>` and the level keeps its other BSPs.
 `GEOMETRY_VERSION` is 1 (`views.json` is unchanged; the web viewer checks
 it); the art's `EXTRACTOR_VERSION` (part of the cache
-key) is 24, so a disc extracted by an older build is extracted again
+key) is 25, so a disc extracted by an older build is extracted again
 (10 added the layers, the sky and `extras.name`; 12 the surface
 pictures, texture coordinates and the `scenario` node; 13 the base map
 from the shader's passes, pictures as files beside `map.glb`, the gzip
@@ -71,7 +71,7 @@ pictures and views, surface pictures at the disc's full size; 22 the
 bipeds' strafing, backwards and crouched movement clips, the vehicle seat
 poses `any:seat_<mode>`, the models' `seats` table and `asset.extras.lift`;
 23 installed mods' art and scripted spawns; 24 the sky's see-through
-layers keep their pictures).
+layers keep their pictures; 25 exports the animated plasma pass on lift geometry).
 
 ### `map.glb`
 
@@ -203,6 +203,16 @@ layers keep their pictures).
   half; `alphaMode: MASK`) or `additive` (added; no depth). Multiplying,
   doubling and additive materials are `KHR_materials_unlit`; effects are
   double-sided.
+- **Plasma.** A `transparent/plasma_alpha` surface keeps its geometry and
+  texture coordinates under its BSP or placed model. Its unlit material
+  names the coverage mask in `baseColorTexture`, the two noise textures
+  by index in `extras.noise`, and the pass data in `extras.plasma`.
+  `uv` holds the scale, offset and optional per-axis scroll
+  (`from`, `to`, `period` in seconds) of noise A, noise B and the mask,
+  in that order. `colors` holds the three RGB constants used to tint and
+  brighten the pass. The viewer adds the masked result with depth testing
+  and no depth writes. The separate 2D tactical views still use their
+  simplified glass class for those triangles.
 - **Sky.** `asset.extras.sky`, when the scenario has a sky: `name` (the
   sky tag's file name), `glb` (`"sky.glb"`, beside `map.glb`, when its
   model could be built), `clear` (the clear colour, RGB 0..1, when not
@@ -847,7 +857,12 @@ step for that and for video memory.
    so cutting at a half keeps what is at least a quarter: the leaves of
    the campaign's trees and bushes keep only 0.5 % to 3 % of their pixels
    at a half. Triangles keep their stored texture coordinates and weld
-   on them too (1/4096).
+   on them too (1/4096). The plasma pass uses layer 15 instead. Ascension,
+   Midship and Ivory Tower have kind-4 parts on their placed lift models.
+   Lockout's beam is in its BSP. Each resolves the same additive pass
+   with two noise maps on stages 1 and 2 and a mask on stage 3. The
+   extractor reads the time-driven UV properties by destination
+   component and preserves the individual periods and directions.
 11. **Scenario objects.** The placement blocks of the object type table
    (docs/formats/objects.md) other than machines: scenery `+0x50`, vehicles
    `+0x70`, equipment `+0x80`, weapons `+0x90`, controls `+0xb8`, light

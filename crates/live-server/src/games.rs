@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::rt::Instant;
+use bytes::Bytes;
 
 use live_proto::game::{
     self, Frame, GameCreated, GameDetail, GameEnded, GameStarted, GameSummary, NewGame, Outline,
@@ -132,6 +133,7 @@ struct FrameClock {
     /// them all, so a reader that starts there has every door.
     machines: BTreeMap<String, game::FrameMachine>,
     machine_positions: BTreeMap<u16, game::MachinePosition>,
+    machine_reset: bool,
     /// The sent frames being cut into chunks for the recording.
     chunks: ChunkWriter,
     /// The game's packed live stream.
@@ -149,6 +151,7 @@ impl FrameClock {
             unsent: game::FrameCarry::default(),
             machines: BTreeMap::new(),
             machine_positions: BTreeMap::new(),
+            machine_reset: false,
             chunks: ChunkWriter::default(),
             pack: pack::Encoder::new(sid, STREAM_KEYFRAME_EVERY),
             since_key: Vec::new(),
@@ -159,6 +162,9 @@ impl FrameClock {
     /// Packs a sent frame into the game's stream and keeps it for readers
     /// that join before the next keyframe.
     fn publish(&mut self, mut frame: Frame) -> Arc<LiveFrame> {
+        if self.machine_reset {
+            self.pack.force_keyframe();
+        }
         let seq = self.pack.next_seq();
         let (packed, keyframe) = match self
             .pack
@@ -170,7 +176,8 @@ impl FrameClock {
                 (None, false)
             }
         };
-        if keyframe && !frame.cinematic {
+        if keyframe {
+            self.machine_reset = false;
             frame.machine_positions = self.machine_positions.values().copied().collect();
         }
         let live = Arc::new(LiveFrame {
@@ -194,7 +201,7 @@ impl FrameClock {
     /// Throttles a validated frame: false when it is dropped (what it
     /// carried goes to the next sent frame). A sent frame's shots, actions
     /// and hits cover the frames dropped before it.
-    fn admit(&mut self, frame: &mut Frame, now: Instant) -> bool {
+    fn admit(&mut self, frame: &mut Frame, now: Instant, machine_baseline: bool) -> bool {
         for m in &frame.machines {
             if self.machines.len() < game::MAX_FRAME_MACHINES || self.machines.contains_key(&m.id) {
                 self.machines.insert(m.id.clone(), m.clone());
@@ -202,6 +209,20 @@ impl FrameClock {
         }
         if frame.cut.is_some() {
             self.machine_positions.clear();
+        }
+        if machine_baseline
+            && self.machine_positions.keys().any(|i| {
+                frame
+                    .machine_positions
+                    .binary_search_by_key(i, |m| m.i)
+                    .is_err()
+            })
+        {
+            // Publish a complete baseline so consumers forget removed keys.
+            // This also supersedes travel waiting in throttled frames.
+            self.machine_positions.clear();
+            self.unsent.clear_machine_positions();
+            self.machine_reset = true;
         }
         frame.machine_positions.retain(|m| {
             if self.machine_positions.get(&m.i) == Some(m) {
@@ -221,25 +242,22 @@ impl FrameClock {
         }
         self.last_sent = now;
         frame.absorb(std::mem::take(&mut self.unsent));
-        if frame.cinematic {
-            frame.machine_positions.clear();
-        }
         true
     }
 
     /// Adds a sent frame to the recording; the chunk it closed, if any. A
     /// chunk's first frame lists every machine seen so far.
     fn record(&mut self, frame: &Frame) -> Option<Chunk> {
-        if self.chunks.starts_chunk(frame) {
+        let first = self.chunks.starts_chunk(frame).then(|| {
             let mut first = frame.clone();
             first.machines = self.machines.values().cloned().collect();
-            if !first.cinematic {
-                first.machine_positions = self.machine_positions.values().copied().collect();
-            }
-            self.chunks.push(&first)
-        } else {
-            self.chunks.push(frame)
-        }
+            first
+        });
+        self.chunks.push_with_machine_baseline(
+            first.as_ref().unwrap_or(frame),
+            Some(&self.machine_positions),
+            self.machine_reset,
+        )
     }
 }
 
@@ -527,7 +545,17 @@ impl Live {
     pub async fn ingest_frame(
         &self,
         author: &Author,
+        frame: Frame,
+    ) -> Result<FrameOutcome, ApiError> {
+        self.ingest_frame_with_machine_baseline(author, frame, false)
+            .await
+    }
+
+    pub(crate) async fn ingest_frame_with_machine_baseline(
+        &self,
+        author: &Author,
         mut frame: Frame,
+        machine_baseline: bool,
     ) -> Result<FrameOutcome, ApiError> {
         if !game::valid_id(&frame.game_id) {
             return Err(invalid("bad game_id"));
@@ -541,7 +569,7 @@ impl Live {
         let clock = self.ingest.clock(&game_id);
         let closed = {
             let mut clock = clock.lock().unwrap();
-            if !clock.admit(&mut frame, Instant::now()) {
+            if !clock.admit(&mut frame, Instant::now(), machine_baseline) {
                 return Ok(FrameOutcome::Throttled);
             }
             let closed = clock.record(&frame);
@@ -638,21 +666,26 @@ impl Live {
 
     /// `GET /v1/games/{id}/chunks/{from_tick}`: one chunk's bytes, checked
     /// against the hash its signed index entry holds.
-    pub async fn frame_chunk(&self, id: &str, from_tick: u64) -> Result<Vec<u8>, ApiError> {
+    pub async fn frame_chunk(&self, id: &str, from_tick: u64) -> Result<Bytes, ApiError> {
         let index = self.frame_chunks(id).await?;
         let meta = index
             .iter()
             .find(|m| m.from_tick == from_tick)
             .ok_or_else(|| not_found("no such chunk"))?;
+        self.stored_chunk(id, meta).await
+    }
+
+    async fn stored_chunk(&self, id: &str, meta: &ChunkMeta) -> Result<Bytes, ApiError> {
+        let from_tick = meta.from_tick;
         let mut bytes = None;
         if let Some(b) = self.blobs() {
             match b.private.get(&chunk_key(id, from_tick)).await {
-                Ok(found) => bytes = found.map(|b| b.to_vec()),
+                Ok(found) => bytes = found,
                 Err(e) => eprintln!("live: frame chunk of {id}: {e}"),
             }
         }
         if bytes.is_none() {
-            bytes = self.store.blob(&meta.sha256).await?;
+            bytes = self.store.blob(&meta.sha256).await?.map(Bytes::from);
         }
         let bytes = bytes.ok_or_else(|| not_found("the chunk is not stored"))?;
         if sign::hex(&Sha256::digest(&bytes)) != meta.sha256 {
@@ -667,7 +700,7 @@ impl Live {
     pub async fn chunk_frames(&self, id: &str) -> Result<Vec<Frame>, ApiError> {
         let mut out = Vec::new();
         for meta in self.frame_chunks(id).await? {
-            let bytes = self.frame_chunk(id, meta.from_tick).await?;
+            let bytes = self.stored_chunk(id, &meta).await?;
             out.extend(chunk::frames(&bytes).map_err(|e| invalid(e.to_string()))?);
         }
         Ok(out)
@@ -1128,12 +1161,12 @@ mod tests {
         let at = |ms: u64| start + Duration::from_millis(ms);
 
         let mut f = frame(1, 0);
-        assert!(clock.admit(&mut f, at(0)));
+        assert!(clock.admit(&mut f, at(0), false));
         assert_eq!(shots(&f), (Some(1), None));
         let mut f = frame(4, 0);
-        assert!(!clock.admit(&mut f, at(20)), "throttled");
+        assert!(!clock.admit(&mut f, at(20), false), "throttled");
         let mut f = frame(0, 3);
-        assert!(clock.admit(&mut f, at(100)));
+        assert!(clock.admit(&mut f, at(100), false));
         assert_eq!(shots(&f), (Some(4), Some(3)), "carries the throttled frame");
     }
 
@@ -1156,7 +1189,7 @@ mod tests {
         let at = |ms: u64| start + Duration::from_millis(ms);
         let mut chunks = Vec::new();
         let mut send = |clock: &mut FrameClock, mut f: Frame, ms: u64| {
-            if clock.admit(&mut f, at(ms)) {
+            if clock.admit(&mut f, at(ms), false) {
                 chunks.extend(clock.record(&f));
             }
         };
@@ -1212,7 +1245,7 @@ mod tests {
             f.tick = tick;
             f.cut = cut;
             f.machine_positions.extend_from_slice(positions);
-            if !clock.admit(&mut f, start + Duration::from_millis(ms)) {
+            if !clock.admit(&mut f, start + Duration::from_millis(ms), false) {
                 return None;
             }
             let _ = clock.record(&f);
@@ -1257,6 +1290,42 @@ mod tests {
     }
 
     #[test]
+    fn machine_positions_empty_ingest_baseline_clears_recorded_and_live_state() {
+        let start = Instant::now();
+        let mut clock = FrameClock::new(start, 0);
+        let mut first = frame(0, 0);
+        first.tick = 10;
+        first.machine_positions = vec![game::MachinePosition { i: 7, p: 200 }];
+        assert!(clock.admit(&mut first, start, true));
+        assert!(clock.record(&first).is_none());
+        clock.publish(first);
+
+        let mut throttled = frame(0, 0);
+        throttled.tick = 12;
+        throttled.machine_positions = vec![game::MachinePosition { i: 8, p: 128 }];
+        assert!(!clock.admit(&mut throttled, start + Duration::from_millis(10), false));
+
+        let mut reset = frame(0, 0);
+        reset.tick = 14;
+        assert!(clock.admit(&mut reset, start + Duration::from_millis(70), true));
+        assert!(reset.machine_positions.is_empty());
+        assert!(clock.record(&reset).is_none());
+        let live = clock.publish(reset);
+        let d = pack::Decoder::new()
+            .decode(live.packed.as_ref().unwrap())
+            .unwrap();
+        assert!(d.machine_baseline);
+        assert!(d.frame.machine_positions.is_empty());
+
+        let chunk = clock.chunks.finish().unwrap();
+        let container = chunk::container(&chunk.bytes).unwrap();
+        let last = pack::records(&container).last().unwrap().unwrap();
+        let d = pack::Decoder::new().decode(last).unwrap();
+        assert!(d.machine_baseline);
+        assert!(d.frame.machine_positions.is_empty());
+    }
+
+    #[test]
     fn machine_positions_baseline_keeps_more_devices_than_world_poses() {
         let start = Instant::now();
         let mut clock = FrameClock::new(start, 0);
@@ -1265,7 +1334,7 @@ mod tests {
             .map(|i| game::MachinePosition { i, p: 127 })
             .collect();
         let expected = f.machine_positions.clone();
-        assert!(clock.admit(&mut f, start));
+        assert!(clock.admit(&mut f, start, false));
         assert_eq!(clock.machine_positions.len(), 195);
         let live = clock.publish(f);
         let mut decoder = pack::Decoder::new();

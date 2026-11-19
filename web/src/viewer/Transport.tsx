@@ -42,14 +42,19 @@ export function replayKey(s: ReplaySession, e: KeyboardEvent): boolean {
   return true;
 }
 
-export default function Transport(props: { session: ReplaySession; killColour?: (killer: number | null) => string | undefined }) {
+export default function Transport(props: {
+  session: ReplaySession;
+  matchStartTick: number;
+  killColour?: (killer: number | null) => string | undefined;
+}) {
   const s = props.session;
   const at = (tl: ReplayTimeline, tick: number) => `${((tick - tl.startTick) / Math.max(1, tl.durationTicks)) * 100}%`;
   const span = (tl: ReplayTimeline, m: TimelineMark) => `${(((m.to ?? m.tick) - m.tick) / Math.max(1, tl.durationTicks)) * 100}%`;
+  const time = (tl: ReplayTimeline, tick: number) => clock((tick - (s.isLive() ? props.matchStartTick : tl.startTick)) / TICKS_PER_SECOND);
   return (
     <Show when={s.timeline()}>
       {(tl) => (
-        <div class="replay-bar" role="group" aria-label="Replay controls">
+        <div class="replay-bar" role="group" aria-label={s.isLive() ? "Live playback controls" : "Replay controls"}>
           <button class="step" onClick={() => s.stepMark(-1)} aria-label="Previous mark" title="Previous kill, death or cut. Key: <">⏮</button>
           <button class="step" onClick={() => s.stepFrame(-1)} aria-label="Back one frame" title="Back one recorded frame. Key: ,">◀︎</button>
           <button class="play" onClick={() => s.toggle()} aria-label={s.playing() ? "Pause" : "Play"}>{s.playing() ? "❚❚" : "▶"}</button>
@@ -63,7 +68,7 @@ export default function Transport(props: { session: ReplaySession; killColour?: 
               step={1}
               value={s.tick()}
               onInput={(e) => s.seek(+e.currentTarget.value)}
-              aria-label="Replay position"
+              aria-label={s.isLive() ? "Live playback position" : "Replay position"}
             />
             <div class="scrub__kills">
               <For each={tl().marks}>
@@ -77,8 +82,8 @@ export default function Transport(props: { session: ReplaySession; killColour?: 
                         class={`scrub__kill scrub__kill--${m.kind}`}
                         tabindex="-1"
                         style={{ left: at(tl(), m.tick), background: m.kind === "kill" ? props.killColour?.(k().killer) : undefined }}
-                        title={`${MARK_TITLES[m.kind]} (${clock((m.tick - tl().startTick) / TICKS_PER_SECOND)}). Key: k`}
-                        aria-label={`Watch the ${m.kind} at ${clock((m.tick - tl().startTick) / TICKS_PER_SECOND)}`}
+                        title={`${MARK_TITLES[m.kind]} (${time(tl(), m.tick)}). Key: k`}
+                        aria-label={`Watch the ${m.kind} at ${time(tl(), m.tick)}`}
                         onClick={() => s.watchKill(k())}
                       />
                     )}
@@ -87,10 +92,13 @@ export default function Transport(props: { session: ReplaySession; killColour?: 
               </For>
             </div>
           </div>
-          <span class="replay-time">{clock((s.tick() - tl().startTick) / TICKS_PER_SECOND)} / {clock(tl().durationSeconds)}</span>
-          <select value={s.speed()} onChange={(e) => s.setSpeed(+e.currentTarget.value)} aria-label="Speed">
+          <span class="replay-time">{time(tl(), s.tick())}<Show when={!s.isLive()}> / {clock(tl().durationSeconds)}</Show></span>
+          <select value={s.speed()} onChange={(e) => s.setSpeed(+e.currentTarget.value)} disabled={s.followingLive()} aria-label="Speed">
             <For each={SPEEDS}>{(v) => <option value={v}>{v}×</option>}</For>
           </select>
+          <Show when={s.isLive()}>
+            <button type="button" class="replay-live" aria-pressed={s.followingLive()} title="Return to live play" onClick={() => s.goLive()}>Live</button>
+          </Show>
         </div>
       )}
     </Show>
