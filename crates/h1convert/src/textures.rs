@@ -100,27 +100,48 @@ pub fn h1_maps_of(h1: &H1Map, tag: &h1map::Tag) -> Option<H1Maps> {
 /// its base map's texture coordinates (1 where it names none).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct H1Scales {
-    pub detail: f32,
+    /// The detail map's tiling in u and v.
+    pub detail: [f32; 2],
     pub bump: f32,
 }
 
-/// The tiling of the Halo 1 shader `tag`'s detail and bump maps. `senv`:
+/// `soso` detail map scale (`+0xd8`, the f32 before the detail map
+/// `+0xdc`) and its v multiplier (`+0xec`, after the reference). V (Blood
+/// Gulch's `soso`): 16 on the Warthog's hull and chain gun and the
+/// Scorpion's hull, 8 on the Ghost's hull and the Scorpion's treads, 10
+/// on the cyborg's armour, 12 on the boulders; the v multiplier 1 on
+/// every one read. Halo 1 tiles the detail by the scale in u and by the
+/// scale times the multiplier in v.
+pub const SOSO_DETAIL_SCALE: usize = 0xd8;
+pub const SOSO_DETAIL_V_SCALE: usize = 0xec;
+
+/// The tiling of the Halo 1 shader `tag`'s detail and bump maps
+/// ([`scales_from`] on its bytes).
+pub fn h1_scales_of(h1: &H1Map, tag: &h1map::Tag) -> H1Scales {
+    match h1.tag_data(tag) {
+        Ok(d) => scales_from(&tag.group.to_string(), d),
+        Err(_) => H1Scales {
+            detail: [1.0; 2],
+            bump: 1.0,
+        },
+    }
+}
+
+/// The tiling of a Halo 1 shader of `group` whose bytes are `d`. `senv`:
 /// each map reference's scale is the f32 before it, primary detail
 /// `+0xb4`, micro detail `+0xf8`, bump `+0x128 - 4`. V (every `senv` on
 /// the disc): 1 wherever the map is null; 1 to 800 where it is set (micro
 /// details mostly 16 to 60, bump maps 1 to 100). The detail's is the
-/// map's [`h1_maps_of`] takes. The base map has none: its coordinates are
-/// the surface's. Other groups (and a scale that isn't positive) are 1.
-pub fn h1_scales_of(h1: &H1Map, tag: &h1map::Tag) -> H1Scales {
+/// map's [`h1_maps_of`] takes. `soso`: the detail map's scale
+/// ([`SOSO_DETAIL_SCALE`], v times [`SOSO_DETAIL_V_SCALE`]); before
+/// converter version 84 a model's detail was tiled once over its base
+/// map, so the Warthog's corroded metal (16×) lay over the hull as a
+/// few big smears. The base map has none: its coordinates are the
+/// surface's. Other groups (and a scale that isn't positive) are 1.
+pub fn scales_from(group: &str, d: &[u8]) -> H1Scales {
     let mut out = H1Scales {
-        detail: 1.0,
+        detail: [1.0; 2],
         bump: 1.0,
-    };
-    if tag.group != Group::new(b"senv") {
-        return out;
-    }
-    let Ok(d) = h1.tag_data(tag) else {
-        return out;
     };
     let scale = |o: usize| {
         d.get(o..o + 4)
@@ -129,14 +150,24 @@ pub fn h1_scales_of(h1: &H1Map, tag: &h1map::Tag) -> H1Scales {
             .unwrap_or(1.0)
     };
     let set = |o: usize| TagRef::read(d, o).is_some_and(|r| !r.id.is_none());
-    out.detail = if set(0xb8) {
-        scale(0xb4)
-    } else if set(0xfc) {
-        scale(0xf8)
-    } else {
-        1.0
-    };
-    out.bump = if set(0x128) { scale(0x124) } else { 1.0 };
+    match group {
+        "senv" => {
+            let detail = if set(0xb8) {
+                scale(0xb4)
+            } else if set(0xfc) {
+                scale(0xf8)
+            } else {
+                1.0
+            };
+            out.detail = [detail; 2];
+            out.bump = if set(0x128) { scale(0x124) } else { 1.0 };
+        }
+        "soso" if set(0xdc) => {
+            let u = scale(SOSO_DETAIL_SCALE);
+            out.detail = [u, u * scale(SOSO_DETAIL_V_SCALE)];
+        }
+        _ => {}
+    }
     out
 }
 
@@ -394,21 +425,27 @@ pub fn model_template<R: Read + Seek>(base: &mut Map<R>) -> Result<Option<ModelT
 
 impl ModelTemplate {
     /// A [`shad::TEX_BUMP`] drawing `base` as its base map and `detail`
-    /// (else the default detail) as its detail map, its bump map flat.
+    /// (else the default detail) as its detail map, tiled `detail_scale`
+    /// times (u, v) over the base, its bump map flat.
     /// The datums are [`map::build::FixupKind::TagId`] fixups, so a datum
     /// not yet installed (an `h1objects` tree's local one) is filled in
     /// later. Returns the tree and the roles Halo 1 supplied.
-    pub fn copy(&self, base: TagId, detail: Option<TagId>) -> (Block, Vec<&'static str>) {
-        let bound = |id| shad::Bound {
+    pub fn copy(
+        &self,
+        base: TagId,
+        detail: Option<TagId>,
+        detail_scale: [f32; 2],
+    ) -> (Block, Vec<&'static str>) {
+        let bound = |id, scale| shad::Bound {
             id,
-            scale: [1.0, 1.0],
+            scale,
             lod_offset: 0.0,
         };
         let mut maps = HashMap::new();
-        maps.insert(shad::Role::Base, bound(base));
+        maps.insert(shad::Role::Base, bound(base, [1.0, 1.0]));
         let mut roles = vec!["base"];
         if let Some(d) = detail {
-            maps.insert(shad::Role::Detail, bound(d));
+            maps.insert(shad::Role::Detail, bound(d, detail_scale));
             roles.push("detail");
         }
         let tree = self
@@ -460,5 +497,27 @@ mod tests {
         };
         let got: Vec<_> = (0..4).map(|s| stage_vector(&tp, ib, s)).collect();
         assert_eq!(got, [Some(3), Some(2), Some(4), None]);
+    }
+
+    /// A `soso`'s detail is tiled by its own scale (invented bytes): u the
+    /// scale, v the scale times its multiplier; 1 without a detail map,
+    /// and for a scale that isn't positive.
+    #[test]
+    fn a_model_shader_tiles_its_detail_by_its_scale() {
+        let mut d = vec![0u8; 0x1b8];
+        let put = |d: &mut Vec<u8>, at: usize, v: u32| d[at..at + 4].copy_from_slice(&v.to_le_bytes());
+        put(&mut d, SOSO_DETAIL_SCALE, 16f32.to_bits());
+        put(&mut d, SOSO_DETAIL_V_SCALE, 0.5f32.to_bits());
+        // No detail map (a null reference): 1.
+        put(&mut d, 0xdc + 12, u32::MAX);
+        assert_eq!(scales_from("soso", &d).detail, [1.0, 1.0]);
+        put(&mut d, 0xdc, u32::from_le_bytes(*b"mtib"));
+        put(&mut d, 0xdc + 12, 0xe1ad_0039);
+        assert_eq!(scales_from("soso", &d).detail, [16.0, 8.0]);
+        put(&mut d, SOSO_DETAIL_SCALE, (-2f32).to_bits());
+        put(&mut d, SOSO_DETAIL_V_SCALE, 0);
+        assert_eq!(scales_from("soso", &d).detail, [1.0, 1.0]);
+        // An `senv` reads its own offsets, not these.
+        assert_eq!(scales_from("senv", &d).detail, [1.0, 1.0]);
     }
 }
