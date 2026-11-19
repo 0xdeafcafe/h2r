@@ -89,6 +89,55 @@ Replication, map loads and the map itself can move either number. RSS counts
 shared pages in each process. Measure the fleet’s incremental RAM separately
 before sizing by game count.
 
+### `h2 host run`
+
+Start one host for an existing Live lease. The provider supplies the lease
+ID, its bearer token and the signed URL and SHA-256 of the owner's private
+game-data bundle. Every required flag can also come from the environment.
+
+| Flag | Environment | Value |
+|---|---|---|
+| `--lease` | `H2_LEASE` | Live host lease ID |
+| `--live` | `H2_LIVE` | Live HTTPS base URL or loopback HTTP URL |
+| `--token` | `H2_TOKEN` | Lease-scoped host bearer |
+| `--data-url` | `H2_DATA_URL` | Signed bundle URL |
+| `--data-sha` | `H2_DATA_SHA` | Bundle SHA-256 |
+| `--region` | `H2_REGION` | Optional provider region label |
+| `--base-port` | `H2_BASE_PORT` | XNet base port, default 31000 |
+| `--tunnel-listen` | `H2_TUNNEL_LISTEN` | Internal tunnel listener, default `0.0.0.0:31100` |
+| `--out` | `H2_IMAGE` | Prebuilt game module directory, default `$TMPDIR/h2boot` |
+| `--data` | `H2_DATA` | Writable game data directory, default private per-run scratch space |
+
+On Unix, the supervisor fetches `GET /v1/hosts/{lease}` with the lease
+bearer, provisions the verified bundle under `H2_HOST_CACHE` (default
+`host-data` in the user cache), and starts a child
+`h2 serve --system-link --host-light`. The bundle's disc directory must
+contain `default.xbe` and the maps. The module must match the XBE and its
+build settings, including `H2_OPT`.
+
+The child gets `H2_HOST_LOBBY=1` and its own private Unix agent socket. The
+supervisor opens the lease's map and variant through `host.lobby.open` and
+registers the endpoint once `host.lobby.state` shows a lobby. It requests
+start when the lobby is ready and has at least the reserved player count,
+or one player for an open lobby. Lease roster authorization belongs to Live.
+
+For UDP, the child uses the default route's IPv4 or the IP from
+`H2_XNET_ADDR`, with the configured base port. Live receives that address
+unless `H2_PUBLIC_ADDR` specifies a public IPv4 or IPv4:port. Keep base
+through base+6 available and assign each concurrent host its own range.
+For tunnel leases, Live receives the WebSocket URL derived from
+`--live` at `/v1/hosts/{lease}/tunnel`, and the child listens at
+`--tunnel-listen`.
+
+The supervisor samples lobby state once a second. It reports `playing`
+on the first playing sample and reports `ended` on postgame
+(`MatchOver`), last departure (`Empty`), an unvisited lobby's timeout
+(`Idle`), or the lease's hard duration limit (`MaxDuration`). These
+ends close the lobby and return 0. A child exit before a terminal lobby
+state reports `Crashed` and returns 1. The child has up to 60 seconds
+after spawn to reach the lobby. The provider also enforces its boot
+deadline from the original lease request.
+
 ### Compare against ordinary headless serve
 
 Use the image, profile and port setup from the [Mac spike](#mac-system-link-spike).
