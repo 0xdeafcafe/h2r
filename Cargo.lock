@@ -3835,13 +3835,17 @@ dependencies = [
 name = "native-render"
 version = "0.1.0"
 dependencies = [
+ "analyze",
  "bytemuck",
  "gfx",
+ "ir",
+ "lift",
  "map",
  "pollster",
  "shaders",
  "tags",
  "wgpu",
+ "xbe",
 ]
 
 [[package]]
