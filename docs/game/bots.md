@@ -2737,10 +2737,15 @@ list for the user to play (§11).
      Teams, Aggression, Aim style and Taunts are saved but not used yet:
      they wait for the lobby teams (stage 6), the utility layer and aim
      styles (stages 4 and 5), and the emotes (stage 4).
-   - **The page** is a kit screen, `clankers`: seven `ChoiceRow`s, laid
-     out as the Halo 1 Options page is (the level select's list, the
-     description pane, the legend in the footer). Its texts are the
-     `clankers` id family. In the preview it is `h2 ui preview clankers`.
+   - **The page** is a kit screen, `clankers`: seven `ChoiceRow`s on the
+     lobby's own settings dialog, Quick Options, inside and out
+     (`KitScreen::dialog(DialogBase::QuickOptions, ..)`, as the Halo 1
+     Options page is; docs/game/ui-builder.md "The Dialog kind"): Quick
+     Options' panel, header ("CLANKERS"), list (its `setting_lists` skin,
+     the name left and the value alone in the value column), the focused
+     row's description in its one-line help line, and the legend in its
+     footer. Its texts are the `clankers` id family. In the preview it is
+     `h2 ui preview clankers`.
    - **The row.** A custom game's Game Setup dialog (any list with Change
      Map) gets a "Clanker Options..." row with action 11, under Quick Options and
      the Halo 1 Options row's 10, above the "Switch To:" rows (retail
@@ -2749,10 +2754,10 @@ list for the user to play (§11).
      hook is ordered after the Halo 1 row's. A press opens the page on the dialog's own
      stack. The row's text has a slot of its own after the page's footer
      (`KitScreen::row_label`, "Clanker Options..."), so the page's title
-     stays "Clankers". The Halo 1 row does the same with its id 2
-     (`h1_options::ROW_LABEL_ID`, "Halo 1 Options..."), its screen's title
-     staying "Halo 1 Options"; both read like the dialog's other
-     "...Options..." rows.
+     stays "CLANKERS" (in capitals, as Quick Options' header is). The
+     Halo 1 row does the same with its id 2 (`h1_options::ROW_LABEL_ID`,
+     "Halo 1 Options..."), its screen's title staying "HALO 1 OPTIONS";
+     both read like the dialog's other "...Options..." rows.
    - **The bots.** While `enabled` is on, a driver keeps `min(count, free
      ports)` brains in the process-wide local bots, on ports 1 to 3 that no
      other bot asked for (an `H2_BOTS` or `sim` bot keeps its port). They

@@ -7,8 +7,12 @@
 //! `h2 settings` lists them.
 //!
 //! **The page** is a kit screen ([`page`]) of seven choice rows
-//! ([`crate::ui_kit::choice::ChoiceRow`]), laid out as the Halo 1 Options
-//! page is.
+//! ([`crate::ui_kit::choice::ChoiceRow`]) on the lobby's own settings
+//! dialog, Quick Options (`DialogBase::QuickOptions`), as the Halo 1
+//! Options page is: Quick Options' panel, header and list (its
+//! `setting_lists` skin, label left and the value alone in the value
+//! column), the focused row's description in its one-line help line, and
+//! the legend in its footer (docs/game/ui-builder.md "The Dialog kind").
 //!
 //! **The row.** A custom game's Game Setup dialog gets a "Clanker Options..." row,
 //! the way it gets the Halo 1 Options row (`crate::h1_options_row`, whose
@@ -43,10 +47,11 @@ use crate::h1_options_row::{self as h1row, CHANGE_MAP};
 use crate::list_class::{self, Rows};
 use crate::telemetry;
 use crate::ui_kit::choice::ChoiceRow;
+use crate::ui_kit::dialog::DialogBase;
 use crate::ui_kit::ids::{self, Family};
 use crate::ui_kit::input::{Glyph, Prompt};
 use crate::ui_kit::screen::{KitScreen, KitTexts};
-use crate::ui_kit::spec::ValueStyle;
+use crate::ui_kit::view::Opener;
 
 /// The page's feature (`features.clankers`) and screen name.
 pub const FEATURE: &str = "clankers";
@@ -185,7 +190,7 @@ static ROWS: [ChoiceRow; 7] = [
     ChoiceRow::new(
         &DIFFICULTY,
         "Difficulty",
-        "How well they play. Mixed gives each a difficulty around Normal.",
+        "How well they play. Mixed varies it around Normal.",
     ),
     ChoiceRow::new(&TEAM, "Teams", "Which team they join in a team game."),
     ChoiceRow::new(
@@ -201,17 +206,18 @@ static ROWS: [ChoiceRow; 7] = [
     ChoiceRow::new(&TAUNTS, "Taunts", "Whether they taunt after a kill."),
 ];
 
-/// The Game Setup row's text; the page's title stays "Clankers".
+/// The Game Setup row's text; the page's title stays [`TITLE`].
 pub const ROW_LABEL: &str = "Clanker Options...";
+/// The page's title, in capitals as Quick Options' header ("QUICK
+/// OPTIONS") is.
+pub const TITLE: &str = "CLANKERS";
 
-/// The Clankers page over `store`.
+/// The Clankers page over `store`: a dialog of its rows on Quick Options
+/// (its seven rows fit the eleven its list shows).
 pub fn page(store: Arc<Store>) -> KitScreen {
-    let mut s = KitScreen::new(FEATURE, SCREEN, IDS, "Clankers")
+    let mut s = KitScreen::new(FEATURE, SCREEN, IDS, TITLE)
         .row_label(ROW_LABEL)
-        .layout(crate::skulls_menu::LIST_LAYOUT, ValueStyle::Inline)
-        .description(crate::skulls_menu::DESCRIPTION_TEXT)
-        // Seven rows in a list that shows five.
-        .scrolls();
+        .dialog(DialogBase::QuickOptions, Opener::GAME_SETUP_CLANKERS);
     for r in &ROWS {
         s = s.row(r.row(Arc::clone(&store)));
     }
