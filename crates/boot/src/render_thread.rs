@@ -115,6 +115,11 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     // registration: all on game-thread points (the simulation's events, the
     // match start, the variant editor and the Game Setup lists), which the
     // render never meets.
+    (
+        "h1-hud-text",
+        "HS_DISCARDED_EVAL",
+        "a script builtin on the simulation thread evaluates its Boolean argument in the guest",
+    ),
     ("hud", "GAME_ACTIVATE", AFTER),
     ("loaded_map", "GAME_ACTIVATE", AFTER),
     ("variant-ext-live", "GAME_ACTIVATE", AFTER),

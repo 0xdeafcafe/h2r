@@ -78,6 +78,7 @@ pub const FILES: &[(&str, &str)] = &[
     ("wgtz.txt", include_str!("defs/wgtz.txt")),
     ("wgit.txt", include_str!("defs/wgit.txt")),
     ("unic.txt", include_str!("defs/unic.txt")),
+    ("hmt_.txt", include_str!("defs/hmt_.txt")),
     ("goof.txt", include_str!("defs/goof.txt")),
     ("matg.txt", include_str!("defs/matg.txt")),
     ("sbsp.txt", include_str!("defs/sbsp.txt")),

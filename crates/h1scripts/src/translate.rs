@@ -161,6 +161,7 @@ impl Target {
             .collect();
         crate::identified::name_unnamed(&mut builtins, c);
         crate::unit_builtins::name_runtime_slots(&mut builtins, c);
+        crate::hud::identify(&mut builtins, c);
         Self {
             builtins,
             types: c.types().to_vec(),

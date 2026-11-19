@@ -433,7 +433,7 @@ points! { ALL;
     /// opaque path's build and draw over the template's layer-15 passes.
     TRANSPARENT_GEOMETRY @ 0x0004_1020: [fn(data: stack 0) ret 4]; "docs/graphics/native-renderer.md";
     /// Shader draw begin: per draw.
-    SHADER_DRAW_BEGIN @ 0x0001_bbf0: [opaque], Hot; "docs/formats/shader-instances.md";
+    SHADER_DRAW_BEGIN @ 0x0001_bbf0: [fn(shader: edi, mode: stack 0, pass: stack 1, flags: stack 2, index: stack 3, scale: stack 4) ret 20], Hot; "docs/formats/shader-instances.md";
     /// `submit_structure_or_model_geometry`: per draw.
     GEOMETRY_SUBMIT @ 0x0004_1040: [opaque], Hot; "docs/formats/structure-bsp.md";
     /// A shader parameter's value for this draw: its sources through
@@ -549,6 +549,28 @@ points! { ALL;
     MAP_SCREEN_FREE @ 0x002b_b384: [fn(screen: ecx, flags: stack 0) -> eax ret 4]; "docs/game/map-select.md";
     /// Whether the HUD draws (AL); 0 in a campaign with Blind on.
     HUD_SHOWN @ 0x0013_939b: [fn() -> al ret 0]; "docs/game/skulls.md";
+    HUD_TEXT_SETUP @ 0x0013_edb0: [fn(font: esi, colour: edi, shadow: stack 3) ret 16], Optional; "docs/halo1/text.md";
+    HUD_TEXT_MEASURE @ 0x0013_ee20: [fn(text: ecx, font: stack 0) -> al ret 4], Optional; "docs/halo1/text.md";
+    HUD_TEXT_BOUNDS @ 0x0024_ce9d: [fn(text: stack 0) ret 4], Optional; "docs/halo1/text.md";
+    HUD_MESSAGE_LOOKUP @ 0x0013_925f: [fn(key: edi, output: ecx) ret 0], Optional; "docs/halo1/text.md";
+    HUD_GLYPH_FIND @ 0x0014_0b20: [fn(font: eax, unit: ecx) -> eax ret 0], Optional; "docs/halo1/text.md";
+    HUD_GLYPH_CREATE @ 0x0014_0b80: [fn(font: stack 0, unit: stack 1) -> eax ret 8], Optional; "docs/halo1/text.md";
+    HUD_GLYPH_LOAD @ 0x0014_1020: [fn(glyph: eax, flags: edx) -> al ret 0], Optional; "docs/halo1/text.md";
+    HUD_GLYPH_PIXELS_READY @ 0x0014_0870: [fn(glyph: eax, flags: stack 0) -> al ret 4], Optional; "docs/halo1/text.md";
+    HUD_GLYPH_PIXELS @ 0x0014_0960: [fn(glyph: eax, output: stack 0) -> al ret 4], Optional; "docs/halo1/text.md";
+    HUD_INTERACTION_VISIBLE @ 0x0024_c98c: [fn(user: eax, visible: stack 0) ret 4], Optional; "docs/halo1/text.md";
+    PLAYER_PICKUP_SCAN @ 0x0015_08e0: [fn(player: stack 0) ret 4], Optional; "docs/halo1/text.md";
+    PLAYER_PICKUP_CANDIDATE @ 0x0015_0e30: [fn(player: stack 0, target: stack 1) ret 8], Optional; "docs/halo1/text.md";
+    PLAYER_PRESS_INTERACT @ 0x0015_1c90: [fn(player: eax, action: stack 0) -> al ret 4], Optional; "docs/halo1/text.md";
+    HUD_MATERIAL_CONSTANTS @ 0x0001_8ee0: [fn(material: stack 0) ret 4], Optional; "docs/halo1/text.md";
+    HUD_MATERIAL_PIXEL_SHADER @ 0x0001_b050: [fn(material: esi) ret 0], Optional; "docs/halo1/text.md";
+    HUD_MATERIAL_READY @ 0x0001_cd90: [fn() ret 0], Optional; "docs/halo1/text.md";
+    HUD_WIDGET_GATE @ 0x0013_ac87: [fn(state: eax, weapon: ecx, word_c: edx, word_a: stack 0, word_b: stack 1, word_d: stack 2) -> al ret 12], Optional; "docs/editor/hud-editor.md";
+    HUD_SENSOR_DRAW @ 0x001a_2823: [fn(screen: eax, user: ecx) ret 0], Optional; "docs/halo1/hud.md";
+    HS_DISCARDED_EVAL @ 0x002a_b130: [fn(slot: stack 0, thread: stack 1, initialize: stack 2) ret 12], Optional; "docs/halo1/text.md";
+    HUD_TEXT_TAIL @ 0x0015_f120: [fn(player: eax, out: esi, capacity: stack 0, mode: stack 1) -> al ret 8], Optional; "docs/halo1/text.md";
+    HUD_TEXT_DRAW @ 0x0001_fa30: [fn(rect: eax, text: ecx) ret 0], Optional; "docs/halo1/text.md";
+    HUD_TEXT_SUBSTITUTE @ 0x0022_d2ee: [fn(text: stack 0, capacity: stack 1) ret 8], Optional; "docs/halo1/text.md";
     /// Draws the first-person weapons of one local user (stdcall, four
     /// arguments, EAX the result); skipped whole in a campaign with Blind on.
     FIRST_PERSON_RENDER @ 0x0016_5f16: [fn(user: stack 0, a: stack 1, b: stack 2, c: stack 3) -> eax ret 16]; "docs/game/skulls.md";

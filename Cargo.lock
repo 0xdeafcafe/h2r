@@ -647,6 +647,7 @@ dependencies = [
  "gfx",
  "h1convert",
  "h1scripts",
+ "h1text",
  "hot-render",
  "hot-tags",
  "iced-x86",
@@ -2454,6 +2455,7 @@ dependencies = [
  "h1scripts",
  "h1sky",
  "h1sounds",
+ "h1text",
  "hs",
  "map",
  "mopp",
@@ -2575,6 +2577,7 @@ dependencies = [
 name = "h1text"
 version = "0.1.0"
 dependencies = [
+ "h1bitmaps",
  "h1map",
  "h1models",
  "map",

@@ -560,6 +560,125 @@ fn h1_trigger_volumes_read() {
     }
 }
 
+fn check_a30_hud(m: &mut Map<Cursor<Vec<u8>>>, h1: &h1map::H1Map, scnr: &[u8], objects: bool) {
+    use h1text::hud::{
+        CONTROL_PROMPTS, EVENTS, EVENT_SIZE, EXIT_VEHICLE, MARKER, MARKER_AT, PROMPT_SUBJECT_SIZE,
+        PROMPT_SUBJECTS, SCENARIO_HELP, SCENARIO_HMT, SHARED_MESSAGES, SILHOUETTE_BASE,
+        SILHOUETTE_SIZE, SILHOUETTES, SWAP_POWERUP, WIDGET_CONTROLS, WIDGET_CONTROL_SIZE,
+    };
+
+    let word = |b: &[u8], at: u32| u32::from_le_bytes(b[at as usize..at as usize + 4].try_into().unwrap());
+    let short = |b: &[u8], at: u32| u16::from_le_bytes(b[at as usize..at as usize + 2].try_into().unwrap());
+    let hmt = m.read_tag_bytes(TagId(word(scnr, SCENARIO_HMT + 4))).unwrap();
+    let mut read = |addr: u32, size: u32| {
+        let offset = m.file_offset(addr, size).unwrap();
+        m.read_file_range(offset, u64::from(size)).unwrap()
+    };
+    assert_eq!(word(&hmt, MARKER_AT), MARKER);
+    assert_eq!(short(&hmt, SCENARIO_HELP + 2), 5);
+    let msgs = read(word(&hmt, 0x14), word(&hmt, 0x10) * 0x40);
+    let parts = read(word(&hmt, 0xc), word(&hmt, 8) * 2);
+    let glyphs = |row: u32| {
+        let row = row * 0x40;
+        let start = usize::from(short(&msgs, row + 0x22)) * 2;
+        let len = usize::from(msgs[row as usize + 0x24]) * 2;
+        parts[start..start + len].chunks_exact(2).filter_map(|p| (p[0] == 1).then_some(p[1]))
+            .collect::<Vec<_>>()
+    };
+    let help = u32::from(short(&hmt, SCENARIO_HELP));
+    assert_eq!(glyphs(help + 3), [30, 31]);
+    assert_eq!(glyphs(help + 4), [16]);
+
+    let widgets = read(word(&hmt, WIDGET_CONTROLS + 4), word(&hmt, WIDGET_CONTROLS) * WIDGET_CONTROL_SIZE);
+    let panels = widgets.chunks_exact(WIDGET_CONTROL_SIZE as usize)
+        .filter(|widget| word(widget, 8) != 0)
+        .collect::<Vec<_>>();
+    assert_eq!(panels.len(), 4);
+    assert_ne!(word(panels[2], 0x10), word(panels[3], 0x10), "radar layers have different flash colours");
+
+    if objects {
+        let routes = read(word(&hmt, EVENTS + 4), word(&hmt, EVENTS) * EVENT_SIZE);
+        let subjects = read(word(&hmt, PROMPT_SUBJECTS + 4), word(&hmt, PROMPT_SUBJECTS) * PROMPT_SUBJECT_SIZE);
+        let sprites = read(word(&hmt, SILHOUETTES + 4), word(&hmt, SILHOUETTES) * SILHOUETTE_SIZE);
+        let text = read(word(&hmt, 4), word(&hmt, 0));
+        let shared = u32::from(short(&hmt, SHARED_MESSAGES));
+        let at = |row| (shared + u32::from(row)) * 0x40;
+        let first_unit = |row| 2 * u32::from(short(&msgs, at(row) + 0x20));
+        let text_row = |row| {
+            let start = first_unit(row) as usize;
+            String::from_utf16(&text[start..].chunks_exact(2)
+                .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
+                .take_while(|&unit| unit != 0)
+                .collect::<Vec<_>>()).unwrap()
+        };
+        assert_eq!(glyphs(shared + u32::from(short(&hmt, EXIT_VEHICLE))), [18, 32]);
+        assert_eq!(glyphs(shared + u32::from(short(&hmt, SWAP_POWERUP))), [18, 32, 33]);
+        for (name, group, label) in [
+            (r"vehicles\warthog\warthog", FourCC(*b"vehi"), "Warthog"),
+            (r"powerups\health pack", FourCC(*b"eqip"), "health pack"),
+        ] {
+            let id = m.tag(map::TagQuery::NameInGroup(name, group)).unwrap().id;
+            let subject = subjects.chunks_exact(PROMPT_SUBJECT_SIZE as usize)
+                .find(|subject| word(subject, 0) == id.0)
+                .expect("the contextual argument follows the rebuilt object datum");
+            assert_eq!(text_row(short(subject, 4)).to_ascii_lowercase(), label.to_ascii_lowercase());
+        }
+        let rifle = m
+            .tag(map::TagQuery::NameInGroup(
+                r"weapons\assault rifle\assault rifle",
+                FourCC(*b"weap"),
+            ))
+            .unwrap()
+            .id;
+        let rifle = m.read_tag_bytes(rifle).unwrap();
+        let route = routes.chunks_exact(EVENT_SIZE as usize)
+            .find(|route| word(route, 0) == word(&rifle, 0xcc))
+            .expect("the rifle pickup field names a converted route");
+        assert_eq!(glyphs(shared + u32::from(short(route, 4))), [18, 32]);
+        let argument = short(route, 6);
+        assert_eq!(short(&text, first_unit(argument) + 2), 0, "one inline glyph");
+        let index = short(&text, first_unit(argument)).checked_sub(SILHOUETTE_BASE).unwrap();
+        let start = usize::from(index) * SILHOUETTE_SIZE as usize;
+        let sprite = &sprites[start..start + SILHOUETTE_SIZE as usize];
+        let pixel_len = word(sprite, 0x10);
+        let offset = m.file_offset(word(sprite, 0x14), pixel_len).unwrap();
+        let pixels = m.read_file_range(offset, u64::from(pixel_len)).unwrap();
+        check_rifle_silhouette(h1, short(sprite, 4), short(sprite, 6), &pixels);
+        assert_eq!(word(&hmt, CONTROL_PROMPTS), 1, "the cave's placed control retains its prompt");
+    }
+}
+
+fn check_rifle_silhouette(h1: &h1map::H1Map, width: u16, height: u16, pixels: &[u8]) {
+    use h1bitmaps::decode::BitmapExt;
+    use h1map::{Group, TagRef, bitmap::Bitmap};
+
+    let rifle = h1.find(Group::new(b"weap"), r"weapons\assault rifle\assault rifle").unwrap();
+    let hud = TagRef::read(h1.tag_data(rifle).unwrap(), 0x480).unwrap();
+    let hud = h1.tag_data(h1.tag(hud.id).unwrap()).unwrap();
+    let sequence = usize::from(u16::from_le_bytes(hud[0x13c..0x13e].try_into().unwrap()));
+    assert_eq!(sequence, 8);
+    let globals = h1.tags().iter().find(|tag| tag.group == Group::new(b"hudg")).unwrap();
+    let atlas = TagRef::read(h1.tag_data(globals).unwrap(), 0xa4).unwrap();
+    let atlas = Bitmap::read(h1, h1.tag(atlas.id).unwrap()).unwrap();
+    let sprite = &atlas.sequences[sequence].sprites[0];
+    let image = atlas.decode(h1, sprite.image as usize, 0).unwrap();
+    let [left, right, top, bottom] = sprite.bounds;
+    assert_eq!(image.width, 128);
+    assert_eq!(image.height, 128);
+    let [left, right, top, bottom] = [left, right, top, bottom].map(|v| (128.0 * v).round() as usize);
+    assert_eq!((usize::from(width), usize::from(height)), (right - left, bottom - top));
+    let mut expected = Vec::new();
+    for row in image.rgba.chunks_exact(128 * 4).take(bottom).skip(top) {
+        for rgba in row.chunks_exact(4).take(right).skip(left) {
+            let nibble = |i: usize| u16::from(rgba[i] / 16);
+            let argb = 0x1000 * nibble(3) + 0x100 * nibble(0) + 0x10 * nibble(1) + nibble(2);
+            expected.extend(argb.to_le_bytes());
+        }
+    }
+    assert!(expected.chunks_exact(2).any(|p| p[1] & 0xf0 != 0));
+    assert_eq!(pixels, expected);
+}
+
 #[test]
 #[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
 fn a30_converts_onto_its_base_and_reads_back() {
@@ -593,6 +712,7 @@ fn a30_converts_onto_its_base_and_reads_back() {
     let addr = scnr.location.unwrap().address;
     let bytes = m.read_tag_bytes(scnr.id).unwrap();
     let word = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
+    check_a30_hud(&mut m, &h1, &bytes, opts.objects);
 
     // Every tag reference in the scenario resolves to a tag of its group.
     // The whole ordinary metadata, unowned bytes included (the base
@@ -771,6 +891,16 @@ fn a30_converts_onto_its_base_and_reads_back() {
     if let Some(sc) = &s {
         let _ = sc;
         let hs_s = hs::Scenario::read(&mut m).unwrap();
+        let (_, slot, _, _, _) = h1scripts::hud::SCENARIO_HELP_BUILTIN;
+        let mut hints = Vec::new();
+        for node in hs_s.nodes().iter().filter(|n| !n.atom() && n.opcode() == slot) {
+            let Ok(head) = hs_s.node(hs::Datum(node.data())) else { continue };
+            if hs_s.string(head.string_offset()).ok() == Some("display_scenario_help") {
+                hints.push(hs_s.node(head.next()).unwrap().data() as u16);
+            }
+        }
+        hints.sort_unstable();
+        assert_eq!(hints, [3, 4], "the cave's two script help calls");
         println!(
             "scripts read back: {} scripts, {} globals, {} nodes",
             hs_s.scripts().len(),
@@ -2298,6 +2428,116 @@ fn scripted_ring_and_boxes_use_native_scenario_palettes() {
                 let tag = map.read_tag_bytes(id).unwrap();
                 assert_eq!(short(&tag, 0x12c), ty);
                 assert_eq!(f32::from_bits(word(&tag, 0x130)), seconds);
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
+fn campaign_hud_text_and_builtins_round_trip() {
+    use h1scripts::hud::{BUILTINS, CONTROL_BUILTINS};
+    use h1text::h1::{Hmt, scenario_text};
+    use h1text::hud::{GROUP, MARKER, MARKER_AT, SCENARIO_HMT, localized_text};
+    use tags::{Language, Localization};
+
+    let script = scripting();
+    for (name, slot) in BUILTINS.iter().map(|&(name, slot, ..)| (name, slot)).chain(
+        CONTROL_BUILTINS
+            .iter()
+            .map(|&(name, slot, ..)| (name, slot)),
+    ) {
+        let from = script.catalog.index_of(name).unwrap();
+        let translation = script.table.builtin(from).unwrap();
+        assert_eq!(
+            translation.kind,
+            h1scripts::translate::Kind::Direct,
+            "{name}"
+        );
+        assert_eq!(translation.target.as_ref().unwrap().1.index, slot, "{name}");
+    }
+
+    // a30 exercises a message with a controller action, and d40 calls all
+    // six timer functions. Exercise both the pinned and scratch paths.
+    for (level, pinned) in [("a30", true), ("d40", false)] {
+        let h1 = h1_level(level);
+        let refs = scenario_text(&h1).unwrap();
+        let messages = h1.tag(refs.hud_messages.unwrap().id).unwrap();
+        let source = Hmt::read(&h1, messages).unwrap();
+        let mut base = h2_map(h1campaign::BASE);
+        let base_text = Localization::read(&mut base).unwrap();
+        let opts = Options {
+            objects: false,
+            ai: false,
+            scripts: Some(&script),
+            cutscene_data: false,
+            pinned,
+            ..Options::default()
+        };
+        let done = h1campaign::convert(&h1, &mut base, &opts).unwrap();
+        if !pinned {
+            assert!(done.report.fresh, "d40 should exercise relocation");
+        }
+        let mut map = Map::from_reader(Cursor::new(done.bytes)).unwrap();
+        map.validate_checksum().unwrap();
+        let scenario = map.scenario().unwrap().id;
+        let root = map.read_tag_bytes(scenario).unwrap();
+        let word = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
+        let at = SCENARIO_HMT as usize;
+        assert_eq!(word(&root, at), GROUP.as_u32());
+        let hud = map.read_tag_bytes(TagId(word(&root, at + 4))).unwrap();
+        assert_eq!(word(&hud, MARKER_AT as usize), MARKER);
+        assert_eq!(word(&hud, 0x10) as usize, source.messages.len());
+
+        let locales = Localization::read(&mut map).unwrap();
+        for language in Language::ALL {
+            let original = base_text.table(language);
+            let extended = locales.table(language);
+            assert!(extended.entries().len() >= original.entries().len());
+            for (i, entry) in original.entries().iter().enumerate() {
+                assert_eq!(extended.entries()[i].id, entry.id);
+                assert_eq!(extended.bytes(i), original.bytes(i));
+            }
+        }
+        let name = h1text::scenario::unicode_path(&messages.name);
+        let id = map
+            .tag(map::TagQuery::NameInGroup(&name, FourCC(*b"unic")))
+            .unwrap()
+            .id;
+        let unic = locales.unic(&mut map, id).unwrap();
+        let rows = locales.entries_for(&unic, Language::English).unwrap();
+        assert_eq!(rows.len(), source.messages.len());
+        for (row, original) in rows.iter().zip(&source.messages) {
+            assert_eq!(
+                locales
+                    .text_in(&unic, row.id, Language::English)
+                    .unwrap()
+                    .unwrap(),
+                localized_text(original).unwrap(),
+            );
+        }
+
+        let scripts = hs::Scenario::read(&mut map).unwrap();
+        let message_type = script.target.type_index("hud_message").unwrap();
+        let atoms: Vec<_> = scripts
+            .nodes()
+            .iter()
+            .filter(|n| n.live() && n.atom() && n.opcode() == message_type)
+            .collect();
+        assert!(!atoms.is_empty());
+        for atom in atoms {
+            let index = atom.data() as u16 as usize;
+            let name = scripts.string(atom.string_offset()).unwrap();
+            assert!(source.messages[index].name.eq_ignore_ascii_case(name));
+        }
+        if level == "d40" {
+            for slot in 667..=672 {
+                assert!(
+                    scripts.nodes().iter().any(|node| {
+                        node.live() && !node.atom() && !node.script_call() && node.opcode() == slot
+                    }),
+                    "missing timer builtin {slot}"
+                );
             }
         }
     }

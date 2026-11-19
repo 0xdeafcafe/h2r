@@ -791,6 +791,7 @@ pub fn write(
     objects: Option<&h1objects::base::Base>,
     opts: &Options,
     lean: crate::Lean,
+    level_text: &h1text::scenario::LevelText,
     report: &mut Report,
 ) -> Result<()> {
     // A fresh level's scenario is written from nothing ([`fresh_root`]);
@@ -802,6 +803,7 @@ pub fn write(
         None => Block::new(base.bytes[..ROOT].to_vec()),
     };
     let rep = &mut report.scenario;
+    level_text.write(&mut root);
 
     // BSP descriptors: exactly Halo 1's BSPs, in order, so its BSP
     // indices (`switch_bsp`, zones, placements) need no map. A BSP past
@@ -962,6 +964,12 @@ pub fn write(
         }
         None => HashMap::new(),
     };
+    level_text.write_control_prompts(
+        set,
+        placed
+            .iter()
+            .filter_map(|(&(kind, from), &(_, to))| (kind == 8).then_some((from, to))),
+    );
     let h1_names = h1_block(h1, h1::OBJECT_NAMES)?;
     let names: Vec<Block> = h1_names
         .iter()
@@ -1195,6 +1203,7 @@ pub fn write(
                     .then_some(opts.cutscene_graphs),
                 crate::cutscenes::policy(opts, &h1.header().name.to_ascii_lowercase()),
                 &aliases,
+                level_text,
             )?);
         }
         None => {
@@ -1294,6 +1303,7 @@ fn place_objects(
         Ok(got)
     };
     let mut conv = h1objects::convert::Converter::new(h1, base);
+    conv.options.unit_hud_draw_colour = true;
     conv.options.rebuild_bipeds = rebuild_bipeds;
     let mut palettes = Vec::new();
     for k in &KINDS {
@@ -1813,6 +1823,7 @@ fn install_scripts(
     cutscene_data: Option<bool>,
     cutscenes: h1scripts::compile::Cutscenes,
     aliases: &crate::h2assets::Aliases,
+    level_text: &h1text::scenario::LevelText,
 ) -> Result<ScriptReport> {
     use h1scripts::compile::{Missing, compile_with};
     let t = h1scripts::Tables::read(h1).map_err(|e| invalid(format!("scripts: {e}")))?;
@@ -1942,6 +1953,8 @@ fn install_scripts(
         match h.type_name.as_str() {
             "string_id" => interned.get(&h.slot).copied(),
             "starting_profile" => crate::profiles::script_index(&profiles, &h.token),
+            "hud_message" => level_text.message_index(&h.token),
+            "hud_corner" => h1scripts::hud::corner(&h.token),
             "sound" => sounds.get(&h.token.to_ascii_lowercase()).map(|id| id.0),
             _ if hook_value(h, targets).is_some() => hook_value(h, targets),
             "unit_seat_mapping" => seats.values.get(&h.token).copied(),
@@ -1972,6 +1985,9 @@ fn install_scripts(
             );
         })
     });
+    if let Some(hook) = left.iter().find(|h| h.type_name == "hud_message") {
+        return Err(invalid(format!("HUD message {:?} is missing", hook.token)));
+    }
     let mut unresolved: Vec<(String, usize)> = Vec::new();
     let mut samples: Vec<(String, String)> = Vec::new();
     for h in &left {

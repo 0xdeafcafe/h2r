@@ -12,7 +12,12 @@
 #![warn(missing_docs)]
 
 pub mod convert;
+mod events;
 pub mod h1;
+pub mod hud;
+pub mod scenario;
+mod scenario_help;
+mod silhouettes;
 
 /// Conversion failures.
 #[derive(Debug, thiserror::Error)]
@@ -23,6 +28,12 @@ pub enum Error {
     /// The Halo 2 map builder failed.
     #[error("map builder: {0}")]
     Build(#[from] map::Error),
+    /// A converted tag did not fit its definition.
+    #[error(transparent)]
+    Definition(#[from] tags::defs::DefError),
+    /// Installing a converted tag failed.
+    #[error(transparent)]
+    Install(#[from] h1models::Error),
     /// A string list is malformed.
     #[error("invalid {0}")]
     Invalid(String),

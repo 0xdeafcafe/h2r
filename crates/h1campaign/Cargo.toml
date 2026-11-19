@@ -18,6 +18,7 @@ h1ai = { path = "../h1ai" }
 h1scripts = { path = "../h1scripts" }
 h1sky = { path = "../h1sky" }
 h1sounds = { path = "../h1sounds" }
+h1text = { path = "../h1text" }
 map.workspace = true
 tags.workspace = true
 # Generated AI pathfinding for each converted structure BSP.

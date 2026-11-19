@@ -108,14 +108,10 @@ pub const SHORT_PATHS: &[(&str, &str)] = &[("tutorial_setup", "fast_setup")];
 /// ten levels' scripts reads the value as "done" (docs/halo1/scripts.md):
 /// conversation status 5 passes `(< 4 s)`, `(> s 4)`, `(> s 3)` and
 /// `(< 2 s)`; command list status 2 passes `(= 2 s)` and `(!= 3 s)` (the
-/// four `(= 1 s)` waits still hold); the HUD timer never runs out;
-/// a conversation is past any line.
+/// four `(= 1 s)` waits still hold). A conversation is past any line.
 pub const DONE_VALUES: &[(&str, i32)] = &[
     ("ai_conversation_status", 5),
     ("ai_command_list_status", 2),
-    // d40's escape timer: `(<= (hud_get_timer_ticks) 0)` ends the level
-    // as failed; Halo 2 has no HUD timer, so it never runs out.
-    ("hud_get_timer_ticks", 32767),
     // b30: `(< 1 (ai_conversation_line jeep_load))`, a line past the first.
     ("ai_conversation_line", 99),
 ];

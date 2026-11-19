@@ -46,6 +46,7 @@ pub mod host_perf;
 pub mod hot_glue;
 pub mod hud;
 pub mod hud_swap;
+mod h1_hud_text;
 pub mod icons;
 pub mod keyboard_glue;
 pub mod layout_glue;

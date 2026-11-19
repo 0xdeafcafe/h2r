@@ -582,6 +582,11 @@ fn convert_with<R: Read + Seek>(
         }
         phase::time("donors", || donor::bring(d, &mut set, &wanted, &mut report))?;
     }
+    let mut locales = h1text::convert::Locales::from_map(base)
+        .map_err(|e| invalid(format!("base text: {e}")))?;
+    let base_rows = locales.len();
+    let level_text = h1text::scenario::LevelText::install(h1, &mut set, &mut locales)
+        .map_err(|e| invalid(format!("level text: {e}")))?;
     phase::time("scenario", || {
         scenario::write(
             h1,
@@ -592,9 +597,16 @@ fn convert_with<R: Read + Seek>(
             objects_base.as_ref(),
             opts,
             lean,
+            &level_text,
             &mut report,
         )
     })?;
+
+    level_text.write_object_prompts(&mut set);
+    if locales.len() != base_rows {
+        locales.install_pinned(&mut set)
+            .map_err(|e| invalid(format!("installing level text: {e}")))?;
+    }
 
     // Built without the bound, so an overflow can say by how much and
     // where the bytes went.
