@@ -58,6 +58,7 @@ async fn accounts_are_created_and_readable() {
     let wk = h.get("/.well-known/h2live.json").await.json();
     assert_eq!(wk["id"], "live.test");
     assert_eq!(wk["api"], "/v1");
+    assert_eq!(wk["ingest_frame_versions"], json!([8]));
     assert_eq!(wk["federation"], false);
     assert_eq!(wk["keys"][0]["kid"], h.operator.kid());
     assert_eq!(

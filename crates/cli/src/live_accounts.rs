@@ -262,6 +262,7 @@ mod tests {
 
     fn discovery() -> Discovery {
         Discovery {
+            ingest_frame_versions: Vec::new(),
             id: "live.test".into(),
             api: "/v1".into(),
             keys: Vec::new(),

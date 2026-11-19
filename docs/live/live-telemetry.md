@@ -654,8 +654,21 @@ machine baseline. Between keys, send one forward byte-range-coded packet per
 sample using causal field predictions, grouped unchanged fields and adaptive
 symbol frequencies. The envelope carries version, key flag, stream id and
 sequence; deltas also carry the tick increment. A discontinuity requires a
-key or a matching decoder checkpoint. Checkpoints include field history,
-the dictionary, machine travel and active probability models.
+fresh key. A subscriber joins at a complete key and reads each subsequent
+record in order. The key seeds the field history and dictionary and resets the
+probability tables, so there is no separate probability-model snapshot.
+
+An upgraded server advertises `ingest_frame_versions: [8]` in discovery.
+The game reads discovery on each new connection and selects v8 only when
+listed. The packed subscriber opts in with `frames=packed&frame_version=8`.
+Standalone signed frame pages and the v7 writer keep their existing encoding.
+
+After the usual ULEB record length, the first byte is
+`8 | (key << 4) | (min(sid, 7) << 5)`. Slot 7 adds ULEB `sid - 7`.
+A ULEB sequence follows. A key carries one bare v7 key of stream 0,
+sequence 0. A delta carries ULEB tick increment and one terminated range
+payload. Each stream maintains independent prediction and probability
+state. A successful key supersedes earlier versions for that stream ID.
 
 Verify every reconstructed field, mixed versions, cuts and joining mid-stream.
 Compare framed production encoders in alternating pairs on the same 9,000

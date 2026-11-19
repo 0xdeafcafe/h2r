@@ -387,6 +387,7 @@ mod tests {
             "afr",
             "http://127.0.0.1:8074",
             &live_proto::Discovery {
+                ingest_frame_versions: Vec::new(),
                 id: "localhost".into(),
                 api: "/v1".into(),
                 keys: Vec::new(),
