@@ -268,6 +268,53 @@ fn is_advertised(text: &str) -> bool {
     text.starts_with("live: session ") && text.contains(" advertised")
 }
 
+/// `live: session ID deleted`.
+fn is_deleted(text: &str) -> bool {
+    text.starts_with("live: session ") && text.ends_with(" deleted")
+}
+
+/// Hosting the custom game: the first moment a session is advertised (and
+/// not deleted) while the lobby mode is 2; its lobby mode and
+/// advertisement lines and the advertisement's text. Failing that, the
+/// first advertisement made in another lobby mode: the mode, its line
+/// and the advertisement's line.
+#[allow(clippy::type_complexity)]
+fn custom_game_hosting<'a>(
+    l: &Log<'a>,
+) -> (
+    Option<(Vec<String>, &'a str)>,
+    Option<(u32, String, String)>,
+) {
+    let mut mode: Option<(u32, String)> = None;
+    let mut session: Option<(String, &'a str)> = None;
+    let mut elsewhere = None;
+    for (raw, t) in l.raw.iter().zip(&l.texts) {
+        if let Some(m) = t.strip_prefix("coop-live: lobby mode ") {
+            mode = m
+                .split(' ')
+                .next()
+                .and_then(|m| m.parse().ok())
+                .map(|m| (m, raw.to_string()));
+        } else if is_advertised(t) {
+            session = Some((raw.to_string(), t));
+            if let Some((m, ml)) = &mode
+                && *m != 2
+                && elsewhere.is_none()
+            {
+                elsewhere = Some((*m, ml.clone(), raw.to_string()));
+            }
+        } else if is_deleted(t) {
+            session = None;
+        } else {
+            continue;
+        }
+        if let (Some((2, ml)), Some((sl, st))) = (&mode, &session) {
+            return (Some((vec![ml.clone(), sl.clone()], *st)), elsewhere);
+        }
+    }
+    (None, elsewhere)
+}
+
 /// The players' screen mode a run ended in when it was not Xbox Live: the
 /// last `ui: screen 0x1e ..., mode N` with N not 3, unless the Xbox Live
 /// menu or a Live session came after it. Its name and line.
@@ -397,18 +444,34 @@ pub fn verdict(log: &str) -> Option<Verdict> {
         }
     });
 
-    // 4. Hosting a Live custom game: the HLE advertised the session. A
-    // lobby (`coop-live: lobby mode 2`) alone is any custom game, Split
-    // Screen and System Link too.
-    let hosting = l.first(is_advertised);
-    checks.push(match hosting {
-        Some((line, t)) => check(
+    // 4. Hosting a Live custom game: a session the HLE advertised (and had
+    // not deleted) while the lobby mode was Custom Game's, 2. A lobby
+    // (`coop-live: lobby mode 2`) alone is any custom game, Split Screen
+    // and System Link too; an advertisement alone is any Live lobby
+    // (OptiMatch's set mode 3 and advertised in run 20261119-003044).
+    let (hosting, elsewhere) = custom_game_hosting(&l);
+    checks.push(match (hosting, elsewhere) {
+        (Some((lines, t)), _) => check(
             "hosting a Live custom game (session advertised)",
             true,
-            t.to_string(),
-            vec![line],
+            format!("{t} in the custom game lobby (lobby mode 2)"),
+            lines,
         ),
-        None => {
+        (None, Some((mode, mode_line, line))) => {
+            let mut lines = vec![mode_line, line];
+            lines.extend(l.last(5, |t| t.starts_with("bots-drive")));
+            check(
+                "hosting a Live custom game (session advertised)",
+                false,
+                format!(
+                    "a Live session was advertised from lobby mode {mode}, not the custom game \
+                     lobby (mode 2): the drive took another Xbox Live row (OptiMatch set 3 in \
+                     run 20261119-003044)"
+                ),
+                lines,
+            )
+        }
+        (None, None) => {
             let lobby = l.first(|t| t.starts_with("coop-live: lobby mode 2"));
             let mut lines = l.last(5, |t| t.starts_with("bots-drive"));
             lines.extend(l.last(1, |t| t.starts_with("ui: screen")));

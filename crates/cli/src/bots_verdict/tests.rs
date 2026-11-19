@@ -481,3 +481,51 @@ fn an_account_picker_that_never_signed_in_is_named() {
         c.detail
     );
 }
+
+#[test]
+fn an_advertisement_from_another_lobby_is_not_hosting_the_custom_game() {
+    // Run 3 (20261119-003044): OptiMatch's lobby (mode 3) advertised a
+    // session, deleted it, and advertised another, all off Custom Game.
+    let lines = [
+        "live: playing as Tester (00097660034d6ee9) on http://127.0.0.1:8077",
+        "clankers: Clanker 1 on (Normal)",
+        "clankers: Clanker 2 on (Normal)",
+        "clankers: Clanker 3 on (Normal)",
+        "ui: screen 0x1e (window 5, slot 4), mode 3",
+        "coop-live: lobby mode 3",
+        "live: session 84098833205b4d5e advertised for 10.0.3.7:3074",
+        "live: session 84098833205b4d5e deleted",
+        "live: session 801787df07153bc8 advertised for 10.0.3.7:3074",
+    ];
+    let v = run(&plan(5), &lines);
+    let c = &v.checks[3];
+    assert!(!c.pass, "{}", v.render());
+    assert!(c.detail.contains("lobby mode 3"), "{}", c.detail);
+    assert!(c.lines[0].contains("lobby mode 3") && c.lines[1].contains("84098833205b4d5e"));
+}
+
+#[test]
+fn the_custom_game_lobby_hosts_in_either_order_but_not_after_a_delete() {
+    let base = [
+        "live: playing as Tester (00097660034d6ee9) on http://127.0.0.1:8077",
+        "clankers: Clanker 1 on (Normal)",
+        "clankers: Clanker 2 on (Normal)",
+        "clankers: Clanker 3 on (Normal)",
+    ];
+    let with = |more: &[&'static str]| {
+        let mut v: Vec<&str> = base.to_vec();
+        v.extend_from_slice(more);
+        run(&plan(5), &v)
+    };
+    let v = with(&[
+        "live: session 0123456789abcdef advertised for 127.0.0.1:1000",
+        "coop-live: lobby mode 2",
+    ]);
+    assert!(v.checks[3].pass, "{}", v.render());
+    let v = with(&[
+        "live: session 0123456789abcdef advertised for 127.0.0.1:1000",
+        "live: session 0123456789abcdef deleted",
+        "coop-live: lobby mode 2",
+    ]);
+    assert!(!v.checks[3].pass, "{}", v.render());
+}

@@ -386,6 +386,7 @@ fn the_lobby_starts_anyway_after_its_wait() {
     presses(&mut d, 2500, 5000);
     d.line(5100, "ui: screen 0xba (window 5, slot 4), live menu row 2");
     presses(&mut d, 5200, 8000);
+    d.line(8050, "coop-live: lobby mode 2");
     d.line(8100, ADVERTISED);
     d.line(
         9000,
@@ -407,6 +408,7 @@ fn start_again_then_stuck() {
     presses(&mut d, 2500, 5000);
     d.line(5100, "ui: screen 0xba (window 5, slot 4), live menu row 2");
     presses(&mut d, 5200, 8000);
+    d.line(8050, "coop-live: lobby mode 2");
     d.line(8100, ADVERTISED);
     for p in 1..=3 {
         d.line(
@@ -432,5 +434,120 @@ fn no_main_menu_gives_up_after_its_presses() {
         d.take_said()
             .iter()
             .any(|s| s.contains("no main menu after 12 presses"))
+    );
+}
+
+/// Run 20261119-003044's Xbox Live menu: a window 5 `none` screen with
+/// list mask 0xf, under the main menu's lobby mode still.
+const LIVE_ROW_0: &str = "ui: screen none (slot 4: window 5 active 0x82539a80 pending 0x0 list [0xf/0xe2780000]; slot 0: no window)";
+const LIVE_ROW_1: &str = "ui: screen none (slot 4: window 5 active 0x82539a80 pending 0x0 list [0xf/0xe2790001]; slot 0: no window)";
+const LIVE_ROW_2: &str = "ui: screen none (slot 4: window 5 active 0x82539a80 pending 0x0 list [0xf/0xe27a0002]; slot 0: no window)";
+const LIVE_NO_ROW: &str = "ui: screen none (slot 4: window 5 active 0x82539a80 pending 0x0 list [0xf/0x4588b0]; slot 0: no window)";
+/// What A on its row 1 (OptiMatch) opened: mask 0x1 like the main menu.
+const OPTIMATCH: &str = "ui: screen none (slot 4: window 5 active 0x82540730 pending 0x0 list [0x1/0xec700000]; slot 0: no window)";
+/// The main menu coming in under the title screen (pending), as run 3.
+const TITLE_TO_MAIN: &str = "ui: screen none (slot 4: window 5 active 0x82537e90 pending 0x82539070 list [0xffff/0x4588b0]; slot 0: no window)";
+
+/// A driver on the players' screen in Xbox Live mode, A sent, at 4 s.
+fn to_live_menu() -> Driver {
+    let mut d = at_main();
+    presses(&mut d, 2500, 4000);
+    d.line(4100, "ui: screen 0x1e (window 5, slot 4), mode 3");
+    assert_eq!(
+        presses(&mut d, 4200, 6000),
+        ["a the players' screen for Xbox Live: on to the Live menu"]
+    );
+    d
+}
+
+#[test]
+fn the_none_line_parts_are_read() {
+    let n = none_line(LIVE_ROW_1).unwrap();
+    assert_eq!(n.window, 5);
+    assert_eq!(n.active, Some(0x8253_9a80));
+    assert_eq!(n.pending, Some(0));
+    assert_eq!(n.mask, Some(0xf));
+    assert_eq!(n.value, Some(0xe279_0001));
+    assert_eq!(none_line(TITLE_TO_MAIN).unwrap().pending, Some(0x8253_9070));
+    assert!(deleted("live: session 84098833205b4d5e deleted"));
+    assert!(!deleted(ADVERTISED));
+}
+
+#[test]
+fn the_live_menu_is_not_the_main_menu() {
+    // Run 3: the Live menu came under lobby mode -1 and took DOWN, A as
+    // "main menu row 1", which opened OptiMatch.
+    let mut d = to_live_menu();
+    d.line(6100, LIVE_ROW_0);
+    let p = presses(&mut d, 6200, 7600);
+    assert_eq!(p, ["down toward Custom Game (row 2, from 0)"]);
+    d.line(7700, LIVE_ROW_1);
+    assert_eq!(
+        presses(&mut d, 7800, 9200),
+        ["down toward Custom Game (row 2, from 1)"]
+    );
+    d.line(9300, LIVE_ROW_2);
+    let p = d.poll(10_800).unwrap();
+    assert_eq!(
+        d.press_line(&p),
+        "bots-drive: press a on screen none row 2 (Custom Game)"
+    );
+}
+
+#[test]
+fn optimatch_under_the_main_menus_mode_is_not_the_main_menu() {
+    let mut d = Driver::new(3);
+    d.line(900, TITLE_TO_MAIN);
+    d.line(950, "coop-live: lobby mode 4294967295");
+    d.line(1000, MAIN_ROW_0);
+    assert!(d.at_main());
+    d.line(5000, LIVE_ROW_1);
+    assert!(!d.at_main() && d.live_menu());
+    d.line(6000, OPTIMATCH);
+    assert!(!d.at_main() && !d.live_menu());
+    assert_eq!(d.main_row(), None);
+}
+
+#[test]
+fn the_live_menu_with_no_row_yet_gets_down_to_show_one() {
+    let mut d = to_live_menu();
+    d.line(6100, LIVE_NO_ROW);
+    assert_eq!(
+        presses(&mut d, 6200, 7600),
+        ["down the Xbox Live menu shows no row yet: DOWN"]
+    );
+    d.line(7700, LIVE_ROW_2);
+    assert_eq!(presses(&mut d, 7800, 9200), ["a Custom Game"]);
+}
+
+#[test]
+fn an_optimatch_lobby_advertising_is_not_hosting() {
+    // Run 3 again: lobby mode 3 and a Live session advertised; not the
+    // custom game lobby, so B back to the Live menu and Custom Game again.
+    let mut d = to_live_menu();
+    d.line(6100, LIVE_ROW_2);
+    assert_eq!(presses(&mut d, 6200, 7600), ["a Custom Game"]);
+    d.line(7700, OPTIMATCH);
+    d.line(7800, "coop-live: lobby mode 3");
+    d.line(7900, ADVERTISED);
+    assert!(
+        !d.take_said()
+            .iter()
+            .any(|s| s.contains("in the Live custom game lobby"))
+    );
+    let p = presses(&mut d, 8000, 7600 + STEP_MS + 500);
+    assert_eq!(p, ["b a lobby in mode 3, not Custom Game's: back"]);
+    d.line(23_000, "live: session 0123456789abcdef deleted");
+    d.line(23_000, LIVE_ROW_2);
+    let p = presses(&mut d, 23_100, 23_000 + STEP_MS + 2000);
+    assert_eq!(p, ["a Custom Game"]);
+    // This time the custom game lobby.
+    d.line(40_000, LOBBY);
+    d.line(40_100, "coop-live: lobby mode 2");
+    d.line(40_200, ADVERTISED);
+    assert!(
+        d.take_said()
+            .iter()
+            .any(|s| s.contains("in the Live custom game lobby"))
     );
 }
