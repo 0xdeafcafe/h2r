@@ -697,7 +697,8 @@ pub struct Swallow {
     /// Per draw, in order, the slot of the colour target it draws into:
     /// 0 the target bound when armed; another slot the target its first
     /// draw finds, the same for each of its draws and distinct from every
-    /// other slot's.
+    /// other slot's (and from the one bound when armed only while slot 0
+    /// is planned: a pass that binds its own target leaves 0 out).
     pub targets: Vec<u8>,
     /// Every draw's primitive and vertex count, but those in `shapes`.
     pub primitive: PrimitiveType,
@@ -902,6 +903,9 @@ pub struct Device<B: Backend> {
     pending_external: Vec<Box<dyn crate::backend::ExternalPass>>,
     /// The draws of a pass being swallowed ([`Device::swallow`]).
     swallowing: Option<Swallowing>,
+    /// How the last swallow that ended early ended
+    /// ([`Device::swallow_mismatch`]).
+    swallow_mismatch: Option<String>,
     /// Display state: flicker filter, persisted surface, vertical blank.
     display: display::Display<B::Surface>,
     /// Render-to-texture targets, by surface header ([`RttTarget`]).
@@ -1088,6 +1092,7 @@ impl<B: Backend> Device<B> {
             pending_grid: None,
             pending_external: Vec::new(),
             swallowing: None,
+            swallow_mismatch: None,
             display: display::Display::default(),
             rtt: HashMap::default(),
             rtt_epoch: 0,
@@ -1905,8 +1910,9 @@ impl<B: Backend> Device<B> {
             self.undelivered = Some(cb);
             return Ok(false);
         }
-        if self.swallowing.take().is_some() {
+        if let Some(old) = self.swallowing.take() {
             self.stats.swallow_mismatches += 1;
+            self.swallow_mismatch = Some(format!("armed over it at draw {} of {}", old.next, old.targets.len()));
         }
         if s.targets.is_empty() || self.render_target == 0 {
             return Ok(false);
@@ -1929,7 +1935,7 @@ impl<B: Backend> Device<B> {
         }
         let slots = s.targets.iter().map(|&t| usize::from(t)).max().unwrap_or(0) + 1;
         let mut headers = vec![None; slots];
-        headers[0] = Some(self.render_target);
+        headers[0] = s.targets.contains(&0).then_some(self.render_target);
         self.swallowing = Some(Swallowing {
             targets: s.targets,
             next: 0,
@@ -1949,6 +1955,13 @@ impl<B: Backend> Device<B> {
         self.swallowing.is_some()
     }
 
+    /// How the last swallow that ended early ended: the draw that was not
+    /// the next planned (its index, the planned shape and slot, what was
+    /// pushed), or that another swallow was armed over it.
+    pub fn swallow_mismatch(&self) -> Option<&str> {
+        self.swallow_mismatch.as_deref()
+    }
+
     /// What becomes of inline draw `d` under the armed swallow.
     fn swallow_fate(&mut self, d: &ImmediateDraw) -> Fate {
         let Some(s) = self.swallowing.as_mut() else { return Fate::Drawn };
@@ -1965,6 +1978,16 @@ impl<B: Backend> Device<B> {
             && self.stats.draws == s.draws
             && into;
         if !fits {
+            self.swallow_mismatch = Some(format!(
+                "draw {} of {}: planned {primitive:?} x{vertices} into slot {slot}, pushed {:?} x{}{}{}{}",
+                s.next,
+                s.targets.len(),
+                d.primitive,
+                d.vertices.len(),
+                if d.inline.is_empty() { "" } else { ", an inline array" },
+                if self.stats.draws == s.draws { "" } else { ", after another draw" },
+                if into { "" } else { ", into another target" },
+            ));
             self.swallowing = None;
             self.stats.swallow_mismatches += 1;
             return Fate::Drawn;

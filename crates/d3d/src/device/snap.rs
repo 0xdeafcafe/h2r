@@ -707,6 +707,7 @@ impl<B: Backend> Device<B> {
             pending_grid: _,
             pending_external: _,
             swallowing: _,
+            swallow_mismatch: _,
             display,
             // Written back by save_snapshot, then dropped by a load.
             rtt: _,
