@@ -490,7 +490,8 @@ fn bytes_per_player_second_stay_under_budget() {
     }
     let rate = bytes.len() as f64 / (16.0 * 30.0);
     println!("{rate:.2} B/player/s including projectiles, vehicles, items and hits");
-    assert!(rate < 300.0, "{rate:.2} B/player/s");
+    // The ten-minute bench measures 145.25 B/player/s on the same RNG.
+    assert!(rate < 147.0, "{rate:.2} B/player/s");
 }
 
 /// The golden vectors `web/test/fixtures/pack` holds: the TypeScript
