@@ -19,6 +19,7 @@ fn gun(trigger: Trigger, zoom: i16, pellets: i16, reach: f32, ammo: Ammo) -> Gun
         ammo,
         profile: Profile {
             trigger,
+            dual: None,
             zoom,
             pellets,
             shot_speed: 400.0,

@@ -916,7 +916,31 @@ impl feature::Feature for Bots {
                 }
             })
             .optional();
-        b.game().on_start("forget bot sound cues", |_| bots::clear_shots());
+        b.game()
+            .on_start("forget bot sound cues", |_| bots::clear_shots());
+
+        let (local, phantoms) = (self.local.clone(), self.phantoms.clone());
+        b.raw()
+            .observe_before(&points::ITEM_SET_UNIT, "date a weapon pickup", move |o| {
+                if (!local.is_empty() || !phantoms.is_empty())
+                    && let (Some(item), Some(unit)) = (o.arg_u32("item"), o.arg_u32("unit"))
+                    && unit != u32::MAX
+                {
+                    guest::pickups::weapon(&*o.guest(), item, unit);
+                }
+            })
+            .optional();
+        let (local, phantoms) = (self.local.clone(), self.phantoms.clone());
+        b.raw()
+            .observe_before(&points::POWERUP_TAKEN, "date a power-up pickup", move |o| {
+                if !local.is_empty() || !phantoms.is_empty() {
+                    guest::pickups::equipment(&*o.guest(), o.cpu.esp, o.cpu.ecx, o.cpu.edx);
+                }
+            })
+            .optional();
+        b.game().on_start("forget previous placement pickups", |_| {
+            guest::pickups::clear()
+        });
 
         // Deaths, for the emotes (bots::emote): the kill function's
         // attacker and victim player datums and betrayal flag, read as
