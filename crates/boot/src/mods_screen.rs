@@ -573,7 +573,9 @@ impl Repo {
                 let mut ids: BTreeSet<_> = items.iter().take(MAX_ROWS).map(|e| e.id).collect();
                 {
                     let g = self.lock();
-                    if g.visiting && let List::Loaded(visible) = &g.list {
+                    if g.visiting
+                        && let List::Loaded(visible) = &g.list
+                    {
                         ids.extend(visible.iter().map(|e| e.id));
                     }
                 }
@@ -769,7 +771,10 @@ impl Repo {
             format!("Downloading {}%", 100 * available / total)
         } else if maps.iter().all(|e| Self::is_here(g, &e.id)) {
             "Installed".into()
-        } else if maps.iter().any(|e| matches!(g.installs.get(&e.id), Some(Install::Failed(_)))) {
+        } else if maps
+            .iter()
+            .any(|e| matches!(g.installs.get(&e.id), Some(Install::Failed(_))))
+        {
             "Failed".into()
         } else if maps.iter().any(|e| Self::status(g, e) == "New") {
             "New".into()
@@ -847,7 +852,11 @@ impl Repo {
                 _ => "Available to download".into(),
             },
         });
-        lines.iter().map(|l| text_fit::line(l, text_fit::SUMMARY)).collect::<Vec<_>>().join("\n")
+        lines
+            .iter()
+            .map(|l| text_fit::line(l, text_fit::SUMMARY))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// A pack's summary: how many maps and by whom, what it is (the
@@ -880,7 +889,10 @@ impl Repo {
                 text_fit::SUMMARY,
             ),
             about,
-            text_fit::line(&format!("{here}/{} installed, {}", maps.len(), mods::size_text(size)), text_fit::SUMMARY),
+            text_fit::line(
+                &format!("{here}/{} installed, {}", maps.len(), mods::size_text(size)),
+                text_fit::SUMMARY,
+            ),
             text_fit::line(&action, text_fit::SUMMARY),
         ]
         .join("\n")
@@ -923,7 +935,8 @@ impl Repo {
             g.selected = Some(e.id);
             g.removing = None;
         }
-        self.texts.set(DETAIL_TITLE, &text_fit::line(&e.name, text_fit::TITLE));
+        self.texts
+            .set(DETAIL_TITLE, &text_fit::line(&e.name, text_fit::TITLE));
         self.footer(DETAIL, Some(0));
         self.set_panel();
         self.touch();
@@ -933,7 +946,8 @@ impl Repo {
     /// Opens pack `name`'s list.
     fn open_pack(&self, name: &str) -> Chosen {
         self.lock().pack = Some(name.to_string());
-        self.texts.set(PACK_TITLE, &text_fit::line(name, text_fit::TITLE));
+        self.texts
+            .set(PACK_TITLE, &text_fit::line(name, text_fit::TITLE));
         self.footer(PACK, Some(0));
         self.touch();
         Chosen::Open(PACK)
@@ -1008,8 +1022,7 @@ impl Repo {
 
     /// The rows the pack's list has: Download All, then its maps.
     pub fn pack_count(&self) -> usize {
-        self.pack()
-            .map_or(1, |(_, maps)| 1 + maps.len())
+        self.pack().map_or(1, |(_, maps)| 1 + maps.len())
     }
 
     /// Row `row` of the pack's list: Download All (or how the downloads
@@ -1031,7 +1044,9 @@ impl Repo {
         let g = self.lock();
         // The pack name is already in the header. Keep a distinctive map
         // name visible when the publisher prefixed every title with it.
-        let name = g.pack.as_deref()
+        let name = g
+            .pack
+            .as_deref()
             .and_then(|pack| e.name.strip_prefix(pack))
             .and_then(|suffix| suffix.strip_prefix(' '))
             .map(str::trim_start)
@@ -1108,8 +1123,12 @@ impl Repo {
     /// The page's one row's line: what A does (Download, Remove, the
     /// download's progress, or why it can't).
     pub fn detail_line(&self, row: i16) -> Option<String> {
-        if row != 0 { return None }
-        let Some(e) = self.selected() else { return Some("Map unavailable".into()) };
+        if row != 0 {
+            return None;
+        }
+        let Some(e) = self.selected() else {
+            return Some("Map unavailable".into());
+        };
         let g = self.lock();
         Some(text_fit::line(&self.action_text(&g, &e), text_fit::ROW))
     }
@@ -1118,8 +1137,12 @@ impl Repo {
     /// now, or how the download is going, in one line
     /// on the lobby panel.
     pub fn detail_description(&self, row: i16) -> Option<String> {
-        if row != 0 { return None }
-        let Some(e) = self.selected() else { return Some("Press B to go back.".into()) };
+        if row != 0 {
+            return None;
+        }
+        let Some(e) = self.selected() else {
+            return Some("Press B to go back.".into());
+        };
         let g = self.lock();
         let line = match g.installs.get(&e.id) {
             Some(Install::Downloading { done, total }) => format!(
@@ -1133,7 +1156,10 @@ impl Repo {
             _ if Self::is_here(&g, &e.id) => "Installed. Change Map > Mods.".into(),
             _ => format!("A or X downloads it: {}.", mods::size_text(e.size)),
         };
-        Some(text_fit::line(&line, i32::from(page_layout::STATUS.rect[3] - page_layout::STATUS.rect[1])))
+        Some(text_fit::line(
+            &line,
+            i32::from(page_layout::STATUS.rect[3] - page_layout::STATUS.rect[1]),
+        ))
     }
 
     /// The page's panel texts into their slots, for the selected map: the
@@ -1391,11 +1417,15 @@ impl Repo {
             g.pictures = None;
         }
         if some {
-            let title = self.selected().map_or_else(|| "Mod details".into(), |e| text_fit::line(&e.name, text_fit::TITLE));
+            let title = self.selected().map_or_else(
+                || "Mod details".into(),
+                |e| text_fit::line(&e.name, text_fit::TITLE),
+            );
             self.texts.set(DETAIL_TITLE, &title);
         }
         if let Some(name) = &pack {
-            self.texts.set(PACK_TITLE, &text_fit::line(name, text_fit::TITLE));
+            self.texts
+                .set(PACK_TITLE, &text_fit::line(name, text_fit::TITLE));
         }
         self.set_panel();
         self.texts.rewrite_all();
@@ -1425,7 +1455,11 @@ pub fn about(e: &ModEntry) -> String {
             &fallback
         }
     };
-    text_fit::paragraph(words, i32::from(page_layout::BODY.rect[3] - page_layout::BODY.rect[1]), 3)
+    text_fit::paragraph(
+        words,
+        i32::from(page_layout::BODY.rect[3] - page_layout::BODY.rect[1]),
+        3,
+    )
 }
 
 /// A list row's state as the mark after its name (`font::mod_marks`, drawn
@@ -1513,15 +1547,17 @@ impl Repo {
     /// only installs. Removal and its confirmation belong to the map page.
     fn prompts(&self, screen: &str, row: Option<i16>) -> Vec<Prompt> {
         let g = self.lock();
-        let download = |e: &ModEntry| {
-            match g.installs.get(&e.id) {
-                Some(Install::Downloading { .. }) => None,
-                _ if Self::is_here(&g, &e.id) => None,
-                Some(Install::Failed(_)) => Some("Retry"),
-                _ => Some("Download"),
-            }
+        let download = |e: &ModEntry| match g.installs.get(&e.id) {
+            Some(Install::Downloading { .. }) => None,
+            _ if Self::is_here(&g, &e.id) => None,
+            Some(Install::Failed(_)) => Some("Retry"),
+            _ => Some("Download"),
         };
-        let bulk = |maps: &[ModEntry]| maps.iter().any(|e| download(e).is_some()).then_some("Download All");
+        let bulk = |maps: &[ModEntry]| {
+            maps.iter()
+                .any(|e| download(e).is_some())
+                .then_some("Download All")
+        };
         let (a, x) = match (screen, row) {
             (SCREEN, Some(r)) => match Self::top_at(&g, r) {
                 Some(Top::Map(e)) => (Some("Details"), download(&e)),
@@ -1546,11 +1582,17 @@ impl Repo {
             },
             (DETAIL, Some(0)) => {
                 let action = g.selected.and_then(|id| {
-                    let List::Loaded(items) = &g.list else { return None };
+                    let List::Loaded(items) = &g.list else {
+                        return None;
+                    };
                     let e = items.iter().find(|e| e.id == id)?;
-                    if g.removing == Some(id) { Some("Confirm") }
-                    else if Self::is_here(&g, &id) { Some("Remove") }
-                    else { download(e) }
+                    if g.removing == Some(id) {
+                        Some("Confirm")
+                    } else if Self::is_here(&g, &id) {
+                        Some("Remove")
+                    } else {
+                        download(e)
+                    }
                 });
                 (action, action)
             }
@@ -1568,8 +1610,13 @@ impl Repo {
     }
 
     fn footer(&self, screen: &str, row: Option<i16>) -> u32 {
-        let slot = match screen { DETAIL => DETAIL_FOOTER, PACK => PACK_FOOTER, _ => LIST_FOOTER };
-        self.texts.set(slot, &footer_legend(&self.prompts(screen, row)))
+        let slot = match screen {
+            DETAIL => DETAIL_FOOTER,
+            PACK => PACK_FOOTER,
+            _ => LIST_FOOTER,
+        };
+        self.texts
+            .set(slot, &footer_legend(&self.prompts(screen, row)))
     }
 }
 
@@ -1627,7 +1674,9 @@ impl ListRows {
 }
 
 impl Rows for ListRows {
-    fn restore_missing_picture(&self) -> bool { true }
+    fn restore_missing_picture(&self) -> bool {
+        true
+    }
     fn focused_footer(&self, row: Option<i16>) -> Option<u32> {
         Some(self.0.footer(SCREEN, row))
     }
@@ -1703,7 +1752,9 @@ impl PackRows {
 }
 
 impl Rows for PackRows {
-    fn restore_missing_picture(&self) -> bool { true }
+    fn restore_missing_picture(&self) -> bool {
+        true
+    }
     fn focused_footer(&self, row: Option<i16>) -> Option<u32> {
         Some(self.0.footer(PACK, row))
     }
@@ -1776,7 +1827,9 @@ impl DetailRows {
 }
 
 impl Rows for DetailRows {
-    fn restore_missing_picture(&self) -> bool { true }
+    fn restore_missing_picture(&self) -> bool {
+        true
+    }
     fn focused_footer(&self, row: Option<i16>) -> Option<u32> {
         Some(self.0.footer(DETAIL, row))
     }

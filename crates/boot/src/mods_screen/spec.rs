@@ -167,10 +167,7 @@ pub fn list_spec(repo: &Repo) -> ScreenSpec {
     s.scrolls = true;
     s.art = vec![
         art(crate::skulls_menu::FRAME, crate::skulls_menu::FRAME_SIZE),
-        art(
-            super::LIST_PICTURE,
-            crate::campaign_menu::PICTURE_SIZE,
-        ),
+        art(super::LIST_PICTURE, crate::campaign_menu::PICTURE_SIZE),
     ];
     s.prompts = repo.prompts(SCREEN, Some(0));
     s.footer = true;
@@ -203,10 +200,7 @@ pub fn pack_spec(repo: &Repo) -> ScreenSpec {
     s.scrolls = true;
     s.art = vec![
         art(crate::skulls_menu::FRAME, crate::skulls_menu::FRAME_SIZE),
-        art(
-            super::LIST_PICTURE,
-            crate::campaign_menu::PICTURE_SIZE,
-        ),
+        art(super::LIST_PICTURE, crate::campaign_menu::PICTURE_SIZE),
     ];
     s.prompts = repo.prompts(PACK, Some(0));
     s.footer = true;

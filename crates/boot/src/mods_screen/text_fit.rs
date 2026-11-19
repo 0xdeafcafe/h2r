@@ -24,22 +24,32 @@ pub(super) fn width(text: &str) -> i32 {
 
 fn ellipsis(text: &str, room: i32) -> String {
     let mut left = room - width("...");
-    let prefix: String = text.chars().take_while(|&c| {
-        left -= advance(c);
-        left >= 0
-    }).collect();
+    let prefix: String = text
+        .chars()
+        .take_while(|&c| {
+            left -= advance(c);
+            left >= 0
+        })
+        .collect();
     format!("{}...", prefix.trim_end())
 }
 
 pub(super) fn line(text: &str, room: i32) -> String {
     let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if width(&text) <= room { text } else { ellipsis(&text, room) }
+    if width(&text) <= room {
+        text
+    } else {
+        ellipsis(&text, room)
+    }
 }
 
 /// Wrap up to the available number of lines. A long unbroken word also
 /// fits, and an ellipsis tells the player when there was more to read.
 pub(super) fn paragraph(text: &str, room: i32, rows: usize) -> String {
-    let words: Vec<_> = text.split_whitespace().map(|word| line(word, room)).collect();
+    let words: Vec<_> = text
+        .split_whitespace()
+        .map(|word| line(word, room))
+        .collect();
     let mut lines = wrap(&words.join(" "), room, &width);
     if lines.len() > rows {
         lines.truncate(rows);

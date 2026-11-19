@@ -1561,8 +1561,13 @@ pub async fn row_text(
             let footer = rows.focused_footer(focused);
             cx.write(|m| rows.write_texts(m))?;
             if let Some(id) = footer {
-                cx.call(GuestCall::new(points::TEXT_SET.base)
-                    .edi(screen.wrapping_add(FOOTER)).esi(screen).args([id])).await?;
+                cx.call(
+                    GuestCall::new(points::TEXT_SET.base)
+                        .edi(screen.wrapping_add(FOOTER))
+                        .esi(screen)
+                        .args([id]),
+                )
+                .await?;
             }
             set_panel_texts(&cx, screen, &shown, rows.as_ref()).await?;
             if let Some(id) = description {
@@ -1582,7 +1587,8 @@ pub async fn row_text(
                 cx.write(|m| set_tint(m, picture, tint))?;
             }
             if let Some((picture, original)) = shown.picture_block(screen) {
-                let datum = focused.and_then(|r| rows.picture(r))
+                let datum = focused
+                    .and_then(|r| rows.picture(r))
                     .or_else(|| rows.restore_missing_picture().then_some(original));
                 if let Some(datum) = datum {
                     cx.write(|m| set_picture(m, picture, datum))?;
@@ -1984,7 +1990,8 @@ async fn add_picture(
             &format!("{name}: no picture (no memory for the widget)"),
         );
     } else if let Some(shown) = shown {
-        let original = u32::from_le_bytes(block[BITMAP_HANDLE..BITMAP_HANDLE + 4].try_into().unwrap());
+        let original =
+            u32::from_le_bytes(block[BITMAP_HANDLE..BITMAP_HANDLE + 4].try_into().unwrap());
         shown.set_picture(screen, widget, original);
     }
     Ok(())
@@ -2839,7 +2846,8 @@ mod tests {
     #[test]
     fn growing_a_waiting_list_keeps_its_first_row_handle() {
         let mut g = guest();
-        g.map(SCREEN, ui::CONTROLS_SCREEN_SIZE).map(ROWS - 0x20, 0x200);
+        g.map(SCREEN, ui::CONTROLS_SCREEN_SIZE)
+            .map(ROWS - 0x20, 0x200);
         construct(&mut g, 4);
         adopt(&mut g, SCREEN, &entries(), 1).unwrap();
         let screen = Screen::at(SCREEN);
@@ -3278,8 +3286,14 @@ mod tests {
             .args([0x200]);
         draw();
         let run = draw();
-        assert!(run.calls.contains(&Gc::new(points::TEXT_SET.base)
-            .edi(SCREEN + FOOTER).esi(SCREEN).args([0x201])));
+        assert!(
+            run.calls.contains(
+                &Gc::new(points::TEXT_SET.base)
+                    .edi(SCREEN + FOOTER)
+                    .esi(SCREEN)
+                    .args([0x201])
+            )
+        );
         assert_eq!(run.guest.bytes(0x0062_0000, 3).unwrap(), b"hi\0");
         assert_eq!(run.calls.last(), Some(&set), "the focus did not move");
     }

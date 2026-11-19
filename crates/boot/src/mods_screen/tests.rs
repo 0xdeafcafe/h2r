@@ -512,7 +512,10 @@ fn a_mod_needing_a_disc_map_says_which() {
         map: "lockout".into(),
     })));
     assert_eq!(repo.detail_line(0).unwrap(), "Retry download");
-    assert_eq!(repo.detail_description(0).unwrap(), "Needs Lockout from your disc");
+    assert_eq!(
+        repo.detail_description(0).unwrap(),
+        "Needs Lockout from your disc"
+    );
     assert_eq!(repo.list_row(0).unwrap().1, "Failed");
     assert_eq!(repo.prompts(SCREEN, Some(0))[1].text, "Retry");
     // A failed one can be tried again.
@@ -671,7 +674,10 @@ fn the_footers_say_what_a_and_x_do() {
     assert!(repo.texts.get(DETAIL_FOOTER).unwrap().contains("CONFIRM"));
     let mut spec = spec::pack_spec(&repo);
     spec.focus = 2;
-    assert_eq!(spec.footer_text(), Some(footer_legend(&repo.prompts(PACK, Some(2)))));
+    assert_eq!(
+        spec.footer_text(),
+        Some(footer_legend(&repo.prompts(PACK, Some(2))))
+    );
     assert_eq!(X_ONLY, [crate::list_class::X_BUTTON]);
     assert_eq!(crate::list_class::X_BUTTON, 2);
     let classes = classes(&Repo::new(Arc::new(Fake::default()), None));
@@ -844,14 +850,12 @@ fn a_packs_list_has_download_all_then_its_maps_each_opening_its_page() {
     assert_eq!(repo.pack_line(1).unwrap(), "Phantom Ascension  \u{2605}");
     assert_eq!(repo.pack_line(3).unwrap(), "Phantom Colossus  \u{2605}");
     assert_eq!(repo.pack_line(4), None);
-    assert!(repo
-        .pack_description(0)
-        .unwrap()
-        .ends_with("3 to download"));
-    assert!(repo
-        .pack_description(2)
-        .unwrap()
-        .starts_with("On Ascension"));
+    assert!(repo.pack_description(0).unwrap().ends_with("3 to download"));
+    assert!(
+        repo.pack_description(2)
+            .unwrap()
+            .starts_with("On Ascension")
+    );
     // A map's row opens its page, Back returns to the pack.
     assert_eq!(repo.press_pack(2), Chosen::Open(DETAIL));
     assert_eq!(repo.selected().map(|e| e.id), Some(id(3)));
@@ -873,9 +877,10 @@ fn a_packs_list_has_download_all_then_its_maps_each_opening_its_page() {
     }
     assert_eq!(repo.pack_line(0).unwrap(), "Downloading 66%");
     assert!(repo.list_line(1).unwrap().ends_with("  \u{2193} 66%"));
-    assert!(repo
-        .x_pack(Some(0))
-        .contains("every map is installed or downloading"));
+    assert!(
+        repo.x_pack(Some(0))
+            .contains("every map is installed or downloading")
+    );
     let (_, _, done) = started.pop().unwrap();
     done(Ok(PathBuf::from("/data/maps/live")));
     assert_eq!(repo.pack_line(0).unwrap(), "Downloading 83%");
@@ -883,10 +888,11 @@ fn a_packs_list_has_download_all_then_its_maps_each_opening_its_page() {
     done(Ok(PathBuf::from("/data/maps/live")));
     assert_eq!(repo.pack_line(0).unwrap(), "All Installed");
     assert_eq!(repo.list_line(1).unwrap(), "Phantom Mappack  \u{2713}");
-    assert!(repo
-        .list_description(1)
-        .unwrap()
-        .ends_with("3/3 installed, 10.2 MB\nChange Map > Mods"));
+    assert!(
+        repo.list_description(1)
+            .unwrap()
+            .ends_with("3/3 installed, 10.2 MB\nChange Map > Mods")
+    );
 }
 
 #[test]
@@ -978,10 +984,7 @@ fn a_big_packs_texts_fit_and_have_ids_of_the_family() {
     }
     assert!(rows.texts(MAX_PACK_ROWS as i16).is_empty());
     assert_eq!(repo.pack_line(0).unwrap(), "Download All (40)");
-    assert!(rows
-        .describe(2)
-        .unwrap()
-        .contains("...\"; rows: [0]"));
+    assert!(rows.describe(2).unwrap().contains("...\"; rows: [0]"));
 }
 
 #[test]
@@ -1042,13 +1045,23 @@ fn wide_published_text_leaves_room_for_state_facts_and_status() {
     assert!(row.label.ends_with("...  ★"));
     assert!(text_fit::width(&row.label) <= text_fit::ROW);
     let summary = row.description.as_deref().unwrap();
-    assert!(summary.lines().all(|l| text_fit::width(l) <= text_fit::SUMMARY));
+    assert!(
+        summary
+            .lines()
+            .all(|l| text_fit::width(l) <= text_fit::SUMMARY)
+    );
     assert_eq!(summary.lines().last(), Some("New map"));
     repo.press_list(0);
     let spec = spec::detail_spec(&repo);
     for cell in &spec.texts {
         let [_, left, _, right] = cell.rect;
-        assert!(cell.text.lines().all(|line| text_fit::width(line) <= i32::from(right - left)), "{}", cell.id);
+        assert!(
+            cell.text
+                .lines()
+                .all(|line| text_fit::width(line) <= i32::from(right - left)),
+            "{}",
+            cell.id
+        );
     }
     assert!(spec.texts[page_layout::BODY_TEXT].text.ends_with("..."));
 }
@@ -1058,7 +1071,10 @@ fn pack_rows_drop_only_the_repeated_pack_name_and_keep_full_page_titles() {
     let repo = spec::sample_repo(spec::Sample::Pack);
     assert_eq!(repo.pack_line(3).as_deref(), Some("Beaver Creek  ★"));
     repo.press_pack(3);
-    assert_eq!(repo.texts.get(DETAIL_TITLE).as_deref(), Some("Sample Pack Beaver Creek"));
+    assert_eq!(
+        repo.texts.get(DETAIL_TITLE).as_deref(),
+        Some("Sample Pack Beaver Creek")
+    );
     let (_, other) = listed(with_pack(), None);
     other.press_list(1);
     assert!(other.pack_line(1).unwrap().starts_with("Phantom Ascension"));
@@ -1069,10 +1085,19 @@ fn a_restored_page_for_an_unlisted_map_has_a_way_back() {
     let repo = spec::sample_repo(spec::Sample::Page);
     let (_, empty) = listed(Vec::new(), None);
     empty.load_state(&repo.save_state()).unwrap();
-    assert_eq!(empty.texts.get(DETAIL_TITLE).as_deref(), Some("Mod details"));
+    assert_eq!(
+        empty.texts.get(DETAIL_TITLE).as_deref(),
+        Some("Mod details")
+    );
     assert_eq!(empty.detail_line(0).as_deref(), Some("Map unavailable"));
-    assert_eq!(empty.detail_description(0).as_deref(), Some("Press B to go back."));
-    assert_eq!(empty.prompts(DETAIL, Some(0)), [Prompt::new(&[Glyph::B], "Back")]);
+    assert_eq!(
+        empty.detail_description(0).as_deref(),
+        Some("Press B to go back.")
+    );
+    assert_eq!(
+        empty.prompts(DETAIL, Some(0)),
+        [Prompt::new(&[Glyph::B], "Back")]
+    );
     assert_eq!(empty.press_detail(0), Chosen::Nothing);
 }
 
@@ -1096,9 +1121,15 @@ fn preview_presses_preserve_parent_focus_and_use_the_displayed_download_commands
     preview.press(Y);
     assert_eq!(preview.spec(), before);
     preview.press(B);
-    assert_eq!((preview.spec().name.as_str(), preview.spec().focus), (PACK, 1));
+    assert_eq!(
+        (preview.spec().name.as_str(), preview.spec().focus),
+        (PACK, 1)
+    );
     preview.press(B);
-    assert_eq!((preview.spec().name.as_str(), preview.spec().focus), (SCREEN, 2));
+    assert_eq!(
+        (preview.spec().name.as_str(), preview.spec().focus),
+        (SCREEN, 2)
+    );
     assert!(preview.go("offline"));
     preview.press(A);
     assert_eq!(preview.spec().rows[0].label, "Loading...");
@@ -1110,10 +1141,25 @@ fn every_named_mod_state_uses_its_rows_footer_and_fits_the_synthetic_layout() {
     for screen in [spec::Sample::List, spec::Sample::Pack, spec::Sample::Page] {
         let preview = spec::preview::Preview::new(screen);
         for (name, page) in preview.specs() {
-            assert_eq!(page.footer_text(), page.rows[page.focus].prompts.as_ref().map(|p| footer_legend(p)));
+            assert_eq!(
+                page.footer_text(),
+                page.rows[page.focus]
+                    .prompts
+                    .as_ref()
+                    .map(|p| footer_legend(p))
+            );
             let (view, _) = From::Synthetic.draw(&page, &name).unwrap();
-            let report = layout::check(&view, &crate::ui_kit::preview::SyntheticSource, &layout::Rules::for_spec(&page));
-            assert!(report.issues.is_empty(), "{}/{name}: {:?}", page.name, report.issues);
+            let report = layout::check(
+                &view,
+                &crate::ui_kit::preview::SyntheticSource,
+                &layout::Rules::for_spec(&page),
+            );
+            assert!(
+                report.issues.is_empty(),
+                "{}/{name}: {:?}",
+                page.name,
+                report.issues
+            );
         }
     }
 }

@@ -329,7 +329,10 @@ impl ScreenSpec {
         }
     }
     fn focused_prompts(&self) -> &[Prompt] {
-        self.rows.get(self.focus).and_then(|r| r.prompts.as_deref()).unwrap_or(&self.prompts)
+        self.rows
+            .get(self.focus)
+            .and_then(|r| r.prompts.as_deref())
+            .unwrap_or(&self.prompts)
     }
 
     /// The footer legend as drawn, when the prompts go there.
@@ -367,7 +370,10 @@ impl ScreenSpec {
         }
         s.push_str(&format!("; focus {}", self.focus));
         if !self.focused_prompts().is_empty() {
-            s.push_str(&format!("; prompts {}", legend_named(self.focused_prompts())));
+            s.push_str(&format!(
+                "; prompts {}",
+                legend_named(self.focused_prompts())
+            ));
         }
         s
     }

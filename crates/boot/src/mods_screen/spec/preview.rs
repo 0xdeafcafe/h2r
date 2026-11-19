@@ -11,14 +11,48 @@ pub struct Preview {
 
 impl Preview {
     pub fn new(root: Sample) -> Self {
-        Self { root, repo: sample_repo(root), stack: vec![(root, Focus(0))] }
+        Self {
+            root,
+            repo: sample_repo(root),
+            stack: vec![(root, Focus(0))],
+        }
     }
 
     fn states(&self) -> &'static [&'static str] {
         match self.root {
-            Sample::List => &["focus-0", "focus-2", "focus-3", "loading", "empty", "offline", "signed-out", "installed", "downloading", "failed", "long-name"],
-            Sample::Pack => &["focus-0", "focus-2", "focus-3", "partial", "installed", "downloading", "failed", "empty-pack"],
-            Sample::Page => &["focus-0", "installed", "downloading", "failed", "confirm-remove", "remove-failed", "unavailable", "long-name"],
+            Sample::List => &[
+                "focus-0",
+                "focus-2",
+                "focus-3",
+                "loading",
+                "empty",
+                "offline",
+                "signed-out",
+                "installed",
+                "downloading",
+                "failed",
+                "long-name",
+            ],
+            Sample::Pack => &[
+                "focus-0",
+                "focus-2",
+                "focus-3",
+                "partial",
+                "installed",
+                "downloading",
+                "failed",
+                "empty-pack",
+            ],
+            Sample::Page => &[
+                "focus-0",
+                "installed",
+                "downloading",
+                "failed",
+                "confirm-remove",
+                "remove-failed",
+                "unavailable",
+                "long-name",
+            ],
         }
     }
 
@@ -45,7 +79,9 @@ impl Preview {
             entries[0].credit = Some("Waterworks Map Making Community".into());
             entries[0].description = Some("Flooded passages beneath the base. ".repeat(9));
             self.repo.listed(Ok(entries));
-            if self.root == Sample::Page { self.repo.press_list(0); }
+            if self.root == Sample::Page {
+                self.repo.press_list(0);
+            }
             return;
         }
 
@@ -61,7 +97,9 @@ impl Preview {
                 self.repo.load_state(&bytes).unwrap();
             }
             "installed" if self.root == Sample::Pack => {
-                for e in maps { self.repo.install_done(e.id, Ok(())); }
+                for e in maps {
+                    self.repo.install_done(e.id, Ok(()));
+                }
             }
             "installed" | "partial" => self.repo.install_done(id, Ok(())),
             "confirm-remove" => {
@@ -70,17 +108,30 @@ impl Preview {
             }
             "remove-failed" => {
                 self.repo.install_done(id, Ok(()));
-                self.repo.lock().installs.insert(id, Install::RemoveFailed("Package in use".into()));
+                self.repo
+                    .lock()
+                    .installs
+                    .insert(id, Install::RemoveFailed("Package in use".into()));
                 self.repo.touch();
             }
             "downloading" => {
-                self.repo.lock().installs.insert(id, Install::Downloading { done: 37, total: 100 });
+                self.repo.lock().installs.insert(
+                    id,
+                    Install::Downloading {
+                        done: 37,
+                        total: 100,
+                    },
+                );
                 self.repo.touch();
-                if self.root == Sample::Pack { self.stack[0].1 = Focus(1); }
+                if self.root == Sample::Pack {
+                    self.stack[0].1 = Focus(1);
+                }
             }
             "failed" => {
                 self.repo.install_done(id, Err(ModsError::Offline));
-                if self.root == Sample::Pack { self.stack[0].1 = Focus(1); }
+                if self.root == Sample::Pack {
+                    self.stack[0].1 = Focus(1);
+                }
             }
             _ => unreachable!("unregistered Mods preview state"),
         }
@@ -89,7 +140,9 @@ impl Preview {
 
 impl Live for Preview {
     fn press(&mut self, input: Input) -> String {
-        let Some((screen, focus)) = self.stack.last_mut() else { return "closed".into() };
+        let Some((screen, focus)) = self.stack.last_mut() else {
+            return "closed".into();
+        };
         let effect = screen.page(Arc::clone(&self.repo)).step(focus, input);
         match &effect {
             ListEffect::Action => {
@@ -101,7 +154,9 @@ impl Live for Preview {
                 };
             }
             ListEffect::Open(name) => self.stack.push((Sample::named(name).unwrap(), Focus(0))),
-            ListEffect::Close => { self.stack.pop(); }
+            ListEffect::Close => {
+                self.stack.pop();
+            }
             _ => {}
         }
         format!("{effect:?}")
@@ -113,7 +168,9 @@ impl Live for Preview {
     }
 
     fn summary(&self) -> String {
-        if self.stack.is_empty() { return "closed".into() }
+        if self.stack.is_empty() {
+            return "closed".into();
+        }
         let spec = self.spec();
         format!("{} | {}", spec.name, focus_line(&spec))
     }
@@ -124,14 +181,19 @@ impl Live for Preview {
 
     fn specs(&self) -> Vec<(String, ScreenSpec)> {
         let mut preview = Self::new(self.root);
-        self.states().iter().map(|&name| {
-            preview.reset(name);
-            (name.into(), preview.spec())
-        }).collect()
+        self.states()
+            .iter()
+            .map(|&name| {
+                preview.reset(name);
+                (name.into(), preview.spec())
+            })
+            .collect()
     }
 
     fn go(&mut self, name: &str) -> bool {
-        if !self.states().contains(&name) { return false }
+        if !self.states().contains(&name) {
+            return false;
+        }
         self.reset(name);
         true
     }

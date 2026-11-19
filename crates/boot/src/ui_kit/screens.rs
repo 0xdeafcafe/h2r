@@ -802,9 +802,17 @@ mod tests {
         for k in 0..l::FACT_ROWS {
             let (r, font, j) = text(&format!("page.fact.{k}.label"));
             let [top, left, bottom, right] = l::row_rect(k);
-            assert_eq!((r, font, j), ([top, left, bottom, l::VALUE_LEFT - 5], 1, Justify::Left), "fact {k}");
+            assert_eq!(
+                (r, font, j),
+                ([top, left, bottom, l::VALUE_LEFT - 5], 1, Justify::Left),
+                "fact {k}"
+            );
             let (r, _, j) = text(&format!("page.fact.{k}.value"));
-            assert_eq!((r, j), ([top, l::VALUE_LEFT, bottom, right], Justify::Right), "fact {k}");
+            assert_eq!(
+                (r, j),
+                ([top, l::VALUE_LEFT, bottom, right], Justify::Right),
+                "fact {k}"
+            );
         }
         assert_eq!(text("page.check.heading").0[1], text("page.check.0.0").0[1]);
         assert!(l::BODY.rect[2] > l::STATUS.rect[0]);
