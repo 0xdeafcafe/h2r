@@ -16,6 +16,7 @@
 
 pub mod aicontrol;
 pub mod catalog;
+pub mod commands;
 pub mod compile;
 pub mod decompile;
 pub mod identified;

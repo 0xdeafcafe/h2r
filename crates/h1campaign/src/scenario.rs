@@ -1075,16 +1075,19 @@ pub fn write(
     put_block(&mut root, BSP_SWITCHES, BSP_SWITCH, switches);
 
     // AI.
+    let source_tables = (opts.ai || opts.scripts.is_some())
+        .then(|| h1scripts::Tables::read(h1))
+        .transpose()
+        .map_err(|e| invalid(format!("AI script references: {e}")))?;
     let mut retained = ai_src.clone();
     let mut ai_options = h1ai::convert::Options::default();
     let mut requests = Vec::new();
-    let generated_starts = if opts.ai {
-        let tables = h1scripts::Tables::read(h1)
-            .map_err(|e| invalid(format!("AI script references: {e}")))?;
+    let generated_starts = if let Some(tables) = source_tables.as_ref().filter(|_| opts.ai) {
         if let Some(scripts) = opts.scripts {
-            requests = h1scripts::aicontrol::requests(&tables, &scripts.catalog);
+            ai_options.first_command_script = Some(u16::try_from(tables.scripts.len()).map_err(|_| invalid("too many scripts"))?);
+            requests = h1scripts::aicontrol::requests(tables, &scripts.catalog);
         }
-        crate::squad_roster::prepare(&mut retained, &tables, &requests, &mut ai_options)
+        crate::squad_roster::prepare(&mut retained, tables, &requests, &mut ai_options)
     } else {
         Default::default()
     };
@@ -1126,6 +1129,20 @@ pub fn write(
             plan.ai.squads.len(),
             plan.ai.squad_groups.len()
         )));
+    }
+    if opts.ai && opts.scripts.is_some()
+        && source_tables.as_ref().is_some_and(|t| !t.commands.timing.is_empty())
+    {
+        let squads = retained.encounters.iter().flat_map(|e| &e.squads);
+        for (src, dst) in squads.zip(&mut plan.ai.squads) {
+            let locations = src.starting_locations.iter().zip(&mut dst.starting_locations);
+            for (i, (source, target)) in locations.enumerate() {
+                let variant = if source.actor >= 0 { source.actor } else { src.actor };
+                if variant >= 0 {
+                    target.name = set.intern(&h1scripts::commands::placement_name(variant, i))?;
+                }
+            }
+        }
     }
     let mut chars = Vec::new();
     let resolve = |p: &str| -> Option<TagId> {
@@ -1186,13 +1203,18 @@ pub fn write(
             notes: plan.notes.len(),
         });
     } else {
-        for (at, _, _) in blocks.fields {
+        for (at, count, data) in blocks.fields {
             put_block(&mut root, at, 0, Vec::new());
+            if opts.scripts.is_some() && at as usize == h1ai::h2::layout::SCRIPTING_DATA.0 && count > 0 {
+                root.block(at, count, data);
+            }
         }
     }
 
     // Recordings also drive gameplay outside cinematics, on every lean step.
-    let mut recordings = if opts.cutscene_data {
+    let command_recording = opts.scripts.is_some() && ai_src.command_lists.iter()
+        .any(|list| list.atoms.iter().any(|atom| atom.kind == 14));
+    let mut recordings = if opts.cutscene_data || command_recording {
         crate::cutscenes::read_recordings(h1)?
     } else {
         Vec::new()
@@ -1231,6 +1253,7 @@ pub fn write(
             let _scripts = h1map::phase::start("scripts");
             rep.scripts = Some(install_scripts(
                 h1,
+                source_tables.as_ref().expect("read for the scripts layer"),
                 s,
                 set,
                 &mut root,
@@ -1817,6 +1840,7 @@ pub fn hook_value(h: &h1scripts::compile::Hook, t: &Targets) -> Option<u32> {
 #[allow(clippy::too_many_arguments)]
 fn install_scripts(
     h1: &H1Map,
+    t: &h1scripts::Tables,
     s: &crate::Scripting,
     set: &mut TagSet,
     root: &mut Block,
@@ -1837,7 +1861,6 @@ fn install_scripts(
     aliases: &crate::h2assets::Aliases,
 ) -> Result<ScriptReport> {
     use h1scripts::compile::{Missing, compile_scenario};
-    let t = h1scripts::Tables::read(h1).map_err(|e| invalid(format!("scripts: {e}")))?;
     let refs: Vec<String> = t
         .references
         .iter()
@@ -1873,7 +1896,7 @@ fn install_scripts(
             .is_some()
     };
     let mut c = compile_scenario(
-        &t,
+        t,
         &s.catalog,
         &s.table,
         &s.target,
@@ -1896,7 +1919,9 @@ fn install_scripts(
     let graphs = if cutscene_graphs {
         crate::cutscenes::install_graphs(h1, set, &c)?
     } else {
-        Default::default()
+        crate::cutscenes::install_graph_hooks(h1, set, c.hooks.iter().filter(|h| {
+            h.h1_type == h1scripts::commands::ANIMATION_GRAPH
+        }))?
     };
     let mut interned: HashMap<String, u32> = HashMap::new();
     for h in &c.hooks {
@@ -1942,6 +1967,9 @@ fn install_scripts(
             "long" if h.h1_type == "actor_variant" => free_characters.get(&h.token).map(|id| id.0),
             "string_id" => interned.get(&h.token).copied(),
             "sound" => sounds.get(&h.token).map(|id| id.0),
+            _ if h.h1_type == "command_voice_tag" => Some(tags_by_name
+                .get(&(FourCC(*b"udlg"), h.token.to_ascii_lowercase()))
+                .map_or(u32::MAX, |id| id.0)),
             _ if hook_value(h, targets).is_some() => hook_value(h, targets),
             "unit_seat_mapping" => seats.values.get(&h.token).copied(),
             "cutscene_recording" => crate::cutscenes::recording_index(recordings, &h.token),
@@ -1971,6 +1999,11 @@ fn install_scripts(
             );
         })
     });
+    if let Some(h) = left.iter().find(|h| {
+        h.h1_type == h1scripts::commands::ANIMATION_GRAPH || h.h1_type == "command_voice_sound"
+    }) {
+        return Err(invalid(format!("AI command {} {} could not be installed", h.type_name, h.token)));
+    }
     let mut unresolved: Vec<(String, usize)> = Vec::new();
     let mut samples: Vec<(String, String)> = Vec::new();
     for h in &left {

@@ -1,4 +1,6 @@
 //! Synthetic tables only: invented scripts, builtins and types.
+mod commands;
+
 use hs::Datum;
 
 use crate::catalog::{Catalog, Function};

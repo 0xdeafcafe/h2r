@@ -39,6 +39,11 @@ pub const ADAPTERS: &[(&str, &str, Adapter)] = &[
     // h1campaign's survey), so the call keeps Halo 1's one argument.
     ("ai_place", "ai_place", Adapter::OmitOptional),
     ("ai_spawn_actor", "ai_place_counted", Adapter::AppendShort(1)),
+    ("ai_command_list", "cs_run_command_script", Adapter::CommandList),
+    ("ai_command_list_by_unit", "cs_run_command_script", Adapter::CommandList),
+    ("ai_command_list_advance", "set", Adapter::CommandList),
+    ("ai_command_list_advance_by_unit", "set", Adapter::CommandList),
+    ("ai_command_list_status", "set", Adapter::CommandList),
     // Halo 2 adds an exit mode; every retail Halo 2 call passes 1.
     (
         "unit_exit_vehicle",
@@ -54,6 +59,8 @@ pub const ADAPTERS: &[(&str, &str, Adapter)] = &[
 /// A rewrite from a Halo 1 call to a Halo 2 one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Adapter {
+    /// Start a generated command script or dispatch its per-unit control request.
+    CommandList,
     /// Same arity; argument nodes take Halo 2's parameter types and Halo 2's
     /// interpreter casts the values, as it casts any argument. Literals whose
     /// type changes (a marker string becoming a `string_id`) keep their
@@ -91,6 +98,9 @@ pub struct H2Builtin {
 pub struct Target {
     /// Named builtins.
     pub builtins: HashMap<String, H2Builtin>,
+    /// Named overloads, keyed by name and descriptor arity. Generated CS calls
+    /// need both `cs_go_to(point)` and `cs_go_to(point, radius)`.
+    pub overloads: HashMap<(String, usize), H2Builtin>,
     /// Value type names, by index.
     pub types: Vec<String>,
     /// Engine (external) globals seen in Halo 2 scripts: name to index and
@@ -101,22 +111,19 @@ pub struct Target {
 impl Target {
     /// The named builtins and types of an observed Halo 2 catalog.
     pub fn from_catalog(c: &hs::Catalog) -> Self {
-        let mut builtins: HashMap<String, H2Builtin> = c
-            .named_functions()
-            .into_iter()
-            .filter_map(|(i, name)| {
-                let f = c.function(i).ok()?;
-                Some((
-                    name.to_owned(),
-                    H2Builtin {
-                        index: i,
-                        return_type: f.return_type(),
-                        parameters: f.parameters().to_vec(),
-                        special: f.flags() & 2 != 0,
-                    },
-                ))
-            })
-            .collect();
+        let mut builtins = HashMap::new();
+        let mut overloads = HashMap::new();
+        for (index, name) in c.named_functions() {
+            let Ok(f) = c.function(index) else { continue };
+            let builtin = H2Builtin {
+                index,
+                return_type: f.return_type(),
+                parameters: f.parameters().to_vec(),
+                special: f.flags() & 2 != 0,
+            };
+            overloads.insert((name.to_owned(), builtin.parameters.len()), builtin.clone());
+            builtins.insert(name.to_owned(), builtin);
+        }
         crate::identified::name_unnamed(&mut builtins, c);
         crate::aicontrol::bind(&mut builtins, c);
         for (name, index) in hs::h1_conversation::BUILTINS {
@@ -137,7 +144,9 @@ impl Target {
                 );
             }
         }
+        crate::commands::identify(&mut builtins, c);
         Self {
+            overloads,
             builtins,
             types: c.types().to_vec(),
             externals: HashMap::new(),
@@ -207,7 +216,10 @@ pub struct Table {
 impl Table {
     /// Translates every builtin of `h1` against `h2`.
     pub fn build(h1: &Catalog, h2: &Target) -> Self {
-        let types: Vec<Option<u16>> = h1.types().iter().map(|t| h2.type_index(t)).collect();
+        let types: Vec<Option<u16>> = h1.types().iter().map(|t| match t.as_str() {
+            "ai_command_list" => h2.type_index("ai_command_script"),
+            ty => h2.type_index(ty),
+        }).collect();
         let map_ty = |t: u16| types.get(t as usize).copied().flatten();
         let renames: HashMap<&str, &str> = RENAMES
             .iter()

@@ -269,6 +269,12 @@ points! { ALL;
     /// `object_update` (`0xbc470`, its only caller): stun timers, shield
     /// recharge, and the body's regeneration (`0xd63de`..`0xd64b5`).
     OBJECT_DAMAGE_UPDATE @ 0x000d_5de0: [fn(object: stack 0) -> al ret 4]; "docs/halo1/health.md";
+    /// Begin, update and remove a command on the Halo 2 AI scheduler.
+    AI_COMMAND_BEGIN @ 0x0025_8cf0: [fn(actor: stack 0, unit: stack 1, state: stack 2, command: stack 3) -> eax ret 16]; "docs/halo1/ai.md";
+    AI_COMMAND_UPDATE @ 0x0025_9430: [fn(actor: stack 0, unit: stack 1, state: stack 2, command: stack 3) -> eax ret 16]; "docs/halo1/ai.md";
+    AI_COMMAND_REMOVE @ 0x0025_8540: [fn(actor: ecx, command: stack 0) ret 4]; "docs/halo1/ai.md";
+    /// HS global write-back notification (EAX is the variable index).
+    HS_GLOBAL_STORED @ 0x0020_a490: [fn(index: eax) ret 0]; "docs/halo1/ai.md";
     /// Restore an object's body to full (EAX the object datum), AL 1 when
     /// it did (refused when full or depleted). Its only caller is the
     /// powerup pickup's health case (`0x151f73`).

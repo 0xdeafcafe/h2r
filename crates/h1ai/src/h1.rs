@@ -255,7 +255,7 @@ pub struct Atom {
     pub script: i16,
     /// AI recording reference index (`+0x14`).
     pub recording: i16,
-    /// Command list index (`+0x16`).
+    /// Branch target within this list (`+0x16`).
     pub command: i16,
     /// Scenario object name index (`+0x18`).
     pub object_name: i16,
@@ -266,12 +266,11 @@ pub fn atom_name(kind: u16) -> String {
     format!("atom {kind}")
 }
 
-/// The point indices an atom reads: atoms 1, 22 and 27 the first, atom 2
-/// both.
+/// Only these dispatch cases dereference point indices. Timed movement (22) uses facing.
 pub fn atom_points(a: &Atom) -> Vec<i16> {
     match a.kind {
-        1 | 22 | 27 => vec![a.points[0]],
-        2 => a.points.to_vec(),
+        1 | 3 | 4 | 7 | 8 => vec![a.points[0]],
+        2 | 23 | 27 => a.points.to_vec(),
         _ => Vec::new(),
     }
 }
@@ -294,6 +293,8 @@ pub struct CommandList {
     pub flags: u32,
     /// Manual BSP index (`i16 +0x2c`).
     pub manual_bsp: i16,
+    /// BSP resolved by the H1 cache compiler (+0x2e), including automatically assigned lists.
+    pub bsp: i16,
     /// Atoms.
     pub atoms: Vec<Atom>,
     /// Points.
@@ -456,12 +457,27 @@ fn encounter(sp: &Space, e: &[u8]) -> Result<Encounter> {
     })
 }
 
+/// Read the scenario's command lists without loading encounter or actor tags.
+pub fn command_lists(scnr: &[u8], sp: &Space) -> Result<Vec<CommandList>> {
+    sp.block_at(scnr, layout::COMMAND_LISTS.0, layout::COMMAND_LISTS.1)?
+        .into_iter()
+        .map(|e| command_list(sp, e))
+        .collect()
+}
+
+/// Keep the authored list index stable even when list names repeat or collide
+/// with campaign scripts. Both the placement record and HS use this name.
+pub fn command_script_name(index: usize) -> String {
+    format!("h1_cmd_{index}")
+}
+
 fn command_list(sp: &Space, e: &[u8]) -> Result<CommandList> {
     let b = |l: (usize, usize)| sp.block_at(e, l.0, l.1);
     Ok(CommandList {
         name: fixed_str(&e[..0x20]),
         flags: u32_at(e, 0x20),
         manual_bsp: i16_at(e, 0x2c),
+        bsp: i16_at(e, 0x2e),
         atoms: b(layout::CL_ATOMS)?
             .into_iter()
             .map(|a| Atom {
@@ -518,10 +534,7 @@ impl H1Ai {
                 .into_iter()
                 .map(|e| encounter(&sp, e))
                 .collect::<Result<_>>()?,
-            command_lists: b(layout::COMMAND_LISTS)?
-                .into_iter()
-                .map(|e| command_list(&sp, e))
-                .collect::<Result<_>>()?,
+            command_lists: command_lists(scnr, &sp)?,
             conversations: crate::conversations::read(m)?,
             reference_counts: [
                 b(layout::AI_ANIMATIONS)?.len(),

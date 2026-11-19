@@ -42,6 +42,7 @@ pub mod h1_options_row;
 mod h1_squads;
 pub mod h1_variants;
 mod h1_ai_control;
+mod h1_command_atoms;
 pub mod health;
 pub mod host_perf;
 pub mod hot_glue;

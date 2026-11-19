@@ -129,11 +129,18 @@ fn model_by_checksum(h1: &H1Map, checksum: u32) -> Option<&h1map::Tag> {
 /// (`animation_graph` atoms and [`ANIMATION_NAME`] tokens) that `set` does
 /// not hold as a `jmad` of that name yet, and maps the animation names.
 pub fn install_graphs(h1: &H1Map, set: &mut TagSet, c: &Compiled) -> Result<Graphs> {
+    install_graph_hooks(h1, set, c.hooks.iter())
+}
+
+/// Install graphs needed by AI even when cinematic graphs are omitted.
+pub(crate) fn install_graph_hooks<'a>(
+    h1: &H1Map, set: &mut TagSet, hooks: impl Iterator<Item = &'a Hook>,
+) -> Result<Graphs> {
     let antr = Group::new(b"antr");
     let jmad = FourCC(*b"jmad");
     let mut wanted: BTreeMap<String, ()> = BTreeMap::new();
-    for h in &c.hooks {
-        if h.type_name == "animation_graph" {
+    for h in hooks {
+        if h.type_name == "animation_graph" && h.h1_type != "command_unit_graph_candidate" {
             wanted.insert(h.token.clone(), ());
         } else if h.h1_type == ANIMATION_NAME
             && let Some((g, _)) = h.token.split_once('|')

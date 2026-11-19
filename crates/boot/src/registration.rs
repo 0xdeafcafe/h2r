@@ -173,6 +173,9 @@ pub fn register_core(features: &mut feature::Registry, i: CoreInputs<'_>) -> any
     features
         .add(&crate::h1_conversation::Conversations)
         .context("installing converted conversation playback and casting")?;
+    features
+        .add(&crate::h1_command_atoms::CommandAtoms)
+        .map_err(|e| anyhow::anyhow!("Halo 1 command lists: {e}"))?;
     // Halo 1's health model on Halo 1 maps (docs/halo1/health.md): no body
     // regeneration, health packs, a health meter. Off (Halo 2's) until the
     // map's identity or the H2_HEALTH_MODEL debug override says Halo 1.
