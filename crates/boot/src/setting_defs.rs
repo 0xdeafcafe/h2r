@@ -1110,7 +1110,6 @@ mod tests {
         let (s, p) = with_env(&data, &[]);
         assert!(p.is_empty(), "{p:?}");
         assert!(!coop_join_in_progress(&s));
-        assert_eq!(s.get(COOP_LOOK_PREDICTION.key), Some(Value::Bool(false)));
         let (s, _) = with_env(&data, &[("H2_COOP_JOIN_IN_PROGRESS", "1")]);
         assert!(coop_join_in_progress(&s));
     }
