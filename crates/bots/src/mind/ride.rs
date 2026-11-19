@@ -134,6 +134,11 @@ impl Mind {
             };
             let led = add(target, scale(vel, aim.lead * dist / speed_of_shot));
             // The hand (mind::look): flick, lag and drift as on foot.
+            self.hand.wield(if riding.role == SeatRole::Passenger {
+                held.map_or(crate::arms::Role::Unknown, |g| g.role())
+            } else {
+                crate::arms::Role::Unknown
+            });
             aim_error = Some(self.hand.track(
                 self.skill,
                 o.id,

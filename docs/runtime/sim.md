@@ -280,7 +280,9 @@ reaction = 5
   tick), and `thumb_switch_ticks` (1–6 ticks);
 - phantom transport: `phantom_ping_ms` (0–1000 ms round trip) and
   `phantom_jitter_ms` (0–50 ms bounded one-way variation). These fields
-  apply when the source drives a phantom.
+  apply when the source drives a phantom;
+- `aim_model`: `code` (the hand-written tracking, the default) or `net`
+  (the aim net; [bots.md §3.4.1](../game/bots.md#341-the-aim-net-built-not-compared-in-a-game-yet)).
 
 Anything left out keeps the built-in value. The bots crate takes them as
 `bots::tuning::Tuning` through `Brain::with_tuning`. The aim table and awareness are
@@ -349,6 +351,42 @@ produce separate reports. The original `hits`, `accuracy`,
 `damage_dealt` and `damage_taken` fields keep their previous definitions.
 Readers can continue to load earlier `h2-sim-report/1` reports.
 
+`ttk_kills` and `ttk_ticks` are the time to kill. A fight is a player's
+hits with damage on one opponent, none more than 150 ticks after the
+last. When the player kills that opponent, the ticks from the fight's
+first hit to the kill are one sample. `ttk_ticks` is the mean over
+`ttk_kills`. A kill in one hit counts as 0 ticks. A kill with no damage
+report from the killer on the victim (a fall the killer caused) has no
+sample.
+
+A bot that tracked a target has an `aim` section, from the hand's view
+of its target each tick (`bots::mind::AimTrace`: the angle from the aim
+to the aim point, before the hand's own error) and the right stick its
+pad reported after the human-input limits (`sim::metrics::AimMotion`,
+tested):
+
+```json
+"aim": { "tracked_ticks": 2100, "mean_error": 0.041, "flicks": 18,
+         "overshoot_ratio": 0.09, "settled": 15, "settle_ticks": 14.2,
+         "stick_jitter": 0.08, "reversals_per_s": 1.1 }
+```
+
+- An engagement is a run of views of one target no more than 3 ticks
+  apart. One that starts 0.35 rad (20°) or more off is a flick.
+- `overshoot_ratio`: per flick, the furthest the aim went past the
+  target in its first 60 ticks, over the flick's size; the mean over
+  flicks.
+- `settle_ticks`: per flick that settled, the ticks from its first view
+  to the first of six in a row within 0.05 rad; the mean over `settled`.
+- `stick_jitter`: the mean right-stick travel between consecutive views
+  of an engagement, in stick radii.
+- `reversals_per_s`: how often the stick's yaw direction changes within
+  an engagement (a stick under 0.05 has no direction).
+- `mean_error` is in radians, over `tracked_ticks`.
+
+All of these are additive: a reader of `h2-sim-report/1` that does not
+know them is unaffected, and reports without them still load.
+
 Sim runs are local by default. Set `H2_TELEMETRY_FILE` for a separate
 JSONL capture, or use `--upload` for an Uplink recording.
 
@@ -384,9 +422,33 @@ params = "tuning/aggressive.toml"
 - **Comparison** (`sim::compare`, tested): per arm, the mean and standard
   deviation over runs of kills, deaths, K/D, accuracy, damage, score,
   stuck time, the win rate, and the difference B - A with a 95% interval
-  (Welch). `compare.json` and a text table in the results directory.
-  `h2 sim compare <dir>` prints it again.
+  (Welch). When the reports have them, also the time to kill (`ttk_s`)
+  and the aim motion (`aim_error`, `overshoot`, `settle_s`, `jitter`,
+  `reversals`), each pooled over what it counts. `compare.json` and a
+  text table in the results directory. `h2 sim compare <dir>` prints it
+  again.
+- **Skills.** `skills = ["easy", "normal", "heroic", "legendary"]` adds
+  a run per skill with every bot at it (ids `<map>-<skill>-s<seed>`).
+  When the runs are of more than one skill, `compare.json` has `by_skill`
+  and the table repeats per skill.
 - `h2 sim batch --dry-run` prints the runs and stops.
+
+### Arm swaps
+
+`mode = "arm_swap"` plays every map, skill and seed twice. The first leg
+is the versus split. The second (`<id>-swapped`) gives every bot the
+other arm. Each bot keeps its seat, name, team, transport, skill and
+brain seed, so each arm plays every seat once and a seat's spawn, team
+or seed cannot favour one arm. Both legs feed the same per-arm
+statistics. It needs two arms. The checked-in example compares the two
+aim models at each skill on Midship and Lockout:
+
+```sh
+H2_OPT=2 h2 sim batch docs/runtime/sim-examples/aim-net-vs-code.toml --disc disc/halo2.iso --parallel 3 --pace unpaced
+```
+
+How to read it and the rule for which model stays are in
+[bots.md §3.4.1](../game/bots.md#341-the-aim-net-built-not-compared-in-a-game-yet).
 
 ### Local and phantom seat swaps
 

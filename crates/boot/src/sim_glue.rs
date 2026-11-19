@@ -189,6 +189,10 @@ pub fn tuning(p: &BotParams) -> bots::tuning::Tuning {
         thumb_switch_ticks: p.thumb_switch_ticks,
         phantom_ping_ms: p.phantom_ping_ms,
         phantom_jitter_ms: p.phantom_jitter_ms,
+        aim_model: p
+            .aim_model
+            .as_deref()
+            .and_then(bots::tuning::AimModel::parse),
     }
 }
 
@@ -673,6 +677,14 @@ impl PadSource for Metered {
                 stuck: m.stuck.level != bots::stuck::Level::Moving,
                 repaths: m.stuck.repaths,
                 doing: doing_name(&m.doing),
+                // The hand's last view of its target, with the stick the
+                // pad reports this tick (after the human-input limits).
+                aim: m.aim_trace().map(|a| sim::metrics::AimSample {
+                    tick: a.tick,
+                    target: a.target,
+                    error: a.error,
+                    stick: pad.right_stick,
+                }),
             };
             let mut s = self.sim.lock();
             if s.phase == Phase::Playing {
@@ -1013,8 +1025,18 @@ mod tests {
             thumb_switch_ticks: Some(2),
             phantom_ping_ms: Some(80.0),
             phantom_jitter_ms: Some(2.5),
+            aim_model: Some("net".into()),
         };
         let t = tuning(&p);
+        assert_eq!(t.aim_model, Some(bots::tuning::AimModel::Net));
+        assert_eq!(
+            tuning(&BotParams {
+                aim_model: Some("code".into()),
+                ..BotParams::default()
+            })
+            .aim_model,
+            Some(bots::tuning::AimModel::Code)
+        );
         assert_eq!(t.reaction, Some(4));
         assert!((t.fire_cone.unwrap() - std::f32::consts::PI).abs() < 1e-6);
         assert_eq!(

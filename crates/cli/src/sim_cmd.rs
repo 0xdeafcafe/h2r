@@ -45,6 +45,9 @@ data directory under <out>/runs/<id>/ (removed after unless --keep-data;
 its bots/ linked to --data's), and writes <out>/compare.json and
 compare.txt. With mode = \"seat_swap\" each map/seed plays twice, once with
 each seat layout, and compare.json includes their paired differences.
+With mode = \"arm_swap\" each plays twice with the arms exchanged, so both
+arms play every seat. skills = [...] adds a run per skill with every bot
+at it, and a table per skill.
 --dry-run lists the runs. For all-local rosters, --fork boots each map once, saves a
 snapshot at spawn (state.save), and has every run load it, or boot on its
 own when the snapshot is refused (docs/runtime/sim.md, \"Forking from spawn\").";

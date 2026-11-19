@@ -12,8 +12,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::metrics::{Report, Winner};
 
-/// The metrics compared, in table order.
-pub const METRICS: [&str; 9] = [
+/// The metrics compared, in table order. The last six are there when the
+/// reports have them: the time to kill (seconds) and the aim motion (the
+/// mean error in radians, the flick overshoot ratio, the settle time in
+/// seconds, the stick travel a tick and its reversals a second;
+/// docs/runtime/sim.md §6).
+pub const METRICS: [&str; 15] = [
     "kills",
     "deaths",
     "kd",
@@ -23,6 +27,12 @@ pub const METRICS: [&str; 9] = [
     "stuck_s",
     "grenades",
     "win",
+    "ttk_s",
+    "aim_error",
+    "overshoot",
+    "settle_s",
+    "jitter",
+    "reversals",
 ];
 
 /// One arm's numbers in one run.
@@ -87,6 +97,39 @@ pub fn samples(run: &str, r: &Report) -> Vec<ArmSample> {
             v.insert("score".into(), mean(&|p| f64::from(p.score)));
             v.insert("stuck_s".into(), mean(&|p| p.stuck_ticks as f64 / 30.0));
             v.insert("grenades".into(), mean(&|p| p.grenades as f64));
+            // Each of these is a mean over what it counts (kills with a
+            // time, tracked views, flicks), pooled over the arm's bots.
+            let mut pooled =
+                |name: &str, f: &dyn Fn(&crate::metrics::PlayerReport) -> (f64, f64)| {
+                    let (sum, n) = ps
+                        .iter()
+                        .map(|p| f(p))
+                        .fold((0.0, 0.0), |a, b| (a.0 + b.0 * b.1, a.1 + b.1));
+                    if n > 0.0 {
+                        v.insert(name.into(), sum / n);
+                    }
+                };
+            pooled("ttk_s", &|p| (p.ttk_ticks / 30.0, p.ttk_kills as f64));
+            let aim = |p: &crate::metrics::PlayerReport,
+                       f: &dyn Fn(&crate::metrics::AimReport) -> (f64, u64)| {
+                p.aim.as_ref().map_or((0.0, 0.0), |a| {
+                    let (value, n) = f(a);
+                    (value, n as f64)
+                })
+            };
+            pooled("aim_error", &|p| {
+                aim(p, &|a| (a.mean_error, a.tracked_ticks))
+            });
+            pooled("overshoot", &|p| aim(p, &|a| (a.overshoot_ratio, a.flicks)));
+            pooled("settle_s", &|p| {
+                aim(p, &|a| (a.settle_ticks / 30.0, a.settled))
+            });
+            pooled("jitter", &|p| {
+                aim(p, &|a| (a.stick_jitter, a.tracked_ticks))
+            });
+            pooled("reversals", &|p| {
+                aim(p, &|a| (a.reversals_per_s, a.tracked_ticks))
+            });
             // A win means something only when both arms played the match.
             if versus {
                 let w = match &winner_arm {
@@ -334,20 +377,38 @@ pub struct Comparison {
     /// Runs with no report, or none that parsed.
     #[serde(default)]
     pub missing: Vec<String>,
+    /// The same statistics over each skill's runs alone, when the runs
+    /// are of more than one skill (a batch's `skills`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub by_skill: BTreeMap<String, SkillComparison>,
 }
 
-/// Compares the reports of a batch, `(run id, report)`, with `arms` in
-/// order (A first). Arms not named in `arms` follow in name order.
-pub fn compare(arms: &[String], reports: &[(String, Report)], missing: Vec<String>) -> Comparison {
-    let samples: Vec<ArmSample> = reports.iter().flat_map(|(id, r)| samples(id, r)).collect();
-    let mut names: Vec<String> = arms.to_vec();
-    for s in &samples {
-        if !names.contains(&s.arm) {
-            names.push(s.arm.clone());
-        }
-    }
+/// One skill's runs of a comparison.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SkillComparison {
+    pub runs: usize,
+    pub stats: BTreeMap<String, BTreeMap<String, Stat>>,
+    pub diff: BTreeMap<String, Diff>,
+}
+
+/// The skills in the order a table lists them.
+const SKILLS: [&str; 4] = ["easy", "normal", "heroic", "legendary"];
+
+/// The skill every bot of a report played at, if they all played at one.
+fn skill_of(r: &Report) -> Option<&str> {
+    let bots = r.match_["bot"].as_array()?;
+    let first = bots.first()?["skill"].as_str()?;
+    bots.iter()
+        .all(|b| b["skill"].as_str() == Some(first))
+        .then_some(first)
+}
+
+type ArmStats = BTreeMap<String, BTreeMap<String, Stat>>;
+
+/// Per arm and metric over `samples`, and the second arm less the first.
+fn summarise(names: &[String], samples: &[&ArmSample]) -> (ArmStats, BTreeMap<String, Diff>) {
     let mut stats = BTreeMap::new();
-    for arm in &names {
+    for arm in names {
         let mut per = BTreeMap::new();
         for m in METRICS {
             let xs: Vec<f64> = samples
@@ -369,6 +430,45 @@ pub fn compare(arms: &[String], reports: &[(String, Report)], missing: Vec<Strin
             }
         }
     }
+    (stats, diff)
+}
+
+/// Compares the reports of a batch, `(run id, report)`, with `arms` in
+/// order (A first). Arms not named in `arms` follow in name order.
+pub fn compare(arms: &[String], reports: &[(String, Report)], missing: Vec<String>) -> Comparison {
+    let samples: Vec<ArmSample> = reports.iter().flat_map(|(id, r)| samples(id, r)).collect();
+    let mut names: Vec<String> = arms.to_vec();
+    for s in &samples {
+        if !names.contains(&s.arm) {
+            names.push(s.arm.clone());
+        }
+    }
+    let all: Vec<&ArmSample> = samples.iter().collect();
+    let (stats, diff) = summarise(&names, &all);
+    let mut skills: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for (id, r) in reports {
+        if let Some(skill) = skill_of(r) {
+            skills.entry(skill).or_default().push(id.as_str());
+        }
+    }
+    let mut by_skill = BTreeMap::new();
+    if skills.len() >= 2 {
+        for (skill, ids) in skills {
+            let of: Vec<&ArmSample> = samples
+                .iter()
+                .filter(|s| ids.contains(&s.run.as_str()))
+                .collect();
+            let (stats, diff) = summarise(&names, &of);
+            by_skill.insert(
+                skill.to_string(),
+                SkillComparison {
+                    runs: ids.len(),
+                    stats,
+                    diff,
+                },
+            );
+        }
+    }
     Comparison {
         seat_swap: seat_comparison(reports),
         runs: reports.len(),
@@ -377,6 +477,42 @@ pub fn compare(arms: &[String], reports: &[(String, Report)], missing: Vec<Strin
         diff,
         samples,
         missing,
+        by_skill,
+    }
+}
+
+/// A table's rows: one a metric, a column an arm, then B - A.
+fn rows(out: &mut String, arms: &[String], stats: &ArmStats, diff: &BTreeMap<String, Diff>) {
+    for m in METRICS {
+        if !arms
+            .iter()
+            .any(|a| stats.get(a).is_some_and(|s| s.contains_key(m)))
+        {
+            continue;
+        }
+        let _ = write!(out, "{m:<14}");
+        for a in arms {
+            match stats.get(a).and_then(|s| s.get(m)) {
+                Some(s) => {
+                    let _ = write!(
+                        out,
+                        "{:>22}",
+                        format!("{:.3} ± {:.3} (n={})", s.mean, s.sd, s.n)
+                    );
+                }
+                None => {
+                    let _ = write!(out, "{:>22}", "-");
+                }
+            }
+        }
+        if let Some(d) = diff.get(m) {
+            let ci = d
+                .ci95
+                .map_or_else(|| "?".to_string(), |c| format!("{c:.3}"));
+            let mark = if d.significant { " *" } else { "" };
+            let _ = write!(out, "{:>26}", format!("{:+.3} ± {ci}{mark}", d.diff));
+        }
+        out.push('\n');
     }
 }
 
@@ -400,37 +536,18 @@ impl Comparison {
             );
         }
         out.push('\n');
-        for m in METRICS {
-            if !self
-                .arms
-                .iter()
-                .any(|a| self.stats.get(a).is_some_and(|s| s.contains_key(m)))
-            {
-                continue;
+        rows(&mut out, &self.arms, &self.stats, &self.diff);
+        let others = self
+            .by_skill
+            .keys()
+            .map(String::as_str)
+            .filter(|k| !SKILLS.contains(k));
+        let listed = SKILLS.iter().copied().chain(others);
+        for skill in listed {
+            if let Some(part) = self.by_skill.get(skill) {
+                let _ = writeln!(out, "\n{skill} ({} runs)", part.runs);
+                rows(&mut out, &self.arms, &part.stats, &part.diff);
             }
-            let _ = write!(out, "{m:<14}");
-            for a in &self.arms {
-                match self.stats.get(a).and_then(|s| s.get(m)) {
-                    Some(s) => {
-                        let _ = write!(
-                            out,
-                            "{:>22}",
-                            format!("{:.3} ± {:.3} (n={})", s.mean, s.sd, s.n)
-                        );
-                    }
-                    None => {
-                        let _ = write!(out, "{:>22}", "-");
-                    }
-                }
-            }
-            if let Some(d) = self.diff.get(m) {
-                let ci = d
-                    .ci95
-                    .map_or_else(|| "?".to_string(), |c| format!("{c:.3}"));
-                let mark = if d.significant { " *" } else { "" };
-                let _ = write!(out, "{:>26}", format!("{:+.3} ± {ci}{mark}", d.diff));
-            }
-            out.push('\n');
         }
         if self.arms.len() >= 2 {
             out.push_str("± is the sd per arm, and the 95% interval (Welch) for the difference; * leaves out 0\n");
@@ -631,6 +748,109 @@ mod tests {
         let mut human = bot(0, "a", 0, 1, 0, 0, 0);
         human.arm = None;
         assert!(samples("h", &report(vec![human], None)).is_empty());
+    }
+
+    #[test]
+    fn time_to_kill_and_aim_motion_pool_over_what_they_count() {
+        use crate::metrics::AimReport;
+        let mut a = bot(0, "code", 0, 4, 2, 100, 30);
+        a.ttk_kills = 3;
+        a.ttk_ticks = 60.0;
+        a.aim = Some(AimReport {
+            tracked_ticks: 300,
+            mean_error: 0.10,
+            flicks: 4,
+            overshoot_ratio: 0.2,
+            settled: 2,
+            settle_ticks: 30.0,
+            stick_jitter: 0.1,
+            reversals_per_s: 2.0,
+        });
+        let mut b = bot(2, "code", 0, 1, 2, 100, 30);
+        b.ttk_kills = 1;
+        b.ttk_ticks = 20.0;
+        b.aim = Some(AimReport {
+            tracked_ticks: 100,
+            mean_error: 0.02,
+            flicks: 0,
+            settled: 0,
+            stick_jitter: 0.3,
+            reversals_per_s: 6.0,
+            ..AimReport::default()
+        });
+        // An arm with neither (an earlier report) has none of the rows.
+        let old = bot(1, "net", 1, 2, 3, 50, 10);
+        let s = samples("r", &report(vec![a, old, b], Some(Winner::Team(0))));
+        let code = &s.iter().find(|s| s.arm == "code").unwrap().values;
+        let near = |name: &str, want: f64| {
+            assert!((code[name] - want).abs() < 1e-9, "{name}: {}", code[name]);
+        };
+        near("ttk_s", (3.0 * 2.0 + 1.0 * 20.0 / 30.0) / 4.0);
+        near("aim_error", (300.0 * 0.10 + 100.0 * 0.02) / 400.0);
+        near("overshoot", 0.2);
+        near("settle_s", 1.0);
+        near("jitter", (300.0 * 0.1 + 100.0 * 0.3) / 400.0);
+        near("reversals", (300.0 * 2.0 + 100.0 * 6.0) / 400.0);
+        let net = &s.iter().find(|s| s.arm == "net").unwrap().values;
+        for name in [
+            "ttk_s",
+            "aim_error",
+            "overshoot",
+            "settle_s",
+            "jitter",
+            "reversals",
+        ] {
+            assert!(METRICS.contains(&name));
+            assert!(!net.contains_key(name), "{name}");
+        }
+        assert_eq!(net["kills"], 2.0);
+    }
+
+    #[test]
+    fn runs_of_several_skills_get_a_table_each() {
+        let run = |skill: &str, kills: i32| {
+            let mut r = report(
+                vec![
+                    bot(0, "code", 0, kills, 3, 10, 5),
+                    bot(1, "net", 1, kills + 2, 3, 10, 5),
+                ],
+                Some(Winner::Player(1)),
+            );
+            r.match_ = serde_json::json!({"bot": [{"skill": skill}, {"skill": skill}]});
+            r
+        };
+        let mut reports = Vec::new();
+        for (skill, base) in [("easy", 1), ("legendary", 10)] {
+            for i in 0..3 {
+                reports.push((format!("{skill}-{i}"), run(skill, base + i)));
+            }
+        }
+        let arms = ["code".to_string(), "net".to_string()];
+        let c = compare(&arms, &reports, vec![]);
+        assert_eq!(c.runs, 6);
+        assert_eq!(c.stats["code"]["kills"].n, 6);
+        assert_eq!(c.by_skill.len(), 2);
+        let easy = &c.by_skill["easy"];
+        assert_eq!(easy.runs, 3);
+        assert_eq!(easy.stats["code"]["kills"].mean, 2.0);
+        assert_eq!(easy.stats["net"]["kills"].mean, 4.0);
+        assert_eq!(easy.diff["kills"].diff, 2.0);
+        assert_eq!(c.by_skill["legendary"].stats["code"]["kills"].mean, 11.0);
+        let t = c.table();
+        let (easy_at, legendary_at) = (t.find("\neasy (3 runs)"), t.find("\nlegendary (3 runs)"));
+        assert!(easy_at.is_some() && easy_at < legendary_at, "{t}");
+        let back: Comparison = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+        assert_eq!(back.by_skill, c.by_skill);
+        // One skill, a mixed lineup or no skills at all: the one table.
+        let one = compare(&arms, &reports[..3], vec![]);
+        assert!(one.by_skill.is_empty());
+        assert!(!serde_json::to_string(&one).unwrap().contains("by_skill"));
+        assert!(!one.table().contains("runs)"));
+        let mut mixed = run("easy", 1);
+        mixed.match_ = serde_json::json!({"bot": [{"skill": "easy"}, {"skill": "heroic"}]});
+        assert_eq!(skill_of(&mixed), None);
+        assert_eq!(skill_of(&run("heroic", 1)), Some("heroic"));
+        assert_eq!(skill_of(&report(vec![], None)), None);
     }
 
     #[test]
