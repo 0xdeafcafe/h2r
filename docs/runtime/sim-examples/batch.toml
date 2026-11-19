@@ -1,0 +1,16 @@
+# A sim batch (docs/runtime/sim.md §7): `h2 sim batch` this file.
+# The base tuning against an aggressive one, 2 v 2 (red is A, blue is B),
+# three maps by five seeds: fifteen matches.
+out = "results/aggressive-vs-base"
+match = "lockout-2v2.toml"
+maps = ["lockout", "midship", "ascension"]
+seeds = [1, 2, 3, 4, 5]
+mode = "versus"
+
+[a]
+name = "base"
+params = "tuning/base.toml"
+
+[b]
+name = "aggressive"
+params = "tuning/aggressive.toml"

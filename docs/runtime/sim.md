@@ -1,9 +1,15 @@
 # Sim mode: the game's simulation without rendering
 
-Status: design, and the build in progress on branch `sim-engine`. Nothing
-on this page has been run against the game yet; [What needs a run](#what-needs-a-run)
-lists what only a run can settle, and [First runs](#first-runs) gives the
-commands.
+Status: designed and built (2026-11-19, branch `sim-engine`), unit-tested
+over pure inputs and fake guest memory. Nothing on this page has been run
+against the game yet; [What needs a run](#what-needs-a-run) lists what
+only a run can settle, and [First runs](#first-runs) gives the commands.
+
+Where it is: `crates/sim` (the match, batch and tuning files, pacing, the
+tally and report, the comparison), `crates/bots/src/tuning.rs`,
+`crates/feature/src/sim_frame.rs`, `crates/boot/src/sim_glue.rs` (and the
+level boot's `MpSetup`), `crates/cli/src/sim_cmd.rs`, and the examples in
+[sim-examples/](sim-examples/).
 
 The goal: train and test the bots offline. Run the retail game's own
 simulation (physics, weapons, damage, AI, game types) with Clankers in it,
@@ -297,9 +303,10 @@ ticks; and the final score. The report is one JSON file per match:
   "match": { "map": "lockout", "game_type": "slayer", "seed": 7, "...": "..." },
   "result": { "end": "game_over", "winner": {"player": 2}, "teams": [] },
   "ticks": 9000, "game_seconds": 300.0,
-  "wall": { "match_s": 41.2, "process_s": 63.0, "speedup": 7.28, "process_speedup": 4.76 },
+  "wall": { "setup_s": 21.8, "match_s": 41.2, "process_s": 63.0, "speedup": 7.28,
+            "process_speedup": 4.76, "ms_per_tick": 4.58 },
   "players": [
-    { "index": 0, "name": "A1", "bot": 0, "team": 0, "port": 0,
+    { "index": 0, "name": "A1", "bot": true, "port": 0, "arm": "base", "team": 0,
       "score": 12, "kills": 12, "deaths": 9, "assists": 2, "suicides": 0, "betrayals": 0,
       "shots": 820, "hits": 301, "accuracy": 0.367, "damage_dealt": 41.5, "damage_taken": 37.0,
       "alive_ticks": 8100, "vehicle_ticks": 0, "grenades": 14, "stuck_ticks": 36, "repaths": 2,
@@ -310,6 +317,12 @@ ticks; and the final score. The report is one JSON file per match:
   "notes": []
 }
 ```
+
+Shots are the `WEAPON_FIRE` weapons a player's unit holds at the next
+tick's snapshot (a turret's are not counted, **S**); damage is the damage
+report's body plus shield numbers (**S**: read as amounts, as telemetry's
+`hits` are); a hit is a report with another player's unit as the victim
+(a shotgun's pellets each count, so accuracy can pass 1).
 
 Live telemetry is not needed for this and stays off; with
 `H2_TELEMETRY_FILE` set it still writes its own JSONL beside the report.
@@ -360,14 +373,20 @@ refuse or are not ready:
 1. `--fork`: one seed process per map boots the match, waits for
    gameplay (`session.wait {"phase":"gameplay","map_ticks":30}`) and
    saves `sim.<map>.<game type>.spawn` (`state.save`), then exits.
-2. Each run boots the same match, and as soon as its agent socket is up
-   the batch sends `state.load` of that snapshot; the run's own bots and
-   seed take over from there. A `BUSY` or a failed load is logged, and the
-   run carries on from its own fresh boot (the fallback).
+2. Each run boots the same match with its agent socket on; once
+   `match.status` says `playing` the batch sends `state.load` of that
+   snapshot, and the run's own seed and teams are written again from
+   there. A `BUSY` or a failed load is logged in the batch's line for the
+   run (`own boot (...)`), and the run carries on from its own fresh boot
+   (the fallback). The seed run's data directory is `runs/seed-<name>/`;
+   the snapshots are in `<out>/snapshots` (`H2_SNAPSHOTS` for every child).
 
-Snapshots carry the machine, not the host's bots: each run's brains,
-their tuning and the metrics tally start fresh at the load (the tally
-resets when the tick goes backwards). The snapshot's build key covers the
+Snapshots carry the machine, not the host's bots. The tally sees the load
+as a jump in the game's tick (backwards, or more than 30 ticks forwards:
+`sim::metrics::JUMP_TICKS`) and starts again there, with the speed-up's
+clock, and the seed and team writes run again. The brains keep their few
+ticks of memory from before the load (their tracks age out; the radio
+resets only when the tick goes backwards). The snapshot's build key covers the
 switches and features, so the seed process and the runs must use the
 same image, `H2_OPT` and switches (the batch passes its own environment
 to every child). Saves are refused while Live is signed in, in co-op, and
@@ -388,7 +407,7 @@ What a sim run's result depends on, and what breaks reproducibility:
 | The render thread | none: no GPU backend |
 | Audio | logical pacing into a `NullSink` |
 | Input | bots only, no keyboard. Bots read guest memory on the game thread before `RENDER_FRAME`, once a frame |
-| The bots' randomness | seeded per bot: `seed ^ hash(name, port)` |
+| The bots' randomness | seeded per bot: SplitMix64 of the match seed and the port (`sim::config::bot_seed`) |
 | `HashMap` iteration in the bots (`mind.rs` tracks, `los`, `nav`) | lookups and `retain` only, as read (**S**: worth a check in review) |
 | The nav mesh | built in the background on a thread at the wall clock's mercy (`bots_nav_auto`): **off in sim mode** (`H2_BOTS_NAV_AUTO=0`). A map with no current mesh is reported (`"nav": "missing"`); build them first with `h2 bots nav <map>` |
 | Wall-clock limits (`max_wall_s`) | can end a match at a different tick on a slower host: the report says `"end": "wall_limit"`. Use `max_ticks` for reproducible ends |
@@ -403,7 +422,7 @@ A sim run never matches a rendered run of the same match (the seed).
 
 ## 9. Agent API
 
-Host methods while `H2_SIM` is on (`boot::sim_glue::add_methods`,
+Host methods while `H2_SIM` is on (`boot::sim_glue::Sim::add_methods`,
 [agent-api.md](agent-api.md), "Sim matches"):
 
 | Method | Access | What |
@@ -474,7 +493,10 @@ skill = "normal"
 EOF
 H2_OPT=2 h2 sim run /tmp/sim-smoke.toml --disc disc/halo2.iso --report /tmp/sim-smoke.json
 # Look for: `sim: skipping the world render`, `level boot: options queued`,
-# `sim: match started`, `sim: match over (tick_limit) ... speed-up Nx`.
+# `sim: match started at tick N`, `sim: match over (tick_limit) at 1800
+# ticks, N.Nx real time`, then the per-bot lines and `sim: report ...`.
+# Watch it live: add --socket /tmp/sim.sock and
+# `H2_AGENT=/tmp/sim.sock h2 agent match.status`.
 
 # 2. Determinism: two runs, tick hashes compared.
 H2_LOCKSTEP=/tmp/a.lock H2_OPT=2 h2 sim run /tmp/sim-smoke.toml --disc disc/halo2.iso --report /tmp/a.json
@@ -487,14 +509,35 @@ h2 lockstep /tmp/a.lock /tmp/b.lock
 sed 's/^seed = 1/seed = 1\nrender_every = 1/' /tmp/sim-smoke.toml > /tmp/sim-render.toml
 H2_OPT=2 h2 sim run /tmp/sim-render.toml --disc disc/halo2.iso --report /tmp/r.json
 
-# 4. Four bots, 2 v 2, then a small batch.
-H2_OPT=2 h2 sim batch docs/runtime/sim-examples/batch.toml --disc disc/halo2.iso
+# 4. Four bots, 2 v 2, then the example batch (fifteen runs on three
+#    maps: build the other two nav meshes first; --dry-run lists the runs).
+H2_OPT=2 h2 sim run docs/runtime/sim-examples/lockout-2v2.toml --disc disc/halo2.iso
+H2_OPT=2 h2 bots nav midship && H2_OPT=2 h2 bots nav ascension
+h2 sim batch docs/runtime/sim-examples/batch.toml --dry-run
+H2_OPT=2 h2 sim batch docs/runtime/sim-examples/batch.toml --disc disc/halo2.iso --parallel 3
+
+# 5. The same batch forked from spawn snapshots (falls back per run).
+H2_OPT=2 h2 sim batch docs/runtime/sim-examples/batch.toml --disc disc/halo2.iso --parallel 3 --fork
+h2 sim compare docs/runtime/sim-examples/results/aggressive-vs-base
 ```
+
+Notes for the runs:
+
+- `h2 sim` never builds: it stops with `h2 build` when the image is not
+  current for this `h2` (as `h2 serve` does).
+- Each batch run has its own data directory (`<out>/runs/<id>/data`, its
+  `bots/` linked to `--data`'s), so a map from a map pack installed only in
+  the shared data directory is not there; disc maps are.
+- The match's pace replaces `H2_BOOT_REALTIME` (unpaced unless the match
+  says otherwise).
 
 ## Tests
 
-`cargo test -p sim` (config, metrics, compare, clock), `cargo test -p bots
-tuning` (the overrides), `cargo test -p feature sim_frame` (the skip's
-decision and stubs over a fake guest), `cargo test -p boot sim_glue`
-and `cargo test -p boot level_boot` (the match options), `cargo test -p cli
-sim_cmd` (arguments, the batch plan).
+`cargo test -p sim` (config, metrics, compare, clock, the examples
+here), `cargo test -p bots tuning` and `cargo test -p bots
+a_tuned_brain` (the overrides), `cargo test -p bots sim_mode_takes`
+(four bot ports), `cargo test -p feature sim_frame` (the skip's decision
+and stubs over a fake guest), `cargo test -p boot sim_glue` (snapshots to
+samples, the limits, the tuning mapping) and `cargo test -p boot
+level_boot` (the match options, the variant edit), `cargo test -p cli
+sim_cmd` (child arguments, per-run data, the results directory).

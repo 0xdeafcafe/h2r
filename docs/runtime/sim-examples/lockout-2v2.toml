@@ -1,0 +1,36 @@
+# A sim match (docs/runtime/sim.md, "Match file"): `h2 sim run` this file.
+# Two against two on Lockout, team Slayer, five minutes of game time.
+map = "lockout"
+game_type = "slayer"
+time_limit_s = 300
+score_limit = 25
+team_play = true
+seed = 7
+max_ticks = 9000      # 5 minutes at 30 ticks a second
+max_wall_s = 900      # and never more than 15 minutes on the clock
+render_every = 0      # never render a world frame
+pace = "unpaced"
+
+[[bot]]
+name = "Red 1"
+skill = "legendary"
+team = 0
+params = "tuning/base.toml"
+
+[[bot]]
+name = "Blue 1"
+skill = "legendary"
+team = 1
+params = "tuning/base.toml"
+
+[[bot]]
+name = "Red 2"
+skill = "heroic"
+team = 0
+
+[[bot]]
+name = "Blue 2"
+skill = "heroic"
+team = 1
+[bot.tuning]
+aggression = 0.5

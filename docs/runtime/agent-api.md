@@ -1262,6 +1262,33 @@ is the local embedded server (`h2 play --live-local`,
 `bot: true` only for xuids it issued. Server-side bot accounts are
 bed6c8dc's. Never point a sim run at live.forbes.red.
 
+## Sim matches
+
+Built 2026-11-19, tested over pure inputs; not run against the game.
+Host methods while sim mode is on (`H2_SIM=<match file>`, `h2 sim run
+<match> --socket PATH`; `boot::sim_glue::Sim::add_methods`,
+[sim.md](sim.md)). Sim mode is a whole headless match with bots and no
+rendering, ending in a report; these let a client watch it, read its
+numbers so far and end it. (The `sim.*` methods above are a different
+thing: simulated players added to an ordinary run.)
+
+| Method | Access | What |
+|---|---|---|
+| `match.status` | read | `match` (the file), `map`, `game_type`, `bots`, `phase` (`waiting` until the match's game starts, `playing`, `over`), `ticks` (game ticks counted since the start), `max_ticks`, `game_seconds`, `wall_s` (since the boot), `match_s` (since the first tick), `speedup` (game over match wall time), `frames` (`skipped` world frames, `rendered_world` by `render_every`, `other` menu and loading frames, `stub_faults`), `end` (`game_over`, `tick_limit`, `wall_limit`, `stopped`; `null` while it plays) |
+| `match.report` | read | the report as it would be written now (`h2-sim-report/1`, sim.md §6): players, kills so far, a note while the match has not ended (its `result.end` is then `aborted`) |
+| `match.stop` | act | end the match: `end` becomes `stopped` (unless it had ended), the boot loop stops at the next slice and the report is written. `{stopping, end, already_over}` |
+
+```sh
+h2 sim run docs/runtime/sim-examples/lockout-2v2.toml --socket /tmp/sim.sock &
+H2_AGENT=/tmp/sim.sock h2 agent match.status
+H2_AGENT=/tmp/sim.sock h2 agent match.report
+H2_AGENT=/tmp/sim.sock h2 agent match.stop
+```
+
+Stepping a match is `session.pause` and `session.step N` as in any run.
+`h2 sim batch --fork` drives these and `state.save`/`state.load`: it
+waits on `match.status` for `playing` before it saves or loads.
+
 ## `havok`: the physics world
 
 Built 2026-11-18, tested over synthetic guest memory; not run against the
