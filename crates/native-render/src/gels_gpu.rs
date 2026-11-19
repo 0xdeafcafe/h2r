@@ -2,6 +2,7 @@
 //! lights cannot overwrite a retained result. The light graph binds
 //! `Output::view` in the existing `LightStage::Gel` slot.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use gfx::translate::SamplerKey;
@@ -52,8 +53,34 @@ impl Program {
         samplers: [SamplerKey; 4],
         state: PassState,
     ) -> Result<Self, String> {
+        Self::compile_inner(microcode, def, options, samplers, state, false)
+    }
+
+    /// A draw into the live target preserves pixels the shader does not
+    /// overwrite, including blend/discard and partial colour writes.
+    pub fn compile_target(
+        microcode: &[u8],
+        def: &PixelShaderDef,
+        options: &PixelOptions,
+        samplers: [SamplerKey; 4],
+        state: PassState,
+    ) -> Result<Self, String> {
+        Self::compile_inner(microcode, def, options, samplers, state, true)
+    }
+
+    fn compile_inner(
+        microcode: &[u8],
+        def: &PixelShaderDef,
+        options: &PixelOptions,
+        samplers: [SamplerKey; 4],
+        state: PassState,
+        preserves: bool,
+    ) -> Result<Self, String> {
         let program =
             vsh::Program::parse(microcode).map_err(|e| format!("gel vertex program: {e:?}"))?;
+        if program.writes_constants() {
+            return Err("gel vertex program writes constants".into());
+        }
         if program.inputs_read() & !INPUTS != 0 {
             return Err("gel reads inherited vertex attributes".into());
         }
@@ -66,7 +93,7 @@ impl Program {
         )
         .map_err(|e| format!("gel vertex translation: {e:?}"))?;
         let ps = psh::translate(def, options);
-        if ps.discards {
+        if ps.discards && !preserves {
             return Err("gel can leave discarded pixels from the previous target".into());
         }
         if !ps.warnings.is_empty() {
@@ -79,7 +106,7 @@ impl Program {
             return Err("gel requires depth".into());
         }
         // A fresh target must not depend on old target-13 pixels.
-        if state.blend.is_some() || state.color_writes != wgpu::ColorWrites::ALL {
+        if !preserves && (state.blend.is_some() || state.color_writes != wgpu::ColorWrites::ALL) {
             return Err("gel depends on previous target contents".into());
         }
         let wgsl = shaders::link(&vs, &ps).map_err(|e| format!("gel link: {e}"))?;
@@ -187,6 +214,7 @@ pub struct Producer {
     uniforms_layout: wgpu::BindGroupLayout,
     layout: wgpu::PipelineLayout,
     module: wgpu::ShaderModule,
+    pipelines: Mutex<HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>>,
 }
 
 impl Producer {
@@ -198,9 +226,7 @@ impl Producer {
         program: Program,
         images: &[Option<Image>; 4],
     ) -> Result<Self, String> {
-        let mut views = Vec::new();
-        let mut samplers = Vec::new();
-        let mut entries = Vec::new();
+        let mut uploaded: [Option<wgpu::TextureView>; 4] = Default::default();
         for n in 0..4 {
             let Some(dim) = program.dims[n] else { continue };
             if dim != TextureDim::D2 {
@@ -209,7 +235,28 @@ impl Producer {
             let image = images[n]
                 .as_ref()
                 .ok_or_else(|| format!("gel stage {n} is unresolved"))?;
-            views.push((n, texture(device, queue, image, "native gel bitmap")));
+            uploaded[n] = Some(texture(device, queue, image, "native gel bitmap"));
+        }
+        Self::resident(device, program, uploaded.each_ref().map(Option::as_ref))
+    }
+
+    /// Uses the resolved draw's exact resident views: no uploads or queue
+    /// writes escape a cancelled two-copy recording transaction.
+    pub fn resident(
+        device: &wgpu::Device,
+        program: Program,
+        stages: [Option<&wgpu::TextureView>; 4],
+    ) -> Result<Self, String> {
+        let mut views = Vec::new();
+        let mut samplers = Vec::new();
+        let mut entries = Vec::new();
+        for n in 0..4 {
+            let Some(dim) = program.dims[n] else { continue };
+            if dim != TextureDim::D2 {
+                return Err(format!("gel stage {n} is not 2D"));
+            }
+            let view = stages[n].ok_or_else(|| format!("gel stage {n} is unresolved"))?;
+            views.push((n, view.clone()));
             samplers.push(device.create_sampler(&program.samplers[n].descriptor()));
             entries.push(wgpu::BindGroupLayoutEntry {
                 binding: 2 * n as u32,
@@ -280,6 +327,7 @@ impl Producer {
             uniforms_layout,
             layout,
             module,
+            pipelines: Mutex::new(HashMap::new()),
         })
     }
 
@@ -316,6 +364,64 @@ impl Producer {
             view_formats: &[],
         });
         let view = texture.create_view(&Default::default());
+        self.draw(
+            device,
+            encoder,
+            frame,
+            &view,
+            format,
+            guest_size,
+            size,
+            wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+        )?;
+        Ok(Output {
+            key,
+            view,
+            guest_size,
+            size,
+        })
+    }
+
+    /// Write the native gel into the real guest target, retaining its
+    /// previous pixels where blend/discard or colour masks require them.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_into(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        frame: &Frame,
+        view: &wgpu::TextureView,
+        format: wgpu::TextureFormat,
+        guest_size: (u32, u32),
+        size: (u32, u32),
+    ) -> Result<(), String> {
+        self.draw(
+            device,
+            encoder,
+            frame,
+            view,
+            format,
+            guest_size,
+            size,
+            wgpu::LoadOp::Load,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        frame: &Frame,
+        view: &wgpu::TextureView,
+        format: wgpu::TextureFormat,
+        guest_size: (u32, u32),
+        size: (u32, u32),
+        load: wgpu::LoadOp<wgpu::Color>,
+    ) -> Result<(), String> {
+        if guest_size.0 == 0 || guest_size.1 == 0 || size.0 == 0 || size.1 == 0 {
+            return Err("empty gel target".into());
+        }
         let mut vu = frame.vertex.clone();
         vu.surface = [guest_size.0 as f32, guest_size.1 as f32];
         vu.shift = gfx::renderer::window_shift(guest_size.0, size.0);
@@ -357,63 +463,150 @@ impl Producer {
                 offset: n as u64 * 16,
                 shader_location: n as u32,
             });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("native target 13"),
-            layout: Some(&self.layout),
-            vertex: wgpu::VertexState {
-                module: &self.module,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<Vertex>() as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &attributes,
-                })],
-            },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleStrip,
-                ..self.program.state.primitive
-            },
-            depth_stencil: None,
-            multisample: Default::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &self.module,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        let pipeline = {
+            let mut pipelines = self.pipelines.lock().unwrap_or_else(|e| e.into_inner());
+            pipelines
+                .entry(format)
+                .or_insert_with(|| {
+                    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                        label: Some("native target 13"),
+                        layout: Some(&self.layout),
+                        vertex: wgpu::VertexState {
+                            module: &self.module,
+                            entry_point: Some("vs_main"),
+                            compilation_options: Default::default(),
+                            buffers: &[Some(wgpu::VertexBufferLayout {
+                                array_stride: std::mem::size_of::<Vertex>() as u64,
+                                step_mode: wgpu::VertexStepMode::Vertex,
+                                attributes: &attributes,
+                            })],
+                        },
+                        primitive: wgpu::PrimitiveState {
+                            topology: wgpu::PrimitiveTopology::TriangleStrip,
+                            ..self.program.state.primitive
+                        },
+                        depth_stencil: None,
+                        multisample: Default::default(),
+                        fragment: Some(wgpu::FragmentState {
+                            module: &self.module,
+                            entry_point: Some("fs_main"),
+                            compilation_options: Default::default(),
+                            targets: &[Some(wgpu::ColorTargetState {
+                                format,
+                                blend: self.program.state.blend,
+                                write_mask: self.program.state.color_writes,
+                            })],
+                        }),
+                        multiview_mask: None,
+                        cache: None,
+                    })
+                })
+                .clone()
+        };
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("native target 13"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &view,
+                view,
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    load,
                     store: wgpu::StoreOp::Store,
                 },
             })],
             ..Default::default()
         });
         pass.set_pipeline(&pipeline);
+        pass.set_blend_constant(self.program.state.blend_constant);
         pass.set_bind_group(0, &group, &[]);
         pass.set_bind_group(1, &self.textures, &[]);
         pass.set_vertex_buffer(0, vertices.slice(..));
         pass.draw(0..4, 0..1);
         drop(pass);
-        Ok(Output {
-            key,
-            view,
-            guest_size,
-            size,
-        })
+        Ok(())
+    }
+}
+
+/// GPU programs/textures are scoped to a map generation and the exact
+/// resident views (including palette and streaming residency). Uniform
+/// buffers remain per recording; only immutable resources are cached.
+#[derive(Default)]
+pub struct ResidentCache(Mutex<HashMap<ResidentKey, Arc<Producer>>>);
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct ResidentKey {
+    generation: u64,
+    shader: String,
+    state: String,
+    samplers: [SamplerKey; 4],
+    stages: [Option<wgpu::TextureView>; 4],
+}
+
+impl ResidentCache {
+    pub fn producer(
+        &self,
+        device: &wgpu::Device,
+        generation: u64,
+        program: Program,
+        stages: [Option<&wgpu::TextureView>; 4],
+    ) -> Result<Arc<Producer>, String> {
+        let key = ResidentKey {
+            generation,
+            shader: program.wgsl.clone(),
+            state: format!("{:?}", program.state),
+            samplers: program.samplers,
+            stages: stages.map(|s| s.cloned()),
+        };
+        let mut cache = self.0.lock().map_err(|_| "gel program cache lock")?;
+        if let Some(producer) = cache.get(&key) {
+            return Ok(Arc::clone(producer));
+        }
+        let producer = Arc::new(Producer::resident(device, program, stages)?);
+        if cache.len() >= 64 {
+            cache.clear();
+        }
+        cache.insert(key, Arc::clone(&producer));
+        Ok(producer)
+    }
+}
+
+/// Comparison assets use the same immutable program cache. Bitmap
+/// identity includes the map generation; repeated stages share uploads.
+#[derive(Default)]
+pub struct BitmapCache {
+    views: HashMap<(u64, u32, u32), wgpu::TextureView>,
+    programs: ResidentCache,
+}
+impl BitmapCache {
+    pub fn producer(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        generation: u64,
+        program: Program,
+        identities: [Option<(u32, u32)>; 4],
+        images: &[Option<Image>; 4],
+    ) -> Result<Arc<Producer>, String> {
+        let mut stages: [Option<wgpu::TextureView>; 4] = Default::default();
+        for n in 0..4 {
+            if program.dims[n].is_none() {
+                continue;
+            }
+            let (bitmap, image) = identities[n].ok_or("gel bitmap identity missing")?;
+            let key = (generation, bitmap, image);
+            if !self.views.contains_key(&key) {
+                let pixels = images[n].as_ref().ok_or("gel bitmap missing")?;
+                self.views
+                    .insert(key, texture(device, queue, pixels, "native gel bitmap"));
+            }
+            stages[n] = self.views.get(&key).cloned();
+        }
+        self.programs.producer(
+            device,
+            generation,
+            program,
+            stages.each_ref().map(Option::as_ref),
+        )
     }
 }
 
