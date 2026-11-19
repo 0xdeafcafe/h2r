@@ -493,7 +493,7 @@ fn generator_output_is_pinned() {
     let got = (crate::cache::GENERATOR, crate::autonav::fingerprint(&s));
     assert_eq!(
         got,
-        (2, 0x96880c12653c7760),
+        (3, 0x96880c12653c7760),
         "the nav output changed: bump cache::GENERATOR and record the new pair"
     );
 }

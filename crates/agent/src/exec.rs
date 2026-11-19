@@ -35,7 +35,7 @@ pub use snap::{SnapshotMachine, Snapshots};
 /// One connection.
 pub type ConnId = u64;
 
-/// Who may call a host method ([`Agent::add_method`]).
+/// Who may call a registered method ([`Agent::add_method`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Access {
     /// Any connection: it only reads.
@@ -44,6 +44,21 @@ pub enum Access {
     /// it acts on the game (pad input, the profiler), and a one-shot
     /// `h2 agent` call should not need `session.claim` first.
     Act,
+    /// Only the connection that holds control through `session.claim`.
+    Claimed,
+}
+
+impl Access {
+    fn check(self, controller: Option<ConnId>, conn: ConnId) -> Result<(), RpcError> {
+        let message = match self {
+            Self::Act | Self::Claimed if controller.is_some_and(|c| c != conn) => {
+                "another connection holds control"
+            }
+            Self::Claimed if controller.is_none() => "session.claim first on this connection",
+            _ => return Ok(()),
+        };
+        Err(RpcError::new(code::NOT_CONTROLLER, message))
+    }
 }
 
 /// A method the game's host answers ([`Agent::add_method`]): params in,
@@ -77,6 +92,27 @@ pub const DEFER_TICKS_MAX: u64 = 300;
 const DEFER_WALL: Duration = Duration::from_secs(60);
 
 impl GameCtx<'_> {
+    /// Runs an operation once with guest memory at this boundary.
+    pub(crate) fn with_guest<T>(
+        &mut self,
+        f: impl FnOnce(&mut dyn engine::GuestMemory) -> Result<T, RpcError>,
+    ) -> Result<T, RpcError> {
+        let mut f = Some(f);
+        let mut out = None;
+        let ran = self.reader.with_guest(&mut |m| {
+            if let Some(f) = f.take() {
+                out = Some(f(m));
+            }
+        });
+        match out {
+            Some(r) if ran => r,
+            _ => Err(RpcError::new(
+                code::UNAVAILABLE,
+                "no guest memory here (the game isn't running)",
+            )),
+        }
+    }
+
     /// Answers a host method (`ui.screen`, `input.state`) as a client
     /// would get it, when the host registered one of that name.
     pub fn host(&mut self, name: &str, params: Value) -> Option<Result<Value, RpcError>> {
@@ -967,11 +1003,8 @@ impl State {
         }
         let p = req.params;
         if let Some((access, _)) = self.host.get(m) {
-            if *access == Access::Act && self.controller.is_some_and(|c| c != conn) {
-                return Some(Err(RpcError::new(
-                    code::NOT_CONTROLLER,
-                    "another connection holds control",
-                )));
+            if let Err(e) = access.check(self.controller, conn) {
+                return Some(Err(e));
             }
             let at = to_value(self.at());
             let (_, f) = self.host.get_mut(m)?;
@@ -1001,11 +1034,8 @@ impl State {
             let at = self.at();
             let stamp = to_value(&at);
             let (access, f) = self.game_methods.get_mut(m)?;
-            if *access == Access::Act && self.controller.is_some_and(|c| c != conn) {
-                return Some(Err(RpcError::new(
-                    code::NOT_CONTROLLER,
-                    "another connection holds control",
-                )));
+            if let Err(e) = access.check(self.controller, conn) {
+                return Some(Err(e));
             }
             let mut ctx = GameCtx {
                 reader,

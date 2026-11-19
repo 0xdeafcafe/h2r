@@ -1,23 +1,36 @@
 //! `world.raw` (docs/runtime/agent-api.md, "world.raw"): an object's body,
 //! physics component, Havok entity, motion and shape as raw guest bytes,
-//! as `live_telemetry::raw` reads them. Read-only; a game method, answered
-//! at a tick boundary. `h2 agent raw-diff` compares two answers.
+//! as `live_telemetry::raw` reads them. `world.poke` writes within one of
+//! those parts at a tick boundary. `h2 agent raw-diff` compares two reads.
 
-use agent_proto::raw::{PARTS, Raw, RawParams, RawPart, method, to_hex};
+use agent_proto::raw::{
+    PARTS, POKE_MAX, Poke, PokeParams, Raw, RawParams, RawPart, from_hex, method, to_hex,
+};
 use agent_proto::{RpcError, code};
+use engine::GuestMemory;
 use live_telemetry::raw::{self as rd, Part};
 use serde_json::Value;
 
 use crate::exec::GameCtx;
+use crate::sim::SimHandle;
 use crate::{Access, Agent};
 
-/// Registers `world.raw` on `agent`.
-pub fn install(agent: &Agent) {
+/// Registers `world.raw` and `world.poke`, using sim's host-write checks.
+pub fn install(agent: &Agent, sim: &SimHandle) {
     agent.add_game_method(method::RAW, Access::Read, raw_method);
+    let sim = sim.clone();
+    agent.add_game_method(method::POKE, Access::Claimed, move |v, ctx| {
+        poke_method(v, ctx, &sim)
+    });
 }
 
 fn invalid(msg: impl Into<String>) -> RpcError {
     RpcError::new(code::INVALID_PARAMS, msg)
+}
+
+fn parse_part(name: &str) -> Result<Part, RpcError> {
+    Part::parse(name)
+        .ok_or_else(|| invalid(format!("unknown part {name} (one of {})", PARTS.join(", "))))
 }
 
 /// The parts asked for; all of them without `parts`.
@@ -28,13 +41,33 @@ fn parts(p: &RawParams) -> Result<Vec<Part>, RpcError> {
     if names.is_empty() {
         return Err(invalid("parts is empty; leave it out for all of them"));
     }
-    names
-        .iter()
-        .map(|n| {
-            Part::parse(n)
-                .ok_or_else(|| invalid(format!("unknown part {n} (one of {})", PARTS.join(", "))))
-        })
-        .collect()
+    names.iter().map(|name| parse_part(name)).collect()
+}
+
+fn datum(ctx: &mut GameCtx<'_>, id: &str) -> Result<u32, RpcError> {
+    let objects = ctx
+        .reader
+        .objects()
+        .map_err(|e| RpcError::new(code::UNAVAILABLE, format!("reading the world: {e}")))?;
+    let (datum, _) = crate::havok::resolve(&objects, id)?;
+    Ok(datum)
+}
+
+fn read_regions(
+    m: &dyn GuestMemory,
+    id: &str,
+    datum: u32,
+    parts: &[Part],
+    len: Option<u32>,
+) -> Result<Vec<rd::Region>, RpcError> {
+    rd::object_parts(m, datum, parts, len)
+        .map_err(|e| {
+            RpcError::new(
+                code::UNAVAILABLE,
+                format!("reading the objects at {:08x}: {e:?}", e.addr),
+            )
+        })?
+        .ok_or_else(|| RpcError::new(code::GONE, format!("{id} ({datum:08x}) has no object body")))
 }
 
 fn raw_method(v: Value, ctx: &mut GameCtx<'_>) -> Result<Value, RpcError> {
@@ -43,37 +76,65 @@ fn raw_method(v: Value, ctx: &mut GameCtx<'_>) -> Result<Value, RpcError> {
     if p.len == Some(0) {
         return Err(invalid("len must be at least 1"));
     }
-    let objects = ctx
-        .reader
-        .objects()
-        .map_err(|e| RpcError::new(code::UNAVAILABLE, format!("reading the world: {e}")))?;
-    let (datum, _) = crate::havok::resolve(&objects, &p.id)?;
-    let mut out = None;
-    let ran = ctx
-        .reader
-        .with_guest(&mut |m| out = Some(rd::object_parts(&*m, datum, &parts, p.len)));
-    let regions = match out {
-        Some(Ok(Some(r))) if ran => r,
-        Some(Ok(None)) if ran => {
-            return Err(RpcError::new(
-                code::GONE,
-                format!("{} ({datum:08x}) has no object body", p.id),
-            ));
-        }
-        Some(Err(e)) if ran => {
-            return Err(RpcError::new(
-                code::UNAVAILABLE,
-                format!("reading the objects at {:08x}: {e:?}", e.addr),
-            ));
-        }
-        _ => {
-            return Err(RpcError::new(
-                code::UNAVAILABLE,
-                "no guest memory here (the game isn't running)",
-            ));
-        }
-    };
+    let datum = datum(ctx, &p.id)?;
+    let regions = ctx.with_guest(|m| read_regions(m, &p.id, datum, &parts, p.len))?;
     Ok(serde_json::to_value(answer(&p.id, datum, &regions)).expect("raw serialises"))
+}
+
+fn poke_method(v: Value, ctx: &mut GameCtx<'_>, sim: &SimHandle) -> Result<Value, RpcError> {
+    let p: PokeParams = serde_json::from_value(v).map_err(|e| invalid(e.to_string()))?;
+    let part = parse_part(&p.part)?;
+    if p.hex.is_empty() || p.hex.len() > 2 * POKE_MAX {
+        return Err(invalid(format!("hex must encode 1 to {POKE_MAX} bytes")));
+    }
+    let bytes = from_hex(&p.hex).ok_or_else(|| invalid("hex must have two digits per byte"))?;
+    sim.writable_session(ctx)?;
+    let datum = datum(ctx, &p.id)?;
+
+    let result = ctx.with_guest(|m| {
+        let region = read_regions(m, &p.id, datum, &[part], None)?
+            .into_iter()
+            .next()
+            .expect("requested one part");
+        let (base, previous) = region.read.map_err(|why| {
+            RpcError::new(code::UNAVAILABLE, format!("{} {}: {why}", p.id, p.part))
+        })?;
+
+        let end = p
+            .offset
+            .checked_add(bytes.len() as u32)
+            .filter(|&end| end as usize <= previous.len())
+            .ok_or_else(|| {
+                invalid(format!(
+                    "offset and length exceed {} bytes for {}",
+                    previous.len(),
+                    p.part
+                ))
+            })?;
+        let before = &previous[p.offset as usize..end as usize];
+        let addr = base
+            .checked_add(p.offset)
+            .filter(|addr| addr.checked_add(bytes.len() as u32 - 1).is_some())
+            .ok_or_else(|| invalid("guest address range overflows"))?;
+        let fault = |e: engine::MemFault| {
+            RpcError::new(
+                code::UNAVAILABLE,
+                format!("guest memory at {:#x} faulted", e.addr),
+            )
+        };
+        m.write(addr, &bytes).map_err(fault)?;
+        let after = m.bytes(addr, bytes.len()).map_err(fault)?;
+        Ok(Poke {
+            id: p.id,
+            datum: format!("{datum:08x}"),
+            part: p.part,
+            base: format!("{base:08x}"),
+            offset: p.offset,
+            before: to_hex(before),
+            after: to_hex(&after),
+        })
+    })?;
+    Ok(serde_json::to_value(result).expect("poke serialises"))
 }
 
 /// `world.raw` from what was read.
@@ -104,9 +165,8 @@ pub(crate) fn answer(id: &str, datum: u32, regions: &[rd::Region]) -> Raw {
 mod tests {
     use std::time::Duration;
 
-    use agent_proto::raw::from_hex;
+    use agent_proto::sim::{SessionKind, SessionView};
     use agent_proto::{Kind, Object};
-    use engine::GuestMemory;
     use engine::testing::FakeGuest;
     use engine::view::{fake, objects};
     use live_telemetry::layout as l;
@@ -191,8 +251,20 @@ mod tests {
 
     impl Harness {
         fn new() -> Harness {
+            Self::in_session(SessionKind::Local)
+        }
+
+        fn in_session(kind: SessionKind) -> Harness {
             let agent = Agent::new();
-            install(&agent);
+            let sim = crate::sim::install(
+                &agent,
+                Box::new(crate::sim::bots::NotLanded),
+                Some(Box::new(move |_| SessionView {
+                    kind,
+                    ..Default::default()
+                })),
+            );
+            install(&agent, &sim);
             let (tx, rx) = std::sync::mpsc::sync_channel(8);
             let conn = agent.connect(tx);
             Harness { agent, conn, rx }
@@ -200,9 +272,17 @@ mod tests {
 
         /// The reply to one call, answered at a boundary of `game`.
         fn call(&self, game: &mut Game, p: Value) -> Value {
-            let req = json!({"jsonrpc": "2.0", "id": 1, "method": method::RAW, "params": p});
-            self.agent.submit(self.conn, &req.to_string());
+            self.send(method::RAW, p);
             self.agent.between_slices(game, 0);
+            self.reply()
+        }
+
+        fn send(&self, method: &str, params: Value) {
+            let req = json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params});
+            self.agent.submit(self.conn, &req.to_string());
+        }
+
+        fn reply(&self) -> Value {
             let line = self.rx.recv_timeout(Duration::from_secs(5)).unwrap();
             serde_json::from_str(&line).unwrap()
         }
@@ -283,6 +363,125 @@ mod tests {
         assert_eq!(error_code(&v), code::UNAVAILABLE, "{v}");
     }
 
+    fn claim(h: &Harness, game: &mut Game) {
+        h.send(agent_proto::method::CLAIM, Value::Null);
+        h.agent.between_slices(game, 0);
+        assert_eq!(h.reply()["result"]["controller"], true);
+    }
+
+    #[test]
+    fn poke_writes_at_the_tick_and_returns_before_and_after() {
+        let h = Harness::new();
+        let mut game = game();
+        claim(&h, &mut game);
+        h.send(
+            method::POKE,
+            json!({"id": "player.0", "offset": 4, "hex": "AB"}),
+        );
+        assert_eq!(game.g.as_ref().unwrap().u32(BODY + 4).unwrap(), 0xdead_beef);
+        h.agent.on_tick(&mut game);
+
+        let v = h.reply();
+        assert_eq!(v["result"]["before"], "ef", "{v}");
+        assert_eq!(v["result"]["after"], "ab");
+        assert_eq!(v["result"]["part"], "object");
+        assert_eq!(v["result"]["at"]["boundary"], "tick");
+        assert_eq!(game.g.as_ref().unwrap().u32(BODY + 4).unwrap(), 0xdead_beab);
+
+        // The maximum length ending at the exact end of a non-default part.
+        let p = json!({
+            "id": "player.0", "part": "motion", "offset": 0x100, "hex": "12".repeat(64)
+        });
+        h.send(method::POKE, p);
+        h.agent.on_tick(&mut game);
+        let v = h.reply();
+        assert_eq!(v["result"]["base"], "80420000", "{v}");
+        assert_eq!(v["result"]["after"], "12".repeat(64));
+        assert_eq!(
+            game.g.as_ref().unwrap().bytes(MOTION + 0x100, 64).unwrap(),
+            vec![0x12; 64]
+        );
+    }
+
+    #[test]
+    fn poke_refuses_invalid_ranges_and_hex_without_writing() {
+        let h = Harness::new();
+        let mut game = game();
+        claim(&h, &mut game);
+        let original = game.g.as_ref().unwrap().bytes(BODY, 0x465).unwrap();
+        for (offset, hex) in [
+            (0x463, "abcd".to_owned()),
+            (u32::MAX, "ab".to_owned()),
+            (4, "ab".repeat(65)),
+            (4, String::new()),
+            (4, "a".to_owned()),
+            (4, "+a".to_owned()),
+        ] {
+            h.send(
+                method::POKE,
+                json!({"id": "player.0", "offset": offset, "hex": hex}),
+            );
+            h.agent.on_tick(&mut game);
+            let v = h.reply();
+            assert_eq!(error_code(&v), code::INVALID_PARAMS, "{v}");
+            assert_eq!(
+                game.g.as_ref().unwrap().bytes(BODY, 0x465).unwrap(),
+                original
+            );
+        }
+    }
+
+    #[test]
+    fn poke_refuses_a_connection_without_the_claim() {
+        let h = Harness::new();
+        let mut game = game();
+        let params = json!({"id": "player.0", "offset": 4, "hex": "ab"});
+        h.send(method::POKE, params.clone());
+        h.agent.on_tick(&mut game);
+        assert_eq!(error_code(&h.reply()), code::NOT_CONTROLLER);
+
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let other = h.agent.connect(tx);
+        let req = json!({"jsonrpc": "2.0", "id": 1, "method": agent_proto::method::CLAIM});
+        h.agent.submit(other, &req.to_string());
+        h.agent.on_tick(&mut game);
+        let line = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let v: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(v["result"]["controller"], true);
+
+        h.send(method::POKE, params);
+        h.agent.on_tick(&mut game);
+        assert_eq!(error_code(&h.reply()), code::NOT_CONTROLLER);
+        assert_eq!(game.g.as_ref().unwrap().u32(BODY + 4).unwrap(), 0xdead_beef);
+    }
+
+    #[test]
+    fn poke_refuses_disallowed_sessions_and_slice_boundaries() {
+        let p = json!({"id": "player.0", "offset": 4, "hex": "ab"});
+        let mut game = game();
+        for kind in [
+            SessionKind::CoopHost,
+            SessionKind::CoopGuest,
+            SessionKind::MpClient,
+            SessionKind::Unknown,
+        ] {
+            let h = Harness::in_session(kind);
+            claim(&h, &mut game);
+            h.send(method::POKE, p.clone());
+            h.agent.on_tick(&mut game);
+            let v = h.reply();
+            assert_eq!(error_code(&v), code::INVALID_REQUEST, "{v}");
+            assert_eq!(v["error"]["data"]["session"]["writes"], false);
+        }
+
+        let h = Harness::new();
+        claim(&h, &mut game);
+        h.send(method::POKE, p);
+        h.agent.between_slices(&mut game, 0);
+        assert_eq!(error_code(&h.reply()), code::UNAVAILABLE);
+        assert_eq!(game.g.as_ref().unwrap().u32(BODY + 4).unwrap(), 0xdead_beef);
+    }
+
     #[test]
     fn the_method_is_listed() {
         let h = Harness::new();
@@ -293,5 +492,6 @@ mod tests {
         h.agent.between_slices(&mut game(), 0);
         let line = h.rx.recv_timeout(Duration::from_secs(5)).unwrap();
         assert!(line.contains(method::RAW), "{line}");
+        assert!(line.contains(method::POKE), "{line}");
     }
 }

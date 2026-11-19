@@ -227,6 +227,20 @@ export function api(t: ServerTarget, reader: Reader = async () => null) {
     /** A ranked playlist's leaderboard; the raw body. */
     leaderboard: async (playlist: string, limit = 100, s?: AbortSignal) =>
       getJson<unknown>(u("/ranks/" + encodeURIComponent(playlist), { limit }), s, await who()),
+    /** Which hoppers are clanker ones (`GET /v1/hoppers/clankers`, by
+     *  descriptor index); the raw body. */
+    clankerHoppers: async (s?: AbortSignal) => getJson<unknown>(u("/hoppers/clankers"), s, await who()),
+    /** The hopper file as the editors read it (`GET /v1/titles/4D530064/hopper`);
+     *  the raw body. Null when none is published — the server then serves
+     *  (and ranks) the built-in lineup. */
+    hopperDoc: async (s?: AbortSignal): Promise<unknown | null> => {
+      try {
+        return await getJson<unknown>(u("/titles/4D530064/hopper"), s);
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 404) return null;
+        throw e;
+      }
+    },
     /** Server-wide stats over a window (docs/live/live-api.md "Stats summary"); the raw body. */
     statsSummary: async (window: string, s?: AbortSignal) => getJson<unknown>(u("/stats/summary", { window }), s, await who()),
     /** What a page load needs, in one read (`GET /v1/snapshot`); a server
