@@ -1345,8 +1345,54 @@ needs its own look. Proof:
 yet: a `soso`'s self-illumination (multipurpose green times its animated
 colour, `+0x70` to `+0x8c`), its change colour (`+0x4c`, multipurpose blue
 on this disc), its detail mask (`+0xd6`) and the reflection of a
-cut-out one. A material with no Halo 1 base map to read names the
-base's model shader itself; Blood Gulch has none. The sky model's
+cut-out one. **Additive chicago chains and the view-angle fade
+(converter version 84).** Blood Gulch's teleporter receivers (the three
+`scenery\teleporter_base\teleporter_base` placements; the senders are
+in the bases' structure) draw a light cone,
+`scenery\teleporter_base\shaders\teleporter_cone` (`schi`, additive,
+two-sided, framebuffer fade mode 2, "fade when parallel"): three maps,
+each map's colour function (`+0x2c`, 2 multiply) multiplying it into the
+next, the grey noise `base volumetric dust` twice, each scrolling at its
+own rate (u 6 s, v −20 s; u −4 s, v 15 s), times `teleporter_dust`, a
+32×32 green ramp black at the top (v ×1.05). Before, a transparent
+shader drew its least tiled map alone: the first dust, so the cone was a
+static grey speckled shell at full brightness, back faces culled, its
+silhouette hard and none of Halo 1's green. Now an additive `schi` or
+`scex` whose maps all multiply (every map but the last on function 2 or
+3, `shad::multiply_chain`) is rebuilt on `two_add_clouds` (Coagulation,
+Beaver Creek, 05a; `rgb = t1 × t2 × 2 × v0.rgb × c0.a × v0.a`, blend
+one/one, two-sided): its first scrolling map on bitmap 0, which the
+clouds tree scrolls (`shad::CLOUDS_TREE`, as retail's `cr_stream`), its
+first still map on bitmap 1, and every other map folded into the tint
+as its mean colour (a scrolling layer averages to it), halved for the
+stem's doubling (`shad::Chain`). Without the stem, `one_add_illum` draws
+the still map with the rest folded in. Every additive transparent shader
+now also fades as Halo 1's fade mode says (`+0x2e`; `shad::Tint`): the
+stems' vertex shader (`transparent_generic_reflection`) blends the
+perpendicular colour and alpha (`v[10]`, the surface facing the eye)
+into the parallel ones (`v[11]`, grazing), and the pass multiplies its
+colour by both; retail's sun volumes and headlights use it the same
+way. Fade when parallel is alpha 1 facing the eye and 0 grazing, so a
+cone's silhouette dissolves; fade when perpendicular the reverse. D
+(every model shader on the disc): 61 `schi` and 125 `sotr`; the chains
+are seven, all fade when parallel: the teleporter cone, a50's
+`volumetric light cone small` and `volumetric light cone ground`, b40's
+`b40_foglamp`, the fighterbomber's `afterburners` and the pelican's
+`hover thrusters` and `jet thrusters`; 8 `schi` and 16 `sotr` fade when
+parallel, one `sotr` when perpendicular. Proof: `shad` unit tests
+(`a_multiply_chain_draws_its_first_scrolling_map_and_first_still_one`,
+`the_tint_and_scroll_land_in_the_stems_vectors_and_tree`,
+`the_fade_mode_sets_the_facing_and_grazing_alphas`) and
+`tests/shad_rebuild.rs`,
+`additive_chicago_chains_draw_two_maps_scrolling_and_faded`. Not yet:
+the receiver also draws `scenery\teleporter_shield\shaders\teleporter_shield`
+(`sotr`, additive, fade when parallel, seven combiner stages over two
+scrolling `energy plasma` maps, the shield's energy mask and the shield
+picture: a plasma, as Halo 2's own `plasma_alpha` teleporter shaders),
+which still draws its least tiled map, the white `energy plasma`, as do
+the other `sotr`: their stages aren't read. A material with no Halo 1
+base map to read names the base's model shader itself; Blood Gulch has
+none. The sky model's
 materials name copies of the base's sky shaders drawing Halo 1's sky
 bitmaps at Halo 1's scale (`h1convert::sky_shaders`, sky.md "The
 model's shaders"), or the base sky's own shader where one doesn't convert

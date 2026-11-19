@@ -115,7 +115,7 @@ pub struct SkyMap {
 
 /// The slide of a map element's animation run at `at`: source 0 (game
 /// time), function [`SLIDE`], a period and scale not 0.
-fn slide(e: &[u8], at: usize) -> Option<shad::Slide> {
+pub(crate) fn slide(e: &[u8], at: usize) -> Option<shad::Slide> {
     let u16_at = |o: usize| Some(u16::from_le_bytes(e.get(o..o + 2)?.try_into().ok()?));
     let f32_at = |o: usize| Some(f32::from_le_bytes(e.get(o..o + 4)?.try_into().ok()?));
     if u16_at(at)? != 0 || u16_at(at + 2)? != SLIDE {

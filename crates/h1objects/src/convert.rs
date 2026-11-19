@@ -1884,6 +1884,12 @@ impl<'a> Converter<'a> {
     /// drew near black without it (the sniper rifle in first person,
     /// converter version 76).
     ///
+    /// An additive `schi` whose maps multiply together (Blood Gulch's
+    /// teleporter cone, the pelican's thrusters) takes this path onto
+    /// `two_add_clouds`, scrolling and faded by the view angle
+    /// (`h1convert::shad::multiply_chain`, converter version 84; the cone
+    /// drew its first grey dust map alone before).
+    ///
     /// Before converter version 73 these took the opaque tex_bump copy
     /// of whatever bitmap sat at a fixed offset, or, with none there, the
     /// base's stand-in model shader: a10's cryo tube glass (`sotr`

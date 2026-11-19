@@ -659,8 +659,9 @@ fn env_reflection_is_halo1s_rule() {
     assert!(checked > 0);
 }
 
-/// Every animated retail `two_alpha_clouds` instance on the disc has
-/// [`shad::CLOUDS_TREE`]'s tree, and its ten transform components mean
+/// Every animated retail `two_alpha_clouds` instance on the disc, and
+/// every `two_add_clouds` one animating only its tile (no colour
+/// animation: `cr_stream`), has [`shad::CLOUDS_TREE`]'s tree, and its ten transform components mean
 /// what [`shad::TextureScroll`] writes: 1 and 2 the tile's u and v scale
 /// (its rows' values), 0 and 3 one, 6 to 9 zero, the time-driven ones
 /// among 4 and 5 (the offsets). Evaluated with the engine's evaluator
@@ -672,6 +673,7 @@ fn cloud_scroll_matches_retail_animated_instances() {
     let tree = &shad::CLOUDS_TREE;
     let mut seen = HashSet::new();
     let mut checked = 0;
+    let mut additive = 0;
     for (name, base, size) in h2_maps(&disc) {
         let mut map = open(&disc, base, size);
         let Ok(lib) = ShaderLibrary::read(&mut map) else { continue };
@@ -684,13 +686,15 @@ fn cloud_scroll_matches_retail_animated_instances() {
         for (id, sname) in ids {
             let Ok(sh) = lib.shader(id) else { continue };
             let stem = map.tag(sh.template.id).ok().and_then(|t| t.name.clone()).unwrap_or_default();
-            if stem != shad::SKY_CLOUDS.stem || !seen.insert(sname.clone()) {
+            let add = stem == shad::TWO_ADD_CLOUDS.stem;
+            if (stem != shad::SKY_CLOUDS.stem && !add) || !seen.insert(sname.clone()) {
                 continue;
             }
             let p = sh.compiled().unwrap();
-            if p.properties.is_empty() {
+            if p.properties.is_empty() || (add && p.animations.len() != tree.bindings.len()) {
                 continue;
             }
+            additive += usize::from(add);
             let at = format!("{name}: {sname}");
             assert_eq!(p.lods.len(), 1, "{at}");
             assert_eq!(p.lods[0].layer_mask, 1 << tree.animated_layer, "{at}");
@@ -729,8 +733,8 @@ fn cloud_scroll_matches_retail_animated_instances() {
             checked += 1;
         }
     }
-    eprintln!("{checked} animated cloud layers");
-    assert!(checked > 0);
+    eprintln!("{checked} animated cloud layers, {additive} of them two_add_clouds");
+    assert!(checked > additive && additive > 0);
 }
 
 /// A texture's kind as the slot needs it: Halo 1's "white" placeholder
@@ -967,4 +971,109 @@ fn water_pool_instances_share_one_tree() {
     }
     eprintln!("{checked} retail water_pool instances; reflection kinds {reflections:?}");
     assert_eq!(checked, 14);
+}
+
+/// Halo 1's additive chicago multiply chains: every one drawn by a model
+/// on the disc (D: seven, all fade when parallel) draws on
+/// `two_add_clouds`, two maps multiplied, scrolling and faded, the rest
+/// folded into the tint. Blood Gulch's teleporter cone in detail: the
+/// first dust scrolls on the tile (u 6 s, v −20 s), the green ramp
+/// `teleporter_dust` is the still map at 1×1.05, the second dust's mean
+/// grey (halved for the stem's doubling) is the tint; opaque facing the
+/// eye, gone at a grazing angle. Without the stem: the ramp alone on
+/// `one_add_illum`, both dusts' means folded in.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO)"]
+fn additive_chicago_chains_draw_two_maps_scrolling_and_faded() {
+    let h1_iso = std::env::var("H1_ISO").expect("set H1_ISO");
+    let mut iso = xiso::Xiso::open(BufReader::new(File::open(&h1_iso).unwrap())).unwrap();
+    let disc = h1map::disc::Disc::open(&mut iso).unwrap();
+    let mut read = |name: &str| {
+        let e = disc.map(name).cloned().unwrap();
+        H1Map::from_reader(Cursor::new(iso.read(&e).unwrap())).unwrap()
+    };
+    let chains = [
+        (
+            "bloodgulch",
+            r"scenery\teleporter_base\shaders\teleporter_cone",
+        ),
+        (
+            "a50",
+            r"levels\a50\devices\light_ceiling\shaders\volumetric light cone small",
+        ),
+        (
+            "a50",
+            r"levels\a50\devices\light_ground\shaders\volumetric light cone ground",
+        ),
+        ("b40", r"levels\b40\shaders\b40_foglamp"),
+        ("a10", r"vehicles\fighterbomber\shaders\afterburners"),
+        ("a10", r"vehicles\pelican\shaders\hover thrusters"),
+        ("a10", r"vehicles\pelican\shaders\jet thrusters"),
+    ];
+    let mut maps: HashMap<&str, H1Map> = HashMap::new();
+    for (map, shader) in chains {
+        let h1 = maps.entry(map).or_insert_with(|| read(map));
+        let tag = h1.tags().iter().find(|t| t.name == shader).unwrap();
+        let s = shad::read_h1(h1, tag).unwrap();
+        assert_eq!(s.layout.stem, shad::TWO_ADD_CLOUDS.stem, "{shader}");
+        let t = s.extras.tint.unwrap();
+        assert_eq!(
+            (t.perpendicular, t.parallel),
+            (1.0, 0.0),
+            "{shader}: fades when parallel"
+        );
+        assert!(
+            t.color.iter().all(|c| (0.0..=1.0).contains(c)),
+            "{shader}: {t:?}"
+        );
+        let f = s.fallback.as_deref().unwrap();
+        assert_eq!(f.layout.stem, shad::ONE_ADD_ILLUM.stem, "{shader}");
+        eprintln!(
+            "{map}: {shader}: tint {:?}, scroll {:?}",
+            t.color, s.extras.scroll
+        );
+    }
+
+    let h1 = &maps["bloodgulch"];
+    let name = |id: h1map::TagId| h1.tag(id).unwrap().name.clone();
+    let tag = h1.tags().iter().find(|t| t.name == chains[0].1).unwrap();
+    let s = shad::read_h1(h1, tag).unwrap();
+    let role = |r: Role| s.maps.iter().find(|(x, _)| *x == r).unwrap().1;
+    let dust = r"scenery\teleporter_base\bitmaps\base volumetric dust";
+    let ramp = r"scenery\teleporter_base\bitmaps\teleporter_dust";
+    assert_eq!(name(role(Role::Tile).bitmap), dust);
+    assert_eq!(name(role(Role::Mask).bitmap), ramp);
+    assert_eq!(role(Role::Mask).scale, [1.0, 1.05]);
+    let [u, v] = s.extras.scroll.unwrap();
+    let (u, v) = (u.unwrap(), v.unwrap());
+    assert_eq!((u.period, u.from, u.to), (6.0, 0.0, 1.0));
+    assert_eq!(
+        (v.period, v.from, v.to),
+        (20.0, 1.0, 0.0),
+        "negative period: backwards"
+    );
+    let grey = shad::h1_mean_color(h1, role(Role::Tile).bitmap).unwrap();
+    let green = shad::h1_mean_color(h1, role(Role::Mask).bitmap).unwrap();
+    assert!(
+        green[1] > 2.0 * green[0] && green[1] > 2.0 * green[2],
+        "the ramp is green: {green:?}"
+    );
+    assert!(
+        (grey[0] - grey[1]).abs() < 0.05 && (grey[1] - grey[2]).abs() < 0.05,
+        "{grey:?}"
+    );
+    let t = s.extras.tint.unwrap();
+    for c in 0..3 {
+        assert!((t.color[c] - grey[c] * 0.5).abs() < 1e-5, "{t:?} {grey:?}");
+    }
+    let f = s.fallback.as_deref().unwrap();
+    assert_eq!(f.maps.len(), 1);
+    assert_eq!(name(f.maps[0].1.bitmap), ramp);
+    let t = f.extras.tint.unwrap();
+    for c in 0..3 {
+        assert!(
+            (t.color[c] - grey[c] * grey[c]).abs() < 1e-5,
+            "{t:?} {grey:?}"
+        );
+    }
 }
