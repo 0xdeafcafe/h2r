@@ -368,6 +368,9 @@ struct MeshContext<'a> {
     device: &'a wgpu::Device,
     layout: &'a wgpu::BindGroupLayout,
     sampler: &'a wgpu::Sampler,
+    /// For textures whose shader clamps them ([`crate::scene::Scene::clamped`]).
+    clamp_sampler: &'a wgpu::Sampler,
+    clamped: &'a std::collections::HashSet<usize>,
     views: &'a [wgpu::TextureView],
     lifts: &'a [f32],
     grey: &'a wgpu::TextureView,
@@ -403,7 +406,13 @@ impl MeshContext<'_> {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::Sampler(self.sampler),
+                    resource: wgpu::BindingResource::Sampler(
+                        if b.texture.is_some_and(|t| self.clamped.contains(&t)) {
+                            self.clamp_sampler
+                        } else {
+                            self.sampler
+                        },
+                    ),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
@@ -467,6 +476,7 @@ pub struct Viewport {
     translucent: wgpu::RenderPipeline,
     texture_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
+    clamp_sampler: wgpu::Sampler,
     /// The texture of untextured batches and the lightmap of unlit ones
     /// (made with the first scene).
     grey: Option<(wgpu::TextureView, wgpu::TextureView)>,
@@ -743,6 +753,18 @@ impl Viewport {
             anisotropy_clamp: 8,
             ..Default::default()
         });
+        // The sky's horizon gradients are drawn clamped (their template
+        // says so): repeated, their solid edge covers the whole dome.
+        let clamp_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("scenario viewport clamped"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            anisotropy_clamp: 8,
+            ..Default::default()
+        });
 
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
@@ -790,6 +812,7 @@ impl Viewport {
             translucent,
             texture_layout,
             sampler,
+            clamp_sampler,
             grey: None,
             identity,
             uniforms,
@@ -899,6 +922,8 @@ impl Viewport {
             device,
             layout: &self.texture_layout,
             sampler: &self.sampler,
+            clamp_sampler: &self.clamp_sampler,
+            clamped: &scene.clamped,
             views: &views,
             lifts: &scene.lifts,
             grey: &grey,

@@ -87,6 +87,17 @@ pub fn template_blend(template: &str) -> Blend {
     }
 }
 
+/// Whether a shader template draws its base map clamped to its edges: a
+/// template (or its passes) named `..._clamped`, as the sky's horizon
+/// gradients are (`sky_one_alpha_env_clamped`; their pass sets the base
+/// map's sampler to clamp). Repeated, a gradient's solid edge wraps over
+/// the whole sky.
+pub fn template_clamps(template: &str) -> bool {
+    let lower = template.to_ascii_lowercase();
+    let stem = lower.rsplit('\\').next().unwrap_or(&lower);
+    stem.contains("clamped")
+}
+
 /// What a shader's bitmap is for, from the words of its tag name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BitmapRole {
@@ -421,6 +432,9 @@ pub struct Scene {
     pub objects: HashMap<TagId, usize>,
     /// The level's sky, drawn behind everything at infinity.
     pub sky: Option<SceneSky>,
+    /// Textures drawn clamped to their edges, not repeated
+    /// ([`template_clamps`]).
+    pub clamped: std::collections::HashSet<usize>,
     pub stats: SceneStats,
 }
 
@@ -564,7 +578,8 @@ pub struct SceneBuilder<'a, R> {
     /// Shader → (texture, blend).
     looks: HashMap<TagId, (Option<usize>, Blend)>,
     /// Bitmap → texture.
-    bitmaps: HashMap<(TagId, bool), Option<usize>>,
+    /// (bitmap, cut out, clamped) -> texture.
+    bitmaps: HashMap<(TagId, bool, bool), Option<usize>>,
 }
 
 impl<'a, R: Read + Seek> SceneBuilder<'a, R> {
@@ -824,7 +839,8 @@ impl<'a, R: Read + Seek> SceneBuilder<'a, R> {
                         .and_then(|t| t.name.as_deref())
                         .is_some_and(|n| bitmap_role(n) == BitmapRole::Diffuse)
                 });
-                let texture = base.and_then(|b| self.texture(b, blend == Blend::Mask));
+                let clamp = template_clamps(&template);
+                let texture = base.and_then(|b| self.texture(b, blend == Blend::Mask, clamp));
                 (texture, blend)
             }
             Err(_) => (None, Blend::Opaque),
@@ -836,8 +852,8 @@ impl<'a, R: Read + Seek> SceneBuilder<'a, R> {
         look
     }
 
-    fn texture(&mut self, bitmap: TagId, cutout: bool) -> Option<usize> {
-        if let Some(t) = self.bitmaps.get(&(bitmap, cutout)) {
+    fn texture(&mut self, bitmap: TagId, cutout: bool, clamp: bool) -> Option<usize> {
+        if let Some(t) = self.bitmaps.get(&(bitmap, cutout, clamp)) {
             return *t;
         }
         let t = match decode_bitmap(self.map, &mut self.files, bitmap) {
@@ -848,14 +864,18 @@ impl<'a, R: Read + Seek> SceneBuilder<'a, R> {
                 let image = image.fit(MAX_TEXTURE);
                 self.scene.lifts.push(image.lift_factor());
                 self.scene.textures.push(image);
-                Some(self.scene.textures.len() - 1)
+                let t = self.scene.textures.len() - 1;
+                if clamp {
+                    self.scene.clamped.insert(t);
+                }
+                Some(t)
             }
             None => {
                 self.scene.stats.bitmaps_failed += 1;
                 None
             }
         };
-        self.bitmaps.insert((bitmap, cutout), t);
+        self.bitmaps.insert((bitmap, cutout, clamp), t);
         t
     }
 }
@@ -1411,6 +1431,19 @@ mod tests {
         ] {
             assert_eq!(bitmap_role(other), BitmapRole::Other, "{other}");
         }
+    }
+
+    #[test]
+    fn clamped_templates_clamp_their_base_map() {
+        assert!(template_clamps(
+            "shaders\\shader_templates\\transparent\\sky_one_alpha_env_clamped"
+        ));
+        assert!(!template_clamps(
+            "shaders\\shader_templates\\transparent\\sky_one_alpha_env"
+        ));
+        assert!(!template_clamps(
+            "shaders\\clamped_folder\\opaque\\tex_bump"
+        ));
     }
 
     fn image(w: u32, h: u32, f: impl Fn(u32, u32) -> [u8; 4]) -> Image {

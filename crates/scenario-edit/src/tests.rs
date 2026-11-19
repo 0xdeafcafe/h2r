@@ -1979,13 +1979,18 @@ fn the_sky_turns_with_the_camera_and_never_comes_nearer() {
 
 /// A box of `half` round the origin, in one batch with texture 0.
 fn sky_box(half: f32) -> crate::scene::Mesh {
+    sky_box_at(half, [0.5, 0.5])
+}
+
+/// [`sky_box`] with every vertex at texture coordinates `uv`.
+fn sky_box_at(half: f32, uv: [f32; 2]) -> crate::scene::Mesh {
     let mut part = geometry::WorldPart::default();
     for z in [-half, half] {
         for y in [-half, half] {
             for x in [-half, half] {
                 part.positions.push([x, y, z]);
                 part.normals.push([0.0, 0.0, 1.0]);
-                part.uvs.push([0.5, 0.5]);
+                part.uvs.push(uv);
             }
         }
     }
@@ -2006,6 +2011,92 @@ fn sky_box(half: f32) -> crate::scene::Mesh {
     mesh
 }
 
+/// A 64x64 viewport's centre pixel after [`crate::render::Viewport::render`].
+fn center_pixel(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    vp: &crate::render::Viewport,
+    size: [u32; 2],
+) -> [u8; 4] {
+    let tex = vp.color_texture().unwrap();
+    let row = 256u32;
+    let buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: u64::from(row * size[1]),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut enc = device.create_command_encoder(&Default::default());
+    enc.copy_texture_to_buffer(
+        tex.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buf,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(row),
+                rows_per_image: Some(size[1]),
+            },
+        },
+        wgpu::Extent3d {
+            width: size[0],
+            height: size[1],
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit([enc.finish()]);
+    buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+    let data = buf.slice(..).get_mapped_range().unwrap();
+    let at = (32 * row + 32 * 4) as usize;
+    [data[at], data[at + 1], data[at + 2], data[at + 3]]
+}
+
+/// A texture its shader clamps is drawn clamped: a sky box whose
+/// coordinates all lie past the picture's bottom edge (`v` 1.25) takes
+/// the bottom row (blue), where repeating would take the top (red).
+#[test]
+fn a_clamped_sky_texture_is_not_repeated() {
+    use crate::scene::{Image, Scene, SceneSky};
+    let instance = wgpu::Instance::default();
+    let Ok(adapter) =
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+    else {
+        eprintln!("no wgpu adapter; skipping");
+        return;
+    };
+    let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+    let size = [64u32, 64];
+    let (red, blue) = ([230u8, 10, 10, 255], [10u8, 10, 230, 255]);
+    let picture = Image {
+        width: 2,
+        height: 2,
+        rgba: [red, red, blue, blue].concat(),
+    };
+    let mut scene = Scene {
+        textures: vec![picture],
+        lifts: vec![1.0],
+        sky: Some(SceneSky {
+            name: "test_sky".into(),
+            mesh: sky_box_at(5.0, [0.5, 1.25]),
+        }),
+        ..Scene::default()
+    };
+    let cam = Camera {
+        distance: 40.0,
+        ..Camera::default()
+    };
+    let mut vp = crate::render::Viewport::new(&device);
+    vp.set_scene(&device, &queue, &scene);
+    vp.render(&device, &queue, &cam, size);
+    let px = center_pixel(&device, &queue, &vp, size);
+    assert!(px[0] > 180 && px[2] < 60, "repeated: {px:?}");
+    scene.clamped.insert(0);
+    vp.set_scene(&device, &queue, &scene);
+    vp.render(&device, &queue, &cam, size);
+    let px = center_pixel(&device, &queue, &vp, size);
+    assert!(px[2] > 180 && px[0] < 60, "clamped: {px:?}");
+}
+
 #[test]
 fn the_sky_model_is_drawn_behind_the_level_wherever_the_eye_is() {
     use crate::scene::{Image, Scene, SceneSky};
@@ -2018,39 +2109,7 @@ fn the_sky_model_is_drawn_behind_the_level_wherever_the_eye_is() {
     };
     let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
     let size = [64u32, 64];
-    let center = |vp: &crate::render::Viewport| -> [u8; 4] {
-        let tex = vp.color_texture().unwrap();
-        let row = 256u32;
-        let buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: u64::from(row * size[1]),
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        let mut enc = device.create_command_encoder(&Default::default());
-        enc.copy_texture_to_buffer(
-            tex.as_image_copy(),
-            wgpu::TexelCopyBufferInfo {
-                buffer: &buf,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(row),
-                    rows_per_image: Some(size[1]),
-                },
-            },
-            wgpu::Extent3d {
-                width: size[0],
-                height: size[1],
-                depth_or_array_layers: 1,
-            },
-        );
-        queue.submit([enc.finish()]);
-        buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
-        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-        let data = buf.slice(..).get_mapped_range().unwrap();
-        let at = (32 * row + 32 * 4) as usize;
-        [data[at], data[at + 1], data[at + 2], data[at + 3]]
-    };
+    let center = |vp: &crate::render::Viewport| center_pixel(&device, &queue, vp, size);
     let red = Image {
         width: 1,
         height: 1,
