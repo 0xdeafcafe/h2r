@@ -91,9 +91,6 @@ pub struct Ready {
     /// What the native lights draw over this world
     /// (`native_lights_glue`; `None` with them off).
     pub(crate) lights: Option<Arc<crate::native_lights_glue::LightsWorld>>,
-    /// Every egor's template pass, loaded (`native_post_load`; `None` with
-    /// the native post off), for `native_post_glue`'s screen passes.
-    pub(crate) screen_effects: Option<Arc<crate::native_post_load::ScreenEffects>>,
     /// The device palettes the load expanded palettized stage bitmaps
     /// through, at the stages it used them (the rest `None`): each ask
     /// checks they are still bound.
@@ -255,8 +252,9 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
         state: Arc::clone(&state),
     }));
     crate::native_transparents_glue::install(device, Arc::clone(&state));
-    crate::native_lights_glue::install(device, Arc::clone(&state));
-    crate::native_post_glue::install(device, state);
+    crate::native_lights_glue::install(device, state);
+    // The post loads its own screen effects (`native_post_glue::EffectsSlot`).
+    crate::native_post_glue::install(device);
 }
 
 /// The world's GPU side, uploaded from its CPU side by the first pass that
@@ -831,9 +829,8 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Res
     } else {
         None
     };
-    // The screen effects' template passes (nothing draws them yet).
-    let post_on = feature::Switches::from_env().is_ok_and(|s| feature::native_post::on(&s));
-    let screen_effects = post_on.then(|| Arc::new(crate::native_post_load::load(&mut map, &mut files)));
+    // The screen effects are not the world's: `native_post_glue` loads
+    // them itself, with or without the native world.
     // Draw only a native material's clusters, and its placements with its
     // rigid program: the rest keeps its D3D draws.
     let world = keep_draws(world, &|d| native.contains(&d.material) && drawn_natively(d, &rigid));
@@ -852,7 +849,6 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Res
         parts: Arc::new(parts),
         transparent_parts: Arc::new(transparent_parts),
         lights,
-        screen_effects,
         palettes: decoder.used().clone(),
     })
 }

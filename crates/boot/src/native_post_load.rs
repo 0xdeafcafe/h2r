@@ -99,6 +99,7 @@ pub(crate) fn load<R: std::io::Read + std::io::Seek>(map: &mut Map<R>, files: &m
         .filter_map(|t| Some((t.id, t.location.as_ref()?.address)))
         .collect();
     if egors.is_empty() {
+        eprintln!("native-post: the map has no screen effects");
         return out;
     }
     let mut lib = match ShaderLibrary::read(map) {

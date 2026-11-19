@@ -2310,12 +2310,15 @@ effect per egor.
      before `TemplatePass` leaves `missing`: reading each egor's shader
      at load (its material, vertex program and bitmaps), the engine
      textures layer 15 binds, and the GPU pass drawing a plan's strips.
-   - **Built: the load** (`boot::native_post_load`, the switch on, with
-     the world): every `egor` tag's shader (the definition's `+0x44`)
+   - **Built: the load** (`boot::native_post_load`, the switch on): every `egor` tag's shader (the definition's `+0x44`)
      resolved, each implementation of each of its layer-15 passes
      looked at and translated with its vertex shader's classification-0
      program (below), and the stages' bitmaps decoded; refusals counted by reason, one line on
-     stderr. Held by the world (`Ready::screen_effects`) for the draw.
+     stderr. The post glue runs it itself, on a thread of its own at the
+     first screen-effect call on a map (`native_post_glue::EffectsSlot`),
+     with or without the native world: it used to ride the world's load,
+     so with `native_world` off no egor loaded and every call was refused
+     as `TemplatePass`.
    - **Traced: the engine textures** (`0x00019530`, the jump table at
      `0x00019b68` by id - 1; `native_render::screen_look::engine_texture`):
      1, 9, 14 and 15 the rasterizer data's bitmaps (`+0xc`, `+4`, `+0x14`);
