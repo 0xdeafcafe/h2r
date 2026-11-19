@@ -76,6 +76,31 @@ pub(super) fn register_spawn_hook(builder: &mut Builder<'_>) {
             }
         },
     );
+    builder.raw().before(
+        &points::AI_SPAWN_AT_SQUAD_START,
+        "reserve an explicitly selected Halo 1 starting location",
+        |call| {
+            if !super::is_converted_campaign(call) {
+                return Ok(Flow::Continue);
+            }
+            if let Some(squad) = call.arg_u32("squad") {
+                let mut guest = call.ctx.runtime().memory();
+                let _ = reserve_explicit(
+                    &mut *guest, u32::from(squad as u16), usize::from(call.cpu.ecx as u16),
+                );
+            }
+            Ok(Flow::Continue)
+        },
+    );
+}
+
+fn reserve_explicit(m: &mut dyn GuestMemory, squad: u32, index: usize) -> R<()> {
+    if let Some(base) = state::teleport_base(m)?
+        && let Some(pool) = pools(m, base)?.get(&squad).copied()
+    {
+        pool.consume(m, index)?;
+    }
+    Ok(())
 }
 
 fn reserve_spawn(
@@ -145,6 +170,18 @@ fn choose(words: &mut [Word], excluded: &[u32], count: usize, seed: u32) -> Opti
 }
 
 impl Pool {
+    fn consume(self, m: &mut dyn GuestMemory, index: usize) -> R<()> {
+        if index >= self.count {
+            return Ok(());
+        }
+        let at = self.base + (index / 32) as u32 * WIDTH * state::STRIDE;
+        let keep = !(1 << (index % 32));
+        let preferred = m.u32(at)? & keep;
+        let available = m.u32(at + state::STRIDE)? & keep;
+        m.set_u32(at, preferred)?;
+        m.set_u32(at + state::STRIDE, available)
+    }
+
     pub(super) fn reserve(
         self,
         m: &mut dyn GuestMemory,
@@ -203,6 +240,18 @@ mod tests {
         let mut words = [Word { preferred: 0b100, available: 0b111 }];
         assert_eq!(choose(&mut words, &[0b100], 3, 0), Some(0));
         assert_eq!(choose(&mut words, &[0], 3, 0), Some(2));
+    }
+
+    #[test]
+    fn direct_spawn_reserves_its_start_without_advancing_random_selection() {
+        let mut guest = FakeGuest::new();
+        let base = 0x0080_0100;
+        guest.put_u32(base, 0b11).put_u32(base + state::STRIDE, 0b111);
+        let pool = Pool { base, count: 3 };
+        pool.consume(&mut guest, 0).unwrap();
+        pool.consume(&mut guest, 0).unwrap();
+        assert_eq!(guest.u32(base), Ok(0b10));
+        assert_eq!(guest.u32(base + state::STRIDE), Ok(0b110));
     }
 
     #[test]
