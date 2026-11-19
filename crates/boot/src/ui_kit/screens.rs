@@ -315,21 +315,20 @@ pub fn live(name: &str) -> Option<Box<dyn Live>> {
 
 /// The kit's choice rows as a dialog (docs/game/ui-builder.md "The Dialog
 /// kind"): on the game's own settings dialog (the lobby's Quick Options,
-/// `quick_options`) with the description in its help line's place, as a bots page could
-/// be, or on the large dialog, the one the game maps have too (a pause
-/// menu's screen).
+/// `quick_options`), its description in Quick Options' help line, as the
+/// Clankers and Halo 1 Options pages are, or on the large dialog, the one
+/// the game maps have too (a pause menu's screen).
 pub fn dialog_example(
     store: Arc<settings::Store>,
     base: crate::ui_kit::dialog::DialogBase,
 ) -> crate::ui_kit::screen::KitScreen {
-    use crate::list_class::TextBlock;
     use crate::ui_kit::choice::example::{COUNT, LEVEL};
-    use crate::ui_kit::dialog::{DialogBase, QUICK_HELP};
+    use crate::ui_kit::dialog::DialogBase;
     let (feature, name) = match base {
         DialogBase::QuickOptions => ("kit-dialog", "kit.dialog"),
         DialogBase::Large => ("kit-dialog-large", "kit.dialog.large"),
     };
-    let s = crate::ui_kit::screen::KitScreen::new(
+    crate::ui_kit::screen::KitScreen::new(
         feature,
         name,
         crate::ui_kit::ids::family(name),
@@ -341,21 +340,7 @@ pub fn dialog_example(
     .prompts(&[
         Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Change"),
         Prompt::new(&[Glyph::B], "Back"),
-    ]);
-    match base {
-        DialogBase::QuickOptions => s.description(TextBlock {
-            rect: [
-                QUICK_HELP.top,
-                QUICK_HELP.left,
-                QUICK_HELP.bottom,
-                QUICK_HELP.right,
-            ],
-            font: 1,
-            colour: [0.388235, 0.580392, 0.756863],
-            animation: 0,
-        }),
-        DialogBase::Large => s,
-    }
+    ])
 }
 
 /// The kit's choice rows on a page laid out as Game Options is (the
@@ -461,11 +446,7 @@ pub fn list_page(name: &str) -> Option<ListPage> {
             let s = Arc::new(crate::h1_options::OptionsScreen {
                 store: skull_store(),
             });
-            let class = crate::h1_options_row::class(
-                Arc::clone(&s),
-                skulls_menu::DESCRIPTION_TEXT,
-                skulls_menu::LIST_LAYOUT,
-            );
+            let class = crate::h1_options_row::class(Arc::clone(&s));
             list(ListPage::new(class, move || s.spec()))
         }
         "variant-more-options" => {
@@ -566,6 +547,118 @@ mod tests {
         }
     }
 
+    /// Our settings dialogs: the pages that are Quick Options inside.
+    const QUICK_PAGES: [&str; 2] = ["clankers", "h1-options"];
+
+    /// Screen `name` drawn from `from` has every widget the kit's own
+    /// Quick Options sample (`kit.dialog`) has where that sample has it:
+    /// the panel, the title, the rows' bars, labels and values, the help
+    /// line and the legend, each the same art or font and justification.
+    fn assert_quick_options_inside(from: &crate::ui_kit::preview::From<'_>, name: &str) {
+        use crate::ui_kit::view::Kind;
+        let (quick, _) = from.draw(&sample("kit.dialog").unwrap(), "q").unwrap();
+        let (v, _) = from.draw(&sample(name).unwrap(), "q").unwrap();
+        let mut compared = 0;
+        for w in &quick.widgets {
+            let same = w.id.starts_with("panel.")
+                || ["title", "description", "legend"].contains(&w.id.as_str())
+                || ["row.0.", "row.1."].iter().any(|p| w.id.starts_with(p));
+            if !same {
+                continue;
+            }
+            let ours = v
+                .widget(&w.id)
+                .unwrap_or_else(|| panic!("{name}: no {}", w.id));
+            assert_eq!(ours.rect, w.rect, "{name}: {}", w.id);
+            assert_eq!(ours.layer, w.layer, "{name}: {}", w.id);
+            match (&ours.kind, &w.kind) {
+                (Kind::Art { art: a, .. }, Kind::Art { art: b, .. }) => {
+                    assert_eq!(a, b, "{name}: {}", w.id)
+                }
+                (
+                    Kind::Text {
+                        font: a,
+                        justify: ja,
+                        ..
+                    },
+                    Kind::Text {
+                        font: b,
+                        justify: jb,
+                        ..
+                    },
+                ) => assert_eq!((a, ja), (b, jb), "{name}: {}", w.id),
+                _ => panic!("{name}: {} is another kind", w.id),
+            }
+            compared += 1;
+        }
+        for id in [
+            "panel.0",
+            "title",
+            "description",
+            "legend",
+            "row.0.label",
+            "row.0.value",
+        ] {
+            assert!(quick.widget(id).is_some(), "kit.dialog has {id}");
+        }
+        assert!(compared >= 8, "{name}: {compared} widgets compared");
+        assert_eq!(v.list, quick.list, "{name}");
+    }
+
+    /// The Clankers and Halo 1 Options pages are Quick Options inside, not
+    /// just its frame: a dialog on `quick_options`, its list (skin,
+    /// anchor, a row per setting), each value alone in the value column,
+    /// the description in its one-line help line, a capitalised header
+    /// and the legend in its footer; drawn, laid out as the kit's Quick
+    /// Options sample is ([`assert_quick_options_inside`]).
+    #[test]
+    fn our_settings_dialogs_are_quick_options_inside() {
+        use crate::ui_kit::dialog::{DialogBase, DialogGeometry, QUICK_HELP_TEXT};
+        let g = DialogGeometry::fallback_for(DialogBase::QuickOptions);
+        for name in QUICK_PAGES {
+            let s = sample(name).unwrap();
+            let d = s
+                .dialog
+                .as_ref()
+                .unwrap_or_else(|| panic!("{name}: a dialog"));
+            assert_eq!(d.base, DialogBase::QuickOptions, "{name}");
+            assert_eq!(d.rows, s.rows, "{name}");
+            assert_eq!(s.style, ValueStyle::Setting, "{name}: the value alone");
+            assert_eq!(
+                s.list,
+                DialogGeometry::list_place(g.list, s.rows.len()),
+                "{name}: Quick Options' own list"
+            );
+            assert!(
+                s.rows.len() <= g.list_items,
+                "{name}: fits without scrolling"
+            );
+            assert_eq!(
+                s.description,
+                Some(QUICK_HELP_TEXT.into()),
+                "{name}: the help line"
+            );
+            assert!(
+                s.footer && s.footer_text().is_some(),
+                "{name}: a footer legend"
+            );
+            assert_eq!(s.title, s.title.to_uppercase(), "{name}: as QUICK OPTIONS");
+            for r in &s.rows {
+                let (label, value) = r.cells(s.style);
+                assert_eq!(label, r.label, "{name}");
+                let v = value.unwrap_or_else(|| panic!("{name}: {} has a value", r.label));
+                assert!(!v.contains('<') && !v.contains('>'), "{name}: {v:?}");
+                let help = r.description.as_deref().unwrap_or("");
+                assert!(!help.is_empty() && !help.contains('\n'), "{name}: {help:?}");
+                assert!(
+                    help.encode_utf16().count() <= 52,
+                    "{name}: {help:?}, one line"
+                );
+            }
+            assert_quick_options_inside(&crate::ui_kit::preview::From::Synthetic, name);
+        }
+    }
+
     #[test]
     fn screens_describe_themselves_as_json_for_the_ui_stack() {
         let s = sample("coop").unwrap();
@@ -585,13 +678,15 @@ mod tests {
     ///   is under them: the large dialog's panel is see-through, retail's
     ///   way, and the sample opens it over the main menu, whose logo is
     ///   under its rows (its real users open it over a pause menu); the
-    ///   Quick Options sample passes on the disc's art, but the synthetic
-    ///   source has no `fs_dialog` to cover its opener's rows.
+    ///   Quick Options dialogs (the sample, Clankers, Halo 1 Options) pass
+    ///   on the disc's art, but the synthetic source has no `fs_dialog` to
+    ///   cover their opener's rows.
     fn known(screen: &str, issue: &crate::ui_kit::layout::Issue) -> bool {
         use crate::ui_kit::layout::Issue;
         matches!(
             (screen, issue),
-            ("kit.dialog" | "kit.dialog.large", Issue::Contrast { id, .. }) if id.starts_with("row.")
+            ("kit.dialog" | "kit.dialog.large" | "clankers" | "h1-options", Issue::Contrast { id, .. })
+                if id.starts_with("row.")
         )
     }
 
@@ -684,6 +779,36 @@ mod tests {
                 disc.dialog_geometry_for(base).unwrap(),
                 "DialogGeometry::fallback_for({base:?}) differs from the disc"
             );
+        }
+        // Quick Options' help line and list, which the Clankers and Halo 1
+        // Options pages use, are its tag's own, and those pages are laid out
+        // as Quick Options on the disc's geometry too.
+        {
+            use crate::ui_kit::dialog::{
+                QUICK_ANIMATION, QUICK_HELP_TEXT, QUICK_LIST, QUICK_LIST_ROWS,
+                QUICK_OPTIONS_SCREEN_ID,
+            };
+            let quick = disc.screen(QUICK_OPTIONS_SCREEN_ID).expect("quick_options");
+            let pane = &quick.panes[0];
+            assert_eq!(pane.animation.0, QUICK_ANIMATION);
+            let help = &pane.text_blocks[0];
+            let r = help.rect;
+            assert_eq!([r.top, r.left, r.bottom, r.right], QUICK_HELP_TEXT.rect);
+            assert_eq!(help.font, QUICK_HELP_TEXT.font);
+            assert_eq!(help.text_color, QUICK_HELP_TEXT.colour);
+            assert_eq!(help.animation.0, QUICK_HELP_TEXT.animation);
+            assert_eq!(
+                help.flags & 3,
+                1,
+                "left-justified, as TextBlock::bytes writes"
+            );
+            let list = &pane.lists[0];
+            assert_eq!(list.skin, QUICK_LIST.skin);
+            assert_eq!([list.anchor.x, list.anchor.y], QUICK_LIST.anchor);
+            assert_eq!(list.visible_items as usize, QUICK_LIST_ROWS);
+            for name in QUICK_PAGES {
+                assert_quick_options_inside(&crate::ui_kit::preview::From::Disc(&disc), name);
+            }
         }
         // Every state passes the layout checks on the disc's art and fonts,
         // the art ones included.

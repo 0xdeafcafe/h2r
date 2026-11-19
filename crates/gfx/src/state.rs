@@ -344,6 +344,17 @@ pub struct RenderState {
     pub fog_color: u32,
     /// `D3DRS_TEXTUREFACTOR`, `0xAARRGGBB`.
     pub texture_factor: u32,
+    /// `D3DRS_DEPTHCLIPCONTROL` is `D3DDCC_DEPTHCLAMP` ([`clamps_depth`]):
+    /// depth outside the clip range is clamped to it, not culled.
+    pub depth_clamp: bool,
+}
+
+/// Whether a `D3DRS_DEPTHCLIPCONTROL` value clamps out-of-range depth
+/// instead of culling it: bits 7:4 = 1 (`D3DDCC_DEPTHCLAMP`), as D3D and
+/// Halo's inlined copies push it to `NV097_SET_ZMIN_MAX_CONTROL` (`0x1D78`;
+/// xemu's `ZCLAMP_EN`).
+pub fn clamps_depth(depth_clip_control: u32) -> bool {
+    (depth_clip_control >> 4) & 0xF == 1
 }
 
 impl Default for RenderState {
@@ -375,6 +386,7 @@ impl Default for RenderState {
             fog_enable: false,
             fog_color: 0,
             texture_factor: 0xFFFF_FFFF,
+            depth_clamp: false,
         }
     }
 }
@@ -419,6 +431,7 @@ pub enum RenderStateType {
     FrontFace,
     CullMode,
     TextureFactor,
+    DepthClipControl,
     /// A slot this model does not track (pixel-shader registers, lighting, ...).
     Other(u32),
 }
@@ -462,6 +475,7 @@ impl RenderStateType {
             146 => FrontFace,
             147 => CullMode,
             148 => TextureFactor,
+            82 => DepthClipControl,
             other => Other(other),
         }
     }
@@ -509,6 +523,7 @@ impl RenderStateType {
             FrontFace => 146,
             CullMode => 147,
             TextureFactor => 148,
+            DepthClipControl => 82,
             Other(i) => i,
         }
     }
@@ -577,6 +592,7 @@ impl RenderState {
             R::FrontFace => self.front_face = FrontFace::from_xbox(value).ok_or_else(bad)?,
             R::CullMode => self.cull_mode = CullMode::from_xbox(value).ok_or_else(bad)?,
             R::TextureFactor => self.texture_factor = value,
+            R::DepthClipControl => self.depth_clamp = clamps_depth(value),
             R::Other(_) => {}
         }
         Ok(())
@@ -1016,6 +1032,30 @@ mod tests {
         assert_eq!(a.xbox_value(), 0x32);
         assert_eq!(TextureArg::from_xbox(0xF), None);
         assert_eq!(TextureArg::from_xbox(0x100), None);
+    }
+
+    #[test]
+    fn depth_clip_control_sets_depth_clamp() {
+        assert_eq!(
+            RenderStateType::from_index(82),
+            RenderStateType::DepthClipControl
+        );
+        assert_eq!(RenderStateType::DepthClipControl.index(), 82);
+        let mut s = RenderState::default();
+        assert!(!s.depth_clamp);
+        // D3DDCC_DEPTHCLAMP is bits 7:4 = 1; CULLPRIMITIVE (0) and
+        // CLIPPLANES (bit 0) alone do not clamp.
+        for (value, clamp) in [
+            (0x10, true),
+            (0x11, true),
+            (0, false),
+            (1, false),
+            (0x20, false),
+            (0x30, false),
+        ] {
+            s.set_raw(RenderStateType::DepthClipControl, value).unwrap();
+            assert_eq!(s.depth_clamp, clamp, "{value:#x}");
+        }
     }
 
     #[test]

@@ -2320,4 +2320,45 @@ mod tests {
             .count();
         assert_eq!(refs, 4);
     }
+
+    /// The map builds after the conversion (fresh, from scratch) read every
+    /// tag through the schema and rewrite what it calls a pointer. Every
+    /// field the converter writes as a value (inputs, state words and
+    /// thresholds, anchor, flags, sequences, offsets, registration, special;
+    /// a text's justification and font) must be no schema field, or it
+    /// comes out changed: v83's "Reload" thresholds at `+0x18` were taken
+    /// for a raw pointer and showed the warning on a full magazine.
+    #[test]
+    fn the_values_written_are_bytes_to_the_map_builds() {
+        use tags::schema::{Field, Schema};
+        let nhdt = &Schema::builtin().groups[&map::FourCC(*b"nhdt")];
+        let block = |at: u32| match &nhdt.fields[&at] {
+            Field::Block(c) => c.clone(),
+            f => panic!("nhdt +{at:#x} is {f:?}"),
+        };
+        // The fields the converter fixes up: the name, the bitmap and
+        // shader references (bitmap widgets); the name, shader and string
+        // (texts); and the bitmap widgets' effects block, left empty.
+        let cases = [
+            (
+                block(NHDT_BITMAP_WIDGETS as u32),
+                BITMAP_WIDGET_SIZE,
+                vec![0, widget::BITMAP, widget::SHADER, widget::EFFECTS],
+            ),
+            (
+                block(NHDT_TEXT_WIDGETS as u32),
+                text::SIZE,
+                vec![text::NAME, text::SHADER, text::STRING, 0x4c],
+            ),
+        ];
+        for (s, size, fixed) in cases {
+            assert_eq!(s.size as usize, size);
+            for (&o, f) in &s.fields {
+                assert!(
+                    fixed.contains(&(o as usize)),
+                    "+{o:#x} is a schema {f:?} the converter writes as a value"
+                );
+            }
+        }
+    }
 }

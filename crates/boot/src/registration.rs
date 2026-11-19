@@ -90,7 +90,7 @@ pub fn register_core(features: &mut feature::Registry, i: CoreInputs<'_>) -> any
     if let Some(store) = i.settings.as_ref() {
         h1_options::install_switches(store);
         let screen = Arc::new(h1_options::OptionsScreen { store: Arc::clone(store) });
-        let class = h1_options_row::class(screen, skulls_menu::DESCRIPTION_TEXT, skulls_menu::LIST_LAYOUT);
+        let class = h1_options_row::class(screen);
         if let Err(e) = features.add(&class) {
             eprintln!("h1 options: {e}");
         }

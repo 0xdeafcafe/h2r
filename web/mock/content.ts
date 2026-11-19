@@ -157,7 +157,7 @@ export class Content {
       map_id: p.map_id, name: p.name, ...(p.description ? { description: p.description } : {}),
       author: p.author, base: p.base, layers: p.layers, size: p.layers.reduce((n, l) => n + l.size, 0),
       ...(p.image ? { image: p.image.sha256 } : {}), ...(p.geometry ? { geometry: p.geometry } : {}), published_at: p.published_at,
-      position: p.position, downloads: this.downloads(p), ...(p.credit ? { credit: p.credit } : {}),
+      position: p.position, downloads: this.downloads(p), ...(p.credit ? { credit: p.credit, credits: { authors: [p.credit] } } : {}),
       ...(p.category ? { category: p.category } : {}), ...(p.source_url ? { source_url: p.source_url } : {}),
     };
   }

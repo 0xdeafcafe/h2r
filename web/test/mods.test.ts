@@ -6,7 +6,7 @@
 import { describe, expect, test } from "bun:test";
 import { parseMapSummaries, parseMapSummary, safeSourceUrl } from "../src/lib/maps";
 import {
-  MOD_CATEGORIES, baseOptions, categoryLabel, creditBeyondAuthor, cursorCurrent, cursorNext, cursorPage, cursorPrev, cursorStart,
+  MOD_CATEGORIES, baseOptions, categoryLabel, modMakers, releasedText, cursorCurrent, cursorNext, cursorPage, cursorPrev, cursorStart,
   downloadsText, isModCategory, modHref, modListParams, modMissingText, modQueryFromSearch, modQueryKey, modSearchParams, modsHref, shortSha,
 } from "../src/lib/mods";
 
@@ -30,6 +30,14 @@ describe("parsing the new fields", () => {
     expect(m.credit).toBe("Old Crate Co.");
     expect(m.category).toBe("weapons");
     expect(m.source_url).toBe("https://mods.example.net/crates");
+  });
+
+  test("credits are read leniently; unsafe links and blanks are dropped", () => {
+    const m = parseMapSummary(wire({ credit: "A & B", credits: { authors: [" A ", "", 3, "B"], release: "Crates v2", released: "2005-03", source_url: "javascript:x", notes: " n " } }))!;
+    expect(m.credits).toEqual({ authors: ["A", "B"], release: "Crates v2", released: "2005-03", notes: "n" });
+    expect(parseMapSummary(wire({ credits: { authors: [" "] } }))!.credits).toBeUndefined();
+    expect(parseMapSummary(wire({ credits: "Old Crate Co." }))!.credits).toBeUndefined();
+    expect(parseMapSummary(wire({ credits: { source_url: "https://mods.example.net/x" } }))!.credits).toEqual({ authors: [], source_url: "https://mods.example.net/x" });
   });
 
   test("absent ones default: position and downloads 0, the rest left out", () => {
@@ -114,11 +122,21 @@ describe("labels and bits", () => {
     expect(baseOptions([], undefined, title)).toEqual([]);
   });
 
-  test("credit only when it names someone else", () => {
-    const author = { xuid: "1", gamertag: "Sneaky Pete" };
-    expect(creditBeyondAuthor({ author, credit: "Old Crate Co." })).toBe("Old Crate Co.");
-    expect(creditBeyondAuthor({ author, credit: "sneaky pete" })).toBeNull();
-    expect(creditBeyondAuthor({ author })).toBeNull();
+  test("the makers are the credited authors, never the uploader", () => {
+    expect(modMakers({ credits: { authors: ["Old Crate Co."] } })).toBe("Old Crate Co.");
+    expect(modMakers({ credits: { authors: ["A", "B"] }, credit: "ignored" })).toBe("A & B");
+    expect(modMakers({ credits: { authors: ["A", "B", "C"] } })).toBe("A, B & C");
+    expect(modMakers({ credit: " Old Crate Co. " })).toBe("Old Crate Co.");
+    expect(modMakers({ credits: { authors: [] } })).toBeNull();
+    expect(modMakers({})).toBeNull();
+  });
+
+  test("release dates read as words", () => {
+    expect(releasedText("2005")).toBe("2005");
+    expect(releasedText("2005-03")).toBe("March 2005");
+    expect(releasedText("2005-03-04")).toBe("4 March 2005");
+    expect(releasedText("2005-13")).toBe("2005");
+    expect(releasedText("spring")).toBe("spring");
   });
 
   test("counts, hashes, links and missing states", () => {

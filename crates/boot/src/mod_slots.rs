@@ -503,5 +503,24 @@ pub fn replacing(data_root: &Path) -> Vec<Fill> {
     out
 }
 
+/// Each disc map's (then each Map Pack map's) picture as its slot shows
+/// it now, by map file name (`lockout`, `triplicate`): the slot's bitmap
+/// datum (`[slot + 8]`), which the level select's picture widget draws
+/// (`list_class::Rows::picture`). A map whose package has a picture shows
+/// that once [`plan`] has run. The Mods screen's picture of a mod
+/// (`crate::mods_screen`).
+pub fn pictures(slots: &[Slot]) -> BTreeMap<String, u32> {
+    let mut out = BTreeMap::new();
+    for want in [Category::Halo2, Category::MapPack] {
+        for s in slots {
+            let datum = s.bitmap()[1];
+            if s.id() != FREE && datum != FREE && category_of(&s.path()) == want {
+                out.entry(s.file()).or_insert(datum);
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 pub(crate) mod tests;

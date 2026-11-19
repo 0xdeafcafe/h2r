@@ -131,7 +131,67 @@ fn sky_tags(
                 || (t.group == FourCC(*b"bitm") && bitmaps.contains(&n))
         })
         .count();
-    skies + added
+    // Opaque copies of the dome pictures drawn without their own alpha
+    // (`H1SkyShader::opaque_picture`): exactly one per such picture, named
+    // `opaque_name` of it, and no other added bitmap so named.
+    let want: std::collections::BTreeSet<String> = p
+        .skies
+        .skies
+        .iter()
+        .flat_map(|s| {
+            s.shaders.iter().flatten().filter_map(|h| {
+                let id = h.maps[h.opaque_picture()?].bitmap;
+                let b = s.bitmaps.iter().find(|b| b.0 == id)?;
+                Some(h1convert::sky::opaque_name(&b.1))
+            })
+        })
+        .collect();
+    let opaque: Vec<String> = m
+        .tags()
+        .iter()
+        .filter(|t| t.id.index() >= base_slots && t.group == FourCC(*b"bitm"))
+        .filter_map(|t| t.name.clone())
+        .filter(|n| n.ends_with(" opaque"))
+        .collect();
+    assert_eq!(
+        opaque
+            .iter()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>(),
+        want,
+        "the opaque sky pictures"
+    );
+    assert_eq!(opaque.len(), want.len(), "one copy each: {opaque:?}");
+    if !opaque.is_empty() {
+        eprintln!("    opaque sky pictures: {opaque:?}");
+    }
+    // Each sky light's lens flare and its bitmap (`h1convert::lens`), where
+    // added and not already counted as a sky or level bitmap.
+    let flares: Vec<(&str, Option<&str>)> = p
+        .skies
+        .skies
+        .iter()
+        .flat_map(|s| s.flares.iter().flatten())
+        .map(|f| (f.name.as_str(), f.bitmap.as_ref().map(|b| b.0.as_str())))
+        .collect();
+    let lens: Vec<String> = m
+        .tags()
+        .iter()
+        .filter(|t| t.id.index() >= base_slots)
+        .filter(|t| {
+            let n = t.name.as_deref().unwrap_or_default();
+            (t.group == FourCC(*b"lens") && flares.iter().any(|f| f.0 == n))
+                || (t.group == FourCC(*b"bitm")
+                    && flares.iter().any(|f| f.1 == Some(n))
+                    && !bitmaps.contains(&n)
+                    && !p.textures.bitmaps.iter().any(|b| b.0 == n))
+        })
+        .filter_map(|t| t.name.clone())
+        .collect();
+    if !lens.is_empty() {
+        eprintln!("    sky flares: {lens:?}");
+    }
+    skies + added + opaque.len() + lens.len()
 }
 
 struct Mem(Vec<u8>);
@@ -965,6 +1025,18 @@ fn every_multiplayer_map_converts_and_keeps_the_bases_bitmaps() {
                     .skies
                     .iter()
                     .any(|s| s.bitmaps.iter().any(|b| b.1 == g.0))
+            })
+            // A dome picture's opaque copy (`Sky::opaque_bitmaps`), and a
+            // sky flare's bitmap the level added (one of the base's own
+            // name is found, not added, and stays the base's image).
+            .filter(|g| {
+                !p.skies.skies.iter().any(|s| {
+                    s.opaque_bitmaps.iter().any(|b| b.1 == g.0)
+                        || s.flares.iter().flatten().any(|f| {
+                            f.bitmap.as_ref().is_some_and(|b| b.0 == g.0)
+                                && !want.iter().any(|w| w.0 == g.0)
+                        })
+                })
             })
             .collect();
         if got.len() != want.len() {

@@ -2377,4 +2377,21 @@ fn held_wheels_keep_what_is_above_the_floor() {
     assert!((one.volume - 0.75).abs() < 1e-4);
     assert!(cube([0.0; 3], [1.0; 3]).above(2.0).is_none());
     assert!(held_wheels(&[vec![cube([0.0; 3], [1.0; 3])]], f32::INFINITY).is_empty());
+
+/// A rebuilt seat's gunner role is Halo 1's alone: the role word's player
+/// gunner bit (`0x000cc810` makes a seat with it, ridden by a player, the
+/// vehicle's gunner) is dropped, so a driver seat whose role word carries
+/// it (the retail warthog driver's `0x48014`) does not fire the gun.
+#[test]
+fn a_rebuilt_seat_s_gunner_is_halo_1_s_alone() {
+    use crate::rebuild::{SEAT_DRIVER, SEAT_GUNNER, SEAT_PLAYER_GUNNER, seat_flags};
+    let driver = seat_flags(0x14, 0x48014);
+    assert_eq!(driver & SEAT_PLAYER_GUNNER, 0, "{driver:#x}");
+    assert_eq!(driver & SEAT_GUNNER, 0, "{driver:#x}");
+    assert_ne!(driver & SEAT_DRIVER, 0, "{driver:#x}");
+    // Halo 1's gunner keeps its bit whatever the role word.
+    assert_ne!(seat_flags(0x198, 0) & SEAT_GUNNER, 0);
+    assert_ne!(seat_flags(0x198, SEAT_PLAYER_GUNNER) & SEAT_GUNNER, 0);
+    // Other role bits above Halo 1's pass through.
+    assert_eq!(seat_flags(0, 1 << 20), 1 << 20);
 }

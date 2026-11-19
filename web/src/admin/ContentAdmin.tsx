@@ -9,6 +9,7 @@ import { identity } from "../state/identity";
 import { live } from "../state/live";
 import { mapTitle } from "../state/gameart";
 import { formatBytes } from "../lib/maps";
+import { modMakers } from "../lib/mods";
 import { ago } from "../lib/format";
 import { actionsFor, fetchContent, moderate, reportsFor, setUploads, shortHash, type ContentList, type ModerateAction } from "./content";
 
@@ -68,12 +69,13 @@ export default function ContentAdmin() {
         <Panel title="Map packages" sub="published custom and modded maps" right={<button class="s-btn" disabled={busy()} onClick={() => void load()}>Refresh</button>}>
           <Show when={content()?.maps.length} fallback={<p class="adm-preset-note">{content() ? "No packages yet." : "Loading…"}</p>}>
             <table class="adm-records adm-mod">
-              <thead><tr><th class="adm-grow">Package</th><th>Author</th><th>Base</th><th>Size</th><th>State</th><th>Reports</th><th /></tr></thead>
+              <thead><tr><th class="adm-grow">Package</th><th>Made by</th><th>Uploader</th><th>Base</th><th>Size</th><th>State</th><th>Reports</th><th /></tr></thead>
               <tbody>
                 <For each={content()!.maps}>
                   {(m) => (
                     <tr classList={{ off: m.state !== "ok" }}>
                       <td title={m.description ?? m.map_id}>{m.name} <span class="adm-mono">{shortHash(m.map_id)}</span></td>
+                      <td>{modMakers(m) ?? "unknown"}</td>
                       <td>{m.author.gamertag}</td>
                       <td>{mapTitle(m.base.map)}</td>
                       <td>{formatBytes(m.size)}</td>

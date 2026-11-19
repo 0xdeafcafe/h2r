@@ -1065,8 +1065,11 @@ impl Worker {
         if s.advertisement.map_id.is_none() {
             return true;
         }
+        // A join may download a layer of tens of MB: not under the worker's
+        // whole-request timeout ([`crate::maps::download_agent`]).
+        let downloads = join.then(crate::maps::download_agent);
         let fetch = crate::maps::HttpFetch {
-            agent: &self.agent,
+            agent: downloads.as_ref().unwrap_or(&self.agent),
             api: &c.api,
             // A join that installs the map counts as its download.
             reader: join.then(|| self.reader()).flatten(),

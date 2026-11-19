@@ -74,6 +74,27 @@ pub struct Looks {
     /// The map's shaders, read the first time a look is (`None` inside
     /// when they could not be: looks then go by bitmap names alone).
     library: Option<Option<ShaderLibrary>>,
+    /// Solid shaders left without a picture, by template (or why the
+    /// shader could not be read) and how many: drawn in their surface
+    /// class's colour instead ([`fallback_note`]).
+    pub fallbacks: std::collections::BTreeMap<String, usize>,
+}
+
+/// The manifest's `map/<stem>/shaders` note: which shader templates were
+/// drawn in their class colour for want of a picture, most used first.
+/// `None` when every solid shader got one.
+pub fn fallback_note(fallbacks: &std::collections::BTreeMap<String, usize>) -> Option<String> {
+    if fallbacks.is_empty() {
+        return None;
+    }
+    let mut v: Vec<(&String, &usize)> = fallbacks.iter().collect();
+    v.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+    let list: Vec<String> = v.iter().map(|(t, n)| format!("{t} ({n})")).collect();
+    Some(format!(
+        "{} shaders drawn in their class colour (no picture): {}",
+        fallbacks.values().sum::<usize>(),
+        list.join(", ")
+    ))
 }
 
 /// How a shader template draws its picture: cut out when its name says
@@ -170,8 +191,33 @@ impl Looks {
         files: &mut ResourceFiles,
         shader: TagId,
     ) -> Option<u32> {
-        let (template, bitmaps) = live_models::shader_bitmaps(map, shader).ok()?;
+        let (template, bitmaps) = match live_models::shader_bitmaps(map, shader) {
+            Ok(t) => t,
+            Err(_) => {
+                *self
+                    .fallbacks
+                    .entry("(unreadable shader)".into())
+                    .or_default() += 1;
+                return None;
+            }
+        };
         let cutout = template_cutout(&template)?;
+        let look = self.read_solid(map, files, shader, &bitmaps, cutout);
+        if look.is_none() {
+            let own = template.rsplit('\\').next().unwrap_or(&template);
+            *self.fallbacks.entry(own.to_string()).or_default() += 1;
+        }
+        look
+    }
+
+    fn read_solid(
+        &mut self,
+        map: &mut MapReader,
+        files: &mut ResourceFiles,
+        shader: TagId,
+        bitmaps: &[TagId],
+        cutout: Cutout,
+    ) -> Option<u32> {
         let names: Vec<(u32, String)> = bitmaps
             .iter()
             .filter_map(|&id| Some((id.0, map.tag(id).ok()?.name.clone()?)))
@@ -408,5 +454,19 @@ mod tests {
         // Never below the floor.
         let tiny = looks.encode(0);
         assert_eq!(tiny[&(7, Cutout::Opaque)].width, MIN_SURFACE_TEXTURE);
+    }
+
+    #[test]
+    fn shaders_left_without_a_picture_are_named_most_used_first() {
+        let mut f = std::collections::BTreeMap::new();
+        assert_eq!(fallback_note(&f), None);
+        f.insert("tex_bump_mod_custom".to_string(), 1);
+        f.insert("(unreadable shader)".to_string(), 3);
+        f.insert("illum_custom".to_string(), 1);
+        assert_eq!(
+            fallback_note(&f).unwrap(),
+            "5 shaders drawn in their class colour (no picture): (unreadable shader) (3), \
+             illum_custom (1), tex_bump_mod_custom (1)"
+        );
     }
 }

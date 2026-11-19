@@ -589,6 +589,18 @@ Halo ring were already built this way.
   sandboxes, for the converted Halo 1 player and, on the sandboxes, Halo
   2's `masterchief_mp` (on the seats Halo 1's player enters; Halo 2's
   graph has no mode for the scorpion's side seats, listed, not failed).
+  **Who fires** (converter version 84): `0x000cc810` makes the seat
+  with bit 2 the vehicle's driver (`+0x248`) and the seat with bit 3
+  its gunner (`+0x24c`), or one with bit 18 (`SEAT_PLAYER_GUNNER`)
+  when its rider has a player (`+0x13c` != -1). The retail warthog's
+  driver seat is `0x48014`: bit 18 makes a player driver its gunner,
+  and the retail warthog's own weapon is its horn (its gun is a turret
+  vehicle with a seat of its own). The rebuilt
+  warthog's driver took that bit from the role word, and a player
+  driving the converted warthog fired its chaingun; now bit 18 is
+  dropped too and only Halo 1's gunner bit makes a gunner
+  (`a_rebuilt_seat_s_gunner_is_halo_1_s_alone`,
+  `the_warthog_gun_is_held_and_only_its_gunner_fires`).
 - **Friction and hover points** (`+0x2f0`, `+0x2e8`). Halo 1's
   counterparts are the `phys` mass points with a powered mass point:
   the warthog's four tires and the ghost's hull and two wings, the same

@@ -41,7 +41,7 @@ use runtime::GuestFault;
 use runtime::guest::Permissions;
 
 use crate::h1_options::{self, OptionsScreen};
-use crate::list_class::{self, ListClass, ListLayout, TextBlock};
+use crate::list_class::{self, ListClass};
 
 /// The row's feature (`features.h1-options-row` switches it).
 pub const ROW_FEATURE: &str = "h1-options-row";
@@ -71,17 +71,22 @@ pub const OPTIONS_ACTION: i16 = 10;
 const WIDGET_TYPE: u32 = 4;
 const WIDGET_PARENT: u32 = 0x10;
 
-/// The screen's class: the skulls page's layout and description, no
-/// picture; left, right and A step a row.
-pub fn class(screen: Arc<OptionsScreen>, block: TextBlock, layout: ListLayout) -> ListClass {
-    ListClass::with_rows(SCREEN_FEATURE, h1_options::SCREEN, screen)
-        .description(block)
-        .layout(ListLayout {
-            visible: 0,
-            ..layout
-        })
+/// The screen's class: a dialog on the lobby's Quick Options
+/// ([`h1_options::DIALOG`], docs/game/ui-builder.md "The Dialog kind"),
+/// inside as well as out: Quick Options' tag copied with its own list (its
+/// `setting_lists` skin, a name and a choice per row, where Quick Options
+/// has it), the focused row's help in Quick Options' help line, and the
+/// legend in its footer. Left, right and A step a row; B closes it.
+pub fn class(screen: Arc<OptionsScreen>) -> ListClass {
+    let base = h1_options::DIALOG;
+    let c = ListClass::with_rows(SCREEN_FEATURE, h1_options::SCREEN, screen)
+        .dialog(base)
         .sideways()
-        .footer(h1_options::FOOTER_ID)
+        .footer(h1_options::FOOTER_ID);
+    match base.help() {
+        Some(help) => c.description(help),
+        None => c,
+    }
 }
 
 /// Whether a Game Setup list with these actions, on a lobby whose map is
@@ -154,6 +159,17 @@ pub fn placed(actions: &[i16], ours: i16) -> Vec<i16> {
 /// rows ([`placed`]): a new datum, then the rows' actions written back in
 /// slot order. The new count.
 pub fn insert_row(m: &mut dyn GuestMemory, list: u32, action: i16) -> Result<usize, String> {
+    insert_row_ordered(m, list, |actions| placed(actions, action))
+}
+
+/// Adds a row to the list at `list`: a new datum, then the actions
+/// `order` gives for the list's actions (one more than there were)
+/// written back in slot order. The new count.
+pub fn insert_row_ordered(
+    m: &mut dyn GuestMemory,
+    list: u32,
+    order: impl FnOnce(&[i16]) -> Vec<i16>,
+) -> Result<usize, String> {
     let e = |e: engine::memory::MemFault| format!("{e:?}");
     let actions = setup_actions(m, list).map_err(e)?;
     let array = engine::datum::DatumArray::at(m.u32(list.wrapping_add(SETUP_ROWS)).map_err(e)?);
@@ -167,7 +183,7 @@ pub fn insert_row(m: &mut dyn GuestMemory, list: u32, action: i16) -> Result<usi
             elems.push(elem);
         }
     }
-    let order = placed(&actions, action);
+    let order = order(&actions);
     if elems.len() != order.len() {
         return Err(format!(
             "{} rows after adding, not {}",
@@ -283,10 +299,10 @@ fn row_chosen(c: &mut Call, request_at: u32) -> Result<Flow, GuestFault> {
     })
 }
 
-/// Why `h1-options-row` (and `clankers-row`) can't be snapshotted now: a
-/// Game Setup list's constructor is between its hooks, with the handler
-/// being built held on the host. The row itself is written into guest
-/// memory.
+/// Why `h1-options-row` (and `clankers-row`, `clankermatch-switch`) can't
+/// be snapshotted now: a Game Setup list's constructor is between its
+/// hooks, with the handler being built held on the host. The row itself
+/// is written into guest memory.
 pub(crate) fn building_live(building: &std::sync::Mutex<Vec<u32>>) -> Option<String> {
     let n = building.lock().unwrap_or_else(|e| e.into_inner()).len();
     (n != 0).then(|| format!("{n} Game Setup lists are being built"))
