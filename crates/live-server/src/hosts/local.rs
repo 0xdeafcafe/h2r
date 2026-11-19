@@ -4,7 +4,7 @@ use super::{HostBoot, HostError, HostLease, HostProvider, ProviderKind};
 use live_proto::hosts::Transport;
 use std::collections::HashMap;
 use std::io;
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -20,6 +20,7 @@ pub struct LocalProvider {
 struct LocalHost {
     lease_id: String,
     slot: u16,
+    tunnel_addr: Option<SocketAddr>,
     child: Child,
 }
 
@@ -42,7 +43,12 @@ impl LocalProvider {
         }
     }
 
-    fn command(&self, lease: &HostLease, boot: &HostBoot, slot: u16) -> Result<Command, HostError> {
+    fn command(
+        &self,
+        lease: &HostLease,
+        boot: &HostBoot,
+        slot: u16,
+    ) -> Result<(Command, Option<SocketAddr>), HostError> {
         if lease.id.is_empty()
             || !lease
                 .id
@@ -86,29 +92,45 @@ impl LocalProvider {
             .parse()
             .map_err(|_| HostError::new("invalid H2_BASE_PORT"))?;
         cmd.env("H2_BASE_PORT", port_for(first, 7, slot)?.to_string());
-        if lease.transport == Transport::Tunnel {
+        let tunnel_addr = if lease.transport == Transport::Tunnel {
             let mut address: SocketAddr = std::env::var("H2_TUNNEL_LISTEN")
-                .unwrap_or_else(|_| "0.0.0.0:31100".into())
+                .unwrap_or_else(|_| "127.0.0.1:31100".into())
                 .parse()
                 .map_err(|_| HostError::new("invalid H2_TUNNEL_LISTEN"))?;
+            // The host listener trusts connections from the relay. Keep it
+            // private even when a shared environment uses the container bind.
+            if address.ip().is_unspecified() {
+                address.set_ip(if address.is_ipv4() {
+                    Ipv4Addr::LOCALHOST.into()
+                } else {
+                    Ipv6Addr::LOCALHOST.into()
+                });
+            }
+            if !address.ip().is_loopback() {
+                return Err(HostError::new("local H2_TUNNEL_LISTEN must use a loopback address"));
+            }
             address.set_port(port_for(address.port(), 1, slot)?);
             cmd.env("H2_TUNNEL_LISTEN", address.to_string());
-        } else if let Ok(public) = std::env::var("H2_PUBLIC_ADDR") {
-            // A bare IP already uses H2_BASE_PORT. An explicit forwarding
-            // base reserves a matching external window for each local host.
-            if let Ok(mut address) = public.parse::<SocketAddrV4>() {
-                address.set_port(port_for(address.port(), 7, slot)?);
-                cmd.env("H2_PUBLIC_ADDR", address.to_string());
-            } else if public.parse::<Ipv4Addr>().is_err() {
-                return Err(HostError::new("invalid H2_PUBLIC_ADDR"));
+            Some(address)
+        } else {
+            if let Ok(public) = std::env::var("H2_PUBLIC_ADDR") {
+                // A bare IP already uses H2_BASE_PORT. An explicit forwarding
+                // base reserves a matching external window for each local host.
+                if let Ok(mut address) = public.parse::<SocketAddrV4>() {
+                    address.set_port(port_for(address.port(), 7, slot)?);
+                    cmd.env("H2_PUBLIC_ADDR", address.to_string());
+                } else if public.parse::<Ipv4Addr>().is_err() {
+                    return Err(HostError::new("invalid H2_PUBLIC_ADDR"));
+                }
             }
-        }
+            None
+        };
         let data = self.root.join(&lease.id);
         std::fs::create_dir_all(&data)?;
         cmd.arg("--data").arg(data);
         #[cfg(unix)]
         cmd.process_group(0);
-        Ok(cmd)
+        Ok((cmd, tunnel_addr))
     }
 }
 
@@ -168,13 +190,15 @@ impl HostProvider for LocalProvider {
         let slot = (0..=u16::MAX)
             .find(|slot| children.values().all(|host| host.slot != *slot))
             .ok_or_else(|| HostError::new("no free local host slots"))?;
-        let child = self.command(lease, boot, slot)?.spawn()?;
+        let (mut command, tunnel_addr) = self.command(lease, boot, slot)?;
+        let child = command.spawn()?;
         let pid = child.id().to_string();
         children.insert(
             pid.clone(),
             LocalHost {
                 lease_id: lease.id.clone(),
                 slot,
+                tunnel_addr,
                 child,
             },
         );
@@ -190,6 +214,16 @@ impl HostProvider for LocalProvider {
             children.remove(provider_ref);
         }
         Ok(())
+    }
+
+    #[cfg(feature = "native")]
+    fn tunnel_addr(&self, lease_id: &str, provider_ref: &str) -> Option<SocketAddr> {
+        let mut children = self.children.lock().unwrap();
+        let host = children.get_mut(provider_ref)?;
+        if host.lease_id != lease_id || !matches!(host.child.try_wait(), Ok(None)) {
+            return None;
+        }
+        host.tunnel_addr
     }
 
     async fn alive(&self, provider_ref: &str) -> Result<bool, HostError> {

@@ -22,7 +22,6 @@ use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use axum::routing::{get, post};
-use live_proto::ErrorCode;
 use live_proto::hosts::{EndReason, HostEndpoint, HostLease, HostState};
 use serde::Deserialize;
 
@@ -34,10 +33,12 @@ type ApiResult<T> = Result<T, ApiError>;
 
 const MAX_REGISTER_BODY: usize = 8 * 1024;
 const MAX_REPORT_BODY: usize = 1024;
-const TUNNEL_PATH: &str = "/v1/hosts/{lease}/tunnel";
+#[cfg(feature = "native")]
+#[path = "host_tunnel.rs"]
+mod host_tunnel;
 
 pub(crate) fn routes() -> Router<Arc<Live>> {
-    Router::new()
+    let router = Router::new()
         .route(
             "/v1/hosts/{lease}/register",
             post(register).layer(DefaultBodyLimit::max(MAX_REGISTER_BODY)),
@@ -48,8 +49,10 @@ pub(crate) fn routes() -> Router<Arc<Live>> {
         )
         .route("/v1/hosts/{lease}", get(detail))
         .route("/v1/admin/hosts", get(inventory))
-        .route("/v1/admin/hosts/{lease}/stop", post(stop))
-        .route(TUNNEL_PATH, get(tunnel))
+        .route("/v1/admin/hosts/{lease}/stop", post(stop));
+    #[cfg(feature = "native")]
+    let router = router.route("/v1/hosts/{lease}/tunnel", get(host_tunnel::upgrade));
+    router
 }
 
 async fn register(
@@ -115,9 +118,4 @@ async fn stop(
 ) -> ApiResult<StatusCode> {
     let _ = live.admin_stop_host(bearer(&headers), &lease).await?;
     Ok(StatusCode::NO_CONTENT)
-}
-
-async fn tunnel() -> ApiError {
-    // TODO(dh-tunnel-host): authorize the roster and upgrade to a datagram tunnel.
-    ApiError::new(ErrorCode::Unimplemented, "host tunnel is not available")
 }

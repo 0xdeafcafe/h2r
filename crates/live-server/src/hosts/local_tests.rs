@@ -39,7 +39,8 @@ fn command_passes_boot_values_verbatim_and_isolates_writable_data() {
     let provider = LocalProvider::new(&root);
     let boot = boot();
     for id in ["hl-first", "hl-second"] {
-        let cmd = provider.command(&lease(id), &boot, 0).unwrap();
+        let (cmd, tunnel_addr) = provider.command(&lease(id), &boot, 0).unwrap();
+        assert!(tunnel_addr.is_none());
         let (_, encoded) = cmd
             .get_envs()
             .find(|(key, _)| *key == OsStr::new("H2_HOST_LEASE_JSON"))
@@ -121,6 +122,7 @@ async fn stopping_checks_lease_and_pid_and_closes_the_games_inherited_socket() {
         LocalHost {
             lease_id: "hl-owner".into(),
             slot: 0,
+            tunnel_addr: None,
             child,
         },
     );

@@ -80,6 +80,12 @@ pub trait HostProvider: Send + Sync {
     /// Stopping an already stopped host succeeds.
     async fn stop(&self, lease_id: &str, provider_ref: &str) -> Result<(), HostError>;
     async fn alive(&self, provider_ref: &str) -> Result<bool, HostError>;
+
+    /// Connect to a local tunnel listener bound by this managed process.
+    #[cfg(feature = "native")]
+    fn tunnel_addr(&self, _lease_id: &str, _provider_ref: &str) -> Option<std::net::SocketAddr> {
+        None
+    }
 }
 
 /// Worker bindings and native environment variables use the same settings.

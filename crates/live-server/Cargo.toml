@@ -19,6 +19,7 @@ thiserror.workspace = true
 # Worker (crates/live-worker, docs/live/live-worker.md): no sockets, no
 # SQL drivers, no TLS, no file serving. `rt` has the timers and tasks.
 tokio = { version = "1", default-features = false, features = ["sync", "macros", "io-util", "rt", "time"] }
+tokio-tungstenite = { version = "0.26", optional = true }
 async-trait = "0.1"
 axum = { version = "0.8", default-features = false, features = ["json", "query", "form", "matched-path", "original-uri"] }
 axum-server = { version = "0.7", features = ["tls-rustls-no-provider"], optional = true }
@@ -81,6 +82,7 @@ native = [
     "object_store/ring",
     "tokio/fs",
     "tokio/net",
+    "dep:tokio-tungstenite",
     "tokio/rt-multi-thread",
     "axum/ws",
     "axum/tokio",

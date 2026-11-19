@@ -13,7 +13,8 @@ use live_server::{Policy, store::MemoryStore};
 const DETAIL: &str = "/v1/hosts/hl-AAAAAAAAAAAAAAAAAAAAAA";
 const REGISTER: &str = "/v1/hosts/hl-AAAAAAAAAAAAAAAAAAAAAA/register";
 const REPORT: &str = "/v1/hosts/hl-AAAAAAAAAAAAAAAAAAAAAA/report";
-const TUNNEL: &str = "/v1/hosts/hl-AAAAAAAAAAAAAAAAAAAAAA/tunnel";
+#[cfg(feature = "native")]
+const UNKNOWN_LEASE: &str = "hl-AAAAAAAAAAAAAAAAAAAAAA";
 const INVENTORY: &str = "/v1/admin/hosts";
 const STOP: &str = "/v1/admin/hosts/hl-AAAAAAAAAAAAAAAAAAAAAA/stop";
 
@@ -156,10 +157,210 @@ async fn host_reads_share_the_api_read_limit() {
     assert_eq!(response.error(), "rate_limited");
 }
 
-#[tokio::test]
-async fn host_tunnel_route_returns_json_501_until_implemented() {
-    let h = harness().await;
-    let response = h.get(TUNNEL).await;
-    assert_eq!(response.status, StatusCode::NOT_IMPLEMENTED);
-    assert_eq!(response.error(), "unimplemented");
+#[cfg(feature = "native")]
+mod tunnel {
+    use super::*;
+    use std::net::SocketAddr;
+    use std::time::Duration;
+
+    use futures_util::{SinkExt, StreamExt};
+    use live_proto::hosts::{HostClass, HostEndpoint, HostLease, ProviderKind, Transport};
+    use live_proto::tunnel::{Frame, Kind, decode, encode};
+    use live_server::hosts::{HostBoot, HostConfig, HostError, HostProvider};
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio::time::timeout;
+    use tokio_tungstenite::tungstenite::{
+        Error, Message,
+        client::IntoClientRequest,
+        handshake::server::{Request, Response},
+    };
+    use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+
+    type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+
+    struct Provider(SocketAddr);
+
+    #[async_trait::async_trait]
+    impl HostProvider for Provider {
+        fn kind(&self) -> ProviderKind {
+            ProviderKind::Local
+        }
+
+        async fn start(&self, lease: &HostLease, _: &HostBoot) -> Result<String, HostError> {
+            Ok(lease.id.clone())
+        }
+
+        async fn stop(&self, _: &str, _: &str) -> Result<(), HostError> {
+            Ok(())
+        }
+
+        async fn alive(&self, _: &str) -> Result<bool, HostError> {
+            Ok(true)
+        }
+
+        fn tunnel_addr(&self, lease_id: &str, provider_ref: &str) -> Option<SocketAddr> {
+            assert_eq!(lease_id, provider_ref);
+            Some(self.0)
+        }
+    }
+
+    async fn serve() -> (common::Harness, SocketAddr) {
+        let h = harness().await;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(axum::serve(listener, h.app.clone()).into_future());
+        (h, addr)
+    }
+
+    async fn upgrade(addr: SocketAddr, lease: &str, token: Option<&str>) -> Result<Socket, Error> {
+        let mut request = format!("ws://{addr}/v1/hosts/{lease}/tunnel").into_client_request()?;
+        request
+            .headers_mut()
+            .insert("x-h2-tunnel-peer", "spoofed".parse().unwrap());
+        if let Some(token) = token {
+            request.headers_mut().insert(
+                header::AUTHORIZATION,
+                format!("Bearer {token}").parse().unwrap(),
+            );
+        }
+        timeout(
+            Duration::from_secs(5),
+            tokio_tungstenite::connect_async(request),
+        )
+        .await
+        .expect("tunnel upgrade timed out")
+        .map(|(socket, _)| socket)
+    }
+
+    fn refused(result: Result<Socket, Error>, status: StatusCode) {
+        match result {
+            Err(Error::Http(response)) => assert_eq!(response.status(), status),
+            Err(err) => panic!("expected HTTP {status}, got {err}"),
+            Ok(_) => panic!("expected HTTP {status}, got a tunnel"),
+        }
+    }
+
+    #[tokio::test]
+    async fn unknown_tunnel_lease_is_only_disclosed_to_an_authenticated_account() {
+        let (h, addr) = serve().await;
+        let member = h.create("TunnelPlayer").await;
+        let wrong_scope = h.token(&member.key, &member.author, lxm::READ);
+        let relay = h.token(&member.key, &member.author, lxm::SESSIONS_RELAY);
+        for token in [None, Some(wrong_scope.as_str())] {
+            refused(
+                upgrade(addr, UNKNOWN_LEASE, token).await,
+                StatusCode::UNAUTHORIZED,
+            );
+        }
+        refused(
+            upgrade(addr, UNKNOWN_LEASE, Some(&relay)).await,
+            StatusCode::NOT_FOUND,
+        );
+    }
+
+    #[tokio::test]
+    async fn only_the_roster_can_relay_datagrams_to_and_from_the_local_host() {
+        let (h, addr) = serve().await;
+        let member = h.create("TunnelMember").await;
+        let stranger = h.create("TunnelStranger").await;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        h.live
+            .set_host_provider(Arc::new(Provider(listener.local_addr().unwrap())));
+        h.live.set_host_config(HostConfig {
+            live_url: format!("http://{addr}"),
+            data_url: "https://private.test/host-data.tar.zst".into(),
+            data_sha256: "ab".repeat(32),
+            max_hosts: 1,
+        });
+        let lease = h
+            .live
+            .request_host(HostLease {
+                id: String::new(),
+                assignment_id: "custom-tunnel".into(),
+                provider: ProviderKind::Local,
+                region: None,
+                class: HostClass::Small,
+                map: "lockout".into(),
+                map_id: None,
+                variant: None,
+                hopper: None,
+                max_players: 2,
+                roster: vec![member.xuid],
+                bots: vec![],
+                transport: Transport::Tunnel,
+                idle_timeout_s: 120,
+                max_match_s: 1800,
+                created_ms: 0,
+            })
+            .await
+            .unwrap();
+        let boot_token = h.live.issue_host_token(&lease);
+        h.live
+            .host_register(
+                Some(&boot_token),
+                &lease.id,
+                HostEndpoint {
+                    transport: Transport::Tunnel,
+                    udp: None,
+                    tunnel_url: Some(format!("ws://{addr}/v1/hosts/{}/tunnel", lease.id)),
+                    xnaddr: "00".repeat(36),
+                    session_id: None,
+                },
+            )
+            .await
+            .unwrap();
+        let token = h.token(&stranger.key, &stranger.author, lxm::SESSIONS_RELAY);
+        refused(
+            upgrade(addr, &lease.id, Some(&token)).await,
+            StatusCode::FORBIDDEN,
+        );
+
+        let hello = Frame {
+            kind: Kind::Hello,
+            port: 0,
+            peer: 0,
+            payload: vec![],
+        };
+        let reply = Frame {
+            kind: Kind::Hello,
+            port: 0,
+            peer: 42,
+            payload: vec![],
+        };
+        let expect_hello = hello.clone();
+        let send_reply = reply.clone();
+        let peer = member.xuid.to_string();
+        let listener_task = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket =
+                tokio_tungstenite::accept_hdr_async(tcp, |req: &Request, res: Response| {
+                    assert!(req.headers().get(header::AUTHORIZATION).is_none());
+                    assert_eq!(req.headers()["x-h2-tunnel-peer"].to_str().unwrap(), peer);
+                    Ok(res)
+                })
+                .await
+                .unwrap();
+            let Message::Binary(bytes) = socket.next().await.unwrap().unwrap() else {
+                panic!("expected a tunnel hello");
+            };
+            assert_eq!(decode(&bytes).unwrap(), expect_hello);
+            socket
+                .send(Message::binary(encode(&send_reply)))
+                .await
+                .unwrap();
+        });
+        let token = h.token(&member.key, &member.author, lxm::SESSIONS_RELAY);
+        let mut client = upgrade(addr, &lease.id, Some(&token)).await.unwrap();
+        client.send(Message::binary(encode(&hello))).await.unwrap();
+        let Message::Binary(bytes) = timeout(Duration::from_secs(5), client.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+        else {
+            panic!("expected a tunnel hello reply");
+        };
+        assert_eq!(decode(&bytes).unwrap(), reply);
+        listener_task.await.unwrap();
+    }
 }

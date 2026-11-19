@@ -392,6 +392,35 @@ impl Live {
         Ok(row)
     }
 
+    #[cfg(feature = "native")]
+    pub(crate) fn local_tunnel_admission(
+        &self,
+        bearer: Option<&str>,
+        id: &str,
+    ) -> ApiResult<(live_proto::Xuid, std::net::SocketAddr)> {
+        let Author::Account { xuid, .. } = self.authenticate(bearer, lxm::SESSIONS_RELAY)? else {
+            return Err(forbidden("the host tunnel is for accounts"));
+        };
+        let row = self.require_host(id)?;
+        if !row.lease.roster.contains(&xuid) {
+            return Err(forbidden("the account has no seat on this host"));
+        }
+        if row.lease.provider != ProviderKind::Local
+            || row.lease.transport != live_proto::hosts::Transport::Tunnel
+            || !matches!(row.state, HostState::Joinable | HostState::Playing)
+        {
+            return Err(conflict("the host tunnel is not available"));
+        }
+
+        let provider = self.hosts.provider_for(&row.lease)?;
+        let addr = row
+            .provider_ref
+            .as_deref()
+            .and_then(|provider_ref| provider.tunnel_addr(id, provider_ref))
+            .ok_or_else(|| unavailable("the host tunnel port is unavailable"))?;
+        Ok((xuid, addr))
+    }
+
     pub fn admin_hosts(&self, bearer: Option<&str>) -> ApiResult<Value> {
         crate::invites::admin(self, bearer, crate::invites::LXM_ADMIN_READ)?;
         let mut rows: Vec<_> = self
