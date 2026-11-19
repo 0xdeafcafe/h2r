@@ -91,7 +91,11 @@ async fn fetch(
     };
     let method = req.method().as_str().to_string();
     let resp = fetch_retrying(&stub, Request::try_from(req)?, &method, &path).await?;
-    let resp: worker::HttpResponse = resp.try_into()?;
+    let mut resp: worker::HttpResponse = resp.try_into()?;
+    if let Some(encoding) = resp.headers_mut().remove("x-h2-stored-encoding") {
+        resp.headers_mut().insert(http::header::CONTENT_ENCODING, encoding);
+        resp.extensions_mut().insert(worker::EncodeBody::Manual);
+    }
     Ok(resp.map(axum::body::Body::new))
 }
 
@@ -429,6 +433,12 @@ impl DurableObject for LiveHub {
             && let Ok(v) = format!("start;dur={ms}, events;desc={head}").parse()
         {
             resp.headers_mut().append(crate::COLD_START_HEADER, v);
+        }
+        // Carry the stored representation through the internal subrequest.
+        // Only the outer HTTP response declares its content encoding.
+        if resp.headers().get(http::header::CONTENT_TYPE).is_some_and(|v| v == "application/x-h2-replay")
+            && let Some(encoding) = resp.headers_mut().remove(http::header::CONTENT_ENCODING) {
+            resp.headers_mut().insert("x-h2-stored-encoding", encoding);
         }
         self.schedule(&live).await?;
         Response::try_from(resp)
