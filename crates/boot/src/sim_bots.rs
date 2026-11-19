@@ -27,7 +27,7 @@ use std::collections::BTreeMap;
 use std::time::Instant;
 
 use agent::sim::bots::{Bot, Bots, PadSource};
-use agent_proto::sim::Identity;
+use agent_proto::sim::{BotBrain, BotMood, BotPersonality, ClankerView, Identity, PlayerKind};
 use bots::local::{self, BotHandle, Frame, Local};
 use input::backend::remote::Remote;
 use input::gamepad::{Gamepad, State};
@@ -96,7 +96,7 @@ pub fn recording_pads(text: &str) -> Result<Vec<HostPadState>, String> {
         .collect())
 }
 
-fn source(s: PadSource, port: u8) -> Result<Box<dyn local::PadSource>, String> {
+fn source(s: PadSource, seed: u64) -> Result<Box<dyn local::PadSource>, String> {
     Ok(match s {
         PadSource::Script(r) => Box::new(ScriptPad(r)),
         PadSource::Recording { name, path } => {
@@ -110,7 +110,7 @@ fn source(s: PadSource, port: u8) -> Result<Box<dyn local::PadSource>, String> {
                 .ok()
                 .and_then(|v| bots::mind::Skill::parse(&v))
                 .unwrap_or_default();
-            Box::new(bots::Brain::new(skill, 0x5eed ^ u64::from(port)))
+            Box::new(bots::Brain::new(skill, seed))
         }
     })
 }
@@ -122,6 +122,51 @@ fn xuid(s: &str) -> Result<u64, String> {
         .map_err(|_| format!("xuid {s:?}: hex, as the local embedded server issues it"))
 }
 
+fn brain_view(view: bots::BrainView) -> BotBrain {
+    use bots::arms::Role;
+    use bots::mind::Skill;
+
+    let skill = match view.skill {
+        Skill::Easy => "easy",
+        Skill::Normal => "normal",
+        Skill::Heroic => "heroic",
+        Skill::Legendary => "legendary",
+    };
+    let p = view.personality;
+    let favorite_weapon = match p.favorite_weapon {
+        Role::Unknown => "unknown",
+        Role::Blade => "blade",
+        Role::Scatter => "scatter",
+        Role::Spray => "spray",
+        Role::Precise => "precise",
+        Role::Sniper => "sniper",
+        Role::Blast => "blast",
+    };
+    let m = view.mood;
+    BotBrain {
+        skill: skill.into(),
+        personality: BotPersonality {
+            aggression: p.aggression,
+            caution: p.caution,
+            teamwork: p.teamwork,
+            objective_focus: p.objective_focus,
+            composure: p.composure,
+            patience: p.patience,
+            showboating: p.showboating,
+            weapon_loyalty: p.weapon_loyalty,
+            chattiness: p.chattiness,
+            favorite_weapon: favorite_weapon.into(),
+        },
+        mood: BotMood {
+            confidence: m.confidence,
+            tilt: m.tilt,
+            fear: m.fear,
+            streak: m.streak,
+            revenge_target: m.revenge_target.map(|id| format!("player.{id}")),
+        },
+    }
+}
+
 impl Bots for LocalBots {
     fn add_local(&mut self, port: Option<u32>, src: PadSource) -> Result<u32, String> {
         let wanted: Vec<u8> = self.local.list().iter().map(|b| b.wanted).collect();
@@ -131,7 +176,7 @@ impl Bots for LocalBots {
                 .find(|p| !wanted.contains(p))
                 .ok_or_else(|| format!("{} local bots already", local::MAX_LOCAL))?,
         };
-        let src = source(src, port)?;
+        let src = source(src, 0x5eed ^ u64::from(port))?;
         let h = self
             .local
             .add(port, &format!("Clanker {port}"), src)
@@ -154,8 +199,7 @@ impl Bots for LocalBots {
         let team = team
             .map(|t| u8::try_from(t).map_err(|_| format!("team {t}")))
             .transpose()?;
-        // A phantom has no port; the brain's seed only needs to differ.
-        let src = source(src, 4)?;
+        let src = source(src, id.xuid)?;
         bots::phantom::add(id, team, src)
             .map(|h| h.0)
             .map_err(|e| e.to_string())
@@ -173,6 +217,44 @@ impl Bots for LocalBots {
 
     fn phantom_player(&self, handle: u32) -> Option<u32> {
         bots::phantom::player(bots::phantom::PhantomHandle(handle))
+    }
+
+    fn brain_view(&self, bot: Bot) -> Option<BotBrain> {
+        match bot {
+            Bot::Local { port } => self.local.brain_view(*self.handles.get(&port)?),
+            Bot::Phantom { handle } => {
+                bots::phantom::global().brain_view(bots::phantom::PhantomHandle(handle))
+            }
+        }
+        .map(brain_view)
+    }
+
+    fn clankers(&self) -> Vec<ClankerView> {
+        let locals = self.local.list().into_iter().filter_map(|bot| {
+            let brain = brain_view(self.local.brain_view(bot.handle)?);
+            let name = self
+                .local
+                .account_of(bot.handle)
+                .map_or(bot.name, |a| a.gamertag);
+            Some(ClankerView {
+                name,
+                kind: PlayerKind::Local,
+                port: bot.port.map(u32::from),
+                player: None,
+                brain,
+            })
+        });
+        let phantoms = bots::phantom::list().into_iter().filter_map(|bot| {
+            let brain = brain_view(bots::phantom::global().brain_view(bot.handle)?);
+            Some(ClankerView {
+                name: bot.identity.gamertag,
+                kind: PlayerKind::Phantom,
+                port: None,
+                player: bot.player.map(|id| format!("player.{id}")),
+                brain,
+            })
+        });
+        locals.chain(phantoms).collect()
     }
 
     fn remove(&mut self, bot: Bot) -> Result<(), String> {

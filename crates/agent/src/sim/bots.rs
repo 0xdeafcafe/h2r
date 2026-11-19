@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use agent_proto::sim::Identity;
+use agent_proto::sim::{BotBrain, ClankerView, Identity};
 use input::backend::remote::Remote;
 
 /// Where a bot's pad comes from (bots.md's `PadSource`). The brain emits
@@ -76,6 +76,14 @@ pub trait Bots: Send {
     fn placed_port(&self, port: u32) -> Option<u32> {
         Some(port)
     }
+    /// What a brain-driven simulated player is thinking.
+    fn brain_view(&self, _bot: Bot) -> Option<BotBrain> {
+        None
+    }
+    /// All brain-driven bots on the host.
+    fn clankers(&self) -> Vec<ClankerView> {
+        Vec::new()
+    }
     /// The players-array index of the player a phantom became, once it has
     /// one. Local bots are found by their port (the player's local user).
     fn phantom_player(&self, handle: u32) -> Option<u32> {
@@ -117,6 +125,8 @@ pub struct FakeLog {
     pub removed: Vec<Bot>,
     /// The player index each phantom became.
     pub phantom_players: BTreeMap<u32, u32>,
+    pub brains: BTreeMap<Bot, BotBrain>,
+    pub clankers: Vec<ClankerView>,
 }
 
 /// A backend for tests: local ports from 1 (the human has 0) to 3,
@@ -160,8 +170,17 @@ impl Bots for FakeBots {
     fn remove(&mut self, bot: Bot) -> Result<(), String> {
         let mut l = self.log();
         l.bots.remove(&bot).ok_or("no such bot")?;
+        l.brains.remove(&bot);
         l.removed.push(bot);
         Ok(())
+    }
+
+    fn brain_view(&self, bot: Bot) -> Option<BotBrain> {
+        self.log().brains.get(&bot).cloned()
+    }
+
+    fn clankers(&self) -> Vec<ClankerView> {
+        self.log().clankers.clone()
     }
 
     fn phantom_player(&self, handle: u32) -> Option<u32> {

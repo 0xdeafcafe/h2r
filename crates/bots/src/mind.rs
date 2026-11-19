@@ -196,6 +196,8 @@ pub enum Doing {
     Support(Vec3),
     /// Going to a sighted powerup or a supply expected back soon.
     Supply(Vec3),
+    /// Holding aim on the last sighting before following it.
+    HoldAngle(Vec3),
     /// Going for the weapon at this point (section 3.6).
     Rearm(Vec3),
     /// Shields down: backing away from where the enemy was, facing it.
@@ -343,7 +345,7 @@ impl Mind {
     pub fn new(skill: Skill, seed: u64) -> Self {
         Mind {
             skill,
-            decisions: Decisions::new(seed),
+            decisions: Decisions::for_skill(seed, skill),
             doing: Doing::Idle,
             rng: Rng::new(seed),
             tick: None,
@@ -438,6 +440,7 @@ impl Mind {
         grenades: &[Grenade],
     ) -> HostPadState {
         let mut pad = HostPadState::default();
+        self.decisions.advance_mood(p.tick);
         let Some(me) = p.me else {
             self.release(p.tick);
             return pad;
@@ -482,7 +485,8 @@ impl Mind {
 
         let eye = up(me.position, EYE);
         let facing = angles(me.aim);
-        let style = Style::of(self.skill);
+        let behavior = self.decisions.behavior();
+        let style = Style::with_behavior(self.skill, behavior);
         // The target (crate::decisions): the team's split, trades and
         // threats weigh tactics' nearest-and-in-front choice.
         let (goal, intent) = self.decide(p, me, &seen, map);
@@ -510,7 +514,7 @@ impl Mind {
         self.kit = match me.arms {
             Some(a) => {
                 let (st, tick) = (&self.stuck, p.tick);
-                arms::plan(
+                arms::plan_with_personality(
                     &Situation {
                         arms: &a,
                         at: me.position,
@@ -535,6 +539,7 @@ impl Mind {
                                 .and_then(|o| o.hill.as_ref())
                                 .is_some_and(|h| !h.contains(pk.position))
                     },
+                    Some(behavior.personality),
                 )
             }
             None => Kit::Fine,
@@ -663,14 +668,27 @@ impl Mind {
                         self.fight.stop_trigger(p.tick);
                         false
                     };
+                    let risky = behavior.melee_risk()
+                        && !carrying
+                        && self.decisions.posture != Posture::Withdraw;
                     let reach = if blade {
-                        shot.lunge
-                    } else if melee {
+                        if risky || !self.recovering {
+                            shot.lunge
+                        } else {
+                            MELEE_RANGE
+                        }
+                    } else if melee || risky {
                         MELEE_RANGE * 1.3
                     } else {
                         MELEE_RANGE
                     };
-                    let in_melee = dist < reach && angle_between(sub(target, eye), me.aim) < 0.85;
+                    let melee_cone = if blade && !risky && dist >= MELEE_RANGE {
+                        0.52
+                    } else {
+                        0.85
+                    };
+                    let in_melee =
+                        dist < reach && angle_between(sub(target, eye), me.aim) < melee_cone;
                     // Glitches (crate::glitches) only where the fight is not
                     // obviously lost: not low, not withdrawing, nobody else
                     // close; a sword fly never into a group.
@@ -771,7 +789,8 @@ impl Mind {
                         reloading: self.fight.wants_cover,
                         range: self.fight.band,
                     };
-                    let mv = self.moves.fight(&fight, map, &bodies);
+                    let st = crate::moves::Style::with_behavior(self.skill, behavior);
+                    let mv = self.moves.fight_with_style(&fight, map, &bodies, st);
                     if mv.jump {
                         pad.buttons.set(JUMP, true);
                     }
@@ -803,6 +822,10 @@ impl Mind {
                         seen: false,
                     });
                 }
+            }
+            Doing::HoldAngle(at) => {
+                look = Some(up(at, CHEST));
+                self.follower = None;
             }
             Doing::Recover(from) => {
                 // Back away from it, facing it, while the shields come back.
@@ -983,7 +1006,7 @@ impl Mind {
             .filter(|o| p.teams && o.team == me.team)
             .map(|o| o.position)
             .collect();
-        let nade = self.grenade.step(
+        let nade = self.grenade.step_with_rate(
             &crate::grenades::Moment {
                 tick: p.tick,
                 // A repeated frame returned the last pad above: always new.
@@ -1006,13 +1029,21 @@ impl Mind {
             },
             world,
             self.skill,
+            behavior.grenade_rate(),
         );
         // Aiming a throw: the hand turns to the throw's line instead of the
         // target (tracked still, so the flick and lag are the same hand's).
         match (track, nade.look) {
             (Some((id, raw, led)), at) => {
                 let goal = at.map_or(led, |l| sub(l, eye));
-                aim_error = Some(self.hand.track(self.skill, id, p.tick, facing, raw, goal));
+                aim_error = Some(self.hand.track(
+                    self.skill,
+                    id,
+                    p.tick,
+                    facing,
+                    [raw, goal],
+                    behavior.aim_noise(),
+                ));
             }
             (None, Some(at)) => look = Some(at),
             (None, None) => {}

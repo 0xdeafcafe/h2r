@@ -897,3 +897,46 @@ fn decisions_ground_scan_matches_live_items_to_their_spawn_and_clock() {
     assert!(sample.supplies.is_none());
     assert_eq!(sample.weapons.len(), 1);
 }
+
+#[test]
+fn temperament_loyalty_takes_a_short_favorite_detour_only_when_calm() {
+    use crate::decisions::Personality;
+
+    let a = arms(Some(gun(BR, rounds(36, 36, 108, 108))), None);
+    let favorite = Pickup {
+        gun: Gun {
+            profile: Profile {
+                trigger: Trigger::Automatic,
+                ..Profile::default()
+            },
+            ..gun(SMG, rounds(30, 30, 90, 90))
+        },
+        ..pickup(1, 9.0, SMG, Ammo::None)
+    };
+    let mut s = Situation {
+        arms: &a,
+        at: [0.0; 3],
+        enemy: None,
+        calm: true,
+        breather: true,
+        by_range: true,
+        pickups: &[favorite],
+    };
+    let loyal = Personality {
+        favorite_weapon: Role::Spray,
+        weapon_loyalty: 0.8,
+        ..Personality::seeded(4)
+    };
+    let indifferent = Personality {
+        weapon_loyalty: 0.2,
+        ..loyal
+    };
+    let plan = |s: &Situation<'_>, p| plan_with_personality(s, |_| false, Some(p));
+    assert_eq!(plan(&s, indifferent), Kit::Fine);
+    assert_eq!(plan(&s, loyal), Kit::Seek(favorite));
+    assert_eq!(plan_with_personality(&s, |_| true, Some(loyal)), Kit::Fine);
+    s.enemy = Some(5.0);
+    s.calm = false;
+    s.breather = false;
+    assert_eq!(plan(&s, loyal), Kit::Fine);
+}

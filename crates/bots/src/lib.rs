@@ -71,7 +71,50 @@ pub struct Brain {
     tuning: Option<tuning::Tuning>,
 }
 
+/// Read-only state shared by local, phantom and simulated bot views.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BrainView {
+    pub skill: mind::Skill,
+    pub personality: decisions::Personality,
+    pub mood: decisions::MoodView,
+}
+
 impl Brain {
+    pub fn view(&self) -> BrainView {
+        BrainView {
+            skill: self.mind.skill,
+            personality: self.mind.decisions.personality,
+            mood: self.mind.decisions.mood(),
+        }
+    }
+
+    pub fn set_skill(&mut self, skill: mind::Skill) {
+        if self.mind.skill != skill {
+            self.mind.skill = skill;
+            self.mind.decisions.personality = decisions::Personality::for_skill(self.seed, skill);
+            self.retune();
+        }
+    }
+
+    pub fn set_identity_seed(&mut self, seed: u64) {
+        if self.seed != seed {
+            self.seed = seed;
+            self.kills_seen = emote::kills().since(u64::MAX).1;
+            self.reset_mind();
+        }
+    }
+
+    fn reset_mind(&mut self) {
+        let taunt = self.mind.emote.taunt;
+        let glitches = self.mind.glitches;
+        let bounces = std::mem::take(&mut self.mind.bounces);
+        self.mind = mind::Mind::new(self.mind.skill, self.seed);
+        self.mind.emote.taunt = taunt;
+        self.mind.glitches = glitches;
+        self.mind.bounces = bounces;
+        self.retune();
+    }
+
     pub fn new(skill: mind::Skill, seed: u64) -> Self {
         Brain {
             mind: mind::Mind::new(skill, seed),
@@ -153,18 +196,14 @@ impl Brain {
             (board.epoch, board.listen(p))
         };
         if self.epoch != epoch {
-            let taunt = self.mind.emote.taunt;
-            let glitches = self.mind.glitches;
-            let bounces = std::mem::take(&mut self.mind.bounces);
-            self.mind = mind::Mind::new(self.mind.skill, self.seed);
-            self.mind.emote.taunt = taunt;
-            self.mind.glitches = glitches;
-            self.mind.bounces = bounces;
+            self.reset_mind();
             self.epoch = epoch;
-            self.retune();
         } else {
             self.mind.hear_deaths(p, kills);
-            self.mind.emote.hear(kills);
+            if let Some((id, _)) = p.observations.player {
+                let weight = self.mind.decisions.behavior().taunt_weight();
+                self.mind.emote.hear_with_style(kills, Some(id), weight);
+            }
         }
         self.mind.decisions.inbox = inbox;
         let pad = self.mind.step_with_cues(p, map, sounds, grenades);
@@ -185,6 +224,10 @@ impl Default for Brain {
 }
 
 impl local::PadSource for Brain {
+    fn brain_view(&self) -> Option<BrainView> {
+        Some(self.view())
+    }
+
     fn pad(&mut self, f: &local::Frame<'_>) -> HostPadState {
         if f.joining {
             self.fidget.reset();
@@ -355,5 +398,44 @@ mod tests {
             moved |= pad.right_stick != (0.0, 0.0);
         }
         assert!(moved);
+    }
+    #[test]
+    fn temperament_survives_a_round_reset_while_mood_clears() {
+        let board = std::sync::Mutex::new(radio::Radio::default());
+        let mut bot = Brain::new(mind::Skill::Easy, 42);
+        bot.epoch = radio::lock(&board).epoch;
+        let first = bot.view().personality;
+        let mut p = brain::Perception {
+            observations: brain::Observations {
+                player: Some((1, 0)),
+                ..Default::default()
+            },
+            tick: 25,
+            ..Default::default()
+        };
+        bot.play(
+            &p,
+            None,
+            &[emote::Kill {
+                seq: 1,
+                tick: p.tick,
+                victim: 1,
+                attacker: Some(2),
+                betrayal: false,
+                at: None,
+            }],
+            &board,
+        );
+        assert!(bot.view().mood.tilt > 0.0);
+        bot.set_skill(mind::Skill::Legendary);
+        let legendary = bot.view().personality;
+        assert_ne!(legendary, first);
+        assert_eq!(legendary.favorite_weapon, first.favorite_weapon);
+        assert!(bot.view().mood.tilt > 0.0);
+        radio::lock(&board).reset();
+        p.tick = 1;
+        bot.play(&p, None, &[], &board);
+        assert_eq!(bot.view().mood, decisions::MoodView::default());
+        assert_eq!(bot.view().personality, legendary);
     }
 }

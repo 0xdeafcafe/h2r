@@ -132,6 +132,52 @@ pub struct SimPlayer {
     /// one for it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub player: Option<String>,
+    /// Live brain state for a brain-driven player, when the backend provides it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brain: Option<BotBrain>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BotBrain {
+    pub skill: String,
+    pub personality: BotPersonality,
+    pub mood: BotMood,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BotPersonality {
+    pub aggression: f32,
+    pub caution: f32,
+    pub teamwork: f32,
+    pub objective_focus: f32,
+    pub composure: f32,
+    pub patience: f32,
+    pub showboating: f32,
+    pub weapon_loyalty: f32,
+    pub chattiness: f32,
+    pub favorite_weapon: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct BotMood {
+    pub confidence: f32,
+    pub tilt: f32,
+    pub fear: f32,
+    pub streak: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revenge_target: Option<String>,
+}
+
+/// A brain-driven bot on the host, whether added by sim or by the game.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClankerView {
+    pub name: String,
+    pub kind: PlayerKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub player: Option<String>,
+    pub brain: BotBrain,
 }
 
 /// `sim.player.remove`: one by id, or `all`.

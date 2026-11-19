@@ -662,7 +662,18 @@ impl Thrower {
     /// This tick: aim and make a throw under way, or roll for a new one at
     /// `m.mark` and solve it against `world`.
     pub fn step(&mut self, m: &Moment<'_>, world: &dyn Solid, skill: Skill) -> Hand {
-        let k = GrenadeSkill::of(skill);
+        self.step_with_rate(m, world, skill, 1.0)
+    }
+
+    pub(crate) fn step_with_rate(
+        &mut self,
+        m: &Moment<'_>,
+        world: &dyn Solid,
+        skill: Skill,
+        rate: f32,
+    ) -> Hand {
+        let mut k = GrenadeSkill::of(skill);
+        k.per_minute *= rate;
         if self.plan.is_none() {
             self.consider(m, world, &k);
         }

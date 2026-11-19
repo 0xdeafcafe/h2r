@@ -186,6 +186,7 @@ pub fn doing_name(d: &bots::mind::Doing) -> &'static str {
         Doing::Idle => "idle",
         Doing::Fight(_) => "fight",
         Doing::Chase(_) => "chase",
+        Doing::HoldAngle(_) => "hold_angle",
         Doing::Roam => "roam",
         Doing::Support(_) => "support",
         Doing::Supply(_) => "supply",
@@ -547,6 +548,10 @@ pub struct Metered {
 }
 
 impl PadSource for Metered {
+    fn brain_view(&self) -> Option<bots::BrainView> {
+        Some(self.brain.view())
+    }
+
     fn pad(&mut self, f: &Frame<'_>) -> HostPadState {
         let pad = self.brain.pad(f);
         if let Some(t) = f.tick

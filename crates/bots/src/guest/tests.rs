@@ -1361,6 +1361,7 @@ fn decisions_observe_player_slot_while_dead_and_only_live_contacts() {
     ];
     let mut g = game(&players, true, &[0, 1]);
     g.put_f32(BODIES + 0xf0, 0.3);
+    g.put_u32(BODIES + BIPED_UNIT_FLAGS, BIPED_CROUCH_REQUEST);
     let p = perceive(&g, 1).unwrap();
     assert_eq!(p.observations.player, Some((1, 1)));
     assert_eq!(
@@ -1370,6 +1371,7 @@ fn decisions_observe_player_slot_while_dead_and_only_live_contacts() {
             aim: [0.0, 1.0, 0.0],
             shield: Some(0.3),
             empty_magazine: false,
+            crouching: true,
         }]
     );
     assert!(p.observations.pickups_scanned);

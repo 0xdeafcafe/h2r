@@ -78,6 +78,8 @@ pub struct Contact {
     /// Empty magazine with rounds in reserve. A window to push, inferred
     /// from the held weapon rather than a reload animation.
     pub empty_magazine: bool,
+    /// The biped is requesting crouch this tick.
+    pub crouching: bool,
 }
 
 /// What the bot knows this tick.

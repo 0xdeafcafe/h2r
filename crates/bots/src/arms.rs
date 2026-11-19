@@ -586,6 +586,14 @@ fn dist(a: Vec3, b: Vec3) -> f32 {
 ///
 /// `skip` rules out pickups (those the bot could not reach).
 pub fn plan(s: &Situation<'_>, skip: impl Fn(&Pickup) -> bool) -> Kit {
+    plan_with_personality(s, skip, None)
+}
+
+pub(crate) fn plan_with_personality(
+    s: &Situation<'_>,
+    skip: impl Fn(&Pickup) -> bool,
+    personality: Option<crate::decisions::Personality>,
+) -> Kit {
     let held_gun = s.arms.held;
     let other_gun = s.arms.other;
     let held = held_gun.map_or(Ammo::None, |g| g.ammo);
@@ -604,7 +612,10 @@ pub fn plan(s: &Situation<'_>, skip: impl Fn(&Pickup) -> bool) -> Kit {
             .map(|p| (dist(p.position, s.at), *p))
             .filter(|(d, _)| *d < range)
             .min_by(|a, b| {
-                let cost = |(d, p): &(f32, Pickup)| d - RATING_PULL * p.gun.rating() as f32;
+                let cost = |(d, p): &(f32, Pickup)| {
+                    d - RATING_PULL * p.gun.rating() as f32
+                        - crate::weapons::pickup_bias(personality, p.gun.role())
+                };
                 cost(a).total_cmp(&cost(b))
             })
             .map(|(_, p)| p)
@@ -686,6 +697,28 @@ pub fn plan(s: &Situation<'_>, skip: impl Fn(&Pickup) -> bool) -> Kit {
         // Same kind tops up by walking over it; any useful gun will do.
         if let Some(p) = nearest(TOP_UP_RANGE, &|_| true) {
             return Kit::Seek(p);
+        }
+    }
+    if s.calm
+        && s.enemy.is_none()
+        && let Some(traits) = personality
+        && ![held_gun, other_gun]
+            .into_iter()
+            .flatten()
+            .any(|g| g.rating() > 0 && g.role() == traits.favorite_weapon)
+        && let Some(p) = nearest(traits.favorite_detour(), &|p| {
+            traits.weapon_interest(p.gun.role()) > 0.0 && !s.arms.carries(p.gun.def)
+        })
+    {
+        let rate = |g: Option<Gun>| g.map_or(0, |g| g.rating());
+        // Preserve the stronger gun and never trade a stronger pair just
+        // for a favorite. A single gun has an open second slot.
+        if other_gun.is_none() || p.gun.rating() >= rate(held_gun).min(rate(other_gun)) {
+            return if other_gun.is_some() && rate(held_gun) > rate(other_gun) {
+                Kit::Switch
+            } else {
+                Kit::Seek(p)
+            };
         }
     }
     if s.calm && s.by_range {

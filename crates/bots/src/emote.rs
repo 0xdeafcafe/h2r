@@ -194,11 +194,19 @@ impl Emoter {
     /// Hears deaths: each dumb one with a body rolls `taunt × severity`
     /// once; a hit makes it the body to emote over.
     pub fn hear(&mut self, kills: &[Kill]) {
-        for k in kills {
-            let (Some(d), Some(at)) = (classify(k), k.at) else {
+        self.hear_with_style(kills, None, 1.0);
+    }
+
+    pub(crate) fn hear_with_style(&mut self, kills: &[Kill], player: Option<u32>, weight: f32) {
+        for k in kills.iter().filter(|k| Some(k.victim) != player) {
+            let severity = classify(k)
+                .map(Dumb::severity)
+                .or_else(|| (player.is_some() && k.attacker == player).then_some(0.35));
+            let (Some(severity), Some(at)) = (severity, k.at) else {
                 continue;
             };
-            if self.uniform() < self.taunt.clamp(0.0, 1.0) * d.severity() {
+            let chance = (self.taunt * weight * severity).clamp(0.0, 1.0);
+            if self.uniform() < chance {
                 self.body = Some((at, k.tick.saturating_add(WINDOW_TICKS)));
             }
         }
@@ -222,6 +230,15 @@ impl Emoter {
         if enemy_in_view {
             self.enemy_at = Some(tick);
             // An enemy: stop at once.
+            if self.burst.take().is_some() {
+                self.last = Some(tick);
+            }
+            return None;
+        }
+        if self.taunt <= 0.0 {
+            self.body = None;
+        }
+        if self.taunt <= 0.0 || objective_live {
             if self.burst.take().is_some() {
                 self.last = Some(tick);
             }
@@ -251,7 +268,7 @@ impl Emoter {
         let rested = self
             .last
             .is_none_or(|l| tick.wrapping_sub(l) >= COOLDOWN_TICKS);
-        if !(near && clear && rested && !objective_live) {
+        if !(near && clear && rested) {
             return None;
         }
         self.body = None;
