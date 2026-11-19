@@ -1071,25 +1071,45 @@ pub fn write(
         .into_iter()
         .map(|n| n.to_ascii_lowercase())
         .collect::<std::collections::BTreeSet<_>>();
-    let mut destinations = h1ai::control::maneuver_targets(&ai_src, &requests);
-    destinations.extend(h1ai::control::automatic_migration_targets(&ai_src));
+    let retained_subjects = match (tables.as_ref(), opts.scripts) {
+        (Some(tables), Some(scripts)) if opts.ai => {
+            h1scripts::aicontrol::retained_subjects(tables, &scripts.catalog)
+        }
+        _ => h1scripts::aicontrol::RetainedSubjects {
+            follow_encounters: Some(Default::default()),
+            ..Default::default()
+        },
+    };
+    let maneuvers = h1ai::control::maneuver_targets(&ai_src, &requests);
+    let automatic = h1ai::control::automatic_migration_targets(
+        &ai_src,
+        retained_subjects.follow_encounters.as_ref(),
+    );
     let mut candidates = Vec::new();
     let mut placed = 0;
     for encounter in &ai_src.encounters {
         for squad in &encounter.squads {
             if squad.starting_locations.is_empty() {
                 let name = format!("{}/{}", encounter.name, squad.name).to_ascii_lowercase();
-                let priority = destinations.contains(&name);
-                if priority || named.contains(&name) {
-                    candidates.push((!priority, name));
-                }
+                let priority = if maneuvers.contains(&name) {
+                    0
+                } else if retained_subjects.migration_destinations.contains(&name) {
+                    1
+                } else if named.contains(&name) {
+                    2
+                } else if automatic.contains(&name) {
+                    3
+                } else {
+                    continue;
+                };
+                candidates.push((priority, name));
             } else {
                 placed += 1;
             }
         }
     }
     // Stable sorting retains the source ordering within each priority.
-    candidates.sort_by_key(|&(ordinary, _)| ordinary);
+    candidates.sort_by_key(|(priority, _)| *priority);
     let remaining = if lean.leaves_out(crate::Lean::EmptySquads) {
         0
     } else {
@@ -1097,9 +1117,11 @@ pub fn write(
     };
     let dropped = candidates.len().saturating_sub(remaining);
     if dropped != 0 {
-        let destinations = candidates.iter().skip(remaining).filter(|(ordinary, _)| !ordinary).count();
+        let discarded = &candidates[remaining..];
+        let required = discarded.iter().filter(|(priority, _)| *priority < 2).count();
+        let automatic = discarded.iter().filter(|(_, name)| automatic.contains(name)).count();
         report.dropped.push(format!(
-            "ai: {dropped} empty squads left out, including {destinations} migration destinations ({placed} placed, cap {MAX_SQUADS})"
+            "ai: {dropped} empty squads left out, including {required} maneuver or scripted destinations and {automatic} automatic migration candidates ({placed} placed, cap {MAX_SQUADS})"
         ));
     }
     let retained_empty: std::collections::BTreeSet<_> = candidates.into_iter()

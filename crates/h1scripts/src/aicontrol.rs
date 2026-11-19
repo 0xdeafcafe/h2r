@@ -282,6 +282,54 @@ pub(crate) fn request(
     })
 }
 
+/// References that should guide the choice of empty squads retained in the
+/// rebuilt map. An unknown follow subject can select any encounter.
+#[derive(Default)]
+pub struct RetainedSubjects {
+    pub follow_encounters: Option<std::collections::BTreeSet<u16>>,
+    pub migration_destinations: std::collections::BTreeSet<String>,
+}
+
+pub fn retained_subjects(tables: &crate::Tables, catalog: &crate::Catalog) -> RetainedSubjects {
+    let mut retained = RetainedSubjects {
+        follow_encounters: Some(Default::default()),
+        ..RetainedSubjects::default()
+    };
+    let literal_ai = |node: &hs::Node| {
+        node.atom() && !node.global() && node.opcode() == crate::catalog::types::AI
+    };
+    for node in tables.nodes.iter().filter(|n| n.live() && !n.atom() && !n.script_call()) {
+        let Ok(function) = catalog.function(node.opcode()) else {
+            continue;
+        };
+        let first = || {
+            let head = tables.node(hs::Datum(node.data())).ok()?;
+            tables.node(head.next()).ok()
+        };
+        match function.name.as_str() {
+            "ai_follow_target_players" | "ai_follow_target_ai" | "ai_follow_target_unit" => {
+                if let Some(subject) = first().filter(|n| literal_ai(n)) {
+                    if let Some(encounters) = &mut retained.follow_encounters {
+                        encounters.insert(subject.data() as u16);
+                    }
+                } else {
+                    retained.follow_encounters = None;
+                }
+            }
+            "ai_migrate" | "ai_migrate_and_speak" | "ai_migrate_by_unit" | "ai_vehicle_encounter" => {
+                if let Some(destination) = first().and_then(|arg| tables.node(arg.next()).ok())
+                    .filter(|n| literal_ai(n) && n.data() >> 30 == 2)
+                    && let Ok(name) = tables.string(destination.string_offset())
+                {
+                    retained.migration_destinations.insert(name.to_ascii_lowercase());
+                }
+            }
+            _ => {}
+        }
+    }
+    retained
+}
+
 /// Level data has to be built from the original squad and platoon indices
 /// before the converter drops unused squads. Only direct AI literals name
 /// a stable source index.

@@ -173,11 +173,16 @@ pub fn maneuver_targets(source: &H1Ai, requests: &[Request]) -> BTreeSet<String>
 }
 
 /// Follow-driven migration uses even unoccupied squads as destinations.
-pub fn automatic_migration_targets(source: &H1Ai) -> BTreeSet<String> {
+pub fn automatic_migration_targets(
+    source: &H1Ai,
+    followed: Option<&BTreeSet<u16>>,
+) -> BTreeSet<String> {
     source
         .encounters
         .iter()
-        .flat_map(|encounter| {
+        .enumerate()
+        .filter(|(i, _)| followed.is_none_or(|groups| groups.contains(&(*i as u16))))
+        .flat_map(|(_, encounter)| {
             encounter
                 .squads
                 .iter()

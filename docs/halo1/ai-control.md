@@ -80,10 +80,15 @@ areas in the current BSP. The unsupported-only teleport uses native
 contact state in place of Halo 1's two-metre ray, and start selection
 uses available converted starts with no cross-call reservation pool.
 
-During integration, keep `maneuver_targets` and
-`automatic_migration_targets` when adopting the squad-roster lane's
-retention strategy. The squad budget and lean conversion can still
-remove empty destinations.
+The converter retains empty maneuver destinations first, followed by
+literal migration and vehicle destinations, other script-named squads,
+and unnamed automatic candidates in followed encounters. The disc
+survey found 26 open squad slots in a50 and 52 in b40 under the
+335-squad limit. Their 2 and 25 empty maneuver targets fit. The same
+maps have 161 and 502 empty automatic candidates in followed encounters,
+so their automatic routes still omit candidates. Lean conversion
+can remove empty destinations. During integration, carry this ordering
+into the squad-roster lane's expanded pool.
 
 Conversations and command lists have separate converter lanes.
 
