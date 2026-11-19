@@ -804,12 +804,56 @@ fn engine_vertex_constants_override_instance_vectors() {
     let c = c20(&m, 0);
     assert_eq!(c.value, [9.0, 10.0, 11.0, 8.0]);
     assert_eq!(c.origin, Origin::Engine);
+    // Where vector 7 landed, so a caller can put another value there.
+    assert_eq!(
+        m.layers[0].passes[0].implementations[0].vector_bindings,
+        vec![VectorBinding {
+            source: 7,
+            target: VectorTarget::Vertex {
+                bank: 1,
+                reg: 2,
+                components: 0b0111
+            }
+        }]
+    );
     // Without the engine binding the instance value stands.
     let imp0 = target(&f, spas_pp(&f));
     w16(&mut f.arena.b, imp0 + 0x124, 0);
-    let c = c20(&library(&f).material(SHAD_ID, Some(e)).unwrap(), 0);
+    let m = library(&f).material(SHAD_ID, Some(e)).unwrap();
+    let c = c20(&m, 0);
     assert_eq!(c.value, [5.0, 6.0, 7.0, 8.0]);
     assert_eq!(c.origin, Origin::Instance);
+    assert!(m.layers[0].passes[0].implementations[0].vector_bindings.is_empty());
+}
+
+#[test]
+fn a_vector_binding_keeps_only_what_later_bindings_leave() {
+    let v = |reg, components| VectorTarget::Vertex { bank: 1, reg, components };
+    let p = |slot, mask| VectorTarget::Pixel { c1: false, slot, mask, half: false };
+    let got = vector_bindings(&[
+        (v(2, 0b0111), Some(5)),
+        (v(2, 0b0001), None),
+        (v(3, 0b0111), Some(6)),
+        (p(1, 0x00ff_ffff), Some(5)),
+        (p(1, 0x0000_00ff), None),
+        (p(8, 0x00ff_ffff), Some(6)),
+        (p(8, 0x00ff_ffff), Some(5)),
+        (v(4, 0b0111), Some(6)),
+        (v(4, 0b0111), None),
+    ]);
+    assert_eq!(
+        got,
+        vec![
+            VectorBinding { source: 5, target: v(2, 0b0110) },
+            VectorBinding { source: 6, target: v(3, 0b0111) },
+            VectorBinding { source: 5, target: p(1, 0x00ff_ff00) },
+            VectorBinding { source: 5, target: p(8, 0x00ff_ffff) },
+        ],
+        "overwritten lanes and wholly overwritten bindings dropped"
+    );
+    assert_eq!(pack_engine_colour([1.0, 0.5, 0.0, 0.0], false), 0x00ff_8000);
+    assert_eq!(pack_engine_colour([1.0, 0.0, -1.0, 0.0], true), 0x80ff_8000);
+    assert_eq!(pack_engine_colour([2.0, -1.0, 0.25, 1.0], false), 0xffff_0040);
 }
 
 #[test]
@@ -892,4 +936,54 @@ fn only_inputs_outside_the_instance_make_a_pass_per_draw() {
     // A vector in the masks.
     w32(&mut v, 0x104, 1);
     assert!(per_draw_inputs(&pass(vec![[0, 1, 3, 21]], vec![5]), &Implementation::decode(&v).unwrap()));
+}
+
+/// `input_reads`: the masks, the engine constants' sources (pixel modes
+/// 0..3 scalar and 4 vector in byte 2; vertex modes in bits 5..9 of the
+/// word) and the fragment selectors, each kind in its own mask.
+#[test]
+fn input_reads_unions_masks_bindings_and_selectors() {
+    let range = |start: u16, count: u8| IndexRange { start, count };
+    let ext = |bytes: [u8; 4]| ExternalBinding { bytes };
+    let frag = |selector: i16| CombinerFragment { selector, base: 0 };
+    let imp = Implementation {
+        textures: IndexRange::default(),
+        render_states: IndexRange::default(),
+        stage_states: IndexRange::default(),
+        pixel_shader: [0; PSDEF_SIZE],
+        fragments: range(0, 3),
+        unknown_f8: [0; 4],
+        vertex_shader: TagRef { group: map::FourCC(*b"xtrv"), id: map::TagId(u32::MAX) },
+        scalar_inputs: 1 << 21,
+        vector_inputs: 1 << 40,
+        int_inputs: 1 << 4,
+        unknown_118: 0,
+        restore_states: IndexRange::default(),
+        animated_render_states: IndexRange::default(),
+        animated_stage_states: IndexRange::default(),
+        external_pixel_constants: range(0, 3),
+        external_vertex_constants: range(3, 2),
+        unknown_126: [0; 12],
+    };
+    let spas = PassPostprocess {
+        implementations: vec![imp.clone()],
+        textures: Vec::new(),
+        render_states: Vec::new(),
+        stage_states: Vec::new(),
+        // -1 is fixed; 6 an integer; 40 is out of the integers' range.
+        fragments: vec![frag(-1), frag(6), frag(40)],
+        variants: Vec::new(),
+        stages: Vec::new(),
+        externals: vec![
+            ext([0, 0, 2, 16]),    // pixel, mode 2: scalar 16
+            ext([0, 0, 4, 5]),     // pixel, mode 4: vector 5
+            ext([0, 0, 6, 9]),     // pixel, mode 6: a stage size
+            ext([4 << 5, 0, 0, 6]), // vertex, mode 4: vector 6
+            ext([1 << 5, 0, 0, 3]), // vertex, mode 1: scalar 3
+        ],
+    };
+    let r = input_reads(&spas, &imp);
+    assert_eq!(r.scalars, 1 << 21 | 1 << 16 | 1 << 3);
+    assert_eq!(r.vectors, 1 << 40 | 1 << 5 | 1 << 6);
+    assert_eq!(r.ints, 1 << 4 | 1 << 6);
 }

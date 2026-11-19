@@ -63,6 +63,58 @@ pub fn body(mem: &dyn GuestRead, handle: u32) -> Option<u32> {
     (body != 0).then_some(body)
 }
 
+/// Most object slots [`object_meets_sphere`] walks; past it the answer is
+/// yes.
+pub const MAX_SLOTS: u32 = 1 << 13;
+
+/// Whether a live object's world bounding sphere (body `+0x30`, `+0x3c`)
+/// meets the sphere (`centre`, `radius`). A light whose sphere meets one
+/// keeps its D3D passes: they light the object, which the native lights
+/// do not yet. Every slot below the high-water mark with a non-zero salt
+/// and a body counts as live. Conservative: a slot or sphere that cannot
+/// be read, a non-finite one, or too many slots, answers yes; no object
+/// array (`[0x004e0300]` zero) answers no.
+pub fn object_meets_sphere(mem: &dyn GuestRead, centre: [f32; 3], radius: f32) -> bool {
+    let Some(array) = mem.read_u32(OBJECTS) else { return true };
+    if array == 0 {
+        return false;
+    }
+    let (Some(high), Some(data)) = (mem.read_u32(array.wrapping_add(ARRAY_HIGH_WATER)), mem.read_u32(array.wrapping_add(ARRAY_DATA))) else {
+        return true;
+    };
+    if high > MAX_SLOTS {
+        return true;
+    }
+    (0..high).any(|slot| {
+        let header = data.wrapping_add(HEADER_SIZE * slot);
+        let Some(salt) = read_u16(mem, header) else { return true };
+        if salt == 0 {
+            return false;
+        }
+        let Some(body) = mem.read_u32(header.wrapping_add(HEADER_BODY)) else { return true };
+        if body == 0 {
+            return false;
+        }
+        let f = |o: u32| mem.read_f32(body.wrapping_add(o));
+        let (Some(x), Some(y), Some(z), Some(r)) = (f(BODY_SPHERE), f(BODY_SPHERE + 4), f(BODY_SPHERE + 8), f(BODY_SPHERE_RADIUS)) else {
+            return true;
+        };
+        spheres_meet(([x, y, z], r), (centre, radius))
+    })
+}
+
+/// Whether two spheres share a point; anything not finite meets.
+pub fn spheres_meet(a: ([f32; 3], f32), b: ([f32; 3], f32)) -> bool {
+    // Checked before any `max`, which would turn a NaN radius into 0.
+    let finite = a.0.iter().chain(&b.0).chain([&a.1, &b.1]).all(|x| x.is_finite());
+    if !finite {
+        return true;
+    }
+    let d2: f32 = (0..3).map(|k| (a.0[k] - b.0[k]) * (a.0[k] - b.0[k])).sum();
+    let reach = a.1.max(0.0) + b.1.max(0.0);
+    !(d2.is_finite() && reach.is_finite()) || d2 <= reach * reach
+}
+
 fn read_u16(mem: &dyn GuestRead, addr: u32) -> Option<u16> {
     let w = mem.read_u32(addr & !3)?;
     Some(if addr & 2 == 0 { w as u16 } else { (w >> 16) as u16 })
@@ -305,6 +357,43 @@ pub(crate) mod tests {
 
     fn mask(m: &Mem, i: u32) -> u32 {
         m.read_u32(ITEMS + ITEM_SIZE * i + 0x10).unwrap()
+    }
+
+    #[test]
+    fn a_light_sphere_meets_live_objects_only() {
+        let mut m = Mem::default();
+        object(&mut m, 1, 0xe000_0100, 1);
+        object(&mut m, 2, 0xe000_0200, 1);
+        m.w(ARRAY + 0x38, 4);
+        m.w(HEADERS, 0); // slot 0 free
+        m.w(HEADERS + 0xc * 3, 0); // slot 3 free
+        // Object 1 at (1, 2, 3) r 0.5; object 2 moved to (20, 0, 0) r 1.
+        for (k, v) in [20.0f32, 0.0, 0.0, 1.0].into_iter().enumerate() {
+            m.f(BODIES + 0x2000 + 0x30 + 4 * k as u32, v);
+        }
+        assert!(object_meets_sphere(&m, [1.0, 2.0, 5.0], 1.5), "touches object 1");
+        assert!(!object_meets_sphere(&m, [1.0, 2.0, 5.0], 1.4));
+        assert!(object_meets_sphere(&m, [17.0, 0.0, 0.0], 2.0), "touches object 2");
+        assert!(!object_meets_sphere(&m, [10.0, 0.0, 0.0], 2.0));
+        // A free slot's stale body is not an object.
+        m.w(HEADERS + 8, BODIES + 0x2000);
+        assert!(!object_meets_sphere(&m, [10.0, 0.0, 0.0], 2.0));
+        // Past the high-water mark: not walked.
+        m.w(ARRAY + 0x38, 2);
+        assert!(!object_meets_sphere(&m, [17.0, 0.0, 0.0], 2.0));
+        // Unreadable or not finite: yes.
+        m.w(ARRAY + 0x38, 4);
+        m.f(BODIES + 0x2000 + 0x3c, f32::NAN);
+        assert!(object_meets_sphere(&m, [-50.0, 0.0, 0.0], 1.0));
+        m.f(BODIES + 0x2000 + 0x3c, 1.0);
+        assert!(!object_meets_sphere(&m, [-50.0, 0.0, 0.0], 1.0));
+        m.w(ARRAY + 0x38, 5);
+        assert!(object_meets_sphere(&m, [-50.0, 0.0, 0.0], 1.0), "slot 4 unreadable");
+        m.w(ARRAY + 0x38, MAX_SLOTS + 1);
+        assert!(object_meets_sphere(&m, [-50.0, 0.0, 0.0], 1.0), "too many slots");
+        // No array: no objects.
+        m.w(OBJECTS, 0);
+        assert!(!object_meets_sphere(&m, [1.0, 2.0, 3.0], 1.0));
     }
 
     #[test]

@@ -10,7 +10,7 @@
 //! side of the tail with the game's clip words (the device side itself:
 //! d3d's `light_tail` test); a light left to D3D leaves them alone. A light
 //! is skipped only while the device's bound target is the one recorded
-//! before the view's lights.
+//! before the view's lights, and not while its sphere meets a live object's.
 
 use std::sync::{Arc, Mutex};
 
@@ -272,4 +272,26 @@ fn native_lights_join_runs_between_the_d3d_lights() {
 
     let (lights, skipped, runs) = native_lights::counts();
     assert_eq!((lights, skipped, runs), (13, 6, 5));
+
+    // A live object whose sphere meets the light's (A: (1, 0, 0), r 5):
+    // the light keeps its D3D passes, which light the object; counted.
+    let objects = 0x005a_0000;
+    let body = objects + 0x1000;
+    m.set_u32(native_render::objects::OBJECTS, objects).unwrap();
+    m.set_u32(objects + 0x38, 3).unwrap();
+    m.set_u32(objects + 0x44, objects + 0x100).unwrap();
+    m.set_u32(objects + 0x100 + 0xc * 2, 0x8002).unwrap();
+    m.set_u32(objects + 0x100 + 0xc * 2 + 8, body).unwrap();
+    put(&mut m, body + 0x30, &[7.0, 0.0, 0.0, 1.5]);
+    dirty(&mut m);
+    let esp = call(&mut m, a, false);
+    assert!(!native_lights::on_light(&mut m, esp));
+    assert!(untouched(&m));
+    assert_eq!(native_lights::object_refusals(), 1);
+    // The object moves out of reach: skipped again (joins the open run).
+    put(&mut m, body + 0x30, &[7.0, 0.0, 0.0, 0.5]);
+    let esp = call(&mut m, a, false);
+    assert!(native_lights::on_light(&mut m, esp));
+    assert_eq!(native_lights::object_refusals(), 1);
+    assert_eq!(native_lights::counts(), (15, 7, 5));
 }

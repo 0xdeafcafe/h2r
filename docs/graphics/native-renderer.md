@@ -1160,10 +1160,62 @@ skipped light never reaches.
      8) keep a shadowed light on the D3D path. `compile_light` translates
      it through the same code as the world's and transparents' passes
      (`program::translate_pass`), and `light_vertex` puts the light's
-     frame constants into `c[31]`..`c[39]`. Next: the host side
-     (resolving the light's materials, the engine textures from the
-     globals' rasterizer bitmaps and the gel, the pass's draw over the
-     lit parts).
+     frame constants into `c[31]`..`c[39]`.
+   - **Host pieces** (Code). The hook computes each light's constants as
+     `0x00031170` would (`feature::native_lights::light_constants`: the
+     definition from the tag table, the shadow word under scene flag bit
+     10, `light_globals` without the screen bounds, `pass_flags`) into
+     `Light::constants`; `LightInputs::from_constants` and
+     `LookCache` (keyed by shader, layer, implementation and the inputs'
+     bits) resolve a material once per distinct light;
+     `native_render::light_gpu` uploads the cube and volume
+     (`LayeredImage`, `layered_texture`) and draws a compiled pass with
+     one uniform group per light (`LightGpu`); `boot::native_lights_glue`
+     reads the light textures' bitmaps from `matg +0x10c`
+     (`light_bitmaps`, `light_textures`) and says which lights are
+     drawable (constants, no shadow).
+   - **Host wiring** (Code; `boot::native_lights_glue`). Texture 10, the
+     gel (`0x00019530`'s id-10 case, `engine::light_passes::gel`): with
+     the context's first word non-zero (`[0x004858c8]`, copied by
+     `0x0004a1e0`), the definition's flag `0x80000` clear and no gel
+     shader at `+0xe0`, image 0 of the bitmap at `+0x7c`; the hook keeps
+     it in `LightConstants::gel`, and a pass sampling any other texture 10
+     keeps the light on D3D. At world load, with the switch on and before
+     the world drops the materials left to D3D (`load`): each material's
+     shader and instance inputs, the vertex programs and stage images of
+     every implementation of its layer-12 and 13 passes, the light
+     textures, the gels of the map's `ligh` tags, the opaque parts of
+     native materials with lit layers, and the bounds of every other
+     surface that has (or may have) lit layers: materials left to D3D
+     and transparents. Per light (`LightsWorld::plan`): the parts whose
+     bounds meet the light's sphere (`Aabb::meets_sphere`, an
+     over-approximation: the attenuation map fades the rest), none if
+     the sphere meets one of those other surfaces; per material the
+     implementation `0x00030da0`/`0x00030e00` would take, resolved with the
+     light's inputs, `light_look` and `compile_light`, cached by inputs
+     (`LookCache`). `accepts` is `drawable` and a plan; `open` asks for one
+     external pass per run, which plans the run's lights at its issue and
+     draws them with `GpuWorld::encode_lights` (`light_gpu::LightSet`: the
+     engine textures and gels uploaded once, one `LightGpu` per
+     `light_gpu_key`, so lights whose inputs differ only in constants share
+     a pipeline with their own uniforms). With the switch off the hooks are
+     not placed, so `light_constants` never runs, and nothing loads.
+     - Objects: the hook leaves a light to D3D when its sphere meets a
+       live object's (`objects::object_meets_sphere`, the object array to
+       its high-water mark; unreadable or non-finite answers yes), counted
+       in `native_lights::object_refusals`, so no object loses a light
+       until stage 4's objects item draws them.
+     - Colours: the resolve records where each mode-4 engine constant put
+       its vector (`ResolvedImplementation::vector_bindings`: a vertex
+       register's components, or a combiner constant's lanes packed as
+       `0x00019ca0` does, `pack_engine_colour`, minus what later bindings
+       overwrite). The cache key leaves the colours out and the host
+       resolves with them zero; `colour_uniforms` puts each light's
+       colours A and B (vectors 5 and 6) into its uniforms, so an animated
+       colour resolves nothing.
+     - Uniforms: one buffer per run, each draw's vertex and pixel uniforms
+       at aligned dynamic offsets (`light_gpu::uniforms_layout`,
+       `run_layout`), one group for the run.
 
 4. **Objects**, through the models as stage 3's objects.
 5. **Shadows**: layer 10 into our depth texture, the term in the light's

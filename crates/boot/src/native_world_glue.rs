@@ -15,6 +15,8 @@
 //! - **Fallback.** A material whose base map does not decode is left out
 //!   of the world and keeps its D3D draws (the skip only clears items of
 //!   the shaders the world draws).
+//! - **Lights** (`impl.render.native_lights`): the lights' part of the
+//!   world, loaded with it (`native_lights_glue::load`).
 //! - **Material programs** (`impl.render.native_world_programs`, off by
 //!   default). A native material whose layer-3 pass translates
 //!   (`native_render::look`, `native_render::program`) draws with its own
@@ -71,6 +73,9 @@ pub struct Ready {
     /// The transparent parts the native pass draws, with their shader's
     /// tag index (`native_transparents_glue`).
     pub(crate) transparent_parts: Arc<HashMap<(Owner, u8), u16>>,
+    /// What the native lights draw over this world
+    /// (`native_lights_glue`; `None` with them off).
+    pub(crate) lights: Option<Arc<crate::native_lights_glue::LightsWorld>>,
 }
 
 /// The current (map, BSP) and its world.
@@ -167,7 +172,8 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
         device: Arc::clone(device),
         state: Arc::clone(&state),
     }));
-    crate::native_transparents_glue::install(device, state);
+    crate::native_transparents_glue::install(device, Arc::clone(&state));
+    crate::native_lights_glue::install(device, state);
 }
 
 /// The world's GPU side, uploaded from its CPU side by the first pass that
@@ -364,6 +370,14 @@ fn load_ready(name: &str, bsp: u32) -> Result<Ready, load::Error> {
     } else {
         Default::default()
     };
+    // The lights' part, over the whole world: the parts of materials left
+    // to D3D are where native lights cannot draw.
+    let lights_on = feature::Switches::from_env().is_ok_and(|s| feature::native_lights::on(&s));
+    let lights = if lights_on {
+        crate::native_lights_glue::load(&mut map, &mut files, &shaders, &world, &|m| base_maps.contains_key(&m)).map(Arc::new)
+    } else {
+        None
+    };
     // Draw only what a native material owns: the rest keeps its D3D draws.
     let world = keep_materials(world, &base_maps);
     Ok(Ready {
@@ -378,6 +392,7 @@ fn load_ready(name: &str, bsp: u32) -> Result<Ready, load::Error> {
         gpu: Mutex::new(None),
         shaders: Arc::new(native),
         transparent_parts: Arc::new(transparent_parts),
+        lights,
     })
 }
 

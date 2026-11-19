@@ -103,6 +103,28 @@ pub struct Register {
     pub origin: Origin,
 }
 
+/// Where an engine vector input landed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VectorTarget {
+    /// Vertex register `reg` of `bank` (1: the constant `c[18 + reg]`, 0:
+    /// the default `v[reg]`, as [`Register::index`]); the input's x, y and
+    /// z in the `components` still its own (bit 0 = x).
+    Vertex { bank: u8, reg: u8, components: u8 },
+    /// Combiner constant `slot` (0..7 the stages', 8 the final
+    /// combiner's) of C1 or C0; the input packed with
+    /// [`pack_engine_colour`] (`half` its option) in the byte lanes of
+    /// `mask` still its own.
+    Pixel { c1: bool, slot: u8, mask: u32, half: bool },
+}
+
+/// One engine vector input's binding ([`ResolvedImplementation::vector_bindings`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VectorBinding {
+    /// The engine vector input.
+    pub source: u8,
+    pub target: VectorTarget,
+}
+
 /// An animated target, not evaluated.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AnimatedTarget {
@@ -149,6 +171,10 @@ pub struct ResolvedImplementation {
     pub per_draw_inputs: bool,
     /// Every engine input the implementation reads ([`input_reads`]).
     pub input_reads: InputReads,
+    /// Where its engine vector inputs landed (mode-4 engine constants), so
+    /// another value of those inputs can be put in without resolving
+    /// again.
+    pub vector_bindings: Vec<VectorBinding>,
     /// Hardware vertex constants (`c[18 + i]`, `0x00018eab`).
     pub vertex_constants: Vec<Register>,
     /// Vertex attribute defaults `v[i]` (`SET_VERTEX_DATA4F_M`, `0x00018e3b`).
@@ -556,6 +582,10 @@ impl ShaderLibrary {
             });
         }
 
+        // Every engine binding's target in order, with the vector input it
+        // copies (mode 4), for `vector_bindings`.
+        let mut engine_writes: Vec<(VectorTarget, Option<u8>)> = Vec::new();
+
         // 0x00019be0: engine-driven vertex constants (after instance vectors).
         for e in &spas.externals[imp.external_vertex_constants.indices()] {
             let w = e.word();
@@ -574,6 +604,14 @@ impl ShaderLibrary {
             )?;
             written[bank][reg] = 0xf;
             origin[bank][reg] = Origin::Engine;
+            engine_writes.push((
+                VectorTarget::Vertex {
+                    bank: bank as u8,
+                    reg: reg as u8,
+                    components: engine_mode_components(mode),
+                },
+                (mode == 4).then_some(e.bytes[3]),
+            ));
         }
 
         // 0x00019ca0: engine-driven pixel constants.
@@ -590,14 +628,9 @@ impl ShaderLibrary {
                 (1.0, 1.0),
                 inputs,
             )?;
-            if e.bytes[1] & 8 != 0 {
-                for x in &mut v {
-                    *x = (*x + 1.0) * 0.5;
-                }
-            }
-            let ch = |x: f32| (x.clamp(0.0, 1.0) * 255.0).round() as u32;
-            let packed = ch(v[3]) << 24 | ch(v[0]) << 16 | ch(v[1]) << 8 | ch(v[2]);
-            apply_color(
+            let half = e.bytes[1] & 8 != 0;
+            let packed = pack_engine_colour(v, half);
+            let at = apply_color(
                 &mut ps,
                 &mut c0w,
                 &mut c1w,
@@ -609,6 +642,17 @@ impl ShaderLibrary {
                 &frag_offset,
                 inputs,
             )?;
+            if let Some((c1, slot)) = at {
+                engine_writes.push((
+                    VectorTarget::Pixel {
+                        c1,
+                        slot,
+                        mask: CHANNEL_MASKS[mode],
+                        half,
+                    },
+                    (mode == 4).then_some(e.bytes[3]),
+                ));
+            }
         }
 
         let mut animated = Vec::new();
@@ -658,6 +702,7 @@ impl ShaderLibrary {
             pixel_constants_from_engine: pixel_from_engine,
             per_draw_inputs: per_draw_inputs(spas, imp),
             input_reads: input_reads(spas, imp),
+            vector_bindings: vector_bindings(&engine_writes),
             vertex_constants: regs(1),
             vertex_defaults: regs(0),
             animated,
@@ -854,7 +899,7 @@ fn apply_color(
     imp: &Implementation,
     frag_offset: &[u8; 8],
     inputs: &EngineInputs,
-) -> Result<()> {
+) -> Result<Option<(bool, u8)>> {
     let c1 = w & 0x400 != 0;
     let fin = w & 0x3c0 == 0x200;
     let mut reg = usize::from((w >> 6) & 0xf);
@@ -872,7 +917,7 @@ fn apply_color(
                     "fragment selector is not an engine integer input",
                 ))?;
             if inputs.ints[s] != i32::from((w >> 3) & 7) {
-                return Ok(());
+                return Ok(None);
             }
         }
         if !fin {
@@ -893,7 +938,73 @@ fn apply_color(
     } else {
         *c0w |= 1 << bit;
     }
-    Ok(())
+    Ok(Some((c1, bit as u8)))
+}
+
+/// `0x00019ca0`'s packing of an engine value into an ARGB combiner
+/// constant: with `half`, `(x + 1) / 2` first; each channel clamped to
+/// 0..1 and rounded to 8 bits.
+pub fn pack_engine_colour(mut v: [f32; 4], half: bool) -> u32 {
+    if half {
+        for x in &mut v {
+            *x = (*x + 1.0) * 0.5;
+        }
+    }
+    let ch = |x: f32| (x.clamp(0.0, 1.0) * 255.0).round() as u32;
+    ch(v[3]) << 24 | ch(v[0]) << 16 | ch(v[1]) << 8 | ch(v[2])
+}
+
+/// The components `eval_engine` writes in each mode. Bit 0 = x.
+fn engine_mode_components(mode: usize) -> u8 {
+    match mode {
+        0..=3 => 1 << mode,
+        4 | 16 | 17 => 0b0111,
+        5..=8 => 1 << (mode - 5),
+        9 | 11 => 0b0011,
+        10 | 12 => 0b1100,
+        _ => 0b1111,
+    }
+}
+
+/// The vector bindings among `writes` (in binding order), each keeping
+/// only the components or lanes no later binding of the same register
+/// overwrites.
+pub(crate) fn vector_bindings(writes: &[(VectorTarget, Option<u8>)]) -> Vec<VectorBinding> {
+    let mut out = Vec::new();
+    for (i, &(target, source)) in writes.iter().enumerate() {
+        let Some(source) = source else { continue };
+        let later = &writes[i + 1..];
+        let target = match target {
+            VectorTarget::Vertex { bank, reg, components } => {
+                let over = later
+                    .iter()
+                    .filter_map(|(t, _)| match *t {
+                        VectorTarget::Vertex { bank: b, reg: r, components: c } if (b, r) == (bank, reg) => Some(c),
+                        _ => None,
+                    })
+                    .fold(0, |a, c| a | c);
+                VectorTarget::Vertex { bank, reg, components: components & !over }
+            }
+            VectorTarget::Pixel { c1, slot, mask, half } => {
+                let over = later
+                    .iter()
+                    .filter_map(|(t, _)| match *t {
+                        VectorTarget::Pixel { c1: c, slot: s, mask: m, .. } if (c, s) == (c1, slot) => Some(m),
+                        _ => None,
+                    })
+                    .fold(0, |a, m| a | m);
+                VectorTarget::Pixel { c1, slot, mask: mask & !over, half }
+            }
+        };
+        let empty = match target {
+            VectorTarget::Vertex { components, .. } => components == 0,
+            VectorTarget::Pixel { mask, .. } => mask == 0,
+        };
+        if !empty {
+            out.push(VectorBinding { source, target });
+        }
+    }
+    out
 }
 
 fn stage_dims(textures: &[Option<StageTexture>; 4], stage: usize) -> (f32, f32) {

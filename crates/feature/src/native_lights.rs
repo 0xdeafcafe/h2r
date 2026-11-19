@@ -45,7 +45,7 @@ use engine::memory::GuestMemory;
 use engine::points;
 use engine::render::light;
 use native_render::camera::{GuestRead, RENDER_CAMERA, RenderCamera};
-use native_render::lights::{LIGHT_PASSES_CLEANUP, Light, Run, TAIL_CLIP, TAIL_ZEROES};
+use native_render::lights::{LIGHT_PASSES_CLEANUP, Light, LightConstants, Run, TAIL_CLIP, TAIL_ZEROES};
 
 use crate::{BuildError, Builder, Feature, Flow, Manifest};
 
@@ -86,6 +86,8 @@ static RUNS: AtomicU64 = AtomicU64::new(0);
 static VIEW_TARGET: Mutex<Option<[u32; 8]>> = Mutex::new(None);
 /// Lights left to D3D because the bound target was not the view's.
 static TARGET_MOVED: AtomicU64 = AtomicU64::new(0);
+/// Lights the host would draw left to D3D because they meet an object.
+static OBJECTS_MET: AtomicU64 = AtomicU64::new(0);
 
 /// Installs the host (boot). Without one nothing is skipped.
 pub fn set_host(host: Arc<dyn Host>) {
@@ -112,6 +114,13 @@ impl GuestRead for Ro<'_> {
 /// Lights left to D3D because the bound target had moved from the view's.
 pub fn target_refusals() -> u64 {
     TARGET_MOVED.load(Ordering::Relaxed)
+}
+
+/// Lights the host would draw left to D3D because their sphere meets a
+/// live object's (`objects::object_meets_sphere`): their passes light
+/// the object, which the native lights do not yet.
+pub fn object_refusals() -> u64 {
+    OBJECTS_MET.load(Ordering::Relaxed)
 }
 
 /// The observer before the dynamic lights: no run carries over, and the
@@ -143,6 +152,74 @@ pub fn read_light(mem: &dyn GuestMemory, handle: u32, shadow: bool, weight: f32)
         bounds: (r.bounds_centre, r.bounds_radius),
         shadow,
         weight,
+        constants: None,
+    })
+}
+
+/// The registers at the light passes' entry the constants need: EAX the
+/// `ligh` datum, ECX the view context, ESP (the return address; the light
+/// datum, its frame, the shadow word and the weight above it), and the
+/// floating-point modes the arithmetic runs under.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Entry {
+    pub eax: u32,
+    pub ecx: u32,
+    pub esp: u32,
+    pub mxcsr: u32,
+    pub x87_control: u16,
+}
+
+/// The light's constants as `0x00031170` would set them: the call it makes
+/// to `0x0004a1e0` (`engine::light_constants`, with the definition from
+/// the tag table and the shadow word kept under scene flag bit 10), then
+/// its flag code (`engine::light_passes::pass_flags`). Reads guest memory,
+/// writes none. `None` when a read faults or the arithmetic would raise an
+/// unmasked exception. The sphere's screen bounds (`0x001650a0`) are not
+/// asked: they only set the scissor rectangle, which the native pass does
+/// not use. S: `0x00040e90` (called with EAX 0 before `0x0004a1e0`) is
+/// taken to leave what `0x0004a1e0` reads alone.
+pub fn light_constants(mem: &dyn GuestMemory, e: &Entry) -> Option<LightConstants> {
+    use engine::light_constants as lc;
+    use engine::light_passes as lp;
+    let arg = |offset: u32| mem.u32(e.esp.wrapping_add(offset)).ok();
+    let table = mem.u32(engine::tags::TAG_ENTRIES_GLOBAL).ok()?;
+    let definition = mem
+        .u32(table.wrapping_add((e.eax & 0xffff) << 4).wrapping_add(8))
+        .ok()?;
+    let scene = mem.u32(lp::global::SCENE_FLAGS).ok()?;
+    let shadow = lp::shadow_argument(arg(0xc)?, scene);
+    let call = lc::Call {
+        frame: arg(8)?,
+        context: e.ecx,
+        light: arg(4)?,
+        definition,
+        shadow,
+        weight: arg(0x10)?,
+    };
+    let fpu = lc::Fpu {
+        mxcsr: e.mxcsr,
+        x87_control: e.x87_control,
+    };
+    let g = lc::light_globals(mem, &call, fpu, &mut |_| None).ok()?;
+    let f = lp::pass_flags(mem, &g, shadow as u8, e.mxcsr).ok()?;
+    let definition_flags = mem.u32(definition).ok()?;
+    let gel = lp::gel(
+        f.flags,
+        definition_flags,
+        mem.u32(definition.wrapping_add(lp::DEFINITION_GEL_SHADER)).ok()?,
+        mem.u32(definition.wrapping_add(lp::DEFINITION_GEL)).ok()?,
+    );
+    Some(LightConstants {
+        frame: g.frame_constants(mem).ok()?,
+        flags: f.flags,
+        colour_a: g.colour_a_input(),
+        colour_b: g.colour_b_input(),
+        mode: g.mode,
+        definition_flags,
+        definition_8a: mem.u16(definition.wrapping_add(0x8a)).ok()?,
+        definition_80: mem.u16(definition.wrapping_add(0x80)).ok()?,
+        falloff_0: g.falloff[0],
+        gel,
     })
 }
 
@@ -151,6 +228,12 @@ pub fn read_light(mem: &dyn GuestMemory, handle: u32, shadow: bool, weight: f32)
 /// above it). `true` when the light joined a native run, the tail is done
 /// and the passes must not run.
 pub fn on_light(mem: &mut dyn GuestMemory, esp: u32) -> bool {
+    on_light_at(mem, esp, None)
+}
+
+/// [`on_light`] with the entry's registers, so the light carries its
+/// constants ([`light_constants`]).
+pub fn on_light_at(mem: &mut dyn GuestMemory, esp: u32, entry: Option<Entry>) -> bool {
     LIGHTS.fetch_add(1, Ordering::Relaxed);
     let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
         return false;
@@ -162,10 +245,16 @@ pub fn on_light(mem: &mut dyn GuestMemory, esp: u32) -> bool {
     ) else {
         return false;
     };
-    let Some(light) = read_light(mem, handle, shadow != 0, f32::from_bits(weight)) else {
+    let Some(mut light) = read_light(mem, handle, shadow != 0, f32::from_bits(weight)) else {
         return false;
     };
+    light.constants = entry.and_then(|e| light_constants(mem, &e));
     if !host.accepts(mem, &light) {
+        return false;
+    }
+    let (centre, radius) = light.bounds;
+    if native_render::objects::object_meets_sphere(&Ro(mem), centre, radius) {
+        OBJECTS_MET.fetch_add(1, Ordering::Relaxed);
         return false;
     }
     // The tail sets the view's target back; skipped, it must still be bound.
@@ -223,7 +312,8 @@ fn join(host: &dyn Host, m: &Ro<'_>, light: Light) -> bool {
     let runs = RUNS.fetch_add(1, Ordering::Relaxed) + 1;
     if runs % 1800 == 1 {
         let (l, s, r) = counts();
-        eprintln!("native-lights: {s} of {l} dynamic lights drawn natively, in {r} runs");
+        let o = object_refusals();
+        eprintln!("native-lights: {s} of {l} dynamic lights drawn natively, in {r} runs; {o} left to D3D for meeting an object");
     }
     true
 }
@@ -252,7 +342,14 @@ impl Feature for NativeLights {
                 let rt = Arc::clone(c.ctx.runtime());
                 let skip = {
                     let mut mem = rt.memory();
-                    on_light(&mut *mem, c.cpu.esp)
+                    let entry = Entry {
+                        eax: c.cpu.eax,
+                        ecx: c.cpu.ecx,
+                        esp: c.cpu.esp,
+                        mxcsr: c.cpu.mxcsr,
+                        x87_control: c.cpu.x87.control,
+                    };
+                    on_light_at(&mut *mem, c.cpu.esp, Some(entry))
                 };
                 if skip {
                     c.ret(LIGHT_PASSES_CLEANUP).map(Flow::Return)
