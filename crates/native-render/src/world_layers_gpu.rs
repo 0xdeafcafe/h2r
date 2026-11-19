@@ -331,8 +331,9 @@ impl ExternalPass for IndexedPass {
     }
 
     fn prepare_copy(&mut self, target: &ExternalTarget<'_>) -> Result<(), &'static str> {
-        self.made = self.prepare(target);
-        self.made
+        let copy = copy_index(target.copy);
+        self.made[copy] = self.prepare(target);
+        self.made[copy]
             .as_ref()
             .map(|_| ())
             .ok_or("opaque draw resources")
