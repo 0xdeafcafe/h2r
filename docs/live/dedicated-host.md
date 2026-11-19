@@ -155,6 +155,58 @@ reservation and eligible joined players before it counts for Ranked.
 Preserve single-use results, reconcile disconnects against the
 reserved roster and keep the service account out of ranks and scores.
 
+## Fly Machines provider
+
+`FlyProvider` ([fly.rs](../../crates/live-server/src/hosts/fly.rs)) runs
+each lease as one Fly Machine: created when matchmaking forms the lobby,
+destroyed with the match. It speaks the Machines API — `POST`, `DELETE
+…?force=true` and `GET` on `/v1/apps/{app}/machines` — through `FlyHttp`,
+a one-method seam in the same file, because the crate had no outbound
+HTTP path that builds in both homes: the native server uses a reqwest
+adapter, and the Worker passes its own adapter over the platform fetch
+(the way [r2.rs](../../crates/live-worker/src/r2.rs) adapts the R2
+binding for the blob store). The builders, the machine shape and the
+error mapping are plain code that compiles for wasm32.
+
+Setup, from the environment:
+
+| Variable | Meaning |
+|---|---|
+| `LIVE_FLY_TOKEN` | Fly API token, sent as the bearer on every call. Required. |
+| `LIVE_FLY_APP` | The Fly app the machines live in. Required. |
+| `LIVE_FLY_IMAGE` | The host image each machine runs (the `linux/amd64` image from `deploy/host`). Required. |
+| `LIVE_FLY_REGION` | Where a lease with no region runs. Default `iad`. |
+| `LIVE_FLY_PORTS` | The UDP range lease windows are picked from, as `30000-44000`. Default `30000-44000`. |
+| `LIVE_FLY_API` | The API base, so a test can point the provider at a fake. Default `https://api.fly.io`. |
+
+**UDP needs the app's dedicated IPv4.** Allocate one
+(`fly ips allocate-v4`, $2/month) and the machine's host process must
+bind `fly-global-services`: the provider sets `H2_XNET_BIND` to that
+address in the machine env. Each machine claims a 7-port window
+(`base..base+6`, the game's channels and QoS) as one UDP service per
+port with external matching internal, chosen deterministically from the
+lease id and aligned inside `LIVE_FLY_PORTS`, so a restarted lease comes
+back on the same ports and two concurrent leases either take disjoint
+windows or the second create is refused by Fly — an error the lifecycle
+falls back from. A Tunnel lease claims no ports: its datagrams arrive
+through the Live tunnel instead.
+
+The machine: guest `performance` 1×2048 MiB for a Small lease, 2×4096
+for Large; `auto_destroy` so a host that ends by itself (match over,
+last client gone) removes its machine; `restart: no` so a crashed host
+is not restarted — the lifecycle reads the failure and falls back. The
+machine env carries `H2_LEASE`, `H2_LIVE`, `H2_TOKEN`, `H2_DATA_URL`,
+`H2_DATA_SHA` (the boot contract) and `H2_XNET_BIND`; its metadata names
+the lease for `fly machines status`. `start` returns the machine id as
+the provider ref — the host registers itself and answers the lease when
+it is up; nothing waits. `stop` deletes the machine with force; a
+machine already gone is stopped. `alive` reads the machine state
+(booting and running are alive, destroyed or missing is not).
+
+Costs follow the [Fly row above](#where-the-game-could-run): the class's
+per-second rate while the machine exists, the dedicated IPv4, storage
+and egress.
+
 ## Order of experiments
 
 1. Run the Mac control below. Advance only after a real remote client joins and its actions reach the authoritative world.
