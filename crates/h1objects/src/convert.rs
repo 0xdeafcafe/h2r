@@ -801,6 +801,9 @@ pub struct Converter<'a> {
     weapon_hud_skips: HashMap<u32, Vec<String>>,
     /// HUD bitmaps with an element colour's alpha ([`Self::hud_bitmap`]).
     hud_bitmaps: HashMap<(u32, u8), TagId>,
+    /// Copies of a bitmap whose sequence starts at a later sprite, by
+    /// (bitmap, sequence, sprite) ([`Self::sprite_bitmap`]).
+    sprite_bitmaps: HashMap<(u32, i16, usize), TagId>,
     /// Meter copies of Halo 1 bitmaps ([`Self::meter_bitmap`]), by tag.
     meter_bitmaps: HashMap<u32, TagId>,
     /// Base maps with a reflection mask as their alpha
@@ -856,6 +859,7 @@ impl<'a> Converter<'a> {
             unit_hud_widgets: HashMap::new(),
             weapon_hud_skips: HashMap::new(),
             hud_bitmaps: HashMap::new(),
+            sprite_bitmaps: HashMap::new(),
             meter_bitmaps: HashMap::new(),
             masked_bitmaps: HashMap::new(),
             roles: HashMap::new(),
@@ -2052,6 +2056,38 @@ impl<'a> Converter<'a> {
         Some(out)
     }
 
+    /// A copy of bitmap `id` whose sequence `seq` starts at its sprite
+    /// `first`, for a Halo 2 widget, which draws its sequence's first
+    /// sprite, to draw a later one (`h1hud::zoom_widget`). Sprite 0 is the
+    /// bitmap itself; `<name>_seq<seq>_sprite<first>`, built once. None past
+    /// the sequence's sprites.
+    fn sprite_bitmap(&mut self, id: h1map::TagId, seq: i16, first: usize) -> Option<TagId> {
+        if first == 0 {
+            return self.bitmap(id);
+        }
+        let key = (id.0, seq, first);
+        if let Some(t) = self.sprite_bitmaps.get(&key) {
+            return Some(*t);
+        }
+        let tag = self.h1.tag(id).ok()?.clone();
+        let bm = h1map::bitmap::Bitmap::read(self.h1, &tag).ok()?;
+        let mut shifted = bm.clone();
+        let sprites = &mut shifted.sequences.get_mut(usize::try_from(seq).ok()?)?.sprites;
+        if first >= sprites.len() {
+            return None;
+        }
+        sprites.drain(..first);
+        let mut pixels = (0..bm.images.len())
+            .map(|i| bm.pixels(self.h1, i).map(|p| p.to_vec()))
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .ok()?;
+        let (conv, _) =
+            h1bitmaps::convert::convert_with(&shifted, |i| Ok(std::mem::take(&mut pixels[i]))).ok()?;
+        let out = self.tree.push(&format!("{}_seq{seq}_sprite{first}", tag.name), conv);
+        self.sprite_bitmaps.insert(key, out);
+        Some(out)
+    }
+
     fn cached(&mut self, t: &Tag, conv: Converted) -> Result<TagId> {
         if let Some(id) = self.done.get(&t.id.0) {
             return Ok(*id);
@@ -3121,6 +3157,26 @@ impl Converter<'_> {
             };
             match h1hud::weapon_widget(e, drawn, meter, plain) {
                 Ok(w) => widgets.push(w),
+                // The zoom-level readout: a widget per level, each on a copy
+                // of the bitmap that starts at the level's sprite.
+                Err(h1hud::Skip::ZoomLevels) => {
+                    for level in 0..h1hud::ZOOM_LEVELS {
+                        let level_drawn = drawn
+                            .and(e.bitmap)
+                            .and_then(|b| self.sprite_bitmap(b, e.sequence, level));
+                        if level > 0 && level_drawn.is_none() {
+                            // No sprite for the level: the weapon has none.
+                            break;
+                        }
+                        match h1hud::zoom_widget(e, level, level_drawn, plain) {
+                            Ok(w) => widgets.push(w),
+                            Err(why) => {
+                                skipped.push(format!("{:?}: {why:?}", e.kind));
+                                break;
+                            }
+                        }
+                    }
+                }
                 Err(why) => skipped.push(format!("{:?}: {why:?}", e.kind)),
             }
         }

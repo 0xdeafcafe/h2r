@@ -606,6 +606,49 @@ fn warnings_convert_where_halo2_has_a_state() {
     assert_eq!(skipped, want);
 }
 
+/// The zoom-level readout (crosshair type 1, zoomed only): a widget per
+/// sprite of its sequence up to Halo 2's two zoom levels, each placed as
+/// Halo 1 places that sprite. The sniper rifle's is `hud_reticles_scope`
+/// sequence 1, "2x" then "10x" (docs/halo1/hud.md, "Zoom level").
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO)"]
+fn the_zoom_level_readout_is_a_widget_per_level() {
+    use h1hud::{Skip, WeaponEntryKind, crosshair_type as ct};
+    let m = h1("bloodgulch");
+    let mut levels = std::collections::BTreeMap::new();
+    for wt in m.tags().iter().filter(|t| t.group == Group::new(b"weap")) {
+        let Some(hud) = h1objects::h1::reference(&m, m.tag_data(wt).unwrap(), 0x480) else {
+            continue;
+        };
+        for e in h1hud::weapon_entries(&m, hud).unwrap() {
+            let WeaponEntryKind::Crosshair(ct::ZOOM_LEVEL, _) = e.kind else { continue };
+            assert_eq!(
+                h1hud::weapon_widget(&e, Some(TagId(1)), TagId(2), TagId(3)),
+                Err(Skip::ZoomLevels)
+            );
+            let b = m.tag(e.bitmap.unwrap()).unwrap();
+            let bm = Bitmap::read(&m, b).unwrap();
+            let sprites = bm.sequences[e.sequence as usize].sprites.len();
+            let mut n = 0;
+            for level in 0..sprites.min(h1hud::ZOOM_LEVELS) {
+                let w = h1hud::zoom_widget(&e, level, Some(TagId(1)), TagId(3)).unwrap();
+                assert_eq!(w.state, h1hud::ZOOM_LEVEL_STATES[level]);
+                let mut shifted = bm.clone();
+                shifted.sequences[e.sequence as usize].sprites.drain(..level);
+                let size = h1hud::sprite_size(&shifted, e.sequence).unwrap();
+                assert_eq!(h1hud::halo2_rect(&w, size), h1hud::halo1_rect(e.anchor, e.offset, size));
+                n += 1;
+            }
+            let short = wt.name.rsplit('\\').next().unwrap().to_owned();
+            levels.insert(short.clone(), (b.name.clone(), e.sequence, n));
+        }
+    }
+    eprintln!("zoom readouts {levels:?}");
+    let sniper = &levels["sniper rifle"];
+    assert!(sniper.0.ends_with("hud_reticles_scope"), "{sniper:?}");
+    assert_eq!((sniper.1, sniper.2), (1, 2));
+}
+
 /// Every overlay element on the disc is shown always (mask `0x10`): Halo 1
 /// has none shown only empty, reloading or below a threshold, so there is
 /// nothing of that kind to convert (docs/halo1/hud.md).

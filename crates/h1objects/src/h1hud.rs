@@ -814,6 +814,72 @@ pub fn reload_state(low: i16) -> [u8; 20] {
 /// shown while there is nothing to fire.
 pub const EMPTY_STATE: [u8; 20] = warning_state(weapon_word_c::NOTHING_TO_FIRE, 0, 0, 0);
 
+/// The zoom levels Halo 2's state words tell apart: word A `0x80` at zoom
+/// level 0, `0x100` at level 1, `0x40` unzoomed (E `0x0013a0df`..
+/// `0x0013a127`, the unit's zoom level `+0x3c`).
+pub const ZOOM_LEVELS: usize = 2;
+
+/// The state of the zoom-level readout at each level: Halo 2's own (V:
+/// `ui\hud\sniper_rifle` widgets 7 and 8, its "5x" and "10x": shown on
+/// word A `0x90` and hidden on `0x140`, shown on `0x110` and hidden on
+/// `0xc0`; word C `0x01`, hidden on `0x04`).
+pub const ZOOM_LEVEL_STATES: [[u8; 20]; ZOOM_LEVELS] = [
+    [0x90, 0, 0, 0, 0x01, 0, 0, 0, 0x40, 0x01, 0, 0, 0x04, 0, 0, 0, 0, 0, 0, 0],
+    [0x10, 0x01, 0, 0, 0x01, 0, 0, 0, 0xc0, 0, 0, 0, 0x04, 0, 0, 0, 0, 0, 0, 0],
+];
+
+/// The widget of Halo 1's zoom-level readout (crosshair type 1) at zoom
+/// level `level`, `bitmap` a copy of the overlay's bitmap whose sequence
+/// starts at the level's sprite.
+///
+/// Halo 1 draws one overlay whose sprite is picked by the zoom level: the
+/// type's value is the level plus 2 (`0x000da775`, the unit's zoom level
+/// from `0x000f8c80`; 1 unzoomed), kept less one (`0x000da9e5`), and an
+/// overlay with flag bit 2 draws only while it is above 0 and takes the
+/// sprite one less again (`0x000dae69`, `0x000daf55`..`0x000daf60`): sprite
+/// `level` of its sequence (V: the sniper rifle's `hud_reticles_scope`
+/// sequence 1, "2x" then "10x"). A Halo 2 widget draws its sequence's first
+/// sprite, so there is one widget per level, each on its own copy of the
+/// bitmap and shown at that level only ([`ZOOM_LEVEL_STATES`]).
+pub fn zoom_widget(
+    e: &WeaponEntry,
+    level: usize,
+    bitmap: Option<TagId>,
+    plain: TagId,
+) -> std::result::Result<Widget, Skip> {
+    let WeaponEntryKind::Crosshair(crosshair_type::ZOOM_LEVEL, flags) = e.kind else {
+        return Err(Skip::NothingDrawn);
+    };
+    if e.hidden {
+        return Err(Skip::Hidden);
+    }
+    if e.screen == SPLIT_SCREEN_ONLY {
+        return Err(Skip::SplitScreen);
+    }
+    if !unscaled(e.scale) {
+        return Err(Skip::Scaled(e.scale));
+    }
+    // Without bit 2 the unzoomed value picks a sprite too: not converted.
+    if flags & OVERLAY_WHEN_ZOOMED == 0 {
+        return Err(Skip::CrosshairType(crosshair_type::ZOOM_LEVEL));
+    }
+    let state = *ZOOM_LEVEL_STATES.get(level).ok_or(Skip::ZoomLevel(level))?;
+    let bitmap = bitmap.ok_or(Skip::NothingDrawn)?;
+    Ok(Widget {
+        name: format!("h1_zoom_level_{level}"),
+        inputs: [0; 4],
+        state,
+        anchor: e.anchor,
+        flags: 0,
+        bitmap,
+        shader: plain,
+        sequence: e.sequence.clamp(0, i8::MAX as i16) as i8,
+        offset: to_halo2_offset(e.anchor, e.offset),
+        registration: registration(e.anchor),
+        special: 0,
+    })
+}
+
 /// Crosshair overlay flags (`wphi` crosshair overlay `+0x48`): bit 2 draws
 /// only while the type's value is above 0, bit 6 only while it is 0
 /// (`0x000dae69`, `0x000dae7c`). On the aim type that value is the zoom
@@ -864,6 +930,11 @@ pub enum Skip {
     MeterState(WeaponState),
     /// A crosshair of a type not converted.
     CrosshairType(i16),
+    /// The zoom-level readout: one widget per level ([`zoom_widget`]).
+    ZoomLevels,
+    /// A zoom level past those Halo 2's state words tell apart
+    /// ([`ZOOM_LEVELS`]).
+    ZoomLevel(usize),
     /// A warning Halo 2's gate has no state for ([`weapon_word_c`]): low
     /// ammunition with none in reserve (an "and" of two words' bits),
     /// low battery, a reload under way, no grenades.
@@ -945,6 +1016,7 @@ pub fn weapon_widget(
                 ("h1_scope", [0; 4], plain, ZOOM_STATE)
             }
             crosshair_type::AIM => ("h1_crosshair", [0; 4], plain, AIM_STATE),
+            crosshair_type::ZOOM_LEVEL => return Err(Skip::ZoomLevels),
             t => return Err(Skip::CrosshairType(t)),
         },
         // Shown while Halo 1's condition holds, not for Halo 1's flash
@@ -1930,6 +2002,47 @@ mod tests {
         w.hidden = false;
         w.screen = SPLIT_SCREEN_ONLY;
         assert_eq!(weapon_widget(&w, Some(TagId(1)), TagId(2), TagId(3)), Err(Skip::SplitScreen));
+    }
+
+    #[test]
+    fn the_zoom_level_readout_is_a_widget_per_level() {
+        // V: the sniper rifle's readout, `hud_reticles_scope` sequence 1 at
+        // (150, 104), flag bit 2 (zoomed only).
+        let mut z = entry(WeaponEntryKind::Crosshair(crosshair_type::ZOOM_LEVEL, 4));
+        z.anchor = Anchor::Centre;
+        z.offset = (150, 104);
+        z.sequence = 1;
+        assert_eq!(weapon_widget(&z, Some(TagId(1)), TagId(2), TagId(3)), Err(Skip::ZoomLevels));
+        for level in 0..ZOOM_LEVELS {
+            let w = zoom_widget(&z, level, Some(TagId(10 + level as u32)), TagId(3)).unwrap();
+            assert_eq!((w.bitmap, w.shader, w.sequence), (TagId(10 + level as u32), TagId(3), 1));
+            assert_eq!((w.anchor, w.offset, w.registration), (Anchor::Centre, (150, 104), [0.5, 0.5]));
+            assert_eq!(w.state, ZOOM_LEVEL_STATES[level]);
+        }
+        // Shown at its own level only: word A 0x80 at level 0, 0x100 at
+        // level 1, 0x40 unzoomed (the gate's show-then-hide on word A).
+        let a = |st: &[u8; 20], word: u16| {
+            let show = u16::from_le_bytes([st[0], st[1]]);
+            let hide = u16::from_le_bytes([st[8], st[9]]);
+            show & word != 0 && hide & word == 0
+        };
+        assert!(a(&ZOOM_LEVEL_STATES[0], 0x80) && !a(&ZOOM_LEVEL_STATES[0], 0x100 | 0x10));
+        assert!(a(&ZOOM_LEVEL_STATES[1], 0x100) && !a(&ZOOM_LEVEL_STATES[1], 0x80 | 0x10));
+        assert!(!a(&ZOOM_LEVEL_STATES[0], 0x40 | 0x10) && !a(&ZOOM_LEVEL_STATES[1], 0x40 | 0x10));
+        assert_eq!(zoom_widget(&z, 2, Some(TagId(1)), TagId(3)), Err(Skip::ZoomLevel(2)));
+        assert_eq!(zoom_widget(&z, 0, None, TagId(3)), Err(Skip::NothingDrawn));
+        // Without bit 2, or on a split screen: none.
+        z.kind = WeaponEntryKind::Crosshair(crosshair_type::ZOOM_LEVEL, 0);
+        assert_eq!(
+            zoom_widget(&z, 0, Some(TagId(1)), TagId(3)),
+            Err(Skip::CrosshairType(crosshair_type::ZOOM_LEVEL))
+        );
+        z.kind = WeaponEntryKind::Crosshair(crosshair_type::ZOOM_LEVEL, 4);
+        z.screen = SPLIT_SCREEN_ONLY;
+        assert_eq!(zoom_widget(&z, 0, Some(TagId(1)), TagId(3)), Err(Skip::SplitScreen));
+        // Not a zoom readout.
+        let aim = entry(WeaponEntryKind::Crosshair(crosshair_type::AIM, 1));
+        assert_eq!(zoom_widget(&aim, 0, Some(TagId(1)), TagId(3)), Err(Skip::NothingDrawn));
     }
 
     #[test]
