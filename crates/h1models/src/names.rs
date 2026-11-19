@@ -109,25 +109,9 @@ fn action_name(s: &str) -> String {
 pub fn mode_name(unit: &str) -> String {
     MODES
         .iter()
-        .find(|(a, _)| *a == unit)
+        .find(|(a, _)| a.eq_ignore_ascii_case(unit))
         .map(|(_, b)| (*b).to_owned())
         .unwrap_or_else(|| unit.replace('-', "_").to_ascii_lowercase())
-}
-
-/// The Halo 2 seat label Halo 1's seat text `token` names: the [`MODES`]
-/// entry for it in any case (Halo 1's tags label a seat `CT-driver` while
-/// its scripts write `ct-driver`), else the label as
-/// [`mode_name`](crate::names) writes it (lower case, `-` as `_`), which is
-/// what a rebuilt vehicle's seat carries
-/// (`h1objects::rebuild::seat_names`). Halo 2's engine matches a seat label
-/// string ID exactly (E `0x0011ade0`), so `unit_enter_vehicle` and
-/// `unit_set_seat` need the label, not the script's spelling.
-pub fn mode_for(token: &str) -> String {
-    MODES
-        .iter()
-        .find(|(h1, _)| h1.eq_ignore_ascii_case(token))
-        .map(|(_, h2)| (*h2).to_owned())
-        .unwrap_or_else(|| mode_name(token))
 }
 
 /// Splits and renames a Halo 1 animation name. A `%n` suffix (a random
@@ -190,7 +174,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn first_person_names_take_mode_any() {        let n = map_name("first-person fire-1");
+    fn first_person_names_take_mode_any() {
+        let n = map_name("first-person fire-1");
         assert_eq!(
             (
                 n.mode.as_str(),
@@ -459,14 +444,14 @@ mod tests {
     fn seat_labels_match_the_built_ones() {
         // Halo 1's tags label seats `CT-driver` while scripts write
         // `ct-driver`; both must give the table's target.
-        assert_eq!(mode_for("ct-driver"), "c_turret_ap_d");
-        assert_eq!(mode_for("CT-driver"), "c_turret_ap_d");
-        assert_eq!(mode_for("w-gunner"), "warthog_g");
-        assert_eq!(mode_for("P-riderLF"), "pelican_p_l01");
-        assert_eq!(mode_for("p-riderlf"), "pelican_p_l01");
+        assert_eq!(mode_name("ct-driver"), "c_turret_ap_d");
+        assert_eq!(mode_name("CT-driver"), "c_turret_ap_d");
+        assert_eq!(mode_name("w-gunner"), "warthog_g");
+        assert_eq!(mode_name("P-riderLF"), "pelican_p_l01");
+        assert_eq!(mode_name("p-riderlf"), "pelican_p_l01");
         // Not in the table: the label as seat_names writes it.
-        assert_eq!(mode_for("cargo"), "cargo");
-        assert_eq!(mode_for("cd-passengerl01"), "cd_passengerl01");
-        assert_eq!(mode_for("alert"), "combat");
+        assert_eq!(mode_name("cargo"), "cargo");
+        assert_eq!(mode_name("cd-passengerl01"), "cd_passengerl01");
+        assert_eq!(mode_name("alert"), "combat");
     }
 }

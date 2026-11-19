@@ -52,13 +52,7 @@ pub const RENAMES: &[(&str, &str)] = &[
         "unit_solo_player_integrated_night_vision_is_active",
         "player_flashlight_on",
     ),
-    // Halo 1's latched look tests become Halo 2's pitch queries: its own
-    // tutorials (01a) wait on these after player_action_test_look_up_begin,
-    // and a10's waits poll the same condition.
-    ("player_action_test_look_relative_up", "player0_looking_up"),
-    ("player_action_test_look_relative_down", "player0_looking_down"),
-    // The dismiss button: B on both. Halo 2 names its test cancel, one past
-    // accept, as Halo 1's back sits one past its accept.
+    // Use Halo 2's latched dismissal action in the tutorial.
     ("player_action_test_back", "player_action_test_cancel"),
 ];
 
@@ -80,13 +74,20 @@ pub const ADAPTERS: &[(&str, &str, Adapter)] = &[
     // Halo 2's scripts never call `!=`: write `(not (= a b))`.
     ("!=", "=", Adapter::Negate),
     // Halo 2 (unit_add_equipment, 250) adds a fourth boolean after Halo 1's
-    // reset flag; its evaluator (0x2a45c0) passes both on, the fourth into
-    // the weapon-giving path (0xccd60). Halo 1's builtin always gives the
-    // profile's equipment, so the call appends true.
+    // reset flag. The fourth reaches the new weapon's flag byte
+    // (0xccde0); every retail Halo 2 script that gives profile equipment
+    // passes true.
     (
         "player_add_equipment",
         "unit_add_equipment",
         Adapter::AppendBool(true),
+    ),
+    // Slot 843 supplies an extra leading long. The host reads the two
+    // remaining arguments in their original types.
+    (
+        "numeric_countdown_timer_set",
+        "numeric_countdown_timer_set",
+        Adapter::PrependLong(0),
     ),
 ];
 
@@ -101,10 +102,12 @@ pub enum Adapter {
     /// Append a `short` literal argument. The literal is a hook too, so the
     /// converter can choose another value.
     AppendShort(i16),
-    /// Append a `boolean` literal argument, hooked like [`AppendShort`].
+    /// Append a boolean literal argument.
     AppendBool(bool),
     /// Insert `none` as the first argument.
     PrependNone,
+    /// Insert a signed integer as the first argument.
+    PrependLong(i32),
     /// Halo 2's last parameter is optional and Halo 1 has no counterpart:
     /// the call keeps Halo 1's arguments, one fewer than Halo 2's table.
     OmitOptional,
@@ -157,6 +160,7 @@ impl Target {
             })
             .collect();
         crate::identified::name_unnamed(&mut builtins, c);
+        crate::unit_builtins::name_runtime_slots(&mut builtins, c);
         Self {
             builtins,
             types: c.types().to_vec(),

@@ -27,7 +27,7 @@ pub struct Identified {
     pub parameters: &'static [&'static str],
 }
 
-const fn id(
+pub(crate) const fn id(
     name: &'static str,
     index: u16,
     returns: &'static str,
@@ -44,46 +44,6 @@ const fn id(
 /// The identifications. Neighbours are named Halo 2 builtins
 /// (`crates/hs`), Halo 1's order is its XBE table's.
 pub const IDENTIFIED: &[Identified] = &[
-    // Halo 1 22, between wake (22) and unit (24) as in Halo 1 (21, 23). E:
-    // the evaluator 0x208e10 is the one hs_vm.md documents as inspect (the
-    // console thread's value printer), and its descriptor's usage text is
-    // "<expression>".
-    id("inspect", 23, "void", &[]),
-    // Halo 1 44, between object_destroy_containing (53) and
-    // object_destroy_type_mask (55). E: its evaluator 0x2a1570 pushes -1
-    // (every type) into the same destroy core (0x29fe10) the type-mask
-    // builtin uses: "destroys all non player objects".
-    id("object_destroy_all", 54, "void", &[]),
-    // Halo 1 71, 72, between object_hide (57) and object_get_parent (73):
-    // the two (object, boolean) setters of the object flag byte's lowest
-    // bits, as Halo 1's pair set the two attack-inhibition flag bits (71's
-    // evaluator 0xf1cc0 sets +0xb7 bit 0; 72's 0xf1c40, +0xb6 bit 7). Halo
-    // 2's table keeps Halo 1's order, so 66 is ranged (its evaluator
-    // 0x2a19a0 sets +0x19 bit 1) and 67 melee (0x2a1920, bit 0).
-    id(
-        "object_set_ranged_attack_inhibited",
-        66,
-        "void",
-        &["object", "boolean"],
-    ),
-    id(
-        "object_set_melee_attack_inhibited",
-        67,
-        "void",
-        &["object", "boolean"],
-    ),
-    // Halo 1 74. E: the evaluator 0x2a1b50 sets the object's +0xc0 byte bit
-    // 0x80 when false and clears it when true — Halo 1's collideable sets
-    // its flag word's bit 0x1000000 the same way round (0xf1ba0). The
-    // region is one Halo 2 reordered (set_scale sits past detach), so the
-    // position gives the family and the polarity the member.
-    id("object_set_collideable", 72, "void", &["object", "boolean"]),
-    // Halo 1 81, between object_can_take_damage (91) and objects_predict
-    // (99). E: the evaluator 0x2a2190 calls 0xbc100, which sets the object
-    // header's flags word +4 bit 0x100000 from the boolean (clearing it
-    // when false, then redrawing) — the same one-bit beautify the Halo 1
-    // evaluator 0xf1a20 performs on the same word (its bit 0x400000).
-    id("object_beautify", 93, "void", &["object", "boolean"]),
     // After object_teleport (105), as in Halo 1 (34, 35).
     id(
         "object_set_facing",
@@ -91,14 +51,6 @@ pub const IDENTIFIED: &[Identified] = &[
         "void",
         &["object", "cutscene_flag"],
     ),
-    // Halo 1 65, between real_random_range (125) and recording_play (138).
-    // E: the evaluator 0x2a2c70 stores the boolean byte into one global
-    // (0x4ed280) — byte for byte Halo 1's 0xf1f10 (into 0x27824c).
-    id("breakable_surfaces_enable", 136, "void", &["boolean"]),
-    // Halo 1 148, the pair of the one above. E: the evaluator 0x2a2cb0
-    // fills the same global's breakable-surface array with -1 (rep stosl),
-    // as Halo 1's reset (0xed670 via 0x88f90) restores every surface.
-    id("breakable_surfaces_reset", 137, "void", &[]),
     // Halo 1 66..70, between physics_disable_character_ground_follow_forces
     // (129) and texture_camera_set_object_marker (144); E above.
     id(
@@ -166,30 +118,6 @@ pub const IDENTIFIED: &[Identified] = &[
         "void",
         &["unit", "vehicle", "string_id"],
     ),
-    // Halo 1 105 has no slot in Halo 2's order (nothing between
-    // unit_is_playing_custom_animation (207) and unit_set_enterable_by_player
-    // (213) has its signature), but between unit_enter_vehicle (216) and
-    // unit_set_emotional_state (220) sits the only unnamed (unit, short)
-    // -> void, and its evaluator 0x2a3b70 drives the emotion core 0x10e9f0
-    // with the short and a default transition time — the by-index emotion
-    // setter beside emotional_state's by-name one (0x10e9a0), as Halo 1
-    // has both (105 set_emotion, 109 set_emotional_state).
-    id("unit_set_emotion", 218, "void", &["unit", "short"]),
-    // Halo 1 119, between vehicle_unload (233) and vehicle_driver (237). E:
-    // the evaluator 0x2a41a0 none-checks and stores the seat label string
-    // ID into the unit object, as Halo 1's 0xf11d0 resolves the label
-    // against the unit's own seats.
-    id("unit_set_seat", 234, "void", &["unit", "string_id"]),
-    // Halo 1 121, in the same window. E: the evaluator 0x2a4230 builds the
-    // rider list through one call (0x11b040), exactly Halo 1's shape
-    // (0xf1190 via 0x3de10).
-    id("vehicle_riders", 236, "object_list", &["unit"]),
-    // Halo 1 123, right after vehicle_driver (237). E: the evaluator
-    // 0x2a42c0 pushes seat type 3 into the occupant getter (0xbadc0), as
-    // Halo 1's 0xf10f0 does (0x8b910).
-    id("vehicle_gunner", 238, "unit", &["unit"]),
-    // Halo 1 126, between unit_get_shield (240) and unit_has_weapon (242).
-    id("unit_get_total_grenade_count", 241, "short", &["unit"]),
     // After unit_has_weapon (242), as in Halo 1's table (a30's sniper
     // tutorial).
     id(
@@ -228,16 +156,6 @@ pub const IDENTIFIED: &[Identified] = &[
         "void",
         &["cutscene_camera_point"],
     ),
-    // Halo 1 341, between player_action_test_reset (479) and
-    // player_action_test_primary_trigger (481). E: the evaluator 0x2a9040
-    // tests bit 1 of the action-test field (0x4ed284's word), the bit
-    // Halo 1's jump reads (bit 1 of 0x276794's word, 0xed4f0).
-    id("player_action_test_jump", 480, "boolean", &[]),
-    // Halo 1 345. E: the evaluator 0x2a91c0 latches the consumed bit and
-    // tests the flag word's bit 0 through the object at 0x4ed284 — the
-    // same shape as Halo 1's action test (0xed420 on 0x276794), unique in
-    // the family (every other member is a plain bit test).
-    id("player_action_test_action", 488, "boolean", &[]),
     // Halo 1 300, right after cinematic_set_title (560) as in Halo 1 (299).
     id(
         "cinematic_set_title_delayed",
@@ -252,22 +170,7 @@ pub const IDENTIFIED: &[Identified] = &[
     // boolean): the first of the three such builtins after
     // hud_cinematic_fade (624). The first is the one Halo 1's order gives.
     id("show_hud", 625, "boolean", &["boolean"]),
-    // Halo 1 371, between deactivate_team_nav_point_object (643) and
-    // player_effect_set_max_rotation (652). E: the evaluator 0x2aac10
-    // stores the three reals into the player-effect global (0x510c5c
-    // +0x8..+0x10) — Halo 1's 0xeea20 into 0x2f9130 +0x3c4..+0x3cc — one
-    // slot before set_max_rotation, as in Halo 1's table.
-    id(
-        "player_effect_set_max_translation",
-        651,
-        "void",
-        &["real", "real", "real"],
-    ),
-    // Halo 1 406, right after cinematic_screen_effect_stop (709) and one
-    // before cinematic_set_far_clip_distance (711). E: the evaluator
-    // 0x2ab3b0 stores the real into the rasterizer global's +0x190, as
-    // Halo 1's 0xee0b0 stores into its own.
-    id("cinematic_set_near_clip_distance", 710, "void", &["real"]),
+
 ];
 
 /// Identifications not used yet; a held builtin stays missing and compiles
@@ -281,34 +184,40 @@ pub const HELD: &[&str] = &[];
 /// Adds each identification whose Halo 2 builtin is unnamed and has the
 /// signature it expects to `builtins`, except those [`HELD`].
 pub fn name_unnamed(builtins: &mut HashMap<String, H2Builtin>, c: &hs::Catalog) {
-    let ty = |t: u16| c.type_name(t).ok();
-    for e in IDENTIFIED {
-        let Ok(f) = c.function(e.index) else {
-            continue;
-        };
-        let signature = ty(f.return_type()) == Some(e.returns)
-            && f.parameters().len() == e.parameters.len()
-            && f.parameters()
-                .iter()
-                .zip(e.parameters)
-                .all(|(&p, want)| ty(p) == Some(*want));
-        if f.name().is_some()
-            || !signature
-            || builtins.contains_key(e.name)
-            || HELD.contains(&e.name)
-        {
-            continue;
-        }
-        builtins.insert(
-            e.name.to_owned(),
-            H2Builtin {
-                index: e.index,
-                return_type: f.return_type(),
-                parameters: f.parameters().to_vec(),
-                special: f.flags() & 2 != 0,
-            },
-        );
+    for e in IDENTIFIED.iter().chain(crate::unit_builtins::RETAIL_BUILTINS) {
+        name_one(builtins, c, e);
     }
+}
+
+pub(crate) fn name_one(
+    builtins: &mut HashMap<String, H2Builtin>,
+    c: &hs::Catalog,
+    e: &Identified,
+) {
+    let ty = |t: u16| c.type_name(t).ok();
+    let Ok(f) = c.function(e.index) else {
+        return;
+    };
+    let signature = ty(f.return_type()) == Some(e.returns)
+        && f.parameters().len() == e.parameters.len()
+        && f.parameters().iter().zip(e.parameters).all(|(&p, want)| ty(p) == Some(*want));
+    if f.name().is_some()
+        || !signature
+        || builtins.contains_key(e.name)
+        || builtins.values().any(|b| b.index == e.index)
+        || HELD.contains(&e.name)
+    {
+        return;
+    }
+    builtins.insert(
+        e.name.to_owned(),
+        H2Builtin {
+            index: e.index,
+            return_type: f.return_type(),
+            parameters: f.parameters().to_vec(),
+            special: f.flags() & 2 != 0,
+        },
+    );
 }
 
 #[cfg(test)]
@@ -326,6 +235,13 @@ mod tests {
             }
         }
         assert!(IDENTIFIED.windows(2).all(|w| w[0].index < w[1].index));
-        assert_eq!(IDENTIFIED.len(), 42);
+        let mut slots = std::collections::HashSet::new();
+        for e in IDENTIFIED.iter().chain(crate::unit_builtins::RETAIL_BUILTINS) {
+            assert!(slots.insert(e.index), "duplicate slot {}", e.index);
+        }
+        for e in crate::unit_builtins::RUNTIME_SLOTS {
+            assert!(slots.insert(e.index), "duplicate slot {}", e.index);
+            assert_ne!(e.index, 300, "reserved by the AI-control lane");
+        }
     }
 }

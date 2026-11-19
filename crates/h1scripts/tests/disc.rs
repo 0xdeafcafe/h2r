@@ -1,5 +1,5 @@
 //! Opt-in checks against the owner's discs. Set `H1_ISO` (default
-//! `disc/halo1.iso`) and `H2_ISO` (default `disc/halo2.iso`). Nothing read
+//! `disc/halo1.iso`) and `H2_DISC` (default `disc/halo2.iso`). Nothing read
 //! here is written to the repository; summaries go to stdout.
 use std::{fs::File, io::BufReader, path::PathBuf};
 
@@ -73,8 +73,14 @@ fn every_campaign_script_decompiles() {
     }
 }
 
+fn h2_disc() -> PathBuf {
+    std::env::var_os("H2_DISC")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| disc("H2_ISO", "halo2.iso"))
+}
+
 fn h2() -> h1scripts::translate::Target {
-    let path = disc("H2_ISO", "halo2.iso");
+    let path = h2_disc();
     let mut iso = xiso::Xiso::open(BufReader::new(File::open(&path).unwrap())).unwrap();
     let e = iso.find("default.xbe").unwrap();
     let bytes = iso.read(&e).unwrap();
@@ -178,7 +184,7 @@ fn translation_coverage() {
 }
 
 fn h2_catalog() -> hs::Catalog {
-    let path = disc("H2_ISO", "halo2.iso");
+    let path = h2_disc();
     let mut iso = xiso::Xiso::open(BufReader::new(File::open(&path).unwrap())).unwrap();
     let e = iso.find("default.xbe").unwrap();
     let bytes = iso.read(&e).unwrap();
@@ -491,14 +497,33 @@ fn units_and_misc_builtins_translate() {
         ("object_beautify", 93, 0x002a_2190),
         ("breakable_surfaces_enable", 136, 0x002a_2c70),
         ("breakable_surfaces_reset", 137, 0x002a_2cb0),
+        ("render_lights", 143, 0x002a_2ea0),
+        ("unit_open", 194, 0x002a_32a0),
+        ("unit_close", 195, 0x002a_32e0),
+        ("unit_enter_vehicle", 216, 0x002a_3ad0),
         ("unit_set_emotion", 218, 0x002a_3b70),
         ("unit_set_seat", 234, 0x002a_41a0),
         ("vehicle_riders", 236, 0x002a_4230),
         ("vehicle_gunner", 238, 0x002a_42c0),
         ("unit_get_total_grenade_count", 241, 0x002a_4310),
+        ("unit_suspended", 249, 0x002a_4570),
+        ("players_unzoom_all", 473, 0x002a_8e90),
         ("player_action_test_jump", 480, 0x002a_9040),
+        ("player_action_test_zoom", 484, 0x002a_9100),
         ("player_action_test_action", 488, 0x002a_91c0),
+        ("player_action_test_look_relative_up", 491, 0x002a_9280),
+        ("player_action_test_look_relative_down", 492, 0x002a_92b0),
+        ("player_action_test_look_relative_left", 493, 0x002a_92e0),
+        ("player_action_test_look_relative_right", 494, 0x002a_9310),
+        ("cinematic_suppress_bsp_object_creation", 562, 0x002a_9910),
+        ("game_safe_to_speak", 586, 0x002a_9bd0),
+        ("game_all_quiet", 587, 0x002a_9c10),
+        ("cls", 644, 0x002a_b130),
         ("player_effect_set_max_translation", 651, 0x002a_ac10),
+        ("player_effect_set_max_rotation", 652, 0x002a_ac70),
+        ("player_effect_set_max_rumble", 653, 0x002a_ace0),
+        ("player_effect_start", 654, 0x002a_ad30),
+        ("player_effect_stop", 655, 0x002a_adb0),
         ("cinematic_set_near_clip_distance", 710, 0x002a_b3b0),
     ];
     const RENAMED: &[(&str, &str)] = &[
@@ -510,26 +535,29 @@ fn units_and_misc_builtins_translate() {
             "unit_solo_player_integrated_night_vision_is_active",
             "player_flashlight_on",
         ),
-        ("player_action_test_look_relative_up", "player0_looking_up"),
-        (
-            "player_action_test_look_relative_down",
-            "player0_looking_down",
-        ),
         ("player_action_test_back", "player_action_test_cancel"),
     ];
-    let (catalog, _) = h1();
+    let (catalog, maps) = h1();
+    assert!(catalog.has_unit_pose("ALERT"));
+    assert!(catalog.has_unit_pose("crouch"));
+    assert!(!catalog.has_unit_pose("noncombat"));
     let target = h2();
     let table = Table::build(&catalog, &target);
     let c = h2_catalog();
-    for (name, index, evaluate) in IDENTIFIED {
+    use h1scripts::unit_builtins::RUNTIME_SLOTS;
+    let slots = IDENTIFIED
+        .iter()
+        .copied()
+        .chain(RUNTIME_SLOTS.iter().map(|s| (s.name, s.index, s.evaluate)));
+    for (name, index, evaluate) in slots {
         let i = catalog.index_of(name).unwrap();
         let tr = table.builtin(i).unwrap();
         assert_ne!(tr.kind, Kind::Missing, "{name}: {:?}", tr.reason);
         let (h2_name, b) = tr.target.as_ref().unwrap();
-        assert_eq!(h2_name.as_str(), *name);
-        assert_eq!(b.index, *index, "{name}");
-        let f = c.function(*index).unwrap();
-        assert_eq!(f.evaluate(), *evaluate, "{name}");
+        assert_eq!(h2_name.as_str(), name);
+        assert_eq!(b.index, index, "{name}");
+        let f = c.function(index).unwrap();
+        assert_eq!(f.evaluate(), evaluate, "{name}");
         let f1 = catalog.function(i).unwrap();
         let sig: Vec<_> = f1
             .parameters
@@ -575,6 +603,40 @@ fn units_and_misc_builtins_translate() {
     assert_eq!(name.as_str(), "unit_add_equipment");
     assert_eq!(b.parameters.len(), 4);
     assert_eq!(tr.adapter, Some(h1scripts::translate::Adapter::AppendBool(true)));
+
+    let mut used = std::collections::BTreeSet::new();
+    for (level, map) in maps {
+        let tables = Tables::read(&map).unwrap();
+        let compiled = h1scripts::compile::compile(
+            &tables,
+            &catalog,
+            &table,
+            &target,
+            h1scripts::compile::Missing::Stub,
+            &[],
+        )
+        .unwrap_or_else(|e| panic!("{level}: {e}"));
+        let scenario = hs::Scenario::decode(&compiled.scenario_bytes(0x8000_0000), 0x8000_0000)
+            .unwrap_or_else(|e| panic!("{level}: {e}"));
+        let names = scenario.builtin_names().unwrap();
+        for slot in RUNTIME_SLOTS {
+            assert!(
+                !compiled.missing.iter().any(|u| u.name == slot.name),
+                "{level}: {} was compiled as missing",
+                slot.name
+            );
+            if let Some(name) = names.get(&slot.index) {
+                assert_eq!(name, slot.name, "{level}: slot {}", slot.index);
+                used.insert(slot.name);
+            }
+        }
+    }
+    for slot in RUNTIME_SLOTS.iter().filter(|s| {
+        use h1scripts::unit_builtins::RuntimeBuiltin::*;
+        !matches!(s.builtin, MoveAllDirections | CountdownGet | CountdownRestart)
+    }) {
+        assert!(used.contains(slot.name), "no calls emitted for {}", slot.name);
+    }
 }
 
 /// Halo 1's `(sleep -1 [script])` sleeps until woken; Halo 2's `sleep`
@@ -680,7 +742,7 @@ fn cinematic_calls_keep_halo1_s_ticks() {
         println!("{name}: ({}) both", h1_params.join(" "));
     }
     // Retail Halo 2's literal durations.
-    let path = disc("H2_ISO", "halo2.iso");
+    let path = h2_disc();
     let mut iso = xiso::Xiso::open(BufReader::new(File::open(&path).unwrap())).unwrap();
     let mut seen: std::collections::BTreeMap<(&str, i16), usize> = Default::default();
     for e in iso

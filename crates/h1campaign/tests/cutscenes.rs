@@ -674,6 +674,15 @@ fn cutscenes_convert_and_read_back() {
         // Read back.
         let mut m = map::Map::from_reader(Cursor::new(done.bytes.clone())).unwrap();
         m.validate_checksum().unwrap();
+        if level == "d40" {
+            for (place, input) in h1convert::shad::COUNTDOWN_DIGITS.iter().enumerate().skip(3).take(4) {
+                assert!(m.strings().iter().any(|s| s.as_deref() == Some(*input)));
+                let shader = format!("levels\\d40\\shaders\\sd numbers_{place}");
+                assert!(m.tags().iter().any(|t| {
+                    t.group == map::FourCC(*b"shad") && t.name.as_deref() == Some(shader.as_str())
+                }), "converted countdown shader {shader:?}");
+            }
+        }
         let tag = m.scenario().unwrap().clone();
         let bytes = m.read_tag_bytes(tag.id).unwrap();
         let w = |o: usize| u32::from_le_bytes(bytes[o..o + 4].try_into().unwrap());
@@ -766,21 +775,21 @@ fn cutscenes_convert_and_read_back() {
     assert!(failed.is_empty(), "{failed:#?}");
 }
 
-/// Every seat name the ten levels' scripts pass to `unit_enter_vehicle`
-/// and `unit_set_seat` resolves, through the label mapping
-/// (`h1models::names::mode_for`), to a seat label some Halo 1 vehicle in
-/// that level carries — which is what the rebuilt vehicle labels the seat
-/// (`h1objects::rebuild::seat_names`), and what Halo 2's engine matches
-/// exactly when seating a unit.
+/// A converted enter-vehicle call must use the exact seat label on the
+/// vehicle it names. Check the source placements, vehicle presets and
+/// rebuilt seat names on all ten campaign levels.
 #[test]
 #[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
 fn seat_names_name_seats_the_vehicles_carry() {
-    use h1objects::h1;
+    use h1campaign::scenario::h1 as scnr;
+    use h1scripts::compile::SEAT_NAME;
     let s = scripting();
+    let enter = s.target.builtins["unit_enter_vehicle"].index;
+    let mut matched = 0;
     for level in levels() {
         let h1 = h1_level(&level);
         let t = h1scripts::Tables::read(&h1).unwrap();
-        let c = h1scripts::compile::compile(
+        let compiled = h1scripts::compile::compile(
             &t,
             &s.catalog,
             &s.table,
@@ -789,39 +798,65 @@ fn seat_names_name_seats_the_vehicles_carry() {
             &[],
         )
         .unwrap();
-        let mut seats = 0;
-        for h in c
-            .hooks
-            .iter()
-            .filter(|h| h.h1_type == h1scripts::compile::SEAT_NAME)
-        {
-            let label = h1models::names::mode_for(&h.token);
-            // `unit_enter_vehicle` seats a unit in a vehicle;
-            // `unit_set_seat` poses a biped, whose Halo 1 tags carry the
-            // pose seats.
-            let names = h1
-                .tags()
-                .iter()
-                .filter(|t| {
-                    let g = &t.group.0.to_be_bytes();
-                    g == b"vehi" || g == b"bipd"
-                })
-                .filter(|t| {
-                    h1::Unit::read(&h1, t).is_ok_and(|u| {
-                        u.seats
-                            .iter()
-                            .any(|s| h1models::names::map_name(&s.label).mode == label)
-                    })
-                })
-                .map(|t| t.name.clone())
-                .collect::<Vec<_>>();
+        let sc = h1.tag_data(h1.scenario()).unwrap();
+        let space = h1.tag_space();
+        let names = space.block_at(sc, scnr::OBJECT_NAMES.0, scnr::OBJECT_NAMES.1).unwrap();
+        let vehicles = space.block_at(sc, scnr::VEHICLES.0, scnr::VEHICLES.1).unwrap();
+        let palette = space.block_at(sc, scnr::VEHICLE_PALETTE.0, scnr::VEHICLE_PALETTE.1).unwrap();
+        let base = 0x8000_0000;
+        let decoded = hs::Scenario::decode(&compiled.scenario_bytes(base), base).unwrap();
+        let hooks: BTreeMap<_, _> = compiled.hooks.iter().map(|h| (h.slot, h)).collect();
+        for call in decoded.nodes().iter().filter(|n| !n.atom() && !n.script_call() && n.opcode() == enter) {
+            let head = decoded.node(hs::Datum(call.data())).unwrap();
+            let rider = decoded.node(head.next()).unwrap();
+            let vehicle_datum = rider.next();
+            let seat_datum = decoded.node(vehicle_datum).unwrap().next();
+            let vehicle = hooks[&(vehicle_datum.slot() as u16)];
+            let seat = hooks[&(seat_datum.slot() as u16)];
+            assert_eq!(seat.h1_type, SEAT_NAME);
+            let name = names.iter().find(|entry| {
+                let len = entry[..32].iter().position(|&c| c == 0).unwrap_or(32);
+                entry[..len].eq_ignore_ascii_case(vehicle.token.as_bytes())
+            }).unwrap_or_else(|| panic!("{level}: vehicle {:?} has no name", vehicle.token));
+            let index = u16::from_le_bytes([name[0x22], name[0x23]]);
+            let placement = vehicles[usize::from(index)];
+            let index = u16::from_le_bytes([placement[0], placement[1]]);
+            let tag = h1map::TagRef::read(palette[usize::from(index)], 0).unwrap();
+            let unit = h1objects::h1::Unit::read(&h1, h1.tag(tag.id).unwrap()).unwrap();
+            let expected = h1models::names::mode_name(&seat.token);
             assert!(
-                !names.is_empty(),
-                "{level}: seat {:#?} -> {label:#?} names no vehicle seat",
-                h.token
+                unit.seats.iter().any(|s| h1objects::rebuild::seat_names(s, &[]).label == expected),
+                "{level}: vehicle {:?} has no seat {expected:?}",
+                vehicle.token
             );
-            seats += 1;
+            matched += 1;
         }
-        println!("{level}: {seats} seat names resolve");
     }
+    assert!(matched > 0);
+}
+
+/// The equipment adapter's starting profiles resolve in rebuilt scenario
+/// order. Check the spelling against the source's encoded index.
+#[test]
+#[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
+fn player_add_equipment_names_rebuilt_profiles() {
+    let scripting = scripting();
+    let add = scripting.catalog.index_of("player_add_equipment").unwrap();
+    let mut count = 0;
+    for level in levels() {
+        let h1 = h1_level(&level);
+        let profiles = h1campaign::profiles::read(&h1).unwrap();
+        let tables = h1scripts::Tables::read(&h1).unwrap();
+        for (index, args) in calls(&tables).into_iter().filter(|(index, _)| *index == add) {
+            let name = tables.string(args[1].string_offset()).unwrap();
+            let expected = u32::from(args[1].data() as u16);
+            assert_eq!(
+                h1campaign::profiles::script_index(&profiles, name),
+                Some(expected),
+                "{level}: builtin {index} profile {name:?}",
+            );
+            count += 1;
+        }
+    }
+    assert!(count > 0);
 }

@@ -135,23 +135,8 @@ under an index nobody calls. Value types map by name; Halo 2 lacks
   converter version 16) every such wait ended at once, so a level's
   dialogue played over itself. `sound_impulse_time_waits_on_the_playing_sound`
   checks the mapping on the discs.
-  The units round adds: `object_pvs_activate` → `pvs_set_object` (Halo 1's
-  own documentation string: "just another (old) name for
-  object_pvs_set_object"), `game_lost` → `game_revert` (Halo 1's
-  documentation: "causes the player to revert to his previous saved game";
-  a50's and d40's fail cases), `player0_look_invert_pitch` →
-  `controller_set_look_invert` (726) and `player0_look_pitch_is_inverted` →
-  `controller_get_look_invert` (727) (one controller flag instead of
-  player0's; a10's tutorial), `unit_solo_player_integrated_night_vision_is_active`
-  → `player_flashlight_on` (476) (**E:** both evaluators push player index
-  0 into one flag query — Halo 1 `0x3c030`, Halo 2 `0x14ed80`; Halo 2 has
-  no night vision, and on a converted dark level the night-vision button
-  is the flashlight; a30's sniper tutorial waits on it),
-  `player_action_test_look_relative_up` → `player0_looking_up` (499) and
-  `..._down` → `player0_looking_down` (500) (Halo 2's own tutorials wait
-  on these; **E:** 499's evaluator compares the look pitch against a
-  constant), and `player_action_test_back` → `player_action_test_cancel`
-  (490) (the dismiss button, one past accept on both sides).
+  The [unit and object builtin notes](script-builtins.md) cover the other
+  aliases, the equipment adapter and the converted-campaign hooks.
 - **Named by position**: Halo 2 builtins no retail script calls, named
   from the XBE (below, "Builtins named by position").
 - **`ai_status`** has no Halo 2 counterpart of the same scale. Halo 1's
@@ -215,63 +200,16 @@ the device's float at `+0x134`; d40's control rooms wait on it) and
 `unit_has_weapon_readied` 243 (`(unit object_definition) -> boolean`,
 after `unit_has_weapon` 242; a30's sniper tutorial).
 
-The units round names seventeen more, each with its evaluator read
-against Halo 1's (the two engines share the descent: most evaluators are
-the same shape with the addresses moved). `inspect` 23 (between `wake` 22
-and `unit` 24; its evaluator `0x208e10` is the one hs_vm.md documents as
-inspect, its usage text `<expression>`), `object_destroy_all` 54 (pushes
--1, every type, into the destroy core `0x29fe10` the type-mask builtin
-shares), `object_set_ranged_attack_inhibited` 66 and
-`object_set_melee_attack_inhibited` 67 (the two setters of the object
-flag byte's lowest bits, as Halo 1's pair set its two attack-inhibition
-flag bits; Halo 2's table keeps Halo 1's order, so 66 is ranged),
-`object_set_collideable` 72 (sets its object bit when false and clears it
-when true, the polarity of Halo 1's collideable; the region is one Halo 2
-reordered, so the family gives the position and the polarity the member),
-`object_beautify` 93 (sets the object header's flags word `+4` bit
-`0x100000` from the boolean, as Halo 1's sets its bit `0x400000` on the
-same word), `breakable_surfaces_enable` 136 (stores the boolean byte into
-one global — byte for byte Halo 1's own body) and
-`breakable_surfaces_reset` 137 (fills the same global's surface array
-with -1), `unit_set_emotion` 218 (the only unnamed `(unit short) -> void`
-between `unit_enter_vehicle` 216 and `unit_set_emotional_state` 220; its
-evaluator drives the emotion core `0x10e9f0` with the short and a default
-transition time, beside emotional_state's by-name core `0x10e9a0`),
-`unit_set_seat` 234 (stores the seat label string ID into the unit
-object, between `vehicle_unload` 233 and `vehicle_driver` 237 as in Halo
-1), `vehicle_riders` 236 and `vehicle_gunner` 238 (the rider list and the
-seat-type-3 occupant, both Halo 1's exact shapes),
-`unit_get_total_grenade_count` 241 (between `unit_get_shield` 240 and
-`unit_has_weapon` 242), `player_action_test_jump` 480 (between `reset`
-479 and `primary_trigger` 481, testing the same action-test field bit
-Halo 1's jump reads), `player_action_test_action` 488 (the family's only
-latching test, Halo 1's action shape exactly),
-`player_effect_set_max_translation` 651 (three reals into the
-player-effect global, one slot before `set_max_rotation` 652 as in Halo
-1) and `cinematic_set_near_clip_distance` 710 (the real into the
-rasterizer global, one before `cinematic_set_far_clip_distance` 711).
-`player_add_equipment` becomes Halo 2's `unit_add_equipment` (250, named
-by retail scripts) through an adapter: Halo 2 adds a fourth boolean that
-flows into the weapon-giving path, and the call appends `true`.
-
-Every slot this table claims, for cross-lane clash checks: 23, 54, 66,
-67, 72, 93, 106, 136, 137, 138–142, 184, 188, 194, 195, 205, 206, 207,
-216, 218, 234, 236, 238, 241, 243, 249, 255, 451, 452, 456, 457, 471,
-480, 488, 561, 621, 625, 651, 710.
-
-Other unnamed
-descriptors with plausible signatures (600 `(sound) -> long`, 586 and
-587 `() -> boolean`) are not named: their
-neighbours do not pin them down. Each is added only when that index is
-unnamed and its signature matches. The neighbours and reasons are in the
-module. Only the recordings and this round's entries have more than
-position as evidence.
+The [unit and object builtin notes](script-builtins.md) list the additional
+retail descriptors, their evaluator evidence and the runtime slot assignments.
+The unnamed sound descriptor at 600 still has only positional evidence.
 
 Object, AI, device, trigger volume, cutscene, tag, enum and string ID values
 keep their Halo 1 token and become hooks (step 3); AI encounters map to
 squads in another lane.
 
-Coverage, share of builtin calls (`translation_coverage`):
+Historical coverage before the units round, share of builtin calls
+(`translation_coverage`):
 
 | Map | Calls | Direct | Renamed | Adapter | Missing | Missing builtins |
 |---|---|---|---|---|---|---|
@@ -313,47 +251,6 @@ the Halo 1 HUD help and objective text, encounter-level AI control
 `unit_set_seat`, `unit_enter_vehicle`, `unit_suspended`), and
 `sound_impulse_time`, which a script waits on after almost every line of
 dialogue (since mapped to `sound_impulse_language_time`).
-
-**Built** in the units round (the list above predates it):
-`object_beautify` (slot 93), `object_pvs_activate` (renamed to
-`pvs_set_object`), `unit_set_emotion` (218), `unit_set_seat` (234, its
-seat names hooked), `player_effect_set_max_translation` (651),
-`cinematic_set_near_clip_distance` (710), `game_lost` (`game_revert`),
-`player_add_equipment` (`unit_add_equipment` plus a `true`),
-`player0_look_invert_pitch`/`_look_pitch_is_inverted`
-(`controller_set/get_look_invert`),
-`unit_solo_player_integrated_night_vision_is_active`
-(`player_flashlight_on`), `player_action_test_jump` (480), `..._action`
-(488), `..._look_relative_up`/`_down` (`player0_looking_up`/`_down`),
-`..._back` (`player_action_test_cancel`), `inspect` (23),
-`object_destroy_all` (54), `object_set_ranged/melee_attack_inhibited`
-(66, 67), `object_set_collideable` (72), `breakable_surfaces_enable`/
-`_reset` (136, 137), `vehicle_riders` (236), `vehicle_gunner` (238) and
-`unit_get_total_grenade_count` (241).
-
-**Left as engine differences** (Halo 2 has no counterpart; the stub is
-the translation, evidence in each evaluator): the cinematic screen-effect
-setters (`set_convolution`, `set_filter`, `set_filter_desaturation_tint`,
-`set_video` — Halo 2 replaced that rasterizer pipeline with
-`set_depth_of_field` 706 and `set_crossfade` 707; its `start` 705 zeroes
-the 172-byte effect block and applies whatever was set, so a start with
-nothing set is neutral), `rasterizer_model_ambient_reflection_tint` and
-`rasterizer_lights_reset_for_new_map` (Halo 2's rasterizer script hooks
-are all discarded stubs, evaluator `0x2ab130`), `game_speed`, `game_time`
-and `game_skip_ticks` (Halo 2 exposes no clock hooks; a30's `game_time`
-waits each end on a test that fires when the player boards),
-`render_lights` (Halo 2's `render_lights_enable_cinematic_shadow` 146 is
-another thing), the unit flashlight setters
-(`units/unit_set_desired_flashlight_state`; Halo 2's
-`player_flashlight_on` 476 only queries the player's light),
-`player0_joystick_set_is_normal` (joystick-set help text choices),
-`player_action_test_look_relative_left`, `_right`,
-`_all_directions` and `_move_relative_all_directions` (Halo 2's training
-look tests are `player0_looking_up`/`_down` only; its `_begin` markers
-501–503 and lookstick tests 504–505 cover the rest of its own tutorial),
-`players_unzoom_all`, `cls`, `cinematic_suppress_bsp_object_creation`,
-`magic_seat_name` and `magic_melee_attack`. `object_set_emotion_animation`
-is unused by the ten levels.
 
 ## Step 3: compile
 

@@ -108,13 +108,11 @@ pub const SHORT_PATHS: &[(&str, &str)] = &[("tutorial_setup", "fast_setup")];
 /// ten levels' scripts reads the value as "done" (docs/halo1/scripts.md):
 /// conversation status 5 passes `(< 4 s)`, `(> s 4)`, `(> s 3)` and
 /// `(< 2 s)`; command list status 2 passes `(= 2 s)` and `(!= 3 s)` (the
-/// four `(= 1 s)` waits still hold); the quiet and safe-to-speak tests
-/// are true; the HUD timer never runs out; a conversation is past any line.
+/// four `(= 1 s)` waits still hold); the HUD timer never runs out;
+/// a conversation is past any line.
 pub const DONE_VALUES: &[(&str, i32)] = &[
     ("ai_conversation_status", 5),
     ("ai_command_list_status", 2),
-    ("game_all_quiet", 1),
-    ("game_safe_to_speak", 1),
     // d40's escape timer: `(<= (hud_get_timer_ticks) 0)` ends the level
     // as failed; Halo 2 has no HUD timer, so it never runs out.
     ("hud_get_timer_ticks", 32767),
@@ -146,15 +144,13 @@ pub const STATUS_LADDER: &[(&str, i32)] = &[
 /// (`h1models::jmad::animation_names`).
 pub const ANIMATION_NAME: &str = "animation_name";
 
-/// The `h1_type` of a hook on a seat name: the string argument of
-/// `unit_enter_vehicle` or `unit_set_seat`, whose Halo 2 counterpart takes
-/// the seat's label as a string ID the engine matches exactly (E
-/// `0x0011ade0`, the enter-seat search: `cmpl` the seat's label string ID at
-/// `vehi+0x1cc` element `+4`). A rebuilt vehicle labels each seat with the
-/// rider's mode (`h1objects::rebuild::seat_names`), so the converter writes
-/// the string ID of the label Halo 1's text names
-/// (`h1models::names::mode_for`).
+/// A vehicle-seat argument. Its token is resolved to the exact label ID
+/// checked by the Halo 2 seat search at `0x0011ade0`.
 pub const SEAT_NAME: &str = "seat_name";
+
+/// A unit pose argument. Slot 234 writes the converted animation mode,
+/// independently of the vehicle-seat table.
+pub const SEAT_POSE: &str = "seat_pose";
 
 /// Halo 2 value types whose value indexes a scenario block the engine
 /// reads without a check: `none` there reads before the block (b40:
@@ -635,32 +631,19 @@ impl Compiler<'_> {
         Ok(())
     }
 
-    /// The string-literal argument in the seat-name position of
-    /// `unit_enter_vehicle` or `unit_set_seat` becomes a [`SEAT_NAME`] hook,
-    /// so the converter writes the label of the seat Halo 1's text names
-    /// instead of interning the text as it stands. `parameters` are Halo 2's
-    /// for the call, `compiled[k]` is `args[k]` compiled.
-    fn mark_seat_names(&mut self, parameters: &[u16], args: &[Datum], compiled: &[Datum]) {
-        for (k, &p) in parameters.iter().enumerate() {
-            if self.h2.types.get(p as usize).map(String::as_str) != Some("string_id") {
-                continue;
-            }
-            let Some(a) = args.get(k).and_then(|&d| self.t.node(d).ok().copied()) else {
-                continue;
-            };
-            if !a.atom() || a.global() || self.h1.type_name(a.opcode()).ok() != Some("string") {
-                continue;
-            }
-            let Ok(token) = self.t.string(a.string_offset()) else {
-                continue;
-            };
-            let slot = compiled.get(k).map(|d| d.slot() as u16);
-            if let Some(slot) = slot
-                && let Some(h) = self.out.hooks.iter_mut().find(|h| h.slot == slot)
-            {
-                h.h1_type = SEAT_NAME.to_owned();
-                h.token = token.to_owned();
-            }
+    fn mark_seat_name(&mut self, builtin: &str, args: &[Datum]) {
+        let (index, role) = match builtin {
+            "unit_enter_vehicle" => (2, SEAT_NAME),
+            "unit_set_seat" => (1, SEAT_POSE),
+            _ => return,
+        };
+        if let Some(d) = args.get(index)
+            && let Some(hook) = self.out.hooks.last_mut()
+            && hook.slot as usize == d.slot()
+            && hook.type_name == "string_id"
+            && hook.h1_type == "string"
+        {
+            hook.h1_type = role.to_owned();
         }
     }
 
@@ -960,6 +943,15 @@ impl Compiler<'_> {
                 let first = self.literal(b.parameters[0], b.parameters[0], NONE, b"none");
                 out.push(first);
             }
+            Some(Adapter::PrependLong(value)) => {
+                let first = self.literal(
+                    b.parameters[0],
+                    h2t::LONG,
+                    value as u32,
+                    value.to_string().as_bytes(),
+                );
+                out.push(first);
+            }
             _ => {}
         }
         let offset = out.len();
@@ -989,13 +981,10 @@ impl Compiler<'_> {
                 .ok_or_else(|| invalid("adapter arity"))?;
             let t: &[u8] = if v { b"true" } else { b"false" };
             let d = self.literal(ty, h2t::BOOLEAN, u32::from(v), t);
-            self.hook(d, h2t::BOOLEAN, types::BOOLEAN, &format!("{h2_name}:{v}"));
             out.push(d);
         }
         self.mark_animation_names(&args, &out[offset..])?;
-        if matches!(h2_name.as_str(), "unit_enter_vehicle" | "unit_set_seat") {
-            self.mark_seat_names(&b.parameters, &args, &out[offset..]);
-        }
+        self.mark_seat_name(&h2_name, &out[offset..]);
         let optional = usize::from(tr.adapter == Some(Adapter::OmitOptional));
         if !b.special && out.len() + optional != b.parameters.len() {
             return Err(invalid(format!(

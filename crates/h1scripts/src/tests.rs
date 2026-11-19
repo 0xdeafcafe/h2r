@@ -1541,14 +1541,15 @@ fn seat_names_are_hooked_with_their_label_role() {
             .map(|h| h.token.as_str())
             .collect()
     };
-    assert_eq!(by_type(crate::compile::SEAT_NAME), ["w-gunner", "alert"]);
+    assert_eq!(by_type(crate::compile::SEAT_NAME), ["w-gunner"]);
+    assert_eq!(by_type(crate::compile::SEAT_POSE), ["alert"]);
     // The marker string of another builtin keeps the plain string role.
     assert_eq!(by_type("string"), ["head"]);
 }
 
 /// Halo 2's `unit_add_equipment` takes a fourth boolean Halo 1's
-/// `player_add_equipment` has no counterpart for; the call appends `true`
-/// as a hooked literal, like `unit_exit_vehicle`'s mode short.
+/// `player_add_equipment` has no counterpart for. Keep the starting
+/// profile as a named hook and append `true` as a boolean literal.
 #[test]
 fn player_add_equipment_appends_the_give_flag() {
     const UNIT: u16 = 14;
@@ -1558,6 +1559,7 @@ fn player_add_equipment_appends_the_give_flag() {
     let c = Catalog::new(
         vec![
             f("begin", PASS, 0x2000, &[]),
+            f("print", VOID, ORDINARY, &[STRING]),
             f(
                 "player_add_equipment",
                 VOID,
@@ -1588,17 +1590,19 @@ fn player_add_equipment_appends_the_give_flag() {
     let chief = b.atom(UNIT, UNIT, "chief", u32::MAX);
     let profile = b.atom(STARTING_PROFILE, STARTING_PROFILE, "profile_a", u32::MAX);
     let yes = b.atom(BOOL, BOOL, "true", 1);
-    let add = b.call(1, VOID, "player_add_equipment", &[chief, profile, yes]);
+    let add = b.call(2, VOID, "player_add_equipment", &[chief, profile, yes]);
     let root = b.call(0, VOID, "begin", &[add]);
     let t = read(&scenario(&b, &[("main", 0, VOID, root)], &[])).unwrap();
     let table = Table::build(&c, &h2);
-    let tr = table.builtin(1).unwrap();
+    let tr = table.builtin(2).unwrap();
     assert_eq!(tr.kind, Kind::Adapter);
     assert_eq!(tr.adapter, Some(Adapter::AppendBool(true)));
     let out = compile(&t, &c, &table, &h2, Missing::Stub, &[]).unwrap();
     let s = hs::Scenario::decode(&out.scenario_bytes(BASE), BASE).unwrap();
     let main = s.script("main").unwrap();
-    let call = s.node(s.node(main.root()).unwrap().next()).unwrap();
+    let begin = s.node(main.root()).unwrap();
+    let head = s.node(Datum(begin.data())).unwrap();
+    let call = s.node(head.next()).unwrap();
     assert_eq!(call.opcode(), 70);
     let mut a = s.node(Datum(call.data())).unwrap().next();
     let mut args = Vec::new();
@@ -1610,13 +1614,10 @@ fn player_add_equipment_appends_the_give_flag() {
     assert_eq!(args.len(), 4);
     assert_eq!(args[3].value_type(), BOOL);
     assert_eq!(args[3].data(), 1);
-    let hook = out
-        .hooks
-        .iter()
-        .find(|h| h.slot == args[3].slot() as u16)
-        .unwrap();
-    assert_eq!(hook.token, "unit_add_equipment:true");
-    assert_eq!(hook.type_name, "boolean");
+    assert_eq!(args[1].value_type(), h2_profile);
+    assert!(out.hooks.iter().any(|h| {
+        h.type_name == "starting_profile" && h.token == "profile_a"
+    }));
 }
 
 /// The renames of this round carry Halo 1 builtins to Halo 2 ones of the
@@ -1633,8 +1634,6 @@ fn renamed_unit_and_misc_builtins_translate() {
             "unit_solo_player_integrated_night_vision_is_active",
             "player_flashlight_on",
         ),
-        ("player_action_test_look_relative_up", "player0_looking_up"),
-        ("player_action_test_look_relative_down", "player0_looking_down"),
         ("player_action_test_back", "player_action_test_cancel"),
     ];
     let c = Catalog::new(

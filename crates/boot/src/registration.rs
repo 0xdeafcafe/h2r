@@ -171,6 +171,9 @@ pub fn register_core(features: &mut feature::Registry, i: CoreInputs<'_>) -> any
     // regeneration, health packs, a health meter. Off (Halo 2's) until the
     // map's identity or the H2_HEALTH_MODEL debug override says Halo 1.
     let health_on = health::install(features).context("installing the health model")?;
+    features
+        .add(&crate::h1_script_builtins::ScriptBuiltins::default())
+        .map_err(|e| anyhow::anyhow!("Halo 1 script builtins: {e}"))?;
     // Precision variants on converted Halo 1 maps in the Halo 2 sandbox
     // (docs/halo1/multiplayer.md): the battle rifle for the SMG at game
     // activation, from the swaps each package's manifest records.
