@@ -699,9 +699,9 @@ globals! { GLOBALS;
     CONTROLS_SCREEN_VTABLE @ 0x0045_be30; "docs/formats/ui.md";
     /// The Controls list handler's vtable (22 slots).
     CONTROLS_LIST_VTABLE @ 0x0045_d240; "docs/formats/ui.md";
-    /// Pointer to the simulation globals: the mode at `+8` (0 none, 1
-    /// local, 2 sync-client, 3 sync-server, 4 dist-client, 5
-    /// dist-server), the update number at `+0x28`, the out-of-sync latch
+    /// Pointer to the simulation globals: the world's mode at `+8` (0
+    /// none, 1 local, 2 sync-server, 3 sync-client, 4 dist-server, 5
+    /// dist-client; not the game mode's numbering, see `0x68da8`), the update number at `+0x28`, the out-of-sync latch
     /// byte at `+0x2c`.
     SIM_GLOBALS @ 0x004c_f77c; "docs/live/live-coop.md";
     /// The simulation's "ended" latch byte.

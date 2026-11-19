@@ -223,8 +223,8 @@ fn co_op_and_lockstep_refuse_and_switch_them_off() {
                 .starts_with("a co-op session")
         );
     }
-    assert!(refusal(Some(4), false).unwrap().starts_with("a guest"));
-    assert_eq!(refusal(Some(5), false), None, "a networked game's host");
+    assert!(refusal(Some(5), false).unwrap().starts_with("a guest"));
+    assert_eq!(refusal(Some(4), false), None, "a networked game's host");
     assert!(
         refusal(Some(1), true)
             .unwrap()
