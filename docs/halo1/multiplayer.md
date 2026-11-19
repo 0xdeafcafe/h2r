@@ -698,12 +698,21 @@ sandbox map: the chain each kept tag was reached by is
 prints it for the vehicles. In the Halo 1 sandbox each entry whose
 vehicle the spawns place a Halo 1 vehicle of the same role for
 (`convert::halo1::halo1_vehicle_for`: the warthog's entry the plain
-warthog, not the rocket warthog) now names that vehicle
+warthog, not the rocket warthog; a role Halo 1 has no vehicle of takes
+the placed one of its netgame type, so the wraith's entry names the
+scorpion, the other heavy vehicle) now names that vehicle
 (`plan_vehicle_list`, written with `globals::set_universal_list` when the
 map is built, as the weapon list is), so a variant's swap gives a
 Halo 1 vehicle and the retail ones the spawns stand in for are dropped.
-The others keep the base's and are reported: on Blood Gulch the wraith,
-banshee, spectre and both turrets.
+The others keep the base's and are reported: on Blood Gulch the banshee,
+spectre and both turrets. The wraith had to go too: its minigun turret
+names `ai\generic_turret`, which names `ai\generic`, which names every
+retail vehicle (V, Coagulation; read off the disc), so a kept wraith kept
+the warthog, ghost and scorpion the list no longer names. A pinned map
+that is over its tag memory still shows what it keeps and why:
+`Prepared::pinned_set` gives the pruned set before the build, with each
+kept tag's first edge (`Pruned::why`) and the pinned tags read word by
+word (`Pruned::word_read`).
 
 **Ambient sound (Built, `h1convert::ambience`, `h1sounds::looping`).**
 Halo 1 keeps a level's background sounds and sound environments in the

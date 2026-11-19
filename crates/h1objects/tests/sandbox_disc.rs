@@ -1647,7 +1647,78 @@ fn pinned_bloodgulch_fits_its_tag_memory() {
             }
         };
         let mopp = structure_mopp(&p.collision).unwrap();
-        let (done, pruned) = p
+        // What pinned pruning keeps and why, printed before the build so
+        // a map over its tag memory still shows it: for the warthog's and
+        // wraith's collision and every base vehicle kept, the chain of
+        // edges it was reached by (`fresh::Pruned::why`) back to its root,
+        // and the pinned tags read word by word (`Pruned::word_read`).
+        {
+            let (set, _, pruned) = p
+                .pinned_set(&mut base, &mopp)
+                .unwrap_or_else(|e| panic!("{sandbox:?}: {e}"));
+            let label = |id: TagId| {
+                set.slots
+                    .get(id.index())
+                    .and_then(|s| Some((s.tag.as_ref()?, s.name.as_deref())))
+                    .filter(|(t, _)| t.id == id)
+                    .map(|(t, n)| {
+                        let built = if id.index() < first { "" } else { " (built)" };
+                        format!("{} {}{built}", t.group, n.unwrap_or("?"))
+                    })
+                    .unwrap_or_else(|| format!("{:#x}", id.0))
+            };
+            let mut asked = Vec::new();
+            for s in set.slots.iter().take(first) {
+                let Some(t) = &s.tag else { continue };
+                let n = s.name.as_deref().unwrap_or_default();
+                let coll = t.group == FourCC(*b"coll")
+                    && matches!(
+                        n,
+                        "objects\\vehicles\\warthog\\warthog" | "objects\\vehicles\\wraith\\wraith"
+                    );
+                if coll || t.group == FourCC(*b"vehi") {
+                    asked.push(t.id);
+                }
+            }
+            for id in asked {
+                let mut chain = vec![label(id)];
+                let mut at = id;
+                for _ in 0..64 {
+                    let step = match pruned.why.get(&at) {
+                        None => "not reached".to_string(),
+                        Some(h1convert::fresh::Reach::Root(r)) => format!("root: {r}"),
+                        Some(h1convert::fresh::Reach::Datum { by }) => {
+                            at = *by;
+                            format!("datum in {}", label(*by))
+                        }
+                        Some(h1convert::fresh::Reach::Address { by, word }) => {
+                            at = *by;
+                            format!("address {word:#x} in {}", label(*by))
+                        }
+                        Some(h1convert::fresh::Reach::Gap { by, gap }) => {
+                            at = *by;
+                            format!(
+                                "datum in the unowned bytes at {gap:#x} {} points into",
+                                label(*by)
+                            )
+                        }
+                    };
+                    let end = step.starts_with("root") || step.starts_with("not");
+                    chain.push(step);
+                    if end {
+                        break;
+                    }
+                }
+                eprintln!("{sandbox:?}: kept: {}", chain.join("\n      <- "));
+            }
+            let word_read: Vec<String> = pruned.word_read.iter().map(|id| label(*id)).collect();
+            eprintln!(
+                "{sandbox:?}: {} base tags dropped ({:#x} bytes); read word by word: {word_read:?}",
+                pruned.tags(),
+                pruned.freed
+            );
+        }
+        let (done, _) = p
             .build_pruned(&mut base, &mopp)
             .unwrap_or_else(|e| panic!("{sandbox:?}: {e}"));
         let word = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
@@ -1720,72 +1791,13 @@ fn pinned_bloodgulch_fits_its_tag_memory() {
         let mut groups: Vec<_> = groups.into_iter().collect();
         groups.sort_by(|a, b| b.1.1.cmp(&a.1.1));
         eprintln!("  by group: {:?}", &groups[..groups.len().min(15)]);
-        // What keeps the base's vehicles: for the warthog's and wraith's
-        // collision and every base vehicle kept, the chain of edges
-        // pinned pruning reached it by (`fresh::Pruned::why`), back to
-        // its root.
         let label = |id: TagId| {
             base_ids
                 .iter()
                 .find(|t| t.0 == id)
                 .map(|t| format!("{} {}", t.1, t.2.as_deref().unwrap_or("?")))
-                .or_else(|| {
-                    out.tags().iter().find(|t| t.id == id).map(|t| {
-                        format!("{} {} (built)", t.group, t.name.as_deref().unwrap_or("?"))
-                    })
-                })
                 .unwrap_or_else(|| format!("{:#x}", id.0))
         };
-        let mut asked: Vec<TagId> = all
-            .iter()
-            .filter(|t| {
-                t.1 == FourCC(*b"coll")
-                    && matches!(
-                        t.2.as_deref(),
-                        Some(
-                            "objects\\vehicles\\warthog\\warthog"
-                                | "objects\\vehicles\\wraith\\wraith"
-                        )
-                    )
-            })
-            .map(|t| t.0)
-            .collect();
-        asked.extend(
-            all.iter()
-                .filter(|t| t.0.index() < first && t.1 == FourCC(*b"vehi"))
-                .map(|t| t.0),
-        );
-        for id in asked {
-            let mut chain = vec![label(id)];
-            let mut at = id;
-            for _ in 0..64 {
-                let step = match pruned.why.get(&at) {
-                    None => "not reached (a tag pruning keeps without reaching it)".to_string(),
-                    Some(h1convert::fresh::Reach::Root(r)) => format!("root: {r}"),
-                    Some(h1convert::fresh::Reach::Datum { by }) => {
-                        at = *by;
-                        format!("datum in {}", label(*by))
-                    }
-                    Some(h1convert::fresh::Reach::Address { by, word }) => {
-                        at = *by;
-                        format!("address {word:#x} in {}", label(*by))
-                    }
-                    Some(h1convert::fresh::Reach::Gap { by, gap }) => {
-                        at = *by;
-                        format!(
-                            "datum in the unowned bytes at {gap:#x} {} points into",
-                            label(*by)
-                        )
-                    }
-                };
-                let end = step.starts_with("root") || step.starts_with("not");
-                chain.push(step);
-                if end {
-                    break;
-                }
-            }
-            eprintln!("{sandbox:?}: kept: {}", chain.join("\n      <- "));
-        }
         // The scenario's vehicle palette: what it names, and how many
         // placements use each entry (fresh::null_unplaced nulls a base
         // entry none uses).
@@ -1817,11 +1829,13 @@ fn pinned_bloodgulch_fits_its_tag_memory() {
             }
         }
         // The Halo 1 sandbox's vehicle list names Blood Gulch's Halo 1
-        // warthog, ghost and scorpion in place of Halo 2's
-        // (`plan_vehicle_list`), so those retail vehicles, which nothing
-        // else reaches, are dropped.
+        // warthog, ghost and scorpion in place of Halo 2's warthog, ghost,
+        // scorpion and wraith (`plan_vehicle_list`), so those retail
+        // vehicles are dropped: the wraith's minigun named
+        // `ai\generic_turret`, whose `ai\generic` names every retail
+        // vehicle, so a kept wraith kept them all.
         if matches!(sandbox, Sandbox::Halo1) {
-            let retail: Vec<String> = ["warthog", "ghost", "scorpion"]
+            let retail: Vec<String> = ["warthog", "ghost", "scorpion", "wraith"]
                 .iter()
                 .map(|v| format!("objects\\vehicles\\{v}\\{v}"))
                 .collect();

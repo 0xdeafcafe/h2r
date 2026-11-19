@@ -707,18 +707,40 @@ fn base_list<R: Read + Seek>(
 /// that stands for the Halo 2 vehicle `h2_name`: one whose Halo 2
 /// equivalent ([`crate::sandbox::h2_equivalent`]) is the role named as
 /// the vehicle (`warthog` for `objects\vehicles\warthog\warthog`, not
-/// the rocket warthog's `warthog_gauss`). `None` when the spawns place
-/// none of that role.
+/// the rocket warthog's `warthog_gauss`); else, for a role Halo 1 has no
+/// vehicle of, one of the same netgame type
+/// ([`crate::sandbox::VehicleClass::netgame_type`]: the wraith takes the
+/// scorpion, the other heavy vehicle the variant's heavy chooser picks
+/// between). `None` when the spawns place neither, or the vehicle has no
+/// class (the spectre, the turrets).
 pub fn halo1_vehicle_for<'a>(h2_name: &str, placed: &'a [String]) -> Option<&'a str> {
     let last = h2_name
         .rsplit(['\\', '/'])
         .next()
         .unwrap_or(h2_name)
         .to_ascii_lowercase();
-    crate::sandbox::vehicle_class(&last)?;
+    let class = crate::sandbox::vehicle_class(&last)?;
+    let role = |n: &str| match h2_equivalent(n) {
+        Some(H2Item::Vehicle(r)) => Some(r),
+        _ => None,
+    };
     placed
         .iter()
-        .find(|n| matches!(h2_equivalent(n), Some(H2Item::Vehicle(r)) if r == last))
+        .find(|n| role(n) == Some(last.as_str()))
+        .or_else(|| {
+            // Only a role no Halo 1 vehicle stands for falls back.
+            if crate::sandbox::TABLE
+                .iter()
+                .any(|(_, i)| *i == H2Item::Vehicle(class.role))
+            {
+                return None;
+            }
+            placed.iter().find(|n| {
+                role(n)
+                    .and_then(crate::sandbox::vehicle_class)
+                    .is_some_and(|c| c.netgame_type == class.netgame_type)
+            })
+        })
         .map(String::as_str)
 }
 
@@ -727,8 +749,9 @@ pub fn halo1_vehicle_for<'a>(h2_name: &str, placed: &'a [String]) -> Option<&'a 
 /// the spawns place a Halo 1 vehicle for ([`halo1_vehicle_for`]) gets
 /// that vehicle, so a game variant's vehicle option that swaps a vehicle
 /// for another of its class gives a Halo 1 one. The other entries (the
-/// wraith, the spectre, the turrets: Halo 1 has none, or the map places
-/// none) keep the base's and are reported. As the list names the base's
+/// spectre and the turrets, which have no class; a vehicle the map
+/// places none of, as Blood Gulch's banshee) keep the base's and are
+/// reported. As the list names the base's
 /// vehicles, a pinned map kept every retail vehicle and all it names
 /// (`fresh::prune_pinned`): pointed at the Halo 1 vehicles, those the
 /// map's spawns stand in for are dropped.
@@ -1048,8 +1071,9 @@ mod tests {
 
     /// Each Coagulation vehicle list entry and the Blood Gulch vehicle
     /// that stands for it: the warthog's is the plain warthog, not the
-    /// rocket warthog; the wraith, spectre and turrets have none, nor does
-    /// a vehicle the spawns don't place.
+    /// rocket warthog; the wraith's the scorpion (Halo 1 has no wraith;
+    /// both are heavy vehicles); the spectre and turrets have none, nor
+    /// has the banshee when the spawns place none.
     #[test]
     fn a_vehicle_list_entry_takes_the_placed_halo1_vehicle_of_its_role() {
         let placed: Vec<String> = [
@@ -1074,7 +1098,11 @@ mod tests {
             Some("vehicles\\scorpion\\scorpion_mp")
         );
         assert_eq!(v("objects\\vehicles\\banshee\\banshee"), None);
-        assert_eq!(v("objects\\vehicles\\wraith\\wraith"), None);
+        // Halo 1 has no wraith: the other heavy vehicle stands for it.
+        assert_eq!(
+            v("objects\\vehicles\\wraith\\wraith"),
+            Some("vehicles\\scorpion\\scorpion_mp")
+        );
         assert_eq!(v("objects\\vehicles\\spectre\\spectre"), None);
         assert_eq!(v("objects\\vehicles\\c_turret_ap\\c_turret_ap"), None);
     }

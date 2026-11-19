@@ -769,6 +769,41 @@ impl Prepared {
         base: &mut Map<R>,
         mopp: &[u8],
     ) -> Result<(TagSet, Vec<u8>, usize, crate::fresh::Pruned)> {
+        let (mut set, section, pruned) = self.pinned_set(base, mopp)?;
+
+        // The scenario stays pinned, so its BSP descriptor is patched with
+        // the new region's place: build once to learn it (it doesn't
+        // depend on the scenario's bytes), patch, build again.
+        let (_, layout) = set.build()?;
+        let (file_offset, size) = layout.bsps[section];
+        let scenario = set.scenario;
+        let tag = set.tag_mut(scenario).ok_or(Error::Invalid("no scenario"))?;
+        let map::build::TagPayload::Pinned { address, bytes } = &mut tag.payload else {
+            return Err(Error::Invalid("the base scenario should be pinned"));
+        };
+        let (at, _, _) = bsp_descriptor(bytes, *address)?;
+        let off = at.wrapping_sub(*address) as usize;
+        bytes[off..off + 4].copy_from_slice(&file_offset.to_le_bytes());
+        bytes[off + 4..off + 8].copy_from_slice(&size.to_le_bytes());
+        bytes[off + 8..off + 12].copy_from_slice(&layout.bsp_base.to_le_bytes());
+        let (bytes, again) = set.build()?;
+        if again.bsps[section] != (file_offset, size) {
+            return Err(Error::Invalid("the BSP region moved between builds"));
+        }
+        Ok((set, bytes, section, pruned))
+    }
+
+    /// The pinned set [`Self::assemble`] builds, before it is built: the
+    /// base decomposed with everything converted added and the base's
+    /// tags nothing reaches dropped ([`crate::fresh::prune_pinned`]), the
+    /// converted structure's BSP section, and what was dropped and why
+    /// each kept tag stayed ([`crate::fresh::Pruned::why`]). For seeing
+    /// what a map that doesn't fit its tag memory keeps.
+    pub fn pinned_set<R: Read + Seek>(
+        &self,
+        base: &mut Map<R>,
+        mopp: &[u8],
+    ) -> Result<(TagSet, usize, crate::fresh::Pruned)> {
         let mut patched = Cursor::new(Vec::new());
         scenario_edit::save::write_patched(base, &self.scenario, &mut patched)?;
         let mut patched = Map::from_reader(Cursor::new(patched.into_inner()))?;
@@ -891,27 +926,7 @@ impl Prepared {
             &crate::fresh::MULTIPLAYER,
             &keep,
         );
-
-        // The scenario stays pinned, so its BSP descriptor is patched with
-        // the new region's place: build once to learn it (it doesn't
-        // depend on the scenario's bytes), patch, build again.
-        let (_, layout) = set.build()?;
-        let (file_offset, size) = layout.bsps[section];
-        let scenario = set.scenario;
-        let tag = set.tag_mut(scenario).ok_or(Error::Invalid("no scenario"))?;
-        let map::build::TagPayload::Pinned { address, bytes } = &mut tag.payload else {
-            return Err(Error::Invalid("the base scenario should be pinned"));
-        };
-        let (at, _, _) = bsp_descriptor(bytes, *address)?;
-        let off = at.wrapping_sub(*address) as usize;
-        bytes[off..off + 4].copy_from_slice(&file_offset.to_le_bytes());
-        bytes[off + 4..off + 8].copy_from_slice(&size.to_le_bytes());
-        bytes[off + 8..off + 12].copy_from_slice(&layout.bsp_base.to_le_bytes());
-        let (bytes, again) = set.build()?;
-        if again.bsps[section] != (file_offset, size) {
-            return Err(Error::Invalid("the BSP region moved between builds"));
-        }
-        Ok((set, bytes, section, pruned))
+        Ok((set, section, pruned))
     }
 }
 

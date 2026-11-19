@@ -779,6 +779,11 @@ pub struct Pruned {
     /// [`prune_pinned`]: each kept slot's datum and the edge it was first
     /// reached by, to follow what keeps a tag back to its root.
     pub why: std::collections::HashMap<TagId, Reach>,
+    /// [`prune_pinned`]: the kept pinned tags read word by word, every
+    /// word a datum and an address, because their schema walk failed
+    /// (a group the schema doesn't know, or an array outside the
+    /// metadata): stale words in them keep tags.
+    pub word_read: Vec<TagId>,
 }
 
 impl Pruned {
@@ -1151,7 +1156,7 @@ fn walk(
 /// owns that a word-read tag points into. Returns the slots reached and
 /// how many were reached only by such an address.
 fn pinned_reach(set: &TagSet, keep: &Keep, roots: &[TagId]) -> (Vec<bool>, usize) {
-    let (seen, by_pointer, _) = pinned_reach_why(set, keep, roots);
+    let (seen, by_pointer, _, _) = pinned_reach_why(set, keep, roots);
     (seen, by_pointer)
 }
 
@@ -1171,12 +1176,13 @@ pub enum Reach {
 }
 
 /// [`pinned_reach`], with the edge each reached slot was first reached
-/// by (`None` for one not reached).
+/// by (`None` for one not reached), and the pinned tags read word by word
+/// (their schema walk failed).
 fn pinned_reach_why(
     set: &TagSet,
     keep: &Keep,
     roots: &[TagId],
-) -> (Vec<bool>, usize, Vec<Option<Reach>>) {
+) -> (Vec<bool>, usize, Vec<Option<Reach>>, Vec<TagId>) {
     let n = set.slots.len();
     let space = Space::new(set);
     let schema = Schema::builtin();
@@ -1224,6 +1230,7 @@ fn pinned_reach_why(
     let mut live_gaps = std::collections::HashSet::new();
     let (mut datums, mut arrays) = (Vec::new(), Vec::new());
     let mut gap_datums: Vec<(u32, u32)> = Vec::new();
+    let mut word_read = Vec::new();
     while let Some(i) = todo.pop() {
         let Some(t) = &set.slots[i].tag else { continue };
         let by = t.id;
@@ -1251,6 +1258,7 @@ fn pinned_reach_why(
                                 .map(|w| u32::from_le_bytes(*w)),
                         );
                         words_too = true;
+                        word_read.push(by);
                     }
                 }
             }
@@ -1302,7 +1310,7 @@ fn pinned_reach_why(
             }
         }
     }
-    (seen, by_pointer, why)
+    (seen, by_pointer, why, word_read)
 }
 
 /// A scenario palette element's size (every object palette, D;
@@ -1426,8 +1434,9 @@ pub fn prune_pinned(set: &mut TagSet, first: usize, keep: &Keep, extra: &[TagId]
             write_word(set, field, kept.len() as u32);
         }
     }
-    let (seen, by_pointer, why) = pinned_reach_why(set, keep, &roots);
+    let (seen, by_pointer, why, word_read) = pinned_reach_why(set, keep, &roots);
     out.kept_by_pointer = by_pointer;
+    out.word_read = word_read;
     out.why = set
         .slots
         .iter()

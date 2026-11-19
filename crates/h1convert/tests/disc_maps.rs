@@ -418,12 +418,31 @@ fn check_h1_textures(
         let TagData::Bitmap(b) = d.data else {
             panic!("{name}: {bn} isn't a bitmap")
         };
-        let tag = h1
-            .tags()
-            .iter()
-            .find(|t| &t.name == bn && t.group.to_string() == "bitm")
-            .unwrap()
-            .clone();
+        let h1_bitmap = |n: &str| {
+            h1.tags()
+                .iter()
+                .find(|t| t.name == n && t.group.to_string() == "bitm")
+                .cloned()
+        };
+        // A plasma picture with its brightness as alpha (converter v90,
+        // `shad::brightness_mask_name`: `<Halo 1 bitmap>_brightness_<gain
+        // x 1000>`) is no Halo 1 bitmap: its pixels are derived, so it is
+        // checked to decode with its source's image count only.
+        let Some(tag) = h1_bitmap(bn) else {
+            let (stem, gain) = bn
+                .rsplit_once("_brightness_")
+                .unwrap_or_else(|| panic!("{name}: {bn} is no Halo 1 bitmap"));
+            assert!(gain.parse::<u32>().is_ok(), "{name}: {bn}");
+            let src_tag = h1_bitmap(stem).unwrap_or_else(|| panic!("{name}: {bn}: no {stem}"));
+            let src = h1map::bitmap::Bitmap::read(h1, &src_tag).unwrap();
+            assert_eq!(b.images.len(), src.images.len(), "{name}: {bn}");
+            for (i, im) in b.images.iter().enumerate() {
+                assets::decode_image(im, files)
+                    .unwrap_or_else(|e| panic!("{name}: {bn} [{i}]: {e}"));
+                images += 1;
+            }
+            continue;
+        };
         let src = h1map::bitmap::Bitmap::read(h1, &tag).unwrap();
         assert_eq!(b.images.len(), src.images.len(), "{name}: {bn}");
         for (i, im) in b.images.iter().enumerate() {
