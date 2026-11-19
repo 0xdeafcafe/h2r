@@ -94,9 +94,10 @@ fn bitmaps<R: std::io::Read + std::io::Seek>(
     out
 }
 
-/// Tags the skies add: each sky and its model, and the shader copies and
-/// Halo 1 bitmaps (those the structure's textures don't already add) of
-/// `m` past `base_slots` named for the skies' Halo 1 shaders and bitmaps.
+/// Tags the skies add: each sky and its model, and the shader copies,
+/// lens flares and Halo 1 bitmaps (those the structure's textures don't
+/// already add) of `m` past `base_slots` named for the skies' Halo 1
+/// shaders, their lights' flares and the bitmaps both draw.
 fn sky_tags(
     p: &h1convert::convert::Prepared,
     m: &Map<Cursor<Vec<u8>>>,
@@ -114,11 +115,20 @@ fn sky_tags(
         .iter()
         .flat_map(|s| s.shaders.iter().flatten().map(|h| h.name.as_str()))
         .collect();
+    // Each sky light's lens flare and its bitmap (`Sky::install`).
+    let flares = || {
+        p.skies
+            .skies
+            .iter()
+            .flat_map(|s| s.flares.iter().flatten())
+    };
+    let lenses: Vec<&str> = flares().map(|f| f.name.as_str()).collect();
     let bitmaps: Vec<&str> = p
         .skies
         .skies
         .iter()
         .flat_map(|s| s.bitmaps.iter().map(|b| b.1.as_str()))
+        .chain(flares().filter_map(|f| f.bitmap.as_ref().map(|b| b.0.as_str())))
         .filter(|n| !p.textures.bitmaps.iter().any(|t| t.0 == *n))
         .collect();
     let added = m
@@ -129,6 +139,7 @@ fn sky_tags(
             let n = t.name.as_deref().unwrap_or_default();
             (t.group == FourCC(*b"shad") && shaders.contains(&n))
                 || (t.group == FourCC(*b"bitm") && bitmaps.contains(&n))
+                || (t.group == FourCC(*b"lens") && lenses.contains(&n))
         })
         .count();
     skies + added

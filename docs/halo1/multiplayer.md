@@ -652,7 +652,11 @@ Halo 1's effects and sounds (converter version 84) Blood Gulch's Halo 1
 sandbox was 0x634000 of the multiplayer 0x62c000 (`map::Error::TagMemory`
 names the groups). The fresh build's roots and edits are applied to the
 pinned set: base entries of the scenery, sound scenery, light fixture and
-crate palettes nulled in the pinned scenario's bytes, its tag list
+crate palettes nulled in the pinned scenario's bytes, and in every object
+palette (`tags::object::OBJECT_TYPES`) each base entry no placement names
+(a placement's `+0` short is its palette index; `fresh::null_unplaced`):
+in the Halo 1 sandbox the base's vehicles, bipeds and weapons stay in
+their palettes with nothing placing them, and kept everything they name. its tag list
 (`+0x3d8`) keeping a base tag only when something else reaches it, then
 every pinned base tag not reached from the scenario, the globals,
 `fresh::KEEP_GROUPS`, `fresh::KEEP_PREFIXES`, the precision collections
@@ -673,8 +677,11 @@ and decorators emptied) are made before this, so the base's sky,
 ambience and decorators they replace go too. On the fresh map Blood Gulch drops
 510 of Coagulation's tags (0x74698 bytes, most of it three `jmad`s and
 retail shaders and bitmaps); `sandbox_disc::pinned_bloodgulch_fits_its_tag_memory`
-prints the pinned map's tag memory and checks no kept tag names a dropped
-one.
+prints the pinned map's tag memory, the largest base tags kept in the
+metadata with what names each, and checks no kept tag names a dropped
+one. The largest tag under a base name is no base tag: the structure BSP
+is Halo 1's, written into Coagulation's `sbsp` slot (and so under its
+path), and lives in the BSP region, not the metadata.
 
 **Ambient sound (Built, `h1convert::ambience`, `h1sounds::looping`).**
 Halo 1 keeps a level's background sounds and sound environments in the

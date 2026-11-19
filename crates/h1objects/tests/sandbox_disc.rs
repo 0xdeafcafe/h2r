@@ -1658,10 +1658,14 @@ fn pinned_bloodgulch_fits_its_tag_memory() {
         );
         // The largest base tags kept, and what names each (by datum), to
         // see what holds the room.
+        // Only the metadata counts here: the structure BSP (Halo 1's,
+        // written into the base's `sbsp` slot, so under its name) lives in
+        // the BSP region.
+        let meta = out.metadata_space();
         let all: Vec<(TagId, FourCC, Option<String>)> = out
             .tags()
             .iter()
-            .filter(|t| t.location.is_some())
+            .filter(|t| t.location.is_some_and(|l| Some(l.space) == meta))
             .map(|t| (t.id, t.group, t.name.clone()))
             .collect();
         let mut bytes_of = std::collections::HashMap::new();

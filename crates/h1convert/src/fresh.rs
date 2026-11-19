@@ -1255,6 +1255,68 @@ fn pinned_reach(set: &TagSet, keep: &Keep, roots: &[TagId]) -> (Vec<bool>, usize
     (seen, by_pointer)
 }
 
+/// A scenario palette element's size (every object palette, D;
+/// [`BASE_PALETTES`]).
+const PALETTE_ENTRY: u32 = 0x28;
+
+/// In a pinned scenario, each object type's palette entries
+/// (`tags::object::OBJECT_TYPES`: placement block, palette block,
+/// placement stride) that no placement names (its `+0` short, the palette
+/// index) and that name a base tag (`is_base`): nulled, tag reference
+/// `-1, -1`. A type whose blocks don't read is left alone. Returns the
+/// entries nulled.
+fn null_unplaced(set: &mut TagSet, is_base: impl Fn(u32) -> bool) -> usize {
+    let scenario = set.scenario;
+    let Some(address) = (match &set.tag(scenario).map(|t| &t.payload) {
+        Some(TagPayload::Pinned { address, .. }) => Some(*address),
+        _ => None,
+    }) else {
+        return 0;
+    };
+    let mut nulled = 0;
+    for ty in tags::object::OBJECT_TYPES {
+        let Some((placements, palette, stride)) = ty.placement else {
+            continue;
+        };
+        let block = |set: &mut TagSet, at: u16| {
+            let field = address + u32::from(at);
+            Some((read_word(set, field)?, read_word(set, field + 4)?))
+        };
+        let (Some((n, p)), Some((entries, q))) = (block(set, placements), block(set, palette))
+        else {
+            continue;
+        };
+        if entries == 0 || entries > 0x1000 || n > 0x10000 {
+            continue;
+        }
+        let mut used = std::collections::HashSet::new();
+        let mut ok = true;
+        for k in 0..n {
+            match read_word(set, p + k * u32::from(stride)) {
+                Some(w) => {
+                    used.insert(w as u16 as i16);
+                }
+                None => ok = false,
+            }
+        }
+        if !ok {
+            continue;
+        }
+        for k in 0..entries {
+            if used.contains(&(k as i16)) {
+                continue;
+            }
+            let e = q + k * PALETTE_ENTRY;
+            if read_word(set, e + 4).is_some_and(&is_base) {
+                write_word(set, e, u32::MAX);
+                write_word(set, e + 4, u32::MAX);
+                nulled += 1;
+            }
+        }
+    }
+    nulled
+}
+
 /// [`prune_with`] for a pinned set: the map `Prepared::assemble` builds
 /// keeps the base's metadata in place, every retail tag of it, reached or
 /// not, and puts what the conversion built after it, so a level that adds
@@ -1285,6 +1347,10 @@ pub fn prune_pinned(set: &mut TagSet, first: usize, keep: &Keep, extra: &[TagId]
             }
         }
     }
+    // Each object palette's base entries no placement names: the base's
+    // placements the conversion removed named them, and nothing else
+    // places from a palette ([`null_unplaced`]).
+    out.palette_entries += null_unplaced(set, is_base);
     let roots = extra.to_vec();
     if let Some((field, count, elements)) = pinned_block(set, SCENARIO_RESOURCES) {
         let list: Option<Vec<u32>> = (0..count)
@@ -1453,5 +1519,55 @@ mod pinned_prune_tests {
         prune_pinned(&mut set, N - 1, &NOTHING, &roots);
         assert!(set.slots[N - 1].tag.is_some());
         assert!(set.slots[8].tag.is_none());
+    }
+
+    /// A pinned scenario's object palette keeps the entries a placement
+    /// names; a base entry none names is nulled and its tag dropped (the
+    /// base's vehicles the conversion's placements replaced).
+    #[test]
+    fn an_object_palette_keeps_what_is_placed() {
+        let mut set = TagSet::new(CacheType::Multiplayer, "m", "s");
+        let tags: [(&[u8; 4], &str, u32, usize); 4] = [
+            (b"scnr", "s", 0, 0x400),
+            (b"matg", "globals", 0x400, 0x40),
+            (b"vehi", "not placed", 0x500, 0x40),
+            (b"vehi", "placed", 0x600, 0x40),
+        ];
+        for (i, (g, name, at, len)) in tags.iter().enumerate() {
+            set.slots.push(Slot {
+                name: Some((*name).into()),
+                tag: Some(TagEntry {
+                    id: id(i),
+                    group: FourCC(**g),
+                    payload: TagPayload::Pinned {
+                        address: BASE + at,
+                        bytes: vec![0; *len],
+                    },
+                }),
+            });
+        }
+        set.scenario = id(0);
+        set.globals = id(1);
+        // Vehicles (`OBJECT_TYPES[1]`): one placement at `+0x200` of
+        // palette entry 1; the palette's two entries at `+0x260`.
+        let (placements, palette, _) = tags::object::OBJECT_TYPES[1].placement.unwrap();
+        let b = bytes(&mut set, 0);
+        put(b, placements as usize, 1);
+        put(b, placements as usize + 4, BASE + 0x200);
+        put(b, 0x200, 1);
+        put(b, palette as usize, 2);
+        put(b, palette as usize + 4, BASE + 0x260);
+        for (k, slot) in [2, 3].into_iter().enumerate() {
+            let e = 0x260 + k * PALETTE_ENTRY as usize;
+            put(b, e, u32::from_be_bytes(*b"vehi"));
+            put(b, e + 4, id(slot).0);
+        }
+        let p = prune_pinned(&mut set, 4, &NOTHING, &[]);
+        assert_eq!(p.palette_entries, 1);
+        assert!(set.slots[2].tag.is_none(), "the unplaced vehicle goes");
+        assert!(set.slots[3].tag.is_some(), "the placed vehicle stays");
+        let b = bytes(&mut set, 0);
+        assert_eq!(b[0x260..0x268], [0xff; 8]);
+        assert_eq!(b[0x28c..0x290], id(3).0.to_le_bytes());
     }
 }
