@@ -643,8 +643,8 @@ Halo ring were already built this way.
   position in its node's space. V: Halo 1's mass point positions are in
   object space (each warthog tire point lies within its radius of its
   tire node's default position). Every point rides the root node (0),
-  at its Halo 1 position (since converter version 93). Through version
-  92 only a point that grips the ground (Halo 1 powered mass point flag
+  at its Halo 1 position (since converter version 94). Through version
+  93 only a point that grips the ground (Halo 1 powered mass point flag
   bit 0: the warthog's tires, the scorpion's treads) did; any other
   rode its own node, and the ghost's antigravity points (bit 6) put its
   back point, `hull back seat`, on the seat node. A hover point whose

@@ -309,7 +309,7 @@ things the engine reads at a vehicle's base, proved in
   (`h1convert::placements::retail_vehicle_depth`: the retail ghost
   0.15, the warthog 0.02, the wraith none).
 
-**The Blood Gulch ghost (converter version 93).** User report on
+**The Blood Gulch ghost (converter version 94).** User report on
 converted Blood Gulch (v90/v91): "physics totally fucked and looks like
 using damage state model"; one ghost lay nose down at pitch -10.8,
 partly in the ground. Both halves were checked in a game run
@@ -348,7 +348,7 @@ partly in the ground. Both halves were checked in a game run
   node; a hover point whose marker is on any node but the root lifts
   nothing (live: eight times its strength changed nothing; named to a
   node-0 marker it lifted). Every friction and hover marker of every
-  retail vehicle is on node 0, so since version 93 every powered point's
+  retail vehicle is on node 0, so since version 94 every powered point's
   marker is (tag-definitions.md, "Every vehicle from definitions";
   `h1objects/tests/vehicle_rebuild_disc.rs`,
   `every_powered_point_rides_the_root_node`). Moved live to node 0 at
