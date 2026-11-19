@@ -2808,16 +2808,27 @@ impl<'a> Converter<'a> {
         );
         let mut out: Vec<PoweredPoint> = Vec::new();
         for m in phys.mass_points.iter().filter(|m| m.powered_mass_point >= 0) {
+            // Every point rides the root node, not its own. A wheel's or
+            // tread's node turns and rises with the spin and suspension
+            // animations, and a contact point that moves with it pushes
+            // the vehicle about. A hover point on any other node lifts
+            // nothing: the converted ghost's back point ("hull back
+            // seat", on its seat node) gave no lift at any strength, so
+            // the ghost rode nose up on its tail with a driver, and the
+            // same point moved live to node 0 at the same place held it
+            // level (game run, 2026-11-19). V: every friction and hover
+            // marker of every retail vehicle is on node 0
+            // (`tests/vehicle_rebuild_disc.rs`,
+            // `every_powered_point_rides_the_root_node`).
+            let node = 0;
+            // The region is unchanged by that: a gripping point's is the
+            // root node's collision region (as through version 92), any
+            // other point's its own node's.
             let grips = phys
                 .powered_flags
                 .get(m.powered_mass_point as usize)
                 .is_some_and(|f| f & h1::POWERED_GROUND_FRICTION != 0);
-            // A wheel or tread rides the root node, not its own: the
-            // wheel's node turns and rises with the spin and suspension
-            // animations, and a contact point that moves with it pushes
-            // the vehicle about (V: the retail warthog's and scorpion's
-            // friction markers are on node 0).
-            let node = if grips {
+            let own = if grips {
                 0
             } else if (m.model_node as usize) < model.nodes.len() && m.model_node >= 0 {
                 m.model_node
@@ -2839,7 +2850,7 @@ impl<'a> Converter<'a> {
             let d: [f32; 3] = std::array::from_fn(|a| m.position[a] - t[a]);
             // The inverse of a rotation is its transpose.
             let local = std::array::from_fn(|a| (0..3).map(|k| r[k][a] * d[k]).sum());
-            let node_name = model.nodes.get(node as usize).map(|n| n.name.as_str());
+            let node_name = model.nodes.get(own as usize).map(|n| n.name.as_str());
             let region = coll
                 .as_ref()
                 .and_then(|c| {

@@ -1315,6 +1315,61 @@ pub fn marker_positions(
     Ok(Some(out))
 }
 
+/// The node (`+0x2`) of every marker of each marker group named in
+/// `names` (string IDs of the base), in the render model of the base
+/// vehicle whose root is `root` (as [`marker_positions`] finds it): one
+/// list per name, empty when the model has no such group. `None` when the
+/// vehicle has no render model.
+pub fn marker_nodes(
+    base: &crate::base::Base,
+    root: &[u8],
+    d: &StructDef,
+    names: &[u32],
+) -> Result<Option<Vec<Vec<u8>>>> {
+    let Some(hlmt) = base.reference(root, path_offset(d, "unit.obje.model")? as usize) else {
+        return Ok(None);
+    };
+    let h = base.root(hlmt)?;
+    let Some(mode) = base.reference(&h, field_offset(def(b"hlmt")?, "render_model")? as usize)
+    else {
+        return Ok(None);
+    };
+    let m = base.root(mode)?;
+    let md = def(b"mode")?;
+    let gd = md
+        .child("marker_groups")
+        .ok_or_else(|| Error::Invalid("mode marker_groups".into()))?;
+    let markers_def = gd
+        .child("markers")
+        .ok_or_else(|| Error::Invalid("mode markers".into()))?;
+    let groups_at = field_offset(md, "marker_groups")? as usize;
+    let (group_name, markers_at) = (
+        field_offset(gd, "name")? as usize,
+        field_offset(gd, "markers")? as usize,
+    );
+    let marker_node = field_offset(markers_def, "node")? as usize;
+    let mut groups = Vec::new();
+    while let Some(g) = base.element(&m, groups_at, gd.size as usize, groups.len())? {
+        groups.push(g);
+    }
+    let mut out = Vec::new();
+    for name in names {
+        let mut nodes = Vec::new();
+        for g in groups
+            .iter()
+            .filter(|g| crate::base::u32_at(g, group_name) == *name)
+        {
+            let mut i = 0;
+            while let Some(x) = base.element(g, markers_at, markers_def.size as usize, i)? {
+                nodes.push(x[marker_node]);
+                i += 1;
+            }
+        }
+        out.push(nodes);
+    }
+    Ok(Some(out))
+}
+
 /// A field's offset through embedded structs (`unit.obje.model`).
 fn path_offset(d: &StructDef, path: &str) -> Result<u32> {
     let (head, rest) = path
