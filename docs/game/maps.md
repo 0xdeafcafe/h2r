@@ -704,6 +704,22 @@ operator's key, `--data DIR`). The file is `[[mod]]` tables of `map_id`,
 `name` (checked against the server's), `authors`, `release`, `released`,
 `source_url`, `notes`; every entry is checked before anything is sent.
 
+**More mods.** `docs/game/mods-catalogue.toml` lists Halo 2 Xbox map mods
+found for import (2026-11-19, mostly from ibotmodz.net, se7ensins and
+archive.org): name, authors, base map, format, size and SHA-256 of the
+file checked, download and source URLs, and a `fit`. `good` ones import
+as they are (PPFs, and whole maps of a disc map); `whole-map` ones are
+total conversions whose map header names a retail map, which import over
+it as a large BPS; `unsupported-format` ones are SPPF or Serenity patches
+(no reader yet, §6 "formats"); `needs-shared` ones patch `mainmenu`. Import
+each with a `mod.toml` that gives its credit:
+
+```sh
+h2 live maps import FILE --base MAP --info mod.toml --out DIR
+# mod.toml: name, authors = [..], base_map, category, released,
+#           source_url, description
+```
+
 **In the game.** A package on a Map Pack base installs and plays like one
 on a disc map, for a player who has the map pack installed (`h2
 import-mappack`, or `h2 play`'s automatic import):
