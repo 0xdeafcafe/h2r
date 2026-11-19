@@ -157,6 +157,58 @@ pub(crate) fn bind(builtins: &mut HashMap<String, H2Builtin>, catalog: &hs::Cata
     }
 }
 
+/// Builtins with an extension opcode and a retail return profile.
+pub(crate) fn runtime_operation(name: &str) -> Option<hs::h1_ai_slots::Operation> {
+    use hs::h1_ai_slots::Operation as RuntimeOperation;
+
+    match name {
+        "ai_magically_see_players" => Some(RuntimeOperation::SeePlayers),
+        "ai_vehicle_encounter" => Some(RuntimeOperation::VehicleEncounter),
+        "ai_vehicle_enterable_distance" => Some(RuntimeOperation::VehicleDistance),
+        "ai_vehicle_enterable_actor_type" => Some(RuntimeOperation::VehicleActorType),
+        "ai_vehicle_enterable_team" => Some(RuntimeOperation::VehicleTeam),
+        "ai_vehicle_enterable_actors" => Some(RuntimeOperation::VehicleActors),
+        "ai_vehicle_enterable_disable" => Some(RuntimeOperation::VehicleDisable),
+        "ai_going_to_vehicle" => Some(RuntimeOperation::VehicleCount),
+        "ai_try_to_fight" => Some(RuntimeOperation::PreferAi),
+        "ai_try_to_fight_player" => Some(RuntimeOperation::PreferPlayer),
+        "ai_try_to_fight_nothing" => Some(RuntimeOperation::ClearPreference),
+        "ai_playfight" => Some(RuntimeOperation::Playfight),
+        "ai_link_activation" => Some(RuntimeOperation::LinkActivation),
+        "ai_automatic_migration_target" => Some(RuntimeOperation::AutomaticMigrationTarget),
+        "ai_follow_target_players" => Some(RuntimeOperation::FollowPlayers),
+        "ai_follow_target_ai" => Some(RuntimeOperation::FollowAi),
+        "ai_follow_target_unit" => Some(RuntimeOperation::FollowUnit),
+        "ai_follow_target_disable" => Some(RuntimeOperation::FollowDisable),
+        "ai_follow_distance" => Some(RuntimeOperation::FollowDistance),
+        "ai_migrate_and_speak" => Some(RuntimeOperation::MigrateSpeak),
+        "ai_attach_free" => Some(RuntimeOperation::AttachFree),
+        "ai_free" => Some(RuntimeOperation::Free),
+        "ai_free_units" => Some(RuntimeOperation::FreeUnits),
+        "ai_migrate_by_unit" => Some(RuntimeOperation::MigrateUnits),
+        "ai_teleport_to_starting_location" => Some(RuntimeOperation::Teleport),
+        "ai_teleport_to_starting_location_if_unsupported" => {
+            Some(RuntimeOperation::TeleportUnsupported)
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn runtime_target(target: &Target, op: hs::h1_ai_slots::Operation) -> Option<&H2Builtin> {
+    use hs::h1_ai_slots::{CONTROL, Operation};
+    let control = target.builtins.get("ai_magically_see_players")?;
+    if control.index != CONTROL {
+        return None;
+    }
+    if op == Operation::VehicleCount {
+        return target
+            .builtins
+            .get("ai_going_to_vehicle")
+            .filter(|b| b.index == op.slot());
+    }
+    Some(control)
+}
+
 pub(crate) fn status_supported(target: &Target) -> bool {
     ["ai_combat_status", "if", ">="]
         .iter()

@@ -130,7 +130,8 @@ pub(crate) fn prepare(
     options: &mut h1ai::convert::Options,
 ) -> HashSet<usize> {
     let mut uses = Uses::read(tables);
-    let maneuver = h1ai::control::maneuver_targets(src, requests);
+    let mut maneuver = h1ai::control::maneuver_targets(src, requests);
+    maneuver.extend(h1ai::control::automatic_migration_targets(src));
     let destinations: HashSet<u32> = requests.iter()
         .filter(|r| r.operation == h1ai::control::Operation::Migrate)
         .filter_map(|r| r.target)

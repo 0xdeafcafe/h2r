@@ -78,6 +78,8 @@ pub enum Adapter {
     Negate,
     /// Use Halo 2's combat status and its ordered thresholds.
     CombatStatus,
+    /// Dispatch the typed converted operation on the retail VM.
+    AiRuntime,
 }
 
 /// One Halo 2 builtin as the translation needs it.
@@ -255,6 +257,17 @@ impl Table {
                         kind: Kind::Adapter,
                         target: Some((h2_name.to_owned(), b.clone())),
                         adapter: Some(adapter),
+                        reason: None,
+                    };
+                }
+                if let Some(op) = crate::aicontrol::runtime_operation(&f.name)
+                    && let Some(b) = crate::aicontrol::runtime_target(h2, op)
+                {
+                    return Translation {
+                        name: f.name.clone(),
+                        kind: Kind::Adapter,
+                        target: Some((hs::h1_ai_slots::CONTROL_TOKEN.to_owned(), b.clone())),
+                        adapter: Some(Adapter::AiRuntime),
                         reason: None,
                     };
                 }

@@ -66,39 +66,8 @@ impl Compiler<'_> {
         args: &[Datum],
         expected: u16,
     ) -> Result<Option<Datum>> {
-        let op = match name {
-            "ai_magically_see_players" => Some(RuntimeOperation::SeePlayers),
-            "ai_vehicle_encounter" => Some(RuntimeOperation::VehicleEncounter),
-            "ai_vehicle_enterable_distance" => Some(RuntimeOperation::VehicleDistance),
-            "ai_vehicle_enterable_actor_type" => Some(RuntimeOperation::VehicleActorType),
-            "ai_vehicle_enterable_team" => Some(RuntimeOperation::VehicleTeam),
-            "ai_vehicle_enterable_actors" => Some(RuntimeOperation::VehicleActors),
-            "ai_vehicle_enterable_disable" => Some(RuntimeOperation::VehicleDisable),
-            "ai_going_to_vehicle" => Some(RuntimeOperation::VehicleCount),
-            "ai_try_to_fight" => Some(RuntimeOperation::PreferAi),
-            "ai_try_to_fight_player" => Some(RuntimeOperation::PreferPlayer),
-            "ai_try_to_fight_nothing" => Some(RuntimeOperation::ClearPreference),
-            "ai_playfight" => Some(RuntimeOperation::Playfight),
-            "ai_link_activation" => Some(RuntimeOperation::LinkActivation),
-            "ai_migrate_and_speak" => Some(RuntimeOperation::MigrateSpeak),
-            "ai_attach_free" => Some(RuntimeOperation::AttachFree),
-            "ai_free" => Some(RuntimeOperation::Free),
-            "ai_free_units" => Some(RuntimeOperation::FreeUnits),
-            "ai_migrate_by_unit" => Some(RuntimeOperation::MigrateUnits),
-            "ai_teleport_to_starting_location" => Some(RuntimeOperation::Teleport),
-            "ai_teleport_to_starting_location_if_unsupported" => {
-                Some(RuntimeOperation::TeleportUnsupported)
-            }
-            _ => None,
-        };
-        if let Some(op) = op
-            && self.has_runtime_control()
-            && (op != RuntimeOperation::VehicleCount
-                || self
-                    .h2
-                    .builtins
-                    .get("ai_going_to_vehicle")
-                    .is_some_and(|b| b.index == op.slot()))
+        if let Some(op) = aicontrol::runtime_operation(name)
+            && aicontrol::runtime_target(self.h2, op).is_some()
         {
             return self.runtime_control(op, args, expected).map(Some);
         }
@@ -361,7 +330,21 @@ impl Compiler<'_> {
             return Err(invalid("converted AI state exceeds the Halo 2 global pool"));
         }
         for index in 0..registry.words() {
-            let root = self.number(h2t::LONG, registry.initial(index));
+            let initial =
+                if registry == Registry::Follow && index >= hs::h1_ai_slots::FOLLOW_WORDS {
+                    let word = (index - hs::h1_ai_slots::FOLLOW_WORDS)
+                        % hs::h1_ai_slots::MIGRATION_WORDS;
+                    self.ai_control.map_or(0, |control| {
+                        control
+                            .automatic_migration
+                            .range(word * 32..(word + 1) * 32)
+                            .fold(0u32, |bits, &id| bits | 1 << (id % 32))
+                            as i32
+                    })
+                } else {
+                    registry.initial(index)
+                };
+            let root = self.number(h2t::LONG, initial);
             let global = start + usize::from(index);
             let name = format!("h1_ai_state_{global}");
             if self
