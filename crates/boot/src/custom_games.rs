@@ -24,13 +24,17 @@
 //! Custom Game, Content Download. It draws a row with `0x230f36` (stdcall,
 //! item at `[esp+4]`, row at `[item+0x70]`, `ret 8`; past row 3 it sets the
 //! null id) and handles a press in `0x230f92` (`ret 8`, a pointer to the row
-//! at `[esp+8]`, `[[esp+4]+4]` the player index). We grow the count to five
-//! and show the rows in this order: rows 0 to 2 as retail, row 3 ours, row 4
-//! Content Download. Row 3 opens the Live browser with
+//! at `[esp+8]`, `[[esp+4]+4]` the player index). We grow the count and
+//! show the rows in this order: rows 0 and 1 as retail, row 2 Clankermatch
+//! (OptiMatch's press with `crate::clankermatch::active` set,
+//! docs/game/bots.md §8.3), row 3 retail's Custom Game moved down, row 4
+//! the browser, then Co-op Campaign when on, then Content Download. The
+//! browser's row opens the Live browser with
 //! `0x149f1e(1 << player, 0x2531c9)`, the request the System Link path
-//! builds at `0x252951`; row 4 opens the game's one-button dialog with our
-//! text ([`MAPPACK_ERROR`]) instead of retail's leave-for-the-dashboard
-//! confirmation (`0x19b5af`, error `0xa3`).
+//! builds at `0x252951`; Content Download opens the Mods screen or the
+//! game's one-button dialog with our text ([`MAPPACK_ERROR`]) instead of
+//! retail's leave-for-the-dashboard confirmation (`0x19b5af`, error
+//! `0xa3`).
 //!
 //! **Back.** The browser's back press (`0x2536a6`) always opens the System
 //! Link screen (`0x252433`), its LAN parent. While a Live-mode browser
@@ -71,14 +75,25 @@ use crate::setting_defs::{
 /// The Xbox Live menu's list name and retail row count.
 pub const LIST_NAME: u32 = 0x0045_8c80;
 pub const VANILLA_ROWS: u32 = 4;
-/// Our rows, Custom Game Browser then Co-op Campaign
-/// (docs/live/live-coop.md), directly above Content Download, and where
-/// Content Download moves to (it is retail row 3). With the co-op row off
-/// (`H2_NO_COOP_ROW=1`) Content Download is row 4.
-pub const ROW: i16 = 3;
-pub const COOP_ROW: i16 = 4;
-pub const DOWNLOAD_ROW: i16 = 5;
+/// Clankermatch (docs/game/bots.md §8.3), right after OptiMatch; retail's
+/// Custom Game one row down from its retail row 2; then our rows, Custom
+/// Game Browser and Co-op Campaign (docs/live/live-coop.md), directly
+/// above Content Download, and where Content Download moves to (it is
+/// retail row 3). With the co-op row off (`H2_NO_COOP_ROW=1`) Content
+/// Download is row 5.
+pub const CLANKERMATCH_ROW: i16 = 2;
+pub const CUSTOM_GAME_ROW: i16 = 3;
+pub const ROW: i16 = 4;
+pub const COOP_ROW: i16 = 5;
+pub const DOWNLOAD_ROW: i16 = 6;
 const RETAIL_DOWNLOAD_ROW: i16 = 3;
+/// Retail row 1, OptiMatch (`0x231025`: the playlist screen's loader
+/// `0x230c8d` through `0x149f1e`). The Clankermatch row runs it with
+/// `crate::clankermatch::active` set.
+pub const RETAIL_OPTIMATCH_ROW: i16 = 1;
+/// The text `0x230f36` gives retail row 2, Custom Game, so the moved row
+/// keeps the player's language.
+pub const CUSTOM_GAME_TEXT_ID: u32 = 0x0b00_0421;
 /// Retail row 2, Custom Game (`0x231001`: `0x199e2e(1)`, a Live squad
 /// session `0x59890(2, 0, 0)`, then the lobby mode `0x199a03(2)`). The
 /// Co-op Campaign row runs it with the mode turned to co-op.
@@ -113,8 +128,11 @@ pub const LIVE_MENU_LOADER: u32 = 0x0023_10b7;
 const REQUEST_BACK: u16 = 7;
 const REQUEST_LOADER: u32 = 0x1c;
 /// The row the Live menu puts its cursor on when built (`0x231170` reads
-/// it when 0 to 3; the retail press stores rows 0 to 2).
+/// it when 0 to 3, `cmp eax,4; jge` at `0x0023119e`; the retail press
+/// stores rows 0 to 2).
 const LAST_ROW: u32 = 0x0051_0a18;
+/// The rows `0x231170` restores the cursor to.
+pub const RESTORED_ROWS: i16 = 4;
 /// Our row's label. It fits: the list skin's text rectangle is 190 units
 /// wide, and the label renders 136 wide in conduit-12 (180 in conduit-16).
 pub const TEXT_ID: u32 = ID_BASE + 0x32;
@@ -133,6 +151,13 @@ pub const COOP_HELP: &str =
 /// (`crate::mods_screen`), in place of retail's on its pane.
 pub const MODS_HELP_ID: u32 = ID_BASE + 0x38;
 pub const MODS_HELP: &str = "Download maps other players made and shared on your Live server.";
+/// The Clankermatch row's label and help (docs/game/bots.md §8.1). It
+/// renders narrower than "Custom Game Browser".
+pub const CLANKERMATCH_TEXT_ID: u32 = ID_BASE + 0x39;
+pub const CLANKERMATCH_TEXT: &str = "Clankermatch";
+pub const CLANKERMATCH_HELP_ID: u32 = ID_BASE + 0x3a;
+pub const CLANKERMATCH_HELP: &str =
+    "Matchmaking against bots. Pick a playlist; your console hosts.";
 
 /// The screen, its list handler's vtable and its retail item widgets.
 pub const SCREEN_ID: i16 = 0xba;
@@ -209,9 +234,10 @@ pub fn extra_items(coop: bool) -> u32 {
     ours(coop)
 }
 
-/// Our rows on the Live menu: the browser's, and co-op's when on.
+/// Our rows on the Live menu: Clankermatch's, the browser's, and co-op's
+/// when on.
 fn ours(coop: bool) -> u32 {
-    1 + u32::from(coop)
+    2 + u32::from(coop)
 }
 
 /// The Live menu's count when it is built with `count` rows: one more for
@@ -231,8 +257,13 @@ pub fn list_count_with(name: u32, count: u32, coop: bool) -> u32 {
 /// What a row of the grown Xbox Live menu is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Row {
-    /// Quickmatch, OptiMatch or Custom Game: the retail functions handle it.
+    /// Quickmatch or OptiMatch: the retail functions handle it.
     Retail,
+    /// Ours: OptiMatch's path, with the clanker hoppers
+    /// (`crate::clankermatch`).
+    Clankermatch,
+    /// Retail's Custom Game, one row down: the retail press of row 2.
+    CustomGame,
     /// Ours: opens the Live browser.
     Browser,
     /// Ours: opens the co-op screen (`crate::coop_live`).
@@ -248,10 +279,25 @@ pub fn row_kind(row: i16) -> Row {
 
 pub fn row_kind_with(row: i16, coop: bool) -> Row {
     match (row, coop) {
+        (CLANKERMATCH_ROW, _) => Row::Clankermatch,
+        (CUSTOM_GAME_ROW, _) => Row::CustomGame,
         (ROW, _) => Row::Browser,
         (COOP_ROW, true) => Row::Coop,
         (COOP_ROW, false) | (DOWNLOAD_ROW, true) => Row::Download,
         _ => Row::Retail,
+    }
+}
+
+impl Row {
+    /// The retail row whose press this row's press runs (the press record
+    /// rewritten to it): OptiMatch for Clankermatch, retail row 2 for the
+    /// moved Custom Game. `None` for the retail rows themselves and ours.
+    pub fn retail_press(self) -> Option<i16> {
+        match self {
+            Row::Clankermatch => Some(RETAIL_OPTIMATCH_ROW),
+            Row::CustomGame => Some(RETAIL_CUSTOM_GAME_ROW),
+            _ => None,
+        }
     }
 }
 
@@ -270,6 +316,8 @@ pub fn row_text_id(row: i16) -> Option<u32> {
 /// if Content Download opens the Mods screen.
 pub fn row_text_id_with(row: i16, coop: bool, mods: Option<u32>) -> Option<u32> {
     match row_kind_with(row, coop) {
+        Row::Clankermatch => Some(CLANKERMATCH_TEXT_ID),
+        Row::CustomGame => Some(CUSTOM_GAME_TEXT_ID),
         Row::Browser => Some(TEXT_ID),
         Row::Coop => Some(COOP_TEXT_ID),
         Row::Download => Some(mods.unwrap_or(DOWNLOAD_TEXT_ID)),
@@ -290,7 +338,8 @@ pub enum Pane {
 
 /// The pane for `row` when the screen's tag has `panes` panes. The retail
 /// tag has one pane per row (the help text and picture of that row); once
-/// [`extend_tag`] has run, pane 4 is ours.
+/// [`extend_tag`] has run, panes 4 on are ours. The moved Custom Game row
+/// shows its retail pane 2.
 pub fn pane_of(row: i16, panes: u32) -> Pane {
     pane_of_with(row, panes, coop_row_enabled())
 }
@@ -299,18 +348,21 @@ pub fn pane_of_with(row: i16, panes: u32, coop: bool) -> Pane {
     let extended = panes > VANILLA_PANES;
     match (row_kind_with(row, coop), extended) {
         (Row::Retail, _) => Pane::Retail,
+        (Row::CustomGame, _) => Pane::Show(RETAIL_CUSTOM_GAME_ROW),
+        (Row::Clankermatch, true) => Pane::Show(CLANKERMATCH_PANE),
         (Row::Browser, true) => Pane::Show(BROWSER_PANE),
         (Row::Coop, true) if panes > COOP_PANE as u32 => Pane::Show(COOP_PANE),
-        // No pane of ours: keep the one shown rather than show Content
-        // Download's help for our row.
-        (Row::Browser | Row::Coop, _) => Pane::Keep,
+        // No pane of ours: keep the one shown rather than show another
+        // row's help for ours.
+        (Row::Clankermatch | Row::Browser | Row::Coop, _) => Pane::Keep,
         (Row::Download, _) => Pane::Show(RETAIL_DOWNLOAD_ROW),
     }
 }
 
 /// Our panes, after the retail four.
-pub const BROWSER_PANE: i16 = 4;
-pub const COOP_PANE: i16 = 5;
+pub const CLANKERMATCH_PANE: i16 = 4;
+pub const BROWSER_PANE: i16 = 5;
+pub const COOP_PANE: i16 = 6;
 
 // ---- back from the Live browser ----
 //
@@ -341,10 +393,13 @@ pub fn back_loader<M: Gm>(m: &mut M, request: u32) -> Option<u32> {
     .then_some(LIVE_MENU_LOADER)
 }
 
-/// Leave the Live menu's cursor on our row for when the browser goes back
-/// to it (the retail press stores rows 0 to 2 the same way).
-pub fn remember_row<M: Gm>(m: &mut M) -> bool {
-    m.set_u32(LAST_ROW, ROW as u32)
+/// Leave the Live menu's cursor on `row` for when a screen goes back to it
+/// (the retail press stores rows 0 to 2 the same way). Only rows
+/// `0x231170` restores (below [`RESTORED_ROWS`]) are written: the browser's
+/// row 4 is not, and back from the browser leaves the cursor where the
+/// menu puts it. Returns whether it wrote.
+pub fn remember_row<M: Gm>(m: &mut M, row: i16) -> bool {
+    (0..RESTORED_ROWS).contains(&row) && m.set_u32(LAST_ROW, row as u32)
 }
 
 /// The strings the rows and the dialog show, as `(id, text)`.
@@ -354,6 +409,8 @@ pub fn strings() -> Vec<(u32, &'static str)> {
         (HELP_ID, HELP),
         (COOP_TEXT_ID, COOP_TEXT),
         (COOP_HELP_ID, COOP_HELP),
+        (CLANKERMATCH_TEXT_ID, CLANKERMATCH_TEXT),
+        (CLANKERMATCH_HELP_ID, CLANKERMATCH_HELP),
         (MODS_HELP_ID, MODS_HELP),
         (MAPPACK_TITLE_ID, MAPPACK_TITLE),
         (MAPPACK_MESSAGE_ID, MAPPACK_MESSAGE),
@@ -393,8 +450,9 @@ const VANILLA_PANES: u32 = 4;
 pub fn extended_panes(coop: bool) -> u32 {
     VANILLA_PANES + ours(coop)
 }
-/// The panes with only the browser's row (the co-op row off).
-pub const EXTENDED_PANES: u32 = 5;
+/// The panes with Clankermatch's and the browser's rows (the co-op row
+/// off).
+pub const EXTENDED_PANES: u32 = 6;
 /// The pane ours copies: Custom Game's, for its picture.
 const TEMPLATE_PANE: u32 = 2;
 const PANE_SIZE: u32 = 0x4c;
@@ -584,10 +642,10 @@ fn extend_tag_with<M: Gm>(
     let mut next = base + panes * PANE_SIZE;
     for p in 0..panes {
         let ours = p >= VANILLA_PANES;
-        let help_id = if p == COOP_PANE as u32 {
-            COOP_HELP_ID
-        } else {
-            HELP_ID
+        let help_id = match p as i16 {
+            COOP_PANE => COOP_HELP_ID,
+            CLANKERMATCH_PANE => CLANKERMATCH_HELP_ID,
+            _ => HELP_ID,
         };
         let src = old + if ours { TEMPLATE_PANE } else { p } * PANE_SIZE;
         let mut pane = vec![0; PANE_SIZE as usize];
@@ -747,35 +805,73 @@ mod tests {
     }
 
     #[test]
-    fn our_row_sits_directly_above_content_download() {
-        // The co-op row off (no Live): Content Download is row 4, as before
-        // it (crate::coop_live tests the six-row menu).
-        assert_eq!(list_count(LIST_NAME, VANILLA_ROWS), 5);
-        for r in 0..3 {
+    fn clankermatch_follows_optimatch_and_the_rest_move_down() {
+        // The co-op row off (no Live): Quickmatch, OptiMatch, Clankermatch,
+        // Custom Game, Custom Game Browser, Content Download
+        // (crate::coop_live tests the seven-row menu).
+        assert_eq!(list_count(LIST_NAME, VANILLA_ROWS), 6);
+        for r in 0..2 {
             assert_eq!(row_kind(r), Row::Retail, "row {r}");
             assert_eq!(row_text_id(r), None, "row {r} keeps the retail text");
         }
+        assert_eq!(CLANKERMATCH_ROW, RETAIL_OPTIMATCH_ROW + 1);
+        assert_eq!(row_kind(CLANKERMATCH_ROW), Row::Clankermatch);
+        assert_eq!(row_text_id(CLANKERMATCH_ROW), Some(CLANKERMATCH_TEXT_ID));
+        // Custom Game, one down, keeps the game's own (localized) label,
+        // the one `0x230f36` gives its retail row 2.
+        assert_eq!(row_kind(CUSTOM_GAME_ROW), Row::CustomGame);
+        assert_eq!(row_text_id(CUSTOM_GAME_ROW), Some(CUSTOM_GAME_TEXT_ID));
         assert_eq!(row_kind(ROW), Row::Browser);
         assert_eq!(row_kind(COOP_ROW), Row::Download);
-        assert_eq!(COOP_ROW, ROW + 1);
+        assert_eq!([CUSTOM_GAME_ROW, ROW, COOP_ROW, DOWNLOAD_ROW], [3, 4, 5, 6]);
         assert_eq!(row_text_id(ROW), Some(TEXT_ID));
         // Content Download keeps the game's own (localized) label.
         assert_eq!(row_text_id(COOP_ROW), Some(DOWNLOAD_TEXT_ID));
-        assert_eq!(row_kind(5), Row::Retail);
+        assert_eq!(row_kind(6), Row::Retail, "past the last row");
+        assert_eq!(row_kind_with(DOWNLOAD_ROW, true), Row::Download);
+        assert_eq!(row_kind_with(COOP_ROW, true), Row::Coop);
         assert_eq!(TEXT, "Custom Game Browser");
+        assert!(CLANKERMATCH_TEXT.len() < TEXT.len());
+    }
+
+    #[test]
+    fn the_moved_rows_press_their_retail_rows() {
+        // Clankermatch runs OptiMatch's press, the moved Custom Game retail
+        // row 2's; no other row is rewritten.
+        assert_eq!(
+            row_kind(CLANKERMATCH_ROW).retail_press(),
+            Some(RETAIL_OPTIMATCH_ROW)
+        );
+        assert_eq!(
+            row_kind(CUSTOM_GAME_ROW).retail_press(),
+            Some(RETAIL_CUSTOM_GAME_ROW)
+        );
+        for r in [0, 1, ROW, COOP_ROW, DOWNLOAD_ROW] {
+            for coop in [false, true] {
+                assert_eq!(row_kind_with(r, coop).retail_press(), None, "row {r}");
+            }
+        }
     }
 
     #[test]
     fn panes_follow_the_rows() {
-        // Extended tag: our row shows pane 4, Content Download its own pane 3.
-        assert_eq!(pane_of(ROW, EXTENDED_PANES), Pane::Show(4));
+        // Extended tag: Clankermatch shows pane 4, the browser 5, Custom
+        // Game its own retail pane 2, Content Download its own pane 3.
+        assert_eq!(pane_of(CLANKERMATCH_ROW, EXTENDED_PANES), Pane::Show(4));
+        assert_eq!(pane_of(CUSTOM_GAME_ROW, EXTENDED_PANES), Pane::Show(2));
+        assert_eq!(pane_of(ROW, EXTENDED_PANES), Pane::Show(5));
         assert_eq!(pane_of(COOP_ROW, EXTENDED_PANES), Pane::Show(3));
-        for r in 0..3 {
+        for r in 0..2 {
             assert_eq!(pane_of(r, EXTENDED_PANES), Pane::Retail);
             assert_eq!(pane_of(r, VANILLA_PANES), Pane::Retail);
         }
-        // A tag we did not extend has no pane 4: keep the shown one.
+        // With co-op: its pane is 6, Content Download one row down.
+        assert_eq!(pane_of_with(COOP_ROW, 7, true), Pane::Show(6));
+        assert_eq!(pane_of_with(DOWNLOAD_ROW, 7, true), Pane::Show(3));
+        // A tag we did not extend has none of ours: keep the shown one.
         assert_eq!(pane_of(ROW, VANILLA_PANES), Pane::Keep);
+        assert_eq!(pane_of(CLANKERMATCH_ROW, VANILLA_PANES), Pane::Keep);
+        assert_eq!(pane_of(CUSTOM_GAME_ROW, VANILLA_PANES), Pane::Show(2));
         assert_eq!(pane_of(COOP_ROW, VANILLA_PANES), Pane::Show(3));
     }
 
@@ -976,59 +1072,64 @@ mod tests {
         for p in 0..4 {
             assert_eq!(m.u32(text(&m, p, 2) + 0x24), Some(0x0a00_0100 + p));
         }
-        assert_eq!(m.u32(text(&m, 4, 2) + 0x24), Some(HELP_ID));
-        assert_eq!(m.u32(text(&m, 4, 0) + 0x24), Some(0x0800_0001));
-        assert_eq!(m.u32(pane(4) + 0xc), Some(0), "no list on our pane");
+        assert_eq!(m.u32(text(&m, 4, 2) + 0x24), Some(CLANKERMATCH_HELP_ID));
+        assert_eq!(m.u32(text(&m, 5, 2) + 0x24), Some(HELP_ID));
+        for p in 4..6 {
+            assert_eq!(m.u32(text(&m, p, 0) + 0x24), Some(0x0800_0001));
+            assert_eq!(m.u32(pane(p) + 0xc), Some(0), "no list on our pane");
+        }
         // Once done, never again.
         assert_eq!(extend_tag(&mut m, wgit, BASE + TAG_SPACE), Some(false));
         assert_eq!(m.u32(wgit + 0x24), Some(BASE));
     }
 
     #[test]
-    fn with_the_co_op_row_the_tag_gets_a_sixth_pane_with_its_help() {
+    fn with_the_co_op_row_the_tag_gets_a_seventh_pane_with_its_help() {
         let mut m = Fake::default();
         let wgit = live_tag(&mut m, 7);
         assert_eq!(
             extend_tag_in(&mut m, wgit, BASE, TAG_SPACE, true),
             Some(true)
         );
-        assert_eq!(m.u32(wgit + 0x20), Some(6));
+        assert_eq!(m.u32(wgit + 0x20), Some(7));
         assert!(m.0.keys().all(|a| *a < BASE + TAG_SPACE));
         let pane = |p: u32| BASE + p * PANE_SIZE;
         let text = |m: &Fake, p: u32, i: u32| m.u32(pane(p) + 0x20).unwrap() + i * TEXT_SIZE;
-        assert_eq!(m.u32(text(&m, 4, 2) + 0x24), Some(HELP_ID));
-        assert_eq!(m.u32(text(&m, 5, 2) + 0x24), Some(COOP_HELP_ID));
-        for p in 0..6 {
+        assert_eq!(m.u32(text(&m, 4, 2) + 0x24), Some(CLANKERMATCH_HELP_ID));
+        assert_eq!(m.u32(text(&m, 5, 2) + 0x24), Some(HELP_ID));
+        assert_eq!(m.u32(text(&m, 6, 2) + 0x24), Some(COOP_HELP_ID));
+        for p in 0..7 {
             // The hint block stays where retail has it, ours included.
             assert_eq!(i16_at(&m, text(&m, p, 0) + 0x1c), -60, "pane {p}");
             assert_eq!(i16_at(&m, text(&m, p, 0) + 0x20), -80);
         }
-        for p in 4..6 {
-            // Both of ours are the Custom Game pane.
+        for p in 4..7 {
+            // All of ours are the Custom Game pane.
             assert_eq!(m.u32(text(&m, p, 0) + 0x24), Some(0x0800_0001));
             assert_eq!(m.u32(pane(p) + 0xc), Some(0), "no list on our pane");
         }
-        // The list's top stays; it shows all six (none scrolls).
+        // The list's top stays; it shows all seven (none scrolls).
         let list = m.u32(pane(0) + 0x10).unwrap();
         assert_eq!(i16_at(&m, list + 0xa), ANCHOR.1);
         assert_eq!(i16_at(&m, list + 6), 7);
     }
 
     #[test]
-    fn six_rows_fit_with_the_retail_gaps_and_no_scroll() {
+    fn seven_rows_fit_with_the_retail_gaps_and_no_scroll() {
         assert_eq!(pitch_for(4), ITEM_HEIGHT, "retail: as it was");
         assert_eq!(pitch_for(5), 36);
         assert_eq!(pitch_for(6), 29);
-        assert_eq!(extra_items(false), 1);
-        assert_eq!(extra_items(true), 2, "a child item per row: no scroll");
-        assert_eq!(VANILLA_ITEMS + extra_items(true), 6);
+        assert_eq!(pitch_for(7), 24);
+        assert_eq!(extra_items(false), 2);
+        assert_eq!(extra_items(true), 3, "a child item per row: no scroll");
+        assert_eq!(VANILLA_ITEMS + extra_items(true), 7);
         // The retail tag: the list anchored at 95, `hint_top` at -70 (21
         // under the fourth row's bottom). Every row ends above it, the
         // first row's top where retail's is, and the text (20 units) fits
         // in a row.
         let (anchor, hint) = (95i16, -70i16);
         assert_eq!(hint, anchor - 3 * ITEM_HEIGHT + ITEM_BOTTOM - RETAIL_GAP);
-        for rows in [5u32, 6] {
+        for rows in [5u32, 6, 7] {
             let p = pitch_for(rows);
             let last_bottom = anchor - (rows as i16 - 1) * p + ITEM_BOTTOM;
             assert!(
@@ -1037,7 +1138,7 @@ mod tests {
             );
             assert!(p >= MIN_PITCH && MIN_PITCH > 20);
         }
-        // The tag: the list shows six; its anchor and the hints stay.
+        // The tag: the list shows seven; its anchor and the hints stay.
         let mut m = Fake::default();
         let wgit = live_tag(&mut m, 4);
         assert_eq!(
@@ -1045,7 +1146,7 @@ mod tests {
             Some(true)
         );
         let list = m.u32(BASE + 0x10).unwrap();
-        assert_eq!(i16_at(&m, list + 6), 6, "the list shows six");
+        assert_eq!(i16_at(&m, list + 6), 7, "the list shows seven");
         assert_eq!(i16_at(&m, list + 0xa), ANCHOR.1);
         let hint = m.u32(BASE + 0x20).unwrap();
         assert_eq!(i16_at(&m, hint + 0x1c), -60);
@@ -1141,12 +1242,12 @@ mod tests {
     }
 
     #[test]
-    fn a_list_showing_fewer_than_five_is_raised_to_five() {
+    fn a_list_showing_fewer_than_six_is_raised_to_six() {
         let mut m = Fake::default();
         let wgit = live_tag(&mut m, 4);
         assert_eq!(extend_tag(&mut m, wgit, BASE), Some(true));
         let list = m.u32(BASE + 0x10).unwrap();
-        assert_eq!(i16_at(&m, list + 6), 5);
+        assert_eq!(i16_at(&m, list + 6), 6);
     }
 
     #[test]
@@ -1175,9 +1276,10 @@ mod tests {
     }
 
     #[test]
-    fn only_the_live_menu_grows_by_one() {
-        assert_eq!(list_count(LIST_NAME, 4), 5);
-        assert_eq!(list_count(LIST_NAME, 5), 5, "not twice");
+    fn only_the_live_menu_grows_by_our_rows() {
+        assert_eq!(list_count(LIST_NAME, 4), 6);
+        assert_eq!(list_count_with(LIST_NAME, 4, true), 7);
+        assert_eq!(list_count(LIST_NAME, 6), 6, "not twice");
         assert_eq!(list_count(LIST_NAME, 3), 3, "not another size");
         assert_eq!(list_count(crate::speaker_row::LIST_NAME, 4), 4);
         assert!(is_ours(TEXT_ID));
@@ -1259,15 +1361,20 @@ mod tests {
     }
 
     #[test]
-    fn our_press_leaves_the_cursor_on_our_row() {
+    fn a_press_leaves_the_cursor_on_its_row_where_the_menu_restores_it() {
         let mut m = Fake::default();
         m.set_u32(LAST_ROW, 1);
-        assert!(remember_row(&mut m));
-        // `0x231170` restores rows 0 to 3, so ours is restored.
-        let row = m.u32(LAST_ROW).unwrap() as i32;
-        assert_eq!(row, ROW as i32);
-        assert!((0..4).contains(&row));
-        assert_eq!(row_kind(row as i16), Row::Browser);
+        // `0x231170` restores rows 0 to 3: Clankermatch and the moved
+        // Custom Game are (their retail presses stored OptiMatch's 1 and
+        // Custom Game's old 2).
+        for row in [CLANKERMATCH_ROW, CUSTOM_GAME_ROW] {
+            assert!(remember_row(&mut m, row));
+            assert_eq!(m.u32(LAST_ROW), Some(row as u32));
+        }
+        // The browser's row 4 is past what it restores: left alone.
+        assert!(!remember_row(&mut m, ROW));
+        assert!(!remember_row(&mut m, -1));
+        assert_eq!(m.u32(LAST_ROW), Some(CUSTOM_GAME_ROW as u32));
     }
 
     #[test]

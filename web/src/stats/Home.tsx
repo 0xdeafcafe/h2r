@@ -331,6 +331,7 @@ function GameTypes(props: { sum: StatsSummary }) {
   const t = () => props.sum.totals;
   const rows = createMemo(() => [
     { name: "Matchmaking", n: t().matchmaking },
+    { name: "Clankermatch", n: t().clankermatch },
     { name: "Custom Games", n: t().custom },
     { name: "Campaign (solo)", n: Math.max(0, t().campaign - t().coop) },
     { name: "Campaign Co-op", n: t().coop },

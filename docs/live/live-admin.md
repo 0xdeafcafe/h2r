@@ -210,9 +210,10 @@ endpoints serve the built-in lineup.
 h2 live hopper defaults --out FILE [--raw] [--force]
 ```
 
-writes that built-in lineup (eight playlists on retail maps, built from
-the format alone) as a download envelope, or with `--raw` as the raw image
-the game caches, to edit offline or import elsewhere.
+writes that built-in lineup (eight playlists and three Clankermatch ones
+on retail maps, built from the format alone) as a download envelope, or
+with `--raw` as the raw image the game caches, to edit offline or import
+elsewhere.
 
 ## 3. The web admin area
 

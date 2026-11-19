@@ -65,10 +65,14 @@ struct Record {
     session: LocalSession,
     key: [u8; 16],
 }
+/// A guest task. `HeldEmpty` is a clanker hopper's search
+/// (docs/game/bots.md §8.4): no sessions, answered at `until` (running till
+/// then).
 enum Task {
     Session { id: [u8; 8], key: [u8; 16] },
     Done,
     EmptySearch,
+    HeldEmpty { until: std::time::Instant },
     Search { array: u32, count: u32 },
     Pending { request: Pending, intent: Intent },
     Failed(u32),
@@ -93,6 +97,8 @@ pub(crate) struct Context<'a> {
     pub users: &'a [u64; 4],
     pub service: Option<&'a Service>,
     pub session: Option<&'a Session>,
+    /// The server's clanker hoppers: their searches find nothing.
+    pub clankers: &'a live_proto::hopper::clankers::ClankerHoppers,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Op {
@@ -158,6 +164,8 @@ pub(crate) struct Sessions {
     said_search: Option<(String, std::time::Instant)>,
     /// The players each hosted session was told of ([`Sessions::set_players`]).
     reported: BTreeMap<[u8; 8], BTreeSet<live_proto::Xuid>>,
+    /// Clanker hoppers' search runs ([`crate::clankermatch::Hold`]).
+    clanker_hold: crate::clankermatch::Hold,
 }
 /// What a hosted session must be told to hold `want` when it was told of
 /// `had`: (joined, left). Zero and host-made bot xuids are never reported:
@@ -507,6 +515,10 @@ impl Sessions {
         let Some(task) = self.tasks.remove(&h) else {
             return Ok(None);
         };
+        let task = match task {
+            Task::HeldEmpty { until } if std::time::Instant::now() >= until => Task::EmptySearch,
+            task => task,
+        };
         let task = if let Task::Pending { request, intent } = task {
             match request.take() {
                 None => Task::Pending { request, intent },
@@ -530,7 +542,7 @@ impl Sessions {
             task
         };
         let status = match task {
-            Task::Pending { .. } => 0,
+            Task::Pending { .. } | Task::HeldEmpty { .. } => 0,
             Task::Failed(e) => e,
             _ => TASK_SUCCESS,
         };
@@ -567,6 +579,7 @@ impl Sessions {
             users,
             service,
             session: connection,
+            clankers: ctx_clankers,
         } = ctx;
         if matches!(op, Op::Info | Op::Results) {
             let status = self
@@ -789,6 +802,35 @@ impl Sessions {
                         a[0], a[1]
                     );
                 }
+                // A clanker hopper (docs/game/bots.md §8.4): nobody to
+                // find. The run's searches answer with no sessions once its
+                // delay is over, and the game hosts.
+                let clanker = (a[0] == live_proto::optimatch::PROCEDURE)
+                    .then(|| {
+                        let values: Vec<_> = params.iter().map(|v| v.value.clone()).collect();
+                        live_proto::optimatch::Query::from_params(&values)
+                    })
+                    .flatten()
+                    .and_then(|q| crate::clankermatch::clanker_search(ctx_clankers, q.hopper));
+                if let Some(hopper) = clanker {
+                    let now = std::time::Instant::now();
+                    let until = self.clanker_hold.answer_at(hopper, now, || {
+                        let r = crate::network::random(4)
+                            .ok()
+                            .and_then(|b| b.get(..4)?.try_into().ok())
+                            .map_or(0, u32::from_le_bytes);
+                        let d = crate::clankermatch::search_delay(r);
+                        eprintln!(
+                            "live: clankermatch: searching clanker playlist {hopper}: no one to find; the console hosts in {:.1} s",
+                            d.as_secs_f32()
+                        );
+                        d
+                    });
+                    let h = storage.alloc(m, 8).ok_or(Failure::Hr(OUT_OF_MEMORY))?;
+                    m.set_u32(a[6], h)?;
+                    self.tasks.insert(h, Task::HeldEmpty { until });
+                    return Ok(0);
+                }
                 if let (Some(service), Some(connection)) = (service, connection) {
                     // Procedure 1 is the retail stored procedure: anonymous
                     // parameters are positional, not attribute IDs. Its return
@@ -875,7 +917,7 @@ impl Sessions {
             }
             Op::Results => {
                 let (array, count) = match self.tasks.get(&a[0]) {
-                    Some(Task::EmptySearch) => (0, 0),
+                    Some(Task::EmptySearch | Task::HeldEmpty { .. }) => (0, 0),
                     Some(Task::Search { array, count }) => (*array, *count),
                     _ => return hr(INVALID_ARGUMENT),
                 };

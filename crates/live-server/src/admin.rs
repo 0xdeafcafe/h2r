@@ -30,8 +30,10 @@ use axum::extract::rejection::BytesRejection;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use live_proto::hopper::clankers::ClankerHoppers;
 use live_proto::hopper::{
-    HALO_2_HOPPER_FILE, HOPPERS, Hopper, HopperError, HopperFile, HopperText, MAX_RECORDS, Record,
+    Descriptor, HALO_2_HOPPER_FILE, HOPPERS, Hopper, HopperError, HopperFile, HopperText,
+    MAX_RECORDS, Record,
 };
 use live_proto::motd::Motd;
 use live_proto::sign;
@@ -748,6 +750,35 @@ pub async fn get_hopper(
     Ok(json(StatusCode::OK, &hoppers_doc(&live, &file)?))
 }
 
+/// `GET /v1/hoppers/clankers`: which of Halo 2's served hoppers are
+/// clanker hoppers (docs/game/bots.md §9.4 item 1), by descriptor index.
+/// The marks are the default lineup's
+/// ([`live_proto::hopper::defaults::Playlist::clankers`]), kept where the
+/// file served now (the published one, or the built-in lineup) has the same
+/// playlist id at that index. No file, or one that does not parse, has
+/// none. Read like the pins; the file is read as ranking reads it
+/// ([`Live::hoppers`]).
+pub async fn get_clankers(
+    State(live): State<Arc<Live>>,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
+    live.authorize_read(bearer(&headers))?;
+    let file = live.hoppers().await;
+    Ok(json(StatusCode::OK, &clanker_hoppers(file.as_ref())))
+}
+
+/// The clanker marks of a served hopper file ([`get_clankers`]); none
+/// without one.
+pub fn clanker_hoppers(file: Option<&HopperFile>) -> ClankerHoppers {
+    let Some(file) = file else {
+        return ClankerHoppers::default();
+    };
+    let served: Vec<Descriptor> = (0..HOPPERS)
+        .filter_map(|i| file.descriptor(i).ok())
+        .collect();
+    ClankerHoppers::of_defaults(&served)
+}
+
 /// `PUT /v1/titles/{title}/hopper`: admin-only. Applies the patch to the
 /// published file (or the built-in lineup, for Halo 2 with none), keeping
 /// every byte the patch does not name, and publishes the result.
@@ -1337,5 +1368,31 @@ mod tests {
 
         drop(live);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clanker_marks_follow_the_served_file() {
+        // The built-in lineup: its three clanker playlists, by index.
+        let defaults = HopperFile::default_set();
+        let marks = clanker_hoppers(Some(&defaults));
+        let ids: Vec<(u32, u32)> = marks
+            .hoppers
+            .iter()
+            .map(|h| (h.hopper_id, h.playlist_id))
+            .collect();
+        assert_eq!(ids, [(8, 9), (9, 10), (10, 11)]);
+        // No file: none; nor a blank one.
+        assert_eq!(clanker_hoppers(None), ClankerHoppers::default());
+        assert_eq!(
+            clanker_hoppers(Some(&HopperFile::blank())),
+            ClankerHoppers::default()
+        );
+        // A file that moved a clanker playlist's id loses that mark.
+        let mut file = HopperFile::default_set();
+        let mut d = file.descriptor(9).unwrap();
+        d.playlist_id = 40;
+        file.set_descriptor(9, &d).unwrap();
+        let marks = clanker_hoppers(Some(&file));
+        assert!(marks.contains(8) && !marks.contains(9) && marks.contains(10));
     }
 }

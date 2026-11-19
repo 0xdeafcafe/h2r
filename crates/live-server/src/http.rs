@@ -208,6 +208,7 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
             axum::routing::put(crate::content::put_uploads),
         )
         .route("/v1/hoppers/pins", get(crate::content::get_pins))
+        .route("/v1/hoppers/clankers", get(crate::admin::get_clankers))
         .route(
             "/v1/hoppers/{hopper}/pins",
             axum::routing::put(crate::content::put_pins),

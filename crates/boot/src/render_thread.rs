@@ -111,6 +111,11 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "*",
         "the Game Setup list's row, a UI event on the game thread",
     ),
+    (
+        "clankermatch",
+        "HOPPER_LISTED",
+        "the OptiMatch playlist list's rows, a UI event on the game thread",
+    ),
     // Local bots: the game thread's frame, sound and players screen. Around
     // RENDER_FRAME, the pipeline's snapshot is taken with the bot views
     // hidden; the render thread never meets these points.

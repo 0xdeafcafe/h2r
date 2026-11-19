@@ -132,12 +132,13 @@ fn main_menu_to_the_lobby_to_start() {
     let p = presses(&mut d, 9200, 11000);
     assert_eq!(p.len(), 1, "{p:?}");
     assert!(p[0].starts_with("a the players' screen"), "{p:?}");
-    // The Live menu restored on row 0: two downs and A on Custom Game.
+    // The Live menu restored on row 0: three downs (past Clankermatch)
+    // and A on Custom Game.
     d.line(11100, "ui: screen 0xba (window 5, slot 4), live menu row 0");
     let p = presses(&mut d, 11200, 16000);
-    assert_eq!(p.len(), 3, "{p:?}");
+    assert_eq!(p.len(), 4, "{p:?}");
     assert!(
-        p[0].starts_with("down toward Custom Game (row 2, from 0)"),
+        p[0].starts_with("down toward Custom Game (row 3, from 0)"),
         "{p:?}"
     );
     assert!(p[2].starts_with("a Custom Game"), "{p:?}");
@@ -192,7 +193,7 @@ fn split_screen_is_backed_out_of_and_said() {
 fn a_lobby_never_advertised_gives_up_saying_so() {
     let mut d = at_main();
     presses(&mut d, 2500, 5000);
-    d.line(5100, "ui: screen 0xba (window 5, slot 4), live menu row 2");
+    d.line(5100, "ui: screen 0xba (window 5, slot 4), live menu row 3");
     assert_eq!(presses(&mut d, 5200, 8000), ["a Custom Game"]);
     d.line(8100, LOBBY);
     d.line(8200, "coop-live: lobby mode 2");
@@ -352,7 +353,7 @@ fn the_live_menu_cursor_left_lower_goes_up() {
     let p = presses(&mut d, 5200, 12000);
     assert_eq!(p.len(), 3, "{p:?}");
     assert!(
-        p[0].starts_with("up toward Custom Game (row 2, from 4)"),
+        p[0].starts_with("up toward Custom Game (row 3, from 4)"),
         "{p:?}"
     );
 }
@@ -370,7 +371,7 @@ fn the_press_line_names_the_screen_and_rows() {
     let p = d.poll(6700).unwrap();
     assert_eq!(
         d.press_line(&p),
-        "bots-drive: press down on screen 0xba row 0 (toward Custom Game (row 2, from 0))"
+        "bots-drive: press down on screen 0xba row 0 (toward Custom Game (row 3, from 0))"
     );
 }
 
@@ -378,7 +379,7 @@ fn the_press_line_names_the_screen_and_rows() {
 fn the_lobby_starts_anyway_after_its_wait() {
     let mut d = at_main();
     presses(&mut d, 2500, 5000);
-    d.line(5100, "ui: screen 0xba (window 5, slot 4), live menu row 2");
+    d.line(5100, "ui: screen 0xba (window 5, slot 4), live menu row 3");
     presses(&mut d, 5200, 8000);
     d.line(8050, "coop-live: lobby mode 2");
     d.line(8100, ADVERTISED);
@@ -400,7 +401,7 @@ fn the_lobby_starts_anyway_after_its_wait() {
 fn start_again_then_stuck() {
     let mut d = at_main();
     presses(&mut d, 2500, 5000);
-    d.line(5100, "ui: screen 0xba (window 5, slot 4), live menu row 2");
+    d.line(5100, "ui: screen 0xba (window 5, slot 4), live menu row 3");
     presses(&mut d, 5200, 8000);
     d.line(8050, "coop-live: lobby mode 2");
     d.line(8100, ADVERTISED);
@@ -436,6 +437,8 @@ fn no_main_menu_gives_up_after_its_presses() {
 const LIVE_ROW_0: &str = "ui: screen none (slot 4: window 5 active 0x82539a80 pending 0x0 list [0xf/0xe2780000]; slot 0: no window)";
 const LIVE_ROW_1: &str = "ui: screen none (slot 4: window 5 active 0x82539a80 pending 0x0 list [0xf/0xe2790001]; slot 0: no window)";
 const LIVE_ROW_2: &str = "ui: screen none (slot 4: window 5 active 0x82539a80 pending 0x0 list [0xf/0xe27a0002]; slot 0: no window)";
+/// Custom Game's row since Clankermatch came in after OptiMatch.
+const LIVE_ROW_3: &str = "ui: screen none (slot 4: window 5 active 0x82539a80 pending 0x0 list [0xf/0xe27b0003]; slot 0: no window)";
 const LIVE_NO_ROW: &str = "ui: screen none (slot 4: window 5 active 0x82539a80 pending 0x0 list [0xf/0x4588b0]; slot 0: no window)";
 /// What A on its row 1 (OptiMatch) opened: mask 0x1 like the main menu.
 const OPTIMATCH: &str = "ui: screen none (slot 4: window 5 active 0x82540730 pending 0x0 list [0x1/0xec700000]; slot 0: no window)";
@@ -474,17 +477,22 @@ fn the_live_menu_is_not_the_main_menu() {
     let mut d = to_live_menu();
     d.line(6100, LIVE_ROW_0);
     let p = presses(&mut d, 6200, 7600);
-    assert_eq!(p, ["down toward Custom Game (row 2, from 0)"]);
+    assert_eq!(p, ["down toward Custom Game (row 3, from 0)"]);
     d.line(7700, LIVE_ROW_1);
     assert_eq!(
         presses(&mut d, 7800, 9200),
-        ["down toward Custom Game (row 2, from 1)"]
+        ["down toward Custom Game (row 3, from 1)"]
     );
     d.line(9300, LIVE_ROW_2);
-    let p = d.poll(10_800).unwrap();
+    assert_eq!(
+        presses(&mut d, 9400, 10_800),
+        ["down toward Custom Game (row 3, from 2)"]
+    );
+    d.line(10_900, LIVE_ROW_3);
+    let p = d.poll(12_400).unwrap();
     assert_eq!(
         d.press_line(&p),
-        "bots-drive: press a on screen none row 2 (Custom Game)"
+        "bots-drive: press a on screen none row 3 (Custom Game)"
     );
 }
 
@@ -510,7 +518,7 @@ fn the_live_menu_with_no_row_yet_gets_down_to_show_one() {
         presses(&mut d, 6200, 7600),
         ["down the Xbox Live menu shows no row yet: DOWN"]
     );
-    d.line(7700, LIVE_ROW_2);
+    d.line(7700, LIVE_ROW_3);
     assert_eq!(presses(&mut d, 7800, 9200), ["a Custom Game"]);
 }
 
@@ -519,7 +527,7 @@ fn an_optimatch_lobby_advertising_is_not_hosting() {
     // Run 3 again: lobby mode 3 and a Live session advertised; not the
     // custom game lobby, so B back to the Live menu and Custom Game again.
     let mut d = to_live_menu();
-    d.line(6100, LIVE_ROW_2);
+    d.line(6100, LIVE_ROW_3);
     assert_eq!(presses(&mut d, 6200, 7600), ["a Custom Game"]);
     d.line(7700, OPTIMATCH);
     d.line(7800, "coop-live: lobby mode 3");
@@ -532,7 +540,7 @@ fn an_optimatch_lobby_advertising_is_not_hosting() {
     let p = presses(&mut d, 8000, 7600 + STEP_MS + 500);
     assert_eq!(p, ["b a lobby in mode 3, not Custom Game's: back"]);
     d.line(23_000, "live: session 0123456789abcdef deleted");
-    d.line(23_000, LIVE_ROW_2);
+    d.line(23_000, LIVE_ROW_3);
     let p = presses(&mut d, 23_100, 23_000 + STEP_MS + 2000);
     assert_eq!(p, ["a Custom Game"]);
     // This time the custom game lobby.
@@ -553,6 +561,7 @@ fn an_optimatch_lobby_advertising_is_not_hosting() {
 const SOLO_LIVE_ROW_0: &str = "ui: screen none (slot 4: window 5 active 0x82539a80 pending 0x0 list [0x1/0xe2780000]; slot 0: no window)";
 const SOLO_LIVE_ROW_1: &str = "ui: screen none (slot 4: window 5 active 0x82539a80 pending 0x0 list [0x1/0xe2790001]; slot 0: no window)";
 const SOLO_LIVE_ROW_2: &str = "ui: screen none (slot 4: window 5 active 0x82539a80 pending 0x0 list [0x1/0xe27a0002]; slot 0: no window)";
+const SOLO_LIVE_ROW_3: &str = "ui: screen none (slot 4: window 5 active 0x82539a80 pending 0x0 list [0x1/0xe27b0003]; slot 0: no window)";
 
 #[test]
 fn the_live_menu_alone_is_learnt_after_the_players_screen() {
@@ -561,19 +570,24 @@ fn the_live_menu_alone_is_learnt_after_the_players_screen() {
     assert!(d.live_menu() && !d.at_main());
     assert_eq!(
         presses(&mut d, 6200, 7600),
-        ["down toward Custom Game (row 2, from 0)"]
+        ["down toward Custom Game (row 3, from 0)"]
     );
     d.line(7700, SOLO_LIVE_ROW_1);
     assert_eq!(
         presses(&mut d, 7800, 9200),
-        ["down toward Custom Game (row 2, from 1)"]
+        ["down toward Custom Game (row 3, from 1)"]
     );
     d.line(9300, SOLO_LIVE_ROW_2);
-    assert_eq!(presses(&mut d, 9400, 10_800), ["a Custom Game"]);
+    assert_eq!(
+        presses(&mut d, 9400, 10_800),
+        ["down toward Custom Game (row 3, from 2)"]
+    );
+    d.line(10_900, SOLO_LIVE_ROW_3);
+    assert_eq!(presses(&mut d, 11_000, 12_400), ["a Custom Game"]);
     // The lobby on the same address, in Custom Game's lobby mode, is not
     // the Live menu.
-    d.line(11_000, "coop-live: lobby mode 2");
-    d.line(11_100, LOBBY);
+    d.line(12_500, "coop-live: lobby mode 2");
+    d.line(12_600, LOBBY);
     assert!(!d.live_menu());
 }
 

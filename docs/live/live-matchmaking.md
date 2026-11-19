@@ -213,8 +213,9 @@ What matters for matchmaking:
   parameters (0x15cb8-byte blocks). Unknown record ids mark the slot as
   error, so **the server may only advertise playlists the tag knows**.
 - The playlist UI (`0x00065530`) iterates the descriptors filtering types
-  {2, 4, 5}; the matchmaking start flow (`0x00231066`) reads the selected
-  hopper's block, and the session state machine (`0x00192eb0`, states
+  {2, 4, 5}; Quickmatch's start (`0x00231066`, the profile's last
+  hopper) and the playlist screen's press (`0x002b2149` → `0x002b2181`,
+  docs/game/bots.md §8.3) read the selected hopper's block, and the session state machine (`0x00192eb0`, states
   6/7/8) consumes it during setup. The hopper therefore decides the search
   parameters, party size limits (descriptor range fields) and the
   matchmaking timeouts — the defaults carry 30/45/120/150/300 s constants
@@ -571,7 +572,8 @@ reads it.
 | entry `+0x248` | i32 | weight: session setup picks an entry at random by weight, each clamped to 1..=1000 (0 when the map is unknown) | `0x00192f12` | confirmed |
 | entry `+0x24c` | 0x130 B | game variant, the saved-variant record ([variants.md](../editor/variants.md)); copied out whole with the map id for the entry picked | `0x00192fc0` | confirmed |
 
-Matchmaking start (`0x00231066`) and the custom-game list
+Quickmatch's start (`0x00231066`), the playlist screen's press
+(`0x002b2181`) and the custom-game list
 (`0x002b20a4`, `0x002b2198`) read a block only to see that it loads.
 
 The game's default entries build each variant from a stock record per
@@ -605,8 +607,9 @@ is separate and goes to stats; an entry's "record id" is a map id. So
 
 ### 6.8 The default set
 
-`HopperFile::default_set()` builds a complete file from nothing: eight
-playlists in hoppers 0..7, playlist ids 1..8, status 0, the game's skill
+`HopperFile::default_set()` builds a complete file from nothing: eleven
+playlists in hoppers 0..10, playlist ids 1..11 (eight human playlists, then
+three clanker ones), status 0, the game's skill
 ceiling and wait/timeout values, the start-wait table computed as the game
 computes it, only retail maps (map pack maps are left out: an unknown map
 errors the whole hopper and the format has no "only when installed" flag),
@@ -622,6 +625,36 @@ and variants from the stock records.
 | 5 | Team Objective | 4 | 2 x 3..4, parties 1..4 (3..4 kept as a team) | Classic CTF, Assault, Territories, Team King, Teamball |
 | 6 | Free for All | 1 | 2..8, parties welcome | Rumble Slayer, Oddball, King of the Hill |
 | 7 | Unranked Teams | 3 | 2 x 2..4, uneven allowed | Team Slayer, Classic CTF, Team King, Teamball |
+| 8 | Clanker Slayer | 1 | 2..8, the rest bots | Rumble Slayer |
+| 9 | Clanker Teams | 3 | 2 x 1..4, uneven allowed, the rest bots | Team Slayer |
+| 10 | Clanker Doubles | 3 | 2 x 1..2, uneven allowed, the rest bots | Team Slayer |
+
+Hoppers 8..10 are **clanker hoppers** (Clankermatch, docs/game/bots.md
+§8): one human or a party, and bots the host runs in every other seat.
+Titles fit the descriptor's 16-byte title slot (15 bytes and a NUL), so
+"Clanker Doubles" stands for 2 x 2. They are unranked types because the
+ranked types' rules are for filling a game with people (ranked teams need
+two a team and bound parties; ranked free for all is solo); a lone human
+with bots needs a team of one and uneven teams while the bots join. The
+server still ranks a Clankermatch game from its record (below). The mark
+is not a game field: it is `Playlist::clankers` in the server's source
+(`Clankers { ranks_as }`, bots.md §9.4 item 1), all three with their own
+standing (`ranks_as` unset).
+
+`GET /v1/hoppers/clankers` (read like `/v1/hoppers/pins`) serves the marks
+as `ClankerHoppers` (`crates/live-proto/src/hopper/clankers.rs`):
+`{"hoppers": [{"hopper_id", "playlist_id", "players", "teams",
+"ranks_as"?}]}`, by descriptor index, for the hopper file served now. A
+published file keeps a mark only where it has the default's playlist id
+at that index; with no file, or one that does not parse, the list is
+empty. live-hle reads it for the Clankermatch row's filter, the search
+and the lobby fill. A game recorded with `kind: "clankermatch"` (and the
+hopper's `playlist_id`) is its own kind in the read model and the stats
+totals (`clankermatch`, apart from `matchmaking`), counts in its playlist
+and every career number, and ranks like a ranked matchmaking game
+(§8.4, the same arbitration round) in its clanker hopper's playlist, or
+`ranks_as`'s; the game's stats read (§8.3) answers a clanker hopper's
+playlist id with that standing.
 
 Tests check it against the validator port, the per-entry checks
 (`HopperFile::problems`: retail map ids, weights, the variant clean-up),

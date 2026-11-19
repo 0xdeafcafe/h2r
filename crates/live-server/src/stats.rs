@@ -58,6 +58,11 @@ pub struct Totals {
     pub multiplayer: u64,
     pub campaign: u64,
     pub matchmaking: u64,
+    /// Matchmade games against bots (docs/game/bots.md §8.2 item 1): their
+    /// own kind, so counted here and not in `matchmaking`; they still
+    /// count in `games`, `multiplayer`, the playlists and every per-player
+    /// number, like human games.
+    pub clankermatch: u64,
     pub custom: u64,
     /// Campaign games with more than one player, or played online.
     pub coop: u64,
@@ -80,6 +85,7 @@ impl Totals {
         self.multiplayer += o.multiplayer;
         self.campaign += o.campaign;
         self.matchmaking += o.matchmaking;
+        self.clankermatch += o.clankermatch;
         self.custom += o.custom;
         self.coop += o.coop;
         self.kills += o.kills;
@@ -354,7 +360,7 @@ impl Inner {
             .iter()
             .filter_map(|p| Some((account(p)?, p.name.clone())))
             .collect();
-        let playlist = (kind == "matchmaking")
+        let playlist = game::is_matchmade(&kind)
             .then(|| ng.playlist.clone())
             .flatten();
         let skulls = ng.skulls.clone().unwrap_or_default();
@@ -370,6 +376,7 @@ impl Inner {
         }
         match kind.as_str() {
             "matchmaking" => delta.matchmaking = 1,
+            "clankermatch" => delta.clankermatch = 1,
             "custom" => delta.custom = 1,
             _ => {}
         }
@@ -971,6 +978,56 @@ mod tests {
         assert_eq!((s.activity[0].games, s.activity[0].kills), (1, 5));
         assert_eq!(s.last_24h, s.totals);
         assert_eq!(s.all_time, s.totals);
+    }
+
+    #[test]
+    fn a_clankermatch_game_counts_as_its_own_kind_and_in_its_playlist() {
+        let mut log = Log::new();
+        log.start(
+            "g1",
+            json!({"kind": "matchmaking", "playlist": "Team Slayer"}),
+            T0,
+        );
+        log.end("g1", "finished", json!({"team": 0}), T0 + 600);
+        log.start(
+            "g2",
+            json!({"kind": "clankermatch", "playlist": "Clanker Teams"}),
+            T0 + 1000,
+        );
+        log.kill("g2", 1, Some(0), "kill", "battle_rifle", T0 + 1010);
+        log.end("g2", "finished", json!({"team": 0}), T0 + 1600);
+
+        let s = log.stats.summary_at(Some(7), T0 + 2000);
+        let t = &s.totals;
+        assert_eq!(
+            (
+                t.games,
+                t.multiplayer,
+                t.matchmaking,
+                t.clankermatch,
+                t.custom
+            ),
+            (2, 2, 1, 1, 0)
+        );
+        assert_eq!(t.kills, 1);
+        let mut playlists = s.playlists.clone();
+        playlists.sort_by(|a, b| a.playlist.cmp(&b.playlist));
+        assert_eq!(
+            playlists,
+            vec![
+                PlaylistRow {
+                    playlist: "Clanker Teams".into(),
+                    games: 1
+                },
+                PlaylistRow {
+                    playlist: "Team Slayer".into(),
+                    games: 1
+                },
+            ]
+        );
+        // Career numbers count both, like human games.
+        let a = row(&s, A);
+        assert_eq!((a.games, a.multiplayer, a.kills), (2, 2, 1));
     }
 
     #[test]

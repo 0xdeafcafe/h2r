@@ -172,6 +172,9 @@ pub(crate) struct State {
     /// key; no other xuid outside the accounts file does. Cleared when the
     /// logon ends.
     leased: Leased,
+    /// The clanker hoppers the server served last (docs/game/bots.md §8),
+    /// for the Clankermatch row's playlists, the search and the lobby fill.
+    clankers: crate::clankermatch::Marks,
 }
 
 /// The bot accounts leased to this console ([`State::roster_bots`]).
@@ -217,6 +220,7 @@ impl State {
             guest_now: None,
             read_keys: None,
             leased: Leased::default(),
+            clankers: Default::default(),
         }
     }
     pub fn set_accounts(&mut self, accounts: Vec<Account>) {
@@ -412,6 +416,11 @@ impl State {
             status = match reply {
                 Ok(Reply::Logon) => {
                     self.publish_users(m, &users)?;
+                    // The playlist screens filter by them (docs/game/bots.md
+                    // §8.3): ask now, so the first list already has them.
+                    if let Err(e) = self.refresh_clanker_hoppers() {
+                        eprintln!("live: clankermatch: clanker hoppers not asked for: {e}");
+                    }
                     CONNECTED
                 }
                 Err(e) => {
@@ -869,6 +878,53 @@ impl State {
             .current_id()
             .map(|id| live_proto::sign::hex(&id))
     }
+    /// The clanker hoppers the server served last (none before the first
+    /// answer of [`State::refresh_clanker_hoppers`]).
+    pub fn clanker_hoppers(&self) -> crate::clankermatch::ClankerHoppers {
+        self.clankers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+    /// The hosted session (hex) and its hopper's mark, while this console
+    /// hosts a lobby of a clanker hopper (docs/game/bots.md §8.4).
+    pub fn clanker_hosted(&self) -> Option<(String, crate::clankermatch::ClankerHopper)> {
+        let id = self.sessions.current_id()?;
+        let hopper = self.sessions.current_playlist()?;
+        let mark = *self
+            .clankers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(hopper)?;
+        Some((live_proto::sign::hex(&id), mark))
+    }
+    /// Asks the server for its clanker hoppers (`GET /v1/hoppers/clankers`);
+    /// the answer replaces the ones kept, on the Live worker. Never waits.
+    /// A refusal keeps the old ones and is said.
+    pub fn refresh_clanker_hoppers(&self) -> std::result::Result<(), String> {
+        let service = self.service.as_ref().ok_or("Live is not connected")?;
+        let session = self.session().ok_or("not signed in to Live")?;
+        let marks = self.clankers.clone();
+        service
+            .clanker_hoppers(
+                &session,
+                Box::new(move |r| match r {
+                    Ok(Reply::ClankerHoppers(h)) => {
+                        let mut m = marks.lock().unwrap_or_else(|e| e.into_inner());
+                        if *m != h {
+                            let ids: Vec<u32> = h.hoppers.iter().map(|h| h.hopper_id).collect();
+                            eprintln!("live: clankermatch: clanker hoppers {ids:?}");
+                        }
+                        *m = h;
+                    }
+                    Ok(_) => eprintln!("live: clankermatch: the server sent no clanker hoppers"),
+                    Err(code) => eprintln!(
+                        "live: clankermatch: no clanker hoppers from the server ({code:#010x})"
+                    ),
+                }),
+            )
+            .map_err(|code| format!("Live is busy ({code:#010x})"))
+    }
     /// Asks the server for a bot roster (`POST /games/bots`,
     /// docs/game/bots.md §9.1); `done` gets the checked roster, or why
     /// there is none, on the Live worker. Never waits.
@@ -1069,6 +1125,7 @@ impl State {
                 return Ok(NO_SESSION);
             }
             let session = self.session();
+            let clankers = self.clanker_hoppers();
             return self.sessions.invoke(
                 op,
                 a,
@@ -1079,6 +1136,7 @@ impl State {
                     users: &self.user_ids,
                     service: self.service.as_ref(),
                     session: session.as_ref(),
+                    clankers: &clankers,
                 },
             );
         }

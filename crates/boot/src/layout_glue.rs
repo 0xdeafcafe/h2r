@@ -436,7 +436,7 @@ static LIVE_TAG: AtomicU32 = AtomicU32::new(0);
 /// Live menu item widgets of ours: one set per open screen, this many
 /// slots, each of up to [`LIVE_MAX_EXTRA`] items.
 const LIVE_ITEM_SLOTS: u32 = 8;
-const LIVE_MAX_EXTRA: u32 = 2;
+const LIVE_MAX_EXTRA: u32 = 3;
 
 /// In place of a row-chosen call (`ret 8`): open the screen of `loader`
 /// for `mask` through `0x149f1e`, then return to the caller.
@@ -1164,10 +1164,13 @@ pub fn install(
                 })
             });
         }
-        // The Xbox Live menu's rows (crate::custom_games): row 3 is our
-        // "Custom Game Browser", which opens the System Link browser in its
-        // Live mode; row 4 is Content Download, which opens our Map Pack
-        // dialog. Rows 0 to 2 go to the originals.
+        // The Xbox Live menu's rows (crate::custom_games): row 2 is our
+        // Clankermatch (OptiMatch's press, crate::clankermatch), row 3
+        // retail's Custom Game moved down, row 4 our "Custom Game
+        // Browser", which opens the System Link browser in its Live mode,
+        // then Co-op Campaign when on and Content Download, which opens the
+        // Mods screen or our Map Pack dialog. Rows 0 and 1 go to the
+        // originals.
         if let Some(o) = originals.remove(&custom_games::ROW_TEXT) {
             let seen = AtomicBool::new(false);
             d.register_override(custom_games::ROW_TEXT, "custom-games:row-text", move |cpu, ctx, _| {
@@ -1222,12 +1225,16 @@ pub fn install(
         }
         if let Some(o) = originals.remove(&custom_games::ROW_CHOSEN) {
             let seen = AtomicBool::new(false);
+            let sh = alias(d, &mut next_shadow, &o, custom_games::ROW_CHOSEN);
             d.register_override(custom_games::ROW_CHOSEN, "custom-games:row-chosen", move |cpu, ctx, _| {
                 let (row, mask) = {
                     let mem = ctx.runtime().memory();
                     (chosen_row(&*mem, cpu.esp), video_screen::player_mask(&*mem, cpu.esp))
                 };
                 let kind = row.map_or(custom_games::Row::Retail, custom_games::row_kind);
+                // The playlist screen OptiMatch's press opens lists the
+                // clanker hoppers only after the Clankermatch row's press.
+                crate::clankermatch::set_active(kind == custom_games::Row::Clankermatch);
                 // Any other Live menu row ends hosting a co-op campaign
                 // (crate::coop_live); no guest memory is held here.
                 if kind != custom_games::Row::Coop {
@@ -1238,6 +1245,32 @@ pub fn install(
                 }
                 if kind == custom_games::Row::Retail {
                     return Ok(o.invoke(cpu, ctx, custom_games::ROW_CHOSEN));
+                }
+                // Clankermatch and the moved Custom Game: the retail press
+                // of their retail row (the press record rewritten, as the
+                // co-op row does below), then the cursor row left on ours
+                // (the retail press stored the retail row in it).
+                if let Some(retail) = kind.retail_press() {
+                    let shown = row.unwrap_or(retail);
+                    {
+                        let rt = Arc::clone(ctx.runtime());
+                        let mut mem = rt.memory();
+                        let record = mem.u32(cpu.esp.wrapping_add(8))?;
+                        mem.set_u16(record, retail as u16)?;
+                    }
+                    if kind == custom_games::Row::Clankermatch {
+                        eprintln!(
+                            "clankermatch: Live menu row {shown} runs OptiMatch's press (row {retail})"
+                        );
+                    }
+                    return call_then(cpu, ctx, sh, move |_, ctx| {
+                        let rt = Arc::clone(ctx.runtime());
+                        let mut mem = rt.memory();
+                        if !custom_games::remember_row(&mut *mem, shown) {
+                            eprintln!("custom games: the live menu's cursor row could not be set");
+                        }
+                        Ok(())
+                    });
                 }
                 announce(&seen, "custom games: row chosen");
                 let Some(mask) = mask else {
@@ -1296,9 +1329,8 @@ pub fn install(
                     );
                     return open_screen(cpu, ctx, mask, loader, note);
                 }
-                if !custom_games::remember_row(&mut *ctx.runtime().memory()) {
-                    eprintln!("custom games: the live menu's cursor row could not be set");
-                }
+                // The browser's row is past the rows the menu restores its
+                // cursor to (`custom_games::remember_row`): nothing stored.
                 open_screen(cpu, ctx, mask, custom_games::LIVE_BROWSER_LOADER, "custom games: opening the browser")
             });
         }

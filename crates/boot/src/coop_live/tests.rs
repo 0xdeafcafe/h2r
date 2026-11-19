@@ -752,18 +752,19 @@ fn a_host_shows_and_advertises_its_guests_report() {
 // ---- the Live menu ----
 
 #[test]
-fn the_live_menu_has_six_rows_with_co_op_above_content_download() {
+fn the_live_menu_has_seven_rows_with_co_op_above_content_download() {
     use crate::custom_games::*;
-    assert_eq!(list_count_with(LIST_NAME, VANILLA_ROWS, true), 6);
-    assert_eq!(list_count_with(LIST_NAME, VANILLA_ROWS, false), 5);
-    assert_eq!(list_count_with(LIST_NAME, 6, true), 6, "not twice");
-    let kinds: Vec<Row> = (0..7).map(|r| row_kind_with(r, true)).collect();
+    assert_eq!(list_count_with(LIST_NAME, VANILLA_ROWS, true), 7);
+    assert_eq!(list_count_with(LIST_NAME, VANILLA_ROWS, false), 6);
+    assert_eq!(list_count_with(LIST_NAME, 7, true), 7, "not twice");
+    let kinds: Vec<Row> = (0..8).map(|r| row_kind_with(r, true)).collect();
     assert_eq!(
         kinds,
         [
             Row::Retail,
             Row::Retail,
-            Row::Retail,
+            Row::Clankermatch,
+            Row::CustomGame,
             Row::Browser,
             Row::Coop,
             Row::Download,
@@ -771,16 +772,16 @@ fn the_live_menu_has_six_rows_with_co_op_above_content_download() {
         ]
     );
     assert_eq!(
-        row_kind_with(4, false),
+        row_kind_with(5, false),
         Row::Download,
-        "co-op off: as before"
+        "co-op off: Content Download right after the browser"
     );
-    assert_eq!(pane_of_with(COOP_ROW, 6, true), Pane::Show(COOP_PANE));
-    assert_eq!(pane_of_with(ROW, 6, true), Pane::Show(BROWSER_PANE));
-    assert_eq!(pane_of_with(DOWNLOAD_ROW, 6, true), Pane::Show(3));
-    assert_eq!(pane_of_with(COOP_ROW, 5, true), Pane::Keep, "no co-op pane");
+    assert_eq!(pane_of_with(COOP_ROW, 7, true), Pane::Show(COOP_PANE));
+    assert_eq!(pane_of_with(ROW, 7, true), Pane::Show(BROWSER_PANE));
+    assert_eq!(pane_of_with(DOWNLOAD_ROW, 7, true), Pane::Show(3));
+    assert_eq!(pane_of_with(COOP_ROW, 6, true), Pane::Keep, "no co-op pane");
     assert_eq!(pane_of_with(COOP_ROW, 4, true), Pane::Keep);
-    assert_eq!(extended_panes(true), 6);
+    assert_eq!(extended_panes(true), 7);
     let ids: Vec<u32> = strings().iter().map(|(i, _)| *i).collect();
     assert!(ids.contains(&COOP_TEXT_ID) && ids.contains(&COOP_HELP_ID));
     assert!(

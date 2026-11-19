@@ -14,6 +14,7 @@ export const MIN_LEVEL = 1, MAX_LEVEL = 50;
 export const DEFAULT_PLAYLISTS: Readonly<Record<string, string>> = {
   "0": "Rumble Pit", "1": "Team Slayer", "2": "Team Skirmish", "3": "Team Snipers",
   "4": "Big Team Battle", "5": "Team Objective", "6": "Free for All", "7": "Unranked Teams",
+  "8": "Clanker Slayer", "9": "Clanker Teams", "10": "Clanker Doubles",
 };
 
 export function playlistName(id: string, names: Readonly<Record<string, string>> = DEFAULT_PLAYLISTS): string {
