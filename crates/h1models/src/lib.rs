@@ -21,6 +21,7 @@
 )]
 
 pub mod compressed;
+pub mod emblem;
 pub mod h1;
 pub mod jmad;
 pub mod mode;
@@ -90,6 +91,25 @@ pub fn graph_from_map(
     tag: &h1map::Tag,
     model: Option<&h1map::Tag>,
 ) -> Result<(h1::Graph, jmad::GraphReport, Converted)> {
+    graph_from_map_with(map, tag, model, &jmad::GraphOptions::default())
+}
+
+/// The weapon types Halo 1's slot tables list in the graph `tag`, as
+/// `(type, class)`: a weapon is held by its label as a type of a class
+/// even where no animation is named for it (V: the warthog's `fixed`
+/// class lists `cg`, its gun's label, and no animation names `cg`).
+pub fn graph_weapon_types(map: &h1map::H1Map, tag: &h1map::Tag) -> Result<Vec<(String, String)>> {
+    h1::weapon_types(map, tag_address(map, tag, b"antr")?)
+}
+
+/// [`graph_from_map`] with what the animated object adds
+/// ([`jmad::GraphOptions`]: a vehicle's mass point markers).
+pub fn graph_from_map_with(
+    map: &h1map::H1Map,
+    tag: &h1map::Tag,
+    model: Option<&h1map::Tag>,
+    opts: &jmad::GraphOptions,
+) -> Result<(h1::Graph, jmad::GraphReport, Converted)> {
     let graph = h1::Graph::read(map, tag_address(map, tag, b"antr")?)?;
     let skeleton = match model {
         Some(t) if graph.nodes.is_empty() => Some(h1::AnimNode::from_model(&h1::Model::read(
@@ -98,7 +118,7 @@ pub fn graph_from_map(
         )?)),
         _ => None,
     };
-    let (out, report) = jmad::convert_graph(&graph, skeleton.as_deref())?;
+    let (out, report) = jmad::convert_graph_with(&graph, skeleton.as_deref(), opts)?;
     Ok((graph, report, out))
 }
 

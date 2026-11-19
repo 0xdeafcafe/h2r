@@ -46,7 +46,72 @@ pub struct GraphReport {
     pub dropped_default_channels: usize,
     /// Zero quaternions in the source, written as identity.
     pub zero_rotations: usize,
+    /// Suspension elements left out: their mass point has no marker on
+    /// the converted model ([`GraphOptions::mass_point_markers`]).
+    pub suspension_without_marker: Vec<String>,
 }
+
+/// What converting a graph needs from the object it animates.
+#[derive(Clone, Debug, Default)]
+pub struct GraphOptions {
+    /// Per mass point of the object's Halo 1 physics (`phys`), the marker
+    /// the converted model holds for it, `None` for none. A vehicle
+    /// graph's suspension names its mass points by index; Halo 2's names a
+    /// marker ([`VEHICLE_SUSPENSION_LEN`]).
+    pub mass_point_markers: Vec<Option<String>>,
+}
+
+/// A vehicle graph's suspension element (graph `+0x3c`, `0x28` each). E:
+/// `0x001dceb0` steps through the block and copies, per element, the
+/// animation (`+4`, graph index and animation index as an action's), the
+/// marker name (`+8`), a mass point offset (`+0xc`), the full extension
+/// (`+0x10`) and full compression (`+0x14`) ground depths, a region name
+/// (`+0x18`) and the same three numbers for when that region is
+/// destroyed (`+0x1c`..`+0x24`). The vehicle's suspension update
+/// (`0x000f6670`) finds the marker (`0x000b8d30`; no marker, no
+/// suspension), casts from it (moved by the offset along the object's
+/// up) down along the up by the full extension depth, and turns the hit
+/// distance `d` into `1 - (d - compression) / (extension - compression)`,
+/// clamped to 0..1; the animation update (`0x000f0760`) plays the
+/// element's overlay at that fraction. So both depths are distances
+/// below the marker, positive. V: the retail warthog's four name its
+/// `left_back_tire` .. markers with 0.308 and 0.132, a zero offset, and
+/// the same three numbers again for the destroyed wheel. Halo 1's depths
+/// are negative ([`crate::h1::Suspension`]) and measured from the tire
+/// mass points, where the converted model's markers sit, so they are
+/// written negated.
+pub const VEHICLE_SUSPENSION_LEN: usize = 0x28;
+/// An object overlay (graph `+0x44`, `0x14` each): label string ID,
+/// animation (graph index, animation index), `+8` function controls,
+/// `+0xc` the function's name, `+0x10` zero. V: the two on Coagulation,
+/// the chaingun's and the spectre turret's `firing`, name `barrel_spin`
+/// with controls 0.
+pub const OBJECT_OVERLAY_LEN: usize = 0x14;
+/// The function a converted object overlay follows. E: the unit's import
+/// names (`0x000c6b90`) answer `barrel_spin` (`0x000c6d41`) from the
+/// unit's current weapon (`+0x212`, `+0x218`, through the weapon's own at
+/// `0x000ff7b0`), so a vehicle's barrels spin with its gun. V: both
+/// retail object overlays name it. S: Halo 1 drives the warthog's
+/// `firing` by its D output, an additive (accumulating) function whose
+/// input the vehicle leaves none; additivity is not converted
+/// (`h1objects::functions`), so that output could not turn the barrels.
+pub const BARREL_SPIN: &str = "barrel_spin";
+const BLEND_SCREEN_LEN: usize = 0x1c;
+/// Alignment of every animation's blob in the resource, and of a
+/// blend-screen stream after a static one. E: codec 8's interpolated
+/// rotation function (`0x0028c530`, the codec table's record 8 at
+/// `0x47fc54`, slot `+0x1c`) loads each frame's four floats at
+/// `+0x20 + i * [+0x14] + frame * 16` of the stream with `movaps` (`0x0028c589`),
+/// which faults (#GP) on an address that is not a multiple of 16. Through
+/// converter version 88 blobs were 4-aligned; from version 84, when the
+/// vehicles' steering and aim overlays took codec 8, Blood Gulch stopped
+/// there about 5 s into a game (`tags::anim::AnimationGraph::engine_problems`
+/// checks it).
+const STREAM_ALIGN: usize = 16;
+/// Codec of an animation with a blend screen: float rotations (V: every
+/// retail animation that names a screen, the vehicles' steering and aim
+/// overlays included, is codec 8).
+const CODEC_BLEND_SCREEN: u8 = 8;
 
 /// Bytes of one per-node bit array (three per flag set).
 pub fn flag_array_bytes(nodes: usize) -> usize {
@@ -103,25 +168,39 @@ fn static_stream(pose: &[Transform], ch: Channels) -> Vec<u8> {
 }
 
 /// Codec 3: per channel, every frame; i16 rotations, float translations
-/// and scales.
-fn animated_stream(frames: &[Vec<Transform>], ch: Channels) -> Vec<u8> {
+/// and scales. Codec 8 (`blend_screen`, when `screen`) is the same with
+/// float rotations, 16 bytes a frame (E: its rotation function
+/// `0x0028c710` reads four floats at `+0x20 + i * [+0x14] + frame * 16`;
+/// translation and scale are codec 3's functions).
+fn animated_stream(frames: &[Vec<Transform>], ch: Channels, screen: bool) -> Vec<u8> {
     let n = frames[0].len();
     let f = frames.len();
     let [r, t, s] = ch.map(|m| ranks(m, n));
-    let trans_at = 0x20 + 8 * f * r.len();
+    let rot = if screen { 16 } else { 8 };
+    let trans_at = 0x20 + rot * f * r.len();
     let scale_at = trans_at + 12 * f * t.len();
     let mut b = vec![0u8; scale_at + 4 * f * s.len()];
-    b[0] = CODEC_QUANTIZED_ROTATION;
+    b[0] = if screen {
+        CODEC_BLEND_SCREEN
+    } else {
+        CODEC_QUANTIZED_ROTATION
+    };
     b[1..4].copy_from_slice(&[r.len() as u8, t.len() as u8, s.len() as u8]);
     put32(&mut b, 0xc, trans_at as u32);
     put32(&mut b, 0x10, scale_at as u32);
-    put32(&mut b, 0x14, (8 * f) as u32);
+    put32(&mut b, 0x14, (rot * f) as u32);
     put32(&mut b, 0x18, (12 * f) as u32);
     put32(&mut b, 0x1c, (4 * f) as u32);
     for (i, &node) in r.iter().enumerate() {
         for (k, pose) in frames.iter().enumerate() {
-            let at = 0x20 + i * 8 * f + k * 8;
-            b[at..at + 8].copy_from_slice(&q16(pose[node].rotation));
+            let at = 0x20 + i * rot * f + k * rot;
+            if screen {
+                for (a, x) in pose[node].rotation.iter().enumerate() {
+                    put32(&mut b, at + 4 * a, x.to_bits());
+                }
+            } else {
+                b[at..at + 8].copy_from_slice(&q16(pose[node].rotation));
+            }
         }
     }
     for (i, &node) in t.iter().enumerate() {
@@ -160,6 +239,7 @@ fn flag_set(ch: Channels, nodes: usize) -> Vec<u8> {
 fn encode(
     anim: &Animation,
     nodes: usize,
+    screen: bool,
     report: &mut GraphReport,
 ) -> Result<(Vec<u8>, usize, usize)> {
     let all = if nodes >= 64 {
@@ -189,10 +269,18 @@ fn encode(
         Vec::new()
     };
     let animated_part = if animated.iter().any(|&m| m != 0) {
-        animated_stream(&anim.frames, animated)
+        animated_stream(&anim.frames, animated, screen)
     } else {
         Vec::new()
     };
+    // A blend-screen stream must start 16-byte aligned in the resource
+    // ([`STREAM_ALIGN`]); every blob does, so pad the static stream
+    // before one. Its size field covers the padding, which no codec 1
+    // read reaches (its offsets are in its header).
+    let mut static_part = static_part;
+    if screen && !static_part.is_empty() {
+        static_part.resize(static_part.len().next_multiple_of(STREAM_ALIGN), 0);
+    }
     if static_part.len() >= 0x8000 {
         return Err(Error::Unsupported(format!(
             "{}: static stream too large",
@@ -222,6 +310,9 @@ pub fn animation_names(g: &Graph) -> Vec<(H2Name, bool)> {
     let mut out = Vec::with_capacity(g.animations.len());
     for anim in &g.animations {
         let mut name: H2Name = map_name(&anim.name);
+        if is_vehicle(g) {
+            vehicle_aim_name(&mut name);
+        }
         let variant = taken.contains(&name.full());
         if variant {
             let action = name.action.clone();
@@ -402,7 +493,7 @@ pub(crate) fn first_person_overlays(
     tree: &mut BTreeMap<String, BTreeMap<String, BTreeMap<String, Vec<(String, usize)>>>>,
 ) -> Overlays {
     let mut out = Overlays::new();
-    if !is_first_person(g) {
+    if !is_first_person(g) && !is_vehicle(g) {
         return out;
     }
     let overlay = |i: usize| g.animations.get(i).is_some_and(|a| a.kind == AnimType::Overlay);
@@ -421,6 +512,175 @@ pub(crate) fn first_person_overlays(
     out
 }
 
+/// A vehicle graph: one with Halo 1's vehicles block (the warthog, ghost
+/// and scorpion on Blood Gulch).
+pub(crate) fn is_vehicle(g: &Graph) -> bool {
+    g.vehicle.is_some()
+}
+
+/// Halo 2's aim overlays are `aim_still_up` and `aim_move_up` (E: the unit
+/// aim update asks for them, `0x001134a3`; V: every retail vehicle and
+/// turret graph names its aim overlay `combat:fixed:aim_still_up`, the
+/// Halo 1 warthog's, ghost's and scorpion's are `stand fixed aim-still`).
+/// Only vehicle graphs are renamed: a biped's aim is not converted here.
+fn vehicle_aim_name(name: &mut H2Name) {
+    let (head, var) = match name.action.split_once(':') {
+        Some((h, v)) => (h.to_owned(), Some(v.to_owned())),
+        None => (name.action.clone(), None),
+    };
+    let head = match head.as_str() {
+        "aim_still" => "aim_still_up",
+        "aim_move" => "aim_move_up",
+        _ => return,
+    };
+    name.action = match var {
+        Some(v) => format!("{head}:{v}"),
+        None => head.to_owned(),
+    };
+}
+
+/// What a vehicle graph lays out beside its name tree ([`vehicle_plan`]).
+#[derive(Default)]
+struct VehiclePlan {
+    /// Animations kept out of the name tree: those the vehicle slots, the
+    /// suspension and the object overlays name (V: no retail vehicle tree
+    /// holds a `vehicle`, `suspension`, `tread` or `firing` mode).
+    outside: std::collections::HashSet<usize>,
+    /// The vehicle slots as overlays of mode, class and type `any` (V: the
+    /// retail warthog's `steering`, `ground_speed`, `ground_speed_rear`,
+    /// the ghost's `steering` are there).
+    slot_overlays: Vec<(String, usize)>,
+    /// Blend screens, `(label, the six fields)`, and each animation's.
+    screens: Vec<(String, [u8; 0x18])>,
+    screen_of: BTreeMap<usize, u8>,
+    suspension: Vec<Block>,
+    object_overlays: Vec<Block>,
+    /// `(type, class)` pairs for graph `+0x54`.
+    weapon_pairs: Vec<(String, String)>,
+}
+
+impl VehiclePlan {
+    fn screen(&mut self, label: &str, bytes: [u8; 0x18]) -> u8 {
+        if let Some(i) = self.screens.iter().position(|(_, b)| *b == bytes) {
+            return i as u8;
+        }
+        self.screens.push((label.to_owned(), bytes));
+        (self.screens.len() - 1) as u8
+    }
+}
+
+/// Halo 1's vehicle tables as Halo 2 lays them out: the vehicle slots as
+/// overlays of `any` (the engine asks for them by name through
+/// `0x001cb9d0`, from `0x000f0760`), the steering screen on the steering
+/// overlay and each weapon class's aiming screen on its aim overlays (an
+/// animation's `+0x12`, a blend screen at graph `+0x24`), the suspension
+/// ([`VEHICLE_SUSPENSION_LEN`]), the object overlays
+/// ([`OBJECT_OVERLAY_LEN`]) and the weapon pairs. Halo 1 finds all of
+/// these by slot. Until converter version 84 they were actions named for
+/// their labels (`vehicle:steering`, `suspension:left_back`,
+/// `combat:fixed:aim_still`) that no engine lookup asks for, so no
+/// converted vehicle steered its wheels, sprang, aimed or spun its
+/// barrels.
+fn vehicle_plan(
+    g: &Graph,
+    names: &[(H2Name, bool)],
+    opts: &GraphOptions,
+    report: &mut GraphReport,
+) -> VehiclePlan {
+    let mut plan = VehiclePlan::default();
+    let Some(v) = &g.vehicle else {
+        return plan;
+    };
+    let valid = |i: i16| usize::try_from(i).ok().filter(|&i| i < g.animations.len());
+    for (k, &slot) in v.slots.iter().enumerate() {
+        let (Some(word), Some(i)) = (crate::h1::VEHICLE_SLOTS.get(k), valid(slot)) else {
+            continue;
+        };
+        plan.outside.insert(i);
+        if !plan.slot_overlays.iter().any(|(w, _)| w == word) {
+            plan.slot_overlays.push(((*word).to_owned(), i));
+        }
+        if k == 0 && v.screen.is_set() {
+            let s = plan.screen("steering", v.screen.bytes());
+            plan.screen_of.insert(i, s);
+        }
+    }
+    for u in &g.units {
+        let mode = crate::names::mode_name(&u.label);
+        for c in &u.classes {
+            plan.weapon_pairs
+                .extend(c.types.iter().map(|(t, _)| (t.clone(), c.label.clone())));
+            if !c.screen.is_set() {
+                continue;
+            }
+            for (i, (n, _)) in names.iter().enumerate() {
+                let head = n.action.split(':').next().unwrap_or("");
+                if n.mode == mode
+                    && n.class == c.label
+                    && matches!(head, "aim_still_up" | "aim_move_up")
+                    && !plan.screen_of.contains_key(&i)
+                {
+                    let s = plan.screen("aiming", c.screen.bytes());
+                    plan.screen_of.insert(i, s);
+                }
+            }
+        }
+    }
+    plan.weapon_pairs.sort();
+    plan.weapon_pairs.dedup();
+    plan.weapon_pairs
+        .insert(0, ("any".to_owned(), "any".to_owned()));
+    for s in &v.suspension {
+        let Some(i) = valid(s.animation) else {
+            continue;
+        };
+        plan.outside.insert(i);
+        let marker = usize::try_from(s.mass_point)
+            .ok()
+            .and_then(|m| opts.mass_point_markers.get(m).cloned().flatten());
+        let Some(marker) = marker else {
+            report
+                .suspension_without_marker
+                .push(g.animations[i].name.clone());
+            continue;
+        };
+        let ext = -s.full_extension_ground_depth;
+        let comp = -s.full_compression_ground_depth;
+        let mut b = Block::zeroed(VEHICLE_SUSPENSION_LEN);
+        b.string_id(0, &names[i].0.full())
+            .put_i16(4, -1)
+            .put_i16(6, i as i16)
+            .string_id(8, &marker)
+            .put_f32(0xc, 0.0)
+            .put_f32(0x10, ext)
+            .put_f32(0x14, comp)
+            // No region; the destroyed numbers are the same, as retail's.
+            .put_f32(0x1c, 0.0)
+            .put_f32(0x20, ext)
+            .put_f32(0x24, comp);
+        plan.suspension.push(b);
+    }
+    for o in &g.objects {
+        let Some(i) = valid(o.animation) else {
+            continue;
+        };
+        plan.outside.insert(i);
+        let label = g.animations[i]
+            .name
+            .trim()
+            .to_ascii_lowercase()
+            .replace([' ', '-'], "_");
+        let mut b = Block::zeroed(OBJECT_OVERLAY_LEN);
+        b.string_id(0, &label)
+            .put_i16(4, -1)
+            .put_i16(6, i as i16)
+            .put_u32(8, u32::from(o.controls))
+            .string_id(0xc, BARREL_SPIN);
+        plan.object_overlays.push(b);
+    }
+    plan
+}
+
 /// An action or overlay entry (`ACTION_LEN`): its name, graph index -1
 /// (this graph), the animation index.
 fn action_block((action, index): &(String, usize)) -> Block {
@@ -432,6 +692,15 @@ fn action_block((action, index): &(String, usize)) -> Block {
 /// Converts a Halo 1 animation graph. A graph without its own node block
 /// takes `skeleton` (its model's nodes, [`AnimNode::from_model`]).
 pub fn convert_graph(g: &Graph, skeleton: Option<&[AnimNode]>) -> Result<(Converted, GraphReport)> {
+    convert_graph_with(g, skeleton, &GraphOptions::default())
+}
+
+/// [`convert_graph`] with what the animated object adds ([`GraphOptions`]).
+pub fn convert_graph_with(
+    g: &Graph,
+    skeleton: Option<&[AnimNode]>,
+    opts: &GraphOptions,
+) -> Result<(Converted, GraphReport)> {
     let node_list: &[AnimNode] = match (g.nodes.is_empty(), skeleton) {
         (false, _) => &g.nodes,
         (true, Some(s)) => s,
@@ -462,6 +731,7 @@ pub fn convert_graph(g: &Graph, skeleton: Option<&[AnimNode]>) -> Result<(Conver
     let mut tree: BTreeMap<String, BTreeMap<String, BTreeMap<String, Vec<(String, usize)>>>> =
         BTreeMap::new();
     let names = animation_names(g);
+    let plan = vehicle_plan(g, &names, opts, &mut report);
     for (i, anim) in g.animations.iter().enumerate() {
         if anim.frame_count == 0 {
             return Err(Error::Unsupported(format!("{}: no frames", anim.name)));
@@ -476,19 +746,21 @@ pub fn convert_graph(g: &Graph, skeleton: Option<&[AnimNode]>) -> Result<(Conver
         if anim.frame_info_type != 0 {
             report.dropped_movement.push(anim.name.clone());
         }
-        tree.entry(name.mode)
-            .or_default()
-            .entry(name.class)
-            .or_default()
-            .entry(name.kind)
-            .or_default()
-            .push((name.action, i));
-
-        while resource.len() % 4 != 0 {
-            resource.push(0);
+        if !plan.outside.contains(&i) {
+            tree.entry(name.mode)
+                .or_default()
+                .entry(name.class)
+                .or_default()
+                .entry(name.kind)
+                .or_default()
+                .push((name.action, i));
         }
+
+        resource.resize(resource.len().next_multiple_of(STREAM_ALIGN), 0);
         let offset = resource.len();
-        let (blob, static_size, animated_size) = encode(anim, nodes, &mut report)?;
+        let screen = plan.screen_of.get(&i).copied();
+        let (blob, static_size, animated_size) =
+            encode(anim, nodes, screen.is_some(), &mut report)?;
         resource.extend(blob);
 
         let mut r = Block::zeroed(ANIMATION_LEN);
@@ -509,7 +781,9 @@ pub fn convert_graph(g: &Graph, skeleton: Option<&[AnimNode]>) -> Result<(Conver
             // graph has no blend screens, so 0 named a screen past the end
             // of an empty block: the read faulted at address `0xc` as soon
             // as a graph found its animations (converter version 64).
-            .put_u8(0x12, 0xff)
+            // A vehicle's steering and aim overlays name theirs
+            // ([`vehicle_plan`]).
+            .put_u8(0x12, screen.unwrap_or(0xff))
             .put_u8(0x13, nodes as u8)
             .put_i16(0x14, anim.frame_count as i16)
             .put_u16(0x16, IN_RESOURCE)
@@ -526,7 +800,20 @@ pub fn convert_graph(g: &Graph, skeleton: Option<&[AnimNode]>) -> Result<(Conver
     }
     borrow_slots(g, &names, &mut tree);
     first_person_slots(g, &mut tree);
-    let overlays = first_person_overlays(g, &mut tree);
+    let mut overlays = first_person_overlays(g, &mut tree);
+    if !plan.slot_overlays.is_empty() {
+        let any = || "any".to_owned();
+        tree.entry(any())
+            .or_default()
+            .entry(any())
+            .or_default()
+            .entry(any())
+            .or_default();
+        overlays
+            .entry((any(), any(), any()))
+            .or_default()
+            .extend(plan.slot_overlays.iter().cloned());
+    }
     while resource.len() % 0x200 != 0 {
         resource.push(0);
     }
@@ -599,6 +886,19 @@ pub fn convert_graph(g: &Graph, skeleton: Option<&[AnimNode]>) -> Result<(Conver
     let mut h = Block::zeroed(HEADER_LEN);
     h.tag_ref(0, map::TagId::NULL);
     h.block(0x0c, node_blocks.len() as u32, array(node_blocks, NODE_LEN));
+    if !plan.screens.is_empty() {
+        let screens = plan
+            .screens
+            .iter()
+            .map(|(label, bytes)| {
+                let mut b = Block::zeroed(BLEND_SCREEN_LEN);
+                b.string_id(0, label);
+                b.bytes[4..BLEND_SCREEN_LEN].copy_from_slice(bytes);
+                b
+            })
+            .collect::<Vec<_>>();
+        h.block(0x24, screens.len() as u32, array(screens, BLEND_SCREEN_LEN));
+    }
     h.block(0x2c, records.len() as u32, array(records, ANIMATION_LEN));
     // A first-person graph (every tree mode `any`): one string-ID pair at
     // `+0x54`, `(any, any)`, as every retail first-person graph holds (V3:
@@ -611,6 +911,29 @@ pub fn convert_graph(g: &Graph, skeleton: Option<&[AnimNode]>) -> Result<(Conver
         p.string_id(0, crate::names::FIRST_PERSON_MODE)
             .string_id(4, crate::names::FIRST_PERSON_MODE);
         h.block(0x54, 1, p);
+    } else if is_vehicle(g) {
+        // `(any, any)` and each weapon type's `(type, class)` from Halo 1's
+        // tables, as retail vehicle graphs hold (V: the ghost's `(any,
+        // any)`, `(gun, fixed)`; the scorpion cannon's `(cannon, fixed)`,
+        // `(cg, fixed)`). What the engine reads them for is S.
+        let pairs = plan
+            .weapon_pairs
+            .iter()
+            .map(|(t, c)| {
+                let mut p = Block::zeroed(8);
+                p.string_id(0, t).string_id(4, c);
+                p
+            })
+            .collect::<Vec<_>>();
+        h.block(0x54, pairs.len() as u32, sorted_array(pairs, 8));
+    }
+    if !plan.suspension.is_empty() {
+        let n = plan.suspension.len() as u32;
+        h.block(0x3c, n, array(plan.suspension, VEHICLE_SUSPENSION_LEN));
+    }
+    if !plan.object_overlays.is_empty() {
+        let n = plan.object_overlays.len() as u32;
+        h.block(0x44, n, array(plan.object_overlays, OBJECT_OVERLAY_LEN));
     }
     h.block(0xac, 1, res);
     Ok((

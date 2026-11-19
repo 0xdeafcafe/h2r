@@ -439,13 +439,17 @@ impl d3d::ExternalPass for WorldPass {
 /// The pass's diagnostics, from the environment (read once):
 ///
 /// - `H2_NATIVE_WORLD_TRACE=1`: a line per pass for the first
-///   [`TRACE_FIRST`] passes, then every [`TRACE_EVERY`]th ([`trace`]);
+///   [`TRACE_FIRST`] passes, then every [`TRACE_EVERY`]th ([`trace`]),
+///   or every `n`th with `H2_NATIVE_WORLD_TRACE_EVERY=n` (with
+///   `H2_NATIVE_WORLD_PROBE`, to probe near a given frame);
 /// - `H2_NATIVE_WORLD_NO_CULL=1`: every draw drawn, no CPU cull
 ///   (`GpuWorld::set_cull`): a part the cull leaves out is then drawn, one
 ///   the GPU clips or the depth test rejects is still missing.
 #[derive(Clone, Copy, Debug, Default)]
 struct Diagnostics {
     trace: bool,
+    /// Passes between traced ones after the first [`TRACE_FIRST`].
+    trace_every: u64,
     no_cull: bool,
     /// `H2_NATIVE_WORLD_PROBE=x,y` (guest pixels, with the trace on): the
     /// parts whose triangles cover that pixel, on each traced pass
@@ -463,11 +467,10 @@ struct Diagnostics {
     /// passes (0 without one: the first, while the game may still be
     /// streaming the bitmaps in at low detail).
     dump: Option<Dump>,
-    /// `H2_NATIVE_WORLD_INHERIT_CULL=none|placements|all` (placements
-    /// without it): whose draws of a pass that does not set `CULLMODE`
-    /// take the device's cull at the layer-3 call, as (placements,
-    /// clusters) (`native_render::program::InheritedCull`); the others
-    /// cull nothing.
+    /// `H2_NATIVE_WORLD_INHERIT_CULL=none|placements|all` (all without
+    /// it): whose draws of a pass that does not set `CULLMODE` take the
+    /// device's cull at the layer-3 call, as (placements, clusters)
+    /// (`native_render::program::InheritedCull`); the others cull nothing.
     inherit_cull: (bool, bool),
 }
 
@@ -486,13 +489,14 @@ impl Diagnostics {
             let on = |k: &str| std::env::var(k).is_ok_and(|v| !v.is_empty() && v != "0");
             let d = Diagnostics {
                 trace: on("H2_NATIVE_WORLD_TRACE"),
+                trace_every: parse_trace_every(std::env::var("H2_NATIVE_WORLD_TRACE_EVERY").ok().as_deref()),
                 no_cull: on("H2_NATIVE_WORLD_NO_CULL"),
                 probe: std::env::var("H2_NATIVE_WORLD_PROBE").ok().and_then(|v| parse_probe(&v)),
                 owners: std::env::var("H2_NATIVE_WORLD_OWNERS").ok().and_then(|v| Owners::parse(&v)).unwrap_or_default(),
                 dump: std::env::var("H2_NATIVE_WORLD_DUMP").ok().and_then(|v| parse_dump(&v)),
                 inherit_cull: parse_inherit_cull(std::env::var("H2_NATIVE_WORLD_INHERIT_CULL").ok().as_deref()),
             };
-            if d.trace || d.no_cull || d.owners != Owners::All || d.dump.is_some() || d.inherit_cull != (true, false) {
+            if d.trace || d.no_cull || d.owners != Owners::All || d.dump.is_some() || d.inherit_cull != (true, true) || d.trace_every != TRACE_EVERY {
                 eprintln!("native-world: diagnostics {d:?}");
             }
             d
@@ -519,7 +523,7 @@ fn trace(
     culled: native_render::cull::CullStats,
 ) -> bool {
     let n = TRACED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    if n >= TRACE_FIRST && n % TRACE_EVERY != 0 {
+    if n >= TRACE_FIRST && n % Diagnostics::get().trace_every != 0 {
         return false;
     }
     let vp = camera.view_projection();
@@ -635,14 +639,19 @@ fn arm_dump(ready: &Arc<Ready>, gpu: &GpuWorld, view: &ViewInputs, Dump { instan
     d3d::uniform_compare::arm_all(candidates);
 }
 
-/// [`Diagnostics::inherit_cull`]: placements only without a value or with
-/// one it does not know.
+/// [`Diagnostics::inherit_cull`]: all without a value or with one it does
+/// not know.
 fn parse_inherit_cull(v: Option<&str>) -> (bool, bool) {
     match v.map(str::trim) {
         Some("none") => (false, false),
-        Some("all") => (true, true),
-        _ => (true, false),
+        Some("placements") => (true, false),
+        _ => (true, true),
     }
+}
+
+/// [`Diagnostics::trace_every`]: [`TRACE_EVERY`] without a positive count.
+fn parse_trace_every(v: Option<&str>) -> u64 {
+    v.and_then(|v| v.trim().parse::<u64>().ok()).filter(|&n| n > 0).unwrap_or(TRACE_EVERY)
 }
 
 fn parse_probe(v: &str) -> Option<(f32, f32)> {
@@ -1586,10 +1595,15 @@ mod tests {
         assert_eq!(parse_dump("282:"), None);
         assert_eq!(parse_dump("282@"), None);
         assert_eq!(parse_dump("girder"), None);
-        assert_eq!(parse_inherit_cull(None), (true, false));
+        assert_eq!(parse_inherit_cull(None), (true, true));
         assert_eq!(parse_inherit_cull(Some("none")), (false, false));
-        assert_eq!(parse_inherit_cull(Some(" all ")), (true, true));
-        assert_eq!(parse_inherit_cull(Some("clusters")), (true, false));
+        assert_eq!(parse_inherit_cull(Some(" placements ")), (true, false));
+        assert_eq!(parse_inherit_cull(Some("all")), (true, true));
+        assert_eq!(parse_inherit_cull(Some("clusters")), (true, true));
+        assert_eq!(parse_trace_every(None), TRACE_EVERY);
+        assert_eq!(parse_trace_every(Some(" 10 ")), 10);
+        assert_eq!(parse_trace_every(Some("0")), TRACE_EVERY);
+        assert_eq!(parse_trace_every(Some("often")), TRACE_EVERY);
         // The D3D draws of placement 282 on 03a: `CULL_CW`, front face `CW`.
         use gfx::state::{CullMode, FrontFace};
         assert_eq!(inherited_cull((CullMode::Cw, FrontFace::Cw)), (Some(wgpu::Face::Front), wgpu::FrontFace::Cw));

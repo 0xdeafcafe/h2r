@@ -22,8 +22,10 @@ pub const LOCAL_PORTS: usize = 3;
 
 /// Whether a game's stderr line goes into the merged log.
 pub fn wanted(line: &str) -> bool {
-    const KEEP: [&str; 15] = [
+    const KEEP: [&str; 17] = [
         "needs a code to sign in",
+        "clankermatch:",
+        "live: optimatch",
         "live: sign-in",
         "bots:",
         "clankers:",
@@ -112,6 +114,8 @@ pub struct Check {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Verdict {
     pub plan: Plan,
+    /// The verdict's first line: what the run tested.
+    pub title: String,
     pub checks: Vec<Check>,
     /// Lines that look like trouble anywhere in the run.
     pub trouble: Vec<String>,
@@ -204,11 +208,21 @@ fn on_live_as_account(text: &str) -> Option<u8> {
         .then(|| port.parse::<u8>().ok())?
 }
 
-/// `bots: phantom NAME joins (peer N)`: the name.
+/// `bots: phantom NAME joins (peer N)` (a running game) or `... joins
+/// (peer N, in the pregame lobby)`: the name.
 fn phantom_joined(text: &str) -> Option<&str> {
     let rest = text.strip_prefix("bots: phantom ")?;
     let (name, after) = rest.rsplit_once(" joins (peer ")?;
     after.ends_with(')').then_some(name)
+}
+
+/// What a phantom join line ends with when it joined the pregame lobby
+/// (`bots::phantom::Phantoms::tick`).
+const IN_LOBBY: &str = ", in the pregame lobby)";
+
+/// [`phantom_joined`] for a join in the pregame lobby: the name.
+fn phantom_joined_lobby(text: &str) -> Option<&str> {
+    phantom_joined(text).filter(|_| text.ends_with(IN_LOBBY))
 }
 
 /// A phantom that could not be made: a `failed` line about a phantom, or
@@ -348,6 +362,33 @@ fn picker_opened(text: &str) -> bool {
     text.starts_with("bots: join gate port 1: ") && text.contains(", dialog 0x14 (")
 }
 
+/// The game's own line with the account picker up (`ui: screen none
+/// (...), dialog 0x14 dialog_live_signin (...)`, `boot::ui_watch`).
+fn picker_line(text: &str) -> bool {
+    text.starts_with("ui: screen none (") && text.contains("), dialog 0x14 ")
+}
+
+/// How many times the account picker opened: by the game's `ui: screen`
+/// lines (a cursor move is another line, so only a line after one
+/// without the picker counts), else by port 1's join gate, which a run
+/// with no local bot placed yet (Clankermatch) never prints.
+fn picker_openings(texts: &[&str]) -> usize {
+    let mut up = false;
+    let mut by_ui = 0;
+    for t in texts.iter().filter(|t| t.starts_with("ui: screen ")) {
+        let now = picker_line(t);
+        if now && !up {
+            by_ui += 1;
+        }
+        up = now;
+    }
+    if by_ui > 0 {
+        by_ui
+    } else {
+        texts.iter().filter(|t| picker_opened(t)).count()
+    }
+}
+
 const TROUBLE: [&str; 7] = [
     "panicked",
     "guest thread exited",
@@ -358,9 +399,14 @@ const TROUBLE: [&str; 7] = [
     "bots-test: timed out",
 ];
 
-/// The verdict a merged log shows; `None` without a plan line.
+/// The verdict a merged log shows; `None` without a plan line. A
+/// Clankermatch run's log (its `bots-test: clankermatch plan:` line) gets
+/// [`clankermatch::verdict`].
 pub fn verdict(log: &str) -> Option<Verdict> {
     let l = Log::new(log);
+    if let Some(plan) = clankermatch::CmPlan::read(&l.texts) {
+        return Some(clankermatch::verdict(&l, plan));
+    }
     let plan = Plan::read(&l.texts)?;
     let local = plan.local() as u8;
     let mut checks = Vec::new();
@@ -431,7 +477,7 @@ pub fn verdict(log: &str) -> Option<Verdict> {
         (None, None) => {
             let mut lines = l.last(5, |t| t.starts_with("bots-drive"));
             lines.extend(l.last(1, |t| t.starts_with("ui: screen")));
-            let pickers = l.texts.iter().filter(|t| picker_opened(t)).count();
+            let pickers = picker_openings(&l.texts);
             let detail = if pickers > 0 {
                 format!(
                     "never on Xbox Live: the game's account picker (dialog 0x14, \
@@ -677,19 +723,25 @@ pub fn verdict(log: &str) -> Option<Verdict> {
         }
     });
 
-    // 10. The phantoms joined.
+    // 10. The phantoms joined the pregame lobby (docs/game/bots.md §5.1,
+    // "Phantoms in the pregame lobby").
     let want = plan.phantoms();
     let joined: BTreeSet<&str> = l.texts.iter().filter_map(|t| phantom_joined(t)).collect();
+    let in_lobby: BTreeSet<&str> = l
+        .texts
+        .iter()
+        .filter_map(|t| phantom_joined_lobby(t))
+        .collect();
     let failed = l.last(3, phantom_failed);
     checks.push(if want == 0 {
         check(
-            "phantoms joined",
+            "phantoms joined the pregame lobby",
             failed.is_empty(),
             "none asked for (count 3 or less)".into(),
             failed,
         )
     } else {
-        let pass = joined.len() >= want && failed.is_empty();
+        let pass = in_lobby.len() >= want && failed.is_empty();
         let mut lines = l.last(want, |t| phantom_joined(t).is_some());
         lines.extend(failed.iter().cloned());
         if !pass {
@@ -698,21 +750,29 @@ pub fn verdict(log: &str) -> Option<Verdict> {
             }));
         }
         check(
-            "phantoms joined",
+            "phantoms joined the pregame lobby",
             pass,
             if pass {
                 format!(
-                    "{} joined: {}",
-                    joined.len(),
-                    Vec::from_iter(joined).join(", ")
+                    "{} joined in the pregame lobby: {}",
+                    in_lobby.len(),
+                    Vec::from_iter(in_lobby).join(", ")
                 )
             } else if !failed.is_empty() {
                 "a phantom failed".into()
+            } else if joined.len() >= want {
+                format!(
+                    "{} of {want} joined the pregame lobby, the rest only once the game ran: \
+                     the lobby join is off (H2_PHANTOM_LOBBY=0) or never saw this console host \
+                     the lobby (a wait line says why)",
+                    in_lobby.len()
+                )
             } else {
                 format!(
-                    "{} of {want} joined (`bots: phantom NAME joins (peer N)`); they join once \
-                     the game this console hosts runs, so a wait line says why not",
-                    joined.len()
+                    "{} of {want} joined the pregame lobby (`bots: phantom NAME joins (peer N, \
+                     in the pregame lobby)`); they join the lobby this console hosts, so a wait \
+                     line says why not",
+                    in_lobby.len()
                 )
             },
             lines,
@@ -756,6 +816,13 @@ pub fn verdict(log: &str) -> Option<Verdict> {
 
     let trouble = l.last(8, |t| TROUBLE.iter().any(|k| t.contains(*k)));
     Some(Verdict {
+        title: format!(
+            "bots test: {} Clankers ({} local, {} phantoms) with {} on a Live custom game",
+            plan.count,
+            plan.local(),
+            plan.phantoms(),
+            plan.tag
+        ),
         plan,
         checks,
         trouble,
@@ -778,15 +845,7 @@ impl Verdict {
 
     pub fn render(&self) -> String {
         let mut s = String::new();
-        let p = &self.plan;
-        let _ = writeln!(
-            s,
-            "bots test: {} Clankers ({} local, {} phantoms) with {} on a Live custom game",
-            p.count,
-            p.local(),
-            p.phantoms(),
-            p.tag
-        );
+        let _ = writeln!(s, "{}", self.title);
         for (i, c) in self.checks.iter().enumerate() {
             let mark = if c.pass { "pass" } else { "FAIL" };
             let _ = writeln!(s, "{:>2}. [{mark}] {}: {}", i + 1, c.name, c.detail);
@@ -811,6 +870,8 @@ impl Verdict {
         s
     }
 }
+
+pub mod clankermatch;
 
 #[cfg(test)]
 mod tests;

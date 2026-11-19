@@ -6,6 +6,11 @@
 //! The game does the rest from the session: each frame it rebuilds the
 //! machine set from the peers (`0x83f00`), diffs the session players
 //! (`0x83610`) and creates the player and its simulation slot (`0x85140`).
+//!
+//! The same writes put a phantom in the pregame lobby this console hosts
+//! ([`host_lobby`]), with the peer properties a real peer sends
+//! ([`sync_props`]: this console's own map and hopper statuses, so the
+//! start checks pass) and even teams ([`lobby_team`], [`rebalance`]).
 
 use engine::memory::{GuestMemory, MemFault};
 use engine::points;
@@ -28,6 +33,15 @@ pub mod at {
     pub const CLASS: u32 = 0x4980;
     pub const MAX_PEERS: u32 = 0x4990;
     pub const MAX_PLAYERS: u32 = 0x4994;
+    /// The game variant the lobby plays (`0x130` bytes, a
+    /// `variants::record`); its flags at `+0x48`, bit 0 team play (the
+    /// host's configuration pass `0x65cb0` tests it at `0x65ec8`).
+    pub const VARIANT: u32 = 0x4db0;
+    pub const VARIANT_FLAGS: u32 = 0x48;
+    /// Join reservations, 16 × `0x24`: `+0` held, `+1` taken. A held one
+    /// not yet taken keeps a player slot free (`0x62e30`).
+    pub const RESERVATIONS: u32 = 0x7668;
+    pub const RESERVATION_SIZE: u32 = 0x24;
     pub const CHANNELS: u32 = 0x72dc;
     pub const CHANNEL_SIZE: u32 = 0x14;
     pub const STATE: u32 = 0x741c;
@@ -47,8 +61,29 @@ pub mod at {
 
     /// In a peer.
     pub const PEER_MAC: u32 = 0xa;
+    /// A byte: the peer's properties came (the host's properties message
+    /// `0x5ed90` sets it for a remote peer, `0x5a790` for its own).
+    pub const PEER_PROPS_SET: u32 = 0x24;
+    /// The peer's `0xc8`-byte properties, which each console makes of its
+    /// own state (`0x658c0`) and sends to the host (message `0x1a`): the
+    /// host copies them in whole (`0x5ed90`, `rep movsd` of `0x32`
+    /// dwords).
+    pub const PEER_PROPS: u32 = 0x28;
+    pub const PROPS_SIZE: u32 = 0xc8;
+    /// Properties `+0`: the name (15 units and a NUL, from `0x4cd86a`).
     pub const PEER_NAME: u32 = 0x28;
     pub const PEER_NAME_UNITS: u32 = 15;
+    /// Properties `+0x20`: a second name (31 units and a NUL, from
+    /// `0x4cd88a`; both set by `0x645d0` from the lobby's profiles).
+    pub const PEER_NAME2: u32 = 0x48;
+    pub const PEER_NAME2_UNITS: u32 = 31;
+    /// Properties `+0x60`: the map status (`[0x4cd8f8]`: 1 failed, 2
+    /// loading, 3 and 4 loaded), `+0x64` its progress (`[0x4cd8fc]`).
+    pub const PEER_MAP_STATUS: u32 = 0x88;
+    /// Properties `+0x84`: each hopper's status, 16 dwords
+    /// (`0x192df0` per hopper); the matchmaking start (`0x66050`) wants 1
+    /// for the lobby's hopper on every peer.
+    pub const PEER_HOPPERS: u32 = 0xac;
     pub const PEER_PLAYERS: u32 = 0xf8;
     pub const PEER_SLOTS: u32 = 0xfc;
 
@@ -65,6 +100,20 @@ pub mod at {
     /// not the game's), and the player slots.
     pub const SIM_GLOBALS: u32 = 0x004c_f77c;
     pub const SIM_MODE: u32 = 8;
+    /// The world's state (`+0x18`): on a server 3 while the game starts
+    /// and waits for every machine's view (`0x69c80`), 4 while views
+    /// join (`0x69d50`), 5 running (`0x69dd0`).
+    pub const SIM_STATE: u32 = 0x18;
+    /// The machines the start waits for (`+0x20`; `0x6b1f0` sets it to the
+    /// whole machine set, and `+0x1c` the time it began).
+    pub const SIM_WAIT: u32 = 0x20;
+    /// Pointer to the machine set (the world's `+0`, `[0x4cf780]`): its
+    /// valid mask at `+0x1c`, its machine ids at `+0x24`, 6 bytes each
+    /// (`0x83b80` finds one), rebuilt from the session's peers
+    /// (`0x83f00`), so machine `i` is peer `i`.
+    pub const MACHINES: u32 = 0x004c_f780;
+    pub const MACHINES_MASK: u32 = 0x1c;
+    pub const MACHINES_IDS: u32 = 0x24;
     pub const SIM_SLOTS: u32 = 0x7c;
     pub const SLOT_SIZE: u32 = 0x88;
     pub const SLOT_MAC: u32 = 0x18;
@@ -134,7 +183,7 @@ pub const MAX: u32 = 16;
 /// Why the host cannot take a phantom now.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NotNow {
-    /// No game running: wait (phantoms join only once a game runs).
+    /// No game running and no lobby to join: wait.
     Wait,
     /// A game runs, but this console is not (or not yet) its host, and
     /// what the check read. A phantom waits and tries again: in the first
@@ -153,7 +202,9 @@ pub fn host_session(m: &dyn GuestMemory) -> Result<u32, NotNow> {
     }
     let read = |a: u32| m.u32(a).ok();
     let ready = m.u8(points::NETWORK_READY.base).ok().unwrap_or(0) != 0;
-    let s = read(points::SQUAD_SESSION.base).unwrap_or(0);
+    // The game's session: the squad's in a custom game, the target
+    // session in a matchmade one (`crate::lobby::game_session`).
+    let s = crate::lobby::game_session(m).unwrap_or(0);
     let sim = read(SIM_GLOBALS).unwrap_or(0);
     if !ready || s == 0 || sim == 0 {
         // A game with no network session: a local game, no host.
@@ -395,13 +446,372 @@ pub fn game_start(m: &mut dyn GuestMemory, s: u32, planned: bool) -> Vec<String>
 }
 
 /// The live network session, game or lobby: the session whose peers a
-/// game's end takes phantoms out of.
+/// game's end takes phantoms out of. The game's session for the life
+/// cycle ([`crate::lobby::game_session`]): the squad session in a custom
+/// game, the target session in matchmaking (its lobby and its game).
 pub fn live_session(m: &dyn GuestMemory) -> Option<u32> {
     if m.u8(points::NETWORK_READY.base).ok()? == 0 {
         return None;
     }
-    let s = m.u32(points::SQUAD_SESSION.base).ok().filter(|&s| s != 0)?;
+    let s = crate::lobby::game_session(m).ok().filter(|&s| s != 0)?;
     (m.u32(s + STATE).ok()? == STATE_LIVE).then_some(s)
+}
+
+/// The pregame lobby this console hosts, when a phantom can join it now
+/// (docs/game/bots.md §5.1, "Phantoms in the pregame lobby"): a pregame
+/// lobby's squad session ([`crate::lobby::pregame`]: session type 1 or 2,
+/// a lobby state), or a matchmaking lobby's target session this console
+/// hosts ([`crate::lobby::matchmaking_host`]: type 6 or 7, a Clankermatch
+/// after its empty search, §8.4), that is live (state 5), distributed
+/// (protocol 2: a System Link or Xbox Live lobby, not Split Screen's
+/// local one) and this console's (the host peer `+0x40` is its own
+/// `+0x72d8`), with no game running ([`host_session`] takes that). A real peer joins such a lobby
+/// through the host's join (`0x5c720`): a peer (`0x5fbd0`), then its
+/// properties (`0x5ed90`) and players (`0x60000`); a phantom gets the
+/// same writes.
+pub fn host_lobby(m: &dyn GuestMemory) -> Result<u32, NotNow> {
+    if guest::game_tick(m).is_some() && multiplayer(m) {
+        return Err(NotNow::Wait);
+    }
+    let Ok(f) = crate::lobby::facts(m) else {
+        return Err(NotNow::Wait);
+    };
+    if !crate::lobby::joinable(&f) {
+        return Err(NotNow::Wait);
+    }
+    let s = crate::lobby::game_session(m).unwrap_or(0);
+    let read = |a: u32| m.u32(a).ok();
+    let shown = |v: Option<u32>| v.map_or_else(|| "?".to_owned(), |v| v.to_string());
+    let state = read(s + STATE);
+    if state != Some(STATE_LIVE) {
+        return Err(NotNow::NotHost(format!(
+            "the lobby's session is not live (state {}, live is {STATE_LIVE})",
+            shown(state)
+        )));
+    }
+    let protocol = read(s + PROTOCOL);
+    if protocol != Some(PROTOCOL_DISTRIBUTED) {
+        return Err(NotNow::NotHost(format!(
+            "the lobby's session is not distributed (protocol {}): phantoms join System Link \
+             and Xbox Live lobbies only",
+            shown(protocol)
+        )));
+    }
+    let (host, local) = (read(s + HOST_PEER), read(s + LOCAL_PEER));
+    if host.is_none() || host != local {
+        return Err(NotNow::NotHost(format!(
+            "this console does not host it (session host peer {}, this console's peer {})",
+            shown_index(host),
+            shown_index(local)
+        )));
+    }
+    Ok(s)
+}
+
+/// The live distributed session this console hosts, game or lobby, if
+/// any: phantoms already in it stay while it lasts (between a lobby and
+/// its game's first hosted frame, and from the game back to the lobby).
+pub fn owned_session(m: &dyn GuestMemory) -> Option<u32> {
+    let s = live_session(m)?;
+    let host = m.u32(s + HOST_PEER).ok()?;
+    (host == m.u32(s + LOCAL_PEER).ok()? && m.u32(s + PROTOCOL).ok()? == PROTOCOL_DISTRIBUTED)
+        .then_some(s)
+}
+
+/// The player slots free for a player with no reservation, as the
+/// host's add (`0x60000` → `0x62e30`) counts them: the session's most
+/// players (`+0x4994`) less its players (`+0x1118`) less the
+/// reservations held and not yet taken (`+0x7668`, 16 × `0x24`).
+pub fn free_player_slots(m: &dyn GuestMemory, s: u32) -> R<u32> {
+    let mut held = 0;
+    for i in 0..MAX {
+        let r = s + RESERVATIONS + i * RESERVATION_SIZE;
+        if m.u8(r)? != 0 && m.u8(r + 1)? == 0 {
+            held += 1;
+        }
+    }
+    let max = m.u32(s + MAX_PLAYERS)?;
+    let count = m.u32(s + PLAYER_COUNT)?;
+    Ok(max.saturating_sub(count).saturating_sub(held))
+}
+
+/// This console's own peer in `s`, if its index is one of the peers.
+fn local_peer(m: &dyn GuestMemory, s: u32) -> R<Option<u32>> {
+    let local = m.u32(s + LOCAL_PEER)?;
+    Ok((local < m.u32(s + PEER_COUNT)?.min(MAX)).then_some(local))
+}
+
+/// A phantom's peer properties: this console's own (its map and hopper
+/// statuses, which the lobby's start checks read of every peer: the map
+/// `0x652a0`, the countdown's end `0x6e410`, the matchmaking start
+/// `0x66050`), with `name` for both names. `None` while this console has
+/// no peer.
+pub fn props_for(m: &dyn GuestMemory, s: u32, name: &str) -> R<Option<Vec<u8>>> {
+    let Some(local) = local_peer(m, s)? else {
+        return Ok(None);
+    };
+    let mut p = vec![0; PROPS_SIZE as usize];
+    m.read(peer(s, local) + PEER_PROPS, &mut p)?;
+    let units: Vec<u16> = name.encode_utf16().collect();
+    for (at, n) in [
+        (PEER_NAME - PEER_PROPS, PEER_NAME_UNITS),
+        (PEER_NAME2 - PEER_PROPS, PEER_NAME2_UNITS),
+    ] {
+        let at = at as usize;
+        p[at..at + 2 * (n as usize + 1)].fill(0);
+        for (i, u) in units.iter().take(n as usize).enumerate() {
+            p[at + 2 * i..at + 2 * i + 2].copy_from_slice(&u.to_le_bytes());
+        }
+    }
+    Ok(Some(p))
+}
+
+/// Gives peer `p` (a phantom's, `name`) [`props_for`]'s properties, as the
+/// host's properties message (`0x5ed90`) does for a remote peer: the
+/// properties set (`+0x24` 1), the `0xc8` bytes in, both counters + 1 when
+/// either changed. Kept each frame, so a map load or a hopper's status on
+/// this console is the phantom's too. Returns whether it wrote.
+pub fn sync_props(m: &mut dyn GuestMemory, s: u32, p: u32, name: &str) -> R<bool> {
+    let Some(want) = props_for(&*m, s, name)? else {
+        return Ok(false);
+    };
+    let a = peer(s, p);
+    let mut have = vec![0; PROPS_SIZE as usize];
+    m.read(a + PEER_PROPS, &mut have)?;
+    if have == want && m.u8(a + PEER_PROPS_SET)? == 1 {
+        return Ok(false);
+    }
+    m.set_u8(a + PEER_PROPS_SET, 1)?;
+    m.write(a + PEER_PROPS, &want)?;
+    bump(m, s)?;
+    Ok(true)
+}
+
+/// This console's first session player (its own peer's lowest user with a
+/// slot), if any.
+fn local_player(m: &dyn GuestMemory, s: u32) -> R<Option<u32>> {
+    let Some(local) = local_peer(m, s)? else {
+        return Ok(None);
+    };
+    let mask = m.u32(s + PLAYER_MASK)?;
+    for u in 0..4 {
+        let slot = m.u32(peer(s, local) + PEER_SLOTS + 4 * u)?;
+        if slot < MAX && mask & 1 << slot != 0 {
+            return Ok(Some(slot));
+        }
+    }
+    Ok(None)
+}
+
+/// A phantom's configuration in session `s`: this console's first session
+/// player's requested one (there in the lobby, where no player datum may
+/// exist yet), else the player datum's ([`config`]), with the phantom's
+/// name and its team when it has one.
+pub fn config_in(
+    m: &dyn GuestMemory,
+    s: u32,
+    name: &str,
+    team: Option<u8>,
+) -> R<Option<[u8; CONFIG_SIZE]>> {
+    let Some(slot) = local_player(m, s)? else {
+        return config(m, name, team);
+    };
+    let mut c = [0; CONFIG_SIZE];
+    m.read(player(s, slot) + P_REQUESTED, &mut c)?;
+    set_name(&mut c, name);
+    if let Some(t) = team {
+        c[CONFIG_TEAM] = t;
+    }
+    Ok(Some(c))
+}
+
+/// Whether the lobby's variant is a team game (`+0x4db0 + 0x48` bit 0).
+pub fn team_game(m: &dyn GuestMemory, s: u32) -> R<bool> {
+    Ok(m.u32(s + VARIANT + VARIANT_FLAGS)? & 1 != 0)
+}
+
+/// The most teams a configuration may name (`0x65cb0` clamps to 0..7).
+const MAX_TEAMS: u8 = 8;
+
+/// Each session player's slot, peer and effective team.
+fn players_teams(m: &dyn GuestMemory, s: u32) -> R<Vec<(u32, u32, u8)>> {
+    let mask = m.u32(s + PLAYER_MASK)?;
+    let mut out = Vec::new();
+    for slot in (0..MAX).filter(|i| mask & 1 << i != 0) {
+        let a = player(s, slot);
+        out.push((
+            slot,
+            m.u32(a + P_PEER)?,
+            m.u8(a + P_EFFECTIVE + CONFIG_TEAM as u32)?,
+        ));
+    }
+    Ok(out)
+}
+
+/// The team for a new phantom in a team game: the one with the fewest
+/// players of red, blue and any other a player is on, the lowest on a tie
+/// (docs/game/bots.md §5.1). The host's configuration pass (`0x65cb0`)
+/// takes a requested team as it is in a team game (clamped to 0..7), so
+/// the bots keep the teams even.
+pub fn lobby_team(m: &dyn GuestMemory, s: u32) -> R<u8> {
+    let teams = players_teams(m, s)?;
+    let count = team_counts(teams.iter().map(|t| t.2));
+    Ok(fewest(&count))
+}
+
+/// The players on each team: red and blue (0 and 1) always, and any
+/// other team a player is on.
+fn team_counts(teams: impl Iterator<Item = u8>) -> Vec<(u8, usize)> {
+    let mut count: Vec<(u8, usize)> = vec![(0, 0), (1, 0)];
+    for t in teams.filter(|&t| t < MAX_TEAMS) {
+        match count.iter_mut().find(|c| c.0 == t) {
+            Some(c) => c.1 += 1,
+            None => count.push((t, 1)),
+        }
+    }
+    count.sort_unstable();
+    count
+}
+
+fn fewest(count: &[(u8, usize)]) -> u8 {
+    count.iter().min_by_key(|c| (c.1, c.0)).map_or(0, |c| c.0)
+}
+
+/// Sets session player `slot`'s team, requested and effective, and bumps
+/// the counters.
+pub fn set_team(m: &mut dyn GuestMemory, s: u32, slot: u32, team: u8) -> R<()> {
+    let a = player(s, slot);
+    m.set_u8(a + P_REQUESTED + CONFIG_TEAM as u32, team)?;
+    m.set_u8(a + P_EFFECTIVE + CONFIG_TEAM as u32, team)?;
+    bump(m, s)
+}
+
+/// Keeps the teams even in a team game's lobby by moving the phantoms of
+/// `movable` (peer indices: the phantoms with no team asked for): while
+/// one's team has two players more than the smallest, it goes to the
+/// smallest. A human changing team, or the variant turning into a team
+/// game, is followed; nobody moves for a difference of one. Returns each
+/// move as (peer, from, to).
+pub fn rebalance(m: &mut dyn GuestMemory, s: u32, movable: &[u32]) -> R<Vec<(u32, u8, u8)>> {
+    if !team_game(&*m, s)? {
+        return Ok(Vec::new());
+    }
+    let players = players_teams(&*m, s)?;
+    let mut count = team_counts(players.iter().map(|t| t.2));
+    let mut moved = Vec::new();
+    for &(slot, p, team) in &players {
+        if !movable.contains(&p) {
+            continue;
+        }
+        let to = fewest(&count);
+        let least = count.iter().find(|c| c.0 == to).map_or(0, |c| c.1);
+        let now = count.iter().find(|c| c.0 == team).map(|c| c.1);
+        // Off every team (0xff, or past the eighth): in. On one with two
+        // more than the smallest: across.
+        if now.is_some_and(|n| n < least + 2) {
+            continue;
+        }
+        if let Some(c) = count.iter_mut().find(|c| c.0 == team) {
+            c.1 -= 1;
+        }
+        if let Some(c) = count.iter_mut().find(|c| c.0 == to) {
+            c.1 += 1;
+        }
+        set_team(m, s, slot, to)?;
+        moved.push((p, team, to));
+    }
+    Ok(moved)
+}
+
+/// The world's state while a server's game starts ([`SIM_STATE`]).
+pub const SIM_STARTING: u32 = 3;
+
+/// The game's start stops waiting for phantom machines (docs/game/bots.md
+/// §5.1, "Phantoms in the game"). A server's world, starting (state 3),
+/// waits until every machine in its wait mask (`+0x20`) but its own has a
+/// joined view, or until the timeout `[0x4ced4c]` (`0x69c80`); a phantom
+/// has no channel, so no view, and the game waited the whole timeout
+/// with phantoms in it. Their bits come out of the mask, so the start
+/// waits for real consoles only. Returns the mask before and after, when
+/// it changed.
+pub fn unwait_phantoms(m: &mut dyn GuestMemory) -> R<Option<(u32, u32)>> {
+    let sim = m.u32(SIM_GLOBALS)?;
+    if sim == 0 {
+        return Ok(None);
+    }
+    let mode = m.u32(sim + SIM_MODE)?;
+    // The servers: synchronous (2) and distributed (4).
+    if !matches!(mode, 2 | WORLD_DIST_SERVER) || m.u32(sim + SIM_STATE)? != SIM_STARTING {
+        return Ok(None);
+    }
+    let set = m.u32(MACHINES)?;
+    if set == 0 {
+        return Ok(None);
+    }
+    let valid = m.u32(set + MACHINES_MASK)?;
+    let wait = m.u32(sim + SIM_WAIT)?;
+    let mut left = wait;
+    for i in (0..MAX).filter(|i| wait & valid & 1 << i != 0) {
+        let id = mac_at(&*m, set + MACHINES_IDS + 6 * i)?;
+        if crate::phantom::handle_of(id).is_some() {
+            left &= !(1 << i);
+        }
+    }
+    if left == wait {
+        return Ok(None);
+    }
+    m.set_u32(sim + SIM_WAIT, left)?;
+    Ok(Some((wait, left)))
+}
+
+/// Gives each local bot's session player the bot mark ([`MARK`],
+/// [`marked_name`]) in its effective configuration, as a phantom has it
+/// (docs/game/bots.md §8.2.2): the name every console's lobby and the
+/// game's player show. `ports` is the bots' controller ports, as a mask.
+/// Only on the session's host (its own effective configurations are the
+/// ones the clients get), and only the effective name: the host's pass
+/// (`0x65cb0`) keeps an effective name once it has one, so a profile
+/// refreshing the requested one does not undo it. Returns the slots it
+/// marked.
+pub fn mark_local_bots(m: &mut dyn GuestMemory, ports: u32) -> R<Vec<u32>> {
+    let Some(s) = live_session(&*m) else {
+        return Ok(Vec::new());
+    };
+    let local = m.u32(s + LOCAL_PEER)?;
+    if m.u32(s + HOST_PEER)? != local || ports == 0 {
+        return Ok(Vec::new());
+    }
+    let mask = m.u32(s + PLAYER_MASK)?;
+    let mut marked = Vec::new();
+    for slot in (0..MAX).filter(|i| mask & 1 << i != 0) {
+        let a = player(s, slot);
+        let controller = m.u32(a + P_CONTROLLER)?;
+        if m.u32(a + P_PEER)? != local || controller >= 4 || ports & 1 << controller == 0 {
+            continue;
+        }
+        let at = a + P_EFFECTIVE;
+        let mut name = Vec::new();
+        for i in 0..CONFIG_NAME_UNITS as u32 {
+            let u = m.u16(at + 2 * i)?;
+            if u == 0 {
+                break;
+            }
+            name.push(u);
+        }
+        if name.is_empty() || name[0] == MARK as u16 {
+            continue;
+        }
+        let tag = String::from_utf16_lossy(&name);
+        let units = marked_name(&tag);
+        for i in 0..CONFIG_NAME_UNITS as u32 {
+            m.set_u16(at + 2 * i, units.get(i as usize).copied().unwrap_or(0))?;
+        }
+        marked.push(slot);
+    }
+    if !marked.is_empty() {
+        bump(m, s)?;
+    }
+    Ok(marked)
 }
 
 fn multiplayer(m: &dyn GuestMemory) -> bool {
@@ -416,6 +826,11 @@ fn bump(m: &mut dyn GuestMemory, s: u32) -> R<()> {
     m.set_u32(s + UPDATE, u.wrapping_add(1))?;
     let c = m.u32(s + CHANGES)?;
     m.set_u32(s + CHANGES, c.wrapping_add(1))
+}
+
+/// The players peer `p` of `s` holds (peer `+0xf8`).
+pub fn peer_players(m: &dyn GuestMemory, s: u32, p: u32) -> R<u32> {
+    m.u32(peer(s, p) + PEER_PLAYERS)
 }
 
 fn peer(s: u32, p: u32) -> u32 {
@@ -496,6 +911,21 @@ pub fn host_team(m: &dyn GuestMemory) -> R<Option<u8>> {
     Ok(None)
 }
 
+/// The host's team in its pregame lobby, before any player datum exists:
+/// its first session player's effective team ([`host_team`] reads the
+/// datum, which a game makes). `None` with no lobby this console hosts.
+pub fn lobby_host_team(m: &dyn GuestMemory) -> R<Option<u8>> {
+    let Ok(s) = host_lobby(m) else {
+        return Ok(None);
+    };
+    let Some(slot) = local_player(m, s)? else {
+        return Ok(None);
+    };
+    Ok(Some(
+        m.u8(player(s, slot) + P_EFFECTIVE + CONFIG_TEAM as u32)?,
+    ))
+}
+
 /// The mark before a bot's name: U+2699 GEAR, which our font patch draws
 /// (`font::gear`; docs/game/bots.md §8.2.2). The same as
 /// `live_proto::bots::BOT_MARK`, which takes it off again for the record.
@@ -565,7 +995,7 @@ pub fn add_player(
 ) -> R<Option<u32>> {
     let mask = m.u32(s + PLAYER_MASK)?;
     let count = m.u32(s + PLAYER_COUNT)?;
-    if count >= m.u32(s + MAX_PLAYERS)? {
+    if free_player_slots(&*m, s)? == 0 {
         return Ok(None);
     }
     for slot in (0..MAX).filter(|i| mask & 1 << i != 0) {
@@ -719,9 +1149,8 @@ pub fn write_action(m: &mut dyn GuestMemory, slot: u32, action: &Action) -> R<()
     m.set_u32(slot + SLOT_STAMP, tick)
 }
 
-/// Turn rate at full right stick, radians a second (\[guess\]: about the
-/// game's at the bots' look sensitivity).
-pub const TURN_RATE: f32 = 3.0;
+/// Nominal turn rate at full stick, shared with the bot's hand.
+pub const TURN_RATE: f32 = crate::mind::TURN_RATE;
 
 /// A pad as an action, for a player facing `aim` (a unit vector) with
 /// weapon `weapon`, over `dt` seconds. The right stick turns from the
@@ -735,12 +1164,12 @@ pub fn action_from_pad(
     dt: f32,
 ) -> Action {
     let (yaw, pitch) = (aim[1].atan2(aim[0]), aim[2].atan2(aim[0].hypot(aim[1])));
-    let (rx, ry) = pad.right_stick;
+    let (rx, ry) = crate::mind::turn_rate(pad.right_stick);
     let (lx, ly) = pad.left_stick;
     Action {
         flags: 0,
-        yaw: yaw - rx * TURN_RATE * dt,
-        pitch: pitch + ry * TURN_RATE * dt,
+        yaw: yaw - rx * dt,
+        pitch: pitch + ry * dt,
         forward: ly,
         // [guess] the action's strafe is positive to the left.
         strafe: -lx,

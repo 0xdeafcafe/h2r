@@ -168,11 +168,16 @@ export function hitText(amount: number | null): string {
 }
 
 /** One frame's hits with the same attacker, victim and kind folded into
- *  one (a shotgun's pellets, a burst), their damage added up. */
+ *  one (a shotgun's pellets, a burst), their damage added up. A hit that
+ *  says it did no damage at all (`amount` 0) is left out: recorded games
+ *  carry runs of them a few ticks apart on one player (kind `guardians`,
+ *  no attacker: 1358 of a Cyclotron game's 1580 hits), each drawn as a "0"
+ *  marker on them. */
 export function mergeHits(hits: readonly SampledHit[]): SampledHit[] {
   const out = new Map<string, SampledHit>();
   let n = 0;
   for (const h of hits) {
+    if (h.amount === 0) continue;
     const key = h.to === null ? "#" + n++ : `${h.from}|${h.to}|${h.kind}`;
     const m = out.get(key);
     if (!m) { out.set(key, { ...h }); continue; }

@@ -338,3 +338,229 @@ fn bloodgulch_leaves_cut_out_and_details_tile_by_their_scale() {
     eprintln!("scorpion hull (no reflection) detail tiling {plain:?}");
     assert_eq!(plain, [16.0, 16.0]);
 }
+
+/// Blood Gulch's player (`bipd characters\cyborg_mp\cyborg_mp`) and
+/// Scorpion take change colours as Halo 2's objects do (converter version
+/// 84): the cyborg's armour, visor and first-person hands `soso` read
+/// change colour C, the Scorpion's darkened hull A, so each is rebuilt on
+/// `tex_bump_env_four_change_color` with a change-colour map whose red
+/// (slot 0) is the multipurpose map's blue and whose other channels are
+/// empty; the biped has four change colours (all empty: Halo 2 writes the
+/// player's into them), the Scorpion its Halo 1 grey in slot 0.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn bloodgulch_cyborg_and_scorpion_take_change_colours() {
+    use tags::defs::{Defs, Val};
+    let h1 = h1_map("bloodgulch");
+    let mut base_map = h2_map("coagulation");
+    let library = h1convert::shad::Library::read(&mut base_map);
+    let cc_stem = library
+        .stem(&h1convert::shad::TEX_BUMP_ENV_FOUR_CHANGE_COLOR)
+        .expect("the base has tex_bump_env_four_change_color");
+    let base = Base::read(&mut base_map).unwrap();
+    let mut conv = Converter::new(&h1, &base);
+    for (group, name) in [
+        (b"bipd", "characters\\cyborg_mp\\cyborg_mp"),
+        (b"vehi", "vehicles\\scorpion\\scorpion_mp"),
+    ] {
+        let t = h1
+            .tags()
+            .iter()
+            .find(|t| t.group == Group::new(group) && t.name == name)
+            .unwrap_or_else(|| panic!("{name}"));
+        conv.object(t).unwrap();
+    }
+    let tree = &conv.tree;
+    let named = |id: TagId| {
+        (id.0 & 0xffff_0000 == local(0).0 & 0xffff_0000)
+            .then(|| {
+                tree.tags
+                    .get((id.0 & 0xffff) as usize)
+                    .map(|(n, _)| n.as_str())
+            })
+            .flatten()
+    };
+    let refs = |name: &str| {
+        let (_, s) = tree
+            .tags
+            .iter()
+            .find(|(n, c)| n == name && c.group.0 == *b"shad")
+            .unwrap_or_else(|| panic!("{name}: a shader of the tree"));
+        let mut out = Vec::new();
+        tag_refs(&s.root, &mut out);
+        out
+    };
+    for (shader, map) in [
+        (
+            "characters\\cyborg\\shaders\\armor",
+            "characters\\cyborg\\bitmaps\\cyborg multipurpose_change_color_0",
+        ),
+        (
+            "characters\\cyborg\\shaders\\visor",
+            "characters\\cyborg\\bitmaps\\cyborg multipurpose_change_color_0",
+        ),
+        (
+            "vehicles\\scorpion\\shaders\\hull_darkened",
+            "vehicles\\scorpion\\bitmaps\\scorpion_multipurpose_change_color_0",
+        ),
+    ] {
+        let r = refs(shader);
+        let names: Vec<&str> = r.iter().filter_map(|&id| named(id)).collect();
+        eprintln!("{shader}: {names:?}");
+        assert!(
+            r.contains(&cc_stem),
+            "{shader}: drawn with the change-colour stem"
+        );
+        assert!(names.contains(&map), "{shader}: its change-colour map");
+    }
+    change_colour_map_is_the_multipurpose_blue(
+        &h1,
+        tree,
+        "characters\\cyborg\\bitmaps\\cyborg multipurpose_change_color_0",
+        "characters\\cyborg\\bitmaps\\cyborg multipurpose",
+    );
+
+    let record = |group: &[u8; 4], name: &str| {
+        let (_, c) = tree
+            .tags
+            .iter()
+            .find(|(n, c)| n == name && c.group.0 == *group)
+            .unwrap_or_else(|| panic!("{name}"));
+        let def = Defs::builtin().group(map::FourCC(*group)).unwrap();
+        tags::defs::from_built(def, &c.root).unwrap()
+    };
+    let count = |r: &tags::defs::Record, p: &str| match r.at(p) {
+        Some(Val::Block(b)) => b.len(),
+        other => panic!("{p}: {other:?}"),
+    };
+    let bipd = record(b"bipd", "characters\\cyborg_mp\\cyborg_mp");
+    assert_eq!(
+        count(&bipd, "unit.obje.change_colors"),
+        4,
+        "the player's four colours"
+    );
+    for k in 0..4 {
+        assert_eq!(
+            count(&bipd, &format!("unit.obje.change_colors[{k}].block_0")),
+            0
+        );
+    }
+    let vehi = record(b"vehi", "vehicles\\scorpion\\scorpion_mp");
+    assert_eq!(count(&vehi, "unit.obje.change_colors"), 4);
+    assert_eq!(
+        count(&vehi, "unit.obje.change_colors[0].block_0"),
+        1,
+        "Halo 1's grey"
+    );
+    match vehi.at("unit.obje.change_colors[0].block_0[0].unknown_4") {
+        Some(Val::Bytes(b)) => {
+            let v = f32::from_le_bytes(b[..4].try_into().unwrap());
+            assert!((v - 0.45).abs() < 0.01, "lower red {v}");
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn bloodgulch_cyborg_wears_the_chiefs_emblem_on_its_left_shoulder() {
+    use h1models::emblem::{LEFT_SHOULDER, place};
+    let h1 = h1_map("bloodgulch");
+    let mode = h1
+        .tags()
+        .iter()
+        .find(|t| t.group == Group::new(b"mode") && t.name == "characters\\cyborg\\cyborg")
+        .expect("the cyborg's model");
+    let (model, _) =
+        h1models::model_from_map(&h1, mode, &h1models::mode::ModelOptions::default()).unwrap();
+    let spot = place(&model, &LEFT_SHOULDER).expect("the ray meets the left upper arm");
+    eprintln!("{spot:?}");
+    // Halo 1 models face +x, z up: the left shoulder is at +y, near the
+    // joint's height (0.569), and its plate faces out to the left.
+    assert!((0.1..0.35).contains(&spot.centre[1]), "{:?}", spot.centre);
+    assert!((0.4..0.65).contains(&spot.centre[2]), "{:?}", spot.centre);
+    assert!(spot.normal[1] > 0.3, "{:?}", spot.normal);
+    assert!(
+        spot.front_is_geometric,
+        "the cyborg's triangles face their normals"
+    );
+
+    let mut base_map = h2_map("coagulation");
+    let base = Base::read(&mut base_map).unwrap();
+    let emblem = base
+        .find(b"shad", h1objects::convert::EMBLEM_SHADER)
+        .expect("the base has the Chief's emblem shader");
+    let mut conv = Converter::new(&h1, &base);
+    let t = h1
+        .tags()
+        .iter()
+        .find(|t| t.group == Group::new(b"bipd") && t.name == "characters\\cyborg_mp\\cyborg_mp")
+        .expect("cyborg_mp");
+    conv.object(t).unwrap();
+    let (_, m) = conv
+        .tree
+        .tags
+        .iter()
+        .find(|(n, c)| n == "characters\\cyborg\\cyborg" && c.group.0 == *b"mode")
+        .expect("the converted model");
+    let mut refs = Vec::new();
+    tag_refs(&m.root, &mut refs);
+    assert!(
+        refs.contains(&emblem),
+        "a material is the Chief's emblem shader"
+    );
+}
+
+/// The change-colour map `name` against the Halo 1 multipurpose map
+/// `mask`: same size and chain, its red the mask's blue within a DXT
+/// step on average, green, blue and alpha 0.
+fn change_colour_map_is_the_multipurpose_blue(
+    h1: &H1Map,
+    tree: &h1objects::convert::Tree,
+    name: &str,
+    mask: &str,
+) {
+    use h1bitmaps::BitmapExt;
+    let (_, conv) = tree
+        .tags
+        .iter()
+        .find(|(n, _)| n == name)
+        .expect("the change-colour map");
+    assert_eq!(conv.group.0, *b"bitm");
+    let images = conv
+        .root
+        .fixups
+        .iter()
+        .find_map(|f| match &f.kind {
+            FixupKind::Block { child, .. } if f.offset == 0x44 => Some(child),
+            _ => None,
+        })
+        .expect("images block");
+    let img = h1map::bitmap::Image::parse(&images.bytes).unwrap();
+    assert_eq!(img.format, h1map::bitmap::PixelFormat::Dxt5);
+    let got = h1bitmaps::decode_image(&img, &conv.raw[0].0).unwrap();
+    let t = h1
+        .tags()
+        .iter()
+        .find(|t| t.name == mask && t.group == Group::new(b"bitm"))
+        .unwrap();
+    let m = h1map::bitmap::Bitmap::read(h1, t).unwrap();
+    let mi = &m.images[0];
+    assert_eq!(
+        (img.width, img.height, img.mip_count),
+        (mi.width, mi.height, mi.mip_count)
+    );
+    let blue = m.decode(h1, 0, 0).unwrap();
+    let top = got.iter().find(|l| l.level == 0 && l.face == 0).unwrap();
+    let n = (top.width * top.height) as usize;
+    let mut off = 0u64;
+    for t in 0..n {
+        off += u64::from(top.rgba[t * 4].abs_diff(blue.rgba[t * 4 + 2]));
+        for c in 1..4 {
+            assert_eq!(top.rgba[t * 4 + c], 0, "texel {t} channel {c}");
+        }
+    }
+    let mean = off as f64 / n as f64;
+    eprintln!("{name}: red off the mask's blue by {mean:.2} on average");
+    assert!(mean < 4.0);
+}

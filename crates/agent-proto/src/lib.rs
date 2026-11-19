@@ -18,6 +18,7 @@ pub mod havok;
 pub mod hot;
 mod load;
 mod pad;
+pub mod raw;
 mod render;
 pub mod sim;
 pub mod state;
@@ -27,8 +28,8 @@ pub use endpoint::Endpoint;
 pub use load::{LoadParams, LoadRecord, LoadSegment, Loads};
 pub use pad::{AtTick, Now, PAD_BUTTONS, PadParams, PadStep};
 pub use render::{
-    DrawRecord, FrameParams, FrameRecord, FrameReply, FrameTotals, OpRecord, PassRecord,
-    RenderStats, SnapRecord,
+    DepthRecord, DrawRecord, FrameParams, FrameRecord, FrameReply, FrameTotals, OpRecord,
+    PassRecord, RenderStats, SnapRecord,
 };
 
 use serde::{Deserialize, Serialize};
@@ -133,6 +134,10 @@ pub mod method {
     pub const INPUT_REPLAY: &str = "input.replay";
     /// End the recording (writing it) or the replay.
     pub const INPUT_STOP: &str = "input.stop";
+    /// The host's controllers as their backends and the debug menu's gate
+    /// see them: profile class, touchpad, buttons, and whether the menu is
+    /// open (`h2 agent hostpads`).
+    pub const INPUT_HOST: &str = "input.host";
     /// Start the in-process sampling profiler (`{"hz": 1000}`).
     pub const SAMPLE_START: &str = "profile.sample.start";
     /// Stop it and write the samples (`{"inline": true}` returns them too).
@@ -145,7 +150,9 @@ pub mod method {
     /// interpreted (`{"top": 20}`): where generated code still stops.
     pub const PROFILE_FALLBACKS: &str = "profile.fallbacks";
     /// The menu screen player one's input goes to (`H2_UI_WATCH=1`,
-    /// `boot::ui_watch`): `{"screen", "window", "slot", "live_menu_row"}`.
+    /// `boot::ui_watch`): `{"screen", "window", "slot", "live_menu_row",
+    /// "mode", "dialog", "age_ms"}`; `dialog` is the first screen on windows
+    /// 0 to 4 (`{"id", "name", "window", "slot"}`) or `null`.
     pub const UI_SCREEN: &str = "ui.screen";
     /// Record the next whole frame's passes, draws and targets, or read
     /// the last one recorded ([`crate::FrameParams`]).
@@ -154,6 +161,15 @@ pub mod method {
     /// reasons, the pipelined render, native render paths
     /// ([`crate::RenderStats`]).
     pub const RENDER_STATS: &str = "render.stats";
+    /// Sim mode's match (`H2_SIM`, `boot::sim_glue`): the match file, the
+    /// phase (`waiting`, `playing`, `over`), ticks, game and wall seconds,
+    /// the speed-up so far, frames skipped, and the end once over.
+    pub const MATCH_STATUS: &str = "match.status";
+    /// Sim mode: the match report as it would be written now
+    /// (`h2-sim-report/1`, docs/runtime/sim.md §6).
+    pub const MATCH_REPORT: &str = "match.report";
+    /// Sim mode: end the match at the next slice boundary, as `stopped`.
+    pub const MATCH_STOP: &str = "match.stop";
 }
 
 /// Error codes. The negative ones are JSON-RPC's own.

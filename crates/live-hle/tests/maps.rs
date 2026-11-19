@@ -7,10 +7,10 @@ use std::sync::Arc;
 use content::manifest::Layer;
 use content::{Library, Manifest, MapId, Sha256};
 use live_hle::maps::{Bases, HttpFetch, MapGate, Refusal};
+use live_proto::lxm;
 use live_proto::maps::{MAP_PUBLISHED, MapDocument, package_stream};
 use live_proto::session::NewSession;
 use live_proto::sign::{AccountRequest, EventBody, KeyPair, issue_token};
-use live_proto::lxm;
 
 struct Disc(HashMap<String, Sha256>);
 impl Bases for Disc {
@@ -208,8 +208,12 @@ fn installing_a_mod_counts_one_download_per_account() {
         serde_json::to_value(&MapDocument {
             manifest: m,
             image: None,
+            features: vec![],
+            gametypes: vec![],
+            version: None,
             category: None,
             source_url: None,
+            credit: None,
         })
         .unwrap(),
         time::OffsetDateTime::now_utc(),

@@ -26,6 +26,7 @@ pub struct Map<R = File> {
     globals: TagId,
     index_space: AddressSpace,
     metadata_space: Option<AddressSpace>,
+    metadata_size: u32,
 }
 
 impl Map<File> {
@@ -109,12 +110,7 @@ impl<R: Read + Seek> Map<R> {
         }
         bounds("index", index, u64::from(header.index_size), length)?;
         let meta_offset = index + u64::from(header.index_size);
-        bounds(
-            "metadata",
-            meta_offset,
-            u64::from(header.tag_data_size),
-            length,
-        )?;
+        let metadata_size = metadata_region_size(&header, meta_offset, length)?;
         let ih = read_at(&mut reader, base, length, index, 32)?;
         if &ih[28..32] != b"sgat" {
             return Err(Error::Invalid("tag-index signature"));
@@ -152,7 +148,7 @@ impl<R: Read + Seek> Map<R> {
                     .checked_add(header.meta_size)
                     .and_then(|b| b.checked_sub(header.tag_data_size))
                     .ok_or(e)?;
-                address_space(base, meta_offset, header.tag_data_size)?
+                address_space(base, meta_offset, metadata_size)?
                     .translate(word(&ih, 8), tag_bytes)?
             }
         };
@@ -169,7 +165,7 @@ impl<R: Read + Seek> Map<R> {
             if first == 0 || first == u32::MAX {
                 return Err(Error::Invalid("missing first-tag metadata anchor"));
             }
-            Some(address_space(first, meta_offset, header.tag_data_size)?)
+            Some(address_space(first, meta_offset, metadata_size)?)
         };
         if header.tag_names.count != 0 && header.tag_names.count != index_slots {
             return Err(Error::Invalid("tag-name count differs from index slots"));
@@ -235,6 +231,7 @@ impl<R: Read + Seek> Map<R> {
             globals: TagId(word(&ih, 16)),
             index_space,
             metadata_space,
+            metadata_size,
         };
         map.check_root(map.scenario, FourCC(*b"scnr"))?;
         map.check_root(map.globals, FourCC(*b"matg"))?;
@@ -266,6 +263,12 @@ impl<R: Read + Seek> Map<R> {
     /// Translate index-header/group/tag-table addresses (primary magic).
     pub fn index_space(&self) -> AddressSpace {
         self.index_space
+    }
+    /// Length of the ordinary metadata region as read: the header's
+    /// `+0x18`, or as much of it as the file holds when a modding tool
+    /// declared more than it wrote (see `metadata_region_size`).
+    pub fn metadata_size(&self) -> u32 {
+        self.metadata_size
     }
     /// Ordinary metadata translation (secondary magic); BSPs have their own
     /// [`TagLocation::space`]. An empty tag index has no metadata anchor.
@@ -439,6 +442,21 @@ impl<R: Read + Seek> Map<R> {
         tag.location = Some(location);
         Ok(())
     }
+}
+
+/// The ordinary metadata region's length: the header's `+0x18`, cut to the
+/// declared file end when it runs past it.
+///
+/// Retail maps end exactly at the region's end. Some community-modded maps
+/// (metadata injected by a modding tool, as in the Phantom Mappack) grow
+/// `+0x18` and `+0x1c` by more than the bytes the tool wrote, so the
+/// declared region overruns the file by a few pages while every tag still
+/// lies inside it. Each tag is checked against the region kept here, so a
+/// tag that truly lies past the end of the file is still refused.
+fn metadata_region_size(header: &Header, meta_offset: u64, length: u64) -> Result<u32> {
+    bounds("metadata", meta_offset, 0, length)?;
+    let size = u64::from(header.tag_data_size).min(length - meta_offset);
+    Ok(size as u32)
 }
 
 fn address_space(virtual_base: u32, file_offset: u64, size: u32) -> Result<AddressSpace> {

@@ -63,52 +63,80 @@ fn the_target_is_near_and_in_front_and_kept() {
 }
 
 #[test]
-fn back_in_view_soon_needs_no_new_reaction() {
-    let mut t = Tactics::default();
-    let a = [foe(1, [6.0, 0.0, 0.0])];
-    t.see(&a, 100, 10);
-    assert_eq!(t.since(1, 100), 100);
-    t.see(&a, 110, 10);
-    // Out of view for a moment, then back: still counted from 100.
-    t.see(&[], 120, 10);
-    t.see(&a, 110 + GRACE, 10);
-    assert_eq!(t.since(1, 110 + GRACE), 100);
-    // Out of view for longer: a new reaction. No one else was in view
-    // lately, so the whole of it.
-    let back = 110 + 3 * GRACE;
-    t.see(&a, back, 10);
-    assert_eq!(t.since(1, back), back);
-    // In a fight already, a newcomer takes half the reaction.
-    t.see(&[a[0], foe(2, [3.0, 3.0, 0.0])], back + 1, 10);
-    assert_eq!(t.since(2, back + 1), back + 1 - 5);
+fn back_in_view_soon_keeps_the_original_reaction() {
+    let mut t = Tactics::new(7);
+    let first = t.focus(1, 100, Skill::Normal);
+    assert!((107..=113).contains(&first));
+    assert_eq!(
+        t.focus(1, 102, Skill::Normal),
+        first,
+        "keeps a pending reaction"
+    );
+    assert_eq!(t.focus(1, 102 + GRACE, Skill::Normal), first);
+    let back = 102 + 3 * GRACE;
+    assert!((back + 7..=back + 13).contains(&t.focus(1, back, Skill::Normal)));
+    let newcomer = t.focus(2, back + 1, Skill::Legendary);
+    assert!(newcomer - (back + 1) >= MIN_REACTION);
     t.reset();
-    assert_eq!(t.since(1, 7), 7);
+    assert!(t.focus(1, newcomer + 1, Skill::Normal) > newcomer + 1);
+}
+
+#[test]
+fn reaction_delays_are_bounded_variable_and_scale_by_skill() {
+    let mut means = Vec::new();
+    for (skill, range) in Skill::ALL.into_iter().zip([10..=18, 7..=13, 5..=9, 5..=8]) {
+        let sample = |seed| Tactics::new(seed).focus(1, 204, skill) - 204;
+        let delays: Vec<_> = (0..256).map(sample).collect();
+        assert!(delays.iter().all(|d| range.contains(d)), "{skill:?}");
+        assert_eq!(delays.iter().min(), Some(range.start()));
+        assert_eq!(delays.iter().max(), Some(range.end()));
+        assert_eq!(delays, (0..256).map(sample).collect::<Vec<_>>());
+        means.push(delays.iter().sum::<u32>());
+    }
+    assert!(means.windows(2).all(|pair| pair[0] > pair[1]), "{means:?}");
+
+    let mut t = Tactics::new(1);
+    let origin = u32::MAX - 2;
+    let ready = t.focus(1, origin, Skill::Legendary);
+    assert!(!reached(origin, ready));
+    assert!(reached(origin.wrapping_add(8), ready));
+    assert_eq!(t.focus(1, 10, Skill::Legendary), ready);
 }
 
 #[test]
 fn a_once_per_pull_trigger_is_pulled_and_let_go() {
-    let mut t = Tactics::default();
+    let mut t = Tactics::new(12);
     let pull = Pull::Tap(6);
-    let down: Vec<bool> = (0..20).map(|k| t.trigger(k, 0, pull, true)).collect();
-    let on: Vec<u32> = (0..20).filter(|&k| down[k as usize]).collect();
-    assert_eq!(on, vec![0, 1, 6, 7, 12, 13, 18, 19]);
-    // Not wanting: no new pull (one under way finishes).
+    let down: Vec<_> = (0..75).map(|k| t.trigger(k, pull, true)).collect();
+    let starts: Vec<_> = (1..down.len())
+        .filter(|&k| !down[k - 1] && down[k])
+        .collect();
+    assert!(starts.len() >= 7, "{starts:?}");
+    assert!(starts.windows(2).all(|w| (6..=9).contains(&(w[1] - w[0]))));
+    for k in [0, starts[0], starts[1]] {
+        assert!((2..=3).contains(&down[k..].iter().take_while(|d| **d).count()));
+    }
     let mut t = Tactics::default();
-    assert!(t.trigger(0, 0, pull, true));
-    assert!(t.trigger(1, 0, pull, false), "finishes the pull");
-    assert!(!t.trigger(6, 0, pull, false));
-    assert!(t.trigger(7, 0, pull, true));
+    assert!(t.trigger(0, pull, true));
+    assert!(t.trigger(1, pull, false), "finishes an allowed pull");
+    t.stop_trigger(2);
+    assert!(!t.trigger(2, pull, false));
 }
 
 #[test]
 fn a_held_trigger_bursts_and_a_blade_never_pulls() {
     let mut t = Tactics::default();
-    let burst = Pull::Hold(Some((3, 2)));
-    let on: Vec<u32> = (0..10).filter(|&k| t.trigger(k, 0, burst, true)).collect();
-    assert_eq!(on, vec![0, 1, 2, 5, 6, 7]);
-    assert!(t.trigger(4, 0, Pull::Hold(None), true));
-    assert!(!t.trigger(4, 0, Pull::Hold(None), false));
-    assert!(!t.trigger(4, 0, Pull::Never, true));
+    let burst = Pull::Hold(Some((12, 8)));
+    let down: Vec<_> = (0..35).map(|k| t.trigger(k, burst, true)).collect();
+    let on = down.iter().take_while(|d| **d).count();
+    let off = down[on..].iter().take_while(|d| !**d).count();
+    assert!((10..=14).contains(&on), "{down:?}");
+    assert!((6..=10).contains(&off), "{down:?}");
+    assert!(down[on + off]);
+    let mut t = Tactics::default();
+    assert!(t.trigger(4, Pull::Hold(None), true));
+    assert!(!t.trigger(4, Pull::Hold(None), false));
+    assert!(!t.trigger(4, Pull::Never, true));
 }
 
 #[test]
@@ -202,6 +230,7 @@ fn the_movement_signals_follow_the_gun_and_the_danger() {
         held: Some(rifle()),
         other: None,
         grenades: [0, 0],
+        ..Arms::default()
     };
     t.signal(Some(&a), Kit::Fine, false, Some(10.0));
     assert_eq!(t.band, Role::Precise.band());

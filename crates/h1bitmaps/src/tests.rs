@@ -466,3 +466,154 @@ fn a_base_takes_its_masks_red_as_alpha() {
     // The same inputs give the same bytes.
     assert_eq!(red_into_alpha(&base, &base_px, &mask, &mask_px).unwrap().1, px);
 }
+
+/// A DXT1 image (red and blue endpoints, each row the four palette
+/// entries): the result keeps its colours exactly and takes `gain` times
+/// each texel's brightest channel as alpha (255, 255, 170, 170 along a
+/// row; at gain 0.5 half that; at gain 2 saturated), within a DXT5 alpha
+/// step.
+#[test]
+fn an_image_takes_its_brightest_channel_as_alpha() {
+    use crate::mask::{brightest, brightest_into_alpha};
+    assert_eq!(brightest(10, 200, 30, 1.0), 200);
+    assert_eq!(brightest(10, 200, 30, 0.5), 100);
+    assert_eq!(brightest(10, 200, 30, 2.0), 255);
+    let base = image(14, 0, [8, 8, 1], 1, DXT);
+    let mut block = [0u8; 8];
+    block[0..2].copy_from_slice(&0xf800u16.to_le_bytes());
+    block[2..4].copy_from_slice(&0x001fu16.to_le_bytes());
+    block[4..8].copy_from_slice(&0xe4e4_e4e4u32.to_le_bytes());
+    let px: Vec<u8> = block.iter().copied().cycle().take(base.pixel_size as usize).collect();
+    let want = decode_image(&base, &px).unwrap();
+    for gain in [1.0f32, 0.5, 2.0] {
+        let (img, out) = brightest_into_alpha(&base, &px, gain).unwrap();
+        assert_eq!(img.format, h1map::bitmap::PixelFormat::Dxt5);
+        assert_eq!((img.width, img.height, img.mip_count), (8, 8, 1));
+        assert_eq!(img.pixel_size as usize, out.len());
+        let got = decode_image(&img, &out).unwrap();
+        assert_eq!(got.len(), 2);
+        for (g, w) in got.iter().zip(&want) {
+            for t in 0..(g.width * g.height) as usize {
+                let c = &w.rgba[t * 4..t * 4 + 3];
+                assert_eq!(&g.rgba[t * 4..t * 4 + 3], c, "gain {gain} level {} texel {t}", g.level);
+                let a = g.rgba[t * 4 + 3];
+                let expect = brightest(c[0], c[1], c[2], gain);
+                // Half a step of the block's 8-value mode over its range
+                // (at most 255 / 7 / 2).
+                assert!(a.abs_diff(expect) <= 19, "gain {gain} level {} texel {t}: {a} vs {expect}", g.level);
+            }
+        }
+        assert_eq!(brightest_into_alpha(&base, &px, gain).unwrap().1, out);
+    }
+}
+
+/// A Halo 1 multipurpose map's blue (invented A8R8G8B8) as a Halo 2
+/// change-colour map: DXT5 of the same size, the blue in the channel asked
+/// for (red: change colour 0), every other channel, alpha included, 0 (a
+/// non-zero alpha would tint by change colour 3 as well). Each 4x4 block
+/// is uniform here, so the values come back exactly.
+#[test]
+fn a_multipurpose_blue_becomes_one_change_colour_channel() {
+    use crate::decode::texture_desc;
+    use crate::mask::channel_into;
+    let mask = image(11, 0, [8, 8, 1], 0, LIN);
+    let pitch = texture_desc(&mask).unwrap().pitch as usize;
+    let mut px = vec![0u8; mask.pixel_size as usize];
+    for y in 0..8 {
+        for x in 0..8 {
+            // B, G, R, A: blue is the mask (left half full, right empty),
+            // red and green are the reflection and glow masks.
+            let b = if x < 4 { 0xff } else { 0 };
+            px[y * pitch + x * 4..][..4].copy_from_slice(&[b, 0x40, 0x80, 0xff]);
+        }
+    }
+    for to in 0..4 {
+        let (img, out) = channel_into(&mask, &px, 2, to).unwrap();
+        assert_eq!(img.format, h1map::bitmap::PixelFormat::Dxt5);
+        assert_eq!((img.width, img.height), (8, 8));
+        assert_eq!(img.pixel_size as usize, out.len());
+        let got = decode_image(&img, &out).unwrap();
+        assert_eq!(got.len(), 1);
+        for t in 0..64 {
+            let want = if t % 8 < 4 { 0xff } else { 0 };
+            for c in 0..4 {
+                let w = if c == to { want } else { 0 };
+                assert_eq!(got[0].rgba[t * 4 + c], w, "to {to} texel {t} channel {c}");
+            }
+        }
+        assert_eq!(channel_into(&mask, &px, 2, to).unwrap().1, out);
+    }
+    assert!(channel_into(&mask, &px, 2, 4).is_err());
+}
+
+/// A picture made opaque keeps its colour and samples alpha 255 in every
+/// format with an alpha it can set, through the swizzled, linear and DXT
+/// paths; the formats whose alpha it can't set are left as they are.
+#[test]
+fn an_opaque_copy_keeps_the_colour_and_drops_the_alpha() {
+    use crate::convert::force_opaque;
+    use h1map::bitmap::PixelFormat;
+    let decode = |format: u16, flags: u16, px: &[u8]| {
+        let img = image(format, 0, [1, 1, 1], 0, flags);
+        let mut b = vec![0u8; img.pixel_size as usize];
+        b[..px.len()].copy_from_slice(px);
+        let before: [u8; 4] = decode_image(&img, &b).unwrap()[0].rgba[..4]
+            .try_into()
+            .unwrap();
+        let done = force_opaque(PixelFormat::from_raw(format), &mut b);
+        let after: [u8; 4] = decode_image(&img, &b).unwrap()[0].rgba[..4]
+            .try_into()
+            .unwrap();
+        (before, after, done)
+    };
+    for (format, texel) in [
+        (0u16, &[0x10u8][..]),   // A8
+        (8, &[0xe0, 0x03][..]),  // A1R5G5B5, alpha bit clear
+        (9, &[0x0f, 0x30][..]),  // A4R4G4B4, alpha 3
+        (10, &[1, 2, 3, 0][..]), // X8R8G8B8
+        (11, &[1, 2, 3, 4][..]), // A8R8G8B8, Blood Gulch's clear blue sky
+    ] {
+        let (before, after, done) = decode(format, SWZ, texel);
+        assert!(done, "format {format}");
+        assert_eq!(after[3], 255, "format {format}");
+        assert_eq!(after[..3], before[..3], "format {format}: colour kept");
+    }
+    // Linear rows: the padding is touched too, harmlessly.
+    let img = image(11, 0, [3, 2, 1], 0, LIN);
+    let mut px = vec![0u8; img.pixel_size as usize];
+    px[64..68].copy_from_slice(&[9, 8, 7, 0]);
+    assert!(force_opaque(PixelFormat::A8R8G8B8, &mut px));
+    let l = decode_image(&img, &px).unwrap();
+    assert_eq!(&l[0].rgba[12..16], &[7, 8, 9, 255]);
+    // DXT3 and DXT5: every texel's alpha 255, the colour block untouched.
+    for format in [15u16, 16] {
+        // Alpha bytes that aren't zero: DXT5 codes 6 (0 with equal
+        // endpoints) everywhere.
+        let mut b = vec![0x5au8, 0x5a, 0xb6, 0x6d, 0xdb, 0xb6, 0x6d, 0xdb];
+        b.extend_from_slice(&dxt1_block());
+        let img = image(format, 0, [4, 4, 1], 0, DXT);
+        let before = decode_image(&img, &b).unwrap()[0].rgba.clone();
+        assert!(force_opaque(PixelFormat::from_raw(format), &mut b));
+        let after = decode_image(&img, &b).unwrap()[0].rgba.clone();
+        for (p, q) in before
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(after.as_chunks::<4>().0)
+        {
+            assert_eq!((q[3], &q[..3]), (255, &p[..3]), "format {format}");
+        }
+    }
+    // Not settable without re-encoding: left alone.
+    for format in [2u16, 3, 14] {
+        let mut b = vec![0x40u8; 8];
+        let keep = b.clone();
+        assert!(
+            !force_opaque(PixelFormat::from_raw(format), &mut b),
+            "format {format}"
+        );
+        assert_eq!(b, keep);
+    }
+    // No alpha to set.
+    assert!(force_opaque(PixelFormat::Y8, &mut [0x80]));
+}

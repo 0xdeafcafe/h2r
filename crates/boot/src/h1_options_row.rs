@@ -41,7 +41,7 @@ use runtime::GuestFault;
 use runtime::guest::Permissions;
 
 use crate::h1_options::{self, OptionsScreen};
-use crate::list_class::{self, ListClass, ListLayout, TextBlock};
+use crate::list_class::{self, ListClass};
 
 /// The row's feature (`features.h1-options-row` switches it).
 pub const ROW_FEATURE: &str = "h1-options-row";
@@ -71,17 +71,27 @@ pub const OPTIONS_ACTION: i16 = 10;
 const WIDGET_TYPE: u32 = 4;
 const WIDGET_PARENT: u32 = 0x10;
 
-/// The screen's class: the skulls page's layout and description, no
-/// picture; left, right and A step a row.
-pub fn class(screen: Arc<OptionsScreen>, block: TextBlock, layout: ListLayout) -> ListClass {
-    ListClass::with_rows(SCREEN_FEATURE, h1_options::SCREEN, screen)
-        .description(block)
-        .layout(ListLayout {
-            visible: 0,
-            ..layout
-        })
+/// The screen's class: a dialog on the lobby's Quick Options
+/// ([`h1_options::DIALOG`], docs/game/ui-builder.md "The Dialog kind"),
+/// inside as well as out: Quick Options' tag copied with its own list (its
+/// `setting_lists` skin, a name and a choice per row, where Quick Options
+/// has it), Quick Options' header (the screen's icon in its game type
+/// picture, its line in the help line), and the legend in its footer.
+/// Left and right step a row, A opens the value picker; B closes it.
+pub fn class(screen: Arc<OptionsScreen>) -> ListClass {
+    let base = h1_options::DIALOG;
+    let mut c = ListClass::with_rows(SCREEN_FEATURE, h1_options::SCREEN, screen)
+        .dialog(base)
         .sideways()
-        .footer(h1_options::FOOTER_ID)
+        .footer(h1_options::FOOTER_ID);
+    if let Some(help) = base.help() {
+        c = c.description(help);
+    }
+    // Quick Options' header: the screen's icon in its game type picture.
+    if let Some(picture) = base.picture() {
+        c = c.picture(picture);
+    }
+    c
 }
 
 /// Whether a Game Setup list with these actions, on a lobby whose map is

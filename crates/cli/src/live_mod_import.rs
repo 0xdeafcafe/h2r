@@ -19,24 +19,40 @@
 //!
 //! ```toml
 //! name = "Lockout Snipers"
-//! author = "who made it"          # [package] author: the credit
+//! authors = ["who made it"]       # the original author(s): the credit
+//! author = "who made it"          # older form of authors, one name
+//! release = "Snipers v2"          # the original release's name
+//! released = "2005-03"            # YYYY, YYYY-MM or YYYY-MM-DD
+//! notes = "..."                   # anything else about the credit
 //! description = "..."
 //! source_url = "https://..."      # where it came from
 //! format = "map"                  # map, ppf, ips or bps; else sniffed
 //! base_map = "lockout"            # else --base
 //! category = "weapons"            # live_proto::maps::CATEGORIES
 //! image = "preview.png"           # beside mod.toml, PNG or JPEG
+//! features = ["ai"]               # live_proto::maps::FEATURES, added to the derived ones
+//! gametypes = ["ctf", "slayer"]   # live_proto::maps::GAMETYPES; none: any
+//! version = "1.2"
 //! ```
 //!
+//! The credit is who made the mod, never the account that publishes it:
+//! it goes into the signed document's `credit` (live_proto::maps::Credit)
+//! and, as one line, into the manifest's `[package] author` for readers
+//! that know only that.
+//!
 //! The package directory gets `manifest.toml`, the layer, the image and a
-//! `mod.toml` with the repository's extras (`category`, `source_url`),
-//! which `h2 live maps publish DIR` reads.
+//! `mod.toml` with the repository's extras (`category`, `source_url`,
+//! `features`, `gametypes`, `version` and the credit), which `h2 live maps
+//! publish DIR` reads. `features` is what the mod changes as read off the
+//! patched map against its base (`crate::live_mod_features`), with the
+//! sidecar's own added.
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
 use content::manifest::{Layer, MANIFEST_FILE, MAX_IMAGE_BYTES, image_signature, is_map_name};
 use content::patch::{self, Overlay, Patch};
 use content::{Manifest, Sha256};
+use live_proto::maps::Credit;
 use serde::{Deserialize, Serialize};
 use vfs::Backend;
 
@@ -51,6 +67,14 @@ pub struct ModInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub author: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authors: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub released: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_url: Option<String>,
@@ -62,6 +86,15 @@ pub struct ModInfo {
     pub category: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
+    /// What the mod changes (`live_proto::maps::FEATURES`): in a sidecar,
+    /// added to what import reads off the map; in a package, all of it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub features: Vec<String>,
+    /// The game types it is made for (`live_proto::maps::GAMETYPES`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gametypes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
 }
 
 impl ModInfo {
@@ -74,6 +107,38 @@ impl ModInfo {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e).with_context(|| path.display().to_string()),
         }
+    }
+
+    /// The credit it gives: `authors` (else `author`), the release, its
+    /// date, the source URL and notes, tidied; None when it says nothing.
+    pub fn credit(&self) -> Option<Credit> {
+        let authors = match &self.authors {
+            Some(a) => Credit::authors(a),
+            None => Credit::authors(Self::text(&self.author)),
+        }
+        .authors;
+        let c = Credit {
+            authors,
+            release: self.release.clone(),
+            released: self.released.clone(),
+            source_url: self.source_url.clone(),
+            notes: self.notes.clone(),
+        }
+        .tidy();
+        (!c.is_empty()).then_some(c)
+    }
+
+    /// The credit's fields, written back as a package's `mod.toml` keeps
+    /// them (`authors`, never the older `author`).
+    fn with_credit(mut self, c: Option<&Credit>) -> Self {
+        if let Some(c) = c {
+            self.authors = (!c.authors.is_empty()).then(|| c.authors.clone());
+            self.release = c.release.clone();
+            self.released = c.released.clone();
+            self.notes = c.notes.clone();
+            self.source_url = c.source_url.clone();
+        }
+        self
     }
 
     /// Empty strings count as absent.
@@ -270,6 +335,73 @@ fn retail_twin(
     Ok(None)
 }
 
+/// The base map and the mod over it, as `import` reads them: `input` (a
+/// whole modded map, or a PPF, IPS or BPS; `format` names which, else it
+/// is sniffed) over the retail map `base` from the disc at `disc`, or from
+/// the map pack disc `mappack`. For `h2 live maps analyze`.
+pub fn mod_over_base(
+    input: &Path,
+    format: Option<&str>,
+    disc: &Path,
+    mappack: Option<&Path>,
+    base: &str,
+) -> Result<(Vec<u8>, Vec<u8>)> {
+    let bytes = std::fs::read(input).with_context(|| format!("reading {}", input.display()))?;
+    mod_bytes_over_base(
+        bytes,
+        &input.display().to_string(),
+        format,
+        disc,
+        mappack,
+        base,
+    )
+}
+
+/// [`mod_over_base`] of a mod already read (`what` names it in errors).
+pub fn mod_bytes_over_base(
+    bytes: Vec<u8>,
+    what: &str,
+    format: Option<&str>,
+    disc: &Path,
+    mappack: Option<&Path>,
+    base: &str,
+) -> Result<(Vec<u8>, Vec<u8>)> {
+    let input = Path::new(what);
+    let kind = match format {
+        Some(f) => InputKind::named(f)
+            .ok_or_else(|| anyhow!("format {f:?} is not map, ppf, ips or bps"))?,
+        None => InputKind::sniff(&bytes).ok_or_else(|| {
+            anyhow!(
+                "{}: not a map, PPF, IPS or BPS file (give --format)",
+                input.display()
+            )
+        })?,
+    };
+    let base = base.to_ascii_lowercase();
+    if !is_map_name(&base) {
+        bail!("{base:?} is not a map name (lockout, midship, ...)");
+    }
+    let mut d =
+        vfs::open_disc(disc).map_err(|e| anyhow!("opening the disc {}: {e}", disc.display()))?;
+    let pack = match mappack {
+        Some(iso) => crate::live_mappack::from_iso(iso)
+            .with_context(|| format!("reading the map pack disc {}", iso.display()))?,
+        None => Vec::new(),
+    };
+    let (base_bytes, _) = read_base(&mut d, &pack, mappack, &base)?;
+    let target = match kind {
+        InputKind::Map => {
+            if !live_proto::maps::is_whole_map(&bytes) {
+                bail!("{}: not a map file (no cache header)", input.display());
+            }
+            bytes
+        }
+        _ => apply(&base_bytes, &bytes)
+            .context("the patch does not apply to the base map: is --base the right map?")?,
+    };
+    Ok((base_bytes, target))
+}
+
 /// What `h2 live maps import` was asked.
 #[derive(Debug, Clone, Default)]
 pub struct ImportOptions {
@@ -367,9 +499,10 @@ pub fn import(opts: &ImportOptions) -> Result<Imported> {
             .join(format!("{stem}.package"))
     });
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    let credit = info.credit();
     let mut manifest = Manifest::retail(&base, Sha256::of(&base_bytes));
     manifest.package.name = name.clone();
-    manifest.package.author = ModInfo::text(&info.author);
+    manifest.package.author = credit.as_ref().and_then(Credit::names);
     manifest.package.description = ModInfo::text(&info.description);
     manifest.patches = vec![Layer {
         file: file.clone(),
@@ -396,11 +529,17 @@ pub fn import(opts: &ImportOptions) -> Result<Imported> {
             .clone()
             .or_else(|| ModInfo::text(&info.category)),
         base_map: Some(base),
+        features: page_features(&info, &base_bytes, &target),
+        gametypes: info.gametypes.clone(),
+        version: ModInfo::text(&info.version),
         ..ModInfo::default()
-    };
+    }
+    .with_credit(credit.as_ref());
     let mut doc = live_proto::maps::MapDocument::new(manifest.clone(), None);
     doc.category = extras.category.clone();
     doc.source_url = extras.source_url.clone();
+    doc.credit = credit;
+    PageExtras::of(&extras).apply(&mut doc);
     doc.validate_extras()
         .map_err(|e| anyhow!("{}: {e}", info_path.display()))?;
 
@@ -421,12 +560,82 @@ pub fn import(opts: &ImportOptions) -> Result<Imported> {
 
 /// The repository extras a package directory's `mod.toml` names, for
 /// `publish`.
-pub fn extras_in(dir: &Path) -> Result<(Option<String>, Option<String>)> {
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Extras {
+    pub category: Option<String>,
+    pub source_url: Option<String>,
+    pub credit: Option<Credit>,
+}
+
+pub fn extras_in(dir: &Path) -> Result<Extras> {
     let info = ModInfo::read(&dir.join(MOD_FILE))?.unwrap_or_default();
-    Ok((
-        ModInfo::text(&info.category),
-        ModInfo::text(&info.source_url),
-    ))
+    Ok(Extras {
+        category: ModInfo::text(&info.category),
+        source_url: ModInfo::text(&info.source_url),
+        credit: info.credit(),
+    })
+}
+
+/// The Mods page's extras a package's `mod.toml` names (docs/game/maps.md
+/// §5, "A mod's page"), for `publish`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PageExtras {
+    pub features: Vec<String>,
+    pub gametypes: Vec<String>,
+    pub version: Option<String>,
+}
+
+impl PageExtras {
+    fn of(info: &ModInfo) -> Self {
+        PageExtras {
+            features: info.features.clone(),
+            gametypes: info.gametypes.clone(),
+            version: ModInfo::text(&info.version),
+        }
+    }
+
+    /// Read from `dir/mod.toml` (none there: none).
+    pub fn read(dir: &Path) -> Result<Self> {
+        Ok(Self::of(
+            &ModInfo::read(&dir.join(MOD_FILE))?.unwrap_or_default(),
+        ))
+    }
+
+    /// Onto the document `publish` signs.
+    pub fn apply(self, doc: &mut live_proto::maps::MapDocument) {
+        doc.features = self.features;
+        doc.gametypes = self.gametypes;
+        doc.version = self.version;
+    }
+}
+
+/// What the mod changes: read off `target` against `base`
+/// (`crate::live_mod_features`), with the sidecar's own added, in the
+/// checklist's order. A map the reader can't read keeps the sidecar's
+/// alone (said on stderr): the import itself does not fail on it.
+fn page_features(info: &ModInfo, base: &[u8], target: &[u8]) -> Vec<String> {
+    use live_proto::maps::{FEATURES, in_order};
+    let mut all = match crate::live_mod_features::derive(base, target) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!(
+                "import: what the mod changes could not be read ({e:#}); only mod.toml's features are listed"
+            );
+            Vec::new()
+        }
+    };
+    all.extend(info.features.iter().cloned());
+    // An unknown id of the sidecar's is refused by validate_extras, not
+    // dropped here.
+    let unknown: Vec<String> = info
+        .features
+        .iter()
+        .filter(|f| !FEATURES.contains(&f.as_str()))
+        .cloned()
+        .collect();
+    let mut out = in_order(&all, &FEATURES);
+    out.extend(unknown);
+    out
 }
 
 #[cfg(test)]

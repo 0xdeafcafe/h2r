@@ -89,8 +89,10 @@ impl Row {
     pub fn action(label: &str, press: impl Fn() -> Then + Send + Sync + 'static) -> Self {
         Self::of(label, Kind::Action(Arc::new(press)))
     }
-    /// Left and right step through `values` (wrapping); A steps right.
-    /// `get` is the current index, `set` stores one and says what to log.
+    /// Left and right step through `values` (wrapping); A opens the value
+    /// picker on them (`crate::ui_kit::picker`, as retail's settings do),
+    /// or steps right when the picker can't list them. `get` is the
+    /// current index, `set` stores one and says what to log.
     pub fn value(
         label: &str,
         values: &[&str],
@@ -172,14 +174,21 @@ const KEYBOARD_CONTEXT: u32 = crate::signin_keyboard::INVITE_CONTEXT;
 
 /// Text slots in guest memory: the family's ids, one slot each, written
 /// when they change.
-struct SlotTexts {
-    family: Family,
-    base: AtomicU32,
+pub(crate) struct SlotTexts {
+    pub(crate) family: Family,
+    pub(crate) base: AtomicU32,
     slots: Mutex<Vec<(Vec<u8>, bool)>>,
 }
 
 impl SlotTexts {
-    fn set(&self, slot: u32, text: &str) -> u32 {
+    pub(crate) fn new(family: Family) -> Self {
+        SlotTexts {
+            family,
+            base: AtomicU32::new(0),
+            slots: Mutex::new(Vec::new()),
+        }
+    }
+    pub(crate) fn set(&self, slot: u32, text: &str) -> u32 {
         let id = self.family.id(slot);
         let mut cut = text.len().min(SLOT_LEN as usize - 1);
         while !text.is_char_boundary(cut) {
@@ -197,7 +206,7 @@ impl SlotTexts {
         }
         id
     }
-    fn address(&self, id: u32) -> Option<u32> {
+    pub(crate) fn address(&self, id: u32) -> Option<u32> {
         let base = self.base.load(Ordering::SeqCst);
         (base != 0 && self.family.owns(id)).then(|| base + (id - self.family.base) * SLOT_LEN)
     }
@@ -208,13 +217,13 @@ impl SlotTexts {
     /// Every slot written again at the next [`Self::write`]: after a
     /// snapshot load the page holds the saved run's texts, which the
     /// cache can't tell from its own.
-    fn rewrite_all(&self) {
+    pub(crate) fn rewrite_all(&self) {
         let mut slots = self.slots.lock().unwrap_or_else(|e| e.into_inner());
         for (_, dirty) in slots.iter_mut() {
             *dirty = true;
         }
     }
-    fn write(&self, m: &mut dyn GuestMemory) -> Result<(), MemFault> {
+    pub(crate) fn write(&self, m: &mut dyn GuestMemory) -> Result<(), MemFault> {
         let base = self.base.load(Ordering::SeqCst);
         if base == 0 {
             return Ok(());
@@ -237,6 +246,8 @@ pub struct KitScreen {
     title: String,
     /// The text of a row elsewhere that opens it ([`KitScreen::row_label`]).
     row_label: Option<String>,
+    /// What that row says it does ([`KitScreen::row_help`]).
+    row_help: Option<String>,
     rows: Vec<Row>,
     layout: Option<ListLayout>,
     style: ValueStyle,
@@ -250,6 +261,9 @@ pub struct KitScreen {
     guard: OpenerGuard,
     /// Shown as a dialog of rows on a retail dialog, over its opener.
     dialog: Option<(DialogBase, Opener)>,
+    /// Quick Options' header: the page's help line and its icon
+    /// ([`KitScreen::header`]).
+    header: Option<(String, u16)>,
     /// [`KitTexts`]' feature id, made once.
     texts_id: OnceLock<&'static str>,
 }
@@ -263,22 +277,20 @@ impl KitScreen {
             name,
             title: title.into(),
             row_label: None,
+            row_help: None,
             rows: Vec::new(),
             layout: None,
             style: ValueStyle::Column,
             description: None,
             prompts: Vec::new(),
             scrolls: false,
-            texts: SlotTexts {
-                family: ids,
-                base: AtomicU32::new(0),
-                slots: Mutex::new(Vec::new()),
-            },
+            texts: SlotTexts::new(ids),
             pending: Mutex::new(None),
             after: AfterClose::default(),
             typing: Mutex::new(None),
             guard: OpenerGuard::default(),
             dialog: None,
+            header: None,
             texts_id: OnceLock::new(),
         }
     }
@@ -298,17 +310,39 @@ impl KitScreen {
     /// game's own dialogs are. `opener` is what the preview draws under
     /// it. The list is the base's own unless [`KitScreen::layout`] moves
     /// it; [`DialogBase::Large`] is the one the game maps have too. Values
-    /// go as the base's list skin has room for them
-    /// ([`DialogBase::style`]).
+    /// go as the base's list skin shows them ([`DialogBase::style`]), and
+    /// the focused row's description goes in the base's help line
+    /// ([`DialogBase::help`]) unless [`KitScreen::description`] names
+    /// another block. A page on [`DialogBase::QuickOptions`] is that
+    /// dialog inside as well as out: its list, skin, value column, help
+    /// line, header and footer.
     pub fn dialog(mut self, base: DialogBase, opener: Opener) -> Self {
         self.dialog = Some((base, opener));
         self.style = base.style();
+        self
+    }
+    /// Quick Options' header on a page of ours (docs/game/ui-builder.md
+    /// "A page's header"), as Quick Options has its own at the top: `help`,
+    /// one line on what the page is for, in the base's help line
+    /// ([`DialogBase::help`]) in place of the focused row's description,
+    /// and icon `icon` of `mp_games2.bitm` ([`crate::ui_kit::dialog::icon`])
+    /// in its game type picture ([`DialogBase::picture`]) beside it. The
+    /// rows keep their descriptions for the value picker A opens. A base
+    /// with no picture shows the line alone.
+    pub fn header(mut self, help: &str, icon: u16) -> Self {
+        self.header = Some((help.into(), icon));
         self
     }
     /// The focused row's description (and the legend) in `block`.
     pub fn description(mut self, block: TextBlock) -> Self {
         self.description = Some(block);
         self
+    }
+    /// Where the focused row's description goes: the screen's own block,
+    /// else its dialog base's help line.
+    fn description_block(&self) -> Option<TextBlock> {
+        self.description
+            .or_else(|| self.dialog.and_then(|(base, _)| base.help()))
     }
     pub fn prompts(mut self, prompts: &[Prompt]) -> Self {
         self.prompts = prompts.to_vec();
@@ -332,6 +366,19 @@ impl KitScreen {
         self.row_label = Some(text.into());
         self
     }
+    /// What the row elsewhere that opens it does, for that screen's
+    /// description ("Bots that join this game..."), in a slot of its own
+    /// after the row's text ([`KitScreen::row_help_id`]).
+    pub fn row_help(mut self, text: &str) -> Self {
+        self.row_help = Some(text.into());
+        self
+    }
+    /// The string id of [`KitScreen::row_help`]'s text, written with the
+    /// other texts; `None` when there is none.
+    pub fn row_help_id(&self) -> Option<u32> {
+        let slot = self.footer_slot() + 1 + u32::from(self.row_label.is_some());
+        self.row_help.as_ref().map(|t| self.texts.set(slot, t))
+    }
     /// The string id of the opening row's text: the [`KitScreen::row_label`]
     /// slot, or the title's when there is none. Written with the other
     /// texts ([`Rows::write_texts`]).
@@ -343,8 +390,8 @@ impl KitScreen {
     }
 
     // Slots: 0 the title, then a label and a value per row, then a
-    // description per row, the footer, and the opening row's text when
-    // there is one.
+    // description per row, the footer, the opening row's text when there
+    // is one, and its help when there is one.
     fn label_slot(row: usize) -> u32 {
         1 + 2 * row as u32
     }
@@ -354,10 +401,21 @@ impl KitScreen {
     fn footer_slot(&self) -> u32 {
         self.description_slot(self.rows.len())
     }
+    fn header_slot(&self) -> u32 {
+        self.footer_slot()
+            + 1
+            + u32::from(self.row_label.is_some())
+            + u32::from(self.row_help.is_some())
+    }
+    /// Where its header's icon goes: its dialog base's picture.
+    fn header_picture(&self) -> Option<(crate::list_class::PictureSpec, u16)> {
+        let (_, icon) = self.header.as_ref()?;
+        Some((self.dialog?.0.picture()?, *icon))
+    }
     /// The slots the screen needs: fails the build of its class when its
     /// family is too small.
     pub fn slots(&self) -> u32 {
-        self.footer_slot() + 1 + u32::from(self.row_label.is_some())
+        self.header_slot() + u32::from(self.header.is_some())
     }
     fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         m.lock().unwrap_or_else(|e| e.into_inner())
@@ -498,8 +556,11 @@ impl KitScreen {
                 .action(self.action())
                 .sideways()
                 .on_free(self.on_free());
-        if let Some(b) = self.description {
+        if let Some(b) = self.description_block() {
             c = c.description(b);
+        }
+        if let Some((picture, _)) = self.header_picture() {
+            c = c.picture(picture);
         }
         if let Some(l) = self.layout {
             c = c.layout(l);
@@ -531,7 +592,7 @@ impl Rows for KitScreen {
         let i = row as usize;
         let (label, value) = r.spec().cells(self.style);
         let mut v = vec![(LABEL_SLOT, self.texts.set(Self::label_slot(i), &label))];
-        if self.style == ValueStyle::Column {
+        if self.style.has_column() {
             let value = value.unwrap_or_default();
             v.push((VALUE_SLOT, self.texts.set(Self::label_slot(i) + 1, &value)));
         }
@@ -553,7 +614,18 @@ impl Rows for KitScreen {
                 Then::CloseThen(work) => pend(Pending::CloseThen(work)),
             },
             Kind::Value { values, get, set } => {
-                Chosen::Stepped(set((get() + 1) % values.len().max(1)))
+                let pick = crate::ui_kit::picker::Pick::new(
+                    &r.label,
+                    values.clone(),
+                    get(),
+                    r.description.as_deref().unwrap_or_default(),
+                    Arc::clone(set),
+                )
+                .over(self.dialog.map_or(Opener::MAIN_MENU, |(_, o)| o));
+                match crate::ui_kit::picker::offer(pick) {
+                    Some(picker) => Chosen::Open(picker),
+                    None => Chosen::Stepped(set((get() + 1) % values.len().max(1))),
+                }
             }
             Kind::Info(_) => Chosen::Nothing,
             Kind::Text { .. } => pend(Pending::Keyboard(row as usize)),
@@ -579,6 +651,9 @@ impl Rows for KitScreen {
     }
     fn description(&self, row: i16) -> Option<u32> {
         let i = usize::try_from(row).ok().filter(|i| *i < self.rows.len())?;
+        if let Some((help, _)) = &self.header {
+            return Some(self.texts.set(self.header_slot(), help));
+        }
         let spec = ScreenSpec {
             focus: i,
             ..self.spec()
@@ -589,6 +664,9 @@ impl Rows for KitScreen {
     fn write_texts(&self, m: &mut dyn GuestMemory) -> Result<(), MemFault> {
         self.poll_keyboard(m)?;
         self.texts.write(m)
+    }
+    fn picture_image(&self) -> Option<u16> {
+        self.header_picture().map(|(_, icon)| icon)
     }
     /// Asked as the screen opens: the opener guard starts, and the log
     /// gets the screen as [`ScreenSpec::log_line`] writes it.
@@ -604,7 +682,7 @@ impl Describe for KitScreen {
         s.list = ListPlace::from(self.layout);
         s.style = self.style;
         s.rows = self.rows.iter().map(Row::spec).collect();
-        s.description = self.description.map(spec::DescriptionBlock::from);
+        s.description = self.description_block().map(spec::DescriptionBlock::from);
         s.prompts = self.prompts.clone();
         s.inputs = vec![
             Input::Up,
@@ -618,6 +696,10 @@ impl Describe for KitScreen {
         ];
         s.scrolls = self.scrolls;
         s.footer = true;
+        s.help = self.header.as_ref().map(|(help, _)| help.clone());
+        if let Some((_, icon)) = self.header_picture() {
+            s.art.push(crate::ui_kit::dialog::quick_icon(icon));
+        }
         if let Some((base, opener)) = self.dialog {
             let list = self
                 .layout
@@ -747,7 +829,7 @@ mod tests {
     #[test]
     fn a_dialog_screen_is_its_rows_in_its_bases_list() {
         for (base, skin, anchor, style) in [
-            (DialogBase::QuickOptions, 2, [-254, 87], ValueStyle::Column),
+            (DialogBase::QuickOptions, 2, [-254, 87], ValueStyle::Setting),
             (DialogBase::Large, 0, [-235, 30], ValueStyle::Inline),
         ] {
             let k = Arc::new(crate::ui_kit::screens::dialog_example(
@@ -762,6 +844,12 @@ mod tests {
             assert!(d.body.is_empty(), "rows, no message");
             assert_eq!(d.opener, Opener::MAIN_MENU);
             assert_eq!(s.style, style, "{base:?}");
+            // The description in the base's help line: Quick Options' own.
+            assert_eq!(
+                s.description,
+                base.help().map(spec::DescriptionBlock::from),
+                "{base:?}"
+            );
             assert_eq!(
                 s.list,
                 ListPlace::Moved {

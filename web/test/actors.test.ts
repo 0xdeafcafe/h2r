@@ -104,6 +104,51 @@ describe("vehicles in frames", () => {
     expect(sampleVehicles([frame(0, { vehicles: odd })], 0)).toEqual([{ id: "v1", kind: "vehicle", x: 0, y: 0, z: 0, forward: [1, 0, 0], up: [0, 0, 1], occupied: true }]);
   });
 
+  test("follow a curve through the frames around them, not straight lines", () => {
+    // Round a circle of radius 10, a frame every 15 ticks (2 Hz), a quarter turn apart.
+    const at = (k: number) => vehicle("v1", 10 * Math.cos(k * Math.PI / 2), { pos: [10 * Math.cos(k * Math.PI / 2), 10 * Math.sin(k * Math.PI / 2), 0] });
+    const frames = [0, 1, 2, 3].map((k) => frame(k * 15, { vehicles: [at(k)] }));
+    // Halfway from the second to the third frame: on the circle it is at radius 10.
+    const [v] = sampleVehicles(frames, 22.5);
+    const straight = Math.hypot(0 + (-10 - 0) / 2, (10 + 0) / 2);
+    expect(straight).toBeCloseTo(7.07, 2);
+    expect(Math.hypot(v!.x, v!.y)).toBeGreaterThan(9);
+    expect(Math.hypot(v!.x, v!.y)).toBeLessThan(11);
+    // Through the frames themselves.
+    expect(sampleVehicles(frames, 15)[0]).toMatchObject({ x: at(1).pos[0], y: at(1).pos[1] });
+    // With only the two frames it is the straight line.
+    const two = [frame(0, { vehicles: [vehicle("v1", 0)] }), frame(2, { vehicles: [vehicle("v1", 4)] })];
+    expect(sampleVehicles(two, 1)[0]!.x).toBeCloseTo(2, 9);
+    // Constant speed in a line stays a line at that speed.
+    const line = [0, 1, 2, 3].map((k) => frame(k * 10, { vehicles: [vehicle("v1", k * 5)] }));
+    expect(sampleVehicles(line, 13)[0]!.x).toBeCloseTo(6.5, 9);
+    // A neighbour a jump away (a respawn) is not followed.
+    const jump = [frame(0, { vehicles: [vehicle("v1", -500)] }), frame(10, { vehicles: [vehicle("v1", 0)] }), frame(20, { vehicles: [vehicle("v1", 4)] })];
+    expect(sampleVehicles(jump, 15)[0]!.x).toBeCloseTo(2, 9);
+  });
+
+  test("follow the game's velocities when the frames carry them", () => {
+    // Moving at 4 units a second along x, frames 30 ticks (one second) apart, turning to +y at the end.
+    const frames = [
+      frame(0, { vehicles: [vehicle("v1", 0, { vel: [4, 0, 0] } as Partial<FrameVehicle>)] }),
+      frame(30, { vehicles: [vehicle("v1", 4, { vel: [0, 4, 0] } as Partial<FrameVehicle>)] }),
+    ];
+    const [v] = sampleVehicles(frames, 15);
+    // Hermite at the middle: (a + b) / 2 + (va - vb) / 8 per axis.
+    expect(v!.x).toBeCloseTo(2 + 4 / 8, 6);
+    expect(v!.y).toBeCloseTo(-4 / 8, 6);
+    expect(sampleVehicles(frames, 0)[0]!.vel).toEqual([4, 0, 0]);
+  });
+
+  test("the 3D view takes their place as sampled when asked, the axes still eased", () => {
+    const shown = new Map<string, SampledVehicle>();
+    const at = (x: number, forward: [number, number, number] = [1, 0, 0]): SampledVehicle => ({ id: "v1", kind: "ghost", x, y: 0, z: 0, forward, up: [0, 0, 1], occupied: true });
+    smoothVehicles(shown, [at(0)], 16, { exact: true });
+    smoothVehicles(shown, [at(1, [0, 1, 0])], 16, { exact: true });
+    expect(shown.get("v1")!.x).toBe(1);
+    expect(shown.get("v1")!.forward[1]).toBeLessThan(1);
+  });
+
   test("the 3D view eases them and drops one nobody is in", () => {
     const shown = new Map<string, SampledVehicle>();
     const at = (x: number, forward: [number, number, number] = [1, 0, 0]): SampledVehicle => ({ id: "v1", kind: "ghost", x, y: 0, z: 0, forward, up: [0, 0, 1], occupied: true });

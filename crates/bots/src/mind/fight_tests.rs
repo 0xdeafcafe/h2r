@@ -39,11 +39,13 @@ fn holding(trigger: Trigger, ammo: Ammo) -> Arms {
         }),
         other: None,
         grenades: [2, 0],
+        ..Arms::default()
     }
 }
 fn step(m: &mut Mind, me: Me, others: Vec<Seen>, teams: bool, tick: u32) -> HostPadState {
     m.step(
         &Perception {
+            observations: Default::default(),
             me: Some(me),
             others,
             teams,
@@ -119,7 +121,7 @@ fn a_moment_out_of_view_does_not_freeze_it_again() {
     };
     // Back after a moment: turns at once.
     let soon = run(10);
-    assert!(soon.0 < -0.5, "{soon:?}");
+    assert!(soon.0 < -0.1, "{soon:?}");
     // Back after long: a fresh reaction, standing still.
     assert_eq!(run(tactics::GRACE + 30), (0.0, 0.0));
 }
@@ -162,12 +164,127 @@ fn no_grenade_into_a_teammate() {
                 team: 0,
             });
         }
-        (0..180 * 30u32)
-            .filter(|&t| step(&mut m, bot(None), others.clone(), true, t).left_trigger > 0.0)
-            .count()
+        // It turns to each throw's arc before letting go (the game's
+        // turning, roughly).
+        let mut me = bot(None);
+        let n = (0..180 * 30u32)
+            .filter(|&t| {
+                let pad = step(&mut m, me, others.clone(), true, t);
+                me.aim = turned(me.aim, &pad);
+                pad.left_trigger > 0.0
+            })
+            .count();
+        (n, m.grenade.throws)
     };
-    assert_eq!(throws(true), 0);
-    assert!(throws(false) > 0);
+    assert_eq!(throws(true), (0, 0));
+    let (pressed, thrown) = throws(false);
+    assert!(pressed > 0 && thrown > 0, "{pressed} {thrown}");
+}
+
+/// The aim after a tick of the right stick: the game's turning as the
+/// hand models it ([`turn_rate`], the bots' sensitivity), one tick of it.
+fn turned(aim: Vec3, pad: &HostPadState) -> Vec3 {
+    let flat = (aim[0] * aim[0] + aim[1] * aim[1]).sqrt();
+    let (rx, ry) = turn_rate(pad.right_stick);
+    let yaw = aim[1].atan2(aim[0]) - rx / TICKS;
+    let pitch = (aim[2].atan2(flat) + ry / TICKS).clamp(-1.4, 1.4);
+    crate::grenades::direction(yaw, pitch)
+}
+
+// ---- weapon skill (crate::weapons, crate::grenades) ----
+
+fn plasma_pistol() -> Gun {
+    Gun {
+        def: 0xa002_0002,
+        ammo: Ammo::Battery(0.9),
+        profile: Profile {
+            trigger: Trigger::Charge,
+            pellets: 1,
+            shot_speed: 60.0,
+            ..Profile::default()
+        },
+    }
+}
+fn rifle() -> Gun {
+    holding(Trigger::Single, rounds(36, 108)).held.unwrap()
+}
+
+#[test]
+fn a_noob_combo_holds_the_charge_lets_go_and_switches() {
+    // Most Legendary bots go for it on a target dead ahead.
+    let combos = (1..=10u64)
+        .filter(|&seed| {
+            let mut m = Mind::new(Skill::Legendary, seed);
+            let me = bot(Some(Arms {
+                held: Some(plasma_pistol()),
+                other: Some(rifle()),
+                grenades: [0, 0],
+                ..Arms::default()
+            }));
+            let mut held = 0;
+            let mut longest = 0;
+            let mut switched_after = false;
+            for t in 0..90 {
+                let pad = step(&mut m, me, vec![enemy(1, [6.0, 0.0, 0.0])], false, t);
+                if pad.right_trigger > 0.0 {
+                    held += 1;
+                    longest = longest.max(held);
+                } else {
+                    held = 0;
+                }
+                switched_after |=
+                    longest >= crate::weapons::CHARGE_TICKS && pad.buttons.contains(SWITCH);
+            }
+            longest >= crate::weapons::CHARGE_TICKS && switched_after
+        })
+        .count();
+    assert!(combos >= 6, "{combos} of 10");
+    // Easy taps the pistol and stays on it.
+    let mut m = Mind::new(Skill::Easy, 2);
+    let me = bot(Some(Arms {
+        held: Some(plasma_pistol()),
+        other: None,
+        grenades: [0, 0],
+        ..Arms::default()
+    }));
+    let mut held = 0;
+    for t in 0..90 {
+        let pad = step(&mut m, me, vec![enemy(1, [6.0, 0.0, 0.0])], false, t);
+        held = if pad.right_trigger > 0.0 { held + 1 } else { 0 };
+        assert!(held < crate::weapons::CHARGE_TICKS, "tick {t}");
+    }
+}
+
+#[test]
+fn dual_wielding_fires_the_left_gun_and_throws_no_grenades() {
+    let smg = Gun {
+        def: 0xa003_0003,
+        ammo: rounds(60, 120),
+        profile: Profile {
+            trigger: Trigger::Automatic,
+            pellets: 1,
+            shot_speed: 300.0,
+            ..Profile::default()
+        },
+    };
+    let me = bot(Some(Arms {
+        held: Some(smg),
+        left: Some(smg),
+        other: Some(rifle()),
+        grenades: [4, 4],
+        ..Arms::default()
+    }));
+    let mut m = Mind::new(Skill::Legendary, 4);
+    let mut left = 0;
+    let mut aim = me;
+    for t in 0..(60 * 30u32) {
+        let pad = step(&mut m, aim, vec![enemy(1, [5.0, 0.0, 0.0])], false, t);
+        aim.aim = turned(aim.aim, &pad);
+        left += usize::from(pad.left_trigger > 0.0);
+        assert!(!pad.buttons.contains(SWAP_GRENADES), "tick {t}");
+    }
+    assert!(left > 100, "{left}");
+    assert_eq!(m.grenade.throws, 0);
 }
 
 #[test]

@@ -636,12 +636,16 @@ impl State {
         self.sessions
             .set_variant_ext(ext, self.service.as_ref(), session.as_ref());
     }
-    /// The bots in this console's hosted game: its sessions are told of
-    /// them, and of its signed-in users, as players.
-    pub fn set_session_players(&mut self, bots: Vec<live_proto::Xuid>) {
-        let session = self.session();
+    /// The bots in this console's hosted game, rostered for `session`
+    /// (hex): that session is told of them, and every hosted session of
+    /// its signed-in users, as players.
+    pub fn set_session_players(&mut self, session: Option<&str>, bots: Vec<live_proto::Xuid>) {
+        let id = session
+            .and_then(|s| u64::from_str_radix(s, 16).ok())
+            .map(u64::to_be_bytes);
+        let connection = self.session();
         self.sessions
-            .set_players(&bots, self.service.as_ref(), session.as_ref());
+            .set_players(id, &bots, self.service.as_ref(), connection.as_ref());
     }
     /// Arms (Some) or leaves (None) a co-op campaign for this console's
     /// lobby advertisements, and says so in presence ("Co-op: <level>").

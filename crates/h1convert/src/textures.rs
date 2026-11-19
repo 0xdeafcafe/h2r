@@ -240,6 +240,7 @@ pub fn role_name(r: shad::Role) -> &'static str {
         shad::Role::Bump => "bump",
         shad::Role::Mask => "mask",
         shad::Role::Tile => "tile",
+        shad::Role::ChangeColour => "change colour",
     }
 }
 
@@ -259,6 +260,7 @@ pub fn plan<R: Read + Seek>(
         ..Retexture::default()
     };
     let mut converted: HashMap<h1map::TagId, Option<usize>> = HashMap::new();
+    let mut brightest: HashMap<(h1map::TagId, u32), Option<usize>> = HashMap::new();
     let mut done: HashMap<(usize, String), ()> = HashMap::new();
     for (i, name) in materials {
         if done.insert((*i, name.clone()), ()).is_some() {
@@ -284,11 +286,27 @@ pub fn plan<R: Read + Seek>(
         let mut maps = Vec::new();
         let mut swapped = Vec::new();
         for (role, m) in &chosen.maps {
-            let k = *converted.entry(m.bitmap).or_insert_with(|| {
-                let tag = h1.tag(m.bitmap).ok()?;
-                let (_, c, _) = h1bitmaps::convert_bitmap(h1, tag).ok()?;
-                out.bitmaps.push((tag.name.clone(), c));
-                Some(out.bitmaps.len() - 1)
+            // A plasma's picture with its brightness as alpha (converter
+            // version 90, `shad::plasma_shader`), else the bitmap as it is.
+            let derived = match (*role, chosen.extras.brightest_mask) {
+                (shad::Role::Mask, Some(gain)) => *brightest
+                    .entry((m.bitmap, gain.to_bits()))
+                    .or_insert_with(|| {
+                        let tag = h1.tag(m.bitmap).ok()?;
+                        let c = h1bitmaps::mask::convert_brightest(h1, tag, gain).ok()?;
+                        out.bitmaps
+                            .push((shad::brightness_mask_name(&tag.name, gain), c));
+                        Some(out.bitmaps.len() - 1)
+                    }),
+                _ => None,
+            };
+            let k = derived.or_else(|| {
+                *converted.entry(m.bitmap).or_insert_with(|| {
+                    let tag = h1.tag(m.bitmap).ok()?;
+                    let (_, c, _) = h1bitmaps::convert_bitmap(h1, tag).ok()?;
+                    out.bitmaps.push((tag.name.clone(), c));
+                    Some(out.bitmaps.len() - 1)
+                })
             });
             let Some(k) = k else { continue };
             maps.push((*role, k, m.scale, shad::h1_lod_offset(h1, m.bitmap)));

@@ -128,16 +128,19 @@ must fall inside one widget record), and after every change the session's
 widget bytes are mirrored into the document (`TagDoc::mirror`, no undo
 step). Block changes are refused with a note.
 
-Two spans keep the schema's type in the definition, because the schema
-(inferred from the disc) types them so and the definitions must agree with
-it: `+0x18` (`raw_18`; E `0x13ac8f` reads `+0x18..+0x1a` as the gate's
-weapon thresholds) and, in text widgets, `+0x2c` (`rawsize_2c`; E
-`0x22ac0b` reads it as the justification). The panel shows them as
-structural and does not edit them, so the HUD tool keeps a row from
-`hud_edit::layout`'s tables for every field the panel cannot edit (today
-the justification). A test (`the_nhdt_definition_agrees_with_the_layout_tables`)
-keeps the definition and the tables together. Correcting the schema's
-inference for those spans would let the panel take them too.
+`+0x18..+0x1a` (both widget kinds) are the gate's threshold bytes
+(`threshold_battery`, `threshold_loaded`, `threshold_reserve`; E
+`0x13ac8f`..`0x13acbd`) and the text widgets' `+0x2c` is the
+justification (E `0x22ac0b`). Inference once typed the first as a
+raw-resource pointer and the second as its size, so a fresh or
+from-scratch map build rewrote the thresholds as a file offset (V: a
+converted Blood Gulch's "Reload" widget, `00 0b 01 00` written, `00 da 22
+01` built). The schema now leaves that word out
+(`tags::schema::infer::ENGINE_DATA`, docs/formats/tag-schema.md step 9)
+and the definition types the bytes. The HUD tool still keeps a row from
+`hud_edit::layout`'s tables for the justification. A test
+(`the_nhdt_definition_agrees_with_the_layout_tables`) keeps the
+definition and the tables together.
 
 ## Not modelled
 

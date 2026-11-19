@@ -116,11 +116,26 @@ export function baseOptions(seen: Iterable<string>, chosen: string | undefined, 
   return [...all].map((map) => ({ map, title: title(map) })).sort((a, b) => a.title.localeCompare(b.title) || a.map.localeCompare(b.map));
 }
 
-/** Who made the mod, when the manifest credits someone other than the
- *  uploader; null when it's the same name or none. */
-export function creditBeyondAuthor(m: Pick<MapSummary, "author" | "credit">): string | null {
-  const c = m.credit?.trim();
-  return c && c.toLowerCase() !== m.author.gamertag.toLowerCase() ? c : null;
+/** Who made the mod, on one line: the credited authors ("A", "A & B",
+ *  "A, B & C"), else the one-line credit; null when nobody is credited. Never
+ *  the uploader: a mod with no credit is by an unknown author, not by
+ *  whoever published it. */
+export function modMakers(m: Pick<MapSummary, "credit" | "credits">): string | null {
+  const a = m.credits?.authors ?? [];
+  if (a.length === 1) return a[0]!;
+  if (a.length > 1) return `${a.slice(0, -1).join(", ")} & ${a[a.length - 1]}`;
+  return m.credit?.trim() || null;
+}
+
+/** "2005", "March 2005", "14 March 2005" from a credit's `released`; the
+ *  text as given when it isn't one of those shapes. */
+export function releasedText(d: string): string {
+  const m = /^(\d{4})(?:-(\d{2})(?:-(\d{2}))?)?$/.exec(d.trim());
+  if (!m) return d;
+  const months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+  const month = m[2] ? months[Number(m[2]) - 1] : undefined;
+  if (!month) return m[1]!;
+  return m[3] ? `${Number(m[3])} ${month} ${m[1]}` : `${month} ${m[1]}`;
 }
 
 /** "1 download", "1,204 downloads". */
