@@ -509,9 +509,10 @@ What the Mac's server serves, and where it comes from on the Worker:
 | `/art/emblem/*` | composed from local game art, under the same sharing rules | composed from the published art in the Worker, without waking the hub |
 
 A game page's header model travels with the hub's existing
-`GET /v1/page-meta` reply. The Worker uses the shared Rust renderer to put
-the header and its emblem image URLs above the app's root in the initial
-HTML. There are no extra hub calls for the images.
+`GET /v1/page-meta` reply. If the hub supplies a game preview without a
+header, the Worker reads `GET /v1/games/{id}` anonymously and builds the
+model from the game detail. Both homes use the same renderer to put the
+header and its emblem URLs above the app's root in the initial HTML.
 
 The Worker routes `/art/emblem/*` ahead of static assets. The stable
 appearance URL redirects to a revision derived from the published art

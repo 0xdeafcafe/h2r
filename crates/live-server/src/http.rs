@@ -498,11 +498,6 @@ async fn app_page(live: &Live, index: &std::path::Path, req: Request) -> Respons
     );
     let meta = crate::page_meta::describe(live, path);
     let body = crate::page_meta::page_html(&html, &meta, &origin, path);
-    // A game page's header, pre-rendered above the app (page_header.rs).
-    let body = match &meta.header {
-        Some(header) => crate::page_header::inject(&body, header),
-        None => body,
-    };
     (
         [(
             header::CONTENT_TYPE,
