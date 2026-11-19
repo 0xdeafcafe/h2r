@@ -737,8 +737,6 @@ enum Fate {
 /// each is logged once per process.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExternalRefusal {
-    /// A newer ask replaced it before the drain.
-    Replaced,
     /// The backend draws no external passes (no GPU backend: a headless
     /// run without `H2_BOOT_GFX`).
     Unsupported,
@@ -757,8 +755,7 @@ pub enum ExternalRefusal {
 }
 
 impl ExternalRefusal {
-    pub const ALL: [ExternalRefusal; 8] = [
-        ExternalRefusal::Replaced,
+    pub const ALL: [ExternalRefusal; 7] = [
         ExternalRefusal::Unsupported,
         ExternalRefusal::NoColour,
         ExternalRefusal::NoDepth,
@@ -775,7 +772,6 @@ impl ExternalRefusal {
 
     pub fn describe(self) -> &'static str {
         match self {
-            ExternalRefusal::Replaced => "a newer pass replaced it before the drain",
             ExternalRefusal::Unsupported => {
                 "the backend draws no external passes (no GPU backend: headless without H2_BOOT_GFX)"
             }
@@ -896,9 +892,9 @@ pub struct Device<B: Backend> {
     /// An occlusion depth grid asked for ([`Device::request_depth_grid`]),
     /// issued after the next drain.
     pending_grid: Option<GridAsk>,
-    /// An external pass asked for ([`Device::request_external_pass`]),
-    /// issued after the next drain.
-    pending_external: Option<Box<dyn crate::backend::ExternalPass>>,
+    /// The external passes asked for ([`Device::request_external_pass`])
+    /// since the last drain, issued after the next one in the order asked.
+    pending_external: Vec<Box<dyn crate::backend::ExternalPass>>,
     /// The draws of a pass being swallowed ([`Device::swallow`]).
     swallowing: Option<Swallowing>,
     /// Display state: flicker filter, persisted surface, vertical blank.
@@ -1085,7 +1081,7 @@ impl<B: Backend> Device<B> {
             encode: None,
             hw: HwState::default(),
             pending_grid: None,
-            pending_external: None,
+            pending_external: Vec::new(),
             swallowing: None,
             display: display::Display::default(),
             rtt: HashMap::default(),
@@ -1725,7 +1721,7 @@ impl<B: Backend> Device<B> {
                 if let Some(ask) = self.pending_grid.take() {
                     self.issue_depth_grid(mem, ask);
                 }
-                if let Some(pass) = self.pending_external.take() {
+                for pass in std::mem::take(&mut self.pending_external) {
                     self.issue_external_pass(mem, pass);
                 }
                 Ok(None)
@@ -1864,13 +1860,14 @@ impl<B: Backend> Device<B> {
     /// Asks for `pass` to draw into the bound colour target and depth with
     /// the current viewport (docs/graphics/native-renderer.md): recorded
     /// after the next drain of the push buffer (the next D3D entry), in
-    /// order with the draws queued before it. A newer ask replaces one not
-    /// issued yet. Dropped (counted in `external_passes_dropped`) when no
-    /// colour or depth is bound or the backend refuses.
+    /// order with the draws queued before it. Several asked before one
+    /// drain are all issued, in the order asked: the world's and the
+    /// objects' are both asked at the same layer-3 call, and dropping the
+    /// first would leave the world's skipped items undrawn. Dropped
+    /// (counted in `external_passes_dropped`) when no colour or depth is
+    /// bound or the backend refuses.
     pub fn request_external_pass(&mut self, pass: Box<dyn crate::backend::ExternalPass>) {
-        if self.pending_external.replace(pass).is_some() {
-            self.refuse_external(ExternalRefusal::Replaced);
-        }
+        self.pending_external.push(pass);
     }
 
     /// Arms `s` (docs/graphics/native-renderer.md, stage 5): the next

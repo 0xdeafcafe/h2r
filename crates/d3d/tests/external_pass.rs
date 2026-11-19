@@ -154,6 +154,34 @@ fn the_pass_gets_the_view_constants_after_the_drain() {
     assert_eq!((c[0], c[1]), ([1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]));
 }
 
+/// Records its name when given the view constants (at issue).
+struct Named(&'static str, Arc<Mutex<Vec<&'static str>>>);
+
+impl ExternalPass for Named {
+    fn encode(&mut self, _t: ExternalTarget<'_>) {}
+    fn view_constants(&mut self, _c: &[[f32; 4]; d3d::VIEW_CONSTANTS]) {
+        self.1.lock().unwrap().push(self.0);
+    }
+}
+
+/// The world's pass and the objects' are asked at the same layer-3 call,
+/// before one drain: both are issued, in the order asked (a newer ask
+/// once replaced the older, and the world's skipped clusters went
+/// undrawn).
+#[test]
+fn passes_asked_before_one_drain_are_all_issued_in_order() {
+    let (mut d, mut m) = create(RecordingBackend::default(), UploadPolicy::Always);
+    set_states(&mut d, &mut m);
+    let order = Arc::default();
+    d.request_external_pass(Box::new(Named("world", Arc::clone(&order))));
+    d.request_external_pass(Box::new(Named("objects", Arc::clone(&order))));
+    assert!(order.lock().unwrap().is_empty(), "not before the drain");
+    d.drain_until_callback(&mut m).unwrap();
+    assert_eq!(*order.lock().unwrap(), vec!["world", "objects"]);
+    d.drain_until_callback(&mut m).unwrap();
+    assert_eq!(order.lock().unwrap().len(), 2, "issued once");
+}
+
 #[test]
 fn a_backend_that_cannot_drops_it() {
     let (mut d, mut m) = create(RecordingBackend::default(), UploadPolicy::Always);
