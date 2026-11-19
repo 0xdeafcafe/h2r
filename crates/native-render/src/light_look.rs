@@ -9,6 +9,8 @@
 //! inputs (`tags::material::ShaderLibrary::material`) and returns what the
 //! native pass draws, or why the light keeps its D3D passes.
 
+use std::collections::HashMap;
+
 use map::TagId;
 use tags::material::{EngineInputs, INSTANCE_INTS, INSTANCE_SCALARS, InputReads, Material, Register, TextureSource};
 use tags::shader::{PSDEF_SIZE, StageStates};
@@ -16,6 +18,7 @@ use tags::shader::{PSDEF_SIZE, StageStates};
 use shaders::psh::{PixelUniforms, TextureDim};
 use shaders::vsh::VertexUniforms;
 
+use crate::lights::LightConstants;
 use crate::pass_state::{PassState, StateRefusal, pass_state};
 use crate::program::{PassParts, translate_pass};
 
@@ -45,6 +48,83 @@ pub struct LightInputs {
     pub falloff_0: f32,
 }
 
+impl LightInputs {
+    /// The inputs of a light whose constants the hook computed.
+    pub fn from_constants(c: &LightConstants) -> Self {
+        let f = |w: [u32; 3]| w.map(f32::from_bits);
+        Self {
+            colour_a: f(c.colour_a),
+            colour_b: f(c.colour_b),
+            mode: c.mode as i32,
+            definition_8a: c.definition_8a as i16,
+            definition_80: c.definition_80 as i16,
+            definition_flags: c.definition_flags,
+            falloff_0: f32::from_bits(c.falloff_0),
+        }
+    }
+
+    /// What resolving a material with these inputs depends on, as bits:
+    /// lights with equal keys resolve every material alike.
+    pub fn key(&self) -> InputKey {
+        let [a0, a1, a2] = self.colour_a.map(f32::to_bits);
+        let [b0, b1, b2] = self.colour_b.map(f32::to_bits);
+        InputKey([
+            a0,
+            a1,
+            a2,
+            b0,
+            b1,
+            b2,
+            self.mode as u32,
+            self.definition_8a as u16 as u32,
+            self.definition_80 as u16 as u32,
+            self.definition_flags & 2,
+            scalar_16(self.falloff_0).to_bits(),
+        ])
+    }
+}
+
+/// [`LightInputs::key`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct InputKey(pub [u32; 11]);
+
+/// Resolved light passes by (shader, layer, implementation, inputs), so a
+/// material is resolved once per distinct light rather than once per
+/// light per frame. Bounded: past `capacity` entries it starts again
+/// (lights' colours animate, so old keys stop coming back).
+pub struct LookCache<V> {
+    entries: HashMap<(TagId, usize, usize, InputKey), V>,
+    capacity: usize,
+}
+
+impl<V: Clone> LookCache<V> {
+    pub fn new(capacity: usize) -> Self {
+        Self { entries: HashMap::new(), capacity: capacity.max(1) }
+    }
+
+    /// The value for the key, made by `make` when missing.
+    pub fn get_or_make(&mut self, shader: TagId, layer: usize, implementation: usize, key: InputKey, make: impl FnOnce() -> V) -> V {
+        let k = (shader, layer, implementation, key);
+        if let Some(v) = self.entries.get(&k) {
+            return v.clone();
+        }
+        if self.entries.len() >= self.capacity {
+            self.entries.clear();
+        }
+        let v = make();
+        self.entries.insert(k, v.clone());
+        v
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
 /// The inputs [`engine_inputs`] fills, beyond the instance's own.
 pub const LIGHT_SCALARS: u64 = 1 << 16;
 pub const LIGHT_VECTORS: u64 = 1 << 5 | 1 << 6;
@@ -62,9 +142,14 @@ pub fn engine_inputs(instance: &EngineInputs, l: &LightInputs) -> EngineInputs {
     e.ints[2] = i32::from(l.definition_8a);
     e.ints[3] = i32::from(l.definition_80);
     e.ints[7] = i32::from(l.definition_flags & 2 == 0);
-    // `comiss one, falloff; jbe` keeps 1: NaN and 1 or more give 1.
-    e.scalars[16] = if 1.0 > l.falloff_0 { l.falloff_0 } else { 1.0 };
+    e.scalars[16] = scalar_16(l.falloff_0);
     e
+}
+
+/// Scalar 16 from falloff word 0: `comiss one, falloff; jbe` keeps 1, so
+/// NaN and 1 or more give 1.
+fn scalar_16(falloff_0: f32) -> f32 {
+    if 1.0 > falloff_0 { falloff_0 } else { 1.0 }
 }
 
 /// What a light pass's texture stage samples.
@@ -435,5 +520,45 @@ mod tests {
         assert_eq!(u.constants[39], [32.0, 33.0, 34.0, 35.0]);
         assert_eq!(u.constants[30], base.constants[30]);
         assert_eq!(u.constants[40], base.constants[40]);
+    }
+
+    #[test]
+    fn inputs_come_from_the_hooks_constants_and_key_the_cache() {
+        let c = LightConstants {
+            frame: [0; 36],
+            flags: 1,
+            colour_a: [0.5f32.to_bits(), 0.25f32.to_bits(), 1.0f32.to_bits()],
+            colour_b: [0; 3],
+            mode: 1,
+            definition_flags: 0x22,
+            definition_8a: 0xffff,
+            definition_80: 3,
+            falloff_0: 2.0f32.to_bits(),
+        };
+        let l = LightInputs::from_constants(&c);
+        assert_eq!(l.colour_a, [0.5, 0.25, 1.0]);
+        assert_eq!((l.mode, l.definition_8a, l.definition_80), (1, -1, 3));
+        assert!(!c.shadowed());
+
+        let mut cache = LookCache::new(2);
+        let shader = TagId(0xe000_0100);
+        let mut made = 0;
+        let mut get = |cache: &mut LookCache<u32>, l: &LightInputs| {
+            cache.get_or_make(shader, DIFFUSE_LAYER, 1, l.key(), || {
+                made += 1;
+                made
+            })
+        };
+        assert_eq!(get(&mut cache, &l), 1);
+        assert_eq!(get(&mut cache, &l), 1, "same inputs: cached");
+        // A falloff of 2 and of 3 both read as scalar 1: the same key.
+        let far = LightInputs { falloff_0: 3.0, ..l };
+        assert_eq!(get(&mut cache, &far), 1);
+        let other = LightInputs { colour_b: [0.0, 0.0, 0.5], ..l };
+        assert_eq!(get(&mut cache, &other), 2);
+        assert_eq!(cache.len(), 2);
+        let third = LightInputs { mode: 2, ..l };
+        assert_eq!(get(&mut cache, &third), 3);
+        assert_eq!(cache.len(), 1, "full: started again");
     }
 }

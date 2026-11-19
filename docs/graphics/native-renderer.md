@@ -1160,7 +1160,21 @@ skipped light never reaches.
      8) keep a shadowed light on the D3D path. `compile_light` translates
      it through the same code as the world's and transparents' passes
      (`program::translate_pass`), and `light_vertex` puts the light's
-     frame constants into `c[31]`..`c[39]`. Next: the host side
+     frame constants into `c[31]`..`c[39]`.
+   - **Host pieces** (Code). The hook computes each light's constants as
+     `0x00031170` would (`feature::native_lights::light_constants`: the
+     definition from the tag table, the shadow word under scene flag bit
+     10, `light_globals` without the screen bounds, `pass_flags`) into
+     `Light::constants`; `LightInputs::from_constants` and
+     `LookCache` (keyed by shader, layer, implementation and the inputs'
+     bits) resolve a material once per distinct light;
+     `native_render::light_gpu` uploads the cube and volume
+     (`LayeredImage`, `layered_texture`) and draws a compiled pass with
+     one uniform group per light (`LightGpu`); `boot::native_lights_glue`
+     reads the light textures' bitmaps from `matg +0x10c`
+     (`light_bitmaps`, `light_textures`) and says which lights are
+     drawable (constants, no shadow). `accepts` still says no: the run's
+     pass over the world's lit parts is not wired yet. Next: the host side
      (resolving the light's materials, the engine textures from the
      globals' rasterizer bitmaps and the gel, the pass's draw over the
      lit parts).

@@ -78,6 +78,43 @@ pub struct Light {
     pub shadow: bool,
     /// The visible list's weight.
     pub weight: f32,
+    /// What the light's passes read, computed at the hook as
+    /// `0x0004a1e0` and the flag code would (`None`: not computed; the
+    /// host draws no such light).
+    pub constants: Option<LightConstants>,
+}
+
+/// One light's constants as its passes read them, words as the game
+/// stores them (docs/graphics/native-renderer.md, "Stage 4", "Engine
+/// constants"); `engine::light_constants` and `engine::light_passes`
+/// compute them without writing guest memory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LightConstants {
+    /// The 36 dwords `0x0003a550` uploads to `c[31]`..`c[39]`.
+    pub frame: [u32; 36],
+    /// The per-light flags (`[0x004ba014]`, `engine::light_passes::flag`).
+    pub flags: u32,
+    /// Engine vectors 5 and 6: colours A and B as the frame holds them.
+    pub colour_a: [u32; 3],
+    pub colour_b: [u32; 3],
+    /// The colour scale mode (`[0x00485a2c]`, integers 0 and 1).
+    pub mode: u32,
+    /// The definition's first dword (its first byte picks layer 12's
+    /// implementation 4; bit 1 is integer 7), and its words `+0x8a` and
+    /// `+0x80` (integers 2 and 3).
+    pub definition_flags: u32,
+    pub definition_8a: u16,
+    pub definition_80: u16,
+    /// Falloff word 0 (`[0x00485a30]`, scalar 16).
+    pub falloff_0: u32,
+}
+
+impl LightConstants {
+    /// Whether the light casts its shadow (flag bit 2): the shadow maps
+    /// are not drawn natively, so the host leaves such a light to D3D.
+    pub fn shadowed(&self) -> bool {
+        self.flags & 4 != 0
+    }
 }
 
 /// Consecutive native lights in the game's order: one external pass. The
@@ -141,6 +178,7 @@ mod tests {
             bounds: ([1.0, 2.0, 3.0], 4.0),
             shadow: false,
             weight: 0.5,
+            constants: None,
         }
     }
 
