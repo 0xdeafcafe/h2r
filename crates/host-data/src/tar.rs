@@ -333,7 +333,7 @@ mod tests {
         for ((name, data), (rname, rsize, rdata)) in entries.iter().zip(&out) {
             assert_eq!(name, rname);
             assert_eq!(*rsize, data.len() as u64);
-            assert_eq!(&rdata, data);
+            assert_eq!(rdata, data);
         }
     }
 

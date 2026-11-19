@@ -160,7 +160,7 @@ pub(crate) mod testkit {
 
     pub(crate) fn read_all(p: &Path) -> Vec<u8> {
         let mut v = Vec::new();
-        File::open(p).unwrap().read_to_end(&mut v).unwrap();
+        std::fs::File::open(p).unwrap().read_to_end(&mut v).unwrap();
         v
     }
 
