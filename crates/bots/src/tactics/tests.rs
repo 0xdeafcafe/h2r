@@ -202,6 +202,7 @@ fn the_movement_signals_follow_the_gun_and_the_danger() {
         held: Some(rifle()),
         other: None,
         grenades: [0, 0],
+        ..Arms::default()
     };
     t.signal(Some(&a), Kit::Fine, false, Some(10.0));
     assert_eq!(t.band, Role::Precise.band());

@@ -120,8 +120,11 @@ pub struct Shot {
     pub pull: Pull,
     /// The projectile's speed for lead (world units a second).
     pub speed: f32,
-    /// Shoots at targets this far, no nearer or further.
+    /// Shoots at targets this far, no nearer or further: the gun's reach
+    /// ([`crate::weapons::reach`]), its role's refined by its aim assist.
     pub range: (f32, f32),
+    /// A blade's lunge (world units): it swings this close. 0 for a gun.
+    pub lunge: f32,
     /// The target point's height over the target's origin.
     pub height: f32,
     /// Something to fire now: never dry-fires.
@@ -166,7 +169,8 @@ impl Shot {
             } else {
                 default_speed
             },
-            range: role.fire_range(),
+            range: held.map_or(role.fire_range(), |g| g.reach().fire),
+            lunge: held.map_or(0.0, |g| g.reach().lunge),
             height,
             // Arms not read: as before, it always may.
             ready: !read || held.is_some_and(|g| g.ammo.ready()),

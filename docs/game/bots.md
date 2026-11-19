@@ -426,8 +426,11 @@ Reload (X) and switch weapons (Y) are taps of 2 ticks, at most one every
 
 Grenades (left trigger) need one in hand (unit `+0x23e`, §3.6, when read).
 At the skill's rate in a fight at 3 to 12 world units, four times that rate
-when another enemy is within 2.5 of the target; and at twice the rate at
-where an enemy went out of view in the last 2 s, while chasing.
+when another enemy is within 2.5 of the target, three times before pushing
+in with a short gun; and at twice the rate at where an enemy went out of
+view in the last 2 s, while chasing. Each throw is flown against the map's
+collision and aimed to land (`bots::grenades`, "Built: weapon skill" in
+§10); none while dual wielding.
 
 The **personality** parameters (aggression, caution, objective focus, teamwork)
 scale the scores. Difficulty does not scale them: a Legendary bot can be
@@ -453,10 +456,12 @@ own turn rate. The game's aim assist then applies, exactly as it does for a
 human.
 
 Lead comes from the target's velocity and the weapon's projectile speed,
-read from the tag at load; hitscan needs no lead. Grenade arcs solve the
-throw speed against gravity, and the bot accepts the throw only when the
-arc misses collision. The numbers in the table are starting points; tuning
-them needs runs (§11).
+read from the tag at load; hitscan needs no lead. A grenade's throw is
+flown against the map's collision (bounces, the fuse, a plasma sticking)
+and its aim searched until it goes off at the target; the bot throws only
+when one does (built: `bots::grenades`, "Built: weapon skill" in §10).
+The numbers in the table are starting points; tuning them needs runs
+(§11).
 
 ### 3.5 Emotes (the teabag layer)
 
@@ -3593,6 +3598,141 @@ list for the user to play (§11).
         teammate stands.
      7. Easy still sprays and misses; Legendary is sharp but still has
         its reaction time.
+
+   **Built: weapon skill** (2026-11-19). The user: "ai doesn't really
+   know about how to use grenades well, how they arc/bounce, and also
+   ranges of weapons, noob combos, using both weapons effectively". This
+   slice is `bots::grenades` (new), `bots::weapons` (new), `bots::arms`,
+   `bots::tactics`, `Walls::hit` in `bots::los`, and small hooks in
+   `bots::mind`. The aim hand, the footwork and the big decisions are
+   other lanes'.
+   - **Grenades fly** (`grenades::fly`). From the eye along the aim, under
+     gravity, in steps of 1/60 s against the map's collision triangles
+     (`los::Walls::hit`: where along the step and the surface's normal; a
+     flat floor at the target's height when the map has no data). A frag
+     bounces (35% of its speed into a surface comes back, 30% of its speed
+     along it is lost at each touch; slower than 0.4 on a floor it lies
+     still) and goes off 1 s after its first touch; a plasma sticks to
+     the first surface or player it touches (a player is an upright line
+     0.1 to 0.65 over the feet, 0.25 thick) and goes off 1.2 s later. Halo
+     2 has no cooking: nothing the bot does moves the fuse. **None of
+     these numbers is read from the game** (below); they are named
+     `ASSUMED_GRAVITY` (3.2 world units a second squared), `FRAG` (6 a
+     second) and `PLASMA` (5.5 a second) for a run to check.
+   - **The aim** (`grenades::solve`). Pitches from -20 to 70 degrees in 5
+     degree steps, the best refined by 1 degree; the throw goes off
+     nearest where it should, within 1 world unit or not at all. A moving
+     target is led (its velocity times the flight time, then again with
+     the flight time of that throw). With none landing straight and banks
+     allowed (Heroic and up), throws 8 to 60 degrees to either side: off a
+     wall, or rolled past a corner to where someone went out of view. A
+     plasma that sticks the target counts as a hit. The arc blocked, it
+     does not throw (tries again in 2/3 s).
+   - **When and what** (`grenades::Thrower`, the mind's `grenade`). The
+     skill's rate per minute, times 4 into a group (another enemy within
+     2.5 of the target; it then aims between them), 2 at where a target
+     went out of view (2 s at most), 3 before pushing in with a shotgun,
+     SMG, plasma or sword (the target beyond its band). A plasma for a
+     target in view within 8 (Normal and up), a frag otherwise; the type
+     selected (unit `+0x23c`) changed first with Black (switch grenades,
+     Halo 2's default layout). Never one that goes off within 3 of its own
+     feet; from Normal, never within 3 of a teammate. Then it turns to the
+     throw (the mind looks along it) and lets go once its aim is within
+     the skill's tolerance, giving up after 1 s; a human hand: the throw's
+     aim is off by the skill's noise. At most one every 8 s.
+
+     | | Easy | Normal | Heroic | Legendary |
+     |---|---|---|---|---|
+     | banks and rolls | no | no | yes | yes |
+     | sticks plasmas | no | yes | yes | yes |
+     | lead | 0 | 0.5 | 0.85 | 1 |
+     | aim noise (degrees, std. dev.) | 6 | 3 | 1.5 | 0.8 |
+     | lets go within (degrees) | 8 | 5 | 4 | 3 |
+     | spares teammates | no | yes | yes | yes |
+     | more before pushing in | no | yes | yes | yes |
+
+   - **Weapon ranges** (`weapons::reach`). A gun's band and fire range
+     are its role's (§3.6) refined by its tag's aim assist reach
+     (`cone_range`, `pull_range`): a magnum, SMG, shotgun, plasma or
+     rifle is good to its reach (kept within half and one and a half
+     times its role's band end) and fires to 1.6 times that, so a magnum
+     backs off to the rifle sooner and an SMG is not sprayed at 18. A
+     sniper or splash weapon keeps its role's. A sword's lunge is its
+     reach (1 to 3; 1.5 unread), and it swings at that. The weapons
+     decision, the movement's band and the fire range all use this.
+   - **Using both guns** (`arms::plan`, Normal and up, out of a fight).
+     Two short guns or two long ones: a gun of the other kind within 15
+     is taken, the worse of the two dropped for it (switching first when
+     the better is in hand). A full magazine in hand and the other gun
+     wanting a reload: switch to it, so it is reloaded out of the fight.
+     In a fight, the switches by range and instead of a reload (§3.6) now
+     use each gun's reach.
+   - **Combos** (`weapons::Combo`, the mind's `combo`). The **noob
+     combo**: holding a charged plasma pistol (battery 0.15 and up) with
+     a rifle, magnum or SMG in the other hand, a target 1.5 to 14 away:
+     hold the trigger 24 ticks, let go when on target (36 at most: a held
+     charge drains), wait the skill's delay, switch (Y), and shoot for the
+     head; the weapons decision does not switch away for 2 s. With the
+     rifle in hand and the pistol in the other on a fresh target, it draws
+     the pistol first. Once per target, by chance: Easy 10%, Normal 35%,
+     Heroic 70%, Legendary 90%; switch delay 18, 10, 6, 3 ticks. The
+     **melee finish**: close (1.3) to a target it has hit with a gun
+     (pulls on target: Normal 5, Heroic 4, Legendary 3; an automatic one
+     each 8 ticks of fire; after a combo's overcharge, at once), melee.
+     Easy never. Without traced target shields "hits" are pulls on target.
+   - **Dual wielding** (unit `+0x213`, the left hand's slot, traced in
+     docs/live/live-gamestate.md and `boot::touch_glue`). The left gun
+     reads as `Arms::left`; the left trigger fires it with the right's
+     aim (a charge gun charges and lets go on target, a once-per-pull
+     gun is pulled at its rate, an automatic held); no grenades then.
+     The bot does not yet choose to dual wield: picking a gun up into the
+     left hand needs the `weap` tag's dual-wield flag, not traced.
+   - Tests: `-p bots --lib grenades` (`a_grenade_falls_as_gravity_says`,
+     `a_frag_bounces_on_and_goes_off_its_fuse_after_the_first_touch`,
+     `a_wall_throws_a_frag_back`, `a_plasma_sticks_to_a_player_in_its_way`,
+     `the_aim_lands_it_at_the_target`, `a_blocked_arc_is_not_thrown`,
+     `a_frag_is_rolled_round_a_corner_when_the_straight_throw_is_blocked`,
+     `a_plasma_is_stuck_on_a_close_target`, `a_moving_target_is_led`,
+     `never_at_its_own_feet_or_a_teammates`,
+     `the_skills_throw_better_in_order`,
+     `the_thrower_turns_to_its_arc_then_throws_spaced_out`,
+     `a_plasma_is_chosen_to_stick_a_close_target`,
+     `no_throw_dual_wielding_without_grenades_or_out_of_range`); `-p bots
+     --lib weapons` (ranges, classes, the combo's phases, the draw, the
+     skills' odds, the melee finish, the left hand); `-p bots --lib arms`
+     (`two_short_guns_take_a_long_one_dropping_the_worse`,
+     `out_of_a_fight_the_other_gun_is_drawn_to_reload_it`,
+     `the_aim_assist_reach_moves_the_switch`,
+     `the_unit_reads_its_left_hand_and_grenade_type`); `-p bots --lib
+     los` (`a_hit_says_where_and_which_way_the_wall_faces`); `-p bots
+     --lib mind::fight_tests` (`no_grenade_into_a_teammate` now turns to
+     each throw, `a_noob_combo_holds_the_charge_lets_go_and_switches`,
+     `dual_wielding_fires_the_left_gun_and_throws_no_grenades`).
+   - **Not traced, wanted** (addresses for a tracing lane):
+     - the globals (`matg`) grenades block: its offset in the globals tag,
+       stride, and each entry's projectile reference (then the frag's and
+       plasma's `proj +0x17c` initial velocity, already confirmed, gives
+       the throw speed);
+     - the gravity the projectile update takes off a projectile's z
+       (`0x000f9726`, docs/live/live-telemetry.md): the global it loads
+       and the `proj` field that scales it (air gravity scale);
+     - in `proj`: the detonation timer and whether it starts at the first
+       touch, the material response block (offset, stride, the
+       perpendicular and parallel friction or restitution fields), and the
+       sticky flag;
+     - how a throw leaves the hand: the projectile's spawn point and
+       direction against the unit's aim (`+0x168`) and whether the unit's
+       velocity is added;
+     - the plasma pistol trigger's charging time (the `weap` trigger
+       block, `+0x40` stride; which field);
+     - the damage effect radius of the frag and plasma explosions (`jpt!`
+       upper radius) for the safety distance (3 assumed);
+     - the `weap` flag that allows dual wielding, and which button picks a
+       gun up into the left hand;
+     - a target's shield (the body's `+0xf0`, already read for the bot
+       itself in `brain::Me`) in `brain::Seen`, so the melee finish and
+       the noob combo's swap follow real shields, not shots on target.
+   - **Game run (the user):** §11.1, "Weapon skill".
 8. **Clankermatch.** First slice built (§8.3, §8.4; run checklist §8.5).
    - Built: the Live menu row (row 2; the rest moved down), the playlist
      filter at `0x00192db0`, the clanker hoppers in the default set and
@@ -3764,6 +3904,35 @@ Cheap wins (§3.3):
     than at one; never with no grenades left.
 16. A bot that loses sight of someone round a corner sometimes lobs a
     grenade there.
+
+Weapon skill ("Built: weapon skill" in §10), Heroic and Legendary, Slayer
+on Lockout and Midship with a human:
+
+17. Before throwing, a bot looks up (or down) along its throw for a
+    moment, then throws; the grenade lands at or rolls to where the
+    human stands, more often than it falls short or long. Note the map,
+    the distance and where it landed against where you stood: the throw
+    speed, gravity, bounce and fuse are assumed numbers.
+18. Behind a pillar or round a corner, a Heroic or Legendary bot's frag
+    sometimes comes off a wall or rolls round the corner to you. It does
+    not throw into a wall in front of its face.
+19. Within about 8 a bot with plasmas sometimes sticks you (it presses
+    Black first when frags are selected). A bot never kills itself or,
+    in a team game, its teammate with its own grenade.
+20. A bot with a shotgun or SMG throws a grenade before closing in.
+21. A bot with a plasma pistol and a battle rifle or magnum charges the
+    pistol (its glow), fires the overcharge at you, switches and shoots
+    for your head; Legendary does it nearly every fight, Easy almost
+    never.
+22. A bot that has hit you a few times and is at arm's length melees.
+23. A bot with two short guns walks to a battle rifle nearby after a
+    fight, and one with two long guns to an SMG or shotgun.
+24. After a fight a bot draws its other gun when that one's magazine is
+    low, and reloads it.
+25. A bot that dual wields (give it two SMGs in a variant, if one can)
+    fires both triggers and throws no grenades.
+26. A magnum bot backs off to its rifle at a shorter range than before;
+    a bot with an SMG stops spraying at you across the map.
 
 ### 11.2 Objectives in play (checklist)
 
