@@ -8,6 +8,8 @@ license.workspace = true
 [dependencies]
 rustc-hash = "2"
 xbe.workspace = true
+# The served-builtin table the h1-scripts feature and the converter share.
+h1builtins.workspace = true
 xiso.workspace = true
 analyze.workspace = true
 lift.workspace = true

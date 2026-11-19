@@ -104,23 +104,14 @@ pub const SKIP_GUARD: &str = "cinematic_skip_start";
 pub const SHORT_PATHS: &[(&str, &str)] = &[("tutorial_setup", "fast_setup")];
 
 /// What a stubbed status query returns under [`Missing::Stub`] instead of
-/// zero, where zero would hold a `sleep_until` forever. Every use in the
-/// ten levels' scripts reads the value as "done" (docs/halo1/scripts.md):
-/// conversation status 5 passes `(< 4 s)`, `(> s 4)`, `(> s 3)` and
-/// `(< 2 s)`; command list status 2 passes `(= 2 s)` and `(!= 3 s)` (the
-/// four `(= 1 s)` waits still hold); the quiet and safe-to-speak tests
-/// are true; the HUD timer never runs out; a conversation is past any line.
-pub const DONE_VALUES: &[(&str, i32)] = &[
-    ("ai_conversation_status", 5),
-    ("ai_command_list_status", 2),
-    ("game_all_quiet", 1),
-    ("game_safe_to_speak", 1),
-    // d40's escape timer: `(<= (hud_get_timer_ticks) 0)` ends the level
-    // as failed; Halo 2 has no HUD timer, so it never runs out.
-    ("hud_get_timer_ticks", 32767),
-    // b30: `(< 1 (ai_conversation_line jeep_load))`, a line past the first.
-    ("ai_conversation_line", 99),
-];
+/// zero, where zero would hold a `sleep_until` forever ([`h1builtins`],
+/// shared with the game's serving feature). Every use in the ten levels'
+/// scripts reads the value as "done" (docs/halo1/scripts.md): conversation
+/// status 5 passes `(< 4 s)`, `(> s 4)`, `(> s 3)` and `(< 2 s)`; command
+/// list status 2 passes `(= 2 s)` and `(!= 3 s)` (the four `(= 1 s)` waits
+/// still hold); the quiet and safe-to-speak tests are true; the HUD timer
+/// never runs out; a conversation is past any line.
+pub use h1builtins::DONE_VALUES;
 
 /// Halo 1's `ai_status` scale on Halo 2's combat status, highest first:
 /// the Halo 2 engine global a status must reach, and the Halo 1 value.
@@ -214,6 +205,12 @@ pub struct Hook {
     /// The token: an object, squad, flag or tag name, an enum value, or the
     /// text to intern as a string ID.
     pub token: String,
+    /// When the atom is a direct argument of a call: the builtin's Halo 1
+    /// name and the argument's position. `ai_migrate`'s destination (its
+    /// second `ai` argument) must not become a squad group: Halo 2's
+    /// migrate ignores a destination with either top bit set
+    /// (`0x002a54cc`), so a group there would silently move no one.
+    pub direct: Option<(String, usize)>,
 }
 
 /// A call compiled under [`Missing`], or an engine global Halo 2 lacks.
@@ -252,6 +249,10 @@ pub struct Compiled {
     /// [`NONE_UNSAFE`] calls compiled inside a guard that skips them when
     /// their unit is `none`.
     pub guarded: Vec<Unresolved>,
+    /// Calls of builtins the game's `h1-scripts` feature serves through a
+    /// sacrificial Halo 2 slot ([`h1builtins::SERVED`]): the builtin, then
+    /// the slot.
+    pub served: Vec<Unresolved>,
     /// Halo 1 `(sleep <negative> [script])` calls compiled as Halo 2's
     /// `sleep_forever`: Halo 2 takes a negative duration as no sleep.
     pub forever: Vec<Unresolved>,
@@ -306,6 +307,7 @@ pub fn compile_with(
         out: Compiled::default(),
         interned: HashMap::new(),
         definition: String::new(),
+        direct: None,
     };
     for (i, g) in t.globals.iter().enumerate() {
         c.definition = g.name.clone();
@@ -409,6 +411,7 @@ pub fn add_startup_placements(
             type_name: type_name.clone(),
             h1_type: "ai".into(),
             token: squad.clone(),
+            direct: None,
         });
         calls.push(call(out, &place, b"ai_place", &[atom]));
     }
@@ -447,6 +450,11 @@ struct Compiler<'a> {
     out: Compiled,
     interned: HashMap<Vec<u8>, u32>,
     definition: String,
+    /// The builtin a direct atom argument belongs to, and its position:
+    /// set just for the atom argument itself, cleared after (a nested
+    /// expression's atoms are that expression's arguments, not this
+    /// call's).
+    direct: Option<(String, usize)>,
 }
 
 /// A node before its slot is known to its parent: its fields.
@@ -585,6 +593,7 @@ impl Compiler<'_> {
                 .unwrap_or_default(),
             h1_type: self.h1.type_name(h1_type).unwrap_or("?").to_owned(),
             token: token.to_owned(),
+            direct: self.direct.clone(),
         });
     }
 
@@ -863,13 +872,57 @@ impl Compiler<'_> {
             return Ok(d);
         }
         let Some((h2_name, b)) = tr.target.clone().filter(|_| tr.kind != Kind::Missing) else {
+            if let Some(served) = h1builtins::by_name(&f.name)
+                && args.iter().all(|&a| self.t.node(a)?.atom())
+            {
+                // The game's `h1-scripts` feature answers the call through
+                // this slot (h1builtins, "Serving missing builtins"), under
+                // either policy: retail runs it as the slot's discarded
+                // stub until the feature patches the slot's descriptor.
+                // Arguments must be atoms (literals, globals, names): the
+                // slot's retail evaluator is the discarded stub, which
+                // evaluates nothing, and the feature reads the atoms
+                // itself; a nested argument would never run, so such a
+                // call is stubbed like any other missing one.
+                if self.h1.fixed_signature(index) && args.len() != served.params.len() {
+                    return Err(invalid(format!(
+                        "{}: served as {} arguments, has {}",
+                        f.name,
+                        served.params.len(),
+                        args.len()
+                    )));
+                }
+                self.out.served.push(Unresolved {
+                    definition: self.definition.clone(),
+                    name: format!("{} (slot {})", f.name, served.slot),
+                });
+                let mut out = Vec::new();
+                for (k, &a) in args.iter().enumerate() {
+                    let ty = if k < served.params.len() {
+                        served.params[k]
+                    } else {
+                        // Past the served signature (a special form's call):
+                        // the argument keeps its own mapped type.
+                        let h1_ty = self.t.node(a)?.value_type();
+                        self.table.ty(h1_ty).unwrap_or(h2t::PASSTHROUGH)
+                    };
+                    out.push(self.expr(a, ty)?);
+                }
+                return Ok(self.call(
+                    served.slot,
+                    CALL,
+                    expected,
+                    f.name.as_bytes(),
+                    &out,
+                ));
+            }
             self.out.missing.push(Unresolved {
                 definition: self.definition.clone(),
                 name: f.name.clone(),
             });
             return match self.policy {
-                Missing::Stub => Ok(match DONE_VALUES.iter().find(|d| d.0 == f.name) {
-                    Some(&(_, v)) => self.number(expected, v),
+                Missing::Stub => Ok(match h1builtins::stub_value(&f.name) {
+                    Some(v) => self.number(expected, v),
                     None => self.default(expected),
                 }),
                 Missing::Extension => {
@@ -932,7 +985,13 @@ impl Compiler<'_> {
                     .get(offset + k)
                     .ok_or_else(|| invalid(format!("{token}: too many arguments for {h2_name}")))?
             };
+            // A direct atom argument remembers the call it belongs to (see
+            // [`Hook::direct`]).
+            if self.t.node(a)?.atom() {
+                self.direct = Some((token.clone(), k));
+            }
             out.push(self.expr(a, ty)?);
+            self.direct = None;
         }
         if let Some(Adapter::AppendShort(v)) = tr.adapter {
             let ty = *b

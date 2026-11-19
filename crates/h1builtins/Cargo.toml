@@ -1,0 +1,8 @@
+[package]
+name = "h1builtins"
+description = "Halo 1 builtins the recompiled engine serves: the table the converter and the game feature share"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]

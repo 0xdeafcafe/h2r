@@ -53,6 +53,7 @@ pub mod raw;
 mod reader;
 pub mod render;
 mod server;
+pub mod hs_state;
 pub mod sim;
 mod tap;
 mod trace;

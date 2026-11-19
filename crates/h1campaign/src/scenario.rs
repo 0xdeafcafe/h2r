@@ -421,6 +421,9 @@ pub struct ScriptReport {
     pub looping_dropped: Vec<String>,
     pub looping_bytes: u64,
     pub missing_calls: usize,
+    /// Calls of builtins the game's `h1-scripts` feature serves through
+    /// sacrificial slots (`h1builtins`): builtin and slot, per script.
+    pub served_calls: Vec<String>,
     /// Calls stubbed because a cutscene flag, camera point, title or device
     /// group they name does not resolve (`h1scripts::compile::INDEXED`).
     pub unindexed: Vec<String>,
@@ -514,6 +517,14 @@ impl std::fmt::Display for ScenarioReport {
                 s.references
             )?;
             writeln!(f, "    unresolved samples: {:?}", s.samples)?;
+            if !s.served_calls.is_empty() {
+                writeln!(
+                    f,
+                    "    {} calls served by the h1-scripts feature: {:?}",
+                    s.served_calls.len(),
+                    s.served_calls
+                )?;
+            }
             if !s.unindexed.is_empty() {
                 writeln!(
                     f,
@@ -1096,9 +1107,40 @@ pub fn write(
                     && named.contains(&format!("{encounter}/{}", q.name).to_ascii_lowercase()))
         });
     }
+    // Platoons the scripts name become squad groups of their squads (the
+    // ai lane's handoff: a platoon argument must cover every squad it did
+    // in Halo 1, so a30's dropship waves spawn and board whole).
+    let mut platoons = std::collections::BTreeSet::new();
+    for e in &ai_src.encounters {
+        for p in &e.platoons {
+            let token = format!("{}/{}", e.name, p.name).to_ascii_lowercase();
+            if named.contains(&token) {
+                platoons.insert(token);
+            }
+        }
+    }
     let plan = h1map::phase::time("ai", || {
-        h1ai::convert::convert(&ai_src, &Default::default())
+        h1ai::convert::convert(
+            &ai_src,
+            &h1ai::convert::Options {
+                platoon_groups: platoons.clone(),
+                ..Default::default()
+            },
+        )
     });
+    // Over the engine's squad-group cap (100): the platoon groups go (their
+    // names resolve to a sibling squad of the encounter, as before them).
+    let plan = if plan.ai.squad_groups.len() > MAX_SQUAD_GROUPS {
+        report.dropped.push(format!(
+            "ai: {} named platoons left without squad groups (cap {MAX_SQUAD_GROUPS}); their names resolve to a sibling squad",
+            platoons.len()
+        ));
+        h1map::phase::time("ai", || {
+            h1ai::convert::convert(&ai_src, &Default::default())
+        })
+    } else {
+        plan
+    };
     if plan.ai.squads.len() > MAX_SQUADS || plan.ai.squad_groups.len() > MAX_SQUAD_GROUPS {
         return Err(invalid(format!(
             "ai: {} squads and {} squad groups, the engine holds {MAX_SQUADS} and {MAX_SQUAD_GROUPS}",
@@ -1750,23 +1792,34 @@ pub fn hook_value(h: &h1scripts::compile::Hook, t: &Targets) -> Option<u32> {
                     .position(|n| n.eq_ignore_ascii_case(g))
                     .map(|i| 0x4000_0000 | i as u32)
             };
+            // A platoon or encounter: the squad group covering its squads
+            // (`ai_place`, `ai_actors`, `ai_strength`, ... walk a group's
+            // children; a group of a platoon's squads makes the argument
+            // cover every squad it did in Halo 1) — unless the argument is
+            // one a squad group cannot serve: `ai_migrate`'s destination
+            // ignores a value with either top bit set (`0x002a54cc`), and
+            // `ai_attach_units` reads the low 16 bits as a squad index
+            // (`0x0027305e`), so a group there would do nothing or name
+            // another squad. Those take the first squad of the platoon's
+            // encounter, keeping the actors in their zone, as Halo 1's
+            // migration did.
+            let migrates_in = h.direct.as_ref().is_some_and(|(b, k)| {
+                *k == 1 && matches!(b.as_str(), "ai_migrate" | "ai_attach" | "ai_attach_free")
+            });
+            if !migrates_in {
+                if let Some(g) = group(&token) {
+                    return Some(g);
+                }
+            }
             // A squad left out (empty, over the squad cap): the first
             // squad of its encounter, else the encounter's squad group.
-            // Halo 2's `ai_migrate` ignores a destination with either top
-            // bit set (`0x002a54cc`, `test ecx,0C0000000h`) and
-            // `ai_attach_units` reads the low 16 bits as a squad index
-            // (`0x0027305e`), so a squad group there would do nothing or
-            // name another squad; a sibling keeps the actors in their
-            // encounter's zone, as Halo 1's migration did.
-            group(&token).or_else(|| {
-                let (encounter, _) = h.token.split_once('/')?;
-                let prefix = format!("{encounter}/").to_ascii_lowercase();
-                t.squads
-                    .iter()
-                    .position(|q| q.to_ascii_lowercase().starts_with(&prefix))
-                    .map(|i| i as u32)
-                    .or_else(|| group(&encounter.chars().take(31).collect::<String>()))
-            })
+            let (encounter, _) = h.token.split_once('/')?;
+            let prefix = format!("{encounter}/").to_ascii_lowercase();
+            t.squads
+                .iter()
+                .position(|q| q.to_ascii_lowercase().starts_with(&prefix))
+                .map(|i| i as u32)
+                .or_else(|| group(&encounter.chars().take(31).collect::<String>()))
         }
         _ => None,
     }
@@ -1977,6 +2030,11 @@ fn install_scripts(
         looping_dropped,
         looping_bytes,
         missing_calls: c.missing.len(),
+        served_calls: c
+            .served
+            .iter()
+            .map(|u| format!("{}: {}", u.definition, u.name))
+            .collect(),
         unindexed: c
             .unindexed
             .iter()

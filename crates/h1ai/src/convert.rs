@@ -37,6 +37,15 @@ pub struct Options {
     pub area_kind: u16,
     /// Style palette index of each order.
     pub order_style: i16,
+    /// Halo 1 platoons the scripts name (`encounter/platoon`, lower case),
+    /// each converted to a squad group of that name under the encounter's
+    /// group, holding exactly the platoon's squads. Halo 2's `ai` builtins
+    /// walk a group's children (`ai_place`, `ai_actors`, `ai_strength`, ...
+    /// on retail's own parent groups, 05a's `all_enemies` among them), so a
+    /// platoon argument covers every squad it did in Halo 1 while the
+    /// encounter's group still covers them all. Empty: no platoon groups
+    /// (the squad's group is its encounter's, as before).
+    pub platoon_groups: std::collections::BTreeSet<String>,
 }
 
 impl Default for Options {
@@ -46,6 +55,7 @@ impl Default for Options {
             zone_flags: 1,
             area_kind: 0,
             order_style: -1,
+            platoon_groups: std::collections::BTreeSet::new(),
         }
     }
 }
@@ -255,6 +265,23 @@ pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
             parent: -1,
             initial_order: -1,
         });
+        let encounter_group = ai.squad_groups.len() as i16 - 1;
+        // Platoons the scripts name become child groups of the encounter's,
+        // holding exactly their squads: a platoon argument then covers every
+        // squad it did in Halo 1 (see `Options::platoon_groups`).
+        let mut platoon_of: Vec<Option<i16>> = vec![None; e.platoons.len()];
+        for (pi, p) in e.platoons.iter().enumerate() {
+            let token = format!("{}/{}", e.name, p.name).to_ascii_lowercase();
+            if !opts.platoon_groups.contains(&token) {
+                continue;
+            }
+            ai.squad_groups.push(h2::SquadGroup {
+                name: name31(&format!("{}/{}", e.name, p.name)),
+                parent: encounter_group,
+                initial_order: -1,
+            });
+            platoon_of[pi] = Some(ai.squad_groups.len() as i16 - 1);
+        }
 
         for s in &e.squads {
             let name = name31(&format!("{}/{}", e.name, s.name));
@@ -340,7 +367,10 @@ pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
                 name,
                 flags: 0,
                 team: e.team,
-                parent: ei as i16,
+                parent: usize::try_from(s.platoon)
+                    .ok()
+                    .and_then(|i| platoon_of.get(i).copied().flatten())
+                    .unwrap_or(encounter_group),
                 delay: s.delay,
                 normal_count: if unplaced { 0 } else { s.normal_count },
                 insane_count: if unplaced { 0 } else { s.insane_count },

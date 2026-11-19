@@ -8,6 +8,8 @@ license.workspace = true
 h1map = { path = "../h1map" }
 # Halo 1 seat labels as the converted graphs (and rebuilt vehicles) name them.
 h1models = { path = "../h1models" }
+# The served-builtin table the game's feature and this converter share.
+h1builtins.workspace = true
 hs.workspace = true
 map.workspace = true
 xbe.workspace = true

@@ -16,6 +16,8 @@ h1models = { path = "../h1models" }
 h1objects = { path = "../h1objects" }
 h1ai = { path = "../h1ai" }
 h1scripts = { path = "../h1scripts" }
+# The served-builtin table the disc tests check against the retail shapes.
+h1builtins.workspace = true
 h1sky = { path = "../h1sky" }
 h1sounds = { path = "../h1sounds" }
 map.workspace = true

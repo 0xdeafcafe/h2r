@@ -83,6 +83,7 @@ fn hooks_take_retail_encodings() {
         type_name: ty.into(),
         h1_type: String::new(),
         token: token.into(),
+        direct: None,
     };
     let names = vec!["lz_cship".to_string(), "hog".to_string()];
     let volumes = ["first", "second"];
@@ -120,4 +121,54 @@ fn hooks_take_retail_encodings() {
     assert_eq!(hook_value(&hook("ai", "enc"), &t), Some(0x4000_0000));
     assert_eq!(hook_value(&hook("ai", "other"), &t), None);
     assert_eq!(hook_value(&hook("cutscene_flag", "x"), &t), None);
+}
+
+/// A platoon token names the squad group the converter made of the
+/// platoon's squads, everywhere but a migration's destination (and an
+/// attach), where Halo 2 would ignore the group; there it names a sibling
+/// squad of the encounter, as before the groups existed.
+#[test]
+fn platoon_hooks_name_their_group_except_where_groups_do_nothing() {
+    use crate::scenario::{Targets, hook_value};
+    use h1scripts::compile::Hook;
+    let hook = |token: &str, direct: Option<(&str, usize)>| Hook {
+        slot: 0,
+        h2_type: 0,
+        type_name: "ai".into(),
+        h1_type: String::new(),
+        token: token.into(),
+        direct: direct.map(|(b, k)| (b.to_string(), k)),
+    };
+    let squads = ["enc/grunt".to_string(), "enc/elite".to_string()];
+    let groups = ["enc".to_string(), "enc/toon".to_string()];
+    let t = Targets {
+        names: &[],
+        placed: &[],
+        volumes: &[],
+        parked: 0,
+        squads: &squads,
+        groups: &groups,
+    };
+    // A place, count or actor query covers every squad of the platoon.
+    assert_eq!(hook_value(&hook("enc/toon", None), &t), Some(0x4000_0001));
+    assert_eq!(
+        hook_value(&hook("enc/toon", Some(("ai_place", 0))), &t),
+        Some(0x4000_0001)
+    );
+    // A migration's source covers them all too...
+    assert_eq!(
+        hook_value(&hook("enc/toon", Some(("ai_migrate", 0))), &t),
+        Some(0x4000_0001)
+    );
+    // ...but its destination takes a squad: a group there would move no
+    // one (`0x002a54cc`).
+    assert_eq!(
+        hook_value(&hook("enc/toon", Some(("ai_migrate", 1))), &t),
+        Some(0)
+    );
+    // So does an attach's target (`0x0027305e`).
+    assert_eq!(
+        hook_value(&hook("enc/toon", Some(("ai_attach", 1))), &t),
+        Some(0)
+    );
 }

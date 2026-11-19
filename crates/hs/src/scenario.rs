@@ -289,7 +289,17 @@ impl Scenario {
             .collect())
     }
 
-    pub fn validate(&self, catalog: &Catalog) -> Result<Validation> {
+    /// [`validate`], with served builtin slots (`h1builtins`): a Halo 2
+    /// builtin index whose descriptor the game's serving feature patches to
+    /// the given return type and parameters, so a call of it is checked
+    /// against those instead of the slot's retail (discarded-stub)
+    /// descriptor.
+    pub fn validate_served(
+        &self,
+        catalog: &Catalog,
+        served: &[(u16, u16, &[u16])],
+    ) -> Result<Validation> {
+        let served = |slot: u16| served.iter().find(|&&(s, _, _)| s == slot);
         self.validate_graph()?;
         for s in &self.scripts {
             if s.kind as usize >= catalog.script_kinds.len() {
@@ -323,6 +333,22 @@ impl Scenario {
                         )));
                     }
                     stats.script_calls += 1;
+                } else if let Some(&(_, _, params)) = served(n.opcode) {
+                    // A served slot: fixed-signature against the patch.
+                    let mut argument = self.node(Datum(n.data))?.next;
+                    for &expected in params {
+                        let actual = self.node(argument)?;
+                        if actual.value_type != expected {
+                            return Err(invalid(format!(
+                                "node {i}: served argument type mismatch"
+                            )));
+                        }
+                        argument = actual.next;
+                    }
+                    if argument != Datum::NULL {
+                        return Err(invalid(format!("node {i}: served arity mismatch")));
+                    }
+                    stats.builtin_calls += 1;
                 } else {
                     let function = catalog.function(n.opcode)?;
                     if function.flags & 2 == 0 {
@@ -371,6 +397,10 @@ impl Scenario {
         stats.rooted_nodes = self.reachable(self.roots())?.len();
         stats.unrooted_live_nodes = stats.live_nodes - stats.rooted_nodes;
         Ok(stats)
+    }
+
+    pub fn validate(&self, catalog: &Catalog) -> Result<Validation> {
+        self.validate_served(catalog, &[])
     }
 
     /// Exact byte comparison for every retained table, including dead slots,

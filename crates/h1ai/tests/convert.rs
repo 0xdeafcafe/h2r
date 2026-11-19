@@ -159,7 +159,6 @@ fn encounters_become_groups_zones_squads_and_orders() {
     assert!(src.check_indices().is_empty());
     let plan = convert(&src, &Options::default());
     let ai = &plan.ai;
-
     // Two palette entries name one character.
     let chars: Vec<_> = plan.characters.iter().map(|c| c.h2_character).collect();
     assert_eq!(
@@ -316,4 +315,54 @@ fn the_character_table_picks_by_species_and_rank() {
     assert_eq!(c(14, "anything"), "ai\\generic");
     assert_eq!(character_for(ActorType(7), "").1, grenade::HUMAN);
     assert_eq!(character_for(ActorType(10), "").1, grenade::NONE);
+}
+
+/// Platoons the scripts name become child squad groups of the encounter's,
+/// holding exactly their squads; the others keep the encounter's group, and
+/// an empty platoon set converts nothing (as before).
+#[test]
+fn named_platoons_become_child_squad_groups() {
+    use h1ai::h1::Platoon;
+    let mut src = invented();
+    let e = &mut src.encounters[0];
+    e.platoons = vec![
+        Platoon {
+            name: "lz_toon".into(),
+            flags: 0,
+        },
+        Platoon {
+            name: "unnamed_toon".into(),
+            flags: 0,
+        },
+    ];
+    // elites and grunts in the named platoon, empty squad left in the
+    // encounter's.
+    e.squads[0].platoon = 0;
+    e.squads[1].platoon = 0;
+    drop(e);
+    let named = ["first/lz_toon".to_string()].into_iter().collect();
+    let plan = convert(
+        &src,
+        &Options {
+            platoon_groups: named,
+            ..Default::default()
+        },
+    );
+    let ai = &plan.ai;
+    // The encounter's group, then the named platoon's as its child.
+    assert_eq!(ai.squad_groups.len(), 2);
+    assert_eq!(ai.squad_groups[0].name, "first");
+    assert_eq!(ai.squad_groups[0].parent, -1);
+    assert_eq!(ai.squad_groups[1].name, "first/lz_toon");
+    assert_eq!(ai.squad_groups[1].parent, 0);
+    let by_name = |n: &str| ai.squads.iter().position(|q| q.name == n).unwrap();
+    assert_eq!(ai.squads[by_name("first/elites")].parent, 1);
+    assert_eq!(ai.squads[by_name("first/grunts")].parent, 1);
+    // A squad of no named platoon stays in the encounter's group.
+    assert_eq!(ai.squads[by_name("first/empty")].parent, 0);
+
+    // Without the set, every squad is in the encounter's group, as before.
+    let plain = convert(&src, &Options::default());
+    assert_eq!(plain.ai.squad_groups.len(), 1);
+    assert!(plain.ai.squads.iter().all(|q| q.parent == 0));
 }
