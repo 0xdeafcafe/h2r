@@ -1102,6 +1102,35 @@ adds them; types in `crates/agent-proto/src/render.rs`, logic in
   Without `H2_BOOT_GFX`, with `H2_RENDER_THREAD=0` or under
   `H2_PIPELINE_RENDER`, `interp` stays `null`.
 
+### Co-op look per rendered view
+
+`render.coop_look` is a read-only host method registered with the Live
+co-op prediction feature. With no parameters it returns the most recent
+256 rendered local views, oldest first. Pass `{"after":123}` to read
+samples newer than that cursor. `latest` is the most recent sample
+number, initially zero. A gap in sample numbers means the reader fell
+behind. One frame can contain several local users.
+
+```sh
+h2 agent --socket ~/Library/Caches/h2recomp/coop-bravo.sock render.coop_look
+```
+
+Each entry in `frames` has a monotonic `sample`, the guest render
+`frame`, the local `user` (0–3), and a `status` such as `active`,
+`waiting` (awaiting a baseline), `host`, `setting off`, `cinematic`,
+`dead`, `director`, `vehicle`, or `no local control`. These are guest
+draws. Additional display-rate replays reuse the guest frame.
+
+| Field | Meaning |
+|---|---|
+| `sent` | Latest outgoing retail look, also recorded with the setting off for A/B timing. |
+| `confirmed` | Local player's yaw and pitch from the last applied update carrying that player's action. |
+| `predicted` | Current absolute target from the still-pending sends, or confirmed aim once they have drained. |
+| `camera`, `drawn` | First render camera before and after the adjustment. All aims are `{yaw,pitch}` in radians, or null when unavailable. |
+| `correction_rad` | Largest reconciliation error observed for this draw in radians (Euclidean length of shortest yaw difference and pitch difference). A pending turn's total lead is measured separately by comparing predicted and confirmed. |
+| `update`, `last_send`, `matched_send`, `matched_update` | Last applied update, last sent sequence, and the sequence/update pair most recently matched by quantized aim. Null before the corresponding event. |
+| `pending`, `dropped` | Unmatched sends and the number superseded or expired since this continuous camera began. Identical quantized actions have indistinguishable echoes. |
+
 ### Hitch causes and fallback hits
 
 ```sh

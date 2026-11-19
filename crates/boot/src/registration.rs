@@ -388,6 +388,14 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
         } else {
             coop_probe::install_live(i.rt, features, i.data_root)?
         };
+        if let Some(arm) = &arm {
+            crate::coop_look::install(
+                features,
+                Arc::clone(arm),
+                i.settings.as_deref(),
+                agent.as_ref().map(|a| &a.agent),
+            )?;
+        }
         // coop.max_players: the host's co-op limit (docs/live/live-coop.md 12).
         if let (Some(arm), Some(store)) = (&arm, &i.settings) {
             let n = arm.set_max_players(i64::from(crate::setting_defs::coop_max_players(store)));

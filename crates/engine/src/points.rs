@@ -303,7 +303,7 @@ points! { ALL;
     RENDER_VIEWS @ 0x0002_b5d0: [opaque]; "docs/engine/engine-map.md";
     /// `render_game_view`: one game view (camera, render state, scene
     /// passes, UI composition).
-    RENDER_GAME_VIEW @ 0x0002_b790: [opaque]; "docs/engine/engine-map.md";
+    RENDER_GAME_VIEW @ 0x0002_b790: [fn(view: stack 0, flags: stack 1) ret 8]; "docs/engine/engine-map.md";
     /// `render_scene_passes`: the scene pass sequence of one view.
     RENDER_SCENE_PASSES @ 0x0002_bcd0: [opaque]; "docs/graphics/e3-lighting.md";
     /// `render_dynamic_lights`: the visible lights, each gathered and drawn
@@ -665,6 +665,8 @@ points! { ALL;
     /// the machine that builds the updates (message `0x28`, `0x180`
     /// bytes, up to four local players).
     SIM_ACTIONS_SEND @ 0x0008_5fc0: [opaque], Optional; "docs/live/live-coop.md";
+    /// Encode a synchronous 0x28 after the sender has admitted it to the channel.
+    SIM_ACTIONS_ENCODE @ 0x000b_2790: [fn(stream: stack 0, size: stack 1, actions: stack 2) ret 12], Optional; "docs/live/live-coop.md";
     /// Synchronous: a peer's actions arrived (from the `0x28` handler
     /// `0x949d0`).
     SIM_ACTIONS_RECEIVE @ 0x0008_5f50: [opaque], Optional; "docs/live/live-coop.md";

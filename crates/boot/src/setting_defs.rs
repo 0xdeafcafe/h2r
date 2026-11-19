@@ -402,6 +402,23 @@ pub static COOP_JOIN_IN_PROGRESS: Def = Def {
     menu: None,
 };
 
+/// Presentation on a synchronous co-op guest. The host always uses its local camera.
+pub static COOP_LOOK_PREDICTION: Def = Def {
+    key: "coop.look_prediction",
+    label: "Co-op Look Prediction",
+    help: "Draw your pending turns while waiting for a co-op host's updates.",
+    kind: Kind::Bool,
+    default: Value::Bool(true),
+    env: Some("H2_COOP_LOOK_PREDICTION"),
+    flag: None,
+    aliases: &[],
+    parse_env: None,
+    apply: Apply::Live,
+    scope: Scope::View,
+    tier: Tier::User,
+    menu: None,
+};
+
 /// [`COOP_JOIN_IN_PROGRESS`] in `store`.
 pub fn coop_join_in_progress(store: &Store) -> bool {
     !matches!(
@@ -721,6 +738,7 @@ pub static ALL: &[&Def] = &[
     &LIVE_VISIBILITY,
     &COOP_MAX_PLAYERS,
     &COOP_JOIN_IN_PROGRESS,
+    &COOP_LOOK_PREDICTION,
     &AIM_ASSIST,
     &TOUCH_LOOK,
     &TOUCH_CROUCH,
