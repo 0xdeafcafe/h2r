@@ -287,7 +287,7 @@ fn objects_skip_layer_3_hand_over_their_nodes_and_get_their_bits_back() {
 /// pipelined render thread: context-only observers before, nothing after.
 #[test]
 fn its_layer_draw_chain_runs_on_the_render_thread() {
-    let mut r = Registry::new(Switches::parse("impl.render.native_objects=on").unwrap());
+    let mut r = Registry::new(Switches::parse("impl.render.native_world=on,impl.render.native_objects=on").unwrap());
     assert!(r.add(&feature::native_world::NativeWorld).unwrap());
     assert!(r.add(&NativeObjects).unwrap());
     let plan = r.build(&Base).unwrap();
