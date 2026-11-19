@@ -19,6 +19,9 @@
 
 pub mod camera;
 pub mod cull;
+pub mod gels;
+#[cfg(feature = "gpu")]
+pub mod gels_gpu;
 #[cfg(feature = "gpu")]
 pub mod glow;
 #[cfg(feature = "gpu")]
