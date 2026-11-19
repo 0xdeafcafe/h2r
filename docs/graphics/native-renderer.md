@@ -141,7 +141,20 @@ lightmap `0x004e0344`, [structure-bsp.md](../formats/structure-bsp.md)):
   (`program::INPUTS`, `WORLD_FETCH`): a world program's module is then
   the D3D path's for the same draw, text for text
   (`a_world_program_s_module_is_the_d3d_path_s`), position math included.
-  The lights still read the placed copy's floats (`FLOAT_INPUTS`). For the placements' edges,
+  The lights still read the placed copy's floats (`FLOAT_INPUTS`).
+  That left the speckle as it was (w13), so it is not the code. What
+  remains is the texels: the D3D path uploads a DXT bitmap whose base
+  size is whole blocks as BC on a host that takes BC
+  (`gfx::texture::decode_texture`, `bc_supported`), and the GPU decodes
+  it, while the native stage bitmaps were decoded on the CPU
+  (`gfx::dxt`), which truncates the interpolated colours (`(2a + b) / 3`
+  rounded down): one level darker on some texels, never brighter. The
+  native stage bitmaps now keep their BC blocks too
+  (`assets::decode_image_blocks`, `Image::with_blocks`) and upload them
+  where the device takes BC, on the D3D path's rule (no signed channel:
+  `bias_signed` drops them). The compare prints each stage's native
+  upload beside the D3D texture (`program::describe_image`: format,
+  size, levels, a hash of level 0). For the placements' edges,
   `H2_NATIVE_WORLD_DUMP=282[:107]` (with `H2_NATIVE_WORLD_OWNERS=clusters`,
   so that the D3D path draws the placement) prints, once per loaded
   world, the uniforms the native rigid draw of that placement and

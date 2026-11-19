@@ -13,7 +13,7 @@ pub mod png;
 pub mod resource;
 pub mod xpr;
 
-pub use bitmap::{DecodedImage, Level, d3d_format, decode_image, texture_desc};
+pub use bitmap::{BlockLevels, DecodedImage, Level, d3d_format, decode_image, decode_image_blocks, texture_desc};
 pub use resource::{Region, ResourceFiles};
 
 /// Why a bitmap image could not be decoded.
