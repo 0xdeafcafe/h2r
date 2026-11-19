@@ -967,12 +967,39 @@ the viewer does (S: some may be hidden in game).
 The first-person weapon and arms are drawn by the player chain after the
 transparents (`0x0002afa0`, `FIRST_PERSON_RENDER`) with their own
 projection, not by the base layers' layer-3 call, which the caller check
-pins. They stay on the D3D path in stage 2. Natively they need the
-first-person camera (`0x0023c110`) and their nodes (the first-person model
-references nodes past its own list; `tags::model` leaves those indices
-unchecked), and they draw after the transparents, so they come with or
-after stage 3. The local player's third-person body draws natively like
-any biped when the game queues it.
+pins. With `impl.render.native_first_person=on` (off by default),
+`feature::native_first_person` takes only the layer-3 call returning to
+`0x00040136`, in each of the two `0x0003fdf0` invocations. Each accepted
+call gets its own external pass in that order; its items are restored at
+the next layer draw. The `0x000404b0` light step and the transparent call
+after the second model draw stay on their original paths. The local
+player's third-person body draws natively like any biped when the game
+queues it.
+
+`native_first_person_glue` and `native_first_person_load` are separate from
+the objects stage's cache, but use its public model, stream and object
+program code. The device's constants at issue supply the first-person view
+(the camera is built by `0x0023c110` upstream), rather than a scene-camera
+copy. The pass requires a known W-buffered depth mode, uses the device's
+W-clip and per-call inherited cull, and loads depth/stencil: first person's
+flag disables stencil writes, so no scene stencil is replaced. Object nodes,
+record rows, materials and implementations are resolved as for native
+objects. Admission is whole-object and whole-definition: an unaccepted live
+item restores that object's other items, and a definition with a refused
+material or a texture-accumulation dependency stays on D3D. Loader
+publication is pinned to a map generation, including A → B → A transitions.
+The first-person lights themselves are not native yet.
+
+For a paired uniform comparison,
+`H2_NATIVE_FIRST_PERSON_COMPARE=definition:part[:after]` keeps that
+definition on D3D, prepares the same native part and arms
+`d3d::uniform_compare` on the selected first-person external pass (part 0,
+pass 0 by default). The ordinary path logs native draws, objects, skipped
+items and queue refusals every 1,800 first-person layer-3 calls; the encoder
+also reports any prepared/encoded part-count mismatch. Synthetic tests cover
+caller selection, whole-object refusal, comparison shadowing, immediate and
+next-layer restoration, and rebuilt-list handling. The live 03a A/B is
+still pending.
 
 ### Shading
 

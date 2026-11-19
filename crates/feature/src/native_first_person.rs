@@ -74,7 +74,13 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
     if ret != FIRST_PERSON_LAYER3_RETURN || m.read_u32(CURRENT_LAYER) != Some(LIGHTMAP_LAYER) {
         return;
     }
-    CALLS.fetch_add(1, Ordering::Relaxed);
+    let calls = CALLS.fetch_add(1, Ordering::Relaxed) + 1;
+    if calls % 1800 == 1 {
+        let (_, drawn, objects, items, refused) = counts();
+        eprintln!(
+            "native-first-person: {drawn} native draws of {calls} first-person layer-3 calls, {objects} objects, {items} items skipped, {refused} queue refusals"
+        );
+    }
     let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
         return;
     };
@@ -134,12 +140,6 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         .map(|&item| m.read_u32(item + 0x10).unwrap_or(0))
         .collect();
     *CLEARED.lock().unwrap_or_else(|e| e.into_inner()) = Some((cleared, left));
-    let (calls, drawn, objects, items, refused) = counts();
-    if calls % 1800 == 1 {
-        eprintln!(
-            "native-first-person: {drawn} native draws of {calls} first-person layer-3 calls, {objects} objects, {items} items skipped, {refused} queue refusals"
-        );
-    }
 }
 
 /// Restores the previous first-person layer-3 skip, unless the list has
