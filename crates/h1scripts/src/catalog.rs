@@ -89,6 +89,7 @@ pub struct Catalog {
     unit_poses: Vec<String>,
     /// The parse function shared by fixed-signature builtins.
     ordinary_parse: u32,
+    pub(crate) dialogue_fallback: Vec<i16>,
 }
 
 impl Catalog {
@@ -139,6 +140,12 @@ impl Catalog {
             names(TYPE_NAMES, TYPE_COUNT)?,
             names(SCRIPT_KIND_NAMES, SCRIPT_KIND_COUNT)?,
         )?;
+        // H1 0x46a55 follows this signed slot index when the sound is absent.
+        catalog.dialogue_fallback = x
+            .bytes_at(0x1e0720, 512)?
+            .chunks_exact(2)
+            .map(|v| i16::from_le_bytes([v[0], v[1]]))
+            .collect();
         catalog.unit_poses = names(UNIT_POSE_NAMES, 6)?;
         Ok(catalog)
     }
@@ -175,6 +182,7 @@ impl Catalog {
             script_kinds,
             unit_poses: Vec::new(),
             ordinary_parse,
+            dialogue_fallback: Vec::new(),
         })
     }
 

@@ -12,6 +12,8 @@ use h1map::{Group, H1Map, Space, Tag, TagId, TagRef};
 use crate::bytes::{f32_at, fixed_str, i16_at, u16_at, u32_at, vec3};
 use crate::{Error, Result};
 
+pub use crate::conversations::Conversation;
+
 /// Scenario field offsets and element sizes, `(offset, stride)`.
 pub mod layout {
     /// Actor palette: an `actv` reference each.
@@ -156,7 +158,7 @@ pub struct Squad {
     pub flags: u32,
     /// Unique leader type (`+0x2c`).
     pub unique_leader: u16,
-    /// Squad index this one maneuvers to, `-1` none (`+0x4c`).
+    /// Squad index this one maneuvers to, `-1` none (`+0x4e`).
     pub maneuver_to: i16,
     /// Seconds before the squad spawns (`+0x50`).
     pub delay: f32,
@@ -194,6 +196,32 @@ pub struct Platoon {
     pub name: String,
     /// Flags (`+0x20`).
     pub flags: u32,
+    /// Condition for reversing the initial attack/defend state (`+0x30`).
+    pub change: PlatoonTrigger,
+    /// Condition for arming the maneuver order (`+0x3c`).
+    pub maneuver: PlatoonTrigger,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlatoonTrigger {
+    /// The retail condition enum. Zero disables the trigger.
+    pub condition: u16,
+    /// Platoon whose status is tested, or -1 for the whole encounter.
+    pub subject: i16,
+}
+
+impl PlatoonTrigger {
+    pub const DISABLED: Self = Self {
+        condition: 0,
+        subject: -1,
+    };
+
+    fn read(bytes: &[u8], at: usize) -> Self {
+        Self {
+            condition: u16_at(bytes, at),
+            subject: i16_at(bytes, at + 2),
+        }
+    }
 }
 
 /// A firing position (`0x18` bytes).
@@ -222,6 +250,8 @@ pub struct Encounter {
     pub search_behavior: u16,
     /// Manual BSP index (`i16 +0x2a`).
     pub manual_bsp: i16,
+    /// BSP assigned by the Halo 1 cache compiler (+0x7e), -1 when unassigned.
+    pub bsp: i16,
     /// Respawn delay, seconds (min, max) (`+0x2c`).
     pub respawn_delay: [f32; 2],
     /// Squads.
@@ -251,7 +281,7 @@ pub struct Atom {
     pub script: i16,
     /// AI recording reference index (`+0x14`).
     pub recording: i16,
-    /// Command list index (`+0x16`).
+    /// Branch target within this list (`+0x16`).
     pub command: i16,
     /// Scenario object name index (`+0x18`).
     pub object_name: i16,
@@ -262,12 +292,11 @@ pub fn atom_name(kind: u16) -> String {
     format!("atom {kind}")
 }
 
-/// The point indices an atom reads: atoms 1, 22 and 27 the first, atom 2
-/// both.
+/// Only these dispatch cases dereference point indices. Timed movement (22) uses facing.
 pub fn atom_points(a: &Atom) -> Vec<i16> {
     match a.kind {
-        1 | 22 | 27 => vec![a.points[0]],
-        2 => a.points.to_vec(),
+        1 | 3 | 4 | 7 | 8 => vec![a.points[0]],
+        2 | 23 | 27 => a.points.to_vec(),
         _ => Vec::new(),
     }
 }
@@ -290,28 +319,12 @@ pub struct CommandList {
     pub flags: u32,
     /// Manual BSP index (`i16 +0x2c`).
     pub manual_bsp: i16,
+    /// BSP resolved by the H1 cache compiler (+0x2e), including automatically assigned lists.
+    pub bsp: i16,
     /// Atoms.
     pub atoms: Vec<Atom>,
     /// Points.
     pub points: Vec<Point>,
-}
-
-/// An AI conversation (`0x74` bytes); its participants and lines are
-/// counted, not converted.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Conversation {
-    /// Name.
-    pub name: String,
-    /// Flags (`u16 +0x20`).
-    pub flags: u16,
-    /// Trigger distance (`f32 +0x24`).
-    pub trigger_distance: f32,
-    /// Run-to-player distance (`f32 +0x28`).
-    pub run_to_player_distance: f32,
-    /// Participants: the encounter each names (`+0x24`, 32 chars).
-    pub participants: Vec<String>,
-    /// Lines: the participant index each is spoken by (`i16 +0x02`).
-    pub lines: Vec<i16>,
 }
 
 /// All of a Halo 1 scenario's AI data.
@@ -399,7 +412,7 @@ fn squad(sp: &Space, e: &[u8]) -> Result<Squad> {
         return_state: u16_at(e, 0x26),
         flags: u32_at(e, 0x28),
         unique_leader: u16_at(e, 0x2c),
-        maneuver_to: i16_at(e, 0x4c),
+        maneuver_to: i16_at(e, 0x4e),
         delay: f32_at(e, 0x50),
         groups: std::array::from_fn(|i| u32_at(e, 0x54 + 4 * i)),
         normal_count: i16_at(e, 0x7c),
@@ -441,6 +454,7 @@ fn encounter(sp: &Space, e: &[u8]) -> Result<Encounter> {
         team: u16_at(e, 0x24),
         search_behavior: u16_at(e, 0x28),
         manual_bsp: i16_at(e, 0x2a),
+        bsp: i16_at(e, 0x7e),
         respawn_delay: [f32_at(e, 0x2c), f32_at(e, 0x30)],
         squads: b(layout::ENC_SQUADS)?
             .into_iter()
@@ -451,6 +465,8 @@ fn encounter(sp: &Space, e: &[u8]) -> Result<Encounter> {
             .map(|p| Platoon {
                 name: fixed_str(&p[..0x20]),
                 flags: u32_at(p, 0x20),
+                change: PlatoonTrigger::read(p, 0x30),
+                maneuver: PlatoonTrigger::read(p, 0x3c),
             })
             .collect(),
         firing_positions: b(layout::ENC_FIRING_POSITIONS)?
@@ -469,12 +485,27 @@ fn encounter(sp: &Space, e: &[u8]) -> Result<Encounter> {
     })
 }
 
+/// Read the scenario's command lists without loading encounter or actor tags.
+pub fn command_lists(scnr: &[u8], sp: &Space) -> Result<Vec<CommandList>> {
+    sp.block_at(scnr, layout::COMMAND_LISTS.0, layout::COMMAND_LISTS.1)?
+        .into_iter()
+        .map(|e| command_list(sp, e))
+        .collect()
+}
+
+/// Keep the authored list index stable even when list names repeat or collide
+/// with campaign scripts. Both the placement record and HS use this name.
+pub fn command_script_name(index: usize) -> String {
+    format!("h1_cmd_{index}")
+}
+
 fn command_list(sp: &Space, e: &[u8]) -> Result<CommandList> {
     let b = |l: (usize, usize)| sp.block_at(e, l.0, l.1);
     Ok(CommandList {
         name: fixed_str(&e[..0x20]),
         flags: u32_at(e, 0x20),
         manual_bsp: i16_at(e, 0x2c),
+        bsp: i16_at(e, 0x2e),
         atoms: b(layout::CL_ATOMS)?
             .into_iter()
             .map(|a| Atom {
@@ -495,24 +526,6 @@ fn command_list(sp: &Space, e: &[u8]) -> Result<CommandList> {
                 position: vec3(p, 0),
                 surface: u32_at(p, 0xc),
             })
-            .collect(),
-    })
-}
-
-fn conversation(sp: &Space, e: &[u8]) -> Result<Conversation> {
-    let b = |l: (usize, usize)| sp.block_at(e, l.0, l.1);
-    Ok(Conversation {
-        name: fixed_str(&e[..0x20]),
-        flags: u16_at(e, 0x20),
-        trigger_distance: f32_at(e, 0x24),
-        run_to_player_distance: f32_at(e, 0x28),
-        participants: b(layout::CONV_PARTICIPANTS)?
-            .into_iter()
-            .map(|p| fixed_str(&p[0x24..0x44]))
-            .collect(),
-        lines: b(layout::CONV_LINES)?
-            .into_iter()
-            .map(|l| i16_at(l, 2))
             .collect(),
     })
 }
@@ -549,14 +562,8 @@ impl H1Ai {
                 .into_iter()
                 .map(|e| encounter(&sp, e))
                 .collect::<Result<_>>()?,
-            command_lists: b(layout::COMMAND_LISTS)?
-                .into_iter()
-                .map(|e| command_list(&sp, e))
-                .collect::<Result<_>>()?,
-            conversations: b(layout::CONVERSATIONS)?
-                .into_iter()
-                .map(|e| conversation(&sp, e))
-                .collect::<Result<_>>()?,
+            command_lists: command_lists(scnr, &sp)?,
+            conversations: crate::conversations::read(m)?,
             reference_counts: [
                 b(layout::AI_ANIMATIONS)?.len(),
                 b(layout::AI_SCRIPTS)?.len(),
@@ -630,9 +637,9 @@ impl H1Ai {
             }
         }
         for c in &self.conversations {
-            for &l in &c.lines {
-                if !opt(l, c.participants.len()) {
-                    bad.push(format!("{}: line participant {l}", c.name));
+            for line in &c.lines {
+                if !opt(line.speaker, c.participants.len()) {
+                    bad.push(format!("{}: line participant {}", c.name, line.speaker));
                 }
             }
         }

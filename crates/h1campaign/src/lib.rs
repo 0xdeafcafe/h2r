@@ -26,13 +26,16 @@
 #![forbid(unsafe_code)]
 
 pub mod cutscenes;
+mod actor_control;
 pub mod donor;
 pub mod h2assets;
 pub mod manifest;
 pub mod profiles;
 pub mod recordings;
+mod roster;
 pub mod scenario;
 pub mod scratch;
+mod squad_roster;
 pub mod structure;
 
 use std::io::{Read, Seek};
@@ -369,8 +372,6 @@ pub enum Lean {
     /// Everything.
     #[default]
     Everything,
-    /// The empty squads kept only because the scripts name them.
-    EmptySquads,
     /// The seat-mapping table.
     SeatTable,
     /// Halo 1's textures on object models (`h1objects`' shader copies and
@@ -378,7 +379,7 @@ pub enum Lean {
     ObjectTextures,
     /// The looping sounds (music and ambience) the scripts name.
     Music,
-    /// The cutscenes' animation graphs and recorded animations
+    /// The cutscenes' animation graphs. Gameplay recordings stay installed
     /// ([`cutscenes`]).
     CutsceneData,
     /// The level data the scripts name (cutscene flags, camera points,
@@ -389,9 +390,8 @@ pub enum Lean {
 
 impl Lean {
     /// The steps in order.
-    pub const LADDER: [Lean; 7] = [
+    pub const LADDER: [Lean; 6] = [
         Lean::Everything,
-        Lean::EmptySquads,
         Lean::SeatTable,
         Lean::ObjectTextures,
         Lean::Music,
@@ -630,7 +630,7 @@ fn convert_with<R: Read + Seek>(
     };
     report.bsps.extend(prepared.reports.iter().cloned());
     let bsps = &prepared.bsps;
-    let objects_base = if opts.objects {
+    let objects_base = if opts.objects || opts.ai {
         let mut b = phase::time("base templates", || h1objects::base::Base::read(base))
             .map_err(|e| invalid(format!("base: {e}")))?;
         if lean.leaves_out(Lean::ObjectTextures) {
@@ -688,6 +688,9 @@ fn convert_with<R: Read + Seek>(
     let pathfinding = bsps.iter().map(|b| b.pathfinding.clone()).collect();
     if let Some(d) = opts.donors.filter(|_| opts.objects || opts.ai) {
         let mut wanted = donor::wanted(h1)?;
+        if let Some(scripts) = opts.scripts {
+            wanted.extend(actor_control::wanted(h1, &scripts.catalog)?);
+        }
         // The retail weapons, vehicles and player the Halo 2-assets
         // variant places that the base lacks.
         if opts.objects && opts.assets == h2assets::Assets::Halo2 {
@@ -695,20 +698,32 @@ fn convert_with<R: Read + Seek>(
         }
         phase::time("donors", || donor::bring(d, &mut set, &wanted, &mut report))?;
     }
+    let mut locales = h1text::convert::Locales::from_map(base)
+        .map_err(|e| invalid(format!("base text: {e}")))?;
+    let base_rows = locales.len();
+    let level_text = h1text::scenario::LevelText::install(h1, &mut set, &mut locales)
+        .map_err(|e| invalid(format!("level text: {e}")))?;
     phase::time("scenario", || {
         scenario::write(
             h1,
             &mut set,
             &scnr,
             &slots,
+            bsps,
             &sounds,
             objects_base.as_ref(),
             opts,
             lean,
             [music, dialogue],
+            &level_text,
             &mut report,
         )
     })?;
+
+    if locales.len() != base_rows {
+        locales.install_pinned(&mut set)
+            .map_err(|e| invalid(format!("installing level text: {e}")))?;
+    }
 
     // Built without the bound, so an overflow can say by how much and
     // where the bytes went.

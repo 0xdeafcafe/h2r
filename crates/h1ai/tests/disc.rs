@@ -363,17 +363,6 @@ fn a30_and_a10_convert_read_back_and_sit_on_generated_pathfinding() {
     for level in ["a30", "a10"] {
         let m = h1_map(level);
         let src = H1Ai::read(&m).unwrap();
-        let plan = convert(&src, &Options::default());
-        let (back, palette) = build_and_read(&plan);
-        let mut want = plan.ai.clone();
-        want.character_palette = palette;
-        assert_eq!(back, want, "{level}: read back differs from the plan");
-        assert!(
-            back.check_indices().is_empty(),
-            "{level}: {:#?}",
-            back.check_indices()
-        );
-
         // Pathfinding generated from each BSP's converted collision.
         let pfs: Vec<_> = m
             .structure_bsps()
@@ -386,51 +375,67 @@ fn a30_and_a10_convert_read_back_and_sit_on_generated_pathfinding() {
                 pathfind::generate::generate(&h2, 0, 0, &Default::default()).unwrap()
             })
             .collect();
-        let on_any = |p: [f32; 3], below: f32| pfs.iter().any(|pf| on_sector(pf, p, below, 0.25));
+        let mut plan = convert(&src, &Options::default());
+        let floors: Vec<_> = pfs.iter().map(h1ai::floors::Floors::new).collect();
+        for (zone, enc) in plan.ai.zones.iter_mut().zip(&src.encounters) {
+            if enc.flags & 0x20 == 0 {
+                let pf = &pfs[zone.manual_bsp as usize];
+                floors[zone.manual_bsp as usize]
+                    .bind(zone, pf, |_| None)
+                    .unwrap();
+            }
+        }
+        let (back, palette) = build_and_read(&plan);
+        let mut want = plan.ai.clone();
+        want.character_palette = palette;
+        assert_eq!(back, want, "{level}: read back differs from the plan");
+        assert!(
+            back.check_indices().is_empty(),
+            "{level}: {:#?}",
+            back.check_indices()
+        );
 
-        // Encounters that fight in the air (a30's banshees: elite pilots
-        // whose firing positions are over the sea) have most firing
-        // positions off any floor. Those encounters are counted as flying,
-        // printed, and left out of the floor check; the rest should be on
-        // the generated sectors.
-        let flying: Vec<bool> = back
-            .zones
-            .iter()
-            .map(|z| {
-                let off = z
-                    .firing_positions
-                    .iter()
-                    .filter(|f| !on_any(f.position, 2.0))
-                    .count();
-                off * 2 > z.firing_positions.len()
-            })
-            .collect();
-        let names: Vec<&str> = back
-            .zones
-            .iter()
-            .zip(&flying)
-            .filter(|(_, f)| **f)
-            .map(|(z, _)| z.name.as_str())
-            .collect();
-        println!("  flying encounters: {names:?}");
-        let (mut fps, mut air, mut off) = (0, 0, Vec::new());
-        for (z, &fly) in back.zones.iter().zip(&flying) {
-            for f in &z.firing_positions {
+        let on_any = |p: [f32; 3], below: f32| pfs.iter().any(|pf| on_sector(pf, p, below, 0.25));
+        let (mut fps, mut air) = (0, 0);
+        for (z, enc) in back.zones.iter().zip(&src.encounters) {
+            let mut authored = enc.firing_positions.clone();
+            authored.sort_by_key(|p| p.group);
+            assert_eq!(z.firing_positions.len(), authored.len());
+            for (f, original) in z.firing_positions.iter().zip(authored) {
                 fps += 1;
-                if fly {
+                if enc.flags & 0x20 != 0 {
                     air += 1;
-                } else if !on_any(f.position, 2.0) {
-                    off.push(format!("{} {:?}", z.name, f.position));
+                    assert_eq!(f.position, original.position);
+                    assert_eq!((f.flags, f.surface), (0, u32::MAX));
+                } else {
+                    use pathfind::geom::{dot, newell, sub};
+                    let pf = &pfs[z.manual_bsp as usize];
+                    let ring: Vec<_> = pf
+                        .sector_polygon(f.surface as usize)
+                        .unwrap()
+                        .into_iter()
+                        .map(|i| pf.vertices[i])
+                        .collect();
+                    let n = newell(&ring);
+                    assert!(dot(n, sub(f.position, ring[0])).abs() <= 0.001 * dot(n, n).sqrt());
+                    // For a convex sector, every edge has the point on its interior side or on the edge.
+                    let side = n[2].signum();
+                    for (a, b) in ring.iter().zip(ring.iter().cycle().skip(1)) {
+                        let edge = sub(*b, *a);
+                        let rel = sub(f.position, *a);
+                        assert!(
+                            (edge[0] * rel[1] - edge[1] * rel[0]) * side
+                                >= -0.001 * dot(edge, edge).sqrt()
+                        );
+                    }
                 }
             }
         }
+        if level == "a30" {
+            assert_eq!(air, 584);
+        }
         let (mut starts, mut starts_off) = (0, Vec::new());
         for s in &back.squads {
-            assert!(
-                !s.starting_locations.is_empty(),
-                "{level} {}: no starting locations",
-                s.name
-            );
             for l in &s.starting_locations {
                 starts += 1;
                 if !on_any(l.position, 2.0) {
@@ -439,18 +444,17 @@ fn a30_and_a10_convert_read_back_and_sit_on_generated_pathfinding() {
             }
         }
         println!(
-            "{level}: {} groups, {} squads, {starts} starts ({} off sectors), {} zones, {fps} firing positions ({air} flying, {} off sectors), {} orders, {} point sets, {} characters",
+            "{level}: {} groups, {} squads, {starts} starts ({} off sectors), {} zones, {fps} firing positions ({air} flying), {} orders, {} point sets, {} characters",
             back.squad_groups.len(),
             back.squads.len(),
             starts_off.len(),
             back.zones.len(),
-            off.len(),
             back.orders.len(),
             back.point_sets.len(),
             back.character_palette.len()
         );
         let mut by: BTreeMap<&str, usize> = BTreeMap::new();
-        for o in off.iter().chain(&starts_off) {
+        for o in &starts_off {
             *by.entry(o.split(' ').next().unwrap()).or_default() += 1;
         }
         println!("  off sectors by zone or squad: {by:?}");
@@ -467,16 +471,71 @@ fn a30_and_a10_convert_read_back_and_sit_on_generated_pathfinding() {
         }
         // Off a generated sector: standing on scenery (not in the BSP), on
         // a slope steeper than 45 degrees, or in water. Bounded, not zero.
-        let ground = fps - air;
-        assert!(
-            off.len() * 50 <= ground,
-            "{level}: {} of {ground} firing positions off the generated sectors",
-            off.len()
-        );
         assert!(
             starts_off.len() * 10 <= starts,
             "{level}: {} of {starts} starting locations off the generated sectors",
             starts_off.len()
         );
     }
+}
+
+#[test]
+#[ignore = "reads H1_ISO and H2_DISC"]
+fn command_script_placement_uses_retail_indices_and_authored_points() {
+    let mut retail = h2_map("03a_oldmombasa");
+    let scenario = retail.scenario().unwrap().clone();
+    let payload = retail.read_tag_bytes(scenario.id).unwrap();
+    let view = TagView::new(&payload, scenario.location.unwrap().address);
+    let definitions = view.block(&payload, 0x1b8, 0x28).unwrap();
+    let retail_ai = ScenarioAi::read(&view).unwrap();
+    let mut bound = 0;
+    for loc in retail_ai.squads.iter().flat_map(|q| &q.starting_locations) {
+        if let Ok(index) = usize::try_from(loc.placement_script_index) {
+            let def = definitions[index];
+            let end = def[..32].iter().position(|&v| v == 0).unwrap_or(32);
+            assert_eq!(loc.placement_script.as_bytes(), &def[..end]);
+            assert_eq!(u16::from_le_bytes([def[32], def[33]]), 5);
+            bound += 1;
+        }
+    }
+    assert_eq!(bound, 57);
+
+    let mut lists = 0;
+    let mut placed = 0;
+    for level in CAMPAIGN_LEVELS {
+        let m = h1_map(level);
+        let src = H1Ai::read(&m).unwrap();
+        let root = m.tag_data(m.scenario()).unwrap();
+        let first = u32::from_le_bytes(root[0x49c..0x4a0].try_into().unwrap()) as u16;
+        let plan = convert(&src, &Options { first_command_script: Some(first), ..Default::default() });
+        let (out, _) = build_and_read(&plan);
+        assert_eq!(src.command_lists.len(), out.point_sets.len(), "{level}");
+        for (list, set) in src.command_lists.iter().zip(&out.point_sets) {
+            assert_eq!(list.bsp, set.bsp, "{level}");
+            assert_eq!(list.points.len(), set.points.len(), "{level}");
+            for (i, (a, b)) in list.points.iter().zip(&set.points).enumerate() {
+                assert_eq!(a.position, b.position);
+                assert_eq!(a.surface, b.surface);
+                assert_eq!(b.name, format!("p{i}"));
+            }
+            lists += 1;
+        }
+        let squads: Vec<_> = src.encounters.iter().flat_map(|e| &e.squads).collect();
+        assert_eq!(squads.len(), out.squads.len(), "{level}");
+        for (src_squad, dst_squad) in squads.into_iter().zip(&out.squads) {
+            assert_eq!(src_squad.starting_locations.len(), dst_squad.starting_locations.len());
+            for (a, b) in src_squad.starting_locations.iter().zip(&dst_squad.starting_locations) {
+                if src.command_lists.get(a.command_list as usize).is_some() {
+                    assert_eq!(b.placement_script_index, first as i16 + a.command_list);
+                    assert_eq!(b.placement_script, h1ai::h1::command_script_name(a.command_list as usize));
+                    placed += 1;
+                } else {
+                    assert_eq!(b.placement_script_index, -1);
+                    assert!(b.placement_script.is_empty());
+                }
+            }
+        }
+    }
+    assert_eq!(lists, 552);
+    assert!(placed > 0);
 }

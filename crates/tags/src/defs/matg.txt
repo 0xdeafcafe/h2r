@@ -233,64 +233,64 @@ group matg 0x284 align 16
   0x180 tagref tagref_180
   0x188 u32 english_index_pointer -- E 0x1a01e0 writes the resident index pointer; zero on disc; localization.md:55-66; engine/src/locale.rs:21-38
   0x18c u32 english_blob_pointer -- E 0x1a01e0 writes the resident blob pointer; zero on disc; localization.md:55-66; engine/src/locale.rs:21-38
-  0x190 rawsize english_index_count of=0x208 -- E/D eight-byte index rows (schema kind rawsize); localization.md:55-66; engine/src/locale.rs:21-38
-  0x194 rawsize english_blob_size of=0x1ec -- E/D blob bytes including terminators (schema kind rawsize); localization.md:55-66; engine/src/locale.rs:21-38
+  0x190 u32 english_index_count -- E/D count of eight-byte index rows; localization.md:55-66; engine/src/locale.rs:21-38
+  0x194 rawsize english_blob_size of=0x19c -- E/D blob bytes including terminators (schema kind rawsize); localization.md:55-66; engine/src/locale.rs:21-38
   0x198 raw english_index_offset -- E/D map-relative file offset of the index; localization.md:55-66; engine/src/locale.rs:21-38; localization.rs:254
   0x19c raw english_blob_offset -- E/D map-relative file offset of the blob; localization.md:55-66; engine/src/locale.rs:21-38; localization.rs:259
   0x1a0 u8 english_loaded -- E loader writes 1, callers test the byte; localization.md:55-66; engine/src/locale.rs:21-38
   0x1a1 unknown 0x3
   0x1a4 u32 japanese_index_pointer -- E 0x1a01e0 writes the resident index pointer; zero on disc; localization.md:55-66; engine/src/locale.rs:21-38
   0x1a8 u32 japanese_blob_pointer -- E 0x1a01e0 writes the resident blob pointer; zero on disc; localization.md:55-66; engine/src/locale.rs:21-38
-  0x1ac rawsize japanese_index_count of=0x20c -- E/D eight-byte index rows (schema kind rawsize); localization.md:55-66; engine/src/locale.rs:21-38
-  0x1b0 rawsize japanese_blob_size of=0x198 -- E/D blob bytes including terminators (schema kind rawsize); localization.md:55-66; engine/src/locale.rs:21-38
+  0x1ac u32 japanese_index_count -- E/D count of eight-byte index rows; localization.md:55-66; engine/src/locale.rs:21-38
+  0x1b0 rawsize japanese_blob_size of=0x1b8 -- E/D blob bytes including terminators (schema kind rawsize); localization.md:55-66; engine/src/locale.rs:21-38
   0x1b4 raw japanese_index_offset -- E/D map-relative file offset of the index; localization.md:55-66; engine/src/locale.rs:21-38; localization.rs:254
   0x1b8 raw japanese_blob_offset -- E/D map-relative file offset of the blob; localization.md:55-66; engine/src/locale.rs:21-38; localization.rs:259
   0x1bc u8 japanese_loaded -- E loader writes 1, callers test the byte; localization.md:55-66; engine/src/locale.rs:21-38
   0x1bd unknown 0x3
   0x1c0 u32 german_index_pointer -- E 0x1a01e0 writes the resident index pointer; zero on disc; localization.md:55-66; engine/src/locale.rs:21-38
   0x1c4 u32 german_blob_pointer -- E 0x1a01e0 writes the resident blob pointer; zero on disc; localization.md:55-66; engine/src/locale.rs:21-38
-  0x1c8 rawsize german_index_count of=0x224 -- E/D eight-byte index rows (schema kind rawsize); localization.md:55-66; engine/src/locale.rs:21-38
-  0x1cc rawsize german_blob_size of=0x1b4 -- E/D blob bytes including terminators (schema kind rawsize); localization.md:55-66; engine/src/locale.rs:21-38
+  0x1c8 u32 german_index_count -- E/D count of eight-byte index rows; localization.md:55-66; engine/src/locale.rs:21-38
+  0x1cc rawsize german_blob_size of=0x1d4 -- E/D blob bytes including terminators (schema kind rawsize); localization.md:55-66; engine/src/locale.rs:21-38
   0x1d0 raw german_index_offset -- E/D map-relative file offset of the index; localization.md:55-66; engine/src/locale.rs:21-38; localization.rs:254
   0x1d4 raw german_blob_offset -- E/D map-relative file offset of the blob; localization.md:55-66; engine/src/locale.rs:21-38; localization.rs:259
   0x1d8 u8 german_loaded -- E loader writes 1, callers test the byte; localization.md:55-66; engine/src/locale.rs:21-38
   0x1d9 unknown 0x3
   0x1dc u32 french_index_pointer -- E 0x1a01e0 writes the resident index pointer; zero on disc; localization.md:55-66; engine/src/locale.rs:21-38
   0x1e0 u32 french_blob_pointer -- E 0x1a01e0 writes the resident blob pointer; zero on disc; localization.md:55-66; engine/src/locale.rs:21-38
-  0x1e4 rawsize french_index_count of=0x228 -- E/D eight-byte index rows (schema kind rawsize); localization.md:55-66; engine/src/locale.rs:21-38
-  0x1e8 rawsize french_blob_size of=0x1b8 -- E/D blob bytes including terminators (schema kind rawsize); localization.md:55-66; engine/src/locale.rs:21-38
+  0x1e4 u32 french_index_count -- E/D count of eight-byte index rows; localization.md:55-66; engine/src/locale.rs:21-38
+  0x1e8 rawsize french_blob_size of=0x1f0 -- E/D blob bytes including terminators (schema kind rawsize); localization.md:55-66; engine/src/locale.rs:21-38
   0x1ec raw french_index_offset -- E/D map-relative file offset of the index; localization.md:55-66; engine/src/locale.rs:21-38; localization.rs:254
   0x1f0 raw french_blob_offset -- E/D map-relative file offset of the blob; localization.md:55-66; engine/src/locale.rs:21-38; localization.rs:259
   0x1f4 u8 french_loaded -- E loader writes 1, callers test the byte; localization.md:55-66; engine/src/locale.rs:21-38
   0x1f5 unknown 0x3
   0x1f8 u32 spanish_index_pointer -- E 0x1a01e0 writes the resident index pointer; zero on disc; localization.md:55-66; engine/src/locale.rs:21-38
   0x1fc u32 spanish_blob_pointer -- E 0x1a01e0 writes the resident blob pointer; zero on disc; localization.md:55-66; engine/src/locale.rs:21-38
-  0x200 rawsize spanish_index_count of=0x260 -- E/D eight-byte index rows (schema kind rawsize); localization.md:55-66; engine/src/locale.rs:21-38
-  0x204 rawsize spanish_blob_size of=0x1d4 -- E/D blob bytes including terminators (schema kind rawsize); localization.md:55-66; engine/src/locale.rs:21-38
+  0x200 u32 spanish_index_count -- E/D count of eight-byte index rows; localization.md:55-66; engine/src/locale.rs:21-38
+  0x204 rawsize spanish_blob_size of=0x20c -- E/D blob bytes including terminators (schema kind rawsize); localization.md:55-66; engine/src/locale.rs:21-38
   0x208 raw spanish_index_offset -- E/D map-relative file offset of the index; localization.md:55-66; engine/src/locale.rs:21-38; localization.rs:254
   0x20c raw spanish_blob_offset -- E/D map-relative file offset of the blob; localization.md:55-66; engine/src/locale.rs:21-38; localization.rs:259
   0x210 u8 spanish_loaded -- E loader writes 1, callers test the byte; localization.md:55-66; engine/src/locale.rs:21-38
   0x211 unknown 0x3
   0x214 u32 italian_index_pointer -- E 0x1a01e0 writes the resident index pointer; zero on disc; localization.md:55-66; engine/src/locale.rs:21-38
   0x218 u32 italian_blob_pointer -- E 0x1a01e0 writes the resident blob pointer; zero on disc; localization.md:55-66; engine/src/locale.rs:21-38
-  0x21c rawsize italian_index_count of=0x240 -- E/D eight-byte index rows (schema kind rawsize); localization.md:55-66; engine/src/locale.rs:21-38
-  0x220 rawsize italian_blob_size of=0x1d0 -- E/D blob bytes including terminators (schema kind rawsize); localization.md:55-66; engine/src/locale.rs:21-38
+  0x21c u32 italian_index_count -- E/D count of eight-byte index rows; localization.md:55-66; engine/src/locale.rs:21-38
+  0x220 rawsize italian_blob_size of=0x228 -- E/D blob bytes including terminators (schema kind rawsize); localization.md:55-66; engine/src/locale.rs:21-38
   0x224 raw italian_index_offset -- E/D map-relative file offset of the index; localization.md:55-66; engine/src/locale.rs:21-38; localization.rs:254
   0x228 raw italian_blob_offset -- E/D map-relative file offset of the blob; localization.md:55-66; engine/src/locale.rs:21-38; localization.rs:259
   0x22c u8 italian_loaded -- E loader writes 1, callers test the byte; localization.md:55-66; engine/src/locale.rs:21-38
   0x22d unknown 0x3
   0x230 u32 korean_index_pointer -- E 0x1a01e0 writes the resident index pointer; zero on disc; localization.md:55-66; engine/src/locale.rs:21-38
   0x234 u32 korean_blob_pointer -- E 0x1a01e0 writes the resident blob pointer; zero on disc; localization.md:55-66; engine/src/locale.rs:21-38
-  0x238 rawsize korean_index_count of=0x244 -- E/D eight-byte index rows (schema kind rawsize); localization.md:55-66; engine/src/locale.rs:21-38
-  0x23c rawsize korean_blob_size of=0x19c -- E/D blob bytes including terminators (schema kind rawsize); localization.md:55-66; engine/src/locale.rs:21-38
+  0x238 u32 korean_index_count -- E/D count of eight-byte index rows; localization.md:55-66; engine/src/locale.rs:21-38
+  0x23c rawsize korean_blob_size of=0x244 -- E/D blob bytes including terminators (schema kind rawsize); localization.md:55-66; engine/src/locale.rs:21-38
   0x240 raw korean_index_offset -- E/D map-relative file offset of the index; localization.md:55-66; engine/src/locale.rs:21-38; localization.rs:254
   0x244 raw korean_blob_offset -- E/D map-relative file offset of the blob; localization.md:55-66; engine/src/locale.rs:21-38; localization.rs:259
   0x248 u8 korean_loaded -- E loader writes 1, callers test the byte; localization.md:55-66; engine/src/locale.rs:21-38
   0x249 unknown 0x3
   0x24c u32 chinese_index_pointer -- E 0x1a01e0 writes the resident index pointer; zero on disc; localization.md:55-66; engine/src/locale.rs:21-38
   0x250 u32 chinese_blob_pointer -- E 0x1a01e0 writes the resident blob pointer; zero on disc; localization.md:55-66; engine/src/locale.rs:21-38
-  0x254 rawsize chinese_index_count of=0x25c -- E/D eight-byte index rows (schema kind rawsize); localization.md:55-66; engine/src/locale.rs:21-38
-  0x258 rawsize chinese_blob_size of=0x1f0 -- E/D blob bytes including terminators (schema kind rawsize); localization.md:55-66; engine/src/locale.rs:21-38
+  0x254 u32 chinese_index_count -- E/D count of eight-byte index rows; localization.md:55-66; engine/src/locale.rs:21-38
+  0x258 rawsize chinese_blob_size of=0x260 -- E/D blob bytes including terminators (schema kind rawsize); localization.md:55-66; engine/src/locale.rs:21-38
   0x25c raw chinese_index_offset -- E/D map-relative file offset of the index; localization.md:55-66; engine/src/locale.rs:21-38; localization.rs:254
   0x260 raw chinese_blob_offset -- E/D map-relative file offset of the blob; localization.md:55-66; engine/src/locale.rs:21-38; localization.rs:259
   0x264 u8 chinese_loaded -- E loader writes 1, callers test the byte; localization.md:55-66; engine/src/locale.rs:21-38
@@ -298,7 +298,7 @@ group matg 0x284 align 16
   0x268 u32 language_8_index_pointer -- E 0x1a01e0 writes the resident index pointer; zero on disc; localization.md:55-66; engine/src/locale.rs:21-38
   0x26c u32 language_8_blob_pointer -- E 0x1a01e0 writes the resident blob pointer; zero on disc; localization.md:55-66; engine/src/locale.rs:21-38
   0x270 u32 language_8_index_count -- E/D eight-byte index rows; localization.md:55-66; engine/src/locale.rs:21-38
-  0x274 u32 language_8_blob_size -- E/D blob bytes including terminators; localization.md:55-66; engine/src/locale.rs:21-38
+  0x274 rawsize language_8_blob_size of=0x27c -- E/D blob bytes including terminators; localization.md:55-66; engine/src/locale.rs:21-38
   0x278 raw language_8_index_offset -- E/D map-relative file offset of the index; localization.md:55-66; engine/src/locale.rs:21-38; localization.rs:254
   0x27c raw language_8_blob_offset -- E/D map-relative file offset of the blob; localization.md:55-66; engine/src/locale.rs:21-38; localization.rs:259
   0x280 u8 language_8_loaded -- E loader writes 1, callers test the byte; localization.md:55-66; engine/src/locale.rs:21-38

@@ -35,6 +35,7 @@ mod tests;
 /// The checked-in definition files, parsed in this order: a struct is
 /// defined before the files that use it.
 pub const FILES: &[(&str, &str)] = &[
+    ("char.txt", include_str!("defs/char.txt")),
     ("obje.txt", include_str!("defs/obje.txt")),
     ("scen.txt", include_str!("defs/scen.txt")),
     ("bloc.txt", include_str!("defs/bloc.txt")),
@@ -78,6 +79,7 @@ pub const FILES: &[(&str, &str)] = &[
     ("wgtz.txt", include_str!("defs/wgtz.txt")),
     ("wgit.txt", include_str!("defs/wgit.txt")),
     ("unic.txt", include_str!("defs/unic.txt")),
+    ("hmt_.txt", include_str!("defs/hmt_.txt")),
     ("goof.txt", include_str!("defs/goof.txt")),
     ("matg.txt", include_str!("defs/matg.txt")),
     ("sbsp.txt", include_str!("defs/sbsp.txt")),
@@ -86,6 +88,10 @@ pub const FILES: &[(&str, &str)] = &[
     ("snde.txt", include_str!("defs/snde.txt")),
     ("fog_.txt", include_str!("defs/fog_.txt")),
     ("nhdt.txt", include_str!("defs/nhdt.txt")),
+    (
+        "recorded_animation.txt",
+        include_str!("defs/recorded_animation.txt"),
+    ),
     ("trak.txt", include_str!("defs/trak.txt")),
 ];
 

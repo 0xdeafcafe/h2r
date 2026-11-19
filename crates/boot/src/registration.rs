@@ -80,6 +80,9 @@ pub fn register_core(features: &mut feature::Registry, i: CoreInputs<'_>) -> any
     features
         .add(&map_copy::MapCopy)
         .map_err(|e| anyhow::anyhow!("map copy: {e}"))?;
+    features
+        .add(&crate::h1_recordings::Playback)
+        .map_err(|e| anyhow::anyhow!("recorded animation playback: {e}"))?;
     layout_glue::install(rt, features, i.model).context("installing the button layouts")?;
     campaign_menu::install(rt, features, i.campaigns).context("installing the campaigns")?;
     map_select::install(rt, features).context("installing the map select")?;
@@ -167,10 +170,22 @@ pub fn register_core(features: &mut feature::Registry, i: CoreInputs<'_>) -> any
     });
     let skulls_custom_on = skulls_custom::install(features, i.settings.clone(), telemetry.clone(), custom_maps)
         .context("installing our skulls")?;
+    features
+        .add(&crate::h1_conversation::Conversations)
+        .context("installing converted conversation playback and casting")?;
+    features
+        .add(&crate::h1_command_atoms::CommandAtoms)
+        .map_err(|e| anyhow::anyhow!("Halo 1 command lists: {e}"))?;
     // Halo 1's health model on Halo 1 maps (docs/halo1/health.md): no body
     // regeneration, health packs, a health meter. Off (Halo 2's) until the
     // map's identity or the H2_HEALTH_MODEL debug override says Halo 1.
+    features
+        .add(&crate::h1_pools::CampaignPools)
+        .map_err(|e| anyhow::anyhow!("campaign datum pools: {e}"))?;
     let health_on = health::install(features).context("installing the health model")?;
+    features
+        .add(&crate::h1_ai_control::AiControl)
+        .map_err(|e| anyhow::anyhow!("Halo 1 AI control: {e}"))?;
     features
         .add(&crate::h1_script_builtins::ScriptBuiltins::default())
         .map_err(|e| anyhow::anyhow!("Halo 1 script builtins: {e}"))?;
@@ -181,6 +196,7 @@ pub fn register_core(features: &mut feature::Registry, i: CoreInputs<'_>) -> any
     // Halo 1's or Halo 2's HUD on converted Halo 1 maps (docs/halo1/hud.md):
     // the owners' HUD references at game activation, by `hud::style_for_map`.
     hud_swap::install(features, i.packages, i.data_root).context("installing the HUD swap")?;
+    crate::h1_hud_text::install(features).context("installing Halo 1 HUD text")?;
     // Stronger aim assist (docs/game/aim-assist.md): the weapons' aim cone and
     // pull at each map load, from the Aim Assist setting (Auto: Strong
     // while the touch controls show). Headless runs keep retail.

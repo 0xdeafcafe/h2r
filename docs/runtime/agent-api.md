@@ -430,8 +430,20 @@ Snapshots never enter the repository: they contain game data.
   the first version compiles one expression with `crates/hs` and runs it
   through the guest's evaluator. How to inject a node into the guest's
   script pool is a research point (**S**).
-- `hs.globals`, `hs.threads`: read script state, so "has the courtyard
-  fight started" is a global, not a guess.
+### HaloScript state
+
+Both read methods take an empty parameter object and sample the loaded
+scenario at a tick boundary. They return `UNAVAILABLE` while its interpreter
+tables are uninitialized or unreadable.
+
+- `hs.threads` returns a `threads` array of live slots. Each row has
+  `slot`, numeric thread `category`, and signed `wake` tick. Scenario
+  script threads also have their definition's `script` name and `kind`.
+  These two fields are null for transient evaluation threads.
+- `hs.globals` returns a `globals` array in scenario declaration order.
+  Each row has `name`, `type`, `type_index`, and `value.bits`. For scalar
+  types the value also includes `boolean`, `real`, or signed `number`.
+  Scenario declarations start after the interpreter's external-global cells.
 
 ### `input`: act like a player
 

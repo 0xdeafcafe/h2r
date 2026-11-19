@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 # The campaign manifest a converted level is listed in.
 content.workspace = true
+engine = { path = "../engine" }
 h1map = { path = "../h1map" }
 # Structure BSP, collision, lightmap and shader choice, shared with the
 # multiplayer converter.
@@ -18,6 +19,7 @@ h1ai = { path = "../h1ai" }
 h1scripts = { path = "../h1scripts" }
 h1sky = { path = "../h1sky" }
 h1sounds = { path = "../h1sounds" }
+h1text = { path = "../h1text" }
 map.workspace = true
 tags.workspace = true
 # Generated AI pathfinding for each converted structure BSP.

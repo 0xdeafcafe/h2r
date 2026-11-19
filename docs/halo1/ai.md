@@ -73,7 +73,7 @@ Squad (`e8`), V for everything the converter uses:
 
 Firing position (`18`): position, group `u16` `0c` (0 = A .. 25 = Z),
 cluster `i16` `0e`, surface `u32` `14`. Command list (`60`): name, flags
-`u32` `20`, manual BSP `i16` `2c`, atoms `30` (`20`), points `3c` (`14`:
+`u32` `20`, manual BSP `i16` `2c`, resolved BSP `i16` `2e`, atoms `30` (`20`), points `3c` (`14`:
 position, surface `u32` `0c`). Atom (`20`): type `u16` `00`, modifier
 `i16` `02`, two `f32` parameters `04`, two point indices `0c`/`0e`,
 animation `10`, script `12`, recording `14`, "command" `16` (for a loop
@@ -84,16 +84,15 @@ jump, targeted jump, script, animate, recording, action, vocalize,
 targeting, initiative, wait, loop, die, move immediate, look random, look
 player, look object, set radius, teleport. Conversation (`74`): name, flags
 `u16` `20`, trigger distance `24`, run-to-player distance `28`,
-participants `50` (`54`, encounter name `char[32]` at `24`), lines `5c`
-(`7c`, participant `i16` at `02`).
+participants `50` (`54`), lines `5c` (`7c`). The layout that feeds the
+generated dialogue is below.
 
-**Stale indices (V):** fields an atom type doesn't read keep old values
-(a `look` atom's points, a `pause`'s animation), so only the fields an atom
-reads are checked: the first point of go to / move immediate / teleport,
-both of go to and face, a loop's atom, an animate's animation. Even so, a
-few retail atoms name a point past the end (a10's `moving_1_3` goes to point
-5 of 5; 10 on the whole disc) and three squads name a platoon their
-encounter doesn't have (a10, c40). The test prints and counts them.
+**Stale indices (V).** The H1 dispatcher at `0x16b250` reads operands by
+atom kind. For example, go-to reads the first point, go-to-and-face reads
+both, and a facing-relative timed move reads neither. Retail records retain
+unrelated operands. Some go-to records also contain unusable targets
+(a10's `moving_1_3` names point 5 in a set of five). The interpreter skips
+that atom and can still run the next one.
 
 ### `actr` and `actv`
 
@@ -171,7 +170,7 @@ decoded on all 15 campaign levels with `check_indices` clean).
 | `168` | zones | `38` |
 | `170` | mission scenes (not read) | |
 | `178` | character palette: a `char` reference each | `8` |
-| `1a0` | AI conversations (not read) | |
+| `1a0` | Legacy conversation field, unused by the converted scripts | |
 | `1d8` | scripting data, one element: point sets at `00` | `80` |
 | `240` | orders | `7c` |
 
@@ -196,7 +195,7 @@ character `20`, initial weapon `22`, secondary `24`, vehicle `28` (`i16`),
 seat type `u16` `2a`, grenade type `u16` `2c`, swarm count `i16` `2e`,
 actor variant string ID `30`, vehicle variant `34`, initial movement
 distance `f32` `38`, emitter vehicle `i16` `3c`, movement mode `u16` `3e`,
-placement script `char[32]` `40`, `i16` `60` (`-1`; R).
+placement script name `char[32]` `40` and compiled script index `i16` `60` (absent = `-1`). On 03a, 57 locations name a kind-5 script whose index matches this field.
 
 Zone (`38`): name, flags `u32` `20` (1 on 118 of 119 retail zones), manual
 BSP `i16` `24`, firing positions `28` (`20`), areas `30` (`88`).
@@ -215,7 +214,8 @@ manual reference frame `i16` `7c`, flight hints block `80`.
 
 Order (`7c`): name, style `i16` `20` (an index into the style palette at
 `150`, `-1` none), flags `u32` `24`, force combat status `u16` `28`, entry
-script `char[32]` `2c`, follow squad `i16` `4c`, follow radius `f32` `50`,
+script `char[32]` `2c`, entry script index `i16` `4c`, follow squad
+`i16` `4e`, follow radius `f32` `50`,
 primary area set `54` and secondary `5c` (`8` each: area type `u16` `00`,
 zone `i16` `04`, area `i16` `06`; V by range check), secondary set trigger
 `64`, special movement `6c`, order endings `74` (`2c`; counted only).
@@ -273,21 +273,135 @@ them into a map with `map::build::TagSet` and reads them back through
 | Halo 1 | Halo 2 |
 |---|---|
 | encounter | a squad group and a zone of the same name; team carried over (S: both games number teams default, player, human, covenant, flood, sentinel) |
-| firing positions | the zone's firing positions, grouped by area; one area per group letter used, named `a`..`z`, with the tools' mean, deviation, first and count filled in. Surface carried over (the converted collision BSP keeps Halo 1's surface indices); cluster `-1` |
+| firing positions | the zone's firing positions, grouped by area; one area per group letter used, named `a`..`z`, with the tools' mean, deviation, first and count filled in. Ground points name a generated sector in the encounter's assigned BSP. Airborne points retain their authored altitude and cluster |
 | squad | squad `encounter/squad` (Halo 1 scripts' own spelling, cut to 31 characters), in the encounter's group and zone; counts, delay and major upgrade carried over |
 | squad's attacking groups | an order of the squad's name over the areas of those letters (every area when none match), set as the squad's initial order |
 | squad starting location | starting location: position, facing as yaw; a location's own actor becomes its own character |
-| squad with no starting locations | kept, empty: no starting locations and counts 0, with a note. It can never spawn, but scripts name it (on a30 these are mostly the attack/defend/retreat squads Halo 1 maneuvers actors into). Retail Halo 2 has such squads too (06b: 28 of 170, `squad_flag_bits`). Until 2026-11-17 they were left out and their script names stayed `none`. The converter keeps only those the scripts name, and only while the level stays under the engine's squad cap (335, `h1campaign::scenario::MAX_SQUADS`, campaign.md §9): a50 (309 placed + 75 named empty) and b40 (283 + 67) leave them out, and their names resolve to a sibling squad: the encounter's first converted squad (`<encounter>/...`), or its squad group if it has none. Not the group first: Halo 2's `ai_migrate` (function 308, evaluator `0x002a54a0`) returns without moving anyone when the destination has either top bit set (`test ecx,0C0000000h` at `0x002a54cc`), so a squad group destination is a no-op, and `ai_attach_units` (287, through `0x002730c0` to `0x00273040`) reads the value's low 16 bits as a squad index (bounded by `scnr+0x160` at `0x0027305e`), so a group would name an unrelated squad |
-| actor variant | a retail character ([`character_for`]): one palette entry per distinct character |
-| command list | a point set of its name (points `p0`..), an order stub of its name, and a `CommandScript` (atoms by name, with their points) for the scripts lane |
-| conversations, platoons, move positions, respawn | not converted (noted) |
+| squad with no starting locations | **Built.** A named migration destination has its own squad datum, zero initial occupants and an order. A direct script placement with an actor can use the squad's move positions or its assigned firing groups. |
+| actor variant | One palette entry per distinct character. Crew and Sentinel variants are rebuilt from the source tags. Other types use the retail character table. |
+| command list | **Built.** Its own point set and Halo 2 command script. The authored list index selects both. A starting location with a command list carries the generated script name and index. |
+| conversations | **Built** as Halo 2 scripts with converted `snd!` references (below) |
+| move positions, respawn | not converted (noted) |
 
 Values Halo 1 has no counterpart for come from the census (`Options`):
 firing position flags `0x42`, zone flags 1, area type 0, order style `-1`.
 Grenades by species: covenant plasma for elites and grunts, fragmentation
 for marines and crew, none otherwise.
 
-### Characters (the stopgap)
+### Conversations
+
+**Built.** `h1ai::conversations` reads retail participants and all six sound
+references on every line. `h1scripts` builds the worker and state into the
+scenario's regular Halo 2 script tables. `h1campaign` installs the referenced
+Halo 1 sounds with the other script sounds and resolves their datums.
+
+| Element | Offsets used | Evidence from Halo 1 Xbox |
+|---|---|---|
+| Participant | Flags `02`, selection `04`, actor type `06`, use and assign object name `08`/`0a`, six voice selectors `18`, encounter token `24` and compiled AI selector `44` | `0x00143c00` selects a role, `0x001440f3` compares voice selectors, and `0x0014476c` installs the chosen unit under the assigned object name |
+| Line | Flags `00`, speaker `02`, addressee kind/index `04`/`06`, post-line pause in seconds `0c`, six `snd!` references starting `1c` | `0x001425a0` takes the cast's voice slot, resolves the sound and converts the pause to ticks. `0x00144abd` waits for advance on flag `0x08` |
+| Conversation | Delay flag `0x40`, trigger distance `24`, run distance `28` | `0x00144466` tests the distance, and `0x00144b7a` retries at 30-tick intervals |
+
+**Built.** Cast selection ranks distinct living units in the authored
+encounter or the converted rosters for their actor type. The original
+selection switch (`0x00143f6d`) checks allegiance, shared vehicles, unmounted
+actors or preference for a unique voice. The bridge reads Halo 2's live
+campaign alliance matrix (`0x001df560`) and vehicle driver (`0x002a4270`).
+Candidates closer to players and to an already cast peer get the original
+distance and view-direction weights (`0x00143a96`, `0x00144026`).
+Voice selection prefers the exact persona, then the wildcard, then an
+eligible generic alternative (`0x001440e2`). A salted profile recorded in
+scenario globals follows a cast member into later scenes and checkpoints.
+Assigned object names still resolve to their captured actors.
+
+**Built.** The map carries the source marine squads' unique-leader rules.
+The native cast bridge seeds 100 or 101 from the live squad roster before
+binding roles. Halo 1's selection at `0x0013e563` supplies the forced,
+random and encounter-size cases. The first spawned living member of each
+new cohort takes the voice, leaving its peers generic. Halo 2 provides the
+current roster through the same squad chain read by `0x00204d30`.
+
+**Built.** Flag `0x20` runs the cast toward the focus player using the
+source distance at `+0x28` (Halo 1 `0x0014476c`). Line flags `0x10` and
+`0x20` wait for the speaker or the cast to finish moving
+(`0x001448db`). Halo 2's native `cs_approach` (429,
+`0x002a81b0`) does the movement and pathfinding. The scene chooses
+a live focus player and applies the view cone when flag `0x80`
+requires attention (`0x001445de`).
+
+**Built.** The speaker, the addressee and other participants turn as their
+line directs (`0x00144c30`). Halo 2's `cs_face_object` and
+`cs_look_object` (400 and 394) run as temporary commands stacked over the
+actors' existing commands (`0x00276480`). Line completion or a scene
+stop removes only its own commands by script and actor (`0x00258540`).
+Selection 1 supplies an unbound radio voice. Selections 6 and 7 bind
+an actor and route the voice over radio (`0x001426a3`, `0x00144992`).
+
+**Built.** Every spoken line owns its native sound instance. Spatial
+voices use the unit's mouth marker and the biped lip-sync path
+(`0x001891d0`, `0x00109220`). Radio uses the engine's untracked impulse
+entry (`0x00189fe0`). Workers poll the salted sound datum until it ends
+before applying the authored pause and advance flag. Stopping calls the
+engine by instance (`0x00126360`), so overlapping lines sharing a
+`snd!` tag keep separate timing and stop handles.
+
+The converted-map hook claims **builtin slot 845** only. Its retail
+descriptor is four longs returning void and its original evaluator
+(`0x002ab130`) discards the call. The shared table is
+`hs::h1_conversation::BUILTINS`. Approach, facing and queue queries use
+stock builtin slots. The converted-map operation validates scenario
+global types and uses salted object, actor and sound handles.
+
+The converted cast ranks candidates with Halo 2 positions, alliances and
+aim. Halo 1 adds a BSP visibility bonus to the cast score and rotates
+fresh ambient voices through its biped dialogue permutations. The
+converted cast uses the authored scripted alternatives for fresh generic
+actors. Unique voices are initialized on the live Halo 2 roster when a
+cast is requested, so a cohort can differ after migration before its
+first conversation.
+
+### Command scripts
+
+**Built.** The ten Halo 1 campaign scenarios contain 552 command lists.
+`h1scripts::compile::commands` appends a kind-5 definition for each, in
+list order after the authored scripts. A list may have the same display
+name as another list. The generated name `h1_cmd_<index>` keeps their
+references distinct. Halo 1 checks the resolved BSP at list offset
+`+0x2e` (`0x16a808`). Each point keeps its position and collision surface.
+Halo 2 addresses a point by set index in the high word and point index
+in the low word.
+
+The generator emits blocking Halo 2 command-script verbs for movement,
+look, animations, jumps and delays. Backward edges repeat their command
+sequence. The stimulus can arrive before a wait, and interruption retires
+the executing instance. The boot feature handles the H1 commands that
+need a runtime calculation. H1 `0x16b74d` uses the direction from the
+unit to a point, while `0x16b895` uses the unit's facing for a duration.
+H2's begin/update pair is `0x258cf0` / `0x259430`. The two H1 vehicle
+atoms search for a driver seat on a nearby live vehicle (`0x16bd0c`).
+H2 tests seat admission at `0xc8200` and submits the entry behavior at
+`0x1a80e0`. H1's falling-damage exemption sets and clears a unit flag at
+`0x16a603` and `0x16b23c`. H2's landing routine tests its counterpart at
+`0xe3727` before applying the distance damage effect.
+
+Vocalize looks up the actor model's converted dialogue and plays its
+source sound on the unit. H1 indexes the dialogue tag at `0x46a40`
+and follows the executable's fallback table when the line is absent.
+None of the retail campaign lists uses this atom.
+
+The synthetic tests cover duplicate list names, point literals, wait
+duration, actor reuse and completion expiry. The ignored disc tests check
+the generated script roots, placement record indices and point sets.
+A shooting atom uses the authored burst length. The H1 actor variant's
+recovery comes from `actv+0x84` (`0x16af96`), with a two-second floor.
+An unauthored random-look interval comes from `actr+0xec/+0xf0`
+(`0x16b4b7`). When those values are needed, placement string IDs identify
+the source actor variant. H2 retains the starting-location ID on its
+actor at `+0x38` (`0x272c13`). The point-acquisition check uses the H2
+weapon targeting ray (`0xcf3d0`). Playback, weapon timing and the
+correspondence between the two engines' gaze strengths still need an
+integrated game run.
+
+### Character selection
 
 The nearest retail Halo 2 `char` by type, refined by words in the variant's
 path. Every target is on the Halo 2 disc with the same type (V: the census
@@ -301,12 +415,12 @@ test checks the table against the disc).
 | hunter | `hunter` | 03a, 05b, 07a, 08a, 08b |
 | marine, crew (johnson / sergeant) | `marine_johnson` / `marine_sgt` | 01a, 01b, 03a, ... |
 | marine | `marine` | 01a, 01b, 03a, ... |
-| crew | `marine\ai\crewman` | 01a |
+| crew | Halo 1 actor variant, unit, colours and weapon | source level |
 | combat form (human / other) | `flood_combat_human` / `floodcombat_elite` | 06a, 06b, 07b / 04b, ... |
 | infection form | `flood_infection` | 04b, 06a, 06b, 07a, 07b |
 | carrier form | `flood_carrier` | 04b, 06a, 06b, 07b |
 | monitor | `monitor\ai\monitor` | 04b, 08b |
-| sentinel | `sentinel_aggressor_halo1` (Halo 2's own Halo 1 sentinel) | 04a, 04b |
+| sentinel | Halo 1 actor variant, unit, weapon and animation graph | source level |
 | mounted weapon | `ai\generic_turret` | most levels |
 | engineer, assassin, player, none | `ai\generic` | every level with AI |
 
@@ -315,36 +429,57 @@ holds them all. `h1campaign::donor` copies the ones the base (05a) lacks
 from a donor, whole tree and sounds (`h1sounds::transplant`): hunter
 from 03a, flood combat elite, infection, carrier and the monitor from
 04b, flood combat human from 06a, and the special-ops elite and grunt
-from 04b. Two stay out: the crewman (no donor; the marine stands in) and
-the sentinel: every sentinel character but the enforcer shares
-`sentinel_aggressor`'s animation graph, which `tags::schema` refuses (an
-unknown pointer in the `+0xb4` block's elements, `donor_survey`).
+from 04b.
 
-### a30 and a10 (V)
+**Built — Sentinel graph.** The Halo 1 variant points to its own rebuilt
+biped. The model converter reads the biped's `antr` and emits a `jmad`
+with local animation resources and owner fixups. On c40, the fixed weapon
+class's slot 0 selects each stance's idle. Slot 25 selects the nine-frame
+aim with a three-by-three yaw/pitch screen. The builder emits the idle
+and lookups for combat, patrol and crouch under class/type `any/any`, as
+on 04b. Combat and patrol share the four directional aim overlay names.
+c40's ordinary and
+defensive variants both name the Sentinel beam and upgrade to the major.
+The eleven flight parameters at Halo 1 `bipd+0x324` correspond to the
+sequence at `+0x2cc` on 04b's Halo 1 aggressor. Both retail aggressors
+have biped flags `0xe00` and character-physics flags `0x13`. The style
+comes from 04b when donor maps are supplied.
 
-`a30_and_a10_convert_read_back_and_sit_on_generated_pathfinding` converts
-both levels, builds and reads back the result, then generates pathfinding
-(`crates/pathfind`) from each BSP's collision converted by
-`h1convert::collision::convert`, and checks positions against the
-generated sectors: inside a sector's polygon with its floor at most 2 m
-below and 0.25 m above.
+**Built — crew.** Each distinct `actv` gets a definition-built `char`
+with its unit, perception, vitality and weapon properties. a10's tech,
+engineer, security, science and command variants have different RGB
+bounds in the block at `actv+0x22c`. Their rebuilt bipeds share a model
+and graph. Security carries the source pistol. The other five variants
+(including the pilot) have null weapon references.
 
-| | a30 | a10 |
-|---|---|---|
-| squad groups, zones | 22 | 39 |
-| squads (no starts, left out until 2026-11-17) | 89 (90) | 114 (30) |
-| starting locations (off sectors) | 390 (24) | 296 (1) |
-| firing positions (flying, off sectors) | 4645 (584, 52) | 2381 (0, 7) |
-| orders, point sets | 92, 3 | 238, 124 |
-| characters | 5 | 5 |
+**Built — firing positions.** Halo 1 encounter flag `0x20` marks all
+three a30 Banshee encounters (584 points). They keep their altitude and
+use a null sector, as in 06a's flying Sentinel zones. Ground points use
+their assigned BSP at encounter `+0x7e`. The surface reference and the
+generated sector polygons give the floor point and normal, including on
+slopes and polygon edges. Halo 2 uses a sector index at firing position
+`+0x14`, confirmed against 05a's sector polygons. Ground clusters are
+queried just above the floor and area centres and deviations recomputed.
 
-Every squad has a starting location and every index is in range. a30's
-three banshee encounters fight in the air, over the sea: an encounter whose
-firing positions are mostly off any floor counts as flying and is left out
-of the floor check. The rest must be on a sector for at least 98% of firing
-positions and 90% of starting locations; the misses (a30's river and cave
-floor, a10's flanks) stand on scenery, which isn't in the structure BSP, on
-slopes past 45°, or in water.
+**Built — script-created and migration squads.** Halo 1 squad literals
+encode `0x80000000 | local_squad << 16 | encounter`. The converter uses
+these indices to retain named targets, including on a50 and b40. The
+native migration evaluator requires a squad datum (`0x002a54cc`).
+Direct placements of empty squads with a defined actor use authored
+positions from that squad's movement or firing groups. This site-selection
+rule is an inference. Examples include a50's `marines_initial/marines_a`
+and b40's `a2_top_cov/grunt_sniper`. b40's `a2_bottom_cov/grunts_tub`
+has no actor or start to instantiate. It remains addressable for migration.
+
+The campaign squad-pool hook runs before `0x00200b30` initializes the
+arrays. Retail allocates consecutive `0xc760` and `0x163c` buffers
+at `0x00200957` and `0x0020098a`. When necessary, it moves the boundary
+within those buffers using the new scenario's counts. Smaller maps restore
+the retail capacities. The converter uses the same capacity calculation.
+
+The ignored disc tests cover the a30/a10 sector readback, every campaign's
+scripted squad references, and the a10/c40 character-to-animation resource
+chain. Gameplay and map-size verification are pending integration.
 
 ## Spawning
 
@@ -354,7 +489,8 @@ initially created") is set; on the ten levels almost all are set (a30:
 such default: no squad on any retail campaign map sets a placement flag
 (survey `squad_flag_bits`: only bits 8, 9 and 13, on a few squads), and
 retail scripts place every squad with `ai_place`. So `h1campaign` adds a
-startup script, `h1_initial_encounters`, placing the squad group of every
+helper, `h1_initial_encounters`, called first by the earliest authored
+startup script (or registered as startup when there is none). It places the group of every
 encounter with bit 0 clear (a30: `mid_cliff_1`), and Halo 1's own
 `ai_place` calls keep one argument, as most retail calls do
 (scripts.md). Squad flags stay 0.
@@ -368,15 +504,14 @@ out in `0xfe618`.
 ## What only a game run can prove
 
 - That Halo 2 spawns the squads at all: the converted scenario still lacks
-  the cluster occupancy bits of each area and the firing positions' cluster
-  index (written `-1`), which the tools compute from the structure's
-  clusters; the engine may need them to activate or search areas.
+  the retail visibility bits of each area. The engine may use them to activate or search areas.
 - That actors move between firing positions on the generated pathfinding.
 - That the chosen characters, pulled into a Halo 1 level from other maps,
   load with their units, weapons and animations.
-- That orders with no endings, and order stubs with no areas, are harmless.
-- Halo 1 behaviour carried by the dropped data: platoons, move positions,
-  respawning, maneuvers into the empty squads, conversations.
+- How squads behave under orders with no endings, and how closely the generated command scripts reproduce H1 movement and timing.
+- Halo 1 behaviour carried by the dropped data: move positions,
+  respawning and maneuvers into the empty squads.
+- Conversation audibility, speaker positioning and transitions in play.
 
 ## Open questions
 
@@ -384,13 +519,13 @@ out in `0xfe618`.
   and area set types 0..2: values from the census, meanings unknown.
 - Whether `area +0x3c` really is cluster occupancy, and whether the engine
   reads the area's mean and deviation or recomputes them.
-- The three trailing `i16` fields that are `-1` on retail (squad `70`,
-  starting location `60`, order `4e`).
+- The two trailing `i16` fields that are `-1` on retail (squad `70`
+  and starting location `60`). The order fields were identified by
+  disassembly in [ai-control.md](ai-control.md).
 - Halo 1 squads' other six group masks (defending, guarding, pursuing):
-  Halo 2 expresses them as order endings and secondary area sets; only the
-  attacking mask is used.
+  Halo 2 expresses them as order endings and secondary area sets. The
+  scripted defend order uses the defending mask. The search, guard and
+  pursue masks remain unused.
 - Vehicle actor variants (`warthog gunner`, `banshee` pilots) become plain
   characters; Halo 2 puts them in vehicles through the starting location's
   vehicle and seat fields, which need the vehicle palette.
-- How the scripts lane names the converted squads and command scripts; the
-  plan uses Halo 1's `encounter/squad` names and the command lists' names.
