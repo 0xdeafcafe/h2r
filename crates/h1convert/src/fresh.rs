@@ -1252,7 +1252,7 @@ fn pinned_reach(set: &TagSet, keep: &Keep, roots: &[TagId]) -> Reached {
     let mut partly = Vec::new();
     let mut holder = vec![false; n];
     let mut held_by: Vec<Option<(TagId, u32)>> = vec![None; n];
-    let mut held = Vec::new();
+    let mut held: Vec<usize> = Vec::new();
     loop {
         let Some(i) = todo.pop() else {
             // A holder: only its blocks count, for the bytes they use.
