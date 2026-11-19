@@ -32,6 +32,25 @@ use crate::route::{self, Dest};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct MixInId(pub(crate) u32);
 
+/// A main-output voice's current routing parameters for inspection.
+#[derive(Debug)]
+pub struct VoiceLevels {
+    pub id: u32,
+    pub kind: &'static str,
+    pub input_bin: Option<u32>,
+    pub distance_units: Option<f32>,
+    pub volume_mb: i32,
+    /// Raw guest pairs, in routing order. None is plain stereo.
+    pub bins: Option<Vec<(u32, i32)>>,
+    /// Broadband gains including voice volume and headroom, before bin
+    /// volume, output panning and master volume.
+    pub direct_gain: f32,
+    pub room_gain: f32,
+    pub direct_hf_db: f32,
+    pub room_hf_db: f32,
+    pub reference_hz: f32,
+}
+
 /// Mixes voices to interleaved stereo `f32` at a fixed host rate.
 #[derive(Debug)]
 pub struct Mixer {
@@ -186,6 +205,52 @@ impl Mixer {
     /// This host enhancement is off by default.
     pub fn set_distance_reverb(&mut self, enabled: bool) {
         self.distance_reverb = enabled;
+    }
+
+    /// Whether the optional host distance cue is enabled.
+    pub fn distance_reverb(&self) -> bool {
+        self.distance_reverb
+    }
+
+    /// Inspect routing without rendering or advancing filter state.
+    pub fn voice_levels(&self) -> Vec<VoiceLevels> {
+        let mut rows = Vec::new();
+        let mut record = |id, kind, input_bin, p: &VoiceParams| {
+            let paths = VoicePaths::new(&self.listener, p, self.reverb(), self.distance_reverb);
+            let gain = mb_to_gain(p.volume_mb) * headroom_gain(p.fx.headroom_mb);
+            rows.push(VoiceLevels {
+                id,
+                kind,
+                input_bin,
+                distance_units: p
+                    .spatial
+                    .as_ref()
+                    .and_then(|s| self.listener.source_distance(s)),
+                volume_mb: p.volume_mb,
+                bins: p.mix_bins.clone(),
+                direct_gain: gain * paths.direct_gain,
+                room_gain: gain * paths.room_gain,
+                direct_hf_db: paths.direct_hf_db,
+                room_hf_db: paths.room_hf_db,
+                reference_hz: paths.reference_hz,
+            });
+        };
+        for (id, b) in &self.buffers {
+            if b.is_playing() {
+                record(id.0, "buffer", None, b.params());
+            }
+        }
+        for (id, s) in &self.streams {
+            if s.is_audible() {
+                record(id.0, "stream", None, s.params());
+            }
+        }
+        for (id, m) in &self.mix_ins {
+            if m.is_playing() {
+                record(id.0, "mix_in", Some(m.input_bin()), m.params());
+            }
+        }
+        rows
     }
 
     /// Master volume in millibels.

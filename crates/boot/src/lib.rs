@@ -1335,6 +1335,9 @@ pub fn run_hosted_with_live(
     )?;
     let mut harness = late.harness;
     let agent = late.agent;
+    if let (Some(a), Some(audio)) = (&agent, &ds) {
+        dsound_glue::add_agent_methods(&a.agent, audio.mixer());
+    }
     let mut snapshot_probe = late.snapshot_probe;
     // edit.* and render.* on the agent (hot_glue.rs, docs/graphics/hot-iteration.md).
     if let Some(a) = &agent {
