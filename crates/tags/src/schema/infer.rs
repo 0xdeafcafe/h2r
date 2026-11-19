@@ -314,6 +314,7 @@ pub fn infer(maps: &mut [MapSample]) -> Schema {
         schema = next;
     }
     apply_engine_data(&mut schema);
+    apply_engine_refs(&mut schema);
     pair_raw_sizes(&mut schema, maps);
     apply_engine_strides(&mut schema);
     schema
@@ -365,6 +366,56 @@ pub fn apply_engine_data(schema: &mut Schema) {
         }
         s.fields
             .retain(|_, f| !matches!(f, Field::RawSize(of) if *of == offset));
+    }
+}
+
+/// Tag references no retail tag fills: `(group, block path, offset)`.
+/// Inference takes a field for a reference only when some element holds a
+/// live datum there, and these hold a group word and a null datum (or
+/// nothing) on every retail map, so they came out as bytes. A converter
+/// that fills one then wrote a datum the schema doesn't know: an extract
+/// or a from-scratch build copied it as data, unrenamed (a converted Blood
+/// Gulch's assault rifle read back with no flashlight effect).
+///
+/// - `weap`'s item layer: `+0xfc` the collision sound, `+0x11c` the
+///   detonating and `+0x124` the detonation effect (`tags/src/defs/item.txt`);
+/// - `weap +0x17c` the detonation effect (E `0x000cf19f` reads its datum
+///   at `+0x180`), `+0x244` and `+0x24c` the light power-on and power-off
+///   effects (S: `effe` group words on retail weapons);
+/// - the magazines' (`weap +0x2c0`) `+0x44` chambering effect (S: between
+///   two `jpt!` group words, as the reloading effect at `+0x34`).
+///
+/// Halo 1's weapons fill each (`h1objects::arsenal::WEAPON_EFFECTS`,
+/// `MAGAZINE_CHAMBERING_EFFECT`).
+pub const ENGINE_REFS: &[(FourCC, &[u32], u32)] = &[
+    (FourCC(*b"weap"), &[], 0xfc),
+    (FourCC(*b"weap"), &[], 0x11c),
+    (FourCC(*b"weap"), &[], 0x124),
+    (FourCC(*b"weap"), &[], 0x17c),
+    (FourCC(*b"weap"), &[], 0x244),
+    (FourCC(*b"weap"), &[], 0x24c),
+    (FourCC(*b"weap"), &[0x2c0], 0x44),
+];
+
+/// Applies [`ENGINE_REFS`] to a schema: each is a tag reference.
+pub fn apply_engine_refs(schema: &mut Schema) {
+    fn at<'a>(s: &'a mut Struct, path: &[u32]) -> Option<&'a mut Struct> {
+        match path.split_first() {
+            None => Some(s),
+            Some((o, rest)) => match s.fields.get_mut(o)? {
+                Field::Block(child) => at(child, rest),
+                _ => None,
+            },
+        }
+    }
+    for &(group, path, offset) in ENGINE_REFS {
+        if let Some(s) = schema
+            .groups
+            .get_mut(&group)
+            .and_then(|root| at(root, path))
+        {
+            s.fields.insert(offset, Field::TagRef);
+        }
     }
 }
 

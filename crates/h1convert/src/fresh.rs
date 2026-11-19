@@ -787,6 +787,10 @@ pub struct Pruned {
     /// some array skipped ([`walk`]: outside the metadata, or implausibly
     /// long); their own words name tags too, as datums only.
     pub partly_walked: Vec<TagId>,
+    /// [`prune_pinned`]: the arrays of kept tags that sit in a dropped
+    /// tag's bytes ([`Shared`]), whose bytes stay in place as metadata no
+    /// tag owns (`PinnedImage::unowned`) while the rest of that tag goes.
+    pub shared: Vec<Shared>,
 }
 
 impl Pruned {
@@ -1111,7 +1115,8 @@ impl<'a> Space<'a> {
 /// elements at `at`), depth first through its blocks: every word of every
 /// array it holds (as the fresh build's [`named`] reads a built tree: a
 /// datum may sit in a field the schema doesn't describe), and every
-/// array's address. Bytes no array covers (an emptied block's old
+/// array below it as its address and length in bytes (the count times
+/// the element size of the block field pointing at it). Bytes no array covers (an emptied block's old
 /// elements, a removed placement's) are not read. An array below the
 /// root that is not in the metadata or is implausibly long is skipped
 /// (counted in `skipped`), its pointer not an address: only the fields the
@@ -1126,7 +1131,7 @@ fn walk(
     count: u32,
     depth: usize,
     words: &mut Vec<u32>,
-    arrays: &mut Vec<u32>,
+    arrays: &mut Vec<(u32, u32)>,
     skipped: &mut usize,
 ) -> Option<()> {
     if depth > 32 || count > 0x10_0000 {
@@ -1152,7 +1157,7 @@ fn walk(
                     let (mut w, mut a) = (Vec::new(), Vec::new());
                     match walk(space, child, p, n, depth + 1, &mut w, &mut a, skipped) {
                         Some(()) => {
-                            arrays.push(p);
+                            arrays.push((p, n * child.size));
                             words.extend(w);
                             arrays.extend(a);
                         }
@@ -1176,40 +1181,18 @@ fn walk(
 /// out when it is built, and a word in it that falls in another tag's
 /// bytes is data (V: the sound gestalt rebuilt with Halo 1's sounds holds
 /// raw offsets such as `0x804f3600`, inside Coagulation's wraith model,
-/// which kept every retail vehicle). A tag whose bytes
-/// hold an array a reached tag points to is reached too (pinned arrays can
-/// sit in another tag's range), and so is every datum in metadata no tag
-/// owns that a word-read tag points into. Returns the slots reached and
-/// how many were reached only by such an address.
-fn pinned_reach(set: &TagSet, keep: &Keep, roots: &[TagId]) -> (Vec<bool>, usize) {
-    let (seen, by_pointer, _, _) = pinned_reach_why(set, keep, roots);
-    (seen, by_pointer)
-}
-
-/// How [`pinned_reach`] reached a slot first: the edge that kept it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Reach {
-    /// A root: the scenario, the globals, a [`Keep`] group or name
-    /// prefix, or one of the caller's tags.
-    Root(&'static str),
-    /// A word of `by` is its datum.
-    Datum { by: TagId },
-    /// A word of `by` (`word`) is an address in its bytes.
-    Address { by: TagId, word: u32 },
-    /// A word in metadata no tag owns (starting at `gap`) that `by`
-    /// points into is its datum.
-    Gap { by: TagId, gap: u32 },
-}
-
-/// [`pinned_reach`], with the edge each reached slot was first reached
-/// by (`None` for one not reached), the pinned tags read word by word
-/// (no schema, or their root doesn't read) and those walked with arrays
-/// skipped ([`walk`]).
-fn pinned_reach_why(
-    set: &TagSet,
-    keep: &Keep,
-    roots: &[TagId],
-) -> (Vec<bool>, usize, Vec<Option<Reach>>, [Vec<TagId>; 2]) {
+/// which kept every retail vehicle).
+///
+/// Retail shares block data between tags: a walked tag's block can sit
+/// in another tag's bytes (W: the `c_turret_ap` model's block at
+/// `0x804f4164`, inside the wraith model). Such an address keeps the
+/// array's bytes (its count times its element size, and each block below
+/// it the same way) and the datums in them, which the walk has read
+/// already, not the tag it falls in: the wraith model with every reference
+/// in it is not reached by it ([`Reached::shared`]). A word-read tag's
+/// address has no length, so the tag it falls in is reached whole, and so
+/// is every datum in metadata no tag owns that a word-read tag points into.
+fn pinned_reach(set: &TagSet, keep: &Keep, roots: &[TagId]) -> Reached {
     let n = set.slots.len();
     let space = Space::new(set);
     let schema = Schema::builtin();
@@ -1255,15 +1238,17 @@ fn pinned_reach_why(
         (k < n && set.slots[k].tag.as_ref().is_some_and(|t| t.id.0 == w)).then_some(k)
     };
     let mut live_gaps = std::collections::HashSet::new();
-    let (mut datums, mut arrays) = (Vec::new(), Vec::new());
+    let (mut datums, mut arrays, mut blocks) = (Vec::new(), Vec::new(), Vec::new());
     let mut gap_datums: Vec<(u32, u32)> = Vec::new();
     let mut word_read = Vec::new();
     let mut partly = Vec::new();
+    let mut shared = Vec::new();
     while let Some(i) = todo.pop() {
         let Some(t) = &set.slots[i].tag else { continue };
         let by = t.id;
         datums.clear();
         arrays.clear();
+        blocks.clear();
         gap_datums.clear();
         let mut words_too = false;
         match &t.payload {
@@ -1276,7 +1261,7 @@ fn pinned_reach_why(
                 match walked {
                     Some((d, a, skipped)) => {
                         datums = d;
-                        arrays = a;
+                        blocks = a;
                         // Arrays it couldn't walk: its own words still
                         // name tags (a datum may sit in one), but none is
                         // taken for an address.
@@ -1310,10 +1295,30 @@ fn pinned_reach_why(
             // gestalt's raw offsets) are not taken for addresses.
             other => named(other, &mut datums),
         }
+        // A walked block in another tag's bytes: those bytes, not the tag.
+        for &(a, len) in &blocks {
+            let end = a.saturating_add(len);
+            let Some(mut p) = space.part(a) else { continue };
+            while p < space.parts.len() && space.parts[p].0 < end {
+                let (start, stop, _, owner) = space.parts[p];
+                if let Some(o) = owner
+                    && o != i
+                {
+                    let owner = set.slots[o].tag.as_ref().map_or(TagId(u32::MAX), |t| t.id);
+                    shared.push(Shared {
+                        owner,
+                        by,
+                        start: a.max(start),
+                        end: end.min(stop),
+                    });
+                }
+                p += 1;
+            }
+        }
         if words_too {
             arrays.extend(datums.iter().copied());
         }
-        // Addresses: the tag or gap holding each.
+        // A word-read tag's addresses: the tag or gap holding each.
         let mut k = 0;
         while k < arrays.len() {
             let a = arrays[k];
@@ -1325,7 +1330,7 @@ fn pinned_reach_why(
                         by_pointer += 1;
                     }
                 }
-                None if words_too && live_gaps.insert(p) => {
+                None if live_gaps.insert(p) => {
                     // A gap a word-read tag points into: its words name
                     // tags and point on.
                     let words: Vec<u32> = space.parts[p]
@@ -1353,7 +1358,60 @@ fn pinned_reach_why(
             }
         }
     }
-    (seen, by_pointer, why, [word_read, partly])
+    Reached {
+        seen,
+        by_pointer,
+        why,
+        word_read,
+        partly,
+        shared,
+    }
+}
+
+/// What [`pinned_reach`] found.
+struct Reached {
+    /// The slots reached.
+    seen: Vec<bool>,
+    /// How many were reached only by a word-read tag's address.
+    by_pointer: usize,
+    /// The edge each reached slot was first reached by (`None` for one
+    /// not reached).
+    why: Vec<Option<Reach>>,
+    /// The pinned tags read word by word (no schema, or their root
+    /// doesn't read) and those walked with arrays skipped ([`walk`]).
+    word_read: Vec<TagId>,
+    partly: Vec<TagId>,
+    /// Walked arrays in another tag's bytes: kept as metadata no tag owns
+    /// when that tag is not reached.
+    shared: Vec<Shared>,
+}
+
+/// A walked tag's array (or the part of one) in another tag's bytes:
+/// block data retail shares between tags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Shared {
+    /// The tag whose bytes hold it, and the tag whose block points at it.
+    pub owner: TagId,
+    pub by: TagId,
+    /// Its bytes, by address.
+    pub start: u32,
+    pub end: u32,
+}
+
+/// How [`pinned_reach`] reached a slot first: the edge that kept it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reach {
+    /// A root: the scenario, the globals, a [`Keep`] group or name
+    /// prefix, or one of the caller's tags.
+    Root(&'static str),
+    /// A word of `by` is its datum.
+    Datum { by: TagId },
+    /// A word of `by` (`word`), a tag read word by word, is an address
+    /// in its bytes.
+    Address { by: TagId, word: u32 },
+    /// A word in metadata no tag owns (starting at `gap`) that `by`
+    /// points into is its datum.
+    Gap { by: TagId, gap: u32 },
 }
 
 /// A scenario palette element's size (every object palette, D;
@@ -1430,7 +1488,9 @@ fn null_unplaced(set: &mut TagSet, is_base: impl Fn(u32) -> bool) -> usize {
 /// (`TagSet::reuse_free_space`). A pinned tag keeps addresses into other
 /// tags' bytes and into metadata no tag owns, and stale words no array of
 /// it covers: reachability walks it by the schema ([`pinned_reach`]).
-/// Only pinned payloads are dropped (the others hold no base metadata).
+/// A dropped tag's bytes that a kept tag's block points at (retail block
+/// data shared between tags) stay in place as metadata no tag owns
+/// ([`Pruned::shared`]); the rest of its bytes are freed. Only pinned payloads are dropped (the others hold no base metadata).
 /// `first` is the first slot the conversion added.
 pub fn prune_pinned(set: &mut TagSet, first: usize, keep: &Keep, extra: &[TagId]) -> Pruned {
     let mut out = Pruned::default();
@@ -1462,7 +1522,7 @@ pub fn prune_pinned(set: &mut TagSet, first: usize, keep: &Keep, extra: &[TagId]
             for k in 0..count {
                 write_word(set, elements + 4 * k, u32::MAX);
             }
-            let (seen, _) = pinned_reach(set, keep, &roots);
+            let seen = pinned_reach(set, keep, &roots).seen;
             let kept: Vec<u32> = list
                 .iter()
                 .copied()
@@ -1477,7 +1537,14 @@ pub fn prune_pinned(set: &mut TagSet, first: usize, keep: &Keep, extra: &[TagId]
             write_word(set, field, kept.len() as u32);
         }
     }
-    let (seen, by_pointer, why, [word_read, partly]) = pinned_reach_why(set, keep, &roots);
+    let Reached {
+        seen,
+        by_pointer,
+        why,
+        word_read,
+        partly,
+        shared,
+    } = pinned_reach(set, keep, &roots);
     out.kept_by_pointer = by_pointer;
     out.word_read = word_read;
     out.partly_walked = partly;
@@ -1487,22 +1554,46 @@ pub fn prune_pinned(set: &mut TagSet, first: usize, keep: &Keep, extra: &[TagId]
         .zip(why)
         .filter_map(|(s, w)| Some((s.tag.as_ref()?.id, w?)))
         .collect();
+    let mut kept_bytes = Vec::new();
     for (i, s) in set.slots.iter_mut().enumerate().take(first) {
         if seen[i] {
             continue;
         }
-        let dropped = match &s.tag {
-            Some(t) => match &t.payload {
-                TagPayload::Pinned { bytes, .. } => Some((bytes.len() as u64, t.group)),
-                _ => None,
-            },
-            None => None,
+        let Some(t) = &s.tag else { continue };
+        let TagPayload::Pinned { address, bytes } = &t.payload else {
+            continue;
         };
-        if let Some((len, group)) = dropped {
-            out.freed += len;
-            *out.groups.entry(group.to_string()).or_default() += 1;
-            s.tag = None;
+        // Its bytes other tags' arrays sit in stay, merged; the rest is
+        // freed with the tag.
+        let mut ranges: Vec<(u32, u32)> = shared
+            .iter()
+            .filter(|r| r.owner == t.id)
+            .map(|r| (r.start, r.end))
+            .collect();
+        ranges.sort_unstable();
+        let mut merged: Vec<(u32, u32)> = Vec::new();
+        for (a, b) in ranges {
+            match merged.last_mut() {
+                Some(last) if a <= last.1 => last.1 = last.1.max(b),
+                _ => merged.push((a, b)),
+            }
         }
+        let mut len = bytes.len() as u64;
+        for (a, b) in merged {
+            let (from, to) = ((a - address) as usize, (b - address) as usize);
+            kept_bytes.push((a, bytes[from..to].to_vec()));
+            len -= u64::from(b - a);
+        }
+        out.freed += len;
+        *out.groups.entry(t.group.to_string()).or_default() += 1;
+        out.shared.extend(shared.iter().filter(|r| r.owner == t.id));
+        s.tag = None;
+    }
+    if !kept_bytes.is_empty()
+        && let Some(p) = &mut set.pinned
+    {
+        p.unowned.extend(kept_bytes);
+        p.unowned.sort_by_key(|u| u.0);
     }
     out
 }
@@ -1690,6 +1781,61 @@ mod pinned_prune_tests {
         // datum of tag 8), none of them an address.
         assert_eq!(p.partly_walked, [id(6)]);
         assert_eq!(p.why.get(&id(8)), Some(&Reach::Datum { by: id(6) }));
+    }
+
+    /// Retail shares block data between tags: a walked tag's block can sit
+    /// in another tag's bytes. The address keeps that array's bytes (its
+    /// count times its element size, and each block below it the same way)
+    /// and the datums in them, not the tag it falls in: the tag is dropped
+    /// with every other reference in it, and the array's bytes stay in
+    /// place as metadata no tag owns.
+    #[test]
+    fn a_block_in_another_tag_keeps_its_bytes_not_the_tag() {
+        let mut set = set();
+        // `MGS2`'s element: its `+0x38` block, one `0x1c` element at
+        // `0xb10` in tag 8's bytes, whose data (`+0x0`) is 4 bytes at
+        // `0xb30`, in tag 8 too.
+        let b = bytes(&mut set, 6);
+        put(b, 0x10 + 0x38, 1);
+        put(b, 0x10 + 0x3c, BASE + 0xb10);
+        // In tag 8: the element names tag 9; past both arrays a word names
+        // tag 5.
+        let b = bytes(&mut set, 8);
+        put(b, 0x10, 4);
+        put(b, 0x14, BASE + 0xb30);
+        put(b, 0x10 + 0x10, id(9).0);
+        put(b, 0x30, 0x1234_5678);
+        put(b, 0x3c, id(5).0);
+        let p = prune_pinned(&mut set, N, &NOTHING, &[id(6)]);
+        assert!(set.slots[8].tag.is_none(), "the tag holding the block goes");
+        assert_eq!(p.why.get(&id(9)), Some(&Reach::Datum { by: id(6) }));
+        assert!(set.slots[9].tag.is_some(), "a datum in the block keeps");
+        assert!(
+            set.slots[5].tag.is_none(),
+            "a datum past the block keeps nothing"
+        );
+        assert_eq!(p.kept_by_pointer, 0);
+        let shared = |start, end| Shared {
+            owner: id(8),
+            by: id(6),
+            start: BASE + start,
+            end: BASE + end,
+        };
+        assert_eq!(p.shared, [shared(0xb10, 0xb2c), shared(0xb30, 0xb34)]);
+        let unowned = &set.pinned.as_ref().unwrap().unowned;
+        let at = |a: u32| unowned.iter().find(|u| u.0 == BASE + a).map(|u| &u.1[..]);
+        let mut element = vec![0u8; 0x1c];
+        put(&mut element, 0x0, 4);
+        put(&mut element, 0x4, BASE + 0xb30);
+        put(&mut element, 0x10, id(9).0);
+        assert_eq!(at(0xb10), Some(&element[..]));
+        assert_eq!(at(0xb30), Some(&0x1234_5678u32.to_le_bytes()[..]));
+        assert_eq!(unowned.len(), 4, "the two gaps and the two arrays");
+        // Without the block, tags 8 and 9 go whole: here tag 9 stays and
+        // `0x20` of tag 8's bytes do.
+        let mut without = super::pinned_prune_tests::set();
+        let all = prune_pinned(&mut without, N, &NOTHING, &[id(6)]);
+        assert_eq!(all.freed - p.freed, 0x40 + 0x20);
     }
 
     /// A pinned scenario's object palette keeps the entries a placement

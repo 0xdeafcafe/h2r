@@ -122,6 +122,11 @@ Coagulation (`h2 object coagulation <weapon>`), E where an engine read is
 cited. Every root and item offset below is also typed in
 `tags::object::layouts` (`ITEM`, `WEAP`) as a reference of that group,
 checked on every map of the disc, so the S rows are S for the name only.
+The tag schema (`tags::schema`) found only the slots some retail weapon
+fills; the others (`+0x17c`, `+0x244`, `+0x24c`, the item's three, the
+magazine's `+0x44`) are references there by `infer::ENGINE_REFS`, so a
+converted weapon's tag in them is read back and moved as a tag, not as
+bytes (docs/formats/tag-schema.md, step 10).
 
 | Halo 2 | Halo 1 | Field | Evidence |
 |---|---|---|---|

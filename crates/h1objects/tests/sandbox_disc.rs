@@ -1719,6 +1719,17 @@ fn pinned_bloodgulch_fits_its_tag_memory() {
                 pruned.freed,
                 pruned.kept_by_pointer
             );
+            // Retail block data shared between tags: a kept tag's array
+            // in a dropped tag's bytes, kept as metadata no tag owns.
+            for r in &pruned.shared {
+                eprintln!(
+                    "{sandbox:?}: kept {:#x}..{:#x} of dropped {} for {}",
+                    r.start,
+                    r.end,
+                    label(r.owner),
+                    label(r.by)
+                );
+            }
         }
         let (done, _) = p
             .build_pruned(&mut base, &mopp)
