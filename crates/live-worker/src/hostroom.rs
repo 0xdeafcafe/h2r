@@ -20,9 +20,8 @@ use worker::{
 };
 
 pub(super) use lease::tunnel_lease;
-use lease::{HostEnv, admit, binding, parse_ref, provider_ref, valid_id};
+use lease::{HostEnv, TUNNEL_PORT, admit, binding, parse_ref, provider_ref, valid_id};
 
-const TUNNEL_PORT: u16 = 31100;
 const ROOM_KEY: &str = "lease";
 
 #[derive(Serialize, Deserialize)]

@@ -438,9 +438,11 @@ meet the default scheduling policy's 3 GiB per vCPU minimum.
 bearer on each WebSocket upgrade. LiveHub checks the roster and match
 state, then sends a fresh upgrade to the lease's room. The account bearer
 stays in LiveHub. The room forwards the upgrade to TCP port 31100 and
-returns the WebSocket response. The diagnostic agent uses container
-loopback on port 14720. Each binary message carries one tunnel frame end
-to end. The host assigns peer IDs and handles the game ports.
+returns the WebSocket response. The supervisor uses the same port through
+`H2_TUNNEL_LISTEN=0.0.0.0:31100`. It drives the game through a private
+Unix socket. The image's `H2_AGENT` fallback stays on container loopback.
+Each binary message carries one tunnel frame end to end. The host assigns
+peer IDs and handles the game ports.
 [WebSocket forwarding](https://developers.cloudflare.com/containers/examples/websocket/)
 
 Only provider start can launch a container. A liveness check reads

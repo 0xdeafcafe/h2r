@@ -52,6 +52,7 @@ fn boot_env_preserves_the_signed_url_and_passes_only_host_credentials() {
             "H2_DATA_SHA": boot.data_sha256,
             "H2_REGION": "enam",
             "H2_AGENT": "tcp://127.0.0.1:14720",
+            "H2_TUNNEL_LISTEN": "0.0.0.0:31100",
         })
     );
 }

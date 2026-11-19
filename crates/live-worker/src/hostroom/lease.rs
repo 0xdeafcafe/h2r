@@ -5,6 +5,8 @@ use live_proto::{ErrorCode, Xuid};
 use live_server::{ApiError, hosts::HostBoot};
 use serde::{Deserialize, Serialize};
 
+pub(crate) const TUNNEL_PORT: u16 = 31100;
+
 pub(crate) fn tunnel_lease(path: &str) -> Option<&str> {
     let id = path.strip_prefix("/v1/hosts/")?.strip_suffix("/tunnel")?;
     valid_id(id).then_some(id)
@@ -69,6 +71,7 @@ pub(crate) struct HostEnv {
     #[serde(skip_serializing_if = "Option::is_none")]
     h2_region: Option<String>,
     h2_agent: String,
+    h2_tunnel_listen: String,
 }
 
 impl HostEnv {
@@ -83,6 +86,7 @@ impl HostEnv {
             // Port 31100 is reserved for the WebSocket tunnel. The diagnostic
             // agent is private even inside the container network.
             h2_agent: "tcp://127.0.0.1:14720".into(),
+            h2_tunnel_listen: format!("0.0.0.0:{TUNNEL_PORT}"),
         }
     }
 }
