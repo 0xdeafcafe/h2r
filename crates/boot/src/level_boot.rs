@@ -303,6 +303,32 @@ type DiscMap = map::Map<std::io::BufReader<std::fs::File>>;
 
 /// Calls `f` with each `.map` on the disc that parses, until it returns false.
 fn for_each_map(disc: &Path, mut f: impl FnMut(&str, &mut DiscMap) -> bool) -> Result<()> {
+    if disc.is_dir() {
+        for entry in std::fs::read_dir(disc).with_context(|| format!("listing {}", disc.display()))? {
+            let entry = entry?;
+            if !entry.file_name().eq_ignore_ascii_case("maps") || !entry.path().is_dir() {
+                continue;
+            }
+            let maps = entry.path();
+            for entry in std::fs::read_dir(&maps).with_context(|| format!("listing {}", maps.display()))? {
+                let path = entry?.path();
+                if !path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("map")) || !path.is_file() {
+                    continue;
+                }
+                let Some(stem) = path.file_stem().and_then(|name| name.to_str()) else {
+                    continue;
+                };
+                let file = std::fs::File::open(&path).with_context(|| format!("opening {}", path.display()))?;
+                let Ok(mut map) = map::Map::from_reader(std::io::BufReader::new(file)) else {
+                    continue;
+                };
+                if !f(stem, &mut map) {
+                    return Ok(());
+                }
+            }
+        }
+        return Ok(());
+    }
     let open = || std::fs::File::open(disc).with_context(|| format!("opening {}", disc.display()));
     let mut iso = xiso::Xiso::open(std::io::BufReader::new(open()?)).context("reading the disc")?;
     let base = iso.partition_offset();
@@ -866,6 +892,44 @@ fn run_from(
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn provisioned_disc_maps_use_the_level_callbacks() {
+        // An Xbox v8 header and an empty tag index, with no retail data.
+        let mut map = [0u8; 0x820];
+        map[..4].copy_from_slice(b"daeh");
+        for (offset, value) in [
+            (4, 8u32), (8, 0x820), (0x10, 0x800), (0x14, 0x20),
+            (0x140, 1), (0x800, 0x8000_0020), (0x808, 0x8000_0020),
+            (0x80c, u32::MAX), (0x810, u32::MAX),
+        ] {
+            map[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        map[0x120..0x12e].copy_from_slice(b"02.09.27.09809");
+        map[0x1bc..0x1c0].copy_from_slice(b"test");
+        map[0x7fc..0x800].copy_from_slice(b"toof");
+        map[0x81c..].copy_from_slice(b"sgat");
+
+        let disc = std::env::temp_dir().join(format!("h2-level-disc-{}", std::process::id()));
+        let maps = disc.join("MAPS");
+        std::fs::create_dir_all(&maps).unwrap();
+        std::fs::write(maps.join("one.MAP"), map).unwrap();
+        std::fs::write(maps.join("two.map"), map).unwrap();
+        std::fs::write(maps.join("bad.map"), b"invalid cache").unwrap();
+        std::fs::write(maps.join("not-a-map.txt"), map).unwrap();
+
+        let levels = disc_levels(&disc).unwrap();
+        assert_eq!(levels.len(), 2);
+        assert!(levels.iter().all(|level| level.scenario == "test" && level.kind == Kind::Multiplayer));
+        assert!(levels.iter().any(|level| level.name == "one"));
+        let mut visits = 0;
+        for_each_map(&disc, |_, _| {
+            visits += 1;
+            false
+        }).unwrap();
+        assert_eq!(visits, 1);
+        std::fs::remove_dir_all(&disc).unwrap();
+    }
 
     /// A sparse byte map standing in for guest memory; unwritten bytes read
     /// as absent.
