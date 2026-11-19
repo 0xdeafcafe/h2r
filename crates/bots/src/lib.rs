@@ -13,6 +13,7 @@ pub mod autonav;
 pub mod brain;
 pub mod cache;
 pub mod emote;
+pub mod grenades;
 pub mod guest;
 pub mod lobby;
 pub mod local;
@@ -25,6 +26,7 @@ pub mod phantom;
 pub mod roam;
 pub mod stuck;
 pub mod tactics;
+pub mod weapons;
 
 use input::host::HostPadState;
 

@@ -317,6 +317,7 @@ fn armed(held: Ammo, other: Option<Ammo>) -> Arms {
             ..Default::default()
         }),
         grenades: [2, 0],
+        ..Arms::default()
     }
 }
 /// A bot at `at` with these arms, aiming +X.

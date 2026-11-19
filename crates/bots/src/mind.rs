@@ -120,8 +120,8 @@ pub const BLADE_RANGE: f32 = 1.5;
 /// The weapon-blind fire range (`arms::Role::Unknown`); a known weapon
 /// shoots to its own (`arms::Role::fire_range`).
 pub const FIRE_RANGE: f32 = 25.0;
-pub const GRENADE_RANGE: (f32, f32) = (3.0, 12.0);
-pub const GRENADE_COOLDOWN: u32 = 240;
+pub const GRENADE_RANGE: (f32, f32) = crate::grenades::RANGE;
+pub const GRENADE_COOLDOWN: u32 = crate::grenades::COOLDOWN;
 /// Crouch: clicking the left stick, Halo 2's default layout.
 pub const CROUCH: HostButton = HostButton::LeftStick;
 
@@ -160,6 +160,9 @@ pub const RELOAD: HostButton = HostButton::West;
 pub const SWITCH: HostButton = HostButton::North;
 pub const MELEE: HostButton = HostButton::East;
 pub const JUMP: HostButton = HostButton::South;
+/// Switch grenades: Black, the right bumper (Halo 2's default layout,
+/// docs/input/controller-layouts.md).
+pub const SWAP_GRENADES: HostButton = HostButton::RightBumper;
 
 /// What the mind is doing.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -201,8 +204,11 @@ pub struct Mind {
     last_seen: Option<(u32, Vec3, u32)>,
     /// The tracking error (yaw, pitch).
     err: (f32, f32),
-    grenade_ready: u32,
-    grenade_until: u32,
+    /// Weapon skill: the grenade hand, the combos and melee finish, the
+    /// left hand when dual wielding (crate::grenades, crate::weapons).
+    pub grenade: crate::grenades::Thrower,
+    pub combo: crate::weapons::Combo,
+    left: crate::weapons::LeftHand,
     follower: Option<Follower>,
     goal: Option<Vec3>,
     /// Getting unstuck (section 3.2).
@@ -289,8 +295,9 @@ impl Mind {
             tracks: Default::default(),
             last_seen: None,
             err: (0.0, 0.0),
-            grenade_ready: 0,
-            grenade_until: 0,
+            grenade: crate::grenades::Thrower::new(seed ^ 0x6e_ade),
+            combo: crate::weapons::Combo::new(seed ^ 0xc0_4b0),
+            left: crate::weapons::LeftHand::default(),
             follower: None,
             goal: None,
             stuck: Stuck::new(),
@@ -341,27 +348,6 @@ impl Mind {
             .collect()
     }
 
-    /// Whether it may throw a grenade: in its arms if they were read.
-    fn has_grenades(me: &crate::brain::Me) -> bool {
-        me.arms.is_none_or(|a| a.has_grenades())
-    }
-
-    /// Rolls for a grenade this tick at `chance_scale` times the skill's
-    /// rate; on a hit, throws for the next few ticks.
-    fn roll_grenade(&mut self, tick: u32, dt: u32, chance_scale: f32) -> bool {
-        let aim = self.skill.aim();
-        if tick < self.grenade_ready {
-            return false;
-        }
-        let chance = aim.grenades_per_minute / (60.0 * TICKS) * dt as f32 * chance_scale;
-        if self.uniform() < chance {
-            self.grenade_until = tick + 3;
-            self.grenade_ready = tick + GRENADE_COOLDOWN;
-            return true;
-        }
-        false
-    }
-
     /// This frame's pad.
     pub fn step(&mut self, p: &Perception, map: Option<&MapData>) -> HostPadState {
         let mut pad = HostPadState::default();
@@ -373,6 +359,9 @@ impl Mind {
             self.take = None;
             self.recovering = false;
             self.fight.reset();
+            self.grenade.reset();
+            self.combo.reset();
+            self.left.reset();
             return pad;
         };
         let new_tick = self.tick != Some(p.tick);
@@ -470,6 +459,10 @@ impl Mind {
         if carrying {
             self.kit = Kit::Fine;
         }
+        // A combo under way chose the gun (crate::weapons): no switch away.
+        if self.combo.busy() && self.kit == Kit::Switch {
+            self.kit = Kit::Fine;
+        }
         // Shields: down under LOW_SHIELD, up again at SHIELD_BACK.
         if me.shield < LOW_SHIELD {
             self.recovering = true;
@@ -502,6 +495,10 @@ impl Mind {
             .collect();
         let mut look: Option<Vec3> = None;
         let mut walk: Option<Walk> = None;
+        // Whom a grenade is for this tick (crate::grenades), and whether it
+        // is closing in with a short gun.
+        let mut mark: Option<crate::grenades::Mark> = None;
+        let mut pushing = false;
         match self.doing {
             Doing::Fight(_) => {
                 let (o, t0) = chosen.unwrap();
@@ -523,11 +520,41 @@ impl Mind {
                     let off = angle_between(sub(target, eye), me.aim);
                     let cone = aim.fire_cone + (0.4 / dist.max(0.5)).min(0.3);
                     let want = off < cone && shot.in_range(dist) && shot.ready && !melee;
-                    if self.fight.trigger(p.tick, t0, shot.pull, want) {
+                    let fired = self.fight.trigger(p.tick, t0, shot.pull, want);
+                    // Weapon skill (crate::weapons): the noob combo may hold
+                    // or let go the trigger and switch; the melee finish.
+                    let combo = self.combo.step(
+                        &crate::weapons::ComboIn {
+                            tick: p.tick,
+                            target: Some(o.id),
+                            dist,
+                            on_target: off < cone,
+                            reacted,
+                            held,
+                            other: me.arms.and_then(|a| a.other),
+                            firing: fired,
+                        },
+                        self.skill,
+                    );
+                    if combo.trigger.unwrap_or(fired) {
                         pad.right_trigger = 1.0;
                     }
+                    if combo.switch {
+                        pad.buttons.set(SWITCH, true);
+                    }
+                    if combo.melee {
+                        pad.buttons.set(MELEE, true);
+                    }
+                    // Dual wielding: the left trigger fires the left gun.
+                    if let Some(l) = me.arms.and_then(|a| a.left) {
+                        let (lo, hi) = l.reach().fire;
+                        let want = off < cone && (lo..hi).contains(&dist) && !melee;
+                        if self.left.trigger(p.tick, &l, want) {
+                            pad.left_trigger = 1.0;
+                        }
+                    }
                     let reach = if blade {
-                        BLADE_RANGE
+                        shot.lunge
                     } else if melee {
                         MELEE_RANGE * 1.3
                     } else {
@@ -536,25 +563,17 @@ impl Mind {
                     if dist < reach && p.tick % 20 < 2 {
                         pad.buttons.set(MELEE, true);
                     }
-                    // A grenade now and then, in range, not too often; more
-                    // often into a cluster; never with a teammate there.
-                    if new_tick
-                        && Self::has_grenades(&me)
-                        && (GRENADE_RANGE.0..GRENADE_RANGE.1).contains(&dist)
-                        && (!style.careful_grenades
-                            || tactics::grenade_safe(o.position, &p.others, p.teams, me.team))
-                    {
-                        let cluster = seen
-                            .iter()
-                            .filter(|s| s.id != o.id && len(sub(s.position, o.position)) < CLUSTER)
-                            .count();
-                        let scale_by = if cluster > 0 { 4.0 } else { 1.0 };
-                        self.roll_grenade(p.tick, dt, scale_by);
-                    }
-                    if p.tick < self.grenade_until {
-                        pad.left_trigger = 1.0;
-                        look = look.map(|l| up(l, 0.15 * dist));
-                    }
+                    // A grenade: the thrower rolls for it, more often into a
+                    // group or before pushing in with a short gun.
+                    mark = Some(crate::grenades::Mark {
+                        at: o.position,
+                        vel,
+                        seen: true,
+                    });
+                    pushing = matches!(
+                        shot.role,
+                        arms::Role::Scatter | arms::Role::Spray | arms::Role::Blade
+                    ) && dist > self.fight.band.1;
                 }
                 // Until it reacts it stands, caught out. Then its footwork
                 // (crate::moves): strafing, keeping its range, reacting to
@@ -602,17 +621,13 @@ impl Mind {
                 let gone = self
                     .last_seen
                     .map_or(u32::MAX, |(_, _, t)| p.tick.wrapping_sub(t));
-                let d = len(sub(up(at, CHEST), eye));
-                if new_tick
-                    && gone < COVER_GRENADE_TICKS
-                    && Self::has_grenades(&me)
-                    && (GRENADE_RANGE.0..GRENADE_RANGE.1).contains(&d)
-                {
-                    self.roll_grenade(p.tick, dt, 2.0);
-                }
-                if p.tick < self.grenade_until {
-                    pad.left_trigger = 1.0;
-                    look = Some(up(up(at, CHEST), 0.15 * d));
+                if gone < COVER_GRENADE_TICKS {
+                    // Banked or rolled round the corner, at Heroic and up.
+                    mark = Some(crate::grenades::Mark {
+                        at,
+                        vel: [0.0; 3],
+                        seen: false,
+                    });
                 }
             }
             Doing::Recover(from) => {
@@ -757,6 +772,50 @@ impl Mind {
         }
         if !matches!(self.doing, Doing::Fight(_)) {
             self.moves.calm();
+            self.combo.reset();
+        }
+        // The grenade hand (crate::grenades): the throw flown against the
+        // map's walls (a flat floor without them); never dual wielding or
+        // carrying.
+        let floor = crate::grenades::Floor(mark.map_or(me.position[2], |m| m.at[2]));
+        let world: &dyn crate::grenades::Solid = match map {
+            Some(m) if !m.walls.tris.is_empty() => &m.walls,
+            _ => &floor,
+        };
+        let mates: Vec<Vec3> = p
+            .others
+            .iter()
+            .filter(|o| p.teams && o.team == me.team)
+            .map(|o| o.position)
+            .collect();
+        let hand = self.grenade.step(
+            &crate::grenades::Moment {
+                tick: p.tick,
+                dt: if new_tick { dt } else { 0 },
+                eye,
+                feet: me.position,
+                aim: me.aim,
+                mark,
+                enemies: &seen,
+                mates: &mates,
+                grenades: me.arms.map(|a| a.grenades),
+                selected: me
+                    .arms
+                    .and_then(|a| crate::grenades::Kind::from_index(a.selected)),
+                busy: carrying || me.arms.is_some_and(|a| a.left.is_some()),
+                pushing,
+            },
+            world,
+            self.skill,
+        );
+        if hand.look.is_some() {
+            look = hand.look;
+        }
+        if hand.throw {
+            pad.left_trigger = 1.0;
+        }
+        if hand.swap {
+            pad.buttons.set(SWAP_GRENADES, true);
         }
 
         // Reload and switch: taps, spaced.
