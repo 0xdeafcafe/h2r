@@ -2,7 +2,7 @@
 
 Status: particles, beam emissions, generated contrails and the researched
 four-vertex effect builder, lens reflections, volume/trail billboards and
-weather layers/lines are connected to `d3d::DrawAdmission`, behind
+weather layers/lines and the two researched material strips are connected to `d3d::DrawAdmission`, behind
 `impl.render.native_particles` (off by default). The handoff commit
 `2fe68835` and subsequent contract `2a61f863` were merged, not rebased. **No cargo, build or game run was
 performed by this lane.** Source checks and synthetic tests are supplied;
@@ -162,7 +162,7 @@ checks refusal of a changed attachment identity. It skips if no GPU
 adapter is available; report that as a skip. Pure tests cover dynamic
 register assignment, colour channel order, z/w reset, NaN/signed zero,
 missing memory, alias/overflow refusal, clip/depth mismatch and malformed
-geometry. The feature test requires nineteen render-safe observer points and
+geometry. The feature test requires twenty-one render-safe observer points and
 none on
 `0x00174420`.
 
@@ -249,7 +249,7 @@ the guest's geometry calculation. Unlike the particle emission decoder,
 this path does not independently re-evaluate billboard/weather arithmetic.
 Compare diagnostics validate scope, declaration, primitive, count and
 resolved resources; they do **not** establish arithmetic or pixel parity.
-Each of the four sites gets its own `H2_NATIVE_PARTICLES_COMPARE=N` budget.
+Each of the five sites gets its own `H2_NATIVE_PARTICLES_COMPARE=N` budget.
 
 The updated handoff contract prepares every live copy before recording
 any. Particle passes retain one prepared entry per Reference/Display copy
@@ -267,3 +267,73 @@ cargo test -p native-render --test particles_gpu
 cargo test -p feature --test native_particles
 cargo test -p boot native_particles
 ```
+
+## Effect-handler census and remaining refusals
+
+This census follows both calls to the common sorted-entry allocator
+`0x0001e2d0` and producers that allocate entries directly. Entries are
+0x70 bytes with handler at +0x20 and data at +0x24. It is not a blanket
+claim that every runtime callback is known. The shared sorted dispatcher
+is unchanged; each owned leaf executes at its original position.
+
+| Handler / producer | Evidence and disposition |
+| --- | --- |
+| Particle `0x002243c0` | Material and particle iteration reach the existing `0x0023ed30` decoder. Parent and `0x00174420` writes remain guest-owned. |
+| Sorted beam `0x00156e10` | Producer `0x00156b60` also queues direct-layer callback `0x00156fe0`. Both call `0x00157020`. Its only geometry emission is `0x0015743d` → `0x0023ed30`; there is no separate unresolved beam draw in this helper. Property evaluation and material/program selection still run. |
+| Sorted dynamic `0x00035b00` | Producer `0x0001e5e0`, used by contrails. Exact builder `0x00042cf0` admitted; others give `UnownedDynamicBuilder` or `DynamicDeclarationOrMode`. |
+| MGS2 `0x0004f010` | Producer `0x00042850`; reached by effect parts, object attachments and lights. Evaluated volume elements feed shared billboard helper `0x0004f7e0`, now admitted per leaf. |
+| tdtl `0x000508d0` | Producer `0x000429a0`; reached by attachments/lights. Curve/state updates precede `0x0004f7e0`; they remain guest-owned. |
+| Geometry `0x00041020` | Producer `0x00041040`; existing transparent-geometry lane owns this handler and its `0x0004cbf0`/`0x0004d0b0` callbacks. No effect-lane hook is installed here. |
+| Layered geometry `0x00041cc0` / `0x000423c0` | Producers `0x000420a0` / `0x00042760`. Multiple geometry calls and target/layer changes: `OtherLaneLayeredGeometry`. These observations never suppress a body. A single effect reservation does not establish ownership of their complete layered sequence. |
+| Material callbacks `0x00244610` / `0x002be650` | Generic producer `0x00041490`, material callback `0x000d4bc0`, geometry callbacks `0x00244470` / `0x002be5d0`. Both reach `0x0019f680`: now admit its completed triangle strip, preserving ring/outline construction, material evaluation and degenerates. |
+| Other callbacks queued by `0x00041490` | Handler pointer comes from stack +0x18 at entry; data-driven registration through `0x000d4d85` may supply others. `UnownedMaterialCallback` for a handler outside the two researched wrappers. No guessed semantic type or ownership. |
+| Wrapper `0x00048e40` | Producer `0x00047870`; sole statically found caller `0x001160b3` supplies callback `0x0024dc50`, a no-op return: `NoGeometryCallback`. The wrapper's material changes still run. A different runtime callback gives `UnownedMaterialCallback`. |
+| Four-vertex builder `0x00052020` | Called through `0x00052040` and the existing dynamic-upload adapter; covered without assigning an unsupported effect-family label. |
+
+The material strip's publication/finish pair is
+`0x0019fc3e/0x0019fc40`. At publication, saved caller at stack +0x40 must
+be `0x002445fa` or `0x002be647`. Require a resolved triangle strip with an
+even count of at least four vertices and the same validated immediate
+register declaration as billboards. The guest still publishes END and
+restores its render state afterwards. Other callers give `UnownedCaller`.
+
+Lens flares use a separate queue: `0x0002dba0` → `0x000209b0`, populated
+from sky, object attachments, lights and effect parts. Pass `0x0002dd30`
+invokes callback `0x0002e540` through `0x00020bb0` with query work enabled;
+its END at `0x0002e9b6` is explicitly `VisibilityQuery`. The queue helper
+brackets this callback with z-pass query packets and retains its readback
+lifecycle. Reflection pass `0x0002df00` invokes `0x0002e9e0` without those
+queries; its visible billboards use the admitted leaf above. Neither queue
+nor visibility-history logic is replaced. The central handoff also rejects
+query-counted draws before asking admission owners.
+
+Weather is a BSP weather-palette path, not one of these effect sort-list
+handlers. The palette is `sbsp+0x84`, stride 0x88, weather datum +0x24;
+cluster weather selection is +0x76. The loop around `0x00036e32` updates
+weat block +8/+12 (stride 0x3a8) through `0x00037260`, then draws it at
+`0x00037a60`. Block +0/+4 (stride 0x8c) updates through `0x00038450` and
+draws at `0x000391f0`. All updates, exclusions and cluster selection stay
+in the guest. That latter draw selects PointList or LineList from its mode
+field (+0x6c); admission uses the actual resolved primitive. Rain/snow
+names are not a reliable mode decoder: the repository's Live weather
+viewer infers those names from palette/tag labels. Thus this lane covers
+rain/snow **line draws**, while any rain/snow **point draws** explicitly
+refuse with `WeatherPointRasterization`. It makes no claim that all snow
+is one mode or all rain another.
+
+Other named admission refusals are `MissingColorTarget`,
+`MissingDepthTarget`, `UnsupportedClip`, `GlyphFiltering`,
+`UnresolvedState`, plus renderer `State`, `Shader`, `Texture`, `Target`,
+`Scissor`, `Geometry` and `Identity`. Preparation uses the live shader,
+textures and state on each copy; it never substitutes an approximate
+material. Diagnostics are bounded and are not replacement receipts.
+
+Additional coordinator acceptance cases, alongside the 03a runs above:
+exercise sorted and direct beams, a lens with changing occlusion, a light
+volume/trail, and both material-strip callbacks. On a weather-bearing BSP,
+exercise both line and point modes plus its weather layer. Compare first
+with `H2_NATIVE_PARTICLES_COMPARE=64`, then unset it and check native
+Reference **and** Display receipts at 1x/2x. Query results and weather/beam
+simulation state must match the D3D baseline. Unsupported point and layered
+geometry draws must retain D3D receipts. No pixel-parity or performance
+claim is made before those runs.

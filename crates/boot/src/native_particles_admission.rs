@@ -344,15 +344,29 @@ impl DrawAdmission for Admission {
                 return None;
             }
         };
-        if snapshot.color_header == 0
-            || snapshot.depth_header == 0
-            || snapshot.draw.target.depth_format.is_none()
-            || snapshot.draw.clip.is_none()
-            || !snapshot.draw.clip_rects.is_empty()
-            || snapshot.draw.glyph_cache != 0
-            || snapshot.draw.hw.zpass_count_enable
-            || !snapshot.draw.state.bad.is_empty()
-        {
+        let refusal = if snapshot.color_header == 0 {
+            Some("MissingColorTarget")
+        } else if snapshot.depth_header == 0 || snapshot.draw.target.depth_format.is_none() {
+            Some("MissingDepthTarget")
+        } else if snapshot.draw.clip.is_none() || !snapshot.draw.clip_rects.is_empty() {
+            Some("UnsupportedClip")
+        } else if snapshot.draw.glyph_cache != 0 {
+            Some("GlyphFiltering")
+        } else if snapshot.draw.hw.zpass_count_enable {
+            Some("VisibilityQuery")
+        } else if !snapshot.draw.state.bad.is_empty() {
+            Some("UnresolvedState")
+        } else {
+            None
+        };
+        if let Some(reason) = refusal {
+            static LOGGED: AtomicU64 = AtomicU64::new(0);
+            if LOGGED.fetch_add(1, Ordering::Relaxed) < 32 {
+                eprintln!(
+                    "native-particles-refused: producer={:?} reason={reason}",
+                    pending.source.producer()
+                );
+            }
             return None;
         }
         Some((

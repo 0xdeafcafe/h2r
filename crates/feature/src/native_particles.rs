@@ -180,8 +180,24 @@ pub fn on_emit(mem: &mut dyn GuestMemory, esp: u32, ebx: u32) {
 }
 
 pub fn on_dynamic(mem: &mut dyn GuestMemory, esp: u32, stride: u32) {
-    let Ok(call) = effect_geometry::read_call(&Read(mem), esp, stride) else {
-        return;
+    let call = match effect_geometry::read_call(&Read(mem), esp, stride) {
+        Ok(call) => call,
+        Err(detail) => {
+            static REFUSED: AtomicU64 = AtomicU64::new(0);
+            if REFUSED.fetch_add(1, Ordering::Relaxed) < compare_budget().unwrap_or(8) {
+                let builder = esp.checked_add(16).and_then(|at| mem.u32(at).ok());
+                let reason = if matches!(
+                    builder,
+                    Some(effect_geometry::CONTRAIL_BUILD | effect_geometry::EFFECT_QUAD_BUILD)
+                ) {
+                    "DynamicDeclarationOrMode"
+                } else {
+                    "UnownedDynamicBuilder"
+                };
+                eprintln!("native-particles-refused: dynamic builder={builder:?} reason={reason} detail={detail:?}");
+            }
+            return;
+        }
     };
     let ordinal = DYNAMIC_CALLS.fetch_add(1, Ordering::Relaxed);
     let compare = compare_budget();

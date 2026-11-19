@@ -8,13 +8,15 @@ pub enum Site {
     DepthBillboard,
     WeatherLayer,
     WeatherParticles,
+    MaterialStrip,
 }
 impl Site {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::Billboard,
         Self::DepthBillboard,
         Self::WeatherLayer,
         Self::WeatherParticles,
+        Self::MaterialStrip,
     ];
     pub const fn boundaries(self) -> (u32, u32) {
         match self {
@@ -22,12 +24,14 @@ impl Site {
             Self::DepthBillboard => (0x0004_8ae5, 0x0004_8aea),
             Self::WeatherLayer => (0x0003_8342, 0x0003_8347),
             Self::WeatherParticles => (0x0003_96f7, 0x0003_96f9),
+            Self::MaterialStrip => (0x0019_fc3e, 0x0019_fc40),
         }
     }
     pub const fn caller_offset(self) -> Option<u32> {
         match self {
             Self::Billboard => Some(0x24),
             Self::DepthBillboard => Some(0x30),
+            Self::MaterialStrip => Some(0x40),
             _ => None,
         }
     }
@@ -35,6 +39,7 @@ impl Site {
         match self {
             Self::Billboard => matches!(caller, Some(0x0002_f24c | 0x0004_fddd)),
             Self::DepthBillboard => caller == Some(0x0004_fd9d),
+            Self::MaterialStrip => matches!(caller, Some(0x0024_45fa | 0x002b_e647)),
             _ => caller.is_none(),
         }
     }
@@ -77,6 +82,7 @@ pub fn decode(
         Site::Billboard | Site::DepthBillboard => primitive == 7 && count == 4,
         Site::WeatherLayer => primitive == 9 && count == 4,
         Site::WeatherParticles => primitive == 2 && count > 0 && count.is_multiple_of(2),
+        Site::MaterialStrip => primitive == 6 && count >= 4 && count.is_multiple_of(2),
     };
     if !valid || count > 65536 || bytes.len() != count as usize * 256 || written & 1 == 0 {
         return Err(Refused::ImmediateGeometry);
@@ -122,6 +128,17 @@ mod tests {
             decode(Site::WeatherParticles, 2, 3, &[0; 768], 1, [[0.; 4]; 16]),
             Err(Refused::ImmediateGeometry)
         );
+    }
+    #[test]
+    fn material_strip_owns_only_researched_callers_and_preserves_degenerates() {
+        assert!(Site::MaterialStrip.accepts_caller(Some(0x2445fa)));
+        assert!(Site::MaterialStrip.accepts_caller(Some(0x2be647)));
+        assert!(!Site::MaterialStrip.accepts_caller(Some(0x244610)));
+        let bytes = vec![0; 1536];
+        let (_, indices) = decode(Site::MaterialStrip, 6, 6, &bytes, 1, [[0.; 4]; 16]).unwrap();
+        assert_eq!(indices, [0, 1, 2, 3, 4, 5]);
+        assert!(decode(Site::MaterialStrip, 6, 5, &bytes[..1280], 1, [[0.; 4]; 16]).is_err());
+        assert!(decode(Site::MaterialStrip, 7, 6, &bytes, 1, [[0.; 4]; 16]).is_err());
     }
     #[test]
     fn keeps_bits_defaults_and_quad_strip_winding() {

@@ -10,7 +10,7 @@ fn default_off_and_no_parent_update_skip() {
     let mut r = Registry::new(Switches::parse("impl.render.native_particles=on").unwrap());
     r.add(&NativeParticles).unwrap();
     let plan = r.build(&Base).unwrap();
-    assert_eq!(plan.chains.len(), 19);
+    assert_eq!(plan.chains.len(), 21);
     assert!(plan
         .chains
         .contains_key(&native_render::particles::EMIT_QUAD));
