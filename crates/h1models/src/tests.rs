@@ -1654,6 +1654,25 @@ fn a_converted_model_carries_the_engine_s_marker_names() {
     assert!(crate::mode::marker_aliases(&["left_hand", "head"]).is_empty());
 }
 
+/// A strip built from a triangle list reads back as that list, in order
+/// and winding, whatever the triangles' parity in the strip they came from.
+#[test]
+fn a_triangle_list_strip_reads_back_as_the_list() {
+    let strip = [0u16, 1, 2, 3, 4, 5, 5, 6, 6, 7, 8];
+    let tris = h1::strip_triangles(&strip);
+    for keep in [
+        tris.clone(),
+        vec![tris[1]],
+        vec![tris[0], tris[2], tris[3]],
+        Vec::new(),
+    ] {
+        assert_eq!(h1::strip_triangles(&h1::triangles_strip(&keep)), keep);
+    }
+    // Triangles sharing vertices across the join still read back whole.
+    let shared = vec![[0, 1, 2], [2, 1, 0], [2, 3, 1]];
+    assert_eq!(h1::strip_triangles(&h1::triangles_strip(&shared)), shared);
+}
+
 // ---------------------------------------------------------------------------
 // Vehicle graphs
 // ---------------------------------------------------------------------------

@@ -421,6 +421,20 @@ mod tests {
         assert_eq!(d.render.depth_mode, DepthBufferMode::Disabled);
     }
 
+    /// D3DRS_DEPTHCLIPCONTROL reaches the draw's state, so a clamped draw
+    /// gets an unclipped-depth pipeline.
+    #[test]
+    fn depth_clip_control_translates_to_depth_clamp() {
+        let t = RenderStateTable::default();
+        let slot = t.canonical_to_guest(82).expect("DEPTHCLIPCONTROL slot") as usize;
+        let mut w = StateWords::defaults(true);
+        assert!(!w.translate(&t).render.depth_clamp);
+        w.render[slot] = 0x10;
+        let d = w.translate(&t);
+        assert!(d.bad.is_empty(), "{:?}", d.bad);
+        assert!(d.render.depth_clamp);
+    }
+
     /// The memo answers what a fresh translation answers, rejected values
     /// and their order included, over a run of draws that each change a
     /// few render or stage words (to valid, invalid and repeated values),

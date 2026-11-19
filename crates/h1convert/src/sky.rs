@@ -47,6 +47,9 @@ pub struct Sky {
     pub shaders: Vec<Option<H1SkyShader>>,
     /// The Halo 1 bitmaps they draw: (Halo 1 id, name, conversion).
     pub bitmaps: Vec<(h1map::TagId, String, h1models::Converted)>,
+    /// Opaque copies of the pictures drawn without their own alpha
+    /// ([`H1SkyShader::opaque_picture`]), named [`opaque_name`].
+    pub opaque_bitmaps: Vec<(h1map::TagId, String, h1models::Converted)>,
     /// Per sky light, its lens flare ([`crate::lens`]), where it has one
     /// that reads.
     pub flares: Vec<Option<crate::lens::Flare>>,
@@ -60,6 +63,11 @@ pub struct Skies {
     /// The base's sky shaders the materials copy
     /// ([`crate::sky_shaders::sky_templates`]).
     pub templates: SkyTemplates,
+}
+
+/// The name of a bitmap's opaque copy ([`Sky::opaque_bitmaps`]).
+pub fn opaque_name(name: &str) -> String {
+    format!("{name} opaque")
 }
 
 /// `mode` materials block (count; pointer at `+4`), element size, and the
@@ -134,6 +142,23 @@ impl Sky {
                 bitmaps.push((m.bitmap, t.name.clone(), c));
             }
         }
+        let mut opaque_bitmaps = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for s in shaders.iter().flatten() {
+            let Some(k) = s.opaque_picture() else {
+                continue;
+            };
+            let id = s.maps[k].bitmap;
+            if !seen.insert(id) {
+                continue;
+            }
+            let Ok(t) = h1.tag(id) else {
+                continue;
+            };
+            if let Ok((_, c, _)) = h1bitmaps::convert::convert_bitmap_opaque(h1, t) {
+                opaque_bitmaps.push((id, opaque_name(&t.name), c));
+            }
+        }
         let flares = f
             .sky
             .lights
@@ -152,6 +177,7 @@ impl Sky {
             model_scale: f.model_scale,
             shaders,
             bitmaps,
+            opaque_bitmaps,
         })
     }
 
@@ -172,6 +198,14 @@ impl Sky {
                     };
                     ids.insert(*h1id, id);
                 }
+                let mut opaque = std::collections::HashMap::new();
+                for (h1id, name, b) in &self.opaque_bitmaps {
+                    let id = match set.find(b.group, name) {
+                        Some(id) => id,
+                        None => b.clone().install(set, name).map_err(|e| err(&e))?,
+                    };
+                    opaque.insert(*h1id, id);
+                }
                 set.add_group(SHAD, None, None);
                 let mut all = true;
                 for (k, s) in self.shaders.iter().enumerate() {
@@ -179,10 +213,19 @@ impl Sky {
                         Some(s) => match set.find(SHAD, &s.name) {
                             Some(id) => Some(id),
                             None => {
+                                let picture = s.opaque_picture();
                                 let maps: Vec<_> = s
                                     .maps
                                     .iter()
-                                    .map(|m| ids.get(&m.bitmap).map(|&id| (id, m.scale, m.lod_offset)))
+                                    .enumerate()
+                                    .map(|(j, m)| {
+                                        let id = if Some(j) == picture {
+                                            opaque.get(&m.bitmap)
+                                        } else {
+                                            ids.get(&m.bitmap)
+                                        };
+                                        id.map(|&id| (id, m.scale, m.lod_offset))
+                                    })
                                     .collect();
                                 match recipe(s).and_then(|r| templates.copy(r, &maps, r.scroll(s))) {
                                     Some(tree) => Some(
