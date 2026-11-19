@@ -65,6 +65,11 @@ impl Switches {
         self
     }
 
+    /// Headphone binaural filtering for positioned audio, off unless requested.
+    pub fn audio_hrtf(&self) -> bool {
+        self.feature("audio.hrtf", false)
+    }
+
     /// `features.<id>`.
     pub fn feature(&self, id: &str, default: bool) -> bool {
         self.set.get(id).copied().unwrap_or(default)
@@ -105,6 +110,14 @@ mod tests {
         assert!(!s.implementation("ui", false));
         assert!(Switches::parse("a=maybe").is_err());
         assert!(Switches::parse("-").is_err());
+    }
+
+    #[test]
+    fn audio_hrtf_requires_opt_in() {
+        assert!(!Switches::defaults().audio_hrtf());
+        assert!(!Switches::parse("audio=on").unwrap().audio_hrtf());
+        assert!(Switches::parse("audio.hrtf=on").unwrap().audio_hrtf());
+        assert!(!Switches::parse("audio.hrtf=off").unwrap().audio_hrtf());
     }
 
     #[test]
