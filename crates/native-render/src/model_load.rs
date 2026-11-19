@@ -27,6 +27,12 @@ pub struct LoadedModel {
     /// Shader per model-local material (`mode +0x60`, stride `0x20`, shader
     /// reference at `+8`).
     pub shaders: Vec<TagId>,
+    /// The decoded `mode`, for parts drawn through the game's programs
+    /// (their streams as stored, `crate::object_program_gpu::lit_model`).
+    pub geometry: RenderModelGeometry,
+    /// The sections drawn, by index into `geometry.sections` (the render
+    /// record key's section).
+    pub sections: Vec<usize>,
 }
 
 /// A render-model region as the pick sees it: its name and, per
@@ -123,7 +129,7 @@ pub fn load_object_model<R: Read + Seek>(
         inverse_binds,
         sections: Vec::new(),
     };
-    for si in sections {
+    for &si in &sections {
         let Some(s) = geo.sections.get(si) else { continue };
         let v = &s.vertices;
         input.sections.push(ModelSectionInput {
@@ -150,10 +156,13 @@ pub fn load_object_model<R: Read + Seek>(
     if model.draws.is_empty() {
         return Err("nothing opaque to draw".into());
     }
+    let shaders = geo.materials.iter().map(|m| m.shader.id).collect();
     Ok(LoadedModel {
         mode,
         model,
-        shaders: geo.materials.iter().map(|m| m.shader.id).collect(),
+        shaders,
+        geometry: geo,
+        sections,
     })
 }
 

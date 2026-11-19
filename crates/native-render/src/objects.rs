@@ -44,6 +44,7 @@
 use crate::camera::{GuestRead, GuestWrite};
 use crate::model::{NODE_MATRIX_SIZE, NodeMatrix};
 use crate::object_lighting::{Defaults, Lighting};
+use crate::object_nodes::{RECORD_KEY, Row, node_rows};
 use crate::skip::{CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, ITEM_SIZE, LIGHTMAP_LAYER, RENDER_RECORD_SIZE, RENDER_RECORDS};
 
 pub const OBJECTS: u32 = 0x004e_0300;
@@ -175,6 +176,10 @@ pub struct ObjectFrame {
     pub lighting: Option<Lighting>,
     /// The inputs' defaults, read with it; `None` when they do not read.
     pub defaults: Option<Defaults>,
+    /// Per mode section its layer-3 records draw: the node rows the draw
+    /// uploads at `c[50..]` ([`crate::object_nodes::node_rows`]), copied
+    /// at the hook ([`attach_node_rows`]). Empty until then.
+    pub node_rows: Vec<(u16, Vec<Row>)>,
 }
 
 /// The lighting of the live object `handle` whose body is `body`: `+0x44`
@@ -237,7 +242,29 @@ pub fn read_object(mem: &dyn GuestRead, handle: u32) -> Option<ObjectFrame> {
         sphere,
         lighting,
         defaults: Defaults::read(mem),
+        node_rows: Vec::new(),
     })
+}
+
+/// Copies into `frame` the node rows of every record its cleared items
+/// draw (`cleared.records[i]` for the items whose owner is the frame's),
+/// one per mode section (the key's bits 9..17). An error names the first
+/// record whose rows do not read or whose draw would upload none: the
+/// object is then left to D3D, since a program would read another draw's
+/// rows.
+pub fn attach_node_rows(mem: &dyn GuestRead, frame: &mut ObjectFrame, cleared: &ClearedObjects) -> Result<(), String> {
+    for (&record, _) in cleared.records.iter().zip(&cleared.owners).filter(|(_, o)| **o == frame.handle) {
+        let at = RENDER_RECORDS + RENDER_RECORD_SIZE * u32::from(record);
+        let key = mem.read_u32(at + RECORD_KEY).ok_or("a record's key does not read")?;
+        let section = ((key >> 9) & 0x1ff) as u16;
+        let rows = node_rows(mem, at).map_err(|e| format!("record {record}: {e}"))?;
+        match frame.node_rows.iter().find(|(s, _)| *s == section) {
+            Some((_, r)) if *r != rows => return Err(format!("section {section}'s records upload different rows")),
+            Some(_) => {}
+            None => frame.node_rows.push((section, rows)),
+        }
+    }
+    Ok(())
 }
 
 /// What [`clear_objects`] cleared: the items (to restore), the object
@@ -248,6 +275,8 @@ pub struct ClearedObjects {
     pub items: Vec<u32>,
     /// The handle of `items[i]`'s object.
     pub owners: Vec<u32>,
+    /// The render record `items[i]` draws.
+    pub records: Vec<u16>,
     pub handles: Vec<u32>,
     /// What the walk met, for the feature's diagnostics.
     pub walk: WalkStats,
@@ -424,6 +453,7 @@ pub fn clear_objects(
         }
         out.items.push(item);
         out.owners.push(handle);
+        out.records.push(item_record(mem, item).unwrap_or(0));
         if !out.handles.contains(&handle) {
             out.handles.push(handle);
         }
@@ -442,10 +472,11 @@ pub fn keep_only(mem: &mut dyn GuestWrite, cleared: &mut ClearedObjects, keep: &
         layer: cleared.layer,
         ..Default::default()
     };
-    for (&item, &owner) in cleared.items.iter().zip(&cleared.owners) {
+    for ((&item, &owner), &record) in cleared.items.iter().zip(&cleared.owners).zip(&cleared.records) {
         let to = if keep(owner) { &mut kept } else { &mut back };
         to.items.push(item);
         to.owners.push(owner);
+        to.records.push(record);
     }
     kept.handles = cleared.handles.iter().copied().filter(|&h| keep(h)).collect();
     kept.walk = std::mem::take(&mut cleared.walk);
@@ -785,5 +816,51 @@ pub(crate) mod tests {
         assert_eq!(clear_objects(&mut m, 1, &|_, _, _| true), None, "not a replaced layer");
         assert_eq!(clear_objects(&mut m, 3, &|_, _, _| true), None, "not the current layer");
         assert_eq!(mask(&m, 1), 0b1010);
+    }
+}
+
+#[cfg(test)]
+mod node_row_tests {
+    use super::tests::*;
+    use super::*;
+    use crate::camera::tests::Mem;
+    use crate::object_nodes::{RECORD_MATRIX, RECORD_NODES};
+
+    const MATRIX: u32 = 0x0068_0000;
+
+    fn record_at(record: u32) -> u32 {
+        RENDER_RECORDS + RENDER_RECORD_SIZE * record
+    }
+
+    #[test]
+    fn an_objects_records_node_rows_are_copied_per_section() {
+        let mut m = Mem::default();
+        let a = object(&mut m, 1, 0xe000_0100, 1);
+        let b = object(&mut m, 2, 0xe000_0200, 1);
+        for i in 0..13 {
+            m.f(MATRIX + 4 * i, i as f32);
+        }
+        // A draws records 2 and 3 (section 5, the same matrix), B record 4.
+        for (r, section) in [(2u32, 5u32), (3, 5), (4, 6)] {
+            m.w(record_at(r) + RECORD_KEY, section << 9);
+            m.w(record_at(r) + RECORD_MATRIX, MATRIX);
+            m.w(record_at(r) + RECORD_NODES, u32::MAX);
+        }
+        let cleared = ClearedObjects {
+            layer: 3,
+            items: vec![0x10, 0x20, 0x30],
+            owners: vec![a, a, b],
+            records: vec![2, 3, 4],
+            handles: vec![a, b],
+            walk: WalkStats::default(),
+        };
+        let mut f = read_object(&m, a).unwrap();
+        attach_node_rows(&m, &mut f, &cleared).unwrap();
+        let rows = vec![[1.0, 4.0, 7.0, 10.0], [2.0, 5.0, 8.0, 11.0], [3.0, 6.0, 9.0, 12.0]];
+        assert_eq!(f.node_rows, vec![(5, rows)], "one entry for section 5, none of B's");
+        // Record 3 uploads nothing (no matrix, no node block): A is not drawn.
+        m.w(record_at(3) + RECORD_MATRIX, 0);
+        let mut f = read_object(&m, a).unwrap();
+        assert!(attach_node_rows(&m, &mut f, &cleared).unwrap_err().contains("record 3"));
     }
 }

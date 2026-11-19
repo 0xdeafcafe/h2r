@@ -17,6 +17,15 @@
 //! - **Per view.** The device gets an `ObjectsPass` with the camera and the
 //!   objects' node matrices; on the render thread it uploads the queued
 //!   models, packs and culls the objects, and draws them skinned.
+//! - **Lit materials** (docs/graphics/native-renderer.md, "Object
+//!   programs"). A material whose layer-3 pass reads the object's lighting
+//!   is drawn through the game's own vertex program and pixel shader, per
+//!   implementation the build may pick (0 and 1, or 2 where the template
+//!   draws layer 15), its section's streams laid out as the game's
+//!   declaration (the format table read from guest memory when the map is
+//!   first seen) and its per-object constants put in per draw. A material
+//!   with any implementation, section or stage that does not compile or
+//!   decode stays on D3D whole, with the reason; never drawn unlit.
 //! - **Transparent parts** (stage 3, with `impl.render.native_transparents`
 //!   on too). The worker also takes each transparent material with a
 //!   single layer-15 pass, no alpha test and a base map that decodes (S:
@@ -41,8 +50,13 @@ use native_render::model::Model;
 use native_render::model_gpu::GpuModels;
 use native_render::model_load;
 use native_render::look;
+use native_render::object_lighting::ShaderValues;
+use native_render::object_nodes::{Compression, decompression_rows};
+use native_render::object_program_gpu::{LitMaterial, LitModelInput, LitObjects, LitSection, lit_model};
+use native_render::object_streams::{self, StreamData, StreamFormats};
 use native_render::objects::ObjectFrame;
 use native_render::pass_state::PassState;
+use native_render::program::ViewInputs;
 
 use crate::native_world_glue::{Raw, StageDecoder, StageImages, StagePalettes, locate, palettes_hold, region, stage_palettes};
 
@@ -53,6 +67,8 @@ struct CpuModel {
     base_maps: HashMap<u16, Image>,
     /// The transparent materials taken: base map and pass state.
     transparents: Vec<(u16, Image, PassState)>,
+    /// The parts drawn through the game's programs.
+    lit: LitModelInput,
 }
 
 /// One definition's transparent parts the native pass draws.
@@ -80,6 +96,8 @@ impl ObjectTransparents {
 pub(crate) struct Models {
     pending: Mutex<Vec<CpuModel>>,
     gpu: Mutex<Option<GpuModels>>,
+    /// The lit parts on the GPU, by uploaded model (locked after `gpu`).
+    lit: Mutex<Option<LitObjects>>,
     /// Definition tag index -> uploaded model.
     pub(crate) index: Mutex<HashMap<u16, u32>>,
     /// Definition tag index -> its transparent parts, published after the
@@ -117,14 +135,19 @@ pub(crate) fn upload_pending<'a>(models: &'a Models, t: &d3d::ExternalTarget<'_>
     let gpu = guard.get_or_insert_with(|| GpuModels::new(t.device, t.queue));
     let pending = std::mem::take(&mut *models.pending.lock().unwrap_or_else(|e| e.into_inner()));
     let mut index = models.index.lock().unwrap_or_else(|e| e.into_inner());
+    let mut lit_gpu = models.lit.lock().unwrap_or_else(|e| e.into_inner());
     for cpu in pending {
         let CpuModel {
             definition,
             model,
             mut base_maps,
             transparents,
+            lit,
         } = cpu;
         let i = gpu.add_model(t.device, t.queue, model, &mut |m| base_maps.remove(&m));
+        if !lit.is_empty() {
+            lit_gpu.get_or_insert_with(|| LitObjects::new(t.device)).add_model(t.device, t.queue, i, lit);
+        }
         for (material, image, state) in transparents {
             // Checked on the worker; a refusal here leaves those parts
             // undrawn for this model.
@@ -132,6 +155,7 @@ pub(crate) fn upload_pending<'a>(models: &'a Models, t: &d3d::ExternalTarget<'_>
         }
         index.insert(definition as u16, i);
     }
+    drop(lit_gpu);
     drop(index);
     guard
 }
@@ -163,10 +187,14 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             // bump), which the D3D path samples through the device palette
             // at their stage. Read with no other lock held, as the world's.
             let palettes = self.device.lock().ok().map(|d| stage_palettes(&d, mem)).unwrap_or_default();
+            // The stream formats the game's declarations are built from,
+            // read where the game keeps them (`None`: lit materials stay
+            // on D3D).
+            let formats = StreamFormats::read(&Ro(mem));
             let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if !current(&*st) {
                 let models = Arc::new(Models::default());
-                let worker = spawn_worker(name.clone(), Arc::clone(&models), Arc::clone(&self.state), palettes);
+                let worker = spawn_worker(name.clone(), Arc::clone(&models), Arc::clone(&self.state), palettes, formats);
                 *st = Some(MapState {
                     name,
                     models,
@@ -227,12 +255,22 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             models,
             camera: *camera,
             objects,
+            view: None,
         }));
         true
     }
 }
 
 static PALETTE_CHANGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Guest memory, read only.
+struct Ro<'a>(&'a dyn GuestMemory);
+
+impl native_render::camera::GuestRead for Ro<'_> {
+    fn read_u32(&self, addr: u32) -> Option<u32> {
+        self.0.u32(addr).ok()
+    }
+}
 
 /// Installs the host on the device (beside the world's).
 pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
@@ -251,12 +289,13 @@ fn spawn_worker(
     models: Arc<Models>,
     state: Arc<Mutex<Option<MapState>>>,
     palettes: StagePalettes,
+    formats: Option<StreamFormats>,
 ) -> Option<mpsc::Sender<u32>> {
     let (tx, rx) = mpsc::channel::<u32>();
     std::thread::Builder::new()
         .name("native-objects load".into())
         .spawn(move || {
-            let mut opened = match open(&name, palettes) {
+            let mut opened = match open(&name, palettes, formats) {
                 Ok(o) => o,
                 Err(e) => {
                     eprintln!("native-objects: {name}: map not opened ({e}); the D3D path draws every object");
@@ -275,6 +314,7 @@ fn spawn_worker(
                         let nodes = cpu.model.inverse_binds.len();
                         let draws = cpu.model.draws.len();
                         let see_through = cpu.model.transparents.len();
+                        let lit = cpu.lit.parts.len();
                         models.pending.lock().unwrap_or_else(|e| e.into_inner()).push(cpu);
                         if !transparents.shaders.is_empty() {
                             models
@@ -290,12 +330,15 @@ fn spawn_worker(
                         let mut set = (*s.set).clone();
                         set.definitions.insert(def as u16, nodes);
                         set.shaders.extend(shaders);
+                        if lit > 0 {
+                            set.lit.insert(def as u16);
+                        }
                         s.set = Arc::new(set);
                         // No lock held across the print.
                         drop(st);
                         loaded += 1;
                         eprintln!(
-                            "native-objects: {name}: definition {def:#010x}: {draws} draws, {see_through} transparent, {nodes} nodes, in {:.0} ms ({loaded} models native, {refused} left to D3D)",
+                            "native-objects: {name}: definition {def:#010x}: {draws} draws, {lit} lit parts, {see_through} transparent, {nodes} nodes, in {:.0} ms ({loaded} models native, {refused} left to D3D)",
                             t0.elapsed().as_secs_f32() * 1000.0
                         );
                     }
@@ -322,9 +365,11 @@ struct Opened {
     /// The shader tags, read at the first transparent material (`None`
     /// when they do not read: transparents stay on D3D).
     lib: Option<Option<tags::material::ShaderLibrary>>,
+    /// The game's stream formats (`None`: lit materials stay on D3D).
+    formats: Option<StreamFormats>,
 }
 
-fn open(name: &str, palettes: StagePalettes) -> Result<Opened, load::Error> {
+fn open(name: &str, palettes: StagePalettes, formats: Option<StreamFormats>) -> Result<Opened, load::Error> {
     let file = locate(name).ok_or("the map's file is not found")?;
     let mut map = Map::from_region(BufReader::new(std::fs::File::open(&file.path)?), file.offset, file.len)?;
     let mut files = assets::ResourceFiles::new();
@@ -346,6 +391,7 @@ fn open(name: &str, palettes: StagePalettes) -> Result<Opened, load::Error> {
         decoder: StageDecoder::new(palettes),
         images: StageImages::new(),
         lib: None,
+        formats,
     })
 }
 
@@ -407,10 +453,10 @@ fn material(o: &mut Opened, shader: TagId) -> Option<tags::material::Material> {
 }
 
 /// Why an opaque material stays on D3D for its lighting: its layer-3
-/// pass reads the object's lighting, which the native models pass does
-/// not apply (`object_program::lighting_refusal` names an input the
-/// object path cannot give, or says the program draw is not wired yet),
-/// or it does not resolve, so that cannot be ruled out. Never drawn unlit.
+/// pass reads an input of the object's the object path cannot give
+/// (`object_program::lighting_refusal`), or it does not resolve, so that
+/// cannot be ruled out. Never drawn unlit: one that reads only what is
+/// given is drawn through its programs ([`lit_material`]) or refused there.
 fn lighting_refusal(o: &mut Opened, shader: TagId) -> Option<String> {
     let Some(m) = material(o, shader) else {
         return Some("the material does not resolve".into());
@@ -442,11 +488,23 @@ fn load_model(o: &mut Opened, def: u32) -> Result<(CpuModel, Vec<u16>, ObjectTra
     let mut base_maps = HashMap::new();
     let mut shaders = Vec::new();
     let mut unlit = Vec::new();
+    let mut lit_materials = HashMap::new();
     for m in loaded.model.materials() {
         let Some(&shader) = loaded.shaders.get(usize::from(m)) else { continue };
         if let Some(why) = lighting_refusal(o, shader) {
             unlit.push(format!("{:#010x} {why}", shader.0));
             continue;
+        }
+        match lit_material(o, shader) {
+            Some(Ok(lit)) => {
+                lit_materials.insert(m, lit);
+                continue;
+            }
+            Some(Err(why)) => {
+                unlit.push(format!("{:#010x} {why}", shader.0));
+                continue;
+            }
+            None => {}
         }
         let Some(bitmap) = load::base_map(&mut o.map, shader) else { continue };
         if let Some(image) = decoded(o, shader, bitmap) {
@@ -466,9 +524,19 @@ fn load_model(o: &mut Opened, def: u32) -> Result<(CpuModel, Vec<u16>, ObjectTra
             table.shaders.entry(shader.0 as u16).or_default().push(m);
         }
     }
+    let lit = if lit_materials.is_empty() {
+        LitModelInput::default()
+    } else {
+        let (lit, taken, refused) = lit_parts(o, &loaded, &lit_materials);
+        for (m, why) in refused {
+            unlit.push(format!("{:#010x} {why}", loaded.shaders[usize::from(m)].0));
+        }
+        shaders.extend(taken.iter().map(|&m| loaded.shaders[usize::from(m)].0 as u16));
+        lit
+    };
     let kept: HashSet<u16> = transparents.iter().map(|t| t.0).collect();
     let model = keep_materials(loaded.model, &base_maps, &kept);
-    if model.draws.is_empty() {
+    if model.draws.is_empty() && lit.is_empty() {
         if !unlit.is_empty() {
             return Err(format!("its materials are lit per object, which the native pass does not apply yet: {}", unlit.join(", ")).into());
         }
@@ -480,10 +548,129 @@ fn load_model(o: &mut Opened, def: u32) -> Result<(CpuModel, Vec<u16>, ObjectTra
             model,
             base_maps,
             transparents,
+            lit,
         },
         shaders,
         table,
     ))
+}
+
+/// What a material whose layer-3 pass reads the object's lighting draws
+/// with: `None` when it reads none (the base-map path draws it), else the
+/// material, its shader's values (`shad +0x44`, `+0x48`) and whether its
+/// template's first level draws layer 15, or why they do not read.
+fn lit_material(o: &mut Opened, shader: TagId) -> Option<Result<LitMaterial, String>> {
+    let material = material(o, shader)?;
+    look::object_lighting_input(&material)?;
+    let mut read = || -> Result<LitMaterial, String> {
+        if o.formats.is_none() {
+            return Err("the game's stream formats do not read".into());
+        }
+        let lib = o.lib.as_mut().and_then(Option::as_mut).ok_or("the shader tags do not read")?;
+        let lod = *lib
+            .template(material.template)
+            .ok()
+            .and_then(|t| t.compiled().ok())
+            .and_then(|c| c.lods.first())
+            .ok_or("its template's levels do not read")?;
+        let address = o.map.tag(shader).ok().and_then(|t| t.location).map(|l| l.address).ok_or("its shader tag has no address")?;
+        let values = lib.metadata().bytes(address + SHADER_VALUES, 8).map_err(|_| "its shader values do not read")?;
+        let word = |k: usize| u32::from_le_bytes([values[k], values[k + 1], values[k + 2], values[k + 3]]);
+        Ok(LitMaterial {
+            shader: ShaderValues { scalar_21: word(0), vector_24: word(4) },
+            layer_15: lod.layer_mask & 1 << 15 != 0,
+            material: material.clone(),
+        })
+    };
+    Some(read())
+}
+
+/// The shader instance's values the object inputs scale by (`shad +0x44`
+/// scalar 21, `+0x48`).
+const SHADER_VALUES: u32 = 0x44;
+
+/// The lit parts of `loaded`'s drawn sections for `materials`
+/// ([`lit_model`]): its vertex programs per section classification read
+/// from the shader tags, its stage bitmaps through the stage decoder.
+fn lit_parts(o: &mut Opened, loaded: &model_load::LoadedModel, materials: &HashMap<u16, LitMaterial>) -> (LitModelInput, Vec<u16>, Vec<(u16, String)>) {
+    let geo = &loaded.geometry;
+    let mut sections = Vec::new();
+    for &si in &loaded.sections {
+        let Some(s) = geo.sections.get(si) else { continue };
+        let flags = s.wire.compression_flags.0;
+        let bounds = geo.compression.as_ref();
+        let compression = Compression {
+            position: bounds.filter(|_| flags & 1 != 0).map(|c| c.position_bounds),
+            texcoord: bounds.filter(|_| flags & 2 != 0).map(|c| c.texcoord_bounds),
+        };
+        let g = &s.geometry;
+        let slots = g.vertex_buffers.iter().map(|b| b.slot + 1).max().unwrap_or(0);
+        let mut streams = vec![None; slots];
+        for b in &g.vertex_buffers {
+            streams[b.slot] = Some((b.type_id, StreamData { bytes: g.data(b), stride: usize::from(b.stride) }));
+        }
+        sections.push(LitSection {
+            index: si as u16,
+            geometry: s.wire.geometry_classification.0,
+            influences: s.wire.unknown_014,
+            decompression: decompression_rows(&compression),
+            streams,
+            vertex_count: g.vertex_count(),
+            parts: g
+                .parts
+                .iter()
+                .filter(|p| p.is_drawn() && p.kind != load::PART_TRANSPARENT)
+                .map(|p| (p.material, g.part_triangles(p)))
+                .collect(),
+        });
+    }
+    // The programs each section's classification takes, read first (the
+    // stage decoder borrows the map after).
+    let mut programs: HashMap<(TagId, u16, u8), Result<(Vec<u8>, Vec<u16>), String>> = HashMap::new();
+    for lit in materials.values() {
+        let vertex_shaders = lit
+            .material
+            .layers
+            .iter()
+            .filter(|l| l.lod == 0 && l.layer == look::LIGHTMAP_LAYER)
+            .flat_map(|l| &l.passes)
+            .flat_map(|p| &p.implementations)
+            .filter_map(|i| i.vertex_shader);
+        for vs in vertex_shaders {
+            for s in &sections {
+                let key = (vs, s.geometry, s.influences);
+                if !programs.contains_key(&key) {
+                    let p = object_vertex_program(o, vs, s.geometry, s.influences);
+                    programs.insert(key, p);
+                }
+            }
+        }
+    }
+    let Some(formats) = o.formats.clone() else {
+        return (LitModelInput::default(), Vec::new(), materials.keys().map(|&m| (m, "the game's stream formats do not read".to_string())).collect());
+    };
+    let mut vertex = |vs: TagId, geometry: u16, influences: u8| {
+        programs.get(&(vs, geometry, influences)).cloned().unwrap_or_else(|| Err("its vertex program was not read".into()))
+    };
+    let mut image = |stage: usize, bitmap: TagId, image: u32| -> Option<Image> {
+        o.decoder.decode(&mut o.map, &mut o.raw.0, &mut o.images, bitmap, image, stage, true).ok()?;
+        o.images.get(&(bitmap, image)).cloned()
+    };
+    lit_model(&sections, materials, &formats, &mut vertex, &mut image)
+}
+
+/// Vertex shader `vs`'s program and input semantics for a section of
+/// geometry classification `geometry` and influences `influences`, as
+/// `0x0001cb20` picks its classification.
+fn object_vertex_program(o: &mut Opened, vs: TagId, geometry: u16, influences: u8) -> Result<(Vec<u8>, Vec<u16>), String> {
+    let address = o.map.tag(vs).ok().and_then(|t| t.location).map(|l| l.address).ok_or("the vertex shader tag has no address")?;
+    let lib = o.lib.as_ref().and_then(Option::as_ref).ok_or("the shader tags do not read")?;
+    let meta = lib.metadata();
+    let count = look::classification_count(meta, address).ok_or("the vertex shader's classifications do not read")?;
+    let class = object_streams::classification(geometry, influences, count).ok_or_else(|| format!("geometry classification {geometry}"))?;
+    let code = look::vertex_program(meta, address, class).ok_or_else(|| format!("classification {class} has no program"))?;
+    let semantics = look::vertex_semantics(meta, address, class).ok_or_else(|| format!("classification {class}'s inputs do not read"))?;
+    Ok((code, semantics))
 }
 
 /// The model without the draws of materials left to the D3D path (opaque
@@ -499,9 +686,15 @@ struct ObjectsPass {
     models: Arc<Models>,
     camera: RenderCamera,
     objects: Vec<ObjectFrame>,
+    /// The view's constants, for the lit parts' programs.
+    view: Option<[[f32; 4]; d3d::VIEW_CONSTANTS]>,
 }
 
 impl d3d::ExternalPass for ObjectsPass {
+    fn view_constants(&mut self, constants: &[[f32; 4]; d3d::VIEW_CONSTANTS]) {
+        self.view = Some(*constants);
+    }
+
     fn encode(&mut self, t: d3d::ExternalTarget<'_>) {
         let mut guard = upload_pending(&self.models, &t);
         let Some(gpu) = guard.as_mut() else { return };
@@ -530,12 +723,46 @@ impl d3d::ExternalPass for ObjectsPass {
         let [x, y, width, height] = t.viewport;
         gpu.encode(
             t.device,
-            t.encoder,
+            &mut *t.encoder,
             t.color,
             t.color_format,
             t.depth,
             t.depth_format,
             PassViewport { x, y, width, height },
+        );
+        // The lit parts, through the game's programs (the viewport the
+        // whole target, as they expect).
+        let Some(constants) = self.view else { return };
+        let mut lit = self.models.lit.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(lit) = lit.as_mut() else { return };
+        let objects: Vec<(u32, &ObjectFrame)> = self
+            .objects
+            .iter()
+            .filter_map(|o| {
+                let i = *index.get(&(o.definition as u16))?;
+                lit.has(i).then_some((i, o))
+            })
+            .collect();
+        if objects.is_empty() {
+            return;
+        }
+        let view = ViewInputs {
+            constants,
+            guest_size: t.guest_size,
+            size: t.size,
+            z_scale: t.z_scale,
+        };
+        lit.encode(
+            t.device,
+            t.queue,
+            &mut *t.encoder,
+            t.color,
+            t.color_format,
+            t.depth,
+            t.depth_format,
+            t.size,
+            &view,
+            &objects,
         );
     }
 }

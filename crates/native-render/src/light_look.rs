@@ -336,6 +336,7 @@ pub fn compile_light(look: &LightLook, microcode: &[u8]) -> Result<LightProgram,
         vertex_constants: &look.vertex_constants,
         vertex_defaults: &look.vertex_defaults,
         alpha_test: look.state.alpha_test,
+        provided_inputs: crate::program::INPUT_MASK,
     })?;
     Ok(LightProgram {
         wgsl: t.wgsl,

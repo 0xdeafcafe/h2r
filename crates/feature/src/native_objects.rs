@@ -15,8 +15,11 @@
 //!   (`[esp] == 0x0002bed5`): ask the [`Host`] which object definitions and
 //!   shaders it draws, clear layer 3's bit on those objects' items
 //!   ([`native_render::objects::clear_objects`]), copy each cleared
-//!   object's node matrices and sphere out of guest memory, and hand the
-//!   copies with the view's camera to the host for one external pass.
+//!   object's node matrices and sphere out of guest memory (and, for a
+//!   definition drawn through its own programs, its lighting and the node
+//!   rows each of its records uploads, `objects::attach_node_rows`), and
+//!   hand the copies with the view's camera to the host for one external
+//!   pass.
 //!   Objects that cannot be read or whose node count disagrees with their
 //!   model get their bits back at once (the D3D path draws them); when the
 //!   host cannot draw, all do.
@@ -59,6 +62,10 @@ pub struct NativeSet {
     /// Shaders by tag index (the low word of an item's `+8`): the
     /// materials the pass draws; the rest keep their D3D draws.
     pub shaders: HashSet<u16>,
+    /// Definitions with parts drawn through their own programs: an object
+    /// of one is drawn only with its lighting (and the root value inputs
+    /// 40 and 37 read) and its records' node rows copied.
+    pub lit: HashSet<u16>,
 }
 
 impl NativeSet {
@@ -69,6 +76,24 @@ impl NativeSet {
     pub fn node_count(&self, definition: u32) -> Option<usize> {
         self.definitions.get(&(definition as u16)).copied()
     }
+
+    /// Whether `definition` draws parts through their own programs.
+    pub fn lit(&self, definition: u32) -> bool {
+        self.lit.contains(&(definition as u16))
+    }
+}
+
+/// Whether frame `f` (of a definition `set` draws) has what its draw
+/// needs, after copying its node rows when it is lit: a lit object needs
+/// its lighting with the root value, and every record's rows.
+pub fn ready(m: &dyn GuestRead, set: &NativeSet, cleared: &ClearedObjects, f: &mut ObjectFrame) -> bool {
+    if set.node_count(f.definition) != Some(f.nodes.len()) {
+        return false;
+    }
+    if !set.lit(f.definition) {
+        return true;
+    }
+    f.lighting.is_some_and(|l| l.root.is_some()) && objects::attach_node_rows(m, f, cleared).is_ok()
 }
 
 /// What draws the objects: boot's glue over the GPU models and the device.
@@ -320,8 +345,8 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
     }
     let mut frames = Vec::with_capacity(cleared.handles.len());
     for &h in &cleared.handles {
-        if let Some(f) = objects::read_object(&m, h)
-            && set.node_count(f.definition) == Some(f.nodes.len())
+        if let Some(mut f) = objects::read_object(&m, h)
+            && ready(&m, &set, &cleared, &mut f)
         {
             frames.push(f);
         }

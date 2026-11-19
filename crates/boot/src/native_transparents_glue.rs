@@ -369,6 +369,7 @@ mod tests {
             sphere: ([0.0; 3], 1.0),
             lighting: None,
             defaults: None,
+            node_rows: Vec::new(),
         }
     }
 
