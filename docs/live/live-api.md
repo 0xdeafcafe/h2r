@@ -1007,7 +1007,15 @@ preview, uploaded like a layer, given exactly when the manifest names one.
 `category` (one of `gameplay`, `weapons`, `vehicles`, `visuals`, `maps`,
 `other`) and `source_url` (an `http` or `https` URL of at most 300
 characters, where the mod came from) are the repository's display data,
-outside the `MapId` like the manifest's name (400 when malformed).
+outside the `MapId` like the manifest's name (400 when malformed). So are
+the in-game Mods page's (docs/game/maps.md §5, "A mod's page"):
+`features` (what the mod changes, each once, of `vehicles`, `weapons`,
+`objects`, `textures`, `shaders`, `scripts`, `geometry`, `ai`;
+`h2 live maps import` derives them), `gametypes` (each once, of `slayer`,
+`ctf`, `assault`, `oddball`, `koth`, `juggernaut`, `territories`; none:
+any) and `version` (one line, at most 24 characters); each optional and
+left out when empty. A server from before them refuses a document that
+has them (the document allows no unknown keys): update the server first.
 The server checks the manifest as the runtime does ([maps.md](../game/maps.md) §7,
 "Manifest checks"), computes `MapId::of` and requires the stream to be that
 id's; refuses a manifest with no layers (only a retail base: 403) or naming a
@@ -1019,8 +1027,8 @@ and nonce checks apply.
 
 A summary is `{map_id, name, description?, author: {xuid, gamertag}, base:
 {map, sha256?, derived}, layers: [{sha256, size, kind: "patch"|"pack"}],
-size, image?, geometry?, published_at, position, downloads, credit?,
-category?, source_url?}`: `size` is the layers' bytes (what a player
+size, image?, features?, gametypes?, version?, geometry?, published_at,
+position, downloads, credit?, category?, source_url?}`: `size` is the layers' bytes (what a player
 without them downloads), `image` the preview's hash, `geometry` the
 manifest's `[result] geometry` (set when the mod changed the map's
 geometry), `position` the `MapPublished` event's log position, `downloads`

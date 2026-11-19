@@ -550,3 +550,42 @@ fn no_retail_map_of_either_disc_is_shared() {
     let e = err(p.opts(modded, "turf"));
     assert!(e.contains("has no turf.map either"), "{e}");
 }
+
+#[test]
+fn the_mods_page_extras_reach_the_package_for_publish() {
+    let f = Fixture::new("page");
+    let mut modded = f.lockout.clone();
+    modded[0x2000..0x2040].fill(3);
+    // Invented maps the map reader can't read: nothing is derived, so the
+    // package lists the sidecar's features, in the checklist's order.
+    let input = f.mod_dir(
+        "page",
+        "hogs.map",
+        &modded,
+        Some(
+            "base_map = \"lockout\"\nfeatures = [\"scripts\", \"vehicles\", \"vehicles\"]\n\
+             gametypes = [\"ctf\"]\nversion = \" 1.2 \"\n",
+        ),
+    );
+    let out = import(&f.opts(input)).unwrap();
+    let extras = PageExtras::read(&out.dir).unwrap();
+    assert_eq!(extras.features, ["vehicles", "scripts"]);
+    assert_eq!(extras.gametypes, ["ctf"]);
+    assert_eq!(extras.version.as_deref(), Some("1.2"));
+    let mut doc = live_proto::maps::MapDocument::new(out.manifest.clone(), None);
+    extras.apply(&mut doc);
+    assert!(doc.validate_extras().is_ok());
+    assert_eq!(doc.features, ["vehicles", "scripts"]);
+
+    // An id the checklist doesn't know is refused, not dropped.
+    let bad = f.mod_dir(
+        "bad",
+        "hogs.map",
+        &modded,
+        Some("base_map = \"lockout\"\nfeatures = [\"teleporters\"]\n"),
+    );
+    let e = import(&f.opts(bad)).unwrap_err();
+    assert!(format!("{e:#}").contains("teleporters"), "{e:#}");
+    // No sidecar features and nothing derived: none listed.
+    assert_eq!(PageExtras::read(&f.root).unwrap(), PageExtras::default());
+}

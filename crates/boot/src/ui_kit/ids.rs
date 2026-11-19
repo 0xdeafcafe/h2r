@@ -69,7 +69,7 @@ pub const FAMILIES: &[Family] = &[
     Family::new("kit.dialog", 0x20ff_c080, 0x40),
     Family::new("kit.dialog.large", 0x20ff_c0c0, 0x40),
     Family::new("co-op texts", 0x20ff_d000, 128),
-    Family::new("mod texts", 0x20ff_d100, 128),
+    Family::new("mod texts", 0x20ff_d100, 0x90),
     Family::new("layouts", TABLE, 0x20),
     Family::new("speaker", TABLE + 0x30, 2),
     Family::new("live menu rows", TABLE + 0x32, 10),

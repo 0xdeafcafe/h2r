@@ -166,10 +166,15 @@ going back to the screen underneath, and nothing left on screen after it
 closes.
 
 The mod repository's two screens (`boot::mods_screen`, docs/game/maps.md
-§5 "Mod downloads (in game)") are list-class screens whose rows come from
-the server, like the co-op friends list: their texts live in the
-`mod texts` id family, written when they change; a row's count is fixed
-when the screen opens.
+§5 "Mod downloads (in game)" and "A mod's page") are list-class screens
+whose rows come from the server, like the co-op friends list, on the level
+select's layout as the campaign picker is (list, bracket, picture,
+description). Their texts live in the `mod texts` id family (256-byte
+slots: a line and a description per row), written when they change; a
+row's count is fixed when the screen opens. Their descriptions are set
+again when a download moves on (`Rows::live_text`'s redraw), and X is
+their action (`ListClass::action_buttons(&[X_BUTTON])`; the list's reads
+the focused row with `list_class::focused_row`).
 
 The skulls page logs `skulls page: ...` lines (docs/game/skulls.md "What it
 logs"); the sign-in prompt logs `signin prompt: ...` lines (docs/live/live.md).

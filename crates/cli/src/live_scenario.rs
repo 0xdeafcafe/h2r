@@ -83,7 +83,7 @@ pub const BLOCKS: [Block; 8] = [
         object_type: 11,
     },
 ];
-const PALETTE_STRIDE: usize = 0x28;
+pub(crate) const PALETTE_STRIDE: usize = 0x28;
 
 /// The netgame equipment block (`scnr+0x120`, 0x90-byte entries;
 /// docs/game/forge.md): what multiplayer spawns and respawns at run time.

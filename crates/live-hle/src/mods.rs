@@ -12,7 +12,10 @@
 //! The answer is read leniently: `id` or `map_id`; `author` and `base` as
 //! a name or as the content API's `{gamertag}` / `{map}` objects; `cursor`
 //! or `next`; an entry's `position`, `downloads` and `image` when the
-//! server has them. An entry with no `position` is never new.
+//! server has them. An entry with no `position` is never new. What a mod
+//! changes (`features`), the game types it is made for and its version
+//! are read when the server lists them (docs/game/maps.md §5, "A mod's
+//! page"), unknown ids dropped.
 
 use serde::Deserialize;
 
@@ -36,6 +39,13 @@ pub struct ModEntry {
     pub position: Option<u64>,
     pub downloads: Option<u64>,
     pub published_at: String,
+    /// What it changes, ids of `live_proto::maps::FEATURES` in that order.
+    pub features: Vec<String>,
+    /// The game types it is made for (`live_proto::maps::GAMETYPES`);
+    /// empty: any.
+    pub gametypes: Vec<String>,
+    /// Its own version, when the server lists one.
+    pub version: Option<String>,
 }
 
 /// A page of the list.
@@ -229,6 +239,12 @@ struct RawEntry {
     downloads: Option<u64>,
     #[serde(default)]
     published_at: String,
+    #[serde(default)]
+    features: Vec<String>,
+    #[serde(default)]
+    gametypes: Vec<String>,
+    #[serde(default)]
+    version: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -262,6 +278,15 @@ impl From<RawPage> for ModPage {
                     position: e.position,
                     downloads: e.downloads,
                     published_at: e.published_at,
+                    features: live_proto::maps::in_order(&e.features, &live_proto::maps::FEATURES),
+                    gametypes: live_proto::maps::in_order(
+                        &e.gametypes,
+                        &live_proto::maps::GAMETYPES,
+                    ),
+                    version: e
+                        .version
+                        .map(|v| v.trim().to_string())
+                        .filter(|v| !v.is_empty()),
                 })
                 .collect(),
             cursor,
@@ -334,7 +359,32 @@ mod tests {
             position,
             downloads: None,
             published_at: String::new(),
+            features: Vec::new(),
+            gametypes: Vec::new(),
+            version: None,
         }
+    }
+
+    #[test]
+    fn features_game_types_and_version_read_when_listed() {
+        let page: ModPage = serde_json::from_value(serde_json::json!({
+            "items": [{
+                "id": ID, "name": "Lockout Hogs", "author": "Modder", "base": "lockout",
+                "features": ["scripts", "vehicles", "teleporters"],
+                "gametypes": ["ctf"], "version": " 1.2 "
+            }, {
+                "id": ID, "name": "Plain", "author": "Modder", "base": "lockout",
+                "version": " "
+            }]
+        }))
+        .unwrap();
+        let e = &page.items[0];
+        assert_eq!(e.features, ["vehicles", "scripts"], "known ids, in order");
+        assert_eq!(e.gametypes, ["ctf"]);
+        assert_eq!(e.version.as_deref(), Some("1.2"));
+        let plain = &page.items[1];
+        assert!(plain.features.is_empty() && plain.gametypes.is_empty());
+        assert_eq!(plain.version, None);
     }
 
     #[test]

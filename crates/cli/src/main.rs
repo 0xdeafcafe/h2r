@@ -58,6 +58,7 @@ mod live_admin;
 mod live_cmd;
 mod live_maps;
 mod live_mod_import;
+mod live_mod_features;
 mod live_halo1;
 mod live_mappack;
 mod live_query;

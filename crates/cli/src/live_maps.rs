@@ -223,6 +223,9 @@ pub(crate) fn publish(
     let mut doc = MapDocument::new(manifest.clone(), None);
     doc.category = category.or(dir_category);
     doc.source_url = source_url.or(dir_source);
+    // The Mods page's checklist, game types and version (an older server
+    // refuses a document with them: publish those once it is updated).
+    crate::live_mod_import::PageExtras::read(dir)?.apply(&mut doc);
     doc.validate_extras().map_err(|e| anyhow::anyhow!(e))?;
     let me = pick_account(client, accounts, as_tag)?;
     let key = me.key_pair()?;

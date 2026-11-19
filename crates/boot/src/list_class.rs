@@ -1554,6 +1554,17 @@ pub async fn event_with(
     Ok(Ret::new(r.eax, 4))
 }
 
+/// The focused row of our screen `screen`, as the sideways steps read it
+/// (`LIST_FOCUSED_ROW` on its list): for an [`Action`] that acts on the
+/// focused row (the Mods list's X, `crate::mods_screen`).
+pub async fn focused_row(cx: &Cx, screen: u32) -> Result<Option<i16>, EntryError> {
+    let focused = cx
+        .call(GuestCall::new(points::LIST_FOCUSED_ROW.base).eax(screen.wrapping_add(ui::LIST)))
+        .await?
+        .eax;
+    Ok((focused != u32::MAX).then(|| DatumHandle(focused).index() as i16))
+}
+
 /// Screen slot 0 of a class told of frees: the Controls destructor
 /// (`original`), then `on_free` with the screen. Thiscall, flags, `ret 4`.
 pub async fn destructor(cx: Cx, original: u32, on_free: OnFree) -> Result<Ret, EntryError> {
