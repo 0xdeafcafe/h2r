@@ -1019,6 +1019,18 @@ pub struct Bound {
     pub lod_offset: f32,
 }
 
+/// Final unbound colour of a converted model reflection parameter block.
+pub const MODEL_REFLECTION_SIGNATURE: u32 = u32::from_le_bytes(*b"H1rf");
+
+/// Facing/grazing RGB followed by facing/grazing alpha, before the saved copy.
+pub fn model_reflection_start(original_colors: usize) -> Option<usize> {
+    match original_colors {
+        7 => Some(1),
+        8 => Some(4),
+        _ => None,
+    }
+}
+
 /// Values a shader sets over its layout's.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Extras {
@@ -1027,6 +1039,9 @@ pub struct Extras {
     /// The scrolling of the layout's animated map
     /// ([`Layout::animation`]); `None`: not animated.
     pub scroll: Option<[Option<Slide>; 2]>,
+    /// Retain original reflection endpoints in a converted model shader so the
+    /// cinematic renderer can release its override after a checkpoint or a cut.
+    pub cinematic_reflection: bool,
     /// The colour and fade, on a layout with [`Layout::tint`] vectors;
     /// `None` keeps the layout's (white, no fade).
     pub tint: Option<Tint>,
@@ -1231,6 +1246,13 @@ impl Library {
             }
             _ => None,
         };
+        let mut colors = colors;
+        if extras.cinematic_reflection {
+            if let Some(first) = model_reflection_start(colors.len()) {
+                colors.extend_from_within(first..first + 4);
+                colors.push(MODEL_REFLECTION_SIGNATURE);
+            }
+        }
         let mut rec = build_record(layout, stem, &bitmaps, &colors, &vectors, picture)?;
         if let Some(tree) = layout.animation {
             let props = match (extras.counter, scroll) {
@@ -2572,7 +2594,7 @@ pub fn plasma_shader(
             scroll: Some(maps[1].scroll),
             tint: Some(Tint::faded([1.0; 3], fade)),
             brightest_mask: Some(light.gain()),
-            counter: None,
+            ..Extras::default()
         },
         fallback: Some(Box::new(plain)),
     }

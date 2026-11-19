@@ -9,6 +9,7 @@
 //! [`Hook`]s the converter fills in.
 
 mod commands;
+mod cinematic;
 
 use std::collections::HashMap;
 
@@ -79,11 +80,11 @@ pub enum Missing {
     Extension,
 }
 
-/// Halo 1 cutscenes and tutorials, which need what is not converted yet
-/// (cutscene animation, recordings, command lists, HUD help text).
+/// How to compile the cutscene guard and tutorial wake targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Cutscenes {
     /// Compile them as written.
+    #[default]
     Play,
     /// Take the path Halo 1 takes when the player skips: every call of the
     /// level's `cinematic_skip_start` script is `false`, so `(if
@@ -91,11 +92,8 @@ pub enum Cutscenes {
     /// script carries on as after a skip (its fade in, `cinematic_stop`,
     /// control back). A wake of a tutorial script with a short path
     /// ([`SHORT_PATHS`]) wakes the short path.
-    #[default]
     Skip,
-    /// Play the cinematics, but wake the short path of a tutorial that
-    /// cannot finish ([`SHORT_PATHS`]; a10's cryo tutorial waits on look
-    /// tests Halo 2 has no builtin for).
+    /// Explicitly select the short tutorial path while playing cinematics.
     PlayShortPaths,
 }
 
@@ -379,6 +377,7 @@ pub fn compile_scenario(
         maneuver_switches: Default::default(),
         maneuver_latches: Default::default(),
         ai_registries: Vec::new(),
+        cinematic_base: None,
         ai_scripts: Default::default(),
         out: Compiled::default(),
         interned: HashMap::new(),
@@ -408,6 +407,7 @@ pub fn compile_scenario(
         let root = c.expr(s.root, ty)?;
         c.out.scripts[i] = definition(&s.name, s.kind, ty, root, i)?;
     }
+    c.cinematic_marker()?;
     c.install_ai_ticks()?;
     c.install_platoon_tick()?;
     c.out.references = t
@@ -552,6 +552,7 @@ struct Compiler<'a> {
     ai_control: Option<&'a h1ai::control::Control>,
     maneuver_switches: std::collections::BTreeMap<h1ai::control::Platoon, u16>,
     maneuver_latches: std::collections::BTreeMap<h1ai::control::Platoon, u16>,
+    cinematic_base: Option<u16>,
     ai_registries: Vec<(hs::h1_ai_slots::Registry, u16)>,
     ai_scripts: std::collections::BTreeMap<h1ai::control::Request, (u16, String)>,
     out: Compiled,
@@ -984,6 +985,9 @@ impl Compiler<'_> {
         let index = n.opcode();
         let catalog = self.h1;
         let f = catalog.function(index)?;
+        if let Some(d) = self.cinematic_call(&f.name, &args, expected)? {
+            return Ok(d);
+        }
         if let Some(d) = conversations::translate(self, &f.name, &args, expected)? {
             return Ok(d);
         }

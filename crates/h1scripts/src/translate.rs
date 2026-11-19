@@ -59,6 +59,11 @@ pub const ADAPTERS: &[(&str, &str, Adapter)] = &[
     // Halo 2 adds an optional count. Retail Halo 2 scripts leave it out in
     // 1309 of 2100 calls and never pass 0 (`ai_place_counts` in
     // h1campaign's survey), so the call keeps Halo 1's one argument.
+    ("cinematic_screen_effect_set_convolution", "set", Adapter::Cinematic),
+    ("cinematic_screen_effect_set_filter", "set", Adapter::Cinematic),
+    ("cinematic_screen_effect_set_filter_desaturation_tint", "set", Adapter::Cinematic),
+    ("cinematic_screen_effect_set_video", "set", Adapter::Cinematic),
+    ("rasterizer_model_ambient_reflection_tint", "set", Adapter::Cinematic),
     ("ai_place", "ai_place", Adapter::OmitOptional),
     ("ai_spawn_actor", "ai_place_counted", Adapter::AppendShort(1)),
     ("ai_command_list", "cs_run_command_script", Adapter::CommandList),
@@ -97,6 +102,8 @@ pub const ADAPTERS: &[(&str, &str, Adapter)] = &[
 /// A rewrite from a Halo 1 call to a Halo 2 one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Adapter {
+    /// Write interpolated cinematic render controls to scenario globals.
+    Cinematic,
     /// Start a generated command script or dispatch its per-unit control request.
     CommandList,
     /// Same arity; argument nodes take Halo 2's parameter types and Halo 2's

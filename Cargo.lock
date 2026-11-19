@@ -637,6 +637,7 @@ dependencies = [
  "bots",
  "clif",
  "content",
+ "coop",
  "d3d",
  "debug-menu",
  "dsound",

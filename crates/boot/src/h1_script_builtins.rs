@@ -31,8 +31,7 @@ const LOOK_DIRECTIONS: u32 = 0x3c00;
 const MOVE_DIRECTIONS: u32 = 0x3c000;
 const PLAYER0_THUMBSTICK_LAYOUT: u32 = 0x0051_ea30;
 const SIM_MODE: u32 = 8;
-const LOCAL_SIM: u32 = 1;
-const MAX_SKIP: u16 = 15;
+const MAX_SKIP: u16 = coop::cinematic::CinematicTicks::MAX as u16;
 const LOCAL_FRAME_UPDATE_RETURN: u32 = 0x0012_b646;
 
 #[derive(Default)]
@@ -56,9 +55,13 @@ fn cinematic_active(m: &dyn GuestMemory) -> Result<bool, MemFault> {
     Ok(globals != 0 && m.u8(globals + CINEMATIC_ACTIVE)? != 0)
 }
 
-fn local_cinematic(m: &dyn GuestMemory) -> Result<bool, MemFault> {
+fn authors_ticks(m: &dyn GuestMemory) -> Result<bool, MemFault> {
     let sim = m.u32(points::SIM_GLOBALS.base)?;
-    Ok(sim != 0 && m.u32(sim + SIM_MODE)? == LOCAL_SIM && cinematic_active(m)?)
+    Ok(sim != 0 && coop::cinematic::CinematicTicks::authors_updates(m.u32(sim + SIM_MODE)?))
+}
+
+fn authoritative_cinematic(m: &dyn GuestMemory) -> Result<bool, MemFault> {
+    Ok(authors_ticks(m)? && cinematic_active(m)?)
 }
 
 fn read_time(m: &dyn GuestMemory, offset: u32) -> Result<u32, MemFault> {
@@ -86,6 +89,10 @@ async fn evaluate(cx: Cx, slot: &'static RuntimeSlot, state: Arc<State>) -> Entr
     let thread = cx.arg(1)?;
     let result = if slot.parameters.is_empty() {
         match slot.builtin {
+            RuntimeBuiltin::ResetLightCaches => {
+                cx.write(crate::h1_cinematics::reset_light_caches)?;
+                0
+            }
             RuntimeBuiltin::GameTime => cx.read(|m| read_time(m, 8))?,
             RuntimeBuiltin::JoystickNormal => {
                 u32::from(cx.read(|m| m.u16(PLAYER0_THUMBSTICK_LAYOUT))? < 2)
@@ -125,7 +132,10 @@ async fn evaluate(cx: Cx, slot: &'static RuntimeSlot, state: Arc<State>) -> Entr
             RuntimeBuiltin::GameSkipTicks => {
                 let count = value as i16;
                 if count <= MAX_SKIP as i16 {
-                    state.skip_ticks.store(count.max(0) as u16, Relaxed);
+                    // A synchronous follower can execute this script during catch-up.
+                    // Its host's sequenced 0x27 updates already include those ticks.
+                    let pending = if cx.read(authors_ticks)? { count.max(0) as u16 } else { 0 };
+                    state.skip_ticks.store(pending, Relaxed);
                 }
                 0
             }
@@ -192,6 +202,7 @@ impl Feature for ScriptBuiltins {
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         flashlight::install(b);
+        crate::h1_cinematics::hooks(b);
         for point in [
             &points::HS_UNUSED_EVALUATOR,
             &points::HS_UNIT_FLAG_SET,
@@ -236,7 +247,7 @@ impl Feature for ScriptBuiltins {
                     return Ok(Flow::Continue);
                 }
                 let count = state.skip_ticks.swap(0, Relaxed);
-                if count == 0 || !local_cinematic(&*mem).unwrap_or(false) {
+                if count == 0 || !authoritative_cinematic(&*mem).unwrap_or(false) {
                     return Ok(Flow::Continue);
                 }
                 count

@@ -49,7 +49,7 @@ called index and the loaded campaign map.
 | Built | `player_action_test_look_relative_all_directions` | 495 | Tests all four signed look latches, matching Halo 1. The retail evaluator at `0x2a9340` tests for any of these bits. |
 | Built | `player_action_test_move_relative_all_directions` | 496 | Tests all four movement latches. The retail evaluator at `0x2a9370` tests for any. No stock Halo 1 campaign calls this form. |
 | Built | `player0_joystick_set_is_normal` | 722 | Reads the local thumbstick layout and checks the two layouts with the look stick in its normal position. Halo 2's input routing at `0x217f26` sends layout values 2 and 3 through the Legacy path. Halo 1's query is at `0xec5f0`. |
-| Built | `game_skip_ticks` | 725 | Queues up to 15 ticks during a local campaign cinematic. The frame hook consumes them after the ordinary simulation batch, through the native tick loop at `0x137f70`, before per-frame updates at `0x137ed0`. Halo 1's queue and dispatch are at `0xef110` and `0xbd6f6`. Networked co-op needs a synchronized extra-tick protocol for this call. |
+| Built | `game_skip_ticks` | 725 | Queues up to 15 ticks for the active campaign cinematic on the local world or synchronous host. The frame hook consumes them after the ordinary simulation batch, through the native tick loop at `0x137f70`, before per-frame updates at `0x137ed0`. Halo 1's queue and dispatch are at `0xef110` and `0xbd6f6`. Followers simulate the host's sequenced updates. See the co-op protocol, section 15.1. |
 | Built | `numeric_countdown_timer_get` | 729 | Returns the requested timer digit as at Halo 1 `0x56aa0`. The runtime uses Halo 2's short-argument descriptor and the interpreter converts its long result to the script's short. |
 | Built | `numeric_countdown_timer_set` | 843 | Sets the millisecond count and start flag as at Halo 1 `0xf1fa0`. The compiler inserts an unused leading long to match the descriptor. |
 | Built | `game_time` | 888 | Returns the simulation tick from the game clock, corresponding to Halo 1's evaluator at `0xed5b0`. |
@@ -70,13 +70,21 @@ reads that value at Halo 2's object-function import boundary
 (`0x108d90`). The AI flag and current power are stored in guest unit
 state and travel with the simulation snapshot.
 
-## Remaining retail campaign calls
+## Cinematic renderer and light caches
 
-| Builtin | Evidence and remaining implementation |
-|---|---|
-| `cinematic_screen_effect_set_convolution`, `_set_filter`, `_set_filter_desaturation_tint`, `_set_video` | Halo 1's evaluators at `0xee100`–`0xee210` populate different fields of its cinematic rasterizer state. Halo 2's start/stop and depth-of-field/crossfade setters control its own effects. The Halo 1 convolution, filtering, desaturation and video need matching rendering passes. |
-| `rasterizer_model_ambient_reflection_tint` | Halo 1 writes separate model environment-reflection state at `0xee330`. The corresponding Halo 2 rasterizer script region discards arguments at `0x2ab130`; the tint needs to reach the model reflection pass. |
-| `rasterizer_lights_reset_for_new_map` | Halo 1 clears its light caches at `0xec680`. Halo 2's map reset at `0xc0040` also resets its light datum arrays and global settings. The running cinematic needs a cache reset compatible with its live light registrations. |
+| Status | Builtin | Behavior and evidence |
+|---|---|---|
+| Built | `cinematic_screen_effect_set_convolution` | H1's blur code at `0x6c4c4`, `0x6b9ff` and `0x6bac0` selects the sample kernel and repeats it. The renderer samples the current viewport and alternates two render targets. a30's opening runs this pass. |
+| Built | `cinematic_screen_effect_set_filter`, `_set_filter_desaturation_tint` | The postprocess applies the brightness and tinted desaturation ramps with H1's filter math at `0x6cc64`–`0x6cde8`. Durations use simulation time so a restored checkpoint restores the ramp. |
+| Built | `cinematic_screen_effect_set_video` | The writer rebuilds the mask and noise bitmaps from the H1 globals rasterizer block, read by the original effect at `0x61990`. The video pass combines them with the scene and the authored noise and overbright parameters. |
+| Built | `rasterizer_model_ambient_reflection_tint` | H1 at `0x70986`–`0x70a2f` overrides the model reflection ramp. Rebuilt environment-mapped model shaders retain their original facing and grazing colors and strengths so the draw hook can restore them when the override clears. |
+| Built | `rasterizer_lights_reset_for_new_map` | Converted-campaign slot 687 (`0x2ab130`). H1 invalidates lighting work at `0xec680`. The hook clears the validity byte and previous frame on occupied H2 object render states used by `0x3dfe0`, preserving the owner and live light links. The H2 map reset at `0xc0040` would release registrations. |
+
+The screen setters compile to typed scenario globals, ordinary retail HS
+operations and the existing game clock (888). Start and stop still call the
+retail screen-effect builtins (705 and 709). The renderer reads the state at
+the Halo 2 screen-effect call inside the view render, before the retail pass.
+Model reflection is independent of the fullscreen effect's lifetime.
 
 `magic_seat_name`, `magic_melee_attack` and `object_set_emotion_animation`
 have no stock calls across the ten campaign maps.

@@ -53,6 +53,23 @@ pub(super) fn mission(s: &Scenario, ai: &h1ai::h2::ScenarioAi, source: &h1map::H
     assert_eq!(main_wakes, ["setup_dead", "objectives_a30", "music_a30", "save_mission_start",
         "mission_lz", "mission_first", "mission_cave", "mission_cliff", "mission_rubble", "mission_river", "mission_obj"]);
     let intro = calls(s, "cutscene_intro");
+    // The original lifepod instruction, in the intro itself, makes one
+    // convolution request (1, 1, 3.0, 0.0, 7.0) and timestamps its ramp.
+    use h1scripts::cinematics::Field::*;
+    let required = [(Passes, 1), (Kernel, 1), (RadiusFrom, 3f32.to_bits()),
+        (RadiusTo, 0), (BlurSeconds, 7f32.to_bits())];
+    assert!(intro.iter().filter(|c| c.name == "begin").any(|body| {
+        body.args.len() >= 5 && required.iter().zip(&body.args).all(|(&(field, bits), &arg)| {
+            let Ok(Expression::Call { name: "set", children, .. }) = s.expression(arg) else { return false };
+            let Ok(args) = children.collect::<hs::Result<Vec<_>>>() else { return false };
+            let [variable, value] = args.as_slice() else { return false };
+            let (name, index) = atom(s, *variable);
+            let n = s.node(*value).unwrap();
+            n.atom() && !n.global() && name == field.name()
+                && s.globals()[index as usize].name().unwrap() == name
+                && (if field.ty() == 7 { n.data() & 0xffff } else { n.data() }) == bits
+        })
+    }), "missing authored lifepod blur");
     assert!(main.iter().any(|c| c.name == "cutscene_intro"));
     for (body, title, index) in [(&intro, "arrival", 0), (&main, "reunion", 1)] {
         let call = body.iter().find(|c| c.name == "cinematic_set_title").unwrap();

@@ -317,7 +317,7 @@ impl Compiler<'_> {
         }
     }
 
-    fn control_call(&mut self, name: &str, ty: u16, args: &[Datum]) -> Result<Datum> {
+    pub(super) fn control_call(&mut self, name: &str, ty: u16, args: &[Datum]) -> Result<Datum> {
         let function = self
             .h2
             .builtins

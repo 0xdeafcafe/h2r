@@ -172,7 +172,7 @@ pub struct Options<'a> {
     /// ([`donor`]); none copies nothing.
     pub donors: Option<&'a donor::Donors>,
     /// Halo 1's cinematics and the a10 tutorial: played or skipped. `None`
-    /// (the default) takes each level's own choice
+    /// (the default) plays all ten levels as authored
     /// ([`cutscenes::default_for`]; docs/halo1/campaign.md, Cutscenes).
     pub cutscenes: Option<h1scripts::compile::Cutscenes>,
     /// The animation graphs and recorded animations the scripts name
