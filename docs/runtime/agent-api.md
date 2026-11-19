@@ -963,6 +963,16 @@ adds them; types in `crates/agent-proto/src/render.rs`, logic in
   (`frame-<seq>-pass-<n>.png`); `snaps` gives each file or error. A pass
   with no draw has no known size and says so. This is a GPU round trip,
   only when asked.
+- **Shadow maps.** `render.shadows {}` reads completed GPU comparisons when
+  `impl.render.native_shadows=on` and `H2_NATIVE_SHADOWS_COMPARE=1`.
+  It accepts no parameters. `comparing` reports the requested mode.
+  `maps.completed`, `nonempty` (at least one caster packet) and `mismatched`
+  count physical maps since process start. `maps.recent` keeps the latest 32
+  in readback completion order. Each includes the present (`frame`), generation,
+  view, parent identity, site, map kind, physical copy, extent, candidate count,
+  projection (nine vectors of four raw u32 words), packet count,
+  differing texel count and first differing pixel or null. A dropped or pending
+  readback contributes no sample. See [native shadows](../graphics/native-shadows.md).
 - **Counters.** `render.stats`: `interp` is `d3d::interp::InterpStats`
   with every field (frames blended and held, replays, warps, and the hold
   reasons `unsure_*`, `mismatch_*`, `dropped`), read from its `Debug`

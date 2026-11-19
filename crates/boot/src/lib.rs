@@ -63,6 +63,7 @@ pub mod movies_glue;
 pub mod native_lights_glue;
 mod native_shadows_draw;
 mod native_shadows_scope;
+mod native_shadows_probe;
 pub mod native_shadows_glue;
 pub mod native_objects_glue;
 pub mod native_post_glue;
@@ -1190,9 +1191,9 @@ pub fn run_hosted_with_live(
     // No window: a headless run, which skips the movies by default.
     let headless = host.gfx.is_none();
     if opts.d3d && let Some(b) = &mut host.gfx {
-        native_shadows_glue::configure(b);
+        native_shadows_glue::configure(b, "reference");
         if let Some((view, _)) = &mut host.gfx_view {
-            native_shadows_glue::configure(view);
+            native_shadows_glue::configure(view, "display");
         } else if interp.is_none() {
             native_shadows_glue::configure_single(b);
         }

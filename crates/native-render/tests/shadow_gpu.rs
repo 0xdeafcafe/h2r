@@ -9,6 +9,7 @@ use native_render::shadow_gpu::{MapKind, Producer};
 #[test]
 fn object_mask_keeps_the_caster_and_clear_in_separate_generations() {
     let Ok(ctx) = GfxContext::headless() else {
+        eprintln!("SKIPPED shadow GPU test: no headless adapter");
         return;
     };
     let size = (16, 16);
@@ -76,9 +77,11 @@ fn d24_map_preserves_caster_depth_stencil_and_the_untouched_clear() {
         state::{CompareFunc, DepthBufferMode, StencilOp, StencilState},
     };
     let Ok(ctx) = GfxContext::headless() else {
+        eprintln!("SKIPPED shadow GPU test: no headless adapter");
         return;
     };
     if !ctx.caps.depth32_stencil8 {
+        eprintln!("SKIPPED shadow D24 test: no readable depth/stencil format");
         return;
     }
     let size = (16, 16);

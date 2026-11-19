@@ -185,6 +185,7 @@ pub fn install_headless(
                 // `frame-N-e3.png` are a pair from the same frame.
                 let scale = scale.max(2);
                 let reference = configure_gfx(
+                    "reference",
                     d3d::GfxBackend::new(share_context(&ctx)).on_present(shots("-1x", 0, None)),
                 );
                 // Every shadow-map frame is compared between the views; the
@@ -249,9 +250,10 @@ pub fn install_headless(
                     e3_shots(ctx, store, id, flags, gamma);
                 };
                 let retail = configure_gfx(
+                    "retail",
                     d3d::GfxBackend::new(share_context(&ctx)).on_present(retail_hook),
                 );
-                let e3 = configure_gfx(d3d::GfxBackend::new(ctx).on_present(e3_hook));
+                let e3 = configure_gfx("e3", d3d::GfxBackend::new(ctx).on_present(e3_hook));
                 if interp.is_some() {
                     eprintln!(
                         "d3d: in-between frames are off under the lighting A/B (H2_BOOT_GFX_LIGHTING_AB)"
@@ -284,11 +286,13 @@ pub fn install_headless(
                 // In-between frames show on the view; the reference's
                 // replay hook keeps its `-1x` swap count the guest's.
                 let reference = configure_gfx(
+                    "reference",
                     d3d::GfxBackend::new(share_context(&ctx))
                         .on_present(shots("-1x", shadow_shots, None))
                         .on_present_replay(|_, _, _, _, _| {}),
                 );
                 let view = configure_gfx(
+                    "display",
                     d3d::GfxBackend::new(ctx)
                         .on_present(shots("", shadow_shots, Some(Arc::clone(&between))))
                         .on_present_replay(between.hook(dir.clone(), "")),
@@ -307,6 +311,7 @@ pub fn install_headless(
                 };
             }
             let mut backend = configure_gfx(
+                "reference",
                 d3d::GfxBackend::new(ctx)
                     .on_present(shots("", shadow_shots, Some(Arc::clone(&between))))
                     .on_present_replay(between.hook(dir.clone(), "")),
@@ -485,8 +490,8 @@ impl BetweenShots {
 }
 
 /// `h2 run`'s settings for a headless `GfxBackend`.
-fn configure_gfx(mut backend: d3d::GfxBackend) -> d3d::GfxBackend {
-    crate::native_shadows_glue::configure(&mut backend);
+fn configure_gfx(copy: &'static str, mut backend: d3d::GfxBackend) -> d3d::GfxBackend {
+    crate::native_shadows_glue::configure(&mut backend, copy);
     // Merged render passes are the default, with the fast rule
     // (alpha-tested draws merged too; a few edge pixels can differ
     // from one render pass per draw). H2_GFX_MERGE_PASSES=exact

@@ -172,6 +172,7 @@ pub fn add_host_methods(agent: &agent::Agent) {
         agent.set_sampler(Box::new(BootSampler));
     }
     agent::render::add_methods(agent, &agent::render::PROBE, crate::render_probe::sources());
+    agent.add_method(method::RENDER_SHADOWS, Access::Read, crate::native_shadows_probe::read);
     agent.add_method(method::PROFILE_FALLBACKS, Access::Read, |v| {
         let top = match v.get("top") {
             None => 20,

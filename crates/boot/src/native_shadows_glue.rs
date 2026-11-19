@@ -92,11 +92,15 @@ pub(crate) fn install<B: d3d::backend::Backend + 'static>(device: &d3d::abi::Sha
     }
 }
 
-pub(crate) fn configure(backend: &mut d3d::GfxBackend) {
-    if enabled() && native_shadows::comparing() {
+pub(crate) fn comparison_enabled() -> bool {
+    enabled() && native_shadows::comparing()
+}
+
+pub(crate) fn configure(backend: &mut d3d::GfxBackend, copy: &'static str) {
+    if comparison_enabled() {
         let mut bits = None;
         backend.observe_recorded_pass(move |ctx, enc, source, target, clear, draws| {
-            batch(ctx, enc, source, target, clear, draws, &mut bits);
+            batch(ctx, enc, source, target, clear, draws, copy, &mut bits);
         });
     }
 }
@@ -386,6 +390,7 @@ struct Copy {
     depth: Option<wgpu::Texture>,
     size: (u32, u32),
     producer: Option<Producer>,
+    copy: Option<&'static str>,
     context: Option<GfxContext>,
     bits: Option<Arc<DepthBits>>,
     refused: bool,
@@ -415,6 +420,7 @@ impl d3d::ExternalPass for Marker {
                     depth: depth.cloned(),
                     size: t.size,
                     producer: None,
+                    copy: None,
                     context: None,
                     bits: None,
                     refused: false,
@@ -465,11 +471,32 @@ impl Copy {
                 bits.convert(&ctx, enc, &t, (t.width(), t.height()))
             }
         };
-        let label = format!(
-            "frame={} seq={} {:?} {:?} packets={draws}",
-            s.frame, s.seq, s.layer.site, s.kind
-        );
-        compare(&ctx.device, enc, map.view.texture(), &reference, label)
+        let Some(copy) = self.copy else { return false };
+        let report = crate::native_shadows_probe::MapComparison {
+            frame: s.frame,
+            generation: s.seq,
+            view: s.layer.view,
+            identity: s.identity,
+            copy,
+            site: match s.layer.site {
+                Site::Light => "light",
+                Site::AdditionalCaster => "additional",
+                Site::Object => "object",
+            },
+            kind: match s.kind {
+                MapKind::ColourMask => "colour_mask",
+                MapKind::Depth => "depth",
+            },
+            candidates: s.layer.items.len(),
+            projection: std::array::from_fn(|r| {
+                std::array::from_fn(|i| s.layer.projection[4 * r + i])
+            }),
+            size: [map.size.0, map.size.1],
+            packets: draws,
+            texels_differ: 0,
+            first: None,
+        };
+        compare(&ctx.device, enc, map.view.texture(), &reference, report)
     }
 }
 
@@ -480,6 +507,7 @@ fn batch(
     target: &RenderTarget<'_>,
     clear: Clear,
     draws: &[RecordedDraw],
+    copy: &'static str,
     bits: &mut Option<Arc<DepthBits>>,
 ) {
     COPIES.with_borrow_mut(|copies| {
@@ -494,6 +522,7 @@ fn batch(
             return;
         };
         if c.producer.is_none() {
+            c.copy = Some(copy);
             c.producer = Producer::new(&ctx.device, enc, target, scope.kind);
             c.context = Some(GfxContext {
                 instance: ctx.instance.clone(),
@@ -534,7 +563,7 @@ fn compare(
     enc: &mut wgpu::CommandEncoder,
     native: &wgpu::Texture,
     reference: &wgpu::Texture,
-    label: String,
+    mut report: crate::native_shadows_probe::MapComparison,
 ) -> bool {
     let (w, h) = (native.width(), native.height());
     if native.size() != reference.size()
@@ -568,7 +597,7 @@ fn compare(
     let result = buf.clone();
     enc.map_buffer_on_submit(&buf, wgpu::MapMode::Read, .., move |r| {
         if r.is_err() {
-            eprintln!("native-shadows {label} readback failed");
+            eprintln!("native-shadows frame={} seq={} readback failed", report.frame, report.generation);
             return;
         }
         let Ok(data) = result.slice(..).get_mapped_range() else {
@@ -590,11 +619,16 @@ fn compare(
             {
                 if a != b {
                     differences += 1;
-                    first.get_or_insert((x, y));
+                    first.get_or_insert([x, y]);
                 }
             }
         }
-        eprintln!("native-shadows {label} map={w}x{h} texels_differ={differences} first={first:?}");
+        report.size = [w,h];
+        report.texels_differ = differences;
+        report.first = first;
+        eprintln!("native-shadows frame={} seq={} {} {} copy={} packets={} map={w}x{h} texels_differ={differences} first={first:?}",
+            report.frame, report.generation, report.site, report.kind, report.copy, report.packets);
+        crate::native_shadows_probe::record(report);
     });
     true
 }

@@ -151,6 +151,7 @@ fn receiver() -> ResolvedDraw {
 #[test]
 fn layer11_uses_only_its_map_and_preserves_rgb_stencil_and_alpha_test() {
     let Ok(ctx) = GfxContext::headless() else {
+        eprintln!("SKIPPED shadow GPU test: no headless adapter");
         return;
     };
     let surface = OffscreenTarget::new(&ctx.device, (16, 16), wgpu::TextureFormat::Rgba8Unorm);
@@ -246,5 +247,146 @@ fn layer11_uses_only_its_map_and_preserves_rgb_stencil_and_alpha_test() {
         let px = surface.read_pixels(&ctx);
         assert_eq!(&px[(2 * 16 + 2) * 4..][..4], [255, 0, 255, want]);
         assert_eq!(&px[(15 * 16 + 15) * 4..][..4], [255, 0, 255, 64]);
+    }
+}
+
+#[test]
+fn mixed_native_shadow_unshadowed_and_refused_d3d_lights_match_all_d3d() {
+    use d3d::{
+        Backend, ExternalPassRequest, ExternalPlan, ExternalSurfaces, GfxBackend, TargetCopy,
+    };
+    let Ok(ctx) = GfxContext::headless() else {
+        eprintln!("SKIPPED shadow GPU test: no headless adapter");
+        return;
+    };
+    let mut backend = GfxBackend::new(crate::d3d_glue::share_context(&ctx));
+    let gpu = new(crate::d3d_glue::share_context(&ctx));
+    let mut make_source = |value: [f32; 4]| {
+        let id = backend
+            .create_surface(D3DFormat::LinA8R8G8B8, 1, 1, false)
+            .unwrap();
+        backend
+            .clear(
+                id,
+                None,
+                Clear {
+                    color: Some(value),
+                    ..Clear::NONE
+                },
+            )
+            .unwrap();
+        backend.flush().unwrap();
+        backend.surface_texture(id).unwrap().unwrap()
+    };
+    let lit = make_source([1.0, 0.0, 0.0, 1.0]);
+    let gel = make_source([0.0, 0.0, 0.0, 128.0 / 255.0]);
+    let dark = make_source([0.0; 4]);
+    let map = SampledMap {
+        kind: MapKind::Depth,
+        size: (1, 1),
+        view: lit.texture.create_view(&Default::default()),
+    };
+    let render = |backend: &mut GfxBackend, native: bool| {
+        let color = backend
+            .create_surface(D3DFormat::A8R8G8B8, 16, 16, false)
+            .unwrap();
+        let depth = backend
+            .create_surface(D3DFormat::D24S8, 16, 16, true)
+            .unwrap();
+        backend
+            .clear(
+                color,
+                Some(depth),
+                Clear {
+                    color: Some([1.0, 0.0, 1.0, 0.25]),
+                    depth: Some(1.0),
+                    stencil: Some(3),
+                },
+            )
+            .unwrap();
+        let plan = ExternalPlan {
+            stage: timeline::native::Stage::Lights,
+            view: 0,
+            ranges: 1,
+            slots: vec![],
+        };
+        let surfaces = ExternalSurfaces {
+            color,
+            depth,
+            sampled: vec![],
+            slots: vec![],
+            slot_sizes: vec![],
+        };
+        let request = ExternalPassRequest {
+            rect: (0, 0, 16, 16),
+            surface_size: (16, 16),
+            z_scale: 16_777_215.0,
+        };
+        for (i, original) in [&lit, &gel, &dark].into_iter().enumerate() {
+            let mut draw = receiver();
+            draw.clip = Some(d3d::PixelRect {
+                x: 4 * i as u32,
+                y: 0,
+                width: 4,
+                height: 16,
+            });
+            if i == 1 {
+                // The intervening unshadowed light reads an ordinary colour texture.
+                draw.texture_info[0].as_mut().unwrap().format = D3DFormat::LinA8R8G8B8;
+                let modes = texture_modes([TEX_PROJECT2D, 0, 0, 0]);
+                Arc::make_mut(&mut draw.raw).render[136] = modes;
+                Arc::make_mut(draw.shader.pixel_shader.as_mut().unwrap())[54] = modes;
+            } else if native {
+                let output = Arc::new(Mutex::new((i == 0).then(|| map.clone())));
+                let pass = Range {
+                    gpu: gpu.clone(),
+                    draw: draw.clone(),
+                    map: Some((output, MapKind::Depth, MAP)),
+                    packets: vec![],
+                    recorded: None,
+                };
+                let commands = backend
+                    .prepare_external(
+                        surfaces.clone(),
+                        request,
+                        [Some(&dark), None, None, None],
+                        &plan,
+                        TargetCopy::Reference,
+                        Arc::new(Mutex::new(Box::new(pass))),
+                    )
+                    .unwrap();
+                if i == 0 {
+                    let commands = commands.expect("lit receiver admitted");
+                    assert_eq!(commands.len(), 1);
+                    for command in commands {
+                        backend.commit_external(command);
+                    }
+                    continue;
+                }
+                assert!(
+                    commands.is_none(),
+                    "unavailable term must leave its original draw"
+                );
+            }
+            assert_eq!(
+                backend
+                    .draw(
+                        color,
+                        Some(depth),
+                        &draw,
+                        [Some(original), None, None, None]
+                    )
+                    .unwrap(),
+                d3d::DrawOutcome::Drawn
+            );
+        }
+        backend.flush().unwrap();
+        backend.store.read_color(&ctx, color).unwrap().0
+    };
+    let expected = render(&mut backend, false);
+    let actual = render(&mut backend, true);
+    assert_eq!(actual, expected);
+    for (x, alpha) in [(1, 255), (5, 128), (9, 0), (13, 64)] {
+        assert_eq!(actual[(16 + x) * 4 + 3], alpha);
     }
 }
