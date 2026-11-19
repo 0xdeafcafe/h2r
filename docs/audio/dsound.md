@@ -294,8 +294,11 @@ The retail library copies all nine fields at `0x37c0e9`. Its voice
 calculator (`0x37ae57`, I3DL2 helper `0x38368b`) splits each loss
 by its LF ratio, adding obstruction only on the direct path. The helper
 uses the room level again for the wet HF coefficient. The two room fields
-agree at both Halo setters. Its distance term multiplies voice distance
-by both room factors, so Halo's zero source factor disables that term.
+agree at both Halo setters. Its distance correction multiplies voice distance
+by both room factors. Above unity the helper adds the product's level
+in millibels to the room level. With Halo's zero source factor it skips
+the correction. This is a calculation of a voice parameter, before the
+MCPX sums the bins.
 The software model uses the named roomHF field and an inverse-distance
 room curve for general I3DL2 inputs. Nonzero source rolloff with finite
 3D distances is a model for other callers, outside the verified Halo case.

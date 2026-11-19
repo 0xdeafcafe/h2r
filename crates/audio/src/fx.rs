@@ -16,8 +16,8 @@
 //!
 //! The stages, in the order [`FxState::process`] applies them to a voice
 //! rendered at unity gain: amplitude envelope and LFO tremolo, then the
-//! filter cascade (cutoff modulated by the filter LFO), then the I3DL2
-//! direct-path high-frequency shelf.
+//! filter cascade (cutoff modulated by the filter LFO). The mixer then
+//! filters the direct and I3DL2 room paths independently before routing.
 
 use std::f64::consts::PI;
 

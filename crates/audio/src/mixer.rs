@@ -1474,13 +1474,10 @@ mod tests {
 
     #[test]
     fn positioned_mix_in_distance_changes_wet_balance_and_direct_brightness_only_when_enabled() {
-        let measure = |enabled, distance, hz| {
+        let measure = |enabled, distance| {
             let mut m = Mixer::new(48_000);
             m.set_distance_reverb(enabled);
-            m.set_reverb(Some(I3dl2Listener {
-                reflections_delay: 0.3,
-                ..env_params()
-            }));
+            m.set_reverb(Some(env_params()));
             let mut bus = MixIn::new(17);
             bus.set_mix_bins(Some(vec![(6, 0), (10, -600)]));
             bus.set_source_3d(Some(Source3d {
@@ -1494,22 +1491,33 @@ mod tests {
             m.add_mix_in(bus);
             let mut stream = Stream::new(WaveFormat::pcm16(1, 48_000).unwrap()).unwrap();
             stream.set_mix_bins(Some(vec![(17, -900)]));
-            stream.submit(&sine_pcm(hz, 0.1)).unwrap();
+            let mut impulse = [0u8; 128];
+            impulse[..2].copy_from_slice(&16384i16.to_le_bytes());
+            stream.submit(&impulse).unwrap();
             m.add_stream(stream);
             let mut out = vec![0.0; 4800 * 2];
             m.render(&mut out);
             let energy = |s: &[f32]| s.iter().map(|x| f64::from(*x).powi(2)).sum::<f64>();
-            (energy(&out[480..]), energy(&m.reverb_in[240..]))
+            // Split the actual stereo output before the first room reflection.
+            // At Nyquist the alternating sum of an impulse response is its HF
+            // gain. Divide by the DC sum to measure coloration independent of level.
+            let (early, tail) = out.split_at(2 * 240);
+            let left = early.chunks_exact(2).map(|frame| f64::from(frame[0]));
+            let dc: f64 = left.clone().sum();
+            let hf: f64 = left
+                .enumerate()
+                .map(|(i, x)| if i % 2 == 0 { x } else { -x })
+                .sum();
+            (energy(early), energy(tail), (hf / dc).abs())
         };
         let far = 30.0;
-        let neutral = measure(false, 0.0, 5000.0);
-        assert_eq!(measure(false, far, 5000.0), neutral);
-        assert_eq!(measure(true, 0.0, 5000.0), neutral);
-        let (direct, wet) = measure(true, far, 5000.0);
-        assert!(wet > neutral.1 && direct / wet < neutral.0 / neutral.1);
-        let low_near = measure(true, 0.0, 100.0).0;
-        let low_far = measure(true, far, 100.0).0;
-        assert!(direct / low_far < 0.3 * neutral.0 / low_near);
+        let near = measure(false, 0.0);
+        assert!(near.0 > 0.0 && near.1 > 0.0);
+        assert_eq!(measure(false, far), near);
+        assert_eq!(measure(true, 0.0), near);
+        let distant = measure(true, far);
+        assert!(distant.1 > near.1 && distant.0 / distant.1 < near.0 / near.1);
+        assert!(distant.2 < 0.5 * near.2);
     }
 
     #[test]
