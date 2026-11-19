@@ -7,6 +7,7 @@
 //! the game and feeds this crate plain values, and `h2 sim` (the CLI) runs
 //! the processes. So all of it is tested without a run.
 
+pub mod batch;
 pub mod clock;
 pub mod compare;
 pub mod config;
