@@ -19,6 +19,7 @@ mod bytes;
 mod ground;
 pub mod control;
 pub mod conversations;
+pub mod voices;
 pub mod convert;
 pub mod floors;
 pub mod h1;

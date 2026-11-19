@@ -151,6 +151,7 @@ fn invented() -> H1Ai {
             ],
         }],
         conversations: Vec::new(),
+        voice_definitions: Vec::new(),
         reference_counts: [0; 3],
     }
 }

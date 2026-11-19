@@ -421,7 +421,8 @@ fn check_bsps(
     let addr = scnr.location.unwrap().address;
     let bytes = m.read_tag_bytes(scnr.id).unwrap();
     let word = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
-    let n = h1.structure_bsps().unwrap().len();
+    let sources = h1.structure_bsps().unwrap();
+    let n = sources.len();
     assert_eq!(done.report.bsps.len(), n, "every Halo 1 BSP converts");
     assert_eq!(word(&bytes, 0x210) as usize, n, "one descriptor per BSP");
     assert_eq!(word(&bytes, 0x290) as usize, n, "cluster data per BSP");
@@ -445,6 +446,13 @@ fn check_bsps(
         );
         regions.push((word(&bytes, e), word(&bytes, e + 4)));
         let b = m.read_tag_bytes(sbsp).unwrap();
+        let source = h1.structure_bsp(&sources[k]).unwrap();
+        let pvs = source.cluster_visibility().unwrap();
+        assert!(!pvs.is_empty(), "bsp {k}: source visibility");
+        let n = word(&b, 0x54) as usize;
+        let data = (word(&b, 0x58) - loc.address) as usize;
+        assert_eq!(&b[data..data + n], pvs, "bsp {k}: source PVS rows");
+
         // The cluster data matches the BSP: one entry per cluster, its
         // checksum.
         let c = clusters + k * 0x34;

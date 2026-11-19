@@ -1,16 +1,15 @@
-/Users/afr/Source/github.com/0xdeafcafe/h2recomp/.claude/worktrees/h1-push-conversations/crates/h1scripts/src/compile/conversations.rs:
-
 //! Conversations expressed with retail Halo 2 scripts and per-voice playback.
 //! The binder runs synchronously. Only the conversation's worker sleeps.
 
 use super::*;
 use h1ai::conversations::{Conversation, Participant, SpeakerScopes};
-use hs::h1_conversation::{ACTOR_CAPACITY, Op};
+use hs::h1_conversation::Op;
 use std::collections::HashSet;
 
 mod emit;
 mod playback;
 mod staging;
+mod voices;
 
 use emit::*;
 
@@ -52,7 +51,6 @@ struct CastScratch {
     rank: Global,
     voice: Global,
     profile_base: u32,
-    seed: Option<Script>,
     best: Global,
     count: Global,
     cursor: Global,
@@ -86,16 +84,29 @@ pub(super) fn build(
     scenes: &[Conversation],
     scopes: &SpeakerScopes,
 ) -> Result<Lowering> {
-    if scenes.is_empty() {
-        return Ok(Lowering::default());
-    }
     let persistent = c.t.scripts.iter().filter(|s| s.kind <= 2).count();
     if persistent + scenes.len() >= 0x140 {
         return Err(invalid(
             "conversation workers exceed the Halo 2 thread pool",
         ));
     }
+    let has_cast = scenes
+        .iter()
+        .flat_map(|s| &s.participants)
+        .any(|p| !p.radio());
+    let voice_metadata = has_cast || !scopes.voice_definitions.is_empty();
+    if voice_metadata {
+        c.out.strings.resize(voices::prefix_len(scopes), 0);
+    }
     let mut program = Program::new(c);
+    let profile_base = if voice_metadata {
+        voices::build(&mut program, scopes)?
+    } else {
+        0
+    };
+    if scenes.is_empty() {
+        return Ok(Lowering::default());
+    }
     for participant in scenes.iter().flat_map(|scene| &scene.participants) {
         if !participant.radio()
             && let Some(name) = &participant.assigned_name
@@ -103,43 +114,12 @@ pub(super) fn build(
             program.add_alias(name)?;
         }
     }
-    let profile_base = program.compiler.out.globals.len() as u32;
-    let has_cast = scenes
-        .iter()
-        .flat_map(|s| &s.participants)
-        .any(|p| !p.radio());
-    if has_cast {
-        for _ in 0..ACTOR_CAPACITY {
-            program.global("voice_history", long(0))?;
-        }
-    }
-    let seed = if !has_cast || scopes.leaders.is_empty() {
-        None
-    } else {
-        let first = program.compiler.out.globals.len() as u32;
-        for leader in &scopes.leaders {
-            // Eight bits of rule, twelve each of encounter and squad.
-            let packed = u32::from(leader.selection) << 24
-                | u32::from(leader.encounter) << 12
-                | u32::from(leader.squad);
-            program.global("leader", long(packed))?;
-        }
-        Some(program.script(
-            "seed_voices",
-            3,
-            bridge(
-                Op::RefreshVoices,
-                [first, scopes.leaders.len() as u32, profile_base],
-            ),
-        )?)
-    };
     let scratch = CastScratch {
         actors: program.global("actors", Expr::None(OBJECT_LIST))?,
         candidate: program.global("candidate", Expr::None(OBJECT))?,
         rank: program.global("rank", Expr::Real(f32::MIN))?,
         voice: program.global("candidate_voice", short(-1))?,
         profile_base,
-        seed,
         best: {
             program.global("voice_table", long(profile_base))?;
             program.global("best", Expr::Real(f32::MIN))?
@@ -438,9 +418,6 @@ impl<'p, 'c, 's, 'a> Scene<'p, 'c, 's, 'a> {
             .flatten()
             .map(|r| r.unit.set(Expr::None(OBJECT)))
             .collect();
-        if let Some(seed) = &self.scratch.seed {
-            body.push(seed.call());
-        }
         let source = self.source;
         // Exact names reserve their actor before searching the squad rosters.
         for named in [true, false] {

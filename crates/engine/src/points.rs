@@ -231,6 +231,10 @@ points! { ALL;
     HS_UNIT_GRENADE_COUNT @ 0x002a_4310: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/ai-control.md";
     /// HaloScript's object awareness evaluator, index 305.
     HS_AI_SEE_OBJECT @ 0x002a_53b0: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/ai-control.md";
+    HS_CONVERSATION_SPAWN_WAVE @ 0x0020_1520: [fn(count: eax, squad: stack 0, location: stack 1) ret 16]; "docs/halo1/ai.md";
+    HS_CONVERSATION_ACTOR_SPAWN @ 0x0020_3780: [fn(location: ecx, squad: stack 0) -> eax ret 8]; "docs/halo1/ai.md";
+    HS_CONVERSATION_UNIT_NEW @ 0x000c_4410: [fn(unit: stack 0) ret 12]; "docs/halo1/ai.md";
+    HS_CONVERSATION_MAP_DISPOSE @ 0x0020_9290: [fn() ret 0]; "docs/halo1/ai.md";
     /// `game_tick`: the per-tick phases, then the tick count. Called once per
     /// simulated tick by `game_update_ticks`.
     GAME_TICK @ 0x0013_7fe0: [fn() ret 0]; "docs/engine/engine-map.md";

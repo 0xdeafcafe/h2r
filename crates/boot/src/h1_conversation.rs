@@ -11,6 +11,8 @@ use runtime::guest::Permissions;
 
 mod cast;
 mod leaders;
+mod visibility;
+mod voices;
 
 const BUILTIN_TABLE: u32 = 0x0047_44e0;
 const EVAL_ARGUMENTS: u32 = 0x0020_9d50;
@@ -25,7 +27,7 @@ const SPATIAL_START: u32 = 0x0018_91d0;
 const RADIO_START: u32 = 0x0018_9fe0;
 const STOP_INSTANCE: u32 = 0x0012_6360;
 const BIPED_LIP_SYNC: u32 = 0x0010_9220;
-const MOUTH_MARKER: u32 = 0x0400_0095;
+const HEAD_MARKER: u32 = 0x0400_0095;
 
 pub struct Conversations;
 
@@ -36,7 +38,9 @@ impl feature::Feature for Conversations {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        let data = b.guest_alloc(0x58, Permissions::RW)?;
+        let data = b.guest_alloc(0x100, Permissions::RW)?;
+        let pending = b.guest_alloc(voices::BOOTSTRAP_BYTES, Permissions::RW)?;
+        leaders::install(b, pending);
         let opcode = u32::from(BUILTINS[0].1);
         b.raw().before(
             &points::HS_UNUSED_EVALUATOR,
@@ -134,6 +138,7 @@ async fn evaluate(cx: Cx, data: u32, opcode: u32) -> Result<Ret, EntryError> {
                 finish_sound(&cx, a, matches!(op, Op::StopSound)).await?
             }
             Op::CancelCommand => cast::cancel_command(&cx, a, b).await?,
+            Op::Score => cast::score(&cx, data, a, b, c).await?,
             _ => cx.write(|m| cast::operate(m, op, a, b, c))?,
         }
     }
@@ -187,7 +192,7 @@ async fn start_sound(cx: &Cx, scratch: u32, a: u32, b: u32, out: u32) -> Result<
             .call(
                 GuestCall::new(SPATIAL_START)
                     .esi(object)
-                    .eax(MOUTH_MARKER)
+                    .eax(HEAD_MARKER)
                     .args([scratch]),
             )
             .await?
