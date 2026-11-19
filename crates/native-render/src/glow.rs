@@ -37,11 +37,11 @@ use crate::camera::GuestRead;
 use crate::screen_gpu::{STRIP_ATTRIBUTES, StripVertex, strip_ranges};
 
 /// A grid's vertex buffer: [`StripVertex`] in order.
-const STRIP_LAYOUT: [wgpu::VertexBufferLayout<'static>; 1] = [wgpu::VertexBufferLayout {
+const STRIP_LAYOUT: [Option<wgpu::VertexBufferLayout<'static>>; 1] = [Some(wgpu::VertexBufferLayout {
     array_stride: std::mem::size_of::<StripVertex>() as wgpu::BufferAddress,
     step_mode: wgpu::VertexStepMode::Vertex,
     attributes: &STRIP_ATTRIBUTES,
-}];
+})];
 
 /// Words in a combiner block (`D3DPIXELSHADERDEF`).
 pub const COMBINER_WORDS: usize = 60;
