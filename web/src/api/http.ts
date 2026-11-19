@@ -265,7 +265,7 @@ export function api(t: ServerTarget, reader: Reader = async () => null) {
     /** The reader stream, resuming after `from` (exclusive), without the 1 Hz GameFrame events. */
     /** `auth`: the first message will be a `read` token (`?auth=1`). */
     streamUrl: (from: number | null, auth = false, game?: string) => u("/stream", {
-      from: from ?? 0, exclude: "GameFrame", frames: "packed", auth: auth ? 1 : undefined,
+      from: from ?? 0, exclude: "GameFrame", frames: "packed", frame_version: 8, auth: auth ? 1 : undefined,
       games: game, stream: game ? "game-" + game : undefined,
     }),
     /** The reader's token now, for a stream's auth message. */

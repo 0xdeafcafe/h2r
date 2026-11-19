@@ -6,6 +6,7 @@
 // The golden vectors in test/fixtures/pack, written by the Rust encoder,
 // prove the two agree.
 
+import { V8Stream, ByteCursor } from "./pack-v8";
 import type { Frame, FrameActor, FrameHit, FrameItem, FrameMachine, FrameObject, FramePlayer, FrameProjectile, FrameVehicle, MachinePosition } from "./types";
 
 /** Version 7 refines linear and angular precision, reuses edit masks and
@@ -144,19 +145,19 @@ export function unoct(qx: number, qy: number, max = DIR_MAX_V4): [number, number
   return [x / len, y / len, z / len];
 }
 
-function dyaw(q: number): number {
+export function dyaw(q: number): number {
   const a = q * TAU / 16384;
   return a > Math.PI ? a - TAU : a;
 }
 
 // Field values as the wire holds them.
 type Id = { datum: number } | { player: number } | { text: string };
-type Vec3 = [number, number, number];
-type Direction = { x: number; y: number; max: number; unit?: Vec3 };
-type Val = null | boolean | number | Vec3 | Direction | string | Id | readonly number[];
+export type Vec3 = [number, number, number];
+export type Direction = { x: number; y: number; max: number; unit?: Vec3 };
+export type Val = null | boolean | number | Vec3 | Direction | string | Id | readonly number[];
 
-const enum K { Bool, Pos, Angle, Dir, Str, Id, Uint, Bits, Actions, Vel, Agos, AnimPhase }
-interface Field { kind: K; arg?: number; opt?: boolean; key?: boolean }
+export const enum K { Bool, Pos, Angle, Dir, Str, Id, Uint, Bits, Actions, Vel, Agos, AnimPhase }
+export interface Field { kind: K; arg?: number; opt?: boolean; key?: boolean }
 
 const f = (kind: K, arg?: number): Field => ({ kind, arg });
 const o = (kind: K, arg?: number): Field => ({ kind, arg, opt: true });
@@ -178,7 +179,7 @@ const ACTOR_V3 = [...ACTOR_V2, ...UNIT_V3];
 const ACTOR = [...ACTOR_V3, ...UNIT_V4];
 const HIT_V2: Field[] = [o(K.Id), o(K.Id), o(K.Str), f(K.Pos), o(K.Uint, 6), o(K.Str)];
 /** Version 3 adds the hit's ticks ago. */
-const HIT = [...HIT_V2, o(K.Uint, 1)];
+export const HIT = [...HIT_V2, o(K.Uint, 1)];
 const MACHINE: Field[] = [o(K.Str), key(K.Id), f(K.Str), f(K.Pos), f(K.Dir), f(K.Dir), o(K.Bits, DEVICE_BITS)];
 const OBJECT: Field[] = [key(K.Bits, 4), key(K.Uint, 6), f(K.Bool), o(K.Pos), o(K.Dir), o(K.Dir)];
 /** Version 6: id, kind, pos, vel, parent. */
@@ -187,7 +188,7 @@ const PROJECTILE: Field[] = [key(K.Id), f(K.Str), f(K.Pos), o(K.Vel), o(K.Id)];
 const ITEM: Field[] = [key(K.Id), f(K.Str), f(K.Pos), f(K.Dir), f(K.Dir), f(K.Bool)];
 
 /** The delta-coded lists in wire order; hits go between actors and machines, always whole. */
-const LISTS: [Field[], number][] = [[PLAYER, 16], [VEHICLE, 64], [ACTOR, 128], [MACHINE, 128], [OBJECT, 2048], [PROJECTILE, 64], [ITEM, 128]];
+export const LISTS: [Field[], number][] = [[PLAYER, 16], [VEHICLE, 64], [ACTOR, 128], [MACHINE, 128], [OBJECT, 2048], [PROJECTILE, 64], [ITEM, 128]];
 const LISTS_V4: [Field[], number][] = [[PLAYER, 16], [VEHICLE_V2, 64], [ACTOR, 128], [MACHINE, 128], [OBJECT, 2048]];
 const LISTS_V3: [Field[], number][] = [[PLAYER_V3, 16], [VEHICLE_V2, 64], [ACTOR_V3, 128], [MACHINE, 128], [OBJECT, 2048]];
 const LISTS_V2: [Field[], number][] = [[PLAYER_V2, 16], [VEHICLE_V2, 64], [ACTOR_V2, 128], [MACHINE, 128], [OBJECT, 2048]];
@@ -237,7 +238,7 @@ function legacyPosition(p: Vec3, a: Vec3, newVel: Val | undefined, dt: number, r
   return [at(0), at(1), at(2)];
 }
 
-type Entity = Val[];
+export type Entity = Val[];
 
 const UTF8 = new TextDecoder("utf-8", { fatal: true });
 
@@ -513,14 +514,14 @@ function readDelta(r: BitReader, schema: Field[], max: number, prev: Entity[], s
 // Entity values to frame objects, keys left out when absent as serde does.
 
 const hex8 = (n: number) => n.toString(16).padStart(8, "0");
-function idText(v: Val): string {
+export function idText(v: Val): string {
   const id = v as Id;
   if ("datum" in id) return hex8(id.datum);
   if ("player" in id) return "p" + id.player;
   return id.text;
 }
 const pos = (v: Val) => v as Vec3;
-function dir(v: Val): Vec3 {
+export function dir(v: Val): Vec3 {
   const d = v as Direction;
   return d.unit ??= unoct(d.x, d.y, d.max);
 }
@@ -653,6 +654,20 @@ const objectFrom = cached(objectOf);
 const projectileFrom = cached(projectileOf);
 const itemFrom = cached(itemOf);
 
+export function materialize(gameId: string, tick: number, lists: Entity[][], hits: Entity[],
+                            previous: Entity[][], prior?: Frame): Frame {
+  const frame: Frame = { game_id: gameId, tick: tick, players:
+    prior && lists[0] === previous[0] ? prior.players : lists[0]!.map(playerFrom) };
+  if (lists[1]?.length) frame.vehicles = lists[1] === previous[1] ? prior!.vehicles : lists[1].map(vehicleFrom);
+  if (lists[2]?.length) frame.actors = lists[2] === previous[2] ? prior!.actors : lists[2].map(actorFrom);
+  if (lists[3]?.length) frame.machines = lists[3] === previous[3] ? prior!.machines : lists[3].map(machineFrom);
+  if (lists[4]?.length) frame.objects = lists[4] === previous[4] ? prior!.objects : lists[4].map(objectFrom);
+  if (lists[5]?.length) frame.projectiles = lists[5] === previous[5] ? prior!.projectiles : lists[5].map(projectileFrom);
+  if (lists[6]?.length) frame.items = lists[6] === previous[6] ? prior!.items : lists[6].map(itemFrom);
+  if (hits.length) frame.hits = hits.map(hitOf);
+  return frame;
+}
+
 interface StreamState {
   seq: number;
   /** The format version its frames were in. */
@@ -676,13 +691,16 @@ export interface Decoded { sid: number; seq: number; keyframe: boolean; frame: F
 export class FrameDecoder {
   private readonly streams = new Map<number, StreamState>();
 
+  private readonly v8 = new Map<number, V8Stream>();
+
   forget(sid: number): void {
     this.streams.delete(sid);
+    this.v8.delete(sid);
   }
 
   decode(bytes: Uint8Array): Decoded {
     const r = new BitReader(bytes);
-    const frame = this.read(r);
+    const frame = this.read(bytes, 0, bytes.length, r);
     return { sid: r.sid, seq: r.seq, keyframe: r.keyframe, frame };
   }
 
@@ -693,7 +711,7 @@ export class FrameDecoder {
     walkRecords(bytes, (start, end) => {
       r.record(start, end);
       let frame: Frame;
-      try { frame = this.read(r); }
+      try { frame = this.read(bytes, start, end, r); }
       catch (e) {
         if (skipGaps && e instanceof PackError && e.gap) return;
         throw e;
@@ -702,7 +720,42 @@ export class FrameDecoder {
     });
   }
 
-  private read(r: BitReader): Frame {
+  private read(bytes: Uint8Array, start: number, end: number, r: BitReader): Frame {
+    if (start === end || (bytes[start]! & 15) !== 8) {
+      const frame = this.legacy(r);
+      if (r.keyframe) this.v8.delete(r.sid);
+      return frame;
+    }
+    const head = bytes[start]!, cursor = new ByteCursor(bytes, start + 1, end);
+    const sid = r.sid = head >>> 5 === 7 ? 7 + cursor.uint() : head >>> 5;
+    const seq = r.seq = cursor.uint();
+    if (!Number.isSafeInteger(sid)) throw new PackError("invalid v8 stream id");
+    r.keyframe = (head & 16) !== 0;
+    if (r.keyframe) {
+      if (!this.v8.has(sid) && !this.streams.has(sid) && this.v8.size + this.streams.size >= 256)
+        throw new PackError("too many packed streams");
+      if (cursor.at === end || (bytes[cursor.at]! & 31) !== 0x17) throw new PackError("expected embedded v7 key");
+      const inner = new BitReader(bytes);
+      inner.record(cursor.at, end);
+      let lists: Entity[][] = [], hits: Entity[] = [];
+      const frame = new FrameDecoder().legacy(inner, (l, h) => { lists = l; hits = h; });
+      if (inner.sid !== 0 || inner.seq !== 0) throw new PackError("invalid embedded key header");
+      this.v8.set(sid, new V8Stream(frame, lists, hits, seq));
+      this.streams.delete(sid);
+      return frame;
+    }
+    const state = this.v8.get(sid);
+    try {
+      if (!state || state.seq + 1 !== seq) throw new PackError("v8 delta needs its preceding frame", true);
+      const dt = cursor.uint();
+      return state.delta(bytes, cursor.at, end, dt, seq);
+    } catch (e) {
+      this.v8.delete(sid);
+      throw e;
+    }
+  }
+
+  private legacy(r: BitReader, capture?: (lists: Entity[][], hits: Entity[]) => void): Frame {
     const version = r.bits(4);
     r.precise = version === PACK_VERSION;
     const schema = SCHEMAS[version];
@@ -749,17 +802,8 @@ export class FrameDecoder {
       const older = dt === prev.span ? (n === 0 ? prev.previousPlayers : n === 2 ? prev.previousActors : undefined) : undefined;
       state.lists[n] = keyframe ? readFull(r, fields, max, state.strings) : readDelta(r, fields, max, prev.lists[n] ?? [], state.strings, dt, schema.predict, older);
     }
-    const prior = prev.frame;
-    const lists = state.lists;
-    const frame: Frame = { game_id: state.gameId, tick: state.tick, players:
-      prior && lists[0] === prev.lists[0] ? prior.players : lists[0]!.map(playerFrom) };
-    if (lists[1]?.length) frame.vehicles = lists[1] === prev.lists[1] ? prior!.vehicles : lists[1].map(vehicleFrom);
-    if (lists[2]?.length) frame.actors = lists[2] === prev.lists[2] ? prior!.actors : lists[2].map(actorFrom);
-    if (lists[3]?.length) frame.machines = lists[3] === prev.lists[3] ? prior!.machines : lists[3].map(machineFrom);
-    if (lists[4]?.length) frame.objects = lists[4] === prev.lists[4] ? prior!.objects : lists[4].map(objectFrom);
-    if (lists[5]?.length) frame.projectiles = lists[5] === prev.lists[5] ? prior!.projectiles : lists[5].map(projectileFrom);
-    if (lists[6]?.length) frame.items = lists[6] === prev.lists[6] ? prior!.items : lists[6].map(itemFrom);
-    if (hits.length) frame.hits = hits.map(hitOf);
+    const frame = materialize(state.gameId, state.tick, state.lists, hits, prev.lists, prev.frame);
+    capture?.(state.lists, hits);
     if (version === PACK_VERSION) {
       const positions = readMachinePositions(r);
       if (positions) frame.machine_positions = positions;

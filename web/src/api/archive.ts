@@ -1,5 +1,6 @@
 // H2AR v1, the post-HTTP-decompression bytes of a finished replay segment.
 // The Rust writer and its exact integer predictors live in live-proto/archive.
+import { rotatedOct, sin } from "./pack-math";
 import { PackError, unoct } from "./pack";
 import type { Frame } from "./types";
 
@@ -55,17 +56,6 @@ class Reader {
     return {value: UTF8.decode(this.take(bytes)), bytes};
   }
   charge(n: number) { this.strings -= n; if (this.strings < 0) bad(); }
-}
-
-/** Rust/JS use the same binary64 operations for the fitted curve. */
-function sin(x: number): number {
-  let a = x - TAU * Math.floor(x / TAU + 0.5);
-  if (a > Math.PI / 2) a = Math.PI - a;
-  if (a < -Math.PI / 2) a = -Math.PI - a;
-  const z = -a * a;
-  let p = 1;
-  for (let k = 9; k >= 1; k--) p = 1 + z * p / ((2 * k) * (2 * k + 1));
-  return a * p;
 }
 
 function add(a: Int, b: Int): Int {
@@ -183,19 +173,6 @@ function node(r: Reader, n: number, depth: number): Value[] {
   return bad();
 }
 
-function oct(x: number, y: number, z: number): [number, number] {
-  const l = Math.abs(x) + Math.abs(y) + Math.abs(z);
-  if (!Number.isFinite(l) || l < 1e-12) bad();
-  x /= l; y /= l;
-  if (z < 0) {
-    const t = (1 - Math.abs(y)) * (x >= 0 ? 1 : -1);
-    y = (1 - Math.abs(x)) * (y >= 0 ? 1 : -1);
-    x = t;
-  }
-  const q = (v: number) => Math.round((Math.min(1, Math.max(-1, v)) + 1) * 0.5 * DIR_MAX);
-  return [q(x), q(y)];
-}
-
 function row(v: Value | undefined): Row {
   return v !== null && typeof v === "object" && !Array.isArray(v) ? v : bad();
 }
@@ -222,8 +199,7 @@ function restore(f: Row): ExactArchiveFrame {
         let x = xy[0], y = xy[1];
         if (k === "r") {
           if (!ref || typeof e.yaw !== "number") bad();
-          const d = e.yaw - heading, c = sin(d + Math.PI / 2), s = sin(d);
-          const base = oct(ref[0]! * c - ref[1]! * s, ref[0]! * s + ref[1]! * c, ref[2]!);
+          const base = rotatedOct(ref, e.yaw - heading);
           x += base[0]; y += base[1];
         }
         if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || x > DIR_MAX || y < 0 || y > DIR_MAX) bad();

@@ -1450,14 +1450,19 @@ readers allowed to see it ([Co-op games](#co-op-games)). On a public server
 the token's expiry closes only explicitly scoped [sim streams](#clanker-training).
 Without `auth`, a public stream is anonymous and leaves those events out.
 
-`?frames=packed` sends frames as binary messages instead: each a container
-of packed frame records (docs/live/live-telemetry.md, "Packed frames"), one
-stream per game, batched up to 100 ms (the server batches every game's
-frames once a tick and shares the batch among readers). A reader that joins
-or falls behind first gets each game's frames since its last keyframe. Each
-stream's frames come in order, each once: never a frame older than one
-already sent, nor a delta without its base. Events and `caught_up` stay
-JSON text messages.
+Legacy subscribers request `?frames=packed` for v7. The viewer requests
+`?frames=packed&frame_version=8` and recognizes the version in each binary
+record, including v7 from older servers. Both homes batch each game's
+length-prefixed records for up to 100 ms. Readers of the same version
+share its encoder and batches. Events and `caught_up` use JSON text.
+
+A new v8 stream starts with an independent key. A reader joining an
+existing stream receives the key and all subsequent records through the
+latest published frame. That suffix restores the adaptive model used by
+the next delta. A v8 key interval spans at most 150 samples. The server
+also uses this history to catch up a slow reader and suppresses records
+that it has already sent. A hibernated Worker socket retains its requested
+version across wake-up.
 
 **`GET /v1/ingest`** for the game. The first message is
 `{ "kind": "auth", "token": "<jwt>" }`. Then the client sends
