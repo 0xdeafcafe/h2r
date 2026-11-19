@@ -1356,10 +1356,22 @@ calls are queued.
   `0x2a019e..0x2a01d9` writes them), a local player's view (`0x1874b0`:
   yaw and pitch into the player controls, `[0x4ed284] + 0x14 + 0x94 *
   user`, `+0x10`, `+0x14`), then `object_set_position` (`0xb75a0`) with no
-  position for the orientation. A seated unit's facing is left (its
-  seat's); the answer says so. Other fields of the same call are written
-  at once. The answer: `wrote` (with `pos`, `facing`) and `teleport`
-  (`pos` and `body_forward` where the game put it, `faced`, `unit`).
+  position for the orientation. That turned the body but not the view
+  (fixed 2026-11-19): the tick then runs the action the frame built
+  before it from the old player-control angles (`0x186ab0`, written at
+  `0x18701d`), which puts the old aim back, and while biped flag `+0x348`
+  bit 5 is set the next frame copies the unit's aiming vector (`+0x168`)
+  into the control yaw and pitch (`0x186f8b..0x18700b`). So once the
+  tick has run, the answer writes the facing again: the desired vectors,
+  the aiming vector `+0x168`, and for a local player the control yaw and
+  pitch (`[0x4ed284] + 0x14 + 0x94 * user`, `+0x10` and `+0x14`, yaw in
+  `[0, 2pi)` as `0x1874b0` keeps it). The next frame's look and action
+  start from there, so the camera and aim face the new way. A seated
+  unit's facing is left (its seat's); the answer says so. Other fields of
+  the same call are written at once. The answer: `wrote` (with `pos`,
+  `facing`) and `teleport` (`pos` and `body_forward` where the game put
+  it, `faced`, `view` (true when the player's view was turned; false with
+  no local user), `unit`).
   `yaw` is degrees about +z from +x and `pitch` degrees up (-89 to 89),
   as `world.query` reports them; or `facing: [x,y,z]` (also taken as
   `forward`, `world.query`'s name for it), so a check can turn the

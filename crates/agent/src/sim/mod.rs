@@ -454,18 +454,34 @@ impl Sim {
             wrote.push("facing");
         }
         let session = serde_json::to_value(session).expect("serialises");
+        let facing = facing.map(|v| v.map(|c| c as f32));
         ctx.defer(
             TELEPORT_TICKS,
-            Box::new(move |_: &mut GameCtx<'_>| {
+            Box::new(move |ctx: &mut GameCtx<'_>| {
                 let out = calls::lock(&q).take(ticket)?;
-                Some(out.map_err(unavailable).map(|t| {
-                    json!({
-                        "player": format!("player.{index}"),
-                        "wrote": wrote,
-                        "teleport": t,
-                        "session": session,
-                    })
-                }))
+                let mut t = match out {
+                    Ok(t) => t,
+                    Err(e) => return Some(Err(unavailable(e))),
+                };
+                // The facing again, after the tick that undid the view
+                // (calls::face_after_tick).
+                if let Some(f) = facing
+                    && t["faced"] == json!(true)
+                {
+                    let view = with_guest(ctx, |m| {
+                        calls::face_after_tick(m, handle, f).map_err(unavailable)
+                    });
+                    match view {
+                        Ok(v) => t["view"] = json!(v),
+                        Err(e) => return Some(Err(e)),
+                    }
+                }
+                Some(Ok(json!({
+                    "player": format!("player.{index}"),
+                    "wrote": wrote,
+                    "teleport": t,
+                    "session": session,
+                })))
             }),
         );
         Ok(Value::Null)

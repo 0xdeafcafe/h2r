@@ -623,6 +623,59 @@ fn a_teleport_goes_through_the_games_placement_and_answers_after_the_tick() {
 }
 
 #[test]
+fn a_faced_teleport_turns_the_aim_and_the_view_again_after_the_tick() {
+    use super::calls::addr;
+    let (h, q) = with_calls();
+    let mut game = game();
+    const CONTROLS: u32 = 0x8050_0000;
+    game.g.map(addr::PLAYER_CONTROLS, 4);
+    game.g.put_u32(addr::PLAYER_CONTROLS, CONTROLS);
+    game.g.map(CONTROLS, 0x200);
+    h.deferred(
+        &mut game,
+        method::STATE_SET,
+        json!({"player": "player.0", "pos": [1, 2, 3], "forward": [0, 1, 0]}),
+    );
+    // The game turned the unit; then the tick ran the old action, which
+    // put the old aim (+x) back.
+    the_game_makes(&q, |_| Ok(json!({"faced": true})));
+    for (i, c) in [1.0f32, 0.0, 0.0].into_iter().enumerate() {
+        game.g
+            .set_f32(UNIT_BODY + addr::UNIT_AIM + 4 * i as u32, c)
+            .unwrap();
+    }
+    h.agent.on_tick(&mut game);
+    let r = h.reply();
+    assert!(r["error"].is_null(), "{r}");
+    assert_eq!(r["result"]["teleport"]["view"], true, "{r}");
+    let aim: Vec<f32> = (0..3)
+        .map(|i| game.g.f32(UNIT_BODY + addr::UNIT_AIM + 4 * i).unwrap())
+        .collect();
+    assert_eq!(aim, [0.0, 1.0, 0.0]);
+    // Player 0 is local user 0: the first control record.
+    let yaw = game
+        .g
+        .f32(CONTROLS + addr::CONTROL_HEADER + addr::CONTROL_YAW)
+        .unwrap();
+    assert!((yaw - std::f32::consts::FRAC_PI_2).abs() < 1e-6, "{yaw}");
+    // A seated unit's answer (no "faced") writes nothing after the tick.
+    h.deferred(
+        &mut game,
+        method::STATE_SET,
+        json!({"player": "player.0", "facing": [1, 0, 0]}),
+    );
+    the_game_makes(&q, |_| Ok(json!({"facing_left": "the seat's"})));
+    h.agent.on_tick(&mut game);
+    let r = h.reply();
+    assert!(r["result"]["teleport"]["view"].is_null(), "{r}");
+    assert_eq!(
+        game.g.f32(UNIT_BODY + addr::UNIT_AIM + 4).unwrap(),
+        1.0,
+        "untouched"
+    );
+}
+
+#[test]
 fn a_teleport_the_game_refuses_or_never_makes_is_an_error() {
     let (h, q) = with_calls();
     let mut game = game();
