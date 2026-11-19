@@ -9,9 +9,11 @@
 
 use input::host::{HostButton, HostPadState};
 
+use crate::arms::{self, Kit, Situation};
 use crate::brain::{Perception, Seen, Vec3};
 use crate::cache::MapData;
 use crate::nav::Follower;
+use crate::stuck::{Stuck, around_bodies};
 
 /// How good a bot is (docs/game/bots.md, section 3.4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -116,6 +118,35 @@ pub const GRENADE_COOLDOWN: u32 = 240;
 /// Crouch: clicking the left stick, Halo 2's default layout.
 pub const CROUCH: HostButton = HostButton::LeftStick;
 
+/// Shields under this: back off in a fight and do not chase
+/// (section 3.3)...
+pub const LOW_SHIELD: f32 = 0.25;
+/// ...until they are back to this.
+pub const SHIELD_BACK: f32 = 0.9;
+/// No enemy in view for this long is calm: reloads, detours for
+/// ammunition.
+pub const CALM_TICKS: u32 = 45;
+/// A tapped button is held this many ticks...
+pub const TAP_TICKS: u32 = 2;
+/// ...and not tapped again for this long.
+pub const RELOAD_COOLDOWN: u32 = 60;
+pub const SWITCH_COOLDOWN: u32 = 40;
+/// Holds the action button on a weapon of another kind this close
+/// (world units, XY)...
+pub const TAKE_RANGE: f32 = 0.5;
+/// ...for this long, then gives it up as out of reach.
+pub const TAKE_TICKS: u32 = 30;
+/// Another enemy this close to the target makes a cluster worth a grenade.
+pub const CLUSTER: f32 = 2.5;
+/// Lobs one where an enemy went out of view this recently.
+pub const COVER_GRENADE_TICKS: u32 = 60;
+/// Halo 2's default layout: X reloads (held, picks up), Y switches
+/// weapons, B melees, A jumps.
+pub const RELOAD: HostButton = HostButton::West;
+pub const SWITCH: HostButton = HostButton::North;
+pub const MELEE: HostButton = HostButton::East;
+pub const JUMP: HostButton = HostButton::South;
+
 /// What the mind is doing.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Doing {
@@ -123,6 +154,10 @@ pub enum Doing {
     Fight(u32),
     Chase(Vec3),
     Roam,
+    /// Going for the weapon at this point (section 3.6).
+    Rearm(Vec3),
+    /// Shields down: backing away from where the enemy was, facing it.
+    Recover(Vec3),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -150,6 +185,24 @@ pub struct Mind {
     grenade_until: u32,
     follower: Option<Follower>,
     goal: Option<Vec3>,
+    /// Getting unstuck (section 3.2).
+    pub stuck: Stuck,
+    /// The last weapons decision (section 3.6).
+    pub kit: Kit,
+    /// The last tick an enemy was in view.
+    last_threat: Option<u32>,
+    /// A tapped button and the tick it is let go; when the next tap may
+    /// come.
+    tap: Option<(HostButton, u32)>,
+    tap_ready: u32,
+    /// The pickup it is holding the action button on, and since when.
+    take: Option<(u32, u32)>,
+    /// Shields went under [`LOW_SHIELD`] and are not back.
+    recovering: bool,
+    /// [`Mind::go`] gave up on the goal this tick.
+    gave_up: bool,
+    /// [`Mind::go`] ran this tick.
+    navigated: bool,
     /// The teabag layer (§3.5).
     pub emote: crate::emote::Emoter,
 }
@@ -166,6 +219,9 @@ fn scale(a: Vec3, s: f32) -> Vec3 {
 fn len(a: Vec3) -> f32 {
     (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt()
 }
+fn dist_xy(a: Vec3, b: Vec3) -> f32 {
+    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()
+}
 fn up(p: Vec3, h: f32) -> Vec3 {
     [p[0], p[1], p[2] + h]
 }
@@ -180,6 +236,20 @@ fn wrap(a: f32) -> f32 {
 fn angle_between(a: Vec3, b: Vec3) -> f32 {
     let d = (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) / (len(a) * len(b)).max(1e-9);
     d.clamp(-1.0, 1.0).acos()
+}
+
+/// A walk: the way to walk and the way to face (the same, but while a
+/// sidestep gets it unstuck).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Walk {
+    walk: [f32; 2],
+    face: [f32; 2],
+}
+
+impl Walk {
+    fn straight(d: [f32; 2]) -> Self {
+        Walk { walk: d, face: d }
+    }
 }
 
 impl Mind {
@@ -198,6 +268,15 @@ impl Mind {
             grenade_until: 0,
             follower: None,
             goal: None,
+            stuck: Stuck::new(),
+            kit: Kit::Fine,
+            last_threat: None,
+            tap: None,
+            tap_ready: 0,
+            take: None,
+            recovering: false,
+            gave_up: false,
+            navigated: false,
             emote: crate::emote::Emoter::new(crate::emote::DEFAULT_TAUNT, seed ^ 0x7ea_ba6),
         }
     }
@@ -234,6 +313,27 @@ impl Mind {
             .collect()
     }
 
+    /// Whether it may throw a grenade: in its arms if they were read.
+    fn has_grenades(me: &crate::brain::Me) -> bool {
+        me.arms.is_none_or(|a| a.has_grenades())
+    }
+
+    /// Rolls for a grenade this tick at `chance_scale` times the skill's
+    /// rate; on a hit, throws for the next few ticks.
+    fn roll_grenade(&mut self, tick: u32, dt: u32, chance_scale: f32) -> bool {
+        let aim = self.skill.aim();
+        if tick < self.grenade_ready {
+            return false;
+        }
+        let chance = aim.grenades_per_minute / (60.0 * TICKS) * dt as f32 * chance_scale;
+        if self.uniform() < chance {
+            self.grenade_until = tick + 3;
+            self.grenade_ready = tick + GRENADE_COOLDOWN;
+            return true;
+        }
+        false
+    }
+
     /// This frame's pad.
     pub fn step(&mut self, p: &Perception, map: Option<&MapData>) -> HostPadState {
         let mut pad = HostPadState::default();
@@ -241,11 +341,16 @@ impl Mind {
             self.follower = None;
             self.target = None;
             self.doing = Doing::Idle;
+            self.stuck.reset();
+            self.take = None;
+            self.recovering = false;
             return pad;
         };
         let new_tick = self.tick != Some(p.tick);
         let dt = self.tick.map_or(1, |t| p.tick.wrapping_sub(t)).clamp(1, 30);
         self.tick = Some(p.tick);
+        self.gave_up = false;
+        self.navigated = false;
         let aim = self.skill.aim();
 
         // Tracks: velocity from the last position.
@@ -291,6 +396,7 @@ impl Mind {
         self.target = chosen.map(|(o, t0)| (o.id, t0));
         if let Some((o, _)) = chosen {
             self.last_seen = Some((o.id, o.position, p.tick));
+            self.last_threat = Some(p.tick);
         }
         if self
             .last_seen
@@ -298,16 +404,55 @@ impl Mind {
         {
             self.last_seen = None;
         }
+        let calm = self
+            .last_threat
+            .is_none_or(|t| p.tick.wrapping_sub(t) > CALM_TICKS);
 
-        self.doing = match (chosen, self.last_seen) {
-            (Some((o, _)), _) => Doing::Fight(o.id),
-            (None, Some((_, at, _))) => Doing::Chase(at),
-            (None, None) => Doing::Roam,
+        // Weapons (section 3.6): only with arms read.
+        let enemy_dist = chosen.map(|(o, _)| len(sub(up(o.position, CHEST), eye)));
+        self.kit = match me.arms {
+            Some(a) => {
+                let (st, tick) = (&self.stuck, p.tick);
+                arms::plan(
+                    &Situation {
+                        arms: &a,
+                        at: me.position,
+                        enemy: enemy_dist,
+                        calm,
+                        pickups: &p.pickups,
+                    },
+                    |pk| st.blocked(pk.position, tick),
+                )
+            }
+            None => Kit::Fine,
         };
+        // Shields: down under LOW_SHIELD, up again at SHIELD_BACK.
+        if me.shield < LOW_SHIELD {
+            self.recovering = true;
+        } else if me.shield >= SHIELD_BACK {
+            self.recovering = false;
+        }
+
+        self.doing = match (chosen, self.last_seen, self.kit) {
+            (_, _, Kit::Seek(pk)) => Doing::Rearm(pk.position),
+            (Some((o, _)), _, _) => Doing::Fight(o.id),
+            (None, Some((_, at, _)), _) if self.recovering => Doing::Recover(at),
+            (None, Some((_, at, _)), _) => Doing::Chase(at),
+            (None, None, _) => Doing::Roam,
+        };
+        if !matches!(self.doing, Doing::Rearm(_)) {
+            self.take = None;
+        }
 
         // Where to look and where to go.
+        let bodies: Vec<Vec3> = p
+            .others
+            .iter()
+            .filter(|o| chosen.is_none_or(|(t, _)| t.id != o.id))
+            .map(|o| o.position)
+            .collect();
         let mut look: Option<Vec3> = None;
-        let mut move_dir: Option<[f32; 2]> = None;
+        let mut walk: Option<Walk> = None;
         match self.doing {
             Doing::Fight(_) => {
                 let (o, t0) = chosen.unwrap();
@@ -316,6 +461,7 @@ impl Mind {
                 let vel = self.tracks.get(&o.id).map_or([0.0; 3], |t| t.vel);
                 let lead = scale(vel, aim.lead * dist / SHOT_SPEED);
                 let reacted = p.tick.wrapping_sub(t0) >= aim.reaction;
+                let melee = self.kit == Kit::Melee;
                 if reacted {
                     look = Some(add(target, lead));
                     // Fire while near the target, in bursts.
@@ -324,22 +470,29 @@ impl Mind {
                     let burst_on = aim
                         .burst
                         .is_none_or(|(on, off)| p.tick.wrapping_sub(t0) % (on + off) < on);
-                    if off < cone && dist < FIRE_RANGE && burst_on {
+                    if off < cone && dist < FIRE_RANGE && burst_on && !melee {
                         pad.right_trigger = 1.0;
                     }
-                    if dist < MELEE_RANGE && p.tick % 20 < 2 {
-                        pad.buttons.set(HostButton::East, true);
+                    let reach = if melee {
+                        MELEE_RANGE * 1.3
+                    } else {
+                        MELEE_RANGE
+                    };
+                    if dist < reach && p.tick % 20 < 2 {
+                        pad.buttons.set(MELEE, true);
                     }
-                    // A grenade now and then, in range, not too often.
+                    // A grenade now and then, in range, not too often; more
+                    // often into a cluster.
                     if new_tick
-                        && p.tick >= self.grenade_ready
+                        && Self::has_grenades(&me)
                         && (GRENADE_RANGE.0..GRENADE_RANGE.1).contains(&dist)
                     {
-                        let chance = aim.grenades_per_minute / (60.0 * TICKS) * dt as f32;
-                        if self.uniform() < chance {
-                            self.grenade_until = p.tick + 3;
-                            self.grenade_ready = p.tick + GRENADE_COOLDOWN;
-                        }
+                        let cluster = seen
+                            .iter()
+                            .filter(|s| s.id != o.id && len(sub(s.position, o.position)) < CLUSTER)
+                            .count();
+                        let scale_by = if cluster > 0 { 4.0 } else { 1.0 };
+                        self.roll_grenade(p.tick, dt, scale_by);
                     }
                     if p.tick < self.grenade_until {
                         pad.left_trigger = 1.0;
@@ -347,7 +500,9 @@ impl Mind {
                     }
                 }
                 // Until it reacts it stands, caught out. Then it strafes,
-                // closing in from afar and backing off close up.
+                // closing in from afar and backing off close up; with no
+                // ammunition it runs straight in to melee, and with its
+                // shields down it backs off.
                 if !reacted {
                     self.follower = None;
                 } else {
@@ -360,19 +515,28 @@ impl Mind {
                     let flat = (to[0] * to[0] + to[1] * to[1]).sqrt().max(1e-6);
                     let (fx, fy) = (to[0] / flat, to[1] / flat);
                     let side = [-fy * self.strafe.0, fx * self.strafe.0];
-                    let fwd = if flat > 8.0 {
+                    let fwd = if melee {
+                        1.0
+                    } else if self.recovering && flat < 8.0 {
+                        -0.8
+                    } else if flat > 8.0 {
                         1.0
                     } else if flat < 2.5 {
                         -0.7
                     } else {
                         0.0
                     };
-                    let mut d = [side[0] + fx * fwd, side[1] + fy * fwd];
+                    let mut d = if melee {
+                        [fx, fy]
+                    } else {
+                        [side[0] + fx * fwd, side[1] + fy * fwd]
+                    };
                     if map.is_none() {
                         // Stage 1's walk: straight at it.
                         d = [fx, fy];
                     }
                     if let Some(m) = map
+                        && !melee
                         && m.nav
                             .locate(add(me.position, [d[0] * 0.6, d[1] * 0.6, 0.0]), 1.0)
                             .is_none()
@@ -381,34 +545,134 @@ impl Mind {
                         self.strafe.0 = -self.strafe.0;
                         d = [-side[0] + fx * fwd, -side[1] + fy * fwd];
                     }
-                    move_dir = Some(d);
+                    let d = around_bodies(me.position, d, &bodies);
+                    walk = Some(Walk {
+                        walk: d,
+                        face: [fx, fy],
+                    });
                     self.follower = None;
                 }
             }
             Doing::Chase(at) => {
-                move_dir = self.go(me.position, at, p.tick, map, &mut pad);
-                if move_dir.is_none() {
-                    // Got there and nobody is here.
+                walk = self.go(me.position, at, p.tick, map, &mut pad, &bodies);
+                if walk.is_none() || self.gave_up {
+                    // Got there and nobody is here, or cannot get there.
                     self.last_seen = None;
+                }
+                // A grenade where they went out of view, now and then.
+                let gone = self
+                    .last_seen
+                    .map_or(u32::MAX, |(_, _, t)| p.tick.wrapping_sub(t));
+                let d = len(sub(up(at, CHEST), eye));
+                if new_tick
+                    && gone < COVER_GRENADE_TICKS
+                    && Self::has_grenades(&me)
+                    && (GRENADE_RANGE.0..GRENADE_RANGE.1).contains(&d)
+                {
+                    self.roll_grenade(p.tick, dt, 2.0);
+                }
+                if p.tick < self.grenade_until {
+                    pad.left_trigger = 1.0;
+                    look = Some(up(up(at, CHEST), 0.15 * d));
+                }
+            }
+            Doing::Recover(from) => {
+                // Back away from it, facing it, while the shields come back.
+                look = Some(up(from, CHEST));
+                let away = sub(me.position, from);
+                let flat = (away[0] * away[0] + away[1] * away[1]).sqrt().max(1e-6);
+                let d = [away[0] / flat, away[1] / flat];
+                let on_mesh = |d: [f32; 2]| {
+                    map.is_none_or(|m| {
+                        m.nav
+                            .locate(add(me.position, [d[0] * 0.6, d[1] * 0.6, 0.0]), 1.0)
+                            .is_some()
+                    })
+                };
+                let side = [-d[1], d[0]];
+                let pick = [d, side, [-side[0], -side[1]]]
+                    .into_iter()
+                    .find(|&d| on_mesh(d));
+                if let Some(d) = pick {
+                    let d = around_bodies(me.position, d, &bodies);
+                    walk = Some(Walk { walk: d, face: d });
+                }
+                self.follower = None;
+            }
+            Doing::Rearm(at) => {
+                let pk = match self.kit {
+                    Kit::Seek(pk) => Some(pk),
+                    _ => None,
+                };
+                let near = dist_xy(me.position, at) < TAKE_RANGE;
+                let other_kind =
+                    pk.is_some_and(|pk| me.arms.is_some_and(|a| !a.carries(pk.gun.def)));
+                if near && other_kind {
+                    // On it: hold the action button to take it. Walking over
+                    // one of the same kind takes its ammunition by itself.
+                    let id = pk.map_or(0, |pk| pk.id);
+                    let since = match self.take {
+                        Some((t, since)) if t == id => since,
+                        _ => p.tick,
+                    };
+                    self.take = Some((id, since));
+                    if p.tick.wrapping_sub(since) < TAKE_TICKS {
+                        pad.buttons.set(RELOAD, true);
+                    } else {
+                        // It will not come: out of reach (on a ledge, in
+                        // a wall). Some other one.
+                        self.stuck.blacklist(at, p.tick);
+                        self.take = None;
+                    }
+                } else {
+                    walk = self.go(me.position, at, p.tick, map, &mut pad, &bodies);
+                    if self.gave_up || (walk.is_none() && !near && dist_xy(me.position, at) > 1.0) {
+                        // No way there.
+                        self.stuck.blacklist(at, p.tick);
+                    }
                 }
             }
             Doing::Roam => {
                 if self.goal.is_none() || self.follower.as_ref().is_none_or(Follower::done) {
-                    self.goal = self.roam_goal(me.position, map);
+                    self.goal = self.roam_goal(me.position, p.tick, map);
                     self.follower = None;
                 }
                 if let Some(g) = self.goal {
-                    move_dir = self.go(me.position, g, p.tick, map, &mut pad);
-                    if move_dir.is_none() {
+                    walk = self.go(me.position, g, p.tick, map, &mut pad, &bodies);
+                    if walk.is_none() || self.gave_up {
                         self.goal = None;
                     }
                 }
             }
             Doing::Idle => {}
         }
+        if !self.navigated {
+            self.stuck.reset();
+        }
 
-        // Turn: toward what it looks at, else along the way it walks.
-        let want = match (look, move_dir) {
+        // Reload and switch: taps, spaced.
+        let tap = match self.kit {
+            Kit::Reload => Some((RELOAD, RELOAD_COOLDOWN)),
+            Kit::Switch => Some((SWITCH, SWITCH_COOLDOWN)),
+            _ => None,
+        };
+        if let Some((b, cooldown)) = tap
+            && p.tick >= self.tap_ready
+        {
+            self.tap = Some((b, p.tick + TAP_TICKS));
+            self.tap_ready = p.tick + cooldown;
+        }
+        if let Some((b, until)) = self.tap {
+            if p.tick < until {
+                pad.buttons.set(b, true);
+            } else {
+                self.tap = None;
+            }
+        }
+
+        // Turn: toward what it looks at, else the way it means to go.
+        let face = walk.map(|w| w.face);
+        let want = match (look, face) {
             (Some(l), _) => {
                 let (y, pi) = angles(sub(l, eye));
                 Some((y + self.err.0, pi + self.err.1))
@@ -423,7 +687,7 @@ impl Mind {
                 ((wp - pitch) * aim.gain).clamp(-1.0, 1.0),
             );
         }
-        if let Some(d) = move_dir {
+        if let Some(Walk { walk: d, .. }) = walk {
             let (c, s) = (yaw.cos(), yaw.sin());
             let (fwd, right) = (d[0] * c + d[1] * s, d[0] * s - d[1] * c);
             let m = (fwd * fwd + right * right).sqrt();
@@ -442,8 +706,9 @@ impl Mind {
         pad
     }
 
-    /// Walks toward `goal` along the nav mesh (straight without one).
-    /// `None` once there.
+    /// Walks toward `goal` along the nav mesh (straight without one),
+    /// getting unstuck on the way ([`Stuck`]). `None` once there, or with
+    /// no way there. Sets `gave_up` when the stuck machine gives up on it.
     fn go(
         &mut self,
         at: Vec3,
@@ -451,40 +716,68 @@ impl Mind {
         tick: u32,
         map: Option<&MapData>,
         pad: &mut HostPadState,
-    ) -> Option<[f32; 2]> {
-        let Some(m) = map else {
-            let d = [goal[0] - at[0], goal[1] - at[1]];
-            let l = (d[0] * d[0] + d[1] * d[1]).sqrt();
-            return (l > crate::nav::REACHED).then(|| [d[0] / l, d[1] / l]);
+        bodies: &[Vec3],
+    ) -> Option<Walk> {
+        self.navigated = true;
+        let (dir, waypoint) = match map {
+            None => {
+                let d = [goal[0] - at[0], goal[1] - at[1]];
+                let l = (d[0] * d[0] + d[1] * d[1]).sqrt();
+                if l <= crate::nav::REACHED {
+                    return None;
+                }
+                ([d[0] / l, d[1] / l], Some(goal))
+            }
+            Some(m) => {
+                let stale = self
+                    .follower
+                    .as_ref()
+                    .and_then(Follower::goal)
+                    .is_none_or(|g| len(sub(g, goal)) > 1.0);
+                if stale {
+                    // Around the edges it got stuck on, if it can be.
+                    let st = &self.stuck;
+                    let path = m
+                        .nav
+                        .path_avoiding(at, goal, &|e| st.blocks_segment(e.a, e.b, tick))
+                        .or_else(|| m.nav.path(at, goal));
+                    self.follower = path.map(|p| Follower::new(p, u64::from(tick)));
+                    self.follower.as_ref()?;
+                }
+                let f = self.follower.as_mut()?;
+                let s = f.steer(at, u64::from(tick));
+                if s.replan {
+                    let done = f.done();
+                    self.follower = None;
+                    return (!done).then_some(Walk::straight([0.0, 0.0]));
+                }
+                if s.jump {
+                    pad.buttons.set(JUMP, true);
+                }
+                (s.dir, f.waypoint())
+            }
         };
-        let stale = self
-            .follower
-            .as_ref()
-            .and_then(Follower::goal)
-            .is_none_or(|g| len(sub(g, goal)) > 1.0);
-        if stale {
-            self.follower = m
-                .nav
-                .path(at, goal)
-                .map(|p| Follower::new(p, u64::from(tick)));
-            self.follower.as_ref()?;
-        }
-        let f = self.follower.as_mut()?;
-        let s = f.steer(at, u64::from(tick));
-        if s.replan {
-            let done = f.done();
+        let u = self.stuck.step(tick, at, Some(dir), waypoint, Some(goal));
+        if u.repath {
             self.follower = None;
-            return (!done).then_some([0.0, 0.0]);
+            self.gave_up = true;
+            return Some(Walk::straight([0.0, 0.0]));
         }
-        if s.jump {
-            pad.buttons.set(HostButton::South, true);
+        if u.jump {
+            pad.buttons.set(JUMP, true);
         }
-        Some(s.dir)
+        if u.crouch {
+            pad.buttons.set(CROUCH, true);
+        }
+        Some(Walk {
+            walk: around_bodies(at, u.dir.unwrap_or(dir), bodies),
+            face: dir,
+        })
     }
 
     /// Somewhere to wander to: the farthest of three polygons picked at
-    /// random.
-    fn roam_goal(&mut self, at: Vec3, map: Option<&MapData>) -> Option<Vec3> {
+    /// random, none it got stuck going to.
+    fn roam_goal(&mut self, at: Vec3, tick: u32, map: Option<&MapData>) -> Option<Vec3> {
         let m = map?;
         let n = m.nav.polys.len();
         if n == 0 {
@@ -495,6 +788,9 @@ impl Mind {
         for _ in 0..3 {
             let i = (self.next() % n as u64) as u32;
             let c = m.nav.polys[i as usize].center;
+            if self.stuck.blocked(c, tick) {
+                continue;
+            }
             let reachable = here.is_some_and(|h| h == i || m.nav.corridor(h, i).is_some());
             if reachable && best.is_none_or(|b| len(sub(c, at)) > len(sub(b, at))) {
                 best = Some(c);

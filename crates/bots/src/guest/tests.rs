@@ -252,7 +252,10 @@ fn perception_finds_the_bot_and_the_living_others() {
         Some(Me {
             position: [5.0, 1.0, 0.0],
             aim: [0.0, 1.0, 0.0],
-            team: 1
+            team: 1,
+            shield: 0.0,
+            health: 0.0,
+            arms: Some(Default::default()),
         })
     );
     assert_eq!(

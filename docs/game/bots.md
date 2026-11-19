@@ -271,11 +271,50 @@ followed by steering:
 
 - a look-ahead point;
 - a corner slowdown;
-- "stuck" detection, which re-plans after 1 s without progress and jumps
-  once before re-planning.
+- "stuck" detection and recovery (below).
 
 A move becomes a left-stick vector relative to the bot's facing. A bot
 never warps.
+
+**Getting unstuck** (`crates/bots/src/stuck.rs`, built). A pure state
+machine, run every tick the bot is walking somewhere (chase, roam, going
+for a weapon; not while it strafes in a fight). It measures progress the
+way the bot wants to go: the position's gain along the wanted direction
+since the start of a window. A window of 20 ticks (2/3 s) with less than
+0.25 world units of gain escalates one step:
+
+| Step | What the bot does for its window |
+|---|---|
+| sidestep | strafes to one side (alternating) and backs off a little, still facing the way it wanted to go |
+| jump | walks on and presses jump (A) for 3 ticks |
+| crouch-jump | jumps, then holds crouch from the third tick (the jump's higher clearance) |
+| repath | the waypoint it was walking to is blacklisted; the path and (for roaming) the goal are dropped; it plans again |
+
+Gaining 0.25 at any step is recovery: back to walking. Stuck again within
+3 s carries on from the step that freed it, not from the sidestep. Two
+slower checks catch what the window does not:
+
+- **penned in**: never more than 1 world unit from one point for 4 s while
+  trying to move: oscillating between two waypoints, circling, sliding to
+  and fro along a wall;
+- **no closer**: the goal not 0.5 closer for 10 s.
+
+Either goes straight to repath, blacklisting the goal and the waypoint.
+
+A blacklisted point is avoided for 10 s within 0.75 world units, 16 at
+most: new paths skip the nav mesh edges whose portal passes near one
+(`NavMesh::path_avoiding`; when no such path exists, the plain one), roam
+goals skip polygons whose centre is one, and weapon pickups at one are not
+sought. A pickup it holds the action button on for 1 s without getting it
+(on a ledge, in a wall) is blacklisted the same way.
+
+**Bodies.** Someone within 0.8 world units ahead of the walk direction and
+within 0.35 of its line (not on another floor) turns the walk away from
+them, keeping its speed. In a fight the target itself is not avoided.
+
+The follower's own stall check (`nav::Follower`, a jump after 30 frames
+without getting closer to the waypoint, then a fresh path) still runs
+under this; the state machine is what escalates and blacklists.
 
 ### 3.3 Decision
 
@@ -292,6 +331,25 @@ keeps the best, with hysteresis so the bot does not flicker between two.
 | flee | outgunned, low health, a grenade nearby |
 | emote | §3.5 |
 | roam | the default: move toward the likely fight (spawns, weapon spots) |
+
+**Built so far** (`Mind::step`, a fixed order rather than scores):
+
+1. the weapons decision (§3.6) says go for a weapon: **rearm**;
+2. an enemy in view: **fight**. With nothing to shoot it runs straight in
+   and melees (B within 1.2 world units); with its shields under 0.25 it
+   backs off while it shoots, until they are back to 0.9;
+3. an enemy seen in the last 10 s, shields down: **recover**, backing
+   away from where it was seen, facing that way;
+4. an enemy seen in the last 10 s: **chase** its last known position;
+5. otherwise **roam**.
+
+Reload (X) and switch weapons (Y) are taps of 2 ticks, at most one every
+2 s (reload) or 1.3 s (switch), on top of whichever of these runs.
+
+Grenades (left trigger) need one in hand (unit `+0x23e`, §3.6, when read).
+At the skill's rate in a fight at 3 to 12 world units, four times that rate
+when another enemy is within 2.5 of the target; and at twice the rate at
+where an enemy went out of view in the last 2 s, while chasing.
 
 The **personality** parameters (aggression, caution, objective focus, teamwork)
 scale the scores. Difficulty does not scale them: a Legendary bot can be
@@ -362,6 +420,73 @@ How often it happens:
 
 `taunt` is 0..1 and comes from the personality. It is 0 when the Clankers
 page's **Taunts** setting is off. A persistent bot has its own taunt value.
+
+### 3.6 Weapons and ammunition (traced)
+
+The user, after playing the Clankers: "they don't know when they have no
+ammo". The bot now reads what it carries and what lies about
+(`crates/bots/src/arms.rs`), and a pure decision (`arms::plan`) turns
+that into a reload, a weapon switch, a walk to a weapon, or a melee.
+
+**Fields.** Traced offline from the XBE with `h2 disasm` (static reading,
+no game run). `U` is the unit's object body, `W` a weapon's, `D` the weapon's
+`weap` tag metadata (`W+0` is its tag datum; the tag entry's `+8` the
+metadata address, `tag_entry_checked`).
+
+| Field | Where | Type | Confidence | Evidence |
+|---|---|---|---|---|
+| held weapon slot | `U+0x212` | `i8`, -1 none | confirmed | docs/live/live-gamestate.md ("Unit aim, held weapon"): `unit_new` `0xc4410` sets -1; `0xc58f0`, `0xc85c0`, `0xcf3d0` index `+0x218` with it |
+| weapon datums | `U+0x218` | `u32[4]` | confirmed | as above; multiplayer fills two |
+| grenade counts | `U+0x23e` | `i8[2]` (frag, plasma) | confirmed offsets, names unverified | live-gamestate.md ("Unit stance"): `0xcdff0` and the HUD index it with `U+0x23c` |
+| magazine count, pointer | `D+0x2c0`, `D+0x2c4` | `i32`, `u32` | confirmed | `0x101a10` (sets a weapon's ammunition from a fraction): `mov eax,[edi+2C0h]; test eax,eax; jle`, then `mov ecx,[edi+2C4h]`; `0x101740` (ammunition between two weapons of one kind) loops over the block with stride `0x5c` (`add esi,5Ch`) |
+| rounds a magazine holds | magazine definition `+0xa` | `i16` | confirmed | `0x101a10`: `movsx edx,word ptr [ecx+0Ah]`, times the fraction, rounded (`fistp`), is stored as the rounds loaded (`mov [esi+22Ch],dx`) |
+| most rounds in reserve | magazine definition `+0xc` | `i16` | confirmed | `0x101a10` caps the reserve with it (`movsx ecx,word ptr [ecx+0Ch]; cmp ax,cx; cmovg`); `0x101740` tops a reserve up to it |
+| reserve rounds | `W+0x22a` (magazine state `+2`) | `i16` | confirmed | `0x101a10`: reserve = reserve + loaded - new loaded (`mov ax,[esi+22Ah]; sub ax,dx; add ax,[esi+22Ch]`), clamped to 0..`+0xc`; `0x101740` moves rounds into it from the other weapon's reserve and loaded |
+| rounds loaded | `W+0x22c` (magazine state `+4`) | `i16` | confirmed | as above; magazine states are `0x10` apart (`0x101740`: `add eax,10h; add ebx,10h`) |
+| barrel count, pointer | `D+0x2d0`, `D+0x2d4` | `i32`, `u32` | confirmed | `0x101d20` loops `D+0x2d0` barrels from `D+0x2d4` with stride `0xec` (`imul ecx,0ECh`) |
+| battery used per shot | barrel definition `+0xa8` | `f32` | confirmed | `0x101d20` returns 1 (the weapon "ages") when `D+0x2c0` is 0 or any barrel's `+0xa8` is over 0; the fire path at `0x1036d1` loads `[esi+0A8h]` and calls `0x101db0`, which adds it to `W+0x184` (`addss xmm0,[esi+184h]`, `0x101e39`) and clamps at 1.0 (`[0x45dbc0]`) |
+| battery used | `W+0x184` | `f32`, 0 fresh to 1 dead | confirmed | as above; `0x101a10` writes `1 - fraction` there for an aging weapon; `0x101740` swaps it with a same-kind weapon's when theirs is fresher (`comiss`, then the swap). Skulls' Unlimited Ammo already keeps it at 0 (docs/game/skulls.md) |
+| a weapon's holder | `W+0x14` | `u32` datum | confirmed | live-gamestate.md: the parent; none for a weapon on the ground |
+
+**How the bot reads them.** `arms::read` takes the unit's four weapon
+datums, each resolved like any object (salt and type 2, weapon) and its
+definition through the tag entry (datum compared). A weapon whose
+definition ages (`0x101d20`'s test) is a **battery**: `1 - W+0x184`. One
+with magazines and no aging barrel is **rounds**: the first magazine,
+loaded `W+0x22c` of `+0xa`, reserve `W+0x22a` of `+0xc`. One with neither
+is **not a gun**: the flag, the ball and the bomb (likely; their tags
+were not looked at) and possibly the energy sword (not checked: if its
+barrel ages it reads as a battery). The held weapon is the slot `U+0x212`
+names; the other is the first other slot with a weapon.
+
+`arms::pickups` walks the objects array (at most 2048) for live weapon
+objects with no parent: placed weapons from the netgame spawns and dropped
+ones alike. A pickup is **useful** when it is a gun with something in it.
+A fault while reading weapons leaves the bot playing without the weapons
+layer (`Me::arms` is `None`); it never blinds it.
+
+**The decision** (`arms::plan`, pure, in order):
+
+1. the held gun is dry (no rounds anywhere, or a battery under 2%):
+   - the other has something: **switch** (Y);
+   - an enemy in view within 2.5 world units: **melee** (run in, B);
+   - a useful pickup within 30 world units, not blacklisted: **seek** it;
+   - an enemy in view: **melee**; else nothing;
+2. an empty magazine with a reserve: **reload** (X), in a fight or not;
+3. calm (no enemy in view for 1.5 s) and under 35% of a magazine with a
+   reserve: **reload**;
+4. calm, the held gun under 20% of all it can carry and the other one too
+   (or none): **seek** a useful pickup within 12;
+5. otherwise nothing.
+
+Seeking walks there along the nav mesh. A weapon of a kind it already
+carries is walked over: the game moves its ammunition across by itself
+(`0x101740`). One of another kind is taken by holding X on it (within 0.5
+world units) for at most 1 s; the dry one in hand is dropped for it.
+
+The presses are Halo 2's Default layout (X reload and action, Y switch,
+B melee, A jump, left stick click crouch), which every bot's profile is
+given whatever the human uses (`guest::bot_block`, §4.2).
 
 ## 4. Way in 1: local slots
 
@@ -2316,6 +2441,55 @@ Each item is for the user to play, or for a coordinator run.
 11. Whether an empty search makes the game host in each playlist type, or
     `MatchProposed` with `host = me` is needed (§8.4).
 
+### 11.1 The brain in play (checklist)
+
+For the user, or a coordinator run with `h2 bots test` and its log. Two
+or three Clankers on Lockout, Midship and one big map (Coagulation or
+Waterworks), on Normal and Legendary. Each line is a yes or no.
+
+Stuck (§3.2):
+
+1. Over a few minutes no bot stands pressed against a wall, a railing or
+   a corner for more than about 3 s.
+2. A bot that walks into a step or low ledge sidesteps, then jumps, then
+   crouch-jumps, and gets over it or turns away. It does not jump in open
+   floor while walking freely.
+3. A bot that cannot get somewhere goes somewhere else within about 3 s
+   and does not come back to the same spot for about 10 s.
+4. No bot walks back and forth between two points for more than about
+   4 s.
+5. Two bots meeting in a corridor pass each other; a bot does not push
+   into a teammate standing still.
+
+Ammunition (§3.6):
+
+6. A bot that empties a magazine reloads at once, in a fight or not
+   (the reload animation plays).
+7. A bot with a part-empty magazine reloads after a fight, not during it.
+8. A bot whose gun runs dry with a loaded second weapon switches to it
+   (the switch animation plays).
+9. A bot with both guns dry walks to the nearest weapon on the map and
+   takes it (another kind: it swaps; the same kind: its ammunition goes
+   up). Check with Famine on, or a variant with low starting ammunition.
+10. A bot with both guns dry and a human within a couple of metres runs
+    in and melees instead.
+11. A bot does not stop on the flag, the ball or the bomb trying to pick
+    it up (they read as not guns).
+12. Plasma weapons: a bot with a dead plasma rifle or pistol switches or
+    goes for another weapon; it does not try to reload it.
+13. The fields themselves: on the human's own unit, `h2 agent object`
+    reads of the held weapon's `+0x22c` and `+0x22a` match the HUD's
+    rounds counter, and `1 - (+0x184)` the plasma pistol's battery meter.
+
+Cheap wins (§3.3):
+
+14. A bot with its shields popped backs away from the human while
+    shooting, and does not chase out of sight until they recharge.
+15. Bots throw a grenade into two humans standing together more often
+    than at one; never with no grenades left.
+16. A bot that loses sight of someone round a corner sometimes lobs a
+    grenade there.
+
 ## 12. Next tracing (offline)
 
 Done for stage 1 (§4.1 to §4.3): the pad seam, the slot flags and the
@@ -2335,6 +2509,13 @@ Still open:
   (zoom?); the layout is in §5.1.
 - Which font slots draw player names in the lobby, scoreboard and carnage
   report.
+- For the weapons layer (§3.6): whether the flag, ball, bomb and energy
+  sword's `weap` tags have no magazines and no aging barrel (the sword
+  should read as a battery to be sought); the `weap` field naming the
+  multiplayer objective kind, to rule them out by name rather than by
+  shape; the heat of plasma weapons (overheating reads as nothing today);
+  and whether a pickup's respawn timer is readable (the netgame equipment
+  index `+0xaf`, docs/live/live-gamestate.md).
 
 ## 13. Testing (`h2 bots test`)
 

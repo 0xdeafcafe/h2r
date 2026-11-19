@@ -305,3 +305,61 @@ fn generator_output_is_pinned() {
         "the nav output changed: bump cache::GENERATOR and record the new pair"
     );
 }
+
+/// Four 2x2 squares in a ring around (2, 2): 0 at the origin, 1 east of
+/// it, 2 north of it, 3 north-east; walkable both ways across each shared
+/// side.
+fn ring() -> NavMesh {
+    let sq = |x: f32, y: f32| {
+        Poly::new(vec![
+            [x, y, 0.0],
+            [x + 2.0, y, 0.0],
+            [x + 2.0, y + 2.0, 0.0],
+            [x, y + 2.0, 0.0],
+        ])
+    };
+    let mut edges = Vec::new();
+    let mut both = |from: u32, to: u32, a: V3, b: V3| {
+        for (f, t) in [(from, to), (to, from)] {
+            edges.push(Edge {
+                from: f,
+                to: t,
+                a,
+                b,
+                kind: Kind::Walk,
+            });
+        }
+    };
+    both(0, 1, [2.0, 0.0, 0.0], [2.0, 2.0, 0.0]);
+    both(0, 2, [0.0, 2.0, 0.0], [2.0, 2.0, 0.0]);
+    both(1, 3, [2.0, 2.0, 0.0], [4.0, 2.0, 0.0]);
+    both(2, 3, [2.0, 2.0, 0.0], [2.0, 4.0, 0.0]);
+    NavMesh::new(
+        vec![sq(0.0, 0.0), sq(2.0, 0.0), sq(0.0, 2.0), sq(2.0, 2.0)],
+        edges,
+    )
+}
+
+#[test]
+fn a_corridor_can_avoid_an_edge() {
+    let m = ring();
+    let via = |c: &[u32]| m.edges[c[0] as usize].to;
+    let any = m.corridor(0, 3).unwrap();
+    assert_eq!(any.len(), 2);
+    // Ruling out the way through 1 goes through 2, and the other way.
+    let not_1 = m.corridor_avoiding(0, 3, &|e| e.to == 1).unwrap();
+    assert_eq!(via(&not_1), 2);
+    let not_2 = m.corridor_avoiding(0, 3, &|e| e.to == 2).unwrap();
+    assert_eq!(via(&not_2), 1);
+    // Both ruled out: no way.
+    assert_eq!(m.corridor_avoiding(0, 3, &|e| e.to == 1 || e.to == 2), None);
+    let p = m
+        .path_avoiding([0.5, 0.5, 0.0], [3.5, 3.5, 0.0], &|e| e.to == 1)
+        .unwrap();
+    assert_eq!(p.last().unwrap().at, [3.5, 3.5, 0.0]);
+    assert!(
+        p.iter()
+            .all(|w| w.at[0] <= 2.0 + 1e-4 || w.at[1] >= 2.0 - 1e-4),
+        "{p:?}"
+    );
+}

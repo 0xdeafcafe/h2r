@@ -781,8 +781,11 @@ pub const UNIT_AIM: u32 = 0x168;
 /// Object body damage flags bit 2: the body is depleted (dead).
 pub const BODY_DEPLETED: u16 = 1 << 2;
 
-/// A player's living unit: its origin and aim.
-fn living_unit(m: &dyn GuestMemory, p: &players::Player) -> R<Option<([f32; 3], [f32; 3])>> {
+/// A player's living unit: its origin, aim and body.
+fn living_unit(
+    m: &dyn GuestMemory,
+    p: &players::Player,
+) -> R<Option<([f32; 3], [f32; 3], objects::Body)>> {
     let Some(unit) = p.unit(m)? else {
         return Ok(None);
     };
@@ -792,7 +795,11 @@ fn living_unit(m: &dyn GuestMemory, p: &players::Player) -> R<Option<([f32; 3], 
     if kind != objects::BIPED || body.damage_flags(m)? & BODY_DEPLETED != 0 {
         return Ok(None);
     }
-    Ok(Some((body.position(m)?, m.vec3(body.addr + UNIT_AIM)?)))
+    Ok(Some((
+        body.position(m)?,
+        m.vec3(body.addr + UNIT_AIM)?,
+        body,
+    )))
 }
 
 /// The game's tick count (30 a second) while a game is loaded, the main
@@ -878,15 +885,20 @@ pub fn perceive_as(m: &dyn GuestMemory, who: Who) -> R<Perception> {
         if !p.listed(m)? {
             continue;
         }
-        let Some((position, aim)) = living_unit(m, &p)? else {
+        let Some((position, aim, body)) = living_unit(m, &p)? else {
             continue;
         };
         let team = i16::from(p.team(m)?);
         if is(m, &p, who)? {
+            // Ammunition is extra: a fault reading it leaves the bot
+            // playing without it (section 3.6), not blind.
             out.me = Some(Me {
                 position,
                 aim,
                 team,
+                shield: body.shield(m)?,
+                health: body.health(m)?,
+                arms: crate::arms::read(m, body.addr).ok(),
             });
         } else {
             out.others.push(Seen {
@@ -895,6 +907,9 @@ pub fn perceive_as(m: &dyn GuestMemory, who: Who) -> R<Perception> {
                 team,
             });
         }
+    }
+    if out.me.is_some() {
+        out.pickups = crate::arms::pickups(m).unwrap_or_default();
     }
     Ok(out)
 }
