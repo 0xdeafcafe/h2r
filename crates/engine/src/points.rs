@@ -520,6 +520,14 @@ points! { ALL;
     /// block definition (`0x38` bytes), a child of the screen in ESI; the
     /// widget in EAX, or 0.
     PANE_BITMAP_ADD @ 0x0022_fa30: [fn(screen: esi, block: stack 0) -> eax ret 4]; "docs/formats/ui.md";
+    /// The two retail player-options constructors share the current selected-player record.
+    PLAYER_OPTIONS_CHECK_FRIEND @ 0x002b_70a3: [fn(request: eax, source: esi) -> eax ret 0]; "docs/game/bots.md";
+    PLAYER_OPTIONS_OPEN @ 0x002b_71a6: [fn(request: eax, source: esi) -> eax ret 0]; "docs/game/bots.md";
+    /// List skin by index in the current interface, or null.
+    UI_LIST_SKIN @ 0x0014_837a: [fn(index: stack 0) -> eax ret 4]; "docs/formats/ui.md";
+    PANE_SHADER_ADD @ 0x002b_af38: [fn(screen: esi, block: ebx) -> eax ret 0]; "docs/formats/ui.md";
+    EMBLEM_WIDGET_DRAW @ 0x002b_11c9: [fn(widget: ecx, context: stack 0) ret 4]; "docs/game/bots.md";
+    EMBLEM_WIDGET_SET @ 0x002b_12ca: [fn(widget: eax, team: edx, slot: ecx, profile: stack 0) ret 4]; "docs/game/bots.md";
     /// The current interface's screen tag for a screen id (stdcall): the
     /// `wgit` tag's datum handle, or -1.
     SCREEN_TAG_BY_ID @ 0x0014_8098: [fn(id: stack 0) -> eax ret 4]; "docs/formats/ui.md";

@@ -690,6 +690,7 @@ version = "0.1.0"
 dependencies = [
  "engine",
  "input",
+ "live-proto",
  "map",
  "pathfind",
  "tags",

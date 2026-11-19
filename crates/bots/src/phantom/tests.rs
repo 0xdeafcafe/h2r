@@ -14,7 +14,6 @@ fn who(xuid: u64, tag: &str) -> Identity {
     Identity {
         xuid,
         gamertag: tag.into(),
-        ..Default::default()
     }
 }
 

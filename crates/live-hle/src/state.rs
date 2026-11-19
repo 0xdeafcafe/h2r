@@ -966,6 +966,25 @@ impl State {
             )
             .map_err(|code| format!("Live is busy ({code:#010x})"))
     }
+    pub fn bot_card(
+        &self,
+        xuid: live_proto::Xuid,
+        done: Box<dyn FnOnce(live_proto::bots::PlayerCard) + Send>,
+    ) {
+        if let (Some(service), Some(session)) = (&self.service, self.session()) {
+            let _ = service.bot_card(
+                &session,
+                xuid,
+                Box::new(move |r| {
+                    if let Ok(Reply::BotCard(card)) = r
+                        && card.xuid == xuid
+                    {
+                        done(card);
+                    }
+                }),
+            );
+        }
+    }
     /// A page of the mod repository ([`crate::Hle::mod_list`]).
     pub fn mod_list(
         &self,

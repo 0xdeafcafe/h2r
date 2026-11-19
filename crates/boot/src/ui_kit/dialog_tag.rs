@@ -392,6 +392,7 @@ pub fn request(window: u32, mask: u16, loader: u32) -> [u8; REQUEST_SIZE as usiz
 /// its loader, the retail dialog it is built from and its list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Registered {
+    pub name: &'static str,
     pub vtable: u32,
     pub page: u32,
     pub loader: u32,
@@ -905,6 +906,7 @@ mod tests {
     fn a_dialog_class_is_served_its_copy_once_made() {
         const PAGE: u32 = 0x0030_0000;
         let d = Registered {
+            name: "test",
             vtable: 0x0071_0000,
             page: PAGE,
             loader: 0x0072_0000,

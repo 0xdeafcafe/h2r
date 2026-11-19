@@ -405,6 +405,9 @@ fn validate(state: &State, body: &EventBody) -> Result<(), ApiError> {
                 if d.to == d.from {
                     return Err(invalid("a friend request needs another account"));
                 }
+                if live_proto::bots::is_bot_xuid(d.to) {
+                    return Err(forbidden("Clankers cannot receive friend requests"));
+                }
                 if !state.accounts.contains_key(&d.to) {
                     return Err(invalid("no such account"));
                 }
@@ -952,6 +955,18 @@ impl Live {
             .unix_timestamp();
         if (at - now).abs() > MAX_EVENT_SKEW_S {
             return Err(invalid("at is more than 5 minutes from the server's clock"));
+        }
+        // All mailbox writes, including unsupported message/voice sends.
+        // Check the recipient before reporting an unknown mailbox or event kind.
+        if let Some(to) = body
+            .stream
+            .strip_prefix("mailbox-")
+            .and_then(|s| Xuid::parse(s).ok())
+            && live_proto::bots::is_bot_xuid(to)
+        {
+            return Err(forbidden(
+                "Clankers cannot receive messages or game invites",
+            ));
         }
         if !may_write(&author, &body.stream, &body.kind) {
             return Err(forbidden(format!(

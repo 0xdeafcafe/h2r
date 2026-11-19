@@ -769,6 +769,24 @@ mod tests {
         }
     }
 
+    #[test]
+    fn clanker_appearance_migrates_legacy_issued_events_on_replay() {
+        use live_proto::bots::{self, Colors, Emblem, Issued, Personality};
+        let xuid = Xuid(bots::SERVER_XUID_MARK | 17);
+        let mut bot = Issued {
+            xuid,
+            gamertag: Gamertag::new("Bolt").unwrap(),
+            persistent: true,
+            emblem: Emblem::default(),
+            colors: Colors::default(),
+            personality: Personality::default(),
+        };
+        let mut log = Log::new();
+        log.push(&bots::bot_stream(xuid), bots::ISSUED, json!(bot));
+        (bot.emblem, bot.colors) = bots::appearance("Bolt");
+        assert_eq!(log.model.read().bots.bot(xuid), Some(&bot));
+    }
+
     const X: &str = "0009000000000001";
 
     #[test]

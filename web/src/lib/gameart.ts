@@ -251,6 +251,10 @@ export const EMBLEM_COLOURS: Rgb[] = [
 function fnv(seed: string, salt: number): number {
   let h = (2166136261 ^ salt) >>> 0;
   for (let i = 0; i < seed.length; i++) h = Math.imul(h ^ seed.charCodeAt(i), 16777619);
+  return mixHash(h);
+}
+
+function mixHash(h: number): number {
   // Final mix, so near-identical seeds don't land on neighbouring picks.
   h ^= h >>> 15; h = Math.imul(h, 0x2c1b3c6d); h ^= h >>> 12;
   return h >>> 0;
@@ -276,6 +280,24 @@ export function emblemFromIndices(
 export interface Appearance {
   emblem?: { fg?: number; bg?: number };
   colours?: { primary?: number; secondary?: number; tertiary?: number; quaternary?: number };
+}
+
+/** Browser binding for live_proto::bots::appearance. Bot events in old
+ *  replays and the mock carry only a name; the pinned vector covers both. */
+export function clankerAppearance(tag: string): Appearance {
+  const normalized = tag.split(/\p{White_Space}+/u).filter(Boolean).join(" ").toLowerCase();
+  let hash = 2166136261;
+  for (const byte of new TextEncoder().encode(normalized)) hash = Math.imul(hash ^ byte, 16777619);
+  const h = mixHash(hash);
+  const light = [0, 4, 13, 16], dark = [2, 7, 10, 11];
+  const pair = (group: number[], bits: number) => {
+    const first = bits & 3;
+    return [group[first]!, group[(first + 1 + (bits >>> 2) % 3) % 4]!] as const;
+  };
+  const inverse = (h & (1 << 11)) !== 0;
+  const [primary, secondary] = pair(inverse ? dark : light, h >>> 12);
+  const [tertiary, quaternary] = pair(inverse ? light : dark, h >>> 20);
+  return { emblem: { fg: h & 63, bg: (h >>> 6) & 31 }, colours: { primary, secondary, tertiary, quaternary } };
 }
 
 /** An appearance off the wire, keeping only finite indices, so state never

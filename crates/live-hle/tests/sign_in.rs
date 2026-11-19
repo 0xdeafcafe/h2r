@@ -1944,6 +1944,40 @@ fn outbox_pointer_faults_do_not_publish_tasks_or_partial_properties() {
     }
 }
 #[test]
+fn clanker_social_sends_refuse_the_whole_outbox_message() {
+    let (mut w, h) = outbox_world();
+    let msg = message_create(&mut w, 1, 0, 0);
+    let voice = message_create(&mut w, 1, 0, 0x0c);
+    message_set(&mut w, voice, 0x9c1, &[9, 4, 2, 1]);
+    let to = DATA + 0x5000;
+    for mark in [
+        live_proto::bots::SERVER_XUID_MARK,
+        live_proto::bots::LOCAL_XUID_MARK,
+    ] {
+        let id = mark | 1;
+        w.put(to, &1u64.to_le_bytes());
+        w.put(to + 12, &id.to_le_bytes());
+        for (op, args) in [
+            ("XOnlineMessageSend", vec![0, msg, 2, to, 0, OUTPUT]),
+            ("XOnlineMessageSend", vec![0, voice, 2, to, 0, OUTPUT]),
+            (
+                "XOnlineGameInviteSend",
+                vec![0, 2, to, 1, 0, 0, 0, 0, OUTPUT],
+            ),
+            (
+                "XOnlineFriendsRequestEx",
+                vec![0, 1, (id >> 32) as u32, 0, 0, 0, OUTPUT],
+            ),
+        ] {
+            w.word(OUTPUT, 0xcafe);
+            assert_eq!(w.call(op, &args), INVALID_ARGUMENT, "{op}");
+            assert_eq!(w.u32(OUTPUT), 0xcafe);
+            assert!(h.message_sends().is_empty());
+        }
+    }
+}
+
+#[test]
 fn outbox_cleanup_invalidates_builders_and_tasks_but_keeps_captures() {
     let (mut w, h) = outbox_world();
     let msg = message_create(&mut w, 2, 0, 0);

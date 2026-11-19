@@ -451,7 +451,7 @@ impl Invites {
                 let mut to = Vec::new();
                 for i in 0..a[3] {
                     let uid = m.u64(a[4] + i * FRIEND_SIZE as u32)?;
-                    if uid == 0 {
+                    if uid == 0 || live_proto::bots::is_bot_xuid(Xuid(uid)) {
                         return Ok(INVALID_ARGUMENT);
                     }
                     to.push(Xuid(uid));
@@ -583,6 +583,9 @@ impl Invites {
         };
         if controller >= 4 || actor == 0 {
             return Err(INVALID_USER);
+        }
+        if live_proto::bots::is_bot_xuid(to) {
+            return Err(INVALID_ARGUMENT);
         }
         if self.internal.len() + self.tasks.len() >= 64 {
             return Err(TASK_BUSY);

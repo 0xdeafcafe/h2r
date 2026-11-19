@@ -78,6 +78,7 @@ pub use live_telemetry as telemetry;
 pub mod bot_glue;
 pub mod bot_mark;
 pub mod bots_nav_auto;
+mod clanker_card;
 pub mod clankermatch;
 pub mod clankers;
 pub mod pause_menu;

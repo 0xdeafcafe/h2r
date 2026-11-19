@@ -6,6 +6,7 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
+live-proto.workspace = true
 input = { path = "../input", default-features = false }
 engine = { path = "../engine" }
 # The nav mesh's polygons come from the pathfinding generator's sectors,

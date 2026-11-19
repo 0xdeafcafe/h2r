@@ -911,6 +911,55 @@ mod tests {
         let items = list["items"].as_array().unwrap();
         assert_eq!(items.len(), 1, "{items:?}");
         assert_eq!(items[0]["gamertag"], "Host");
+        let (status, card) = call(
+            "GET",
+            format!("/v1/games/bots/{}", bot["xuid"].as_str().unwrap()),
+            None,
+            String::new(),
+        )
+        .await;
+        assert_eq!(status, 200, "{card}");
+        assert_eq!(card["gamertag"], bot["gamertag"]);
+        assert_eq!(card["skill"], bot["skill"]);
+        assert_eq!(card["seed"], bot["personality"]["seed"]);
+        // The Worker routes through the same validator on its SQLite store.
+        for to in [bot["xuid"].as_str().unwrap(), "000e000000000001"] {
+            let from = created["xuid"].as_str().unwrap();
+            for (kind, stream, data) in [
+                (
+                    "FriendRequested",
+                    format!("account-{from}"),
+                    serde_json::json!({"from": from, "to": to}),
+                ),
+                (
+                    "GameInviteSent",
+                    format!("mailbox-{to}"),
+                    serde_json::json!({"from": from, "session_id": session_id}),
+                ),
+                (
+                    "MessageSent",
+                    format!("mailbox-{to}"),
+                    serde_json::json!({}),
+                ),
+                (
+                    "VoiceMessageSent",
+                    format!("mailbox-{to}"),
+                    serde_json::json!({}),
+                ),
+            ] {
+                let event =
+                    live_proto::sign::EventBody::at_unix(&key, &author, &stream, kind, data, now());
+                let (status, body) = call(
+                    "POST",
+                    "/v1/events".into(),
+                    Some(token(lxm::EVENTS_WRITE)),
+                    event.sign(&key),
+                )
+                .await;
+                assert_eq!(status, 403, "{body}");
+                assert!(body["message"].as_str().unwrap().contains("Clankers"));
+            }
+        }
         // The host reports the bot it leased as one of its session's
         // players, as on the native server (live-server tests/bots.rs).
         let joined = live_proto::sign::EventBody::at_unix(

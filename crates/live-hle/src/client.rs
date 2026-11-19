@@ -113,6 +113,7 @@ pub(crate) enum Reply {
     /// A bot roster for the host's session (docs/game/bots.md §9.1), not
     /// yet checked.
     Roster(live_proto::bots::Roster),
+    BotCard(live_proto::bots::PlayerCard),
     /// Everyone's presence, as `GET /v1/presence` shows this console.
     Presence(Vec<live_proto::Presence>),
     /// A page of the mod repository (docs/game/maps.md §5, "Mod downloads").
@@ -258,6 +259,7 @@ enum Work {
     /// `POST /games/bots` (docs/game/bots.md §9.1), as the host of the
     /// request's session.
     Bots(live_proto::bots::RosterRequest),
+    BotCard(Xuid),
     /// `GET /v1/presence`.
     ReadPresence,
     /// `GET /v1/maps?sort=new` (the mod repository), as the first account
@@ -390,6 +392,10 @@ impl Service {
         then: Then,
     ) -> Result<(), u32> {
         self.submit_then(s, Work::Bots(request), Some(then))
+            .map(|_| ())
+    }
+    pub fn bot_card(&self, s: &Session, xuid: Xuid, then: Then) -> Result<(), u32> {
+        self.submit_then(s, Work::BotCard(xuid), Some(then))
             .map(|_| ())
     }
     pub fn logon(&self, s: &Session, accounts: Vec<Account>) -> Result<Pending, u32> {
@@ -1623,6 +1629,17 @@ impl Worker {
                     Error::Status(400 | 413 | 422) => INVALID_ARGUMENT,
                     _ => e.result(),
                 })
+            }
+            Work::BotCard(xuid) => {
+                let active = self
+                    .active
+                    .as_ref()
+                    .filter(|a| a.session.id == c.session.id)
+                    .ok_or(NO_SESSION)?;
+                let user = active.users.values().next().ok_or(NO_USER)?;
+                self.team_json(user, &format!("/games/bots/{xuid}"))
+                    .map(Reply::BotCard)
+                    .map_err(Error::result)
             }
             Work::ReadPresence => {
                 let active = self

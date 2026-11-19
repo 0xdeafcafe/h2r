@@ -6,7 +6,7 @@ import type {
   KillRecord, PlayerJoined, PlayerKilled, PlayerLeft, PlayerScore, PresenceData, PresenceEntry, ScoreChanged,
   WireEvent, Winner, Xuid, GameId,
 } from "../api/types";
-import { normalizeAppearance, type Appearance } from "../lib/gameart";
+import { clankerAppearance, normalizeAppearance, type Appearance } from "../lib/gameart";
 import { normalizeSkulls } from "../lib/skulls";
 
 export interface Presence {
@@ -169,13 +169,15 @@ function addPlayer(s: LiveState, g: GameState, p: GamePlayer) {
   const prev = g.players[p.index];
   // A bot is never an account's player: it keeps the name the game sent.
   const tag = p.bot ? null : gamertagOf(s, p.xuid);
+  const botAccount = p.bot && p.xuid ? s.accounts[p.xuid] : undefined;
   g.players[p.index] = {
     ...p,
     name: tag ?? p.name,
     game_name: tag && tag !== p.name ? p.name : null,
     xuid: p.xuid ?? null,
     left: false,
-    appearance: normalizeAppearance(wire.appearance) ?? prev?.appearance ?? null,
+    appearance: botAccount?.bot ? clankerAppearance(botAccount.gamertag)
+      : normalizeAppearance(wire.appearance) ?? (p.bot ? clankerAppearance(p.name) : prev?.appearance ?? null),
   };
   if (!g.scores[p.index]) g.scores[p.index] = emptyScore(p.index);
 }

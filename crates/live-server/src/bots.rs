@@ -17,8 +17,8 @@ use axum::extract::State as HttpState;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use live_proto::bots::{
-    self, Colors, Emblem, ISSUED, Issued, MAX_BOTS, Personality, ROSTERED, Roster, RosterBot,
-    RosterRequest, Rostered, RosteredBot, SERVER_XUID_MARK,
+    self, ISSUED, Issued, MAX_BOTS, Personality, ROSTERED, Roster, RosterBot, RosterRequest,
+    Rostered, RosteredBot, SERVER_XUID_MARK,
 };
 use live_proto::game::Player;
 use live_proto::{Author, Gamertag, Xuid, lxm, streams, types};
@@ -35,6 +35,7 @@ pub const MAX_ISSUE: u32 = 64;
 /// The projection of the `bot-*` and `bots-*` streams.
 #[derive(Debug, Default)]
 pub struct Bots {
+    latest_skill: HashMap<Xuid, f32>,
     pub issued: HashMap<Xuid, Issued>,
     /// The persistent ones, for [`crate::ranks::Ranks::nearest`].
     pub persistent: BTreeSet<Xuid>,
@@ -152,9 +153,10 @@ pub(crate) fn project(s: &mut State, e: &RecordedEvent) {
     let b = &e.body;
     match b.kind.as_str() {
         ISSUED => {
-            let Ok(d) = serde_json::from_value::<Issued>(b.data.clone()) else {
+            let Ok(mut d) = serde_json::from_value::<Issued>(b.data.clone()) else {
                 return;
             };
+            (d.emblem, d.colors) = bots::appearance(d.gamertag.as_str());
             if d.persistent {
                 s.bots.persistent.insert(d.xuid);
             }
@@ -166,6 +168,9 @@ pub(crate) fn project(s: &mut State, e: &RecordedEvent) {
             let Ok(d) = serde_json::from_value::<Rostered>(b.data.clone()) else {
                 return;
             };
+            s.bots
+                .latest_skill
+                .extend(d.bots.iter().map(|b| (b.xuid, b.skill)));
             s.bots
                 .rosters
                 .entry(d.session_id.clone())
@@ -280,16 +285,7 @@ fn make(seed: u64, persistent: bool, attempt: u32) -> Issued {
     getrandom::fill(&mut low[2..]).expect("the OS random source failed");
     let xuid = Xuid(SERVER_XUID_MARK | u64::from_be_bytes(low));
     let gamertag = name(&mut s, attempt);
-    let colour = |s: &mut u64| below(s, 18) as u8;
-    let emblem = Emblem {
-        foreground: below(&mut s, 64) as u8,
-        background: below(&mut s, 32) as u8,
-        colors: [colour(&mut s), colour(&mut s), colour(&mut s)],
-    };
-    let colors = Colors {
-        primary: colour(&mut s),
-        secondary: colour(&mut s),
-    };
+    let (emblem, colors) = bots::appearance(gamertag.as_str());
     let personality = Personality {
         seed,
         aggression: between(&mut s, 0.2, 0.8),
@@ -560,6 +556,29 @@ impl Live {
 }
 
 // ---------- route handlers ----------
+
+pub(crate) async fn player_card(
+    HttpState(live): HttpState<Arc<Live>>,
+    headers: HeaderMap,
+    axum::extract::Path(raw): axum::extract::Path<String>,
+) -> Result<Response, ApiError> {
+    live.authorize_read(crate::http::bearer(&headers))?;
+    let xuid = Xuid::parse(&raw).map_err(|_| invalid("invalid Clanker xuid"))?;
+    let state = live.model.read();
+    let bot = state
+        .bots
+        .bot(xuid)
+        .ok_or_else(|| not_found("no such Clanker"))?;
+    Ok(crate::http::json(
+        StatusCode::OK,
+        &bots::PlayerCard {
+            xuid,
+            gamertag: bot.gamertag.clone(),
+            skill: state.bots.latest_skill.get(&xuid).copied(),
+            seed: bot.personality.seed,
+        },
+    ))
+}
 
 pub(crate) async fn post_roster(
     HttpState(live): HttpState<Arc<Live>>,

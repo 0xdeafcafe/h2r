@@ -749,7 +749,10 @@ How it behaves (**Code**, with tests in `crates/agent`):
   any slot), or `null`: `{"id", "name", "window", "slot"}`, with `name`
   the dialog's tag (`dialog_live_signin` for the account picker,
   `confirmation_dialog`, `error_dialog_ok`, ...; `boot::ui_watch::
-  dialog_name`) or `null` for an id not named yet. Dialogs read as
+  dialog_name`) or `null` for an id not named yet. For the Clanker player
+  card, `dialog.name` is `clanker_player_options`, resolved from the
+  active screen's kit class. Its numeric id belongs to the retail base
+  class and can also identify other screens. Dialogs read as
   `"screen": null`, so this is how a driver tells one from another; the
   `ui: screen none` line names it the same way (`, dialog 0x14
   dialog_live_signin (window 3, slot 4)`). The input

@@ -126,6 +126,8 @@ pub mod at {
     pub const CONFIG_SIZE: usize = 0x90;
     pub const CONFIG_TEAM: usize = 0x7c;
     pub const CONFIG_NAME_UNITS: usize = 16;
+    /// The retail profile appearance inside a player configuration (0x18fd94).
+    pub const CONFIG_LOOK: usize = 0x40;
     /// Unit `+0x212`: the current weapon index.
     pub const UNIT_WEAPON: u32 = 0x212;
 }
@@ -618,7 +620,7 @@ pub fn config_in(
     };
     let mut c = [0; CONFIG_SIZE];
     m.read(player(s, slot) + P_REQUESTED, &mut c)?;
-    set_name(&mut c, name);
+    set_identity(&mut c, name);
     if let Some(t) = team {
         c[CONFIG_TEAM] = t;
     }
@@ -769,7 +771,7 @@ pub fn unwait_phantoms(m: &mut dyn GuestMemory) -> R<Option<(u32, u32)>> {
 /// (docs/game/bots.md §8.2.2): the name every console's lobby and the
 /// game's player show. `ports` is the bots' controller ports, as a mask.
 /// Only on the session's host (its own effective configurations are the
-/// ones the clients get), and only the effective name: the host's pass
+/// ones the clients get), and only the effective name and appearance: the host's pass
 /// (`0x65cb0`) keeps an effective name once it has one, so a profile
 /// refreshing the requested one does not undo it. Returns the slots it
 /// marked.
@@ -798,11 +800,29 @@ pub fn mark_local_bots(m: &mut dyn GuestMemory, ports: u32) -> R<Vec<u32>> {
             }
             name.push(u);
         }
-        if name.is_empty() || name[0] == MARK as u16 {
+        // The effective name can survive a guest-to-account switch. The
+        // signed-in bot profile retains the full tag even when its gear-marked
+        // display name must be shortened to fit the configuration.
+        let source = guest::slot(controller) + guest::SLOT_BLOCK;
+        let profile_tag = m
+            .utf16(
+                source + guest::BLOCK_PROFILE_NAME as u32,
+                guest::BLOCK_PROFILE_NAME_UNITS,
+            )
+            .ok()
+            .filter(|s| !s.is_empty());
+        let tag = match profile_tag {
+            Some(tag) => tag,
+            None if !name.is_empty() && name[0] != MARK as u16 => String::from_utf16_lossy(&name),
+            None => continue,
+        };
+        let units = marked_name(&tag);
+        let look_at = at + CONFIG_LOOK as u32;
+        let look = guest::bot_look(&tag, m.u8(look_at + 4)?);
+        if name == units && m.bytes(look_at, 8)? == look {
             continue;
         }
-        let tag = String::from_utf16_lossy(&name);
-        let units = marked_name(&tag);
+        m.write(look_at, &look)?;
         for i in 0..CONFIG_NAME_UNITS as u32 {
             m.set_u16(at + 2 * i, units.get(i as usize).copied().unwrap_or(0))?;
         }
@@ -887,7 +907,7 @@ pub fn config(m: &dyn GuestMemory, name: &str, team: Option<u8>) -> R<Option<[u8
         if p.listed(m)? && p.local_user(m)? >= 0 {
             let mut c = [0; CONFIG_SIZE];
             m.read(p.addr + PLAYER_CONFIG, &mut c)?;
-            set_name(&mut c, name);
+            set_identity(&mut c, name);
             if let Some(t) = team {
                 c[CONFIG_TEAM] = t;
             }
@@ -947,7 +967,10 @@ pub fn marked_name(tag: &str) -> Vec<u16> {
     out
 }
 
-fn set_name(c: &mut [u8; CONFIG_SIZE], name: &str) {
+fn set_identity(c: &mut [u8; CONFIG_SIZE], name: &str) {
+    // PROFILE properties builder 0x18fd94 copies the appearance here.
+    let look = crate::guest::bot_look(name, c[CONFIG_LOOK + 4]);
+    c[CONFIG_LOOK..CONFIG_LOOK + 8].copy_from_slice(&look);
     c[..CONFIG_NAME_UNITS * 2].fill(0);
     for (i, u) in marked_name(name).into_iter().enumerate() {
         c[2 * i..2 * i + 2].copy_from_slice(&u.to_le_bytes());

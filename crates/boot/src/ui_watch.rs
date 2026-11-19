@@ -329,6 +329,8 @@ pub fn stack<M: Gm + ?Sized>(m: &M, window: u32, slot: u32) -> Option<Stack> {
 /// A screen on windows 0 to 4 (see [`dialog`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Dialog {
+    /// Kit dialogs share retail screen ids. Their class identifies them.
+    pub class_name: Option<&'static str>,
     pub window: u32,
     pub slot: u32,
     /// The channel's active screen's id, when it has a plausible one.
@@ -359,7 +361,7 @@ impl Dialog {
     /// (window 3, slot 4)` without a name, `dialog ? (...)` without an id.
     pub fn line(&self) -> String {
         let id = match self.id {
-            Some(i) => match dialog_name(i) {
+            Some(i) => match self.class_name.or_else(|| dialog_name(i)) {
                 Some(n) => format!("0x{i:02x} {n}"),
                 None => format!("0x{i:02x}"),
             },
@@ -371,7 +373,7 @@ impl Dialog {
     pub fn json(&self) -> serde_json::Value {
         serde_json::json!({
             "id": self.id,
-            "name": self.id.and_then(dialog_name),
+            "name": self.class_name.or_else(|| self.id.and_then(dialog_name)),
             "window": self.window,
             "slot": self.slot,
         })
@@ -392,11 +394,19 @@ pub fn dialog<M: Gm + ?Sized>(m: &M) -> Option<Dialog> {
                 continue;
             };
             if occupied(m, ch) {
-                let id = m
-                    .u32(ch + ACTIVE)
-                    .filter(|&s| s != 0)
-                    .and_then(|s| id_of(m, s));
-                return Some(Dialog { window, slot, id });
+                let active = m.u32(ch + ACTIVE).filter(|&s| s != 0);
+                let id = active.and_then(|s| id_of(m, s));
+                let class_name = active
+                    .and_then(|s| m.u32(s))
+                    .and_then(crate::ui_kit::dialog_tag::by_vtable)
+                    .map(|d| d.name)
+                    .filter(|n| *n == crate::clanker_card::SCREEN);
+                return Some(Dialog {
+                    window,
+                    slot,
+                    id,
+                    class_name,
+                });
             }
         }
     }
@@ -589,6 +599,7 @@ mod tests {
         assert_eq!(
             dialog(&f),
             Some(Dialog {
+                class_name: None,
                 window: 3,
                 slot: 4,
                 id: Some(0x17)
@@ -605,6 +616,7 @@ mod tests {
         assert_eq!(
             dialog(&f),
             Some(Dialog {
+                class_name: None,
                 window: 0,
                 slot: 4,
                 id: None
@@ -734,6 +746,7 @@ mod tests {
         assert_eq!(d.json()["id"], 0x14);
         // An unnamed one gives its id, an unread one `?`.
         let d = Dialog {
+            class_name: None,
             window: 3,
             slot: 4,
             id: Some(0x0a),
@@ -748,12 +761,34 @@ mod tests {
     }
 
     #[test]
+    fn ui_screen_names_the_clanker_card_by_class() {
+        use crate::ui_kit::{dialog::DialogBase, dialog_tag};
+        let d = dialog_tag::Registered {
+            name: crate::clanker_card::SCREEN,
+            vtable: 0x7154_2000,
+            page: 0x7154_4000,
+            loader: 0x7154_3000,
+            base: DialogBase::Large,
+            list: dialog_tag::base_layout(DialogBase::Large, 4),
+        };
+        dialog_tag::register(d);
+        let mut f = Fake::default();
+        let active = 0x8000_2000;
+        screen(&mut f, WINDOW_1 + 4 * STRIDE_13, active, 39, 1);
+        f.set_u32(active, d.vtable);
+        let v = screen_json(std::time::Duration::ZERO, None, dialog(&f));
+        assert_eq!(v["dialog"]["name"], "clanker_player_options");
+        assert_eq!(v["dialog"]["id"], 39);
+    }
+
+    #[test]
     fn ui_screen_answers_with_the_dialog() {
         let age = std::time::Duration::from_millis(40);
         let v = screen_json(
             age,
             None,
             Some(Dialog {
+                class_name: None,
                 window: 3,
                 slot: 4,
                 id: Some(ACCOUNT_PICKER),
