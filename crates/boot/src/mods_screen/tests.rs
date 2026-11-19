@@ -969,3 +969,31 @@ fn a_big_packs_texts_fit_and_have_ids_of_the_family() {
         .unwrap()
         .starts_with("title \"A Pack Whose Name Is Longer Than Any ...\"; rows: [0]"));
 }
+
+#[test]
+fn a_cold_visit_can_retry_and_browse_every_row_without_changing_focus_on_refresh() {
+    let fake = Arc::new(Fake::default());
+    let repo = Repo::new(fake, None);
+    let rows = ListRows::new(Arc::clone(&repo));
+    repo.opened();
+    let now = Instant::now();
+    repo.fetch(now);
+    repo.listed(Err(ModsError::Offline));
+    assert!(matches!(rows.press(0), Chosen::Stepped(_)));
+    assert_eq!(repo.list_state(), List::Loading);
+    assert!(repo.due(now));
+    assert_eq!(rows.count(), 1);
+    assert_eq!(rows.growing_capacity(), Some(MAX_ROWS));
+    repo.listed(Ok(three()));
+    assert_eq!(rows.count(), 3);
+    assert_eq!(repo.menu_text(), "Mods");
+    assert_eq!(rows.press(2), Chosen::Open(DETAIL));
+    repo.listed(Ok(vec![entry(4, "New arrival", Some(40))]));
+    assert_eq!(repo.menu_text(), "Mods (1 new)");
+    assert_eq!(rows.count(), 3);
+    assert_eq!(repo.selected().unwrap().id, id(1));
+    repo.closed();
+    repo.opened();
+    assert_eq!(rows.count(), 1);
+    assert_eq!(repo.list_row(0).unwrap().0, "New arrival");
+}

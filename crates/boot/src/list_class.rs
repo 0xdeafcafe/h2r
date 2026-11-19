@@ -130,6 +130,11 @@ pub trait Rows: Send + Sync {
     fn title(&self) -> u32;
     /// The rows when the screen opens.
     fn count(&self) -> usize;
+    /// Reserve room for a list that starts with one waiting row and grows
+    /// in place when its contents arrive. Existing row handles stay valid.
+    fn growing_capacity(&self) -> Option<usize> {
+        None
+    }
     /// `(text index, string id)` for each text of row `row`.
     fn texts(&self, row: i16) -> Vec<(u32, u32)>;
     /// A press on row `row`.
@@ -1279,6 +1284,18 @@ pub fn adopt(
     })
 }
 
+/// Append rows to the reserved array without invalidating the focused handle.
+fn grow_rows(m: &mut dyn GuestMemory, screen: Screen, count: usize) -> Result<(), MemFault> {
+    let rows = screen.list().row_array(m)?.array;
+    let active = rows.header_field(m, engine::datum::layout::ACTIVE_COUNT)?;
+    for _ in active.max(0) as usize..count {
+        if rows.new_datum(m)?.is_none() {
+            break;
+        }
+    }
+    Ok(())
+}
+
 /// The row an item shows.
 fn item_row(m: &dyn GuestMemory, item: u32) -> Result<Option<i16>, MemFault> {
     Ok(Item::at(item)
@@ -1306,6 +1323,7 @@ pub async fn load(
     let count = rows.count();
     let described = rows.describe(count);
     cx.write(|m| rows.write_texts(m))?;
+    let capacity = rows.growing_capacity().unwrap_or(count).max(count);
     let rows = count;
     let request = cx.arg(0)?;
     // A dialog's tag copy is made before its pane is, from its base found
@@ -1331,7 +1349,7 @@ pub async fn load(
     // Unreadable (no game kind byte): the main menu's.
     let base = cx.read(|m| m.u8(UI_GAME_KIND).map_or(CONTROLS_SCREEN_ID, base_screen_id));
     {
-        let _building = Building::start(rows);
+        let _building = Building::start(capacity);
         if base == CONTROLS_SCREEN_ID {
             cx.call(
                 GuestCall::new(points::CONTROLS_SCREEN_CTOR.base)
@@ -1487,6 +1505,11 @@ pub async fn row_text(
             }
             Ok(())
         })?;
+    }
+    if live.redraw && rows.growing_capacity().is_some() {
+        let count = rows.count();
+        let screen = Screen::at(cx.entry().ecx.wrapping_sub(ui::LIST));
+        cx.write(|m| grow_rows(m, screen, count))?;
     }
     let row = cx.read(|m| item_row(m, item))?;
     // The rows read the settings store; no guest memory is held here.
@@ -2794,6 +2817,22 @@ mod tests {
             .live(&run.guest, 32)
             .unwrap();
         assert_eq!(live.len(), 15);
+    }
+
+    #[test]
+    fn growing_a_waiting_list_keeps_its_first_row_handle() {
+        let mut g = guest();
+        g.map(SCREEN, ui::CONTROLS_SCREEN_SIZE).map(ROWS - 0x20, 0x200);
+        construct(&mut g, 4);
+        adopt(&mut g, SCREEN, &entries(), 1).unwrap();
+        let screen = Screen::at(SCREEN);
+        let rows = screen.list().row_array(&g).unwrap();
+        let first = rows.live(&g, 4).unwrap()[0].0;
+        grow_rows(&mut g, screen, 4).unwrap();
+        grow_rows(&mut g, screen, 4).unwrap();
+        let live = rows.live(&g, 4).unwrap();
+        assert_eq!(live.len(), 4);
+        assert_eq!(live[0].0, first);
     }
 
     #[test]

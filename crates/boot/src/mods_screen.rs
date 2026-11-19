@@ -427,6 +427,9 @@ struct Inner {
     seen: u64,
     /// What "New" is measured against on the screen this visit.
     shown_from: u64,
+    // A populated visit keeps its row identities until B leaves the browser.
+    visiting: bool,
+    next_list: Option<Vec<ModEntry>>,
     selected: Option<MapId>,
     installed: BTreeSet<MapId>,
     installs: BTreeMap<MapId, Install>,
@@ -465,6 +468,8 @@ impl Repo {
                 list: List::Loading,
                 seen,
                 shown_from: seen,
+                visiting: false,
+                next_list: None,
                 selected: None,
                 pack: None,
                 installed: BTreeSet::new(),
@@ -508,6 +513,9 @@ impl Repo {
     /// The Live menu row's text: "Mods", or "Mods (N new)".
     pub fn menu_text(&self) -> String {
         let g = self.lock();
+        if let Some(items) = &g.next_list {
+            return menu_text(mods::new_count(items, g.seen));
+        }
         let n = match &g.list {
             List::Loaded(items) => mods::new_count(items, g.seen),
             _ => 0,
@@ -586,7 +594,14 @@ impl Repo {
                         items.len(),
                         mods::new_count(&items, g.seen)
                     );
-                    g.list = List::Loaded(items);
+                    if g.visiting && matches!(&g.list, List::Loaded(rows) if !rows.is_empty()) {
+                        g.next_list = Some(items);
+                    } else {
+                        if g.visiting {
+                            self.mark_seen(&mut g, &items);
+                        }
+                        g.list = List::Loaded(items);
+                    }
                 }
                 Err(e) => {
                     eprintln!("mods: no list: {e}");
@@ -608,27 +623,45 @@ impl Repo {
     /// on disk), but tagged "New" for this visit; a fresh list is asked
     /// for, and the maps' pictures are read again.
     pub fn opened(&self) {
-        let seen = {
+        {
             let mut g = self.lock();
+            if let Some(items) = g.next_list.take() {
+                g.list = List::Loaded(items);
+            }
+            g.visiting = true;
             g.shown_from = g.seen;
             g.pictures = None;
             if let List::Loaded(items) = &g.list {
-                let page = ModPage {
-                    items: items.clone(),
-                    ..ModPage::default()
-                };
-                g.seen = mods::seen_after(&page, g.seen);
+                let items = items.clone();
+                self.mark_seen(&mut g, &items);
             }
-            g.seen
-        };
-        if let Some(path) = &self.seen_file
-            && let Err(e) = write_seen(path, seen)
-        {
-            eprintln!("mods: the last-seen position could not be kept: {e}");
         }
         self.want_list();
         self.touch();
         self.refresh_menu();
+    }
+
+    fn mark_seen(&self, g: &mut Inner, items: &[ModEntry]) {
+        let seen = items.iter().filter_map(|e| e.position).max().unwrap_or(0);
+        if seen > g.seen {
+            g.seen = seen;
+            if let Some(path) = &self.seen_file
+                && let Err(e) = write_seen(path, seen)
+            {
+                eprintln!("mods: the last-seen position could not be kept: {e}");
+            }
+        }
+    }
+
+    fn closed(&self) {
+        let mut g = self.lock();
+        g.visiting = false;
+        if let Some(items) = g.next_list.take() {
+            g.list = List::Loaded(items);
+        }
+        drop(g);
+        self.refresh_menu();
+        self.touch();
     }
 
     /// The entries as the list shows them (at most [`MAX_ROWS`]).
@@ -856,10 +889,19 @@ impl Repo {
         match top {
             Some(Top::Map(e)) => self.open_page(&e),
             Some(Top::Pack(name, _)) => self.open_pack(&name),
-            None => {
+            None if row == 0 => {
+                let mut g = self.lock();
+                if g.in_flight || matches!(g.list, List::Loading) {
+                    return Chosen::Nothing;
+                }
+                g.asked = None;
+                g.list = List::Loading;
+                drop(g);
+                self.touch();
                 self.want_list();
                 Chosen::Stepped("mods: reading the list again".into())
             }
+            None => Chosen::Nothing,
         }
     }
 
@@ -1534,6 +1576,9 @@ impl Rows for ListRows {
     fn count(&self) -> usize {
         self.0.list_count()
     }
+    fn growing_capacity(&self) -> Option<usize> {
+        Some(MAX_ROWS)
+    }
     fn texts(&self, row: i16) -> Vec<(u32, u32)> {
         let Some(line) = self.0.list_line(row) else {
             return Vec::new();
@@ -1828,6 +1873,13 @@ pub fn classes(repo: &Arc<Repo>) -> [ListClass; 3] {
         .picture(crate::campaign_menu::PICTURE)
         .action_buttons(&X_ONLY)
         .action(list_action(repo))
+        .on_free({
+            let repo = Arc::clone(repo);
+            Arc::new(move |_, _| {
+                repo.closed();
+                Box::pin(async { Ok(()) })
+            })
+        })
         .footer(Slots::id(LIST_FOOTER)),
         ListClass::with_rows("mods-pack", PACK, Arc::new(PackRows::new(Arc::clone(repo))))
             .layout(crate::skulls_menu::LIST_LAYOUT)
