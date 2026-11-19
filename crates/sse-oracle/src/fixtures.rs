@@ -393,6 +393,11 @@ impl Builder {
     /// Add one corpus row (any order within a form). Verifies that the input
     /// regenerates exactly from the case id and mode.
     pub fn add(&mut self, inputs: &Inputs, f: Fixture) -> Result<()> {
+        ensure!(
+            f.backend == "rosetta2-x86_64",
+            "the compact fixture format records Rosetta results, got {}",
+            f.backend
+        );
         let id = case_id(&f.case).with_context(|| format!("unknown case {}", f.case))?;
         let key = (f.code.clone(), f.instruction.clone());
         let next = self.forms.len();
@@ -477,4 +482,28 @@ pub fn compress(raw: &[u8]) -> Result<Vec<u8>> {
     enc.window_log(27)?;
     std::io::Write::write_all(&mut enc, raw)?;
     Ok(enc.finish()?)
+}
+
+#[cfg(all(test, target_os = "linux"))]
+#[test]
+fn compact_fixture_builder_requires_rosetta_provenance() {
+    let inputs = Inputs::default();
+    let input = inputs.input(0, "movss", 0);
+    let mut row = Fixture {
+        schema: 1,
+        backend: "linux-x86_64".into(),
+        mnemonic: "movss".into(),
+        code: "Movss_xmm_xmmm32".into(),
+        instruction: vec![0xf3, 0x0f, 0x10, 0xc1],
+        case: "edge-0-0".into(),
+        output: Observation {
+            state: Some(input.clone()),
+            exception: None,
+        },
+        input,
+    };
+    let mut builder = Builder::default();
+    assert!(builder.add(&inputs, row.clone()).is_err());
+    row.backend = "rosetta2-x86_64".into();
+    builder.add(&inputs, row).unwrap();
 }

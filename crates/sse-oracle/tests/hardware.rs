@@ -1,7 +1,8 @@
-#![cfg(target_os = "macos")]
+#![cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
 use sse_oracle::{Oracle, State, build_runner};
 
 // These test the transport, state isolation, and observable machine behavior.
+#[cfg(target_os = "macos")]
 #[test]
 fn hardware_protocol_and_instruction_boundaries() -> anyhow::Result<()> {
     // Rosetta is opt-in: set SSE_ORACLE_ROSETTA=1. Skips cleanly if unavailable.
@@ -9,7 +10,17 @@ fn hardware_protocol_and_instruction_boundaries() -> anyhow::Result<()> {
         eprintln!("skipped: set SSE_ORACLE_ROSETTA=1 with Rosetta 2 and clang installed");
         return Ok(());
     }
-    let root = std::path::PathBuf::from(std::env::var_os("TMPDIR").expect("TMPDIR"))
+    check_protocol()
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn native_elf_runner_preserves_state_across_queries_and_signals() -> anyhow::Result<()> {
+    check_protocol()
+}
+
+fn check_protocol() -> anyhow::Result<()> {
+    let root = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
         .join(format!("sse-oracle-test-{}", std::process::id()));
     let binary = build_runner(&root)?;
     let mut oracle = Oracle::spawn(&binary)?;
@@ -88,9 +99,8 @@ fn hardware_protocol_and_instruction_boundaries() -> anyhow::Result<()> {
         io::{Read, Write},
         process::{Command, Stdio},
     };
-    let mut child = Command::new("arch")
-        .arg("-x86_64")
-        .arg(&binary)
+    // build_runner emits a single-architecture x86-64 executable.
+    let mut child = Command::new(&binary)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()?;
