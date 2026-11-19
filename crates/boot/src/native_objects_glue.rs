@@ -754,6 +754,7 @@ impl d3d::ExternalPass for ObjectsPass {
             guest_size: t.guest_size,
             size: t.size,
             z_scale: t.z_scale,
+            w_clip: None,
         };
         lit.encode(
             t.device,

@@ -1295,7 +1295,13 @@ pub const RS_DEPTHCLIPCONTROL: u32 = 82;
 
 /// Whether out-of-range depth is clamped, not culled.
 fn depth_clamp(table: &RenderStateTable, draw: &ResolvedDraw) -> bool {
-    (raw(table, draw, RS_DEPTHCLIPCONTROL) >> 4) & 0xF == 1
+    clamps_depth(raw(table, draw, RS_DEPTHCLIPCONTROL))
+}
+
+/// Whether a `D3DRS_DEPTHCLIPCONTROL` value clamps out-of-range depth
+/// (bits 7:4 = 1, `D3DDCC_DEPTHCLAMP`).
+pub fn clamps_depth(depth_clip_control: u32) -> bool {
+    (depth_clip_control >> 4) & 0xF == 1
 }
 
 /// The w clip range of a W-buffered draw: the pushed `[CLIP_MIN,

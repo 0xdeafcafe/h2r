@@ -92,7 +92,17 @@ lightmap `0x004e0344`, [structure-bsp.md](../formats/structure-bsp.md)):
   render camera's `near`/`far` are not that range (03a's distant
   buildings in the intro cinematic, and a far girder in play, lay past
   the camera's `far` and were left out natively while their items were
-  skipped: holes showing what was behind). A placement's placed copy is
+  skipped: holes showing what was behind). The cull alone did not close
+  them (the 02000 frame was byte-identical before and after it): the
+  programs also clipped w to `[0, z_max]` with out-of-range depth culled,
+  where the D3D path takes the device's pushed clip range
+  (`SET_CLIP_MIN`/`MAX`, `nv2a::w_clip_range`) and
+  `D3DRS_DEPTHCLIPCONTROL`'s clamp, which the game sets per view
+  (`0x00015720`). The device now gives the pass both at issue
+  (`ExternalPass::depth_clip`, `Device::depth_clip`) and the world's
+  programs draw with them (`ViewInputs::w_clip`). The objects',
+  transparents' and lights' passes still take the whole range (S: the
+  same gap for anything far in a cinematic). A placement's placed copy is
   unscaled, as the game draws it (`load`), so its bounds are where it
   draws. The
   result is written as `instance_count` 0 or 1 into the indirect buffer

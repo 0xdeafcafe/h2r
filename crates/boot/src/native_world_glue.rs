@@ -214,6 +214,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             ready: Arc::clone(&ready),
             camera: *camera,
             view: None,
+            w_clip: None,
             stencil,
         }));
         Some(Arc::clone(&ready.parts))
@@ -289,6 +290,12 @@ struct WorldPass {
     camera: RenderCamera,
     /// The device's view constants at the pass (material programs).
     view: Option<[[f32; 4]; d3d::VIEW_CONSTANTS]>,
+    /// The device's W-buffer clip at the pass (`d3d::DepthClip`): the range
+    /// and clamp the D3D path draws the layer with. Without it the
+    /// programs culled what lies past `z_max`, where a cinematic's range
+    /// reaches further and clamps (03a's intro: distant buildings left as
+    /// sky-coloured slivers).
+    w_clip: Option<([f32; 2], bool)>,
     /// The stencil the pass draws with ([`pass_stencil`]).
     stencil: (gfx::state::StencilState, Vec<Owner>),
 }
@@ -296,6 +303,10 @@ struct WorldPass {
 impl d3d::ExternalPass for WorldPass {
     fn view_constants(&mut self, constants: &[[f32; 4]; d3d::VIEW_CONSTANTS]) {
         self.view = Some(*constants);
+    }
+
+    fn depth_clip(&mut self, clip: d3d::DepthClip) {
+        self.w_clip = Some((clip.range, clip.clamp));
     }
 
     fn encode(&mut self, t: d3d::ExternalTarget<'_>) {
@@ -318,6 +329,7 @@ impl d3d::ExternalPass for WorldPass {
                     guest_size: t.guest_size,
                     size: t.size,
                     z_scale: t.z_scale,
+                    w_clip: self.w_clip,
                 },
             );
         }

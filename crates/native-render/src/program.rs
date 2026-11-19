@@ -523,6 +523,12 @@ pub struct ViewInputs {
     pub guest_size: (u32, u32),
     pub size: (u32, u32),
     pub z_scale: f32,
+    /// The W-buffer's clip range in depth units and whether out-of-range
+    /// depth is clamped rather than culled, as the device holds them when
+    /// the pass is issued (`d3d::DepthClip`: `SET_CLIP_MIN`/`MAX`,
+    /// `D3DRS_DEPTHCLIPCONTROL`), what the D3D path draws the layer's
+    /// draws with. `None`: the whole range, culled.
+    pub w_clip: Option<([f32; 2], bool)>,
 }
 
 /// `base` with the view's constants, surface and depth for one frame.
@@ -531,9 +537,9 @@ pub fn frame_vertex(base: &VertexUniforms, view: &ViewInputs) -> VertexUniforms 
     u.constants[..VIEW_CONSTANTS].copy_from_slice(&view.constants);
     u.surface = [view.guest_size.0 as f32, view.guest_size.1 as f32];
     u.z_max = view.z_scale;
-    // S: the W-buffer's clip range is the whole depth range.
-    u.w_clip = Some([0.0, view.z_scale]);
-    u.w_clamp = false;
+    let (range, clamp) = view.w_clip.unwrap_or(([0.0, view.z_scale], false));
+    u.w_clip = Some(range);
+    u.w_clamp = clamp;
     let s = view.size.0 as f32 / view.guest_size.0.max(1) as f32;
     // As the D3D path shifts a scaled target (gfx::renderer::window_shift).
     u.shift = if s > 1.0 { (2.0 * s - 1.0) / (4.0 * s) } else { 0.0 };
@@ -544,7 +550,10 @@ pub fn frame_vertex(base: &VertexUniforms, view: &ViewInputs) -> VertexUniforms 
 pub fn frame_pixel(base: &PixelUniforms, view: &ViewInputs) -> PixelUniforms {
     PixelUniforms {
         depth: [view.z_scale, 0.0, 0.0, 1.0],
-        depth_range: [0.0, view.z_scale, 0.0, 0.0],
+        depth_range: {
+            let [lo, hi] = view.w_clip.map_or([0.0, view.z_scale], |(range, _)| range);
+            [lo, hi, 0.0, 0.0]
+        },
         ..*base
     }
 }
@@ -1112,7 +1121,7 @@ mod tests {
         base.constants[18] = [10.0, 10.0, 0.0, 0.0];
         let mut constants = [[0.0; 4]; VIEW_CONSTANTS];
         constants[0] = [1.0, 2.0, 3.0, 4.0];
-        let view = ViewInputs { constants, guest_size: (640, 480), size: (1280, 960), z_scale: 16_777_215.0 };
+        let view = ViewInputs { constants, guest_size: (640, 480), size: (1280, 960), z_scale: 16_777_215.0, w_clip: None };
         let u = frame_vertex(&base, &view);
         assert_eq!(u.constants[0], [1.0, 2.0, 3.0, 4.0]);
         assert_eq!(u.constants[18], [10.0, 10.0, 0.0, 0.0], "instance constants kept");
@@ -1122,6 +1131,15 @@ mod tests {
         assert_eq!(frame_vertex(&base, &ViewInputs { size: (640, 480), ..view }).shift, 0.0);
         let p = frame_pixel(&PixelUniforms::default(), &ViewInputs { z_scale: 65_535.0, ..view });
         assert_eq!((p.depth[0], p.depth_range[1]), (65_535.0, 65_535.0));
+        // The device's clip range and clamp, as the D3D path takes them
+        // (`d3d::nv2a`'s `w_clip_range`, `depth_clamp`): a cinematic's
+        // range past the camera's far, clamped.
+        let clipped = ViewInputs { w_clip: Some(([0.0, 33_554_430.0], true)), ..view };
+        let u = frame_vertex(&base, &clipped);
+        assert_eq!((u.w_clip, u.w_clamp), (Some([0.0, 33_554_430.0]), true));
+        let p = frame_pixel(&PixelUniforms::default(), &clipped);
+        assert_eq!(p.depth_range, [0.0, 33_554_430.0, 0.0, 0.0]);
+        assert!(!frame_vertex(&base, &view).w_clamp, "none: the whole range, culled");
     }
 
     #[test]
@@ -1439,7 +1457,7 @@ mod tests {
         ];
         let mut constants = [[0.0; 4]; VIEW_CONSTANTS];
         constants[3] = [5.0, 6.0, 7.0, 8.0];
-        let view = ViewInputs { constants, guest_size: (640, 480), size: (640, 480), z_scale: 16_777_215.0 };
+        let view = ViewInputs { constants, guest_size: (640, 480), size: (640, 480), z_scale: 16_777_215.0, w_clip: None };
         let u = rigid_vertex(&r.vertex, &view, &rows);
         assert_eq!(u.constants[3], [5.0, 6.0, 7.0, 8.0]);
         assert_eq!(u.z_max, 16_777_215.0);
