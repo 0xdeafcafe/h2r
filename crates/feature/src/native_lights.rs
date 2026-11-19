@@ -17,12 +17,9 @@
 //!   scissors, the depth-clip range and viewport, through the device in
 //!   render order), then the guest words the tail zeroes
 //!   (`lights::TAIL_ZEROES`), so a skipped light leaves what a drawn one
-//!   does. Without an open run, ask the host for one:
-//!   it asks the device for an external pass that takes the run's lights
-//!   when the device issues it, at its next entry, which is the next D3D
-//!   light's first draw (or what follows the lights). A sealed run is
-//!   replaced by a new one, so each run lands between the D3D lights it
-//!   sits between;
+//!   does. The host can seal a run immediately. Boot does so at this
+//!   boundary and waits for the encoder to confirm the light's ranges.
+//!   A refusal leaves the guest call running.
 //! - an observer before the dynamic lights: forgets the open run, so a run
 //!   never spans two views (or a pass the device dropped), and records the
 //!   device's bound target ([`Host::target`]). The tail's last call sets
@@ -113,9 +110,8 @@ pub trait Host: Send + Sync {
         false
     }
     /// Asks the device for an external pass over `run` with `camera`; the
-    /// pass seals the run when the device issues it. `false`: nothing
-    /// asked (the light goes to the D3D path).
-    fn open(&self, camera: &RenderCamera, run: Arc<Run<Self::Plan>>) -> bool;
+    /// host seals the run on issue. An error gives the reason to keep D3D.
+    fn open(&self, mem: &mut dyn GuestMemory, camera: &RenderCamera, run: Arc<Run<Self::Plan>>) -> Result<(), &'static str>;
     /// The device side of the passes' tail, at this point of the render
     /// (`d3d::Device::light_passes_tail`, with `clip` the game's clip-range
     /// words). `false`: not done, the light goes to the D3D path.
@@ -412,7 +408,7 @@ impl<H: Host> Hooks for Installed<H> {
         if !zero_tail(mem) {
             return refused("guest tail write failed");
         }
-        if !self.join(&Ro(mem), plan) {
+        if !self.join(mem, plan) {
             return false;
         }
         if SKIPPED.fetch_add(1, Ordering::Relaxed) == 0 {
@@ -453,7 +449,7 @@ impl<H: Host> Installed<H> {
             TARGET_MOVED.fetch_add(1, Ordering::Relaxed);
             return refused("view target unavailable or changed");
         }
-        if !self.join(&Ro(mem), plan) {
+        if !self.join(mem, plan) {
             return false;
         }
         *SPLIT.lock().unwrap_or_else(|e| e.into_inner()) = Some(shaders);
@@ -514,7 +510,7 @@ fn restore_split(mem: &mut dyn GuestMemory) {
 /// Adds the light to the open run, or opens one; `false` when no pass
 /// could be asked for.
 impl<H: Host> Installed<H> {
-    fn join(&self, m: &Ro<'_>, plan: H::Plan) -> bool {
+    fn join(&self, mem: &mut dyn GuestMemory, plan: H::Plan) -> bool {
         // OPEN is only held to read or store the run: never across the run's
         // own lock or the host's (open takes the device lock).
         let current = self.open.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -523,16 +519,15 @@ impl<H: Host> Installed<H> {
         {
             return run.push(plan) || refused("run sealed during submission");
         }
-        let Some(camera) = RenderCamera::read(m, RENDER_CAMERA) else {
+        let Some(camera) = RenderCamera::read(&Ro(mem), RENDER_CAMERA) else {
             return refused("unreadable render camera");
         };
         let run = Arc::new(Run::new());
         run.push(plan);
-        let opened = self.host.open(&camera, Arc::clone(&run));
-        *self.open.lock().unwrap_or_else(|e| e.into_inner()) = opened.then_some(run);
-        if !opened {
-            return refused("device refused external pass");
+        if let Err(why) = self.host.open(mem, &camera, Arc::clone(&run)) {
+            return refused(why);
         }
+        *self.open.lock().unwrap_or_else(|e| e.into_inner()) = Some(run);
         let runs = RUNS.fetch_add(1, Ordering::Relaxed) + 1;
         if runs % 1800 == 1 {
             let (l, s, r) = counts();

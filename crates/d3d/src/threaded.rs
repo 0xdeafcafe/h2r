@@ -1180,12 +1180,18 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         if !self.external_pass {
             return Ok(false);
         }
-        // In order with the draws before it, on the render thread.
-        let shared = Arc::clone(&self.shared);
-        self.post(move |w| {
+        let confirm = pass.confirm_issue();
+        let issue = move |w: &mut Worker<B>| {
             let (c, d) = (w.surface(color)?, w.surface(depth)?);
             let sampled = sampled.into_iter().map(|s| s.and_then(|s| w.surface(s).ok())).collect();
-            if !w.inner.external_pass(c, d, sampled, request, pass)? {
+            w.inner.external_pass(c, d, sampled, request, pass)
+        };
+        if confirm {
+            return self.call(issue);
+        }
+        let shared = Arc::clone(&self.shared);
+        self.post(move |w| {
+            if !issue(w)? {
                 shared.miss("external_pass returned false".into());
             }
             Ok(())

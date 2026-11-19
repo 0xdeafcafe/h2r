@@ -26,6 +26,10 @@ impl Begin {
 }
 
 impl d3d::ExternalPass for Begin {
+    fn confirm_issue(&self) -> bool {
+        true
+    }
+
     fn view_constants(&mut self, constants: &[[f32; 4]; d3d::VIEW_CONSTANTS]) {
         self.constants = Some(*constants);
     }

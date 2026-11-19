@@ -105,13 +105,13 @@ impl Host for Stub {
     fn probe(&self, _mem: &mut dyn GuestMemory, _plan: &Light) -> bool {
         std::mem::take(&mut *self.probe.lock().unwrap())
     }
-    fn open(&self, camera: &RenderCamera, run: Arc<Run>) -> bool {
+    fn open(&self, _mem: &mut dyn GuestMemory, camera: &RenderCamera, run: Arc<Run>) -> Result<(), &'static str> {
         assert_eq!(camera.far, 1024.0);
         if *self.refuse.lock().unwrap() {
-            return false;
+            return Err("device refused external pass");
         }
         self.runs.lock().unwrap().push(run);
-        true
+        Ok(())
     }
     fn tail(&self, _mem: &mut dyn GuestMemory, clip: [u32; 2]) -> bool {
         if *self.refuse_tail.lock().unwrap() {

@@ -1050,6 +1050,10 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
 struct SharedPass(std::sync::Arc<std::sync::Mutex<Box<dyn crate::backend::ExternalPass>>>);
 
 impl crate::backend::ExternalPass for SharedPass {
+    fn confirm_issue(&self) -> bool {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).confirm_issue()
+    }
+
     fn encode(&mut self, target: crate::backend::ExternalTarget<'_>) {
         self.0.lock().unwrap_or_else(|e| e.into_inner()).encode(target);
     }
@@ -1654,6 +1658,11 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         let drawn = self
             .reference
             .external_pass(color.reference, depth.reference, reference, request, Box::new(shared.clone()))?;
+        // A confirmed reference refusal returns the entire light to D3D,
+        // which will draw both copies.
+        if !drawn && crate::backend::ExternalPass::confirm_issue(&shared) {
+            return Ok(false);
+        }
         if let (Some(c), Some(d)) = (color.view, depth.view)
             && !self.view.external_pass(c, d, view, request, Box::new(shared))?
         {

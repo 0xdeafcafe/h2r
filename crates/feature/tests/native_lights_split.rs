@@ -38,9 +38,9 @@ impl Host for Stub {
     fn prepare(&self, _mem: &dyn GuestMemory, light: &Light) -> Option<Light> {
         (light.definition == WHOLE).then_some(*light)
     }
-    fn open(&self, _camera: &RenderCamera, run: Arc<Run>) -> bool {
+    fn open(&self, _mem: &mut dyn GuestMemory, _camera: &RenderCamera, run: Arc<Run>) -> Result<(), &'static str> {
         self.runs.lock().unwrap().push(run);
-        true
+        Ok(())
     }
     fn tail(&self, _mem: &mut dyn GuestMemory, _clip: [u32; 2]) -> bool {
         true

@@ -12,6 +12,7 @@ use compare::{Begin, End, ProbeState};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use engine::memory::{GuestMemory, MemFault};
 use feature::native_lights::Host;
@@ -295,18 +296,22 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         }
     }
 
-    fn open(&self, _camera: &RenderCamera, run: Arc<Run<PreparedLight>>) -> bool {
-        let Ok(mut d) = self.device.lock() else { return false };
-        if !d.can_external_pass() {
-            return false;
+    fn open(&self, mem: &mut dyn GuestMemory, _camera: &RenderCamera, run: Arc<Run<PreparedLight>>) -> Result<(), &'static str> {
+        let mut d = self.device.lock().map_err(|_| "device unavailable")?;
+        // The caller publishes the run only after open returns. Seal this
+        // one light before any other caller can add work to it.
+        let [light] = <[PreparedLight; 1]>::try_from(run.seal()).map_err(|_| "expected one prepared light at submission")?;
+        let encoded = Arc::new(AtomicBool::new(false));
+        let pass = RunPass { light, view: None, clip: None, encoded: Arc::clone(&encoded) };
+        let issued = d.external_pass_now(&mut DeviceMemory(mem), Box::new(pass))
+            .map_err(|_| "could not drain or issue the light pass")?;
+        if !issued {
+            return Err("device declined the light pass at submission");
         }
-        d.request_external_pass(Box::new(RunPass {
-            run,
-            view: None,
-            clip: None,
-            plans: Vec::new(),
-        }));
-        true
+        if !encoded.load(Ordering::Acquire) {
+            return Err("light encoder could not bind all prepared draws");
+        }
+        Ok(())
     }
 
     fn tail(&self, mem: &mut dyn GuestMemory, clip: [u32; 2]) -> bool {
@@ -879,16 +884,19 @@ impl PreparedLight {
 }
 
 struct RunPass {
-    run: Arc<Run<PreparedLight>>,
+    light: PreparedLight,
     view: Option<[[f32; 4]; d3d::VIEW_CONSTANTS]>,
     clip: Option<([f32; 2], bool)>,
-    plans: Vec<PreparedLight>,
+    encoded: Arc<AtomicBool>,
 }
 
 impl d3d::ExternalPass for RunPass {
+    fn confirm_issue(&self) -> bool {
+        true
+    }
+
     fn view_constants(&mut self, constants: &[[f32; 4]; d3d::VIEW_CONSTANTS]) {
         self.view = Some(*constants);
-        self.plans = self.run.seal();
     }
 
     fn depth_clip(&mut self, clip: d3d::DepthClip) {
@@ -898,24 +906,26 @@ impl d3d::ExternalPass for RunPass {
     fn encode(&mut self, t: d3d::ExternalTarget<'_>) {
         let Some(constants) = self.view else { return };
         let view = ViewInputs { constants, guest_size: t.guest_size, size: t.size, z_scale: t.z_scale, w_clip: self.clip };
-        for group in self.plans.chunk_by(|a, b| Arc::ptr_eq(&a.ready, &b.ready)) {
-            let ready = &group[0].ready;
-            let lw = ready.lights.as_ref().expect("a prepared light owns its loaded light textures");
-            let mut gpu = upload(ready, &t);
-            let gpu = gpu.as_mut().expect("a prepared world owns CPU data or its GPU upload");
-            if gpu.lights().is_none() {
-                gpu.set_lights(LightSet::new(t.device, t.queue, lw.normalization.as_ref(), lw.attenuation.as_ref()));
-            }
-            let draws: Vec<_> = group.iter().flat_map(|l| l.draws.iter().map(move |p| l.draw(p))).collect();
-            let drawn = gpu.encode_lights(
-                t.device, t.queue, t.encoder, t.color, t.color_format, t.depth, t.depth_format, t.size, &view, &draws,
-                &mut |stage, s| match s {
-                    LightStage::Bitmap { bitmap, image } => lw.images.get(&(stage, bitmap, image)).cloned(),
-                    _ => None,
-                },
-                &mut |g| lw.gels.get(&g).cloned(),
-            );
+        let ready = &self.light.ready;
+        let Some(lw) = &ready.lights else { return };
+        let mut gpu = upload(ready, &t);
+        let Some(gpu) = gpu.as_mut() else { return };
+        if gpu.lights().is_none() {
+            gpu.set_lights(LightSet::new(t.device, t.queue, lw.normalization.as_ref(), lw.attenuation.as_ref()));
+        }
+        let draws: Vec<_> = self.light.draws.iter().map(|p| self.light.draw(p)).collect();
+        let drawn = gpu.encode_lights(
+            t.device, t.queue, t.encoder, t.color, t.color_format, t.depth, t.depth_format, t.size, &view, &draws,
+            &mut |stage, s| match s {
+                LightStage::Bitmap { bitmap, image } => lw.images.get(&(stage, bitmap, image)).cloned(),
+                _ => None,
+            },
+            &mut |g| lw.gels.get(&g).cloned(),
+        );
+        // LightSet checks all resources before opening its render pass.
+        if drawn != 0 {
             debug_assert_eq!(drawn, draws.iter().map(|d| d.ranges.len()).sum::<usize>());
+            self.encoded.store(true, Ordering::Release);
         }
     }
 }

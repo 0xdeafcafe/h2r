@@ -267,6 +267,12 @@ pub trait ExternalPass: Send {
     /// reference and the scaled view), with the same frame each time.
     fn encode(&mut self, target: ExternalTarget<'_>);
 
+    /// The guest is deciding whether to skip the work this pass replaces.
+    /// Report the encoder's decision to that caller even on a threaded backend.
+    fn confirm_issue(&self) -> bool {
+        false
+    }
+
     /// The device's vertex constants `c[0..VIEW_CONSTANTS]` (hardware
     /// numbering) when the pass is issued, after the drain: the view's
     /// own (view-projection, viewport fix-up), for a pass that runs the

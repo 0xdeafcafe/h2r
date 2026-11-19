@@ -196,6 +196,28 @@ fn an_immediate_reference_marker_follows_pending_passes_and_is_never_reissued() 
     assert_eq!(order.lock().unwrap().len(), 2);
 }
 
+#[test]
+fn a_confirmed_threaded_pass_reports_the_actual_target_refusal_to_the_guest() {
+    struct Confirmed;
+    impl ExternalPass for Confirmed {
+        fn confirm_issue(&self) -> bool { true }
+        fn encode(&mut self, _: ExternalTarget<'_>) {}
+    }
+
+    let mut backend = RecordingBackend::default();
+    backend.external_passes = true;
+    let (mut d, mut m) = create(ThreadedBackend::new(backend).unwrap(), UploadPolicy::Always);
+    set_states(&mut d, &mut m);
+    // The worker advertised external passes but declines this request.
+    d.backend.with_inner(|b| b.external_passes = false).unwrap();
+    assert!(d.can_external_pass());
+    assert!(!d.external_pass_now(&mut m, Box::new(Confirmed)).unwrap());
+    assert_eq!(d.stats().external_refusals[d3d::ExternalRefusal::Backend.index()], 1);
+    d.backend.with_inner(|b| b.external_passes = true).unwrap();
+    assert!(d.external_pass_now(&mut m, Box::new(Confirmed)).unwrap());
+    assert_eq!(d.stats().external_passes, 1);
+}
+
 /// Keeps the depth clip it is given.
 struct Clip(Arc<Mutex<Option<d3d::DepthClip>>>);
 
