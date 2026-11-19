@@ -1384,13 +1384,52 @@ parallel, one `sotr` when perpendicular. Proof: `shad` unit tests
 `the_tint_and_scroll_land_in_the_stems_vectors_and_tree`,
 `the_fade_mode_sets_the_facing_and_grazing_alphas`) and
 `tests/shad_rebuild.rs`,
-`additive_chicago_chains_draw_two_maps_scrolling_and_faded`. Not yet:
-the receiver also draws `scenery\teleporter_shield\shaders\teleporter_shield`
-(`sotr`, additive, fade when parallel, seven combiner stages over two
-scrolling `energy plasma` maps, the shield's energy mask and the shield
-picture: a plasma, as Halo 2's own `plasma_alpha` teleporter shaders),
-which still draws its least tiled map, the white `energy plasma`, as do
-the other `sotr`: their stages aren't read. A material with no Halo 1
+`additive_chicago_chains_draw_two_maps_scrolling_and_faded`. **Plasma
+`sotr` (converter version 85).** The receiver also draws
+`scenery\teleporter_shield\shaders\teleporter_shield` (`sotr`,
+additive, fade when parallel): seven combiner stages over four maps,
+`energy plasma` twice (scrolling u 10 s backwards and v 6 s; u 11 s and
+v 7 s backwards), a still energy mask and the still shield picture,
+whose alpha is a rounded square. It is one of Halo 1's plasma programs:
+the difference of two scrolling noise samples, squared and sharpened
+into thin moving bands, coloured and masked by the picture, the same
+idea as Halo 2's `plasma_alpha` (retail's own teleporter and needler
+shaders: `r0 = t1 − t2`, squared ×4 and `bx2` squared, coloured between
+colour 1 and colour 0, times the mask's alpha and the fade). Before, it
+drew its least tiled map alone on `one_add_illum`: `energy plasma`,
+white, added over the base as a blown-out white square (live frame,
+`before-receiver-close.png`). A `sotr` is now a plasma
+(`shad::is_plasma`) when it is additive with seven stages over four 2D
+maps, the first two the same bitmap and both scrolling, the last two
+still; it is rebuilt on `plasma_alpha` (`shad::plasma_shader`): the first
+noise on bitmap 0, the second on bitmap 1 scrolling as Halo 1's map 1
+(the clouds tree, as retail's `needler_ammo_glow` animates it), the
+picture on bitmap 2 as the mask, both band colours the picture's mean
+colour, colour 2 black and colour 3's alpha 0 as on every retail
+instance, and Halo 1's fade in vectors 7 (`v[10]`, facing) and 6
+(`v[11]`, grazing): retail's teleporter plasma fades when parallel
+too. D (every `sotr` on the disc): thirteen match, on four stage
+programs: the teleporter shield, the jackal's and the field generator's
+shields, the overshield and active camouflage powerups, the dropship's
+tractor beam, the needler's core and ammo glow, the gun turret's and
+c20 index platform's beam tendrils, a50's prison energy door and shuttle
+bay doors, and b40's structure `b40_shaftenergy`. Of the 125 `sotr`
+models draw, 12 are plasmas; none of the other 113 matches (D, by
+framebuffer blend and stage count): additive with 0 stages 18, 1 stage
+24, 2 stages 15, 3 stages 12, 4 stages 4 (chillout's hilltop, b40's holo
+halo ring, a10's shield charge, Cortana); alpha-blended (blend 0) with
+0 to 3 stages 22, 4, 5 and 1; blends 1, 6 and 7 with 0 to 2 stages 1,
+6 and 1. They keep their single-map rebuild. Lost on a plasma: the energy mask
+(map 2), Halo 1's stage constants (the teleporter's teal base glow,
+added under the bands), and the first noise's own scroll (retail's
+teleporter animates both pairs; that tree isn't verified here). Proof:
+`a_plasma_is_seven_stages_over_one_noise_twice_then_two_still_maps`,
+`a_plasma_scrolls_its_second_noise_and_fades_through_vectors_7_and_6`,
+and `tests/shad_rebuild.rs`,
+`plasma_sotrs_draw_on_plasma_alpha_and_no_other_sotr_does` (prints what
+every `sotr` becomes). Which instance colour reaches which combiner
+constant is read from the retail colour values, not the pass's
+bindings. A material with no Halo 1
 base map to read names the base's model shader itself; Blood Gulch has
 none. The sky model's
 materials name copies of the base's sky shaders drawing Halo 1's sky

@@ -660,8 +660,8 @@ fn env_reflection_is_halo1s_rule() {
 }
 
 /// Every animated retail `two_alpha_clouds` instance on the disc, and
-/// every `two_add_clouds` one animating only its tile (no colour
-/// animation: `cr_stream`), has [`shad::CLOUDS_TREE`]'s tree, and its ten transform components mean
+/// every `two_add_clouds` and `plasma_alpha` one animating only one map
+/// (`cr_stream`, `needler_ammo_glow`), has [`shad::CLOUDS_TREE`]'s tree, and its ten transform components mean
 /// what [`shad::TextureScroll`] writes: 1 and 2 the tile's u and v scale
 /// (its rows' values), 0 and 3 one, 6 to 9 zero, the time-driven ones
 /// among 4 and 5 (the offsets). Evaluated with the engine's evaluator
@@ -686,7 +686,8 @@ fn cloud_scroll_matches_retail_animated_instances() {
         for (id, sname) in ids {
             let Ok(sh) = lib.shader(id) else { continue };
             let stem = map.tag(sh.template.id).ok().and_then(|t| t.name.clone()).unwrap_or_default();
-            let add = stem == shad::TWO_ADD_CLOUDS.stem;
+            let plasma = stem == shad::PLASMA_ALPHA.stem;
+            let add = stem == shad::TWO_ADD_CLOUDS.stem || plasma;
             if (stem != shad::SKY_CLOUDS.stem && !add) || !seen.insert(sname.clone()) {
                 continue;
             }
@@ -724,8 +725,10 @@ fn cloud_scroll_matches_retail_animated_instances() {
                 let timed = f.kind != tags::effects::function::FunctionType::Constant;
                 comp[r.component as usize] = (v, timed);
             }
-            assert_eq!(comp[1].0, p.vectors[0][0], "{at}: u scale");
-            assert_eq!(comp[2].0, p.vectors[1][1], "{at}: v scale");
+            // The scrolled pair: vectors 0 and 1, plasma_alpha's 2 and 3.
+            let row = if plasma { 2 } else { 0 };
+            assert_eq!(comp[1].0, p.vectors[row][0], "{at}: u scale");
+            assert_eq!(comp[2].0, p.vectors[row + 1][1], "{at}: v scale");
             assert!(comp[0] == (1.0, false) && comp[3] == (1.0, false), "{at}: {comp:?}");
             assert!(comp[6..].iter().all(|c| *c == (0.0, false)), "{at}: {comp:?}");
             assert!(comp[4].1 || comp[5].1, "{at}: an offset scrolls");
@@ -733,7 +736,7 @@ fn cloud_scroll_matches_retail_animated_instances() {
             checked += 1;
         }
     }
-    eprintln!("{checked} animated cloud layers, {additive} of them two_add_clouds");
+    eprintln!("{checked} animated cloud layers, {additive} of them two_add_clouds or plasma_alpha");
     assert!(checked > additive && additive > 0);
 }
 
@@ -1076,4 +1079,106 @@ fn additive_chicago_chains_draw_two_maps_scrolling_and_faded() {
             "{t:?} {grey:?}"
         );
     }
+}
+
+/// Halo 1's plasma `sotr` (`shad::is_plasma`) over the whole disc: the
+/// shaders that match are exactly the twelve plasma programs (and b40's
+/// structure `b40_shaftenergy`), each on `plasma_alpha`; every other
+/// `sotr` keeps its single-map rebuild. Blood Gulch's teleporter shield in
+/// detail: `energy plasma` on bitmaps 0 and 1, the second scrolling as
+/// Halo 1's map 1 does (u 11 s, v 7 s backwards), the shield picture as
+/// the mask, faded when parallel. Every `sotr` is listed by what it
+/// becomes (`--nocapture`).
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO)"]
+fn plasma_sotrs_draw_on_plasma_alpha_and_no_other_sotr_does() {
+    let h1_iso = std::env::var("H1_ISO").expect("set H1_ISO");
+    let mut iso = xiso::Xiso::open(BufReader::new(File::open(&h1_iso).unwrap())).unwrap();
+    let disc = h1map::disc::Disc::open(&mut iso).unwrap();
+    let names: Vec<&str> = CAMPAIGN
+        .iter()
+        .copied()
+        .chain(h1convert::convert::MAPS.iter().map(|m| m.0))
+        .collect();
+    let want: HashSet<&str> = [
+        r"characters\jackal\shaders\jackal shield",
+        r"scenery\c_field_generator\shaders\generator shield",
+        r"powerups\active camoflage\shaders\active camoflage",
+        r"vehicles\c_dropship\shaders\dropshield tractor beam",
+        r"weapons\needler\shaders\needler core",
+        r"powerups\needler ammo\shaders\needler ammo glow",
+        r"vehicles\c gun turret\shaders\beam tendril",
+        r"levels\c20\devices\index platform\shaders\beam tendril",
+        r"powerups\over shield\shaders\over shield",
+        r"levels\a50\devices\prison door\shaders\prison energy door",
+        r"levels\a50\devices\shuttle bay doors\shaders\shuttle bay doors",
+        r"scenery\teleporter_shield\shaders\teleporter_shield",
+        r"levels\b40\shaders\b40_shaftenergy",
+    ]
+    .into_iter()
+    .collect();
+    let mut got: BTreeMap<String, String> = BTreeMap::new();
+    let mut shield = None;
+    for name in names {
+        let Some(e) = disc.map(name).cloned() else {
+            continue;
+        };
+        let h1 = H1Map::from_reader(Cursor::new(iso.read(&e).unwrap())).unwrap();
+        for tag in h1.tags() {
+            if tag.group.to_string() != "sotr" || got.contains_key(&tag.name) {
+                continue;
+            }
+            let Some(s) = shad::read_h1(&h1, tag) else {
+                got.insert(tag.name.clone(), "no map read".into());
+                continue;
+            };
+            got.insert(
+                tag.name.clone(),
+                s.layout.stem.rsplit('\\').next().unwrap().into(),
+            );
+            if tag.name == r"scenery\teleporter_shield\shaders\teleporter_shield"
+                && shield.is_none()
+            {
+                let n = |id: h1map::TagId| h1.tag(id).unwrap().name.clone();
+                let maps: Vec<(Role, String, [f32; 2])> = s
+                    .maps
+                    .iter()
+                    .map(|(r, m)| (*r, n(m.bitmap), m.scale))
+                    .collect();
+                shield = Some((maps, s.extras.clone()));
+            }
+        }
+    }
+    for (n, l) in &got {
+        eprintln!("  {l:<14} {n}");
+    }
+    let plasma: HashSet<&str> = got
+        .iter()
+        .filter(|(_, l)| l.as_str() == "plasma_alpha")
+        .map(|(n, _)| n.as_str())
+        .collect();
+    assert_eq!(plasma, want);
+
+    let (maps, extras) = shield.unwrap();
+    let plasma_map = r"levels\a50\devices\prison door\bitmaps\energy plasma".to_owned();
+    assert_eq!(
+        maps,
+        vec![
+            (Role::Base, plasma_map.clone(), [1.0, 1.0]),
+            (Role::Tile, plasma_map, [1.0, 1.0]),
+            (
+                Role::Mask,
+                r"scenery\teleporter_shield\bitmaps\teleporter_shield".to_owned(),
+                [1.0, 1.0]
+            ),
+        ]
+    );
+    let [u, v] = extras.scroll.unwrap();
+    let (u, v) = (u.unwrap(), v.unwrap());
+    assert_eq!((u.period, u.from, u.to), (11.0, 0.0, 1.0));
+    assert_eq!((v.period, v.from, v.to), (7.0, 0.0, -1.0));
+    let t = extras.tint.unwrap();
+    assert_eq!((t.perpendicular, t.parallel), (1.0, 0.0));
+    assert_eq!(extras.colors.len(), 2);
+    assert_eq!(extras.colors[0], extras.colors[1]);
 }
