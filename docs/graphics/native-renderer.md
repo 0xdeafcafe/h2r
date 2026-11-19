@@ -8,6 +8,125 @@ labels as in [feature-engine.md](../engine/feature-engine.md): **Code**
 game data: addresses and offsets are research points, everything else is
 read from the user's disc at run time.
 
+## Ordered replacement handoff
+
+World and objects use the device reservation below. Held post packets can pass their saved slots and viewport to the same transaction. Geometry
+hooks for particles, decals, HUD, gel producers and world layers can register
+`Device::add_draw_admission(Arc<dyn DrawAdmission>)`. The device calls admissions
+in registration order at the resolved draw, for immediate, inline, indexed and
+array geometry. Scope ownership to the current producer and match the complete
+state. Returning `None` leaves the draw available to the next admission. A
+failed preparation of a claimed draw falls through to the original D3D draw.
+
+For a helper that emits one quad, call
+`Device::begin_draw_scope(mem, Arc<dyn DrawAdmission>) -> Result<Option<DrawScope>, D3dError>`
+on entry. Keep the handle across the guest call. At return,
+`Device::end_draw_scope(mem, scope) -> Result<bool, D3dError>` drains that
+call's pending packets and reports whether the replacement committed. Earlier
+packets drain before entry. Refusal consumes the candidate, and dropping the
+handle disarms it. Nesting supersedes the outer candidate. A persistent
+admission is appropriate for an ordered stream of independently owned draws.
+
+```rust
+trait DrawAdmission: Send + Sync {
+    fn admit(&self, snapshot: &DrawSnapshot<'_>)
+        -> Option<(ExternalPlan, Box<dyn ExternalPass>)>;
+}
+
+// At a hook outside draw submission, drain the preceding guest commands.
+let reservation = device.prepare_external_pass(mem, plan, pass)?;
+if let Some(reservation) = reservation {
+    // Apply reversible mask edits here. Drop the reservation to cancel.
+    reservation.commit();
+}
+```
+
+`DrawSnapshot::draw` borrows the exact `ResolvedDraw` that D3D can still issue.
+It includes vertex declaration, streams, indices, shader inputs (microcode,
+constants, defaults, pixel definition and combiner state), raw and translated
+render and stage state, texture headers and formats, viewport and scissors.
+The snapshot adds raw shader handles, bound texture headers, the sampled-stage mask, bound colour/depth headers and palette headers and entries.
+The device replaces only the draw packet. The guest's shader setup and
+stencil tail still run, including when adjacent draws have different owners.
+
+`ExternalPlan { stage, view, ranges, slots }` promises a positive number of
+geometry or effect ranges on **each** participating copy. `slots` is an indexed
+`Vec<Option<ExternalSlot>>`; each populated slot names a guest colour surface
+header and whether it will be written. `ExternalPass::writes()` declares writes
+to the bound colour and depth/stencil. In `record_ranges(ExternalTarget) -> usize`,
+`target.copy` is `Reference` or `Display`, `target.stages` holds the four resident
+stage views for a resolved draw, and `target.slots[i]` supplies the live surface's
+attachment, sample view, format and texel size for this copy. Record only in
+the supplied encoder. A queue submission or write to a live texture would
+escape cancellation. A declared sampled header or intermediate surface that
+cannot be resolved on one required copy refuses the entire replacement.
+
+Recording takes place during prepare. Partial recordings are discarded.
+Commit splices only previously sealed command buffers into the D3D submission
+order. Commit has no remaining stage callbacks or target lookups. With interpolated
+presentation active, confirmed replacements keep the guest draw for replay.
+
+A confirmed admission on the threaded backend needs a synchronous worker
+round trip. `encode_pending` closes the preceding merged D3D pass, and each
+physical copy gets a private command buffer. World and object hooks batch a
+view into one reservation. A packet holder can batch consecutive native draws
+on the same targets in a single `ExternalPlan` and encode their ranges in
+guest order. End the batch before any guest-owned draw, target/state change
+that the batch does not reproduce, or guest-visible read. A one-draw helper
+pays the full admission cost.
+
+At a drained boundary, the held-packet entry is
+`Device::prepare_external_bound_at(mem, plan, pass, slots, rect)`. It compares
+each saved `Option<B::Surface>` against its slot's current guest header. The
+rectangle is `(x, y, width, height)` in guest pixels. Each `ExternalColor`
+provides both `guest_size` and this copy's physical `size`. A scaled frame
+whose intermediate bloom slot exists only at 1× keeps the entire guest
+sequence. With the display copy asleep, the 1× reference can run alone.
+
+`Backend::prepare_external(surfaces, request, textures, &plan, copy, pass)`
+returns `Result<Option<Vec<ExternalRecording>>, String>`. Each copy first
+calls `ExternalPass::prepare_copy(&ExternalTarget) -> Result<(), &'static str>`.
+Only when every copy agrees does the backend call `record_ranges` on private
+encoders. Validation scopes include resource lookup, native preparation,
+recording and encoder finish. A failed recording discards every copy.
+`Backend::commit_external(recording)` takes one sealed copy. The device
+reservation also preserves deferred display copies and invalidates guest
+colour, depth and alias caches for the declared writes. Code that holds guest
+packets should use the device entry for those effects. A private gel producer
+or probe can use the default read-only `writes()` while using `colour_only()`
+to request a scratch depth attachment.
+
+Use `ExternalTarget::encoder_uploads()` for per-view constants, dynamic rows
+and indirect arguments. Its upload arena reserves a fresh source range for
+each write and records a copy immediately before the consuming draw. Target
+copies and multiple runs may share a submission. The queue completion callback
+returns the leased storage to its pool after the last submission using it.
+World placement transforms are initialized once at map load.
+
+**Frame counters.** `H2_FRAME_STATS`, its CSV, `profile.counters` and
+`profile.capture` use the same stage names. Prefix each suffix below with
+`native_<stage>_`, where stage is `world`, `objects`, `transparents`,
+`lights`, `post`, `particles`, `decals`, `hud` or `gels`.
+
+| Suffix | Measurement |
+| --- | --- |
+| `examined`, `suppressed` | Guest items considered and items committed. Multi-range passes override `ExternalPass::items(ranges)` to report their logical item count. |
+| `refused_ownership`, `refused_resources`, `refused_inputs` | Unowned items, unavailable surfaces or bindings, and rejected stage preflight. |
+| `refused_ranges`, `refused_masks`, `refused_validation`, `refused_replay` | Incomplete range count, failed reversible guest mask edit, wgpu validation error, and original draws retained for interpolation. |
+| `prepare_ns`, `encode_ns` | Host wall nanoseconds in native selection/resource preparation and private command recording, respectively. |
+| `buffers`, `bind_groups`, `upload_bytes`, `pipeline_misses` | Actual creations and bytes charged through the submission arena and counted `gfx::churn` operations during the stage. |
+| `v<V>_<C>_recorded`, `v<V>_<C>_ranges` | Ranges the stage recorded on this copy, including discarded attempts, and ranges committed. |
+| `v<V>_invariants`, `v<V>_<C>_invariants`, `v<V>_<C>_refused` | Range-count mismatches across copies, mismatches on this copy, and transactions refused by this copy. Each stage/view/copy mismatch logs once. |
+
+`V` is player view `0` through `3`, or `other`. `C` is `reference` or
+`display`. Confirmed passes account for both physical copies and count a
+suppressed guest item once. Stage ownership filters count items they reject
+before calling the device. Single-stage draw admissions can override
+`DrawAdmission::stage() -> Option<timeline::native::Stage>` to meter their
+selection time and ownership refusals automatically. New stage implementations use
+`gfx::churn::{create_buffer, create_buffer_init, create_bind_group, create_render_pipeline, upload_bytes}`
+for resource accounting. Legacy enqueues have no suppression promise.
+
 ## Why a new shape
 
 Today a frame on Old Mombasa costs about 25 ms of game-thread time in the
@@ -36,7 +155,7 @@ have drawn it. A skipped subtree costs nothing on the game thread, in
 | 1. Static world | Structure BSP clusters and instanced geometry, layer 3 (lightmap) | Layer 3's structure entries: their builds, shader draws (`0x0001bbf0`/`0x00016b90`), geometry submission (`0x00041040`'s callbacks `0x0004cbf0`/`0x0004d0b0`) and the push-buffer words; most of the 8.26 ms layer-3 site, the matching `d3d` decode, encode and submit | Colour target and depth/stencil, viewport, the camera |
 | 1b. World, all layers | The world's layers 1 (base depth / texaccum), 5, 7 (self-illumination) and 8 (environment map) | The rest of the world's entries in the base layers | Texaccum target (when kept), depth |
 | 2. Objects and skinning | Render models: rigid and skinned sections, permutations, LODs; node matrices from the game per frame | `0x00133790`'s render records for drawn objects, their layer entries in every base layer | Node matrices (read only), object list (read only) |
-| 3. Transparents and particles | Sorted transparents (`0x0001e370`, 2.58 ms), particle systems, decals, contrails | The transparent list and its per-entry handlers; particle update stays in the simulation | Depth (read), sorted order computed on the GPU or on our side |
+| 3. Transparents and particles | Sorted transparents (`0x0001e370`, 2.58 ms), particle systems, decals, contrails | Persistent native vertex bindings for sorted indexed geometry. Particle and effect handlers still run through D3D. | The guest's sort, resolved per-draw state and the live depth target |
 | 4. Lights and shadows | Dynamic lights (layers 10 to 14, `0x00031c80`, 1.88 ms of bookkeeping), shadow maps; E3 lighting becomes a pass ([e3-lighting.md](e3-lighting.md)) | The per-light passes and their gathering | Light list (read) |
 | 5. Post and HUD | Fog, bloom, active camouflage, screen effects, HUD and text, then the present | `render_screen_effects` (`0x00013870`: the colour pass, screen effects, `0x0002df00`), `0x0002dd30`, layer 17, the fade `0x00040890`, the UI and HUD `0x00147af1` (see "Stage 5: post and HUD") | Nothing left: the D3D path is only a fallback |
 
@@ -102,9 +221,9 @@ lightmap `0x004e0344`, [structure-bsp.md](../formats/structure-bsp.md)):
   (`ExternalPass::depth_clip`, `Device::depth_clip`) and the world's
   programs draw with them (`ViewInputs::w_clip`), as the objects' lit
   parts now do (`ObjectsPass::depth_clip`; 03a's near is 256 depth
-  units, which the objects clipped at 0). The transparents' and lights'
-  passes still take the whole range (S: the same gap for anything far in
-  a cinematic, or nearer than the view's near). That did not close the
+  units, which the objects clipped at 0). Stage 3 also takes the device
+  range for transparents. The lights' passes still take the whole range
+  (S: the same gap for distant or very near triangles). That did not close the
   02000 slivers either (the 2026-11-19 A/B: 1490 px, max 87, unchanged).
   To tell the remaining causes apart, `H2_NATIVE_WORLD_TRACE=1` prints a
   line per pass (the first 8, then every 250th, or every `n`th with
@@ -145,9 +264,9 @@ lightmap `0x004e0344`, [structure-bsp.md](../formats/structure-bsp.md)):
   its translation decodes them in the shader (`xvs_normpacked3`), where
   the native programs read floats decoded on the CPU, so the two modules
   were different code. A world vertex now carries the four words too
-  (`WorldVertex::packed`, `world::pack_normpacked3`, which gives back the
-  stream's word for any value decoded from one) and the material
-  programs fetch and decode them as the D3D path does
+  (`WorldVertex::packed`). The loader now keeps the words from the
+  guest streams, including either encoding that clamps to -1. The
+  material programs fetch and decode them as the D3D path does
   (`program::INPUTS`, `WORLD_FETCH`): a world program's module is then
   the D3D path's for the same draw, text for text
   (`a_world_program_s_module_is_the_d3d_path_s`), position math included.
@@ -500,21 +619,11 @@ The crate `native-render` (`crates/native-render`):
 
 ### Wired into the game
 
-- **`d3d` external pass** (`crates/d3d`). `Device::request_external_pass`
-  holds a boxed `ExternalPass` and issues it at the next push-buffer drain
-  (the next D3D entry), with the bound colour target, the bound depth and
-  the current viewport, like `request_depth_grid`; `can_external_pass`
-  asks the backend first. `GfxBackend::external_pass` encodes the pending
-  pass, then hands the pass the open encoder, single-mip views of the two
-  surfaces, their formats, the viewport in texels and the device's depth
-  full scale (`+0x948`). `ThreadedBackend` posts it to the render thread;
-  `ScaledBackend` runs it into both copies (the 1x reference and the
-  scaled view: `encode` is called once per copy); `InterpBackend` (E1)
-  forwards it and holds the frame (`unpinned`), since a replay redraws
-  draws, not passes. `DiagBackend` and boot's headless backend forward it.
-  Counters: `external_passes`, `external_passes_dropped`. Test:
-  `crates/d3d/tests/external_pass.rs` (direct, render thread, E1, and a
-  backend that cannot).
+- **`d3d` external pass.** World and object replacements use the ordered
+  reservation above. `Device::request_external_pass` still schedules
+  legacy passes, including comparison probes, at the next push-buffer
+  drain. `crates/d3d/tests/external_pass.rs` covers both entry points,
+  direct and threaded recording, scaled attachment refusal, and replay.
 - **The feature `native-world`** (`crates/feature/src/native_world.rs`,
   off by default (the A/B on screen showed the stage 1 look, base map
   times lightmap, far from the D3D path), `H2_FEATURES=impl.render.native_world=on`
@@ -532,10 +641,10 @@ The crate `native-render` (`crates/native-render`):
   the item masks, the camera, the active BSP, the map name); the host's
   load state (a mutex only `ask` takes, and only the render reaches it;
   the loader is a host thread that opens the map through the VFS's
-  mutex and never touches guest memory); the D3D device's pending
-  external pass, which the render owns while it is in flight (the sim's
-  D3D calls join first) and which is issued at the render's next D3D
-  entry, in render order, with that entry's memory.
+  mutex and never touches guest memory); the D3D device's current
+  targets, which the render owns while it is in flight (the sim's D3D
+  calls join first). The host drains previous commands, previews the list
+  and confirms one batched reservation for the view before applying masks.
   Tests: `crates/feature/tests/native_world.rs` (the plan with
   `render-timing`, deep, and the layer-draw port all on; alone, the chain
   runs on the render thread; off by default, and on with pipelining placed; the
@@ -595,8 +704,9 @@ and behind it as before); `cpu` and the `0x0002bed0` site (layer 3) drop
 by most of the world's share of the 8.26 ms, and `encode` and `submit`
 drop with the D3D draws that are gone, in proportion to the parts the
 coverage line says are native.
-A frame where the device's `external_passes_dropped` grows has a world
-hole: it means the pass was asked for and could not be drawn.
+A refused world reservation leaves the affected guest items in layer 3.
+Use the stage's refusal reasons, per-copy range counts and invariant
+failures to distinguish D3D fallback from native coverage.
 
 The stage 1 look (base map times lightmap, on by default until
 2026-11-19) was far from the D3D path on screen, lighting most of all:
@@ -860,6 +970,91 @@ vector (`v1`) and view vector (`v0`), and the lightmap (stage 3). Its
    with the per-pixel lightmap implementation, and translate.
 5. The A/B per template, and `native-world` keeps a material native only
    once its template's A/B is clean.
+
+### Native opaque layers
+
+`impl.render.native_world_layers=on` allows the standard geometry
+handler's main-scene indexed ranges in layers 1, 5, 7, 8 and the
+combined materials in layer 3 to record natively. The layer
+hook identifies the scene call and the indexed submission identifies the
+individual cluster, placement or object record. The guest still builds
+and sorts the list and runs its shader and stencil setup and tail. At
+the draw, the native pass reuses the resolved live streams, indices,
+programs, render states, constants and texture views. This preserves
+interleaved D3D draws in their guest order, including subpart slices,
+depth equality, inherited cull and per-record stencil reference.
+
+Layer 1 replaces a draw only while target 1's attachment header is
+bound. Texture inputs must resolve to views the program can sample.
+The two-copy reservation records the entire indexed range on every
+live target copy before replacing the D3D submission. Color and
+depth/stencil writes use the original attachments and feed the usual
+RTT and depth tracking. Alternate views and special handlers remain
+with their own D3D setup.
+
+The layer-3 replacement uses the texture view from the resolved
+D3D draw. It also pins target 1's colour attachment and resolves the
+engine texture 3 header through the RTT path. All three views must
+hold the same GPU texture on each live copy. The guest dimensions
+must agree and the texture must use linear texel addressing. This works
+with either owner of layer 1, because both write the same attachment.
+
+This slice replaces the backend draw. Its CPU cost includes the guest
+setup and D3D resource resolution. Geometry snapshots can reuse native
+GPU buffers, while native shader, pipeline and texture bindings are
+cached per device. Measure before treating this as a performance gain.
+
+### Opaque-layer comparison
+
+`H2_NATIVE_WORLD_LAYERS_COMPARE=2000,3000` prints the indexed D3D
+draws of layers 1, 2, 3, 5, 7 and 8 at those present numbers. It works
+with or without the native stage switches. Take a reference with both
+`impl.render.native_world=off` and `impl.render.native_objects=off`
+to see the guest's complete layer 3. Use the same replay and render
+scale for both comparisons. Each line names the layer's call site and
+its list, the standard geometry handler's owner, render record, part,
+shader, variant and implementation where they resolve, plus the
+indexed call's return site, attachments, clip, W/Z and stencil state.
+Other indexed handlers lack a geometry identity.
+
+Target 1 has two guest headers. The scene's main layer-1 site
+(`0x0002be45`) asks `0x00014bc0` for it before the layer, and
+`0x0001dcf0(1)` gives the attachment header at descriptor `+0x18`
+when the descriptor is enabled and `+0x78` is positive.
+`0x0001dcc0(1)` returns the texture header at `+4`. The line reports
+both headers and the texture's guest size, whether the draw wrote to
+that attachment and which stages bound the texture header. An
+`in_place_sample` line names the actual backend surface and texture ID,
+which can be paired with the indexed draw's `texture_ids`. Equal guest
+dimensions alone do not establish the same target. Native
+`recorded` lines show the replacement recorded on each physical copy.
+The native stage suppression counters show committed draws. Use
+`H2_NATIVE_WORLD_LAYERS_OWNERS=world` or `objects` with the switch on
+to compare mixed ownership. The default is `all`. Frame and pass color
+checks use the agent API (`render.frame` and `render.stats`).
+
+### Scene and exceptional draw sites
+
+The retail return sites distinguish uses of the same layer number.
+
+| Site | Draw calls | State and ownership |
+|---|---|---|
+| Scene kinds 1 and 2 | Layer 1 `0x0002be45`, layer 3 `0x0002bed0`, layer 5 `0x0002bf34`, layer 8 `0x0002bfa5` | Layer 1 binds target 1 and usually clears. Layers 3, 5 and 8 select the scene target at `0x004858b8`. Layers 1 and 3 start with stencil mode 1. Layers 5 and 8 start with mode 0. Layer 8 also requires the byte at `0x004ba022`. |
+| Scene middle | Layer 7 `0x0002c034`, layer 2 `0x0002c05b` | Layer 7 follows `0x000335e0` and precedes the dynamic lights. Layer 2 draws after the lights and after `0x0002c370(1)`. Both take their setup through `0x00044370`. |
+| Alternate scene kinds | Layers 1, 3, 5, 2 at `0x0002bd57`, `0x0002bd6f`, `0x0002bd87`, `0x0002bda3` | All use the general layer begin. The main scene's target-1 and clear sequence is elsewhere. |
+| First person | Layers 1, 3, 8, 7 at `0x000400a6`, `0x00040131`, `0x000401a2`, `0x0004026c` | The first-person list and projection are separate. The two scene calls to this chain straddle the first-person light step. |
+| Sky | `0x0002c0bc` to `0x0003ede0` to `0x0004c690` | The sky has its own setup inside a stencil-mode-2 bracket and its renderer issues an indexed strip at `0x0004c976`, with shader layer 15 and explicit cull disable. This path sits outside the layer loop and the diagnostic labels its indexed draw `Sky`. |
+
+Within the normal geometry handler, the layer-5 object branch at
+`0x0004d22f` can select a subpart mask after resolving the object's
+geometry. The emitter at `0x0004daa0` can issue multiple indexed slices
+from that mask, and layer 5 sorts with `0x0003bbd0`. Preserve both the
+slices and their order. The geometry handler switches stencil immediately
+before the emitter in layers 1 and 3, then runs its stencil tail after
+the emitter. Its prefix also handles per-record fade and geometry state.
+The same layer's entries may use other handlers from the live list, so
+a replacement needs the observed standard geometry call as well as the
+layer ID.
 
 ## Stage 2: objects and skinning (design)
 
@@ -1199,15 +1394,14 @@ implementation samples engine texture 3.
   (lighting, defaults, rows, decompression) and every state field
   resolved, the device W-buffered, and for a part sampling the texture
   accumulation target a device that samples levels in place. It says
-  per item whether it is drawn, and the feature gives every other item
-  its bit back (`objects::keep_items`) before the layer draws. The pass
-  issues exactly the planned draws in that order (`LitObjects::encode`
-  puts in only the view's constants and clip and the level's size). What
-  only the issue knows (the level the device resolves after the drain,
-  the view's constants) cannot be planned: a planned draw the encode
-  cannot issue is counted and its reason logged once (`shortfall`);
-  the issue-time guarantee waits on the device's prepare/commit
-  contract.
+  per item whether it can draw it. Each physical copy reserves that exact
+  sequence and `LitObjects::encode` returns the issue count. A missing
+  texaccum level, a partial encode, or a validation error cancels all copies.
+  After full reservation the host rechecks the load generation and calls
+  `ItemMasks::apply(mem, &drawn)`. This runs `objects::keep_items` on the
+  original mask overlay. Only confirmed items change guest memory, and the
+  feature retains their full identities for restoration. A shadow comparison
+  keeps its guest draw.
 - **The state, field by field** (`object_state::resolve`). The host
   reads the render states the device holds at the layer-3 call from the
   guest's render-state array (`object_state::EntryStates`: depth
@@ -1377,8 +1571,8 @@ pipeline's own snapshot plus that copy. The observer is the one hook
 (context-only, nothing after the body, the restore at the next layer
 draw), so the pipelined render runs it on its own thread like the
 world's. The host's writes are its map state (a mutex only the observer
-takes, with the model loader on host threads) and the device's pending
-external pass, issued at the render's next D3D entry, in render order.
+takes, with the model loader on host threads) and a reservation on the device
+for the current view. The reservation commits in render order at the hook.
 
 ### Per frame on the CPU
 
@@ -1508,17 +1702,13 @@ at `+0x37c`, 8 bytes each with the set's datum at `+4`). They have no
 render record, are not objects, and neither skip touches them (both take
 only build `0x0004cbf0`): they stay on D3D, a later world stage.
 
-## Stage 3: transparents (design)
+## Stage 3: transparents
 
-The sorted transparents are not layers of the scene list: after the
-opaque layers, layer 15 and the late passes, `render_scene_passes` calls
-`SCENE_TRANSPARENTS` (`0x0001e370`, 2.58 ms on the census run), which
-sorts a list of its own and calls one handler per entry. So the skip is
-not on `LAYER_DRAW`; it is on the geometry entries' handler. Stage 1b
-(the world's layers 1, 5, 7, 8) is not a prerequisite: the transparents
-depth-test against what the opaque layers left (the world's native pass
-writes the game's W depth already), and their materials are the
-template's layer-15 passes, which do not read the other layers' targets.
+After the opaque layers and late passes, `render_scene_passes` calls
+`SCENE_TRANSPARENTS` (`0x0001e370`, 2.58 ms on the census run). The call
+sorts its own list and invokes one handler per entry. The geometry
+handlers set up their layer-15 passes and depth-test against what the
+opaque layers left.
 
 ### The list (Code, `h2 disasm`)
 
@@ -1551,101 +1741,76 @@ template's layer-15 passes, which do not read the other layers' targets.
 Other handlers in the list (effects, particles, contrails, decals) are
 not read yet; they keep their D3D draws in this stage.
 
-### Skip point and order
+### Admission and order
 
-One `before` on `TRANSPARENT_GEOMETRY`, context-only: for an entry the
-host draws (`native_render::transparent::read_entry`, then
-`Host::accepts`), it answers `ret 4`, so the entry builds and draws
-nothing and no guest memory changes (no restore). The hook meets the
-entries in the game's sorted order, so no sort of ours is needed.
+Observers identify the sorted entry from the live guest stack and clear
+the scope when `SCENE_TRANSPARENTS` returns. The return observer uses
+the game-thread fallback under pipelined rendering. The original handler
+runs its builds, state writes, binds and
+restores. The D3D indexed draw drains pending push-buffer work, then
+resolves its own state and bindings. Stage 3 may substitute one immutable
+GPU vertex binding at that draw. It uses the original indices, shader
+classification, constants, alpha test, W clip and attachments. The
+original draw remains in place if the entry, map generation, compatible
+depth target or any sampled texture cannot be confirmed.
 
-Ordering against the D3D path's transparents uses the device's external
-pass as it already works: a pass asked for is issued at the device's
-next entry, after the draws queued before it. Consecutive native entries
-join one `transparent::Run`; the first asks the device for a pass that
-owns the run, and the pass seals the run when the device issues it
-(`ExternalPass::view_constants`, the issue moment, on the device's
-thread). A D3D entry's draw is a device entry, so the next native entry
-finds its run sealed and opens a new one. Each run therefore lands
-between the D3D draws it sorts between, and its entries draw in their
-sorted order inside the pass. An observer before `SCENE_TRANSPARENTS`
-forgets the open run, so a run never spans two views, or outlives a
-pass the device dropped.
-
-Both hooks are context-only with nothing after a body, so the pipelined
-render runs them on its own thread; the entries are read from the
-render's snapshot of the frame.
+The intervening D3D and inline draws pass through the same command
+stream. Each entry retains its own part and the implementation passes
+that the handler actually draws. No stage-3 pass is queued ahead of
+that work. The optimization targets vertex bindings. Guest handler and
+D3D state-resolution costs still apply.
 
 ### Order of work
 
-1. **The skip and the runs** (built: `feature::native_transparents`,
-   `native_render::transparent`, `impl.render.native_transparents`, off by
-   default). Without a host nothing is skipped.
-2. **The layer-15 look** (built: `look::transparent_passes`,
-   `pass_state`). Every pass of the template's layer 15 at the first
-   level of detail, in order, each with `look::implementation_look`'s
-   rules (the ones layer 3 uses) and the pipeline state from the
-   implementation's render states (`ResolvedImplementation::render_states`,
-   decoded by `gfx` as the D3D path decodes them: blend enable, factors,
-   op and constant, colour writes, depth test and write, cull, alpha
-   test). All or nothing per material. It stays on the D3D path when a
-   pass has more than one implementation (S: which one the engine binds
-   for a transparent entry is not traced), reads engine render states
-   (`engine_render_states`), turns on fog, stencil or a depth bias, or
-   leaves blend enable, its factors or depth write to whatever the
-   previous draw left (S: the states it does not set are taken at the
-   D3D defaults).
-3. **The world's transparent parts.** The draw table is built
-   (`world::TransparentDraw`, `World::transparent(owner, part)`): the
-   kind-4 parts in the world's vertex and index buffers, keyed by
-   (cluster or placement, the part's index in its section; the loader now
-   keeps every part in place, a part not drawn as an empty one), their
-   lightmap pages in the lightmap array. The GPU side is built too
-   (`transparent_gpu::TransparentSet`, `GpuWorld::encode_transparents`):
-   each material's passes compiled with `program::compile_pass` (the
-   world programs' translation plus the pass's alpha test) and uploaded
-   with the same per-program code as the world's (`program::Gpu`), one
-   pipeline per pass with its `PassState` (blend, write mask, depth write
-   and compare, cull) and its blend constant set per draw. A run's pass
-   loads the target and depth and draws, per entry in order, the part
-   with each of its passes, over the whole target (the programs carry
-   the viewport). Boot's host is built too (`boot::native_transparents_glue`, over the
-   native world's loaded BSP, so the native world must be on): at load,
-   each transparent material's passes compiled all or nothing and their
-   stage images decoded, then the parts that can draw (a compiled
-   material, and its lightmap page when a pass samples it), with one line
-   on stderr: how many materials and parts, and why the rest stay on the
-   D3D path. It accepts a cluster or placement entry whose part is in
-   that table with the entry's shader; a run's pass takes the run's
-   entries when the device issues it and draws them with
-   `GpuWorld::encode_transparents`.
-4. **Objects' transparent parts** (with `impl.render.native_objects` on
-   as well). The hook copies the object's node matrices and sphere into
-   the run (`transparent::RunEntry`, `objects::read_object`, as stage 2
-   does at layer 3), from the render's snapshot, so the pass draws the
-   frame's pose. An object's entry stands for all of its parts with that
-   shader (S: which section and part an object's render record names is
-   not read), so a later entry of the same object and shader in the view
-   is skipped without drawing again (the parts draw at the first one's
-   place in the order). On the GPU (`model_gpu`) a model keeps its
-   transparent parts in its index buffer, in their own draw table
-   (`Model::transparents`); the caller sets each transparent material's
-   base map and pass state (`GpuModels::set_transparent`; S: an
-   alpha-tested pass is refused, the models' shader has no alpha test
-   yet), and `GpuModels::encode_transparents` draws a run's object items
-   in order with the models' shading and the base map's alpha
-   (`fs_transparent`), each pass's blend and depth state, and the run's
-   node matrices in buffers of its own, so runs and the opaque objects'
-   pass in one submit do not overwrite each other's. In boot, the objects'
-   worker takes a definition's transparent materials with one layer-15
-   pass, no alpha test and a base map that decodes, and publishes the
-   definition's node count and each shader's materials; the transparents'
-   host accepts an object entry when its definition is published with
-   the copy's node count and the entry's shader, and a run's pass draws
-   its entries in order as segments: consecutive world entries through
-   the world's pass, consecutive objects through the models'.
-5. **The live A/B**, as stage 1's: the same frame with the switch on and
-   off, `external_passes_dropped` steady, and the `0x0002c19a` site's ms.
+1. **Sorted parts.** `feature::native_transparents` tracks the view and
+   geometry handler frames. It verifies the entry argument and render
+   record at each indexed draw. The switch
+   `impl.render.native_transparents` is off by default.
+2. **Draw state and attachments.** Each draw takes the D3D snapshot
+   after that handler sets up its pass, including the effects of earlier
+   setup and restore writes. The adapter requires a programmable
+   W-buffered indexed triangle draw with compatible colour and depth
+   targets. The shared backend uses the resolved state and receives the
+   actual texture bindings. Palette expansion, resident mip selection,
+   BC blocks, sampler state and render-to-texture coherency stay with
+   that path.
+3. **Vertex bindings.** `native_render::transparent_streams` packs
+   multiple immutable streams into one buffer when their live
+   declarations and strides allow it. It keeps the raw guest bytes,
+   including packed normals and normalized endpoints. The cache uses
+   immutable stream snapshots and the exact declaration, scoped to the
+   game activation and active BSP. A transparent view can use the cache
+   before any layer-3 item. The object flag also has to be on to pack
+   object entries. Object inputs and node rows come from the actual
+   draw, as do cluster and placement inputs. The opaque world keeps the
+   layers 1, 3, 5, 7 and 8 layout, with a 92-byte stride and
+   `Float32x2` for v6.
+4. **GPU submission.** The ordered draw path batches uniforms in the
+   renderer's upload arena and reuses texture/sampler groups keyed by
+   the live views and samplers. The packed vertex buffer can stay on
+   the GPU across views. No transparent draw allocates its own pair
+   of uniform buffers and group.
+5. **Live A/B pending.** Capture the same Old Mombasa frame with
+   `H2_LEVEL=03a_oldmombasa` and
+   `H2_FEATURES=impl.render.native_world=on,impl.render.native_objects=on,impl.render.native_transparents=on`.
+   For the reference, set `impl.render.native_transparents=off` and
+   keep the other switches and capture settings the same. Compare
+   pixels, check that `native-transparents:` reports native bindings,
+   and compare the `0x0002c19a` site's time.
+
+   - `H2_NATIVE_TRANSPARENTS_PROBE=x,y` names the sorted indexed entries
+     with triangles covering a guest pixel. It reports source, part,
+     record, shader, triangle depth and edge distance from the live
+     vertex program. Coverage is measured before clip, depth and alpha
+     tests.
+   - `H2_NATIVE_TRANSPARENTS_COMPARE=placement:ID:PART[@N]` keeps the
+     selected original binding and emits a one-shot diagnostic after
+     `N` eligible draws. The other selectors are `cluster:ID:PART[@N]`
+     and `object:HANDLE:PART[:RECORD][@N]`. Handles may be hexadecimal.
+     The optional record distinguishes draws that share a handle and
+     part. Read `native-transparents compare` for both vertex fetch
+     plans and the shared W clip, constants, stage textures and render
+     states.
 
 ## Stage 4: lights and shadows (design)
 
@@ -2168,26 +2333,22 @@ frame.
 - **After the scene.** `0x00040890` is a full-screen fade: when the mode
   `[0x00485870]` is not 0, it draws the colour at `0x00485874..`
   (packed by `0x00131e50`), with a blend picked through the jump table
-  at `0x00040dc0`. Then `0x00147af1` composes the UI and HUD. The HUD
-  render (`0x0013954b`, gated by `HUD_SHOWN` `0x0013939b`) is S: under
-  it; its caller chain is not traced. So the HUD is always drawn after
-  `render_screen_effects`, and the post passes need no HUD split: the
-  colour pass and the screen effects see the scene only, and the fade
-  and the HUD go over them.
+  at `0x00040dc0`. Then `0x00147af1` composes the UI. The HUD render
+  (`0x0013954b`, gated by `HUD_SHOWN` `0x0013939b`) is not under it: it
+  is the tail jump of `0x001917eb`, which `render_view_scene` calls
+  before the fade (Code, `0x00191887`; see "The UI and HUD" below). So
+  the HUD is always drawn after `render_screen_effects`, and the post
+  passes need no HUD split: the colour pass and the screen effects see
+  the scene only, the HUD goes over them, the fade over the HUD, and the
+  UI over everything.
 
 ### Hook point and order
 
-The calls run; their draws are what the native renderer takes over.
-For the colour pass (the only part native so far), one context-only
-`before` on `COLOUR_PASS` (`0x000214f0`) arms the device to drop the
-pass's own quads and to draw the native glow in place of the last
-(order of work, item 2). So the glow lands where the game's composite
-did: after layer 17, before the screen effects, `0x0002df00`, the fade
-and the HUD, once per view, in the game's order; and the game's code
-leaves every state, register and guest word as it always does.
-
-The hook has nothing after its body, so the pipelined render runs it on
-its own thread, and render-timing does not matter (the call runs).
+The colour pass (`COLOUR_PASS`, `0x000214f0`) and each screen effect
+(`SCREEN_EFFECT`, `0x0002d140`) run their guest bodies. The entry
+hook records the caller, stack frame and plan. The return
+continuation closes the plan before the guest caller resumes. Under
+`H2_PIPELINE_RENDER`, these hooks require the game thread.
 
 ### What the native post draws
 
@@ -2242,92 +2403,229 @@ its own thread, and render-timing does not matter (the call runs).
 - **`0x0002df00`**, once it is traced; until then a call with `late`
   set keeps its D3D passes.
 
+### The UI and HUD (Code, `h2 disasm`; the native-hud lane)
+
+**Where they are drawn.** `render_view_scene` (`0x0002ba10`) calls
+`0x001917eb` at `0x0002bc93` when `[0x004b9ed8]` (the view's user) is
+not -1: it asks `0x0014de70` and `0x00159170` for the user's unit,
+draws per-user overlays (`0x0019188c`, `0x00192129`, `0x0024da7d`,
+`0x0024cf66`), and tail-jumps to the HUD render `0x0013954b`. Then the
+fade `0x00040890`, then `ui_render_layers` `0x00147af1` (also called by
+the alternate view `0x0002c790` at `0x0002c884` and by `0x0002c8a0` at
+`0x0002c9bc`). `0x00147af1` takes the user in EAX (-1 every user, the
+word at `[ebp+8]` when EAX is -1), stores it at `0x0054d598`, returns
+early when `0x00155f60` says so, then for an index 0 to 4 calls the
+render slot (`+0x14`) of three layer objects (`0x0054d62c + 0x40 *
+index`, `0x0054d76c + 0x38 * index`, `0x0054d884 + 0x38 * index`); index
+4 also draws the screen managers around them (`0x00234f8c` on
+`0x0054d5c4` and `0x0054dba8`, `0x0023583e` on `0x0054d9e0`,
+`0x00234f8c` on `0x0054d99c`). Those collect and sort the screen's widgets
+(`0x002353a5`, docs/formats/ui.md, "Draw order") and call each
+widget's draw. Last, a fade-in by the clock at `0x0054d5b8` against
+`0x0054d5c0` (3 s and 4 s windows).
+
+**The draw primitives under them.** Every draw the HUD and the menus
+make that was followed ends in one of three:
+
+| Primitive | What it pushes | Who calls it |
+|---|---|---|
+| Screen quads: begin `0x00035b90` (record of `0x98` bytes), quad `0x000363a0`, end `0x00036560` (`points::SCREEN_QUADS_BEGIN`, `SCREEN_QUAD`, `SCREEN_QUADS_END`) | The begin sets up to three bitmaps (`0x00012310`, address mode wrap or clamp per stage, point or linear filter), colour writes without alpha (`SET_COLOR_MASK`), depth test off, the blend by mode (`0x000142f0`: mode 10 off, else three 12-entry tables of source factor, destination factor and equation), two vertex constant blocks (a pixel-centred screen transform over the rectangle at `0x00485648`, and a second block from the record's flips and pairs), and, with stage 0 bound and `+0x97` clear, a fixed combiner written into the PSDEF at `0x00484f68` with the record's colours packed in (`0x00131e50`). Each quad commits the state (`0x0001cf50`) and pushes one inline `Begin(7)`, four vertices of diffuse (`SET_VERTEX_DATA4UB`), coordinate and position (`SET_VERTEX_DATA2F`), and `End`: no D3D entry. | Text: `0x0001f070` (from `0x0001fa50`, 22 call sites, and `0x0001fb10`, the HUD's `0x0022aca8`), over the glyph cache `[0x004b62ac]`, one quad per glyph through the layout `0x0013f0e0`, its callback `0x0001f490` and `0x0001f3a0`. A full-screen bitmap at `0x00156960`. |
+| HUD shader quad `0x0022a664` (`points::HUD_SHADER_QUAD`) | The HUD's bitmap into `0x004e6978`/`0x004e697c` (datum, index: the shader's engine texture), the shader draw `0x0001bbf0` (EDI the shader), then `D3DDevice_Begin(7)`, per corner `SetVertexData2f(3, u, v)` and `SetVertexData4f(-1, x, y, z, w)` (z and w the float at `0x0045dd40`), `D3DDevice_End`. The coordinates are the rectangle at EAX `(u0, u1, v0, v1)`, times the bitmap's size when it is linear. | The HUD widgets (`0x0022b397` to `0x0022bca4`), the UI's shader bitmaps (`0x002b12ae`), `0x001e936a` to `0x001e95b6`, `0x0020077f`, `0x0024eca0` to `0x0024f556`. |
+| Other immediate draws (`D3DDevice_Begin` callers) | Not traced: `0x002548f0` (`0x00254e28`, `0x00255083`, with `0x00014bc0` target switches and `0x00014f60` texture binds: S, the menus' blurred backdrop), the fade's `0x00040d86`, and `0x00029b00`, `0x00037a60`, `0x0003bf20`, `0x00046ea0`. | |
+
+So text is one batch per string with a quad per glyph, each a separate
+D3D draw; that is the work a native batch removes (one draw per run of
+glyphs, the glyph cache mirrored as a texture). The HUD's bitmaps are
+shader draws: native, they need the shader's program (the stage 3
+compiler) with the HUD's engine bitmap, in screen space.
+
+**The end of the frame** (for the present's owner; Code, not changed
+here). `0x00013b90` calls `0x0001fd20`, then, when `0x0001dc40` and
+`0x0001de20` say so, copies the view's target `[0x004858b8]` through
+`0x000351a0`, then `0x0001fd00`, `0x0001fcd0` and `0x00022070`.
+`0x00013cd0` (`ret 4`) commits the state (`0x0001cf50`), writes push
+words itself (`[0x00407488]`) and calls the D3D entry at `0x003fb520`.
+`0x00013f10` (`ret 8`) locks a surface for the optional readback
+(`0x003fdb20`, `0x003fad50`, `0x003fdbc0`; bitmaps `0x001358c0`,
+`0x00135a30`), calls `0x00013d80`, and swaps at `0x000140fc`
+(`0x003f9d00`, between two `0x003f9df0`).
+
+**Built** (`impl.render.native_hud`, off by default;
+`feature::native_hud`, `boot::native_hud_glue`,
+`native_render::hud`, `native_render::hud_gpu`). Four context-only
+hooks: the screen-quad begin, quad and end, and the HUD shader quad.
+The host plans each batch (`hud::Batch::read`: the record, the blend
+through the game's tables, the screen transform with the begin's own
+arithmetic, the bitmap) and refuses, logged once per reason
+(`hud::Refused`), every batch that is not one stage over the glyph
+cache with the text's second block. Planned batches are drawn natively
+(below, "Native text"), and so are HUD shader quads (below, "Native HUD
+quads").
+
+`H2_NATIVE_HUD_COMPARE=N` (empty: 512) pairs the plan with the D3D
+path for the first `N` quads, over the handoff's seam: the hooks queue
+each quad's corners as the call pushes them (`hud::Expect`), and a
+`d3d::DrawAdmission` the host adds to the device reads the position of
+every resolved four-vertex fan, in issue order, and pairs it with the
+first waiting quad of the same corners (`hud::Pairing`; quads passed
+over are lost). It claims no draw. It prints, for the first screen quad
+and the first HUD quad, what D3D resolved (entry, colour target, stage
+0's texture, blend) beside the batch's plan, and every 64 pairings one
+line: `native-hud: compare: <s> screen quads and <h> HUD quads paired
+with their D3D draws; <ls> screen and <lh> HUD lost; <o> other fans; <w>
+waiting`. Every quad paired and none lost is the pass mark. A quad
+drawn natively is skipped on D3D and never queued.
+
+#### Native text
+
+A planned batch is drawn in segments, each one external pass
+(`hud_gpu::TextDraw`, recorded by `hud_gpu::TextGpu`):
+
+- **Reservation, before any skip.** At a quad of a planned batch the
+  host reads what the begin set: the render states (`ZENABLE` off,
+  no stencil, alpha test, fog or stipple, solid fill, not flat; blend,
+  colour writes, cull and front face taken as they are), the combiner
+  block at `0x00484f68` and that the bound combiner is it (render
+  states 0..57 equal its code words; constants and the texture modes
+  come from the states, as `d3d::nv2a::guest_def` takes them, with
+  D3D's default final combiner), the clip area as one rectangle
+  (`Device::clip_area`), the viewport, and the glyph cache's texels
+  (its header read as `LIN_A4R4G4B4` 256x256, mirrored as RGBA,
+  `hud::a4r4g4b4_to_rgba`). It then calls
+  `Device::prepare_external_pass` (the drain of everything before,
+  then the pass recorded on every live copy) and commits. Only then is
+  the quad skipped (`ret 4`). Anything not established, or the
+  reservation refused, and the quad and the rest of the batch keep
+  their D3D draws (`native_hud_glue::Kept`, logged once). The states
+  are read again after the drain and before commit. If the drain changed
+  them, the recording is discarded and the quad stays on D3D.
+- **Extension.** The pass draws its quads with an indexed indirect
+  draw over buffers it made at recording (128 quads). A later quad
+  joins it while the device's counters (`Device::stats`), its bound
+  target, viewport, clip, render states and the glyph cache's ring
+  (`hud::GLYPH_RING`, which every glyph added moves) still match the
+  reservation. Its corners and the new count go in through the queue
+  (`hud_gpu::Segment::append`), and it is skipped. The backend seals
+  the segment before submitting either copy, under the lock that guards
+  both queue writes. Accepted writes reach the draw before submission.
+  If the state changes or the segment fills or seals, the quad tries a
+  new reservation. If that fails, D3D draws it. Ending the batch ends the
+  segment.
+  This is why the pass is committed at the reservation and filled up to
+  the end, not committed at the end: `PreparedExternal` borrows the
+  device and cannot be held across hooks.
+- **What a quad is.** S, the screen-transform assumption
+  (`hud::text_quad`, with a synthetic test): the batch's vertex
+  program takes `oPos` from the begin's rows (`hud::ScreenTransform`)
+  then to the viewport as Xbox D3D's viewport constants do, and scales
+  the coordinate by the record's `+0x40`/`+0x44` (texels for the linear
+  glyph cache, normalised by its size as the D3D path's `tex_scale`
+  does). The colour is the pushed bytes over 255. The vertex stage
+  (`hud_gpu::TEXT_VERTEX`) snaps window coordinates as the translated
+  programs do (`xvs_fixup`: 1/16 at 1x, the render scale's shift
+  above), the fragment stage is the combiner through `shaders::psh`
+  with fog off; the clamp sampler filters as the record's `+0x96` says.
+  The clip is the scissor, scaled to each copy.
+
+S to verify on a run: text on 03a and the menus drawn as on D3D (no
+half-pixel shift, the same weight), `Kept` lines, and segments per
+batch (`native_hud_glue::text_counts`).
+
+#### Native HUD quads
+
+A HUD shader quad (`0x0022a664`) is one resolved draw, so it goes
+through a `DrawAdmission` (`native_hud_glue::HudAdmission`): the hook
+notes the open call's corners; the admission claims the
+`D3DDevice_End` four-vertex fan with those corners and hands the device
+a pass that draws it with what D3D resolved (`hud_gpu::ScreenDraw`):
+the vertex program (`shaders::vsh`, every register a float4 at `16 r`
+as the device's immediate draws lay them out) with the draw's
+constants and defaults, the combiner as `d3d::nv2a::guest_def` builds
+it with D3D's default final combiner (`shaders::psh`, fog off), each
+sampled stage's resident view (`ExternalTarget::stages`) with its
+sampler, `tex_scale` for linear stages, bias and bump environment, the
+blend, colour writes and cull, the clip as the scissor. The device
+reserves the pass on every copy before it gives up the draw and draws
+it on D3D when that fails. Refused, logged once per reason: fixed
+function on either side, not the immediate layout, depth on,
+stencil, alpha test, fog, stipple or not solid fill, W-buffered, a clip
+of several rectangles, and a sampled stage that is not a 2D texture, is
+P8, has signed channels or a border. Programs are translated once per
+code (`hud_gpu::ScreenGpu::program`). Counts:
+`native_hud_glue::hud_counts`.
+
+**Next.** (1) The A/B on 03a and the main menu with
+`impl.render.native_hud=on`: text and HUD identical, few segments per
+batch, the `Kept` and HUD lines. (2) Alpha test in both passes (the
+combiner compiler takes it). (3) The other immediate draws.
+
 ### Stage 5 status
 
-With `impl.render.native_post` off (the default) everything here draws
-on D3D, and the host only observes. With it on, a call is armed only
-once nothing in it is missing (`native_post_glue::Missing`, counted and
-logged once per reason). It is then probed before any of its draws are
-dropped, and it falls back on its own: the glow alone, and each screen
-effect per egor.
+`H2_FEATURES=impl.render.native_post=on` enables the experimental
+replacement. The default uses D3D. Each enabled call either commits
+one complete replacement or draws all its originals. An effect whose
+plan requires an unsupported input or an unavailable live target
+uses D3D for that call.
 
-| Effect kind | With the switch on | Why, or what refuses it |
-|---|---|---|
-| Colour pass glow (`0x000214f0`) | Armed after its probe | Refused when its plan fails (a blur past `MAX_BLUR_STEPS`, a target it cannot read). A refused draw or a swallow mismatch keeps every later glow on D3D. |
-| Screen effect, passes into the bound target, nothing convolved (`desaturate`'s shape) | Armed after its probe | `TemplatePass` when a pass's program did not load, or a stage binds an engine texture that is not supplied (`screen_gpu::supplied`). |
-| Pass into target 1, read by a later pass | Armed | `PassTarget` when the pass into target 1 is the call's last, or has no size. `TemplatePass` when target 1 is read before the call drew it (`call_ordered`). |
-| Kept convolution (flag bit 0 or 1 with its value 0) | Armed | Nothing to refuse: it draws nothing, and its result is the pass's target. |
-| Blur convolution (`0x000211a0`) | Armed (blur egor; waiting on the mainmenu A/B) | `Blur` and `StandIns` without the quads' frame. At the probe: a convolving pass that blends or masks colour (`ConvolutionStates`), a combiner that does not compile, the colour not sampleable. |
-| Wide convolution (`0x00021360`) | Armed (built; not run live yet) | `Wide` and `StandIns` without the frame, or when a grid cannot be made (`grid_of`: the source bound at no size, the grid's arithmetic failing). At the probe: as the blur, plus a grid strip under a triangle (`NoStrips`). |
-| A pass `0x00016610` does not draw (no vertex shader for its implementation) | Refused (`TemplateSkipped`) | `0x0002d140` skips it whole; the plan would wait for strips that never come. |
-| Convolution that copies its result (`0x000351a0`) | Refused (`TemplatePass`) | Not drawable natively. `0x0002d140` passes -1, so it never happens. |
-| A screen effect's plan that fails (too many corners, unreadable values, a convolution past its budget) | D3D | Logged once ("a screen effect keeps its D3D draws"). |
-| `0x0002df00` (`late`), `0x0002dd30` | D3D | Not traced yet (step 5 below). |
-| Layer 17, the fade `0x00040890`, the UI and HUD | D3D | Not started (steps 6 to 8). |
+| Effect | Native admission |
+|---|---|
+| Colour pass glow | The window, combiners, target sizes and blur steps must plan successfully. The live quads and attachments must match. |
+| Screen strips into target 0 or target 1 | All drawn layer-15 passes must have loaded programs and supported bindings. A target 1 read requires an earlier write in the same call. |
+| Kept convolution | It emits no draws. Its result names the pass's target. |
+| Blur and wide convolutions | The quads or grids must plan successfully and match the live attachments and colour state. |
+| Template pass skipped by `0x00016610` | The host leaves that pass and its convolutions out of the plan. An unreadable gate refuses the call. |
+| `0x0002df00`, `0x0002dd30`, layer 17, fade, UI and HUD | D3D. |
 
 ### Order of work
 
-1. **The hook and its order** (built: `feature::native_post`,
-   `impl.render.native_post`, off by default; point `COLOUR_PASS`,
-   `0x000214f0`). The first design skipped `render_screen_effects`
-   whole and redid what it leaves (its prologue first); it is replaced
-   by the swallow below, under which the game's code runs and leaves
-   every state itself, so nothing is redone. `native_render::post`'s
-   `PostFrame` (the call's gates) stays for the screen effects.
-2. **The swallow** (built: `d3d::Device::swallow`). At the colour
-   pass's entry a context-only `before` (nothing after its body, so the
-   pipelined render runs it on its own thread; fine with render-timing,
-   since the call runs) hands the host the call's seven stack words and
-   the caller's MXCSR and x87 control word. The host plans the glow
-   (`boot::native_post_glue::plan`: `colour_pass::parameters` on those
-   words, then `glow::pass_a`, `blur_combiner`, `blur` and `pass_b`) and
-   arms the device with one entry per quad (`targets`): the view's
-   target (slot 0, the one bound at the entry), target 7 (1) or 8 (2).
-   Arming drains what is queued first, so only quads the pass pushes
-   count. Each must be the next planned: an inline `Begin(7)`/`End`
-   (a four-vertex fan, `0x00034420`), no other draw since the last, into
-   its slot's target (a slot's first quad fixes its target; slots
-   differ). Each is dropped; the native glow is issued in place of the
-   last, into the targets bound then (the composite's: the view). Any
-   other draw ends the swallow (`Stats::swallow_mismatches`): it and
-   every draw after it are drawn by the D3D path and the glow is not;
-   the host logs it and keeps every later call on the D3D path. The
-   quads already dropped stay dropped (S: one frame without its glow or
-   with a composite over stale 7 and 8; the plan matches the game's
-   control flow bit for bit, so this takes a port that is wrong). A call
-   the host cannot plan (a copy after the blur, a target it does not
-   know) is not armed.
+1. **The hooks** (`feature::native_post`). The glow draws after
+   layer 17 and before the screen effects. The entry hooks pass
+   guest arguments, MXCSR and the x87 control word to the host. The
+   guest runs all its setters and its tail with either draw path.
 
-   Nothing is dropped unless the glow will be drawn. The glow and the
-   A/B's capture are colour-only external passes
-   (`ExternalPass::colour_only`): the composite binds no depth, so the
-   device issues them with none and the GPU backend gives them a scratch
-   depth (`Backend::external_pass` with the colour as its own depth).
-   The device refuses to arm a drop, dropping nothing, when the pass
-   could not be issued into the targets bound at the entry (no external
-   passes in the backend, no colour target, an unreadable header) or is
-   not colour-only (`Stats::swallow_refusals`). Every pass not issued is
-   counted by reason (`Stats::external_refusals`, `ExternalRefusal`)
-   and each reason logged once (`d3d: an external pass was dropped:
-   ...`). The host then observes its first call with a probe that checks
-   on the GPU's thread that the glow would draw into the target it gets
-   (`native_render::glow::check`: the target can be sampled, is the
-   plan's size, every block compiles); only then are quads dropped. A
-   probe or glow refused keeps every later call on the D3D path (logged).
-   The first A/B on 03a ran headless (no `H2_BOOT_GFX`, so no GPU
-   backend): every pass was dropped (`Unsupported`) after its quads
-   were, and no capture could be made; both are now refused up front and
-   logged. A backend that takes the pass on the render thread and then
-   refuses it there (a multisampled or non-drawable target) is not seen
-   in time: the probe's pass is never encoded, so nothing is dropped.
+2. **The call transaction** (`d3d::Device::swallow`). Arming drains
+   previously queued pushes. The active guest frame is identified by
+   its entry, entry ESP, caller's return address and live return
+   continuation. D3D entries must still be inside that frame. Each
+   matching draw supplies a primitive, count, emitter and colour
+   slot. A layer-15 strip must come from the `D3DDevice_End` return
+   site `0x0002d8b2`. Glow quads and convolution draws use the pushed
+   path.
 
-   Tests: d3d `swallow` (exactly the plan's quads dropped and nothing
-   after, the pass issued colour-only after the last; a missing or extra
-   quad, another draw or another shape ends it; an unfinished swallow;
-   through the render thread; a backend that takes no passes or a pass
-   that needs depth drops nothing; each refusal counted), boot
-   `native_post_glue::tests` (nothing dropped before the probe; every
-   pass colour-only), feature `native_post`.
+   The device resolves each original at its usual draw boundary and
+   retains the packet, binding handles, textures and stream bytes.
+   The first draw into a slot pins the host surface and its guest
+   resource identity. Target switches and direct RTT samples can
+   proceed while their bindings preserve access to the held
+   surfaces. Pixel observations or resource operations that depend
+   on those writes trigger replay before the operation. A competing
+   external stage or draw scope also triggers replay before it prepares
+   its own recording. Gel comparison uses a read-only observer that
+   runs after the last matched guest draw.
+
+   The return continuation drains any remaining pushed draws from
+   the call and requires the full planned sequence. A mismatch,
+   extra draw, interruption or early return replays the packets in
+   order. The last matched draw supplies the primary target and
+   viewport even if the guest tail restored its state. Native
+   recording uses the live slot surfaces and sizes. The backend
+   keeps each copy's commands cancellable until all copies have
+   recorded the expected ranges. A failed encode discards those
+   commands and replays the originals.
+
+   The call validates live packet state and attachments each time.
+   Under render scaling, a replacement that uses a reference-only
+   intermediate together with a live display target falls back.
+   Start A/B runs at `H2_RENDER_SCALE=1`.
+
+   Tests in `d3d/tests/swallow.rs` compare the original packets at
+   every mismatch position and across target switches, and check
+   same-shape draws from a different End caller. GPU tests compare
+   both colour attachments after a failed encode and check that a
+   successful replacement writes the intermediate back to the guest.
+   The screen renderer's GPU test covers masked writes and pixels
+   preserved between partial passes into a BGRA intermediate.
+
 3. **The colour pass.** Its numbers are built: `engine::colour_pass`
    (`arguments`: the caller's half with `0x000137a0`'s curves;
    `parameters`: the callee's override record and clamps;
@@ -2378,10 +2676,9 @@ effect per egor.
       scales; `VERTEX` is the screen shader for them; `program` compiles
       a block through `shaders::psh` with its stages linear (`tex_scale`
       one over the guest size) and fog off; `GpuGlow::encode` draws a
-      plan's quads in order into stand-ins for targets 7 and 8
-      (`Rgba8Unorm`, the guest size times the copy's scale) and the
-      view's colour, sampling it directly (gfx's colour surfaces are
-      `TEXTURE_BINDING`), the composite with the blend of
+      plan's quads into live targets 7 and 8 and the view's colour,
+      using each attachment's format and loading its existing
+      pixels. The composite uses the blend of
       `0x000222d0`'s states (`Blend`: source `ONE` or
       `INVDESTCOLOR` by the sixth argument, destination `ONE` unless
       the seventh's byte is set, alpha alike). The down-sample and
@@ -2393,8 +2690,8 @@ effect per egor.
       quads are dropped (item 2). `0x00034a90`'s `0x000142f0(10)` sets
       `NV097_SET_BLEND_ENABLE` (`0x00040304`) to 0 for the down-sample
       and the blur (Code), so they draw unblended, as `GpuGlow` does.
-   4. The switch on draws the glow natively; after the frame A/B below
-      it can become the default.
+   4. Default-on admission requires complete, pixel-identical
+      replacements across representative views and effects.
 
    **The frame A/B** for the glow: the same frame (a fixed save, view
    and time, `H2_FEATURES` differing only in `impl.render.native_post`)
@@ -2406,20 +2703,20 @@ effect per egor.
    spread over the run, intro and gameplay), `H2_POST_AB_COUNT` calls
    each (default 1), into
    `<dir>/<native|d3d>-<call>-<w>x<h>.png`, one per copy of the target
-   under the render scale. With the switch off the hook is placed for it
-   and observes the same quads, dropping none, so the D3D side is
-   captured at the same draw. It needs the GPU backend: a headless run
-   writes nothing (logged); set `H2_BOOT_GFX=<dir>
-   H2_BOOT_GFX_EVERY=never`. With the switch on the first call is the
-   probe's (a D3D-side capture if it falls in the window), so start the
-   window after it. Compare:
-   - the two captures per pixel, within a small tolerance for filtering
-     (max and mean error and the count over it);
-   - `swallow_mismatches` 0 and `swallowed_draws` the quads planned on
-     both sides, `external_passes_dropped` steady;
-   - the frame's next draws (the screen effects, the fade, the HUD) as
-     d3d records them: equal (the game's code left the same states);
-   - the ms of `render_screen_effects`.
+   under the render scale. With the switch off the hook observes
+   the same quads for a D3D capture. It queues a native capture after
+   the replacement commits. For headless GPU rendering set
+   `H2_BOOT_GFX=<dir>` and `H2_BOOT_GFX_EVERY=never`.
+
+   Compare the same view and call. Check that the expected glow and
+   screen replacements committed, with no unexpected refusals or
+   replays. Compare pixels on each changed intermediate, its next D3D
+   consumer and the final image. Require zero unexplained pixel
+   differences. The glow A/B files capture the composite. Use the
+   agent API's `render.frame` and stage counters to inspect the other
+   passes and confirm coverage. Keep a D3D measurement of
+   `render_screen_effects` for the cost comparison.
+
 4. **The screen effects** (`0x0002d140`; 03a's blur first), with their
    function values (`0x00134fc0`) read at the call. Traced (Code,
    `h2 disasm`); slice (a) built (below).
@@ -2473,7 +2770,7 @@ effect per egor.
      pass through `program::translate_pass` (the world's and lights'
      path) with the engine inputs the screen-effect pass reads; (c)
      `0x00021360` traced and ported beside `blur`; (d) targets `0x19` to
-     `0x1b` as stand-ins like 7 and 8. Each is a slice; (a) first.
+     `0x1b` as convolution targets like 7 and 8. Each is a slice; (a) first.
    - **Built: which entries draw** (`engine::screen_effects`):
      `function_value` (`0x00134fc0` and `0x00134fe0`: the state's input
      plus its `+0x1c`; without a parent (`+0x16` -1 or past the count)
@@ -2567,17 +2864,11 @@ effect per egor.
      `0x000350e0`. A radial (zoom) blur. `strips()` and `pushed()` give
      the exact words. Tests: unit tests and
      `screen_grid_differential::the_grid_matches_the_lifted_original`.
-   - **Wired: the screen-effect hook** (`feature::native_post`, switch on
-     only): a context-only `before` on `0x0002d140`
-     (`points::SCREEN_EFFECT`) hands boot's host EAX and the four stack
-     words; `native_post_glue::plan_effect` plans the call and
-     `missing` lists what does not draw natively yet (the layer-15
-     template pass, passes into target 1, blur and wide convolutions,
-     the stand-ins for targets `0x19` to `0x1b`). Every effect is
-     refused, counted and logged once per reason, and nothing is armed:
-     the D3D path draws them all. Each piece then gets a slice and is
-     struck from `missing`; only an effect with nothing missing will be
-     armed, behind the same swallow and probe as the glow.
+   - **The screen-effect hooks** (`feature::native_post`). The entry
+     hands boot's host EAX and the four stack words. The host plans
+     the drawn passes and refuses unsupported inputs before arming.
+     The return hooks commit the staged recording or replay the call.
+
    - **Built: the template pass's look** (`native_render::screen_look`):
      `screen_look` takes the egor's shader resolved and an
      layer pass and implementation and gives that pass of layer 15 (at
@@ -2640,24 +2931,14 @@ effect per egor.
      final combiner as reading them). Its WGSL writes no depth
      (`PassParts::w_buffer` off). The engine constants are the call's
      (below).
-   - **Built: the GPU pass, unarmed** (`native_render::screen_gpu`,
-     `native_post_glue`'s `ScreenPass` and `ScreenProbe`): each strip a
-     triangle strip of `StripVertex` (attribute 0 the position, z and w
-     `[0x0045dd40]`; 1..4 the texture coordinates), the translated
-     program with the target's guest size as its surface and the
-     device's depth scale as its `z_max`, each render-target stage
-     fetched in its texels (`tex_scale`, as a linear texture), no depth,
-     no culling (S: the D3D path's cull mode is inherited; the A/B checks
-     the facing), the pass's blend and colour writes. Of the engine
-     textures only the view's (5) is supplied, as a copy of the bound
-     colour taken before each pass that samples it (S: 5 and `kind` 0
-     both resolve to target 0 while `[0x004858b8]` is clear). The host
-     strikes `TemplatePass` from `missing` for a pass whose program
-     loaded and whose stages are all bound (`pass_drawable`), and arms a
-     call with nothing missing as the glow is armed: one swallow of its
-     strips (slot 0, `SET_BEGIN_END` 6, twice the columns), a probe
-     first, then the pass in place of the strips; a mismatch after a
-     screen swallow keeps every later call on D3D.
+   - **The GPU pass** (`native_render::screen_gpu`). It translates
+     the layer-15 program at the target's guest size with the
+     device's depth scale. Engine stages read the view, target 1 or
+     a convolution result. A stage reading the view takes an
+     ordered copy before the pass. Each attachment uses its live
+     format and loads existing contents. Partial strips, colour
+     masks and consecutive writes preserve the surrounding pixels.
+
    - **Traced: the end of the call draws nothing**
      (`0x0002dae8..0x0002db64`): `0x0001ddd0` writes the sizes of
      targets 1, `0x19` and `0x1b` back into the target table (`+0x80`,
@@ -2667,33 +2948,15 @@ effect per egor.
      saved size, and `0x1a` never), `0x00016b10` applies the last pass's
      restore states and clears the draw-state cache at `0x00485b48`,
      `[0x004670bc]` is set and `0x00485a78`/`7c` cleared. The game runs
-     it on both paths, so the stand-ins for `0x19`..`0x1b` are missing
-     only for a call with a drawn (blur or wide) convolution, which
-     renders into them; a pass sampling them (engine textures 24 and 25)
-     is not drawable on its own. A call of passes into the bound target
-     with every convolution kept, the shape of
-     `effects\screen_effects\desaturate` (one pass, kind 0, none
-     convolved, stage 0 the view), now misses nothing and is armed with
-     the switch on: a probe on its first call, its strips dropped for the
-     native pass after. The blur (`kind` 1 and a convolution in its first
-     pass) stays on D3D.
-   - **Built: passes into target 1** (`screen_gpu::Dest`): a pass of
-     `kind` 1..3 draws into a stand-in for target 1, its guest size the
-     plan's (the window's, a half, a quarter) and its texels that times
-     the copy's render scale, cleared first (S: the strips cover it); a
-     later pass of the call samples it as engine textures 2 and 3, in its
-     texels. Target 1 read before a pass of the call drew it (what the
-     D3D path left there), or by the pass drawing it, is refused
-     (`screen_gpu::check_order`, `native_post_glue::call_ordered`). The
-     swallow sends target 1's strips to slot 1. `PassTarget` stays
-     missing only for a pass into target 1 that is the call's last (the
-     native pass is issued into the target bound at the last strip) or
-     has no size. Nothing more is armed by it: the only egor with such a
-     pass, the blur, still misses its convolution and the stand-ins, and
-     its second pass reads engine pixel constants and engine texture 24.
-     (S: what the D3D side later reads of target 1 is not this call's,
-     since its strips are dropped; target 1 is scratch to the screen
-     effects, as 7 and 8 are to the glow.)
+     it on both paths. The backend records into the physical
+     surface used by each original draw, even when the tail changes
+     the guest size fields.
+   - **Target 1** (`screen_gpu::Dest`). A pass of kind 1..3 uses
+     slot 2 at the window's size, a half or a quarter. Engine
+     textures 2 and 3 can sample that output in later passes of the
+     call. Reading target 1 before the call draws into it or while
+     the same pass writes it refuses the replacement.
+
    - **Built: the call's engine constants**
      (`screen_look::ScreenConstants`): `0x0002d140` copies its four
      values to `0x004c19b0`, and the scalar evaluator `0x000336f0` (its
@@ -2723,30 +2986,17 @@ effect per egor.
      the combiner is `0x00020f30`'s at strength 0 and `y` 0
      (`engine::glow::blur_combiner`), and each quad goes through
      `0x00034a90` with its tenth argument 0: the window's rectangle in
-     the stand-in's pixels, four taps, each stage's coordinates scaled by
-     its source's size over the stand-in's (`0x00034bf7`..`0x00034c27`),
+     the target's pixels, four taps, each stage's coordinates scaled by
+     its source's size over the target's (`0x00034bf7`..`0x00034c27`),
      the quad `glow::quad` gives the glow's, drawn by the glow's
-     `glow::QuadDrawer` (the glow now draws through it too). The quads go
-     into stand-ins for `0x19`..`0x1b` (`screen_gpu::STAND_INS`, at the
-     plan's guest size times the copy's scale, `STAND_IN_FORMAT`; S: an
-     8-bit target as 7 and 8), each cleared when the call first draws
-     into it; their source is the pass's target (the bound colour, or
-     target 1's stand-in) or the stand-in the last quad drew. Engine
-     textures 24 and 25 bind the target the pass's convolution `n` left in
-     `[0x00485a78 + 4 n]` (`screen_gpu::Bound::Result`), refused before
-     one set it in the call, since `0x0002d140` clears them on its way out
-     (`screen_gpu::Drawn`, `check_order`). A pass that blends or masks
-     colour does not convolve natively (its quads draw under its states).
-     The swallow takes each draw's own shape (`d3d::Swallow::shapes`: the
-     strips of `SET_BEGIN_END` 6, the quads `Begin(7)` of four), the quads
-     into slots 3..5 for `0x19`..`0x1b`. Each egor is probed on its own
-     before its draws are dropped, and falls back on its own: a refused
-     pass, a failed probe or a swallow mismatch (charged to the egor that
-     armed last) keeps that egor's later calls on D3D and no other's. With these, the blur misses nothing and
-     is armed with the switch on (off by default).
+     `glow::QuadDrawer`. The quads bind the live levels
+     `0x19`..`0x1b` (slots 3..5). Engine textures 24 and 25 resolve
+     the results in the order the call produces them. A convolution
+     whose colour state or source differs keeps the original draws.
+
    - **Built: the wide convolution** (`0x00021360`; `screen_gpu::ConvolutionGrid`,
      `native_post_glue::wide_grid`, `grid_of`). `0x0002d140` passes it
-     the words `+0x50`, `+0x54`, the stand-ins, -1, 1, 0, 0, so its
+     the words `+0x50`, `+0x54`, the convolution targets, -1, 1, 0, 0, so its
      combiner is the blur's (`0x00020f30` with XMM0 0 and XMM3 its eighth
      word, 0), its stages are bound as the blur's (clamp, linear), and
      each draw is `0x00034d90` (Code, `0x00021455..0x00021485`) with the
@@ -2755,89 +3005,33 @@ effect per egor.
      two words its radii, EDI the draw's offsets, each stage's ratio the
      size `0x00014f60` bound the source at (`0x0001dd60` of it: the
      pass's target as the call sized it, `screen_effect::target_size`,
-     or a stand-in at the pair's size) over the stand-in's. The glue
+     or a convolution target at the pair's size) over the target's. The glue
      makes each draw's 30 strips of 42 vertices with
      `engine::screen_grid::strips` (the original's arithmetic, under the
      call's MXCSR and x87 control word), the taps in texels of that bound
      size; `glow::QuadDrawer::draw_grid` draws them through
-     `glow::GRID_VERTEX` (attribute 0 the position in the stand-in's
+     `glow::GRID_VERTEX` (attribute 0 the position in the target's
      pixels, 1..4 the taps; z and w ignored as the quad's are: no depth
      test and w the same at every vertex) and the blur's combiner with
      its stages scaled by the bound size. The swallow takes each strip
-     as `SET_BEGIN_END` 6 of 42 (`0x00034770`) into the stand-in's slot.
+     as `SET_BEGIN_END` 6 of 42 (`0x00034770`) into the target's slot.
      A grid that cannot be made keeps the call on D3D
      (`Missing::Wide`), as does a missing frame; a grid with a strip
      under a triangle is refused (`ScreenRefused::NoStrips`). With these
      a wide convolution misses nothing and is armed with the switch on
      (off by default).
-   - **Fixed: the first mainmenu A/B armed nothing** (1500 presents,
-     pixel-identical): the effects loaded, but the first probe's swallow
-     ended at its first strip (`swallowed_draws` was the glow's six per
-     frame exactly), and the effect fell back. The likely cause: slot 0
-     is the target bound when the swallow is armed, and `0x00016610`
-     binds each pass's own target (`0x00014bc0` of 0 or 1, Code,
-     `0x0001675c..0x00016765`). `0x0002d140` has two callers,
-     `render_screen_effects` (`0x00013b52`, 2 x 2 corners) and the UI
-     (`0x0022bbbb`, 3 x 3), and the UI's call need not have target 0
-     bound. A screen call's swallow now plans no slot 0
-     (`native_post_glue::SLOT_BOUND` 1, target 1 slot 2, the stand-ins
-     3..5), and `d3d::Swallow` pins slot 0 only when a draw plans it.
-     The device says how a swallow ended (`Device::swallow_mismatch`:
-     the draw, its planned shape and slot, what was pushed, after
-     another draw or into another target, or armed over), and the glue
-     logs it with the fall-back. Arming over an unfinished swallow is
-     charged to that one, not the new one. A proof holds for the egor
-     and the plan it probed (`Proofs`): a call of another shape is
-     probed again before any of its strips are dropped. A convolution
-     drawn after the last pass is refused (`PassTarget`): the native pass
-     is issued into the target bound at the last draw. `H2_POST_SHAPES`
-     writes each call's plan (egor, probe or drop, slot:primitive x
-     count), the first 64 calls.
-   - **Then: the strips were never pushed.** With those, the next A/B
-     said `draw 0 of 1: planned TriangleStrip x4 into slot 1, pushed
-     QuadList x0, an inline array, after another draw` for the one egor
-     the menu calls (`0xe4380218`, `render_screen_effects`' 2 x 2): the
-     first draws after arming were the UI's, so `0x0002d140` drew
-     nothing. The plan assumed `0x00016610` draws (the differential stubs
-     it so), but `0x0002d140` skips a pass whole when it does not
-     (`0x0002d4be`). Its gate is now ported,
-     `screen_effect::template_draws` (Code, `0x00016610..0x000166ed`:
-     the template at the shader's `+4`, its `+0x5c` count, layer 15's bit
-     and word, the pass the implementation names, and the selector's
-     implementation's `+0x100` not -1), and a call with a pass it skips
-     keeps its D3D draws (`Missing::TemplateSkipped`). The menu's other
-     egor is never called there; the blur needs another scene.
-   - **The next A/B was the same**: no `TemplateSkipped`, the same
-     mismatch. So the static reading is set aside for a runtime account,
-     `H2_POST_TRACE=N` (`N,after`; empty, 4): for the first `N` calls of
-     `0x0002d140` the device keeps, from the hook to the next hook of
-     either kind (`d3d::Traced`, the first 512 events): every D3D entry
-     the runtime calls and its guest return address (so a call from
-     inside `0x0002d140..0x0002db67` is its own); `Arming` before the
-     drain at arming, so a draw pushed before the hook shows ahead of
-     `Armed`; every draw with its entry, primitive, vertex count, inline
-     array words, the push-buffer address of its `End`, the colour target,
-     `Stats::draws` before it, and a pushed draw's fate (`drawn`,
-     `dropped`, `observed`, `mismatch`). The host adds the call, the
-     hook's plan, whether it armed or what it refused, and each
-     `0x00016610` (`points::TEMPLATE_PASS`, a context-only `before`) with
-     its words, caller and what `template_draws` says of it. `,after`
-     notes the returns of `0x00016610` (AL) and `0x0002d140`, after-hooks
-     that keep those chains off the pipelined render thread. Each line
-     is `native-post: H2_POST_TRACE #<call> ...`, the trace written when
-     it ends.
-   - **Fixed: the strip comes through the `D3DDevice_End` entry.** The
-     trace said `0x0002d140` draws (`0x00016610` from `0x0002d4bc`, the
-     port agreeing; the commit from `0x0002d51b`), but its strip is
-     `D3DDevice_End` called from `0x0002d8b2` (`Begin`,
-     `SetVertexData4f`, `End` as entries), not a pushed `Begin`/`End`.
-     The swallow watched only pushed draws, so the strip drew and the
-     UI's next pushed quad was taken for it. Both paths now go through
-     `Device::swallow_immediate`. A probe that ends early dropped
-     nothing, so the egor is only left unproved and its next call probes
-     again; only a dropping swallow that ends early keeps the egor on D3D
-     (`screen_mismatch`). A call made while the map's effects are still
-     loading is no longer counted as a `TemplatePass` refusal.
+   - **Runtime diagnostics.** An early menu A/B reported identical
+     images while no screen replacement committed. The menu and
+     gameplay can call `0x0002d140` with different bound targets and
+     grid sizes. `H2_POST_SHAPES=1` logs the first 64 screen plans.
+     `H2_POST_TRACE=N` records the first `N` calls per egor (default
+     four), including D3D caller addresses and draw fates. `,after`
+     includes template return values. While post calls arrive it
+     prints a cumulative summary every five seconds with held calls,
+     dropped and replayed draws, glow and screen commits, and refusals
+     by reason. `H2_FRAME_STATS` includes the native post examined,
+     suppressed, refused and recorded-range columns.
+
 5. **`0x0002df00`, and `0x0002dd30`** before layer 17, which has the
    same shape and gets its own skip point.
 6. **Layer 17** (S: bloom), as stage 1b draws the world's other layers.
@@ -2869,3 +3063,97 @@ effect per egor.
 - Which 03a templates have a layer-1 texaccum pass that layer 3 samples
   in screen space; those need the texaccum target bound to the native
   pass, or stage 1b.
+
+## Residual render callers
+
+The runtime census is selected with
+`H2_NATIVE_RESIDUAL_PROBE=2000,3000,4000`. The agent's `render.stats`
+returns the completed presents in `counters.residual.frames`. For each
+view kind it gives the invocation count and distinct `(entry, return_pc)`
+pairs, plus the draw attempts that reached the ordinary backend.
+`ViewSetup` covers the game-view prefix. `Alternate` is the separate
+`0x0002c790` view. `Scene(n)` uses the actual scene-pass argument.
+`ViewTail` covers calls after the scene passes return. `OutsideView`
+includes the frame tail and frames that never enter a game view. The counts are
+at runtime D3D entries, before native draw admission. Pair them with
+the native suppression counters and `render.frame` to distinguish
+original entry work from draw packets that still reach the D3D renderer.
+A D3D continuation that re-enters counts twice. Inline push-buffer
+methods and unhooked XDK helpers are tracked through their containing
+entries or the static call sites below. If an inline packet drains in a
+later ABI entry, its backend draw is labelled with the packet entry and
+a null return PC.
+
+### Retail call-site inventory
+
+These are counts of reachable sites from the retail image, with
+conditional sites included once. The number of runtime invocations
+depends on visibility, state caches, materials and which stage
+admissions succeed. All-stage runtime counts are pending integration.
+
+| View path | Reachable residual sites | Notes |
+|---|---|---|
+| Scene kind 1 | 5 direct target selections in the base sequence, 1 direct layer-1 clear, 1 late layer-2 overlay, 1 sky call, 1 visibility issuance call and 1 visibility result reader | Layer begins can select and clear targets too. Sky has an independent model path. Flare tests issue once per eligible flare and poll the three-frame set. |
+| Scene kind 2 | The same 5 base target and 1 layer-1 clear sites, and 1 late layer-2 overlay | This path exits after the first transparent site. Sky and the late visibility pair are on the other path. |
+| Scene kinds 0, 3, 4, 6, 7 | 4 general layer begins before the late sequence, including 1 layer-2 overlay site, plus the late sky and visibility sites | Layers 1, 3, 5 and 2 use the general begin. The main scene's five explicit target selections are outside this branch. |
+| Scene kind 5 | 1 common scene-exit site | The scene leaves after its early setup. The common exit may restore target 0 and depth clip. |
+| Alternate view | 1 view setup at `0x0002c863`, 1 UI call at `0x0002c884`, 1 view finish at `0x0002c889` | This is the alternate view record's separate path. Its target and UI draw stream depends on the view. |
+| Outside game views | 1 fallback-view call at `0x0022326a`, 2 frame-finish calls after the view loop, 1 present call at `0x00223296` | Load screens, video and menu composition, the final blit and display resource handling are outside the normal scene admission. |
+
+The five base target sites are `0x0002bde2`, `0x0002be83`,
+`0x0002bf0e`, `0x0002bf7f` and `0x0002bfe3`. The direct clear is
+`0x0002be01`; the clear helper calls `D3DDevice_Clear` at
+`0x00014bb2`. Target changes converge on `0x0001cd30`, which calls
+the same-size D3D bind at `0x0001cd63` or the viewport-resetting bind at
+`0x0001cd6c`. The scene also reaches layer, light, camera and post targets
+through their own wrappers. The scene exit `0x00013630` can restore a
+target at `0x0001366b`.
+
+The flare writer `0x00020bb0` polls an older result at `0x00020cbb`,
+begins the count with inline NV2A methods, draws its callback and ends the
+test at `0x00020d0f`. The late reader `0x00020770` polls the two-frame
+slot at `0x00020840`. The native GPU counter must preserve sample counts,
+readiness and timestamps for both callers. That report is separate from
+the optional previous-frame depth grid used for object culling.
+
+The all-stage capture should cover Old Mombasa's cinematic and gameplay,
+a main menu, a movie and an alternate view. Turn on the integrated
+world/object layers, transparents, decals, particles, lights, gels,
+shadows, first person, water/fog/camouflage, post and HUD switches.
+Compare with the residual switch off and on. The census still lists
+unsupported materials, exceptional handlers, clears, target changes,
+query reports, menu/video and final display traffic, and any shader or
+geometry setup retained by a stage that replaces only resolved draws.
+
+### Residual geometry admission
+
+`impl.render.native_residual=on` admits the sky model's indexed strip
+at `0x0004c976`, and standard layer-2 geometry at the main-scene and
+alternate-scene layer sites. Their guest order, transforms, shader
+inputs and stencil setup stay in place. The native pass consumes the
+resolved packet and records the full range on both live target copies
+before the handoff replaces the D3D draw. Other layer-2 handlers and
+unknown callers retain their own D3D submission.
+
+### Attachment and visibility entry paths
+
+The residual switch also selects the native entry path for clears,
+target binds and visibility finish/results. Their ordering boundary is
+the runtime's existing drain. A one-use marker lets these handlers
+consume that drain instead of reading the push cursor a second time.
+Callbacks, dirty-range processing, deferred destruction and ABI return
+writes still run through the common adapter.
+
+A whole-viewport, unmasked clear uses the native attachment load
+operations directly, without building a rectangle list. Partial or
+channel-masked clears use the existing rectangle renderer. Target
+binds among device-owned surfaces skip reference staging while retaining
+the surface lookup, write-back order and viewport behavior. Title-owned
+surfaces retain the usual reference, parent and destruction rules.
+
+Visibility issuance and results use the existing GPU pixel counter and
+report slots. The inline begin still drains before the counted draw.
+Finish and result calls retain index validation, pending answers, GPU
+timestamps and the normal write order. Counted geometry stays with the
+counting renderer. Draw admission only replaces ranges for which a
+complete recording can be reserved, including every live target copy.

@@ -27,7 +27,7 @@
 //! So [`Plan::quad`] gives each draw its corners and per-stage offsets
 //! and scales, and [`VERTEX`] reproduces the screen shader for them; the
 //! pixel side is the block itself ([`program`]). [`GpuGlow`] draws a plan
-//! into a copy of the view's colour's stand-ins for targets 7 and 8.
+//! into the live view and blur targets, retaining pixels outside the quads.
 
 use std::collections::HashMap;
 
@@ -67,9 +67,9 @@ pub const TARGET_OTHER: u32 = 8;
 pub enum Surface {
     /// The view's colour target.
     View,
-    /// Target 7's stand-in.
+    /// Target 7.
     Down,
-    /// Target 8's stand-in.
+    /// Target 8.
     Other,
 }
 
@@ -423,10 +423,6 @@ pub fn sampler_descriptor() -> wgpu::SamplerDescriptor<'static> {
     }
 }
 
-/// The format of the stand-ins (targets 7 and 8 are
-/// `D3DFMT_LIN_A8R8G8B8`).
-pub const SMALL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
-
 struct Compiled {
     module: wgpu::ShaderModule,
     uniforms_layout: wgpu::BindGroupLayout,
@@ -442,7 +438,7 @@ pub struct GlowTarget<'a> {
     pub queue: &'a wgpu::Queue,
     pub encoder: &'a mut wgpu::CommandEncoder,
     pub color: &'a wgpu::TextureView,
-    pub color_format: wgpu::TextureFormat,
+    pub intermediates: [Option<&'a wgpu::TextureView>; 2],
     /// Guest pixels and this copy's texels.
     pub guest_size: (u32, u32),
     pub size: (u32, u32),
@@ -640,41 +636,36 @@ impl QuadDrawer {
     }
 }
 
-/// The GPU side: the quads ([`QuadDrawer`]) and the stand-ins for
-/// targets 7 and 8 (by size).
+/// Checks the actual attachment for this copy of the guest render target.
+pub(crate) fn live_colour(view: &wgpu::TextureView, size: (u32, u32)) -> bool {
+    let t = view.texture();
+    t.dimension() == wgpu::TextureDimension::D2
+        && t.depth_or_array_layers() == 1
+        && t.sample_count() == 1
+        && t.mip_level_count() == 1
+        && (t.width(), t.height()) == size
+        && !t.format().is_depth_stencil_format()
+        && t.usage().contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
+}
+
+pub(crate) fn sampleable(device: &wgpu::Device, view: &wgpu::TextureView) -> bool {
+    let t = view.texture();
+    t.usage().contains(wgpu::TextureUsages::TEXTURE_BINDING)
+        && gfx::program::filterable(t.format(), device.features())
+}
+
+/// The GPU pipeline cache. Target views come from each live call.
 #[derive(Default)]
 pub struct GpuGlow {
     quads: QuadDrawer,
-    small: Option<((u32, u32), [wgpu::TextureView; 2])>,
 }
 
-/// Why [`GpuGlow::encode`] drew nothing.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Refused {
-    /// The view's colour cannot be sampled.
-    ColourNotSampled,
-    /// The view's guest size is not the plan's.
     ViewSize((u32, u32), (u32, u32)),
-    /// A block does not compile.
+    Attachment(Surface),
+    Source(Surface),
     Program(String),
-}
-
-/// Whether [`GpuGlow::encode`] would draw `plan` into `color` (guest size
-/// `guest_size`), recording nothing: the target can be sampled, is the
-/// plan's size, and every block compiles.
-pub fn check(color: &wgpu::TextureView, guest_size: (u32, u32), plan: &Plan) -> Result<(), Refused> {
-    check_target(color, guest_size, plan)?;
-    programs(plan).map(|_| ()).map_err(Refused::Program)
-}
-
-fn check_target(color: &wgpu::TextureView, guest_size: (u32, u32), plan: &Plan) -> Result<(), Refused> {
-    if !color.texture().usage().contains(wgpu::TextureUsages::TEXTURE_BINDING) {
-        return Err(Refused::ColourNotSampled);
-    }
-    if guest_size != plan.view {
-        return Err(Refused::ViewSize(guest_size, plan.view));
-    }
-    Ok(())
 }
 
 /// A draw's program's key: its block without its constants (uniforms,
@@ -703,54 +694,44 @@ impl GpuGlow {
         Self::default()
     }
 
-    /// Records `plan`'s draws in order. The stand-ins are the guest sizes
-    /// times this copy's scale. Nothing is recorded when it refuses.
-    pub fn encode(&mut self, mut t: GlowTarget<'_>, plan: &Plan) -> Result<(), Refused> {
-        check_target(t.color, t.guest_size, plan)?;
-        let mut programs = Vec::with_capacity(plan.draws.len());
-        for d in &plan.draws {
-            let stages = d.stages.map(|s| s.map(|s| plan.size(s)));
-            programs.push(self.quads.program(&d.combiner, stages).map_err(Refused::Program)?);
+    /// Records every quad into the exact colour attachment the D3D draw
+    /// used. Destination format and existing pixels come from that view.
+    pub fn encode(&mut self, t: GlowTarget<'_>, plan: &Plan) -> Result<(), Refused> {
+        if t.guest_size != plan.view {
+            return Err(Refused::ViewSize(t.guest_size, plan.view));
         }
-        for (draw, program) in plan.draws.iter().zip(&programs) {
-            let reads_dest = (0..4).any(|n| program.dims[n].is_some() && draw.stages[n] == Some(draw.dest));
-            if reads_dest {
-                return Err(Refused::Program("a quad samples the surface it draws into".into()));
-            }
-        }
-        let scale = |n: u32, of: u32, by: u32| ((u64::from(n) * u64::from(of)).div_ceil(u64::from(by.max(1))) as u32).max(1);
-        let small = (
-            scale(plan.small.0, t.size.0, t.guest_size.0),
-            scale(plan.small.1, t.size.1, t.guest_size.1),
-        );
-        let device = t.device;
-        if self.small.as_ref().is_none_or(|(s, _)| *s != small) {
-            let make = |label| {
-                device
-                    .create_texture(&wgpu::TextureDescriptor {
-                        label: Some(label),
-                        size: wgpu::Extent3d { width: small.0, height: small.1, depth_or_array_layers: 1 },
-                        mip_level_count: 1,
-                        sample_count: 1,
-                        dimension: wgpu::TextureDimension::D2,
-                        format: SMALL_FORMAT,
-                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-                        view_formats: &[],
-                    })
-                    .create_view(&Default::default())
-            };
-            self.small = Some((small, [make("native glow 7"), make("native glow 8")]));
-        }
-        let Some((_, [down, other])) = &self.small else { return Ok(()) };
-        let view_of = |s: Surface| match s {
-            Surface::View => t.color,
-            Surface::Down => down,
-            Surface::Other => other,
+        let small = crate::screen_gpu::host_size(plan.small, t.guest_size, t.size);
+        let view_of = |surface| match surface {
+            Surface::View => Some(t.color),
+            Surface::Down => t.intermediates[0],
+            Surface::Other => t.intermediates[1],
         };
-        for (draw, program) in plan.draws.iter().zip(&programs) {
-            let format = if draw.dest == Surface::View { t.color_format } else { SMALL_FORMAT };
-            let stages = draw.stages.map(|s| s.map(view_of));
-            self.quads.draw(device, &mut *t.encoder, program, &plan.quad(draw), view_of(draw.dest), format, draw.blend, stages);
+        let mut prepared = Vec::with_capacity(plan.draws.len());
+        for draw in &plan.draws {
+            let dest = view_of(draw.dest).ok_or(Refused::Attachment(draw.dest))?;
+            let size = if draw.dest == Surface::View { t.size } else { small };
+            if !live_colour(dest, size) {
+                return Err(Refused::Attachment(draw.dest));
+            }
+            let sizes = draw.stages.map(|s| s.map(|s| plan.size(s)));
+            let program = self.quads.program(&draw.combiner, sizes).map_err(Refused::Program)?;
+            let mut stages = [None; 4];
+            for (n, stage) in stages.iter_mut().enumerate() {
+                if program.dims[n].is_none() {
+                    continue;
+                }
+                let Some(surface) = draw.stages[n] else { return Err(Refused::Program(format!("stage {n} has no source"))) };
+                let view = view_of(surface).ok_or(Refused::Source(surface))?;
+                let size = if surface == Surface::View { t.size } else { small };
+                if dest.texture() == view.texture() || !live_colour(view, size) || !sampleable(t.device, view) {
+                    return Err(Refused::Source(surface));
+                }
+                *stage = Some(view);
+            }
+            prepared.push((dest, program, stages));
+        }
+        for (draw, (dest, program, stages)) in plan.draws.iter().zip(prepared) {
+            self.quads.draw(t.device, t.encoder, &program, &plan.quad(draw), dest, dest.texture().format(), draw.blend, stages);
         }
         Ok(())
     }

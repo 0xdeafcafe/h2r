@@ -3,22 +3,9 @@
 //! default; `H2_FEATURES=impl.render.native_post=on` turns it on (exactly
 //! that key).
 //!
-//! The colour pass of `render_screen_effects`, a glow (`0x000214f0`,
-//! `points::COLOUR_PASS`), runs as the game's own code, so it leaves
-//! every state, register and guest word as it always does; only its quads
-//! are not drawn by the D3D path. One hook, a context-only `before` with
-//! nothing after its body (the pipelined render runs it on its own
-//! thread), reads the call's seven arguments and hands them to the
-//! [`Host`]. The host plans the glow from them, and arms the device to
-//! drop exactly the plan's quads and draw the native glow in place of the
-//! last (`d3d::Device::swallow`); a quad the plan does not have ends that
-//! and the D3D path draws the rest. The call always runs.
-//!
-//! A second hook, on each of the scenario's screen effects (`0x0002d140`,
-//! `points::SCREEN_EFFECT`, the switch on only), hands the host EAX and
-//! the four stack words ([`ScreenEffect`]); the host plans the effect
-//! (`engine::screen_effect::plan`) and arms nothing until every piece it
-//! needs draws natively, refusing per reason. The call always runs.
+//! The colour pass and each screen effect run their guest code. Entry
+//! hooks supply the call's arguments and stack identity. Return hooks
+//! close that exact call before its caller can issue another draw.
 //!
 //! `H2_POST_TRACE` ([`TraceSpec`]) traces the first calls of
 //! `0x0002d140`: the host keeps the device's account of what each runs
@@ -56,19 +43,47 @@ pub struct Fp {
     pub x87_control: u16,
 }
 
+/// Which guest call owns a post transaction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PostCall {
+    Colour,
+    Screen,
+}
+
+impl PostCall {
+    fn cleanup(self) -> u32 {
+        match self {
+            Self::Colour => 28,
+            Self::Screen => 16,
+        }
+    }
+}
+
+/// The guest stack at entry, before the feature chain installs its return
+/// continuation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CallSite {
+    pub kind: PostCall,
+    pub esp: u32,
+    pub ret: u32,
+}
+
 /// What the colour pass becomes: boot's glue over the GPU and the device.
 pub trait Host: Send + Sync {
     /// The call of `0x000214f0` with `args` (its seven stack words) is
     /// about to run. `native`: drop its quads and draw the glow natively;
     /// otherwise only observe them (the A/B). `true`: the device is armed.
-    fn colour_pass(&self, mem: &mut dyn GuestMemory, args: [u32; 7], fp: Fp, native: bool) -> bool;
+    fn colour_pass(&self, mem: &mut dyn GuestMemory, site: CallSite, args: [u32; 7], fp: Fp, native: bool) -> bool;
 
     /// The call of `0x0002d140` described by `call` is about to run (the
     /// switch on). `true`: the device is armed. By default nothing is.
-    fn screen_effect(&self, mem: &mut dyn GuestMemory, call: ScreenEffect, fp: Fp) -> bool {
-        let _ = (mem, call, fp);
+    fn screen_effect(&self, mem: &mut dyn GuestMemory, site: CallSite, call: ScreenEffect, fp: Fp) -> bool {
+        let _ = (mem, site, call, fp);
         false
     }
+
+    /// Finishes the call whose entry frame was at `esp`.
+    fn finish(&self, _mem: &mut dyn GuestMemory, _kind: PostCall, _esp: u32) {}
 
     /// `H2_POST_TRACE`: the call of `0x0002d140` described by `call`,
     /// returning to `ret`, is about to run; called before
@@ -90,17 +105,15 @@ pub trait Host: Send + Sync {
 }
 
 /// `H2_POST_TRACE` (docs/graphics/native-renderer.md, stage 5): `N` traces
-/// the first `N` calls of `0x0002d140` (empty: [`TRACE_CALLS`]); `N,after`
-/// also notes where `0x00016610` returns (its AL) and where `0x0002d140`
-/// returns. An after-hook keeps those two chains off the pipelined render
-/// thread: each call of them falls back to the game thread.
+/// each egor's first `N` calls of `0x0002d140` (empty: [`TRACE_CALLS`]).
+/// `N,after` also notes the return values of the template and effect.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TraceSpec {
     pub calls: u64,
     pub after: bool,
 }
 
-/// The calls `H2_POST_TRACE` traces when it names no count.
+/// The calls of each egor `H2_POST_TRACE` traces when it names no count.
 pub const TRACE_CALLS: u64 = 4;
 
 impl TraceSpec {
@@ -204,7 +217,9 @@ pub fn on_colour_pass(mem: &mut dyn GuestMemory, esp: u32, fp: Fp, native: bool)
     let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
         return false;
     };
-    let armed = host.colour_pass(mem, args, fp, native);
+    let Ok(ret) = mem.u32(esp) else { return false };
+    let site = CallSite { kind: PostCall::Colour, esp, ret };
+    let armed = host.colour_pass(mem, site, args, fp, native);
     if armed {
         ARMED.fetch_add(1, Ordering::Relaxed);
     }
@@ -233,15 +248,23 @@ pub fn on_screen_effect(mem: &mut dyn GuestMemory, eax: u32, esp: u32, fp: Fp) -
     let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
         return false;
     };
+    let Ok(ret) = mem.u32(esp) else { return false };
+    let site = CallSite { kind: PostCall::Screen, esp, ret };
     if trace_spec().is_some() {
-        let ret = mem.u32(esp).unwrap_or(0);
         host.trace_effect(mem, call, ret);
     }
-    let armed = host.screen_effect(mem, call, fp);
+    let armed = host.screen_effect(mem, site, call, fp);
     if armed {
         EFFECTS_ARMED.fetch_add(1, Ordering::Relaxed);
     }
     armed
+}
+
+/// The return continuation runs before the guest caller resumes.
+pub fn finish(mem: &mut dyn GuestMemory, kind: PostCall, esp: u32) {
+    if let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+        host.finish(mem, kind, esp.wrapping_sub(4 + kind.cleanup()));
+    }
 }
 
 /// `H2_POST_TRACE`'s hook on `0x00016610`: `esp` at the entry (the
@@ -296,6 +319,11 @@ impl Feature for NativePost {
                 Ok(Flow::Continue)
             })
             .context_only();
+        b.raw().after(&points::COLOUR_PASS, "native_post_colour_exit", |c| {
+            let rt = Arc::clone(c.ctx.runtime());
+            finish(&mut *rt.memory(), PostCall::Colour, c.cpu.esp);
+            Ok(())
+        });
         if native {
             b.raw()
                 .before(&points::SCREEN_EFFECT, "native_post_screen_effect", move |c| {
@@ -309,6 +337,14 @@ impl Feature for NativePost {
                     Ok(Flow::Continue)
                 })
                 .context_only();
+            b.raw().after(&points::SCREEN_EFFECT, "native_post_screen_exit", |c| {
+                let rt = Arc::clone(c.ctx.runtime());
+                if trace_spec().is_some_and(|trace| trace.after) {
+                    on_return("0x0002d140", c.cpu.eax);
+                }
+                finish(&mut *rt.memory(), PostCall::Screen, c.cpu.esp);
+                Ok(())
+            });
             if let Some(trace) = trace_spec() {
                 b.raw()
                     .before(&points::TEMPLATE_PASS, "native_post_trace_template", |c| {
@@ -325,9 +361,6 @@ impl Feature for NativePost {
                             on_return("0x00016610", o.cpu.eax)
                         })
                         .optional();
-                    b.raw().observe_after(&points::SCREEN_EFFECT, "native_post_trace_effect_return", |o| {
-                        on_return("0x0002d140", o.cpu.eax)
-                    });
                 }
             }
         }

@@ -1,10 +1,10 @@
-//! Target-13 producer host. The first slice observes one complete guest
-//! quad, then produces the native equivalent in render order. It drops
-//! no D3D work. Lights receive an invocation-specific ticket through
-//! `Outputs`; no process-global last-texture slot is used.
+//! Target-13 producer host. Scoped draw admission replaces exact gel
+//! packets after complete two-copy recording. The optional comparison
+//! prefix retains D3D and produces private comparison outputs. Lights
+//! consume the real target-13 surface through Outputs::binding_after.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, Once, OnceLock};
 
 use engine::memory::GuestMemory;
 use feature::native_gels::{Call, Host};
@@ -12,12 +12,14 @@ use gfx::state::{DepthBufferMode, FillMode, ShadeMode, TextureAddress};
 use gfx::translate::{Capabilities, SamplerKey};
 use native_render::camera::GuestRead;
 use native_render::gels::{self, Key, Target};
-use native_render::gels_gpu::{self, Frame, Producer, Program, Ticket};
+use native_render::gels_gpu::{self, Frame, Program, Ticket};
 use native_render::pass_state::PassState;
 use shaders::psh::{PixelOptions, PixelUniforms, TextureDim};
 use shaders::vsh::VertexUniforms;
 
 use crate::native_gels_load::{self, Asset, Assets};
+pub use crate::native_gels_replace::Binding;
+use crate::native_gels_replace::Replacements;
 use crate::native_lights_glue::DeviceMemory;
 
 struct Ro<'a>(&'a dyn GuestMemory);
@@ -33,6 +35,7 @@ impl GuestRead for Ro<'_> {
 #[derive(Default)]
 pub struct Outputs {
     latest: Mutex<Option<Ticket>>,
+    binding: Mutex<Option<Binding>>,
     sequence: AtomicU64,
 }
 
@@ -44,6 +47,24 @@ impl Outputs {
     /// skip then cannot accidentally consume the previous light's gel.
     pub fn checkpoint(&self) -> Checkpoint {
         Checkpoint(self.sequence.load(Ordering::Acquire))
+    }
+
+    /// Add the returned slot to the consuming light's ExternalPlan. The
+    /// handoff then supplies target 13 as native/D3D last wrote it.
+    pub fn binding_after(
+        &self,
+        before: Checkpoint,
+        definition: u32,
+        shader: u32,
+        surface: u32,
+    ) -> Option<Binding> {
+        let binding = (*self.binding.lock().ok()?)?;
+        let key = binding.key;
+        (key.sequence > before.0
+            && key.definition == definition
+            && key.shader == shader
+            && key.surface == surface)
+            .then_some(binding)
     }
 
     pub fn produced_after(
@@ -68,6 +89,7 @@ struct Loaded {
     name: String,
     generation: u64,
     assets: Option<Arc<Assets>>,
+    loading: bool,
 }
 
 struct Pending {
@@ -78,6 +100,8 @@ struct Pending {
 
 struct Glue<B: d3d::Backend + Send + 'static> {
     device: d3d::abi::SharedDevice<B>,
+    replacements: Arc<Replacements>,
+    admission_registered: Once,
     loaded: Arc<Mutex<Loaded>>,
     pending: Mutex<Option<Pending>>,
     outputs: Arc<Outputs>,
@@ -106,25 +130,40 @@ impl<B: d3d::Backend + Send + 'static> Glue<B> {
         }
     }
 
-    fn assets(&self, name: &str) -> Option<Arc<Assets>> {
-        let mut loaded = self.loaded.lock().ok()?;
-        if loaded.name == name {
-            return loaded.assets.clone();
+    fn generation(&self, name: &str) -> u64 {
+        let mut loaded = self.loaded.lock().unwrap_or_else(|e| e.into_inner());
+        if loaded.name != name {
+            loaded.name = name.into();
+            loaded.generation = loaded.generation.wrapping_add(1);
+            loaded.assets = None;
+            loaded.loading = false;
         }
-        loaded.name = name.into();
-        loaded.generation = loaded.generation.wrapping_add(1);
-        loaded.assets = None;
-        let generation = loaded.generation;
+        loaded.generation
+    }
+
+    fn assets(&self, name: &str) -> Option<Arc<Assets>> {
+        let generation = self.generation(name);
+        let mut loaded = self.loaded.lock().ok()?;
+        if loaded.name != name {
+            return None;
+        }
+        if let Some(assets) = loaded.assets.as_ref() {
+            return Some(Arc::clone(assets));
+        }
+        if loaded.loading {
+            return None;
+        }
+        loaded.loading = true;
         let slot = Arc::clone(&self.loaded);
         let name = name.to_owned();
         drop(loaded);
-        let _ = std::thread::Builder::new()
+        let spawned = std::thread::Builder::new()
             .name("native gels load".into())
-            .spawn(move || match native_gels_load::load(&name) {
+            .spawn(move || match native_gels_load::load(&name, generation) {
                 Ok(assets) => {
                     let accepted = assets.values().filter(|v| v.is_ok()).count();
                     eprintln!(
-                        "native-gels: {name}: {accepted} of {} shader gels loaded",
+                        "native-gels: {name}: {accepted} of {} comparison assets loaded",
                         assets.len()
                     );
                     let mut loaded = slot.lock().unwrap_or_else(|e| e.into_inner());
@@ -132,9 +171,48 @@ impl<B: d3d::Backend + Send + 'static> Glue<B> {
                         loaded.assets = Some(Arc::new(assets));
                     }
                 }
-                Err(e) => eprintln!("native-gels: {name}: load refused: {e}"),
+                Err(e) => eprintln!("native-gels: {name}: compare load refused: {e}"),
             });
+        if let Err(e) = spawned {
+            eprintln!("native-gels: comparison loader failed: {e}");
+        }
         None
+    }
+
+    fn replace(
+        &self,
+        mem: &mut dyn GuestMemory,
+        pending: Pending,
+        target: Target,
+    ) -> Result<(), String> {
+        let mut device = self.device.lock().map_err(|_| "device lock")?;
+        if !device
+            .begin_external_boundary(&mut DeviceMemory(mem))
+            .map_err(|e| e.to_string())?
+        {
+            return Err("gel waits for a preceding guest callback".into());
+        }
+        let generation = self
+            .loaded
+            .lock()
+            .map_err(|_| "gel map generation lock")?
+            .generation;
+        let view = mem.u32(0x004b_a050).map_err(|e| format!("view: {e:?}"))?;
+        // Only the enabled feature's replacement path reaches here. Keep
+        // disabled/compare-only runs out of the device's admission list.
+        self.admission_registered.call_once(|| {
+            device.add_draw_admission(self.replacements.clone());
+        });
+        self.replacements.arm(pending.key, target, view, generation);
+        *self
+            .outputs
+            .binding
+            .lock()
+            .map_err(|_| "gel binding lock")? = Some(Binding {
+            key: pending.key,
+            guest_size: target.size,
+        });
+        Ok(())
     }
 
     fn prepare(
@@ -212,7 +290,7 @@ impl<B: d3d::Backend + Send + 'static> Glue<B> {
             frame: Arc::clone(&frame),
             ticket: ticket.clone(),
             target,
-            compare: self.compares.fetch_add(1, Ordering::Relaxed) < compare_budget(),
+            compare: true,
             encoded: Arc::clone(&self.encoded),
             refused: Arc::clone(&self.refused),
             clip_known: false,
@@ -223,12 +301,16 @@ impl<B: d3d::Backend + Send + 'static> Glue<B> {
             .swallow(
                 &mut DeviceMemory(mem),
                 d3d::Swallow {
+                    call: None,
+                    end_returns: Vec::new(),
+                    headers: Vec::new(),
                     targets: vec![1],
                     primitive: gfx::vertex::PrimitiveType::TriangleStrip,
                     vertices: 4,
                     shapes: Vec::new(),
                     drop: false,
                     pass: Box::new(pass),
+                    capture: None,
                 },
             )
             .map_err(|e| e.to_string())?;
@@ -244,6 +326,12 @@ impl<B: d3d::Backend + Send + 'static> Glue<B> {
 
 impl<B: d3d::Backend + Send + 'static> Host for Glue<B> {
     fn template(&self, mem: &dyn GuestMemory, call: Option<Call>) {
+        self.replacements.cancel();
+        self.outputs
+            .binding
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
         self.pending
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -261,7 +349,10 @@ impl<B: d3d::Backend + Send + 'static> Host for Glue<B> {
         let Ok(name) = crate::health::loaded_map_name(mem) else {
             return;
         };
-        self.assets(&name);
+        self.generation(&name);
+        if self.compares.load(Ordering::Relaxed) < compare_budget() {
+            self.assets(&name);
+        }
         let key = Key {
             sequence: self.outputs.sequence.fetch_add(1, Ordering::AcqRel) + 1,
             definition: call.definition,
@@ -277,9 +368,35 @@ impl<B: d3d::Backend + Send + 'static> Host for Glue<B> {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .take();
-        if let Some(pending) = pending
-            && let Err(e) = self.prepare(mem, mxcsr, pending)
+        let Some(pending) = pending else {
+            return;
+        };
+        let Some(target) = Target::read(&Ro(mem)) else {
+            self.refuse("target 13 is unresolved");
+            return;
+        };
+        if target.surface != pending.key.surface
+            || mem.u32(gels::DEFINITION).ok() != Some(pending.call.definition)
+            || mem.u32(pending.call.definition.wrapping_add(0xe0)).ok() != Some(pending.call.shader)
+            || crate::health::loaded_map_name(mem).ok().as_ref() != Some(&pending.name)
         {
+            self.refuse("gel invocation changed before its quad");
+            return;
+        }
+        let result = if self.compares.fetch_add(1, Ordering::Relaxed) < compare_budget() {
+            *self
+                .outputs
+                .binding
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(Binding {
+                key: pending.key,
+                guest_size: target.size,
+            });
+            self.prepare(mem, mxcsr, pending)
+        } else {
+            self.replace(mem, pending, target)
+        };
+        if let Err(e) = result {
             self.refuse(&e);
         }
     }
@@ -435,6 +552,8 @@ struct Pass {
     refused: Arc<AtomicU64>,
     clip_known: bool,
 }
+impl d3d::SwallowPass for Pass {}
+
 impl d3d::ExternalPass for Pass {
     fn view_constants(&mut self, constants: &[[f32; 4]; d3d::VIEW_CONSTANTS]) {
         if let Ok(mut frame) = self.frame.lock()
@@ -476,7 +595,19 @@ impl d3d::ExternalPass for Pass {
                 samplers: snapshot.program.samplers,
                 state: snapshot.program.state,
             };
-            let producer = Producer::new(t.device, t.queue, program, &self.asset.images)?;
+            let producer = self
+                .asset
+                .gpu
+                .lock()
+                .map_err(|_| "gel bitmap cache lock")?
+                .producer(
+                    t.device,
+                    t.queue,
+                    self.asset.generation,
+                    program,
+                    self.asset.bitmap_ids,
+                    &self.asset.images,
+                )?;
             let output = producer.encode(
                 t.device,
                 t.encoder,
@@ -486,10 +617,16 @@ impl d3d::ExternalPass for Pass {
                 t.guest_size,
                 t.size,
             )?;
-            if self.compare {
-                gels_gpu::compare_on_submit(t.device, t.encoder, &output, t.color)?;
+            self.ticket.publish(output.clone());
+            if self.compare
+                && let Err(reason) =
+                    gels_gpu::compare_on_submit(t.device, t.encoder, &output, t.color)
+            {
+                eprintln!(
+                    "native-gels compare {:?}: {reason}; output retained",
+                    self.ticket.key
+                );
             }
-            self.ticket.publish(output);
             let count = self.encoded.fetch_add(1, Ordering::Relaxed) + 1;
             if count <= 4 || count.is_multiple_of(1800) {
                 eprintln!(
@@ -512,13 +649,16 @@ impl d3d::ExternalPass for Pass {
 }
 
 /// Installed with the world's hosts. The lights lane can retain the
-/// returned Outputs and bind its tickets at the post-constants seam.
+/// returned Outputs and bind its target-13 slots at the post-constants seam.
 pub fn install<B: d3d::Backend + Send + 'static>(
     device: &d3d::abi::SharedDevice<B>,
 ) -> Arc<Outputs> {
     let outputs = Arc::new(Outputs::default());
+    let replacements = Arc::new(Replacements::default());
     feature::native_gels::set_host(Arc::new(Glue {
         device: Arc::clone(device),
+        replacements,
+        admission_registered: Once::new(),
         loaded: Arc::new(Mutex::new(Loaded::default())),
         pending: Mutex::new(None),
         outputs: Arc::clone(&outputs),
@@ -545,8 +685,18 @@ mod tests {
         };
         outputs.sequence.store(1, Ordering::Release);
         *outputs.latest.lock().unwrap() = Some(Ticket::new(key));
+        *outputs.binding.lock().unwrap() = Some(Binding {
+            key,
+            guest_size: (32, 16),
+        });
+        let binding = outputs.binding_after(before_first, 2, 3, 4).unwrap();
+        assert_eq!(binding.slot().header, 4);
+        assert!(!binding.slot().written);
+        assert_eq!(binding.tex_scale(), [1.0 / 32.0, 1.0 / 16.0, 1.0, 1.0]);
         assert!(outputs.produced_after(before_first, 2, 3, 4).is_some());
         let before_second = outputs.checkpoint();
+        assert!(outputs.binding_after(before_second, 2, 3, 4).is_none());
+        assert!(outputs.binding_after(before_first, 2, 3, 5).is_none());
         assert!(outputs.produced_after(before_second, 2, 3, 4).is_none());
         assert!(outputs.produced_after(before_first, 2, 3, 5).is_none());
         let next = Key { sequence: 2, ..key };

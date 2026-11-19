@@ -770,7 +770,6 @@ pub(crate) struct Gpu {
     stage_views: [Option<wgpu::TextureView>; 4],
     /// What each stage's bitmap was uploaded as ([`describe_image`]).
     stage_info: [Option<String>; 4],
-    pub(crate) pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat), wgpu::RenderPipeline>,
     /// The world's pipelines, by target formats, the stencil state the
     /// layer draws with and the cull ([`ProgramSet::pipelines`]).
     world_pipelines: HashMap<PipelineKey, wgpu::RenderPipeline>,
@@ -870,7 +869,7 @@ impl Gpu {
             immediate_size: 0,
         });
         let buffer = |label, size: usize| {
-            device.create_buffer(&wgpu::BufferDescriptor {
+            gfx::churn::create_buffer(device, &wgpu::BufferDescriptor {
                 label: Some(label),
                 size: size as u64,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -879,7 +878,7 @@ impl Gpu {
         };
         let vertex_buffer = buffer("native world program vertex", VertexUniforms::SIZE);
         let pixel_buffer = buffer("native world program pixel", PixelUniforms::SIZE);
-        let uniforms = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let uniforms = gfx::churn::create_bind_group(device, &wgpu::BindGroupDescriptor {
             label: Some("native world program uniforms"),
             layout: &uniforms_layout,
             entries: &[
@@ -899,7 +898,6 @@ impl Gpu {
             samplers,
             stage_views,
             stage_info,
-            pipelines: HashMap::new(),
             world_pipelines: HashMap::new(),
         })
     }
@@ -929,7 +927,7 @@ impl Gpu {
                 resource: wgpu::BindingResource::Sampler(&self.samplers[*n]),
             });
         }
-        Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+        Some(gfx::churn::create_bind_group(device, &wgpu::BindGroupDescriptor {
             label: Some("native world program textures"),
             layout: &self.textures_layout,
             entries: &entries,
@@ -940,21 +938,6 @@ impl Gpu {
     pub(crate) fn prepare(&self, queue: &wgpu::Queue, view: &ViewInputs) {
         queue.write_buffer(&self.vertex_buffer, 0, &frame_vertex(&self.program.vertex, view).to_bytes());
         queue.write_buffer(&self.pixel_buffer, 0, &frame_pixel(&self.program.pixel, view).to_bytes());
-    }
-
-    /// Makes the pipeline for these target formats: the world's opaque
-    /// state without `state`, a transparent pass's with it.
-    pub(crate) fn pipeline(
-        &mut self,
-        device: &wgpu::Device,
-        color: wgpu::TextureFormat,
-        depth: wgpu::TextureFormat,
-        state: Option<&PassState>,
-    ) {
-        let (module, layout) = (&self.module, &self.layout);
-        self.pipelines
-            .entry((color, depth))
-            .or_insert_with(|| render_pipeline(device, module, layout, color, depth, state, None, wgpu::StencilState::default()));
     }
 }
 
@@ -978,7 +961,7 @@ fn render_pipeline(
         .collect();
     let (primitive, (depth_write, depth_compare)) = pipeline_state(state, cull);
     let (blend, write_mask) = state.map_or((None, wgpu::ColorWrites::ALL), |s| (s.blend, s.color_writes));
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    gfx::churn::create_render_pipeline(device, &wgpu::RenderPipelineDescriptor {
         label: Some("native world program"),
         layout: Some(layout),
         vertex: wgpu::VertexState {
@@ -1084,13 +1067,19 @@ impl Rigid {
             bind_group_layouts: &[Some(&uniforms_layout), Some(&gpu.textures_layout)],
             immediate_size: 0,
         });
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let mut initial = vec![0; (stride * (slots.len() as u64 - 1) + size) as usize];
+        for (i, (_, rows)) in slots.iter().enumerate() {
+            let mut v = program.vertex.clone();
+            v.constants[MODEL_ROWS..MODEL_ROWS + 3].copy_from_slice(rows);
+            let start = i * stride as usize;
+            v.write_bytes(&mut initial[start..start + VertexUniforms::SIZE]);
+        }
+        let buffer = gfx::churn::create_buffer_init(device, &wgpu::util::BufferInitDescriptor {
             label: Some("native world rigid vertex"),
-            size: stride * (slots.len() as u64 - 1) + size,
+            contents: &initial,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
         });
-        let uniforms = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let uniforms = gfx::churn::create_bind_group(device, &wgpu::BindGroupDescriptor {
             label: Some("native world rigid uniforms"),
             layout: &uniforms_layout,
             entries: &[
@@ -1109,9 +1098,13 @@ impl Rigid {
     }
 
     /// The frame's view and rows in every slot.
-    fn prepare(&self, queue: &wgpu::Queue, view: &ViewInputs) {
-        let bytes = rigid_slot_bytes(&self.program.vertex, view, &self.slots, self.stride as usize);
-        queue.write_buffer(&self.buffer, 0, &bytes);
+    fn prepare(&self, uploads: &mut gfx::ring::EncoderUploads<'_>, view: &ViewInputs) {
+        let v = frame_vertex(&self.program.vertex, view).to_bytes();
+        // Only c[0..18] and the viewport/clip tail depend on the view.
+        // Every placement keeps its own original c[50..53] in the GPU block.
+        let tail = VertexUniforms::SIZE - 32;
+        uploads.repeat(&self.buffer, 0, self.stride, self.slots.len(), &v[..VIEW_CONSTANTS * 16]);
+        uploads.repeat(&self.buffer, tail as u64, self.stride, self.slots.len(), &v[tail..]);
     }
 
     /// The dynamic offset of `instance`'s slot.
@@ -1172,12 +1165,13 @@ impl ProgramSet {
     }
 
     /// The frame's uniforms for every material.
-    pub fn prepare(&self, queue: &wgpu::Queue, view: &ViewInputs) {
+    pub fn prepare(&self, uploads: &mut gfx::ring::EncoderUploads<'_>, view: &ViewInputs) {
         for g in self.materials.values() {
-            g.prepare(queue, view);
+            uploads.write(&g.vertex_buffer, 0, &frame_vertex(&g.program.vertex, view).to_bytes());
+            uploads.write(&g.pixel_buffer, 0, &frame_pixel(&g.program.pixel, view).to_bytes());
         }
         for r in self.rigid.values() {
-            r.prepare(queue, view);
+            r.prepare(uploads, view);
         }
     }
 
@@ -1315,7 +1309,8 @@ mod tests {
         let regs: Vec<u32> = INPUTS.iter().map(|i| i.0).collect();
         assert_eq!(regs, (0..7).collect::<Vec<_>>());
         assert_eq!(INPUT_MASK, INPUTS.iter().fold(0, |m, i| m | (1 << i.0)));
-        assert_eq!(INPUTS[6].1, 20, "v6 is the lightmap coordinate, after position and uv");
+        assert_eq!(INPUTS[6], (6, 20, wgpu::VertexFormat::Float32x2));
+        assert_eq!(FLOAT_INPUTS[6].1, 20, "the lights still read the float coordinate");
         assert_eq!(INPUTS[5].1, 88, "v5 is the lighting vector's word, the last");
         assert_eq!(FLOAT_INPUTS[5].1, 64, "the float lighting vector, before the words");
         // The packed registers are words, decoded in the shader.

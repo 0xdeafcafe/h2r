@@ -13,12 +13,16 @@
 //! [`instances`]), skinned on the GPU, while the game skips their layer-3
 //! entries ([`objects::clear_objects`]).
 //!
-//! Stage 3, transparents: the sorted transparent list's geometry
-//! entries the native renderer draws, met in the game's order and drawn in
-//! runs between the D3D path's ([`transparent`]).
+//! Stage 3, transparents: sorted geometry entries ([`transparent`])
+//! use native vertex bindings at their original indexed draws.
 
 pub mod camera;
 pub mod cull;
+pub mod decal;
+#[cfg(feature = "gpu")]
+pub mod decal_gpu;
+pub mod effect_geometry;
+pub mod effect_immediate;
 pub mod gels;
 #[cfg(feature = "gpu")]
 pub mod gels_gpu;
@@ -26,6 +30,9 @@ pub mod gels_gpu;
 pub mod glow;
 #[cfg(feature = "gpu")]
 pub mod gpu;
+pub mod hud;
+#[cfg(feature = "gpu")]
+pub mod hud_gpu;
 pub mod instances;
 #[cfg(feature = "gpu")]
 pub mod light_gpu;
@@ -63,8 +70,14 @@ pub mod post;
 pub mod screen_gpu;
 #[cfg(feature = "gpu")]
 pub mod screen_look;
+#[cfg(feature = "gpu")]
+pub mod shadow_gpu;
+pub mod shadows;
 pub mod skip;
 pub mod transparent;
 #[cfg(feature = "gpu")]
-pub mod transparent_gpu;
+pub mod transparent_streams;
 pub mod world;
+pub mod world_layers;
+#[cfg(feature = "gpu")]
+pub mod world_layers_gpu;
