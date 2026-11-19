@@ -446,6 +446,52 @@ local report, including when an upload fails. Training games are private
 and excluded from public stats and ranks. The
 [Live API](../live/live-api.md#clanker-training) describes the storage limits.
 
+### Batches on hosts
+
+```sh
+h2 sim batch docs/runtime/sim-examples/batch.toml --provider cloud \
+  --live https://live.example.net --max-parallel 4 --budget-usd 0.50
+```
+
+`--provider local` is the default. It runs the same child processes as
+`h2 sim batch <file>`. `--max-parallel` also works as `--parallel` on
+local batches. Local runs have zero estimated host cost.
+
+Cloud batches use the Cloudflare or Fly provider configured on Live. The
+CLI sends the self-contained match file, including the batch's seed, bot
+seats and inline tuning, and Live starts one ad hoc host for each admitted
+run. Each host plays unpaced with the provisioned game image and data,
+streams to the private **Clanker Training** view, uploads its report and
+exits. Use retail map file stems such as `lockout`. Supply the maps' bot nav meshes with the host's data for runs that
+need them. Snapshot forks are local only.
+
+`--live` defaults to `H2_LIVE_SERVER` or `http://127.0.0.1:8074`. Use a
+stored admin account for that Live server, optionally selected by
+`--as GAMERTAG`, or pass a fresh Live admin `games.write` JWT via `--token`
+or `H2_LIVE_TOKEN`. Live exchanges the single-use JWT for a credential
+limited to starting and polling this batch, which expires after 24 hours.
+HTTPS and loopback HTTP are supported. `--dry-run` prints the plan without
+contacting Live.
+
+Cloud parallelism defaults to the batch file's `parallel` setting or four.
+`--max-parallel` overrides that setting, up to Live's fleet-wide
+`LIVE_MAX_HOSTS`. Live enforces its monthly budget separately. The CLI reserves the
+estimated cost in plan order before each launch. At the first run that
+would exceed `--budget-usd`, it stops queueing and waits for active runs.
+The estimate uses the shorter of the configured game-time and tick limits
+at 2.8× game speed, plus 60 seconds for setup and upload, capped by the host
+lease's wall limit. With no positive game-time or tick limit it reserves
+for the full lease. Small hosts (up to four bots) use default compute rates
+of $0.090/hour on Cloudflare or $0.046/hour on Fly. Large hosts use twice the
+Small rate. This estimates compute cost. Actual duration, storage and
+transfer can change the bill. [Dedicated host cost assumptions](../live/dedicated-host.md#where-the-game-could-run)
+
+As reports arrive, the CLI saves them to `<out>/runs/<id>/report.json` and
+uses the same comparison code as local batches for `compare.json` and
+`compare.txt`. The comparison lists budget-skipped and unsuccessful runs
+as missing. `batch.json` carries the Live batch ID for Uplink. A failed
+host makes the command exit unsuccessfully after it writes the comparison.
+
 ### Forking from spawn (snapshots)
 
 Machine snapshots (`state.save`, `load`, `fork`; [snapshots.md](snapshots.md))

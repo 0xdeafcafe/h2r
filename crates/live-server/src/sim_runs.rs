@@ -42,6 +42,21 @@ pub(crate) fn is_sim_stream(stream: &str) -> bool {
 }
 
 pub(crate) fn validate_start(sim: &SimGame, game: &game::NewGame) -> Result<(), ApiError> {
+    validate_metadata(sim, game, 4)
+}
+
+pub(crate) fn validate_hosted_start(sim: &SimGame, game: &game::NewGame) -> Result<(), ApiError> {
+    if sim.pace != "unpaced" {
+        return Err(invalid("dedicated simulations must be unpaced"));
+    }
+    validate_metadata(sim, game, game::MAX_PLAYERS)
+}
+
+fn validate_metadata(
+    sim: &SimGame,
+    game: &game::NewGame,
+    max_bots: usize,
+) -> Result<(), ApiError> {
     if !game::valid_id(&sim.run_id)
         || sim.run_id.len() > 60
         || sim
@@ -52,7 +67,7 @@ pub(crate) fn validate_start(sim: &SimGame, game: &game::NewGame) -> Result<(), 
         || !game::valid_id(&sim.gametype)
         || sim.pace.is_empty()
         || sim.pace.len() > 32
-        || !(1..=4).contains(&sim.bots.len())
+        || !(1..=max_bots).contains(&sim.bots.len())
         || sim.bots.iter().any(|b| !b.is_object())
         || game.mode != "multiplayer"
         || game.kind() != "custom"
@@ -492,7 +507,7 @@ impl HostMatch {
             } else {
                 HostClass::Large
             },
-            map: m.map,
+            map: m.map.to_ascii_lowercase(),
             map_id: None,
             variant: m.game_type,
             hopper: None,
@@ -721,8 +736,11 @@ pub(crate) async fn upload(
     Path(id): Path<String>,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Response, ApiError> {
-    let author = live.authenticate(bearer(&headers), lxm::GAMES_WRITE)?;
-    crate::admin::require_admin(&live, &author)?;
+    let (publisher, _, _) =
+        live.publisher(bearer(&headers), crate::host_identity::TELEMETRY_INGEST)?;
+    if let Some(peer) = publisher.peer() {
+        crate::admin::require_admin(&live, peer)?;
+    }
     let bytes = body.map_err(|e| match e.status() {
         StatusCode::PAYLOAD_TOO_LARGE => too_large("simulation report is too large"),
         _ => invalid(e.body_text()),
@@ -732,7 +750,7 @@ pub(crate) async fn upload(
     {
         let state = live.model.read();
         let (game, sim) = lookup(&state.games, &id)?;
-        if game.started.host != author.to_string() {
+        if game.started.host != publisher.to_string() {
             return Err(forbidden("only the sim host may upload its report"));
         }
         if game.ended.is_none() {
@@ -780,6 +798,31 @@ mod host_tests {
     use super::*;
 
     #[test]
+    fn hosted_sim_metadata_allows_the_full_roster_and_requires_unpaced() {
+        let game = game::NewGame {
+            map: "lockout".into(),
+            mode: "multiplayer".into(),
+            ..Default::default()
+        };
+        let mut sim = SimGame {
+            run_id: "run-42".into(),
+            batch_id: Some("batch-7".into()),
+            seed: "42".into(),
+            gametype: "slayer".into(),
+            pace: "unpaced".into(),
+            bots: vec![serde_json::json!({}); game::MAX_PLAYERS],
+            deferred: false,
+        };
+        assert!(validate_start(&sim, &game).is_err());
+        assert!(validate_hosted_start(&sim, &game).is_ok());
+        sim.bots.push(serde_json::json!({}));
+        assert!(validate_hosted_start(&sim, &game).is_err());
+        sim.bots.pop();
+        sim.pace = "realtime".into();
+        assert!(validate_hosted_start(&sim, &game).is_err());
+    }
+
+    #[test]
     fn simulation_batch_grant_requires_the_live_signature_and_audience() {
         let at = 1_800_000_000;
         let mut identity = ServerIdentity {
@@ -815,7 +858,7 @@ mod host_tests {
     #[test]
     fn simulation_host_lease_uses_the_bot_only_roster_and_exact_run_id() {
         let spec = spec(serde_json::json!({
-            "map": "lockout",
+            "map": "Lockout",
             "game_type": "slayer",
             "max_wall_s": 300,
             "bot": [
