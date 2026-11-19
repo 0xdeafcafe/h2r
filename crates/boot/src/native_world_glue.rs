@@ -90,6 +90,10 @@ pub struct Ready {
     /// What the native lights draw over this world
     /// (`native_lights_glue`; `None` with them off).
     pub(crate) lights: Option<Arc<crate::native_lights_glue::LightsWorld>>,
+    /// Every egor's template pass, loaded (`native_post_load`; `None` with
+    /// the native post off). Read once the screen-effect pass draws.
+    #[allow(dead_code)]
+    pub(crate) screen_effects: Option<Arc<crate::native_post_load::ScreenEffects>>,
     /// The device palettes the load expanded palettized stage bitmaps
     /// through, at the stages it used them (the rest `None`): each ask
     /// checks they are still bound.
@@ -506,6 +510,9 @@ fn load_ready(name: &str, bsp: u32, palettes: StagePalettes) -> Result<Ready, lo
     } else {
         None
     };
+    // The screen effects' template passes (nothing draws them yet).
+    let post_on = feature::Switches::from_env().is_ok_and(|s| feature::native_post::on(&s));
+    let screen_effects = post_on.then(|| Arc::new(crate::native_post_load::load(&mut map, &mut files)));
     // Draw only what a native material owns: the rest keeps its D3D draws.
     let world = keep_materials(world, &native);
     let parts = part_set(&world, &shaders);
@@ -523,6 +530,7 @@ fn load_ready(name: &str, bsp: u32, palettes: StagePalettes) -> Result<Ready, lo
         parts: Arc::new(parts),
         transparent_parts: Arc::new(transparent_parts),
         lights,
+        screen_effects,
         palettes: decoder.used().clone(),
     })
 }

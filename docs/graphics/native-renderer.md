@@ -2086,6 +2086,13 @@ its own thread, and render-timing does not matter (the call runs).
      before `TemplatePass` leaves `missing`: reading each egor's shader
      at load (its material, vertex program and bitmaps), the engine
      textures layer 15 binds, and the GPU pass drawing a plan's strips.
+   - **Built: the load** (`boot::native_post_load`, the switch on, with
+     the world): every `egor` tag's shader (the definition's `+0x44`)
+     resolved, each implementation of its layer-15 pass looked at and
+     translated for every classification of its vertex shader (up to
+     16; which one a pass draws with is `0x00016610`'s to say), and the
+     stages' bitmaps decoded; refusals counted by reason, one line on
+     stderr. Held by the world (`Ready::screen_effects`) for the draw.
 5. **`0x0002df00`, and `0x0002dd30`** before layer 17, which has the
    same shape and gets its own skip point.
 6. **Layer 17** (S: bloom), as stage 1b draws the world's other layers.
