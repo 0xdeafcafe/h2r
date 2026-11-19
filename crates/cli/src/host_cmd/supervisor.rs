@@ -139,9 +139,11 @@ pub(super) fn run(args: impl Iterator<Item = String>) -> Result<()> {
         return Ok(());
     }
     let opts = Options::parse(args)?;
+    let lease_json = std::env::var("H2_HOST_LEASE_JSON")
+        .context("h2 host run requires H2_HOST_LEASE_JSON from the provider")?;
+    let lease = decode_lease(&opts.lease, &lease_json)?;
     let live = Live::new(&opts.live, &opts.lease, &opts.token)?;
     process::watch_signals()?;
-    let lease = live.lease(&opts.lease)?;
     let region = opts.region.as_deref().or(lease.region.as_deref());
     eprintln!(
         "h2 host {}: provisioning for {} ({})",
@@ -180,6 +182,15 @@ pub(super) fn run(args: impl Iterator<Item = String>) -> Result<()> {
     reported?;
     eprintln!("h2 host {}: ended with {reason:?}", lease.id);
     Ok(())
+}
+
+fn decode_lease(id: &str, json: &str) -> Result<HostLease> {
+    let lease: HostLease = serde_json::from_str(json).context("decoding H2_HOST_LEASE_JSON")?;
+    ensure!(
+        lease.id == id,
+        "H2_HOST_LEASE_JSON id does not match the requested lease"
+    );
+    Ok(lease)
 }
 
 fn drive(
@@ -367,6 +378,38 @@ fn lobby_state(value: Value) -> Result<StateResult> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn accepts_provider_lease_json_only_for_the_requested_id() {
+        let lease_json = json!({
+            "id": "hl-a",
+            "assignment_id": "custom-test",
+            "provider": "local",
+            "region": null,
+            "class": "small",
+            "map": "lockout",
+            "map_id": null,
+            "variant": "Slayer",
+            "hopper": null,
+            "max_players": 8,
+            "roster": [],
+            "bots": [],
+            "transport": "udp",
+            "idle_timeout_s": 120,
+            "max_match_s": 1800,
+            "created_ms": 1
+        })
+        .to_string();
+        let lease = decode_lease("hl-a", &lease_json).unwrap();
+        assert_eq!(lease.map, "lockout");
+        assert_eq!(lease.variant.as_deref(), Some("Slayer"));
+        let error = decode_lease("hl-b", &lease_json).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "H2_HOST_LEASE_JSON id does not match the requested lease"
+        );
+        assert!(decode_lease("hl-a", "{").is_err());
+    }
 
     #[test]
     fn reads_provider_environment_and_prefers_flags() {

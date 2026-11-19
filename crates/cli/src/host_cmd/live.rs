@@ -2,20 +2,14 @@ use std::net::SocketAddrV4;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
-use live_proto::hosts::{EndReason, HostEndpoint, HostLease, HostState, Transport};
-use serde::{Deserialize, Serialize};
+use live_proto::hosts::{EndReason, HostEndpoint, HostState, Transport};
+use serde::Serialize;
 
 pub(super) struct Live<'a> {
     base: String,
     path: String,
     token: &'a str,
     http: ureq::Agent,
-}
-
-#[derive(Deserialize)]
-struct LeaseStatus {
-    lease: HostLease,
-    state: HostState,
 }
 
 #[derive(Serialize)]
@@ -34,7 +28,7 @@ impl<'a> Live<'a> {
             .redirects(0)
             .build();
         let parsed = http
-            .get(base)
+            .post(base)
             .request_url()
             .ok()
             .context("invalid Live URL")?;
@@ -61,22 +55,6 @@ impl<'a> Live<'a> {
 
     pub fn base(&self) -> &str {
         &self.base
-    }
-
-    pub fn lease(&self, id: &str) -> Result<HostLease> {
-        let response = checked("fetching lease", self.request("GET", "").call())?;
-        let status: LeaseStatus = serde_json::from_reader(response.into_reader())
-            .context("decoding Live's host lease response")?;
-        ensure!(
-            status.lease.id == id,
-            "Live returned a different host lease"
-        );
-        ensure!(
-            matches!(status.state, HostState::Requested | HostState::Booting),
-            "host lease {id} is already {:?}",
-            status.state
-        );
-        Ok(status.lease)
     }
 
     pub fn register(&self, endpoint: &HostEndpoint) -> Result<()> {
@@ -129,16 +107,12 @@ impl<'a> Live<'a> {
         }
     }
 
-    fn request(&self, method: &str, suffix: &str) -> ureq::Request {
-        self.http
-            .request(method, &format!("{}{}{suffix}", self.base, self.path))
-            .set("Authorization", &format!("Bearer {}", self.token))
-    }
-
     fn post(&self, suffix: &str, operation: &str, body: &impl Serialize) -> Result<()> {
         let bytes = serde_json::to_vec(body)?;
         let response = self
-            .request("POST", suffix)
+            .http
+            .post(&format!("{}{}{suffix}", self.base, self.path))
+            .set("Authorization", &format!("Bearer {}", self.token))
             .set("Content-Type", "application/json")
             .send_bytes(&bytes);
         checked(operation, response)?;

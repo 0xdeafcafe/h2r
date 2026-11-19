@@ -91,8 +91,9 @@ before sizing by game count.
 
 ### `h2 host run`
 
-Start one host for an existing Live lease. The provider supplies the lease
-ID, its bearer token and the signed URL and SHA-256 of the owner's private
+Start one host for an existing Live lease. The provider supplies the full
+`HostLease` JSON object in `H2_HOST_LEASE_JSON`, along with the lease ID,
+its bearer token and the signed URL and SHA-256 of the owner's private
 game-data bundle. Every required flag can also come from the environment.
 
 | Flag | Environment | Value |
@@ -108,9 +109,9 @@ game-data bundle. Every required flag can also come from the environment.
 | `--out` | `H2_IMAGE` | Prebuilt game module directory, default `$TMPDIR/h2boot` |
 | `--data` | `H2_DATA` | Writable game data directory, default private per-run scratch space |
 
-On Unix, the supervisor fetches `GET /v1/hosts/{lease}` with the lease
-bearer, provisions the verified bundle under `H2_HOST_CACHE` (default
-`host-data` in the user cache), and starts a child
+On Unix, the supervisor checks that the JSON lease ID matches `--lease`
+or `H2_LEASE` before provisioning. It provisions the verified bundle under
+`H2_HOST_CACHE` (default `host-data` in the user cache) and starts a child
 `h2 serve --system-link --host-light`. The bundle's disc directory must
 contain `default.xbe` and the maps. The module must match the XBE and its
 build settings, including `H2_OPT`.
