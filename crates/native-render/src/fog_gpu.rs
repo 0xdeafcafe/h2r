@@ -22,8 +22,10 @@ use std::collections::HashMap;
 use crate::gpu::Image;
 use crate::look::{implementation_look, PassLook, Refusal, Stage};
 use crate::pass_state::{pass_state, PassState, StateRefusal};
-use crate::program::{compile_pass, world_constants_read, Gpu, MaterialProgram, ViewInputs};
-use crate::world::{LightmapKey, Owner};
+use crate::program::{
+    compile_pass, world_constants_read, Gpu, MaterialProgram, Rigid, RigidProgram, ViewInputs,
+};
+use crate::world::{LightmapKey, Owner, World};
 use gfx::state::RenderStateType;
 use gfx::xdk::{HALO2_BUILD, RenderStateTable};
 use shaders::psh::{self, PixelShaderDef, TexMode};
@@ -332,6 +334,11 @@ pub struct FogProgram {
     /// what the D3D path's draw binds, for telling its draws apart
     /// (`d3d::uniform_compare`).
     pub code_words: Vec<u32>,
+    /// The pass with its vertex program's rigid classification, which
+    /// draws the material's instanced placements (`compile_pass_rigid`,
+    /// their rows in `c[50..52]` per draw as `0x0004d830` uploads them);
+    /// `None` leaves them to the D3D path.
+    pub rigid: Option<RigidProgram>,
 }
 
 impl FogProgram {
@@ -343,6 +350,18 @@ impl FogProgram {
     /// `c[0..18]`, the instance's, the model rows and the decompression
     /// rows; whatever `0x25d50` uploads beyond them shows here).
     pub fn compile(pass: &FogPass, microcode: &[u8]) -> Result<Self, String> {
+        Self::compile_rigid_pass(pass, microcode, None)
+    }
+
+    /// [`FogProgram::compile`] with the pass's rigid classification
+    /// `rigid_microcode` (the `vrtx` tag's classification 1,
+    /// [`crate::look::rigid_program`]): the placements' draws take it,
+    /// with their rows per draw.
+    pub fn compile_rigid_pass(
+        pass: &FogPass,
+        microcode: &[u8],
+        rigid_microcode: Option<&[u8]>,
+    ) -> Result<Self, String> {
         world_constants_read(&pass.look, microcode)?;
         let program = compile_pass(&pass.look, microcode, pass.state.alpha_test)?;
         let parsed = shaders::vsh::Program::parse(microcode).map_err(|e| format!("vertex program: {e:?}"))?;
@@ -350,13 +369,17 @@ impl FogProgram {
             .chunks_exact(4)
             .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
             .collect();
-        Ok(FogProgram { program, state: pass.state, words: pass.fog, code_words })
+        let rigid = rigid_microcode
+            .map(|code| crate::program::compile_pass_rigid(&pass.look, pass.state.alpha_test, code))
+            .transpose()?;
+        Ok(FogProgram { program, state: pass.state, words: pass.fog, code_words, rigid })
     }
 }
 
 struct FogMaterial {
-    /// The passes in draw order.
-    passes: Vec<(Gpu, PassState)>,
+    /// The passes in draw order, a placement's draws with the pass's
+    /// rigid program when it compiled one.
+    passes: Vec<(Gpu, PassState, Option<Rigid>)>,
     /// The fog words the passes set themselves (they share one, the
     /// layer's; a material whose passes disagree is not drawn — the
     /// load's `fog_passes` is all or nothing and takes one `FogWords`
@@ -389,6 +412,7 @@ impl FogSet {
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        world: &World,
         parts: Vec<((Owner, u8), (u32, u32, Option<LightmapKey>, u16))>,
         programs: HashMap<u16, Vec<FogProgram>>,
         stage_image: &mut dyn FnMut(Stage) -> Option<Image>,
@@ -405,13 +429,28 @@ impl FogSet {
             }
             let mut gpus = Vec::with_capacity(passes.len());
             for p in passes {
-                let Some(g) = Gpu::new(device, queue, p.program, stage_image) else {
+                let mut program = p.program;
+                program.rigid = p.rigid.clone();
+                let Some(g) = Gpu::new(device, queue, program, stage_image) else {
                     continue 'material;
                 };
-                gpus.push((g, p.state));
+                // A placement's draws take the rigid program, one holder
+                // per pass with its own pipeline keys
+                // ([`FogMaterial::passes`]).
+                let rigid = g.program.rigid.clone().and_then(|_| Rigid::new(device, &g, world, material));
+                gpus.push((g, p.state, rigid));
             }
             materials.insert(material, FogMaterial { passes: gpus, words, groups: HashMap::new() });
         }
+        // A placement part draws only when its material compiled a rigid
+        // program for every pass; anything else stays on the D3D path (a
+        // material with no placement parts needs none).
+        let mut parts: Vec<((Owner, u8), (u32, u32, Option<LightmapKey>, u16))> = parts;
+        parts.retain(|&((owner, _), (_, _, _, material))| {
+            let placed = matches!(owner, Owner::Instance(_));
+            let Some(m) = materials.get(&material) else { return false };
+            !placed || (!m.passes.is_empty() && m.passes.iter().all(|(_, _, r)| r.is_some()))
+        });
         let mut pages: HashMap<LightmapKey, Option<wgpu::TextureView>> = HashMap::new();
         let mut out = Vec::new();
         let mut missing: Vec<u16> = Vec::new();
@@ -482,11 +521,14 @@ impl FogSet {
     ) {
         for (&material, m) in &self.materials {
             let Some((fog, color)) = fogs.get(&material) else { continue };
-            for (g, _) in &m.passes {
+            for (g, _, rigid) in &m.passes {
                 let mut pixel = g.program.pixel;
                 pixel.fog = fog.uniform();
                 pixel.fog_color = *color;
                 g.prepare_with(uploads, view, &pixel);
+                if let Some(r) = rigid {
+                    r.prepare(uploads, view);
+                }
             }
         }
     }
@@ -494,8 +536,11 @@ impl FogSet {
     /// Makes the pipelines for these target formats (before the pass).
     pub fn pipelines(&mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat) {
         for m in self.materials.values_mut() {
-            for (g, state) in &mut m.passes {
-                g.pipeline(device, color, depth, Some(&*state));
+            for (g, state, rigid) in &mut m.passes {
+                g.pipeline(device, color, depth, Some(state));
+                if let Some(r) = rigid {
+                    r.pipeline_for(device, color, depth, Some(state), None, &wgpu::StencilState::default());
+                }
             }
         }
     }
@@ -504,16 +549,31 @@ impl FogSet {
     /// vertex and index buffers bound), each part with every pass of its
     /// material. Returns how many parts were drawn.
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, color: wgpu::TextureFormat, depth: wgpu::TextureFormat) -> usize {
+        let stencil = wgpu::StencilState::default();
         let mut drawn = 0;
-        for (_, &(first_index, index_count, lightmap, material)) in &self.parts {
+        for &((owner, _), &(first_index, index_count, lightmap, material)) in &self.parts {
             let Some(m) = self.materials.get(&material) else { continue };
             let Some(groups) = m.groups.get(&lightmap) else { continue };
-            if m.passes.iter().any(|(g, _)| !g.pipelines.contains_key(&(color, depth))) {
+            if m.passes.iter().any(|(g, ..)| !g.pipelines.contains_key(&(color, depth))) {
                 continue;
             }
-            for ((g, state), textures) in m.passes.iter().zip(groups) {
-                pass.set_pipeline(&g.pipelines[&(color, depth)]);
-                pass.set_bind_group(0, &g.uniforms, &[]);
+            let instance = match owner {
+                Owner::Instance(n) => Some(n),
+                Owner::Cluster(_) => None,
+            };
+            for ((g, state, rigid), textures) in m.passes.iter().zip(groups) {
+                match (rigid, instance) {
+                    (Some(r), Some(n)) => {
+                        let Some(offset) = r.offset(n) else { continue };
+                        let Some(pipeline) = r.pipeline_at(color, depth, None, &stencil) else { continue };
+                        pass.set_pipeline(pipeline);
+                        pass.set_bind_group(0, &r.uniforms, &[offset]);
+                    }
+                    _ => {
+                        pass.set_pipeline(&g.pipelines[&(color, depth)]);
+                        pass.set_bind_group(0, &g.uniforms, &[]);
+                    }
+                }
                 pass.set_bind_group(1, textures, &[]);
                 pass.set_blend_constant(state.blend_constant);
                 pass.draw_indexed(first_index..first_index + index_count, 0, 0..1);

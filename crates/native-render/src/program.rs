@@ -236,16 +236,28 @@ pub fn world_constants_read(look: &PassLook, microcode: &[u8]) -> Result<(), Str
 /// rows `c[50..52]`: the D3D path places a placement's vertices with them
 /// on the GPU, and the native pass uploads the same rows per placement.
 pub fn compile_rigid(pass: &WorldPass, microcode: &[u8]) -> Result<RigidProgram, String> {
+    compile_pass_rigid(&pass.look, pass.state.alpha_test, microcode)
+}
+
+/// [`compile_rigid`] for any pass look (the fog layer's placements,
+/// `crate::fog_gpu`): the rigid checks (the model rows `c[50..52]` read,
+/// every constant one the native pass sets) and the compile with the
+/// pass's own alpha test.
+pub fn compile_pass_rigid(
+    look: &crate::look::PassLook,
+    alpha_test: Option<(wgpu::CompareFunction, u8)>,
+    microcode: &[u8],
+) -> Result<RigidProgram, String> {
     let program = vsh::Program::parse(microcode).map_err(|e| format!("rigid vertex program: {e:?}"))?;
     let read = constants_read(&program)?;
     if !(MODEL_ROWS..MODEL_ROWS + 3).all(|c| read.contains(&(c as u8))) {
         return Err("the rigid vertex program does not read the model rows c[50..52]".into());
     }
-    let set = set_constants(&pass.look.vertex_constants);
+    let set = set_constants(&look.vertex_constants);
     if let Some(c) = read.into_iter().find(|&c| !set(c)) {
         return Err(format!("rigid vertex program reads c[{c}], which the native pass does not set"));
     }
-    let p = compile_pass(&pass.look, microcode, pass.state.alpha_test)?;
+    let p = compile_pass(look, microcode, alpha_test)?;
     let words = microcode[4..4 + 16 * program.instructions.len()]
         .chunks_exact(4)
         .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
@@ -1061,7 +1073,7 @@ pub(crate) struct Rigid {
     module: wgpu::ShaderModule,
     layout: wgpu::PipelineLayout,
     buffer: wgpu::Buffer,
-    uniforms: wgpu::BindGroup,
+    pub(crate) uniforms: wgpu::BindGroup,
     /// Bytes between slots (the device's offset alignment).
     stride: u64,
     /// Per slot, ascending: the placement and its rows.
@@ -1098,7 +1110,7 @@ pub fn rigid_slot_bytes(base: &VertexUniforms, view: &ViewInputs, slots: &[(u32,
 impl Rigid {
     /// Uploads `gpu`'s rigid program for `material`'s placements in
     /// `world`; `None` without one, or with no placement to draw.
-    fn new(device: &wgpu::Device, gpu: &Gpu, world: &World, material: u16) -> Option<Self> {
+    pub(crate) fn new(device: &wgpu::Device, gpu: &Gpu, world: &World, material: u16) -> Option<Self> {
         let program = gpu.program.rigid.clone()?;
         let slots = rigid_slots(world, material)?;
         if slots.is_empty() {
@@ -1156,7 +1168,7 @@ impl Rigid {
     }
 
     /// The frame's view and rows in every slot.
-    fn prepare(&self, uploads: &mut gfx::ring::EncoderUploads<'_>, view: &ViewInputs) {
+    pub(crate) fn prepare(&self, uploads: &mut gfx::ring::EncoderUploads<'_>, view: &ViewInputs) {
         let v = frame_vertex(&self.program.vertex, view).to_bytes();
         // Only c[0..18] and the viewport/clip tail depend on the view.
         // Every placement keeps its own original c[50..53] in the GPU block.
@@ -1166,9 +1178,38 @@ impl Rigid {
     }
 
     /// The dynamic offset of `instance`'s slot.
-    fn offset(&self, instance: u32) -> Option<u32> {
+    pub(crate) fn offset(&self, instance: u32) -> Option<u32> {
         let n = self.slots.binary_search_by_key(&instance, |s| s.0).ok()?;
         u32::try_from(n as u64 * self.stride).ok()
+    }
+
+    /// Makes the pipeline for these formats, state and cull (another
+    /// stage's passes: the fog layer's, `crate::fog_gpu`, whose state is
+    /// each pass's own).
+    pub(crate) fn pipeline_for(
+        &mut self,
+        device: &wgpu::Device,
+        color: wgpu::TextureFormat,
+        depth: wgpu::TextureFormat,
+        state: Option<&PassState>,
+        cull: Option<Cull>,
+        stencil: &wgpu::StencilState,
+    ) {
+        let (module, layout) = (&self.module, &self.layout);
+        self.pipelines
+            .entry((color, depth, stencil.clone(), cull))
+            .or_insert_with(|| render_pipeline(device, module, layout, color, depth, state, cull, stencil.clone()));
+    }
+
+    /// The pipeline those keys name, when made.
+    pub(crate) fn pipeline_at(
+        &self,
+        color: wgpu::TextureFormat,
+        depth: wgpu::TextureFormat,
+        cull: Option<Cull>,
+        stencil: &wgpu::StencilState,
+    ) -> Option<&wgpu::RenderPipeline> {
+        self.pipelines.get(&(color, depth, stencil.clone(), cull))
     }
 }
 

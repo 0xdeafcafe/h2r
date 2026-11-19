@@ -2224,11 +2224,13 @@ loaded, drawn with each material's own translated layer-16 pass.
   reserves the replacement through the ordered handoff (recording on
   every copy before anything is surrendered), applies the mask edits
   and commits, and the hook remembers what was cleared for the restore
-  at the next layer draw (clusters only in the first slice: a
-  placement's fog needs the rigid program and per-placement rows, as
-  its layer 3 does, and stays on the D3D path, by count in the load's
-  log). Objects' layer-16 items are never cleared: their fog is stage
-  2's.
+  at the next layer draw. A placement's part draws with its pass's
+  rigid classification (the `vrtx` tag's classification 1, the model
+  rows `c[50..52]` at its slot's dynamic offset, as its layer 3 does);
+  a material whose rigid program does not compile, or whose
+  placement's rows did not read, keeps those parts on the D3D path (by
+  count in the load's log). Objects' layer-16 items are never cleared:
+  their fog is stage 2's.
 - **The draw** (`fog_gpu::FogSet`, `GpuWorld::encode_fog`): the world's
   parts whose material compiled, each with its layer-16 passes in
   order, blended over the loaded depth with the pass's own

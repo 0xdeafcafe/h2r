@@ -89,6 +89,7 @@ pub(crate) fn load<R: std::io::Read + std::io::Seek>(
         match tags::material::ShaderLibrary::read(map) {
             Ok(lib) => {
                 let mut refused: HashMap<String, usize> = HashMap::new();
+                let mut rigid_refused: HashMap<String, usize> = HashMap::new();
                 for &m in &materials {
                     let Some(&shader) = shaders.get(usize::from(m)) else { continue };
                     let compiled = lib
@@ -101,7 +102,20 @@ pub(crate) fn load<R: std::io::Read + std::io::Seek>(
                                 .map(|p| {
                                     let code = look::world_program(map, lib.metadata(), p.look.vertex_shader)
                                         .ok_or("no world-space vertex program")?;
-                                    FogProgram::compile(p, &code)
+                                    let mut program = FogProgram::compile(p, &code)?;
+                                    // The rigid classification for the
+                                    // material's placements (their rows in
+                                    // c[50..52], as 0x0004d830 uploads
+                                    // them). A rigid program that does not
+                                    // compile leaves the placements on the
+                                    // D3D path, not the whole material.
+                                    if let Some(rigid) = look::rigid_program(map, lib.metadata(), p.look.vertex_shader) {
+                                        match program::compile_pass_rigid(&p.look, p.state.alpha_test, &rigid) {
+                                            Ok(r) => program.rigid = Some(r),
+                                            Err(e) => *rigid_refused.entry(format!("rigid: {e}")).or_default() += 1,
+                                        }
+                                    }
+                                    Ok(program)
                                 })
                                 .collect::<Result<Vec<_>, String>>()
                         })
@@ -127,16 +141,17 @@ pub(crate) fn load<R: std::io::Read + std::io::Seek>(
                         Err(why) => *refused.entry(why).or_default() += 1,
                     }
                 }
-                // A placement's fog needs the rigid program: any such part
-                // keeps its material on the D3D path.
-                for d in &world.draws {
-                    if matches!(d.owner, Owner::Instance(_)) {
-                        programs.remove(&d.material);
-                        words.remove(&d.material);
-                    }
-                }
                 for d in &world.draws {
                     let Some(passes) = programs.get(&d.material) else { continue };
+                    // A placement part draws only with the rigid program
+                    // for every pass and its rows read
+                    // ([`FogSet::new`] holds the holder; without either,
+                    // the part keeps its D3D draws).
+                    if let Owner::Instance(i) = d.owner
+                        && !passes.iter().all(|p| p.rigid.is_some())
+                    {
+                        continue;
+                    }
                     let samples_lightmap = passes
                         .iter()
                         .any(|p| p.program.stages.iter().zip(&p.program.dims).any(|(s, dim)| *s == Stage::Lightmap && dim.is_some()));
@@ -148,8 +163,10 @@ pub(crate) fn load<R: std::io::Read + std::io::Seek>(
                 let mut why: Vec<_> = refused.into_iter().collect();
                 why.sort();
                 let placements = world.draws.iter().filter(|d| matches!(d.owner, Owner::Instance(_))).count();
+                let mut rigid_why: Vec<_> = rigid_refused.into_iter().collect();
+                rigid_why.sort();
                 eprintln!(
-                    "native-fog: {} of {} world materials' layer-16 passes translate, {} parts native ({placements} placement parts stay on D3D); on the D3D path: {why:?}",
+                    "native-fog: {} of {} world materials' layer-16 passes translate, {} parts native ({placements} placement parts, their rigid programs where they compiled); placements left on D3D: {rigid_why:?}; on the D3D path: {why:?}",
                     programs.len(),
                     materials.len(),
                     parts.len(),
