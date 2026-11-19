@@ -16,6 +16,7 @@
 #![forbid(unsafe_code)]
 
 mod bytes;
+mod ground;
 pub mod convert;
 pub mod h1;
 pub mod h2;

@@ -222,6 +222,8 @@ pub struct Encounter {
     pub search_behavior: u16,
     /// Manual BSP index (`i16 +0x2a`).
     pub manual_bsp: i16,
+    /// BSP selected when the encounter was compiled (i16 at +0x7e).
+    pub bsp: i16,
     /// Respawn delay, seconds (min, max) (`+0x2c`).
     pub respawn_delay: [f32; 2],
     /// Squads.
@@ -441,6 +443,7 @@ fn encounter(sp: &Space, e: &[u8]) -> Result<Encounter> {
         team: u16_at(e, 0x24),
         search_behavior: u16_at(e, 0x28),
         manual_bsp: i16_at(e, 0x2a),
+        bsp: i16_at(e, 0x7e),
         respawn_delay: [f32_at(e, 0x2c), f32_at(e, 0x30)],
         squads: b(layout::ENC_SQUADS)?
             .into_iter()

@@ -685,7 +685,7 @@ fn convert_with<R: Read + Seek>(
             sounds: b.sound_clusters.clone(),
         });
     }
-    let pathfinding = bsps.iter().map(|b| b.pathfinding.clone()).collect();
+    let pathfinding: Vec<_> = bsps.iter().map(|b| b.pathfinding.clone()).collect();
     if let Some(d) = opts.donors.filter(|_| opts.objects || opts.ai) {
         let mut wanted = donor::wanted(h1)?;
         // The retail weapons, vehicles and player the Halo 2-assets
@@ -701,6 +701,7 @@ fn convert_with<R: Read + Seek>(
             &mut set,
             &scnr,
             &slots,
+            &pathfinding,
             &sounds,
             objects_base.as_ref(),
             opts,

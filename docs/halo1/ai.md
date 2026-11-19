@@ -6,11 +6,9 @@ decodes Halo 2's scenario AI blocks and `char` tags out of a v8 map, and
 converts the first into the second as `map::build` blocks. Halo 2's AI then
 runs Halo 1's encounters (decision 1: where the engines differ, Halo 2 wins).
 
-Status (2026-11-17): reader and decoders checked on every campaign level of
-both discs; the converter's output for a30 and a10 builds, reads back
-unchanged, and sits on the pathfinding generated from the converted
-collision. Not yet loaded by the game: what only a game run can prove is
-listed at the end.
+The readers have been checked on every campaign map of both discs. The a30
+ground placement and loadout checks below use the source maps and generated
+scenario. Soldier movement and combat still need a live a30 observation.
 
 Evidence labels, as in [map-format.md](map-format.md):
 
@@ -47,7 +45,7 @@ unused), tag references 16.
 | `468` | AI conversations | `74` | V |
 
 Encounter (`b0`): name `char[32]` `00`, flags `u32` `20`, team `u16` `24`,
-search behavior `u16` `28`, manual BSP `i16` `2a`, respawn delay `f32[2]`
+search behavior `u16` `28`, manual BSP `i16` `2a`, compiled BSP `i16` `7e`, respawn delay `f32[2]`
 `2c`; blocks: squads `80` (`e8`), platoons `8c` (`ac`), firing positions
 `98` (`18`), player starting locations `a4` (`34`, the scenario's own
 layout). V for the blocks; the scalars are R.
@@ -203,14 +201,14 @@ BSP `i16` `24`, firing positions `28` (`20`), areas `30` (`88`).
 
 Firing position (`20`): position, reference frame `i16` `0c`, flags `u16`
 `0e` (R: 21 distinct values; most common `0x42`, `0x41`, `0`), area `i16`
-`10`, cluster `i16` `12`, surface `u32` `14`, normal yaw and pitch `f32`
+`10`, cluster `i16` `12`, pathfinding sector `u32` `14` (all ones when unassigned), normal yaw and pitch `f32`
 `18` (pitch π/2 is straight up).
 
 Area (`88`): name, flags `u32` `20`, then fields the tools compute: mean of
 the area's firing positions `24`, its reference frame `i16` `30`, their
 deviation `f32` `34`, first firing position `i16` `38` and count `i16` `3a`
 (V: every area's run tiles the zone's firing positions, which are grouped by
-area; an empty area is `-1+0`), cluster occupancy `3c`..`7c` (not written),
+area; an empty area is `-1+0`), cluster bit mask `3c`..`7c` (exclusive end),
 manual reference frame `i16` `7c`, flight hints block `80`.
 
 Order (`7c`): name, style `i16` `20` (an index into the style palette at
@@ -273,12 +271,12 @@ them into a map with `map::build::TagSet` and reads them back through
 | Halo 1 | Halo 2 |
 |---|---|
 | encounter | a squad group and a zone of the same name; team carried over (S: both games number teams default, player, human, covenant, flood, sentinel) |
-| firing positions | the zone's firing positions, grouped by area; one area per group letter used, named `a`..`z`, with the tools' mean, deviation, first and count filled in. Surface carried over (the converted collision BSP keeps Halo 1's surface indices); cluster `-1` |
+| ground firing positions | authored coordinates and cluster, resolved through the compiled encounter BSP's surface-to-sector references. Floor yaw and pitch come from that sector's polygon. Each group letter makes one area with mean, deviation, first, count and the bits for its positions' clusters |
 | squad | squad `encounter/squad` (Halo 1 scripts' own spelling, cut to 31 characters), in the encounter's group and zone; counts, delay and major upgrade carried over |
 | squad's attacking groups | an order of the squad's name over the areas of those letters (every area when none match), set as the squad's initial order |
 | squad starting location | starting location: position, facing as yaw; a location's own actor becomes its own character |
 | squad with no starting locations | kept, empty: no starting locations and counts 0, with a note. It can never spawn, but scripts name it (on a30 these are mostly the attack/defend/retreat squads Halo 1 maneuvers actors into). Retail Halo 2 has such squads too (06b: 28 of 170, `squad_flag_bits`). Until 2026-11-17 they were left out and their script names stayed `none`. The converter keeps only those the scripts name, and only while the level stays under the engine's squad cap (335, `h1campaign::scenario::MAX_SQUADS`, campaign.md §9): a50 (309 placed + 75 named empty) and b40 (283 + 67) leave them out, and their names resolve to a sibling squad: the encounter's first converted squad (`<encounter>/...`), or its squad group if it has none. Not the group first: Halo 2's `ai_migrate` (function 308, evaluator `0x002a54a0`) returns without moving anyone when the destination has either top bit set (`test ecx,0C0000000h` at `0x002a54cc`), so a squad group destination is a no-op, and `ai_attach_units` (287, through `0x002730c0` to `0x00273040`) reads the value's low 16 bits as a squad index (bounded by `scnr+0x160` at `0x0027305e`), so a group would name an unrelated squad |
-| actor variant | a retail character ([`character_for`]): one palette entry per distinct character |
+| actor variant | a retail character (one palette entry per distinct character) and the variant weapon's retail counterpart in the scenario weapon palette. Squads sharing a character can use different weapons. Starting locations can override character, weapon and grenade type |
 | command list | a point set of its name (points `p0`..), an order stub of its name, and a `CommandScript` (atoms by name, with their points) for the scripts lane |
 | conversations, platoons, move positions, respawn | not converted (noted) |
 
@@ -338,13 +336,38 @@ below and 0.25 m above.
 | orders, point sets | 92, 3 | 238, 124 |
 | characters | 5 | 5 |
 
-Every squad has a starting location and every index is in range. a30's
+The placement counts in this census cover squads with starting locations. a30's
 three banshee encounters fight in the air, over the sea: an encounter whose
 firing positions are mostly off any floor counts as flying and is left out
 of the floor check. The rest must be on a sector for at least 98% of firing
 positions and 90% of starting locations; the misses (a30's river and cave
 floor, a10's flanks) stand on scenery, which isn't in the structure BSP, on
 slopes past 45°, or in water.
+
+### a30 ground encounters
+
+The manual BSP field is zero throughout a30. Its compiled BSP selects the
+second structure for the later plateau encounters. The two structures have
+separate sector tables. In retail 05a, 469 of 499 assigned firing positions
+in the landing zone and 186 of 188 in the tower zone lie inside the named
+sector in XY. Treating those indices as collision surfaces produced zero
+polygon matches in both samples.
+
+Applying the generator's walkability and area cuts to a30's source
+collision assigns 1,635 of 1,656 ground positions in BSP 0 and 2,373 of
+2,405 in BSP 1. The other 53 have no walkable source surface. The converter
+keeps their coordinates and leaves the sector unassigned. In the first
+wave 510 of 512 positions share one component through two-sided links.
+All 54 in `mid_cliff_1` share a component in BSP 1. All 17 first-marine
+starts and all five mid-cliff starts stand over the main firing component
+of their respective encounters. None of the first wave's 73 starts stand
+over its main firing component. That wave stages elsewhere and its scripts
+place platoons and load their actors onto dropships. Checking a path from
+the authored start to the landing zone would miss that transfer.
+
+The ignored `a30_converts_onto_its_base_and_reads_back` test checks the
+emitted map's sector references, cluster masks, connectivity and starting
+weapons against the characters' inherited firing profiles.
 
 ## Spawning
 
@@ -367,11 +390,11 @@ out in `0xfe618`.
 
 ## What only a game run can prove
 
-- That Halo 2 spawns the squads at all: the converted scenario still lacks
-  the cluster occupancy bits of each area and the firing positions' cluster
-  index (written `-1`), which the tools compute from the structure's
-  clusters; the engine may need them to activate or search areas.
-- That actors move between firing positions on the generated pathfinding.
+- That Halo 2 places each wave, moves actors between its firing positions,
+  takes cover, targets the player and uses the selected weapons and grenades.
+  The agent method `world.ai` reports squad, cached sector, behavior, focus
+  object and combat status. Match its unit ID to positions across ticks in
+  `world.object`. [Agent API](../runtime/agent-api.md#worldai)
 - That the chosen characters, pulled into a Halo 1 level from other maps,
   load with their units, weapons and animations.
 - That orders with no endings, and order stubs with no areas, are harmless.
@@ -382,8 +405,9 @@ out in `0xfe618`.
 
 - The firing position flag bits (`0x1`, `0x2`, `0x4`, `0x8`, `0x40`, ...)
   and area set types 0..2: values from the census, meanings unknown.
-- Whether `area +0x3c` really is cluster occupancy, and whether the engine
-  reads the area's mean and deviation or recomputes them.
+- What contributes additional clusters to retail area masks. In 05a the masks
+  include all 666 distinct area/position-cluster pairs and 1,528 additional
+  bits. The conversion writes only the clusters evidenced by its positions.
 - The three trailing `i16` fields that are `-1` on retail (squad `70`,
   starting location `60`, order `4e`).
 - Halo 1 squads' other six group masks (defending, guarding, pursuing):

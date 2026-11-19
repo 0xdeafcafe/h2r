@@ -149,8 +149,8 @@ pub struct FiringPosition {
     pub area: i16,
     /// Cluster (`i16 +0x12`).
     pub cluster: i16,
-    /// Collision surface (`u32 +0x14`).
-    pub surface: u32,
+    /// Pathfinding sector in the zone's BSP, u32::MAX if unassigned.
+    pub sector: u32,
     /// Normal: yaw, pitch in radians (`+0x18`).
     pub normal: [f32; 2],
 }
@@ -173,6 +173,8 @@ pub struct Area {
     pub first: i16,
     /// Firing position count (`i16 +0x3a`).
     pub count: i16,
+    /// Cluster bits at +0x3c.
+    pub clusters: [u32; 16],
     /// Manual reference frame (`i16 +0x7c`).
     pub manual_reference_frame: i16,
 }
@@ -382,7 +384,7 @@ impl ScenarioAi {
                             flags: u16_at(f, 0xe),
                             area: i16_at(f, 0x10),
                             cluster: i16_at(f, 0x12),
-                            surface: u32_at(f, 0x14),
+                            sector: u32_at(f, 0x14),
                             normal: [f32_at(f, 0x18), f32_at(f, 0x1c)],
                         })
                         .collect(),
@@ -397,6 +399,7 @@ impl ScenarioAi {
                             deviation: f32_at(a, 0x34),
                             first: i16_at(a, 0x38),
                             count: i16_at(a, 0x3a),
+                            clusters: std::array::from_fn(|i| u32_at(a, 0x3c + 4 * i)),
                             manual_reference_frame: i16_at(a, 0x7c),
                         })
                         .collect(),

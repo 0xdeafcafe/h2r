@@ -11,7 +11,7 @@ mod common;
 use std::collections::BTreeMap;
 
 use common::{H2_CAMPAIGN, build_and_read, h1_map, h2_map};
-use h1ai::convert::{Options, character_for, convert};
+use h1ai::convert::{Options, character_for, convert_for_map};
 use h1ai::h1::{ActorType, H1Ai};
 use h1ai::h2::{Character, ScenarioAi};
 use h1map::disc::CAMPAIGN_LEVELS;
@@ -363,17 +363,6 @@ fn a30_and_a10_convert_read_back_and_sit_on_generated_pathfinding() {
     for level in ["a30", "a10"] {
         let m = h1_map(level);
         let src = H1Ai::read(&m).unwrap();
-        let plan = convert(&src, &Options::default());
-        let (back, palette) = build_and_read(&plan);
-        let mut want = plan.ai.clone();
-        want.character_palette = palette;
-        assert_eq!(back, want, "{level}: read back differs from the plan");
-        assert!(
-            back.check_indices().is_empty(),
-            "{level}: {:#?}",
-            back.check_indices()
-        );
-
         // Pathfinding generated from each BSP's converted collision.
         let pfs: Vec<_> = m
             .structure_bsps()
@@ -386,6 +375,17 @@ fn a30_and_a10_convert_read_back_and_sit_on_generated_pathfinding() {
                 pathfind::generate::generate(&h2, 0, 0, &Default::default()).unwrap()
             })
             .collect();
+        let plan = convert_for_map(&src, &Options::default(), &pfs, &[]);
+        let (back, palette) = build_and_read(&plan);
+        let mut want = plan.ai.clone();
+        want.character_palette = palette;
+        assert_eq!(back, want, "{level}: read back differs from the plan");
+        assert!(
+            back.check_indices().is_empty(),
+            "{level}: {:#?}",
+            back.check_indices()
+        );
+
         let on_any = |p: [f32; 3], below: f32| pfs.iter().any(|pf| on_sector(pf, p, below, 0.25));
 
         // Encounters that fight in the air (a30's banshees: elite pilots
@@ -426,11 +426,6 @@ fn a30_and_a10_convert_read_back_and_sit_on_generated_pathfinding() {
         }
         let (mut starts, mut starts_off) = (0, Vec::new());
         for s in &back.squads {
-            assert!(
-                !s.starting_locations.is_empty(),
-                "{level} {}: no starting locations",
-                s.name
-            );
             for l in &s.starting_locations {
                 starts += 1;
                 if !on_any(l.position, 2.0) {
