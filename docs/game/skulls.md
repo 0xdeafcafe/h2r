@@ -323,7 +323,8 @@ and its description under the picture.
 
 | Part | Level select (retail) | The page |
 |---|---|---|
-| list | anchor (-215, 130), skin 0 (`ui\list_skins\default\default`: one text `[28 20 8 210]`, row background 200 wide) | the same |
+| list | anchor (-215, 130), skin 0 (`ui\list_skins\default\default`), 16 visible items | same anchor and skin, 13 visible items |
+| row label | font 1, `[28 20 8 210]` relative to the item | first label at `[158 -195 138 -5]`, with 190 units of width for the name and state |
 | picture | `[177 39 -30 259]` (220 by 207) | the difficulty screen's Legendary skull (`difficulty_options` image 3, 256 by 256, drawn at its size), top-left (36, 180): its visible part (17..209 across, 3..208 down) sits centred in that box, its top on the box's top |
 | description | `[-30 39 -133 260]`, font 1, colour (99, 148, 193) | the same |
 | frame | `ul_02` top left (`[177 -259 -79 -131]`, its pane 0 bitmap 1) | the same, copied from the level select at run time (`skulls_menu::FRAME`, `ListClass::frame`). None of the Controls tag's frame art is kept: its bracket (`ul_03`, `[170 -280 42 -24]`) was made for the Controls list 39 units further left on skin 2, and under this list it framed an empty box and the first row's end cap cut into it (found by the UI builder's frame check, docs/game/ui-builder.md); its bottom-right piece (`br_06`) is where the description goes |
@@ -337,13 +338,12 @@ builds their texts and bitmaps from the skin (`0x24bc12`, `0x14837a`,
 screen. So the screen-tag hook (`layout_glue`, `0x22f871`, EAX the
 screen) hands a screen whose vtable is a class with a layout
 (`list_class::ListLayout`) a copy of its tag (`list_class::copy_tag`,
-in the class's table page, made once per retail tag): the root, one
-pane, the list block with our anchor and skin, and only the bitmaps
-whose left edge is left of the centre. The retail Controls tag is not
-written. The picture and the description are widgets of ours, as
-before: the pane builder's bitmap step (`0x22fa30`) on a copy of the
-difficulty screen's pane 3 bitmap, and its text step (`0x22f9bf`) on a
-block of ours.
+in the class's table page, made once per retail tag). The copy has one
+pane with our anchor, skin and visible count. The list block's other
+fields match level select's flags, animation and item value. The copy
+drops both Controls bitmaps. The pane builder's bitmap step (`0x22fa30`)
+adds the picture from a copy of the difficulty screen's pane 3 bitmap.
+Its text step (`0x22f9bf`) adds the description from our text block.
 
 Env overrides, read at boot, each logged when set:
 
@@ -354,6 +354,12 @@ Env overrides, read at boot, each logged when set:
   (default `-30,39,-133,260`).
 
 The multiplayer screen uses the same layout, picture and description.
+Video keeps the Controls list at (-254, 130) on skin 2, with separate
+label and value columns. Game Options starts 39 units to its right. The
+retail `ul_02` bracket extends under the left part of the list, as it
+does on level select. The list's text ends at x = -5, with the picture
+and description column starting at x = 39. The disc-backed layout test
+measures every skull name and state in the retail row font.
 
 - **Strings** are served by the locale hook: the title, "Locked",
   15 + 6 names and descriptions from ids

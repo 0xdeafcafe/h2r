@@ -227,6 +227,23 @@ fn placed_names(m: &mut M) -> Vec<(FourCC, String)> {
     out
 }
 
+/// a30 borrows b30's holo control. Both asset settings keep its palette
+/// reference and the four change-colour slots the device builder writes.
+fn check_a30_holo_control(m: &mut M) {
+    let group = FourCC(*b"ctrl");
+    let name = r"levels\b30\devices\interior tech objects\holo control\holo control";
+    let control = m.tag(map::TagQuery::NameInGroup(name, group)).unwrap().id;
+    let scenario = m.scenario().unwrap().id;
+    let relocator = tags::schema::Relocator::new(tags::schema::Schema::builtin(), m).unwrap();
+    let (_, palette) = relocator.block_field(scenario, 0xc0).unwrap().unwrap();
+    assert!(palette.bytes.chunks_exact(0x28).any(|entry| {
+        word(entry, 0).to_be_bytes() == group.0 && word(entry, 4) == control.0
+    }));
+    let (count, colors) = relocator.block_field(control, 0xac).unwrap().unwrap();
+    assert_eq!(count, 4);
+    assert_eq!(colors.bytes.len(), 4 * 0x10);
+}
+
 /// Both variants of every level, as the import builds them: each built
 /// from scratch with every reference resolving (0 dangling) and every
 /// script tag atom naming a tag of its group. The Halo 2-assets variant
@@ -278,8 +295,13 @@ fn every_level_builds_in_both_assets() {
             let r = &done.report;
             println!("== {what}");
             print!("{r}");
-            let mut m = Map::from_reader(Cursor::new(done.bytes.clone())).unwrap();
+            let file_size = done.bytes.len();
+            let mut m = Map::from_reader(Cursor::new(done.bytes)).unwrap();
             m.validate_checksum().unwrap();
+            assert_eq!(m.header().name, level);
+            if level == "a30" {
+                check_a30_holo_control(&mut m);
+            }
             let mem = tags::schema::Memory::of(&mut m).unwrap();
             let (refs, bad) = reference_sweep(&m, &mem);
             let (atoms, defs, script_bad) = script_tags(&mut m, &catalog);
@@ -338,7 +360,7 @@ fn every_level_builds_in_both_assets() {
             } else {
                 chars = ai;
             }
-            rows.push((what, r.memory, done.bytes.len(), m.tags().len()));
+            rows.push((what, r.memory, file_size, m.tags().len()));
         }
     }
     println!("level | tag memory | file | tags");

@@ -565,6 +565,9 @@ points! { ALL;
     SCREEN_TAG_BY_ID @ 0x0014_8098: [fn(id: stack 0) -> eax ret 4]; "docs/formats/ui.md";
     /// The focused item's row handle of the list in EAX, or -1.
     LIST_FOCUSED_ROW @ 0x0024_c447: [fn(list: eax) -> eax ret 0]; "docs/formats/ui.md";
+    /// Transform a UI quad in place from UI coordinates to screen coordinates.
+    /// The list's arrow draw at `0x24bda2` calls it with its arrow quad in ESI.
+    UI_QUAD_TO_SCREEN @ 0x0023_618e: [fn(quad: esi, scale: stack 0, transform: stack 1) -> eax ret 8]; "docs/formats/ui.md";
     /// An item widget's `index`-th text widget of kind 6 (thiscall on the
     /// item; the game pushes 0, the index, 6), or 0.
     ITEM_TEXT @ 0x0022_edb8: [fn(item: ecx, kind: stack 0, index: stack 1, zero: stack 2) -> eax ret 12]; "docs/audio/playstation-audio.md";

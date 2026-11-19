@@ -138,7 +138,8 @@ merged, built and tested together, then played.
 
 | Gap | Branch | Notes |
 |---|---|---|
-| a30 fails to convert at v95: a converted `ctrl` (b30's holo control) keeps a pointer-like word at `+0xb0` the fresh build can't move | `a30convert` | Found 2026-11-19; a30 can't run until it's fixed |
+| a30 fails to convert at v95 when relocating b30's holo control | `a30convert` | **Built.** The relocation schema follows `obje +0xac` on controls and machines (§9). The a30 disc test is pending the integration run |
+| a10, a50, c40, d20 and d40 failed unpinning with Halo 1 assets in the v90 import | `a30convert` | **Built.** Both fresh paths read locale data at the lengths recorded in `matg`. The 20-variant disc test is pending the integration run (§9) |
 | Recorded animations and `recording_*`, `vehicle_hover`: the scripted Pelican, dropship, lifepod and banshee flights | `recordings` | Halo 1's recordings rebuilt in Halo 2's format |
 | AI command lists (`ai_command_list*`) | `commandlists` | Halo 2 uses command scripts instead |
 | AI conversations (`ai_conversation*`, `ai_dialogue_triggers`, `unit_set_emotion`) | `conversations` | |
@@ -388,7 +389,20 @@ convert --pinned` skip it):
    built the slice-before way (a `dropped` line says why): every tag of
    the intermediate laid out anew (`h1convert::fresh::unpin_all` with
    `built_too`), the unreachable base tags dropped (`fresh::prune_with`,
-   `KEEP`), on 05a's index. No level takes it today.
+   `KEEP`), on 05a's index.
+
+**Built, locale raw extents.** The v90 import hit the map reader's 64 MiB
+limit on one raw read in `Unpinner::copy_raw`. The retail base's ninth
+locale has zero rows and zero text bytes (`matg +0x270` and `+0x274`),
+with nonzero file offsets (`+0x278` and `+0x27c`). The generic raw sizing
+walk can treat those offsets as the start of a resource stretching to the
+next pointer it recognizes. The resulting length grows with intervening
+asset data. On a saved a10, that gives `0x464be00` bytes for an empty
+locale. Both fresh paths now size all nine locale indices as `count * 8`
+and their blobs as the descriptor's byte count, matching the loader at
+`0x1a01e0` ([localization.md](../formats/localization.md)). The synthetic
+`matg_locales_use_descriptor_lengths_across_a_large_raw_gap` test puts a
+known boundary 80 MiB after an empty locale and checks both raw readers.
 
 **Measured** (`tests/fresh.rs`, `every_level_converts_fresh`, 2026-11-17,
 converter version 28, the gestalt cut; pinned is the old way, lean ladder
@@ -752,6 +766,16 @@ version-4 event streams and unit control data as recorded; that
 list checksums are Halo 1's on both); every identified builtin's
 behaviour (they are found by position and signature, E only for the
 recordings); the dialogue sleeps lining up with the converted sounds.
+
+**Built, device change-colour relocation.** The holo control a30 borrows
+from b30 failed fresh conversion because its `+0xb0` pointed to the
+change-colour array at `obje +0xac`, which the retail relocation schema
+omitted for `ctrl` and `mach`. The schema now uses the shared object
+definition for that array. Every campaign level's controls, machines and
+light fixtures (built as machines) use the same device builder and layout.
+`every_level_builds_in_both_assets` exercises all ten levels in both
+asset settings. Both a30 maps are checked for the holo control's palette
+reference and all four colour slots.
 
 **Proof.** `H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso cargo test
 --release -p h1campaign --test disc -- --ignored --nocapture`.

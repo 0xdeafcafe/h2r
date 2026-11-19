@@ -11,6 +11,7 @@ use std::io::{BufReader, Cursor};
 use h1convert::convert::{Sandbox, known, prepare, structure_mopp};
 use h1map::H1Map;
 use map::{FourCC, Map, TagId};
+use tags::localization::matg_locale_raw_len;
 use tags::schema::{Field, Memory, Schema, Struct, visit};
 
 type M = Map<Cursor<Vec<u8>>>;
@@ -52,9 +53,15 @@ fn by_key(m: &M) -> HashMap<(FourCC, String), TagId> {
 
 /// One element in address-free and index-free form: block addresses
 /// zeroed, every word that is a datum of the map as its tag's name, each
-/// local raw pointer as the bytes it names (its paired size, else 16
-/// bytes), external ones as they are.
-fn element(s: &Struct, e: &[u8], file: &[u8], ids: &HashMap<u32, String>) -> String {
+/// local raw pointer as the bytes it names (the locale descriptor length,
+/// its paired size, or 16 bytes), external ones as they are.
+fn element(
+    s: &Struct,
+    e: &[u8],
+    file: &[u8],
+    ids: &HashMap<u32, String>,
+    matg_root: bool,
+) -> String {
     let mut bytes = e.to_vec();
     let mut raws = Vec::new();
     let mut tags = Vec::new();
@@ -72,6 +79,10 @@ fn element(s: &Struct, e: &[u8], file: &[u8], ids: &HashMap<u32, String>) -> Str
                 bytes[o as usize..o as usize + 4].fill(0);
                 if v == u32::MAX || v == 0 {
                     raws.push("null".to_owned());
+                } else if matg_root && let Some(n) = matg_locale_raw_len(e, o) {
+                    let at = v as usize;
+                    let n = usize::try_from(n).expect("locale resource length");
+                    raws.push(format!("{:02x?}", &file[at..at + n]));
                 } else if v >> 30 != 0 {
                     raws.push(format!("{v:#x}"));
                 } else {
@@ -94,6 +105,7 @@ fn element(s: &Struct, e: &[u8], file: &[u8], ids: &HashMap<u32, String>) -> Str
 
 /// The tag's elements in visit order, address-free.
 fn canonical(
+    group: FourCC,
     s: &Struct,
     address: u32,
     mem: &Memory,
@@ -102,7 +114,8 @@ fn canonical(
 ) -> Vec<String> {
     let mut out = Vec::new();
     visit(s, address, mem, &mut |s, e, path| {
-        out.push(format!("{path:x?} {}", element(s, e, file, ids)));
+        let matg_root = group == FourCC(*b"matg") && path.is_empty();
+        out.push(format!("{path:x?} {}", element(s, e, file, ids, matg_root)));
     })
     .expect("visit");
     out
@@ -303,8 +316,8 @@ fn a_multiplayer_map_converts_fresh_with_nothing_pinned() {
                 continue;
             }
             let b = f.tag(fid(&t).unwrap()).unwrap().location.unwrap();
-            let x = canonical(s, a.address, &mm, &pinned, &mids);
-            let y = canonical(s, b.address, &fm, &fresh.bytes, &fids);
+            let x = canonical(t.group, s, a.address, &mm, &pinned, &mids);
+            let y = canonical(t.group, s, b.address, &fm, &fresh.bytes, &fids);
             if x != y {
                 let i = x.iter().zip(&y).position(|(p, q)| p != q).unwrap_or(0);
                 panic!(
@@ -360,8 +373,8 @@ fn a_multiplayer_map_converts_fresh_with_nothing_pinned() {
                 align: root.align,
                 fields: [(o, Field::Block(c.clone()))].into(),
             };
-            let x = canonical(&only, sa, &mm, &pinned, &mids);
-            let y = canonical(&only, sb, &fm, &fresh.bytes, &fids);
+            let x = canonical(scnr.group, &only, sa, &mm, &pinned, &mids);
+            let y = canonical(scnr.group, &only, sb, &fm, &fresh.bytes, &fids);
             if o == 0x210 {
                 // The descriptor's region words name each map's own region.
                 assert_eq!(x.len(), y.len());

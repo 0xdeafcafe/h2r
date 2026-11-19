@@ -81,6 +81,9 @@ pub fn register_core(features: &mut feature::Registry, i: CoreInputs<'_>) -> any
         .add(&map_copy::MapCopy)
         .map_err(|e| anyhow::anyhow!("map copy: {e}"))?;
     layout_glue::install(rt, features, i.model).context("installing the button layouts")?;
+    features
+        .add(&crate::list_class::ScrollArrowLayout)
+        .map_err(|e| anyhow::anyhow!("list scroll arrows: {e}"))?;
     campaign_menu::install(rt, features, i.campaigns).context("installing the campaigns")?;
     map_select::install(rt, features).context("installing the map select")?;
     // The Halo 1 / Halo 2 options (docs/halo1/multiplayer.md "Halo 1
