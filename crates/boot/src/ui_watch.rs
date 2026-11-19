@@ -673,10 +673,13 @@ mod tests {
         screen(&mut f, WINDOW_1 + 4 * STRIDE_13, 0x8000_1000, 0xb6, 0x2);
         let r = read(&f);
         assert_eq!(r.top, None);
+        // The window 1 screen is the dialog up ([`dialog`]: any screen on
+        // windows 0 to 4, whoever's mask), and why player one's input
+        // goes nowhere, so the line names it.
         assert_eq!(
             r.line(),
             "ui: screen none (slot 4: window 1 active 0x80001000 pending 0x0 list [0x2/0xb6]; \
-             slot 0: no window)"
+             slot 0: no window), dialog 0xb6 (window 1, slot 4)"
         );
         // A screen in player one's own slot takes it.
         screen(&mut f, WINDOW_5, 0x8000_2000, 0x1e, 0x1);
