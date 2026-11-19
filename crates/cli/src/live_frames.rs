@@ -539,3 +539,137 @@ mod tests {
         assert_eq!(v.unpublished, 1);
     }
 }
+
+#[cfg(test)]
+mod server_test {
+    use super::*;
+    use live_proto::{game, sign::EventBody};
+    use live_server::{ServerIdentity, store::NewEvent};
+    use serde_json::json;
+
+    #[test]
+    fn migration_command_keeps_an_unreadable_signed_source_and_finishes_the_other_game() {
+        let dir = std::env::temp_dir().join(format!(
+            "h2-replay-migration-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let data_dir = dir.join("server");
+        let server = live_server::start_embedded(
+            live_server::MEMORY_DB,
+            "127.0.0.1:0".parse().unwrap(),
+            &data_dir,
+            Default::default(),
+        )
+        .unwrap();
+        let op = ServerIdentity::load(&data_dir).unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let mut signed = Vec::new();
+        for (id, source) in [
+            (
+                "historic",
+                json!({"game_id":"historic","tick":0,"players":[{"index":0,"alive":true,"yaw":0.0,"pos":[0.1,-0.0,1.0/65536.0]}]}),
+            ),
+            ("broken", json!({"packed":"not base64","tick":0})),
+        ] {
+            let started = game::GameStarted {
+                game_id: id.into(),
+                host: op.author(),
+                game: game::NewGame {
+                    map: "lockout".into(),
+                    mode: "multiplayer".into(),
+                    ..Default::default()
+                },
+            };
+            for (kind, payload) in [
+                (game::GAME_STARTED, json!(started)),
+                (game::GAME_FRAME, source),
+                (game::GAME_ENDED, json!({"tick":2,"reason":"finished"})),
+            ] {
+                let body = EventBody::at_unix(
+                    &op.key,
+                    &op.author(),
+                    &game::stream(id),
+                    kind,
+                    payload,
+                    live_cmd::now(),
+                );
+                signed.push(NewEvent {
+                    jws: body.sign(&op.key).into(),
+                    jws_index: None,
+                    body,
+                });
+            }
+        }
+        let rows = rt
+            .block_on(server.live.store().append(signed, &[]))
+            .unwrap();
+        let seal = rows.last().unwrap().position;
+        rt.block_on(async {
+            let mut applied = server.live.applied();
+            tokio::time::timeout(Duration::from_secs(5), applied.wait_for(|n| *n >= seal))
+                .await
+                .unwrap()
+                .unwrap();
+        });
+        let command = |mode: &str| {
+            let cp = dir.join(format!("{}.json", &mode[2..]));
+            let result = live_cmd::run(vec![
+                "frames".into(),
+                "migrate".into(),
+                mode.into(),
+                "--server".into(),
+                server.url.clone(),
+                "--data".into(),
+                data_dir.to_str().unwrap().into(),
+                "--delay-ms".into(),
+                "0".into(),
+                "--checkpoint".into(),
+                cp.to_str().unwrap().into(),
+            ]);
+            let progress: Checkpoint = serde_json::from_slice(&fs::read(cp).unwrap()).unwrap();
+            (result, progress)
+        };
+        let (dry, plan) = command("--dry-run");
+        assert!(dry.is_err());
+        assert_eq!(plan.migrated, 1);
+        assert_eq!(rt.block_on(server.live.store().head()).unwrap(), seal);
+        let (apply, published) = command("--apply");
+        assert!(apply.is_err());
+        assert_eq!(published.migrated, 1);
+        assert_eq!(published.failed[0].job.game.game_id, "broken");
+        let applied_head = rt.block_on(server.live.store().head()).unwrap();
+        let (retry, again) = command("--apply");
+        assert!(retry.is_err());
+        assert_eq!(again.migrated, 1);
+        assert_eq!(
+            rt.block_on(server.live.store().head()).unwrap(),
+            applied_head
+        );
+        let (verify, done) = command("--verify");
+        verify.unwrap();
+        assert_eq!(done.totals.frames, 1);
+        assert_eq!(done.unpublished, 1);
+        let originals = rt
+            .block_on(server.live.store().read(&live_server::store::Query {
+                after: 0,
+                limit: rows.len(),
+                stream: None,
+                types: vec![],
+                exclude: vec![],
+            }))
+            .unwrap();
+        for (before, after) in rows.iter().zip(&originals) {
+            assert_eq!(before.to_wire(), after.to_wire());
+        }
+        assert_eq!(originals.len(), rows.len());
+        drop(server);
+        fs::remove_dir_all(dir).unwrap();
+    }
+}
