@@ -73,11 +73,13 @@
 //!   second controller's profile chosen in the lobby. On Live it waits
 //!   for the user's Xbox Live identity (a local user with the offline id's
 //!   flags `0xBAD00000` counts as none there, `0x646df`), which the bot
-//!   gets from [`bots::guest::go_live_as`] within 30 frames;
-//! - a matchmaking lobby this console hosts (a Clankermatch after its
-//!   empty search: life cycle 6, screen `0xd2`), read from the target
-//!   session ([`bots::lobby::matchmaking_host`]). The same sign-in: the
-//!   local-player pass runs on the target session too.
+//!   gets from [`bots::guest::go_live_as`] within 30 frames.
+//!
+//! Never in a matchmaking lobby (life cycle 6, screen `0xd2`): there the
+//! local-player pass adds a local user to the party's squad session as
+//! well as the match's, and the matchmade start checks each local
+//! player's controller, which a bot's port fails. A Clankermatch's bots
+//! are all phantoms (docs/game/bots.md §8.4, "Phantoms only").
 //!
 //! Each port's gate is logged when it changes, naming the screen it
 //! thinks is up (`players`, `lobby`, the top screen's id or `none`), and
@@ -154,9 +156,10 @@ pub enum Screen {
     /// mask (`+8`) at `screen`.
     Players { screen: u32 },
     /// A pregame lobby (Live or System Link custom game,
-    /// [`bots::lobby::pregame`]), or a matchmaking lobby this console
-    /// hosts (a Clankermatch, [`bots::lobby::matchmaking_host`]: the
-    /// target session, screen `0xd2`), and no game runs. The lobby is read from
+    /// [`bots::lobby::pregame`]) and no game runs. Never a matchmaking
+    /// lobby: a local user there is added to the party's session too, and
+    /// the matchmade start checks each local player's controller
+    /// (docs/game/bots.md §8.4, "Phantoms only"). The lobby is read from
     /// its squad session, not from the screens: it shares its window and
     /// slot with the screens over it, and `ui_watch` reads it as no screen
     /// (the user's run: `top none`). A bot joins with the game's sign-in
@@ -198,8 +201,7 @@ pub const SPLIT_SCREEN: u32 = 1;
 /// Which screen the gate is on: the players screen in Split Screen when it
 /// takes player one's input (`top`, [`crate::ui_watch::read`], mode
 /// [`SPLIT_SCREEN`]); otherwise the pregame lobby when its session is up
-/// (`pregame`, [`bots::lobby::in_joinable`]: a pregame lobby, or a
-/// matchmaking lobby this console hosts) and no game runs (`in_game`);
+/// (`pregame`, [`bots::lobby::in_pregame`]) and no game runs (`in_game`);
 /// otherwise the top screen read, if any.
 ///
 /// The players screen in any other mode (Xbox Live 3, System Link 2, an
@@ -828,7 +830,7 @@ impl feature::Feature for Bots {
                 let facts = bots::lobby::facts(g).ok();
                 let on = screen(
                     top,
-                    facts.as_ref().is_some_and(bots::lobby::joinable),
+                    facts.as_ref().is_some_and(bots::lobby::pregame),
                     guest::in_game(g),
                 );
                 // What the lobby read gave, once per change.
@@ -1053,7 +1055,7 @@ impl feature::Feature for Bots {
                         let in_game = guest::in_game(&*mem);
                         let on = screen(
                             crate::ui_watch::read(&*mem).top,
-                            bots::lobby::in_joinable(&*mem),
+                            bots::lobby::in_pregame(&*mem),
                             in_game,
                         );
                         let dialog = crate::ui_watch::dialog(&*mem);

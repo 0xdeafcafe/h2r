@@ -50,7 +50,8 @@ pub struct CmPlan {
     /// Teams (0: free for all).
     pub teams: u32,
     /// Bots beside the human, and how many of them are local bots
-    /// (`boot::clankers::max_local`); the rest are phantoms.
+    /// (`boot::clankers::MATCH_LOCAL`, none: phantoms only); the rest are
+    /// phantoms.
     pub bots: usize,
     pub local: usize,
     pub tag: String,
@@ -451,7 +452,7 @@ pub fn verdict(l: &Log, plan: CmPlan) -> Verdict {
                     t[LOCAL_LINE.len()..].to_string()
                 } else {
                     format!(
-                        "{n} local bots, not the {} the plan works out (`max_local` of {} bots, \
+                        "{n} local bots, not the {} the plan works out (`MATCH_LOCAL`; {} bots, \
                          {} players, {} teams)",
                         plan.local, plan.bots, plan.max, plan.teams
                     )
@@ -499,7 +500,30 @@ pub fn verdict(l: &Log, plan: CmPlan) -> Verdict {
         }
     }
     let not_seated: Vec<u8> = missing.iter().filter(|m| !m.1).map(|m| m.0).collect();
-    checks.push(check(
+    if local == 0 {
+        // Phantoms only (docs/game/bots.md §8.4): no bot signs in on a
+        // controller port, so none shows in the party.
+        let signed: Vec<String> = l
+            .texts
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| signing_port(t).is_some())
+            .map(|(i, _)| l.raw_at(i))
+            .collect();
+        checks.push(check(
+            "no bot in the party: none signs in on a controller port",
+            signed.is_empty(),
+            if signed.is_empty() {
+                "no `bots: signing ...` line: every bot is a phantom in the match".into()
+            } else {
+                "a bot signed in on a controller port: it shows in the party, and the \
+                 matchmade start checks its controller"
+                    .into()
+            },
+            signed,
+        ));
+    } else {
+        checks.push(check(
         "local bots seated and signed in, in the lobby",
         missing.is_empty() && local > 0,
         if local == 0 {
@@ -521,6 +545,7 @@ pub fn verdict(l: &Log, plan: CmPlan) -> Verdict {
         },
         lines,
     ));
+    }
 
     // 8. Each local bot on Live as its own bot account.
     let mut lines = Vec::new();
@@ -550,20 +575,48 @@ pub fn verdict(l: &Log, plan: CmPlan) -> Verdict {
             }
         }
     }
-    checks.push(check(
-        "local bots on Xbox Live as bot accounts (000b...)",
-        missing.is_empty() && local > 0,
-        if missing.is_empty() {
-            names.join(", ")
-        } else {
-            format!(
-                "port(s) {missing:?}: no bot account sign-in (`Clanker N is ... (bot account \
+    if local == 0 {
+        // Phantoms only: each planned phantom carries a roster bot account
+        // (`clankers: G (phantom, rostered) on (...)`).
+        let rostered: Vec<(String, &str)> = l
+            .texts
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.starts_with("clankers: ") && t.contains(" (phantom, rostered) on"))
+            .map(|(i, t)| (l.raw_at(i), *t))
+            .collect();
+        let want = plan.phantoms();
+        let n = rostered.len();
+        checks.push(check(
+            "the phantoms are the roster's bot accounts",
+            n >= want && want > 0,
+            if n >= want {
+                format!("{n} rostered phantoms")
+            } else {
+                format!(
+                    "{n} of {want} phantoms rostered (`clankers: G (phantom, rostered) on`): \
+                     Live's roster refused or never came (`no roster from Live`), so host-made \
+                     bots with no account"
+                )
+            },
+            rostered.into_iter().map(|r| r.0).collect(),
+        ));
+    } else {
+        checks.push(check(
+            "local bots on Xbox Live as bot accounts (000b...)",
+            missing.is_empty() && local > 0,
+            if missing.is_empty() {
+                names.join(", ")
+            } else {
+                format!(
+                    "port(s) {missing:?}: no bot account sign-in (`Clanker N is ... (bot account \
                  000b...)` and `... is on Xbox Live as its own bot account`); a guest or offline \
                  line says why"
-            )
-        },
-        lines,
-    ));
+                )
+            },
+            lines,
+        ));
+    }
 
     // 9. The lobby's player count reached the playlist's fewest players,
     // before the game started: the game's own count of its session

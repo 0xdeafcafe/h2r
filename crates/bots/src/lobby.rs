@@ -91,6 +91,14 @@ pub fn matchmaking_type(session_type: u32) -> bool {
     matches!(session_type, 6 | 7)
 }
 
+/// Whether the life cycle is matchmaking's (types 6 to 9: the match's
+/// lobby, its game and after it), networking on. A Clankermatch's bots
+/// live only there.
+pub fn matchmaking_cycle(m: &dyn GuestMemory) -> bool {
+    m.u8(NETWORKING).is_ok_and(|n| n != 0)
+        && m.u32(SESSION_TYPE).is_ok_and(|t| (6..=9).contains(&t))
+}
+
 /// The session the game plays in now ([`game_session_at`] of the
 /// life-cycle type `[0x527334]`, read as 0 with networking off), or 0.
 pub fn game_session(m: &dyn GuestMemory) -> R<u32> {
