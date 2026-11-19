@@ -49,13 +49,18 @@ pub const FOOTER_ID: u32 = IDS.id(1);
 /// title stays "Halo 1 Options" (`crate::h1_options_row`).
 pub const ROW_LABEL_ID: u32 = IDS.id(2);
 pub const ROW_LABEL: &str = "Halo 1 Options...";
+/// What the Game Setup row does, in Game Setup's description while it has
+/// the focus, as retail's rows have theirs (`crate::game_setup_help`).
+pub const ROW_HELP_ID: u32 = IDS.id(3);
+pub const ROW_HELP: &str =
+    "Choose whether this Halo 1 map plays with Halo 1's weapons, vehicles and HUD, or Halo 2's.";
 /// Rows' strings start here, [`PER_ROW`] ids each.
 const ROW_IDS: u32 = 4;
 const PER_ROW: u32 = 3;
 /// In capitals, as Quick Options' header ("QUICK OPTIONS") is.
 pub const TITLE: &str = "HALO 1 OPTIONS";
 /// The options screen's buttons, in the footer as retail's are.
-pub const PROMPT: &str = "\u{e10a}  \u{e10b} CHANGE  \u{e101} BACK";
+pub const PROMPT: &str = "\u{e10a}  \u{e10b} CHANGE  \u{e100} SELECT  \u{e101} BACK";
 
 /// One option: a setting of two choices, Halo 1's then Halo 2's.
 pub struct OptionRow {
@@ -182,6 +187,7 @@ static STRINGS: std::sync::LazyLock<Vec<(u32, String)>> = std::sync::LazyLock::n
         (TITLE_ID, TITLE.to_string()),
         (FOOTER_ID, PROMPT.to_string()),
         (ROW_LABEL_ID, ROW_LABEL.to_string()),
+        (ROW_HELP_ID, ROW_HELP.to_string()),
         (choice_id(true), choice(true).to_string()),
         (choice_id(false), choice(false).to_string()),
     ];
@@ -236,6 +242,27 @@ pub fn step(store: &Store, row: &OptionRow) -> String {
     }
 }
 
+/// The value picker's pick for `row`: Halo 1 then Halo 2, the one held
+/// focused, both choices' meanings on the right.
+pub fn pick(store: &Arc<Store>, row: &'static OptionRow) -> crate::ui_kit::picker::Pick {
+    let held = Arc::clone(store);
+    let set = Arc::new(move |i: usize| {
+        if (i == 0) == is_halo1(&held, row) {
+            format!("h1 options: {} stays {}", row.def.key, choice(i == 0))
+        } else {
+            step(&held, row)
+        }
+    });
+    crate::ui_kit::picker::Pick::new(
+        row.label,
+        vec![choice(true).to_string(), choice(false).to_string()],
+        usize::from(!is_halo1(store, row)),
+        &description(row),
+        set,
+    )
+    .over(crate::ui_kit::view::Opener::GAME_SETUP)
+}
+
 /// Moves the run's switch for `def` to `halo1`.
 fn switch(def: &Def, halo1: bool) {
     if def.key == HALO1_SANDBOX.key {
@@ -287,10 +314,16 @@ impl Rows for OptionsScreen {
             })
             .unwrap_or_default()
     }
-    /// A steps the row, as on the game's own settings lists.
+    /// A opens the value picker on the row's two choices, as the game's
+    /// own settings rows open theirs (`crate::ui_kit::picker`).
     fn press(&self, row: i16) -> Chosen {
-        option_at(MULTIPLAYER, row)
-            .map_or(Chosen::Nothing, |r| Chosen::Stepped(step(&self.store, r)))
+        let Some(r) = option_at(MULTIPLAYER, row) else {
+            return Chosen::Nothing;
+        };
+        match crate::ui_kit::picker::offer(pick(&self.store, r)) {
+            Some(picker) => Chosen::Open(picker),
+            None => Chosen::Stepped(step(&self.store, r)),
+        }
     }
     fn sideways(&self, row: i16, right: bool) -> Option<String> {
         let r = option_at(MULTIPLAYER, row)?;
@@ -337,6 +370,7 @@ impl crate::ui_kit::spec::Describe for OptionsScreen {
         s.footer = true;
         s.prompts = vec![
             Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Change"),
+            Prompt::new(&[Glyph::A], "Select"),
             Prompt::new(&[Glyph::B], "Back"),
         ];
         s.inputs = vec![
@@ -481,8 +515,8 @@ mod tests {
         assert_eq!(screen.description(2), None);
     }
 
-    /// Left, right and A each step to the other choice; it is saved, and a
-    /// store loaded again has it.
+    /// Left and right each step to the other choice, A opens the value
+    /// picker whose choice is saved too; a store loaded again has it.
     #[test]
     fn stepping_saves_and_a_new_run_reads_it() {
         let dir = scratch("step");
@@ -509,7 +543,19 @@ mod tests {
                 (VALUE_SLOT, choice_id(false))
             ]
         );
-        assert!(matches!(screen.press(1), Chosen::Stepped(l) if l.contains("halo1.hud -> Halo 2")));
+        // A opens the value picker on HUD: Halo 1 then Halo 2, Halo 1
+        // held; choosing Halo 2 there saves it.
+        assert_eq!(screen.press(1), Chosen::Open(crate::ui_kit::picker::NAME));
+        let p = crate::ui_kit::picker::current().expect("the picker's pick");
+        assert_eq!(p.title, "HUD");
+        assert_eq!(p.values, ["Halo 1", "Halo 2"]);
+        assert_eq!(p.current, 0);
+        assert_eq!(p.description, description(&HUD));
+        assert!(
+            (p.set)(0).contains("stays Halo 1"),
+            "the held one: nothing changes"
+        );
+        assert!((p.set)(1).contains("halo1.hud -> Halo 2"));
         let again = store_at(&dir);
         assert_eq!(setting_defs::halo1_sandbox(&again), "h2");
         assert!(!is_halo1(&again, &HUD));

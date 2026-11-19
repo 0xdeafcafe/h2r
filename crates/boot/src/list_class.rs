@@ -1369,6 +1369,13 @@ pub fn player_mask(m: &dyn GuestMemory, chain: u32) -> Result<Option<u32>, MemFa
 /// Opens our screen `screen` for the player of `chain` (`0x149f1e(mask,
 /// loader)`). Says why when it cannot.
 pub async fn open(cx: &Cx, chain: u32, screen: &str) -> Result<(), EntryError> {
+    // The value picker is `low_level_settings` in the main menu and the
+    // large dialog in a game (`crate::ui_kit::picker`).
+    let screen = if screen == crate::ui_kit::picker::NAME && cx.read(ingame).unwrap_or(false) {
+        crate::ui_kit::picker::GAME_NAME
+    } else {
+        screen
+    };
     let Some(loader) = loader_of(screen) else {
         eprintln!("ui: {screen} is not a screen of ours (or its class is off); not opened");
         return Ok(());

@@ -909,3 +909,34 @@ fn a_clankermatch_refused_a_roster_seats_host_made_bots() {
     let names: Vec<&str> = l.iter().map(|p| p.identity.gamertag.as_str()).collect();
     assert_eq!(names, ["Clanker 4", "Clanker 5", "Clanker 6", "Clanker 7"]);
 }
+
+/// A on a row opens the value picker on it (the On/Off row too, as
+/// retail's two-value settings do), and the Game Setup row has its own
+/// description in the page's family.
+#[test]
+fn a_opens_the_value_picker_and_the_row_has_a_description() {
+    use crate::ui::Chosen;
+    use crate::ui_kit::picker;
+    let s = store();
+    let p = page(Arc::clone(&s));
+    assert_eq!(p.press(2), Chosen::Open(picker::NAME));
+    let pick = picker::current().expect("a pick");
+    assert_eq!(pick.title, "DIFFICULTY");
+    assert_eq!(pick.values.len(), 5, "the four skills and Mixed");
+    assert_eq!(
+        pick.opener,
+        crate::ui_kit::view::Opener::GAME_SETUP_CLANKERS
+    );
+    assert_eq!(p.press(0), Chosen::Open(picker::NAME));
+    assert_eq!(picker::current().unwrap().values, ["Off", "On"]);
+    assert_eq!(
+        s.get(ENABLED.key),
+        Some(Value::Bool(false)),
+        "opening changes nothing"
+    );
+    let help = p.row_help_id().expect("a description");
+    assert!(IDS.owns(help));
+    assert_ne!(help, p.row_label_id());
+    assert!(p.slots() <= IDS.len);
+    assert!(ROW_HELP.len() < 120, "a few lines under Game Setup's list");
+}

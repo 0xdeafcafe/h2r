@@ -89,8 +89,10 @@ impl Row {
     pub fn action(label: &str, press: impl Fn() -> Then + Send + Sync + 'static) -> Self {
         Self::of(label, Kind::Action(Arc::new(press)))
     }
-    /// Left and right step through `values` (wrapping); A steps right.
-    /// `get` is the current index, `set` stores one and says what to log.
+    /// Left and right step through `values` (wrapping); A opens the value
+    /// picker on them (`crate::ui_kit::picker`, as retail's settings do),
+    /// or steps right when the picker can't list them. `get` is the
+    /// current index, `set` stores one and says what to log.
     pub fn value(
         label: &str,
         values: &[&str],
@@ -172,14 +174,21 @@ const KEYBOARD_CONTEXT: u32 = crate::signin_keyboard::INVITE_CONTEXT;
 
 /// Text slots in guest memory: the family's ids, one slot each, written
 /// when they change.
-struct SlotTexts {
-    family: Family,
-    base: AtomicU32,
+pub(crate) struct SlotTexts {
+    pub(crate) family: Family,
+    pub(crate) base: AtomicU32,
     slots: Mutex<Vec<(Vec<u8>, bool)>>,
 }
 
 impl SlotTexts {
-    fn set(&self, slot: u32, text: &str) -> u32 {
+    pub(crate) fn new(family: Family) -> Self {
+        SlotTexts {
+            family,
+            base: AtomicU32::new(0),
+            slots: Mutex::new(Vec::new()),
+        }
+    }
+    pub(crate) fn set(&self, slot: u32, text: &str) -> u32 {
         let id = self.family.id(slot);
         let mut cut = text.len().min(SLOT_LEN as usize - 1);
         while !text.is_char_boundary(cut) {
@@ -197,7 +206,7 @@ impl SlotTexts {
         }
         id
     }
-    fn address(&self, id: u32) -> Option<u32> {
+    pub(crate) fn address(&self, id: u32) -> Option<u32> {
         let base = self.base.load(Ordering::SeqCst);
         (base != 0 && self.family.owns(id)).then(|| base + (id - self.family.base) * SLOT_LEN)
     }
@@ -208,13 +217,13 @@ impl SlotTexts {
     /// Every slot written again at the next [`Self::write`]: after a
     /// snapshot load the page holds the saved run's texts, which the
     /// cache can't tell from its own.
-    fn rewrite_all(&self) {
+    pub(crate) fn rewrite_all(&self) {
         let mut slots = self.slots.lock().unwrap_or_else(|e| e.into_inner());
         for (_, dirty) in slots.iter_mut() {
             *dirty = true;
         }
     }
-    fn write(&self, m: &mut dyn GuestMemory) -> Result<(), MemFault> {
+    pub(crate) fn write(&self, m: &mut dyn GuestMemory) -> Result<(), MemFault> {
         let base = self.base.load(Ordering::SeqCst);
         if base == 0 {
             return Ok(());
@@ -237,6 +246,8 @@ pub struct KitScreen {
     title: String,
     /// The text of a row elsewhere that opens it ([`KitScreen::row_label`]).
     row_label: Option<String>,
+    /// What that row says it does ([`KitScreen::row_help`]).
+    row_help: Option<String>,
     rows: Vec<Row>,
     layout: Option<ListLayout>,
     style: ValueStyle,
@@ -263,17 +274,14 @@ impl KitScreen {
             name,
             title: title.into(),
             row_label: None,
+            row_help: None,
             rows: Vec::new(),
             layout: None,
             style: ValueStyle::Column,
             description: None,
             prompts: Vec::new(),
             scrolls: false,
-            texts: SlotTexts {
-                family: ids,
-                base: AtomicU32::new(0),
-                slots: Mutex::new(Vec::new()),
-            },
+            texts: SlotTexts::new(ids),
             pending: Mutex::new(None),
             after: AfterClose::default(),
             typing: Mutex::new(None),
@@ -342,6 +350,19 @@ impl KitScreen {
         self.row_label = Some(text.into());
         self
     }
+    /// What the row elsewhere that opens it does, for that screen's
+    /// description ("Bots that join this game..."), in a slot of its own
+    /// after the row's text ([`KitScreen::row_help_id`]).
+    pub fn row_help(mut self, text: &str) -> Self {
+        self.row_help = Some(text.into());
+        self
+    }
+    /// The string id of [`KitScreen::row_help`]'s text, written with the
+    /// other texts; `None` when there is none.
+    pub fn row_help_id(&self) -> Option<u32> {
+        let slot = self.footer_slot() + 1 + u32::from(self.row_label.is_some());
+        self.row_help.as_ref().map(|t| self.texts.set(slot, t))
+    }
     /// The string id of the opening row's text: the [`KitScreen::row_label`]
     /// slot, or the title's when there is none. Written with the other
     /// texts ([`Rows::write_texts`]).
@@ -353,8 +374,8 @@ impl KitScreen {
     }
 
     // Slots: 0 the title, then a label and a value per row, then a
-    // description per row, the footer, and the opening row's text when
-    // there is one.
+    // description per row, the footer, the opening row's text when there
+    // is one, and its help when there is one.
     fn label_slot(row: usize) -> u32 {
         1 + 2 * row as u32
     }
@@ -367,7 +388,10 @@ impl KitScreen {
     /// The slots the screen needs: fails the build of its class when its
     /// family is too small.
     pub fn slots(&self) -> u32 {
-        self.footer_slot() + 1 + u32::from(self.row_label.is_some())
+        self.footer_slot()
+            + 1
+            + u32::from(self.row_label.is_some())
+            + u32::from(self.row_help.is_some())
     }
     fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         m.lock().unwrap_or_else(|e| e.into_inner())
@@ -563,7 +587,18 @@ impl Rows for KitScreen {
                 Then::CloseThen(work) => pend(Pending::CloseThen(work)),
             },
             Kind::Value { values, get, set } => {
-                Chosen::Stepped(set((get() + 1) % values.len().max(1)))
+                let pick = crate::ui_kit::picker::Pick::new(
+                    &r.label,
+                    values.clone(),
+                    get(),
+                    r.description.as_deref().unwrap_or_default(),
+                    Arc::clone(set),
+                )
+                .over(self.dialog.map_or(Opener::MAIN_MENU, |(_, o)| o));
+                match crate::ui_kit::picker::offer(pick) {
+                    Some(picker) => Chosen::Open(picker),
+                    None => Chosen::Stepped(set((get() + 1) % values.len().max(1))),
+                }
             }
             Kind::Info(_) => Chosen::Nothing,
             Kind::Text { .. } => pend(Pending::Keyboard(row as usize)),

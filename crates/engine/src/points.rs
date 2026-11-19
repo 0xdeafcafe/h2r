@@ -431,6 +431,11 @@ points! { ALL;
     /// The Game Setup list's row chosen: jumps through a ten-entry table by
     /// the row's action with no bounds check.
     SQUAD_SETTINGS_ROW_CHOSEN @ 0x002b_b801: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/halo1/multiplayer.md";
+    /// The Game Setup dialog's update (vtable `0x45c524`): sets the
+    /// description, the "current" label and value, and the picture for
+    /// the focused row's action (a jump table of ten at `0x2bbea8`; any
+    /// other action gets none of them and image 0), then the base update.
+    SQUAD_SETTINGS_UPDATE @ 0x002b_bbf6: [fn(screen: ecx) ret 0]; "docs/game/ui-builder.md";
     /// Whether the OptiMatch playlist list shows hopper `index` (0..16):
     /// the range, two gates and the descriptor's validity (tail `jmp` to
     /// `0x001934f0`). Its one caller is the list's item builder

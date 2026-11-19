@@ -51,6 +51,15 @@ pub enum DialogBase {
     /// (-254, 87) and a help line above it; the game's own settings
     /// dialog. Only in `mainmenu.map`.
     QuickOptions,
+    /// `low_level_settings` (screen 223, the variant editor's and Quick
+    /// Options' value picker): the large dialog's panel and header layout
+    /// 2 (title "SCORE TO WIN ROUND", legend in its footer), a six-row
+    /// list of one-text items on `default6` (skin 22, its scroll arrows
+    /// at the list's left) at (-231, 30), and the setting's description
+    /// in a text block on the right ([`PICKER_HELP_TEXT`]). Only in
+    /// `mainmenu.map`; in a game the picker is the large dialog laid out
+    /// the same way (`crate::ui_kit::picker`).
+    ValuePicker,
 }
 
 impl DialogBase {
@@ -58,6 +67,7 @@ impl DialogBase {
         match self {
             DialogBase::Large => LARGE_SCREEN_ID,
             DialogBase::QuickOptions => QUICK_OPTIONS_SCREEN_ID,
+            DialogBase::ValuePicker => VALUE_PICKER_SCREEN_ID,
         }
     }
     /// Where a row's value goes: alone in the value column of Quick
@@ -66,7 +76,7 @@ impl DialogBase {
     /// large dialog's one-text skin.
     pub fn style(self) -> crate::ui_kit::spec::ValueStyle {
         match self {
-            DialogBase::Large => crate::ui_kit::spec::ValueStyle::Inline,
+            DialogBase::Large | DialogBase::ValuePicker => crate::ui_kit::spec::ValueStyle::Inline,
             DialogBase::QuickOptions => crate::ui_kit::spec::ValueStyle::Setting,
         }
     }
@@ -77,6 +87,7 @@ impl DialogBase {
         match self {
             DialogBase::Large => None,
             DialogBase::QuickOptions => Some(QUICK_HELP_TEXT),
+            DialogBase::ValuePicker => Some(PICKER_HELP_TEXT),
         }
     }
     /// The base pane's bitmaps (by block index) that are the retail
@@ -84,7 +95,7 @@ impl DialogBase {
     /// Quick Options' game type picture beside the variant's name.
     pub fn content_bitmaps(self) -> &'static [u16] {
         match self {
-            DialogBase::Large => &[],
+            DialogBase::Large | DialogBase::ValuePicker => &[],
             DialogBase::QuickOptions => &[1],
         }
     }
@@ -97,6 +108,8 @@ impl DialogBase {
 
 /// `quick_options`'s screen id.
 pub const QUICK_OPTIONS_SCREEN_ID: i16 = 222;
+/// `low_level_settings`' screen id: the value picker.
+pub const VALUE_PICKER_SCREEN_ID: i16 = 223;
 
 /// What a dialog shows besides its title and legend (the spec's `title`
 /// and `prompts`).
@@ -226,6 +239,35 @@ pub const QUICK_LIST: ListAt = ListAt {
 };
 pub const QUICK_LIST_ROWS: usize = 11;
 
+/// `low_level_settings`' list: `default6` (skin 22: `default`'s one text
+/// and row bar, its scroll arrows at (-27, 24) and (-27, -88)), six rows
+/// from (-231, 30), each 22 high; more values than that scroll.
+pub const PICKER_LIST: ListAt = ListAt {
+    anchor: [-231, 30],
+    skin: 22,
+};
+pub const PICKER_LIST_ROWS: usize = 6;
+/// `low_level_settings`' description block (pane 0's text block 0,
+/// string `description`, filled by code): right of the list, from the
+/// header's bottom to the footer's top, left-justified, font 1, the pale
+/// blue, the pane's animation (23). Where the picker says what the
+/// setting does ("Points are earned in Slayer for...").
+pub const PICKER_HELP: Rect = rect(74, 15, -80, 250);
+pub const PICKER_HELP_TEXT: crate::list_class::TextBlock = crate::list_class::TextBlock {
+    rect: [
+        PICKER_HELP.top,
+        PICKER_HELP.left,
+        PICKER_HELP.bottom,
+        PICKER_HELP.right,
+    ],
+    font: 1,
+    colour: [0.388235, 0.580392, 0.756863],
+    animation: PICKER_ANIMATION,
+};
+/// `low_level_settings`' pane and text animation slot (1-based), as
+/// `error_dialog_large`'s.
+pub const PICKER_ANIMATION: u16 = 23;
+
 /// The text column's edges: the header layout's title rectangle's.
 pub const LEFT: i16 = -243;
 pub const RIGHT: i16 = 255;
@@ -257,6 +299,38 @@ impl DialogGeometry {
         let large = DialogGeometry::large();
         match base {
             DialogBase::Large => large,
+            DialogBase::ValuePicker => {
+                // The large dialog's four panel blocks, as
+                // `low_level_settings` has them (same bitmaps, places and
+                // depth; its own animations).
+                let panel = large
+                    .panel
+                    .iter()
+                    .map(|p| PaneArt {
+                        art: match p.art {
+                            Art::Screen {
+                                pane, index, image, ..
+                            } => Art::Screen {
+                                screen_id: VALUE_PICKER_SCREEN_ID,
+                                pane,
+                                index,
+                                image,
+                            },
+                            other => other,
+                        },
+                        ..*p
+                    })
+                    .collect();
+                let list = PICKER_LIST;
+                DialogGeometry {
+                    screen_id: VALUE_PICKER_SCREEN_ID,
+                    panel,
+                    list,
+                    list_items: PICKER_LIST_ROWS,
+                    rows: Geometry::fallback(Self::list_place(list, PICKER_LIST_ROWS)),
+                    ..large
+                }
+            }
             DialogBase::QuickOptions => {
                 let art = |index: u16, at: [i16; 2], size: [u16; 2], depth: i16| PaneArt {
                     art: Art::Screen {

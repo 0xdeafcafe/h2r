@@ -208,6 +208,10 @@ static ROWS: [ChoiceRow; 7] = [
 
 /// The Game Setup row's text; the page's title stays [`TITLE`].
 pub const ROW_LABEL: &str = "Clanker Options...";
+/// What the Game Setup row does, in Game Setup's description while it has
+/// the focus, as retail's rows have theirs (`crate::game_setup_help`).
+pub const ROW_HELP: &str =
+    "Add bots to this game: how many, how well they play, and which team they join.";
 /// The page's title, in capitals as Quick Options' header ("QUICK
 /// OPTIONS") is.
 pub const TITLE: &str = "CLANKERS";
@@ -217,12 +221,14 @@ pub const TITLE: &str = "CLANKERS";
 pub fn page(store: Arc<Store>) -> KitScreen {
     let mut s = KitScreen::new(FEATURE, SCREEN, IDS, TITLE)
         .row_label(ROW_LABEL)
+        .row_help(ROW_HELP)
         .dialog(DialogBase::QuickOptions, Opener::GAME_SETUP_CLANKERS);
     for r in &ROWS {
         s = s.row(r.row(Arc::clone(&store)));
     }
     s.prompts(&[
         Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Change"),
+        Prompt::new(&[Glyph::A], "Select"),
         Prompt::new(&[Glyph::B], "Back"),
     ])
 }
@@ -1668,6 +1674,19 @@ pub fn install(
     registry
         .add(&page.class())
         .map_err(|e| anyhow::anyhow!("clankers page: {e}"))?;
+    // The row's picture and description on Game Setup: a Spartan over a
+    // roster (an image of the set no retail row uses), and what the page
+    // is for.
+    let help = Arc::clone(&page);
+    crate::game_setup_help::register(
+        ROW_ACTION,
+        crate::game_setup_help::image::ROSTER,
+        Arc::new(move |m: &mut dyn engine::memory::GuestMemory| {
+            let id = help.row_help_id()?;
+            help.write_texts(m).ok()?;
+            Some(id)
+        }),
+    );
     registry
         .add(&SetupRow { page })
         .map_err(|e| anyhow::anyhow!("clankers row: {e}"))?;
