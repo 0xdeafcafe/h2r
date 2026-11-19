@@ -1487,6 +1487,44 @@ for a bot of the session's latest roster when its host posts it
 replaced roster's bots can leave but not join again. The worker shares
 the code (`live-worker` `rostered_bots_read_as_bot_accounts`).
 
+**One identity across a session handoff.** Halo 2 hands its lobby to a
+new Live session as a game starts (and again as it ends): the HLE deletes
+the lobby's session and advertises another (run 20261119-020015:
+`8894d40b...` deleted, `83d9415d...` advertised a few seconds later).
+The bots keep who they are through it, local bots and phantoms alike:
+
+- **Server** (`live_server::bots::may_carry`, both homes: the worker runs
+  the same code). A roster request may name `carry_from`, the host's
+  previous session. The server rosters that session's latest bots again,
+  in order and with their levels and skills, for the new session (a
+  `BotsRostered` on `bots-<new>`), so they are leased to it: the host may
+  report them as the new session's players and its game records may name
+  them. "The same host's next session" means: `carry_from` was this
+  author's session, it is no longer open, it ended (its last activity, the
+  delete) no more than `CARRY_WINDOW_S` (120 s) before the request, its
+  latest roster is this author's, and it is not the new session itself.
+  A count above the old roster's is topped up with new bots after the
+  carried ones; a smaller one takes the first. Anything else is a 400.
+- **Console** (`clankers::ask_for`). Between the delete and the next
+  advertisement (no hosted session), the roster in force stays and the
+  bots do not change. When the hosted session changes and the same bots
+  are wanted (count, difficulty and playlist unchanged), the driver asks
+  with `carry_from` and keeps the old roster meanwhile: nothing is taken
+  off, no bot falls back to host-made, the phantoms stay joined. The log
+  says `clankers: the game moved from session A to B: asking Live to
+  carry its bots there`. Until the server answers, the roster is not the
+  new session's: no game record names it and the session is told of no
+  bots (`roster_in_force` is `None`). If the server refuses the carry,
+  the driver asks for a new roster, as it did before. A changed count,
+  difficulty or playlist asks for a new roster, not a carry.
+- **The record.** Telemetry asks for the bots once, at the game's start.
+  A phantom made later (by a roster change mid-game) was then a machine
+  the start's list did not name, so it went out as a human: run -020015's
+  "6 players, 3 bots". A phantom's machine id now marks it as a bot
+  whether listed or not (`live_proto::bots::is_phantom_machine`, the
+  `C1 A4` prefix); only a listed one, with its roster in force, carries
+  its xuid.
+
 **Web.** A bot account has a player page: the identity strip with a BOT
 mark, its service record and game history, no friend, message or other
 social actions, never online. The page finds it in the event log
@@ -1516,7 +1554,8 @@ sbmm-ranked's.
 
 **Tests:** `cargo test -p live-server --test bots
 a_rostered_bot_is_an_account` and
-`a_host_reports_the_bots_it_leased_as_its_sessions_players`, `-p live-hle
+`a_host_reports_the_bots_it_leased_as_its_sessions_players` and
+`a_hosts_next_session_carries_its_bots`, `-p live-hle
 --lib players_tests`, `-p live-worker
 rostered_bots_read_as_bot_accounts`, `-p live-hle --test server
 a_leased_bot_account`, `-p bots guest` (the bot-account record and
@@ -1915,7 +1954,11 @@ list for the user to play (§11).
        level. Without one: made-up bots at the request's `skill` (Normal
        when absent). `team` stays `null`; the host balances. The answer is
        the §9.1 roster with `match_id` = the session id, and the server
-       writes `BotsRostered` on `bots-<session_id>`.
+       writes `BotsRostered` on `bots-<session_id>`. With `carry_from`
+       (the host's previous session, ended within 120 s): that session's
+       bots first, as they were (§9.5, "One identity across a session
+       handoff"). The session's players that are bots do not count as
+       humans for the room or the mean level.
      - `POST /v1/admin/bots {count}` (the operator, up to 64): persistent
        bots, the pool rosters draw from. A persistent bot reserves its
        gamertag as an account would (no account can take it). A made-up
@@ -2063,6 +2106,21 @@ list for the user to play (§11).
        clankers` (the session's bot accounts), `-p live-hle --lib
        players_tests`, `-p live-server --test bots
        a_host_reports_the_bots_it_leased`, `-p cli bots_verdict`.
+   - **Built (6c, after run 20261119-020015):** 11 of 12, the phantoms
+     joined, but the roster churned at the session handoff (new names for
+     every bot mid-game, six phantom joins for two) and the record had 3
+     of 5 bots.
+     - The roster carries across the handoff (§9.5, "One identity across
+       a session handoff"): `RosterRequest::carry_from` on the server and
+       worker, `clankers::ask_for` on the console.
+     - The record marks every phantom-machine player as a bot.
+     - Tests: `cargo test -p live-server --test bots
+       a_hosts_next_session_carries_its_bots`, `-p live-worker
+       rostered_bots_read_as_bot_accounts` (the carry on the worker),
+       `-p boot --lib clankers` (`the_bots_keep_who_they_are_...`,
+       `the_record_knows_a_phantom_...`), `-p live-telemetry --lib
+       a_phantom_the_start_did_not_list_is_still_a_bot`, `-p live-proto
+       bots`.
 7. **Clankers page (Game Setup).** Built: `boot::clankers`.
    - **Settings** `clankers.*`, kept in the profile store
      (`setting_defs::ALL`):

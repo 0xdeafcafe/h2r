@@ -332,6 +332,7 @@ fn with_live_every_bot_is_a_server_bot_account_locals_first() {
             count: 5,
             skill: Some(live_proto::bots::HEROIC),
             teams: false,
+            carry_from: None,
         }],
         "every bot, local and phantom, at the page's difficulty"
     );
@@ -505,6 +506,106 @@ fn a_failed_roster_leaves_host_made_bots_that_no_record_names() {
             .iter()
             .all(|p| p.identity.gamertag.starts_with("Clanker"))
     );
+}
+
+/// The game record knows a phantom by its machine id (live-telemetry),
+/// with the prefix the phantoms are made with.
+#[test]
+fn the_record_knows_a_phantom_by_the_same_machine_prefix() {
+    assert_eq!(
+        bots::phantom::MACHINE_PREFIX,
+        live_proto::bots::PHANTOM_MACHINE_PREFIX
+    );
+    let m = bots::phantom::machine_id(PhantomHandle(9));
+    assert!(live_proto::bots::is_phantom_machine(m));
+    assert!(!live_proto::bots::is_phantom_machine([
+        0x00, 0x50, 0xf2, 0, 0, 9
+    ]));
+}
+
+/// The run 20261119-020015: as the game started, Halo 2 deleted the
+/// lobby's session and advertised another, and the driver asked for a new
+/// roster: host-made bots in the gap, then new names for every bot,
+/// mid-game. Now the bots keep who they are across the handoff, and the
+/// server is asked to carry their roster to the new session.
+#[test]
+fn the_bots_keep_who_they_are_when_the_game_moves_to_a_new_session() {
+    const LOBBY: &str = "8894d40b4db49acb";
+    const GAME: &str = "83d9415d14bf4ddc";
+    const NEXT: &str = "8000000000000001";
+    let (s, live, ph, d) = rostered_driver(Some(LOBBY));
+    on(&s, 5, 2);
+    live.answer(0, Ok(roster(LOBBY, 5, 0.67)));
+    let who = |d: &Driver| -> Vec<(Seat, u64)> {
+        d.own
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|o| (o.seat, o.xuid))
+            .collect()
+    };
+    let before = who(&d);
+    let phantoms = ph.list();
+    assert_eq!(phantoms.len(), 2);
+    assert!(before.iter().all(|(_, x)| *x != 0));
+    let accounts = d.bots_in_force().unwrap().accounts;
+
+    // The lobby's session deleted, the next not advertised yet: nothing
+    // changes, and a page change in the gap keeps the roster.
+    *live.session.lock().unwrap() = None;
+    assert!(d.refresh().is_empty());
+    let log = d.apply(Want::read(&s));
+    assert!(log.is_empty(), "{log:?}");
+    assert_eq!(who(&d), before);
+    assert_eq!(ph.list(), phantoms);
+
+    // The game's session advertised: the server is asked to carry the
+    // lobby's bots there, and they stay as they are meanwhile.
+    *live.session.lock().unwrap() = Some(GAME.into());
+    let log = d.refresh();
+    assert_eq!(
+        log,
+        [format!(
+            "the game moved from session {LOBBY} to {GAME}: asking Live to carry its bots there"
+        )]
+    );
+    let asked = &live.requests()[1];
+    assert_eq!(asked.session_id, GAME);
+    assert_eq!(asked.carry_from.as_deref(), Some(LOBBY));
+    assert_eq!(asked.count, 5);
+    assert_eq!(who(&d), before, "no host-made bots in the gap");
+    assert_eq!(ph.list(), phantoms, "the phantoms stay joined");
+    assert!(d.refresh().is_empty(), "asked once");
+    // Until the server answers, the roster is not the new session's.
+    assert_eq!(d.bots_in_force().unwrap().session_id, None);
+    assert!(d.session_bots().is_empty());
+
+    // The carried roster: the same bots, now the game session's.
+    live.answer(1, Ok(roster(GAME, 5, 0.67)));
+    assert_eq!(who(&d), before);
+    assert_eq!(ph.list(), phantoms);
+    let bots = d.bots_in_force().unwrap();
+    assert_eq!(bots.session_id.as_deref(), Some(GAME));
+    assert_eq!(bots.accounts, accounts);
+    assert_eq!(
+        d.session_bots().len(),
+        3,
+        "the local bots (the phantoms are not made)"
+    );
+
+    // A carry the server refuses: a new roster is asked for.
+    *live.session.lock().unwrap() = Some(NEXT.into());
+    d.refresh();
+    assert_eq!(live.requests()[2].carry_from.as_deref(), Some(GAME));
+    live.answer(2, Err("status 400".into()));
+    assert_eq!(live.requests().len(), 4);
+    assert_eq!(live.requests()[3].session_id, NEXT);
+    assert_eq!(live.requests()[3].carry_from, None);
+
+    // A count change is a new roster, not a carry.
+    live.answer(3, Ok(roster(NEXT, 5, 0.67)));
+    s.set(COUNT.key, Value::Int(4)).unwrap();
+    assert_eq!(live.requests()[4].carry_from, None);
 }
 
 #[test]

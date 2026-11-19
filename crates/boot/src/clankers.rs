@@ -368,11 +368,67 @@ struct Asked {
     skill: Option<f32>,
 }
 
+impl Asked {
+    /// The same bots asked for, whatever the session.
+    fn same_bots(&self, other: &Asked) -> bool {
+        self.playlist == other.playlist && self.count == other.count && self.skill == other.skill
+    }
+}
+
 #[derive(Default)]
 struct RosterState {
     asked: Option<Asked>,
-    /// The answer to `asked`, once it came.
+    /// The answer to `asked`, once it came; or, while `carrying`, the
+    /// previous session's roster, which stays in place meanwhile.
     roster: Option<Vec<RosterSeat>>,
+    /// `asked` carries the roster of this earlier session (a handoff, §9.5)
+    /// and the server has not answered yet: the bots keep who they are,
+    /// but the roster is not the new session's until it does.
+    carrying: Option<String>,
+}
+
+/// What a roster ask for `asked` does, with `r` the roster state before it.
+#[derive(Debug, PartialEq)]
+enum Ask {
+    /// The roster in force, or being carried: nothing to ask.
+    Have(Option<Vec<RosterSeat>>),
+    /// Ask for a new roster; the bots are host-made until it comes.
+    Fresh,
+    /// The hosted session changed and the same bots are wanted: ask the
+    /// server to carry this earlier session's roster to the new one, the
+    /// bots staying as they are meanwhile.
+    Carry(String),
+}
+
+/// Decides [`Ask`] for `asked` (`None`: this console hosts no session now,
+/// as between a deleted session and the next one's advertisement).
+fn ask_for(
+    r: &RosterState,
+    asked: Option<&Asked>,
+    count: u32,
+    skill: Option<f32>,
+    playlist: Option<&String>,
+) -> Ask {
+    let Some(asked) = asked else {
+        // Between sessions: a roster for these bots stays.
+        return match (&r.asked, &r.roster) {
+            (Some(a), Some(seats))
+                if a.count == count && a.skill == skill && a.playlist.as_ref() == playlist =>
+            {
+                Ask::Have(Some(seats.clone()))
+            }
+            _ => Ask::Have(None),
+        };
+    };
+    match (&r.asked, &r.roster) {
+        (Some(a), _) if a == asked => Ask::Have(r.roster.clone()),
+        // The roster's session, or, when its carry is not answered yet and
+        // the session changed again, the one it was carried from.
+        (Some(a), Some(_)) if a.same_bots(asked) => {
+            Ask::Carry(r.carrying.clone().unwrap_or_else(|| a.session.clone()))
+        }
+        _ => Ask::Fresh,
+    }
 }
 
 /// A Clanker: the brain, its skill shared with the driver so a change on
@@ -538,7 +594,18 @@ impl Driver {
         log: &mut Vec<String>,
     ) -> Option<Vec<RosterSeat>> {
         let rosters = self.rosters.as_ref()?;
-        let Some(session) = rosters.session() else {
+        let playlist = rosters.playlist();
+        let skill = request_skill(difficulty);
+        let session = rosters.session();
+        let mut r = self.roster.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(session) = session else {
+            if let Ask::Have(Some(seats)) =
+                ask_for(&r, None, count as u32, skill, playlist.as_ref())
+            {
+                // A handoff under way: the lobby's session went, the next
+                // is not advertised yet. The bots stay who they are.
+                return Some(seats);
+            }
             // Said so a run shows why no roster was asked for: the game
             // hosts no Xbox Live session (not signed in to Live, Split
             // Screen, System Link). A Live session hosted later asks
@@ -550,17 +617,32 @@ impl Driver {
             return None;
         };
         let asked = Asked {
-            playlist: rosters.playlist(),
+            playlist,
             session,
             count: count as u32,
-            skill: request_skill(difficulty),
+            skill,
         };
-        let mut r = self.roster.lock().unwrap_or_else(|e| e.into_inner());
-        if r.asked.as_ref() == Some(&asked) {
-            return r.roster.clone();
-        }
+        let carry_from = match ask_for(
+            &r,
+            Some(&asked),
+            asked.count,
+            skill,
+            asked.playlist.as_ref(),
+        ) {
+            Ask::Have(seats) => return seats,
+            Ask::Fresh => {
+                r.roster = None;
+                r.carrying = None;
+                None
+            }
+            Ask::Carry(from) => {
+                // The old roster stays in `roster` meanwhile.
+                r.carrying = Some(from.clone());
+                Some(from)
+            }
+        };
         r.asked = Some(asked.clone());
-        r.roster = None;
+        let kept = r.roster.clone();
         drop(r);
         let request = live_proto::bots::RosterRequest {
             session_id: asked.session.clone(),
@@ -568,6 +650,7 @@ impl Driver {
             count: asked.count,
             skill: asked.skill,
             teams: false,
+            carry_from: carry_from.clone(),
         };
         let session = asked.session.clone();
         let me = self.me.clone();
@@ -577,13 +660,16 @@ impl Driver {
                 eprintln!("clankers: {line}");
             }
         });
-        match rosters.ask(request, done) {
-            Ok(()) => log.push(format!(
+        match (rosters.ask(request, done), &carry_from) {
+            (Ok(()), None) => log.push(format!(
                 "asking Live for {count} bots for session {session}"
             )),
-            Err(e) => log.push(format!("no roster from Live: {e}")),
+            (Ok(()), Some(from)) => log.push(format!(
+                "the game moved from session {from} to {session}: asking Live to carry its bots there"
+            )),
+            (Err(e), _) => log.push(format!("no roster from Live: {e}")),
         }
-        None
+        kept
     }
 
     /// A roster's answer to `asked`: kept and applied when it is still the
@@ -598,17 +684,39 @@ impl Driver {
             if r.asked.as_ref() != Some(asked) {
                 return vec!["an old roster's answer, dropped".into()];
             }
+            let carried = r.carrying.take();
             match answer {
                 Ok(roster) if roster.match_id == asked.session => {
                     r.roster = Some(roster_seats(&roster));
                 }
-                Ok(roster) => {
-                    return vec![format!(
-                        "a roster for session {}, not {}: host-made bots",
-                        roster.match_id, asked.session
+                answer => {
+                    let why = match answer {
+                        Ok(roster) => format!(
+                            "a roster for session {}, not {}",
+                            roster.match_id, asked.session
+                        ),
+                        Err(e) => format!("no roster from Live ({e})"),
+                    };
+                    let Some(from) = carried else {
+                        return vec![format!("{why}: host-made bots")];
+                    };
+                    // The carry failed: the old roster is not this
+                    // session's, so ask for a new one.
+                    r.asked = None;
+                    r.roster = None;
+                    drop(r);
+                    let mut log = vec![format!(
+                        "{why}: session {from}'s bots did not carry to {}; asking for new ones",
+                        asked.session
                     )];
+                    // Copied out first: `apply` takes `last` again, and an
+                    // `if let` would hold its guard through the body.
+                    let want = *self.last.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Some(want) = want {
+                        log.extend(self.apply(want));
+                    }
+                    return log;
                 }
-                Err(e) => return vec![format!("no roster from Live ({e}): host-made bots")],
             }
         }
         let want = *self.last.lock().unwrap_or_else(|e| e.into_inner());
@@ -735,6 +843,10 @@ impl Driver {
         let r = self.roster.lock().unwrap_or_else(|e| e.into_inner());
         let asked = r.asked.as_ref().filter(|a| a.session == session)?;
         r.roster.as_ref()?;
+        // A carried roster is the new session's once the server says so.
+        if r.carrying.is_some() {
+            return None;
+        }
         Some(asked.session.clone())
     }
 
