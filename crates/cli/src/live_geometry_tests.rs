@@ -2298,6 +2298,7 @@ fn test_look(shader: u32, bitmap: u32, w: u32) -> crate::live_looks::Look {
             },
         }),
         scale: [1.0, 1.0],
+        plasma: None,
     }
 }
 
@@ -2525,6 +2526,117 @@ fn written_levels_keep_pictures_beside_the_glb_and_tile_them_by_the_shader_s_sca
         serde_json::json!(["KHR_texture_transform"])
     );
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn plasma_primitives_keep_uvs_and_reference_all_three_pictures() {
+    use crate::live_looks::Cutout;
+    use crate::live_plasma::{PlasmaLook, Scroll, Transform};
+
+    let still = Transform {
+        scale: [1.0, 1.0],
+        offset: [0.0, 0.0],
+        scroll: [None, None],
+    };
+    let animated = Transform {
+        scale: [2.0, 1.0],
+        scroll: [
+            None,
+            Some(Scroll {
+                from: 0.0,
+                to: -1.0,
+                period: 3.0,
+            }),
+        ],
+        ..still
+    };
+    let mut look = test_look(100, 7, 8);
+    look.cutout = Cutout::Plasma;
+    look.plasma = Some((
+        PlasmaLook {
+            uv: [animated, still, still],
+            colors: [[0.25, 0.5, 1.0]; 3],
+        },
+        [test_look(0, 8, 8).texture, test_look(0, 9, 8).texture],
+    ));
+    let mut looks = Looks::default();
+    let k = looks.add(look);
+    let surface = surface_of(Some("plasma"), Some(r"shaders\transparent\plasma_alpha"));
+    assert_eq!(surface, Surface::Plasma);
+    let tris = flat(0.0, 0.0, 4.0, 4.0, 0.0, true).map(|t| Tri {
+        surface,
+        ..looked(t, Some(k))
+    });
+    // The same look and picture sharing applies to both BSPs and model meshes.
+    let mut level = Level::build(
+        "plasma",
+        MapKind::Multiplayer,
+        vec![(0, Ok(build_mesh(&tris)))],
+    )
+    .unwrap();
+    level.looks = looks;
+    let (glb, pictures) = level.glb_and_pictures(true);
+    assert_eq!(pictures.encoded.len(), 3);
+    gltf::Gltf::from_slice(&glb).expect("valid plasma glTF");
+    let (doc, _) = parse_glb(&glb);
+    let p = &doc["meshes"][0]["primitives"][0];
+    assert!(p["attributes"]["TEXCOORD_0"].is_number());
+    assert!(p["extras"]["flat"].is_null(), "no glass swap");
+    let m = &doc["materials"][p["material"].as_u64().unwrap() as usize];
+    assert_eq!(m["alphaMode"], "BLEND");
+    assert!(m["extensions"]["KHR_materials_unlit"].is_object());
+    assert_eq!(m["pbrMetallicRoughness"]["baseColorTexture"]["index"], 0);
+    assert_eq!(m["extras"]["noise"], serde_json::json!([1, 2]));
+    assert_eq!(
+        m["extras"]["plasma"]["uv"][0],
+        serde_json::json!({
+            "scale": [2.0, 1.0],
+            "offset": [0.0, 0.0],
+            "scroll": [null, {"from": 0.0, "to": -1.0, "period": 3.0}],
+        })
+    );
+}
+
+#[test]
+#[ignore = "requires the retail disc in H2_DISC"]
+fn plasma_lifts_from_the_disc() {
+    let disc = Disc::scan(Path::new(&std::env::var("H2_DISC").expect("H2_DISC"))).unwrap();
+    for (stem, shader, placed) in [
+        ("ascension", "grav_beam", true),
+        ("midship", "grav_beam", true),
+        ("lockout", "grav_lift", false),
+        ("cyclotron", "human_air", true),
+    ] {
+        let map = disc
+            .maps_of(map::CacheType::Multiplayer)
+            .find(|m| m.name() == stem)
+            .unwrap();
+        let level = load_level(&disc, map, MapKind::Multiplayer, &mut MapStats::default()).unwrap();
+        let mut indices = if placed {
+            level
+                .object_models
+                .iter()
+                .flat_map(|m| &m.mesh.primitives)
+                .collect::<Vec<_>>()
+        } else {
+            level.bsps.iter().flat_map(|(_, m)| &m.primitives).collect()
+        }
+        .into_iter()
+        .filter_map(|(_, p)| p.look);
+        assert!(
+            indices.any(|i| {
+                let look = &level.looks.looks[i as usize];
+                look.name == shader
+                    && look.plasma.as_ref().is_some_and(|(p, _)| {
+                        p.uv[..2]
+                            .iter()
+                            .all(|uv| uv.scroll.iter().any(Option::is_some))
+                            && p.uv[2].scroll == [None, None]
+                    })
+            }),
+            "{stem}: missing animated plasma mesh ({shader})"
+        );
+    }
 }
 
 #[test]
