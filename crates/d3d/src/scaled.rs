@@ -1047,14 +1047,15 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
 
 /// One external pass drawn into both copies of the targets.
 #[derive(Clone)]
-struct SharedPass(std::sync::Arc<std::sync::Mutex<Box<dyn crate::backend::ExternalPass>>>);
+struct SharedPass(std::sync::Arc<std::sync::Mutex<Box<dyn crate::backend::ExternalPass>>>, crate::TargetCopy);
 
 impl crate::backend::ExternalPass for SharedPass {
     fn confirm_issue(&self) -> bool {
         self.0.lock().unwrap_or_else(|e| e.into_inner()).confirm_issue()
     }
 
-    fn encode(&mut self, target: crate::backend::ExternalTarget<'_>) {
+    fn encode(&mut self, mut target: crate::backend::ExternalTarget<'_>) {
+        target.copy = self.1;
         self.0.lock().unwrap_or_else(|e| e.into_inner()).encode(target);
     }
 }
@@ -1686,7 +1687,7 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         // Both copies get the pass: the reference (what the guest reads
         // back and what repairs come from) and the view (what is shown),
         // each sampling its own copy of the sampled levels.
-        let shared = SharedPass(std::sync::Arc::new(std::sync::Mutex::new(pass)));
+        let mut shared = SharedPass(std::sync::Arc::new(std::sync::Mutex::new(pass)), crate::TargetCopy::Reference);
         let reference = sampled.iter().map(|s| s.as_ref().map(|s| s.reference)).collect();
         let view = sampled.iter().map(|s| s.as_ref().and_then(|s| self.live(s.view))).collect();
         let drawn = self
@@ -1697,6 +1698,7 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         if !drawn && crate::backend::ExternalPass::confirm_issue(&shared) {
             return Ok(false);
         }
+        shared.1 = crate::TargetCopy::Display;
         if let (Some(c), Some(d)) = (color.view, depth.view)
             && !self.view.external_pass(c, d, view, request, Box::new(shared))?
         {
