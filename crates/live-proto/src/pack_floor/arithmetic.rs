@@ -4,6 +4,7 @@ use super::super::BitWriter;
 const HALF: u64 = 1 << 31;
 const Q: u64 = 1 << 30;
 pub trait Bits {
+    const WRITING: bool;
     fn choose(&mut self, cut: u64, want: bool) -> bool;
     fn shift(&mut self, offset: u64);
 }
@@ -22,6 +23,7 @@ impl Output {
     }
 }
 impl Bits for Output {
+    const WRITING: bool = true;
     #[inline]
     fn choose(&mut self, _: u64, want: bool) -> bool {
         want
@@ -54,6 +56,7 @@ impl<'a> Input<'a> {
     }
 }
 impl Bits for Input<'_> {
+    const WRITING: bool = false;
     #[inline]
     fn choose(&mut self, cut: u64, _: bool) -> bool {
         self.code >= cut

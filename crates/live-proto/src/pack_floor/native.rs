@@ -105,7 +105,14 @@ fn dictionary<T: Bits>(
         ids.insert(v.clone(), id);
         strings.push(v);
     }
-    (id, strings[id].clone())
+    (
+        id,
+        if T::WRITING {
+            Val::None
+        } else {
+            strings[id].clone()
+        },
+    )
 }
 
 #[derive(Default)]
@@ -159,9 +166,9 @@ impl History {
         let is_unit = list == 0 || list == 2;
         let aim = if list == 0 { 6 } else { 4 };
         refs.first_aim = None;
-        let mut out = Vec::with_capacity(n);
+        let mut out = Vec::with_capacity(if T::WRITING { 0 } else { n });
         for (i, hist) in rows.iter_mut().enumerate() {
-            let mut e: Entity = Vec::with_capacity(schema.len());
+            let mut e: Entity = Vec::with_capacity(if T::WRITING { 0 } else { schema.len() });
             let source = src.map(|v| &v[i]);
             let mut ctx = RowContext {
                 direction: None,
@@ -170,7 +177,7 @@ impl History {
             };
             for (j, field) in schema.iter().enumerate() {
                 if is_unit && j == aim {
-                    ctx.direction = direction_base(refs.first_aim, e.get(3));
+                    ctx.direction = direction_base(refs.first_aim, source.unwrap_or(&e).get(3));
                 } else {
                     ctx.direction = None;
                 }
@@ -186,18 +193,23 @@ impl History {
                     &mut self.strings,
                     &mut self.ids,
                 );
-                e.push(value);
+                if !T::WRITING {
+                    e.push(value);
+                }
             }
+            let actual = source.unwrap_or(&e);
             if list == 0 {
-                refs.positions.push(e[2].clone());
+                refs.positions.push(actual[2].clone());
             }
             if i == 0
                 && is_unit
-                && let (Val::Dir(q), Val::Int(y)) = (&e[aim], &e[3])
+                && let (Val::Dir(q), Val::Int(y)) = (&actual[aim], &actual[3])
             {
                 refs.first_aim = Some((unoct(*q), dyaw(*y)));
             }
-            out.push(e);
+            if !T::WRITING {
+                out.push(e);
+            }
         }
         out
     }
@@ -434,6 +446,10 @@ fn bench_live_floor_native() {
     for interval in [150, 450, usize::MAX] {
         let mut enc = Connection::default();
         let mut dec = Connection::default();
+        let mut control = Encoder::new(0, 150);
+        let mut v7_time = Duration::ZERO;
+        let mut v7_bytes = 0;
+        let mut container = Vec::new();
         let mut total = 0;
         let mut time = Duration::ZERO;
         let mut snapshot = 0;
@@ -444,12 +460,33 @@ fn bench_live_floor_native() {
                 dec = Connection::default();
                 dec.resume(&b);
             }
+            // Alternate first position so both writers get both cache conditions.
+            let mut v7 = || {
+                let start = Instant::now();
+                let (record, _) = control.encode(f).unwrap();
+                container.clear();
+                push_record(&mut container, &record);
+                v7_time += start.elapsed();
+                v7_bytes += container.len();
+            };
+            if n % 2 == 0 {
+                v7();
+            }
             let start = Instant::now();
             let packet = enc.encode(f, n % interval == 0);
             time += start.elapsed();
+            if n % 2 != 0 {
+                v7();
+            }
             total += packet.len();
             assert_eq!(dec.decode(&packet), quantize(f).unwrap());
         }
+        assert_eq!(v7_bytes, 1_394_368);
+        println!(
+            "paired v7 control {:.3} us/frame; causal/v7 {:.3}",
+            v7_time.as_secs_f64() * 1e6 / frames.len() as f64,
+            time.as_secs_f64() / v7_time.as_secs_f64()
+        );
         println!(
             "native causal interval_frames={interval} bytes={total} B/player/s={:.3} encode_us/frame={:.3} snapshot_B={snapshot}",
             total as f64 / 9600.,
