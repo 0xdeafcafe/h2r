@@ -704,6 +704,10 @@ impl Unit {
         let biped_words = if g == b"bipd" {
             crate::rebuild::BIPED_WORDS
                 .iter()
+                .chain(crate::rebuild::SENTINEL_FLIGHT.iter().filter(|_| {
+                    tag.name
+                        .eq_ignore_ascii_case(r"characters\sentinel\sentinel")
+                }))
                 .filter(|w| w.1 + 4 <= b.len())
                 .map(|w| (w.1, u32_at(b, w.1)))
                 .collect()

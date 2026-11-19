@@ -149,7 +149,7 @@ pub struct FiringPosition {
     pub area: i16,
     /// Cluster (`i16 +0x12`).
     pub cluster: i16,
-    /// Collision surface (`u32 +0x14`).
+    /// Pathfinding sector (`u32 +0x14`), or all ones for airborne positions.
     pub surface: u32,
     /// Normal: yaw, pitch in radians (`+0x18`).
     pub normal: [f32; 2],

@@ -37,6 +37,7 @@ pub mod game_glue;
 pub mod game_setup_help;
 pub mod h1_options;
 pub mod h1_options_row;
+mod h1_squads;
 pub mod h1_variants;
 mod h1_ai_control;
 pub mod health;
