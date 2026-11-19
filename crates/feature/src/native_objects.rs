@@ -84,6 +84,12 @@ pub struct NativeSet {
     /// than the one loaded, or a section none of whose parts loaded) would
     /// lose those items undrawn, so its items keep their D3D draws.
     pub sections: HashSet<(u16, u16)>,
+    /// Definitions whose objects the host is handed as drawn ones (node
+    /// rows, lighting) while their items keep their D3D draws: the host
+    /// compares its uniforms with the D3D path's draws of them
+    /// (`H2_NATIVE_OBJECTS_COMPARE` in the boot glue) and does not draw
+    /// them.
+    pub shadowed: HashSet<u16>,
 }
 
 impl NativeSet {
@@ -433,7 +439,9 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
             frames.push(f);
         }
     }
-    let drawn: HashSet<u32> = frames.iter().map(|f| f.handle).collect();
+    // A shadowed definition's items keep their D3D draws; the host still
+    // gets its frames (`NativeSet::shadowed`).
+    let drawn: HashSet<u32> = frames.iter().filter(|f| !set.shadowed.contains(&(f.definition as u16))).map(|f| f.handle).collect();
     let accepted = cleared.handles.len();
     objects::keep_only(&mut m, &mut cleared, &|h: u32| drawn.contains(&h));
     if frames.is_empty() {

@@ -1,0 +1,28 @@
+[
+  {
+    "game_id": "cinematic-golden",
+    "tick": 100,
+    "players": [],
+    "bsp": 1
+  },
+  {
+    "game_id": "cinematic-golden",
+    "tick": 102,
+    "players": [],
+    "bsp": 1,
+    "cinematic": true
+  },
+  {
+    "game_id": "cinematic-golden",
+    "tick": 104,
+    "players": [],
+    "bsp": 1,
+    "cinematic": true
+  },
+  {
+    "game_id": "cinematic-golden",
+    "tick": 106,
+    "players": [],
+    "bsp": 2
+  }
+]

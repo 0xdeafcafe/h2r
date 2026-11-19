@@ -101,7 +101,7 @@ struct LitProgram {
     /// texture accumulation target, whose level is the pass's (made per
     /// encode, [`texture_group`]).
     textures: Option<wgpu::BindGroup>,
-    pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat, Vec<u8>, Vec<Attribute>), wgpu::RenderPipeline>,
+    pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat, Vec<u8>, Vec<Attribute>, wgpu::PrimitiveState), wgpu::RenderPipeline>,
 }
 
 /// The bind group of `views` (and `extra`, the texture accumulation
@@ -119,6 +119,23 @@ fn texture_group(
         entries.push(wgpu::BindGroupEntry { binding: 2 * n as u32 + 1, resource: wgpu::BindingResource::Sampler(&samplers[n]) });
     }
     device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("native object program textures"), layout, entries: &entries })
+}
+
+/// One lit part's draw as [`LitObjects::encode`] issues it
+/// ([`LitObjects::part_uniforms`]).
+#[derive(Clone, Debug)]
+pub struct PartUniforms {
+    pub implementation: usize,
+    pub words: Vec<u32>,
+    pub vertex: VertexUniforms,
+    pub pixel: PixelUniforms,
+    pub options: shaders::vsh::VertexOptions,
+    pub def: shaders::psh::PixelShaderDef,
+    pub pixel_options: shaders::psh::PixelOptions,
+    pub samplers: [Option<gfx::translate::SamplerKey>; 4],
+    pub textures: [Option<String>; 4],
+    pub primitive: wgpu::PrimitiveState,
+    pub depth: (bool, wgpu::CompareFunction),
 }
 
 /// The texture accumulation level an encode binds: its view and its size
@@ -142,6 +159,9 @@ pub struct LitObjects {
     /// The vector normalization cube, as the lights load it (engine
     /// texture 1).
     normalization: Option<wgpu::TextureView>,
+    /// The device's cull at the pass, for programs that inherit it
+    /// ([`Self::set_inherited_cull`]).
+    inherited_cull: Option<crate::program::Cull>,
 }
 
 /// One part's draw this view.
@@ -240,7 +260,7 @@ pub fn frame_parts<'a>(frame: &'a ObjectFrame, parts: &[LitPart]) -> Vec<(usize,
 
 impl LitObjects {
     pub fn new(device: &wgpu::Device) -> Self {
-        Self { uniforms_layout: uniforms_layout(device), models: HashMap::new(), normalization: None }
+        Self { uniforms_layout: uniforms_layout(device), models: HashMap::new(), normalization: None, inherited_cull: None }
     }
 
     /// Uploads the normalization cube the programs' normalization stages
@@ -340,6 +360,20 @@ impl LitObjects {
         Some(LitProgram { pass, module, layout, textures_layout, views, samplers, textures, pipelines: HashMap::new() })
     }
 
+    /// The cull the device holds at the layer-3 call (`None`: not known),
+    /// which the programs whose implementation does not set `CULLMODE`
+    /// draw with from the next encode, as the D3D path's draws of them do.
+    pub fn set_inherited_cull(&mut self, cull: Option<crate::program::Cull>) {
+        self.inherited_cull = cull;
+    }
+
+    /// The primitive and depth write and compare `pass` draws with: its
+    /// state, with the inherited cull where it takes it.
+    fn pipeline_state(&self, pass: &ObjectPass) -> (wgpu::PrimitiveState, (bool, wgpu::CompareFunction)) {
+        let cull = if pass.program.inherits_cull { self.inherited_cull } else { None };
+        crate::program::pipeline_state(pass.program.state.as_ref(), cull)
+    }
+
     /// Whether model `index` has lit parts.
     pub fn has(&self, index: u32) -> bool {
         self.models.contains_key(&index)
@@ -421,6 +455,55 @@ impl LitObjects {
         out
     }
 
+    /// What part `part` of model `index` draws with for `frame` in `view`
+    /// (as [`Self::encode`] puts it in), to compare with the D3D path's draw
+    /// of it (`d3d::uniform_compare`); or why it is not drawn.
+    pub fn part_uniforms(&self, index: u32, frame: &ObjectFrame, part: usize, view: &ViewInputs, texaccum: Option<Texaccum<'_>>) -> Result<PartUniforms, String> {
+        let m = self.models.get(&index).ok_or("no lit model")?;
+        let p = m.parts.get(part).ok_or_else(|| format!("no part {part} (of {})", m.parts.len()))?;
+        let (i, imp, rows) = frame_parts(frame, &m.parts)
+            .into_iter()
+            .find(|(i, _, _)| *i == part)
+            .ok_or("not drawn: no record of its section, or its records' implementation is not one it has")?;
+        debug_assert_eq!(i, part);
+        let (program, _) = p.implementations[imp].ok_or("no program for its implementation")?;
+        let pass = &m.programs[program].pass;
+        let defaults = frame.defaults.unwrap_or_default();
+        let inputs = ObjectInputs { lighting: frame.lighting.as_ref(), defaults: &defaults, shader: p.shader };
+        let mut vertex = object_vertex_uniforms(&frame_vertex(&pass.program.vertex, view), &pass.implementation, &inputs, rows, p.decompression)?;
+        let mut pixel = object_pixel_uniforms(&frame_pixel(&pass.program.pixel, view), &pass.implementation, &inputs)?;
+        if let Some(t) = texaccum {
+            texaccum_dimensions(&mut vertex, &pass.implementation, pass.texaccum, t.guest_size);
+            texaccum_scale(&mut pixel, pass.texaccum, t.guest_size);
+        }
+        let (primitive, depth) = self.pipeline_state(pass);
+        let textures = std::array::from_fn(|n| {
+            if pass.texaccum[n] {
+                Some(format!("the texture accumulation level ({:?} guest texels)", texaccum.map(|t| t.guest_size)))
+            } else if pass.normalization[n] {
+                Some("the normalization cube".to_string())
+            } else {
+                match pass.program.stages[n] {
+                    Stage::Empty => None,
+                    s => Some(format!("{s:?}")),
+                }
+            }
+        });
+        Ok(PartUniforms {
+            implementation: imp,
+            words: pass.words.clone(),
+            vertex,
+            pixel,
+            options: pass.options,
+            def: pass.program.def.clone(),
+            pixel_options: pass.program.pixel_options,
+            samplers: std::array::from_fn(|n| pass.program.dims[n].and(pass.program.samplers[n].as_ref()).and_then(crate::program::sampler_key)),
+            textures,
+            primitive,
+            depth,
+        })
+    }
+
     /// The sections model `index`'s lit parts come from, each once
     /// (diagnostics).
     pub fn sections(&self, index: u32) -> Vec<u16> {
@@ -482,11 +565,12 @@ impl LitObjects {
             return 0;
         }
         for d in &draws {
+            let (primitive, _) = self.pipeline_state(&self.models[&d.model].programs[d.program].pass);
             let m = self.models.get_mut(&d.model).expect("drawn model");
             let registers = m.buffers[d.buffer].registers.clone();
             let formats = m.buffers[d.buffer].formats.clone();
             let p = &mut m.programs[d.program];
-            let key = (color_format, depth_format, registers.clone(), formats.clone());
+            let key = (color_format, depth_format, registers.clone(), formats.clone(), primitive);
             if p.pipelines.contains_key(&key) {
                 continue;
             }
@@ -505,7 +589,7 @@ impl LitObjects {
                         attributes: &attrs,
                     })],
                 },
-                primitive: state.primitive,
+                primitive,
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: depth_format,
                     depth_write_enabled: Some(state.depth_write),
@@ -596,7 +680,7 @@ impl LitObjects {
             let m = &self.models[&d.model];
             let b = &m.buffers[d.buffer];
             let p = &m.programs[d.program];
-            let Some(pipeline) = p.pipelines.get(&(color_format, depth_format, b.registers.clone(), b.formats.clone())) else { continue };
+            let Some(pipeline) = p.pipelines.get(&(color_format, depth_format, b.registers.clone(), b.formats.clone(), self.pipeline_state(&p.pass).0)) else { continue };
             let Some(textures) = p.textures.as_ref().or_else(|| groups.get(&(d.model, d.program))) else { continue };
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &uniforms, o);

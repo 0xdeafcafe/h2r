@@ -23,6 +23,7 @@ pub mod devices;
 pub mod dsound;
 pub mod format;
 pub mod fx;
+mod hrtf;
 pub mod mixer;
 pub mod resample;
 pub mod reverb;

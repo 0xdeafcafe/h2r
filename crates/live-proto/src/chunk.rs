@@ -500,7 +500,7 @@ mod tests {
         assert_eq!(frames(&bytes).unwrap(), quantized(&src));
     }
 
-    /// The golden chunk `web/test/fixtures/pack/chunk.bin`: the TypeScript
+    /// The golden chunk `web/test/fixtures/pack/v7-chunk.bin`: the TypeScript
     /// reader must read it into `chunk.json`'s frames.
     /// `H2_UPDATE_GOLDEN=1` writes them.
     #[test]
@@ -512,19 +512,29 @@ mod tests {
         let json = serde_json::to_string_pretty(&frames(&got.bytes).unwrap()).unwrap() + "\n";
         if std::env::var_os("H2_UPDATE_GOLDEN").is_some() {
             std::fs::create_dir_all(&dir).unwrap();
-            std::fs::write(dir.join("chunk.bin"), &got.bytes).unwrap();
-            std::fs::write(dir.join("chunk.json"), &json).unwrap();
+            std::fs::write(dir.join("v7-chunk.bin"), &got.bytes).unwrap();
+            std::fs::write(dir.join("v7-chunk.json"), &json).unwrap();
         }
         assert_eq!(
-            std::fs::read(dir.join("chunk.bin")).ok().as_deref(),
+            std::fs::read(dir.join("v7-chunk.bin")).ok().as_deref(),
             Some(&got.bytes[..]),
             "chunk.bin is stale: run with H2_UPDATE_GOLDEN=1"
         );
         assert_eq!(
-            std::fs::read_to_string(dir.join("chunk.json")).ok(),
+            std::fs::read_to_string(dir.join("v7-chunk.json")).ok(),
             Some(json),
             "chunk.json is stale"
         );
+    }
+
+    #[test]
+    fn version_six_chunks_still_decode() {
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/test/fixtures/pack");
+        let bin = std::fs::read(dir.join("v6-chunk.bin")).unwrap();
+        let expected: Vec<Frame> =
+            serde_json::from_slice(&std::fs::read(dir.join("v6-chunk.json")).unwrap()).unwrap();
+        assert_eq!(frames(&bin).unwrap(), expected);
     }
 
     /// Bytes a minute of play stored as chunks, per mode, against the

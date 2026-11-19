@@ -25,6 +25,7 @@ use crate::dsound::{
     mb_to_gain,
 };
 use crate::fx::headroom_gain;
+use crate::hrtf::Hrtf;
 use crate::reverb::{I3dl2Listener, Reverb};
 use crate::route::{self, Dest};
 
@@ -37,6 +38,7 @@ pub struct MixInId(pub(crate) u32);
 pub struct Mixer {
     pub(crate) sample_rate: u32,
     pub(crate) master_mb: i32,
+    pub(crate) hrtf: bool,
     pub(crate) listener: Listener,
     pub(crate) buffers: BTreeMap<BufferId, SoundBuffer>,
     pub(crate) streams: BTreeMap<StreamId, Stream>,
@@ -90,6 +92,7 @@ impl Mixer {
         Self {
             sample_rate,
             master_mb: 0,
+            hrtf: false,
             listener: Listener::default(),
             buffers: BTreeMap::new(),
             streams: BTreeMap::new(),
@@ -147,9 +150,25 @@ impl Mixer {
     /// seamlessly at the new rate.
     pub fn set_sample_rate(&mut self, sample_rate: u32) {
         assert!(sample_rate > 0);
+        if self.hrtf && self.sample_rate != sample_rate {
+            for mix in self.mix_ins.values_mut() {
+                mix.hrtf = Some(Hrtf::new(sample_rate));
+            }
+        }
         self.sample_rate = sample_rate;
         if let Some(r) = &self.reverb {
             self.reverb = Some(Reverb::new(sample_rate, *r.params()));
+        }
+    }
+
+    /// Enables headphone binaural filtering for positioned mix-ins. Call
+    /// from the control side, where the per-mix-in delay lines can allocate.
+    pub fn set_hrtf(&mut self, enabled: bool) {
+        if self.hrtf != enabled {
+            self.hrtf = enabled;
+            for mix in self.mix_ins.values_mut() {
+                mix.hrtf = enabled.then(|| Hrtf::new(self.sample_rate));
+            }
         }
     }
 
@@ -201,8 +220,9 @@ impl Mixer {
         id
     }
 
-    pub fn add_mix_in(&mut self, mix_in: MixIn) -> MixInId {
+    pub fn add_mix_in(&mut self, mut mix_in: MixIn) -> MixInId {
         let id = MixInId(self.take_id());
+        mix_in.hrtf = self.hrtf.then(|| Hrtf::new(self.sample_rate));
         self.mix_ins.insert(id, mix_in);
         id
     }
@@ -357,6 +377,7 @@ impl Mixer {
                     &scratch,
                     has_direct.then_some(&direct[..produced * 2]),
                     out,
+                    None,
                 );
             }
         }
@@ -413,6 +434,7 @@ impl Mixer {
                     &scratch,
                     has_direct.then_some(&direct[..produced * 2]),
                     out,
+                    None,
                 ) {
                     self.health.unrouted_frames += produced as u64;
                 }
@@ -445,6 +467,7 @@ impl Mixer {
                 &scratch,
                 has_direct.then_some(&direct[..]),
                 out,
+                mix.hrtf.as_mut(),
             );
         }
         if let (Some(r), true) = (self.reverb.as_mut(), reverb_live) {
@@ -526,12 +549,22 @@ fn route_voice(
     src: &[f32],
     direct_src: Option<&[f32]>,
     out: &mut [f32],
+    hrtf: Option<&mut Hrtf>,
 ) -> bool {
     // The direct path (speakers and mix-in sends) may be shelved by an I3DL2
     // source's obstruction; the reverb send always takes `src`.
     let dsrc = direct_src.unwrap_or(src);
     let (listener, master) = (cx.listener, cx.master);
     let spatial = p.spatial.as_ref().map(|s| listener.spatial(s));
+    let binaural = hrtf.and_then(|hrtf| {
+        let direction = p.spatial.as_ref().and_then(|s| listener.head_direction(s));
+        if let Some(direction) = direction {
+            Some((hrtf, direction))
+        } else {
+            hrtf.reset();
+            None
+        }
+    });
     // I3DL2 source shaping: the direct level applies to everything but the
     // reverb send, the room level to the reverb send alone.
     let (direct, room) =
@@ -542,12 +575,21 @@ fn route_voice(
         // A plain DirectSound voice: volume and pan, then the 3D panning.
         let s = spatial.unwrap_or(Spatial::DRY);
         let (l, r) = p.gains();
-        add(out, dsrc, 0, 0, l * s.gain * s.left * master * direct * hr);
-        add(out, dsrc, 1, 1, r * s.gain * s.right * master * direct * hr);
+        if let Some((hrtf, direction)) = binaural {
+            let gains = [
+                l * s.gain * master * direct * hr,
+                r * s.gain * master * direct * hr,
+            ];
+            hrtf.mix(dsrc, out, direction, [gains; 2]);
+        } else {
+            add(out, dsrc, 0, 0, l * s.gain * s.left * master * direct * hr);
+            add(out, dsrc, 1, 1, r * s.gain * s.right * master * direct * hr);
+        }
         return true;
     };
     let volume = mb_to_gain(p.volume_mb);
     let mut reached = false;
+    let mut crosstalk_gains = [[0.0; 2]; 2]; // front and back, each left and right
     for (i, &(bin, mb)) in bins.iter().enumerate() {
         let dest = route::dest(bin);
         reached |= match dest {
@@ -570,6 +612,13 @@ fn route_voice(
                 add(out, dsrc, ch, 1, g * right * master * direct);
             }
             Dest::Crosstalk { left, front } => {
+                if binaural.is_some()
+                    && let Some(s) = spatial
+                {
+                    let pair = &mut crosstalk_gains[if front { 0 } else { 1 }];
+                    pair[if left { 0 } else { 1 }] += g * s.gain * master * direct;
+                    continue;
+                }
                 let w = match spatial {
                     Some(s) => {
                         s.gain
@@ -614,6 +663,9 @@ fn route_voice(
             }
             Dest::Dropped => {}
         }
+    }
+    if let Some((hrtf, direction)) = binaural {
+        hrtf.mix(dsrc, out, direction, crosstalk_gains);
     }
     reached
 }
