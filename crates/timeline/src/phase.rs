@@ -160,10 +160,15 @@ pub enum Counter {
 }
 
 /// Number of [`Counter`]s.
-pub const COUNTERS: usize = 17;
+pub const COUNTERS: usize = 17 + crate::native::COLUMNS;
+/// Every field in a frame, in storage and CSV order.
+pub fn counter_columns() -> impl Iterator<Item = (usize, &'static str)> {
+    Counter::ALL.into_iter().map(|c| (c as usize, c.label()))
+        .chain(crate::native::labels().iter().enumerate().map(|(i, s)| (17 + i, s.as_str())))
+}
 
 impl Counter {
-    pub const ALL: [Counter; COUNTERS] = [
+    pub const ALL: [Counter; 17] = [
         Counter::Draws,
         Counter::Submits,
         Counter::Pipelines,
@@ -534,10 +539,15 @@ fn start_local(l: &Local, now: u64) {
 /// Adds `n` to this frame's `counter`.
 #[inline]
 pub fn count(counter: Counter, n: u64) {
+    count_index(counter as usize, n);
+}
+
+#[inline]
+pub(crate) fn count_index(index: usize, n: u64) {
     if enabled() {
         LOCAL.with(|l| {
             prepare_local(l);
-            let c = &l.counts[counter as usize];
+            let c = &l.counts[index];
             c.set(c.get() + n);
         });
     }
@@ -612,7 +622,7 @@ impl WorkerFrame {
 }
 
 /// One finished frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameSample {
     /// Frame number (frames counted by [`crate::frame`]).
     pub index: u64,
@@ -623,6 +633,12 @@ pub struct FrameSample {
     /// Self time per phase, including parallel worker contributions.
     pub phase_ns: [u64; PHASES],
     pub counts: [u64; COUNTERS],
+}
+
+impl Default for FrameSample {
+    fn default() -> Self {
+        Self { index: 0, end_ns: 0, total_ns: 0, phase_ns: [0; PHASES], counts: [0; COUNTERS] }
+    }
 }
 
 impl FrameSample {
@@ -736,7 +752,7 @@ pub fn start(config: Config) -> std::io::Result<()> {
                 .iter()
                 .map(|p| format!("{}_us", p.label()))
                 .collect();
-            let counts: Vec<&str> = Counter::ALL.iter().map(|c| c.label()).collect();
+            let counts: Vec<&str> = counter_columns().map(|(_, label)| label).collect();
             writeln!(
                 f,
                 "frame,end_ms,total_us,{},{}",
@@ -831,12 +847,18 @@ pub fn totals() -> Option<Totals> {
 }
 
 /// Running sums of every frame ([`totals`]).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Totals {
     pub frames: u64,
     pub total_ns: u64,
     pub phase_ns: [u64; PHASES],
     pub counts: [u64; COUNTERS],
+}
+
+impl Default for Totals {
+    fn default() -> Self {
+        Self { frames: 0, total_ns: 0, phase_ns: [0; PHASES], counts: [0; COUNTERS] }
+    }
 }
 
 impl Totals {
@@ -871,7 +893,7 @@ pub fn take_interval() -> Option<Interval> {
 
 /// Frames over an interval: sums and per-frame maxima, for averages and
 /// worst cases of each phase.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Interval {
     pub frames: u64,
     /// Sum and maximum of the frames' wall times.
@@ -881,6 +903,12 @@ pub struct Interval {
     pub phase_sum_ns: [u64; PHASES],
     pub phase_max_ns: [u64; PHASES],
     pub count_sum: [u64; COUNTERS],
+}
+
+impl Default for Interval {
+    fn default() -> Self {
+        Self { frames: 0, total_sum_ns: 0, total_max_ns: 0, phase_sum_ns: [0; PHASES], phase_max_ns: [0; PHASES], count_sum: [0; COUNTERS] }
+    }
 }
 
 impl Interval {
@@ -1086,11 +1114,11 @@ impl Recorder {
             );
         }
         out += "\n  mean per frame:";
-        for c in Counter::ALL {
+        for (i, label) in counter_columns().filter(|(i, _)| *i < 17 || self.count_sum[*i] > 0) {
             out += &format!(
                 " {} {:.1}",
-                c.label(),
-                self.count_sum[c as usize] as f64 / n as f64
+                label,
+                self.count_sum[i] as f64 / n as f64
             );
         }
         out += "\n  worst frames:\n";
@@ -1100,8 +1128,8 @@ impl Recorder {
                 out += &format!(" {} {:.1}", p.label(), w.phase_ns[p as usize] as f64 / 1e6);
             }
             out += " |";
-            for c in Counter::ALL {
-                out += &format!(" {} {}", c.label(), w.counts[c as usize]);
+            for (i, label) in counter_columns().filter(|(i, _)| *i < 17 || w.counts[*i] > 0) {
+                out += &format!(" {} {}", label, w.counts[i]);
             }
             out += "\n";
         }
