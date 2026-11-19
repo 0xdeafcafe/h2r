@@ -2020,7 +2020,7 @@ impl<'a> Converter<'a> {
     /// An additive `schi` whose maps multiply together (Blood Gulch's
     /// teleporter cone, the pelican's thrusters) takes this path onto
     /// `two_add_clouds`, scrolling and faded by the view angle
-    /// (`h1convert::shad::multiply_chain`, converter version 89; the cone
+    /// (`h1convert::shad::multiply_chain`, converter version 90; the cone
     /// drew its first grey dust map alone before).
     ///
     /// A `soso` with a change colour (`h1convert::shad::soso_change_colour`)
@@ -2085,7 +2085,7 @@ impl<'a> Converter<'a> {
                     self.masked_bitmap(m.bitmap, mask).or_else(|| self.bitmap(m.bitmap))
                 }
                 // A plasma's picture with its brightness as alpha
-                // (converter version 89, `shad::plasma_shader`).
+                // (converter version 90, `shad::plasma_shader`).
                 (h1convert::shad::Role::Mask, _, Some(gain)) => self
                     .brightest_bitmap(m.bitmap, gain)
                     .or_else(|| self.bitmap(m.bitmap)),

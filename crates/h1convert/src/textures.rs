@@ -287,7 +287,7 @@ pub fn plan<R: Read + Seek>(
         let mut swapped = Vec::new();
         for (role, m) in &chosen.maps {
             // A plasma's picture with its brightness as alpha (converter
-            // version 89, `shad::plasma_shader`), else the bitmap as it is.
+            // version 90, `shad::plasma_shader`), else the bitmap as it is.
             let derived = match (*role, chosen.extras.brightest_mask) {
                 (shad::Role::Mask, Some(gain)) => *brightest
                     .entry((m.bitmap, gain.to_bits()))

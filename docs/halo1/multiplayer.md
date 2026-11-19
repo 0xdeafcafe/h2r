@@ -1356,7 +1356,7 @@ blue) draws with Halo 2's change-colour stem from converter version 84
 emblem (models.md "The emblem").
 
 **Additive chicago chains and the view-angle fade
-(converter version 89).** Blood Gulch's teleporter receivers (the three
+(converter version 90).** Blood Gulch's teleporter receivers (the three
 `scenery\teleporter_base\teleporter_base` placements; the senders are
 in the bases' structure) draw a light cone,
 `scenery\teleporter_base\shaders\teleporter_cone` (`schi`, additive,
@@ -1395,7 +1395,7 @@ parallel, one `sotr` when perpendicular. Proof: `shad` unit tests
 `the_fade_mode_sets_the_facing_and_grazing_alphas`) and
 `tests/shad_rebuild.rs`,
 `additive_chicago_chains_draw_two_maps_scrolling_and_faded`. **Plasma
-`sotr` (converter version 89).** The receiver also draws
+`sotr` (converter version 90).** The receiver also draws
 `scenery\teleporter_shield\shaders\teleporter_shield` (`sotr`,
 additive, fade when parallel): seven combiner stages over four maps,
 `energy plasma` twice (scrolling u 10 s backwards and v 6 s; u 11 s and
@@ -1448,13 +1448,13 @@ second (the clouds tree, bitmap target 1, `c[22]` and `c[23]`),
 `0x01d2` and `0x01f3`: `c[20]` and `c[21]`).
 
 **Teleporter receiver brightness against Halo 1 (converter version
-89).** Face on, per channel (`teleporter_receiver_brightness_against_halo1`,
+90).** Face on, per channel (`teleporter_receiver_brightness_against_halo1`,
 numbers from the disc's bitmaps). The cone (Halo 1 `dust × dust ×
 ramp`, no doubling): Halo 1's mean (0.012, 0.030, 0.014) and the
 conversion's are equal by construction (the dropped dust folded in as
 its mean); its peak (0.148, 0.362, 0.175) against the conversion's
 (0.062, 0.154, 0.073), the folded dust's peak averaged away. Before
-version 89 the grey dust drew alone: peak 0.61 in every channel.
+version 90 the grey dust drew alone: peak 0.61 in every channel.
 
 The shield's last stage (`teleporter_shield` stage 6, and every plasma
 but the jackal's and the generator's shields) adds `picture.rgb × (band

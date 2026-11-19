@@ -1894,7 +1894,7 @@ pub struct Chain {
 /// `base volumetric dust` twice, scrolling at their own rates (u 6 s, v
 /// −20 s; u −4 s, v 15 s), times the green vertical ramp
 /// `teleporter_dust` (black at the top, 1×1.05). Before converter
-/// version 89 the least tiled map alone drew, the first dust: a grey,
+/// version 90 the least tiled map alone drew, the first dust: a grey,
 /// static cone at full brightness with hard edges and no green.
 pub fn multiply_chain(maps: &[ChainMap]) -> Option<Chain> {
     let (_, chained) = maps.split_last()?;
