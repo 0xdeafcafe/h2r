@@ -49,7 +49,7 @@ impl Compiler<'_> {
         {
             return Err(invalid(format!("global name collision: {name}")));
         }
-        let root = self.number(h2t::BOOLEAN, i32::from(initial));
+        let root = self.global_constant(h2t::BOOLEAN, i32::from(initial));
         self.out
             .globals
             .push(definition(name, h2t::BOOLEAN, 0, root, index)?);
@@ -402,7 +402,7 @@ impl Compiler<'_> {
                 } else {
                     registry.initial(index)
                 };
-            let root = self.number(h2t::LONG, initial);
+            let root = self.global_constant(h2t::LONG, initial);
             let global = start + usize::from(index);
             let name = format!("h1_ai_state_{global}");
             if self

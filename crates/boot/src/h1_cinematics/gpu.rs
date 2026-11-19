@@ -92,6 +92,28 @@ fn upload(t: &d3d::ExternalTarget<'_>, image: &Image) -> wgpu::TextureView {
     texture.create_view(&Default::default())
 }
 
+/// H1 0x6bc52 samples the render random stream twice for the noise UVs.
+/// Seek directly to this tick's pair so both target copies and restored
+/// frames see the same phase without advancing the simulation's random seed.
+pub(super) fn video_offset(tick: u32) -> [f32; 2] {
+    use feature::pipeline_render::{RANDOM_A, RANDOM_C};
+    let (mut mult, mut add) = (RANDOM_A, RANDOM_C);
+    let mut seed = 0u32;
+    let mut steps = tick.wrapping_mul(2);
+    while steps != 0 {
+        if steps & 1 != 0 {
+            seed = seed.wrapping_mul(mult).wrapping_add(add);
+        }
+        add = add.wrapping_mul(mult.wrapping_add(1));
+        mult = mult.wrapping_mul(mult);
+        steps >>= 1;
+    }
+    std::array::from_fn(|_| {
+        seed = seed.wrapping_mul(RANDOM_A).wrapping_add(RANDOM_C);
+        (seed >> 16) as f32 / 65535.
+    })
+}
+
 pub(super) struct Pass {
     pub(super) frame: Frame,
     pub(super) map: Option<String>,
@@ -173,6 +195,11 @@ impl d3d::ExternalPass for Pass {
             scratch[0].texture().as_image_copy(),
             extent,
         );
+        let shift = if f.video {
+            video_offset(f.tick)
+        } else {
+            [0.; 2]
+        };
         let count = if f.kernel != 0 && f.radius > 0. {
             ((i32::from(f.passes as i16) + 1) * 2).max(1) as usize
         } else {
@@ -207,11 +234,11 @@ impl d3d::ExternalPass for Pass {
                 f.video as u8 as f32,
                 f.gain,
                 f.noise,
-                (f.tick % 65536) as f32,
+                0.,
                 scale[0],
                 scale[1],
-                0.,
-                0.,
+                shift[0],
+                shift[1],
             ];
             let bytes = control.map(f32::to_le_bytes);
             let buffer = t

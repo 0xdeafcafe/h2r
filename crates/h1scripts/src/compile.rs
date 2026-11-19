@@ -378,6 +378,7 @@ pub fn compile_scenario(
         maneuver_latches: Default::default(),
         ai_registries: Vec::new(),
         cinematic_base: None,
+        global_constants: HashMap::new(),
         ai_scripts: Default::default(),
         out: Compiled::default(),
         interned: HashMap::new(),
@@ -553,6 +554,7 @@ struct Compiler<'a> {
     maneuver_switches: std::collections::BTreeMap<h1ai::control::Platoon, u16>,
     maneuver_latches: std::collections::BTreeMap<h1ai::control::Platoon, u16>,
     cinematic_base: Option<u16>,
+    global_constants: HashMap<(u16, i32), Datum>,
     ai_registries: Vec<(hs::h1_ai_slots::Registry, u16)>,
     ai_scripts: std::collections::BTreeMap<h1ai::control::Request, (u16, String)>,
     out: Compiled,
@@ -675,6 +677,18 @@ impl Compiler<'_> {
             }
             _ => self.literal(ty, ty, NONE, b"none"),
         }
+    }
+
+    /// Global initializer roots have no sibling. Generated globals with the same
+    /// scalar default can share the syntax node while keeping separate VM cells.
+    /// Argument nodes cannot be shared this way because their siblings differ.
+    fn global_constant(&mut self, ty: u16, value: i32) -> Datum {
+        if let Some(&root) = self.global_constants.get(&(ty, value)) {
+            return root;
+        }
+        let root = self.number(ty, value);
+        self.global_constants.insert((ty, value), root);
+        root
     }
 
     /// `v` as a literal of `ty` (boolean, real, short or long).

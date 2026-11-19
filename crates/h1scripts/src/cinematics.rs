@@ -1,10 +1,12 @@
 //! Checkpointed scenario globals shared by the cinematic script compiler and renderer.
 pub const VIDEO_BITMAPS: [&str; 2] = [r"h1_cinematic\video_mask", r"h1_cinematic\video_noise"];
+pub const ACTIVE_NAME: &str = "h1_cine_active";
 pub const MARKER: &str = "h1_cine_state";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(usize)]
 pub enum Field {
     Active,
+    Initialized,
     Clear,
     Passes,
     Kernel,
@@ -32,8 +34,9 @@ pub enum Field {
 }
 
 impl Field {
-    pub const ALL: [Self; 25] = [
+    pub const ALL: [Self; 26] = [
         Self::Active,
+        Self::Initialized,
         Self::Clear,
         Self::Passes,
         Self::Kernel,
@@ -62,7 +65,7 @@ impl Field {
 
     pub fn ty(self) -> u16 {
         match self {
-            Self::Active | Self::Clear | Self::FilterFlag | Self::Video => 5,
+            Self::Active | Self::Initialized | Self::Clear | Self::FilterFlag | Self::Video => 5,
             Self::RadiusFrom
             | Self::RadiusTo
             | Self::BlurSeconds
@@ -85,6 +88,9 @@ impl Field {
     }
 
     pub fn name(self) -> String {
-        format!("h1_cine_{self:?}").to_ascii_lowercase()
+        match self {
+            Self::Active => ACTIVE_NAME.to_owned(),
+            _ => format!("h1_cine_{self:?}").to_ascii_lowercase(),
+        }
     }
 }

@@ -59,7 +59,7 @@ impl Cells {
         let base = m.u32(data + index * 8).ok()?;
         if base.checked_add(Field::ALL.len() as u32)? > index
             || m.read(defs + base * 40, &mut label).is_err()
-            || label.split(|b| *b == 0).next()? != Field::Active.name().as_bytes()
+            || label.split(|b| *b == 0).next()? != h1scripts::cinematics::ACTIVE_NAME.as_bytes()
         {
             return None;
         }
@@ -186,7 +186,8 @@ impl Frame {
         let cell = Cells::find(m)?;
         let word = |f| cell.word(m, f).ok();
         let real = |f| word(f).map(f32::from_bits);
-        if word(Active)? == 0 {
+        let boolean = |f| word(f).map(|w| w as u8 != 0);
+        if !boolean(Active)? {
             return None;
         }
         let clock = m.u32(points::GAME_TIME.base).ok()?;
@@ -195,8 +196,10 @@ impl Frame {
         let filter = fraction(tick, word(FilterTick)?, real(FilterSeconds)?);
         let lerp = |from, to, t| Some(real(from)? * (1. - t) + real(to)? * t);
         let mut tint = [real(Red)?, real(Green)?, real(Blue)?];
-        if tint == [0.; 3] {
-            tint = [1.; 3];
+        // H1 0x61ba7 compares the three words against the black constant.
+        // Its replacement at *0x232f7c is green (0, 1, 0).
+        if tint.map(f32::to_bits) == [0; 3] {
+            tint = [0., 1., 0.];
         }
         let f = Self {
             passes: word(Passes)? as u16,
@@ -205,8 +208,8 @@ impl Frame {
             light: lerp(LightFrom, LightTo, filter)?,
             desat: lerp(DesatFrom, DesatTo, filter)?,
             tint,
-            filtered: word(FilterFlag)? != 0,
-            video: word(Video)? != 0,
+            filtered: boolean(FilterFlag)?,
+            video: boolean(Video)?,
             gain: (1 << (word(VideoMode)? as i16).clamp(0, 2)) as f32,
             noise: real(Noise)?,
             tick,

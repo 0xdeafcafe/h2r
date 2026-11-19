@@ -49,7 +49,7 @@ fn lifepod_blur_follows_the_checkpointed_campaign_clock() {
         m.put_u32(0x50008, tick);
         assert_eq!(Frame::read(&m).map(|f| f.radius), radius);
     }
-    m.put_u32(cells, 0);
+    m.put_u32(cells, 0xffff_ff00);
     assert_eq!(Frame::read(&m), None);
 }
 
@@ -74,6 +74,9 @@ fn cinematic_filter_and_video_read_their_own_parameters() {
         (f.light, f.desat, f.tint, f.filtered),
         (0.5, 0.5, [0.5, 0., 1.], true)
     );
+    m.put_u32(cells + 8 * Field::Red as u32, 0)
+        .put_u32(cells + 8 * Field::Blue as u32, 0);
+    assert_eq!(Frame::read(&m).unwrap().tint, [0., 1., 0.]);
     m.put_u32(cells + 8 * Field::Video as u32, 1)
         .put_u32(cells + 8 * Field::VideoMode as u32, 2)
         .put_u32(cells + 8 * Field::Noise as u32, 0.75f32.to_bits());
@@ -157,6 +160,19 @@ fn model_reflection_changes_both_endpoints_and_restores_the_authored_material() 
     material(&mut m, tag).unwrap();
     for (i, v) in authored.into_iter().enumerate() {
         assert_eq!(m.u32(colors + 16 + i as u32 * 4), Ok(v));
+    }
+}
+
+#[test]
+fn video_noise_uses_the_two_retail_draws_for_each_frame() {
+    use feature::pipeline_render::{RANDOM_A, RANDOM_C};
+    let mut seed = 0u32;
+    for tick in 0..200 {
+        let pair = std::array::from_fn(|_| {
+            seed = seed.wrapping_mul(RANDOM_A).wrapping_add(RANDOM_C);
+            (seed >> 16) as f32 / 65535.
+        });
+        assert_eq!(gpu::video_offset(tick), pair);
     }
 }
 

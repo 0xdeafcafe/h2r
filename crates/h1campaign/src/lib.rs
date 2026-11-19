@@ -527,11 +527,22 @@ pub fn convert<R: Read + Seek>(h1: &H1Map, base: &mut Map<R>, opts: &Options) ->
     let mut music = u64::MAX;
     let mut dialogue = u64::MAX;
     let mut ambience = u64::MAX;
+    let preserve_content = !opts.pinned
+        && opts.scripts.is_some()
+        && opts.cutscene_data
+        && opts.cutscene_graphs
+        && opts.cutscenes.unwrap_or_default() == h1scripts::compile::Cutscenes::Play;
     let mut opts = Options { ..*opts };
     // Each retry and why, for the report.
     let mut retries = Vec::new();
     loop {
         match convert_with(h1, base, &opts, lean, [music, dialogue, ambience]) {
+            // A normal fresh scripted campaign promises the whole level. Report
+            // a capacity regression with the original diagnostics before a retry
+            // could remove a seat, a device, a recording dependency or a graph.
+            Err(e @ (Error::TagMemory { .. } | Error::FileSize { .. })) if preserve_content => {
+                return Err(e);
+            }
             Err(Error::TagMemory { need, max, .. }) if lean.next().is_some() => {
                 lean = lean.next().expect("checked");
                 retries.push(format!("tag memory {need:#x} over {max:#x}: lean {lean:?}"));

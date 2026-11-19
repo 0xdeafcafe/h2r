@@ -106,6 +106,9 @@ pub(crate) fn install_graph_hooks<'a>(
     }
     let mut out = Graphs::default();
     for name in wanted.into_keys() {
+        if name.is_empty() || name.eq_ignore_ascii_case("none") {
+            continue;
+        }
         let Some(tag) = h1.find(antr, &name) else {
             out.dropped.push(format!("{name}: not in the level"));
             continue;

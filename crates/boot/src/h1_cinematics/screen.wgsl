@@ -1,10 +1,10 @@
 struct Settings {
     view: vec4f, // origin, size in render texels
     blur: vec4f, // radius in scaled pixels, kernel, reserved
-    grading: vec4f, // light, desaturation, invert tint blend, final pass
+    grading: vec4f, // light, desaturation, additive tint blend, final pass
     tint: vec4f,
-    video: vec4f, // enable, overbright, noise, animation tick
-    scale: vec4f,
+    video: vec4f, // enable, overbright, noise, reserved
+    scale: vec4f, // texels per guest pixel, noise UV offset
 };
 @group(0) @binding(0) var source: texture_2d<f32>;
 @group(0) @binding(1) var linear_sampler: sampler;
@@ -39,8 +39,7 @@ fn scene(p: vec2f) -> vec4f {
     if s.video.x != 0. {
         let coord = (p - s.view.xy) / s.scale.xy;
         let nsize = vec2f(textureDimensions(noise));
-        let shift = fract(sin(vec2f(s.video.w, s.video.w + 37.) * 12.9898) * 43758.5453);
-        let snow = textureSampleLevel(noise, linear_sampler, fract(coord / nsize + shift), 0.);
+        let snow = textureSampleLevel(noise, linear_sampler, fract(coord / nsize + s.scale.zw), 0.);
         let m = textureSampleLevel(mask, linear_sampler, fract(coord / vec2f(textureDimensions(mask))), 0.);
         let grain = mix(vec4f(1.), snow, clamp(s.video.z, 0., 1.));
         let squared = color.rgb * color.rgb;
@@ -55,8 +54,11 @@ fn scene(p: vec2f) -> vec4f {
     var rgb = mix(color.rgb, vec3f(1.) - inv * inv * inv * inv, clamp(s.grading.x, 0., 1.));
     let mono = dot(rgb, vec3f(1./3.));
     if s.grading.y > 0. {
-        let weight = select(1. - s.grading.y, s.grading.y, s.grading.z != 0.);
-        rgb = mix(rgb, vec3f(mono) * s.tint.rgb, clamp(weight, 0., 1.));
+        // 0x6cd89 uses the original RGB as final-combiner D (additive).
+        // 0x6cdc2 uses it as C, weighted by the complement of A.
+        let weight = clamp(s.grading.y, 0., 1.);
+        let tinted = vec3f(mono) * s.tint.rgb;
+        rgb = select(mix(rgb, tinted, weight), min(vec3f(1.), rgb + weight * tinted), s.grading.z != 0.);
     }
     return vec4f(rgb, color.a);
 }

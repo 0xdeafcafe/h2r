@@ -13,7 +13,7 @@ impl Compiler<'_> {
         {
             return Err(invalid(format!("no scenario global available for {name}")));
         }
-        let root = self.number(ty, value);
+        let root = self.global_constant(ty, value);
         self.out.globals.push(definition(name, ty, 0, root, index)?);
         Ok(())
     }
@@ -88,19 +88,21 @@ impl Compiler<'_> {
         }
         match name {
             "cinematic_screen_effect_start" => {
-                let active = self.cine_var(Active);
-                let inactive = self.control_call("not", h2t::BOOLEAN, &[active])?;
+                // H1 0x618b0 tests a separate initialized byte. Stopping
+                // clears only the active byte, so start(false) can resume.
+                let initialized = self.cine_var(Initialized);
+                let first = self.control_call("not", h2t::BOOLEAN, &[initialized])?;
                 let clear = self.cine_var(Clear);
-                let reset = self.control_call("or", h2t::BOOLEAN, &[clear, inactive])?;
+                let reset = self.control_call("or", h2t::BOOLEAN, &[clear, first])?;
                 let zero = [
-                    Kernel, RadiusFrom, RadiusTo, LightFrom, LightTo, DesatFrom, DesatTo, Video,
-                    Red, Green, Blue,
+                    Passes, Kernel, FilterFlag, Video, VideoMode, Noise, Red, Green, Blue,
                 ]
                 .into_iter()
                 .map(|f| self.cine_const(f, 0))
                 .collect::<Result<Vec<_>>>()?;
                 let clear_fields = self.control_call("begin", h2t::VOID, &zero)?;
                 body.push(self.control_call("if", h2t::VOID, &[reset, clear_fields])?);
+                body.push(self.cine_const(Initialized, 1)?);
                 body.push(self.cine_const(Active, 1)?);
                 let clear = self.cine_var(Clear);
                 body.push(self.control_call(name, h2t::VOID, &[clear])?);
@@ -123,7 +125,20 @@ impl Compiler<'_> {
             }
             "cinematic_screen_effect_set_video" => {
                 for f in [
-                    Kernel, LightFrom, LightTo, DesatFrom, DesatTo, Red, Green, Blue,
+                    Passes,
+                    Kernel,
+                    RadiusFrom,
+                    RadiusTo,
+                    BlurSeconds,
+                    LightFrom,
+                    LightTo,
+                    DesatFrom,
+                    DesatTo,
+                    FilterSeconds,
+                    FilterFlag,
+                    Red,
+                    Green,
+                    Blue,
                 ] {
                     body.push(self.cine_const(f, 0)?);
                 }

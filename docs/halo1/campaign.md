@@ -530,6 +530,10 @@ controller layout and pitch settings come from the converted unit builtins.
 An explicit `Options::cutscenes` can still select the shorter diagnostic paths.
 
 The ordinary fresh writer retains the reachable base tags and resources.
+Generated AI and cinematic globals share identical scalar initializer nodes
+while retaining independent checkpointed cells. Each duplicate removed saves
+one 20-byte syntax node. A full fresh scripted conversion reports a capacity
+error before a fallback can discard content.
 The earlier b40 limit was measured on the pinned base. The version 55
 fresh-assets measurement above used `0x966000` of `0xc24000` bytes with
 Halo 1 assets. Graphs already converted for an object are shared with
@@ -543,7 +547,9 @@ below are historical, not measurements of this change.
 **Built.** x50 and c40 actor movement runs through the rebuilt command
 scripts. The disc readback walks each cinematic's original command-list
 calls and compares their targets in order with the emitted
-`cs_run_command_script` calls.
+`cs_run_command_script` calls. On the source disc c10 has ten by-unit
+commands, including Mendoza and Johnson's looks. c40 has twenty, including
+the Monitor's flight and individual orders for four sentinels.
 
 What a cutscene needed (survey `cutscene_survey`, h1campaign
 `tests/cutscenes.rs`, over all ten levels):
