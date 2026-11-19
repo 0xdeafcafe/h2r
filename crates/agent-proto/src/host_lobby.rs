@@ -78,17 +78,24 @@ mod tests {
             assert!(from_value::<OpenParams>(invalid).is_err());
         }
         assert_eq!(to_value(OpenResult::default()).unwrap(), json!({}));
-        let live = OpenResult { session_id: Some("0123456789abcdef".into()) };
-        assert_eq!(to_value(live).unwrap(), json!({"session_id": "0123456789abcdef"}));
+        let live = OpenResult {
+            session_id: Some("0123456789abcdef".into()),
+        };
+        assert_eq!(
+            to_value(live).unwrap(),
+            json!({"session_id": "0123456789abcdef"})
+        );
     }
 
     #[test]
     fn contract_state_lists_players_individually_and_spells_all_five_phases() {
-        let players = (0..2).map(|slot| Player {
-            slot,
-            peer: 1,
-            name: format!("player {slot}"),
-        }).collect::<Vec<_>>();
+        let players = (0..2)
+            .map(|slot| Player {
+                slot,
+                peer: 1,
+                name: format!("player {slot}"),
+            })
+            .collect::<Vec<_>>();
         for (phase, name) in [
             (Phase::Menu, "menu"),
             (Phase::Lobby, "lobby"),
@@ -96,7 +103,11 @@ mod tests {
             (Phase::Playing, "playing"),
             (Phase::Postgame, "postgame"),
         ] {
-            let state = StateResult { phase, players: players.clone(), ready: false };
+            let state = StateResult {
+                phase,
+                players: players.clone(),
+                ready: false,
+            };
             let wire = json!({
                 "phase": name,
                 "players": [

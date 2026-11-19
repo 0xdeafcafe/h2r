@@ -155,6 +155,62 @@ reservation and eligible joined players before it counts for Ranked.
 Preserve single-use results, reconcile disconnects against the
 reserved roster and keep the service account out of ranks and scores.
 
+## Playerless lobby
+
+For the zero-local repeat of the Mac spike, start the host with
+`H2_HOST_LOBBY=1` and `serve --system-link --host-light`. Leave the real
+client on its usual System Link path. Use the host agent to open a custom
+game and read its roster even when nobody is connected.
+
+```sh
+host_agent host.lobby.open '{"map":"lockout","variant":"slayer","max_players":2,"live":false}'
+host_agent host.lobby.state '{}'
+```
+
+After a remote console joins, expect one remote player and two peers
+(count peers with `sim session`). Once `ready` is true, use
+`host_agent host.lobby.start '{}'`. Check for world mode 4 on the host and
+5 on the client. Verify movement, death and respawn from the host agent,
+then the absence of a local player in the result. Close through
+`host_agent host.lobby.close '{}'` and repeat the open and join. A second
+remote on a separate console tests independent inputs. Two split-screen
+users on one remote test the distinction between a player slot and a peer.
+
+The implementation keeps the local **peer** as host and party leader.
+It blocks local profile attachment for this dedicated run. A signed-in
+bot-style profile would be reconciled into a real session player by
+`0x63d80 → 0x65770`. Omitting that row from agent output would still
+consume a slot and could affect teams, spawns and results. No owner
+profile or player record is manufactured.
+
+The first expected profile-specific refusal is the controller countdown
+at `0x19a78e`. It reads the pressing controller's local-user index,
+which is −1 on the playerless host. The machine fallback requests stage
+2 through `0x5a220` after the remote roster, map properties, ownership
+and retail start check pass. Set `H2_HOST_LOBBY_MACHINE_START=0` to
+observe the original refusal with the same roster. Remote-view
+handshakes still have to finish before the match can run.
+
+| Retail boundary | What the coordinator should confirm |
+|---|---|
+| Tick `0x137fe0`, profile sign-in `0x18fb34` (callee pops 12 bytes) | Main-menu ticks service RPCs before a profile is chosen. Networking byte `[0x527330]` and lobby byte `[0x4d8ba0]` become nonzero. All four slots from `0x54e8e0` (stride `0xc70`, profile flag `0x10`, local-user index at `+4`) remain signed out through reopen and postgame. |
+| System Link Create `0x199df9(0,0)`, Live preparation `0x199e2e(1)` and Create `0x59890(2,0,0)`, custom mode `0x199a03(2)` | Creation returns success in AL and keeps the squad pointer `S = [0x527364]`. Check host state 5 (`S+0x741c`), class 1 or 2 (`+0x18`), peer count (`+0x54`), and that the machine index (`+0x72d8`) equals both host and leader (`+0x40/+0x50`). Confirm discovery and a remote join on each transport. |
+| Map setter `0x19a6f2` (ESI = map ID, stack = −1), default variant `0x19d220(out,type)`, variant setter `0x19a728(out)` | Check map (`S+0x4d0c`), distributed protocol 2 (`+0x4dac`), and the full `0x130`-byte rules at `+0x4db0`. Check the limit at variant `+0x78` and session `+0x4994`. Verify that bumping parameter revision `+0x4978` publishes the limit to the client and that retail refuses an extra join. |
+| Start check `0x19a2ce(0)`, countdown `0x19a78e` (EAX = port 0, stack = 10, 3), machine request `0x5a220(2)` | Verify start state 9 with a remote player and map status 3 or 4 for every peer (`S+0x58+peer*0x10c+0x88`). Check the fallback's calling convention and the stage change at `S+0x4980` against retail's countdown finisher `0x6e410`. Exercise both flag settings and verify remote controls move a unit. |
+| Roster and phase | Verify count/mask at `S+0x1118/+0x111c`, records at `S+0x1120+slot*0x13c`, peer at `+0x0c`, and effective UTF-16 name at `+0xa8`. Cross-check lifecycle `[0x527334]` (1/2 lobby, 3 game, 4 postgame), countdown `S+0x49a8`, and game globals `[0x4e6948]` (mode `+8`, active `+0x1120`, ended `+0x1128`). Confirm world `[0x4cf77c]` reaches distributed-server mode 4 at `+8` and running state 5 at `+0x18` before gameplay is reported. |
+| Leave sessions `0x593e0()` and return to menu `0x18f1c0(0)` | The target pointer `[0x52736c]` must hold no separate active matchmaking session. Check that remote clients leave, the network squad retires, the host returns to the menu, and the specific Live listing disappears. Repeat open and join in the same process, including close during countdown and during play. |
+
+System Link can run this experiment without a service account. For Live,
+the current XOnline session HLE requires a connected logon before it will
+advertise. The host lease needs a machine credential with `sessions.publish`
+(contract 4) accepted by that path. A configured service URL alone cannot
+publish. Compare the ID returned by open with the service listing, then
+verify that no host user appears in membership or results.
+
+The supervisor uses the agent API for these repeatable operations. The
+guest boundaries above come from static traces. The two-console lifecycle
+and the first refusal still need a game run. [Agent methods](../runtime/agent-api.md#hostlobby)
+
 ## Order of experiments
 
 1. Run the Mac control below. Advance only after a real remote client joins and its actions reach the authoritative world.
@@ -245,7 +301,7 @@ host_agent sim view at player
 
 On a disposable repeat, try the ordinary local player’s leave/sign-out action through the host agent UI after the client joins pregame. Check both session roles, peer and player counts immediately afterward. A refusal, a disbanded lobby, or migration to the client identifies a failing retail transition. If the original host survives without a player, try starting the round.
 
-**Zero-local passes** only if that experiment or the host-mode implementation in step 2 meets all of the following checks. Repeat with the service-owned lobby and identical client. Require **two peers, exactly one session player**, and a world player with a live unit and no `local_user` on the host. On the client the same named player must be local. Verify remote input, a death and respawn, round results free of a host entrant, a second successful start and the last client leaving. Add a second remote for opponent damage, scoring and team objectives. The existing API removes only simulated players. It cannot detach the real owner. There is no zero-local flag in this spike. Use the existing agent API for all checks. Add a documented, tested lobby action if recurring playerless creation/start requires it. No running game was inspected for this design. [Player reader](../../crates/agent/src/reader.rs) · [Agent API](../runtime/agent-api.md)
+**Zero-local passes** only if that experiment or the host-mode implementation in step 2 meets all of the following checks. Repeat with the service-owned lobby and identical client. Require **two peers, exactly one session player**, and a world player with a live unit and no `local_user` on the host. On the client the same named player must be local. Verify remote input, a death and respawn, round results free of a host entrant, a second successful start and the last client leaving. Add a second remote for opponent damage, scoring and team objectives. The profile-based control uses the original lobby. The dedicated repeat uses the [playerless lobby methods](#playerless-lobby) to create and start the game without a local owner. This design still awaits a two-console run. [Player reader](../../crates/agent/src/reader.rs) · [Agent API](../runtime/agent-api.md)
 
 Stop the two processes from this shell when finished.
 

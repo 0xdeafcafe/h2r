@@ -39,6 +39,7 @@ pub mod h1_options;
 pub mod h1_options_row;
 pub mod h1_variants;
 pub mod health;
+mod host_lobby;
 mod host_metrics;
 pub mod host_perf;
 pub mod hot_glue;
@@ -1480,6 +1481,7 @@ fn run_configured(
     }
     if let Some(a) = &agent {
         host_metrics::install(&mut features, &a.agent, host_light)?;
+        host_lobby::install(&mut features, &a.agent, host_light, opts, _live.clone())?;
     }
     // Sim mode's render skip and metrics, and match.* on the agent.
     if let Some(s) = &sim_mode {
