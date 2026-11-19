@@ -60,6 +60,7 @@ use crate::shader::{CONSTANTS, Microcode, PROGRAM_SLOTS, ShaderInputs, VertexPro
 use crate::state::{DrawState, StateWords, Translator, slot};
 use crate::vertex_cache::{IndexCache, Probe, VertexCache};
 
+mod admission_scope;
 mod display;
 mod fragments;
 mod mirror;

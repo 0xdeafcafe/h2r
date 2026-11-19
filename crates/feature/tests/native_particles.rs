@@ -10,12 +10,20 @@ fn default_off_and_no_parent_update_skip() {
     let mut r = Registry::new(Switches::parse("impl.render.native_particles=on").unwrap());
     r.add(&NativeParticles).unwrap();
     let plan = r.build(&Base).unwrap();
-    assert_eq!(plan.chains.len(), 1);
-    let chain = plan.chains.values().next().unwrap();
-    assert_eq!(chain.point.base, native_render::particles::EMIT_QUAD);
-    assert_ne!(chain.point.base, native_render::particles::RENDER_UPDATE);
-    assert!(chain.render_thread().is_ok());
-    assert!(!chain.needs_shadow());
+    assert_eq!(plan.chains.len(), 6);
+    assert!(
+        plan.chains
+            .contains_key(&native_render::particles::EMIT_QUAD)
+    );
+    assert!(
+        plan.chains
+            .contains_key(&native_render::effect_geometry::DYNAMIC_DRAW)
+    );
+    for chain in plan.chains.values() {
+        assert_ne!(chain.point.base, native_render::particles::RENDER_UPDATE);
+        assert!(chain.render_thread().is_ok());
+        assert!(!chain.needs_shadow());
+    }
 }
 #[test]
 fn compare_budget_is_explicit_and_bounded() {
