@@ -53,6 +53,7 @@ fn snapshot(call: u64, x: f32, tint: [f32; 4]) -> ImmediateDrawSnapshot {
         pixel_uniforms: Default::default(),
         textures: Default::default(),
         vertices,
+        raw_vertices: None,
         indices: QUAD_INDICES.to_vec(),
         primitive: wgpu::PrimitiveState::default(),
         depth: wgpu::DepthStencilState {
@@ -122,7 +123,52 @@ fn two_views_keep_distinct_geometry_and_uniforms_in_one_submission() {
     let dv = depth.create_view(&Default::default());
     let mut renderer = ParticleRenderer::new(1);
     let red = snapshot(1, 4., [1., 0., 0., 1.]);
-    let green = snapshot(2, 36., [0., 1., 0., 1.]);
+    let mut green = snapshot(2, 36., [0., 1., 0., 1.]);
+    // A generated ribbon uses the same immutable upload path, preserving
+    // its strip order and packed BGRA colour fetch on the GPU.
+    let mut bytes = Vec::new();
+    for i in [0, 1, 3, 2] {
+        for f in green.vertices[i].registers[0][..3]
+            .iter()
+            .copied()
+            .chain([0., 0.])
+        {
+            bytes.extend(f.to_le_bytes());
+        }
+        bytes.extend([0, 255, 0, 255]);
+    }
+    green.raw_vertices = Some(
+        RawVertices::new(
+            native_render::effect_geometry::Kind::Contrail,
+            bytes,
+            vec![
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x3,
+                    offset: 0,
+                    shader_location: 0,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x2,
+                    offset: 12,
+                    shader_location: 9,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Unorm8x4Bgra,
+                    offset: 20,
+                    shader_location: 3,
+                },
+            ],
+        )
+        .unwrap(),
+    );
+    green.vertices.clear();
+    green.indices = vec![0, 1, 2, 3];
+    green.primitive.topology = wgpu::PrimitiveTopology::TriangleStrip;
+    green.primitive.strip_index_format = Some(wgpu::IndexFormat::Uint32);
+    green.shader.microcode = program(&[
+        Inst::mac(vsh::MacOp::Mov, Some(O::v(0)), None, None).to_out(false, vsh::OutReg::Pos, 15),
+        Inst::mac(vsh::MacOp::Mov, Some(O::v(3)), None, None).to_out(false, vsh::OutReg::D0, 15),
+    ]);
     let a = renderer.prepare(&ctx.device, &red).unwrap();
     let b = renderer.prepare(&ctx.device, &green).unwrap();
     let mut encoder = ctx.device.create_command_encoder(&Default::default());

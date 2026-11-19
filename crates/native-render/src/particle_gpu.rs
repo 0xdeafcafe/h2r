@@ -61,7 +61,10 @@ pub struct ImmediateDrawSnapshot {
     pub pixel_uniforms: psh::PixelUniforms,
     pub textures: [Option<TextureBinding>; 4],
     pub vertices: Vec<Vertex>,
-    /// Triangle list, in original primitive order; no material sorting.
+    /// Generated contrail/effect streams retain raw FLOAT/BGRA fetch.
+    /// When present, vertices may be empty; the raw stream owns the count.
+    pub raw_vertices: Option<RawVertices>,
+    /// Triangle list or strip in original order; no material sorting.
     pub indices: Vec<u32>,
     pub primitive: wgpu::PrimitiveState,
     pub depth: wgpu::DepthStencilState,
@@ -71,6 +74,77 @@ pub struct ImmediateDrawSnapshot {
     pub stencil_reference: u32,
     /// Host texels; already intersected with the target and guest scissor.
     pub scissor: [u32; 4],
+}
+
+/// A validated raw generated stream. BGRA stays packed for GPU fetch, as
+/// on D3D; CPU normalization can round differently. Live declaration
+/// locations are supplied by the adapter, never inferred from semantics.
+#[derive(Clone, Debug)]
+pub struct RawVertices {
+    kind: crate::effect_geometry::Kind,
+    bytes: Vec<u8>,
+    stride: u64,
+    attributes: Vec<wgpu::VertexAttribute>,
+    provided: u16,
+}
+impl RawVertices {
+    pub fn new(
+        kind: crate::effect_geometry::Kind,
+        bytes: Vec<u8>,
+        mut attributes: Vec<wgpu::VertexAttribute>,
+    ) -> Result<Self, Refused> {
+        use crate::effect_geometry::Kind;
+        use wgpu::VertexFormat as F;
+        let (stride, formats): (u64, &[(u64, F)]) = match kind {
+            Kind::Contrail => (
+                24,
+                &[(0, F::Float32x3), (12, F::Float32x2), (20, F::Unorm8x4Bgra)],
+            ),
+            Kind::EffectQuad => (20, &[(0, F::Float32x3), (12, F::Float32x2)]),
+        };
+        if bytes.is_empty()
+            || bytes.len() > 8192
+            || !(bytes.len() as u64).is_multiple_of(stride)
+            || attributes.len() != formats.len()
+        {
+            return Err(Refused::Geometry);
+        }
+        attributes.sort_by_key(|a| a.offset);
+        let mut provided = 0u16;
+        for (a, &(offset, format)) in attributes.iter().zip(formats) {
+            if a.offset != offset
+                || a.format != format
+                || a.shader_location >= 16
+                || provided & (1u16 << a.shader_location) != 0
+            {
+                return Err(Refused::Geometry);
+            }
+            provided |= 1u16 << a.shader_location;
+        }
+        let count = bytes.len() as u64 / stride;
+        if match kind {
+            Kind::Contrail => count < 4 || !count.is_multiple_of(2),
+            Kind::EffectQuad => count != 4,
+        } {
+            return Err(Refused::Geometry);
+        }
+        Ok(Self {
+            kind,
+            bytes,
+            stride,
+            attributes,
+            provided,
+        })
+    }
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+    pub fn kind(&self) -> crate::effect_geometry::Kind {
+        self.kind
+    }
+    pub fn vertex_count(&self) -> usize {
+        self.bytes.len() / self.stride as usize
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -107,26 +181,32 @@ impl ImmediateDrawSnapshot {
         {
             return Err(Refused::Scissor);
         }
-        if self.vertices.is_empty()
-            || self.vertices.len() > 65536
+        let vertex_count = self
+            .raw_vertices
+            .as_ref()
+            .map_or(self.vertices.len(), RawVertices::vertex_count);
+        let strip = self.primitive.topology == wgpu::PrimitiveTopology::TriangleStrip;
+        if vertex_count == 0
+            || vertex_count > 65536
             || self.indices.is_empty()
             || self.indices.len() > 393216
-            || !self.indices.len().is_multiple_of(3)
-            || self
-                .indices
-                .iter()
-                .any(|&i| i as usize >= self.vertices.len())
+            || if strip {
+                self.indices.len() < 3
+            } else {
+                !self.indices.len().is_multiple_of(3)
+            }
+            || self.indices.iter().any(|&i| i as usize >= vertex_count)
         {
             return Err(Refused::Geometry);
         }
-        if self.primitive.topology != wgpu::PrimitiveTopology::TriangleList
-            || self.primitive.strip_index_format.is_some()
+        if (!strip && self.primitive.topology != wgpu::PrimitiveTopology::TriangleList)
+            || self.primitive.strip_index_format != strip.then_some(wgpu::IndexFormat::Uint32)
             || self.primitive.polygon_mode != wgpu::PolygonMode::Fill
             || self.primitive.conservative
             || self.depth.depth_write_enabled.is_none()
             || self.depth.depth_compare.is_none()
             || self.shader.pixel_options.flat_shading != self.shader.flat_shading
-            || self.shader.pixel_options.w_buffer != self.vertex_uniforms.w_clip.is_some()
+            || (self.shader.pixel_options.w_buffer && self.vertex_uniforms.w_clip.is_none())
             || self
                 .vertex_uniforms
                 .surface
@@ -158,6 +238,7 @@ struct ShaderKey {
     pixel: psh::PixelShaderDef,
     options: psh::PixelOptions,
     flat: bool,
+    provided: u16,
 }
 
 struct Program {
@@ -173,7 +254,7 @@ struct Program {
 /// Drop/recreate on map generation changes to release obsolete programs.
 pub struct ParticleRenderer {
     device: u64,
-    programs: HashMap<ShaderKey, Arc<Program>>,
+    programs: HashMap<ShaderKey, Result<Arc<Program>, Refused>>,
     pipelines: HashMap<(ShaderKey, String), wgpu::RenderPipeline>,
 }
 
@@ -205,19 +286,23 @@ impl ParticleRenderer {
         {
             return Err(Refused::State);
         }
+        let mut code = s.shader.pixel.clone();
+        code.constant0 = [0; 8];
+        code.constant1 = [0; 8];
+        code.final_constant0 = 0;
+        code.final_constant1 = 0;
         let key = ShaderKey {
             microcode: s.shader.microcode.clone(),
-            pixel: s.shader.pixel.clone(),
+            pixel: code,
             options: s.shader.pixel_options,
             flat: s.shader.flat_shading,
+            provided: s.raw_vertices.as_ref().map_or(u16::MAX, |r| r.provided),
         };
-        let program = if let Some(p) = self.programs.get(&key) {
-            Arc::clone(p)
-        } else {
-            let p = Arc::new(compile(device, &key)?);
-            self.programs.insert(key.clone(), Arc::clone(&p));
-            p
-        };
+        let program = self
+            .programs
+            .entry(key.clone())
+            .or_insert_with(|| compile(device, &key).map(Arc::new))
+            .clone()?;
         // Check every sampled level before pipeline/groups/uploads. A missing
         // stage cannot turn into a skipped range in the recording loop.
         for (n, dim) in program.sampled.iter().enumerate() {
@@ -231,22 +316,35 @@ impl ParticleRenderer {
         let pipeline_key = (
             key,
             format!(
-                "{:?}/{:?}/{:?}/{:?}/{:?}",
-                s.target.color_format, s.primitive, s.depth, s.blend, s.color_writes
+                "{:?}/{:?}/{:?}/{:?}/{:?}/{:?}",
+                s.target.color_format,
+                s.primitive,
+                s.depth,
+                s.blend,
+                s.color_writes,
+                s.raw_vertices.as_ref().map(|r| (r.stride, &r.attributes))
             ),
         );
         let pipeline = self
             .pipelines
             .entry(pipeline_key)
             .or_insert_with(|| {
-                let attributes: Vec<_> = (0..16u64)
-                    .filter(|&r| program.locations & (1u16 << r) != 0)
-                    .map(|r| wgpu::VertexAttribute {
-                        format: wgpu::VertexFormat::Float32x4,
-                        offset: r * 16,
-                        shader_location: r as u32,
-                    })
-                    .collect();
+                let attributes: Vec<_> = if let Some(raw) = &s.raw_vertices {
+                    raw.attributes
+                        .iter()
+                        .filter(|a| program.locations & (1u16 << a.shader_location) != 0)
+                        .copied()
+                        .collect()
+                } else {
+                    (0..16u64)
+                        .filter(|&r| program.locations & (1u16 << r) != 0)
+                        .map(|r| wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: r * 16,
+                            shader_location: r as u32,
+                        })
+                        .collect()
+                };
                 device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                     label: Some("native particle/effect pipeline"),
                     layout: Some(&program.layout),
@@ -255,7 +353,10 @@ impl ParticleRenderer {
                         entry_point: Some("vs_main"),
                         compilation_options: Default::default(),
                         buffers: &[Some(wgpu::VertexBufferLayout {
-                            array_stride: std::mem::size_of::<Vertex>() as u64,
+                            array_stride: s
+                                .raw_vertices
+                                .as_ref()
+                                .map_or(std::mem::size_of::<Vertex>() as u64, |r| r.stride),
                             step_mode: wgpu::VertexStepMode::Vertex,
                             attributes: &attributes,
                         })],
@@ -339,7 +440,9 @@ impl ParticleRenderer {
             textures,
             vertices: buffer(
                 "particle dynamic vertices",
-                bytemuck::cast_slice(&s.vertices),
+                s.raw_vertices
+                    .as_ref()
+                    .map_or_else(|| bytemuck::cast_slice(&s.vertices), |r| r.bytes.as_slice()),
                 wgpu::BufferUsages::VERTEX,
             ),
             indices: buffer(
@@ -358,10 +461,13 @@ impl ParticleRenderer {
 fn compile(device: &wgpu::Device, key: &ShaderKey) -> Result<Program, Refused> {
     let program = vsh::Program::parse(&key.microcode)
         .map_err(|e| Refused::Shader(format!("vertex: {e:?}")))?;
+    if program.writes_constants() {
+        return Err(Refused::Shader("vertex program writes constants".into()));
+    }
     let vertex = vsh::translate(
         &program,
         &vsh::VertexOptions {
-            provided_inputs: u16::MAX,
+            provided_inputs: key.provided,
             flat_shading: key.flat,
             ..Default::default()
         },
@@ -376,6 +482,7 @@ fn compile(device: &wgpu::Device, key: &ShaderKey) -> Result<Program, Refused> {
         return Err(Refused::State);
     }
     let wgsl = shaders::link(&vertex, &pixel).map_err(|e| Refused::Shader(e.to_string()))?;
+    shaders::validate(&wgsl).map_err(|e| Refused::Shader(e.to_string()))?;
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("native particles"),
         source: wgpu::ShaderSource::Wgsl(wgsl.into()),
