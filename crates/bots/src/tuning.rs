@@ -206,7 +206,7 @@ mod tests {
             gain: Some(9.0),
             ..Tuning::default()
         };
-        let r = std::panic::catch_unwind(|| with(Some(t), || panic!("think")));
+        let r = std::panic::catch_unwind(|| with(Some(t), || -> u32 { panic!("think") }));
         assert!(r.is_err());
         assert!(current().is_none());
     }
