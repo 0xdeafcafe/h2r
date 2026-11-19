@@ -35,6 +35,7 @@ reader.
 | [bitmaps.md](bitmaps.md) | `bitm` and lightmap pages | `h1bitmaps` |
 | [sounds.md](sounds.md) | `snd!` to Halo 2 `snd!` and the `ugh!` gestalt | `h1sounds` |
 | [objects.md](objects.md) | `weap`, `proj`, `eqip`, `bipd`, `vehi`, `coll`, `phys` | `h1objects` |
+| [role-audit.md](role-audit.md) | Halo 2 values left in converted tags (role words, counterpart references), each allowed or a bug | `h1objects` |
 | [ai.md](ai.md) | Actors, encounters, command lists to Halo 2's scenario AI | `h1ai` |
 | [scripts.md](scripts.md) | Campaign scripts to Halo 2 builtins and nodes | `h1scripts` |
 | [sky.md](sky.md) | `sky ` | `h1sky` |

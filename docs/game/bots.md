@@ -116,9 +116,9 @@ Each tick, `0x1870a0` does this:
   finds the player. It matches the 6-byte machine id against the valid
   machines in `[0x4e8c20]+0x30`. Then `0x847d0(slot, action)` stores the
   `0x5c` record; `0x847d0` branches on the slot's mode (1 or 2).
-- `0x6a3b0` has two more callers, `0x6a81c` and `0x978bb`. These are likely
-  where remote players' actions arrive from the network. They are not read
-  yet.
+- Another caller at `0x6a81c` copies 23 dwords to a mode-3 slot's
+  `+0x2c` and stamps `+0x28` with game time. The caller at `0x978bb`
+  instead reads the slot's player and gathers unit state, including position.
 - `0x847d0`'s modes are the simulation slot's: 1 and 2 are client-side; 4
   (a remote player on the distributed server) quantizes and stores the
   record (§5.1).
@@ -132,16 +132,10 @@ What this means for bots:
 
 - A **local-slot bot** feeds the pad. Steps 1 to 3 then run for it as for a
   human, so nothing else is needed.
-- A **phantom bot** has no pad. Its brain's pad state must become an action
-  record before it is stored through `0x6a3b0`/`0x847d0`, keyed by the
-  phantom's machine id.
-
-  There are two ways to do the conversion. We could call `0x185be0` with a
-  spare control-state slot as scratch, or we could write our own converter.
-  **Design:** call the game's. Run it on one of the 4 per-user control states
-  that no local user holds. If all 4 are taken, swap one out and back around
-  the call. This keeps turn rates, sensitivity and aim assist the game's own.
-  It is the same "only controller input" rule as local slots.
+- A **phantom bot** supplies its brain's pad when the host gathers the
+  remote slot for simulation. It uses the Default layout, keeps button
+  history per phantom and writes the same action format as the local
+  builder. See §5.1, “The action from a pad”, for the fields and timing.
 
 ### 2.3 Views (traced)
 
@@ -1062,9 +1056,9 @@ Legendary (`H2_BOTS_SKILL=legendary`). §11.4 is the checklist.
 
 **Open** (§12): the seat flag bits and the type's names (the two "not
 traced" rows); the lock time and whether it needs a zoom; the entry
-points (the seats' markers and `S+0x98`); whether X held enters and a
-press exits, as assumed; a vehicle nav mesh (wider clearance, no jumps);
-the Banshee; driving tactics beyond "at the enemy" (circling, keeping
+points (the seats' markers and `S+0x98`); entry and exit on each seat
+in a run (the X tests are traced in §5.1); a vehicle nav mesh (wider
+clearance, no jumps); the Banshee; driving tactics beyond "at the enemy" (circling, keeping
 range for a gunner); and a Warthog driver waiting for its gunner.
 
 ## 4. Way in 1: local slots
@@ -1617,7 +1611,7 @@ a missed tick is harmless. The record (written at `0x187012..0x187083`,
 validated by `0x14d0a0`): `+0` flags, `+4` yaw and `+8` pitch (finite),
 `+0xc`/`+0x10` throttle (-1 to 1), `+0x14` trigger (0 to 1), `+0x20` and
 `+0x21` weapon indices (-1 or 0 to 3, different), `+0x22` grenade (-1, 0,
-1). Not yet named: which flag bits are crouch and jump.
+1). The button masks, hold word and zoom selector are traced below.
 
 **The session state.** A running game stays in state 5. The per-frame
 membership code (`0x83220`, `0x8327b..0x83299`) goes on only in state 5
@@ -1706,11 +1700,17 @@ its class 4.
    with the phantom's name (UTF-16 at `+0`, up to 15) and its team at
    `+0x7c` when it has one.
 4. The game does the rest over the next frames: machine, player, slot.
-5. **Actions**, each frame: the slot is the simulation slot whose MAC
-   (`+0x18`) is the phantom's; the action goes in at `+0x2c` and the
-   stamp at `+0x28` is the game tick, as `0x847d0`'s server path stores
-   it, without its rounding. The server reuses it for 2 s, so ticks
-   between frames are covered.
+5. **Actions.** In a hosted game the simulation gather (`0x69137` →
+   `0x84990(slot, out)`) samples the phantom's pad once per simulation
+   tick. It writes the record at slot `+0x2c`, stamps slot `+0x28`
+   with the tick and supplies the record to the gather. This keeps a tap
+   visible for its full simulation tick even when render and game rates
+   differ. The slot has the player index at `+0`, remote mode 4 at
+   `+8` and the six-byte machine ID at `+0x18` (`0x694c0`). The live
+   player must have the same ID at `+0x14`, a nonzero salt at `+0`,
+   a clear leaving flag (bit 1 at `+2`) and a unit datum at `+0x2c`
+   (`engine::view::players::Player`). Game time
+   supplies seconds per tick at `[GAME_TIME]+4` and the tick at `+8`.
 6. **Removal** (as `0x5fe20`): the peer's players out (mask, count, the
    peer's slots), later players' peer indices and the session's peer
    indices (`+0x40`, `+0x72d8`, `+0x50`) down one, the peers and channel
@@ -1858,8 +1858,8 @@ no run yet).
   waited for.
 - **Actions.** Unchanged: a spawned phantom's unit takes the action the
   bots write in its simulation slot (step 5 above). Until now no phantom
-  had a unit, so none of it was seen; `facing` reads the unit, so a
-  phantom without one is skipped.
+  had a unit, so none of it was seen. Input starts when the phantom has
+  a spawned unit.
 
 **The user's Halo 1 run (2026-11-19: Live custom game on
 `h1_bloodgulch`, 3 local Clankers and 4 phantoms, a crash a while into
@@ -1910,19 +1910,71 @@ the game).** Read from the log tail and the disassembly; no run yet.
   already, so it has nothing to do: `waits` is every gate line out of a
   lobby. It is no sign they were left out of the game.
 
-**The action from a pad** (`session::action_from_pad`): yaw and pitch
-are absolute world angles (`0x186f99`, `0x824d0`), so the right stick
-turns from the unit's facing. A radial curve maps the stick to yaw
-minus x and pitch plus y, with a nominal maximum of 3 rad/s. The left
-stick is the throttle (forward; strafe
-[guess] positive to the left), the right trigger `+0x14` (fire), the left
-`+0x18` (grenades), the weapon the unit's current (`+0x212`). The rest is
-what passes `0x14d0a0`: the second weapon, grenade type and `+0x24` -1,
-target and aim block zero. **Buttons are not mapped**: the flag bits come
-from abstract buttons k0..k15 in `0x185be0` (k0 → `0x2`, k4 → `0x30`, k5
-→ `0x4|0x100000|0x2000000`, k6 → `0x4000000`, k7 → `0x10040`, k12 →
-`0x80`, k13 → `0x100`; `+0x1c` bits from k2 and k3), and which pad button
-each k is is not traced. So a phantom does not jump, crouch or melee yet.
+**The action from a pad.** The offsets below are relative to one
+`0x5c`-byte action, in little-endian order. The local and remote paths
+can be followed from the generated functions for `0x185be0`, `0x186ab0`
+and `0x84990`. The Default layout initializer (`0x218420`) assigns each
+abstract action slot `k` a physical button. The input pass at
+`0x217e40` copies each button's down count and elapsed milliseconds into
+its slot. The control builder copies those arrays at `0x186570` and tests
+the relevant `k`. Finally `0x187029..0x187083` writes the record that the
+host consumes at `0x14d6d4..0x14d7e7`. The host translates that record
+to unit controls at `0x1505f0`. This is the same Default layout local
+Clanker profiles use. [Controller layout trace](../input/controller-layouts.md)
+
+| Default pad input | Record field and timing | Local evidence |
+|---|---|---|
+| A / South, jump (k0) | Flags dword `+0`, mask `0x2` while down. A also drives k14, which sets word `+0x1c` bit `0x100` on the first tick. | `0x1868cb..0x186918` (jump inhibit latch, `[0x510c50]+5`), `0x186996` (k14). |
+| Left stick click, crouch (k10) | Flags `0x1` while latched. First click admits crouch if movement magnitude squared is below 0.25 or the biped check admits it. Release clears the latch. | `0x1865bf..0x18662b`, including the biped predicate `0xe4050` (object header kind zero at `+3`). |
+| B / East, melee (k4) | Flags `0x30` while down. | `0x18691b..0x186942`. The host filters repeats at `0x14f70d`. |
+| White / LB, flashlight (k5) | Flags `0x02100004` while down. The mask is shared across contexts. | `0x186898..0x1868cb`. A visible flashlight effect depends on game mode and unit. |
+| RT, fire (k7) | Flags `0x00010040` while down, plus pressure (0–1) at `+0x14`. | `0x1867bc`, `0x186945`, `0x187058`. |
+| LT, grenade or left gun (k6) | Pressure at `+0x18`. Flags `0x00224800` while active plus `0x04000000` for a grenade. Dual wielding suppresses the grenade bit. Letting go rearms a trigger still down when the left weapon was dropped. | Default LT slot selected at `0x217ed3..0x217f01`. Dual check and four LT flags at `0x186751..0x18684a`, grenade bit at `0x18684d`. The host dispatches a grenade action at `0x14fe58..0x14fe99`. |
+| X / West, reload or use (k2) | Word `+0x1c`, bit `0x01` while down, also `0x02` after the hold threshold. | `0x1869de..0x186a2c`. On press the host tries the contextual action and then reload (`0x14f86d`, `0x14f9d0..0x14fa38`). A held X takes a seat or board target through `0x151c90`, or a weapon through `0x151940` (`0x14f89d..0x14f8fb`). The exit path tests pressed or held at `0x14fae1`. |
+| Y / North, switch weapon (k3) | Word `+0x1c`, bit `0x10` down, also `0x20` after the same threshold. An unused release selects the next eligible primary at `+0x20`. | `0x186a2c..0x186a7d`, `0x186bcb..0x186c0e`. The local builder calls the four-slot inventory search `0xcdeb0`. A handled Y interaction sets player flag `0x20` at `0x14f922`. |
+| Black / RB, swap grenades (k1) | Signed word `+0x22` = requested type (0 frag, 1 plasma, −1 none). Cycle once on press, using whichever types have stock. | `0x18695f` tests down count equal to one. `0x186c46..0x186ce9` checks unit `+0x23d` and the two signed counts at `+0x23e`. `0xc6e41` applies a valid selection. |
+| Right stick click, zoom (k11) | Signed word `+0x24` = zoom level (−1 off, 0 first zoom). A tap cycles once. On a long hold, release restores the level from before the click. | `0x18662b..0x18670c` forms the click and down signals. `0x186d45..0x186de0` checks eligibility, calls `0xc8960` to cycle and restores after more than 15 subsequent held updates. `0xc6e51` writes the requested level to unit `+0x241`. |
+| D-pad left / right (k12/k13) | Flags `0x80` / `0x100` while down. | `0x186867..0x186895`. |
+
+**Tap and hold timing.** The Default pad conversion preserves face-button
+and trigger pressure. The XInput reader at `0x124c53..0x124cc9` tests
+the last pressure byte against a per-button threshold and uses the new
+byte to update that threshold. A phantom uses the same pressure history
+and publishes the new sample for the current tick. While down, the
+threshold can rise to
+pressure minus 32. While up, it can fall to pressure plus 64. Stick clicks
+and the D-pad are digital. X and Y send their levels on every tick. The host
+compares them to player `+0x3c` and derives the press/release bits in
+`0x14f722..0x14f81a` (X `0x04/0x08`, Y `0x40/0x80`). The threshold comes
+from the active globals' player-control block, `[[0x4e034c]+0xf4]` at
+`+0x7c`, in seconds. The local builder multiplies by 1000, truncates,
+and compares to the pad's accumulated milliseconds. A phantom measures
+the hold in simulation time. Exact agreement at the threshold with an
+asynchronously polled physical controller is **[guess]**. The named button fields above are traced.
+
+**Selectors, target and motion.** At `0x187036` the local builder packs a
+weapon-set generation into `+0x1e` (u16) and the requested primary and
+secondary indices into `+0x20/+0x21` (i8, −1 or 0–3). Unit `+0x212/213`
+are the actual hands and `+0x216/217` are the requests. At `0xc6e2b`
+the unit accepts the two indices only if the generation matches unit
+`+0x214`. An objective weapon returned by `0xcfe40` can override the
+requested primary (`0x186c0e`). The weapon handles at unit `+0x218`
+also feed the zoom check for a deflected aim stick (`0x100f70`). Player
+flags at `+2` tell Y release whether an interaction consumed the press.
+Weapon, grenade and zoom ranges are checked by `0x14d0a0`.
+The local interaction finder `0x151110(player, result)` returns the
+12 bytes copied at `+0x28`. These include the interaction kind (i16),
+detail at `+0x2a` (seat for a seat interaction), object datum at `+0x2c`
+and melee target at `+0x30` (`0x151d41`, `0x15166c`, `0x14fd37`).
+An empty target has kind zero and both datums −1. The unused aim block
+`+0x34..+0x57` has its first three datums set to −1, other fields zero,
+as initialized at `0x14d040`.
+
+Yaw and pitch are absolute radians at `+4/+8`. The phantom turns from
+the unit's aim vector at `+0x168` with the bot's stick curve (nominal
+3 rad/s at full deflection). The left stick supplies forward and strafe at `+0xc/+0x10`.
+Default stick layout writes left Y and negated left X at `0x21838a..0x218399`,
+which `0x185e81..0x185ea9` passes to the action builder.
 
 **Open, for a run**:
 
@@ -1971,7 +2023,7 @@ same as a full human lobby. Measure in a run (§11).
 |---|---|---|
 | Brain (perception, nav, decision, aim, emotes) | shared | shared |
 | Nav mesh tool and cache | shared | shared |
-| Pad output | to the port's pad merge | through `0x185be0` into a record, stored with `0x847d0` |
+| Pad output | to the port's pad merge | one remote-slot action per simulation tick (§5.1) |
 | Signing in | guest profile in a local slot | player configuration on a made-up peer |
 | Views | hidden by the render window | none: not a local user |
 | Network | none | the drop and keep-alive for phantom addresses |
@@ -2506,10 +2558,9 @@ plugged in" and went back to the lobby.
   bots from the squad pass would mean hooking the pass per session and
   the controller check besides, and would still leave the bots this
   console's own party in the game's eyes (one team in a team playlist,
-  the host's guests on the scoreboard). What phantoms lose against local
-  bots: buttons. Their action records carry sticks, triggers and the
-  weapon, but no jump, crouch or melee bits yet (§5.1, "The action from a
-  pad"), and none of the pad-press glitches (§3.8).
+  the host's guests on the scoreboard). The phantom action adapter carries
+  the brain's button presses, holds and releases (§5.1), including the
+  sequences used by emotes (§3.5) and glitches (§3.8).
 - **Built.** `clankers::MATCH_LOCAL` = 0: the fill seats every bot as a
   phantom (`clankermatch: 0 local bots join the lobby on free controller
   ports; 7 phantoms join the lobby as peers (...), in the match only`).
@@ -2590,8 +2641,9 @@ clankermatch`, `-p live-worker a_clankermatch_game`.
 ### 8.5 Game run (checklist)
 
 `h2 play --live-local` (or a Live server with the new default hoppers),
-signed in on port 0, Clankers page off. Steps 4 to 9 run with no one at
-the controller as `h2 bots test --clankermatch` (§13.1).
+signed in on port 0, Clankers page off. `h2 bots test --clankermatch`
+(§13.1) covers the lobby and match transitions. Observe the in-game
+actions in step 8 separately.
 
 1. The Xbox Live menu shows seven rows (six without co-op): Quickmatch,
    OptiMatch, Clankermatch, Co-op Campaign, Custom Game, Custom Game
@@ -2609,20 +2661,35 @@ the controller as `h2 bots test --clankermatch` (§13.1).
 5. Pick Clanker Slayer: the retail search screen runs for 4 to 20 s
    (`live: clankermatch: searching clanker playlist 8 ...`), then the
    game hosts its own lobby (does it? in every type: FFA and teams).
-6. The lobby fills one bot at a time, 0.5 to 3 s apart: three local bots
-   in the lobby (`clankers: clankermatch: hosting clanker playlist 8 ...
-   7 bots join`, `3 local bots join the lobby`, `Clanker N is ... on Xbox
-   Live`), then the countdown starts and the four phantoms join the game
-   (`bots: phantom ... joins`). Does the search restart when the local
-   bots sign in? Each shows `⚙ ` and a
-   gamertag, the gear drawn (not a box) in the lobby, the scoreboard and
-   the carnage report; say which place shows a box, if any.
-7. Clanker Teams: 4 v 4, the human's team its three local bots, the
-   other four phantoms, whichever team the human is on (`... 2 teams, the
-   host on team N`). Clanker Doubles: one local bot, two phantoms.
-8. The match starts on its own countdown and plays; the carnage report
-   lists the bots; the site shows the game as Clankermatch with its
-   playlist, each bot with BOT.
+6. The match lobby fills with rostered phantoms (seven for Slayer), the
+   countdown starts, and port 0 remains the only local user. Check each
+   gear and gamertag in the lobby, scoreboard and carnage report.
+7. In Clanker Teams check 4 v 4, with phantoms on both teams. In Clanker
+   Doubles check 2 v 2 with three phantoms. Returning to the party should
+   leave only the human there.
+8. Let the match start on its own. Check the carnage report lists the
+   bots and the site shows the Clankermatch playlist and BOT marks.
+   Follow one phantom by gamertag for the gameplay checks below. For
+   tick-level movement use the existing agent API's player physics and
+   trace views (§3.8).
+   - At a jump or obstruction, watch the phantom leave the ground. On a
+     crouch approach or jump, watch it lower and stand again. With Taunts
+     enabled and a qualifying death nearby, look for distinct crouches
+     and releases over the body (§3.5).
+   - At close range watch a melee connect. At grenade range look for an
+     actual throw and a decrease in the selected grenade count. With both
+     types stocked, check a swap selects the other type once.
+   - With a partly empty magazine and reserve ammo, watch X reload. Give
+     it two weapons and watch a Y tap complete one switch, including the
+     plasma-pistol release and rifle follow-up of the noob combo. To check
+     zoom and flashlight directly, add a scripted phantom in a hosted
+     custom game with `sim.player.add`. Send right-stick clicks on a scoped
+     weapon and White presses where a flashlight is available with
+     `sim.player.pad`. See the [agent API](../runtime/agent-api.md).
+   - Put a pickup, an empty vehicle and a slowly moving enemy vehicle in
+     reach in separate attempts. Watch held X take the pickup, enter the
+     free seat and board the occupied vehicle. Check the bot's unit parent
+     and seat after entry (§11.4).
 9. Leave after the game: the bots go within 30 s (`clankermatch: the game
    is over: the bots go`). Back on the Live menu, Quickmatch starts the
    human playlist picked last in OptiMatch, or nothing if none
@@ -3266,8 +3333,8 @@ list for the user to play (§11).
      once when an enemy comes into view.
    - **Taunt**: 0.3 (§9.1's default personality) for every brain; the
      Clankers page's Taunts off makes it 0 for its bots at their next
-     frame. Phantoms do not emote yet: their actions carry no buttons
-     (§5.1).
+     frame. A phantom's burst reaches the host as alternating crouch and
+     standing ticks (§5.1).
    - Tests (`cargo test -p bots emote`): the classification; the log's
      cursors and size; taunts off never, the chance following taunt and
      severity; the burst's presses, rhythm and length; each gate (near,
@@ -3332,13 +3399,12 @@ list for the user to play (§11).
      - `bots::phantom::session`: the session recipe of §5.1 as memory
        writes (peer, player, removal), the configuration, the simulation
        slot, the action record and the action from a pad.
-     - `Phantoms::tick`, from `boot::bot_glue` before each `RENDER_FRAME`:
-       while a multiplayer game this console hosts runs, pending phantoms
-       get a peer and a player; each joined one's source is asked for its
-       pad (`Frame { port: 4, machine: Some(id) }`) and the pad becomes its
-       action. A removed phantom's peer comes out. **Phantoms join only
-       once the game runs**: when it ends they leave the session and wait
-       for the next game, so the lobby never holds one. On a client, or a
+     - In the original game-only configuration, `Phantoms::tick` maintains
+       membership before each `RENDER_FRAME`. In play the server's action
+       gather samples each joined source (`Frame { port: 4, machine:
+       Some(id) }`). A removed phantom's peer comes out. With the pregame
+       join disabled, **phantoms join only once the game runs**. When
+       it ends they leave the session and wait for the next game, so the lobby never holds one. On a client, or a
        local game, or before this console is the game's host (the first
        frames of a game), they wait and try again each frame, logged once
        per phantom and reason (`bots: phantom Clanker 4 waits: this
@@ -3361,14 +3427,15 @@ list for the user to play (§11).
      2. The client joins; start Slayer. The host's log says `bots: phantom
         Clanker 4 joins (peer N)` once the game runs.
      3. On the host's scoreboard: Clanker 4 and 5, wearing the host's
-        colours. Do they spawn, turn, walk and shoot? They do not jump or
-        melee yet.
+        colours. Do they spawn, turn, walk and shoot? Watch the same
+        phantoms for the button actions in §8.5 step 8.
      4. On the client: are they on the scoreboard, do they move, and do
         they stay for the whole game (§5.1, "Clients and the phantom's
         address")?
      5. Back in the lobby they are gone; the next game they join again.
      6. Send the `bots:` and `clankers:` lines, and anything odd in the
-        turning: 3 rad/s and the strafe sign are guesses.
+        turning or lateral movement. Compare full-stick turning with the
+        adapter's nominal 3 rad/s.
      7. Also useful: on the host, the session state and the network life
         cycle (`0x527334`) during the game.
    - **Built (6c), the server side, both homes** (`live_server::bots`,
@@ -4265,8 +4332,8 @@ list for the user to play (§11).
    - Small right-stick fidgets happen when an actor is standing idle
      and on signed-in local pads in a network pregame lobby or while
      awaiting a unit. They send zero left stick, triggers and buttons.
-     The phantom action adapter applies the turn curve. Face buttons
-     still require the phantom mapping described in §5.1.
+     The phantom action adapter applies the turn curve and translates the
+     hand's button timing as described in §5.1.
    - Seeing a live grenade and getting clear of it is `bots::incoming`
      (named `grenade` on the lane; renamed at the merge so it does not
      read as `bots::grenades`, which owns throwing). The live grenades
@@ -4365,14 +4432,17 @@ small surface. Everything in it is controller input.
   port it asked for, and the port it got (`None` until the input manager
   has placed it).
 - `trait PadSource: Send { fn pad(&mut self, f: &Frame) -> HostPadState }`
-  - It is called once a frame on the game thread, before `RENDER_FRAME`,
-    only for placed bots.
+  - A placed local bot is sampled once per rendered frame on the game
+    thread, before `RENDER_FRAME`. A spawned phantom is sampled when
+    the hosted simulation gathers its slot for a new game tick (§5.1).
+    Its `Frame.frame` counts pad samples so a recording or script advances
+    once, even if two ticks fall in the same render or a tick is read twice.
   - `Frame` carries the frame count, the game's tick (`tick`, 30 a
     second, `None` in the menus), the port, the guest memory and
     `joining`: the players screen is on top and the bot's slot has no
-    profile, so A signs it in. Frames are rendered frames; a slow frame
-    runs several ticks and a fast one none, so time by `tick` to match the
-    simulation.
+    profile, so A signs it in. For a local bot, a slow render can cover
+    several simulation ticks and a fast one none. Time by `tick` to
+    match the simulation.
   - A source must not call `add` or `remove` from inside `pad`.
   - Closures `FnMut(&Frame) -> HostPadState` are sources.
   - Three sources come with the crate:
@@ -4666,9 +4736,9 @@ Still open:
 - How the players screen's mask becomes the game's local users when the
   game starts. A run answers it for stage 1 (stage 1 run, step 1); a trace
   is needed only if that fails.
-- The network receivers of remote actions, `0x6a81c` and `0x978bb`.
-- The `0x5c` action record's flag bits (crouch and jump) and `+0x24`
-  (zoom?); the layout is in §5.1.
+- Compare the phantom's per-tick hold transition, zoom release and grenade
+  throw after dropping a dual weapon with a local bot in play (§5.1 and
+  §8.5). The button masks and selection fields have static traces.
 - Which font slots draw player names in the lobby, scoreboard and carnage
   report.
 - For objectives (§3.7): Territories' globals `[0x51eccc]` (the

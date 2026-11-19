@@ -1243,6 +1243,11 @@ pub fn run_hosted_with_live(
         )?),
         (true, None) => Some(dsound_glue::install(&loaded.runtime, &k, xbe_bytes)?),
     };
+    if let Some(audio) = &ds
+        && features.switches().audio_hrtf()
+    {
+        audio.mixer().lock().unwrap().set_hrtf(true);
+    }
     if let Some(input) = host.input.as_mut() {
         // Local bots' pads (docs/game/bots.md): after the host's own.
         input.add_backend(Box::new(bots::local::global().backend()));

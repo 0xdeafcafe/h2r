@@ -512,6 +512,7 @@ pub fn particle(
     set(&mut x, "bitmap", Val::tag(FourCC(*b"bitm"), bitmap.map_or(TagId::NULL, |b| b.0)))?;
     set(&mut r, "parameters", Val::Block(vec![x]))?;
     for (f, v) in &role.statics {
+        crate::provenance::note(*f, v);
         set(&mut r, f, v.clone())?;
     }
     sprite_frame(&mut r)?;
@@ -751,12 +752,15 @@ pub fn particle_system(
     let mut s = defs::default_record(sd);
     set(&mut s, "particle", Val::tag(FourCC(*b"prt3"), particle))?;
     set(&mut s, "location", Val::Int(p.location.into()))?;
+    // The caller places the system in an effect's event: any element.
     for (f, v) in &role.system {
+        crate::provenance::note(format!("events[*].particle_systems[*].{f}"), v);
         set(&mut s, f, v.clone())?;
     }
     let mut e = defs::default_record(ed);
     set(&mut e, "movement", Val::tag(FourCC(*b"pmov"), TagId::NULL))?;
     for (f, v) in &role.emitter {
+        crate::provenance::note(format!("events[*].particle_systems[*].emitters[0].{f}"), v);
         set(&mut e, f, v.clone())?;
     }
     set(&mut e, "emission_shape", Val::Int(0))?;

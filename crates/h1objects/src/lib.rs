@@ -45,6 +45,7 @@ pub mod h1hud;
 pub mod health_hud;
 pub mod particles;
 pub mod physics;
+pub mod provenance;
 pub mod query;
 pub mod ragdoll;
 pub mod rebuild;
