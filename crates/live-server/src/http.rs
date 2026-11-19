@@ -343,6 +343,8 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
             "/v1/accounts/{gamertag}/ranks/{playlist}",
             get(crate::ranks::player_history),
         )
+        .route("/v1/admin/replay-archives", get(crate::replay_archive::inventory))
+        .route("/v1/admin/replay-archives/{id}", get(crate::replay_archive::detail))
         .route("/v1/admin/status", get(crate::status::get_admin_status))
         .route("/v1/admin/usage", get(crate::usage::get_overview))
         .route("/v1/admin/usage/accounts", get(crate::usage::get_accounts))

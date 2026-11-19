@@ -87,6 +87,7 @@ pub struct Game {
     pub kills: VecDeque<KillRecord>,
     pub last_tick: Option<u64>,
     pub ended: Option<(GameEnded, String)>,
+    pub(crate) recording: crate::replay_archive::Recording,
     /// Unix seconds of the last event or frame; idle games are ended.
     pub last_activity: i64,
     /// A Live co-op campaign game's session, recorded when it starts: a
@@ -237,10 +238,15 @@ impl State {
 
     /// Games newest first, optionally only live or ended ones.
     pub fn games_newest(&self) -> impl Iterator<Item = &Game> {
+        self.games_before(None)
+    }
+
+    pub(crate) fn games_before(&self, before: Option<u64>) -> impl Iterator<Item = &Game> {
+        use std::ops::Bound::{Excluded, Unbounded};
         self.games_by_position
-            .values()
+            .range((Unbounded, before.map_or(Unbounded, Excluded)))
             .rev()
-            .filter_map(|id| self.games.get(id))
+            .filter_map(|(_, id)| self.games.get(id))
     }
 
     pub fn active_key_count(&self, xuid: Xuid) -> usize {
@@ -412,6 +418,7 @@ impl Model {
                 kills: VecDeque::new(),
                 last_tick: None,
                 ended: None,
+                recording: crate::replay_archive::Recording { position: e.position, ..Default::default() },
                 last_activity: at,
             };
             s.games_by_position.insert(e.position, id.clone());
@@ -464,11 +471,15 @@ impl Model {
                 }
             }
             game::GAME_FRAME => {
+                g.recording.position = e.position;
+                g.recording.legacy_frames += 1;
                 if let Some(tick) = b.data.get("tick").and_then(|t| t.as_u64()) {
                     g.last_tick = Some(tick);
                 }
             }
             live_proto::chunk::FRAME_CHUNK => {
+                g.recording.position = e.position;
+                g.recording.chunks += 1;
                 if let Some(tick) = b.data.get("to_tick").and_then(|t| t.as_u64()) {
                     g.last_tick = Some(g.last_tick.map_or(tick, |t| t.max(tick)));
                 }
@@ -481,6 +492,7 @@ impl Model {
                 if !d.players.is_empty() {
                     g.scoreboard = d.players.clone();
                 }
+                g.recording.position = e.position;
                 g.ended = Some((d, b.at.clone()));
             }
             _ => {}
