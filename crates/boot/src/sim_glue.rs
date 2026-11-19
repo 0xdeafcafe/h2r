@@ -706,7 +706,12 @@ impl feature::Feature for SimMetrics {
                     (|| {
                         let attacker = g.u32(esp.wrapping_add(4))?;
                         let victim = g.u32(esp.wrapping_add(8))?;
-                        let betrayal = g.u32(esp.wrapping_add(0x0c))? != 0;
+                        // A betrayal by the teams, as the bots tell it: the
+                        // third argument is not a betrayal flag.
+                        let betrayal = bots::emote::kill_from_guest(&*g, attacker, victim)
+                            .ok()
+                            .flatten()
+                            .is_some_and(|k| k.betrayal);
                         let tick = telemetry::game_tick(&g)?;
                         Ok::<_, runtime::GuestFault>((attacker, victim, betrayal, tick))
                     })()
