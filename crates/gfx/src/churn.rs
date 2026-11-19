@@ -65,6 +65,7 @@ pub fn snapshot() -> Churn {
 
 /// Counts a GPU buffer created.
 pub fn buffer_created() {
+    timeline::native::resource(timeline::native::Metric::Buffers, 1);
     bump(|c| c.buffers_created += 1);
 }
 
@@ -110,4 +111,27 @@ pub fn buffer_reused() {
 pub fn create_buffer(device: &wgpu::Device, desc: &wgpu::BufferDescriptor<'_>) -> wgpu::Buffer {
     buffer_created();
     device.create_buffer(desc)
+}
+
+/// Resource operations used by native stages. Count at creation, including
+/// resources discarded when one copy refuses the replacement.
+pub fn create_buffer_init(device: &wgpu::Device, desc: &wgpu::util::BufferInitDescriptor<'_>) -> wgpu::Buffer {
+    use wgpu::util::DeviceExt;
+    buffer_created();
+    upload_bytes(desc.contents.len());
+    device.create_buffer_init(desc)
+}
+
+pub fn create_bind_group(device: &wgpu::Device, desc: &wgpu::BindGroupDescriptor<'_>) -> wgpu::BindGroup {
+    timeline::native::resource(timeline::native::Metric::BindGroups, 1);
+    device.create_bind_group(desc)
+}
+
+pub fn create_render_pipeline(device: &wgpu::Device, desc: &wgpu::RenderPipelineDescriptor<'_>) -> wgpu::RenderPipeline {
+    timeline::native::resource(timeline::native::Metric::PipelineMisses, 1);
+    device.create_render_pipeline(desc)
+}
+
+pub fn upload_bytes(n: usize) {
+    timeline::native::resource(timeline::native::Metric::UploadBytes, n as u64);
 }

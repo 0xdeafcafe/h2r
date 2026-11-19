@@ -189,9 +189,6 @@ struct MapState {
 pub struct Glue<B: d3d::backend::Backend + Send + 'static> {
     device: d3d::abi::SharedDevice<B>,
     state: Arc<Mutex<Option<MapState>>>,
-    /// The device's cull at this layer-3 call, read in `native` for the
-    /// pass `draw` asks for ([`ObjectsPass::cull`]).
-    cull: Mutex<Option<native_render::program::Cull>>,
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
@@ -243,18 +240,6 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                 return None;
             }
         }
-        // The cull layer 3 starts in, which the passes that do not set
-        // `CULLMODE` draw with on the D3D path, as the world's.
-        let cull = if inherit_cull() {
-            self.device
-                .lock()
-                .ok()
-                .and_then(|d| d.cull_state(&crate::native_world_glue::ReadMemory(mem)))
-                .map(crate::native_world_glue::inherited_cull)
-        } else {
-            None
-        };
-        *self.cull.lock().unwrap_or_else(|e| e.into_inner()) = cull;
         Some(set)
     }
 
@@ -268,7 +253,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         }
     }
 
-    fn draw(&self, camera: &RenderCamera, objects: Vec<ObjectFrame>) -> bool {
+    fn draw(&self, mem: &mut dyn GuestMemory, camera: &RenderCamera, objects: Vec<ObjectFrame>,
+        masks: &native_render::skip::MaskPlan, ranges: usize) -> bool {
         let Some(models) = self
             .state
             .lock()
@@ -278,13 +264,15 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         else {
             return false;
         };
-        let cull = *self.cull.lock().unwrap_or_else(|e| e.into_inner());
         let Ok(mut d) = self.device.lock() else {
             return false;
         };
-        if !d.can_external_pass() {
+        if !d.can_external_pass() || !d.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)).unwrap_or(false) {
             return false;
         }
+        let cull = if inherit_cull() {
+            d.cull_state(&crate::native_world_glue::ReadMemory(mem)).map(crate::native_world_glue::inherited_cull)
+        } else { None };
         // An object whose lit parts sample the texture accumulation target
         // reads the level the D3D path drew in layer 1, in place: without
         // that the D3D path draws the view's objects.
@@ -295,7 +283,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         if texaccum && !d.samples_levels_in_place() {
             return false;
         }
-        d.request_external_pass(Box::new(ObjectsPass {
+        let pass = Box::new(ObjectsPass {
             models,
             camera: *camera,
             objects,
@@ -303,7 +291,21 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             texaccum,
             w_clip: None,
             cull,
-        }));
+        });
+        if ranges == 0 {
+            // A comparison-only view keeps every guest item.
+            d.request_external_pass(pass);
+            return true;
+        }
+        let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
+        let plan = d3d::ExternalPlan { stage: timeline::native::Stage::Objects, view, ranges, slots: Vec::new() };
+        let Ok(Some(reservation)) = d.prepare_external_bound(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass, Vec::new())
+            else { return false };
+        if !masks.apply(&mut feature::native_world::Mem(mem)) {
+            timeline::native::Stage::Objects.count(timeline::native::Metric::RefusedMasks, ranges as u64);
+            return false;
+        }
+        reservation.commit();
         true
     }
 }
@@ -326,7 +328,6 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
     feature::native_objects::set_host(Arc::new(Glue {
         device: Arc::clone(device),
         state,
-        cull: Mutex::new(None),
     }));
 }
 
@@ -838,9 +839,27 @@ impl d3d::ExternalPass for ObjectsPass {
         if self.texaccum { vec![native_render::object_program::TEXACCUM_HEADER] } else { Vec::new() }
     }
 
-    fn encode(&mut self, t: d3d::ExternalTarget<'_>) {
+    fn prepare_copy(&mut self, t: &d3d::ExternalTarget<'_>) -> Result<(), &'static str> {
+        if self.view.is_none() { return Err("object view constants unavailable"); }
+        if self.texaccum && texaccum_level(t.sampled, t.guest_size, t.size).is_none() {
+            return Err("object texture accumulation unavailable");
+        }
+        let gpu = upload_pending(&self.models, t);
+        let index = self.models.index.lock().unwrap_or_else(|e| e.into_inner());
+        if self.objects.iter().all(|o| {
+            index.get(&(o.definition as u16)).and_then(|&i| gpu.as_ref()?.model(i)).is_some()
+        }) { Ok(()) } else { Err("object model unavailable") }
+    }
+
+    fn writes(&self) -> d3d::ExternalWrites {
+        d3d::ExternalWrites { color: true, depth_stencil: true }
+    }
+
+    fn encode(&mut self, t: d3d::ExternalTarget<'_>) { self.record_ranges(t); }
+
+    fn record_ranges(&mut self, mut t: d3d::ExternalTarget<'_>) -> usize {
         let mut guard = upload_pending(&self.models, &t);
-        let Some(gpu) = guard.as_mut() else { return };
+        let Some(gpu) = guard.as_mut() else { return 0 };
         let index = self.models.index.lock().unwrap_or_else(|e| e.into_inner());
         let inputs: Vec<ObjectInput<'_>> = self
             .objects
@@ -853,18 +872,21 @@ impl d3d::ExternalPass for ObjectsPass {
                 })
             })
             .collect();
+        if inputs.len() != self.objects.len() { return 0; }
+        let full_scale = t.z_scale;
+        let device = t.device;
         gpu.prepare(
-            t.device,
-            t.queue,
+            device,
+            &mut t.encoder_uploads(),
             &self.camera,
             DepthRule {
-                full_scale: t.z_scale,
+                full_scale,
                 floor: true,
             },
             &inputs,
         );
         let [x, y, width, height] = t.viewport;
-        gpu.encode(
+        let base_draws = gpu.encode(
             t.device,
             &mut *t.encoder,
             t.color,
@@ -875,9 +897,9 @@ impl d3d::ExternalPass for ObjectsPass {
         );
         // The lit parts, through the game's programs (the viewport the
         // whole target, as they expect).
-        let Some(constants) = self.view else { return };
+        let Some(constants) = self.view else { return base_draws };
         let mut lit = self.models.lit.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(lit) = lit.as_mut() else { return };
+        let Some(lit) = lit.as_mut() else { return base_draws };
         lit.set_inherited_cull(self.cull);
         let compared = compare();
         let objects: Vec<(u32, &ObjectFrame)> = self
@@ -931,7 +953,7 @@ impl d3d::ExternalPass for ObjectsPass {
             arm_compare(c, lit, model, o, &self.view_inputs(constants, &t), texaccum);
         }
         if objects.is_empty() {
-            return;
+            return base_draws;
         }
         if self.texaccum && texaccum.is_none() && TEXACCUM_MISSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0 {
             eprintln!(
@@ -953,7 +975,7 @@ impl d3d::ExternalPass for ObjectsPass {
                 }
             }
         }
-        lit.encode(
+        base_draws + lit.encode(
             t.device,
             t.queue,
             &mut *t.encoder,
@@ -965,7 +987,7 @@ impl d3d::ExternalPass for ObjectsPass {
             &view,
             &objects,
             texaccum,
-        );
+        )
     }
 }
 

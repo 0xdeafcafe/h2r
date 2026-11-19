@@ -164,7 +164,9 @@ fn a_posed_object_draws_skinned_and_lit_with_the_games_w_depth() {
         ObjectInput { model: m, nodes: &behind, sphere: ([-10.0, 0.0, 0.0], 3.0) },
         ObjectInput { model: m, nodes: &one, sphere: ([10.0, 0.0, 0.0], 3.0) },
     ];
-    let f = gpu.prepare(&ctx.device, &ctx.queue, &camera(), DepthRule::D24, &objects);
+    let arena = gfx::ring::UploadPool::default().begin();
+    let mut uploads = gfx::ring::EncoderUploads { device: &ctx.device, queue: &ctx.queue, encoder: &mut enc, arena: &arena };
+    let f = gpu.prepare(&ctx.device, &mut uploads, &camera(), DepthRule::D24, &objects);
     assert_eq!((f.instances.len(), f.culled, f.mismatched, f.draws.len()), (1, 1, 1, 1));
     gpu.encode(
         &ctx.device,
@@ -180,6 +182,7 @@ fn a_posed_object_draws_skinned_and_lit_with_the_games_w_depth() {
             height: SIZE as f32,
         },
     );
+    arena.flush(&ctx.queue);
     ctx.queue.submit([enc.finish()]);
 
     let px = read(&ctx, &color, wgpu::TextureAspect::All);

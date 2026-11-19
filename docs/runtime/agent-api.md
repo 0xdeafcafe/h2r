@@ -835,6 +835,17 @@ h2 agent --socket /tmp/h2-play.sock hostpads
   is read-only, so it needs no claim. With frame stats off it answers
   `UNAVAILABLE` (the agent starts a quiet collection when nothing else
   does, so they are on unless something stopped them).
+- **Native renderer counters.** `profile.counters` and `profile.capture`
+  use the field names of `H2_FRAME_STATS_CSV`. Each agent response and
+  capture CSV includes native columns with activity in its window. The
+  streaming `H2_FRAME_STATS_CSV` writes a fixed header at startup. Each
+  `native_<stage>_` prefix includes examined and suppressed guest items,
+  refusals by reason, prepare and encode nanoseconds, GPU buffers and bind
+  groups created, upload bytes and pipeline misses. Per-view columns
+  distinguish reference and display ranges attempted and committed and
+  invariant failures. For instance, `native_world_v1_display_recorded` can
+  be positive while `native_world_v1_display_ranges` is zero when the
+  display copy fails validation. [Field definitions](../graphics/native-renderer.md#ordered-replacement-handoff).
 - **Sampling.** `sample: true` also runs the in-process sampler
   (`profile.sample.*`, boot's `sampling`) over the window, and `sampling`
   is what `profile.sample.stop` answers: the module-relative dump

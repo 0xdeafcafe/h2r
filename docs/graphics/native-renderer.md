@@ -8,6 +8,125 @@ labels as in [feature-engine.md](../engine/feature-engine.md): **Code**
 game data: addresses and offsets are research points, everything else is
 read from the user's disc at run time.
 
+## Ordered replacement handoff
+
+World and objects use the device reservation below. Held post packets can pass their saved slots and viewport to the same transaction. Geometry
+hooks for particles, decals, HUD, gel producers and world layers can register
+`Device::add_draw_admission(Arc<dyn DrawAdmission>)`. The device calls admissions
+in registration order at the resolved draw, for immediate, inline, indexed and
+array geometry. Scope ownership to the current producer and match the complete
+state. Returning `None` leaves the draw available to the next admission. A
+failed preparation of a claimed draw falls through to the original D3D draw.
+
+For a helper that emits one quad, call
+`Device::begin_draw_scope(mem, Arc<dyn DrawAdmission>) -> Result<Option<DrawScope>, D3dError>`
+on entry. Keep the handle across the guest call. At return,
+`Device::end_draw_scope(mem, scope) -> Result<bool, D3dError>` drains that
+call's pending packets and reports whether the replacement committed. Earlier
+packets drain before entry. Refusal consumes the candidate, and dropping the
+handle disarms it. Nesting supersedes the outer candidate. A persistent
+admission is appropriate for an ordered stream of independently owned draws.
+
+```rust
+trait DrawAdmission: Send + Sync {
+    fn admit(&self, snapshot: &DrawSnapshot<'_>)
+        -> Option<(ExternalPlan, Box<dyn ExternalPass>)>;
+}
+
+// At a hook outside draw submission, drain the preceding guest commands.
+let reservation = device.prepare_external_pass(mem, plan, pass)?;
+if let Some(reservation) = reservation {
+    // Apply reversible mask edits here. Drop the reservation to cancel.
+    reservation.commit();
+}
+```
+
+`DrawSnapshot::draw` borrows the exact `ResolvedDraw` that D3D can still issue.
+It includes vertex declaration, streams, indices, shader inputs (microcode,
+constants, defaults, pixel definition and combiner state), raw and translated
+render and stage state, texture headers and formats, viewport and scissors.
+The snapshot adds raw shader handles, bound texture headers, the sampled-stage mask, bound colour/depth headers and palette headers and entries.
+The device replaces only the draw packet. The guest's shader setup and
+stencil tail still run, including when adjacent draws have different owners.
+
+`ExternalPlan { stage, view, ranges, slots }` promises a positive number of
+geometry or effect ranges on **each** participating copy. `slots` is an indexed
+`Vec<Option<ExternalSlot>>`; each populated slot names a guest colour surface
+header and whether it will be written. `ExternalPass::writes()` declares writes
+to the bound colour and depth/stencil. In `record_ranges(ExternalTarget) -> usize`,
+`target.copy` is `Reference` or `Display`, `target.stages` holds the four resident
+stage views for a resolved draw, and `target.slots[i]` supplies the live surface's
+attachment, sample view, format and texel size for this copy. Record only in
+the supplied encoder. A queue submission or write to a live texture would
+escape cancellation. A declared sampled header or intermediate surface that
+cannot be resolved on one required copy refuses the entire replacement.
+
+Recording takes place during prepare. Partial recordings are discarded.
+Commit splices only previously sealed command buffers into the D3D submission
+order. Commit has no remaining stage callbacks or target lookups. With interpolated
+presentation active, confirmed replacements keep the guest draw for replay.
+
+A confirmed admission on the threaded backend needs a synchronous worker
+round trip. `encode_pending` closes the preceding merged D3D pass, and each
+physical copy gets a private command buffer. World and object hooks batch a
+view into one reservation. A packet holder can batch consecutive native draws
+on the same targets in a single `ExternalPlan` and encode their ranges in
+guest order. End the batch before any guest-owned draw, target/state change
+that the batch does not reproduce, or guest-visible read. A one-draw helper
+pays the full admission cost.
+
+At a drained boundary, the held-packet entry is
+`Device::prepare_external_bound_at(mem, plan, pass, slots, rect)`. It compares
+each saved `Option<B::Surface>` against its slot's current guest header. The
+rectangle is `(x, y, width, height)` in guest pixels. Each `ExternalColor`
+provides both `guest_size` and this copy's physical `size`. A scaled frame
+whose intermediate bloom slot exists only at 1× keeps the entire guest
+sequence. With the display copy asleep, the 1× reference can run alone.
+
+`Backend::prepare_external(surfaces, request, textures, &plan, copy, pass)`
+returns `Result<Option<Vec<ExternalRecording>>, String>`. Each copy first
+calls `ExternalPass::prepare_copy(&ExternalTarget) -> Result<(), &'static str>`.
+Only when every copy agrees does the backend call `record_ranges` on private
+encoders. Validation scopes include resource lookup, native preparation,
+recording and encoder finish. A failed recording discards every copy.
+`Backend::commit_external(recording)` takes one sealed copy. The device
+reservation also preserves deferred display copies and invalidates guest
+colour, depth and alias caches for the declared writes. Code that holds guest
+packets should use the device entry for those effects. A private gel producer
+or probe can use the default read-only `writes()` while using `colour_only()`
+to request a scratch depth attachment.
+
+Use `ExternalTarget::encoder_uploads()` for per-view constants, dynamic rows
+and indirect arguments. Its upload arena reserves a fresh source range for
+each write and records a copy immediately before the consuming draw. Target
+copies and multiple runs may share a submission. The queue completion callback
+returns the leased storage to its pool after the last submission using it.
+World placement transforms are initialized once at map load.
+
+**Frame counters.** `H2_FRAME_STATS`, its CSV, `profile.counters` and
+`profile.capture` use the same stage names. Prefix each suffix below with
+`native_<stage>_`, where stage is `world`, `objects`, `transparents`,
+`lights`, `post`, `particles`, `decals`, `hud` or `gels`.
+
+| Suffix | Measurement |
+| --- | --- |
+| `examined`, `suppressed` | Guest items considered and items committed. Multi-range passes override `ExternalPass::items(ranges)` to report their logical item count. |
+| `refused_ownership`, `refused_resources`, `refused_inputs` | Unowned items, unavailable surfaces or bindings, and rejected stage preflight. |
+| `refused_ranges`, `refused_masks`, `refused_validation`, `refused_replay` | Incomplete range count, failed reversible guest mask edit, wgpu validation error, and original draws retained for interpolation. |
+| `prepare_ns`, `encode_ns` | Host wall nanoseconds in native selection/resource preparation and private command recording, respectively. |
+| `buffers`, `bind_groups`, `upload_bytes`, `pipeline_misses` | Actual creations and bytes charged through the submission arena and counted `gfx::churn` operations during the stage. |
+| `v<V>_<C>_recorded`, `v<V>_<C>_ranges` | Ranges the stage recorded on this copy, including discarded attempts, and ranges committed. |
+| `v<V>_invariants`, `v<V>_<C>_invariants`, `v<V>_<C>_refused` | Range-count mismatches across copies, mismatches on this copy, and transactions refused by this copy. Each stage/view/copy mismatch logs once. |
+
+`V` is player view `0` through `3`, or `other`. `C` is `reference` or
+`display`. Confirmed passes account for both physical copies and count a
+suppressed guest item once. Stage ownership filters count items they reject
+before calling the device. Single-stage draw admissions can override
+`DrawAdmission::stage() -> Option<timeline::native::Stage>` to meter their
+selection time and ownership refusals automatically. New stage implementations use
+`gfx::churn::{create_buffer, create_buffer_init, create_bind_group, create_render_pipeline, upload_bytes}`
+for resource accounting. Legacy enqueues have no suppression promise.
+
 ## Why a new shape
 
 Today a frame on Old Mombasa costs about 25 ms of game-thread time in the
@@ -493,21 +612,11 @@ The crate `native-render` (`crates/native-render`):
 
 ### Wired into the game
 
-- **`d3d` external pass** (`crates/d3d`). `Device::request_external_pass`
-  holds a boxed `ExternalPass` and issues it at the next push-buffer drain
-  (the next D3D entry), with the bound colour target, the bound depth and
-  the current viewport, like `request_depth_grid`; `can_external_pass`
-  asks the backend first. `GfxBackend::external_pass` encodes the pending
-  pass, then hands the pass the open encoder, single-mip views of the two
-  surfaces, their formats, the viewport in texels and the device's depth
-  full scale (`+0x948`). `ThreadedBackend` posts it to the render thread;
-  `ScaledBackend` runs it into both copies (the 1x reference and the
-  scaled view: `encode` is called once per copy); `InterpBackend` (E1)
-  forwards it and holds the frame (`unpinned`), since a replay redraws
-  draws, not passes. `DiagBackend` and boot's headless backend forward it.
-  Counters: `external_passes`, `external_passes_dropped`. Test:
-  `crates/d3d/tests/external_pass.rs` (direct, render thread, E1, and a
-  backend that cannot).
+- **`d3d` external pass.** World and object replacements use the ordered
+  reservation above. `Device::request_external_pass` still schedules
+  legacy passes, including comparison probes, at the next push-buffer
+  drain. `crates/d3d/tests/external_pass.rs` covers both entry points,
+  direct and threaded recording, scaled attachment refusal, and replay.
 - **The feature `native-world`** (`crates/feature/src/native_world.rs`,
   off by default (the A/B on screen showed the stage 1 look, base map
   times lightmap, far from the D3D path), `H2_FEATURES=impl.render.native_world=on`
@@ -525,10 +634,10 @@ The crate `native-render` (`crates/native-render`):
   the item masks, the camera, the active BSP, the map name); the host's
   load state (a mutex only `ask` takes, and only the render reaches it;
   the loader is a host thread that opens the map through the VFS's
-  mutex and never touches guest memory); the D3D device's pending
-  external pass, which the render owns while it is in flight (the sim's
-  D3D calls join first) and which is issued at the render's next D3D
-  entry, in render order, with that entry's memory.
+  mutex and never touches guest memory); the D3D device's current
+  targets, which the render owns while it is in flight (the sim's D3D
+  calls join first). The host drains previous commands, previews the list
+  and confirms one batched reservation for the view before applying masks.
   Tests: `crates/feature/tests/native_world.rs` (the plan with
   `render-timing`, deep, and the layer-draw port all on; alone, the chain
   runs on the render thread; off by default, and on with pipelining placed; the
@@ -588,8 +697,9 @@ and behind it as before); `cpu` and the `0x0002bed0` site (layer 3) drop
 by most of the world's share of the 8.26 ms, and `encode` and `submit`
 drop with the D3D draws that are gone, in proportion to the parts the
 coverage line says are native.
-A frame where the device's `external_passes_dropped` grows has a world
-hole: it means the pass was asked for and could not be drawn.
+A refused world reservation leaves the affected guest items in layer 3.
+Use the stage's refusal reasons, per-copy range counts and invariant
+failures to distinguish D3D fallback from native coverage.
 
 The stage 1 look (base map times lightmap, on by default until
 2026-11-19) was far from the D3D path on screen, lighting most of all:
