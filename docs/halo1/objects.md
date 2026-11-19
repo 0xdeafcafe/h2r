@@ -309,6 +309,55 @@ things the engine reads at a vehicle's base, proved in
   (`h1convert::placements::retail_vehicle_depth`: the retail ghost
   0.15, the warthog 0.02, the wraith none).
 
+**The Blood Gulch ghost (converter version 94).** User report on
+converted Blood Gulch (v90/v91): "physics totally fucked and looks like
+using damage state model"; one ghost lay nose down at pitch -10.8,
+partly in the ground. Both halves were checked in a game run
+(2026-11-19) and against the discs:
+
+- **Model: the intact permutation draws.** Halo 1's `ghost` model has
+  one region, `__unnamed`, with `__base` (geometries 3, 3, 2, 1, 0 from
+  super low to super high, shaders 0 to 2) and `~damaged` (3, 7, 6, 5,
+  4, shaders 3 to 5: the `damaged ghost ...` shaders on the
+  `ghost_destroyed` bitmaps). The converted `mode` keeps both in that
+  order and its `hlmt` has no variants, no damage sections
+  (`hlmt +0x60` empty) and one region naming both permutations. E: the
+  region permutation update (`0x0016d660`) gathers candidates only from
+  the object's variant (`0x0016dad0`, through `hlmt +0x54`); with none
+  it chooses nothing and the region keeps permutation 0. In the game the
+  ghost drew 1,082, 28 and 109 vertex parts (`render.frame` draws):
+  geometry 0, `__base` at super high, with the `ghost hull metal`, `ghost
+  self illuminated` and `ghost hull diffuse shine` shaders in its
+  materials 0 to 2. Side by side with a spawned retail ghost on flat
+  ground the two look alike. So nothing selects the damaged model; the
+  "fragment" was the ghost lying on a slope, half hidden by it.
+- **At rest the ghost lies on its hull.** Its `phmo` is Halo 1's
+  collision (lowest point 0.134 below the origin; the retail ghost's
+  `phmo` 0.019) of Halo 1's `phys` mass, 2000 (retail 907), centre of
+  mass (0.376, 0, 0.133) from the pieces (Halo 1's own 0.362, 0, 0.108;
+  retail 0.287, 0, 0.177). Empty, both rest on their physics shapes
+  (neither hovers without a driver): spawned on flat ground the
+  converted ghost's origin was 0.13 above it at pitch -2.8, the retail
+  one's 0.01 at -2.3 (its model dipping into the ground). The nose-down
+  ghost lay on a slope falling 7 degrees forward with its hull on the
+  ground, as Halo 1's hull would.
+- **Driven, its back hover point gave no lift.** With a driver the
+  converted ghost rode at pitch +19.9, its tail on the ground; the
+  retail ghost rides at -7.9, 0.39 above it. The back point (`hull back
+  seat`, the retail back point's strength 3.75) sat on Halo 1's seat
+  node; a hover point whose marker is on any node but the root lifts
+  nothing (live: eight times its strength changed nothing; named to a
+  node-0 marker it lifted). Every friction and hover marker of every
+  retail vehicle is on node 0, so since version 94 every powered point's
+  marker is (tag-definitions.md, "Every vehicle from definitions";
+  `h1objects/tests/vehicle_rebuild_disc.rs`,
+  `every_powered_point_rides_the_root_node`). Moved live to node 0 at
+  the same place, the ghost rode at -7.7, 0.33 above the ground, and
+  drove. The hover points' positions match the retail ghost's within
+  0.06 (Halo 1's back point (-0.25, 0, 0.08), retail (-0.27, 0, 0.10);
+  the front pair (0.62, ±0.4, 0.06) and (0.68, ±0.4, 0.10)); the
+  skeletons are the same five nodes at the same rest pose.
+
 **Functions and what they scale (vehicles).** Halo 1 scales an
 attachment (a looping engine sound, a headlight) by one of the object's
 four outputs (attachment `+0x30`: 1 to 4, A to D); output *k* is the

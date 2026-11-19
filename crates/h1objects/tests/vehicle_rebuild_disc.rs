@@ -49,6 +49,10 @@
 //!   as its Halo 1 tread collision does, the warthog's no further than
 //!   its hull, and nothing of either is under the hull's lowest point;
 //!   the ghost has no wheel nodes.
+//! - `every_powered_point_rides_the_root_node`: every friction and hover
+//!   marker of every vehicle on the three bases is on node 0, and the
+//!   converted Blood Gulch ghost's three hover markers are too, each at
+//!   its Halo 1 mass point's position in the object's space.
 
 use std::collections::{BTreeMap, HashSet};
 use std::fs::File;
@@ -1265,6 +1269,148 @@ fn wheels_and_treads_are_solid_above_the_hull() {
                 y <= hull_y + 0.01,
                 "{name}: built widest {y}, past the hull's {hull_y}"
             );
+        }
+    }
+}
+
+/// Every friction and hover point rides the root node. Retail: on the
+/// three bases every marker of every vehicle's friction (`+0x2f0`) and
+/// hover (`+0x2e8`) points is on node 0. Converted: each of the Blood
+/// Gulch ghost's three hover points has its markers on node 0, at Halo
+/// 1's mass point position in the object's space. Through converter
+/// version 92 its back point ("hull back seat") rode its own node, the
+/// seat (4), and gave no lift at any strength: with a driver the ghost
+/// rode nose up on its tail (game run, 2026-11-19; the same point moved
+/// live to node 0 at the same place held it level, as the retail ghost).
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn every_powered_point_rides_the_root_node() {
+    let d = def(b"vehi");
+    let mut points = 0;
+    for map in ["coagulation", "beavercreek", "05a_deltaapproach"] {
+        let mut base_map = h2_map(map);
+        let base = Base::read(&mut base_map).unwrap();
+        for x in base.tags.iter().filter(|x| x.1 == FourCC(*b"vehi")) {
+            let r = base.root(x.0).unwrap();
+            for block in [VEHI_FRICTION, VEHI_HOVER] {
+                let e = d.child(block).unwrap();
+                let (at, marker) = (
+                    offset(d, block, 0) as usize,
+                    offset(e, "string_0", 0) as usize,
+                );
+                let mut names = Vec::new();
+                while let Some(p) = base.element(&r, at, e.size as usize, names.len()).unwrap() {
+                    names.push(u32_at(&p, marker));
+                }
+                if names.is_empty() {
+                    continue;
+                }
+                let Some(nodes) = h1objects::rebuild::marker_nodes(&base, &r, d, &names).unwrap()
+                else {
+                    continue;
+                };
+                for (k, n) in nodes.iter().enumerate() {
+                    assert!(
+                        n.iter().all(|n| *n == 0),
+                        "{map} {}: {block}[{k}] markers on nodes {n:?}",
+                        x.2
+                    );
+                    points += usize::from(!n.is_empty());
+                }
+            }
+        }
+    }
+    println!("{points} retail friction and hover points, every marker on node 0");
+    assert!(points > 20, "{points}");
+
+    let mut base_map = h2_map("coagulation");
+    let base = Base::read(&mut base_map).unwrap();
+    let h1 = h1_level("bloodgulch").unwrap();
+    let t = h1
+        .tags()
+        .iter()
+        .find(|t| t.name == "vehicles\\ghost\\ghost_mp" && t.group.0.to_be_bytes() == *b"vehi")
+        .unwrap();
+    let u = h1::Unit::read(&h1, t).unwrap();
+    let phys = h1::Physics::read(&h1, h1.tag(u.object.physics.unwrap()).unwrap()).unwrap();
+    let model = h1models::model_from_map(
+        &h1,
+        h1.tag(u.object.model.unwrap()).unwrap(),
+        &Default::default(),
+    )
+    .unwrap()
+    .0;
+    let world = h1models::mode::world_transforms(
+        &model
+            .nodes
+            .iter()
+            .map(|n| (n.parent, n.rotation, n.translation))
+            .collect::<Vec<_>>(),
+    );
+    let mut c = Converter::new(&h1, &base);
+    let id = c.object(t).unwrap();
+    let r = read_back(local(&c.tree, id).unwrap(), "ghost_mp");
+    let h = defs::from_built(
+        def(b"hlmt"),
+        &reference(&r, "unit.obje.model")
+            .and_then(|x| local(&c.tree, x))
+            .unwrap()
+            .root,
+    )
+    .unwrap();
+    let mode = reference(&h, "render_model")
+        .and_then(|x| local(&c.tree, x))
+        .unwrap();
+    let m = defs::from_built(def(b"mode"), &mode.root).unwrap();
+    let Some(Val::Block(groups)) = m.at("marker_groups") else {
+        panic!()
+    };
+    let Some(Val::Block(hover)) = r.at(VEHI_HOVER) else {
+        panic!()
+    };
+    assert_eq!(hover.len(), 3, "the ghost's hover points");
+    for (k, p) in hover.iter().enumerate() {
+        let Some(Val::String(Str::Text(marker))) = p.get("string_0") else {
+            panic!("point {k}")
+        };
+        let mass = phys
+            .mass_points
+            .iter()
+            .find(|x| x.powered_mass_point >= 0 && h1objects::coll::sid_name(&x.name) == *marker)
+            .unwrap_or_else(|| panic!("no mass point {marker}"));
+        let g = groups
+            .iter()
+            .find(|g| g.get("name") == Some(&Val::String(Str::Text(marker.clone()))))
+            .unwrap_or_else(|| panic!("no marker {marker}"));
+        let Some(Val::Block(ms)) = g.get("markers") else {
+            panic!()
+        };
+        assert!(!ms.is_empty(), "{marker}");
+        for x in ms {
+            assert_eq!(x.get("node"), Some(&Val::Int(0)), "{marker}: node");
+            let Some(Val::List(tr)) = x.get("translation") else {
+                panic!("{marker}")
+            };
+            let tr: Vec<f32> = tr
+                .iter()
+                .map(|v| match v {
+                    Val::Float(f) => *f,
+                    v => panic!("{v:?}"),
+                })
+                .collect();
+            let (rot, pos) = world[0];
+            let at: [f32; 3] =
+                std::array::from_fn(|a| pos[a] + (0..3).map(|j| rot[a][j] * tr[j]).sum::<f32>());
+            let off = (0..3)
+                .map(|a| (at[a] - mass.position[a]).powi(2))
+                .sum::<f32>()
+                .sqrt();
+            assert!(
+                off < 1e-3,
+                "{marker}: at {at:?}, Halo 1 {:?}",
+                mass.position
+            );
+            println!("ghost_mp hover[{k}] {marker}: node 0, at {at:?}");
         }
     }
 }
