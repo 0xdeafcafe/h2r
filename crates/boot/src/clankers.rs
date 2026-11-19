@@ -453,7 +453,7 @@ struct Fill {
     bots: usize,
     /// The playlist's teams (0 free for all).
     teams: u32,
-    /// How many of the bots may be local bots ([`max_local`]); the rest
+    /// How many of the bots may be local bots ([`MATCH_LOCAL`]); the rest
     /// are phantoms.
     local: usize,
     schedule: Vec<std::time::Duration>,
@@ -473,22 +473,16 @@ struct Fill {
 /// (a few seconds, §9.5), short enough that leaving ends it.
 const FILL_GONE: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// How many of a Clankermatch's `bots` go on this console's free
-/// controller ports (docs/game/bots.md §8.4): local bots sign in to the
-/// lobby as session players, so the lobby reaches the playlist's fewest
-/// players and the game starts it (phantoms now join the lobby too, §5.1;
-/// with `H2_PHANTOM_LOBBY=0` they join only the game, and the local bots
-/// alone carry the start). A console's players are one party, on one team in a team game, so
-/// a team playlist takes no more than fill the human's team (a team of
-/// `players / teams`); free for all takes up to the three free ports.
-pub fn max_local(bots: usize, players: u32, teams: u32) -> usize {
-    let party = if teams > 1 {
-        (players / teams).saturating_sub(1) as usize
-    } else {
-        3
-    };
-    bots.min(party).min(3)
-}
+/// How many of a Clankermatch's bots go on this console's controller
+/// ports: none (docs/game/bots.md §8.4, "Phantoms only"). Every bot is a
+/// phantom, a remote peer in the match's target session, as the players a
+/// search finds are. A local bot is a local user, and the game's
+/// local-player pass (`0x65770`) adds a signed-in local user to every live
+/// session, the party's squad session too, so it showed in the human's
+/// party (the user's run on f5d3010c); and the matchmade start checks each
+/// local player's controller, which a bot's port fails ("Player 2's
+/// controller is not plugged in", back to the lobby).
+pub const MATCH_LOCAL: usize = 0;
 
 /// What the driver seats: the page's bots, or a Clankermatch's.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -501,7 +495,7 @@ struct Seating {
     /// refused), and no more than `local` of the seated are local bots.
     fill: bool,
     /// The most local bots: the page's count, or a Clankermatch's
-    /// [`max_local`].
+    /// [`MATCH_LOCAL`].
     local: usize,
     /// The teams to balance the phantoms over (0: none).
     teams: u32,
@@ -1395,16 +1389,15 @@ impl Driver {
                             String::new()
                         }
                     ));
-                    // Which bots are local and which phantoms
-                    // (docs/game/bots.md §8.4): local bots sign in to the
-                    // lobby as session players; phantoms join the lobby
-                    // this console hosts as peers (§5.1, "Phantoms in the
-                    // pregame lobby"). Both count toward the playlist's
-                    // fewest players, so the game starts it.
-                    let local = max_local(bots, mark.players, mark.teams);
+                    // Every bot a phantom (docs/game/bots.md §8.4,
+                    // "Phantoms only"): they join the match's target
+                    // session as peers, never the party, and count toward
+                    // the playlist's fewest players, so the game starts it.
+                    let local = MATCH_LOCAL;
                     log.push(format!(
                         "clankermatch: {local} local bots join the lobby on free controller ports; \
-                         {} phantoms join the lobby as peers (\"bots: phantom ... joins\")",
+                         {} phantoms join the lobby as peers (\"bots: phantom ... joins\"), \
+                         in the match only",
                         bots - local
                     ));
                     *fill = Some(Fill {
@@ -1439,9 +1432,19 @@ impl Driver {
                 (None, None) => false,
             }
         };
+        // While a fill runs, its phantoms join the match alone: never the
+        // party's lobby before the search or after the game. Set before
+        // any phantom is seated, and cleared only once they are gone.
+        let filling = self.filling();
+        if let (Some(ph), true) = (&self.phantoms, filling) {
+            ph.set_match_only(true);
+        }
         if changed {
             let want = *self.last.lock().unwrap_or_else(|e| e.into_inner());
             log.extend(self.apply(want.unwrap_or(Want::OFF)));
+        }
+        if let (Some(ph), false) = (&self.phantoms, filling) {
+            ph.set_match_only(false);
         }
         log
     }
