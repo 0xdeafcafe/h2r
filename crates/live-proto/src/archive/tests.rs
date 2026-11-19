@@ -190,3 +190,14 @@ fn invalid_columns_fail_before_expanding_their_payload() {
     assert!(rows(&inf, 1).is_err());
     assert!(rows(&[0, 0], MAX_NODES + 1).is_err());
 }
+
+#[test]
+fn shared_browser_fixture_preserves_every_source_field() {
+    let bytes = include_bytes!("../../../../web/test/fixtures/archive/mp16.br");
+    let source = samples::multiplayer(450)
+        .iter()
+        .map(pack::quantize)
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .unwrap();
+    verify(&source, bytes).unwrap();
+}
