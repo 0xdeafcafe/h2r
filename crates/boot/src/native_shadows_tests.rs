@@ -370,9 +370,11 @@ fn mixed_native_shadow_unshadowed_and_refused_d3d_lights_match_all_d3d() {
         }
         backend.flush().unwrap();
         if native {
-            // Clear, the first two receivers in one pass, the two D3D
-            // draws, and the final receiver after the fallback.
-            assert_eq!(backend.batch_stats().render_passes - before, 4);
+            // Clear, the first two receivers in one pass, the gel draw,
+            // the refused receiver's D3D fallback, and the final receiver.
+            // Attachment preflight encodes the pending gel before it
+            // discovers the missing shadow map, splitting the D3D draws.
+            assert_eq!(backend.batch_stats().render_passes - before, 5);
         }
         backend.store.read_color(&ctx, color).unwrap().0
     };

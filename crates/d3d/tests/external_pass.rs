@@ -671,8 +671,9 @@ fn a_backend_prepare_error_leaves_the_device_ready_for_the_guest_draw() {
     assert_eq!(d.backend.draws().len(), 1);
 }
 
-// The GfxBackend bundle pass counters are shared by all contexts.
-static PAINT_TESTS: Mutex<()> = Mutex::new(());
+fn light_plan() -> d3d::ExternalPlan {
+    d3d::ExternalPlan { stage: timeline::native::Stage::Lights, ..plan(1) }
+}
 
 /// Record a synthetic full-screen triangle. The caller's scissor and
 /// constant blend colour distinguish execution order and scaled copies.
@@ -746,7 +747,6 @@ impl ExternalPass for Paint {
 
 #[test]
 fn compatible_lights_share_one_pass_per_copy_and_refusal_keeps_both_pixels() {
-    let _serial = PAINT_TESTS.lock().unwrap();
     let Some(reference) = backend() else { return };
     let ctx = &reference.ctx;
     let display = GfxBackend::new(GfxContext { instance: ctx.instance.clone(), adapter: ctx.adapter.clone(),
@@ -758,18 +758,24 @@ fn compatible_lights_share_one_pass_per_copy_and_refusal_keeps_both_pixels() {
     assert_eq!(seen.lock().unwrap().iter().map(|s| s.copy).collect::<Vec<_>>(),
         [d3d::TargetCopy::Reference, d3d::TargetCopy::Display]);
     d.clear(&mut m, 0, 0, 0xf0, 0xff00ff00, 1., 0).unwrap();
-    let baseline = GfxBackend::native_bundle_passes();
+    // Finish the clear before counting bundle passes on these two backends.
+    d.backend.reference_mut().flush().unwrap();
+    d.backend.view_mut().flush().unwrap();
+    let passes = |backend: &d3d::ScaledBackend<GfxBackend, GfxBackend>| {
+        [backend.reference().batch_stats().render_passes, backend.view().batch_stats().render_passes]
+    };
+    let baseline = passes(&d.backend);
     let paint = |x, color, refuse_display| Box::new(Paint { run: 17, x, color, refuse_display, bundles: [None, None] });
-    d.prepare_external_pass(&mut m, plan(1), paint(0, wgpu::Color::WHITE, false)).unwrap().unwrap().commit();
-    d.prepare_external_pass(&mut m, plan(1), paint(4, wgpu::Color::BLACK, false)).unwrap().unwrap().commit();
-    assert!(d.prepare_external_pass(&mut m, plan(1), paint(12, wgpu::Color::WHITE, true)).unwrap().is_none());
+    d.prepare_external_pass(&mut m, light_plan(), paint(0, wgpu::Color::WHITE, false)).unwrap().unwrap().commit();
+    d.prepare_external_pass(&mut m, light_plan(), paint(4, wgpu::Color::BLACK, false)).unwrap().unwrap().commit();
+    assert!(d.prepare_external_pass(&mut m, light_plan(), paint(12, wgpu::Color::WHITE, true)).unwrap().is_none());
     // A bundle can be well formed while its dynamic scissor is invalid for the
     // actual render pass. Catch the validation error before taking the guest draws.
-    assert!(d.prepare_external_pass(&mut m, plan(1), paint(64, wgpu::Color::WHITE, false)).unwrap().is_none());
-    drop(d.prepare_external_pass(&mut m, plan(1), paint(12, wgpu::Color::WHITE, false)).unwrap().unwrap());
+    assert!(d.prepare_external_pass(&mut m, light_plan(), paint(64, wgpu::Color::WHITE, false)).unwrap().is_none());
+    drop(d.prepare_external_pass(&mut m, light_plan(), paint(12, wgpu::Color::WHITE, false)).unwrap().unwrap());
     let reference = d.backend.reference_mut().read_color(back.reference).unwrap().0;
     let display = d.backend.view_mut().read_color(back.view.unwrap()).unwrap().0;
-    assert_eq!(GfxBackend::native_bundle_passes(), baseline.map(|n| n + 1));
+    assert_eq!(passes(&d.backend), baseline.map(|n| n + 1));
     for (scale, pixels) in [(1usize, reference), (2, display)] {
         for (x, rgba) in [(0, [255; 4]), (3, [255; 4]), (4, [0,0,0,255]), (11, [0,0,0,255]), (12, [0,255,0,255])] {
             let at = x * scale * 4;
@@ -780,7 +786,6 @@ fn compatible_lights_share_one_pass_per_copy_and_refusal_keeps_both_pixels() {
 
 #[test]
 fn consecutive_lights_need_one_worker_wait_and_keep_their_draw_order() {
-    let _serial = PAINT_TESTS.lock().unwrap();
     let Some(b) = backend() else { return };
     let (mut d, mut m) = create(ThreadedBackend::new(b).unwrap(), UploadPolicy::Always);
     let back = d.back_buffer().unwrap();
@@ -788,8 +793,7 @@ fn consecutive_lights_need_one_worker_wait_and_keep_their_draw_order() {
     let before = d.backend.waits().reads;
     for (x, color) in [(0, wgpu::Color::WHITE), (2, wgpu::Color::BLACK), (4, wgpu::Color::WHITE)] {
         let pass = Paint { run: 17, x, color, refuse_display: false, bundles: [None, None] };
-        let plan = d3d::ExternalPlan { stage: timeline::native::Stage::Lights, ..plan(1) };
-        d.prepare_external_pass(&mut m, plan, Box::new(pass)).unwrap().unwrap().commit();
+        d.prepare_external_pass(&mut m, light_plan(), Box::new(pass)).unwrap().unwrap().commit();
     }
     assert_eq!(d.backend.waits().reads - before, 1, "one attachment pin for three reservations");
     let pixels = d.backend.with_surface(back, |b, back| b.read_color(back).map(|(pixels, _)| pixels)).unwrap();
@@ -800,16 +804,14 @@ fn consecutive_lights_need_one_worker_wait_and_keep_their_draw_order() {
 
 #[test]
 fn intervening_d3d_work_revalidates_attachments_even_with_the_same_run_key() {
-    let _serial = PAINT_TESTS.lock().unwrap();
     let Some(b) = backend() else { return };
     let (mut d, mut m) = create(ThreadedBackend::new(b).unwrap(), UploadPolicy::Always);
     let back = d.back_buffer().unwrap();
     let paint = |x| Box::new(Paint { run: 17, x, color: wgpu::Color::WHITE, refuse_display: false, bundles: [None, None] });
-    let light = || d3d::ExternalPlan { stage: timeline::native::Stage::Lights, ..plan(1) };
     let before = d.backend.waits().reads;
-    d.prepare_external_pass(&mut m, light(), paint(0)).unwrap().unwrap().commit();
+    d.prepare_external_pass(&mut m, light_plan(), paint(0)).unwrap().unwrap().commit();
     d.clear(&mut m, 0, 0, 0xf0, 0xff00ff00, 1., 0).unwrap();
-    d.prepare_external_pass(&mut m, light(), paint(4)).unwrap().unwrap().commit();
+    d.prepare_external_pass(&mut m, light_plan(), paint(4)).unwrap().unwrap().commit();
     assert_eq!(d.backend.waits().reads - before, 2);
     let pixels = d.backend.with_surface(back, |b, back| b.read_color(back).map(|(pixels, _)| pixels)).unwrap();
     assert_eq!(&pixels[..4], &[0, 255, 0, 255], "clear follows the first light");
