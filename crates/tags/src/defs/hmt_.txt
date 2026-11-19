@@ -46,7 +46,7 @@ group 686d7420 0xc8 align 4
     0xe pad 2
     0x10 data pixels align 4
   0xb8 block prompt_subjects 0x8 align 4
-    0x0 datum object groups=eqip,vehi
+    0x0 datum object groups=eqip|vehi
     0x4 u16 argument
     0x6 pad 2
   0xc0 u16 exit_vehicle
