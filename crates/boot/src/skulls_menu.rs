@@ -1197,28 +1197,32 @@ mod tests {
         assert_eq!((tl, tr), (bl, br + 1));
     }
 
-    /// The list (default skin rows: text and background to 210 right of the
-    /// anchor) stays left of the picture column; none of the Controls
-    /// frame art is kept (`ul_03` `[170 -280 42 -24]`, `br_06`
-    /// `[-30 150 -286 406]`), and the level select's bracket frames the list
-    /// from its left.
+    /// Pin the visible row art and label rectangles in screen units.
     #[test]
-    fn the_columns_do_not_overlap_and_the_frame_stays_clear() {
-        const ROW_RIGHT: i16 = 210;
-        let list_right = LIST_LAYOUT.anchor[0] + ROW_RIGHT;
-        let [_, bl, _, _] = PICTURE_BOX;
-        assert!(
-            list_right < bl,
-            "list {list_right} left of the picture {bl}"
+    fn the_campaign_list_and_its_labels_fit_between_the_bracket_and_picture() {
+        use crate::ui_kit::screens::sample;
+        use crate::ui_kit::view::{Geometry, Synthetic, view_of};
+
+        let screen = sample("skulls").unwrap();
+        let geometry = Geometry::fallback(screen.list);
+        let view = view_of(&screen, &geometry, &Synthetic, "first");
+        let rect = |id| view.widget(id).unwrap().rect;
+
+        let first_cap = rect("row.0.art.1");
+        let last_cap = rect("row.12.art.1");
+        let first_bar = rect("row.0.art.0");
+        let list_right = first_bar[3];
+        assert_eq!(
+            [first_cap[0], first_cap[1], last_cap[2], list_right],
+            [163, -215, -135, -5],
         );
+        assert_eq!(geometry.visible, 13);
+        assert_eq!(rect("row.0.label"), [158, -195, 138, -5]);
+        assert_eq!(rect("row.12.label"), [-106, -195, -126, -5]);
+        assert_eq!(rect("art.0"), [177, -259, -79, -131]);
+        assert!(geometry.frame_art.is_empty(), "no Controls frame art");
+        assert!(list_right < PICTURE_BOX[1]);
         assert!(list_right < DESCRIPTION_TEXT.rect[1]);
-        // No Controls frame art is kept: every bitmap's x is at least the
-        // least there is.
-        assert_eq!(LIST_LAYOUT.bitmaps_left_of, i16::MIN);
-        // The bracket's left edge is left of the list, and its right edge
-        // over the list's first column, as on the level select.
-        assert!(FRAME.at[0] < LIST_LAYOUT.anchor[0]);
-        assert!(FRAME.at[0] + FRAME_SIZE[0] as i16 > LIST_LAYOUT.anchor[0]);
         let [top, left, bottom, right] = DESCRIPTION_TEXT.rect;
         assert!(
             top <= 240 && bottom >= -240 && left >= -320 && right <= 320,
@@ -1430,7 +1434,17 @@ mod disc {
             .iter()
             .map(|b| b.top_left.x)
             .collect();
-        assert_eq!(xs, [-280, 150], "ul_03 kept, br_06 left out");
+        assert_eq!(xs, [-280, 150], "the two Controls frame bitmaps");
+        let controls_list = &controls.panes[0].lists[0];
+        assert_eq!(
+            (
+                controls_list.flags,
+                controls_list.animation,
+                controls_list.item_value,
+            ),
+            (l.flags, l.animation, l.item_value),
+            "the list fields inherited by the tag copy"
+        );
         // Our picture and description slide with the page as the level
         // select's own do.
         assert_eq!(p.text_blocks[0].animation.0, DESCRIPTION_ANIMATION);
@@ -1445,6 +1459,17 @@ mod disc {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../disc/halo2.iso")
             });
         let d = crate::ui_kit::preview::Disc::open(&path).unwrap();
+        let geometry = d.geometry(Some(LIST_LAYOUT).into()).unwrap();
+        let (label, font, _) = geometry.label;
+        assert_eq!(
+            [label.top, label.left, label.bottom, label.right],
+            [28, 20, 8, 210]
+        );
+        assert_eq!(font, 1);
+        for (_, text) in ROW_LABELS.iter() {
+            let width = d.fonts.width(font, text);
+            assert!(width <= label.width(), "{text:?} is {width} units wide");
+        }
         let footer = d.shared.header_layouts[d.controls.header_layout()].secondary;
         let last_bottom = LIST_LAYOUT.anchor[1] - VISIBLE_ROWS * ITEM_HEIGHT;
         assert!(
