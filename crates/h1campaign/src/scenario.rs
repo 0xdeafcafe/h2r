@@ -979,6 +979,12 @@ pub fn write(
         }
         None => HashMap::new(),
     };
+    level_text.write_control_prompts(
+        set,
+        placed
+            .iter()
+            .filter_map(|(&(kind, from), &(_, to))| (kind == 8).then_some((from, to))),
+    );
     let h1_names = h1_block(h1, h1::OBJECT_NAMES)?;
     let names: Vec<Block> = h1_names
         .iter()
@@ -1318,6 +1324,7 @@ fn place_objects(
         Ok(got)
     };
     let mut conv = h1objects::convert::Converter::new(h1, base);
+    conv.options.unit_hud_draw_colour = true;
     conv.options.rebuild_bipeds = rebuild_bipeds;
     conv.options.dialogue_budget = dialogue;
     let mut palettes = Vec::new();

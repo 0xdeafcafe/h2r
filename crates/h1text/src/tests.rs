@@ -759,7 +759,7 @@ fn mission_hud_rebuild_links_text_and_extends_pinned_locales() {
             put(&mut bytes, 0x580, SCNR_ID + 1);
             bytes
         }),
-        tag(b"ustr", "help", |at| ustr_tag(&["Walk slowly"], at)),
+        tag(b"ustr", "help", |at| ustr_tag(&["Walk slowly with %move"], at)),
         tag(b"hmt ", "mission", |at| {
             hmt_raw(
                 &["Try ", " next", "Reach the door"],
@@ -792,8 +792,9 @@ fn mission_hud_rebuild_links_text_and_extends_pinned_locales() {
     let hud = TagId(word(&root, SCENARIO_HMT as usize + 4));
     let bytes = map.read_tag_bytes(hud).unwrap();
     assert_eq!(word(&bytes, MARKER_AT as usize), MARKER);
-    assert_eq!(word(&bytes, 8), 4);
-    assert_eq!(word(&bytes, 0x10), 2);
+    assert_eq!(word(&bytes, 8), 6);
+    assert_eq!(word(&bytes, 0x10), 3);
+    assert_eq!(word(&bytes, crate::hud::SCENARIO_HELP as usize), 0x0001_0002);
     let messages = map.file_offset(word(&bytes, 0x14), 0x80).unwrap();
     let entries = map.read_file_range(messages, 0x80).unwrap();
     assert_eq!(&entries[0x60..0x65], &[11, 0, 3, 0, 1]);

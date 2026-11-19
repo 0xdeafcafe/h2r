@@ -780,6 +780,8 @@ pub const FOOT_FIELD: &str = "unit.obje.foot_ref_54";
 /// How the [`Converter`] builds tags.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Options {
+    /// The campaign HUD supplies the unit panels' authored tint at draw time.
+    pub unit_hud_draw_colour: bool,
     /// Build bipeds from the `bipd` definition ([`crate::rebuild::biped`])
     /// instead of on a template: Halo 1's model, collision size and
     /// physics, the role's words, and the references of the Halo 2
@@ -796,6 +798,7 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
+            unit_hud_draw_colour: false,
             rebuild_bipeds: true,
             dialogue_budget: u64::MAX,
         }
@@ -3608,6 +3611,10 @@ impl Converter<'_> {
             // meter's colour is elsewhere in its element and stays out.
             // Colour 0 draws nothing in Halo 1 (`h1hud::static_alpha`).
             let alpha = match e.role {
+                crate::h1hud::Role::Static
+                    if self.options.unit_hud_draw_colour
+                        && tag.name == "ui\\hud\\cyborg"
+                        && e.name != "h1_hud_background" => 0xff,
                 crate::h1hud::Role::Static => match crate::h1hud::static_alpha(e.colour) {
                     Some(a) => a,
                     None => continue,

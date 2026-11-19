@@ -19,6 +19,8 @@ pub struct LevelText {
     object_names: Option<TagId>,
     hud_messages: Option<TagId>,
     message_names: Vec<String>,
+    events: Vec<crate::events::Event>,
+    control_phrases: Vec<Option<usize>>,
 }
 
 impl LevelText {
@@ -43,28 +45,47 @@ impl LevelText {
             }
         }
 
-        let mut hud_messages = None;
-        let mut message_names = Vec::new();
-        if let Some(reference) = refs.hud_messages {
+        let (path, messages) = if let Some(reference) = refs.hud_messages {
             let tag = map.tag(reference.id)?;
             let messages = Hmt::read(map, tag)?;
             let (translated, _) = locales.add_mission_hmt(set, &tag.name, &messages)?;
             translated.install(set, &unicode_path(&tag.name))?;
-            hud_messages = Some(
-                hud::rebuild(
-                    &messages,
-                    &help_flash(map)?,
-                    &component_flash(map)?,
-                    &set.strings,
-                )?
-                .install(set, &tag.name)?,
-            );
-            message_names = messages.messages.into_iter().map(|m| m.name).collect();
-        }
+            (tag.name.clone(), messages)
+        } else {
+            (
+                format!("{}\\hud", map.scenario().name),
+                Hmt { messages: Vec::new() },
+            )
+        };
+        let help = refs
+            .help_text
+            .map(|r| Ustr::read(map, map.tag(r.id)?))
+            .transpose()?
+            .map_or_else(Vec::new, crate::scenario_help::messages);
+        let events = crate::events::read(map, refs.object_names)?;
+        let hud_messages = if messages.messages.is_empty()
+            && help.is_empty()
+            && events.entries.is_empty()
+        {
+            None
+        } else {
+            Some(hud::rebuild(
+                &messages,
+                &help,
+                &events,
+                &help_flash(map)?,
+                unit_hud(map)?,
+                &set.strings,
+            )?
+            .install(set, &path)?)
+        };
+        let message_names = messages.messages.into_iter().map(|m| m.name).collect();
         Ok(Self {
             object_names,
             hud_messages,
             message_names,
+            events: events.routes,
+            control_phrases: events.control_phrases,
         })
     }
 
@@ -81,6 +102,49 @@ impl LevelText {
             if let Some(id) = id {
                 scenario.tag_ref(at, id);
             }
+        }
+    }
+
+    /// Write the event string IDs into the fields that the native interaction
+    /// and pickup code reads, while the rebuilt objects are still blocks.
+    pub fn write_object_prompts(&self, set: &mut TagSet) {
+        for event in &self.events {
+            event.write(set);
+        }
+    }
+
+    /// Index control prompts by the new placements, including gaps from
+    /// source controls that could not be converted.
+    pub fn write_control_prompts(
+        &self,
+        set: &mut TagSet,
+        placed: impl Iterator<Item = (i16, i16)>,
+    ) {
+        let Some(tag) = self.hud_messages.and_then(|id| set.tag_mut(id)) else {
+            return;
+        };
+        let map::build::TagPayload::Built(root) = &mut tag.payload else {
+            return;
+        };
+        let mut rows = Vec::new();
+        for (source, target) in placed {
+            let (Ok(source), Ok(target)) = (usize::try_from(source), usize::try_from(target)) else {
+                continue;
+            };
+            let Some(Some(row)) = self.control_phrases.get(source) else {
+                continue;
+            };
+            let row = u16::try_from(*row).expect("HUD shared rows fit in 16 bits");
+            if rows.len() <= target {
+                rows.resize(target + 1, u16::MAX);
+            }
+            rows[target] = row;
+        }
+        if !rows.is_empty() {
+            let count = rows.len() as u32;
+            let bytes = rows.into_iter().flat_map(u16::to_le_bytes).collect();
+            root.fixups.retain(|fixup| fixup.offset != hud::CONTROL_PROMPTS);
+            root.block(hud::CONTROL_PROMPTS, count, Block::new(bytes));
         }
     }
 
@@ -114,23 +178,9 @@ fn help_flash(map: &H1Map) -> Result<[u8; 0x18]> {
         .ok_or_else(|| crate::Error::Invalid("HUD globals shorter than their help flash".into()))
 }
 
-// The unit HUD uses its panel/background flash record for each component.
-// E: 0xdcfc7 (shield), 0xdd33f (health), 0xdd57e (motion sensor) and
-// 0xe18bb..0xe18ed (the static widget's flash fields).
-fn component_flash(map: &H1Map) -> Result<[u8; 0x48]> {
-    let mut profiles = [0; 0x48];
+fn unit_hud(map: &H1Map) -> Result<&[u8]> {
     let Some(tag) = map.find(h1map::Group::new(b"unhi"), "ui\\hud\\cyborg") else {
-        return Ok(profiles);
+        return Ok(&[]);
     };
-    let bytes = map.tag_data(tag)?;
-    for (i, start) in [0x17c + 0x34, 0x8c + 0x34, 0x26c + 0x34]
-        .into_iter()
-        .enumerate()
-    {
-        let record = bytes.get(start..start + 0x18).ok_or_else(|| {
-            crate::Error::Invalid("unit HUD shorter than its flash records".into())
-        })?;
-        profiles[i * 0x18..(i + 1) * 0x18].copy_from_slice(record);
-    }
-    Ok(profiles)
+    Ok(map.tag_data(tag)?)
 }

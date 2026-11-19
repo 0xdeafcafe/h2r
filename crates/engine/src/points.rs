@@ -370,7 +370,7 @@ points! { ALL;
     /// opaque path's build and draw over the template's layer-15 passes.
     TRANSPARENT_GEOMETRY @ 0x0004_1020: [fn(data: stack 0) ret 4]; "docs/graphics/native-renderer.md";
     /// Shader draw begin: per draw.
-    SHADER_DRAW_BEGIN @ 0x0001_bbf0: [opaque], Hot; "docs/formats/shader-instances.md";
+    SHADER_DRAW_BEGIN @ 0x0001_bbf0: [fn(shader: edi, mode: stack 0, pass: stack 1, flags: stack 2, index: stack 3, scale: stack 4) ret 20], Hot; "docs/formats/shader-instances.md";
     /// `submit_structure_or_model_geometry`: per draw.
     GEOMETRY_SUBMIT @ 0x0004_1040: [opaque], Hot; "docs/formats/structure-bsp.md";
     /// A shader parameter's value for this draw: its sources through
@@ -487,6 +487,12 @@ points! { ALL;
     /// Whether the HUD draws (AL); 0 in a campaign with Blind on.
     HUD_SHOWN @ 0x0013_939b: [fn() -> al ret 0]; "docs/game/skulls.md";
     HUD_TEXT_SETUP @ 0x0013_edb0: [fn(font: esi, colour: edi, shadow: stack 3) ret 16], Optional; "docs/halo1/text.md";
+    HUD_TEXT_MEASURE @ 0x0013_ee20: [fn(text: ecx, font: stack 0) -> al ret 4], Optional; "docs/halo1/text.md";
+    HUD_TEXT_BOUNDS @ 0x0024_ce9d: [fn(text: stack 0) ret 4], Optional; "docs/halo1/text.md";
+    HUD_MESSAGE_LOOKUP @ 0x0013_925f: [fn(key: edi, output: ecx) ret 0], Optional; "docs/halo1/text.md";
+    HUD_MATERIAL_CONSTANTS @ 0x0001_8ee0: [fn(material: stack 0) ret 4], Optional; "docs/halo1/text.md";
+    HUD_MATERIAL_PIXEL_SHADER @ 0x0001_b050: [fn(material: esi) ret 0], Optional; "docs/halo1/text.md";
+    HUD_MATERIAL_READY @ 0x0001_cd90: [fn() ret 0], Optional; "docs/halo1/text.md";
     HUD_WIDGET_GATE @ 0x0013_ac87: [fn(state: eax, weapon: ecx, word_c: edx, word_a: stack 0, word_b: stack 1, word_d: stack 2) -> al ret 12], Optional; "docs/editor/hud-editor.md";
     HUD_SENSOR_DRAW @ 0x001a_2823: [fn(screen: eax, user: ecx) ret 0], Optional; "docs/halo1/hud.md";
     HS_DISCARDED_EVAL @ 0x002a_b130: [fn(slot: stack 0, thread: stack 1, initialize: stack 2) ret 12], Optional; "docs/halo1/text.md";

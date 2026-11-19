@@ -1,7 +1,7 @@
 # hmt : the compiled legacy HUD message list read by Halo 2's setters.
 # E: 0x24c831 and 0x24c878. D: source message records on the Halo 1 disc.
 # The converter owns the fields after +0x18. Retail only reads through +0x14.
-group 686d7420 0x94 align 4
+group 686d7420 0xb0 align 4
   0x00 data text align 4 -- UTF-16LE runs consumed by the message elements
   0x08 block elements 0x2 align 4 -- E 0x24c8af reads the array address at +0xc
     0x00 u8 kind -- E 0x24c8b2: 0 is text
@@ -15,8 +15,24 @@ group 686d7420 0x94 align 4
   0x18 u32 converter_marker
   0x1c u32 control_flags
   0x20 unknown 0x18 -- Halo 1 help flash record as read at hudg +0xd0
-  0x38 block widgets 0x8 align 4
+  0x38 block widgets 0x24 align 4
     0x0 string name
     0x4 u32 control
-  0x40 unknown 0x48 -- health, shield and motion-sensor flash records (0x18 each)
+    0x8 u32 has_colour
+    0xc unknown 0x18 -- static element colour and flash record
+  0x40 pad 0x48
   0x88 u32[3] blink_start_ticks
+  0x94 u16 help_first
+  0x96 u16 help_count
+  0x98 u16 shared_first
+  0x9a u16 shared_count
+  0x9c block events 0xc align 4
+    0x0 string key
+    0x4 u16 template
+    0x6 u16 first_argument
+    0x8 u16 second_argument
+    0xa u16 control
+  0xa4 block control_prompts 2 align 4
+    0x0 u16 argument
+  0xac u16 custom_device
+  0xae pad 2

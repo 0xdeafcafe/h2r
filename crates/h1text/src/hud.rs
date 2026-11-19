@@ -5,8 +5,9 @@ use h1models::Converted;
 use map::FourCC;
 use tags::defs::{Defs, Record, Val, default_record, to_built};
 
-use crate::h1::{Hmt, HudMessage, MessagePart};
 use crate::{Error, Result};
+use crate::events::Events;
+use crate::h1::{Hmt, HudMessage, MessagePart};
 
 /// Scenario reference read by the Halo 2 help and objective setters.
 pub const SCENARIO_HMT: u32 = 0x208;
@@ -15,12 +16,16 @@ pub const SCENARIO_HMT: u32 = 0x208;
 pub const GROUP: FourCC = FourCC(*b"hmt ");
 
 /// Root size including the converter's runtime fields.
-pub const SIZE: u32 = 0x94;
+pub const SIZE: u32 = 0xb0;
 
 /// The marker and HUD state after the unmodified legacy tag fields.
 pub const MARKER_AT: u32 = 0x18;
 /// Value written by the converter, for the runtime hooks to recognize.
-pub const MARKER: u32 = 0x4831_4855;
+pub const MARKER: u32 = 0x4831_4856;
+/// Marker of the first mission-text layout, before shared events and panel tints.
+pub const LEGACY_MARKER: u32 = 0x4831_4855;
+/// Root size of the first mission-text layout.
+pub const LEGACY_SIZE: u32 = 0x94;
 /// Persistent visibility and blink bits, with the same bit positions as Halo 1.
 pub const CONTROL_FLAGS: u32 = 0x1c;
 /// The flash record read by the native help draw hook.
@@ -28,10 +33,22 @@ pub const HELP_FLASH: u32 = 0x20;
 /// The runtime widget classification block.
 pub const WIDGET_CONTROLS: u32 = 0x38;
 
-/// Source flash records for health, shield and motion sensor, in that order.
-pub const COMPONENT_FLASH: u32 = 0x40;
 /// Runtime start ticks for the three component flash records.
 pub const COMPONENT_START: u32 = 0x88;
+/// Widget control record size, including its static colour and flash fields.
+pub const WIDGET_CONTROL_SIZE: u32 = 0x24;
+/// First appended scenario help row, followed by its row count.
+pub const SCENARIO_HELP: u32 = 0x94;
+/// First appended shared event row, followed by its row count.
+pub const SHARED_MESSAGES: u32 = 0x98;
+/// Native event string IDs and the template and argument rows they select.
+pub const EVENTS: u32 = 0x9c;
+/// A string ID, one template row, and two argument row indices.
+pub const EVENT_SIZE: u32 = 0xc;
+/// Per-placement argument rows for the scenario's device controls.
+pub const CONTROL_PROMPTS: u32 = 0xa4;
+/// The shared template row for a control with an authored prompt.
+pub const CUSTOM_DEVICE: u32 = 0xac;
 
 /// Hidden health, shield, motion sensor and crosshair, respectively.
 /// Each of the first three is followed by its blink bit, as in Halo 1's
@@ -107,12 +124,13 @@ pub fn localized_text(message: &HudMessage) -> Result<String> {
     Ok(out)
 }
 
-/// Rebuild an `hmt ` from the Halo 2 tag definition. Indices keep their
-/// Halo 1 order, including the start of each message's UTF-16 stream.
-pub fn rebuild(
+/// Rebuild a level's HUD from the definition, keeping the source lists indexed separately.
+pub(crate) fn rebuild(
     source: &Hmt,
+    help: &[HudMessage],
+    events: &Events,
     help_flash: &[u8; 0x18],
-    component_flash: &[u8; 0x48],
+    unit_hud: &[u8],
     string_names: &[Option<String>],
 ) -> Result<Converted> {
     let def = Defs::builtin().group(GROUP).expect("hmt definition");
@@ -121,8 +139,8 @@ pub fn rebuild(
     let message = def.child("messages").expect("message definition");
     let mut text = Vec::new();
     let mut elements: Vec<Record> = Vec::new();
-    let mut messages: Vec<Record> = Vec::with_capacity(source.messages.len());
-    for entry in &source.messages {
+    let mut messages = Vec::new();
+    for entry in source.messages.iter().chain(help).chain(&events.entries) {
         let mut record = default_record(message);
         let mut name = vec![0; 0x20];
         if entry.name.len() > name.len() {
@@ -162,13 +180,45 @@ pub fn rebuild(
     root.set("messages", Val::Block(messages))?;
     root.set("converter_marker", Val::Int(i64::from(MARKER)))?;
     root.set("unknown_20", Val::Bytes(help_flash.to_vec()))?;
-    root.set("unknown_40", Val::Bytes(component_flash.to_vec()))?;
+    root.set("help_first", field_u16(source.messages.len())?)?;
+    root.set("help_count", field_u16(help.len())?)?;
+    root.set("shared_first", field_u16(source.messages.len() + help.len())?)?;
+    root.set("shared_count", field_u16(events.entries.len())?)?;
+    root.set(
+        "custom_device",
+        field_u16(events.custom_device.unwrap_or(usize::from(u16::MAX)))?,
+    )?;
+    let mut routes = Vec::new();
+    let event_def = def.child("events").expect("event definition");
+    for event in &events.routes {
+        let mut row = default_record(event_def);
+        row.set("key", Val::text(&event.key))?;
+        row.set("template", field_u16(event.template)?)?;
+        row.set("control", Val::Int(event.is_control() as i64))?;
+        for (field, index) in ["first_argument", "second_argument"].into_iter().zip(event.args) {
+            row.set(field, field_u16(index.unwrap_or(usize::from(u16::MAX)))?)?;
+        }
+        routes.push(row);
+    }
+    root.set("events", Val::Block(routes))?;
     let widget = def.child("widgets").expect("widget definition");
     let mut widgets = Vec::new();
     let mut add_widget = |name: &str, control: u32| -> Result<()> {
         let mut record = default_record(widget);
         record.set("name", Val::String(tags::defs::Str::Text(name.to_owned())))?;
         record.set("control", Val::Int(i64::from(control)))?;
+        let flash = match name {
+            "h1_health_background" => Some(0x17c),
+            "h1_shield_background" => Some(0x8c),
+            "h1_motion_background" => Some(0x26c),
+            "h1_motion_foreground" => Some(0x2d4),
+            _ => None,
+        }
+        .and_then(|at| unit_hud.get(at + 0x34..at + 0x4c));
+        if let Some(flash) = flash {
+            record.set("has_colour", Val::Int(1))?;
+            record.set("unknown_c", Val::Bytes(flash.to_vec()))?;
+        }
         widgets.push(record);
         Ok(())
     };

@@ -43,7 +43,7 @@ fn components(argb: u32) -> [f32; 4] {
     argb.to_be_bytes().map(|byte| f32::from(byte) / 255.0)
 }
 
-fn flash_colour(record: &[u8; 24], elapsed: Option<f32>) -> [f32; 4] {
+pub(super) fn flash_colour(record: &[u8; 24], elapsed: Option<f32>) -> [f32; 4] {
     let word = |at: usize| u32::from_le_bytes(record[at..at + 4].try_into().expect("word"));
     let primary = components(word(0));
     let alternate = components(word(4));
@@ -60,7 +60,7 @@ fn flash_colour(record: &[u8; 24], elapsed: Option<f32>) -> [f32; 4] {
     std::array::from_fn(|i| from[i] + weight * (to[i] - from[i]))
 }
 
-pub(super) fn record_strength(record: &[u8; 24], elapsed: f32) -> f32 {
+fn record_strength(record: &[u8; 24], elapsed: f32) -> f32 {
     let float = |at: usize| f32::from_le_bytes(record[at..at + 4].try_into().expect("float"));
     strength(
         elapsed,

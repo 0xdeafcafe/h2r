@@ -177,10 +177,27 @@ input-action table at `0x21bfc0`, and handles the last literal controls
 at 29–31 (E `0xdfc14`–`0xdfd27`). The converter uses Halo 2's font
 glyphs and input-action substitutions (E `0x22d2ee`, `0x22dcbc`,
 `0x22df04`, [button icons](../input/button-icons.md)). The
-shared event-message list also uses glyphs 32 and above for arguments
-supplied by the event that queued it. Those substitutions are outside
-the mission list. The standalone plain-text conversion still drops
-them.
+shared event-message list uses glyphs 32 and up as the argument indices
+in the player HUD message entry (E `0xdfc65`–`0xdfd19`).
+
+**Built.** The campaign converter keeps the shared templates from
+`hudg +0xfc` and binds them to the native interaction and pickup string
+fields of the rebuilt objects. At `0x13925f` the game already chose the
+object and action. The hook uses that string ID to select a template, then
+expands the template with its argument rows. Weapon pickup, swap and
+switch prompts use the named weapon. Vehicle entry uses the seat and
+vehicle names from `hudg +0xc0`, the vehicle's `+0x13c` and the seat's
+`+0xec` (E `0xe2d28`, `0xe2fc3`). Vehicle flip uses the vehicle name.
+
+The source control placement's `+0x34` holds a one-based custom phrase
+index (E `0x118f16`, `0xe2e30`). The converter keeps that argument
+through placement remapping. The interaction hook reads the selected
+object's placement index at `+0x1a` (E `0x191cf0`, `0xb7c87`), so two
+instances of the same switch can show different prompts. Pickup
+notifications use the source item row at `+0x180` (E `0xe0147`) and
+the next row's `%d` becomes the queued-count substitution U+E422
+(E `0x24caf4`, `0x24d472`, `0x22d9e0`). Counted ammo and grenades
+use the native queue's singular/plural selection and accumulation.
 
 ## Script control and the native HUD draw
 
@@ -202,9 +219,9 @@ in the retail Xbox XBE when naming the slot. A static survey of all
 **Built.** `boot::h1_hud_text` restores the link between selection and
 drawing. Halo 2's legacy display already tests an objective's hold time
 and the help visibility flag at `0x24d02c` and `0x24d045`. Its text
-pass copies an inline UTF-16 buffer at `0x24d2b7`. The hook fills that
-buffer for the selected message before the copy and restores it at the
-substitution call at `0x24d2c0`. Halo 2 draws it with its own font and
+pass copies an inline UTF-16 buffer at `0x24d2b7`. The hook opens that
+path for the selected message and supplies a full-length buffer to the
+substitution, measurement and draw calls. Halo 2 draws it with its own font and
 current controller bindings. Objective messages have priority during
 their native hold time. Help flashing applies Halo 1's `hudg +0xd0`
 record, sampled from Halo 2's script-controlled tick (`+0x1380` in the
@@ -233,18 +250,36 @@ independent of AI's slot 300.
 | 661 | `hud_show_motion_sensor` |
 | 662 | `hud_blink_motion_sensor` |
 | 663 | `hud_show_crosshair` |
+| 903 | `display_scenario_help` |
+
+**Built.** Slot 903 has the retail discarded `(short) -> void`
+signature and shares the argument evaluator. The Halo 1 evaluator
+`0xf2f30` passes a help-list row to `0xd0930`. The converter appends the
+scenario's help rows to its HUD tag, with their own base index so the
+mission indices still address the original messages. The evaluator shows
+the selected row in the native HUD help panel. The two a30 cave rows use
+`%move`, `%look` and `%left-stick`. The first pair follows the current
+player's thumbstick layout at `0x51ea18 + 0x1c * port + 0x18`
+(E `0x22df4c`). The last token always shows the physical left stick.
 
 The flags reflect the stores in Halo 1's evaluators
 (`0xee820`–`0xee580`). The widget gate at `0x13ac87` matches string
 IDs recorded at conversion. The radar blip draw at `0x1a2823` follows
-the motion-sensor gate. The converted bitmap widgets use a visibility
-pulse at the peak of the Halo 1 panel flash curve. Their tint is baked
-into the converted bitmap. Help text interpolates its original two
-colours.
+the motion-sensor visibility gate.
+
+**Built.** The campaign health and shield panels and the two radar
+layers keep their original bitmap alpha. Each layer carries its own
+colour pair and flash timing from `unhi`, following the static draw at
+`0xe18ed` and the flash curve at `0xe04b0`. The sampled ARGB goes into
+the native widget shader's active combiner constants at draw time
+(E `0x22a7dd`, `0x18ee0`, `0x1b050`). The material cache is restored
+after the native material upload. The fill and blip passes keep the separate
+widget behaviour seen in Halo 1 at `0xdd2ea`, `0xdd52e` and
+`0xdd690`.
 
 The retail HUD readers consume the first `0x18` bytes of the rebuilt
-`hmt `. The rest is a converter marker, widget classification and
-flash data. The hooks check the marker and source call site. The
+`hmt `. The rest holds converter metadata for the message lists and
+widget controls. The hooks check the marker and source call site. The
 simulation thread writes the control bits and blink start ticks from
 scripts. The render thread reads the resulting guest state and uses
 the native draw calls.

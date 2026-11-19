@@ -76,6 +76,10 @@ pub const CONTROL_BUILTINS: &[(&str, u16, u32, bool)] = &[
     ("hud_show_crosshair", 663, 64, true),
 ];
 
+/// Retired slot for the scenario Unicode help list.
+pub const SCENARIO_HELP_BUILTIN: (&str, u16, u32, &str, &[&str]) =
+    ("display_scenario_help", 903, DISCARDED_EVALUATOR, "void", &["short"]);
+
 /// The discarded evaluator shared by these slots on the retail XBE.
 pub const DISCARDED_EVALUATOR: u32 = 0x002a_b130;
 
@@ -86,7 +90,9 @@ pub(crate) fn identify(builtins: &mut HashMap<String, H2Builtin>, catalog: &hs::
     let controls = CONTROL_BUILTINS
         .iter()
         .map(|&(name, index, _, _)| (name, index, DISCARDED_EVALUATOR, "void", BOOL_PARAM));
-    for (name, index, evaluate, returns, parameters) in native.chain(controls) {
+    for (name, index, evaluate, returns, parameters) in
+        native.chain(controls).chain([SCENARIO_HELP_BUILTIN])
+    {
         let Ok(builtin) = catalog.function(index) else {
             continue;
         };
@@ -140,6 +146,7 @@ mod tests {
             .iter()
             .map(|entry| entry.1)
             .chain(CONTROL_BUILTINS.iter().map(|entry| entry.1))
+            .chain([SCENARIO_HELP_BUILTIN.1])
         {
             assert!(slots.insert(slot));
         }

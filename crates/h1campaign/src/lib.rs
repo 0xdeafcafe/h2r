@@ -716,6 +716,7 @@ fn convert_with<R: Read + Seek>(
         )
     })?;
 
+    level_text.write_object_prompts(&mut set);
     if locales.len() != base_rows {
         locales.install_pinned(&mut set)
             .map_err(|e| invalid(format!("installing level text: {e}")))?;

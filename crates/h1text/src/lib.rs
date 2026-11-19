@@ -12,9 +12,11 @@
 #![warn(missing_docs)]
 
 pub mod convert;
+mod events;
 pub mod h1;
 pub mod hud;
 pub mod scenario;
+mod scenario_help;
 
 /// Conversion failures.
 #[derive(Debug, thiserror::Error)]

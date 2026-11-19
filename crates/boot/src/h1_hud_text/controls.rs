@@ -6,8 +6,10 @@ use engine::memory::{GuestMemory, MemFault};
 use engine::points::{HS_DISCARDED_EVAL, HUD_SENSOR_DRAW, HUD_WIDGET_GATE};
 use feature::{Builder, Flow};
 
-use h1scripts::hud::CONTROL_BUILTINS;
-use h1text::hud::{COMPONENT_FLASH, COMPONENT_START, CONTROL_FLAGS, SENSOR, WIDGET_CONTROLS};
+use h1scripts::hud::{CONTROL_BUILTINS, SCENARIO_HELP_BUILTIN};
+use h1text::hud::{
+    COMPONENT_START, CONTROL_FLAGS, SENSOR, WIDGET_CONTROL_SIZE, WIDGET_CONTROLS,
+};
 
 use super::{flash, mission_hud};
 
@@ -24,6 +26,24 @@ fn update_flags(flags: u32, bit: u32, parameter: bool, invert: bool) -> u32 {
 }
 
 async fn eval(cx: Cx, tag: u32, slot: u16, bit: u32, invert: bool) -> Result<Ret, EntryError> {
+    eval_argument(cx, slot, move |mem, args| {
+        let parameter = mem.u8(args)? != 0;
+        let flags = mem.u32(tag + CONTROL_FLAGS)?;
+        if !invert && parameter && flags & bit == 0 {
+            let component = bit.trailing_zeros() / 2;
+            let time = mem.u32(flash::GAME_TIME)?;
+            let tick = mem.u32(time + 8)?;
+            mem.set_u32(tag + COMPONENT_START + 4 * component, tick)?;
+        }
+        mem.set_u32(tag + CONTROL_FLAGS, update_flags(flags, bit, parameter, invert))
+    }).await
+}
+
+async fn eval_argument(
+    cx: Cx,
+    slot: u16,
+    apply: impl FnOnce(&mut dyn GuestMemory, u32) -> Result<(), MemFault> + Send,
+) -> Result<Ret, EntryError> {
     let thread = cx.arg(1)?;
     let initialize = cx.arg(2)?;
     let descriptor = cx.read(|mem| mem.u32(HS_FUNCTION_TABLE + u32::from(slot) * 4))?;
@@ -34,52 +54,28 @@ async fn eval(cx: Cx, tag: u32, slot: u16, bit: u32, invert: bool) -> Result<Ret
     // A suspended argument resumes at the evaluator, just as for a
     // native Boolean builtin. Leave its parent frame in place.
     if args != 0 {
-        cx.write(|mem| {
-            let parameter = mem.u8(args)? != 0;
-            let flags = mem.u32(tag + CONTROL_FLAGS)?;
-            if !invert && parameter && flags & bit == 0 {
-                let component = bit.trailing_zeros() / 2;
-                let time = mem.u32(flash::GAME_TIME)?;
-                let tick = mem.u32(time + 8)?;
-                mem.set_u32(tag + COMPONENT_START + 4 * component, tick)?;
-            }
-            mem.set_u32(
-                tag + CONTROL_FLAGS,
-                update_flags(flags, bit, parameter, invert),
-            )
-        })?;
+        cx.write(|mem| apply(mem, args))?;
         cx.call(GuestCall::new(HS_RETURN).ecx(thread).eax(0))
             .await?;
     }
     Ok(Ret::new(0, 12))
 }
 
-fn role(mem: &dyn GuestMemory, tag: u32, name: u32) -> Result<u32, MemFault> {
+pub(super) fn widget_control(
+    mem: &dyn GuestMemory,
+    tag: u32,
+    name: u32,
+) -> Result<Option<u32>, MemFault> {
     let count = mem.u32(tag + WIDGET_CONTROLS)?.min(4096);
     let widgets = mem.u32(tag + WIDGET_CONTROLS + 4)?;
+    let stride = if super::extended(mem, tag)? { WIDGET_CONTROL_SIZE } else { 8 };
     for i in 0..count {
-        let entry = widgets + 8 * i;
+        let entry = widgets + stride * i;
         if mem.u32(entry)? == name {
-            return mem.u32(entry + 4);
+            return Ok(Some(entry));
         }
     }
-    Ok(0)
-}
-
-fn suppress(mem: &dyn GuestMemory, tag: u32, flags: u32, role: u32) -> Result<bool, MemFault> {
-    if flags & role != 0 {
-        return Ok(true);
-    }
-    if flags & (role << 1) == 0 {
-        return Ok(false);
-    }
-    let component = role.trailing_zeros() / 2;
-    let start = mem.u32(tag + COMPONENT_START + 4 * component)?;
-    let mut record = [0; 0x18];
-    mem.read(tag + COMPONENT_FLASH + component * 0x18, &mut record)?;
-    // The replacement bitmap has its tint baked in. Pulse its visibility
-    // near the peak of the source flash curve.
-    Ok(flash::record_strength(&record, flash::elapsed(mem, start)?) >= 0.75)
+    Ok(None)
 }
 
 fn widget_hidden(mem: &dyn GuestMemory, state: u32) -> Result<bool, MemFault> {
@@ -90,15 +86,17 @@ fn widget_hidden(mem: &dyn GuestMemory, state: u32) -> Result<bool, MemFault> {
     if flags == 0 {
         return Ok(false);
     }
-    let role = role(mem, tag, mem.u32(state - 8)?)?;
-    suppress(mem, tag, flags, role)
+    let Some(entry) = widget_control(mem, tag, mem.u32(state - 8)?)? else {
+        return Ok(false);
+    };
+    Ok(flags & mem.u32(entry + 4)? != 0)
 }
 
 fn sensor_hidden(mem: &dyn GuestMemory) -> Result<bool, MemFault> {
     let Some(tag) = mission_hud(mem)? else {
         return Ok(false);
     };
-    suppress(mem, tag, mem.u32(tag + CONTROL_FLAGS)?, SENSOR)
+    Ok(mem.u32(tag + CONTROL_FLAGS)? & SENSOR != 0)
 }
 
 pub(super) fn register(b: &mut Builder) {
@@ -117,6 +115,14 @@ pub(super) fn register(b: &mut Builder) {
             let Some(tag) = tag else {
                 return Ok(Flow::Continue);
             };
+            if slot == SCENARIO_HELP_BUILTIN.1 {
+                return c.answer_async(move |cx| {
+                    Box::pin(eval_argument(cx, slot, move |mem, args| {
+                        let index = mem.u16(args)?;
+                        super::show_scenario_help(mem, tag, index)
+                    }))
+                });
+            }
             let Some(&(_, _, bit, invert)) = CONTROL_BUILTINS.iter().find(|entry| entry.1 == slot)
             else {
                 return Ok(Flow::Continue);

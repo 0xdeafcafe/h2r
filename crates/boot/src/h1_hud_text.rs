@@ -2,18 +2,22 @@
 //! Retail script evaluators maintain the selection, objective hold time,
 //! flash state and visibility. See docs/halo1/text.md.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 use engine::handle::DatumHandle;
 use engine::memory::{GuestMemory, MemFault};
-use engine::points::{HUD_TEXT_SETUP, HUD_TEXT_SUBSTITUTE, SCENARIO};
+use engine::points::{
+    HUD_TEXT_BOUNDS, HUD_TEXT_DRAW, HUD_TEXT_MEASURE, HUD_TEXT_SETUP, HUD_TEXT_SUBSTITUTE, SCENARIO,
+};
 use engine::tags::{entry_layout, tag_entry_checked};
 use feature::{BuildError, Builder, Manifest};
-use h1text::hud::{GROUP, MARKER, MARKER_AT, SCENARIO_HMT, SIZE, glyph};
+use h1text::hud::{GROUP, LEGACY_MARKER, LEGACY_SIZE, MARKER, MARKER_AT, SCENARIO_HMT, SIZE, glyph};
 
 mod controls;
+mod events;
 mod flash;
 mod timer;
+mod tint;
 
 const HUD: u32 = 0x0050_23f4;
 const HUD_FLAGS: u32 = 0x0051_0c98;
@@ -27,13 +31,51 @@ const SCREEN_LOCAL: u32 = 0x40;
 const HAS_TEXT_LOCAL: u32 = 0x0d;
 const FROM_SETUP: u32 = 0x0024_d28c;
 const FROM_SUBSTITUTE: u32 = 0x0024_d2c5;
+const FROM_MEASURE: u32 = 0x0024_d2d2;
+const FROM_BOUNDS: u32 = 0x0024_d2eb;
+const FROM_DRAW: u32 = 0x0024_d2f8;
 
 // The inline-text branch copies into the draw's own stack buffer at
 // 0x24d2b7. The caller there always invokes the substitution pass next.
 const TEXT: u32 = 0x220;
 const TEXT_ID: u32 = 0x440;
-const TEXT_CAPACITY: usize = 256;
+const TEXT_CAPACITY: usize = 2048;
 const WORKSPACE_SIZE: usize = (TEXT_ID + 4 - TEXT) as usize;
+
+fn list_row(mem: &dyn GuestMemory, tag: u32, list: u32, index: u16) -> Result<Option<u32>, MemFault> {
+    if index >= mem.u16(tag + list + 2)? {
+        return Ok(None);
+    }
+    let index = u32::from(mem.u16(tag + list)?) + u32::from(index);
+    message_at(mem, tag, index)
+}
+
+fn message_at(mem: &dyn GuestMemory, tag: u32, index: u32) -> Result<Option<u32>, MemFault> {
+    if index >= mem.u32(tag + 0x10)? {
+        return Ok(None);
+    }
+    Ok(Some(mem.u32(tag + 0x14)? + 0x40 * index))
+}
+
+fn show_scenario_help(mem: &mut dyn GuestMemory, tag: u32, index: u16) -> Result<(), MemFault> {
+    if !extended(mem, tag)? {
+        return Ok(());
+    }
+    let Some(row) = list_row(mem, tag, h1text::hud::SCENARIO_HELP, index)? else {
+        return Ok(());
+    };
+    let hud = mem.u32(HUD)?;
+    let flags = mem.u32(HUD_FLAGS)?;
+    if hud != 0 && flags != 0 {
+        mem.set_u32(hud + HELP_MESSAGE, row)?;
+        mem.set_u8(flags + HELP_SHOWN, 1)?;
+    }
+    Ok(())
+}
+
+fn extended(mem: &dyn GuestMemory, tag: u32) -> Result<bool, MemFault> {
+    Ok(mem.u32(tag + MARKER_AT)? == MARKER)
+}
 
 struct Saved {
     address: u32,
@@ -44,6 +86,7 @@ thread_local! {
     // Both callbacks run on the same thread in one guest draw. No game
     // state survives the second callback.
     static SAVED: RefCell<Option<Saved>> = const { RefCell::new(None) };
+    static DRAW_TEXT: Cell<u32> = const { Cell::new(0) };
 }
 
 fn selected_message(mem: &dyn GuestMemory, hud: u32) -> Result<(u32, bool), MemFault> {
@@ -62,6 +105,8 @@ fn message_text(
     mem: &dyn GuestMemory,
     tag: u32,
     message: u32,
+    arguments: &[Option<&[u8]>],
+    capacity: usize,
 ) -> Result<Option<Vec<u8>>, MemFault> {
     let messages = mem.u32(tag + 0x14)?;
     let count = mem.u32(tag + 0x10)?;
@@ -95,17 +140,23 @@ fn message_text(
                 result.extend_from_slice(&mem.bytes(at, 2 * (len as usize - 1))?);
                 unit += len;
             }
-            1 => {
-                let Some(glyph) = glyph(value) else {
+            1 if value >= 32 => {
+                let Some(Some(arg)) = arguments.get(usize::from(value - 32)) else {
                     return Ok(None);
                 };
-                result.extend_from_slice(&glyph.to_le_bytes());
+                result.extend_from_slice(arg);
             }
+            1 => result.extend_from_slice(&glyph(value).expect("controller glyph").to_le_bytes()),
             _ => return Ok(None),
         }
     }
-    // The game's destination is 256 UTF-16 units including the terminator.
-    result.truncate(2 * (TEXT_CAPACITY - 1));
+    if result.len() >= 2 * capacity {
+        result.truncate(2 * (capacity - 1));
+        let last = u16::from_le_bytes(result[result.len() - 2..].try_into().unwrap());
+        if (0xd800..=0xdbff).contains(&last) {
+            result.truncate(result.len() - 2);
+        }
+    }
     if result.is_empty() {
         return Ok(None);
     }
@@ -126,13 +177,48 @@ fn mission_hud(mem: &dyn GuestMemory) -> Result<Option<u32>, MemFault> {
     let Some(entry) = tag_entry_checked(mem, datum)? else {
         return Ok(None);
     };
-    if mem.u32(entry + entry_layout::GROUP)? != GROUP.as_u32()
-        || mem.u32(entry + entry_layout::SIZE)? < SIZE
-    {
+    let size = mem.u32(entry + entry_layout::SIZE)?;
+    if mem.u32(entry + entry_layout::GROUP)? != GROUP.as_u32() || size < LEGACY_SIZE {
         return Ok(None);
     }
     let tag = mem.u32(entry + entry_layout::ADDRESS)?;
-    Ok((mem.u32(tag + MARKER_AT)? == MARKER).then_some(tag))
+    let supported = match mem.u32(tag + MARKER_AT)? {
+        MARKER => size >= SIZE,
+        LEGACY_MARKER => true,
+        _ => false,
+    };
+    Ok(supported.then_some(tag))
+}
+
+// Follow the same local-user to player to input-settings path as 0x22df04.
+// Move and look need the stick deflection icons, not the click icons.
+fn stick_layout(mem: &dyn GuestMemory, user: u32) -> Result<Option<u16>, MemFault> {
+    if user >= 4 {
+        return Ok(None);
+    }
+    let local_users = mem.u32(0x004e_8c20)?;
+    let player = mem.u32(local_users + 0xc + 4 * user)?;
+    if player == u32::MAX {
+        return Ok(None);
+    }
+    let players = mem.u32(0x004e_8c24)?;
+    let player = mem.u32(players + 0x44)? + (player & 0xffff) * 0x21c;
+    let port = mem.u32(player + 0x24)?;
+    if port >= 4 {
+        return Ok(None);
+    }
+    let layout = mem.u16(0x0051_ea18 + 0x1c * port + 0x18)?;
+    Ok((layout < 4).then_some(layout))
+}
+
+fn substitute_sticks(text: &mut [u8], layout: u16) {
+    for [low, high] in text.as_chunks_mut::<2>().0 {
+        let action = u16::from_le_bytes([*low, *high]);
+        if matches!(action, 0xe456 | 0xe457) {
+            let right = (layout & 1) ^ (action - 0xe456);
+            [*low, *high] = (0xe10e + right).to_le_bytes();
+        }
+    }
 }
 
 fn stage(
@@ -140,6 +226,7 @@ fn stage(
     frame: u32,
     primary: u32,
     shadow: u32,
+    scratch: u32,
 ) -> Result<Option<Saved>, MemFault> {
     let Some(tag) = mission_hud(mem)? else {
         return Ok(None);
@@ -149,9 +236,16 @@ fn stage(
         return Ok(None);
     }
     let (selected, help) = selected_message(mem, hud)?;
-    let Some(text) = message_text(mem, tag, selected)? else {
+    let Some(mut text) = message_text(mem, tag, selected, &[], TEXT_CAPACITY)? else {
         return Ok(None);
     };
+    let user = mem.u32(frame + 8)?;
+    if user >= 4 {
+        return Ok(None);
+    }
+    if let Ok(Some(layout)) = stick_layout(mem, user) {
+        substitute_sticks(&mut text, layout);
+    }
 
     let screen = mem.u32(frame - SCREEN_LOCAL)?;
     if screen == 0 {
@@ -166,10 +260,13 @@ fn stage(
     }
     let original = mem.bytes(address, WORKSPACE_SIZE)?;
     let mut workspace = original.clone();
-    workspace[..text.len()].copy_from_slice(&text);
+    workspace[..2].fill(0);
     workspace[WORKSPACE_SIZE - 4..].fill(0); // route the draw through inline text
+    let scratch = scratch + user * (TEXT_CAPACITY as u32 * 2);
+    mem.write(scratch, &text)?;
     mem.set_u8(frame - HAS_TEXT_LOCAL, 1)?;
     mem.write(address, &workspace)?;
+    DRAW_TEXT.set(scratch);
     Ok(Some(Saved { address, original }))
 }
 
@@ -178,17 +275,22 @@ pub(crate) fn install(registry: &mut feature::Registry) -> Result<(), BuildError
         manifest: Manifest::new("h1-hud-text", "Halo 1 help and objectives"),
         build: |b: &mut Builder| {
             b.snapshot(feature::SnapshotPolicy::Stateless);
+            let scratch = b.guest_alloc(
+                4 * TEXT_CAPACITY as u32 * 2,
+                runtime::guest::Permissions::RW,
+            )?;
             b.raw()
-                .before(&HUD_TEXT_SETUP, "supply the selected mission text", |c| {
+                .before(&HUD_TEXT_SETUP, "supply the selected mission text", move |c| {
                     let sp = c.cpu.esp;
                     let bp = c.cpu.ebp;
                     let primary = c.cpu.edi;
                     let mut mem = c.ctx.memory();
                     if mem.u32(sp).ok() == Some(FROM_SETUP) {
+                        DRAW_TEXT.set(0);
                         let shadow = mem.u32(sp + 16).unwrap_or(0);
                         SAVED.with(|saved| {
                             *saved.borrow_mut() =
-                                stage(&mut *mem, bp, primary, shadow).ok().flatten();
+                                stage(&mut *mem, bp, primary, shadow, scratch).ok().flatten();
                         });
                     }
                     Ok(feature::Flow::Continue)
@@ -207,13 +309,52 @@ pub(crate) fn install(registry: &mut feature::Registry) -> Result<(), BuildError
                                     let _ = mem.write(saved.address, &saved.original);
                                 }
                             });
+                            let text = DRAW_TEXT.get();
+                            if text != 0 {
+                                let _ = mem.write(
+                                    sp + 4,
+                                    &[text, TEXT_CAPACITY as u32].map(u32::to_le_bytes).concat(),
+                                );
+                            }
                         }
                         Ok(feature::Flow::Continue)
                     },
                 )
                 .context_only();
+            b.raw()
+                .before(&HUD_TEXT_MEASURE, "measure the selected text", |c| {
+                    if c.ctx.memory().u32(c.cpu.esp).ok() == Some(FROM_MEASURE)
+                        && DRAW_TEXT.get() != 0
+                    {
+                        c.cpu.ecx = DRAW_TEXT.get();
+                    }
+                    Ok(feature::Flow::Continue)
+                })
+                .context_only();
+            b.raw()
+                .before(&HUD_TEXT_BOUNDS, "lay out the selected text", |c| {
+                    let sp = c.cpu.esp;
+                    let mut mem = c.ctx.memory();
+                    if mem.u32(sp).ok() == Some(FROM_BOUNDS) && DRAW_TEXT.get() != 0 {
+                        let _ = mem.set_u32(sp + 4, DRAW_TEXT.get());
+                    }
+                    Ok(feature::Flow::Continue)
+                })
+                .context_only();
+            b.raw()
+                .before(&HUD_TEXT_DRAW, "draw the selected text", |c| {
+                    if c.ctx.memory().u32(c.cpu.esp).ok() == Some(FROM_DRAW)
+                        && DRAW_TEXT.get() != 0
+                    {
+                        c.cpu.ecx = DRAW_TEXT.replace(0);
+                    }
+                    Ok(feature::Flow::Continue)
+                })
+                .context_only();
             controls::register(b);
+            events::register(b);
             timer::register(b);
+            tint::register(b);
             Ok(())
         },
     };
@@ -254,11 +395,11 @@ mod tests {
             .encode_utf16()
             .flat_map(u16::to_le_bytes)
             .collect::<Vec<_>>();
-        assert_eq!(message_text(&mem, tag, message).unwrap(), Some(out));
-        assert_eq!(message_text(&mem, tag, message + 1).unwrap(), None);
+        assert_eq!(message_text(&mem, tag, message, &[], TEXT_CAPACITY).unwrap(), Some(out));
+        assert_eq!(message_text(&mem, tag, message + 1, &[], TEXT_CAPACITY).unwrap(), None);
 
         mem.set_u16(message + 0x20, 4).unwrap();
-        assert_eq!(message_text(&mem, tag, message).unwrap(), None);
+        assert_eq!(message_text(&mem, tag, message, &[], TEXT_CAPACITY).unwrap(), None);
     }
 
     #[test]
@@ -276,5 +417,21 @@ mod tests {
         assert_eq!(selected_message(&mem, hud).unwrap(), (1, true));
         mem.set_u8(flags + HELP_SHOWN, 0).unwrap();
         assert_eq!(selected_message(&mem, hud).unwrap(), (0, false));
+    }
+
+    #[test]
+    fn cave_help_uses_the_mapped_stick_and_preserves_the_literal_stick() {
+        for (layout, move_glyph, look_glyph) in [
+            (0, 0xe10e, 0xe10f),
+            (1, 0xe10f, 0xe10e),
+            (2, 0xe10e, 0xe10f),
+            (3, 0xe10f, 0xe10e),
+        ] {
+            let mut text = [0xe456u16, 0xe457, 0xe10e, 0]
+                .map(u16::to_le_bytes)
+                .concat();
+            substitute_sticks(&mut text, layout);
+            assert_eq!(text, [move_glyph, look_glyph, 0xe10e, 0].map(u16::to_le_bytes).concat());
+        }
     }
 }

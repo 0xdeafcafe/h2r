@@ -560,6 +560,61 @@ fn h1_trigger_volumes_read() {
     }
 }
 
+fn check_a30_hud(m: &mut Map<Cursor<Vec<u8>>>, scnr: &[u8], objects: bool) {
+    use h1text::hud::{
+        CONTROL_PROMPTS, EVENTS, EVENT_SIZE, MARKER, MARKER_AT, SCENARIO_HELP, SCENARIO_HMT,
+        SHARED_MESSAGES, WIDGET_CONTROLS, WIDGET_CONTROL_SIZE,
+    };
+
+    let word = |b: &[u8], at: u32| u32::from_le_bytes(b[at as usize..at as usize + 4].try_into().unwrap());
+    let short = |b: &[u8], at: u32| u16::from_le_bytes(b[at as usize..at as usize + 2].try_into().unwrap());
+    let hmt = m.read_tag_bytes(TagId(word(scnr, SCENARIO_HMT + 4))).unwrap();
+    let mut read = |addr: u32, size: u32| {
+        let offset = m.file_offset(addr, size).unwrap();
+        m.read_file_range(offset, u64::from(size)).unwrap()
+    };
+    assert_eq!(word(&hmt, MARKER_AT), MARKER);
+    assert_eq!(short(&hmt, SCENARIO_HELP + 2), 5);
+    let msgs = read(word(&hmt, 0x14), word(&hmt, 0x10) * 0x40);
+    let parts = read(word(&hmt, 0xc), word(&hmt, 8) * 2);
+    let glyphs = |row: u32| {
+        let row = row * 0x40;
+        let start = usize::from(short(&msgs, row + 0x22)) * 2;
+        let len = usize::from(msgs[row as usize + 0x24]) * 2;
+        parts[start..start + len].chunks_exact(2).filter_map(|p| (p[0] == 1).then_some(p[1]))
+            .collect::<Vec<_>>()
+    };
+    let help = u32::from(short(&hmt, SCENARIO_HELP));
+    assert_eq!(glyphs(help + 3), [30, 31]);
+    assert_eq!(glyphs(help + 4), [16]);
+
+    let widgets = read(word(&hmt, WIDGET_CONTROLS + 4), word(&hmt, WIDGET_CONTROLS) * WIDGET_CONTROL_SIZE);
+    let panels = widgets.chunks_exact(WIDGET_CONTROL_SIZE as usize)
+        .filter(|widget| word(widget, 8) != 0)
+        .collect::<Vec<_>>();
+    assert_eq!(panels.len(), 4);
+    assert_ne!(word(panels[2], 0x10), word(panels[3], 0x10), "radar layers have different flash colours");
+
+    if objects {
+        let routes = read(word(&hmt, EVENTS + 4), word(&hmt, EVENTS) * EVENT_SIZE);
+        let rifle = m
+            .tag(map::TagQuery::NameInGroup(
+                r"weapons\assault rifle\assault rifle",
+                FourCC(*b"weap"),
+            ))
+            .unwrap()
+            .id;
+        let rifle = m.read_tag_bytes(rifle).unwrap();
+        let route = routes.chunks_exact(EVENT_SIZE as usize)
+            .find(|route| word(route, 0) == word(&rifle, 0xcc))
+            .expect("the rifle pickup field names a converted route");
+        let shared = u32::from(short(&hmt, SHARED_MESSAGES));
+        assert_eq!(glyphs(shared + u32::from(short(route, 4))), [18, 32]);
+        assert_ne!(short(route, 6), u16::MAX);
+        assert_eq!(word(&hmt, CONTROL_PROMPTS), 1, "the cave's placed control retains its prompt");
+    }
+}
+
 #[test]
 #[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
 fn a30_converts_onto_its_base_and_reads_back() {
@@ -593,6 +648,7 @@ fn a30_converts_onto_its_base_and_reads_back() {
     let addr = scnr.location.unwrap().address;
     let bytes = m.read_tag_bytes(scnr.id).unwrap();
     let word = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
+    check_a30_hud(&mut m, &bytes, opts.objects);
 
     // Every tag reference in the scenario resolves to a tag of its group.
     // The whole ordinary metadata, unowned bytes included (the base
@@ -771,6 +827,16 @@ fn a30_converts_onto_its_base_and_reads_back() {
     if let Some(sc) = &s {
         let _ = sc;
         let hs_s = hs::Scenario::read(&mut m).unwrap();
+        let (_, slot, _, _, _) = h1scripts::hud::SCENARIO_HELP_BUILTIN;
+        let mut hints = Vec::new();
+        for node in hs_s.nodes().iter().filter(|n| !n.atom() && n.opcode() == slot) {
+            let Ok(head) = hs_s.node(hs::Datum(node.data())) else { continue };
+            if hs_s.string(head.string_offset()).ok() == Some("display_scenario_help") {
+                hints.push(hs_s.node(head.next()).unwrap().data() as u16);
+            }
+        }
+        hints.sort_unstable();
+        assert_eq!(hints, [3, 4], "the cave's two script help calls");
         println!(
             "scripts read back: {} scripts, {} globals, {} nodes",
             hs_s.scripts().len(),

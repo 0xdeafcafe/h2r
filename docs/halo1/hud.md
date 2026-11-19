@@ -596,7 +596,7 @@ Gulch's `ui\hud\default` against ascension's, lockout's, 01a's and
 | `+0x00..+0x48` | `+0x00..+0x48` | message placement | same |
 | `+0x48`, `+0x58` (fonts) | `+0x48`, `+0x50` (`bitm`, null) | | Halo 2's differ |
 | `+0x68..+0x94` | `+0x58..+0x84` | message timing | same but `+0x90` 1.35 / `+0x80` 1.1 |
-| `+0x94`, `+0xa4`, `+0xb4`, `+0xc4` | `+0x84`, `+0x8c`, `+0x94`, `+0x9c` | item and icon messages: strings, icons, their list | Halo 2's own assets |
+| `+0x94`, `+0xa4`, `+0xb4`, `+0xc4` | `+0x84`, `+0x8c`, `+0x94`, `+0x9c` | item and icon messages: strings, icons, their list | Campaign event text uses the rebuilt message and argument rows. See [HUD text](text.md). |
 | `+0xd0..+0xf0` | `+0xa4..+0xc4` | text colours, flash (E Halo 2 reads `+0xa4`, `+0xa8`, `+0xb6`: `0x0024d1a2`..) | same |
 | `+0x100..+0x150` | `+0xcc..+0x11c` | (E Halo 2 reads `+0xe8`, `+0xea`: `0x0024c8ca`) | same |
 | `+0x150`, `+0x160` | `+0x118`, `+0x120` | the waypoint arrow: bitmap and arrow list (10 in Halo 1, 15 in Halo 2; E Halo 2 `0x0024dacb`) | Halo 2's own assets |
