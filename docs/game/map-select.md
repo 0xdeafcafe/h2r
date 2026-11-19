@@ -150,6 +150,12 @@ cache header `[0x4e0350] + 0x10` says main menu):
   `0x1d5e0`) and sets the path to `<dir>\<basename>`, which, with the
   slot's own directory as `dir`, is the path it had. With no free bitmap
   left the mod keeps the map's picture.
+- **Memory.** The record (`0x2d3fc` bytes) and its content dir go in a
+  `0x2e000`-byte block of ours mapped once at install
+  (`mod_slots::map_scratch`: the first free place from `0xa2fc_0000`,
+  above the campaigns' region, below `0xa300_0000`), not the features'
+  shared arena (512 KiB for all of them). Without it the mods keep their
+  maps' pictures.
 - **Undo.** A slot changed in this load whose package is gone (or no
   longer has an image) gets its own bitmap reference, names and
   descriptions back.

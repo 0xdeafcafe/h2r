@@ -372,9 +372,42 @@ impl Gm for WriteGm<'_> {
     }
 }
 
-/// Guest memory of ours for one record and its content dir.
+/// Guest memory of ours for one record and its content dir. Too big for
+/// the features' shared arena (`feature::arena`, 512 KiB for every
+/// feature), so it is mapped on its own ([`map_scratch`]), above the
+/// campaigns' region (`campaigns::Region`, up to `0xa2fc_0000`).
 pub const SCRATCH_LEN: u32 = 0x2e000;
 const DIR_AT: u32 = 0x2d400;
+pub const SCRATCH_FROM: u32 = 0xa2fc_0000;
+const SCRATCH_TO: u32 = 0xa300_0000;
+
+/// Maps [`SCRATCH_LEN`] bytes at the first page-aligned place from
+/// [`SCRATCH_FROM`] that nothing maps or claims; its address, `None` when
+/// there is none (the mods then keep their maps' pictures).
+pub fn map_scratch(g: &mut runtime::guest::Guest) -> Option<u32> {
+    let mut base = SCRATCH_FROM;
+    let taken = |g: &runtime::guest::Guest, base: u32| {
+        let hit = |start: u32, len: u32| {
+            u64::from(base) < u64::from(start) + u64::from(len)
+                && u64::from(base) + u64::from(SCRATCH_LEN) > u64::from(start)
+        };
+        g.mappings().iter().any(|r| hit(r.virtual_start, r.len))
+            || g.virtual_claims()
+                .iter()
+                .any(|r| hit(r.virtual_start, r.len))
+    };
+    while taken(g, base) {
+        base = base.checked_add(0x1000)?;
+        if base + SCRATCH_LEN > SCRATCH_TO {
+            return None;
+        }
+    }
+    g.map_zeroed(base, SCRATCH_LEN, runtime::guest::Permissions::RW)
+        .ok()?;
+    g.claim_virtual(base, SCRATCH_LEN, "mod slots: a patch.lvl record")
+        .ok()?;
+    Some(base)
+}
 
 /// What a refill did, for the console.
 #[derive(Debug, Default, PartialEq, Eq)]

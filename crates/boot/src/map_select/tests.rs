@@ -198,14 +198,14 @@ fn slots_and_packages_read_as_the_game_lists_them() {
 
 #[test]
 fn one_category_or_none_leaves_the_retail_list() {
-    assert!(!prepare(Catalogue::default(), Vec::new()).active());
+    assert!(!Selection::new(Catalogue::default()).active());
     let retail = Catalogue::new([map(
         0x0a,
         "Lockout",
         10,
         "scenarios\\multi\\lockout\\lockout",
     )]);
-    assert!(!prepare(retail, Vec::new()).active());
+    assert!(!Selection::new(retail).active());
     assert!(Selection::new(sample()).active());
 }
 
@@ -408,6 +408,7 @@ fn the_boot_s_features_plan_together_with_the_campaigns() {
         sel: Arc::new(Selection::new(sample())),
         flow: Arc::default(),
         slots: Arc::default(),
+        scratch: None,
     })
     .unwrap();
     r.add(&crate::h1_options_row::SetupRow {

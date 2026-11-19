@@ -783,6 +783,9 @@ pub struct MapSelect {
     pub sel: Arc<Selection>,
     pub flow: Arc<Flow>,
     pub slots: Arc<Slots>,
+    /// Our memory for a record the game applies (`mod_slots::map_scratch`);
+    /// `None`: the mods keep their maps' pictures.
+    pub scratch: Option<u32>,
 }
 
 /// The replacing packages on their maps' slots, as this load has them
@@ -839,11 +842,23 @@ async fn refill(
     cx: &engine::entry::Cx,
     sel: &Selection,
     slots: &Slots,
-    scratch: u32,
+    scratch: Option<u32>,
     why: &str,
 ) -> Result<(), EntryError> {
     let generation = sel.generation();
-    let fills = sel.fills();
+    let mut fills = sel.fills();
+    if scratch.is_none() {
+        // No memory for a record: names only, the maps' own pictures.
+        fills = Arc::new(
+            fills
+                .iter()
+                .map(|f| crate::mod_slots::Fill {
+                    preview: None,
+                    ..f.clone()
+                })
+                .collect(),
+        );
+    }
     let found = cx.read(|m| crate::mod_slots::read_slots(&crate::layout_glue::ReadGm(m)));
     *lock(&slots.filled) = Some(generation);
     if found.is_empty() {
@@ -853,7 +868,7 @@ async fn refill(
     if steps.is_empty() {
         return Ok(());
     }
-    let done = crate::mod_slots::run(cx, steps, scratch).await?;
+    let done = crate::mod_slots::run(cx, steps, scratch.unwrap_or(0)).await?;
     eprintln!(
         "map select: mods on their maps ({why}): {} named, {} pictures, {} put back, {} failed",
         done.texts, done.pictures, done.restored, done.failed
@@ -897,10 +912,7 @@ impl feature::Feature for MapSelect {
 
         // The lists were built again (a main menu load): the replacing
         // packages' texts and pictures onto their maps' slots.
-        let scratch = b.guest_alloc(
-            crate::mod_slots::SCRATCH_LEN,
-            runtime::guest::Permissions::RW,
-        )?;
+        let scratch = self.scratch;
         let (slots, sel) = (Arc::clone(&self.slots), Arc::clone(&self.sel));
         b.raw().before(
             &MP_LEVEL_REFRESH,
@@ -1181,15 +1193,20 @@ const MAP_SCREEN_FREE_AT: u32 = 0x002b_b384;
 /// with one category or none Change Map opens the retail list until a
 /// package installed while the game runs makes a second). Returns whether
 /// they were added.
-pub fn install(registry: &mut feature::Registry) -> anyhow::Result<bool> {
+pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry) -> anyhow::Result<bool> {
     let Some(sel) = PREPARED.get() else {
         return Ok(false);
     };
+    let scratch = crate::mod_slots::map_scratch(&mut rt.memory());
+    if scratch.is_none() {
+        eprintln!("map select: no memory for a mod's picture; mods keep their maps' pictures");
+    }
     let added = registry
         .add(&MapSelect {
             sel: Arc::clone(sel),
             flow: Arc::default(),
             slots: Arc::default(),
+            scratch,
         })
         .map_err(|e| anyhow::anyhow!("map select: {e}"))?;
     if !added {

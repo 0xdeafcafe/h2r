@@ -220,7 +220,8 @@ fn a_picture_dropped_gives_the_map_its_own_bitmap_back() {
     let mut list = retail();
     let mut state = State::default();
     let with = [fill("lockout", "Lockout Snow", Some(vec![1; PREVIEW_LEN]))];
-    apply(&mut list, &plan(&list, &with, &mut state));
+    let p = plan(&list, &with, &mut state);
+    apply(&mut list, &p);
     let without = [fill("lockout", "Lockout Snow", None)];
     let steps = plan(&list, &without, &mut state);
     assert_eq!(
