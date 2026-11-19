@@ -19,6 +19,13 @@ pub const LIGHTMAP_LAYER: usize = 3;
 /// The `vrtx` geometry classification of world-space geometry (S: its
 /// programs read `v0` as a world position with no model transform).
 pub const WORLD_CLASSIFICATION: u32 = 0;
+/// The `vrtx` classification of rigid geometry, which the D3D path draws
+/// an instanced placement with (S: the only other classification the
+/// world's lightmap programs have; its programs place `v0` with the model
+/// rows `c[50..52]` the structure draw uploads for a placement,
+/// `0x0004d830`, after the position decompression `c[170..171]`).
+/// [`crate::program::compile_rigid`] checks that it reads the rows.
+pub const RIGID_CLASSIFICATION: u32 = 1;
 /// `vrtx` classification stride; `+0xc` the compiled shader's size, `+0x10`
 /// its address (docs/graphics/shaders.md).
 const CLASSIFICATION: u32 = 0x1c;
@@ -331,6 +338,13 @@ pub fn vertex_semantics(meta: &Metadata, address: u32, index: u32) -> Option<Vec
 pub fn world_program<R: Read + Seek>(map: &mut Map<R>, meta: &Metadata, vrtx: TagId) -> Option<Vec<u8>> {
     let address = map.tag(vrtx).ok()?.location?.address;
     vertex_program(meta, address, WORLD_CLASSIFICATION)
+}
+
+/// [`vertex_program`] of a `vrtx` tag in `map`, rigid classification
+/// ([`RIGID_CLASSIFICATION`]).
+pub fn rigid_program<R: Read + Seek>(map: &mut Map<R>, meta: &Metadata, vrtx: TagId) -> Option<Vec<u8>> {
+    let address = map.tag(vrtx).ok()?.location?.address;
+    vertex_program(meta, address, RIGID_CLASSIFICATION)
 }
 
 #[cfg(test)]

@@ -13,7 +13,7 @@ use feature::native_world::{self, Host, NativeWorld, PartSet};
 use feature::plan::Base;
 use feature::{Registry, Switches};
 use native_render::camera::{RENDER_CAMERA, RenderCamera};
-use native_render::skip::{CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, RENDER_RECORDS};
+use native_render::skip::{CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, RENDER_RECORDS, STENCIL_MARK, STENCIL_OFF_FLAGS};
 use native_render::world::Owner;
 
 #[test]
@@ -194,4 +194,28 @@ fn the_world_items_skip_layer_3_and_get_it_back_at_the_next_layer_draw() {
     assert_eq!(masks(&m), vec![0b0010, 0b1010, 0b1010]);
     native_world::restore_pending(&mut m);
     assert_eq!(masks(&m), vec![0b1010; 3]);
+
+    // An item that marks its pixels in the stencil (the object's here,
+    // record 3) switches the state between items: the view is left to
+    // the D3D path, the host not asked.
+    let asked = stub.asked.lock().unwrap().len();
+    let left = native_world::stencil_views();
+    let mut m = guest();
+    m.set_u32(RENDER_RECORDS + 0x20 * 3, STENCIL_MARK).unwrap();
+    native_world::before_layer(&mut m);
+    assert_eq!(masks(&m), vec![0b1010; 3]);
+    assert_eq!(stub.asked.lock().unwrap().len(), asked);
+    assert_eq!(native_world::stencil_views(), left + 1);
+    // So is a view with the stencil-off flag set.
+    let mut m = guest();
+    m.set_u32(STENCIL_OFF_FLAGS, 0x0000_0100).unwrap();
+    native_world::before_layer(&mut m);
+    assert_eq!(masks(&m), vec![0b1010; 3]);
+    assert_eq!(native_world::stencil_views(), left + 2);
+    // Another bit of the record does not.
+    let mut m = guest();
+    m.set_u32(RENDER_RECORDS + 0x20 * 3, 0x1008).unwrap();
+    native_world::before_layer(&mut m);
+    assert_eq!(masks(&m), vec![0b0010, 0b1010, 0b1010]);
+    native_world::restore_pending(&mut m);
 }

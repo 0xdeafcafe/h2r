@@ -41,12 +41,12 @@ use engine::memory::GuestMemory;
 use feature::native_world::{Host, PartSet};
 use map::{Map, ResourceFile, TagId};
 use native_render::camera::RenderCamera;
-use native_render::gpu::{DepthRule, GpuWorld, Image, PassViewport};
+use native_render::gpu::{DepthRule, GpuWorld, Image, PassStencil, PassViewport};
 use native_render::load::{self, LoadedWorld};
 use native_render::look::{self, Stage};
 use native_render::program::{self, MaterialProgram, ProgramSet, ViewInputs};
 use native_render::transparent_gpu::{TransparentProgram, TransparentSet};
-use native_render::world::{LightmapKey, Owner, World};
+use native_render::world::{LightmapKey, Owner, World, WorldDraw};
 
 use crate::telemetry::{MapFile, MapLocator};
 
@@ -191,10 +191,21 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             }
             return None;
         }
+        // The stencil the layer's draws take now (the feature leaves the
+        // views where an item switches it to the D3D path): the native
+        // pass tests and writes the same, as the structure draw's mode 1
+        // writes reference 0 over every item it draws.
+        let Some(stencil) = d.stencil_state(&ReadMemory(mem)) else {
+            if !STENCIL_UNREAD.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                eprintln!("native-world: the device's stencil state does not read; the D3D path draws the world");
+            }
+            return None;
+        };
         d.request_external_pass(Box::new(WorldPass {
             ready: Arc::clone(&ready),
             camera: *camera,
             view: None,
+            stencil,
         }));
         Some(Arc::clone(&ready.parts))
     }
@@ -247,7 +258,11 @@ pub(crate) fn upload<'a>(ready: &'a Ready, t: &d3d::ExternalTarget<'_>) -> std::
         // Set even when empty: with programs on, a batch without one is
         // never drawn with stage 1's program.
         let set = ProgramSet::new(device, queue, g.world(), programs, &mut stage, &mut |k| lightmaps.get(&k).cloned());
-        eprintln!("native-world: {} materials draw with their own programs", set.len());
+        eprintln!(
+            "native-world: {} materials draw with their own programs, {} of them their placements with their rigid programs",
+            set.len(),
+            set.rigid_len()
+        );
         g.set_programs(set);
     }
     if !transparents.is_empty() {
@@ -265,6 +280,8 @@ struct WorldPass {
     camera: RenderCamera,
     /// The device's view constants at the pass (material programs).
     view: Option<[[f32; 4]; d3d::VIEW_CONSTANTS]>,
+    /// The device's stencil state when the pass was asked for.
+    stencil: gfx::state::StencilState,
 }
 
 impl d3d::ExternalPass for WorldPass {
@@ -303,6 +320,7 @@ impl d3d::ExternalPass for WorldPass {
                 floor: true,
             },
         );
+        gpu.set_stencil(PassStencil::from_device(&self.stencil, t.depth_format));
         let [x, y, width, height] = t.viewport;
         gpu.encode(
             t.device,
@@ -325,6 +343,7 @@ impl d3d::ExternalPass for WorldPass {
 static NO_VIEW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static UNBOUND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static PALETTE_CHANGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static STENCIL_UNREAD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The device palette at each texture stage (`A8R8G8B8` entries), or
 /// `None`: what a palettized stage bitmap (P8, P8 bump) is sampled through
@@ -449,10 +468,12 @@ fn load_ready(name: &str, bsp: u32, palettes: StagePalettes) -> Result<Ready, lo
     let mut native = HashSet::new();
     let mut decoder = StageDecoder::new(palettes);
     let mut palettized = Vec::new();
+    let mut rigid_refused = Refused::new();
     let (programs, mut stage_images, refused) = if programs_on {
         let out = material_programs(&mut map, &mut files, &shaders, &world, &lightmaps, &mut decoder);
         native.extend(out.programs.keys().copied());
         palettized = out.palettized;
+        rigid_refused = out.rigid_refused;
         (out.programs, out.images, out.refused)
     } else {
         let mut decoded: HashMap<TagId, Option<Image>> = HashMap::new();
@@ -476,8 +497,28 @@ fn load_ready(name: &str, bsp: u32, palettes: StagePalettes) -> Result<Ready, lo
     // split is per shader (`feature::native_lights`), so they take only
     // the materials whose shader is native whole.
     let whole = whole_shader_materials(&world.materials(), &shaders, &native);
+    // A native material's instanced placements draw natively only with
+    // its rigid program ([`drawn_natively`]); the lights, whose native
+    // passes would meet the ones left to D3D, take only materials whose
+    // every placement draws natively.
+    let rigid: HashSet<u16> = programs.iter().filter(|(_, p)| p.rigid.is_some()).map(|(&m, _)| m).collect();
+    let instanced: HashSet<u16> = world
+        .draws
+        .iter()
+        .filter(|d| matches!(d.owner, Owner::Instance(_)) && !rigid.contains(&d.material))
+        .map(|d| d.material)
+        .collect();
     if programs_on {
         log_coverage(&mut map, &world, &shaders, &native, refused);
+        let placed = world.draws.iter().filter(|d| native.contains(&d.material) && matches!(d.owner, Owner::Instance(_)));
+        let (with, without) = placed.fold((0, 0), |(w, wo), d| if rigid.contains(&d.material) { (w + 1, wo) } else { (w, wo + 1) });
+        eprintln!(
+            "native-world: {with} instanced-geometry parts draw natively with their rigid programs (the placement's rows in c[50..52] per draw, as 0x0004d830 uploads them); D3D keeps {without} of native materials without one"
+        );
+        for (why, ms) in &rigid_refused {
+            let parts = world.draws.iter().filter(|d| ms.contains(&d.material) && matches!(d.owner, Owner::Instance(_))).count();
+            eprintln!("native-world: D3D keeps the placements of {} materials ({parts} parts): {why}", ms.len());
+        }
         if !palettized.is_empty() {
             // The materials whose look depends on a device palette (the
             // bump maps' normals): the ones to compare first in an A/B.
@@ -502,12 +543,14 @@ fn load_ready(name: &str, bsp: u32, palettes: StagePalettes) -> Result<Ready, lo
     // shader), are where native lights cannot draw.
     let lights_on = feature::Switches::from_env().is_ok_and(|s| feature::native_lights::on(&s));
     let lights = if lights_on {
-        crate::native_lights_glue::load(&mut map, &mut files, &shaders, &world, &|m| whole.contains(&m)).map(Arc::new)
+        crate::native_lights_glue::load(&mut map, &mut files, &shaders, &world, &|m| whole.contains(&m) && !instanced.contains(&m))
+            .map(Arc::new)
     } else {
         None
     };
-    // Draw only what a native material owns: the rest keeps its D3D draws.
-    let world = keep_materials(world, &native);
+    // Draw only a native material's clusters, and its placements with its
+    // rigid program: the rest keeps its D3D draws.
+    let world = keep_draws(world, &|d| native.contains(&d.material) && drawn_natively(d, &rigid));
     let parts = part_set(&world, &shaders);
     Ok(Ready {
         cpu: Mutex::new(Some(CpuWorld {
@@ -564,7 +607,7 @@ fn whole_shader_materials(materials: &[u16], shaders: &[TagId], native: &HashSet
 
 /// The skip's table: each part the world draws (by owner and part index),
 /// with its material's shader by tag index. `world` holds only native
-/// materials' draws ([`keep_materials`]).
+/// materials' draws ([`keep_draws`]).
 fn part_set(world: &World, shaders: &[TagId]) -> PartSet {
     world
         .draws
@@ -614,19 +657,41 @@ fn log_coverage<R: std::io::Read + std::io::Seek>(
     }
 }
 
-/// The world without the draws of materials left to the D3D path.
-fn keep_materials(mut world: World, native: &HashSet<u16>) -> World {
-    world.draws.retain(|d| native.contains(&d.material));
-    world.batches.retain(|b| native.contains(&b.material));
-    let mut first = 0;
-    for b in &mut world.batches {
-        b.first_draw = first;
-        first += b.draw_count;
+/// Whether the native pass draws a part of a native material: a
+/// cluster's, and a placement's when the material has a rigid program
+/// (`rigid`). The passes after layer 3 (shadows 11, lights 12 and 13, fog
+/// 16, overlays 7) test `ZFUNC` equal against layer 3's depth, so the
+/// native pass must write the D3D path's bits: a cluster goes through the
+/// world program with the same position bits on both paths, and the D3D
+/// path draws a placement with the rigid classification of the pass's
+/// vertex program, which places the definition's vertices on the GPU with
+/// the placement's rows in `c[50..52]` (`0x0004d830`: forward, left and up
+/// by column and the position, copied from the placement the render
+/// record points at, its scale not applied). The native pass does the
+/// same, with the same rows per placement (`program::rigid_vertex`).
+fn drawn_natively(d: &WorldDraw, rigid: &HashSet<u16>) -> bool {
+    match d.owner {
+        Owner::Cluster(_) => true,
+        Owner::Instance(_) => rigid.contains(&d.material),
     }
-    for (bi, b) in world.batches.iter().enumerate() {
-        for d in &mut world.draws[b.first_draw as usize..(b.first_draw + b.draw_count) as usize] {
-            d.batch = bi as u32;
+}
+
+/// The world with only the draws `keep` takes, batched again (the draws
+/// stay in their order, so a batch is a run of one material and page).
+fn keep_draws(mut world: World, keep: &dyn Fn(&WorldDraw) -> bool) -> World {
+    world.draws.retain(|d| keep(d));
+    world.batches.clear();
+    for (i, d) in world.draws.iter_mut().enumerate() {
+        match world.batches.last_mut() {
+            Some(b) if b.material == d.material && b.lightmap == d.lightmap => b.draw_count += 1,
+            _ => world.batches.push(native_render::world::Batch {
+                material: d.material,
+                lightmap: d.lightmap,
+                first_draw: i as u32,
+                draw_count: 1,
+            }),
         }
+        d.batch = world.batches.len() as u32 - 1;
     }
     world
 }
@@ -640,6 +705,9 @@ struct Programs {
     programs: HashMap<u16, MaterialProgram>,
     images: StageImages,
     refused: Refused,
+    /// Native materials whose placements stay on the D3D path, by reason
+    /// (their rigid program does not translate or fit).
+    rigid_refused: Refused,
     /// Materials with a palettized stage bitmap.
     palettized: Vec<u16>,
 }
@@ -663,8 +731,15 @@ fn material_programs<R: std::io::Read + std::io::Seek>(
         programs,
         images,
         refused,
+        rigid_refused,
         palettized,
     } = &mut out;
+    let placed: HashSet<u16> = world
+        .draws
+        .iter()
+        .filter(|d| matches!(d.owner, Owner::Instance(_)))
+        .map(|d| d.material)
+        .collect();
     let materials = world.materials();
     let mut lib = match tags::material::ShaderLibrary::read(map) {
         Ok(l) => l,
@@ -685,7 +760,20 @@ fn material_programs<R: std::io::Read + std::io::Seek>(
             .and_then(|mat| look::layer3_pass(&mat).map_err(|r| format!("layer 3: {r:?}")))
             .and_then(|pass| {
                 let code = look::world_program(map, lib.metadata(), pass.look.vertex_shader).ok_or("no world-space vertex program")?;
-                program::compile_world(&pass, &code)
+                let mut p = program::compile_world(&pass, &code)?;
+                if placed.contains(&m) {
+                    // Its placements: the pass with the rigid
+                    // classification, or they stay on the D3D path.
+                    let rigid = look::rigid_program(map, lib.metadata(), pass.look.vertex_shader)
+                        .ok_or_else(|| "no rigid vertex program".to_string())
+                        .and_then(|code| program::compile_rigid(&pass, &code))
+                        .and_then(|r| program::rigid_fit(world, m, &r).map(|()| r));
+                    match rigid {
+                        Ok(r) => p.rigid = Some(r),
+                        Err(why) => rigid_refused.entry(why).or_default().push(m),
+                    }
+                }
+                Ok(p)
             })
             .and_then(|p| {
                 program::world_fit(world, m, &p, &|k: LightmapKey| lightmaps.contains_key(&k))?;
@@ -940,7 +1028,7 @@ mod tests {
             b.add_section(Owner::Cluster(i as u32), &tri(m), &Placement::IDENTITY, None);
         }
         let native: HashSet<u16> = [2, 3].into_iter().collect();
-        let w = keep_materials(b.finish(), &native);
+        let w = keep_draws(b.finish(), &|d| native.contains(&d.material));
         let batches: Vec<_> = w.batches.iter().map(|b| (b.material, b.first_draw, b.draw_count)).collect();
         assert_eq!(batches, vec![(2, 0, 2), (3, 2, 1)]);
         assert_eq!(w.draws.iter().map(|d| (d.material, d.batch)).collect::<Vec<_>>(), vec![(2, 0), (2, 0), (3, 1)]);
@@ -965,8 +1053,11 @@ mod tests {
         // The world as the loader leaves it with programs on: material 7
         // translated, materials 8 and 9 refused, 9 sharing 7's shader. 8
         // and 9 are neither drawn natively nor skipped, so the D3D path
-        // still draws them; 7 is drawn natively and its parts are
-        // skipped, the shader's other parts not.
+        // still draws them; 7's cluster part is drawn natively and
+        // skipped, the shader's other parts not, and 7's part on an
+        // instanced placement stays on the D3D path without a rigid
+        // program (the D3D path places it on the GPU), and is drawn
+        // natively with one.
         let tri = |m| PartInput {
             material: m,
             transparent: false,
@@ -986,11 +1077,24 @@ mod tests {
         shaders[8] = TagId(0xe000_0108);
         shaders[9] = TagId(0xe000_0107);
         let translated: HashSet<u16> = [7].into_iter().collect();
-        let w = keep_materials(world, &translated);
+        let w = keep_draws(world.clone(), &|d| translated.contains(&d.material) && drawn_natively(d, &HashSet::new()));
         assert!(w.draws.iter().all(|d| d.material == 7), "8 and 9 are not drawn natively (no stage 1 look)");
         let parts = part_set(&w, &shaders);
+        let want: PartSet = [((Owner::Cluster(0), 0), 0x107)].into_iter().collect();
+        assert_eq!(parts, want, "7's cluster part by owner and index, with its shader; not 9's, which shares it, nor the placement's");
+        // Batched again over what is left: one batch, one draw.
+        let batches: Vec<_> = w.batches.iter().map(|b| (b.material, b.first_draw, b.draw_count)).collect();
+        assert_eq!(batches, vec![(7, 0, 1)]);
+        assert_eq!(w.draws[0].batch, 0);
+        // With 7's rigid program its placement's part is drawn and skipped
+        // too, in the same batch after the cluster's.
+        let rigid: HashSet<u16> = [7].into_iter().collect();
+        let w = keep_draws(world, &|d| translated.contains(&d.material) && drawn_natively(d, &rigid));
+        let parts = part_set(&w, &shaders);
         let want: PartSet = [((Owner::Cluster(0), 0), 0x107), ((Owner::Instance(3), 1), 0x107)].into_iter().collect();
-        assert_eq!(parts, want, "7's parts by owner and index, with its shader; not 9's, which shares it");
+        assert_eq!(parts, want);
+        let owners: Vec<_> = w.draws.iter().map(|d| (d.owner, d.batch)).collect();
+        assert_eq!(owners, vec![(Owner::Cluster(0), 0), (Owner::Instance(3), 0)]);
     }
 
     /// A 2x2 level and its 1x1 mip as `assets` decodes a P8 image: the

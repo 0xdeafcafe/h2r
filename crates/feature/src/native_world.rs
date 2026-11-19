@@ -12,7 +12,10 @@
 //!   layers after 3 on the scene list, 5 and up, come next in the same
 //!   view, so the bits are back before anything reads them again), each
 //!   only if the item still holds the mask it left ([`restore_pending`]);
-//! - then, when the current layer is 3: read the render camera and the
+//! - then, when the current layer is 3 and its draw keeps one stencil
+//!   state throughout (no item switches it,
+//!   [`native_render::skip::stencil_switches`]: the native pass draws with
+//!   the state the layer starts with): read the render camera and the
 //!   active BSP, ask the [`Host`] (boot's glue: the GPU world and the D3D
 //!   device) for the native pass, and when it accepts, clear layer 3's bit
 //!   on the BSP items whose part it draws, by cluster or placement and
@@ -103,6 +106,7 @@ pub struct Pending {
 static VIEWS: AtomicU64 = AtomicU64::new(0);
 static DRAWN: AtomicU64 = AtomicU64::new(0);
 static ITEMS: AtomicU64 = AtomicU64::new(0);
+static STENCIL: AtomicU64 = AtomicU64::new(0);
 
 /// Installs the host (boot). Without one nothing is skipped.
 pub fn set_host(host: Arc<dyn Host>) {
@@ -116,6 +120,12 @@ pub fn counts() -> (u64, u64, u64) {
         DRAWN.load(Ordering::Relaxed),
         ITEMS.load(Ordering::Relaxed),
     )
+}
+
+/// Layer-3 views left to the D3D path because an item switches the
+/// stencil.
+pub fn stencil_views() -> u64 {
+    STENCIL.load(Ordering::Relaxed)
 }
 
 /// The guest's memory as `native_render` reads and writes it.
@@ -145,6 +155,19 @@ pub fn before_layer(mem: &mut dyn GuestMemory) {
     let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
         return;
     };
+    // An item that marks its pixels in the stencil (or a flag that turns
+    // it off) switches the state between the layer's items: the D3D path
+    // draws that view.
+    if skip::stencil_switches(&m, LIGHTMAP_LAYER) != Some(false) {
+        let n = STENCIL.fetch_add(1, Ordering::Relaxed);
+        if n % 1800 == 0 {
+            eprintln!(
+                "native-world: {} layer-3 views left to the D3D path: an item switches the stencil (0x0004d640: record bit 14, or the flags at 0x00485a75)",
+                n + 1
+            );
+        }
+        return;
+    }
     let (Some(camera), Some(bsp)) = (RenderCamera::read(&m, RENDER_CAMERA), m.read_u32(ACTIVE_BSP)) else {
         return;
     };
