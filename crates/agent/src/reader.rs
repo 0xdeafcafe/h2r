@@ -478,6 +478,7 @@ mod tests {
             occupied: true,
             parent: None,
             aim: None,
+            velocity: None,
         });
         assert_eq!(v.mounted_on, None);
         let turret = vehicle_object(&VehicleState {
@@ -489,6 +490,7 @@ mod tests {
             occupied: false,
             parent: Some(0xe200_0003),
             aim: None,
+            velocity: None,
         });
         assert_eq!(turret.mounted_on.as_deref(), Some("vehicle.e2000003"));
         assert_eq!(
