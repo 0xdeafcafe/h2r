@@ -358,3 +358,81 @@ fn world_layers_gpu_mixed_w_depth_stencil_and_texaccum_match_d3d() {
     );
     assert_eq!(scene(&mut backend, true), baseline);
 }
+
+#[test]
+fn queued_world_draws_choose_native_or_d3d_in_order_without_waiting() {
+    let Ok(ctx) = GfxContext::headless() else {
+        return;
+    };
+    let mut backend = d3d::ThreadedBackend::new(GfxBackend::new(ctx)).unwrap();
+    let color = backend.create_surface(FORMAT, SIZE, SIZE, false).unwrap();
+    let depth = backend.create_surface(DEPTH, SIZE, SIZE, true).unwrap();
+    let cache = Arc::new(Cache::default());
+    let outcomes = Arc::new(Mutex::new(Vec::new()));
+    let mut render = |queued| {
+        backend
+            .clear(color, Some(depth), Clear::all([0.0, 0.0, 0.0, 1.0]))
+            .unwrap();
+        let waits = backend.waits().reads;
+        // The second draw overwrites the first and deliberately refuses native
+        // recording. The third writes separate pixels after that fallback.
+        for (i, (x, rgba)) in [
+            (2.0, [1.0, 0.0, 0.0, 1.0]),
+            (2.0, [0.0, 1.0, 0.0, 1.0]),
+            (18.0, [0.0, 0.0, 1.0, 1.0]),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut draw = triangle(x, rgba, 1, false);
+            draw.state.render.depth_func = CompareFunc::Always;
+            if queued {
+                let pass = IndexedPass::new(&draw, cache.clone(), 1, None).unwrap();
+                let results = outcomes.clone();
+                let candidate = d3d::backend::QueuedExternalDraw {
+                    surfaces: ExternalSurfaces {
+                        color,
+                        depth,
+                        sampled: vec![],
+                        slots: vec![],
+                        slot_sizes: vec![],
+                    },
+                    request: ExternalPassRequest {
+                        rect: (0, 0, SIZE, SIZE),
+                        surface_size: (SIZE, SIZE),
+                        z_scale: 16_777_215.0,
+                    },
+                    plan: ExternalPlan {
+                        stage: timeline::native::Stage::World,
+                        view: 0,
+                        ranges: if i == 1 { 2 } else { 1 },
+                        slots: vec![],
+                    },
+                    fallback: pass.resolved_fallback().unwrap(),
+                    fallback_depth: Some(depth),
+                    pass: Arc::new(Mutex::new(Box::new(pass))),
+                    finished: Box::new(move |fallback| {
+                        results.lock().unwrap().push((i, fallback.cloned()));
+                    }),
+                };
+                assert!(backend.queue_external_draw(candidate, [None; 4]));
+            } else {
+                assert_eq!(
+                    backend.draw(color, Some(depth), &draw, [None; 4]),
+                    Ok(DrawOutcome::Drawn)
+                );
+            }
+        }
+        assert_eq!(backend.waits().reads, waits);
+        backend
+            .with_surface(color, |b, s| b.read_color(s).map(|image| image.0))
+            .unwrap()
+    };
+    let baseline = render(false);
+    assert!(baseline.chunks_exact(4).any(|p| p[1] != 0));
+    assert_eq!(render(true), baseline);
+    assert_eq!(
+        *outcomes.lock().unwrap(),
+        [(0, None), (1, Some(Ok(DrawOutcome::Drawn))), (2, None)]
+    );
+}

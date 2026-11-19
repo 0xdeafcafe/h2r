@@ -75,6 +75,10 @@ pub(crate) fn install_census(rt: &runtime::Runtime, entries: &[(u32, &'static st
     });
 }
 
+pub(crate) fn observing_draw() -> bool {
+    ACTIVE.get().is_some()
+}
+
 /// Counts only calls that reach the backend draw path. A pushed packet
 /// flushed by a later ABI entry has no original return PC at this point.
 pub(crate) fn backend_draw(entry: &'static str) {

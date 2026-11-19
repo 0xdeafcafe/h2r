@@ -61,8 +61,8 @@ pub struct Dispatch<'a> {
 }
 
 pub trait Host: Send + Sync {
-    /// Confirm all target copies. Consume only the confirmed prefix on
-    /// this stack before publishing any draw to the worker.
+    /// Confirm all target copies before consuming the sorted prefix on
+    /// this stack. Compatible committed draws may share a backend run.
     fn submit(&self, mem: &mut dyn GuestMemory, dispatch: Dispatch<'_>, esi: &mut u32) -> bool;
     /// Before the guest constants or gel quad for this invocation.
     fn checkpoint_gel(&self, serial: u64);

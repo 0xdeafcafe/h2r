@@ -338,6 +338,13 @@ pub struct WalkStats {
     pub implementations: [u32; IMPLEMENTATIONS],
 }
 
+impl WalkStats {
+    /// Object records in this layer that did not reach native acceptance.
+    pub fn refused_ownership(&self) -> u32 {
+        self.object_records - self.accepted
+    }
+}
+
 /// What a render record draws.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecordOwner {
@@ -836,6 +843,20 @@ pub(crate) mod tests {
         restore(&mut m, &c);
         assert_eq!((0..5).map(|i| mask(&m, i)).collect::<Vec<_>>(), before);
         let _ = b;
+    }
+
+    #[test]
+    fn only_active_object_records_can_refuse_ownership() {
+        let (mut m, ..) = scene();
+        m.w(LIST + 4, 7);
+        item(&mut m, 5, 6, Some(lighting(8)), 0x10, 0b0010);
+        item(&mut m, 6, 7, None, 0x10, 0b1000);
+        m.w(ITEMS + 6 * ITEM_SIZE, 0);
+        let cleared = clear_objects(&mut m, 3, &|_, def, _| def == 0xe000_0100).unwrap();
+        assert_eq!(cleared.walk.walked, 7);
+        assert_eq!(cleared.walk.object_records, 4);
+        assert_eq!(cleared.walk.accepted, 2);
+        assert_eq!(cleared.walk.refused_ownership(), 2, "B and the dead owner");
     }
 
     #[test]

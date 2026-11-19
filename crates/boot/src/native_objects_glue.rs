@@ -40,7 +40,7 @@ use feature::native_objects::{Host, ItemMasks, NativeSet, SetPart};
 use map::{Map, ResourceFile, TagId};
 use native_render::camera::RenderCamera;
 use native_render::gpu::Image;
-use native_render::light_gpu::LayeredImage;
+use native_render::light_gpu::StaticLightTexture;
 use native_render::load;
 use native_render::model::Model;
 use native_render::model_gpu::GpuModels;
@@ -64,7 +64,7 @@ struct CpuModel {
     /// The parts drawn through the game's programs.
     lit: LitModelInput,
     /// The normalization cube the lit parts' programs may sample.
-    normalization: Option<Arc<LayeredImage>>,
+    normalization: Option<Arc<StaticLightTexture>>,
 }
 
 /// One map's models: queued, uploaded, and which definition is which.
@@ -470,7 +470,7 @@ struct Opened {
     lib: Option<Option<tags::material::ShaderLibrary>>,
     /// The vector normalization cube, loaded as the lights load it at the
     /// first lit model (`Some(None)`: it does not load).
-    normalization: Option<Option<Arc<LayeredImage>>>,
+    normalization: Option<Option<Arc<StaticLightTexture>>>,
     /// The game's stream formats (`None`: lit materials stay on D3D).
     formats: Option<StreamFormats>,
     /// What an object's draw samples for the lightmap (the globals'
@@ -675,7 +675,7 @@ fn lit_parts(o: &mut Opened, loaded: &model_load::LoadedModel, materials: &HashM
     // The normalization cube, as the lights load it (once per map).
     if o.normalization.is_none() {
         let cube = match o.lib.as_ref().and_then(Option::as_ref) {
-            Some(lib) => crate::native_lights_glue::light_textures(&mut o.map, lib.metadata(), &mut o.raw.0).0.map(Arc::new),
+            Some(lib) => crate::native_lights_glue::light_textures(&mut o.map, lib.metadata(), &mut o.raw.0).0,
             None => None,
         };
         o.normalization = Some(cube);
@@ -878,6 +878,7 @@ impl d3d::ExternalPass for ObjectsPass {
         lit.encode(
             t.device,
             t.queue,
+            t.uploads,
             &mut *t.encoder,
             t.color,
             t.color_format,

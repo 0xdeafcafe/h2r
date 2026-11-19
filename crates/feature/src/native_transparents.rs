@@ -144,6 +144,16 @@ thread_local! {
     static SCOPE: Cell<Scope> = Cell::new(Scope::default());
 }
 
+/// Without a sorted handler the indexed draw cannot use the transparent adapter.
+pub fn in_indexed_handler() -> bool {
+    SCOPE.with(|slot| {
+        let scope = slot.take();
+        let active = scope.handler.is_some();
+        slot.set(scope);
+        active
+    })
+}
+
 pub fn indexed_entry(mem: &dyn GuestRead, esp: u32) -> Option<(MapGeneration, Entry)> {
     SCOPE.with(|slot| {
         let scope = slot.take();

@@ -61,11 +61,8 @@ fn enabled() -> bool {
 static SINGLE_GPU: Mutex<Option<SharedGpu>> = Mutex::new(None);
 pub(crate) fn configure_single(backend: &mut d3d::GfxBackend) {
     if enabled() && !native_shadows::comparing() {
-        let gpu = native_shadows_draw::new(crate::d3d_glue::share_context(&backend.ctx));
-        *SINGLE_GPU.lock().unwrap_or_else(|e| e.into_inner()) = Some(gpu.clone());
-        backend.observe_submitted_frames(move || {
-            gpu.lock().unwrap_or_else(|e| e.into_inner()).presented()
-        });
+        let gpu = native_shadows_draw::for_backend(backend);
+        *SINGLE_GPU.lock().unwrap_or_else(|e| e.into_inner()) = Some(gpu);
     }
 }
 

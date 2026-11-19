@@ -201,7 +201,7 @@ fn the_world_draws_lit_with_the_games_w_depth() {
 }
 
 #[test]
-fn both_cameras_keep_their_uniforms_and_indirect_slots_at_both_scales_in_one_submit() {
+fn selected_and_indirect_world_draws_match_for_both_cameras_at_both_scales_in_one_submit() {
     use wgpu::{TextureFormat as F, TextureUsages as U};
     let Ok(ctx) = gfx::GfxContext::headless() else { return };
     let mut b = WorldBuilder::new();
@@ -214,7 +214,7 @@ fn both_cameras_keep_their_uniforms_and_indirect_slots_at_both_scales_in_one_sub
     let arena = gfx::ring::UploadPool::default().begin();
     let mut enc = ctx.device.create_command_encoder(&Default::default());
     let mut images = Vec::new();
-    for size in [SIZE, SIZE * 2] {
+    for (size, selected) in [(SIZE, false), (SIZE, true), (2 * SIZE, false), (2 * SIZE, true)] {
         let texture = |format| ctx.device.create_texture(&wgpu::TextureDescriptor {
             label: None, size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
             mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format,
@@ -241,19 +241,29 @@ fn both_cameras_keep_their_uniforms_and_indirect_slots_at_both_scales_in_one_sub
             let forward = if view == 0 { [1., 0., 0.] } else { [-1., 0., 0.] };
             let camera = RenderCamera { forward, ..camera() };
             let mut uploads = gfx::ring::EncoderUploads { device: &ctx.device, queue: &ctx.queue, arena: &arena, encoder: &mut enc };
-            assert_eq!(world.prepare(&mut uploads, &camera, DepthRule::D24).visible, 1);
             let half = size as f32 / 2.;
             let vp = PassViewport { x: view as f32 * half, y: 0., width: half, height: size as f32 };
-            world.encode(&ctx.device, &mut enc, &cv, F::Rgba8Unorm, &dv, F::Depth32Float, vp, (size, size));
+            if selected {
+                let selection = world.select_parts(&[(Owner::Cluster(view), 0); 2], &camera).unwrap();
+                assert!(world.prepare_selection(&ctx.device, F::Rgba8Unorm, F::Depth32Float, &selection));
+                assert!(world.write_selection(&mut uploads, &selection, None, &camera, DepthRule::D24));
+                assert_eq!(world.encode_selection(&mut enc, &cv, F::Rgba8Unorm, &dv, F::Depth32Float, vp, (size, size), &selection), 2);
+            } else {
+                assert_eq!(world.prepare(&mut uploads, &camera, DepthRule::D24).visible, 1);
+                world.encode(&ctx.device, &mut enc, &cv, F::Rgba8Unorm, &dv, F::Depth32Float, vp, (size, size));
+            }
         }
-        images.push(color);
+        images.push((color, depth));
     }
     arena.flush(&ctx.queue);
     ctx.queue.submit([enc.finish()]);
     ctx.queue.on_submitted_work_done(move || drop(arena));
-    for image in images {
-        let px = read(&ctx, &image, wgpu::TextureAspect::All);
-        let size = image.width() as usize;
+    for pair in images.chunks_exact(2) {
+        let (reference, selected) = (&pair[0], &pair[1]);
+        let px = read(&ctx, &reference.0, wgpu::TextureAspect::All);
+        assert_eq!(px, read(&ctx, &selected.0, wgpu::TextureAspect::All));
+        assert_eq!(read(&ctx, &reference.1, wgpu::TextureAspect::DepthOnly), read(&ctx, &selected.1, wgpu::TextureAspect::DepthOnly));
+        let size = reference.0.width() as usize;
         for (x, wanted) in [(size / 4, [255, 0, 0, 255]), (3 * size / 4, [0, 255, 0, 255])] {
             let i = 4 * (size / 2 * size + x);
             assert_eq!(&px[i..i + 4], &wanted, "centre of view at x={x} on {size}px copy");
