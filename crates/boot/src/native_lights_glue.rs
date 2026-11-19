@@ -345,12 +345,19 @@ fn select_parts(
     let mut selected = Vec::new();
     let mut kept = HashSet::new();
     for item in items {
-        let Some((_, draw)) = clusters.get(&item.part).filter(|(shader, _)| shader.0 == item.shader) else {
-            if split {
+        let part = match clusters.get(&item.part) {
+            Some((shader, draw)) if shader.0 == item.shader => Ok(draw),
+            Some(_) => Err("gathered shader datum differs from the cluster material"),
+            None if matches!(item.part.0, Owner::Instance(_)) => Err("gathered placement needs a rigid light program"),
+            None => Err("gathered cluster part has no native draw"),
+        };
+        let draw = match part {
+            Ok(draw) => draw,
+            Err(_) if split => {
                 kept.insert(item.shader as u16);
                 continue;
             }
-            return Err(Keep::Unsupported("gathered part or shader has no native cluster draw"));
+            Err(why) => return Err(Keep::Unsupported(why)),
         };
         for layer in [DIFFUSE_LAYER, SPECULAR_LAYER] {
             if item.layers & (1 << layer) != 0 {
@@ -1099,7 +1106,8 @@ mod tests {
         assert_eq!(select_parts(&clusters, &items, false).unwrap().0,
             vec![(DIFFUSE_LAYER, b), (DIFFUSE_LAYER, a), (SPECULAR_LAYER, b)]);
         items[1].shader ^= 1 << 24;
-        assert!(select_parts(&clusters, &items, false).is_err());
+        assert_eq!(select_parts(&clusters, &items, false).unwrap_err(),
+            Keep::Unsupported("gathered shader datum differs from the cluster material"));
         assert_eq!(select_parts(&clusters, &items, true).unwrap().1, HashSet::from([shader.0 as u16]));
     }
 
