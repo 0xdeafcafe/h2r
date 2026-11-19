@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Frame } from "../src/api/types";
-import { FrameBuffer, findFrame, interpolateFrames, lerpAngle, sampleFrames, sampleObjects, sampleVehicles } from "../src/state/frames";
+import { FrameBuffer, findFrame, interpolateFrames, lerpAngle, sampleActors, sampleFrames, sampleObjects, sampleVehicles } from "../src/state/frames";
 
 const f = (tick: number, players: Array<[number, number, number, boolean?, number?]>): Frame => ({
   game_id: "g", tick,
@@ -12,6 +12,23 @@ describe("interpolation", () => {
     const out = interpolateFrames(f(0, [[0, 0, 0]]), f(10, [[0, 10, -4]]), 5);
     expect(out[0]!.x).toBeCloseTo(5);
     expect(out[0]!.y).toBeCloseTo(-2);
+  });
+
+  test("irregular samples keep elapsed time and hold the last pose until a checkpoint cut", () => {
+    const fs = [f(2, [[0, 0, 0]]), f(9, [[0, 7, 0]]), { ...f(20, [[0, 10, 0]]), cut: 0 }];
+    expect(sampleFrames(fs, 5)[0]!.x).toBeCloseTo(3);
+    expect(sampleFrames(fs, 19.9)[0]!.x).toBe(7);
+    expect(sampleFrames(fs, 20)[0]!.x).toBe(10);
+  });
+
+  test("actor fire masks retain short shots across irregular samples", () => {
+    const actor = (tick: number, fire: number): Frame => ({
+      tick, game_id: "g", players: [],
+      actors: [{ id: "abcd", species: "elite", pos: [1, 2, 3], yaw: 0, fire }],
+    });
+    const fs = [actor(10, 1), actor(16, 1 << 3)];
+    expect(sampleActors(fs, 12)[0]!.fireTicks).toEqual([10]);
+    expect(sampleActors(fs, 13)[0]!.fireTicks).toEqual([10, 13]);
   });
 
   test("angles take the short way round", () => {

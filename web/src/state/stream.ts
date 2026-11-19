@@ -3,7 +3,7 @@
 // logic is testable without a socket.
 
 import type { StreamMessage, WireEvent, Frame } from "../api/types";
-import { FrameDecoder, PackError, records } from "../api/pack";
+import { FrameDecoder, PackError } from "../api/pack";
 
 export interface SocketLike {
   onopen: ((ev: unknown) => void) | null;
@@ -183,15 +183,7 @@ export class StreamClient {
 
   private handlePacked(bytes: Uint8Array) {
     try {
-      for (const record of records(bytes)) {
-        try {
-          this.h.onFrame(this.frames.decode(record).frame);
-        } catch (e) {
-          // A delta after a missed frame: the stream's next keyframe
-          // picks it up again.
-          if (!(e instanceof PackError && e.gap)) throw e;
-        }
-      }
+      this.frames.forEachRecord(bytes, (d) => this.h.onFrame(d.frame), true);
     } catch (e) {
       if (!(e instanceof PackError)) throw e;
       // A bad message: drop the rest of it.

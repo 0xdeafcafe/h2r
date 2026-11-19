@@ -10,7 +10,7 @@ const load = (name: string) => ({
 });
 
 describe("packed frames", () => {
-  for (const name of ["multiplayer", "campaign", "odd", "cinematic", "v1-multiplayer", "v2-multiplayer", "v3-multiplayer", "v4-multiplayer", "v4-cinematic"]) {
+  for (const name of ["multiplayer", "campaign", "odd", "cinematic", "v1-multiplayer", "v2-multiplayer", "v3-multiplayer", "v4-multiplayer", "v4-cinematic", "v6-multiplayer", "v6-campaign", "v6-odd", "v6-cinematic", "v7-multiplayer", "v7-campaign", "v7-odd", "v7-cinematic", "v7-motion"]) {
     test(`decodes the Rust encoder's ${name} stream exactly`, () => {
       const { bin, json } = load(name);
       const d = new FrameDecoder();
@@ -63,7 +63,7 @@ describe("packed frames", () => {
   });
 
   test("version 6: every frame carries the cinematic bit, so a cutscene is deltas", () => {
-    const recs = records(load("cinematic").bin);
+    const recs = records(load("v6-cinematic").bin);
     expect(recs.map((r) => r[0]! & 0xf)).toEqual([6, 6, 6, 6]);
     expect(recs.map((r) => (r[0]! >> 4) & 1)).toEqual([1, 0, 0, 0]);
     const d = new FrameDecoder();
@@ -72,14 +72,14 @@ describe("packed frames", () => {
 
   test("version 6 projectiles, items and vehicle velocity; version 4 frames have none", () => {
     const d = new FrameDecoder();
-    const odd = d.decode(records(load("odd").bin)[0]!).frame;
+    const odd = d.decode(records(load("v6-odd").bin)[0]!).frame;
     expect(odd.projectiles).toHaveLength(2);
     expect(odd.projectiles![0]!.parent).toBe("p15");
     expect(odd.projectiles![0]!.vel).toBeUndefined();
     expect(odd.projectiles![1]!.vel).toEqual([-99, 0.5, -0.015625]);
     expect(odd.items![0]!.equipment).toBe(true);
     const mp = new FrameDecoder();
-    const frames = records(load("multiplayer").bin).map((r) => mp.decode(r).frame);
+    const frames = records(load("v6-multiplayer").bin).map((r) => mp.decode(r).frame);
     expect(frames.every((f) => (f.items ?? []).length >= 4)).toBe(true);
     expect(frames[0]!.vehicles!.filter((v) => v.kind !== "chaingun").every((v) => v.vel !== undefined)).toBe(true);
     const v4 = new FrameDecoder();
@@ -87,7 +87,7 @@ describe("packed frames", () => {
     expect(old.every((f) => f.projectiles === undefined && f.items === undefined && (f.vehicles ?? []).every((v) => v.vel === undefined))).toBe(true);
     // A version 4 delta never follows on from a version 6 frame.
     const mixed = new FrameDecoder();
-    mixed.decode(records(load("multiplayer").bin)[0]!);
+    mixed.decode(records(load("v6-multiplayer").bin)[0]!);
     expect(() => mixed.decode(records(load("v4-multiplayer").bin)[1]!)).toThrow(PackError);
   });
 
@@ -104,6 +104,28 @@ describe("packed frames", () => {
     expect(() => d.decode(recs[3]!)).toThrow();
     expect(d.decode(recs[4]!).frame).toEqual(json[4]);
     expect(d.decode(recs[5]!).frame).toEqual(json[5]);
+  });
+
+  test("v7 shares unchanged vectors and seeks at the cut after an irregular gap", () => {
+    const { bin, json } = load("v7-motion");
+    const d = new FrameDecoder();
+    const sequence: ReturnType<typeof d.decode>[] = [];
+    d.forEachRecord(bin, f => sequence.push(f));
+    expect(sequence.map(f => f.frame.tick)).toEqual([0, 1, 3, 10, 42, 44, 45]);
+    expect(sequence.map(f => f.frame)).toEqual(json);
+    expect(sequence[1]!.frame.players[0]!.vel).toBe(sequence[0]!.frame.players[0]!.vel);
+    const seek = new FrameDecoder();
+    const rs = records(bin);
+    expect(seek.decode(rs[5]!).frame).toEqual(json[5]);
+    expect(seek.decode(rs[6]!).frame).toEqual(json[6]);
+  });
+
+  test("container reads cannot borrow bytes from the following record", () => {
+    const good = records(load("multiplayer").bin)[0]!;
+    const bad = new Uint8Array(3 + good.length);
+    bad.set([1, good[0]!, 0]);
+    bad.set(good, 3);
+    expect(() => new FrameDecoder().forEachRecord(bad, () => { throw new Error("unexpected record"); })).toThrow("ends early");
   });
 
   test("keyframes decode alone; deltas do not", () => {

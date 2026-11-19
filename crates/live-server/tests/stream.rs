@@ -1033,12 +1033,12 @@ async fn packed_frames_ingest_stream_and_record() {
         let cache = body.header("cache-control").map(str::to_owned);
         let mut bytes = Vec::new();
         std::io::Read::read_to_end(&mut body.into_reader(), &mut bytes).unwrap();
-        // The JSON frames read is gone.
-        let json_frames = match ureq::get(&format!("{base}/frames?format=json")).call() {
-            Err(ureq::Error::Status(code, _)) => code,
-            Ok(r) => r.status(),
-            Err(e) => panic!("{e}"),
-        };
+        let json_frames: Vec<live_proto::game::Frame> =
+            ureq::get(&format!("{base}/chunks/{from}?format=json"))
+                .call()
+                .unwrap()
+                .into_json()
+                .unwrap();
         (list, kind, cache, bytes, json_frames)
     })
     .await
@@ -1046,8 +1046,13 @@ async fn packed_frames_ingest_stream_and_record() {
     assert_eq!(list["items"][0]["from_tick"], from);
     assert_eq!(list["items"][0]["sha256"], index[0].sha256.as_str());
     assert_eq!(kind.as_deref(), Some("application/x-h2-chunk"));
-    assert_eq!(cache.as_deref(), Some("public, max-age=31536000, immutable"));
+    assert_eq!(
+        cache.as_deref(),
+        Some("public, max-age=31536000, immutable")
+    );
     let replay = live_proto::chunk::frames(&bytes).unwrap();
     assert_eq!(replay[0], first);
-    assert_eq!(json_frames, 400);
+    assert_eq!(bytes, live.frame_chunk(&game_id, from).await.unwrap());
+    assert_eq!(replay, json_frames);
+    assert!(index[0].versions.contains(&(live_proto::pack::VERSION as u8)));
 }

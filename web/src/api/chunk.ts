@@ -9,7 +9,7 @@
 // needs no change here, only in the frame decoder (pack.ts).
 
 import type { Frame } from "./types";
-import { FrameDecoder, PackError, records } from "./pack";
+import { FrameDecoder, PackError } from "./pack";
 
 /** A chunk's content type (`GET /v1/games/{id}/chunks/{tick}`). */
 export const CHUNK_TYPE = "application/x-h2-chunk";
@@ -107,8 +107,9 @@ export async function chunkContainer(bytes: Uint8Array, inflate: Inflate = infla
 
 /** Every frame in a chunk, in order. */
 export async function decodeChunk(bytes: Uint8Array, inflate: Inflate = inflateRaw): Promise<Frame[]> {
-  const d = new FrameDecoder();
-  return records(await chunkContainer(bytes, inflate)).map((r) => d.decode(r).frame);
+  const frames: Frame[] = [];
+  new FrameDecoder().forEachRecord(await chunkContainer(bytes, inflate), d => frames.push(d.frame));
+  return frames;
 }
 
 /** The chunk holding `tick` (the last that starts at or before it), or
