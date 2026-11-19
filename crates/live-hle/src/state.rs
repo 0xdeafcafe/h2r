@@ -380,8 +380,47 @@ impl State {
         self.invites.users_changed(&self.user_ids);
         Ok(())
     }
+    fn machine(&self) -> bool {
+        self.service.as_ref().is_some_and(|service| service.machine)
+    }
+
+    // Retail need not visit the controller sign-in screen on a playerless
+    // host. Queue machine logon before the first retail advertisement.
+    fn machine_logon(&mut self, m: &mut Guest) -> Result<u32> {
+        if self.logon.is_some() {
+            return Ok(OK);
+        }
+        let Some(handle) = self.storage.alloc(m, 8) else {
+            return Ok(OUT_OF_MEMORY);
+        };
+        let session = Session::new(handle);
+        let service = self.service.as_ref().expect("machine service");
+        let pending = match service.logon(&session, Vec::new()) {
+            Ok(pending) => pending,
+            Err(error) => return Ok(error),
+        };
+        m.set_u32(handle, 0)?;
+        self.tasks.insert(
+            handle,
+            Task::Logon {
+                users: Box::new([0; USERS_SIZE]),
+                pending: Some(pending),
+                session: Some(session),
+                status: 0,
+            },
+        );
+        self.logon = Some(handle);
+        Ok(OK)
+    }
+
+    fn machine_connected(&self) -> bool {
+        self.machine() && self.session().is_some_and(|s| s.status() == CONNECTED)
+    }
+
+    // Player services require a player logon. The machine logon only drives
+    // the retail session writer and its own logon task.
     fn connected(&self) -> bool {
-        matches!(
+        !self.machine() && matches!(
             self.logon.and_then(|h| self.tasks.get(&h)),
             Some(Task::Logon {
                 status: CONNECTED,
@@ -418,7 +457,9 @@ impl State {
                     self.publish_users(m, &users)?;
                     // The playlist screens filter by them (docs/game/bots.md
                     // §8.3): ask now, so the first list already has them.
-                    if let Err(e) = self.refresh_clanker_hoppers() {
+                    if !self.machine()
+                        && let Err(e) = self.refresh_clanker_hoppers()
+                    {
                         eprintln!("live: clankermatch: clanker hoppers not asked for: {e}");
                     }
                     CONNECTED
@@ -852,15 +893,22 @@ impl State {
     /// The session this console joined: a registered key (`keys`, from
     /// `XNetRegisterKey`) that is not one of its own advertisements.
     pub fn joined_session(&self, keys: &[[u8; 8]]) -> Option<String> {
+        if let Some((_, id)) = self.sessions.dedicated_match(keys) {
+            return Some(id);
+        }
         let own = self.sessions.own_ids();
         keys.iter()
             .find(|k| !own.contains(k))
             .map(|k| live_proto::sign::hex(k))
     }
-    /// The playlist and session (hex) of the game about to start: this
-    /// console's own advertisement, else the joined session as last read.
+    /// The playlist and session (hex) of the game about to start: the
+    /// registered dedicated match, this console's advertisement, or the
+    /// joined session as last read, in that order.
     /// No request is made.
     pub fn matchmade(&self, keys: &[[u8; 8]]) -> Option<(u32, String)> {
+        if let Some(dedicated) = self.sessions.dedicated_match(keys) {
+            return Some(dedicated);
+        }
         if let (Some(p), Some(id)) = (self.sessions.current_playlist(), self.sessions.current_id())
         {
             return Some((p, live_proto::sign::hex(&id)));
@@ -874,6 +922,18 @@ impl State {
             .unwrap_or_else(|e| e.into_inner());
         let p = live_proto::optimatch::playlist(&seen.get(&id)?.advertisement.attributes)?;
         Some((p, id))
+    }
+    pub fn matchmaking_status(&self) -> Option<&str> {
+        self.sessions.matchmaking_status()
+    }
+    pub fn frames_from_host(&self, session_id: &str) -> bool {
+        self.sessions.frames_from_host(session_id)
+    }
+    pub fn end_match_join(&mut self, id: [u8; 8]) -> bool {
+        self.sessions.end_match_join(id)
+    }
+    pub fn has_match_tunnel(&self) -> bool {
+        self.sessions.has_match_tunnel()
     }
     /// The Live session this console hosts (16 lowercase hex digits):
     /// the advertisement it made last, while it still stands.
@@ -966,6 +1026,25 @@ impl State {
             )
             .map_err(|code| format!("Live is busy ({code:#010x})"))
     }
+    pub fn bot_card(
+        &self,
+        xuid: live_proto::Xuid,
+        done: Box<dyn FnOnce(live_proto::bots::PlayerCard) + Send>,
+    ) {
+        if let (Some(service), Some(session)) = (&self.service, self.session()) {
+            let _ = service.bot_card(
+                &session,
+                xuid,
+                Box::new(move |r| {
+                    if let Ok(Reply::BotCard(card)) = r
+                        && card.xuid == xuid
+                    {
+                        done(card);
+                    }
+                }),
+            );
+        }
+    }
     /// A page of the mod repository ([`crate::Hle::mod_list`]).
     pub fn mod_list(
         &self,
@@ -1047,6 +1126,11 @@ impl State {
     pub fn set_map_probe(&mut self, probe: Option<crate::sessions::MapProbe>) {
         self.sessions.set_map_probe(probe);
     }
+    pub fn lobby_map_changed(&mut self, guest: &Guest) {
+        let connection = self.session();
+        self.sessions
+            .lobby_map_changed(guest, self.service.as_ref(), connection.as_ref());
+    }
     pub fn set_skulls_probe(&mut self, probe: Option<crate::sessions::SkullsProbe>) {
         self.sessions.set_skulls_probe(probe);
     }
@@ -1078,7 +1162,7 @@ impl State {
             .unwrap();
         self.teams.store.apply(&actor, action, &now)
     }
-    pub fn invoke(&mut self, op: Operation, a: &[u32], m: &mut Guest) -> Result<u32> {
+    pub fn invoke(&mut self, op: Operation, a: &[u32], m: &mut Guest, hle: &crate::Hle) -> Result<u32> {
         use Operation::*;
         if let Teams(op) = op {
             if self.online_refs == 0 {
@@ -1125,7 +1209,14 @@ impl State {
             if self.online_refs == 0 {
                 return Ok(NOT_INITIALIZED);
             }
-            if op.starts_task() && !self.connected() {
+            if self.machine() {
+                if matches!(op, crate::sessions::Op::Find | crate::sessions::Op::Search) {
+                    return Ok(NO_USER);
+                }
+                if op.starts_task() && self.logon.is_none() {
+                    return Ok(NO_SESSION);
+                }
+            } else if op.starts_task() && !self.connected() {
                 return Ok(NO_SESSION);
             }
             let session = self.session();
@@ -1135,6 +1226,7 @@ impl State {
                 a,
                 m,
                 crate::sessions::Context {
+                    hle,
                     storage: &mut self.storage,
                     host: crate::network::xnaddr(self.address),
                     users: &self.user_ids,
@@ -1470,6 +1562,12 @@ impl State {
                 if self.storage.ensure(m).is_err() {
                     return Ok(OUT_OF_MEMORY);
                 }
+                if self.machine() {
+                    let status = self.machine_logon(m)?;
+                    if status != OK {
+                        return Ok(status);
+                    }
+                }
                 self.online_refs = self.online_refs.saturating_add(1);
                 return Ok(OK);
             }
@@ -1507,11 +1605,29 @@ impl State {
             Logon => {
                 work_event(a[3])?;
                 writable(m, a[4], 4)?;
-                if self.logon.is_some() {
+                if !self.machine() && self.logon.is_some() {
                     return Ok(TASK_BUSY);
                 }
                 if a[2] > 16 {
                     return Ok(INVALID_ARGUMENT);
+                }
+                if self.machine() {
+                    if a[0] != 0
+                        && self
+                            .users(m, a[0])?
+                            .is_none_or(|users| users.iter().any(|b| *b != 0))
+                    {
+                        return Ok(INVALID_USER);
+                    }
+                    m.check(a[1], a[2] as usize * 4, Access::Read, 1)?;
+                    self.services = (0..a[2])
+                        .map(|i| m.u32(a[1] + i * 4))
+                        .collect::<std::result::Result<_, _>>()?;
+                    let status = self.machine_logon(m)?;
+                    if status == OK {
+                        m.set_u32(a[4], self.logon.expect("machine logon installed"))?;
+                    }
+                    return Ok(status);
                 }
                 let Some(users) = self.users(m, a[0])? else {
                     return Ok(INVALID_USER);
@@ -1612,7 +1728,7 @@ impl State {
                 if let Some(status) = self.teams.poll(a[0]) {
                     return Ok(status);
                 }
-                if let Some(status) = self.sessions.poll(a[0], m, &mut self.storage)? {
+                if let Some(status) = self.sessions.poll(a[0], m, &mut self.storage, hle)? {
                     return Ok(status);
                 }
                 if let Some(status) = self.outbox.poll(a[0]) {
@@ -1752,13 +1868,13 @@ impl State {
                 Ok(result)
             }
             LogonResults => self.poll_logon(a[0], m),
-            LogonUsers => Ok(if self.connected() {
+            LogonUsers => Ok(if self.connected() || self.machine_connected() {
                 self.storage.base.unwrap_or(0)
             } else {
                 0
             }),
             ServiceInfo => {
-                if !self.connected() {
+                if !self.connected() && !self.machine_connected() {
                     return Ok(NO_SESSION);
                 }
                 if !self.services.contains(&a[0]) {

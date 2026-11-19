@@ -3,7 +3,7 @@
 // real one rather than a pick derived from their XUID.
 
 import { createMemo, createRoot } from "solid-js";
-import type { Appearance } from "../lib/gameart";
+import { clankerAppearance, type Appearance } from "../lib/gameart";
 import { live } from "./live";
 
 const byXuid = createRoot(() =>
@@ -23,5 +23,7 @@ const byXuid = createRoot(() =>
 
 /** The player's latest known appearance, or null. */
 export function appearanceOf(xuid: string | null | undefined): Appearance | null {
-  return (xuid && byXuid().get(xuid)) || null;
+  if (!xuid) return null;
+  const account = live.state.accounts[xuid];
+  return account?.bot ? clankerAppearance(account.gamertag) : byXuid().get(xuid) ?? null;
 }

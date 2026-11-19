@@ -1,0 +1,4 @@
+# build.sh output: the staged Linux h2 and the module compiled from the
+# owner's disc (never commit either), and `h2 build`'s output directory.
+/stage/
+/image-out/

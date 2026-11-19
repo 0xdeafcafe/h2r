@@ -49,6 +49,16 @@ fn secret(info: &RecoveryInfo) -> TotpSecret {
 }
 
 async fn recover_with(h: &Harness, tag: &str, code: &str, device: &KeyPair) -> Resp {
+    recover_from(h, &[], tag, code, device).await
+}
+
+async fn recover_from(
+    h: &Harness,
+    headers: &[(&str, String)],
+    tag: &str,
+    code: &str,
+    device: &KeyPair,
+) -> Resp {
     let body = json!({
         "request": RecoverRequest::sign(device, tag, "live.test", now()),
         "code": code,
@@ -56,7 +66,7 @@ async fn recover_with(h: &Harness, tag: &str, code: &str, device: &KeyPair) -> R
     h.call(
         Method::POST,
         &format!("/v1/accounts/{tag}/recover"),
-        &[],
+        headers,
         body.to_string(),
     )
     .await
@@ -184,37 +194,77 @@ async fn codes_one_step_either_side_are_accepted() {
 }
 
 #[tokio::test]
-async fn wrong_codes_lock_the_gamertag_out() {
-    let h = start(
-        Arc::new(MemoryStore::new()),
-        Policy {
-            recover_lockout: (3, Duration::from_secs(600), Duration::from_secs(3600)),
-            ..Policy::default()
-        },
-    )
-    .await;
+async fn wrong_codes_lock_only_the_gamertag_and_client_ip_pair() {
+    let policy = Policy {
+        recover_lockout: (3, Duration::from_secs(600), Duration::from_secs(3600)),
+        ..Policy::default()
+    };
+    policy.public.set_edge("https://live.test");
+    let h = start(Arc::new(MemoryStore::new()), policy).await;
     let (_, keeper) = create(&h, "Keeper", None).await;
     let (_, other) = create(&h, "Other", None).await;
-    let good = format_code(secret(&keeper).code_at(now()));
-    let wrong = if good == "000-000" {
-        "111-111"
-    } else {
-        "000-000"
-    };
+    let attacker = [("cf-connecting-ip", "192.0.2.1".into())];
+    let owner = [("cf-connecting-ip", "192.0.2.2".into())];
+    let keeper_secret = secret(&keeper);
+    let at = now();
+    let wrong = (0..1_000_000)
+        .find(|&code| keeper_secret.verify(code, at).is_none())
+        .map(format_code)
+        .unwrap();
     for _ in 0..3 {
-        let r = recover_with(&h, "Keeper", wrong, &KeyPair::generate()).await;
-        assert_eq!(
-            (r.status, r.error().as_str()),
-            (StatusCode::FORBIDDEN, "forbidden")
-        );
+        let r = recover_from(&h, &attacker, "Keeper", &wrong, &KeyPair::generate()).await;
+        assert_eq!(r.status, StatusCode::FORBIDDEN);
     }
-    // Locked: even the right code waits.
-    let r = recover_with(&h, "Keeper", &good, &KeyPair::generate()).await;
-    assert_eq!(r.status, StatusCode::TOO_MANY_REQUESTS);
-    // Per gamertag.
+    let good = format_code(keeper_secret.code_at(now()));
+    assert_eq!(
+        recover_from(&h, &attacker, "keeper", &good, &KeyPair::generate())
+            .await
+            .status,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(
+        recover_from(&h, &owner, "Keeper", &good, &KeyPair::generate())
+            .await
+            .status,
+        StatusCode::CREATED
+    );
     let code = format_code(secret(&other).code_at(now()));
     assert_eq!(
-        recover_with(&h, "Other", &code, &KeyPair::generate())
+        recover_from(&h, &attacker, "Other", &code, &KeyPair::generate())
+            .await
+            .status,
+        StatusCode::CREATED
+    );
+}
+
+#[tokio::test]
+async fn recovery_request_budget_is_per_ip_and_independent_of_signup() {
+    let policy = Policy {
+        create_rate: (0.0, 1),
+        recover_rate: (0.0, 1),
+        ..Policy::default()
+    };
+    policy.public.set_edge("https://live.test");
+    let h = start(Arc::new(MemoryStore::new()), policy).await;
+    let attacker = [("cf-connecting-ip", "192.0.2.1".into())];
+    let owner = [("cf-connecting-ip", "192.0.2.2".into())];
+    let device = KeyPair::generate();
+    assert_eq!(
+        recover_from(&h, &attacker, "Nobody", "123456", &device)
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        recover_from(&h, &attacker, "Other", "123456", &device)
+            .await
+            .status,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    let (_, keeper) = create(&h, "Keeper", None).await;
+    let code = format_code(secret(&keeper).code_at(now()));
+    assert_eq!(
+        recover_from(&h, &owner, "Keeper", &code, &device)
             .await
             .status,
         StatusCode::CREATED

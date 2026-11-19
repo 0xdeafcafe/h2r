@@ -84,19 +84,20 @@ const fn text(rect: [i16; 4], colour: [f32; 3]) -> TextBlock {
 }
 
 /// The mod's own words: the lobby's status text (`[135 -258 61 45]`,
-/// pale blue), two units lower at the bottom so four lines of conduit-12
-/// (19 each) fit.
-pub const BODY: TextBlock = text([135, -258, 59, 45], PALE_BLUE);
+/// pale blue), with room for three lines above the action hint.
+pub const BODY: TextBlock = text([135, -258, 78, 45], PALE_BLUE);
 /// What the action does now (the focused row's description, set by the
 /// class): one line under the body, on the lobby panel where its "open"
 /// line is, in the Live menu's hint blue.
-pub const STATUS: TextBlock = text([55, -258, 36, 45], HINT_BLUE);
+pub const STATUS: TextBlock = text([75, -258, 56, 45], HINT_BLUE);
 
 /// The table column: the lobby's player rows, 22 apart from the top one
 /// `[177 118 157 276]`, its names white and left (bias 6) and its values
-/// pale blue and right (bias 5). Right edge 272, the title-safe area's
+/// pale blue and right (bias 5). Widened left into the gutter so each
+/// cell has its own box. Right edge 272, the title-safe area's
 /// (the lobby's runs to 276 and 279).
-pub const TABLE_LEFT: i16 = 118;
+pub const TABLE_LEFT: i16 = 76;
+pub const VALUE_LEFT: i16 = 163;
 pub const TABLE_RIGHT: i16 = 272;
 pub const TABLE_TOP: i16 = 177;
 pub const ROW_STEP: i16 = 22;
@@ -145,18 +146,20 @@ pub fn panel_text(i: usize) -> PanelText {
     }
     if i < CHECK_HEADING {
         let k = (i - 1) / 2;
+        let [top, l, bottom, r] = row_rect(k);
         return if i == fact_label(k) {
-            left(row_rect(k), WHITE, LABEL_BIAS)
+            left([top, l, bottom, VALUE_LEFT - 5], WHITE, LABEL_BIAS)
         } else {
             PanelText {
-                block: text(row_rect(k), PALE_BLUE),
+                block: text([top, VALUE_LEFT, bottom, r], PALE_BLUE),
                 right: true,
                 bias: TEXT_BIAS,
             }
         };
     }
     if i == CHECK_HEADING {
-        return left(row_rect(FACT_ROWS), WHITE, LABEL_BIAS);
+        let [top, _, bottom, right] = row_rect(FACT_ROWS);
+        return left([top, CHECK_LEFT, bottom, right], WHITE, LABEL_BIAS);
     }
     let cell = i - CHECK_HEADING - 1;
     let (row, column) = (cell / 2, cell % 2);

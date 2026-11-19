@@ -189,7 +189,7 @@ impl<B: Backend> Device<B> {
             matches!(t.format, D3DFormat::D24S8 | D3DFormat::LinD24S8)
                 && self.backend.can_sample_depth_surfaces()
         } else {
-            gfx::guest_words::WordFormat::of(t.format).is_some()
+            gfx::format::WordFormat::of(t.format).is_some()
         };
         aligned && format
     }

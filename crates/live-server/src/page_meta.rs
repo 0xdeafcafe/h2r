@@ -198,6 +198,7 @@ fn stats_page<'a>(s: &'a [&'a str]) -> Option<&'a [&'a str]> {
 pub enum Subject {
     Player(String),
     Game(String),
+    Clip { game: String, id: String },
     Clan(String),
 }
 
@@ -215,8 +216,12 @@ pub fn subject(path: &str) -> Option<Subject> {
             _ => None,
         };
     }
-    // The oldest links, which the app redirects into the stats site.
     match s.as_slice() {
+        ["theater", game, "clip", id] => Some(Subject::Clip {
+            game: game.to_string(),
+            id: id.to_string(),
+        }),
+        // The oldest links, which the app redirects into the stats site.
         ["players", tag, ..] => Some(Subject::Player(tag.to_string())),
         ["games", id, ..] => Some(Subject::Game(id.to_string())),
         ["dash", "clans", id, ..] => Some(Subject::Clan(id.to_string())),
@@ -231,7 +236,7 @@ pub fn is_page(path: &str) -> bool {
     let first = path.trim_start_matches('/').split('/').next().unwrap_or("");
     matches!(
         first,
-        "" | "dash" | "stats" | "players" | "games" | "events" | "signin"
+        "" | "dash" | "stats" | "players" | "games" | "events" | "signin" | "theater"
     )
 }
 
@@ -287,6 +292,14 @@ pub fn describe_static(path: &str) -> PageMeta {
         ["games", ..] => stats(Some("Game"), STATS),
         ["players", ..] => stats(Some("Service Record"), STATS),
         ["events"] => stats(Some("Event Log"), "The service's signed public event log."),
+        ["theater", _, "clip", _] => stats(
+            Some("Theater Clip"),
+            "Watch a shared clip from a recorded h2recomp game.",
+        ),
+        ["theater", ..] => stats(
+            Some("Theater"),
+            "Watch a recorded h2recomp game and follow the players in 3D.",
+        ),
         _ => dash(None, DASH),
     }
 }
@@ -317,6 +330,9 @@ pub fn describe(live: &Live, path: &str) -> PageMeta {
     match subject(path) {
         Some(Subject::Player(tag)) => base = player(live, &tag).unwrap_or(base),
         Some(Subject::Game(id)) => base = game(live, &id).unwrap_or(base),
+        Some(Subject::Clip { game, id }) => {
+            base = theater_clip(live, &game, &id).unwrap_or(base);
+        }
         Some(Subject::Clan(id)) => base = clan(live, &id, base.side).unwrap_or(base),
         None => {}
     }
@@ -504,6 +520,25 @@ fn game(live: &Live, id: &str) -> Option<PageMeta> {
     })
 }
 
+fn theater_clip(live: &Live, game_id: &str, clip_id: &str) -> Option<PageMeta> {
+    let (title, seconds) = {
+        let model = live.model.read();
+        let clip = crate::films::visible_clip(&model, clip_id, Viewer::Anonymous)?;
+        if clip.game != game_id {
+            return None;
+        }
+        (clip.title.clone(), clip.duration_s())
+    };
+    let game_title = game(live, game_id)?.page?;
+    Some(PageMeta {
+        page: Some(title),
+        description: format!("A {seconds}-second Theater clip from {game_title}."),
+        side: Side::Stats,
+        kind: website(),
+        header: None,
+    })
+}
+
 /// A retail map's stem as a title ("burial_mounds" -> "Burial Mounds").
 /// The real names are in the owner's game art, not here.
 fn map_title(stem: &str) -> String {
@@ -639,10 +674,14 @@ pub fn inject(html: &str, tags: &str) -> String {
     html.to_string()
 }
 
-/// The page's HTML: `index` with the tags for `meta`.
+/// The page's HTML with its link preview and, when supplied, game header.
 pub fn page_html(index: &str, meta: &PageMeta, origin: &str, path: &str) -> String {
     let names = Names::from_html(index);
-    inject(index, &render(meta, &names, origin, path))
+    let html = inject(index, &render(meta, &names, origin, path));
+    match &meta.header {
+        Some(header) => crate::page_header::inject(&html, header),
+        None => html,
+    }
 }
 
 /// Where the server is reached from outside, for absolute URLs: the
@@ -746,6 +785,8 @@ mod tests {
             "/stats/games/x",
             "/players/x",
             "/signin",
+            "/theater/abc",
+            "/theater/abc/clip/xyz",
         ] {
             assert!(is_page(page), "{page}");
         }
@@ -780,6 +821,11 @@ mod tests {
         assert_eq!((m.page.as_deref(), m.side), (Some("Event Log"), Side::Stats));
         let m = describe_static("/games");
         assert_eq!((m.page, m.side), (None, Side::Stats));
+        let m = describe_static("/theater/abc/clip/xyz");
+        assert_eq!(
+            (m.page.as_deref(), m.side),
+            (Some("Theater Clip"), Side::Stats)
+        );
     }
 
     #[test]

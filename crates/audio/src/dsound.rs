@@ -184,6 +184,7 @@ macro_rules! voice_setters {
 pub struct SoundBuffer {
     pub(crate) format: WaveFormat,
     pub(crate) data: Vec<u8>,
+    pub(crate) size_bytes: usize,
     pub(crate) decoded: Vec<f32>,
     pub(crate) frames: usize,
     pub(crate) params: VoiceParams,
@@ -212,8 +213,14 @@ impl SoundBuffer {
     /// Creates a buffer that owns `data`.
     pub fn from_data(format: WaveFormat, data: Vec<u8>) -> Result<Self, AudioError> {
         let decoded = format.decode(&data)?;
-        Ok(Self {
-            frames: format.frames_in(data.len()),
+        let size_bytes = data.len();
+        Ok(Self::with_data(format, size_bytes, data, decoded))
+    }
+
+    fn with_data(format: WaveFormat, size_bytes: usize, data: Vec<u8>, decoded: Vec<f32>) -> Self {
+        Self {
+            size_bytes,
+            frames: format.frames_in(size_bytes),
             params: VoiceParams::new(&format),
             format,
             data,
@@ -223,14 +230,28 @@ impl SoundBuffer {
             loop_region: None,
             pos: 0.0,
             fx_state: FxState::default(),
-        })
+        }
+    }
+
+    /// A buffer with the same cursor and playback state but no sample storage.
+    /// Must be advanced with the mixer's clock-only path.
+    pub fn for_clock(format: WaveFormat, size_bytes: usize) -> Result<Self, AudioError> {
+        let align = format.block_align();
+        if !size_bytes.is_multiple_of(align) {
+            return Err(AudioError::BadLength {
+                len: size_bytes,
+                unit: align,
+                what: "frame or block",
+            });
+        }
+        Ok(Self::with_data(format, size_bytes, Vec::new(), Vec::new()))
     }
 
     pub fn format(&self) -> &WaveFormat {
         &self.format
     }
     pub fn size_bytes(&self) -> usize {
-        self.data.len()
+        self.size_bytes
     }
     pub fn frames(&self) -> usize {
         self.frames
@@ -346,6 +367,20 @@ impl SoundBuffer {
 
     /// Mixes into `out` (interleaved stereo), advancing the cursor.
     pub(crate) fn render(&mut self, out: &mut [f32], host_rate: u32, gain: (f32, f32)) {
+        self.play_frames(out.len() / 2, Some(out), host_rate, gain);
+    }
+
+    pub(crate) fn advance_clock(&mut self, frames: usize, host_rate: u32) {
+        self.play_frames(frames, None, host_rate, (0.0, 0.0));
+    }
+
+    fn play_frames(
+        &mut self,
+        frames: usize,
+        out: Option<&mut [f32]>,
+        host_rate: u32,
+        gain: (f32, f32),
+    ) {
         if !self.playing {
             return;
         }
@@ -374,14 +409,17 @@ impl SoundBuffer {
                 [self.decoded[i * 2], self.decoded[i * 2 + 1]]
             }
         };
-        for frame in out.as_chunks_mut::<2>().0 {
+        let mut output = out.map(|out| out.as_chunks_mut::<2>().0.iter_mut());
+        for _ in 0..frames {
             let step = base_step * self.fx_state.pitch_mult(&self.params.fx, host_rate);
-            let i = self.pos.floor() as usize;
-            let t = (self.pos - i as f64) as f32;
-            let a = fetch(i, self.looping);
-            let b = fetch(i + 1, self.looping);
-            frame[0] += (a[0] + (b[0] - a[0]) * t) * gain.0;
-            frame[1] += (a[1] + (b[1] - a[1]) * t) * gain.1;
+            if let Some(frame) = output.as_mut().and_then(Iterator::next) {
+                let i = self.pos.floor() as usize;
+                let t = (self.pos - i as f64) as f32;
+                let a = fetch(i, self.looping);
+                let b = fetch(i + 1, self.looping);
+                frame[0] += (a[0] + (b[0] - a[0]) * t) * gain.0;
+                frame[1] += (a[1] + (b[1] - a[1]) * t) * gain.1;
+            }
             self.fx_state.clock += 1;
             self.pos += step;
             if self.pos >= end as f64 {
@@ -512,6 +550,7 @@ pub struct PacketId(pub u64);
 pub(crate) struct Packet {
     pub(crate) id: PacketId,
     pub(crate) frames: Vec<f32>,
+    pub(crate) frame_count: usize,
 }
 
 /// An `IDirectSoundStream` / XMO-style packet stream.
@@ -541,18 +580,27 @@ pub struct Stream {
 
 impl Stream {
     pub fn new(format: WaveFormat) -> Result<Self, AudioError> {
-        Ok(Self {
+        Ok(Self::with_history(format, HISTORY_FRAMES + 1))
+    }
+
+    /// A stream that tracks packet timing without retaining sample history.
+    pub fn for_clock(format: WaveFormat) -> Self {
+        Self::with_history(format, 0)
+    }
+
+    fn with_history(format: WaveFormat, capacity: usize) -> Self {
+        Self {
             params: VoiceParams::new(&format),
             format,
             queue: VecDeque::new(),
-            history: VecDeque::with_capacity(HISTORY_FRAMES + 1),
+            history: VecDeque::with_capacity(capacity),
             pos: 0.0,
             paused: false,
             next_id: 1,
             completed: Vec::new(),
             fx_state: FxState::default(),
             dry_at: None,
-        })
+        }
     }
 
     voice_setters!();
@@ -564,14 +612,35 @@ impl Stream {
     /// Queues a packet of raw bytes in the stream's format.
     pub fn submit(&mut self, data: &[u8]) -> Result<PacketId, AudioError> {
         let frames = self.format.decode(data)?;
+        Ok(self.queue_packet(self.format.frames_in(data.len()), frames))
+    }
+
+    /// Queues only a packet's duration for clock-only playback.
+    pub fn submit_for_clock(&mut self, size: usize) -> Result<PacketId, AudioError> {
+        let align = self.format.block_align();
+        if !size.is_multiple_of(align) {
+            return Err(AudioError::BadLength {
+                len: size,
+                unit: align,
+                what: "frame or block",
+            });
+        }
+        Ok(self.queue_packet(self.format.frames_in(size), Vec::new()))
+    }
+
+    fn queue_packet(&mut self, frame_count: usize, frames: Vec<f32>) -> PacketId {
         let id = PacketId(self.next_id);
         self.next_id += 1;
-        if frames.is_empty() {
+        if frame_count == 0 {
             self.completed.push((id, PacketStatus::Success));
         } else {
-            self.queue.push_back(Packet { id, frames });
+            self.queue.push_back(Packet {
+                id,
+                frames,
+                frame_count,
+            });
         }
-        Ok(id)
+        id
     }
 
     /// Pauses or resumes consumption.
@@ -664,70 +733,89 @@ impl Stream {
     }
 
     pub(crate) fn render(&mut self, out: &mut [f32], host_rate: u32, gain: (f32, f32)) {
+        self.play_frames(out.len() / 2, Some(out), host_rate, gain);
+    }
+
+    pub(crate) fn advance_clock(&mut self, frames: usize, host_rate: u32) {
+        self.play_frames(frames, None, host_rate, (0.0, 0.0));
+    }
+
+    fn play_frames(
+        &mut self,
+        frames: usize,
+        out: Option<&mut [f32]>,
+        host_rate: u32,
+        gain: (f32, f32),
+    ) {
         if self.paused {
             return;
         }
         let base_step = self.params.frequency as f64 / host_rate as f64;
         let ch = self.format.channels() as usize;
-        for frame in out.as_chunks_mut::<2>().0 {
+        let keep_samples = out.is_some();
+        let mut output = out.map(|out| out.as_chunks_mut::<2>().0.iter_mut());
+        for _ in 0..frames {
             if self.queue.is_empty() {
                 break;
             }
-            // Pitch modulation (LFO, Doppler) never changes how fast packets
-            // are consumed: `pos` advances at the nominal rate, so packets
-            // complete exactly when they would without effects. The
-            // modulation moves only the read position, by an offset that
-            // accumulates `(ratio - 1)` per frame and is bounded.
-            let m = self.fx_state.pitch_mult(&self.params.fx, host_rate);
-            let off = self.fx_state.phase_off;
-            let step = base_step;
-            let (a, b, t) = if m == 1.0 && off == 0.0 {
-                let i = self.pos.floor() as usize;
-                let t = (self.pos - i as f64) as f32;
-                let a = self.frame(0, i).unwrap_or([0.0; 2]);
-                // Interpolate toward the next packet's first frame at a
-                // boundary so packet joins are seamless.
-                let b = self
-                    .frame(0, i + 1)
-                    .or_else(|| self.frame(1, 0))
-                    .unwrap_or(a);
-                (a, b, t)
-            } else {
-                let p = self.pos + off;
-                let i = p.floor() as i64;
-                (
-                    self.frame_rel(i),
-                    self.frame_rel(i + 1),
-                    (p - i as f64) as f32,
-                )
-            };
-            if m != 1.0 {
-                self.fx_state.phase_off =
-                    (off + (m - 1.0) * base_step).clamp(-MAX_PHASE_OFFSET, MAX_PHASE_OFFSET);
+            if let Some(frame) = output.as_mut().and_then(Iterator::next) {
+                // Pitch modulation (LFO, Doppler) never changes how fast packets
+                // are consumed: `pos` advances at the nominal rate, so packets
+                // complete exactly when they would without effects. The
+                // modulation moves only the read position, by an offset that
+                // accumulates `(ratio - 1)` per frame and is bounded.
+                let m = self.fx_state.pitch_mult(&self.params.fx, host_rate);
+                let off = self.fx_state.phase_off;
+                let (a, b, t) = if m == 1.0 && off == 0.0 {
+                    let i = self.pos.floor() as usize;
+                    let t = (self.pos - i as f64) as f32;
+                    let a = self.frame(0, i).unwrap_or([0.0; 2]);
+                    // Interpolate toward the next packet's first frame at a
+                    // boundary so packet joins are seamless.
+                    let b = self
+                        .frame(0, i + 1)
+                        .or_else(|| self.frame(1, 0))
+                        .unwrap_or(a);
+                    (a, b, t)
+                } else {
+                    let p = self.pos + off;
+                    let i = p.floor() as i64;
+                    (
+                        self.frame_rel(i),
+                        self.frame_rel(i + 1),
+                        (p - i as f64) as f32,
+                    )
+                };
+                if m != 1.0 {
+                    self.fx_state.phase_off =
+                        (off + (m - 1.0) * base_step).clamp(-MAX_PHASE_OFFSET, MAX_PHASE_OFFSET);
+                }
+                frame[0] += (a[0] + (b[0] - a[0]) * t) * gain.0;
+                frame[1] += (a[1] + (b[1] - a[1]) * t) * gain.1;
             }
-            frame[0] += (a[0] + (b[0] - a[0]) * t) * gain.0;
-            frame[1] += (a[1] + (b[1] - a[1]) * t) * gain.1;
             self.fx_state.clock += 1;
-            self.pos += step;
+            self.pos += base_step;
             // Consume every packet boundary crossed (downsampling can cross
             // several per output frame), keeping the fractional position.
             while let Some(front) = self.queue.front() {
-                let n = front.frames.len() / ch;
+                let n = front.frame_count;
                 if self.pos < n as f64 {
                     break;
                 }
                 self.pos -= n as f64;
                 let done = self.queue.pop_front().expect("front exists");
-                let first = n.saturating_sub(HISTORY_FRAMES);
-                for k in first..n {
-                    if self.history.len() >= HISTORY_FRAMES {
-                        self.history.pop_front();
+                if keep_samples {
+                    let first = n.saturating_sub(HISTORY_FRAMES);
+                    for k in first..n {
+                        if self.history.len() >= HISTORY_FRAMES {
+                            self.history.pop_front();
+                        }
+                        self.history.push_back(if ch == 1 {
+                            [done.frames[k]; 2]
+                        } else {
+                            [done.frames[k * 2], done.frames[k * 2 + 1]]
+                        });
                     }
-                    self.history.push_back(if ch == 1 {
-                        [done.frames[k]; 2]
-                    } else {
-                        [done.frames[k * 2], done.frames[k * 2 + 1]]
-                    });
                 }
                 self.completed.push((done.id, PacketStatus::Success));
             }
@@ -1111,6 +1199,31 @@ fn cone_gain(src: &Source3d, rel: Vec3) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clock_only_buffers_match_rendered_cursors() {
+        let fmt = WaveFormat::pcm16(1, 44_100).unwrap();
+        let bytes = 2000;
+        for looping in [false, true] {
+            let mut rendered = SoundBuffer::new(fmt, bytes).unwrap();
+            let mut clock = SoundBuffer::for_clock(fmt, bytes).unwrap();
+            assert_eq!(clock.size_bytes(), rendered.size_bytes());
+            assert!(clock.bytes().is_empty());
+            for voice in [&mut rendered, &mut clock] {
+                voice.set_loop_region(13, 767).unwrap();
+                voice.set_current_position(26);
+                voice.set_doppler_pitch(1.07);
+                voice.play(looping);
+            }
+            for frames in [32, 256, 512, 256, 128] {
+                rendered.render(&mut vec![0.0; frames * 2], 48_000, (1.0, 1.0));
+                clock.advance_clock(frames, 48_000);
+                assert_eq!(clock.position_frames(), rendered.position_frames());
+                assert_eq!(clock.current_position(), rendered.current_position());
+                assert_eq!(clock.is_playing(), rendered.is_playing());
+            }
+        }
+    }
 
     fn mono16(samples: &[i16]) -> Vec<u8> {
         samples.iter().flat_map(|s| s.to_le_bytes()).collect()

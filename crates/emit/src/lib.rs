@@ -341,6 +341,17 @@ pub fn write_module(owners: &[Owner], dir: &Path) -> io::Result<WriteReport> {
 
 /// Emit every owner into `dir`.
 pub fn write_module_with(owners: &[Owner], dir: &Path, codegen: Codegen) -> io::Result<WriteReport> {
+    write_module_with_hot(owners, dir, codegen, None)
+}
+
+/// Keep all entry and resume records. Owners outside an audited allowlist
+/// are replaced by a faulting ABI body rather than leaving stale pointers.
+pub fn write_module_with_hot(
+    owners: &[Owner],
+    dir: &Path,
+    codegen: Codegen,
+    hot: Option<&BTreeSet<u32>>,
+) -> io::Result<WriteReport> {
     std::fs::create_dir_all(dir)?;
     // Defined ahead of the header in every generated file, so all of a
     // module's objects agree.
@@ -364,6 +375,9 @@ pub fn write_module_with(owners: &[Owner], dir: &Path, codegen: Codegen) -> io::
     // core, then lay it out in owner order as before.
     let functions: BTreeSet<u32> = owners.iter().map(|o| o.func.entry).collect();
     let texts = par::map(owners, |o| {
+        if hot.is_some_and(|hot| !hot.contains(&o.func.entry)) {
+            return cold_owner(o.func.entry);
+        }
         let shape = c::OwnerShape {
             selectors: &o.selectors,
             loops: &o.loops,
@@ -419,6 +433,19 @@ pub fn write_module_with(owners: &[Owner], dir: &Path, codegen: Codegen) -> io::
     }
     write_if_changed(&dir.join("manifest.tsv"), &manifest)?;
     Ok(report)
+}
+
+/// Code 15 is diagnosed by boot's shim. It is a fault, so the interpreter's
+/// STOP recovery cannot turn a coverage miss into a plausible match.
+fn cold_owner(owner: u32) -> String {
+    format!(
+        "TransferAbi {}(CpuAbi *cpu, ExecCtxOpaque *ctx, uint32_t start) {{\n\
+             cpu->eip = start;\n\
+             uint32_t event = h2shim_v1_event(ctx, start, start, 15u, {owner:#x}u);\n\
+             return (TransferAbi){{H2_ABI_VERSION, sizeof(TransferAbi), H2_FAULT, H2_ENTRY, 0u, 0u, event}};\n\
+         }}\n",
+        c::symbol(owner),
+    )
 }
 
 /// The registration object: ABI version export and the entry/resume tables.

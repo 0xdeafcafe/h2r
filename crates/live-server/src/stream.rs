@@ -43,6 +43,8 @@ pub struct StreamFilter {
     /// `?frames=packed`: live frames as packed binary messages
     /// (docs/live/live-telemetry.md, Packed frames); JSON otherwise.
     pub packed: bool,
+    #[serde(default)]
+    pub v8: bool,
     /// `?auth=1`: the first message is a `read` token, on a public server
     /// too, so the reader sees what that account may (a private server
     /// always asks for one).
@@ -88,6 +90,11 @@ impl StreamFilter {
                 None | Some("") | Some("json") => false,
                 Some("packed") => true,
                 Some(_) => return Err(invalid("frames must be json or packed")),
+            },
+            v8: match p.get("frame_version").map(String::as_str) {
+                None | Some("7") => false,
+                Some("8") => true,
+                Some(_) => return Err(invalid("frame_version must be 7 or 8")),
             },
             auth: matches!(p.get("auth").map(String::as_str), Some("1" | "true")),
         })
@@ -150,6 +157,17 @@ pub struct StreamSession {
     /// is due) and caught up.
     last: Option<u64>,
     follow: Follow,
+    registered: bool,
+}
+
+impl Drop for StreamSession {
+    fn drop(&mut self) {
+        if self.registered {
+            self.live
+                .packed()
+                .reader(&self.filter.games, self.filter.v8, false);
+        }
+    }
 }
 
 impl StreamSession {
@@ -163,6 +181,7 @@ impl StreamSession {
             expires: None,
             last: None,
             follow: Follow::default(),
+            registered: false,
         }
     }
 
@@ -351,6 +370,13 @@ impl StreamSession {
         if !self.is_open() || !self.filter.packed {
             return None;
         }
+        if tick
+            .games
+            .first()
+            .is_none_or(|b| (b.version == 8) != self.filter.v8)
+        {
+            return None;
+        }
         let ids = tick.games.iter().map(|b| b.game_id.as_str());
         let shown: Vec<bool> = self
             .live
@@ -364,7 +390,11 @@ impl StreamSession {
 
     /// One game's packed batch, for a packed reader of that game.
     pub fn on_game_batch(&mut self, b: &GameBatch) -> Option<Out> {
-        if !self.is_open() || !self.filter.packed || !self.filter.shows_game(&b.game_id) {
+        if !self.is_open()
+            || !self.filter.packed
+            || (b.version == 8) != self.filter.v8
+            || !self.filter.shows_game(&b.game_id)
+        {
             return None;
         }
         if self.live.games_show([b.game_id.as_str()], self.viewer)[0] {
@@ -381,12 +411,20 @@ impl StreamSession {
         if !self.is_open() || !self.filter.packed {
             return None;
         }
-        let mut out = Vec::new();
-        for f in self.live.frames_since_keyframe(&self.filter.games) {
-            if self.filter.shows_game(&f.frame.game_id) && self.live.frame_shows(&f, self.viewer) {
-                self.follow.take_frame(&f, &mut out);
-            }
+        if !self.registered {
+            self.live
+                .packed()
+                .reader(&self.filter.games, self.filter.v8, true);
+            self.registered = true;
         }
+        let mut out = Vec::new();
+        self.live.join_packed(
+            &self.filter.games,
+            self.filter.v8,
+            self.viewer,
+            &mut self.follow,
+            &mut out,
+        );
         (!out.is_empty()).then(|| Out::Binary(out.into()))
     }
 }
@@ -453,7 +491,13 @@ mod tests {
         assert_eq!(f.types, ["a", "b"]);
         assert_eq!(f.exclude, ["c"]);
         assert_eq!(f.games, ["g1"]);
-        assert!(f.packed && f.auth);
+        assert!(f.packed && f.auth && !f.v8);
+        let v8 = StreamFilter::from_params(&params(&[("frames", "packed"), ("frame_version", "8")])).unwrap();
+        assert!(v8.packed && v8.v8);
+        let mut attachment = serde_json::to_value(&f).unwrap();
+        attachment.as_object_mut().unwrap().remove("v8");
+        assert_eq!(serde_json::from_value::<StreamFilter>(attachment).unwrap(), f);
+        assert!(StreamFilter::from_params(&params(&[("frame_version", "9")])).is_err());
         assert_eq!(
             StreamFilter::from_params(&params(&[])).unwrap(),
             StreamFilter::default()

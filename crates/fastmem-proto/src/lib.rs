@@ -3,7 +3,8 @@
 //! See docs/perf/fastmem-proto.md for the design choices, the measured costs and what the
 //! fastmem design has to carry over.
 //!
-//! Everything is gated to macOS arm64; on other targets the crate is empty.
+//! The library's Mach server is macOS arm64 only. The Linux x86-64
+//! implementation runs inside the isolated `fastmem-probe` binary.
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod imp {
@@ -18,7 +19,7 @@ mod imp {
 pub use imp::{bench, mapping::Mapping, ops, server::*, sys};
 
 /// Errors from setup, registration and re-arming. The handler path never
-/// produces these; it counts failures in [`Stats`] instead.
+/// produces these; it counts failures in its statistics instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
     /// A Mach call returned this `kern_return_t`.

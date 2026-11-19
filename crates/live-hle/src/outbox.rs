@@ -335,6 +335,12 @@ impl Outbox {
             }
             _ => unreachable!(),
         };
+        if recipients.iter().any(|r| {
+            matches!(r, MessageRecipient::User(u)
+            if live_proto::bots::is_bot_xuid(live_proto::Xuid(u.xuid)))
+        }) {
+            return hr(INVALID_ARGUMENT);
+        }
         let cost = charge(&message)
             + recipients
                 .iter()

@@ -147,6 +147,10 @@ fn packet(i: u32) -> u32 {
 }
 
 fn run(game: Game, completion_dpc: bool) -> Outcome {
+    run_with_clock(game, completion_dpc, false)
+}
+
+fn run_with_clock(game: Game, completion_dpc: bool, clock_only: bool) -> Outcome {
     let h = Harness::with_guest(kernel::Config::default(), |g| {
         g.map_zeroed(0x0037_9000, 0xf000, runtime::guest::Permissions::RX)
             .unwrap();
@@ -163,13 +167,20 @@ fn run(game: Game, completion_dpc: bool) -> Outcome {
     let output = hle
         .spawn_output(
             Arc::clone(&h.runtime),
-            || audio::NullSink::new(MIX as u32, MIX as usize),
+            move || {
+                assert!(!clock_only, "the completions clock must never open a sink");
+                audio::NullSink::new(MIX as u32, MIX as usize)
+            },
             OutputConfig {
                 period: Duration::from_millis(5),
-                pacing: Pacing::Logical {
-                    origin,
-                    max_queued: Duration::from_millis(250),
-                    playout: None,
+                pacing: if clock_only {
+                    Pacing::Completions { origin }
+                } else {
+                    Pacing::Logical {
+                        origin,
+                        max_queued: Duration::from_millis(250),
+                        playout: None,
+                    }
                 },
                 halt_when: None,
                 side: None,
@@ -332,6 +343,11 @@ fn run(game: Game, completion_dpc: bool) -> Outcome {
         max_waiting = max_waiting.max(hle.pending_callbacks());
     };
     output.halt();
+    if clock_only {
+        assert_eq!(output.stats().wakes, 0);
+        assert_eq!(output.stats().dropped_frames, 0);
+        assert!(output.stats().rendered_frames > 0);
+    }
     assert!(
         matches!(outcome, kernel::RunOutcome::Complete { .. }),
         "{outcome:?}"
@@ -401,6 +417,27 @@ fn a_polled_stream_with_halos_packets_never_starves() {
             assert_eq!((o.starves, o.starve_frames), (0, 0), "{o:?}");
             assert!(o.refills >= expected_refills(&game), "{o:?}");
         }
+    }
+}
+
+#[test]
+fn clock_only_keeps_callback_and_poll_refill_timing() {
+    for game in [
+        Game { seconds: 2, ..Game::voice(HZ30, (8, 31)) },
+        Game {
+            refill: Refill::Poll,
+            frame: HZ30,
+            update_ms: (8, 31),
+            rate: 44_100,
+            channels: 2,
+            packet_frames: 0x4000 / 4,
+            seconds: 2,
+        },
+    ] {
+        let rendered = run(game, true);
+        let clock = run_with_clock(game, true, true);
+        assert_eq!(clock.refills, rendered.refills, "{game:?}");
+        assert_eq!(clock.max_waiting, rendered.max_waiting, "{game:?}");
     }
 }
 

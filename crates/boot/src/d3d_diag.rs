@@ -54,7 +54,15 @@ pub fn note_skipped_present() {
 }
 
 /// Wall-clock time of every present, for the frame-rate report.
+static KEEP_PRESENT_HISTORY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 static PRESENT_TIMES: Mutex<Vec<std::time::Instant>> = Mutex::new(Vec::new());
+
+pub fn keep_present_history(keep: bool) {
+    KEEP_PRESENT_HISTORY.store(keep, std::sync::atomic::Ordering::Relaxed);
+    if !keep {
+        *PRESENT_TIMES.lock().unwrap() = Vec::new();
+    }
+}
 
 /// Wall-clock frame rate: presents per second over the run since `start`,
 /// and over a window with its mean, median and worst frame time: from
@@ -516,18 +524,18 @@ fn depth_record(draw: &ResolvedDraw) -> agent_proto::DepthRecord {
             DepthBufferMode::W => "w",
         }
         .into(),
-        w: d3d::nv2a::w_buffered(draw),
+        w: d3d::hw::w_buffered(draw),
         func: format!("{:?}", st.depth_func),
         write: st.depth_write,
         viewport: [draw.viewport.min_z, draw.viewport.max_z],
         scale: [hw.viewport_scale[2], hw.viewport_offset[2]],
         clip: [hw.clip_min, hw.clip_max],
         full: if draw.target.depth_format.is_some() {
-            gfx::renderer::d3dz_max(draw.target.depth_format)
+            gfx::format::d3dz_max(draw.target.depth_format)
         } else {
             0.0
         },
-        clamp: d3d::nv2a::draw_clamps_depth(draw),
+        clamp: d3d::hw::draw_clamps_depth(draw),
     }
 }
 
@@ -707,6 +715,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
             self.origin(id, || {
                 format!("render-to-texture surface {surface:?} in place")
             });
+            #[cfg(feature = "gpu")]
             crate::native_world_layers_glue::sample_surface(surface, id);
             Tracked { id, inner }
         }))
@@ -737,6 +746,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
     ) -> Result<bool, String> {
         self.inner.request_depth_grid(surface, request, sink)
     }
+    #[cfg(feature = "gpu")]
     fn external_attachments(
         &mut self, surfaces: d3d::ExternalSurfaces<Self::Surface>, textures: [Option<&Self::Texture>; 4],
         copy: d3d::TargetCopy,
@@ -761,7 +771,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
     ) -> bool {
         let draw = &candidate.fallback;
         if self.capturing().is_some() || self.logging() || self.sweep.is_some() || self.probe.armed()
-            || crate::native_world_layers_glue::comparing() || crate::native_residual_glue::observing_draw()
+            || native_observing()
         {
             return false;
         }
@@ -827,6 +837,18 @@ impl<B: Backend> Backend for DiagBackend<B> {
     }
     fn drop_pixel_count(&mut self, ticket: u64) {
         self.inner.drop_pixel_count(ticket)
+    }
+    fn uses_texture_placeholders(&self) -> bool {
+        self.inner.uses_texture_placeholders()
+    }
+    fn texture_placeholder(
+        &mut self,
+        desc: &gfx::texture::TextureDesc,
+    ) -> Result<Self::Texture, String> {
+        let inner = self.inner.texture_placeholder(desc)?;
+        let id = self.next_texture;
+        self.next_texture += 1;
+        Ok(Tracked { id, inner })
     }
     fn upload_texture(&mut self, texture: &DecodedTexture) -> Result<Self::Texture, String> {
         let r = self.inner.upload_texture(texture);
@@ -966,8 +988,10 @@ impl<B: Backend> Backend for DiagBackend<B> {
         }
         let inner: [Option<&B::Texture>; 4] =
             std::array::from_fn(|i| textures[i].map(|t| &t.inner));
+        #[cfg(feature = "gpu")]
         crate::native_residual_glue::backend_draw(draw.entry);
         let r = self.inner.draw(color, depth, draw, inner);
+        #[cfg(feature = "gpu")]
         if crate::native_world_layers_glue::comparing() {
             crate::native_world_layers_glue::compare_draw(
                 self.in_frame,
@@ -1089,11 +1113,15 @@ impl<B: Backend> Backend for DiagBackend<B> {
     ) -> (Result<DrawOutcome, String>, Vec<StreamBytes>) {
         // Capturing, logging and the sweep diagnostic read the draw after
         // the inner backend has drawn it.
+        #[cfg(feature = "gpu")]
+        let comparing = crate::native_world_layers_glue::comparing();
+        #[cfg(not(feature = "gpu"))]
+        let comparing = false;
         if self.capturing().is_some()
             || self.logging()
             || self.sweep.is_some()
             || self.probe.armed()
-            || crate::native_world_layers_glue::comparing()
+            || comparing
         {
             let r = self.draw(color, depth, &draw, textures);
             return (r, draw.streams);
@@ -1101,6 +1129,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
         let (target, info) = (draw.target, draw.texture_info);
         let inner: [Option<&B::Texture>; 4] =
             std::array::from_fn(|i| textures[i].map(|t| &t.inner));
+        #[cfg(feature = "gpu")]
         crate::native_residual_glue::backend_draw(draw.entry);
         let (r, spare) = self.inner.draw_owned(color, depth, draw, inner);
         self.tally(&r, &target, &info);
@@ -1154,7 +1183,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
         }
         self.stats.lock().unwrap().presents += 1;
         let n = PRESENTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-        {
+        if KEEP_PRESENT_HISTORY.load(std::sync::atomic::Ordering::Relaxed) {
             let mut times = PRESENT_TIMES.lock().unwrap();
             let now = std::time::Instant::now();
             // A heartbeat for long runs: where the run is, and how fast the last 100 went.
@@ -1489,7 +1518,7 @@ mod tests {
         let table = RenderStateTable::default();
         let mut words = d3d::state::StateWords::defaults(true);
         let clip_control = table
-            .canonical_to_guest(d3d::nv2a::RS_DEPTHCLIPCONTROL)
+            .canonical_to_guest(d3d::hw::RS_DEPTHCLIPCONTROL)
             .expect("DEPTHCLIPCONTROL has a guest slot");
         words.render[clip_control as usize] = 0x10;
         let mut state = words.translate(&table);
@@ -1499,7 +1528,7 @@ mod tests {
         constants[96 - 38] = [0.0, 0.0, 16384.0, 1.0];
         constants[96 + 58] = [320.0, -240.0, 16777215.0, 0.0];
         let mut hw = d3d::hw::HwState {
-            control0: Some(0x0010_0001 | d3d::nv2a::CONTROL0_Z_PERSPECTIVE),
+            control0: Some(0x0010_0001 | d3d::hw::CONTROL0_Z_PERSPECTIVE),
             clip_min: 0.0,
             clip_max: 16777215.0,
             ..Default::default()
@@ -1702,4 +1731,16 @@ mod tests {
         let missing: Vec<_> = tr.difference(&headless).collect();
         assert!(missing.is_empty(), "Headless does not forward {missing:?}");
     }
+}
+
+/// A native-renderer comparison or residual observer wants the ordered D3D path.
+#[cfg(feature = "gpu")]
+fn native_observing() -> bool {
+    crate::native_world_layers_glue::comparing() || crate::native_residual_glue::observing_draw()
+}
+
+/// Headless builds have no native renderer to compare against.
+#[cfg(not(feature = "gpu"))]
+fn native_observing() -> bool {
+    false
 }

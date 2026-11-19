@@ -131,7 +131,7 @@ x87_helpers! {
     h2x87_v1_load_env,
 }
 
-const NAMES: [&str; 15] = [
+const NAMES: [&str; 16] = [
     "?",
     "divide error (#DE)",
     "breakpoint (#BP)",
@@ -147,6 +147,7 @@ const NAMES: [&str; 15] = [
     "unmodelled (popfd, or an unmasked x87 OE/UE/PE)",
     "SIMD floating-point exception (#XM)",
     "x87 floating-point error (#MF, arg = status word)",
+    "unobserved host module owner (arg = entry address)",
 ];
 
 fn record(c: *mut ExecCtxOpaque, pc: u32, text: String) -> u32 {

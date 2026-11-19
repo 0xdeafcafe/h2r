@@ -14,11 +14,7 @@ pub fn install(
     config: &LiveConfig,
     maps: Option<Arc<MapGate>>,
 ) -> anyhow::Result<Option<Arc<Hle>>> {
-    if !config.enabled {
-        return Ok(None);
-    }
-    let network = live_hle::NetworkConfig::from_env().map_err(anyhow::Error::msg)?;
-    install_with_network(rt, k, config, network, maps)
+    install_configured(rt, k, config, None, maps, None)
 }
 
 /// Explicit network settings for embedding/tests; install() reads the host env.
@@ -29,10 +25,26 @@ pub fn install_with_network(
     network: live_hle::NetworkConfig,
     maps: Option<Arc<MapGate>>,
 ) -> anyhow::Result<Option<Arc<Hle>>> {
+    install_configured(rt, k, config, Some(network), maps, None)
+}
+
+pub(crate) fn install_configured(
+    rt: &runtime::Runtime,
+    k: &kernel::Kernel,
+    config: &LiveConfig,
+    network: Option<live_hle::NetworkConfig>,
+    maps: Option<Arc<MapGate>>,
+    publisher: Option<live_hle::HostPublisher>,
+) -> anyhow::Result<Option<Arc<Hle>>> {
     if !config.enabled {
         return Ok(None);
     }
+    let network = match network {
+        Some(network) => network,
+        None => live_hle::NetworkConfig::from_env().map_err(anyhow::Error::msg)?,
+    };
     let options = ServerOptions {
+        publisher,
         maps,
         build: build(),
         capabilities: CAPABILITIES.iter().map(|c| c.to_string()).collect(),
@@ -40,6 +52,23 @@ pub fn install_with_network(
     };
     let hle = Hle::with_server_options(config.clone(), network, options)
         .context("configuring Live client")?;
+    register_network(rt, k, hle)
+}
+
+pub(crate) fn install_film(
+    rt: &runtime::Runtime,
+    k: &kernel::Kernel,
+    network: live_hle::NetworkConfig,
+    live_service: bool,
+) -> anyhow::Result<Option<Arc<Hle>>> {
+    register_network(rt, k, Hle::for_film(network, live_service)?)
+}
+
+fn register_network(
+    rt: &runtime::Runtime,
+    k: &kernel::Kernel,
+    hle: Arc<Hle>,
+) -> anyhow::Result<Option<Arc<Hle>>> {
     rt.edit_dispatch(|d| live_hle::register(d, &hle))
         .context("registering Live boundary")?;
     let mut console = k.console_config();

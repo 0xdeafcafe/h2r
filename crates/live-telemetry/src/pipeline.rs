@@ -189,7 +189,6 @@ pub(crate) fn fold(queued: &mut Box<Snapshot>, mut newer: Box<Snapshot>) -> Box<
 
 pub struct Pipeline {
     shared: Arc<Shared>,
-    #[cfg_attr(not(test), allow(dead_code, reason = "tests read it once settled"))]
     session: Arc<Mutex<Session>>,
     logged: AtomicBool,
     worker: Option<JoinHandle<()>>,
@@ -298,7 +297,6 @@ impl Pipeline {
     }
 
     /// The session, once the worker has done everything queued.
-    #[cfg(test)]
     pub(crate) fn session(&self) -> std::sync::MutexGuard<'_, Session> {
         self.settle();
         self.session.lock().unwrap()
@@ -429,6 +427,7 @@ fn apply(session: &mut Session, work: Work) -> Option<Box<Snapshot>> {
             session.set_placements(placements);
         }
         Work::Tick(snapshot) => {
+            let _cpu = timeline::host::Subsystem::TelemetryWorker.span();
             session.sample(&snapshot);
             return Some(snapshot);
         }

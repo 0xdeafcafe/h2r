@@ -5,6 +5,10 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 
+[features]
+default = ["render-overrides"]
+render-overrides = ["dep:hot-render"]
+
 [dependencies]
 agent-proto = { path = "../agent-proto" }
 serde.workspace = true
@@ -17,7 +21,7 @@ timeline = { path = "../timeline" }
 xapi = { path = "../xapi" }
 input = { path = "../input", default-features = false }
 # Hot iteration: live tag edits and render overrides (src/hot.rs).
-hot-render = { path = "../hot-render" }
+hot-render = { path = "../hot-render", optional = true }
 hot-tags = { path = "../hot-tags" }
 # The debug menu is an in-process client (src/menu.rs), and lists settings.
 debug-menu = { path = "../debug-menu" }

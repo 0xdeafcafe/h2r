@@ -9,6 +9,7 @@ import { artStem, gameImage, mapTitle } from "../state/gameart";
 import { mapKey } from "../lib/gameart";
 import { live } from "../state/live";
 import { now } from "../lib/now";
+import { dedicatedHostLabel } from "../lib/hosts";
 import { coopPlayers, difficultyName, gametype, isCoop, keepSelection, kind, levelName, listed, mapName, openFor, pingText, roomText, seats, sessionRow, sortSessions, visibilityText, type Session } from "../lib/sessions";
 import { useSession, useSessions } from "../state/sessions";
 import { customMapBadge, pictureChoice } from "../lib/maps";
@@ -156,7 +157,7 @@ function SessionList(props: SessionsProps) {
         }
       >
         {(s) => (
-          <Plate small={feed.status() === "error" ? "stale" : roomText(s())} title={s().host_gamertag}>
+          <Plate small={feed.status() === "error" ? "stale" : roomText(s())} title={dedicatedHostLabel(s()) ?? s().host_gamertag}>
             <Facts session={s()} />
             <Seats session={s()} />
           </Plate>
@@ -170,10 +171,17 @@ function SessionList(props: SessionsProps) {
 function SessionDetail(props: SessionsProps & { id: string }) {
   const one = useSession(() => props.id);
   const toList = () => props.go("/dash/sessions", "back");
-  const host = () => { const s = one.session(); if (s) props.go(`/dash/players/${encodeURIComponent(s.host_gamertag)}`, "deeper"); };
+  const hostTag = () => {
+    const session = one.session();
+    return session && !dedicatedHostLabel(session) ? session.host_gamertag : null;
+  };
+  const host = () => {
+    const tag = hostTag();
+    if (tag) props.go(`/dash/players/${encodeURIComponent(tag)}`, "deeper");
+  };
   onMount(() => props.bind((a) => {
     if (a === "back" || a === "left") { toList(); return true; }
-    if (a === "select") { host(); return true; }
+    if (a === "select" && hostTag()) { host(); return true; }
     return false;
   }));
   onCleanup(() => props.bind(null));
@@ -197,7 +205,7 @@ function SessionDetail(props: SessionsProps & { id: string }) {
         }
       >
         {(s) => (
-          <Plate small={one.status() === "error" ? "stale" : roomText(s())} title={s().host_gamertag} main>
+          <Plate small={one.status() === "error" ? "stale" : roomText(s())} title={dedicatedHostLabel(s()) ?? s().host_gamertag} main>
             <Facts session={s()} />
             <Seats session={s()} />
             <Show when={roster().length}>
@@ -209,7 +217,7 @@ function SessionDetail(props: SessionsProps & { id: string }) {
           </Plate>
         )}
       </Show>
-      <Prompts onA={one.session() ? host : undefined} onB={toList} aLabel="host" />
+      <Prompts onA={hostTag() ? host : undefined} onB={toList} aLabel="host" />
     </div>
   );
 }

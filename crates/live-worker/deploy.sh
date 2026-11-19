@@ -20,6 +20,10 @@
 #   --yes-production   required for cutover and production
 #   --skip-build       deploy what build/ and web/dist already hold
 #   --dry-run          build and bundle, deploy nothing (no sign-in needed)
+#   --no-hosts         deploy without the dedicated host containers: a copy of
+#                      wrangler.toml with no [[containers]] and LIVE_MAX_HOSTS
+#                      "0" (Live refuses host launches). Needed until the host
+#                      image is staged (deploy/host/build.sh fills deploy/host/stage)
 #
 # Environment:
 #   H2_LIVE_KEY_FILE      cutover/production: read the key from this file
@@ -36,7 +40,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
 
 usage() {
-    sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//' >&2
+    sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//' >&2
     exit 2
 }
 
@@ -44,12 +48,14 @@ env_name=""
 yes_production=0
 skip_build=0
 dry_run=0
+no_hosts=0
 for arg in "$@"; do
     case "$arg" in
         staging | cutover | production) env_name=$arg ;;
         --yes-production) yes_production=1 ;;
         --skip-build) skip_build=1 ;;
         --dry-run) dry_run=1 ;;
+        --no-hosts) no_hosts=1 ;;
         -h | --help) usage ;;
         *) echo "deploy.sh: unknown argument $arg" >&2; usage ;;
     esac
@@ -79,9 +85,26 @@ server_id=$(toml_value "[env.$env_name.vars]" H2_LIVE_ID)
 [ -n "$bucket" ] && [ -n "$server_id" ] || die "wrangler.toml has no bucket or id for env.$env_name"
 echo "deploy.sh: $env_name: server id $server_id, bucket $bucket"
 
+# The host containers build deploy/host/Dockerfile from the staged image.
+# Without it (or with --no-hosts) deploy from a copy without them; it sits
+# next to wrangler.toml so its relative paths still resolve.
+config="$here/wrangler.toml"
+if [ "$no_hosts" = 1 ]; then
+    config="$here/wrangler.nohosts.toml"
+    awk '
+        /^\[/ { skip = ($0 ~ /^\[\[(env\.[a-z]+\.)?containers\]\]$/) }
+        skip { next }
+        /^LIVE_MAX_HOSTS = / { print "LIVE_MAX_HOSTS = \"0\""; next }
+        { print }
+    ' "$here/wrangler.toml" > "$config"
+    echo "deploy.sh: --no-hosts: no host containers, LIVE_MAX_HOSTS 0"
+elif [ "$dry_run" = 0 ] && ! [ -d "$repo/deploy/host/stage" ]; then
+    die "the host containers need the staged image (deploy/host/build.sh); run again with --no-hosts to deploy without them"
+fi
+
 wrangler() {
     # shellcheck disable=SC2086
-    ${WRANGLER:-bunx wrangler@4} "$@" --config "$here/wrangler.toml"
+    ${WRANGLER:-bunx wrangler@4} "$@" --config "$config"
 }
 # The terminal echoes again however this ends (the key is read unechoed).
 trap 'stty echo 2>/dev/null || true' EXIT INT TERM

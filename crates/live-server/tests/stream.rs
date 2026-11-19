@@ -852,6 +852,7 @@ async fn recorded_frames(live: &Live, game_id: &str) -> Vec<serde_json::Value> {
 async fn next_packed(
     ws: &mut Socket,
     d: &mut live_proto::pack::Decoder,
+    version: u8,
 ) -> Vec<live_proto::game::Frame> {
     loop {
         let msg = tokio::time::timeout(Duration::from_secs(5), ws.next())
@@ -862,7 +863,11 @@ async fn next_packed(
         match msg {
             Message::Binary(b) => {
                 return live_proto::pack::records(&b)
-                    .map(|r| d.decode(r.unwrap()).unwrap().frame)
+                    .map(|r| {
+                        let record = r.unwrap();
+                        assert_eq!(record[0] & 15, version, "negotiated subscriber version");
+                        d.decode(record).unwrap().frame
+                    })
                     .collect();
             }
             Message::Text(t) => {
@@ -920,7 +925,11 @@ async fn packed_frames_ingest_stream_and_record() {
         &format!("?games={game_id}&exclude=GameFrame&frames=packed"),
     )
     .await;
-    for r in [&mut json_reader, &mut packed_reader] {
+    let mut causal_reader = connect(
+        addr,
+        &format!("?games={game_id}&exclude=GameFrame&frames=packed&frame_version=8"),
+    ).await;
+    for r in [&mut json_reader, &mut packed_reader, &mut causal_reader] {
         assert!(matches!(next(r).await, StreamMessage::CaughtUp { .. }));
     }
 
@@ -943,7 +952,9 @@ async fn packed_frames_ingest_stream_and_record() {
     .await
     .unwrap();
     // The game's stream: a keyframe, then deltas, two frames a message.
-    let mut encoder = pack::Encoder::new(0, 100);
+    let mut encoder = pack::Encoder::with_version(0, 150, 8).unwrap();
+    let mut causal_decoder = pack::Decoder::new();
+    let mut causal_seen = Vec::new();
     let mut d = pack::Decoder::new();
     let mut seen = Vec::new();
     let mut sent = Vec::new();
@@ -959,13 +970,16 @@ async fn packed_frames_ingest_stream_and_record() {
         };
         assert_eq!(frame.tick, pair[0].tick);
         sent.push(*frame);
-        seen.extend(next_packed(&mut packed_reader, &mut d).await);
+        seen.extend(next_packed(&mut packed_reader, &mut d, 7).await);
+        causal_seen.extend(next_packed(&mut causal_reader, &mut causal_decoder, 8).await);
         tokio::time::sleep(Duration::from_millis(80)).await;
     }
     // What JSON readers get (throttled frames' shots and hits carried
     // into the next sent one), quantised.
     let expect: Vec<_> = sent.iter().map(|f| pack::quantize(f).unwrap()).collect();
     assert_eq!(seen, expect, "packed readers get the quantised frames");
+    assert_eq!(causal_seen, expect);
+    causal_seen.clear();
     assert_eq!(seen[0].machine_positions, [device(0)]);
     assert_eq!(seen[1].machine_positions, [device(177)], "throttled change");
     assert!(seen[2].machine_positions.is_empty());
@@ -973,7 +987,7 @@ async fn packed_frames_ingest_stream_and_record() {
     // A reader that joins now starts from the game's last keyframe.
     let mut late = connect(
         addr,
-        &format!("?games={game_id}&exclude=GameFrame&frames=packed"),
+        &format!("?games={game_id}&exclude=GameFrame&frames=packed&frame_version=8"),
     )
     .await;
     assert!(matches!(
@@ -981,8 +995,8 @@ async fn packed_frames_ingest_stream_and_record() {
         StreamMessage::CaughtUp { .. }
     ));
     let mut late_d = pack::Decoder::new();
-    let caught = next_packed(&mut late, &mut late_d).await;
-    assert_eq!(caught.last(), expect.last());
+    let caught = next_packed(&mut late, &mut late_d, 8).await;
+    assert_eq!(caught, expect, "late v8 join gets the trained stream from its key");
 
     // The game goes on: the reader that joined mid-game and the one there
     // from the start each get every new frame once, in order (a repeated
@@ -998,15 +1012,17 @@ async fn packed_frames_ingest_stream_and_record() {
             panic!("expected a frame")
         };
         sent.push(pack::quantize(&frame).unwrap());
-        seen.extend(next_packed(&mut packed_reader, &mut d).await);
-        late_seen.extend(next_packed(&mut late, &mut late_d).await);
+        seen.extend(next_packed(&mut packed_reader, &mut d, 7).await);
+        causal_seen.extend(next_packed(&mut causal_reader, &mut causal_decoder, 8).await);
+        late_seen.extend(next_packed(&mut late, &mut late_d, 8).await);
         tokio::time::sleep(Duration::from_millis(80)).await;
     }
     assert_eq!(seen, sent);
     assert_eq!(late_seen, sent);
+    assert_eq!(causal_seen, sent);
 
     // A delta without its base is refused; the socket stays open.
-    let mut skip = pack::Encoder::new(0, 100);
+    let mut skip = pack::Encoder::with_version(0, 150, 8).unwrap();
     skip.encode(&frames[0]).unwrap();
     let mut message = Vec::new();
     pack::push_record(&mut message, &skip.encode(&frames[1]).unwrap().0);

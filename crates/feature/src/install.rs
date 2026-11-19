@@ -327,6 +327,7 @@ fn place(d: &mut runtime::Dispatch, c: Chain, body: Body) {
         for o in &observe_before {
             o.announce();
             (o.f)(&Obs {
+                thread_id: ctx.thread_id,
                 cpu,
                 runtime: ctx.runtime(),
                 addr,
@@ -372,6 +373,7 @@ fn place(d: &mut runtime::Dispatch, c: Chain, body: Body) {
                 for o in observe_after.iter() {
                     o.announce();
                     (o.f)(&Obs {
+                        thread_id: ctx.thread_id,
                         cpu,
                         runtime: ctx.runtime(),
                         addr,

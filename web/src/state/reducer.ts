@@ -6,8 +6,9 @@ import type {
   KillRecord, PlayerJoined, PlayerKilled, PlayerLeft, PlayerScore, PresenceData, PresenceEntry, ScoreChanged,
   WireEvent, Winner, Xuid, GameId,
 } from "../api/types";
-import { normalizeAppearance, type Appearance } from "../lib/gameart";
+import { clankerAppearance, normalizeAppearance, type Appearance } from "../lib/gameart";
 import { normalizeSkulls } from "../lib/skulls";
+import type { DedicatedHostFields } from "../lib/hosts";
 
 export interface Presence {
   state: string;
@@ -53,7 +54,8 @@ export interface GamePlayerState extends GamePlayer {
   appearance: Appearance | null;
 }
 
-export interface GameState {
+export interface GameState extends DedicatedHostFields {
+  archiveRevision?: number;
   game_id: GameId;
   console: string | null;
   /** Who started the game: `acct:<xuid>@<server>`, when the server said. */
@@ -169,13 +171,15 @@ function addPlayer(s: LiveState, g: GameState, p: GamePlayer) {
   const prev = g.players[p.index];
   // A bot is never an account's player: it keeps the name the game sent.
   const tag = p.bot ? null : gamertagOf(s, p.xuid);
+  const botAccount = p.bot && p.xuid ? s.accounts[p.xuid] : undefined;
   g.players[p.index] = {
     ...p,
     name: tag ?? p.name,
     game_name: tag && tag !== p.name ? p.name : null,
     xuid: p.xuid ?? null,
     left: false,
-    appearance: normalizeAppearance(wire.appearance) ?? prev?.appearance ?? null,
+    appearance: botAccount?.bot ? clankerAppearance(botAccount.gamertag)
+      : normalizeAppearance(wire.appearance) ?? (p.bot ? clankerAppearance(p.name) : prev?.appearance ?? null),
   };
   if (!g.scores[p.index]) g.scores[p.index] = emptyScore(p.index);
 }
@@ -272,6 +276,8 @@ export function applyEvent(s: LiveState, ev: WireEvent): boolean {
         game_id: id,
         console: d.console ?? null,
         host: d.host ?? null,
+        host_lease: str(d.host_lease),
+        dedicated_region: str(d.dedicated_region),
         map: d.map,
         map_id: mapId(d.map_id),
         mode: d.mode,
@@ -336,6 +342,12 @@ export function applyEvent(s: LiveState, ev: WireEvent): boolean {
       const g = gameFor(s, ev);
       const d = ev.data as { tick?: number };
       if (g && typeof d?.tick === "number" && d.tick > g.last_tick) g.last_tick = d.tick;
+      break;
+    }
+    case "ReplayArchivePublished":
+    case "ReplayArchiveRolledBack": {
+      const g = gameFor(s, ev);
+      if (g) g.archiveRevision = ev.position;
       break;
     }
     case "FrameChunk": {
@@ -623,6 +635,8 @@ export function applyGameSnapshot(s: LiveState, d: GameSummary | GameDetail) {
       game_id: d.game_id,
       console: det.console ?? null,
       host: det.host ?? null,
+      host_lease: str(d.host_lease),
+      dedicated_region: str(d.dedicated_region),
       map: d.map,
       map_id: mapId(d.map_id),
       mode: d.mode,
@@ -650,6 +664,8 @@ export function applyGameSnapshot(s: LiveState, d: GameSummary | GameDetail) {
   } else {
     const k = kindFields(d);
     g.map_id ??= mapId(d.map_id);
+    g.host_lease ??= str(d.host_lease);
+    g.dedicated_region ??= str(d.dedicated_region);
     g.kind ??= k.kind; g.playlist ??= k.playlist; g.playlist_id ??= k.playlist_id;
     g.difficulty ??= k.difficulty; g.online ??= k.online;
     if (!g.skulls.length) g.skulls = k.skulls;

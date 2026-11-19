@@ -30,6 +30,25 @@ pub trait GuestMemory {
     fn write_u32(&mut self, addr: u32, v: u32) -> Result<(), MemFault> {
         self.write(addr, &v.to_le_bytes())
     }
+    /// Validates an audio payload without retaining it. The runtime bridge
+    /// checks the mapping directly, without touching the sample pages.
+    fn check_samples(&self, addr: u32, len: u32) -> Result<(), MemFault> {
+        let fault = MemFault { addr, len };
+        addr.checked_add(len).ok_or(fault)?;
+        if len > MAX_GUEST_COPY {
+            return Err(fault);
+        }
+        let mut scratch = [0; 4096];
+        let mut done = 0;
+        while done < len {
+            let n = (len - done).min(scratch.len() as u32);
+            self.read(addr + done, &mut scratch[..n as usize])
+                .map_err(|_| fault)?;
+            done += n;
+        }
+        Ok(())
+    }
+
     /// Reads `len` bytes. The span is validated first and the buffer grows
     /// chunk by chunk as the memory proves readable, so a hostile length
     /// faults instead of allocating up to 4 GiB.

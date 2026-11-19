@@ -304,6 +304,17 @@ impl Dispatch {
             stop_recovery: self.stop_recovery.clone(),
         }
     }
+    /// Use the title's generated functions in an isolated executor. HLE-only
+    /// imports keep their refusal handlers. Context-only implementations can
+    /// run against the private memory exactly as on the main executor.
+    pub fn prefer_generated(&mut self) {
+        for (addr, entry) in &mut self.overrides {
+            if self.generated.contains_key(addr) && !entry.context_only {
+                entry.enabled = false;
+            }
+        }
+    }
+
     pub fn has_generated(&self, addr: u32) -> bool {
         self.generated.contains_key(&addr)
     }

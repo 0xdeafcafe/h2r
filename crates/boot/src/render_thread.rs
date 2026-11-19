@@ -37,24 +37,29 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "*",
         "off by default, and pipelining is off with it (it watches the render on the game thread)",
     ),
+    #[cfg(feature = "gpu")]
     ("native-transparents", "SCENE_TRANSPARENTS", AFTER),
+    #[cfg(feature = "gpu")]
     (
         "native-transparents",
         "GAME_ACTIVATE",
         "game activation runs on the game thread; the render never meets it",
     ),
+    #[cfg(feature = "gpu")]
     (
         "native-post",
         "COLOUR_PASS",
         "off by default; the post call's draws are held until it returns, so the \
          return hook decides commit or replay",
     ),
+    #[cfg(feature = "gpu")]
     (
         "native-post",
         "SCREEN_EFFECT",
         "off by default; the post call's draws are held until it returns, so the \
          return hook decides commit or replay",
     ),
+    #[cfg(feature = "gpu")]
     (
         "native-decals",
         "DECAL_RENDER",
@@ -154,6 +159,22 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "live-menu-cursor",
         "LIVE_MENU_CURSOR",
         "the Xbox Live menu's build, a UI event on the game thread",
+    ),
+    ("clanker-options-route", "RECENT_PLAYERS_BUILD", AFTER),
+    (
+        "clanker-options-route",
+        "PLAYER_OPTIONS_OPEN",
+        "opens a dialog with a guest call and may request a Live card",
+    ),
+    (
+        "clanker-options-route",
+        "PLAYER_OPTIONS_CHECK_FRIEND",
+        "routes the selection through the same dialog and Live lookup",
+    ),
+    (
+        "clanker-options-route",
+        "EMBLEM_WIDGET_DRAW",
+        "consumes the shared card refresh flag and updates the live widget",
     ),
     // Local bots: the game thread's frame, sound and players screen. Around
     // RENDER_FRAME, the pipeline's snapshot is taken with the bot views
@@ -289,6 +310,12 @@ mod tests {
             "LOCALE_EXISTS",
             "HUD_SHOWN",
             "FIRST_PERSON_RENDER",
+            "UI_QUAD_TO_SCREEN",
+        ] {
+            assert!(safe.contains(&p), "{p} runs on the render thread");
+        }
+        #[cfg(feature = "gpu")]
+        for p in [
             "LAYER_DRAW",
             "TRANSPARENT_GEOMETRY",
             "RENDER_LIGHT_PASSES",

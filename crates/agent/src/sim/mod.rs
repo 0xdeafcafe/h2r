@@ -336,7 +336,9 @@ impl Sim {
 
     fn player_list(&mut self, _: Value, ctx: &mut GameCtx<'_>) -> R {
         let objects = ctx.reader.objects().unwrap_or_default();
-        let mut clankers = self.bots.clankers();
+        let mut clankers = ctx
+            .with_guest(|m| Ok(self.bots.clankers(Some(m))))
+            .unwrap_or_else(|_| self.bots.clankers(None));
         for bot in &mut clankers {
             if let Some(port) = bot.port {
                 bot.player = local_player(port, &objects).map(|i| format!("player.{i}"));

@@ -540,6 +540,7 @@ fn put_buffer(w: &mut Writer, b: &SoundBuffer) {
         format,
         data,
         // Rebuilt from `data`.
+        size_bytes: _,
         decoded: _,
         frames: _,
         params,
@@ -612,7 +613,7 @@ fn put_stream(w: &mut Writer, s: &Stream) {
     put_params(w, params);
     w.u32(queue.len() as u32);
     for p in queue {
-        let Packet { id, frames } = p;
+        let Packet { id, frames, .. } = p;
         w.u64(id.0);
         put_f32s(w, frames);
     }
@@ -640,10 +641,10 @@ fn get_stream(r: &mut Reader<'_>, version: u32) -> Result<Stream, Error> {
     s.params = get_params(r)?;
     s.queue = r
         .list(12, |r| {
-            Ok(Packet {
-                id: PacketId(r.u64()?),
-                frames: get_f32s(r)?,
-            })
+            let id = PacketId(r.u64()?);
+            let frames = get_f32s(r)?;
+            let frame_count = frames.len() / format.channels() as usize;
+            Ok(Packet { id, frames, frame_count })
         })?
         .into();
     let history = r.list(8, |r| Ok([get_f32(r)?, get_f32(r)?]))?;

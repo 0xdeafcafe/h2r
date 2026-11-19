@@ -7,13 +7,29 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 
+#[cfg(not(feature = "desktop"))]
 const USAGE: &str = "usage:
-  h2 build <disc.iso|default.xbe> [--out DIR] [--jobs N] [--check] [--tier fast|clang]
+  h2 serve <disc.iso> --system-link --host-light [--host-bots] [--socket PATH]
+           [--out DIR] [--data DIR] [--fresh-data] [--settings DIR]
+
+--out defaults to the temporary directory's h2boot and must contain the
+prebuilt game module. Use the same H2_OPT the module was built with.
+--data sets the runtime data directory.
+--socket sets the agent API socket (default H2_AGENT or the agent's default).
+--host-light skips steady-state world rendering, uses a silent sound clock,
+disables kernel tracing and paces to real time. Requires --system-link.
+--host-bots enables bot support on a light host. H2_BOTS also enables it.";
+
+#[cfg(feature = "desktop")]
+const USAGE: &str = "usage:
+  h2 build <disc.iso|default.xbe> [--out DIR] [--jobs N] [--check] [--tier fast|clang] [--arch TARGET]
   h2 run   <disc.iso> [--out DIR] [--tier auto|fast|clang] [--data DIR] [--fresh-data] [--slices N] [--transfers N] [--no-stopgaps] [--no-d3d] [--no-bink] [--no-dsound] [--no-xapi] [--no-mappack] [--no-halo1]
            [--movies DIR | --no-movies] [--settings DIR]
-  h2 serve <disc.iso> [--socket PATH] [--system-link] [run's options]
+  h2 serve <disc.iso> [--socket PATH] [--system-link [--host-light [--host-bots] [--film FILE]]] [run's options]
 
---out defaults to $TMPDIR/h2boot (generated C, objects, libh2game.dylib).
+--out defaults to $TMPDIR/h2boot (generated C, objects, and the game module).
+--arch selects a single build target and overrides H2_EMIT_TARGET. Use
+  x86_64-linux to cross-build libh2game.so for a Linux dedicated host.
 --tier (or H2_TIER): `build` builds clang's optimised module by default, or
   with `fast` the Cranelift fast tier in --out/fast/ in seconds
   (docs/lifter/cranelift-tier.md). `run` defaults to `auto`: clang's module
@@ -52,7 +68,10 @@ exits, for `h2 agent` and other clients (docs/runtime/agent-api.md). It never
 builds: when --out's dylib isn't current it stops and says so. Use the same
 H2_OPT the image was built with.
 --system-link enables the XNet sockets for a headless LAN game. Choose System
-  Link in the normal menus. No Live account or service URL is required.";
+  Link in the normal menus. No Live account or service URL is required.
+--host-light skips steady-state world rendering, uses a silent sound clock,
+  disables kernel tracing and paces to real time. Requires --system-link.
+--host-bots enables bot support on a light host. H2_BOTS also enables it.";
 
 pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     let tmp = std::env::temp_dir();
@@ -64,6 +83,9 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     let mut slices = if serve { u64::MAX } else { 100_000u64 };
     let mut socket = None;
     let mut system_link = false;
+    let mut host_light = false;
+    let mut host_bots = false;
+    let mut film = None;
     let mut transfers = 50_000_000u64;
     let mut disc = None;
     let mut stopgaps = true;
@@ -73,10 +95,16 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     let mut dsound = true;
     let mut xapi = true;
     let mut fresh = false;
+    #[cfg(feature = "desktop")]
     let mut check = false;
+    #[cfg(feature = "desktop")]
+    let mut build_arch = None;
+    #[cfg(feature = "desktop")]
     let mut no_mappack = false;
+    #[cfg(feature = "desktop")]
     let mut no_halo1 = false;
     let mut tier = None;
+    #[cfg(feature = "desktop")]
     let mut background = false;
     let mut settings_dir = None;
     let mut it = args.into_iter();
@@ -87,21 +115,39 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             "--data" => data = PathBuf::from(val()?),
             "--jobs" => jobs = val()?.parse()?,
             "--fresh-data" => fresh = true,
+            #[cfg(feature = "desktop")]
             "--check" if cmd == "build" => check = true,
+            #[cfg(feature = "desktop")]
+            "--arch" if cmd == "build" => {
+                let arches = emit::compile::architectures(Some(&val()?))?;
+                let [arch] = arches.as_slice() else { bail!("h2 build --arch requires one target") };
+                build_arch = Some(*arch);
+            }
+            #[cfg(feature = "desktop")]
             "--background" if cmd == "build" => background = true,
             "--tier" => tier = Some(boot::tier::Choice::parse(&val()?)?),
             "--system-link" => system_link = true,
+            "--host-light" => host_light = true,
+            "--film" if serve => film = Some(PathBuf::from(val()?)),
+            "--host-bots" => host_bots = true,
             "--socket" if serve => socket = Some(PathBuf::from(val()?)),
             "--settings" if cmd != "build" => settings_dir = Some(PathBuf::from(val()?)),
             "--no-stopgaps" => stopgaps = false,
             "--no-d3d" => d3d = false,
             "--no-bink" => bink = false,
+            #[cfg(feature = "desktop")]
             "--movies" => movies = boot::movies_glue::Movies::Dir(PathBuf::from(val()?)),
+            #[cfg(not(feature = "desktop"))]
+            "--movies" => bail!("movie playback needs the desktop feature"),
             "--no-movies" => movies = boot::movies_glue::Movies::Off,
             "--no-dsound" => dsound = false,
             "--no-xapi" => xapi = false,
+            #[cfg(feature = "desktop")]
             "--no-mappack" => no_mappack = true,
+            #[cfg(feature = "desktop")]
             "--no-halo1" => no_halo1 = true,
+            #[cfg(not(feature = "desktop"))]
+            "--no-mappack" | "--no-halo1" => {}
             "--slices" => slices = val()?.parse()?,
             "--transfers" => transfers = val()?.parse()?,
             "-h" | "--help" => bail!("{USAGE}"),
@@ -109,7 +155,25 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             _ => bail!("unexpected {a}\n\n{USAGE}"),
         }
     }
-    let live = headless_live_config(serve, system_link)?;
+    let mut live = headless_live_config(serve, system_link)?;
+    check_host_options(serve, system_link, host_light, host_bots)?;
+    if let Some(path) = film {
+        anyhow::ensure!(host_light, "--film requires a light host");
+        // SAFETY: CLI startup, before signal, agent, or device threads start.
+        unsafe { std::env::set_var("H2_FILM_OUT", path) };
+    }
+
+    let publisher = if host_light {
+        leased_publisher(&mut live, |key| std::env::var_os(key))?
+    } else {
+        None
+    };
+    if host_light && (!d3d || !bink || !dsound || !xapi) {
+        bail!("--host-light needs the guest D3D, Bink, DirectSound and XAPI shims");
+    }
+    if host_light && matches!(movies, boot::movies_glue::Movies::Dir(_)) {
+        bail!("--host-light skips movies; remove --movies");
+    }
     let disc = disc
         .or_else(|| std::env::var_os("H2_DISC").map(PathBuf::from))
         .context(USAGE)?;
@@ -119,12 +183,22 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
         Some(t) => t,
         None => Choice::from_env()?,
     };
+    #[cfg(feature = "desktop")]
     if cmd == "build" {
         // `build` builds one tier: clang's unless asked for the fast one.
         let fast = choice == Choice::Fast;
-        let lib = if fast { boot::tier::fast_dylib(&out) } else { boot::tier::clang_dylib(&out) };
+        let arch = match build_arch {
+            Some(arch) => arch,
+            None => emit::compile::Arch::target()?,
+        };
+        let lib = if fast {
+            boot::tier::check_fast_target(arch)?;
+            boot::tier::fast_dylib(&out)
+        } else {
+            out.join(arch.module_file_name())
+        };
         if check {
-            let current = if fast { boot::tier::fast_current(&xbe, &lib) } else { boot::dylib_current(&xbe, &lib) };
+            let current = if fast { boot::tier::fast_current(&xbe, &lib) } else { boot::dylib_current_for(&xbe, &lib, arch) };
             eprintln!(
                 "h2 build --check: {} is {}",
                 lib.display(),
@@ -133,7 +207,7 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             std::process::exit(if current { 0 } else { 3 });
         }
         if fast {
-            boot::tier::build_fast(&xbe, &out, jobs)?;
+            boot::tier::build_fast_for(&xbe, &out, jobs, arch)?;
         } else {
             #[cfg(unix)]
             let _lock = if background {
@@ -149,7 +223,7 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             };
             #[cfg(not(unix))]
             let _ = background;
-            boot::build(&xbe, &out, jobs)?;
+            boot::build_for(&xbe, &out, jobs, arch)?;
         }
         return Ok(());
     }
@@ -177,17 +251,21 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             std::fs::remove_dir_all(&d).with_context(|| format!("emptying {}", d.display()))?;
         }
     }
+    #[cfg(feature = "desktop")]
     if crate::mappack_cmd::auto_enabled(no_mappack) {
         crate::mappack_cmd::auto_install(&disc, &data);
     }
+    #[cfg(feature = "desktop")]
     if crate::h1_import::auto_enabled(no_halo1) {
         crate::h1_import::auto_import(&disc, &data);
     }
     let host = boot::Host {
+        host_light,
+        host_bots,
         settings: settings_dir.map(|d| settings_store(cmd, &d)),
         ..boot::Host::default()
     };
-    let r = boot::run_hosted_with_live(
+    let r = boot::run_hosted_with_publisher(
         &xbe,
         &lib,
         &boot::RunOpts {
@@ -205,6 +283,7 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
         },
         host,
         &live,
+        publisher,
     );
     // The kernel's storage may outlive the run (or never drop): store its
     // pending write metadata now. Signals and other abnormal exits fall
@@ -221,6 +300,38 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     println!("stop: {}", r.stop);
     println!("last eip: {:#010x}", r.eip);
     Ok(())
+}
+
+fn check_host_options(serve: bool, system_link: bool, light: bool, bots: bool) -> Result<()> {
+    if light && !(serve && system_link) {
+        bail!("--host-light requires h2 serve --system-link");
+    }
+    if bots && !light {
+        bail!("--host-bots requires --host-light");
+    }
+    Ok(())
+}
+
+fn leased_publisher(
+    config: &mut boot::LiveConfig,
+    env: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Result<Option<boot::HostPublisher>> {
+    let values = ["H2_HOST_TOKEN", "H2_HOST_LIVE_URL", "H2_HOST_LEASE_JSON"].map(env);
+    if values.iter().all(Option::is_none) {
+        return Ok(None);
+    }
+    let [Some(token), Some(url), Some(json)] = values.map(|v| v.and_then(|s| s.into_string().ok()))
+    else {
+        bail!("host publication requires H2_HOST_TOKEN, H2_HOST_LIVE_URL and H2_HOST_LEASE_JSON");
+    };
+    anyhow::ensure!(
+        live_proto::bearer_allowed(&url),
+        "host publication requires HTTPS or loopback HTTP"
+    );
+    let lease = serde_json::from_str(&json).context("invalid H2_HOST_LEASE_JSON")?;
+    let publisher = boot::HostPublisher::new(lease, token)?;
+    config.server_url = Some(url);
+    Ok(Some(publisher))
 }
 
 /// System Link only needs the XNet boundary. Leave accounts and HTTP unset.
@@ -249,7 +360,7 @@ fn settings_store(cmd: &str, dir: &Path) -> Arc<settings::Store> {
 /// `build --background`: lower this process's priority (clang's processes
 /// inherit it) and take `out`'s background-build lock, held until the
 /// returned file drops; `None` when another build holds it.
-#[cfg(unix)]
+#[cfg(all(unix, feature = "desktop"))]
 fn background_lock(out: &Path) -> Result<Option<std::fs::File>> {
     use std::os::fd::AsRawFd;
     std::fs::create_dir_all(out)?;
@@ -364,6 +475,16 @@ mod tests {
     }
 
     #[test]
+    fn light_host_and_its_bots_are_explicit_opt_ins() {
+        assert!(check_host_options(true, true, true, false).is_ok());
+        assert!(check_host_options(true, true, true, true).is_ok());
+        assert!(check_host_options(true, true, false, false).is_ok());
+        assert!(check_host_options(true, false, true, false).is_err());
+        assert!(check_host_options(false, true, true, false).is_err());
+        assert!(check_host_options(true, true, false, true).is_err());
+    }
+
+    #[test]
     fn system_link_enables_accountless_networking_only_on_request() {
         let lan = headless_live_config(true, true).unwrap();
         assert!(lan.enabled);
@@ -374,6 +495,19 @@ mod tests {
             let error = run(cmd, vec!["--system-link".into()]).unwrap_err();
             assert_eq!(error.to_string(), "--system-link requires h2 serve");
         }
+    }
+
+    #[test]
+    fn leased_publication_requires_the_complete_child_environment() {
+        let mut config = headless_live_config(true, true).unwrap();
+        assert!(leased_publisher(&mut config, |_| None).unwrap().is_none());
+        for missing in ["H2_HOST_TOKEN", "H2_HOST_LIVE_URL", "H2_HOST_LEASE_JSON"] {
+            assert!(
+                leased_publisher(&mut config, |key| (key != missing).then(|| "value".into()))
+                    .is_err()
+            );
+        }
+        assert!(config.server_url.is_none() && config.accounts_path.is_none());
     }
 
     #[test]

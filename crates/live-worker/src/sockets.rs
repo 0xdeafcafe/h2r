@@ -542,7 +542,7 @@ mod tests {
         let sockets = Rc::new(Sockets::<Fake>::default());
         let ws = Fake::default();
         sockets
-            .accept(s.live.clone(), ws.clone(), StreamFilter::default())
+            .accept(s.live.clone(), ws.clone(), StreamFilter { packed: true, v8: true, ..Default::default() })
             .await;
         assert_eq!(sockets.attached(), 1);
         let local = tokio::task::LocalSet::new();
@@ -569,6 +569,7 @@ mod tests {
         let (_, session) = woke.adopt(&s.live, &ws).unwrap();
         let session = session.lock().await;
         assert_eq!(session.resume().last, Some(s.live.position()));
+        assert!(session.filter().packed && session.filter().v8);
         assert!(!session.behind());
     }
 }

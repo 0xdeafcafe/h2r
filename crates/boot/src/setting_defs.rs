@@ -87,7 +87,7 @@ pub static RENDER_SCALE: Def = Def {
            size it renders at (1280x960 for 2). The row steps 1 to 4; the file and \
            H2_RENDER_SCALE take up to 6. A change applies at the next frame.",
     kind: Kind::Int {
-        valid: 1..=d3d::scaled::MAX_SCALE as i64,
+        valid: 1..=d3d::MAX_SCALE as i64,
         steps: &[1, 2, 3, 4],
         unit: Unit::Pixels {
             width: GUEST_FRAME.0,
@@ -398,6 +398,23 @@ pub static COOP_JOIN_IN_PROGRESS: Def = Def {
     parse_env: None,
     apply: Apply::Live,
     scope: Scope::Sim,
+    tier: Tier::User,
+    menu: None,
+};
+
+/// Presentation on a synchronous co-op guest. The host always uses its local camera.
+pub static COOP_LOOK_PREDICTION: Def = Def {
+    key: "coop.look_prediction",
+    label: "Co-op Look Prediction",
+    help: "Draw your pending turns while waiting for a co-op host's updates.",
+    kind: Kind::Bool,
+    default: Value::Bool(true),
+    env: Some("H2_COOP_LOOK_PREDICTION"),
+    flag: None,
+    aliases: &[],
+    parse_env: None,
+    apply: Apply::Live,
+    scope: Scope::View,
     tier: Tier::User,
     menu: None,
 };
@@ -721,6 +738,7 @@ pub static ALL: &[&Def] = &[
     &LIVE_VISIBILITY,
     &COOP_MAX_PLAYERS,
     &COOP_JOIN_IN_PROGRESS,
+    &COOP_LOOK_PREDICTION,
     &AIM_ASSIST,
     &TOUCH_LOOK,
     &TOUCH_CROUCH,
@@ -901,6 +919,7 @@ mod tests {
                 ("H2_HALO1_HUD", "halo2"),
                 ("H2_COOP_MAX_PLAYERS", "4"),
                 ("H2_COOP_JOIN_IN_PROGRESS", "0"),
+                ("H2_COOP_LOOK_PREDICTION", "0"),
                 ("H2_VOICE_INPUT", "default"),
                 ("H2_VOICE_OUTPUT", "game"),
                 ("H2_VOICE_MODE", "ptt"),
@@ -922,6 +941,7 @@ mod tests {
         }
         assert_eq!(coop_max_players(&s), 4);
         assert!(!coop_join_in_progress(&s));
+        assert_eq!(s.get(COOP_LOOK_PREDICTION.key), Some(Value::Bool(false)));
         assert_eq!(s.get(TOUCH_ACCEL.key), Some(Value::Int(0)));
         assert_eq!(s.get(TOUCH_AUTO_FIRE.key), Some(Value::Bool(true)));
         assert_eq!(halo1_sandbox(&s), "h2");

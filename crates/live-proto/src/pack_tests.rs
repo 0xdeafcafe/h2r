@@ -643,7 +643,11 @@ fn golden_vectors_match_the_encoder() {
     odd_b.objects[0].u = None;
     odd_b.projectiles[1].pos = [-9.5, 4.25, 4.75];
     odd_b.items.clear();
-    let cases: [(&str, Vec<Frame>, u64); 6] = [
+    let cases: [(&str, Vec<Frame>, u64); 10] = [
+        ("v8-motion", motion_stream(), 100),
+        ("v8-machine-positions", machine_position_stream(), 3),
+        ("v8-multiplayer", samples::multiplayer(16), 9),
+        ("v8-campaign", samples::campaign(9), 5),
         ("v7-multiplayer", samples::multiplayer(6), 4),
         ("v7-campaign", samples::campaign(4), 3),
         ("v7-odd", vec![odd_frame(), odd_b], 15),
@@ -655,7 +659,8 @@ fn golden_vectors_match_the_encoder() {
     for (name, frames, every) in cases {
         let mut container = Vec::new();
         let mut decoded = Vec::new();
-        let mut e = Encoder::new(5, every);
+        let version = if name.starts_with("v8-") { 8 } else { 7 };
+        let mut e = Encoder::with_version(5, every, version).unwrap();
         let mut d = Decoder::new();
         for f in &frames {
             let bytes = e.encode(f).unwrap().0;
@@ -1375,4 +1380,69 @@ fn an_animation_round_trips_and_needs_a_good_name() {
         });
         assert!(validate_frame(&f).is_err(), "{name} {frame}");
     }
+}
+
+#[test]
+fn v8_rejoins_and_switches_versions_without_reusing_stale_state() {
+    let frames = samples::multiplayer(6);
+    let sid = 300;
+    let mut v8 = Encoder::with_version(sid, 3, 8).unwrap();
+    let mut v7 = Encoder::new(sid, 3);
+    let packets: Vec<_> = frames.iter().map(|f| v8.encode(f).unwrap().0).collect();
+    let mut reader = Decoder::new();
+    assert!(matches!(
+        reader.decode(&packets[2]),
+        Err(PackError::Gap { sid: 300, seq: 2 })
+    ));
+    let legacy = v7.encode(&frames[0]).unwrap().0;
+    reader.decode(&legacy).unwrap();
+    for (i, p) in packets.iter().enumerate().skip(3) {
+        let d = reader.decode(p).unwrap();
+        assert_eq!(
+            (d.sid, d.seq, d.keyframe, d.machine_baseline),
+            (sid, i as u64, i == 3, i == 3)
+        );
+        assert_eq!(d.frame, quantize(&frames[i]).unwrap());
+    }
+    assert!(matches!(
+        reader.decode(&v7.encode(&frames[1]).unwrap().0),
+        Err(PackError::Gap { .. })
+    ));
+    reader.decode(&legacy).unwrap();
+    assert!(matches!(
+        reader.decode(&packets[4]),
+        Err(PackError::Gap { .. })
+    ));
+    assert!(Encoder::with_version(0, 150, 9).is_err());
+}
+
+#[test]
+fn v8_rejects_truncated_and_trailing_range_bytes_and_recovers_at_a_key() {
+    let fs = samples::campaign(3);
+    let mut writer = Encoder::with_version(0, 150, 8).unwrap();
+    let key = writer.encode(&fs[0]).unwrap().0;
+    let delta = writer.encode(&fs[1]).unwrap().0;
+    for n in 0..delta.len() {
+        let mut reader = Decoder::new();
+        reader.decode(&key).unwrap();
+        assert!(reader.decode(&delta[..n]).is_err(), "prefix {n}");
+    }
+    let mut reader = Decoder::new();
+    reader.decode(&key).unwrap();
+    let mut extra = delta.clone();
+    extra.push(0);
+    assert!(reader.decode(&extra).is_err());
+    assert!(matches!(reader.decode(&delta), Err(PackError::Gap { .. })));
+    writer.force_keyframe();
+    assert_eq!(
+        reader
+            .decode(&writer.encode(&fs[2]).unwrap().0)
+            .unwrap()
+            .frame,
+        quantize(&fs[2]).unwrap()
+    );
+    assert!(
+        reader.decode(&[0x18, 0, 0x18, 0]).is_err(),
+        "recursive embedded key"
+    );
 }

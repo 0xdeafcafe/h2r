@@ -163,7 +163,7 @@ impl State {
 pub struct Observation {
     /// Absent on a signal: partial state is deliberately not presented as an output.
     pub state: Option<State>,
-    /// macOS POSIX signal number, or null. MXCSR flags are in state.mxcsr & 63.
+    /// Host POSIX signal number, or null. MXCSR flags are in state.mxcsr & 63.
     pub exception: Option<u32>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -178,6 +178,22 @@ pub struct Fixture {
     pub output: Observation,
 }
 
+const NATIVE_LINUX: bool = cfg!(all(target_os = "linux", target_arch = "x86_64"));
+
+/// Whether the supported host has the tools needed for live x86-64 queries.
+pub fn runner_available() -> bool {
+    if NATIVE_LINUX {
+        Command::new("clang")
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    } else {
+        rosetta_available()
+    }
+}
+
 /// Build separately from Cargo so native arm64 clients need no x86 Rust target.
 pub fn build_runner(directory: &Path) -> Result<std::path::PathBuf> {
     std::fs::create_dir_all(directory)?;
@@ -186,16 +202,12 @@ pub fn build_runner(directory: &Path) -> Result<std::path::PathBuf> {
     std::fs::write(&c, include_str!("../native/runner.c"))?;
     std::fs::write(&asm, include_str!("../native/execute.S"))?;
     let binary = directory.join("sse-runner");
-    let output = Command::new("clang")
-        .args([
-            "-arch",
-            "x86_64",
-            "-O2",
-            "-Wall",
-            "-Wextra",
-            "-Werror",
-            "-mno-sse2",
-        ])
+    let mut clang = Command::new("clang");
+    if !NATIVE_LINUX {
+        clang.args(["-arch", "x86_64"]);
+    }
+    let output = clang
+        .args(["-O2", "-Wall", "-Wextra", "-Werror", "-mno-sse2"])
         .arg(&c)
         .arg(&asm)
         .arg("-o")
@@ -214,9 +226,14 @@ pub struct Oracle {
 }
 impl Oracle {
     pub fn spawn(binary: &Path) -> Result<Self> {
-        let mut child = Command::new("arch")
-            .arg("-x86_64")
-            .arg(binary)
+        let mut cmd = if NATIVE_LINUX {
+            Command::new(binary)
+        } else {
+            let mut arch = Command::new("arch");
+            arch.arg("-x86_64").arg(binary);
+            arch
+        };
+        let mut child = cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())

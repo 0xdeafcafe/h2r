@@ -406,7 +406,7 @@ fn the_bot_block_is_the_humans_with_a_name_and_fixed_controls() {
     human[BLOCK_CONTROLS + 4] = 2; // Boxer
     human[BLOCK_CONTROLS + 5] = 1;
     human[BLOCK_CONTROLS + 6] = 9;
-    let b = bot_block(&human, "Clanker 1 with a long name", 1);
+    let b = bot_block(&human, "Clanker 1 with a long name");
     assert_eq!(&b[BLOCK_NAME..BLOCK_NAME + 16], b"Clanker 1 with \0");
     let flags = u32::from_le_bytes(b[BLOCK_CONTROLS..BLOCK_CONTROLS + 4].try_into().unwrap());
     assert_eq!(flags, 0xffff_fffa, "bits 0 and 2 off, the rest kept");
@@ -425,7 +425,7 @@ fn the_bot_block_is_the_humans_with_a_name_and_fixed_controls() {
     }
     // Short names are padded with NULs.
     assert_eq!(
-        &bot_block(&human, "B", 1)[BLOCK_NAME..BLOCK_NAME + 3],
+        &bot_block(&human, "B")[BLOCK_NAME..BLOCK_NAME + 3],
         b"B\0\0"
     );
 }
@@ -465,20 +465,20 @@ fn refresh_name(m: &mut FakeGuest, port: u32) {
 #[test]
 fn the_bot_block_carries_the_bots_name_as_its_profile_name() {
     let human = halo0001();
-    let b = bot_block(&human, "Clanker 2", 2);
+    let b = bot_block(&human, "Clanker 2");
     let name = &b[BLOCK_PROFILE_NAME..BLOCK_PROFILE_NAME + 2 * BLOCK_PROFILE_NAME_UNITS];
     assert_eq!(utf16(name), "Clanker 2", "not the human's Halo0001");
     assert!(name[2 * 9..].iter().all(|&b| b == 0), "NUL to the end");
     // At most 31 units and a NUL, whatever the name.
     let long = "x".repeat(40);
-    let b = bot_block(&human, &long, 1);
+    let b = bot_block(&human, &long);
     let name = &b[BLOCK_PROFILE_NAME..BLOCK_PROFILE_NAME + 2 * BLOCK_PROFILE_NAME_UNITS];
     assert_eq!(utf16(name).len(), BLOCK_PROFILE_NAME_UNITS - 1);
     assert_eq!(&name[2 * 31..], &[0, 0]);
     // Each bot is its own: no two share a name the session would rename.
     let names: Vec<String> = (1..=3)
         .map(|p| {
-            let b = bot_block(&human, &format!("Clanker {p}"), p);
+            let b = bot_block(&human, &format!("Clanker {p}"));
             utf16(&b[BLOCK_PROFILE_NAME..BLOCK_PROFILE_NAME + 2 * BLOCK_PROFILE_NAME_UNITS])
         })
         .collect();
@@ -516,39 +516,17 @@ fn look_is_valid(l: &[u8]) -> bool {
 }
 
 #[test]
-fn each_bot_has_its_own_colours_and_emblem_never_the_humans() {
-    let mut human = [0u8; BLOCK_LEN];
-    // The human: colours 3 and 1 (port 1's), model 1, emblem 9 on 4.
-    human[BLOCK_LOOK..BLOCK_LOOK + 8].copy_from_slice(&[3, 1, 3, 1, 1, 9, 4, 0x0f]);
-    human[BLOCK_LOOK + 8] = 0x77;
-    let looks: Vec<[u8; 8]> = (1..=3)
-        .map(|port| {
-            let b = bot_block(&human, "B", port);
-            assert_eq!(b[BLOCK_LOOK + 8], 0x77, "the unchecked half is the human's");
-            b[BLOCK_LOOK..BLOCK_LOOK + 8].try_into().unwrap()
-        })
-        .collect();
-    for (port, l) in (1..).zip(&looks) {
-        assert!(look_is_valid(l), "port {port}: {l:?}");
-        assert_eq!(l[4], 1, "the human's model");
-        assert_ne!(l[0], 3, "port {port}: not the human's primary");
-        assert_ne!(l[1], 1, "port {port}: not the human's secondary");
-        assert_ne!((l[5], l[6]), (9, 4), "port {port}: not the human's emblem");
-    }
-    assert_eq!(&looks[0][..2], &[4, 2], "port 1's colours moved one on");
-    assert_ne!(looks[0], looks[1]);
-    assert_ne!(looks[1], looks[2]);
-    assert_ne!(looks[0], looks[2]);
-    // A bad model is not copied.
-    human[BLOCK_LOOK + 4] = 9;
-    let b = bot_block(&human, "B", 2);
-    assert!(look_is_valid(&b[BLOCK_LOOK..BLOCK_LOOK + 8]));
-    for (port, (_, fg, bg)) in (1..).zip(BOT_LOOKS) {
-        assert!(
-            fg < EMBLEM_FOREGROUNDS && bg < EMBLEM_BACKGROUNDS,
-            "port {port}"
-        );
-    }
+fn clanker_appearance_in_the_profile_comes_from_the_name() {
+    let mut human = [0x77; BLOCK_LEN];
+    human[BLOCK_LOOK + 4] = 1;
+    let b = bot_block(&human, "Bolt");
+    let look = &b[BLOCK_LOOK..BLOCK_LOOK + 8];
+    assert_eq!(look, bot_look(" BOLT "));
+    assert!(look_is_valid(look));
+    assert_eq!(b[BLOCK_LOOK + 8], 0x77);
+    human[BLOCK_LOOK..BLOCK_LOOK + 8].fill(0);
+    assert_eq!(&bot_block(&human, "Bolt")[BLOCK_LOOK..BLOCK_LOOK + 8], look);
+    assert!((0..16).any(|i| bot_look(&format!("Clanker {i}"))[4] != look[4]));
 }
 
 #[test]
@@ -1076,6 +1054,16 @@ fn a_bot_goes_on_live_as_its_own_account_not_a_guest() {
             "shown by its gamertag"
         );
     }
+    let look = slot(1) + SLOT_BLOCK + BLOCK_LOOK as u32;
+    assert_eq!(g.bytes(look, 8).unwrap(), bot_look(&bot(1).gamertag));
+    assert_eq!(
+        g.utf16(
+            slot(1) + SLOT_BLOCK + BLOCK_PROFILE_NAME as u32,
+            BLOCK_PROFILE_NAME_UNITS
+        )
+        .unwrap(),
+        bot(1).gamertag
+    );
     // Twice is once.
     assert_eq!(
         go_live_as(&mut g, 1, 0b0110, &bot(1)).unwrap(),

@@ -731,6 +731,8 @@ impl feature::Feature for Bots {
         );
 
         let phantoms = self.phantoms.clone();
+        let workspace = b.guest_alloc(retail_input::WORK_BYTES, runtime::guest::Permissions::RW)?;
+        let input = Arc::new(std::sync::Mutex::new(None));
         b.raw().before(
             &points::SIMULATION_SLOT_ACTION,
             "phantoms: sample the pad for this simulation tick",
@@ -741,8 +743,24 @@ impl feature::Feature for Bots {
                     return Ok(Flow::Continue);
                 }
                 let phantoms = phantoms.clone();
+                let input = Arc::clone(&input);
+                let cpu = *c.cpu;
                 c.answer_async(move |cx| {
-                    Box::pin(async move { phantoms.slot_action(cx, slot).await })
+                    Box::pin(async move {
+                        phantoms
+                            .slot_action(cx, slot, |sample| {
+                                let mut guard = input.lock().unwrap_or_else(|e| e.into_inner());
+                                let builder = guard.get_or_insert_with(|| {
+                                    retail_input::Builder::new(&rt, workspace)
+                                });
+                                builder.action(&rt, cpu, sample).map_err(|e| {
+                                    engine::entry::EntryError::IsolatedCall(format!(
+                                        "phantom player {}: {e:#}", sample.player.index()
+                                    ))
+                                })
+                            })
+                            .await
+                    })
                 })
             },
         );
@@ -794,6 +812,7 @@ impl feature::Feature for Bots {
             &points::RENDER_FRAME,
             "bot pads; hide bot views",
             move |c| {
+                let _cpu = timeline::host::Subsystem::Bots.span();
                 let bots = local.port_mask();
                 let any_phantoms = !phantoms.is_empty();
                 let f = frame.fetch_add(1, Ordering::Relaxed);
@@ -1323,6 +1342,7 @@ mod tests {
     }
 
     const CHOOSER: Option<Dialog> = Some(Dialog {
+        class_name: None,
         window: 3,
         slot: 4,
         id: Some(0x17),
@@ -1673,3 +1693,5 @@ mod tests {
         );
     }
 }
+
+mod retail_input;

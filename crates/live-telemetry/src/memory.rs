@@ -430,6 +430,14 @@ fn held_weapon(objects: &Objects, unit: u32, body: u32) -> ReadResult<Option<(We
     Ok((definition != u32::MAX).then_some((Weapon { datum, definition }, weapon)))
 }
 
+/// Definition of any live object datum, including weapons and equipment.
+pub fn object_definition(guest: &Guest, datum: u32) -> ReadResult<Option<u32>> {
+    let Some((_, body)) = Objects::new(guest).body(datum)? else {
+        return Ok(None);
+    };
+    Ok(Some(guest.u32(body + layout::BODY_DEFINITION)?).filter(|d| *d != u32::MAX))
+}
+
 pub fn object(guest: &Guest, datum: u32) -> ReadResult<Option<ObjectState>> {
     object_in(&Objects::new(guest), datum)
 }

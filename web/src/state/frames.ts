@@ -2,7 +2,7 @@
 // arrive at up to 15 Hz per game and are read directly by the canvas loop.
 
 import { isMachineBaseline } from "../api/pack";
-import type { Frame, FrameHit, FrameMachine, FrameObject, FramePlayer, FrameVehicle } from "../api/types";
+import type { Frame, FrameHit, FrameMachine, FrameObject, FramePlayer, FrameVehicle, MachinePosition } from "../api/types";
 
 export const TICKS_PER_SECOND = 30;
 const MS_PER_TICK = 1000 / TICKS_PER_SECOND;
@@ -692,16 +692,22 @@ interface TravelSample {
  *  position through quiet frames, including when a replay seeks there. */
 export class MachinePositionHistory {
   private readonly positions = new Map<number, TravelSample[]>();
-  private readonly resets: { tick: number }[] = [];
+  private readonly resets: { tick: number; rewind: boolean }[] = [];
 
   push(frame: Frame, tick = frame.tick, rewind = false): void {
     if (this.positions.size && (rewind || frame.cut != null || isMachineBaseline(frame))) {
-      this.resets.push({ tick });
+      this.resets.push({ tick, rewind });
     }
-    if (!Array.isArray(frame.machine_positions)) return;
+    if (Array.isArray(frame.machine_positions)) {
+      this.addPositions(tick, frame.machine_positions, MAX_MACHINE_POSITIONS);
+    }
+  }
+
+  /** Install sparse updates or the accumulated positions at an archive seek. */
+  addPositions(tick: number, entries: readonly MachinePosition[], limit = entries.length): void {
     const reset = this.resets.at(-1)?.tick ?? -Infinity;
-    for (let n = 0; n < Math.min(frame.machine_positions.length, MAX_MACHINE_POSITIONS); n++) {
-      const m = frame.machine_positions[n];
+    for (let n = 0; n < Math.min(entries.length, limit); n++) {
+      const m = entries[n];
       if (!m || !Number.isInteger(m.i) || m.i < 0 || m.i > 0x7fff ||
           !Number.isInteger(m.p) || m.p < 0 || m.p > 255) continue;
       let samples = this.positions.get(m.i);
@@ -730,10 +736,13 @@ export class MachinePositionHistory {
     if (!this.positions.size) return;
     const at = findFrame(frames, tick);
     if (at < 0 || frames[at]!.cinematic) return;
-    const reset = this.resets[findFrame(this.resets, tick)]?.tick ?? -Infinity;
+    const resetAt = findFrame(this.resets, tick);
+    const reset = this.resets[resetAt]?.tick ?? -Infinity;
+    const nextReset = this.resets[resetAt + 1];
     const before = frames[at]!.tick;
     const next = frames[at + 1];
-    const blend = next && next.cut == null && !next.cinematic && next.tick > before;
+    const blend = next && next.cut == null && !next.cinematic && next.tick > before &&
+      !(nextReset?.rewind && nextReset.tick === next.tick);
     const mix = blend ? (tick - before) / (next.tick - before) : 0;
     const out = new Map<number, SampledMachinePosition>();
     for (const [i, samples] of this.positions) {

@@ -2,8 +2,12 @@
 //!
 //! Every request goes to the one hub, which runs live-server's router
 //! over the log in its own SQLite storage and blobs in R2. `/v1/stream` is
-//! a hibernatable WebSocket ([`crate::sockets`]); ingest and the relay
-//! come in later slices (docs/live/live-worker.md).
+//! a hibernatable WebSocket ([`crate::sockets`]); the hub also runs ingest
+//! and authorizes co-op relay upgrades (docs/live/live-worker.md).
+
+// Dedicated host container binding and provider.
+#[path = "hostroom.rs"]
+mod hostroom;
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -20,11 +24,11 @@ use tokio::sync::OnceCell;
 use tower_service::Service;
 use wasm_bindgen::JsValue;
 use worker::{
-    Context, DurableObject, Env, HttpRequest, Request, Response, Result, SqlStorage, State,
-    WebSocket, WebSocketIncomingMessage, WebSocketPair, durable_object, event,
+    Context, DurableObject, Env, Headers, HttpRequest, Request, RequestInit, Response, Result,
+    SqlStorage, State, WebSocket, WebSocketIncomingMessage, WebSocketPair, durable_object, event,
 };
 
-use crate::bindings::{BLOBS, HUB, HUB_NAME, RELAY};
+use crate::bindings::{BLOBS, HUB, HUB_NAME};
 use crate::dosql::DoSql;
 use crate::ingest::{Ingests, Message};
 use crate::r2::R2;
@@ -81,20 +85,18 @@ async fn fetch(
     {
         return app_page(&req, &env).await;
     }
-    // A co-op session's relay is its own object; everything else, the hub.
-    let stub = match crate::relay::session_of(&path) {
-        Some(session) => env
-            .durable_object(RELAY)?
-            .id_from_name(session)?
-            .get_stub()?,
-        None => env
-            .durable_object(HUB)?
-            .id_from_name(HUB_NAME)?
-            .get_stub()?,
-    };
+    let stub = env
+        .durable_object(HUB)?
+        .id_from_name(HUB_NAME)?
+        .get_stub()?;
     let method = req.method().as_str().to_string();
     let resp = fetch_retrying(&stub, Request::try_from(req)?, &method, &path).await?;
-    let resp: worker::HttpResponse = resp.try_into()?;
+    let mut resp: worker::HttpResponse = resp.try_into()?;
+    if let Some(encoding) = resp.headers_mut().remove("x-h2-stored-encoding") {
+        resp.headers_mut()
+            .insert(http::header::CONTENT_ENCODING, encoding);
+        resp.extensions_mut().insert(worker::EncodeBody::Manual);
+    }
     Ok(resp.map(axum::body::Body::new))
 }
 
@@ -131,32 +133,41 @@ async fn app_page(req: &HttpRequest, env: &Env) -> Result<http::Response<axum::b
         let resp: worker::HttpResponse = index.try_into()?;
         return Ok(resp.map(axum::body::Body::new));
     }
-    let html = index.text().await?;
-    let mut meta = page_meta::describe_static(path);
-    if let Some(url) = crate::site::page_meta_url(path) {
-        let hub = env
-            .durable_object(HUB)?
-            .id_from_name(HUB_NAME)?
-            .get_stub()?;
-        if let Ok(mut r) = hub.fetch_with_str(&url).await
-            && r.status_code() == 200
-            && let Ok(m) = r.json::<page_meta::PageMeta>().await
-        {
-            meta = m;
-        }
-    }
     let body = if *req.method() == http::Method::HEAD {
         String::new()
     } else {
-        // A game page's header, pre-rendered above the app (page_header),
-        // as the hub's answer carries it.
-        match &meta.header {
-            Some(header) => live_server::page_header::inject(
-                &page_meta::page_html(&html, &meta, &origin, path),
-                header,
-            ),
-            None => page_meta::page_html(&html, &meta, &origin, path),
-        }
+        let html = index.text().await?;
+        // The hub rate-limits reads per client IP: pass the visitor's on.
+        let ip = req
+            .headers()
+            .get("cf-connecting-ip")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+        crate::site::app_html(&html, &origin, path, |url| {
+            let ip = ip.clone();
+            async move {
+                let hub = env
+                    .durable_object(HUB)
+                    .ok()?
+                    .id_from_name(HUB_NAME)
+                    .ok()?
+                    .get_stub()
+                    .ok()?;
+                let headers = Headers::new();
+                if let Some(ip) = &ip {
+                    headers.set("cf-connecting-ip", ip).ok()?;
+                }
+                let mut init = RequestInit::new();
+                init.with_headers(headers);
+                let call = Request::new_with_init(&url, &init).ok()?;
+                let mut response = hub.fetch_with_request(call).await.ok()?;
+                if response.status_code() != 200 {
+                    return None;
+                }
+                response.text().await.ok()
+            }
+        })
+        .await
     };
     http::Response::builder()
         .header(http::header::CONTENT_TYPE, "text/html; charset=utf-8")
@@ -184,7 +195,9 @@ async fn fetch_retrying(
         .headers()
         .get("content-length")?
         .and_then(|v| v.trim().parse::<u64>().ok());
-    let kept = doretry::keeps_body(req.inner().body().is_some(), length);
+    // Dedicated tunnel admission consumes the bearer nonce, like the co-op relay.
+    let kept = hostroom::tunnel_lease(path).is_none()
+        && doretry::keeps_body(req.inner().body().is_some(), length);
     let mut req = Some(req);
     let mut attempt = 1;
     loop {
@@ -281,18 +294,34 @@ impl LiveHub {
         );
         // Title files in R2: a Durable Object's row holds at most 2 MB.
         let store = BlobsElsewhere::new(Arc::new(store), private.clone());
-        let live = Live::start_with(
+        // Include historical host events in the budget when the hub wakes.
+        let host_costs = live_server::host_costs::HostCosts::configured(
+            self.setting("LIVE_HOST_PRICES").as_deref(),
+            self.setting("LIVE_HOST_BUDGET_USD_MONTH").as_deref(),
+        )
+        .map_err(rust_error)?;
+        let live = Live::start_with_host_costs(
             Arc::new(store),
             settings.identity,
             settings.policy,
             Timers::Driven,
+            host_costs,
         )
         .await
         .map_err(|e| rust_error(format!("{e:#}")))?;
+        // dh-matchmaker: load the dedicated queue settings from Worker bindings.
+        if let Err(err) = live.configure_dedicated_matchmaking(|name| self.setting(name)) {
+            worker::console_log!("live: dedicated matchmaking disabled: {err}");
+        }
         live.set_blobs(Blobs {
             private,
             public: None,
         });
+        // Dedicated host leases use this environment's private container namespace.
+        live.set_host_config(live_server::hosts::HostConfig::from_env(&|name| {
+            self.setting(name)
+        }));
+        live.set_host_provider(Arc::new(hostroom::CloudflareProvider::new(self.env.clone())));
         Ok((live, js_sys::Date::now() - started, head))
     }
 }
@@ -338,7 +367,7 @@ impl LiveHub {
                 }
             });
         }
-        let sweep = live.sweep_due().map(|s| s as f64 * 1000.0);
+        let sweep = live.sweep_due_with_hosts().map(|s| s as f64 * 1000.0);
         let due = [
             sweep,
             self.sockets.next_due_ms(),
@@ -374,14 +403,18 @@ impl LiveHub {
 
     /// `GET /v1/stream` and `GET /v1/ingest`: WebSockets the object
     /// accepts for hibernation.
-    async fn socket(&self, live: Arc<Live>, req: &Request) -> Result<Response> {
+    async fn socket(&self, live: Arc<Live>, req: &HttpRequest) -> Result<Response> {
         let refuse = |m: &str| {
             let e = live_server::ApiError::new(live_proto::ErrorCode::Invalid, m);
             Response::try_from(axum::response::IntoResponse::into_response(e))
         };
-        let stream = req.path() == "/v1/stream";
-        let filter = if stream {
-            let params: HashMap<String, String> = req.url()?.query_pairs().into_owned().collect();
+        let path = req.uri().path();
+        let filter = if path == "/v1/stream" {
+            let Ok(axum::extract::Query(params)) =
+                axum::extract::Query::<HashMap<String, String>>::try_from_uri(req.uri())
+            else {
+                return refuse("invalid stream query");
+            };
             match StreamFilter::from_params(&params) {
                 Ok(f) => Some(f),
                 Err(e) => {
@@ -391,9 +424,8 @@ impl LiveHub {
         } else {
             None
         };
-        let upgrade = req.headers().get("upgrade")?.unwrap_or_default();
-        if !upgrade.eq_ignore_ascii_case("websocket") {
-            return refuse(&format!("{} is a WebSocket", req.path()));
+        if req.method() != http::Method::GET || !crate::relay::websocket_upgrade(req.headers()) {
+            return refuse(&format!("{path} is a WebSocket"));
         }
         let pair = WebSocketPair::new()?;
         match filter {
@@ -427,12 +459,29 @@ impl DurableObject for LiveHub {
 
     async fn fetch(&self, req: Request) -> Result<Response> {
         let (live, cold) = self.live().await?;
-        if req.path() == "/v1/stream" || req.path() == "/v1/ingest" {
+        let req: HttpRequest = req.try_into()?;
+        let path = req.uri().path();
+        let relay = crate::relayroom::session_of(path);
+        let tunnel = hostroom::tunnel_lease(path);
+        if path == "/v1/stream" || path == "/v1/ingest" || relay.is_some() || tunnel.is_some() {
+            if matches!(*req.method(), http::Method::GET | http::Method::HEAD) {
+                let ip = live_server::http::client_ip_key(&live, None, req.headers());
+                if let Err(e) = live_server::http::limit_read(&live, &ip) {
+                    return Response::try_from(axum::response::IntoResponse::into_response(e));
+                }
+            }
+            if let Some(id) = tunnel {
+                let id = id.to_owned();
+                return hostroom::upgrade(&live, &self.env, req, &id).await;
+            }
+            if let Some(session) = relay {
+                let session = session.to_owned();
+                return crate::relay::upgrade(&live, &self.env, req, &session).await;
+            }
             let resp = self.socket(live.clone(), &req).await;
             self.schedule(&live).await?;
             return resp;
         }
-        let req: HttpRequest = req.try_into()?;
         let mut router = live_server::http::router(live.clone());
         let mut resp = match router.call(req).await {
             Ok(resp) => resp,
@@ -442,6 +491,16 @@ impl DurableObject for LiveHub {
             && let Ok(v) = format!("start;dur={ms}, events;desc={head}").parse()
         {
             resp.headers_mut().append(crate::COLD_START_HEADER, v);
+        }
+        // Carry the stored representation through the internal subrequest.
+        // Only the outer HTTP response declares its content encoding.
+        if resp
+            .headers()
+            .get(http::header::CONTENT_TYPE)
+            .is_some_and(|v| v == "application/x-h2-replay")
+            && let Some(encoding) = resp.headers_mut().remove(http::header::CONTENT_ENCODING)
+        {
+            resp.headers_mut().insert("x-h2-stored-encoding", encoding);
         }
         self.schedule(&live).await?;
         Response::try_from(resp)
@@ -453,7 +512,7 @@ impl DurableObject for LiveHub {
         let (live, _) = self.live().await?;
         // Set again below if anything is still due.
         self.alarm_at.set(Some(None));
-        live.sweep().await;
+        live.sweep_with_hosts().await;
         self.sockets.check();
         self.ingests.check();
         self.schedule(&live).await?;

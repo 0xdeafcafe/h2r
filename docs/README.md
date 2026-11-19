@@ -38,7 +38,7 @@ goals, the two-stage plan, the crate table and milestones.
 - [debug-menu.md](runtime/debug-menu.md): our in-game debug menu: an overlay over the game image, in the 8x8 font, over the same registries as `h2 agent` (built and unit tested, not yet seen in the game)
 - [lab.md](runtime/lab.md): `h2 lab`: start levels on a second Mac over SSH, build branches there, replay input recordings, fetch frame stats, profiles and logs
 - [checkpoints.md](runtime/checkpoints.md): the checkpoint save and revert acceptance test
-- [sim.md](runtime/sim.md): sim mode, `h2 sim run` and `h2 sim batch`: the game's simulation with bots and no rendering, faster than real time, matches set up by script and scored, A/B of bot tunings
+- [sim.md](runtime/sim.md): headless bot matches, tuning comparisons and uploads to Clanker Training in Uplink
 - [snapshots.md](runtime/snapshots.md): machine snapshots for `state.save`/`state.load`: what state lives outside guest RAM, the file format, phases
 - [cache-slots.md](runtime/cache-slots.md): the campaign cache-slot integration test
 - [tvos.md](runtime/tvos.md): building and deploying to Apple TV (`platform/tvos`, `H2_EMIT_TARGET=tvos`)
@@ -137,10 +137,11 @@ goals, the two-stage plan, the crate table and milestones.
 - [skulls.md](game/skulls.md): campaign skulls per profile, the skulls menu, and our own skulls
 - [community-gametypes.md](game/community-gametypes.md): community classics (Zombies, SWAT and more) as extra built-in game variants
 - [game-options.md](game/game-options.md): game variant options retail doesn't allow (no-weapon starts, instant respawn, gravity) and names with any character (design)
-- [maps.md](game/maps.md): new, edited, patched and shared maps: packages, patches, `MapId`; foundation built
-- [bots.md](game/bots.md): design for multiplayer bots (Clankers): one brain feeding controller input, local slots then phantom peers, the Clankers Game Setup page, Clankermatch, and the bot roster interface with the server
+- [maps.md](game/maps.md): map packages, patches applied at load, separate mod slots, and Live downloads
+- [bots.md](game/bots.md): Clanker navigation, beliefs, personality, local and phantom seats, appearance, player options, and Clankermatch
 - [map-pack.md](game/map-pack.md): the Multiplayer Map Pack disc, `h2 import-mappack` and how 1.0 lists its maps
-- [map-select.md](game/map-select.md): Change Map opens a list of categories first (Halo 2, Map Pack, community, Halo 1) in the retail Select Map dialog (built and table-tested, not run in the game)
+- [map-select.md](game/map-select.md): Change Map categories for Halo 2, Map Pack, Mods and Halo: CE, with separate retail and mod slots
+- [mods-ui-review.md](game/mods-ui-review.md): offline Mods browser, pack and detail review, with integrated slot behaviour and remaining game checks
 - [high-framerate.md](game/high-framerate.md): 60 and 120 fps keeping the 30 Hz tick exact (`H2_FPS`); the determinism harness is built
 - [theater.md](game/theater.md): design for saved films, free camera and spectating (not built)
 - [forge.md](game/forge.md): design for Forge on Halo 2 multiplayer maps (not built)
@@ -171,22 +172,24 @@ Reading and converting Halo 1 data:
 
 - [live.md](live/live.md) (**start here**): the Xbox Live replacement: overview, CLI, service and every client HLE section
 - [live-api.md](live/live-api.md): the service's HTTP and WebSocket contract
-- [live-security.md](live/live-security.md): identity, signing, tokens and federation (built except federation)
+- [live-security.md](live/live-security.md): identity, signing, token checks, recovery, rate limits and the federation design
 - [live-cloud-saves.md](live/live-cloud-saves.md): cloud saves: profiles, variants, campaign saves and profile settings follow the account; the merge and conflict rules
 - [live-admin.md](live/live-admin.md): who may publish title files, and the web MOTD editor and playlist builder
 - [web-boundary.md](live/web-boundary.md): what goes on the dashboard and what on the stats site, and the dashboard's dense style for admin and ops screens
 - [dash-concepts.md](live/dash-concepts.md): the Live dashboard as it is now: the orb, the menu blades, the Games screen and its Halo 2 panel
 - [live-hosting.md](live/live-hosting.md): hosting a server for friends (Cloudflare Tunnel, docker compose)
-- [live-worker.md](live/live-worker.md): moving the whole Live server to Cloudflare Workers, Durable Objects and R2, with the same axum router
+- [live-worker.md](live/live-worker.md): the Live service on Workers, Durable Objects and R2, including the game header and cutover runbook
+- [dedicated-host.md](live/dedicated-host.md): native game hosting, zero-local trial, light host, cloud choices and Ranked telemetry design
 - [live-boundary.md](live/live-boundary.md): static inventory of the retail XOnline/XNet entry points and the sign-in sequence
 - [live-motd.md](live/live-motd.md): how retail fetches and parses `message_of_the_day.dat` and `multiplayer_hopper.dat`
-- [live-matchmaking.md](live/live-matchmaking.md): matchmaking, sessions and invites: the retail call trace and what is built
+- [live-matchmaking.md](live/live-matchmaking.md): sessions, invites, arbitration, the Ranked page and ping-aware host selection in progress
 - [live-custom-games.md](live/live-custom-games.md): the custom games browser, its menu row, visibility and joining
 - [live-coop.md](live/live-coop.md): campaign co-op over Live: options, decisions, and what is built and probed (Co-op over Live built and confirmed in the game)
 - [live-voice.md](live/live-voice.md): voice chat, voice messages and the mute list: how the title does voice, and the host design (design only, not built)
 - [live-gamestate.md](live/live-gamestate.md): retail game-state addresses and layouts for the scoreboard and map
-- [live-telemetry.md](live/live-telemetry.md): `crates/live-telemetry`: hooks into the game, events and frames
-- [replay-fidelity.md](live/replay-fidelity.md): what replays record today (measured), the game clock that stopped the campaign flicker, and a denser tick-exact spectator track for the viewer (design, mostly not built)
+- [live-telemetry.md](live/live-telemetry.md): capture hooks, events, machine travel, negotiated v8 live frames and the archive handoff
+- [replay-fidelity.md](live/replay-fidelity.md): current recording and playback, the original 1 Hz measurements and the spectator track design
+- [replay-migration.md](live/replay-migration.md): migrate, verify and roll back finished-game archives in both homes
 - [live-art.md](live/live-art.md): map geometry and pre-drawn views extracted from the disc for the stats site
 
 ## Editor (`editor/`)

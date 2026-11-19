@@ -15,6 +15,7 @@ import { geometryFor } from "../map/geometry";
 import type { RosterEntry } from "../map/render";
 import { geometryChanged } from "../state/maps";
 import type { GameState } from "../state/reducer";
+import type { ViewerDirector } from "./camera";
 import { afterChange, setFullscreen, type FullscreenDoc, type FullscreenState } from "./fullscreen";
 import type { ViewMode } from "./scene";
 import type { CameraRequest } from "./sync";
@@ -56,6 +57,10 @@ export default function GameViewer(props: {
   onKey?: (e: KeyboardEvent) => boolean;
   /** The keys, for screen readers. */
   keysLabel?: string;
+  /** Optional page controls give 2D/3D and camera selection a shared owner. */
+  director?: ViewerDirector;
+  viewControls?: JSX.Element;
+  overlay?: JSX.Element;
   /** Under the view, full screen too: the replay's transport or the live clock. */
   controls?: JSX.Element;
   /** Under that, not full screen: the legend. */
@@ -64,10 +69,13 @@ export default function GameViewer(props: {
   let box!: HTMLElement;
   const [params, setParams] = useSearchParams<{ view?: string; cam?: string; ao?: string; cut?: string; see?: string }>();
   const geometry = geometryFor(() => props.game.map, () => props.game.map_id);
-  const mode = () => viewerMode(params.view, !geometryChanged(props.game));
+  const mode = () => viewerMode(
+    props.director ? (props.director.selection().mode === "top-down" ? undefined : "3d") : params.view,
+    !geometryChanged(props.game),
+  );
   const setMode = (m: ViewerMode) => setParams({ view: m === "3d" ? "3d" : undefined }, { replace: true });
   // A killcam wants the 3D view: switch to it (it takes the camera as it opens).
-  createEffect(on(() => props.camera?.() ?? null, (c) => { if (c && mode() !== "3d" && !geometryChanged(props.game)) setMode("3d"); }, { defer: true }));
+  createEffect(on(() => props.camera?.() ?? null, (c) => { if (!props.director && c && mode() !== "3d" && !geometryChanged(props.game)) setMode("3d"); }, { defer: true }));
 
   // ---- full screen ----
   const [full, setFull] = createSignal<FullscreenState>(null);
@@ -92,7 +100,7 @@ export default function GameViewer(props: {
       if (full() === "api") void setFullscreen(box, false, doc(), "api");
     });
     // Sent here from the old pop-out address (or a link to the 3D view): bring the viewer into view.
-    if (params.view === "3d") {
+    if (!props.director && params.view === "3d") {
       box.scrollIntoView?.({ block: "start", behavior: reducedMotion() ? "auto" : "smooth" });
       focusInside();
       focus3dWhenReady();
@@ -171,15 +179,17 @@ export default function GameViewer(props: {
         <h2>Game Viewer<small>{props.title}</small></h2>
         <span class="gv-status">{props.status}</span>
         <span class="gv-buttons">
-          <span class="gv-switch" role="group" aria-label="View">
-            <button aria-pressed={mode() === "2d"} classList={{ on: mode() === "2d" }} onClick={() => { setMode("2d"); focusInside(); }} title="The tactical map, from above">2D map</button>
-            <Show
-              when={!geometryChanged(props.game)}
-              fallback={<button disabled title={`This custom map's ${GEOMETRY_CHANGED_NOTE}`}>3D view</button>}
-            >
-              <button aria-pressed={mode() === "3d"} classList={{ on: mode() === "3d" }} onClick={() => { setMode("3d"); focusInside(); focus3dWhenReady(); }} title="The level in 3D: orbit, follow a player, fly">3D view</button>
-            </Show>
-          </span>
+          <Show when={props.director} fallback={
+            <span class="gv-switch" role="group" aria-label="View">
+              <button aria-pressed={mode() === "2d"} classList={{ on: mode() === "2d" }} onClick={() => { setMode("2d"); focusInside(); }} title="The tactical map, from above">2D map</button>
+              <Show
+                when={!geometryChanged(props.game)}
+                fallback={<button disabled title={`This custom map's ${GEOMETRY_CHANGED_NOTE}`}>3D view</button>}
+              >
+                <button aria-pressed={mode() === "3d"} classList={{ on: mode() === "3d" }} onClick={() => { setMode("3d"); focusInside(); focus3dWhenReady(); }} title="The level in 3D: orbit, follow a player, fly">3D view</button>
+              </Show>
+            </span>
+          }>{props.viewControls}</Show>
           <button
             class="gv-full-button"
             aria-pressed={full() !== null}
@@ -209,10 +219,11 @@ export default function GameViewer(props: {
         >
           <div class="v3-body">
             <Suspense fallback={<div class="v3-note v3-note--mid">Loading the 3D view…</div>}>
-              <Viewer3D frame={props.frame} roster={props.roster} highlight={props.highlight} soughtAt={props.soughtAt} camera={props.camera} {...view3d()} />
+              <Viewer3D frame={props.frame} roster={props.roster} highlight={props.highlight} soughtAt={props.soughtAt} camera={props.director ? undefined : props.camera} director={props.director} {...view3d()} />
             </Suspense>
           </div>
         </Show>
+        {props.overlay}
       </div>
       <Show when={props.controls}><div class="gv-controls">{props.controls}</div></Show>
       <Show when={props.children}><div class="gv-below">{props.children}</div></Show>

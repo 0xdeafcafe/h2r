@@ -13,16 +13,19 @@ use live_server::relay::{CLOSE_CONFLICT, CLOSE_RATE, CLOSE_TOO_LARGE, MAX_RELAY_
 use live_server::stream::CLOSE_UNAUTHORIZED;
 use serde::{Deserialize, Serialize};
 
+/// The session id in `/v1/sessions/{id}/relay`.
+pub(crate) fn session_of(path: &str) -> Option<&str> {
+    let id = path.strip_prefix("/v1/sessions/")?.strip_suffix("/relay")?;
+    (!id.is_empty() && !id.contains('/')).then_some(id)
+}
+
 /// What a relay socket keeps across hibernation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RelayAttachment {
     /// This socket, within its room.
     pub socket: u64,
     pub session: String,
-    /// When the object took it (ms since the epoch): it has 10 s to send
-    /// its auth message.
-    pub since: f64,
-    /// The hub's ticket, once let in.
+    /// The hub's ticket. Older pending sockets may have no ticket.
     pub ticket: Option<String>,
 }
 

@@ -29,7 +29,7 @@ import { createReplaySession } from "../viewer/session";
 import { emblemOrigin } from "../lib/emblem";
 import { gameHeaderModel, showGameHeader } from "./gameHeader";
 import "../styles/stats-game.css";
-import { STATS_ROOT, statsPath } from "../routes";
+import { STATS_ROOT, statsPath, theaterHref } from "../routes";
 
 export default function Game() {
   const params = useParams<{ id: string }>();
@@ -195,7 +195,12 @@ function viewerTitle(g: GameState): string {
   return isCampaign(g) ? gameMapTitle(g) : `${gameTitle(g)} on ${gameMapTitle(g)}`;
 }
 
-const PageTitle = () => <Title class="s-title--bar" back={["see all games", statsPath("/games")]}>Game Details</Title>;
+const PageTitle = (props: { game: GameState }) => (
+  <Title class="s-title--bar" back={["see all games", statsPath("/games")]}
+    right={<Show when={props.game.status === "ended"}><A href={theaterHref(props.game.game_id)}>Watch in Theater</A></Show>}>
+    Game Details
+  </Title>
+);
 
 /** Beside the viewer: the scoreboard (players, in a campaign) and the field report. */
 function Side(props: { game: GameState; scores: GameState; kills: Kill[]; at?: string; onHover: (i: number | null) => void }) {
@@ -234,14 +239,7 @@ export function GameView(props: { game: GameState; embedded?: boolean }) {
     return tl.killsBetween(-Infinity, tick()).map((k) => ({ ...k, at: "", pos: k.at ? [k.at.x, k.at.y, k.at.z] : null }));
   });
 
-  const onKey = (e: KeyboardEvent): boolean => {
-    if (!timeline()?.frames.length) return false;
-    if (replayKey(session, e)) return true;
-    if (e.ctrlKey || e.metaKey || e.altKey) return false;
-    if (e.key === "ArrowRight") { e.preventDefault(); session.seek(tick() + 5 * TICKS_PER_SECOND); return true; }
-    if (e.key === "ArrowLeft") { e.preventDefault(); session.seek(tick() - 5 * TICKS_PER_SECOND); return true; }
-    return false;
-  };
+  const onKey = (e: KeyboardEvent) => !!timeline()?.frames.length && replayKey(session, e);
 
   const controls = () => (
     <>
@@ -265,7 +263,7 @@ export function GameView(props: { game: GameState; embedded?: boolean }) {
 
   return (
     <>
-      <Show when={!props.embedded}><PageTitle /></Show>
+      <Show when={!props.embedded}><PageTitle game={props.game} /></Show>
       <GameViewer
         game={props.game}
         title={viewerTitle(props.game)}

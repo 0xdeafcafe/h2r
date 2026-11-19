@@ -325,9 +325,8 @@ pub struct RosterSeat {
     pub taunt: f32,
 }
 
-/// A checked roster's bots as phantoms: each bot's xuid, gamertag, emblem
-/// and colours, its team and its brain's skill and quirks. The host never
-/// changes any of them (§9.1).
+/// A checked roster supplies the identity, team and brain. The player
+/// configuration derives the emblem and colours from this gamertag (§9.1).
 pub fn roster_seats(roster: &live_proto::bots::Roster) -> Vec<RosterSeat> {
     roster
         .bots
@@ -336,14 +335,6 @@ pub fn roster_seats(roster: &live_proto::bots::Roster) -> Vec<RosterSeat> {
             identity: Identity {
                 xuid: b.xuid.0,
                 gamertag: b.gamertag.as_str().to_owned(),
-                emblem: [
-                    b.emblem.foreground,
-                    b.emblem.background,
-                    b.emblem.colors[0],
-                    b.emblem.colors[1],
-                    b.emblem.colors[2],
-                ],
-                colors: [b.colors.primary, b.colors.secondary],
             },
             team: b.team,
             skill: skill_of(b.skill),
@@ -1218,7 +1209,6 @@ impl Driver {
                             identity: Identity {
                                 xuid: live_proto::bots::local_xuid(n).0,
                                 gamertag: phantom_name(n),
-                                ..Default::default()
                             },
                             team: None,
                             skill: k,

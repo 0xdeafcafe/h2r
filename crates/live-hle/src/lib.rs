@@ -14,7 +14,7 @@ pub mod maps;
 pub mod mods;
 mod messages;
 mod mutes;
-pub use client::{Retry, ServerOptions, ServerStatus};
+pub use client::{HostPublisher, Retry, ServerOptions, ServerStatus};
 pub use messages::{ATTACHMENT_CAP, SUMMARY_SIZE};
 pub mod entries;
 #[cfg(unix)]
@@ -22,6 +22,7 @@ mod host;
 #[cfg(windows)]
 #[path = "host_windows.rs"]
 mod host;
+mod matchmaking;
 mod network;
 mod network_config;
 mod outbox;
@@ -47,6 +48,8 @@ pub use arbitration::{Arbitration, ArbitrationRound};
 mod storage_api;
 mod teams;
 pub mod traffic;
+pub mod tunnel_client;
+pub use tunnel_client::{TunnelHandle, connect_tunnel};
 pub use teams::{MEMBER_SIZE, TEAM_PROPERTIES_SIZE, TEAM_SIZE};
 mod ui;
 pub use network_config::{COOP_PORT_OFFSET, NetworkConfig};
@@ -212,6 +215,14 @@ pub struct Hle {
     network: network::Network,
 }
 impl Hle {
+    /// Installed once by boot, before any guest thread runs.
+    pub fn set_film_tap(&self, tap: Arc<dyn film::tape::Tap>) {
+        assert!(self.network.tap.set(tap).is_ok());
+    }
+    pub fn film_address(&self) -> SocketAddrV4 {
+        self.network.config.address
+    }
+
     /// Loads account identities once; does not connect to the server. Disabled
     /// configuration never reads a file or queries host networking.
     pub fn new(config: LiveConfig) -> Result<Arc<Self>, ConfigError> {
@@ -248,6 +259,14 @@ impl Hle {
         if options.request_timeout.is_zero() || options.heartbeat_interval.is_zero() {
             return Err(ConfigError::Worker);
         }
+        if options.publisher.is_some()
+            && (!config.enabled
+                || config.server_url.is_none()
+                || config.accounts_path.is_some()
+                || config.offer_new_account)
+        {
+            return Err(ConfigError::HostCredential);
+        }
         let address = network.address;
         let accounts = config.accounts()?;
         let service = if config.enabled {
@@ -265,6 +284,26 @@ impl Hle {
                 accounts,
                 address,
                 service,
+                config.clone(),
+            )),
+            config,
+            network: network::Network::new(network),
+        }))
+    }
+    /// Preserve the dedicated lobby's configured session class, with no HTTP
+    /// worker, accounts or usable remote URL. The guest network uses its tape.
+    pub fn for_film(network: NetworkConfig, live_service: bool) -> Result<Arc<Self>, ConfigError> {
+        network.validate().map_err(ConfigError::Network)?;
+        let config = LiveConfig {
+            enabled: true,
+            server_url: live_service.then(|| "film:offline".to_owned()),
+            ..Default::default()
+        };
+        Ok(Arc::new(Self {
+            state: Mutex::new(state::State::new(
+                Vec::new(),
+                network.address,
+                None,
                 config.clone(),
             )),
             config,
@@ -347,13 +386,20 @@ impl Hle {
             .unwrap_or_else(|e| e.into_inner())
             .set_visibility_probe(probe)
     }
-    /// Lets advertisements say exactly which map the host has loaded
+    /// Lets advertisements name the host's selected map
     /// (`NewSession.map_id`, docs/game/maps.md §5). Without it they name none.
     pub fn set_map_probe(&self, probe: Option<MapProbe>) {
         self.state
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .set_map_probe(probe)
+    }
+    /// The title has changed the map selected in its multiplayer lobby.
+    pub fn lobby_map_changed(&self, guest: &runtime::Guest) {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .lobby_map_changed(guest);
     }
     /// The host's multiplayer skulls (docs/game/skulls.md "In multiplayer"):
     /// advertisements carry them from now, and open ones are updated at
@@ -417,13 +463,22 @@ impl Hle {
     }
     /// The playlist (hopper descriptor index, as game records name it) and
     /// Live session id (16 hex digits) of the game about to start, for its
-    /// record (docs/live/live-matchmaking.md §8.3, §8.4): this console's
-    /// advertisement when it hosts, else the joined session as last read.
+    /// record (docs/live/live-matchmaking.md §8.3, §8.4): the dedicated
+    /// match, this console's advertisement when it hosts, or a joined session.
     /// `None` for a custom game or when nothing says. Never waits and never
     /// takes guest memory, so the game-start hook may call it.
     pub fn matchmade(&self) -> Option<(u32, String)> {
         let keys = self.network.registered_keys();
         self.lock().matchmade(&keys)
+    }
+    /// Whether Live assigned frame uploads to the host for this match alone.
+    /// The uploader reads it when it latches the published session ID.
+    pub fn frames_from_host(&self, session_id: &str) -> bool {
+        self.lock().frames_from_host(session_id)
+    }
+    /// Dedicated host progress for the retail matchmaking lobby line.
+    pub fn matchmaking_status(&self) -> Option<String> {
+        self.lock().matchmaking_status().map(str::to_owned)
     }
     /// The clanker hoppers the server served last (docs/game/bots.md §8):
     /// the playlists the Clankermatch row lists and OptiMatch does not.
@@ -445,7 +500,41 @@ impl Hle {
     /// The Live session this console hosts (16 lowercase hex digits),
     /// while its advertisement stands. Never waits on the server.
     pub fn hosted_session(&self) -> Option<String> {
-        self.lock().hosted_session()
+        let Some(tap) = self.network.tap.get() else {
+            return self.lock().hosted_session();
+        };
+        const NAME: &str = "HostedSession";
+        if tap.replaying() {
+            let call = tap.next(NAME, &[], 0)?;
+            match call.outputs.as_slice() {
+                [] => None,
+                [id] if id.len() == 16 && id.iter().all(u8::is_ascii_hexdigit) => {
+                    String::from_utf8(id.clone()).ok()
+                }
+                _ => {
+                    tap.fault("invalid recorded session ID".into());
+                    None
+                }
+            }
+        } else {
+            let id = self.lock().hosted_session();
+            tap.record(
+                film::NETR,
+                film::tape::Call {
+                    index: 0,
+                    op: NAME.into(),
+                    args: vec![],
+                    thread: 0,
+                    result: Ok(0),
+                    outputs: id
+                        .as_ref()
+                        .map(|s| s.as_bytes().to_vec())
+                        .into_iter()
+                        .collect(),
+                },
+            );
+            id
+        }
     }
     /// Asks the server for a bot roster for this console's session
     /// (`POST /v1/games/bots` with a `games.write` token, docs/game/bots.md
@@ -458,6 +547,14 @@ impl Hle {
         done: Box<dyn FnOnce(Result<live_proto::bots::Roster, String>) + Send>,
     ) -> Result<(), String> {
         self.lock().roster_bots(request, done)
+    }
+    /// Look up a remote or recent Clanker on the Live worker. The UI stays usable offline.
+    pub fn bot_card(
+        &self,
+        xuid: live_proto::Xuid,
+        done: Box<dyn FnOnce(live_proto::bots::PlayerCard) + Send>,
+    ) {
+        self.lock().bot_card(xuid, done)
     }
     /// A page of the mod repository, newest first (`GET /v1/maps?sort=new`
     /// with a `read` token, docs/game/maps.md §5 "Mod downloads"). Returns
@@ -601,6 +698,9 @@ impl Hle {
         report: Option<u16>,
         timeout: std::time::Duration,
     ) -> Option<u16> {
+        if self.network.tap.get().is_some_and(|t| t.replaying()) {
+            return None;
+        }
         let qos = std::net::SocketAddrV4::new(*host.ip(), host.port().wrapping_add(2));
         qos::ping(qos, report.unwrap_or(0), timeout).map(qos::round_trip_ms)
     }
@@ -826,12 +926,34 @@ fn invoke(
             .collect::<Result<Vec<_>, _>>()?
     };
     if let Operation::Net(op) = e.operation {
+        // dh-client-join: unregistering this exact key leaves the dedicated
+        // match. Unregistering the older party key can happen during its join.
+        let leaving = if op == network::Op::UnregisterKey {
+            let mut id = [0; 8];
+            ctx.memory().read_bytes(args[0], &mut id, 1).ok().map(|()| id)
+        } else {
+            None
+        };
         let value = hle.network.invoke(op, &args, ctx.thread_id, ctx.runtime());
+        if value == 0 && let Some(id) = leaving {
+            let mut state = hle.lock();
+            if state.end_match_join(id) {
+                hle.clear_tunnel();
+            }
+        }
         cpu.eax = value;
         return ctx.memory().ret(cpu, e.stack_words * 4);
     }
+    if matches!(e.operation, Operation::Sessions(crate::sessions::Op::Search))
+        && crate::matchmaking::config().is_some()
+        && let Err(e) = hle.network.ensure_responder()
+    {
+        eprintln!("live: matchmaking: could not start QoS responder: {e}");
+    }
     if e.operation == Operation::QosRelease && hle.network.release_qos(args[0]) {
-        cpu.eax = 0;
+        cpu.eax = hle.network.tap.get().map_or(0, |t| {
+            network::film::service_qos(t.as_ref(), e.name, &args, ctx.thread_id, ctx.runtime(), 0)
+        });
         return ctx.memory().ret(cpu, e.stack_words * 4);
     }
     // The accepted-invitation read stamps the record in the guest's clock;
@@ -845,12 +967,21 @@ fn invoke(
     let guest_now = (e.operation == Operation::AcceptedInvite)
         .then(|| ctx.runtime().guest_time())
         .flatten();
+    let thread_id = ctx.thread_id;
     let (result, cleanup) = {
         let mut m = ctx.memory();
         let mut state = hle.state.lock().unwrap_or_else(|e| e.into_inner());
         state.set_guest_now(guest_now);
         state.set_read_keys(read_keys);
-        let result = state.invoke(e.operation, &args, &mut m);
+        let had_match_tunnel = state.has_match_tunnel();
+        let mut invoke = || state.invoke(e.operation, &args, &mut m, hle);
+        let result = match hle.network.tap.get() {
+            Some(tap) => network::film::with_random(tap, e.name, thread_id, invoke),
+            None => invoke(),
+        };
+        if had_match_tunnel && !state.has_match_tunnel() {
+            hle.clear_tunnel();
+        }
         let cleanup = if matches!(result, Ok(0)) {
             hle.network.lifecycle(e.operation)
         } else {
@@ -861,6 +992,20 @@ fn invoke(
     drop(cleanup); // Socket wakeups and QoS responder join run without locks.
     let result = match result {
         Ok(value) => {
+            let value = if matches!(e.operation, Operation::QosLookup | Operation::QosRelease)
+                && let Some(tap) = hle.network.tap.get()
+            {
+                network::film::service_qos(
+                    tap.as_ref(),
+                    e.name,
+                    &args,
+                    ctx.thread_id,
+                    ctx.runtime(),
+                    value,
+                )
+            } else {
+                value
+            };
             cpu.eax = if e.operation == Operation::WsaCleanup && value != 0 {
                 hle.network.set_error(ctx.thread_id, value);
                 u32::MAX

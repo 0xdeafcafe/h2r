@@ -270,8 +270,6 @@ fn a_roster_becomes_phantom_identities_and_brains() {
     let a = &seats[0];
     assert_eq!(a.identity.xuid, SERVER_XUID_MARK | 0x201);
     assert_eq!(a.identity.gamertag, "Rusty Lugnut 1");
-    assert_eq!(a.identity.emblem, [12, 3, 1, 7, 1]);
-    assert_eq!(a.identity.colors, [4, 9]);
     assert_eq!(a.team, None, "null: the host balances");
     assert_eq!(seats[1].team, Some(1), "the roster's team when it has one");
     assert_eq!(a.skill, Skill::Heroic);

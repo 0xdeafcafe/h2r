@@ -13,6 +13,7 @@ import { zoneInPlay, type ZonePick } from "./zones";
 import { savePref, texturesPref } from "./textures3d";
 import { KIND_LABELS } from "./scenario3d";
 import { ViewerScene, hasWebGl, type ViewMode } from "./scene";
+import type { ViewerDirector } from "./camera";
 import { cameraFresh, type CameraRequest } from "./sync";
 import "./viewer.css";
 
@@ -29,6 +30,7 @@ export interface Viewer3DProps {
   follow?: number | null;
   /** Camera requests from the replay (a killcam): each new one is taken. */
   camera?: () => CameraRequest | null;
+  director?: ViewerDirector;
   ao?: boolean;
   /** Open with the height cut on, at this height (game z); and how the
    *  see-through starts (`auto` unless false or another mode is given). */
@@ -67,11 +69,15 @@ export default function Viewer3D(props: Viewer3DProps) {
   const hint = (text: string, ms = 1600) => { setFlyHint(text); clearTimeout(hintTimer); hintTimer = setTimeout(() => setFlyHint(""), ms); };
   onCleanup(() => clearTimeout(hintTimer));
   let root!: HTMLDivElement;
-  const toggleFly = () => {
-    if (!scene) return;
-    scene.setFly(!scene.flying);
+  const fly = (on: boolean) => {
+    if (!scene || scene.flying === on) return;
+    scene.setFly(on);
     if (scene.flying) hint("Flycam: WASD or arrows move, Q E or Ctrl Space down and up, drag (either button) to look, click to lock the mouse, wheel for speed, Shift for faster, F to leave. Touch: one finger looks, two fly", 6000);
     else setFlyHint("");
+  };
+  const toggleFly = () => {
+    if (!scene) return;
+    fly(!scene.flying);
     root.focus();
   };
   const onKeyUp = (e: KeyboardEvent) => { if (scene?.flyKey(e, false)) { e.preventDefault(); e.stopPropagation(); } };
@@ -80,12 +86,20 @@ export default function Viewer3D(props: Viewer3DProps) {
     // Stopped here: the pop-out page takes Space for play and pause.
     if (!typing && scene?.flyKey(e, true)) { e.preventDefault(); e.stopPropagation(); return; }
     if (e.ctrlKey || e.metaKey || e.altKey || typing) return;
-    if (e.key === "f") toggleFly();
-    else if (e.key === "c") toggleCut();
+    if (e.key === "f") {
+      const d = props.director;
+      if (d) {
+        const previous = mode();
+        d.pick(flying() ? (previous === "top" ? "top-down" : previous) : "free", d.selection().follow);
+      } else toggleFly();
+    } else if (e.key === "c") toggleCut();
     else if (e.key === "[" || e.key === "]") { if (scene) setRange(scene.cutRange()); moveCut(stepCut(cutValue(), e.key === "]" ? 1 : -1, range())); }
     else if (e.key === "x") toggleSee();
-    else if (e.key === "v") toggleEyes();
-    else return;
+    else if (e.key === "v") {
+      const d = props.director;
+      if (d) d.pick(mode() === "eyes" && !flying() ? "follow" : "eyes", d.selection().follow);
+      else toggleEyes();
+    } else return;
     e.preventDefault();
   };
   // AI-controlled bipeds (campaign) go unnamed unless asked; the button only shows when there are some.
@@ -157,7 +171,10 @@ export default function Viewer3D(props: Viewer3DProps) {
   const pick = (m: ViewMode, index: number | null = follow()) => {
     if (onPlayer(m) && index === null) index = people()[0]?.index ?? null;
     if (onPlayer(m) && index === null) return;
-    if (scene?.flying) toggleFly();
+    if (scene?.flying) {
+      fly(false);
+      if (!props.director) root.focus();
+    }
     setMode(m);
     setFollow(onPlayer(m) ? index : follow());
     scene?.setMode(m, index);
@@ -172,10 +189,23 @@ export default function Viewer3D(props: Viewer3DProps) {
     opened = true;
   }));
 
+  const applySelection = (selection = props.director?.selection()) => {
+    if (!selection) return;
+    if (selection.mode === "free") fly(true);
+    else if (selection.mode !== "top-down") pick(selection.mode, selection.follow);
+  };
+  createEffect(on(() => props.director?.selection(), (selection) => {
+    applySelection(selection);
+    if (scene?.flying) root.focus({ preventScroll: true });
+  }));
+
   onMount(() => {
     if (!hasWebGl()) { setFailed("This browser can't draw 3D here (WebGL is off or unavailable). The 2D map still shows the game."); return; }
     try {
-      scene = new ViewerScene(host, { reducedMotion: reducedMotion(), onPick: (i) => pick("follow", i) });
+      scene = new ViewerScene(host, {
+        reducedMotion: reducedMotion(),
+        onPick: (i) => props.director ? props.director.pick("follow", i) : pick("follow", i),
+      });
     } catch {
       setFailed("The 3D view couldn't start on this device. The 2D map still shows the game.");
       return;
@@ -187,6 +217,7 @@ export default function Viewer3D(props: Viewer3DProps) {
     s.onAoDropped = () => setAo(false);
     s.onFlyChange = setFlying;
     s.onFlySpeed = (label) => hint(label);
+    applySelection();
     if (ao()) setAo(s.setAo(true));
     s.setSeeMode(see());
     s.setTextures(textures());
@@ -202,15 +233,19 @@ export default function Viewer3D(props: Viewer3DProps) {
     let seen = 0, started = false;
     const stop = onAnimationFrame((now) => {
       if (!visible || document.hidden) return;
-      const sought = props.soughtAt?.() ?? 0;
       const frame = props.frame(now);
+      const sought = props.soughtAt?.() ?? 0;
       s.update(now, frame, props.roster(), props.highlight?.() ?? null, sought !== seen);
       seen = sought;
       if (!!frame.actors?.length !== hasActors()) setHasActors(!!frame.actors?.length);
       if (!!frame.cinematic !== cutscene()) setCutscene(!!frame.cinematic);
       if ((frame.bsp ?? null) !== (level()?.active ?? null)) setLevel(s.levelInfo());
       // The opening camera, once there are players to follow.
-      if (!started && frame.players.length) { started = true; if (mode() !== "orbit") pick(mode(), follow()); }
+      if (!started && frame.players.length) {
+        started = true;
+        if (props.director) applySelection();
+        else if (mode() !== "orbit") pick(mode(), follow());
+      }
     });
     onCleanup(() => { stop(); ro.disconnect(); io.disconnect(); s.dispose(); scene = null; });
   });
@@ -241,21 +276,27 @@ export default function Viewer3D(props: Viewer3DProps) {
         <div ref={host} class="v3-host" />
         <Show when={flyHint()}><div class="v3-fly-hint" role="status">{flyHint()}</div></Show>
         <Show when={cutscene()}><div class="v3-cutscene" role="status">Cutscene</div></Show>
-        <div class="v3-tools" role="group" aria-label="Camera">
-          <button classList={{ on: mode() === "orbit" }} aria-pressed={mode() === "orbit"} onClick={() => pick("orbit")} title="Drag to orbit, scroll to zoom, right-drag to pan">Orbit</button>
-          <button classList={{ on: mode() === "top" }} aria-pressed={mode() === "top"} onClick={() => pick("top")} title="Straight down, north up">Top-down</button>
-          <button classList={{ on: flying() }} aria-pressed={flying()} onClick={toggleFly} title="Flycam: fly freely. WASD or arrows move, Q and E (or Ctrl and Space) go down and up, drag with either mouse button to look (a click locks the mouse), wheel changes speed, Shift is faster. One finger looks and two fly on a touch screen; a gamepad works too. Key: f">Fly</button>
-          <select
-            classList={{ on: onPlayer(mode()) }}
-            aria-label="Follow a player"
-            value={onPlayer(mode()) && follow() !== null ? String(follow()) : ""}
-            onChange={(e) => { const v = e.currentTarget.value; if (v === "") pick("orbit"); else pick(mode() === "eyes" ? "eyes" : "follow", +v); }}
-          >
-            <option value="">Follow…</option>
-            <For each={people()}>{(p) => <option value={p.index}>{p.bot ? `${p.name} (BOT)` : p.name}</option>}</For>
-          </select>
-          <button classList={{ on: mode() === "eyes" }} aria-pressed={mode() === "eyes"} onClick={toggleEyes} title="First person: through the followed player's eyes, where they aim. Key: v">Eyes</button>
-          <button onClick={() => scene?.reset()} title="Back to the whole map">Reset</button>
+        <div class="v3-tools" role="group" aria-label={props.director ? "View settings" : "Camera"}>
+          <Show when={!props.director}>
+            <button classList={{ on: mode() === "orbit" }} aria-pressed={mode() === "orbit"} onClick={() => pick("orbit")} title="Drag to orbit, scroll to zoom, right-drag to pan">Orbit</button>
+            <button classList={{ on: mode() === "top" }} aria-pressed={mode() === "top"} onClick={() => pick("top")} title="Straight down, north up">Top-down</button>
+            <button classList={{ on: flying() }} aria-pressed={flying()} onClick={toggleFly} title="Flycam: fly freely. WASD or arrows move, Q and E (or Ctrl and Space) go down and up, drag with either mouse button to look (a click locks the mouse), wheel changes speed, Shift is faster. One finger looks and two fly on a touch screen; a gamepad works too. Key: f">Fly</button>
+            <select
+              classList={{ on: onPlayer(mode()) }}
+              aria-label="Follow a player"
+              value={onPlayer(mode()) && follow() !== null ? String(follow()) : ""}
+              onChange={(e) => { const v = e.currentTarget.value; if (v === "") pick("orbit"); else pick(mode() === "eyes" ? "eyes" : "follow", +v); }}
+            >
+              <option value="">Follow…</option>
+              <For each={people()}>{(p) => <option value={p.index}>{p.bot ? `${p.name} (BOT)` : p.name}</option>}</For>
+            </select>
+            <button classList={{ on: mode() === "eyes" }} aria-pressed={mode() === "eyes"} onClick={toggleEyes} title="First person: through the followed player's eyes, where they aim. Key: v">Eyes</button>
+          </Show>
+          <button onClick={() => {
+            const d = props.director;
+            if (d) d.pick("orbit", d.selection().follow);
+            scene?.reset();
+          }} title="Back to the whole map">Reset</button>
           <button classList={{ on: ao() }} aria-pressed={ao()} onClick={() => setAo(scene?.setAo(!ao()) ?? false)} title="Ambient occlusion: soft shading in corners (costs frame rate)">AO</button>
           <select
             classList={{ on: see() !== "off" }}

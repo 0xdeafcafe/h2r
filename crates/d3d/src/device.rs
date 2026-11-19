@@ -3012,12 +3012,12 @@ impl<B: Backend> Device<B> {
     /// `[0, z_max]` when empty) and `D3DRS_DEPTHCLIPCONTROL` from the
     /// guest's render-state array (unreadable: no clamp).
     pub fn depth_clip(&self, mem: &dyn GuestMemory, z_max: f32) -> crate::backend::DepthClip {
-        let slot = RenderStateTable::default().canonical_to_guest(crate::nv2a::RS_DEPTHCLIPCONTROL);
+        let slot = RenderStateTable::default().canonical_to_guest(crate::hw::RS_DEPTHCLIPCONTROL);
         let control = slot.and_then(|s| self.render_state(mem, s)).unwrap_or(0);
         crate::backend::DepthClip {
-            range: crate::nv2a::w_clip_range(&self.hw, z_max),
-            clamp: crate::nv2a::clamps_depth(control),
-            w_buffered: self.hw.control0.map(|c| c & crate::nv2a::CONTROL0_Z_PERSPECTIVE != 0),
+            range: crate::hw::w_clip_range(&self.hw, z_max),
+            clamp: crate::hw::clamps_depth(control),
+            w_buffered: self.hw.control0.map(|c| c & crate::hw::CONTROL0_Z_PERSPECTIVE != 0),
         }
     }
 
@@ -3053,7 +3053,7 @@ impl<B: Backend> Device<B> {
     /// The W-buffer's parameters now: `None` unless the depth is W-buffered
     /// (`SET_CONTROL0` z-perspective) with a finite, positive scale.
     fn depth_grid_scale(&self, mem: &dyn GuestMemory) -> Option<DepthScale> {
-        let w = self.hw.control0? & crate::nv2a::CONTROL0_Z_PERSPECTIVE != 0;
+        let w = self.hw.control0? & crate::hw::CONTROL0_Z_PERSPECTIVE != 0;
         if !w {
             return None;
         }
@@ -4325,12 +4325,15 @@ impl<B: Backend> Device<B> {
         } else {
             None
         };
+        #[cfg(feature = "gpu")]
         let compatible = self.indexed_geometry.is_some()
             && gfx::surface::color_surface_format(c.format).is_some()
             && depth.as_ref().is_some_and(|d| {
                 d.width == c.width && d.height == c.height
                     && gfx::surface::depth_surface_format(d.format, gfx::translate::Capabilities::ALL).is_some()
             });
+        #[cfg(not(feature = "gpu"))]
+        let compatible = false;
         Ok((
             TargetInfo {
                 width: c.width,
@@ -5032,6 +5035,26 @@ impl<B: Backend> Device<B> {
             levels: desc.levels,
         };
         let identity = pc.identity();
+        if self.backend.uses_texture_placeholders() {
+            if self.cache.get(&key).is_some_and(|cached| {
+                cached.identity == identity && cached.palette == pal
+            }) {
+                self.stats.texture_hits += 1;
+                return Ok((key, info));
+            }
+            let host = self.backend.texture_placeholder(&desc).map_err(D3dError::Backend)?;
+            self.cache.insert(key, CachedTexture {
+                identity,
+                palette: pal,
+                va,
+                len,
+                generation: self.tracker.generation(),
+                hash: 0,
+                info,
+                host,
+            });
+            return Ok((key, info));
+        }
         let policy = self.cfg.upload;
         let read_all = |mem: &dyn GuestMemory| -> Result<(Vec<u8>, Option<Vec<u8>>), D3dError> {
             let t = mem.read_vec(va, len as usize)?;
@@ -6311,7 +6334,7 @@ fn linear_twin(f: D3DFormat) -> D3DFormat {
 /// stages whose `PSTEXTUREMODES` mode (slot 136, five bits a stage)
 /// samples a texture (`TexMode::texture_dim`); for the
 /// fixed-function combiner, the stages before the first `COLOROP =
-/// DISABLE` (where [`crate::nv2a::fixed_function_def`] stops).
+/// DISABLE` (where `crate::nv2a::fixed_function_def` stops).
 pub(crate) fn sampled_stages(
     shader: &ShaderInputs,
     words: &StateWords,

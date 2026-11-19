@@ -435,6 +435,7 @@ impl DirectSound {
         let DirectSound {
             // Keep: the handle; the mixer's contents are the `audio` section.
             mixer: _,
+            clock_only: _,
             layout,
             objects,
             root,
@@ -572,6 +573,7 @@ impl DirectSound {
     pub(crate) fn apply_snapshot(&mut self, s: SavedDs) {
         let DirectSound {
             mixer: _,
+            clock_only: _,
             layout: _,
             objects,
             root,

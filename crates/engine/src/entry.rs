@@ -131,6 +131,8 @@ pub enum EntryError {
     Fault(MemFault),
     /// The body awaited something other than a guest call.
     Stalled,
+    /// A nested isolated guest call failed.
+    IsolatedCall(String),
 }
 
 impl From<MemFault> for EntryError {
@@ -149,6 +151,7 @@ impl std::fmt::Display for EntryError {
                 m.addr,
                 m.len
             ),
+            EntryError::IsolatedCall(msg) => f.write_str(msg),
             EntryError::Stalled => f.write_str("awaited something other than a guest call"),
         }
     }

@@ -75,6 +75,8 @@ pub enum Pacing {
         max_queued: Duration,
         playout: Option<Playout>,
     },
+    /// Logical packet and cursor timing with no sample rendering or sink.
+    Completions { origin: u64 },
 }
 
 /// The jitter buffer between logical audio time and a device.
@@ -307,6 +309,7 @@ pub struct Output {
     runtime: Arc<Runtime>,
     lease: Lease,
     grid: Option<Mutex<Grid>>,
+    clock_only: bool,
 }
 
 impl Output {
@@ -348,7 +351,11 @@ impl Output {
     /// The thread has exited (dropped, halted, or it hit a stop: see
     /// [`Hle::take_stops`], name `"Hle::output"`).
     pub fn is_finished(&self) -> bool {
-        self.join.as_ref().is_none_or(|j| j.is_finished())
+        if self.clock_only {
+            self.shared.gate().halted
+        } else {
+            self.join.as_ref().is_none_or(|j| j.is_finished())
+        }
     }
 
     /// Logical pacing: advances audio time to `logical` (100 ns ticks, the
@@ -370,30 +377,37 @@ impl Output {
         let mut g = grid.lock().unwrap_or_else(|e| e.into_inner());
         let due = due_frames(logical.saturating_sub(g.origin), g.rate);
         let mut rendered = 0;
-        let mut block = vec![0.0f32; 2 * QUANTUM as usize];
-        let mut side = vec![0.0f32; 2 * QUANTUM as usize];
+        if g.done + QUANTUM > due {
+            return Ok(0);
+        }
+        let mut samples = (!self.clock_only).then(|| {
+            ([0.0f32; 2 * QUANTUM as usize], [0.0f32; 2 * QUANTUM as usize])
+        });
         while g.done + QUANTUM <= due {
             let mut gate = self.shared.gate();
             if !gate.open() {
                 break;
             }
-            block.fill(0.0);
-            let side_live = self.shared.side_live.load(Ordering::Acquire);
-            self.hle.render_leased(
-                &self.runtime,
-                &mut block,
-                side_live.then_some(&mut side[..]),
-                &self.lease,
-            )?;
-            drop(gate);
-            if side_live {
-                self.shared.push_side(&side, g.max_queued);
+            if let Some((block, side)) = &mut samples {
+                let side_live = self.shared.side_live.load(Ordering::Acquire);
+                self.hle.render_leased(
+                    &self.runtime,
+                    block,
+                    side_live.then_some(&mut side[..]),
+                    &self.lease,
+                )?;
+                drop(gate);
+                if side_live {
+                    self.shared.push_side(side, g.max_queued);
+                }
+                let over = push_queue(&self.shared.queue, block, g.max_queued);
+                self.shared.dropped.fetch_add(over, Ordering::AcqRel);
+            } else {
+                self.hle.advance_audio_leased(&self.runtime, QUANTUM, &self.lease)?;
             }
             g.done += QUANTUM;
             rendered += QUANTUM;
             self.shared.rendered.fetch_add(QUANTUM, Ordering::AcqRel);
-            let over = push_queue(&self.shared.queue, &block, g.max_queued);
-            self.shared.dropped.fetch_add(over, Ordering::AcqRel);
         }
         Ok(rendered)
     }
@@ -519,9 +533,13 @@ impl Hle {
         S: AudioSink + 'static,
         F: FnOnce() -> S + Send + 'static,
     {
+        let clock_only = matches!(config.pacing, Pacing::Completions { .. });
         let (lease, mixer_rate) = {
             let mut ds = self.direct_sound();
             let lease = ds.lease_consumer(Consumer::Output)?;
+            if clock_only {
+                ds.set_clock_only();
+            }
             let rate = ds
                 .mixer()
                 .lock()
@@ -559,7 +577,16 @@ impl Hle {
             max_wake_gap_us: AtomicU64::new(0),
         });
         let (mode, grid) = match pacing {
-            Pacing::Device { target_latency_ms } => (Mode::Device(target_latency_ms), None),
+            Pacing::Device { target_latency_ms } => (Some(Mode::Device(target_latency_ms)), None),
+            Pacing::Completions { origin } => {
+                shared.rate.store(mixer_rate, Ordering::Release);
+                (None, Some(Mutex::new(Grid {
+                    origin,
+                    done: 0,
+                    rate: mixer_rate,
+                    max_queued: 0,
+                })))
+            }
             Pacing::Logical {
                 origin,
                 max_queued,
@@ -567,7 +594,7 @@ impl Hle {
             } => {
                 let max_queued = (max_queued.as_secs_f64() * f64::from(mixer_rate)) as usize;
                 (
-                    Mode::Logical(mixer_rate, playout),
+                    Some(Mode::Logical(mixer_rate, playout)),
                     Some(Mutex::new(Grid {
                         origin,
                         done: 0,
@@ -577,33 +604,36 @@ impl Hle {
                 )
             }
         };
-        let hle = Arc::clone(self);
-        let rt = Arc::clone(&runtime);
-        let sh = Arc::clone(&shared);
-        let join = std::thread::Builder::new()
-            .name("dsound-output".into())
-            .spawn(move || {
-                let sink = open();
-                let playout = match mode {
-                    Mode::Logical(_, p) => p,
-                    Mode::Device(_) => None,
-                };
-                let side = side.map(|s| Side::open(s, Arc::clone(&sh), playout));
-                match mode {
-                    Mode::Device(ms) => run_device(hle, rt, sink, side, period, ms, sh),
-                    Mode::Logical(rate, playout) => {
-                        run_logical(sink, side, period, rate, playout, sh)
+        let join = mode.map(|mode| {
+            let hle = Arc::clone(self);
+            let rt = Arc::clone(&runtime);
+            let sh = Arc::clone(&shared);
+            std::thread::Builder::new()
+                .name("dsound-output".into())
+                .spawn(move || {
+                    let sink = open();
+                    let playout = match mode {
+                        Mode::Logical(_, p) => p,
+                        Mode::Device(_) => None,
+                    };
+                    let side = side.map(|s| Side::open(s, Arc::clone(&sh), playout));
+                    match mode {
+                        Mode::Device(ms) => run_device(hle, rt, sink, side, period, ms, sh),
+                        Mode::Logical(rate, playout) => {
+                            run_logical(sink, side, period, rate, playout, sh)
+                        }
                     }
-                }
-            })
-            .expect("spawning the dsound output thread");
+                })
+                .expect("spawning the dsound output thread")
+        });
         Ok(Output {
             shared,
-            join: Some(join),
+            join,
             hle: Arc::clone(self),
             runtime,
             lease,
             grid,
+            clock_only,
         })
     }
 }

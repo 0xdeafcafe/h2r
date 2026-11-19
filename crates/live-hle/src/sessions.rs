@@ -2,6 +2,7 @@
 //! Exchange keys remain local; remote search records carry a zero HLE key.
 use crate::{
     client::{MatchRequest, Pending, Reply, Service, Session},
+    matchmaking::DedicatedMatch,
     state::{Error, Storage},
     status::*,
 };
@@ -75,6 +76,10 @@ enum Task {
     HeldEmpty { until: std::time::Instant },
     Search { array: u32, count: u32 },
     Pending { request: Pending, intent: Intent },
+    Queue {
+        search: Box<crate::matchmaking::Search>,
+        intent: Intent,
+    },
     Failed(u32),
 }
 enum Intent {
@@ -92,6 +97,7 @@ enum Intent {
     },
 }
 pub(crate) struct Context<'a> {
+    pub hle: &'a crate::Hle,
     pub storage: &'a mut Storage,
     pub host: [u8; 36],
     pub users: &'a [u64; 4],
@@ -125,6 +131,11 @@ pub(crate) struct Sessions {
     records: BTreeMap<[u8; 8], Record>,
     results: crate::qos_memory::QosMemory,
     tasks: BTreeMap<u32, Task>,
+    /// The elected host gets an empty search, then publishes using this lease.
+    matchmaking: Option<(live_proto::matchmaking::Assignment, std::time::Instant)>,
+    /// The selected queue result. Keep the lease route for FindFromID and
+    /// the frame policy for this published session alone.
+    match_join: Option<MatchJoin>,
     /// The host's visibility setting, for new and updated advertisements.
     visibility: Visibility,
     /// Visibility updates sent outside a guest task; dropped once answered.
@@ -166,6 +177,12 @@ pub(crate) struct Sessions {
     reported: BTreeMap<[u8; 8], BTreeSet<live_proto::Xuid>>,
     /// Clanker hoppers' search runs ([`crate::clankermatch::Hold`]).
     clanker_hold: crate::clankermatch::Hold,
+}
+
+struct MatchJoin {
+    id: [u8; 8],
+    frames_from_host: bool,
+    dedicated: DedicatedMatch,
 }
 /// The players hosted session `id` holds: this console's signed-in
 /// `users`, and `bots` when `id` is the session they were rostered for
@@ -515,6 +532,42 @@ impl Sessions {
     pub fn set_map_probe(&mut self, probe: Option<MapProbe>) {
         self.map_probe = probe;
     }
+    /// Publish a lobby selection even if the title's other advertisement
+    /// attributes have stayed the same.
+    pub fn lobby_map_changed(
+        &mut self,
+        guest: &Guest,
+        service: Option<&Service>,
+        connection: Option<&Session>,
+    ) {
+        let Some(probe) = &self.map_probe else { return };
+        let Some(id) = self.current_id() else { return };
+        let map_id = probe(guest);
+        let Some(record) = self.records.get_mut(&id) else {
+            return;
+        };
+        if record.session.map_id == map_id || record.session.campaign.is_some() {
+            return;
+        }
+        if let (Some(service), Some(connection)) = (service, connection) {
+            let request = MatchRequest::Update {
+                id: live_proto::sign::hex(&id),
+                update: live_proto::session::Update {
+                    map_id,
+                    clear_map_id: map_id.is_none(),
+                    ..Default::default()
+                },
+            };
+            let Ok(pending) = service.match_request(connection, request) else {
+                return;
+            };
+            self.background.retain(|p| p.take().is_none());
+            self.background.push(pending);
+        }
+        record.session.map_id = map_id;
+        record.session.revision = record.session.revision.saturating_add(1);
+    }
+
     pub fn set_skulls_probe(&mut self, probe: Option<SkullsProbe>) {
         self.skulls_probe = probe;
     }
@@ -522,13 +575,48 @@ impl Sessions {
         self.records.clear();
         self.looked_up.clear();
         self.tasks.clear();
+        self.matchmaking = None;
+        self.match_join = None;
         self.results.clear();
+    }
+    pub fn matchmaking_status(&self) -> Option<&str> {
+        self.tasks
+            .values()
+            .rev()
+            .find_map(|task| match task {
+                Task::Queue { search, .. } => Some(search.status()),
+                _ => None,
+            })
+            .flatten()
+    }
+    pub fn frames_from_host(&self, session_id: &str) -> bool {
+        self.match_join.as_ref().is_some_and(|joined| {
+            joined.frames_from_host && wire_id(session_id) == Some(joined.id)
+        })
+    }
+    pub fn dedicated_match(&self, keys: &[[u8; 8]]) -> Option<(u32, String)> {
+        let joined = self.match_join.as_ref().filter(|j| keys.contains(&j.id))?;
+        Some((joined.dedicated.hopper, live_proto::sign::hex(&joined.id)))
+    }
+    pub fn end_match_join(&mut self, id: [u8; 8]) -> bool {
+        if self.match_join.as_ref().is_some_and(|joined| joined.id == id) {
+            let had_tunnel = self.has_match_tunnel();
+            self.match_join = None;
+            return had_tunnel;
+        }
+        false
+    }
+    pub fn has_match_tunnel(&self) -> bool {
+        self.match_join
+            .as_ref()
+            .is_some_and(|joined| joined.dedicated.route.tunnel_url.is_some())
     }
     pub fn poll(
         &mut self,
         h: u32,
         m: &mut Guest,
         _storage: &mut Storage,
+        hle: &crate::Hle,
     ) -> std::result::Result<Option<u32>, GuestFault> {
         let Some(task) = self.tasks.remove(&h) else {
             return Ok(None);
@@ -559,8 +647,67 @@ impl Sessions {
         } else {
             task
         };
+        let task = if let Task::Queue { mut search, intent } = task {
+            use crate::matchmaking::Outcome;
+            match search.poll() {
+                Ok(None) => {
+                    if search.status().is_some() {
+                        self.matchmaking = None;
+                    }
+                    Task::Queue { search, intent }
+                }
+                Ok(Some(Outcome::Host(assignment))) => {
+                    self.match_join = None;
+                    self.matchmaking = Some((assignment, std::time::Instant::now()));
+                    Task::EmptySearch
+                }
+                Ok(Some(Outcome::Join {
+                    rows,
+                    frames_from_host,
+                    dedicated,
+                    tunnel,
+                })) => {
+                    let id = rows.first().and_then(|row| wire_id(&row.session_id));
+                    let installed = tunnel.is_some();
+                    if let Some((address, handle)) = tunnel
+                        && let Err(why) = hle.install_tunnel(address, handle)
+                    {
+                        eprintln!("live: could not install dedicated host tunnel: {why}");
+                        search.retry_dedicated();
+                        self.tasks.insert(h, Task::Queue { search, intent });
+                        return Ok(Some(0));
+                    }
+                    self.match_join = None;
+                    self.matchmaking = None;
+                    match self.complete(m, intent, rows) {
+                        Ok(v @ Task::Search { .. }) => {
+                            self.match_join =
+                                id.zip(dedicated).map(|(id, dedicated)| MatchJoin {
+                                    id,
+                                    frames_from_host,
+                                    dedicated,
+                                });
+                            v
+                        }
+                        result => {
+                            if installed {
+                                hle.clear_tunnel();
+                            }
+                            match result {
+                                Ok(v) => v,
+                                Err(Failure::Hr(e)) => Task::Failed(e),
+                                Err(Failure::Fault(f)) => return Err(f),
+                            }
+                        }
+                    }
+                }
+                Err(e) => Task::Failed(e),
+            }
+        } else {
+            task
+        };
         let status = match task {
-            Task::Pending { .. } | Task::HeldEmpty { .. } => 0,
+            Task::Pending { .. } | Task::HeldEmpty { .. } | Task::Queue { .. } => 0,
             Task::Failed(e) => e,
             _ => TASK_SUCCESS,
         };
@@ -592,6 +739,7 @@ impl Sessions {
     }
     fn checked(&mut self, op: Op, a: &[u32], m: &mut Guest, ctx: Context<'_>) -> Result<u32> {
         let Context {
+            hle,
             storage,
             host,
             users,
@@ -601,7 +749,7 @@ impl Sessions {
         } = ctx;
         if matches!(op, Op::Info | Op::Results) {
             let status = self
-                .poll(a[0], m, storage)?
+                .poll(a[0], m, storage, hle)?
                 .ok_or(Failure::Hr(INVALID_ARGUMENT))?;
             if status == 0 {
                 return hr(TASK_BUSY);
@@ -667,11 +815,7 @@ impl Sessions {
                 }
                 let was_coop = session.campaign.clone();
                 session.campaign = self.coop.clone();
-                // A session keeps its map id once it has one (the wire has
-                // no way back to none).
-                if map_id.is_some() {
-                    session.map_id = map_id;
-                }
+                session.map_id = map_id;
                 for attr in attributes {
                     // Attribute identity excludes its datatype. A changed NULL
                     // clears the value; unchanged entries never dereference data.
@@ -696,7 +840,23 @@ impl Sessions {
                 if let (Some(service), Some(connection)) = (service, connection) {
                     let data = advertisement(&session);
                     let request = if op == Op::Create {
-                        MatchRequest::Create(data)
+                        let publish_window = std::time::Duration::from_secs(
+                            live_proto::matchmaking::ASSIGNMENT_SECONDS as u64,
+                        );
+                        let assignment = self
+                            .matchmaking
+                            .as_ref()
+                            .filter(|(lease, elected)| {
+                                elected.elapsed() < publish_window
+                                    && !data.is_coop()
+                                    && live_proto::optimatch::playlist(&data.attributes)
+                                        == Some(lease.hopper)
+                            })
+                            .map(|(lease, _)| lease.id.clone());
+                        MatchRequest::Create {
+                            session: data,
+                            assignment,
+                        }
                     } else {
                         MatchRequest::Update {
                             id: live_proto::sign::hex(&id),
@@ -722,6 +882,11 @@ impl Sessions {
                                         .get(&id)
                                         .is_none_or(|r| r.session.map_id != Some(*m))
                                 }),
+                                clear_map_id: session.map_id.is_none()
+                                    && self
+                                        .records
+                                        .get(&id)
+                                        .is_some_and(|r| r.session.map_id.is_some()),
                                 // Only a change, as for visibility; empty
                                 // says the host turned them all off.
                                 skulls: self
@@ -868,6 +1033,37 @@ impl Sessions {
                             eprintln!("{line}");
                         }
                     }
+                    if a[1] > 0
+                        && let Some(query) = optimatch
+                        && let Some(hopper) = crate::matchmaking::solo_hopper(query, users)
+                        && let Some(connectivity) = crate::matchmaking::config()
+                    {
+                        let h = storage.alloc(m, 8).ok_or(Failure::Hr(OUT_OF_MEMORY))?;
+                        let ticket = live_proto::matchmaking::Ticket {
+                            hopper,
+                            port: u16::from_be_bytes([host[8], host[9]]),
+                            dedicated: false,
+                            connectivity,
+                            samples: Vec::new(),
+                        };
+                        let search =
+                            crate::matchmaking::Search::new(service, connection, ticket, query, a[1])
+                                .map_err(Failure::Hr)?;
+                        m.set_u32(a[6], h)?;
+                        self.tasks.insert(
+                            h,
+                            Task::Queue {
+                                search: Box::new(search),
+                                intent: Intent::Search {
+                                    limit: a[1],
+                                    bytes: a[4],
+                                    retail: true,
+                                    find: None,
+                                },
+                            },
+                        );
+                        return Ok(0);
+                    }
                     let filters = if a[0] == 1 {
                         BTreeMap::new()
                     } else {
@@ -985,6 +1181,11 @@ impl Sessions {
                     .next()
                     .ok_or(Failure::Hr(MATCH_INVALID_SESSION))?;
                 let id = wire_id(&row.session_id).ok_or(Failure::Hr(MATCH_INVALID_SESSION))?;
+                if let Some(lease) = &row.matchmaking
+                    && self.matchmaking.as_ref().is_some_and(|(held, _)| held.id == lease.id)
+                {
+                    self.matchmaking = None;
+                }
                 session.id = id;
                 session.slots = row.advertisement.slots;
                 session.attributes = row.advertisement.attributes;
@@ -1018,17 +1219,26 @@ impl Sessions {
                 retail,
                 find,
             } => {
+                let mut rows: Vec<_> = rows
+                    .into_iter()
+                    .filter(|v| v.state == "open")
+                    .take(limit as usize)
+                    .collect();
+                if let Some(joined) = self.match_join.as_ref().filter(|j| find == Some(j.id)) {
+                    for row in &mut rows {
+                        if wire_id(&row.session_id) == Some(joined.id)
+                            && joined.dedicated.route.still_assigned(row)
+                        {
+                            joined.dedicated.route.apply(row);
+                        }
+                    }
+                }
                 if let Some(id) = find {
                     let line = find_line(&id, &rows);
                     if say_once_per(&mut self.said_find, &line, FIND_REPEAT) {
                         eprintln!("{line}");
                     }
                 }
-                let rows: Vec<_> = rows
-                    .into_iter()
-                    .filter(|v| v.state == "open")
-                    .take(limit as usize)
-                    .collect();
                 if rows.is_empty() {
                     return Ok(Task::EmptySearch);
                 }
@@ -1277,7 +1487,7 @@ fn optimatch_line(q: &live_proto::optimatch::Query) -> String {
         q.hopper, q.average
     )
 }
-fn wire_id(s: &str) -> Option<[u8; 8]> {
+pub(crate) fn wire_id(s: &str) -> Option<[u8; 8]> {
     if !live_proto::session::valid_id(s) {
         return None;
     }
@@ -1443,7 +1653,7 @@ fn parse_result(m: &mut Guest, a: &[u32]) -> Result<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::ping_moved;
+    use super::*;
 
     #[test]
     fn a_ping_update_waits_for_a_real_change() {
@@ -1454,6 +1664,40 @@ mod tests {
         assert!(ping_moved(Some(30), Some(36)));
         assert!(!ping_moved(Some(200), Some(215)), "under a tenth");
         assert!(ping_moved(Some(200), Some(225)));
+    }
+
+    #[test]
+    fn dedicated_match_uses_its_published_id_hopper_and_frame_policy() {
+        use crate::matchmaking::Route;
+        use live_proto::hosts::{HostEndpoint, Transport};
+
+        let id = "8000000000000002";
+        let key = wire_id(id).unwrap();
+        let party = wire_id("8000000000000001").unwrap();
+        let endpoint = HostEndpoint {
+            transport: Transport::Udp,
+            udp: Some("192.0.2.10:31000".into()),
+            tunnel_url: None,
+            xnaddr: "00".repeat(36),
+            session_id: Some(id.into()),
+        };
+        let route = Route::from_endpoint(&endpoint, "https://live.example/v1", "hl-test").unwrap();
+        let mut sessions = Sessions {
+            match_join: Some(MatchJoin {
+                id: key,
+                frames_from_host: true,
+                dedicated: DedicatedMatch { route, hopper: 3 },
+            }),
+            ..Default::default()
+        };
+
+        assert_eq!(sessions.dedicated_match(&[party, key]), Some((3, id.into())));
+        assert_eq!(sessions.dedicated_match(&[party]), None);
+        assert!(!sessions.frames_from_host("8000000000000001"));
+        sessions.end_match_join(party);
+        assert!(sessions.frames_from_host(id));
+        sessions.end_match_join(key);
+        assert!(!sessions.frames_from_host(id));
     }
 }
 

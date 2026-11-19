@@ -124,7 +124,7 @@ pub fn cpu_flags(value: Option<&str>) -> Result<Vec<String>, Error> {
 pub fn for_arch(flags: Vec<String>, arch: Arch) -> Vec<String> {
     match arch {
         Arch::Arm64 | Arch::Arm64Tvos | Arch::Arm64Ios => flags,
-        Arch::X86_64 | Arch::X86_64Windows => flags
+        Arch::X86_64 | Arch::X86_64Windows | Arch::X86_64Linux => flags
             .into_iter()
             .filter(|f| !f.starts_with("-mcpu="))
             .collect(),
@@ -163,9 +163,9 @@ __attribute__((constructor)) static void h2pgo_init(void) {
     __llvm_profile_set_filename(h2pgo_path);
 }
 
-const char *h2pgo_file_v1(void) { return h2pgo_path; }
+__attribute__((visibility("default"))) const char *h2pgo_file_v1(void) { return h2pgo_path; }
 
-int h2pgo_write_v1(void) { return __llvm_profile_write_file(); }
+__attribute__((visibility("default"))) int h2pgo_write_v1(void) { return __llvm_profile_write_file(); }
 "#;
 
 /// The name [`super::host_dylib`] gives [`SHIM`] in the source directory
@@ -255,7 +255,7 @@ mod tests {
         for a in [Arch::Arm64, Arch::Arm64Tvos, Arch::Arm64Ios] {
             assert_eq!(for_arch(f(), a), f(), "{a:?}");
         }
-        for a in [Arch::X86_64, Arch::X86_64Windows] {
+        for a in [Arch::X86_64, Arch::X86_64Windows, Arch::X86_64Linux] {
             assert_eq!(for_arch(f(), a), ["-O2"], "{a:?}");
         }
     }

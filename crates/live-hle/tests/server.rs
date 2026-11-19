@@ -234,7 +234,7 @@ impl World {
         let hle = Hle::with_server_options(
             LiveConfig {
                 enabled: true,
-                accounts_path: Some(path.clone()),
+                accounts_path: options.publisher.is_none().then(|| path.clone()),
                 server_url: Some(url.into()),
                 offer_new_account: false,
             },
@@ -1611,15 +1611,19 @@ fn teams_server_failure_finishes_a_task_without_mutating_the_local_cache() {
 /// The host's advertisement says exactly which map it has loaded when the
 /// boot's map probe names a package's `MapId` (docs/game/maps.md §5).
 #[test]
-fn advertisements_carry_the_hosts_map_id() {
+fn advertisements_carry_the_hosts_map_id_and_clear_it_for_retail() {
     let s = Server::new();
     let a = s.account("Host");
     let mut host = World::new(&s.embedded.url, &[&a]);
     host.logon();
     let id = live_proto::maps::MapId([0x6d; 32]);
+    let selected = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let probe = selected.clone();
     host.hle
         .set_map_probe(Some(std::sync::Arc::new(move |_: &runtime::Guest| {
-            Some(id)
+            probe
+                .load(std::sync::atomic::Ordering::SeqCst)
+                .then_some(id)
         })));
     attr(&host, MATCH_ATTR, 1, 101);
     assert_eq!(
@@ -1638,6 +1642,31 @@ fn advertisements_carry_the_hosts_map_id() {
         .find(|e| e.kind == "SessionCreated")
         .unwrap();
     assert_eq!(created.data["advertisement"]["map_id"], id.to_string());
+    assert_eq!(
+        host.call("XOnlineMatchSessionGetInfo", &[create, MATCH_ID, MATCH_KEY]),
+        0
+    );
+    let lo = host.u32(MATCH_ID);
+    let hi = host.u32(MATCH_ID + 4);
+    selected.store(false, std::sync::atomic::Ordering::SeqCst);
+    attr(&host, MATCH_ATTR, 1, 101);
+    assert_eq!(
+        host.call(
+            "XOnlineMatchSessionUpdate",
+            &[lo, hi, 1, 7, 0, 0, 1, MATCH_ATTR, 0, OUT]
+        ),
+        0
+    );
+    let update = host.u32(OUT);
+    assert_eq!(host.wait(update), TASK_SUCCESS);
+    assert_eq!(host.hle.local_sessions()[0].map_id, None);
+    let updated = s
+        .events()
+        .into_iter()
+        .find(|e| e.kind == "SessionUpdated")
+        .unwrap();
+    assert_eq!(updated.data["clear_map_id"], true);
+    assert!(updated.data.get("map_id").is_none());
 }
 
 /// The host asks for a bot roster for the session it advertised
@@ -1812,6 +1841,110 @@ fn match_search(w: &mut World, procedure: u32, params: u32, cap: u32) -> (u32, u
     );
     (task, w.u32(OUT), w.u32(OUT + 4))
 }
+#[test]
+fn leased_publication_logs_on_and_writes_without_a_player() {
+    use live_proto::{hosts, session};
+    let s = Server::new();
+    let live = &s.embedded.live;
+    let lease: hosts::HostLease = serde_json::from_value(json!({
+        "id": hosts::HostLease::new_id(), "assignment_id":"custom-test",
+        "provider":"local", "class":"small", "map":"lockout", "transport":"udp",
+        "max_players":4, "roster":[], "bots":[],
+        "created_ms":time::OffsetDateTime::now_utc().unix_timestamp() * 1000
+    }))
+    .unwrap();
+    let requested = sign::EventBody::new(
+        &s.operator,
+        &format!("server:{}", s.discovery.id),
+        hosts::STREAM,
+        hosts::HOST_REQUESTED,
+        json!({"lease": &lease}),
+        time::OffsetDateTime::now_utc(),
+    );
+    let event = live_server::store::NewEvent {
+        jws: requested.sign(&s.operator).into(),
+        jws_index: None,
+        body: requested,
+    };
+    tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(live.store().append(vec![event], &[]))
+        .unwrap();
+    s.until(|| live.host_view(&lease.id).is_some());
+    let token = live.issue_host_token(&lease);
+    let mut different_lease = lease.clone();
+    different_lease.id = hosts::HostLease::new_id();
+    assert!(live_hle::HostPublisher::new(different_lease, token.clone()).is_err());
+    let publisher = live_hle::HostPublisher::new(lease.clone(), token).unwrap();
+    let mut w = World::with_options(
+        &s.embedded.url,
+        &[],
+        ServerOptions {
+            publisher: Some(publisher),
+            ..Default::default()
+        },
+    );
+    assert_eq!(w.call("XNetStartup", &[0]), OK);
+    assert_eq!(w.call("WSAStartup", &[2, DATA]), OK);
+    assert_eq!(w.call("XOnlineStartup", &[0]), OK);
+    assert_eq!(w.call("XOnlineGetUsers", &[DATA, OUT]), OK);
+    assert_eq!(w.u32(OUT), 0);
+
+    // The dedicated lobby never visits the controller sign-in screen.
+    assert_eq!(
+        w.call("XOnlineMatchSessionCreate", &[0, 4, 0, 0, 0, 0, 0, OUT]),
+        OK
+    );
+    let task = w.u32(OUT);
+    assert_eq!(w.wait(task), TASK_SUCCESS);
+    assert_eq!(
+        w.call("XOnlineMatchSessionGetInfo", &[task, MATCH_ID, MATCH_KEY]),
+        OK
+    );
+    let id = sign::hex(&w.bytes(MATCH_ID, 8));
+    assert_eq!(w.hle.hosted_session().as_deref(), Some(id.as_str()));
+    let (lo, hi) = (w.u32(MATCH_ID), w.u32(MATCH_ID + 4));
+    let detail = || s.get_as_operator::<Value>(&format!("/v1/sessions/{id}"))["session"].clone();
+    let row = detail();
+    assert_eq!(row["host"], format!("host:{}", lease.id));
+    assert_eq!(row["host_gamertag"], "");
+    assert_eq!(row["players"], json!({}));
+    assert_eq!(row["advertisement"]["slots"]["public_filled"], 0);
+
+    assert_eq!(w.call("XOnlineLogon", &[USERS, DATA, 0, 0, OUT]), OK);
+    let logon = w.u32(OUT);
+    assert_eq!(w.wait(logon), CONNECTED);
+    let slots = w.call("XOnlineGetLogonUsers", &[]);
+    assert_ne!(slots, 0);
+    assert_eq!(w.bytes(slots, 4 * 112), vec![0; 4 * 112]);
+    assert_eq!(w.call("XOnlineFriendsStartup", &[0, OUT]), NO_SESSION);
+    assert_eq!(w.call("XOnlinePresenceInit", &[0, 0, OUT]), NO_SESSION);
+
+    assert_eq!(
+        w.call(
+            "XOnlineMatchSessionUpdate",
+            &[lo, hi, 0, 3, 0, 0, 0, 0, 0, OUT]
+        ),
+        OK
+    );
+    let task = w.u32(OUT);
+    assert_eq!(w.wait(task), TASK_SUCCESS);
+    assert_eq!(detail()["advertisement"]["slots"]["public_open"], 3);
+    assert_eq!(w.call("XOnlineMatchSessionDelete", &[lo, hi, 0, OUT]), OK);
+    let task = w.u32(OUT);
+    assert_eq!(w.wait(task), TASK_SUCCESS);
+    assert_eq!(w.hle.hosted_session(), None);
+    assert_eq!(detail()["state"], "deleted");
+    assert!(s.presence().is_empty());
+    assert!(!s.events().iter().any(|e| e.kind == types::SIGNED_IN));
+    assert!(
+        s.events()
+            .iter()
+            .any(|e| e.kind == session::DELETED && e.author == format!("host:{}", lease.id))
+    );
+}
+
 #[test]
 fn sessions_two_guests_publish_find_parse_update_and_delete() {
     let s = Server::new();

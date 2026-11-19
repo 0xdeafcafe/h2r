@@ -1,13 +1,14 @@
 //! Runtime overrides for the statically linked Bink 1.x player in Halo 2.
 //!
-//! Two modes, chosen when [`register`] runs:
+//! Skip mode is always available through [`register_skip`]. With the
+//! `playback` feature, `register` selects between two modes:
 //!
 //! * **Skip** (no movie source): the engine's movie-start wrapper
 //!   ([`addr::MOVIE_START`]) is replaced by a stub that starts nothing. The
 //!   wrapper's own state says "no movie" (`ST_BINK == 0`), so every caller
 //!   (intro, attract, campaign, credits) moves on at once. This is the path
 //!   that unblocks the main menu and needs no files.
-//! * **Playback** (a [`MovieSource`] is present): the Bink API itself
+//! * **Playback** (a `MovieSource` is present): the Bink API itself
 //!   (`BinkOpen`, `BinkDoFrame`, `BinkCopyToBuffer`, ...) is replaced. The
 //!   engine's wrapper runs unchanged and drives a decoded stream, including
 //!   its own skip-on-button and end-of-movie handling. A movie the source
@@ -15,26 +16,35 @@
 //!   treats as a failed open, so a missing transcode is still a clean skip.
 //!
 //! No Bink decoding happens here. Decoded frames come from a
-//! [`MovieStream`], normally fed from the transcoded MOV (see
-//! `docs/audio/movies.md`) by a platform decoder behind [`MovieDecoder`].
+//! `MovieStream`, normally fed from the transcoded MOV (see
+//! `docs/audio/movies.md`) by a platform decoder behind `MovieDecoder`.
 #![deny(unsafe_code)]
 
-#[cfg(target_os = "macos")]
+#[cfg(all(feature = "playback", target_os = "macos"))]
 #[allow(unsafe_code)]
 mod avfoundation;
-#[cfg(target_os = "macos")]
+#[cfg(all(feature = "playback", target_os = "macos"))]
 pub use avfoundation::AvFoundationDecoder;
 
 pub mod addr;
+#[cfg(feature = "playback")]
 mod audio_out;
+#[cfg(feature = "playback")]
 mod playback;
+#[cfg(feature = "playback")]
 pub mod select;
+#[cfg(feature = "playback")]
 mod source;
 
+#[cfg(feature = "playback")]
 pub use audio_out::{MixerAudio, MovieAudioOut, MovieVoice};
+#[cfg(feature = "playback")]
 pub use movies::status::{DiscMovie, disc_movies};
+#[cfg(feature = "playback")]
 pub use playback::{BinkHle, DEFAULT_ARENA_HINT, HLE_RESERVED};
+#[cfg(feature = "playback")]
 pub use select::{Selection, platform_decoder, select};
+#[cfg(feature = "playback")]
 pub use source::{
     AudioInfo, Clock, MovieDecoder, MovieSource, MovieStream, Mp4Source, StreamInfo,
     SyntheticDecoder, SystemClock, TranscodedSource, synthetic_audio_frames, synthetic_sample,
@@ -43,6 +53,69 @@ pub use source::{
 use runtime::{Dispatch, GuestFault, dispatch::Override};
 use std::sync::Arc;
 
+/// The movie shim in a build with only the wrapper's skip stub.
+#[cfg(not(feature = "playback"))]
+pub struct BinkHle;
+
+#[cfg(not(feature = "playback"))]
+impl BinkHle {
+    /// Skip mode never opens a stream.
+    pub fn open_streams(&self) -> usize {
+        0
+    }
+}
+
+impl BinkHle {
+    /// Skip every movie at the engine's movie-start wrapper.
+    pub fn skip_only() -> Arc<Self> {
+        #[cfg(feature = "playback")]
+        {
+            Self::new(None)
+        }
+        #[cfg(not(feature = "playback"))]
+        {
+            Arc::new(Self)
+        }
+    }
+
+    /// Replacement for the wrapper's `MovieStart(path, flags) ret 8`.
+    fn skip_start(
+        &self,
+        cpu: &mut runtime::CpuAbi,
+        ctx: &mut runtime::ExecCtx,
+    ) -> Result<runtime::TransferAbi, GuestFault> {
+        let mut mem = ctx.memory();
+        #[cfg(feature = "playback")]
+        self.record_skip(
+            &mem,
+            mem.u32(cpu.esp.wrapping_add(4))?,
+            mem.u32(cpu.esp.wrapping_add(8))?,
+        );
+        use addr::{ST_BINK, ST_FINISHED, ST_MOVIE_OPEN};
+        // No movie is open and the last one is "finished". Only touch state
+        // when the wrapper's page is mapped (it always is in the real image).
+        if mem.u32(ST_BINK).is_ok() {
+            mem.set_u32(ST_BINK, 0)?;
+            mem.set_u8(ST_MOVIE_OPEN, 0)?;
+            mem.set_u8(ST_FINISHED, 1)?;
+        }
+        mem.ret(cpu, 8)
+    }
+}
+
+#[cfg(feature = "playback")]
+fn read_cstr(mem: &runtime::Guest, mut p: u32) -> String {
+    let mut out = Vec::new();
+    while out.len() < 260 {
+        match mem.u8(p) {
+            Ok(0) | Err(_) => break,
+            Ok(b) => out.push(b),
+        }
+        p = p.wrapping_add(1);
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// One installed override and whatever it displaced.
 pub struct Registered {
     pub addr: u32,
@@ -50,7 +123,7 @@ pub struct Registered {
     pub previous: Option<Override>,
 }
 
-/// What [`register`] installed.
+/// What `register` installed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Skip,
@@ -66,6 +139,7 @@ pub struct Request {
     pub played: bool,
 }
 
+#[cfg(feature = "playback")]
 /// Install the overrides for the mode the instance is configured for.
 pub fn register(dispatch: &mut Dispatch, hle: &Arc<BinkHle>) -> (Mode, Vec<Registered>) {
     if hle.has_source() {
@@ -86,6 +160,7 @@ pub fn register_skip(dispatch: &mut Dispatch, hle: &Arc<BinkHle>) -> Vec<Registe
     )]
 }
 
+#[cfg(feature = "playback")]
 /// The Bink API overrides. The wrapper runs as compiled.
 pub fn register_playback(dispatch: &mut Dispatch, hle: &Arc<BinkHle>) -> Vec<Registered> {
     use addr::*;

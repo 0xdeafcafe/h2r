@@ -6,7 +6,7 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
-gfx = { path = "../gfx" }
+gfx = { path = "../gfx", default-features = false }
 tags.workspace = true
 map.workspace = true
 thiserror.workspace = true

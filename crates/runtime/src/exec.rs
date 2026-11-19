@@ -105,7 +105,7 @@ impl ExecCtx {
     pub fn new(runtime: Arc<Runtime>, thread_id: u32) -> Self {
         let (preempt, word) = crate::preempt::new_word(&runtime);
         let (direct, direct_ptr) = crate::direct::Direct::new(&runtime);
-        Self {
+        let mut ctx = Self {
             preempt,
             direct_ptr,
             direct,
@@ -126,7 +126,11 @@ impl ExecCtx {
             profile: None,
             fast_memory: None,
             fast_memory_enabled: true,
+        };
+        if ctx.runtime.coverage.get().is_some() {
+            ctx.enable_direct_calls(false);
         }
+        ctx
     }
     /// Enable the optional generated-C RAM view for subsequent handler calls.
     /// Disabling it keeps the same generated module on checked Rust helpers,

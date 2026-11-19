@@ -17,10 +17,18 @@ pub struct DiscBackend<R> {
     volume_bytes: u64,
     /// The image file, when opened by path ([`Backend::host_file`]).
     image: Option<std::path::PathBuf>,
+    mapping: Option<memmap2::Mmap>,
 }
 impl DiscBackend<File> {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let mut disc = Self::new(File::open(path.as_ref())?)?;
+        Self::open_with_mapping(path, false)
+    }
+
+    pub(crate) fn open_with_mapping(path: impl AsRef<Path>, mmap: bool) -> Result<Self> {
+        let file = File::open(path.as_ref())?;
+        let mapping = if mmap { map_read_only(&file) } else { None };
+        let mut disc = Self::new(file)?;
+        disc.mapping = mapping;
         disc.image = Some(path.as_ref().to_path_buf());
         Ok(disc)
     }
@@ -54,6 +62,7 @@ impl<R: Read + Seek> DiscBackend<R> {
             entries,
             volume_bytes,
             image: None,
+            mapping: None,
         })
     }
     fn entry(&self, path: &str) -> Result<&xiso::Entry> {
@@ -150,8 +159,12 @@ impl<R: Read + Seek + Send> Backend for DiscBackend<R> {
         if len == 0 {
             return Ok(0);
         }
-        self.reader.seek(SeekFrom::Start(start + offset))?;
-        self.reader.read_exact(&mut buffer[..len])?;
+        if let Some(map) = &self.mapping {
+            copy_mapped(map, start + offset, &mut buffer[..len])?;
+        } else {
+            self.reader.seek(SeekFrom::Start(start + offset))?;
+            self.reader.read_exact(&mut buffer[..len])?;
+        }
         Ok(len)
     }
     fn volume_info(&mut self) -> Result<VolumeInfo> {
@@ -167,4 +180,25 @@ impl<R: Read + Seek + Send> Backend for DiscBackend<R> {
             maximum_component_name_length: 255,
         })
     }
+}
+
+/// Only the DVD input in the immutable-disc profile is mapped. The title
+/// may replace or truncate its writable cache files and installed maps.
+// The crate denies unsafe code; this read-only map is its one exception.
+#[allow(unsafe_code)]
+pub(crate) fn map_read_only(file: &File) -> Option<memmap2::Mmap> {
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
+    // SAFETY: The host-light input is an immutable disc image or immutable
+    // DVD files. Active files must remain intact until the run ends.
+    unsafe { memmap2::MmapOptions::new().map(file) }.ok()
+}
+
+pub(crate) fn copy_mapped(map: &[u8], offset: u64, buffer: &mut [u8]) -> Result<()> {
+    let bytes = usize::try_from(offset).ok()
+        .and_then(|start| map.get(start..)?.get(..buffer.len()))
+        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::UnexpectedEof))?;
+    buffer.copy_from_slice(bytes);
+    Ok(())
 }

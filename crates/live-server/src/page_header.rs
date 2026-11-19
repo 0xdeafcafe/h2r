@@ -16,7 +16,7 @@
 
 use std::fmt::Write as _;
 
-use live_proto::game::{self, GameEnded, GameSummary, Player, PlayerScore, Winner};
+use live_proto::game::{self, GameDetail, GameSummary, Player, PlayerScore, Winner};
 use serde::{Deserialize, Serialize};
 
 use crate::app::Live;
@@ -225,7 +225,23 @@ pub fn model_for(live: &Live, path: &str) -> Option<GameHeaderModel> {
     let s = live.model.read();
     let g = s.games.get(&id)?;
     let ended = g.ended.as_ref().map(|e| &e.0);
-    Some(build(&g.summary(), &g.scoreboard, ended))
+    Some(build(
+        &g.summary(),
+        &g.scoreboard,
+        ended.and_then(|e| e.winner.as_ref()),
+        ended.map(|e| e.reason.as_str()),
+    ))
+}
+
+/// Build the same model from an authorized game-detail response, for the
+/// Worker when the hub sends page metadata without a header.
+pub fn from_detail(game: &GameDetail) -> GameHeaderModel {
+    build(
+        &game.summary,
+        &game.scoreboard,
+        game.winner.as_ref(),
+        game.end_reason.as_deref(),
+    )
 }
 
 /// A player's score from the game's scoreboard, when it has one.
@@ -239,7 +255,8 @@ fn score_of(scoreboard: &[PlayerScore], index: u32) -> Option<i64> {
 fn build(
     summary: &GameSummary,
     scoreboard: &[PlayerScore],
-    ended: Option<&GameEnded>,
+    winner: Option<&Winner>,
+    end_reason: Option<&str>,
 ) -> GameHeaderModel {
     let campaign = summary.mode == "campaign";
     let map = map_title(&summary.map);
@@ -280,7 +297,7 @@ fn build(
         title,
         map,
         status: if live { "LIVE" } else { "FINAL" }.into(),
-        result: result_words(summary, ended),
+        result: result_words(summary, winner, end_reason),
         kind_line: type_line(summary),
         teams: None,
         players: None,
@@ -322,12 +339,15 @@ fn build(
 }
 
 /// How a finished game ended (resultWords in web/src/stats/Side.tsx).
-fn result_words(summary: &GameSummary, ended: Option<&GameEnded>) -> Option<String> {
+fn result_words(
+    summary: &GameSummary,
+    winner: Option<&Winner>,
+    end_reason: Option<&str>,
+) -> Option<String> {
     if summary.state != "ended" {
         return None;
     }
-    let e = ended?;
-    match &e.winner {
+    match winner {
         Some(Winner::Team { team }) => Some(format!("{} Team won", team_name(*team))),
         Some(Winner::Player { player }) => {
             let name = summary
@@ -339,7 +359,7 @@ fn result_words(summary: &GameSummary, ended: Option<&GameEnded>) -> Option<Stri
             Some(format!("{name} placed 1st"))
         }
         None => Some(
-            match e.reason.as_str() {
+            match end_reason? {
                 "quit" => "Ended early",
                 "lost" => "Unfinished",
                 _ => "No winner",
@@ -517,6 +537,7 @@ mod tests {
         // The same game, as the read model would carry it (the web side's
         // fixture game, web/test/fixtures/game-header-game.ts).
         let summary = GameSummary {
+            dedicated: Default::default(),
             game_id: "0123abcd".into(),
             map: "orchard".into(),
             mode: "multiplayer".into(),
@@ -591,13 +612,12 @@ mod tests {
             PlayerScore { index: 2, score: 8, kills: 8, deaths: 8, assists: 0 },
             PlayerScore { index: 3, score: 3, kills: 3, deaths: 12, assists: 0 },
         ];
-        let ended = GameEnded {
-            tick: 0,
-            reason: "finished".into(),
-            winner: Some(Winner::Team { team: 1 }),
-            players: Vec::new(),
-        };
-        let built = build(&summary, &scoreboard, Some(&ended));
+        let built = build(
+            &summary,
+            &scoreboard,
+            Some(&Winner::Team { team: 1 }),
+            Some("finished"),
+        );
         let model: GameHeaderModel = serde_json::from_str(FIXTURE_JSON.trim()).unwrap();
         assert_eq!(serde_json::to_string(&built).unwrap(), serde_json::to_string(&model).unwrap());
     }

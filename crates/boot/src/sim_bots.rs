@@ -36,14 +36,16 @@ use input::host::HostPadState;
 /// The bots of one [`Local`], as sim calls them.
 pub struct LocalBots {
     local: Local,
+    allow_add: bool,
     /// The bot on each port sim asked for.
     handles: BTreeMap<u32, BotHandle>,
 }
 
 impl LocalBots {
-    pub fn new(local: Local) -> Self {
+    pub fn new(local: Local, allow_add: bool) -> Self {
         LocalBots {
             local,
+            allow_add,
             handles: BTreeMap::new(),
         }
     }
@@ -169,6 +171,9 @@ fn brain_view(view: bots::BrainView) -> BotBrain {
 
 impl Bots for LocalBots {
     fn add_local(&mut self, port: Option<u32>, src: PadSource) -> Result<u32, String> {
+        if !self.allow_add {
+            return Err("light host bots are off; start with --host-bots".into());
+        }
         let wanted: Vec<u8> = self.local.list().iter().map(|b| b.wanted).collect();
         let port = match port {
             Some(p) => u8::try_from(p).map_err(|_| format!("port {p}: ports are 0 to 3"))?,
@@ -191,10 +196,12 @@ impl Bots for LocalBots {
         team: Option<i32>,
         src: PadSource,
     ) -> Result<u32, String> {
+        if !self.allow_add {
+            return Err("light host bots are off; start with --host-bots".into());
+        }
         let id = bots::phantom::Identity {
             xuid: xuid(&identity.xuid)?,
             gamertag: identity.gamertag.clone(),
-            ..Default::default()
         };
         let team = team
             .map(|t| u8::try_from(t).map_err(|_| format!("team {t}")))
@@ -229,7 +236,7 @@ impl Bots for LocalBots {
         .map(brain_view)
     }
 
-    fn clankers(&self) -> Vec<ClankerView> {
+    fn clankers(&self, guest: Option<&dyn engine::GuestMemory>) -> Vec<ClankerView> {
         let locals = self.local.list().into_iter().filter_map(|bot| {
             let brain = brain_view(self.local.brain_view(bot.handle)?);
             let name = self
@@ -241,6 +248,7 @@ impl Bots for LocalBots {
                 kind: PlayerKind::Local,
                 port: bot.port.map(u32::from),
                 player: None,
+                aim: None,
                 brain,
             })
         });
@@ -251,6 +259,20 @@ impl Bots for LocalBots {
                 kind: PlayerKind::Phantom,
                 port: None,
                 player: bot.player.map(|id| format!("player.{id}")),
+                aim: guest
+                    .and_then(|m| bots::phantom::global().aim_view(m, bot.handle))
+                    .map(|a| agent_proto::sim::PhantomAim {
+                        tick: a.tick,
+                        stick: a.stick,
+                        arrived_stick: a.arrived_stick,
+                        trigger: a.trigger,
+                        arrived_trigger: a.arrived_trigger,
+                        action_deg: a.action_deg,
+                        fire_primary: a.fire_primary,
+                        assist_strength: a.assist_strength,
+                        unit_forward: a.unit_forward,
+                        assist_player: a.assist_player.map(|i| format!("player.{i}")),
+                    }),
                 brain,
             })
         });
@@ -312,7 +334,7 @@ mod tests {
         local
             .add(1, "Clanker 1", Box::new(bots::Brain::default()))
             .unwrap();
-        let mut b = LocalBots::new(local.clone());
+        let mut b = LocalBots::new(local.clone(), true);
         assert_eq!(
             b.add_local(None, PadSource::Script(Remote::new())),
             Ok(2),

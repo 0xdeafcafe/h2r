@@ -98,6 +98,8 @@ pub struct Policy {
     pub invite_only: bool,
     /// Per author and method: requests per second, burst.
     pub write_rate: (f64, u32),
+    /// HTTP API reads per client IP: requests per second, burst.
+    pub read_rate: (f64, u32),
     /// Account creation, server-wide.
     pub create_rate: (f64, u32),
     /// Presence with no event or ping for this long expires.
@@ -120,7 +122,9 @@ pub struct Policy {
     /// Cloud saves: item cap, quota and item count per account
     /// (docs/live/live-cloud-saves.md).
     pub storage: crate::cloud_saves::StorageLimits,
-    /// Account recovery lockout per gamertag: wrong codes allowed, the
+    /// Account recovery requests per client IP: requests per second, burst.
+    pub recover_rate: (f64, u32),
+    /// Recovery lockout per gamertag and IP: wrong codes allowed, the
     /// first lockout, its cap (live-security.md §1, Recovery).
     pub recover_lockout: (u32, Duration, Duration),
 }
@@ -131,6 +135,7 @@ impl Default for Policy {
             private: false,
             invite_only: false,
             write_rate: (10.0, 30),
+            read_rate: (30.0, 120),
             create_rate: (1.0, 10),
             presence_ttl_s: 90,
             game_idle_s: 300,
@@ -141,6 +146,7 @@ impl Default for Policy {
             public: Default::default(),
             content: Default::default(),
             storage: Default::default(),
+            recover_rate: (1.0, 10),
             recover_lockout: (
                 crate::recovery::FREE_FAILURES,
                 crate::recovery::LOCK_BASE,
@@ -165,12 +171,18 @@ pub struct Live {
     /// Packed frames, batched a tick at a time for packed readers.
     pub(crate) packed: crate::packed::Hub,
     pub(crate) ingest: crate::games::IngestState,
+    pub(crate) archive_work: tokio::sync::Mutex<()>,
+    pub(crate) film_writes: tokio::sync::Mutex<()>,
     jtis: ReplayGuard,
     writes: RateLimiter,
+    pub(crate) reads: RateLimiter,
     creates: RateLimiter,
     team_writes: tokio::sync::Mutex<()>,
     pub(crate) sim_writes: tokio::sync::Mutex<()>,
     pub(crate) session_writes: tokio::sync::Mutex<()>,
+    // Dedicated hosts share one replayed registry on both homes.
+    pub(crate) hosts: Arc<crate::hosts::Hosts>,
+    pub(crate) matchmaking: std::sync::Mutex<crate::matchmaking::Matchmaker>,
     /// Serializes ranking, so a game is ranked once.
     pub(crate) rank_writes: tokio::sync::Mutex<()>,
     /// Serializes arbitration writes, so a round is registered once per account.
@@ -255,7 +267,11 @@ fn may_write(author: &Author, stream: &str, kind: &str) -> bool {
             && stream.starts_with("mailbox-")
             && live_proto::mailbox::is_kind(kind);
     }
-    if stream.starts_with("session-")
+    if stream == live_proto::hosts::STREAM
+        || live_proto::hosts::KINDS.contains(&kind)
+        || stream == crate::films::STREAM
+        || crate::films::KINDS.contains(&kind)
+        || stream.starts_with("session-")
         || stream.starts_with("reports-")
         || stream.starts_with("rank-")
         || stream.starts_with("round-")
@@ -406,6 +422,9 @@ fn validate(state: &State, body: &EventBody) -> Result<(), ApiError> {
                 if d.to == d.from {
                     return Err(invalid("a friend request needs another account"));
                 }
+                if live_proto::bots::is_bot_xuid(d.to) {
+                    return Err(forbidden("Clankers cannot receive friend requests"));
+                }
                 if !state.accounts.contains_key(&d.to) {
                     return Err(invalid("no such account"));
                 }
@@ -481,6 +500,22 @@ impl Live {
         policy: Policy,
         timers: Timers,
     ) -> anyhow::Result<Arc<Self>> {
+        let costs = crate::host_costs::HostCosts::configured(
+            std::env::var("LIVE_HOST_PRICES").ok().as_deref(),
+            std::env::var("LIVE_HOST_BUDGET_USD_MONTH").ok().as_deref(),
+        )?;
+        Self::start_with_host_costs(store, identity, policy, timers, costs).await
+    }
+
+    /// Starts Live with prices and budget from the deployment's bindings.
+    /// The cost projection observes the complete log before the first allocation.
+    pub async fn start_with_host_costs(
+        store: Arc<dyn EventStore>,
+        identity: ServerIdentity,
+        policy: Policy,
+        timers: Timers,
+        costs: crate::host_costs::HostCosts,
+    ) -> anyhow::Result<Arc<Self>> {
         let held = Arc::new(crate::hold::HeldStore::open(store).await?);
         let store: Arc<dyn EventStore> = held.clone();
         let model = Arc::new(Model::default());
@@ -496,6 +531,7 @@ impl Live {
         let recovery = Arc::new(crate::recovery::Recovery::new(
             &identity,
             crate::guard::Backoff::new(free, base, max),
+            RateLimiter::new(policy.recover_rate.0, policy.recover_rate.1),
         ));
         dispatcher.subscribe(recovery.clone());
         let signins = Arc::new(crate::signins::Registry::new(&identity));
@@ -513,6 +549,9 @@ impl Live {
         let usage = Arc::new(crate::usage::Usage::default());
         usage.load(&store.usage().await?);
         dispatcher.subscribe(usage.clone());
+        let hosts =
+            crate::hosts::Hosts::subscribe(&mut dispatcher, policy.write_rate, store.as_ref(), costs)
+                .await?;
         let mut applied = dispatcher.applied();
         let feed = dispatcher.feed();
         let wake = store.wake().await?;
@@ -530,12 +569,17 @@ impl Live {
             frames: broadcast::channel(256).0,
             packed: Default::default(),
             ingest: Default::default(),
+            archive_work: Default::default(),
+            film_writes: Default::default(),
             jtis: ReplayGuard::default(),
             writes: RateLimiter::new(policy.write_rate.0, policy.write_rate.1),
+            reads: RateLimiter::new(policy.read_rate.0, policy.read_rate.1),
             creates: RateLimiter::new(policy.create_rate.0, policy.create_rate.1),
             team_writes: Default::default(),
             sim_writes: Default::default(),
             session_writes: Default::default(),
+            hosts,
+            matchmaking: Default::default(),
             rank_writes: Default::default(),
             round_writes: Default::default(),
             local_signin: Default::default(),
@@ -566,6 +610,7 @@ impl Live {
         applied.wait_for(|p| *p >= head).await?;
         live.model.renew_deadlines(now());
         let live = Arc::new(live);
+        live.hosts.attach(&live);
         if timers == Timers::Driven {
             return Ok(live);
         }
@@ -576,7 +621,7 @@ impl Live {
             loop {
                 crate::rt::sleep(every).await;
                 let Some(live) = weak.upgrade() else { return };
-                live.sweep().await;
+                live.sweep_with_hosts().await;
             }
         });
         // Packed readers' batches, a tick at a time.
@@ -608,7 +653,10 @@ impl Live {
     /// Records where the server keeps its key and log, for the admin
     /// status (shown only to callers on this machine). Set once.
     pub fn set_data_dir(&self, dir: &std::path::Path) {
-        let _ = self.data_dir.set(dir.to_path_buf());
+        if self.data_dir.set(dir.to_path_buf()).is_ok() {
+            #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
+            self.install_native_host_provider(dir);
+        }
         #[cfg(feature = "native")]
         if self.blobs.get().is_none() {
             match crate::blobs::Blobs::dir(dir) {
@@ -757,7 +805,11 @@ impl Live {
         Ok(Token::parse(bearer).map(|t| t.claims.exp).unwrap_or(0))
     }
 
-    pub(crate) fn rate_limit(&self, author: &Author, method: &str) -> Result<(), ApiError> {
+    pub(crate) fn rate_limit(
+        &self,
+        author: &impl std::fmt::Display,
+        method: &str,
+    ) -> Result<(), ApiError> {
         if self.writes.allow(&format!("{author} {method}")) {
             Ok(())
         } else {
@@ -925,11 +977,6 @@ impl Live {
         ))
     }
 
-    /// The server-wide limit on account creation, shared by recovery.
-    pub(crate) fn allow_create(&self, what: &str) -> bool {
-        self.creates.allow(what)
-    }
-
     /// `POST /v1/events`: one signed event (security §2), by the token's
     /// author.
     pub async fn append_signed(
@@ -954,6 +1001,18 @@ impl Live {
             .unix_timestamp();
         if (at - now).abs() > MAX_EVENT_SKEW_S {
             return Err(invalid("at is more than 5 minutes from the server's clock"));
+        }
+        // All mailbox writes, including unsupported message/voice sends.
+        // Check the recipient before reporting an unknown mailbox or event kind.
+        if let Some(to) = body
+            .stream
+            .strip_prefix("mailbox-")
+            .and_then(|s| Xuid::parse(s).ok())
+            && live_proto::bots::is_bot_xuid(to)
+        {
+            return Err(forbidden(
+                "Clankers cannot receive messages or game invites",
+            ));
         }
         if !may_write(&author, &body.stream, &body.kind) {
             return Err(forbidden(format!(
@@ -1073,6 +1132,7 @@ impl Live {
 
     pub fn discovery(&self) -> Discovery {
         Discovery {
+            ingest_frame_versions: vec![live_proto::pack::LIVE_VERSION],
             id: self.identity.id.clone(),
             api: "/v1".into(),
             keys: vec![self.identity.key.public().jwk()],
@@ -1173,7 +1233,7 @@ impl Live {
                 .filter(|g| g.xuids.contains(&a.xuid))
                 .filter(|g| g.shows_to(viewer, |x, y| s.is_friends(x, y)))
                 .take(RECENT_GAMES)
-                .map(|g| g.summary())
+                .map(|g| self.game_summary(g))
                 .collect(),
             position,
         })
@@ -1214,7 +1274,7 @@ impl Live {
                 .filter(|g| g.xuids.contains(&b.xuid))
                 .filter(|g| g.shows_to(viewer, |x, y| s.is_friends(x, y)))
                 .take(RECENT_GAMES)
-                .map(|g| g.summary())
+                .map(|g| self.game_summary(g))
                 .collect(),
             position,
         })

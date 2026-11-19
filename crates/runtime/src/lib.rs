@@ -13,6 +13,7 @@ pub mod cpu;
 pub mod direct;
 pub mod dispatch;
 mod entry_stats;
+mod coverage;
 pub mod events;
 pub mod exec;
 pub mod executor;
@@ -39,6 +40,7 @@ pub use continuation::{
     Continuation, ContinuationInfo, ContinuationLayout, LayoutError, LiveRecord, SlotRecord,
 };
 pub use cow::CopyKind;
+pub use coverage::GuestCoverage;
 pub use cpu::CpuAbi;
 pub use dispatch::Dispatch;
 pub use exec::{Event, ExecCtx, FaultReport, GuestFrame, Runner, Runtime};

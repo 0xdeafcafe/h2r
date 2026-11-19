@@ -130,13 +130,26 @@ pub trait Rows: Send + Sync {
     fn title(&self) -> u32;
     /// The rows when the screen opens.
     fn count(&self) -> usize;
+    /// Reserve room for a list that starts with one waiting row and grows
+    /// in place when its contents arrive. Existing row handles stay valid.
+    fn growing_capacity(&self) -> Option<usize> {
+        None
+    }
     /// `(text index, string id)` for each text of row `row`.
     fn texts(&self, row: i16) -> Vec<(u32, u32)>;
+    /// A reserved list can remove trailing rows when its filter changes.
+    fn shrink_growing_rows(&self) -> bool {
+        false
+    }
     /// A press on row `row`.
     fn press(&self, row: i16) -> Chosen;
     /// The description's string id for row `row`, for a class with a
     /// description text ([`ListClass::description`]).
     fn description(&self, _row: i16) -> Option<u32> {
+        None
+    }
+    /// A focus- or state-dependent footer slot, refreshed with the description.
+    fn focused_footer(&self, _row: Option<i16>) -> Option<u32> {
         None
     }
     /// The picture's tint (red, green, blue multipliers) for row `row`, for
@@ -152,6 +165,10 @@ pub trait Rows: Send + Sync {
     /// picture changes with its focused level.
     fn picture(&self, _row: i16) -> Option<u32> {
         None
+    }
+    /// Restore the picture block's original bitmap when a row has no picture.
+    fn restore_missing_picture(&self) -> bool {
+        false
     }
     /// The image of its bitmap the picture shows, set once as the screen
     /// opens ([`set_image`]), for a class with a picture
@@ -898,7 +915,7 @@ pub struct Shown(Mutex<Vec<ShownEntry>>);
 struct ShownEntry {
     screen: u32,
     widget: u32,
-    picture: Option<u32>,
+    picture: Option<(u32, u32)>, // widget and original bitmap datum
     row: Option<i16>,
     /// The panel texts' widgets, in [`ListClass::panel`]'s order (0 for
     /// one that could not be made).
@@ -930,9 +947,9 @@ impl Shown {
     }
     /// Screen `screen`'s picture widget is `widget` (after its description
     /// widget was set).
-    pub fn set_picture(&self, screen: u32, widget: u32) {
+    fn set_picture(&self, screen: u32, widget: u32, original: u32) {
         if let Some(e) = self.lock().iter_mut().find(|e| e.screen == screen) {
-            e.picture = Some(widget);
+            e.picture = Some((widget, original));
         }
     }
     /// Screen `screen`'s panel text widgets are `widgets`.
@@ -951,6 +968,9 @@ impl Shown {
     }
     /// Screen `screen`'s picture widget.
     pub fn picture(&self, screen: u32) -> Option<u32> {
+        self.picture_block(screen).map(|(widget, _)| widget)
+    }
+    fn picture_block(&self, screen: u32) -> Option<(u32, u32)> {
         self.lock()
             .iter()
             .find(|e| e.screen == screen)
@@ -1131,6 +1151,7 @@ pub struct ListClass {
     buttons: Option<Buttons>,
     sideways: bool,
     on_free: Option<OnFree>,
+    pane_ready: Option<Action>,
     footer: Option<u32>,
     action_buttons: &'static [u32],
     lines: bool,
@@ -1140,6 +1161,11 @@ pub struct ListClass {
 }
 
 impl ListClass {
+    /// Attach dynamic widgets once the retail pane and its children exist.
+    pub fn pane_ready(mut self, action: Action) -> Self {
+        self.pane_ready = Some(action);
+        self
+    }
     /// The model's screen `screen`.
     pub fn new(id: &'static str, screen: &'static str, model: Arc<Model>) -> Self {
         Self::with_rows(id, screen, Arc::new(ModelRows { model, screen }))
@@ -1159,6 +1185,7 @@ impl ListClass {
             buttons: None,
             sideways: false,
             on_free: None,
+            pane_ready: None,
             footer: None,
             action_buttons: &ACTION_BUTTONS,
             lines: false,
@@ -1379,6 +1406,18 @@ pub fn adopt(
     })
 }
 
+/// Append rows to the reserved array without invalidating the focused handle.
+fn grow_rows(m: &mut dyn GuestMemory, screen: Screen, count: usize) -> Result<(), MemFault> {
+    let rows = screen.list().row_array(m)?.array;
+    let active = rows.header_field(m, engine::datum::layout::ACTIVE_COUNT)?;
+    for _ in active.max(0) as usize..count {
+        if rows.new_datum(m)?.is_none() {
+            break;
+        }
+    }
+    Ok(())
+}
+
 /// The row an item shows.
 fn item_row(m: &dyn GuestMemory, item: u32) -> Result<Option<i16>, MemFault> {
     Ok(Item::at(item)
@@ -1406,6 +1445,7 @@ pub async fn load(
     let count = rows.count();
     let described = rows.describe(count);
     cx.write(|m| rows.write_texts(m))?;
+    let capacity = rows.growing_capacity().unwrap_or(count).max(count);
     let rows = count;
     let request = cx.arg(0)?;
     // A dialog's tag copy is made before its pane is, from its base found
@@ -1431,7 +1471,7 @@ pub async fn load(
     // Unreadable (no game kind byte): the main menu's.
     let base = cx.read(|m| m.u8(UI_GAME_KIND).map_or(CONTROLS_SCREEN_ID, base_screen_id));
     {
-        let _building = Building::start(rows);
+        let _building = Building::start(capacity);
         if base == CONTROLS_SCREEN_ID {
             cx.call(
                 GuestCall::new(points::CONTROLS_SCREEN_CTOR.base)
@@ -1588,6 +1628,26 @@ pub async fn row_text(
             Ok(())
         })?;
     }
+    if live.redraw && rows.growing_capacity().is_some() {
+        let count = rows.count();
+        let screen = Screen::at(cx.entry().ecx.wrapping_sub(ui::LIST));
+        cx.write(|m| grow_rows(m, screen, count))?;
+        if rows.shrink_growing_rows() {
+            let list = cx.entry().ecx;
+            let focused = cx.call(GuestCall::new(points::LIST_FOCUSED_ROW.base).eax(list)).await?.eax;
+            if focused != u32::MAX && usize::from(DatumHandle(focused).index()) >= count {
+                // Clamp before removing the datum the list cursor refers to.
+                cx.call(GuestCall::new(0x0024_c591).eax(list).args([count.saturating_sub(1) as u32])).await?;
+            }
+            cx.write(|m| {
+                let rows = screen.list().row_array(m)?;
+                for (handle, _) in rows.live(m, i32::MAX)?.into_iter().skip(count) {
+                    rows.array.delete(m, handle)?;
+                }
+                Ok::<_, MemFault>(())
+            })?;
+        }
+    }
     let row = cx.read(|m| item_row(m, item))?;
     // The rows read the settings store; no guest memory is held here.
     let texts = row.map(|r| rows.texts(r)).unwrap_or_default();
@@ -1624,7 +1684,17 @@ pub async fn row_text(
             // it through `0x230134` into the widget), so a slot of ours
             // set here is written before it is named.
             let description = focused.and_then(|r| rows.description(r));
+            let footer = rows.focused_footer(focused);
             cx.write(|m| rows.write_texts(m))?;
+            if let Some(id) = footer {
+                cx.call(
+                    GuestCall::new(points::TEXT_SET.base)
+                        .edi(screen.wrapping_add(FOOTER))
+                        .esi(screen)
+                        .args([id]),
+                )
+                .await?;
+            }
             set_panel_texts(&cx, screen, &shown, rows.as_ref()).await?;
             if let Some(id) = description {
                 cx.call(
@@ -1642,12 +1712,13 @@ pub async fn row_text(
             ) {
                 cx.write(|m| set_tint(m, picture, tint))?;
             }
-            if let (Some(picture), Some(datum), Some(_)) = (
-                shown.picture(screen),
-                focused.and_then(|r| rows.picture(r)),
-                moved,
-            ) {
-                cx.write(|m| set_picture(m, picture, datum))?;
+            if let Some((picture, original)) = shown.picture_block(screen) {
+                let datum = focused
+                    .and_then(|r| rows.picture(r))
+                    .or_else(|| rows.restore_missing_picture().then_some(original));
+                if let Some(datum) = datum {
+                    cx.write(|m| set_picture(m, picture, datum))?;
+                }
             }
         }
     }
@@ -2045,7 +2116,9 @@ async fn add_picture(
             &format!("{name}: no picture (no memory for the widget)"),
         );
     } else if let Some(shown) = shown {
-        shown.set_picture(screen, widget);
+        let original =
+            u32::from_le_bytes(block[BITMAP_HANDLE..BITMAP_HANDLE + 4].try_into().unwrap());
+        shown.set_picture(screen, widget, original);
     }
     Ok(())
 }
@@ -2153,14 +2226,17 @@ impl feature::Feature for ListClass {
                 rows: Some(Arc::clone(&rows)),
             });
         let footer = self.footer;
+        let pane_ready = self.pane_ready.clone();
         let setup_pane_at = b.entry("set up pane", move |cx| -> EntryFuture {
-            Box::pin(setup_pane_footer(
-                cx,
-                title,
-                footer,
-                description.clone(),
-                name,
-            ))
+            let (description, ready) = (description.clone(), pane_ready.clone());
+            Box::pin(async move {
+                let screen = cx.entry().ecx;
+                let ret = setup_pane_footer(cx.clone(), title, footer, description, name).await?;
+                if let Some(ready) = ready {
+                    ready(cx, screen).await?;
+                }
+                Ok(ret)
+            })
         })?;
         let loader_slot = b.entry("loader slot", move |_| -> EntryFuture {
             Box::pin(async move { Ok(Ret::new(loader, 0)) })
@@ -2184,6 +2260,7 @@ impl feature::Feature for ListClass {
                     .layout
                     .unwrap_or_else(|| crate::ui_kit::dialog_tag::base_layout(base, rows.count()));
                 crate::ui_kit::dialog_tag::register(crate::ui_kit::dialog_tag::Registered {
+                    name: self.screen,
                     vtable: tables,
                     page: b.guest_alloc(0x1000, Permissions::RW)?,
                     loader,
@@ -2957,6 +3034,23 @@ mod tests {
     }
 
     #[test]
+    fn growing_a_waiting_list_keeps_its_first_row_handle() {
+        let mut g = guest();
+        g.map(SCREEN, ui::CONTROLS_SCREEN_SIZE)
+            .map(ROWS - 0x20, 0x200);
+        construct(&mut g, 4);
+        adopt(&mut g, SCREEN, &entries(), 1).unwrap();
+        let screen = Screen::at(SCREEN);
+        let rows = screen.list().row_array(&g).unwrap();
+        let first = rows.live(&g, 4).unwrap()[0].0;
+        grow_rows(&mut g, screen, 4).unwrap();
+        grow_rows(&mut g, screen, 4).unwrap();
+        let live = rows.live(&g, 4).unwrap();
+        assert_eq!(live.len(), 4);
+        assert_eq!(live[0].0, first);
+    }
+
+    #[test]
     fn a_failed_allocation_opens_nothing() {
         let mut g = guest();
         g.put_u32(STACK + 4, REQUEST);
@@ -3333,6 +3427,9 @@ mod tests {
             fn description(&self, _row: i16) -> Option<u32> {
                 Some(0x200)
             }
+            fn focused_footer(&self, row: Option<i16>) -> Option<u32> {
+                (row == Some(0)).then_some(0x201)
+            }
             fn live_text(&self) -> LiveText {
                 LiveText {
                     writes: vec![(0x0062_0000, b"hi\0".to_vec())],
@@ -3379,6 +3476,14 @@ mod tests {
             .args([0x200]);
         draw();
         let run = draw();
+        assert!(
+            run.calls.contains(
+                &Gc::new(points::TEXT_SET.base)
+                    .edi(SCREEN + FOOTER)
+                    .esi(SCREEN)
+                    .args([0x201])
+            )
+        );
         assert_eq!(run.guest.bytes(0x0062_0000, 3).unwrap(), b"hi\0");
         assert_eq!(run.calls.last(), Some(&set), "the focus did not move");
     }
@@ -3609,7 +3714,7 @@ mod tests {
         let list = SCREEN + ui::LIST;
         let shown = Arc::new(Shown::default());
         shown.set_widget(SCREEN, 0x9000);
-        shown.set_picture(SCREEN, PICTURE);
+        shown.set_picture(SCREEN, PICTURE, 0xe58c_036c);
         let mut g = guest();
         g.put_u32(STACK + 4, ITEM).put_u32(STACK + 8, 0);
         const BLOCK: u32 = 0x0062_0000;

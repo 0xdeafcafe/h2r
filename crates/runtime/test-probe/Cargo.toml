@@ -7,3 +7,6 @@ publish = false
 
 [dependencies]
 runtime = { path = ".." }
+
+[build-dependencies]
+cc = "1"

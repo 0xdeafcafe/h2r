@@ -12,29 +12,29 @@ const WRAPPER: &str = r#"
 #undef H2_X87_NATIVE
 #define H2_X87_NATIVE 1
 #include "h2gen.h"
-uint32_t n_arith(X87Abi *s, uint32_t op, uint32_t dst, uint32_t kind, uint64_t src) {
+H2_EXPORT uint32_t n_arith(X87Abi *s, uint32_t op, uint32_t dst, uint32_t kind, uint64_t src) {
     return h2x87n_arith(s, op, dst, kind, src);
 }
-uint32_t n_unary(X87Abi *s, uint32_t op) { return h2x87n_unary(s, op); }
-uint32_t n_load(X87Abi *s, uint64_t bits) { return h2x87n_ld_f64(s, bits); }
-uint32_t n_copy(X87Abi *s, uint32_t i) { return h2x87n_ld_st(s, i); }
-uint32_t n_load32(X87Abi *s, uint32_t b) { return h2x87n_ld_f32(s, b); }
-uint32_t n_ld_i32(X87Abi *s, int32_t v) { return h2x87n_ld_i32(s, v); }
-uint32_t n_ld_i16(X87Abi *s, int16_t v) { return h2x87n_ld_i16(s, v); }
-uint32_t n_const(X87Abi *s, uint32_t i) { return h2x87n_ld_const(s, i); }
-uint32_t n_st_st(X87Abi *s, uint32_t i, uint32_t pop) { return h2x87n_st_st(s, i, pop); }
-uint32_t n_commit(X87Abi *s, uint16_t sw, uint32_t pop) { return h2x87n_store_commit(s, sw, pop); }
-uint32_t n_store64(X87Abi *s, uint32_t i, uint64_t *v, uint16_t *sw) {
+H2_EXPORT uint32_t n_unary(X87Abi *s, uint32_t op) { return h2x87n_unary(s, op); }
+H2_EXPORT uint32_t n_load(X87Abi *s, uint64_t bits) { return h2x87n_ld_f64(s, bits); }
+H2_EXPORT uint32_t n_copy(X87Abi *s, uint32_t i) { return h2x87n_ld_st(s, i); }
+H2_EXPORT uint32_t n_load32(X87Abi *s, uint32_t b) { return h2x87n_ld_f32(s, b); }
+H2_EXPORT uint32_t n_ld_i32(X87Abi *s, int32_t v) { return h2x87n_ld_i32(s, v); }
+H2_EXPORT uint32_t n_ld_i16(X87Abi *s, int16_t v) { return h2x87n_ld_i16(s, v); }
+H2_EXPORT uint32_t n_const(X87Abi *s, uint32_t i) { return h2x87n_ld_const(s, i); }
+H2_EXPORT uint32_t n_st_st(X87Abi *s, uint32_t i, uint32_t pop) { return h2x87n_st_st(s, i, pop); }
+H2_EXPORT uint32_t n_commit(X87Abi *s, uint16_t sw, uint32_t pop) { return h2x87n_store_commit(s, sw, pop); }
+H2_EXPORT uint32_t n_store64(X87Abi *s, uint32_t i, uint64_t *v, uint16_t *sw) {
     return h2x87n_st_f64(s, i, v, sw);
 }
-uint32_t n_store(X87Abi *s, uint32_t i, uint32_t *v, uint16_t *sw) {
+H2_EXPORT uint32_t n_store(X87Abi *s, uint32_t i, uint32_t *v, uint16_t *sw) {
     return h2x87n_st_f32(s, i, v, sw);
 }
-uint32_t n_eligible(X87Abi *s) {
+H2_EXPORT uint32_t n_eligible(X87Abi *s) {
     double v; return h2x87n_mode(s) && h2x87n_get(s, h2x87n_phys(s, 0), &v);
 }
 /* Change host RC only for this call, restoring it even on fallback. */
-uint32_t n_directed(X87Abi *s, uint32_t op) {
+H2_EXPORT uint32_t n_directed(X87Abi *s, uint32_t op) {
 #if defined(__aarch64__)
     uint64_t old, next;
     __asm__ volatile("mrs %0, fpcr" : "=r"(old));

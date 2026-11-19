@@ -209,16 +209,25 @@ so **the direct path is four bots**: free-for-all, or 2 v 2 with teams.
 
 ### More than four
 
-Phantoms (bots.md §5) give up to 16 players, but they join only a
-**distributed** game: a System Link or Xbox Live game this console hosts.
-A level-booted local game is simulation mode 1, where phantoms wait for
-ever (bots.md, "Phantoms: not in Split Screen"). Making a local game
-distributed would change every Split Screen game's simulation (bots.md
-decided against it). So 5 to 16 bots means hosting a System Link custom
-game through the menus, as `h2 bots test` drives the Live one
-(`crates/cli/src/bots_drive.rs`). **Not built here**: the batch runner
-refuses more than four bots and says why. It is the next slice once the
-direct path has run.
+A `[[bot]]` with `kind = "phantom"` selects a distributed System Link
+match for the whole roster. `kind = "local"` is the default. Specify one
+to four local pads and up to sixteen seats in total. File order is the
+logical seat number starting at zero. Local seats receive controller
+ports in order. Each phantom receives its own machine identity.
+
+The headless host signs in the local pads (`0x18fb34`), creates a System
+Link squad (`0x199df9(0,0)`, `0x199a03(2)`), and applies the map and
+variant with retail's lobby setters (`0x19a6f2`, `0x19a728`). It waits
+for the roster and retail start state 9 before requesting the countdown
+(`0x19a78e`). Each process reserves its own loopback XNet port block.
+Headless runs reach the regular phantom uplink and remote gather.
+
+`match.status` enters `binding` on map activation. Combat sampling
+starts once the distributed server has a player and a spawned unit for
+every configured controller and phantom machine. A run that cannot
+bind the roster writes its diagnostic report and exits with an error.
+Startup allows up to 180 wall-clock seconds, subject to a shorter
+`max_wall_s`. Distributed runs boot a fresh session for each match.
 
 ### Match file
 
@@ -271,7 +280,9 @@ reaction = 5
   tick), and `thumb_switch_ticks` (1–6 ticks);
 - phantom transport: `phantom_ping_ms` (0–1000 ms round trip) and
   `phantom_jitter_ms` (0–50 ms bounded one-way variation). These fields
-  apply when the source drives a phantom.
+  apply when the source drives a phantom;
+- `aim_model`: `code` (the hand-written tracking, the default) or `net`
+  (the aim net; [bots.md §3.4.1](../game/bots.md#341-the-aim-net-built-not-compared-in-a-game-yet)).
 
 Anything left out keeps the built-in value. The bots crate takes them as
 `bots::tuning::Tuning` through `Brain::with_tuning`. The aim table and awareness are
@@ -326,11 +337,55 @@ ticks; and the final score. The report is one JSON file per match:
 }
 ```
 
-Shots are the `WEAPON_FIRE` weapons a player's unit holds at the next
-tick's snapshot (a turret's are not counted, **S**); damage is the damage
+A shot is attributed to the firing weapon's parent unit at `WEAPON_FIRE`,
+with the next tick's held-weapon snapshot as a fallback. Damage is the damage
 report's body plus shield numbers (**S**: read as amounts, as telemetry's
 `hits` are); a hit is a report with another player's unit as the victim
 (a shotgun's pellets each count, so accuracy can pass 1).
+
+Each bot row includes its logical `seat` and transport `kind`. Only a
+local bot has a controller `port`. `opposing_hits` counts positive body
+or shield damage reports against another player on an opposing team, or
+any other player in free-for-all. Multiple pellets, splash and melee can
+produce separate reports. The original `hits`, `accuracy`,
+`damage_dealt` and `damage_taken` fields keep their previous definitions.
+Readers can continue to load earlier `h2-sim-report/1` reports.
+
+`ttk_kills` and `ttk_ticks` are the time to kill. A fight is a player's
+hits with damage on one opponent, none more than 150 ticks after the
+last. When the player kills that opponent, the ticks from the fight's
+first hit to the kill are one sample. `ttk_ticks` is the mean over
+`ttk_kills`. A kill in one hit counts as 0 ticks. A kill with no damage
+report from the killer on the victim (a fall the killer caused) has no
+sample.
+
+A bot that tracked a target has an `aim` section, from the hand's view
+of its target each tick (`bots::mind::AimTrace`: the angle from the aim
+to the aim point, before the hand's own error) and the right stick its
+pad reported after the human-input limits (`sim::metrics::AimMotion`,
+tested):
+
+```json
+"aim": { "tracked_ticks": 2100, "mean_error": 0.041, "flicks": 18,
+         "overshoot_ratio": 0.09, "settled": 15, "settle_ticks": 14.2,
+         "stick_jitter": 0.08, "reversals_per_s": 1.1 }
+```
+
+- An engagement is a run of views of one target no more than 3 ticks
+  apart. One that starts 0.35 rad (20°) or more off is a flick.
+- `overshoot_ratio`: per flick, the furthest the aim went past the
+  target in its first 60 ticks, over the flick's size; the mean over
+  flicks.
+- `settle_ticks`: per flick that settled, the ticks from its first view
+  to the first of six in a row within 0.05 rad; the mean over `settled`.
+- `stick_jitter`: the mean right-stick travel between consecutive views
+  of an engagement, in stick radii.
+- `reversals_per_s`: how often the stick's yaw direction changes within
+  an engagement (a stick under 0.05 has no direction).
+- `mean_error` is in radians, over `tracked_ticks`.
+
+All of these are additive: a reader of `h2-sim-report/1` that does not
+know them is unaffected, and reports without them still load.
 
 Sim runs are local by default. Set `H2_TELEMETRY_FILE` for a separate
 JSONL capture, or use `--upload` for an Uplink recording.
@@ -356,8 +411,11 @@ params = "tuning/aggressive.toml"
 
 - Each run is a child process, `h2 sim run`, with its own data directory
   (`<out>/runs/<id>/data`, its `bots/` nav meshes linked to the shared
-  data's) and its own report, log and agent socket. Runs are maps × seeds
-  × arms.
+  data's) and its own report, log and agent socket. Each combination of
+  map, game type, skill and seed gets a run. IDs are
+  `<map>[-<gametype>][-<skill>]-s<seed>`, with the game type and skill
+  segments included when those axes are set. Separate mode appends the
+  arm name. In either swap mode the second leg appends `-swapped`.
 - **Arms.** By default each run plays config A against config B in the
   same match: half the bots A, half B (2 v 2 with teams A and B in a team
   game; in free-for-all, alternating). That is the fairest comparison: the
@@ -367,9 +425,60 @@ params = "tuning/aggressive.toml"
 - **Comparison** (`sim::compare`, tested): per arm, the mean and standard
   deviation over runs of kills, deaths, K/D, accuracy, damage, score,
   stuck time, the win rate, and the difference B - A with a 95% interval
-  (Welch). `compare.json` and a text table in the results directory.
-  `h2 sim compare <dir>` prints it again.
+  (Welch). When the reports have them, also the time to kill (`ttk_s`)
+  and the aim motion (`aim_error`, `overshoot`, `settle_s`, `jitter`,
+  `reversals`), each pooled over what it counts. `compare.json` and a
+  text table in the results directory. `h2 sim compare <dir>` prints it
+  again.
+- **Game types.** Set `game_types = ["slayer", "ctf", "assault", "juggernaut"]`
+  to run each listed type. CTF and Assault enable team play, Juggernaut
+  disables it, and the other types use the match file's team-play setting.
+  Omit the axis to use the match file's game type and team-play setting.
+- **Skills.** `skills = ["easy", "normal", "heroic", "legendary"]` adds
+  a run per skill and overrides each bot's skill. When the runs cover
+  multiple skills, `compare.json` has `by_skill` and the table repeats
+  per skill.
 - `h2 sim batch --dry-run` prints the runs and stops.
+
+### Arm swaps
+
+`mode = "arm_swap"` plays each map, game type, skill and seed twice.
+The first leg is the versus split. The second (`<id>-swapped`) gives
+every bot the other arm. Each bot keeps its seat, name, team, transport
+and brain seed, so each arm plays every seat once. The run's skill
+applies to both legs when the skill axis is set. Otherwise, an arm can
+override the bot's skill through its tuning. Both legs feed the same
+per-arm statistics. The mode needs two arms. The checked-in example
+compares the two aim models at each skill on Midship and Lockout:
+
+```sh
+H2_OPT=2 h2 sim batch docs/runtime/sim-examples/aim-net-vs-code.toml --disc disc/halo2.iso --parallel 3 --pace unpaced
+```
+
+How to read it and the rule for which model stays are in
+[bots.md §3.4.1](../game/bots.md#341-the-aim-net-built-not-compared-in-a-game-yet).
+
+### Local and phantom seat swaps
+
+`mode = "seat_swap"` schedules two legs per map, game type, skill and
+seed. The second leg exchanges every local and phantom seat. Both
+lineups must fit on a host. Each bot keeps its name, team, tuning, arm
+and brain seed. The checked-in Legendary Midship example plays ten seed
+pairs, two red against two blue, with normal phantom latency.
+
+```sh
+H2_OPT=2 h2 sim batch docs/runtime/sim-examples/midship-seat-swap.toml --disc disc/halo2.iso --parallel 3 --pace unpaced
+```
+
+Read `compare.txt` or `compare.json` under
+`docs/runtime/sim-examples/results/midship-seat-swap/`. The
+`seat_swap` section reports `pairs`, per-seat/game `local` and `phantom`
+means, and their signed `local_minus_phantom` gap for shots, opposing
+hits, damage dealt and damage taken. Each pair of legs contributes one
+sample. Its two observations for each logical seat are matched across
+the legs. Only full rosters ending at game over or the tick limit count.
+Incomplete pairs appear in `excluded`; absent reports appear in
+`missing`. These are counts per game, so game length affects the result.
 
 ### Watching in Uplink
 
@@ -397,10 +506,61 @@ in the list with replay available after the match. They buffer packed
 telemetry locally and take turns uploading after they finish. The batch prints
 its Live batch ID and writes it to `batch.json`. Fork seed runs stay local.
 
-The same game stream becomes the replay at the end. The CLI still saves the
+The same game stream becomes the replay at the end. Uploads use the
+game's telemetry frames, which include machine travel when sampled.
+The finished-game viewer switches to the archive when it is published.
+[Replay playback](../live/replay-fidelity.md#current-recording-and-playback)
+
+The CLI still saves the
 local report, including when an upload fails. Training games are private
 and excluded from public stats and ranks. The
 [Live API](../live/live-api.md#clanker-training) describes the storage limits.
+
+### Batches on hosts
+
+```sh
+h2 sim batch docs/runtime/sim-examples/batch.toml --provider cloud \
+  --live https://live.example.net --max-parallel 4 --budget-usd 0.50
+```
+
+`--provider local` is the default. It runs the same child processes as
+`h2 sim batch <file>`. `--max-parallel` also works as `--parallel` on
+local batches. Local runs have zero estimated host cost.
+
+Cloud batches use the Cloudflare or Fly provider configured on Live. The
+CLI sends the self-contained match file, including the batch's seed, bot
+seats and inline tuning, and Live starts one ad hoc host for each admitted
+run. Each host plays unpaced with the provisioned game image and data,
+streams to the private **Clanker Training** view, uploads its report and
+exits. Use retail map file stems such as `lockout`. Supply the maps' bot nav meshes with the host's data for runs that
+need them. Snapshot forks are local only.
+
+`--live` defaults to `H2_LIVE_SERVER` or `http://127.0.0.1:8074`. Use a
+stored admin account for that Live server, optionally selected by
+`--as GAMERTAG`, or pass a fresh Live admin `games.write` JWT via `--token`
+or `H2_LIVE_TOKEN`. Live exchanges the single-use JWT for a credential
+limited to starting and polling this batch, which expires after 24 hours.
+HTTPS and loopback HTTP are supported. `--dry-run` prints the plan without
+contacting Live.
+
+Cloud parallelism defaults to the batch file's `parallel` setting or four.
+`--max-parallel` overrides that setting, up to Live's fleet-wide
+`LIVE_MAX_HOSTS`. Live enforces its monthly budget separately. The CLI reserves the
+estimated cost in plan order before each launch. At the first run that
+would exceed `--budget-usd`, it stops queueing and waits for active runs.
+The estimate uses the shorter of the configured game-time and tick limits
+at 2.8× game speed, plus 60 seconds for setup and upload, capped by the host
+lease's wall limit. With no positive game-time or tick limit it reserves
+for the full lease. Small hosts (up to four bots) use default compute rates
+of $0.090/hour on Cloudflare or $0.046/hour on Fly. Large hosts use twice the
+Small rate. This estimates compute cost. Actual duration, storage and
+transfer can change the bill. [Dedicated host cost assumptions](../live/dedicated-host.md#where-the-game-could-run)
+
+As reports arrive, the CLI saves them to `<out>/runs/<id>/report.json` and
+uses the same comparison code as local batches for `compare.json` and
+`compare.txt`. The comparison lists budget-skipped and unsuccessful runs
+as missing. `batch.json` carries the Live batch ID for Uplink. A failed
+host makes the command exit unsuccessfully after it writes the comparison.
 
 ### Forking from spawn (snapshots)
 
@@ -446,7 +606,7 @@ What a sim run's result depends on, and what breaks reproducibility:
 | The render thread | none: no GPU backend |
 | Audio | logical pacing into a `NullSink` |
 | Input | bots only, no keyboard. Bots read guest memory on the game thread before `RENDER_FRAME`, once a frame |
-| The bots' randomness | seeded per bot: SplitMix64 of the match seed and the port (`sim::config::bot_seed`) |
+| The bots' randomness | seeded per bot: SplitMix64 of the match seed and logical seat (`sim::config::bot_seed`) |
 | `HashMap` iteration in the bots (`mind.rs` tracks, `los`, `nav`) | lookups and `retain` only, as read (**S**: worth a check in review) |
 | The nav mesh | built in the background on a thread at the wall clock's mercy (`bots_nav_auto`): **off in sim mode** (`H2_BOTS_NAV_AUTO=0`). A map with no current mesh is reported (`"nav": "missing"`); build them first with `h2 bots nav <map>` |
 | Wall-clock limits (`max_wall_s`) | can end a match at a different tick on a slower host: the report says `"end": "wall_limit"`. Use `max_ticks` for reproducible ends |
@@ -475,22 +635,89 @@ Stepping is the existing `session.pause` and `session.step N`.
 
 ## 10. Expected speed-up
 
-From the Old Mombasa split above (a campaign level, heavier than a 4-bot
-multiplayer map): the tick and the per-frame work are 6.2 to 7.8 ms of a
-28 to 34 ms headless frame. Skipping the render front-end and the D3D
-layer under it, and the trace file, leaves about 8 to 10 ms a frame with
-audio and the scheduler, so **about 3.5x a headless run, and about 3.5x to
-4x real time** on Old Mombasa. A multiplayer map with four bots has no AI
-actors and less to simulate (**S**: about 3 to 5 ms a tick), which would
-be **6x to 10x real time per process**. Parallel processes multiply that
-by the cores used, less memory bandwidth: each process is about 1 GB
-(64 MB of guest RAM, the module, the map caches).
+Clanker Training uses the [dedicated light profile](../live/dedicated-host.md#light-host).
+The default skips steady-state world draws, uses descriptor-only texture
+handles in the D3D shim, runs the audio clock without mixing, and maps the
+disc read-only. Verified server-map copies are picked up from
+`H2_SERVER_MAP_DIR`. Distributed System Link seats and packed telemetry
+use their ordinary paths. Sim uses the match's pace, with unpaced as the
+default. Dedicated serve waits for real-time deadlines.
 
-What limits it, in order: the guest code of the tick itself (generated C,
-x87 and SSE helpers, guest memory accessors; docs/perf/), then the
-logical mixer, then the bots' own thinking (perception, nav, per bot per
-frame). The first number to look at after a run is the report's
-`wall.speedup`.
+The prior two-bot run took about 11.9 ms/tick. Its entire kernel, XAPI and
+DirectSound bucket was 1.5–2.1 ms/tick, so removing the mixer alone could
+only save part of that bucket. Allow **10–12 ms/tick and 1 GiB RSS per
+process** as a starting point for a comparable unaudited workload.
+Guest RAM accounts for 64 MiB. Keep the module and immutable maps shared
+across processes. The guest tick, replication, telemetry and bot
+thinking remain, and the distributed configuration needs a fresh
+measurement. For 5,000 games at 1,800 ticks, that range is about 25–30
+core-hours of tick work before loading and match setup. Use the smaller
+of available effective cores and available memory divided by measured
+incremental RAM. With eight effective cores and 12 GiB available, start
+sizing from at most eight workers before allowing for headroom. Use
+`wall.speedup` from an ordinary batch and `host.metrics` for RSS and CPU.
+
+## Host audit corpus
+
+Build the full clang image with the usual optimization setting. Prepare
+bot navigation data and install the owned Map Packs in `H2_DATA`. Set
+`H2_DISC`, `H2_IMAGE` and `H2_DATA` to absolute paths. Run the matrix
+with the original caches so it can report all observed guest reads.
+
+```sh
+env -u H2_HOST_MODULE -u H2_SERVER_MAP_DIR H2_OPT=2 h2 sim batch docs/runtime/sim-examples/light-host-corpus.toml --disc "$H2_DISC" --out "$H2_IMAGE" --tier clang --data "$H2_DATA" --parallel 4 --pace unpaced
+```
+
+The matrix plans 483 matches across 23 Xbox multiplayer maps, seven game
+types, and three seeds with four legendary distributed bots. Missing
+assets, unsupported Map Packs and incomplete matches are reported in
+`docs/runtime/sim-examples/results/light-host-corpus/audit-missing.json`.
+Add deployed mod maps and targeted matches for equipment the bots miss.
+The report records the weapon fired, the weapon/vehicle/equipment tag
+inventory, player vehicle occupancy, and observed powerup pickup. A
+vehicle seat observation does not establish that a bot drove the vehicle
+or used its weapon. A map and game-type matrix alone cannot cover every
+weapon, vehicle, powerup, objective or lobby transition.
+
+Find the per-run `audit.json` under `runs/<id>/` and the merged
+`audit.json` beside `audit-missing.json`. The batch also writes
+`audit-equipment-gaps.json` with indexed datums lacking an observed use. Reports from the same image,
+profile and registry union their guest owners, entry/resume selectors,
+tag lookup requests and byte ranges. Combine additional matches with
+`h2 sim audit-merge OUTPUT INPUT [INPUT ...]`. Tag spans are relative to each datum and
+are traced at 64-byte line granularity after load or BSP fixation.
+The watch observes checked guest reads, including observer reads, and
+can miss early loading reads, raw physical access and out-of-line data.
+Unidentified tag epochs and missing hooks are recorded.
+
+CPU totals are inclusive across the object, physics, AI, effects,
+particles, sound, camera, first-person, HUD/UI and network functions
+with mapped hooks. Bot and telemetry times come from their Rust entry
+points. The telemetry worker has a separate bucket for consumed samples.
+Divide each total by report ticks for an inclusive per-tick
+attribution. Nested buckets overlap, and totals include lobby and load
+work where the hook runs. Auditing bypasses generated native direct
+calls to count visible entries. Inlined blocks with no selector cannot
+be counted separately. Use an unaudited batch for throughput.
+
+The experimental `H2_HOST_MODULE` build option accepts a complete
+`audit.json` from the matching full clang image. Use a separate output
+directory and keep that same report path set when launching it.
+
+```sh
+H2_OPT=2 H2_HOST_MODULE="$H2_AUDIT_REPORT" h2 build "$H2_DISC" --out "$H2_SMALL_IMAGE" --tier clang
+```
+
+Cold bodies keep their registry and selectors and stop the guest with a
+logged address on first entry. Re-run that case with the full light
+image, add it to the corpus and rebuild. An audit with missing runs or
+hooks cannot build the small module. The full image remains the default.
+Compare a candidate against the full light image with the existing
+`H2_LOCKSTEP`/`h2 lockstep` check before relying on any prune. Same-profile
+repeatability needs to pass first. Cross-profile equality is still open
+because the render reads and advances shared state and the hash includes
+guest buffers. The light tick keeps guest cosmetic updates and all tag
+headers and blocks while those dependencies are being traced.
 
 ## What needs a run
 
@@ -556,7 +783,7 @@ h2 sim batch docs/runtime/sim-examples/batch.toml --dry-run
 H2_OPT=2 h2 sim batch docs/runtime/sim-examples/batch.toml --disc disc/halo2.iso --parallel 3
 
 # 5. The same batch forked from spawn snapshots (falls back per run).
-H2_OPT=2 h2 sim batch docs/runtime/sim-examples/batch.toml --disc disc/halo2.iso --parallel 3 --fork
+H2_FEATURES=-host-light H2_OPT=2 h2 sim batch docs/runtime/sim-examples/batch.toml --disc disc/halo2.iso --parallel 3 --fork
 h2 sim compare docs/runtime/sim-examples/results/aggressive-vs-base
 ```
 
@@ -565,8 +792,8 @@ Notes for the runs:
 - `h2 sim` never builds: it stops with `h2 build` when the image is not
   current for this `h2` (as `h2 serve` does).
 - Each batch run has its own data directory (`<out>/runs/<id>/data`, its
-  `bots/` linked to `--data`'s), so a map from a map pack installed only in
-  the shared data directory is not there; disc maps are.
+  `bots/` linked to `--data`'s). For supported Map Pack runs the batch
+  stages the selected offer from the shared data directory.
 - The match's pace replaces `H2_BOOT_REALTIME` (unpaced unless the match
   says otherwise).
 

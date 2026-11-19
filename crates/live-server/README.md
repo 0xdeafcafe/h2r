@@ -80,10 +80,11 @@ What is built of [live-api.md](../../docs/live/live-api.md):
 | `POST /v1/games` | `games.write`; body: the game without an id; 201 `{game_id, position}` (server writes `GameStarted` with `host`) |
 | `GET /v1/games?state=live\|ended&cursor=&limit=` | `GameSummary` list, newest first |
 | `GET /v1/games/{id}` | summary plus scoreboard, last 50 kills, winner, end reason |
-| `GET /v1/games/{id}/frames?from_tick=&to_tick=&cursor=&limit=` | recorded frames, oldest first, 600 a page |
+| `GET /v1/games/{id}/chunks` | recorded chunks or, with `format=archive`, the published replay index |
+| `GET /v1/games/{id}/frames?from_tick=&to_tick=&cursor=&limit=` | frames for recordings made before chunks, oldest first, 600 a page |
 | `POST /v1/games/{id}/events` | `games.write`; body: one batch JWS by the host or a player |
 | `GET /v1/ingest` | WebSocket: `auth`, then `frame` / `events` / `ping` |
-| `PUT /v1/maps/{map}/outline` | `games.write`, ≤ 2 MiB; first upload wins, operator may replace |
+| `PUT /v1/maps/{map}/outline` | admin or operator's `games.write`, ≤ 2 MiB, stores or replaces the outline |
 | `GET /v1/maps/{map}/outline` | the outline JSON |
 
 Also built, in [live-api.md](../../docs/live/live-api.md): teams
@@ -142,8 +143,7 @@ side) on `account-<xuid>`, and `SignedIn` / `PresenceChanged` /
   rate limits per author and method.
 - **`http`**: routes, body caps (64 KiB, title files 2 MiB, WebSocket
   messages 16 KiB), CORS (any origin for GET/HEAD, none for writes).
-- **`games`**, **`ingest`**: game writes and reads, frames (15 Hz fan-out,
-  1 Hz recorded), outlines, and the sweeper that writes `PresenceExpired`
+- **`games`**, **`ingest`**: game writes and reads, frames (up to 15 Hz fan-out and chunk recording), outlines, and the sweeper that writes `PresenceExpired`
   and `GameEnded {reason: "lost"}`.
 - **`identity`**: the server key and id on disk.
 

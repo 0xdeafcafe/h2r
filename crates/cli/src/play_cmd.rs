@@ -372,6 +372,8 @@ fn hosted(
         eprintln!("play: field of view {fov} degrees");
     }
     boot::Host {
+        host_light: false,
+        host_bots: false,
         gfx: Some(gfx),
         gfx_view: view,
         // The backend's work on a render thread unless H2_RENDER_THREAD=0, as
@@ -381,6 +383,7 @@ fn hosted(
         voice_io: Some(voice::host::HostVoiceIo::opener()),
         pad_speaker,
         debug_menu: None,
+        theater: None,
         perf_overlay: None,
         settings: Some(store),
         trace_limit: Some(TRACE_LIMIT),
@@ -497,7 +500,16 @@ fn watch_signals(_: app::Closer) -> Arc<AtomicBool> {
     Arc::new(AtomicBool::new(false))
 }
 
+pub(crate) mod theater;
+
 pub fn run(args: Vec<String>) -> Result<()> {
+    run_with_theater(args, Some(theater::open_library))
+}
+
+pub(crate) fn run_with_theater(
+    args: Vec<String>,
+    open_library: Option<boot::theater_ui::adapter::OpenLibrary>,
+) -> Result<()> {
     #[cfg(unix)]
     if args.iter().any(|a| a == "--follow") {
         return crate::follow::run(args);
@@ -764,6 +776,14 @@ pub fn run(args: Vec<String>) -> Result<()> {
         .then(debug_menu::Shared::default);
     config.debug_menu = debug_menu.clone();
     let perf_overlay = config.watermark.as_ref().map(app::Watermark::switch);
+    let theater = open_library.map(|open| (boot::theater_ui::Theater::default(), open));
+    if let Some((controller, _)) = &theater {
+        let (overlay, _) = theater::overlay(
+            controller.clone(),
+            opts.data_root.join("films/screenshots"),
+        );
+        config.theater = Some(overlay);
+    }
     let report = app::run(config, move |host| {
         let mut host = hosted(
             host,
@@ -779,9 +799,12 @@ pub fn run(args: Vec<String>) -> Result<()> {
         host.on_vfs = on_vfs;
         // The menu sees every pad first, and hides them from the game while
         // it is open.
-        if let (Some(menu), Some(input)) = (&debug_menu, host.input.as_mut()) {
-            input.set_gate(Box::new(menu.gate()));
+        if let Some(input) = host.input.as_mut() {
+            if let Some(menu) = &debug_menu {
+                input.set_gate(Box::new(menu.gate()));
+            }
         }
+        host.theater = theater;
         host.debug_menu = debug_menu;
         host.perf_overlay = perf_overlay;
         let r = boot::run_hosted_with_live(&xbe, &lib, &opts, host, &live_config);

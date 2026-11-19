@@ -43,18 +43,24 @@ pub mod default_motd;
 pub mod dispatch;
 pub mod emblem;
 pub mod filestore;
+mod films;
 pub mod games;
 pub mod guard;
 pub mod hold;
+// Dedicated host lifecycle and billing.
+pub mod host_costs;
+pub mod hosts;
 pub mod http;
 #[cfg(feature = "native")]
 pub mod httpstore;
+pub mod host_identity; // dh-identity
 pub mod identity;
 pub mod ingest;
 pub mod invites;
 pub mod local_signin;
 pub mod logio;
 mod mailbox;
+mod matchmaking;
 pub mod model;
 pub mod mutes;
 pub mod page_header;
@@ -68,6 +74,7 @@ pub mod recovery;
 pub mod signins;
 pub mod relay;
 pub mod reports;
+mod replay_archive;
 pub mod rt;
 mod sessions;
 mod sim_runs;

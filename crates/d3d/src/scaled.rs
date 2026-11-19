@@ -80,8 +80,7 @@ use gfx::{Clear, D3DFormat};
 use crate::backend::{Backend, DrawJudge, DrawOutcome, GuestLayoutKind, RectClear, ResolvedDraw};
 use crate::gfx_backend::{GfxBackend, HostTexture};
 
-/// The largest render scale: 6x of 640x480 is 3840x2880.
-pub const MAX_SCALE: u32 = 6;
+pub use crate::{Lighting, MAX_SCALE};
 
 /// `H2_RENDER_SCALE`: unset, empty or `1` is 1 (no view backend at all);
 /// `2`..=`6` render the frame at that multiple.
@@ -100,20 +99,6 @@ pub fn render_scale_from(value: Option<&str>) -> Result<u32, String> {
 /// [`render_scale_from`] of the environment.
 pub fn render_scale() -> Result<u32, String> {
     render_scale_from(std::env::var("H2_RENDER_SCALE").ok().as_deref())
-}
-
-/// The view's lighting (docs/graphics/e3-lighting.md): the Video screen's
-/// Lighting row, `[graphics] lighting`, `H2_LIGHTING`. Nothing of it
-/// reaches the guest: the reference draws retail whatever this is.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum Lighting {
-    /// The game's own: shadow maps at the guest's size, sampled as the
-    /// NV2A does (2x2 percentage-closer filtering when the stage filters).
-    #[default]
-    Retail,
-    /// Phase 1 of E3 lighting: shadow maps at [`shadow_scale`] times their
-    /// size in the view, compared with one tap.
-    E3,
 }
 
 /// `H2_LIGHTING`: unset, empty or `retail` is [`Lighting::Retail`]; `e3`

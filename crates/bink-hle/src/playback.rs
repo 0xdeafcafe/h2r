@@ -1,6 +1,6 @@
 //! Override bodies. Everything is `__stdcall`: arguments sit at `esp+4...`
 //! and the callee pops them, so each body ends in `ret(cpu, 4 * nargs)`.
-use crate::Request;
+use crate::{Request, read_cstr};
 use crate::addr::*;
 use crate::audio_out::{MovieAudioOut, MovieVoice};
 use crate::source::{AudioInfo, Clock, MovieSource, MovieStream, StreamInfo, SystemClock};
@@ -199,27 +199,13 @@ impl BinkHle {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    // --- skip mode -------------------------------------------------------
-
-    /// Replacement for the wrapper's `MovieStart(path, flags) ret 8`.
-    pub(crate) fn skip_start(&self, cpu: &mut CpuAbi, ctx: &mut ExecCtx) -> R {
-        let mut mem = ctx.memory();
-        let path_ptr = mem.u32(cpu.esp.wrapping_add(4))?;
-        let flags = mem.u32(cpu.esp.wrapping_add(8))?;
-        let path = read_cstr(&mem, path_ptr);
+    pub(crate) fn record_skip(&self, mem: &runtime::Guest, path_ptr: u32, flags: u32) {
+        let path = read_cstr(mem, path_ptr);
         self.lock().requests.push(Request {
             path,
             flags,
             played: false,
         });
-        // No movie is open and the last one is "finished". Only touch state
-        // when the wrapper's page is mapped (it always is in the real image).
-        if mem.u32(ST_BINK).is_ok() {
-            mem.set_u32(ST_BINK, 0)?;
-            mem.set_u8(ST_MOVIE_OPEN, 0)?;
-            mem.set_u8(ST_FINISHED, 1)?;
-        }
-        mem.ret(cpu, 8)
     }
 
     // --- Bink API ---------------------------------------------------------
@@ -503,18 +489,6 @@ impl BinkHle {
             }
         }
     }
-}
-
-fn read_cstr(mem: &runtime::Guest, mut p: u32) -> String {
-    let mut out = Vec::new();
-    while out.len() < 260 {
-        match mem.u8(p) {
-            Ok(0) | Err(_) => break,
-            Ok(b) => out.push(b),
-        }
-        p = p.wrapping_add(1);
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// `d:\bink\intro_60.bik` -> `intro_60`.

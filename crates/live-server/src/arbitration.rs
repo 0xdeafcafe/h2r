@@ -5,6 +5,8 @@
 //! Nobody else writes those streams. [`Live::rank_game`] ranks a game's
 //! humans only if their own account registered its round, and marks the
 //! round used (`ArbitrationUsed`) so it ranks no other game.
+//! dh-identity: a dedicated assignment uses its reservation id as its single
+//! round. Its service identity never registers a player in arbitration.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -69,6 +71,13 @@ pub(crate) fn project(s: &mut State, e: &RecordedEvent) {
     let b = &e.body;
     if b.kind == USED {
         if let Ok(d) = serde_json::from_value::<Used>(b.data.clone()) {
+            // Dedicated session IDs differ from assignment IDs. Replaying a
+            // spent reservation also prevents a second publication ranking it.
+            if let Some(a) = s.sessions.get(&d.session_id).and_then(|s| s.matchmaking.as_ref())
+                && a.host_lease.is_some() && a.id == d.round_id
+            {
+                s.ranks.host_assignments.insert(a.id.clone());
+            }
             s.ranks
                 .rounds
                 .insert(format!("{}-{}", d.session_id, d.round_id));

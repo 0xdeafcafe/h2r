@@ -184,6 +184,8 @@ pub enum Refusal {
     Ranked(MapId),
     #[error("downloading this game's map failed: {0}")]
     Download(String),
+    #[error("{0}")]
+    Unavailable(String),
 }
 
 /// What a join needs.
@@ -200,15 +202,16 @@ pub enum Need {
     },
 }
 
-/// Told the package directory after [`MapGate::prepare`] wrote or chose a
-/// package (see [`MapGate::on_installed`]).
+/// Told the package directory after an install or removal.
 pub type Installed = Box<dyn Fn(&Path) + Send + Sync>;
+pub type Ready = Box<dyn Fn(MapId) -> Result<(), String> + Send + Sync>;
 
 /// The join-time map check and download, for one maps directory.
 pub struct MapGate {
     maps_dir: PathBuf,
     bases: Arc<dyn Bases>,
     installed: Mutex<Option<Installed>>,
+    ready: Mutex<Option<Ready>>,
 }
 
 impl std::fmt::Debug for MapGate {
@@ -236,15 +239,18 @@ impl MapGate {
             maps_dir: maps_dir.into(),
             bases,
             installed: Mutex::new(None),
+            ready: Mutex::new(None),
         }
     }
 
-    /// Call `f` after each [`prepare`](Self::prepare) that wrote a package
-    /// or named one in `active.toml`: the boot rescans the VFS's packages
-    /// (`vfs::Vfs::rescan_maps`), so the map is served at its next open.
-    /// Replaces any earlier callback.
+    /// Call `f` after a download or removal so the boot updates its offers.
     pub fn on_installed(&self, f: Installed) {
         *self.installed.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
+    }
+
+    /// Check that the package has a playable slot on this console.
+    pub fn on_prepare(&self, f: Ready) {
+        *self.ready.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
     }
 
     fn installed(&self, dir: &Path) {
@@ -364,12 +370,21 @@ impl MapGate {
     }
 
     /// [`check`](Self::check), then fetch what is missing, verify every
-    /// byte, write the package, and make it the one served for its map
-    /// (`active.toml`). Returns the package directory (None: the disc's
-    /// map).
+    /// byte, and write the package. Verify it has a slot before joining.
     pub fn prepare(&self, f: &dyn Fetch, ad: &NewSession) -> Result<Option<PathBuf>, Refusal> {
         let need = self.check(f, ad)?;
-        self.fetch(f, need, ad.map_id, &mut |_, _| {})
+        let dir = self.fetch(f, need, ad.map_id, &mut |_, _| {})?;
+        if let (Some(_), Some(id), Some(ready)) = (
+            &dir,
+            ad.map_id,
+            self.ready
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref(),
+        ) {
+            ready(id).map_err(Refusal::Unavailable)?;
+        }
+        Ok(dir)
     }
 
     /// Install published map `id` from the mod repository (docs/game/maps.md
@@ -390,9 +405,7 @@ impl MapGate {
     /// Removes the package for map `id` that a download put here (the Mods
     /// screen's Remove, docs/game/maps.md §5 "A mod's page"): only a
     /// `live-<id>` directory of the maps directory, never a package the
-    /// player put there by hand. `active.toml`'s choice of it for its map
-    /// goes too, so the vfs serves the next package (or the disc's map);
-    /// [`on_installed`](Self::on_installed) is told, so the boot rescans.
+    /// player put there by hand. The boot then removes its offer.
     /// Returns the directory removed.
     pub fn remove(&self, id: &MapId) -> Result<PathBuf, String> {
         let lib = Library::open(&self.maps_dir);
@@ -413,34 +426,12 @@ impl MapGate {
                 dir.display()
             ));
         }
-        let path = self.maps_dir.join(content::ACTIVE_FILE);
-        if let Some(mut table) = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|t| t.parse::<toml::Table>().ok())
-        {
-            let gone: Vec<String> = table
-                .iter()
-                .filter(|(_, v)| v.as_str() == Some(name.as_str()))
-                .map(|(k, _)| k.clone())
-                .collect();
-            for k in &gone {
-                table.remove(k);
-            }
-            if !gone.is_empty() {
-                write_atomic(
-                    &path,
-                    toml::to_string(&table).unwrap_or_default().as_bytes(),
-                )
-                .map_err(|e| format!("{}: {e}", path.display()))?;
-            }
-        }
         std::fs::remove_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         self.installed(&dir);
         Ok(dir)
     }
 
-    /// Carry out what [`check`](Self::check) found: fetch, verify, write,
-    /// activate (for `id`'s map), tell [`on_installed`](Self::on_installed).
+    /// Fetch and verify any missing layers, then tell the boot.
     fn fetch(
         &self,
         f: &dyn Fetch,
@@ -450,16 +441,7 @@ impl MapGate {
     ) -> Result<Option<PathBuf>, Refusal> {
         let (answer, total) = match need {
             Need::Nothing => return Ok(None),
-            Need::Local(dir) => {
-                // Already the one served: nothing to write, rescan or count
-                // (FindFromID asks again for every look at a friend's
-                // session, not only on a join).
-                if self.activate(&dir, map_id)? {
-                    self.installed(&dir);
-                    self.count(f, map_id);
-                }
-                return Ok(Some(dir));
-            }
+            Need::Local(dir) => return Ok(Some(dir)),
             Need::Download { answer, bytes } => (answer, bytes),
         };
         let mut done = 0u64;
@@ -514,7 +496,6 @@ impl MapGate {
                 dir.display()
             )));
         }
-        self.activate(&dir, map_id)?;
         self.installed(&dir);
         self.count(f, map_id);
         Ok(Some(dir))
@@ -553,41 +534,6 @@ impl MapGate {
         {
             eprintln!("live: map {id}: the download was not counted: {e}");
         }
-    }
-
-    /// Names `dir` in `active.toml` for its map, so the vfs serves it
-    /// rather than another package for the same map (docs/game/maps.md §7,
-    /// "Choice rule"). True when that changed the choice.
-    fn activate(&self, dir: &Path, map_id: Option<MapId>) -> Result<bool, Refusal> {
-        let Some(pkg) = Library::open(&self.maps_dir)
-            .packages()
-            .iter()
-            .find(|p| Some(p.id) == map_id)
-            .cloned()
-        else {
-            return Ok(false);
-        };
-        let name = dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_default()
-            .to_string();
-        let path = self.maps_dir.join(content::ACTIVE_FILE);
-        let mut table: toml::Table = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|t| t.parse().ok())
-            .unwrap_or_default();
-        let key = pkg.manifest.base.map.to_ascii_lowercase();
-        if table.get(&key).and_then(|v| v.as_str()) == Some(name.as_str()) {
-            return Ok(false);
-        }
-        table.insert(key, toml::Value::String(name));
-        write_atomic(
-            &path,
-            toml::to_string(&table).unwrap_or_default().as_bytes(),
-        )
-        .map_err(|e| Refusal::Download(format!("{}: {e}", path.display())))?;
-        Ok(true)
     }
 }
 
@@ -771,7 +717,7 @@ mod tests {
     }
 
     #[test]
-    fn a_published_mod_is_downloaded_verified_and_activated() {
+    fn a_published_mod_is_downloaded_without_activating_its_base() {
         let maps = dir("download");
         let patch = b"PATCH invented";
         let m = modded(patch);
@@ -792,8 +738,7 @@ mod tests {
         assert_eq!(std::fs::read(dir.join("patches/snipers.ips")).unwrap(), patch);
         let lib = Library::open(&maps);
         assert_eq!(lib.packages()[0].id, id);
-        let active = std::fs::read_to_string(maps.join("active.toml")).unwrap();
-        assert!(active.contains(&format!("lockout = \"live-{}\"", &id.to_string()[..16])), "{active}");
+        assert!(!maps.join("active.toml").exists());
         // Now it is here: nothing more is fetched.
         s.asked.lock().unwrap().clear();
         assert_eq!(g.check(&s, &ad("custom", Some(id))).unwrap(), Need::Local(lib.packages()[0].dir.clone()));
@@ -877,22 +822,34 @@ mod tests {
             (1, 1)
         );
         let active = maps.join("active.toml");
-        let before = std::fs::metadata(&active).unwrap().modified().unwrap();
-        // The friend view's FindFromID asks again and again.
+        let legacy = "lockout = \"someone-else\"\n";
+        std::fs::write(&active, legacy).unwrap();
         for _ in 0..5 {
             g.prepare(&s, &ad("custom", Some(id))).unwrap().unwrap();
         }
         assert_eq!(*told.lock().unwrap(), 1, "no rescan");
         assert_eq!(s.counted.lock().unwrap().len(), 1, "no counted GETs");
+        assert_eq!(std::fs::read_to_string(&active).unwrap(), legacy);
+        std::fs::remove_dir_all(&maps).unwrap();
+    }
+
+    #[test]
+    fn a_downloaded_map_without_a_slot_refuses_the_join() {
+        let maps = dir("full");
+        let patch = b"PATCH invented for a full list";
+        let m = modded(patch);
+        let id = m.map_id();
+        let s = server_with(&m, patch);
+        let g = gate(&maps, true);
+        g.on_prepare(Box::new(move |wanted| {
+            assert_eq!(wanted, id);
+            Err("the map list is full".into())
+        }));
         assert_eq!(
-            std::fs::metadata(&active).unwrap().modified().unwrap(),
-            before
+            g.prepare(&s, &ad("custom", Some(id))),
+            Err(Refusal::Unavailable("the map list is full".into()))
         );
-        // Another package chosen for lockout in between: choosing this one
-        // again is a change, and is told.
-        std::fs::write(&active, "lockout = \"someone-else\"\n").unwrap();
-        g.prepare(&s, &ad("custom", Some(id))).unwrap().unwrap();
-        assert_eq!(*told.lock().unwrap(), 2);
+        assert!(g.package_of(&id).is_some());
         std::fs::remove_dir_all(&maps).unwrap();
     }
 
@@ -994,9 +951,12 @@ mod tests {
         assert_eq!(g.package_of(&id), Some(dir.clone()));
         assert_eq!(*told.lock().unwrap(), std::slice::from_ref(&dir), "the boot is told");
         let manifest = format!("/maps/{id}");
-        assert_eq!(*s.counted.lock().unwrap(), [manifest.clone()], "the download is counted once installed");
-        let active = std::fs::read_to_string(maps.join("active.toml")).unwrap();
-        assert!(active.contains(&format!("lockout = \"live-{}\"", &id.to_string()[..16])), "{active}");
+        assert_eq!(
+            *s.counted.lock().unwrap(),
+            [manifest.clone()],
+            "the download is counted once installed"
+        );
+        assert!(!maps.join("active.toml").exists());
         // Installed already: nothing is fetched again.
         s.asked.lock().unwrap().clear();
         let mut again = Vec::new();
@@ -1068,11 +1028,7 @@ mod tests {
             std::fs::read(dir.join("patches/snipers.ips")).unwrap(),
             patch
         );
-        let active = std::fs::read_to_string(maps.join("active.toml")).unwrap();
-        assert!(
-            active.contains(&format!("dune = \"live-{}\"", &id.to_string()[..16])),
-            "{active}"
-        );
+        assert!(!maps.join("active.toml").exists());
         // A guest joining a game on it gets the same package.
         let mut join = ad("custom", Some(id));
         join.map = Some("dune".into());
@@ -1161,7 +1117,7 @@ mod tests {
     }
 
     #[test]
-    fn a_downloaded_mod_is_removed_with_its_choice_and_nothing_else() {
+    fn a_downloaded_mod_is_removed_without_touching_legacy_choices() {
         let maps = dir("remove");
         let patch = b"PATCH invented to be removed";
         let m = modded(patch);
@@ -1172,11 +1128,13 @@ mod tests {
         let told: Arc<Mutex<Vec<PathBuf>>> = Arc::default();
         let sink = Arc::clone(&told);
         g.on_installed(Box::new(move |d| sink.lock().unwrap().push(d.to_owned())));
+        let active = maps.join("active.toml");
+        let legacy = "lockout = \"some-old-choice\"\n";
+        std::fs::write(&active, legacy).unwrap();
         assert_eq!(g.remove(&id).unwrap(), dir);
         assert!(!dir.exists());
         assert_eq!(g.package_of(&id), None);
-        let active = std::fs::read_to_string(maps.join("active.toml")).unwrap();
-        assert!(!active.contains("live-"), "{active}");
+        assert_eq!(std::fs::read_to_string(&active).unwrap(), legacy);
         assert_eq!(*told.lock().unwrap(), [dir], "the boot rescans");
         assert!(g.remove(&id).unwrap_err().contains("not installed"));
         // A package put here by hand is never removed.

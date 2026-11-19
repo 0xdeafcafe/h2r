@@ -1,0 +1,118 @@
+.theater-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(212px, 27%);
+  align-items: start;
+  gap: 8px;
+  padding: 8px;
+}
+.theater-grid .gv { margin: 0; }
+.theater-grid .gv-bar { flex-wrap: wrap; }
+.theater-grid .gv-bar h2 { flex-basis: 70%; line-height: 25px; }
+.theater-grid .gv-buttons { margin: 0 0 5px; flex-wrap: wrap; }
+.theater-grid .gv-status { flex: 1; text-align: right; }
+.theater-cameras { display: flex; flex-wrap: wrap; gap: 4px; }
+.theater-cameras button:last-child { margin-left: 4px; }
+.theater-grid .gv-stage { max-height: none; }
+.theater-grid .gv-stage--3d > .v3-body { inset: 0; }
+.theater-scoreboard { margin: 0; min-width: 0; }
+.theater-scoreboard .score-name { white-space: nowrap; }
+.theater-scoreboard .score-pov {
+  max-width: calc(100% - 14px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+  font: inherit;
+  color: var(--s-link, #aaceeb);
+  background: none;
+  border: 0;
+  padding: 0 2px;
+  cursor: pointer;
+}
+.theater-scoreboard .score-pov:hover { text-decoration: underline; }
+.theater-scoreboard .score-row--picked td { background: color-mix(in srgb, var(--row) 35%, #1e1e1e); }
+.theater-scoreboard .score-row--picked .score-pov { color: white; }
+.theater-byline {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 8px 8px 0;
+  padding: 7px 10px;
+  background: #20262e;
+  border: 1px solid #3a424e;
+}
+.theater-hud { position: absolute; inset: 0; pointer-events: none; }
+.theater-hud > div, .theater-hud time {
+  position: absolute;
+  bottom: 10px;
+  padding: 4px 7px;
+  background: #0b1627db;
+  color: #e5f4ff;
+  border: 1px solid #86a3bf99;
+}
+.theater-hud > div { left: 10px; display: flex; flex-wrap: wrap; gap: 8px; }
+.theater-hud time { right: 10px; font-variant-numeric: tabular-nums; }
+.theater-reticle {
+  position: absolute;
+  inset: 50% auto auto 50%;
+  width: 12px;
+  height: 12px;
+  transform: translate(-50%, -50%);
+  border: 1px solid #daf5ffcf;
+  border-radius: 50%;
+  box-shadow: 0 0 1px 1px #0009;
+}
+.theater-clip-editor {
+  border-top: 1px solid #40454b;
+  background: #22272e;
+  color: #ebeff4;
+  padding: 8px;
+}
+.theater-clip-editor p { margin: 6px 0 0; }
+.theater-clip-marks, .theater-clip-fields { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+.theater-clip-note { padding-bottom: 6px; }
+.theater-clip-fields label { display: inline-flex; align-items: center; gap: 6px; flex: 1 1 160px; }
+.theater-clip-fields input { flex: 1; min-width: 0; }
+.scrub__selection, .scrub__boundary { position: absolute; pointer-events: none; }
+.scrub__selection { top: 6px; height: 4px; background: #58bbf4b8; }
+.scrub__boundary { top: 3px; height: 11px; width: 2px; transform: translateX(-1px); }
+.scrub__boundary--in { background: #8af3d0; }
+.scrub__boundary--out { background: #ffce84; }
+
+@media (max-width: 730px) {
+  .theater-grid { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 480px) {
+  .theater .replay-bar { flex-wrap: wrap; height: auto; padding-block: 5px; gap: 5px; }
+  .theater .replay-time { min-width: auto; }
+  .theater-grid .gv-buttons { gap: 4px; }
+}
+
+.stats:has(.theater) { --s-width: 1180px; }
+.stats .film-library {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 186px), 1fr));
+  gap: 10px;
+  padding: 8px;
+}
+.film-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: #1b1e24;
+  border: 1px solid #3c4653;
+}
+.film-card-link { display: block; flex: 1; }
+.film-card-image { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; }
+.film-card-image--empty {
+  display: grid;
+  place-items: center;
+  padding: 12px;
+  text-align: center;
+  background: linear-gradient(145deg, #293f55, #151b26);
+  color: #c2d2e4;
+}
+.film-card-body { display: grid; gap: 3px; padding: 8px; color: #c5cfda; overflow-wrap: anywhere; }
+.film-card-body strong { font-size: 13px; }
+.film-card-body time { color: #a9b6c6; }
+.film-card-actions { border-top: 1px solid #3c4653; padding: 6px 8px; }

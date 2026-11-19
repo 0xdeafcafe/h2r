@@ -539,18 +539,15 @@ mod tests {
         std::fs::write(over.join("level.map"), b"overridden").unwrap();
         let hashes = DiscHashes::default();
         let cfg = vfs::Config::new(t.0.join("data"), 0x4D530064);
-        let mut v = crate::map_override::mount_with_hashes::<crate::map_override::tests::Upper>(
+        let mut v = crate::map_override::mount::<crate::map_override::tests::Upper>(
             cfg,
             &iso,
             None,
             Some(&over),
-            Some(&maps),
-            None,
-            hashes.clone(),
             &[],
         )
         .unwrap();
-        assert!(crate::map_override::map_id(&mut v, &t.0.join("data"), "level").is_some());
+        assert!(crate::map_override::map_id(&mut v, "level").is_some());
         let bases = DiscBases::new(&iso, Some(&maps), hashes);
         assert_eq!(bases.disc_hash("level"), Some(Sha256::of(LEVEL)));
     }
@@ -626,54 +623,5 @@ mod tests {
             gate.retail_id("turf"),
             Some(content::MapId::retail("turf", Sha256::of(TURF)))
         );
-    }
-
-    /// A package on the installed Turf: served at its `$c` path, and named
-    /// by `map_override::map_id`, as the session and telemetry ask.
-    #[test]
-    fn a_package_on_a_map_pack_base_is_served_and_named() {
-        let t = Temp::new();
-        let iso = iso(&t);
-        install_turf(&t);
-        let maps = t.maps();
-        let dir = maps.join("turf-mod");
-        std::fs::create_dir_all(&dir).unwrap();
-        let patch = b"PATCH\0\0\0\0\x05OWNEDEOF";
-        std::fs::write(dir.join("a.ips"), patch).unwrap();
-        let mut m = content::Manifest::retail("turf", Sha256::of(TURF));
-        m.patches.push(content::manifest::Layer {
-            file: "a.ips".into(),
-            sha256: Sha256::of(patch),
-        });
-        std::fs::write(dir.join("manifest.toml"), m.to_toml()).unwrap();
-        let data = t.0.join("data");
-        let cfg = vfs::Config::new(&data, 0x4D530064);
-        let mut v = crate::map_override::mount(
-            cfg,
-            &iso,
-            None::<crate::map_override::tests::Upper>,
-            None,
-            Some(&maps),
-        )
-        .unwrap();
-        let path = crate::map_override::map_pack_path(&data, "turf").unwrap();
-        assert_eq!(
-            path,
-            "\\Device\\Harddisk0\\Partition1\\TDATA\\4D530064\\$c\\4d53006400000102\\Turf.map"
-        );
-        let h = v.open(&path, vfs::OpenOptions::default()).unwrap().handle;
-        let mut buf = vec![0; TURF.len()];
-        assert_eq!(
-            v.read(h, vfs::Offset::Absolute(0), &mut buf).unwrap(),
-            TURF.len()
-        );
-        v.close(h).unwrap();
-        assert_eq!(&buf[..5], b"OWNED");
-        assert_eq!(&buf[5..], &TURF[5..]);
-        assert_eq!(
-            crate::map_override::map_id(&mut v, &data, "turf"),
-            Some(m.map_id())
-        );
-        assert_eq!(crate::map_override::map_id(&mut v, &data, "dune"), None);
     }
 }

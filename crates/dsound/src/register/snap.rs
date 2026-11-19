@@ -118,6 +118,9 @@ impl Hle {
     /// What refuses a save now. Empty when [`Hle::save_snapshot`] may run.
     pub fn snapshot_blockers(&self) -> Vec<String> {
         let mut why = Vec::new();
+        if self.direct_sound().clock_only() {
+            why.push("clock-only DirectSound has no sample storage for snapshots".into());
+        }
         let batches = lock(&self.outbox).len();
         if batches > 0 {
             why.push(format!("{batches} event batches not yet delivered"));
@@ -182,6 +185,9 @@ impl Hle {
     /// (`kcore`) must already be loaded. Everything is decoded and checked,
     /// and the pins made again, before anything changes.
     pub fn load_snapshot(&self, snapshot: &Snapshot<'_>) -> Result<(), SnapshotError> {
+        if self.direct_sound().clock_only() {
+            return Err(SnapshotError::Busy(self.snapshot_blockers()));
+        }
         let batches = lock(&self.outbox).len();
         if batches > 0 {
             return Err(SnapshotError::Busy(vec![format!(

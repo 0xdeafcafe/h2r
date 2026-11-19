@@ -21,9 +21,10 @@
 # the reader. authors = [] means nobody could be found: the package then
 # says "unknown author", never the uploader.
 #
-# Researched 2026-11-19 from the original release posts, readmes and patch
-# headers (archive.org / web.archive.org copies of halomods.com,
-# assassin4hire.com, theppfnoobs.com, se7ensins.com); see each `evidence`.
+# Researched 2026-11-19 from release posts, readmes, patch headers and
+# preserved pack listings (halomods.com, assassin4hire.com, theppfnoobs.com,
+# se7ensins.com and Internet Archive). The five 12-map packs were matched
+# against the Live catalogue. See each `evidence`.
 
 [[mod]]
 map_id = "5acdecdfbbfb69c69c4b1ca4b275134c5077766fd1603132c116bd6f3d5765b0"
@@ -563,3 +564,687 @@ source_url = "https://web.archive.org/web/20090208202552/http://www.halomods.com
 confidence = "high"
 evidence = "AI Revision release post map list by Zone 117 (halomods.com, 2007-06-16, archived): https://web.archive.org/web/20090208202552/http://www.halomods.com/forums/viewtopic.php?t=61177"
 notes = "Confirmed by the pack's map list, not just the name. Halo 2 Remapped AI Revision pack compiled by Zone 117 (menu), auto-patcher by Detox; released 2007-06-16."
+
+[[mod]]
+map_id = "680e014316b13df0717952af71e10346febb0a32d50ee66a71748ce50af8b62e"
+name = "Sparten Killers: zanzibar"
+base = "zanzibar"
+authors = []
+release = "Sparten Killers Mappack"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+confidence = "unknown"
+evidence = "Sparten Killers Mappack is the title in the Se7ensins index and the preserved RAR's folder name. The pack readme gives launch instructions and is unsigned. The August 2022 repost announcement also spells it 'Spartan Killers'."
+notes = "Modified versions of the 12 original Xbox multiplayer maps. Terminator Zero supplied the archive to CabooseSayzWTF for preservation in 2022. Original author and release date unknown."
+
+[[mod]]
+map_id = "2709be292e67408bab6fbf4dbfd61fb304344d4db8c2a8edb1515b1a3e701833"
+name = "Sparten Killers: waterworks"
+base = "waterworks"
+authors = []
+release = "Sparten Killers Mappack"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+confidence = "unknown"
+evidence = "Sparten Killers Mappack is the title in the Se7ensins index and the preserved RAR's folder name. The pack readme gives launch instructions and is unsigned. The August 2022 repost announcement also spells it 'Spartan Killers'."
+notes = "Modified versions of the 12 original Xbox multiplayer maps. Terminator Zero supplied the archive to CabooseSayzWTF for preservation in 2022. Original author and release date unknown."
+
+[[mod]]
+map_id = "8c8fa144ab358eeee4d0926c26f560ed0c0a7a1413f18620216cf52e31a632d8"
+name = "Sparten Killers: midship"
+base = "midship"
+authors = []
+release = "Sparten Killers Mappack"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+confidence = "unknown"
+evidence = "Sparten Killers Mappack is the title in the Se7ensins index and the preserved RAR's folder name. The pack readme gives launch instructions and is unsigned. The August 2022 repost announcement also spells it 'Spartan Killers'."
+notes = "Modified versions of the 12 original Xbox multiplayer maps. Terminator Zero supplied the archive to CabooseSayzWTF for preservation in 2022. Original author and release date unknown."
+
+[[mod]]
+map_id = "60c5a49b3cb313e0246cecc5ac2481a4553a4b3655429f4c5d4795aa7665a9e7"
+name = "Sparten Killers: lockout"
+base = "lockout"
+authors = []
+release = "Sparten Killers Mappack"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+confidence = "unknown"
+evidence = "Sparten Killers Mappack is the title in the Se7ensins index and the preserved RAR's folder name. The pack readme gives launch instructions and is unsigned. The August 2022 repost announcement also spells it 'Spartan Killers'."
+notes = "Modified versions of the 12 original Xbox multiplayer maps. Terminator Zero supplied the archive to CabooseSayzWTF for preservation in 2022. Original author and release date unknown."
+
+[[mod]]
+map_id = "3d37507d0ce59542cd22e4f3e9f0783a3e9c239a2fb4d6b0a84e28048f3eaf76"
+name = "Sparten Killers: headlong"
+base = "headlong"
+authors = []
+release = "Sparten Killers Mappack"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+confidence = "unknown"
+evidence = "Sparten Killers Mappack is the title in the Se7ensins index and the preserved RAR's folder name. The pack readme gives launch instructions and is unsigned. The August 2022 repost announcement also spells it 'Spartan Killers'."
+notes = "Modified versions of the 12 original Xbox multiplayer maps. Terminator Zero supplied the archive to CabooseSayzWTF for preservation in 2022. Original author and release date unknown."
+
+[[mod]]
+map_id = "f49b418cac9c85d3dad7f253ce3efef9db8f237e82b7553ac1d3922870c4a481"
+name = "Sparten Killers: foundation"
+base = "foundation"
+authors = []
+release = "Sparten Killers Mappack"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+confidence = "unknown"
+evidence = "Sparten Killers Mappack is the title in the Se7ensins index and the preserved RAR's folder name. The pack readme gives launch instructions and is unsigned. The August 2022 repost announcement also spells it 'Spartan Killers'."
+notes = "Modified versions of the 12 original Xbox multiplayer maps. Terminator Zero supplied the archive to CabooseSayzWTF for preservation in 2022. Original author and release date unknown."
+
+[[mod]]
+map_id = "d02e69511fa2e14b014df41775be21928c9ac4bcac490fe08c1f70dd51d42ba9"
+name = "Sparten Killers: cyclotron"
+base = "cyclotron"
+authors = []
+release = "Sparten Killers Mappack"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+confidence = "unknown"
+evidence = "Sparten Killers Mappack is the title in the Se7ensins index and the preserved RAR's folder name. The pack readme gives launch instructions and is unsigned. The August 2022 repost announcement also spells it 'Spartan Killers'."
+notes = "Modified versions of the 12 original Xbox multiplayer maps. Terminator Zero supplied the archive to CabooseSayzWTF for preservation in 2022. Original author and release date unknown."
+
+[[mod]]
+map_id = "b387f6d13338e1e0b5d43784a234ceba70659baaf6b331022f2518bfafbce5f6"
+name = "Sparten Killers: colossus"
+base = "colossus"
+authors = []
+release = "Sparten Killers Mappack"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+confidence = "unknown"
+evidence = "Sparten Killers Mappack is the title in the Se7ensins index and the preserved RAR's folder name. The pack readme gives launch instructions and is unsigned. The August 2022 repost announcement also spells it 'Spartan Killers'."
+notes = "Modified versions of the 12 original Xbox multiplayer maps. Terminator Zero supplied the archive to CabooseSayzWTF for preservation in 2022. Original author and release date unknown."
+
+[[mod]]
+map_id = "0270441024819bff5a2ec66e327800c677f8642a8ecd7832af885ba59f73f816"
+name = "Sparten Killers: coagulation"
+base = "coagulation"
+authors = []
+release = "Sparten Killers Mappack"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+confidence = "unknown"
+evidence = "Sparten Killers Mappack is the title in the Se7ensins index and the preserved RAR's folder name. The pack readme gives launch instructions and is unsigned. The August 2022 repost announcement also spells it 'Spartan Killers'."
+notes = "Modified versions of the 12 original Xbox multiplayer maps. Terminator Zero supplied the archive to CabooseSayzWTF for preservation in 2022. Original author and release date unknown."
+
+[[mod]]
+map_id = "9f1852f9fc2535c1d3df35297dcb5f2e659ad4ee79e4faaa06c56f9af9bbb560"
+name = "Sparten Killers: burial_mounds"
+base = "burial_mounds"
+authors = []
+release = "Sparten Killers Mappack"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+confidence = "unknown"
+evidence = "Sparten Killers Mappack is the title in the Se7ensins index and the preserved RAR's folder name. The pack readme gives launch instructions and is unsigned. The August 2022 repost announcement also spells it 'Spartan Killers'."
+notes = "Modified versions of the 12 original Xbox multiplayer maps. Terminator Zero supplied the archive to CabooseSayzWTF for preservation in 2022. Original author and release date unknown."
+
+[[mod]]
+map_id = "794a86590382d2789f88b7f4de440ff52d3ff421205fcac329ededd7312c909e"
+name = "Sparten Killers: beavercreek"
+base = "beavercreek"
+authors = []
+release = "Sparten Killers Mappack"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+confidence = "unknown"
+evidence = "Sparten Killers Mappack is the title in the Se7ensins index and the preserved RAR's folder name. The pack readme gives launch instructions and is unsigned. The August 2022 repost announcement also spells it 'Spartan Killers'."
+notes = "Modified versions of the 12 original Xbox multiplayer maps. Terminator Zero supplied the archive to CabooseSayzWTF for preservation in 2022. Original author and release date unknown."
+
+[[mod]]
+map_id = "8c23033f97a554a90e918be64adf6ecd2d6c001ae3fe7c2c2d1f29f7c19f84d7"
+name = "Sparten Killers: ascension"
+base = "ascension"
+authors = []
+release = "Sparten Killers Mappack"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+confidence = "unknown"
+evidence = "Sparten Killers Mappack is the title in the Se7ensins index and the preserved RAR's folder name. The pack readme gives launch instructions and is unsigned. The August 2022 repost announcement also spells it 'Spartan Killers'."
+notes = "Modified versions of the 12 original Xbox multiplayer maps. Terminator Zero supplied the archive to CabooseSayzWTF for preservation in 2022. Original author and release date unknown."
+
+[[mod]]
+map_id = "d60c954b0a9b3582e3e8caffa62c1ca658d4d694e6907a935575af06f6a89e9e"
+name = "PPF Noobs Starting Patches: zanzibar"
+base = "zanzibar"
+authors = ["l PPF l NeoN"]
+release = "Starting Patches"
+released = "2006"
+source_url = "https://web.archive.org/web/20070112050451id_/http://theppfnoobs.com:80/Mods/All_Starting_Patches.rar"
+confidence = "medium"
+evidence = "The original All_Starting_Patches.rar uses the folder name 'Starting Patches'. All 12 retail PPFs match Live's patch hashes. For each map, all but four of the bytes written by Starting Patches match the bytes written at the same offsets by the v2 patch credited to l PPF l NeoN. Starting Patches has no author byline."
+notes = "PPF3 patches for the original multiplayer maps. Authorship inferred from the overlap with v2. The PPFs are dated July 2006 and the original server's Last-Modified header dates the RAR to September 2006."
+
+[[mod]]
+map_id = "ff18bbe4391c25189d8d6a11dab48df359c79665a68c7b1b4201dd948f66c5f4"
+name = "PPF Noobs Starting Patches: waterworks"
+base = "waterworks"
+authors = ["l PPF l NeoN"]
+release = "Starting Patches"
+released = "2006"
+source_url = "https://web.archive.org/web/20070112050451id_/http://theppfnoobs.com:80/Mods/All_Starting_Patches.rar"
+confidence = "medium"
+evidence = "The original All_Starting_Patches.rar uses the folder name 'Starting Patches'. All 12 retail PPFs match Live's patch hashes. For each map, all but four of the bytes written by Starting Patches match the bytes written at the same offsets by the v2 patch credited to l PPF l NeoN. Starting Patches has no author byline."
+notes = "PPF3 patches for the original multiplayer maps. Authorship inferred from the overlap with v2. The PPFs are dated July 2006 and the original server's Last-Modified header dates the RAR to September 2006."
+
+[[mod]]
+map_id = "1e615ef6e727dccf3bc9bcdcf8ed23352c49cfb1d1415c42d3033668ac6258e3"
+name = "PPF Noobs Starting Patches: midship"
+base = "midship"
+authors = ["l PPF l NeoN"]
+release = "Starting Patches"
+released = "2006"
+source_url = "https://web.archive.org/web/20070112050451id_/http://theppfnoobs.com:80/Mods/All_Starting_Patches.rar"
+confidence = "medium"
+evidence = "The original All_Starting_Patches.rar uses the folder name 'Starting Patches'. All 12 retail PPFs match Live's patch hashes. For each map, all but four of the bytes written by Starting Patches match the bytes written at the same offsets by the v2 patch credited to l PPF l NeoN. Starting Patches has no author byline."
+notes = "PPF3 patches for the original multiplayer maps. Authorship inferred from the overlap with v2. The PPFs are dated July 2006 and the original server's Last-Modified header dates the RAR to September 2006."
+
+[[mod]]
+map_id = "7e2db40cbad805b489ff30ee65e522418657fc291a0dfc7461838c56fc68576e"
+name = "PPF Noobs Starting Patches: lockout"
+base = "lockout"
+authors = ["l PPF l NeoN"]
+release = "Starting Patches"
+released = "2006"
+source_url = "https://web.archive.org/web/20070112050451id_/http://theppfnoobs.com:80/Mods/All_Starting_Patches.rar"
+confidence = "medium"
+evidence = "The original All_Starting_Patches.rar uses the folder name 'Starting Patches'. All 12 retail PPFs match Live's patch hashes. For each map, all but four of the bytes written by Starting Patches match the bytes written at the same offsets by the v2 patch credited to l PPF l NeoN. Starting Patches has no author byline."
+notes = "PPF3 patches for the original multiplayer maps. Authorship inferred from the overlap with v2. The PPFs are dated July 2006 and the original server's Last-Modified header dates the RAR to September 2006."
+
+[[mod]]
+map_id = "daa3f52d575865414400f76a913bb60356bb87ebb3d13f78ed473d3925973e08"
+name = "PPF Noobs Starting Patches: headlong"
+base = "headlong"
+authors = ["l PPF l NeoN"]
+release = "Starting Patches"
+released = "2006"
+source_url = "https://web.archive.org/web/20070112050451id_/http://theppfnoobs.com:80/Mods/All_Starting_Patches.rar"
+confidence = "medium"
+evidence = "The original All_Starting_Patches.rar uses the folder name 'Starting Patches'. All 12 retail PPFs match Live's patch hashes. For each map, all but four of the bytes written by Starting Patches match the bytes written at the same offsets by the v2 patch credited to l PPF l NeoN. Starting Patches has no author byline."
+notes = "PPF3 patches for the original multiplayer maps. Authorship inferred from the overlap with v2. The PPFs are dated July 2006 and the original server's Last-Modified header dates the RAR to September 2006."
+
+[[mod]]
+map_id = "51a45705d0b64aefb3ed95499bdf3b8e233458fb07fa62ae95e564a7a1650aae"
+name = "PPF Noobs Starting Patches: foundation"
+base = "foundation"
+authors = ["l PPF l NeoN"]
+release = "Starting Patches"
+released = "2006"
+source_url = "https://web.archive.org/web/20070112050451id_/http://theppfnoobs.com:80/Mods/All_Starting_Patches.rar"
+confidence = "medium"
+evidence = "The original All_Starting_Patches.rar uses the folder name 'Starting Patches'. All 12 retail PPFs match Live's patch hashes. For each map, all but four of the bytes written by Starting Patches match the bytes written at the same offsets by the v2 patch credited to l PPF l NeoN. Starting Patches has no author byline."
+notes = "PPF3 patches for the original multiplayer maps. Authorship inferred from the overlap with v2. The PPFs are dated July 2006 and the original server's Last-Modified header dates the RAR to September 2006."
+
+[[mod]]
+map_id = "5505876ecbfe620f6c441c8aab979f230455dac677170e8f122702a545cd9e20"
+name = "PPF Noobs Starting Patches: cyclotron"
+base = "cyclotron"
+authors = ["l PPF l NeoN"]
+release = "Starting Patches"
+released = "2006"
+source_url = "https://web.archive.org/web/20070112050451id_/http://theppfnoobs.com:80/Mods/All_Starting_Patches.rar"
+confidence = "medium"
+evidence = "The original All_Starting_Patches.rar uses the folder name 'Starting Patches'. All 12 retail PPFs match Live's patch hashes. For each map, all but four of the bytes written by Starting Patches match the bytes written at the same offsets by the v2 patch credited to l PPF l NeoN. Starting Patches has no author byline."
+notes = "PPF3 patches for the original multiplayer maps. Authorship inferred from the overlap with v2. The PPFs are dated July 2006 and the original server's Last-Modified header dates the RAR to September 2006."
+
+[[mod]]
+map_id = "7ae239060740b22e7a85edb50ec61b855645018e2685865f9835b8dceb4aefe5"
+name = "PPF Noobs Starting Patches: colossus"
+base = "colossus"
+authors = ["l PPF l NeoN"]
+release = "Starting Patches"
+released = "2006"
+source_url = "https://web.archive.org/web/20070112050451id_/http://theppfnoobs.com:80/Mods/All_Starting_Patches.rar"
+confidence = "medium"
+evidence = "The original All_Starting_Patches.rar uses the folder name 'Starting Patches'. All 12 retail PPFs match Live's patch hashes. For each map, all but four of the bytes written by Starting Patches match the bytes written at the same offsets by the v2 patch credited to l PPF l NeoN. Starting Patches has no author byline."
+notes = "PPF3 patches for the original multiplayer maps. Authorship inferred from the overlap with v2. The PPFs are dated July 2006 and the original server's Last-Modified header dates the RAR to September 2006."
+
+[[mod]]
+map_id = "21d75bbdcf495da30f874e3182354613933a32dcc7c949025a03343cafa20e33"
+name = "PPF Noobs Starting Patches: coagulation"
+base = "coagulation"
+authors = ["l PPF l NeoN"]
+release = "Starting Patches"
+released = "2006"
+source_url = "https://web.archive.org/web/20070112050451id_/http://theppfnoobs.com:80/Mods/All_Starting_Patches.rar"
+confidence = "medium"
+evidence = "The original All_Starting_Patches.rar uses the folder name 'Starting Patches'. All 12 retail PPFs match Live's patch hashes. For each map, all but four of the bytes written by Starting Patches match the bytes written at the same offsets by the v2 patch credited to l PPF l NeoN. Starting Patches has no author byline."
+notes = "PPF3 patches for the original multiplayer maps. Authorship inferred from the overlap with v2. The PPFs are dated July 2006 and the original server's Last-Modified header dates the RAR to September 2006."
+
+[[mod]]
+map_id = "d27997a472d5a1f188ad18352f50c6409363dcf2b7adb8814c2f2bcdeeb7a613"
+name = "PPF Noobs Starting Patches: burial_mounds"
+base = "burial_mounds"
+authors = ["l PPF l NeoN"]
+release = "Starting Patches"
+released = "2006"
+source_url = "https://web.archive.org/web/20070112050451id_/http://theppfnoobs.com:80/Mods/All_Starting_Patches.rar"
+confidence = "medium"
+evidence = "The original All_Starting_Patches.rar uses the folder name 'Starting Patches'. All 12 retail PPFs match Live's patch hashes. For each map, all but four of the bytes written by Starting Patches match the bytes written at the same offsets by the v2 patch credited to l PPF l NeoN. Starting Patches has no author byline."
+notes = "PPF3 patches for the original multiplayer maps. Authorship inferred from the overlap with v2. The PPFs are dated July 2006 and the original server's Last-Modified header dates the RAR to September 2006."
+
+[[mod]]
+map_id = "89f72e564fe4651a37fcc4cd51475c97c56211bcbe624a65400fd2158f67740e"
+name = "PPF Noobs Starting Patches: beavercreek"
+base = "beavercreek"
+authors = ["l PPF l NeoN"]
+release = "Starting Patches"
+released = "2006"
+source_url = "https://web.archive.org/web/20070112050451id_/http://theppfnoobs.com:80/Mods/All_Starting_Patches.rar"
+confidence = "medium"
+evidence = "The original All_Starting_Patches.rar uses the folder name 'Starting Patches'. All 12 retail PPFs match Live's patch hashes. For each map, all but four of the bytes written by Starting Patches match the bytes written at the same offsets by the v2 patch credited to l PPF l NeoN. Starting Patches has no author byline."
+notes = "PPF3 patches for the original multiplayer maps. Authorship inferred from the overlap with v2. The PPFs are dated July 2006 and the original server's Last-Modified header dates the RAR to September 2006."
+
+[[mod]]
+map_id = "9bb4406fb2fe6f086e666818c9dfb3f86505235f10fc22f469d9cafaedc6a23a"
+name = "PPF Noobs Starting Patches: ascension"
+base = "ascension"
+authors = ["l PPF l NeoN"]
+release = "Starting Patches"
+released = "2006"
+source_url = "https://web.archive.org/web/20070112050451id_/http://theppfnoobs.com:80/Mods/All_Starting_Patches.rar"
+confidence = "medium"
+evidence = "The original All_Starting_Patches.rar uses the folder name 'Starting Patches'. All 12 retail PPFs match Live's patch hashes. For each map, all but four of the bytes written by Starting Patches match the bytes written at the same offsets by the v2 patch credited to l PPF l NeoN. Starting Patches has no author byline."
+notes = "PPF3 patches for the original multiplayer maps. Authorship inferred from the overlap with v2. The PPFs are dated July 2006 and the original server's Last-Modified header dates the RAR to September 2006."
+
+[[mod]]
+map_id = "31616dc52abd881ef5698612aa01609eed51d2938fda4f0004640deb03817ac7"
+name = "PPF Noobs Old Map Package v2: zanzibar"
+base = "zanzibar"
+authors = ["l PPF l NeoN"]
+release = "The PPF Noobs Old Map Package v2"
+released = "2006-10"
+source_url = "https://web.archive.org/web/20070112055306id_/http://www.theppfnoobs.com:80/Mods/The%20PPF%20Noobs%20Old%20Map%20Package%20v2.rar"
+confidence = "high"
+evidence = "The original RAR uses this title and contains 'Made By l PPF l NeoN.txt', which credits the maps to l PPF l NeoN. All 12 map PPFs match Live's patch hashes."
+notes = "PPF3 patches for the original multiplayer maps. The RAR's files and the original server's Last-Modified header are dated 2006-10-02. A separate release from The PPF Noobs Map Package."
+
+[[mod]]
+map_id = "65de51e891e3f5b874b0fa6e13b51734b01fbe46f5122d79a51025c70e6a443c"
+name = "PPF Noobs Old Map Package v2: waterworks"
+base = "waterworks"
+authors = ["l PPF l NeoN"]
+release = "The PPF Noobs Old Map Package v2"
+released = "2006-10"
+source_url = "https://web.archive.org/web/20070112055306id_/http://www.theppfnoobs.com:80/Mods/The%20PPF%20Noobs%20Old%20Map%20Package%20v2.rar"
+confidence = "high"
+evidence = "The original RAR uses this title and contains 'Made By l PPF l NeoN.txt', which credits the maps to l PPF l NeoN. All 12 map PPFs match Live's patch hashes."
+notes = "PPF3 patches for the original multiplayer maps. The RAR's files and the original server's Last-Modified header are dated 2006-10-02. A separate release from The PPF Noobs Map Package."
+
+[[mod]]
+map_id = "d45c0f6a0fc87286557c844ec040e841332335046b41dea174d82c21633e9aa4"
+name = "PPF Noobs Old Map Package v2: midship"
+base = "midship"
+authors = ["l PPF l NeoN"]
+release = "The PPF Noobs Old Map Package v2"
+released = "2006-10"
+source_url = "https://web.archive.org/web/20070112055306id_/http://www.theppfnoobs.com:80/Mods/The%20PPF%20Noobs%20Old%20Map%20Package%20v2.rar"
+confidence = "high"
+evidence = "The original RAR uses this title and contains 'Made By l PPF l NeoN.txt', which credits the maps to l PPF l NeoN. All 12 map PPFs match Live's patch hashes."
+notes = "PPF3 patches for the original multiplayer maps. The RAR's files and the original server's Last-Modified header are dated 2006-10-02. A separate release from The PPF Noobs Map Package."
+
+[[mod]]
+map_id = "d39ebd6d978c55ed0be89471f85519f709c568690283ea86e7f55ce6cd4cca10"
+name = "PPF Noobs Old Map Package v2: lockout"
+base = "lockout"
+authors = ["l PPF l NeoN"]
+release = "The PPF Noobs Old Map Package v2"
+released = "2006-10"
+source_url = "https://web.archive.org/web/20070112055306id_/http://www.theppfnoobs.com:80/Mods/The%20PPF%20Noobs%20Old%20Map%20Package%20v2.rar"
+confidence = "high"
+evidence = "The original RAR uses this title and contains 'Made By l PPF l NeoN.txt', which credits the maps to l PPF l NeoN. All 12 map PPFs match Live's patch hashes."
+notes = "PPF3 patches for the original multiplayer maps. The RAR's files and the original server's Last-Modified header are dated 2006-10-02. A separate release from The PPF Noobs Map Package."
+
+[[mod]]
+map_id = "07a439930345e44242862a602f7575cc74e0c7afd11a978de4a93b0c1e60eef4"
+name = "PPF Noobs Old Map Package v2: headlong"
+base = "headlong"
+authors = ["l PPF l NeoN"]
+release = "The PPF Noobs Old Map Package v2"
+released = "2006-10"
+source_url = "https://web.archive.org/web/20070112055306id_/http://www.theppfnoobs.com:80/Mods/The%20PPF%20Noobs%20Old%20Map%20Package%20v2.rar"
+confidence = "high"
+evidence = "The original RAR uses this title and contains 'Made By l PPF l NeoN.txt', which credits the maps to l PPF l NeoN. All 12 map PPFs match Live's patch hashes."
+notes = "PPF3 patches for the original multiplayer maps. The RAR's files and the original server's Last-Modified header are dated 2006-10-02. A separate release from The PPF Noobs Map Package."
+
+[[mod]]
+map_id = "8935a637b7f5a3fdde553a0cf9a0dd5bca1b2cdf4d1617b978031a80322ccc95"
+name = "PPF Noobs Old Map Package v2: foundation"
+base = "foundation"
+authors = ["l PPF l NeoN"]
+release = "The PPF Noobs Old Map Package v2"
+released = "2006-10"
+source_url = "https://web.archive.org/web/20070112055306id_/http://www.theppfnoobs.com:80/Mods/The%20PPF%20Noobs%20Old%20Map%20Package%20v2.rar"
+confidence = "high"
+evidence = "The original RAR uses this title and contains 'Made By l PPF l NeoN.txt', which credits the maps to l PPF l NeoN. All 12 map PPFs match Live's patch hashes."
+notes = "PPF3 patches for the original multiplayer maps. The RAR's files and the original server's Last-Modified header are dated 2006-10-02. A separate release from The PPF Noobs Map Package."
+
+[[mod]]
+map_id = "487d0eb003d7f3975eb5d20108d53d45195e9a872837403ff5235d7b10bb0ec1"
+name = "PPF Noobs Old Map Package v2: cyclotron"
+base = "cyclotron"
+authors = ["l PPF l NeoN"]
+release = "The PPF Noobs Old Map Package v2"
+released = "2006-10"
+source_url = "https://web.archive.org/web/20070112055306id_/http://www.theppfnoobs.com:80/Mods/The%20PPF%20Noobs%20Old%20Map%20Package%20v2.rar"
+confidence = "high"
+evidence = "The original RAR uses this title and contains 'Made By l PPF l NeoN.txt', which credits the maps to l PPF l NeoN. All 12 map PPFs match Live's patch hashes."
+notes = "PPF3 patches for the original multiplayer maps. The RAR's files and the original server's Last-Modified header are dated 2006-10-02. A separate release from The PPF Noobs Map Package."
+
+[[mod]]
+map_id = "8d7e9855f457ff298541dd00e9d7ce5fec91b6608a9645c0ff2a3dd46a93069c"
+name = "PPF Noobs Old Map Package v2: colossus"
+base = "colossus"
+authors = ["l PPF l NeoN"]
+release = "The PPF Noobs Old Map Package v2"
+released = "2006-10"
+source_url = "https://web.archive.org/web/20070112055306id_/http://www.theppfnoobs.com:80/Mods/The%20PPF%20Noobs%20Old%20Map%20Package%20v2.rar"
+confidence = "high"
+evidence = "The original RAR uses this title and contains 'Made By l PPF l NeoN.txt', which credits the maps to l PPF l NeoN. All 12 map PPFs match Live's patch hashes."
+notes = "PPF3 patches for the original multiplayer maps. The RAR's files and the original server's Last-Modified header are dated 2006-10-02. A separate release from The PPF Noobs Map Package."
+
+[[mod]]
+map_id = "549bdbf75dfde0682b47c87c91b0065c2a56628461be13b14324723d9388b252"
+name = "PPF Noobs Old Map Package v2: coagulation"
+base = "coagulation"
+authors = ["l PPF l NeoN"]
+release = "The PPF Noobs Old Map Package v2"
+released = "2006-10"
+source_url = "https://web.archive.org/web/20070112055306id_/http://www.theppfnoobs.com:80/Mods/The%20PPF%20Noobs%20Old%20Map%20Package%20v2.rar"
+confidence = "high"
+evidence = "The original RAR uses this title and contains 'Made By l PPF l NeoN.txt', which credits the maps to l PPF l NeoN. All 12 map PPFs match Live's patch hashes."
+notes = "PPF3 patches for the original multiplayer maps. The RAR's files and the original server's Last-Modified header are dated 2006-10-02. A separate release from The PPF Noobs Map Package."
+
+[[mod]]
+map_id = "1d637f56660aa4466ebe7074eaa13e945165005e243b374edf9cb20fc842fccc"
+name = "PPF Noobs Old Map Package v2: burial_mounds"
+base = "burial_mounds"
+authors = ["l PPF l NeoN"]
+release = "The PPF Noobs Old Map Package v2"
+released = "2006-10"
+source_url = "https://web.archive.org/web/20070112055306id_/http://www.theppfnoobs.com:80/Mods/The%20PPF%20Noobs%20Old%20Map%20Package%20v2.rar"
+confidence = "high"
+evidence = "The original RAR uses this title and contains 'Made By l PPF l NeoN.txt', which credits the maps to l PPF l NeoN. All 12 map PPFs match Live's patch hashes."
+notes = "PPF3 patches for the original multiplayer maps. The RAR's files and the original server's Last-Modified header are dated 2006-10-02. A separate release from The PPF Noobs Map Package."
+
+[[mod]]
+map_id = "b00080fd25e08c3c51662dead95a1d36bac7410ce4b39fb0982e91e39e535961"
+name = "PPF Noobs Old Map Package v2: beavercreek"
+base = "beavercreek"
+authors = ["l PPF l NeoN"]
+release = "The PPF Noobs Old Map Package v2"
+released = "2006-10"
+source_url = "https://web.archive.org/web/20070112055306id_/http://www.theppfnoobs.com:80/Mods/The%20PPF%20Noobs%20Old%20Map%20Package%20v2.rar"
+confidence = "high"
+evidence = "The original RAR uses this title and contains 'Made By l PPF l NeoN.txt', which credits the maps to l PPF l NeoN. All 12 map PPFs match Live's patch hashes."
+notes = "PPF3 patches for the original multiplayer maps. The RAR's files and the original server's Last-Modified header are dated 2006-10-02. A separate release from The PPF Noobs Map Package."
+
+[[mod]]
+map_id = "dc4b45915d9fd249040046ff273eb94391804e13ab783d786f363532089e9960"
+name = "PPF Noobs Old Map Package v2: ascension"
+base = "ascension"
+authors = ["l PPF l NeoN"]
+release = "The PPF Noobs Old Map Package v2"
+released = "2006-10"
+source_url = "https://web.archive.org/web/20070112055306id_/http://www.theppfnoobs.com:80/Mods/The%20PPF%20Noobs%20Old%20Map%20Package%20v2.rar"
+confidence = "high"
+evidence = "The original RAR uses this title and contains 'Made By l PPF l NeoN.txt', which credits the maps to l PPF l NeoN. All 12 map PPFs match Live's patch hashes."
+notes = "PPF3 patches for the original multiplayer maps. The RAR's files and the original server's Last-Modified header are dated 2006-10-02. A separate release from The PPF Noobs Map Package."
+
+[[mod]]
+map_id = "90c171c23fbc73872f5a6cd24fef0ce2fe1fd3a4ec76f1f3ae5fa2b13586b48a"
+name = "justcallmesteves: zanzibar"
+base = "zanzibar"
+authors = ["JustCallMeSteve"]
+release = "JustCallMeSteves Map Pack"
+source_url = "https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html"
+confidence = "medium"
+evidence = "The PPF Noobs' February 2007 mod page lists 'JustCallMeSteves Map Pack' for the old maps. Caboose refers to the preserved release as Steve's pack in the repost announcement at https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/page-9#post-14460530."
+notes = "Attribution inferred from the contemporaneous listing and repost. The surviving pack's readme gives launch instructions. The original patches are unavailable for comparison. First release date unknown."
+
+[[mod]]
+map_id = "4fbde238a97c11202817e213eeb9cfc053dbd5717385e25068bee25cb14efa3f"
+name = "justcallmesteves: waterworks"
+base = "waterworks"
+authors = ["JustCallMeSteve"]
+release = "JustCallMeSteves Map Pack"
+source_url = "https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html"
+confidence = "medium"
+evidence = "The PPF Noobs' February 2007 mod page lists 'JustCallMeSteves Map Pack' for the old maps. Caboose refers to the preserved release as Steve's pack in the repost announcement at https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/page-9#post-14460530."
+notes = "Attribution inferred from the contemporaneous listing and repost. The surviving pack's readme gives launch instructions. The original patches are unavailable for comparison. First release date unknown."
+
+[[mod]]
+map_id = "f8f2337389592193738d9f29e825031251ec59fa94d0e93d2464d6863f390a8e"
+name = "justcallmesteves: midship"
+base = "midship"
+authors = ["JustCallMeSteve"]
+release = "JustCallMeSteves Map Pack"
+source_url = "https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html"
+confidence = "medium"
+evidence = "The PPF Noobs' February 2007 mod page lists 'JustCallMeSteves Map Pack' for the old maps. Caboose refers to the preserved release as Steve's pack in the repost announcement at https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/page-9#post-14460530."
+notes = "Attribution inferred from the contemporaneous listing and repost. The surviving pack's readme gives launch instructions. The original patches are unavailable for comparison. First release date unknown."
+
+[[mod]]
+map_id = "11cf7a606d630efd25bf0aeef2d03a4324225c6e4b4fbfaa35313f1798676704"
+name = "justcallmesteves: lockout"
+base = "lockout"
+authors = ["JustCallMeSteve"]
+release = "JustCallMeSteves Map Pack"
+source_url = "https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html"
+confidence = "medium"
+evidence = "The PPF Noobs' February 2007 mod page lists 'JustCallMeSteves Map Pack' for the old maps. Caboose refers to the preserved release as Steve's pack in the repost announcement at https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/page-9#post-14460530."
+notes = "Attribution inferred from the contemporaneous listing and repost. The surviving pack's readme gives launch instructions. The original patches are unavailable for comparison. First release date unknown."
+
+[[mod]]
+map_id = "c940f9fe52039d9474629bdd624894c8c0fef42cb64f548947c9de7ddefc0c4e"
+name = "justcallmesteves: headlong"
+base = "headlong"
+authors = ["JustCallMeSteve"]
+release = "JustCallMeSteves Map Pack"
+source_url = "https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html"
+confidence = "medium"
+evidence = "The PPF Noobs' February 2007 mod page lists 'JustCallMeSteves Map Pack' for the old maps. Caboose refers to the preserved release as Steve's pack in the repost announcement at https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/page-9#post-14460530."
+notes = "Attribution inferred from the contemporaneous listing and repost. The surviving pack's readme gives launch instructions. The original patches are unavailable for comparison. First release date unknown."
+
+[[mod]]
+map_id = "ea8e78f775e2076f69dda7a0393a00ab12ca13649c7434c5aec16a42e00a54b3"
+name = "justcallmesteves: foundation"
+base = "foundation"
+authors = ["JustCallMeSteve"]
+release = "JustCallMeSteves Map Pack"
+source_url = "https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html"
+confidence = "medium"
+evidence = "The PPF Noobs' February 2007 mod page lists 'JustCallMeSteves Map Pack' for the old maps. Caboose refers to the preserved release as Steve's pack in the repost announcement at https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/page-9#post-14460530."
+notes = "Attribution inferred from the contemporaneous listing and repost. The surviving pack's readme gives launch instructions. The original patches are unavailable for comparison. First release date unknown."
+
+[[mod]]
+map_id = "2fbb614b9af2bf0219659a0998c7df2718043780e895ee3ff8b15d9ace62be0a"
+name = "justcallmesteves: cyclotron"
+base = "cyclotron"
+authors = ["JustCallMeSteve"]
+release = "JustCallMeSteves Map Pack"
+source_url = "https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html"
+confidence = "medium"
+evidence = "The PPF Noobs' February 2007 mod page lists 'JustCallMeSteves Map Pack' for the old maps. Caboose refers to the preserved release as Steve's pack in the repost announcement at https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/page-9#post-14460530."
+notes = "Attribution inferred from the contemporaneous listing and repost. The surviving pack's readme gives launch instructions. The original patches are unavailable for comparison. First release date unknown."
+
+[[mod]]
+map_id = "1d8004e6f8562c195b11562e770a1d086236a71f30a484eee520eb4fad5757ef"
+name = "justcallmesteves: colossus"
+base = "colossus"
+authors = ["JustCallMeSteve"]
+release = "JustCallMeSteves Map Pack"
+source_url = "https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html"
+confidence = "medium"
+evidence = "The PPF Noobs' February 2007 mod page lists 'JustCallMeSteves Map Pack' for the old maps. Caboose refers to the preserved release as Steve's pack in the repost announcement at https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/page-9#post-14460530."
+notes = "Attribution inferred from the contemporaneous listing and repost. The surviving pack's readme gives launch instructions. The original patches are unavailable for comparison. First release date unknown."
+
+[[mod]]
+map_id = "98153366062980b76a0e7212a35bcb4dc70d697af564f317a4cf80551cdb9b49"
+name = "justcallmesteves: coagulation"
+base = "coagulation"
+authors = ["JustCallMeSteve"]
+release = "JustCallMeSteves Map Pack"
+source_url = "https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html"
+confidence = "medium"
+evidence = "The PPF Noobs' February 2007 mod page lists 'JustCallMeSteves Map Pack' for the old maps. Caboose refers to the preserved release as Steve's pack in the repost announcement at https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/page-9#post-14460530."
+notes = "Attribution inferred from the contemporaneous listing and repost. The surviving pack's readme gives launch instructions. The original patches are unavailable for comparison. First release date unknown."
+
+[[mod]]
+map_id = "94602e981b11933a7099b8e14d83acfba73ff5d81f77695163a64eebb6ee3baf"
+name = "justcallmesteves: burial_mounds"
+base = "burial_mounds"
+authors = ["JustCallMeSteve"]
+release = "JustCallMeSteves Map Pack"
+source_url = "https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html"
+confidence = "medium"
+evidence = "The PPF Noobs' February 2007 mod page lists 'JustCallMeSteves Map Pack' for the old maps. Caboose refers to the preserved release as Steve's pack in the repost announcement at https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/page-9#post-14460530."
+notes = "Attribution inferred from the contemporaneous listing and repost. The surviving pack's readme gives launch instructions. The original patches are unavailable for comparison. First release date unknown."
+
+[[mod]]
+map_id = "6b7181510443ac395e911090aaa8016ad0fa4111c9c4d7d3505866e9bb37e5d3"
+name = "justcallmesteves: beavercreek"
+base = "beavercreek"
+authors = ["JustCallMeSteve"]
+release = "JustCallMeSteves Map Pack"
+source_url = "https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html"
+confidence = "medium"
+evidence = "The PPF Noobs' February 2007 mod page lists 'JustCallMeSteves Map Pack' for the old maps. Caboose refers to the preserved release as Steve's pack in the repost announcement at https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/page-9#post-14460530."
+notes = "Attribution inferred from the contemporaneous listing and repost. The surviving pack's readme gives launch instructions. The original patches are unavailable for comparison. First release date unknown."
+
+[[mod]]
+map_id = "f0e0aa83bcc6c4649e1cf966eb167699857f00e5db32e947495c2f0aa03c9497"
+name = "justcallmesteves: ascension"
+base = "ascension"
+authors = ["JustCallMeSteve"]
+release = "JustCallMeSteves Map Pack"
+source_url = "https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html"
+confidence = "medium"
+evidence = "The PPF Noobs' February 2007 mod page lists 'JustCallMeSteves Map Pack' for the old maps. Caboose refers to the preserved release as Steve's pack in the repost announcement at https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/page-9#post-14460530."
+notes = "Attribution inferred from the contemporaneous listing and repost. The surviving pack's readme gives launch instructions. The original patches are unavailable for comparison. First release date unknown."
+
+[[mod]]
+map_id = "7b343e5e5cb705758f70d78a63a5c7f5213325c7ddedede6e9250f9dbfd27a2a"
+name = "Hockey Fans (Old Maps): zanzibar"
+base = "zanzibar"
+authors = []
+release = "Hockey Fans (Old Maps) Map Pack"
+source_url = "https://archive.org/download/H2Mappacks"
+confidence = "unknown"
+evidence = "This is the preserved archive's name. Caboose announced the 2019-05-22 repost as Hockey Fan's (Old Maps) at https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/page-4#post-13985878."
+notes = "Modified versions of the 12 original Xbox multiplayer maps. The preserved pack has no readme. Original author and release date unknown."
+
+[[mod]]
+map_id = "6a11cf5ad579c0f020e6c598f94ba6768e9b763f399d0c6bdbd17d125f99343e"
+name = "Hockey Fans (Old Maps): waterworks"
+base = "waterworks"
+authors = []
+release = "Hockey Fans (Old Maps) Map Pack"
+source_url = "https://archive.org/download/H2Mappacks"
+confidence = "unknown"
+evidence = "This is the preserved archive's name. Caboose announced the 2019-05-22 repost as Hockey Fan's (Old Maps) at https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/page-4#post-13985878."
+notes = "Modified versions of the 12 original Xbox multiplayer maps. The preserved pack has no readme. Original author and release date unknown."
+
+[[mod]]
+map_id = "0539c8370acf635003265c3f89cc3539c209af34d73ac4c71e1737ab1afecaf9"
+name = "Hockey Fans (Old Maps): midship"
+base = "midship"
+authors = []
+release = "Hockey Fans (Old Maps) Map Pack"
+source_url = "https://archive.org/download/H2Mappacks"
+confidence = "unknown"
+evidence = "This is the preserved archive's name. Caboose announced the 2019-05-22 repost as Hockey Fan's (Old Maps) at https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/page-4#post-13985878."
+notes = "Modified versions of the 12 original Xbox multiplayer maps. The preserved pack has no readme. Original author and release date unknown."
+
+[[mod]]
+map_id = "7a6ec77eee9facb2c6d53cb9a797ff6030136705b23c78d923c6f7ef96c0c54d"
+name = "Hockey Fans (Old Maps): lockout"
+base = "lockout"
+authors = []
+release = "Hockey Fans (Old Maps) Map Pack"
+source_url = "https://archive.org/download/H2Mappacks"
+confidence = "unknown"
+evidence = "This is the preserved archive's name. Caboose announced the 2019-05-22 repost as Hockey Fan's (Old Maps) at https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/page-4#post-13985878."
+notes = "Modified versions of the 12 original Xbox multiplayer maps. The preserved pack has no readme. Original author and release date unknown."
+
+[[mod]]
+map_id = "e260565ca6ec225223d3f1c43445ff144c37555f55f8b1066b654e25d74ddad6"
+name = "Hockey Fans (Old Maps): headlong"
+base = "headlong"
+authors = []
+release = "Hockey Fans (Old Maps) Map Pack"
+source_url = "https://archive.org/download/H2Mappacks"
+confidence = "unknown"
+evidence = "This is the preserved archive's name. Caboose announced the 2019-05-22 repost as Hockey Fan's (Old Maps) at https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/page-4#post-13985878."
+notes = "Modified versions of the 12 original Xbox multiplayer maps. The preserved pack has no readme. Original author and release date unknown."
+
+[[mod]]
+map_id = "1773de2df33e29ca807f3985aad266286dfb32cd88ab0bbc63e8841b5b4e90d4"
+name = "Hockey Fans (Old Maps): foundation"
+base = "foundation"
+authors = []
+release = "Hockey Fans (Old Maps) Map Pack"
+source_url = "https://archive.org/download/H2Mappacks"
+confidence = "unknown"
+evidence = "This is the preserved archive's name. Caboose announced the 2019-05-22 repost as Hockey Fan's (Old Maps) at https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/page-4#post-13985878."
+notes = "Modified versions of the 12 original Xbox multiplayer maps. The preserved pack has no readme. Original author and release date unknown."
+
+[[mod]]
+map_id = "bab5a3138f419802764b1c6273a2858db2db762dc537337be0914f4fa5e74457"
+name = "Hockey Fans (Old Maps): cyclotron"
+base = "cyclotron"
+authors = []
+release = "Hockey Fans (Old Maps) Map Pack"
+source_url = "https://archive.org/download/H2Mappacks"
+confidence = "unknown"
+evidence = "This is the preserved archive's name. Caboose announced the 2019-05-22 repost as Hockey Fan's (Old Maps) at https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/page-4#post-13985878."
+notes = "Modified versions of the 12 original Xbox multiplayer maps. The preserved pack has no readme. Original author and release date unknown."
+
+[[mod]]
+map_id = "26ebd8f79a51634858b6dff3689dd51df3f58c07c8b759cda193bba45fe1a373"
+name = "Hockey Fans (Old Maps): colossus"
+base = "colossus"
+authors = []
+release = "Hockey Fans (Old Maps) Map Pack"
+source_url = "https://archive.org/download/H2Mappacks"
+confidence = "unknown"
+evidence = "This is the preserved archive's name. Caboose announced the 2019-05-22 repost as Hockey Fan's (Old Maps) at https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/page-4#post-13985878."
+notes = "Modified versions of the 12 original Xbox multiplayer maps. The preserved pack has no readme. Original author and release date unknown."
+
+[[mod]]
+map_id = "5527fb7f5b3b82a7a405d958155a4f48f1ecff6de47d48aba49b50fae57d3731"
+name = "Hockey Fans (Old Maps): coagulation"
+base = "coagulation"
+authors = []
+release = "Hockey Fans (Old Maps) Map Pack"
+source_url = "https://archive.org/download/H2Mappacks"
+confidence = "unknown"
+evidence = "This is the preserved archive's name. Caboose announced the 2019-05-22 repost as Hockey Fan's (Old Maps) at https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/page-4#post-13985878."
+notes = "Modified versions of the 12 original Xbox multiplayer maps. The preserved pack has no readme. Original author and release date unknown."
+
+[[mod]]
+map_id = "b21b8e1bbc7fd6b2793420f5d7856cc92742462cba4198c1e0b8f14290b0d048"
+name = "Hockey Fans (Old Maps): burial_mounds"
+base = "burial_mounds"
+authors = []
+release = "Hockey Fans (Old Maps) Map Pack"
+source_url = "https://archive.org/download/H2Mappacks"
+confidence = "unknown"
+evidence = "This is the preserved archive's name. Caboose announced the 2019-05-22 repost as Hockey Fan's (Old Maps) at https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/page-4#post-13985878."
+notes = "Modified versions of the 12 original Xbox multiplayer maps. The preserved pack has no readme. Original author and release date unknown."
+
+[[mod]]
+map_id = "9af4d5813fb37c7f48bdc6f5e0accf6f8215cd831dee9ed2137691ba1ed2aba4"
+name = "Hockey Fans (Old Maps): beavercreek"
+base = "beavercreek"
+authors = []
+release = "Hockey Fans (Old Maps) Map Pack"
+source_url = "https://archive.org/download/H2Mappacks"
+confidence = "unknown"
+evidence = "This is the preserved archive's name. Caboose announced the 2019-05-22 repost as Hockey Fan's (Old Maps) at https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/page-4#post-13985878."
+notes = "Modified versions of the 12 original Xbox multiplayer maps. The preserved pack has no readme. Original author and release date unknown."
+
+[[mod]]
+map_id = "ce75de97ec465e2a5f27b670432ca1cd785899acc0947a95ec65953d2397a020"
+name = "Hockey Fans (Old Maps): ascension"
+base = "ascension"
+authors = []
+release = "Hockey Fans (Old Maps) Map Pack"
+source_url = "https://archive.org/download/H2Mappacks"
+confidence = "unknown"
+evidence = "This is the preserved archive's name. Caboose announced the 2019-05-22 repost as Hockey Fan's (Old Maps) at https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/page-4#post-13985878."
+notes = "Modified versions of the 12 original Xbox multiplayer maps. The preserved pack has no readme. Original author and release date unknown."

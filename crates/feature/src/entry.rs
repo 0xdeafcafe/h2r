@@ -67,7 +67,7 @@ fn fault(e: EntryError, at: u32) -> GuestFault {
             access: if m.write { Access::Write } else { Access::Read },
             reason: FaultReason::Unmapped,
         },
-        EntryError::Stalled => GuestFault {
+        EntryError::Stalled | EntryError::IsolatedCall(_) => GuestFault {
             addr: at,
             len: 0,
             access: Access::Execute,

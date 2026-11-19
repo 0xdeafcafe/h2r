@@ -1,0 +1,23 @@
+# The aim net against the code aim (docs/game/bots.md §3.4.1):
+#   H2_OPT=2 h2 sim batch docs/runtime/sim-examples/aim-net-vs-code.toml --disc disc/halo2.iso --parallel 3 --pace unpaced
+#
+# Two maps by four skills by five seeds, each played twice. The second leg
+# gives every bot the other arm, so both models play every seat, team,
+# spawn and brain seed: 80 matches. Only `aim_model` differs between the
+# arms. compare.txt has the table for all skills and one per skill.
+out = "results/aim-net-vs-code"
+match = "aim-net-2v2.toml"
+maps = ["midship", "lockout"]
+seeds = [1, 2, 3, 4, 5]
+skills = ["easy", "normal", "heroic", "legendary"]
+mode = "arm_swap"
+
+[a]
+name = "code"
+[a.tuning]
+aim_model = "code"
+
+[b]
+name = "net"
+[b.tuning]
+aim_model = "net"

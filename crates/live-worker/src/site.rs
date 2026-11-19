@@ -3,7 +3,7 @@
 //! the same page under `/games/halo2`, in entry.rs), and the app's pages
 //! (the built `index.html` with each page's link preview
 //! [`live_server::page_meta`], and a game page's pre-rendered header
-//! [`live_server::page_header`], which the hub's answer carries).
+//! [`live_server::page_header`], built from the hub's anonymous reads).
 //!
 //! The Worker has no art files (they are the owner's, extracted from their
 //! disc). Art published to a public bucket (`h2 live assets publish`,
@@ -12,7 +12,11 @@
 //! 404, so the web app uses its own art pack. Static assets never see
 //! these paths: wrangler.toml sends `/art/game/*` to the Worker first.
 
+use std::future::Future;
+
+use live_proto::game::{GameDetail, valid_id};
 use live_server::art::{PREFIX, published_redirect};
+use live_server::{page_header, page_meta};
 
 /// Whether to serve a composed image at the edge.
 pub fn is_emblem(path: &str) -> bool {
@@ -51,11 +55,39 @@ pub fn game_art(base: Option<&str>, path: &str, query: Option<&str>) -> Option<G
 /// the page names a player, game or clan; `None` when the path alone
 /// says (so the hub is not woken for it).
 pub fn page_meta_url(path: &str) -> Option<String> {
-    live_server::page_meta::subject(path)?;
+    page_meta::subject(path)?;
     Some(format!(
         "https://hub/v1/page-meta?path={}",
         encode_query(path)
     ))
+}
+
+/// Build the app HTML from the hub's anonymous metadata. An older hub may
+/// describe a public game without sending its header model. In that case,
+/// use its game-detail route, which also enforces anonymous visibility.
+pub async fn app_html<F, Fut>(index: &str, origin: &str, path: &str, mut read_hub: F) -> String
+where
+    F: FnMut(String) -> Fut,
+    Fut: Future<Output = Option<String>>,
+{
+    let mut meta = page_meta::describe_static(path);
+    if let Some(url) = page_meta_url(path)
+        && let Some(json) = read_hub(url).await
+        && let Ok(mut resolved) = serde_json::from_str::<page_meta::PageMeta>(&json)
+    {
+        if resolved.header.is_none()
+            && resolved.page != meta.page
+            && let Some(page_meta::Subject::Game(id)) = page_meta::subject(path)
+            && valid_id(&id)
+            && let Some(json) = read_hub(format!("https://hub/v1/games/{id}")).await
+            && let Ok(detail) = serde_json::from_str::<GameDetail>(&json)
+            && detail.summary.game_id == id
+        {
+            resolved.header = Some(page_header::from_detail(&detail));
+        }
+        meta = resolved;
+    }
+    page_meta::page_html(index, &meta, origin, path)
 }
 
 /// `s` for a query value: unreserved characters and `/` as they are,
@@ -75,6 +107,77 @@ fn encode_query(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::future::ready;
+
+    const INDEX: &str = include_str!("../../../web/index.html");
+    const ORIGIN: &str = "https://live.example.net";
+    const GAME_PATH: &str = "/games/halo2/games/0123";
+
+    #[tokio::test]
+    async fn game_page_renders_header_when_hub_only_sends_the_link_preview() {
+        let legacy_meta = r#"{
+            "page": "Slayer on Midship", "description": "Final", "side": "stats", "kind": "website"
+        }"#;
+        let game = r#"{
+            "game_id": "0123", "map": "midship", "mode": "multiplayer", "kind": "custom",
+            "variant": "Slayer", "state": "ended", "team_play": true,
+            "started_at": "2026-11-19T16:47:21Z", "ended_at": "2026-11-19T16:55:09Z",
+            "players": [{
+                "index": 0, "name": "Host", "team": 0, "local": true,
+                "appearance": {
+                    "emblem_foreground": 30, "emblem_background": 7,
+                    "primary": 3, "secondary": 6, "tertiary": 8, "quaternary": 2
+                }
+            }],
+            "teams": [{"team": 0, "score": 49}], "host": "0009000000000042",
+            "scoreboard": [{"index": 0, "score": 49, "kills": 49, "deaths": 0, "assists": 0}],
+            "kills": [], "winner": {"team": 0}, "end_reason": "finished", "position": 12
+        }"#;
+        let meta_url = "https://hub/v1/page-meta?path=/games/halo2/games/0123";
+        let game_url = "https://hub/v1/games/0123";
+        let mut calls = Vec::new();
+        let html = app_html(INDEX, ORIGIN, GAME_PATH, |url| {
+            let response = match url.as_str() {
+                u if u == meta_url => legacy_meta,
+                u if u == game_url => game,
+                _ => panic!("unexpected hub request: {url}"),
+            };
+            calls.push(url);
+            ready(Some(response.to_owned()))
+        })
+        .await;
+        assert_eq!(calls, vec![meta_url, game_url]);
+        assert!(html.contains(r#"property="og:title" content="Slayer on Midship"#));
+        assert!(html.find(r#"id="game-header""#).unwrap() < html.find(r#"id="root""#).unwrap());
+        assert!(html.contains(r#"id="game-header-model""#));
+        assert!(html.contains("<b>Slayer</b> on Midship"));
+        assert!(html.contains("Red Team won"));
+        assert!(html.contains(r#"src="/art/emblem/30-7-3-6-8-2.png""#));
+
+        let mut modern: page_meta::PageMeta = serde_json::from_str(legacy_meta).unwrap();
+        modern.header = Some(page_header::from_detail(
+            &serde_json::from_str(game).unwrap(),
+        ));
+        let html_from_metadata = app_html(INDEX, ORIGIN, GAME_PATH, |url| {
+            assert_eq!(url, meta_url);
+            ready(Some(serde_json::to_string(&modern).unwrap()))
+        })
+        .await;
+        assert_eq!(html, html_from_metadata);
+    }
+
+    #[tokio::test]
+    async fn game_page_uses_only_static_metadata_for_an_unknown_or_hidden_game() {
+        let html = app_html(INDEX, ORIGIN, GAME_PATH, |url| {
+            assert_eq!(url, page_meta_url(GAME_PATH).unwrap());
+            ready(Some(
+                serde_json::to_string(&page_meta::describe_static(GAME_PATH)).unwrap(),
+            ))
+        })
+        .await;
+        assert!(html.contains(page_header::BEGIN));
+        assert!(!html.contains(r#"id="game-header""#));
+    }
 
     /// wrangler.toml sends the Worker exactly the app's pages (and the
     /// paths it had before): every page pattern is a page, and every kind
@@ -125,6 +228,8 @@ mod tests {
             "/games/x",
             "/games/halo2",
             "/games/halo2/players/x",
+            "/theater/x",
+            "/theater/x/clip/y",
             "/events",
             "/signin",
         ] {

@@ -1,28 +1,12 @@
-//! New maps in 1.0's multiplayer map list (docs/game/maps.md §4).
-//!
-//! A map package whose map name the disc doesn't have (a derived map,
-//! `[base] derived = true`) can't replace a disc map, so it is installed the
-//! way the Map Pack is on 1.0 (docs/game/map-pack.md §5, §8): as a content
-//! package of its own under `T:\$c\<offer id>\`, holding
-//!
-//! - `<map>.map`, the map materialised through the content resolver (1.0
-//!   opens it from the package directory, not `\maps`), written once and
-//!   again only when the package's `MapId` changes;
-//! - `patch.lvl`, a version 2 record built by [`content::map_list`];
-//! - `ContentMeta.xbx`, synthesised (in the Map Pack's shape when it is
-//!   installed) and signed with [`kernel::content::sign`];
-//! - the package's image, if it has one, under its own name;
-//! - [`MARKER`], which source package and `MapId` the directory holds.
-//!
-//! Offer IDs are Halo 2's title ID over [`content::map_list::offer_content`]
-//! of the map's list id, so they never meet the Map Pack's. A directory in
-//! that range whose source package is gone is removed. With no such
-//! packages nothing is read or written.
+//! Registers installed maps as multiplayer content offers. The game applies
+//! each offer's `patch.lvl` to a free slot (docs/game/map-pack.md §8).
+//! The VFS resolves the map at that offer's path on demand.
 use std::{
     collections::{BTreeSet, HashMap},
     fs::File,
     io::BufReader,
     path::{Path, PathBuf},
+    sync::{Mutex, OnceLock},
 };
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -30,8 +14,8 @@ use content::{
     Library, MapId, Package,
     manifest::LANGUAGES,
     map_list::{self, BaseEntry, Entry},
-    patch::Source,
 };
+use vfs::Backend;
 
 pub const HALO2_TITLE: u32 = 0x4D53_0064;
 /// Which package a directory holds: `source`, `map_id`, `map`.
@@ -48,8 +32,10 @@ const MAP_PACK_OFFERS: std::ops::RangeInclusive<u32> = 0x0101..=0x03ff;
 pub struct Report {
     /// `(map name, offer ID, list map id)` of each package in place.
     pub installed: Vec<(String, u64, u32)>,
-    /// Maps written (materialised) this time.
-    pub materialised: Vec<String>,
+    /// Installed packages left out because no multiplayer slot was free.
+    pub overflow: usize,
+    /// The partition-relative paths to resolve at load time.
+    pub mounts: Vec<(String, vfs::ContentMap)>,
     /// Package directories removed: their source is gone or moved.
     pub removed: Vec<PathBuf>,
     /// Packages left out, with why.
@@ -64,7 +50,11 @@ pub struct Report {
 impl Report {
     /// One line for the console, or none when there was nothing to do.
     pub fn line(&self) -> Option<String> {
-        if self.installed.is_empty() && self.removed.is_empty() && self.skipped.is_empty() {
+        if self.installed.is_empty()
+            && self.removed.is_empty()
+            && self.skipped.is_empty()
+            && self.overflow == 0
+        {
             return None;
         }
         let names: Vec<&str> = self.installed.iter().map(|(n, ..)| n.as_str()).collect();
@@ -72,8 +62,8 @@ impl Report {
         if !names.is_empty() {
             s += &format!(" ({})", names.join(", "));
         }
-        if !self.materialised.is_empty() {
-            s += &format!(", {} written", self.materialised.len());
+        if self.overflow != 0 {
+            s += &format!(", {} mods not shown, list full", self.overflow);
         }
         if !self.removed.is_empty() {
             s += &format!(", {} removed", self.removed.len());
@@ -89,6 +79,8 @@ impl Report {
 pub trait Disc {
     /// Whether the disc has `maps\<name>.map`.
     fn has_map(&mut self, name: &str) -> Result<bool>;
+    /// The ISO region of the disc's own map, below any VFS overrides.
+    fn map_file(&mut self, name: &str) -> Result<Option<vfs::HostFile>>;
     /// `mainmenu.map`'s multiplayer level list, one `0xc64`-byte element
     /// each.
     fn slots(&mut self) -> Result<Vec<Vec<u8>>>;
@@ -97,158 +89,261 @@ pub trait Disc {
     fn preview(&mut self, slot: &[u8]) -> Result<Vec<u8>>;
 }
 
-/// Installs at boot: never fails, prints what it did.
-pub fn install_at_boot(data_root: &Path, disc: &Path) {
+/// Shared by the installer and the data partition, including after boot.
+pub fn mounted_packages() -> vfs::ContentMaps {
+    static MAPS: OnceLock<vfs::ContentMaps> = OnceLock::new();
+    MAPS.get_or_init(vfs::ContentMaps::default).clone()
+}
+
+/// Install the offers and publish their load inputs to the VFS.
+pub fn install_at_boot(data_root: &Path, disc: &Path) -> usize {
+    static INSTALL: Mutex<()> = Mutex::new(());
+    let _install = INSTALL.lock().unwrap_or_else(|e| e.into_inner());
     let mut d = IsoDisc::new(disc);
     match install(data_root, &mut d) {
         Ok(r) => {
             for n in &r.notices {
                 eprintln!("new maps: {n}");
             }
-            let table = crate::h1_variants::mp_variants();
-            table.clear();
-            for (path, pair) in &r.variants {
-                table.register(path, pair.clone());
-            }
-            if !r.variants.is_empty() {
-                eprintln!(
-                    "new maps: {} converted map(s) follow the sandbox chosen per game",
-                    r.variants.len()
-                );
-            }
+            crate::h1_variants::mp_variants().replace(r.variants.iter().cloned());
             if let Some(l) = r.line() {
                 eprintln!("{l}");
             }
+            mounted_packages().replace(r.mounts);
+            r.overflow
         }
-        Err(e) => eprintln!("new maps: not installed: {e:#}"),
+        Err(e) => {
+            eprintln!("new maps: not installed: {e:#}");
+            0
+        }
     }
 }
 
-/// Installs every new map package under `<data_root>/maps` into
-/// `<data_root>/disk/Partition1/TDATA/4D530064/$c`, and removes the ones
-/// whose source is gone.
+/// A package can update its own ID, or use a free slot. Reserve IDs of
+/// both the disc and existing content so generated records do only the latter.
+fn slot_plan(slots: &[Vec<u8>], content: &[Entry], keys: &[MapId]) -> (Vec<u32>, usize) {
+    let mut taken: BTreeSet<_> = slots
+        .iter()
+        .filter_map(|slot| BaseEntry::from_slot(slot).map(|entry| entry.map_id))
+        .collect();
+    let free = slots
+        .iter()
+        .filter(|slot| slot.get(..4) == Some(&[0xff; 4]))
+        .count();
+    let used_by_content = content
+        .iter()
+        .filter(|entry| taken.insert(entry.map_id))
+        .count();
+    (
+        map_list::list_ids(keys, &taken.into_iter().collect::<Vec<_>>()),
+        free.saturating_sub(used_by_content),
+    )
+}
+
+fn existing_content(root: &Path) -> Vec<Entry> {
+    std::fs::read_dir(root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| !generated_offer(&e.file_name().to_string_lossy()))
+        .filter_map(|e| {
+            let bytes = std::fs::read(e.path().join(LVL)).ok()?;
+            Entry::from_v2(bytes.get(..content::patch_lvl::V2_LEN)?).ok()
+        })
+        .collect()
+}
+
+fn generated_offer(name: &str) -> bool {
+    parse_offer(name).is_some_and(|offer| {
+        offer >> 32 == u64::from(HALO2_TITLE) && map_list::is_new_map_offer(offer as u32)
+    })
+}
+
+fn base_file(data_root: &Path, disc: &mut dyn Disc, map: &str) -> Result<vfs::HostFile> {
+    if let Some(base) = disc.map_file(map)? {
+        return Ok(base);
+    }
+    let (_, _, path) = crate::map_bases::map_pack_file(data_root, map)
+        .with_context(|| format!("the disc and Map Pack have no {map}.map"))?;
+    Ok(vfs::HostFile {
+        len: path.metadata()?.len(),
+        path,
+        offset: 0,
+    })
+}
+
+/// The alias fits the cache header's 32-byte name and FATX. The hash
+/// distinguishes packages even if the engine's 31-bit IDs collide.
+fn alias(id: u32, package: MapId) -> String {
+    format!("m-{id:08x}-{}", &package.to_string()[..20])
+}
+
+/// Installs one content record per package using the remaining slots.
+/// Existing `active.toml` and source files are left in place.
 pub fn install(data_root: &Path, disc: &mut dyn Disc) -> Result<Report> {
     let cfg = vfs::Config::new(data_root, HALO2_TITLE);
     let content_root = cfg.title_data_dir().join(vfs::CONTENT_DIR);
-    let mut report = Report::default();
     let maps = crate::map_override::packages_dir(data_root);
-    let mut chosen: Vec<Package> = Vec::new();
-    let mut library = None;
+    let mut report = Report::default();
+    let mut keep = BTreeSet::new();
     if maps.is_dir() {
-        // Converted Halo 1 maps: the sandbox the setting names.
         let (store, _) = crate::setting_defs::load(data_root, &[]);
         let sandbox = crate::setting_defs::halo1_sandbox(&store);
-        let mut lib = Library::open_with_sandbox(&maps, Some(sandbox));
-        let names: BTreeSet<String> = lib
-            .packages()
-            .iter()
-            .filter(|p| p.manifest.base.derived)
-            .map(|p| p.manifest.base.map.to_ascii_lowercase())
-            .collect();
-        for name in names {
-            if disc.has_map(&name)? {
-                continue;
+        let mut library = Library::open_with_sandbox(&maps, Some(sandbox));
+        report.notices.extend(library.take_notices());
+        let packages = library.packages();
+        if !packages.is_empty() {
+            let slots = disc.slots().context("reading mainmenu.map's map list")?;
+            let bases: Vec<_> = slots
+                .iter()
+                .filter_map(|s| BaseEntry::from_slot(s).map(|b| (b, s.as_slice())))
+                .collect();
+            let existing = existing_content(&content_root);
+            let keys: Vec<_> = packages.iter().map(|p| p.list_key).collect();
+            let (ids, free) = slot_plan(&slots, &existing, &keys);
+            let existing_bases: Vec<_> = existing
+                .iter()
+                .map(|e| BaseEntry {
+                    map_id: e.map_id,
+                    map: e
+                        .scenario
+                        .rsplit('\\')
+                        .next()
+                        .unwrap_or_default()
+                        .to_owned(),
+                    sort: e.sort,
+                    flags: e.flags,
+                    teams: e.teams,
+                })
+                .zip(&existing)
+                .collect();
+            let template = map_pack_meta(&content_root);
+            let first_slot = bases.iter().min_by_key(|(b, _)| (b.sort, b.map_id));
+            let mut frame: Option<Option<Vec<u8>>> = None;
+            let mut name_counts = HashMap::new();
+            for p in packages {
+                *name_counts
+                    .entry(p.manifest.base.map.to_ascii_lowercase())
+                    .or_insert(0) += 1;
             }
-            if name.len() > MAX_MAP_NAME {
-                report.skipped.push(format!(
-                    "{name}: a map name over {MAX_MAP_NAME} bytes doesn't fit FATX"
-                ));
-                continue;
-            }
-            if let Some(p) = lib
-                .choose(&name)
-                .cloned()
-                .filter(|p| p.manifest.base.derived)
-            {
-                chosen.push(p);
-            }
-        }
-        report.notices.extend(lib.take_notices());
-        library = Some(lib);
-    }
-    let mut keep = BTreeSet::new();
-    if let (false, Some(lib)) = (chosen.is_empty(), library.as_ref()) {
-        let slots = disc.slots().context("reading mainmenu.map's map list")?;
-        let bases: Vec<(BaseEntry, &Vec<u8>)> = slots
-            .iter()
-            .filter_map(|s| BaseEntry::from_slot(s).map(|b| (b, s)))
-            .collect();
-        let taken: Vec<u32> = bases.iter().map(|(b, _)| b.map_id).collect();
-        // A converted map's list ID is the same in both sandboxes
-        // (`Package::list_key`).
-        let ids = map_list::list_ids(
-            &chosen.iter().map(|p| p.list_key).collect::<Vec<_>>(),
-            &taken,
-        );
-        let template = map_pack_meta(&content_root);
-        // Without a base of its own, a map takes its flags and team counts
-        // from the list's first retail map (lowest sort order): what the
-        // user's own disc has, never a table of ours.
-        let first_slot = bases.iter().min_by_key(|(b, _)| (b.sort, b.map_id));
-        let first = first_slot.map(|(b, _)| b);
-        // Retail's frame for a preview not taken from the disc (an image,
-        // a generated card): the first retail map's preview, read once
-        // when a package needs it.
-        let mut frame: Option<Option<Vec<u8>>> = None;
-        for (p, id) in chosen.iter().zip(ids) {
-            let base = p
-                .manifest
-                .list
-                .as_ref()
-                .and_then(|l| l.base.as_deref())
-                .map(|want| {
-                    let found = bases.iter().find(|(b, _)| b.map.eq_ignore_ascii_case(want));
-                    if found.is_none() {
-                        report.notices.push(format!(
-                        "{}: [list] base {want} is not in mainmenu.map's map list; using defaults",
+            for (p, id) in packages.iter().zip(ids) {
+                let base_name = &p.manifest.base.map;
+                let base = if p.manifest.base.derived {
+                    None
+                } else {
+                    match base_file(data_root, disc, base_name) {
+                        Ok(base) => Some(base),
+                        Err(e) => {
+                            report.skipped.push(format!("{}: {e:#}", p.dir_name()));
+                            continue;
+                        }
+                    }
+                };
+                let needs_alias = base.is_some()
+                    || disc.has_map(base_name)?
+                    || existing_bases
+                        .iter()
+                        .any(|(b, _)| b.map.eq_ignore_ascii_case(base_name))
+                    || name_counts[&base_name.to_ascii_lowercase()] > 1;
+                let alias = needs_alias.then(|| alias(id, p.id));
+                let map = alias.as_deref().unwrap_or(base_name);
+                if map.len() > MAX_MAP_NAME {
+                    report
+                        .skipped
+                        .push(format!("{}: map name doesn't fit FATX", p.dir_name()));
+                    continue;
+                }
+                if report.installed.len() == free {
+                    report.overflow += 1;
+                    continue;
+                }
+                let list_base = p.manifest.list.as_ref().and_then(|l| l.base.as_deref());
+                let visual_base = list_base.unwrap_or(base_name);
+                let disc_base = bases
+                    .iter()
+                    .find(|(b, _)| b.map.eq_ignore_ascii_case(visual_base));
+                let pack_base = existing_bases
+                    .iter()
+                    .find(|(b, _)| b.map.eq_ignore_ascii_case(visual_base));
+                if let Some(name) = list_base
+                    && disc_base.is_none()
+                    && pack_base.is_none()
+                {
+                    report.notices.push(format!(
+                        "{}: [list] base {name} is absent; using defaults",
                         p.dir_name()
                     ));
-                    }
-                    found
-                });
-            let base = base.flatten().map(|(b, s)| (b, s.as_slice()));
-            if (p.manifest.package.image.is_some() || base.is_none()) && frame.is_none() {
-                frame = Some(first_slot.and_then(|(_, s)| match disc.preview(s) {
-                    Ok(px) => Some(px),
-                    Err(e) => {
-                        report.notices.push(format!(
-                            "retail's preview frame unread ({e:#}); new maps' pictures have none"
-                        ));
-                        None
-                    }
-                }));
-            }
-            let looks = Looks {
-                template: template.as_deref(),
-                frame: frame.as_ref().and_then(|f| f.as_deref()),
-            };
-            match install_one(lib, &cfg, p, id, base, first, disc, looks) {
-                Ok((offer, wrote)) => {
-                    keep.insert(offer);
-                    if let Some(pair) = variant_pair(p) {
-                        report
-                            .variants
-                            .push((content_path(offer, &p.manifest.base.map), pair));
-                    }
-                    if wrote {
-                        report.materialised.push(p.manifest.base.map.clone());
-                    }
-                    report
-                        .installed
-                        .push((p.manifest.base.map.clone(), offer, id));
                 }
-                Err(e) => report.skipped.push(format!("{}: {e:#}", p.dir_name())),
+                let own_preview = p.manifest.package.image.is_some();
+                if (own_preview || (disc_base.is_none() && pack_base.is_none())) && frame.is_none()
+                {
+                    frame = Some(first_slot.and_then(|(_, s)| disc.preview(s).ok()));
+                }
+                let mut fallback = || {
+                    disc_base
+                        .and_then(|(_, slot)| disc.preview(slot).ok())
+                        .or_else(|| pack_base.map(|(_, record)| record.preview.clone()))
+                };
+                let preview = if own_preview {
+                    match map_list::preview_for(&p.manifest, &p.dir, None) {
+                        Ok(mut pixels) => {
+                            if let Some(Some(frame)) = &frame {
+                                map_list::with_frame(&mut pixels, frame);
+                            }
+                            pixels
+                        }
+                        Err(e) => {
+                            report
+                                .notices
+                                .push(format!("{}: preview: {e}", p.dir_name()));
+                            fallback().unwrap_or_else(|| map_list::generated_card(&p.id))
+                        }
+                    }
+                } else {
+                    fallback().unwrap_or_else(|| {
+                        let mut pixels = map_list::generated_card(&p.id);
+                        if let Some(Some(frame)) = &frame {
+                            map_list::with_frame(&mut pixels, frame);
+                        }
+                        pixels
+                    })
+                };
+                let base_entry = disc_base
+                    .map(|(b, _)| b)
+                    .or_else(|| pack_base.map(|(b, _)| b))
+                    .or_else(|| first_slot.map(|(b, _)| b));
+                let mut entry = Entry::for_manifest(&p.manifest, id, base_entry, preview);
+                entry.scenario = format!("scenarios\\multi\\{map}\\{map}");
+                match install_one(&cfg, p, map, &entry, template.as_deref()) {
+                    Ok(offer) => {
+                        keep.insert(offer);
+                        let path = content_path(offer, map);
+                        if alias.is_none()
+                            && let Some(pair) = variant_pair(p)
+                        {
+                            report.variants.push((path.clone(), pair));
+                        }
+                        report.installed.push((map.to_owned(), offer, id));
+                        report.mounts.push((
+                            path,
+                            vfs::ContentMap {
+                                package: p.clone(),
+                                base,
+                                alias,
+                            },
+                        ));
+                    }
+                    Err(e) => report.skipped.push(format!("{}: {e:#}", p.dir_name())),
+                }
             }
         }
     }
     if let Ok(dir) = std::fs::read_dir(&content_root) {
         for e in dir.flatten() {
-            let Some(offer) = e.file_name().to_str().and_then(parse_offer) else {
-                continue;
-            };
-            if offer >> 32 != u64::from(HALO2_TITLE)
-                || !map_list::is_new_map_offer(offer as u32)
-                || keep.contains(&offer)
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            if !generated_offer(&name)
+                || parse_offer(&name).is_some_and(|offer| keep.contains(&offer))
             {
                 continue;
             }
@@ -348,120 +443,45 @@ struct Marker {
     map_id: MapId,
 }
 
-/// A disc source for derived maps, which never read the disc.
-struct NoDisc;
-impl Source for NoDisc {
-    fn size(&self) -> u64 {
-        0
-    }
-    fn read_at(&mut self, _: u64, _: &mut [u8]) -> std::io::Result<usize> {
-        Err(std::io::Error::other("a derived map reads no disc map"))
-    }
-}
-
-/// What a package's records take from the user's own disc and Map Pack.
-#[derive(Clone, Copy, Default)]
-struct Looks<'a> {
-    /// An installed Map Pack package's `ContentMeta.xbx`.
-    template: Option<&'a [u8]>,
-    /// A retail preview, for its frame ([`map_list::with_frame`]).
-    frame: Option<&'a [u8]>,
-}
-
-/// One package. Returns its offer ID and whether the map was written.
-#[allow(clippy::too_many_arguments)]
+/// Write the data the retail content scan consumes. The .map entry is
+/// a directory placeholder, with the actual bytes resolved by the VFS.
 fn install_one(
-    lib: &Library,
     cfg: &vfs::Config,
     p: &Package,
-    id: u32,
-    base: Option<(&BaseEntry, &[u8])>,
-    first: Option<&BaseEntry>,
-    disc: &mut dyn Disc,
-    looks: Looks<'_>,
-) -> Result<(u64, bool)> {
-    let template = looks.template;
-    let map = p.manifest.base.map.clone();
-    let offer = vfs::offer_id(HALO2_TITLE, map_list::offer_content(id));
+    map: &str,
+    entry: &Entry,
+    template: Option<&[u8]>,
+) -> Result<u64> {
+    let offer = vfs::offer_id(HALO2_TITLE, map_list::offer_content(entry.map_id));
+    let lvl = entry.to_v2()?;
     let dir = cfg.content_dir(offer);
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-    let marker = Marker {
-        source: p.dir_name().to_owned(),
-        map: map.clone(),
-        map_id: p.id,
-    };
-    let had: Option<Marker> = std::fs::read_to_string(dir.join(MARKER))
-        .ok()
-        .and_then(|t| toml::from_str(&t).ok());
-    let map_file = dir.join(format!("{map}.map"));
-    let fresh = had
-        .as_ref()
-        .is_some_and(|m| m.map_id == p.id && m.map == map)
-        && map_file.is_file();
-    if !fresh {
-        // The marker goes first, so a half-written directory is never taken
-        // as up to date.
-        let _ = std::fs::remove_file(dir.join(MARKER));
-        for e in std::fs::read_dir(&dir)?.flatten() {
-            if e.file_name()
-                .to_string_lossy()
-                .to_ascii_lowercase()
-                .ends_with(".map")
-            {
-                remove(&e.path())?;
-            }
-        }
-        let resolved = lib
-            .resolve_package(p, &mut NoDisc)
-            .map_err(|e| anyhow!("resolving: {e}"))?;
-        let bytes = resolved
-            .read_all(&mut NoDisc)
-            .context("reading the resolved map")?;
-        write_file(&map_file, &bytes)?;
-        // Stored once: a map the resolver materialised in its cache lives
-        // here instead.
-        let cached = match &resolved.data {
-            content::Data::File { path, .. }
-                if path.starts_with(lib.root().join(content::CACHE_DIR)) =>
-            {
-                Some(path.clone())
-            }
-            _ => None,
-        };
-        drop(resolved);
-        if let Some(path) = cached {
-            let _ = std::fs::remove_file(path);
+    let map_name = format!("{map}.map");
+    let map_file = dir.join(&map_name);
+    // Retire whole maps materialised by previous versions. Only files
+    // in this generated offer are affected.
+    for e in std::fs::read_dir(&dir)?.flatten() {
+        if e.file_name()
+            .to_string_lossy()
+            .to_ascii_lowercase()
+            .ends_with(".map")
+            && (e.file_name() != std::ffi::OsStr::new(&map_name) || e.metadata()?.len() != 0)
+        {
+            remove(&e.path())?;
         }
     }
-    let base_preview = match (&p.manifest.package.image, base) {
-        (None, Some((_, slot))) => match disc.preview(slot) {
-            Ok(px) => Some(px),
-            Err(e) => {
-                eprintln!("new maps: {map}: base preview: {e:#}; using a plain card");
-                None
-            }
-        },
-        _ => None,
-    };
-    let from_disc = base_preview.is_some();
-    let mut preview = map_list::preview_for(&p.manifest, &p.dir, base_preview)
-        .map_err(|e| anyhow!("preview: {e}"))?;
-    // A disc preview has retail's frame in its pixels; ours take it.
-    if let (false, Some(frame)) = (from_disc, looks.frame) {
-        map_list::with_frame(&mut preview, frame);
-    }
-    let entry = Entry::for_manifest(&p.manifest, id, base.map(|(b, _)| b).or(first), preview);
-    write_file(&dir.join(LVL), &entry.to_v2()?)?;
+    write_file(&map_file, &[])?;
     let mut meta = content_meta(&entry.names, offer, template);
     kernel::content::sign(&mut meta, HALO2_TITLE).map_err(|e| anyhow!("signing: {e}"))?;
     write_file(&dir.join(META), &meta)?;
-    if let Some(image) = &p.manifest.package.image {
-        let name = Path::new(image).file_name().context("image name")?;
-        let bytes = std::fs::read(p.dir.join(content::manifest::relative(image)?))?;
-        write_file(&dir.join(name), &bytes)?;
-    }
+    let marker = Marker {
+        source: p.dir_name().to_owned(),
+        map: map.to_owned(),
+        map_id: p.id,
+    };
     write_file(&dir.join(MARKER), toml::to_string(&marker)?.as_bytes())?;
-    Ok((offer, !fresh))
+    write_file(&dir.join(LVL), &lvl)?;
+    Ok(offer)
 }
 
 // ---------------------------------------------------------------------------
@@ -550,10 +570,10 @@ const LEVEL_DATA_MP: usize = 0x10;
 const SLOT_BITMAP: usize = 0x8;
 const MAX_LEVELS: u32 = 256;
 
-/// The game disc as an XISO, opened on first use.
+/// The game disc (image or extracted folder), opened on first use.
 pub struct IsoDisc {
     path: PathBuf,
-    entries: Option<(u64, Vec<xiso::Entry>)>,
+    disc: Option<vfs::AnyDisc>,
     previews: HashMap<u32, Vec<u8>>,
 }
 
@@ -561,38 +581,26 @@ impl IsoDisc {
     pub fn new(path: &Path) -> Self {
         Self {
             path: path.to_owned(),
-            entries: None,
+            disc: None,
             previews: HashMap::new(),
         }
     }
 
-    fn entries(&mut self) -> Result<&(u64, Vec<xiso::Entry>)> {
-        if self.entries.is_none() {
-            let f = File::open(&self.path)
-                .with_context(|| format!("opening {}", self.path.display()))?;
-            let mut iso = xiso::Xiso::open(BufReader::new(f)).context("reading the disc")?;
-            self.entries = Some((iso.partition_offset(), iso.entries()?));
+    fn disc(&mut self) -> Result<&mut vfs::AnyDisc> {
+        if self.disc.is_none() {
+            self.disc = Some(vfs::open_disc(&self.path).context("opening the disc")?);
         }
-        Ok(self.entries.as_ref().unwrap())
-    }
-
-    fn map_entry(&mut self, name: &str) -> Result<Option<(u64, xiso::Entry)>> {
-        let want = format!("/maps/{name}.map");
-        let (base, entries) = self.entries()?;
-        Ok(entries
-            .iter()
-            .find(|e| !e.is_dir && e.path.eq_ignore_ascii_case(&want))
-            .map(|e| (*base, e.clone())))
+        Ok(self.disc.as_mut().unwrap())
     }
 
     fn region(&mut self, name: &str) -> Result<assets::Region> {
-        let (base, e) = self
-            .map_entry(name)?
+        let file = self
+            .map_file(name)?
             .with_context(|| format!("the disc has no {name}.map"))?;
         Ok(assets::Region {
-            path: self.path.clone(),
-            base: base + u64::from(e.sector) * xiso::SECTOR,
-            length: e.size.into(),
+            path: file.path,
+            base: file.offset,
+            length: file.len,
         })
     }
 
@@ -605,7 +613,11 @@ impl IsoDisc {
 
 impl Disc for IsoDisc {
     fn has_map(&mut self, name: &str) -> Result<bool> {
-        Ok(self.map_entry(name)?.is_some())
+        Ok(self.map_file(name)?.is_some())
+    }
+
+    fn map_file(&mut self, name: &str) -> Result<Option<vfs::HostFile>> {
+        Ok(self.disc()?.host_file(&format!("maps\\{name}.map")))
     }
 
     fn slots(&mut self) -> Result<Vec<Vec<u8>>> {

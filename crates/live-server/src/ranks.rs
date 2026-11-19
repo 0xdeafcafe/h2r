@@ -53,6 +53,8 @@ pub struct Ranks {
     /// Arbitration rounds that have ranked a game (`{session}-{round}`):
     /// a round ranks one game.
     pub rounds: BTreeSet<String>,
+    /// Dedicated reservations already spent, across session publications.
+    pub(crate) host_assignments: BTreeSet<String>,
 }
 
 impl Ranks {
@@ -239,6 +241,66 @@ pub fn entrants(g: &Game) -> Vec<Entrant> {
     out
 }
 
+/// One admission decision for a finished matchmade record. Host reservations
+/// spend their assignment once. Peer sessions spend a registered round.
+fn ranked_seats(s: &State, g: &Game, session: &str) -> Option<(String, Vec<(Entrant, Seat)>)> {
+    let advertised = s.sessions.get(session)?;
+    if let Some(assignment) = &advertised.matchmaking
+        && let Some(lease) = &assignment.host_lease
+    {
+        // dh-identity: the published members are the checked HostLease.roster.
+        // xuids includes players who left. A missing XUID also fails closed.
+        if !crate::host_identity::ranked_host_game(g, advertised, assignment, lease)
+            || s.ranks.host_assignments.contains(&assignment.id)
+        {
+            return None;
+        }
+        let seats = entrants(g)
+            .into_iter()
+            .map(|e| {
+                let seat = if s.bots.bot(e.xuid).is_some() {
+                    Seat::Bot
+                } else {
+                    Seat::Human
+                };
+                (e, seat)
+            })
+            .collect();
+        return Some((assignment.id.clone(), seats));
+    }
+    let Some(Author::Account { xuid: host, .. }) = Author::parse(&g.started.host) else {
+        return None;
+    };
+    // Only the session host's record ranks: the server trusts it,
+    // and nobody else's (a guest's own record of the session, say).
+    if advertised.host_xuid != host {
+        return None;
+    }
+    let (round, r) = s
+        .arbitration
+        .for_game(session, host, g.position, &s.ranks.rounds)?;
+    // Bots never register: the host vouches for them, and the game
+    // record's acceptance check (bots.md §9.3) let in only the
+    // roster's.
+    let entrants: Vec<(Entrant, Seat)> = entrants(g)
+        .into_iter()
+        .filter_map(|e| {
+            let rostered = s
+                .bots
+                .rostered(session, e.xuid, g.position)
+                .filter(|(roster, _)| roster.host == host);
+            let seat = match rostered {
+                Some((_, b)) if b.persistent => Seat::Bot,
+                Some((_, b)) => Seat::MadeUp(b.level),
+                None if r.registered.contains_key(&e.xuid) => Seat::Human,
+                None => return None,
+            };
+            Some((e, seat))
+        })
+        .collect();
+    Some((round, entrants))
+}
+
 impl Live {
     /// Whether `playlist` (a hopper descriptor index) is ranked in the
     /// hopper file the server serves.
@@ -329,7 +391,8 @@ impl Live {
 
     /// Ranks a finished ranked matchmaking game once (docs/live/
     /// live-matchmaking.md §8.4), and only the session host's own record.
-    /// Its entrants are the humans who registered the game's arbitration
+    /// A dedicated reservation admits a lease-signed roster subset.
+    /// A peer game's entrants are the humans who registered the game's arbitration
     /// round (the latest round the host registered in its session before
     /// the game started that has not ranked a game) and the bots of the
     /// host's roster in force when it started. One `RankChanged` per human
@@ -366,45 +429,14 @@ impl Live {
                 return Ok(());
             }
             let clanker = started.kind() == "clankermatch";
-            // Arbitration (docs/live/live-matchmaking.md §8.4): the host's
-            // latest unused round in the game's session; only the humans
-            // whose own account registered it are ranked.
+            // A peer spends its registered round; a dedicated host spends
+            // the reservation attached to its published session.
             let Some(session) = started.session_id.as_deref() else {
                 return Ok(());
             };
-            let Some(Author::Account { xuid: host, .. }) = Author::parse(&g.started.host) else {
+            let Some((round, entrants)) = ranked_seats(&s, g, session) else {
                 return Ok(());
             };
-            // Only the session host's record ranks: the server trusts it,
-            // and nobody else's (a guest's own record of the session, say).
-            if s.sessions.get(session).is_none_or(|x| x.host_xuid != host) {
-                return Ok(());
-            }
-            let Some((round, r)) =
-                s.arbitration
-                    .for_game(session, host, g.position, &s.ranks.rounds)
-            else {
-                return Ok(());
-            };
-            // Bots never register: the host vouches for them, and the game
-            // record's acceptance check (bots.md §9.3) let in only the
-            // roster's.
-            let entrants: Vec<(Entrant, Seat)> = entrants(g)
-                .into_iter()
-                .filter_map(|e| {
-                    let rostered = s
-                        .bots
-                        .rostered(session, e.xuid, g.position)
-                        .filter(|(roster, _)| roster.host == host);
-                    let seat = match rostered {
-                        Some((_, b)) if b.persistent => Seat::Bot,
-                        Some((_, b)) => Seat::MadeUp(b.level),
-                        None if r.registered.contains_key(&e.xuid) => Seat::Human,
-                        None => return None,
-                    };
-                    Some((e, seat))
-                })
-                .collect();
             (playlist, entrants, (session.to_string(), round), clanker)
         };
         let playlist = if clanker {

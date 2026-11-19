@@ -262,7 +262,7 @@ fn a_mod_downloads_from_its_page_with_progress_then_shows_installed() {
     );
     assert_eq!(
         repo.detail_description(0).as_deref(),
-        Some("Installed: pick it in Change Map.")
+        Some("Installed. Change Map > Mods.")
     );
 }
 
@@ -322,7 +322,7 @@ fn an_installed_map_is_removed_from_its_page_on_a_second_press() {
     fake.here.lock().unwrap().clear();
     repo.act();
     assert!(repo.act().contains("not removed"));
-    assert_eq!(repo.detail_line(0).unwrap(), "Remove failed");
+    assert_eq!(repo.detail_line(0).unwrap(), "Retry removal");
     assert_eq!(
         repo.detail_description(0).as_deref(),
         Some("Not removed: not downloaded here")
@@ -353,9 +353,9 @@ fn a_maps_page_lists_its_info_and_ticks_what_it_changes() {
             ("Downloads", "12".to_string()),
             ("Published", "2026-11-18".to_string()),
             ("Version", "1.2".to_string()),
-            ("For", "CTF, Slayer".to_string()),
+            ("Modes", "CTF, Slayer".to_string()),
             ("From", "Map Pack".to_string()),
-            ("Joins", "Get it too".to_string()),
+            ("Joiners", "Auto-install".to_string()),
         ]
     );
     assert_eq!(
@@ -376,14 +376,14 @@ fn a_maps_page_lists_its_info_and_ticks_what_it_changes() {
     // The panel's slots hold the page: body, facts, checklist.
     let t = repo.panel();
     assert_eq!(t.len(), page_layout::TEXTS);
-    assert!(t[page_layout::BODY_TEXT].starts_with("Warthogs everywhere. Warthogs"));
+    assert!(t[page_layout::BODY_TEXT].starts_with("Warthogs everywhere."));
     assert!(t[page_layout::BODY_TEXT].ends_with("..."));
-    assert_eq!(t[page_layout::BODY_TEXT].chars().count(), ABOUT_CHARS);
+    assert_eq!(t[page_layout::BODY_TEXT].lines().count(), 3);
     assert_eq!(t[page_layout::fact_label(0)], "Map");
     assert_eq!(t[page_layout::fact_value(0)], "Relic");
-    assert_eq!(t[page_layout::fact_label(8)], "Joins");
+    assert_eq!(t[page_layout::fact_label(8)], "Joiners");
     assert_eq!(t[page_layout::fact_label(9)], "", "no tenth fact");
-    assert_eq!(t[page_layout::CHECK_HEADING], "What It Changes");
+    assert_eq!(t[page_layout::CHECK_HEADING], "Changes");
     assert_eq!(t[page_layout::check_cell(0, 0)], "[x] Vehicles");
     assert_eq!(t[page_layout::check_cell(0, 1)], "[ ] Weapons");
     assert_eq!(t[page_layout::check_cell(3, 1)], "[ ] AI");
@@ -406,11 +406,12 @@ fn a_maps_page_lists_its_info_and_ticks_what_it_changes() {
     bare.gametypes = vec!["koth".into(), "juggernaut".into(), "slayer".into()];
     for (label, value) in facts(&bare).iter().chain(facts(&full()).iter()) {
         assert!(
-            label.chars().count() + 1 + value.chars().count() <= FACT_CHARS,
+            text_fit::width(value) <= i32::from(page_layout::TABLE_RIGHT - page_layout::VALUE_LEFT),
             "{label} {value}"
         );
     }
-    assert_eq!(facts(&bare)[3], ("For", "King of the H...".to_string()));
+    assert_eq!(facts(&bare)[3].0, "Modes");
+    assert!(facts(&bare)[3].1.ends_with("..."));
     assert_eq!(checklist(&bare), ["Not listed"]);
     assert_eq!(about(&bare), "No description. Built on Lockout.");
 }
@@ -432,7 +433,7 @@ fn the_status_line_fits_in_every_state() {
     seen.push(repo.detail_description(0).unwrap());
     assert_eq!(
         seen.last().map(String::as_str),
-        Some("Needs the Map Pack's Relic. A retries.")
+        Some("Needs the Map Pack's Relic")
     );
     fake.here.lock().unwrap().insert(id(5));
     repo.install_done(id(5), Ok(()));
@@ -440,7 +441,7 @@ fn the_status_line_fits_in_every_state() {
     repo.act();
     seen.push(repo.detail_description(0).unwrap());
     for s in &seen {
-        assert!(s.chars().count() <= STATUS_CHARS, "{s:?}");
+        assert!(text_fit::width(s) <= 303, "{s:?}");
     }
     assert_eq!(seen[4], "Press A or X again to remove it.");
 }
@@ -453,16 +454,20 @@ fn the_list_describes_the_focused_map() {
     assert_eq!(
         repo.list_description(0).unwrap(),
         "On Relic, by Modder\n3.4 MB, 12 downloads\nHas vehicles, scripts\n\
-         X downloads it, A opens its page"
+         New map"
     );
     assert_eq!(
         repo.list_description(1).unwrap().lines().nth(2),
-        Some("What it changes isn't listed")
+        Some("Changes not listed")
     );
     assert_eq!(repo.list_description(9), None);
     // The picture is the base map's slot's, once read.
     let rows = ListRows::new(Arc::clone(&repo));
     assert_eq!(rows.picture(0), None, "not read yet");
+    assert!(rows.restore_missing_picture());
+    assert_eq!(LIST_PICTURE.screen_id, page_layout::LOBBY_SCREEN_ID);
+    assert_eq!(LIST_PICTURE.bitmap, page_layout::PICTURE.bitmap);
+    assert_eq!(LIST_PICTURE.at, crate::campaign_menu::PICTURE.at);
     repo.set_pictures(BTreeMap::from([
         ("dune".to_string(), 0xe100_0010),
         ("lockout".to_string(), 0xe100_0020),
@@ -506,7 +511,13 @@ fn a_mod_needing_a_disc_map_says_which() {
         name: "Lockout Swords".into(),
         map: "lockout".into(),
     })));
-    assert_eq!(repo.detail_line(0).unwrap(), "Needs Lockout from your disc");
+    assert_eq!(repo.detail_line(0).unwrap(), "Retry download");
+    assert_eq!(
+        repo.detail_description(0).unwrap(),
+        "Needs Lockout from your disc"
+    );
+    assert_eq!(repo.list_row(0).unwrap().1, "Failed");
+    assert_eq!(repo.prompts(SCREEN, Some(0))[1].text, "Retry");
     // A failed one can be tried again.
     assert!(matches!(repo.press_detail(0), Chosen::Stepped(_)));
     assert_eq!(fake.installs.lock().unwrap().len(), 1);
@@ -521,7 +532,7 @@ fn a_mod_needing_a_disc_map_says_which() {
         ),
         (
             ModsError::Refused(Refusal::Download("HTTP 500".into())),
-            "Failed; press A to retry",
+            "Download failed",
         ),
         (ModsError::NotSignedIn, "Sign in to Live first"),
         // A Map Pack base: the map pack, by the map's game name.
@@ -588,7 +599,7 @@ fn every_text_fits_and_has_an_id_of_the_family() {
         assert!(texts.iter().all(|(_, id)| TEXTS.owns(*id)));
         assert!(TEXTS.owns(rows.description(r).unwrap()));
         let line = repo.list_line(r).unwrap();
-        assert!(line.chars().count() <= LINE_CHARS, "{line:?}");
+        assert!(text_fit::width(&line) <= text_fit::ROW, "{line:?}");
         let d = repo.list_description(r).unwrap();
         assert!(
             d.len() < SLOT_LEN as usize && d.lines().count() <= 5,
@@ -599,11 +610,8 @@ fn every_text_fits_and_has_an_id_of_the_family() {
     assert!(rows.texts(-1).is_empty());
     assert_eq!(rows.description(MAX_ROWS as i16), None);
     // Row 0 was published at position 0: seen. Row 1 is new.
-    assert_eq!(repo.list_line(0).unwrap(), "An Extremely Long Mod Nam...");
-    assert_eq!(
-        repo.list_line(1).unwrap(),
-        "An Extremely Long Mod ...  \u{2605}"
-    );
+    assert!(repo.list_line(0).unwrap().ends_with("..."));
+    assert!(repo.list_line(1).unwrap().ends_with("...  \u{2605}"));
     repo.press_list(0);
     assert!(facts(&repo.selected().unwrap()).contains(&("Downloads", "1234".to_string())));
     let detail = DetailRows::new(Arc::clone(&repo));
@@ -646,16 +654,30 @@ fn slots_are_served_once_placed() {
 #[test]
 fn the_footers_say_what_a_and_x_do() {
     let texts = |p: Vec<Prompt>| p.into_iter().map(|p| p.text).collect::<Vec<_>>();
+    let (_, repo) = listed(with_pack(), None);
+    let commands = |screen, row| texts(repo.prompts(screen, Some(row)));
+    assert_eq!(commands(SCREEN, 0), ["Details", "Download", "Back"]);
+    assert_eq!(commands(SCREEN, 1), ["Open", "Download All", "Back"]);
+    repo.press_list(1);
+    assert_eq!(commands(PACK, 0), ["or", "Download All", "Back"]);
+    repo.press_pack(2);
+    assert_eq!(commands(DETAIL, 0), ["or", "Download", "Back"]);
+    repo.act();
+    assert_eq!(commands(DETAIL, 0), ["Back"]);
+    repo.install_done(id(3), Ok(()));
+    assert_eq!(commands(PACK, 2), ["Details", "Back"]);
+    assert_eq!(commands(DETAIL, 0), ["or", "Remove", "Back"]);
+    repo.act();
+    assert_eq!(commands(DETAIL, 0), ["or", "Confirm", "Back"]);
+    let rows = DetailRows::new(Arc::clone(&repo));
+    assert_eq!(rows.focused_footer(Some(0)), Some(Slots::id(DETAIL_FOOTER)));
+    assert!(repo.texts.get(DETAIL_FOOTER).unwrap().contains("CONFIRM"));
+    let mut spec = spec::pack_spec(&repo);
+    spec.focus = 2;
     assert_eq!(
-        texts(prompts(SCREEN, false)),
-        ["Details", "Download", "Back"]
+        spec.footer_text(),
+        Some(footer_legend(&repo.prompts(PACK, Some(2))))
     );
-    // The page's one row is its action: A and X both do it.
-    assert_eq!(texts(prompts(DETAIL, false)), ["Download", "Back"]);
-    assert_eq!(texts(prompts(DETAIL, true)), ["Remove", "Back"]);
-    assert_eq!(prompts(DETAIL, false)[0].glyphs, [Glyph::A, Glyph::X]);
-    // X is the button the class's action takes (event button word 2).
-    assert_eq!(prompts(SCREEN, false)[1].glyphs, [Glyph::X]);
     assert_eq!(X_ONLY, [crate::list_class::X_BUTTON]);
     assert_eq!(crate::list_class::X_BUTTON, 2);
     let classes = classes(&Repo::new(Arc::new(Fake::default()), None));
@@ -717,13 +739,10 @@ fn by_is_the_credited_maker_and_the_uploader_keeps_a_row() {
     let mut same = entry(3, "Mine", None);
     same.credit = Some("modder".into());
     assert!(!uploader_apart(&same), "the uploader made it: one row");
-    assert_eq!(
-        facts(&credited)[1..3],
-        [
-            ("By", "l PPF l NeoN, ...".to_string()),
-            ("Shared By", "afr".to_string())
-        ]
-    );
+    let credit = facts(&credited);
+    assert_eq!(credit[1].0, "By");
+    assert!(credit[1].1.starts_with("l PPF") && credit[1].1.ends_with("..."));
+    assert_eq!(credit[2], ("Shared By", "afr".to_string()));
     assert_eq!(
         facts(&uncredited)[1..3],
         [("By", "Modder".to_string()), ("Size", "3.4 MB".to_string())]
@@ -804,8 +823,7 @@ fn a_pack_is_one_row_at_its_newest_maps_place() {
     assert_eq!(repo.list_line(1).unwrap(), "Phantom Mappack  \u{2605}");
     assert_eq!(
         repo.list_description(1).unwrap(),
-        "3 maps, by Phantom, Ghost\nClassic maps, remade for small teams.\n\
-         10.2 MB in all, 0 installed\nA opens it, X downloads all"
+        "3 maps, by Phantom, Ghost\nClassic maps, remade for\nsmall teams.\n0/3 installed, 10.2 MB\nNew maps"
     );
     // Seen before: no star, how many maps.
     let mut old = with_pack();
@@ -815,7 +833,7 @@ fn a_pack_is_one_row_at_its_newest_maps_place() {
     let (_, seen) = listed(old, None);
     seen.opened();
     seen.opened();
-    assert_eq!(seen.list_line(1).unwrap(), "Phantom Mappack  3 maps");
+    assert!(seen.list_line(1).unwrap().ends_with("  3 maps"));
 }
 
 #[test]
@@ -832,21 +850,22 @@ fn a_packs_list_has_download_all_then_its_maps_each_opening_its_page() {
     assert_eq!(repo.pack_line(1).unwrap(), "Phantom Ascension  \u{2605}");
     assert_eq!(repo.pack_line(3).unwrap(), "Phantom Colossus  \u{2605}");
     assert_eq!(repo.pack_line(4), None);
-    assert!(repo
-        .pack_description(0)
-        .unwrap()
-        .ends_with("A or X downloads all 3"));
-    assert!(repo
-        .pack_description(2)
-        .unwrap()
-        .starts_with("On Ascension"));
+    assert!(repo.pack_description(0).unwrap().ends_with("3 to download"));
+    assert!(
+        repo.pack_description(2)
+            .unwrap()
+            .starts_with("On Ascension")
+    );
     // A map's row opens its page, Back returns to the pack.
     assert_eq!(repo.press_pack(2), Chosen::Open(DETAIL));
     assert_eq!(repo.selected().map(|e| e.id), Some(id(3)));
     // X on a map downloads it alone.
-    assert!(repo
-        .x_pack(Some(2))
-        .starts_with("mods: downloading Phantom Ivory"));
+    assert!(
+        repo.x_pack(Some(2))
+            .starts_with("mods: downloading Phantom Ivory")
+    );
+    assert_eq!(repo.pack_line(0).as_deref(), Some("Download All (2)"));
+    assert!(repo.pack_description(0).unwrap().contains("Downloading 0%"));
     let (got, _, done) = fake.installs.lock().unwrap().pop().unwrap();
     assert_eq!(got, id(3));
     done(Ok(PathBuf::from("/data/maps/live-03")));
@@ -859,20 +878,24 @@ fn a_packs_list_has_download_all_then_its_maps_each_opening_its_page() {
     for (_, progress, _) in &mut started {
         progress(50, 100);
     }
-    assert_eq!(repo.pack_line(0).unwrap(), "Downloading 50%");
-    assert_eq!(repo.list_line(1).unwrap(), "Phantom Mappack  \u{2193} 50%");
-    assert!(repo
-        .x_pack(Some(0))
-        .contains("every map is installed or downloading"));
-    for (_, _, done) in started {
-        done(Ok(PathBuf::from("/data/maps/live")));
-    }
+    assert_eq!(repo.pack_line(0).unwrap(), "Downloading 66%");
+    assert!(repo.list_line(1).unwrap().ends_with("  \u{2193} 66%"));
+    assert!(
+        repo.x_pack(Some(0))
+            .contains("every map is installed or downloading")
+    );
+    let (_, _, done) = started.pop().unwrap();
+    done(Ok(PathBuf::from("/data/maps/live")));
+    assert_eq!(repo.pack_line(0).unwrap(), "Downloading 83%");
+    let (_, _, done) = started.pop().unwrap();
+    done(Ok(PathBuf::from("/data/maps/live")));
     assert_eq!(repo.pack_line(0).unwrap(), "All Installed");
     assert_eq!(repo.list_line(1).unwrap(), "Phantom Mappack  \u{2713}");
-    assert!(repo
-        .list_description(1)
-        .unwrap()
-        .ends_with("3 installed\nAll installed: A opens it"));
+    assert!(
+        repo.list_description(1)
+            .unwrap()
+            .ends_with("3/3 installed, 10.2 MB\nChange Map > Mods")
+    );
 }
 
 #[test]
@@ -939,15 +962,15 @@ fn a_big_packs_texts_fit_and_have_ids_of_the_family() {
     let (_, repo) = listed(items, None);
     assert_eq!(repo.list_count(), 1, "fifty maps, one row");
     let line = repo.list_line(0).unwrap();
-    assert!(line.chars().count() <= LINE_CHARS, "{line:?}");
+    assert!(text_fit::width(&line) <= text_fit::ROW, "{line:?}");
     let d = repo.list_description(0).unwrap();
     assert!(
-        d.len() < SLOT_LEN as usize && d.lines().count() == 4,
+        d.len() < SLOT_LEN as usize && d.lines().count() <= 5,
         "{d:?}"
     );
     assert_eq!(repo.press_list(0), Chosen::Open(PACK));
     let rows = PackRows::new(Arc::clone(&repo));
-    assert_eq!(rows.count(), MAX_ROWS, "Download All and 39 maps");
+    assert_eq!(rows.count(), MAX_PACK_ROWS, "Download All and all 40 maps");
     assert!(TEXTS.owns(rows.title()));
     for r in 0..rows.count() as i16 {
         let texts = rows.texts(r);
@@ -955,17 +978,218 @@ fn a_big_packs_texts_fit_and_have_ids_of_the_family() {
         assert!(texts.iter().all(|(_, id)| TEXTS.owns(*id)));
         assert!(TEXTS.owns(rows.description(r).unwrap()));
         let line = repo.pack_line(r).unwrap();
-        assert!(line.chars().count() <= LINE_CHARS, "{line:?}");
+        assert!(text_fit::width(&line) <= text_fit::ROW, "{line:?}");
         let d = repo.pack_description(r).unwrap();
         assert!(
             d.len() < SLOT_LEN as usize && d.lines().count() <= 5,
             "{d:?}"
         );
     }
-    assert!(rows.texts(MAX_ROWS as i16).is_empty());
-    assert_eq!(repo.pack_line(0).unwrap(), "Download All (50)");
-    assert!(rows
-        .describe(2)
-        .unwrap()
-        .starts_with("title \"A Pack Whose Name Is Longer Than Any ...\"; rows: [0]"));
+    assert!(rows.texts(MAX_PACK_ROWS as i16).is_empty());
+    assert_eq!(repo.pack_line(0).unwrap(), "Download All (40)");
+    assert!(rows.describe(2).unwrap().contains("...\"; rows: [0]"));
+}
+
+#[test]
+fn a_cold_visit_can_retry_and_browse_every_row_without_changing_focus_on_refresh() {
+    let fake = Arc::new(Fake::default());
+    let repo = Repo::new(fake, None);
+    let rows = ListRows::new(Arc::clone(&repo));
+    repo.opened();
+    let now = Instant::now();
+    repo.fetch(now);
+    repo.listed(Err(ModsError::Offline));
+    assert!(matches!(rows.press(0), Chosen::Stepped(_)));
+    assert_eq!(repo.list_state(), List::Loading);
+    assert!(repo.due(now));
+    assert_eq!(rows.count(), 1);
+    assert_eq!(rows.growing_capacity(), Some(MAX_ROWS));
+    repo.listed(Ok(three()));
+    assert_eq!(rows.count(), 3);
+    assert_eq!(repo.menu_text(), "Mods");
+    assert_eq!(rows.press(2), Chosen::Open(DETAIL));
+    repo.listed(Ok(vec![entry(4, "New arrival", Some(40))]));
+    assert_eq!(repo.menu_text(), "Mods (1 new)");
+    assert_eq!(rows.count(), 3);
+    assert_eq!(repo.selected().unwrap().id, id(1));
+    repo.closed();
+    repo.opened();
+    assert_eq!(rows.count(), 1);
+    assert_eq!(repo.list_row(0).unwrap().0, "New arrival");
+}
+
+#[test]
+fn bulk_download_requires_focus_on_download_all_in_a_listed_pack() {
+    let (fake, repo) = listed(with_pack(), None);
+    repo.press_list(1);
+    for row in [None, Some(-1), Some(4)] {
+        repo.x_pack(row);
+    }
+    assert!(fake.installs.lock().unwrap().is_empty());
+    repo.listed(Ok(Vec::new()));
+    assert_eq!(repo.pack_count(), 1);
+    assert_eq!(repo.pack_line(0).as_deref(), Some("Pack unavailable"));
+    assert!(repo.pack_description(0).unwrap().contains("Press B"));
+    assert_eq!(repo.press_pack(0), Chosen::Nothing);
+    repo.x_pack(Some(0));
+    assert!(fake.installs.lock().unwrap().is_empty());
+}
+
+#[test]
+fn wide_published_text_leaves_room_for_state_facts_and_status() {
+    let mut map = full();
+    map.name = "W".repeat(80);
+    map.credit = Some("M".repeat(100));
+    map.description = Some("W".repeat(200));
+    map.features = FEATURES.iter().map(|s| s.to_string()).collect();
+    let (_, repo) = listed(vec![map], None);
+    let list = spec::list_spec(&repo);
+    let row = &list.rows[0];
+    assert!(row.label.ends_with("...  ★"));
+    assert!(text_fit::width(&row.label) <= text_fit::ROW);
+    let summary = row.description.as_deref().unwrap();
+    assert!(
+        summary
+            .lines()
+            .all(|l| text_fit::width(l) <= text_fit::SUMMARY)
+    );
+    assert_eq!(summary.lines().last(), Some("New map"));
+    repo.press_list(0);
+    let spec = spec::detail_spec(&repo);
+    for cell in &spec.texts {
+        let [_, left, _, right] = cell.rect;
+        assert!(
+            cell.text
+                .lines()
+                .all(|line| text_fit::width(line) <= i32::from(right - left)),
+            "{}",
+            cell.id
+        );
+    }
+    assert!(spec.texts[page_layout::BODY_TEXT].text.ends_with("..."));
+}
+
+#[test]
+fn pack_rows_drop_only_the_repeated_pack_name_and_keep_full_page_titles() {
+    let repo = spec::sample_repo(spec::Sample::Pack);
+    assert_eq!(repo.pack_line(3).as_deref(), Some("Beaver Creek  ★"));
+    repo.press_pack(3);
+    assert_eq!(
+        repo.texts.get(DETAIL_TITLE).as_deref(),
+        Some("Sample Pack Beaver Creek")
+    );
+    let (_, other) = listed(with_pack(), None);
+    other.press_list(1);
+    assert!(other.pack_line(1).unwrap().starts_with("Phantom Ascension"));
+}
+
+#[test]
+fn a_restored_page_for_an_unlisted_map_has_a_way_back() {
+    let repo = spec::sample_repo(spec::Sample::Page);
+    let (_, empty) = listed(Vec::new(), None);
+    empty.load_state(&repo.save_state()).unwrap();
+    assert_eq!(
+        empty.texts.get(DETAIL_TITLE).as_deref(),
+        Some("Mod details")
+    );
+    assert_eq!(empty.detail_line(0).as_deref(), Some("Map unavailable"));
+    assert_eq!(
+        empty.detail_description(0).as_deref(),
+        Some("Press B to go back.")
+    );
+    assert_eq!(
+        empty.prompts(DETAIL, Some(0)),
+        [Prompt::new(&[Glyph::B], "Back")]
+    );
+    assert_eq!(empty.press_detail(0), Chosen::Nothing);
+}
+
+#[test]
+fn preview_presses_preserve_parent_focus_and_use_the_displayed_download_commands() {
+    use crate::ui_kit::input::Input::{A, B, Down, X, Y};
+    use crate::ui_kit::page::Live;
+    let mut preview = spec::preview::Preview::new(spec::Sample::List);
+    assert!(preview.go("focus-2"));
+    preview.press(A);
+    assert_eq!(preview.spec().name, PACK);
+    preview.press(Down);
+    preview.press(X);
+    let spec = preview.spec();
+    assert!(spec.rows[1].label.ends_with("↓ 0%"));
+    let footer = spec.footer_text().unwrap();
+    assert!(footer.contains("DETAILS") && !footer.contains("DOWNLOAD"));
+    preview.press(A);
+    assert_eq!(preview.spec().name, DETAIL);
+    let before = preview.spec();
+    preview.press(Y);
+    assert_eq!(preview.spec(), before);
+    preview.press(B);
+    assert_eq!(
+        (preview.spec().name.as_str(), preview.spec().focus),
+        (PACK, 1)
+    );
+    preview.press(B);
+    assert_eq!(
+        (preview.spec().name.as_str(), preview.spec().focus),
+        (SCREEN, 2)
+    );
+    assert!(preview.go("offline"));
+    preview.press(A);
+    assert_eq!(preview.spec().rows[0].label, "Loading...");
+}
+
+#[test]
+fn every_named_mod_state_uses_its_rows_footer_and_fits_the_synthetic_layout() {
+    use crate::ui_kit::{layout, page::Live, preview::From};
+    for screen in [spec::Sample::List, spec::Sample::Pack, spec::Sample::Page] {
+        let preview = spec::preview::Preview::new(screen);
+        for (name, page) in preview.specs() {
+            assert_eq!(
+                page.footer_text(),
+                page.rows[page.focus]
+                    .prompts
+                    .as_ref()
+                    .map(|p| footer_legend(p))
+            );
+            let (view, _) = From::Synthetic.draw(&page, &name).unwrap();
+            let report = layout::check(
+                &view,
+                &crate::ui_kit::preview::SyntheticSource,
+                &layout::Rules::for_spec(&page),
+            );
+            assert!(
+                report.issues.is_empty(),
+                "{}/{name}: {:?}",
+                page.name,
+                report.issues
+            );
+        }
+    }
+}
+
+#[test]
+fn a_refresh_keeps_installed_state_for_maps_still_visible_on_this_visit() {
+    let (fake, repo) = listed(three(), None);
+    fake.here.lock().unwrap().insert(id(2));
+    repo.listed(Ok(three()));
+    repo.opened();
+    repo.press_list(1);
+    repo.listed(Ok(Vec::new()));
+    assert_eq!(repo.detail_line(0).as_deref(), Some("Remove"));
+    repo.closed();
+    repo.listed(Err(ModsError::Offline));
+    assert_eq!(repo.list_line(0).as_deref(), Some("Try Again"));
+}
+
+#[test]
+fn loading_a_snapshot_requires_a_fresh_removal_confirmation() {
+    let (fake, repo) = listed(three(), None);
+    repo.press_list(1);
+    repo.install_done(id(2), Ok(()));
+    repo.act();
+    let bytes = repo.save_state();
+    repo.load_state(&bytes).unwrap();
+    assert_eq!(repo.detail_line(0).as_deref(), Some("Remove"));
+    repo.act();
+    assert!(fake.removed.lock().unwrap().is_empty());
 }

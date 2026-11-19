@@ -28,6 +28,9 @@ pub(crate) fn execute(
     }
     let result = match invocation {
         Invocation::Handler(Handler::Native(f)) => {
+            if let Some(coverage) = ctx.runtime().coverage.get() {
+                coverage.record(f, selector);
+            }
             Ok(crate::ffi::call_native(f, cpu, ctx, selector))
         }
         Invocation::Handler(Handler::Rust(f)) => {

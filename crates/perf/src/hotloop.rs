@@ -464,3 +464,25 @@ impl Scenario for HotLoop {
         Ok(result)
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    #[test]
+    fn named_worker_has_monotonic_wall_thread_and_process_clocks() {
+        std::thread::Builder::new()
+            .name("h2-perf-clock".into())
+            .spawn(|| {
+                let name = std::fs::read_to_string("/proc/thread-self/comm").unwrap();
+                assert_eq!(name.trim_end(), "h2-perf-clock");
+                let wall = timeline::now_ns();
+                let thread = super::thread_cpu_ns().unwrap();
+                let process = timeline::host::process_cpu_ns().unwrap();
+                assert!(timeline::now_ns() >= wall);
+                assert!(super::thread_cpu_ns().unwrap() >= thread);
+                assert!(timeline::host::process_cpu_ns().unwrap() >= process);
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+}

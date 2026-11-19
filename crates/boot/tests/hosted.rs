@@ -76,6 +76,8 @@ fn the_host_paces_feeds_and_stops_the_run() {
         gfx: None,
         gfx_view: None,
         render_thread: false,
+        host_light: false,
+        host_bots: false,
         voice_io: None,
         audio_sink: Some(Box::new({
             let (opened, written) = (Arc::clone(&opened), Arc::clone(&written));
@@ -109,6 +111,7 @@ fn the_host_paces_feeds_and_stops_the_run() {
             }
         })),
         on_vfs: None,
+        ..boot::Host::default()
     };
     let r = boot::run_hosted(&xbe, &dylib, &opts, host).unwrap();
     let _ = std::fs::remove_dir_all(&data);

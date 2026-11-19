@@ -3,8 +3,8 @@
 Status: contract, implemented apart from what the sections mark as not
 built (federation among them). The service is `crates/live-server`
 ([live.md](live.md)). Everything here is JSON over HTTP on one port
-(default `127.0.0.1:8074`), plus three WebSockets (stream, ingest and the
-co-op relay). Identity, signing, tokens
+(default `127.0.0.1:8074`), plus WebSockets for streaming, ingest, the
+co-op relay and the dedicated host tunnel. Identity, signing, tokens
 and discovery are in [live-security.md](live-security.md); this page refers
 to it as §n. Every client is given a base URL and finds the rest from
 `GET /.well-known/h2live.json`.
@@ -212,8 +212,9 @@ additional `position` (0..1) on each entry.
 `machine_positions` gives the changed device travel values independently
 of the world poses. `i` is the scenario machine index (0..32767) and `p`
 is its position byte (0 closed or at the start, 255 fully open or at the
-end). Entries are sorted by index, at most 255, one per index. A packed v7
-keyframe is a complete baseline, including at a recorded chunk start.
+end). Entries are sorted by index, at most 255, one per index. A
+machine-aware packed keyframe is a complete baseline, including at a
+chunk start. V8 keys carry that baseline in their embedded v7 key.
 An omitted index on a keyframe has unknown travel. An omitted index on a
 delta holds the last value. A `cut` clears the preceding run's state.
 
@@ -327,10 +328,12 @@ A chunk is stored when a frame lands in the next window, and when the game
 ends (its `GameEnded`, or the idle sweep ending it as `lost`); there is no
 timer. A server that stops mid-window loses at most that window.
 
-Each chunk is an immutable blob in the private blob store,
-`frames/<game id>/<first tick>` (R2 on the Worker, the data directory
-natively; the event store's blobs on a server with neither), and a
-server-signed `FrameChunk` event in the game's stream is its index entry:
+The private blob store uses `frames/<game id>/<first tick>-<sha256>` for
+new chunks and reads older chunks under `frames/<game id>/<first tick>`.
+The digest keeps both originals when a checkpoint rewind repeats a chunk
+start. Readers can pass the signed index entry’s `sha256` as a query parameter to disambiguate a repeated first tick. The Worker uses R2 and the native server uses its data directory.
+With neither configured, the event store holds the bytes. A server-signed
+`FrameChunk` event in the game's stream records its index entry.
 
 ```json
 { "from_tick": 9000, "to_tick": 9298, "frames": 150, "bytes": 38211,
@@ -368,7 +371,7 @@ the index once and fetches the one chunk whose window holds the tick.
 | method and path | returns |
 |---|---|
 | `GET /healthz` | `{ "ok": true, "position": <head> }` |
-| `GET /.well-known/h2live.json` | server id, API base, server keys (security §4), `url`: the public base URL when known ([live-hosting.md](live-hosting.md)) |
+| `GET /.well-known/h2live.json` | server id, API base, server keys (security §4), `url`: the public base URL when known ([live-hosting.md](live-hosting.md)), and `ingest_frame_versions` for supported live codecs |
 | `GET /v1/accounts/{gamertag}/keys` | account public keys with validity ranges |
 | `GET /v1/accounts` | accounts: `{xuid, gamertag, created_at, online}` |
 | `GET /v1/accounts/{gamertag}` | one account plus `recent_games` (without the co-op games the reader may not see: [Co-op games](#co-op-games)) |
@@ -380,7 +383,7 @@ the index once and fetches the one chunk whose window holds the tick.
 | `GET /v1/games/{id}/chunks` | the game's [frame chunk](#frame-chunks) index: `{game_id, chunk_ticks, ended, items}`, `items` the `FrameChunk` data oldest first; empty for a game recorded before chunks |
 | `GET /v1/games/{id}/chunks/{tick}` | one chunk by its first tick, `application/x-h2-chunk`; checked against its index entry's hash. Anonymous reads are `public, max-age=31536000, immutable` (it is never rewritten) |
 | `GET /v1/games/{id}/frames?from_tick=&to_tick=` | a game recorded before frame chunks: its `GameFrame`s as an `application/x-h2-frames` container of packed keyframes (docs/live/live-telemetry.md, "Packed frames"), the next cursor in `x-next` and the head position in `x-position`. `format=json` returns the decoded page as `{items,next,position}` |
-| `GET /v1/maps/{map}/outline` | top-down map outline (see below), 404 until a console has uploaded it |
+| `GET /v1/maps/{map}/outline` | top-down map outline (see below), 404 until an admin has uploaded it |
 | `GET /v1/snapshot` | what a page needs on load, in one read at one log position: `{position, accounts, presence, live, ended, details, tail}`. `accounts` is `/v1/accounts?limit=1000`, `presence` is `/v1/presence`, `live` and `ended` are `/v1/games?state=…&limit=100`, `details` is `/v1/games/{id}` for every live game and the 40 newest ended ones, and `tail` is the last 300 log events up to `position` without `GameFrame` (as on the stream). Each part has the reader's visibility applied, as at its own endpoint ([Co-op games](#co-op-games)) |
 | `GET /v1/events?from=&type=&stream=&limit=` | raw log, oldest first, at most 200 a page; without the events of co-op games and sessions the reader may not see ([Co-op games](#co-op-games), "The log"): a page can be short or empty with a `next`; without network addresses for anyone but the operator ([Network addresses](#network-addresses)); invitations, friend events, content and player reports and bans only to whom they concern ([Private events](#private-events)) |
 | `GET /v1/titles/{title}/files/{name}` | raw file bytes, `ETag` = sha256 |
@@ -400,6 +403,71 @@ Set by `crates/live-server/src/caching.rs` on GET and HEAD responses whose handl
 - Anonymous reads under `/v1/` of `snapshot`, `games`, `accounts`, `presence`, `stats`, `events`, `teams` and `maps` that succeed: `public, max-age=0, s-maxage=5, stale-while-revalidate=30`, with a weak `ETag`. A matching `If-None-Match` gets a 304.
 - Everything else under `/v1/` is `private, no-store`: any request with `Authorization` or an `auth` query mark (the web app adds `auth=1` to every read it sends with a token, because a CDN's cache key leaves out `Authorization`), any error, and every other route.
 - Art (`/art/*`) and title files keep their own headers.
+
+## Web Theater
+
+Films use the [game's spectator track](replay-fidelity.md). These routes
+store pins and clip ranges alongside the game log. Playback still uses
+the game's chunk or archive endpoints.
+
+| Method and path | Token scope | Result |
+|---|---|---|
+| `GET /v1/films?player=<xuid>&kind=recent` | public or `read` | Up to 25 of the player's visible games, newest first. |
+| `GET /v1/films?player=<xuid>&kind=saved` | public or `read` | Games pinned by that player, newest game first. |
+| `GET /v1/films?player=<xuid>&kind=clips` | public or `read` | Clips authored by that player across all games, newest clip first. Each item is `{clip, film}`. |
+| `POST /v1/films/{game}/save` | `films.write` | Save the game for the caller. The caller must have played in it. Returns 204, including a repeated save. |
+| `DELETE /v1/films/{game}/save` | `films.write` | Remove the caller's own pin. The caller must have played in the game. Returns 204 even if the pin is already absent. |
+| `GET /v1/films/{game}/clips` | public or `read` | The game's clips, newest first. |
+| `POST /v1/films/{game}/clips` | `films.write` | An account that can see the game can create a clip. Returns the clip with 201. |
+| `GET /v1/clips/{id}` | public or `read` | The clip. |
+| `DELETE /v1/clips/{id}` | `films.write` | Delete a clip as its author or an admin. Returns 204. |
+
+Each list is `{items, next, position}`. Saved films and clip lists take
+`limit` (default 100, max 1000). Pass `next` back as `cursor` until it is null.
+Recent films have `next: null`. The game record supplies each film:
+
+```json
+{ "game_id": "9ab0", "map": "lockout", "mode": "multiplayer",
+  "variant": "Team Slayer", "started_at": "2026-11-19T19:30:00Z",
+  "duration_s": 230, "result": "win" }
+```
+
+`variant` can be null. For a finished game, `duration_s` measures whole
+seconds from the start and end ticks. Old games without a start tick use
+elapsed wall time, with zero for lost games from that era. Live games have
+`duration_s: null`. The player's `result` is `win`, `loss`, `draw` or null
+when there is no result for that player. On an authored clip's film, the
+result is for the author if they played.
+
+A clip is:
+
+```json
+{ "id": "jjXBkYPKW79VveEmdu81PA", "game": "9ab0", "from_tick": 530,
+  "to_tick": 1430, "title": "Last stand", "by": "0009a1b2c3d4e5f6",
+  "pov": 1, "camera": "follow", "created_ms": 1795116900000 }
+```
+
+Send `{from_tick, to_tick, title, pov?, camera?}` to create one. The server
+sets `id`, `game`, `by` and Unix `created_ms`. Clip ticks are nonnegative
+JSON safe integers, and `to_tick - from_tick` must be 900–9000 ticks
+inclusive (30 seconds to five minutes at 30 Hz). The optional `pov` is a
+player slot and `camera` is a name of up to 64 letters, digits,
+underscores or hyphens. The title is plain text. The server strips
+control and bidirectional formatting characters, collapses whitespace
+and requires 1–60 Unicode characters. An account may create at most 20
+clips per UTC day. A deleted clip still counts that day. Further creates
+return 429.
+
+Film and clip reads follow [game visibility](#co-op-games), including
+when an optional `read` bearer is sent on a public server. Hidden games
+and their clips are omitted from lists and read as 404 by id. Public
+link previews at `/theater/<game>` and `/theater/<game>/clip/<id>` follow
+anonymous visibility. The server-signed Theater mutation events are
+visible in the log to admins and the operator.
+
+A game's archive is exempt from pruning while any player has it saved.
+Archive inventory and detail expose this as `pinned`. The current
+retention policy keeps all recordings.
 
 ## Stats summary
 
@@ -595,7 +663,7 @@ except account creation. Signed bodies are sent raw as a compact JWS with
 | `POST /v1/invites/{jti}/revoke` | JWS `InviteRevoked` event `{jti}` by an admin | end an open invite an admin made |
 | `POST /v1/games` | `GameStarted` data without `game_id` | starts a game; returns `{game_id}` |
 | `POST /v1/games/{id}/events` | `[{type, data}]` | append game events in order |
-| `PUT /v1/maps/{map}/outline` | outline JSON | store a map outline |
+| `PUT /v1/maps/{map}/outline` | outline JSON, admin or operator's `games.write` token | store or replace a map outline |
 | `POST /v1/local/signin` | `{"once": token}`, no token | embedded server and loopback peers only: answers once with the browser account entry `h2 play --live-local` offered; otherwise 404 (live-admin.md §4) |
 
 ## Sign-ins
@@ -849,7 +917,8 @@ Only the authenticated host may append events, signed with its registered key:
 
 - `SessionUpdated`: optional slots, attributes (full replacement), name, map,
   visibility, `map_id`, `skulls` or `variant_ext` (absent keeps the current
-  one; `skulls: []` turns them all off; a `variant_ext` replaces the last).
+  one). Use `clear_map_id: true` when a host returns to retail.
+  `skulls: []` turns them all off. A `variant_ext` replaces the last.
   A server from before `skulls` refuses an update that has it, so the HLE
   sends it only when the host's set changed; the same for `variant_ext`.
 - `PlayerJoined`: `{xuid, slot?}`; the account must exist and not be in the
@@ -1037,6 +1106,40 @@ map's (from the operator's retail list) nor pinned on the session's
 server never saw is fine in a custom game: retail maps and local edits have
 ids too.
 
+## Dedicated hosts
+
+A `HostLease` reserves a process for one match. Its `id` is `hl-` plus
+16 random bytes in unpadded base64url. The `assignment_id` is the
+matchmaking assignment ID, `sim-<id>` or `custom-<id>`. The lease records
+the `provider` (`local`, `cloudflare` or `fly`), `region`, `class` (`small`
+for 1 vCPU and 2 GiB, `large` for 2 vCPUs and 4 GiB), `map`, `map_id`,
+`variant`, `hopper`, `max_players` (1–16), `roster` (XUIDs), `bots`
+(seat names), `transport` (`udp` or `tunnel`) and `created_ms` (Unix
+milliseconds). `idle_timeout_s` defaults to 120 and `max_match_s` to 1800.
+
+A `HostEndpoint` contains `transport`, `udp` (address and base port),
+`tunnel_url`, `xnaddr` (hex of the advertised XNADDR) and `session_id`.
+UDP uses base through base+6. Host states are `requested`, `booting`,
+`joinable`, `playing`, `ended` and `failed`.
+
+The server signs these lifecycle events on stream `hosts`.
+
+| type | data |
+|---|---|
+| `HostRequested` | `{lease}` (the full `HostLease`) |
+| `HostBooting` | `{lease_id, provider_ref}` (the provider's container, machine or process ID) |
+| `HostReady` | `{lease_id, endpoint, boot_ms}` (a `HostEndpoint` and milliseconds to readiness) |
+| `HostPlaying` | `{lease_id, players}` (player count) |
+| `HostEnded` | `{lease_id, reason, ran_ms, players_peak}` |
+
+End reasons are `match_over`, `empty`, `idle`, `max_duration`, `stopped`,
+`boot_timeout`, `crashed` and `budget`. `ran_ms` is elapsed milliseconds.
+
+The matchmaking assignment includes `host_lease` when an ad hoc dedicated
+host serves it. A queue reply with `state: "join"` includes `session_id`
+and `frames_from_host`. When true, the dedicated host supplies telemetry
+frames for the match. Older replies that omit the flag read as false.
+
 ## Custom maps
 
 Custom and modded maps are shared as content: the layers (file patches,
@@ -1047,7 +1150,7 @@ stored: players use their own disc for the base.
 | endpoint | authentication | result |
 |---|---|---|
 | `PUT /v1/content/{sha256}` | account token, `lxm: content.write`; the raw bytes | 201 `{sha256, size, whole_map, stored: true}`; 200 `{..., stored: false}` if already kept |
-| `GET /v1/content/{sha256}` | public, or `read` on a private server | the bytes (`ETag` the hash, cached immutably); 404; 410 if taken down |
+| `GET /v1/content/{sha256}` | public, or `read` on a private server | streams the bytes (`ETag` the hash, cached immutably); 404; 410 if taken down |
 | `POST /v1/content/{sha256}/report` | account token, `lxm: content.write`; `{reason}` | 201 `{ok, position}` |
 | `PUT /v1/maps` | account token, `lxm: content.write`; a signed `MapPublished` event (compact JWS) | 201 `{map, missing, position}`; 200 when the author republishes it |
 | `GET /v1/maps?sort=&base=&author=&category=&q=&limit=&cursor=` | read rule | `{items: [summary], next, position}`, newest first or most downloaded first (see "The mod repository") |
@@ -1366,14 +1469,15 @@ message from one member of a co-op session to the other
 cannot reach each other directly; the direct path is UDP on the XNet base
 port + 4.
 
-- The first message is `{ "kind": "auth", "token": "<jwt>" }` with
-  `lxm: sessions.relay`. A missing, wrong or expired token closes the
-  socket with 4401, as on the other sockets. Sending a fresh `auth`
-  message later extends the socket; it must be the same account's.
+- The upgrade request carries `Authorization: Bearer <jwt>` with
+  `lxm: sessions.relay`. A missing, wrong or expired token gets HTTP 401.
+  After the upgrade, `{ "kind": "auth", "token": "<jwt>" }` from the same
+  account refreshes the socket. Expiry closes it with 4401.
 - The session must be open and created with `flags: "coop"`. The account
-  must be its host, or one whose invitation to this session was answered
-  `accept`. Otherwise the socket closes with 4403. Membership is checked
-  again every few seconds, so a closed session ends its relay.
+  must be its host or a guest who accepted an invitation. The upgrade
+  gets HTTP 403 if membership is refused or 404 if the session is missing.
+  The relay rechecks membership after connection and closes with 4403
+  if membership ends.
 - A room has two members. The same account connecting again replaces its
   older socket (which closes with 4409); a third account gets 4409.
 - Each member receives `{ "kind": "peer", "present": true|false }` when
@@ -1385,6 +1489,47 @@ port + 4.
   not queue for an absent member: a message with nobody to take it, or
   with more than 256 waiting for a slow member, is dropped. The co-op
   protocol repeats what was lost. Nothing is appended to the event log.
+
+## Dedicated hosts
+
+| Route | Auth | Result |
+|---|---|---|
+| `POST /v1/hosts/{lease}/register` | Lease's host bearer, `hosts.register` | Takes a [`HostEndpoint`](dedicated-host-build.md#1-lease-live-proto-owned-by-lane-dh-lease) JSON body up to 8 KiB. Records `HostReady` and returns `200` with the `HostLease`. |
+| `POST /v1/hosts/{lease}/report` | Lease's host bearer, `hosts.report` | Takes `{state, players, reason?}` JSON up to 1 KiB. `state` is `"playing"` or `"ended"`, `players` is the player count and `reason` is an optional `EndReason`. Records `HostPlaying` or `HostEnded` and returns `204`. |
+| `GET /v1/hosts/{lease}` | Roster member or admin with a `read` bearer | Returns `200` with `{lease, state, endpoint}`. The endpoint is available after registration. |
+| `GET /v1/admin/hosts` | Admin with an `admin.read` bearer | Returns `200` with running and recent hosts and their costs. |
+| `POST /v1/admin/hosts/{lease}/stop` | Admin with an `admin.write` bearer | Takes no body, stops the host with reason `stopped` and returns `204`. |
+| `GET /v1/hosts/{lease}/tunnel` | Roster member with a `sessions.relay` bearer on upgrade | Reserved for the [WebSocket datagram tunnel](dedicated-host-build.md#6-tunnel-wire-live-proto-owned-by-dh-tunnel-client). The native stub returns `501`. |
+
+Invalid JSON bodies return `400`. Requests exceeding a body cap return
+`413`. Lease and inventory reads use the shared per-IP API rate limit.
+
+## Dedicated host tunnel
+
+A client joins a tunnel endpoint with a WebSocket upgrade at
+`GET /v1/hosts/{lease}/tunnel`. The upgrade carries the roster member's
+`sessions.relay` bearer in the `Authorization` header. The client uses
+the endpoint URL directly and sends one frame per binary message.
+
+| Byte offset | Size | Field |
+|---|---|---|
+| 0 | 1 | Version, currently 1 |
+| 1 | 1 | Kind, 0 for datagram, 1 for hello, 2 for bye |
+| 2 | 2 | Port offset 0 through 6, little-endian |
+| 4 | 4 | Peer ID, little-endian |
+| 8 | 0–1264 | Payload bytes |
+
+The client starts each connection with an empty hello on port 0 and
+peer 0. The host replies with a hello on port 0, the client's assigned
+nonzero peer ID and the **host's** synthetic IPv4 address as four octets
+in network order (`10.77.x.y`). All client frames have peer 0. Host
+datagrams carry the recipient's assigned ID. The port names the game
+channel in both directions. A zero-length datagram is valid.
+
+The client sends a WebSocket Ping every five seconds. On transport loss
+it attempts one fresh upgrade and hello. A bye has port 0 and an empty
+payload. The sender follows it with a WebSocket close. The host uses
+the recipient's ID for its bye. A bye ends the session.
 
 ## Game-invite mailboxes
 
@@ -1448,22 +1593,28 @@ readers allowed to see it ([Co-op games](#co-op-games)). On a public server
 the token's expiry closes only explicitly scoped [sim streams](#clanker-training).
 Without `auth`, a public stream is anonymous and leaves those events out.
 
-`?frames=packed` sends frames as binary messages instead: each a container
-of packed frame records (docs/live/live-telemetry.md, "Packed frames"), one
-stream per game, batched up to 100 ms (the server batches every game's
-frames once a tick and shares the batch among readers). A reader that joins
-or falls behind first gets each game's frames since its last keyframe. Each
-stream's frames come in order, each once: never a frame older than one
-already sent, nor a delta without its base. Events and `caught_up` stay
-JSON text messages.
+Legacy subscribers request `?frames=packed` for v7. The viewer requests
+`?frames=packed&frame_version=8` and recognizes the version in each binary
+record, including v7 from older servers. Both homes batch each game's
+length-prefixed records for up to 100 ms. Readers of the same version
+share its encoder and batches. Events and `caught_up` use JSON text.
+
+A new v8 stream starts with an independent key. A reader joining an
+existing stream receives the key and all subsequent records through the
+latest published frame. That suffix restores the adaptive model used by
+the next delta. A v8 key interval spans at most 150 samples. The server
+also uses this history to catch up a slow reader and suppresses records
+that it has already sent. A hibernated Worker socket retains its requested
+version across wake-up.
 
 **`GET /v1/ingest`** for the game. The first message is
 `{ "kind": "auth", "token": "<jwt>" }`. Then the client sends
 `{ "kind": "frame", "frame": {...} }` and
 `{ "kind": "events", "game_id": "...", "events": [{type, data}] }`. Frames
 may also come as binary messages: containers of packed frame records, one
-stream per socket. The server fans frames out to readers, records them in
-[frame chunks](#frame-chunks), and appends events.
+stream per socket. The server caps each text or binary message at 16 KiB,
+including the first auth message. The server fans frames out to readers,
+records them in [frame chunks](#frame-chunks), and appends events.
 
 A `GameFrame` recorded before frame chunks holds `{tick, source, packed}`:
 `packed` is the frame as one packed keyframe, base64url without padding, so
@@ -1472,9 +1623,9 @@ frame plus `source`; both read the same through `/frames`.
 
 ## Map outline
 
-Map geometry comes from the user's own map files, so the server never ships
-it. The game uploads an outline for its map the first time it starts a game
-there:
+An admin or the operator can upload an outline derived from their own map
+files with a `games.write` token. Each map name has one outline, shared
+by every game on that map. A new upload replaces the current outline.
 
 ```json
 { "map": "lockout", "bounds": { "min": [x,y,z], "max": [x,y,z] },
@@ -1647,8 +1798,7 @@ above where they differ.
   or `{kind: "error", ...}`. `{kind: "ping"}` refreshes presence.
 - **`POST /v1/events`** returns the stored wire event (a superset of
   `{position}`).
-- **Map outlines**: the first upload for a map wins; the operator can replace
-  it.
+- **Map outlines** can be uploaded and replaced by admins and the operator.
 - **`POST /v1/presence/ping`** needs `lxm: events.write` and returns 404 if
   the caller isn't signed in. Presence expires 90 s after the last event or
   ping; a game with no events or frames for 5 minutes ends as `lost`. That
@@ -1719,3 +1869,52 @@ game. Nobody writes these through `/v1/events`.
 An id that is not 16 lowercase hex digits, or another call name, is a
 404.
 
+
+### Finished replay archives
+
+`GET /v1/games/{id}/chunks?format=archive` returns the ordinary frame chunk
+index until a verified archive is published. Its published response includes
+`archive_sha256` and an ordered `items` array. Each entry identifies the
+segment’s first and last source ticks, frame count, compressed byte count,
+SHA-256, zero-based offsets of source keys with a complete machine travel
+baseline, and an optional `machine_entry` seed of known device travel at
+the segment start. A seek applies the seed before the segment's first
+frame. Ticks beyond the JSON safe-integer range use decimal strings.
+Items keep recording order, including repeated or rewound source ticks.
+
+`GET /v1/games/{id}/archive/{archive_sha256}/{ordinal}` serves the stored
+segment with `Content-Type: application/x-h2-replay` and
+`Content-Encoding: br`. The browser receives an independently decodable
+H2AR body. Fetch the segment containing the playhead first. Both routes
+apply the game’s normal visibility check. Anonymous segment reads of public
+games are immutable. Authenticated responses are private. The game
+stream’s `ReplayArchivePublished` event signals that playback
+can switch to the archive. Live viewing uses the packed stream described
+above.
+
+The original chunk index remains available without the format parameter.
+Historical game inventory, dry run, verification, backup and rollback use
+the separate admin API. [Replay migration](replay-migration.md)
+
+#### Admin archive operations
+
+| Method and path | Token scope | Result |
+|---|---|---|
+| `GET /v1/admin/replay-archives?limit=32&cursor=…` | `admin.read` | Inventory page with `items`, `next` and log `position`. The limit is 1–100. |
+| `GET /v1/admin/replay-archives/{id}` | `admin.read` | Current state, sealed source position, original chunk and legacy frame counts, cumulative totals and both committed hashes. |
+| `POST /v1/admin/replay-archives/{id}/step` | `admin.write` | Process one segment of a sealed game. |
+| `POST /v1/admin/replay-archives/{id}/rollback` | `admin.write` | Check both supplied hashes and return the updated inventory record with HTTP 200 and state `rolled_back`. |
+
+A step body contains `mode` (`dry_run`, `apply` or `verify`), the inventory’s
+`source_position`, and the preceding receipt’s opaque `next` value as
+`cursor`. Omit the cursor on the first request. Dry runs write no objects
+or events. Apply can resume durable progress. Verify checks each published
+segment, immutable index node and original backup against the retained
+source. The final receipt includes `done: true`, the archive and backup
+SHA-256 values, and cumulative totals for `frames`, `segments`,
+`source_bytes`, `archive_bytes` and `index_bytes`. Rollback takes both
+`archive_sha256` and `backup_sha256` from that receipt.
+
+An incorrect revision or pointer returns 409. A broken recording fails the
+affected game, while a storage-service failure returns 503. A retry with
+the same cursor returns the same cumulative counts.

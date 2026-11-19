@@ -1,18 +1,17 @@
 # Maps: new, edited, patched and shared (design)
 
-Status: design, with the foundation built and confirmed in the game by the
-owner (2026-11-17): `crates/content` (manifest,
-`MapId`, PPF/IPS/BPS readers and writers, resolver), `vfs::PackageBackend`
-(including packages installed while the game runs, §3), the boot wiring,
-the scenario editor's "Save as package" and "Open package" (§8), and new
-maps in 1.0's map list (§4). Sections marked **Built** say exactly what exists; see also
-§7. Agreed with the Live session (network side) and built on
-the feature engine's content packs ([feature-engine.md](../engine/feature-engine.md),
-"Content packs"). What exists today: the editor (`h2-editor`,
-[editor.md](../editor/editor.md), [scenario-editor.md](../editor/scenario-editor.md)) saves
-edited `.map` files, and `H2_MAP_DIR` makes the runtime serve
-`\maps\<name>.map` from a host folder ([storage.md](../runtime/storage.md), "Map
-overrides"). Everything below builds on those two.
+The package loader, editor package tools, multiplayer slots and Live
+downloads are built. A package gets its own slot if there is room. Retail
+and Map Pack slots keep their original paths. The VFS resolves the
+package and applies its file patches when the game opens the mod path.
+See [multiplayer map selection](map-select.md) for the menu and
+[the Mods UI review](mods-ui-review.md) for the offline checks.
+
+The editor saves edited `.map` files. `H2_MAP_DIR` remains a separate
+developer override for `\maps\<name>.map`. The resolver validates and
+lists map-variant packs. Applying those packs at load is planned. [Scenario editor](../editor/scenario-editor.md) ·
+[Storage](../runtime/storage.md#map-overrides) ·
+[Feature engine](../engine/feature-engine.md)
 
 The goals, in the user's words: simple; new maps, edited maps and patch
 files (PPF, SPPF and the like) applied by the Rust runtime itself at boot;
@@ -32,8 +31,9 @@ Every map the game loads is resolved from:
 - zero or more **file patches**, applied in order to the base's bytes:
   PPF, SPPF, Serenity, or our own;
 - zero or more **content packs** of kind `map-variant`
-  ([feature-engine.md](../engine/feature-engine.md)): field-level edits (move this
-  weapon, change that spawn) applied to the loaded tag data in memory.
+  ([feature-engine.md](../engine/feature-engine.md)): field-level edits such
+  as spawn or weapon placement. Packages list and validate these layers.
+  Applying them to loaded tag data is planned.
 
 A **map package** is the manifest that lists those, plus display data:
 
@@ -119,24 +119,19 @@ The type lives in a small new crate, `crates/content` (manifest, `MapId`,
 patch format readers, resolver), which vfs, boot, editor, live-proto and
 live-server depend on. It is the hand-off to the Live session.
 
-## 2. Applying layers at boot
+## 2. Applying layers at load
 
-The resolver turns a `MapId` into bytes the vfs serves as
-`\maps\<name>.map`, generalising today's `MapOverrideBackend`
-(**Built**, except content packs, which are listed and not yet applied;
-the details are in §7):
+The game opens a mod's own content path. The VFS resolves the manifest
+against the retail base or the package's whole-map layer on first open.
 
-- **Offset patches** (PPF records, IPS, and our own) never copy the map:
-  the vfs reads the base and overlays the patched ranges as it streams.
-- **Block patches** (SPPF, Serenity) and whole-file deltas move data, so
-  they are applied once into a content-addressed cache,
-  `<data>/maps/cache/<MapId>.map`, and served from there. The cache is
-  rebuilt only when the `MapId` changes, and evicted least-recently-used.
-- After the file layers, the **header checksum** (`+0x2d0`) is repaired,
-  as the modders' "resign" step did and as `map::writer` already does.
-- **Content packs** are applied after the loader publishes the tags (the
-  feature engine's `loader().patch`, bridged today by an after-hook on
-  `0x0018eaa0`).
+- PPF and IPS stream the patched ranges over the base.
+- BPS materialises once into `<data>/maps/cache/<MapId>.map`. The ID
+  includes the expected base SHA-256 and the ordered layer hashes. A
+  cache hit checks the actual base before using the result.
+- The resolver repairs the body's checksum. For an aliased mod, the
+  VFS serves the alias in the header's short-name field, outside the
+  checksum. The original layer files stay intact.
+- Content packs are listed for the feature engine.
 
 ### Patch formats
 
@@ -156,40 +151,15 @@ author, description and image map onto the package manifest.
 
 ## 3. Realtime
 
-- **Now** (**Built**): a package saved into the maps folder while the
-  game runs (the editor's save, a Live join's download) is used at the
-  map's next load, with no restart.
-  - `vfs::PackageBackend` keeps a stamp of `<data>/maps`: the
-    modification times of the folder and `active.toml`, and of each
-    package directory and its `manifest.toml`. It compares the stamp before
-    each map path is looked up (every open stats first) and before each
-    listing of `maps`. When the stamp differs, the library is scanned
-    again. `Vfs::rescan_maps()` forces the same thing; the boot calls it
-    when `MapGate` has installed or activated a package
-    (`MapGate::on_installed`).
-  - After a scan, only maps whose chosen package (its directory and
-    `MapId`) changed are resolved again. The others keep their
-    resolution, so their bases are not hashed again.
-  - A map that has a file object open keeps what it was serving until its
-    last handle closes. A new package takes effect at the next open of
-    that path, never under an open handle (`Backend::opened` and
-    `closed`).
-  - **The game's cache slots.** The game reuses a cache slot whose
-    resident header names the same `d:\maps\<name>.map`, without reading
-    the DVD file again, so a changed map would be served stale from its
-    slot. The boot's `map-slots` feature drops such a slot (zeroes its
-    resident header) once the slot is no longer the current map's; the
-    next load copies the map afresh. See
-    [cache-slots.md](../runtime/cache-slots.md), "Changed maps".
-- **Next:** a file-system watch instead of the stamp, if the stamp ever
-  shows up in a profile.
-- **Later:** the editor talks to the running game over a local socket.
-  Field edits the scenario editor makes (move, rotate, retype, team) are
-  exactly a `map-variant` pack's edits, so the editor sends them as a pack
-  and the runtime applies them at the feature engine's safe point. The
-  edit shows up at once; spawned objects follow on their next respawn, or
-  the editor asks for a round restart. Structural edits (add or remove
-  entries, file patches) still take a map reload.
+Live downloads and removals rebuild the generated offers and publish
+their paths to the VFS. The game refreshes its content slots on the
+next main-menu tick. Packages added by hand are scanned again at boot.
+Open files retain their resolution until their last handle closes.
+
+The game's cache matches the copied map's path. A mod's own content
+path keeps its cached copy distinct from the retail base. The boot's
+`map-slots` feature can discard an obsolete generated path once its
+slot is inactive. See [cache slots](../runtime/cache-slots.md#changed-maps).
 
 ## 4. New maps and the Map Pack
 
@@ -203,43 +173,30 @@ under `T:\$c` per map, with a `patch.lvl` listing it. The Map Pack is
 installed this way by `h2 import-mappack` ([map-pack.md](map-pack.md) §5,
 §8). New maps are below.
 
-### New maps (**Built**)
+### Package offers
 
-A package whose map name the disc doesn't have (`[base] derived = true`
-and `[base] map` not in the disc's `\maps`) can't replace a disc map, so
-the vfs never serves it as `\maps\<name>.map` (§7). Instead
-`boot::new_maps` installs it as a content package of its own, at every
-boot before the VFS is mounted (so before the game lists `T:\$c`), and on
-demand with
+Every installed package that fits has its own offer. The boot writes
+the offers before the game scans `T:\$c`. The command
+`h2 maps install [--data DIR] [--disc disc/halo2.iso]` stages the same
+records for the next boot.
 
-```sh
-cargo h2 maps install [--data DIR] [--disc disc/halo2.iso]
-```
-
-For each new map name (one package per name, by the choice rule of §7) it
-writes `<data>/disk/Partition1/TDATA/4D530064/$c/<offer ID>/`:
-
-| file | what |
+| File under `T:\$c\<offer>` | Purpose |
 |---|---|
-| `<map>.map` | the map, resolved by the content resolver (`Library::resolve_package`) and written here once; written again only when the package's `MapId` changes. A copy the resolver materialised in `maps/cache` is removed, so the map is stored once |
-| `patch.lvl` | a version 2 record built by `content::map_list` (fields below), checked with 1.0's own check before writing |
-| `ContentMeta.xbx` | synthesised, then signed by `kernel::content::sign` (below) |
-| the package's image | copied under its own name, if it has one |
-| `h2recomp-map.toml` | which package (directory, map name, `MapId`) the directory holds |
+| `<map>.map` | A zero-byte placeholder for the path whose bytes come from the VFS |
+| `patch.lvl` | The version 2 list record containing the package's texts and preview |
+| `ContentMeta.xbx` | The signed content metadata |
+| `h2recomp-map.toml` | The source package, map name and content ID |
 
-Small files are rewritten only when their bytes change, through a
-temporary file and a rename. A failing package (a layer whose hash no
-longer matches, a map name over 38 bytes, which FATX can't hold with
-`.map`) is skipped with its reason, and the game starts anyway.
-
-**Removal.** A directory in the new-map offer range that isn't one this
-install produced (its package was deleted, or its `MapId` and so its map id
-changed) is removed. Nothing else under `$c` is touched: not the Map
-Pack's packages, not anything else.
-
-**Retail unchanged.** With no `<data>/maps`, or no derived package for a
-name the disc lacks, nothing is written and nothing under `$c` is created;
-with no derived package at all the disc isn't even read.
+A mod on a retail base uses a short alias containing its list ID and
+part of its content hash. Standalone maps keep their name where unique.
+Aliases identify the exact package to Live. The match report uses the
+retail base name for grouping and carries the package identity in
+`map_id`. [Map identity in telemetry](../live/live-telemetry.md)
+Old generated offers are cleaned up when their package disappears or
+exceeds the slot budget. Older materialised copies in those offers are
+replaced by placeholders. The source package keeps its layers and image.
+A whole-map package stores the full source map, with no second full copy
+in the content offer. The Map Pack's original files stay in place.
 
 #### The record's fields
 
@@ -263,7 +220,7 @@ description.ja = "..." # optional
 | names (9 x 32 UTF-16 units) | `[list] name.<lang>`, else `[package] name`, in every language; cut to 31 units at a character boundary |
 | descriptions (9 x 128) | `[list] description.<lang>`, else `[package] description`, else empty |
 | sort order | `[list] sort`, else 1000: after every retail map (10 to 120 on the user's disc) and Map Pack map (130 to 210) |
-| flags, team counts | the `[list] base` map's own element of `mainmenu.map`'s level list (globals `+0x178`, element 0, block `+0x10`, `0xc64`-byte elements: flags `+0xc50`, team counts `+0xc54`). Without a base, the list's first retail element (lowest sort order) on the user's disc. Only with no readable list at all: flags 0 and eight for every count |
+| flags, team counts | The `[list] base` entry, the package's retail base entry, or the first disc entry by sort order |
 | preview | the package image; else the base's own picture; else a plain card |
 
 The language order is the game's: on the user's disc only index 7 holds
@@ -299,9 +256,11 @@ treatment. The plain card is a vertical gradient in a colour from the
   with a retail id from the disc's own list or another new map, the next
   free id up is taken, wrapping in the range; choices are made in `MapId`
   order, so they don't depend on directory order. 1.0 compares ids for
-  equality only (map-pack.md 8.3), and a new map gets a free slot (38).
-  Since the id follows the `MapId`, editing a map's bytes gives it a new id
-  (and a new directory); a display change keeps both.
+  equality only (map-pack.md 8.3). The 50 slots include 12 on disc, so
+  38 are free before extra content and 29 after the nine-map Map Pack.
+  Content beyond the budget is reported in the Mods category. Editing
+  map bytes typically changes its list ID and offer. Display changes
+  keep both.
 - **Offer IDs**: Halo 2's title ID in the high half, `0x8000_0000 | map id`
   in the low half (`4d530064800NNNNN`-style). The Map Pack uses
   `0x0101..0x03ff` and the disc packages `1..3`, so the top bit keeps them
@@ -336,16 +295,9 @@ list path reads only `ContentMeta.xbx` and `patch.lvl`.
   (image, base, card); ids in range, independent of order, around
   collisions and wrapping; offers apart from the Map Pack's; base entries
   read from a level element.
-- `boot` `new_maps::tests` (temp data dirs, a fake disc): install end to
-  end (map bytes, `patch.lvl`, flags and teams from the base, the base's
-  preview, `ContentMeta.xbx` signed as `kernel::content` checks it, names
-  and table digests), refresh (nothing rewritten; a display change rewrites
-  only `patch.lvl`; a new `MapId` moves the package and removes the old
-  directory), removal when the source is gone, other content untouched,
-  retail unchanged (no folder, no derived packages, a derived package for a
-  disc map: nothing written, the disc not read), ids clear of retail ids
-  and each other, image and default sources, the Map Pack template, and
-  bad packages skipped.
+- `boot` `new_maps::tests` covers legacy installs, simultaneous VFS reads
+  of the retail and mod paths, slot allocation, overflow, signatures,
+  image fallback and converted-map sandboxes.
 - `boot` `real_disc_base_entry_and_record` (ignored; reads the user's disc
   and, if beside it, `mappack.iso`; writes nothing): 50 level elements, 12
   used, all retail ids below the new range; Lockout's element decodes to a
@@ -379,7 +331,7 @@ base = "lockout"
 ```
 
 Start the game (`h2 play`). The console prints `new maps: 1 in the map
-list (coldsnap), 1 written`. In a local custom game's map choice,
+list (coldsnap)`. In a local custom game's map choice,
 **Coldsnap should be listed last, with its name and preview** (the
 package image, else Lockout's picture). Start a game on it: it should
 load from `T:\$c\<offer ID>\coldsnap.map` and reach spawn. Then delete
@@ -494,10 +446,12 @@ SHA-256.
   create and on update). `custom` and `coop` sessions take any map that is
   not taken down.
 - **The game's side.** The boot names the loaded map's `MapId` with
-  `boot::map_override::map_id(vfs, name)` (the cache header's short name,
-  `0x00547898`): telemetry's `set_map_id_locator` fills `NewGame.map_id`,
-  and live-hle's `set_map_probe` fills each advertisement's `map_id` (and
-  sends it on a lobby update when it changes).
+  its content path. In the lobby the Live probe reads the selected
+  multiplayer list ID, then looks up the package's content `MapId` by
+  its path. The lobby setter publishes a change immediately. Selecting
+  retail clears the advertisement's `map_id`. Telemetry can identify a
+  loaded mod by its aliased cache header name and keeps the base map's
+  name in match reports.
 - **Joining** (`live_hle::maps::MapGate`, given to the HLE through
   `ServerOptions.maps`). A search result whose map cannot be had is left
   out of the browser; finding a session by id (how a join starts) makes its
@@ -507,8 +461,9 @@ SHA-256.
   (`Bases`, the SHA-256 of `maps\<map>.map`), the missing layers and image
   downloaded from `/v1/content/{sha256}`, each checked against its
   SHA-256, and written as `<data>/maps/live-<first 16 hex of the
-  MapId>/` with its `manifest.toml` last; then `active.toml` names that
-  directory for the map so the choice rule serves it. Refusals, printed
+  MapId>/` with its `manifest.toml` last. The installer registers the
+  package's content offer before joining proceeds. If the package has
+  no slot, the join is refused and the download stays installed. Refusals, printed
   with their reason before any map load: the disc lacks the base
   (`NoBase`), an admin took it down (410: `TakenDown`), the server never
   saw it and it is not here (`Unpublished`), a `hopper`/`ranked` session on
@@ -543,8 +498,6 @@ Deviations from the design above:
 - `coop` sessions are not held to the ranked rule (they are not hoppers).
 - Art option 2 (the patched map's own preview, read client-side) is not
   built.
-- Joining writes `active.toml`: with one package per map name, that is how
-  the session's map is the one served, and it stays chosen afterwards.
 
 **Wired in the boot** (lane "maps-live-runtime"):
 
@@ -565,9 +518,8 @@ Deviations from the design above:
     ISO's canonical path, size and modification time (ns), so a restart
     against the same ISO reads nothing. Any other ISO, or a touched one,
     starts afresh.
-- **Installing.** A package `MapGate` installs is served at the map's
-  next open (§3, "Now"), and the game's cached copy of the old map is
-  dropped ([cache-slots.md](../runtime/cache-slots.md), "Changed maps").
+- **Installing.** A package `MapGate` installs is served at its own
+  content path (§3).
 
 Still open: a `--private` server's reads need a token, which the gate's
 fetches do not send yet.
@@ -586,44 +538,26 @@ Fixed, with tests in `live_hle::maps`:
   (410) refused the whole map. It is now best-effort, and a package
   written without it drops `[package] image` (outside the `MapId`)
   (`a_taken_down_image_does_not_block_the_map`).
-- A package already here and already chosen in `active.toml` was
-  re-activated, rescanned and counted (a fresh token and a GET) on every
-  FindFromID, and the friend view asks repeatedly. Now only a change of
-  choice does that
-  (`preparing_a_package_already_served_writes_rescans_and_counts_nothing`).
+- Repeated lookups of a locally installed package reuse its offer and
+  do not count new downloads.
 - Two writers of the same file (a join and a Mods screen install) shared
   one temporary name per process, so one rename failed. Each write now
   has its own name (`writes_from_two_threads_do_not_trip_over_each_other`).
 
 Open (each needs a live run or a design choice):
 
-- **The host advertises the loaded map, not the lobby's next one.** The
-  session's `map_id` comes from the boot's map probe
-  (`boot/src/lib.rs`, `map_override::map_id` of the map at `0x547898`),
-  which in a lobby is `mainmenu` (no id). A guest who joins in the lobby
-  sees no `map_id` and downloads nothing; the id only appears with a
-  `SessionUpdated` during a game. The id is also never cleared
-  (`live-hle/src/sessions.rs`), so a host back on retail keeps
-  advertising the last mod, and a guest already joined does not run the
-  gate when the id changes. Needs the lobby's selected map read from the
-  session attributes (confirm on a live run which field) and a guest-side
-  check on `SessionUpdated`.
-- **`active.toml` stays chosen.** A join or install leaves the package
-  served for its map; joining a retail game on that map later plays the
-  mod against a retail host. A join-time choice should be a per-session
-  override, not `active.toml`.
+- A guest already in a session needs a fresh map check when the host
+  changes maps through a session update.
 - **The download runs on the Live worker's thread**, so heartbeats and
   session updates wait for it (the Mods screen uses its own thread).
 - **Ranked pins are not applied**: sessions go out as `custom` with no
   `hopper_id`, so `ranked_flags` is never true for a real session.
-- **New (derived) maps** are not advertised by the probe, and a guest's
-  `new_maps::install` runs only at boot.
 - **The Worker home buffers whole blobs** in the hub Durable Object
   (R2 `bytes()`, then copies): a 95 MiB layer is several hundred MB in a
   128 MB isolate. `BlobStore::get_stream` exists; `GET /v1/content` should
   stream (needs a staging run with a large blob).
-- A local package with the right `MapId` but damaged layers is trusted
-  (`Need::Local`); the vfs then refuses it and serves the disc.
+- The VFS checks local layers on first open. Corrupt layers cause
+  a load error at that package's path.
 
 ### The mod repository (Live)
 
@@ -787,28 +721,12 @@ import-mappack`, or `h2 play`'s automatic import):
   the Mods screen's Download row says "Needs the Map Pack's Relic" (the
   map's game name, `content::map_pack::title`, as on the Map row). A map
   pack that is installed but differs is `NoBase`, with the same row text.
-- **Serving.** The game opens a Map Pack map from
-  `T:\$c\<offer>\<map>.map`. With `vfs::Config::map_packages` set (the
-  boot sets `<data>/maps`), the data partition is wrapped in
-  `vfs::PackageBackend::over_map_pack`: the package `active.toml` (or the
-  choice rule) picks for the map is served at exactly that path, over the
-  installed file as the DVD layer serves over the disc's map (PPF and IPS
-  stream, BPS is materialised; a longer map, as when a mod grows Relic,
-  reports and reads its full size). Everything else on the partition,
-  writes included, is untouched; the served map itself is read-only.
-  Changes while the game runs (a download, a join) are seen at the map's
-  next open, and `map_slots` drops a stale cached copy, as for disc maps
-  (§3); `Vfs::rescan_maps` reaches this layer too.
-- **Map select and sessions.** `map_select::Catalogue::with_mods` lists a
-  Map Pack map whose package is chosen under Mods by the package's name,
-  on the Map Pack map's own slot (its `T:\$c` path, which the vfs serves
-  patched), as for a disc map; the disc's slot wins if the disc had a map
-  of that name. `map_override::map_id(vfs, data_root, name)` names the
-  package serving a Map Pack map (through `map_pack_path`), so games and
-  advertisements carry its `map_id` and guests fetch it.
-
-Not handled: a Map Pack map installed some other way than `h2
-import-mappack` (another offer scheme) is not served over.
+- **Serving.** The game's Map Pack slot opens its original file at
+  `T:\$c\<offer>\<map>.map`. The mod gets a separate content offer and
+  alias. The VFS reads the original Map Pack file as the mod's base.
+- **Map select and sessions.** The map stays in Map Pack and the package
+  appears under Mods. The lobby advertises the mod's content `MapId`
+  when its slot is selected.
 
 Limits: a mod built on a different build of the base map than the user's
 disc still imports (the delta reproduces it exactly) but is larger, and
@@ -853,39 +771,34 @@ game" below.
   drawn into every font as the bot mark's gear is (`font::mod_marks`,
   added by `bot_mark::GearRewrite` with the gear, the capitals' height;
   drawn here from polygons, nothing copied). The focused map's picture is on the right and under
-  it four lines: "On Lockout, by Modder", its size and downloads, what it
-  changes ("Has vehicles, scripted events", or "What it changes isn't
-  listed"), and its state ("X downloads it, A opens its page",
-  "Downloading N%", "Installed: A for its page", or why a download
-  failed). **A** opens the map's page; **X** downloads the focused map
-  there and then (an installed one is left alone). The footer reads
-  `(A) DETAILS  (X) DOWNLOAD  (B) BACK`. Every row is something to
-  press: with no list the one row is "Loading...", "Try Again" (its
-  description says why: "Sign in to Live first", "Live is off", "Live is
-  busy" or "Can't reach the server") or "Refresh" (no mods yet); A asks
-  again. The **map's page** is below.
+  it are the base and credit, size and downloads, changes and current state.
+  A opens details. X downloads an available map or retries a failure. An
+  installed row offers Details and Back. During a transfer the arrow and
+  percentage update in place. An empty list offers Refresh. A failed read
+  offers Try Again and explains why. An explicit retry shows Loading and
+  can run at the reader's next turn. The populated list keeps its order
+  until the player leaves it, including while a pack or page is open.
 - **Map packs.** Maps the server lists with the same pack (an entry's
   `pack`, a name or `{name, description}`; else its credit's `release`)
   are one row of Mods, at the place of its newest map: the pack's name,
   and a star, a tick, the downloads' percentage together, or "N maps".
-  Its summary: "N maps, by <makers>", what it is (the pack's
-  description, else "On <base maps>"), "<size> in all, K installed",
-  "A opens it, X downloads all". A pack with one map listed is that
-  map's row. **A** opens the pack's own list (`mods.pack`, the same
-  layout, titled with the pack's name): first **Download All (N)** (N the
-  maps not here; "Downloading N%" while they run, "All Installed" after),
-  whose description is the pack's summary, then its maps, each as the
-  list shows it, A opening its page (B back to the pack). **X** on a map
-  downloads it; on Download All, or on the pack's row of Mods, every map
-  of it not here or under way. A snapshot keeps the open pack.
+  Its summary names the makers, describes the pack, and gives its total
+  size and installed count. A opens the pack. Download All comes first,
+  followed by every listed map. On this screen maps omit an exact repeated
+  pack-name prefix. Details and Change Map use the published name.
+  X on a map downloads that map. A or X on Download All starts maps that can still be downloaded,
+  including failed maps eligible for retry. Installed and in-flight maps
+  are excluded from the action count. A partially installed pack counts completed maps toward the pack
+  percentage. B returns to the parent row. If a restored pack is gone,
+  the page says so and shows B Back.
 - **Installing.** Download runs `MapGate::install` on a thread of its own
   (`h2-live-mod`): the join's own checks and path (the manifest from
   `/v1/maps/{id}`, the base checked against the disc, each layer from
   `/v1/content/{sha256}` checked against its SHA-256, the package written
-  as `<data>/maps/live-<id>/`, `active.toml`, then the VFS rescan). The
-  Download row shows "Downloading N%" after each layer, then "Installed".
+  as `<data>/maps/live-<id>/`, then the offers refresh). The
+  action shows "Downloading N%" after each layer, then "Remove".
   A refusal says why: "Needs Lockout from your disc", "Taken down", "Not
-  on the server", or "Failed; press A to retry" (the reason on stderr).
+  on the server", or "Download failed". The detail row offers Retry download.
 - **The download count.** Once a package is installed (or found here
   already), the gate asks for its manifest again with a fresh single-use
   `read` token of the first account signed in (`Fetch::get_counted`,
@@ -893,16 +806,9 @@ game" below.
   (docs/live/live-api.md "The mod repository"). A join that installs the
   session's map counts the same way; a search's check never does. A
   reinstall adds nothing; a failed count is only logged.
-- **The map select.** The installed package is served for its base map at
-  that map's next open, and the map select follows in the same session:
-  the download's thread reads the catalogue again, and the next Change
-  Map lists the mod under Mods by its name. The base map's slot takes
-  the mod's name, description and (when the package has one) picture,
-  so Select Map, Game Setup and the lobby show the mod, not the base map
-  ([map-select.md](map-select.md), "Installed while the game runs" and
-  "A mod's name and picture"). A mod that is a new map is installed as
-  a content package then, and the game's own content scan runs again
-  before the list is built.
+- **The map select.** The package appears by its own name under Mods
+  after the next content scan. Its slot holds its own texts and preview,
+  which also appear in Game Setup and the lobby.
 - **Previews.** The three screens are in the UI kit's inventory (`mods`,
   `mods.pack`, `mods.detail`; `h2 ui preview mods.detail`), over invented
   entries with an invented three-map pack (`mods_screen::spec`).
@@ -939,44 +845,29 @@ colour, animation and depth bias is the lobby tag's own unless noted):
 
 | Part | Lobby original | On a mod's page |
 |---|---|---|
-| Action | the buttons `[173 -274 153 -118]` on `name_field` (338 by 35 at (-279, 174)) | the page's only row, a skin-0 item at anchor (-262, 147) on `name_field`: `Download`, `Downloading N%`, `Remove`, `Remove? Press again`, a refusal or `Remove failed` |
-| Body | status text `[135 -258 61 45]`, font 1, pale blue, on `lobby_display` (512 by 128 at (-283, 149)) | the mod's description, one paragraph, 140 characters at most (4 lines; bottom 59) |
-| Status | the "open" line `[75 -260 55 70]` | the action's description, one line of 40 characters at most, `[55 -258 36 45]` in the Live menu's hint blue: `A or X downloads it: 3.4 MB.`, `25% of 3.4 MB. You can leave.`, `Needs the Map Pack's Relic. A retries.`, `Press A or X again to remove it.`, `Installed: pick it in Change Map.`, `Not removed: <why>` |
-| Picture | `unknown_map` at (-152, 32), animation 14 | the same widget at (-258, 30), so no text runs over it (the lobby's settings lines do); its bitmap is the base map's slot picture as on the list |
-| Table | the player rows, names white and left (bias 6), values pale blue and right (bias 5) | up to ten facts: `Map`, `By` (the credit, else the uploader), `Shared By` (the uploader, when the credit names someone else), `Size`, `Downloads`, `Published`, `Version` (the last three when the server has them), `For` (game types, or `any game type`), `From` (`Your disc` or `Map Pack`), `Joins` (`Get it too`); right edge 272, the title-safe area's; each row 20 characters at most, the value cut with `...` |
-| Checklist | (the lobby's settings lines) | row 11 of the table column, `What It Changes` in white, then four rows of two: `[x] Vehicles  [ ] Weapons` ... `[ ] Geometry  [ ] AI`; `Not listed` when the server lists none |
+| Action | Buttons on `name_field` | One skin-0 row at (-262, 147). Download, progress, retry and removal share the row. |
+| Body and hint | The grid on `lobby_display` | Three lines of published description above a separate one-line hint. Installed maps point to Change Map > Mods. |
+| Picture | The lobby's `unknown_map`, 220 by 207 | At (-258, 30) below the panel. The class uses the selected map's bitmap when available and restores the placeholder otherwise. |
+| Table | White player names left, pale blue values right, 22 units between rows | Ten fact rows, with a gutter between the labels and values. Map, maker, uploader, size, downloads, date, version, modes, disc and join behavior. |
+| Checklist | The lobby's settings lines | Changes, then four rows of two. Each ticked box names an affected feature. |
 
-Only the action is a row, so the focus never lands on information. The
-title is the mod's name, and the footer reads `(A)(X) DOWNLOAD  (B)
-BACK`, or `REMOVE` for an installed map. In game the texts are text
-widgets of the page's own (`ListClass::panel`, `list_class::PanelText`):
-made from their blocks when the pane is built, their strings set from
-the `mod texts` slots then and again whenever the description is set
-(a download's progress, an install, a removal).
+The focused row and transfer state determine the footer. On the detail
+page A or X downloads, retries, or removes. Both buttons share a verb
+with a visible OR between them. During a transfer the footer offers B
+Back and the hint says the player can leave. The page sets its panel
+strings and footer again when the download state changes.
 
 **A** on the action, or **X**, downloads the map; on a map that is here
 they remove it, on a second press (the first turns the row to `Remove?
 Press again`; opening the page again forgets it).
 Remove (`MapGate::remove`) deletes only a `live-<id>` directory of
 `<data>/maps` (one the Mods screen or a join wrote; a package put there by
-hand is refused) and its line in `active.toml`, then tells the boot as an
-install does: the VFS rescans and the map select and slots follow (the
-base map's slot gets its own name and picture back). A Remove of a
-derived map (a new map, not a mod of one) leaves the content package
-`boot::new_maps` made of it.
+hand is refused), then tells the boot to retire that generated offer.
 
-**The picture** on both screens is the base map's slot picture in the
-multiplayer map list (`mod_slots::pictures`: the slot's bitmap datum,
-which the level select's picture widget draws, `Rows::picture`). Once a
-mod with an image is installed and chosen for its map, its slot shows the
-mod's own image (`mod_slots`, "A mod's name and picture"), and so do these
-screens; before that they show the base map's. The pictures are read from
-the loaded map's slots when the screen opens and after each install or
-removal. Showing a mod's own image before it is downloaded needs its
-preview in a bitmap of the loaded map: the traced way in is the record
-applier `mod_slots` already uses (`0x19be00`), run on a spare bitmap
-pointed at by the base map's slot for the call and given back after; not
-built.
+**The picture** in Select Map, Game Setup and the lobby comes from the
+chosen slot. The Mods browser and its detail page look up the base
+map's bitmap by filename (`mod_slots::pictures`). They use the neutral
+lobby picture when the base bitmap is missing.
 
 **What it changes** (`features`) is read off the map at import:
 `h2 live maps import` has the base and the modded map in hand and compares
@@ -1014,24 +905,23 @@ disc's):
      "Download maps other players made and shared on your Live server."
      stderr: `mods: N on the server, M new`.
 2. Press A on Mods: stderr `mods: opening the mods screen`; the screen
-   titled "Mods" lists the maps newest first, the new ones tagged "New".
+   titled "Mods" lists the maps newest first, with a star on each new map.
    B goes back to the Live menu, whose row now reads "Mods"; leaving the
    Live menu and coming back keeps "Mods". `<data>/live-mods.toml` holds
    the newest position.
 3. A on a map: its page, titled with its name; "By:" is who made it
    (the server's credit, else the uploading account), and when the credit
-   names someone else an "Uploaded By:" row follows with the publishing
+   names someone else a "Shared By" row follows with the publishing
    account.
-4. A on Download: "Downloading N%", then "Installed"; stderr `mods: <id>
-   installed`; `<data>/maps/live-<16 hex>/` exists and `active.toml`
-   names it. B, B, then host a custom game: with no restart, Change Map
+4. A on Download: "Downloading N%", then Remove and the installed hint; stderr `mods: <id>
+   installed`; `<data>/maps/live-<16 hex>/` exists. B, B, then host a custom game: with no restart, Change Map
    lists the mod under Mods by its name, with its picture (or the base
    map's) and description; pick it, and Game Setup and the lobby show
    its name. The mod loads.
 5. The map whose base you lack: "Needs <Map> from your disc"; nothing
    written under `<data>/maps`.
-6. Signed out (or the server stopped): Mods shows one row, "Sign in to
-   Live first" or "Can't reach the server"; A on it logs `mods: reading
+6. Signed out (or the server stopped): Mods shows Try Again and a hint,
+   "Sign in to Live first" or "Can't reach the server". A on it logs `mods: reading
    the list again`.
 
 **To check in game: the pages** (a server with a mod published with
@@ -1064,9 +954,9 @@ server is updated):
    installed one the first press reads `Remove? Press again`, the second
    logs `mods: <name> (<id>) removed`, the row reads `Download`, the
    footer `DOWNLOAD`; `<data>/maps/live-<16 hex>/` is gone and
-   `active.toml` no longer names it; Change Map no longer lists it.
-5. After installing a mod with an image and backing out to the list,
-   re-open Mods: its picture is the mod's own (the slot's refill).
+   Change Map no longer lists it.
+5. Select the mod in Game Setup and check the package image in all
+   three views: Select Map, Game Setup and the lobby.
 6. A pack (a server with two or more maps of one pack, e.g. a mappack
    imported with its release): one row, its name and a star or "N maps";
    its summary says how many maps and by whom. A opens it, titled with
@@ -1083,21 +973,21 @@ server is updated):
 | content | **Built.** `crates/content`: manifest, `MapId`, PPF/IPS/BPS readers, resolver; the vfs serves packages from `<data>/maps/` (with `H2_MAP_DIR` kept as a shortcut) | — |
 | editor | **Built** (§8): save as package (one PPF3 or BPS layer against the base, manifest, image, optional `active.toml`), open packages; `map-variant` packs not yet | content |
 | map list | **Built** (§4): new maps as content packages with a built `patch.lvl`; the Map Pack through `h2 import-mappack` | the 1.0 research |
-| live | `map_id` in sessions, hoppers and telemetry; the content store; join-time download; admin; art keys | content (`MapId`) |
+| live | **Built** (§5): package identity in sessions and telemetry, content storage, join-time download, and moderation | content (`MapId`) |
 | realtime | **Built:** packages installed mid-session served at the next open, stale cache slots dropped (§3). Next: the editor-to-game socket for `map-variant` edits | feature engine loader hook |
 | formats | SPPF and Serenity readers | sample patches from the user |
 
 ## 7. What is built
 
 `crates/content` (no game data; every test uses synthetic maps and
-patches), `vfs::PackageBackend`, and the boot mount
+patches), the VFS content map registry, and the boot mount
 (`crates/boot/src/map_override.rs`).
 
 **Layout.**
 
 ```text
 <data>/maps/
-  active.toml              optional: which package serves which map
+  active.toml              legacy editor choices, ignored by the game
   lockout-snipers/         one directory per package (any name)
     manifest.toml          the manifest of §1
     snipers.ppf            its layers, packs and image
@@ -1126,22 +1016,11 @@ first). The form and the package layout are in
 [multiplayer.md](../halo1/multiplayer.md#converting-a-map-built-h1convertconvert-h2-h1-convert).
 Nothing yet picks a variant by a setting.
 
-**Choice rule: one package per map name.**
+The generated offers in §4 give packages their own paths and slots.
+The game ignores legacy `active.toml` choices. Existing package
+directories work as installed.
 
-1. `active.toml` decides when it names the map: `lockout = "dir"` picks
-   the package in `<data>/maps/dir`; `lockout = false` the disc's map. If
-   the named package is missing, broken or for another map, the disc's map
-   is served with a warning, never another package.
-2. Otherwise, of the valid packages for the name, the one whose directory
-   name sorts last wins (so `lockout-2026-11-16` beats `lockout-2026-10-01`),
-   with a notice when there was more than one.
-
-Names match ASCII case-insensitively. Only maps the disc has are served
-here; a derived package for a new name goes into the map list as a
-content package instead (§4).
-
-**Resolution**, on the map's first use, and again only after its chosen
-package changes (§3):
+**Resolution** starts when the VFS first opens that package's path:
 
 - Each layer is read and its SHA-256 checked. The format comes from its
   signature (`PPF`, `PATCH`, `BPS1`); a file with none ending in `.map`
@@ -1160,33 +1039,20 @@ package changes (§3):
 - **Materialised** (any BPS layer): the result is built in memory once,
   checksum repaired, and written atomically (a temporary file, then a
   rename) to `cache/<MapId>.map`. A later resolution of the same `MapId`
-  uses the file without reading the base. After each write the cache is
+  uses the file after verifying the base hash. After each write the cache is
   trimmed to its cap (4 GiB by default) by removing the least recently
   used maps (by modification time, refreshed on each use), never the one
   just built.
 - Content packs are hash-checked and listed (`Resolved::packs`) for the
   feature engine; nothing applies them yet.
-- Any failure (a base that does not match, a damaged patch, a layer
-  leaving its package) is a warning, and the disc's map is served.
+- A wrong base or damaged layer raises a load error at the mod path.
 
-**In the vfs** (`PackageBackend`, wrapping the disc beneath
-`MapOverrideBackend`, so `H2_MAP_DIR` still wins as a whole-file
-override): `stat` and listings of `maps` give the result's size,
-`read_at` streams it, and the choice is logged once with the package and
-`MapId`. `host_file` is the cache file for a materialised map and none
-for an overlay, which is not one region of a host file (so telemetry and
-the speaker index fall back as for any file without one).
-`PackageBackend::map_id(path)` gives the `MapId` serving a map. A second
-`PackageBackend` (`over_map_pack`) wraps the data partition for packages
-on a Map Pack base, serving the installed `T:\$c\<offer>\<map>.map`
-(§5, "Importing a mod").
-
-**Boot.** `<data>/maps/` is scanned at mount and again whenever it
-changes (§3). The packages layer is always mounted, even while the folder
-is empty or missing, so a package installed later is served; with no
-package it serves the disc unchanged. Without a packages directory and
-with `H2_MAP_DIR` unset, `map_override::mount` is exactly `Vfs::with_disc`
-/ `with_disc_rewrite`.
+**In the VFS.** The registered map resolves over the read-only disc
+region or installed Map Pack base. `stat` gives its resolved size and
+`read_at` streams its bytes. `Vfs::map_id` reports the manifest's content
+ID for the generated path. Overlays and aliased headers are available
+through VFS reads. Host tools can still resolve the original package
+and use its BPS cache file.
 
 **Not yet:** applying content packs; SPPF and Serenity. A resolution still
 reads a patched map's base once, in full, per session: the overlay's
@@ -1228,8 +1094,8 @@ crate's own readers and through the resolver.
 package in a hidden sibling directory and renames it into place; replacing
 the package being edited writes its new files, then the manifest by
 rename (the commit point), then removes files only the old manifest named.
-`store::set_active` rewrites `active.toml` by rename, keeping other
-entries. `store::default_data_root()` is the runtime's default data root,
+The editor can still write its legacy `active.toml` choices, which the
+game ignores. `store::default_data_root()` is the runtime's default data root,
 `~/Library/Application Support/h2recomp/data`, the one `h2 play` and `h2 run` use without
 `--data` (`vfs::Config::for_title`'s `~/Library/Application
 Support/h2recomp` is not used by any run).

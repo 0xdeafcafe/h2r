@@ -109,6 +109,11 @@ pub fn generate_filtered(
     keep: impl Fn(&Form, &str) -> bool,
     mut sink: impl FnMut(Fixture) -> Result<()>,
 ) -> Result<BTreeMap<String, usize>> {
+    let backend = if crate::NATIVE_LINUX {
+        "linux-x86_64"
+    } else {
+        "rosetta2-x86_64"
+    };
     let mut counts = BTreeMap::new();
     for form in forms {
         let mut cases = Vec::new();
@@ -143,7 +148,7 @@ pub fn generate_filtered(
                     let observation = oracle.query(&form.bytes, &input)?;
                     sink(Fixture {
                         schema: 1,
-                        backend: "rosetta2-x86_64".into(),
+                        backend: backend.into(),
                         mnemonic: form.mnemonic.clone(),
                         code: form.code.clone(),
                         instruction: form.bytes.clone(),
@@ -177,14 +182,20 @@ pub fn audit(input: impl std::io::BufRead) -> Result<Audit> {
         exceptions: 0,
     };
     let mut modes = BTreeMap::<Vec<u8>, u8>::new();
+    let mut backend = None;
     for (line, json) in input.lines().enumerate() {
         let f: Fixture =
             serde_json::from_str(&json?).with_context(|| format!("line {}", line + 1))?;
         ensure!(
-            f.schema == 1 && f.backend == "rosetta2-x86_64",
+            f.schema == 1 && matches!(f.backend.as_str(), "rosetta2-x86_64" | "linux-x86_64"),
             "unknown schema/backend on line {}",
             line + 1
         );
+        if let Some(first) = &backend {
+            ensure!(first == &f.backend, "mixed backends on line {}", line + 1);
+        } else {
+            backend = Some(f.backend);
+        }
         if !modes.contains_key(&f.instruction) {
             crate::validate_instruction(&f.instruction)?;
         }
@@ -251,4 +262,37 @@ pub fn audit(input: impl std::io::BufRead) -> Result<Audit> {
     );
     report.forms = modes.len();
     Ok(report)
+}
+
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn generated_native_rows_are_identified_and_audited() -> Result<()> {
+    let dir = std::env::temp_dir().join(format!("sse-linux-corpus-{}", std::process::id()));
+    std::fs::create_dir(&dir)?;
+    let mut oracle = Oracle::spawn(&crate::build_runner(&dir)?)?;
+    let form = Form {
+        mnemonic: "movss".into(),
+        code: "Movss_xmm_xmmm32".into(),
+        bytes: vec![0xf3, 0x0f, 0x10, 0xc1],
+        sites: 1,
+        immediate: None,
+    };
+    let mut rows = Vec::new();
+    generate_filtered(
+        &mut oracle,
+        &[form],
+        0,
+        SEED,
+        |_, case| case == "edge-0-0",
+        |f| {
+            assert_eq!(f.backend, "linux-x86_64");
+            serde_json::to_writer(&mut rows, &f)?;
+            rows.push(b'\n');
+            Ok(())
+        },
+    )?;
+    assert_eq!(audit(rows.as_slice())?.fixtures, 8);
+    drop(oracle);
+    std::fs::remove_dir_all(dir)?;
+    Ok(())
 }

@@ -118,12 +118,15 @@ async fn a_host_gets_a_roster_of_issued_bots_for_its_session() {
     let h = harness().await;
     let a = h.create("Host").await;
     let session = host(&h, &a).await;
-    let r = roster(
+    let response = ask(
         &h,
         &a,
         json!({"session_id": session, "count": 3, "skill": 0.67}),
     )
     .await;
+    assert_eq!(response.status, StatusCode::CREATED);
+    assert_eq!(response.json()["bots"][0]["skill"], json!(0.67));
+    let r: Roster = serde_json::from_slice(&response.body).unwrap();
     assert_eq!(r.match_id, session);
     assert_eq!(r.bots.len(), 3);
     r.check().unwrap();
@@ -142,6 +145,27 @@ async fn a_host_gets_a_roster_of_issued_bots_for_its_session() {
     });
     // Made-up bots do not hold their names against accounts.
     h.create(r.bots[0].gamertag.as_str()).await;
+    let b = &r.bots[0];
+    let card = h
+        .call(
+            Method::GET,
+            &format!("/v1/games/bots/{}", b.xuid),
+            &[],
+            Body::empty(),
+        )
+        .await;
+    assert_eq!(card.status, StatusCode::OK);
+    assert_eq!(card.json()["skill"], json!(0.67));
+    let card: bots::PlayerCard = serde_json::from_slice(&card.body).unwrap();
+    assert_eq!(
+        (card.xuid, card.gamertag, card.skill, card.seed),
+        (
+            b.xuid,
+            b.gamertag.clone(),
+            Some(b.skill),
+            b.personality.seed
+        )
+    );
 }
 
 #[tokio::test]
@@ -882,4 +906,40 @@ async fn a_hosts_next_session_carries_its_bots() {
             .is_err(),
         "no roster to carry"
     );
+}
+
+#[tokio::test]
+async fn clanker_social_requests_are_refused_before_append() {
+    let h = harness().await;
+    let a = h.create("Host").await;
+    let position = h.live.position();
+    for x in [Xuid(bots::SERVER_XUID_MARK | 9), bots::local_xuid(9)] {
+        for kind in [
+            live_proto::types::FRIEND_REQUESTED,
+            live_proto::mailbox::SENT,
+            "MessageSent",
+            "VoiceMessageSent",
+        ] {
+            let (stream, data) = if kind == live_proto::types::FRIEND_REQUESTED {
+                (
+                    live_proto::streams::account(a.xuid),
+                    json!({"from": a.xuid, "to": x}),
+                )
+            } else {
+                (
+                    live_proto::mailbox::stream(x),
+                    json!({"from": a.xuid, "session_id": "0123456789abcdef"}),
+                )
+            };
+            let resp = h.post_event(&a, h.event(&a, &stream, kind, data)).await;
+            assert_eq!(resp.status, StatusCode::FORBIDDEN, "{kind}");
+            assert!(
+                resp.json()["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Clankers")
+            );
+        }
+    }
+    assert_eq!(h.live.position(), position);
 }

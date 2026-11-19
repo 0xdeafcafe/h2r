@@ -1108,8 +1108,8 @@ impl<'a> Space<'a> {
 
     /// The part holding `addr`, by index.
     fn part(&self, addr: u32) -> Option<usize> {
-        let k = self.parts.partition_point(|p| p.0 <= addr);
-        (k > 0 && addr < self.parts[k - 1].1).then_some(k - 1)
+        let i = self.parts.partition_point(|p| p.0 <= addr).checked_sub(1)?;
+        (addr < self.parts[i].1).then_some(i)
     }
 
     fn word(&self, addr: u32) -> Option<u32> {

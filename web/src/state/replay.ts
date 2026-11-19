@@ -2,7 +2,8 @@
 // steps and killcams the viewer offers.
 
 import type { Frame, FrameObject, PlayerKilled, PlayerScore, ScoreChanged, WireEvent } from "../api/types";
-import { recordedFrame } from "../api/pack";
+import { chunkAt, type ArchiveSegment } from "../api/chunk";
+import { isMachineBaseline, markMachineBaseline, recordedFrame } from "../api/pack";
 import { MachinePositionHistory, cinematicAt, sampleActors, sampleBsp, sampleFrames, sampleHits, sampleMachines, sampleObjects, sampleVehicles, withoutUnplaced, type SampledMachine, type SampledPlayer, type SampledVehicle, TICKS_PER_SECOND } from "./frames";
 
 export interface ReplayKill {
@@ -84,7 +85,9 @@ export class ReplayTimeline {
   readonly scores: ScoreSnapshot[];
   readonly startTick: number;
   readonly endTick: number;
+  readonly recordedEndTick: number;
   private readonly latestRunOffset: number;
+  private readonly openingScores: ScoreSnapshot;
 
   /** Where the recording's ticks ran backwards (a campaign checkpoint
    *  revert or mission restart, recorded before the game's clock kept
@@ -98,7 +101,7 @@ export class ReplayTimeline {
   /** `frames` as fetched (log order, oldest first) and the game's events.
    *  The events' own `GameFrame`s, when they cover the fetched frames, are
    *  read instead: their log positions place the other events among them. */
-  constructor(frames: Frame[], events: WireEvent[]) {
+  constructor(frames: Frame[], events: WireEvent[], archive?: readonly ArchiveSegment[]) {
     const sorted = [...events].sort((a, b) => a.position - b.position);
     const clock = new GameClock();
     const ticks = new Map<WireEvent, number>();
@@ -114,7 +117,32 @@ export class ReplayTimeline {
       this.travel.push(f, tick, clock.cuts.at(-1) === tick);
       this.frames.push(retick(f, tick));
     };
-    if (logged.size && logged.size >= frames.length) {
+    if (archive?.length) {
+      const start = frames[0];
+      const segment = start && chunkAt(archive, start.tick);
+      if (segment?.codec === "archive" && segment.machine_entry?.length) {
+        this.travel.addPositions(segment.from_tick, segment.machine_entry);
+      }
+      // Archive frame ticks are on the playback clock already. Use the full
+      // index to place events across runs even when only one segment is loaded.
+      let previousEnd: bigint | undefined;
+      for (const m of archive) {
+        const lo = Number(m.rawFrom), hi = lo + (m.to_tick - m.from_tick);
+        const run = clock.runs.at(-1);
+        if (run && previousEnd !== undefined && m.rawFrom > previousEnd) run.hi = hi;
+        else {
+          if (run) clock.cuts.push(m.from_tick);
+          clock.runs.push({lo, hi, offset:m.from_tick - lo});
+        }
+        previousEnd = m.rawFrom + BigInt(m.to_tick - m.from_tick);
+      }
+      const cuts = new Set(clock.cuts);
+      for (const f of frames) if (isFrame(f)) {
+        this.travel.push(f, f.tick, cuts.has(f.tick));
+        this.frames.push(retick(f, f.tick));
+      }
+      clock.place(sorted, ticks);
+    } else if (logged.size && logged.size >= frames.length) {
       for (const ev of sorted) {
         const f = logged.get(ev);
         if (f) {
@@ -171,15 +199,17 @@ export class ReplayTimeline {
     }
     this.kills.sort((a, b) => a.tick - b.tick || a.position - b.position);
     this.scores.sort((a, b) => a.tick - b.tick);
-    this.startTick = this.frames.length ? this.frames[0]!.tick : 0;
-    this.endTick = Math.max(endTick, this.startTick);
+    this.startTick = archive?.[0]?.from_tick ?? this.frames[0]?.tick ?? 0;
+    this.recordedEndTick = archive?.at(-1)?.to_tick ?? this.frames.at(-1)?.tick ?? this.startTick;
+    this.endTick = Math.max(endTick, this.startTick, this.recordedEndTick);
+    this.openingScores = { tick: this.startTick, players: {}, teams: {} };
     this.cinematics = [];
     let open: number | null = null;
     for (const f of this.frames) {
       if (f.cinematic === true) open ??= f.tick;
       else if (open !== null) { this.cinematics.push({ from: open, to: f.tick }); open = null; }
     }
-    if (open !== null) this.cinematics.push({ from: open, to: this.endTick });
+    if (open !== null) this.cinematics.push({ from: open, to: archive ? this.frames.at(-1)!.tick : this.endTick });
   }
 
   /** The cutscene playing at `tick` (from <= tick < to), or null. A game
@@ -241,8 +271,8 @@ export class ReplayTimeline {
   /** The next (`dir` 1) or previous (-1) mark's tick from `tick`, or null.
    *  Going back from just after a mark skips it (as a player's "previous"
    *  does), so pressing it twice gets anywhere. */
-  markStep(tick: number, dir: 1 | -1): number | null {
-    const m = this.marks;
+  markStep(tick: number, dir: 1 | -1, range?: TickRange): number | null {
+    const m = range ? this.marks.filter((mark) => inTickRange(mark.tick, range)) : this.marks;
     if (dir > 0) {
       for (const x of m) if (x.tick > tick + 1e-6) return x.tick;
       return null;
@@ -254,9 +284,10 @@ export class ReplayTimeline {
 
   /** The kill to watch from `tick`: the latest at or before it (a second
    *  of slack, so one just played still counts), else the next. */
-  killNear(tick: number): ReplayKill | null {
+  killNear(tick: number, range?: TickRange): ReplayKill | null {
     let best: ReplayKill | null = null;
     for (const k of this.kills) {
+      if (range && !inTickRange(k.tick, range)) continue;
       if (k.tick <= tick + TICKS_PER_SECOND) best = k;
       else return best ?? k;
     }
@@ -344,7 +375,7 @@ export class ReplayTimeline {
       const mid = (lo + hi) >> 1;
       if (this.scores[mid]!.tick <= tick) { ans = mid; lo = mid + 1; } else hi = mid - 1;
     }
-    return ans < 0 ? { tick: this.startTick, players: {}, teams: {} } : this.scores[ans]!;
+    return ans < 0 ? this.openingScores : this.scores[ans]!;
   }
 }
 
@@ -392,7 +423,7 @@ export class GameClock {
    *  were read) into the frames' runs: in log order they move on to a later
    *  run when they step back, to the first that spans them. Into `ticks`. */
   place(sorted: readonly WireEvent[], ticks: Map<WireEvent, number>): void {
-    if (this.runs.length < 2) return;
+    if (!this.runs.length || (this.runs.length === 1 && !this.runs[0]!.offset)) return;
     let at = 0, high = -Infinity;
     for (const ev of sorted) {
       const raw = eventTick(ev);
@@ -419,7 +450,9 @@ function isFrame(f: Frame | null | undefined): f is Frame {
 /** `f` at game tick `tick`, without players it had nowhere to put. */
 function retick(f: Frame, tick: number): Frame {
   const g = withoutUnplaced(f);
-  return tick === g.tick ? g : { ...g, tick };
+  const adjusted = tick === g.tick ? g : { ...g, tick };
+  if (adjusted !== f && isMachineBaseline(f)) markMachineBaseline(adjusted);
+  return adjusted;
 }
 
 /** A kill's, score's or end's tick, else null. */
@@ -429,6 +462,19 @@ function eventTick(ev: WireEvent): number | null {
   return typeof t === "number" && Number.isFinite(t) ? t : null;
 }
 
+export interface TickRange { from_tick: number; to_tick: number }
+
+export function inTickRange(tick: number, range: TickRange): boolean {
+  return tick >= range.from_tick && tick <= range.to_tick;
+}
+
+/** A clip can overlap an archive that starts late or ends early. */
+export function playbackRange(timeline: { startTick: number; endTick: number; recordedEndTick?: number }, range: TickRange): TickRange | undefined {
+  const from_tick = Math.max(timeline.startTick, range.from_tick);
+  const to_tick = Math.min(timeline.recordedEndTick ?? timeline.endTick, range.to_tick);
+  if (from_tick < to_tick) return { from_tick, to_tick };
+}
+
 /** Play/pause/speed/seek over a timeline, driven by wall-clock time. */
 export class ReplayClock {
   playing = false;
@@ -436,19 +482,36 @@ export class ReplayClock {
   private baseTick: number;
   private baseTime = 0;
 
-  constructor(readonly timeline: ReplayTimeline, private readonly growing = false) {
-    this.baseTick = timeline.startTick;
+  readonly loop: TickRange | undefined;
+  loops = 0;
+
+  constructor(readonly timeline: ReplayTimeline, private readonly growing = false, range?: TickRange) {
+    this.loop = range && playbackRange(timeline, range);
+    this.baseTick = this.loop?.from_tick ?? timeline.startTick;
   }
 
   tickAt(now: number): number {
     if (!this.playing) return this.baseTick;
     const elapsed = Math.max(0, now - this.baseTime);
     let t = this.baseTick + (elapsed / 1000) * TICKS_PER_SECOND * this.speed;
+    const loop = this.loop;
+    if (loop && t >= loop.to_tick) {
+      const length = loop.to_tick - loop.from_tick;
+      this.baseTick = t = loop.from_tick + (t - loop.from_tick) % length;
+      this.baseTime = now;
+      this.loops++;
+    }
     // Playing skips a cutscene: on to the first frame after it.
     const c = this.timeline.cinematicSpanAt(t);
     if (elapsed > 0 && c && c.to > t) {
-      this.baseTick = t = c.to;
-      this.baseTime = now;
+      if (!loop || c.to < loop.to_tick) {
+        this.baseTick = t = c.to;
+        this.baseTime = now;
+      } else if (c.from > loop.from_tick) {
+        this.baseTick = t = loop.from_tick;
+        this.baseTime = now;
+        this.loops++;
+      }
     }
     if (t >= this.timeline.endTick) {
       this.playing = this.growing;
@@ -461,7 +524,9 @@ export class ReplayClock {
 
   play(now: number): void {
     if (this.playing) return;
-    if (!this.growing && this.baseTick >= this.timeline.endTick) this.baseTick = this.timeline.startTick;
+    if (!this.growing && this.baseTick >= (this.loop?.to_tick ?? this.timeline.endTick)) {
+      this.baseTick = this.loop?.from_tick ?? this.timeline.startTick;
+    }
     this.baseTime = now;
     this.playing = true;
   }
@@ -472,7 +537,7 @@ export class ReplayClock {
   }
 
   seek(tick: number, now: number): void {
-    this.baseTick = this.timeline.clamp(tick);
+    this.baseTick = this.loop ? Math.max(this.loop.from_tick, Math.min(this.loop.to_tick, tick)) : this.timeline.clamp(tick);
     this.baseTime = now;
   }
 

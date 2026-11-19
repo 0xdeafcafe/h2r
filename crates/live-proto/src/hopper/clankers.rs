@@ -76,7 +76,7 @@ pub fn size_of(rules: &Rules) -> (u32, u32) {
         }
         | Rules::Clan {
             teams, team_size, ..
-        } => (teams * team_size.1, teams),
+        } => (teams.saturating_mul(team_size.1), teams),
     }
 }
 
@@ -109,8 +109,12 @@ impl ClankerHoppers {
             .filter_map(|(i, p)| {
                 let mark = p.clankers?;
                 let d = served.get(i)?;
-                (d.playlist_id == p.playlist_id)
-                    .then(|| ClankerHopper::new(i as u32, p.playlist_id, &p.rules, mark))
+                if d.playlist_id != p.playlist_id {
+                    return None;
+                }
+                // The published descriptor can resize a playlist in place.
+                let hopper = ClankerHopper::new(i as u32, d.playlist_id, &d.rules()?, mark);
+                (1..=16).contains(&hopper.players).then_some(hopper)
             })
             .collect();
         ClankerHoppers { hoppers }
@@ -137,6 +141,21 @@ mod tests {
         let h = ClankerHopper::new(9, 10, &team, Clankers::default());
         assert_eq!(h.bots_for(1), 7);
         assert_eq!(h.bots_for(9), 0);
+    }
+
+    #[test]
+    fn fill_size_uses_the_served_playlist_rules() {
+        let file = super::super::HopperFile::default_set();
+        let mut served: Vec<_> = (0..super::super::HOPPERS)
+            .map(|i| file.descriptor(i).unwrap())
+            .collect();
+        let i = ClankerHoppers::of_defaults(&served).hoppers[0].hopper_id;
+        served[i as usize].set_rules(&Rules::FreeForAll {
+            ranked: false,
+            players: (9, 12),
+        });
+        let mark = ClankerHoppers::of_defaults(&served);
+        assert_eq!(mark.get(i).unwrap().bots_for(1), 11);
     }
 
     #[test]

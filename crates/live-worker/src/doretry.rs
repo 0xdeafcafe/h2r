@@ -68,6 +68,8 @@ impl Thrown {
 /// signed events, which the hub takes once by their nonce.
 pub fn repeatable(method: &str, path: &str) -> bool {
     match method {
+        // Upgrades consume the account token's nonce at the hub.
+        "GET" if crate::relayroom::session_of(path).is_some() => false,
         "GET" | "HEAD" | "OPTIONS" | "PUT" | "DELETE" => true,
         "POST" => {
             path == "/v1/events"
@@ -210,6 +212,12 @@ mod tests {
                 "{method} {path}"
             );
         }
+    }
+
+    #[test]
+    fn relay_upgrade_is_not_retried_with_a_spent_nonce() {
+        assert!(!repeatable("GET", "/v1/sessions/0123456789abcdef/relay"));
+        assert!(repeatable("GET", "/v1/sessions/0123456789abcdef"));
     }
 
     #[test]
