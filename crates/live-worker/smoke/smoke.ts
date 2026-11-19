@@ -46,7 +46,7 @@
 import { decodeArchive } from "../../../web/src/api/archive";
 import { decodeChunk } from "../../../web/src/api/chunk";
 import { canonicalJson } from "../../../web/src/state/verify";
-import { createAccount, importSeed, signCompact } from "../../../web/src/state/account";
+import { createAccount, importSeed, signCompact, type LocalAccount } from "../../../web/src/state/account";
 import { eventBody, postEvent, TYP_EVENT } from "../../../web/src/state/sign";
 import { issueToken } from "../../../web/src/admin/token";
 
@@ -196,12 +196,18 @@ function subscribe(query: string, path = "/v1/stream") {
   return { ws, got, opened, until, close, untilBinary };
 }
 
-// The live socket, let in and caught up before the append.
+// Each authenticated socket needs its own single-use read token.
+async function signIn(socket: ReturnType<typeof subscribe>, who: LocalAccount) {
+  await socket.opened;
+  socket.ws.send(JSON.stringify({ kind: "auth", token: await issueToken(who, aud, "read") }));
+}
+
+// Friend events are visible to the participants and their friends.
 const t5s = performance.now();
-const live = subscribe("");
+const live = subscribe("?auth=1");
 let caughtUp: Msg | undefined;
 try {
-  await live.opened;
+  await signIn(live, a!);
   caughtUp = await live.until((m) => m.kind === "caught_up");
 } catch (e) {
   fail("stream-subscribe", e);
@@ -218,7 +224,15 @@ try {
 } catch (e) {
   fail("append", e);
 }
-const log = await (await fetch(`${api}/events?stream=account-${a!.xuid}&limit=100`)).json();
+const eventsUrl = `${api}/events?stream=account-${a!.xuid}&from=${position! - 1}&limit=100`;
+const publicLog = await timed(eventsUrl);
+if (!publicLog.r.ok || JSON.parse(publicLog.body).items.some((e: {position: number}) => e.position === position))
+  fail("anonymous-private-event", publicLog.r.status);
+const participantLog = await timed(eventsUrl + "&auth=1", {
+  headers: {authorization: `Bearer ${await issueToken(a!, aud, "read")}`},
+});
+if (!participantLog.r.ok) fail("append-read", `${participantLog.r.status} ${participantLog.body}`);
+const log = JSON.parse(participantLog.body);
 const found = (log.items ?? []).some((e: { type: string; position: number }) => e.type === "FriendRequested" && e.position === position);
 if (!found) fail("append", `position ${position} is not in the stream`);
 out.append = { ms: +(performance.now() - t5).toFixed(1), position };
@@ -237,9 +251,9 @@ live.ws.close();
 
 // 6. Replay from just before the event: it, then caught_up.
 const t6 = performance.now();
-const replay = subscribe(`?from=${position! - 1}&stream=account-${a!.xuid}`);
+const replay = subscribe(`?auth=1&from=${position! - 1}&stream=account-${a!.xuid}`);
 try {
-  await replay.opened;
+  await signIn(replay, a!);
   const done = await replay.until((m) => m.kind === "caught_up");
   const events = replay.got.filter((m) => m.kind === "event").map((m) => m.event!.position);
   if (events.length !== 1 || events[0] !== position) throw new Error(`replayed ${JSON.stringify(events)}`);
@@ -253,9 +267,7 @@ replay.ws.close();
 // A reader that signs in first (?auth=1), and one with a bad token.
 const authed = subscribe("?auth=1");
 try {
-  await authed.opened;
-  // A fresh token: each one is good for a single use.
-  authed.ws.send(JSON.stringify({ kind: "auth", token: await issueToken(a!, aud, "read") }));
+  await signIn(authed, a!);
   await authed.until((m) => m.kind === "caught_up");
 } catch (e) {
   fail("stream-auth", e);
@@ -279,9 +291,9 @@ await warmTimes();
 
 // 8. A hibernation wake.
 if (wakeWait > 0) {
-  const sleeper = subscribe("");
+  const sleeper = subscribe("?auth=1");
   try {
-    await sleeper.opened;
+    await signIn(sleeper, a!);
     await sleeper.until((m) => m.kind === "caught_up");
   } catch (e) {
     fail("wake-subscribe", e);
@@ -519,9 +531,9 @@ let archiveGame = "";
 
 // 11. A busy stream.
 if (busy > 0) {
-  const readers = Array.from({ length: busy }, () => subscribe(""));
+  const readers = Array.from({ length: busy }, () => subscribe("?auth=1"));
   try {
-    await Promise.all(readers.map((r) => r.opened));
+    await Promise.all(readers.map((r) => signIn(r, a!)));
     await Promise.all(readers.map((r) => r.until((m) => m.kind === "caught_up", 15000)));
   } catch (e) {
     fail("busy-subscribe", e);
