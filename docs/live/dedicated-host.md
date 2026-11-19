@@ -147,6 +147,12 @@ The boot deadline is 60 seconds from the request. After registration, the
 idle timeout defaults to 120 seconds and the hard limit to 1,800 seconds from
 the request. The lease carries both limits so replay preserves its deadlines.
 
+Set `LIVE_HOST_DATA_URL` to the signed URL for the owner's bundle and
+`LIVE_HOST_DATA_SHA256` to its 64-character SHA-256 digest. Set
+`LIVE_HOST_LIVE_URL` to the Live base URL reachable from the host when it
+differs from the server's public URL. This includes local servers listening
+on a port other than the default 8074 without a public URL.
+
 Locally the server launches `h2 host run` with a writable directory under
 `<server-data>/hosts/<lease-id>`. A standalone `h2-live-server` deployment
 sets `LIVE_HOST_BIN` to the host-capable `h2` binary. Otherwise the provider
