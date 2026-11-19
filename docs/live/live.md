@@ -863,6 +863,25 @@ learns a sender's base from the channel's source port before secure
 registration, and reports the sender by the same IN_ADDR. Incoming channel
 ports are translated back to the guest's virtual port.
 
+For a dedicated host with `transport = "tunnel"`, the join code opens
+`connect_tunnel(url, bearer)` using the advertised WebSocket URL and a
+`sessions.relay` bearer. The host's hello supplies its synthetic IPv4
+address and the client's peer ID. The join uses `handle.qos_base()` to
+probe the host's lobby on channel +2 and installs the transport with
+`hle.install_tunnel(advertised, handle)`. The advertised XNADDR supplies
+the host base port. Datagrams addressed to that host on base through
+base+6 travel on the WebSocket with their port offset and payload. On
+the return path the worker delivers the payload to the UDP socket bound to
+guest port `1000 + offset`. This makes it readable by `select`, `recv`
+and `recvfrom`. The guest sees the host's game address as the sender.
+LAN discovery broadcasts and sends to other peers use the existing UDP path.
+
+The socket thread sends a WebSocket Ping every five seconds. A dropped
+connection gets one reconnect and a fresh hello. On leave,
+`hle.clear_tunnel()` removes the route. The worker sends a bye and closes
+the WebSocket when the route is cleared or the last handle drops. See the
+[dedicated host tunnel wire format](live-api.md#dedicated-host-tunnel).
+
 XNetCreateKey fills an 8-byte system-link ID and a 16-byte key from host OS
 randomness; XNetRandom fills the requested buffer. Register/unregister maintain
 a bounded key table. Unregistering a key removes its address associations and
