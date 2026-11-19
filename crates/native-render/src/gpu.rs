@@ -675,7 +675,7 @@ impl GpuWorld {
             device,
             queue,
             encoder,
-            &self.vertices,
+            &self.program_vertices,
             &self.indices,
             color,
             color_format,

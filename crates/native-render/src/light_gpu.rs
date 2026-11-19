@@ -11,7 +11,7 @@ use shaders::vsh::VertexUniforms;
 
 use crate::gpu::{Image, texture};
 use crate::light_look::{FRAME_DWORDS, LightProgram, LightStage, colour_uniforms, light_vertex};
-use crate::program::{FLOAT_INPUTS, ViewInputs, bias_signed, frame_pixel, frame_vertex, sampler_descriptor};
+use crate::program::{Cull, INPUTS, ViewInputs, pipeline_state, bias_signed, frame_pixel, frame_vertex, sampler_descriptor};
 use crate::world::WorldVertex;
 
 /// The texture shapes a light stage binds.
@@ -177,7 +177,7 @@ pub struct LightGpu {
     textures_layout: wgpu::BindGroupLayout,
     samplers: [wgpu::Sampler; 4],
     stage_views: [Option<wgpu::TextureView>; 4],
-    pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat), wgpu::RenderPipeline>,
+    pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat, Option<Cull>), wgpu::RenderPipeline>,
 }
 
 impl LightGpu {
@@ -283,13 +283,13 @@ impl LightGpu {
 
     /// Makes the pipeline for these target formats, with the pass's own
     /// blend, depth and cull state.
-    pub fn pipeline(&mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat) -> &wgpu::RenderPipeline {
-        let attributes: Vec<wgpu::VertexAttribute> = FLOAT_INPUTS
+    pub fn pipeline(&mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat, cull: Option<Cull>) -> &wgpu::RenderPipeline {
+        let attributes: Vec<wgpu::VertexAttribute> = INPUTS
             .iter()
             .map(|&(location, offset, format)| wgpu::VertexAttribute { format, offset, shader_location: location })
             .collect();
         let (module, layout, s) = (&self.module, &self.layout, self.program.state);
-        self.pipelines.entry((color, depth)).or_insert_with(|| {
+        self.pipelines.entry((color, depth, cull)).or_insert_with(|| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("native light pass"),
                 layout: Some(layout),
@@ -303,7 +303,7 @@ impl LightGpu {
                         attributes: &attributes,
                     })],
                 },
-                primitive: s.primitive,
+                primitive: pipeline_state(Some(&s), cull).0,
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: depth,
                     depth_write_enabled: Some(s.depth_write),
@@ -326,30 +326,6 @@ impl LightGpu {
                 cache: None,
             })
         })
-    }
-
-    /// Records one light's draw of `indices` (the world's vertex and index
-    /// buffers bound, the pipeline made for these formats), its uniforms at
-    /// `offsets` (vertex, pixel) in the run's group. `false`: nothing
-    /// recorded.
-    #[allow(clippy::too_many_arguments)]
-    pub fn draw(
-        &self,
-        pass: &mut wgpu::RenderPass<'_>,
-        uniforms: &wgpu::BindGroup,
-        offsets: [u32; 2],
-        textures: &wgpu::BindGroup,
-        indices: std::ops::Range<u32>,
-        color: wgpu::TextureFormat,
-        depth: wgpu::TextureFormat,
-    ) -> bool {
-        let Some(p) = self.pipelines.get(&(color, depth)) else { return false };
-        pass.set_pipeline(p);
-        pass.set_bind_group(0, uniforms, &offsets);
-        pass.set_bind_group(1, textures, &[]);
-        pass.set_blend_constant(self.program.state.blend_constant);
-        pass.draw_indexed(indices, 0, 0..1);
-        true
     }
 }
 
@@ -407,12 +383,22 @@ pub fn run_layout(count: usize, align: u64) -> (Vec<[u32; 2]>, u64) {
 pub struct LightDraw<'a> {
     pub program: &'a LightProgram,
     pub key: u64,
+    pub cull: Option<Cull>,
     /// Colours A and B (engine vectors 5 and 6).
     pub colours: [[f32; 3]; 2],
     pub frame: &'a [u32; FRAME_DWORDS],
     /// The gel's `bitm` datum (image 0), for a pass that samples it.
     pub gel: Option<u32>,
     pub ranges: Vec<std::ops::Range<u32>>,
+}
+
+impl LightDraw<'_> {
+    /// Used by both the GPU upload and its reference comparison.
+    pub fn uniforms(&self, view: &ViewInputs) -> (VertexUniforms, PixelUniforms) {
+        let [a, b] = self.colours;
+        let (vertex, pixel) = colour_uniforms(self.program, a, b);
+        (light_vertex(&frame_vertex(&vertex, view), self.frame), frame_pixel(&pixel, view))
+    }
 }
 
 /// The world's light passes on the GPU: the engine's light textures, the
@@ -425,10 +411,11 @@ pub struct LightSet {
     passes: HashMap<u64, Option<LightGpu>>,
 }
 
-/// A light draw made ready before the render pass: its pass's key, its
+/// A light draw made ready before the render pass: its pipeline, its
 /// texture group, its uniforms' offsets in the run's group, its ranges.
 struct Prepared {
-    key: u64,
+    pipeline: wgpu::RenderPipeline,
+    blend_constant: wgpu::Color,
     offsets: [u32; 2],
     textures: wgpu::BindGroup,
     ranges: Vec<std::ops::Range<u32>>,
@@ -467,8 +454,8 @@ impl LightSet {
 
     /// The draws' texture groups and one uniforms group for the run (one
     /// buffer, each draw's uniforms at its own offsets), their passes made
-    /// (with pipelines for these formats) as needed; a draw whose pass,
-    /// stage image, engine texture or gel is missing is left out.
+    /// (with pipelines for these formats) as needed. If any draw is
+    /// missing a resource, return before recording any of them.
     #[allow(clippy::too_many_arguments)]
     fn prepare(
         &mut self,
@@ -495,10 +482,12 @@ impl LightSet {
                 let p = LightGpu::new(device, queue, d.program.clone(), &self.uniforms_layout, &mut *stage_image);
                 self.passes.insert(d.key, p);
             }
-            let Some(Some(pass)) = self.passes.get_mut(&d.key) else { continue };
-            pass.pipeline(device, color, depth);
-            let Some(textures) = pass.textures(device, &self.textures, gel.as_ref()) else { continue };
-            ready.push((d, textures));
+            // The host accepts this light only after checking every sampled
+            // stage against the very same immutable map assets.
+            let pass = self.passes.get_mut(&d.key)?.as_mut()?;
+            let pipeline = pass.pipeline(device, color, depth, d.cull).clone();
+            let textures = pass.textures(device, &self.textures, gel.as_ref())?;
+            ready.push((d, pipeline, textures));
         }
         if ready.is_empty() {
             return None;
@@ -506,11 +495,9 @@ impl LightSet {
         let align = u64::from(device.limits().min_uniform_buffer_offset_alignment);
         let (offsets, size) = run_layout(ready.len(), align);
         let mut bytes = vec![0u8; size as usize];
-        for ((d, _), o) in ready.iter().zip(&offsets) {
-            let [a, b] = d.colours;
-            let (vertex, pixel) = colour_uniforms(d.program, a, b);
-            let vertex = light_vertex(&frame_vertex(&vertex, view), d.frame).to_bytes();
-            let pixel = frame_pixel(&pixel, view).to_bytes();
+        for ((d, _, _), o) in ready.iter().zip(&offsets) {
+            let (vertex, pixel) = d.uniforms(view);
+            let (vertex, pixel) = (vertex.to_bytes(), pixel.to_bytes());
             let (v, p) = (o[0] as usize, o[1] as usize);
             bytes[v..v + vertex.len()].copy_from_slice(&vertex);
             bytes[p..p + pixel.len()].copy_from_slice(&pixel);
@@ -538,8 +525,9 @@ impl LightSet {
         let prepared = ready
             .into_iter()
             .zip(offsets)
-            .map(|((d, textures), offsets)| Prepared {
-                key: d.key,
+            .map(|((d, pipeline, textures), offsets)| Prepared {
+                pipeline,
+                blend_constant: d.program.state.blend_constant,
                 offsets,
                 textures,
                 ranges: d.ranges.clone(),
@@ -551,20 +539,19 @@ impl LightSet {
     /// Records `draws` into `pass` (the world's vertex and index buffers
     /// bound), after [`Self::prepare`]. Returns how many ranges were drawn.
     fn record(
-        &self,
         pass: &mut wgpu::RenderPass<'_>,
         uniforms: &wgpu::BindGroup,
         prepared: &[Prepared],
-        color: wgpu::TextureFormat,
-        depth: wgpu::TextureFormat,
     ) -> usize {
         let mut drawn = 0;
         for p in prepared {
-            let Some(Some(gpu)) = self.passes.get(&p.key) else { continue };
+            pass.set_pipeline(&p.pipeline);
+            pass.set_bind_group(0, uniforms, &p.offsets);
+            pass.set_bind_group(1, &p.textures, &[]);
+            pass.set_blend_constant(p.blend_constant);
             for r in &p.ranges {
-                if gpu.draw(pass, uniforms, p.offsets, &p.textures, r.clone(), color, depth) {
-                    drawn += 1;
-                }
+                pass.draw_indexed(r.clone(), 0, 0..1);
+                drawn += 1;
             }
         }
         drawn
@@ -624,7 +611,7 @@ impl LightSet {
         pass.set_viewport(0.0, 0.0, target_size.0 as f32, target_size.1 as f32, 0.0, 1.0);
         pass.set_vertex_buffer(0, vertices.slice(..));
         pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
-        self.record(&mut pass, &uniforms, &prepared, color_format, depth_format)
+        Self::record(&mut pass, &uniforms, &prepared)
     }
 }
 
