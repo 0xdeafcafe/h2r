@@ -34,7 +34,7 @@
 
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
 
 use gfx::texture::{DecodeOptions, TextureDesc, decode_texture};
 use gfx::vertex::{
@@ -1024,6 +1024,7 @@ pub struct Device<B: Backend> {
     events: Vec<Event>,
     last_stop: Option<HleStop>,
     stats: Stats,
+    queued_external_stats: Arc<QueuedExternalStats>,
     /// `D3DSIMPLERENDERSTATEENCODE`, read from the image at creation.
     encode: Option<SimpleEncode>,
     /// NV2A register state the push buffer has set ([`crate::hw`]).
@@ -1039,6 +1040,7 @@ pub struct Device<B: Backend> {
     residual: Residual,
     /// Optional vertex-binding optimization at the resolved indexed draw.
     indexed_geometry: Option<IndexedGeometryHook>,
+    indexed_geometry_scope: fn() -> bool,
     /// The draws of a pass being swallowed ([`Device::swallow`]).
     swallowing: Option<Swallowing<B>>,
     /// How the last swallow that ended early ended
@@ -1170,7 +1172,25 @@ struct ExternalBinding<S> {
     depth_write: bool,
 }
 
-fn complete_recordings(plan: &crate::ExternalPlan, c: &[crate::ExternalRecording]) -> bool {
+#[derive(Default)]
+struct QueuedExternalStats {
+    committed: AtomicU64,
+    dropped: AtomicU64,
+}
+
+impl<S: Copy + Eq> ExternalBinding<S> {
+    fn same_draw_writes(&self, header: u32, color: S, depth: Option<S>, writes_depth: bool) -> bool {
+        self.colors.as_slice() == [(header, color)]
+            && self.depth_write == writes_depth
+            && self.surfaces.color == color
+            && match depth {
+                Some(depth) => self.surfaces.depth == depth,
+                None => !writes_depth && self.surfaces.depth == color,
+            }
+    }
+}
+
+pub(crate) fn complete_recordings(plan: &crate::ExternalPlan, c: &[crate::ExternalRecording]) -> bool {
     let copies = matches!(c, [r] if r.copy == crate::TargetCopy::Reference)
         || matches!(c, [r, d] if r.copy == crate::TargetCopy::Reference && d.copy == crate::TargetCopy::Display);
     copies && c.iter().all(|r| plan.complete(r.copy, r.ranges))
@@ -1299,6 +1319,7 @@ impl<B: Backend> Device<B> {
             events: Vec::new(),
             last_stop: None,
             stats: Stats::default(),
+            queued_external_stats: Default::default(),
             encode: None,
             hw: HwState::default(),
             pending_grid: None,
@@ -1307,6 +1328,7 @@ impl<B: Backend> Device<B> {
             scoped_admission: None,
             residual: Residual::default(),
             indexed_geometry: None,
+            indexed_geometry_scope: || false,
             swallowing: None,
             swallow_mismatch: None,
             trace: None,
@@ -1348,7 +1370,10 @@ impl<B: Backend> Device<B> {
 
     /// Counters.
     pub fn stats(&self) -> Stats {
-        self.stats
+        let mut stats = self.stats;
+        stats.external_passes += self.queued_external_stats.committed.load(AtomicOrdering::Relaxed);
+        stats.external_passes_dropped += self.queued_external_stats.dropped.load(AtomicOrdering::Relaxed);
+        stats
     }
 
     /// Drains recorded events.
@@ -2041,6 +2066,13 @@ impl<B: Backend> Device<B> {
     /// It runs after texture and attachment resolution, in submission order.
     pub fn set_indexed_geometry(&mut self, hook: IndexedGeometryHook) {
         self.indexed_geometry = Some(hook);
+        self.indexed_geometry_scope = || true;
+    }
+
+    /// Outside this predicate the adapter cannot replace the D3D fallback stream.
+    pub fn set_scoped_indexed_geometry(&mut self, scope: fn() -> bool, hook: IndexedGeometryHook) {
+        self.set_indexed_geometry(hook);
+        self.indexed_geometry_scope = scope;
     }
 
     /// Whether the backend can draw an external pass: asked before the
@@ -2489,7 +2521,11 @@ impl<B: Backend> Device<B> {
         if self.swallowing.is_none() {
             return Ok(());
         }
-        if entry.starts_with("D3DDevice_SetVertexData")
+        // The dedicated render-state adapters all call set_render_state.
+        // They only change state for later draws; held packets already
+        // contain their resolved state.
+        if crate::abi::RENDER_STATE_SETTERS.iter().any(|&(_, name, _)| entry == name)
+            || entry.starts_with("D3DDevice_SetVertexData")
             || entry.starts_with("D3DDevice_SetVertexShader")
             || entry.starts_with("D3DDevice_SetTextureState")
             || entry.starts_with("D3DDevice_SetRenderTarget")
@@ -5483,9 +5519,36 @@ impl<B: Backend> Device<B> {
             !missing
         });
         if let Some((plan, pass, binding)) = replacement {
+            // Layer-level mask edits and helper scopes need the answer immediately.
+            // At a resolved draw the original packet is sufficient for worker fallback
+            // when both routes make precisely the same guest-visible writes.
+            let fallback = if matches!(plan.stage, timeline::native::Stage::World | timeline::native::Stage::Shadows)
+                && scoped.is_none()
+                && binding.same_draw_writes(self.render_target, color, depth, writes_depth)
+                && !(parts.indexed_esp.is_some() && compatible_geometry_target && (self.indexed_geometry_scope)())
+            {
+                pass.resolved_fallback()
+            } else {
+                None
+            };
+            let pass = Arc::new(std::sync::Mutex::new(pass));
+            if let Some(fallback) = fallback {
+                let stats = Arc::clone(&self.queued_external_stats);
+                let queued = crate::backend::QueuedExternalDraw {
+                    surfaces: binding.surfaces.clone(), request: binding.request, plan: plan.clone(),
+                    pass: pass.clone(), fallback, fallback_depth: depth, finished: Box::new(move |fallback| {
+                        let count = if fallback.is_some() { &stats.dropped } else { &stats.committed };
+                        count.fetch_add(1, AtomicOrdering::Relaxed);
+                    }),
+                };
+                if self.backend.queue_external_draw(queued, textures) {
+                    self.mark_written(writes_depth);
+                    *streams = draw.streams;
+                    return Ok(());
+                }
+            }
             let commands = self.backend.prepare_external(
-                binding.surfaces.clone(), binding.request, textures, &plan, crate::TargetCopy::Reference,
-                Arc::new(std::sync::Mutex::new(pass)),
+                binding.surfaces.clone(), binding.request, textures, &plan, crate::TargetCopy::Reference, pass,
             );
             if let Ok(Some(recordings)) = commands && complete_recordings(&plan, &recordings) {
                 for &(_, surface) in &binding.colors { self.before_target_write(surface)?; }
@@ -6291,6 +6354,29 @@ fn count_vertex_bytes(counter: timeline::phase::Counter, len: usize) {
 mod depth_write_tests {
     use super::*;
     use gfx::state::{DepthBufferMode, StencilOp};
+
+    #[test]
+    fn queued_fallback_requires_identical_guest_writes() {
+        let mut binding = ExternalBinding {
+            surfaces: crate::ExternalSurfaces { color: 1, depth: 2, slots: vec![], slot_sizes: vec![], sampled: vec![] },
+            request: crate::ExternalPassRequest { rect: (0, 0, 1, 1), surface_size: (1, 1), z_scale: 1.0 },
+            colors: vec![(11, 1)], depth_write: true,
+        };
+        assert!(binding.same_draw_writes(11, 1, Some(2), true));
+        assert!(!binding.same_draw_writes(11, 1, None, true));
+        assert!(!binding.same_draw_writes(11, 1, Some(3), true));
+        assert!(!binding.same_draw_writes(11, 1, Some(2), false));
+        assert!(!binding.same_draw_writes(12, 1, Some(2), true));
+        binding.colors.push((13, 3));
+        assert!(!binding.same_draw_writes(11, 1, Some(2), true));
+        binding.colors.clear();
+        assert!(!binding.same_draw_writes(11, 1, Some(2), true));
+        binding.colors.push((11, 1));
+        binding.depth_write = false;
+        assert!(!binding.same_draw_writes(11, 1, None, false));
+        binding.surfaces.depth = binding.surfaces.color;
+        assert!(binding.same_draw_writes(11, 1, None, false));
+    }
 
     /// Review P3: a stencil test that can store nothing does not change the
     /// depth/stencil surface.

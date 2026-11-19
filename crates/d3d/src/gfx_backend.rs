@@ -149,6 +149,7 @@ pub struct GfxBackend {
     presented: Option<SurfaceId>,
     present_hook: Option<PresentHook>,
     recorded_pass_observer: Option<RecordedPassObserver>,
+    submission_uploads: Option<Box<dyn FnMut() + Send>>,
     submitted_frame_observer: Option<Box<dyn FnMut() + Send>>,
     /// [`Self::on_present_replay`]'s hook; `None`: in-between frames go
     /// through `present_hook`.
@@ -307,6 +308,7 @@ impl GfxBackend {
             presented: None,
             present_hook: None,
             recorded_pass_observer: None,
+            submission_uploads: None,
             submitted_frame_observer: None,
             replay_hook: None,
             pending: None,
@@ -480,6 +482,11 @@ impl GfxBackend {
         self.recorded_pass_observer = Some(Box::new(observer));
     }
 
+    /// Flush a side renderer's staged bytes before submitting its recorded passes.
+    pub fn flush_external_uploads_with(&mut self, flush: impl FnMut() + Send + 'static) {
+        self.submission_uploads = Some(Box::new(flush));
+    }
+
     /// Recycle external renderer resources after the guest frame has been submitted.
     pub fn observe_submitted_frames(&mut self, observer: impl FnMut() + Send + 'static) {
         self.submitted_frame_observer = Some(Box::new(observer));
@@ -595,11 +602,7 @@ impl GfxBackend {
             let drawable = s.texture().usage().contains(wgpu::TextureUsages::RENDER_ATTACHMENT);
             (single && drawable).then(|| {
                 (
-                    s.texture().create_view(&wgpu::TextureViewDescriptor {
-                        base_mip_level: 0,
-                        mip_level_count: Some(1),
-                        ..Default::default()
-                    }),
+                    s.base_view().clone(),
                     s.wgpu_format(),
                     (s.texture().width(), s.texture().height()),
                 )
@@ -611,6 +614,7 @@ impl GfxBackend {
             // Colour only: a scratch depth of the colour's size.
             const SCRATCH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
             if self.scratch_depth.as_ref().is_none_or(|(s, _)| *s != size) {
+                let scope = self.ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
                 let t = self.ctx.device.create_texture(&wgpu::TextureDescriptor {
                     label: Some("external pass scratch depth"),
                     size: wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
@@ -621,7 +625,11 @@ impl GfxBackend {
                     usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
                     view_formats: &[],
                 });
-                self.scratch_depth = Some((size, t.create_view(&wgpu::TextureViewDescriptor::default())));
+                let depth = t.create_view(&wgpu::TextureViewDescriptor::default());
+                if pollster::block_on(scope.pop()).is_some() {
+                    return Ok(None);
+                }
+                self.scratch_depth = Some((size, depth));
             }
             let Some((_, v)) = &self.scratch_depth else { return Ok(None) };
             (v.clone(), SCRATCH)
@@ -967,6 +975,9 @@ impl GfxBackend {
         self.renderer.flush_uploads(&self.ctx.queue);
         if let Some(s) = self.shaders.as_mut() {
             s.flush_uploads(&self.ctx);
+        }
+        if let Some(flush) = self.submission_uploads.as_mut() {
+            flush();
         }
         // Persistent buffers' copies go ahead of everything that draws.
         let copies = self.renderer.upload_commands(&self.ctx.device);
@@ -1684,13 +1695,14 @@ impl Backend for GfxBackend {
         Ok(true)
     }
 
+    fn reusable_external_attachments(&self) -> bool { true }
+
     fn external_attachments(
         &mut self, surfaces: crate::ExternalSurfaces<SurfaceId>, textures: [Option<&Self::Texture>; 4],
         copy: crate::TargetCopy,
     ) -> Result<crate::ExternalCopies, String> {
         // Finish pending D3D work before the device can give up its guest draws.
         if self.pending.is_some() { self.encode_pending()?; }
-        let scope = self.ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
         let attachments: Result<Option<Vec<_>>, String> = (|| {
             let sampled = surfaces.sampled.into_iter().map(Some).collect();
             let Some((cv, cf, dv, df, size, sampled)) = self.external_views(surfaces.color, surfaces.depth, sampled)? else {
@@ -1712,7 +1724,7 @@ impl Backend for GfxBackend {
                 slots.push(Some(crate::ExternalColor {
                     guest_size: guest_size.ok_or("missing guest slot dimensions")?,
                     sample: s.view().clone(),
-                    attachment: t.create_view(&wgpu::TextureViewDescriptor { mip_level_count: Some(1), ..Default::default() }),
+                    attachment: s.base_view().clone(),
                     format: t.format(),
                     size: (t.width(), t.height()),
                 }));
@@ -1727,7 +1739,6 @@ impl Backend for GfxBackend {
                 depth: dv, depth_format: df, size, sampled, slots, copy, stages,
             }]))
         })();
-        if pollster::block_on(scope.pop()).is_some() { return Ok(crate::ExternalCopies::Missing(copy)); }
         Ok(match attachments? {
             Some(a) => crate::ExternalCopies::Ready(a),
             None => crate::ExternalCopies::Missing(copy),
@@ -1740,8 +1751,8 @@ impl Backend for GfxBackend {
             recording.stage.count(timeline::native::Metric::Suppressed, recording.items as u64);
         }
         match recording.commands {
-            crate::backend::ExternalCommands::Bundles { setup, targets, color, depth, stencil, draws } =>
-                self.append_native(recording.copy, setup, targets, color, depth, stencil, draws),
+            crate::backend::ExternalCommands::Bundles { targets, color, depth, stencil, draws } =>
+                self.append_native(recording.copy, targets, color, depth, stencil, draws),
             crate::backend::ExternalCommands::Standalone(commands) => {
                 self.finish_native_run();
                 if let Some((enc, _)) = self.open.take() {
@@ -1753,7 +1764,7 @@ impl Backend for GfxBackend {
         self.retain_uploads(recording.uploads);
         // The pass limit can submit this recording immediately.
         self.external_on_submit.extend(recording.on_submit);
-        if self.external_prefix.len() >= MAX_ENCODED_PASSES {
+        if self.external_prefix.len() + self.open.as_ref().map_or(0, |(_, passes)| *passes) >= MAX_ENCODED_PASSES {
             self.submit_open();
         }
     }

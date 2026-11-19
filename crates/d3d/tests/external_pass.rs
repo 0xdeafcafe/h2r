@@ -445,6 +445,63 @@ fn indexed_admission_receives_the_exact_resolved_guest_draw() {
 }
 
 #[test]
+fn indexed_world_admission_replays_a_refused_packet_without_a_worker_read() {
+    indexed_admission_replays_a_refused_packet(timeline::native::Stage::World);
+}
+
+#[test]
+fn shadow_admission_replays_a_refused_packet_without_a_worker_read() {
+    indexed_admission_replays_a_refused_packet(timeline::native::Stage::Shadows);
+}
+
+fn indexed_admission_replays_a_refused_packet(stage: timeline::native::Stage) {
+    struct Retained(Arc<d3d::ResolvedDraw>);
+
+    impl ExternalPass for Retained {
+        fn resolved_fallback(&self) -> Option<Arc<d3d::ResolvedDraw>> {
+            Some(self.0.clone())
+        }
+        fn writes(&self) -> d3d::ExternalWrites {
+            d3d::ExternalWrites { color: true, depth_stencil: false }
+        }
+    }
+
+    struct Admission {
+        stage: timeline::native::Stage,
+        draw: Mutex<Option<Arc<d3d::ResolvedDraw>>>,
+    }
+    impl d3d::DrawAdmission for Admission {
+        fn admit(&self, s: &d3d::DrawSnapshot<'_>) -> Option<(d3d::ExternalPlan, Box<dyn ExternalPass>)> {
+            let draw = Arc::new(s.draw.clone());
+            *self.draw.lock().unwrap() = Some(draw.clone());
+            Some((d3d::ExternalPlan { stage: self.stage, ..plan(1) }, Box::new(Retained(draw))))
+        }
+    }
+
+    // The recording backend accepts draws, but cannot supply GPU attachments.
+    let mut backend = RecordingBackend::default();
+    backend.external_passes = true;
+    let (mut d, mut m) = create(ThreadedBackend::new(backend).unwrap(), UploadPolicy::Always);
+    set_states(&mut d, &mut m);
+    quad_vb(&mut m, 0., 0., 32., 32., 0xff009900);
+    bind_quad(&mut d, &mut m);
+    let probe = Arc::new(Admission { stage, draw: Mutex::default() });
+    d.add_draw_admission(probe.clone());
+    m.write(MISC, &[2, 0, 1, 0, 0, 0]).unwrap();
+    let waits = d.backend.waits().reads;
+    d.draw_indexed_vertices(&mut m, TRIANGLESTRIP, 3, MISC).unwrap();
+    assert_eq!(d.backend.waits().reads, waits);
+    let replay = d.backend.with_inner(|b| {
+        let draws = b.draws();
+        assert_eq!(draws.len(), 1);
+        draws[0].clone()
+    }).unwrap();
+    assert_eq!(probe.draw.lock().unwrap().as_deref(), Some(&replay));
+    assert_eq!(d.stats().external_passes, 0);
+    assert_eq!(d.stats().external_passes_dropped, 1);
+}
+
+#[test]
 fn scoped_acceptance_reports_commit_and_replaces_only_the_first_draw() {
     let Some(b) = backend() else { return };
     let (mut d, mut m) = create(b, UploadPolicy::Always);
@@ -593,6 +650,9 @@ fn a_backend_prepare_error_leaves_the_device_ready_for_the_guest_draw() {
     assert_eq!(d.backend.draws().len(), 1);
 }
 
+// The GfxBackend bundle pass counters are shared by all contexts.
+static PAINT_TESTS: Mutex<()> = Mutex::new(());
+
 /// Record a synthetic full-screen triangle. The caller's scissor and
 /// constant blend colour distinguish execution order and scaled copies.
 struct Paint {
@@ -604,6 +664,8 @@ struct Paint {
 }
 
 impl ExternalPass for Paint {
+    fn batch_key(&self) -> Option<u64> { Some(self.run) }
+
     fn writes(&self) -> d3d::ExternalWrites {
         d3d::ExternalWrites { color: true, depth_stencil: false }
     }
@@ -663,6 +725,7 @@ impl ExternalPass for Paint {
 
 #[test]
 fn compatible_lights_share_one_pass_per_copy_and_refusal_keeps_both_pixels() {
+    let _serial = PAINT_TESTS.lock().unwrap();
     let Some(reference) = backend() else { return };
     let ctx = &reference.ctx;
     let display = GfxBackend::new(GfxContext { instance: ctx.instance.clone(), adapter: ctx.adapter.clone(),
@@ -692,4 +755,42 @@ fn compatible_lights_share_one_pass_per_copy_and_refusal_keeps_both_pixels() {
             assert_eq!(pixels[at..at+4], rgba, "{scale}x at {x}");
         }
     }
+}
+
+#[test]
+fn consecutive_lights_need_one_worker_wait_and_keep_their_draw_order() {
+    let _serial = PAINT_TESTS.lock().unwrap();
+    let Some(b) = backend() else { return };
+    let (mut d, mut m) = create(ThreadedBackend::new(b).unwrap(), UploadPolicy::Always);
+    let back = d.back_buffer().unwrap();
+    d.clear(&mut m, 0, 0, 0xf0, 0xff00ff00, 1., 0).unwrap();
+    let before = d.backend.waits().reads;
+    for (x, color) in [(0, wgpu::Color::WHITE), (2, wgpu::Color::BLACK), (4, wgpu::Color::WHITE)] {
+        let pass = Paint { run: 17, x, color, refuse_display: false, bundles: [None, None] };
+        let plan = d3d::ExternalPlan { stage: timeline::native::Stage::Lights, ..plan(1) };
+        d.prepare_external_pass(&mut m, plan, Box::new(pass)).unwrap().unwrap().commit();
+    }
+    assert_eq!(d.backend.waits().reads - before, 1, "one attachment pin for three reservations");
+    let pixels = d.backend.with_surface(back, |b, back| b.read_color(back).map(|(pixels, _)| pixels)).unwrap();
+    for (x, rgba) in [(0, [255; 4]), (2, [0, 0, 0, 255]), (4, [255; 4]), (12, [0, 255, 0, 255])] {
+        assert_eq!(pixels[x * 4..x * 4 + 4], rgba, "pixel {x}");
+    }
+}
+
+#[test]
+fn intervening_d3d_work_revalidates_attachments_even_with_the_same_run_key() {
+    let _serial = PAINT_TESTS.lock().unwrap();
+    let Some(b) = backend() else { return };
+    let (mut d, mut m) = create(ThreadedBackend::new(b).unwrap(), UploadPolicy::Always);
+    let back = d.back_buffer().unwrap();
+    let paint = |x| Box::new(Paint { run: 17, x, color: wgpu::Color::WHITE, refuse_display: false, bundles: [None, None] });
+    let light = || d3d::ExternalPlan { stage: timeline::native::Stage::Lights, ..plan(1) };
+    let before = d.backend.waits().reads;
+    d.prepare_external_pass(&mut m, light(), paint(0)).unwrap().unwrap().commit();
+    d.clear(&mut m, 0, 0, 0xf0, 0xff00ff00, 1., 0).unwrap();
+    d.prepare_external_pass(&mut m, light(), paint(4)).unwrap().unwrap().commit();
+    assert_eq!(d.backend.waits().reads - before, 2);
+    let pixels = d.backend.with_surface(back, |b, back| b.read_color(back).map(|(pixels, _)| pixels)).unwrap();
+    assert_eq!(&pixels[..4], &[0, 255, 0, 255], "clear follows the first light");
+    assert_eq!(&pixels[16..20], &[255; 4], "second light follows the clear");
 }

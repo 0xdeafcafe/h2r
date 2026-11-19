@@ -98,8 +98,8 @@ pub fn frame_rate(start: std::time::Instant, tail: usize, from: Option<usize>) -
 
 /// What the wrapper saw over the run.
 ///
-/// Counted per draw on the game thread, so the keys are plain values and
-/// the names are only formatted for [`DrawStats::report`].
+/// Counted from each draw outcome. The keys are plain values and the names
+/// are only formatted for [`DrawStats::report`].
 #[derive(Default)]
 pub struct DrawStats {
     pub presents: u64,
@@ -109,8 +109,8 @@ pub struct DrawStats {
     textures: rustc_hash::FxHashMap<(D3DFormat, TextureKind), u64>,
     /// Frames (numbered as `frame-N.png`) with a drawn draw that samples
     /// a depth texture: Halo's shadow apply (layer 11) reading a shadow
-    /// map. In order, each once.
-    shadow_frames: Vec<u64>,
+    /// map. Worker fallbacks can land after the guest counts a newer frame.
+    shadow_frames: BTreeSet<u64>,
 }
 
 /// [`DrawStats::shadow_frames`] of the run, for the screenshot hook
@@ -118,8 +118,7 @@ pub struct DrawStats {
 static SHADOW_FRAMES: Mutex<BTreeSet<u64>> = Mutex::new(BTreeSet::new());
 
 /// Whether frame `n` (as `frame-N.png` numbers it) sampled a shadow map.
-/// Its draws reach the wrapper before its present reaches the backend, so
-/// the answer is final by the time the backend presents it.
+/// Worker fallback draws complete before the present on the same queue.
 pub fn samples_shadow_map(n: u64) -> bool {
     SHADOW_FRAMES.lock().unwrap().contains(&n)
 }
@@ -182,6 +181,16 @@ impl DrawStats {
         t: &TargetInfo,
         info: &[Option<TextureInfo>; 4],
     ) -> Option<u64> {
+        self.add_at(self.presents + 1, r, t, info)
+    }
+
+    fn add_at(
+        &mut self,
+        frame: u64,
+        r: &Result<DrawOutcome, String>,
+        t: &TargetInfo,
+        info: &[Option<TextureInfo>; 4],
+    ) -> Option<u64> {
         let drawn = matches!(r, Ok(DrawOutcome::Drawn));
         let out = (!drawn).then(|| outcome_name(r));
         *self
@@ -194,12 +203,8 @@ impl DrawStats {
         for ti in info.iter().flatten() {
             *self.textures.entry((ti.format, ti.kind)).or_default() += 1;
         }
-        let frame = self.presents + 1;
         let shadow = info.iter().flatten().any(|t| t.format.is_depth());
-        (shadow && self.shadow_frames.last() != Some(&frame)).then(|| {
-            self.shadow_frames.push(frame);
-            frame
-        })
+        (shadow && self.shadow_frames.insert(frame)).then_some(frame)
     }
 
     pub fn report(&self) -> String {
@@ -214,7 +219,7 @@ impl DrawStats {
             s += &format!(
                 "  shadow-map frames {:>3}  {}\n",
                 self.shadow_frames.len(),
-                ranges(&self.shadow_frames, 40)
+                ranges(&self.shadow_frames.iter().copied().collect::<Vec<_>>(), 40)
             );
         }
         s
@@ -754,6 +759,36 @@ impl<B: Backend> Backend for DiagBackend<B> {
         textures: [Option<&Self::Texture>; 4], plan: &d3d::ExternalPlan, copy: d3d::TargetCopy, pass: d3d::SharedReplacement,
     ) -> Result<Option<Vec<d3d::ExternalRecording>>, String> {
         self.inner.prepare_external(surfaces, request, textures.map(|t| t.map(|t| &t.inner)), plan, copy, pass)
+    }
+
+    fn reusable_external_attachments(&self) -> bool {
+        self.inner.reusable_external_attachments()
+    }
+
+    fn queue_external_draw(
+        &mut self, mut candidate: d3d::backend::QueuedExternalDraw<Self::Surface>,
+        textures: [Option<&Self::Texture>; 4],
+    ) -> bool {
+        let draw = &candidate.fallback;
+        if self.capturing().is_some() || self.logging() || self.sweep.is_some() || self.probe.armed()
+            || crate::native_world_layers_glue::comparing() || crate::native_residual_glue::observing_draw()
+        {
+            return false;
+        }
+        let stats = Arc::clone(&self.stats);
+        let frame = self.in_frame;
+        let (target, info) = (draw.target, draw.texture_info);
+        let finished = candidate.finished;
+        candidate.finished = Box::new(move |fallback| {
+            if let Some(r) = fallback {
+                let shadow = stats.lock().unwrap().add_at(frame, r, &target, &info);
+                if let Some(frame) = shadow {
+                    SHADOW_FRAMES.lock().unwrap().insert(frame);
+                }
+            }
+            finished(fallback);
+        });
+        self.inner.queue_external_draw(candidate, textures.map(|t| t.map(|t| &t.inner)))
     }
 
     fn commit_external(&mut self, recording: d3d::ExternalRecording) {
@@ -1415,6 +1450,10 @@ mod tests {
             "{}",
             s.report()
         );
+        // A delayed worker fallback keeps the frame it was queued in.
+        assert_eq!(s.add_at(4, &Ok(DrawOutcome::Drawn), &t, &map), None);
+        assert_eq!(s.add_at(2, &Ok(DrawOutcome::Drawn), &t, &map), Some(2));
+        assert!(s.report().ends_with("  shadow-map frames   5  2-5, 8\n"));
         assert_eq!(ranges(&[1, 2, 4, 6, 7], 2), "1-2, 4, ...");
     }
 
@@ -1607,6 +1646,54 @@ mod tests {
         assert_eq!(draw.constants[&-38], [0.0, 0.0, 16384.0, 1.0]);
         assert_eq!(draw.constants[&58], [320.0, -240.0, 16777215.0, 0.0]);
         assert_eq!(draw.depth.as_ref().map(|d| d.w), Some(true));
+    }
+
+    #[test]
+    fn the_headless_gpu_stack_pins_plain_lights_once() {
+        struct PlainLight {
+            index: u32,
+            seen: Arc<Mutex<Vec<u32>>>,
+        }
+        impl d3d::ExternalPass for PlainLight {
+            fn batch_key(&self) -> Option<u64> { Some(37) }
+
+            fn prepare_copy(&mut self, target: &d3d::ExternalTarget<'_>) -> Result<(), &'static str> {
+                assert_eq!(target.copy, d3d::TargetCopy::Reference);
+                self.seen.lock().unwrap().push(self.index);
+                Ok(())
+            }
+
+            fn record_bundles(&mut self, _: &mut d3d::ExternalTarget<'_>) -> Option<d3d::backend::ExternalBundles> {
+                Some(d3d::backend::ExternalBundles {
+                    run: self.batch_key()?,
+                    scissor: [0, 0, 8, 8],
+                    groups: Vec::new(),
+                    ranges: 1,
+                })
+            }
+        }
+
+        let Ok(ctx) = gfx::GfxContext::headless() else { return };
+        let gpu = d3d::GfxBackend::new(ctx);
+        let (mut backend, _) = DiagBackend::new(d3d::ThreadedBackend::new(gpu).unwrap());
+        let surfaces = d3d::ExternalSurfaces {
+            color: backend.create_surface(D3DFormat::LinA8R8G8B8, 8, 8, false).unwrap(),
+            depth: backend.create_surface(D3DFormat::LinD16, 8, 8, true).unwrap(),
+            sampled: vec![], slots: vec![], slot_sizes: vec![],
+        };
+        let request = d3d::ExternalPassRequest { rect: (0, 0, 8, 8), surface_size: (8, 8), z_scale: 65_535. };
+        let plan = d3d::ExternalPlan { stage: timeline::native::Stage::Lights, view: 0, ranges: 1, slots: vec![] };
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let reads = backend.inner.waits().reads;
+        for index in 0..4 {
+            let pass: d3d::SharedReplacement = Arc::new(Mutex::new(Box::new(PlainLight { index, seen: seen.clone() })));
+            let recordings = backend.prepare_external(surfaces.clone(), request, [None; 4], &plan,
+                d3d::TargetCopy::Reference, pass).unwrap().expect("complete reservation");
+            for recording in recordings { backend.commit_external(recording); }
+        }
+        assert_eq!(backend.inner.waits().reads - reads, 1);
+        assert_eq!(*seen.lock().unwrap(), [0, 1, 2, 3]);
+        backend.drain().unwrap();
     }
 
     /// Every `Backend` method must be forwarded by `DiagBackend`; a missed

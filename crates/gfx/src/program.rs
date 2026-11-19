@@ -114,6 +114,11 @@ impl ProgramBindings {
         }
     }
 
+    /// Group 0 shared by every program linked with these bindings.
+    pub fn uniform_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.uniforms
+    }
+
     fn layout(
         &mut self,
         device: &wgpu::Device,

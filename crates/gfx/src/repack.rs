@@ -177,7 +177,7 @@ impl Conversion {
 }
 
 /// One attribute within a [`StreamPlan`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PlannedAttribute {
     /// Source register (= shader location).
     pub register: VertexRegister,
@@ -196,7 +196,7 @@ pub struct PlannedAttribute {
 }
 
 /// Plan for one vertex stream.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct StreamPlan {
     /// Stream index.
     pub stream: u32,

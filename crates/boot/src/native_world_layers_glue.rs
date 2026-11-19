@@ -245,6 +245,10 @@ struct Replacement {
 impl ExternalPass for Replacement {
     fn encode(&mut self, _target: ExternalTarget<'_>) {}
 
+    fn resolved_fallback(&self) -> Option<Arc<ResolvedDraw>> {
+        self.pass.resolved_fallback()
+    }
+
     fn writes(&self) -> ExternalWrites {
         self.pass.writes()
     }

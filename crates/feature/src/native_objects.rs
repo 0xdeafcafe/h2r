@@ -446,7 +446,7 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         stop(Stop::NoList, || "the current list does not read".to_owned());
         return;
     };
-    let unowned = (cleared.walk.walked - cleared.walk.accepted) as u64;
+    let unowned = u64::from(cleared.walk.refused_ownership());
     Stage::Objects.count(Metric::Examined, unowned);
     Stage::Objects.count(Metric::RefusedOwnership, unowned);
     add_walk(&cleared.walk);

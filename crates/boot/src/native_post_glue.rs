@@ -511,9 +511,17 @@ fn screen_end_returns(call: &ScreenCall) -> Vec<Option<u32>> {
     returns
 }
 
-fn target_header(mem: &dyn GuestMemory, index: u32) -> Option<u32> {
-    let addr = glow::TARGETS.checked_add(index.checked_mul(glow::TARGET_STRIDE)?)?;
-    mem.u32(addr + 0x88).ok().filter(|&h| h != 0)
+/// The embedded level-zero surface returned by the guest's
+/// `0x0001dcf0` for a live render-target descriptor.
+fn target_level_surface(mem: &dyn GuestMemory, index: u32) -> Option<u32> {
+    let descriptor = glow::TARGETS.checked_add(index.checked_mul(glow::TARGET_STRIDE)?)?;
+    if mem.u32(descriptor.checked_add(0x88)?).ok()? == 0
+        || mem.u8(descriptor.checked_add(0x95)?).ok()? != 0
+        || mem.i32(descriptor.checked_add(0x78)?).ok()? <= 0
+    {
+        return None;
+    }
+    descriptor.checked_add(0x18)
 }
 
 fn slot<'a>(target: &d3d::ExternalTarget<'a>, slot: usize) -> Option<&'a d3d::ExternalColor> {
@@ -824,7 +832,15 @@ fn glow_slot(surface: Surface) -> u8 {
     }
 }
 
-/// A quad of `0x00034420`: `D3DDevice_Begin(7)`, four vertices.
+fn glow_headers(mem: &dyn GuestMemory) -> Vec<Option<u32>> {
+    vec![
+        None, // The swallow pins the view from the bound target.
+        target_level_surface(mem, glow::TARGET_DOWN),
+        target_level_surface(mem, glow::TARGET_OTHER),
+    ]
+}
+
+/// A quad of `0x00034420`: four vertices between pushed Begin(7) and End.
 pub const QUAD: (PrimitiveType, usize) = (PrimitiveType::TriangleFan, 4);
 
 /// `H2_POST_AB`: where and which calls the A/B captures.
@@ -1138,7 +1154,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         } else {
             Box::new(capture("d3d"))
         };
-        let headers = vec![None, target_header(mem, glow::TARGET_DOWN), target_header(mem, glow::TARGET_OTHER)];
+        let headers = glow_headers(mem);
         let capture = (native && pumping).then(|| Box::new(capture("native")) as Box<dyn d3d::ExternalPass>);
         self.arm(mem, d3d::Swallow {
             call: Some(swallow_call(site)),
@@ -1344,8 +1360,10 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         let (targets, shapes) = plan;
         let (primitive, vertices) = shapes[0];
         let end_returns = screen_end_returns(&call);
-        let headers = [None, Some(0), Some(1), Some(0x19), Some(0x1a), Some(0x1b)]
-            .map(|index| index.and_then(|index| target_header(mem, index))).to_vec();
+        // Target 0 comes from a device surface, outside the level table.
+        // Its first strip pins SLOT_BOUND after the guest binds it.
+        let headers = [None, None, Some(1), Some(0x19), Some(0x1a), Some(0x1b)]
+            .map(|index| index.and_then(|index| target_level_surface(mem, index))).to_vec();
         let pass = Box::new(ScreenPass { effects, call, screens: Arc::clone(&self.screens) });
         self.arm(mem, d3d::Swallow {
             call: Some(swallow_call(site)), end_returns, headers, targets, primitive, vertices, shapes, drop: true, pass, capture: None,
@@ -1484,18 +1502,146 @@ mod tests {
     }
 
     #[test]
-    fn the_swallow_has_a_slot_per_quad() {
+    fn the_colour_swallow_matches_the_embedded_surfaces_in_pass_order() {
+        use d3d::GuestMemory as _;
+        use d3d::pushbuf::method;
+        use d3d::resource::{ResourceType, common};
+        use engine::memory::FlatMemory;
+        use gfx::vertex::fvf;
+
         let plan = Plan {
             window: [0.0; 4],
             signs: [0.0; 2],
-            view: (640, 480),
-            small: (160, 120),
+            view: (32, 32),
+            small: (16, 16),
             draws: [Surface::Down, Surface::Other, Surface::Down, Surface::Other, Surface::Down, Surface::View]
                 .map(draw)
                 .to_vec(),
         };
-        assert_eq!(targets(&plan), vec![1, 2, 1, 2, 1, 0]);
-        assert_eq!(QUAD, (PrimitiveType::from_xbox(7).unwrap(), 4), "0x00034420's Begin(7)");
+        let call = d3d::SwallowCall {
+            entry: call_entry(PostCall::Colour),
+            esp: 0x0043_0100,
+            ret: 0x2000,
+        };
+        let config = d3d::DeviceConfig::halo2(
+            d3d::GuestRange {
+                addr: 0x0041_0000,
+                len: 0x1_0000,
+            },
+            d3d::GuestRange {
+                addr: 0x0042_0000,
+                len: 0x1000,
+            },
+        );
+        let down = glow::TARGETS + glow::TARGET_DOWN * glow::TARGET_STRIDE;
+        let other = glow::TARGETS + glow::TARGET_OTHER * glow::TARGET_STRIDE;
+
+        for wrong_target in [false, true] {
+            let mut mem = FlatMemory::new(0x0040_0000, 0x10_0000);
+            for slot in 0..d3d::pushbuf::SIMPLE_ENCODE_SLOTS as u32 {
+                let header = (1 << 18) | (4 * (slot + 1));
+                mem.set_u32(config.layout.simple_encode + 4 * slot, header).unwrap();
+            }
+            for (descriptor, data) in [(down, 0x0010_0000), (other, 0x0011_0000)] {
+                mem.set_u32(descriptor + 0x88, data).unwrap();
+                mem.set_u32(descriptor + 0x78, 1).unwrap();
+                let surface = descriptor + 0x18;
+                let resource = (ResourceType::Surface.raw() << common::TYPE_SHIFT) | 1;
+                let format = (2 << 4) | (gfx::D3DFormat::LinA8R8G8B8.raw() << 8) | (1 << 16);
+                let size = (plan.small.0 - 1) | ((plan.small.1 - 1) << 12);
+                for (i, word) in [resource, data, 0, format, size, 0].into_iter().enumerate() {
+                    mem.set_u32(surface + 4 * i as u32, word).unwrap();
+                }
+            }
+            let headers = glow_headers(&mem);
+            let mut dm = DeviceMemory(&mut mem);
+            let mut backend = d3d::RecordingBackend::new();
+            backend.external_passes = true;
+            let mut device = d3d::Device::new(config, backend);
+            let params = 0x0043_0000;
+            d3d::PresentParameters {
+                width: plan.view.0,
+                height: plan.view.1,
+                back_buffer_format: gfx::D3DFormat::A8R8G8B8.raw(),
+                back_buffer_count: 1,
+                multisample_type: 0,
+                swap_effect: 0,
+                enable_auto_depth_stencil: false,
+                auto_depth_stencil_format: 0,
+                flags: 0,
+                refresh_rate: 0,
+                presentation_interval: 0,
+                buffer_surface: 0,
+                depth_stencil_surface: 0,
+            }
+            .write(&mut dm, params)
+            .unwrap();
+            device.create_device(&mut dm, 0, params, 0).unwrap();
+            device.set_vertex_shader(&mut dm, fvf::XYZRHW).unwrap();
+            let view = device.bound_target()[0];
+            let swallow = d3d::Swallow {
+                call: Some(call),
+                end_returns: Vec::new(),
+                headers,
+                targets: targets(&plan),
+                primitive: QUAD.0,
+                vertices: QUAD.1,
+                shapes: Vec::new(),
+                drop: true,
+                pass: Box::new(CapturePass(None)),
+                capture: None,
+            };
+            assert!(device.swallow(&mut dm, swallow).unwrap());
+
+            // Downsample, four ping-pong blur draws, then the composite.
+            // The guest binds the embedded surfaces and pushes a fan with
+            // the position register last for each corner.
+            let (down, other) = (down + 0x18, other + 0x18);
+            let first_blur = if wrong_target { down } else { other };
+            for target in [down, first_blur, down, other, down, view] {
+                device.set_render_target(&mut dm, target, 0).unwrap();
+                let mut put = dm.read_u32(config.layout.device).unwrap();
+                let mut push = |words: &[u32]| {
+                    for &word in words {
+                        dm.write_u32(put, word).unwrap();
+                        put += 4;
+                    }
+                };
+                push(&[(1 << 18) | method::BEGIN_END, 7]);
+                for (x, y) in [(0.0_f32, 0.0_f32), (0.0, 8.0), (8.0, 8.0), (8.0, 0.0)] {
+                    push(&[
+                        (4 << 18) | (method::VERTEX_DATA4F + 16),
+                        x.to_bits(), y.to_bits(), 0, 0,
+                    ]);
+                    push(&[
+                        (4 << 18) | method::VERTEX4F,
+                        x.to_bits(), y.to_bits(), 0, 1.0_f32.to_bits(),
+                    ]);
+                }
+                push(&[(1 << 18) | method::BEGIN_END, 0]);
+                dm.write_u32(config.layout.device, put).unwrap();
+            }
+            assert_eq!(device.drain_until_callback(&mut dm).unwrap(), None);
+            assert_eq!(device.stats().draws, if wrong_target { 6 } else { 0 });
+            device.finish_swallow(&mut dm, call.entry, call.esp).unwrap();
+            let (matched, reason) = if wrong_target {
+                (1, d3d::SwallowRefusal::Shape)
+            } else {
+                // The recorder cannot encode a replacement. It reaches
+                // the encode boundary with all six originals still held.
+                (6, d3d::SwallowRefusal::Encode)
+            };
+            let stats = device.stats();
+            assert_eq!(stats.swallowed_draws, matched);
+            assert_eq!(stats.swallow_draws_replayed, matched);
+            assert_eq!(
+                stats.swallow_reasons[reason.index()],
+                1,
+                "{:?}",
+                device.swallow_mismatch()
+            );
+            assert_eq!(stats.draws, 6);
+        }
     }
 
     #[test]

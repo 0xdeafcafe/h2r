@@ -300,6 +300,10 @@ impl Surface {
     pub fn view(&self) -> &wgpu::TextureView {
         &self.view
     }
+    /// Base mip of the actual image, usable as a single-level attachment.
+    pub fn base_view(&self) -> &wgpu::TextureView {
+        self.levels.first().unwrap_or(&self.view)
+    }
     /// Mip levels (1 unless made by [`SurfaceStore::create_texture_target`]).
     pub fn mip_levels(&self) -> u32 {
         self.texture.mip_level_count()
@@ -530,7 +534,7 @@ impl SurfaceStore {
         let larger = depth.and_then(|d| self.surfaces.get(&d)).is_some_and(|d| d.desc.width != c.desc.width || d.desc.height != c.desc.height);
         let view = match (&c.padded, larger) {
             (Some(p), true) => &p.view,
-            _ => c.msaa.as_ref().map_or(c.levels.first().unwrap_or(&c.view), |(_, v)| v),
+            _ => c.msaa.as_ref().map_or(c.base_view(), |(_, v)| v),
         };
         Ok(RenderTarget {
             color: view,
