@@ -275,6 +275,7 @@ async fn ingest_fans_out_and_records_frames() {
         issue_token(key, id, "live.test", method, live_server::app::now())
     };
     let new = NewGame {
+        sim: None,
         console: None,
         map: "lockout".into(),
         mode: "multiplayer".into(),
@@ -440,6 +441,7 @@ async fn frames_carry_species_aim_weapon_and_shots() {
     let (live, addr) = serve(Policy::default()).await;
     let (key, account) = create(&live, "Host").await;
     let new = NewGame {
+        sim: None,
         console: None,
         map: "lockout".into(),
         mode: "multiplayer".into(),
@@ -595,6 +597,7 @@ async fn campaign_frames_carry_vehicles_and_actors() {
     let (live, addr) = serve(Policy::default()).await;
     let (key, account) = create(&live, "Host").await;
     let new = NewGame {
+        sim: None,
         console: None,
         map: "03a_oldmombasa".into(),
         mode: "campaign".into(),
@@ -666,6 +669,7 @@ async fn campaign_frames_carry_vehicles_and_actors() {
             occupied: true,
             parent: None,
             aim: None,
+            vel: Some([0.0, 4.0, 0.0]),
         }],
         actors: vec![FrameActor {
             id: "90070007".into(),
@@ -704,6 +708,22 @@ async fn campaign_frames_carry_vehicles_and_actors() {
         bsp: Some(1),
         cut: Some(61),
         cinematic: false,
+        machine_positions: vec![live_proto::game::MachinePosition { i: 23, p: 126 }],
+        projectiles: vec![live_proto::game::FrameProjectile {
+            id: "900b000b".into(),
+            kind: "plasma_grenade".into(),
+            pos: [4.0, 5.0, 6.0],
+            vel: Some([3.0, 0.0, 2.5]),
+            parent: None,
+        }],
+        items: vec![live_proto::game::FrameItem {
+            id: "900c000c".into(),
+            kind: "flag".into(),
+            pos: [1.0, 1.0, 0.5],
+            forward: [1.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            equipment: false,
+        }],
         machines: vec![live_proto::game::FrameMachine {
             node: Some("scarab_0".into()),
             id: "90090009".into(),
@@ -740,17 +760,28 @@ async fn campaign_frames_carry_vehicles_and_actors() {
     bad_stance.actors[0].stance = Some("prone".into());
     let mut bad_position = good.clone();
     bad_position.machines[0].position = Some(2.0);
+    let mut duplicate_travel = good.clone();
+    duplicate_travel
+        .machine_positions
+        .push(good.machine_positions[0]);
     let mut bad_order = good.clone();
     bad_order.objects.reverse();
     let mut bad_gone = good.clone();
     bad_gone.objects[1].p = Some([0.0; 3]);
+    let mut bad_item = good.clone();
+    bad_item.items[0].up = [0.0; 3];
+    let mut bad_projectile = good.clone();
+    bad_projectile.projectiles[0].vel = Some([f64::NAN, 0.0, 0.0]);
     for bad in [
         bad_up,
         bad_species,
         bad_stance,
         bad_position,
+        duplicate_travel,
         bad_order,
         bad_gone,
+        bad_item,
+        bad_projectile,
     ] {
         assert!(live.ingest_frame(&author, bad).await.is_err());
     }
@@ -768,6 +799,13 @@ async fn campaign_frames_carry_vehicles_and_actors() {
     );
     assert_eq!(frame.actors[0].team.as_deref(), Some("covenant"));
     assert_eq!(frame.actors[0].shots, Some(2));
+    assert_eq!(
+        frame.machine_positions,
+        [live_proto::game::MachinePosition { i: 23, p: 126 }]
+    );
+    assert_eq!(frame.vehicles[0].vel, Some([0.0, 4.0, 0.0]));
+    assert_eq!(frame.projectiles[0].kind, "plasma_grenade");
+    assert_eq!(frame.items[0].kind, "flag");
 
     let recorded = recorded_frames(&live, &game_id).await;
     assert_eq!(recorded[0]["vehicles"][0]["kind"], "warthog");
@@ -781,6 +819,10 @@ async fn campaign_frames_carry_vehicles_and_actors() {
     assert_eq!(recorded[0]["hits"][0]["to"], "p0");
     assert_eq!(recorded[0]["bsp"], 1);
     assert_eq!(recorded[0]["machines"][0]["node"], "scarab_0");
+    assert_eq!(
+        recorded[0]["machine_positions"],
+        serde_json::json!([{ "i": 23, "p": 126 }])
+    );
     assert_eq!(recorded[0]["objects"][0]["k"], "bloc");
     assert_eq!(
         recorded[0]["objects"][0]["f"],
@@ -866,6 +908,9 @@ async fn packed_frames_ingest_stream_and_record() {
     };
     let game_id = live.start_game(Some(&token), new).await.unwrap().game_id;
     let mut frames = live_proto::samples::multiplayer(10);
+    let device = |p| live_proto::game::MachinePosition { i: 9, p };
+    frames[0].machine_positions.push(device(0));
+    frames[1].machine_positions.push(device(177));
     for f in &mut frames {
         f.game_id = game_id.clone();
     }
@@ -921,6 +966,9 @@ async fn packed_frames_ingest_stream_and_record() {
     // into the next sent one), quantised.
     let expect: Vec<_> = sent.iter().map(|f| pack::quantize(f).unwrap()).collect();
     assert_eq!(seen, expect, "packed readers get the quantised frames");
+    assert_eq!(seen[0].machine_positions, [device(0)]);
+    assert_eq!(seen[1].machine_positions, [device(177)], "throttled change");
+    assert!(seen[2].machine_positions.is_empty());
 
     // A reader that joins now starts from the game's last keyframe.
     let mut late = connect(
@@ -993,6 +1041,14 @@ async fn packed_frames_ingest_stream_and_record() {
     let first: live_proto::game::Frame = serde_json::from_value(recorded[0].clone()).unwrap();
     assert_eq!(first.tick, expect[0].tick);
     assert_eq!(first.players, expect[0].players);
+    assert_eq!(
+        recorded[0]["machine_positions"],
+        serde_json::json!([{ "i": 9, "p": 0 }])
+    );
+    assert_eq!(
+        recorded[1]["machine_positions"],
+        serde_json::json!([{ "i": 9, "p": 177 }])
+    );
     let index = live.frame_chunks(&game_id).await.unwrap();
     let from = index[0].from_tick;
     // Off the test's one runtime thread, which the server needs.
@@ -1008,12 +1064,12 @@ async fn packed_frames_ingest_stream_and_record() {
         let cache = body.header("cache-control").map(str::to_owned);
         let mut bytes = Vec::new();
         std::io::Read::read_to_end(&mut body.into_reader(), &mut bytes).unwrap();
-        // The JSON frames read is gone.
-        let json_frames = match ureq::get(&format!("{base}/frames?format=json")).call() {
-            Err(ureq::Error::Status(code, _)) => code,
-            Ok(r) => r.status(),
-            Err(e) => panic!("{e}"),
-        };
+        let json_frames: Vec<live_proto::game::Frame> =
+            ureq::get(&format!("{base}/chunks/{from}?format=json"))
+                .call()
+                .unwrap()
+                .into_json()
+                .unwrap();
         (list, kind, cache, bytes, json_frames)
     })
     .await
@@ -1021,8 +1077,20 @@ async fn packed_frames_ingest_stream_and_record() {
     assert_eq!(list["items"][0]["from_tick"], from);
     assert_eq!(list["items"][0]["sha256"], index[0].sha256.as_str());
     assert_eq!(kind.as_deref(), Some("application/x-h2-chunk"));
-    assert_eq!(cache.as_deref(), Some("public, max-age=31536000, immutable"));
+    assert_eq!(
+        cache.as_deref(),
+        Some("public, max-age=31536000, immutable")
+    );
     let replay = live_proto::chunk::frames(&bytes).unwrap();
     assert_eq!(replay[0], first);
-    assert_eq!(json_frames, 400);
+    assert_eq!(
+        bytes.as_slice(),
+        live.frame_chunk(&game_id, from).await.unwrap().as_ref()
+    );
+    assert_eq!(replay, json_frames);
+    assert!(
+        index[0]
+            .versions
+            .contains(&(live_proto::pack::VERSION as u8))
+    );
 }

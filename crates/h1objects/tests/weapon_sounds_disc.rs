@@ -20,7 +20,7 @@
 //!   each barrel's firing effects are Halo 1's (by path), and every sound
 //!   part of each is the Halo 1 sound its Halo 1 effect plays (by path) and
 //!   is in the map; the same for the magazines' reloading effects. Before
-//!   converter version 92 the effects were the Halo 2 counterpart's (the
+//!   converter version 97 the effects were the Halo 2 counterpart's (the
 //!   assault rifle fired the SMG's), and weapons with no counterpart (the
 //!   vehicle guns) had none.
 
@@ -551,7 +551,7 @@ fn retail_animation_sound_events() {
 /// converts is counted), as tags and tree bytes per group, the largest
 /// tags, and the sounds' `snd!` and gestalt rows (permutations `0x10`,
 /// pitch ranges `0xc`, chunks `0xc`, parameters `0xa`). Before converter
-/// version 92 none of this was in the map (the counterparts' were, from
+/// version 97 none of this was in the map (the counterparts' were, from
 /// the base). Prints only.
 #[test]
 #[ignore = "reads the Halo 1 and Halo 2 discs ($H1_ISO, $H2_DISC)"]

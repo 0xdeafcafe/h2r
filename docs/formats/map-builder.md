@@ -196,6 +196,20 @@ move retail tags away from their old addresses while reusing freed space).
 `check_tag_memory = false` skips the tag-memory bound below; only for
 offline round trips of maps already at the bound.
 
+A pinned map's BSP space is fixed too: every region loads at the same
+base, the metadata sits right after the largest, and pinned metadata
+cannot move. A built BSP region larger than the pinned one is refused
+("BSP space outgrew the pinned metadata base"). `check_bsp_space = false`
+lets it run on into the metadata's virtual range: the reader still finds
+every BSP tag through its own region and every metadata tag through the
+metadata's, but the engine could not load the map. Only for an
+intermediate map read back offline and laid out anew: `h1convert`'s fresh
+build (`Prepared::build_fresh`) builds its pinned intermediate so, because
+merging placed scenery into the level's collision grows Boarding Action's
+region past Beaver Creek's; the fresh map has no pinned base and sizes its
+BSP space to its own regions. Builder test:
+`a_bsp_region_past_the_pinned_bsp_space_is_refused_unless_unchecked`.
+
 A `Block` with a sharing key (`Block::shared(key)`) is placed once per
 region: every later block with the same key gets the first one's address
 and is not written again. The relocator keys every array this way so

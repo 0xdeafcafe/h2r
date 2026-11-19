@@ -28,7 +28,7 @@ struct item 0x12c
   0x124 tagref detonation_effect -- S: effe group words on retail items; Halo 1 item +0x2f8
 group weap 0x31c
   0x0 struct item item -- the item layer
-  0x12c unknown 0x4
+  0x12c u32 weapon_flags -- E: bits 22 and 23 permit the off hand (0xcd8a8..0xcd8d7, 0xcdaee..0xcdb0d)
   0x130 unknown 0x4
   0x134 unknown 0x4
   0x138 unknown 0x4
@@ -101,7 +101,8 @@ group weap 0x31c
   0x284 unknown 0x4
   0x288 string string_288
   0x28c string string_28c
-  0x290 unknown 0x4
+  0x290 i16 multiplayer_weapon_type -- E/V: 0 ordinary, 1 flag or bomb, 2 ball, 4 juggernaut powerup (0x101280, Zanzibar)
+  0x292 unknown 0x2
   0x294 unknown 0x4
   0x298 unknown 0x4
   0x29c unknown 0x4

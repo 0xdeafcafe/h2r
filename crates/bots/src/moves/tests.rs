@@ -9,6 +9,7 @@ fn quad(x0: f32, y0: f32, x1: f32, y1: f32, z: f32) -> Poly {
 /// One wide floor, no walls.
 fn open() -> MapData {
     MapData {
+        places: Default::default(),
         nav: NavMesh::new(vec![quad(-20.0, -20.0, 20.0, 20.0, 0.0)], vec![]),
         walls: Walls::default(),
     }
@@ -18,6 +19,7 @@ fn open() -> MapData {
 /// 2 below it.
 fn bridge() -> MapData {
     MapData {
+        places: Default::default(),
         nav: NavMesh::new(
             vec![
                 quad(-20.0, -0.4, 20.0, 0.4, 2.0),
@@ -347,4 +349,27 @@ fn rushing_runs_straight_in_and_without_a_map_it_walks_straight() {
         ..input(Skill::Normal, 2, [0.0; 3], [5.0, 0.0, 0.0])
     };
     assert_eq!(m.fight(&back, None, &[]).walk, [-1.0, 0.0]);
+}
+
+#[test]
+fn a_standing_step_stops_at_a_roof_inside_its_floor_polygon() {
+    let floor = crate::nav::Poly::new(vec![
+        [0.0, 0.0, 0.0],
+        [4.0, 0.0, 0.0],
+        [4.0, 4.0, 0.0],
+        [0.0, 4.0, 0.0],
+    ]);
+    let ceiling = [
+        [2.0, 0.0, 0.59],
+        [4.0, 0.0, 0.59],
+        [4.0, 4.0, 0.59],
+        [2.0, 4.0, 0.59],
+    ];
+    let map = MapData {
+        places: Default::default(),
+        nav: crate::nav::NavMesh::new(vec![floor], vec![]),
+        walls: crate::los::Walls::from_polygons([ceiling.as_slice()]),
+    };
+    assert!(!headroom(&map, [1.8, 2.0, 0.0], [1.0, 0.0]));
+    assert!(headroom(&map, [1.8, 2.0, 0.0], [-1.0, 0.0]));
 }

@@ -105,9 +105,35 @@ impl Appearance {
     }
 }
 
+/// Private headless simulation metadata carried by the normal game start.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SimGame {
+    pub run_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_id: Option<String>,
+    /// Decimal u64, including seeds larger than JavaScript's exact integer range.
+    pub seed: String,
+    pub gametype: String,
+    pub pace: String,
+    /// Resolved bot specs from the match config, with inline tuning.
+    pub bots: Vec<serde_json::Value>,
+    /// This match's recording is sent after simulation finishes.
+    #[serde(default)]
+    pub deferred: bool,
+}
+
+/// Sim recordings' stable game id, also used when retrying a start.
+pub fn sim_game_id(run_id: &str) -> String {
+    format!("sim-{run_id}")
+}
+
 /// `POST /v1/games`: `GameStarted` data without `game_id` (or `host`).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct NewGame {
+    /// Present only for private admin training games.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sim: Option<SimGame>,
+
     #[serde(default)]
     pub console: Option<String>,
     pub map: String,
@@ -186,6 +212,14 @@ impl NewGame {
             None => "custom",
         }
     }
+
+    /// Whether this game has teammates, so a kill can be a betrayal: a team
+    /// game (the variant's team flag), or a campaign, where the players are
+    /// all on one side. Free-for-all has none, whatever team index its
+    /// players carry.
+    pub fn has_teammates(&self) -> bool {
+        self.team_play || self.mode == "campaign"
+    }
 }
 
 /// `GameStarted` data, written by the server: the request plus the id it
@@ -223,6 +257,58 @@ pub struct PlayerKilled {
 }
 
 pub const KILL_KINDS: [&str; 4] = ["kill", "suicide", "betrayal", "world"];
+
+/// Whether a kill is a betrayal: in a game with teammates
+/// ([`NewGame::has_teammates`]), by a killer who is not the victim and is
+/// on the victim's team. `team_of` gives a player's team; a player it does
+/// not know is no one's teammate.
+///
+/// This is the only rule. The kill function's third argument is not a
+/// betrayal flag: it is set for free-for-all kills too
+/// (docs/live/live-gamestate.md §7).
+pub fn is_betrayal(
+    has_teammates: bool,
+    killer: Option<u32>,
+    victim: u32,
+    team_of: impl Fn(u32) -> Option<i32>,
+) -> bool {
+    has_teammates
+        && killer
+            .is_some_and(|k| k != victim && team_of(k).is_some_and(|t| team_of(victim) == Some(t)))
+}
+
+/// A kill's kind from who killed whom: `world` with no killer, `suicide`
+/// by the victim, else `betrayal` or `kill` ([`is_betrayal`]).
+pub fn kill_kind(killer: Option<u32>, victim: u32, betrayal: bool) -> &'static str {
+    match killer {
+        None => "world",
+        Some(k) if k == victim => "suicide",
+        Some(_) if betrayal => "betrayal",
+        Some(_) => "kill",
+    }
+}
+
+/// A recorded kill's kind as it should be read: a `kill` or `betrayal` by
+/// another player is settled again by `betrayal` ([`is_betrayal`]), since
+/// hosts before the fix recorded free-for-all kills as betrayals; `suicide`
+/// and `world` stay as recorded.
+pub fn settled_kill_kind<'a>(
+    recorded: &'a str,
+    killer: Option<u32>,
+    victim: u32,
+    betrayal: bool,
+) -> &'a str {
+    match recorded {
+        "kill" | "betrayal" if killer.is_some_and(|k| k != victim) => {
+            if betrayal {
+                "betrayal"
+            } else {
+                "kill"
+            }
+        }
+        other => other,
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlayerScore {
@@ -391,6 +477,8 @@ pub const MAX_FRAME_ACTIONS: usize = 8;
 pub const MAX_FRAME_HITS: usize = 64;
 /// Most machines one frame may carry.
 pub const MAX_FRAME_MACHINES: usize = 128;
+/// Most placed devices whose travel is retained, fitting the packed count byte.
+pub const MAX_MACHINE_POSITIONS: usize = u8::MAX as usize;
 /// Fastest `speed` accepted, game units a second.
 pub const MAX_FRAME_SPEED: f64 = 1000.0;
 
@@ -430,10 +518,13 @@ pub struct Frame {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bsp: Option<u32>,
     /// Machines (doors, elevators, the scarab, ...) that moved since the
-    /// previous frame; all of them in a game's first frame and in every
-    /// recorded frame. At most [`MAX_FRAME_MACHINES`].
+    /// previous frame; all of them in a game's first frame and at chunk
+    /// starts. At most [`MAX_FRAME_MACHINES`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub machines: Vec<FrameMachine>,
+    /// Changed travel values for placed machines, keyed by scenario index.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub machine_positions: Vec<MachinePosition>,
     /// Scenario placements that are not where the scenario put them: moved
     /// by more than a small epsilon, or gone (destroyed, picked up, not
     /// created). Every such placement, each frame, ordered by kind then
@@ -452,10 +543,68 @@ pub struct Frame {
     /// actors, vehicles, hits, machines or objects, only the tick and the
     /// BSP, so a viewer shows a cutscene rather than the puppets the
     /// scripts move about (docs/live/live-telemetry.md, "Cinematics";
-    /// packed version 5).
+    /// packed version 5; every version 6 frame carries the bit).
     #[serde(default, skip_serializing_if = "is_false")]
     pub cinematic: bool,
+    /// Projectiles in flight that a viewer can see fly (grenades, rockets,
+    /// plasma, needles: slower than [`MAX_PROJECTILE_SPEED`]; faster ones
+    /// live a tick or two and are drawn from `fire` and `aim`), at most
+    /// [`MAX_FRAME_PROJECTILES`] (packed version 6).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub projectiles: Vec<FrameProjectile>,
+    /// Weapons and equipment lying loose in the world that no scenario
+    /// placement or netgame spawn made (those are in `objects`): a dead
+    /// unit's dropped gun, a dropped flag, ball or bomb. At most
+    /// [`MAX_FRAME_ITEMS`] (packed version 6).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<FrameItem>,
 }
+
+/// A projectile in flight (packed version 6).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct FrameProjectile {
+    /// The projectile's object datum in hex.
+    pub id: String,
+    /// The `proj` tag file stem (`frag_grenade`, `plasma_grenade`,
+    /// `rocket`, ...), or `unknown`.
+    pub kind: String,
+    /// World position; with `parent`, where that object is (a stuck plasma
+    /// grenade's own transform is relative to what it stuck to).
+    pub pos: [f64; 3],
+    /// Velocity, game units a second; absent when stuck or not read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vel: Option<[f64; 3]>,
+    /// The object it is attached to (a plasma grenade stuck to a unit or a
+    /// vehicle): its id as players, actors and vehicles carry it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
+}
+
+/// A loose weapon or piece of equipment (packed version 6).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct FrameItem {
+    /// The object datum in hex.
+    pub id: String,
+    /// The `weap` (or with `equipment`, `eqip`) tag file stem: `flag`,
+    /// `ball`, `assault_bomb`, `battle_rifle`, ..., or `unknown`.
+    pub kind: String,
+    pub pos: [f64; 3],
+    /// Unit length, game coordinates.
+    pub forward: [f64; 3],
+    pub up: [f64; 3],
+    /// An `eqip` tag (grenades, powerups), not a `weap`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub equipment: bool,
+}
+
+/// Most projectiles one frame may carry.
+pub const MAX_FRAME_PROJECTILES: usize = 64;
+/// Most loose items one frame may carry.
+pub const MAX_FRAME_ITEMS: usize = 128;
+/// Projectiles faster than this (world units a second) are not sent: a
+/// bullet (400) crosses a map in a tick or two, and the viewer draws it
+/// from the shooter's `fire` and `aim`.
+pub const MAX_PROJECTILE_SPEED: f64 = 100.0;
 
 /// Which scenario block a [`FrameObject`] is placed by. The order is the
 /// packed format's kind code (docs/live/live-telemetry.md, Packed frames). Its
@@ -584,6 +733,15 @@ pub struct FrameHit {
     pub ago: Option<u32>,
 }
 
+/// A placed machine's travel, independent of its world pose and tag name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MachinePosition {
+    /// Index into the scenario's machine placements.
+    pub i: u16,
+    /// Normalized device position, rounded to 0..255.
+    pub p: u8,
+}
+
 /// A device machine or other big scripted mover.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct FrameMachine {
@@ -598,7 +756,7 @@ pub struct FrameMachine {
     pub pos: [f64; 3],
     pub forward: [f64; 3],
     pub up: [f64; 3],
-    /// Device position, 0 to 1 (door or elevator travel).
+    /// Legacy device position, 0 to 1. New senders use `Frame::machine_positions`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub position: Option<f64>,
 }
@@ -634,6 +792,10 @@ pub struct FrameVehicle {
     /// points. Unit length, game coordinates; absent when not read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aim: Option<[f64; 3]>,
+    /// Velocity, game units a second (body `+0x88`), as players' and
+    /// actors' `vel` (packed version 6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vel: Option<[f64; 3]>,
 }
 
 /// An AI-controlled biped.
@@ -1000,6 +1162,7 @@ pub fn validate_frame(frame: &Frame) -> Result<(), String> {
         if v.aim.is_some_and(|a| !direction(a)) {
             return Err("vehicle aim must be a finite, non-zero vector".into());
         }
+        validate_vel(v.vel)?;
     }
     for a in &frame.actors {
         let ids = [
@@ -1046,7 +1209,20 @@ pub fn validate_frame(frame: &Frame) -> Result<(), String> {
     if frame.machines.len() > MAX_FRAME_MACHINES {
         return Err(format!("at most {MAX_FRAME_MACHINES} machines"));
     }
+    if frame.machine_positions.len() > MAX_MACHINE_POSITIONS {
+        return Err(format!("at most {MAX_MACHINE_POSITIONS} machine positions"));
+    }
+    if frame
+        .machine_positions
+        .iter()
+        .any(|m| m.i > i16::MAX as u16)
+        || frame.machine_positions.windows(2).any(|w| w[0].i >= w[1].i)
+    {
+        return Err("machine positions must be ordered by placement index, each once".into());
+    }
     validate_objects(&frame.objects)?;
+    validate_projectiles(&frame.projectiles)?;
+    validate_items(&frame.items)?;
     for m in &frame.machines {
         if !valid_model_id(&m.id) || !valid_model_id(&m.kind) {
             return Err("machine id and kind must be [a-z0-9_]{1,32}".into());
@@ -1059,6 +1235,51 @@ pub fn validate_frame(frame: &Frame) -> Result<(), String> {
         }
         if m.position.is_some_and(|p| !(0.0..=1.0).contains(&p)) {
             return Err("machine position must be 0 to 1".into());
+        }
+    }
+    Ok(())
+}
+
+fn validate_vel(vel: Option<[f64; 3]>) -> Result<(), String> {
+    if vel.is_some_and(|v| !v.iter().all(|c| c.is_finite()) || length(v) > MAX_FRAME_SPEED) {
+        return Err(format!("vel must be finite and at most {MAX_FRAME_SPEED}"));
+    }
+    Ok(())
+}
+
+fn validate_projectiles(projectiles: &[FrameProjectile]) -> Result<(), String> {
+    if projectiles.len() > MAX_FRAME_PROJECTILES {
+        return Err(format!("at most {MAX_FRAME_PROJECTILES} projectiles"));
+    }
+    for p in projectiles {
+        if !valid_model_id(&p.id) || !valid_model_id(&p.kind) {
+            return Err("projectile id and kind must be [a-z0-9_]{1,32}".into());
+        }
+        if p.parent
+            .as_deref()
+            .is_some_and(|id| !valid_model_id(id) || id == p.id)
+        {
+            return Err("projectile parent must be another [a-z0-9_]{1,32} id".into());
+        }
+        if !p.pos.iter().all(|c| c.is_finite()) {
+            return Err("projectile pos must be finite".into());
+        }
+        validate_vel(p.vel)?;
+    }
+    Ok(())
+}
+
+fn validate_items(items: &[FrameItem]) -> Result<(), String> {
+    if items.len() > MAX_FRAME_ITEMS {
+        return Err(format!("at most {MAX_FRAME_ITEMS} items"));
+    }
+    let direction = |v: [f64; 3]| v.iter().all(|c| c.is_finite()) && length(v) >= 1e-6;
+    for i in items {
+        if !valid_model_id(&i.id) || !valid_model_id(&i.kind) {
+            return Err("item id and kind must be [a-z0-9_]{1,32}".into());
+        }
+        if !i.pos.iter().all(|c| c.is_finite()) || !direction(i.forward) || !direction(i.up) {
+            return Err("item pos must be finite, forward and up finite and non-zero".into());
         }
     }
     Ok(())
@@ -1184,6 +1405,7 @@ pub struct FrameCarry {
     actions: Vec<(Shooter, Vec<(String, Option<u64>)>)>,
     hits: Vec<(FrameHit, Option<u64>)>,
     machines: Vec<FrameMachine>,
+    machine_positions: Vec<MachinePosition>,
     cut: Option<u64>,
 }
 
@@ -1244,8 +1466,19 @@ impl FrameCarry {
             }
         }
         if frame.cut.is_some() {
+            self.machine_positions.clear();
             self.cut = frame.cut;
         }
+        if !frame.machine_positions.is_empty() {
+            let mut positions = frame.machine_positions.clone();
+            merge_machine_positions(&mut positions, self.machine_positions.drain(..));
+            self.machine_positions = positions;
+        }
+    }
+
+    /// A fresh machine baseline supersedes travel in throttled frames.
+    pub fn clear_machine_positions(&mut self) {
+        self.machine_positions.clear();
     }
 
     pub fn is_empty(&self) -> bool {
@@ -1254,7 +1487,23 @@ impl FrameCarry {
             && self.actions.is_empty()
             && self.hits.is_empty()
             && self.machines.is_empty()
+            && self.machine_positions.is_empty()
             && self.cut.is_none()
+    }
+}
+
+/// Keep newer device samples when folding in the preceding frame.
+fn merge_machine_positions(
+    newer: &mut Vec<MachinePosition>,
+    earlier: impl IntoIterator<Item = MachinePosition>,
+) {
+    for m in earlier {
+        if newer.len() >= MAX_MACHINE_POSITIONS {
+            break;
+        }
+        if let Err(i) = newer.binary_search_by_key(&m.i, |p| p.i) {
+            newer.insert(i, m);
+        }
     }
 }
 
@@ -1390,6 +1639,7 @@ impl Frame {
             }
         }
         if self.cut.is_none() {
+            merge_machine_positions(&mut self.machine_positions, carry.machine_positions);
             self.cut = carry.cut;
         }
     }
@@ -1453,6 +1703,10 @@ pub fn normalize_frame(frame: &mut Frame) {
     for v in &mut frame.vehicles {
         unit(&mut v.forward);
         unit(&mut v.up);
+    }
+    for i in &mut frame.items {
+        unit(&mut i.forward);
+        unit(&mut i.up);
     }
     for a in &mut frame.actors {
         if let Some(aim) = &mut a.aim {
@@ -1682,6 +1936,50 @@ mod tests {
         ] {
             assert!(validate(kind, &data, &p).is_err(), "{kind} {data}");
         }
+    }
+
+    /// Free-for-all has no betrayals, even with every player on team 0 (or
+    /// a Clanker on the host's team); a team game's are teammates only.
+    #[test]
+    fn a_betrayal_is_a_teammate_killed_in_a_game_with_teams() {
+        let g = |mode: &str, team_play: bool| -> NewGame {
+            serde_json::from_value(json!({
+                "map": "lockout", "mode": mode, "team_play": team_play, "players": []
+            }))
+            .unwrap()
+        };
+        assert!(!g("multiplayer", false).has_teammates());
+        assert!(g("multiplayer", true).has_teammates());
+        assert!(g("campaign", false).has_teammates());
+
+        let all_zero = |_| Some(0);
+        assert!(!is_betrayal(false, Some(1), 2, all_zero), "free-for-all");
+        assert!(is_betrayal(true, Some(1), 2, all_zero));
+        assert!(!is_betrayal(true, Some(2), 2, all_zero), "a suicide");
+        assert!(!is_betrayal(true, None, 2, all_zero), "the world");
+        let teams = |p: u32| (p != 9).then_some((p % 2) as i32);
+        assert!(!is_betrayal(true, Some(1), 2, teams), "an enemy");
+        assert!(is_betrayal(true, Some(1), 3, teams));
+        assert!(!is_betrayal(true, Some(9), 1, teams), "an unknown killer");
+        assert!(!is_betrayal(true, Some(1), 9, teams), "an unknown victim");
+
+        assert_eq!(kill_kind(None, 2, true), "world");
+        assert_eq!(kill_kind(Some(2), 2, true), "suicide");
+        assert_eq!(kill_kind(Some(1), 2, true), "betrayal");
+        assert_eq!(kill_kind(Some(1), 2, false), "kill");
+    }
+
+    /// Records from hosts before the fix carry `betrayal` for free-for-all
+    /// kills: reading settles them again; suicides and world deaths stay.
+    #[test]
+    fn a_recorded_kills_kind_is_settled_again_on_read() {
+        assert_eq!(settled_kill_kind("betrayal", Some(1), 2, false), "kill");
+        assert_eq!(settled_kill_kind("kill", Some(1), 2, true), "betrayal");
+        assert_eq!(settled_kill_kind("betrayal", Some(1), 2, true), "betrayal");
+        assert_eq!(settled_kill_kind("kill", Some(1), 2, false), "kill");
+        assert_eq!(settled_kill_kind("suicide", Some(2), 2, false), "suicide");
+        assert_eq!(settled_kill_kind("world", None, 2, true), "world");
+        assert_eq!(settled_kill_kind("betrayal", Some(2), 2, false), "betrayal");
     }
 
     #[test]

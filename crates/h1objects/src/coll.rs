@@ -269,6 +269,62 @@ pub fn convert_collision(c: &Collision, bsp_physics: bool) -> Result<(Converted,
     ))
 }
 
+/// The collision of the Halo 1 object `obj` in object space, as Halo 2
+/// BSPs: for each collision node with any BSP, its first (permutation 0
+/// of the node's region: what a converted placement, which names no
+/// variant, draws), converted ([`h1convert::collision::convert`]) and
+/// placed by the render model's default pose, as
+/// `Converter::built_physics` places a node's cells (the model node of the
+/// same name, else of the same index, else node 0). Empty with no
+/// collision. For [`h1convert::convert::halo1::merge_scenery_collision`],
+/// which makes placed scenery solid as structure.
+pub fn object_bsps(h1: &h1map::H1Map, obj: &crate::h1::Object) -> Result<Vec<Bsp>> {
+    use h1convert::scenery_collision::{Pose, transformed};
+    let Some(c) = obj.collision else {
+        return Ok(Vec::new());
+    };
+    let coll = Collision::read(h1, h1.tag(c)?)?;
+    // (name, default pose) per model node.
+    let nodes: Vec<(String, Pose)> = match obj.model {
+        Some(m) => {
+            let t = h1.tag(m)?;
+            h1.tag_data(t)?;
+            let model = h1models::h1::Model::read(h1, t.data_address)?;
+            let world = h1models::mode::world_transforms(
+                &model
+                    .nodes
+                    .iter()
+                    .map(|n| (n.parent, n.rotation, n.translation))
+                    .collect::<Vec<_>>(),
+            );
+            model
+                .nodes
+                .iter()
+                .zip(world)
+                .map(|(n, (r, t))| (n.name.clone(), Pose { r, t }))
+                .collect()
+        }
+        None => Vec::new(),
+    };
+    let mut out = Vec::new();
+    for (i, n) in coll.nodes.iter().enumerate() {
+        let Some(src) = n.bsps.first() else { continue };
+        let bsp = h1convert::collision::convert(src)?;
+        let pose = nodes
+            .iter()
+            .find(|m| m.0 == n.name)
+            .or_else(|| nodes.get(i))
+            .or_else(|| nodes.first())
+            .map_or(Pose::IDENTITY, |m| m.1);
+        out.push(if pose == Pose::IDENTITY {
+            bsp
+        } else {
+            transformed(&bsp, &pose)?
+        });
+    }
+    Ok(out)
+}
+
 /// Halo 1 names to string IDs: lower case, spaces as underscores (the
 /// form of Halo 2's own names).
 pub fn sid_name(s: &str) -> String {

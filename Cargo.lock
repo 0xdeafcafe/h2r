@@ -692,7 +692,10 @@ dependencies = [
  "input",
  "map",
  "pathfind",
+ "serde",
+ "serde_json",
  "tags",
+ "xiso",
 ]
 
 [[package]]
@@ -3505,6 +3508,7 @@ dependencies = [
  "mime_guess",
  "object_store",
  "percent-encoding",
+ "png",
  "reqwest",
  "rustls",
  "s3s",

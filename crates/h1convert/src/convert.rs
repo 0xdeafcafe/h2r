@@ -748,7 +748,7 @@ impl Prepared {
         base: &mut Map<R>,
         mopp: &[u8],
     ) -> Result<(Converted, crate::fresh::Pruned)> {
-        let (_, bytes, _, pruned) = self.assemble(base, mopp)?;
+        let (_, bytes, _, pruned) = self.assemble(base, mopp, false)?;
         let manifest = self.manifest(&bytes);
         Ok((
             Converted {
@@ -764,12 +764,19 @@ impl Prepared {
     /// with everything converted added, and the base's tags nothing
     /// reaches dropped: [`crate::fresh::prune_pinned`]), its bytes, the
     /// converted structure's BSP section, and what was dropped.
+    /// An `intermediate` one (for [`Prepared::build_fresh`], which lays
+    /// every tag out anew and takes the BSP from the set) may outgrow the
+    /// base's BSP space: placed scenery merged into the level's collision
+    /// ([`halo1::merge_scenery_collision`]) grows Boarding Action's region
+    /// past Beaver Creek's, and the pinned metadata cannot move up to make
+    /// room (`map::build::TagSet::check_bsp_space`).
     pub(crate) fn assemble<R: Read + Seek>(
         &self,
         base: &mut Map<R>,
         mopp: &[u8],
+        intermediate: bool,
     ) -> Result<(TagSet, Vec<u8>, usize, crate::fresh::Pruned)> {
-        let (mut set, section, pruned) = self.pinned_set(base, mopp)?;
+        let (mut set, section, pruned) = self.pinned_set(base, mopp, intermediate)?;
 
         // The scenario stays pinned, so its BSP descriptor is patched with
         // the new region's place: build once to learn it (it doesn't
@@ -803,11 +810,13 @@ impl Prepared {
         &self,
         base: &mut Map<R>,
         mopp: &[u8],
+        intermediate: bool,
     ) -> Result<(TagSet, usize, crate::fresh::Pruned)> {
         let mut patched = Cursor::new(Vec::new());
         scenario_edit::save::write_patched(base, &self.scenario, &mut patched)?;
         let mut patched = Map::from_reader(Cursor::new(patched.into_inner()))?;
         let mut set = TagSet::from_map(&mut patched)?;
+        set.check_bsp_space = !intermediate;
         // The vehicle collections the placements build first (their
         // datums were picked from the first added slot), then the
         // converted objects.

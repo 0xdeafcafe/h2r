@@ -216,6 +216,34 @@ pub struct VehicleState {
     /// Its own aiming vector (a vehicle is a unit), normalised: where a
     /// turret points.
     pub aim: Option<[f64; 3]>,
+    /// Body `+0x88`, world units a second; `None` when not finite.
+    pub velocity: Option<[f64; 3]>,
+}
+
+/// A projectile in flight (object type 5).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProjectileState {
+    pub datum: u32,
+    pub definition: Option<u32>,
+    /// World position: its own, or with `parent` that object's.
+    pub pos: [f64; 3],
+    /// Body `+0x88`; `None` when not finite.
+    pub velocity: Option<[f64; 3]>,
+    /// What it is attached to (a stuck plasma grenade).
+    pub parent: Option<u32>,
+}
+
+/// A weapon or equipment object with no parent that no placement or
+/// netgame spawn made: dropped.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ItemState {
+    pub datum: u32,
+    pub definition: Option<u32>,
+    /// Equipment (type 3), not a weapon.
+    pub equipment: bool,
+    pub pos: [f64; 3],
+    pub forward: [f64; 3],
+    pub up: [f64; 3],
 }
 
 /// A machine (door, elevator, scarab, ...).
@@ -228,7 +256,7 @@ pub struct MachineState {
     pub pos: [f64; 3],
     pub forward: [f64; 3],
     pub up: [f64; 3],
-    /// Device position 0..1, when it reads as one.
+    /// Placed device travel, 0..1, with an active position animation.
     pub position: Option<f64>,
 }
 
@@ -258,6 +286,10 @@ pub struct World {
     /// Dead bipeds (body depleted) the game has not cleared away yet:
     /// AI and players' bodies alike.
     pub bodies: Vec<ActorState>,
+    /// Projectiles in flight.
+    pub projectiles: Vec<ProjectileState>,
+    /// Loose (dropped) weapons and equipment.
+    pub items: Vec<ItemState>,
 }
 
 /// An object the scenario placed (or a netgame equipment entry spawned):
@@ -427,6 +459,10 @@ pub struct Snapshot {
     pub placed: Vec<PlacedObject>,
     /// Dead bipeds still in the world; frame ticks only.
     pub bodies: Vec<ActorState>,
+    /// Projectiles in flight; frame ticks only.
+    pub projectiles: Vec<ProjectileState>,
+    /// Loose weapons and equipment; frame ticks only.
+    pub items: Vec<ItemState>,
     /// The active structure BSP index.
     pub bsp: Option<u32>,
     /// Damage reports since the previous snapshot.

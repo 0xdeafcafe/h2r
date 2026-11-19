@@ -72,12 +72,12 @@ fn a_wreck_a_flipped_one_a_moving_one_or_a_shunned_one_is_not_taken() {
     let s = sight(vec![ghost(1, [5.0, 0.0, 0.0])]);
     assert_eq!(take(&me, &s, &[], &w, |_| 3.0, none), None, "moving");
     assert_eq!(take(&me, &s, &[], &w, still, |id| id == 1), None);
-    // A Banshee is not taken yet, nor a turret on its own.
+    // An empty Banshee can be taken. A turret needs a contested area.
     let banshee = vehicle(1, Class::Fighter, [5.0, 0.0, 0.0], &[SeatRole::Driver]);
     let turret = vehicle(2, Class::Turret, [5.0, 0.0, 0.0], &[SeatRole::Gunner]);
     assert_eq!(
-        take(&me, &sight(vec![banshee, turret]), &[], &w, still, none),
-        None
+        take(&me, &sight(vec![banshee, turret]), &[], &w, still, none).map(|p| p.vehicle),
+        Some(1)
     );
 }
 
@@ -190,20 +190,87 @@ fn in_free_for_all_anyone_driving_is_boarded() {
 }
 
 #[test]
-fn the_approach_is_beside_the_seat_and_the_other_side_mirrors_it() {
-    let mut g = ghost(1, [10.0, 0.0, 1.0]);
-    g.forward = [0.0, 1.0, 0.0];
-    let spec = Class::Scout.spec();
-    let a = approach(&g, SeatRole::Driver, 0);
-    // Facing +Y, left is -X.
-    let want = [10.0 - spec.driver_at[1], spec.driver_at[0], 1.0];
-    for k in 0..3 {
-        assert!((a[k] - want[k]).abs() < 1e-5, "{a:?} {want:?}");
-    }
-    let b = approach(&g, SeatRole::Driver, 1);
-    assert!((b[0] - (10.0 + spec.driver_at[1])).abs() < 1e-5, "{b:?}");
-    // A Warthog's gunner gets in from behind.
-    let hog = warthog(10, [0.0; 3])[0].clone();
-    let back = approach(&hog, SeatRole::Gunner, 0);
-    assert!(back[0] < -1.0 && back[1].abs() < 1e-5, "{back:?}");
+fn the_approach_uses_the_resolved_marker_and_radius() {
+    let g = ghost(1, [10.0, 0.0, 1.0]);
+    let pick = Pick {
+        why: Why::Take,
+        vehicle: 1,
+        root: 1,
+        role: SeatRole::Driver,
+    };
+    let (first, entry) = approach(&g, pick, g.position, 0, None).unwrap();
+    let (retry, _) = approach(&g, pick, g.position, 1, None).unwrap();
+    assert_eq!(first[0], 10.0);
+    assert!(first[1] > retry[1] && retry[1] > entry.at[1]);
+    assert!(in_entry(&g, entry, first));
+    assert!(!in_entry(
+        &g,
+        entry,
+        [first[0], first[1] + entry.radius, first[2]]
+    ));
+    assert!(!in_entry(&g, entry, [10.0, -0.2, 1.0]));
+    let [_, gun] = warthog(10, [0.0; 3]);
+    let pick = Pick {
+        why: Why::Take,
+        vehicle: 11,
+        root: 10,
+        role: SeatRole::Gunner,
+    };
+    assert!(approach(&gun, pick, [0.0; 3], 0, None).unwrap().0[0] < -1.15);
+}
+
+#[test]
+fn a_turret_is_taken_when_it_covers_the_contest_and_abandoned_when_flanked() {
+    let at = [4.0, 0.0, 0.0];
+    let turret = vehicle(1, Class::Turret, at, &[SeatRole::Gunner]);
+    let s = sight(vec![turret]);
+    let me = foot([0.0; 3]);
+    assert_eq!(
+        take_turret(&me, &s, [15.0, 0.0, 0.0], None, none)
+            .unwrap()
+            .vehicle,
+        1
+    );
+    assert!(take_turret(&me, &s, [35.0, 0.0, 0.0], None, none).is_none());
+    let walls = crate::los::Walls::from_polygons([&[
+        [7.0, -2.0, 0.0],
+        [7.0, 2.0, 0.0],
+        [7.0, 2.0, 2.0],
+        [7.0, -2.0, 2.0],
+    ][..]]);
+    let map = crate::cache::MapData {
+        walls,
+        ..Default::default()
+    };
+    assert!(take_turret(&me, &s, [15.0, 0.0, 0.0], Some(&map), none).is_none());
+    assert!(flanked(at, [1.0, 0.0, 0.0], [[4.0, 3.0, 0.0]]));
+    assert!(!flanked(
+        at,
+        [1.0, 0.0, 0.0],
+        [[7.0, 0.0, 0.0], [4.0, 3.0, 3.0]]
+    ));
+}
+
+#[test]
+fn a_mounted_turret_needs_a_friendly_driver() {
+    let [mut hog, gun] = warthog(10, [4.0, 0.0, 0.0]);
+    let me = foot([0.0; 3]);
+    let contact = [15.0, 0.0, 0.0];
+    assert!(
+        take_turret(
+            &me,
+            &sight(vec![hog.clone(), gun.clone()]),
+            contact,
+            None,
+            none
+        )
+        .is_none()
+    );
+    sit(&mut hog, 0, 4, 0);
+    assert_eq!(
+        take_turret(&me, &sight(vec![hog, gun]), contact, None, none)
+            .unwrap()
+            .vehicle,
+        11
+    );
 }

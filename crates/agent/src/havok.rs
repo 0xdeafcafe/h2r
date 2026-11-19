@@ -1,5 +1,5 @@
-//! `havok.bodies` and `havok.contacts` (docs/runtime/agent-api.md,
-//! "havok"): the Havok world as `live_telemetry::havok` reads it, with
+//! Read-only `havok.*` methods (docs/runtime/agent-api.md, "havok"):
+//! bodies, contact constraints and collision-agent caches, with
 //! bodies named by the agent ids of their objects. Game methods, answered
 //! at a tick boundary.
 
@@ -15,8 +15,11 @@ use serde_json::{Value, json};
 use crate::exec::GameCtx;
 use crate::{Access, Agent};
 
+mod agents;
+
 /// Registers `havok.*` on `agent`.
 pub fn install(agent: &Agent) {
+    agent.add_game_method(method::AGENTS, Access::Read, agents::agents_method);
     agent.add_game_method(method::BODIES, Access::Read, bodies_method);
     agent.add_game_method(method::CONTACTS, Access::Read, contacts_method);
 }
@@ -68,7 +71,7 @@ pub(crate) fn resolve(objects: &[Object], id: &str) -> Result<(u32, Option<[f64;
 
 fn read<T>(
     ctx: &mut GameCtx<'_>,
-    f: fn(&dyn engine::GuestMemory) -> Result<T, engine::MemFault>,
+    f: impl Fn(&dyn engine::GuestMemory) -> Result<T, engine::MemFault>,
 ) -> Result<T, RpcError> {
     let mut out = None;
     let ran = ctx.reader.with_guest(&mut |m| out = Some(f(&*m)));
@@ -517,7 +520,7 @@ mod tests {
         a.between_slices(&mut NoGuest, 0);
         let line = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
         assert!(
-            line.contains(method::BODIES) && line.contains(method::CONTACTS),
+            method::ALL.iter().all(|name| line.contains(*name)),
             "{line}"
         );
         // Without guest memory the reads are unavailable, not a panic.

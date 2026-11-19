@@ -18,6 +18,8 @@ pub mod sqlstore;
 #[cfg(target_arch = "wasm32")]
 mod dosql;
 #[cfg(target_arch = "wasm32")]
+mod emblem;
+#[cfg(target_arch = "wasm32")]
 mod entry;
 #[cfg(target_arch = "wasm32")]
 mod ingest;

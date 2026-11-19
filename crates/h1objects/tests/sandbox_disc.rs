@@ -1619,7 +1619,7 @@ fn every_engine_marker_resolves_on_the_converted_objects() {
 /// Pinned Blood Gulch (`Prepared::build`, the `--pinned` map) in each
 /// sandbox fits the engine's tag memory with room to spare: the base's
 /// tags nothing reaches are dropped (`h1convert::fresh::prune_pinned`) and
-/// the built tags take their bytes. Before (converter version 92's weapon
+/// the built tags take their bytes. Before (converter version 97's weapon
 /// effects, Halo 1 sandbox) it was 0x634000 of 0x62c000. And what stays
 /// is whole: no word of any kept tag names a dropped base tag, the
 /// globals, multiplayer globals and gestalt are kept, and every base tag
@@ -1654,7 +1654,7 @@ fn pinned_bloodgulch_fits_its_tag_memory() {
         // and the pinned tags read word by word (`Pruned::word_read`).
         {
             let (set, _, pruned) = p
-                .pinned_set(&mut base, &mopp)
+                .pinned_set(&mut base, &mopp, false)
                 .unwrap_or_else(|e| panic!("{sandbox:?}: {e}"));
             let label = |id: TagId| {
                 set.slots

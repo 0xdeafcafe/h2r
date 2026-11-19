@@ -1,6 +1,7 @@
 //! `h2 agent raw <id> [parts]` (`world.raw`) and `h2 agent raw-diff <a>
 //! <b>`: an object's raw state at two moments, and what changed between
-//! them (docs/runtime/agent-api.md, "world.raw").
+//! them. `h2 agent poke` writes bytes within one part
+//! (docs/runtime/agent-api.md, "world.poke").
 
 use agent_proto::raw::{self, Raw, method};
 use anyhow::{Context, Result, bail};
@@ -14,14 +15,18 @@ pub const USAGE: &str = "  raw <id> [part[,part...]] [len]
   raw-diff <a.json> <b.json>
                          per part, the 32-bit words that differ between two
                          world.raw answers (and as floats where they read as
-                         ones); no game needed";
+                         ones); no game needed
+  poke <id> <part> <offset> <hex>
+                         world.poke: claim control and write 1 to 64 bytes
+                         at a tick boundary; offset is decimal or 0x hex";
 
-/// `raw <id> [parts] [len]` as a call, or `None` for other words.
+/// A `raw` or `poke` call, or `None` for other words.
 pub fn parse(words: &[String]) -> Option<Result<(String, Value)>> {
-    if words.first()? != "raw" {
-        return None;
+    match words.first()?.as_str() {
+        "raw" => Some(parse_raw(&words[1..])),
+        "poke" => Some(parse_poke(&words[1..])),
+        _ => None,
     }
-    Some(parse_raw(&words[1..]))
 }
 
 fn parse_raw(w: &[String]) -> Result<(String, Value)> {
@@ -43,6 +48,21 @@ fn parse_raw(w: &[String]) -> Result<(String, Value)> {
         }
     }
     Ok((method::RAW.into(), p))
+}
+
+fn parse_poke(words: &[String]) -> Result<(String, Value)> {
+    let [id, part, offset, hex] = words else {
+        bail!("usage: h2 agent poke <id> <part> <offset> <hex>");
+    };
+    let offset = match offset.strip_prefix("0x") {
+        Some(digits) => u32::from_str_radix(digits, 16),
+        None => offset.parse::<u32>(),
+    }
+    .context("poke offset must be a nonnegative integer in decimal or 0x hex")?;
+    Ok((
+        method::POKE.into(),
+        json!({"id": id, "part": part, "offset": offset, "hex": hex}),
+    ))
 }
 
 /// A `world.raw` answer from a file: the result as `h2 agent` prints it,
@@ -116,6 +136,20 @@ mod tests {
         assert!(parse(&words("object player.0")).is_none());
         assert!(parse(&words("raw")).unwrap().is_err());
         assert!(parse(&words("raw a b c d")).unwrap().is_err());
+    }
+
+    #[test]
+    fn poke_becomes_world_poke() {
+        let c = |s: &str| parse(&words(s)).unwrap();
+        let expected = (
+            "world.poke".to_owned(),
+            json!({"id": "player.0", "part": "motion", "offset": 16, "hex": "ab"}),
+        );
+        assert_eq!(c("poke player.0 motion 0x10 ab").unwrap(), expected);
+        assert_eq!(c("poke player.0 motion 16 ab").unwrap(), expected);
+        assert!(c("poke player.0 motion -1 ab").is_err());
+        assert!(c("poke player.0 motion 16").is_err());
+        assert!(c("poke player.0 motion 16 ab extra").is_err());
     }
 
     #[test]

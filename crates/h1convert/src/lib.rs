@@ -15,6 +15,8 @@
 //! - [`slots`]: tag-index slots a conversion may reuse for new tags.
 //! - [`convert`]: a whole map, onto a base, with its package manifest.
 //! - [`fresh`]: the same map with nothing of the base pinned.
+//! - [`scenery_collision`]: placed solid scenery merged into the level's
+//!   collision.
 //!
 //! No game data is in this crate or its tests. Tests build invented BSPs;
 //! the `#[ignore]`d ones read maps from `$H1_MAP_DIR` at run time.
@@ -33,6 +35,7 @@ pub mod lens;
 pub mod placements;
 pub mod query;
 pub mod sandbox;
+pub mod scenery_collision;
 pub mod scratch;
 pub mod shad;
 pub mod shaders;

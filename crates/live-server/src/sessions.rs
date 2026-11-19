@@ -580,6 +580,9 @@ pub fn wire_for(s: &State, e: &RecordedEvent, viewer: Viewer) -> Option<live_pro
 
 /// [`crate::model::Game::shows_to`] by id; an unknown game is public.
 pub fn game_shows_to(s: &State, id: &str, viewer: Viewer) -> bool {
+    if crate::sim_runs::is_sim_id(id) && !viewer.is_admin() {
+        return false;
+    }
     s.games
         .get(id)
         .is_none_or(|g| g.shows_to(viewer, |a, b| s.is_friends(a, b)))

@@ -24,8 +24,25 @@ use native_render::transparent::{DATA_OFFSET, Entry, GEOMETRY_HANDLER, Run, Sour
 fn the_switch_off_places_nothing() {
     let mut r = Registry::new(Switches::parse("").unwrap());
     r.add(&NativeTransparents).unwrap();
-    let text = r.build(&Base).unwrap().text();
+    let plan = r.build(&Base).unwrap();
+    let text = plan.text();
     assert!(!text.contains("native_transparents"), "{text}");
+    // Nothing placed, nothing held: no snapshot blocker.
+    assert!(plan.snapshot_blockers().is_empty());
+}
+
+/// On too: what it holds lasts one view and changes no guest memory.
+#[test]
+fn on_its_snapshot_policy_is_stateless() {
+    let mut r = Registry::new(Switches::parse("impl.render.native_transparents=on").unwrap());
+    assert!(r.add(&NativeTransparents).unwrap());
+    let plan = r.build(&Base).unwrap();
+    let policies: Vec<_> = plan
+        .snapshot
+        .iter()
+        .map(|f| (f.id, f.policy.name()))
+        .collect();
+    assert_eq!(policies, vec![(native_transparents::ID, "stateless")]);
 }
 
 #[test]

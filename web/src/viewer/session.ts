@@ -274,6 +274,7 @@ export function replayFrame(tl: ReplayTimeline, at: number, r: Map<number, Roste
     hits: tl.sampleHits(at),
     bsp: tl.sampleBsp(at),
     machines: tl.sampleMachines(at),
+    machinePositions: tl.sampleMachinePositions(at),
     objects: tl.sampleObjects(at),
     cinematic: tl.cinematicAt(at),
     markers: tl.killsBetween(at - fade, at).filter((k) => k.at).map((k) => ({

@@ -305,6 +305,13 @@ pub struct Weapon {
     /// `pr`, `rl`, `sr`, `pp`, `ne`, `ft`; `cg`, `cannon`, `gun` on vehicle
     /// weapons. V (Blood Gulch, every `weap`).
     pub label: String,
+    /// `0x330` to `0x336`: the A to D in sources (`u16` each), Halo 1's
+    /// weapon enum; [`WEAPON_PRIMARY_AMMUNITION`] among them. D (Blood
+    /// Gulch's assault rifle: A 14, B 2, C 12, D 0).
+    pub inputs: [u16; 4],
+    /// The object's functions ([`functions`]); function `k` is the
+    /// object's output `k` (A to D out).
+    pub functions: Vec<Function>,
     /// `0x338` seconds.
     pub ready_time: f32,
     pub ready_effect: Option<TagId>,
@@ -404,6 +411,8 @@ impl Weapon {
             object: Object::read(map, b)?,
             flags: u32_at(b, 0x308),
             label: name32(b, 0x30c),
+            inputs: std::array::from_fn(|i| u16_at(b, 0x330 + 2 * i)),
+            functions: functions(map, b)?,
             ready_time: f32_at(b, 0x338),
             ready_effect: reference(map, b, 0x33c),
             heat_recovery_threshold: f32_at(b, 0x34c),
@@ -431,6 +440,43 @@ impl Weapon {
             magazines,
             triggers,
         })
+    }
+}
+
+/// Halo 1's weapon input source (`weap +0x330`) "primary ammunition":
+/// the first magazine's rounds loaded over its loaded maximum. D: the
+/// assault rifle's B in, which its A out passes on, and its first-person
+/// counter (`h1convert::shad::H1Numeric`, A out × 60) shows the rounds
+/// loaded. Its 12 (illumination) and 14 (integrated light) drive its
+/// other two functions.
+pub const WEAPON_PRIMARY_AMMUNITION: u16 = 2;
+
+impl Weapon {
+    /// The loaded maximum of the first magazine when the weapon's A out
+    /// is its primary ammunition ([`WEAPON_PRIMARY_AMMUNITION`]) as it
+    /// is: function 0 is "one" scaled by the input naming it, not
+    /// inverted, with no period, map, steps, add, result scale or bounds
+    /// of its own. Halo 1's numeric shaders count A out × their limit
+    /// (`h1convert::shad::H1Numeric`), so with the limit at this maximum
+    /// they count the rounds loaded. `None` otherwise.
+    pub fn rounds_counter(&self) -> Option<i16> {
+        let f = self.functions.first()?;
+        let k = usize::from(f.scale_function_by)
+            .checked_sub(1)
+            .filter(|&k| k < 4)?;
+        let plain = f.function == 0
+            && f.flags & 1 == 0
+            && f.scale_period_by == 0
+            && f.map_to == 0
+            && f.add == 0
+            && f.scale_result_by == 0
+            && f.step_count <= 1
+            && f.sawtooth_count <= 1
+            && f.bounds == [0.0, 1.0];
+        (plain && self.inputs[k] == WEAPON_PRIMARY_AMMUNITION)
+            .then(|| self.magazines.first().map(|m| m.rounds_loaded_maximum))
+            .flatten()
+            .filter(|&m| m > 0)
     }
 }
 

@@ -1,0 +1,4122 @@
+[
+  {
+    "game_id": "7f3c0b5e2a9d4c1f8e6b3a2d1c0f9e8d",
+    "tick": 9000,
+    "players": [
+      {
+        "index": 0,
+        "alive": true,
+        "pos": [
+          -35.4296875,
+          23.65234375,
+          6.421875
+        ],
+        "yaw": -2.5341362615870793,
+        "species": "spartan",
+        "aim": [
+          -0.8196937772435249,
+          -0.5706194449309001,
+          0.04995558642428337
+        ],
+        "weapon": "carbine",
+        "shots": 1,
+        "stance": "crouch",
+        "speed": 1.8125,
+        "grenade": "frag",
+        "vel": [
+          -1.484375,
+          -1.03125,
+          0.21875
+        ],
+        "fire": 1,
+        "body": 1.0,
+        "shield": 0.5,
+        "anim": {
+          "name": "combat:carbine:any:move_front",
+          "frame": 0.0
+        }
+      },
+      {
+        "index": 1,
+        "alive": true,
+        "pos": [
+          32.025390625,
+          -3.162109375,
+          -1.2421875
+        ],
+        "yaw": -1.5539225381281545,
+        "species": "elite",
+        "aim": [
+          0.01718137454112573,
+          -0.9986023142387639,
+          0.049982180483274935
+        ],
+        "weapon": "shotgun",
+        "stance": "stand",
+        "speed": 4.125,
+        "grenade": "frag",
+        "vel": [
+          0.0625,
+          -4.109375,
+          -0.4375
+        ],
+        "body": 1.0,
+        "shield": 0.90625,
+        "anim": {
+          "name": "combat:shotgun:any:move_front",
+          "frame": 0.0
+        }
+      },
+      {
+        "index": 2,
+        "alive": true,
+        "pos": [
+          16.51171875,
+          -35.26953125,
+          4.0859375
+        ],
+        "yaw": -1.0246991663076086,
+        "species": "spartan",
+        "aim": [
+          0.5182379056115114,
+          -0.8537726353841122,
+          0.05001759946920754
+        ],
+        "weapon": "battle_rifle",
+        "stance": "stand",
+        "speed": 2.4375,
+        "grenade": "frag",
+        "vel": [
+          1.25,
+          -2.078125,
+          0.015625
+        ],
+        "body": 1.0,
+        "shield": 0.96875,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 0.0
+        }
+      },
+      {
+        "index": 3,
+        "alive": true,
+        "pos": [
+          6.416015625,
+          3.0234375,
+          7.35546875
+        ],
+        "yaw": 1.3146215352179944,
+        "species": "elite",
+        "aim": [
+          0.25374420274081777,
+          0.9659650945414509,
+          0.05025251936920838
+        ],
+        "weapon": "energy_blade",
+        "shots": 2,
+        "stance": "stand",
+        "speed": 1.6875,
+        "grenade": "frag",
+        "vel": [
+          0.4375,
+          1.640625,
+          0.140625
+        ],
+        "fire": 1,
+        "body": 1.0,
+        "shield": 0.5625,
+        "anim": {
+          "name": "combat:energy:any:move_front",
+          "frame": 0.0
+        }
+      },
+      {
+        "index": 4,
+        "alive": true,
+        "pos": [
+          31.240234375,
+          -0.951171875,
+          6.13671875
+        ],
+        "yaw": 1.8699225804325965,
+        "species": "spartan",
+        "aim": [
+          -0.2944294612806598,
+          0.9543575641511041,
+          0.0501291539680434
+        ],
+        "weapon": "sniper_rifle",
+        "stance": "stand",
+        "speed": 2.6875,
+        "grenade": "frag",
+        "vel": [
+          -0.796875,
+          2.5625,
+          0.109375
+        ],
+        "body": 1.0,
+        "shield": 0.125,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 0.0
+        }
+      },
+      {
+        "index": 5,
+        "alive": true,
+        "pos": [
+          -22.923828125,
+          -34.654296875,
+          0.251953125
+        ],
+        "yaw": -0.3574175235773547,
+        "species": "elite",
+        "aim": [
+          0.9358162526295227,
+          -0.3488931673566514,
+          0.050214530628901334
+        ],
+        "weapon": "magnum",
+        "stance": "crouch",
+        "speed": 2.5,
+        "grenade": "frag",
+        "vel": [
+          2.34375,
+          -0.875,
+          0.171875
+        ],
+        "body": 1.0,
+        "shield": 0.03125,
+        "anim": {
+          "name": "combat:magnum:any:move_front",
+          "frame": 0.0
+        }
+      },
+      {
+        "index": 6,
+        "alive": true,
+        "pos": [
+          -40.29296875,
+          -26.96875,
+          4.078125
+        ],
+        "yaw": -0.8298836062461321,
+        "species": "spartan",
+        "aim": [
+          0.6744927725610876,
+          -0.7365889325746482,
+          0.049962427597117685
+        ],
+        "weapon": "plasma_rifle",
+        "shots": 1,
+        "stance": "stand",
+        "speed": 1.6875,
+        "grenade": "frag",
+        "vel": [
+          1.140625,
+          -1.25,
+          0.0625
+        ],
+        "fire": 1,
+        "body": 1.0,
+        "shield": 0.375,
+        "anim": {
+          "name": "combat:plasma:any:move_front",
+          "frame": 0.0
+        }
+      },
+      {
+        "index": 7,
+        "alive": true,
+        "pos": [
+          28.005859375,
+          8.08203125,
+          -1.53515625
+        ],
+        "yaw": 0.4172427743048944,
+        "species": "elite",
+        "aim": [
+          0.9132961880538587,
+          0.40420204372537283,
+          0.05010769137091386
+        ],
+        "weapon": "battle_rifle",
+        "stance": "stand",
+        "speed": 3.8125,
+        "actions": [
+          "reload"
+        ],
+        "grenade": "frag",
+        "vel": [
+          3.46875,
+          1.53125,
+          -0.203125
+        ],
+        "body": 1.0,
+        "shield": 0.84375,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 0.0
+        }
+      },
+      {
+        "index": 8,
+        "alive": true,
+        "pos": [
+          -19.794921875,
+          -8.228515625,
+          0.876953125
+        ],
+        "yaw": 1.521708941582556,
+        "species": "spartan",
+        "aim": [
+          0.04872724909546148,
+          0.9975699457675264,
+          0.049798177647010264
+        ],
+        "weapon": "shotgun",
+        "stance": "stand",
+        "speed": 2.0,
+        "grenade": "frag",
+        "vel": [
+          0.09375,
+          1.984375,
+          0.171875
+        ],
+        "body": 1.0,
+        "shield": 1.0,
+        "anim": {
+          "name": "combat:shotgun:any:move_front",
+          "frame": 0.0
+        }
+      },
+      {
+        "index": 9,
+        "alive": true,
+        "pos": [
+          -0.791015625,
+          10.640625,
+          2.44921875
+        ],
+        "yaw": -2.2135342769189803,
+        "species": "elite",
+        "aim": [
+          -0.5990379151277467,
+          -0.7991887179390244,
+          0.04950726571303699
+        ],
+        "weapon": "plasma_rifle",
+        "shots": 3,
+        "stance": "stand",
+        "speed": 3.5625,
+        "grenade": "frag",
+        "vel": [
+          -2.15625,
+          -2.875,
+          0.09375
+        ],
+        "fire": 1,
+        "body": 1.0,
+        "shield": 0.71875,
+        "anim": {
+          "name": "combat:plasma:any:move_front",
+          "frame": 0.0
+        }
+      },
+      {
+        "index": 10,
+        "alive": true,
+        "pos": [
+          -17.25390625,
+          10.001953125,
+          -0.52734375
+        ],
+        "yaw": 1.5401167110371838,
+        "species": "spartan",
+        "aim": [
+          0.03057027629165021,
+          0.9982776430411313,
+          0.05007200427080651
+        ],
+        "weapon": "sniper_rifle",
+        "stance": "crouch",
+        "speed": 2.0,
+        "grenade": "frag",
+        "vel": [
+          0.0625,
+          2.015625,
+          0.296875
+        ],
+        "body": 1.0,
+        "shield": 0.21875,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 0.0
+        }
+      },
+      {
+        "index": 11,
+        "alive": true,
+        "pos": [
+          8.716796875,
+          -33.474609375,
+          4.35546875
+        ],
+        "yaw": -0.3267379078196413,
+        "species": "elite",
+        "aim": [
+          0.9459994865338684,
+          -0.3202635923139814,
+          0.05016176747086447
+        ],
+        "weapon": "sniper_rifle",
+        "stance": "stand",
+        "speed": 1.875,
+        "grenade": "frag",
+        "vel": [
+          1.75,
+          -0.59375,
+          0.09375
+        ],
+        "body": 1.0,
+        "shield": 0.0,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 0.0
+        }
+      },
+      {
+        "index": 12,
+        "alive": true,
+        "pos": [
+          -24.96875,
+          4.880859375,
+          1.57421875
+        ],
+        "yaw": -0.3865631585471814,
+        "species": "spartan",
+        "aim": [
+          0.9251048135185728,
+          -0.3763809733801475,
+          0.050184129784019656
+        ],
+        "weapon": "battle_rifle",
+        "shots": 1,
+        "stance": "stand",
+        "speed": 3.75,
+        "grenade": "frag",
+        "vel": [
+          3.484375,
+          -1.421875,
+          0.203125
+        ],
+        "fire": 1,
+        "body": 1.0,
+        "shield": 0.21875,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 0.0
+        }
+      },
+      {
+        "index": 13,
+        "alive": true,
+        "pos": [
+          -30.912109375,
+          3.96484375,
+          -2.037109375
+        ],
+        "yaw": 0.7946020481247621,
+        "species": "elite",
+        "aim": [
+          0.7001234254934396,
+          0.7122684236907748,
+          0.05000881610667401
+        ],
+        "weapon": "sniper_rifle",
+        "stance": "stand",
+        "speed": 1.375,
+        "grenade": "frag",
+        "vel": [
+          0.96875,
+          0.984375,
+          -0.0625
+        ],
+        "body": 1.0,
+        "shield": 0.71875,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 0.0
+        }
+      },
+      {
+        "index": 14,
+        "alive": true,
+        "pos": [
+          22.94140625,
+          19.103515625,
+          2.396484375
+        ],
+        "yaw": 2.8961557275280905,
+        "species": "spartan",
+        "aim": [
+          -0.9687878402391598,
+          0.2428132373118504,
+          0.04991845741690337
+        ],
+        "weapon": "battle_rifle",
+        "stance": "stand",
+        "speed": 3.5625,
+        "grenade": "frag",
+        "vel": [
+          -3.46875,
+          0.875,
+          -0.25
+        ],
+        "body": 1.0,
+        "shield": 1.0,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 0.0
+        }
+      },
+      {
+        "index": 15,
+        "alive": true,
+        "pos": [
+          31.3515625,
+          -23.583984375,
+          0.689453125
+        ],
+        "yaw": -1.7441361558259736,
+        "species": "elite",
+        "aim": [
+          -0.1719265655665791,
+          -0.983867435142992,
+          0.04945832708079673
+        ],
+        "weapon": "sniper_rifle",
+        "shots": 3,
+        "stance": "crouch",
+        "speed": 2.6875,
+        "grenade": "frag",
+        "vel": [
+          -0.46875,
+          -2.640625,
+          -0.265625
+        ],
+        "fire": 1,
+        "body": 1.0,
+        "shield": 0.8125,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 0.0
+        }
+      }
+    ],
+    "vehicles": [
+      {
+        "id": "90040004",
+        "kind": "warthog",
+        "pos": [
+          -12.76171875,
+          -8.18359375,
+          0.3671875
+        ],
+        "forward": [
+          0.36690681741515824,
+          -0.9302576994221976,
+          1.4401419133195992e-16
+        ],
+        "up": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "occupied": true
+      },
+      {
+        "id": "90050005",
+        "kind": "ghost",
+        "pos": [
+          -18.41015625,
+          -17.703125,
+          -0.80859375
+        ],
+        "forward": [
+          -0.9953845762840835,
+          0.09596637586027586,
+          -1.2116429550172552e-16
+        ],
+        "up": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "occupied": true
+      },
+      {
+        "id": "90060006",
+        "kind": "banshee",
+        "pos": [
+          -1.376953125,
+          -22.814453125,
+          0.908203125
+        ],
+        "forward": [
+          0.8652281497118359,
+          -0.5013783490999915,
+          0.0
+        ],
+        "up": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "occupied": false
+      },
+      {
+        "id": "90070007",
+        "kind": "mongoose",
+        "pos": [
+          27.1875,
+          -22.654296875,
+          8.072265625
+        ],
+        "forward": [
+          -0.2856190960906474,
+          0.958343222414789,
+          0.0
+        ],
+        "up": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "occupied": false
+      },
+      {
+        "id": "90080008",
+        "kind": "chaingun",
+        "pos": [
+          -0.599609375,
+          0.0,
+          0.75
+        ],
+        "forward": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "up": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "occupied": true,
+        "parent": "90040004",
+        "aim": [
+          0.994984085123738,
+          0.0,
+          0.10003334619254775
+        ]
+      }
+    ],
+    "hits": [
+      {
+        "from": "p11",
+        "to": "p12",
+        "weapon": "battle_rifle",
+        "pos": [
+          31.240234375,
+          -0.951171875,
+          6.13671875
+        ],
+        "amount": 0.16796875,
+        "kind": "bullet",
+        "ago": 1
+      }
+    ],
+    "bsp": 0,
+    "objects": [
+      {
+        "k": "netgame",
+        "i": 0,
+        "gone": true
+      },
+      {
+        "k": "netgame",
+        "i": 3,
+        "gone": true
+      },
+      {
+        "k": "netgame",
+        "i": 6,
+        "gone": true
+      },
+      {
+        "k": "netgame",
+        "i": 9,
+        "gone": true
+      },
+      {
+        "k": "netgame",
+        "i": 12,
+        "gone": true
+      },
+      {
+        "k": "netgame",
+        "i": 15,
+        "gone": true
+      },
+      {
+        "k": "netgame",
+        "i": 18,
+        "gone": true
+      },
+      {
+        "k": "netgame",
+        "i": 21,
+        "gone": true
+      }
+    ]
+  },
+  {
+    "game_id": "7f3c0b5e2a9d4c1f8e6b3a2d1c0f9e8d",
+    "tick": 9002,
+    "players": [
+      {
+        "index": 0,
+        "alive": true,
+        "pos": [
+          -35.52734375,
+          23.58203125,
+          6.435546875
+        ],
+        "yaw": -2.509592568980909,
+        "species": "spartan",
+        "aim": [
+          -0.7977132441315072,
+          -0.6009392584451194,
+          0.0502552265601926
+        ],
+        "weapon": "carbine",
+        "shots": 1,
+        "stance": "crouch",
+        "speed": 1.8125,
+        "grenade": "frag",
+        "vel": [
+          -1.453125,
+          -1.0625,
+          0.203125
+        ],
+        "fire": 2,
+        "body": 1.0,
+        "shield": 0.53125,
+        "anim": {
+          "name": "combat:carbine:any:move_front",
+          "frame": 2.0
+        }
+      },
+      {
+        "index": 1,
+        "alive": true,
+        "pos": [
+          32.037109375,
+          -3.435546875,
+          -1.271484375
+        ],
+        "yaw": -1.5048351529158142,
+        "species": "elite",
+        "aim": [
+          0.07912134490724765,
+          -0.9956102567495329,
+          0.05000029435110792
+        ],
+        "weapon": "shotgun",
+        "stance": "stand",
+        "speed": 4.125,
+        "grenade": "frag",
+        "vel": [
+          0.265625,
+          -4.09375,
+          -0.4375
+        ],
+        "body": 1.0,
+        "shield": 0.9375,
+        "anim": {
+          "name": "combat:shotgun:any:move_front",
+          "frame": 2.0
+        }
+      },
+      {
+        "index": 2,
+        "alive": true,
+        "pos": [
+          16.59765625,
+          -35.40625,
+          4.087890625
+        ],
+        "yaw": -0.9970875121256668,
+        "species": "spartan",
+        "aim": [
+          0.5528807773332552,
+          -0.8317737423251886,
+          0.049752262599063395
+        ],
+        "weapon": "battle_rifle",
+        "stance": "stand",
+        "speed": 2.4375,
+        "grenade": "frag",
+        "vel": [
+          1.3125,
+          -2.03125,
+          0.03125
+        ],
+        "body": 1.0,
+        "shield": 0.9375,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 2.0
+        }
+      },
+      {
+        "index": 3,
+        "alive": true,
+        "pos": [
+          6.443359375,
+          3.1328125,
+          7.365234375
+        ],
+        "yaw": 1.3360972662483934,
+        "species": "elite",
+        "aim": [
+          0.21929750698488829,
+          0.9743855989023847,
+          0.04981273011845102
+        ],
+        "weapon": "energy_blade",
+        "shots": 2,
+        "stance": "stand",
+        "speed": 1.6875,
+        "grenade": "frag",
+        "vel": [
+          0.390625,
+          1.65625,
+          0.15625
+        ],
+        "fire": 2,
+        "body": 1.0,
+        "shield": 0.5625,
+        "anim": {
+          "name": "combat:energy:any:move_front",
+          "frame": 2.0
+        }
+      },
+      {
+        "index": 4,
+        "alive": true,
+        "pos": [
+          31.185546875,
+          -0.779296875,
+          6.14453125
+        ],
+        "yaw": 1.88986433067511,
+        "species": "spartan",
+        "aim": [
+          -0.3254896513454883,
+          0.9442422558834463,
+          0.04962911515564882
+        ],
+        "weapon": "sniper_rifle",
+        "stance": "stand",
+        "speed": 2.6875,
+        "grenade": "frag",
+        "vel": [
+          -0.84375,
+          2.546875,
+          0.09375
+        ],
+        "body": 1.0,
+        "shield": 0.09375,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 2.0
+        }
+      },
+      {
+        "index": 5,
+        "alive": true,
+        "pos": [
+          -22.767578125,
+          -34.7109375,
+          0.263671875
+        ],
+        "yaw": -0.3344078117590694,
+        "species": "elite",
+        "aim": [
+          0.9475589194865947,
+          -0.3156391255161845,
+          0.05004034916719991
+        ],
+        "weapon": "magnum",
+        "stance": "crouch",
+        "speed": 2.5,
+        "grenade": "frag",
+        "vel": [
+          2.359375,
+          -0.828125,
+          0.171875
+        ],
+        "body": 1.0,
+        "shield": 0.03125,
+        "anim": {
+          "name": "combat:magnum:any:move_front",
+          "frame": 2.0
+        }
+      },
+      {
+        "index": 6,
+        "alive": true,
+        "pos": [
+          -40.216796875,
+          -27.05078125,
+          4.08203125
+        ],
+        "yaw": -0.8191457407309324,
+        "species": "spartan",
+        "aim": [
+          0.691824726211161,
+          -0.7203830224427878,
+          0.04926306099955648
+        ],
+        "weapon": "plasma_rifle",
+        "shots": 2,
+        "stance": "stand",
+        "speed": 1.6875,
+        "grenade": "frag",
+        "vel": [
+          1.15625,
+          -1.234375,
+          0.0625
+        ],
+        "fire": 2,
+        "body": 1.0,
+        "shield": 0.375,
+        "anim": {
+          "name": "combat:plasma:any:move_front",
+          "frame": 2.0
+        }
+      },
+      {
+        "index": 7,
+        "alive": true,
+        "pos": [
+          28.236328125,
+          8.1875,
+          -1.548828125
+        ],
+        "yaw": 0.440252486123179,
+        "species": "elite",
+        "aim": [
+          0.8975945936287745,
+          0.4379665928188666,
+          0.050092005979282955
+        ],
+        "weapon": "battle_rifle",
+        "stance": "stand",
+        "speed": 3.8125,
+        "grenade": "frag",
+        "vel": [
+          3.421875,
+          1.609375,
+          -0.203125
+        ],
+        "body": 1.0,
+        "shield": 0.84375,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 2.0
+        }
+      },
+      {
+        "index": 8,
+        "alive": true,
+        "pos": [
+          -19.7890625,
+          -8.095703125,
+          0.888671875
+        ],
+        "yaw": 1.5416506918250694,
+        "species": "spartan",
+        "aim": [
+          0.015595504987708222,
+          0.9986321693795793,
+          0.04990561596066612
+        ],
+        "weapon": "shotgun",
+        "stance": "stand",
+        "speed": 2.0,
+        "grenade": "frag",
+        "vel": [
+          0.0625,
+          1.984375,
+          0.171875
+        ],
+        "body": 1.0,
+        "shield": 1.0,
+        "anim": {
+          "name": "combat:shotgun:any:move_front",
+          "frame": 2.0
+        }
+      },
+      {
+        "index": 9,
+        "alive": true,
+        "pos": [
+          -0.931640625,
+          10.447265625,
+          2.455078125
+        ],
+        "yaw": -2.182854661161268,
+        "species": "elite",
+        "aim": [
+          -0.5625706109581616,
+          -0.8252440298075405,
+          0.049865809460711
+        ],
+        "weapon": "plasma_rifle",
+        "shots": 3,
+        "stance": "stand",
+        "speed": 3.5625,
+        "grenade": "frag",
+        "vel": [
+          -2.0625,
+          -2.9375,
+          0.078125
+        ],
+        "fire": 2,
+        "body": 1.0,
+        "shield": 0.6875,
+        "anim": {
+          "name": "combat:plasma:any:move_front",
+          "frame": 2.0
+        }
+      },
+      {
+        "index": 10,
+        "alive": true,
+        "pos": [
+          -17.251953125,
+          10.13671875,
+          -0.505859375
+        ],
+        "yaw": 1.573864288370668,
+        "species": "spartan",
+        "aim": [
+          -0.016123592568977125,
+          0.9986225074979364,
+          0.049931125374896815
+        ],
+        "weapon": "sniper_rifle",
+        "stance": "crouch",
+        "speed": 2.0,
+        "grenade": "frag",
+        "vel": [
+          0.0,
+          2.015625,
+          0.296875
+        ],
+        "body": 1.0,
+        "shield": 0.21875,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 2.0
+        }
+      },
+      {
+        "index": 11,
+        "alive": true,
+        "pos": [
+          8.833984375,
+          -33.513671875,
+          4.361328125
+        ],
+        "yaw": -0.31293208072867085,
+        "species": "elite",
+        "aim": [
+          0.9541222606279306,
+          -0.2951875257431721,
+          0.050150138782173365
+        ],
+        "weapon": "sniper_rifle",
+        "stance": "stand",
+        "speed": 1.875,
+        "grenade": "frag",
+        "vel": [
+          1.75,
+          -0.5625,
+          0.09375
+        ],
+        "body": 1.0,
+        "shield": 0.0,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 2.0
+        }
+      },
+      {
+        "index": 12,
+        "alive": true,
+        "pos": [
+          -24.736328125,
+          4.7890625,
+          1.587890625
+        ],
+        "yaw": -0.3620194659410112,
+        "species": "spartan",
+        "aim": [
+          0.9387117432903749,
+          -0.34105443960376935,
+          0.050021317808552804
+        ],
+        "weapon": "battle_rifle",
+        "shots": 1,
+        "stance": "stand",
+        "speed": 3.75,
+        "grenade": "frag",
+        "vel": [
+          3.515625,
+          -1.328125,
+          0.203125
+        ],
+        "fire": 2,
+        "body": 1.0,
+        "shield": 0.25,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 2.0
+        }
+      },
+      {
+        "index": 13,
+        "alive": true,
+        "pos": [
+          -30.84765625,
+          4.03125,
+          -2.041015625
+        ],
+        "yaw": 0.803805932852076,
+        "species": "elite",
+        "aim": [
+          0.6841068576844136,
+          0.7276668976831078,
+          0.04998693114604282
+        ],
+        "weapon": "sniper_rifle",
+        "stance": "stand",
+        "speed": 1.375,
+        "grenade": "frag",
+        "vel": [
+          0.96875,
+          1.0,
+          -0.0625
+        ],
+        "body": 1.0,
+        "shield": 0.71875,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 2.0
+        }
+      },
+      {
+        "index": 14,
+        "alive": true,
+        "pos": [
+          22.708984375,
+          19.15625,
+          2.380859375
+        ],
+        "yaw": 2.9375732088010027,
+        "species": "spartan",
+        "aim": [
+          -0.9807764880445372,
+          0.1887711880450021,
+          0.04942589466162503
+        ],
+        "weapon": "battle_rifle",
+        "stance": "stand",
+        "speed": 3.5625,
+        "grenade": "frag",
+        "vel": [
+          -3.5,
+          0.71875,
+          -0.21875
+        ],
+        "body": 1.0,
+        "shield": 1.0,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 2.0
+        }
+      },
+      {
+        "index": 15,
+        "alive": true,
+        "pos": [
+          31.32421875,
+          -23.76171875,
+          0.671875
+        ],
+        "yaw": -1.7088545977046046,
+        "species": "elite",
+        "aim": [
+          -0.12471993368072797,
+          -0.9909255004770164,
+          0.05011577243791807
+        ],
+        "weapon": "sniper_rifle",
+        "shots": 1,
+        "stance": "crouch",
+        "speed": 2.6875,
+        "grenade": "frag",
+        "vel": [
+          -0.375,
+          -2.65625,
+          -0.28125
+        ],
+        "fire": 2,
+        "body": 1.0,
+        "shield": 0.8125,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 2.0
+        }
+      }
+    ],
+    "vehicles": [
+      {
+        "id": "90040004",
+        "kind": "warthog",
+        "pos": [
+          -12.685546875,
+          -8.37109375,
+          0.361328125
+        ],
+        "forward": [
+          0.39694039976407713,
+          -0.9178443871567417,
+          0.0
+        ],
+        "up": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "occupied": true
+      },
+      {
+        "id": "90050005",
+        "kind": "ghost",
+        "pos": [
+          -18.578125,
+          -17.689453125,
+          -0.810546875
+        ],
+        "forward": [
+          -0.9971492625039188,
+          0.07545427945379102,
+          0.0
+        ],
+        "up": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "occupied": true
+      },
+      {
+        "id": "90060006",
+        "kind": "banshee",
+        "pos": [
+          -1.376953125,
+          -22.814453125,
+          0.908203125
+        ],
+        "forward": [
+          0.8652281497118359,
+          -0.5013783490999915,
+          0.0
+        ],
+        "up": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "occupied": false
+      },
+      {
+        "id": "90070007",
+        "kind": "mongoose",
+        "pos": [
+          27.1875,
+          -22.654296875,
+          8.072265625
+        ],
+        "forward": [
+          -0.2856190960906474,
+          0.958343222414789,
+          0.0
+        ],
+        "up": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "occupied": false
+      },
+      {
+        "id": "90080008",
+        "kind": "chaingun",
+        "pos": [
+          -0.599609375,
+          0.0,
+          0.75
+        ],
+        "forward": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "up": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "occupied": true,
+        "parent": "90040004",
+        "aim": [
+          0.9909321388956536,
+          0.08997986825827833,
+          0.09978536672232118
+        ]
+      }
+    ],
+    "bsp": 0,
+    "objects": [
+      {
+        "k": "netgame",
+        "i": 0,
+        "gone": true
+      },
+      {
+        "k": "netgame",
+        "i": 3,
+        "gone": true
+      },
+      {
+        "k": "netgame",
+        "i": 6,
+        "gone": true
+      },
+      {
+        "k": "netgame",
+        "i": 9,
+        "gone": true
+      },
+      {
+        "k": "netgame",
+        "i": 12,
+        "gone": true
+      },
+      {
+        "k": "netgame",
+        "i": 15,
+        "gone": true
+      },
+      {
+        "k": "netgame",
+        "i": 18,
+        "gone": true
+      },
+      {
+        "k": "netgame",
+        "i": 21,
+        "gone": true
+      }
+    ]
+  },
+  {
+    "game_id": "7f3c0b5e2a9d4c1f8e6b3a2d1c0f9e8d",
+    "tick": 9004,
+    "players": [
+      {
+        "index": 0,
+        "alive": true,
+        "pos": [
+          -35.623046875,
+          23.509765625,
+          6.44921875
+        ],
+        "yaw": -2.4850488763747385,
+        "species": "spartan",
+        "aim": [
+          -0.774674460086989,
+          -0.6304002257772104,
+          0.04974973596888929
+        ],
+        "weapon": "carbine",
+        "shots": 2,
+        "stance": "crouch",
+        "speed": 1.8125,
+        "grenade": "frag",
+        "vel": [
+          -1.4375,
+          -1.109375,
+          0.203125
+        ],
+        "fire": 3,
+        "body": 1.0,
+        "shield": 0.53125,
+        "anim": {
+          "name": "combat:carbine:any:move_front",
+          "frame": 4.0
+        }
+      },
+      {
+        "index": 1,
+        "alive": true,
+        "pos": [
+          32.0625,
+          -3.70703125,
+          -1.30078125
+        ],
+        "yaw": -1.4557477677034738,
+        "species": "elite",
+        "aim": [
+          0.1411669557919333,
+          -0.988744882199826,
+          0.049552482441249955
+        ],
+        "weapon": "shotgun",
+        "stance": "stand",
+        "speed": 4.125,
+        "grenade": "frag",
+        "vel": [
+          0.46875,
+          -4.078125,
+          -0.421875
+        ],
+        "body": 1.0,
+        "shield": 0.9375,
+        "anim": {
+          "name": "combat:shotgun:any:move_front",
+          "frame": 4.0
+        }
+      },
+      {
+        "index": 2,
+        "alive": true,
+        "pos": [
+          16.6875,
+          -35.541015625,
+          4.091796875
+        ],
+        "yaw": -0.969475857943725,
+        "species": "spartan",
+        "aim": [
+          0.5860065080475136,
+          -0.8088441212160026,
+          0.04865758009058773
+        ],
+        "weapon": "battle_rifle",
+        "stance": "stand",
+        "speed": 2.4375,
+        "grenade": "frag",
+        "vel": [
+          1.375,
+          -2.0,
+          0.0625
+        ],
+        "body": 1.0,
+        "shield": 0.9375,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 4.0
+        }
+      },
+      {
+        "index": 3,
+        "alive": true,
+        "pos": [
+          6.46875,
+          3.244140625,
+          7.375
+        ],
+        "yaw": 1.359106978066678,
+        "species": "elite",
+        "aim": [
+          0.18457181319948468,
+          0.9816134374017608,
+          0.04866523692076437
+        ],
+        "weapon": "energy_blade",
+        "shots": 2,
+        "stance": "stand",
+        "speed": 1.6875,
+        "grenade": "frag",
+        "vel": [
+          0.359375,
+          1.65625,
+          0.15625
+        ],
+        "fire": 3,
+        "body": 1.0,
+        "shield": 0.53125,
+        "anim": {
+          "name": "combat:energy:any:move_front",
+          "frame": 4.0
+        }
+      },
+      {
+        "index": 4,
+        "alive": true,
+        "pos": [
+          31.12890625,
+          -0.611328125,
+          6.150390625
+        ],
+        "yaw": 1.9082721001297376,
+        "species": "spartan",
+        "aim": [
+          -0.3555673274911575,
+          0.9333642346642885,
+          0.04902123081219991
+        ],
+        "weapon": "sniper_rifle",
+        "stance": "stand",
+        "speed": 2.6875,
+        "grenade": "frag",
+        "vel": [
+          -0.890625,
+          2.53125,
+          0.09375
+        ],
+        "body": 1.0,
+        "shield": 0.09375,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 4.0
+        }
+      },
+      {
+        "index": 5,
+        "alive": true,
+        "pos": [
+          -22.609375,
+          -34.763671875,
+          0.2734375
+        ],
+        "yaw": -0.31293208072867085,
+        "species": "elite",
+        "aim": [
+          0.9580964075123057,
+          -0.2822006512593774,
+          0.04913314910319524
+        ],
+        "weapon": "magnum",
+        "stance": "crouch",
+        "speed": 2.5,
+        "grenade": "frag",
+        "vel": [
+          2.375,
+          -0.765625,
+          0.15625
+        ],
+        "body": 1.0,
+        "shield": 0.03125,
+        "anim": {
+          "name": "combat:magnum:any:move_front",
+          "frame": 4.0
+        }
+      },
+      {
+        "index": 6,
+        "alive": true,
+        "pos": [
+          -40.138671875,
+          -27.1328125,
+          4.0859375
+        ],
+        "yaw": -0.8084078752157327,
+        "species": "spartan",
+        "aim": [
+          0.7083869467074341,
+          -0.7041023482394456,
+          0.049272882381867854
+        ],
+        "weapon": "plasma_rifle",
+        "shots": 3,
+        "stance": "stand",
+        "speed": 1.6875,
+        "grenade": "frag",
+        "vel": [
+          1.15625,
+          -1.21875,
+          0.0625
+        ],
+        "fire": 3,
+        "body": 1.0,
+        "shield": 0.40625,
+        "anim": {
+          "name": "combat:plasma:any:move_front",
+          "frame": 4.0
+        }
+      },
+      {
+        "index": 7,
+        "alive": true,
+        "pos": [
+          28.462890625,
+          8.296875,
+          -1.5625
+        ],
+        "yaw": 0.46479617872934925,
+        "species": "elite",
+        "aim": [
+          0.8808259145821935,
+          0.47086886498255565,
+          0.04927697424236047
+        ],
+        "weapon": "battle_rifle",
+        "stance": "stand",
+        "speed": 3.8125,
+        "grenade": "frag",
+        "vel": [
+          3.390625,
+          1.6875,
+          -0.21875
+        ],
+        "body": 1.0,
+        "shield": 0.875,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 4.0
+        }
+      },
+      {
+        "index": 8,
+        "alive": true,
+        "pos": [
+          -19.787109375,
+          -7.96484375,
+          0.900390625
+        ],
+        "yaw": 1.5615924420675826,
+        "species": "spartan",
+        "aim": [
+          -0.01716440941657683,
+          0.9986565478735628,
+          0.048892560156309904
+        ],
+        "weapon": "shotgun",
+        "stance": "stand",
+        "speed": 2.0,
+        "grenade": "frag",
+        "vel": [
+          0.015625,
+          1.984375,
+          0.171875
+        ],
+        "body": 1.0,
+        "shield": 1.0,
+        "anim": {
+          "name": "combat:shotgun:any:move_front",
+          "frame": 4.0
+        }
+      },
+      {
+        "index": 9,
+        "alive": true,
+        "pos": [
+          -1.06640625,
+          10.248046875,
+          2.458984375
+        ],
+        "yaw": -2.1506410646156686,
+        "species": "elite",
+        "aim": [
+          -0.5252808498585625,
+          -0.849493930698417,
+          0.0493972719734541
+        ],
+        "weapon": "plasma_rifle",
+        "shots": 1,
+        "stance": "stand",
+        "speed": 3.5625,
+        "grenade": "frag",
+        "vel": [
+          -1.96875,
+          -3.0,
+          0.046875
+        ],
+        "fire": 3,
+        "body": 1.0,
+        "shield": 0.65625,
+        "anim": {
+          "name": "combat:plasma:any:move_front",
+          "frame": 4.0
+        }
+      },
+      {
+        "index": 10,
+        "alive": true,
+        "pos": [
+          -17.25390625,
+          10.271484375,
+          -0.486328125
+        ],
+        "yaw": 1.607611865704152,
+        "species": "spartan",
+        "aim": [
+          -0.06284206456828166,
+          0.9968051621175713,
+          0.049298516169945135
+        ],
+        "weapon": "sniper_rifle",
+        "stance": "crouch",
+        "speed": 2.0,
+        "grenade": "frag",
+        "vel": [
+          -0.078125,
+          2.015625,
+          0.296875
+        ],
+        "body": 1.0,
+        "shield": 0.1875,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 4.0
+        }
+      },
+      {
+        "index": 11,
+        "alive": true,
+        "pos": [
+          8.951171875,
+          -33.55078125,
+          4.3671875
+        ],
+        "yaw": -0.2991262536377004,
+        "species": "elite",
+        "aim": [
+          0.961682869508727,
+          -0.2696716439546268,
+          0.04942937325386434
+        ],
+        "weapon": "sniper_rifle",
+        "stance": "stand",
+        "speed": 1.875,
+        "grenade": "frag",
+        "vel": [
+          1.765625,
+          -0.546875,
+          0.09375
+        ],
+        "body": 1.0,
+        "shield": 0.0,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 4.0
+        }
+      },
+      {
+        "index": 12,
+        "alive": true,
+        "pos": [
+          -24.5,
+          4.703125,
+          1.6015625
+        ],
+        "yaw": -0.3359417925469552,
+        "species": "spartan",
+        "aim": [
+          0.9511722430514276,
+          -0.30473212612505524,
+          0.04908864793227858
+        ],
+        "weapon": "battle_rifle",
+        "shots": 1,
+        "stance": "stand",
+        "speed": 3.75,
+        "actions": [
+          "reload"
+        ],
+        "grenade": "frag",
+        "vel": [
+          3.546875,
+          -1.25,
+          0.1875
+        ],
+        "fire": 3,
+        "body": 1.0,
+        "shield": 0.28125,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 4.0
+        }
+      },
+      {
+        "index": 13,
+        "alive": true,
+        "pos": [
+          -30.78515625,
+          4.099609375,
+          -2.044921875
+        ],
+        "yaw": 0.8130098175793898,
+        "species": "elite",
+        "aim": [
+          0.6674450439073768,
+          0.7430317689652635,
+          0.04920267951881316
+        ],
+        "weapon": "sniper_rifle",
+        "stance": "stand",
+        "speed": 1.375,
+        "grenade": "frag",
+        "vel": [
+          0.953125,
+          1.0,
+          -0.046875
+        ],
+        "body": 1.0,
+        "shield": 0.75,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 4.0
+        }
+      },
+      {
+        "index": 14,
+        "alive": true,
+        "pos": [
+          22.474609375,
+          19.19921875,
+          2.3671875
+        ],
+        "yaw": 2.9805246708618007,
+        "species": "spartan",
+        "aim": [
+          -0.9897407214102599,
+          0.13410499641575027,
+          0.04928645167416471
+        ],
+        "weapon": "battle_rifle",
+        "stance": "stand",
+        "speed": 3.5625,
+        "grenade": "frag",
+        "vel": [
+          -3.53125,
+          0.578125,
+          -0.171875
+        ],
+        "body": 1.0,
+        "shield": 1.0,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 4.0
+        }
+      },
+      {
+        "index": 15,
+        "alive": true,
+        "pos": [
+          31.302734375,
+          -23.939453125,
+          0.65234375
+        ],
+        "yaw": -1.6751070203711205,
+        "species": "elite",
+        "aim": [
+          -0.07790342801075549,
+          -0.9957374777431064,
+          0.04937541211949282
+        ],
+        "weapon": "sniper_rifle",
+        "shots": 2,
+        "stance": "crouch",
+        "speed": 2.6875,
+        "grenade": "frag",
+        "vel": [
+          -0.28125,
+          -2.671875,
+          -0.296875
+        ],
+        "fire": 3,
+        "body": 1.0,
+        "shield": 0.78125,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 4.0
+        }
+      }
+    ],
+    "vehicles": [
+      {
+        "id": "90040004",
+        "kind": "warthog",
+        "pos": [
+          -12.6015625,
+          -8.556640625,
+          0.35546875
+        ],
+        "forward": [
+          0.42576573180222355,
+          -0.9048334330819773,
+          0.0
+        ],
+        "up": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "occupied": true
+      },
+      {
+        "id": "90050005",
+        "kind": "ghost",
+        "pos": [
+          -18.748046875,
+          -17.677734375,
+          -0.8125
+        ],
+        "forward": [
+          -0.9985121451286754,
+          0.05452977196478077,
+          0.0
+        ],
+        "up": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "occupied": true
+      },
+      {
+        "id": "90060006",
+        "kind": "banshee",
+        "pos": [
+          -1.376953125,
+          -22.814453125,
+          0.908203125
+        ],
+        "forward": [
+          0.8652281497118359,
+          -0.5013783490999915,
+          0.0
+        ],
+        "up": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "occupied": false
+      },
+      {
+        "id": "90070007",
+        "kind": "mongoose",
+        "pos": [
+          27.1875,
+          -22.654296875,
+          8.072265625
+        ],
+        "forward": [
+          -0.2856190960906474,
+          0.958343222414789,
+          0.0
+        ],
+        "up": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "occupied": false
+      },
+      {
+        "id": "90080008",
+        "kind": "chaingun",
+        "pos": [
+          -0.599609375,
+          0.0,
+          0.75
+        ],
+        "forward": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "up": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "occupied": true,
+        "parent": "90040004",
+        "aim": [
+          0.9789940201458474,
+          0.17799891275379037,
+          0.0994338754003935
+        ]
+      }
+    ],
+    "hits": [
+      {
+        "from": "p10",
+        "to": "p3",
+        "weapon": "plasma_rifle",
+        "pos": [
+          -35.623046875,
+          23.509765625,
+          6.44921875
+        ],
+        "amount": 0.2578125,
+        "kind": "bullet",
+        "ago": 0
+      },
+      {
+        "from": "p10",
+        "to": "p14",
+        "weapon": "carbine",
+        "pos": [
+          31.302734375,
+          -23.939453125,
+          0.65234375
+        ],
+        "amount": 0.3671875,
+        "kind": "bullet",
+        "ago": 1
+      }
+    ],
+    "bsp": 0,
+    "objects": [
+      {
+        "k": "netgame",
+        "i": 0,
+        "gone": true
+      },
+      {
+        "k": "netgame",
+        "i": 3,
+        "gone": true
+      },
+      {
+        "k": "netgame",
+        "i": 6,
+        "gone": true
+      },
+      {
+        "k": "netgame",
+        "i": 9,
+        "gone": true
+      },
+      {
+        "k": "netgame",
+        "i": 12,
+        "gone": true
+      },
+      {
+        "k": "netgame",
+        "i": 15,
+        "gone": true
+      },
+      {
+        "k": "netgame",
+        "i": 18,
+        "gone": true
+      },
+      {
+        "k": "netgame",
+        "i": 21,
+        "gone": true
+      }
+    ]
+  },
+  {
+    "game_id": "7f3c0b5e2a9d4c1f8e6b3a2d1c0f9e8d",
+    "tick": 9006,
+    "players": [
+      {
+        "index": 0,
+        "alive": true,
+        "pos": [
+          -35.71875,
+          23.435546875,
+          6.462890625
+        ],
+        "yaw": -2.4605051837685683,
+        "species": "spartan",
+        "aim": [
+          -0.7507219622475976,
+          -0.6588404317637834,
+          0.048433674983715966
+        ],
+        "weapon": "carbine",
+        "shots": 2,
+        "stance": "crouch",
+        "speed": 1.8125,
+        "grenade": "frag",
+        "vel": [
+          -1.40625,
+          -1.140625,
+          0.203125
+        ],
+        "fire": 1,
+        "body": 1.0,
+        "shield": 0.5625,
+        "anim": {
+          "name": "combat:carbine:any:move_front",
+          "frame": 6.0
+        }
+      },
+      {
+        "index": 1,
+        "alive": true,
+        "pos": [
+          32.099609375,
+          -3.978515625,
+          -1.326171875
+        ],
+        "yaw": -1.4051264017032477,
+        "species": "elite",
+        "aim": [
+          0.2022330839940409,
+          -0.978160020505302,
+          0.04800785376713138
+        ],
+        "weapon": "shotgun",
+        "stance": "stand",
+        "speed": 4.125,
+        "grenade": "frag",
+        "vel": [
+          0.671875,
+          -4.046875,
+          -0.390625
+        ],
+        "body": 1.0,
+        "shield": 0.96875,
+        "anim": {
+          "name": "combat:shotgun:any:move_front",
+          "frame": 6.0
+        }
+      },
+      {
+        "index": 2,
+        "alive": true,
+        "pos": [
+          16.78125,
+          -35.671875,
+          4.095703125
+        ],
+        "yaw": -0.9433981845496691,
+        "species": "spartan",
+        "aim": [
+          0.6180734451015182,
+          -0.7846414033570879,
+          0.048198387920760595
+        ],
+        "weapon": "battle_rifle",
+        "stance": "stand",
+        "speed": 2.4375,
+        "grenade": "frag",
+        "vel": [
+          1.421875,
+          -1.96875,
+          0.078125
+        ],
+        "body": 1.0,
+        "shield": 0.90625,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 6.0
+        }
+      },
+      {
+        "index": 3,
+        "alive": true,
+        "pos": [
+          6.4921875,
+          3.35546875,
+          7.38671875
+        ],
+        "yaw": 1.380582709097077,
+        "species": "elite",
+        "aim": [
+          0.15000963014423416,
+          0.9875151328027776,
+          0.04807258417749608
+        ],
+        "weapon": "energy_blade",
+        "shots": 3,
+        "stance": "stand",
+        "speed": 1.6875,
+        "grenade": "frag",
+        "vel": [
+          0.328125,
+          1.671875,
+          0.171875
+        ],
+        "fire": 1,
+        "body": 1.0,
+        "shield": 0.5,
+        "anim": {
+          "name": "combat:energy:any:move_front",
+          "frame": 6.0
+        }
+      },
+      {
+        "index": 4,
+        "alive": true,
+        "pos": [
+          31.068359375,
+          -0.44140625,
+          6.15625
+        ],
+        "yaw": 1.928213850372251,
+        "species": "spartan",
+        "aim": [
+          -0.38529386654903597,
+          0.9215275983440858,
+          0.0483272375568378
+        ],
+        "weapon": "sniper_rifle",
+        "stance": "stand",
+        "speed": 2.6875,
+        "grenade": "frag",
+        "vel": [
+          -0.9375,
+          2.515625,
+          0.078125
+        ],
+        "body": 1.0,
+        "shield": 0.09375,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 6.0
+        }
+      },
+      {
+        "index": 5,
+        "alive": true,
+        "pos": [
+          -22.451171875,
+          -34.814453125,
+          0.28515625
+        ],
+        "yaw": -0.2899223689103865,
+        "species": "elite",
+        "aim": [
+          0.9674409218545893,
+          -0.24834690331133139,
+          0.04880449094924162
+        ],
+        "weapon": "magnum",
+        "stance": "crouch",
+        "speed": 2.5,
+        "grenade": "frag",
+        "vel": [
+          2.390625,
+          -0.71875,
+          0.15625
+        ],
+        "body": 1.0,
+        "shield": 0.03125,
+        "anim": {
+          "name": "combat:magnum:any:move_front",
+          "frame": 6.0
+        }
+      },
+      {
+        "index": 6,
+        "alive": true,
+        "pos": [
+          -40.0625,
+          -27.212890625,
+          4.091796875
+        ],
+        "yaw": -0.7976700097005338,
+        "species": "spartan",
+        "aim": [
+          0.7245984867905683,
+          -0.6875127374666415,
+          0.047783561628905624
+        ],
+        "weapon": "plasma_rifle",
+        "shots": 3,
+        "stance": "stand",
+        "speed": 1.6875,
+        "grenade": "frag",
+        "vel": [
+          1.171875,
+          -1.203125,
+          0.0625
+        ],
+        "fire": 1,
+        "body": 1.0,
+        "shield": 0.4375,
+        "anim": {
+          "name": "combat:plasma:any:move_front",
+          "frame": 6.0
+        }
+      },
+      {
+        "index": 7,
+        "alive": true,
+        "pos": [
+          28.6875,
+          8.412109375,
+          -1.576171875
+        ],
+        "yaw": 0.4878058905476339,
+        "species": "elite",
+        "aim": [
+          0.8631483191898728,
+          0.502697581096182,
+          0.0476457872192811
+        ],
+        "weapon": "battle_rifle",
+        "stance": "stand",
+        "speed": 3.8125,
+        "actions": [
+          "reload"
+        ],
+        "grenade": "frag",
+        "vel": [
+          3.34375,
+          1.78125,
+          -0.21875
+        ],
+        "body": 1.0,
+        "shield": 0.875,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 6.0
+        }
+      },
+      {
+        "index": 8,
+        "alive": true,
+        "pos": [
+          -19.787109375,
+          -7.83203125,
+          0.912109375
+        ],
+        "yaw": 1.581534192310096,
+        "species": "spartan",
+        "aim": [
+          -0.04921271751124148,
+          0.997627371287667,
+          0.04814287582621456
+        ],
+        "weapon": "shotgun",
+        "stance": "stand",
+        "speed": 2.0,
+        "grenade": "frag",
+        "vel": [
+          -0.015625,
+          1.984375,
+          0.171875
+        ],
+        "body": 1.0,
+        "shield": 0.96875,
+        "anim": {
+          "name": "combat:shotgun:any:move_front",
+          "frame": 6.0
+        }
+      },
+      {
+        "index": 9,
+        "alive": true,
+        "pos": [
+          -1.193359375,
+          10.046875,
+          2.462890625
+        ],
+        "yaw": -2.119961448857956,
+        "species": "elite",
+        "aim": [
+          -0.4874717718032315,
+          -0.8718112928723519,
+          0.04812838367591856
+        ],
+        "weapon": "plasma_rifle",
+        "shots": 2,
+        "stance": "stand",
+        "speed": 3.5625,
+        "grenade": "frag",
+        "vel": [
+          -1.875,
+          -3.0625,
+          0.015625
+        ],
+        "fire": 1,
+        "body": 1.0,
+        "shield": 0.625,
+        "anim": {
+          "name": "combat:plasma:any:move_front",
+          "frame": 6.0
+        }
+      },
+      {
+        "index": 10,
+        "alive": true,
+        "pos": [
+          -17.26171875,
+          10.40625,
+          -0.466796875
+        ],
+        "yaw": 1.6413594430376361,
+        "species": "spartan",
+        "aim": [
+          -0.10839158162118004,
+          0.9929342813795148,
+          0.048298839478867865
+        ],
+        "weapon": "sniper_rifle",
+        "stance": "crouch",
+        "speed": 2.0,
+        "grenade": "frag",
+        "vel": [
+          -0.140625,
+          2.015625,
+          0.296875
+        ],
+        "body": 1.0,
+        "shield": 0.1875,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 6.0
+        }
+      },
+      {
+        "index": 11,
+        "alive": true,
+        "pos": [
+          9.068359375,
+          -33.5859375,
+          4.373046875
+        ],
+        "yaw": -0.28685440733461487,
+        "species": "elite",
+        "aim": [
+          0.9683720267909179,
+          -0.24471272733035926,
+          0.048695983524177464
+        ],
+        "weapon": "sniper_rifle",
+        "stance": "stand",
+        "speed": 1.875,
+        "grenade": "frag",
+        "vel": [
+          1.765625,
+          -0.515625,
+          0.09375
+        ],
+        "body": 1.0,
+        "shield": 0.0,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 6.0
+        }
+      },
+      {
+        "index": 12,
+        "alive": true,
+        "pos": [
+          -24.26171875,
+          4.623046875,
+          1.61328125
+        ],
+        "yaw": -0.31139809994078504,
+        "species": "spartan",
+        "aim": [
+          0.9619680072625011,
+          -0.26877598643461703,
+          0.04875471381837245
+        ],
+        "weapon": "battle_rifle",
+        "shots": 1,
+        "stance": "stand",
+        "speed": 3.75,
+        "grenade": "frag",
+        "vel": [
+          3.578125,
+          -1.15625,
+          0.1875
+        ],
+        "fire": 1,
+        "body": 1.0,
+        "shield": 0.28125,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 6.0
+        }
+      },
+      {
+        "index": 13,
+        "alive": true,
+        "pos": [
+          -30.720703125,
+          4.166015625,
+          -2.046875
+        ],
+        "yaw": 0.8222137023067037,
+        "species": "elite",
+        "aim": [
+          0.6512587483004869,
+          0.7573107193352111,
+          0.04839955725074674
+        ],
+        "weapon": "sniper_rifle",
+        "stance": "stand",
+        "speed": 1.375,
+        "grenade": "frag",
+        "vel": [
+          0.9375,
+          1.015625,
+          -0.046875
+        ],
+        "body": 1.0,
+        "shield": 0.78125,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 6.0
+        }
+      },
+      {
+        "index": 14,
+        "alive": true,
+        "pos": [
+          22.23828125,
+          19.232421875,
+          2.357421875
+        ],
+        "yaw": 3.0234761329225988,
+        "species": "spartan",
+        "aim": [
+          -0.9956570598636251,
+          0.0795866999339722,
+          0.04830089375303142
+        ],
+        "weapon": "battle_rifle",
+        "stance": "stand",
+        "speed": 3.5625,
+        "grenade": "frag",
+        "vel": [
+          -3.5625,
+          0.421875,
+          -0.140625
+        ],
+        "body": 1.0,
+        "shield": 1.0,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 6.0
+        }
+      },
+      {
+        "index": 15,
+        "alive": true,
+        "pos": [
+          31.287109375,
+          -24.1171875,
+          0.6328125
+        ],
+        "yaw": -1.6413594430376364,
+        "species": "elite",
+        "aim": [
+          -0.03160921827683454,
+          -0.9983244772433578,
+          0.04846746802447964
+        ],
+        "weapon": "sniper_rifle",
+        "shots": 1,
+        "stance": "crouch",
+        "speed": 2.6875,
+        "grenade": "frag",
+        "vel": [
+          -0.1875,
+          -2.671875,
+          -0.296875
+        ],
+        "fire": 1,
+        "body": 1.0,
+        "shield": 0.78125,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 6.0
+        }
+      }
+    ],
+    "vehicles": [
+      {
+        "id": "90040004",
+        "kind": "warthog",
+        "pos": [
+          -12.51171875,
+          -8.73828125,
+          0.3515625
+        ],
+        "forward": [
+          0.45482152375058443,
+          -0.8905826079220257,
+          -1.493698644408748e-16
+        ],
+        "up": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "occupied": true
+      },
+      {
+        "id": "90050005",
+        "kind": "ghost",
+        "pos": [
+          -18.91796875,
+          -17.671875,
+          -0.814453125
+        ],
+        "forward": [
+          -0.9994101903383136,
+          0.03434052195199865,
+          -1.1476938425073604e-16
+        ],
+        "up": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "occupied": true
+      },
+      {
+        "id": "90060006",
+        "kind": "banshee",
+        "pos": [
+          -1.376953125,
+          -22.814453125,
+          0.908203125
+        ],
+        "forward": [
+          0.8652281497118359,
+          -0.5013783490999915,
+          0.0
+        ],
+        "up": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "occupied": false
+      },
+      {
+        "id": "90070007",
+        "kind": "mongoose",
+        "pos": [
+          27.1875,
+          -22.654296875,
+          8.072265625
+        ],
+        "forward": [
+          -0.2856190960906474,
+          0.958343222414789,
+          0.0
+        ],
+        "up": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "occupied": false
+      },
+      {
+        "id": "90080008",
+        "kind": "chaingun",
+        "pos": [
+          -0.599609375,
+          0.0,
+          0.75
+        ],
+        "forward": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "up": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "occupied": true,
+        "parent": "90040004",
+        "aim": [
+          0.9597975317877077,
+          0.2622327038397102,
+          0.10011347067772174
+        ]
+      }
+    ],
+    "hits": [
+      {
+        "from": "p0",
+        "to": "p5",
+        "weapon": "shotgun",
+        "pos": [
+          28.6875,
+          8.412109375,
+          -1.576171875
+        ],
+        "amount": 0.15625,
+        "kind": "bullet",
+        "ago": 0
+      },
+      {
+        "from": "p9",
+        "to": "p6",
+        "weapon": "smg",
+        "pos": [
+          -22.451171875,
+          -34.814453125,
+          0.28515625
+        ],
+        "amount": 0.27734375,
+        "kind": "bullet",
+        "ago": 0
+      },
+      {
+        "from": "p4",
+        "to": "p3",
+        "weapon": "plasma_rifle",
+        "pos": [
+          32.099609375,
+          -3.978515625,
+          -1.326171875
+        ],
+        "amount": 0.18359375,
+        "kind": "bullet",
+        "ago": 0
+      }
+    ],
+    "bsp": 0,
+    "objects": [
+      {
+        "k": "netgame",
+        "i": 0,
+        "gone": true
+      },
+      {
+        "k": "netgame",
+        "i": 3,
+        "gone": true
+      },
+      {
+        "k": "netgame",
+        "i": 6,
+        "gone": true
+      },
+      {
+        "k": "netgame",
+        "i": 9,
+        "gone": true
+      },
+      {
+        "k": "netgame",
+        "i": 12,
+        "gone": true
+      },
+      {
+        "k": "netgame",
+        "i": 15,
+        "gone": true
+      },
+      {
+        "k": "netgame",
+        "i": 18,
+        "gone": true
+      },
+      {
+        "k": "netgame",
+        "i": 21,
+        "gone": true
+      }
+    ]
+  },
+  {
+    "game_id": "7f3c0b5e2a9d4c1f8e6b3a2d1c0f9e8d",
+    "tick": 9008,
+    "players": [
+      {
+        "index": 0,
+        "alive": true,
+        "pos": [
+          -35.810546875,
+          23.357421875,
+          6.4765625
+        ],
+        "yaw": -2.435961491162398,
+        "species": "spartan",
+        "aim": [
+          -0.7263465417035972,
+          -0.6857167547780771,
+          0.04704501644007589
+        ],
+        "weapon": "carbine",
+        "shots": 2,
+        "stance": "crouch",
+        "speed": 1.8125,
+        "grenade": "frag",
+        "vel": [
+          -1.375,
+          -1.171875,
+          0.1875
+        ],
+        "fire": 2,
+        "body": 1.0,
+        "shield": 0.59375,
+        "anim": {
+          "name": "combat:carbine:any:move_front",
+          "frame": 8.0
+        }
+      },
+      {
+        "index": 1,
+        "alive": true,
+        "pos": [
+          32.15234375,
+          -4.248046875,
+          -1.3515625
+        ],
+        "yaw": -1.3560390164909064,
+        "species": "elite",
+        "aim": [
+          0.26182336308612014,
+          -0.9639577500795393,
+          0.04726502516519017
+        ],
+        "weapon": "shotgun",
+        "stance": "stand",
+        "speed": 4.125,
+        "grenade": "frag",
+        "vel": [
+          0.875,
+          -4.015625,
+          -0.359375
+        ],
+        "body": 1.0,
+        "shield": 0.96875,
+        "anim": {
+          "name": "combat:shotgun:any:move_front",
+          "frame": 8.0
+        }
+      },
+      {
+        "index": 2,
+        "alive": true,
+        "pos": [
+          16.876953125,
+          -35.80078125,
+          4.1015625
+        ],
+        "yaw": -0.9157865303677282,
+        "species": "spartan",
+        "aim": [
+          0.6483166774489568,
+          -0.759923824772955,
+          0.04691765428906916
+        ],
+        "weapon": "battle_rifle",
+        "stance": "stand",
+        "speed": 2.4375,
+        "grenade": "frag",
+        "vel": [
+          1.484375,
+          -1.921875,
+          0.09375
+        ],
+        "body": 1.0,
+        "shield": 0.90625,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 8.0
+        }
+      },
+      {
+        "index": 3,
+        "alive": true,
+        "pos": [
+          6.51171875,
+          3.466796875,
+          7.3984375
+        ],
+        "yaw": 1.4035924209153616,
+        "species": "elite",
+        "aim": [
+          0.11569473308990742,
+          0.9921528818149126,
+          0.04740662233927897
+        ],
+        "weapon": "energy_blade",
+        "shots": 3,
+        "stance": "stand",
+        "speed": 1.6875,
+        "grenade": "frag",
+        "vel": [
+          0.28125,
+          1.671875,
+          0.171875
+        ],
+        "fire": 2,
+        "body": 1.0,
+        "shield": 0.46875,
+        "anim": {
+          "name": "combat:energy:any:move_front",
+          "frame": 8.0
+        }
+      },
+      {
+        "index": 4,
+        "alive": true,
+        "pos": [
+          31.00390625,
+          -0.275390625,
+          6.162109375
+        ],
+        "yaw": 1.9466216198268786,
+        "species": "spartan",
+        "aim": [
+          -0.41350005048722743,
+          0.909298654712204,
+          0.04683657529790594
+        ],
+        "weapon": "sniper_rifle",
+        "stance": "stand",
+        "speed": 2.6875,
+        "grenade": "frag",
+        "vel": [
+          -0.984375,
+          2.5,
+          0.078125
+        ],
+        "body": 1.0,
+        "shield": 0.0625,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 8.0
+        }
+      },
+      {
+        "index": 5,
+        "alive": true,
+        "pos": [
+          -22.2890625,
+          -34.859375,
+          0.294921875
+        ],
+        "yaw": -0.268446637879987,
+        "species": "elite",
+        "aim": [
+          0.9754125434027239,
+          -0.2152801397714629,
+          0.04716812051172495
+        ],
+        "weapon": "magnum",
+        "stance": "crouch",
+        "speed": 2.5,
+        "grenade": "frag",
+        "vel": [
+          2.40625,
+          -0.65625,
+          0.140625
+        ],
+        "body": 1.0,
+        "shield": 0.0625,
+        "anim": {
+          "name": "combat:magnum:any:move_front",
+          "frame": 8.0
+        }
+      },
+      {
+        "index": 6,
+        "alive": true,
+        "pos": [
+          -39.982421875,
+          -27.29296875,
+          4.095703125
+        ],
+        "yaw": -0.7869321441853341,
+        "species": "spartan",
+        "aim": [
+          0.7400237973575002,
+          -0.6709359163722476,
+          0.0470082489178007
+        ],
+        "weapon": "plasma_rifle",
+        "shots": 3,
+        "stance": "stand",
+        "speed": 1.6875,
+        "grenade": "frag",
+        "vel": [
+          1.1875,
+          -1.1875,
+          0.0625
+        ],
+        "fire": 2,
+        "body": 1.0,
+        "shield": 0.4375,
+        "anim": {
+          "name": "combat:plasma:any:move_front",
+          "frame": 8.0
+        }
+      },
+      {
+        "index": 7,
+        "alive": true,
+        "pos": [
+          28.908203125,
+          8.533203125,
+          -1.591796875
+        ],
+        "yaw": 0.5123495831538042,
+        "species": "elite",
+        "aim": [
+          0.8445738066895195,
+          0.5333417443727716,
+          0.04734626451350959
+        ],
+        "weapon": "battle_rifle",
+        "stance": "stand",
+        "speed": 3.8125,
+        "grenade": "frag",
+        "vel": [
+          3.296875,
+          1.859375,
+          -0.21875
+        ],
+        "body": 1.0,
+        "shield": 0.90625,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 8.0
+        }
+      },
+      {
+        "index": 8,
+        "alive": true,
+        "pos": [
+          -19.7890625,
+          -7.69921875,
+          0.923828125
+        ],
+        "yaw": 1.6014759425526093,
+        "species": "spartan",
+        "aim": [
+          -0.08068157942336536,
+          0.995621667169964,
+          0.04720146823407761
+        ],
+        "weapon": "shotgun",
+        "stance": "stand",
+        "speed": 2.0,
+        "grenade": "frag",
+        "vel": [
+          -0.0625,
+          1.984375,
+          0.171875
+        ],
+        "body": 1.0,
+        "shield": 0.96875,
+        "anim": {
+          "name": "combat:shotgun:any:move_front",
+          "frame": 8.0
+        }
+      },
+      {
+        "index": 9,
+        "alive": true,
+        "pos": [
+          -1.314453125,
+          9.83984375,
+          2.462890625
+        ],
+        "yaw": -2.087747852312358,
+        "species": "elite",
+        "aim": [
+          -0.4497055126551421,
+          -0.8919498478755834,
+          0.04680193118130434
+        ],
+        "weapon": "plasma_rifle",
+        "shots": 2,
+        "stance": "stand",
+        "speed": 3.5625,
+        "grenade": "frag",
+        "vel": [
+          -1.78125,
+          -3.125,
+          0.0
+        ],
+        "fire": 2,
+        "body": 1.0,
+        "shield": 0.625,
+        "anim": {
+          "name": "combat:plasma:any:move_front",
+          "frame": 8.0
+        }
+      },
+      {
+        "index": 10,
+        "alive": true,
+        "pos": [
+          -17.2734375,
+          10.541015625,
+          -0.447265625
+        ],
+        "yaw": 1.6751070203711202,
+        "species": "spartan",
+        "aim": [
+          -0.15376375545957366,
+          0.9869892378744712,
+          0.04699948751783193
+        ],
+        "weapon": "sniper_rifle",
+        "stance": "crouch",
+        "speed": 2.0,
+        "grenade": "frag",
+        "vel": [
+          -0.203125,
+          2.015625,
+          0.28125
+        ],
+        "body": 1.0,
+        "shield": 0.15625,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 8.0
+        }
+      },
+      {
+        "index": 11,
+        "alive": true,
+        "pos": [
+          9.1875,
+          -33.619140625,
+          4.37890625
+        ],
+        "yaw": -0.2730485802436444,
+        "species": "elite",
+        "aim": [
+          0.9743020331353777,
+          -0.22021895269498262,
+          0.04731977495925239
+        ],
+        "weapon": "sniper_rifle",
+        "stance": "stand",
+        "speed": 1.875,
+        "grenade": "frag",
+        "vel": [
+          1.78125,
+          -0.5,
+          0.09375
+        ],
+        "body": 1.0,
+        "shield": 0.0,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 8.0
+        }
+      },
+      {
+        "index": 12,
+        "alive": true,
+        "pos": [
+          -24.0234375,
+          4.548828125,
+          1.625
+        ],
+        "yaw": -0.28685440733461487,
+        "species": "spartan",
+        "aim": [
+          0.9713594062266557,
+          -0.23290618865472357,
+          0.04707027959688636
+        ],
+        "weapon": "battle_rifle",
+        "shots": 1,
+        "stance": "stand",
+        "speed": 3.75,
+        "grenade": "frag",
+        "vel": [
+          3.609375,
+          -1.0625,
+          0.171875
+        ],
+        "fire": 2,
+        "body": 1.0,
+        "shield": 0.3125,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 8.0
+        }
+      },
+      {
+        "index": 13,
+        "alive": true,
+        "pos": [
+          -30.658203125,
+          4.234375,
+          -2.05078125
+        ],
+        "yaw": 0.8314175870340175,
+        "species": "elite",
+        "aim": [
+          0.6352829153437143,
+          0.7708572581712556,
+          0.04684767867339114
+        ],
+        "weapon": "sniper_rifle",
+        "stance": "stand",
+        "speed": 1.375,
+        "grenade": "frag",
+        "vel": [
+          0.9375,
+          1.03125,
+          -0.046875
+        ],
+        "body": 1.0,
+        "shield": 0.78125,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 8.0
+        }
+      },
+      {
+        "index": 14,
+        "alive": true,
+        "pos": [
+          22.0,
+          19.255859375,
+          2.349609375
+        ],
+        "yaw": 3.064893614195511,
+        "species": "spartan",
+        "aim": [
+          -0.9985756070669627,
+          0.025108239465277217,
+          0.04707794899739472
+        ],
+        "weapon": "battle_rifle",
+        "stance": "stand",
+        "speed": 3.5625,
+        "actions": [
+          "reload"
+        ],
+        "grenade": "frag",
+        "vel": [
+          -3.578125,
+          0.265625,
+          -0.09375
+        ],
+        "body": 1.0,
+        "shield": 1.0,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 8.0
+        }
+      },
+      {
+        "index": 15,
+        "alive": true,
+        "pos": [
+          31.27734375,
+          -24.296875,
+          0.611328125
+        ],
+        "yaw": -1.6076118657041523,
+        "species": "elite",
+        "aim": [
+          0.01449799620426525,
+          -0.9988083813581228,
+          0.04660070208513786
+        ],
+        "weapon": "sniper_rifle",
+        "shots": 2,
+        "stance": "crouch",
+        "speed": 2.6875,
+        "grenade": "frag",
+        "vel": [
+          -0.09375,
+          -2.6875,
+          -0.3125
+        ],
+        "fire": 2,
+        "body": 1.0,
+        "shield": 0.75,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 8.0
+        }
+      }
+    ],
+    "vehicles": [
+      {
+        "id": "90040004",
+        "kind": "warthog",
+        "pos": [
+          -12.41796875,
+          -8.91796875,
+          0.349609375
+        ],
+        "forward": [
+          0.4832177126900259,
+          -0.8755002239534948,
+          0.0
+        ],
+        "up": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "occupied": true
+      },
+      {
+        "id": "90050005",
+        "kind": "ghost",
+        "pos": [
+          -19.087890625,
+          -17.666015625,
+          -0.81640625
+        ],
+        "forward": [
+          -0.9999038496677525,
+          0.013866918172707812,
+          -1.1255116481484033e-16
+        ],
+        "up": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "occupied": true
+      },
+      {
+        "id": "90060006",
+        "kind": "banshee",
+        "pos": [
+          -1.376953125,
+          -22.814453125,
+          0.908203125
+        ],
+        "forward": [
+          0.8652281497118359,
+          -0.5013783490999915,
+          0.0
+        ],
+        "up": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "occupied": false
+      },
+      {
+        "id": "90070007",
+        "kind": "mongoose",
+        "pos": [
+          27.1875,
+          -22.654296875,
+          8.072265625
+        ],
+        "forward": [
+          -0.2856190960906474,
+          0.958343222414789,
+          0.0
+        ],
+        "up": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "occupied": false
+      },
+      {
+        "id": "90080008",
+        "kind": "chaingun",
+        "pos": [
+          -0.599609375,
+          0.0,
+          0.75
+        ],
+        "forward": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "up": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "occupied": true,
+        "parent": "90040004",
+        "aim": [
+          0.9345152882502459,
+          0.3415350837633993,
+          0.10017466039517003
+        ]
+      }
+    ],
+    "hits": [
+      {
+        "from": "p10",
+        "to": "p7",
+        "weapon": "energy_blade",
+        "pos": [
+          -39.982421875,
+          -27.29296875,
+          4.095703125
+        ],
+        "amount": 0.25,
+        "kind": "bullet",
+        "ago": 1
+      },
+      {
+        "from": "p13",
+        "to": "p6",
+        "weapon": "plasma_rifle",
+        "pos": [
+          32.15234375,
+          -4.248046875,
+          -1.3515625
+        ],
+        "amount": 0.234375,
+        "kind": "bullet",
+        "ago": 1
+      }
+    ],
+    "bsp": 0,
+    "objects": [
+      {
+        "k": "netgame",
+        "i": 0,
+        "gone": true
+      },
+      {
+        "k": "netgame",
+        "i": 3,
+        "gone": true
+      },
+      {
+        "k": "netgame",
+        "i": 6,
+        "gone": true
+      },
+      {
+        "k": "netgame",
+        "i": 9,
+        "gone": true
+      },
+      {
+        "k": "netgame",
+        "i": 12,
+        "gone": true
+      },
+      {
+        "k": "netgame",
+        "i": 15,
+        "gone": true
+      },
+      {
+        "k": "netgame",
+        "i": 18,
+        "gone": true
+      },
+      {
+        "k": "netgame",
+        "i": 21,
+        "gone": true
+      }
+    ]
+  },
+  {
+    "game_id": "7f3c0b5e2a9d4c1f8e6b3a2d1c0f9e8d",
+    "tick": 9010,
+    "players": [
+      {
+        "index": 0,
+        "alive": true,
+        "pos": [
+          -35.900390625,
+          23.279296875,
+          6.48828125
+        ],
+        "yaw": -2.411417798556228,
+        "species": "spartan",
+        "aim": [
+          -0.7013928006074721,
+          -0.7113618353369185,
+          0.04486065628250842
+        ],
+        "weapon": "carbine",
+        "shots": 1,
+        "stance": "crouch",
+        "speed": 1.8125,
+        "grenade": "frag",
+        "vel": [
+          -1.34375,
+          -1.203125,
+          0.1875
+        ],
+        "fire": 3,
+        "body": 1.0,
+        "shield": 0.625,
+        "anim": {
+          "name": "combat:carbine:any:move_front",
+          "frame": 10.0
+        }
+      },
+      {
+        "index": 1,
+        "alive": true,
+        "pos": [
+          32.216796875,
+          -4.513671875,
+          -1.375
+        ],
+        "yaw": -1.306951631278566,
+        "species": "elite",
+        "aim": [
+          0.3195577882304574,
+          -0.9465058336765856,
+          0.04482774584395202
+        ],
+        "weapon": "shotgun",
+        "stance": "stand",
+        "speed": 4.125,
+        "grenade": "frag",
+        "vel": [
+          1.078125,
+          -3.96875,
+          -0.3125
+        ],
+        "body": 1.0,
+        "shield": 0.96875,
+        "anim": {
+          "name": "combat:shotgun:any:move_front",
+          "frame": 10.0
+        }
+      },
+      {
+        "index": 2,
+        "alive": true,
+        "pos": [
+          16.978515625,
+          -35.927734375,
+          4.109375
+        ],
+        "yaw": -0.8881748761857864,
+        "species": "spartan",
+        "aim": [
+          0.6769547515799139,
+          -0.7346133581813578,
+          0.04555741756163459
+        ],
+        "weapon": "battle_rifle",
+        "stance": "stand",
+        "speed": 2.4375,
+        "grenade": "frag",
+        "vel": [
+          1.53125,
+          -1.875,
+          0.109375
+        ],
+        "body": 1.0,
+        "shield": 0.90625,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 10.0
+        }
+      },
+      {
+        "index": 3,
+        "alive": true,
+        "pos": [
+          6.529296875,
+          3.578125,
+          7.41015625
+        ],
+        "yaw": 1.4266021327336462,
+        "species": "elite",
+        "aim": [
+          0.08287050616572765,
+          0.9955436965869531,
+          0.04500252652708381
+        ],
+        "weapon": "energy_blade",
+        "shots": 2,
+        "stance": "stand",
+        "speed": 1.6875,
+        "actions": [
+          "reload"
+        ],
+        "grenade": "frag",
+        "vel": [
+          0.25,
+          1.6875,
+          0.1875
+        ],
+        "fire": 3,
+        "body": 1.0,
+        "shield": 0.46875,
+        "anim": {
+          "name": "combat:energy:any:move_front",
+          "frame": 10.0
+        }
+      },
+      {
+        "index": 4,
+        "alive": true,
+        "pos": [
+          30.935546875,
+          -0.109375,
+          6.166015625
+        ],
+        "yaw": 1.966563370069392,
+        "species": "spartan",
+        "aim": [
+          -0.4410725648120439,
+          0.8963296990897126,
+          0.045255531152231195
+        ],
+        "weapon": "sniper_rifle",
+        "stance": "stand",
+        "speed": 2.6875,
+        "grenade": "frag",
+        "vel": [
+          -1.03125,
+          2.484375,
+          0.0625
+        ],
+        "body": 1.0,
+        "shield": 0.0625,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 10.0
+        }
+      },
+      {
+        "index": 5,
+        "alive": true,
+        "pos": [
+          -22.12890625,
+          -34.90234375,
+          0.3046875
+        ],
+        "yaw": -0.24543692606170264,
+        "species": "elite",
+        "aim": [
+          0.9821130593152315,
+          -0.18270495805442893,
+          0.045528419968255726
+        ],
+        "weapon": "magnum",
+        "stance": "crouch",
+        "speed": 2.5,
+        "grenade": "frag",
+        "vel": [
+          2.421875,
+          -0.609375,
+          0.140625
+        ],
+        "body": 1.0,
+        "shield": 0.0625,
+        "anim": {
+          "name": "combat:magnum:any:move_front",
+          "frame": 10.0
+        }
+      },
+      {
+        "index": 6,
+        "alive": true,
+        "pos": [
+          -39.90234375,
+          -27.373046875,
+          4.099609375
+        ],
+        "yaw": -0.7777282594580202,
+        "species": "spartan",
+        "aim": [
+          0.7540387180479364,
+          -0.6552532498022596,
+          0.045483956602325876
+        ],
+        "weapon": "plasma_rifle",
+        "shots": 1,
+        "stance": "stand",
+        "speed": 1.6875,
+        "grenade": "frag",
+        "vel": [
+          1.203125,
+          -1.1875,
+          0.0625
+        ],
+        "fire": 3,
+        "body": 1.0,
+        "shield": 0.46875,
+        "anim": {
+          "name": "combat:plasma:any:move_front",
+          "frame": 10.0
+        }
+      },
+      {
+        "index": 7,
+        "alive": true,
+        "pos": [
+          29.126953125,
+          8.66015625,
+          -1.60546875
+        ],
+        "yaw": 0.5368932757599744,
+        "species": "elite",
+        "aim": [
+          0.8256523190907362,
+          0.5623399594824946,
+          0.045519423868446304
+        ],
+        "weapon": "battle_rifle",
+        "stance": "stand",
+        "speed": 3.8125,
+        "grenade": "frag",
+        "vel": [
+          3.25,
+          1.9375,
+          -0.21875
+        ],
+        "body": 1.0,
+        "shield": 0.90625,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 10.0
+        }
+      },
+      {
+        "index": 8,
+        "alive": true,
+        "pos": [
+          -19.794921875,
+          -7.568359375,
+          0.935546875
+        ],
+        "yaw": 1.6214176927951227,
+        "species": "spartan",
+        "aim": [
+          -0.11118001768925787,
+          0.9927589458313524,
+          0.04548273450924179
+        ],
+        "weapon": "shotgun",
+        "stance": "stand",
+        "speed": 2.0,
+        "grenade": "frag",
+        "vel": [
+          -0.09375,
+          1.984375,
+          0.171875
+        ],
+        "body": 1.0,
+        "shield": 0.96875,
+        "anim": {
+          "name": "combat:shotgun:any:move_front",
+          "frame": 10.0
+        }
+      },
+      {
+        "index": 9,
+        "alive": true,
+        "pos": [
+          -1.4296875,
+          9.630859375,
+          2.4609375
+        ],
+        "yaw": -2.0570682365546444,
+        "species": "elite",
+        "aim": [
+          -0.41141254806154537,
+          -0.9103170503374778,
+          0.04541567088991085
+        ],
+        "weapon": "plasma_rifle",
+        "shots": 1,
+        "stance": "stand",
+        "speed": 3.5625,
+        "grenade": "frag",
+        "vel": [
+          -1.671875,
+          -3.171875,
+          -0.03125
+        ],
+        "fire": 3,
+        "body": 1.0,
+        "shield": 0.59375,
+        "anim": {
+          "name": "combat:plasma:any:move_front",
+          "frame": 10.0
+        }
+      },
+      {
+        "index": 10,
+        "alive": true,
+        "pos": [
+          -17.2890625,
+          10.67578125,
+          -0.427734375
+        ],
+        "yaw": 1.7073206169167185,
+        "species": "spartan",
+        "aim": [
+          -0.197636174118911,
+          0.9792245485045739,
+          0.04537869858923635
+        ],
+        "weapon": "sniper_rifle",
+        "stance": "crouch",
+        "speed": 2.0,
+        "grenade": "frag",
+        "vel": [
+          -0.28125,
+          2.0,
+          0.28125
+        ],
+        "body": 1.0,
+        "shield": 0.125,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 10.0
+        }
+      },
+      {
+        "index": 11,
+        "alive": true,
+        "pos": [
+          9.3046875,
+          -33.65234375,
+          4.384765625
+        ],
+        "yaw": -0.2592427531526731,
+        "species": "elite",
+        "aim": [
+          0.9795035316783094,
+          -0.19625862480034334,
+          0.04533633885965392
+        ],
+        "weapon": "sniper_rifle",
+        "stance": "stand",
+        "speed": 1.875,
+        "grenade": "frag",
+        "vel": [
+          1.78125,
+          -0.46875,
+          0.078125
+        ],
+        "body": 1.0,
+        "shield": 0.0,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 10.0
+        }
+      },
+      {
+        "index": 12,
+        "alive": true,
+        "pos": [
+          -23.78125,
+          4.48046875,
+          1.63671875
+        ],
+        "yaw": -0.2607767339405589,
+        "species": "spartan",
+        "aim": [
+          0.9791351892173698,
+          -0.1982151724513212,
+          0.04477752389713585
+        ],
+        "weapon": "battle_rifle",
+        "shots": 2,
+        "stance": "stand",
+        "speed": 3.75,
+        "grenade": "frag",
+        "vel": [
+          3.640625,
+          -0.96875,
+          0.15625
+        ],
+        "fire": 3,
+        "body": 1.0,
+        "shield": 0.34375,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 10.0
+        }
+      },
+      {
+        "index": 13,
+        "alive": true,
+        "pos": [
+          -30.595703125,
+          4.302734375,
+          -2.0546875
+        ],
+        "yaw": 0.8406214717613314,
+        "species": "elite",
+        "aim": [
+          0.61912331779707,
+          0.7839870127076044,
+          0.04528444838744285
+        ],
+        "weapon": "sniper_rifle",
+        "stance": "stand",
+        "speed": 1.375,
+        "grenade": "frag",
+        "vel": [
+          0.921875,
+          1.03125,
+          -0.046875
+        ],
+        "body": 1.0,
+        "shield": 0.8125,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 10.0
+        }
+      },
+      {
+        "index": 14,
+        "alive": true,
+        "pos": [
+          21.76171875,
+          19.26953125,
+          2.345703125
+        ],
+        "yaw": 3.107845076256309,
+        "species": "spartan",
+        "aim": [
+          -0.9985600288187563,
+          -0.028290787804938586,
+          0.045579602574623096
+        ],
+        "weapon": "battle_rifle",
+        "stance": "stand",
+        "speed": 3.5625,
+        "grenade": "frag",
+        "vel": [
+          -3.578125,
+          0.125,
+          -0.03125
+        ],
+        "body": 1.0,
+        "shield": 1.0,
+        "anim": {
+          "name": "combat:battle:any:move_front",
+          "frame": 10.0
+        }
+      },
+      {
+        "index": 15,
+        "alive": true,
+        "pos": [
+          31.2734375,
+          -24.474609375,
+          0.591796875
+        ],
+        "yaw": -1.5738642883706682,
+        "species": "elite",
+        "aim": [
+          0.05919829176351409,
+          -0.9972221330708319,
+          0.04520596825577423
+        ],
+        "weapon": "sniper_rifle",
+        "shots": 3,
+        "stance": "crouch",
+        "speed": 2.6875,
+        "actions": [
+          "reload"
+        ],
+        "grenade": "frag",
+        "vel": [
+          0.0,
+          -2.6875,
+          -0.3125
+        ],
+        "fire": 3,
+        "body": 1.0,
+        "shield": 0.71875,
+        "anim": {
+          "name": "combat:sniper:any:move_front",
+          "frame": 10.0
+        }
+      }
+    ],
+    "vehicles": [
+      {
+        "id": "90040004",
+        "kind": "warthog",
+        "pos": [
+          -12.31640625,
+          -9.09375,
+          0.349609375
+        ],
+        "forward": [
+          0.5108481048219446,
+          -0.8596709916007563,
+          1.521581856536948e-16
+        ],
+        "up": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "occupied": true
+      },
+      {
+        "id": "90050005",
+        "kind": "ghost",
+        "pos": [
+          -19.2578125,
+          -17.666015625,
+          -0.81640625
+        ],
+        "forward": [
+          -0.9999762897642395,
+          -0.006886211537973176,
+          0.0
+        ],
+        "up": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "occupied": true
+      },
+      {
+        "id": "90060006",
+        "kind": "banshee",
+        "pos": [
+          -1.376953125,
+          -22.814453125,
+          0.908203125
+        ],
+        "forward": [
+          0.8652281497118359,
+          -0.5013783490999915,
+          0.0
+        ],
+        "up": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "occupied": false
+      },
+      {
+        "id": "90070007",
+        "kind": "mongoose",
+        "pos": [
+          27.1875,
+          -22.654296875,
+          8.072265625
+        ],
+        "forward": [
+          -0.2856190960906474,
+          0.958343222414789,
+          0.0
+        ],
+        "up": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "occupied": false
+      },
+      {
+        "id": "90080008",
+        "kind": "chaingun",
+        "pos": [
+          -0.599609375,
+          0.0,
+          0.75
+        ],
+        "forward": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "up": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "occupied": true,
+        "parent": "90040004",
+        "aim": [
+          0.9045579356988567,
+          0.41450241038154517,
+          0.09981328945642558
+        ]
+      }
+    ],
+    "bsp": 0,
+    "objects": [
+      {
+        "k": "netgame",
+        "i": 0,
+        "gone": true
+      },
+      {
+        "k": "netgame",
+        "i": 3,
+        "gone": true
+      },
+      {
+        "k": "netgame",
+        "i": 6,
+        "gone": true
+      },
+      {
+        "k": "netgame",
+        "i": 9,
+        "gone": true
+      },
+      {
+        "k": "netgame",
+        "i": 12,
+        "gone": true
+      },
+      {
+        "k": "netgame",
+        "i": 15,
+        "gone": true
+      },
+      {
+        "k": "netgame",
+        "i": 18,
+        "gone": true
+      },
+      {
+        "k": "netgame",
+        "i": 21,
+        "gone": true
+      }
+    ]
+  }
+]

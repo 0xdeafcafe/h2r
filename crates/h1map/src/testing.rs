@@ -90,7 +90,13 @@ pub fn specs() -> Vec<Spec> {
 }
 
 pub fn build(opts: &Opts) -> Built {
-    let tags = specs();
+    build_with_extra_tags(opts, Vec::new())
+}
+
+/// Builds the standard fixture with more tags appended to its index.
+pub fn build_with_extra_tags(opts: &Opts, extra: Vec<Spec>) -> Built {
+    let mut tags = specs();
+    tags.extend(extra);
     let index_len = if opts.pc_index { 0x28 } else { 0x24 };
     let index_at = HEADER_LEN;
     // Metadata: index header, tag array, names, then each tag's data, then

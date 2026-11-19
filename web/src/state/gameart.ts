@@ -3,7 +3,7 @@
 // none: callers then use the art pack.
 
 import { createEffect, createMemo, createRoot, createSignal } from "solid-js";
-import { compositeEmblem, countKeys, emblemCacheKey, emblemPalette, mapDisplayName, mapKey, normaliseMask, loadGameArt, resolveMapStem, type EmblemSpec, type GameArt, type GameArtRef, type MapNameSources } from "../lib/gameart";
+import { mapDisplayName, mapKey, normaliseMask, loadGameArt, resolveMapStem, type GameArt, type GameArtRef, type MapNameSources } from "../lib/gameart";
 import { live } from "./live";
 import { ENGINES, loadCatalog, type Catalog } from "../admin/catalog";
 import { isHalo1 } from "../map/views";
@@ -138,18 +138,6 @@ export function gameImage(key: string | null | undefined): GameArtRef | null {
   return key ? art()?.get(key) ?? null : null;
 }
 
-// ---- emblem compositing (needs a canvas, so it lives here, not in lib) ----
-
-/** The emblem layers the server has, or null when it has no usable set. */
-export const emblemLayers = createRoot(() => createMemo(() => {
-  const a = art();
-  if (!a) return null;
-  const fg = countKeys(a, "emblem/fg/", 64), bg = countKeys(a, "emblem/bg/", 32);
-  return fg && bg ? { a, fg, bg, palette: emblemPalette(a.manifest) } : null;
-}));
-
-const emblems = new Map<string, Promise<string | null>>();
-
 function loadImage(url: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -167,26 +155,6 @@ function pixels(img: HTMLImageElement, w: number, h: number): Uint8ClampedArray 
   const ctx = c.getContext("2d", { willReadFrequently: true })!;
   ctx.drawImage(img, 0, 0, w, h);
   return ctx.getImageData(0, 0, w, h).data;
-}
-
-/** The coloured emblem as an image URL, or null when the server lacks the
- *  layers or they can't be read. Cached by server, layers and colours. */
-export function emblemUrl(a: GameArt, spec: EmblemSpec): Promise<string | null> {
-  const key = a.root + "|" + emblemCacheKey(spec);
-  let p = emblems.get(key);
-  if (!p) {
-    const bg = a.get(`emblem/bg/${spec.bg}`), fg = a.get(`emblem/fg/${spec.fg}`);
-    p = !bg || !fg ? Promise.resolve(null) : Promise.all([loadImage(bg.url), loadImage(fg.url)]).then(([b, f]) => {
-      const w = b.naturalWidth, h = b.naturalHeight;
-      const out = compositeEmblem(pixels(b, w, h), pixels(f, w, h), spec);
-      const c = document.createElement("canvas");
-      c.width = w; c.height = h;
-      c.getContext("2d")!.putImageData(new ImageData(out as Uint8ClampedArray<ArrayBuffer>, w, h), 0, 0);
-      return c.toDataURL("image/png");
-    }).catch(() => null);
-    emblems.set(key, p);
-  }
-  return p;
 }
 
 // ---- single-mask pictures (weapons) ----

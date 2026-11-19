@@ -56,6 +56,19 @@ fn holds_x(pad: &HostPadState) -> bool {
     pad.buttons.contains(RELOAD)
 }
 
+fn enter(g: &Vehicle, attempt: u32) -> Me {
+    let pick = plan::Pick {
+        why: plan::Why::Take,
+        vehicle: g.id,
+        root: g.id,
+        role: SeatRole::Driver,
+    };
+    let (at, entry) = plan::approach(g, pick, g.position, attempt, None).unwrap();
+    let mut me = bot(at);
+    me.aim = entry.forward.map(|v| -v);
+    me
+}
+
 #[test]
 fn a_calm_bot_walks_to_a_free_ghost_and_holds_x_beside_its_seat() {
     let mut m = Mind::new(Skill::Normal, 1);
@@ -69,48 +82,35 @@ fn a_calm_bot_walks_to_a_free_ghost_and_holds_x_beside_its_seat() {
     }
     assert!(pad.left_stick.1 > 0.5, "walks to it: {:?}", pad.left_stick);
     // Beside the driver's seat: X.
-    let side = plan::approach(&g, SeatRole::Driver, 0);
-    let pad = step(&mut m, bot(side), vec![], 4, None);
+    let pad = step(&mut m, enter(&g, 0), vec![], 4, None);
     assert!(holds_x(&pad));
     assert_eq!(pad.left_stick, (0.0, 0.0), "it stands to get in");
 }
 
 #[test]
-fn a_seat_that_will_not_take_it_is_tried_from_the_other_side_then_given_up() {
+fn a_seat_that_will_not_take_it_is_retried_closer_then_given_up() {
     let mut m = Mind::new(Skill::Normal, 1);
     let g = ghost(100, [5.0, 0.0, 0.0]);
     m.see_vehicles(on_foot(vec![g.clone()]));
     step(&mut m, bot([0.0; 3]), vec![], 0, None);
-    let first = plan::approach(&g, SeatRole::Driver, 0);
-    let other = plan::approach(&g, SeatRole::Driver, 1);
+    let first = enter(&g, 0);
+    let other = enter(&g, 1);
     let mut t = 1;
     while t <= plan::ENTER_TICKS {
-        assert!(
-            holds_x(&step(&mut m, bot(first), vec![], t, None)),
-            "tick {t}"
-        );
+        assert!(holds_x(&step(&mut m, first, vec![], t, None)), "tick {t}");
         t += 1;
     }
     // This side is done: it goes round to the other.
-    let pad = step(&mut m, bot(first), vec![], t, None);
+    let pad = step(&mut m, first, vec![], t, None);
     assert!(!holds_x(&pad));
     assert_eq!(m.vehicles.going.map(|g| g.side), Some(1));
     let start = t + 1;
     for t in start..start + plan::ENTER_TICKS {
-        assert!(
-            holds_x(&step(&mut m, bot(other), vec![], t, None)),
-            "tick {t}"
-        );
+        assert!(holds_x(&step(&mut m, other, vec![], t, None)), "tick {t}");
     }
-    step(&mut m, bot(other), vec![], start + plan::ENTER_TICKS, None);
+    step(&mut m, other, vec![], start + plan::ENTER_TICKS, None);
     // Both sides failed: given up, and left alone.
-    step(
-        &mut m,
-        bot(other),
-        vec![],
-        start + plan::ENTER_TICKS + 1,
-        None,
-    );
+    step(&mut m, other, vec![], start + plan::ENTER_TICKS + 1, None);
     assert_ne!(m.doing, Doing::Mount(100));
     assert!(m.vehicles.shunned(100, start + plan::ENTER_TICKS + 2));
 }
@@ -253,6 +253,7 @@ fn with_nobody_about_the_driver_follows_a_route_turning_by_the_camera() {
         [0.0, 20.0, 0.0],
     ]);
     let map = MapData {
+        places: Default::default(),
         nav: NavMesh::new(vec![floor], vec![]),
         walls: Walls::default(),
     };
@@ -351,4 +352,66 @@ fn rockets_aim_at_the_vehicles_middle_without_lead() {
         "down to it: {:?}",
         pad.right_stick
     );
+}
+
+#[test]
+fn a_standalone_gunner_stays_on_the_gun_until_flanked() {
+    let mut m = Mind::new(Skill::Normal, 1);
+    let mut gun = crate::vehicle::tests::vehicle(
+        100,
+        crate::vehicle::Class::Turret,
+        [0.0; 3],
+        &[SeatRole::Gunner],
+    );
+    sit(&mut gun, 0, 0, 0);
+    m.see_vehicles(Sight {
+        riding: Some(Riding {
+            vehicle: 100,
+            seat: 0,
+            role: SeatRole::Gunner,
+        }),
+        vehicles: vec![gun],
+    });
+    for tick in 0..140 {
+        assert!(!holds_x(&step(
+            &mut m,
+            bot([0.0; 3]),
+            vec![enemy(1, [8.0, 0.0, 0.0])],
+            tick,
+            None
+        )));
+    }
+    let pad = step(
+        &mut m,
+        bot([0.0; 3]),
+        vec![enemy(1, [0.0, 2.0, 0.0])],
+        140,
+        None,
+    );
+    assert!(holds_x(&pad));
+    assert_eq!(
+        m.vehicles.leaving,
+        Some(crate::vehicle::drive::Leave::Flanked)
+    );
+    assert_eq!(pad.right_trigger, 0.0);
+}
+
+#[test]
+fn the_mind_builds_a_flight_pad_for_the_banshee_driver() {
+    let mut m = Mind::new(Skill::Normal, 1);
+    let mut banshee = crate::vehicle::tests::vehicle(
+        100,
+        crate::vehicle::Class::Fighter,
+        [0.0, 0.0, 3.0],
+        &[SeatRole::Driver],
+    );
+    m.see_vehicles(driving(banshee.clone()));
+    let pad = step(&mut m, bot(banshee.position), vec![], 0, None);
+    assert_eq!(m.doing, Doing::Drive(100));
+    assert!(pad.left_stick.1 > 0.9);
+    banshee.health = 0.05;
+    m.see_vehicles(driving(banshee.clone()));
+    let pad = step(&mut m, bot(banshee.position), vec![], 1, None);
+    assert!(holds_x(&pad));
+    assert_eq!(pad.left_stick, (0.0, 0.0));
 }

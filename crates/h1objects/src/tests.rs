@@ -2354,7 +2354,7 @@ fn role_spheres_read_the_physics_elements_multisphere() {
 /// A weapon fires Halo 1's effects: each barrel takes its own trigger's
 /// firing effects (firing, misfire, empty) in order, with the damage the
 /// parts give, and a barrel whose trigger has none gets none (before
-/// converter version 92 every barrel took the Halo 2 counterpart's, the
+/// converter version 97 every barrel took the Halo 2 counterpart's, the
 /// last one's when it had fewer barrels). A magazine takes Halo 1's
 /// reloading and chambering effects, and the root's Halo 1 references
 /// win over the counterpart's.

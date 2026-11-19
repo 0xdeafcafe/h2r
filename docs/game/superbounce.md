@@ -173,6 +173,34 @@ that tick only, two points:
   position equals the drawn one on every tick, crouched or not, by
   construction (the object's position is copied from the body).
 
+### Looking for state a forced crouch leaves behind (Trace)
+
+Players report that a bounce only happens after a forced crouch some time
+before the jump (not during it). A fifth trace (2026-11-19) looked for
+such a state with `world.raw` (the player object, its physics component
+record, Havok body, motion and shape as bytes) before, during and after
+a forced crouch, and every tick while the player jumped at the patch:
+
+- The biped's Havok shape (vtable `0x004122f0`, radius 0.175 at `+0x0c`)
+  is not rebuilt by a crouch: its pointer at `+0x30` moves from the
+  standing pill (`0x80393700` in that run) to the crouching pill (`+0x50`)
+  and back. After the crouch it is the standing pill again, and the
+  shape's bytes equal the ones before.
+- In the player object, the only word changed by the crouch and kept
+  after it is `+0x2c` (with `+0x28`), which moves with the object's
+  location in the map, not with crouching.
+- 15 landings at the patch, each after a forced crouch: 1 bounce (9.2 cm
+  in, +2.6 out), 6 caught, 8 plain landings, two of them 13.6 and 14 cm
+  in. No body, physics component or shape word differed on the tick
+  before the bounce from the ticks before the others.
+- 5 landings after a respawn with no crouch, at the same fall speed:
+  none bounced (3 landings, 2 caught). Too few to compare.
+
+So far the state, if there is one, is not in the object, the body or the
+shape. The remaining candidate is Havok's collision agents: the per-pair
+caches between the body and the level (closest features, welding), which
+a shape swap mid-contact could leave stale. **Open**
+
 ## The geometry (Code, from the map)
 
 The structure collision BSP of `ascension` at the patch (surface indices

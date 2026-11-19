@@ -59,6 +59,20 @@ impl Halo1Objects for Objects<'_> {
         Ok((got.0 & 0xffff) as usize)
     }
 
+    fn collision(
+        &mut self,
+        group: [u8; 4],
+        name: &str,
+    ) -> Result<Vec<tags::collision::Bsp>, String> {
+        let h1 = self.conv.h1;
+        let tag = h1
+            .find(Group::new(&group), name)
+            .ok_or_else(|| format!("no {} {name}", String::from_utf8_lossy(&group)))?;
+        let bytes = h1.tag_data(tag).map_err(|e| e.to_string())?;
+        let obj = crate::h1::Object::read(h1, bytes).map_err(|e| e.to_string())?;
+        crate::coll::object_bsps(h1, &obj).map_err(|e| e.to_string())
+    }
+
     fn take(&mut self) -> ObjectTags {
         let tree = std::mem::take(&mut self.conv.tree);
         let notes = tree

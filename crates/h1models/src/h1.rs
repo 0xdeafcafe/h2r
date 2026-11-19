@@ -502,6 +502,22 @@ pub fn triangles_strip(tris: &[[u16; 3]]) -> Vec<u16> {
     strip
 }
 
+/// The Halo 2 strip (even windows `(a, b, c)`, odd ones `(a, c, b)`, as
+/// `tags::geometry::strip_triangles` reads it) that draws the triangles
+/// [`strip_triangles`] reads from the Halo 1 strip `strip`, in order and
+/// wound alike: `strip` behind one repeat of its first index. That shifts
+/// every window's parity by one, and the new first window repeats an index,
+/// so is skipped. Empty when `strip` holds no window.
+pub fn h2_strip(strip: &[u16]) -> Vec<u16> {
+    if strip.len() < 3 {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(strip.len() + 1);
+    out.push(strip[0]);
+    out.extend_from_slice(strip);
+    out
+}
+
 // ---------------------------------------------------------------------------
 // Animation graphs
 // ---------------------------------------------------------------------------

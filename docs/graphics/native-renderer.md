@@ -1120,6 +1120,30 @@ implementation samples engine texture 3.
   constants it gets; or why it is not drawn.
   `H2_NATIVE_OBJECTS_EXCEPT=0xe92207ad,...` leaves those definitions to
   D3D (the load refuses them), to tell which one a difference is.
+- **The comparison.** `H2_NATIVE_OBJECTS_COMPARE=definition:part[:after]`
+  (e.g. `0xe92207ad:2:30`) is the objects' `H2_NATIVE_WORLD_DUMP`: the
+  definition's objects keep their D3D draws (`NativeSet::shadowed`: the
+  host gets their frames, their items are not skipped), and on the pass
+  after `after` holding one, its first object's part is armed in
+  `d3d::uniform_compare` with what the pass would draw it with
+  (`LitObjects::part_uniforms`: program words, vertex and pixel uniforms
+  with the object's rows, decompression, lighting and texture
+  accumulation constants, translation options, pixel shader and options,
+  samplers, primitive, depth). The D3D draws with the same rows
+  `c[50..52]` and the same program are compared field by field; those
+  with another program (the object's other parts, and its earlier
+  layers, which wrote the depth a later `Equal` pass tests) are named
+  with their cull, winding, depth state and `c[0..4]`.
+- **The inherited cull.** A lit part whose layer-3 implementation does
+  not set `CULLMODE` (`object_program::sets_cull`; 03a's
+  `concrete_rebar` part of `concrete_chunk_j`) draws on the D3D path
+  with the device's cull and winding at the layer-3 call, as a world
+  pass does. Its program is marked (`MaterialProgram::inherits_cull`);
+  the host reads `Device::cull_state` when the feature asks for the set,
+  and the pass draws those parts with it
+  (`LitObjects::set_inherited_cull`, through `program::pipeline_state`;
+  the cull is part of the pipeline key). Before, they culled nothing.
+  `H2_NATIVE_OBJECTS_INHERIT_CULL=0` turns it off.
 
 - **The vertex block.** What the game's upload would hold for one drawn
   object: `c[0..18]` the view's; `c[18 + i]` the implementation's

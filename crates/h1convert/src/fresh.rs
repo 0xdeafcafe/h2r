@@ -103,7 +103,7 @@ pub struct Fresh {
 impl Prepared {
     /// The converted map with nothing pinned (see the module docs).
     pub fn build_fresh<R: Read + Seek>(&self, base: &mut Map<R>, mopp: &[u8]) -> Result<Fresh> {
-        let (pinned, bytes, section, pinned_pruned) = self.assemble(base, mopp)?;
+        let (pinned, bytes, section, pinned_pruned) = self.assemble(base, mopp, true)?;
         let mut src = Map::from_reader(Cursor::new(&bytes[..]))?;
         let mut fresh = unpinned_copy(&pinned);
         // The pinned map keeps the base's file prefix, so the base's own
@@ -1201,7 +1201,7 @@ fn walk(
 /// but not reached: its own references keep nothing. The holder stays a
 /// whole tag because the schema moves a block outside its tag only when
 /// it sits inside another tag (`tags::schema::walk`): kept as metadata no
-/// tag owns, the fresh build refused it (converter version 92, round 9:
+/// tag owns, the fresh build refused it (converter version 97, round 9:
 /// 1288 references out of bounds). A holder's own blocks that sit in a
 /// third tag make that one a holder too. One whose root doesn't read by
 /// the schema is reached whole, as a word-read tag's address keeps the

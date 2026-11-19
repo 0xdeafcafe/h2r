@@ -2,7 +2,7 @@
 use super::{distance, supplies::Timers};
 use crate::brain::{Me, Perception, Vec3};
 use crate::cache::MapData;
-use crate::mind::{CHEST, EYE, Skill};
+use crate::mind::{CHEST, EYE};
 use crate::nav::{Edge, NavMesh, Waypoint};
 use crate::stuck::Stuck;
 
@@ -10,8 +10,9 @@ pub(super) const HOT_TICKS: u32 = 600;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct MapMemory {
+    familiar: bool,
     deaths: Vec<(Vec3, u32)>,
-    timers: Timers,
+    pub(super) timers: Timers,
     /// A defensible ball position, reconsidered on a short cooldown.
     shelter: Option<Shelter>,
     route_threat: Option<Vec3>,
@@ -52,28 +53,64 @@ impl MapMemory {
         }
     }
 
+    pub(crate) fn familiarize(&mut self, map: &MapData, tick: u32, sense: f32, personality: f32) {
+        if self.familiar {
+            return;
+        }
+        for pad in &map.places.pads {
+            let rank = (u32::from(pad.site) * 73 + (personality * 127.) as u32) % 128;
+            if rank as f32 / 128. < sense {
+                self.timers.familiar(*pad, tick);
+            }
+        }
+        self.familiar = true;
+    }
+
     pub(super) fn observe(&mut self, p: &Perception, me: Me, map: Option<&MapData>) {
         self.deaths
             .retain(|(_, t)| p.tick.wrapping_sub(*t) < HOT_TICKS);
+        let visible = |at: Vec3| {
+            let dist = distance(me.position, at);
+            let facing = (0..3)
+                .map(|i| (at[i] - me.position[i]) * me.aim[i])
+                .sum::<f32>();
+            dist <= 25.0
+                && (dist < 3.0 || facing > dist * 0.42)
+                && map.is_none_or(|m| crate::perceive::in_view(me, at, 0.2, Some(m)))
+        };
         self.timers
-            .observe(p.tick, p.observations.supplies.as_deref(), |at| {
-                let dist = distance(me.position, at);
-                let facing = (0..3)
-                    .map(|i| (at[i] - me.position[i]) * me.aim[i])
-                    .sum::<f32>();
-                dist <= 25.0
-                    && (dist < 3.0 || facing > dist * 0.42)
-                    && map.is_none_or(|m| m.walls.clear(raised(me.position, EYE), raised(at, 0.2)))
-            });
+            .observe(p.tick, p.observations.supplies.as_deref(), visible);
+        self.timers.update_known(p, visible);
+        self.timers.carriers(p, me);
     }
 
-    pub(crate) fn due(&self, me: Me, tick: u32, skill: Skill, stuck: &Stuck) -> Option<Vec3> {
-        self.timers.due(me, tick, skill, |at| {
-            self.hot(at, tick, 3.0) || stuck.blocked(at, tick)
-        })
+    pub(super) fn holder(&self, id: u32) -> bool {
+        self.timers.holder(id)
     }
 
-    fn hot(&self, at: Vec3, tick: u32, radius: f32) -> bool {
+    pub(crate) fn due(
+        &self,
+        me: Me,
+        tick: u32,
+        mind: &crate::mind::Mind,
+        map: Option<&MapData>,
+        trip: super::supplies::Trip,
+    ) -> Option<Vec3> {
+        self.timers.due(
+            me,
+            tick,
+            mind.skill,
+            mind.decisions.personality,
+            trip,
+            |at| {
+                (!self.hot(at, tick, 3.0) && !mind.stuck.blocked(at, tick)).then(|| {
+                    map.map_or(0., |m| m.places.strength(at)) + 0.3 * mind.experience.success(at)
+                })
+            },
+        )
+    }
+
+    pub(crate) fn hot(&self, at: Vec3, tick: u32, radius: f32) -> bool {
         self.deaths.iter().any(|(p, t)| {
             let fade = 1.0 - tick.wrapping_sub(*t) as f32 / HOT_TICKS as f32;
             fade > 0.0 && distance(at, *p) < radius * fade.sqrt()
@@ -91,7 +128,13 @@ impl MapMemory {
         stuck: &Stuck,
         caution: f32,
     ) -> Option<Vec<Waypoint>> {
-        let blocked = |e: &Edge| stuck.blocks_segment(e.a, e.b, tick);
+        let blocked = |e: &Edge| {
+            if e.kind.traversal() {
+                stuck.blocked(e.a, tick) || stuck.blocked(e.b, tick)
+            } else {
+                stuck.blocks_segment(e.a, e.b, tick)
+            }
+        };
         let threat = self.route_threat;
         if !self.deaths.is_empty() || threat.is_some() {
             let danger = |p| {
@@ -102,9 +145,14 @@ impl MapMemory {
             // even when that unavoidable destination is dangerous.
             let end = nav.poly_near(goal);
             let safe = nav.path_avoiding(at, goal, &|e| {
-                let mid = std::array::from_fn(|i| (e.a[i] + e.b[i]) * 0.5);
+                let mid = if e.kind.traversal() {
+                    e.a
+                } else {
+                    std::array::from_fn(|i| (e.a[i] + e.b[i]) * 0.5)
+                };
                 blocked(e)
                     || danger(mid)
+                    || (e.kind.traversal() && Some(e.to) != end && danger(e.b))
                     || (Some(e.to) != end && danger(nav.polys[e.to as usize].center))
             });
             if safe.is_some() {

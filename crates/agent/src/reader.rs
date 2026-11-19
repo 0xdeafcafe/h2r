@@ -7,7 +7,7 @@ use std::ops::DerefMut;
 
 use agent_proto::{Kind, Object, ObjectId, Physics};
 use live_telemetry::{
-    ActorState, MachineState, Motion, ObjectState, PlayerState, VehicleState, layout,
+    ActorState, MachineState, Motion, ObjectState, PlayerState, ThingState, VehicleState, layout,
 };
 use runtime::Guest;
 
@@ -31,6 +31,35 @@ pub trait Reader {
     fn with_guest(&mut self, f: &mut dyn FnMut(&mut dyn engine::GuestMemory)) -> bool {
         let _ = f;
         false
+    }
+}
+
+/// Names definition tags by datum handle (the loaded map's tag names),
+/// for `world.*` results' `tag_name` ([`crate::Agent::set_tag_names`]).
+pub trait TagNames: Send {
+    /// The names of `datums`, in order; `None` where unnamed.
+    fn names(&mut self, datums: &[u32]) -> Vec<Option<String>>;
+}
+
+/// Fills each object's `tag_name` from its `tag`, asking `names` once for
+/// the distinct datums.
+pub fn name_tags(names: &mut dyn TagNames, objects: &mut [Object]) {
+    let datum = |o: &Object| {
+        o.tag
+            .as_deref()
+            .and_then(|t| u32::from_str_radix(t, 16).ok())
+    };
+    let mut datums: Vec<u32> = objects.iter().filter_map(datum).collect();
+    datums.sort_unstable();
+    datums.dedup();
+    if datums.is_empty() {
+        return;
+    }
+    let named = names.names(&datums);
+    for o in objects.iter_mut() {
+        if let Some(i) = datum(&*o).and_then(|d| datums.binary_search(&d).ok()) {
+            o.tag_name = named.get(i).cloned().flatten();
+        }
     }
 }
 
@@ -95,6 +124,10 @@ where
         out.extend(world.vehicles.iter().map(vehicle_object));
         out.extend(world.machines.iter().map(machine_object));
         out.extend(world.bodies.iter().map(|a| actor_object(Kind::Body, a)));
+        // Scenery, items, controls, crates and creatures: their own pass.
+        let things = live_telemetry::things(&g, |t| Kind::of_object_type(t).is_some())
+            .map_err(|e| format!("objects: {e:?}"))?;
+        out.extend(things.iter().filter_map(thing_object));
         Ok(out)
     }
 }
@@ -159,10 +192,23 @@ fn support(s: &live_telemetry::Support) -> agent_proto::Support {
     }
 }
 
+/// `yaw` and `pitch` from `forward`.
+fn angles(o: &mut Object) {
+    if let Some((yaw, pitch)) = o.forward.and_then(agent_proto::sim::yaw_pitch) {
+        o.yaw = Some(yaw);
+        o.pitch = Some(pitch);
+    }
+}
+
 /// The fields every unit shares (a player's unit, an actor, a body).
+/// `forward` is where the unit aims (its aiming vector, which follows the
+/// camera), the body's own forward `body_forward`: a biped's body turns
+/// only as it moves, so its forward stays put while the view turns.
 fn unit_fields(o: &mut Object, s: &ObjectState) {
     o.pos = Some(s.pos);
-    o.forward = Some(s.forward);
+    o.forward = Some(s.aim.unwrap_or(s.forward));
+    o.body_forward = Some(s.forward);
+    angles(o);
     o.velocity = Some(s.motion.velocity);
     o.physics = Some(physics(&s.motion));
     o.team = s.team.map(i32::from);
@@ -199,7 +245,7 @@ pub fn actor_object(kind: Kind, a: &ActorState) -> Object {
 }
 
 pub fn vehicle_object(v: &VehicleState) -> Object {
-    Object {
+    let mut o = Object {
         id: id(Kind::Vehicle, v.datum),
         kind: Kind::Vehicle,
         pos: Some(v.pos),
@@ -208,11 +254,13 @@ pub fn vehicle_object(v: &VehicleState) -> Object {
         occupied: Some(v.occupied),
         mounted_on: v.parent.map(|p| id(Kind::Vehicle, p)),
         ..Default::default()
-    }
+    };
+    angles(&mut o);
+    o
 }
 
 pub fn machine_object(m: &MachineState) -> Object {
-    Object {
+    let mut o = Object {
         id: id(Kind::Machine, m.datum),
         kind: Kind::Machine,
         pos: Some(m.pos),
@@ -221,7 +269,30 @@ pub fn machine_object(m: &MachineState) -> Object {
         placement: m.placement,
         position: m.position,
         ..Default::default()
+    };
+    angles(&mut o);
+    o
+}
+
+/// An object of a kind [`Kind::of_object_type`] names. One attached to
+/// another (a held weapon, a grenade a unit carries) is left out: its pose
+/// is relative to what holds it, and a unit's `weapon` already names it.
+pub fn thing_object(t: &ThingState) -> Option<Object> {
+    let kind = Kind::of_object_type(t.object_type)?;
+    if t.parent.is_some() {
+        return None;
     }
+    let mut o = Object {
+        id: id(kind, t.datum),
+        kind,
+        pos: Some(t.pos),
+        forward: Some(t.forward),
+        tag: t.definition.map(hex),
+        placement: t.placement,
+        ..Default::default()
+    };
+    angles(&mut o);
+    Some(o)
 }
 
 #[cfg(test)]
@@ -355,6 +426,29 @@ mod tests {
     }
 
     #[test]
+    fn a_unit_faces_where_it_aims_and_keeps_its_body_forward() {
+        // The body faces +x; the view has turned to -y and looks 30 up.
+        let mut u = unit();
+        let (c, s) = (30f64.to_radians().cos(), 30f64.to_radians().sin());
+        u.aim = Some([0.0, -c, s]);
+        let o = player_object(&player(0xe005_0010), Some(&u));
+        assert_eq!(o.forward, Some([0.0, -c, s]));
+        assert_eq!(o.body_forward, Some([1.0, 0.0, 0.0]));
+        assert!((o.yaw.unwrap() - 270.0).abs() < 1e-9, "{:?}", o.yaw);
+        assert!((o.pitch.unwrap() - 30.0).abs() < 1e-9, "{:?}", o.pitch);
+        // No aim read (not finite or not unit length): the body's forward.
+        let o = actor_object(
+            Kind::Actor,
+            &ActorState {
+                datum: 1,
+                object: unit(),
+            },
+        );
+        assert_eq!(o.forward, Some([1.0, 0.0, 0.0]));
+        assert_eq!((o.yaw, o.pitch), (Some(0.0), Some(0.0)));
+    }
+
+    #[test]
     fn a_dead_player_is_listed_without_a_unit() {
         let o = player_object(&player(u32::MAX), None);
         assert_eq!(o.unit, None);
@@ -384,6 +478,7 @@ mod tests {
             occupied: true,
             parent: None,
             aim: None,
+            velocity: None,
         });
         assert_eq!(v.mounted_on, None);
         let turret = vehicle_object(&VehicleState {
@@ -395,6 +490,7 @@ mod tests {
             occupied: false,
             parent: Some(0xe200_0003),
             aim: None,
+            velocity: None,
         });
         assert_eq!(turret.mounted_on.as_deref(), Some("vehicle.e2000003"));
         assert_eq!(
@@ -402,5 +498,86 @@ mod tests {
             ("vehicle.e2000003", Some(true))
         );
         assert_eq!(v.tag.as_deref(), Some("00000007"));
+    }
+
+    fn thing(object_type: u8, parent: Option<u32>) -> ThingState {
+        ThingState {
+            datum: 0xe500_0005,
+            object_type,
+            definition: Some(0xf00d_0042),
+            parent,
+            placement: Some(3),
+            pos: [10.0, 20.0, 1.0],
+            forward: [0.0, 1.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+        }
+    }
+
+    #[test]
+    fn scenery_items_and_controls_are_objects_and_held_ones_are_not() {
+        let s = thing_object(&thing(6, None)).unwrap();
+        assert_eq!((s.id.as_str(), s.kind), ("scenery.e5000005", Kind::Scenery));
+        assert_eq!(s.pos, Some([10.0, 20.0, 1.0]));
+        assert_eq!(s.tag.as_deref(), Some("f00d0042"));
+        assert_eq!(s.placement, Some(3));
+        assert!((s.yaw.unwrap() - 90.0).abs() < 1e-9, "{:?}", s.yaw);
+        assert_eq!(s.pitch, Some(0.0));
+        let kinds: Vec<_> = [2, 3, 8, 11, 12]
+            .into_iter()
+            .map(|t| thing_object(&thing(t, None)).unwrap().kind)
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                Kind::Weapon,
+                Kind::Equipment,
+                Kind::Control,
+                Kind::Crate,
+                Kind::Creature
+            ]
+        );
+        // A held weapon, and the types with readers of their own.
+        assert_eq!(thing_object(&thing(2, Some(0xe000_0001))), None);
+        for t in [0, 1, 4, 5, 7, 9, 10] {
+            assert_eq!(thing_object(&thing(t, None)), None, "type {t}");
+        }
+    }
+
+    struct Named(Vec<Vec<u32>>);
+    impl TagNames for Named {
+        fn names(&mut self, datums: &[u32]) -> Vec<Option<String>> {
+            self.0.push(datums.to_vec());
+            datums
+                .iter()
+                .map(|d| {
+                    (*d == 0xf00d_0042)
+                        .then(|| "scenery\\teleporter_base\\teleporter_base".to_owned())
+                })
+                .collect()
+        }
+    }
+
+    #[test]
+    fn tags_are_named_once_per_datum() {
+        let mut objects = vec![
+            thing_object(&thing(6, None)).unwrap(),
+            thing_object(&thing(6, None)).unwrap(),
+            Object {
+                tag: Some("00000007".into()),
+                ..Default::default()
+            },
+            Object::default(),
+        ];
+        let mut names = Named(Vec::new());
+        name_tags(&mut names, &mut objects);
+        assert_eq!(names.0, [vec![7, 0xf00d_0042]]);
+        let teleporter = Some("scenery\\teleporter_base\\teleporter_base");
+        assert_eq!(objects[0].tag_name.as_deref(), teleporter);
+        assert_eq!(objects[1].tag_name.as_deref(), teleporter);
+        assert_eq!(objects[2].tag_name, None, "not named");
+        assert_eq!(objects[3].tag_name, None, "no tag");
+        // Nothing to name: no call.
+        name_tags(&mut names, &mut [Object::default()]);
+        assert_eq!(names.0.len(), 1);
     }
 }

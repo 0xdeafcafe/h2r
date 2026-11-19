@@ -382,7 +382,7 @@ pub struct WeaponParts {
 /// 1's trigger firing effect (`h1::FiringEffect`): its converted firing,
 /// misfire and empty effects, and the damage (rumble and shake) the Halo 2
 /// counterpart's barrel names. A shot plays the effect: until converter
-/// version 92 the effects were the counterpart's too, so the assault
+/// version 97 the effects were the counterpart's too, so the assault
 /// rifle fired with the SMG's sound and a weapon with no counterpart (the
 /// vehicle guns) had no firing effect and fired silent.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -423,7 +423,7 @@ pub const MAGAZINE_CHAMBERING_EFFECT: &str = "chambering_effect";
 /// `+0x270`) by magnification, the pickup sound at `0x000a009a`
 /// (`+0x268`, played by `0x001896c0` for a weapon), the overheated and
 /// detonation effects at `0x000cf12c` (`+0x170`) and `0x000cf19f`
-/// (`+0x180`); each skips a null datum. Until converter version 92 these
+/// (`+0x180`); each skips a null datum. Until converter version 97 these
 /// were the counterpart's: drawing the assault rifle played the needler's
 /// ready effect (the SMG's), picking it up the SMG's ammunition sound.
 pub const WEAPON_EFFECTS: &[(&str, usize)] = &[
