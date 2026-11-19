@@ -573,10 +573,10 @@ impl Mind {
                         shield: me.shield,
                         rush: melee,
                         retreat: self.recovering,
-                        // SEAM (bots-fight): `self.fight.wants_cover` and
-                        // `self.fight.band` once tactics is merged.
-                        reloading: matches!(self.kit, Kit::Reload | Kit::Switch),
-                        range: crate::moves::preferred_range(&me),
+                        // The combat side's signals (tactics): cover while
+                        // reloading or switching in range, and its range band.
+                        reloading: self.fight.wants_cover,
+                        range: self.fight.band,
                     };
                     let mv = self.moves.fight(&fight, map, &bodies);
                     if mv.jump {
