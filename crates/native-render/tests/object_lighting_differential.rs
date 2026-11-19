@@ -1,5 +1,6 @@
 //! `native_render::object_lighting` against the original: the vector input
-//! evaluator `0x00033980` and the scalar one `0x000336f0`, lifted and run
+//! evaluator `0x00033980` and the scalar one `0x000336f0` (with the object
+//! walk `0x00033670` and lookup `0x000badc0` behind inputs 40 and 37), lifted and run
 //! on the IR interpreter from a seeded state, must give, for every
 //! lighting input the port takes, the same bits the port gives from the
 //! same memory (a NaN matches any NaN: the port's float arithmetic is not
@@ -8,7 +9,9 @@
 //! Each case seeds the current lighting pointer `[0x00485a58]` (null now
 //! and then), the lighting's `0x78` bytes with any float bits (zeros,
 //! infinities, NaNs, denormals), its colour count byte, the two default
-//! records and the shader's two values, under one of three x87 precisions
+//! records and the shader's two values, and an object array whose objects
+//! hang off each other (attached flags, parents, salts, empty elements;
+//! the lighting's `+0` one of their handles, a stale one, or -1), under one of three x87 precisions
 //! (the colour unpack `0x00131bb0` runs on the x87).
 //!
 //! Needs the user's XBE (`H2_XBE`, or `disc/default.xbe`), pinned by hash;
@@ -32,8 +35,9 @@ use ir::IrInsn;
 use ir::interp::{self, Cpu, FlatMemory};
 use native_render::camera::GuestRead;
 use native_render::object_lighting::{
-    self as ol, CURRENT_LIGHTING, DEFAULT_COLOUR, DEFAULT_VECTOR, Defaults, LIGHTING_BYTES, Lighting, SCALAR_INPUTS,
-    SHADER_SCALAR_21, SHADER_VECTOR_24, ShaderValues, VECTOR_INPUTS,
+    self as ol, CURRENT_LIGHTING, DEFAULT_COLOUR, DEFAULT_VECTOR, Defaults, LIGHTING_BYTES, Lighting, OBJECT_ARRAY,
+    OBJECT_ATTACHED, OBJECT_PARENT, OBJECT_ROOT_VALUE, SCALAR_INPUTS, SHADER_SCALAR_21, SHADER_VECTOR_24, ShaderValues,
+    VECTOR_INPUTS,
 };
 
 const RAM: u32 = 64 << 20;
@@ -45,9 +49,17 @@ const LIGHTING: u32 = 0x0300_0000;
 const VECTOR_RECORD: u32 = 0x0300_1000;
 const COLOUR: u32 = 0x0300_2000;
 const OUT: u32 = 0x0300_3000;
+const ARRAY: u32 = 0x0300_4000;
+const ELEMENTS: u32 = 0x0300_5000;
+const BODIES: u32 = 0x0301_0000;
+const BODY_SIZE: u32 = 0x400;
+const OBJECTS: u32 = 8;
 
 /// The vector inputs the port takes.
-const VECTORS: [u32; 15] = [3, 4, 14, 15, 16, 17, 21, 22, 23, 24, 35, 42, 43, 44, 45];
+const VECTORS: [u32; 16] = [3, 4, 14, 15, 16, 17, 21, 22, 23, 24, 35, 40, 42, 43, 44, 45];
+/// The scalar inputs the port takes; 37 (and vector 40) only with a
+/// lighting: the game reads `[[0x00485a58]]` for them unchecked.
+const SCALARS: [u32; 2] = [23, 37];
 
 struct Read<'a>(&'a FlatMemory);
 
@@ -126,6 +138,46 @@ fn case(image: &FlatMemory, seed: u64, n: u32) -> (FlatMemory, u16) {
         put(&mut mem, VECTOR_RECORD + 4 * i, a);
         put(&mut mem, COLOUR + 4 * i, b);
     }
+    // The object array: elements of 12 bytes; a parent is always an
+    // earlier object (or -1), so the walk ends.
+    put(&mut mem, OBJECT_ARRAY, ARRAY);
+    put(&mut mem, ARRAY + 0x24, 12);
+    put(&mut mem, ARRAY + 0x38, OBJECTS);
+    put(&mut mem, ARRAY + 0x44, ELEMENTS);
+    let mut handles = Vec::new();
+    for i in 0..OBJECTS {
+        let salt = match r.below(8) {
+            0 => 0,
+            _ => 0x8000 | r.below(0x7fff) + 1,
+        };
+        let e = ELEMENTS + 12 * i;
+        put(&mut mem, e, r.u32() & 0xffff_0000 | salt);
+        let body = if r.below(8) == 0 { 0 } else { BODIES + BODY_SIZE * i };
+        put(&mut mem, e + 8, body);
+        handles.push(salt << 16 | i);
+        if body == 0 {
+            continue;
+        }
+        let attached = if r.below(2) == 0 { 0 } else { 1 + r.below(255) };
+        let at = body + (OBJECT_ATTACHED & !3);
+        let shift = 8 * (OBJECT_ATTACHED & 3);
+        put(&mut mem, at, r.u32() & !(0xff << shift) | attached << shift);
+        let parent = match (i, r.below(6)) {
+            (0, _) | (_, 0) => u32::MAX,
+            (_, 1) => r.u32() & 0xffff_0000 | r.below(i),
+            _ => handles[r.below(i) as usize],
+        };
+        put(&mut mem, body + OBJECT_PARENT, parent);
+        let v = r.float();
+        put(&mut mem, body + OBJECT_ROOT_VALUE, v);
+    }
+    let owner = match r.below(8) {
+        0 => u32::MAX,
+        1 => r.u32() & 0xffff_0000 | r.below(OBJECTS),
+        2 => r.u32() & 0xffff_0000 | (OBJECTS + r.below(4)),
+        _ => handles[r.below(OBJECTS) as usize],
+    };
+    put(&mut mem, LIGHTING, owner);
     let (s21, s24) = (r.float(), r.float());
     put(&mut mem, SHADER_SCALAR_21, s21);
     put(&mut mem, SHADER_VECTOR_24, s24);
@@ -217,6 +269,9 @@ fn lighting_inputs_match_the_lifted_original() {
             };
             *seen.entry(if lighting.is_some() { "lit" } else { "no lighting" }).or_default() += 1;
             for input in VECTORS {
+                if input == 40 && lighting.is_none() {
+                    continue;
+                }
                 let mut mem = FlatMemory {
                     base: base.base,
                     bytes: base.bytes.clone(),
@@ -231,18 +286,30 @@ fn lighting_inputs_match_the_lifted_original() {
                     "seed {seed} case {n} vector {input}: original {original:08x?}, port {port:08x?}"
                 );
             }
-            let mut mem = FlatMemory {
-                base: base.base,
-                bytes: base.bytes.clone(),
-            };
-            let cpu = lifted
-                .run(&mut mem, SCALAR_INPUTS, 23, x87)
-                .unwrap_or_else(|e| panic!("seed {seed} case {n} scalar 23: {e}"));
-            let original = cpu.xmm[0] as u32;
-            let port = ol::scalar_input(23, lighting.as_ref()).expect("ported");
-            assert!(same(original, port), "seed {seed} case {n} scalar 23: original {original:08x}, port {port:08x}");
+            for input in SCALARS {
+                if input == 37 && lighting.is_none() {
+                    continue;
+                }
+                let mut mem = FlatMemory {
+                    base: base.base,
+                    bytes: base.bytes.clone(),
+                };
+                let cpu = lifted
+                    .run(&mut mem, SCALAR_INPUTS, input, x87)
+                    .unwrap_or_else(|e| panic!("seed {seed} case {n} scalar {input}: {e}"));
+                let original = cpu.xmm[0] as u32;
+                let port = ol::scalar_input(input, lighting.as_ref()).expect("ported");
+                assert!(
+                    same(original, port),
+                    "seed {seed} case {n} scalar {input}: original {original:08x}, port {port:08x}"
+                );
+            }
+            if let Some(l) = &lighting {
+                let root = f32::from_bits(l.root.expect("the walk ends"));
+                *seen.entry(if root == 0.0 { "root zero" } else { "root value" }).or_default() += 1;
+            }
         }
     }
     eprintln!("cases: {seen:?}");
-    assert!(seen.len() == 2, "both with and without a lighting: {seen:?}");
+    assert!(seen.len() == 4, "with and without a lighting, a root value and zero: {seen:?}");
 }

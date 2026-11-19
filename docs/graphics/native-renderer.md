@@ -773,25 +773,108 @@ How the game lights an object's layer-3 pass (Code, `h2 disasm`;
 - **The transform.** `0x0004d830` uploads a single-node object's matrix
   (record `+0x1c`) as three registers at hardware `c[50]`.
 - **The port.** `object_lighting::vector_input` and `scalar_input` give
-  every lighting input but vector 40 and scalar 37 (a value of the object
-  whose handle is the lighting's `+0`, walked up its parents by
-  `0x00033670`); `tests/object_lighting_differential.rs` checks them bit
-  for bit (NaN for NaN) against the lifted `0x00033980` and `0x000336f0`
-  on seeded states. The hook copies each drawn object's `0x78` lighting
+  every lighting input. Vector 40 (all three components) and scalar 37
+  are `object_lighting::root_value` (`0x00033670`): the object whose
+  handle is the lighting's `+0` (`0x000badc0`, mask -1: index below the
+  array's count, salt non-zero and equal), walked up its parents
+  (`+0x14`) while its byte `+0xaa` is set, the elements read straight
+  from `[0x004e0300] + 0x44` at a stride of 12; the root's `+0x2b0`
+  clamped to 0..1, or 0 when a handle does not resolve. Both read
+  `[[0x00485a58]]` unchecked, so without a lighting they are not given.
+  The value is taken with the lighting's words at hook time.
+  `tests/object_lighting_differential.rs` checks every input bit for bit
+  (NaN for NaN) against the lifted `0x00033980` and `0x000336f0` on
+  seeded states, 40 and 37 over a seeded object array of parents,
+  salts and empty elements. The hook copies each drawn object's `0x78` lighting
   bytes and the inputs' defaults into its `ObjectFrame`
   (`objects::object_lighting`: body `+0xcc`, the record still its own),
   so the pass has the frame's values whatever the cache does next.
-- **The refusal.** The native pass does not apply them yet: its program
-  is ours, not the game's `lightmap_dynamic`/`sh_dynamic`, and what each
-  register means (ambient, a light's colour or direction) is the vertex
-  programs' business, not read. So a material whose layer-3 pass reads
-  any lighting input in any implementation
-  (`look::object_lighting_input`) is refused at load and keeps its D3D
-  draws: never drawn unlit. Expect most lit objects back on D3D until the
-  next step, which runs the object passes through their own vertex
-  programs (as the world's go through `program`) with `c[18 + i]` filled
-  from these inputs (`ResolvedImplementation::vector_bindings`) and the
-  node matrices where the programs read them.
+- **The refusal.** The native models pass does not apply them: its
+  program is ours, not the game's `lightmap_dynamic`/`sh_dynamic`. So a
+  material whose layer-3 pass reads any lighting input in any
+  implementation is refused at load and keeps its D3D draws: never drawn
+  unlit (`object_program::lighting_refusal`, which names an input the
+  object path cannot give, or says the program draw is not wired yet).
+
+### Object programs
+
+An object material whose layer-3 pass reads the object's lighting is
+drawn with the game's own vertex program and pixel shader
+(`native_render::object_program`, `object_program_gpu`), each piece with
+synthetic tests:
+
+- **The vertex block.** What the game's upload would hold for one drawn
+  object: `c[0..18]` the view's; `c[18 + i]` the implementation's
+  constants with every engine binding that reads the lighting put in from
+  the port (`object_vertex_uniforms`: the vector inputs through
+  `ResolvedImplementation::vector_bindings`, the scalar ones through the
+  new `scalar_bindings`, both keeping only what later bindings leave);
+  `c[50..]` the node rows; `c[170..173]` the decompression.
+  `inputs_supported` refuses an implementation that reads any other
+  per-draw input (time, the camera, object functions) or puts a lighting
+  input into a combiner constant (that would need a per-object pixel
+  block).
+- **The node rows** (`node_rows`, Code): a record with a matrix at
+  `+0x1c` uploads it transposed, without its scale, as three registers at
+  hardware `c[50]` (`0x0004d830`). Otherwise `0x0004d8e0` reads the
+  record's `+8` node block handle (-1: nothing is uploaded, so the object
+  is refused): the block at `0x00487b1c + (handle & 0x0fffffff)` holds per
+  part (`+0xc & 0xf`) a first matrix and a count at `+4 + 4·part`, and the
+  matrices at `+0x44 + 0x30·n`, twelve floats in register order. A model
+  record (`+0xc` bits 29..31 = 1) whose section names a node
+  (`0x0004cb80`: the `mode`'s sections, stride `0x5c`, the i16 at
+  `+0x2c`) uploads one matrix (the part's first when it has one, else
+  that node's); anything else uploads the part's whole palette
+  (`0x000152a0`), `c[50 + 3·k]` for matrix `k`, which the skinned program
+  indexes with `a0.x`. A palette that would run past `c[170]` is refused.
+- **The decompression** (`decompression_rows`, `0x0001cdd0` from the
+  section setup `0x0004d7c0`): `c[170]` half the position bounds' extent
+  (w 1), `c[171]` their centre (w 0), `c[172]` the texture coordinate's
+  scale and offset; the identity where the section's flag is clear.
+- **The program** (`object_look`, `compile_object`): the implementation's
+  look with its engine constants allowed, translated as the world's are;
+  every constant read directly must be one of the above, and a read
+  relative to `a0.x` must start in the node rows.
+
+- **The vertex streams** (`object_streams`, Code). The draw sets its
+  streams through `0x0001caa0`: the section's `vrtx` classification
+  (`0x0001cb20`: the geometry classification at section `+0x18`, 0..2 as
+  they are, 3 the influences byte `+0x14` plus 2 when the tag has that
+  many, else 0), its program, and the streams (`0x0001c8c0`): the
+  section's vertex buffer descriptors in order, each stream's format the
+  record of its type in the table at `0x0043f408` (`0x15` bytes a type:
+  the type, then up to ten (semantic, format) pairs; semantic `0xfe` skips
+  bytes, any other negative one ends it). The classification lists per
+  register `v<i>` the semantic it reads; the declaration puts each
+  attribute in the register reading its semantic. The format codes are
+  the Xbox vertex types in order (float 1..4, packed bytes 1..4, shorts
+  1..4, normalised shorts 1..4, normalised packed 11:11:10, `D3DCOLOR`).
+  The table is read from guest memory when the map is first seen, never
+  copied; a section's streams are expanded once per declaration to
+  float4s, so the programs see the values the hardware's fetch gives.
+- **The implementation** (`object_implementation`, Code `0x0004cbf0`,
+  `0x0004cd1b`..`0x0004cd41`): 2 when the template's level (taken as the
+  first, S) draws layer 15 (bit 15 of its layer mask), else 1 when the
+  lighting's byte `+0x76` is `0xff`, else 0. Without a lighting the build
+  keeps what `0x00015d70` chose (not traced): such an object stays on D3D.
+  A material is drawn only when every implementation it may draw (0 and 1,
+  or 2) compiles for every section it is in and its stage bitmaps decode
+  (linear textures refused, as the world programs do); otherwise it stays
+  on D3D whole, with the reason logged.
+- **The node rows at the hook** (`objects::attach_node_rows`). The
+  observer copies, for each record a drawn object's items name, the rows
+  that record's draw would upload, one set per mode section (two records
+  of a section that would upload different rows refuse the object). Under
+  the pipelined render this reads the render's snapshot, as the rest of
+  the observer does (below): the node blocks at `0x00487b1c..` are guest
+  RAM, so they are frame `k`'s. An object of a definition with lit parts
+  is drawn only with its lighting (and the root value inputs 40 and 37
+  read) and every record's rows; else all of it stays on D3D.
+- **The draw** (`LitObjects::encode`). After the models pass, one render
+  pass over the same targets: per drawn (object, lit part) its vertex
+  block (`object_vertex_uniforms` over the view's `c[0..18]`) and pixel
+  block in one buffer at dynamic offsets, as the lights do; the viewport
+  is the whole target, as the programs' own fix-up expects.
 
 ### Pipelined render
 

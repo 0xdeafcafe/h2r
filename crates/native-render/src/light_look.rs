@@ -336,6 +336,7 @@ pub fn compile_light(look: &LightLook, microcode: &[u8]) -> Result<LightProgram,
         vertex_constants: &look.vertex_constants,
         vertex_defaults: &look.vertex_defaults,
         alpha_test: look.state.alpha_test,
+        provided_inputs: crate::program::INPUT_MASK,
     })?;
     Ok(LightProgram {
         wgsl: t.wgsl,
@@ -453,6 +454,7 @@ mod tests {
             per_draw_inputs: true,
             input_reads: InputReads { scalars: 0, vectors: 1 << 5, ints: 1 << 4 },
             vector_bindings: Vec::new(),
+            scalar_bindings: Vec::new(),
             vertex_constants: vec![Register { index: 18, value: [1.0, 1.0, 0.0, 0.0], written: 0xf, origin: Origin::Instance }],
             vertex_defaults: Vec::new(),
             animated: Vec::new(),
