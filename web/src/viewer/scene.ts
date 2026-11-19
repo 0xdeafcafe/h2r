@@ -33,6 +33,7 @@ import { ModelLibrary, type BipedAnimator, type BipedInstance, type WeaponInstan
 import { smoothPlayers, smoothVehicles, type SmoothPlayer } from "./sync";
 import { BipedAnim, HELD, MAX_TWIST, SpeedMeter, WALK_SPEED, actionShot, aimAngles, actorAim, clipFor, clipTime, gameAnim, legTwist, paceScale, sideways, weaponClass, wrapAngle, type OneShot } from "./anim";
 import { GroundCache, type Floor } from "./ground";
+import { FloorGrid, type FloorSource } from "./floorgrid";
 import { Bodies, bodyPlace, type Place } from "./bodies";
 import { EventFeed } from "../map/events";
 import { Effects3D } from "./effects3d";
@@ -139,6 +140,10 @@ interface VehicleObj {
 interface TracerObj { group: THREE.Group; beam: THREE.Mesh; flash: THREE.Mesh; beamMat: THREE.MeshBasicMaterial; flashMat: THREE.MeshBasicMaterial }
 
 const AXIS_X = new THREE.Vector3(1, 0, 0);
+/** Level pictures fetched at once. They are small (a few to 80 KB) and
+ *  the art is on HTTP/2, so the wait is round trips, not bandwidth: six at
+ *  a time took 12 s for a campaign level's 197. */
+const PICTURES_AT_ONCE = 16;
 /** The cut plane's height when the cut is off: above anything. */
 const CUT_OFF = 1e9;
 const FIRING = new THREE.Color(0xfff0b8);
@@ -161,6 +166,8 @@ export class ViewerScene {
   private map: THREE.Object3D | null = null;
   /** The floor under each biped, probed on the loaded level (ground.ts). */
   private floors: GroundCache | null = null;
+  /** The level's triangles for floor probes, and the meshes they are from. */
+  private floorGrid: { grid: FloorGrid; meshes: THREE.Object3D[] } | null = null;
   private ground: THREE.Mesh;
   private grid: THREE.Object3D | null = null;
   private gridKey = "";
@@ -226,10 +233,10 @@ export class ViewerScene {
   private v1 = new THREE.Vector3();
   private v2 = new THREE.Vector3();
   private v3 = new THREE.Vector3();
-  private v4 = new THREE.Vector3();
   private q0 = new THREE.Quaternion();
   private bounds: Box3 | null = null;
   private hasMap = false;
+  private drewMap = false;
   private scale = 1;
   private mode: ViewMode = "orbit";
   private followIndex: number | null = null;
@@ -347,7 +354,10 @@ export class ViewerScene {
       // follow (textures3d.ts).
       const loader = gltfLoader();
       const pending = deferTextures(loader, url);
-      const gltf = await loader.loadAsync(url);
+      const loading = loader.loadAsync(url);
+      // Player and vehicle models wait for the level (players3d.ts).
+      this.library.hold(loading);
+      const gltf = await loading;
       if (this.disposed || gen !== this.mapGen) return false;
       // Textured primitives' class materials, for the flat look.
       const flats = await loadFlats(gltf);
@@ -430,6 +440,8 @@ export class ViewerScene {
       this.floors = new GroundCache((x, y, z, reach) => this.floorProbe(x, y, z, reach));
       this.scene.add(root);
       this.hasMap = true;
+      this.drewMap = false;
+      mark("h2-viewer:map-loaded");
       if (this.grid) { this.scene.remove(this.grid); this.grid = null; this.gridKey = ""; }
       // glTF (x, y, z) is game (x, -z, y).
       this.setBounds({ min: [box.min.x, -box.max.z, box.min.y], max: [box.max.x, -box.min.z, box.max.y] }, true);
@@ -454,7 +466,7 @@ export class ViewerScene {
       for (const t of texturesSharing(p.texture, used)) { t.image = picture; t.needsUpdate = true; }
       this.textures.refresh();
       this.dirty = true;
-    }, { stopped: () => this.disposed || gen !== this.mapGen }).then(() => undefined);
+    }, { concurrency: PICTURES_AT_ONCE, stopped: () => this.disposed || gen !== this.mapGen }).then(() => { if (gen === this.mapGen) mark("h2-viewer:textured"); });
   }
 
   /** Builds (or drops) the level's teleporters, links and lifts. */
@@ -677,6 +689,7 @@ export class ViewerScene {
     });
     this.map = null;
     this.floors = null;
+    this.floorGrid = null;
     for (const b of this.bodies.clear()) this.dropBody(b.obj);
     this.zone.reset();
     this.look.clear();
@@ -840,35 +853,55 @@ export class ViewerScene {
   /** The height of the level's first surface below (x, y, z), game
    *  coordinates, within `reach` units; null when there is none. */
   floorBelow(x: number, y: number, z: number, reach = 20): number | null {
-    if (!this.map) return null;
-    this.raycaster.set(new THREE.Vector3(...gameToGl(x, y, z)), new THREE.Vector3(0, -1, 0));
-    this.raycaster.far = reach;
-    const hit = this.raycaster.intersectObject(this.map, true).find((h) => (h.object as THREE.Mesh).isMesh && h.object.visible);
-    this.raycaster.far = Infinity;
-    return hit ? hit.point.y : null;
+    return this.floorProbe(x, y, z, reach)?.z ?? null;
   }
 
   /** The first surface facing up below (x, y, z) within `reach`, game
    *  coordinates, with its normal: the level as it lies, without its
-   *  machines (a lift is somewhere else a moment later). */
+   *  machines (a lift is somewhere else a moment later). Probed in a grid
+   *  of the level's triangles (floorgrid.ts), built on the first probe. */
   private floorProbe(x: number, y: number, z: number, reach: number): Floor | null {
     if (!this.map) return null;
-    this.raycaster.set(this.v3.set(...gameToGl(x, y, z)), this.v4.set(0, -1, 0));
-    this.raycaster.far = reach;
-    const hits = this.raycaster.intersectObject(this.map, true);
-    this.raycaster.far = Infinity;
-    for (const h of hits) {
-      if (!(h.object as THREE.Mesh).isMesh || !h.object.visible || !h.face) continue;
-      let machine = false;
-      for (let o: THREE.Object3D | null = h.object; o && o !== this.map; o = o.parent) if (o.name === "machines") { machine = true; break; }
-      if (machine) continue;
-      const n = h.face.normal.clone().transformDirection(h.object.matrixWorld);
-      // Seen from above: a face turned down is the underside of something.
-      if (n.y <= 0) continue;
-      const [px, py, pz] = [h.point.x, -h.point.z, h.point.y];
-      return { x: px, y: py, z: pz, nx: n.x, ny: -n.z, nz: n.y };
-    }
-    return null;
+    this.floorGrid ??= this.buildFloorGrid(this.map);
+    const { grid, meshes } = this.floorGrid;
+    const [gx, gy, gz] = gameToGl(x, y, z);
+    const h = grid.probe(gx, gy, gz, reach, (id) => shownUnder(meshes[id]!, this.map!));
+    return h ? { x: h.x, y: -h.z, z: h.y, nx: h.nx, ny: -h.nz, nz: h.ny } : null;
+  }
+
+  /** The level's meshes in world space for floor probes: everything but
+   *  the machines (they move) and the scenario's placement nodes (hidden;
+   *  their instanced batches stand in for them, as placed). */
+  private buildFloorGrid(root: THREE.Object3D): { grid: FloorGrid; meshes: THREE.Object3D[] } {
+    root.updateWorldMatrix(true, true);
+    const meshes: THREE.Object3D[] = [];
+    const sources: FloorSource[] = [];
+    const v = new THREE.Vector3(), m = new THREE.Matrix4();
+    const add = (mesh: THREE.Mesh, world: THREE.Matrix4) => {
+      const pos = mesh.geometry.getAttribute("position");
+      if (!pos) return;
+      const out = new Float32Array(pos.count * 3);
+      for (let i = 0; i < pos.count; i++) {
+        v.fromBufferAttribute(pos, i).applyMatrix4(world);
+        out[i * 3] = v.x; out[i * 3 + 1] = v.y; out[i * 3 + 2] = v.z;
+      }
+      const index = mesh.geometry.getIndex();
+      sources.push({ id: meshes.length, positions: out, index: index ? index.array : null });
+      meshes.push(mesh);
+    };
+    const walk = (o: THREE.Object3D) => {
+      if (o.name === "machines") return;
+      const mesh = o as THREE.Mesh;
+      if ((mesh as unknown as THREE.InstancedMesh).isInstancedMesh) {
+        const im = mesh as unknown as THREE.InstancedMesh;
+        for (let i = 0; i < im.count; i++) { im.getMatrixAt(i, m); add(mesh, m.premultiply(im.matrixWorld)); }
+      } else if (mesh.isMesh && !hasScenarioPlacement(o)) {
+        add(mesh, mesh.matrixWorld);
+      }
+      for (const c of o.children) walk(c);
+    };
+    walk(root);
+    return { grid: new FloorGrid(sources), meshes };
   }
 
   /** The level's placed objects and where they stand (scenario3d.ts). */
@@ -1718,13 +1751,24 @@ export class ViewerScene {
   }
 
   private draw(dt: number) {
+    // Marks for the perf harness (web/bench/viewer.bench.ts): the first
+    // frame with the level in it.
+    if (this.hasMap && !this.drewMap) { this.drewMap = true; mark("h2-viewer:first-map-frame"); }
     this.look.beforeDraw(this.camera, this.camera.position.distanceTo(this.controls.target));
     this.scenarioObjects.beforeDraw();
     // The soft ground stands in for a sky's horizon only when there is none.
     this.ground.visible = !this.look.skyShown();
-    if (this.composer && this.aoWanted) this.composer.render();
-    else this.renderer.render(this.scene, this.camera);
-    this.labels.render(this.scene, this.camera);
+    // The world matrices once a frame: the passes and the labels would
+    // each walk the whole tree (every bone of every biped) again.
+    this.scene.updateMatrixWorld();
+    this.scene.matrixWorldAutoUpdate = false;
+    try {
+      if (this.composer && this.aoWanted) this.composer.render();
+      else this.renderer.render(this.scene, this.camera);
+      this.labels.render(this.scene, this.camera);
+    } finally {
+      this.scene.matrixWorldAutoUpdate = true;
+    }
     // Ambient occlusion is the one costly step: drop it on a machine that
     // can't keep up (under ~25 frames a second for a couple of seconds),
     // rather than stutter.
@@ -1744,10 +1788,12 @@ export class ViewerScene {
     if (on && !this.composer) {
       try {
         const size = this.renderer.getDrawingBufferSize(new THREE.Vector2());
-        const target = new THREE.WebGLRenderTarget(size.x, size.y, { type: THREE.HalfFloatType, samples: 4 });
+        // With a depth texture, which the occlusion reads (aopass.ts): the
+        // composer's second target is a copy, with its own.
+        const target = new THREE.WebGLRenderTarget(size.x, size.y, { type: THREE.HalfFloatType, samples: 4, depthTexture: new THREE.DepthTexture(size.x, size.y) });
         const composer = new EffectComposer(this.renderer, target);
         composer.addPass(new RenderPass(this.scene, this.camera));
-        const gtao = new LevelAoPass(this.scene, this.camera, this.w, this.h);
+        const gtao = new LevelAoPass(this.scene, this.camera, this.w, this.h, target.depthTexture!);
         gtao.blendIntensity = 0.9;
         composer.addPass(gtao);
         composer.addPass(new OutputPass());
@@ -1880,4 +1926,22 @@ function disposeTree(o: THREE.Object3D) {
     const mat = mesh.material;
     if (mat) for (const m of Array.isArray(mat) ? mat : [mat]) m.dispose();
   });
+}
+
+/** A performance mark, for the perf harness; never throws. */
+function mark(name: string) {
+  try { performance.mark(name); } catch { /* no User Timing */ }
+}
+
+/** Whether `o` and everything above it up to `root` is shown. */
+function shownUnder(o: THREE.Object3D, root: THREE.Object3D): boolean {
+  for (let p: THREE.Object3D | null = o; p && p !== root; p = p.parent) if (!p.visible) return false;
+  return true;
+}
+
+/** Whether `o` is in a scenario placement's node (a child of `scenario`
+ *  that is not one of its instanced batches). */
+function hasScenarioPlacement(o: THREE.Object3D): boolean {
+  for (let p: THREE.Object3D | null = o; p; p = p.parent) if (p.parent?.name === "scenario") return !(p as THREE.InstancedMesh).isInstancedMesh;
+  return false;
 }
