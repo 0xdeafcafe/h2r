@@ -290,7 +290,13 @@ impl BlurArgs {
     }
 }
 
+/// The most steps [`blur`] takes: the colour pass asks for a handful,
+/// and at infinity (or past 2^24, where `i + 1` is `i`) the original
+/// never leaves its loop.
+pub const MAX_BLUR_STEPS: u32 = 64;
+
 /// `0x000211a0` after its combiner (`0x000211d5`..`0x0002135a`).
+/// [`Error::Unbounded`] past [`MAX_BLUR_STEPS`] steps.
 pub fn blur(mem: &dyn GuestMemory, a: &BlurArgs, mxcsr: u32) -> Result<Blur, Error> {
     let mut sse = Sse { mxcsr };
     let one = mem.u32(constant::ONE)?;
@@ -303,6 +309,7 @@ pub fn blur(mem: &dyn GuestMemory, a: &BlurArgs, mxcsr: u32) -> Result<Blur, Err
         let t = sse.mul(a.growth, mem.u32(constant::SPREAD)?)?;
         let factor = sse.add(g, t)?;
         let (mut i, mut scale) = (zero, a.scale);
+        let mut taken = 0;
         loop {
             let left = sse.sub(a.steps, i)?;
             let fraction = if sse.above(zero, left)? {
@@ -329,6 +336,10 @@ pub fn blur(mem: &dyn GuestMemory, a: &BlurArgs, mxcsr: u32) -> Result<Blur, Err
             if !sse.above(a.steps, i)? {
                 break;
             }
+            taken += 1;
+            if taken >= MAX_BLUR_STEPS {
+                return Err(Error::Unbounded);
+            }
         }
     }
     if a.last != u32::MAX && a.last != current {
@@ -343,4 +354,43 @@ pub fn blur(mem: &dyn GuestMemory, a: &BlurArgs, mxcsr: u32) -> Result<Blur, Err
         result: current,
         copy: None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::FlatMemory;
+
+    /// The two constants the blur reads (1.0, and a spread term of 2.0
+    /// chosen here), on otherwise empty memory.
+    fn constants() -> FlatMemory {
+        let mut m = FlatMemory::new(0x0045_d000, 0x1000);
+        m.set_u32(constant::ONE, 1.0f32.to_bits()).unwrap();
+        m.set_u32(constant::SPREAD, 2.0f32.to_bits()).unwrap();
+        m
+    }
+
+    fn steps(s: f32) -> BlurArgs {
+        BlurArgs {
+            source: TARGET_DOWN,
+            steps: s.to_bits(),
+            scale: 1.0f32.to_bits(),
+            growth: 0.25f32.to_bits(),
+            dest: TARGET_OTHER,
+            other: u32::MAX,
+            last: u32::MAX,
+        }
+    }
+
+    #[test]
+    fn the_blur_stops_at_its_budget() {
+        let m = constants();
+        let draws = |s: f32| blur(&m, &steps(s), 0x1f80).map(|b| b.draws.len());
+        assert_eq!(draws(3.5), Ok(4), "the last step its fraction");
+        assert_eq!(draws(MAX_BLUR_STEPS as f32), Ok(MAX_BLUR_STEPS as usize), "the budget itself");
+        assert_eq!(draws(MAX_BLUR_STEPS as f32 + 0.5), Err(Error::Unbounded));
+        assert_eq!(draws(f32::INFINITY), Err(Error::Unbounded), "the original never returns");
+        assert_eq!(draws(f32::NAN), Ok(0));
+        assert_eq!(draws(0.0), Ok(0));
+    }
 }

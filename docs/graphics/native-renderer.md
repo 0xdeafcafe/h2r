@@ -1346,7 +1346,10 @@ its own thread, and render-timing does not matter (the call runs).
     drawing four taps into the other buffer (7 and 8 in turn), with
     spread `fraction * scale`, the scale growing by
     `1 - g + g * [0x0045dc0c]` per step (`g` the fourth argument, 0.25):
-    a Kawase-style blur. It returns the last buffer drawn.
+    a Kawase-style blur. It returns the last buffer drawn. At infinity
+    (or past 2^24, where `i + 1` is `i`) the loop never ends; the port
+    stops after `engine::glow::MAX_BLUR_STEPS` (64) with
+    `Error::Unbounded`, so the glue leaves such a call to D3D.
 
   The quad draw `0x00034a90` (eleven arguments, `ret 0x2c`): the target
   (`0x00014bc0` unless -1), `0x000142f0` with the second argument unless

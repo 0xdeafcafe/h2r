@@ -12,7 +12,9 @@
 //!   the quad draw `0x00034a90`, the copy `0x000351a0`; each returns with
 //!   its cleanup and is recorded): the draws (the target bound at stage 0,
 //!   the target drawn into, the spread argument), the copy and the
-//!   returned target must be the port's.
+//!   returned target must be the port's. Steps at infinity: the
+//!   original never leaves its loop (it runs to the step limit), the port
+//!   stops at `glow::MAX_BLUR_STEPS` with `Error::Unbounded`.
 //!
 //! Each case seeds the floats with now and then an edge (zeros, signed
 //! zero, infinities, NaNs, denormals) under one of several MXCSR and x87
@@ -34,6 +36,7 @@ use std::collections::BTreeMap;
 use common::{IMAGE_SHA256, sha256, xbe_path};
 use engine::colour_pass::Parameters;
 use engine::glow::{self, BlurArgs, BlurDraw, PSDEF, PSDEF_WORDS};
+use engine::light_constants::Error;
 use engine::memory::{GuestMemory, MemFault};
 use ir::IrInsn;
 use ir::interp::{self, Cpu, FlatMemory};
@@ -169,7 +172,7 @@ impl Lifted<'_> {
         while !exits.contains(&pc) {
             steps += 1;
             if steps > STEP_LIMIT {
-                return Err("step limit".into());
+                return Err(format!("step limit ({STEP_LIMIT} instructions) at {pc:#x}"));
             }
             if let Some(&cleanup) = stubs.get(&pc) {
                 seen(pc, cpu, mem);
@@ -339,7 +342,11 @@ fn blur_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
                 last: [u32::MAX, 7, 8, 10][r.below(4) as usize],
             };
             let mut a = image.clone();
-            let want = glow::blur(&Eng(&mut a.clone()), &args, mx).unwrap_or_else(|e| panic!("seed {seed} case {n}: {e:?}"));
+            let want = match glow::blur(&Eng(&mut a.clone()), &args, mx) {
+                Ok(w) => Some(w),
+                Err(Error::Unbounded) => None,
+                Err(e) => panic!("seed {seed} case {n}: {e:?}"),
+            };
 
             let esp = STACK_TOP - 0x400;
             let stack = [
@@ -374,9 +381,21 @@ fn blur_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
                 COPY => copy = Some((word(m, c.gpr[4] + 4), word(m, c.gpr[4] + 8))),
                 _ => {}
             };
-            lifted
-                .run(&mut c, &mut a, &[HARNESS_EXIT], &stubs, &mut record)
-                .unwrap_or_else(|e| panic!("seed {seed} case {n}: {e}"));
+            let ran = lifted.run(&mut c, &mut a, &[HARNESS_EXIT], &stubs, &mut record);
+            let Some(want) = want else {
+                // Past the port's budget (steps at infinity): the
+                // original must not finish either, and must have drawn
+                // more than the budget's draws by its step limit.
+                assert!(
+                    matches!(&ran, Err(e) if e.starts_with("step limit")),
+                    "seed {seed} case {n}: the port stopped at {} steps, the original {ran:?}: {args:#x?}",
+                    glow::MAX_BLUR_STEPS
+                );
+                assert!(draws.len() > glow::MAX_BLUR_STEPS as usize, "seed {seed} case {n}: {} draws", draws.len());
+                *seen.entry("unbounded".into()).or_default() += 1;
+                continue;
+            };
+            ran.unwrap_or_else(|e| panic!("seed {seed} case {n}: {e}"));
             assert_eq!(c.gpr[4], esp + 4 + 0x28, "seed {seed} case {n}: esp");
             assert_eq!(draws, want.draws, "seed {seed} case {n}: {args:#x?}");
             // 0x000351a0(edi, esi): the result, then where it goes.
