@@ -1925,7 +1925,7 @@ Clanker profiles use. [Controller layout trace](../input/controller-layouts.md)
 | Default pad input | Record field and timing | Local evidence |
 |---|---|---|
 | A / South, jump (k0) | Flags dword `+0`, mask `0x2` while down. A also drives k14, which sets word `+0x1c` bit `0x100` on the first tick. | `0x1868cb..0x186918` (jump inhibit latch, `[0x510c50]+5`), `0x186996` (k14). |
-| Left stick click, crouch (k10) | Flags `0x1` while latched. First click admits crouch if movement magnitude squared is below 0.25 or the biped check admits it. Release clears the latch. | `0x1865bf..0x18662b`, including the biped predicate `0xe4050`. |
+| Left stick click, crouch (k10) | Flags `0x1` while latched. First click admits crouch if movement magnitude squared is below 0.25 or the biped check admits it. Release clears the latch. | `0x1865bf..0x18662b`, including the biped predicate `0xe4050` (object header kind zero at `+3`). |
 | B / East, melee (k4) | Flags `0x30` while down. | `0x18691b..0x186942`. The host filters repeats at `0x14f70d`. |
 | White / LB, flashlight (k5) | Flags `0x02100004` while down. The mask is shared across contexts. | `0x186898..0x1868cb`. A visible flashlight effect depends on game mode and unit. |
 | RT, fire (k7) | Flags `0x00010040` while down, plus pressure (0–1) at `+0x14`. | `0x1867bc`, `0x186945`, `0x187058`. |
@@ -1939,7 +1939,9 @@ Clanker profiles use. [Controller layout trace](../input/controller-layouts.md)
 **Tap and hold timing.** The Default pad conversion preserves face-button
 and trigger pressure. The XInput reader at `0x124c53..0x124cc9` tests
 the last pressure byte against a per-button threshold and uses the new
-byte to update that threshold. While down, the threshold can rise to
+byte to update that threshold. A phantom uses the same pressure history
+and publishes the new sample for the current tick. While down, the
+threshold can rise to
 pressure minus 32. While up, it can fall to pressure plus 64. Stick clicks
 and the D-pad are digital. X and Y send their levels on every tick. The host
 compares them to player `+0x3c` and derives the press/release bits in
@@ -4433,6 +4435,8 @@ small surface. Everything in it is controller input.
   - A placed local bot is sampled once per rendered frame on the game
     thread, before `RENDER_FRAME`. A spawned phantom is sampled when
     the hosted simulation gathers its slot for a new game tick (§5.1).
+    Its `Frame.frame` counts pad samples so a recording or script advances
+    once, even if two ticks fall in the same render or a tick is read twice.
   - `Frame` carries the frame count, the game's tick (`tick`, 30 a
     second, `None` in the menus), the port, the guest memory and
     `joining`: the players screen is on top and the bot's slot has no
