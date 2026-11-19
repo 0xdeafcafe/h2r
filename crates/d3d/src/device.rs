@@ -699,9 +699,13 @@ pub struct Swallow {
     /// draw finds, the same for each of its draws and distinct from every
     /// other slot's.
     pub targets: Vec<u8>,
-    /// Every draw's primitive and vertex count.
+    /// Every draw's primitive and vertex count, but those in `shapes`.
     pub primitive: PrimitiveType,
     pub vertices: usize,
+    /// Per draw, in order, its own primitive and vertex count (draw `i`
+    /// takes `shapes[i]` while `i` is below its length): a pass of mixed
+    /// draws.
+    pub shapes: Vec<(PrimitiveType, usize)>,
     /// Drop the draws; `false` draws them and only places `pass` (a
     /// capture of what the game drew).
     pub drop: bool,
@@ -715,6 +719,7 @@ struct Swallowing {
     headers: Vec<Option<u32>>,
     primitive: PrimitiveType,
     vertices: usize,
+    shapes: Vec<(PrimitiveType, usize)>,
     drop: bool,
     /// `Stats::draws` when the next planned draw comes: no other draw in
     /// between.
@@ -1934,6 +1939,7 @@ impl<B: Backend> Device<B> {
             headers,
             primitive: s.primitive,
             vertices: s.vertices,
+            shapes: s.shapes,
             drop: s.drop,
             draws: self.stats.draws,
             pass: Some(s.pass),
@@ -1955,9 +1961,10 @@ impl<B: Backend> Device<B> {
             Some(h) => h == target,
             None => target != 0 && !s.headers.contains(&Some(target)),
         };
+        let (primitive, vertices) = s.shapes.get(s.next).copied().unwrap_or((s.primitive, s.vertices));
         let fits = d.inline.is_empty()
-            && d.primitive == s.primitive
-            && d.vertices.len() == s.vertices
+            && d.primitive == primitive
+            && d.vertices.len() == vertices
             && self.stats.draws == s.draws
             && into;
         if !fits {

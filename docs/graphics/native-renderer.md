@@ -1960,6 +1960,28 @@ its own thread, and render-timing does not matter (the call runs).
 - **`0x0002df00`**, once it is traced; until then a call with `late`
   set keeps its D3D passes.
 
+### Stage 5 status
+
+With `impl.render.native_post` off (the default) everything here draws
+on D3D, and the host only observes. With it on, a call is armed only
+once nothing in it is missing (`native_post_glue::Missing`, counted and
+logged once per reason). It is then probed before any of its draws are
+dropped, and it falls back on its own: the glow alone, and each screen
+effect per egor.
+
+| Effect kind | With the switch on | Why, or what refuses it |
+|---|---|---|
+| Colour pass glow (`0x000214f0`) | Armed after its probe | Refused when its plan fails (a blur past `MAX_BLUR_STEPS`, a target it cannot read). A refused draw or a swallow mismatch keeps every later glow on D3D. |
+| Screen effect, passes into the bound target, nothing convolved (`desaturate`'s shape) | Armed after its probe | `TemplatePass` when a pass's program did not load, or a stage binds an engine texture that is not supplied (`screen_gpu::supplied`). |
+| Pass into target 1, read by a later pass | Armed | `PassTarget` when the pass into target 1 is the call's last, or has no size. `TemplatePass` when target 1 is read before the call drew it (`call_ordered`). |
+| Kept convolution (flag bit 0 or 1 with its value 0) | Armed | Nothing to refuse: it draws nothing, and its result is the pass's target. |
+| Blur convolution (`0x000211a0`) | Armed (blur egor; waiting on the mainmenu A/B) | `Blur` and `StandIns` without the quads' frame. At the probe: a convolving pass that blends or masks colour (`ConvolutionStates`), a combiner that does not compile, the colour not sampleable. |
+| Wide convolution (`0x00021360`) | Armed (built; not run live yet) | `Wide` and `StandIns` without the frame, or when a grid cannot be made (`grid_of`: the source bound at no size, the grid's arithmetic failing). At the probe: as the blur, plus a grid strip under a triangle (`NoStrips`). |
+| Convolution that copies its result (`0x000351a0`) | Refused (`TemplatePass`) | Not drawable natively. `0x0002d140` passes -1, so it never happens. |
+| A screen effect's plan that fails (too many corners, unreadable values, a convolution past its budget) | D3D | Logged once ("a screen effect keeps its D3D draws"). |
+| `0x0002df00` (`late`), `0x0002dd30` | D3D | Not traced yet (step 5 below). |
+| Layer 17, the fade `0x00040890`, the UI and HUD | D3D | Not started (steps 6 to 8). |
+
 ### Order of work
 
 1. **The hook and its order** (built: `feature::native_post`,
@@ -2409,6 +2431,59 @@ its own thread, and render-timing does not matter (the call runs).
      size. A vertex register the resolver took from the engine that no
      external of the implementation names is refused
      (`ScreenRefusal::EngineVertexConstants`).
+   - **Built: the blur's convolution** (`screen_gpu::ScreenConvolution`,
+     `native_post_glue::screen_convolution`): `0x0002d140` calls
+     `0x000211a0` with its seventh word 1 and the eighth to tenth 0, so
+     the combiner is `0x00020f30`'s at strength 0 and `y` 0
+     (`engine::glow::blur_combiner`), and each quad goes through
+     `0x00034a90` with its tenth argument 0: the window's rectangle in
+     the stand-in's pixels, four taps, each stage's coordinates scaled by
+     its source's size over the stand-in's (`0x00034bf7`..`0x00034c27`),
+     the quad `glow::quad` gives the glow's, drawn by the glow's
+     `glow::QuadDrawer` (the glow now draws through it too). The quads go
+     into stand-ins for `0x19`..`0x1b` (`screen_gpu::STAND_INS`, at the
+     plan's guest size times the copy's scale, `STAND_IN_FORMAT`; S: an
+     8-bit target as 7 and 8), each cleared when the call first draws
+     into it; their source is the pass's target (the bound colour, or
+     target 1's stand-in) or the stand-in the last quad drew. Engine
+     textures 24 and 25 bind the target the pass's convolution `n` left in
+     `[0x00485a78 + 4 n]` (`screen_gpu::Bound::Result`), refused before
+     one set it in the call, since `0x0002d140` clears them on its way out
+     (`screen_gpu::Drawn`, `check_order`). A pass that blends or masks
+     colour does not convolve natively (its quads draw under its states).
+     The swallow takes each draw's own shape (`d3d::Swallow::shapes`: the
+     strips of `SET_BEGIN_END` 6, the quads `Begin(7)` of four), the quads
+     into slots 2..4 for `0x19`..`0x1b`. Each egor is probed on its own
+     before its draws are dropped, and falls back on its own: a refused
+     pass, a failed probe or a swallow mismatch (charged to the egor that
+     armed last) keeps that egor's later calls on D3D and no other's. With these, the blur misses nothing and
+     is armed with the switch on (off by default).
+   - **Built: the wide convolution** (`0x00021360`; `screen_gpu::ConvolutionGrid`,
+     `native_post_glue::wide_grid`, `grid_of`). `0x0002d140` passes it
+     the words `+0x50`, `+0x54`, the stand-ins, -1, 1, 0, 0, so its
+     combiner is the blur's (`0x00020f30` with XMM0 0 and XMM3 its eighth
+     word, 0), its stages are bound as the blur's (clamp, linear), and
+     each draw is `0x00034d90` (Code, `0x00021455..0x00021485`) with the
+     same screen vertex shader (`0x0001c590`) and states as the quad's:
+     the window's rectangle (word 7's low byte clear), depth `1.0`, the
+     two words its radii, EDI the draw's offsets, each stage's ratio the
+     size `0x00014f60` bound the source at (`0x0001dd60` of it: the
+     pass's target as the call sized it, `screen_effect::target_size`,
+     or a stand-in at the pair's size) over the stand-in's. The glue
+     makes each draw's 30 strips of 42 vertices with
+     `engine::screen_grid::strips` (the original's arithmetic, under the
+     call's MXCSR and x87 control word), the taps in texels of that bound
+     size; `glow::QuadDrawer::draw_grid` draws them through
+     `glow::GRID_VERTEX` (attribute 0 the position in the stand-in's
+     pixels, 1..4 the taps; z and w ignored as the quad's are: no depth
+     test and w the same at every vertex) and the blur's combiner with
+     its stages scaled by the bound size. The swallow takes each strip
+     as `SET_BEGIN_END` 6 of 42 (`0x00034770`) into the stand-in's slot.
+     A grid that cannot be made keeps the call on D3D
+     (`Missing::Wide`), as does a missing frame; a grid with a strip
+     under a triangle is refused (`ScreenRefused::NoStrips`). With these
+     a wide convolution misses nothing and is armed with the switch on
+     (off by default).
 5. **`0x0002df00`, and `0x0002dd30`** before layer 17, which has the
    same shape and gets its own skip point.
 6. **Layer 17** (S: bloom), as stage 1b draws the world's other layers.

@@ -34,6 +34,14 @@ use std::collections::HashMap;
 use shaders::psh::{self, PixelOptions, PixelShaderDef, PixelUniforms, TextureDim};
 
 use crate::camera::GuestRead;
+use crate::screen_gpu::{STRIP_ATTRIBUTES, StripVertex, strip_ranges};
+
+/// A grid's vertex buffer: [`StripVertex`] in order.
+const STRIP_LAYOUT: [Option<wgpu::VertexBufferLayout<'static>>; 1] = [Some(wgpu::VertexBufferLayout {
+    array_stride: std::mem::size_of::<StripVertex>() as wgpu::BufferAddress,
+    step_mode: wgpu::VertexStepMode::Vertex,
+    attributes: &STRIP_ATTRIBUTES,
+})];
 
 /// Words in a combiner block (`D3DPIXELSHADERDEF`).
 pub const COMBINER_WORDS: usize = 60;
@@ -163,13 +171,7 @@ pub fn target_size(mem: &dyn GuestRead, index: u32) -> Option<(u32, u32)> {
 /// the sizes (`None` when a size is missing, zero, or 7 and 8 differ).
 /// The draws are the caller's ([`Plan::draws`]).
 pub fn read_frame(mem: &dyn GuestRead) -> Option<Plan> {
-    let half = |a: u32| -> Option<f32> {
-        let w = mem.read_u32(a & !3)?;
-        let h = if a & 2 != 0 { w >> 16 } else { w & 0xffff };
-        Some(f32::from(h as u16 as i16))
-    };
-    let window = [half(WINDOW + 2)?, half(WINDOW)?, half(WINDOW + 6)?, half(WINDOW + 4)?];
-    let signs = [f32::from_bits(mem.read_u32(SIGN_CLEAR)?), f32::from_bits(mem.read_u32(SIGN_SET)?)];
+    let (window, signs) = read_window(mem)?;
     let view_index = mem.read_u32(VIEW_TARGET)? & 0xffff;
     let view = target_size(mem, view_index as u16 as i16 as i32 as u32)?;
     let small = target_size(mem, TARGET_DOWN)?;
@@ -177,6 +179,20 @@ pub fn read_frame(mem: &dyn GuestRead) -> Option<Plan> {
         return None;
     }
     Some(Plan { window, signs, view, small, draws: Vec::new() })
+}
+
+/// The window `(left, top, right, bottom)` and the tap signs
+/// `[[SIGN_CLEAR], [SIGN_SET]]`, as the quad draw reads them
+/// (`0x00034b0a`).
+pub fn read_window(mem: &dyn GuestRead) -> Option<([f32; 4], [f32; 2])> {
+    let half = |a: u32| -> Option<f32> {
+        let w = mem.read_u32(a & !3)?;
+        let h = if a & 2 != 0 { w >> 16 } else { w & 0xffff };
+        Some(f32::from(h as u16 as i16))
+    };
+    let window = [half(WINDOW + 2)?, half(WINDOW)?, half(WINDOW + 6)?, half(WINDOW + 4)?];
+    let signs = [f32::from_bits(mem.read_u32(SIGN_CLEAR)?), f32::from_bits(mem.read_u32(SIGN_SET)?)];
+    Some((window, signs))
 }
 
 /// One quad's vertex uniforms ([`VERTEX`]'s `GlowQuad`).
@@ -203,22 +219,33 @@ impl Plan {
 
     /// `draw`'s vertex uniforms: `0x00034100`'s taps for its stages.
     pub fn quad(&self, draw: &Draw) -> Quad {
-        let d = self.size(draw.dest);
-        let (dw, dh) = (d.0 as f32, d.1 as f32);
-        let taps = std::array::from_fn(|k| {
-            let s = draw.stages[k].map_or(d, |s| self.size(s));
-            let (sx, sy) = if (k as u32) < draw.taps {
-                (self.signs[usize::from(k & 1 != 0)], self.signs[usize::from(k & 2 != 0)])
-            } else {
-                (0.0, 0.0)
-            };
-            [draw.spread * sx, draw.spread * sy, s.0 as f32 / dw, s.1 as f32 / dh]
-        });
-        Quad {
-            corners: self.window,
-            dest: [2.0 / dw, 2.0 / dh, 0.0, 0.0],
-            taps,
-        }
+        let stages = draw.stages.map(|s| s.map(|s| self.size(s)));
+        quad(self.window, self.signs, self.size(draw.dest), stages, draw.taps, draw.spread)
+    }
+}
+
+/// The vertex uniforms of a quad `0x00034a90` draws with its tenth
+/// argument clear into a target `dest` guest pixels: corners the window
+/// `(left, top, right, bottom)` (clipped to the target), `taps` taps of
+/// `spread` (the signs `[[SIGN_CLEAR], [SIGN_SET]]`, `k & 1` in x and
+/// `k & 2` in y), each stage's coordinates scaled by its bound size
+/// (`stages[k]`; `None` the target's) over the target's
+/// (`0x00034bf7`..`0x00034c27`).
+pub fn quad(window: [f32; 4], signs: [f32; 2], dest: (u32, u32), stages: [Option<(u32, u32)>; 4], taps: u32, spread: f32) -> Quad {
+    let (dw, dh) = (dest.0 as f32, dest.1 as f32);
+    let taps = std::array::from_fn(|k| {
+        let s = stages[k].unwrap_or(dest);
+        let (sx, sy) = if (k as u32) < taps {
+            (signs[usize::from(k & 1 != 0)], signs[usize::from(k & 2 != 0)])
+        } else {
+            (0.0, 0.0)
+        };
+        [spread * sx, spread * sy, s.0 as f32 / dw, s.1 as f32 / dh]
+    });
+    Quad {
+        corners: window,
+        dest: [2.0 / dw, 2.0 / dh, 0.0, 0.0],
+        taps,
     }
 }
 
@@ -257,6 +284,60 @@ fn vs_main(@builtin(vertex_index) i: u32) -> XboxVaryings {
 }
 "#;
 
+/// The same screen shader for the strips of a grid (`0x00034d90`, a wide
+/// convolution's draw; `engine::screen_grid`): the vertex shader
+/// `0x0001c590` binds for both draws passes its inputs through, so each
+/// vertex is attribute 0 the position in the target's pixels and 1..4
+/// the taps in the source's texels (`screen_gpu::StripVertex`), the
+/// uniform `2 / width`, `2 / height` of the target. z and w are the
+/// depth's, as the quad's are; with the depth test off and w the same at
+/// every vertex they change nothing, so the position goes out at z 0 and
+/// w 1 as [`VERTEX`]'s does.
+pub const GRID_VERTEX: &str = r#"
+struct GlowGrid {
+    dest: vec4f,
+}
+@group(0) @binding(0) var<uniform> glow: GlowGrid;
+
+struct GridIn {
+    @location(0) position: vec4f,
+    @location(1) t0: vec4f,
+    @location(2) t1: vec4f,
+    @location(3) t2: vec4f,
+    @location(4) t3: vec4f,
+}
+
+@vertex
+fn vs_main(v: GridIn) -> XboxVaryings {
+    var o: XboxVaryings;
+    o.position = vec4f(v.position.x * glow.dest.x - 1.0, 1.0 - v.position.y * glow.dest.y, 0.0, 1.0);
+    o.d0 = vec4f(0.0);
+    o.d1 = vec4f(0.0);
+    o.b0 = vec4f(0.0);
+    o.b1 = vec4f(0.0);
+    o.t0 = v.t0;
+    o.t1 = v.t1;
+    o.t2 = v.t2;
+    o.t3 = v.t3;
+    o.fog = 1.0;
+    return o;
+}
+"#;
+
+/// A grid's vertex uniform ([`GRID_VERTEX`]'s `GlowGrid`).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GridFrame {
+    /// `2 / width`, `2 / height` of the target (guest pixels).
+    pub dest: [f32; 4],
+}
+
+impl GridFrame {
+    pub fn of(dest: (u32, u32)) -> Self {
+        Self { dest: [2.0 / dest.0.max(1) as f32, 2.0 / dest.1.max(1) as f32, 0.0, 0.0] }
+    }
+}
+
 /// A block compiled for the pass.
 #[derive(Clone, Debug)]
 pub struct Program {
@@ -265,12 +346,23 @@ pub struct Program {
     /// What each stage samples (`None`: nothing).
     pub dims: [Option<TextureDim>; 4],
     pub pixel: PixelUniforms,
+    /// Drawn as a grid's strips ([`GRID_VERTEX`]), not a quad.
+    pub grid: bool,
 }
 
 /// `combiner` through the stage 3 compiler with `stages` bound, each a
 /// linear texture of that size (`tex_scale` one over it), fog off; or why
 /// it cannot be drawn.
 pub fn program(combiner: &[u32; COMBINER_WORDS], stages: [Option<(u32, u32)>; 4]) -> Result<Program, String> {
+    translate(combiner, stages, false)
+}
+
+/// [`program`] for a grid's strips ([`GRID_VERTEX`]).
+pub fn grid_program(combiner: &[u32; COMBINER_WORDS], stages: [Option<(u32, u32)>; 4]) -> Result<Program, String> {
+    translate(combiner, stages, true)
+}
+
+fn translate(combiner: &[u32; COMBINER_WORDS], stages: [Option<(u32, u32)>; 4], grid: bool) -> Result<Program, String> {
     let def = PixelShaderDef::from_words(combiner);
     let options = PixelOptions {
         texture_dims: stages.map(|s| s.map(|_| TextureDim::D2)),
@@ -300,9 +392,10 @@ pub fn program(combiner: &[u32; COMBINER_WORDS], stages: [Option<(u32, u32)>; 4]
         }
     }
     Ok(Program {
-        wgsl: format!("{}{}", ps.module(), VERTEX),
+        wgsl: format!("{}{}", ps.module(), if grid { GRID_VERTEX } else { VERTEX }),
         dims: ps.textures,
         pixel,
+        grid,
     })
 }
 
@@ -355,16 +448,204 @@ pub struct GlowTarget<'a> {
     pub size: (u32, u32),
 }
 
-/// The GPU side: compiled blocks (by their WGSL), the stand-ins for
-/// targets 7 and 8 (by size) and the sampler.
+/// Quads drawn through combiner blocks: each block translated once by its
+/// code ([`program_key`]), each translation compiled once by its WGSL,
+/// and the sampler every stage of these passes binds.
+#[derive(Default)]
+pub struct QuadDrawer {
+    programs: HashMap<(ProgramKey, bool), Program>,
+    compiled: HashMap<String, Compiled>,
+    sampler: Option<wgpu::Sampler>,
+}
+
+impl QuadDrawer {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// `combiner`'s program with `stages` bound ([`program`]), its
+    /// translation shared with every block of the same code.
+    pub fn program(&mut self, combiner: &[u32; COMBINER_WORDS], stages: [Option<(u32, u32)>; 4]) -> Result<Program, String> {
+        self.cached(combiner, stages, false)
+    }
+
+    /// [`Self::program`] for a grid's strips ([`grid_program`]).
+    pub fn grid_program(&mut self, combiner: &[u32; COMBINER_WORDS], stages: [Option<(u32, u32)>; 4]) -> Result<Program, String> {
+        self.cached(combiner, stages, true)
+    }
+
+    fn cached(&mut self, combiner: &[u32; COMBINER_WORDS], stages: [Option<(u32, u32)>; 4], grid: bool) -> Result<Program, String> {
+        let key = (program_key(combiner, stages), grid);
+        if let Some(p) = self.programs.get(&key) {
+            return Ok(with_constants(p.clone(), combiner));
+        }
+        let p = translate(combiner, stages, grid)?;
+        if self.programs.len() >= 256 {
+            self.programs.clear();
+        }
+        self.programs.insert(key, p.clone());
+        Ok(p)
+    }
+
+    /// Records one quad of `program` with `quad`'s vertex uniforms into
+    /// `dest` (format `format`, blended by `blend`), each sampled stage
+    /// `n` reading `stages[n]`, the rest of `dest` kept.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        program: &Program,
+        quad: &Quad,
+        dest: &wgpu::TextureView,
+        format: wgpu::TextureFormat,
+        blend: Option<Blend>,
+        stages: [Option<&wgpu::TextureView>; 4],
+    ) {
+        self.record(device, encoder, program, bytemuck::bytes_of(quad), None, (dest, format, blend), stages);
+    }
+
+    /// Records a grid's `strips` (`screen_gpu::StripVertex`, each a
+    /// triangle strip) of a [`grid_program`] into `dest` (`frame` its
+    /// size), as [`Self::draw`] does a quad.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_grid(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        program: &Program,
+        frame: &GridFrame,
+        strips: &[Vec<StripVertex>],
+        dest: &wgpu::TextureView,
+        format: wgpu::TextureFormat,
+        blend: Option<Blend>,
+        stages: [Option<&wgpu::TextureView>; 4],
+    ) {
+        self.record(device, encoder, program, bytemuck::bytes_of(frame), Some(strips), (dest, format, blend), stages);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn record(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        program: &Program,
+        vertex_uniform: &[u8],
+        strips: Option<&[Vec<StripVertex>]>,
+        (dest, format, blend): (&wgpu::TextureView, wgpu::TextureFormat, Option<Blend>),
+        stages: [Option<&wgpu::TextureView>; 4],
+    ) {
+        let sampler = self.sampler.get_or_insert_with(|| device.create_sampler(&sampler_descriptor())).clone();
+        let c = self.compiled.entry(program.wgsl.clone()).or_insert_with(|| compile(device, program));
+        let (module, layout) = (&c.module, &c.layout);
+        c.pipelines.entry((format, blend)).or_insert_with(|| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("native glow"),
+                layout: Some(layout),
+                vertex: wgpu::VertexState {
+                    module,
+                    entry_point: Some("vs_main"),
+                    compilation_options: Default::default(),
+                    buffers: if program.grid { &STRIP_LAYOUT[..] } else { &[] },
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleStrip,
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module,
+                    entry_point: Some("fs_main"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: blend.map(Blend::state),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        });
+        let buffer = |label, bytes: &[u8], usage| {
+            use wgpu::util::DeviceExt;
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(label),
+                contents: bytes,
+                usage,
+            })
+        };
+        let all: Vec<StripVertex> = strips.unwrap_or_default().iter().flatten().copied().collect();
+        if strips.is_some() && all.is_empty() {
+            return;
+        }
+        let quad = buffer("native glow vertex", vertex_uniform, wgpu::BufferUsages::UNIFORM);
+        let pixel = buffer("native glow pixel", &program.pixel.to_bytes(), wgpu::BufferUsages::UNIFORM);
+        let uniforms = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("native glow uniforms"),
+            layout: &c.uniforms_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: quad.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: pixel.as_entire_binding() },
+            ],
+        });
+        let mut entries = Vec::new();
+        for (n, d) in program.dims.iter().enumerate() {
+            let (Some(_), Some(view)) = (d, stages[n]) else { continue };
+            entries.push(wgpu::BindGroupEntry {
+                binding: 2 * n as u32,
+                resource: wgpu::BindingResource::TextureView(view),
+            });
+            entries.push(wgpu::BindGroupEntry {
+                binding: 2 * n as u32 + 1,
+                resource: wgpu::BindingResource::Sampler(&sampler),
+            });
+        }
+        let textures = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("native glow textures"),
+            layout: &c.textures_layout,
+            entries: &entries,
+        });
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("native glow"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: dest,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&c.pipelines[&(format, blend)]);
+        pass.set_bind_group(0, &uniforms, &[]);
+        pass.set_bind_group(1, &textures, &[]);
+        match strips {
+            None => pass.draw(0..4, 0..1),
+            Some(strips) => {
+                let vertices = buffer("native glow grid", bytemuck::cast_slice(&all), wgpu::BufferUsages::VERTEX);
+                pass.set_vertex_buffer(0, vertices.slice(..));
+                for r in strip_ranges(strips) {
+                    pass.draw(r, 0..1);
+                }
+            }
+        }
+    }
+}
+
+/// The GPU side: the quads ([`QuadDrawer`]) and the stand-ins for
+/// targets 7 and 8 (by size).
 #[derive(Default)]
 pub struct GpuGlow {
-    /// Each block translated once (the colour pass draws a few, every
-    /// frame).
-    programs: HashMap<ProgramKey, Program>,
-    compiled: HashMap<String, Compiled>,
+    quads: QuadDrawer,
     small: Option<((u32, u32), [wgpu::TextureView; 2])>,
-    sampler: Option<wgpu::Sampler>,
 }
 
 /// Why [`GpuGlow::encode`] drew nothing.
@@ -429,19 +710,7 @@ impl GpuGlow {
         let mut programs = Vec::with_capacity(plan.draws.len());
         for d in &plan.draws {
             let stages = d.stages.map(|s| s.map(|s| plan.size(s)));
-            let key = program_key(&d.combiner, stages);
-            let p = match self.programs.get(&key) {
-                Some(p) => with_constants(p.clone(), &d.combiner),
-                None => {
-                    let p = program(&d.combiner, stages).map_err(Refused::Program)?;
-                    if self.programs.len() >= 256 {
-                        self.programs.clear();
-                    }
-                    self.programs.insert(key, p.clone());
-                    p
-                }
-            };
-            programs.push(p);
+            programs.push(self.quads.program(&d.combiner, stages).map_err(Refused::Program)?);
         }
         for (draw, program) in plan.draws.iter().zip(&programs) {
             let reads_dest = (0..4).any(|n| program.dims[n].is_some() && draw.stages[n] == Some(draw.dest));
@@ -472,7 +741,6 @@ impl GpuGlow {
             };
             self.small = Some((small, [make("native glow 7"), make("native glow 8")]));
         }
-        let sampler = self.sampler.get_or_insert_with(|| device.create_sampler(&sampler_descriptor())).clone();
         let Some((_, [down, other])) = &self.small else { return Ok(()) };
         let view_of = |s: Surface| match s {
             Surface::View => t.color,
@@ -481,94 +749,8 @@ impl GpuGlow {
         };
         for (draw, program) in plan.draws.iter().zip(&programs) {
             let format = if draw.dest == Surface::View { t.color_format } else { SMALL_FORMAT };
-            let c = self.compiled.entry(program.wgsl.clone()).or_insert_with(|| compile(device, program));
-            let (module, layout) = (&c.module, &c.layout);
-            c.pipelines.entry((format, draw.blend)).or_insert_with(|| {
-                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                    label: Some("native glow"),
-                    layout: Some(layout),
-                    vertex: wgpu::VertexState {
-                        module,
-                        entry_point: Some("vs_main"),
-                        compilation_options: Default::default(),
-                        buffers: &[],
-                    },
-                    primitive: wgpu::PrimitiveState {
-                        topology: wgpu::PrimitiveTopology::TriangleStrip,
-                        cull_mode: None,
-                        ..Default::default()
-                    },
-                    depth_stencil: None,
-                    multisample: wgpu::MultisampleState::default(),
-                    fragment: Some(wgpu::FragmentState {
-                        module,
-                        entry_point: Some("fs_main"),
-                        compilation_options: Default::default(),
-                        targets: &[Some(wgpu::ColorTargetState {
-                            format,
-                            blend: draw.blend.map(Blend::state),
-                            write_mask: wgpu::ColorWrites::ALL,
-                        })],
-                    }),
-                    multiview_mask: None,
-                    cache: None,
-                })
-            });
-            let buffer = |label, bytes: &[u8]| {
-                use wgpu::util::DeviceExt;
-                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some(label),
-                    contents: bytes,
-                    usage: wgpu::BufferUsages::UNIFORM,
-                })
-            };
-            let quad = buffer("native glow quad", bytemuck::bytes_of(&plan.quad(draw)));
-            let pixel = buffer("native glow pixel", &program.pixel.to_bytes());
-            let uniforms = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("native glow uniforms"),
-                layout: &c.uniforms_layout,
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: quad.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: pixel.as_entire_binding() },
-                ],
-            });
-            let mut entries = Vec::new();
-            for (n, d) in program.dims.iter().enumerate() {
-                let (Some(_), Some(s)) = (d, draw.stages[n]) else { continue };
-                entries.push(wgpu::BindGroupEntry {
-                    binding: 2 * n as u32,
-                    resource: wgpu::BindingResource::TextureView(view_of(s)),
-                });
-                entries.push(wgpu::BindGroupEntry {
-                    binding: 2 * n as u32 + 1,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                });
-            }
-            let textures = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("native glow textures"),
-                layout: &c.textures_layout,
-                entries: &entries,
-            });
-            let mut pass = t.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("native glow"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: view_of(draw.dest),
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pass.set_pipeline(&c.pipelines[&(format, draw.blend)]);
-            pass.set_bind_group(0, &uniforms, &[]);
-            pass.set_bind_group(1, &textures, &[]);
-            pass.draw(0..4, 0..1);
+            let stages = draw.stages.map(|s| s.map(view_of));
+            self.quads.draw(device, &mut *t.encoder, program, &plan.quad(draw), view_of(draw.dest), format, draw.blend, stages);
         }
         Ok(())
     }
@@ -689,6 +871,19 @@ mod tests {
         assert!(q.taps[1..].iter().all(|t| t[0] == 0.0 && t[1] == 0.0), "no taps past the count");
     }
 
+    /// A quad into any target (a screen effect's convolution): its stages'
+    /// sizes over the target's.
+    #[test]
+    fn a_quad_into_any_target_scales_by_its_stages() {
+        let q = quad([0.0, 0.0, 640.0, 480.0], [-0.5, 0.5], (320, 240), [Some((640, 480)), None, None, None], 1, 2.0);
+        assert_eq!(q.corners, [0.0, 0.0, 640.0, 480.0]);
+        assert_eq!(q.dest, [2.0 / 320.0, 2.0 / 240.0, 0.0, 0.0]);
+        assert_eq!(q.taps[0], [-1.0, -1.0, 2.0, 2.0]);
+        assert_eq!(q.taps[1], [0.0, 0.0, 1.0, 1.0], "past the taps, nothing bound: the target's own size");
+        let d = draw(Surface::Down, Surface::View, 4, 0.5);
+        assert_eq!(plan().quad(&d), quad(plan().window, plan().signs, (160, 120), [Some((640, 480)); 4], 4, 0.5));
+    }
+
     /// A block's constants are uniforms: blocks differing only there share
     /// one translation, each with its own constants.
     #[test]
@@ -737,6 +932,25 @@ mod tests {
         assert_eq!(p.pixel.fog, psh::fog::Fog::OFF.uniform());
         let e = program(&words(&def), [None; 4]).unwrap_err();
         assert!(e.contains("nothing bound"), "{e}");
+    }
+
+    /// A wide convolution's grid: the same pixel side, the screen shader
+    /// taking each vertex's position and taps from its buffer.
+    #[test]
+    fn a_grid_compiles_with_its_vertices_as_inputs() {
+        let def = PixelShaderDef { texture_modes: 1, ..Default::default() };
+        let stages = [Some((640, 480)), None, None, None];
+        let (q, g) = (program(&words(&def), stages).unwrap(), grid_program(&words(&def), stages).unwrap());
+        shaders::validate(&g.wgsl).expect("valid WGSL");
+        assert!(g.grid && !q.grid);
+        assert!(g.wgsl.contains("@location(4) t3") && !q.wgsl.contains("GridIn"));
+        assert_eq!(g.pixel.to_bytes(), q.pixel.to_bytes(), "the pixel side is the quad's");
+        assert_eq!(g.dims, q.dims);
+        assert_eq!(GridFrame::of((320, 240)).dest, [2.0 / 320.0, 2.0 / 240.0, 0.0, 0.0]);
+        assert_eq!(std::mem::size_of::<StripVertex>(), 5 * 16, "five vec4f, locations 0..4");
+        let mut drawer = QuadDrawer::new();
+        let (dq, dg) = (drawer.program(&words(&def), stages).unwrap(), drawer.grid_program(&words(&def), stages).unwrap());
+        assert!(dg.grid && !dq.grid, "cached apart");
     }
 
     #[test]
