@@ -902,10 +902,11 @@ vector (`v1`) and view vector (`v0`), and the lightmap (stage 3). Its
 5. The A/B per template, and `native-world` keeps a material native only
    once its template's A/B is clean.
 
-### Native layer 1
+### Native opaque layers
 
 `impl.render.native_world_layers=on` allows the standard geometry
-handler's main-scene layer-1 indexed ranges to record natively. The layer
+handler's main-scene indexed ranges in layers 1, 5, 7, 8 and the
+combined materials in layer 3 to record natively. The layer
 hook identifies the scene call and the indexed submission identifies the
 individual cluster, placement or object record. The guest still builds
 and sorts the list and runs its shader and stencil setup and tail. At
@@ -921,6 +922,13 @@ live target copy before replacing the D3D submission. Color and
 depth/stencil writes use the original attachments and feed the usual
 RTT and depth tracking. Alternate views and special handlers remain
 with their own D3D setup.
+
+The layer-3 replacement uses the texture view from the resolved
+D3D draw. It also pins target 1's colour attachment and resolves the
+engine texture 3 header through the RTT path. All three views must
+hold the same GPU texture on each live copy. The guest dimensions
+must agree and the texture must use linear texel addressing. This works
+with either owner of layer 1, because both write the same attachment.
 
 This slice replaces the backend draw. Its CPU cost includes the guest
 setup and D3D resource resolution. Geometry snapshots can reuse native
@@ -949,9 +957,12 @@ both headers and the texture's guest size, whether the draw wrote to
 that attachment and which stages bound the texture header. An
 `in_place_sample` line names the actual backend surface and texture ID,
 which can be paired with the indexed draw's `texture_ids`. Equal guest
-dimensions alone do not establish the same target. The diagnostic keeps
-every guest draw. Frame and pass color checks use the agent API
-(`render.frame` and `render.stats`).
+dimensions alone do not establish the same target. Native
+`recorded` lines show the replacement recorded on each physical copy.
+The native stage suppression counters show committed draws. Use
+`H2_NATIVE_WORLD_LAYERS_OWNERS=world` or `objects` with the switch on
+to compare mixed ownership. The default is `all`. Frame and pass color
+checks use the agent API (`render.frame` and `render.stats`).
 
 ### Scene and exceptional draw sites
 

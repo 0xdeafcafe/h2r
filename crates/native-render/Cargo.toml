@@ -30,5 +30,6 @@ ir = { workspace = true, optional = true }
 lift = { workspace = true, optional = true }
 
 [dev-dependencies]
+timeline = { path = "../timeline" }
 gfx = { path = "../gfx" }
 pollster = "1"

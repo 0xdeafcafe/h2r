@@ -18,6 +18,8 @@ use gfx::vertex::PrimitiveType;
 use shaders::{psh::PixelUniforms, vsh::VertexUniforms};
 use wgpu::util::DeviceExt;
 
+use crate::world_layers::Texaccum;
+
 const CACHE_BUDGET: u64 = 64 * 1024 * 1024;
 
 #[derive(Default)]
@@ -83,7 +85,7 @@ pub struct IndexedPass {
     cache: Arc<Cache>,
     frame: u64,
     fetch: FetchMode,
-    texaccum: Option<u32>,
+    texaccum: Option<Texaccum>,
     texaccum_stages: [bool; 4],
     made: [Option<Prepared>; 2],
 }
@@ -103,7 +105,7 @@ impl IndexedPass {
         draw: &ResolvedDraw,
         cache: Arc<Cache>,
         frame: u64,
-        texaccum: Option<u32>,
+        texaccum: Option<Texaccum>,
     ) -> Option<Self> {
         let indices = draw.indices.as_ref()?;
         if indices.len() < 3
@@ -125,7 +127,7 @@ impl IndexedPass {
             texaccum,
             texaccum_stages: draw
                 .textures
-                .map(|header| texaccum.is_some() && header == texaccum),
+                .map(|header| texaccum.is_some_and(|t| header == Some(t.texture))),
             made: [None, None],
         })
     }
@@ -199,10 +201,20 @@ impl IndexedPass {
             {
                 return None;
             }
-            if self.texaccum_stages[n]
-                && view.texture() != target.sampled.first()?.as_ref()?.view.texture()
-            {
-                return None;
+            if self.texaccum_stages[n] {
+                let accum = self.texaccum?;
+                let info = draw.texture_info[n]?;
+                let sampled = target.sampled.first()?.as_ref()?;
+                let source = target.slots.first()?.as_ref()?;
+                if (info.width, info.height) != accum.size
+                    || info.format.layout() != gfx::format::Layout::Linear
+                    || source.guest_size != accum.size
+                    || source.size != sampled.size
+                    || source.sample.texture() != sampled.view.texture()
+                    || source.sample.texture() != view.texture()
+                {
+                    return None;
+                }
             }
         }
         // A header that was bound but unreferenced does not establish
@@ -313,7 +325,7 @@ impl ExternalPass for IndexedPass {
     fn encode(&mut self, _target: ExternalTarget<'_>) {}
 
     fn sampled(&self) -> Vec<u32> {
-        self.texaccum.into_iter().collect()
+        self.texaccum.iter().map(|target| target.texture).collect()
     }
 
     fn writes(&self) -> ExternalWrites {

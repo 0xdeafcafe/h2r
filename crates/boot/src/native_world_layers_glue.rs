@@ -4,8 +4,8 @@ use std::cell::Cell;
 use std::sync::Arc;
 
 use d3d::backend::{
-    DrawAdmission, DrawSnapshot, ExternalPass, ExternalPlan, ExternalTarget, ExternalWrites,
-    ResolvedDraw,
+    DrawAdmission, DrawSnapshot, ExternalPass, ExternalPlan, ExternalSlot, ExternalTarget,
+    ExternalWrites, ResolvedDraw,
 };
 use d3d::shader::VertexProcessing;
 use feature::native_world_layers::{Layer, compare_frames, current};
@@ -58,7 +58,7 @@ pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(
         return;
     }
     if native && let Ok(mut device) = device.lock() {
-        device.add_draw_admission(Arc::new(Admission::default()));
+        device.add_draw_admission(Arc::new(Admission::new()));
     }
     rt.edit_dispatch(|dispatch| {
         let index = DRAW_INDEXED_VERTICES;
@@ -119,9 +119,39 @@ pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(
     });
 }
 
-#[derive(Default)]
 struct Admission {
     cache: Arc<Cache>,
+    owners: Owners,
+}
+
+enum Owners {
+    All,
+    World,
+    Objects,
+    None,
+}
+
+impl Admission {
+    fn new() -> Self {
+        let owners = match std::env::var("H2_NATIVE_WORLD_LAYERS_OWNERS")
+            .ok()
+            .as_deref()
+        {
+            None | Some("all") => Owners::All,
+            Some("world") => Owners::World,
+            Some("objects") => Owners::Objects,
+            Some(_) => {
+                eprintln!(
+                    "native-world-layers: H2_NATIVE_WORLD_LAYERS_OWNERS wants all, world or objects"
+                );
+                Owners::None
+            }
+        };
+        Self {
+            cache: Arc::default(),
+            owners,
+        }
+    }
 }
 
 impl DrawAdmission for Admission {
@@ -131,28 +161,58 @@ impl DrawAdmission for Admission {
         let layer = c.layer;
         let draw = snapshot.draw;
         if layer.site != Site::Scene
-            || layer.number != 1
             || layer.list == 0
             || draw.entry != "D3DDevice_DrawIndexedVertices"
             || c.index_count? as usize != draw.indices.as_ref()?.len()
         {
             return None;
         }
-        let accum = layer.texaccum?;
-        if accum.surface? != snapshot.color_header {
-            return None;
-        }
+        let mut slots = Vec::new();
+        let texaccum = match layer.number {
+            1 => {
+                let target = layer.texaccum?;
+                if target.surface? != snapshot.color_header {
+                    return None;
+                }
+                None
+            }
+            3 => {
+                let target = layer.texaccum?;
+                let surface = target.surface?;
+                if surface == snapshot.color_header
+                    || !draw.textures.contains(&Some(target.texture))
+                {
+                    return None;
+                }
+                // Pin the layer-1 attachment separately from the lookup
+                // for engine texture 3. The GPU preflight checks both
+                // bindings resolve to that exact texture on each copy.
+                slots.push(Some(ExternalSlot {
+                    header: surface,
+                    written: false,
+                }));
+                Some(target)
+            }
+            5 | 7 | 8 => None,
+            _ => return None,
+        };
         let stage = match geometry.owner {
             Owner::Cluster(_) | Owner::Placement(_) => timeline::native::Stage::World,
             Owner::Object { .. } => timeline::native::Stage::Objects,
         };
-        let pass = IndexedPass::new(draw, Arc::clone(&self.cache), c.frame, None)?;
+        match (&self.owners, stage) {
+            (Owners::All, _)
+            | (Owners::World, timeline::native::Stage::World)
+            | (Owners::Objects, timeline::native::Stage::Objects) => {}
+            _ => return None,
+        }
+        let pass = IndexedPass::new(draw, Arc::clone(&self.cache), c.frame, texaccum)?;
         Some((
             ExternalPlan {
                 stage,
                 view: layer.view,
                 ranges: 1,
-                slots: Vec::new(),
+                slots,
             },
             Box::new(Replacement {
                 pass,
@@ -160,6 +220,7 @@ impl DrawAdmission for Admission {
                 geometry,
                 color: snapshot.color_header,
                 depth: snapshot.depth_header,
+                samples_texaccum: texaccum.is_some(),
             }),
         ))
     }
@@ -171,6 +232,7 @@ struct Replacement {
     geometry: Geometry,
     color: u32,
     depth: u32,
+    samples_texaccum: bool,
 }
 
 impl ExternalPass for Replacement {
@@ -193,13 +255,14 @@ impl ExternalPass for Replacement {
         let ranges = self.pass.record_ranges(target);
         if self.context.compare && ranges != 0 {
             eprintln!(
-                "native-world-layers: recorded frame={} layer={} view={} geometry={:?} copy={copy:?} size={size:?} guest={:#010x}/{:#010x}",
+                "native-world-layers: recorded frame={} layer={} view={} geometry={:?} copy={copy:?} size={size:?} guest={:#010x}/{:#010x} samples_texaccum={}",
                 self.context.frame,
                 self.context.layer.number,
                 self.context.layer.view,
                 self.geometry,
                 self.color,
-                self.depth
+                self.depth,
+                self.samples_texaccum,
             );
         }
         ranges

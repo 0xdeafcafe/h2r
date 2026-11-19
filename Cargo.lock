@@ -3848,6 +3848,7 @@ dependencies = [
  "pollster",
  "shaders",
  "tags",
+ "timeline",
  "wgpu",
  "xbe",
 ]
