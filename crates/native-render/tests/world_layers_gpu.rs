@@ -436,3 +436,51 @@ fn queued_world_draws_choose_native_or_d3d_in_order_without_waiting() {
         [(0, None), (1, Some(Ok(DrawOutcome::Drawn))), (2, None)]
     );
 }
+
+#[test]
+fn uncached_world_geometry_shares_one_upload_and_one_pass() {
+    let Ok(ctx) = GfxContext::headless() else {
+        return;
+    };
+    let mut backend = GfxBackend::new(ctx);
+    backend.set_merge_passes(true);
+    backend.set_merge_masks(true);
+    let color = backend.create_surface(FORMAT, SIZE, SIZE, false).unwrap();
+    let depth = backend.create_surface(DEPTH, SIZE, SIZE, true).unwrap();
+    let surfaces = ExternalSurfaces {
+        color,
+        depth,
+        sampled: vec![],
+        slots: vec![],
+        slot_sizes: vec![],
+    };
+    let cache = Arc::new(Cache::default());
+    let before = gfx::churn::snapshot();
+    let passes = backend.batch_stats().render_passes;
+    backend.clear(color, Some(depth), Clear::all([0.0; 4])).unwrap();
+    for i in 0..8 {
+        let x = if i % 2 == 0 { 2.0 } else { 18.0 };
+        let mut draw = triangle(x, [1.0, f32::from(i as u8 % 2), 0.0, 1.0], 1, false);
+        draw.state.render.depth_func = CompareFunc::Always;
+        assert!(draw.streams.iter().all(|s| s.data.cache_id().is_none()));
+        assert!(draw.indices.as_ref().unwrap().cache_id().is_none());
+        if i == 7 {
+            // One guest range can have multiple clip pieces and still counts
+            // as one complete reservation with the same staged buffers.
+            draw.clip_rects = vec![
+                PixelRect { x: 16, y: 0, width: 8, height: SIZE },
+                PixelRect { x: 24, y: 0, width: 8, height: SIZE },
+            ];
+        }
+        assert!(record(&mut backend, surfaces.clone(), &draw, [None; 4], &cache));
+    }
+    backend.flush().unwrap();
+    let churn = gfx::churn::snapshot() - before;
+    assert_eq!(churn.buffers_created, 1);
+    assert_eq!(churn.queue_writes, 1);
+    assert_eq!(backend.batch_stats().render_passes - passes, 1);
+    let pixels = backend.read_color(color).unwrap().0;
+    let pixel = |x: usize| &pixels[4 * (4 * SIZE as usize + x)..][..4];
+    assert_eq!(pixel(4), [255, 0, 0, 255]);
+    assert_eq!(pixel(20), [255, 255, 0, 255]);
+}

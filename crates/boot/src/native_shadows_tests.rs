@@ -204,7 +204,6 @@ fn layer11_uses_only_its_map_and_preserves_rgb_stencil_and_alpha_test() {
         let range = Range {
             gpu: gpu.clone(),
             draw: Arc::new(d),
-            run: 0,
             recorded: None,
             map: Some((Arc::new(Mutex::new(Some(map.clone()))), MapKind::Depth, MAP)),
         };
@@ -272,7 +271,7 @@ fn mixed_native_shadow_unshadowed_and_refused_d3d_lights_match_all_d3d() {
         size: (1, 1),
         view: lit.texture.create_view(&Default::default()),
     };
-    let render = |backend: &mut GfxBackend, native: bool| {
+    let render = |backend: &mut GfxBackend, native: bool, snapshot: bool| {
         let before = backend.batch_stats().render_passes;
         let color = backend
             .create_surface(D3DFormat::A8R8G8B8, 16, 16, false)
@@ -309,7 +308,14 @@ fn mixed_native_shadow_unshadowed_and_refused_d3d_lights_match_all_d3d() {
             surface_size: (16, 16),
             z_scale: 16_777_215.0,
         };
+        let mut captured = None;
         for (i, original) in [&lit, &lit, &gel, &dark, &lit].into_iter().enumerate() {
+            if i == 3 && snapshot {
+                let submits = backend.batch_stats().submits;
+                captured = backend.snapshot_surface(color, false).unwrap();
+                assert!(captured.is_some());
+                assert_eq!(backend.batch_stats().submits, submits);
+            }
             let mut draw = receiver();
             draw.clip = Some(d3d::PixelRect {
                 // The D3D gel overwrites the second native receiver.
@@ -330,7 +336,6 @@ fn mixed_native_shadow_unshadowed_and_refused_d3d_lights_match_all_d3d() {
                     gpu: gpu.clone(),
                     draw: Arc::new(draw.clone()),
                     map: Some((output, MapKind::Depth, MAP)),
-                    run: 0,
                     recorded: None,
                 };
                 let commands = backend
@@ -369,21 +374,27 @@ fn mixed_native_shadow_unshadowed_and_refused_d3d_lights_match_all_d3d() {
             );
         }
         backend.flush().unwrap();
-        if native {
-            // Clear, the first two receivers in one pass, the gel draw,
-            // the refused receiver's D3D fallback, and the final receiver.
-            // Attachment preflight encodes the pending gel before it
-            // discovers the missing shadow map, splitting the D3D draws.
-            assert_eq!(backend.batch_stats().render_passes - before, 5);
+        // The clear, receivers, intervening D3D gel and refused receiver
+        // share a pass. A snapshot of those pixels is a real ordering boundary.
+        assert_eq!(backend.batch_stats().render_passes - before, 1 + u64::from(snapshot));
+        if let Some(captured) = captured {
+            let pixels = gfx::readback::read_texture(
+                &ctx, &captured.texture, wgpu::TextureAspect::All, 4, (16, 16),
+            );
+            for (x, alpha) in [(1, 255), (5, 128), (9, 64), (13, 64)] {
+                assert_eq!(pixels[(16 + x) * 4 + 3], alpha);
+            }
         }
         backend.store.read_color(&ctx, color).unwrap().0
     };
     backend.set_merge_passes(true);
     backend.set_merge_discards(true);
     backend.set_merge_masks(true);
-    let expected = render(&mut backend, false);
-    let actual = render(&mut backend, true);
+    backend.set_defer_side_passes(true);
+    let expected = render(&mut backend, false, false);
+    let actual = render(&mut backend, true, false);
     assert_eq!(actual, expected);
+    assert_eq!(render(&mut backend, true, true), expected);
     for (x, alpha) in [(1, 255), (5, 128), (9, 0), (13, 255)] {
         assert_eq!(actual[(16 + x) * 4 + 3], alpha);
     }

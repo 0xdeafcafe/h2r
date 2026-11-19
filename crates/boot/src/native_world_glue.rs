@@ -129,76 +129,89 @@ pub(crate) enum Load {
 pub struct Glue<B: d3d::backend::Backend + Send + 'static> {
     device: d3d::abi::SharedDevice<B>,
     state: State,
+    ordered_scene_world: bool,
 }
 
-impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
-    fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, camera: &RenderCamera, plan: &StencilPlan) -> Option<native_render::skip::Cleared> {
+impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
+    fn ready(&self, mem: &dyn GuestMemory, bsp: u32) -> Option<Arc<Ready>> {
         let name = crate::health::loaded_map_name(mem).ok()?;
         if name.is_empty() || bsp == 0 {
             return None;
         }
         let index = active_bsp_index(mem)?;
         let key = (name, bsp, index);
-        let ready = 'ready: {
-            {
-                let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
-                if st.0.as_ref() == Some(&key) {
-                    match &st.1 {
-                        Load::Ready(r) => break 'ready Arc::clone(r),
-                        Load::Idle | Load::Loading | Load::Failed => return None,
-                    }
+        {
+            let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            if st.0.as_ref() == Some(&key) {
+                return match &st.1 {
+                    Load::Ready(r) => Some(Arc::clone(r)),
+                    Load::Idle | Load::Loading | Load::Failed => None,
+                };
+            }
+            *st = (Some(key.clone()), Load::Loading);
+        }
+        // The palettes bound now, for the stage bitmaps that are
+        // palettized (P8, P8 bump): the D3D path samples them through
+        // the device's palette at their stage, which the load expands
+        // them through. Read with no other lock held.
+        let palettes = self.device.lock().ok().map(|d| stage_palettes(&d, mem)).unwrap_or_default();
+        let state = Arc::clone(&self.state);
+        std::thread::Builder::new()
+            .name("native-world load".into())
+            .spawn(move || {
+                let t0 = std::time::Instant::now();
+                let out = load_ready(&key.0, key.1, key.2, palettes);
+                let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
+                if st.0.as_ref() != Some(&key) {
+                    return;
                 }
-                *st = (Some(key.clone()), Load::Loading);
-            }
-            // The palettes bound now, for the stage bitmaps that are
-            // palettized (P8, P8 bump): the D3D path samples them through
-            // the device's palette at their stage, which the load expands
-            // them through. Read with no other lock held.
-            let palettes = self.device.lock().ok().map(|d| stage_palettes(&d, mem)).unwrap_or_default();
-            {
-                let state = Arc::clone(&self.state);
-                std::thread::Builder::new()
-                    .name("native-world load".into())
-                    .spawn(move || {
-                        let t0 = std::time::Instant::now();
-                        let out = load_ready(&key.0, key.1, key.2, palettes);
-                        let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
-                        if st.0.as_ref() != Some(&key) {
-                            return;
-                        }
-                        st.1 = match out {
-                            Ok(r) => {
-                                // One guard, dropped before the print: two
-                                // `lock()`s in the macro's arguments both live
-                                // to the statement's end, and the second
-                                // waited on the first forever (with `state`
-                                // held, so the render thread's next ask hung).
-                                let (draws, batches) = {
-                                    let cpu = r.cpu.lock().unwrap_or_else(|e| e.into_inner());
-                                    cpu.as_ref().map_or((0, 0), |c| (c.world.draws.len(), c.world.batches.len()))
-                                };
-                                eprintln!(
-                                    "native-world: {} BSP {} at {:#010x}: {} draws in {} batches, {} parts native, in {:.1} s",
-                                    key.0,
-                                    key.2,
-                                    key.1,
-                                    draws,
-                                    batches,
-                                    r.parts.len(),
-                                    t0.elapsed().as_secs_f32()
-                                );
-                                Load::Ready(Arc::new(r))
-                            }
-                            Err(e) => {
-                                eprintln!("native-world: {} BSP {} at {:#010x}: not loaded ({e}); the D3D path draws it", key.0, key.2, key.1);
-                                Load::Failed
-                            }
+                st.1 = match out {
+                    Ok(r) => {
+                        // One guard, dropped before the print: two
+                        // `lock()`s in the macro's arguments both live
+                        // to the statement's end, and the second
+                        // waited on the first forever (with `state`
+                        // held, so the render thread's next ask hung).
+                        let (draws, batches) = {
+                            let cpu = r.cpu.lock().unwrap_or_else(|e| e.into_inner());
+                            cpu.as_ref().map_or((0, 0), |c| (c.world.draws.len(), c.world.batches.len()))
                         };
-                    })
-                    .ok()?;
-                return None;
-            }
-        };
+                        eprintln!(
+                            "native-world: {} BSP {} at {:#010x}: {} draws in {} batches, {} parts native, in {:.1} s",
+                            key.0,
+                            key.2,
+                            key.1,
+                            draws,
+                            batches,
+                            r.parts.len(),
+                            t0.elapsed().as_secs_f32()
+                        );
+                        Load::Ready(Arc::new(r))
+                    }
+                    Err(e) => {
+                        eprintln!("native-world: {} BSP {} at {:#010x}: not loaded ({e}); the D3D path draws it", key.0, key.2, key.1);
+                        Load::Failed
+                    }
+                };
+            })
+            .ok()?;
+        None
+    }
+}
+
+impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
+    fn use_resolved_scene(&self, mem: &dyn GuestMemory, bsp: u32) -> bool {
+        if !self.ordered_scene_world || Diagnostics::get().requires_mask_pass() {
+            return false;
+        }
+        // Keep the BSP load for lights, water and fog. The opaque draw
+        // itself will use the live range and keep its queued D3D fallback.
+        let _ = self.ready(mem, bsp);
+        true
+    }
+
+    fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, camera: &RenderCamera, plan: &StencilPlan) -> Option<native_render::skip::Cleared> {
+        let ready = self.ready(mem, bsp)?;
         let mut d = self.device.lock().ok()?;
         if !d.can_external_pass() || !d.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)).ok()? {
             return None;
@@ -285,9 +298,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
 /// Installs the world host and the other native stages on the device.
 pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
     let state: State = Arc::new(Mutex::new((None, Load::Idle)));
+    let switches = feature::Switches::from_env().unwrap_or_default();
     feature::native_world::set_host(Arc::new(Glue {
         device: Arc::clone(device),
         state: Arc::clone(&state),
+        ordered_scene_world: crate::native_world_layers_glue::owns_scene_world(&switches),
     }));
     crate::native_transparents_glue::install(device);
     crate::native_fog_glue::install(device, Arc::clone(&state));
@@ -557,6 +572,11 @@ pub(crate) struct Probe {
 }
 
 impl Diagnostics {
+    fn requires_mask_pass(&self) -> bool {
+        self.trace || self.no_cull || self.probe.is_some() || self.owners != Owners::All
+            || self.dump.is_some() || self.inherit_cull != (true, true) || self.trace_every != TRACE_EVERY
+    }
+
     fn get() -> Self {
         static D: std::sync::OnceLock<Diagnostics> = std::sync::OnceLock::new();
         *D.get_or_init(|| {
@@ -570,7 +590,7 @@ impl Diagnostics {
                 dump: std::env::var("H2_NATIVE_WORLD_DUMP").ok().and_then(|v| parse_dump(&v)),
                 inherit_cull: parse_inherit_cull(std::env::var("H2_NATIVE_WORLD_INHERIT_CULL").ok().as_deref()),
             };
-            if d.trace || d.no_cull || d.probe.is_some() || d.owners != Owners::All || d.dump.is_some() || d.inherit_cull != (true, true) || d.trace_every != TRACE_EVERY {
+            if d.requires_mask_pass() {
                 eprintln!("native-world: diagnostics {d:?}");
             }
             d

@@ -98,7 +98,6 @@ pub(crate) struct Range {
     pub(crate) gpu: SharedGpu,
     pub(crate) draw: Arc<ResolvedDraw>,
     pub(crate) map: Option<(Output, MapKind, u32)>,
-    pub(crate) run: u64,
     pub(crate) recorded: Option<Arc<std::sync::atomic::AtomicUsize>>,
 }
 
@@ -286,7 +285,7 @@ impl d3d::ExternalPass for Range {
         if let Some(count) = &self.recorded {
             count.fetch_add(packets.len(), std::sync::atomic::Ordering::Relaxed);
         }
-        Some(Ok(ExternalDraws { run: self.run, packets, discards }))
+        Some(Ok(ExternalDraws { ranges: packets.len(), packets, discards }))
     }
 }
 

@@ -240,7 +240,9 @@ impl SubmissionUploads {
         let ring = guard.get_or_insert_with(|| {
             self.0.pool.0.lock().unwrap_or_else(|e| e.into_inner()).pop().unwrap_or_else(|| SubmissionRing {
                 upload: UploadRing::new(device, "native submission uploads",
-                    wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::UNIFORM, 256 << 10),
+                    wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::UNIFORM
+                        | wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::INDEX,
+                    256 << 10),
                 uniform_groups: Vec::new(),
             })
         });
@@ -254,7 +256,8 @@ impl SubmissionUploads {
     }
 
     /// Allocate immutable bytes for a run. Returns a COPY_SRC region usable in
-    /// this copy's encoder. A buffer is allocated only when a pass uploads data.
+    /// this copy's encoder or bound as vertices or indices. A buffer is
+    /// allocated only when a pass uploads data.
     pub fn stage(&self, device: &wgpu::Device, queue: &wgpu::Queue, bytes: &[u8]) -> (wgpu::Buffer, u64) {
         crate::churn::upload_bytes(bytes.len());
         self.with_ring(device, |r| r.upload.push(device, queue, bytes, 4))

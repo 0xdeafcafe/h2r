@@ -598,18 +598,10 @@ impl ExternalBundles {
 
 #[cfg(feature = "gpu")]
 pub struct ExternalDraws {
-    pub run: u64,
+    /// Guest ranges represented by the packets (a range may have several scissors).
+    pub ranges: usize,
     pub packets: Vec<gfx::RecordedDraw>,
     pub discards: bool,
-}
-
-#[cfg(feature = "gpu")]
-pub struct ExternalDrawTarget {
-    pub color: wgpu::TextureView,
-    pub color_format: wgpu::TextureFormat,
-    pub depth: Option<wgpu::TextureView>,
-    pub depth_format: Option<wgpu::TextureFormat>,
-    pub size: (u32, u32),
 }
 
 #[cfg(feature = "gpu")]
@@ -617,7 +609,6 @@ pub enum ExternalCommands {
     Standalone(wgpu::CommandBuffer),
     Draws {
         targets: (gfx::surface::SurfaceId, gfx::surface::SurfaceId),
-        target: ExternalDrawTarget,
         draws: ExternalDraws,
     },
     Bundles {
@@ -728,19 +719,10 @@ pub(crate) fn prepare_external_recordings<T: AsRef<[ExternalAttachments]>>(
         let mut on_submit = Vec::new();
         let (ranges, commands, valid) = match prepared {
             Prepared::Draws(draws) => {
-                let ranges = draws.packets.len();
-                let depth = target.targets.0 != target.targets.1;
-                let commands = ExternalCommands::Draws {
-                    targets: target.targets,
-                    target: ExternalDrawTarget {
-                        color: target.color.clone(), color_format: target.color_format,
-                        depth: depth.then(|| target.depth.clone()),
-                        depth_format: depth.then_some(target.depth_format),
-                        size: target.size,
-                    },
-                    draws,
-                };
-                (ranges, commands, true)
+                let ranges = draws.ranges;
+                let valid = ranges <= draws.packets.len()
+                    && !draws.packets.iter().any(gfx::RecordedDraw::counts_samples);
+                (ranges, ExternalCommands::Draws { targets: target.targets, draws }, valid)
             }
             Prepared::Commands(mut encoder) => {
                 let scope = check_recording.then(|| target.device.push_error_scope(wgpu::ErrorFilter::Validation));

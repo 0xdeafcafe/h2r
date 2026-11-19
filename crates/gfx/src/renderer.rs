@@ -409,6 +409,7 @@ pub struct Renderer {
 /// One draw, validated, with its pipeline built and its bytes staged in the
 /// renderer's upload rings: ready for [`Renderer::encode_pass`] on a target
 /// with the size and formats it was recorded for.
+#[derive(Clone)]
 pub struct RecordedDraw {
     /// Built on a compile worker if it was not cached; waited for (or built)
     /// when the draw is encoded.
@@ -440,6 +441,50 @@ pub struct RecordedDraw {
 }
 
 impl RecordedDraw {
+    /// Build an ordered packet from an already validated indexed pipeline and
+    /// its pinned bindings. The caller checks the target, buffer ranges and
+    /// pipeline compatibility before handing this packet to the backend.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepared_indexed(
+        key: &PipelineKey,
+        pipeline: Arc<PendingPipeline>,
+        vertex_buffers: Vec<(wgpu::Buffer, u64, u64)>,
+        indices: (wgpu::Buffer, u64, u64),
+        vertices: u32,
+        bind_groups: Vec<BoundGroup>,
+        render: &crate::state::RenderState,
+        size: (u32, u32),
+        scissor: ScissorRect,
+    ) -> Self {
+        Self {
+            pipeline,
+            vertex_buffers,
+            indices: Some(indices),
+            vertices,
+            builtin: None,
+            bind_groups,
+            viewport: DrawViewport::full(size.0, size.1),
+            scissor: scissor.intersect(ScissorRect::full(size.0, size.1)),
+            blend_constant: translate::blend_constant(render),
+            stencil_ref: u32::from(render.stencil.reference),
+            count: None,
+            new_pass: false,
+            state: Box::new((
+                key.shader,
+                key.primitive,
+                key.depth_stencil.clone(),
+                key.color_target.clone(),
+            )),
+        }
+    }
+
+    /// Reuse the pipeline and immutable buffer allocations for another
+    /// rectangle of the same validated draw.
+    pub fn with_scissor(mut self, scissor: ScissorRect, size: (u32, u32)) -> Self {
+        self.scissor = scissor.intersect(ScissorRect::full(size.0, size.1));
+        self
+    }
+
     /// Resolve the cached pipeline before an ordered replacement commits.
     pub fn pipeline_valid(&self) -> bool {
         self.pipeline.get().is_some()
