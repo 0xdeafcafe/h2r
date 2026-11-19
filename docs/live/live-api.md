@@ -180,7 +180,7 @@ animation they play:
 `name` is the animation's name in the unit's graph, `[a-z0-9_:-]{1,64}`;
 `frame` the frame in it, 0 to 32767, kept to a sixteenth.
 
-A frame may also carry `hits`, `bsp` and `machines`:
+A frame may also carry `hits`, `bsp`, `machines` and `machine_positions`:
 
 ```json
 "hits": [ { "from": "p0", "to": "90070007", "weapon": "battle_rifle",
@@ -188,7 +188,8 @@ A frame may also carry `hits`, `bsp` and `machines`:
 "bsp": 1,
 "machines": [ { "node": "scarab_0", "id": "90090009", "kind": "scarab",
                 "pos": [0.0, 0.0, 10.0], "forward": [1.0, 0.0, 0.0],
-                "up": [0.0, 0.0, 1.0], "position": 0.5 } ]
+                "up": [0.0, 0.0, 1.0] } ],
+"machine_positions": [ { "i": 7, "p": 128 } ]
 ```
 
 `hits` is the damage dealt since the previous frame, oldest first, at most
@@ -205,11 +206,20 @@ machines and other big scripted movers (doors, elevators, the scarab): those
 that moved since the previous frame, all of them in a game's first frame,
 at most 128. `node` is map.glb's `machines` child for it,
 `<tag stem>_<scenario placement index>`, absent when the scenario did not
-place it; `kind` the `mach` tag stem; `position` the device position, 0
-(closed, bottom) to 1. The server refuses unknown stances, actions and
-grenades, negative or non-finite speeds and amounts, more than 8 actions,
-64 hits or 128 machines, machine nodes outside `[a-z0-9_]{1,64}` and
-positions outside 0..1.
+place it. `kind` is the `mach` tag stem. Older frames may carry an
+additional `position` (0..1) on each entry.
+
+`machine_positions` gives the changed device travel values independently
+of the world poses. `i` is the scenario machine index (0..32767) and `p`
+is its position byte (0 closed or at the start, 255 fully open or at the
+end). Entries are sorted by index, at most 255, one per index. A packed v7
+keyframe is a complete baseline, including at a recorded chunk start.
+An omitted index on a keyframe has unknown travel. An omitted index on a
+delta holds the last value. A `cut` clears the preceding run's state.
+
+The server refuses unknown stances, actions and grenades, negative or
+non-finite speeds and amounts, more than 8 actions, 64 hits or 128 machine
+poses, invalid machine node names, and legacy positions outside 0..1.
 
 A frame may also carry `objects`, the scenario's placed objects that are
 not where the scenario put them (docs/live/live-telemetry.md, "Scenario
@@ -276,10 +286,8 @@ either side of it into it. Absent means false.
 Shots, actions and hits of frames that are dropped (the 15 Hz throttle, a
 full sink queue) go to the next delivered frame (`fire`, `actions_ago` and
 hits' `ago` placed again against that frame's tick, those older than they
-can say dropped, and a `cut` kept), and a recorded 1 Hz frame
-holds every one of them since the previous recorded frame (capped as
-above). A recorded frame also lists every machine the game has sent, at its
-latest state, so a replay can start at any second.
+can say dropped, and a `cut` kept), and a recorded frame holds the values admitted by the throttle. The first
+frame of a recorded chunk repeats the latest machine poses and travel.
 
 Campaign plays as one game per mission (mode `campaign`, no scores): a
 checkpoint revert or restart of the same mission continues it, and its
@@ -1551,6 +1559,29 @@ coverage = background: 1;  foreground: max(red, blue)
 colour for *a*, a second background colour for *b*). The masks were
 measured on the disc. Which profile colour fills which mask has not been
 confirmed against the game.
+
+**Composed emblem images.** `GET /art/emblem/{fg}-{bg}-{primary}-{secondary}-{tertiary}-{quaternary}.png`
+takes foreground (0–63) and background (0–31) layer numbers followed by
+four palette indices (0–255, wrapped to the palette length). For example,
+`/art/emblem/30-7-3-6-8-2.png` displays layers 30 and 7 with colours 3 and 6
+on the foreground and 8 and 2 on the background. The server uses the
+extraction's palette when it contains at least two valid colours and
+otherwise uses the web app's default 18 colours.
+
+The web client uses `s` plus eight lowercase hex digits for a seed-derived
+selector when an appearance field is absent. If a seeded colour depends
+on an overridden primary or tertiary, a final hyphen-separated field
+carries the original primary and tertiary hashes as 16 lowercase hex
+digits. A colour can also be an explicit `rRRGGBB` value with lowercase
+hex digits.
+
+The route redirects to the current revision's `?v=<revision>` URL, which
+returns a PNG at the background mask's pixel size. The foreground scales
+to fit it. Successful images with shared game art are served with
+`Cache-Control: public, max-age=31536000, immutable`. Loopback-only art
+keeps a private cache policy. Invalid specs return 400. Missing art,
+layers, or revisions return 404, and these replies are uncached. The same
+access rules apply as for `/art/game/*`.
 
 ## Clarifications (2026-11-15)
 

@@ -59,6 +59,7 @@ binding = "ASSETS"
 not_found_handling = "single-page-application"
 run_worker_first = [
     "/v1/*", "/.well-known/*", "/healthz", "/art/game", "/art/game/*",
+    "/art/emblem", "/art/emblem/*",
     "/", "/dash", "/dash/*", "/stats", "/stats/*", "/players", "/players/*",
     "/games", "/games/*", "/events", "/events/*", "/signin", "/signin/*",
 ]

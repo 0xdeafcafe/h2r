@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { BitReader, FrameDecoder, PackError, decodeKeyframe, fromBase64, records, recordedFrame, unoct } from "../src/api/pack";
+import { BitReader, FrameDecoder, PackError, decodeKeyframe, fromBase64, isMachineBaseline, records, recordedFrame, unoct } from "../src/api/pack";
+
+import type { Frame } from "../src/api/types";
 
 const dir = join(import.meta.dir, "fixtures", "pack");
 const load = (name: string) => ({
@@ -41,6 +43,42 @@ describe("packed frames", () => {
       expect(frames).toEqual(json);
     });
   }
+
+  test("mixed v7 machine records decode within each container boundary", () => {
+    const { bin, json } = load("v7-machine-positions");
+    const d = new FrameDecoder();
+    const frames: Frame[] = [];
+    d.forEachRecord(bin, (frame) => frames.push(frame));
+    expect(frames).toEqual(json);
+    expect(frames.map(isMachineBaseline)).toEqual([true, false, false, true, false, true, false, false]);
+
+    const rs = records(bin);
+    const seek = new FrameDecoder();
+    expect(seek.decode(rs[5]!).frame.machine_positions).toEqual([{ i: 23, p: 40 }]);
+    expect(seek.decode(rs[6]!).frame.machine_positions).toBeUndefined();
+    expect(seek.decode(rs[7]!).frame.machine_positions).toEqual([{ i: 23, p: 168 }]);
+  });
+
+  test("v7 rejects malformed machine counts, gaps, truncation and padding", () => {
+    const rs = records(load("v7-machine-positions").bin);
+    const tryDelta = (tail: (w: ReturnType<typeof deltaHeader>) => void) => {
+      const d = new FrameDecoder();
+      const w = deltaHeader(d.decode(rs[0]!));
+      for (let n = 0; n < 8; n++) w.eg(0, 2);
+      tail(w);
+      return () => d.decode(w.bytes());
+    };
+    expect(tryDelta(w => w.eg(255, 2))).toThrow("too many machine positions");
+    expect(tryDelta(w => { w.eg(0, 2); w.eg(0x8000, 3); w.u(1, 8); }))
+      .toThrow("machine position index out of range");
+    expect(tryDelta(w => { w.eg(1, 2); w.eg(0x7fff, 3); w.u(1, 8); w.eg(0, 3); w.u(1, 8); }))
+      .toThrow("machine position index out of range");
+    expect(tryDelta(w => { w.eg(1, 2); w.eg(0, 3); w.u(1, 8); })).toThrow("ends early");
+    expect(tryDelta(w => { w.eg(0, 2); w.eg(0, 3); w.u(1, 8); w.u(1, 1); }))
+      .toThrow("bad machine position padding");
+    expect(tryDelta(w => { w.eg(0, 2); w.eg(0, 3); w.u(1, 8); w.u(0, 8); }))
+      .toThrow("bad machine position padding");
+  });
 
   test("a turret keeps its parent and aim; version 1 vehicles have neither", () => {
     const turret = load("multiplayer").json[0].vehicles.find((v: { kind: string }) => v.kind === "chaingun");

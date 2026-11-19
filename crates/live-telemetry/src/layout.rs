@@ -312,11 +312,13 @@ pub const NETGAME_EQUIPMENT_POSITION: u32 = 0x40;
 pub const NETGAME_EQUIPMENT_ROTATION: u32 = 0x4c;
 /// The most entries a placement block is read for (they count with `i16`).
 pub const MAX_PLACEMENTS: u32 = 0x8000;
-/// likely: a device's position, `f32` 0..1. The machine network-state
-/// builder `0x000a3df0` copies it (flag `0x400`) next to the desired value
-/// of the device group at `+0x13c` (flag `0x800`); the object function
-/// evaluator compares it with 0.9 at `0x00106e24`.
+/// The device's normalized position. The updater at `0x0011546d` adds
+/// the tick's travel to it. `0x00106930` passes it to the position
+/// animation channel's normalized-frame setter (`0x001c6620`).
 pub const DEVICE_POSITION: u32 = 0x140;
+/// This device's position animation channel: `0x00106930` uses it as
+/// the channel, and `0x001086e0` starts the position action here.
+pub const DEVICE_POSITION_CHANNEL: u32 = 0x18c;
 
 /// Crouch amount, `f32` 0 (standing) to 1 (crouched); confirmed: the crouch
 /// update at `0x000dd83f` moves it toward 1 while unit flags (`+0x134`) bit
