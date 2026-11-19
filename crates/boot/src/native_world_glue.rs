@@ -20,8 +20,8 @@
 //!   then draws with its own vertex program, pixel shader, stage textures,
 //!   constants and render states, and the device's view constants each
 //!   frame. Every other material is left out of the world and keeps its
-//!   D3D draws (the skip only clears items of the shaders the world draws,
-//!   and a shader only when all its materials are native). The load says
+//!   D3D draws (the skip clears only the items of the parts the world
+//!   draws, by owner and part index, whatever shares their shader). The load says
 //!   the coverage and each reason once, with counts. A palettized stage
 //!   bitmap (the bump map's P8) is expanded through the device palette
 //!   bound at its stage when the load started, as the D3D path samples
@@ -38,7 +38,7 @@ use std::io::BufReader;
 use std::sync::{Arc, Mutex};
 
 use engine::memory::GuestMemory;
-use feature::native_world::{Host, ShaderSet};
+use feature::native_world::{Host, PartSet};
 use map::{Map, ResourceFile, TagId};
 use native_render::camera::RenderCamera;
 use native_render::gpu::{DepthRule, GpuWorld, Image, PassViewport};
@@ -81,7 +81,9 @@ pub struct CpuWorld {
 pub struct Ready {
     cpu: Mutex<Option<CpuWorld>>,
     gpu: Mutex<Option<GpuWorld>>,
-    shaders: Arc<ShaderSet>,
+    /// The parts the native pass draws, with their shaders: what the skip
+    /// clears.
+    parts: Arc<PartSet>,
     /// The transparent parts the native pass draws, with their shader's
     /// tag index (`native_transparents_glue`).
     pub(crate) transparent_parts: Arc<HashMap<(Owner, u8), u16>>,
@@ -111,7 +113,7 @@ pub struct Glue<B: d3d::backend::Backend + Send + 'static> {
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
-    fn ask(&self, mem: &dyn GuestMemory, bsp: u32, camera: &RenderCamera) -> Option<Arc<ShaderSet>> {
+    fn ask(&self, mem: &dyn GuestMemory, bsp: u32, camera: &RenderCamera) -> Option<Arc<PartSet>> {
         let name = crate::health::loaded_map_name(mem).ok()?;
         if name.is_empty() || bsp == 0 {
             return None;
@@ -156,12 +158,12 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                                     cpu.as_ref().map_or((0, 0), |c| (c.world.draws.len(), c.world.batches.len()))
                                 };
                                 eprintln!(
-                                    "native-world: {} BSP at {:#010x}: {} draws in {} batches, {} materials native, in {:.1} s",
+                                    "native-world: {} BSP at {:#010x}: {} draws in {} batches, {} parts native, in {:.1} s",
                                     key.0,
                                     key.1,
                                     draws,
                                     batches,
-                                    r.shaders.len(),
+                                    r.parts.len(),
                                     t0.elapsed().as_secs_f32()
                                 );
                                 Load::Ready(Arc::new(r))
@@ -194,7 +196,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             camera: *camera,
             view: None,
         }));
-        Some(Arc::clone(&ready.shaders))
+        Some(Arc::clone(&ready.parts))
     }
 }
 
@@ -446,7 +448,7 @@ fn load_ready(name: &str, bsp: u32, palettes: StagePalettes) -> Result<Ready, lo
     let mut native = HashSet::new();
     let mut used_palettes = StagePalettes::default();
     let mut palettized = Vec::new();
-    let (mut programs, mut stage_images, refused) = if programs_on {
+    let (programs, mut stage_images, refused) = if programs_on {
         let out = material_programs(&mut map, &mut files, &shaders, &world, &lightmaps, &palettes);
         native.extend(out.programs.keys().copied());
         used_palettes = out.palettes;
@@ -468,14 +470,14 @@ fn load_ready(name: &str, bsp: u32, palettes: StagePalettes) -> Result<Ready, lo
         }
         Default::default()
     };
-    // The game's skip is per shader: a shader is skipped only when every
-    // material of the world that uses it is native.
-    let (native, shader_set, shared) = native_shaders(&world.materials(), &shaders, &native);
-    programs.retain(|m, _| native.contains(m));
-    base_maps.retain(|m, _| native.contains(m));
+    // The skip is per part (an item names its cluster or placement and
+    // part, `skip::clear_parts`), so every native material is drawn
+    // natively whatever other materials share its shader. The lights'
+    // split is per shader (`feature::native_lights`), so they take only
+    // the materials whose shader is native whole.
+    let whole = whole_shader_materials(&world.materials(), &shaders, &native);
     if programs_on {
-        log_coverage(&mut map, &world, &shaders, &native, refused, &shared);
-        palettized.retain(|m| native.contains(m));
+        log_coverage(&mut map, &world, &shaders, &native, refused);
         if !palettized.is_empty() {
             // The materials whose look depends on a device palette (the
             // bump maps' normals): the ones to compare first in an A/B.
@@ -496,15 +498,17 @@ fn load_ready(name: &str, bsp: u32, palettes: StagePalettes) -> Result<Ready, lo
         Default::default()
     };
     // The lights' part, over the whole world: the parts of materials left
-    // to D3D are where native lights cannot draw.
+    // to D3D, or sharing a shader with one (the lights' split skips by
+    // shader), are where native lights cannot draw.
     let lights_on = feature::Switches::from_env().is_ok_and(|s| feature::native_lights::on(&s));
     let lights = if lights_on {
-        crate::native_lights_glue::load(&mut map, &mut files, &shaders, &world, &|m| native.contains(&m)).map(Arc::new)
+        crate::native_lights_glue::load(&mut map, &mut files, &shaders, &world, &|m| whole.contains(&m)).map(Arc::new)
     } else {
         None
     };
     // Draw only what a native material owns: the rest keeps its D3D draws.
     let world = keep_materials(world, &native);
+    let parts = part_set(&world, &shaders);
     Ok(Ready {
         cpu: Mutex::new(Some(CpuWorld {
             world,
@@ -516,7 +520,7 @@ fn load_ready(name: &str, bsp: u32, palettes: StagePalettes) -> Result<Ready, lo
             transparents,
         })),
         gpu: Mutex::new(None),
-        shaders: Arc::new(shader_set),
+        parts: Arc::new(parts),
         transparent_parts: Arc::new(transparent_parts),
         lights,
         palettes: used_palettes,
@@ -541,30 +545,32 @@ fn expand_levels(levels: Vec<assets::Level>, palette: &[u32; 256]) -> Option<Ima
 }
 
 /// Of the world's materials (`materials`, by BSP index; `shaders` the
-/// shader of each), those drawn natively and the shaders the skip clears:
-/// a shader only when every one of the world's materials that uses it is
-/// in `native`, since the game skips by shader. Also the materials left
-/// out for sharing a shader with one that is not native.
-fn native_shaders(materials: &[u16], shaders: &[TagId], native: &HashSet<u16>) -> (HashSet<u16>, ShaderSet, Vec<u16>) {
+/// shader of each), those in `native` whose shader no other material
+/// outside `native` uses: what a skip by shader (the lights' split) may
+/// clear.
+fn whole_shader_materials(materials: &[u16], shaders: &[TagId], native: &HashSet<u16>) -> HashSet<u16> {
     let shader = |m: u16| shaders.get(usize::from(m)).map(|s| s.0 as u16);
     let refused: HashSet<u16> = materials
         .iter()
         .filter(|&&m| !native.contains(&m))
         .filter_map(|&m| shader(m))
         .collect();
-    let mut kept = HashSet::new();
-    let mut set = ShaderSet::new();
-    let mut shared = Vec::new();
-    for &m in materials.iter().filter(|&&m| native.contains(&m)) {
-        let Some(s) = shader(m) else { continue };
-        if refused.contains(&s) {
-            shared.push(m);
-        } else {
-            kept.insert(m);
-            set.insert(s);
-        }
-    }
-    (kept, set, shared)
+    materials
+        .iter()
+        .copied()
+        .filter(|m| native.contains(m) && shader(*m).is_some_and(|s| !refused.contains(&s)))
+        .collect()
+}
+
+/// The skip's table: each part the world draws (by owner and part index),
+/// with its material's shader by tag index. `world` holds only native
+/// materials' draws ([`keep_materials`]).
+fn part_set(world: &World, shaders: &[TagId]) -> PartSet {
+    world
+        .draws
+        .iter()
+        .filter_map(|d| Some(((d.owner, d.part), shaders.get(usize::from(d.material))?.0 as u16)))
+        .collect()
 }
 
 /// Materials left to the D3D path, by reason.
@@ -578,12 +584,8 @@ fn log_coverage<R: std::io::Read + std::io::Seek>(
     world: &World,
     shaders: &[TagId],
     native: &HashSet<u16>,
-    mut refused: Refused,
-    shared: &[u16],
+    refused: Refused,
 ) {
-    if !shared.is_empty() {
-        refused.insert("shares its shader with a material left to D3D".into(), shared.to_vec());
-    }
     let mut parts: HashMap<u16, usize> = HashMap::new();
     for d in &world.draws {
         *parts.entry(d.material).or_default() += 1;
@@ -880,48 +882,50 @@ mod tests {
     }
 
     #[test]
-    fn a_shader_is_skipped_only_when_all_its_materials_are_native() {
+    fn a_skip_by_shader_takes_only_materials_whose_shader_is_native_whole() {
         // Materials 0..4; 1 and 3 share shader 0xe000_0011. 1 translates,
-        // 3 does not: the shader stays on D3D, so 1 does too (its items
-        // carry the same shader and the skip goes by shader).
+        // 3 does not: a skip by shader (the lights' split) would clear 3's
+        // items too, so it takes 0 and 2 only.
         let shaders = [0xe000_0010, 0xe000_0011, 0xe000_0012, 0xe000_0011, 0xe000_0014].map(TagId);
         let translated: HashSet<u16> = [0, 1, 2].into_iter().collect();
-        let (native, set, shared) = native_shaders(&[0, 1, 2, 3, 4], &shaders, &translated);
-        assert_eq!(native, [0, 2].into_iter().collect::<HashSet<u16>>());
-        assert_eq!(set, [0x10, 0x12].into_iter().collect::<ShaderSet>(), "by tag index");
-        assert_eq!(shared, vec![1]);
-        // A material without a shader is never native.
-        let (native, _, _) = native_shaders(&[0, 9], &shaders, &[0, 9].into_iter().collect());
-        assert_eq!(native, [0].into_iter().collect::<HashSet<u16>>());
+        let whole = whole_shader_materials(&[0, 1, 2, 3, 4], &shaders, &translated);
+        assert_eq!(whole, [0, 2].into_iter().collect::<HashSet<u16>>());
+        // A material without a shader is never taken.
+        let whole = whole_shader_materials(&[0, 9], &shaders, &[0, 9].into_iter().collect());
+        assert_eq!(whole, [0].into_iter().collect::<HashSet<u16>>());
     }
 
     #[test]
     fn an_untranslated_material_keeps_its_d3d_draws_and_a_translated_one_is_skipped() {
         // The world as the loader leaves it with programs on: material 7
-        // translated, material 8 refused. 8 is neither drawn natively nor
-        // skipped, so the D3D path still draws it; 7 is drawn natively
-        // and its shader is skipped.
-        let tri = |m| SectionInput {
+        // translated, materials 8 and 9 refused, 9 sharing 7's shader. 8
+        // and 9 are neither drawn natively nor skipped, so the D3D path
+        // still draws them; 7 is drawn natively and its parts are
+        // skipped, the shader's other parts not.
+        let tri = |m| PartInput {
+            material: m,
+            transparent: false,
+            triangles: vec![[0, 1, 2]],
+        };
+        let section = |parts| SectionInput {
             positions: vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
-            parts: vec![PartInput {
-                material: m,
-                transparent: false,
-                triangles: vec![[0, 1, 2]],
-            }],
+            parts,
             ..Default::default()
         };
         let mut b = WorldBuilder::new();
-        b.add_section(Owner::Cluster(0), &tri(7), &Placement::IDENTITY, None);
-        b.add_section(Owner::Cluster(1), &tri(8), &Placement::IDENTITY, None);
+        b.add_section(Owner::Cluster(0), &section(vec![tri(7), tri(9)]), &Placement::IDENTITY, None);
+        b.add_section(Owner::Instance(3), &section(vec![tri(8), tri(7)]), &Placement::IDENTITY, None);
         let world = b.finish();
-        let mut shaders = vec![TagId(0xe000_0000); 9];
+        let mut shaders = vec![TagId(0xe000_0000); 10];
         shaders[7] = TagId(0xe000_0107);
         shaders[8] = TagId(0xe000_0108);
+        shaders[9] = TagId(0xe000_0107);
         let translated: HashSet<u16> = [7].into_iter().collect();
-        let (native, set, _) = native_shaders(&world.materials(), &shaders, &translated);
-        let w = keep_materials(world, &native);
-        assert!(w.draws.iter().all(|d| d.material == 7), "8 is not drawn natively (no stage 1 look)");
-        assert!(set.contains(&0x107) && !set.contains(&0x108), "only 7's shader is skipped");
+        let w = keep_materials(world, &translated);
+        assert!(w.draws.iter().all(|d| d.material == 7), "8 and 9 are not drawn natively (no stage 1 look)");
+        let parts = part_set(&w, &shaders);
+        let want: PartSet = [((Owner::Cluster(0), 0), 0x107), ((Owner::Instance(3), 1), 0x107)].into_iter().collect();
+        assert_eq!(parts, want, "7's parts by owner and index, with its shader; not 9's, which shares it");
     }
 
     /// A 2x2 level and its 1x1 mip as `assets` decodes a P8 image: the

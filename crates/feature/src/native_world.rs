@@ -15,9 +15,10 @@
 //! - then, when the current layer is 3: read the render camera and the
 //!   active BSP, ask the [`Host`] (boot's glue: the GPU world and the D3D
 //!   device) for the native pass, and when it accepts, clear layer 3's bit
-//!   on the BSP items whose shader it draws
-//!   ([`native_render::skip::clear_structure`]): the layer then builds no
-//!   entry for them.
+//!   on the BSP items whose part it draws, by cluster or placement and
+//!   part index, with the part's shader ([`native_render::skip::clear_parts`]):
+//!   the layer then builds no entry for them. A shader shared with a part
+//!   the native pass does not draw keeps that part's D3D draws.
 //!
 //! Nothing runs after the body, so the chain needs no Rust continuation,
 //! and the observer is context-only: it reads and writes the memory its
@@ -29,7 +30,7 @@
 //! It sits inside `render-timing`'s observers at the point
 //! (`after_feature`), so its layer stage holds it.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -37,6 +38,7 @@ use engine::memory::GuestMemory;
 use engine::points;
 use native_render::camera::{GuestRead, GuestWrite, RENDER_CAMERA, RenderCamera};
 use native_render::skip::{self, Cleared, LIGHTMAP_LAYER};
+use native_render::world::Owner;
 
 use crate::{BuildError, Builder, Feature, Manifest};
 
@@ -69,17 +71,18 @@ pub fn programs_on(switches: &crate::Switches) -> bool {
 /// The active structure BSP's tag data (docs/formats/structure-bsp.md).
 pub const ACTIVE_BSP: u32 = 0x004e_0348;
 
-/// The shaders the native world draws, by tag index (the low word of the
-/// datum an item's `+8` holds).
-pub type ShaderSet = HashSet<u16>;
+/// The world parts the native world draws, by owner (cluster or
+/// placement) and part index in its section, each with its material's
+/// shader by tag index (the low word of the datum an item's `+8` holds).
+pub type PartSet = HashMap<(Owner, u8), u16>;
 
 /// What draws the world: boot's glue over the GPU world and the device.
 pub trait Host: Send + Sync {
     /// Before layer 3 of a view (`mem` the guest, read only): `bsp` the active BSP's address, `camera`
     /// the view's render camera. Asks for the native pass when a world for
-    /// `bsp` is ready and the device can draw it; returns the shaders it
+    /// `bsp` is ready and the device can draw it; returns the parts it
     /// draws, or `None` to leave the world to the D3D path.
-    fn ask(&self, mem: &dyn GuestMemory, bsp: u32, camera: &RenderCamera) -> Option<Arc<ShaderSet>>;
+    fn ask(&self, mem: &dyn GuestMemory, bsp: u32, camera: &RenderCamera) -> Option<Arc<PartSet>>;
 }
 
 static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
@@ -145,10 +148,12 @@ pub fn before_layer(mem: &mut dyn GuestMemory) {
     let (Some(camera), Some(bsp)) = (RenderCamera::read(&m, RENDER_CAMERA), m.read_u32(ACTIVE_BSP)) else {
         return;
     };
-    let Some(shaders) = host.ask(&*m.0, bsp, &camera) else {
+    let Some(parts) = host.ask(&*m.0, bsp, &camera) else {
         return;
     };
-    let cleared = skip::clear_structure(&mut m, LIGHTMAP_LAYER, &|shader| shaders.contains(&(shader as u16)));
+    let cleared = skip::clear_parts(&mut m, LIGHTMAP_LAYER, &|owner, part, shader| {
+        parts.get(&(owner, part)) == Some(&(shader as u16))
+    });
     if let Some(c) = cleared {
         DRAWN.fetch_add(1, Ordering::Relaxed);
         ITEMS.fetch_add(c.items.len() as u64, Ordering::Relaxed);

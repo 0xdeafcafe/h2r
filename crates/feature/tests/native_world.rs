@@ -2,17 +2,19 @@
 //! next to every other hook on the layer draw, its one observer on
 //! synthetic guest memory (the BSP items the host draws lose layer 3's bit
 //! for the layer and get it back at the next layer draw; nothing changes
-//! without a host, in another layer, or for a shader the host leaves to
-//! the D3D path), and its chain on the pipelined render thread.
+//! without a host, in another layer, or for a part the host leaves to the
+//! D3D path, even one of a shader it draws), and its chain on the
+//! pipelined render thread.
 
 use std::sync::{Arc, Mutex};
 
 use engine::memory::{FlatMemory, GuestMemory};
-use feature::native_world::{self, Host, NativeWorld, ShaderSet};
+use feature::native_world::{self, Host, NativeWorld, PartSet};
 use feature::plan::Base;
 use feature::{Registry, Switches};
 use native_render::camera::{RENDER_CAMERA, RenderCamera};
 use native_render::skip::{CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, RENDER_RECORDS};
+use native_render::world::Owner;
 
 #[test]
 fn the_plan_orders_it_inside_render_timing_with_the_layer_ports() {
@@ -90,18 +92,19 @@ const BSP: u32 = 0x0080_0000;
 
 struct Stub {
     asked: Mutex<Vec<(u32, RenderCamera)>>,
-    shaders: Arc<ShaderSet>,
+    parts: Arc<PartSet>,
 }
 
 impl Host for Stub {
-    fn ask(&self, _mem: &dyn GuestMemory, bsp: u32, camera: &RenderCamera) -> Option<Arc<ShaderSet>> {
+    fn ask(&self, _mem: &dyn GuestMemory, bsp: u32, camera: &RenderCamera) -> Option<Arc<PartSet>> {
         self.asked.lock().unwrap().push((bsp, *camera));
-        Some(Arc::clone(&self.shaders))
+        Some(Arc::clone(&self.parts))
     }
 }
 
-/// Layer 3 current; two BSP items (shaders 0x10 and 0x11) and an object
-/// item, all in layers 1 and 3; a usable camera; the active BSP.
+/// Layer 3 current; two BSP items (shaders 0x10 and 0x11, cluster 0's
+/// parts 0 and 1) and an object item, all in layers 1 and 3; a usable
+/// camera; the active BSP.
 fn guest() -> FlatMemory {
     let mut m = FlatMemory::new(0x0040_0000, 0x0021_0000);
     m.set_u32(CURRENT_LAYER, 3).unwrap();
@@ -116,7 +119,7 @@ fn guest() -> FlatMemory {
         let a = ITEMS + 0x18 * i as u32;
         m.set_u32(a, GEOMETRY_BUILD).unwrap();
         m.set_u32(a + 8, 0xe000_0000 | shader).unwrap();
-        m.set_u32(a + 0xc, record << 8).unwrap();
+        m.set_u32(a + 0xc, record << 8 | i as u32).unwrap();
         m.set_u32(a + 0x10, 0b1010).unwrap();
         m.set_u32(RENDER_RECORDS + 0x20 * record + 4, handle).unwrap();
     }
@@ -146,7 +149,7 @@ fn the_world_items_skip_layer_3_and_get_it_back_at_the_next_layer_draw() {
 
     let stub = Arc::new(Stub {
         asked: Mutex::default(),
-        shaders: Arc::new([0x10u16].into_iter().collect()),
+        parts: Arc::new([((Owner::Cluster(0), 0), 0x10u16)].into_iter().collect()),
     });
     native_world::set_host(stub.clone());
 
@@ -154,7 +157,7 @@ fn the_world_items_skip_layer_3_and_get_it_back_at_the_next_layer_draw() {
     assert_eq!(
         masks(&m),
         vec![0b0010, 0b1010, 0b1010],
-        "the drawn shader's BSP item only: not the D3D-path shader, not the object"
+        "the drawn part's BSP item only: not the D3D-path part, not the object"
     );
     {
         let asked = stub.asked.lock().unwrap();
@@ -182,4 +185,13 @@ fn the_world_items_skip_layer_3_and_get_it_back_at_the_next_layer_draw() {
     m.set_u32(ITEMS + 0x10, 0b0100).unwrap();
     native_world::restore_pending(&mut m);
     assert_eq!(masks(&m)[0], 0b0100, "not the mask the skip left: not touched");
+
+    // A part left to D3D keeps layer 3 though its shader is drawn: both
+    // BSP items carry shader 0x10, and only part 0 is native.
+    let mut m = guest();
+    m.set_u32(ITEMS + 0x18 + 8, 0xe000_0010).unwrap();
+    native_world::before_layer(&mut m);
+    assert_eq!(masks(&m), vec![0b0010, 0b1010, 0b1010]);
+    native_world::restore_pending(&mut m);
+    assert_eq!(masks(&m), vec![0b1010; 3]);
 }

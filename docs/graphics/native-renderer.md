@@ -276,7 +276,7 @@ The crate `native-render` (`crates/native-render`):
   cleared (on items that still hold the mask it left), then, with layer 3
   current, reads the camera and the active BSP (`0x004e0348`) and asks the
   host; when the host accepts it clears layer 3's bit on the BSP items
-  whose shader the world draws. It sits inside `render-timing`'s
+  whose part the world draws (`skip::clear_parts`, below). It sits inside `render-timing`'s
   observers (`after_feature`). One observer call per layer draw, nothing
   per draw.
   It runs on the pipelined render thread (context-only, nothing after the
@@ -293,7 +293,8 @@ The crate `native-render` (`crates/native-render`):
   `render-timing`, deep, and the layer-draw port all on; alone, the chain
   runs on the render thread; off by default, and on with pipelining placed; the
   switch off places nothing; the skip and its restore at the next layer
-  draw on synthetic memory, and a rebuilt list left alone);
+  draw on synthetic memory, a rebuilt list left alone, and a part left to
+  D3D keeping its bit though its shader is drawn);
   `crates/boot/src/render_thread.rs` (the default plan's `LAYER_DRAW`
   is render-thread safe).
 - **Boot glue** (`crates/boot/src/native_world_glue.rs`). The host: on a
@@ -304,15 +305,29 @@ The crate `native-render` (`crates/native-render`):
   ("Order of work" 4). A material is native only when its pass translates
   and every part of it can be drawn with it; every other material is left
   out of the world and keeps its D3D draws, never stage 1's look. The skip
-  goes by shader, so a shader is skipped only when every material of the
-  world that uses it is native. Each layer-3 view then asks the device for
+  goes by part: the host returns each drawn part, by cluster or placement
+  and part index, with its material's shader, and `skip::clear_parts`
+  clears an item only when its part is one of them with that shader. An
+  item names its part exactly as the build `0x0004cbf0` reads it
+  (`0x0004cec1`..`0x0004cf21`): render record `+0` bit 12 clear, the
+  cluster at `+0xc` bits 9..17 (`[sbsp+0xa0] + 0xb0·cluster`, its section
+  at `+0x50`); set, the placement at bits 18..28 (`[sbsp+0x144] +
+  0x58·placement`, its definition at `+0x34`, `[sbsp+0x13c] +
+  0xc8·definition`, section at `+0x50`); then the item argument's low
+  byte indexes the section's parts (`[section+4] + 0x48·part`, the order
+  `tags::geometry` decodes and `native_render::load` keeps, undrawn parts
+  included). So a material that shares its shader with one left to D3D
+  is native too (until 2026-11-19 the skip went by shader, and 70 of
+  03a's materials, 690 parts, stayed on D3D for that alone). The lights'
+  split still clears by shader (`feature::native_lights`), so the lights
+  take only the materials whose shader is native whole. Each layer-3 view then asks the device for
   a `WorldPass` with the view's camera; the first pass uploads the world
   on the render thread. Lines per load:
   `native-world: N of M materials draw natively with their own programs
   (P of Q parts); K stay on the D3D path for R reasons`, then one line per
   reason, most parts first, `native-world: D3D keeps K materials (P
   parts): <why>; e.g. <a shader that has it>`, then `native-world: <map>
-  BSP at <addr>: N draws in B batches, M materials native, in S s`; at the
+  BSP at <addr>: N draws in B batches, P parts native, in S s`; at the
   upload `native-world: N materials draw with their own programs`; every
   1,800 layer-3 views: `native-world: D of V layer-3 views drawn natively,
   I world items skipped`. Said once if it ever happens (it should not):
@@ -540,7 +555,8 @@ vector (`v1`) and view vector (`v0`), and the lightmap (stage 3). Its
      stage bitmap must decode and be swizzled (a linear texture is
      addressed in texels on the D3D path, `tex_scale`), and so must a
      lightmap page. One part that cannot be drawn keeps the whole
-     material on the D3D path (the skip is per shader).
+     material on the D3D path (the skip could go per part; the material
+     is the unit the coverage is counted in).
    - Palettized stage bitmaps. `tex_bump`'s bump stage (stage 2) is
      `P8Bump`, and `P8` is palettized too: the tag has no palette, and
      `assets` decodes both as their index in every channel. The D3D path

@@ -16,8 +16,15 @@
 //!   record (`0x004ba138 + 0x20 · index`) has `+4` an object's render
 //!   model tag datum, `-1` for BSP clusters and instanced geometry (not the
 //!   object handle: [`crate::objects::record_owner`] finds that).
+//! - Which BSP geometry a structure item draws (the build `0x0004cbf0`,
+//!   `0x0004cec1`..`0x0004cf21`): the record's `+0` bit 12 clear, a cluster
+//!   (`+0xc` bits 9..17, the structure BSP's clusters at `+0xa0`, `0xb0`
+//!   each); set, an instanced-geometry placement (`+0xc` bits 18..28, the
+//!   placements at `+0x144`, `0x58` each); then the argument's low byte
+//!   is the index into that section's parts (`[section+4] + 0x48·part`).
 
 use crate::camera::{GuestRead, GuestWrite};
+use crate::world::Owner;
 
 pub const LAYER_DRAW: u32 = 0x0004_4550;
 pub const CURRENT_LAYER: u32 = 0x0046_7130;
@@ -53,6 +60,36 @@ pub fn is_structure_item(mem: &dyn GuestRead, item: u32) -> Option<bool> {
     Some(model == u32::MAX)
 }
 
+/// The BSP geometry a structure item ([`is_structure_item`]) draws: its
+/// cluster or placement and the part index in that section, as the build
+/// reads them.
+pub fn structure_part(mem: &dyn GuestRead, item: u32) -> Option<(Owner, u8)> {
+    let arg = mem.read_u32(item + 0xc)?;
+    let record = (arg >> 8) as u16 as i16;
+    if record < 0 {
+        return None;
+    }
+    let base = RENDER_RECORDS + RENDER_RECORD_SIZE * record as u32;
+    let packed = mem.read_u32(base + 0xc)?;
+    let owner = if mem.read_u32(base)? & (1 << 12) == 0 {
+        Owner::Cluster((packed >> 9) & 0x1ff)
+    } else {
+        Owner::Instance((packed >> 18) & 0x7ff)
+    };
+    Some((owner, arg as u8))
+}
+
+/// Clears `layer`'s bit on every BSP item of the current list whose part
+/// (owner and part index, [`structure_part`]) and shader (the item's
+/// `+8`) `native` accepts, when the current layer is `layer`: the items of
+/// parts the native pass does not draw keep their D3D draws, whatever
+/// their shader. `None` and the rest as [`clear_structure`].
+pub fn clear_parts(mem: &mut dyn GuestWrite, layer: u32, native: &dyn Fn(Owner, u8, u32) -> bool) -> Option<Cleared> {
+    clear_items(mem, layer, &|mem, item, shader| {
+        Some(structure_part(mem, item).is_some_and(|(owner, part)| native(owner, part, shader)))
+    })
+}
+
 /// Clears `layer`'s bit on every BSP item of the current list whose
 /// shader (the item's `+8`) `native` accepts, when the current layer is
 /// `layer`: the per-material fallback keeps the rest on the D3D path.
@@ -60,6 +97,16 @@ pub fn is_structure_item(mem: &dyn GuestRead, item: u32) -> Option<bool> {
 /// be read; an unreadable item stops the walk with what was cleared so
 /// far.
 pub fn clear_structure(mem: &mut dyn GuestWrite, layer: u32, native: &dyn Fn(u32) -> bool) -> Option<Cleared> {
+    clear_items(mem, layer, &|_, _, shader| Some(native(shader)))
+}
+
+/// The walk of [`clear_structure`] and [`clear_parts`]: `accept` sees a
+/// structure item and its shader (`None` stops the walk).
+fn clear_items(
+    mem: &mut dyn GuestWrite,
+    layer: u32,
+    accept: &dyn Fn(&dyn GuestRead, u32, u32) -> Option<bool>,
+) -> Option<Cleared> {
     if mem.read_u32(CURRENT_LAYER)? != layer || layer >= 32 {
         return None;
     }
@@ -82,9 +129,9 @@ pub fn clear_structure(mem: &mut dyn GuestWrite, layer: u32, native: &dyn Fn(u32
             continue;
         }
         match is_structure_item(mem, item) {
-            Some(true) => match mem.read_u32(item + 8) {
-                Some(shader) if native(shader) => {}
-                Some(_) => continue,
+            Some(true) => match mem.read_u32(item + 8).and_then(|shader| accept(&*mem, item, shader)) {
+                Some(true) => {}
+                Some(false) => continue,
                 None => break,
             },
             Some(false) => continue,
@@ -173,6 +220,48 @@ mod tests {
         let c = clear_structure(&mut m, LIGHTMAP_LAYER, &|shader| shader != 0xe000_0042).unwrap();
         assert!(c.items.is_empty());
         assert_eq!(mask(&m, 0), 0b1010);
+    }
+
+    #[test]
+    fn a_structure_item_names_its_cluster_or_placement_and_part() {
+        let mut m = scene();
+        // Record 2: a cluster (bit 12 clear), cluster 37 in bits 9..17,
+        // no placement; record 7: placement 140 (bit 12 set).
+        m.w(RENDER_RECORDS + 0x20 * 2, 0x0000_0040);
+        m.w(RENDER_RECORDS + 0x20 * 2 + 0xc, 0x7ff << 18 | 37 << 9 | 0x15);
+        m.w(RENDER_RECORDS + 0x20 * 7, 1 << 12);
+        m.w(RENDER_RECORDS + 0x20 * 7 + 0xc, 140 << 18 | 3 << 9);
+        m.w(ITEMS + 0xc, 2 << 8 | 4);
+        m.w(ITEMS + ITEM_SIZE * 2 + 0xc, 7 << 8);
+        assert_eq!(structure_part(&m, ITEMS), Some((Owner::Cluster(37), 4)));
+        assert_eq!(structure_part(&m, ITEMS + ITEM_SIZE * 2), Some((Owner::Instance(140), 0)));
+        m.w(ITEMS + 0xc, 0x00ff_ff04);
+        assert_eq!(structure_part(&m, ITEMS), None, "record -1");
+    }
+
+    #[test]
+    fn the_skip_by_part_clears_only_the_parts_the_native_pass_draws() {
+        // Two BSP items of one shader, cluster 37's parts 4 and 5: only
+        // part 4 is native (part 5's material is left to D3D).
+        let mut m = scene();
+        m.w(RENDER_RECORDS + 0x20 * 2 + 0xc, 0x7ff << 18 | 37 << 9);
+        m.w(ITEMS + 0xc, 2 << 8 | 4);
+        let second = ITEMS + ITEM_SIZE * 2;
+        m.w(second, GEOMETRY_BUILD);
+        m.w(second + 8, 0xe000_0010);
+        m.w(second + 0xc, 2 << 8 | 5);
+        m.w(second + 0x10, 0b1010);
+        let native = |o: Owner, part: u8, shader: u32| o == Owner::Cluster(37) && part == 4 && shader == 0xe000_0010;
+        let c = clear_parts(&mut m, LIGHTMAP_LAYER, &native).unwrap();
+        assert_eq!(c.items, vec![ITEMS]);
+        assert_eq!(mask(&m, 0), 0b0010);
+        assert_eq!(mask(&m, 2), 0b1010, "the same shader, a part left to D3D");
+        assert_eq!(mask(&m, 1), 0b1000, "objects are never cleared");
+        restore(&mut m, &c);
+        assert_eq!(mask(&m, 0), 0b1010);
+        // Another shader on the native part (a stale table): kept.
+        m.w(ITEMS + 8, 0xe000_0099);
+        assert!(clear_parts(&mut m, LIGHTMAP_LAYER, &native).unwrap().items.is_empty());
     }
 
     #[test]
