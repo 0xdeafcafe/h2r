@@ -228,6 +228,8 @@ mod tests {
             "/games/x",
             "/games/halo2",
             "/games/halo2/players/x",
+            "/theater/x",
+            "/theater/x/clip/y",
             "/events",
             "/signin",
         ] {

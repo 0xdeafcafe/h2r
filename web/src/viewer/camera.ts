@@ -2,6 +2,14 @@
 
 import type { Vec3 } from "../map/views";
 
+export type DirectorMode = "eyes" | "follow" | "orbit" | "free" | "top-down";
+
+export interface CameraSelection { mode: DirectorMode; follow: number | null }
+export interface ViewerDirector {
+  selection(): CameraSelection;
+  pick(mode: DirectorMode, follow: number | null): void;
+}
+
 export interface Box3 { min: Vec3; max: Vec3 }
 
 export interface CameraFit {

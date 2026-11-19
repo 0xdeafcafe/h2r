@@ -6,11 +6,17 @@ import { colourFor, teamName } from "../lib/game";
 import { STATS_ROOT } from "../routes";
 import { BotTag } from "./bits";
 
-function Row(props: { g: GameState; s: Standing; rank: number; onHover?: (i: number | null) => void }) {
+interface ScoreboardActions {
+  onHover?: (i: number | null) => void;
+  onPick?: (i: number) => void;
+  picked?: number | null;
+}
+
+function Row(props: ScoreboardActions & { g: GameState; s: Standing; rank: number }) {
   return (
     <tr
       class="score-row"
-      classList={{ "score-row--left": props.s.left }}
+      classList={{ "score-row--left": props.s.left, "score-row--picked": props.picked === props.s.index }}
       style={{ "--row": colourFor(props.g, props.s.team, props.s.index) }}
       onMouseEnter={() => props.onHover?.(props.s.index)}
       onMouseLeave={() => props.onHover?.(null)}
@@ -21,8 +27,14 @@ function Row(props: { g: GameState; s: Standing; rank: number; onHover?: (i: num
       <td class="score-name">
         <span class="swatch" style={{ background: colourFor(props.g, props.s.team, props.s.index) }} />
         {/* A bot with an xuid is a server bot account and has a page (bots.md §6). */}
-        <Show when={props.s.xuid} fallback={props.s.name}>
-          {(x) => <A href={`${STATS_ROOT}/players/${encodeURIComponent(props.s.name)}`} title={props.s.game_name ? `${x()} · in game as ${props.s.game_name}` : x()}>{props.s.name}</A>}
+        <Show when={props.onPick} fallback={
+          <Show when={props.s.xuid} fallback={props.s.name}>
+            {(x) => <A href={`${STATS_ROOT}/players/${encodeURIComponent(props.s.name)}`} title={props.s.game_name ? `${x()} · in game as ${props.s.game_name}` : x()}>{props.s.name}</A>}
+          </Show>
+        }>
+          <button type="button" class="score-pov" aria-pressed={props.picked === props.s.index} onClick={() => props.onPick?.(props.s.index)} title={`Watch ${props.s.name}`}>
+            {props.s.name}
+          </button>
         </Show>
         <Show when={props.s.bot}><BotTag /></Show>
         <Show when={props.s.left}> <small>(left)</small></Show>
@@ -44,7 +56,7 @@ function Head() {
 }
 
 /** Live scoreboard. `game` may be a replay snapshot shaped like GameState. */
-export default function Scoreboard(props: { game: GameState; onHover?: (i: number | null) => void }) {
+export default function Scoreboard(props: ScoreboardActions & { game: GameState }) {
   return (
     <div class="scoreboard">
       <Show
@@ -53,7 +65,7 @@ export default function Scoreboard(props: { game: GameState; onHover?: (i: numbe
           <table class="score-table" aria-label="Free-for-all scoreboard">
             <Head />
             <tbody>
-              <For each={standings(props.game)}>{(s, i) => <Row g={props.game} s={s} rank={i() + 1} onHover={props.onHover} />}</For>
+              <For each={standings(props.game)}>{(s, i) => <Row g={props.game} s={s} rank={i() + 1} onHover={props.onHover} onPick={props.onPick} picked={props.picked} />}</For>
             </tbody>
           </table>
         }
@@ -68,7 +80,7 @@ export default function Scoreboard(props: { game: GameState; onHover?: (i: numbe
               <table class="score-table" aria-label={`${teamName(t.team)} Team scoreboard`}>
                 <Head />
                 <tbody>
-                  <For each={t.players}>{(s, i) => <Row g={props.game} s={s} rank={i() + 1} onHover={props.onHover} />}</For>
+                  <For each={t.players}>{(s, i) => <Row g={props.game} s={s} rank={i() + 1} onHover={props.onHover} onPick={props.onPick} picked={props.picked} />}</For>
                 </tbody>
               </table>
             </section>

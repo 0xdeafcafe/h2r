@@ -23,3 +23,13 @@ export function movedStatsPath(path: string): string | null {
   const rest = path.slice(OLD_STATS_ROOT.length);
   return statsPath(rest === "/" ? "" : rest);
 }
+
+/** A whole film, or one named range of it. IDs occupy separate path segments. */
+export function theaterHref(game: string, clip?: string): string {
+  const film = `/theater/${encodeURIComponent(game)}`;
+  return clip === undefined ? film : `${film}/clip/${encodeURIComponent(clip)}`;
+}
+
+export function clipShareUrl(origin: string, game: string, clip: string): string {
+  return new URL(theaterHref(game, clip), origin).toString();
+}

@@ -70,6 +70,25 @@ test("a direct seek opens only its target segment through a checkpoint rewind", 
   expect(window.frames).toHaveLength(450);
 });
 
+test("a looping clip retains its opening segment across a distant seek", async () => {
+  const game = "7f3c0b5e2a9d4c1f8e6b3a2d1c0f9e8d";
+  const meta = { from_tick: 9000, to_tick: 9898, frames: 450, bytes: 15556, sha256: "b".repeat(64), keyframes: [0] };
+  const index = chunkIndex({ game_id: game, archive_sha256: "a".repeat(64), ended: true, items: [meta, meta, meta] })!;
+  const calls: number[] = [];
+  const window = new ArchiveWindow(index, async (c) => {
+    if (c.codec !== "archive") throw new Error("expected published archive");
+    calls.push(c.ordinal);
+    return brotliDecompressSync(readFileSync(join(fixtures, "archive/mp16.br")));
+  }, 9300);
+  await window.at(9300);
+  await window.at(11000);
+  expect(window.frames[0]?.tick).toBe(10800);
+  await window.at(9300);
+  expect(calls).toEqual([0, 2]);
+  expect(window.ready(9300)).toBe(true);
+  expect(window.frames[0]?.tick).toBe(9000);
+});
+
 test("wide source ticks are projected into a precise local playback interval", () => {
   const index = chunkIndex({game_id:"g", ended:true, archive_sha256:"0".repeat(64), items:[{
     from_tick:"18446744073709551500", to_tick:"18446744073709551615", frames:2,

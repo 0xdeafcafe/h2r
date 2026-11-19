@@ -10,7 +10,7 @@ import { onAnimationFrame } from "../map/scheduler";
 import { TICKS_PER_SECOND, type FrameBuffer } from "../state/frames";
 import { frameHub, live } from "../state/live";
 import type { GameState } from "../state/reducer";
-import { ReplayTimeline, fetchRecording, type ReplayKill } from "../state/replay";
+import { ReplayTimeline, fetchRecording, inTickRange, playbackRange, type ReplayKill, type TickRange } from "../state/replay";
 import { ArchiveWindow } from "./archive";
 import { ViewerPlayback } from "./playback";
 import { applyClock, clockAgrees, isSyncMessage, nextCamera, readClock, syncChannelName, type CameraRequest, type SyncMessage } from "./sync";
@@ -18,6 +18,7 @@ import { applyClock, clockAgrees, isSyncMessage, nextCamera, readClock, syncChan
 export interface ReplaySession {
   timeline: Accessor<ReplayTimeline | null>;
   error: Accessor<string | null>;
+  range?: Accessor<TickRange | undefined>;
   /** The clock's tick, refreshed about ten times a second for the UI. */
   tick: Accessor<number>;
   playing: Accessor<boolean>;
@@ -49,8 +50,13 @@ export function createReplaySession(
   game: Accessor<GameState>,
   roster: Accessor<Map<number, RosterEntry>>,
   startTime: Accessor<string | string[] | undefined>,
+  options: { range?: TickRange; sync?: boolean } = {},
 ): ReplaySession {
   const [timeline, setTimeline] = createSignal<ReplayTimeline | null>(null);
+  const range = createMemo(() => {
+    const tl = timeline();
+    return options.range && tl ? playbackRange(tl, options.range) : undefined;
+  });
   const [error, setError] = createSignal<string | null>(null);
   const [tick, setTick] = createSignal(0);
   const [playing, setPlaying] = createSignal(false);
@@ -60,12 +66,21 @@ export function createReplaySession(
   const gameId = createMemo(() => game().game_id);
   const archiveRevision = createMemo(() => game().archiveRevision);
   const isLive = createMemo(() => game().status === "live");
-  let playback = new ViewerPlayback(false);
+  let playback = new ViewerPlayback(false, options.range);
   let liveEdge = (_now: number) => 0;
   let liveFrame: ReturnType<typeof liveFrameSource> | null = null;
   let sought = 0;
   let archive: ArchiveWindow | undefined;
-  const tickAt = (now: number) => playback.tickAt(now, playback.followingLive ? liveEdge(now) : 0);
+  let seekArchive: ((tick: number) => void) | undefined;
+  const tickAt = (now: number) => {
+    const loops = playback.clock?.loops;
+    const tick = playback.tickAt(now, playback.followingLive ? liveEdge(now) : 0);
+    if (loops !== playback.clock?.loops) {
+      sought = now;
+      seekArchive?.(tick);
+    }
+    return tick;
+  };
 
   // Explicit replay controls also apply in other tabs on this game. A new
   // tab takes its initial position from its own link.
@@ -86,7 +101,7 @@ export function createReplaySession(
   createEffect(on(gameId, (id) => {
     const ac = new AbortController();
     const openedLive = isLive();
-    playback = new ViewerPlayback(openedLive);
+    playback = new ViewerPlayback(openedLive, options.range);
     liveFrame = liveFrameSource(id, roster);
     liveEdge = (now) => frameHub.get(id).renderTick(now);
     let buffer: FrameBuffer | undefined;
@@ -134,6 +149,9 @@ export function createReplaySession(
         if (archive === selected && !ac.signal.aborted) { setError(e.message); archive = undefined; }
       }).finally(() => { if (pendingWindow === request) pendingWindow = null; });
     };
+    seekArchive = refreshWindow;
+    onCleanup(() => { seekArchive = undefined; });
+
     createEffect(on([isLive, archiveRevision], ([matchIsLive, revision]) => {
       const n = performance.now();
       if (matchIsLive) {
@@ -165,13 +183,17 @@ export function createReplaySession(
         const index = await api.chunks(id, signal, revision);
         if (signal.aborted) return;
         if (index?.archive_sha256) {
-          const window = new ArchiveWindow(index, (c, segmentSignal) => api.chunk(id, c, AbortSignal.any([signal, segmentSignal])));
+          const window = new ArchiveWindow(
+            index,
+            (c, segmentSignal) => api.chunk(id, c, AbortSignal.any([signal, segmentSignal])),
+            options.range?.from_tick,
+          );
           const bounds = new ReplayTimeline([], [], window.segments);
           const clock = playback.clock;
           const seconds = Number(Array.isArray(time) ? time[0] : time);
           const target = clock
             ? (recordingOpen ? clock.tickAt(performance.now()) : bounds.tickFromLatestRun(clock.tickAt(performance.now())))
-            : bounds.startTick + (Number.isFinite(seconds) ? seconds * TICKS_PER_SECOND : 0);
+            : options.range?.from_tick ?? bounds.startTick + (Number.isFinite(seconds) ? seconds * TICKS_PER_SECOND : 0);
           await window.at(bounds.clamp(target));
           if (signal.aborted) return;
           archive = window;
@@ -197,7 +219,7 @@ export function createReplaySession(
         }
       };
       void read().then(() => {
-        if (signal.aborted || channel) return;
+        if (signal.aborted || channel || options.sync === false || options.range) return;
         if (typeof BroadcastChannel === "undefined") return;
         channel = new BroadcastChannel(syncChannelName(id));
         channel.onmessage = (e) => {
@@ -242,18 +264,19 @@ export function createReplaySession(
     if (playback.followingLive && liveFrame) return liveFrame(now);
     const tl = playback.clock?.timeline;
     const tick = tickAt(now);
-    if (!tl || (archive && !archive.ready(tick))) return { players: [], markers: [], seen: null };
+    if (!tl || (options.range && !playback.clock?.loop) || (archive && !archive.ready(tick))) return { players: [], markers: [], seen: null };
     return replayFrame(tl, tick, roster());
   };
 
   const changed = (now: number) => {
     sought = now;
     reflect(now);
+    if (options.range) seekArchive?.(tick());
     announce(now);
   };
 
   return {
-    timeline, error, tick, playing, speed, isLive, followingLive, frame,
+    timeline, error, range, tick, playing, speed, isLive, followingLive, frame,
     soughtAt: () => sought,
     goLive() {
       if (!isLive()) return;
@@ -296,14 +319,14 @@ export function createReplaySession(
       const clock = playback.clock;
       if (!clock) return;
       const now = performance.now();
-      const t = clock.timeline.markStep(tickAt(now), dir);
+      const t = clock.timeline.markStep(tickAt(now), dir, clock.loop);
       if (t === null) return;
       playback.seek(t, now);
       changed(now);
     },
     watchKill(kill) {
       const clock = playback.clock;
-      if (!clock) return;
+      if (!clock || (clock.loop && !inTickRange(kill.tick, clock.loop))) return;
       const k = clock.timeline.killcam(kill);
       const now = performance.now();
       clock.pause(now);
