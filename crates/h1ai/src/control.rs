@@ -18,6 +18,7 @@ pub enum Operation {
     Defend,
     Maneuver,
     ManeuverEnable,
+    TimerExpire,
     Spawn,
     FollowPlayers,
     FollowAi,
@@ -54,6 +55,7 @@ pub enum Action {
         platoon: Option<Platoon>,
     },
     Enable(Platoon),
+    ExpireTimer { squad: u16, reveal_players: bool },
     Spawn(u16),
 }
 
@@ -184,6 +186,17 @@ pub fn prepare(source: &H1Ai, plan: &mut Plan, opts: &Options, requests: &[Reque
             source_index
                 .and_then(|i| ids[i])
                 .map(|i| vec![Action::Spawn(i)])
+        } else if request.operation == Operation::TimerExpire {
+            Some(encounter.squads.iter().enumerate()
+                .filter(|(index, squad)| match selection {
+                    Selection::Encounter => true,
+                    Selection::Platoon(i) => squad.platoon == i16::from(i),
+                    Selection::Squad(i) => *index == usize::from(i),
+                })
+                .filter_map(|(index, squad)| Some(Action::ExpireTimer {
+                    squad: ids[index]?,
+                    reveal_players: squad.flags & 0x10 != 0,
+                })).collect())
         } else if request.operation == Operation::FollowDistance {
             // The source analysis proved this assignment is folded into
             // the subsequent follow order.
@@ -304,11 +317,7 @@ fn platoon_actions(
             }
         }
     }
-    if operation == Operation::Maneuver {
-        order_migrations(actions)
-    } else {
-        Some(actions)
-    }
+    Some(actions)
 }
 
 // Move a destination's original actors first if it is itself a source.

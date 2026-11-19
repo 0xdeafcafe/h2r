@@ -1,7 +1,9 @@
 //! Lower scripted platoon actions into the level's Halo 2 orders and squads.
 
 use h1ai::control::{Action, Control, Platoon};
-use hs::h1_ai_slots::{CONTROL, CONTROL_TOKEN, Operation as RuntimeOperation};
+use hs::h1_ai_slots::{
+    CONTROL, CONTROL_TOKEN, ManeuverEdge, Operation as RuntimeOperation, Registry,
+};
 use hs::{Datum, Node};
 
 use super::{CALL, Compiler, GLOBAL, New, definition, h2t};
@@ -66,6 +68,20 @@ impl Compiler<'_> {
     ) -> Result<Option<Datum>> {
         let op = match name {
             "ai_magically_see_players" => Some(RuntimeOperation::SeePlayers),
+            "ai_vehicle_encounter" => Some(RuntimeOperation::VehicleEncounter),
+            "ai_vehicle_enterable_distance" => Some(RuntimeOperation::VehicleDistance),
+            "ai_vehicle_enterable_actor_type" => Some(RuntimeOperation::VehicleActorType),
+            "ai_vehicle_enterable_team" => Some(RuntimeOperation::VehicleTeam),
+            "ai_vehicle_enterable_actors" => Some(RuntimeOperation::VehicleActors),
+            "ai_vehicle_enterable_disable" => Some(RuntimeOperation::VehicleDisable),
+            "ai_going_to_vehicle" => Some(RuntimeOperation::VehicleCount),
+            "ai_try_to_fight" => Some(RuntimeOperation::PreferAi),
+            "ai_try_to_fight_player" => Some(RuntimeOperation::PreferPlayer),
+            "ai_try_to_fight_nothing" => Some(RuntimeOperation::ClearPreference),
+            "ai_playfight" => Some(RuntimeOperation::Playfight),
+            "ai_link_activation" => Some(RuntimeOperation::LinkActivation),
+            "ai_migrate_and_speak" => Some(RuntimeOperation::MigrateSpeak),
+            "ai_attach_free" => Some(RuntimeOperation::AttachFree),
             "ai_free" => Some(RuntimeOperation::Free),
             "ai_free_units" => Some(RuntimeOperation::FreeUnits),
             "ai_migrate_by_unit" => Some(RuntimeOperation::MigrateUnits),
@@ -76,11 +92,13 @@ impl Compiler<'_> {
             _ => None,
         };
         if let Some(op) = op
-            && self
-                .h2
-                .builtins
-                .get("ai_magically_see_players")
-                .is_some_and(|b| b.index == CONTROL)
+            && self.has_runtime_control()
+            && (op != RuntimeOperation::VehicleCount
+                || self
+                    .h2
+                    .builtins
+                    .get("ai_going_to_vehicle")
+                    .is_some_and(|b| b.index == op.slot()))
         {
             return self.runtime_control(op, args, expected).map(Some);
         }
@@ -173,6 +191,35 @@ impl Compiler<'_> {
         args: &[Datum],
         expected: u16,
     ) -> Result<Datum> {
+        if matches!(
+            actions.first(),
+            Some(Action::Migrate {
+                platoon: Some(_),
+                ..
+            })
+        ) && self.has_runtime_control()
+        {
+            let mut routes = String::new();
+            for &action in actions {
+                let Action::Migrate {
+                    from,
+                    to,
+                    platoon: Some(platoon),
+                } = action
+                else {
+                    return Err(invalid("mixed maneuver and ordinary migration actions"));
+                };
+                ManeuverEdge {
+                    from,
+                    to,
+                    enabled_by: self.maneuver_switches.get(&platoon).copied(),
+                }
+                .append_to(&mut routes);
+            }
+            let offset = self.intern(routes.as_bytes());
+            let operand = self.literal(h2t::STRING, h2t::STRING, offset, routes.as_bytes());
+            return self.runtime_control_call(RuntimeOperation::Maneuver, &[operand], expected);
+        }
         let mut expressions = Vec::with_capacity(actions.len());
         let ty = if actions.len() == 1 {
             expected
@@ -220,6 +267,14 @@ impl Compiler<'_> {
                     let enable = self.expr(*value, h2t::BOOLEAN)?;
                     self.control_call("set", ty, &[flag, enable])?
                 }
+                Action::ExpireTimer {
+                    squad,
+                    reveal_players,
+                } => {
+                    let squad = self.ai_literal(squad)?;
+                    let reveal = self.number(h2t::BOOLEAN, i32::from(reveal_players));
+                    self.runtime_control_call(RuntimeOperation::TimerExpire, &[squad, reveal], ty)?
+                }
                 Action::Spawn(squad) => {
                     let squad = self.ai_literal(squad)?;
                     let count = self.number(h2t::SHORT, 1);
@@ -250,21 +305,144 @@ impl Compiler<'_> {
         ))
     }
 
+    fn has_runtime_control(&self) -> bool {
+        self.h2
+            .builtins
+            .get("ai_magically_see_players")
+            .is_some_and(|b| b.index == CONTROL)
+    }
+
     fn runtime_control(
         &mut self,
         op: RuntimeOperation,
         args: &[Datum],
         expected: u16,
     ) -> Result<Datum> {
-        let parameters = op.parameters();
+        let mut parameters = op.parameters();
+        if op.registry().is_some() {
+            parameters = &parameters[..parameters.len() - 1];
+        }
         if args.len() != parameters.len() {
             return Err(invalid(format!("wrong arity for {op:?}")));
         }
         let mut compiled = Vec::with_capacity(args.len());
         for (&arg, &ty) in args.iter().zip(parameters) {
-            compiled.push(self.expr(arg, ty)?);
+            let node = *self.t.node(arg)?;
+            let literal = if ty == hs::h1_ai_slots::ACTOR_TYPE
+                && node.atom()
+                && !node.global()
+                && self.h1.type_name(node.opcode())? == "actor_type"
+            {
+                // Halo 2 preserves Halo 1's actor-type enumerators.
+                let text = self.t.string_bytes(node.string_offset())?.to_vec();
+                self.literal(ty, ty, node.data(), &text)
+            } else {
+                self.expr(arg, ty)?
+            };
+            compiled.push(literal);
         }
-        let call = self.call(CONTROL, CALL, expected, CONTROL_TOKEN.as_bytes(), &compiled);
+        if let Some(registry) = op.registry() {
+            let base = self.registry_base(registry)?;
+            compiled.push(self.number(h2t::LONG, i32::from(base)));
+        }
+        self.runtime_control_call(op, &compiled, expected)
+    }
+
+    fn registry_base(&mut self, registry: Registry) -> Result<u16> {
+        if let Some(&(_, base)) = self.ai_registries.iter().find(|(r, _)| *r == registry) {
+            return Ok(base);
+        }
+        // Calls can appear in original global initializers. Reserve names
+        // after the original globals and maneuver switches in either case.
+        let base = self.t.globals.len()
+            + self.ai_control.map_or(0, |c| c.switches.len())
+            + self
+                .ai_registries
+                .iter()
+                .map(|(r, _)| usize::from(r.words()))
+                .sum::<usize>();
+        let base = u16::try_from(base).map_err(|_| invalid("global count"))?;
+        self.ai_registries.push((registry, base));
+        Ok(base)
+    }
+
+    pub(super) fn install_ai_ticks(&mut self) -> Result<()> {
+        let mut hook_state = u32::MAX;
+        for (registry, base) in std::mem::take(&mut self.ai_registries) {
+            if let Some(shift) = registry.hook_shift() {
+                hook_state = (hook_state & !(0xffff << shift)) | (u32::from(base) << shift);
+            }
+            let start = usize::from(base);
+            let end = start + usize::from(registry.words());
+            if self.out.globals.len() != start || hs::vm::EXTERNAL_GLOBALS + end > 0xc00 {
+                return Err(invalid("converted AI state exceeds the Halo 2 global pool"));
+            }
+            for index in 0..registry.words() {
+                let root = self.number(h2t::LONG, registry.initial(index));
+                let global = start + usize::from(index);
+                let name = format!("h1_ai_state_{global}");
+                if self
+                    .t
+                    .globals
+                    .iter()
+                    .any(|g| g.name.eq_ignore_ascii_case(&name))
+                {
+                    return Err(invalid(format!("global name collision: {name}")));
+                }
+                self.out
+                    .globals
+                    .push(definition(&name, h2t::LONG, 0, root, global)?);
+            }
+            let Some(operation) = registry.tick() else {
+                continue;
+            };
+            let name = format!("h1_ai_tick_{base}");
+            if self
+                .t
+                .scripts
+                .iter()
+                .any(|s| s.name.eq_ignore_ascii_case(&name))
+            {
+                return Err(invalid(format!("script name collision: {name}")));
+            }
+            let base = self.number(h2t::LONG, i32::from(base));
+            let root = self.runtime_control_call(operation, &[base], h2t::VOID)?;
+            self.out.scripts.push(definition(
+                &name,
+                2,
+                h2t::VOID,
+                root,
+                self.out.scripts.len(),
+            )?);
+        }
+        if hook_state != u32::MAX {
+            // Native hooks can locate these registries in constant time.
+            let name = hs::h1_ai_slots::HOOK_STATE;
+            let index = self.out.globals.len();
+            if hs::vm::EXTERNAL_GLOBALS + index >= 0xc00
+                || self
+                    .t
+                    .globals
+                    .iter()
+                    .any(|g| g.name.eq_ignore_ascii_case(name))
+            {
+                return Err(invalid("unable to add the AI hook state index"));
+            }
+            let root = self.number(h2t::LONG, hook_state as i32);
+            self.out
+                .globals
+                .push(definition(name, h2t::LONG, 0, root, index)?);
+        }
+        Ok(())
+    }
+
+    fn runtime_control_call(
+        &mut self,
+        op: RuntimeOperation,
+        args: &[Datum],
+        expected: u16,
+    ) -> Result<Datum> {
+        let call = self.call(op.slot(), CALL, expected, CONTROL_TOKEN.as_bytes(), args);
         let head = Datum(self.out.nodes[call.slot()].data());
         let mut wire = self.out.nodes[head.slot()].encode();
         wire[16..20].copy_from_slice(&op.marker().to_le_bytes());

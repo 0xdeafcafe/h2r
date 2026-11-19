@@ -23,6 +23,13 @@ pub struct Binding {
 
 pub const BINDINGS: &[Binding] = &[
     Binding {
+        name: "ai_going_to_vehicle",
+        index: hs::h1_ai_slots::VEHICLE_COUNT,
+        evaluator: hs::h1_ai_slots::VEHICLE_COUNT_EVALUATOR,
+        returns: "short",
+        arguments: &["unit"],
+    },
+    Binding {
         name: "ai_grenades",
         index: 280,
         evaluator: 0x002a_4d70,
@@ -175,6 +182,7 @@ pub(crate) fn operation(name: &str) -> Option<h1ai::control::Operation> {
         "ai_defend" => Defend,
         "ai_retreat" | "ai_maneuver" => Maneuver,
         "ai_maneuver_enable" => ManeuverEnable,
+        "ai_timer_expire" => TimerExpire,
         "ai_spawn_actor" => Spawn,
         "ai_follow_target_players" => FollowPlayers,
         "ai_follow_target_ai" => FollowAi,

@@ -2182,3 +2182,25 @@ fn physics_models_load_as_the_engine_reads_them() {
         assert!(bad.is_empty(), "{level}: {bad:#?}");
     }
 }
+
+#[test]
+#[ignore = "reads H2_DISC"]
+fn migration_speech_events_use_retail_order_patterns() {
+    let mut map = h2_map(h1campaign::base_for("a50"));
+    let tag = map.tags().iter().find(|tag| tag.group == FourCC(*b"adlg")).unwrap().clone();
+    let bytes = map.read_tag_bytes(tag.id).unwrap();
+    let base = tag.location.unwrap().address;
+    let word = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+    let patterns = (word(0xc) - base) as usize;
+    let index = (word(0x20) - base) as usize;
+    for (event, pattern, name) in [
+        (111, 138, "newordr_advance"),
+        (114, 144, "newordr_retreat"),
+    ] {
+        let range = word(index + event * 4);
+        assert_eq!(range & 0xffff, pattern);
+        assert!(range >> 16 > 0);
+        let string = word(patterns + pattern as usize * 0x40 + 4) as u16;
+        assert_eq!(map.strings()[usize::from(string)].as_deref(), Some(name));
+    }
+}

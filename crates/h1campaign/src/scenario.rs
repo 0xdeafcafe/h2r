@@ -1926,6 +1926,7 @@ fn install_scripts(
     }
     let (at, stride) = h1scripts::seats::MAPPINGS;
     put_block(root, at, stride, seats.elements());
+    let free_characters = crate::actor_control::install(h1, set, aliases, &c.hooks)?;
     let tags_by_name: HashMap<(FourCC, String), TagId> = set
         .slots
         .iter()
@@ -1937,6 +1938,7 @@ fn install_scripts(
     let mut resolved_by_level = 0;
     let left = c.resolve_hooks(|h| {
         match h.type_name.as_str() {
+            "long" if h.h1_type == "actor_variant" => free_characters.get(&h.token).map(|id| id.0),
             "string_id" => interned.get(&h.token).copied(),
             "sound" => sounds.get(&h.token).map(|id| id.0),
             _ if hook_value(h, targets).is_some() => hook_value(h, targets),

@@ -644,7 +644,7 @@ fn cinematic_calls_keep_halo1_s_ticks() {
 fn encounter_controls_emit_live_evaluators_and_native_orders() {
     use h1ai::control::Operation;
     use h1scripts::compile::{Cutscenes, Missing, compile_with_ai};
-    use hs::h1_ai_slots::{CLAIMS, CONTROL, Operation as RuntimeOperation};
+    use hs::h1_ai_slots::{CLAIMS, CONTROL, VEHICLE_COUNT, Operation as RuntimeOperation};
 
     let (catalog, maps) = h1();
     let target = h2();
@@ -712,7 +712,7 @@ fn encounter_controls_emit_live_evaluators_and_native_orders() {
                     .unwrap()
             };
             match node.opcode() {
-                CONTROL => {
+                CONTROL | VEHICLE_COUNT => {
                     let head = scenario.node(hs::Datum(node.data())).unwrap();
                     let operation = RuntimeOperation::from_marker(head.data()).unwrap();
                     runtime_operations.insert(operation as u16);
@@ -763,10 +763,26 @@ fn encounter_controls_emit_live_evaluators_and_native_orders() {
     for operation in [
         RuntimeOperation::SeePlayers,
         RuntimeOperation::Free,
+        RuntimeOperation::AttachFree,
         RuntimeOperation::FreeUnits,
         RuntimeOperation::MigrateUnits,
+        RuntimeOperation::MigrateSpeak,
         RuntimeOperation::Teleport,
         RuntimeOperation::TeleportUnsupported,
+        RuntimeOperation::Maneuver,
+        RuntimeOperation::VehicleEncounter,
+        RuntimeOperation::VehicleDistance,
+        RuntimeOperation::VehicleActorType,
+        RuntimeOperation::VehicleDisable,
+        RuntimeOperation::VehicleTick,
+        RuntimeOperation::VehicleCount,
+        RuntimeOperation::TimerExpire,
+        RuntimeOperation::LinkActivation,
+        RuntimeOperation::ActivationTick,
+        RuntimeOperation::Playfight,
+        RuntimeOperation::PreferAi,
+        RuntimeOperation::PreferPlayer,
+        RuntimeOperation::ClearPreference,
     ] {
         assert!(runtime_operations.contains(&(operation as u16)), "{operation:?}");
     }
