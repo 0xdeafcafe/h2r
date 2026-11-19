@@ -126,6 +126,79 @@ lockstep. For an isolated tick-hash comparison use two runs of the same sim
 match with `render_every = 0`, setting `H2_FEATURES=audio.clock-only` on one.
 Compare with `h2 lockstep` as in the [sim checks](../runtime/sim.md#first-runs).
 
+## Game data bundle
+
+Build the bundle from your own Halo 2 disc image or an extracted DVD
+directory. Keep the archive, manifest and extracted cache private. Keep
+the bundle out of Git and container images.
+
+```sh
+h2 host bundle --disc "$H2_DISC" --out "$H2_BUNDLE_DIR"
+```
+
+| Disc files | Why the host needs them |
+|---|---|
+| `default.xbe` | Boot reads the original executable and uses its full hash to identify the prebuilt module. |
+| `maps/mainmenu.map` | The light host still boots the retail menu and loads the multiplayer lobby. |
+| `maps/shared.map`, `maps/single_player_shared.map` | The map loader can resolve references into these shared caches. |
+| Multiplayer `maps/*.map` | The host loads these maps for matches. The bundle selects them by their cache headers. |
+| `maps/fonts/` | The retail menu reads the font tables and packed glyphs from the DVD. |
+
+The light host skips Bink movies. Campaign levels and dashboard media are
+outside the multiplayer boot path. See [boot](../../crates/boot/src/lib.rs)
+and [disc fonts](../formats/fonts.md).
+
+To use server copies, make them with `h2 server-map strip ORIGINAL.map
+OUTPUT.map`, keeping the original filenames, and add `--stripped-maps DIR`.
+A same-named copy must match the original map header and logical length.
+Maps without a replacement come from the disc.
+
+The command writes `host-data.tar.zst` and `host-data.json`. The JSON gives
+the archive's `sha256` and the list of payload paths, sizes in bytes and
+SHA-256 digests. Keep the two files together.
+
+### Upload to private R2
+
+Create an R2 bucket with public access disabled. Create an R2 API token
+with Object Read & Write permission scoped to the bucket, then configure
+your AWS CLI profile with its Access Key ID and Secret Access Key. Set
+`R2_ACCOUNT_ID`, `R2_BUCKET`, `AWS_PROFILE` and `H2_BUNDLE_DIR` before
+running these commands with the AWS CLI and `jq`.
+[Cloudflare R2 S3 setup](https://developers.cloudflare.com/r2/get-started/s3/)
+
+```sh
+R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+H2_DATA_SHA=$(jq -er '.sha256' "$H2_BUNDLE_DIR/host-data.json")
+R2_BUNDLE="s3://$R2_BUCKET/host-data/$H2_DATA_SHA"
+
+aws s3 cp "$H2_BUNDLE_DIR/host-data.tar.zst" "$R2_BUNDLE/host-data.tar.zst" \
+  --endpoint-url "$R2_ENDPOINT" --region auto
+aws s3 cp "$H2_BUNDLE_DIR/host-data.json" "$R2_BUNDLE/host-data.json" \
+  --endpoint-url "$R2_ENDPOINT" --region auto
+```
+
+Create a signed GET URL for the archive and pass it as `HostBoot.data_url`
+(`H2_DATA_URL` for a direct host launch). Pass the manifest's archive SHA-256
+as `HostBoot.data_sha256` (`H2_DATA_SHA`). Refresh the URL before starting
+hosts after it expires and keep it out of logs and shared configuration.
+[Cloudflare R2 presigned URLs](https://developers.cloudflare.com/r2/api/s3/presigned-urls/)
+
+```sh
+H2_DATA_URL=$(aws s3 presign "$R2_BUNDLE/host-data.tar.zst" \
+  --endpoint-url "$R2_ENDPOINT" --region auto --expires-in 3600)
+export H2_DATA_URL H2_DATA_SHA
+```
+
+At startup the host streams the archive to `<cache>/<sha256>.partial`,
+checks the archive digest, verifies the files during extraction and
+publishes `<cache>/<sha256>/` atomically. A complete cache entry works
+after the signed URL expires. `H2_HOST_CACHE` overrides the cache location.
+`H2_HOST_CACHE_MAX_BYTES` sets the cache budget in uncompressed bytes
+(default 8 GiB). Provisioning evicts older entries by last use and keeps
+the requested entry even if it alone exceeds the budget. When running
+different bundle hashes concurrently, size the cache to hold the live
+bundles or give each deployment its own cache.
+
 ## Routing, assignment and arbitration
 
 **Game traffic.** System Link discovers pregame hosts by UDP broadcast. Live discovers through a session ID, XNADDR/key and QoS description. Both reach the game over XNet’s UDP mapping. Keep base through base+6 reachable (game channels +0/+1/+5/+6, QoS +2). On a home router this generally requires port forwarding. The HLE provides no general NAT traversal or transport encryption. Existing public/friends listings use the observed HTTP source address. A successful XNetConnect only records an address mapping. Cloud egress and public UDP ingress can differ. Verify the advertised endpoint externally and allow an authenticated managed ingress separate from the local bind address. The existing WebSocket relay admits an open **co-op** host and one guest for messages up to 1,200 bytes. It cannot carry a retail multiplayer match today. A multiplayer fallback needs authenticated multi-peer channel mapping, datagram boundaries, expiry, limits and real route measurements. [XNet transport](live.md#client-hle-sockets-and-system-link) · [Join and address restrictions](live-custom-games.md) · [Relay](../../crates/live-server/src/relay.rs) · [Worker counterpart](../../crates/live-worker/src/relayroom.rs)
