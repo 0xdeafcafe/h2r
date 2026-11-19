@@ -103,7 +103,7 @@ const BLEND_SCREEN_LEN: usize = 0x1c;
 /// `0x47fc54`, slot `+0x1c`) loads each frame's four floats at
 /// `+0x20 + i * [+0x14] + frame * 16` of the stream with `movaps` (`0x0028c589`),
 /// which faults (#GP) on an address that is not a multiple of 16. Through
-/// converter version 87 blobs were 4-aligned; from version 84, when the
+/// converter version 88 blobs were 4-aligned; from version 84, when the
 /// vehicles' steering and aim overlays took codec 8, Blood Gulch stopped
 /// there about 5 s into a game (`tags::anim::AnimationGraph::engine_problems`
 /// checks it).

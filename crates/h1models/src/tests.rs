@@ -1980,7 +1980,7 @@ fn a_vehicle_graph_takes_halo_2s_vehicle_layout() {
     assert_eq!((0..5).map(codec).collect::<Vec<_>>(), [8, 3, 8, 3, 3]);
     // Every blob starts 16-byte aligned: codec 8's rotation reads are
     // `movaps` (E `0x0028c589`). Animation 2 followed 0 and 1 at a
-    // 4-aligned offset through converter version 87.
+    // 4-aligned offset through converter version 88.
     for i in 0..6 {
         assert_eq!(r.w(anims + i * 0x6c + 0x28) % 16, 0, "animation {i}");
     }

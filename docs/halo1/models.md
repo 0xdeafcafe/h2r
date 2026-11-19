@@ -244,10 +244,10 @@ retail's are (`jmad::vehicle_plan`):
   (`0x0028c589`), which faults on an address that is not a multiple of
   16. V: every codec 8 stream on Coagulation is so aligned in its
   resource (`h1objects/tests/animation_codec_disc.rs`). Through converter
-  version 87 the converter placed blobs 4-aligned, so from version 84 (the
+  version 88 the converter placed blobs 4-aligned, so from version 84 (the
   first with codec 8) converted Blood Gulch stopped with `#GP at
   0x28c589` about 5 s into a game, when a vehicle's steering or aim
-  overlay first played. Since version 88 every blob starts 16-aligned and
+  overlay first played. Since version 89 every blob starts 16-aligned and
   a static stream before a codec 8 stream is padded to 16 (its size
   field covers the padding).
   The vehicles block's screen is `steering`'s, each class's screen goes

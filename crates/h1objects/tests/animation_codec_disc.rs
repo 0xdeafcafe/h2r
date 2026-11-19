@@ -21,7 +21,7 @@
 //! - `converted_blood_gulch_graphs_read_as_the_engine_reads_them`: Blood
 //!   Gulch's vehicles, bipeds, weapons and equipment converted; every
 //!   animation of every converted graph has no problem. Through converter
-//!   version 87 the vehicles' codec 8 steering and aim overlays sat at
+//!   version 88 the vehicles' codec 8 steering and aim overlays sat at
 //!   4-aligned offsets, and the game stopped with #GP at `0x0028c589`
 //!   about 5 s into a game.
 
