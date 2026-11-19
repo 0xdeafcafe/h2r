@@ -12,7 +12,10 @@
 //! - Objects resolve through `tags::object` (object → `hlmt` → `mode`) and
 //!   draw each region's first permutation at its best LOD
 //!   (`RenderModelGeometry::default_sections`), in model space; the
-//!   viewport places them by each placement's transform.
+//!   viewport places them by each placement's transform. The objects the
+//!   model's variant attaches (a vehicle's turret is its own vehicle tag on
+//!   the hull's `turret` marker) join the model at rest
+//!   ([`object_model_of`], [`markers_in`]).
 //!
 //! - The BSP's lightmap pages ([`geometry::world_parts_lit`]) are decoded
 //!   from `P8` through their group's palette ([`lightmap_page`]) and light
@@ -27,6 +30,7 @@ use assets::{Region, ResourceFiles};
 use map::{FourCC, Map, ResourceFile, TagId};
 use std::collections::HashMap;
 use std::io::{Read, Seek};
+use tags::anim_sample::{Mat4, NodeTransform, mat_mul};
 use tags::geometry::{RawSource, TagView};
 use tags::model::RenderModelGeometry;
 
@@ -610,30 +614,35 @@ impl<'a, R: Read + Seek> SceneBuilder<'a, R> {
         }
     }
 
-    /// A model for every placed object tag that resolves to one.
+    /// A model for every placed object tag that resolves to one, with the
+    /// objects its model variant attaches ([`object_model_of`]).
     pub fn objects(&mut self, objects: impl IntoIterator<Item = TagId>) {
         let ctx = match tags::object::Context::read(self.map) {
             Ok(c) => c,
             Err(_) => return,
         };
-        let mut by_mode: HashMap<TagId, Option<usize>> = HashMap::new();
+        let multiplayer = self.map.header().cache_type == map::CacheType::Multiplayer;
+        let mut by_model: HashMap<ObjectModel, Option<usize>> = HashMap::new();
         let mut seen = std::collections::HashSet::new();
         for object in objects {
             if !seen.insert(object) {
                 continue;
             }
             self.scene.stats.objects += 1;
-            let Some(mode) = render_model_of(&ctx, object) else {
+            let Some(wanted) = object_model_of(&ctx, object, multiplayer) else {
                 continue;
             };
-            let model = match by_mode.get(&mode) {
+            let model = match by_model.get(&wanted) {
                 Some(m) => *m,
                 None => {
-                    let m = self.model(mode);
+                    let m = self.object_mesh(&wanted).map(|mesh| {
+                        self.scene.models.push(mesh);
+                        self.scene.models.len() - 1
+                    });
                     if m.is_none() {
                         self.scene.stats.models_failed += 1;
                     }
-                    by_mode.insert(mode, m);
+                    by_model.insert(wanted, m);
                     m
                 }
             };
@@ -646,12 +655,6 @@ impl<'a, R: Read + Seek> SceneBuilder<'a, R> {
 
     pub fn finish(self) -> Scene {
         self.scene
-    }
-
-    fn model(&mut self, mode: TagId) -> Option<usize> {
-        let mesh = self.model_mesh(mode)?;
-        self.scene.models.push(mesh);
-        Some(self.scene.models.len() - 1)
     }
 
     /// The first of the scenario's skies ([`scenario_skies`]) whose
@@ -689,10 +692,47 @@ impl<'a, R: Read + Seek> SceneBuilder<'a, R> {
     }
 
     fn model_mesh(&mut self, mode: TagId) -> Option<Mesh> {
-        let geo = RenderModelGeometry::read(self.map, mode, self.raw).ok()?;
-        let shaders: Vec<TagId> = geo.materials.iter().map(|m| m.shader.id).collect();
+        self.object_mesh(&ObjectModel {
+            mode,
+            attached: Vec::new(),
+        })
+    }
+
+    /// A model and what it carries, in the model's space: each attached
+    /// object's model with its marker (or origin) on the parent's marker,
+    /// at rest. An attachment whose marker or model is missing is left
+    /// off; the whole is refused past [`MAX_MODEL_TRIANGLES`].
+    fn object_mesh(&mut self, model: &ObjectModel) -> Option<Mesh> {
         let mut mesh = Mesh::default();
         let mut tris = 0;
+        self.push_model(model, &IDENTITY, "", &mut mesh, &mut tris)?;
+        (tris <= MAX_MODEL_TRIANGLES && !mesh.batches.is_empty()).then_some(mesh)
+    }
+
+    /// Add `model`'s parts to `mesh`, placed by `at` after moving its
+    /// `anchor` marker (none: its origin) to the origin. `None` when the
+    /// model does not read; `tris` counts every triangle added.
+    fn push_model(
+        &mut self,
+        model: &ObjectModel,
+        at: &Mat4,
+        anchor: &str,
+        mesh: &mut Mesh,
+        tris: &mut usize,
+    ) -> Option<()> {
+        let geo = RenderModelGeometry::read(self.map, model.mode, self.raw).ok()?;
+        let frames = if anchor.is_empty() && model.attached.is_empty() {
+            HashMap::new()
+        } else {
+            marker_frames(self.map, model.mode, &geo)
+        };
+        let at = attachment_transform(
+            at,
+            &IDENTITY,
+            frames.get(anchor).filter(|_| !anchor.is_empty()),
+        );
+        let moved = at != IDENTITY;
+        let shaders: Vec<TagId> = geo.materials.iter().map(|m| m.shader.id).collect();
         for si in geo.default_sections() {
             let Some(section) = geo.sections.get(si) else {
                 continue;
@@ -729,12 +769,15 @@ impl<'a, R: Read + Seek> SceneBuilder<'a, R> {
                     });
                     out.tris.push(tri);
                 }
-                tris += out.tris.len();
-                if tris > MAX_MODEL_TRIANGLES {
-                    return None;
+                *tris += out.tris.len();
+                if *tris > MAX_MODEL_TRIANGLES {
+                    return Some(());
                 }
                 if v.normals.is_empty() {
                     out.normals = geometry::vertex_normals(&out.positions, &out.tris);
+                }
+                if moved {
+                    place_part(&mut out, &at);
                 }
                 let (texture, mut blend) = self.look(out.shader);
                 if out.transparent {
@@ -743,7 +786,23 @@ impl<'a, R: Read + Seek> SceneBuilder<'a, R> {
                 mesh.push(texture, None, blend, &out);
             }
         }
-        (!mesh.batches.is_empty()).then_some(mesh)
+        for a in &model.attached {
+            let parent = if a.parent_marker.is_empty() {
+                IDENTITY
+            } else {
+                let Some(m) = frames.get(&a.parent_marker) else {
+                    continue;
+                };
+                *m
+            };
+            let placed = attachment_transform(&at, &parent, None);
+            // A child that does not read is left off; the parent stays.
+            let _ = self.push_model(&a.model, &placed, &a.child_marker, mesh, tris);
+            if *tris > MAX_MODEL_TRIANGLES {
+                return Some(());
+            }
+        }
+        Some(())
     }
 
     /// A shader's base map and blend, read the first time it is asked for.
@@ -854,6 +913,301 @@ pub fn render_model_of(ctx: &tags::object::Context, object: TagId) -> Option<Tag
     let resolved = ctx.resolve_object(object).ok()?;
     let mode = resolved.model?.render_model?;
     (mode.group == FourCC(*b"mode")).then_some(mode.id)
+}
+
+/// What a placed object draws: its render model and the objects its model
+/// variant attaches on markers (a Warthog's chaingun, a Wraith's mortar,
+/// a Scorpion's or Spectre's turret: each its own vehicle tag, named by
+/// hlmt variant `+0x1c`, not part of the hull's render model).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ObjectModel {
+    pub mode: TagId,
+    pub attached: Vec<Attached>,
+}
+
+/// One attached object ([`ObjectModel::attached`]).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Attached {
+    /// The parent's marker it sits on; empty for the parent's origin.
+    pub parent_marker: String,
+    /// Its own marker put there; empty for its origin.
+    pub child_marker: String,
+    pub model: ObjectModel,
+}
+
+/// How deep attachments are followed (a turret on a vehicle, and what the
+/// turret carries).
+pub const MAX_ATTACH_DEPTH: usize = 2;
+
+/// An object's [`ObjectModel`]: [`render_model_of`]'s model, and the
+/// objects of the variant it is drawn with. That variant is the
+/// collection entry's (`vehc`/`itmc`), else `multiplayer` on a
+/// multiplayer map when the model has one (the variant the map's vehicles
+/// spawn with; the Live art's rule, `cli::live_models::pick_variant`), else
+/// the object's default variant as the engine picks it.
+pub fn object_model_of(
+    ctx: &tags::object::Context,
+    object: TagId,
+    multiplayer: bool,
+) -> Option<ObjectModel> {
+    object_model_at(ctx, object, multiplayer, 0)
+}
+
+fn object_model_at(
+    ctx: &tags::object::Context,
+    object: TagId,
+    multiplayer: bool,
+    depth: usize,
+) -> Option<ObjectModel> {
+    let group = ctx.catalog.get(object)?.group;
+    let (object, entry_variant) = if group == FourCC(*b"itmc") || group == FourCC(*b"vehc") {
+        let tag = ctx.decode(object).ok()?;
+        tag.layers
+            .first()?
+            .elements("entries")
+            .iter()
+            .filter_map(|e| {
+                let r = e.tag_ref("object")?;
+                let variant = e.sid("variant").map(|s| s.0);
+                Some((r.id, variant))
+            })
+            .find(|(id, _)| *id != TagId::NULL)?
+    } else {
+        (object, None)
+    };
+    let resolved = ctx.resolve_object(object).ok()?;
+    let mut model = resolved.model?;
+    let mode = model.render_model.as_ref()?;
+    if mode.group != FourCC(*b"mode") {
+        return None;
+    }
+    let mode = mode.id;
+    let names: Vec<(tags::wire::StringId, Option<String>)> = model
+        .tag
+        .layers
+        .first()
+        .map(|root| root.elements("variants"))
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|v| v.sid("name"))
+        .map(|(id, s)| (id, s.map(str::to_owned)))
+        .collect();
+    let has = |v: tags::wire::StringId| names.iter().any(|(id, _)| *id == v);
+    let multiplayer_variant = names
+        .iter()
+        .find(|(_, s)| s.as_deref() == Some("multiplayer"))
+        .map(|(id, _)| *id);
+    let preferred = entry_variant
+        .filter(|v| v.0 != 0 && has(*v))
+        .or(multiplayer_variant.filter(|_| multiplayer));
+    if let Some(v) = preferred
+        && let Ok(m) = ctx.resolve_model(model.id, v)
+    {
+        model = m;
+    }
+    let attached = if depth < MAX_ATTACH_DEPTH {
+        model
+            .objects
+            .iter()
+            .filter_map(|o| {
+                Some(Attached {
+                    parent_marker: o.parent_marker.clone(),
+                    child_marker: o.child_marker.clone(),
+                    model: object_model_at(ctx, o.object, multiplayer, depth + 1)?,
+                })
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    Some(ObjectModel { mode, attached })
+}
+
+/// Column-major 4x4 identity.
+const IDENTITY: Mat4 = [
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0, 0.0],
+    [0.0, 0.0, 1.0, 0.0],
+    [0.0, 0.0, 0.0, 1.0],
+];
+
+fn transform_point(m: &Mat4, p: [f32; 3]) -> [f32; 3] {
+    std::array::from_fn(|r| m[0][r] * p[0] + m[1][r] * p[1] + m[2][r] * p[2] + m[3][r])
+}
+
+fn transform_vector(m: &Mat4, v: [f32; 3]) -> [f32; 3] {
+    std::array::from_fn(|r| m[0][r] * v[0] + m[1][r] * v[1] + m[2][r] * v[2])
+}
+
+/// Where an attached object's model space lands in its parent's: the
+/// parent's own placement `at`, then the parent's marker frame, then the
+/// child's anchor marker (if it names one) moved back to the origin.
+pub fn attachment_transform(at: &Mat4, parent_marker: &Mat4, child_anchor: Option<&Mat4>) -> Mat4 {
+    let on_marker = mat_mul(at, parent_marker);
+    match child_anchor {
+        Some(c) => mat_mul(&on_marker, &invert_rigid(c)),
+        None => on_marker,
+    }
+}
+
+/// A part moved by `at` (positions and normals).
+pub fn place_part(part: &mut WorldPart, at: &Mat4) {
+    for p in &mut part.positions {
+        *p = transform_point(at, *p);
+    }
+    for n in &mut part.normals {
+        *n = normalize(transform_vector(at, *n));
+    }
+}
+
+/// The inverse of a rotation, uniform scale and translation.
+fn invert_rigid(m: &Mat4) -> Mat4 {
+    let s2: f32 = (0..3).map(|r| m[0][r] * m[0][r]).sum();
+    let k = if s2 > 0.0 { 1.0 / s2 } else { 0.0 };
+    let mut out = [[0.0; 4]; 4];
+    for c in 0..3 {
+        for r in 0..3 {
+            out[c][r] = m[r][c] * k;
+        }
+    }
+    let t: [f32; 3] = std::array::from_fn(|r| -(0..3).map(|c| out[c][r] * m[3][c]).sum::<f32>());
+    out[3] = [t[0], t[1], t[2], 1.0];
+    out
+}
+
+/// A local frame: rotation (unit quaternion `[x, y, z, w]`) then
+/// translation.
+fn frame(translation: [f32; 3], rotation: [f32; 4]) -> Mat4 {
+    NodeTransform {
+        rotation,
+        translation,
+        ..NodeTransform::default()
+    }
+    .matrix()
+}
+
+/// The render model's nodes at rest, in model space: each node's default
+/// translation and orientation (`ModeNode +0xc`, `+0x18`) relative to its
+/// parent, composed down from the roots.
+pub fn rest_nodes(geo: &RenderModelGeometry) -> Vec<Mat4> {
+    let nodes: Vec<RestNode> = geo
+        .nodes
+        .iter()
+        .map(|n| RestNode {
+            parent: n.wire.parent_index,
+            translation: n.wire.translation,
+            orientation: n.wire.orientation,
+        })
+        .collect();
+    rest_frames(&nodes)
+}
+
+/// A render-model node at rest, relative to its parent (`-1`: a root).
+#[derive(Clone, Copy, Debug)]
+pub struct RestNode {
+    pub parent: i16,
+    pub translation: [f32; 3],
+    /// Unit quaternion `[x, y, z, w]`.
+    pub orientation: [f32; 4],
+}
+
+/// [`rest_nodes`] over plain nodes: a node whose parent is out of range
+/// (or itself) is a root; one in a cycle is left at the origin.
+pub fn rest_frames(nodes: &[RestNode]) -> Vec<Mat4> {
+    let n = nodes.len();
+    let mut world: Vec<Option<Mat4>> = vec![None; n];
+    // Parents may follow their children; resolve up to `n` passes.
+    for _ in 0..n {
+        let mut progress = false;
+        for (i, node) in nodes.iter().enumerate() {
+            if world[i].is_some() {
+                continue;
+            }
+            let local = frame(node.translation, node.orientation);
+            let parent = usize::try_from(node.parent).ok();
+            world[i] = match parent {
+                None => Some(local),
+                Some(p) if p == i || p >= n => Some(local),
+                Some(p) => world[p].map(|pw| mat_mul(&pw, &local)),
+            };
+            progress |= world[i].is_some();
+        }
+        if !progress {
+            break;
+        }
+    }
+    world.into_iter().map(|m| m.unwrap_or(IDENTITY)).collect()
+}
+
+/// The render model's markers in model space at rest, by name (the first
+/// marker of each group): header `+0x58` is a block of marker groups (0xc:
+/// string-ID name, block of markers); a marker is 0x24 bytes with its node
+/// at `+2`, translation `+4` and rotation `+0x10`, relative to the node
+/// (docs/live/live-art.md, "Markers").
+pub fn marker_frames<R: Read + Seek>(
+    map: &mut Map<R>,
+    mode: TagId,
+    geo: &RenderModelGeometry,
+) -> HashMap<String, Mat4> {
+    let out = HashMap::new();
+    let Some(address) = map
+        .tag(mode)
+        .ok()
+        .and_then(|t| t.location.as_ref())
+        .map(|l| l.address)
+    else {
+        return out;
+    };
+    let Ok(bytes) = map.read_tag_bytes(mode) else {
+        return out;
+    };
+    markers_in(&bytes, address, map.strings(), &rest_nodes(geo))
+}
+
+/// [`marker_frames`] over a render model's payload (`bytes` at
+/// `address`), its nodes at rest in model space.
+pub fn markers_in(
+    bytes: &[u8],
+    address: u32,
+    strings: &[Option<String>],
+    nodes: &[Mat4],
+) -> HashMap<String, Mat4> {
+    let mut out = HashMap::new();
+    let view = TagView::new(bytes, address);
+    let Ok(root) = view.at(0, 0x60) else {
+        return out;
+    };
+    let Ok(groups) = view.block(root, 0x58, 0xc) else {
+        return out;
+    };
+    let f32_at = |b: &[u8], o: usize| f32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
+    for g in groups {
+        let id = tags::wire::StringId(u32::from_le_bytes([g[0], g[1], g[2], g[3]]));
+        let Some(name) = id.resolve(strings).ok().flatten() else {
+            continue;
+        };
+        if out.contains_key(name) {
+            continue;
+        }
+        let Some(m) = view.block(g, 4, 0x24).ok().and_then(|m| m.first().copied()) else {
+            continue;
+        };
+        let Some(node) = nodes.get(usize::from(m[2])) else {
+            continue;
+        };
+        let translation = [f32_at(m, 4), f32_at(m, 8), f32_at(m, 0xc)];
+        let rotation = [
+            f32_at(m, 0x10),
+            f32_at(m, 0x14),
+            f32_at(m, 0x18),
+            f32_at(m, 0x1c),
+        ];
+        out.insert(
+            name.to_owned(),
+            mat_mul(node, &frame(translation, rotation)),
+        );
+    }
+    out
 }
 
 /// A shader's template name and bitmaps: `shad +0` is the template
@@ -1150,6 +1504,120 @@ mod tests {
         assert!(
             (p[0] - 8.0).abs() < 1e-5 && (p[1] - 2.0).abs() < 1e-5,
             "{p:?}"
+        );
+    }
+
+    fn near(a: [f32; 3], b: [f32; 3]) -> bool {
+        (0..3).all(|i| (a[i] - b[i]).abs() < 1e-5)
+    }
+
+    /// A turret on a hull, all invented: the hull's root node and a mount
+    /// node one unit up, turned a quarter about z; the hull's `turret`
+    /// marker half a unit along the mount's x. The turret's own `mount`
+    /// marker sits a quarter below its origin.
+    #[test]
+    fn an_attached_object_sits_on_its_parents_marker() {
+        let q = std::f32::consts::FRAC_1_SQRT_2;
+        let nodes = rest_frames(&[
+            RestNode {
+                parent: -1,
+                translation: [0.0; 3],
+                orientation: [0.0, 0.0, 0.0, 1.0],
+            },
+            RestNode {
+                parent: 0,
+                translation: [0.0, 0.0, 1.0],
+                orientation: [0.0, 0.0, q, q],
+            },
+        ]);
+        // The hull's payload: a 0x60-byte header whose `+0x58` block holds
+        // two marker groups, `turret` (two markers: the first counts) and
+        // `spare` (none, so no frame).
+        let strings: Vec<Option<String>> = ["", "turret", "spare", "mount"]
+            .iter()
+            .map(|s| Some((*s).to_owned()))
+            .collect();
+        let sid = |i: usize| ((strings[i].as_ref().unwrap().len() as u32) << 24) | i as u32;
+        let address = 0x8000_0000u32;
+        let mut b = vec![0u8; 0x60 + 2 * 0xc + 2 * 0x24];
+        let put = |b: &mut Vec<u8>, at: usize, v: u32| {
+            b[at..at + 4].copy_from_slice(&v.to_le_bytes());
+        };
+        let putf = |b: &mut Vec<u8>, at: usize, v: &[f32]| {
+            for (k, x) in v.iter().enumerate() {
+                b[at + 4 * k..at + 4 * k + 4].copy_from_slice(&x.to_le_bytes());
+            }
+        };
+        put(&mut b, 0x58, 2);
+        put(&mut b, 0x5c, address + 0x60);
+        put(&mut b, 0x60, sid(1));
+        put(&mut b, 0x64, 2);
+        put(&mut b, 0x68, address + 0x78);
+        put(&mut b, 0x6c, sid(2));
+        let m0 = 0x78;
+        b[m0 + 2] = 1;
+        putf(&mut b, m0 + 4, &[0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+        let m1 = m0 + 0x24;
+        putf(&mut b, m1 + 4, &[9.0, 9.0, 9.0, 0.0, 0.0, 0.0, 1.0]);
+        let frames = markers_in(&b, address, &strings, &nodes);
+        assert_eq!(frames.len(), 1, "{:?}", frames.keys());
+        let turret = frames["turret"];
+        assert!(near(transform_point(&turret, [0.0; 3]), [0.0, 0.5, 1.0]));
+        assert!(near(
+            transform_vector(&turret, [1.0, 0.0, 0.0]),
+            [0.0, 1.0, 0.0]
+        ));
+
+        // The turret's anchor lands on the hull's marker, and its axes
+        // turn with it.
+        let anchor = frame([0.0, 0.0, -0.25], [0.0, 0.0, 0.0, 1.0]);
+        let at = attachment_transform(&IDENTITY, &turret, Some(&anchor));
+        let mut part = WorldPart {
+            positions: vec![[0.0, 0.0, -0.25], [1.0, 0.0, -0.25]],
+            normals: vec![[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+            ..WorldPart::default()
+        };
+        place_part(&mut part, &at);
+        assert!(
+            near(part.positions[0], [0.0, 0.5, 1.0]),
+            "{:?}",
+            part.positions
+        );
+        assert!(
+            near(part.positions[1], [0.0, 1.5, 1.0]),
+            "{:?}",
+            part.positions
+        );
+        assert!(near(part.normals[0], [0.0, 1.0, 0.0]), "{:?}", part.normals);
+        assert!(near(part.normals[1], [0.0, 0.0, 1.0]), "{:?}", part.normals);
+        // Without an anchor its origin is on the marker; a placed parent
+        // carries it along.
+        let lifted = frame([0.0, 0.0, 10.0], [0.0, 0.0, 0.0, 1.0]);
+        let at = attachment_transform(&lifted, &turret, None);
+        assert!(near(transform_point(&at, [0.0; 3]), [0.0, 0.5, 11.0]));
+    }
+
+    #[test]
+    fn rest_frames_compose_in_any_order_and_survive_bad_links() {
+        let still = [0.0, 0.0, 0.0, 1.0];
+        let node = |parent: i16, z: f32| RestNode {
+            parent,
+            translation: [0.0, 0.0, z],
+            orientation: still,
+        };
+        // The child comes first; a self-parented node is a root; two nodes
+        // in a cycle stay at the origin.
+        let f = rest_frames(&[
+            node(1, 1.0),
+            node(-1, 2.0),
+            node(2, 5.0),
+            node(4, 1.0),
+            node(3, 1.0),
+        ]);
+        let z = |m: &Mat4| transform_point(m, [0.0; 3])[2];
+        assert_eq!(
+            f.iter().map(z).collect::<Vec<_>>(),
+            [3.0, 2.0, 5.0, 0.0, 0.0]
         );
     }
 }
