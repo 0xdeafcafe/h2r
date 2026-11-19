@@ -947,7 +947,7 @@ fn a_big_packs_texts_fit_and_have_ids_of_the_family() {
     );
     assert_eq!(repo.press_list(0), Chosen::Open(PACK));
     let rows = PackRows::new(Arc::clone(&repo));
-    assert_eq!(rows.count(), MAX_ROWS, "Download All and 39 maps");
+    assert_eq!(rows.count(), MAX_PACK_ROWS, "Download All and all 40 maps");
     assert!(TEXTS.owns(rows.title()));
     for r in 0..rows.count() as i16 {
         let texts = rows.texts(r);
@@ -962,8 +962,8 @@ fn a_big_packs_texts_fit_and_have_ids_of_the_family() {
             "{d:?}"
         );
     }
-    assert!(rows.texts(MAX_ROWS as i16).is_empty());
-    assert_eq!(repo.pack_line(0).unwrap(), "Download All (50)");
+    assert!(rows.texts(MAX_PACK_ROWS as i16).is_empty());
+    assert_eq!(repo.pack_line(0).unwrap(), "Download All (40)");
     assert!(rows
         .describe(2)
         .unwrap()
@@ -996,4 +996,21 @@ fn a_cold_visit_can_retry_and_browse_every_row_without_changing_focus_on_refresh
     repo.opened();
     assert_eq!(rows.count(), 1);
     assert_eq!(repo.list_row(0).unwrap().0, "New arrival");
+}
+
+#[test]
+fn bulk_download_requires_focus_on_download_all_in_a_listed_pack() {
+    let (fake, repo) = listed(with_pack(), None);
+    repo.press_list(1);
+    for row in [None, Some(-1), Some(4)] {
+        repo.x_pack(row);
+    }
+    assert!(fake.installs.lock().unwrap().is_empty());
+    repo.listed(Ok(Vec::new()));
+    assert_eq!(repo.pack_count(), 1);
+    assert_eq!(repo.pack_line(0).as_deref(), Some("Pack unavailable"));
+    assert!(repo.pack_description(0).unwrap().contains("Press B"));
+    assert_eq!(repo.press_pack(0), Chosen::Nothing);
+    repo.x_pack(Some(0));
+    assert!(fake.installs.lock().unwrap().is_empty());
 }

@@ -107,10 +107,11 @@ const DETAIL_ROWS: u32 = LIST_DESCRIPTIONS + MAX_ROWS as u32;
 const DETAIL_DESCRIPTIONS: u32 = DETAIL_ROWS + MAX_PAGE_ROWS as u32;
 const PANEL_TEXTS: u32 = DETAIL_DESCRIPTIONS + MAX_PAGE_ROWS as u32;
 const PACK_ROWS: u32 = PANEL_TEXTS + page_layout::TEXTS as u32;
-const PACK_DESCRIPTIONS: u32 = PACK_ROWS + MAX_ROWS as u32;
-const _: () = assert!(PACK_DESCRIPTIONS + MAX_ROWS as u32 <= TEXTS.len);
+const PACK_DESCRIPTIONS: u32 = PACK_ROWS + MAX_PACK_ROWS as u32;
+const _: () = assert!(PACK_DESCRIPTIONS + MAX_PACK_ROWS as u32 <= TEXTS.len);
 /// Rows the list (and a pack's list) shows at most.
-pub const MAX_ROWS: usize = 40;
+pub const MAX_ROWS: usize = LIMIT as usize;
+const MAX_PACK_ROWS: usize = MAX_ROWS + 1;
 /// A line of a pack's summary holds this many characters (the level
 /// select's description text is 221 units wide, about 32 of conduit-12),
 /// and the pack's own words twice that less a margin for the wrap, so the
@@ -588,7 +589,8 @@ impl Repo {
             g.in_flight = false;
             g.failed = r.is_err();
             match r {
-                Ok(items) => {
+                Ok(mut items) => {
+                    items.truncate(MAX_ROWS);
                     eprintln!(
                         "mods: {} on the server, {} new",
                         items.len(),
@@ -969,34 +971,33 @@ impl Repo {
         format!("mods: {name}: downloading {} maps", wanted.len())
     }
 
-    /// The open pack's name and maps, newest first (its list shows one
-    /// less than [`MAX_ROWS`] of them: its first row is Download All).
+    /// The open pack and its maps, newest first. A vanished pack has no actions.
     pub fn pack(&self) -> Option<(String, Vec<ModEntry>)> {
         let g = self.lock();
         let name = g.pack.clone()?;
         let List::Loaded(items) = &g.list else {
             return None;
         };
-        let maps = items
+        let maps: Vec<_> = items
             .iter()
             .filter(|e| e.pack.as_deref() == Some(name.as_str()))
             .cloned()
             .collect();
-        Some((name, maps))
+        (!maps.is_empty()).then_some((name, maps))
     }
 
     /// The map at the open pack's row `row` (row 0 is Download All).
     fn pack_entry(&self, row: i16) -> Option<ModEntry> {
         let r = usize::try_from(row)
             .ok()
-            .filter(|r| (1..MAX_ROWS).contains(r))?;
+            .filter(|r| (1..MAX_PACK_ROWS).contains(r))?;
         self.pack()?.1.into_iter().nth(r - 1)
     }
 
     /// The rows the pack's list has: Download All, then its maps.
     pub fn pack_count(&self) -> usize {
         self.pack()
-            .map_or(1, |(_, maps)| 1 + maps.len().min(MAX_ROWS - 1))
+            .map_or(1, |(_, maps)| 1 + maps.len())
     }
 
     /// Row `row` of the pack's list: Download All (or how the downloads
@@ -1004,7 +1005,7 @@ impl Repo {
     pub fn pack_line(&self, row: i16) -> Option<String> {
         if row == 0 {
             let Some((_, maps)) = self.pack() else {
-                return Some("Back".into());
+                return Some("Pack unavailable".into());
             };
             let g = self.lock();
             let left = maps.iter().filter(|e| !Self::is_here(&g, &e.id)).count();
@@ -1024,7 +1025,7 @@ impl Repo {
     pub fn pack_description(&self, row: i16) -> Option<String> {
         if row == 0 {
             let Some((_, maps)) = self.pack() else {
-                return Some("That pack is not listed any more.".into());
+                return Some("This pack is no longer listed.\nPress B to return to Mods.".into());
             };
             let g = self.lock();
             let left = maps.iter().filter(|e| !Self::is_here(&g, &e.id)).count();
@@ -1056,12 +1057,16 @@ impl Repo {
     /// X on the pack's row `row`: that map downloads; on Download All,
     /// every map not here.
     pub fn x_pack(self: &Arc<Self>, row: Option<i16>) -> String {
-        match row.filter(|r| *r != 0).and_then(|r| self.pack_entry(r)) {
-            Some(e) => self.x_map(&e),
-            None => match self.pack() {
+        match row {
+            Some(0) => match self.pack() {
                 Some((name, maps)) => self.download_all(&name, &maps),
                 None => "mods: no pack is open".into(),
             },
+            Some(r) => match self.pack_entry(r) {
+                Some(e) => self.x_map(&e),
+                None => "mods: no map focused".into(),
+            },
+            None => "mods: no map focused".into(),
         }
     }
 
@@ -1635,7 +1640,7 @@ impl PackRows {
     fn set_description(&self, row: i16) -> Option<u32> {
         let r = u32::try_from(row)
             .ok()
-            .filter(|r| (*r as usize) < MAX_ROWS)?;
+            .filter(|r| (*r as usize) < MAX_PACK_ROWS)?;
         let text = self.0.pack_description(row).unwrap_or_default();
         Some(self.0.texts.set(PACK_DESCRIPTIONS + r, &text))
     }
@@ -1764,7 +1769,7 @@ impl Rows for DetailRows {
 
 fn describe(title: &str, count: usize, row: impl Fn(i16) -> Option<String>) -> String {
     let mut out = format!("title {title:?}; rows:");
-    for r in 0..count.min(MAX_ROWS) as i16 {
+    for r in 0..count as i16 {
         if let Some(l) = row(r) {
             out.push_str(&format!(" [{r}] {l:?}"));
         }
