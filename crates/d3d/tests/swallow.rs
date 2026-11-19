@@ -92,6 +92,7 @@ fn plan(drop: bool, placed: &Arc<AtomicU32>) -> Swallow {
         targets: vec![1, 1, 0],
         primitive: PrimitiveType::QuadList,
         vertices: 4,
+        shapes: Vec::new(),
         drop,
         pass: Box::new(Placed(Arc::clone(placed), true)),
     }
@@ -247,6 +248,7 @@ fn another_draw_or_shape_ends_the_swallow() {
         targets: vec![0, 0],
         primitive: PrimitiveType::QuadList,
         vertices: 4,
+        shapes: Vec::new(),
         drop: true,
         pass: Box::new(Placed(Arc::clone(placed), true)),
     };
@@ -269,6 +271,35 @@ fn another_draw_or_shape_ends_the_swallow() {
     assert_eq!(d.drain_until_callback(&mut m).unwrap(), None);
     assert_eq!(d.stats().swallow_mismatches, 2, "a quad list where a fan is planned");
     assert_eq!(d.stats().swallowed_draws, 1);
+}
+
+/// A draw's own shape stands for it; the draws past `shapes` take the
+/// swallow's.
+#[test]
+fn each_draw_can_have_its_own_shape() {
+    let (mut d, mut m, _) = setup(takes());
+    let placed = Arc::new(AtomicU32::new(0));
+    let mixed = |shapes: Vec<(PrimitiveType, usize)>| Swallow {
+        targets: vec![0, 0],
+        primitive: PrimitiveType::TriangleFan,
+        vertices: 4,
+        shapes,
+        drop: true,
+        pass: Box::new(Placed(Arc::clone(&placed), true)),
+    };
+    let quads = vec![(PrimitiveType::QuadList, 4); 2];
+    assert!(d.swallow(&mut m, mixed(quads)).unwrap());
+    quad(&mut m);
+    quad(&mut m);
+    assert_eq!(d.drain_until_callback(&mut m).unwrap(), None);
+    let s = d.stats();
+    assert_eq!((s.swallowed_draws, s.swallow_mismatches), (2, 0), "both quads are their own shape");
+    assert!(d.swallow(&mut m, mixed(vec![(PrimitiveType::QuadList, 4)])).unwrap());
+    quad(&mut m);
+    quad(&mut m);
+    assert_eq!(d.drain_until_callback(&mut m).unwrap(), None);
+    let s = d.stats();
+    assert_eq!((s.swallowed_draws, s.swallow_mismatches), (3, 1), "the second takes the fan");
 }
 
 /// Arming over a swallow its pass never finished counts it as a mismatch.

@@ -2331,6 +2331,32 @@ its own thread, and render-timing does not matter (the call runs).
      size. A vertex register the resolver took from the engine that no
      external of the implementation names is refused
      (`ScreenRefusal::EngineVertexConstants`).
+   - **Built: the blur's convolution** (`screen_gpu::ScreenConvolution`,
+     `native_post_glue::screen_convolution`): `0x0002d140` calls
+     `0x000211a0` with its seventh word 1 and the eighth to tenth 0, so
+     the combiner is `0x00020f30`'s at strength 0 and `y` 0
+     (`engine::glow::blur_combiner`), and each quad goes through
+     `0x00034a90` with its tenth argument 0: the window's rectangle in
+     the stand-in's pixels, four taps, each stage's coordinates scaled by
+     its source's size over the stand-in's (`0x00034bf7`..`0x00034c27`),
+     the quad `glow::quad` gives the glow's, drawn by the glow's
+     `glow::QuadDrawer` (the glow now draws through it too). The quads go
+     into stand-ins for `0x19`..`0x1b` (`screen_gpu::STAND_INS`, at the
+     plan's guest size times the copy's scale, `STAND_IN_FORMAT`; S: an
+     8-bit target as 7 and 8), each cleared when the call first draws
+     into it; their source is the pass's target (the bound colour, or
+     target 1's stand-in) or the stand-in the last quad drew. Engine
+     textures 24 and 25 bind the target the pass's convolution `n` left in
+     `[0x00485a78 + 4 n]` (`screen_gpu::Bound::Result`), refused before
+     one set it in the call, since `0x0002d140` clears them on its way out
+     (`screen_gpu::Drawn`, `check_order`). A pass that blends or masks
+     colour does not convolve natively (its quads draw under its states).
+     The swallow takes each draw's own shape (`d3d::Swallow::shapes`: the
+     strips of `SET_BEGIN_END` 6, the quads `Begin(7)` of four), the quads
+     into slots 2..4 for `0x19`..`0x1b`. Each egor is probed on its own
+     before its draws are dropped. With these, the blur misses nothing and
+     is armed with the switch on (off by default); a wide convolution
+     (`0x00021360`) still keeps its effect on D3D (`Missing::Wide`).
 5. **`0x0002df00`, and `0x0002dd30`** before layer 17, which has the
    same shape and gets its own skip point.
 6. **Layer 17** (S: bloom), as stage 1b draws the world's other layers.
