@@ -1772,13 +1772,14 @@ where
         &mut self,
         color: Self::Surface,
         depth: Self::Surface,
+        sampled: Vec<Option<Self::Surface>>,
         request: crate::backend::ExternalPassRequest,
         pass: Box<dyn crate::backend::ExternalPass>,
     ) -> Result<bool, String> {
         // A replay redraws recorded draws, not passes: until it can redraw
         // this one with its warped camera, the frame is held, not blended.
         self.unpinned = true;
-        self.inner.external_pass(color, depth, request, pass)
+        self.inner.external_pass(color, depth, sampled, request, pass)
     }
 
     fn depth_level_texture(

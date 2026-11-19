@@ -253,6 +253,7 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
     }));
     crate::native_transparents_glue::install(device, Arc::clone(&state));
     crate::native_lights_glue::install(device, state);
+    // The post loads its own screen effects (`native_post_glue::EffectsSlot`).
     crate::native_post_glue::install(device);
 }
 
@@ -900,6 +901,8 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Res
     } else {
         None
     };
+    // The screen effects are not the world's: `native_post_glue` loads
+    // them itself, with or without the native world.
     // Draw only a native material's clusters, and its placements with its
     // rigid program: the rest keeps its D3D draws.
     let world = keep_draws(world, &|d| native.contains(&d.material) && drawn_natively(d, &rigid));

@@ -169,6 +169,7 @@ pub fn compile_pass(
         alpha_test,
         provided_inputs: INPUT_MASK,
         input_fetch: WORLD_FETCH,
+        w_buffer: true,
     })?;
     Ok(MaterialProgram {
         wgsl: t.wgsl,
@@ -405,6 +406,9 @@ pub(crate) struct PassParts<'a> {
     /// How each supplied register arrives ([`WORLD_FETCH`] for a material
     /// program's world vertex).
     pub input_fetch: [InputFetch; 16],
+    /// The fragment writes the W-buffered depth (the world's passes); a
+    /// colour-only screen pass (`ZENABLE` 0) writes none.
+    pub w_buffer: bool,
 }
 
 /// A translated pass.
@@ -436,7 +440,7 @@ pub(crate) fn translate_pass(p: &PassParts<'_>) -> Result<Translated, String> {
     let mut options = PixelOptions {
         texture_dims: p.dims,
         // The game's world is W-buffered (docs/graphics/native-renderer.md).
-        w_buffer: true,
+        w_buffer: p.w_buffer,
         alpha_test: p.alpha_test.map(|(f, _)| alpha_func(f)),
         ..Default::default()
     };

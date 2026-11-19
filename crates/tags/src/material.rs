@@ -113,8 +113,9 @@ pub enum VectorTarget {
     /// Combiner constant `slot` (0..7 the stages', 8 the final
     /// combiner's) of C1 or C0; the input packed with
     /// [`pack_engine_colour`] (`half` its option) in the byte lanes of
-    /// `mask` still its own.
-    Pixel { c1: bool, slot: u8, mask: u32, half: bool },
+    /// `mask` still its own. A scalar goes through [`engine_scalar`] with
+    /// `transform` first (`0x00019ca0`; vectors ignore it).
+    Pixel { c1: bool, slot: u8, mask: u32, half: bool, transform: u8 },
 }
 
 /// One engine vector input's binding ([`ResolvedImplementation::vector_bindings`]).
@@ -188,6 +189,13 @@ pub struct ResolvedImplementation {
     /// Engine-driven render-state / stage-state bindings, raw.
     pub engine_render_states: Vec<ExternalBinding>,
     pub engine_stage_states: Vec<ExternalBinding>,
+    /// The engine vertex constants that read a stage's texture size (modes
+    /// 5..20), in the order `0x00019be0` applies them: their resolved
+    /// values hold the size the resolver knew (0 by 0 for an engine
+    /// texture's, which `0x00019530` sets when it binds it), so a host
+    /// binding an engine texture puts its size in again
+    /// ([`EngineVertexConstant::eval_size`]).
+    pub dimension_bindings: Vec<EngineVertexConstant>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -595,11 +603,9 @@ impl ShaderLibrary {
 
         // 0x00019be0: engine-driven vertex constants (after instance vectors).
         for e in &spas.externals[imp.external_vertex_constants.indices()] {
-            let w = e.word();
-            let reg = usize::from(w & 0xf);
-            let bank = usize::from((w >> 4) & 1);
-            let mode = usize::from((w >> 5) & 0x1f);
-            let stage = (w >> 13) as usize;
+            let c = EngineVertexConstant::of(*e);
+            let (reg, bank, mode, stage) =
+                (usize::from(c.reg), usize::from(c.bank), usize::from(c.mode), usize::from(c.stage));
             let dims = stage_dims(&textures, stage);
             eval_engine(
                 &mut banks[bank][reg],
@@ -654,6 +660,7 @@ impl ShaderLibrary {
                     slot,
                     mask: CHANNEL_MASKS[mode],
                     half,
+                    transform: transform as u8,
                 };
                 engine_writes.push((target, (mode == 4).then_some(e.bytes[3])));
                 scalar_writes.push((target, (mode <= 3).then_some(e.bytes[3])));
@@ -714,6 +721,11 @@ impl ShaderLibrary {
             animated,
             engine_render_states: spas.externals[imp.animated_render_states.indices()].to_vec(),
             engine_stage_states: spas.externals[imp.animated_stage_states.indices()].to_vec(),
+            dimension_bindings: spas.externals[imp.external_vertex_constants.indices()]
+                .iter()
+                .map(|&e| EngineVertexConstant::of(e))
+                .filter(|c| (5..=20).contains(&c.mode))
+                .collect(),
         })
     }
 }
@@ -991,7 +1003,7 @@ pub(crate) fn vector_bindings(writes: &[(VectorTarget, Option<u8>)]) -> Vec<Vect
                     .fold(0, |a, c| a | c);
                 VectorTarget::Vertex { bank, reg, components: components & !over }
             }
-            VectorTarget::Pixel { c1, slot, mask, half } => {
+            VectorTarget::Pixel { c1, slot, mask, half, transform } => {
                 let over = later
                     .iter()
                     .filter_map(|(t, _)| match *t {
@@ -999,7 +1011,7 @@ pub(crate) fn vector_bindings(writes: &[(VectorTarget, Option<u8>)]) -> Vec<Vect
                         _ => None,
                     })
                     .fold(0, |a, m| a | m);
-                VectorTarget::Pixel { c1, slot, mask: mask & !over, half }
+                VectorTarget::Pixel { c1, slot, mask: mask & !over, half, transform }
             }
         };
         let empty = match target {
@@ -1011,6 +1023,67 @@ pub(crate) fn vector_bindings(writes: &[(VectorTarget, Option<u8>)]) -> Vec<Vect
         }
     }
     out
+}
+
+/// One engine-driven vertex constant (`0x00019be0`, an entry of an
+/// implementation's `+0x124` range): the word's low 4 bits the register,
+/// bit 4 the bank (1 the constant `c[18 + reg]`, 0 the default
+/// `v[reg]`), bits 5..9 the mode (0..3 a scalar into one component, 4 a
+/// vector, 5..20 the size of stage `stage - 1`'s texture, stage 0 a size
+/// of 1 by 1), bits 13..15 the stage; byte 3 the input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EngineVertexConstant {
+    pub bank: u8,
+    pub reg: u8,
+    pub mode: u8,
+    pub stage: u8,
+    pub source: u8,
+}
+
+impl EngineVertexConstant {
+    pub fn of(e: ExternalBinding) -> Self {
+        let w = e.word();
+        Self {
+            bank: ((w >> 4) & 1) as u8,
+            reg: (w & 0xf) as u8,
+            mode: ((w >> 5) & 0x1f) as u8,
+            stage: (w >> 13) as u8,
+            source: e.bytes[3],
+        }
+    }
+
+    /// Whether it reads a stage's size (modes 5..20).
+    pub fn reads_size(self) -> bool {
+        (5..=20).contains(&self.mode)
+    }
+
+    /// The components it writes (bit 0 = x).
+    pub fn components(self) -> u8 {
+        engine_mode_components(usize::from(self.mode))
+    }
+
+    /// Its value written into `row` as `0x00019be0` writes it (only the
+    /// mode's components): `size` the stage's texture's (width, height),
+    /// read by modes 5..20, `inputs` read by modes 0..4.
+    pub fn eval(self, row: &mut [f32; 4], size: (f32, f32), inputs: &EngineInputs) -> Result<()> {
+        eval_engine(row, usize::from(self.mode), 0, usize::from(self.source), size, inputs)
+    }
+
+    /// For a size mode (5..20), its value written into `row` with `size`
+    /// the (width, height) of the texture at stage `stage - 1`; other
+    /// modes leave `row` alone.
+    pub fn eval_size(self, row: &mut [f32; 4], size: (f32, f32)) {
+        if (5..=20).contains(&self.mode) {
+            eval_size(row, usize::from(self.mode), size);
+        }
+    }
+}
+
+/// `imp`'s engine-driven vertex constants in the order `0x00019be0`
+/// applies them.
+pub fn engine_vertex_constants(spas: &PassPostprocess, imp: &Implementation) -> Vec<EngineVertexConstant> {
+    let r = imp.external_vertex_constants;
+    spas.externals.get(r.indices()).unwrap_or(&[]).iter().map(|&e| EngineVertexConstant::of(e)).collect()
 }
 
 fn stage_dims(textures: &[Option<StageTexture>; 4], stage: usize) -> (f32, f32) {
@@ -1029,6 +1102,23 @@ fn stage_dims(textures: &[Option<StageTexture>; 4], stage: usize) -> (f32, f32) 
 }
 
 /// `0x0001b2c0`: one engine value into a float4 register.
+/// An engine scalar through a binding's transform, as `0x00019ca0` (and
+/// the vertex constants' evaluation, with transform 0) applies it: 1 the
+/// complement, 2..5 a cosine or sine wave over one period, scaled into
+/// 0..1 and clamped; anything else the value itself.
+pub fn engine_scalar(x: f32, transform: usize) -> f32 {
+    use std::f32::consts::TAU;
+    let y = match transform {
+        1 => 1.0 - x,
+        2 => ((TAU * x).cos() + 1.0) * 0.5,
+        3 => 0.5 - (TAU * x).cos() * 0.5,
+        4 => ((TAU * x).sin() + 1.0) * 0.5,
+        5 => 0.5 - (TAU * x).sin() * 0.5,
+        _ => x,
+    };
+    if (2..=5).contains(&transform) { y.clamp(0.0, 1.0) } else { y }
+}
+
 fn eval_engine(
     out: &mut [f32; 4],
     mode: usize,
@@ -1037,24 +1127,13 @@ fn eval_engine(
     dims: (f32, f32),
     inputs: &EngineInputs,
 ) -> Result<()> {
-    use std::f32::consts::TAU;
     match mode {
         0..=3 => {
             let x = *inputs
                 .scalars
                 .get(source)
                 .ok_or(Error::Invalid("engine scalar index above 63"))?;
-            out[mode] = match transform {
-                1 => 1.0 - x,
-                2 => ((TAU * x).cos() + 1.0) * 0.5,
-                3 => 0.5 - (TAU * x).cos() * 0.5,
-                4 => ((TAU * x).sin() + 1.0) * 0.5,
-                5 => 0.5 - (TAU * x).sin() * 0.5,
-                _ => x,
-            };
-            if (2..=5).contains(&transform) {
-                out[mode] = out[mode].clamp(0.0, 1.0);
-            }
+            out[mode] = engine_scalar(x, transform);
         }
         4 => {
             let v = inputs
@@ -1063,23 +1142,26 @@ fn eval_engine(
                 .ok_or(Error::Invalid("engine vector index above 63"))?;
             out[..3].copy_from_slice(v);
         }
-        5..=20 => {
-            let (w, h) = dims;
-            match mode {
-                5..=8 => out[mode - 5] = w,
-                9 => (out[0], out[1]) = (w, h),
-                10 => (out[2], out[3]) = (w, h),
-                11 => (out[0], out[1]) = (0.0, 0.0),
-                12 => (out[2], out[3]) = (0.0, 0.0),
-                13 => *out = [w, h, 0.0, 0.0],
-                14 | 18 => *out = [w, 0.0, 0.0, 0.0],
-                15 | 19 => *out = [0.0, h, 0.0, 0.0],
-                16 => (out[0], out[1], out[2]) = (w, h, 1.0),
-                17 => (out[0], out[1], out[2]) = (0.0, 0.0, 0.0),
-                _ => *out = [0.0; 4],
-            }
-        }
+        5..=20 => eval_size(out, mode, dims),
         _ => return Err(Error::Invalid("engine binding mode above 20")),
     }
     Ok(())
+}
+
+/// Modes 5..20 of [`eval_engine`]: the stage's texture size `dims`.
+fn eval_size(out: &mut [f32; 4], mode: usize, dims: (f32, f32)) {
+    let (w, h) = dims;
+    match mode {
+        5..=8 => out[mode - 5] = w,
+        9 => (out[0], out[1]) = (w, h),
+        10 => (out[2], out[3]) = (w, h),
+        11 => (out[0], out[1]) = (0.0, 0.0),
+        12 => (out[2], out[3]) = (0.0, 0.0),
+        13 => *out = [w, h, 0.0, 0.0],
+        14 | 18 => *out = [w, 0.0, 0.0, 0.0],
+        15 | 19 => *out = [0.0, h, 0.0, 0.0],
+        16 => (out[0], out[1], out[2]) = (w, h, 1.0),
+        17 => (out[0], out[1], out[2]) = (0.0, 0.0, 0.0),
+        _ => *out = [0.0; 4],
+    }
 }

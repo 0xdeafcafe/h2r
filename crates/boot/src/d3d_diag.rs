@@ -687,10 +687,11 @@ impl<B: Backend> Backend for DiagBackend<B> {
         &mut self,
         color: Self::Surface,
         depth: Self::Surface,
+        sampled: Vec<Option<Self::Surface>>,
         request: d3d::ExternalPassRequest,
         pass: Box<dyn d3d::ExternalPass>,
     ) -> Result<bool, String> {
-        self.inner.external_pass(color, depth, request, pass)
+        self.inner.external_pass(color, depth, sampled, request, pass)
     }
     fn warp_surface(
         &mut self,

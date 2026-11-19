@@ -305,6 +305,11 @@ points! { ALL;
     /// `0x000138b3`..`0x000139b5` push (`engine::colour_pass::Arguments`),
     /// `ret 0x1c`.
     COLOUR_PASS @ 0x0002_14f0: [fn(a0: stack 0, a1: stack 1, a2: stack 2, a3: stack 3, a4: stack 4, a5: stack 5, a6: stack 6) ret 28]; "docs/graphics/native-renderer.md";
+    /// One of the scenario's screen effects (`0x0002d140`, from the loop of
+    /// `render_screen_effects`): EAX the `egor` datum, stack `(&values,
+    /// columns, rows, &corners)` (`engine::screen_effect::plan`), `ret
+    /// 0x10`.
+    SCREEN_EFFECT @ 0x0002_d140: [fn(datum: eax, values: stack 0, columns: stack 1, rows: stack 2, corners: stack 3) ret 16]; "docs/graphics/native-renderer.md";
     /// Draws the current layer (`[0x00467130]`) of the current list: layer
     /// setup, then `LAYER_ENTRIES` for the layers in its mask.
     LAYER_DRAW @ 0x0004_4550: [opaque]; "docs/graphics/layer-draw.md";

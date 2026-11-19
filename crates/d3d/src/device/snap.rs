@@ -563,7 +563,7 @@ impl<B: Backend> Device<B> {
         if self.pending_grid.is_some() {
             why.push("an occlusion depth grid is asked for".into());
         }
-        if self.pending_external.is_some() {
+        if !self.pending_external.is_empty() {
             why.push("an external pass is asked for".into());
         }
         if self.swallowing.is_some() {

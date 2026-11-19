@@ -977,18 +977,66 @@ How the game lights an object's layer-3 pass (Code, `h2 disasm`;
   (`objects::object_lighting`: body `+0xcc`, the record still its own),
   so the pass has the frame's values whatever the cache does next.
 - **The refusal.** The native models pass does not apply them: its
-  program is ours, not the game's `lightmap_dynamic`/`sh_dynamic`. So a
-  material whose layer-3 pass reads any lighting input in any
-  implementation is refused at load and keeps its D3D draws: never drawn
-  unlit (`object_program::lighting_refusal`, which names an input the
-  object path cannot give, or says the program draw is not wired yet).
+  program is ours, not the game's `lightmap_dynamic`/`sh_dynamic`. So no
+  opaque material is drawn by it (below): one none of whose layer-3
+  implementations reads only what the object path gives is refused at
+  load and keeps its D3D draws (`object_program::program_refusal`, which
+  names what each implementation reads that the path cannot give, or says
+  it has no layer-3 pass).
 
 ### Object programs
 
-An object material whose layer-3 pass reads the object's lighting is
-drawn with the game's own vertex program and pixel shader
-(`native_render::object_program`, `object_program_gpu`), each piece with
-synthetic tests:
+Every opaque object material, whether or not its layer-3 pass reads the
+object's lighting, is drawn with the game's own vertex program and pixel
+shader (`native_render::object_program`, `object_program_gpu`), or left
+to D3D, each piece with synthetic tests. The models pass's base-map
+stand-in (base map, fixed ambient and directional light, posed from the
+object's own node matrices) is no longer used for opaque parts: on 03a's
+intro (frame 02000) the scarab's materials that read no lighting were
+drawn by it, flat and dark where the game lights them, and posed apart
+from its parts drawn through their programs, which use the rows its
+records upload and matched D3D pixel for pixel. The native set accepts a
+shader per definition (`NativeSet::shaders` holds `(definition, shader)`):
+a material one model draws through its programs may be refused for
+another whose sections take other programs, and that one's items keep
+their D3D draws.
+
+A material with no layer-3 pass ("it has no layer-3 pass" in the load
+log) is not drawn at layer 3 at all: its items sit in other layers, which
+the objects stage does not touch, so they keep their D3D draws while the
+definition's layer-3 materials go native. On 03a masterchief
+(0xf40a1293) and 0xe703058e each have one, beside a material whose every
+implementation samples engine texture 3.
+
+- **The texture accumulation target** (engine texture 3, Code). The
+  binding `0x00019530` takes for 3 (`0x000195b2`) binds render target 1
+  through `0x00014f60` (its kind, the byte at `0x00015154 + 1`, takes
+  `0x00015044`: the texture `0x0001dcc0(1)` returns, the descriptor
+  `0x004b4b58 + 0x98` and its texture at `+4`, valid while `+0x88` is set
+  and `+0x95` clear) and writes the target's size (`+0x80`, `+0x84`) as
+  the stage's size, which engine vertex constants of modes 5..20 read.
+  Layer 1's `_combined` passes draw into it; layer 3 samples it in screen
+  space, a linear texture addressed in texels.
+  - `object_look_stages` takes the stage out of the look
+    (`EngineBound::texaccum`); it compiles as a 2D stage without a bias.
+  - The pass asks the device for the level (`ExternalPass::sampled`, the
+    header `TEXACCUM_HEADER`); after the drain the device finds the
+    render-to-texture level over it as a draw binding it would
+    (`Device::rtt_level`, in place, nothing written back) and the backend
+    gives the pass that copy's view (`ExternalTarget::sampled`, the scaled
+    copy's under the render scale). A view whose objects need it is left
+    to D3D when levels are not sampled in place
+    (`Device::samples_levels_in_place`), and an object whose parts need
+    it is left to D3D at the hook, before its items' skip is kept, when
+    the target is not bound (`object_nodes::texaccum_bound`, the check
+    `0x0001dcc0` makes; `NativeSet::texaccum`). If the device still finds
+    no level after the drain, those parts go undrawn for that view: logged
+    once and counted.
+  - Per draw the stage's coordinate scale is one over the level's guest
+    size (`texaccum_scale`), and the engine vertex constants that read
+    the stage's size (`ResolvedImplementation::dimension_bindings`, which
+    the resolver left 0 by 0 for an engine texture) get it
+    (`texaccum_dimensions`).
 
 - **The vertex block.** What the game's upload would hold for one drawn
   object: `c[0..18]` the view's; `c[18 + i]` the implementation's
@@ -1054,13 +1102,43 @@ synthetic tests:
   do), is drawn; one that does not is left out with its reason, and a
   material with none stays on D3D whole. An object whose records pick an
   implementation some lit part of its definition lacks stays on D3D.
+- **The normalization cube.** A stage sampling engine texture 1 is bound
+  to the vector normalization cube the lights load
+  (`native_lights_glue::light_textures`, the globals' rasterizer data),
+  sampled as a cube without a bias, as the lights sample it.
+- **The lightmap stage** (`object_program::OBJECT_LIGHTMAP`, Code). An
+  object's draw binds no lightmap page. The draw (`0x0004d0b0`, draw 3)
+  sets the current page `[0x00485a60]` to -1 for every record with a
+  model datum at `+4` (`0x0004d2c4`..`0x0004d2de`, `0x0004d362`, then
+  `0x0004d420`); only records without one (the BSP's instanced geometry,
+  `0x0004d367`) get a cluster's page and palette through `0x00015c90`.
+  With the page at -1 the stage setup (`0x00018c43`..`0x00018c4c`, then
+  `0x00018d1f`) binds the globals' rasterizer data element's bitmap at
+  `+0x64` (`[[0x00485a80] + 0x64]`) and no palette. The coordinates the
+  draw adds for it come from the BSP: for a record whose implementation
+  is not 2 or 3 and whose `+0xc` bits 18..28 are not `0x7ff`, the BSP's
+  `+0x64` element (stride 12) at that index holds per section a u16 that
+  `0x0004dc60` turns into the vertex offset of a stream of type `0x2e` in
+  the BSP geometry block its `+2` names (`+0x44`, stride `0x38`); the
+  streams step (`0x0001c8c0`, `0x0001ca25`) adds it with its own type's
+  format. The host loads that bitmap as stage 3 decodes it and takes it
+  only when it is uniform (every texel of every level the same): then it
+  samples the same wherever the coordinates fall, and the lit build feeds
+  the stream as zeros instead of reading the BSP. A bitmap that is not
+  uniform keeps implementation 0 on D3D, with the reason; reading the
+  BSP's stream per object section is what that would need.
 - **Combiner constants** (`object_pixel_uniforms`). A lighting vector
   bound to a pixel combiner constant is packed per object as `0x00019ca0`
   packs an engine value (`pack_engine_colour`: alpha 0, `(x + 1) / 2`
   first where the binding halves it, each channel rounded to 8 bits) into
   the byte lanes the binding keeps, the rest as compiled. A lighting
-  scalar bound there is refused: its binding does not keep the transform
-  `0x00019ca0` applies to scalars.
+  scalar goes through its binding's transform first
+  (`tags::material::engine_scalar`, the one `0x00019ca0` applies: the
+  complement, or a cosine or sine wave over one period clamped to 0..1),
+  which the binding now keeps.
+- **Which implementations a map draws.** The observer counts live layer-3
+  object items by their record's implementation and logs the counts once
+  per map, after 600 views.
 - **The node rows at the hook** (`objects::attach_node_rows`). The
   observer copies, for each record a drawn object's items name, the rows
   that record's draw would upload, one set per mode section (two records
@@ -1958,6 +2036,28 @@ its own thread, and render-timing does not matter (the call runs).
 - **`0x0002df00`**, once it is traced; until then a call with `late`
   set keeps its D3D passes.
 
+### Stage 5 status
+
+With `impl.render.native_post` off (the default) everything here draws
+on D3D, and the host only observes. With it on, a call is armed only
+once nothing in it is missing (`native_post_glue::Missing`, counted and
+logged once per reason). It is then probed before any of its draws are
+dropped, and it falls back on its own: the glow alone, and each screen
+effect per egor.
+
+| Effect kind | With the switch on | Why, or what refuses it |
+|---|---|---|
+| Colour pass glow (`0x000214f0`) | Armed after its probe | Refused when its plan fails (a blur past `MAX_BLUR_STEPS`, a target it cannot read). A refused draw or a swallow mismatch keeps every later glow on D3D. |
+| Screen effect, passes into the bound target, nothing convolved (`desaturate`'s shape) | Armed after its probe | `TemplatePass` when a pass's program did not load, or a stage binds an engine texture that is not supplied (`screen_gpu::supplied`). |
+| Pass into target 1, read by a later pass | Armed | `PassTarget` when the pass into target 1 is the call's last, or has no size. `TemplatePass` when target 1 is read before the call drew it (`call_ordered`). |
+| Kept convolution (flag bit 0 or 1 with its value 0) | Armed | Nothing to refuse: it draws nothing, and its result is the pass's target. |
+| Blur convolution (`0x000211a0`) | Armed (blur egor; waiting on the mainmenu A/B) | `Blur` and `StandIns` without the quads' frame. At the probe: a convolving pass that blends or masks colour (`ConvolutionStates`), a combiner that does not compile, the colour not sampleable. |
+| Wide convolution (`0x00021360`) | Armed (built; not run live yet) | `Wide` and `StandIns` without the frame, or when a grid cannot be made (`grid_of`: the source bound at no size, the grid's arithmetic failing). At the probe: as the blur, plus a grid strip under a triangle (`NoStrips`). |
+| Convolution that copies its result (`0x000351a0`) | Refused (`TemplatePass`) | Not drawable natively. `0x0002d140` passes -1, so it never happens. |
+| A screen effect's plan that fails (too many corners, unreadable values, a convolution past its budget) | D3D | Logged once ("a screen effect keeps its D3D draws"). |
+| `0x0002df00` (`late`), `0x0002dd30` | D3D | Not traced yet (step 5 below). |
+| Layer 17, the fade `0x00040890`, the UI and HUD | D3D | Not started (steps 6 to 8). |
+
 ### Order of work
 
 1. **The hook and its order** (built: `feature::native_post`,
@@ -2115,7 +2215,7 @@ its own thread, and render-timing does not matter (the call runs).
    - the ms of `render_screen_effects`.
 4. **The screen effects** (`0x0002d140`; 03a's blur first), with their
    function values (`0x00134fc0`) read at the call. Traced (Code,
-   `h2 disasm`); nothing built yet.
+   `h2 disasm`); slice (a) built (below).
    - **The loop** (`0x00013a0d..0x00013b72`): the window `0x004b9dd0`
      as four floats twice (the corners), then per entry of the scenario
      block (`+0x3d0` count, `+0x3d4` address, `0x24` bytes): skipped when
@@ -2149,8 +2249,9 @@ its own thread, and render-timing does not matter (the call runs).
        address, `0x5c` bytes): a size from the target's (`0x0001dd60`)
        times `+0x58`, at least 64 and its area capped at `0x12c00` by a
        square root (`0x00322b0c` rounds), targets `0x19`/`0x1a` (first)
-       or `0x1b`, and with flag bit 2 `0x00021360` (not traced) else the
-       blur `0x000211a0` (ported: `engine::glow::blur`), its result in
+       or `0x1b`, and with flag bit 2 `0x00021360` (ported:
+       `engine::glow::wide`) else the blur `0x000211a0` (ported:
+       `engine::glow::blur`), its result in
        `[0x00485a78 + 4 i]`.
      - At the end the targets 1, `0x19`, `0x19` and `0x1b` are set back,
        `[0x004670bc]` set, the draw state reset (`0x00016b10`) and
@@ -2166,6 +2267,302 @@ its own thread, and render-timing does not matter (the call runs).
      path) with the engine inputs the screen-effect pass reads; (c)
      `0x00021360` traced and ported beside `blur`; (d) targets `0x19` to
      `0x1b` as stand-ins like 7 and 8. Each is a slice; (a) first.
+   - **Built: which entries draw** (`engine::screen_effects`):
+     `function_value` (`0x00134fc0` and `0x00134fe0`: the state's input
+     plus its `+0x1c`; without a parent (`+0x16` -1 or past the count)
+     the function through `0x0013bb90`, its output range unless a flag in
+     `0xf0`; with one (itself without a parent, else 0) the parent's
+     value times its own raw value, then its range), the evaluator being
+     `engine::function_eval`; `full_screen_single_view`
+     (`0x00022710`: the viewport `0x00485648` is 0, 0, 480, 640 and at
+     most one view `[0x004ba04c]`); `gated`, `corners` and `drawn` (the
+     loop: each entry's datum and four values). Tests: unit tests, and
+     `engine/tests/screen_effects_differential.rs` (`0x00134fc0` over
+     random functions of every type with parents, and the loop from
+     `0x000139ba` with `0x0002d140` stubbed, against the lifted
+     original, bit for bit).
+   - **Built: the evaluator** (`engine::function_eval`, `0x0013b390`
+     instruction for instruction): SSE in the original's operand order,
+     so a NaN keeps the sign and payload the original's does (the blend
+     is `second * r + (1 - r) * first`, type 9's `(1 - r) * first +
+     second * r`); shape `0x0017ca10` and wave `0x0017c900` over the
+     image's tables with the CRT `fmod(v, 1.0)` (`0x00373b6a`: `fprem`
+     for finite non-zero, `fldz` for a zero, a quieted NaN, the
+     indefinite for an infinity) and an x87 `fistp`; type 9 and spline
+     2 through the CRT `pow` (`0x00372d48`) on the x87 model: `fyl2x`
+     and `0x00327f84`'s `frndint`/`f2xm1`/`fscale`, negative bases by
+     `0x00372f31`'s integer and odd test, zero bases, NaNs (`faddp`),
+     infinities (`_powhlp` `0x003738a8`), the range check `0x0032806d`
+     (scaled by 2^1536 or 2^-1536) and `_handle_exc` (`0x003246b5`):
+     overflow to the rounding mode's infinity or largest value,
+     underflow to a denormal by truncation or zero, the others kept.
+     Spline 2's exponent is `rsqrtss` of one segment's squared length
+     times the halving-trick root of the other's, as the original
+     computes it. Control words with an x87 exception unmasked are
+     refused. Tests: unit tests, and the differential above with
+     `_getptd` (`0x00326079`) stubbed so the CRT's error paths run
+     lifted.
+   - **Built: what each draws** (`engine::screen_effect::plan`, one call
+     of `0x0002d140` as an `Effect`): the shader and layer 15's
+     implementation count (the template datum the shader's `+0x24`
+     points at, its definition's `+0x5c` element: the word at
+     `[+4] & 0x1ff`, then the word that many plus 15 into `[+0xc]`, its
+     high 7 bits; `Err(Data)` for `MTRP`/`3trp`, which go through a
+     virtual call). Per pass that draws: its index, implementation and
+     selector (`0x00016610`'s third and fourth arguments; skipped as the
+     original skips them), its target kind and target 1's size (window
+     width and height, halved or quartered toward zero), the strips (per
+     row of corners, per column the corner and the one below; four
+     texture coordinates by kind, 0 the corner's uv, 1 the window
+     fraction, 2 pixels from the window's top left, 3 the corner's x and
+     y, 4 the vector at `[[0x004687c0]]`, z 0 and w 1 except kind 4; plus
+     the offsets `+0x5c` when `+0x58` is above 0, u and v times
+     `[0x004b9de4]` when the set's flag bit 0 is set; the position raw,
+     from the window's top left, or that times `[0x0045dbbc]` or
+     `[0x0045dc20]`) and `Pass::pushed`, the exact words; and its
+     convolutions (kept, the blur with `glow::blur`'s draws, or
+     `0x00021360`'s registers and arguments), each with its size (the
+     area cap: x87 `fild`, `fdivr`, `fsqrt`, `_ftol2` toward zero, both
+     64 when either side is under 64). At the end the original sets
+     target `0x19` twice, the second time to `0x1a`'s saved size (as it
+     does; a native draw need not copy it). Tests: unit tests, and
+     `effect_plans_match_the_lifted_original` (`0x0002d140` lifted, its
+     callees stubbed and recorded: the template passes, every size set,
+     the convolution calls and the words pushed must be the plan's).
+   - **Built: `0x00021360`** (`engine::glow::wide`, slice (c)), the blur's
+     sibling (Code): EAX the source, ECX the draw count, XMM0 a scale,
+     then stack words passed to each draw, the two buffers, the last
+     target, a byte that first sets the combiner `0x00020f30` (XMM0 0,
+     XMM3 its eighth word), `ret 0x20`. `s = scale * [0x0045e4e0]`; per
+     draw (count above 0) the source is bound to stages 0..3 (`0x00014f60`,
+     the same sampler states as the blur) and `0x00034d90` draws into the
+     destination with EDI pointing at `s`, `s * [0x0045e1f4]`,
+     `s * [0x0045e4dc]` and `0 - s`, the buffers ping-pong as the blur's,
+     and `s` grows by `[0x0045dc0c]` (the blur's spread term). The result
+     and the copy into the last target are the blur's. `MAX_WIDE_TAPS`
+     (64) bounds it. `0x00034d90` is `0x00034a90`'s sibling: the
+     target's size (`0x0001dd60`, -1 the bound one `[0x004858b8]`), the
+     target's rectangle or the window by a byte argument, the per-stage
+     size ratios (`0x00485af4`/`0x00485b04` over the target's) and EDI's
+     four floats where `0x00034a90` takes a spread; how the four move
+     each tap is for the native draw to trace. Tests: unit test
+     `the_wide_convolution_ping_pongs_with_a_growing_scale`, and
+     `glow_differential::wide_matches_the_lifted_original` (stubbed as
+     the blur's: draws, offsets, the quad's stack words, combiner, copy
+     and result); the plan now follows a convolution after a wide one.
+   - **Built: `0x00034d90`'s grid** (`engine::screen_grid`): the grid
+     each step of `0x00021360` draws, 30 strips of 21 x 2 vertices
+     (`0x00034770` with the attribute function `0x00034100`). Each tap is
+     the rectangle at (u, v) pulled toward its centre by its EDI float,
+     weighted, when the radii (words 5 and 6) differ, by where the
+     vertex's distance from the centre (x87 `fsqrt`) falls between them,
+     times the stage's bound-over-target ratio; the position through
+     `0x000350e0`. A radial (zoom) blur. `strips()` and `pushed()` give
+     the exact words. Tests: unit tests and
+     `screen_grid_differential::the_grid_matches_the_lifted_original`.
+   - **Wired: the screen-effect hook** (`feature::native_post`, switch on
+     only): a context-only `before` on `0x0002d140`
+     (`points::SCREEN_EFFECT`) hands boot's host EAX and the four stack
+     words; `native_post_glue::plan_effect` plans the call and
+     `missing` lists what does not draw natively yet (the layer-15
+     template pass, passes into target 1, blur and wide convolutions,
+     the stand-ins for targets `0x19` to `0x1b`). Every effect is
+     refused, counted and logged once per reason, and nothing is armed:
+     the D3D path draws them all. Each piece then gets a slice and is
+     struck from `missing`; only an effect with nothing missing will be
+     armed, behind the same swallow and probe as the glow.
+   - **Built: the template pass's look** (`native_render::screen_look`):
+     `screen_look` takes the egor's shader resolved and an
+     layer pass and implementation and gives that pass of layer 15 (at
+     the first level of detail; its vertex shader, stages as the shader's bitmaps
+     or engine textures the draw supplies, stage and render states,
+     pixel shader, constants), or why it stays on D3D (no layer, no such
+     pass or implementation, animated, engine inputs beyond the
+     instance's, engine-driven states, unset or default textures, a
+     lightmap, states the native pass does not fit). `compile_screen`
+     translates it through `program::translate_pass` over the strips'
+     inputs, `v0` the position and `v1`..`v4` the four texture
+     coordinates (`0x00101a00`, `0x00101a10 + 16 s`). Still missing
+     before `TemplatePass` leaves `missing`: reading each egor's shader
+     at load (its material, vertex program and bitmaps), the engine
+     textures layer 15 binds, and the GPU pass drawing a plan's strips.
+   - **Built: the load** (`boot::native_post_load`, the switch on): every `egor` tag's shader (the definition's `+0x44`)
+     resolved, each implementation of each of its layer-15 passes
+     looked at and translated with its vertex shader's classification-0
+     program (below), and the stages' bitmaps decoded; refusals counted by reason, one line on
+     stderr. The post glue runs it itself, on a thread of its own at the
+     first screen-effect call on a map (`native_post_glue::EffectsSlot`),
+     with or without the native world: it used to ride the world's load,
+     so with `native_world` off no egor loaded and every call was refused
+     as `TemplatePass`.
+   - **Traced: the engine textures** (`0x00019530`, the jump table at
+     `0x00019b68` by id - 1; `native_render::screen_look::engine_texture`):
+     1, 9, 14 and 15 the rasterizer data's bitmaps (`+0xc`, `+4`, `+0x14`);
+     render targets through `0x00014f60`: 2 and 3 target 1, 6 target 3, 8
+     target 10, 13 target 9, 17 `0x13`, 19 `0x15`, 20 `0x16`, 21 13, 22
+     `0x11`, 23 `0x17`; 5 the view's bound target `[0x004858b8]`; 24 and
+     25 the target the word `[0x00485a18 + 4 id]` names (`0x19`..`0x1b`
+     sized through `0x0001dd60`: the screen effects' own targets); 4
+     clears the stage; 10 and 12 the light's; 16, 18, 26 and 27 chosen at
+     run time; 7 and 11 null entries. A template pass binding the light's,
+     a run-time one or an invalid id is refused
+     (`ScreenRefusal::EngineTexture`); the rest the draw supplies.
+   - **Traced: which pass, implementation and program**
+     (`0x00016610(shader, layer, pass, implementation, target, flag)`,
+     Code): the layer's passes are the template's word at its layer
+     index (low 9 bits the first, high 7 the count, which is
+     `screen_effect::Effect::implementations`); `pass` -1 draws them all,
+     else that one (`screen_effect::Pass::implementation` names a layer
+     pass), each with implementation `implementation`
+     (`Pass::selector`; `0x132` bytes each, the vertex shader at `+0x100`,
+     -1 not drawn). After `0x0001bbf0`, `0x0001c590` loads that vertex
+     shader with classification 0 (`0x0001c2e0`, `0x1c` bytes per
+     classification), so the load translates only the first program
+     (`screen_look::SCREEN_CLASSIFICATION`), per (layer pass,
+     implementation): `effects\screen_effects\blur` has two layer-15
+     passes (`copy_fb_to_texaccum`, `copy_texaccum_to_fb`), so a layer
+     with several passes is no longer refused. What the real egors
+     (`blur`, `desaturate`) showed the look must take: their passes set
+     `ZENABLE` 0 and no ZWRITEENABLE (`pass_state` takes the depth
+     buffer off as enough; a screen pass testing or writing depth is
+     refused, `ScreenRefusal::Depth`), and `screen_xform_4` moves `v5`,
+     `v6` and `v7.w` into the colours and fog, registers the strips do
+     not push: `compile_screen` gives them the uniforms' defaults only
+     for a pixel side that reads no colour or fog
+     (`screen_look::reads_vertex_colours`, which also counts a missing
+     final combiner as reading them). Its WGSL writes no depth
+     (`PassParts::w_buffer` off). The engine constants are the call's
+     (below).
+   - **Built: the GPU pass, unarmed** (`native_render::screen_gpu`,
+     `native_post_glue`'s `ScreenPass` and `ScreenProbe`): each strip a
+     triangle strip of `StripVertex` (attribute 0 the position, z and w
+     `[0x0045dd40]`; 1..4 the texture coordinates), the translated
+     program with the target's guest size as its surface and the
+     device's depth scale as its `z_max`, each render-target stage
+     fetched in its texels (`tex_scale`, as a linear texture), no depth,
+     no culling (S: the D3D path's cull mode is inherited; the A/B checks
+     the facing), the pass's blend and colour writes. Of the engine
+     textures only the view's (5) is supplied, as a copy of the bound
+     colour taken before each pass that samples it (S: 5 and `kind` 0
+     both resolve to target 0 while `[0x004858b8]` is clear). The host
+     strikes `TemplatePass` from `missing` for a pass whose program
+     loaded and whose stages are all bound (`pass_drawable`), and arms a
+     call with nothing missing as the glow is armed: one swallow of its
+     strips (slot 0, `SET_BEGIN_END` 6, twice the columns), a probe
+     first, then the pass in place of the strips; a mismatch after a
+     screen swallow keeps every later call on D3D.
+   - **Traced: the end of the call draws nothing**
+     (`0x0002dae8..0x0002db64`): `0x0001ddd0` writes the sizes of
+     targets 1, `0x19` and `0x1b` back into the target table (`+0x80`,
+     `+0x84`, the surface words `+0x14`, `+0x28`) from what
+     `0x0002d26e..0x0002d344` saved on entry (0 for a target without a
+     surface; `0x19` is written twice, the second time with `0x1a`'s
+     saved size, and `0x1a` never), `0x00016b10` applies the last pass's
+     restore states and clears the draw-state cache at `0x00485b48`,
+     `[0x004670bc]` is set and `0x00485a78`/`7c` cleared. The game runs
+     it on both paths, so the stand-ins for `0x19`..`0x1b` are missing
+     only for a call with a drawn (blur or wide) convolution, which
+     renders into them; a pass sampling them (engine textures 24 and 25)
+     is not drawable on its own. A call of passes into the bound target
+     with every convolution kept, the shape of
+     `effects\screen_effects\desaturate` (one pass, kind 0, none
+     convolved, stage 0 the view), now misses nothing and is armed with
+     the switch on: a probe on its first call, its strips dropped for the
+     native pass after. The blur (`kind` 1 and a convolution in its first
+     pass) stays on D3D.
+   - **Built: passes into target 1** (`screen_gpu::Dest`): a pass of
+     `kind` 1..3 draws into a stand-in for target 1, its guest size the
+     plan's (the window's, a half, a quarter) and its texels that times
+     the copy's render scale, cleared first (S: the strips cover it); a
+     later pass of the call samples it as engine textures 2 and 3, in its
+     texels. Target 1 read before a pass of the call drew it (what the
+     D3D path left there), or by the pass drawing it, is refused
+     (`screen_gpu::check_order`, `native_post_glue::call_ordered`). The
+     swallow sends target 1's strips to slot 1. `PassTarget` stays
+     missing only for a pass into target 1 that is the call's last (the
+     native pass is issued into the target bound at the last strip) or
+     has no size. Nothing more is armed by it: the only egor with such a
+     pass, the blur, still misses its convolution and the stand-ins, and
+     its second pass reads engine pixel constants and engine texture 24.
+     (S: what the D3D side later reads of target 1 is not this call's,
+     since its strips are dropped; target 1 is scratch to the screen
+     effects, as 7 and 8 are to the glow.)
+   - **Built: the call's engine constants**
+     (`screen_look::ScreenConstants`): `0x0002d140` copies its four
+     values to `0x004c19b0`, and the scalar evaluator `0x000336f0` (its
+     table at `0x000338d4`) returns `[0x004c19b0]` for scalar 41 and
+     `[0x004c19b4]` for 42 (`screen_look::SCREEN_SCALARS`), so a pass
+     reading those is no longer refused. The blur's
+     `copy_texaccum_to_fb` reads 41 into `c0.a` (pixel mode 3), the mix
+     of its two stages, and sets `c18`..`c21` from its stages' sizes
+     (vertex modes 14 and 15 of stages 1 and 2: `[w, 0, 0, 0]`,
+     `[0, h, 0, 0]`), which carry its coordinates into texels. Per call
+     the pass gets each combiner constant reading a value packed as
+     `0x00019ca0` packs it (the binding's transform, then
+     `pack_engine_colour`, into its lanes) and each vertex constant
+     reading a value or an engine stage's size evaluated as
+     `0x00019be0` evaluates it (`tags::material::EngineVertexConstant`,
+     from the `spas`, keeping what no later binding of the register
+     writes), the size the guest size of the target the stage binds
+     (`screen_gpu::stage_sizes`: the view's, target 1's as the call drew
+     it). The rest stay as resolved at load: the instance's scalar 21,
+     the pixel side's sizes (`0x00019ca0` takes 1 by 1), a bitmap stage's
+     size. A vertex register the resolver took from the engine that no
+     external of the implementation names is refused
+     (`ScreenRefusal::EngineVertexConstants`).
+   - **Built: the blur's convolution** (`screen_gpu::ScreenConvolution`,
+     `native_post_glue::screen_convolution`): `0x0002d140` calls
+     `0x000211a0` with its seventh word 1 and the eighth to tenth 0, so
+     the combiner is `0x00020f30`'s at strength 0 and `y` 0
+     (`engine::glow::blur_combiner`), and each quad goes through
+     `0x00034a90` with its tenth argument 0: the window's rectangle in
+     the stand-in's pixels, four taps, each stage's coordinates scaled by
+     its source's size over the stand-in's (`0x00034bf7`..`0x00034c27`),
+     the quad `glow::quad` gives the glow's, drawn by the glow's
+     `glow::QuadDrawer` (the glow now draws through it too). The quads go
+     into stand-ins for `0x19`..`0x1b` (`screen_gpu::STAND_INS`, at the
+     plan's guest size times the copy's scale, `STAND_IN_FORMAT`; S: an
+     8-bit target as 7 and 8), each cleared when the call first draws
+     into it; their source is the pass's target (the bound colour, or
+     target 1's stand-in) or the stand-in the last quad drew. Engine
+     textures 24 and 25 bind the target the pass's convolution `n` left in
+     `[0x00485a78 + 4 n]` (`screen_gpu::Bound::Result`), refused before
+     one set it in the call, since `0x0002d140` clears them on its way out
+     (`screen_gpu::Drawn`, `check_order`). A pass that blends or masks
+     colour does not convolve natively (its quads draw under its states).
+     The swallow takes each draw's own shape (`d3d::Swallow::shapes`: the
+     strips of `SET_BEGIN_END` 6, the quads `Begin(7)` of four), the quads
+     into slots 2..4 for `0x19`..`0x1b`. Each egor is probed on its own
+     before its draws are dropped, and falls back on its own: a refused
+     pass, a failed probe or a swallow mismatch (charged to the egor that
+     armed last) keeps that egor's later calls on D3D and no other's. With these, the blur misses nothing and
+     is armed with the switch on (off by default).
+   - **Built: the wide convolution** (`0x00021360`; `screen_gpu::ConvolutionGrid`,
+     `native_post_glue::wide_grid`, `grid_of`). `0x0002d140` passes it
+     the words `+0x50`, `+0x54`, the stand-ins, -1, 1, 0, 0, so its
+     combiner is the blur's (`0x00020f30` with XMM0 0 and XMM3 its eighth
+     word, 0), its stages are bound as the blur's (clamp, linear), and
+     each draw is `0x00034d90` (Code, `0x00021455..0x00021485`) with the
+     same screen vertex shader (`0x0001c590`) and states as the quad's:
+     the window's rectangle (word 7's low byte clear), depth `1.0`, the
+     two words its radii, EDI the draw's offsets, each stage's ratio the
+     size `0x00014f60` bound the source at (`0x0001dd60` of it: the
+     pass's target as the call sized it, `screen_effect::target_size`,
+     or a stand-in at the pair's size) over the stand-in's. The glue
+     makes each draw's 30 strips of 42 vertices with
+     `engine::screen_grid::strips` (the original's arithmetic, under the
+     call's MXCSR and x87 control word), the taps in texels of that bound
+     size; `glow::QuadDrawer::draw_grid` draws them through
+     `glow::GRID_VERTEX` (attribute 0 the position in the stand-in's
+     pixels, 1..4 the taps; z and w ignored as the quad's are: no depth
+     test and w the same at every vertex) and the blur's combiner with
+     its stages scaled by the bound size. The swallow takes each strip
+     as `SET_BEGIN_END` 6 of 42 (`0x00034770`) into the stand-in's slot.
+     A grid that cannot be made keeps the call on D3D
+     (`Missing::Wide`), as does a missing frame; a grid with a strip
+     under a triangle is refused (`ScreenRefused::NoStrips`). With these
+     a wide convolution misses nothing and is armed with the switch on
+     (off by default).
 5. **`0x0002df00`, and `0x0002dd30`** before layer 17, which has the
    same shape and gets its own skip point.
 6. **Layer 17** (S: bloom), as stage 1b draws the world's other layers.

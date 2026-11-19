@@ -768,3 +768,39 @@ fn leaving_an_unwritten_level_does_not_read_it_again() {
     // the target (the last visit) reads it.
     assert_eq!(stats.rtt_leave_reads_skipped, 5, "{stats:?}");
 }
+
+/// Samples the texture headers it is made with. Colour only: `recorded`
+/// leaves the back buffer bound with no depth (`set_render_target(back,
+/// 0)`), where a pass that needs depth is refused (`NoDepth`).
+struct Samples(Vec<u32>);
+
+impl d3d::ExternalPass for Samples {
+    fn encode(&mut self, _t: d3d::ExternalTarget<'_>) {}
+    fn sampled(&self) -> Vec<u32> {
+        self.0.clone()
+    }
+    fn colour_only(&self) -> bool {
+        true
+    }
+}
+
+/// An external pass that samples a texture whose level the D3D path drew
+/// into (the native objects' layer 3 reading the texture accumulation
+/// target layer 1 drew) gets the level's own surface, in place: nothing
+/// written back. A header over no drawn level gets none.
+#[test]
+fn an_external_pass_samples_a_drawn_level_in_place() {
+    let (mut d, mut m, _surf) = recorded();
+    d.backend.external_passes = true;
+    let nothing = MISC + 0x7300;
+    d.request_external_pass(Box::new(Samples(vec![TEX_HEADER, nothing])));
+    d.drain_until_callback(&mut m).unwrap();
+    assert_eq!(d.stats().external_passes, 1, "refusals {:?}", d.stats().external_refusals);
+    let sampled = &d.backend.external_sampled;
+    assert_eq!(sampled.len(), 1);
+    assert_eq!(sampled[0].len(), 2, "one per header, in order");
+    let level = sampled[0][0].expect("the drawn level");
+    assert_ne!(level, d.backend.external[0].0, "not the colour target");
+    assert_eq!(sampled[0][1], None);
+    assert_eq!(d.stats().rtt_writebacks, 0, "sampled in place");
+}

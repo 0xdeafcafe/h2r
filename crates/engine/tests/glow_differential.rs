@@ -15,6 +15,13 @@
 //!   returned target must be the port's. Steps at infinity: the
 //!   original never leaves its loop (it runs to the step limit), the port
 //!   stops at `glow::MAX_BLUR_STEPS` with `Error::Unbounded`.
+//! - `wide`: `0x00021360` from its entry to its return, stubbed the same
+//!   way (`0x00020f30`, the bind, its quad draw `0x00034d90`, the copy):
+//!   the draws (the target bound at stage 0, EAX the target drawn into,
+//!   the four offsets EDI points at, and the quad's stack words), whether
+//!   and how it set the combiner, the copy and the returned target must
+//!   be the port's. Past `glow::MAX_WIDE_TAPS` the port stops with
+//!   `Error::Unbounded` and the original draws every tap.
 //!
 //! Each case seeds the floats with now and then an edge (zeros, signed
 //! zero, infinities, NaNs, denormals) under one of several MXCSR and x87
@@ -35,7 +42,7 @@ use std::collections::BTreeMap;
 
 use common::{IMAGE_SHA256, sha256, xbe_path};
 use engine::colour_pass::Parameters;
-use engine::glow::{self, BlurArgs, BlurDraw, PSDEF, PSDEF_WORDS};
+use engine::glow::{self, BlurArgs, BlurDraw, PSDEF, PSDEF_WORDS, WideArgs, WideDraw};
 use engine::light_constants::Error;
 use engine::memory::{GuestMemory, MemFault};
 use ir::IrInsn;
@@ -56,6 +63,8 @@ const BLUR: u32 = 0x0002_11a0;
 const BIND: u32 = 0x0001_4f60;
 const QUAD: u32 = 0x0003_4a90;
 const COPY: u32 = 0x0003_51a0;
+const WIDE: u32 = 0x0002_1360;
+const WIDE_QUAD: u32 = 0x0003_4d90;
 const DIRTY: u32 = 0x0040_7490;
 
 struct Eng<'a>(&'a mut FlatMemory);
@@ -406,6 +415,108 @@ fn blur_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
     }
     eprintln!("blur: all equal; {seen:#?}");
     for k in ["0 draws", "1 draws", "4 draws"] {
+        assert!(seen.contains_key(k), "{k} never seen: widen the states");
+    }
+}
+
+#[test]
+fn wide_matches_the_lifted_original() {
+    if !with_image(wide_cases) {
+        eprintln!("SKIPPED wide_matches_the_lifted_original: no XBE (set H2_XBE)");
+    }
+}
+
+fn wide_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
+    lifted.lift(WIDE);
+    let stubs: Stubs = [(BLUR_COMBINER, 0), (BIND, 0), (WIDE_QUAD, 0x24), (COPY, 8)].into_iter().collect();
+    let mut seen: BTreeMap<String, u32> = BTreeMap::new();
+    for seed in seeds() {
+        for n in 0..256u32 {
+            let mut r = Rng(seed.wrapping_mul(0x2545_f491_4f6c_dd1d) ^ n as u64);
+            let mx = mxcsr(&mut r);
+            let args = WideArgs {
+                source: 1,
+                taps: [-2, 0, 1, 2, 3, 4, 7, glow::MAX_WIDE_TAPS, glow::MAX_WIDE_TAPS + 3][r.below(9) as usize],
+                scale: r.float(4.0),
+                words: [r.u32(), r.u32()],
+                dest: 0x19,
+                other: if r.below(3) == 0 { u32::MAX } else { 0x1a },
+                last: [u32::MAX, 1, 0x19, 0x1a, 0x1b][r.below(5) as usize],
+            };
+            let mut a = image.clone();
+            let want = match glow::wide(&Eng(&mut a.clone()), &args, mx) {
+                Ok(w) => Some(w),
+                Err(Error::Unbounded) => None,
+                Err(e) => panic!("seed {seed} case {n}: {e:?}"),
+            };
+
+            let esp = STACK_TOP - 0x400;
+            let combine = (r.u32() & !0xff) | r.below(2);
+            let (sixth, eighth) = (r.u32(), r.float(1.0));
+            let stack = [
+                HARNESS_EXIT,
+                args.words[0],
+                args.words[1],
+                args.dest,
+                args.other,
+                args.last,
+                combine,
+                sixth,
+                eighth,
+            ];
+            for (i, v) in stack.iter().enumerate() {
+                put(&mut a, esp + 4 * i as u32, *v);
+            }
+            let mut c = cpu(&mut r, esp, WIDE, mx, 0x027f);
+            c.gpr[0] = args.source;
+            c.gpr[1] = args.taps as u32;
+            c.xmm[0] = (u128::from(r.u32()) << 32) | u128::from(args.scale);
+            let mut bound = 0;
+            let mut draws = Vec::new();
+            let mut quad_words = Vec::new();
+            let mut combiner = None;
+            let mut copy = None;
+            let mut record = |pc: u32, c: &Cpu, m: &FlatMemory| match pc {
+                BLUR_COMBINER => combiner = Some((c.xmm[0] as u32, c.xmm[3] as u32)),
+                // EDI the target, EBX the stage.
+                BIND if c.gpr[3] == 0 => bound = c.gpr[7],
+                WIDE_QUAD => {
+                    draws.push(WideDraw {
+                        source: bound,
+                        dest: c.gpr[0],
+                        offsets: std::array::from_fn(|k| word(m, c.gpr[7] + 4 * k as u32)),
+                    });
+                    quad_words.push((0..9).map(|k| word(m, c.gpr[4] + 4 + 4 * k)).collect::<Vec<u32>>());
+                }
+                COPY => copy = Some((word(m, c.gpr[4] + 4), word(m, c.gpr[4] + 8))),
+                _ => {}
+            };
+            let ran = lifted.run(&mut c, &mut a, &[HARNESS_EXIT], &stubs, &mut record);
+            ran.unwrap_or_else(|e| panic!("seed {seed} case {n}: {e}"));
+            assert_eq!(combiner, ((combine & 0xff) != 0).then_some((0, eighth)), "seed {seed} case {n}: the combiner");
+            let Some(want) = want else {
+                // Past the port's budget: the original draws every tap.
+                assert_eq!(draws.len(), args.taps as usize, "seed {seed} case {n}");
+                *seen.entry("unbounded".into()).or_default() += 1;
+                continue;
+            };
+            assert_eq!(c.gpr[4], esp + 4 + 0x20, "seed {seed} case {n}: esp");
+            assert_eq!(draws, want.draws, "seed {seed} case {n}: {args:#x?}");
+            let words = vec![0xa, 0x0101_0101, 0, 0, 0x3f80_0000, args.words[0], args.words[1], sixth, 0];
+            for w in &quad_words {
+                assert_eq!(*w, words, "seed {seed} case {n}: the quad's stack words");
+            }
+            // 0x000351a0(edi, esi): the result, then where it goes.
+            assert_eq!(copy, want.copy, "seed {seed} case {n}: copy");
+            assert_eq!(c.gpr[0], want.result, "seed {seed} case {n}: result");
+            *seen.entry(format!("{} draws", want.draws.len().min(4))).or_default() += 1;
+            if want.copy.is_some() {
+                *seen.entry("copied".into()).or_default() += 1;
+            }
+        }
+    }
+    eprintln!("wide: all equal; {seen:#?}");
+    for k in ["0 draws", "1 draws", "4 draws", "unbounded", "copied"] {
         assert!(seen.contains_key(k), "{k} never seen: widen the states");
     }
 }

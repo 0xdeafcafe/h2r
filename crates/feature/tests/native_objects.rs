@@ -174,7 +174,7 @@ fn objects_skip_layer_3_hand_over_their_nodes_and_get_their_bits_back() {
     {
         let mut set = stub.set.lock().unwrap();
         set.definitions.insert(DEF_A as u16, 2);
-        set.shaders.insert(0x10);
+        set.shaders.insert((DEF_A as u16, 0x10));
     }
     native_objects::set_host(stub.clone());
 
@@ -207,7 +207,11 @@ fn objects_skip_layer_3_hand_over_their_nodes_and_get_their_bits_back() {
 
     // B's model loaded with another node count than the object has: B
     // stays on the D3D path.
-    stub.set.lock().unwrap().definitions.insert(DEF_B as u16, 5);
+    {
+        let mut set = stub.set.lock().unwrap();
+        set.definitions.insert(DEF_B as u16, 5);
+        set.shaders.insert((DEF_B as u16, 0x10));
+    }
     native_objects::before_layer(&mut m, SCENE_LAYER3_RETURN);
     assert_eq!(masks(&m), vec![0b0010, 0b1010, 0b1010, 0b1010]);
     assert_eq!(stub.drawn.lock().unwrap()[1].1.len(), 1);
@@ -283,7 +287,7 @@ fn objects_skip_layer_3_hand_over_their_nodes_and_get_their_bits_back() {
 /// pipelined render thread: context-only observers before, nothing after.
 #[test]
 fn its_layer_draw_chain_runs_on_the_render_thread() {
-    let mut r = Registry::new(Switches::parse("impl.render.native_objects=on").unwrap());
+    let mut r = Registry::new(Switches::parse("impl.render.native_world=on,impl.render.native_objects=on").unwrap());
     assert!(r.add(&feature::native_world::NativeWorld).unwrap());
     assert!(r.add(&NativeObjects).unwrap());
     let plan = r.build(&Base).unwrap();
@@ -295,4 +299,54 @@ fn its_layer_draw_chain_runs_on_the_render_thread() {
     assert_eq!(chain.observe_before.len(), 2, "the world's and the objects'");
     assert!(!chain.needs_shadow());
     assert!(chain.render_thread().is_ok());
+}
+
+/// Guest words for [`native_objects::ready`].
+struct Words(std::collections::HashMap<u32, u32>);
+
+impl native_render::camera::GuestRead for Words {
+    fn read_u32(&self, addr: u32) -> Option<u32> {
+        Some(self.0.get(&addr).copied().unwrap_or(0))
+    }
+}
+
+/// An object whose parts sample the texture accumulation target is drawn
+/// only while the target is bound (`0x0001dcc0`'s check): decided at the
+/// hook, before its items' skip is kept, so with none bound they keep
+/// their D3D draws rather than go undrawn.
+#[test]
+fn an_object_sampling_the_texture_accumulation_target_waits_for_it() {
+    use native_render::object_nodes::TEXACCUM_TARGET;
+    let mut set = NativeSet::default();
+    set.definitions.insert(DEF_A as u16, 1);
+    let mut frame = ObjectFrame {
+        handle: 0x8001_0001,
+        definition: DEF_A,
+        nodes: vec![native_render::model::NodeMatrix::IDENTITY],
+        sphere: ([0.0; 3], 1.0),
+        lighting: None,
+        defaults: None,
+        node_rows: Vec::new(),
+        implementations: Vec::new(),
+    };
+    let cleared = native_render::objects::ClearedObjects::default();
+    let mut mem = Words(Default::default());
+    assert!(native_objects::ready(&mem, &set, &cleared, &mut frame), "not a texaccum definition");
+    set.texaccum.insert(DEF_A as u16);
+    assert!(!native_objects::ready(&mem, &set, &cleared, &mut frame), "no target");
+    mem.0.insert(TEXACCUM_TARGET + 0x88, 0x0123_4560);
+    assert!(native_objects::ready(&mem, &set, &cleared, &mut frame), "bound");
+    mem.0.insert(TEXACCUM_TARGET + 0x94, 1 << 8);
+    assert!(!native_objects::ready(&mem, &set, &cleared, &mut frame), "the byte at +0x95 set");
+}
+
+#[test]
+fn a_shader_is_accepted_only_for_the_definitions_that_draw_it() {
+    let mut set = NativeSet::default();
+    set.definitions.insert(DEF_A as u16, 2);
+    set.definitions.insert(DEF_B as u16, 2);
+    set.shaders.insert((DEF_A as u16, 0x10));
+    assert!(set.accepts(DEF_A, 0x10));
+    assert!(!set.accepts(DEF_B, 0x10), "B's model refused the material: its items keep their D3D draws");
+    assert!(!set.accepts(DEF_A, 0x11));
 }
