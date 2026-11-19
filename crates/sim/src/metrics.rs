@@ -55,6 +55,195 @@ pub struct BrainTick {
     pub repaths: u32,
     /// What it is doing (`bots::mind::Doing`, lower case).
     pub doing: &'static str,
+    /// What its hand saw of the target it is tracking, if any.
+    pub aim: Option<AimSample>,
+}
+
+/// A bot's hand on one view of a tracked target (`bots::mind::AimTrace`),
+/// with the right stick its pad reported on the same game tick.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct AimSample {
+    /// The tick of the view. It trails the game's by the brain's
+    /// perception delay, and repeats while the brain has no new view.
+    pub tick: u32,
+    /// Who it tracks.
+    pub target: u32,
+    /// From the aim to the aim point, yaw then pitch, radians, before the
+    /// hand's own error.
+    pub error: [f32; 2],
+    pub stick: (f32, f32),
+}
+
+/// A first error this large (radians, 20 degrees) is a flick.
+pub const AIM_FLICK: f32 = 0.35;
+/// Settled: within this (radians) for [`AIM_SETTLE_HOLD`] views running.
+pub const AIM_SETTLED: f32 = 0.05;
+pub const AIM_SETTLE_HOLD: u32 = 6;
+/// Overshoot is looked for this many ticks into a flick.
+pub const AIM_OVERSHOOT_WINDOW: u32 = 60;
+/// Views of one target this many ticks apart or less are one engagement.
+pub const AIM_GAP: u32 = 3;
+/// A stick this far over (of 1) has a direction, for the reversals.
+pub const AIM_STICK_MOVING: f32 = 0.05;
+/// Hits on one victim further apart than this (ticks) are separate
+/// fights: the time to kill starts again.
+pub const TTK_GAP: u32 = 150;
+
+/// How a bot's aim moved over a match (docs/runtime/sim.md §6).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AimReport {
+    /// Views of a tracked target.
+    pub tracked_ticks: u64,
+    /// The mean angle off the aim point while tracking, radians.
+    pub mean_error: f64,
+    /// Engagements that began at least [`AIM_FLICK`] off.
+    pub flicks: u64,
+    /// Over the flicks, the mean of how far past the target the aim went
+    /// in the first two seconds, as a fraction of the flick.
+    pub overshoot_ratio: f64,
+    /// Flicks that settled, and the mean ticks they took to.
+    pub settled: u64,
+    pub settle_ticks: f64,
+    /// The mean right-stick travel a tick while tracking, in stick radii.
+    pub stick_jitter: f64,
+    /// Changes of the stick's yaw direction a second while tracking.
+    pub reversals_per_s: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Engagement {
+    start: u32,
+    first: [f32; 2],
+    size: f32,
+    flick: bool,
+    /// The furthest past the target so far, radians.
+    past: f32,
+    /// Views in a row inside [`AIM_SETTLED`].
+    calm: u32,
+    settled: bool,
+}
+
+/// The aim-motion tally of one player.
+#[derive(Clone, Debug, Default)]
+struct AimMotion {
+    last: Option<AimSample>,
+    run: Option<Engagement>,
+    tracked: u64,
+    error: f64,
+    pairs: u64,
+    travel: f64,
+    reversals: u64,
+    /// The stick's last yaw direction in the engagement, 0 before any.
+    turning: i8,
+    flicks: u64,
+    overshoot: f64,
+    settled: u64,
+    settle_ticks: u64,
+}
+
+impl AimMotion {
+    fn close(&mut self) {
+        if let Some(e) = self.run.take()
+            && e.flick
+        {
+            self.overshoot += f64::from(e.past / e.size);
+        }
+    }
+
+    fn sample(&mut self, s: AimSample) {
+        if !(s.error[0].is_finite() && s.error[1].is_finite()) {
+            return;
+        }
+        // The same view again: the brain did not think this tick.
+        if self
+            .last
+            .is_some_and(|l| l.tick == s.tick && l.target == s.target)
+        {
+            return;
+        }
+        let same = self
+            .last
+            .is_some_and(|l| l.target == s.target && s.tick.wrapping_sub(l.tick) <= AIM_GAP);
+        let size = s.error[0].hypot(s.error[1]);
+        if !same || self.run.is_none() {
+            self.close();
+            let flick = size >= AIM_FLICK;
+            if flick {
+                self.flicks += 1;
+            }
+            self.run = Some(Engagement {
+                start: s.tick,
+                first: s.error,
+                size,
+                flick,
+                past: 0.0,
+                calm: 0,
+                settled: false,
+            });
+            self.turning = 0;
+        } else if let Some(l) = self.last {
+            self.pairs += 1;
+            self.travel += f64::from((s.stick.0 - l.stick.0).hypot(s.stick.1 - l.stick.1));
+        }
+        let turning = if s.stick.0 > AIM_STICK_MOVING {
+            1
+        } else if s.stick.0 < -AIM_STICK_MOVING {
+            -1
+        } else {
+            0
+        };
+        if turning != 0 {
+            if self.turning == -turning {
+                self.reversals += 1;
+            }
+            self.turning = turning;
+        }
+        self.tracked += 1;
+        self.error += f64::from(size);
+        if let Some(e) = &mut self.run
+            && e.flick
+        {
+            let age = s.tick.wrapping_sub(e.start);
+            if age <= AIM_OVERSHOOT_WINDOW {
+                let along = (s.error[0] * e.first[0] + s.error[1] * e.first[1]) / e.size;
+                e.past = e.past.max(-along);
+            }
+            if !e.settled {
+                if size < AIM_SETTLED {
+                    e.calm += 1;
+                    if e.calm == AIM_SETTLE_HOLD {
+                        e.settled = true;
+                        self.settled += 1;
+                        // From the flick's first view to the first of the
+                        // calm ones.
+                        self.settle_ticks += u64::from(age.saturating_sub(AIM_SETTLE_HOLD - 1));
+                    }
+                } else {
+                    e.calm = 0;
+                }
+            }
+        }
+        self.last = Some(s);
+    }
+
+    fn report(&self) -> Option<AimReport> {
+        if self.tracked == 0 {
+            return None;
+        }
+        let mut done = self.clone();
+        done.close();
+        let over = |sum: f64, n: u64| if n > 0 { sum / n as f64 } else { 0.0 };
+        Some(AimReport {
+            tracked_ticks: done.tracked,
+            mean_error: over(done.error, done.tracked),
+            flicks: done.flicks,
+            overshoot_ratio: over(done.overshoot, done.flicks),
+            settled: done.settled,
+            settle_ticks: over(done.settle_ticks as f64, done.settled),
+            stick_jitter: over(done.travel, done.pairs),
+            reversals_per_s: over(done.reversals as f64 * 30.0, done.pairs),
+        })
+    }
 }
 
 /// How a death is classified.
@@ -185,6 +374,16 @@ pub struct PlayerReport {
     /// Ticks per activity.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub doing: BTreeMap<String, u64>,
+    /// Kills with a time to kill: the killer had hurt the victim first.
+    #[serde(default)]
+    pub ttk_kills: u64,
+    /// Over those, the mean ticks from the killer's first hit of the
+    /// fight on the victim to the kill.
+    #[serde(default)]
+    pub ttk_ticks: f64,
+    /// How the bot's aim moved while it tracked a target.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aim: Option<AimReport>,
 }
 
 /// The whole report: one JSON file per match.
@@ -242,6 +441,9 @@ struct Acc {
     held: Option<(u32, u32)>,
     /// The brain's repath count last tick.
     last_repaths: u32,
+    ttk_kills: u64,
+    ttk_ticks: u64,
+    aim: AimMotion,
 }
 
 /// A tick this far past the last one is a snapshot load, not play.
@@ -292,6 +494,9 @@ pub struct Tally {
     /// Bot port → player index, from the snapshots.
     ports: BTreeMap<u8, u8>,
     resets: u32,
+    /// `(attacker, victim)` → the first and the latest tick of the fight's
+    /// hits, for the time to kill.
+    fights: BTreeMap<(u8, u8), (u32, u32)>,
 }
 
 impl Tally {
@@ -410,6 +615,17 @@ impl Tally {
                 || team(attacker)
                     .zip(team(victim))
                     .is_some_and(|(a, b)| a != b);
+            if opposing
+                && damage > 0.0
+                && let Some(v) = victim
+            {
+                let now = self.last_tick.map_or(0, |t| t.wrapping_add(1));
+                let fight = self.fights.entry((a, v)).or_insert((now, now));
+                if now.wrapping_sub(fight.1) > TTK_GAP {
+                    fight.0 = now;
+                }
+                fight.1 = now;
+            }
             let acc = self.acc.entry(a).or_default();
             if opposing && damage > 0.0 {
                 acc.opposing_hits += 1;
@@ -432,6 +648,19 @@ impl Tally {
         {
             self.acc.entry(k).or_default().betrayals += 1;
         }
+        if kind == KillKind::Kill
+            && let Some(k) = killer
+            && let Some(&(first, _)) = self.fights.get(&(k, victim))
+        {
+            // The hits are stamped a tick after the last snapshot; so is
+            // a kill on the same tick.
+            let now = self.last_tick.map_or(tick, |t| t.wrapping_add(1));
+            let a = self.acc.entry(k).or_default();
+            a.ttk_kills += 1;
+            a.ttk_ticks += u64::from(now.wrapping_sub(first).min(1 << 20));
+        }
+        // Whoever was fighting the victim starts again on its next life.
+        self.fights.retain(|&(_, v), _| v != victim);
         self.kills.push(KillEvent {
             tick,
             killer,
@@ -458,6 +687,9 @@ impl Tally {
             a.repaths += u64::from(b.repaths - a.last_repaths);
         }
         a.last_repaths = b.repaths;
+        if let Some(s) = b.aim {
+            a.aim.sample(s);
+        }
         if !b.doing.is_empty() {
             *a.doing.entry(b.doing).or_default() += 1;
             if OBJECTIVE_DOINGS.contains(&b.doing) {
@@ -559,6 +791,13 @@ impl Tally {
                 repaths: a.repaths,
                 objective_ticks: a.objective_ticks,
                 doing: a.doing.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
+                ttk_kills: a.ttk_kills,
+                ttk_ticks: if a.ttk_kills > 0 {
+                    a.ttk_ticks as f64 / a.ttk_kills as f64
+                } else {
+                    0.0
+                },
+                aim: a.aim.report(),
             });
         }
         let teams = last
@@ -750,6 +989,7 @@ mod tests {
             stuck,
             repaths,
             doing,
+            aim: None,
         };
         // Before any snapshot the port is unknown: dropped.
         t.brain(2, busy(true, 0, "fight"));
@@ -803,6 +1043,186 @@ mod tests {
         assert_eq!((t.resets(), t.ticks()), (1, 3));
         t.tick(&sample(52 + 2 * JUMP_TICKS, vec![]));
         assert_eq!((t.resets(), t.ticks()), (2, 1));
+    }
+
+    #[test]
+    fn time_to_kill_runs_from_the_fights_first_hit() {
+        let mut t = Tally::new();
+        t.start(0);
+        let both = || vec![p(0, Some(0), 0), p(1, Some(1), 0)];
+        // Player 0 first hurts 1 on tick 11, again on 31, and kills on 41.
+        for tick in 0..=40 {
+            t.tick(&sample(tick, both()));
+            if tick == 10 || tick == 30 {
+                t.hit(Some(0), Some(1), 0.3, false);
+            }
+        }
+        t.kill(41, Some(0), 1, false);
+        // A new life: one hit, a long gap, then a second fight of 21 ticks.
+        for tick in 41..=300 {
+            t.tick(&sample(tick, both()));
+            if tick == 50 || tick == 279 {
+                t.hit(Some(0), Some(1), 0.3, false);
+            }
+            // No damage and a hit on itself start nothing.
+            if tick == 45 {
+                t.hit(Some(1), Some(0), 0.0, false);
+                t.hit(Some(1), Some(1), 0.5, false);
+            }
+        }
+        t.kill(300, Some(0), 1, false);
+        // Killed with nothing landed first (a fall, a stick): no time.
+        t.kill(300, Some(1), 0, false);
+        t.kill(300, None, 1, false);
+        let r = t.report(Finish::bare(End::GameOver));
+        let a = r.player(0).unwrap();
+        assert_eq!(a.ttk_kills, 2);
+        assert_eq!(a.ttk_ticks, (30.0 + 21.0) / 2.0);
+        let b = r.player(1).unwrap();
+        assert_eq!((b.ttk_kills, b.ttk_ticks), (0, 0.0));
+    }
+
+    /// A view a tick: the error, and a stick that follows its sign.
+    fn aim(t: &mut Tally, tick: u32, target: u32, yaw: f32, stick: f32) {
+        t.brain_for_player(
+            0,
+            BrainTick {
+                doing: "fight",
+                aim: Some(AimSample {
+                    tick,
+                    target,
+                    error: [yaw, 0.0],
+                    stick: (stick, 0.0),
+                }),
+                ..BrainTick::default()
+            },
+        );
+    }
+
+    #[test]
+    fn aim_motion_measures_overshoot_settle_and_jitter() {
+        let mut t = Tally::new();
+        t.start(0);
+        t.tick(&sample(0, vec![p(0, Some(0), 0)]));
+        // A flick from 0.8: ten views closing, four past the target (0.12
+        // at the worst), then on it.
+        let mut tick = 100;
+        let mut errors: Vec<f32> = (0..10).map(|i| 0.8 - 0.08 * i as f32).collect();
+        errors.extend([-0.04, -0.12, -0.08, -0.02]);
+        errors.extend([0.01; 12]);
+        for e in &errors {
+            let stick = if *e > 0.03 {
+                -0.5
+            } else if *e < -0.03 {
+                0.5
+            } else {
+                0.0
+            };
+            aim(&mut t, tick, 7, *e, stick);
+            // The brain's view repeated on a tick it did not think: once.
+            aim(&mut t, tick, 7, *e, 0.9);
+            tick += 1;
+        }
+        // Another target, close already: an engagement, not a flick.
+        for i in 0..5 {
+            aim(&mut t, tick + i, 8, 0.1, -0.2);
+        }
+        let r = t.report(Finish::bare(End::GameOver));
+        let a = r.player(0).unwrap().aim.clone().unwrap();
+        assert_eq!(a.tracked_ticks, errors.len() as u64 + 5);
+        assert_eq!(a.flicks, 1);
+        assert!((a.overshoot_ratio - 0.12 / 0.8).abs() < 1e-6, "{a:?}");
+        // Views 13.. are inside 0.05; the sixth of them settles it.
+        assert_eq!((a.settled, a.settle_ticks), (1, 13.0));
+        // One reversal past the target; the stick moved on two views of
+        // the first engagement's 25 pairs and none of the second's four.
+        let pairs = (errors.len() - 1 + 4) as f64;
+        assert!((a.reversals_per_s - 30.0 / pairs).abs() < 1e-9, "{a:?}");
+        assert!((a.stick_jitter - (1.0 + 0.5) / pairs).abs() < 1e-6, "{a:?}");
+        let mean = (errors.iter().map(|e| e.abs()).sum::<f32>() + 0.5) / (errors.len() + 5) as f32;
+        assert!((a.mean_error - f64::from(mean)).abs() < 1e-5, "{a:?}");
+        // The report as it stands does not close the tally's engagement.
+        let again = t.report(Finish::bare(End::GameOver));
+        assert_eq!(again.player(0).unwrap().aim, Some(a));
+    }
+
+    #[test]
+    fn aim_motion_splits_engagements_and_leaves_out_what_never_settles() {
+        let mut t = Tally::new();
+        t.start(0);
+        t.tick(&sample(0, vec![p(0, Some(0), 0)]));
+        // Never inside 0.05 for six views: a flick that does not settle.
+        for i in 0..40 {
+            aim(&mut t, i, 3, if i % 4 == 1 { 0.02 } else { 0.5 }, -1.0);
+        }
+        // The same target after a gap is a new flick; it overshoots by
+        // half, and only what happens in the first two seconds counts.
+        for i in 0..80 {
+            let e = match i {
+                0 => 0.4,
+                1..=9 => -0.2,
+                70 => -0.4,
+                _ => 0.0,
+            };
+            aim(&mut t, 50 + i, 3, e, 0.0);
+        }
+        // A view that is not a number is dropped.
+        aim(&mut t, 500, 3, f32::NAN, 0.0);
+        let a = t
+            .report(Finish::bare(End::GameOver))
+            .player(0)
+            .unwrap()
+            .aim
+            .clone()
+            .unwrap();
+        assert_eq!(a.tracked_ticks, 120);
+        assert_eq!(a.flicks, 2);
+        assert!((a.overshoot_ratio - 0.25).abs() < 1e-6, "{a:?}");
+        assert_eq!((a.settled, a.settle_ticks), (1, 10.0));
+        assert_eq!(a.reversals_per_s, 0.0);
+        // A player with no tracked view has no aim section at all.
+        let mut none = Tally::new();
+        none.tick(&sample(0, vec![p(0, Some(0), 0)]));
+        none.brain_for_player(0, BrainTick::default());
+        let r = none.report(Finish::bare(End::GameOver));
+        assert_eq!(r.player(0).unwrap().aim, None);
+        let v = serde_json::to_value(&r).unwrap();
+        assert!(v["players"][0].get("aim").is_none());
+        assert_eq!(v["players"][0]["ttk_kills"], 0);
+    }
+
+    #[test]
+    fn earlier_reports_still_load() {
+        // A player line as written before the time to kill and the aim
+        // section existed.
+        let old = serde_json::json!({
+            "index": 0, "name": "A1", "bot": true, "score": 3, "kills": 3, "deaths": 1,
+            "assists": 0, "suicides": 0, "betrayals": 0, "shots": 10, "hits": 4,
+            "accuracy": 0.4, "damage_dealt": 2.0, "damage_taken": 1.0, "alive_ticks": 9,
+            "vehicle_ticks": 0, "grenades": 0, "stuck_ticks": 0, "repaths": 0,
+            "objective_ticks": 0
+        });
+        let p: PlayerReport = serde_json::from_value(old).unwrap();
+        assert_eq!((p.ttk_kills, p.ttk_ticks, p.aim.clone()), (0, 0.0, None));
+        // And the new fields round trip.
+        let new = PlayerReport {
+            ttk_kills: 2,
+            ttk_ticks: 25.5,
+            aim: Some(AimReport {
+                tracked_ticks: 30,
+                mean_error: 0.04,
+                flicks: 1,
+                overshoot_ratio: 0.15,
+                settled: 1,
+                settle_ticks: 13.0,
+                stick_jitter: 0.08,
+                reversals_per_s: 1.2,
+            }),
+            ..p
+        };
+        let v = serde_json::to_value(&new).unwrap();
+        assert_eq!(v["aim"]["overshoot_ratio"], 0.15);
+        assert_eq!(serde_json::from_value::<PlayerReport>(v).unwrap(), new);
     }
 
     #[test]

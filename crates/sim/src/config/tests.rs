@@ -449,6 +449,244 @@ fn light_host_corpus_expands_all_maps_modes_and_seeds() {
 }
 
 #[test]
+fn the_aim_model_is_code_or_net() {
+    let p: BotParams = toml::from_str("aim_model = \"net\"").unwrap();
+    assert_eq!(p.aim_model.as_deref(), Some("net"));
+    assert!(p.problems("x").is_empty());
+    let over = BotParams {
+        aim_model: Some("code".into()),
+        ..BotParams::default()
+    };
+    assert_eq!(p.overlay(&over).aim_model.as_deref(), Some("code"));
+    assert_eq!(
+        over.overlay(&BotParams::default()).aim_model,
+        over.aim_model
+    );
+    let bad: BotParams = toml::from_str("aim_model = \"mlp\"").unwrap();
+    let e = bad.problems("bot 1").join("\n");
+    assert!(e.contains("bot 1: aim_model = \"mlp\": code or net"), "{e}");
+    // Left out, it is not written back.
+    assert!(
+        !toml::to_string(&BotParams::default())
+            .unwrap()
+            .contains("aim_model")
+    );
+}
+
+const ARMS: &str = "[a]\nname = \"code\"\n[a.tuning]\naim_model = \"code\"\n[b]\nname = \"net\"\n[b.tuning]\naim_model = \"net\"\n";
+const TWO_V_TWO: &str = "map = \"midship\"\nteam_play = true\n[[bot]]\nname = \"R1\"\nskill = \"heroic\"\n[[bot]]\nname = \"B1\"\n[[bot]]\nname = \"R2\"\n[[bot]]\nname = \"B2\"\n";
+
+#[test]
+fn an_arm_swap_plays_each_arm_in_every_seat() {
+    let text =
+        format!("out = \"o\"\nmatch = \"m.toml\"\nseeds = [3, 4]\nmode = \"arm_swap\"\n{ARMS}");
+    let b = batch(&text, TWO_V_TWO).unwrap();
+    assert_eq!(b.mode, Mode::ArmSwap);
+    assert_eq!(Mode::parse("arm_swap").unwrap().name(), "arm_swap");
+    let ids: Vec<_> = b.runs.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        [
+            "midship-s3",
+            "midship-s3-swapped",
+            "midship-s4",
+            "midship-s4-swapped"
+        ]
+    );
+    for pair in b.runs.chunks_exact(2) {
+        let (first, second) = (&pair[0].config, &pair[1].config);
+        assert_eq!(first.arms_swapped, Some(false));
+        assert_eq!(second.arms_swapped, Some(true));
+        assert_eq!((&first.map, first.seed), (&second.map, second.seed));
+        let arms = |c: &MatchConfig| -> Vec<String> {
+            c.bots.iter().map(|b| b.arm.clone().unwrap()).collect()
+        };
+        assert_eq!(arms(first), ["code", "net", "code", "net"]);
+        assert_eq!(arms(second), ["net", "code", "net", "code"]);
+        let (a, b) = (
+            resolve(first.clone(), &no_files).unwrap(),
+            resolve(second.clone(), &no_files).unwrap(),
+        );
+        for (x, y) in a.bots.iter().zip(&b.bots) {
+            // The same seat, name, team, transport, skill and brain seed;
+            // only the arm and what it tunes change.
+            assert_eq!(
+                (&x.name, x.seat, x.port, x.kind, x.team, x.skill, x.seed),
+                (&y.name, y.seat, y.port, y.kind, y.team, y.skill, y.seed)
+            );
+            assert_ne!(x.arm, y.arm);
+            assert_ne!(x.params.aim_model, y.params.aim_model);
+            let model = if x.arm.as_deref() == Some("net") {
+                "net"
+            } else {
+                "code"
+            };
+            assert_eq!(x.params.aim_model.as_deref(), Some(model));
+        }
+        // The legs write back and read as they were planned.
+        for c in [first, second] {
+            let back = parse_match(&toml::to_string(c).unwrap(), false).unwrap();
+            assert_eq!(&back, c);
+        }
+    }
+    // It needs both arms.
+    let one = batch(
+        "out = \"o\"\nmatch = \"m.toml\"\nmode = \"arm_swap\"\n[a]\n",
+        TWO_V_TWO,
+    )
+    .unwrap_err();
+    assert!(one.contains("arm_swap needs two arms"), "{one}");
+    // The other modes leave the leg marker out.
+    let plain = batch(
+        &format!("out = \"o\"\nmatch = \"m.toml\"\n{ARMS}"),
+        TWO_V_TWO,
+    )
+    .unwrap();
+    assert_eq!(plain.runs[0].config.arms_swapped, None);
+}
+
+#[test]
+fn skills_are_an_axis_over_every_bot() {
+    let text = format!(
+        "out = \"o\"\nmatch = \"m.toml\"\nmaps = [\"midship\", \"lockout\"]\nseeds = [1, 2]\nskills = [\"easy\", \"Legendary\"]\n{ARMS}"
+    );
+    let b = batch(&text, TWO_V_TWO).unwrap();
+    let ids: Vec<_> = b.runs.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        [
+            "midship-easy-s1",
+            "midship-easy-s2",
+            "midship-legendary-s1",
+            "midship-legendary-s2",
+            "lockout-easy-s1",
+            "lockout-easy-s2",
+            "lockout-legendary-s1",
+            "lockout-legendary-s2",
+        ]
+    );
+    for r in &b.runs {
+        let want = if r.id.contains("easy") {
+            "easy"
+        } else {
+            "legendary"
+        };
+        let m = resolve(r.config.clone(), &no_files).unwrap();
+        assert!(m.bots.iter().all(|b| b.skill.name() == want), "{}", r.id);
+    }
+    // Without the axis each bot keeps its own.
+    let own = batch(
+        &format!("out = \"o\"\nmatch = \"m.toml\"\n{ARMS}"),
+        TWO_V_TWO,
+    )
+    .unwrap();
+    let m = resolve(own.runs[0].config.clone(), &no_files).unwrap();
+    let skills: Vec<_> = m.bots.iter().map(|b| b.skill.name()).collect();
+    assert_eq!(skills, ["heroic", "normal", "normal", "normal"]);
+    let e = batch(
+        &format!("out = \"o\"\nmatch = \"m.toml\"\nskills = [\"mythic\"]\n{ARMS}"),
+        TWO_V_TWO,
+    )
+    .unwrap_err();
+    assert!(e.contains("skills:"), "{e}");
+}
+
+#[test]
+fn game_types_and_skills_compose_with_arm_swaps() {
+    let text = format!(
+        r#"out = 'o'
+match = 'm.toml'
+maps = ['midship', 'lockout']
+game_types = ['Capture the Flag', 'assault', 'juggernaut']
+skills = ['easy', 'Heroic']
+seeds = [3, 4]
+mode = 'arm_swap'
+{ARMS}"#
+    );
+    let base = r#"map = 'midship'
+team_play = false
+[[bot]]
+team = 1
+skill = 'legendary'
+[[bot]]
+team = 0
+"#;
+    let batch = batch(&text, base).unwrap();
+    assert_eq!(batch.runs.len(), 2 * 3 * 2 * 2 * 2);
+    let mut runs = batch.runs.into_iter();
+    for map in ["midship", "lockout"] {
+        for (game_type, team_play) in [("ctf", true), ("assault", true), ("juggernaut", false)] {
+            for skill in ["easy", "heroic"] {
+                for seed in [3, 4] {
+                    for (swapped, suffix) in [(false, ""), (true, "-swapped")] {
+                        let run = runs.next().unwrap();
+                        assert_eq!(run.id, format!("{map}-{game_type}-{skill}-s{seed}{suffix}"));
+                        let m = resolve(run.config, &no_files).unwrap();
+                        assert_eq!(m.game_type.name(), game_type);
+                        assert_eq!(m.team_play, team_play);
+                        assert_eq!(m.config.arms_swapped, Some(swapped));
+                        assert!(m.bots.iter().all(|b| b.skill.name() == skill));
+                        let arms = if team_play ^ swapped {
+                            ["net", "code"]
+                        } else {
+                            ["code", "net"]
+                        };
+                        assert_eq!(
+                            m.bots
+                                .iter()
+                                .map(|b| b.arm.as_deref().unwrap())
+                                .collect::<Vec<_>>(),
+                            arms
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The aim-model comparison in docs/runtime/sim-examples stays valid.
+#[test]
+fn the_aim_model_comparison_loads() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/runtime/sim-examples");
+    let b = load_batch(&dir.join("aim-net-vs-code.toml")).unwrap();
+    assert_eq!(b.mode, Mode::ArmSwap);
+    assert_eq!(
+        b.arms.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(),
+        ["code", "net"]
+    );
+    // Two maps, four skills, five seeds, two legs.
+    assert_eq!(b.runs.len(), 80);
+    assert_eq!(b.runs[0].id, "midship-easy-s1");
+    assert_eq!(b.runs[79].id, "lockout-legendary-s5-swapped");
+    for r in &b.runs {
+        let m = resolve(r.config.clone(), &no_files).unwrap();
+        assert_eq!(m.bots.len(), 4);
+        assert!(!m.distributed());
+        for model in ["code", "net"] {
+            let on: Vec<_> = m
+                .bots
+                .iter()
+                .filter(|b| b.params.aim_model.as_deref() == Some(model))
+                .collect();
+            // One team a model, and the arm named after it.
+            assert_eq!(on.len(), 2, "{}", r.id);
+            assert_eq!(on[0].team, on[1].team);
+            assert!(on.iter().all(|b| b.arm.as_deref() == Some(model)));
+        }
+        // Apart from the aim model and the skill the arms are untuned.
+        for bot in &m.bots {
+            let plain = BotParams {
+                skill: bot.params.skill.clone(),
+                aim_model: bot.params.aim_model.clone(),
+                ..BotParams::default()
+            };
+            assert_eq!(bot.params, plain);
+        }
+    }
+}
+
+#[test]
 fn planned_runs_write_back_as_toml() {
     let b = batch(
         BATCH,

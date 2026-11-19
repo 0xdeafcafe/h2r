@@ -836,8 +836,149 @@ the two paths before using their hit rates to tune the brain.
 The shared pad-to-action path for local and phantom seats is in progress.
 Clanker Training needs phantom seats before aim tuning so the comparison
 includes the remote action path. Compare the hand-written aim with a
-planned hand-built aim net in simulation. Use matched maps, lineups and
-seeds and record results per seat. [Simulation coverage](../runtime/sim.md#more-than-four)
+hand-built aim net in simulation using matched maps, lineups and seeds.
+Record results per seat. [Simulation coverage](../runtime/sim.md#more-than-four)
+
+#### 3.4.1 The aim net (built, not compared in a game yet)
+
+The user asked for a small neural net with hand-written weights for aim
+and tracking, tested in simulation against the code above, the winner to
+stay. `bots::aim_net` is that net. Nothing is trained and there is no ML
+dependency: the weights are `const` arrays built from named constants, so
+each hidden unit has one job.
+
+**The switch.** `aim_model = "code" | "net"` in a bot's tuning
+(`bots::tuning::Tuning::aim_model`, `sim::config::BotParams::aim_model`).
+`H2_BOT_AIM_MODEL=net` sets the default for bots whose tuning does not
+name one. The default is `code`.
+
+**What it replaces.** Only the step that turns the hand's view of a
+tracked target into the stick it wants. With `code` that is the tracking
+lag, the flick offset and `gain × error` through the stick curve. With
+`net` it is one forward pass. Both models share everything around that
+step:
+
+- the view, as late as `perception_ticks` makes it;
+- the hand's wandering error and misreads, from the same seeded process,
+  scaled by `error` and by mood through `human_input::tracking_noise`;
+- the thumb, which moves at most the skill's travel a tick (0.15 easy to
+  0.25 legendary) inside the stick's circle;
+- the controller: motor delay, the 0.45 stick step, the one-thumb rule;
+- target choice, the fire cone, the trigger, movement and the shared
+  action builder.
+
+A look with no tracked target (travel, a glance at a sound, a pilot's
+line) uses the code's curve under either model.
+
+**Inputs (18).** Yaw then pitch where there are two.
+
+| Input | Unit | From |
+|---|---|---|
+| error | rad | aim to the led aim point, before the hand's error |
+| error rate | rad/s | this view's error less the last one's |
+| target rate | rad/s | the target's bearing from the eye, view to view |
+| stick | -1..1 | the thumb now, turn-positive |
+| pending turn | rad | the nominal turn of the last `perception_ticks + motor_ticks` reports: asked for, not in the view yet |
+| since acquired | s | 0..2 |
+| size | rad | 0.25 / distance: the target's apparent half width |
+| looseness | 0..1 | the weapon: sniper 0, precise 0.15, unknown and blast 0.5, spray 0.7, shotgun and sword 1 |
+| gain | 0..1.5 | the skill's `gain`: 0 at easy's 1.6, 1 at legendary's 4.5 |
+| spread | 0..1.5 | the skill's `error` / 0.10 |
+| lead | 0..1 | the skill's `lead` |
+| noise | rad | the hand's wandering error this tick |
+
+The three skill scalars come from the tuned aim table, so `gain`, `error`
+and `lead` in a tuning file move the net as they move the code.
+
+**Hidden units (24, ReLU).** They come in mirrored pairs, one unit a
+direction. Skill enters only through biases: it widens or narrows a dead
+band or a clamp. With `seen = error + noise`,
+`predicted = seen + 0.02 × error rate + 0.12 × target rate − 0.9 × pending`
+and `tolerance = 0.006 × spread + 0.06 × size + 0.004 × looseness`:
+
+| Units | Name | Computes | Job |
+|---|---|---|---|
+| 0, 1 | yaw pull | `±predicted − tolerance` | The PD term. The error rate is the D. The target rate carries the error forward over the view's age, and the pending turn takes off what is already on its way. Out at 3.9 stick/rad. Inside the tolerance the thumb rests. |
+| 2, 3 | yaw boost cap | `2.0 × pull − 0.43 × gain` | Takes the extra 2.0 stick/rad away again once it has given `0.43 × gain` of stick. Easy gets 1.9 stick/rad everywhere; legendary 3.9 for the first 0.2 rad. |
+| 4, 5 | yaw breakout | `±seen − tolerance` | The micro-correction. Out at 8 stick/rad on the error as seen, so a small miss gets a stick past its dead zone at once. |
+| 6, 7 | yaw breakout cap | `8 × breakout − 0.17` | Stops the micro-correction at 0.17 of stick, just past the 0.13 dead zone, where the view creeps. |
+| 8, 9 | yaw lead | `±target rate` | Velocity feed-forward: 0.35 stick per rad/s, so the thumb holds the turn a moving target needs with no error to drive it. |
+| 10, 11 | yaw lead cap | `0.35 × lead unit − 0.6 × lead` | Stops the feed-forward at `0.6 × lead` of stick. Easy keeps up with 0.5 rad/s, legendary with 1.7. |
+| 12, 13 | yaw follow-through | `±stick − 0.5 − 1.2 × since + 0.3 × spread` | The flick overshoot. A thumb already hard over early in an engagement stays over (0.8 out), so the aim carries past and comes back. It fades within 0.4 to 0.7 s and is wider for a wider spread. |
+| 14–21 | pitch pull, boost cap, breakout, breakout cap | as yaw's | The same four pairs on pitch. |
+| 22, 23 | pitch lead | `±target rate` | Pitch feed-forward, 0.25 stick per rad/s, no cap. |
+
+**Outputs (2).** The yaw and pitch turn, each the weighted sum of its
+units clamped to −1..1. The hand maps `[yaw, pitch]` to the right stick
+`(−yaw, pitch)`, keeps it in the unit circle and moves the thumb there.
+No fire gate: the trigger stays with the shared fire cone, so the
+comparison measures aim alone.
+
+The pending-turn input is what separates the two models most. A view is
+`perception_ticks` old and a report lands `motor_ticks` later: five ticks
+at easy and normal, four at heroic, three at legendary. The code aim
+steers on the old view as if it were current. The net subtracts the turn
+it has already asked for. In a scratch model of the nominal stick curve
+with that delay, written while the weights were designed, the code aim
+swung past a still target and at heroic and legendary gain kept swinging.
+No test asserts that and no game run has shown it: the real stick
+response has look acceleration and aim assist that the nominal model
+leaves out. The comparison is what says.
+
+**Tests.** `cargo test -p bots aim_net` covers the network alone: the
+same bits for the same inputs, no stick for no error or inside the dead
+band, sign and axis, saturation, the gain order by skill, each named
+unit's effect, and the table's shape. `cargo test -p bots look` runs both
+models through one kinematic harness (the nominal stick curve, the view
+as late as the skill's delays): determinism, the code aim untouched by
+the switch, the net landing a 0.95 rad flick and settling sooner and
+closer at each higher skill, tracking a strafing and a crossing target,
+and the mood scaling of its error.
+
+**The comparison.**
+
+```sh
+H2_OPT=2 h2 sim batch docs/runtime/sim-examples/aim-net-vs-code.toml --disc disc/halo2.iso --parallel 3 --pace unpaced
+```
+
+Midship and Lockout, four skills, five seeds, two against two, every bot
+at the run's skill. Each match is played twice (`mode = "arm_swap"`): the
+second leg gives every bot the other arm, so each model plays every seat,
+team, spawn and brain seed. 80 matches. Only `aim_model` differs between
+the arms. `compare.txt` under
+`docs/runtime/sim-examples/results/aim-net-vs-code/` has one table over
+all runs and one per skill, with net − code and its 95% interval:
+
+| Row | Meaning | Better |
+|---|---|---|
+| `accuracy` | hits / shots | higher |
+| `kd`, `win`, `kills`, `deaths` | the fights | higher K/D |
+| `ttk_s` | seconds from the killer's first hit of a fight to the kill | lower |
+| `aim_error` | mean angle off the aim point while tracking, rad | lower |
+| `overshoot` | how far past the target a flick of 20° or more goes, as a fraction of the flick | 0.03 to 0.25 reads as a hand |
+| `settle_s` | seconds for such a flick to stay within 0.05 rad | lower |
+| `jitter` | right-stick travel a tick while tracking | lower |
+| `reversals` | changes of the stick's yaw direction a second | lower |
+
+**The decision rule.** Read the per-skill tables.
+
+1. The net wins if, at three skills or more, it is better with the
+   interval clear of zero on at least one of `kd`, `accuracy` and
+   `ttk_s`, worse with the interval clear of zero on none of them at any
+   skill, and no less like a hand: `jitter` and `reversals` not higher
+   with the interval clear of zero, and `overshoot` inside 0.03 to 0.25.
+2. The code wins if the reverse holds.
+3. Anything else is close, and the simpler one stays. That is the code:
+   it is the incumbent and carries no extra state.
+
+Also check that each model's own `accuracy` still rises from easy to
+legendary. A net that makes easy bots sharp has lost the difficulty
+ladder whatever its K/D.
+
+The loser is deleted, not kept behind the switch. If the net wins, the
+default becomes `net`, then the code's tracking lag and flick offset go.
+If the code wins, `bots::aim_net`, the switch and the hand's net state
+go. The aim-motion rows and `arm_swap` stay either way.
 
 ### 3.5 Emotes (the teabag layer)
 

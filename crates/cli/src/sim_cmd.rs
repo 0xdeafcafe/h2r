@@ -45,12 +45,15 @@ Choose a stored admin account with --as, or leave it off if there is only one.
 --data defaults to h2's data root; its bots/ must hold the map's nav mesh
 (`h2 bots nav <map>`): sim mode never builds one.
 
-`batch` runs maps x game_types x seeds (x arms with mode = \"separate\") as child
-processes, --parallel at once (default: half the cores), each with its own
+`batch` runs maps x game_types x skills x seeds (x arms with mode = \"separate\") as
+child processes, --parallel at once (default: half the cores), each with its own
 data directory under <out>/runs/<id>/ (removed after unless --keep-data;
 its bots/ linked to --data's), and writes <out>/compare.json and
-compare.txt. With mode = \"seat_swap\" each map/seed plays twice, once with
-each seat layout, and compare.json includes their paired differences.
+compare.txt. With mode = "seat_swap" each combination plays twice, once
+with each seat layout, and compare.json includes their paired differences.
+With mode = "arm_swap" each plays twice with the arms exchanged, so both
+arms play every seat. skills = [...] adds a run per skill with every bot
+at it, and a table per skill.
 --provider local is the default. --max-parallel also works for local batches.
 --provider cloud runs unpaced on dedicated hosts through Live.
 --dry-run lists the runs. For all-local rosters, --fork boots each map once, saves a

@@ -226,7 +226,14 @@ pub struct BotParams {
     /// Maximum phantom one-way variation in milliseconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phantom_jitter_ms: Option<f32>,
+    /// What turns the hand's view of a target into the right stick:
+    /// `code` (the hand-written tracking) or `net` (the aim net).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aim_model: Option<String>,
 }
+
+/// The aim models a tuning can name (`bots::tuning::AimModel`).
+pub const AIM_MODELS: [&str; 2] = ["code", "net"];
 
 impl BotParams {
     /// `self` with every field `over` sets replaced by `over`'s.
@@ -257,6 +264,7 @@ impl BotParams {
             thumb_switch_ticks: pick(&self.thumb_switch_ticks, &over.thumb_switch_ticks),
             phantom_ping_ms: pick(&self.phantom_ping_ms, &over.phantom_ping_ms),
             phantom_jitter_ms: pick(&self.phantom_jitter_ms, &over.phantom_jitter_ms),
+            aim_model: pick(&self.aim_model, &over.aim_model),
         }
     }
 
@@ -328,6 +336,11 @@ impl BotParams {
             {
                 out.push(format!("{at}: {name} = {v}: {lo} to {hi}"));
             }
+        }
+        if let Some(m) = &self.aim_model
+            && !AIM_MODELS.contains(&m.as_str())
+        {
+            out.push(format!("{at}: aim_model = {m:?}: code or net"));
         }
         let on_off = self.burst_on.is_some() || self.burst_off.is_some();
         if self.burst == Some(false) && on_off {
@@ -401,6 +414,10 @@ pub struct MatchConfig {
     /// Set by paired batch planning. False is the original layout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seats_swapped: Option<bool>,
+    /// Set by an `arm_swap` batch. True on the leg where every bot plays
+    /// for the other arm.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arms_swapped: Option<bool>,
     /// Seconds; 0 or unset: the type's default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub time_limit_s: Option<u32>,
@@ -681,6 +698,9 @@ pub enum Mode {
     /// Every match twice: all bots A, then all bots B.
     Separate,
     SeatSwap,
+    /// Versus, twice: the second leg gives every bot the other arm, so
+    /// each arm plays every seat, team and brain seed once.
+    ArmSwap,
 }
 
 impl Mode {
@@ -689,6 +709,7 @@ impl Mode {
             Self::Versus => "versus",
             Self::Separate => "separate",
             Self::SeatSwap => "seat_swap",
+            Self::ArmSwap => "arm_swap",
         }
     }
 
@@ -697,7 +718,10 @@ impl Mode {
             "versus" | "vs" => Ok(Mode::Versus),
             "separate" => Ok(Mode::Separate),
             "seat_swap" => Ok(Mode::SeatSwap),
-            _ => Err(format!("unknown mode {s:?} (versus, separate, seat_swap)")),
+            "arm_swap" => Ok(Mode::ArmSwap),
+            _ => Err(format!(
+                "unknown mode {s:?} (versus, separate, seat_swap, arm_swap)"
+            )),
         }
     }
 }
@@ -726,6 +750,10 @@ pub struct BatchConfig {
     /// One run per seed (default: the match's).
     #[serde(default)]
     pub seeds: Vec<u64>,
+    /// One run per skill, every bot at it (default: the bots' own). The
+    /// comparison then has a table per skill as well.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
     /// Fork every run from a snapshot at spawn (docs/runtime/sim.md, "Forking
@@ -747,8 +775,9 @@ pub struct ArmParams {
 /// One run of a batch.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Run {
-    /// `<map>-s<seed>` plus `-a`/`-b` in separate mode: the run's
-    /// directory under `<out>/runs/`.
+    /// `<map>[-<gametype>][-<skill>]-s<seed>` plus the arm name in
+    /// separate mode or `-swapped` on a second leg. Used as the
+    /// directory name under `<out>/runs/`.
     pub id: String,
     pub map: String,
     pub seed: u64,
@@ -779,9 +808,10 @@ pub fn load_batch(path: &Path) -> Result<Batch, String> {
     plan(config, base_match, &read_arm, &read_bot, &base)
 }
 
-/// Plans a batch's runs: maps × seeds (× arms in separate mode). Every
-/// run's match file has its bots' tunings inline, the arm's over the
-/// bot's own, so a run directory is self-contained.
+/// Plans a batch's runs: maps × game types × skills × seeds (× arms in
+/// separate mode, × two legs in the swap modes). Every run's match file
+/// has its bots' tunings inline, the arm's over the bot's own, so a run
+/// directory is self-contained.
 pub fn plan(
     config: BatchConfig,
     base_match: MatchConfig,
@@ -828,9 +858,30 @@ pub fn plan(
     if mode == Mode::Versus && arms.len() == 2 && base_match.bots.len() < 2 {
         problems.push("versus needs at least two bots, one per arm".to_string());
     }
+    if mode == Mode::ArmSwap && arms.len() < 2 {
+        problems.push("arm_swap needs two arms, [a] and [b]".to_string());
+    }
+    if mode == Mode::ArmSwap && base_match.bots.len() < 2 {
+        problems.push("arm_swap needs at least two bots, one per arm".to_string());
+    }
     if config.parallel == Some(0) {
         problems.push("parallel = 0: at least 1".to_string());
     }
+    let skills: Vec<Option<String>> = if config.skills.is_empty() {
+        vec![None]
+    } else {
+        config
+            .skills
+            .iter()
+            .map(|s| match Skill::parse(s) {
+                Ok(skill) => Some(skill.name().to_string()),
+                Err(e) => {
+                    problems.push(format!("skills: {e}"));
+                    None
+                }
+            })
+            .collect()
+    };
     // The bots' own tuning files, read once.
     let mut own = Vec::new();
     for (i, b) in base_match.bots.iter().enumerate() {
@@ -857,106 +908,133 @@ pub fn plan(
         config.seeds.clone()
     };
     let game_types = if config.game_types.is_empty() {
-        vec![base_match.game_type.clone()]
+        vec![(base_match.game_type.clone(), base_match.team_play)]
     } else {
-        config.game_types.iter().filter_map(|name| match GameType::parse(name) {
-            Ok(kind) => Some(kind.name().to_string()),
-            Err(e) => {
-                problems.push(e);
-                None
-            }
-        }).collect()
+        config
+            .game_types
+            .iter()
+            .filter_map(|name| match GameType::parse(name) {
+                Ok(kind) => {
+                    let team_play = match kind {
+                        GameType::Ctf | GameType::Assault => Some(true),
+                        GameType::Juggernaut => Some(false),
+                        _ => base_match.team_play,
+                    };
+                    Some((kind.name().to_string(), team_play))
+                }
+                Err(e) => {
+                    problems.push(e);
+                    None
+                }
+            })
+            .collect()
     };
     let mut runs = Vec::new();
     let kinds: Vec<Option<usize>> = match (mode, arms.len()) {
         (Mode::Separate, 2) => vec![Some(0), Some(1)],
         _ => vec![None],
     };
-    for map in &maps {
-        for game_type in &game_types {
-            for &seed in &seeds {
-                for kind in &kinds {
-                    let mut c = base_match.clone();
-                    c.map = map.clone();
-                    c.game_type = game_type.clone();
-                    c.team_play = if config.game_types.is_empty() {
-                        base_match.team_play
+    // Apply the selected arm's tuning and then the skill axis. In a
+    // team game the versus split follows teams, including implicit ones.
+    let lineup = |kind: Option<usize>, flip: bool, skill: &Option<String>, team_play: bool| {
+        base_match
+            .bots
+            .iter()
+            .enumerate()
+            .map(|(i, b)| {
+                let mut spec = b.clone();
+                let team = b.team.unwrap_or((i % 2) as u8);
+                if team_play {
+                    spec.team = Some(team);
+                }
+                let a = kind.unwrap_or_else(|| {
+                    if arms.len() < 2 {
+                        0
+                    } else if team_play {
+                        usize::from(team % 2)
                     } else {
-                        match GameType::parse(game_type) {
-                            Ok(GameType::Ctf | GameType::Assault) => Some(true),
-                            Ok(GameType::Juggernaut) => Some(false),
-                            _ => base_match.team_play,
-                        }
-                    };
-                    let team_play = c.team_play.unwrap_or(false);
-                    c.seed = seed;
-                    c.bots = base_match
-                        .bots
-                        .iter()
-                        .enumerate()
-                        .map(|(i, b)| {
-                            let a = kind.unwrap_or_else(|| {
-                                if arms.len() < 2 {
-                                    0
-                                } else if team_play {
-                                    usize::from(b.team.unwrap_or((i % 2) as u8) % 2)
-                                } else {
-                                    i % 2
-                                }
-                            });
-                            let arm = &arms[a];
-                            let mut spec = b.clone();
-                            spec.params = None;
-                            spec.tuning = Some(own[i].overlay(&arm.params));
-                            if let Some(s) = &arm.params.skill {
-                                spec.skill = Some(s.clone());
-                            }
-                            if team_play && spec.team.is_none() {
-                                spec.team = Some((i % 2) as u8);
-                            }
-                            spec.arm = Some(arm.name.clone());
-                            spec
-                        })
-                        .collect();
-                    let name = if config.game_types.is_empty() {
-                        safe(map)
-                    } else {
-                        format!("{}-{}", safe(map), safe(game_type))
-                    };
-                    let id = match kind {
-                        Some(a) => format!("{name}-s{seed}-{}", safe(&arms[*a].name)),
-                        None => format!("{name}-s{seed}"),
-                    };
-                    // Each planned match must itself check.
-                    if let Err(e) = resolve(c.clone(), &|_| Ok(BotParams::default())) {
-                        problems.push(format!("run {id}: {}", e.replace('\n', "; ")));
+                        i % 2
                     }
-                    let swapped_run = if mode == Mode::SeatSwap {
-                        c.seats_swapped = Some(false);
-                        let mut swapped = c.clone();
-                        swapped.seats_swapped = Some(true);
-                        for b in &mut swapped.bots {
-                            b.kind = b.kind.swapped();
+                });
+                let a = if flip && arms.len() == 2 { 1 - a } else { a };
+                let arm = &arms[a];
+                spec.params = None;
+                spec.tuning = Some(own[i].overlay(&arm.params));
+                if let Some(s) = skill.as_ref().or(arm.params.skill.as_ref()) {
+                    spec.skill = Some(s.clone());
+                }
+                spec.arm = Some(arm.name.clone());
+                spec
+            })
+            .collect::<Vec<_>>()
+    };
+    for map in &maps {
+        for (game_type, team_play) in &game_types {
+            let name = if config.game_types.is_empty() {
+                safe(map)
+            } else {
+                format!("{}-{game_type}", safe(map))
+            };
+            for skill in &skills {
+                let name = match skill {
+                    Some(s) => format!("{name}-{s}"),
+                    None => name.clone(),
+                };
+                for &seed in &seeds {
+                    for &kind in &kinds {
+                        let id = match kind {
+                            Some(a) => format!("{name}-s{seed}-{}", safe(&arms[a].name)),
+                            None => format!("{name}-s{seed}"),
+                        };
+                        let mut c = base_match.clone();
+                        c.map = map.clone();
+                        c.game_type = game_type.clone();
+                        c.team_play = *team_play;
+                        c.seed = seed;
+                        let team_play = team_play.unwrap_or(false);
+                        c.bots = lineup(kind, false, skill, team_play);
+                        if let Err(e) = resolve(c.clone(), &|_| Ok(BotParams::default())) {
+                            problems.push(format!("run {id}: {}", e.replace('\n', "; ")));
                         }
-                        if let Err(e) = resolve(swapped.clone(), &|_| Ok(BotParams::default())) {
-                            problems.push(format!("run {id}-swapped: {e}"));
+                        let swapped_run = match mode {
+                            Mode::SeatSwap => {
+                                c.seats_swapped = Some(false);
+                                let mut swapped = c.clone();
+                                swapped.seats_swapped = Some(true);
+                                for b in &mut swapped.bots {
+                                    b.kind = b.kind.swapped();
+                                }
+                                Some(swapped)
+                            }
+                            Mode::ArmSwap => {
+                                c.arms_swapped = Some(false);
+                                let mut swapped = c.clone();
+                                swapped.arms_swapped = Some(true);
+                                swapped.bots = lineup(kind, true, skill, team_play);
+                                Some(swapped)
+                            }
+                            Mode::Versus | Mode::Separate => None,
                         }
-                        Some(Run {
-                            id: format!("{id}-swapped"),
+                        .map(|config| {
+                            let id = format!("{id}-swapped");
+                            if let Err(e) = resolve(config.clone(), &|_| Ok(BotParams::default())) {
+                                problems.push(format!("run {id}: {e}"));
+                            }
+                            Run {
+                                id,
+                                map: map.clone(),
+                                seed,
+                                config,
+                            }
+                        });
+                        runs.push(Run {
+                            id,
                             map: map.clone(),
                             seed,
-                            config: swapped,
-                        })
-                    } else {
-                        None
-                    };
-                    runs.push(Run {
-                        id,
-                        map: map.clone(),
-                        seed,
-                        config: c,
-                    });
-                    runs.extend(swapped_run);
+                            config: c,
+                        });
+                        runs.extend(swapped_run);
+                    }
                 }
             }
         }
@@ -964,7 +1042,7 @@ pub fn plan(
     let mut ids: Vec<&str> = runs.iter().map(|r| r.id.as_str()).collect();
     ids.sort_unstable();
     if ids.windows(2).any(|w| w[0] == w[1]) {
-        problems.push("two runs share an id: repeated maps, game types or seeds".to_string());
+        problems.push("two runs share an id: repeated maps, game types, skills or seeds".to_string());
     }
     if !problems.is_empty() {
         problems.dedup();
