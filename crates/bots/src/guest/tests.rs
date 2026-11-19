@@ -615,7 +615,8 @@ fn sign_in_calls_the_games_sign_in_with_the_bot_block_and_joins_the_screen() {
     assert_eq!(run.calls.len(), 1);
     let c = &run.calls[0];
     assert_eq!(c.target, points::PROFILE_SIGN_IN.base);
-    assert_eq!(c.args, vec![1, BUFFER, u32::MAX], "no file: nothing saved");
+    assert_eq!(c.args, vec![1, BUFFER, NO_FILE], "no file: nothing saved");
+    assert_eq!(NO_FILE, u32::MAX, "the game's -1");
     let g = run.guest;
     assert!(signed_in(&g, 1).unwrap());
     let block = g.bytes(slot(1) + SLOT_BLOCK, BLOCK_LEN).unwrap();
@@ -626,6 +627,58 @@ fn sign_in_calls_the_games_sign_in_with_the_bot_block_and_joins_the_screen() {
         "Clanker 1"
     );
     assert_eq!(g.u16(SCREEN + SCREEN_MASK).unwrap(), 0b11);
+}
+
+#[test]
+fn a_bot_is_never_signed_in_over_a_profile_its_slot_holds() {
+    // Port 1's slot holds the user's saved profile (file handle 0x1230):
+    // the game's sign-in over it would put the bot's block in its place.
+    // Nothing is called and the slot keeps its profile and file.
+    let mut g = FakeGuest::new();
+    slots(&mut g);
+    g.put_u32(slot(0), SLOT_PROFILE)
+        .put(slot(0) + SLOT_BLOCK, &halo0001());
+    g.put_u32(slot(1), SLOT_PROFILE)
+        .put(slot(1) + SLOT_BLOCK, &halo0001())
+        .put_u32(slot(1) + SLOT_FILE, 0x1230);
+    let run = sign_in_then_run(g, Some(SCREEN));
+    let sign_in = points::PROFILE_SIGN_IN.base;
+    let ports: Vec<u32> = run
+        .calls
+        .iter()
+        .filter(|c| c.target == sign_in)
+        .map(|c| c.args[0])
+        .collect();
+    assert_eq!(ports, vec![3], "only the empty slot");
+    let g = run.guest;
+    assert_eq!(g.u32(slot(1) + SLOT_FILE).unwrap(), 0x1230);
+    assert_eq!(
+        g.bytes(slot(1) + SLOT_BLOCK, BLOCK_LEN).unwrap(),
+        halo0001().to_vec(),
+        "the user's profile untouched"
+    );
+    assert_eq!(
+        g.u16(SCREEN + SCREEN_MASK).unwrap(),
+        0b1001,
+        "port 1 not joined"
+    );
+}
+
+#[test]
+fn a_saved_profile_is_a_signed_in_slot_with_a_file() {
+    let mut g = FakeGuest::new();
+    slots(&mut g);
+    for port in 0..4 {
+        g.put_u32(slot(port) + SLOT_FILE, NO_FILE);
+    }
+    assert_eq!(saved_profile(&g, 1).unwrap(), None, "empty");
+    g.put_u32(slot(1) + SLOT_FILE, 0x1230);
+    assert_eq!(saved_profile(&g, 1).unwrap(), None, "no profile flag");
+    g.put_u32(slot(1), SLOT_PROFILE);
+    assert_eq!(saved_profile(&g, 1).unwrap(), Some(0x1230));
+    // A bot's: signed in with no file.
+    g.put_u32(slot(2), SLOT_PROFILE);
+    assert_eq!(saved_profile(&g, 2).unwrap(), None);
 }
 
 fn sign_in_then_run(mut g: FakeGuest, screen: Option<u32>) -> testing::Run {

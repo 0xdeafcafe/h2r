@@ -771,9 +771,58 @@ signs a profile into a slot:
   `+0x14c`).
 
 Its callers are all "a profile was chosen" paths: the profile UI
-(`0x24b6ba` with `file = -1` for an unsaved profile, and `0x24b75b` after
-loading a file), the settings commit (`0x18fd0c`, `0x18fd59`) and
-`0x148b6b`. The sign-out is `0x18fc08`.
+(`0x24b6ba`, reached only when the chooser's file at `+4` is not -1, and
+`0x24b75b` after loading a file), the settings commit (`0x18fd0c`,
+`0x18fd59`) and `0x148b6b`. The sign-out is `0x18fc08`.
+
+**The file, and what "in use" means (traced 2026-11-19).** `file` is a
+saved-file handle from the saved-file manager (`[0x51ea14]`: the
+built-in content first, at most `0x65` records of `0x1e4` bytes, then per
+device a list of up to `0x1000` saved files of `0x40` bytes from `+0xbef8`,
+`0x40004` apart). A slot's handle at `+0x1f8` is everything that ties it to
+a saved profile:
+
+- **Chooser lists.** The list builder `0x24a190` takes the saved files of
+  a type (`0x215900`) and leaves out each one a signed-in slot's `+0x1f8`
+  holds (`0x18fc75`; a handle with bit 21 set, as -1 has, never matches).
+  So a slot holding a saved profile hides it from every chooser.
+- **The open-profile list** (`0x55c160` count, entries of `0x44` bytes at
+  `0x55c164`, room for four before `0x55c274`). The sign-in appends the new
+  handle when it is not -1 and differs from the slot's (`0x18fbd1`, no
+  bound check); `0x2172a0` removes one (the sign-in's old handle,
+  `PROFILE_SIGN_OUT`). The menus' memory mode keeps the saved-file manager
+  (`0x18ef00`'s table at `0x453c00`: `0x2157e0` builds it in mode 1,
+  `0x215810` frees it and freezes the list in the others); back in the
+  menus `0x18f5e3` re-finds each slot's handle (`0x2170e0`).
+- **Saving.** A profile commit (`0x18fcc4`: the block changed) signs the
+  block in again with the slot's own handle and sets slot flag `0x40`;
+  the save passes `0x190e37` and `0x190e71` write each such slot's block to
+  its file (`0x1a0660`, `0x2153dd`), and `0x1a0660` returns at once for -1.
+
+A bot's `file` is always -1 (`guest::NO_FILE`), so it never hides, holds
+or writes a saved profile. Nothing on the sign-in or sign-out path deletes
+a save: the game's `XDeleteSaveGame` callers are a failed create's clean-up
+(`0x215c00`), the profile UI's delete (`0x215e60`) and `0x2ad480`. A new
+profile is refused with error 1 (dialog `0x4a`, `0x148ca8`) when a
+device's list or its `XFindFirstSaveGame` count is `0x1000` or more
+(`0x215c55`, `0x215c65`, `0x217590`).
+
+**Never a saved profile (2026-11-19).** The user's report: the profile
+list showed only "Default" (a built-in) and a new profile was refused,
+and they thought the bots had taken their profiles. The data root's saves
+were untouched (one profile, unchanged since before the bots signed in;
+no save directory made or removed since). The guards that keep it so:
+
+- `guest::sign_in_then` and `guest::sign_in` never call the sign-in on a
+  slot that has a profile: over a saved one it would detach the user's
+  file and put the bot's block in its place;
+- a bot's slot that holds a saved profile anyway (a chooser opened for
+  its controller and took a stray A, as bots used to tap A before the
+  glue signed them in) is signed out once no game runs
+  (`local::release_step`, `guest::saved_profile`): `SLOT_SIGN_OUT` gives
+  the handle back to the open-profile list and saves nothing, so the
+  profile is offered again before a save pass can write the bot's block
+  over it, and the join gate signs the bot in again with its own block.
 
 **The players screen does not help.** In `0x1e`'s join path (`0x2528e5`):
 

@@ -90,6 +90,15 @@
 //! ([`bots::local::leave_step`], [`bots::guest::slot_held`]). A game never
 //! sees a bot's pad go.
 //!
+//! **Never a saved profile.** A bot is signed in with no profile file
+//! (`-1`), only on an empty slot ([`bots::guest::sign_in_then`]), so it
+//! never holds, hides or saves one of the user's profiles. Should a slot
+//! of a bot's hold a saved profile anyway (a chooser opened for its
+//! controller and took a stray A), the glue signs it out once no game
+//! runs ([`bots::local::release_step`], [`bots::guest::saved_profile`]):
+//! the profile is offered again, nothing is saved, and the join gate signs
+//! the bot back in with its own block.
+//!
 //! With no bots every hook returns at once. The bots stay signed in until
 //! they are taken off; going back to the players screen finds them joined,
 //! though its panes do not show them.
@@ -320,6 +329,15 @@ pub fn to_sign_in(
     (0..4u8)
         .filter(|&p| joining & 1 << p != 0 && join_gate(screen, dialog, signed_in(p)))
         .collect()
+}
+
+/// The log line for bots whose slot holds a saved profile
+/// ([`bots::local::release_step`]) as the glue signs them out.
+pub fn release_line(ports: &[u8]) -> String {
+    format!(
+        "bots: the bots on ports {ports:?} hold a saved profile (a chooser gave it to them): \
+         signing them out so it is offered again; nothing is saved"
+    )
 }
 
 /// The log line for one bot the glue signs in, and where: on the players
@@ -967,6 +985,31 @@ impl feature::Feature for Bots {
                     }
                 }
                 if !busy.load(Ordering::Relaxed) {
+                    let release = {
+                        let mem = rt.memory();
+                        let in_game = guest::in_game(&*mem);
+                        local::release_step(in_game, local.joining_mask(), |p| {
+                            guest::saved_profile(&*mem, u32::from(p))
+                                .ok()
+                                .flatten()
+                                .is_some()
+                        })
+                    };
+                    if !release.is_empty() {
+                        eprintln!("{}", release_line(&release));
+                        busy.store(true, Ordering::Relaxed);
+                        let busy = Arc::clone(&busy);
+                        let then = points::SOUND_UPDATE.base;
+                        return c.answer_async(move |cx| -> engine::entry::EntryFuture {
+                            Box::pin(async move {
+                                let r = guest::sign_out_then(cx, release, then).await;
+                                busy.store(false, Ordering::Relaxed);
+                                r
+                            })
+                        });
+                    }
+                }
+                if !busy.load(Ordering::Relaxed) {
                     let leaving = local.leaving();
                     if !leaving.is_empty() {
                         let step = {
@@ -1328,6 +1371,13 @@ mod tests {
             sign_in_skip(true, false, false),
             Some("no human profile to copy (no port without a bot has a profile)")
         );
+    }
+
+    #[test]
+    fn the_release_line_names_the_ports() {
+        let line = release_line(&[1, 3]);
+        assert!(line.starts_with("bots: the bots on ports [1, 3] hold a saved profile"));
+        assert!(line.ends_with("nothing is saved"));
     }
 
     #[test]
