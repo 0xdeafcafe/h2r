@@ -239,8 +239,8 @@ impl ParticleRenderer {
             .pipelines
             .entry(pipeline_key)
             .or_insert_with(|| {
-                let attributes: Vec<_> = (0..16)
-                    .filter(|r| program.locations & (1 << r) != 0)
+                let attributes: Vec<_> = (0..16u64)
+                    .filter(|&r| program.locations & (1u16 << r) != 0)
                     .map(|r| wgpu::VertexAttribute {
                         format: wgpu::VertexFormat::Float32x4,
                         offset: r * 16,

@@ -6,7 +6,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use crate::{BuildError, Builder, Feature, Flow, Manifest};
+use crate::{BuildError, Builder, Feature, Manifest};
 use engine::memory::GuestMemory;
 use engine::points::{Point, Sig};
 use native_render::camera::GuestRead;
@@ -143,11 +143,9 @@ impl Feature for NativeParticles {
             return Ok(());
         }
         b.raw()
-            .before(&EMIT, "native_particles_emit", |c| {
-                let rt = Arc::clone(c.ctx.runtime());
-                let mut mem = rt.memory();
-                on_emit(&mut *mem, c.cpu.esp, c.cpu.ebx);
-                Ok(Flow::Continue)
+            .observe_before(&EMIT, "native_particles_emit", |o| {
+                let mut mem = o.guest();
+                on_emit(&mut *mem, o.cpu.esp, o.cpu.ebx);
             })
             .context_only();
         b.snapshot(crate::SnapshotPolicy::Stateless);
