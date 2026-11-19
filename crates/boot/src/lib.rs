@@ -1128,9 +1128,9 @@ fn run_configured(
             wrappers::install_full_attributes(&loaded.runtime, u);
         }
     }
-    // Community classics in the built-in variant list (docs/game/community-gametypes.md).
-    community_variants::install(&loaded.runtime)
-        .context("installing the community game variants")?;
+    // Community variants and the dedicated-host matchmaking status text.
+    community_variants::install_with_live(&loaded.runtime, _live.clone())
+        .context("installing community variants and matchmaking strings")?;
     // Extra button layouts and the Controller Speaker row on the Controls
     // screen (docs/input/controller-layouts.md, docs/audio/playstation-audio.md).
     // The Video row on the Settings list opens our Video screen
