@@ -1075,3 +1075,45 @@ fn a_restored_page_for_an_unlisted_map_has_a_way_back() {
     assert_eq!(empty.prompts(DETAIL, Some(0)), [Prompt::new(&[Glyph::B], "Back")]);
     assert_eq!(empty.press_detail(0), Chosen::Nothing);
 }
+
+#[test]
+fn preview_presses_preserve_parent_focus_and_use_the_displayed_download_commands() {
+    use crate::ui_kit::input::Input::{A, B, Down, X, Y};
+    use crate::ui_kit::page::Live;
+    let mut preview = spec::preview::Preview::new(spec::Sample::List);
+    assert!(preview.go("focus-2"));
+    preview.press(A);
+    assert_eq!(preview.spec().name, PACK);
+    preview.press(Down);
+    preview.press(X);
+    let spec = preview.spec();
+    assert!(spec.rows[1].label.ends_with("↓ 0%"));
+    let footer = spec.footer_text().unwrap();
+    assert!(footer.contains("DETAILS") && !footer.contains("DOWNLOAD"));
+    preview.press(A);
+    assert_eq!(preview.spec().name, DETAIL);
+    let before = preview.spec();
+    preview.press(Y);
+    assert_eq!(preview.spec(), before);
+    preview.press(B);
+    assert_eq!((preview.spec().name.as_str(), preview.spec().focus), (PACK, 1));
+    preview.press(B);
+    assert_eq!((preview.spec().name.as_str(), preview.spec().focus), (SCREEN, 2));
+    assert!(preview.go("offline"));
+    preview.press(A);
+    assert_eq!(preview.spec().rows[0].label, "Loading...");
+}
+
+#[test]
+fn every_named_mod_state_uses_its_rows_footer_and_fits_the_synthetic_layout() {
+    use crate::ui_kit::{layout, page::Live, preview::From};
+    for screen in [spec::Sample::List, spec::Sample::Pack, spec::Sample::Page] {
+        let preview = spec::preview::Preview::new(screen);
+        for (name, page) in preview.specs() {
+            assert_eq!(page.footer_text(), page.rows[page.focus].prompts.as_ref().map(|p| footer_legend(p)));
+            let (view, _) = From::Synthetic.draw(&page, &name).unwrap();
+            let report = layout::check(&view, &crate::ui_kit::preview::SyntheticSource, &layout::Rules::for_spec(&page));
+            assert!(report.issues.is_empty(), "{}/{name}: {:?}", page.name, report.issues);
+        }
+    }
+}

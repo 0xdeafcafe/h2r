@@ -14,12 +14,13 @@ use super::{
     PANEL_TEXTS, Repo, SCREEN, Slots, Source, Top, page_layout,
 };
 use crate::list_class::PictureSpec;
-use crate::ui_kit::input::Input;
+use crate::ui_kit::input::{Glyph, Input, Prompt};
+use crate::ui_kit::page::ListPage;
 use crate::ui_kit::spec::{ListPlace, PaneText, Press, RowSpec, ScreenSpec, ValueStyle};
 use crate::ui_kit::view::{Art, PaneArt};
 
 /// A source for previews: the list comes from [`sample_entries`], nothing
-/// is here, an install never ends, and nothing is removed.
+/// starts installed, and installs wait for the preview to supply progress.
 pub struct SampleSource;
 
 impl Source for SampleSource {
@@ -33,7 +34,7 @@ impl Source for SampleSource {
         BTreeSet::new()
     }
     fn remove(&self, _id: MapId) -> Result<(), String> {
-        Err("a sample".into())
+        Ok(())
     }
 }
 
@@ -112,6 +113,36 @@ pub fn sample_repo(open: Sample) -> Arc<Repo> {
     repo
 }
 
+impl Sample {
+    pub fn named(name: &str) -> Option<Self> {
+        match name {
+            SCREEN => Some(Self::List),
+            PACK => Some(Self::Pack),
+            DETAIL => Some(Self::Page),
+            _ => None,
+        }
+    }
+
+    pub fn page(self, repo: Arc<Repo>) -> ListPage {
+        let [list, pack, detail] = super::classes(&repo);
+        match self {
+            Self::List => ListPage::new(list, move || list_spec(&repo)),
+            Self::Pack => ListPage::new(pack, move || pack_spec(&repo)),
+            Self::Page => ListPage::new(detail, move || detail_spec(&repo)),
+        }
+    }
+}
+
+fn row_spec(label: &str, press: Press, prompts: Vec<Prompt>) -> RowSpec {
+    let mut row = if prompts.iter().any(|p| p.glyphs.contains(&Glyph::A)) {
+        RowSpec::action(label).press(press)
+    } else {
+        RowSpec::info(label, "")
+    };
+    row.prompts = Some(prompts);
+    row
+}
+
 fn art(p: PictureSpec, size: [u16; 2]) -> PaneArt {
     PaneArt {
         art: Art::Screen {
@@ -153,11 +184,10 @@ pub fn list_spec(repo: &Repo) -> ScreenSpec {
             Some(Top::Pack(..)) => Press::Open(PACK.into()),
             None => Press::Step,
         };
-        let mut r = RowSpec::action(&line).press(press);
+        let mut r = row_spec(&line, press, repo.prompts(SCREEN, Some(row)));
         if let Some(d) = repo.list_description(row) {
             r = r.describe(&d);
         }
-        r.prompts = Some(repo.prompts(SCREEN, Some(row)));
         s.rows.push(r);
     }
     s
@@ -189,11 +219,10 @@ pub fn pack_spec(repo: &Repo) -> ScreenSpec {
         } else {
             Press::Open(DETAIL.into())
         };
-        let mut r = RowSpec::action(&line).press(press);
+        let mut r = row_spec(&line, press, repo.prompts(PACK, Some(row)));
         if let Some(d) = repo.pack_description(row) {
             r = r.describe(&d);
         }
-        r.prompts = Some(repo.prompts(PACK, Some(row)));
         s.rows.push(r);
     }
     s
@@ -233,7 +262,7 @@ pub fn detail_spec(repo: &Repo) -> ScreenSpec {
     s.ids
         .extend((0..page_layout::TEXTS as u32).map(|i| Slots::id(PANEL_TEXTS + i)));
     if let Some(line) = repo.detail_line(0) {
-        let mut r = RowSpec::action(&line).press(Press::Act);
+        let mut r = row_spec(&line, Press::Act, s.prompts.clone());
         if let Some(d) = repo.detail_description(0) {
             r = r.describe(&d);
         }
@@ -241,3 +270,5 @@ pub fn detail_spec(repo: &Repo) -> ScreenSpec {
     }
     s
 }
+
+pub mod preview;

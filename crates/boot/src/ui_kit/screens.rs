@@ -314,6 +314,10 @@ pub fn live(name: &str) -> Option<Box<dyn Live>> {
     match name {
         "signin-code" => Some(Box::new(Driven::new(crate::signin_screen::SigninPage))),
         "account" => Some(Box::new(Driven::new(AccountPage))),
+        "mods" | "mods.pack" | "mods.detail" => {
+            use crate::mods_screen::spec::{Sample, preview::Preview};
+            Some(Box::new(Preview::new(Sample::named(name)?)))
+        }
         _ => Some(Box::new(Driven::new(list_page(name)?))),
     }
 }
@@ -529,21 +533,9 @@ pub fn list_page(name: &str) -> Option<ListPage> {
             list(ListPage::new(s.class(), described(&s)))
         }
         "mods" | "mods.pack" | "mods.detail" => {
-            use crate::mods_screen::spec::{
-                Sample, detail_spec, list_spec, pack_spec, sample_repo,
-            };
-            let open = match name {
-                "mods.detail" => Sample::Page,
-                "mods.pack" => Sample::Pack,
-                _ => Sample::List,
-            };
-            let repo = sample_repo(open);
-            let [list_class, pack_class, detail_class] = crate::mods_screen::classes(&repo);
-            match open {
-                Sample::Page => list(ListPage::new(detail_class, move || detail_spec(&repo))),
-                Sample::Pack => list(ListPage::new(pack_class, move || pack_spec(&repo))),
-                Sample::List => list(ListPage::new(list_class, move || list_spec(&repo))),
-            }
+            use crate::mods_screen::spec::{Sample, sample_repo};
+            let open = Sample::named(name)?;
+            list(open.page(sample_repo(open)))
         }
         "kit.picker" | "kit.picker.game" => {
             crate::ui_kit::picker::offer(picker_sample());
