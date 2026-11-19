@@ -813,6 +813,10 @@ pub const LOOKAHEAD: f32 = 0.8;
 /// Frames without getting closer before the follower jumps, then gives up.
 pub const STUCK_FRAMES: u64 = 30;
 
+pub(crate) fn approach_pace(distance: f32) -> f32 {
+    0.44 + 0.50 * (distance / 1.25).min(1.0)
+}
+
 impl Follower {
     pub fn new(path: Vec<Waypoint>, frame: u64) -> Self {
         Follower {
@@ -845,7 +849,49 @@ impl Follower {
         self.path.get(self.next).map(|w| w.at)
     }
 
+    /// A turn to look into before the feet commit to it.
+    pub(crate) fn corner(&self, at: V3) -> Option<V3> {
+        let (w, next) = (self.path.get(self.next)?, self.path.get(self.next + 1)?);
+        if w.kind != Kind::Walk || next.kind != Kind::Walk || dist_xy(w.at, at) > 1.8 {
+            return None;
+        }
+        let a = [w.at[0] - at[0], w.at[1] - at[1]];
+        let b = [next.at[0] - w.at[0], next.at[1] - w.at[1]];
+        let dot = a[0] * b[0] + a[1] * b[1];
+        (dot < 0.91 * a[0].hypot(a[1]) * b[0].hypot(b[1])).then_some(next.at)
+    }
+
+    pub(crate) fn pace(&self, at: V3) -> f32 {
+        let Some(w) = self.path.get(self.next) else {
+            return 0.0;
+        };
+        let d = dist_xy(w.at, at);
+        if w.kind != Kind::Walk
+            || self
+                .path
+                .get(self.next + 1)
+                .is_some_and(|n| n.kind != Kind::Walk)
+        {
+            1.0
+        } else if self.next + 1 == self.path.len() {
+            approach_pace(d)
+        } else if d < 1.2 && self.corner(at).is_some() {
+            0.70 + 0.24 * (d / 1.2)
+        } else {
+            0.94
+        }
+    }
+
     pub fn steer(&mut self, at: V3, frame: u64) -> Steer {
+        self.steer_with_clearance(at, frame, |_| true)
+    }
+
+    pub(crate) fn steer_with_clearance(
+        &mut self,
+        at: V3,
+        frame: u64,
+        clear: impl FnOnce([f32; 2]) -> bool,
+    ) -> Steer {
         while let Some(w) = self.path.get(self.next) {
             let d = dist_xy(w.at, at);
             if w.at[2] - at[2] > FELL + d {
@@ -911,7 +957,10 @@ impl Follower {
             ];
             let bl = (b[0] * b[0] + b[1] * b[1]).sqrt();
             if bl > 1e-3 {
-                dir = [b[0] / bl, b[1] / bl];
+                let bend = [b[0] / bl, b[1] / bl];
+                if clear(bend) {
+                    dir = bend;
+                }
             }
         }
         s.dir = dir;

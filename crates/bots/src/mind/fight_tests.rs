@@ -119,7 +119,7 @@ fn a_moment_out_of_view_does_not_freeze_it_again() {
     };
     // Back after a moment: turns at once.
     let soon = run(10);
-    assert!(soon.0 < -0.5, "{soon:?}");
+    assert!(soon.0 < -0.1, "{soon:?}");
     // Back after long: a fresh reaction, standing still.
     assert_eq!(run(tactics::GRACE + 30), (0.0, 0.0));
 }

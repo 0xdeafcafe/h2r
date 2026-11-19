@@ -770,6 +770,20 @@ impl feature::Feature for Bots {
                 Ok(())
             });
 
+        // The same weapon-fire point used by Live telemetry, as a sound
+        // cue. It can only draw a bot's gaze.
+        let (local, phantoms) = (self.local.clone(), self.phantoms.clone());
+        b.raw()
+            .observe_before(&points::WEAPON_FIRE, "bots hear shots", move |o| {
+                if (!local.is_empty() || !phantoms.is_empty())
+                    && let Some(weapon) = o.arg_u32("weapon")
+                {
+                    bots::observe_shot(&*o.guest(), weapon);
+                }
+            })
+            .optional();
+        b.game().on_start("forget bot sound cues", |_| bots::clear_shots());
+
         // Deaths, for the emotes (bots::emote): the kill function's
         // attacker and victim player datums and betrayal flag, read as
         // live telemetry reads them.

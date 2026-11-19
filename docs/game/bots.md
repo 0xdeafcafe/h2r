@@ -231,8 +231,10 @@ The brain reads game state the way telemetry already does
 - the weapons, grenades and powerups lying in the world;
 - the objective: flag, bomb, ball, hill and territories, from the
   game-engine globals and the scenario's netgame flags (built, §3.7);
-- shots (the `0x104150` hook) and kills (`0x15ce70`), for "who is shooting
-  me" and for the emote triggers (§3.5).
+- nearby grenade projectiles, identified by the loaded map's grenade
+  definitions and checked against view and collision;
+- shots (the existing `0x104150` point) for a brief look toward the sound,
+  and kills (`0x15ce70`) for emote triggers (§3.5).
 
 **Line of sight** is a ray against the map's BSP collision, the same data
 the nav mesh comes from. A bot sees an enemy only when all three hold:
@@ -346,13 +348,13 @@ fight, apart from the aim:
 | holds a strafe (ticks) | 40 to 80 | 20 to 50 | 12 to 35 | 8 to 26 |
 | a new strafe is standing still | 35% | 15% | 5% | never |
 | on a hit: reverses the strafe (juke) | never | 20% | 50% | 70% |
-| on a hit: jumps | never | 10% | 25% | 35% |
 | on a hit beyond 8: crouches a moment | never | never | 10% | 15% |
 | backs off inside its range | no | 0.6 | 0.85 | full |
 | backs off to cover | no (straight back) | yes | yes | yes |
 
-- A hit is a shield drop of more than 0.03 in a tick; one reaction at
-  most every 20 ticks, a jump at most every 45.
+- A hit is a shield drop of more than 0.03 in a tick, with one
+  footwork reaction at most every 20 ticks. Jumping is reserved for
+  navigation, getting unstuck, and visible grenade threats.
 - **Range**: closes in beyond the far end of its range and backs off
   inside the near end. The range comes from `moves::preferred_range`,
   today 2.5 to 8 for every weapon: the seam for the weapons decision to
@@ -421,8 +423,10 @@ In an objective game the objective takes the place of chasing and
 roaming; fighting, rearming and recovering keep their place, except for
 a carrier.
 
-Reload (X) and switch weapons (Y) are taps of 2 ticks, at most one every
-2 s (reload) or 1.3 s (switch), on top of whichever of these runs.
+Reload (X) and switch weapons (Y) take 5–13 ticks of stable intent,
+depending on skill, then hold 2–4 ticks. Retries are at least 2 s apart
+for reload and 1.3 s for switch. Melee also needs a target in reach and
+near the crosshair for a short time before the press.
 
 Grenades (left trigger) need one in hand (unit `+0x23e`, §3.6, when read).
 At the skill's rate in a fight at 3 to 12 world units, four times that rate
@@ -435,11 +439,12 @@ timid, and an Easy bot can rush.
 
 ### 3.4 Aim
 
-Aim is a model of a human hand on a stick, not a snap to the target.
+Aim feeds the biped's current view back into a model of a human thumb
+on a stick.
 
 | Part | Easy | Normal | Heroic | Legendary |
 |---|---|---|---|---|
-| reaction time (see to start turning) | 450 ms | 320 ms | 240 ms | 180 ms |
+| fresh reaction (ticks from first sight) | 10–18 | 7–13 | 5–9 | 5–8 |
 | tracking error (std. dev. of the angle) | large | medium | small | very small |
 | lead (fraction of the needed lead) | 0.3 | 0.6 | 0.85 | 1.0 |
 | flick overshoot | large | some | little | little |
@@ -447,10 +452,16 @@ Aim is a model of a human hand on a stick, not a snap to the target.
 | grenades (arc solve) | rarely, poor | sometimes | often, good | often, good |
 | weapon choice by range | no | partly | yes | yes |
 
-Tracking runs a second-order spring that turns the right stick toward the
-target, plus noise. A fully deflected stick turns no faster than the game's
-own turn rate. The game's aim assist then applies, exactly as it does for a
-human.
+Each encounter samples a reaction delay around the skill's normal pace.
+Already-alert reactions trend sooner with a five-tick floor (167 ms).
+A brief occlusion keeps the reaction clock and clears the velocity sample.
+
+The right thumb takes several ticks to cross the stick well. Large flicks
+carry a little past the target before settling. Small correlated errors and
+the occasional larger misread vary by skill. Fast crossings leave more
+tracking lag than slow ones. The local virtual pad uses the game's stick
+response, look acceleration and aim assist at sensitivity 3. Phantom
+actions use a nominal sensitivity-3 curve with a 3 rad/s ceiling.
 
 Lead comes from the target's velocity and the weapon's projectile speed,
 read from the tag at load; hitscan needs no lead. Grenade arcs solve the
@@ -1291,8 +1302,9 @@ its class 4.
 
 **The action from a pad** (`session::action_from_pad`): yaw and pitch
 are absolute world angles (`0x186f99`, `0x824d0`), so the right stick
-turns from the unit's facing: yaw minus x, pitch plus y, at 3 rad/s
-[guess, tuned in a run]. The left stick is the throttle (forward; strafe
+turns from the unit's facing. A radial curve maps the stick to yaw
+minus x and pitch plus y, with a nominal maximum of 3 rad/s. The left
+stick is the throttle (forward; strafe
 [guess] positive to the left), the right trigger `+0x14` (fire), the left
 `+0x18` (grenades), the weapon the unit's current (`+0x212`). The rest is
 what passes `0x14d0a0`: the second weapon, grenade type and `+0x24` -1,
@@ -3298,8 +3310,8 @@ list for the user to play (§11).
      `the_handling_reads_from_the_weapon_and_projectile_tags`), `-p bots
      --lib tactics`, `-p bots --lib mind::fight_tests`; the rest of
      `-p bots --lib mind` unchanged.
-   - **Not traced, wanted next:** who is shooting the bot (the shots
-     hook `0x104150` to Perception), the targets' shields, a projectile's
+   - **Not traced, wanted next:** whether a shot hit or was aimed at the
+     bot, the targets' shields, a projectile's
      gravity for lobbed weapons, the energy sword's lunge range from its
      tag, and the flag, ball and bomb tags' aim assist (assumed none).
    - **Game run (the user):** `H2_BOTS_SKILL=heroic`, Slayer on
@@ -3319,6 +3331,35 @@ list for the user to play (§11).
         teammate stands.
      7. Easy still sprays and misses; Legendary is sharp but still has
         its reaction time.
+   **Built: natural feel (sol).** Aim, walking and buttons are driven by
+   the simulation tick with separate seeded random streams. The full
+   pad is reused on repeated frames within a tick.
+
+   - Aim ramps into flicks and corrects overshoot. Tracking trails a fast
+     crossing more than a slow one, and brief wall occlusions discard
+     velocity. A gunshot may draw a delayed, coarse glance. Visible
+     enemies alone supply live targets and shot lead.
+   - The feet accelerate in world space, vary strafe deflection and
+     ease off near a destination. Cameras look into clear turns and
+     doorways before the feet finish the turn. The navigation follower
+     checks the corner cut for footing and keeps gap approaches at pace.
+   - Bots crouch-walk on quiet objective approaches. Hits alone can
+     change the strafe or start a crouch at range. Jumps are single
+     short presses at gaps, during stuck recovery, or on a clear
+     escape line from a visible nearby grenade.
+   - Weapon taps have a short intent delay, a hold and a release gap.
+     Melee needs a sustained chance in front of the bot. Semi-auto
+     pulls vary within the weapon's cadence and bursts start when the
+     bot lines up a shot.
+   - Small right-stick fidgets happen when an actor is standing idle
+     and on signed-in local pads in a network pregame lobby or while
+     awaiting a unit. They send zero left stick, triggers and buttons.
+     The phantom action adapter applies the turn curve. Face buttons
+     still require the phantom mapping described in §5.1.
+   - Focused unit-test filters are `mind`, `tactics`, `moves`,
+     `nav::tests`, `grenade`, `sound` and `phantom::session` with
+     `cargo test -p bots --lib`. The game-run checklist is §11.1.
+
 8. **Clankermatch.** First slice built (§8.3, §8.4; run checklist §8.5).
    - Built: the Live menu row (row 2; the rest moved down), the playlist
      filter at `0x00192db0`, the clanker hoppers in the default set and
@@ -3464,8 +3505,8 @@ Stuck (§3.2):
 
 Ammunition (§3.6):
 
-6. A bot that empties a magazine reloads at once, in a fight or not
-   (the reload animation plays).
+6. A bot that empties a magazine starts its reload after a short input
+   delay (the reload animation plays).
 7. A bot with a part-empty magazine reloads after a fight, not during it.
 8. A bot whose gun runs dry with a loaded second weapon switches to it
    (the switch animation plays).
@@ -3490,6 +3531,29 @@ Cheap wins (§3.3):
     than at one; never with no grenades left.
 16. A bot that loses sight of someone round a corner sometimes lobs a
     grenade there.
+
+Natural feel (local virtual pads):
+
+17. Compare Easy and Legendary on the same map. Peek from the edge of a
+    doorway, then cut sideways across the bot's view. Watch for a pause
+    at first sight, a quick turn with a small correction, and more lag
+    on fast crossings. Easy takes longer to settle.
+18. Strafe behind a pillar and change direction while hidden. Watch the
+    bot hold or scan the opening, then pick you up when you reappear.
+    Fire from behind a nearby wall. A short look toward the report can
+    happen before the bot has a target.
+19. Follow a bot through a doorway and around a corner. Look for small
+    changes of pace, a brief look into the opening, and a path that
+    leaves the frame and railings clear. Compare two bots strafing.
+20. Throw a grenade into plain view near a bot on level ground. Look for
+    one quick escape movement and, up close, a single jump when the
+    route is clear. In an ordinary gunfight, hits lead mostly to strafes
+    or crouches. At a genuine gap the bot takes a run-up.
+21. Watch a local bot in a quiet CTF or Hill approach, near an empty
+    magazine and during a close melee encounter. Look for a slower
+    crouch-walk, a brief delay before X or Y, and spaced melee swings.
+    Leave it waiting and check the lobby selection and respawn remain
+    under the human's control.
 
 ### 11.2 Objectives in play (checklist)
 
