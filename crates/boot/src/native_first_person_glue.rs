@@ -1,20 +1,22 @@
-//! Device host for the native first-person arms and weapon. Each accepted
-//! `0x0003fdf0` layer-3 call becomes one external pass at that exact point;
-//! the device's current constants are the first-person view, its depth clip
-//! is preserved, and the loaded depth/stencil attachment keeps the scene's
-//! stencil (disabled by the first-person flag) intact.
+//! Device host for native first-person arms and weapon. Every item is
+//! planned at the layer-3 call against the device's entry states before its
+//! guest draw is surrendered. The two model calls remain separate external
+//! passes in guest order; their light and transparent neighbours stay on D3D.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use engine::memory::GuestMemory;
 use feature::native_first_person::Host;
 use feature::native_objects::NativeSet;
-use native_render::object_program_gpu::{LitObjects, frame_parts};
+use native_render::object_program_gpu::{LitObjects, PlannedDraw};
+use native_render::object_state::EntryStates;
 use native_render::object_streams::StreamFormats;
+use native_render::objects::{ItemDraw, ObjectFrame};
 use native_render::program::ViewInputs;
 
 use crate::native_first_person_load::{self, MapState, Models};
-use crate::native_world_glue::{ReadMemory, inherited_cull, palettes_hold, stage_palettes};
+use crate::native_world_glue::{ReadMemory, palettes_hold, stage_palettes};
 
 /// Hook memory as the stream-format reader expects it.
 struct Ro<'a>(&'a dyn GuestMemory);
@@ -46,31 +48,30 @@ fn full_target_viewport<B: d3d::backend::Backend>(
         && viewport.height == desc.height
 }
 
-/// The installed host: current map generation and inherited cull.
+/// State every item's plan inherits, resolved before `Host::draw` returns.
+#[derive(Clone, Debug)]
+struct LayerEntry {
+    states: EntryStates,
+    w_buffered: bool,
+    w_clip: ([f32; 2], bool),
+    view: [[f32; 4]; d3d::VIEW_CONSTANTS],
+}
+
+/// The installed host: current map generation and this call's entry state.
 pub struct Glue<B: d3d::backend::Backend + Send + 'static> {
     device: d3d::abi::SharedDevice<B>,
     state: Arc<Mutex<Option<MapState>>>,
     generation: Mutex<u64>,
-    cull: Mutex<Option<native_render::program::Cull>>,
+    entry: Mutex<Option<LayerEntry>>,
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     fn native(&self, mem: &dyn GuestMemory) -> Option<Arc<NativeSet>> {
+        *self.entry.lock().unwrap_or_else(|e| e.into_inner()) = None;
         let name = crate::health::loaded_map_name(mem).ok()?;
         if name.is_empty() {
             return None;
         }
-        let (clip, cull, full_viewport) = {
-            let device = self.device.lock().ok()?;
-            let clip = device.depth_clip(&ReadMemory(mem), 1.0);
-            let cull = device.cull_state(&ReadMemory(mem)).map(inherited_cull);
-            (clip, cull, full_target_viewport(&device, mem))
-        };
-        if clip.w_buffered != Some(true) || cull.is_none() || !full_viewport {
-            return None;
-        }
-        *self.cull.lock().unwrap_or_else(|e| e.into_inner()) = cull;
-
         let current = |state: &Option<MapState>| {
             state.as_ref().map(|s| s.name.as_str()) == Some(name.as_str())
         };
@@ -100,6 +101,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                     models,
                     set: Arc::new(NativeSet {
                         map: name.clone(),
+                        generation: next,
                         ..NativeSet::default()
                     }),
                     tried: Default::default(),
@@ -124,45 +126,92 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                 return None;
             }
         }
+
+        let entry = {
+            let device = self.device.lock().ok()?;
+            if !full_target_viewport(&device, mem) {
+                return None;
+            }
+            let read = ReadMemory(mem);
+            let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
+            let clip = device.depth_clip(&read, native_render::camera::D24_SCALE);
+            LayerEntry {
+                states: EntryStates::read(|state| {
+                    table
+                        .canonical_to_guest(state.index())
+                        .and_then(|guest| device.render_state(&read, guest))
+                }),
+                w_buffered: clip.w_buffered == Some(true),
+                w_clip: (clip.range, clip.clamp),
+                view: std::array::from_fn(|register| device.constant(register)),
+            }
+        };
+        if !entry.w_buffered {
+            return None;
+        }
+        *self.entry.lock().unwrap_or_else(|e| e.into_inner()) = Some(entry);
         Some(set)
     }
 
-    fn want(&self, definition: u32) {
+    fn want(&self, model: u32) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(state) = state.as_mut() else { return };
-        if state.tried.insert(definition as u16)
+        let Some(state) = state.as_mut() else {
+            return;
+        };
+        if state.tried.insert(model as u16)
             && let Some(worker) = &state.worker
         {
-            let _ = worker.send(definition);
+            let _ = worker.send(model);
         }
     }
 
-    fn draw(&self, objects: Vec<native_render::objects::ObjectFrame>) -> bool {
-        let Some(models) = self
+    fn draw(
+        &self,
+        generation: u64,
+        objects: Vec<ObjectFrame>,
+        items: Vec<ItemDraw>,
+        models: HashMap<u16, u32>,
+    ) -> Vec<bool> {
+        let mut out = vec![false; items.len()];
+        let Some(gpu) = self
             .state
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
+            .filter(|state| state.generation == generation)
             .map(|state| Arc::clone(&state.models))
         else {
-            return false;
+            return out;
         };
-        let cull = *self.cull.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(entry) = self.entry.lock().unwrap_or_else(|e| e.into_inner()).take() else {
+            return out;
+        };
         let Ok(mut device) = self.device.lock() else {
-            return false;
+            return out;
         };
         if !device.can_external_pass() {
-            return false;
+            return out;
+        }
+        let plan = plan_view(&gpu, &objects, &items, &models, &entry);
+        let pending = !gpu
+            .pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty();
+        if plan.draws.is_empty() && plan.compare.is_none() && !pending {
+            return out;
+        }
+        for &index in &plan.drawn {
+            out[index] = true;
         }
         device.request_external_pass(Box::new(FirstPersonPass {
-            models,
-            objects,
-            view: None,
-            w_clip: None,
-            cull,
-            valid: true,
+            models: gpu,
+            draws: plan.draws,
+            compare: plan.compare,
+            view: entry.view,
+            w_clip: entry.w_clip,
         }));
-        true
+        out
     }
 }
 
@@ -172,17 +221,88 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
         device: Arc::clone(device),
         state: Arc::new(Mutex::new(None)),
         generation: Mutex::new(0),
-        cull: Mutex::new(None),
+        entry: Mutex::new(None),
     }));
 }
 
+#[derive(Default)]
+struct ViewPlan {
+    /// Places in the input items whose guest draws may be suppressed.
+    drawn: Vec<usize>,
+    /// Exact planned draws, in first-person list order.
+    draws: Vec<(u32, PlannedDraw)>,
+    /// The shadow item selected for comparison: model, draw and label.
+    compare: Option<(u32, PlannedDraw, String)>,
+}
+
+/// Plans every offered item. Only a fully resolved plan is marked drawn;
+/// missing models, programs, constants, entry fields or W mode are refusals
+/// here, before `Host::draw` returns, never silent encode-time omissions.
+fn plan_view(
+    models: &Models,
+    objects: &[ObjectFrame],
+    items: &[ItemDraw],
+    record_models: &HashMap<u16, u32>,
+    entry: &LayerEntry,
+) -> ViewPlan {
+    let mut out = ViewPlan::default();
+    let lit = models.lit.lock().unwrap_or_else(|e| e.into_inner());
+    let compared = compare();
+    for (index, item) in items.iter().enumerate() {
+        let frame = &objects[item.object];
+        let model = record_models[&item.key.record];
+        let planned = (|| -> Result<PlannedDraw, String> {
+            if !entry.w_buffered {
+                return Err("the device's draws are not W-buffered".into());
+            }
+            let lit = lit.as_ref().ok_or("no first-person model is uploaded")?;
+            let draw = lit.plan(model, frame, &item.key, &item.rows, &entry.states)?;
+            if draw.texaccum {
+                return Err(
+                    "it samples the texture accumulation target, which this pass does not bind"
+                        .into(),
+                );
+            }
+            Ok(draw)
+        })();
+        match planned {
+            Ok(draw) if item.shadow => {
+                if out.compare.is_none()
+                    && compared.is_some_and(|compare| {
+                        compare.definition == model as u16 && compare.part == draw.part
+                    })
+                {
+                    let label = format!(
+                        "first-person object {:#010x} mode {model:#010x} part {} record {}",
+                        frame.handle, draw.part, item.key.record
+                    );
+                    out.compare = Some((model, draw, label));
+                }
+            }
+            Ok(draw) => {
+                out.drawn.push(index);
+                out.draws.push((model, draw));
+            }
+            Err(why) => {
+                if item.shadow && compared.is_some() {
+                    eprintln!(
+                        "native-first-person compare: mode {model:#010x} record {}: {why}",
+                        item.key.record
+                    );
+                }
+            }
+        }
+    }
+    out
+}
+
+/// One first-person call's preplanned draws.
 struct FirstPersonPass {
     models: Arc<Models>,
-    objects: Vec<native_render::objects::ObjectFrame>,
-    view: Option<[[f32; 4]; d3d::VIEW_CONSTANTS]>,
-    w_clip: Option<([f32; 2], bool)>,
-    cull: Option<native_render::program::Cull>,
-    valid: bool,
+    draws: Vec<(u32, PlannedDraw)>,
+    compare: Option<(u32, PlannedDraw, String)>,
+    view: [[f32; 4]; d3d::VIEW_CONSTANTS],
+    w_clip: ([f32; 2], bool),
 }
 
 impl FirstPersonPass {
@@ -217,121 +337,84 @@ impl FirstPersonPass {
             guest_size: target.guest_size,
             size: target.size,
             z_scale: target.z_scale,
-            w_clip: self.w_clip,
+            w_clip: Some(self.w_clip),
         }
     }
 }
 
 impl d3d::ExternalPass for FirstPersonPass {
     fn view_constants(&mut self, constants: &[[f32; 4]; d3d::VIEW_CONSTANTS]) {
-        self.view = Some(*constants);
+        self.view = *constants;
     }
 
     fn depth_clip(&mut self, clip: d3d::DepthClip) {
-        self.valid &= clip.w_buffered == Some(true);
-        self.w_clip = Some((clip.range, clip.clamp));
+        self.w_clip = (clip.range, clip.clamp);
     }
 
     fn encode(&mut self, target: d3d::ExternalTarget<'_>) {
-        static INVALID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-        static NO_VIEW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-        static PARTIAL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-        if !self.valid {
-            if !INVALID.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                eprintln!(
-                    "native-first-person: issue refused a non-W-buffered or unknown depth mode (logged once)"
-                );
-            }
-            return;
-        }
-        if target.viewport != [0.0, 0.0, target.size.0 as f32, target.size.1 as f32] {
-            if !PARTIAL.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                eprintln!(
-                    "native-first-person: issue refused a partial target viewport (logged once)"
-                );
-            }
-            return;
-        }
-        let Some(constants) = self.view else {
-            if !NO_VIEW.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                eprintln!("native-first-person: issue supplied no view constants (logged once)");
-            }
-            return;
-        };
         let mut guard = self.upload(&target);
-        let Some(lit) = guard.as_mut() else { return };
-        lit.set_inherited_cull(self.cull);
-        let compared = compare();
-        let (shadowed, prepared): (Vec<_>, Vec<_>) = self
-            .objects
-            .iter()
-            .map(|object| (object.definition, object))
-            .partition(|(_, object)| {
-                compared.is_some_and(|compare| compare.definition == object.definition as u16)
-            });
-        let native: Vec<_> = prepared
-            .iter()
-            .filter(|(definition, _)| lit.has(*definition))
-            .copied()
-            .collect();
-        let view = self.view_inputs(constants, &target);
-        if let (Some(compare), Some(&(_, object))) = (
-            compared,
-            shadowed.iter().find(|(definition, _)| lit.has(*definition)),
-        ) {
-            arm_compare(compare, lit, object, &view);
-        }
-        let expected = expected_parts(&self.models, &prepared);
-        let drawn = if native.is_empty() {
-            0
-        } else {
-            lit.encode(
-                target.device,
-                target.queue,
-                &mut *target.encoder,
-                target.color,
-                target.color_format,
-                target.depth,
-                target.depth_format,
-                target.size,
+        let lit = guard
+            .as_mut()
+            .expect("upload initializes the lit model cache");
+        let view = self.view_inputs(self.view, &target);
+        if let Some((model, draw, label)) = &self.compare {
+            arm_compare(
+                lit,
+                *model,
+                draw,
+                label,
                 &view,
-                &native,
-                None,
-            )
-        };
-        if drawn != expected {
-            static MISMATCH: std::sync::atomic::AtomicBool =
-                std::sync::atomic::AtomicBool::new(false);
-            if !MISMATCH.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                eprintln!(
-                    "native-first-person: encoded {drawn} of {expected} prepared parts; mixed D3D/native output needs investigation (logged once)"
-                );
-            }
+                compare().map_or(0, |compare| compare.after),
+            );
+        }
+        if self.draws.is_empty() {
+            return;
+        }
+        let drawn = lit.encode(
+            target.device,
+            target.queue,
+            &mut *target.encoder,
+            target.color,
+            target.color_format,
+            target.depth,
+            target.depth_format,
+            target.size,
+            &view,
+            &self.draws,
+            None,
+        );
+        if drawn < self.draws.len() {
+            shortfall(
+                self.draws.len() - drawn,
+                "a planned model or pipeline was missing at the encode",
+            );
         }
     }
 }
 
-/// Number of parts the prepared object frames select in the CPU metadata.
-fn expected_parts(
-    models: &Models,
-    objects: &[(u32, &native_render::objects::ObjectFrame)],
-) -> usize {
-    let parts = models.parts.lock().unwrap_or_else(|e| e.into_inner());
-    objects
-        .iter()
-        .map(|(definition, frame)| {
-            parts
-                .get(definition)
-                .map(|parts| frame_parts(frame, parts).len())
-                .unwrap_or(0)
-        })
-        .sum()
+/// Draws surrendered at the hook that the issue could not record. All
+/// admission-time causes are refused before `draw`; these are issue-only
+/// failures and are always counted and logged, never silent.
+static SHORTFALL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn shortfall(count: usize, why: &'static str) {
+    if count == 0 {
+        return;
+    }
+    SHORTFALL.fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
+    static LOGGED: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+    let mut logged = LOGGED.lock().unwrap_or_else(|e| e.into_inner());
+    if !logged.contains(&why) {
+        logged.push(why);
+        eprintln!(
+            "native-first-person: {count} planned draws not issued: {why} (logged once per reason)"
+        );
+    }
 }
 
 /// `H2_NATIVE_FIRST_PERSON_COMPARE=mode:part[:after]`: keep that record
-/// mode on D3D and arm its native program/constants against the real
-/// first-person draw on the selected external-target encode (0 by default;
-/// scaled output encodes a pass more than once).
+/// mode on D3D and arm its planned draw on the selected external-target
+/// encode (scaled output encodes a pass more than once).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Compare {
     definition: u16,
@@ -347,7 +430,7 @@ fn compare() -> Option<Compare> {
             .and_then(|value| parse_compare(&value));
         if let Some(compare) = compare {
             eprintln!(
-                "native-first-person: comparing {compare:?} with D3D (its objects stay on D3D)"
+                "native-first-person: comparing {compare:?} with D3D (its items stay on D3D)"
             );
         }
         compare
@@ -379,32 +462,29 @@ fn parse_compare(value: &str) -> Option<Compare> {
 }
 
 fn arm_compare(
-    compare: Compare,
     lit: &LitObjects,
-    object: &native_render::objects::ObjectFrame,
+    model: u32,
+    draw: &PlannedDraw,
+    label: &str,
     view: &ViewInputs,
+    after: u32,
 ) {
     static SEEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    if SEEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed) != compare.after {
+    if SEEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed) != after {
         return;
     }
-    let label = format!(
-        "first-person object {:#010x} definition {:#010x} part {}",
-        object.handle, object.definition, compare.part
-    );
-    match lit.part_uniforms(object.definition, object, compare.part, view, None) {
+    match lit.part_uniforms(model, draw, view, None) {
         Ok(uniforms) => {
             eprintln!(
-                "native-first-person compare {label}: implementation {}, {} program words, rows c[50..] {:?}, depth {:?}, primitive {:?}, textures {:?}",
+                "native-first-person compare {label}: implementation {}, {} program words, depth {:?}, primitive {:?}, textures {:?}",
                 uniforms.implementation,
                 uniforms.words.len(),
-                &uniforms.vertex.constants[50..53],
                 uniforms.depth,
                 uniforms.primitive,
                 uniforms.textures
             );
             d3d::uniform_compare::arm(d3d::uniform_compare::Expected {
-                label,
+                label: label.to_owned(),
                 words: uniforms.words,
                 vertex: uniforms.vertex,
                 pixel: uniforms.pixel,
@@ -427,13 +507,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn comparison_parses_a_definition_part_and_pass() {
+    fn comparison_parses_a_mode_part_and_encode() {
         assert_eq!(
             parse_compare("0xe92207ad:2:30"),
             Some(Compare {
                 definition: 0x07ad,
                 part: 2,
-                after: 30
+                after: 30,
             })
         );
         assert_eq!(
@@ -441,7 +521,7 @@ mod tests {
             Some(Compare {
                 definition: 0x07ad,
                 part: 0,
-                after: 0
+                after: 0,
             })
         );
         assert_eq!(parse_compare("07ad:0:1:extra"), None);

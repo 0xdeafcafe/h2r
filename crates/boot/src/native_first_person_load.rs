@@ -8,7 +8,7 @@ use std::io::BufReader;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
-use feature::native_objects::NativeSet;
+use feature::native_objects::{NativeSet, SetPart};
 use map::{Map, ResourceFile, TagId};
 use native_render::gpu::Image;
 use native_render::light_gpu::LayeredImage;
@@ -19,8 +19,7 @@ use native_render::model_load;
 use native_render::object_lighting::ShaderValues;
 use native_render::object_nodes::{Compression, decompression_rows};
 use native_render::object_program_gpu::{
-    EngineStages, LitBuild, LitMaterial, LitModelInput, LitObjects, LitPart, LitSection, lit_model,
-    uniform,
+    EngineStages, LitBuild, LitMaterial, LitModelInput, LitObjects, LitSection, lit_model, uniform,
 };
 use native_render::object_streams::{self, StreamData, StreamFormats};
 use tags::model::RenderModelGeometry;
@@ -30,7 +29,6 @@ use crate::native_world_glue::{Raw, StageDecoder, StageImages, StagePalettes, lo
 pub(crate) struct CpuModel {
     pub(crate) definition: u32,
     pub(crate) nodes: usize,
-    pub(crate) implementations: u8,
     pub(crate) lit: LitModelInput,
     pub(crate) normalization: Option<Arc<LayeredImage>>,
 }
@@ -39,8 +37,6 @@ pub(crate) struct CpuModel {
 pub(crate) struct Models {
     pub(crate) pending: Mutex<Vec<CpuModel>>,
     pub(crate) lit: Mutex<Option<LitObjects>>,
-    /// CPU-side part metadata, used to check the encoded draw count.
-    pub(crate) parts: Mutex<HashMap<u32, Vec<LitPart>>>,
     pub(crate) palettes: Mutex<StagePalettes>,
 }
 
@@ -80,12 +76,10 @@ pub(crate) fn spawn_worker(
                 let result = load_model(&mut opened, definition);
                 models.palettes.lock().unwrap_or_else(|e| e.into_inner()).clone_from(opened.decoder.used());
                 match result {
-                    Ok((cpu, shaders)) => {
-                        let parts = cpu.lit.parts.len();
-                        let lit_sections: HashSet<u16> = cpu.lit.parts.iter().map(|part| part.section).collect();
-                        models.parts.lock().unwrap_or_else(|e| e.into_inner()).insert(definition, cpu.lit.parts.clone());
+                    Ok(cpu) => {
+                        let parts = set_parts(&cpu.lit);
                         let nodes = cpu.nodes;
-                        let lit_implementations = cpu.implementations;
+                        let part_count = parts.len();
                         models.pending.lock().unwrap_or_else(|e| e.into_inner()).push(cpu);
                         let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
                         let Some(s) = st.as_mut().filter(|s| s.name == name && s.generation == generation) else {
@@ -93,9 +87,9 @@ pub(crate) fn spawn_worker(
                         };
                         let mut set = (*s.set).clone();
                         set.definitions.insert(definition as u16, nodes);
-                        set.shaders.extend(shaders.into_iter().map(|shader| (definition as u16, shader)));
-                        set.lit.insert(definition as u16, lit_implementations);
-                        set.sections.extend(lit_sections.into_iter().map(|section| (definition as u16, section)));
+                        set.parts.extend(parts.into_iter().map(|((section, part), native)| {
+                            ((definition as u16, section, part), native)
+                        }));
                         if compare == Some(definition as u16) {
                             set.shadowed.insert(definition as u16);
                         }
@@ -103,7 +97,7 @@ pub(crate) fn spawn_worker(
                         drop(st);
                         loaded += 1;
                         eprintln!(
-                            "native-first-person: {name}: definition {definition:#010x}: {parts} lit parts, {nodes} nodes ({loaded} models native, {refused} left to D3D)"
+                            "native-first-person: {name}: mode {definition:#010x}: {part_count} lit parts, {nodes} nodes ({loaded} models native, {refused} left to D3D)"
                         );
                     }
                     Err(why) => {
@@ -115,6 +109,33 @@ pub(crate) fn spawn_worker(
         })
         .ok()?;
     Some(tx)
+}
+
+/// The native set's entries by the section and geometry part a record names.
+fn set_parts(lit: &LitModelInput) -> Vec<((u16, u8), SetPart)> {
+    lit.parts
+        .iter()
+        .map(|part| {
+            let mut native = SetPart {
+                shader: part.shader_tag as u16,
+                ..SetPart::default()
+            };
+            for (implementation, slot) in part.implementations.iter().enumerate() {
+                let Some((program, _)) = slot else {
+                    continue;
+                };
+                native.implementations |= 1 << implementation;
+                if lit
+                    .programs
+                    .get(*program)
+                    .is_some_and(|program| program.pass.texaccum.contains(&true))
+                {
+                    native.texaccum |= 1 << implementation;
+                }
+            }
+            ((part.section, part.part), native)
+        })
+        .collect()
 }
 
 struct Opened {
@@ -229,7 +250,7 @@ const SHADER_VALUES: u32 = 0x44;
 /// not the owner definition's default variant, selects the first-person
 /// permutation and LOD. Any refused material or absent program leaves the
 /// whole mode on D3D.
-fn load_model(opened: &mut Opened, definition: u32) -> Result<(CpuModel, Vec<u16>), load::Error> {
+fn load_model(opened: &mut Opened, definition: u32) -> Result<CpuModel, load::Error> {
     let mode = tag_of(&opened.map, definition).ok_or("no such mode tag")?;
     let geometry = RenderModelGeometry::read(&mut opened.map, mode, &mut opened.raw)?;
     let nodes = geometry.nodes.len();
@@ -303,7 +324,7 @@ fn load_model(opened: &mut Opened, definition: u32) -> Result<(CpuModel, Vec<u16
         input,
         taken,
         refused,
-        implementations,
+        implementations: _,
     } = lit_parts(opened, &loaded, &materials);
     if !refused.is_empty() {
         let reasons = refused
@@ -322,25 +343,17 @@ fn load_model(opened: &mut Opened, definition: u32) -> Result<(CpuModel, Vec<u16
                 .into(),
         );
     }
-    let shaders = taken
-        .into_iter()
-        .map(|local| loaded.shaders[usize::from(local)].0 as u16)
-        .collect();
     let normalization = if input.is_empty() {
         None
     } else {
         opened.normalization.clone().flatten()
     };
-    Ok((
-        CpuModel {
-            definition,
-            nodes,
-            implementations,
-            lit: input,
-            normalization,
-        },
-        shaders,
-    ))
+    Ok(CpuModel {
+        definition,
+        nodes,
+        lit: input,
+        normalization,
+    })
 }
 
 fn lit_parts(
@@ -387,8 +400,9 @@ fn lit_parts(
             parts: geometry
                 .parts
                 .iter()
-                .filter(|part| part.is_drawn() && part.kind != load::PART_TRANSPARENT)
-                .map(|part| (part.material, geometry.part_triangles(part)))
+                .enumerate()
+                .filter(|(_, part)| part.is_drawn() && part.kind != load::PART_TRANSPARENT)
+                .map(|(index, part)| (index as u8, part.material, geometry.part_triangles(part)))
                 .collect(),
         });
     }

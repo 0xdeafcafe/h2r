@@ -996,13 +996,16 @@ permutation and LOD. The observer pins the item array `0x004c8740` and
 bounds each record index by `[0x0050943c]`; the records themselves use the
 same `0x004ba138` array as the other geometry draws. The owner's lighting
 and the record's node rows are resolved as for native objects, without
-requiring the body and mode node counts to match. Admission is whole-object
-and whole-mode: an unaccepted live item restores that object's other items,
-mixed record models veto the object (logged once per handle/model pair),
-and an incomplete or non-geometry list leaves the whole call on D3D. A mode with a refused material or a texture-accumulation dependency
-stays on D3D. Loader publication is pinned to a map generation, including
-A → B → A transitions. The first-person lights themselves are not native
-yet.
+requiring the body and mode node counts to match. Admission is per item:
+`ItemKey` selects the exact section, geometry part, shader and
+implementation, and `LitObjects::plan` resolves every constant and every
+inherited `EntryStates` field before `Host::draw` returns. Only those
+planned items keep their bits cleared (`objects::keep_items`); mixed record
+models under one owner are therefore independent draws. An incomplete or
+non-geometry list leaves the whole call on D3D, and a mode with a refused
+material or a texture-accumulation dependency stays there too. Loader
+publication is pinned to a map generation, including A → B → A transitions.
+The first-person lights themselves are not native yet.
 
 For a paired uniform comparison,
 `H2_NATIVE_FIRST_PERSON_COMPARE=mode:part[:after]` keeps that record mode
@@ -1010,11 +1013,11 @@ on D3D, prepares the same native part and arms `d3d::uniform_compare` on
 the selected external-target encode (part 0, encode 0 by default; scaled
 output encodes a pass more than once). The ordinary path logs native draws,
 objects, skipped items and queue refusals every 1,800 first-person layer-3
-calls; the encoder also reports any prepared/encoded part-count mismatch,
-including a model the GPU upload rejected. Synthetic tests cover caller
-selection, record/body model divergence, whole-object and incomplete-list
-refusal, comparison shadowing, immediate and next-layer restoration, and
-rebuilt-list handling. The live 03a A/B is still pending.
+calls; issue-time shortfalls are counted and logged rather than silently
+dropping a planned item. Synthetic tests cover caller selection, record/body
+model divergence, per-item masks and rows, mixed record modes, comparison
+shadowing, incomplete-list refusal, immediate and next-layer restoration,
+and rebuilt-list handling. The live 03a A/B is still pending.
 
 ### Shading
 
