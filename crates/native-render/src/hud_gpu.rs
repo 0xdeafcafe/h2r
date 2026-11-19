@@ -568,6 +568,437 @@ fn compile(device: &wgpu::Device, program: &TextProgram) -> Compiled {
     }
 }
 
+/// A HUD shader quad (`0x0022a664`) as the D3D path resolved it, for a
+/// draw admission to draw natively: the vertex program and its constants,
+/// the combiner as D3D builds it, the stages it samples, and the
+/// immediate vertices (every register a float4 at `16 r`, 256 bytes a
+/// vertex, as `d3d`'s immediate draws lay them out). Built by the host
+/// from `d3d::ResolvedDraw`, which has refused what is not here.
+pub struct ScreenDraw {
+    pub microcode: Vec<u32>,
+    pub provided_inputs: u16,
+    pub flat: bool,
+    pub constants: Box<[[f32; 4]; shaders::vsh::CONSTANT_COUNT]>,
+    pub defaults: [[f32; 4]; shaders::vsh::INPUT_COUNT],
+    /// `d3d::nv2a::guest_def` with D3D's default final combiner.
+    pub def: PixelShaderDef,
+    /// Per stage: bound (a 2D texture) with its sampler, and whether it
+    /// is linear (texel coordinates) of that size.
+    pub stages: [Option<ScreenStage>; 4],
+    pub alpha_kill: [bool; 4],
+    pub lod_bias: [f32; 4],
+    pub bump_mat: [[f32; 4]; 4],
+    pub bump_lum: [[f32; 4]; 4],
+    /// The colour target in guest pixels and its depth's full scale.
+    pub surface: (u32, u32),
+    pub z_max: f32,
+    pub state: TextState,
+    pub blend_constant: wgpu::Color,
+    /// The clip area in guest pixels `(x, y, width, height)`.
+    pub clip: [u32; 4],
+    /// The registers the stream carries (bit `r`).
+    pub registers: u16,
+    /// Four vertices, `SCREEN_STRIDE` bytes each.
+    pub vertices: Vec<u8>,
+}
+
+/// Bytes a vertex of an immediate draw takes (`d3d`'s layout).
+pub const SCREEN_STRIDE: u64 = 256;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ScreenStage {
+    pub sampler: gfx::translate::SamplerKey,
+    /// `Some(size)` for a linear texture (texel coordinates).
+    pub linear: Option<(u32, u32)>,
+}
+
+/// What a screen draw's code depends on: its programs, not their
+/// constants.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct ScreenKey {
+    microcode: Vec<u32>,
+    provided_inputs: u16,
+    flat: bool,
+    code: PixelShaderDef,
+    dims: [bool; 4],
+    alpha_kill: [bool; 4],
+}
+
+/// A screen draw's programs linked.
+#[derive(Clone, Debug)]
+pub struct ScreenProgram {
+    pub wgsl: String,
+    /// The vertex locations the program reads.
+    pub locations: u16,
+    /// The stages the combiner samples.
+    pub sampled: [bool; 4],
+}
+
+/// `draw`'s vertex program and combiner through `shaders`, linked; or why
+/// it stays on D3D.
+pub fn screen_program(draw: &ScreenDraw) -> Result<ScreenProgram, String> {
+    let bytes: Vec<u8> = draw
+        .microcode
+        .iter()
+        .flat_map(|w| w.to_le_bytes())
+        .collect();
+    let program =
+        shaders::vsh::Program::parse(&bytes).map_err(|e| format!("vertex program: {e:?}"))?;
+    let vs = shaders::vsh::translate(
+        &program,
+        &shaders::vsh::VertexOptions {
+            provided_inputs: draw.provided_inputs,
+            flat_shading: draw.flat,
+            ..Default::default()
+        },
+    )
+    .map_err(|e| format!("vertex program: {e:?}"))?;
+    if vs.locations & !draw.registers != 0 {
+        return Err(format!(
+            "the program reads registers the draw does not carry ({:#06x})",
+            vs.locations & !draw.registers
+        ));
+    }
+    let options = PixelOptions {
+        texture_dims: draw.stages.map(|s| s.map(|_| TextureDim::D2)),
+        alpha_kill: draw.alpha_kill,
+        flat_shading: draw.flat,
+        ..Default::default()
+    };
+    let ps = psh::translate(&draw.def, &options);
+    if !ps.warnings.is_empty() {
+        return Err(format!("combiner: {}", ps.warnings.join("; ")));
+    }
+    let mut sampled = [false; 4];
+    for (n, d) in ps.textures.iter().enumerate() {
+        match (d, draw.stages[n]) {
+            (None, _) => {}
+            (Some(TextureDim::D2), Some(_)) => sampled[n] = true,
+            (Some(_), None) => return Err(format!("stage {n} is sampled with nothing bound")),
+            (Some(d), Some(_)) => return Err(format!("stage {n} is fetched as {d:?}")),
+        }
+    }
+    let wgsl = shaders::link(&vs, &ps).map_err(|e| e.to_string())?;
+    Ok(ScreenProgram {
+        wgsl,
+        locations: vs.locations,
+        sampled,
+    })
+}
+
+impl ScreenDraw {
+    fn key(&self) -> ScreenKey {
+        let mut code = self.def.clone();
+        code.constant0 = [0; 8];
+        code.constant1 = [0; 8];
+        code.final_constant0 = 0;
+        code.final_constant1 = 0;
+        ScreenKey {
+            microcode: self.microcode.clone(),
+            provided_inputs: self.provided_inputs,
+            flat: self.flat,
+            code,
+            dims: self.stages.map(|s| s.is_some()),
+            alpha_kill: self.alpha_kill,
+        }
+    }
+
+    /// The vertex uniforms for a copy `size` texels across.
+    pub fn vertex_uniforms(&self, size: (u32, u32)) -> shaders::vsh::VertexUniforms {
+        shaders::vsh::VertexUniforms {
+            constants: *self.constants,
+            defaults: self.defaults,
+            surface: [self.surface.0 as f32, self.surface.1 as f32],
+            z_max: self.z_max,
+            shift: shift(self.surface.0, size.0),
+            ..Default::default()
+        }
+    }
+
+    /// The combiner's uniforms: its constants, fog off, each linear
+    /// stage's coordinates over its size, the bias and bump environment.
+    pub fn pixel_uniforms(&self) -> PixelUniforms {
+        let (c0, c1) = self.def.embedded_constants();
+        let mut p = PixelUniforms {
+            c0,
+            c1,
+            fog: psh::fog::Fog::OFF.uniform(),
+            lod_bias: self.lod_bias,
+            bump_mat: self.bump_mat,
+            bump_lum: self.bump_lum,
+            ..Default::default()
+        };
+        for (n, s) in self.stages.iter().enumerate() {
+            if let Some(ScreenStage {
+                linear: Some((w, h)),
+                ..
+            }) = s
+            {
+                p.tex_scale[n] = [1.0 / (*w).max(1) as f32, 1.0 / (*h).max(1) as f32, 1.0, 1.0];
+            }
+        }
+        p
+    }
+}
+
+struct ScreenCompiled {
+    module: wgpu::ShaderModule,
+    uniforms_layout: wgpu::BindGroupLayout,
+    textures_layout: wgpu::BindGroupLayout,
+    layout: wgpu::PipelineLayout,
+    pipelines: HashMap<(wgpu::TextureFormat, TextState, u16), wgpu::RenderPipeline>,
+}
+
+/// Screen draws' programs (by code) and their pipelines.
+#[derive(Default)]
+pub struct ScreenGpu {
+    programs: HashMap<ScreenKey, Result<ScreenProgram, String>>,
+    compiled: HashMap<String, ScreenCompiled>,
+    samplers: HashMap<gfx::translate::SamplerKey, wgpu::Sampler>,
+}
+
+impl ScreenGpu {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// `draw`'s programs, translated once per code.
+    pub fn program(&mut self, draw: &ScreenDraw) -> Result<ScreenProgram, String> {
+        if self.programs.len() >= 512 {
+            self.programs.clear();
+        }
+        self.programs
+            .entry(draw.key())
+            .or_insert_with(|| screen_program(draw))
+            .clone()
+    }
+
+    /// Records `draw` (its programs `program`) into `t`, stage `n`
+    /// sampling `stages[n]`. False when a sampled stage has no view or the
+    /// target cannot take it.
+    pub fn record(
+        &mut self,
+        draw: &ScreenDraw,
+        program: &ScreenProgram,
+        t: TextTarget<'_>,
+        stages: [Option<&wgpu::TextureView>; 4],
+    ) -> bool {
+        if t.guest_size.0 == 0 || t.guest_size.1 == 0 || t.size.0 == 0 || t.size.1 == 0 {
+            return false;
+        }
+        if draw.vertices.len() as u64 != 4 * SCREEN_STRIDE {
+            return false;
+        }
+        if (0..4).any(|n| program.sampled[n] && stages[n].is_none()) {
+            return false;
+        }
+        let device = t.device;
+        let c = self
+            .compiled
+            .entry(program.wgsl.clone())
+            .or_insert_with(|| screen_compile(device, program));
+        let format = t.color_format;
+        let inputs = program.locations & draw.registers;
+        let key = (format, draw.state, inputs);
+        if !c.pipelines.contains_key(&key) {
+            let attributes: Vec<wgpu::VertexAttribute> = (0..16u32)
+                .filter(|r| inputs & (1 << r) != 0)
+                .map(|r| wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x4,
+                    offset: 16 * u64::from(r),
+                    shader_location: r,
+                })
+                .collect();
+            let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("native hud quad"),
+                layout: Some(&c.layout),
+                vertex: wgpu::VertexState {
+                    module: &c.module,
+                    entry_point: Some("vs_main"),
+                    compilation_options: Default::default(),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: SCREEN_STRIDE,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &attributes,
+                    })],
+                },
+                primitive: draw.state.primitive,
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &c.module,
+                    entry_point: Some("fs_main"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: draw.state.blend,
+                        write_mask: draw.state.writes,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            });
+            c.pipelines.insert(key, p);
+        }
+        use wgpu::util::DeviceExt;
+        let buffer = |label, bytes: &[u8], usage| {
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(label),
+                contents: bytes,
+                usage,
+            })
+        };
+        let vertices = buffer(
+            "native hud quad vertices",
+            &draw.vertices,
+            wgpu::BufferUsages::VERTEX,
+        );
+        let indices = buffer(
+            "native hud quad indices",
+            bytemuck::cast_slice(&FAN_INDICES),
+            wgpu::BufferUsages::INDEX,
+        );
+        let vu = buffer(
+            "native hud quad vertex uniforms",
+            &draw.vertex_uniforms(t.size).to_bytes(),
+            wgpu::BufferUsages::UNIFORM,
+        );
+        let pu = buffer(
+            "native hud quad pixel uniforms",
+            &draw.pixel_uniforms().to_bytes(),
+            wgpu::BufferUsages::UNIFORM,
+        );
+        let uniforms = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("native hud quad uniforms"),
+            layout: &c.uniforms_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: vu.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: pu.as_entire_binding(),
+                },
+            ],
+        });
+        let mut samplers = Vec::new();
+        for n in 0..4 {
+            if !program.sampled[n] {
+                continue;
+            }
+            let Some(s) = draw.stages[n] else {
+                return false;
+            };
+            let sampler = self
+                .samplers
+                .entry(s.sampler)
+                .or_insert_with(|| device.create_sampler(&s.sampler.descriptor()))
+                .clone();
+            samplers.push((n, sampler));
+        }
+        let mut entries = Vec::new();
+        for (n, sampler) in &samplers {
+            let Some(view) = stages[*n] else { return false };
+            entries.push(wgpu::BindGroupEntry {
+                binding: 2 * *n as u32,
+                resource: wgpu::BindingResource::TextureView(view),
+            });
+            entries.push(wgpu::BindGroupEntry {
+                binding: 2 * *n as u32 + 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            });
+        }
+        let textures = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("native hud quad textures"),
+            layout: &c.textures_layout,
+            entries: &entries,
+        });
+        let [x, y, w, h] = scale_rect(draw.clip, t.guest_size, t.size);
+        let mut pass = t.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("native hud quad"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: t.color,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        if w == 0 || h == 0 {
+            return true;
+        }
+        pass.set_viewport(0.0, 0.0, t.size.0 as f32, t.size.1 as f32, 0.0, 1.0);
+        pass.set_scissor_rect(x, y, w, h);
+        pass.set_pipeline(&c.pipelines[&key]);
+        pass.set_blend_constant(draw.blend_constant);
+        pass.set_bind_group(0, &uniforms, &[]);
+        pass.set_bind_group(1, &textures, &[]);
+        pass.set_vertex_buffer(0, vertices.slice(..));
+        pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
+        pass.draw_indexed(0..6, 0, 0..1);
+        true
+    }
+}
+
+fn screen_compile(device: &wgpu::Device, program: &ScreenProgram) -> ScreenCompiled {
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("native hud quad"),
+        source: wgpu::ShaderSource::Wgsl(program.wgsl.clone().into()),
+    });
+    let mut entries = Vec::new();
+    for n in 0..4u32 {
+        if !program.sampled[n as usize] {
+            continue;
+        }
+        entries.push(wgpu::BindGroupLayoutEntry {
+            binding: 2 * n,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        });
+        entries.push(wgpu::BindGroupLayoutEntry {
+            binding: 2 * n + 1,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            count: None,
+        });
+    }
+    let textures_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("native hud quad textures"),
+        entries: &entries,
+    });
+    let uniforms_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("native hud quad uniforms"),
+        entries: &[
+            crate::program::uniform_entry(0, wgpu::ShaderStages::VERTEX),
+            crate::program::uniform_entry(1, wgpu::ShaderStages::FRAGMENT),
+        ],
+    });
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("native hud quad"),
+        bind_group_layouts: &[Some(&uniforms_layout), Some(&textures_layout)],
+        immediate_size: 0,
+    });
+    ScreenCompiled {
+        module,
+        uniforms_layout,
+        textures_layout,
+        layout,
+        pipelines: HashMap::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -633,5 +1064,73 @@ mod tests {
         let none = text_program(&PixelShaderDef::default()).expect("compiles");
         shaders::validate(&none.wgsl).expect("valid WGSL");
         assert!(!none.samples);
+    }
+
+    fn screen(def: PixelShaderDef) -> ScreenDraw {
+        ScreenDraw {
+            microcode: vec![1, 2, 3, 4],
+            provided_inputs: 1,
+            flat: false,
+            constants: Box::new([[0.0; 4]; shaders::vsh::CONSTANT_COUNT]),
+            defaults: [[0.0, 0.0, 0.0, 1.0]; shaders::vsh::INPUT_COUNT],
+            def,
+            stages: [
+                Some(ScreenStage {
+                    sampler: gfx::translate::SamplerKey::from_stage(
+                        &gfx::state::TextureStageState::default_for_stage(0),
+                        gfx::translate::Capabilities::ALL,
+                    ),
+                    linear: Some((128, 64)),
+                }),
+                None,
+                None,
+                None,
+            ],
+            alpha_kill: [false; 4],
+            lod_bias: [0.5, 0.0, 0.0, 0.0],
+            bump_mat: [[0.0; 4]; 4],
+            bump_lum: [[1.0, 0.0, 0.0, 0.0]; 4],
+            surface: (640, 480),
+            z_max: 16_777_215.0,
+            state: TextState {
+                blend: None,
+                writes: wgpu::ColorWrites::ALL,
+                primitive: wgpu::PrimitiveState::default(),
+                point: false,
+            },
+            blend_constant: wgpu::Color::TRANSPARENT,
+            clip: [0, 0, 640, 480],
+            registers: 1,
+            vertices: vec![0; 4 * SCREEN_STRIDE as usize],
+        }
+    }
+
+    #[test]
+    fn a_screen_draws_code_is_its_programs_not_their_constants() {
+        let a = screen(PixelShaderDef::default());
+        let b = screen(PixelShaderDef {
+            constant0: [7; 8],
+            final_constant1: 9,
+            ..Default::default()
+        });
+        assert!(a.key() == b.key(), "constants are uniforms");
+        let c = screen(PixelShaderDef {
+            texture_modes: 1,
+            ..Default::default()
+        });
+        assert!(a.key() != c.key(), "the texture modes are code");
+    }
+
+    #[test]
+    fn a_linear_stage_takes_texel_coordinates_and_the_shift_follows_the_copy() {
+        let d = screen(PixelShaderDef::default());
+        let p = d.pixel_uniforms();
+        assert_eq!(p.tex_scale[0], [1.0 / 128.0, 1.0 / 64.0, 1.0, 1.0]);
+        assert_eq!(p.tex_scale[1], [1.0; 4]);
+        assert_eq!(p.lod_bias, [0.5, 0.0, 0.0, 0.0]);
+        assert_eq!(p.fog, psh::fog::Fog::OFF.uniform());
+        assert_eq!(d.vertex_uniforms((640, 480)).shift, 0.0);
+        assert!(d.vertex_uniforms((1280, 960)).shift > 0.0);
+        assert_eq!(d.vertex_uniforms((640, 480)).surface, [640.0, 480.0]);
     }
 }
