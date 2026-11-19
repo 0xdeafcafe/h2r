@@ -1100,6 +1100,12 @@ pub struct PreparedExternal<'a, B: Backend> {
 }
 
 impl<B: Backend> PreparedExternal<'_, B> {
+    /// The device after the drain, for validating the state used to record
+    /// this pass before deciding whether to commit it.
+    pub fn device(&self) -> &Device<B> {
+        self.device
+    }
+
     pub fn commit(self) {
         for recording in self.recordings {
             self.device.backend.commit_external(recording);
@@ -2125,6 +2131,18 @@ impl<B: Backend> Device<B> {
             rs.set_raw(t, self.render_state(mem, guest)?).ok()?;
         }
         Some((rs.cull_mode, rs.front_face))
+    }
+
+    /// The area a draw recorded now could write (the viewport, the
+    /// scissors and the target, as [`ResolvedDraw::clip`] and
+    /// [`ResolvedDraw::clip_rects`] take it); `None` when nothing. Read
+    /// only: for a pass that replaces draws before they are resolved (the
+    /// native HUD's text, docs/graphics/native-renderer.md).
+    pub fn clip_area(
+        &self,
+        mem: &dyn GuestMemory,
+    ) -> Result<Option<(crate::backend::PixelRect, Vec<crate::backend::PixelRect>)>, D3dError> {
+        self.draw_clip(mem)
     }
 
     /// The `A8R8G8B8` entries of the palette bound at `stage` now

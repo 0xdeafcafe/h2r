@@ -242,6 +242,7 @@ fn layer11_uses_only_its_map_and_preserves_rgb_stencil_and_alpha_test() {
             uploads: &uploads,
             copy: d3d::TargetCopy::Reference,
             stages: [Some(&fallback.view), None, None, None],
+            on_submit: None,
         };
         range.prepare_copy(&destination).unwrap();
         assert_eq!(range.record_ranges(destination), 1);

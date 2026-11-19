@@ -22,6 +22,7 @@ pub mod leaves;
 pub mod locale;
 pub mod native_decals;
 pub mod native_gels;
+pub mod native_hud;
 pub mod native_lights;
 pub mod native_objects;
 pub mod native_particles;
