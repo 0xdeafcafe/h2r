@@ -326,7 +326,7 @@ impl Feature for NativeLights {
                     return Ok(Flow::Continue);
                 };
                 // sorted() already checked the return address on this locked stack.
-                c.cpu.esp = c.cpu.esp.wrapping_add(32);
+                c.cpu.esp = c.cpu.esp.wrapping_add(4 + engine::render_loop::layer::HANDLER_CLEANUP);
                 Ok(Flow::Return(runtime::TransferAbi::ret(caller)))
             })
             .context_only();

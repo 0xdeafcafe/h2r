@@ -16,6 +16,13 @@ fn its_chains_run_on_the_render_thread() {
     let mut r = Registry::new(Switches::parse("impl.render.native_lights=on").unwrap());
     assert!(r.add(&NativeLights).unwrap());
     let plan = r.build(&Base).unwrap();
+    use engine::points::{LIGHT_GEOMETRY_DRAW, Loc, Sig};
+    let Sig::Fn { args, ret, pop } = LIGHT_GEOMETRY_DRAW.sig else {
+        panic!("geometry admission requires a returnable handler");
+    };
+    assert_eq!(args.iter().map(|&(_, loc)| loc).collect::<Vec<_>>(), (0..7).map(Loc::Stack).collect::<Vec<_>>());
+    assert_eq!(u32::from(pop), engine::render_loop::layer::HANDLER_CLEANUP);
+    assert_eq!(ret, None);
     let text = plan.text();
     assert!(text.contains("native_lights_geometry"), "{text}");
     assert!(text.contains("native_lights_view"), "{text}");
