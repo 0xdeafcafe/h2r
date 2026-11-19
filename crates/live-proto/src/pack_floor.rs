@@ -83,6 +83,7 @@ struct Bill {
     list: usize,
     cursor: usize,
     bits: BTreeMap<(usize, &'static str), [usize; 2]>,
+    absolutes: BTreeMap<(usize, usize, usize), Histogram>,
     residuals: BTreeMap<(usize, usize, usize), Histogram>,
 }
 
@@ -93,7 +94,7 @@ pub(super) fn start(key: bool) {
             b.list = 8;
             b.cursor = 0;
             if key {
-                for h in b.residuals.values_mut() {
+                for h in b.residuals.values_mut().chain(b.absolutes.values_mut()) {
                     h.previous = None;
                 }
             }
@@ -193,6 +194,28 @@ impl Histogram {
     }
 }
 
+/// Keys, list additions and transient hits have no preceding entity. Hits
+/// pointing at a player use that ordinal (the actual within-frame predictor).
+pub(super) fn absolute(f: usize, v: &Val) {
+    BILL.with_borrow_mut(|b| {
+        let Some(b) = b else { return };
+        let mut see = |axis, s| b.absolutes.entry((b.list, f, axis)).or_default().see(s);
+        match v {
+            Val::Pos(q) | Val::Vel(q) => {
+                for (i, &n) in q.iter().enumerate() {
+                    see(i, Symbol::Delta(n));
+                }
+            }
+            Val::Dir(q) => {
+                for (i, &n) in q.iter().enumerate() {
+                    see(i, Symbol::Delta(i64::from(n)));
+                }
+            }
+            _ => see(0, Symbol::Literal(v.clone())),
+        }
+    });
+}
+
 /// Traverse matched entities (including unchanged runs) against the writer's
 /// actual post-advance base. Absent/present changes are tagged literals. H1's
 /// predecessor is the preceding residual in that field/axis in wire order.
@@ -272,16 +295,26 @@ fn audit(frames: &[Frame]) -> usize {
     println!(
         "Matched residuals incl implicit zeros; H0/H1 fitted on this match (ideal bits, no tables). Keys, new entities, absolute hits and framing are outside this conditional estimate."
     );
-    for ((l, i, axis), h) in bill.residuals {
-        let (h0, h1) = h.bits();
+    for (section, tables) in [("matched", bill.residuals), ("absolute", bill.absolutes)] {
+        let mut sums = [0.; 2];
+        for ((l, i, axis), h) in tables {
+            let (h0, h1) = h.bits();
+            sums[0] += h0;
+            sums[1] += h1;
+            println!(
+                "H {section} {}.{}[{}] N={} H0_bits={:.1} H1_bits={:.1}",
+                NAMES[l],
+                FIELDS[l][i],
+                axis,
+                h.totals.values().sum::<usize>(),
+                h0,
+                h1
+            );
+        }
         println!(
-            "H {}.{}[{}] N={} H0_bits={:.1} H1_bits={:.1}",
-            NAMES[l],
-            FIELDS[l][i],
-            axis,
-            h.totals.values().sum::<usize>(),
-            h0,
-            h1
+            "H {section} ideal B/player/s H0={:.3} H1={:.3}",
+            sums[0] / 76800.,
+            sums[1] / 76800.
         );
     }
     bytes
@@ -306,19 +339,26 @@ fn bench_live_floor() {
         COARSE_AIM.set(aim);
         let bytes = wire(&frames, 150);
         let mut errors = Vec::new();
+        let mut fine_errors = Vec::new();
         for p in frames.iter().flat_map(|f| &f.players) {
             if pos {
                 let q = dpos(qpos(p.pos).unwrap());
                 errors.push(distance(p.pos, q));
+                fine_errors.push(distance(
+                    p.pos,
+                    p.pos.map(|v| (v * POS_SCALE).round() / POS_SCALE),
+                ));
             } else {
                 let a = p.aim.unwrap();
                 let u = unoct_grid(oct_grid(a, 4094.).unwrap(), 4094.);
                 errors.push(angle(a, u));
+                fine_errors.push(angle(a, unoct(oct(a).unwrap())));
             }
         }
         let (p99, max) = summary(&mut errors);
+        let (old99, oldmax) = summary(&mut fine_errors);
         println!(
-            "{label}: {bytes} bytes {:.3} B/player/s saving {:.3}; sampled player error p99 {p99:.8} max {max:.8} {}",
+            "{label}: {bytes} bytes {:.3} B/player/s saving {:.3}; sampled player error p99 {old99:.8} -> {p99:.8} max {oldmax:.8} -> {max:.8} {}",
             bytes as f64 / 9600.,
             (baseline as f64 - bytes as f64) / 9600.,
             if pos { "world units" } else { "degrees" }
@@ -345,4 +385,50 @@ pub(crate) fn summary(errors: &mut [f64]) -> (f64, f64) {
         errors[(errors.len() * 99).div_ceil(100) - 1],
         errors[errors.len() - 1],
     )
+}
+
+/// The cheapest integration control: keep v7 as-is, carry a fast raw DEFLATE
+/// dictionary between samples and sync-flush every sample. One flag octet
+/// outside the compressed bytes announces a dictionary reset at each key.
+#[test]
+#[ignore = "release streaming compression control"]
+fn bench_live_floor_deflate() {
+    use flate2::write::{DeflateDecoder, DeflateEncoder};
+    use std::io::Write;
+    use std::time::{Duration, Instant};
+    let frames = crate::samples::multiplayer(9000);
+    let new = || DeflateEncoder::new(Vec::new(), flate2::Compression::fast());
+    let mut zip = new();
+    let mut unzip = DeflateDecoder::new(Vec::new());
+    let mut enc = Encoder::new(0, 150);
+    let mut ns = Duration::ZERO;
+    let mut bytes = 0;
+    let mut framed = Vec::new();
+    for f in &frames {
+        let start = Instant::now();
+        let (record, key) = enc.encode(f).unwrap();
+        if key {
+            zip = new();
+        }
+        zip.write_all(&record).unwrap();
+        zip.flush().unwrap();
+        let payload = std::mem::take(zip.get_mut());
+        let mut flagged = vec![u8::from(key)];
+        flagged.extend_from_slice(&payload);
+        framed.clear();
+        push_record(&mut framed, &flagged);
+        ns += start.elapsed();
+        bytes += framed.len();
+        if key {
+            unzip = DeflateDecoder::new(Vec::new());
+        }
+        unzip.write_all(&payload).unwrap();
+        unzip.flush().unwrap();
+        assert_eq!(std::mem::take(unzip.get_mut()), record);
+    }
+    println!(
+        "v7 + streaming deflate level 1: {bytes} bytes {:.3} B/player/s, {:.3} native encode us/frame",
+        bytes as f64 / 9600.,
+        ns.as_secs_f64() * 1e6 / frames.len() as f64
+    );
 }

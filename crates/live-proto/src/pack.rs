@@ -1688,6 +1688,8 @@ fn write_entity(w: &mut BitWriter, schema: &[Field], e: &Entity, t: &Table) {
     for (i, (field, v)) in schema.iter().zip(e).enumerate() {
         #[cfg(test)]
         floor::before_field(schema, i);
+        #[cfg(test)]
+        floor::absolute(i, v);
         write_field(w, *field, v, None, t, 0);
         #[cfg(test)]
         floor::field(w, i);
@@ -1744,10 +1746,15 @@ fn write_hits(w: &mut BitWriter, hits: &[Entity], players: &[Entity], table: &Ta
                 if let Some(index) = index {
                     w.bits(index as u64, 4);
                     #[cfg(test)]
-                    floor::field(w, i);
+                    {
+                        floor::absolute(i, &Val::Int(index as u64));
+                        floor::field(w, i);
+                    }
                     continue;
                 }
             }
+            #[cfg(test)]
+            floor::absolute(i, &hit[i]);
             write_field(w, *field, &hit[i], None, table, 0);
             #[cfg(test)]
             floor::field(w, i);
