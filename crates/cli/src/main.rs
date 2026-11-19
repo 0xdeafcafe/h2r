@@ -49,6 +49,7 @@ mod live_basemap;
 mod live_catalog;
 mod live_cmd;
 mod live_features;
+mod live_frames;
 mod live_geometry;
 mod live_halo1;
 mod live_layers;
