@@ -1,8 +1,8 @@
 # Bots: Clankers and Clankermatch
 
-Status: design (slice 1). Nothing is built. The decisions below are
-final unless a game run proves one of them wrong. Everything that needs a run
-is listed in §11.
+This document records the original design, implementation traces and
+outstanding game checks. The player-options checks are below. Section 11
+lists the original multiplayer checks.
 
 What we want: multiplayer bots ("Clankers") that play Halo 2 multiplayer by
 the game's own rules. They can be added to a custom game from Game Setup.
@@ -14,6 +14,80 @@ addresses given. **Repo** means it is already in this repository's code or
 docs. **Design** means it is our decision. **Run** means only a game run can
 settle it. No game data is in this document: it has addresses and paraphrase
 only.
+
+## Clanker appearance and Live player options
+
+A Clanker's full gamertag determines its emblem and armour colours across
+local slots, System Link, simulated players and Live rosters. Switching
+controller, host or account XUID keeps the same look for the same name.
+The profile model still comes from the host. Team games can override the
+visible armour colour.
+
+`live_proto::bots::appearance` lowercases the tag, collapses whitespace
+and hashes its UTF-8 bytes with 32-bit FNV-1a and a fixed final mix. The
+low bits select one of 64 foregrounds and 32 backgrounds. The two
+foreground colours come from one brightness group and the two background
+colours from the other, using four different retail palette indices.
+Rusty Lugnut has foreground 1, background 30 and profile colours
+10, 11, 13, 16. The server recomputes looks when projecting every
+`BotIssued`, including old signed events, so existing accounts migrate
+without rewriting their log or changing their personality. The web mock
+calls the same kernel compiled as inline WebAssembly. The Rust and web
+tests pin the same 8,192-name fingerprint. After changing
+`crates/live-proto/src/clanker_appearance.c`, regenerate the browser module
+with `python3 scripts/clanker-web-kernel.py` using LLVM clang and wasm-ld.
+The web tests check the source digest.
+
+**Retail trace.** The main-menu tags identify the pregame lobby as
+`0x0e`, the expanded/collapsed Live Y menus as `0x1a/0x1b`, and their
+`player_selected_dialog` as `0x1f`. Zanzibar's in-game Live menu is
+`0x1c` and also has `0x1f`. There is a separately named
+`player_selected_dialog` tag `0x20` in the main menu. The presence of
+that tag alone does not establish a loader for it.
+
+- The friend-list press at `0x2b3870` copies the selected friend (record
+  kind 2), commits it at `0x2b38ed` and opens through `0x2b71f0`.
+  The list handler at `0x2b3e4d` builds kind 1 from the selected row and
+  opens through `0x2b7212`. Another player selection at `0x23403c`
+  copies the XUID and name at `0x234100` and uses `0x2b7223`.
+- Both options loader families reach `0x2b70a3` or `0x2b71a6`.
+  They take the request in EAX, source in ESI, and return the screen in
+  EAX. Their shared constructor `0x2b6106` builds screen 31 with its
+  action list at screen + `0x614`. The list is populated at `0x2b55ae`
+  and its press handler is `0x2b5d3b`.
+- `0x148893` writes the selected-player record at `0x54dc6c`.
+  For kinds 1 and 2, +4 holds the eight-byte XUID, +12 the flags and
+  +16 the ASCII gamertag. Kind 3 has only a name. The hooks leave
+  name-only rows and human accounts on the retail path. A local guest
+  sharing a human XUID must match the bot slot's full 12-byte player id.
+  A guest on another console needs a matching, gear-marked session slot.
+- The card opens on the kit's large dialog and offers Back. Skin 6 of
+  the current interface contains the Y menu's player table. Its nested
+  skin's first shader bitmap uses the medium emblem material in the
+  main menu, shared map and Zanzibar. The card copies that definition
+  and feeds the profile to the retail emblem setter at `0x2b12ca`.
+- The host shows the active brain's difficulty and strongest personality
+  trait. A remote or recent server bot resolves by XUID through
+  `GET /v1/games/bots/{xuid}`, which returns its full tag, seed and last
+  rostered skill. A scripted player with no brain, or a remote player
+  whose details cannot be retrieved, shows “Unavailable”.
+- Mute and feedback are omitted from the card. A Clanker has no voice
+  account to mute and no human player to report. Both server homes
+  refuse friend requests and mailbox writes to either reserved XUID
+  range with HTTP 403. Retail text and voice sends share the HLE outbox,
+  which refuses the entire recipient list if it includes a bot.
+
+**Needs a game run.** The common constructors and record layout are
+confirmed statically. Which handler each retail lobby, in-game, recent
+and friends row exercises still needs input-driven confirmation.
+Select a bot and a human from each available surface, including a
+recent bot that has left the session. Check `h2 agent ui` for
+`dialog.name = clanker_player_options`, the rendered emblem, difficulty
+and style, and return to the invoking list with B or Back. Repeat with a
+remote client, a human guest next to an unleased local bot and two
+controllers. Check the same name after restart and in a non-team System
+Link game against its Live card and web emblem. Use a legacy friends
+entry if available, since new friend requests to bots cannot create one.
 
 ## 1. Decision
 
@@ -1557,7 +1631,7 @@ changes:
 
   The brain's aim spring is tuned against that sensitivity.
 - the look at block `+0x118` (colours and emblem) set to the bot's own,
-  by port (stage 7, "Their own look"), so it does not wear the human's.
+  by full gamertag (see “Clanker appearance and Live player options”).
 - The name the game shows comes from slot `+0xc1c` (UTF-16, 32 units,
   `0x1902c1`). The driver writes it after the sign-in.
 
@@ -2350,8 +2424,8 @@ which `0x185e81..0x185ea9` passes to the action builder.
   never go through it ("Phantoms in the pregame lobby"). `0x5f970` is a
   channel's teardown, not a ready check, and `0x62e30` is the free-slot
   count, now honoured.
-- Colours and emblem in the configuration ([guess] `+0x40..+0x7b`); a
-  phantom wears the host's until then.
+- The profile appearance starts at configuration `+0x40` (traced at
+  `0x18fd94`). Phantoms set its colours and emblem from their full tag.
 
 **Phantom ping.** Each phantom has a seeded 40–80 ms round-trip ping by
 default. The host samples its pad at 30 Hz and queues the report for
@@ -3870,8 +3944,7 @@ list for the user to play (§11).
      - Until a roster comes, or when none does (refused, Live off, System
        Link, offline), phantoms are host-made, as in 6b. Once it comes,
        they all go and the roster's bots replace them
-       (`clankers::roster_seats`): xuid, gamertag, emblem and colours as
-       the `Identity`; the roster's team when not null; a brain at the
+       (`clankers::roster_seats`): xuid and gamertag as the `Identity`; the roster's team when not null; a brain at the
        nearest named skill (`skill_of`), seeded with the personality's
        seed and taunting at its `taunt` (Taunts off still makes it 0). The
        page's difficulty never changes a roster bot's skill.
@@ -3939,7 +4012,7 @@ list for the user to play (§11).
        true` is accepted only for an xuid the server issued as a bot.
      - The host asks for the roster when the Clankers page wants more bots
        than free ports (or always, with Live on). Each roster entry becomes
-       a `bots::phantom::Identity` (xuid, gamertag, emblem, colours) and a
+       a `bots::phantom::Identity` (xuid and gamertag) and a
        brain at the entry's skill.
      - `sim` can ask the same endpoint for identities and pass them to
        `sim.player.add {kind: phantom, identity}`. The bots crate never
@@ -4094,9 +4167,8 @@ list for the user to play (§11).
      player properties at `+0x40`; `0x1a0540` zeroes them when
      `0x153750` rejects the first 8: four colours below 18, a model below
      4, an emblem foreground below 0x40 and background below 0x20, flags
-     in the low nibble). Each port has its colours and emblem
-     (`guest::BOT_LOOKS`), an armour colour the human wears is moved one
-     on, and the model is the human's.
+     in the low nibble). The gamertag supplies the colours and emblem,
+     and the profile supplies the model.
    - **Nav meshes early.** A map picked in the lobby's map list with
      Clankers on, or Clankers coming on after a map was picked, asks
      `bots::autonav::build_soon` for its mesh (`clankers::map_picked`).
@@ -4115,8 +4187,7 @@ list for the user to play (§11).
        (`guest::slot_held`);
      - the gate: only the bare players screen with an empty slot
        (`bot_glue` tests, `ui_watch` dialog tests);
-     - the look: valid by `0x153750`'s checks, never the human's colours
-       or emblem, distinct per port;
+     - the look: valid by `0x153750`'s checks, repeatable across ports;
      - the page: a row per setting, steps saved in the store, wrapping;
        the row's text in its own slot, not the title's;
      - the row: only a custom game's list, once, beside the Halo 1 row;
@@ -4811,8 +4882,8 @@ small surface. Everything in it is controller input.
       multiplayer game, and is idle elsewhere.
 - `bots::phantom::add(Identity, team: Option<u8>, Box<dyn PadSource>)`
   puts a phantom on the books; it joins once a multiplayer game this
-  console hosts runs (§5.1). `Identity` is the roster's xuid, gamertag,
-  emblem and colours (§9.1); emblem and colours are not applied yet.
+  console hosts runs (§5.1). `Identity` carries the roster's XUID and full gamertag.
+  The phantom applies that name's look to its player configuration.
 - `bots::phantom::remove(handle)`, `list() -> Vec<PhantomInfo>` (handle,
   identity, team, machine id, `player: Option<u32>`, `state: Pending |
   Joined | Failed(reason)`) and `player(handle) -> Option<u32>` work on the

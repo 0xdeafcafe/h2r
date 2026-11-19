@@ -38,6 +38,11 @@ pub fn is_server_xuid(x: Xuid) -> bool {
     x.0 >> 48 == SERVER_XUID_MARK >> 48
 }
 
+/// Either reserved Clanker range, including host-made System Link players.
+pub fn is_bot_xuid(x: Xuid) -> bool {
+    is_server_xuid(x) || is_local_xuid(x)
+}
+
 /// The mark a bot's name carries in the game: U+2699 GEAR and a space
 /// before its gamertag (docs/game/bots.md §8.2.2). It is not part of the
 /// account's name: a record names the bot without it ([`unmarked_units`]),
@@ -187,6 +192,43 @@ pub struct Colors {
     pub secondary: u8,
 }
 
+unsafe extern "C" {
+    fn clanker_appearance(name: *const u8, len: usize, out: *mut u8);
+}
+
+/// The game, server and browser use the same freestanding kernel on the
+/// normalized UTF-8 gamertag. Its six output bytes are a stable wire contract.
+pub fn appearance(name: &str) -> (Emblem, Colors) {
+    let lowercase = name.to_lowercase();
+    let mut normalized = String::with_capacity(lowercase.len());
+    for word in lowercase.split_whitespace() {
+        if !normalized.is_empty() {
+            normalized.push(' ');
+        }
+        normalized.push_str(word);
+    }
+    let mut fields = [0u8; 6];
+    // SAFETY: both buffers outlive the call. The kernel reads exactly len
+    // input bytes and writes six bytes to the disjoint output buffer.
+    unsafe { clanker_appearance(normalized.as_ptr(), normalized.len(), fields.as_mut_ptr()) };
+    let [
+        foreground,
+        background,
+        primary,
+        secondary,
+        tertiary,
+        quaternary,
+    ] = fields;
+    (
+        Emblem {
+            foreground,
+            background,
+            colors: [secondary, tertiary, quaternary],
+        },
+        Colors { primary, secondary },
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BotRank {
     pub level: u8,
@@ -217,6 +259,15 @@ impl Default for Personality {
             taunt: 0.3,
         }
     }
+}
+
+/// A player's Clanker card. Skill is the most recently rostered difficulty.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PlayerCard {
+    pub xuid: Xuid,
+    pub gamertag: Gamertag,
+    pub skill: Option<f32>,
+    pub seed: u64,
 }
 
 /// The named difficulties' skills (§9.1).
@@ -276,6 +327,52 @@ impl Roster {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clanker_appearance_vectors_and_normalisation() {
+        for tag in ["Rusty Lugnut", "  RUSTY  lugnut ", "Rusty\tlUgNuT\n"] {
+            let (e, c) = appearance(tag);
+            assert_eq!(
+                (e.foreground, e.background, e.colors),
+                (1, 30, [11, 13, 16])
+            );
+            assert_eq!((c.primary, c.secondary), (10, 11));
+        }
+    }
+
+    #[test]
+    fn clanker_appearance_spreads_names_and_contrasts_masks() {
+        const LIGHT: [u8; 4] = [0, 4, 13, 16];
+        const DARK: [u8; 4] = [2, 7, 10, 11];
+        let mut fg = [0; 64];
+        let mut bg = [0; 32];
+        let mut looks = std::collections::HashSet::new();
+        let mut fingerprint = 2_166_136_261u32;
+        for i in 0..8192 {
+            let (e, c) = appearance(&format!("Clanker {i}"));
+            fg[e.foreground as usize] += 1;
+            bg[e.background as usize] += 1;
+            let [secondary, bg1, bg2] = e.colors;
+            assert_eq!(secondary, c.secondary);
+            assert_ne!(c.primary, secondary);
+            assert_ne!(bg1, bg2);
+            let (front, back) = if LIGHT.contains(&c.primary) {
+                (LIGHT, DARK)
+            } else {
+                (DARK, LIGHT)
+            };
+            assert!([c.primary, secondary].iter().all(|v| front.contains(v)));
+            assert!([bg1, bg2].iter().all(|v| back.contains(v)));
+            for field in [e.foreground, e.background, c.primary, secondary, bg1, bg2] {
+                fingerprint = (fingerprint ^ u32::from(field)).wrapping_mul(16_777_619);
+            }
+            looks.insert((e.foreground, e.background, c.primary, e.colors));
+        }
+        assert!(fg.iter().all(|&n| (64..200).contains(&n)));
+        assert!(bg.iter().all(|&n| (160..360).contains(&n)));
+        assert!(looks.len() > 8000);
+        assert_eq!(fingerprint, 4_171_212_491); // Shared browser compatibility vector.
+    }
 
     const DOC: &str = r#"{
       "match_id": "m1",

@@ -466,6 +466,14 @@ impl Hle {
     ) -> Result<(), String> {
         self.lock().roster_bots(request, done)
     }
+    /// Look up a remote or recent Clanker on the Live worker. The UI stays usable offline.
+    pub fn bot_card(
+        &self,
+        xuid: live_proto::Xuid,
+        done: Box<dyn FnOnce(live_proto::bots::PlayerCard) + Send>,
+    ) {
+        self.lock().bot_card(xuid, done)
+    }
     /// A page of the mod repository, newest first (`GET /v1/maps?sort=new`
     /// with a `read` token, docs/game/maps.md §5 "Mod downloads"). Returns
     /// at once; `done` is called on the Live worker with the page, or why

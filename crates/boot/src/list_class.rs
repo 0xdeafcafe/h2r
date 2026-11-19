@@ -1038,6 +1038,7 @@ pub struct ListClass {
     buttons: Option<Buttons>,
     sideways: bool,
     on_free: Option<OnFree>,
+    pane_ready: Option<Action>,
     footer: Option<u32>,
     action_buttons: &'static [u32],
     lines: bool,
@@ -1047,6 +1048,11 @@ pub struct ListClass {
 }
 
 impl ListClass {
+    /// Attach dynamic widgets once the retail pane and its children exist.
+    pub fn pane_ready(mut self, action: Action) -> Self {
+        self.pane_ready = Some(action);
+        self
+    }
     /// The model's screen `screen`.
     pub fn new(id: &'static str, screen: &'static str, model: Arc<Model>) -> Self {
         Self::with_rows(id, screen, Arc::new(ModelRows { model, screen }))
@@ -1065,6 +1071,7 @@ impl ListClass {
             buttons: None,
             sideways: false,
             on_free: None,
+            pane_ready: None,
             footer: None,
             action_buttons: &ACTION_BUTTONS,
             lines: false,
@@ -2053,14 +2060,17 @@ impl feature::Feature for ListClass {
                 rows: Some(Arc::clone(&rows)),
             });
         let footer = self.footer;
+        let pane_ready = self.pane_ready.clone();
         let setup_pane_at = b.entry("set up pane", move |cx| -> EntryFuture {
-            Box::pin(setup_pane_footer(
-                cx,
-                title,
-                footer,
-                description.clone(),
-                name,
-            ))
+            let (description, ready) = (description.clone(), pane_ready.clone());
+            Box::pin(async move {
+                let screen = cx.entry().ecx;
+                let ret = setup_pane_footer(cx.clone(), title, footer, description, name).await?;
+                if let Some(ready) = ready {
+                    ready(cx, screen).await?;
+                }
+                Ok(ret)
+            })
         })?;
         let loader_slot = b.entry("loader slot", move |_| -> EntryFuture {
             Box::pin(async move { Ok(Ret::new(loader, 0)) })
@@ -2084,6 +2094,7 @@ impl feature::Feature for ListClass {
                     .layout
                     .unwrap_or_else(|| crate::ui_kit::dialog_tag::base_layout(base, rows.count()));
                 crate::ui_kit::dialog_tag::register(crate::ui_kit::dialog_tag::Registered {
+                    name: self.screen,
                     vtable: tables,
                     page: b.guest_alloc(0x1000, Permissions::RW)?,
                     loader,

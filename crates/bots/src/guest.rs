@@ -81,29 +81,19 @@ pub const COLOURS: u8 = 18;
 pub const EMBLEM_FOREGROUNDS: u8 = 0x40;
 pub const EMBLEM_BACKGROUNDS: u8 = 0x20;
 
-/// A bot's own colours and emblem, by its port (1 to 3; other ports take
-/// port 1's): four colours and the emblem's foreground and background.
-/// Indices only; which colour each is, is the game's palette.
-pub const BOT_LOOKS: [([u8; 4], u8, u8); 3] = [
-    ([3, 1, 3, 1], 5, 2),
-    ([6, 9, 6, 9], 12, 7),
-    ([12, 4, 12, 4], 20, 11),
-];
-
-/// The look `bot_block` writes for the bot on `port`: [`BOT_LOOKS`], with
-/// each armour colour that is the human's (`human`, their 16 look bytes)
-/// moved one on, so the bot never wears the human's colours.
-pub fn bot_look(port: u32, human: &[u8]) -> [u8; 8] {
-    let i = (port as usize).clamp(1, 3) - 1;
-    let (mut colours, fg, bg) = BOT_LOOKS[i];
-    for (k, c) in colours.iter_mut().enumerate().take(2) {
-        if human.get(k) == Some(&*c) {
-            *c = (*c + 1) % COLOURS;
-        }
-    }
-    let model = human.get(4).copied().filter(|&m| m < 4).unwrap_or(0);
+/// The eight checked profile bytes. The primary layer shares the primary
+/// armour colour; the other three masks occupy the remaining colour slots.
+pub fn bot_look(name: &str, model: u8) -> [u8; 8] {
+    let (e, c) = live_proto::bots::appearance(name);
     [
-        colours[0], colours[1], colours[2], colours[3], model, fg, bg, 0,
+        c.primary,
+        c.secondary,
+        e.colors[1],
+        e.colors[2],
+        if model < 4 { model } else { 0 },
+        e.foreground,
+        e.background,
+        0,
     ]
 }
 
@@ -150,26 +140,30 @@ pub fn profile_name_bytes(name: &str) -> [u8; BLOCK_PROFILE_NAME_UNITS * 2] {
     out
 }
 
-/// A bot's profile block: the human's, with the bot's name (the profile
-/// name the game shows, [`BLOCK_PROFILE_NAME`], and [`BLOCK_NAME`]), its own look
-/// ([`bot_look`]: colours and emblem by `port`, the human's model) and
-/// controls that mean the same on every machine (inversion and the other
-/// flag off, the Default layouts, a fixed sensitivity). Everything else is
-/// the human's.
-pub fn bot_block(human: &[u8; BLOCK_LEN], name: &str, port: u32) -> [u8; BLOCK_LEN] {
-    let mut b = *human;
-    let look = bot_look(port, &human[BLOCK_LOOK..BLOCK_LOOK + 16]);
-    b[BLOCK_LOOK..BLOCK_LOOK + 8].copy_from_slice(&look);
-    b[BLOCK_PROFILE_NAME..BLOCK_PROFILE_NAME + BLOCK_PROFILE_NAME_UNITS * 2]
-        .copy_from_slice(&profile_name_bytes(name));
-    let field = &mut b[BLOCK_NAME..BLOCK_NAME + BLOCK_NAME_LEN];
-    field.fill(0);
+fn account_name_bytes(name: &str) -> [u8; BLOCK_NAME_LEN] {
+    let mut field = [0; BLOCK_NAME_LEN];
     for (dst, c) in field[..BLOCK_NAME_LEN - 1]
         .iter_mut()
         .zip(name.bytes().filter(u8::is_ascii))
     {
         *dst = c;
     }
+    field
+}
+
+/// A bot's profile block: the human's, with the bot's name (the profile
+/// name the game shows, [`BLOCK_PROFILE_NAME`], and [`BLOCK_NAME`]), its own look
+/// ([`bot_look`]: colours and emblem by name, the human's model) and
+/// controls that mean the same on every machine (inversion and the other
+/// flag off, the Default layouts, a fixed sensitivity). Everything else is
+/// the human's.
+pub fn bot_block(human: &[u8; BLOCK_LEN], name: &str) -> [u8; BLOCK_LEN] {
+    let mut b = *human;
+    let look = bot_look(name, human[BLOCK_LOOK + 4]);
+    b[BLOCK_LOOK..BLOCK_LOOK + 8].copy_from_slice(&look);
+    b[BLOCK_PROFILE_NAME..BLOCK_PROFILE_NAME + BLOCK_PROFILE_NAME_UNITS * 2]
+        .copy_from_slice(&profile_name_bytes(name));
+    b[BLOCK_NAME..BLOCK_NAME + BLOCK_NAME_LEN].copy_from_slice(&account_name_bytes(name));
     let c = BLOCK_CONTROLS;
     let flags = u32::from_le_bytes(b[c..c + 4].try_into().unwrap()) & !0b101;
     b[c..c + 4].copy_from_slice(&flags.to_le_bytes());
@@ -181,11 +175,17 @@ pub fn bot_block(human: &[u8; BLOCK_LEN], name: &str, port: u32) -> [u8; BLOCK_L
 
 /// The name the game shows for `port`'s slot.
 pub fn set_slot_name(m: &mut dyn GuestMemory, port: u32, name: &str) -> R<()> {
-    let at = slot(port) + SLOT_NAME;
-    let mut units: Vec<u16> = name.encode_utf16().take(SLOT_NAME_UNITS - 1).collect();
-    units.resize(SLOT_NAME_UNITS, 0);
-    let bytes: Vec<u8> = units.iter().flat_map(|u| u.to_le_bytes()).collect();
-    m.write(at, &bytes)
+    let look = slot(port) + SLOT_BLOCK + BLOCK_LOOK as u32;
+    let model = m.u8(look + 4)?;
+    m.write(look, &bot_look(name, model))?;
+    // The slot refresh rebuilds its visible name from the source profile.
+    let bytes = profile_name_bytes(name);
+    m.write(slot(port) + SLOT_BLOCK + BLOCK_PROFILE_NAME as u32, &bytes)?;
+    m.write(
+        slot(port) + SLOT_BLOCK + BLOCK_NAME as u32,
+        &account_name_bytes(name),
+    )?;
+    m.write(slot(port) + SLOT_NAME, &bytes)
 }
 
 /// The players screen's event record: `+4` the controller, `+8` the button.
@@ -234,7 +234,7 @@ async fn sign_in_one(
         };
         let mut block = [0u8; BLOCK_LEN];
         m.read(slot(human) + SLOT_BLOCK, &mut block)?;
-        m.write(buffer, &bot_block(&block, name, port))?;
+        m.write(buffer, &bot_block(&block, name))?;
         Ok(true)
     })?;
     if !made {

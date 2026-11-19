@@ -47,7 +47,6 @@ fn game_with_latency(
             Identity {
                 gamertag: "Clanker".into(),
                 xuid: 1,
-                ..Default::default()
             },
             None,
             Box::new(TimedSource(source, latency)),

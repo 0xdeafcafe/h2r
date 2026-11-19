@@ -194,7 +194,6 @@ impl Bots for LocalBots {
         let id = bots::phantom::Identity {
             xuid: xuid(&identity.xuid)?,
             gamertag: identity.gamertag.clone(),
-            ..Default::default()
         };
         let team = team
             .map(|t| u8::try_from(t).map_err(|_| format!("team {t}")))

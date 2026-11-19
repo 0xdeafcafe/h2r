@@ -370,6 +370,7 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
         .route("/v1/sessions/{id}/events", post(crate::sessions::append))
         .route("/v1/snapshot", get(snapshot))
         .route("/v1/games", get(list_games).post(start_game))
+        .route("/v1/games/bots/{xuid}", get(crate::bots::player_card))
         .route("/v1/games/bots", post(crate::bots::post_roster))
         .route("/v1/games/{id}", get(game))
         .route("/v1/games/{id}/frames", get(game_frames))

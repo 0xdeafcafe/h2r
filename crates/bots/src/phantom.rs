@@ -30,10 +30,6 @@ use crate::local::PadSource;
 pub struct Identity {
     pub xuid: u64,
     pub gamertag: String,
-    /// Emblem foreground, background and three colours, primary and
-    /// secondary armour colours, as the roster gives them.
-    pub emblem: [u8; 5],
-    pub colors: [u8; 2],
 }
 
 /// The most phantoms: 16 machines, one of them the host.

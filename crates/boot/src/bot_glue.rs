@@ -1323,6 +1323,7 @@ mod tests {
     }
 
     const CHOOSER: Option<Dialog> = Some(Dialog {
+        class_name: None,
         window: 3,
         slot: 4,
         id: Some(0x17),

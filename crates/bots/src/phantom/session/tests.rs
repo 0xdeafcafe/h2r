@@ -319,7 +319,7 @@ fn the_configuration_is_the_hosts_with_a_name_and_team() {
         "the rest of the name cleared"
     );
     assert_eq!(c[CONFIG_TEAM], 2);
-    assert_eq!(c[0x44], 0x40 + 0x44, "the rest is the host's");
+    assert_eq!(c[0x40..0x48], crate::guest::bot_look("Bolt", 0));
     assert_eq!(
         config(&g, "Bolt", None).unwrap().unwrap()[CONFIG_TEAM],
         0x40 + CONFIG_TEAM as u8,
@@ -701,7 +701,6 @@ mod books {
         Identity {
             xuid,
             gamertag: tag.into(),
-            ..Default::default()
         }
     }
 
@@ -901,7 +900,6 @@ mod lobby {
         Identity {
             xuid,
             gamertag: tag.into(),
-            ..Default::default()
         }
     }
 
@@ -1010,7 +1008,7 @@ mod lobby {
     fn the_configuration_is_the_hosts_session_players() {
         let g = lobby();
         let c = config_in(&g, S, "Rusty Lugnut", None).unwrap().unwrap();
-        assert_eq!(c[0x40], 0x50, "the host's requested configuration");
+        assert_eq!(c[0x40..0x48], crate::guest::bot_look("Rusty Lugnut", 0));
         assert_eq!(u16::from_le_bytes([c[0], c[1]]), MARK as u16);
         assert_eq!(c[CONFIG_TEAM], 0);
         let c = config_in(&g, S, "Rusty Lugnut", Some(1)).unwrap().unwrap();
@@ -1019,7 +1017,7 @@ mod lobby {
         let mut g = hosted();
         g.put_u32(S + PEERS + PEER_SLOTS, u32::MAX);
         let c = config_in(&g, S, "X", None).unwrap().unwrap();
-        assert_eq!(c[0x40], 0x80);
+        assert_eq!(c[0x40..0x48], crate::guest::bot_look("X", 0));
     }
 
     #[test]
@@ -1109,7 +1107,10 @@ mod lobby {
             MARK as u16,
             "listed by its marked name"
         );
-        assert_eq!(g.u8(cfg + 0x40).unwrap(), 0x50, "the host's look");
+        assert_eq!(
+            g.u8(cfg + 0x40).unwrap(),
+            crate::guest::bot_look("Rusty Lugnut", 0)[0]
+        );
         assert_eq!(
             ph.list()[0].state,
             State::Pending,
@@ -1636,7 +1637,6 @@ mod in_game {
                 Identity {
                     xuid: 1,
                     gamertag: "A".into(),
-                    ..Default::default()
                 },
                 None,
                 Box::new(|_: &crate::local::Frame<'_>| HostPadState::default()),
@@ -1662,7 +1662,6 @@ mod in_game {
         let who = |x: u64| Identity {
             xuid: x,
             gamertag: format!("B{x}"),
-            ..Default::default()
         };
         let idle = || -> Box<dyn crate::local::PadSource> {
             Box::new(|_: &crate::local::Frame<'_>| HostPadState::default())
@@ -1711,6 +1710,23 @@ mod in_game {
             .map(|i| g.u16(at + 2 * i).unwrap())
             .take_while(|&u| u != 0)
             .collect()
+    }
+
+    #[test]
+    fn clanker_appearance_follows_a_local_guest_onto_its_rostered_account() {
+        let mut g = with_local_bot();
+        let bot = S + PLAYERS + PLAYER_SIZE + P_EFFECTIVE;
+        mark_local_bots(&mut g, 0b10).unwrap();
+        let src = guest::slot(1) + guest::SLOT_BLOCK + guest::BLOCK_PROFILE_NAME as u32;
+        g.map(src, 64)
+            .put(src, &guest::profile_name_bytes("Rusty Lugnut"));
+        assert_eq!(mark_local_bots(&mut g, 0b10).unwrap(), vec![1]);
+        assert_eq!(name_at(&g, bot), marked_name("Rusty Lugnut"));
+        assert_eq!(
+            g.bytes(bot + CONFIG_LOOK as u32, 8).unwrap(),
+            guest::bot_look("Rusty Lugnut", 0)
+        );
+        assert!(mark_local_bots(&mut g, 0b10).unwrap().is_empty());
     }
 
     #[test]
