@@ -3,13 +3,14 @@
 //! building (docs/runtime/agent-api.md).
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 
 const USAGE: &str = "usage:
   h2 build <disc.iso|default.xbe> [--out DIR] [--jobs N] [--check] [--tier fast|clang]
   h2 run   <disc.iso> [--out DIR] [--tier auto|fast|clang] [--data DIR] [--fresh-data] [--slices N] [--transfers N] [--no-stopgaps] [--no-d3d] [--no-bink] [--no-dsound] [--no-xapi] [--no-mappack] [--no-halo1]
-           [--movies DIR | --no-movies]
+           [--movies DIR | --no-movies] [--settings DIR]
   h2 serve <disc.iso> [--socket PATH] [run's options]
 
 --out defaults to $TMPDIR/h2boot (generated C, objects, libh2game.dylib).
@@ -39,6 +40,12 @@ headless, and a level boot (H2_LEVEL) has no intro. --movies DIR plays those
 `run` builds first when the dylib is missing or was built from another
 image or generator (its .stamp). `build --check` builds nothing: it exits 0
 when --out's dylib is current for this h2 and the image, 3 otherwise.
+--settings DIR gives `run` and `serve` our settings store, read from
+  DIR/settings.toml (written when a menu changes a setting), the H2_*
+  variables and the defaults, as `h2 play` builds it from --data. Without it a
+  headless run has no store, and the menus behind one (the campaign's Game
+  Options page, the Video screen's rows, the Halo 1 options) stay retail.
+  `--settings` with the --data directory uses the same file `h2 play` does.
 `serve` runs headless with the agent API listening on --socket (default
 $H2_AGENT, else the cache directory's h2recomp/agent.sock) until the game
 exits, for `h2 agent` and other clients (docs/runtime/agent-api.md). It never
@@ -68,6 +75,7 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     let mut no_halo1 = false;
     let mut tier = None;
     let mut background = false;
+    let mut settings_dir = None;
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
         let mut val = || it.next().with_context(|| format!("{a} needs a value"));
@@ -80,6 +88,7 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             "--background" if cmd == "build" => background = true,
             "--tier" => tier = Some(boot::tier::Choice::parse(&val()?)?),
             "--socket" if serve => socket = Some(PathBuf::from(val()?)),
+            "--settings" if cmd != "build" => settings_dir = Some(PathBuf::from(val()?)),
             "--no-stopgaps" => stopgaps = false,
             "--no-d3d" => d3d = false,
             "--no-bink" => bink = false,
@@ -169,7 +178,11 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     if crate::h1_import::auto_enabled(no_halo1) {
         crate::h1_import::auto_import(&disc, &data);
     }
-    let r = boot::run(
+    let host = boot::Host {
+        settings: settings_dir.map(|d| settings_store(cmd, &d)),
+        ..boot::Host::default()
+    };
+    let r = boot::run_hosted(
         &xbe,
         &lib,
         &boot::RunOpts {
@@ -185,6 +198,7 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             xapi,
             movies,
         },
+        host,
     );
     // The kernel's storage may outlive the run (or never drop): store its
     // pending write metadata now. Signals and other abnormal exits fall
@@ -201,6 +215,18 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     println!("stop: {}", r.stop);
     println!("last eip: {:#010x}", r.eip);
     Ok(())
+}
+
+/// `--settings DIR`: our settings store, built as `h2 play` builds its own
+/// (`boot::setting_defs::load`): `DIR/settings.toml`, then the environment,
+/// then each default. A bad value is logged and the next source used.
+fn settings_store(cmd: &str, dir: &Path) -> Arc<settings::Store> {
+    let (store, problems) = boot::setting_defs::load(dir, &[]);
+    for p in problems {
+        eprintln!("h2 {cmd}: {p}");
+    }
+    eprintln!("h2 {cmd}: settings from {}", settings::path_in(dir).display());
+    Arc::new(store)
 }
 
 /// `build --background`: lower this process's priority (clang's processes
@@ -353,6 +379,22 @@ mod tests {
         let dirs = fresh_data_dirs(&data, &[&elsewhere, &out]).unwrap();
         assert_eq!(dirs, [data.join("disk"), data.join("metadata")]);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `--settings DIR` reads DIR's settings.toml, and the store has what
+    /// the settings-gated menus look for (the skulls' settings, which put
+    /// the Game Options page on the plan).
+    #[test]
+    fn settings_come_from_the_given_directory() {
+        let dir = scratch("settings");
+        std::fs::write(settings::path_in(&dir), "[graphics]\nfov = 100\n").unwrap();
+        let store = settings_store("serve", &dir);
+        assert_eq!(store.handle::<u32>(boot::setting_defs::FOV.key).get(), 100);
+        assert!(
+            store.def(boot::skulls::SKULLS[0].key).is_some(),
+            "the skulls' settings are on the store"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
