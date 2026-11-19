@@ -26,7 +26,7 @@ pub fn build_and_read(plan: &Plan) -> (ScenarioAi, Vec<TagId>) {
             let id = set
                 .add_tag(
                     FourCC(*b"char"),
-                    c.h2_character,
+                    &c.h2_character,
                     TagPayload::Built(Block::zeroed(layout::CHARACTER_SIZE)),
                 )
                 .unwrap();

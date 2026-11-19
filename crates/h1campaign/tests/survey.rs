@@ -46,7 +46,11 @@ fn survey_bases() {
     println!("a30 bsps: {}", h1.structure_bsps().unwrap().len());
     let ai = h1ai::h1::H1Ai::read(&h1).unwrap();
     let plan = h1ai::convert::convert(&ai, &Default::default());
-    let chars: Vec<&str> = plan.characters.iter().map(|c| c.h2_character).collect();
+    let chars: Vec<&str> = plan
+        .characters
+        .iter()
+        .map(|c| c.h2_character.as_str())
+        .collect();
     let mut groups = std::collections::BTreeMap::<String, usize>::new();
     for t in h1.tags() {
         *groups.entry(t.group.to_string()).or_default() += 1;

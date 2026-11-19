@@ -2196,3 +2196,163 @@ fn physics_models_load_as_the_engine_reads_them() {
         assert!(bad.is_empty(), "{level}: {bad:#?}");
     }
 }
+
+#[test]
+#[ignore = "reads H1_ISO and H2_DISC"]
+fn rebuilt_crew_and_sentinel_characters_reach_their_own_animation_resources() {
+    use h1objects::convert::h2::{HLMT_ANIMATION, MODEL};
+    let reference = |bytes: &[u8], offset: usize| {
+        TagId(u32::from_le_bytes(
+            bytes[offset + 4..offset + 8].try_into().unwrap(),
+        ))
+    };
+    for (level, kind) in [("a10", 8), ("c40", 13)] {
+        let h1 = h1_level(level);
+        let src = h1ai::h1::H1Ai::read(&h1).unwrap();
+        let mut base = h2_map(h1campaign::BASE);
+        let done = h1campaign::convert(
+            &h1,
+            &mut base,
+            &Options {
+                objects: false,
+                ai: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut m = Map::from_reader(Cursor::new(done.bytes)).unwrap();
+        let scenario = m.scenario().unwrap().clone();
+        let bytes = m.read_tag_bytes(scenario.id).unwrap();
+        let read = h1ai::h2::ScenarioAi::read(&tags::geometry::TagView::new(
+            &bytes,
+            scenario.location.unwrap().address,
+        ))
+        .unwrap();
+        let mut seen = std::collections::HashSet::new();
+        let mut graphs = std::collections::HashSet::new();
+        for (i, v) in src.actor_palette.iter().enumerate() {
+            if !src.actor_of(i).is_some_and(|a| a.kind.0 == kind) {
+                continue;
+            }
+            let v = v.as_ref().unwrap();
+            if !seen.insert(&v.name) {
+                continue;
+            }
+            let c = read
+                .character_palette
+                .iter()
+                .find_map(|&id| {
+                    let t = m.tag(id).ok()?;
+                    (t.name.as_deref() == Some(v.name.as_str())).then(|| t.clone())
+                })
+                .expect("actor variant in scenario char palette");
+            let bytes = m.read_tag_bytes(c.id).unwrap();
+            let decoded = h1ai::h2::Character::read(&tags::geometry::TagView::new(
+                &bytes,
+                c.location.unwrap().address,
+            ))
+            .unwrap();
+            assert_eq!(decoded.kind, Some(kind));
+            if !v.major_variant.id.is_none() {
+                assert_eq!(
+                    m.tag(decoded.major).unwrap().name.as_deref(),
+                    Some(h1.tag(v.major_variant.id).unwrap().name.as_str())
+                );
+            }
+            let cview = tags::geometry::TagView::new(&bytes, c.location.unwrap().address);
+            let weapons = cview.block(&bytes, 0xcc, 0xcc).unwrap();
+            if v.weapon.id.is_none() {
+                assert!(weapons.is_empty());
+            } else {
+                assert_eq!(weapons.len(), 1);
+                assert_eq!(
+                    m.tag(reference(weapons[0], 4)).unwrap().name.as_deref(),
+                    Some(h1.tag(v.weapon.id).unwrap().name.as_str())
+                );
+            }
+            let b = m.read_tag_bytes(decoded.unit).unwrap();
+            if kind == 13 {
+                let source = h1.tag_data(h1.tag(v.unit.id).unwrap()).unwrap();
+                assert_eq!(&b[0x2cc..0x2f8], &source[0x324..0x350]);
+            }
+            let hlmt = m.read_tag_bytes(reference(&b, MODEL)).unwrap();
+            let graph_id = reference(&hlmt, HLMT_ANIMATION);
+            if !graphs.insert(graph_id) {
+                continue;
+            }
+            let source = h1objects::h1::Unit::read(&h1, h1.tag(v.unit.id).unwrap()).unwrap();
+            let source_graph = h1.tag(source.object.animation.unwrap()).unwrap();
+            assert_eq!(
+                m.tag(graph_id).unwrap().name.as_deref(),
+                Some(source_graph.name.as_str())
+            );
+            let graph = tags::anim::AnimationGraph::read(&mut m, graph_id).unwrap();
+            assert_eq!(
+                graph.animations.len(),
+                h1models::graph_names(&h1, source_graph).unwrap().len()
+            );
+            if kind == 13 {
+                assert_eq!(graph.animations.len(), 13);
+                assert_eq!(graph.blend_screens.len(), 1);
+                for stance in ["combat", "patrol", "crouch"] {
+                    let strings = m.strings();
+                    let mode = graph
+                        .modes
+                        .iter()
+                        .find(|m| m.name.resolve(strings).unwrap() == Some(stance))
+                        .unwrap();
+                    let class = mode
+                        .classes
+                        .iter()
+                        .find(|c| c.name.resolve(strings).unwrap() == Some("any"))
+                        .unwrap();
+                    let ty = class
+                        .types
+                        .iter()
+                        .find(|t| t.name.resolve(strings).unwrap() == Some("any"))
+                        .unwrap();
+                    assert!(
+                        ty.actions
+                            .iter()
+                            .any(|a| a.name.resolve(strings).unwrap() == Some("idle"))
+                    );
+                    assert!(
+                        ty.overlays
+                            .iter()
+                            .any(|a| a.name.resolve(strings).unwrap() == Some("look"))
+                    );
+                    if stance != "crouch" {
+                        assert!(
+                            ty.overlays
+                                .iter()
+                                .any(|a| a.name.resolve(strings).unwrap() == Some("aim_still_up"))
+                        );
+                    }
+                }
+            }
+            assert!(!graph.animations.is_empty());
+            for (j, resource) in graph.resources.iter().enumerate() {
+                assert_eq!(resource.owner, graph_id);
+                let p = resource.pointer.unwrap();
+                assert_eq!(p.file, map::ResourceFile::Local);
+                let raw = m
+                    .read_file_range(p.offset.into(), resource.size.into())
+                    .unwrap();
+                for (k, _) in graph
+                    .animations
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, a)| a.resource_index as usize == j)
+                {
+                    assert!(
+                        graph.engine_problems(k, &raw).is_empty(),
+                        "{level} clip {k}"
+                    );
+                }
+            }
+            assert!(!graph.resources.is_empty());
+        }
+        assert!(!seen.is_empty());
+        assert_eq!(graphs.len(), 1);
+    }
+}

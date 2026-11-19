@@ -800,6 +800,7 @@ pub fn write(
     set: &mut TagSet,
     base: &BaseScenario,
     bsps: &[BspSlot],
+    structures: &[crate::structure::Prepared],
     sounds: &h1convert::ambience::Installed,
     objects: Option<&h1objects::base::Base>,
     opts: &Options,
@@ -953,8 +954,10 @@ pub fn write(
         }
     }
     let mut aliases = crate::h2assets::Aliases::default();
+    let mut ai_src = h1ai::h1::H1Ai::read(h1).map_err(|e| invalid(format!("ai: {e}")))?;
+    let mut kit = crate::roster::Loadout::default();
     let placed = match objects {
-        Some(b) => {
+        Some(b) if opts.objects => {
             // Device groups are written with the scripts' level data;
             // without them a placement's group index would dangle.
             let groups = opts.scripts.is_some() && !lean.leaves_out(crate::Lean::LevelData);
@@ -969,13 +972,26 @@ pub fn write(
                     groups,
                     opts.devices,
                     opts.rebuild_bipeds,
+                    opts.ai.then_some(&ai_src),
+                    &mut kit,
                     dialogue,
                     opts.assets,
                     &mut aliases,
                 )
             })?
         }
-        None => HashMap::new(),
+        Some(b) if opts.ai => {
+            let mut conv = h1objects::convert::Converter::new(h1, b);
+            conv.options.dialogue_budget = dialogue;
+            let roster = crate::roster::prepare(h1, &ai_src, &mut conv)?;
+            let ids = conv
+                .tree
+                .install(set)
+                .map_err(|e| invalid(format!("AI objects: {e}")))?;
+            kit = crate::roster::install(set, &ids, roster)?;
+            HashMap::new()
+        }
+        _ => HashMap::new(),
     };
     let h1_names = h1_block(h1, h1::OBJECT_NAMES)?;
     let names: Vec<Block> = h1_names
@@ -1054,54 +1070,50 @@ pub fn write(
     put_block(&mut root, BSP_SWITCHES, BSP_SWITCH, switches);
 
     // AI.
-    let mut ai_src = h1ai::h1::H1Ai::read(h1).map_err(|e| invalid(format!("ai: {e}")))?;
-    // h1ai keeps squads with no starting locations (empty) so scripts can
-    // name them; only those the scripts name are worth their room.
-    let named = h1scripts::Tables::read(h1)
-        .map(|t| t.atom_tokens(h1scripts::catalog::types::AI))
-        .unwrap_or_default()
-        .into_iter()
-        .map(|n| n.to_ascii_lowercase())
-        .collect::<std::collections::BTreeSet<_>>();
-    // They go first when the level would pass the engine's squad cap
-    // ([`MAX_SQUADS`]; a50 and b40 would): the scripts then name the
-    // squad's encounter, its squad group ([`hook_value`]).
-    let empty_named = |e: &h1ai::h1::Encounter, q: &h1ai::h1::Squad| {
-        q.starting_locations.is_empty()
-            && named.contains(&format!("{}/{}", e.name, q.name).to_ascii_lowercase())
+
+    let generated_starts = if opts.ai {
+        let tables = h1scripts::Tables::read(h1)
+            .map_err(|e| invalid(format!("AI script references: {e}")))?;
+        crate::squad_roster::prepare(&mut ai_src, &tables)
+    } else {
+        Default::default()
     };
-    let placed = ai_src
-        .encounters
-        .iter()
-        .flat_map(|e| &e.squads)
-        .filter(|q| !q.starting_locations.is_empty())
-        .count();
-    let empty = ai_src
-        .encounters
-        .iter()
-        .flat_map(|e| e.squads.iter().map(move |q| (e, q)))
-        .filter(|(e, q)| empty_named(e, q))
-        .count();
-    let keep_empty = !lean.leaves_out(crate::Lean::EmptySquads) && placed + empty <= MAX_SQUADS;
-    if !keep_empty && empty > 0 {
-        report.dropped.push(format!(
-            "ai: {empty} empty squads the scripts name left out ({placed} placed; cap {MAX_SQUADS}); the scripts name their squad groups"
-        ));
-    }
-    for e in &mut ai_src.encounters {
-        let encounter = e.name.clone();
-        e.squads.retain(|q| {
-            !q.starting_locations.is_empty()
-                || (keep_empty
-                    && named.contains(&format!("{encounter}/{}", q.name).to_ascii_lowercase()))
-        });
-    }
-    let plan = h1map::phase::time("ai", || {
+    let mut plan = h1map::phase::time("ai", || {
         h1ai::convert::convert(&ai_src, &Default::default())
     });
-    if plan.ai.squads.len() > MAX_SQUADS || plan.ai.squad_groups.len() > MAX_SQUAD_GROUPS {
+    if opts.ai {
+        kit.equip(&mut root, &mut plan)?;
+        for (i, bsp) in structures.iter().enumerate() {
+            let floors = h1ai::floors::Floors::new(&bsp.pathfinding);
+            for &index in &generated_starts {
+                let squad = &mut plan.ai.squads[index];
+                let zone = &plan.ai.zones[squad.initial_zone as usize];
+                let encounter = &ai_src.encounters[squad.initial_zone as usize];
+                if zone.manual_bsp as usize == i && encounter.flags & 0x20 == 0 {
+                    for start in &mut squad.starting_locations {
+                        start.position = floors.ground_point(start.position).ok_or_else(|| {
+                            invalid(format!("no ground sector for {}", squad.name))
+                        })?;
+                    }
+                }
+            }
+            for (zone, enc) in plan.ai.zones.iter_mut().zip(&ai_src.encounters) {
+                if zone.manual_bsp as usize == i && enc.flags & 0x20 == 0 {
+                    floors
+                        .bind(zone, &bsp.pathfinding, |p| {
+                            let leaf = h1convert::query::leaf_at(&bsp.collision, p)?;
+                            i16::try_from(*bsp.sound_leaves.get(leaf)?).ok()
+                        })
+                        .map_err(|e| invalid(format!("ai: {e}")))?;
+                }
+            }
+        }
+    }
+    if opts.ai
+        && engine::squad_pool::partition(plan.ai.squads.len(), plan.ai.squad_groups.len()).is_none()
+    {
         return Err(invalid(format!(
-            "ai: {} squads and {} squad groups, the engine holds {MAX_SQUADS} and {MAX_SQUAD_GROUPS}",
+            "ai: {} squads and {} squad groups, the combined squad and group pools cannot hold them",
             plan.ai.squads.len(),
             plan.ai.squad_groups.len()
         )));
@@ -1114,9 +1126,16 @@ pub fn write(
                 (t.group == FourCC(*b"char") && s.name.as_deref() == Some(p)).then_some(t.id)
             })
         };
+        if plan
+            .characters
+            .iter()
+            .any(|c| c.h2_character == p && h1ai::convert::rebuilds_character(c.h1_type))
+        {
+            return find(p);
+        }
         find(p).or_else(|| {
             // Stand-ins for characters the base lacks: the marine for
-            // marine kinds (a30's crewmen), else the folder's first.
+            // marine kinds, else the folder's first.
             let folder = p.rsplit_once('\\')?.0;
             if p.contains("\\marine\\") {
                 find("objects\\characters\\marine\\ai\\marine")
@@ -1130,7 +1149,13 @@ pub fn write(
         })
     };
     for c in &plan.characters {
-        let got = resolve(c.h2_character);
+        let got = resolve(&c.h2_character);
+        if opts.ai && h1ai::convert::rebuilds_character(c.h1_type) && got.is_none() {
+            return Err(invalid(format!(
+                "missing rebuilt character {}",
+                c.h2_character
+            )));
+        }
         let name = got
             .and_then(|id| set.slots[id.index()].name.clone())
             .unwrap_or_else(|| "none".into());
@@ -1164,12 +1189,12 @@ pub fn write(
             let volume_names: Vec<&str> = h1_volumes.iter().map(|v| v.name.as_str()).collect();
             let (squads, groups): (Vec<String>, Vec<String>) = if opts.ai {
                 (
-                    plan.ai.squads.iter().map(|q| q.name.clone()).collect(),
-                    plan.ai
-                        .squad_groups
+                    ai_src
+                        .encounters
                         .iter()
-                        .map(|g| g.name.clone())
+                        .flat_map(|e| e.squads.iter().map(move |q| format!("{}/{}", e.name, q.name)))
                         .collect(),
+                    ai_src.encounters.iter().map(|e| e.name.clone()).collect(),
                 )
             } else {
                 Default::default()
@@ -1181,9 +1206,8 @@ pub fn write(
                 ai_src
                     .encounters
                     .iter()
-                    .zip(&plan.ai.squad_groups)
-                    .filter(|(e, _)| e.flags & 1 == 0)
-                    .map(|(_, g)| g.name.clone())
+                    .filter(|e| e.flags & 1 == 0)
+                    .map(|e| e.name.clone())
                     .collect()
             } else {
                 Vec::new()
@@ -1299,6 +1323,8 @@ fn place_objects(
     device_groups: bool,
     devices: crate::Devices,
     rebuild_bipeds: bool,
+    ai: Option<&h1ai::h1::H1Ai>,
+    kit: &mut crate::roster::Loadout,
     dialogue: u64,
     assets: crate::h2assets::Assets,
     aliases: &mut crate::h2assets::Aliases,
@@ -1315,8 +1341,12 @@ fn place_objects(
         Ok(got)
     };
     let mut conv = h1objects::convert::Converter::new(h1, base);
-    conv.options.rebuild_bipeds = rebuild_bipeds;
     conv.options.dialogue_budget = dialogue;
+    let roster = ai
+        .map(|src| crate::roster::prepare(h1, src, &mut conv))
+        .transpose()?
+        .unwrap_or_default();
+    conv.options.rebuild_bipeds = rebuild_bipeds;
     let mut palettes = Vec::new();
     for k in &KINDS {
         let mut pal = Vec::new();
@@ -1484,6 +1514,7 @@ fn place_objects(
     let ids = tree
         .install(set)
         .map_err(|e| invalid(format!("objects: {e}")))?;
+    *kit = crate::roster::install(set, &ids, roster)?;
     let real = |t: TagId| ids[(t.0 & 0xffff) as usize];
     // A pair's Halo 2 HUD may be a base-map tag (a weapon's counterpart's).
     let resolve = |t: TagId| h1objects::convert::local_index(t).map_or(t, |k| ids[k]);
@@ -1740,8 +1771,8 @@ pub fn hook_value(h: &h1scripts::compile::Hook, t: &Targets) -> Option<u32> {
                 .position(|n| n.iter().any(|n| n.eq_ignore_ascii_case(&h.token)))?,
         ),
         "ai" => {
-            let token: String = h.token.chars().take(31).collect();
-            if let Some(i) = t.squads.iter().position(|q| q.eq_ignore_ascii_case(&token)) {
+            let token = &h.token;
+            if let Some(i) = t.squads.iter().position(|q| q.eq_ignore_ascii_case(token)) {
                 return Some(i as u32);
             }
             let group = |g: &str| {
@@ -1750,22 +1781,15 @@ pub fn hook_value(h: &h1scripts::compile::Hook, t: &Targets) -> Option<u32> {
                     .position(|n| n.eq_ignore_ascii_case(g))
                     .map(|i| 0x4000_0000 | i as u32)
             };
-            // A squad left out (empty, over the squad cap): the first
-            // squad of its encounter, else the encounter's squad group.
-            // Halo 2's `ai_migrate` ignores a destination with either top
-            // bit set (`0x002a54cc`, `test ecx,0C0000000h`) and
-            // `ai_attach_units` reads the low 16 bits as a squad index
-            // (`0x0027305e`), so a squad group there would do nothing or
-            // name another squad; a sibling keeps the actors in their
-            // encounter's zone, as Halo 1's migration did.
-            group(&token).or_else(|| {
-                let (encounter, _) = h.token.split_once('/')?;
+            group(token).or_else(|| {
+                // A Halo 1 platoon has no independent group in this conversion.
+                let (encounter, _) = token.split_once('/')?;
                 let prefix = format!("{encounter}/").to_ascii_lowercase();
                 t.squads
                     .iter()
                     .position(|q| q.to_ascii_lowercase().starts_with(&prefix))
                     .map(|i| i as u32)
-                    .or_else(|| group(&encounter.chars().take(31).collect::<String>()))
+                    .or_else(|| group(encounter))
             })
         }
         _ => None,

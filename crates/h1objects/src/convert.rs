@@ -3009,6 +3009,57 @@ impl<'a> Converter<'a> {
         })
     }
 
+    /// Rebuild a character's unit with its actor-variant colours while sharing
+    /// the source unit's rebuilt model, collision, physics and animation tags.
+    pub fn actor_biped(
+        &mut self,
+        tag: &Tag,
+        name: &str,
+        colours: &[h1::ChangeColour],
+    ) -> Result<TagId> {
+        let role = self
+            .biped_rebuild_role(&tag.name)
+            .ok_or_else(|| Error::NoTemplate(format!("no rebuild role for {}", tag.name)))?;
+        if !self.options.rebuild_bipeds || self.biped_role(role)?.is_none() {
+            return Err(Error::NoTemplate(format!(
+                "missing biped role for {}",
+                tag.name
+            )));
+        }
+        let id = self.object(tag)?;
+        if colours.is_empty() {
+            return Ok(id);
+        }
+        let d = tags::defs::Defs::builtin()
+            .group(FourCC(*b"bipd"))
+            .expect("bipd definition");
+        let mut r = tags::defs::from_built(
+            d,
+            &self.tree.tags[local_index(id).expect("rebuilt unit")]
+                .1
+                .root,
+        )
+        .map_err(|e| Error::Invalid(e.to_string()))?;
+        let mut obj = h1::Object::read(self.h1, self.h1.tag_data(tag)?)?;
+        obj.change_colours.resize(
+            obj.change_colours.len().max(colours.len()),
+            Default::default(),
+        );
+        obj.change_colours[..colours.len()].clone_from_slice(colours);
+        self.halo2_change_colours(&mut obj);
+        crate::rebuild::object_change_colors(b"bipd", &mut r, "unit.obje", &obj.change_colours)?;
+        let root = tags::defs::to_built(d, &r, &mut |_| None)
+            .map_err(|e| Error::Invalid(e.to_string()))?;
+        Ok(self.tree.push(
+            name,
+            Converted {
+                group: FourCC(*b"bipd"),
+                root,
+                raw: Vec::new(),
+            },
+        ))
+    }
+
     /// A Halo 1 biped from the `bipd` definition ([`crate::rebuild::biped`]):
     /// Halo 1's model chain with a physics model built from its collision
     /// ([`PhysicsKind::Biped`]), the counterpart's references on the

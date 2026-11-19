@@ -13,8 +13,7 @@
 //! | flood combat elite, infection, carrier; monitor | `04b_floodlab` |
 //! | flood combat human | `06a_sentinelwalls` |
 //!
-//! The Halo 1 sentinel (`sentinel_aggressor_halo1`, on 04a and 04b) does
-//! not copy: the schema refuses its animation graph (an unknown pointer).
+//! Crew and Sentinel actor variants use their own rebuilt units and graphs in `crate::roster`.
 
 use std::collections::HashMap;
 use std::io::Cursor;
@@ -119,7 +118,11 @@ pub fn wanted(h1: &H1Map) -> Result<Vec<(FourCC, String)>> {
     let plan = h1ai::convert::convert(&ai, &Default::default());
     let mut out: Vec<(FourCC, String)> = Vec::new();
     for c in &plan.characters {
-        let w = (FourCC(*b"char"), c.h2_character.to_owned());
+        let w = match c.h1_type.0 {
+            8 => continue,
+            13 => (FourCC(*b"styl"), crate::roster::SENTINEL_STYLE.to_owned()),
+            _ => (FourCC(*b"char"), c.h2_character.to_owned()),
+        };
         if !out.contains(&w) {
             out.push(w);
         }
