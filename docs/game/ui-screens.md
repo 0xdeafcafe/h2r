@@ -175,9 +175,18 @@ The mod repository's two screens (`boot::mods_screen`, docs/game/maps.md
 §5 "Mod downloads (in game)" and "A mod's page") are list-class screens
 whose rows come from the server, like the co-op friends list, on the level
 select's layout as the campaign picker is (list, bracket, picture,
-description). Their texts live in the `mod texts` id family (256-byte
-slots: a line and a description per row), written when they change; a
-row's count is fixed when the screen opens. Their descriptions are set
+description); a map's page is on the pregame lobby's layout instead
+(docs/game/maps.md "A mod's page"): one action row, and the rest
+(body, a two-column table, a checklist) as panel texts of the class
+(`ListClass::panel`: retail backings and text blocks that belong to no
+row, their strings named by `Rows::panel_text`, set when the pane is
+built and again with the description). Their texts live in the `mod
+texts` id family (256-byte slots: a line and a description per row,
+then the page's panel texts), written when they change; a row's count
+is fixed when the screen opens. **Information is not a row**: a
+selectable list holds only what A does something with; facts, tables
+and checklists are panel texts (`ScreenSpec::texts`, drawn as `page.*`
+widgets, and `ScreenSpec::panel` for the art under them). Their descriptions are set
 again when a download moves on (`Rows::live_text`'s redraw), and X is
 their action (`ListClass::action_buttons(&[X_BUTTON])`; the list's reads
 the focused row with `list_class::focused_row`).

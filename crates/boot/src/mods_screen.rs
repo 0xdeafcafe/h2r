@@ -7,15 +7,18 @@
 //! the focused map's picture on the right and its summary under it (base
 //! map, who published it, size, downloads, what it changes, its state).
 //! A opens the map's page; X downloads the focused map there and then.
+//! Every row is something to press: with no list, its one row is Try
+//! Again (or Refresh), and why is in the description.
 //!
-//! **A map's page** (docs/game/maps.md §5, "A mod's page"), the same
-//! layout: Download (or Remove, once it is here) first, then the base map,
-//! publisher, size, downloads, date, version and game types, then the
-//! checklist of what it changes (`live_proto::maps::FEATURES`), whether it
-//! needs the Map Pack and that guests get it when they join. The focused
-//! row's text says more: the mod's description, what a feature means, or
-//! what Download will do. A on Download, or X anywhere, downloads; on an
-//! installed map they remove it, after a second press.
+//! **A map's page** (docs/game/maps.md §5, "A mod's page") is laid out as
+//! the pregame lobby is ([`page_layout`]): its one row, Download (or
+//! Remove, once it is here), where the lobby's buttons are, and nothing
+//! else selectable. Under it, on the lobby's panel, the mod's description
+//! and a line saying what A does now; under that the base map's picture.
+//! In the lobby's table column: a table of facts (base map, who made it,
+//! size, downloads, date, version, game types, which disc, joins), then the
+//! checklist of what it changes (`live_proto::maps::FEATURES`). A or X
+//! downloads; on an installed map they remove it, after a second press.
 //!
 //! **The picture** is the base map's slot picture (`mod_slots::pictures`),
 //! which is the mod's own once it is installed and chosen for its map (the
@@ -75,7 +78,8 @@ const TEXTS: Family = crate::ui_kit::ids::family("mod texts");
 /// A slot's bytes: room for a description of five lines.
 pub const SLOT_LEN: u32 = 256;
 /// Slot layout: the Live menu's label, the two titles and footers, then a
-/// line and a description per row of the list and of the page.
+/// line and a description per row of the list and of the page, then the
+/// page's panel texts ([`page_layout`]).
 const MENU_SLOT: u32 = 0;
 const LIST_TITLE: u32 = 1;
 const LIST_FOOTER: u32 = 2;
@@ -85,17 +89,23 @@ const LIST_ROWS: u32 = 8;
 const LIST_DESCRIPTIONS: u32 = LIST_ROWS + MAX_ROWS as u32;
 const DETAIL_ROWS: u32 = LIST_DESCRIPTIONS + MAX_ROWS as u32;
 const DETAIL_DESCRIPTIONS: u32 = DETAIL_ROWS + MAX_PAGE_ROWS as u32;
-const _: () = assert!(DETAIL_DESCRIPTIONS + MAX_PAGE_ROWS as u32 <= TEXTS.len);
+const PANEL_TEXTS: u32 = DETAIL_DESCRIPTIONS + MAX_PAGE_ROWS as u32;
+const _: () = assert!(PANEL_TEXTS + page_layout::TEXTS as u32 <= TEXTS.len);
 /// Rows the list shows at most.
 pub const MAX_ROWS: usize = 40;
-/// Rows a map's page has at most.
-pub const MAX_PAGE_ROWS: usize = 24;
+/// Rows a map's page has: its action.
+pub const MAX_PAGE_ROWS: usize = 1;
 /// A row's line is cut to this many characters with "..." (the level
 /// select skin's one text, 190 units of conduit-12).
 pub const LINE_CHARS: usize = 28;
 /// A mod's description on its page is cut to this many characters (the
-/// description rectangle holds about five lines).
-pub const ABOUT_CHARS: usize = 200;
+/// body holds four lines of about 40).
+pub const ABOUT_CHARS: usize = 140;
+/// The page's status line (what A does now) holds this many characters.
+pub const STATUS_CHARS: usize = 40;
+/// A fact row's label and value together (the table column is 154 units,
+/// about 20 characters of conduit-12), less a space between them.
+pub const FACT_CHARS: usize = 20;
 
 /// Where the list and installs come from: the HLE and the map gate in a
 /// boot, a fake in tests.
@@ -158,29 +168,6 @@ pub enum Install {
     RemoveFailed(String),
 }
 
-/// One row of a map's page.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PageRow {
-    /// Download, its progress, or Remove: what A and X do.
-    Action,
-    Map,
-    By,
-    /// The account that published it, when a credit names someone else
-    /// as its maker.
-    Uploader,
-    Size,
-    Downloads,
-    Published,
-    Version,
-    GameTypes,
-    /// `FEATURES[i]`, ticked or not.
-    Feature(usize),
-    /// The server lists no features for it.
-    NoFeatures,
-    MapPack,
-    Online,
-}
-
 /// What a feature is called on the checklist, and what it means.
 pub fn feature_text(id: &str) -> (&'static str, &'static str) {
     match id {
@@ -195,10 +182,7 @@ pub fn feature_text(id: &str) -> (&'static str, &'static str) {
         ),
         "textures" => ("Textures", "new or repainted textures"),
         "shaders" => ("Shaders", "new or changed shaders: how surfaces look"),
-        "scripts" => (
-            "Scripted events",
-            "its scripts changed: things happen as you play",
-        ),
+        "scripts" => ("Scripts", "its scripts changed: things happen as you play"),
         "geometry" => ("Geometry", "the level itself was rebuilt or reshaped"),
         "ai" => ("AI", "new or changed AI characters"),
         _ => ("Other", "something else"),
@@ -219,31 +203,81 @@ pub fn gametype_title(id: &str) -> &'static str {
     }
 }
 
-/// The rows of `e`'s page.
-pub fn page_rows(e: &ModEntry) -> Vec<PageRow> {
-    let mut v = vec![PageRow::Action, PageRow::Map, PageRow::By];
+/// The facts in the page's table, label and value, at most
+/// [`page_layout::FACT_ROWS`]: the base map, who made it (and who shared
+/// it, when that is someone else), size, downloads, date and version (when
+/// the server has them), game types, which disc the base is on, and that
+/// players who join get it. Each row fits [`FACT_CHARS`].
+pub fn facts(e: &ModEntry) -> Vec<(&'static str, String)> {
+    let mut v = vec![("Map", mods::base_title(&e.base)), ("By", made_by(e))];
     if uploader_apart(e) {
-        v.push(PageRow::Uploader);
+        v.push(("Shared By", e.author.clone()));
     }
-    v.push(PageRow::Size);
-    if e.downloads.is_some() {
-        v.push(PageRow::Downloads);
+    v.push(("Size", mods::size_text(e.size)));
+    if let Some(n) = e.downloads {
+        v.push(("Downloads", n.to_string()));
     }
-    if !e.published_at.is_empty() {
-        v.push(PageRow::Published);
+    if let Some(day) = e.published_at.get(..10) {
+        v.push(("Published", day.to_string()));
     }
-    if e.version.is_some() {
-        v.push(PageRow::Version);
+    if let Some(version) = &e.version {
+        v.push(("Version", version.clone()));
     }
-    v.push(PageRow::GameTypes);
-    if e.features.is_empty() {
-        v.push(PageRow::NoFeatures);
+    v.push(("For", gametypes_text(&e.gametypes)));
+    let disc = if content::map_pack::is_map(&e.base) {
+        "Map Pack"
     } else {
-        v.extend((0..FEATURES.len()).map(PageRow::Feature));
+        "Your disc"
+    };
+    v.push(("From", disc.to_string()));
+    v.push(("Joins", "Get it too".to_string()));
+    v.truncate(page_layout::FACT_ROWS);
+    v.into_iter()
+        .map(|(label, value)| {
+            let room = FACT_CHARS.saturating_sub(label.chars().count() + 1);
+            (label, cut(&value, room))
+        })
+        .collect()
+}
+
+/// The checklist of what `e` changes, in [`FEATURES`] order: a tick and
+/// a name each (`[x] Vehicles`, `[ ] AI`); one line saying so when the
+/// server lists none.
+pub fn checklist(e: &ModEntry) -> Vec<String> {
+    if e.features.is_empty() {
+        return vec!["Not listed".into()];
     }
-    v.extend([PageRow::MapPack, PageRow::Online]);
-    v.truncate(MAX_PAGE_ROWS);
-    v
+    FEATURES
+        .iter()
+        .map(|id| {
+            let tick = if e.features.iter().any(|f| f == id) {
+                "[x]"
+            } else {
+                "[ ]"
+            };
+            format!("{tick} {}", feature_text(id).0)
+        })
+        .collect()
+}
+
+/// Every panel text of `e`'s page, by [`page_layout`] slot: the body, the
+/// facts (empty past the last), the checklist's heading and cells.
+pub fn panel_texts(e: &ModEntry) -> Vec<String> {
+    let mut t = vec![String::new(); page_layout::TEXTS];
+    t[page_layout::BODY_TEXT] = about(e);
+    for (k, (label, value)) in facts(e).into_iter().enumerate() {
+        t[page_layout::fact_label(k)] = label.to_string();
+        t[page_layout::fact_value(k)] = value;
+    }
+    t[page_layout::CHECK_HEADING] = "What It Changes".into();
+    for (i, line) in checklist(e)
+        .into_iter()
+        .take(2 * page_layout::CHECK_ROWS)
+        .enumerate()
+    {
+        t[page_layout::check_cell(i / 2, i % 2)] = line;
+    }
+    t
 }
 
 /// Who made `e`, for its page and the list's summary: the server's credit
@@ -572,12 +606,20 @@ impl Repo {
     }
 
     /// Row `row` of the list as its one line: the name, and its state
-    /// ("New", "Installed", "45%") unless that is only its size.
+    /// ("New", "Installed", "45%") unless that is only its size. With no
+    /// list, the one row is what A does: "Loading...", "Try Again" or
+    /// "Refresh" (why is in its description).
     pub fn list_line(&self, row: i16) -> Option<String> {
         let (name, status) = self.list_row(row)?;
         let has_entry = Self::entry_at(&self.lock(), row).is_some();
+        if !has_entry {
+            return Some(match self.lock().list {
+                List::Loading => name,
+                List::Failed(_) => "Try Again".into(),
+                List::Loaded(_) => "Refresh".into(),
+            });
+        }
         Some(match status.as_str() {
-            _ if !has_entry => cut(&name, LINE_CHARS),
             "" => cut(&name, LINE_CHARS),
             s if s.ends_with(" MB") || s.ends_with(" KB") => cut(&name, LINE_CHARS),
             s => {
@@ -616,7 +658,15 @@ impl Repo {
     /// and downloads, what it changes, and its state.
     pub fn list_description(&self, row: i16) -> Option<String> {
         let g = self.lock();
-        let e = Self::entry_at(&g, row)?;
+        let Some(e) = Self::entry_at(&g, row) else {
+            return (row == 0).then(|| match &g.list {
+                List::Loading => "Reading the mods on your Live server.".into(),
+                List::Failed(e) => format!("{}.\nA reads the list again.", failed_text(e)),
+                List::Loaded(_) => {
+                    "No mods on your Live server yet.\nA reads the list again.".into()
+                }
+            });
+        };
         let mut lines = vec![format!(
             "On {}, by {}",
             mods::base_title(&e.base),
@@ -673,6 +723,7 @@ impl Repo {
                 let here = Self::is_here(&self.lock(), &e.id);
                 self.texts
                     .set(DETAIL_FOOTER, &footer_legend(&prompts(DETAIL, here)));
+                self.set_panel();
                 self.touch();
                 Chosen::Open(DETAIL)
             }
@@ -695,6 +746,11 @@ impl Repo {
         self.download(&e)
     }
 
+    /// Whether map `id` is downloaded here.
+    pub fn is_installed(&self, id: &MapId) -> bool {
+        Self::is_here(&self.lock(), id)
+    }
+
     /// The selected entry.
     pub fn selected(&self) -> Option<ModEntry> {
         let g = self.lock();
@@ -705,106 +761,53 @@ impl Repo {
         }
     }
 
-    /// The page's rows, for the selected map.
-    pub fn page(&self) -> Vec<PageRow> {
-        self.selected().map(|e| page_rows(&e)).unwrap_or_default()
-    }
-
-    /// Row `row` of the page as its one line.
+    /// The page's one row's line: what A does (Download, Remove, the
+    /// download's progress, or why it can't).
     pub fn detail_line(&self, row: i16) -> Option<String> {
-        let e = self.selected()?;
-        let r = *page_rows(&e).get(usize::try_from(row).ok()?)?;
+        let e = self.selected().filter(|_| row == 0)?;
         let g = self.lock();
-        let tick = |on: bool| if on { "[x]" } else { "[ ]" };
-        let line = match r {
-            PageRow::Action => self.action_text(&g, &e),
-            PageRow::Map => format!("Map: {}", mods::base_title(&e.base)),
-            PageRow::By => format!("By: {}", made_by(&e)),
-            PageRow::Uploader => format!("Uploaded By: {}", e.author),
-            PageRow::Size => format!("Size: {}", mods::size_text(e.size)),
-            PageRow::Downloads => format!("Downloads: {}", e.downloads.unwrap_or(0)),
-            PageRow::Published => format!("Published: {}", e.published_at.get(..10).unwrap_or("")),
-            PageRow::Version => format!("Version: {}", e.version.as_deref().unwrap_or("")),
-            PageRow::GameTypes => format!("For: {}", gametypes_text(&e.gametypes)),
-            PageRow::Feature(i) => {
-                let id = FEATURES[i];
-                format!(
-                    "{} {}",
-                    tick(e.features.iter().any(|f| f == id)),
-                    feature_text(id).0
-                )
-            }
-            PageRow::NoFeatures => "Changes: not listed".into(),
-            PageRow::MapPack => {
-                format!("{} Map Pack map", tick(content::map_pack::is_map(&e.base)))
-            }
-            PageRow::Online => format!("{} Joins get it", tick(true)),
-        };
-        Some(cut(&line, LINE_CHARS))
+        Some(cut(&self.action_text(&g, &e), LINE_CHARS))
     }
 
-    /// The page's description of row `row`.
+    /// The page's status line, the row's description: what A or X does
+    /// now, or how the download is going, in one line
+    /// ([`STATUS_CHARS`]).
     pub fn detail_description(&self, row: i16) -> Option<String> {
-        let e = self.selected()?;
-        let r = *page_rows(&e).get(usize::try_from(row).ok()?)?;
+        let e = self.selected().filter(|_| row == 0)?;
         let g = self.lock();
-        let base = mods::base_title(&e.base);
-        Some(match r {
-            PageRow::Action => match g.installs.get(&e.id) {
-                Some(Install::Downloading { .. }) => format!(
-                    "{} of {}. You can leave this page; it carries on.",
-                    percent_of(&g, &e),
-                    mods::size_text(e.size)
-                ),
-                Some(Install::Failed(err)) => format!(
-                    "{}. A or X tries again.",
-                    failed_install_text(err).trim_end_matches("; press A to retry")
-                ),
-                _ if g.removing == Some(e.id) => {
-                    "Press A or X again to remove it from this console.".into()
-                }
-                Some(Install::RemoveFailed(why)) => format!("Not removed: {}", cut(why, 120)),
-                _ if Self::is_here(&g, &e.id) => {
-                    "Installed. Host a game and pick it under Mods in Change Map. A or X removes it."
-                        .into()
-                }
-                _ => format!(
-                    "A or X downloads it ({}). Then host a game on {base} and pick it under Mods in Change Map.",
-                    mods::size_text(e.size)
-                ),
-            },
-            PageRow::Feature(i) => {
-                let id = FEATURES[i];
-                let (name, means) = feature_text(id);
-                if e.features.iter().any(|f| f == id) {
-                    format!("{name}: {means}.")
-                } else {
-                    format!("{name}: not in this mod ({means}).")
-                }
-            }
-            PageRow::NoFeatures => {
-                "The server doesn't list what this mod changes: it was published before the checklist."
-                    .into()
-            }
-            PageRow::MapPack if content::map_pack::is_map(&e.base) => format!(
-                "Built on {base} from the Multiplayer Map Pack: it needs the map pack installed (h2 import-mappack)."
+        let line = match g.installs.get(&e.id) {
+            Some(Install::Downloading { done, total }) => format!(
+                "{} of {}. You can leave.",
+                percent(*done, *total).trim_start_matches("Downloading "),
+                mods::size_text(e.size)
             ),
-            PageRow::MapPack => format!("Built on {base} from your disc."),
-            PageRow::Online => {
-                "Players who join your game on it download it on the way in, from your Live server."
-                    .into()
-            }
-            PageRow::GameTypes if e.gametypes.is_empty() => {
-                "Its author names no game type: play anything on it.".into()
-            }
-            PageRow::GameTypes => format!("Made for {}.", gametypes_text(&e.gametypes)),
-            PageRow::Uploader => format!(
-                "{} shared it on your Live server; {} made it.",
-                e.author,
-                made_by(&e)
+            Some(Install::Failed(err)) => format!(
+                "{}. A retries.",
+                failed_install_text(err).trim_end_matches("; press A to retry")
             ),
-            _ => about(&e),
-        })
+            _ if g.removing == Some(e.id) => "Press A or X again to remove it.".into(),
+            Some(Install::RemoveFailed(why)) => format!("Not removed: {why}"),
+            _ if Self::is_here(&g, &e.id) => "Installed: pick it in Change Map.".into(),
+            _ => format!("A or X downloads it: {}.", mods::size_text(e.size)),
+        };
+        Some(cut(&line, STATUS_CHARS))
+    }
+
+    /// The page's panel texts into their slots, for the selected map: the
+    /// page sets its widgets from them when it opens and again when the
+    /// texts change ([`Rows::panel_text`]).
+    fn set_panel(&self) {
+        for (i, t) in self.panel().iter().enumerate() {
+            self.texts.set(PANEL_TEXTS + i as u32, t);
+        }
+    }
+
+    /// The selected map's page's panel texts ([`panel_texts`]); empty
+    /// with none selected.
+    pub fn panel(&self) -> Vec<String> {
+        self.selected()
+            .map(|e| panel_texts(&e))
+            .unwrap_or_else(|| vec![String::new(); page_layout::TEXTS])
     }
 
     fn action_text(&self, g: &Inner, e: &ModEntry) -> String {
@@ -818,13 +821,9 @@ impl Repo {
         }
     }
 
-    /// A on the page's row `row`: the Download row downloads, or removes.
+    /// A on the page's row: it downloads, or removes.
     pub fn press_detail(self: &Arc<Self>, row: i16) -> Chosen {
-        let is_action = usize::try_from(row).is_ok_and(|r| {
-            self.selected()
-                .is_some_and(|e| page_rows(&e).get(r) == Some(&PageRow::Action))
-        });
-        if !is_action {
+        if row != 0 || self.selected().is_none() {
             return Chosen::Nothing;
         }
         Chosen::Stepped(self.act())
@@ -961,6 +960,7 @@ impl Repo {
         if on_page {
             self.texts
                 .set(DETAIL_FOOTER, &footer_legend(&prompts(DETAIL, here)));
+            self.set_panel();
         }
         self.touch();
     }
@@ -1036,6 +1036,7 @@ impl Repo {
         if let Some(entry) = self.selected() {
             self.texts.set(DETAIL_TITLE, &cut(&entry.name, 40));
         }
+        self.set_panel();
         self.texts.rewrite_all();
         self.touch();
         Ok(())
@@ -1053,21 +1054,19 @@ pub fn gametypes_text(ids: &[String]) -> String {
         .join(", ")
 }
 
-/// The mod's own words on its page: its description (cut), and who made it.
-fn about(e: &ModEntry) -> String {
-    let text = e
+/// The mod's own words on its page: its description, on one paragraph
+/// and cut to the body's four lines ([`ABOUT_CHARS`]).
+pub fn about(e: &ModEntry) -> String {
+    let words: Vec<&str> = e
         .description
         .as_deref()
-        .map(|d| cut(d.trim(), ABOUT_CHARS))
-        .unwrap_or_else(|| "No description.".into());
-    format!("{text}\nBy {}.", made_by(e))
-}
-
-fn percent_of(g: &Inner, e: &ModEntry) -> String {
-    match g.installs.get(&e.id) {
-        Some(Install::Downloading { done, total }) => percent(*done, *total),
-        _ => String::new(),
+        .unwrap_or("")
+        .split_whitespace()
+        .collect();
+    if words.is_empty() {
+        return format!("No description. Built on {}.", mods::base_title(&e.base));
     }
+    cut(&words.join(" "), ABOUT_CHARS)
 }
 
 /// The Live menu row's text for `new` new mods.
@@ -1129,12 +1128,15 @@ pub fn cut(s: &str, max: usize) -> String {
 }
 
 /// The footer legends: the list's A opens a map's page and X downloads;
-/// the page's A and X download, or remove a map that is `here`.
+/// the page's A and X (its one row's action) download, or remove a map
+/// that is `here`.
 pub fn prompts(screen: &str, here: bool) -> Vec<Prompt> {
     if screen == DETAIL {
         vec![
-            Prompt::new(&[Glyph::A], "Select"),
-            Prompt::new(&[Glyph::X], if here { "Remove" } else { "Download" }),
+            Prompt::new(
+                &[Glyph::A, Glyph::X],
+                if here { "Remove" } else { "Download" },
+            ),
             Prompt::new(&[Glyph::B], "Back"),
         ]
     } else {
@@ -1269,7 +1271,7 @@ impl Rows for DetailRows {
         Slots::id(DETAIL_TITLE)
     }
     fn count(&self) -> usize {
-        self.0.page().len().max(1)
+        MAX_PAGE_ROWS
     }
     fn texts(&self, row: i16) -> Vec<(u32, u32)> {
         let Some(line) = self.0.detail_line(row) else {
@@ -1302,6 +1304,9 @@ impl Rows for DetailRows {
     }
     fn press(&self, row: i16) -> Chosen {
         self.0.press_detail(row)
+    }
+    fn panel_text(&self, i: usize) -> Option<u32> {
+        (i < page_layout::TEXTS).then(|| Slots::id(PANEL_TEXTS + i as u32))
     }
     fn write_texts(&self, m: &mut dyn GuestMemory) -> Result<(), MemFault> {
         self.0.read_pictures(m);
@@ -1393,29 +1398,33 @@ fn page_action(repo: &Arc<Repo>) -> Action {
 /// X only: Start keeps doing nothing on these screens.
 const X_ONLY: [u32; 1] = [crate::list_class::X_BUTTON];
 
-/// The two screens' classes over `repo`: the level select's list, bracket,
-/// picture and description, as the campaign picker has them.
+/// The two screens' classes over `repo`: the list on the level select's
+/// list, bracket, picture and description, as the campaign picker has
+/// them; a map's page on the pregame lobby's layout ([`page_layout`]).
 pub fn classes(repo: &Arc<Repo>) -> [ListClass; 2] {
-    let level_select = |c: ListClass| {
-        c.layout(crate::skulls_menu::LIST_LAYOUT)
-            .description(crate::skulls_menu::DESCRIPTION_TEXT)
-            .frame(crate::skulls_menu::FRAME)
-            .picture(crate::campaign_menu::PICTURE)
-            .action_buttons(&X_ONLY)
-    };
     [
-        level_select(ListClass::with_rows(
+        ListClass::with_rows(
             "mods-screen",
             SCREEN,
             Arc::new(ListRows::new(Arc::clone(repo))),
-        ))
+        )
+        .layout(crate::skulls_menu::LIST_LAYOUT)
+        .description(crate::skulls_menu::DESCRIPTION_TEXT)
+        .frame(crate::skulls_menu::FRAME)
+        .picture(crate::campaign_menu::PICTURE)
+        .action_buttons(&X_ONLY)
         .action(list_action(repo))
         .footer(Slots::id(LIST_FOOTER)),
-        level_select(ListClass::with_rows(
+        ListClass::with_rows(
             "mods-detail",
             DETAIL,
             Arc::new(DetailRows::new(Arc::clone(repo))),
-        ))
+        )
+        .layout(page_layout::LIST)
+        .description(page_layout::STATUS)
+        .picture(page_layout::PICTURE)
+        .panel(page_layout::panel())
+        .action_buttons(&X_ONLY)
         .action(page_action(repo))
         .footer(Slots::id(DETAIL_FOOTER)),
     ]
@@ -1465,6 +1474,9 @@ pub fn install(
         .spawn(move || reader(weak))?;
     Ok(true)
 }
+
+pub mod page_layout;
+pub mod spec;
 
 #[cfg(test)]
 mod tests;

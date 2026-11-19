@@ -268,7 +268,7 @@ pub fn account_spec(a: &crate::account_screen::AccountScreen, now: i64) -> Scree
 }
 
 /// The screens `h2 ui preview` knows, by name.
-pub const NAMES: [&str; 16] = [
+pub const NAMES: [&str; 18] = [
     "campaigns",
     "skulls",
     "skulls.h1",
@@ -285,6 +285,8 @@ pub const NAMES: [&str; 16] = [
     "kit.dialog",
     "kit.dialog.large",
     "clankers",
+    "mods",
+    "mods.detail",
 ];
 
 /// Every named state of screen `name` for the preview sheet: a list's
@@ -505,6 +507,17 @@ pub fn list_page(name: &str) -> Option<ListPage> {
             let s = Arc::new(crate::clankers::page(store));
             list(ListPage::new(s.class(), described(&s)))
         }
+        "mods" | "mods.detail" => {
+            use crate::mods_screen::spec::{detail_spec, list_spec, sample_repo};
+            let page = name == "mods.detail";
+            let repo = sample_repo(page);
+            let [list_class, detail_class] = crate::mods_screen::classes(&repo);
+            if page {
+                list(ListPage::new(detail_class, move || detail_spec(&repo)))
+            } else {
+                list(ListPage::new(list_class, move || list_spec(&repo)))
+            }
+        }
         _ => None,
     }
 }
@@ -659,6 +672,91 @@ mod tests {
         }
     }
 
+    /// A mod's page is the pregame lobby's layout, drawn from `from`: its
+    /// one row (the action) where the lobby's buttons are, the lobby's
+    /// panels under it, the body and status on them, the map's picture
+    /// under them, and the table column's facts (white names left, pale
+    /// values right, 22 apart) and checklist; nothing but the action is a
+    /// row, so nothing else takes the focus.
+    fn assert_lobby_inside(from: &crate::ui_kit::preview::From<'_>) {
+        use crate::mods_screen::page_layout as l;
+        use crate::ui_kit::view::{Art, Justify, Kind, Layer};
+        let s = sample("mods.detail").unwrap();
+        assert_eq!(s.rows.len(), 1, "one row: the action");
+        assert_eq!(s.rows[0].press, Press::Act);
+        assert!(!s.scrolls);
+        assert_eq!(s.texts.len(), l::TEXTS);
+        let (v, _) = from.draw(&s, "lobby").unwrap();
+        assert_eq!(v.focus.as_deref(), Some("row.0"));
+        assert!(v.widget("row.1.label").is_none());
+        // The action's bar on the lobby buttons' band (153 to 174).
+        let bar = v.widget("row.0.art.0").unwrap().rect;
+        assert!(bar[0] <= 174 && bar[2] >= 153, "{bar:?}");
+        // The lobby's backings, at the lobby's own places, as panels.
+        for (k, spec) in l::ART.iter().enumerate() {
+            let w = v.widget(&format!("panel.{k}")).unwrap();
+            assert_eq!(w.layer, Layer::Panel);
+            assert_eq!([w.rect[1], w.rect[0]], spec.at);
+            assert!(matches!(
+                w.kind,
+                Kind::Art {
+                    art: Art::Screen {
+                        screen_id: 14,
+                        pane: 0,
+                        ..
+                    },
+                    ..
+                }
+            ));
+        }
+        // The picture: the lobby's picture widget, nothing over it.
+        let pic = v.widget("art.0").unwrap();
+        assert_eq!([pic.rect[1], pic.rect[0]], l::PICTURE.at);
+        let text = |id: &str| {
+            let w = v.widget(id).unwrap_or_else(|| panic!("no {id}"));
+            match &w.kind {
+                Kind::Text { font, justify, .. } => (w.rect, *font, *justify),
+                _ => panic!("{id} is not a text"),
+            }
+        };
+        assert_eq!(text("page.body").0, l::BODY.rect);
+        assert_eq!(text("description").0, l::STATUS.rect);
+        for k in 0..l::FACT_ROWS {
+            let (r, font, j) = text(&format!("page.fact.{k}.label"));
+            assert_eq!((r, font, j), (l::row_rect(k), 1, Justify::Left), "fact {k}");
+            let (r, _, j) = text(&format!("page.fact.{k}.value"));
+            assert_eq!((r, j), (l::row_rect(k), Justify::Right), "fact {k}");
+        }
+        assert_eq!(text("page.check.heading").0, l::row_rect(l::FACT_ROWS));
+        for w in v.widgets.iter().filter(|w| w.id.starts_with("page.")) {
+            let r = w.rect;
+            assert!(
+                r[1] >= l::TABLE_LEFT || w.id == "page.body",
+                "{}: in the table column",
+                w.id
+            );
+            assert!(
+                r[2] > pic.rect[0] || r[3] < pic.rect[1] || r[1] > pic.rect[3],
+                "{}: off the picture",
+                w.id
+            );
+        }
+    }
+
+    #[test]
+    fn a_mods_page_is_the_lobby_layout_with_one_action() {
+        assert_lobby_inside(&crate::ui_kit::preview::From::Synthetic);
+        // The list keeps the level select's layout, and every row is a map
+        // its press opens.
+        let list = sample("mods").unwrap();
+        assert_eq!(list.list, ListPlace::from(Some(skulls_menu::LIST_LAYOUT)));
+        assert!(
+            list.rows
+                .iter()
+                .all(|r| r.press == Press::Open(crate::mods_screen::DETAIL.into()))
+        );
+    }
+
     #[test]
     fn screens_describe_themselves_as_json_for_the_ui_stack() {
         let s = sample("coop").unwrap();
@@ -809,6 +907,46 @@ mod tests {
             for name in QUICK_PAGES {
                 assert_quick_options_inside(&crate::ui_kit::preview::From::Disc(&disc), name);
             }
+        }
+        // A mod's page: the pregame lobby's own blocks (pane 0), and the
+        // page laid out as the lobby on the disc's geometry too.
+        {
+            use crate::mods_screen::page_layout as l;
+            let lobby = disc
+                .screen(l::LOBBY_SCREEN_ID as i16)
+                .expect("pregame_lobby");
+            let pane = &lobby.panes[0];
+            let body = &pane.text_blocks[0];
+            let r = body.rect;
+            assert_eq!([r.top, r.left, r.right], [135, -258, 45]);
+            assert_eq!(l::BODY.rect[..2], [r.top, r.left]);
+            assert_eq!(
+                (body.font, body.text_color, body.animation.0),
+                (l::BODY.font, l::BODY.colour, l::BODY.animation)
+            );
+            assert_eq!(body.render_depth_bias, l::TEXT_BIAS);
+            // The table column's first row: a value (right) and a name.
+            let value = &pane.text_blocks[11];
+            let r = value.rect;
+            assert_eq!(
+                [r.top, r.left, r.bottom],
+                [l::row_rect(0)[0], l::TABLE_LEFT, l::row_rect(0)[2]]
+            );
+            assert_eq!(value.flags & 3, 2, "right-justified");
+            assert_eq!(value.text_color, l::PALE_BLUE);
+            let next = &pane.text_blocks[12];
+            assert_eq!(value.rect.top - next.rect.top, l::ROW_STEP);
+            for (spec, size) in l::ART.iter().zip(l::ART_SIZES) {
+                let b = &pane.bitmaps[spec.bitmap as usize];
+                assert_eq!([b.top_left.x, b.top_left.y], spec.at);
+                assert_eq!(b.animation.0, spec.animation);
+                assert_eq!(b.image, spec.image);
+                let _ = size;
+            }
+            let pic = &pane.bitmaps[l::PICTURE.bitmap as usize];
+            assert_eq!(pic.animation.0, l::PICTURE.animation);
+            assert_eq!(pic.image, l::PICTURE.image);
+            assert_lobby_inside(&crate::ui_kit::preview::From::Disc(&disc));
         }
         // Every state passes the layout checks on the disc's art and fonts,
         // the art ones included.
