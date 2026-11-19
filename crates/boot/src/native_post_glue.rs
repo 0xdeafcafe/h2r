@@ -16,6 +16,16 @@
 //! logs it and keeps every later call on the D3D path. Anything it cannot
 //! plan (a copy after the blur, a target it does not know) is not armed.
 //!
+//! The glow and the A/B's capture are colour-only passes (the composite
+//! binds no depth). Nothing is dropped before the glow is known to draw:
+//! the device refuses to arm a drop when the pass could not be issued (no
+//! GPU backend, no colour target; counted and logged once per reason), and
+//! the host first observes one call with a [`Probe`] that checks, on the
+//! GPU's thread, that the glow would draw into the target it gets
+//! (`native_render::glow::check`). Only then are quads dropped. A glow
+//! refused after that (a target it cannot sample) keeps every later call
+//! on the D3D path; that frame's glow is missing.
+//!
 //! The frame A/B, behind `H2_POST_AB=<dir>` ([`Ab`]): the view's colour
 //! where the glow lands (after the composite, before the screen effects,
 //! the fade and the HUD), from the call numbered `H2_POST_AB_AT` (default
@@ -216,8 +226,9 @@ fn capture(t: &mut d3d::ExternalTarget<'_>, stem: &str) {
 
 /// Maps the copies made before this pass (their frames were submitted:
 /// passes encode in order on the GPU's thread) and writes the ones
-/// mapped. Never waits.
-fn pump() {
+/// mapped. Polls the device for the mappings; never waits.
+fn pump(device: &wgpu::Device) {
+    let _ = device.poll(wgpu::PollType::Poll);
     let mut list = READBACKS.lock().unwrap_or_else(|e| e.into_inner());
     list.retain_mut(|r| {
         if !r.mapping {
@@ -289,8 +300,12 @@ struct GlowPass {
 }
 
 impl d3d::ExternalPass for GlowPass {
+    fn colour_only(&self) -> bool {
+        true
+    }
+
     fn encode(&mut self, mut t: d3d::ExternalTarget<'_>) {
-        pump();
+        pump(t.device);
         let drawn = self.gpu.lock().unwrap_or_else(|e| e.into_inner()).encode(
             GlowTarget {
                 device: t.device,
@@ -306,8 +321,9 @@ impl d3d::ExternalPass for GlowPass {
         if let Err(r) = drawn {
             GLOW_REFUSED.fetch_add(1, Ordering::Relaxed);
             if !GLOW_REFUSAL_LOGGED.swap(true, Ordering::Relaxed) {
-                eprintln!("native-post: the glow was not drawn: {r:?} (logged once)");
+                eprintln!("native-post: the glow was not drawn: {r:?}; this frame's glow is missing, later calls keep the D3D path (logged once)");
             }
+            FELL_BACK.store(true, Ordering::Relaxed);
         }
         if let Some(stem) = &self.capture {
             capture(&mut t, stem);
@@ -319,9 +335,46 @@ impl d3d::ExternalPass for GlowPass {
 struct CapturePass(Option<String>);
 
 impl d3d::ExternalPass for CapturePass {
+    fn colour_only(&self) -> bool {
+        true
+    }
+
     fn encode(&mut self, mut t: d3d::ExternalTarget<'_>) {
-        pump();
+        pump(t.device);
         if let Some(stem) = &self.0 {
+            capture(&mut t, stem);
+        }
+    }
+}
+
+/// Before any quad is dropped: whether the glow would draw into the
+/// target this call's quads went to (observed, all drawn by D3D). Proved,
+/// later calls drop their quads; refused, they keep them.
+struct Probe {
+    plan: Plan,
+    capture: Option<String>,
+}
+
+impl d3d::ExternalPass for Probe {
+    fn colour_only(&self) -> bool {
+        true
+    }
+
+    fn encode(&mut self, mut t: d3d::ExternalTarget<'_>) {
+        pump(t.device);
+        match glow::check(t.color, t.guest_size, &self.plan) {
+            Ok(()) => {
+                if !PROVED.swap(true, Ordering::Relaxed) {
+                    eprintln!("native-post: the glow can draw into the view's target; its quads are dropped from the next call");
+                }
+            }
+            Err(r) => {
+                if !FELL_BACK.swap(true, Ordering::Relaxed) {
+                    eprintln!("native-post: the glow cannot draw into the view's target: {r:?}; the colour pass keeps its D3D quads");
+                }
+            }
+        }
+        if let Some(stem) = &self.capture {
             capture(&mut t, stem);
         }
     }
@@ -330,8 +383,12 @@ impl d3d::ExternalPass for CapturePass {
 static GLOW_REFUSED: AtomicU64 = AtomicU64::new(0);
 static GLOW_REFUSAL_LOGGED: AtomicBool = AtomicBool::new(false);
 static PLAN_LOGGED: AtomicBool = AtomicBool::new(false);
-/// A swallow ended early: later calls keep the D3D path.
+/// A swallow ended early, or the glow cannot draw: later calls keep the
+/// D3D path.
 static FELL_BACK: AtomicBool = AtomicBool::new(false);
+/// A [`Probe`] found the glow draws into the view's target.
+static PROVED: AtomicBool = AtomicBool::new(false);
+static NO_GPU_LOGGED: AtomicBool = AtomicBool::new(false);
 
 struct Glue<B: d3d::backend::Backend + Send + 'static> {
     device: d3d::abi::SharedDevice<B>,
@@ -346,7 +403,15 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let ab = Ab::get();
         let capturing = ab.is_some_and(|a| a.captures(call));
         let stem = |side: &str| capturing.then(|| format!("{side}-{call:06}"));
-        let Ok(mismatches) = self.device.lock().map(|d| d.stats().swallow_mismatches) else { return false };
+        let Ok((mismatches, gpu)) = self.device.lock().map(|d| (d.stats().swallow_mismatches, d.can_external_pass()))
+        else {
+            return false;
+        };
+        if !gpu && !NO_GPU_LOGGED.swap(true, Ordering::Relaxed) {
+            eprintln!(
+                "native-post: no external passes in this run (no GPU backend: headless without H2_BOOT_GFX), so the glow stays D3D's and the A/B writes nothing; H2_BOOT_GFX=<dir> H2_BOOT_GFX_EVERY=never renders on the GPU"
+            );
+        }
         if mismatches > self.mismatches.swap(mismatches, Ordering::Relaxed) && !FELL_BACK.swap(true, Ordering::Relaxed) {
             eprintln!(
                 "native-post: the colour pass drew a quad its plan did not have; that call's glow fell back to D3D, and every later call keeps it"
@@ -367,24 +432,49 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             }
         };
         let targets = targets(&plan);
-        let pass: Box<dyn d3d::ExternalPass> = if native {
-            Box::new(GlowPass {
+        let (drop, pass) = arm(native, PROVED.load(Ordering::Relaxed));
+        let pass: Box<dyn d3d::ExternalPass> = match pass {
+            Pass::Glow => Box::new(GlowPass {
                 plan,
                 gpu: Arc::clone(&self.gpu),
                 capture: stem("native"),
-            })
-        } else {
-            Box::new(CapturePass(stem("d3d")))
+            }),
+            Pass::Probe => Box::new(Probe {
+                plan,
+                capture: stem("d3d"),
+            }),
+            Pass::Capture => Box::new(CapturePass(stem("d3d"))),
         };
         let swallow = d3d::Swallow {
             targets,
             primitive: QUAD.0,
             vertices: QUAD.1,
-            drop: native,
+            drop,
             pass,
         };
         let Ok(mut d) = self.device.lock() else { return false };
         d.swallow(&mut DeviceMemory(mem), swallow).unwrap_or(false)
+    }
+}
+
+/// The pass a call arms.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Pass {
+    /// The native glow, its quads dropped.
+    Glow,
+    /// The check before any drop, its quads drawn.
+    Probe,
+    /// The A/B's D3D side, its quads drawn.
+    Capture,
+}
+
+/// Whether a call drops its quads, and its pass: `native` (the switch,
+/// no fall-back), once the glow is `proved` to draw.
+fn arm(native: bool, proved: bool) -> (bool, Pass) {
+    match (native, proved) {
+        (true, true) => (true, Pass::Glow),
+        (true, false) => (false, Pass::Probe),
+        (false, _) => (false, Pass::Capture),
     }
 }
 
@@ -426,5 +516,33 @@ mod tests {
         };
         assert_eq!(targets(&plan), vec![1, 2, 1, 2, 1, 0]);
         assert_eq!(QUAD, (PrimitiveType::from_xbox(7).unwrap(), 4), "0x00034420's Begin(7)");
+    }
+
+    #[test]
+    fn nothing_is_dropped_before_the_glow_is_proved() {
+        assert_eq!(arm(true, false), (false, Pass::Probe), "observe and check first");
+        assert_eq!(arm(true, true), (true, Pass::Glow));
+        assert_eq!(arm(false, false), (false, Pass::Capture), "the A/B's D3D side");
+        assert_eq!(arm(false, true), (false, Pass::Capture));
+    }
+
+    #[test]
+    fn every_pass_is_colour_only() {
+        use d3d::ExternalPass;
+        let plan = Plan {
+            window: [0.0; 4],
+            signs: [0.0; 2],
+            view: (640, 480),
+            small: (160, 120),
+            draws: vec![],
+        };
+        let glow = GlowPass {
+            plan: plan.clone(),
+            gpu: Arc::new(Mutex::new(GpuGlow::new())),
+            capture: None,
+        };
+        assert!(glow.colour_only(), "the composite binds no depth");
+        assert!(Probe { plan, capture: None }.colour_only());
+        assert!(CapturePass(None).colour_only());
     }
 }

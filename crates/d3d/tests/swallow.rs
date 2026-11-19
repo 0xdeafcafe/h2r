@@ -7,9 +7,13 @@
 //! draws and nothing after, places its pass after the last; a draw that
 //! is not the next planned ends it (that draw and the rest are drawn, the
 //! pass is not placed); observing draws everything and still places the
-//! pass. On the device's thread and through the render thread.
-//! Synthetic device and recording backend (which refuses the pass after
-//! the device hands it its constants: that is when it is placed).
+//! pass. On the device's thread and through the render thread. The pass
+//! is colour-only: issued with no depth bound (the composite binds none).
+//! Dropping is refused up front, nothing dropped, when the pass could not
+//! be issued: a backend that takes no external passes (a headless run), or
+//! a pass that needs depth. Synthetic device and recording backend (which
+//! takes the pass when asked to, recording its surfaces; the device hands
+//! it its constants when it is placed).
 
 mod common;
 
@@ -18,8 +22,8 @@ use std::sync::Arc;
 
 use common::*;
 use d3d::{
-    Backend, Device, ExternalPass, ExternalTarget, GuestMemory, RecordingBackend, SparseMemory, Swallow,
-    ThreadedBackend, UploadPolicy,
+    Backend, Device, ExternalPass, ExternalRefusal, ExternalTarget, GuestMemory, RecordingBackend, SparseMemory,
+    Swallow, ThreadedBackend, UploadPolicy,
 };
 use gfx::vertex::PrimitiveType;
 
@@ -44,13 +48,25 @@ fn level(m: &mut SparseMemory) {
     }
 }
 
-/// Counts the times it is placed (handed the view constants).
-struct Placed(Arc<AtomicU32>);
+/// Counts the times it is placed (handed the view constants); colour
+/// only unless it says otherwise.
+struct Placed(Arc<AtomicU32>, bool);
 
 impl ExternalPass for Placed {
     fn encode(&mut self, _t: ExternalTarget<'_>) {}
     fn view_constants(&mut self, _c: &[[f32; 4]; d3d::VIEW_CONSTANTS]) {
         self.0.fetch_add(1, Ordering::Relaxed);
+    }
+    fn colour_only(&self) -> bool {
+        self.1
+    }
+}
+
+/// A recording backend that takes external passes.
+fn takes() -> RecordingBackend {
+    RecordingBackend {
+        external_passes: true,
+        ..RecordingBackend::default()
     }
 }
 
@@ -77,7 +93,7 @@ fn plan(drop: bool, placed: &Arc<AtomicU32>) -> Swallow {
         primitive: PrimitiveType::QuadList,
         vertices: 4,
         drop,
-        pass: Box::new(Placed(Arc::clone(placed))),
+        pass: Box::new(Placed(Arc::clone(placed), true)),
     }
 }
 
@@ -108,37 +124,104 @@ fn as_planned<B: Backend>(b: B, drop: bool) -> (Device<B>, [u64; 4], Arc<AtomicU
     (d, [before, level, last, after], placed)
 }
 
-fn drops_exactly_the_plan<B: Backend>(b: B) {
+fn drops_exactly_the_plan<B: Backend>(b: B) -> Device<B> {
     let (d, draws, placed) = as_planned(b, true);
     assert_eq!(draws, [1, 1, 1, 2], "the three planned dropped; the one after drawn");
     let s = d.stats();
-    assert_eq!((s.swallowed_draws, s.swallow_mismatches), (3, 0));
+    assert_eq!((s.swallowed_draws, s.swallow_mismatches, s.swallow_refusals), (3, 0, 0));
     assert_eq!(placed.load(Ordering::Relaxed), 1, "placed once");
+    assert_eq!((s.external_passes, s.external_passes_dropped), (1, 0), "issued, with no depth bound");
+    d
 }
 
 #[test]
 fn the_swallow_drops_exactly_the_plans_draws_and_nothing_after() {
-    drops_exactly_the_plan(RecordingBackend::new());
+    let d = drops_exactly_the_plan(takes());
+    let taken = &d.backend.external;
+    assert_eq!(taken.len(), 1);
+    assert_eq!(taken[0].0, taken[0].1, "colour only: the colour as its own depth");
 }
 
 #[test]
 fn the_swallow_holds_through_the_render_thread() {
-    drops_exactly_the_plan(ThreadedBackend::new(RecordingBackend::new()).unwrap());
+    drops_exactly_the_plan(ThreadedBackend::new(takes()).unwrap());
 }
 
 #[test]
 fn observing_draws_everything_and_places_the_pass_after_the_last() {
-    let (d, draws, placed) = as_planned(RecordingBackend::new(), false);
+    let (d, draws, placed) = as_planned(takes(), false);
     assert_eq!(draws, [1, 3, 4, 5]);
     assert_eq!((d.stats().swallowed_draws, d.stats().swallow_mismatches), (3, 0));
     assert_eq!(placed.load(Ordering::Relaxed), 1);
+    assert_eq!(d.stats().external_passes, 1, "the capture is issued too");
+}
+
+/// The pass's three quads, as the game draws them; the draws handed to
+/// the backend after them.
+fn the_pass<B: Backend>(d: &mut Device<B>, m: &mut SparseMemory, back: u32) -> u64 {
+    d.set_render_target(m, LEVEL_A, 0).unwrap();
+    quad(m);
+    quad(m);
+    d.set_render_target(m, back, 0).unwrap();
+    quad(m);
+    assert_eq!(d.drain_until_callback(m).unwrap(), None);
+    d.stats().draws
+}
+
+/// Headless (no GPU backend) the glow cannot be drawn: dropping is
+/// refused before any draw, every quad is drawn, and why is counted.
+/// Observing still arms (it drops nothing) and its pass is dropped for
+/// the same reason.
+#[test]
+fn a_pass_that_cannot_be_issued_drops_nothing() {
+    let (mut d, mut m, back) = setup(RecordingBackend::new());
+    let placed = Arc::new(AtomicU32::new(0));
+    assert!(!d.swallow(&mut m, plan(true, &placed)).unwrap(), "not armed");
+    assert!(!d.swallowing());
+    assert_eq!(the_pass(&mut d, &mut m, back), 3, "every quad drawn");
+    let s = d.stats();
+    assert_eq!((s.swallow_refusals, s.swallowed_draws), (1, 0));
+    assert_eq!(s.external_refusals[ExternalRefusal::Unsupported.index()], 1);
+    assert_eq!(placed.load(Ordering::Relaxed), 0);
+
+    assert!(d.swallow(&mut m, plan(false, &placed)).unwrap(), "observing arms");
+    assert_eq!(the_pass(&mut d, &mut m, back), 6);
+    let s = d.stats();
+    assert_eq!(s.swallowed_draws, 3);
+    assert_eq!(s.external_refusals[ExternalRefusal::Unsupported.index()], 2, "the capture, dropped");
+    assert_eq!(s.external_passes, 0);
+}
+
+/// A pass that needs depth is not swallowed for: the last quad's depth is
+/// not known when arming (the composite binds none).
+#[test]
+fn dropping_needs_a_colour_only_pass() {
+    let (mut d, mut m, back) = setup(takes());
+    let placed = Arc::new(AtomicU32::new(0));
+    let s = Swallow {
+        pass: Box::new(Placed(Arc::clone(&placed), false)),
+        ..plan(true, &placed)
+    };
+    assert!(!d.swallow(&mut m, s).unwrap());
+    assert_eq!(the_pass(&mut d, &mut m, back), 3);
+    assert_eq!(d.stats().external_refusals[ExternalRefusal::NoDepth.index()], 1);
+    assert!(d.backend.external.is_empty());
+}
+
+/// Every reason has its own count and index.
+#[test]
+fn each_refusal_is_counted_apart() {
+    for (i, r) in ExternalRefusal::ALL.iter().enumerate() {
+        assert_eq!(r.index(), i);
+        assert!(!r.describe().is_empty());
+    }
 }
 
 /// The game draws one quad into the level where the plan has two: its
 /// second planned draw finds the back buffer, the wrong slot.
 #[test]
 fn a_draw_the_plan_does_not_have_ends_the_swallow() {
-    let (mut d, mut m, back) = setup(RecordingBackend::new());
+    let (mut d, mut m, back) = setup(takes());
     let placed = Arc::new(AtomicU32::new(0));
     assert!(d.swallow(&mut m, plan(true, &placed)).unwrap());
     d.set_render_target(&mut m, LEVEL_A, 0).unwrap();
@@ -158,14 +241,14 @@ fn a_draw_the_plan_does_not_have_ends_the_swallow() {
 /// another shape, ends it too.
 #[test]
 fn another_draw_or_shape_ends_the_swallow() {
-    let (mut d, mut m, _) = setup(RecordingBackend::new());
+    let (mut d, mut m, _) = setup(takes());
     let placed = Arc::new(AtomicU32::new(0));
     let single = |placed: &Arc<AtomicU32>| Swallow {
         targets: vec![0, 0],
         primitive: PrimitiveType::QuadList,
         vertices: 4,
         drop: true,
-        pass: Box::new(Placed(Arc::clone(placed))),
+        pass: Box::new(Placed(Arc::clone(placed), true)),
     };
     assert!(d.swallow(&mut m, single(&placed)).unwrap());
     quad(&mut m);
@@ -191,7 +274,7 @@ fn another_draw_or_shape_ends_the_swallow() {
 /// Arming over a swallow its pass never finished counts it as a mismatch.
 #[test]
 fn a_swallow_left_unfinished_is_a_mismatch() {
-    let (mut d, mut m, _) = setup(RecordingBackend::new());
+    let (mut d, mut m, _) = setup(takes());
     let placed = Arc::new(AtomicU32::new(0));
     assert!(d.swallow(&mut m, plan(true, &placed)).unwrap());
     assert!(d.swallow(&mut m, plan(true, &placed)).unwrap());

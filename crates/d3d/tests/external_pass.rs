@@ -163,5 +163,55 @@ fn a_backend_that_cannot_drops_it() {
     d.request_external_pass(Box::new(Probe(Arc::clone(&got))));
     d.drain_until_callback(&mut m).unwrap();
     assert_eq!((d.stats().external_passes, d.stats().external_passes_dropped), (0, 1));
+    assert_eq!(d.stats().external_refusals[d3d::ExternalRefusal::Unsupported.index()], 1, "counted by reason");
     assert!(got.lock().unwrap().is_empty());
+}
+
+/// A [`Probe`] that draws colour only.
+struct ColourOnly(Probe);
+
+impl ExternalPass for ColourOnly {
+    fn encode(&mut self, t: ExternalTarget<'_>) {
+        self.0.encode(t);
+    }
+    fn colour_only(&self) -> bool {
+        true
+    }
+}
+
+/// A colour-only pass (the glow, the A/B's capture) is issued with no
+/// depth bound and gets a scratch depth of the colour's size; a pass that
+/// needs depth is dropped there, for that reason.
+fn colour_only<B: Backend>(b: B) {
+    let (mut d, mut m) = create(b, UploadPolicy::Always);
+    set_states(&mut d, &mut m);
+    let back = m
+        .read_u32(d3d::GuestLayout::HALO2.device + d3d::layout::device_field::RENDER_TARGET)
+        .unwrap();
+    d.set_render_target(&mut m, back, 0).unwrap();
+    let needs: Got = Arc::default();
+    d.request_external_pass(Box::new(Probe(Arc::clone(&needs))));
+    d.drain_until_callback(&mut m).unwrap();
+    assert_eq!(d.stats().external_refusals[d3d::ExternalRefusal::NoDepth.index()], 1);
+    let got: Got = Arc::default();
+    d.request_external_pass(Box::new(ColourOnly(Probe(Arc::clone(&got)))));
+    d.drain_until_callback(&mut m).unwrap();
+    assert_eq!(d.stats().external_passes, 1);
+    wait(&mut d, &mut m, &got);
+    let seen = got.lock().unwrap()[0].clone();
+    assert!(seen.depth_is_depth, "a scratch depth");
+    assert_eq!(seen.sizes, ((64, 64), (64, 64)));
+    assert!(needs.lock().unwrap().is_empty());
+}
+
+#[test]
+fn a_colour_only_pass_needs_no_depth() {
+    let Some(b) = backend() else { return };
+    colour_only(b);
+}
+
+#[test]
+fn a_colour_only_pass_comes_through_the_render_thread() {
+    let Some(b) = backend() else { return };
+    colour_only(ThreadedBackend::new(b).unwrap());
 }

@@ -204,6 +204,8 @@ pub struct GfxBackend {
     open: Option<(wgpu::CommandEncoder, usize)>,
     /// [`set_defer_side_passes`](Self::set_defer_side_passes).
     defer_side_passes: bool,
+    /// The scratch depth a colour-only external pass gets, by size.
+    scratch_depth: Option<((u32, u32), wgpu::TextureView)>,
 }
 
 /// What `Swap` with `D3DSWAP_FINISH` waits for.
@@ -317,6 +319,7 @@ impl GfxBackend {
             swap_finish: SwapFinish::from_env(),
             open: None,
             defer_side_passes: std::env::var_os("H2_GFX_SIDE_SUBMIT").is_none_or(|v| v != "1"),
+            scratch_depth: None,
         }
     }
 
@@ -1581,11 +1584,32 @@ impl Backend for GfxBackend {
         };
         let c = self.store.get(color).map_err(|e| e.to_string())?;
         let Some((cv, cf, size)) = attachment(c) else { return Ok(false) };
-        let d = self.store.get(depth).map_err(|e| e.to_string())?;
-        let Some((dv, df, dsize)) = attachment(d) else { return Ok(false) };
-        if !df.is_depth_stencil_format() || dsize.0 < size.0 || dsize.1 < size.1 {
-            return Ok(false);
-        }
+        let (dv, df) = if depth == color {
+            // Colour only: a scratch depth of the colour's size.
+            const SCRATCH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+            if self.scratch_depth.as_ref().is_none_or(|(s, _)| *s != size) {
+                let t = self.ctx.device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("external pass scratch depth"),
+                    size: wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: SCRATCH,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    view_formats: &[],
+                });
+                self.scratch_depth = Some((size, t.create_view(&wgpu::TextureViewDescriptor::default())));
+            }
+            let Some((_, v)) = &self.scratch_depth else { return Ok(false) };
+            (v.clone(), SCRATCH)
+        } else {
+            let d = self.store.get(depth).map_err(|e| e.to_string())?;
+            let Some((dv, df, dsize)) = attachment(d) else { return Ok(false) };
+            if !df.is_depth_stencil_format() || dsize.0 < size.0 || dsize.1 < size.1 {
+                return Ok(false);
+            }
+            (dv, df)
+        };
         let _p = timeline::phase::enter(timeline::phase::Phase::Encode);
         // After the draws recorded so far, in the same submission.
         let (mut enc, passes) = self.take_open()?;
