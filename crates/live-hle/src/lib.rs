@@ -427,13 +427,22 @@ impl Hle {
     }
     /// The playlist (hopper descriptor index, as game records name it) and
     /// Live session id (16 hex digits) of the game about to start, for its
-    /// record (docs/live/live-matchmaking.md §8.3, §8.4): this console's
-    /// advertisement when it hosts, else the joined session as last read.
+    /// record (docs/live/live-matchmaking.md §8.3, §8.4): the dedicated
+    /// match, this console's advertisement when it hosts, or a joined session.
     /// `None` for a custom game or when nothing says. Never waits and never
     /// takes guest memory, so the game-start hook may call it.
     pub fn matchmade(&self) -> Option<(u32, String)> {
         let keys = self.network.registered_keys();
         self.lock().matchmade(&keys)
+    }
+    /// Whether Live assigned frame uploads to the host for this match alone.
+    /// The uploader reads it when it latches the published session ID.
+    pub fn frames_from_host(&self, session_id: &str) -> bool {
+        self.lock().frames_from_host(session_id)
+    }
+    /// Dedicated host progress for the retail matchmaking lobby line.
+    pub fn matchmaking_status(&self) -> Option<String> {
+        self.lock().matchmaking_status().map(str::to_owned)
     }
     /// The clanker hoppers the server served last (docs/game/bots.md §8):
     /// the playlists the Clankermatch row lists and OptiMatch does not.
@@ -844,7 +853,21 @@ fn invoke(
             .collect::<Result<Vec<_>, _>>()?
     };
     if let Operation::Net(op) = e.operation {
+        // dh-client-join: unregistering this exact key leaves the dedicated
+        // match. Unregistering the older party key can happen during its join.
+        let leaving = if op == network::Op::UnregisterKey {
+            let mut id = [0; 8];
+            ctx.memory().read_bytes(args[0], &mut id, 1).ok().map(|()| id)
+        } else {
+            None
+        };
         let value = hle.network.invoke(op, &args, ctx.thread_id, ctx.runtime());
+        if value == 0 && let Some(id) = leaving {
+            let mut state = hle.lock();
+            if state.end_match_join(id) {
+                hle.clear_tunnel();
+            }
+        }
         cpu.eax = value;
         return ctx.memory().ret(cpu, e.stack_words * 4);
     }
@@ -874,7 +897,11 @@ fn invoke(
         let mut state = hle.state.lock().unwrap_or_else(|e| e.into_inner());
         state.set_guest_now(guest_now);
         state.set_read_keys(read_keys);
-        let result = state.invoke(e.operation, &args, &mut m);
+        let had_match_tunnel = state.has_match_tunnel();
+        let result = state.invoke(e.operation, &args, &mut m, hle);
+        if had_match_tunnel && !state.has_match_tunnel() {
+            hle.clear_tunnel();
+        }
         let cleanup = if matches!(result, Ok(0)) {
             hle.network.lifecycle(e.operation)
         } else {
