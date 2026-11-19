@@ -1685,6 +1685,46 @@ fn read_full(
     (0..n).map(|_| read_entity(r, schema, strings)).collect()
 }
 
+/// Hit positions often coincide exactly with a player's position in the
+/// same tick. A four-bit list ordinal replaces three absolute axes only
+/// on exact equality; off-body impacts keep their full position.
+fn write_hits(w: &mut BitWriter, hits: &[Entity], players: &[Entity], table: &Table) {
+    w.eg(hits.len() as u64, 2);
+    for hit in hits {
+        for (i, field) in HIT.iter().enumerate() {
+            if i == 3 && !players.is_empty() {
+                let index = players.iter().position(|p| p[2] == hit[i]);
+                w.bit(index.is_some());
+                if let Some(index) = index {
+                    w.bits(index as u64, 4);
+                    continue;
+                }
+            }
+            write_field(w, *field, &hit[i], None, table, 0);
+        }
+    }
+}
+
+fn read_hits(r: &mut BitReader, players: &[Entity], strings: &[String]) -> Result<Vec<Entity>> {
+    let count = read_count(r, MAX_FRAME_HITS)?;
+    let mut hits = Vec::with_capacity(count);
+    for _ in 0..count {
+        let mut hit = Vec::with_capacity(HIT.len());
+        for (i, field) in HIT.iter().enumerate() {
+            if i == 3 && !players.is_empty() && r.bit()? {
+                let player = players
+                    .get(r.bits(4)? as usize)
+                    .ok_or(PackError::Bad("hit position player out of range"))?;
+                hit.push(player[2].clone());
+            } else {
+                hit.push(read_field(r, *field, None, strings, 0)?);
+            }
+        }
+        hits.push(hit);
+    }
+    Ok(hits)
+}
+
 /// One older quantized sample per unit slot. Keys guard roster changes.
 /// Retaining just these fields avoids keeping or cloning an extra frame.
 #[derive(Default, Clone, Copy)]
@@ -1921,17 +1961,20 @@ fn write_delta(
             run += 1;
         }
         if run > 0 {
-            w.bit(false);
+            w.bits(0, 2);
             w.eg(run as u64 - 1, 2);
             i += run;
             cursor += run;
             continue;
         }
-        w.bit(true);
         match matched(i) {
             Some(j) => {
-                w.bit(true);
-                w.seg(j as i64 - cursor as i64, 0);
+                if j == cursor {
+                    w.bit(true);
+                } else {
+                    w.bits(0b110, 3);
+                    w.seg(j as i64 - cursor as i64, 0);
+                }
                 let before = &prev[j];
                 let entity = &list[i];
                 // Key fields already matched and compare equal.
@@ -1962,7 +2005,7 @@ fn write_delta(
                 cursor = j + 1;
             }
             None => {
-                w.bit(false);
+                w.bits(0b010, 3);
                 write_entity(w, schema, &list[i], t);
             }
         }
@@ -1999,8 +2042,23 @@ fn read_delta(
     let mut moved: Vec<usize> = Vec::new();
     let mut last_mask = 0u32;
     let mut cursor = 0usize;
+    enum Edit {
+        Run,
+        Here,
+        Relative,
+        New,
+    }
     while out.len() < n {
-        if !r.bit()? {
+        let op = if r.version == VERSION && r.bit()? {
+            Edit::Here
+        } else if !r.bit()? {
+            Edit::Run
+        } else if r.bit()? {
+            Edit::Relative
+        } else {
+            Edit::New
+        };
+        if matches!(op, Edit::Run) {
             let run = r.eg(2)? as usize + 1;
             if out.len() + run > n || cursor + run > prev.len() {
                 return Err(PackError::Bad("run past the list"));
@@ -2020,8 +2078,13 @@ fn read_delta(
             cursor += run;
             continue;
         }
-        if r.bit()? {
-            let j = cursor as i64 + r.seg(0)?;
+        if !matches!(op, Edit::New) {
+            let offset = if matches!(op, Edit::Relative) {
+                r.seg(0)?
+            } else {
+                0
+            };
+            let j = cursor as i64 + offset;
             let j = usize::try_from(j)
                 .ok()
                 .filter(|j| *j < prev.len())
@@ -2214,7 +2277,7 @@ impl Encoder {
         }
         for (n, (schema, _)) in LISTS.iter().enumerate() {
             if n == 3 {
-                write_full(&mut w, HIT, &lists.hits, &table);
+                write_hits(&mut w, &lists.hits, &lists.lists[0], &table);
             }
             if key {
                 write_full(&mut w, schema, &lists.lists[n], &table);
@@ -2335,7 +2398,11 @@ impl Decoder {
         }
         for (n, (fields, max)) in schema.lists.iter().enumerate() {
             if n == 3 {
-                hits = read_full(&mut r, schema.hit, MAX_FRAME_HITS, &state.strings)?;
+                hits = if version == VERSION {
+                    read_hits(&mut r, &state.lists[0], &state.strings)?
+                } else {
+                    read_full(&mut r, schema.hit, MAX_FRAME_HITS, &state.strings)?
+                };
             }
             state.lists[n] = if key {
                 read_full(&mut r, fields, *max, &state.strings)?
