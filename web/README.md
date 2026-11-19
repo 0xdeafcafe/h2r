@@ -465,6 +465,13 @@ optional; a frame without them draws as before.
   ticked); its "Show" menu switches the backdrop, cutscene zones, decals,
   effects, sky and fog. The camera and the lights fit the playable zones
   only (`viewer/level3d.ts`).
+- *Mods* (`map/views.ts` `mapFilesFor`, `map/geometry.ts`). A game on a
+  map package (`map_id`) draws the mod's own entry of the art when there
+  is one (`mod-<id>`, carrying the `map_id`): its level, objects and
+  pictures extracted from the patched map. Without one, the base map's,
+  unless the package changed the geometry (docs/live/live-art.md, "Mods").
+  Effects the level's scripts play (`asset.extras.spawners`) are diamonds
+  that burst at each play, shown with the effects (`viewer/spawners.ts`).
 - *Layers, sky and fog* (`viewer/layers3d.ts`, `viewer/sky3d.ts`). A zone's
   `decals_<n>` and `effects_<n>` meshes are drawn with their pictures,
   after the level and without depth: decals pulled just in front of their

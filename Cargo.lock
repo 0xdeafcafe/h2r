@@ -7079,6 +7079,7 @@ dependencies = [
  "anyhow",
  "assets",
  "bytemuck",
+ "content",
  "gfx",
  "map",
  "pollster",

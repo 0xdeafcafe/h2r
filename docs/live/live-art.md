@@ -152,8 +152,21 @@ poses `any:seat_<mode>`, the models' `seats` table and `asset.extras.lift`).
   block), `tag` (the object tag's file name), `pos`, `forward`, `up` and
   `scale` (game coordinates, as for machines), `bsp` (the zone the
   placement says it belongs to, when it names one) and, for `netgame`,
-  `item` (the drawn object's group: `weap`, `vehi`, `eqip`). The views do
-  not draw these objects, and they are not in `bounds` or the frame.
+  `item` (the drawn object's group: `weap`, `vehi`, `eqip`), and `script`
+  for a placement a script creates (below). The views do not draw these
+  objects, and they are not in `bounds` or the frame.
+- **Scripted spawns** (`live_scripted`). A placement the level does not
+  make at the start (flag bit 0) is drawn when one of the scenario's
+  scripts creates it, and any placement a script creates carries
+  `extras.script`: `name` (the script), `looping` (a `continuous` script)
+  and `period` (seconds between runs, when its sleeps say). Effects a
+  script plays are `asset.extras.spawners`, a list of `script`, `effect`
+  (the effect tag as the script names it), `at` (the cutscene flag or
+  object it is played at), `pos` (game coordinates), `looping` and
+  `period`. The 3D view marks each spawner with a diamond that bursts at
+  each play (`viewer/spawners.ts`), shown with the effects. Mods use these
+  for vehicles that arrive later, respawning turrets and effects (a
+  projectile salvo) on a loop; retail multiplayer maps have almost none.
 - **Layers.** Decals and effect surfaces (pipeline steps 4 and 7) are in a
   BSP's child nodes `decals_<index>` (`extras.decals: true`) and
   `effects_<index>` (`extras.effects: true`), `decals` and `effects` on a
@@ -396,6 +409,55 @@ with the Halo 2 disc's shared maps.
   they do not decompile, no BSP is flagged cinematic and the level lists
   `map/<stem>/cinematic` under `skipped` (all its BSPs are drawn). Nothing
   of the maps is in the repository; the tests build invented packages.
+
+### Mods
+
+Installed mods, the map packages under `<data>/maps/`
+([maps.md](../game/maps.md)), get art of their own, extracted from the
+patched map the game would load (`live_mods`), so the 3D view of a game
+on a mod draws the mod's level, objects, scripted spawns and pictures,
+not the retail map's.
+
+- **Where.** The same data root as the map pack and Halo 1 maps:
+  `--installed DATA` (default: the one `h2 play` uses), and the default
+  data root for `h2 play --live-local`. Every valid package with patch
+  layers is a mod; converted Halo 1 maps (packages with a variant per
+  sandbox) are left to the Halo 1 section above.
+- **Resolving.** Each package goes through `content::Library` as the
+  game's package backend resolves it: its layers over the disc's map of
+  its `[base] map` (or the map pack map `h2 import-mappack` installed),
+  the base checked against the package's SHA-256, or its own whole map for
+  a derived map. An offset-patched (PPF, IPS) result is written once into
+  `<out>.mods/` beside the output while the extraction runs and removed
+  after; a materialised (BPS) result is read from `<data>/maps/cache/`. A
+  package that does not resolve (no base, a base that differs, a damaged
+  patch) is left out with a `mods:` notice.
+- **Keys.** A mod's stem is `mod-<first 16 hex digits of its MapId>`,
+  never its base map's name, so it never stands in for the retail map and
+  two mods of one map are two entries. Its manifest entry carries `name`
+  (the package's), `map_id` (all 64 hex digits, as games report it),
+  `base` (the map it is played as) and `sha256` (of the patched map). The
+  art's cache key covers every installed mod's `MapId`, which hashes the
+  base's SHA-256 and every layer's, so a new, changed or removed mod
+  extracts again, and one that fails to resolve does not make every start
+  extract again.
+- **Content.** Everything is read from the patched map: the BSPs, the
+  scenario's placements and netgame equipment (however many the mod has,
+  wherever it moved them, whatever tags it names), machines, scripted
+  spawns, the sky and weather, and the pictures (bitmap tags and their
+  pixel data, the mod's own tags and retail-named tags it changed alike).
+  Pictures are cached per level by tag ID while it is extracted and
+  written under `map/<stem>/`, so no picture is shared by name with the
+  base map's. The shared maps (`shared`, `single_player_shared`) are the
+  disc's, as in the game.
+- **In the web.** A game's view looks its art up by `map_id` first
+  (`map/views.ts` `mapFilesFor`) and draws the mod's entry when there is
+  one, else the base map's (when the package says its geometry is the
+  base's) or nothing.
+- **Shaders.** A solid shader whose base map cannot be found or decoded
+  (a mod's own template among them) is drawn in its surface class's
+  colour, and the level lists `map/<stem>/shaders` under `skipped`: how
+  many and which templates.
 
 ### `views.json`
 
@@ -720,7 +782,7 @@ step for that and for video memory.
    0x28-byte entries), read like machine placements, plus the zone at
    `+0x2c` (i16, kept when it is one of the scenario's BSPs). A placement
    whose flags (`+4`) have bit 0 set is created by a script, not at the
-   start, and is left out: on the disc these are the cutscenes' props
+   start, and is left out unless the scripts read below create it: on the disc these are the cutscenes' props
    (capital ships, a ring world, drop pods stacked under a level), the
    weapons a cutscene hands out and vehicles brought in later. Then the
    netgame equipment (`scnr+0x120`, 0x90-byte entries; docs/game/forge.md):
@@ -733,6 +795,22 @@ step for that and for video memory.
    fail are listed under `skipped` as `map/<stem>/object_<kind>_<index>`.
    On the retail disc: Lockout 50 objects (30 spawns), Zanzibar 165,
    campaign levels 17 to 854.
+
+   **Scripted spawns** (`live_scripted`). The scripts, decompiled once
+   per map with the disc's executable (the same source the cinematic test
+   reads), are read as text for `object_create`, `object_create_anew` and
+   their `_containing` forms (scenario object names, `scnr+0x48`, stride
+   `0x24`: name `+0`, object type `+0x20`, placement `+0x22`), and
+   `effect_new` (at a cutscene flag, `scnr+0x1e0`, stride `0x38`: name
+   `+4`, position `+0x24`) and `effect_new_on_object_marker` (at the named
+   object's placement). Static scripts are followed through the scripts
+   that call them (four levels deep). A `continuous` script's period is
+   the sum of its literal `(sleep N)` ticks at 30 a second (at least one
+   tick); `sleep_until`, a computed sleep or `(sleep -1)` leave it unknown.
+   A placement any such script creates is drawn even when its flags say
+   it is not made at the start, and carries the script. Names the
+   scenario lacks are listed as `map/<stem>/scripts`; a level whose
+   scripts do not decompile lists the reason there.
 12. **Write.** `map.glb` as soon as a map is built, then every (map, view)
    picture in parallel, then `views.json`; the manifest is written last by
    the art extractor.
@@ -788,8 +866,12 @@ teleporters, links and lifts. Do not commit anything they write.
 - Machines and objects are at rest: a door is drawn as its model's default
   pose has it, the wheel does not turn, and a vehicle sits in its model's
   rest pose. Each object is drawn as its regions' first permutations, not
-  the variant the placement names. Objects a script creates later are not
-  drawn, nor bipeds (AI come from the frames). A multiplayer spawn shows
+  the variant the placement names. Objects a script creates are drawn
+  where the scenario places them, once, whatever the script does next
+  (the period is in `extras.script`); a script that creates an object by
+  a computed name, from a folder, or under a condition is read only as far
+  as its literal calls go. Bipeds are not drawn (AI come from the frames).
+  A multiplayer spawn shows
   the heaviest entry of its collection: the game rolls it, and gametype
   settings can swap it.
 - Campaign levels sit in large backdrop planes (sea or ground around the
@@ -805,6 +887,13 @@ teleporters, links and lifts. Do not commit anything they write.
   lightmaps: a glow is its picture added, a waterfall does not flow.
   Decals on dynamic objects, and particle systems (campaign fires, smoke,
   sparks) are not in the BSP and not extracted.
+- Scripted effects are marks, not effects: no particles or projectiles
+  are simulated, and an effect played on an object marker is placed at the
+  object's origin. Projectiles a weapon or a device fires on its own (no
+  script) are not read.
+- Player and weapon models (`model/...`) are the disc's: a mod that
+  changes a weapon's or a biped's model gets its level and placed objects
+  from the patched map, but players are drawn with the retail models.
 - A level with several skies (one per zone) gets only the first with a
   model. Additive sky layers (haze, glows) are left out by the viewer:
   without the shader's constants they wash the sky out.

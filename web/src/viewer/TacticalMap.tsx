@@ -36,7 +36,7 @@ export default function TacticalMap(props: {
   label: string;
 }) {
   const outline = outlineFor(() => props.game.map);
-  const geometry = geometryFor(() => props.game.map);
+  const geometry = geometryFor(() => props.game.map, () => props.game.map_id);
   // Teleporters and lifts, from the head of the map's glb; shown unless turned off.
   const features = featuresFor(() => geometry()?.glb);
   const [showFeatures, setShowFeatures] = createSignal(true);
