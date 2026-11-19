@@ -43,7 +43,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use engine::memory::GuestMemory;
-use feature::native_objects::{Host, NativeSet, SetPart};
+use feature::native_objects::{Host, ItemMasks, NativeSet, SetPart};
 use map::{Map, ResourceFile, TagId};
 use native_render::camera::RenderCamera;
 use native_render::gpu::Image;
@@ -202,8 +202,6 @@ struct LayerEntry {
 pub struct Glue<B: d3d::backend::Backend + Send + 'static> {
     device: d3d::abi::SharedDevice<B>,
     state: Arc<Mutex<Option<MapState>>>,
-    /// The device at this layer-3 call, read in `native` for `draw`.
-    entry: Mutex<Option<LayerEntry>>,
 }
 
 /// The key of the load guest memory `mem` holds now, `None` without a map
@@ -225,8 +223,10 @@ fn publishes_to(current: &MapState, models: &Arc<Models>) -> bool {
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
-    fn native(&self, mem: &dyn GuestMemory) -> Option<Arc<NativeSet>> {
-        *self.entry.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    fn native(&self, mem: &mut dyn GuestMemory) -> Option<Arc<NativeSet>> {
+        if !self.device.lock().ok()?.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)).ok()? {
+            return None;
+        }
         let key = map_key(mem)?;
         let current = |st: &Option<MapState>| st.as_ref().map(|s| &s.key) == Some(&key);
         let loaded = current(&*self.state.lock().unwrap_or_else(|e| e.into_inner()));
@@ -273,19 +273,6 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                 return None;
             }
         }
-        // The render states layer 3 starts in, field by field, which an
-        // implementation's draw takes where it sets none
-        // (`native_render::object_state`), and whether the draws are
-        // W-buffered (the programs write w).
-        let entry = self.device.lock().ok().map(|d| {
-            let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
-            let read = crate::native_world_glue::ReadMemory(mem);
-            LayerEntry {
-                states: EntryStates::read(|t| table.canonical_to_guest(t.index()).and_then(|g| d.render_state(&read, g))),
-                w_buffered: d.hw().control0.is_some_and(|c| c & d3d::nv2a::CONTROL0_Z_PERSPECTIVE != 0),
-            }
-        });
-        *self.entry.lock().unwrap_or_else(|e| e.into_inner()) = entry;
         Some(set)
     }
 
@@ -299,47 +286,62 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         }
     }
 
-    fn draw(&self, camera: &RenderCamera, generation: u64, objects: Vec<ObjectFrame>, items: Vec<ItemDraw>) -> Vec<bool> {
-        let mut out = vec![false; items.len()];
-        let Some(models) = self
-            .state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-            .filter(|s| s.generation == generation)
-            .map(|s| Arc::clone(&s.models))
-        else {
-            return out;
+    fn draw(
+        &self, mem: &mut dyn GuestMemory, camera: &RenderCamera, generation: u64,
+        objects: Vec<ObjectFrame>, items: Vec<ItemDraw>, masks: ItemMasks,
+    ) -> Option<native_render::objects::ClearedObjects> {
+        use timeline::native::{Metric, Stage, Timer};
+        let planning = Timer::start(Stage::Objects, Metric::PrepareNs);
+        let models = {
+            let st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            Arc::clone(&st.as_ref().filter(|s| s.generation == generation)?.models)
         };
-        let Some(entry) = self.entry.lock().unwrap_or_else(|e| e.into_inner()).take() else {
-            return out;
+        let mut device = self.device.lock().ok()?;
+        // native() drained before the feature walked the guest list. Resolve the
+        // implementation's inherited fields on the device that will reserve it.
+        let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
+        let read = crate::native_world_glue::ReadMemory(mem);
+        let entry = LayerEntry {
+            states: EntryStates::read(|t| table.canonical_to_guest(t.index()).and_then(|g| device.render_state(&read, g))),
+            w_buffered: device.hw().control0.is_some_and(|c| c & d3d::nv2a::CONTROL0_Z_PERSPECTIVE != 0),
         };
-        let Ok(mut d) = self.device.lock() else {
-            return out;
-        };
-        if !d.can_external_pass() {
-            return out;
-        }
-        let plan = plan_view(&models, &objects, &items, &entry, d.samples_levels_in_place());
+        let plan = plan_view(&models, &objects, &items, &entry, device.samples_levels_in_place());
+        let ranges = plan.draws.len();
+        let refused = (items.len() - ranges) as u64;
+        Stage::Objects.count(Metric::Examined, refused);
+        Stage::Objects.count(Metric::RefusedInputs, refused);
         let pending = !models.pending.lock().unwrap_or_else(|e| e.into_inner()).is_empty();
-        if plan.draws.is_empty() && plan.compare.is_none() && !pending {
-            return out;
+        if ranges == 0 && plan.compare.is_none() && !pending { return None; }
+        let mut drawn = vec![false; items.len()];
+        for &i in &plan.drawn { drawn[i] = true; }
+        let pass = Box::new(ObjectsPass {
+            models: Arc::clone(&models), camera: *camera, objects, draws: plan.draws, owners: plan.owners,
+            refused: plan.refused, compare: plan.compare, view: None, w_clip: None,
+        });
+        if ranges == 0 {
+            // Upload new models or arm a comparison; every guest item stays live.
+            device.request_external_pass(pass);
+            return None;
         }
-        for &k in &plan.drawn {
-            out[k] = true;
+        let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
+        let promise = d3d::ExternalPlan { stage: Stage::Objects, view, ranges, slots: Vec::new() };
+        drop(planning);
+        let ready = device.prepare_external_bound(
+            &mut crate::native_lights_glue::DeviceMemory(mem), promise, pass, Vec::new(),
+        ).ok()??;
+        // Pin the current load through the mask change and commit. The worker
+        // may publish another definition, but a replaced load cannot win here.
+        let st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if !st.as_ref().is_some_and(|s| s.generation == generation && Arc::ptr_eq(&s.models, &models)) {
+            Stage::Objects.count(Metric::RefusedInputs, ranges as u64);
+            return None;
         }
-        d.request_external_pass(Box::new(ObjectsPass {
-            models,
-            camera: *camera,
-            objects,
-            draws: plan.draws,
-            owners: plan.owners,
-            refused: plan.refused,
-            compare: plan.compare,
-            view: None,
-            w_clip: None,
-        }));
-        out
+        let Some(cleared) = masks.apply(mem, &drawn) else {
+            Stage::Objects.count(Metric::RefusedMasks, ranges as u64);
+            return None;
+        };
+        ready.commit();
+        Some(cleared)
     }
 }
 
@@ -440,7 +442,6 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
     feature::native_objects::set_host(Arc::new(Glue {
         device: Arc::clone(device),
         state,
-        entry: Mutex::new(None),
     }));
 }
 
@@ -951,19 +952,37 @@ impl d3d::ExternalPass for ObjectsPass {
         }
     }
 
+    fn writes(&self) -> d3d::ExternalWrites {
+        d3d::ExternalWrites {
+            color: self.draws.iter().any(|(_, d)| !d.state.color_writes.is_empty()),
+            depth_stencil: self.draws.iter().any(|(_, d)| d.state.depth_write),
+        }
+    }
+
+    fn prepare_copy(&mut self, t: &d3d::ExternalTarget<'_>) -> Result<(), &'static str> {
+        if self.view.is_none() { return Err("object view constants unavailable"); }
+        if self.draws.iter().any(|(_, d)| d.texaccum) && texaccum_level(t.sampled, t.guest_size, t.size).is_none() {
+            return Err("object texture accumulation unavailable");
+        }
+        drop(upload_pending(&self.models, t));
+        let lit = self.models.lit.lock().unwrap_or_else(|e| e.into_inner());
+        if lit.as_ref().is_some_and(|l| self.draws.iter().all(|(model, d)| l.has(*model) && !d.indices.is_empty())) {
+            Ok(())
+        } else {
+            Err("planned object geometry unavailable")
+        }
+    }
+
     fn encode(&mut self, t: d3d::ExternalTarget<'_>) {
-        // The models queued since the last pass go up first (the plan
-        // only drew uploaded ones; these are for the next views).
+        // Comparison-only views can still upload models for the following view.
         drop(upload_pending(&self.models, &t));
-        let Some(constants) = self.view else {
-            shortfall(self.draws.len(), "the device gave no view constants");
-            return;
-        };
+        self.record_ranges(t);
+    }
+
+    fn record_ranges(&mut self, t: d3d::ExternalTarget<'_>) -> usize {
+        let Some(constants) = self.view else { return 0 };
         let mut lit = self.models.lit.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(lit) = lit.as_mut() else {
-            shortfall(self.draws.len(), "the lit models are gone");
-            return;
-        };
+        let Some(lit) = lit.as_mut() else { return 0 };
         let texaccum = texaccum_level(t.sampled, t.guest_size, t.size);
         let view = self.view_inputs(constants, &t);
         if let Some((model, d, label)) = &self.compare {
@@ -992,10 +1011,8 @@ impl d3d::ExternalPass for ObjectsPass {
                 t.size
             );
         }
-        if self.draws.is_empty() {
-            return;
-        }
-        let drawn = lit.encode(
+        if self.draws.is_empty() { return 0; }
+        lit.encode(
             t.device,
             t.queue,
             &mut *t.encoder,
@@ -1007,35 +1024,7 @@ impl d3d::ExternalPass for ObjectsPass {
             &view,
             &self.draws,
             texaccum,
-        );
-        if drawn < self.draws.len() {
-            let why = if texaccum.is_none() && self.draws.iter().any(|(_, d)| d.texaccum) {
-                "the device gave no texture accumulation level after the drain"
-            } else {
-                "a model or pipeline was missing at the encode"
-            };
-            shortfall(self.draws.len() - drawn, why);
-        }
-    }
-}
-
-/// Draws planned at the hook, whose D3D draws were given up, that the
-/// encode could not issue: what only the issue can know (the texture
-/// accumulation level the device resolves after the drain, the view's
-/// constants). Counted, and each reason logged once; the issue-time
-/// guarantee waits on the device's prepare/commit contract.
-static SHORTFALL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-fn shortfall(n: usize, why: &'static str) {
-    if n == 0 {
-        return;
-    }
-    static LOGGED: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
-    SHORTFALL.fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
-    let mut logged = LOGGED.lock().unwrap_or_else(|e| e.into_inner());
-    if !logged.contains(&why) {
-        logged.push(why);
-        eprintln!("native-objects: {n} planned draws not issued: {why} (logged once per reason; counted)");
+        )
     }
 }
 
