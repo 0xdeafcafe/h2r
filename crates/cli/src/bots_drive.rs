@@ -38,8 +38,9 @@
 //!   dialog is known by the bots' join gate line (`dialog 0x14 (window
 //!   3, ...)`), its cursor by the list value's low 16 bits;
 //! * the main menu: from its row to Xbox Live (row 1), A; signed in, that
-//!   opens the players' screen (`0x1e`) in mode 3, where the local bots
-//!   join; A there opens the Xbox Live menu (`0xba`). Not signed in, it
+//!   opens the players' screen (`0x1e`) in mode 3 (the local bots no
+//!   longer join there: they join in the lobby, docs/game/bots.md §4.3);
+//!   A there opens the Xbox Live menu (`0xba`). Not signed in, it
 //!   opens the picker first. Another dialog on the way gets A; a players'
 //!   screen in another mode is backed out of and corrected; Live asking
 //!   for a 6-digit code stops the drive;
@@ -601,7 +602,7 @@ impl Driver {
         let mut q: Vec<Press> = (0..n)
             .map(|_| press(button, &format!("to Xbox Live (row 1, from {from})")))
             .collect();
-        q.push(press("a", "Xbox Live (signs in; the bots join here)"));
+        q.push(press("a", "Xbox Live (signs in)"));
         self.queue = q;
         self.step = Step::ToLive { at: now, tries };
     }

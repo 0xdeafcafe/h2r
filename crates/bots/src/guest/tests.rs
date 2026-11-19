@@ -148,6 +148,95 @@ fn nothing_is_hidden_without_bots_or_without_a_human() {
     assert_eq!(locals(&g), before);
 }
 
+const SOUND: u32 = 0x0068_0000;
+
+fn listener_active(g: &FakeGuest, u: u32) -> u8 {
+    g.u8(SOUND + LISTENER_ACTIVE + LISTENER_STRIDE * u).unwrap()
+}
+
+#[test]
+fn a_bot_users_listener_goes_quiet_and_the_humans_stays() {
+    // The human (user 0) and bots (users 1 and 2), each with an active
+    // listener, as the listener update outside SOUND_UPDATE left them.
+    let mut g = three();
+    g.map(SOUND, 0x200).put_u32(SOUND_GLOBALS, SOUND);
+    for u in 0..3 {
+        g.put_u8(SOUND + LISTENER_ACTIVE + LISTENER_STRIDE * u, 1);
+    }
+    let h = hide(&mut g, 0b110).unwrap().expect("bots to hide");
+    assert_eq!(h.users(), 0b110);
+    assert_eq!(quiet_listeners(&mut g, &h).unwrap(), 0b110);
+    assert_eq!(
+        [0, 1, 2].map(|u| listener_active(&g, u)),
+        [1, 0, 0],
+        "only the human's ears"
+    );
+    // Restoring the users does not wake the listeners: the next update
+    // runs hidden again.
+    restore(&mut g, &h).unwrap();
+    assert_eq!(listener_active(&g, 1), 0);
+    // Already quiet: nothing to say.
+    let h = hide(&mut g, 0b110).unwrap().unwrap();
+    assert_eq!(quiet_listeners(&mut g, &h).unwrap(), 0);
+    restore(&mut g, &h).unwrap();
+}
+
+#[test]
+fn no_sound_globals_quiets_nothing() {
+    let mut g = three();
+    g.map(SOUND_GLOBALS, 4);
+    let h = hide(&mut g, 0b10).unwrap().unwrap();
+    assert_eq!(quiet_listeners(&mut g, &h).unwrap(), 0);
+}
+
+/// The game's controller handles: the human's pad on port 0, bots on 1
+/// and 2, nothing on 3.
+fn pads() -> FakeGuest {
+    let mut g = FakeGuest::new();
+    g.map(PAD_HANDLES, 16)
+        .put_u32(PAD_HANDLES, 0x8100_0010)
+        .put_u32(PAD_HANDLES + 4, 0x8100_0020)
+        .put_u32(PAD_HANDLES + 8, 0x8100_0030);
+    g
+}
+
+fn handles(g: &FakeGuest) -> [u32; 4] {
+    [0, 1, 2, 3].map(|p| g.u32(PAD_HANDLES + 4 * p).unwrap())
+}
+
+#[test]
+fn the_players_screen_sees_no_controller_on_a_bot_port_and_the_humans_as_it_is() {
+    let mut g = pads();
+    let h = hide_pads(&mut g, 0b0110)
+        .unwrap()
+        .expect("bot pads to hide");
+    assert_eq!(h.ports(), 0b0110);
+    assert_eq!(
+        handles(&g),
+        [0x8100_0010, 0, 0, 0],
+        "the human's pane still has its controller"
+    );
+    restore_pads(&mut g, &h).unwrap();
+    assert_eq!(handles(&g), [0x8100_0010, 0x8100_0020, 0x8100_0030, 0]);
+}
+
+#[test]
+fn no_bot_controller_hides_nothing_and_a_handle_the_game_wrote_is_kept() {
+    let mut g = pads();
+    assert_eq!(hide_pads(&mut g, 0).unwrap(), None);
+    assert_eq!(
+        hide_pads(&mut g, 0b1000).unwrap(),
+        None,
+        "a bot on port 3 with no pad plugged yet"
+    );
+    assert_eq!(handles(&g), [0x8100_0010, 0x8100_0020, 0x8100_0030, 0]);
+    let h = hide_pads(&mut g, 0b0010).unwrap().unwrap();
+    // The game opened port 1 again in the meantime: its handle stays.
+    g.put_u32(PAD_HANDLES + 4, 0x8100_0040);
+    restore_pads(&mut g, &h).unwrap();
+    assert_eq!(handles(&g)[1], 0x8100_0040);
+}
+
 #[test]
 fn perception_finds_the_bot_and_the_living_others() {
     let mut ps = vec![

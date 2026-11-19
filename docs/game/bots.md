@@ -656,8 +656,85 @@ and its restore cancel out, so nothing reaches the game thread. The
 pipeline's hook plan has to list the window as a render-thread hook (its
 boot test checks that every hook is listed).
 
-**Rumble.** The bots backend has no motors, so rumble to a bot port is
-dropped.
+**Listeners (traced, 2026-11-19).** The listener update `0x127400`
+(`SOUND_LISTENERS_UPDATE`, stdcall, one argument) walks the four local
+users: for each mapped one it sets the user's listener from its camera
+and marks it active (the byte at `[0x4e6380] + 0x8e + 0x48 * user`); for
+an unmapped one it writes the record's player fields to -1 and leaves the
+active byte alone (`0x127b13`). It has two callers: `SOUND_UPDATE`
+(`0x125c1e`, inside the window above) and the per-frame update `0x18c060`
+(`0x18c07f`, from `0x137ef8`), which runs it **outside** the window when
+the sound globals' bytes `+0x78`, `+0x79` and `+0x7a` are set. So each
+bot's user was a live listener after all, at the bot's own camera.
+`0x127d00`, which picks the listener a starting sound is for (the
+closest active one; a sound with no position goes to the first mapped
+user), then took a bot's own sounds (its reloads, jumps, landings,
+melee, pain) as heard by the bot, right at its ears. Those are the
+sounds the controller speaker routes (docs/audio/playstation-audio.md),
+and the user heard the bots' through the controller.
+
+- **Design:** the listener update gets the same window as the sound
+  frame (`bot_glue`, before and after `SOUND_LISTENERS_UPDATE`), and at
+  both points each hidden user's listener is marked inactive
+  (`guest::quiet_listeners`): the update never clears the byte for a
+  user it skips, so a listener made before its user was hidden would
+  stay active where the bot last stood. Called from inside
+  `SOUND_UPDATE`, the window finds no bot user mapped and does nothing.
+- [guess] That a sound at an active listener plays as a plain (not 3D)
+  voice is read from the symptom, not traced: a 3D voice is never
+  routed to the controller. The game run says.
+
+**The controller speaker, haptics and rumble (Repo).** Nothing there
+goes by port:
+
+- The controller speaker (`dsound::padroute`, `boot::pad_speaker`)
+  routes by **sound tag name**, never by player: one DualSense or DS4
+  speaker, chosen by device name, gets every routed sound, and the Steam
+  Controller's trackpads (`input::steam_pad`, "as haptics") play the
+  routed tone on every connected controller. There is no port-to-pad
+  map for sound. So a bot's sounds reached the pad only by being started
+  as a local player's (above); with the bots' listeners gone they start
+  as anyone else's sounds in the world.
+- **Rumble** goes by port: `XInputSetState` on a port goes to the pad on
+  it (`input::device`, `HostBackend::set_rumble` of the backend that owns
+  it). A bot's pad says it has no motors (`supports_rumble: false`), so
+  the game's rumble for a bot's port is refused (`NotSupported`, as an
+  Xbox pad with none) and never reaches the human's pad.
+- **Voice (the communicator).** With a microphone chosen, every port with
+  a pad used to get a communicator, bots' included, so the game opened a
+  headphone for each bot and played the other players' voices to it on
+  the one host output. Now a bot's port gets none
+  (`voice_glue::player_pads`).
+
+**The players screen (traced, the user's ask 2026-11-19).** "I don't want
+bots to appear in the other player slots on the Xbox Live screen." The
+screen's per-frame update `0x252554` (`PLAYERS_SCREEN_UPDATE`, vtable
+`0x45a490` slot 3) lays out one pane per port: a port is joined (its name,
+no prompt) when its controller handle is non-zero (`[0x4e61cc + 4 *
+port]`, `0x18f8b8`; `0x1249d0` reads it too) and its slot has a profile
+(`+0` bit `0x10`); with a controller and no profile it says "PRESS A TO
+JOIN" (`0x0f00028a`); with none, "CONNECT CONTROLLER" (`0x1100028b`).
+
+- **Design:** around that update the bots' controller handles read as 0
+  (`guest::hide_pads`, put back after unless the game wrote one
+  meanwhile). A bot's pane is then an empty port's, "CONNECT
+  CONTROLLER", whether or not the bot is signed in: what a one-pad Xbox
+  shows. Nothing else is touched, so the bots stay joined.
+- **Where bots join.** The players screen is a join screen only in Split
+  Screen (mode 1, `bot_glue::SPLIT_SCREEN`). In Xbox Live (3), System
+  Link (2) or an invitation's mode (4) no bot signs in there: they join
+  in the pregame lobby that follows (§4.2, "Joining in the pregame
+  lobby"), as opponents, which is where the game wants them anyway.
+  With a pregame session up under the players screen it reads as the
+  lobby (no mask write). Split Screen has no networked lobby
+  (`0x199df9(1, 0)` makes a local session), so its bots still join on
+  the players screen, with their mask bits, and are hidden from its
+  panes like any others: the screen shows the human alone, the lobby
+  and the game show the bots.
+- Not changed: B on the players screen (`0x25286d`) backs out only with
+  one profile signed in (`0x18f911` counts slots with `0x10`, bots
+  included); with bots joined it opens the human's profile menu
+  instead, as before. A game run says whether it matters.
 
 ### 4.4 What a local slot cannot do
 
@@ -1883,9 +1960,10 @@ list for the user to play (§11).
      3. Set Clankers to On and Count to 2 (the log says `clankers:
         Clanker 1 on (Normal)`). In Split Screen, bots join on the
         players screen, so back out of the lobby to it: "Clanker 1" and
-        "Clanker 2" join by themselves; go on to the lobby again. In a
-        System Link or Live lobby they join where they are (§4.2,
-        "Joining in the pregame lobby").
+        "Clanker 2" join by themselves (the screen's panes do not show
+        them, §4.3); go on to the lobby again. In a System Link or Live
+        lobby they join where they are (§4.2, "Joining in the pregame
+        lobby").
      4. Start Slayer: the two bots play as in stages 1 to 3, at the
         difficulty chosen.
      5. Quit to the lobby, open the page, set Difficulty to Legendary,
@@ -2022,7 +2100,8 @@ list for the user to play (§11).
         gate saw) or a phantom keeps waiting (its reason says which check).
      5. System Link (not on Live): the same, with no `on Xbox Live` line;
         the bots show in the lobby at once. Split Screen: the bots still
-        join on the players screen (`screen players`).
+        join on the players screen (`screen players`), hidden from its
+        panes (§4.3).
    **Built: fixes from the first `h2 bots test` run** (2026-11-18,
    `20261118-232735`, Tester, count 5). What the run was: the drive never
    reached the Xbox Live menu (`bots-drive: stuck: no Xbox Live menu
@@ -2080,6 +2159,56 @@ list for the user to play (§11).
      Custom Game there (its drive stuck at the main menu's Xbox Live row);
      on a Split Screen run expect the three local bots to sign in on the
      players screen and no phantom to join.
+   **Built: bots off the players screen, and quiet** (2026-11-19, §4.3,
+   "The players screen", "Listeners" and "The controller speaker,
+   haptics and rumble"). The user's ask: "i don't want bots to appear in
+   the other player slots on the xbox live screen ... also other bots
+   sounds come out via the controller?"
+   - **Where bots join:** the players screen only in Split Screen (mode
+     1). In Xbox Live, System Link and an invitation's mode the gate
+     reads it as the lobby (a pregame session up) or as `0x1e` (none),
+     so the bots join in the lobby (`bot_glue::screen`).
+   - **The panes:** around `PLAYERS_SCREEN_UPDATE` the bots' controller
+     handles read as none (`guest::hide_pads`, `restore_pads`), so a
+     bot's pane says "CONNECT CONTROLLER" in every mode, Split Screen
+     included, joined or not.
+   - **The bots' ears:** `SOUND_LISTENERS_UPDATE` gets the hide window
+     too (the per-frame update `0x18c060` runs it outside
+     `SOUND_UPDATE`), and at both points the hidden users' listeners are
+     marked inactive (`guest::quiet_listeners`).
+   - **Voice:** a bot's port gets no communicator
+     (`voice_glue::player_pads`). Rumble for a bot's port was already
+     refused (no motors); a test now says so.
+   - Tests: `-p boot --lib bot_glue`
+     (`only_split_screen_bots_join_on_the_players_screen`), `-p bots
+     --lib guest` (`the_players_screen_sees_no_controller_on_a_bot_port_and_the_humans_as_it_is`,
+     `no_bot_controller_hides_nothing_and_a_handle_the_game_wrote_is_kept`,
+     `a_bot_users_listener_goes_quiet_and_the_humans_stays`,
+     `no_sound_globals_quiets_nothing`), `-p bots --lib local`
+     (`rumble_for_a_bots_port_never_reaches_the_humans_pad`), `-p boot
+     --lib voice_glue` (`a_bots_port_gets_no_communicator`), `-p boot
+     --lib render_thread` (the two new points listed), `-p cli --bin h2
+     bots_drive` (the press label).
+   - **Game run (the user):**
+     1. `h2 play --live`, Clankers On, Count 3 or more. Main menu, Xbox
+        Live: the players screen shows you alone; the other three panes
+        say "CONNECT CONTROLLER". The log has no `bots: signing ... on
+        the players screen`.
+     2. Live menu, Custom Game: in the lobby, `bots: signing Clanker N in
+        on port N in the pregame lobby`, then each is on Xbox Live and in
+        the lobby's list.
+     3. Back out to the players screen: still you alone (the bots stay
+        signed in, unseen). On again to the lobby: the bots are there.
+     4. In a game, with the controller speaker on (a DualSense, or a
+        Steam Controller as haptics): only your own reloads, jumps,
+        landings, melee and shield warnings come out of the controller;
+        the bots' are heard in the world, from where they are. Send the
+        `bots:` lines and say which sounds still come through if any do.
+     5. With a microphone chosen (pause menu, Voice): other players'
+        voices sound as they did with no bots (no doubling).
+     6. Split Screen with Clankers On: the players screen shows you
+        alone, the lobby and the game have the bots. Say whether B on
+        the players screen backs out or opens your profile menu.
 8. **Clankermatch.**
    - The Live menu row, the playlist filter, the fake search and the lobby
      fill.
@@ -2164,9 +2293,9 @@ Known limits, for the agent API's `sim.*` docs (agent-api.md):
 Each item is for the user to play, or for a coordinator run.
 
 1. A bot port signing in through the players screen with an injected guest
-   profile (§4.2), on Split Screen, System Link and a Live custom game;
-   and in a System Link or Live pregame lobby with no players screen
-   (§4.2, "Joining in the pregame lobby").
+   profile (§4.2), on Split Screen only; and in a System Link or Live
+   pregame lobby (§4.2, "Joining in the pregame lobby"). The players
+   screen shows no bot in any mode (§4.3, "The players screen").
 2. The view window: the human gets a full screen, and the HUD, sound and
    camera are right with 1 to 3 bots.
 3. Whether Live matchmaking accepts guests (§4.4), and how our Live names
@@ -2261,8 +2390,9 @@ h2 bots verdict <bots.log>   # the verdict of a log again
    gives up after 3 picks that did not sign in, or a picker still up 30 s
    after A. Another dialog on the way gets A, and a request for the
    account's 6-digit code stops the drive. Then A on the players' screen in
-   Xbox Live mode (where the local bots join; any other mode is backed out
-   of), then the Xbox Live menu. That is a window 5 `none` screen too, and
+   Xbox Live mode (any other mode is backed out of; the local bots no
+   longer join there, but in the lobby: §4.3, "The players screen"),
+   then the Xbox Live menu. That is a window 5 `none` screen too, and
    it comes while the lobby mode is still the main menu's, so the drive
    tells them apart by the list mask (`list [0xf/...]` on the Live menu,
    `[0x1/...]` on the main menu) and by the screen address: the main menu

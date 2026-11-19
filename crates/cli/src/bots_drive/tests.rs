@@ -81,7 +81,7 @@ fn a_fresh_profile_boots_with_a_presses_then_goes_to_xbox_live() {
         p,
         [
             "down to Xbox Live (row 1, from 0)",
-            "a Xbox Live (signs in; the bots join here)"
+            "a Xbox Live (signs in)"
         ]
     );
 }
@@ -94,16 +94,13 @@ fn the_main_menu_row_is_read_off_the_list() {
     let p = presses(&mut d, 2500, 4000);
     assert_eq!(
         p,
-        [
-            "up to Xbox Live (row 1, from 2)",
-            "a Xbox Live (signs in; the bots join here)"
-        ]
+        ["up to Xbox Live (row 1, from 2)", "a Xbox Live (signs in)"]
     );
     let mut d = Driver::new(3);
     d.line(900, MAIN_ROW_1);
     d.line(1000, "coop-live: lobby mode 4294967295");
     let p = presses(&mut d, 2500, 4000);
-    assert_eq!(p, ["a Xbox Live (signs in; the bots join here)"]);
+    assert_eq!(p, ["a Xbox Live (signs in)"]);
 }
 
 #[test]
@@ -227,7 +224,7 @@ fn back_on_the_main_menu_tries_again() {
     // Nothing opened: still the main menu, now on row 1.
     d.line(3300, MAIN_ROW_1);
     let p = presses(&mut d, 3400, 3300 + STEP_MS + 2000);
-    assert_eq!(p, ["a Xbox Live (signs in; the bots join here)"]);
+    assert_eq!(p, ["a Xbox Live (signs in)"]);
     assert!(d.take_said().iter().any(|s| s.contains("Xbox Live again")));
 }
 
@@ -249,10 +246,7 @@ fn the_join_gate_names_the_dialog() {
 fn the_account_picker_gets_down_then_a_not_a_on_no_account() {
     let mut d = at_main();
     let p = presses(&mut d, 2500, 4000);
-    assert_eq!(
-        p.last().unwrap(),
-        "a Xbox Live (signs in; the bots join here)"
-    );
+    assert_eq!(p.last().unwrap(), "a Xbox Live (signs in)");
     // The picker over the main menu, on row 0 (run 2: A here signed out).
     d.line(4100, DIALOG_14);
     d.line(4100, GATE_14);
