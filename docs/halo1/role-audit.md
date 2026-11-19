@@ -18,20 +18,55 @@ integration run. There is no new pass count or play result yet.
 
 ## Native engine fields
 
-- The vehicle controller still uses a base drivetrain of the same vehicle
-  type, selected by nearest powered-point count and then tag path. Its
-  compiled gear curves and their raw locations form a unit. Halo 1 has
-  no Halo 2 gear curve resources. The controller selectors are at
-  `+0x218` and `+0x244`, the coefficients at `+0x250..+0x264`,
-  `+0x270..+0x280`, `+0x2b0..+0x2c4` and `+0x2d8..+0x2e4`.
-  The same controller provides tire/tread coefficients by steering type
-  and the remaining H2 hover coefficients by marker position. The
-  drivetrain reads include `0x000eee7c`, `0x000efbd7`, `0x000f1612`
-  and `0x000f2aab`. The tank control mode is 2. The seat entry test
-  needs positive distance and angle limits (`0x000c9040`). H1 does
-  not author these. Individual native controller coefficients still lack
-  a verified physical interpretation. They are listed explicitly in
-  the audit; no majority is taken over vehicles, seats, points or gears.
+- **Built. Ground drive.** Halo 1 advances contact speed directly at
+  `0x39785` and `0x80c10`. The two Warthog groups receive the same speed
+  and opposite steering angles at `0x3925c`. The Scorpion gets forward
+  speed minus and plus turn speed at `0x39301` and `0x39325`.
+  The converted definitions select that velocity controller in the engine.
+  Its two direction records have speed ratios −1 and +1. The solver
+  receives the track assigned by the source powered group for every contact.
+- **Built. Gear format.** At H2 `0xf1540` throttle blends two inline
+  torque profiles. Each profile gives torque at rest, peak torque, the
+  fraction of redline at the peak, the falloff exponent, and torques at
+  redline and twice redline (`0xf15d0`). The remaining five floats are
+  the upshift delay and threshold, speed ratio, and downshift delay and
+  threshold (`0xf152c`, `0xf18aa`). Engine inertia divides net torque
+  before integration at `0xf1c02`. Halo 1's velocity law supplies no unique
+  torque, inertia, redline, or shift schedule. A zero redline bypasses
+  native gear selection and torque integration at `0xf17b1` and `0xf1981`.
+  The native steering curve has a reference angle and exponent at
+  `+0x250/+0x254`. `0xeee7c` supplies one for either zero. An exponent
+  of one gives a linear angle. The ground controller applies H1's signed
+  steering limits and slew directly at the contacts.
+- **Built. Ghost and contacts.** The H1 hover drive uses one horizontal
+  speed cap and one acceleration magnitude at `0x38152..0x38232`. The
+  Ghost gets 6.75 world units/s and 4.5 units/s² on both axes and signs.
+  H1 `0x84376..0x84485` and H2 `0x20631d..0x20656e` give the lift
+  height, point radius, damping and two slope cosines. H1 fixed lift
+  height gives zero H2 banking-height modulation. The ground spring on
+  both engines uses gravity times penetration divided by depth, minus
+  damping times normal velocity (`0x83df4`, `0x2069b6`). Converting the
+  velocities and force units multiplies the damping coefficient by 30.
+- The remaining native root values are the vehicle priority compared at
+  `0x1ab48a` (`+0x244`), the unit input activation rate at `0xf045b`
+  (`+0x25c`), the two impulse gains selected at `0xe538c`
+  (`+0x274/+0x278`), and the contact friction coefficients
+  (`+0x2b0/+0x2bc`). H2 switches tire friction laws at a per-point slip
+  threshold, using a square-root coefficient and normal load at
+  `0x207017` and `0x2070e8`. H1 applies longitudinal and transverse drag
+  at `0x80f80` and `0x83e30`. The speed ramps do not determine those
+  gains or the native tire slip and material response. For example, the
+  Coagulation Warthog's first tire has gain 14 at `+0x08` and a slip
+  threshold of 7 at `+0x18`. The Scorpion's are 40 and 200. Blood
+  Gulch's Warthog instead has two directional drag factors per point,
+  0.45/0.65 at the rear and 0.75/0.45 at the front. The Scorpion has
+  1/1 on its tracks. Aircraft retain
+  their subtype and flight gains (`+0x218/+0x270/+0x27c/+0x280`).
+  The dispatch table at `0xf069c` selects their controllers, which use
+  those terms for flight at `0xf23b9`, `0xf2875`, `0xf2aab` and
+  `0xf5a89`. The seat entry test needs positive distance and angle
+  limits (`0xc9040`). `+0x258` and `+0x2e4` keep their definition defaults.
+  Neither has an identified read in the ground or hover drive equations.
 - Biped models keep the native damage section array that `object_new`
   indexes at damage info `+0xbc`, and native shield/overshield shaders
   at `+0x7c/+0x84/+0xe8/+0xf0`. The per-model camouflage shader is

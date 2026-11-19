@@ -353,6 +353,13 @@ pub fn apply_engine_data(schema: &mut Schema) {
             },
         }
     }
+    // The entire 0x44-byte gear is inline numeric data. H2 evaluates two
+    // six-float torque curves at 0xf1540, reads the ratio at 0xf152c and
+    // tests four shift parameters at 0xf18aa. No word is a resource.
+    if let Some(gear) = schema.groups.get_mut(&FourCC(*b"vehi"))
+        .and_then(|root| at(root, &[0x268])) {
+        gear.fields.clear();
+    }
     for &(group, path, offset) in ENGINE_DATA {
         let Some(s) = schema
             .groups

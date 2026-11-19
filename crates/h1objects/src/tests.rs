@@ -687,6 +687,7 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
     let markers = vec!["driver".to_string(), "driver enter".to_string(), "camera".to_string()];
     let seats = [crate::rebuild::seat_names(&seat, &markers)];
     let root = crate::rebuild::vehicle(&crate::rebuild::VehicleSpec {
+        physics: None,
         source: &[],
         references: &[],
         object: &obj,
@@ -820,18 +821,13 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
     };
     let role = VehicleRole {
         member: "jeep".to_owned(),
-        controller: vec![("unknown_254".into(), 1.5f32.to_bits())],
-        control: 2,
+        controller: vec![("unknown_2b0".into(), 1.5f32.to_bits())],
         friction: Some(vec![("unknown_8".into(), 0x4160_0000), ("unknown_4".into(), 0x32)]),
         friction_steered: Some(vec![("unknown_8".into(), 0x4160_0000), ("unknown_4".into(), 0x26)]),
         hover: None,
         hover_each: Vec::new(),
         hover_at: Vec::new(),
         wheel_shapes: false,
-        gears: vec![vec![
-            ("unknown_0".into(), 0x4795_6a00),
-            ("raw_14".into(), 0x4000_1234),
-        ]],
     };
     let points = [
         crate::rebuild::Point {
@@ -874,7 +870,10 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
     // The driver's camera track converted; the passenger has none.
     let track = map::TagId(0xe001_0009);
     seats[0].camera_track = Some(track);
-    let root = crate::rebuild::vehicle(&VehicleSpec {
+    let mut physics = [0; crate::h1::PHYS_SIZE];
+    physics[0x68..0x6c].copy_from_slice(&2u32.to_le_bytes());
+    let spec = VehicleSpec {
+        physics: Some(&physics),
         source: &[],
         references: &[],
         object: &obj,
@@ -891,18 +890,29 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
         attachments: &[],
         functions: &[],
         creation_effect: None,
-    })
-    .unwrap();
+    };
+    let root = crate::rebuild::vehicle(&spec).unwrap();
     let def = Defs::builtin().group(map::FourCC(*b"vehi")).unwrap();
     let got = defs::from_built(def, &root).unwrap();
     let word = |w: u32| Some(Val::Bytes(w.to_le_bytes().to_vec()));
     assert_eq!(got.at("vehicle_type"), Some(&Val::Enum(1)));
     assert_eq!(got.at("vehicle_flags"), Some(&Val::Int(0xcd1)));
-    assert_eq!(got.at("unknown_254").cloned(), word(1.5f32.to_bits()));
+    assert_eq!(got.at("unknown_2b0").cloned(), word(1.5f32.to_bits()));
     assert_eq!(
         got.at("block_2f8[0].unknown_48").cloned(),
         word(0.5_f32.to_bits())
     );
+
+    assert_eq!(got.get("unknown_2c0").cloned(), word(0));
+    assert_eq!(got.get("unknown_2c4").cloned(), word(0.0f32.next_up().to_bits()));
+    let mut passive = physics;
+    passive[0x68..0x6c].copy_from_slice(&1u32.to_le_bytes());
+    let passive = crate::rebuild::vehicle(&VehicleSpec { physics: Some(&passive), ..spec }).unwrap();
+    let passive = defs::from_built(def, &passive).unwrap();
+    assert_eq!(passive.get("unknown_260").cloned(), word(0));
+    let Some(Val::Block(gears)) = passive.get("block_268") else { panic!("missing direction records") };
+    assert_eq!(gears.len(), 2);
+    assert!(gears.iter().all(|g| g.get("speed_ratio") == Some(&Val::Float(0.0))));
     // Each seat takes its kind's words.
     assert_eq!(got.at("block_1c8[0].unknown_20").cloned(), word(0));
     assert_eq!(got.at("block_1c8[1].unknown_20").cloned(), word(0));
@@ -941,18 +951,14 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
     // point's region is the model's third, the back point names none.
     assert_eq!(got.at("block_2f0[0].unknown_48").cloned(), word(2));
     assert_eq!(got.at("block_2f0[1].unknown_48").cloned(), word(0xffff_ffff));
-    // The role's control word (the scorpion's 2 drives as a tank).
-    assert_eq!(got.at("unknown_1f2"), Some(&Val::Bytes(vec![2, 0])));
+    assert_eq!(got.at("unknown_1f2"), Some(&Val::Bytes(vec![0, 0])));
     // The front point steers with the role's steering words, the back one
     // takes the others.
     assert_eq!(got.at("block_2f0[0].unknown_4").cloned(), word(0x26));
-    assert_eq!(got.at("block_2f0[1].unknown_4").cloned(), word(0x32));
+    assert_eq!(got.at("block_2f0[1].unknown_4").cloned(), word(0x3a));
     assert!(matches!(got.at("block_2e8"), Some(Val::Block(b)) if b.is_empty()));
-    assert_eq!(got.at("block_268[0].unknown_0").cloned(), word(0x4795_6a00));
-    assert_eq!(
-        got.at("block_268[0].raw_14"),
-        Some(&Val::Raw(defs::RawVal::Word(0x4000_1234)))
-    );
+    assert_eq!(got.at("block_268[0].speed_ratio"), Some(&Val::Float(-1.0)));
+    assert_eq!(got.at("block_268[1].speed_ratio"), Some(&Val::Float(1.0)));
     let again = defs::to_built(def, &got, &mut |_| None).unwrap();
     assert_eq!(defs::from_built(def, &again).unwrap(), got);
     // Turret words stay off a vehicle with its own role.
@@ -2434,9 +2440,10 @@ fn hover_points_take_their_paired_points_words() {
     let def = Defs::builtin().group(map::FourCC(*b"vehi")).unwrap();
     let build = |points: &[crate::rebuild::Point]| {
         let root = crate::rebuild::vehicle(&VehicleSpec {
+            physics: None,
             source: &[],
-        references: &[],
-        object: &obj,
+            references: &[],
+            object: &obj,
             bounds: None,
             hlmt: None,
             seats: &[],

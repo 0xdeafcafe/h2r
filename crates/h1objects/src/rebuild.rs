@@ -654,12 +654,11 @@ pub fn seat_names(seat: &h1::Seat, markers: &[String]) -> SeatNames {
     }
 }
 
-/// The Halo 2 drivetrain selected for a source vehicle's type and point count.
+/// Native contact and flight parameters selected by type and point count.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct VehicleRole {
     pub member: String,
     pub controller: Vec<(String, u32)>,
-    pub control: u16,
     /// Native tire/tread coefficients, separated by steering.
     pub friction: Option<Vec<(String, u32)>>,
     pub friction_steered: Option<Vec<(String, u32)>>,
@@ -669,12 +668,10 @@ pub struct VehicleRole {
     pub hover_at: Vec<[f32; 3]>,
     /// Whether the H2 wheel/tread controller carries solid wheel shapes.
     pub wheel_shapes: bool,
-    /// Native gear curves, in the order the controller indexes them.
-    pub gears: Vec<Vec<(String, u32)>>,
 }
 
 /// `vehi +0x1f2`, the 16 bits after `vehicle_type`: how the driver's
-/// stick drives the vehicle, taken by type from the role's majority. V,
+/// stick drives the vehicle, selected by source type. V,
 /// every `vehi` on the retail disc: 2 on the scorpion (the one type 0) and
 /// its cannon turrets, 0 on every other vehicle of every type, so type 0
 /// takes 2 and the rest 0. Proved in a game run (2026-11-19, converted
@@ -730,28 +727,14 @@ pub const FRICTION_STEERS: u32 = 1 << 2;
 pub struct Point {
     /// Halo 1 mass-point centre in object space and its collision radius.
     pub sphere: [f32; 4],
-    pub antigravity: Option<[f32; 4]>,
+    pub antigravity: Option<[f32; 6]>,
     pub marker: String,
     pub region: String,
     /// That region's index among the model's regions (the `hlmt`'s), -1
     /// for none ([`FRICTION_REGION_INDEX`]).
     pub region_index: i16,
-    /// Whether the point steers: it lies ahead of the powered points'
-    /// middle (the warthog's front tires). It takes the role's steering
-    /// words ([`VehicleRole::friction_steered`]) where the role has them.
+    /// Powered group zero steers a jeep forward and drives the first tank tread.
     pub steered: bool,
-}
-
-/// Every 4-byte field of `e` that holds a plain word or a raw pointer, as
-/// (path, offset).
-fn gear_spans(e: &StructDef) -> Vec<(String, u32)> {
-    e.fields
-        .iter()
-        .filter(|f| {
-            matches!(f.kind, defs::Kind::Raw) || matches!(f.kind, defs::Kind::Unknown { len: 4, .. })
-        })
-        .map(|f| (f.name.clone(), f.offset))
-        .collect()
 }
 
 /// Candidate controllers with the closest contact count to the H1 vehicle.
@@ -800,21 +783,23 @@ pub fn vehicle_role(
             .map(|(_, m)| m)
             .collect();
     }
-    // A drivetrain's curves and coefficients are one native controller.
-    // Never vote on its pieces independently. The point count selects the
-    // controller above; the path breaks ties independently of tag order.
+    // Use one contact configuration for the chosen geometry.
     members.sort_by(|a, b| a.0.cmp(&b.0));
     let (name, root) = &members[0];
-    let root_fields = named_words(root, &[
-        0x218, 0x244, 0x250, 0x254, 0x258, 0x25c, 0x260, 0x264, 0x270, 0x274, 0x278,
-        0x27c, 0x280, 0x2b0, 0x2b4, 0x2b8, 0x2bc, 0x2c0, 0x2c4,
-        0x2d8, 0x2dc, 0x2e0, 0x2e4,
-    ]);
-    let (fat, hat, gat) = (field_offset(d, VEHI_FRICTION)? as usize,
-        field_offset(d, VEHI_HOVER)? as usize, field_offset(d, VEHI_GEARS)? as usize);
+    // +244 compares vehicle priority at 0x1ab48a, +25c slews the unit
+    // control fraction at 0xf045b. +274/+278 scale the two impulses at
+    // 0xe538c, and +2b0/+2bc are the high/low slip friction law. The H1
+    // contact solver uses directional drag instead (0x80f80, 0x83e30).
+    let mut root_fields = named_words(root, &[0x244, 0x25c, 0x274, 0x278, 0x2b0, 0x2bc]);
+    if matches!(vehicle_type, 3 | 5) {
+        // Only these types enter the aircraft controllers at 0xf2360 and
+        // 0xf4800 (dispatch table 0xf069c). Preserve their flight tuning.
+        root_fields.extend(named_words(root, &[0x218, 0x270, 0x27c, 0x280]));
+    }
+    let (fat, hat) = (field_offset(d, VEHI_FRICTION)? as usize,
+        field_offset(d, VEHI_HOVER)? as usize);
     let fdef = d.child(VEHI_FRICTION).expect("friction points");
     let hdef = d.child(VEHI_HOVER).expect("hover points");
-    let gdef = d.child(VEHI_GEARS).expect("gears");
     let mut friction = None;
     let mut friction_steered = None;
     let mut i = 0;
@@ -825,21 +810,14 @@ pub fn vehicle_role(
         i += 1;
     }
     let (hover_each, hover_at) = member_hover(base, root, d, hat, hdef)?;
-    let gspans = gear_spans(gdef);
-    let mut gears = Vec::new();
-    while let Some(x) = base.element(root, gat, gdef.size as usize, gears.len())? {
-        gears.push(gspans.iter().map(|(path, at)| (path.clone(), crate::base::u32_at(&x, *at as usize))).collect());
-    }
     Ok(Some(VehicleRole {
         member: name.clone(),
         controller: root_fields,
-        control: if vehicle_type == 0 { 2 } else { 0 },
         friction: friction.or_else(|| friction_steered.clone()),
         friction_steered,
         hover: hover_each.first().cloned(),
         hover_each, hover_at,
         wheel_shapes: member_wheel_shapes(base, root, d, fat, fdef)?.unwrap_or(false),
-        gears,
     }))
 }
 
@@ -1156,6 +1134,7 @@ pub fn model_sphere(model: &h1models::h1::Model) -> Option<(f32, [f32; 3])> {
 pub struct VehicleSpec<'a> {
     pub object: &'a h1::Object,
     pub source: &'a [u8],
+    pub physics: Option<&'a [u8]>,
     pub references: &'a [(String, FourCC, TagId)],
     /// The bounding sphere (radius, centre) written in place of Halo 1's
     /// ([`model_sphere`]); `None` keeps Halo 1's.
@@ -1249,7 +1228,7 @@ mod phantom_tests {
     }
 }
 
-/// Builds the vehicle from Halo 1 and its native drivetrain, with one
+/// Builds the vehicle from its Halo 1 drive and contact data, with one
 /// seat per source seat and one contact per powered mass point.
 pub fn vehicle(v: &VehicleSpec) -> Result<Block> {
     let d = def(b"vehi")?;
@@ -1257,8 +1236,39 @@ pub fn vehicle(v: &VehicleSpec) -> Result<Block> {
     if let Some(role) = v.role {
         role_words(&mut r, "", &role.controller)?;
     }
+    let powered_groups = if let Some(physics) = v.physics {
+        if physics.len() < h1::PHYS_SIZE {
+            return Err(Error::Truncated("vehicle physics"));
+        }
+        // H1 0x83df4 and H2 0x2069b6 both compute gravity * penetration /
+        // depth minus damping * normal velocity. H1 integrates per tick.
+        // Both slope responses interpolate on the contact normal's z
+        // component (0x83ea2, 0x206f96). Gravity is a dimensionless
+        // multiplier at 0x8399d and 0xf51b4.
+        for (field, source, factor) in [
+            ("unknown_2b4", 0x24, 1.0), ("unknown_2b8", 0x28, 30.0),
+            ("unknown_2c0", 0x2c, 1.0),
+            ("unknown_2e0", 0x1c, 1.0),
+        ] {
+            let value = f32::from_bits(crate::base::u32_at(physics, source)) * factor;
+            set(&mut r, field, Val::Bytes(value.to_le_bytes().to_vec()))?;
+        }
+        let full = f32::from_bits(crate::base::u32_at(physics, 0x2c));
+        let cutoff = f32::from_bits(crate::base::u32_at(physics, 0x30));
+        // Equal endpoints in H1's 0x123b4 give full grip at or below
+        // the endpoint. H2 0x206fad divides by the difference. Adjacent
+        // floats express the same step for every representable normal.
+        let cutoff = if cutoff == full { full.next_up() } else { cutoff };
+        set(&mut r, "unknown_2c4", Val::Bytes(cutoff.to_le_bytes().to_vec()))?;
+        crate::base::u32_at(physics, 0x68)
+    } else {
+        0
+    };
     let mut phantom = defs::default_record(d.child(VEHI_PHYSICS).expect("vehicle phantom"));
     if v.role.is_some_and(|role| role.friction.is_some()) && !v.points.is_empty() {
+        if v.points.len() > 16 {
+            return Err(Error::Invalid("vehicle exceeds the 16 friction contacts at 0x20678d".into()));
+        }
         write_vehicle_phantom(&mut phantom, v.points)?;
     } else {
         role(&mut phantom, &format!("{VEHI_PHYSICS}[0]."), TURRET_PHYSICS_ROLE)?;
@@ -1285,6 +1295,30 @@ pub fn vehicle(v: &VehicleSpec) -> Result<Block> {
             set(&mut r, path, Val::Bytes(value.to_le_bytes().to_vec()))?;
         }
     }
+    // The H1 hover solver (0x38152..0x38232) uses the same speed
+    // and acceleration in either direction on both horizontal axes.
+    // H2 selects four directional cap/rate pairs at 0xf32f5/0xf3562.
+    if v.vehicle_type == 4 {
+        for (source, scale, paths) in [
+            (0x2f8, 30.0, ["unknown_1f8", "unknown_22c", "unknown_230"]),
+            (0x300, 900.0, ["unknown_200", "unknown_234", "unknown_238"]),
+        ] {
+            if let Some(bytes) = v.source.get(source..source + 4) {
+                let value = f32::from_le_bytes(bytes.try_into().unwrap()) * scale;
+                for path in paths {
+                    set(&mut r, path, Val::Bytes(value.to_le_bytes().to_vec()))?;
+                }
+            }
+        }
+    }
+    if v.vehicle_type == 0 {
+        // H1 differential turn speed at full steering is the forward cap
+        // (0x3988b..0x398d6). H2 normalizes it by +0x22c at 0xf1d5b.
+        if let Some(bytes) = v.source.get(0x2f8..0x2fc) {
+            let cap = f32::from_le_bytes(bytes.try_into().unwrap()) * 30.0;
+            set(&mut r, "unknown_22c", Val::Bytes(cap.to_le_bytes().to_vec()))?;
+        }
+    }
     crate::arsenal::refs(&mut r, v.references)?;
     let (obj, hlmt, predicted) = (v.object, v.hlmt, v.predicted);
     set(
@@ -1303,10 +1337,8 @@ pub fn vehicle(v: &VehicleSpec) -> Result<Block> {
         Val::tag(FourCC(*b"hlmt"), hlmt.unwrap_or(TagId::NULL)),
     )?;
     set(&mut r, "vehicle_type", Val::Enum(v.vehicle_type.into()))?;
-    let control = v.role.map_or(0, |x| x.control);
-    if v.role.is_some() {
-        crate::provenance::note(VEHI_CONTROL, &Val::Bytes(control.to_le_bytes().to_vec()));
-    }
+    // 0xef747 selects the differential controller for mode 2.
+    let control: u16 = if v.vehicle_type == 0 { 2 } else { 0 };
     set(&mut r, VEHI_CONTROL, Val::Bytes(control.to_le_bytes().to_vec()))?;
     set(
         &mut r,
@@ -1403,13 +1435,39 @@ pub fn vehicle(v: &VehicleSpec) -> Result<Block> {
                 };
                 role_words(&mut x, &format!("{block}[{i}]."), words)?;
                 if block == VEHI_HOVER && let Some(lift) = p.antigravity {
-                    for (field, value) in ["unknown_8", "unknown_c", "unknown_10", "unknown_14"].into_iter().zip(lift) {
+                    // 0x84376/0x20634c measure height above the point radius.
+                    // Both lift laws subtract damping * normal velocity and
+                    // interpolate on the same two slope cosines (0x84418,
+                    // 0x84477, 0x206420, 0x206550). H1 has fixed lift height;
+                    // the H2 bank modifiers +0x2d8/+0x2dc stay zero.
+                    let [strength, offset, height, damping, full, cutoff] = lift;
+                    for (field, value) in [
+                        ("unknown_8", strength), ("unknown_c", offset), ("unknown_10", height),
+                        ("unknown_14", damping * 30.0), ("unknown_18", full),
+                        ("unknown_1c", cutoff), ("unknown_20", p.sphere[3]),
+                    ] {
                         set(&mut x, field, Val::Bytes(value.to_le_bytes().to_vec()))?;
                     }
                 }
                 set(&mut x, marker, Val::text(&p.marker))?;
                 set(&mut x, region, Val::text(&p.region))?;
                 if block == VEHI_FRICTION {
+                    if matches!(v.vehicle_type, 0 | 1) {
+                        let mut flags = words.iter().find(|(name, _)| name == FRICTION_FLAGS)
+                            .map_or(0, |(_, bits)| *bits);
+                        if v.vehicle_type == 1 {
+                            // H1 0x3925c..0x392af gives the two powered
+                            // groups opposite wheel quaternions. H2 tests
+                            // bits 2 and 3 at 0xf20f7/0xf2178.
+                            flags = (flags & !0xc) | if p.steered { 4 } else { 8 };
+                        } else {
+                            flags &= !tags::object::direct_drive::H1_SECOND_TRACK;
+                            if !p.steered {
+                                flags |= tags::object::direct_drive::H1_SECOND_TRACK;
+                            }
+                        }
+                        set(&mut x, FRICTION_FLAGS, Val::Bytes(flags.to_le_bytes().to_vec()))?;
+                    }
                     set(&mut x, "unknown_c", Val::Bytes(p.sphere[3].to_le_bytes().to_vec()))?;
                     let index: u32 = if p.region_index >= 0 {
                         p.region_index as u32
@@ -1426,27 +1484,26 @@ pub fn vehicle(v: &VehicleSpec) -> Result<Block> {
             }
             set(&mut r, block, Val::Block(out))?;
         }
-        if !role.gears.is_empty() {
-            let e = d.child(VEHI_GEARS).expect("vehi gears");
-            let mut out = Vec::new();
-            for (i, words) in role.gears.iter().enumerate() {
-                let mut x = defs::default_record(e);
-                for (path, w) in words {
-                    let raw = e
-                        .fields
-                        .iter()
-                        .any(|f| f.name == *path && matches!(f.kind, defs::Kind::Raw));
-                    let val = if raw {
-                        Val::Raw(defs::RawVal::Word(*w))
-                    } else {
-                        Val::Bytes(w.to_le_bytes().to_vec())
-                    };
-                    crate::provenance::note(format!("{VEHI_GEARS}[{i}].{path}"), &val);
-                    set(&mut x, path, val)?;
-                }
-                out.push(x);
-            }
-            set(&mut r, VEHI_GEARS, Val::Block(out))?;
+    }
+    // H1 passes drive commands to the solver only for two powered groups
+    // (jeep 0x39256, tank 0x393dc). Other layouts coast passively.
+    if matches!(v.vehicle_type, 0 | 1) {
+        // The H2 wheel loops index gear 0 for reverse and 1 for forward.
+        // H1 drives both directly in world units, with no engine inertia.
+        let gear = d.child(VEHI_GEARS).expect("vehicle gear");
+        let mut directions = Vec::new();
+        // Even a passive tank selects gear 0 or 1 at 0xef40d. It still
+        // needs two valid records when 0xf152c reads the selected ratio.
+        let ratios = if powered_groups == 2 { [-1.0, 1.0] } else { [0.0; 2] };
+        for ratio in ratios {
+            let mut e = defs::default_record(gear);
+            set(&mut e, "speed_ratio", Val::Float(ratio))?;
+            directions.push(e);
+        }
+        set(&mut r, VEHI_GEARS, Val::Block(directions))?;
+        if powered_groups == 2 {
+            let mode = tags::object::direct_drive::H1_DIRECT_DRIVE.to_le_bytes();
+            set(&mut r, "unknown_260", Val::Bytes(mode.to_vec()))?;
         }
     }
     built(d, &r)

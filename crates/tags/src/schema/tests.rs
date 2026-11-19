@@ -573,6 +573,22 @@ fn hud_thresholds_are_bytes_not_raw_pointers() {
     assert_eq!(&inferred, Schema::builtin());
 }
 
+#[test]
+fn gear_curves_are_inline_floats_through_extraction_and_inference() {
+    let mut inferred = Schema::builtin().clone();
+    let group = FourCC(*b"vehi");
+    let Some(Field::Block(gear)) = inferred.groups.get_mut(&group).unwrap().fields.get_mut(&0x268)
+    else { panic!("missing gear block") };
+    assert!(gear.fields.is_empty());
+    for offset in [0x14, 0x1c, 0x28, 0x2c] {
+        gear.fields.insert(offset, Field::Raw);
+    }
+    gear.fields.insert(0x10, Field::RawSize(0x14));
+    gear.fields.insert(0x38, Field::Word);
+    super::infer::apply_engine_data(&mut inferred);
+    assert_eq!(&inferred, Schema::builtin());
+}
+
 /// The weapon slots no retail tag fills but Halo 1's weapons do (the
 /// flashlight's power-on and power-off effects, the detonation effects,
 /// the collision sound, the magazines' chambering effect) are tag

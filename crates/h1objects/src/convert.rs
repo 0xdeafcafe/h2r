@@ -2633,9 +2633,13 @@ impl<'a> Converter<'a> {
             references.push(crate::arsenal::halo1_ref(path, &group, out));
         }
         let (attachments, functions, creation_effect) = self.object_outputs(b, &u.object, &mut rep)?;
+        let physics = u.object.physics.map(|id| {
+            h1::tag_bytes(self.h1, self.h1_tag(id)?, b"phys", h1::PHYS_SIZE)
+        }).transpose()?;
         let (root, roles) = crate::provenance::capture(|| {
             crate::rebuild::vehicle(&crate::rebuild::VehicleSpec {
                 source: b,
+                physics,
                 references: &references,
                 attachments: &attachments,
                 functions: &functions,
@@ -2655,7 +2659,7 @@ impl<'a> Converter<'a> {
         });
         let root = root?;
         rep.no_home.push(format!(
-            "vehi: Halo 1's type, flags (low half), camera, {} seats (label as the rider's mode, markers), {} weapons and {} powered mass points as friction or hover points; the type's role words and gears; {} attachments (looping sounds and effects) and the creation effect from Halo 1; {} seat camera tracks Halo 1's; HUD and damage null; {} Halo 1 references",
+            "vehi: Halo 1's type, flags (low half), camera, {} seats (label as the rider's mode, markers), {} weapons and {} powered mass points as friction or hover points; the native contact parameters and Halo 1 drive; {} attachments (looping sounds and effects) and the creation effect from Halo 1; {} seat camera tracks Halo 1's; HUD and damage null; {} Halo 1 references",
             u.seats.len(),
             weapons.len(),
             points.len(),
@@ -2834,20 +2838,12 @@ impl<'a> Converter<'a> {
                     marker,
                     region,
                     region_index,
-                    steered: false,
+                    steered: m.powered_mass_point == 0,
                 },
                 node,
                 position: local,
                 object: m.position,
             });
-        }
-        // A point ahead of the points' middle steers (the warthog's front
-        // tires, Halo 1's object space has x forward).
-        if !out.is_empty() {
-            let middle = out.iter().map(|p| p.object[0]).sum::<f32>() / out.len() as f32;
-            for p in &mut out {
-                p.point.steered = p.object[0] > middle + 1e-3;
-            }
         }
         Ok(out)
     }

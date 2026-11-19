@@ -1008,8 +1008,8 @@ pub struct Physics {
     /// (wheels and treads), bit 6 on the ghost's (antigravity). V: Blood
     /// Gulch's three vehicles.
     pub powered_flags: Vec<u32>,
-    /// Lift strength, offset, height and damping by powered mass point.
-    pub antigravity: Vec<[f32; 4]>,
+    /// Strength, offset, height, damping per tick and the two lift slope cosines.
+    pub antigravity: Vec<[f32; 6]>,
     /// `0x74`.
     pub mass_points: Vec<MassPoint>,
 }
@@ -1025,7 +1025,7 @@ impl Physics {
             moments: vec3(b, 0x50),
             powered_mass_points: Block::read(b, 0x68).map_or(0, |b| b.count),
             antigravity: elements(map, b, 0x68, 0x80)?.into_iter()
-                .map(|p| [0x24, 0x28, 0x2c, 0x30].map(|at| f32_at(p, at))).collect(),
+                .map(|p| [0x24, 0x28, 0x2c, 0x30, 0x34, 0x38].map(|at| f32_at(p, at))).collect(),
             powered_flags: elements(map, b, 0x68, 0x80)?
                 .into_iter()
                 .map(|p| u32_at(p, 0x20))
