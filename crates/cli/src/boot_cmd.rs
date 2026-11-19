@@ -11,7 +11,7 @@ const USAGE: &str = "usage:
   h2 build <disc.iso|default.xbe> [--out DIR] [--jobs N] [--check] [--tier fast|clang]
   h2 run   <disc.iso> [--out DIR] [--tier auto|fast|clang] [--data DIR] [--fresh-data] [--slices N] [--transfers N] [--no-stopgaps] [--no-d3d] [--no-bink] [--no-dsound] [--no-xapi] [--no-mappack] [--no-halo1]
            [--movies DIR | --no-movies] [--settings DIR]
-  h2 serve <disc.iso> [--socket PATH] [run's options]
+  h2 serve <disc.iso> [--socket PATH] [--system-link] [run's options]
 
 --out defaults to $TMPDIR/h2boot (generated C, objects, libh2game.dylib).
 --tier (or H2_TIER): `build` builds clang's optimised module by default, or
@@ -50,7 +50,9 @@ when --out's dylib is current for this h2 and the image, 3 otherwise.
 $H2_AGENT, else the cache directory's h2recomp/agent.sock) until the game
 exits, for `h2 agent` and other clients (docs/runtime/agent-api.md). It never
 builds: when --out's dylib isn't current it stops and says so. Use the same
-H2_OPT the image was built with.";
+H2_OPT the image was built with.
+--system-link enables the XNet sockets for a headless LAN game. Choose System
+  Link in the normal menus. No Live account or service URL is required.";
 
 pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     let tmp = std::env::temp_dir();
@@ -61,6 +63,7 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     // A server runs until the game exits.
     let mut slices = if serve { u64::MAX } else { 100_000u64 };
     let mut socket = None;
+    let mut system_link = false;
     let mut transfers = 50_000_000u64;
     let mut disc = None;
     let mut stopgaps = true;
@@ -87,6 +90,7 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             "--check" if cmd == "build" => check = true,
             "--background" if cmd == "build" => background = true,
             "--tier" => tier = Some(boot::tier::Choice::parse(&val()?)?),
+            "--system-link" => system_link = true,
             "--socket" if serve => socket = Some(PathBuf::from(val()?)),
             "--settings" if cmd != "build" => settings_dir = Some(PathBuf::from(val()?)),
             "--no-stopgaps" => stopgaps = false,
@@ -105,6 +109,7 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             _ => bail!("unexpected {a}\n\n{USAGE}"),
         }
     }
+    let live = headless_live_config(serve, system_link)?;
     let disc = disc
         .or_else(|| std::env::var_os("H2_DISC").map(PathBuf::from))
         .context(USAGE)?;
@@ -182,7 +187,7 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
         settings: settings_dir.map(|d| settings_store(cmd, &d)),
         ..boot::Host::default()
     };
-    let r = boot::run_hosted(
+    let r = boot::run_hosted_with_live(
         &xbe,
         &lib,
         &boot::RunOpts {
@@ -199,6 +204,7 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             movies,
         },
         host,
+        &live,
     );
     // The kernel's storage may outlive the run (or never drop): store its
     // pending write metadata now. Signals and other abnormal exits fall
@@ -215,6 +221,17 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     println!("stop: {}", r.stop);
     println!("last eip: {:#010x}", r.eip);
     Ok(())
+}
+
+/// System Link only needs the XNet boundary. Leave accounts and HTTP unset.
+fn headless_live_config(serve: bool, system_link: bool) -> Result<boot::LiveConfig> {
+    if system_link && !serve {
+        bail!("--system-link requires h2 serve");
+    }
+    Ok(boot::LiveConfig {
+        enabled: system_link,
+        ..Default::default()
+    })
 }
 
 /// `--settings DIR`: our settings store, built as `h2 play` builds its own
@@ -344,6 +361,19 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn system_link_enables_accountless_networking_only_on_request() {
+        let lan = headless_live_config(true, true).unwrap();
+        assert!(lan.enabled);
+        assert!(lan.accounts_path.is_none() && lan.server_url.is_none() && !lan.offer_new_account);
+        assert!(!headless_live_config(true, false).unwrap().enabled);
+        assert!(!headless_live_config(false, false).unwrap().enabled);
+        for cmd in ["run", "build"] {
+            let error = run(cmd, vec!["--system-link".into()]).unwrap_err();
+            assert_eq!(error.to_string(), "--system-link requires h2 serve");
+        }
     }
 
     #[test]

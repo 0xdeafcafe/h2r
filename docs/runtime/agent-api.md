@@ -637,6 +637,10 @@ How it behaves (**Code**, with tests in `crates/agent`):
   H2_OPT=2 H2_UI_WATCH=1 h2 serve disc/halo2.iso --out <image> --settings <dir>
   ```
 
+  For a headless System Link lobby, pass `--system-link` to `h2 serve`.
+  This enables XNet with no service URL or Live accounts. The coordinator
+  recipe uses one native process per console. [Dedicated host experiment](../live/dedicated-host.md#mac-system-link-spike)
+
   **Reaching a level select.** There is no campaign or level-select helper:
   `lobby mode campaign` (`agent_proto::sim::menu`) presses A on the main
   menu's Campaign row and expects screen `0xee`, and nothing goes further.
@@ -1235,9 +1239,9 @@ probe (`boot::agent_glue::session_view`):
 |---|---|---|
 | 0 | `none` (menus) | allowed (no players to write) |
 | 1 | `local` (campaign, split screen) | allowed |
-| 2, 3 | `coop_guest`, `coop_host` (synchronous) | **refused**: a write on one machine desyncs the others and trips the sim hash |
-| 4 | `mp_client` (distributed) | refused: the host owns the state and overwrites it |
-| 5 | `mp_host` (distributed) | allowed: host-authoritative |
+| 2, 3 | `coop_host`, `coop_guest` (synchronous) | **refused**: a write on one machine desyncs the others and trips the sim hash |
+| 4 | `mp_host` (distributed server world) | allowed: host-authoritative |
+| 5 | `mp_client` (distributed client world) | refused: the host owns the state and overwrites it |
 | unreadable | `unknown` | refused |
 
 A refusal is `INVALID_REQUEST` with the session in `data`. In co-op, drive
