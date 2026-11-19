@@ -23,18 +23,21 @@
 //! line is renormalised for the engine's distance tests.
 //!
 //! **Merging.** A BSP's solid space is the union of its solid leaves'
-//! cells, so two BSPs are united by putting a copy of the piece's tree in
-//! place of each of the level's open leaves the piece reaches: inside that
-//! leaf's cell, the piece decides; everywhere else the level does. The
-//! copy is gated by the piece's bounding box (six nodes whose outside
-//! keeps the level's leaf), so a piece whose tree calls unbounded space
-//! solid (an open mesh) cannot reach past its box. Each open leaf of a
-//! copy stands in part of a level leaf, so it carries, with its own 2D
-//! references, those of the level leaf whose planes its cell touches: a
-//! ray leaving the piece's open space into the level's solid looks its
-//! surface up in the leaf it leaves (`0x001dea00`, docs/formats/collision.md,
-//! "What the engine does with a BSP"). Cells are clipped convex polyhedra
-//! in `f64`.
+//! cells, so two BSPs are united by putting the piece's tree in place of
+//! each of the level's open leaves the piece's solid reaches: inside that
+//! leaf's cell, the piece decides; everywhere else the level does. One
+//! copy of the piece's tree serves every such leaf, each reaching it
+//! through six nodes testing the piece's bounding box whose outside keeps
+//! that level leaf, so a piece whose tree calls unbounded space solid (an
+//! open mesh) cannot reach past its box, and the merge grows the level by
+//! one tree and six nodes a leaf. An open leaf of the copy stands in part
+//! of the level, so it carries, with its own 2D references, those of each
+//! level leaf it stands in whose planes its cell there touches: a ray
+//! leaving the piece's open space into the level's solid looks its surface
+//! up in the leaf it leaves (`0x001dea00`, docs/formats/collision.md,
+//! "What the engine does with a BSP"), which tries every reference on the
+//! crossed plane and keeps a surface only when the point is on its
+//! polygon. Cells are clipped convex polyhedra in `f64`.
 
 use std::collections::HashMap;
 
@@ -520,158 +523,95 @@ fn shift(v: u16, by: usize) -> u16 {
     }
 }
 
-struct Graft<'a> {
+/// What the one copy of a piece's tree must hold for every level leaf it
+/// stands in: per piece leaf, the level references its cells touch and
+/// the level leaf it first stands in.
+struct Gather<'a> {
     level: &'a Bsp,
     piece: &'a Bsp,
-    base: Base,
-    out: &'a mut Bsp,
-    slot_leaf: usize,
-    stand_ins: &'a mut Vec<usize>,
-    /// Reference runs already written: `(plane, node)` words to first.
-    ranges: &'a mut HashMap<Vec<(u16, u16)>, u16>,
+    carried: Vec<Vec<Bsp2dRef>>,
+    host_flags: Vec<u8>,
+    stand_in: Vec<Option<usize>>,
 }
 
-impl Graft<'_> {
-    /// The piece's subtree `c` as new nodes and leaves; `cell` is the
-    /// space it covers (`None` once empty).
-    fn child(&mut self, c: Child, cell: Option<&Cell>, depth: usize) -> Result<Child> {
+impl Gather<'_> {
+    /// Walks the piece's subtree `c` over `cell`, inside level leaf
+    /// `host`; `true` when it reaches the piece's solid there.
+    fn walk(&mut self, c: Child, cell: &Cell, host: usize, depth: usize) -> Result<bool> {
         if depth > self.piece.nodes.len() {
             return Err(Error::Invalid("a piece's 3D tree has a cycle"));
         }
         match c {
-            Child::None => Ok(Child::None),
-            Child::Leaf(l) => self.leaf(l as usize, cell),
+            Child::None => Ok(true),
+            Child::Leaf(l) => {
+                self.leaf(l as usize, cell, host)?;
+                Ok(false)
+            }
             Child::Node(n) => {
                 let src = *self
                     .piece
                     .nodes
                     .get(n as usize)
                     .ok_or(Error::Invalid("a piece's 3D child names no node"))?;
-                let at = self.out.nodes.len();
-                if at > MAX_CHILD {
-                    return Err(too_big("3D node", at));
-                }
-                self.out.nodes.push(Node3d {
-                    plane: (usize::from(src.plane) + self.base.planes) as u16,
-                    back: Child::None,
-                    front: Child::None,
-                });
                 let (normal, d) = plane_of(self.piece, usize::from(src.plane))?;
-                let side = |front: bool| {
-                    cell.map(|c| c.clip(normal, d, front))
-                        .filter(|c| !c.is_empty())
-                };
-                let (bc, fc) = (side(false), side(true));
-                let back = self.child(src.back, bc.as_ref(), depth + 1)?;
-                let front = self.child(src.front, fc.as_ref(), depth + 1)?;
-                self.out.nodes[at].back = back;
-                self.out.nodes[at].front = front;
-                Ok(Child::Node(at as u32))
+                let mut solid = false;
+                for (front, child) in [(false, src.back), (true, src.front)] {
+                    let part = cell.clip(normal, d, front);
+                    if !part.is_empty() {
+                        solid |= self.walk(child, &part, host, depth + 1)?;
+                    }
+                }
+                Ok(solid)
             }
         }
     }
 
-    /// A copy of piece leaf `l` standing in the slot's level leaf: its own
-    /// references, after those of the level leaf whose planes `cell`
-    /// touches.
-    fn leaf(&mut self, l: usize, cell: Option<&Cell>) -> Result<Child> {
-        let src = *self
-            .piece
-            .leaves
-            .get(l)
-            .ok_or(Error::Invalid("a piece's leaf is missing"))?;
-        let host = *self
+    /// Piece leaf `l` reached over `cell` inside level leaf `host`: it
+    /// carries each of the host's references whose plane `cell` touches.
+    fn leaf(&mut self, l: usize, cell: &Cell, host: usize) -> Result<()> {
+        if l >= self.piece.leaves.len() {
+            return Err(Error::Invalid("a piece's leaf is missing"));
+        }
+        let h = *self
             .level
             .leaves
-            .get(self.slot_leaf)
+            .get(host)
             .ok_or(Error::Invalid("a level leaf is missing"))?;
-        let mut carried = Vec::new();
-        if let Some(cell) = cell
-            && host.ref_count > 0
-        {
-            let first = usize::from(host.first_ref);
-            let refs = self
-                .level
-                .refs
-                .get(first..first + usize::from(host.ref_count))
-                .ok_or(Error::Invalid(
-                    "a level leaf's references run past the block",
-                ))?;
-            for r in refs {
-                let (n, d) = plane_of(self.level, usize::from(r.plane & 0x7fff))?;
-                if cell.touches(n, d) {
-                    carried.push(*r);
-                }
+        self.stand_in[l].get_or_insert(host);
+        if h.ref_count == 0 {
+            return Ok(());
+        }
+        let first = usize::from(h.first_ref);
+        let refs = self
+            .level
+            .refs
+            .get(first..first + usize::from(h.ref_count))
+            .ok_or(Error::Invalid(
+                "a level leaf's references run past the block",
+            ))?;
+        for r in refs {
+            let (n, d) = plane_of(self.level, usize::from(r.plane & 0x7fff))?;
+            if cell.touches(n, d) && !self.carried[l].contains(r) {
+                self.carried[l].push(*r);
+                self.host_flags[l] |= h.flags & 1;
             }
         }
-        let leaf = if carried.is_empty() {
-            Leaf {
-                flags: src.flags,
-                ref_count: src.ref_count,
-                first_ref: if src.ref_count == 0 {
-                    u16::MAX
-                } else {
-                    shift(src.first_ref, self.base.refs)
-                },
-            }
-        } else {
-            let first = usize::from(src.first_ref);
-            let own = self
-                .piece
-                .refs
-                .get(first..first + usize::from(src.ref_count))
-                .ok_or(Error::Invalid(
-                    "a piece leaf's references run past the block",
-                ))?;
-            let b = self.base;
-            carried.extend(own.iter().map(|r| Bsp2dRef {
-                plane: shift_flagged(r.plane, b.planes),
-                node: if r.node == u16::MAX {
-                    r.node
-                } else {
-                    shift_2d(r.target(), b).raw()
-                },
-            }));
-            let count = u8::try_from(carried.len()).map_err(|_| Error::TooBig {
-                what: "leaf 2D reference count",
-                value: carried.len() as u32,
-                max: 0xff,
-            })?;
-            let key: Vec<(u16, u16)> = carried.iter().map(|r| (r.plane, r.node)).collect();
-            let first_ref = match self.ranges.get(&key) {
-                Some(&f) => f,
-                None => {
-                    let f = self.out.refs.len();
-                    if f + carried.len() > MAX_INDEX + 1 {
-                        return Err(too_big("2D reference", f + carried.len()));
-                    }
-                    self.out.refs.extend_from_slice(&carried);
-                    self.ranges.insert(key, f as u16);
-                    f as u16
-                }
-            };
-            Leaf {
-                flags: src.flags | (host.flags & 1),
-                ref_count: count,
-                first_ref,
-            }
-        };
-        let at = self.out.leaves.len();
-        if at > MAX_CHILD {
-            return Err(too_big("leaf", at));
-        }
-        self.out.leaves.push(leaf);
-        self.stand_ins.push(self.slot_leaf);
-        Ok(Child::Leaf(at as u32))
+        Ok(())
     }
 }
 
 /// Merges `piece` (in the level's space) into `level`: its planes, 2D
 /// nodes, surfaces (material `material`, no breakable surface), edges,
-/// vertices and references appended, and a copy of its tree, behind its
-/// gate box, in place of each open leaf of the level its box reaches.
-/// Nothing changes when it fails (an index past what Halo 2's packed
-/// fields hold).
+/// vertices and references appended, one copy of its 3D tree, and in place
+/// of each open leaf of the level that the piece's solid reaches, six
+/// nodes testing the piece's box whose outside keeps that leaf and whose
+/// inside is the copy. The copy's open leaves carry the references of
+/// every such level leaf whose planes their cells touch (the matcher tries
+/// each reference on the crossed plane and keeps a surface only when the
+/// point is on its polygon, so one a leaf doesn't border costs a lookup,
+/// no false hit). Nothing changes when the piece's solid reaches no open
+/// leaf, or when it fails (an index past what Halo 2's packed fields
+/// hold).
 pub fn merge(level: &mut Bsp, piece: &Bsp, material: u16) -> Result<Merged> {
     if piece.nodes.is_empty() || piece.surfaces.is_empty() || piece.vertices.is_empty() {
         return Ok(Merged::default());
@@ -764,20 +704,119 @@ pub fn merge(level: &mut Bsp, piece: &Bsp, material: u16) -> Result<Merged> {
         out.planes.push(Plane([n[0], n[1], n[2], -lo[a] as f32]));
     }
 
-    let mut merged = Merged::default();
-    let mut ranges = HashMap::new();
-    for slot in slots(level, lo, hi)? {
+    // The level leaves the piece's solid reaches, and what its copy's
+    // leaves carry from them.
+    let mut gather = Gather {
+        level: &*level,
+        piece,
+        carried: vec![Vec::new(); piece.leaves.len()],
+        host_flags: vec![0; piece.leaves.len()],
+        stand_in: vec![None; piece.leaves.len()],
+    };
+    let mut kept = Vec::new();
+    for slot in slots(&*level, lo, hi)? {
         let mut cell = Cell::cube(lo, hi);
         for (n, d, front) in &slot.path {
             cell = cell.clip(*n, *d, *front);
         }
-        if cell.is_empty() {
-            continue;
+        // A leaf of an earlier piece's shared copy is reached once per
+        // gate in front of it: gathered on every path, gated once.
+        if !cell.is_empty()
+            && gather.walk(Child::Node(0), &cell, slot.leaf, 0)?
+            && !kept
+                .iter()
+                .any(|k: &Slot| (k.node, k.front) == (slot.node, slot.front))
+        {
+            kept.push(slot);
         }
+    }
+    let Some(first_host) = kept.first().map(|s| s.leaf) else {
+        return Ok(Merged::default());
+    };
+
+    // The copy: the piece's nodes and leaves, once.
+    let (n0, l0) = (out.nodes.len(), out.leaves.len());
+    let nodes_end = n0 + piece.nodes.len() + 6 * kept.len();
+    if nodes_end > MAX_CHILD + 1 {
+        return Err(too_big("3D node", nodes_end));
+    }
+    if l0 + piece.leaves.len() > MAX_CHILD + 1 {
+        return Err(too_big("leaf", l0 + piece.leaves.len()));
+    }
+    let kid = |c: Child| -> Result<Child> {
+        Ok(match c {
+            Child::None => Child::None,
+            Child::Node(k) if (k as usize) < piece.nodes.len() => Child::Node(k + n0 as u32),
+            Child::Leaf(j) if (j as usize) < piece.leaves.len() => Child::Leaf(j + l0 as u32),
+            _ => return Err(Error::Invalid("a piece's 3D child is out of range")),
+        })
+    };
+    for n in &piece.nodes {
+        out.nodes.push(Node3d {
+            plane: (usize::from(n.plane) + base.planes) as u16,
+            back: kid(n.back)?,
+            front: kid(n.front)?,
+        });
+    }
+    let mut merged = Merged::default();
+    for (j, src) in piece.leaves.iter().enumerate() {
+        let carried = &gather.carried[j];
+        let leaf = if carried.is_empty() {
+            Leaf {
+                flags: src.flags,
+                ref_count: src.ref_count,
+                first_ref: if src.ref_count == 0 {
+                    u16::MAX
+                } else {
+                    shift(src.first_ref, base.refs)
+                },
+            }
+        } else {
+            let first = usize::from(src.first_ref);
+            let own = if src.ref_count == 0 {
+                &[][..]
+            } else {
+                piece
+                    .refs
+                    .get(first..first + usize::from(src.ref_count))
+                    .ok_or(Error::Invalid(
+                        "a piece leaf's references run past the block",
+                    ))?
+            };
+            let count = carried.len() + own.len();
+            let count = u8::try_from(count).map_err(|_| Error::TooBig {
+                what: "leaf 2D reference count",
+                value: count as u32,
+                max: 0xff,
+            })?;
+            let at = out.refs.len();
+            if at + usize::from(count) > MAX_INDEX + 1 {
+                return Err(too_big("2D reference", at + usize::from(count)));
+            }
+            out.refs.extend_from_slice(carried);
+            out.refs.extend(own.iter().map(|r| Bsp2dRef {
+                plane: shift_flagged(r.plane, base.planes),
+                node: if r.node == u16::MAX {
+                    r.node
+                } else {
+                    shift_2d(r.target(), base).raw()
+                },
+            }));
+            Leaf {
+                flags: src.flags | gather.host_flags[j],
+                ref_count: count,
+                first_ref: at as u16,
+            }
+        };
+        out.leaves.push(leaf);
+        merged
+            .stand_ins
+            .push(gather.stand_in[j].unwrap_or(first_host));
+    }
+
+    // Each kept level leaf behind the gate box.
+    for slot in &kept {
         let first = out.nodes.len();
-        if first + 6 > MAX_CHILD {
-            return Err(too_big("3D node", first + 6));
-        }
         for k in 0..6 {
             out.nodes.push(Node3d {
                 plane: (gate + k) as u16,
@@ -785,17 +824,7 @@ pub fn merge(level: &mut Bsp, piece: &Bsp, material: u16) -> Result<Merged> {
                 front: Child::Leaf(slot.leaf as u32),
             });
         }
-        let root = Graft {
-            level,
-            piece,
-            base,
-            out: &mut out,
-            slot_leaf: slot.leaf,
-            stand_ins: &mut merged.stand_ins,
-            ranges: &mut ranges,
-        }
-        .child(Child::Node(0), Some(&cell), 0)?;
-        out.nodes[first + 5].back = root;
+        out.nodes[first + 5].back = Child::Node(n0 as u32);
         let parent = &mut out.nodes[slot.node];
         let gated = Child::Node(first as u32);
         if slot.front {
@@ -803,11 +832,9 @@ pub fn merge(level: &mut Bsp, piece: &Bsp, material: u16) -> Result<Merged> {
         } else {
             parent.back = gated;
         }
-        merged.slots += 1;
     }
-    if merged.slots > 0 {
-        *level = out;
-    }
+    merged.slots = kept.len();
+    *level = out;
     Ok(merged)
 }
 

@@ -114,6 +114,41 @@ fn keeps_the_level(before: &Bsp, after: &Bsp) {
     assert_eq!(after.leaves[..before.leaves.len()], before.leaves[..]);
 }
 
+/// What the merged BSP's validator finds, less the level's own surfaces
+/// with no material (`0xffff`, which retail Halo 2 structure BSPs hold too,
+/// `h1convert/tests/h2_sbsp.rs`; the object validator doesn't allow it);
+/// and every surface the merge added names material 0.
+fn problems(before: &Bsp, after: &Bsp, materials: usize) -> Vec<String> {
+    let n = before.surfaces.len();
+    assert!(
+        after.surfaces[n..].iter().all(|s| s.material == 0),
+        "merged surfaces take material 0"
+    );
+    after
+        .validate(materials)
+        .into_iter()
+        .filter(|p| {
+            let level_none = p
+                .strip_prefix("surface ")
+                .and_then(|r| r.split_once(':'))
+                .and_then(|(i, rest)| Some((i.parse::<usize>().ok()?, rest)))
+                .is_some_and(|(i, rest)| {
+                    i < n
+                        && rest == " material 65535 out of range"
+                        && before.surfaces[i].material == u16::MAX
+                });
+            !level_none
+        })
+        .collect()
+}
+
+/// Growth of the merged BSP over the level's: node count and encoded bytes
+/// (what the structure's tag space grows by, MOPP code aside).
+fn growth(before: &Bsp, after: &Bsp) -> (f64, usize, usize) {
+    let (a, b) = (before.encode_blocks(0).len(), after.encode_blocks(0).len());
+    (after.nodes.len() as f64 / before.nodes.len() as f64, a, b)
+}
+
 fn sizes(b: &Bsp) -> String {
     format!(
         "{} nodes, {} planes (of 32,768), {} leaves, {} references (of 65,535), {} 2D nodes (of 32,768), {} surfaces (of 32,767), {} edges, {} vertices",
@@ -159,8 +194,17 @@ fn bloodgulch_boulder_doublewide_is_level_collision() {
         .filter(|u| u.contains("collision not"))
         .collect();
     assert!(refused.is_empty(), "{refused:#?}");
-    assert_eq!(after.validate(p.collision_materials), Vec::<String>::new());
+    assert_eq!(
+        problems(&before, after, p.collision_materials),
+        Vec::<String>::new()
+    );
     keeps_the_level(&before, after);
+    let (ratio, bytes_before, bytes_after) = growth(&before, after);
+    eprintln!(
+        "nodes x{ratio:.2}; collision BSP {bytes_before} bytes, merged {bytes_after} (+{})",
+        bytes_after - bytes_before
+    );
+    assert!(ratio < 2.0, "the merge is proportionate: nodes x{ratio:.2}");
     assert_eq!(p.sound_leaves.len(), after.leaves.len());
 
     let placed = placed_collision(&mut objects, scenery);
@@ -321,10 +365,13 @@ fn every_multiplayer_map_merges_its_placed_scenery() {
         let scenery = p.scenery.as_ref().expect("scenery planned");
         let with = placed_collision(&mut objects, scenery).len();
         eprintln!(
-            "{name}: {} scenery placed, {with} with collision, {} merged; {}",
+            "{name}: {} scenery placed, {with} with collision, {} merged; {}; nodes x{:.2}, collision BSP {} to {} bytes",
             scenery.placed.len(),
             scenery.solid,
-            sizes(after)
+            sizes(after),
+            growth(&before, after).0,
+            growth(&before, after).1,
+            growth(&before, after).2
         );
         let refused: Vec<_> = p
             .applied
@@ -334,7 +381,7 @@ fn every_multiplayer_map_merges_its_placed_scenery() {
             .collect();
         assert!(refused.is_empty(), "{name}: {refused:#?}");
         assert_eq!(
-            after.validate(p.collision_materials),
+            problems(&before, after, p.collision_materials),
             Vec::<String>::new(),
             "{name}"
         );

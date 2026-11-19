@@ -108,21 +108,28 @@ Ry(−pitch) · Rx(roll)`, the record's `+0x14` as it is drawn) and merged:
 - **Merging.** The piece's planes, 2D nodes, surfaces, edges, vertices and
   references are appended (surfaces take collision material 0, every
   converted collision material being the base's one template; no
-  breakable surface). Then each of the level's open leaves the piece's
-  bounding box (its vertices' box, 0.05 out) reaches is replaced by six
-  nodes testing that box, whose outside keeps the level's leaf, and inside
-  them a copy of the piece's 3D tree. Inside that leaf's cell the piece
-  decides solid or open, everywhere else the level does: the union. The
-  box keeps a piece whose tree calls unbounded space solid (an open mesh)
-  inside it. Each open leaf of a copy carries, before its own references,
-  those of the level leaf it stands in whose planes its cell touches
-  (cells are the box clipped by the level's path planes and the piece's,
-  convex polyhedra in `f64`): a ray that leaves the piece's open space
-  into the level's solid looks the surface up in the leaf it leaves.
-  Identical carried runs are shared. New leaves are in the cluster of the
-  level leaf they stand in (`sbsp +0x2c`, the sound and visibility
-  cluster). The level's own blocks keep their indices; nothing is
-  renumbered.
+  breakable surface), and one copy of the piece's 3D tree. Then each of
+  the level's open leaves the piece's solid reaches (inside its bounding
+  box, its vertices' box 0.05 out) is replaced by six nodes testing that
+  box, whose outside keeps the level's leaf and whose inside is the
+  copy. Inside that leaf's cell the piece decides solid or open,
+  everywhere else the level does: the union. The box keeps a piece whose
+  tree calls unbounded space solid (an open mesh) inside it. Each open
+  leaf of the copy carries, before its own references, those of every
+  level leaf it stands in whose planes its cell there touches (cells are
+  the box clipped by the level's path planes and the piece's, convex
+  polyhedra in `f64`): a ray that leaves the piece's open space into the
+  level's solid looks the surface up in the leaf it leaves, and the
+  matcher tries each reference on the crossed plane, keeping a surface
+  only when the point is on its polygon, so a reference a cell doesn't
+  border costs a lookup and gives no false hit. A copied leaf is in the
+  cluster of the first level leaf it stands in (`sbsp +0x2c`, the sound
+  and visibility cluster). The level's own blocks keep their indices;
+  nothing is renumbered. So a merge grows the level by one tree and six
+  nodes per level leaf. Version 92 as first written copied the whole
+  tree into every level leaf the box reached instead: Blood Gulch's
+  12,071 nodes became 51,007 for 25 placements, past what the pinned
+  build's BSP space holds.
 - **Havok.** The structure's MOPP code is built over every structure
   surface after the merge (`structure_mopp`), so the rocks' surfaces are
   keyed with the level's.
@@ -145,8 +152,10 @@ solid, a ray from above stops on the rock's top where the rock alone is
 hit and not on the ground, the MOPP code returns that surface there, the
 ground is found as before around the rock, and a 121 by 121 grid of
 vertical rays away from every placed object meets the level exactly as
-before; every multiplayer map merges every placement, validates, and keys
-every surface in its MOPP code).
+before; every multiplayer map merges every placement, validates (the level's own
+surfaces may hold material `0xffff`, none, as retail structure BSPs do),
+and keys every surface in its MOPP code; each prints its node growth and
+collision BSP bytes before and after).
 
 ## Halo 2 sandbox table (**Built** as `h1convert::sandbox`)
 
