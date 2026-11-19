@@ -508,7 +508,7 @@ fn each_bot_has_its_own_colours_and_emblem_never_the_humans() {
 }
 
 #[test]
-fn signing_out_calls_the_games_sign_out_per_port_then_the_frame() {
+fn signing_out_calls_the_games_whole_slot_sign_out_per_port_then_the_frame() {
     const THEN: u32 = 0x0012_5b40;
     let f = |cx: Cx| -> EntryFuture { Box::pin(sign_out_then(cx, vec![1, 3], THEN)) };
     let regs = Regs {
@@ -523,8 +523,35 @@ fn signing_out_calls_the_games_sign_out_per_port_then_the_frame() {
     });
     assert_eq!(run.result, Ok(Ret::new(0x77, 0)), "the frame's own return");
     let calls: Vec<(u32, Option<u32>)> = run.calls.iter().map(|c| (c.target, c.eax)).collect();
-    let out = points::PROFILE_SIGN_OUT.base;
+    // The whole slot's sign-out (Live, local user, profile), not the
+    // profile's alone: with its local user kept, the lobby's session kept
+    // the bot's player (the user's run: off, and they stayed in the lobby).
+    let out = points::SLOT_SIGN_OUT.base;
     assert_eq!(calls, vec![(out, Some(1)), (out, Some(3)), (THEN, None)]);
+    assert!(
+        run.calls
+            .iter()
+            .all(|c| c.target != points::PROFILE_SIGN_OUT.base),
+        "never the profile's sign-out alone"
+    );
+}
+
+#[test]
+fn a_slot_is_held_while_it_has_a_profile_or_xbox_live() {
+    let mut g = FakeGuest::new();
+    slots(&mut g);
+    assert!(!slot_held(&g, 1).unwrap(), "empty");
+    g.put_u32(slot(1), SLOT_PROFILE);
+    assert!(slot_held(&g, 1).unwrap(), "a profile");
+    g.put_u32(slot(1), SLOT_PROFILE | SLOT_LIVE);
+    assert!(slot_held(&g, 1).unwrap(), "a profile on Live");
+    // A profile signed out with the Live flag left (what the profile-only
+    // sign-out left behind): still held, so it is signed out again.
+    g.put_u32(slot(1), SLOT_LIVE);
+    assert!(slot_held(&g, 1).unwrap(), "Live with no profile");
+    g.put_u32(slot(1), 0);
+    assert!(!slot_held(&g, 1).unwrap(), "signed out");
+    assert!(!slot_held(&g, 2).unwrap(), "another port");
 }
 
 fn slots(g: &mut FakeGuest) {

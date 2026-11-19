@@ -260,14 +260,21 @@ pub async fn sign_in_then(
     Ok(Ret::new(r.eax, 0))
 }
 
-/// Signs the profiles on `ports` out with the game's own
-/// `PROFILE_SIGN_OUT` (slot in EAX), then calls `then` (a `fn() ret 0`
-/// the hook answering for, so its frame still runs) and returns its EAX.
-/// The leaving bots' slots are empty after; their pads go a frame later
-/// ([`crate::local::leave_step`]).
+/// Signs the slots on `ports` out altogether with the game's own
+/// `SLOT_SIGN_OUT` (slot in EAX: off Xbox Live, its local user freed, the
+/// profile signed out), then calls `then` (a `fn() ret 0` the hook
+/// answering for, so its frame still runs) and returns its EAX. The
+/// leaving bots' slots are empty after ([`slot_held`] false); their pads
+/// go a frame later ([`crate::local::leave_step`]).
+///
+/// Not `PROFILE_SIGN_OUT` alone: that clears the profile and nothing
+/// else, so the slot kept its local user with its Live identity, and the
+/// squad session (which drops a player only when its local user goes,
+/// `0x65770` status 0) kept the bot in the lobby (the user's run,
+/// 2026-11-19: "i turned them off and they stay in the lobby").
 pub async fn sign_out_then(cx: Cx, ports: Vec<u8>, then: u32) -> Result<Ret, EntryError> {
     for p in ports {
-        cx.call(GuestCall::new(points::PROFILE_SIGN_OUT.base).eax(u32::from(p)))
+        cx.call(GuestCall::new(points::SLOT_SIGN_OUT.base).eax(u32::from(p)))
             .await?;
     }
     let r = cx.call(GuestCall::new(then)).await?;
@@ -309,6 +316,14 @@ pub const LOCAL_USER_ID: u32 = 1;
 /// The slot's flags (`+0`).
 pub fn slot_flags(m: &dyn GuestMemory, port: u32) -> R<u32> {
     m.u32(slot(port))
+}
+
+/// Whether `port`'s slot still holds anything a leaving bot must give up
+/// before its pad goes: a profile or Xbox Live ([`SLOT_PROFILE`],
+/// [`SLOT_LIVE`]). `SLOT_SIGN_OUT` clears both, with the slot's local
+/// user; a slot left on Live with no profile is signed out again.
+pub fn slot_held(m: &dyn GuestMemory, port: u32) -> R<bool> {
+    Ok(slot_flags(m, port)? & (SLOT_PROFILE | SLOT_LIVE) != 0)
 }
 
 /// Whether `port`'s slot is signed in to Xbox Live.

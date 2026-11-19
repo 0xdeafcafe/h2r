@@ -706,9 +706,12 @@ changes:
   `0x1902c1`). The driver writes it after the sign-in.
 
 Because the file is `-1`, nothing is saved. The bot leaves through
-`0x18fc08` (`PROFILE_SIGN_OUT`, slot in EAX), called the same way, once
+`0x190d4b` (`SLOT_SIGN_OUT`, slot in EAX), called the same way, once
 it is removed and no game runs; its pad is unplugged only after that
-(stage 7, "a lower count, or Off").
+(stage 7, "a lower count, or Off"). `0x18fc08` alone (`PROFILE_SIGN_OUT`)
+is not enough: it only zeroes the block, clears `0x10` and sets `+0x1f8`
+to -1, so the slot keeps its local user and Live identity, and the
+lobby's session keeps its player ("Leaving the lobby (traced)" below).
 
 Whether a signed-in slot with its mask bit is enough for the game to make a
 local player in Split Screen, System Link and Live custom games is the
@@ -2494,10 +2497,12 @@ list for the user to play (§11).
        does not unplug its pad (in the user's run that brought up
        "CONTROLLER DISCONNECTED" for port 4 and the human could not move):
        the bot leaves the books with an idle pad still plugged. Out of a
-       game (`guest::game_tick` is `None`), before `SOUND_UPDATE`, the glue
-       signs it out of its slot with the game's `PROFILE_SIGN_OUT`
-       (`0x18fc08`, slot in EAX; a guest call, then the frame runs), and
-       once the slot is empty it unplugs the pad
+       game (`guest::in_game` false: the menus and a pregame lobby),
+       before `SOUND_UPDATE`, the glue signs its slot out with the game's
+       `SLOT_SIGN_OUT` (`0x190d4b`, slot in EAX; a guest call, then the
+       frame runs): off Xbox Live, its local user freed, its profile out,
+       so a lobby's session drops its player. Once the slot holds no
+       profile and no Live (`guest::slot_held`) it unplugs the pad
        (`bots::local::leave_step`). During a game nothing is removed: the
        bot stands idle until the game ends. Turning Clankers on again
        before then gives the new bot the leaving bot's pad back.
@@ -2559,7 +2564,9 @@ list for the user to play (§11).
        back;
      - leaving: nothing during a game, then sign-out, then unplug
        (`local::leave_step`); `guest::sign_out_then` calls
-       `PROFILE_SIGN_OUT` per port, then the frame;
+       `SLOT_SIGN_OUT` per port (never `PROFILE_SIGN_OUT` alone), then
+       the frame; a slot is held while it has a profile or Live
+       (`guest::slot_held`);
      - the gate: only the bare players screen with an empty slot
        (`bot_glue` tests, `ui_watch` dialog tests);
      - the look: valid by `0x153750`'s checks, never the human's colours
@@ -2593,7 +2600,9 @@ list for the user to play (§11).
      6. Set Count to 1: one bot leaves. In a game it stands idle until
         the game ends (no "controller disconnected"); in the menus the log
         says `bots: signing the bots on ports [2] out`, then `bots: bot N
-        left: its pad is unplugged`. Set Clankers to Off: none play.
+        left: its pad is unplugged`, and in a System Link or Live lobby
+        the bot leaves the lobby's list. Set Clankers to Off: none play,
+        and the lobby lists none.
      7. Quit and start `h2 play` again: the page shows what you left it
         at; `h2 settings` lists the `clankers.*` values.
      8. Send the `clankers:` and `ui:` log lines if the row is missing,
@@ -2831,6 +2840,65 @@ list for the user to play (§11).
      6. Split Screen with Clankers On: the players screen shows you
         alone, the lobby and the game have the bots. Say whether B on
         the players screen backs out or opens your profile menu.
+   **Built: Off takes the bots out of the lobby** (2026-11-19). The
+   user's run: "clankers still a bit buggy, i turned them off and they
+   stay in the lobby."
+   - **Cause.** A bot taken off was signed out with `PROFILE_SIGN_OUT`
+     (`0x18fc08`), which only zeroes the profile block, clears `0x10` and
+     sets `+0x1f8` to -1. The slot kept its local user (`+4`, an entry in
+     use at `0x4cd904`) with its Live identity (`0x20`, `+8`, `+0x470`).
+     The squad session's local-player pass (`0x65770`) drops a player only
+     when its local user goes (`0x646b0` status 0: entry `+0` clear, or on
+     Live the offline flags `0xBAD00000`; then `0x65b80`), so the bot
+     stayed in the lobby's list, on Live as its bot account or guest, and
+     the glue unplugged its pad all the same. Clankers on again then took
+     a second local user for the port (`0x18fb34` takes one when the slot
+     has no profile), leaving the first one's player behind.
+   - **Leaving the lobby (traced).** The game's own whole-slot sign-out is
+     `0x190d4b` (`SLOT_SIGN_OUT`, slot in EAX, `ret`): `0x190da5(slot)`
+     (stdcall, `ret 4`: clears `0x20`, zeroes the account record and the
+     Live state around it, releases `+0xc14` and `+0xc18` through
+     `0x6b640` via `0x190d0a`), then the slot's local user freed
+     (`0x64690`, EDX the index: zeroes its `0xd0` bytes) and `+4` set to
+     -1, then `0x18fc08`, then the flags, `+8..+0x13` and the name
+     cleared and `+0x14` set to -1. The profile UI signs a profile out
+     with it (`0x24b807`), and a failed host logon signs every slot of
+     that account out with it (`0x190186`, at `0x1901e7`). The glue now
+     calls it in place of `0x18fc08` (`guest::sign_out_then`); with the
+     local user gone, the pass takes the bot's player out of the session
+     on its next frame, as when a second controller's player signs out
+     of a lobby. The pad still goes a frame later, once the slot holds no
+     profile and no Live (`guest::slot_held`, `local::leave_step`).
+   - **The server.** The game's session drops the player, and the Live
+     HLE hears of it as of any player leaving. The driver already tells
+     the hosted session its bot accounts every 30 frames
+     (`Driver::report_players`), once more with none after Off.
+   - **Phantoms** were already right: they join only while a game runs,
+     and one taken off has its peer taken out at the next frame
+     (`Phantoms::tick`), every one when the game ends.
+   - **Not changed.** A lower count or Off during a game still waits for
+     the game to end (an unplugged pad pauses it). A Clankermatch's bots
+     are the playlist's, not the page's: Off on the Clankers page does
+     not apply there.
+   - Tests: `-p bots --lib guest`
+     (`signing_out_calls_the_games_whole_slot_sign_out_per_port_then_the_frame`,
+     `a_slot_is_held_while_it_has_a_profile_or_xbox_live`), `-p bots
+     --lib local` (`leaving_bots_wait_out_the_game_then_sign_out_then_unplug`),
+     `-p engine --lib points` (`every_address_is_named_once`), `-p boot
+     --lib clankers` (`the_driver_follows_the_store`,
+     `the_hosted_session_is_told_of_the_bot_accounts_in_the_game`).
+   - **Game run (the user):**
+     1. `h2 play --live`, host a Custom Game, Clankers On, Count 3: the
+        three bots are in the lobby's list.
+     2. Count 1: the log says `bots: signing the bots on ports [2, 3]
+        out`, then `bots: bot N left: its pad is unplugged` twice; the
+        lobby lists you and Clanker 1 only at once.
+     3. Clankers Off: Clanker 1 leaves the list the same way.
+     4. Clankers On, Count 3 again: three bots, each once (no leftover
+        "Clanker 2" or a renamed copy beside the new one).
+     5. The same in a System Link custom game.
+     6. Send the `bots:` lines if a bot stays in the list, the lobby
+        shows an error, or the human's own player leaves.
 8. **Clankermatch.** First slice built (§8.3, §8.4; run checklist §8.5).
    - Built: the Live menu row (row 2; the rest moved down), the playlist
      filter at `0x00192db0`, the clanker hoppers in the default set and

@@ -15,9 +15,10 @@
 //! port no human holds (the user's run, docs/game/bots.md §4.2). The bot
 //! leaves the books at once ([`list`] no longer has it) but stays plugged
 //! with an idle pad. The boot glue takes it the rest of the way with
-//! [`leave_step`]: once no game runs it signs the bot's profile out of its
-//! slot (`PROFILE_SIGN_OUT`), and once the slot is empty it unplugs the pad
-//! ([`Local::unplug`]). A bot added again on that port before then takes
+//! [`leave_step`]: once no game runs it signs the bot's slot out altogether
+//! (`SLOT_SIGN_OUT`: off Xbox Live, its local user freed, so the lobby's
+//! session drops its player), and once the slot is empty it unplugs the
+//! pad ([`Local::unplug`]). A bot added again on that port before then takes
 //! the leaving bot's pad back, so the game never sees it go.
 //!
 //! The free functions work on one process-wide [`Local`] ([`global`]),
@@ -426,7 +427,7 @@ pub fn list() -> Vec<BotInfo> {
 /// What the glue does for the leaving bots this frame ([`leave_step`]).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LeaveStep {
-    /// Ports whose profile to sign out (`PROFILE_SIGN_OUT`), first.
+    /// Ports whose slot to sign out (`SLOT_SIGN_OUT`), first.
     pub sign_out: Vec<u8>,
     /// Bots whose pad to unplug: their slot is empty already.
     pub unplug: Vec<BotHandle>,
@@ -434,14 +435,15 @@ pub struct LeaveStep {
 
 /// The next step for the `leaving` bots ([`Local::leaving`]): nothing while
 /// a game runs (`in_game`: the bot's player is in it, and an unplugged pad
-/// pauses the game); else sign out each bot whose port's slot still has a
-/// profile (`signed_in`), and unplug each whose slot has none (or that was
-/// never placed). A bot is signed out one frame and unplugged a later one,
-/// so the game never sees a signed-in slot without its pad.
+/// pauses the game); else sign out each bot whose port's slot still holds
+/// a profile or Xbox Live (`held`, [`crate::guest::slot_held`]), and
+/// unplug each whose slot holds neither (or that was never placed). A bot
+/// is signed out one frame and unplugged a later one, so the game never
+/// sees a signed-in slot without its pad.
 pub fn leave_step(
     in_game: bool,
     leaving: &[(BotHandle, Option<u8>)],
-    signed_in: impl Fn(u8) -> bool,
+    held: impl Fn(u8) -> bool,
 ) -> LeaveStep {
     let mut step = LeaveStep::default();
     if in_game {
@@ -449,7 +451,7 @@ pub fn leave_step(
     }
     for &(h, port) in leaving {
         match port {
-            Some(p) if signed_in(p) => step.sign_out.push(p),
+            Some(p) if held(p) => step.sign_out.push(p),
             _ => step.unplug.push(h),
         }
     }
