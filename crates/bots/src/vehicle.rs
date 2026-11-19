@@ -108,7 +108,7 @@ pub struct Rider {
     pub team: i16,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Seat {
     pub role: SeatRole,
     pub rider: Option<Rider>,

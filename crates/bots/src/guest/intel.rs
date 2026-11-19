@@ -3,7 +3,7 @@
 use super::{DatumHandle, GuestMemory, R, objects, points};
 use crate::decisions::supplies::Supply;
 use engine::tags::GroupTag;
-use engine::view::{Record, Tags};
+use engine::view::Tags;
 
 pub(crate) const EQUIPMENT: u8 = 3;
 
