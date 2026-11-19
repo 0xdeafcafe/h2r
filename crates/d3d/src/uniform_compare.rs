@@ -6,7 +6,8 @@
 //! the D3D draw's vertex program reads that differs, the inputs it reads
 //! that one streams and the other does not, or whose defaults differ, and
 //! the pixel uniforms, and each sampled stage's sampler and the D3D
-//! draw's texture there. Inert until armed (one relaxed load per draw).
+//! draw's texture there. A light comparison uses two backend markers
+//! instead of model rows, so the frame constants can differ.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -48,7 +49,7 @@ pub struct Expected {
     pub depth: (bool, wgpu::CompareFunction, wgpu::DepthBiasState),
     /// What it binds at each stage, described (`None`: not known).
     pub textures: [Option<String>; 4],
-    /// Each stage it samples, with its sampler (`None`: not sampled).
+    /// Each sampled stage with a known sampler.
     pub samplers: [Option<SamplerKey>; 4],
     /// Draws with the same program to compare before it disarms.
     pub draws: u32,
@@ -111,6 +112,44 @@ pub fn armed() -> bool {
     ARMED.load(Ordering::Acquire)
 }
 
+// The two external passes bracketing a reference light are encoded on the
+// backend that consumes its D3D draws. In particular the game thread can
+// have started the next light while a threaded backend is still here.
+thread_local! {
+    static IN_LIGHT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static LIGHT: std::cell::RefCell<Option<LightWindow>> = const { std::cell::RefCell::new(None) };
+}
+
+struct LightWindow {
+    handle: u32,
+    candidates: Vec<Expected>,
+    seen: usize,
+    matched: usize,
+    reported: std::collections::BTreeSet<String>,
+}
+
+/// Open a comparison on this backend's thread. The window identifies the
+/// light, so differences in its frame registers are themselves reportable.
+pub fn begin_light(handle: u32, candidates: Vec<Expected>) {
+    IN_LIGHT.set(true);
+    LIGHT.with_borrow_mut(|slot| {
+        *slot = Some(LightWindow { handle, candidates, seen: 0, matched: 0, reported: Default::default() });
+    });
+}
+
+pub fn end_light(handle: u32) {
+    LIGHT.with_borrow_mut(|slot| {
+        if slot.as_ref().is_some_and(|w| w.handle == handle) {
+            IN_LIGHT.set(false);
+            let w = slot.take().unwrap();
+            eprintln!(
+                "native-lights compare: light {handle:#010x}: {} matching of {} D3D program draws",
+                w.matched, w.seen,
+            );
+        }
+    });
+}
+
 /// A D3D draw with vertex program `words`, uniforms `vertex` and `pixel`,
 /// the layout's streamed registers, and its samplers and textures:
 /// printed when it matches.
@@ -124,6 +163,20 @@ pub(crate) fn observe(
     samplers: &[SamplerKey; 4],
     textures: &[Option<TextureInfo>; 4],
 ) {
+    if IN_LIGHT.get() {
+        LIGHT.with_borrow_mut(|slot| {
+            let Some(window) = slot.as_mut() else { return };
+            window.seen += 1;
+            let Some((e, distance)) = pick(&window.candidates, words, pixel_shader) else { return };
+            window.matched += 1;
+            if window.reported.len() < 8 && window.reported.insert(e.label.clone()) {
+                eprintln!("native-lights compare: paired {} by vertex program and closest pixel shader ({distance} differing shader fields)", e.label);
+                for line in compare(e, words, vertex, pixel, options, pixel_shader, pipeline, samplers, textures) {
+                    eprintln!("{line}");
+                }
+            }
+        });
+    }
     if !ARMED.load(Ordering::Relaxed) {
         return;
     }
@@ -255,7 +308,7 @@ pub fn compare(
     }
     let label = &e.label;
     let mut out = vec![format!(
-        "uniform-compare {label}: a D3D draw with the rows and the program; streams {streamed:#06x} (other {:#06x}), reads v {inputs:#06x}",
+        "uniform-compare {label}: a matching D3D program draw; streams {streamed:#06x} (other {:#06x}), reads v {inputs:#06x}",
         e.options.provided_inputs
     )];
     let same = |a: &[f32; 4], b: &[f32; 4]| a.map(f32::to_bits) == b.map(f32::to_bits);
@@ -352,13 +405,17 @@ pub fn compare(
     // The stages the other renderer samples: the D3D draw's texture
     // there, and the samplers when they differ.
     for (n, other) in e.samplers.iter().enumerate() {
-        let Some(other) = other else { continue };
+        if other.is_none() && e.textures[n].is_none() { continue; }
         let t = textures[n].map_or_else(
             || "none".to_string(),
             |t| format!("{:?} {}x{} levels {}", t.format, t.width, t.height, t.levels),
         );
         let o = e.textures[n].as_deref().unwrap_or("not known");
         let d = &samplers[n];
+        let Some(other) = other else {
+            out.push(format!("  stage {n} d3d texture {t}, other {o}, sampler d3d {d:?} other unknown"));
+            continue;
+        };
         if d == other {
             out.push(format!("  stage {n} d3d texture {t}, other {o}, the same sampler"));
         } else {
@@ -423,6 +480,30 @@ mod tests {
         assert!(same_program(&longer, &e.words), "an upload past the final instruction");
         assert!(!same_program(&longer[4..], &e.words));
         assert!(!same_program(&longer, &[]));
+    }
+
+    #[test]
+    fn a_reference_light_is_scoped_to_its_backend_even_when_uniform_rows_differ() {
+        let e = expected();
+        begin_light(42, vec![e.clone()]);
+        let mut v = e.vertex.clone();
+        v.constants[MODEL_ROWS] = [9.0; 4];
+        v.constants[31] = [7.0; 4];
+        let draw = |words| observe(words, &v, &e.pixel, &e.options, (&e.def, &e.pixel_options),
+            (&e.primitive, None), &[sampler(wgpu::FilterMode::Linear); 4], &[None; 4]);
+        draw(&e.words);
+        draw(&e.words[4..]);
+        end_light(43);
+        LIGHT.with_borrow(|slot| {
+            let w = slot.as_ref().unwrap();
+            assert_eq!((w.seen, w.matched, w.reported.len()), (2, 1, 1));
+        });
+        std::thread::scope(|s| {
+            s.spawn(|| LIGHT.with_borrow(|s| assert!(s.is_none()))).join().unwrap();
+        });
+        end_light(42);
+        draw(&e.words);
+        LIGHT.with_borrow(|slot| assert!(slot.is_none()));
     }
 
     #[test]

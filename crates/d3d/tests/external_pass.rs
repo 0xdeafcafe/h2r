@@ -182,6 +182,20 @@ fn passes_asked_before_one_drain_are_all_issued_in_order() {
     assert_eq!(order.lock().unwrap().len(), 2, "issued once");
 }
 
+#[test]
+fn an_immediate_reference_marker_follows_pending_passes_and_is_never_reissued() {
+    let (mut d, mut m) = create(RecordingBackend::default(), UploadPolicy::Always);
+    set_states(&mut d, &mut m);
+    let order = Arc::default();
+    d.request_external_pass(Box::new(Named("pending", Arc::clone(&order))));
+    // RecordingBackend declines the GPU operation, but each pass sees its
+    // constants immediately, after the commands preceding this boundary.
+    assert!(!d.external_pass_now(&mut m, Box::new(Named("marker", Arc::clone(&order)))).unwrap());
+    assert_eq!(*order.lock().unwrap(), vec!["pending", "marker"]);
+    d.drain_until_callback(&mut m).unwrap();
+    assert_eq!(order.lock().unwrap().len(), 2);
+}
+
 /// Keeps the depth clip it is given.
 struct Clip(Arc<Mutex<Option<d3d::DepthClip>>>);
 

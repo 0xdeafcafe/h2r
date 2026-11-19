@@ -1943,6 +1943,22 @@ impl<B: Backend> Device<B> {
         self.pending_external.push(pass);
     }
 
+    /// Place a pass at this guest call boundary, after all existing push
+    /// words and before the caller can append more. A callback due first
+    /// remains queued for the normal D3D entry to deliver.
+    pub fn external_pass_now(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        pass: Box<dyn crate::backend::ExternalPass>,
+    ) -> Result<bool, D3dError> {
+        self.live("external pass")?;
+        if let Some(cb) = self.drain_until_callback(mem)? {
+            self.undelivered = Some(cb);
+            return Ok(false);
+        }
+        Ok(self.issue_external_pass(mem, pass))
+    }
+
     /// Arms `s` (docs/graphics/native-renderer.md, stage 5): the next
     /// immediate-mode draws, one per entry of [`Swallow::targets`], are the
     /// pass's: pushed `Begin`/`End`s and those through the
@@ -2179,7 +2195,7 @@ impl<B: Backend> Device<B> {
         Some(if z_scale.is_finite() && z_scale > 0.0 { z_scale } else { 16_777_215.0 })
     }
 
-    fn issue_external_pass(&mut self, mem: &mut dyn GuestMemory, mut pass: Box<dyn crate::backend::ExternalPass>) {
+    fn issue_external_pass(&mut self, mem: &mut dyn GuestMemory, mut pass: Box<dyn crate::backend::ExternalPass>) -> bool {
         let constants: [[f32; 4]; crate::backend::VIEW_CONSTANTS] = std::array::from_fn(|r| self.constant(r));
         pass.view_constants(&constants);
         if let Some(z_max) = self.guest_z_scale(mem) {
@@ -2210,8 +2226,14 @@ impl<B: Backend> Device<B> {
             },
         };
         match issued {
-            Ok(()) => self.stats.external_passes += 1,
-            Err(why) => self.refuse_external(why),
+            Ok(()) => {
+                self.stats.external_passes += 1;
+                true
+            }
+            Err(why) => {
+                self.refuse_external(why);
+                false
+            }
         }
     }
 
