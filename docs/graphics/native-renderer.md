@@ -2970,3 +2970,13 @@ Compare with the residual switch off and on. The census still lists
 unsupported materials, exceptional handlers, clears, target changes,
 query reports, menu/video and final display traffic, and any shader or
 geometry setup retained by a stage that replaces only resolved draws.
+
+### Residual geometry admission
+
+`impl.render.native_residual=on` admits the sky model's indexed strip
+at `0x0004c976`, and standard layer-2 geometry at the main-scene and
+alternate-scene layer sites. Their guest order, transforms, shader
+inputs and stencil setup stay in place. The native pass consumes the
+resolved packet and records the full range on both live target copies
+before the handoff replaces the D3D draw. Other layer-2 handlers and
+unknown callers retain their own D3D submission.

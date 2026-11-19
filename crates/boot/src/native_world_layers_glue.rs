@@ -24,13 +24,13 @@ impl GuestRead for Memory<'_> {
 }
 
 #[derive(Clone, Copy)]
-struct DrawContext {
-    layer: Layer,
-    frame: u64,
+pub(crate) struct DrawContext {
+    pub(crate) layer: Layer,
+    pub(crate) frame: u64,
     compare: bool,
-    geometry: Option<Geometry>,
+    pub(crate) geometry: Option<Geometry>,
     target: [u32; 8],
-    index_count: Option<u32>,
+    pub(crate) index_count: Option<u32>,
     return_address: u32,
 }
 
@@ -52,9 +52,11 @@ pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(
     rt: &runtime::Runtime,
     device: &d3d::abi::SharedDevice<B>,
 ) {
-    let native = feature::Switches::from_env().is_ok_and(|s| feature::native_world_layers::on(&s));
+    let switches = feature::Switches::from_env().unwrap_or_default();
+    let native = feature::native_world_layers::on(&switches);
+    let residual = feature::native_residual::on(&switches);
     let frames = compare_frames();
-    if !native && frames.is_empty() {
+    if !native && !residual && frames.is_empty() {
         return;
     }
     if native && let Ok(mut device) = device.lock() {
@@ -75,7 +77,7 @@ pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(
                     let frame = crate::d3d_diag::presents() + 1;
                     let compare = frames.contains(&frame);
                     let current = current();
-                    if (!native || current.is_none()) && !compare {
+                    if (!native || current.is_none()) && !residual && !compare {
                         return None;
                     }
                     let guest = ctx.memory();
@@ -117,6 +119,10 @@ pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(
             dispatch.mark_context_only(index);
         }
     });
+}
+
+pub(crate) fn indexed_draw() -> Option<DrawContext> {
+    DRAW.get()
 }
 
 struct Admission {

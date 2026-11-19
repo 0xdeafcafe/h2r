@@ -66,7 +66,10 @@ impl Feature for NativeWorldLayers {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        if !on(b.switches()) && compare_frames().is_empty() {
+        if !on(b.switches())
+            && !crate::native_residual::on(b.switches())
+            && compare_frames().is_empty()
+        {
             return Ok(());
         }
         b.raw()

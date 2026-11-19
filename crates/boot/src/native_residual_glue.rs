@@ -132,3 +132,64 @@ mod tests {
         assert_eq!(value["views"][1]["distinct_callers"], 2);
     }
 }
+
+/// Use the same resolved indexed input and two-copy reservation as the
+/// opaque layers. No sky model state, sort order or layer handler is moved.
+pub(crate) fn install<B: d3d::Backend + Send + 'static>(
+    rt: &runtime::Runtime,
+    device: &d3d::abi::SharedDevice<B>,
+    entries: &[(u32, &'static str)],
+) {
+    install_census(rt, entries);
+    let enabled = feature::Switches::from_env().is_ok_and(|s| feature::native_residual::on(&s));
+    if enabled && let Ok(mut device) = device.lock() {
+        device.add_draw_admission(std::sync::Arc::new(ResidualDraws::default()));
+    }
+}
+
+#[derive(Default)]
+struct ResidualDraws {
+    geometry: std::sync::Arc<native_render::world_layers_gpu::Cache>,
+}
+
+impl d3d::DrawAdmission for ResidualDraws {
+    fn admit(
+        &self,
+        snapshot: &d3d::DrawSnapshot<'_>,
+    ) -> Option<(d3d::ExternalPlan, Box<dyn d3d::ExternalPass>)> {
+        use native_render::world_layers::{Owner, Site};
+
+        let call = crate::native_world_layers_glue::indexed_draw()?;
+        let draw = snapshot.draw;
+        if draw.entry != "D3DDevice_DrawIndexedVertices"
+            || draw.indices.as_ref()?.len() != call.index_count? as usize
+        {
+            return None;
+        }
+        let stage = match (call.layer.site, call.layer.number) {
+            (Site::Sky, 15) => timeline::native::Stage::World,
+            (Site::Scene | Site::AlternateView, 2) if call.layer.list != 0 => {
+                match call.geometry?.owner {
+                    Owner::Cluster(_) | Owner::Placement(_) => timeline::native::Stage::World,
+                    Owner::Object { .. } => timeline::native::Stage::Objects,
+                }
+            }
+            _ => return None,
+        };
+        let pass = native_render::world_layers_gpu::IndexedPass::new(
+            draw,
+            std::sync::Arc::clone(&self.geometry),
+            call.frame,
+            None,
+        )?;
+        Some((
+            d3d::ExternalPlan {
+                stage,
+                view: call.layer.view,
+                ranges: 1,
+                slots: Vec::new(),
+            },
+            Box::new(pass),
+        ))
+    }
+}
