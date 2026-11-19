@@ -43,6 +43,7 @@
 
 use crate::camera::{GuestRead, GuestWrite};
 use crate::model::{NODE_MATRIX_SIZE, NodeMatrix};
+use crate::object_lighting::{Defaults, Lighting};
 use crate::skip::{CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, ITEM_SIZE, LIGHTMAP_LAYER, RENDER_RECORD_SIZE, RENDER_RECORDS};
 
 pub const OBJECTS: u32 = 0x004e_0300;
@@ -169,6 +170,31 @@ pub struct ObjectFrame {
     pub nodes: Vec<NodeMatrix>,
     /// World bounding sphere: centre, radius.
     pub sphere: ([f32; 3], f32),
+    /// Its lighting, copied from its render-state cache record
+    /// ([`object_lighting`]); `None` without one.
+    pub lighting: Option<Lighting>,
+    /// The inputs' defaults, read with it; `None` when they do not read.
+    pub defaults: Option<Defaults>,
+}
+
+/// The lighting of the live object `handle` whose body is `body`: `+0x44`
+/// of the render-state cache record its `+0xcc` names, when that record
+/// is still its own (`[record + 4] == handle`, as `0x0003ddd0` checks).
+pub fn object_lighting(mem: &dyn GuestRead, handle: u32, body: u32) -> Option<u32> {
+    let state = mem.read_u32(body.checked_add(BODY_RENDER_STATE)?)?;
+    if state == u32::MAX {
+        return None;
+    }
+    let cache = mem.read_u32(RENDER_STATE_CACHE)?;
+    if cache == 0 {
+        return None;
+    }
+    let index = state & 0xffff;
+    if index >= mem.read_u32(cache + ARRAY_HIGH_WATER)? {
+        return None;
+    }
+    let record = mem.read_u32(cache + ARRAY_DATA)?.checked_add(CACHE_RECORD_SIZE * index)?;
+    (mem.read_u32(record + CACHE_OWNER)? == handle).then_some(record + CACHE_LIGHTING)
 }
 
 /// The definition datum of the live object `handle`.
@@ -177,7 +203,8 @@ pub fn definition(mem: &dyn GuestRead, handle: u32) -> Option<u32> {
 }
 
 /// Reads object `handle`: its definition, its node matrices (`None` when
-/// the block is empty, misaligned, too long or not finite) and its sphere.
+/// the block is empty, misaligned, too long or not finite), its sphere,
+/// and a copy of its lighting.
 pub fn read_object(mem: &dyn GuestRead, handle: u32) -> Option<ObjectFrame> {
     let body = body(mem, handle)?;
     let definition = mem.read_u32(body + BODY_DEFINITION)?;
@@ -202,11 +229,14 @@ pub fn read_object(mem: &dyn GuestRead, handle: u32) -> Option<ObjectFrame> {
     }
     let f = |o: u32| mem.read_f32(body + o);
     let sphere = ([f(BODY_SPHERE)?, f(BODY_SPHERE + 4)?, f(BODY_SPHERE + 8)?], f(BODY_SPHERE_RADIUS)?);
+    let lighting = object_lighting(mem, handle, body).and_then(|at| Lighting::read(mem, at));
     Some(ObjectFrame {
         handle,
         definition,
         nodes,
         sphere,
+        lighting,
+        defaults: Defaults::read(mem),
     })
 }
 
@@ -657,6 +687,37 @@ pub(crate) mod tests {
         assert_eq!(o.nodes.len(), 3);
         assert_eq!(o.nodes[2].position, [2.0, 0.0, 0.0]);
         assert_eq!(o.sphere, ([1.0, 2.0, 3.0], 0.5));
+    }
+
+    #[test]
+    fn an_object_carries_a_copy_of_its_cache_records_lighting() {
+        let (mut m, a, b) = scene();
+        // A's cache record is 8 (slot 1 + 7): its lighting at +0x44.
+        let at = lighting(8);
+        assert_eq!(object_lighting(&m, a, BODIES + 0x1000), Some(at));
+        for i in 0..crate::object_lighting::LIGHTING_BYTES / 4 {
+            m.w(at + 4 * i, 0x1000 + i);
+        }
+        m.w(crate::object_lighting::DEFAULT_VECTOR, 0x0075_0000);
+        m.w(crate::object_lighting::DEFAULT_COLOUR, 0x0075_0100);
+        for i in 0..3 {
+            m.w(0x0075_0004 + 4 * i, 0x2000 + i);
+            m.w(0x0075_0100 + 4 * i, 0x3000 + i);
+        }
+        let o = read_object(&m, a).unwrap();
+        let l = o.lighting.expect("A's lighting");
+        assert_eq!((l.words[0], l.words[0x1d]), (0x1000, 0x101d));
+        let d = o.defaults.expect("the defaults");
+        assert_eq!((d.vector, d.colour), ([0x2000, 0x2001, 0x2002], [0x3000, 0x3001, 0x3002]));
+        // B's record holds no lighting words here: no copy, still drawn.
+        let o = read_object(&m, b).unwrap();
+        assert_eq!(o.lighting, None);
+        // A record taken by another object: not A's lighting.
+        m.w(CACHE_DATA + CACHE_RECORD_SIZE * 8 + CACHE_OWNER, b);
+        assert_eq!(object_lighting(&m, a, BODIES + 0x1000), None);
+        m.w(CACHE_DATA + CACHE_RECORD_SIZE * 8 + CACHE_OWNER, a);
+        m.w(BODIES + 0x1000 + BODY_RENDER_STATE, u32::MAX);
+        assert_eq!(object_lighting(&m, a, BODIES + 0x1000), None, "no cache record");
     }
 
     #[test]

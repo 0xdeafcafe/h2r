@@ -252,6 +252,36 @@ pub fn transparent_passes(material: &Material) -> Result<Vec<TransparentPass>, T
     Ok(out)
 }
 
+/// A lighting input an object's layer-3 pass reads
+/// ([`crate::object_lighting`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LightingInput {
+    Vector(u8),
+    Scalar(u8),
+}
+
+/// The first lighting input any implementation of `material`'s layer-3
+/// passes (first level of detail) reads, or `None`. Every implementation
+/// counts: the build picks the one an object draws from its lighting
+/// (`0x0004cd35`). The native objects pass applies none of them yet, so a
+/// material that reads one stays on the D3D path: never drawn unlit.
+pub fn object_lighting_input(material: &Material) -> Option<LightingInput> {
+    use crate::object_lighting::{LIGHTING_SCALARS, LIGHTING_VECTORS};
+    let layers = material.layers.iter().filter(|l| l.lod == 0 && l.layer == LIGHTMAP_LAYER);
+    for imp in layers.flat_map(|l| &l.passes).flat_map(|p| &p.implementations) {
+        let r = imp.input_reads;
+        let v = r.vectors & LIGHTING_VECTORS;
+        if v != 0 {
+            return Some(LightingInput::Vector(v.trailing_zeros() as u8));
+        }
+        let s = r.scalars & LIGHTING_SCALARS;
+        if s != 0 {
+            return Some(LightingInput::Scalar(s.trailing_zeros() as u8));
+        }
+    }
+    None
+}
+
 fn samples_lightmap(i: &ResolvedImplementation) -> bool {
     i.textures
         .iter()
@@ -335,6 +365,24 @@ mod tests {
                     .collect(),
             }],
         }
+    }
+
+    #[test]
+    fn an_object_material_reading_its_lighting_in_any_implementation_is_named() {
+        let mut lit = implementation(1, false);
+        lit.input_reads.vectors = 1 << 5 | 1 << 15;
+        let m = material(3, vec![vec![implementation(0, false), lit.clone()]]);
+        assert_eq!(object_lighting_input(&m), Some(LightingInput::Vector(15)));
+        let mut luma = implementation(0, false);
+        luma.input_reads.scalars = 1 << 21 | 1 << 23;
+        let m = material(3, vec![vec![luma]]);
+        assert_eq!(object_lighting_input(&m), Some(LightingInput::Scalar(23)));
+        // Inputs that are not the lighting's, or another layer: none.
+        let mut other = implementation(0, false);
+        other.input_reads.vectors = 1 << 5;
+        other.input_reads.scalars = 1 << 21;
+        assert_eq!(object_lighting_input(&material(3, vec![vec![other]])), None);
+        assert_eq!(object_lighting_input(&material(4, vec![vec![lit]])), None);
     }
 
     #[test]

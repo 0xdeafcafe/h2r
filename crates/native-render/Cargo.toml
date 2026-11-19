@@ -10,6 +10,9 @@ default = ["gpu"]
 # The map loader and the wgpu pass. Without it only the pure parts
 # (world, camera, cull, skip) build: what the feature crate's hooks need.
 gpu = ["dep:map", "dep:tags", "dep:wgpu", "dep:shaders", "dep:gfx"]
+# Seeded differential test of the object lighting port against the lifted
+# original (tests/object_lighting_differential.rs; needs the user's XBE).
+differential = ["dep:analyze", "dep:xbe", "dep:ir", "dep:lift"]
 
 [dependencies]
 map = { workspace = true, optional = true }
@@ -18,6 +21,11 @@ wgpu = { version = "30", optional = true }
 shaders = { path = "../shaders", optional = true }
 gfx = { path = "../gfx", optional = true }
 bytemuck = { version = "1", features = ["derive"] }
+# For tests/object_lighting_differential.rs only.
+analyze = { workspace = true, optional = true }
+xbe = { workspace = true, optional = true }
+ir = { workspace = true, optional = true }
+lift = { workspace = true, optional = true }
 
 [dev-dependencies]
 gfx = { path = "../gfx" }
