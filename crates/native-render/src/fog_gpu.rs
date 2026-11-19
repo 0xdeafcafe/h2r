@@ -537,9 +537,9 @@ impl FogSet {
     pub fn pipelines(&mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat) {
         for m in self.materials.values_mut() {
             for (g, state, rigid) in &mut m.passes {
-                g.pipeline(device, color, depth, Some(state));
+                g.pipeline(device, color, depth, Some(&*state));
                 if let Some(r) = rigid {
-                    r.pipeline_for(device, color, depth, Some(state), None, &wgpu::StencilState::default());
+                    r.pipeline_for(device, color, depth, Some(&*state), None, &wgpu::StencilState::default());
                 }
             }
         }
