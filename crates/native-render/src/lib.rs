@@ -36,6 +36,7 @@ pub mod hud_gpu;
 pub mod instances;
 #[cfg(feature = "gpu")]
 pub mod light_gpu;
+pub mod light_list;
 #[cfg(feature = "gpu")]
 pub mod light_look;
 pub mod lights;

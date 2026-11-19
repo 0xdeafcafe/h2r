@@ -270,10 +270,10 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
         state: Arc::clone(&state),
     }));
     crate::native_transparents_glue::install(device);
-    crate::native_lights_glue::install(device, state);
+    let gels = crate::native_gels_glue::install(device);
+    crate::native_lights_glue::install(device, state, gels);
     // The post loads its own screen effects (`native_post_glue::EffectsSlot`).
     crate::native_post_glue::install(device);
-    crate::native_gels_glue::install(device);
     crate::native_shadows_glue::install(device);
     crate::native_hud_glue::install(device);
 }
@@ -869,6 +869,10 @@ pub(crate) fn palettes_hold(used: &StagePalettes, bound: &dyn Fn(usize) -> Optio
 /// The hook's guest memory as the device reads it, read-only.
 pub(crate) struct ReadMemory<'a>(pub(crate) &'a dyn GuestMemory);
 
+impl native_render::camera::GuestRead for ReadMemory<'_> {
+    fn read_u32(&self, addr: u32) -> Option<u32> { self.0.u32(addr).ok() }
+}
+
 impl d3d::GuestMemory for ReadMemory<'_> {
     fn read(&self, addr: u32, out: &mut [u8]) -> Result<(), d3d::GuestError> {
         self.0.read(addr, out).map_err(|f| d3d::GuestError { addr: f.addr, len: f.len })
@@ -993,7 +997,7 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Res
     let mut decoder = StageDecoder::new(palettes);
     let mut palettized = Vec::new();
     let mut rigid_refused = Refused::new();
-    let (programs, mut stage_images, refused) = if programs_on {
+    let (programs, stage_images, refused) = if programs_on {
         let out = material_programs(&mut map, &mut files, &shaders, &world, &lightmaps, &mut decoder);
         native.extend(out.programs.keys().copied());
         palettized = out.palettized;
@@ -1015,23 +1019,7 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Res
         }
         Default::default()
     };
-    // The skip is per part (an item names its cluster or placement and
-    // part, `skip::clear_parts`), so every native material is drawn
-    // natively whatever other materials share its shader. The lights'
-    // split is per shader (`feature::native_lights`), so they take only
-    // the materials whose shader is native whole.
-    let whole = whole_shader_materials(&world.materials(), &shaders, &native);
-    // A native material's instanced placements draw natively only with
-    // its rigid program ([`drawn_natively`]); the lights, whose native
-    // passes would meet the ones left to D3D, take only materials whose
-    // every placement draws natively.
     let rigid: HashSet<u16> = programs.iter().filter(|(_, p)| p.rigid.is_some()).map(|(&m, _)| m).collect();
-    let instanced: HashSet<u16> = world
-        .draws
-        .iter()
-        .filter(|d| matches!(d.owner, Owner::Instance(_)) && !rigid.contains(&d.material))
-        .map(|d| d.material)
-        .collect();
     if programs_on {
         log_coverage(&mut map, &world, &shaders, &native, refused);
         let placed = world.draws.iter().filter(|d| native.contains(&d.material) && matches!(d.owner, Owner::Instance(_)));
@@ -1054,12 +1042,10 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Res
             );
         }
     }
-    // The lights' part, over the whole world: the parts of materials left
-    // to D3D, or sharing a shader with one (the lights' split skips by
-    // shader), are where native lights cannot draw.
+    // The sorted geometry entries identify individual cluster parts and their full shader datums.
     let lights_on = feature::Switches::from_env().is_ok_and(|s| feature::native_lights::on(&s));
     let lights = if lights_on {
-        crate::native_lights_glue::load(&mut map, &mut files, &shaders, &world, &|m| whole.contains(&m) && !instanced.contains(&m))
+        crate::native_lights_glue::load(&mut map, &mut files, &shaders, &world, &|m| native.contains(&m), &decoder.palettes)
             .map(Arc::new)
     } else {
         None
@@ -1103,24 +1089,6 @@ fn expand_levels(levels: Vec<assets::Level>, palette: &[u32; 256]) -> Option<Ima
             })
             .collect(),
     )
-}
-
-/// Of the world's materials (`materials`, by BSP index; `shaders` the
-/// shader of each), those in `native` whose shader no other material
-/// outside `native` uses: what a skip by shader (the lights' split) may
-/// clear.
-fn whole_shader_materials(materials: &[u16], shaders: &[TagId], native: &HashSet<u16>) -> HashSet<u16> {
-    let shader = |m: u16| shaders.get(usize::from(m)).map(|s| s.0 as u16);
-    let refused: HashSet<u16> = materials
-        .iter()
-        .filter(|&&m| !native.contains(&m))
-        .filter_map(|&m| shader(m))
-        .collect();
-    materials
-        .iter()
-        .copied()
-        .filter(|m| native.contains(m) && shader(*m).is_some_and(|s| !refused.contains(&s)))
-        .collect()
 }
 
 /// The skip's table: each part the world draws (by owner and part index),
@@ -1529,6 +1497,29 @@ fn stage_image(
     Ok((image, palette.is_some()))
 }
 
+/// A light stage uses normalized 2D coordinates. Decode all mip levels
+/// with the same palette and BC rules as the world's material pass.
+pub(crate) fn light_image<R: std::io::Read + std::io::Seek>(
+    map: &mut Map<R>,
+    files: &mut assets::ResourceFiles,
+    id: TagId,
+    index: usize,
+    stage: usize,
+    palette: &Option<Vec<u32>>,
+) -> Option<(Image, bool)> {
+    let tags::TagData::Bitmap(b) = tags::DecodedTag::read(map, id).ok()?.data else { return None };
+    let image = b.images.get(index)?;
+    if image.kind != tags::TextureKind::D2 {
+        return None;
+    }
+    let (d, blocks) = assets::decode_image_blocks(image, files).ok()?;
+    if d.desc.format.layout() == gfx::format::Layout::Linear {
+        return None;
+    }
+    let (image, palettized) = stage_image(image.format, d.levels, stage, palette).ok()?;
+    Some((with_blocks(image, blocks), palettized))
+}
+
 /// The first image of a bitmap as RGBA, with its mip chain.
 pub(crate) fn decode_first<R: std::io::Read + std::io::Seek>(map: &mut Map<R>, files: &mut assets::ResourceFiles, id: TagId) -> Option<Image> {
     decode_image(map, files, id, 0)
@@ -1577,20 +1568,6 @@ mod tests {
         let batches: Vec<_> = w.batches.iter().map(|b| (b.material, b.first_draw, b.draw_count)).collect();
         assert_eq!(batches, vec![(2, 0, 2), (3, 2, 1)]);
         assert_eq!(w.draws.iter().map(|d| (d.material, d.batch)).collect::<Vec<_>>(), vec![(2, 0), (2, 0), (3, 1)]);
-    }
-
-    #[test]
-    fn a_skip_by_shader_takes_only_materials_whose_shader_is_native_whole() {
-        // Materials 0..4; 1 and 3 share shader 0xe000_0011. 1 translates,
-        // 3 does not: a skip by shader (the lights' split) would clear 3's
-        // items too, so it takes 0 and 2 only.
-        let shaders = [0xe000_0010, 0xe000_0011, 0xe000_0012, 0xe000_0011, 0xe000_0014].map(TagId);
-        let translated: HashSet<u16> = [0, 1, 2].into_iter().collect();
-        let whole = whole_shader_materials(&[0, 1, 2, 3, 4], &shaders, &translated);
-        assert_eq!(whole, [0, 2].into_iter().collect::<HashSet<u16>>());
-        // A material without a shader is never taken.
-        let whole = whole_shader_materials(&[0, 9], &shaders, &[0, 9].into_iter().collect());
-        assert_eq!(whole, [0].into_iter().collect::<HashSet<u16>>());
     }
 
     #[test]

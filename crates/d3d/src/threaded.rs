@@ -62,6 +62,9 @@
 //! [`Backend::draw_owned`] move to the render thread without a copy, and
 //! their stream buffers come back for the device to refill.
 
+/// Synchronous light reservations submitted to an actual worker thread.
+pub static LIGHT_WORKER_WAITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
@@ -1181,6 +1184,10 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         &mut self, surfaces: crate::ExternalSurfaces<Self::Surface>, request: crate::ExternalPassRequest,
         textures: [Option<&Self::Texture>; 4], plan: &crate::ExternalPlan, copy: crate::TargetCopy, pass: crate::SharedReplacement,
     ) -> Result<Option<Vec<crate::ExternalRecording>>, String> {
+        plan.stage.count(timeline::native::Metric::WorkerRoundTrips, 1);
+        if plan.stage == timeline::native::Stage::Lights {
+            LIGHT_WORKER_WAITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         let plan = plan.clone();
         let ids = textures.map(|t| t.map(|t| t.id));
         self.call(move |w| {
@@ -1214,12 +1221,18 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         if !self.external_pass {
             return Ok(false);
         }
-        // In order with the draws before it, on the render thread.
-        let shared = Arc::clone(&self.shared);
-        self.post(move |w| {
+        let confirm = pass.confirm_issue();
+        let issue = move |w: &mut Worker<B>| {
             let (c, d) = (w.surface(color)?, w.surface(depth)?);
             let sampled = sampled.into_iter().map(|s| s.and_then(|s| w.surface(s).ok())).collect();
-            if !w.inner.external_pass(c, d, sampled, request, pass)? {
+            w.inner.external_pass(c, d, sampled, request, pass)
+        };
+        if confirm {
+            return self.call(issue);
+        }
+        let shared = Arc::clone(&self.shared);
+        self.post(move |w| {
+            if !issue(w)? {
                 shared.miss("external_pass returned false".into());
             }
             Ok(())

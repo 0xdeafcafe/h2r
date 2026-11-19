@@ -863,6 +863,10 @@ h2 agent --socket /tmp/h2-play.sock hostpads
   invariant failures. For instance, `native_world_v1_display_recorded` can
   be positive while `native_world_v1_display_ranges` is zero when the
   display copy fails validation. [Field definitions](../graphics/native-renderer.md#ordered-replacement-handoff).
+  Frame captures include `native_lights_worker_round_trips` for synchronous
+  light reservations and `native_lights_reference_passes` /
+  `native_lights_display_passes` for committed light runs encoded on each
+  physical copy. Compare these with the per-view light range counts.
 - **Sampling.** `sample: true` also runs the in-process sampler
   (`profile.sample.*`, boot's `sampling`) over the window, and `sampling`
   is what `profile.sample.stop` answers: the module-relative dump

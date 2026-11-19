@@ -142,7 +142,7 @@ pub fn layer3_pass(material: &Material) -> Result<WorldPass, Refusal> {
 }
 
 /// Whether `states` set `which` (build 5849's slots).
-fn sets_state(states: &[tags::shader::RenderStateValue], which: gfx::state::RenderStateType) -> bool {
+pub(crate) fn sets_state(states: &[tags::shader::RenderStateValue], which: gfx::state::RenderStateType) -> bool {
     let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
     states
         .iter()

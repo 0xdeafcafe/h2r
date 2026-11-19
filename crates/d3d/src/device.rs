@@ -314,6 +314,8 @@ pub mod clear_flags {
 /// Counters, for tests and diagnostics.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Stats {
+    /// Changes of the bound colour/depth pair, including a switch away and back.
+    pub target_changes: u64,
     /// Occlusion depth grids recorded ([`Device::request_depth_grid`]).
     pub depth_grids: u64,
     /// Asks not recorded (another depth bound, not W-buffered, the
@@ -2289,6 +2291,23 @@ impl<B: Backend> Device<B> {
         self.pending_external.push(pass);
     }
 
+    /// Place a pass at this guest call boundary, after all existing push
+    /// words and before the caller can append more. A callback due first
+    /// remains queued for the normal D3D entry to deliver.
+    pub fn external_pass_now(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        pass: Box<dyn crate::backend::ExternalPass>,
+    ) -> Result<bool, D3dError> {
+        self.live("external pass")?;
+        if let Some(cb) = self.drain_until_callback(mem)? {
+            self.undelivered = Some(cb);
+            return Ok(false);
+        }
+        self.swallow_external_boundary()?;
+        Ok(self.issue_external_pass(mem, pass))
+    }
+
     /// Drains earlier work and arms one guest post call. Only draws
     /// issued inside that call can satisfy its plan. Its return, a
     /// mismatch, or a conflicting operation ends the transaction.
@@ -2861,9 +2880,9 @@ impl<B: Backend> Device<B> {
     /// What issuing a pass needs that is checked without touching the
     /// targets: the backend, the bound colour (and depth unless
     /// `colour_only`), the colour's header and the Z scale. The request.
-    fn external_ready(
+    pub fn external_ready(
         &self,
-        mem: &mut dyn GuestMemory,
+        mem: &dyn GuestMemory,
         colour_only: bool,
     ) -> Result<crate::backend::ExternalPassRequest, ExternalRefusal> {
         if !self.backend.supports_external_pass() {
@@ -2893,7 +2912,7 @@ impl<B: Backend> Device<B> {
         Some(if z_scale.is_finite() && z_scale > 0.0 { z_scale } else { 16_777_215.0 })
     }
 
-    fn issue_external_pass(&mut self, mem: &mut dyn GuestMemory, mut pass: Box<dyn crate::backend::ExternalPass>) {
+    fn issue_external_pass(&mut self, mem: &mut dyn GuestMemory, mut pass: Box<dyn crate::backend::ExternalPass>) -> bool {
         let constants: [[f32; 4]; crate::backend::VIEW_CONSTANTS] = std::array::from_fn(|r| self.constant(r));
         pass.view_constants(&constants);
         if let Some(z_max) = self.guest_z_scale(mem) {
@@ -2930,8 +2949,12 @@ impl<B: Backend> Device<B> {
                 self.stats.external_passes += 1;
                 if writes.color { self.mark_color_written(self.render_target); }
                 if writes.depth_stencil && !colour_only { self.mark_depth_written(); }
+                true
             }
-            Err(why) => self.refuse_external(why),
+            Err(why) => {
+                self.refuse_external(why);
+                false
+            }
         }
     }
 
@@ -4403,6 +4426,9 @@ impl<B: Backend> Device<B> {
         if move_refs {
             let destroys = refs.commit(mem)?;
             self.destroy_resources(mem, destroys)?;
+        }
+        if (self.render_target, self.depth_stencil) != (target, z_stencil) {
+            self.stats.target_changes = self.stats.target_changes.wrapping_add(1);
         }
         self.render_target = target;
         self.depth_stencil = z_stencil;

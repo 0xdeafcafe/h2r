@@ -572,38 +572,30 @@ impl GpuWorld {
     }
 
     /// Records one run of lights' draws over the world's parts (each
-    /// draw's index ranges, which `boot` picks from the parts whose bounds
-    /// meet the light's sphere), added into the target over the depth
+    /// draw's index ranges from the active gathered cluster items),
+    /// added into the target over the depth
     /// (loaded and kept), in order. Nothing without [`Self::set_lights`].
     /// Returns how many ranges were drawn.
     #[allow(clippy::too_many_arguments)]
-    pub fn encode_lights(
+    pub fn prepare_lights(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        encoder: &mut wgpu::CommandEncoder,
-        color: &wgpu::TextureView,
         color_format: wgpu::TextureFormat,
-        depth: &wgpu::TextureView,
         depth_format: wgpu::TextureFormat,
-        target_size: (u32, u32),
         view: &ViewInputs,
         draws: &[LightDraw<'_>],
-        stage_image: &mut dyn FnMut(LightStage) -> Option<Image>,
+        stage_image: &mut dyn FnMut(usize, LightStage) -> Option<Image>,
         gel_image: &mut dyn FnMut(u32) -> Option<Image>,
-    ) -> usize {
-        let Some(set) = self.lights.as_mut() else { return 0 };
-        set.encode(
+    ) -> Option<crate::light_gpu::LightBundles> {
+        let set = self.lights.as_mut()?;
+        set.bundles(
             device,
             queue,
-            encoder,
-            &self.vertices,
+            &self.program_vertices,
             &self.indices,
-            color,
             color_format,
-            depth,
             depth_format,
-            target_size,
             view,
             draws,
             stage_image,

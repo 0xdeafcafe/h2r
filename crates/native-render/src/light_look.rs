@@ -192,6 +192,7 @@ pub struct LightLook {
     /// Where the colours (vectors 5 and 6) landed.
     pub vector_bindings: Vec<VectorBinding>,
     pub state: PassState,
+    pub inherits_cull: bool,
 }
 
 /// Why a light's pass stays on the D3D path.
@@ -281,6 +282,7 @@ pub fn light_look(material: &Material, layer: usize, implementation: usize) -> R
         vertex_constants: imp.vertex_constants.clone(),
         vertex_defaults: imp.vertex_defaults.clone(),
         vector_bindings: imp.vector_bindings.clone(),
+        inherits_cull: !crate::look::sets_state(&imp.render_states, gfx::state::RenderStateType::CullMode),
         state,
     })
 }
@@ -296,6 +298,10 @@ pub const FRAME_DWORDS: usize = 36;
 pub struct LightProgram {
     /// The linked module (`vs_main`, `fs_main`).
     pub wgsl: String,
+    pub words: Vec<u32>,
+    pub inputs: u16,
+    pub def: shaders::psh::PixelShaderDef,
+    pub pixel_options: shaders::psh::PixelOptions,
     pub stages: [LightStage; 4],
     pub samplers: [Option<StageStates>; 4],
     /// The texture each stage's fetch expects (`None`: not sampled).
@@ -310,6 +316,16 @@ pub struct LightProgram {
     /// Where the colours land in those uniforms ([`colour_uniforms`]).
     pub colours: Vec<VectorBinding>,
     pub state: PassState,
+    pub inherits_cull: bool,
+}
+
+/// Vertex fetch for the world-space light classification.
+pub fn vertex_options() -> shaders::vsh::VertexOptions {
+    shaders::vsh::VertexOptions {
+        provided_inputs: crate::program::INPUT_MASK,
+        input_fetch: crate::program::WORLD_FETCH,
+        ..Default::default()
+    }
 }
 
 /// The texture a light stage binds: instance bitmaps and the gel as 2D
@@ -327,6 +343,7 @@ pub fn stage_dim(stage: LightStage) -> Option<TextureDim> {
 /// Translates `look` with its vertex program `microcode` (the world-space
 /// classification), or says why the light keeps its D3D passes.
 pub fn compile_light(look: &LightLook, microcode: &[u8]) -> Result<LightProgram, String> {
+    let options = vertex_options();
     let t = translate_pass(&PassParts {
         microcode,
         pixel_shader: &look.pixel_shader,
@@ -336,13 +353,32 @@ pub fn compile_light(look: &LightLook, microcode: &[u8]) -> Result<LightProgram,
         vertex_constants: &look.vertex_constants,
         vertex_defaults: &look.vertex_defaults,
         alpha_test: look.state.alpha_test,
-        provided_inputs: crate::program::INPUT_MASK,
-        // The lights read the placed copy's floats
-        // (`crate::program::FLOAT_INPUTS`).
-        input_fetch: [shaders::vsh::InputFetch::Float; 16],
+        provided_inputs: options.provided_inputs,
+        input_fetch: options.input_fetch,
         w_buffer: true,
     })?;
+    crate::program::pixel_parity(&t.def, &look.stage_states, t.dims.map(|d| d.is_some()))?;
+    // The frame is uploaded before the material binds its constants. Our
+    // per-light upload supplies all nine rows together.
+    if look.vertex_constants.iter().any(|r| r.written != 0
+        && (FRAME_REGISTER..FRAME_REGISTER + FRAME_DWORDS / 4).contains(&usize::from(r.index))) {
+        return Err("material writes into the light frame constants".into());
+    }
+    let vs = shaders::vsh::Program::parse(microcode).map_err(|e| format!("light vertex program: {e:?}"))?;
+    let set = crate::program::set_constants(&look.vertex_constants);
+    if let Some(c) = crate::program::constants_read(&vs)?.into_iter().find(|&c| {
+        !set(c) && !(FRAME_REGISTER..FRAME_REGISTER + FRAME_DWORDS / 4).contains(&usize::from(c))
+    }) {
+        return Err(format!("light vertex program reads unsupplied c[{c}]"));
+    }
+    let words = microcode[4..4 + 16 * vs.instructions.len()].chunks_exact(4)
+        .map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]])).collect();
     Ok(LightProgram {
+        words,
+        def: t.def,
+        pixel_options: t.pixel_options,
+        inputs: t.inputs,
+        inherits_cull: look.inherits_cull,
         wgsl: t.wgsl,
         stages: look.textures,
         samplers: t.samplers,
@@ -553,23 +589,18 @@ mod tests {
     /// its stages (2D, cube, none, volume).
     fn sphere_look() -> LightLook {
         use shaders::psh::bits::{TEX_CUBEMAP, TEX_NONE, TEX_PROJECT2D, TEX_PROJECT3D, texture_modes};
-        let def = shaders::PixelShaderDef {
+        let mut def = shaders::PixelShaderDef {
             texture_modes: texture_modes([TEX_PROJECT2D, TEX_CUBEMAP, TEX_NONE, TEX_PROJECT3D]),
             ..Default::default()
         };
+        (def.final_inputs_abcd, def.final_inputs_efg) = shaders::psh::d3d_default_final_combiner(false, false);
         let m = material(DIFFUSE_LAYER, vec![implementation(1, TextureSource::Engine(9))]);
         LightLook { pixel_shader: def.to_bytes(), ..light_look(&m, DIFFUSE_LAYER, 1).unwrap() }
     }
 
     #[test]
     fn a_sphere_light_pass_binds_a_cube_and_a_volume() {
-        use shaders::psh::bits::{TEX_CUBEMAP, TEX_NONE, TEX_PROJECT2D, TEX_PROJECT3D, texture_modes};
-        let def = shaders::PixelShaderDef {
-            texture_modes: texture_modes([TEX_PROJECT2D, TEX_CUBEMAP, TEX_NONE, TEX_PROJECT3D]),
-            ..Default::default()
-        };
-        let m = material(DIFFUSE_LAYER, vec![implementation(1, TextureSource::Engine(9))]);
-        let look = LightLook { pixel_shader: def.to_bytes(), ..light_look(&m, DIFFUSE_LAYER, 1).unwrap() };
+        let look = sphere_look();
         let p = compile_light(&look, &light_program()).expect("compiles");
         shaders::validate(&p.wgsl).expect("valid WGSL");
         assert_eq!(p.dims, [Some(TextureDim::D2), Some(TextureDim::Cube), None, Some(TextureDim::D3)]);
@@ -583,6 +614,25 @@ mod tests {
         gel.textures[3] = LightStage::Gel;
         let p = compile_light(&gel, &light_program()).expect("compiles");
         assert_eq!(p.dims[3], Some(TextureDim::D2));
+    }
+
+    #[test]
+    fn a_light_cannot_claim_pixel_state_or_frame_lanes_it_does_not_supply() {
+        let mut look = sphere_look();
+        let mut def = shaders::PixelShaderDef::from_bytes(&look.pixel_shader).unwrap();
+        def.final_inputs_abcd = 0;
+        def.final_inputs_efg = 0;
+        look.pixel_shader = def.to_bytes();
+        assert!(compile_light(&look, &light_program()).unwrap_err().contains("final combiner"));
+
+        let mut look = sphere_look();
+        look.vertex_constants.push(Register {
+            index: FRAME_REGISTER as u8,
+            value: [0.0; 4],
+            written: 1,
+            origin: Origin::Instance,
+        });
+        assert!(compile_light(&look, &light_program()).unwrap_err().contains("frame constants"));
     }
 
     #[test]
@@ -665,6 +715,7 @@ mod tests {
             definition_80: 3,
             falloff_0: 2.0f32.to_bits(),
             gel: None,
+            animated_gel: false,
         };
         let l = LightInputs::from_constants(&c);
         assert_eq!(l.colour_a, [0.5, 0.25, 1.0]);

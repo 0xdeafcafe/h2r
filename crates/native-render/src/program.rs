@@ -69,10 +69,8 @@ pub const WORLD_FETCH: [InputFetch; 16] = {
     f
 };
 
-/// [`INPUTS`] with the frame and lighting vector as floats (the
-/// [`WorldVertex`] fields): what the native lights read, from the placed
-/// copy of the world (`crate::light_gpu`; their programs translate with
-/// float fetch).
+/// Float layout of the placed world's frame and lighting vector.
+/// Cluster material and light programs use [`INPUTS`] and [`WORLD_FETCH`].
 pub const FLOAT_INPUTS: [(u32, u64, wgpu::VertexFormat); 7] = [
     (0, std::mem::offset_of!(WorldVertex, position) as u64, wgpu::VertexFormat::Float32x3),
     (1, std::mem::offset_of!(WorldVertex, uv) as u64, wgpu::VertexFormat::Float32x2),
@@ -270,7 +268,7 @@ pub fn rigid_vertex(base: &VertexUniforms, view: &ViewInputs, rows: &ModelRows) 
 
 /// Whether the native world sets constant `c` (hardware numbering) for a
 /// pass with instance constants `instance`.
-fn set_constants(instance: &[Register]) -> impl Fn(u8) -> bool + '_ {
+pub(crate) fn set_constants(instance: &[Register]) -> impl Fn(u8) -> bool + '_ {
     move |c| {
         let c = usize::from(c);
         c < VIEW_CONSTANTS
@@ -319,6 +317,11 @@ pub fn constants_read(program: &vsh::Program) -> Result<Vec<u8>, String> {
 ///   the border in the shader).
 pub fn world_parity(look: &PassLook) -> Result<(), String> {
     let def = PixelShaderDef::from_bytes(&look.pixel_shader).map_err(|e| format!("pixel shader: {e:?}"))?;
+    pixel_parity(&def, &look.stage_states, look.textures.map(|s| s != Stage::Empty))
+}
+
+/// Pixel dependencies that neither the world nor the light pass supplies.
+pub(crate) fn pixel_parity(def: &PixelShaderDef, stages: &[StageStates], sampled: [bool; 4]) -> Result<(), String> {
     let c = def.decode();
     let Some(f) = c.final_combiner else {
         return Err("no final combiner (D3D builds one from the fog and specular states)".into());
@@ -341,9 +344,8 @@ pub fn world_parity(look: &PassLook) -> Result<(), String> {
             return Err(format!("stage {n} texture mode {m:?} reads device state"));
         }
     }
-    for (n, s) in look.stage_states.iter().enumerate().take(4) {
-        let sampled = look.textures[n] != Stage::Empty;
-        if sampled && [s.address_u, s.address_v, s.address_w].contains(&ADDRESS_BORDER) {
+    for (n, s) in stages.iter().enumerate().take(4) {
+        if sampled[n] && [s.address_u, s.address_v, s.address_w].contains(&ADDRESS_BORDER) {
             return Err(format!("stage {n} addresses the border"));
         }
     }

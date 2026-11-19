@@ -274,6 +274,12 @@ pub trait ExternalPass: Send {
     /// reference and the scaled view), with the same frame each time.
     fn encode(&mut self, target: ExternalTarget<'_>) { self.record_ranges(target); }
 
+    /// The guest is deciding whether to skip the work this pass replaces.
+    /// Report the encoder's decision to that caller even on a threaded backend.
+    fn confirm_issue(&self) -> bool {
+        false
+    }
+
     /// Validate stage-specific resources on this copy before recording.
     fn prepare_copy(&mut self, _target: &ExternalTarget<'_>) -> Result<(), &'static str> {
         Ok(())
@@ -284,6 +290,10 @@ pub trait ExternalPass: Send {
     fn record_ranges(&mut self, _target: ExternalTarget<'_>) -> usize {
         0
     }
+
+    /// Fully recorded bundles for an ordered run on the bound attachments.
+    /// The per-copy reservation checks their range count before commit.
+    fn record_bundles(&mut self, _target: &mut ExternalTarget<'_>) -> Option<ExternalBundles> { None }
 
     /// Number of suppressed guest items represented by this reservation. Most
     /// geometry promises one range per item; multi-range effects override it.
@@ -471,6 +481,7 @@ pub enum ExternalCopies {
 
 /// GPU handles pinned for a complete prepare/record transaction.
 pub struct ExternalAttachments {
+    pub targets: (gfx::surface::SurfaceId, gfx::surface::SurfaceId),
     pub uploads: gfx::ring::SubmissionUploads,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
@@ -509,9 +520,56 @@ pub struct ExternalRecording {
     pub items: usize,
     pub copy: TargetCopy,
     pub ranges: usize,
-    pub commands: wgpu::CommandBuffer,
+    pub commands: ExternalCommands,
     pub uploads: gfx::ring::SubmissionUploads,
     pub on_submit: Vec<Box<dyn FnOnce() + Send>>,
+}
+
+pub struct ExternalBundles {
+    pub run: u64,
+    pub scissor: [u32; 4],
+    pub groups: Vec<(wgpu::Color, wgpu::RenderBundle)>,
+    pub ranges: usize,
+}
+
+impl ExternalBundles {
+    /// Use identical attachments and dynamic state for validation and final submission.
+    pub(crate) fn encode_run(encoder: &mut wgpu::CommandEncoder, color: &wgpu::TextureView,
+        depth: &wgpu::TextureView, stencil: bool, packets: &[Self]) {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("native light run"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: color, depth_slice: None, resolve_target: None,
+                ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: depth,
+                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
+                stencil_ops: stencil.then_some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
+            }),
+            ..Default::default()
+        });
+        for draws in packets {
+            let [x, y, width, height] = draws.scissor;
+            pass.set_scissor_rect(x, y, width, height);
+            for (blend, bundle) in &draws.groups {
+                pass.set_blend_constant(*blend);
+                pass.execute_bundles(std::iter::once(bundle));
+            }
+        }
+    }
+}
+
+pub enum ExternalCommands {
+    Standalone(wgpu::CommandBuffer),
+    Bundles {
+        setup: wgpu::CommandBuffer,
+        targets: (gfx::surface::SurfaceId, gfx::surface::SurfaceId),
+        color: wgpu::TextureView,
+        depth: wgpu::TextureView,
+        stencil: bool,
+        draws: ExternalBundles,
+    },
 }
 
 pub type SharedReplacement = std::sync::Arc<std::sync::Mutex<Box<dyn ExternalPass>>>;
@@ -1074,9 +1132,27 @@ pub trait Backend: Send {
         for (target, mut encoder) in prepared {
             let scope = target.device.push_error_scope(wgpu::ErrorFilter::Validation);
             let mut on_submit = Vec::new();
-            let ranges = pass.record_ranges(target.target(request, &mut encoder, Some(&mut on_submit)));
+            let bundles = pass.record_bundles(&mut target.target(request, &mut encoder, Some(&mut on_submit)));
+            let (ranges, commands) = match bundles {
+                Some(draws) => {
+                    // Usage conflicts (e.g. sampling the colour attachment) and render-pass
+                    // compatibility are only checked when a finished bundle is executed.
+                    // Never submit this verification encoder. Both copies are still cancellable.
+                    let mut verify = target.device.create_command_encoder(&Default::default());
+                    ExternalBundles::encode_run(&mut verify, &target.color, &target.depth,
+                        target.depth_format.has_stencil_aspect(), std::slice::from_ref(&draws));
+                    drop(verify.finish());
+                    (draws.ranges, ExternalCommands::Bundles {
+                        setup: encoder.finish(), targets: target.targets, color: target.color.clone(), depth: target.depth.clone(),
+                        stencil: target.depth_format.has_stencil_aspect(), draws,
+                    })
+                }
+                None => {
+                    let ranges = pass.record_ranges(target.target(request, &mut encoder, Some(&mut on_submit)));
+                    (ranges, ExternalCommands::Standalone(encoder.finish()))
+                }
+            };
             plan.stage.attempted(plan.view, target.copy == TargetCopy::Display, ranges);
-            let commands = encoder.finish();
             let invalid = pollster::block_on(scope.pop()).is_some();
             let complete = plan.complete(target.copy, ranges);
             if invalid || !complete {
