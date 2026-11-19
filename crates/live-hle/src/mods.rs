@@ -470,14 +470,16 @@ impl From<RawPage> for ModPage {
                 .map(|e| {
                     let (named, described) = e.pack();
                     let pack_info = match &e.pack {
-                        Some(RawPackRef::Name(id)) => packs.iter().find(|p| p.id == id.trim()).cloned(),
+                        Some(RawPackRef::Name(id)) => {
+                            packs.iter().find(|p| p.id == id.trim()).cloned()
+                        }
                         _ => None,
                     };
                     let pack = text(e.pack_name.clone())
                         .or_else(|| pack_info.as_ref().map(|p| p.name.clone()))
                         .or(named);
-                    let pack_description =
-                        described.or_else(|| pack_info.as_ref().and_then(|p| p.description.clone()));
+                    let pack_description = described
+                        .or_else(|| pack_info.as_ref().and_then(|p| p.description.clone()));
                     (e, pack, pack_info, pack_description)
                 })
                 .map(|(e, pack, pack_info, pack_description)| ModEntry {
