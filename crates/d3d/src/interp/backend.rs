@@ -1764,6 +1764,18 @@ where
         self.inner.request_depth_grid(surface, request, sink)
     }
 
+    fn prepare_external(
+        &mut self, surfaces: crate::ExternalSurfaces<Self::Surface>, request: crate::ExternalPassRequest,
+        textures: [Option<&Self::Texture>; 4], plan: &crate::ExternalPlan, copy: crate::TargetCopy, pass: crate::SharedReplacement,
+    ) -> Result<Option<Vec<crate::ExternalRecording>>, String> {
+        self.inner.prepare_external(surfaces, request, textures, plan, copy, pass)
+    }
+
+    fn commit_external(&mut self, recording: crate::ExternalRecording) {
+        self.unpinned = true;
+        self.inner.commit_external(recording);
+    }
+
     fn supports_external_pass(&self) -> bool {
         self.inner.supports_external_pass()
     }
