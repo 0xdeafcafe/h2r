@@ -10,19 +10,25 @@
 //! camera copy: the device supplies the first-person view constants and
 //! W-clip at the external-pass boundary, exactly as its D3D draw sees them.
 //!
-//! Admission is whole-object: if any live layer-3 item of an object is not
-//! accepted, all of that object's accepted items are restored. This avoids
-//! the object encoder drawing a native part beside its own D3D part.
+//! Admission is whole-object and keyed by each record's mode datum, which
+//! can differ from its owner's third-person definition. If any live layer-3
+//! item of an object is not accepted, all of that object's accepted items
+//! are restored. An incomplete or non-geometry list leaves the call on D3D.
 
-use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use engine::memory::GuestMemory;
 use engine::points;
-use native_render::objects::{self, ClearedObjects, FIRST_PERSON_LAYER3_RETURN, ObjectFrame};
-use native_render::skip::{CURRENT_LAYER, LIGHTMAP_LAYER};
+use native_render::camera::GuestRead;
+use native_render::objects::{
+    self, ClearedObjects, FIRST_PERSON_LAYER3_RETURN, ObjectFrame, RECORD_MODEL, RecordOwner,
+};
+use native_render::skip::{
+    CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, ITEM_SIZE, LIGHTMAP_LAYER, RENDER_RECORD_SIZE,
+    RENDER_RECORDS,
+};
 
 use crate::native_objects::NativeSet;
 use crate::native_world::Mem;
@@ -36,10 +42,10 @@ pub trait Host: Send + Sync {
     /// The models and materials resolved for this map, or `None` to leave
     /// the whole first-person view to D3D.
     fn native(&self, mem: &dyn GuestMemory) -> Option<Arc<NativeSet>>;
-    /// Load a definition met in the first-person list (cheap to repeat).
-    fn want(&self, definition: u32);
+    /// Load a record's mode met in the first-person list (cheap to repeat).
+    fn want(&self, model: u32);
     /// Queue this first-person layer-3 draw. `false` restores every item.
-    /// Compared definitions are included but keep their D3D draws.
+    /// Compared modes are included but keep their D3D draws.
     fn draw(&self, objects: Vec<ObjectFrame>) -> bool;
 }
 
@@ -67,6 +73,121 @@ pub fn counts() -> (u64, u64, u64, u64, u64) {
     )
 }
 
+/// The record-model of each accepted object. A first-person record can use
+/// a different mode from its owner definition's third-person model.
+struct Admission {
+    models: HashMap<u32, u32>,
+    accepted: HashSet<u32>,
+}
+
+/// Reads the whole live list before writing any mask. Any uncertain item
+/// leaves the entire call on D3D; an unaccepted material or mixed record
+/// models veto just their owner object.
+fn admit(m: &dyn GuestRead, set: &NativeSet, host: &dyn Host) -> Option<Admission> {
+    const MAX_ITEMS: u32 = 1 << 16;
+    const FIRST_PERSON_ITEMS: u32 = 0x004c_8740;
+    const FIRST_PERSON_RECORD_COUNT: u32 = 0x0050_943c;
+    let list = m.read_u32(CURRENT_LIST)?;
+    if list == 0 {
+        return None;
+    }
+    let count = m.read_u32(list + 4)?;
+    let first = m.read_u32(list + 0xc)?;
+    let items = m.read_u32(list + 0x14)?;
+    if items != FIRST_PERSON_ITEMS || first > count || count - first > MAX_ITEMS {
+        return None;
+    }
+    let records = m.read_u32(FIRST_PERSON_RECORD_COUNT)?;
+    let bit = 1u32 << LIGHTMAP_LAYER;
+    let mut models = HashMap::new();
+    let mut accepted = HashSet::new();
+    let mut rejected = HashSet::new();
+    for i in first..count {
+        let item = items + ITEM_SIZE * i;
+        let mask = m.read_u32(item + 0x10)?;
+        if mask & bit == 0 {
+            continue;
+        }
+        if m.read_u32(item)? != GEOMETRY_BUILD {
+            return None;
+        }
+        let record = ((m.read_u32(item + 0xc)? as i32) >> 8) as u16 as i16;
+        if record < 0 || record as u32 >= records {
+            return None;
+        }
+        let at = RENDER_RECORDS + RENDER_RECORD_SIZE * record as u32;
+        let model = m.read_u32(at + RECORD_MODEL)?;
+        let handle = match objects::item_owner(m, item)? {
+            RecordOwner::World => continue,
+            RecordOwner::Unresolved => return None,
+            RecordOwner::Object(handle) => handle,
+        };
+        let shader = m.read_u32(item + 8)?;
+        if !set.accepts(model, shader) {
+            if !set.definitions.contains_key(&(model as u16)) {
+                host.want(model);
+            }
+            accepted.remove(&handle);
+            rejected.insert(handle);
+            continue;
+        }
+        if let Some(&other) = models.get(&handle)
+            && other != model
+        {
+            static MIXED: Mutex<Option<HashSet<(u32, u32, u32)>>> = Mutex::new(None);
+            let mut logged = MIXED.lock().unwrap_or_else(|e| e.into_inner());
+            if logged
+                .get_or_insert_with(HashSet::new)
+                .insert((handle, other, model))
+            {
+                eprintln!(
+                    "native-first-person: object {handle:#010x} mixes record modes {other:#010x} and {model:#010x}; it stays on D3D (logged once per pair)"
+                );
+            }
+            accepted.remove(&handle);
+            rejected.insert(handle);
+            continue;
+        }
+        models.insert(handle, model);
+        if !rejected.contains(&handle) {
+            accepted.insert(handle);
+        }
+    }
+    Some(Admission { models, accepted })
+}
+
+/// The object readiness checks except the third-person model's node count:
+/// first-person rows and geometry come from the record's mode, not the
+/// owner's body model.
+fn ready(
+    m: &dyn GuestRead,
+    set: &NativeSet,
+    cleared: &ClearedObjects,
+    frame: &mut ObjectFrame,
+) -> bool {
+    if set.texaccum.contains(&(frame.definition as u16))
+        && !native_render::object_nodes::texaccum_bound(m)
+    {
+        return false;
+    }
+    let Some(implementations) = set.lit(frame.definition) else {
+        return true;
+    };
+    frame
+        .lighting
+        .is_some_and(|lighting| lighting.root.is_some())
+        && objects::attach_node_rows(m, frame, cleared).is_ok()
+        && frame.implementations.iter().all(|&(_, implementation)| {
+            implementation < 8 && implementations & (1 << implementation) != 0
+        })
+        && set
+            .missing_section(
+                frame.definition,
+                frame.implementations.iter().map(|&(section, _)| section),
+            )
+            .is_none()
+}
+
 /// The observer before a layer draw. Only `0x0003fdf0`'s layer 3 is owned.
 pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
     restore_pending(mem);
@@ -87,39 +208,33 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
     let Some(set) = host.native(&*m.0) else {
         return;
     };
-
-    // A rejected item vetoes its whole object. The object encoder selects
-    // parts by section, so drawing just the accepted subset is not exact.
-    let rejected = RefCell::new(HashSet::new());
-    let accept = |handle: u32, definition: u32, shader: u32| {
-        if set.accepts(definition, shader) {
-            return true;
-        }
-        rejected.borrow_mut().insert(handle);
-        if !set.definitions.contains_key(&(definition as u16)) {
-            host.want(definition);
-        }
-        false
+    let Some(admission) = admit(&m, &set, &*host) else {
+        return;
     };
+    let accept = |handle: u32, _definition: u32, _shader: u32| admission.accepted.contains(&handle);
     let Some(mut cleared) = objects::clear_objects(&mut m, LIGHTMAP_LAYER, &accept) else {
         return;
     };
-    let rejected = rejected.into_inner();
+    if cleared.walk.write_failed != 0 {
+        objects::restore(&mut m, &cleared);
+        return;
+    }
     let mut frames = Vec::with_capacity(cleared.handles.len());
     for &handle in &cleared.handles {
-        if rejected.contains(&handle) {
+        let Some(&model) = admission.models.get(&handle) else {
             continue;
-        }
-        if let Some(mut frame) = objects::read_object(&m, handle)
-            && crate::native_objects::ready(&m, &set, &cleared, &mut frame)
-        {
-            frames.push(frame);
+        };
+        if let Some(mut frame) = objects::read_object(&m, handle) {
+            frame.definition = model;
+            if ready(&m, &set, &cleared, &mut frame) {
+                frames.push(frame);
+            }
         }
     }
     let drawn: HashSet<u32> = frames
         .iter()
-        .filter(|f| !set.shadowed.contains(&(f.definition as u16)))
-        .map(|f| f.handle)
+        .filter(|frame| !set.shadowed.contains(&(frame.definition as u16)))
+        .map(|frame| frame.handle)
         .collect();
     objects::keep_only(&mut m, &mut cleared, &|handle| drawn.contains(&handle));
     if frames.is_empty() {

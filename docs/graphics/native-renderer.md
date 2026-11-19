@@ -980,26 +980,35 @@ queues it.
 the objects stage's cache, but use its public model, stream and object
 program code. The device's constants at issue supply the first-person view
 (the camera is built by `0x0023c110` upstream), rather than a scene-camera
-copy. The pass requires a known W-buffered depth mode, uses the device's
-W-clip and per-call inherited cull, and loads depth/stencil: first person's
-flag disables stencil writes, so no scene stencil is replaced. Object nodes,
-record rows, materials and implementations are resolved as for native
-objects. Admission is whole-object and whole-definition: an unaccepted live
-item restores that object's other items, and a definition with a refused
-material or a texture-accumulation dependency stays on D3D. Loader
-publication is pinned to a map generation, including A → B → A transitions.
-The first-person lights themselves are not native yet.
+copy. The pass requires a known W-buffered depth mode and a full-target
+viewport (split or partial views stay on D3D), uses the device's W-clip and
+per-call inherited cull, and loads depth/stencil: first person's flag
+disables stencil writes, so no scene stencil is replaced. Record `+4`,
+not the owner definition's third-person model, names the `mode` to load;
+every section of that mode is built because the record key selects the
+permutation and LOD. The observer pins the item array `0x004c8740` and
+bounds each record index by `[0x0050943c]`; the records themselves use the
+same `0x004ba138` array as the other geometry draws. The owner's lighting
+and the record's node rows are resolved as for native objects, without
+requiring the body and mode node counts to match. Admission is whole-object
+and whole-mode: an unaccepted live item restores that object's other items,
+mixed record models veto the object (logged once per handle/model pair),
+and an incomplete or non-geometry list leaves the whole call on D3D. A mode with a refused material or a texture-accumulation dependency
+stays on D3D. Loader publication is pinned to a map generation, including
+A → B → A transitions. The first-person lights themselves are not native
+yet.
 
 For a paired uniform comparison,
-`H2_NATIVE_FIRST_PERSON_COMPARE=definition:part[:after]` keeps that
-definition on D3D, prepares the same native part and arms
-`d3d::uniform_compare` on the selected first-person external pass (part 0,
-pass 0 by default). The ordinary path logs native draws, objects, skipped
-items and queue refusals every 1,800 first-person layer-3 calls; the encoder
-also reports any prepared/encoded part-count mismatch. Synthetic tests cover
-caller selection, whole-object refusal, comparison shadowing, immediate and
-next-layer restoration, and rebuilt-list handling. The live 03a A/B is
-still pending.
+`H2_NATIVE_FIRST_PERSON_COMPARE=mode:part[:after]` keeps that record mode
+on D3D, prepares the same native part and arms `d3d::uniform_compare` on
+the selected external-target encode (part 0, encode 0 by default; scaled
+output encodes a pass more than once). The ordinary path logs native draws,
+objects, skipped items and queue refusals every 1,800 first-person layer-3
+calls; the encoder also reports any prepared/encoded part-count mismatch,
+including a model the GPU upload rejected. Synthetic tests cover caller
+selection, record/body model divergence, whole-object and incomplete-list
+refusal, comparison shadowing, immediate and next-layer restoration, and
+rebuilt-list handling. The live 03a A/B is still pending.
 
 ### Shading
 

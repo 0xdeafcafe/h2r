@@ -43,7 +43,7 @@ const HEADERS: u32 = 0x0058_1000;
 const BODIES: u32 = 0x0059_0000;
 const CACHE: u32 = 0x0057_0000;
 const CACHE_DATA: u32 = 0x0057_1000;
-const ITEMS: u32 = 0x0060_0000;
+const ITEMS: u32 = 0x004c_8740;
 const DEF_A: u32 = 0xe000_0100;
 const DEF_B: u32 = 0xe000_0200;
 
@@ -114,13 +114,16 @@ fn guest() -> (FlatMemory, u32, u32) {
     m.set_u32(RENDER_STATE_CACHE, CACHE).unwrap();
     m.set_u32(CACHE + 0x38, 16).unwrap();
     m.set_u32(CACHE + 0x44, CACHE_DATA).unwrap();
-    let a = object(&mut m, 1, DEF_A, 2);
-    let b = object(&mut m, 2, DEF_B, 1);
+    // The body definitions deliberately do not name the record modes:
+    // first-person geometry follows RECORD_MODEL, not the third-person body.
+    let a = object(&mut m, 1, 0xdead_0001, 2);
+    let b = object(&mut m, 2, 0xdead_0002, 1);
     m.set_u32(CURRENT_LAYER, 3).unwrap();
     m.set_u32(CURRENT_LIST, LIST).unwrap();
     m.set_u32(LIST + 4, 4).unwrap();
     m.set_u32(LIST + 0xc, 0).unwrap();
     m.set_u32(LIST + 0x14, ITEMS).unwrap();
+    m.set_u32(0x0050_943c, 16).unwrap();
     for (i, (shader, record, owner)) in [
         (0x10u32, 1u32, Some(a)),
         (0x11, 2, Some(a)),
@@ -136,7 +139,9 @@ fn guest() -> (FlatMemory, u32, u32) {
         m.set_u32(at + 0xc, record << 8).unwrap();
         m.set_u32(at + 0x10, 0b1010).unwrap();
         let at = RENDER_RECORDS + 0x20 * record;
-        let (model, light) = owner.map_or((u32::MAX, 0), |h| (0xe100_0000 | record, lighting(h)));
+        let (model, light) = owner.map_or((u32::MAX, 0), |h| {
+            (if h == a { DEF_A } else { DEF_B }, lighting(h))
+        });
         m.set_u32(at + RECORD_MODEL, model).unwrap();
         m.set_u32(at + RECORD_LIGHTING, light).unwrap();
     }
@@ -230,6 +235,13 @@ fn first_person_skips_whole_objects_and_restores_them_between_draws() {
         2,
         "the first-person object's own nodes"
     );
+    assert_eq!(
+        last.iter()
+            .map(|object| object.definition)
+            .collect::<Vec<_>>(),
+        vec![DEF_A, DEF_B],
+        "the record modes, not the body definitions"
+    );
     drop(drawn);
     m.set_u32(ITEMS + 0x10, 0b0100).unwrap();
     native_first_person::before_layer(&mut m, FIRST_PERSON_LAYER3_RETURN);
@@ -239,4 +251,30 @@ fn first_person_skips_whole_objects_and_restores_them_between_draws() {
     assert_eq!(calls, 6);
     assert_eq!(drawn, 4, "comparison, B, A and B, then the rebuilt list");
     assert_eq!(refused, 1);
+
+    native_first_person::restore_pending(&mut m);
+    m.set_u32(ITEMS + 3 * 0x18, 0x0004_b5d0).unwrap();
+    let draws = stub.drawn.lock().unwrap().len();
+    native_first_person::before_layer(&mut m, FIRST_PERSON_LAYER3_RETURN);
+    assert_eq!(
+        masks(&m),
+        vec![0b0100, 0b1010, 0b1010, 0b1010],
+        "an item whose owner cannot be established leaves the whole call on D3D"
+    );
+    assert_eq!(stub.drawn.lock().unwrap().len(), draws);
+
+    m.set_u32(ITEMS + 3 * 0x18, GEOMETRY_BUILD).unwrap();
+    m.set_u32(ITEMS + 0x10, 0b1010).unwrap();
+    m.set_u32(RENDER_RECORDS + 0x20 * 2 + RECORD_MODEL, DEF_B)
+        .unwrap();
+    native_first_person::before_layer(&mut m, FIRST_PERSON_LAYER3_RETURN);
+    assert_eq!(
+        masks(&m),
+        vec![0b1010, 0b1010, 0b0010, 0b1010],
+        "one owner with two record modes is vetoed; the complete other object still draws"
+    );
+    assert_eq!(
+        stub.drawn.lock().unwrap().last().unwrap()[0].definition,
+        DEF_B
+    );
 }

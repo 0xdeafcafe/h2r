@@ -14,6 +14,7 @@ use native_render::gpu::Image;
 use native_render::light_gpu::LayeredImage;
 use native_render::load;
 use native_render::look;
+use native_render::model::{Model, ModelInput, ModelSectionInput};
 use native_render::model_load;
 use native_render::object_lighting::ShaderValues;
 use native_render::object_nodes::{Compression, decompression_rows};
@@ -22,6 +23,7 @@ use native_render::object_program_gpu::{
     uniform,
 };
 use native_render::object_streams::{self, StreamData, StreamFormats};
+use tags::model::RenderModelGeometry;
 
 use crate::native_world_glue::{Raw, StageDecoder, StageImages, StagePalettes, locate, region};
 
@@ -117,7 +119,6 @@ pub(crate) fn spawn_worker(
 
 struct Opened {
     map: Map<BufReader<std::fs::File>>,
-    ctx: tags::object::Context,
     raw: Raw,
     decoder: StageDecoder,
     images: StageImages,
@@ -149,10 +150,8 @@ fn open(
             files.set(which, region(&f))?;
         }
     }
-    let ctx = tags::object::Context::read(&mut map)?;
     Ok(Opened {
         map,
-        ctx,
         raw: Raw(files),
         decoder: StageDecoder::new(palettes),
         images: StageImages::new(),
@@ -226,13 +225,64 @@ fn lit_material(opened: &mut Opened, shader: TagId) -> Result<LitMaterial, Strin
 
 const SHADER_VALUES: u32 = 0x44;
 
-/// Loads one complete opaque definition. Any refused material, texture
-/// accumulation dependency or absent program leaves the whole definition on
-/// D3D; partial native objects are not admitted by this stage.
+/// Loads one complete record model. Every section is built: the record key,
+/// not the owner definition's default variant, selects the first-person
+/// permutation and LOD. Any refused material or absent program leaves the
+/// whole mode on D3D.
 fn load_model(opened: &mut Opened, definition: u32) -> Result<(CpuModel, Vec<u16>), load::Error> {
-    let id = tag_of(&opened.map, definition).ok_or("no such tag")?;
-    let loaded = model_load::load_object_model(&mut opened.map, &opened.ctx, &mut opened.raw, id)?;
-    let nodes = loaded.model.inverse_binds.len();
+    let mode = tag_of(&opened.map, definition).ok_or("no such mode tag")?;
+    let geometry = RenderModelGeometry::read(&mut opened.map, mode, &mut opened.raw)?;
+    let nodes = geometry.nodes.len();
+    let inverse_binds = geometry
+        .nodes
+        .iter()
+        .map(|node| model_load::inverse_bind(&node.wire.unknown_028[..]))
+        .collect::<Option<Vec<_>>>()
+        .ok_or("a node's inverse rest frame is not finite")?;
+    let sections: Vec<usize> = (0..geometry.sections.len()).collect();
+    let mut input = ModelInput {
+        inverse_binds,
+        sections: Vec::new(),
+    };
+    for &section_index in &sections {
+        let Some(section) = geometry.sections.get(section_index) else {
+            continue;
+        };
+        let vertices = &section.vertices;
+        input.sections.push(ModelSectionInput {
+            positions: vertices.positions.clone(),
+            uvs: vertices.texcoords.clone(),
+            normals: vertices.normals.clone(),
+            node_indices: vertices.node_indices.clone(),
+            node_weights: vertices.node_weights.clone(),
+            node_map: section.node_map.clone(),
+            parts: section
+                .geometry
+                .parts
+                .iter()
+                .filter(|part| part.is_drawn())
+                .map(|part| native_render::model::ModelPartInput {
+                    material: part.material,
+                    transparent: part.kind == load::PART_TRANSPARENT,
+                    triangles: section.geometry.part_triangles(part),
+                })
+                .collect(),
+        });
+    }
+    let model = Model::build(&input);
+    let shaders = geometry
+        .materials
+        .iter()
+        .map(|material| material.shader.id)
+        .collect();
+    let loaded = model_load::LoadedModel {
+        mode,
+        model,
+        shaders,
+        geometry,
+        lod_sections: sections.clone(),
+        sections,
+    };
     let mut materials = HashMap::new();
     for local in loaded.model.materials() {
         let Some(&shader) = loaded.shaders.get(usize::from(local)) else {

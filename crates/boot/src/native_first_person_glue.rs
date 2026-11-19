@@ -25,6 +25,27 @@ impl native_render::camera::GuestRead for Ro<'_> {
     }
 }
 
+/// The object encoder uses the whole target as its viewport. A split or
+/// otherwise partial view therefore keeps its original D3D draw.
+fn full_target_viewport<B: d3d::backend::Backend>(
+    device: &d3d::Device<B>,
+    mem: &dyn GuestMemory,
+) -> bool {
+    let target = device.bound_target()[0];
+    let Ok(header) = d3d::resource::SurfaceHeader::read(&ReadMemory(mem), target) else {
+        return false;
+    };
+    let Ok(desc) = gfx::texture::TextureDesc::from_header(header.pixels.format, header.pixels.size)
+    else {
+        return false;
+    };
+    let viewport = device.viewport();
+    viewport.x == 0
+        && viewport.y == 0
+        && viewport.width == desc.width
+        && viewport.height == desc.height
+}
+
 /// The installed host: current map generation and inherited cull.
 pub struct Glue<B: d3d::backend::Backend + Send + 'static> {
     device: d3d::abi::SharedDevice<B>,
@@ -39,13 +60,13 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         if name.is_empty() {
             return None;
         }
-        let (clip, cull) = {
+        let (clip, cull, full_viewport) = {
             let device = self.device.lock().ok()?;
             let clip = device.depth_clip(&ReadMemory(mem), 1.0);
             let cull = device.cull_state(&ReadMemory(mem)).map(inherited_cull);
-            (clip, cull)
+            (clip, cull, full_target_viewport(&device, mem))
         };
-        if clip.w_buffered != Some(true) || cull.is_none() {
+        if clip.w_buffered != Some(true) || cull.is_none() || !full_viewport {
             return None;
         }
         *self.cull.lock().unwrap_or_else(|e| e.into_inner()) = cull;
@@ -212,49 +233,80 @@ impl d3d::ExternalPass for FirstPersonPass {
     }
 
     fn encode(&mut self, target: d3d::ExternalTarget<'_>) {
+        static INVALID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        static NO_VIEW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        static PARTIAL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
         if !self.valid {
-            eprintln!("native-first-person: issue refused a non-W-buffered or unknown depth mode");
+            if !INVALID.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                eprintln!(
+                    "native-first-person: issue refused a non-W-buffered or unknown depth mode (logged once)"
+                );
+            }
             return;
         }
-        let Some(constants) = self.view else { return };
+        if target.viewport != [0.0, 0.0, target.size.0 as f32, target.size.1 as f32] {
+            if !PARTIAL.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                eprintln!(
+                    "native-first-person: issue refused a partial target viewport (logged once)"
+                );
+            }
+            return;
+        }
+        let Some(constants) = self.view else {
+            if !NO_VIEW.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                eprintln!("native-first-person: issue supplied no view constants (logged once)");
+            }
+            return;
+        };
         let mut guard = self.upload(&target);
         let Some(lit) = guard.as_mut() else { return };
         lit.set_inherited_cull(self.cull);
-        let objects: Vec<(u32, &native_render::objects::ObjectFrame)> = self
+        let compared = compare();
+        let (shadowed, prepared): (Vec<_>, Vec<_>) = self
             .objects
             .iter()
-            .filter(|object| lit.has(object.definition))
             .map(|object| (object.definition, object))
+            .partition(|(_, object)| {
+                compared.is_some_and(|compare| compare.definition == object.definition as u16)
+            });
+        let native: Vec<_> = prepared
+            .iter()
+            .filter(|(definition, _)| lit.has(*definition))
+            .copied()
             .collect();
-        let compared = compare();
-        let (shadowed, native): (Vec<_>, Vec<_>) = objects.into_iter().partition(|(_, object)| {
-            compared.is_some_and(|compare| compare.definition == object.definition as u16)
-        });
         let view = self.view_inputs(constants, &target);
-        if let (Some(compare), Some(&(_, object))) = (compared, shadowed.first()) {
+        if let (Some(compare), Some(&(_, object))) = (
+            compared,
+            shadowed.iter().find(|(definition, _)| lit.has(*definition)),
+        ) {
             arm_compare(compare, lit, object, &view);
         }
-        if native.is_empty() {
-            return;
-        }
-        let expected = expected_parts(&self.models, &native);
-        let drawn = lit.encode(
-            target.device,
-            target.queue,
-            &mut *target.encoder,
-            target.color,
-            target.color_format,
-            target.depth,
-            target.depth_format,
-            target.size,
-            &view,
-            &native,
-            None,
-        );
+        let expected = expected_parts(&self.models, &prepared);
+        let drawn = if native.is_empty() {
+            0
+        } else {
+            lit.encode(
+                target.device,
+                target.queue,
+                &mut *target.encoder,
+                target.color,
+                target.color_format,
+                target.depth,
+                target.depth_format,
+                target.size,
+                &view,
+                &native,
+                None,
+            )
+        };
         if drawn != expected {
-            eprintln!(
-                "native-first-person: encoded {drawn} of {expected} prepared parts; mixed D3D/native output needs investigation"
-            );
+            static MISMATCH: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if !MISMATCH.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                eprintln!(
+                    "native-first-person: encoded {drawn} of {expected} prepared parts; mixed D3D/native output needs investigation (logged once)"
+                );
+            }
         }
     }
 }
@@ -276,9 +328,10 @@ fn expected_parts(
         .sum()
 }
 
-/// `H2_NATIVE_FIRST_PERSON_COMPARE=definition:part[:after]`: keep that
-/// definition on D3D and arm its native program/constants against the real
-/// first-person draw on the selected external pass.
+/// `H2_NATIVE_FIRST_PERSON_COMPARE=mode:part[:after]`: keep that record
+/// mode on D3D and arm its native program/constants against the real
+/// first-person draw on the selected external-target encode (0 by default;
+/// scaled output encodes a pass more than once).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Compare {
     definition: u16,
