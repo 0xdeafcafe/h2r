@@ -262,6 +262,14 @@ impl Scenario {
             if name.is_empty() {
                 return Err(invalid("empty builtin name"));
             }
+            if name == crate::h1_ai_slots::CONTROL_TOKEN
+                && crate::h1_ai_slots::Operation::from_marker(head.data)
+                    .is_some_and(|operation| operation.slot() == n.opcode)
+            {
+                // A converted operation names its dispatch protocol. The
+                // unmarked retail call supplies the descriptor's name.
+                continue;
+            }
             if names
                 .insert(n.opcode, name.to_owned())
                 .is_some_and(|old| old != name)

@@ -31,8 +31,8 @@ Names supplied by the unit and object descriptor table use slots 23, 54,
 already have names in the shared retail descriptor table.
 The AI-control lane also uses slot 241 for a marked vehicle-count call.
 Retail grenade counts appear in a10 and the marked AI calls come from
-a30 and b30. The builtin-name census should disregard the marked call
-when the two share a cache.
+a30 and b30. The builtin-name census skips the marked operation, leaving the
+retail grenade count as the descriptor name when both share a cache.
 
 ## Converted-campaign hooks
 

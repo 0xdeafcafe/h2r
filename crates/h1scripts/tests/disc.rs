@@ -909,8 +909,11 @@ fn encounter_controls_emit_live_evaluators_and_native_orders() {
             match node.opcode() {
                 CONTROL | VEHICLE_COUNT => {
                     let head = scenario.node(hs::Datum(node.data())).unwrap();
-                    let operation = RuntimeOperation::from_marker(head.data()).unwrap();
-                    runtime_operations.insert(operation as u16);
+                    if scenario.string(head.string_offset()).unwrap() == hs::h1_ai_slots::CONTROL_TOKEN {
+                        let operation = RuntimeOperation::from_marker(head.data()).unwrap();
+                        assert_eq!(operation.slot(), node.opcode());
+                        runtime_operations.insert(operation as u16);
+                    }
                 }
                 280 => grenades = true,
                 291 => {
