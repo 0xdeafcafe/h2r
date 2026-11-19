@@ -96,17 +96,6 @@ impl Rule {
     }
 }
 
-fn registry(m: &dyn GuestMemory, base: u32) -> R<Option<u32>> {
-    if base > 0xc00 - hs::vm::EXTERNAL_GLOBALS as u32 - REGISTRY_WORDS {
-        return Ok(None);
-    }
-    let scenario = m.u32(super::points::SCENARIO.base)?;
-    if scenario == 0 || base + REGISTRY_WORDS > m.u32(scenario + 0x1c0)? {
-        return Ok(None);
-    }
-    Ok(Some(state::addr(m, base)?))
-}
-
 fn vehicle(m: &dyn GuestMemory, handle: u32) -> R<Option<objects::Body>> {
     let Some((objects::VEHICLE, body)) = objects::get(m, DatumHandle(handle))? else {
         return Ok(None);
@@ -120,7 +109,7 @@ pub(super) fn configure(cx: &Cx, op: Operation, args: &[u32]) -> R<()> {
         if vehicle(m, handle)?.is_none() {
             return Ok(());
         }
-        let Some(start) = registry(m, args[args.len() - 1])? else {
+        let Some(start) = state::registry(m, args[args.len() - 1], REGISTRY_WORDS)? else {
             return Ok(());
         };
         let mut available = None;
@@ -242,7 +231,7 @@ pub(super) async fn assign(cx: &Cx, handle: u32, destination: u32) -> Result<(),
 pub(super) async fn tick(cx: &Cx, base: u32) -> Result<(), EntryError> {
     let rules = cx.read(|m| {
         let mut rules = Vec::new();
-        let Some(start) = registry(m, base)? else {
+        let Some(start) = state::registry(m, base, REGISTRY_WORDS)? else {
             return Ok(rules);
         };
         for row in 0..u32::from(VEHICLE_ROWS) {

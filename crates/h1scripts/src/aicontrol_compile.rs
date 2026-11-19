@@ -1,7 +1,9 @@
 //! Lower scripted platoon actions into the level's Halo 2 orders and squads.
 
 use h1ai::control::{Action, Control, Platoon};
-use hs::h1_ai_slots::{CONTROL, CONTROL_TOKEN, ManeuverEdge, Operation as RuntimeOperation};
+use hs::h1_ai_slots::{
+    CONTROL, CONTROL_TOKEN, ManeuverEdge, Operation as RuntimeOperation, Registry,
+};
 use hs::{Datum, Node};
 
 use super::{CALL, Compiler, GLOBAL, New, definition, h2t};
@@ -73,6 +75,12 @@ impl Compiler<'_> {
             "ai_vehicle_enterable_actors" => Some(RuntimeOperation::VehicleActors),
             "ai_vehicle_enterable_disable" => Some(RuntimeOperation::VehicleDisable),
             "ai_going_to_vehicle" => Some(RuntimeOperation::VehicleCount),
+            "ai_try_to_fight" => Some(RuntimeOperation::PreferAi),
+            "ai_try_to_fight_player" => Some(RuntimeOperation::PreferPlayer),
+            "ai_try_to_fight_nothing" => Some(RuntimeOperation::ClearPreference),
+            "ai_playfight" => Some(RuntimeOperation::Playfight),
+            "ai_link_activation" => Some(RuntimeOperation::LinkActivation),
+            "ai_migrate_and_speak" => Some(RuntimeOperation::MigrateSpeak),
             "ai_attach_free" => Some(RuntimeOperation::AttachFree),
             "ai_free" => Some(RuntimeOperation::Free),
             "ai_free_units" => Some(RuntimeOperation::FreeUnits),
@@ -259,6 +267,14 @@ impl Compiler<'_> {
                     let enable = self.expr(*value, h2t::BOOLEAN)?;
                     self.control_call("set", ty, &[flag, enable])?
                 }
+                Action::ExpireTimer {
+                    squad,
+                    reveal_players,
+                } => {
+                    let squad = self.ai_literal(squad)?;
+                    let reveal = self.number(h2t::BOOLEAN, i32::from(reveal_players));
+                    self.runtime_control_call(RuntimeOperation::TimerExpire, &[squad, reveal], ty)?
+                }
                 Action::Spawn(squad) => {
                     let squad = self.ai_literal(squad)?;
                     let count = self.number(h2t::SHORT, 1);
@@ -303,7 +319,7 @@ impl Compiler<'_> {
         expected: u16,
     ) -> Result<Datum> {
         let mut parameters = op.parameters();
-        if op.uses_vehicle_registry() {
+        if op.registry().is_some() {
             parameters = &parameters[..parameters.len() - 1];
         }
         if args.len() != parameters.len() {
@@ -325,74 +341,98 @@ impl Compiler<'_> {
             };
             compiled.push(literal);
         }
-        if op.uses_vehicle_registry() {
-            let base = self.vehicle_state()?;
+        if let Some(registry) = op.registry() {
+            let base = self.registry_base(registry)?;
             compiled.push(self.number(h2t::LONG, i32::from(base)));
         }
         self.runtime_control_call(op, &compiled, expected)
     }
 
-    fn vehicle_state(&mut self) -> Result<u16> {
-        if let Some(base) = self.vehicle_state {
+    fn registry_base(&mut self, registry: Registry) -> Result<u16> {
+        if let Some(&(_, base)) = self.ai_registries.iter().find(|(r, _)| *r == registry) {
             return Ok(base);
         }
         // Calls can appear in original global initializers. Reserve names
         // after the original globals and maneuver switches in either case.
-        let base = self.t.globals.len() + self.ai_control.map_or(0, |c| c.switches.len());
+        let base = self.t.globals.len()
+            + self.ai_control.map_or(0, |c| c.switches.len())
+            + self
+                .ai_registries
+                .iter()
+                .map(|(r, _)| usize::from(r.words()))
+                .sum::<usize>();
         let base = u16::try_from(base).map_err(|_| invalid("global count"))?;
-        self.vehicle_state = Some(base);
+        self.ai_registries.push((registry, base));
         Ok(base)
     }
 
-    pub(super) fn install_vehicle_tick(&mut self) -> Result<()> {
-        use hs::h1_ai_slots::{VEHICLE_ROWS, VEHICLE_WIDTH};
-        let Some(base) = self.vehicle_state else {
-            return Ok(());
-        };
-        let base = usize::from(base);
-        let end = base + usize::from(VEHICLE_ROWS) * usize::from(VEHICLE_WIDTH);
-        if self.out.globals.len() != base || hs::vm::EXTERNAL_GLOBALS + end > 0xc00 {
-            return Err(invalid("vehicle AI state exceeds the Halo 2 global pool"));
-        }
-        for index in base..end {
-            let word = (index - base) % usize::from(VEHICLE_WIDTH);
-            let init = if matches!(word, 0 | 1 | 5..=10) {
-                -1
-            } else {
-                0
+    pub(super) fn install_ai_ticks(&mut self) -> Result<()> {
+        let mut hook_state = u32::MAX;
+        for (registry, base) in std::mem::take(&mut self.ai_registries) {
+            if let Some(shift) = registry.hook_shift() {
+                hook_state = (hook_state & !(0xffff << shift)) | (u32::from(base) << shift);
+            }
+            let start = usize::from(base);
+            let end = start + usize::from(registry.words());
+            if self.out.globals.len() != start || hs::vm::EXTERNAL_GLOBALS + end > 0xc00 {
+                return Err(invalid("converted AI state exceeds the Halo 2 global pool"));
+            }
+            for index in 0..registry.words() {
+                let root = self.number(h2t::LONG, registry.initial(index));
+                let global = start + usize::from(index);
+                let name = format!("h1_ai_state_{global}");
+                if self
+                    .t
+                    .globals
+                    .iter()
+                    .any(|g| g.name.eq_ignore_ascii_case(&name))
+                {
+                    return Err(invalid(format!("global name collision: {name}")));
+                }
+                self.out
+                    .globals
+                    .push(definition(&name, h2t::LONG, 0, root, global)?);
+            }
+            let Some(operation) = registry.tick() else {
+                continue;
             };
-            let root = self.number(h2t::LONG, init);
-            let name = format!("h1_vehicle_state_{index}");
+            let name = format!("h1_ai_tick_{base}");
             if self
                 .t
-                .globals
+                .scripts
                 .iter()
-                .any(|g| g.name.eq_ignore_ascii_case(&name))
+                .any(|s| s.name.eq_ignore_ascii_case(&name))
             {
-                return Err(invalid(format!("global name collision: {name}")));
+                return Err(invalid(format!("script name collision: {name}")));
             }
+            let base = self.number(h2t::LONG, i32::from(base));
+            let root = self.runtime_control_call(operation, &[base], h2t::VOID)?;
+            self.out.scripts.push(definition(
+                &name,
+                2,
+                h2t::VOID,
+                root,
+                self.out.scripts.len(),
+            )?);
+        }
+        if hook_state != u32::MAX {
+            // Native hooks can locate these registries in constant time.
+            let name = hs::h1_ai_slots::HOOK_STATE;
+            let index = self.out.globals.len();
+            if hs::vm::EXTERNAL_GLOBALS + index >= 0xc00
+                || self
+                    .t
+                    .globals
+                    .iter()
+                    .any(|g| g.name.eq_ignore_ascii_case(name))
+            {
+                return Err(invalid("unable to add the AI hook state index"));
+            }
+            let root = self.number(h2t::LONG, hook_state as i32);
             self.out
                 .globals
-                .push(definition(&name, h2t::LONG, 0, root, index)?);
+                .push(definition(name, h2t::LONG, 0, root, index)?);
         }
-        let name = "h1_vehicle_ai_tick";
-        if self
-            .t
-            .scripts
-            .iter()
-            .any(|s| s.name.eq_ignore_ascii_case(name))
-        {
-            return Err(invalid(format!("script name collision: {name}")));
-        }
-        let base = self.number(h2t::LONG, base as i32);
-        let root = self.runtime_control_call(RuntimeOperation::VehicleTick, &[base], h2t::VOID)?;
-        self.out.scripts.push(definition(
-            name,
-            2,
-            h2t::VOID,
-            root,
-            self.out.scripts.len(),
-        )?);
         Ok(())
     }
 

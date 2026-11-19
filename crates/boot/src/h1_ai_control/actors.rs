@@ -56,6 +56,17 @@ pub(super) fn active(m: &dyn GuestMemory) -> R<bool> {
     Ok(ai != 0 && m.u8(ai + 1)? != 0)
 }
 
+pub(super) fn by_handle(m: &dyn GuestMemory, handle: DatumHandle) -> R<Option<Actor>> {
+    let pool = m.u32(ACTORS)?;
+    if pool == 0 {
+        return Ok(None);
+    }
+    DatumArray::at(pool)
+        .try_get(m, handle)?
+        .map(|at| Actor::read(m, handle, at))
+        .transpose()
+}
+
 pub(super) fn all(m: &dyn GuestMemory) -> R<Vec<Actor>> {
     let base = m.u32(ACTORS)?;
     let mut out = Vec::new();
@@ -116,6 +127,28 @@ pub(super) fn selected(m: &dyn GuestMemory, reference: u32) -> R<Vec<Actor>> {
         }
     }
     Ok(out)
+}
+
+pub(super) fn matches_reference(m: &dyn GuestMemory, actor: Actor, reference: u32) -> R<bool> {
+    if reference == NONE {
+        return Ok(false);
+    }
+    match reference & AI_KIND {
+        0 => Ok(actor.squad == u32::from(reference as u16)),
+        super::AI_GROUP => super::squad_control::contains_squad(m, reference as u16, actor.squad),
+        0x8000_0000 => Ok(actor.handle as u16 == reference as u16),
+        _ => {
+            let squad = (reference >> 16) & 0x3fff;
+            if actor.squad != squad {
+                return Ok(false);
+            }
+            let Some(start) = start_for_reference(m, squad, u32::from(reference as u16))? else {
+                return Ok(false);
+            };
+            let name = m.u32(start)?;
+            Ok(name != 0 && m.u32(actor.at + ACTOR_STARTING_LOCATION)? == name)
+        }
+    }
 }
 
 pub(super) fn object_list(m: &dyn GuestMemory, list: u32) -> R<BTreeSet<u32>> {

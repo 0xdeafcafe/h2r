@@ -8,6 +8,11 @@ use feature::{BuildError, Builder, Flow, Manifest, points};
 use hs::h1_ai_slots::{self, Operation};
 
 mod actors;
+mod playfight;
+mod preference;
+mod speech;
+#[path = "h1_ai_control/squads.rs"]
+mod squad_control;
 mod state;
 mod vehicles;
 
@@ -78,6 +83,40 @@ impl feature::Feature for AiControl {
                     return Ok(Flow::Continue);
                 }
                 call.answer_async(|cx| Box::pin(see(cx, MAGICALLY_SEE_OBJECT)))
+            },
+        );
+        b.raw().before(
+            &points::AI_DAMAGE_MODIFIER,
+            "attenuate playfighting actor damage",
+            |call| {
+                if is_converted_campaign(call) {
+                    let (Some(actor), Some(multiplier)) =
+                        (call.arg_u32("actor"), call.arg_u32("multiplier"))
+                    else {
+                        return Ok(Flow::Continue);
+                    };
+                    let mut guest = call.ctx.runtime().memory();
+                    let _ = playfight::scale_damage(&mut *guest, actor, multiplier);
+                }
+                Ok(Flow::Continue)
+            },
+        );
+        b.raw().after(
+            &points::AI_TARGET_SCORE,
+            "score a Halo 1 actor's preferred target",
+            |call| {
+                let score = f32::from_le_bytes(call.cpu.xmm[0][..4].try_into().unwrap());
+                if score == 0.0 || !score.is_finite() {
+                    return Ok(());
+                }
+                if is_converted_campaign(call) {
+                    let guest = call.ctx.runtime().memory();
+                    // The callee popped both arguments. Their values remain
+                    // above its return address, at the top of its old stack.
+                    let added = preference::score_bonus(&*guest, call.cpu.esp).unwrap_or(0.0);
+                    call.cpu.xmm[0][..4].copy_from_slice(&(score + added).to_le_bytes());
+                }
+                Ok(())
             },
         );
         b.snapshot(feature::SnapshotPolicy::Stateless);
@@ -257,6 +296,7 @@ async fn dispatch(cx: Cx, op: Operation) -> Result<Ret, EntryError> {
                     actors::move_actor(&cx, actor, NONE).await?;
                 }
             }
+            Operation::MigrateSpeak => speech::migrate(&cx, args[0], args[1], args[2]).await?,
             Operation::MigrateUnits => {
                 let moves = cx.read(|m| {
                     let mut moves = Vec::new();
@@ -275,9 +315,21 @@ async fn dispatch(cx: Cx, op: Operation) -> Result<Ret, EntryError> {
                 actors::teleport(&cx, args[0], op == Operation::TeleportUnsupported).await?;
             }
             Operation::Maneuver => actors::maneuver(&cx, args[0]).await?,
+            Operation::PreferAi | Operation::PreferPlayer | Operation::ClearPreference => {
+                preference::set(&cx, op, &args)?;
+            }
+            Operation::Playfight => playfight::set(&cx, args[0], args[1] as u8 != 0, args[2])?,
+            Operation::TimerExpire => {
+                squad_control::expire(&cx, args[0])?;
+                if args[1] as u8 != 0 {
+                    awareness(&cx, args[0], None).await?;
+                }
+            }
+            Operation::LinkActivation => squad_control::link(&cx, args[0], args[1], args[2])?,
+            Operation::ActivationTick => squad_control::activation_tick(&cx, args[0]).await?,
             Operation::VehicleTick => vehicles::tick(&cx, args[0]).await?,
             Operation::VehicleCount => value = cx.read(|m| vehicles::count(m, args[0]))?,
-            operation if operation.uses_vehicle_registry() => {
+            operation if operation.registry() == Some(hs::h1_ai_slots::Registry::Vehicles) => {
                 vehicles::configure(&cx, operation, &args)?;
                 if operation == Operation::VehicleEncounter {
                     vehicles::assign(&cx, args[0], args[1]).await?;

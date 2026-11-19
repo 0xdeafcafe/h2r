@@ -224,8 +224,12 @@ macro_rules! globals {
 points! { ALL;
     /// The HaloScript evaluator shared by argument-evaluating discarded builtins.
     HS_DISCARDED_EVALUATE @ 0x002a_b6c0: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/ai-control.md";
-    /// HaloScript's object awareness evaluator, index 305.
+    /// How strongly the observing actor prioritizes one candidate.
+    AI_TARGET_SCORE @ 0x0026_5d30: [fn(actor: stack 0, interest: stack 1) -> xmm0 ret 8], hot; "docs/halo1/ai-control.md";
+    /// The actor's contribution to outgoing damage calculation.
+    AI_DAMAGE_MODIFIER @ 0x001c_8440: [fn(actor: ecx, multiplier: edx, packet: stack 0) -> al ret 4]; "docs/halo1/ai-control.md";
     HS_UNIT_GRENADE_COUNT @ 0x002a_4310: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/ai-control.md";
+    /// HaloScript's object awareness evaluator, index 305.
     HS_AI_SEE_OBJECT @ 0x002a_53b0: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/ai-control.md";
     /// `game_tick`: the per-tick phases, then the tick count. Called once per
     /// simulated tick by `game_update_ticks`.

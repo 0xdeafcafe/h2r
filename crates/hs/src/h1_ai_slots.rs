@@ -6,7 +6,7 @@
 //! fixed-signature evaluator. The retail descriptor still supplies the
 //! result type. See docs/halo1/ai-control.md.
 
-use crate::casts::types::{AI, LONG, OBJECT, OBJECT_LIST, REAL, SHORT, STRING, VOID};
+use crate::casts::types::{AI, BOOLEAN, LONG, OBJECT, OBJECT_LIST, REAL, SHORT, STRING, VOID};
 
 pub const VEHICLE_COUNT: u16 = 241;
 pub const CONTROL: u16 = 300;
@@ -15,8 +15,54 @@ const UNIT: u16 = 51;
 const TEAM: u16 = 45;
 pub const ACTOR_TYPE: u16 = 46;
 
-pub const VEHICLE_ROWS: u16 = 128;
+pub const VEHICLE_ROWS: u16 = 96;
 pub const VEHICLE_WIDTH: u16 = 11;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Registry {
+    Vehicles,
+    ActivationLinks,
+    Playfight,
+    TargetPreference,
+}
+
+impl Registry {
+    pub const fn words(self) -> u16 {
+        match self {
+            Self::Vehicles => VEHICLE_ROWS * VEHICLE_WIDTH,
+            Self::ActivationLinks => 128,
+            Self::Playfight => 4,
+            Self::TargetPreference => 512,
+        }
+    }
+
+    pub const fn initial(self, index: u16) -> i32 {
+        match self {
+            Self::Vehicles if matches!(index % VEHICLE_WIDTH, 2..=4) => 0,
+            Self::Playfight => 0,
+            _ => -1,
+        }
+    }
+
+    pub const fn hook_shift(self) -> Option<u32> {
+        match self {
+            Self::Playfight => Some(0),
+            Self::TargetPreference => Some(16),
+            _ => None,
+        }
+    }
+
+    pub const fn tick(self) -> Option<Operation> {
+        match self {
+            Self::Vehicles => Some(Operation::VehicleTick),
+            Self::ActivationLinks => Some(Operation::ActivationTick),
+            Self::Playfight | Self::TargetPreference => None,
+        }
+    }
+}
+
+/// The final global packs the indices of data needed by native hooks.
+pub const HOOK_STATE: &str = "h1_ai_hook_state";
 
 pub const CONTROL_TOKEN: &str = "h1_ai_control";
 pub const DISCARD_EVALUATOR: u32 = 0x002a_b6c0;
@@ -82,6 +128,14 @@ pub enum Operation {
     VehicleTick = 14,
     VehicleCount = 15,
     AttachFree = 16,
+    TimerExpire = 17,
+    LinkActivation = 18,
+    ActivationTick = 19,
+    Playfight = 20,
+    PreferAi = 21,
+    PreferPlayer = 22,
+    ClearPreference = 23,
+    MigrateSpeak = 24,
 }
 
 impl Operation {
@@ -109,6 +163,14 @@ impl Operation {
             14 => Self::VehicleTick,
             15 => Self::VehicleCount,
             16 => Self::AttachFree,
+            17 => Self::TimerExpire,
+            18 => Self::LinkActivation,
+            19 => Self::ActivationTick,
+            20 => Self::Playfight,
+            21 => Self::PreferAi,
+            22 => Self::PreferPlayer,
+            23 => Self::ClearPreference,
+            24 => Self::MigrateSpeak,
             _ => return None,
         })
     }
@@ -121,16 +183,21 @@ impl Operation {
     }
 
     /// Setters take an additional index of the registry in the script globals.
-    pub const fn uses_vehicle_registry(self) -> bool {
-        matches!(
-            self,
+    pub const fn registry(self) -> Option<Registry> {
+        match self {
             Self::VehicleEncounter
-                | Self::VehicleDistance
-                | Self::VehicleActorType
-                | Self::VehicleTeam
-                | Self::VehicleActors
-                | Self::VehicleDisable
-        )
+            | Self::VehicleDistance
+            | Self::VehicleActorType
+            | Self::VehicleTeam
+            | Self::VehicleActors
+            | Self::VehicleDisable => Some(Registry::Vehicles),
+            Self::LinkActivation => Some(Registry::ActivationLinks),
+            Self::Playfight => Some(Registry::Playfight),
+            Self::PreferAi | Self::PreferPlayer | Self::ClearPreference => {
+                Some(Registry::TargetPreference)
+            }
+            _ => None,
+        }
     }
 
     pub const fn parameters(self) -> &'static [u16] {
@@ -138,6 +205,7 @@ impl Operation {
             Self::SeePlayers | Self::Free | Self::Teleport | Self::TeleportUnsupported => &[AI],
             Self::FreeUnits => &[OBJECT_LIST],
             Self::MigrateUnits => &[OBJECT_LIST, AI],
+            Self::MigrateSpeak => &[AI, AI, STRING],
             Self::Maneuver => &[STRING],
             Self::VehicleEncounter | Self::VehicleActors => &[UNIT, AI, LONG],
             Self::VehicleDistance => &[UNIT, REAL, LONG],
@@ -147,6 +215,12 @@ impl Operation {
             Self::VehicleTick => &[LONG],
             Self::VehicleCount => &[UNIT],
             Self::AttachFree => &[UNIT, LONG],
+            Self::TimerExpire => &[AI, BOOLEAN],
+            Self::LinkActivation => &[AI, AI, LONG],
+            Self::ActivationTick => &[LONG],
+            Self::Playfight => &[AI, BOOLEAN, LONG],
+            Self::PreferAi => &[AI, AI, LONG],
+            Self::PreferPlayer | Self::ClearPreference => &[AI, LONG],
         }
     }
 }

@@ -335,7 +335,7 @@ pub fn compile_with_ai(
         resolves,
         ai_control,
         maneuver_switches: Default::default(),
-        vehicle_state: None,
+        ai_registries: Vec::new(),
         ai_scripts: Default::default(),
         ai_definitions: Vec::new(),
         out: Compiled::default(),
@@ -358,7 +358,7 @@ pub fn compile_with_ai(
             .push(definition(&s.name, s.kind, ty, root, i)?);
     }
     c.out.scripts.append(&mut c.ai_definitions);
-    c.install_vehicle_tick()?;
+    c.install_ai_ticks()?;
     c.out.references = t
         .references
         .iter()
@@ -484,7 +484,7 @@ struct Compiler<'a> {
     resolves: &'a dyn Fn(&str, &str) -> bool,
     ai_control: Option<&'a h1ai::control::Control>,
     maneuver_switches: std::collections::BTreeMap<h1ai::control::Platoon, u16>,
-    vehicle_state: Option<u16>,
+    ai_registries: Vec<(hs::h1_ai_slots::Registry, u16)>,
     ai_scripts: std::collections::BTreeMap<h1ai::control::Request, (u16, String)>,
     ai_definitions: Vec<[u8; 40]>,
     out: Compiled,

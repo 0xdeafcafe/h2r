@@ -182,6 +182,7 @@ pub(crate) fn operation(name: &str) -> Option<h1ai::control::Operation> {
         "ai_defend" => Defend,
         "ai_retreat" | "ai_maneuver" => Maneuver,
         "ai_maneuver_enable" => ManeuverEnable,
+        "ai_timer_expire" => TimerExpire,
         "ai_spawn_actor" => Spawn,
         "ai_follow_target_players" => FollowPlayers,
         "ai_follow_target_ai" => FollowAi,

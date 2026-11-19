@@ -766,6 +766,7 @@ fn encounter_controls_emit_live_evaluators_and_native_orders() {
         RuntimeOperation::AttachFree,
         RuntimeOperation::FreeUnits,
         RuntimeOperation::MigrateUnits,
+        RuntimeOperation::MigrateSpeak,
         RuntimeOperation::Teleport,
         RuntimeOperation::TeleportUnsupported,
         RuntimeOperation::Maneuver,
@@ -775,6 +776,13 @@ fn encounter_controls_emit_live_evaluators_and_native_orders() {
         RuntimeOperation::VehicleDisable,
         RuntimeOperation::VehicleTick,
         RuntimeOperation::VehicleCount,
+        RuntimeOperation::TimerExpire,
+        RuntimeOperation::LinkActivation,
+        RuntimeOperation::ActivationTick,
+        RuntimeOperation::Playfight,
+        RuntimeOperation::PreferAi,
+        RuntimeOperation::PreferPlayer,
+        RuntimeOperation::ClearPreference,
     ] {
         assert!(runtime_operations.contains(&(operation as u16)), "{operation:?}");
     }
