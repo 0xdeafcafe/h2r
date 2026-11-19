@@ -149,9 +149,150 @@ fn an_l_shaped_corridor_turns_at_the_inner_corner() {
         (2.0, 2.0, 4.0, 4.0, 0.0),
     ]);
     let p = m.path([0.5, 1.8, 0.0], [2.2, 3.5, 0.0]).unwrap();
-    assert_eq!(p.len(), 2, "{p:?}");
-    assert!(dist_xy(p[0].at, [2.0, 2.0, 0.0]) < 1e-4, "{p:?}");
-    assert_eq!(p[1].at, [2.2, 3.5, 0.0]);
+    assert_eq!(p.last().unwrap().at, [2.2, 3.5, 0.0]);
+    // It turns at the corner (2, 2), a body's width off it, not on it.
+    let turns = &p[..p.len() - 1];
+    assert!(!turns.is_empty(), "{p:?}");
+    for w in turns {
+        let d = dist_xy(w.at, [2.0, 2.0, 0.0]);
+        assert!(d > CLEARANCE - 0.01 && d < 0.5, "{p:?}");
+    }
+}
+
+#[test]
+fn wall_corners_are_kept_clear_and_open_vertices_are_not() {
+    let m = ring();
+    // (2, 2) is inside the ring: every side meeting there is walked across.
+    assert!(!m.is_corner([2.0, 2.0, 0.0]));
+    assert!(m.is_corner([0.0, 0.0, 0.0]));
+    assert!(m.is_corner([2.0, 0.0, 0.0]));
+    // A portal from the outer wall to the middle is pulled in at the wall
+    // end only.
+    let e = m
+        .edges
+        .iter()
+        .find(|e| e.from == 0 && e.to == 1)
+        .copied()
+        .unwrap();
+    let (a, b) = m.portal(&e);
+    let (wall, open) = if a[1] < b[1] { (a, b) } else { (b, a) };
+    assert!((wall[1] - CLEARANCE).abs() < 1e-4, "{a:?} {b:?}");
+    assert!((open[1] - 2.0).abs() < 1e-4, "{a:?} {b:?}");
+    // Straight across the middle: nothing to go around.
+    let p = m.path([0.5, 0.5, 0.0], [3.5, 3.5, 0.0]).unwrap();
+    for w in &p {
+        assert!((w.at[0] - w.at[1]).abs() < 1e-3, "on the diagonal: {p:?}");
+    }
+}
+
+/// Two 4x4 rooms joined by a doorway one unit wide (Y 1.5 to 2.5), the
+/// way the mesh builder links surfaces that do not share an edge: each
+/// room's whole wall side is linked to the doorway.
+fn doorway() -> NavMesh {
+    let quad = |x0: f32, y0: f32, x1: f32, y1: f32| {
+        Poly::new(vec![
+            [x0, y0, 0.0],
+            [x1, y0, 0.0],
+            [x1, y1, 0.0],
+            [x0, y1, 0.0],
+        ])
+    };
+    let polys = vec![
+        quad(0.0, 0.0, 4.0, 4.0),
+        quad(4.0, 1.5, 5.0, 2.5),
+        quad(5.0, 0.0, 9.0, 4.0),
+    ];
+    let e = |from, to, a: V3, b: V3| Edge {
+        from,
+        to,
+        a,
+        b,
+        kind: Kind::Walk,
+    };
+    let edges = vec![
+        e(0, 1, [4.0, 0.0, 0.0], [4.0, 4.0, 0.0]),
+        e(1, 0, [4.0, 1.5, 0.0], [4.0, 2.5, 0.0]),
+        e(1, 2, [5.0, 1.5, 0.0], [5.0, 2.5, 0.0]),
+        e(2, 1, [5.0, 0.0, 0.0], [5.0, 4.0, 0.0]),
+    ];
+    NavMesh::new(polys, edges)
+}
+
+/// Where the path's legs cross the line X = `x`.
+fn crossings(from: V3, p: &[Waypoint], x: f32) -> Vec<f32> {
+    let mut out = Vec::new();
+    let mut prev = from;
+    for w in p {
+        let (a, b) = (prev, w.at);
+        if (a[0] - x) * (b[0] - x) <= 0.0 && (b[0] - a[0]).abs() > 1e-6 {
+            let t = (x - a[0]) / (b[0] - a[0]);
+            out.push(a[1] + (b[1] - a[1]) * t);
+        }
+        prev = w.at;
+    }
+    out
+}
+
+#[test]
+fn a_doorway_off_a_long_wall_is_walked_through_not_around() {
+    let m = doorway();
+    // The rooms' far corners on the doorway's side: a straight line would
+    // go through the wall above the door.
+    let (from, to) = ([1.0, 3.8, 0.0], [8.0, 3.8, 0.0]);
+    let p = m.path(from, to).unwrap();
+    assert_eq!(p.last().unwrap().at, to);
+    for x in [4.0, 5.0] {
+        let ys = crossings(from, &p, x);
+        assert!(!ys.is_empty(), "{p:?}");
+        for y in ys {
+            assert!(
+                (1.5 + CLEARANCE - 0.01..=2.5 - CLEARANCE + 0.01).contains(&y),
+                "through the door at X {x}, clear of its sides: {y} {p:?}"
+            );
+        }
+    }
+    // The way in is the doorway's span, not the whole wall.
+    let into = m.edges.iter().find(|e| e.from == 0).copied().unwrap();
+    let (a, b) = m.portal(&into);
+    assert!((a[1].min(b[1]) - 1.8).abs() < 1e-4, "{a:?} {b:?}");
+    assert!((a[1].max(b[1]) - 2.2).abs() < 1e-4, "{a:?} {b:?}");
+}
+
+#[test]
+fn a_start_or_goal_off_the_mesh_snaps_to_the_nearest_floor() {
+    let m = ring();
+    // A goal in the air (someone seen mid-jump): the path ends on the floor
+    // under it.
+    let p = m.path([0.5, 0.5, 0.0], [3.0, 3.0, 2.0]).unwrap();
+    let end = p.last().unwrap().at;
+    assert!(
+        dist_xy(end, [3.0, 3.0, 0.0]) < 1e-4 && end[2].abs() < 1e-4,
+        "{p:?}"
+    );
+    // A start just off the west side (on a crate, knocked off the edge):
+    // first onto the floor, a little inside its edge.
+    let p = m.path([-1.0, 1.0, 0.0], [3.5, 3.5, 0.0]).unwrap();
+    let first = p[0].at;
+    assert!((first[0] - CLEARANCE).abs() < 1e-3, "{p:?}");
+    assert!((first[1] - 1.0).abs() < 0.35, "{p:?}");
+    assert_eq!(p[0].kind, Kind::Walk);
+    assert_eq!(p.last().unwrap().at, [3.5, 3.5, 0.0]);
+    // Too far from any floor: no path.
+    assert_eq!(m.path([-5.0, 1.0, 0.0], [3.5, 3.5, 0.0]), None);
+    assert_eq!(m.path([0.5, 0.5, 0.0], [3.0, 3.0, 9.0]), None);
+    // poly_near: on the mesh, the polygon under it; off it, the nearest.
+    assert_eq!(m.poly_near([0.5, 0.5, 0.0]), m.locate([0.5, 0.5, 0.0], 1.0));
+    assert_eq!(m.poly_near([-1.0, 1.0, 0.0]), Some(0));
+    assert_eq!(m.poly_near([-9.0, 1.0, 0.0]), None);
+}
+
+#[test]
+fn a_start_beside_and_below_the_floor_jumps_up_onto_it() {
+    let m = ring();
+    // Half a unit under the floor's edge, beside it: the floor is higher,
+    // so the first step is a jump.
+    let p = m.path([-0.5, 1.0, -0.4], [1.5, 1.5, 0.0]).unwrap();
+    assert_eq!(p[0].kind, Kind::Jump, "{p:?}");
 }
 
 #[test]
@@ -248,6 +389,57 @@ fn a_stuck_follower_jumps_once_then_asks_for_a_new_path() {
     assert!(f.steer([0.0, 0.0, 0.0], STUCK_FRAMES).jump);
     let s = f.steer([0.0, 0.0, 0.0], 2 * STUCK_FRAMES);
     assert!(s.replan);
+}
+
+#[test]
+fn the_follower_bends_toward_the_next_leg_near_a_corner() {
+    let walk = |x: f32, y: f32| Waypoint {
+        at: [x, y, 0.0],
+        kind: Kind::Walk,
+    };
+    // Far from the corner: straight at it.
+    let mut f = Follower::new(vec![walk(2.0, 0.0), walk(2.0, 2.0)], 0);
+    assert_eq!(f.steer([0.0, 0.0, 0.0], 1).dir, [1.0, 0.0]);
+    // Near it: bending left, toward the next leg, still mostly on.
+    let s = f.steer([1.6, 0.0, 0.0], 2);
+    assert!(s.dir[1] > 0.1 && s.dir[0] > 0.5, "{s:?}");
+    assert!((s.dir[0].hypot(s.dir[1]) - 1.0).abs() < 1e-4);
+    // Not into a jump: those start at their edge.
+    let mut j = Follower::new(
+        vec![
+            walk(2.0, 0.0),
+            Waypoint {
+                at: [2.0, 2.0, 0.0],
+                kind: Kind::Jump,
+            },
+        ],
+        0,
+    );
+    let d = j.steer([1.6, 0.0, 0.0], 1).dir;
+    assert!((d[0] - 1.0).abs() < 1e-5 && d[1].abs() < 1e-5, "{d:?}");
+}
+
+#[test]
+fn a_follower_that_fell_below_its_path_plans_again() {
+    let up_there = |z: f32| {
+        Follower::new(
+            vec![Waypoint {
+                at: [5.0, 0.0, z],
+                kind: Kind::Walk,
+            }],
+            0,
+        )
+    };
+    // Under a waypoint 3 up: fell off; plan again at once.
+    assert!(up_there(3.0).steer([4.5, 0.0, 0.0], 1).replan);
+    assert!(up_there(3.0).steer([5.0, 0.0, 0.0], 1).replan);
+    // Up a ramp: 1.5 higher 5 away is a climb, not a fall.
+    let s = up_there(1.5).steer([0.0, 0.0, 0.0], 1);
+    assert!(!s.replan && s.dir == [1.0, 0.0], "{s:?}");
+    // The goal it was asked for is remembered over the path's end.
+    let f = up_there(0.0).toward([5.0, 0.0, 2.0]);
+    assert_eq!(f.goal(), Some([5.0, 0.0, 2.0]));
+    assert_eq!(up_there(0.0).goal(), Some([5.0, 0.0, 0.0]));
 }
 
 #[test]

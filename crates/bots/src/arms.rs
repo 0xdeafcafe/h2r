@@ -14,9 +14,17 @@
 //!   `+0xa` the rounds a magazine holds, `+0xc` the most in reserve),
 //!   `+0x2d0`/`+0x2d4` the barrel block (`0xec` each: `+0xa8` the battery
 //!   used per shot).
+//!
+//! The handling ([`Profile`], section 3.6 "Handling"), for the weapon's
+//! [`Role`] and its [`preferred_range`]: `weap` `+0x1fe` zoom levels,
+//! `+0x20c`/`+0x214` the aim assist's reach, `+0x2c8` the triggers (`+6`
+//! the behaviour), and in the first barrel `+8` the rate, `+0x6a` the
+//! projectiles per shot and `+0x8c` the projectile, whose `proj` `+0x17c`
+//! is its speed.
 
 use engine::handle::DatumHandle;
 use engine::memory::{GuestMemory, MemFault};
+use engine::tags::GroupTag;
 use engine::view::{Tags, objects};
 
 use crate::brain::Vec3;
@@ -55,6 +63,35 @@ pub const BARREL_DEF_STRIDE: u32 = 0xec;
 pub const BARREL_DEF_USAGE: u32 = 0xa8;
 /// Barrels looked at, at most (a weapon has one or two).
 const MAX_BARRELS: u32 = 8;
+
+// The weapon's handling (section 3.6, "Handling"): what kind of gun it is,
+// for the range it is good at, the trigger and the lead.
+
+/// `weap` `+0x1fe`: the zoom levels (`i16`; the sniper and beam rifles 2,
+/// the battle rifle, carbine and rocket launcher 1, others 0;
+/// `boot::touch_glue`).
+pub const WEAP_ZOOM_LEVELS: u32 = 0x1fe;
+/// `weap` `+0x20c`, `+0x214`: the aim assist's `cone_range` and
+/// `pull_range` (`f32`, world units; docs/game/aim-assist.md).
+pub const WEAP_CONE_RANGE: u32 = 0x20c;
+pub const WEAP_PULL_RANGE: u32 = 0x214;
+/// `weap` `+0x2c8`: the triggers block's count, then its pointer (none on
+/// the energy sword).
+pub const WEAP_TRIGGERS: u32 = 0x2c8;
+pub const TRIGGER_DEF_STRIDE: u32 = 0x40;
+/// In a trigger definition: its behaviour (`u16`; 0 fires while held, 1, 4
+/// and 5 once per pull, 2 and 3 charge).
+pub const TRIGGER_DEF_BEHAVIOUR: u32 = 6;
+/// In a barrel definition: the most rounds a second (`f32`).
+pub const BARREL_DEF_RATE: u32 = 8;
+/// In a barrel definition: projectiles per shot (`i16`).
+pub const BARREL_DEF_PROJECTILES: u32 = 0x6a;
+/// In a barrel definition: the projectile, a tag reference (group, then
+/// datum at `+4`).
+pub const BARREL_DEF_PROJECTILE: u32 = 0x8c;
+/// `proj` `+0x17c`: the initial velocity (`f32`, world units a second).
+pub const PROJ_INITIAL_VELOCITY: u32 = 0x17c;
+const PROJ: GroupTag = GroupTag::from_chars(*b"proj");
 
 /// A weapon's ammunition.
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -135,13 +172,271 @@ impl Ammo {
     pub fn gun(self) -> bool {
         !matches!(self, Ammo::None)
     }
+    /// Something to fire now, without a reload: rounds in the magazine or
+    /// a live battery.
+    pub fn ready(self) -> bool {
+        match self {
+            Ammo::Rounds { loaded, .. } => loaded > 0,
+            Ammo::Battery(b) => b > BATTERY_DEAD,
+            Ammo::None => false,
+        }
+    }
+    /// The magazine's fill, 0 to 1 (a battery's charge; 0 for neither).
+    pub fn magazine(self) -> f32 {
+        match self {
+            Ammo::Rounds {
+                loaded, capacity, ..
+            } => (loaded.max(0) as f32 / capacity.max(1) as f32).clamp(0.0, 1.0),
+            Ammo::Battery(b) => b.clamp(0.0, 1.0),
+            Ammo::None => 0.0,
+        }
+    }
 }
 
-/// One weapon: its definition (the `weap` tag datum) and its ammunition.
+/// How a trigger fires (`weap` `+0x2c8`, a trigger's `+6`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Trigger {
+    /// Not read: the bot holds the trigger as before.
+    #[default]
+    Unknown,
+    /// Fires while held (SMG, plasma rifle, needler).
+    Automatic,
+    /// Once per pull (magnum, battle rifle, carbine, shotgun, sniper,
+    /// rocket launcher): it must be let go and pulled again.
+    Single,
+    /// Charges while held (plasma pistol); a quick pull fires at once.
+    Charge,
+    /// No triggers block at all (the energy sword).
+    Absent,
+}
+
+impl Trigger {
+    /// A trigger definition's behaviour value.
+    pub fn from_behaviour(b: u16) -> Trigger {
+        match b {
+            0 => Trigger::Automatic,
+            1 | 4 | 5 => Trigger::Single,
+            2 | 3 => Trigger::Charge,
+            _ => Trigger::Unknown,
+        }
+    }
+}
+
+/// A weapon's handling, read from its `weap` tag (section 3.6,
+/// "Handling"). All zero (and [`Trigger::Unknown`]) when not read: then
+/// every rule falls back to the bot's old, weapon-blind behaviour.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub struct Profile {
+    pub trigger: Trigger,
+    /// Zoom levels (`+0x1fe`).
+    pub zoom: i16,
+    /// The aim assist's reach (`+0x20c`, `+0x214`), world units.
+    pub cone_range: f32,
+    pub pull_range: f32,
+    /// The first barrel's most rounds a second, 0 unknown.
+    pub rate: f32,
+    /// The first barrel's projectiles per shot, 0 unknown.
+    pub pellets: i16,
+    /// The first barrel's projectile's initial speed (world units a
+    /// second), 0 unknown.
+    pub shot_speed: f32,
+}
+
+/// What a weapon is for, from its [`Profile`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Role {
+    /// Not known: the old, weapon-blind behaviour.
+    #[default]
+    Unknown,
+    /// No trigger, but aim assist: the energy sword. Close in and swing.
+    Blade,
+    /// Many pellets, once per pull: the shotgun.
+    Scatter,
+    /// Fires while held: SMG, plasma rifle, needler, and the plasma
+    /// pistol's quick shots.
+    Spray,
+    /// Once per pull, accurate: magnum, battle rifle, carbine.
+    Precise,
+    /// Two zoom levels: the sniper and beam rifles.
+    Sniper,
+    /// Once per pull, a slow projectile: rocket launcher, fuel rod, brute
+    /// shot. Splash: never close.
+    Blast,
+}
+
+/// Slower than this (world units a second) a single-shot projectile is a
+/// rocket, a fuel rod or a brute shot grenade, not a bullet.
+pub const BLAST_SPEED: f32 = 100.0;
+/// This many projectiles a shot or more is a shotgun.
+pub const SCATTER_PELLETS: i16 = 4;
+
+impl Profile {
+    pub fn role(&self) -> Role {
+        match self.trigger {
+            Trigger::Unknown => Role::Unknown,
+            Trigger::Absent => {
+                // The flag, ball and bomb likely have no aim assist; the
+                // sword lunges with it.
+                if self.cone_range > 0.0 || self.pull_range > 0.0 {
+                    Role::Blade
+                } else {
+                    Role::Unknown
+                }
+            }
+            t => {
+                let single = t == Trigger::Single;
+                if self.zoom >= 2 {
+                    Role::Sniper
+                } else if single && self.shot_speed > 0.0 && self.shot_speed < BLAST_SPEED {
+                    Role::Blast
+                } else if single && self.pellets >= SCATTER_PELLETS {
+                    Role::Scatter
+                } else if single {
+                    Role::Precise
+                } else {
+                    Role::Spray
+                }
+            }
+        }
+    }
+}
+
+impl Role {
+    /// The distances (world units, about 3 m each) it is best at: the
+    /// movement keeps its target in here, and the weapon choice prefers
+    /// the gun whose band holds the target.
+    pub fn band(self) -> (f32, f32) {
+        match self {
+            Role::Unknown => (2.5, 15.0),
+            Role::Blade => (0.0, 1.5),
+            Role::Scatter => (0.0, 4.0),
+            Role::Spray => (1.5, 9.0),
+            Role::Precise => (5.0, 28.0),
+            Role::Sniper => (12.0, 60.0),
+            Role::Blast => (5.0, 25.0),
+        }
+    }
+    /// Shoots at targets from `.0` to `.1` away, no further (wasted
+    /// rounds) and, with splash, no closer.
+    pub fn fire_range(self) -> (f32, f32) {
+        match self {
+            Role::Unknown => (0.0, 25.0),
+            Role::Blade => (0.0, 0.0),
+            Role::Scatter => (0.0, 8.0),
+            Role::Spray => (0.0, 18.0),
+            Role::Precise => (0.0, 40.0),
+            Role::Sniper => (0.0, 80.0),
+            Role::Blast => (2.5, 35.0),
+        }
+    }
+    /// How much it is worth going for (power weapons 4 and up).
+    pub fn rating(self) -> u8 {
+        match self {
+            Role::Unknown => 1,
+            Role::Spray => 2,
+            Role::Precise => 3,
+            Role::Scatter | Role::Blade => 4,
+            Role::Sniper | Role::Blast => 5,
+        }
+    }
+    pub fn power(self) -> bool {
+        self.rating() >= 4
+    }
+    /// How far `d` is outside the band, relative to it: 0 inside.
+    pub fn misfit(self, d: f32) -> f32 {
+        let (lo, hi) = self.band();
+        if d < lo {
+            (lo - d) / lo.max(1.0)
+        } else if d > hi {
+            (d - hi) / hi.max(1.0)
+        } else {
+            0.0
+        }
+    }
+}
+
+/// One weapon: its definition (the `weap` tag datum), its ammunition and
+/// its handling.
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct Gun {
     pub def: u32,
     pub ammo: Ammo,
+    pub profile: Profile,
+}
+
+impl Gun {
+    pub fn role(&self) -> Role {
+        self.profile.role()
+    }
+    /// Worth going for: its role's rating, nothing when dry. A blade with
+    /// no battery read counts as live.
+    pub fn rating(&self) -> u8 {
+        let role = self.role();
+        if self.ammo.dry() && !(role == Role::Blade && self.ammo == Ammo::None) {
+            0
+        } else {
+            role.rating()
+        }
+    }
+    /// Able to fight now: a blade, or a gun with something loaded.
+    pub fn ready(&self) -> bool {
+        (self.role() == Role::Blade && !matches!(self.ammo, Ammo::Battery(b) if b <= BATTERY_DEAD))
+            || self.ammo.ready()
+    }
+}
+
+/// Whatever has a preferred range: a weapon, a role, what is carried, or
+/// the weapons decision ([`preferred_range`]).
+pub trait Ranged {
+    fn band(&self) -> (f32, f32);
+}
+
+impl Ranged for Role {
+    fn band(&self) -> (f32, f32) {
+        Role::band(*self)
+    }
+}
+impl Ranged for Profile {
+    fn band(&self) -> (f32, f32) {
+        self.role().band()
+    }
+}
+impl Ranged for Gun {
+    fn band(&self) -> (f32, f32) {
+        self.role().band()
+    }
+}
+impl Ranged for Arms {
+    /// The held weapon's (an empty magazine is soon reloaded); the held
+    /// one dry, the other's (it switches); nothing to fire, arm's length.
+    fn band(&self) -> (f32, f32) {
+        let live = |g: &Gun| g.ready() || !g.ammo.dry();
+        match (self.held, self.other) {
+            (Some(g), _) if live(&g) => g.band(),
+            (_, Some(g)) if live(&g) => g.band(),
+            _ => MELEE_BAND,
+        }
+    }
+}
+impl Ranged for Kit {
+    /// The decision alone knows only melee: arm's length; anything else
+    /// the weapon-blind band. Prefer [`Arms`] (or `Mind::fight.band`).
+    fn band(&self) -> (f32, f32) {
+        match self {
+            Kit::Melee => MELEE_BAND,
+            _ => Role::Unknown.band(),
+        }
+    }
+}
+
+/// With nothing to shoot: run in to melee.
+pub const MELEE_BAND: (f32, f32) = (0.0, 1.0);
+
+/// The distances (min, max; world units) the bot wants its target at, for
+/// the movement: what it carries ([`Arms`], the held weapon), a [`Gun`],
+/// a [`Role`], or the weapons decision ([`Kit`]: melee or not).
+pub fn preferred_range(kit: &impl Ranged) -> (f32, f32) {
+    kit.band()
 }
 
 /// What the bot carries.
@@ -211,6 +506,13 @@ pub struct Situation<'a> {
     pub enemy: Option<f32>,
     /// No enemy in view for a while: safe to reload, worth a detour.
     pub calm: bool,
+    /// No enemy in view for a moment (it went behind cover): time for a
+    /// reload of a half-empty magazine.
+    pub breather: bool,
+    /// Picks the weapon by range: switches to the other gun when the
+    /// enemy is outside the held one's band and inside the other's, and
+    /// rather than reload under fire (Normal skill and up).
+    pub by_range: bool,
     pub pickups: &'a [Pickup],
 }
 
@@ -218,8 +520,17 @@ pub struct Situation<'a> {
 pub const SEEK_RANGE: f32 = 30.0;
 /// ...or, merely low and calm, within this.
 pub const TOP_UP_RANGE: f32 = 12.0;
+/// ...or, for a power weapon it does not have, out of a fight, within this.
+pub const POWER_RANGE: f32 = 25.0;
 /// Rather than walk away, goes for the enemy with no ammunition this close.
 pub const MELEE_CHASE: f32 = 2.5;
+/// In a lull, reloads a magazine under this.
+pub const BREATHER_RELOAD: f32 = 0.6;
+/// Switches by range only when the held gun's misfit ([`Role::misfit`]) is
+/// over this and the other's is 0: no flip-flop at a band's edge.
+pub const RANGE_SWITCH_MISFIT: f32 = 0.3;
+/// A better pickup counts this many world units nearer per rating point.
+pub const RATING_PULL: f32 = 3.0;
 
 fn dist(a: Vec3, b: Vec3) -> f32 {
     let d = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
@@ -228,30 +539,65 @@ fn dist(a: Vec3, b: Vec3) -> f32 {
 
 /// The decision, pure. In order:
 ///
-/// 1. the held gun is dry: switch to the other if it has ammunition; else
+/// 1. the held weapon is a blade: keep it close up; with the enemy out of
+///    its reach and a ready gun, switch (by range);
+/// 2. the held gun is dry: switch to the other if it has ammunition; else
 ///    melee an enemy within [`MELEE_CHASE`]; else go for a pickup within
-///    [`SEEK_RANGE`]; else melee whatever comes;
-/// 2. an empty magazine with rounds to load: reload, enemy or not;
-/// 3. calm with a magazine under [`RELOAD_BELOW`]: reload;
-/// 4. calm with both weapons low: top up from a pickup within
+///    [`SEEK_RANGE`] (the best near one); else melee whatever comes;
+/// 3. an empty magazine with rounds to load: reload; by range, with the
+///    other gun loaded and the enemy in its band, switch instead (faster);
+/// 4. by range: the enemy clearly outside the held gun's band and inside
+///    the other's: switch;
+/// 5. calm with a magazine under [`RELOAD_BELOW`], or a lull with one under
+///    [`BREATHER_RELOAD`], or the enemy beyond the gun's fire range with
+///    one under [`RELOAD_BELOW`]: reload;
+/// 6. no enemy in view and no power weapon carried: a power weapon within
+///    [`POWER_RANGE`]: seek it, switching first so the worse gun is the one
+///    dropped for it;
+/// 7. calm with both weapons low: top up from a pickup within
 ///    [`TOP_UP_RANGE`];
-/// 5. otherwise fine.
+/// 8. otherwise fine.
 ///
 /// `skip` rules out pickups (those the bot could not reach).
 pub fn plan(s: &Situation<'_>, skip: impl Fn(&Pickup) -> bool) -> Kit {
-    let held = s.arms.held.map_or(Ammo::None, |g| g.ammo);
-    let other = s.arms.other.map(|g| g.ammo);
+    let held_gun = s.arms.held;
+    let other_gun = s.arms.other;
+    let held = held_gun.map_or(Ammo::None, |g| g.ammo);
+    let role = held_gun.map_or(Role::Unknown, |g| g.role());
+    let other = other_gun.map(|g| g.ammo);
+    let other_ready = other_gun.is_some_and(|g| g.ready());
+    let other_role = other_gun.map_or(Role::Unknown, |g| g.role());
     let nearest = |range: f32, want: &dyn Fn(&Pickup) -> bool| {
         s.pickups
             .iter()
             .filter(|&p| p.useful() && want(p) && !skip(p))
             .map(|p| (dist(p.position, s.at), *p))
             .filter(|(d, _)| *d < range)
-            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .min_by(|a, b| {
+                let cost = |(d, p): &(f32, Pickup)| d - RATING_PULL * p.gun.rating() as f32;
+                cost(a).total_cmp(&cost(b))
+            })
             .map(|(_, p)| p)
     };
+    // Switches to the other gun when the enemy is clearly out of the held
+    // one's band and in the other's.
+    let range_switch = |d: f32| {
+        s.by_range
+            && other_ready
+            && other_role != Role::Unknown
+            && role.misfit(d) > RANGE_SWITCH_MISFIT
+            && other_role.misfit(d) == 0.0
+    };
+    if role == Role::Blade && held_gun.is_some_and(|g| g.ready()) {
+        if let Some(d) = s.enemy
+            && range_switch(d)
+        {
+            return Kit::Switch;
+        }
+        return Kit::Fine;
+    }
     if held.dry() {
-        if other.is_some_and(|o| !o.dry()) {
+        if other.is_some_and(|o| !o.dry()) || other_ready {
             return Kit::Switch;
         }
         if s.enemy.is_some_and(|d| d < MELEE_CHASE) {
@@ -267,10 +613,43 @@ pub fn plan(s: &Situation<'_>, skip: impl Fn(&Pickup) -> bool) -> Kit {
         };
     }
     if held.empty_magazine() {
+        if let Some(d) = s.enemy
+            && s.by_range
+            && other_ready
+            && other_role.misfit(d) == 0.0
+        {
+            return Kit::Switch;
+        }
         return Kit::Reload;
     }
-    if s.calm && held.wants_reload() {
+    if let Some(d) = s.enemy
+        && range_switch(d)
+    {
+        return Kit::Switch;
+    }
+    let out_of_reach = s.enemy.is_some_and(|d| d > role.fire_range().1);
+    let half = matches!(held, Ammo::Rounds { reserve, .. } if reserve > 0)
+        && held.magazine() < BREATHER_RELOAD;
+    if (held.wants_reload() && (s.calm || out_of_reach)) || (s.breather && half) {
         return Kit::Reload;
+    }
+    let has_power = [held_gun, other_gun]
+        .iter()
+        .flatten()
+        .any(|g| g.rating() > 0 && g.role().power());
+    if s.enemy.is_none()
+        && (s.calm || s.breather)
+        && !has_power
+        && let Some(p) = nearest(POWER_RANGE, &|p| {
+            p.gun.role().power() && !s.arms.carries(p.gun.def)
+        })
+    {
+        // Taking it drops the held gun: make that the worse one.
+        let rate = |g: Option<Gun>| g.map_or(0, |g| g.rating());
+        if other_gun.is_some() && rate(held_gun) > rate(other_gun) {
+            return Kit::Switch;
+        }
+        return Kit::Seek(p);
     }
     if s.calm && held.low() && other.is_none_or(|o| o.low()) {
         // Same kind tops up by walking over it; any useful gun will do.
@@ -321,6 +700,42 @@ impl WeaponDef {
         Ok(WeaponDef { magazine, ages })
     }
 
+    /// The handling of the weapon whose definition is at `weap` (section
+    /// 3.6, "Handling"). The first trigger and the first barrel speak for
+    /// the weapon. A projectile that does not resolve leaves the speed 0.
+    pub fn profile(m: &dyn GuestMemory, weap: u32) -> R<Profile> {
+        let triggers = m.i32(weap + WEAP_TRIGGERS)?;
+        let trigger = if triggers <= 0 {
+            Trigger::Absent
+        } else {
+            let first = m.u32(weap + WEAP_TRIGGERS + 4)?;
+            Trigger::from_behaviour(m.u16(first + TRIGGER_DEF_BEHAVIOUR)?)
+        };
+        let mut p = Profile {
+            trigger,
+            zoom: m.u16(weap + WEAP_ZOOM_LEVELS)? as i16,
+            cone_range: finite(m.f32(weap + WEAP_CONE_RANGE)?),
+            pull_range: finite(m.f32(weap + WEAP_PULL_RANGE)?),
+            ..Profile::default()
+        };
+        if m.i32(weap + WEAP_BARRELS)? > 0 {
+            let barrel = m.u32(weap + WEAP_BARRELS + 4)?;
+            p.rate = finite(m.f32(barrel + BARREL_DEF_RATE)?);
+            p.pellets = m.u16(barrel + BARREL_DEF_PROJECTILES)? as i16;
+            let proj = m.u32(barrel + BARREL_DEF_PROJECTILE + 4)?;
+            if let Some(h) = DatumHandle::from_raw(proj)
+                && let Some(tag) = Tags.entry(m, h)?
+                && tag.group(m)? == PROJ
+            {
+                let def = tag.address(m)?;
+                if def != 0 {
+                    p.shot_speed = finite(m.f32(def + PROJ_INITIAL_VELOCITY)?);
+                }
+            }
+        }
+        Ok(p)
+    }
+
     /// The ammunition of a weapon of this definition whose body is at
     /// `body`. A weapon that uses battery reads as one, as `0x101a10`
     /// sets it; one with magazines and no battery as rounds; one with
@@ -361,13 +776,22 @@ pub fn gun(m: &dyn GuestMemory, weapon: DatumHandle) -> R<Option<(Gun, objects::
         return Ok(None);
     }
     let ammo = WeaponDef::read(m, weap)?.ammo(m, body.addr)?;
+    // The handling is a refinement: a fault reading it leaves the gun
+    // weapon-blind, not unread.
+    let profile = WeaponDef::profile(m, weap).unwrap_or_default();
     Ok(Some((
         Gun {
             def: def.raw(),
             ammo,
+            profile,
         },
         body,
     )))
+}
+
+/// `v` when finite and not negative, else 0 (unknown).
+fn finite(v: f32) -> f32 {
+    if v.is_finite() && v > 0.0 { v } else { 0.0 }
 }
 
 /// What the unit whose body is at `unit` carries.

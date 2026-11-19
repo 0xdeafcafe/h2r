@@ -18,10 +18,13 @@ pub mod lobby;
 pub mod local;
 pub mod los;
 pub mod mind;
+pub mod moves;
 pub mod nav;
 pub mod objective;
 pub mod phantom;
+pub mod roam;
 pub mod stuck;
+pub mod tactics;
 
 use input::host::HostPadState;
 

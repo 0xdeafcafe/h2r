@@ -13,12 +13,17 @@
 //!   across a gap of up to [`Build::max_gap`].
 //!
 //! [`NavMesh::path`] is A\* over the polygons, then a funnel pass over the
-//! portals, giving waypoints. [`Follower`] walks them: the move direction,
-//! when to jump, and when it is stuck. The mesh is saved in a small format
-//! of ours ([`NavMesh::to_bytes`]); it is derived from the disc, so it is
-//! cached under the data root, never committed.
+//! portals, giving waypoints. A portal's end at a wall corner (a vertex on
+//! the mesh's boundary) is pulled in by [`CLEARANCE`], so paths turn a
+//! body's width off a corner instead of grazing it. A start or goal off the
+//! mesh (on scenery, in the air mid-jump) snaps to the nearest polygon
+//! ([`NavMesh::nearest`]). [`Follower`] walks the waypoints: the move
+//! direction (bending toward the next corner as it nears one), when to
+//! jump, and when it is stuck or has fallen below its path. The mesh is
+//! saved in a small format of ours ([`NavMesh::to_bytes`]); it is derived
+//! from the disc, so it is cached under the data root, never committed.
 
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use tags::pathfinding::PathfindingData;
 
@@ -176,6 +181,26 @@ impl Poly {
 
 const CELL: f32 = 4.0;
 
+/// Paths keep this far off a wall corner (world units; a biped is about
+/// 0.2 across its waist, so this leaves a margin).
+pub const CLEARANCE: f32 = 0.3;
+/// A point off the mesh snaps to a polygon within this (XY)...
+pub const SNAP: f32 = 3.0;
+/// ...whose floor is at most this far over the point...
+pub const SNAP_UP: f32 = 0.6;
+/// ...or this far under it (someone seen mid-jump, a bot on a crate).
+pub const SNAP_DOWN: f32 = 3.0;
+
+/// A vertex to the millimetre, for matching shared corners.
+type Key = (i32, i32, i32);
+fn key(v: V3) -> Key {
+    let q = |f: f32| (f * 1000.0).round() as i32;
+    (q(v[0]), q(v[1]), q(v[2]))
+}
+fn pair(a: Key, b: Key) -> (Key, Key) {
+    if a <= b { (a, b) } else { (b, a) }
+}
+
 /// The nav mesh of one structure BSP.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct NavMesh {
@@ -184,6 +209,10 @@ pub struct NavMesh {
     /// Each polygon's outgoing edges (indices into `edges`).
     out: Vec<Vec<u32>>,
     grid: HashMap<(i32, i32), Vec<u32>>,
+    /// The vertices on the mesh's boundary: an end of a polygon side that
+    /// is not walked across (a wall, a ledge). Portal ends here keep
+    /// [`CLEARANCE`].
+    corners: HashSet<Key>,
 }
 
 fn cell(v: f32) -> i32 {
@@ -214,12 +243,159 @@ impl NavMesh {
                 }
             }
         }
+        let linked: HashSet<(Key, Key)> = edges
+            .iter()
+            .filter(|e| e.kind == Kind::Walk)
+            .map(|e| pair(key(e.a), key(e.b)))
+            .collect();
+        let mut corners = HashSet::new();
+        for p in &polys {
+            let n = p.verts.len();
+            for i in 0..n {
+                let (u, v) = (key(p.verts[i]), key(p.verts[(i + 1) % n]));
+                if !linked.contains(&pair(u, v)) {
+                    corners.insert(u);
+                    corners.insert(v);
+                }
+            }
+        }
         NavMesh {
             polys,
             edges,
             out,
             grid,
+            corners,
         }
+    }
+
+    /// Whether `v` is a vertex on the mesh's boundary (a wall corner).
+    pub fn is_corner(&self, v: V3) -> bool {
+        self.corners.contains(&key(v))
+    }
+
+    /// Where a path may cross edge `e`: its segment, cut to the part the
+    /// polygon beyond lies along (a step or seam link spans the whole side
+    /// of the near polygon, which can be much wider than the far one: a
+    /// doorway off a long wall), with each end at a wall corner, or cut,
+    /// pulled in by [`CLEARANCE`]. A portal narrower than that shrinks to
+    /// a point between its ends (the middle when both are corners).
+    pub fn portal(&self, e: &Edge) -> (V3, V3) {
+        let (a, b, cut_a, cut_b) = self.clip(e);
+        let ab = sub(b, a);
+        let l = (ab[0] * ab[0] + ab[1] * ab[1]).sqrt();
+        if l < 1e-6 {
+            return (a, b);
+        }
+        let ia = if cut_a || self.is_corner(a) {
+            CLEARANCE
+        } else {
+            0.0
+        };
+        let ib = if cut_b || self.is_corner(b) {
+            CLEARANCE
+        } else {
+            0.0
+        };
+        if ia + ib >= l {
+            let m = add(a, scale(ab, ia / (ia + ib)));
+            return (m, m);
+        }
+        (add(a, scale(ab, ia / l)), sub(b, scale(ab, ib / l)))
+    }
+
+    /// `e`'s segment cut to the span of the far polygon's vertices that lie
+    /// on its line (within 0.3, XY), and whether each end was cut. Uncut
+    /// when the far polygon has no side along the edge (a drop or a jump
+    /// to a floor that is not beside it).
+    fn clip(&self, e: &Edge) -> (V3, V3, bool, bool) {
+        let (a, b) = (e.a, e.b);
+        let ab = sub(b, a);
+        let l2 = ab[0] * ab[0] + ab[1] * ab[1];
+        let Some(far) = self.polys.get(e.to as usize) else {
+            return (a, b, false, false);
+        };
+        if l2 < 1e-12 {
+            return (a, b, false, false);
+        }
+        let l = l2.sqrt();
+        let n = [-ab[1] / l, ab[0] / l];
+        let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+        for v in &far.verts {
+            let av = sub(*v, a);
+            if (av[0] * n[0] + av[1] * n[1]).abs() > 0.3 {
+                continue;
+            }
+            let t = (av[0] * ab[0] + av[1] * ab[1]) / l2;
+            lo = lo.min(t);
+            hi = hi.max(t);
+        }
+        let (t0, t1) = (lo.max(0.0), hi.min(1.0));
+        if t0 >= t1 {
+            return (a, b, false, false);
+        }
+        let eps = 1e-4;
+        (
+            add(a, scale(ab, t0)),
+            add(a, scale(ab, t1)),
+            t0 > eps,
+            t1 < 1.0 - eps,
+        )
+    }
+
+    /// The polygon nearest `p` (XY) within `reach` whose floor there is at
+    /// most `up` over `p` and `down` under it, and the point on it to walk
+    /// to: `p` itself over the polygon, else its nearest point pulled
+    /// [`CLEARANCE`] inside.
+    pub fn nearest(&self, p: V3, reach: f32, up: f32, down: f32) -> Option<(u32, V3)> {
+        let mut seen = HashSet::new();
+        let mut best: Option<(f32, u32, V3)> = None;
+        for x in cell(p[0] - reach)..=cell(p[0] + reach) {
+            for y in cell(p[1] - reach)..=cell(p[1] + reach) {
+                for &i in self.grid.get(&(x, y)).into_iter().flatten() {
+                    if !seen.insert(i) {
+                        continue;
+                    }
+                    let poly = &self.polys[i as usize];
+                    let q = if poly.contains_xy(p) {
+                        p
+                    } else {
+                        let n = poly.verts.len();
+                        let edge = (0..n)
+                            .map(|k| closest_xy(poly.verts[k], poly.verts[(k + 1) % n], p))
+                            .min_by(|a, b| dist_xy(*a, p).total_cmp(&dist_xy(*b, p)));
+                        let Some(e) = edge else { continue };
+                        let inward = sub(poly.center, e);
+                        let il = (inward[0] * inward[0] + inward[1] * inward[1]).sqrt();
+                        if il < 1e-6 {
+                            e
+                        } else {
+                            add(e, scale(inward, CLEARANCE.min(il) / il))
+                        }
+                    };
+                    let dxy = dist_xy(q, p);
+                    if dxy > reach {
+                        continue;
+                    }
+                    let z = poly.z_at(q);
+                    let dz = z - p[2];
+                    if dz > up || -dz > down {
+                        continue;
+                    }
+                    let score = dxy + 0.5 * dz.abs();
+                    if best.is_none_or(|(s, _, _)| score < s) {
+                        best = Some((score, i, [q[0], q[1], z]));
+                    }
+                }
+            }
+        }
+        best.map(|(_, i, q)| (i, q))
+    }
+
+    /// The polygon a biped at `p` is on, or (off the mesh) the nearest one
+    /// within [`SNAP`].
+    pub fn poly_near(&self, p: V3) -> Option<u32> {
+        self.locate(p, 1.0)
+            .or_else(|| self.nearest(p, SNAP, SNAP_UP, SNAP_DOWN).map(|(i, _)| i))
     }
 
     /// The walkable polygons from `pathfind`'s data (one per walkable
@@ -438,17 +614,39 @@ impl NavMesh {
     }
 
     /// [`NavMesh::path`] over a corridor that never takes an edge `skip`
-    /// rules out.
+    /// rules out. A start off the mesh walks to the nearest polygon first
+    /// (jumping when its floor is higher); a goal off it ends at the
+    /// nearest point on the mesh ([`NavMesh::nearest`], within [`SNAP`]).
     pub fn path_avoiding(
         &self,
         from: V3,
         to: V3,
         skip: &dyn Fn(&Edge) -> bool,
     ) -> Option<Vec<Waypoint>> {
-        let start = self.locate(from, 1.0)?;
-        let goal = self.locate(to, 1.0)?;
+        let (start, lead) = match self.locate(from, 1.0) {
+            Some(i) => (i, None),
+            None => {
+                let (i, q) = self.nearest(from, SNAP, SNAP_UP, SNAP_DOWN)?;
+                (i, Some(q))
+            }
+        };
+        let (goal, to) = match self.locate(to, 1.0) {
+            Some(i) => (i, to),
+            None => self.nearest(to, SNAP, SNAP_UP, SNAP_DOWN)?,
+        };
         let corridor = self.corridor_avoiding(start, goal, skip)?;
-        Some(funnel(self, from, to, &corridor))
+        let Some(q) = lead else {
+            return Some(funnel(self, from, to, &corridor));
+        };
+        let kind = if q[2] - from[2] > Build::default().step {
+            Kind::Jump
+        } else {
+            Kind::Walk
+        };
+        let mut path = vec![Waypoint { at: q, kind }];
+        path.extend(funnel(self, q, to, &corridor));
+        path.dedup_by(|b, a| dist_xy(a.at, b.at) < 1e-4 && b.kind == Kind::Walk);
+        Some(path)
     }
 }
 
@@ -469,19 +667,21 @@ fn funnel(mesh: &NavMesh, from: V3, to: V3, corridor: &[u32]) -> Vec<Waypoint> {
     let mut run: Vec<(V3, V3)> = Vec::new();
     for &ei in corridor {
         let e = &mesh.edges[ei as usize];
+        // Off the wall corners by a body's width.
+        let (ea, eb) = mesh.portal(e);
         if e.kind == Kind::Walk {
             let c = mesh.polys[e.from as usize].center;
             // Left and right as seen from inside the polygon, looking out.
             let (l, r) = if cross_xy(c, e.a, e.b) > 0.0 {
-                (e.b, e.a)
+                (eb, ea)
             } else {
-                (e.a, e.b)
+                (ea, eb)
             };
             run.push((l, r));
             continue;
         }
         // Funnel up to the special edge, aimed at its nearest point.
-        let at = closest_on(e.a, e.b, start);
+        let at = closest_on(ea, eb, start);
         for (k, c) in pull(start, at, &run).into_iter().enumerate() {
             out.push(Waypoint {
                 at: c,
@@ -552,6 +752,18 @@ fn pull(from: V3, to: V3, portals: &[(V3, V3)]) -> Vec<V3> {
     out
 }
 
+/// The point of segment `a`-`b` nearest `p`, in XY (Z interpolated), ends
+/// included.
+fn closest_xy(a: V3, b: V3, p: V3) -> V3 {
+    let ab = sub(b, a);
+    let l2 = ab[0] * ab[0] + ab[1] * ab[1];
+    if l2 < 1e-12 {
+        return a;
+    }
+    let t = (((p[0] - a[0]) * ab[0] + (p[1] - a[1]) * ab[1]) / l2).clamp(0.0, 1.0);
+    add(a, scale(ab, t))
+}
+
 /// The point of segment `a`-`b` nearest `p`, in XY (Z interpolated).
 fn closest_on(a: V3, b: V3, p: V3) -> V3 {
     let ab = sub(b, a);
@@ -585,10 +797,19 @@ pub struct Follower {
     best: f32,
     best_frame: u64,
     jumped: bool,
+    /// The goal it was asked for, when the path ends elsewhere (a goal off
+    /// the mesh ends at the nearest point on it).
+    target: Option<V3>,
 }
 
-/// Within this (XY) a waypoint counts as reached.
+/// Within this (XY) a waypoint counts as reached...
 pub const REACHED: f32 = 0.3;
+/// ...unless its floor is this much over the bot: then it has fallen
+/// below its path (off a ledge, knocked off a bridge) and plans again.
+/// The allowance grows with the XY distance (a ramp climbs).
+pub const FELL: f32 = 1.2;
+/// Within this of a corner it starts bending toward the next waypoint.
+pub const LOOKAHEAD: f32 = 0.8;
 /// Frames without getting closer before the follower jumps, then gives up.
 pub const STUCK_FRAMES: u64 = 30;
 
@@ -600,16 +821,23 @@ impl Follower {
             best: f32::INFINITY,
             best_frame: frame,
             jumped: false,
+            target: None,
         }
+    }
+
+    /// The same, remembering `goal` as the goal asked for.
+    pub fn toward(mut self, goal: V3) -> Self {
+        self.target = Some(goal);
+        self
     }
 
     pub fn done(&self) -> bool {
         self.next >= self.path.len()
     }
 
-    /// The goal, if any.
+    /// The goal asked for, else the path's end, if any.
     pub fn goal(&self) -> Option<V3> {
-        self.path.last().map(|w| w.at)
+        self.target.or_else(|| self.path.last().map(|w| w.at))
     }
 
     /// The waypoint it is walking to, if any.
@@ -619,7 +847,15 @@ impl Follower {
 
     pub fn steer(&mut self, at: V3, frame: u64) -> Steer {
         while let Some(w) = self.path.get(self.next) {
-            if dist_xy(w.at, at) > REACHED {
+            let d = dist_xy(w.at, at);
+            if w.at[2] - at[2] > FELL + d {
+                // Below it with no way up from here.
+                return Steer {
+                    replan: true,
+                    ..Steer::default()
+                };
+            }
+            if d > REACHED {
                 break;
             }
             self.next += 1;
@@ -654,10 +890,31 @@ impl Follower {
         if w.kind == Kind::Jump && d < 1.0 {
             s.jump = true;
         }
-        s.dir = [
+        let mut dir = [
             (w.at[0] - at[0]) / d.max(1e-6),
             (w.at[1] - at[1]) / d.max(1e-6),
         ];
+        // Nearing a corner of a walk with more walk after it: bend toward
+        // the next leg, so the turn is a curve, not a stop and a pivot.
+        // Never into a jump or a drop: those start at their edge.
+        if let Some(n) = self.path.get(self.next + 1)
+            && w.kind == Kind::Walk
+            && n.kind == Kind::Walk
+            && d < LOOKAHEAD
+        {
+            let dn = dist_xy(n.at, at).max(1e-6);
+            let to_n = [(n.at[0] - at[0]) / dn, (n.at[1] - at[1]) / dn];
+            let t = 0.5 * (1.0 - d / LOOKAHEAD);
+            let b = [
+                dir[0] * (1.0 - t) + to_n[0] * t,
+                dir[1] * (1.0 - t) + to_n[1] * t,
+            ];
+            let bl = (b[0] * b[0] + b[1] * b[1]).sqrt();
+            if bl > 1e-3 {
+                dir = [b[0] / bl, b[1] / bl];
+            }
+        }
+        s.dir = dir;
         s
     }
 }
