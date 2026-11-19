@@ -304,15 +304,46 @@ pub struct WeaponParts {
     /// Halo 1's first-person model and animations, converted.
     pub first_person: (Option<TagId>, Option<TagId>),
     /// From the Halo 2 counterpart: root references (HUD, melee damage,
-    /// effects, sounds), per barrel its references, and per barrel its
-    /// firing effects' references.
+    /// effects, sounds) and per barrel its references.
     pub halo2: Halo2Refs,
     pub barrel_halo2: Vec<Halo2Refs>,
-    pub firing_effects: Vec<Vec<Halo2Refs>>,
+    /// Per Halo 1 trigger, its firing effects, converted ([`FiringParts`]).
+    pub firing_effects: Vec<Vec<FiringParts>>,
+    /// Per Halo 1 magazine, its reloading effect, converted.
+    pub magazine_effects: Vec<Option<TagId>>,
     /// The weapon class and type a unit's graph holds it by
     /// ([`WEAPON_CLASS`], [`WEAPON_TYPE_NAME`]); `None` leaves both null.
     pub animation: Option<(String, String)>,
 }
+
+/// One firing effect of a barrel (`barrels.block_e4`, `0x34`) from Halo
+/// 1's trigger firing effect (`h1::FiringEffect`): its converted firing,
+/// misfire and empty effects, and the damage (rumble and shake) the Halo 2
+/// counterpart's barrel names. A shot plays the effect: until converter
+/// version 84 the effects were the counterpart's too, so the assault
+/// rifle fired with the SMG's sound and a weapon with no counterpart (the
+/// vehicle guns) had no firing effect and fired silent.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FiringParts {
+    pub effects: [Option<TagId>; 3],
+    pub damage: [Option<TagId>; 3],
+}
+
+/// `barrels.block_e4` references, in Halo 1's order: firing, misfire and
+/// empty effect (`effe`; retail Halo 2 also names a `snd!` there), then
+/// firing, misfire and empty damage (`jpt!`). V: on every retail weapon
+/// the first three hold `effe` or `snd!` and the last three `jpt!`
+/// (`weapon_sounds_disc`); names S, by Halo 1's order.
+pub const FIRING_EFFECT_REFS: [&str; 3] = ["ref_4", "ref_c", "ref_14"];
+pub const FIRING_DAMAGE_REFS: [&str; 3] = ["ref_1c", "ref_24", "ref_2c"];
+/// [`FIRING_DAMAGE_REFS`]' offsets in the element.
+pub const FIRING_DAMAGE_AT: [usize; 3] = [0x1c, 0x24, 0x2c];
+
+/// Magazine `+0x34`: the reloading effect (`effe`). V: retail's SMG
+/// names an effect here; Halo 1's magazine `+0x38`. The chambering
+/// effect (`+0x44` by the group words' pattern: `+0x3c` and `+0x4c` hold
+/// `jpt!` group words) has no definition field yet and is not written.
+pub const MAGAZINE_RELOADING_EFFECT: &str = "ref_34";
 
 /// `weap +0x288`, `+0x28c`: the weapon class and type (string IDs) the
 /// holder's animation graph is looked up by. A unit takes a weapon only
@@ -536,6 +567,13 @@ pub fn weapon(w: &h1::Weapon, b: &[u8], parts: &WeaponParts, role: &Role) -> Res
                 m.rounds_loaded_maximum,
             )),
         )?;
+        if let Some(reloading) = parts.magazine_effects.get(mags.len()) {
+            set(
+                &mut e,
+                MAGAZINE_RELOADING_EFFECT,
+                Val::tag(FourCC(*b"effe"), reloading.unwrap_or(TagId::NULL)),
+            )?;
+        }
         mags.push(e);
     }
     set(&mut r, "magazines", Val::Block(mags))?;
@@ -568,13 +606,16 @@ pub fn weapon(w: &h1::Weapon, b: &[u8], parts: &WeaponParts, role: &Role) -> Res
             ),
         )?;
         let mut effects = Vec::new();
-        if let Some(list) = parts.firing_effects.get(i).or(parts.firing_effects.last()) {
-            for h in list {
-                let mut x = defs::default_record(fd);
-                words(&mut x, role.element("barrels.block_e4"))?;
-                refs(&mut x, h)?;
-                effects.push(x);
+        for f in parts.firing_effects.get(i).into_iter().flatten() {
+            let mut x = defs::default_record(fd);
+            words(&mut x, role.element("barrels.block_e4"))?;
+            for (path, id) in FIRING_EFFECT_REFS.iter().zip(f.effects) {
+                set(&mut x, path, Val::tag(FourCC(*b"effe"), id.unwrap_or(TagId::NULL)))?;
             }
+            for (path, id) in FIRING_DAMAGE_REFS.iter().zip(f.damage) {
+                set(&mut x, path, Val::tag(FourCC(*b"jpt!"), id.unwrap_or(TagId::NULL)))?;
+            }
+            effects.push(x);
         }
         set(&mut e, "block_e4", Val::Block(effects))?;
         barrels.push(e);

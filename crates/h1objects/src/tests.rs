@@ -2235,3 +2235,71 @@ fn role_spheres_read_the_physics_elements_multisphere() {
     );
     assert!(role_spheres(&VehicleRole::default()).is_empty());
 }
+
+/// A weapon fires Halo 1's effects: each barrel takes its own trigger's
+/// firing effects (firing, misfire, empty) in order, with the damage the
+/// parts give, and a barrel whose trigger has none gets none (before
+/// converter version 84 every barrel took the Halo 2 counterpart's, the
+/// last one's when it had fewer barrels). A magazine takes Halo 1's
+/// reloading effect.
+#[test]
+fn a_weapon_fires_and_reloads_with_halo1_s_effects() {
+    use crate::arsenal::{
+        FIRING_DAMAGE_REFS, FIRING_EFFECT_REFS, FiringParts, MAGAZINE_RELOADING_EFFECT, Role,
+        WeaponParts, weapon,
+    };
+    use crate::h1::{Magazine, TRIGGER_SIZE, Trigger, WEAP_SIZE, Weapon};
+    use tags::defs::{self, Defs, Record, Target, Val};
+
+    let w = Weapon {
+        magazines: vec![Magazine::default()],
+        triggers: vec![Trigger::default(), Trigger::default()],
+        ..Default::default()
+    };
+    let b = vec![0u8; WEAP_SIZE + 2 * TRIGGER_SIZE];
+    let shake = TagId(0xe123_0045);
+    let parts = WeaponParts {
+        firing_effects: vec![vec![
+            FiringParts {
+                effects: [Some(local(3)), None, Some(local(4))],
+                damage: [Some(shake), None, None],
+            },
+            FiringParts {
+                effects: [Some(local(5)), None, None],
+                damage: [None; 3],
+            },
+        ]],
+        magazine_effects: vec![Some(local(6))],
+        ..Default::default()
+    };
+    let root = weapon(&w, &b, &parts, &Role::default()).unwrap();
+    let d = Defs::builtin().group(FourCC(*b"weap")).unwrap();
+    let r = defs::from_built(d, &root).unwrap();
+    let block = |r: &Record, p: &str| match r.at(p) {
+        Some(Val::Block(b)) => b.clone(),
+        x => panic!("{p}: {x:?}"),
+    };
+    let target = |r: &Record, p: &str| match r.at(p) {
+        Some(Val::Ref {
+            target: Target::Id(id),
+            ..
+        }) if *id != TagId::NULL => Some(*id),
+        Some(Val::Ref { .. }) => None,
+        x => panic!("{p}: {x:?}"),
+    };
+    let barrels = block(&r, "barrels");
+    assert_eq!(barrels.len(), 2);
+    let fx = block(&barrels[0], "block_e4");
+    assert_eq!(fx.len(), 2);
+    let effects = |e: &Record| FIRING_EFFECT_REFS.map(|p| target(e, p));
+    let damage = |e: &Record| FIRING_DAMAGE_REFS.map(|p| target(e, p));
+    assert_eq!(effects(&fx[0]), [Some(local(3)), None, Some(local(4))]);
+    assert_eq!(damage(&fx[0]), [Some(shake), None, None]);
+    assert_eq!(effects(&fx[1]), [Some(local(5)), None, None]);
+    assert!(
+        block(&barrels[1], "block_e4").is_empty(),
+        "the second trigger has no firing effects of its own"
+    );
+    let mags = block(&r, "magazines");
+    assert_eq!(target(&mags[0], MAGAZINE_RELOADING_EFFECT), Some(local(6)));
+}

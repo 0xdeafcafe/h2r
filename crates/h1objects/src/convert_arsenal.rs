@@ -163,6 +163,10 @@ impl Converter<'_> {
         let d = Defs::builtin().group(FourCC(*b"weap")).expect("weap");
         let bd = d.child("barrels").expect("barrels");
         let fd = d.child("barrels.block_e4").expect("firing effects");
+        // Per counterpart barrel, its firing effects' damage (the shot's
+        // rumble and shake): `jpt!` from Halo 1 carries only damage bounds,
+        // so these stay Halo 2's, as the melee damage does.
+        let mut halo2_damage: Vec<Vec<[Option<TagId>; 3]>> = Vec::new();
         let mut parts = arsenal::WeaponParts {
             hlmt,
             predicted,
@@ -187,14 +191,49 @@ impl Converter<'_> {
                 parts
                     .barrel_halo2
                     .push(arsenal::halo2_refs(self.base, bd, &e, &["projectile"]));
-                let mut fx = Vec::new();
+                let mut list = Vec::new();
                 let mut k = 0;
                 while let Some(x) = self.base.element(&e, 0xe4, fd.size as usize, k)? {
-                    fx.push(arsenal::halo2_refs(self.base, fd, &x, &[]));
+                    list.push(arsenal::FIRING_DAMAGE_AT.map(|at| self.base.reference(&x, at)));
                     k += 1;
                 }
-                parts.firing_effects.push(fx);
+                halo2_damage.push(list);
                 i += 1;
+            }
+        }
+        // What a shot plays: Halo 1's effects, converted (their sounds with
+        // them), never the counterpart's.
+        for (i, t) in w.triggers.iter().enumerate() {
+            let mut list = Vec::new();
+            let barrel_damage = halo2_damage.get(i).or(halo2_damage.last());
+            for (k, f) in t.firing_effects.iter().enumerate() {
+                let damage = barrel_damage
+                    .and_then(|l| l.get(k).or(l.last()))
+                    .copied()
+                    .unwrap_or_default();
+                for (j, n) in damage
+                    .iter()
+                    .flatten()
+                    .filter_map(|j| Some((j, self.base.name(*j)?.1)))
+                {
+                    rep.no_home.push(format!(
+                        "Halo 2 reference barrels[{i}].block_e4[{k}] damage: jpt! {n} ({j:?})"
+                    ));
+                }
+                list.push(arsenal::FiringParts {
+                    effects: f.effects.map(|e| self.weapon_effect(e, &mut rep)),
+                    damage,
+                });
+            }
+            parts.firing_effects.push(list);
+        }
+        for m in &w.magazines {
+            let reloading = self.weapon_effect(m.reloading_effect, &mut rep);
+            parts.magazine_effects.push(reloading);
+            if let Some(c) = m.chambering_effect {
+                let n = self.h1_tag(c).map_or("?", |t| t.name.as_str());
+                rep.no_home
+                    .push(format!("chambering effect {n}: no Halo 2 field written yet"));
             }
         }
         for t in &w.triggers {
@@ -249,7 +288,9 @@ impl Converter<'_> {
                         rep.no_home.push(format!("HUD: {s}"));
                     }
                 }
-                Err(e) => rep.no_home.push(format!("HUD: Halo 1's does not convert: {e}")),
+                Err(e) => rep
+                    .no_home
+                    .push(format!("HUD: Halo 1's does not convert: {e}")),
             }
         }
         let role = self.item_role(b"weap")?;
@@ -277,6 +318,20 @@ impl Converter<'_> {
             });
         }
         Ok(id)
+    }
+
+    /// A weapon's Halo 1 effect converted ([`Converter::effect`]); one that
+    /// does not convert is left out, the reason in `rep`.
+    fn weapon_effect(&mut self, id: Option<h1map::TagId>, rep: &mut ObjectReport) -> Option<TagId> {
+        let t = self.h1_tag(id?).ok()?;
+        match self.effect(t) {
+            Ok(x) => Some(x),
+            Err(e) => {
+                rep.no_home
+                    .push(format!("effe {}: not converted ({e})", t.name));
+                None
+            }
+        }
     }
 
     /// `counterpart`: the Halo 2 projectile the counterpart weapon's barrel
