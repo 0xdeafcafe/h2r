@@ -1648,3 +1648,26 @@ game. Nobody writes these through `/v1/events`.
 An id that is not 16 lowercase hex digits, or another call name, is a
 404.
 
+
+### Finished replay archives
+
+`GET /v1/games/{id}/chunks?format=archive` returns the ordinary frame chunk
+index until a verified archive is published. Its published response includes
+`archive_sha256` and an ordered `items` array. Each entry identifies the
+segment’s first and last source ticks, frame count, compressed byte count,
+SHA-256 and zero-based offsets of original v7 keyframes. Ticks beyond the
+JSON safe-integer range use decimal strings. Array order is recording order,
+including repeated or rewound source ticks.
+
+`GET /v1/games/{id}/archive/{archive_sha256}/{ordinal}` serves the stored
+segment with `Content-Type: application/x-h2-replay` and
+`Content-Encoding: br`. The browser receives an independently decodable
+H2AR body. Fetch the segment containing the playhead first. Both routes
+apply the game’s normal visibility check. Anonymous segment reads of public
+games are immutable. Authenticated responses are private. New live viewers
+continue to consume the v7 stream. The game stream’s `ReplayArchivePublished`
+event signals that the finished recording can switch to the archive.
+
+The original chunk index remains available without the format parameter.
+Historical game inventory, dry run, verification, backup and rollback use
+the separate admin API. [Replay migration](replay-migration.md)
