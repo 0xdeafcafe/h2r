@@ -460,6 +460,7 @@ fn rebuilt_scenery_has_only_definition_bytes() {
         creation_effect: None,
         attachments: Vec::new(),
         widgets: Vec::new(),
+        change_colours: Vec::new(),
     };
     let hlmt = map::TagId(0xe001_0002);
     let (mode_id, bitm) = (map::TagId(0xe001_0003), map::TagId(0xe001_0004));
@@ -538,6 +539,111 @@ fn rebuilt_scenery_has_only_definition_bytes() {
     );
 }
 
+/// Halo 1's change colours in Halo 2's slots: A and C share slot 0, the
+/// one the model reads starting there (C on the cyborg, whose Halo 1
+/// player colour is C; A elsewhere); B goes to 1, D to 2; always four, so
+/// a player's unit takes the player's four colours.
+#[test]
+fn change_colours_go_to_halo2_slots_with_c_first_when_read() {
+    use crate::h1::{ChangeColour, ColourPermutation};
+    let one = |v: f32| ChangeColour {
+        permutations: vec![ColourPermutation {
+            weight: 1.0,
+            lower: [v; 3],
+            upper: [v; 3],
+        }],
+    };
+    let h1 = [one(0.1), one(0.2), one(0.3), one(0.4)];
+    let first = |c: &ChangeColour| c.permutations.first().map(|p| p.lower[0]);
+    let a = ChangeColour::halo2_slots(&h1, false);
+    assert_eq!(
+        a.iter().map(first).collect::<Vec<_>>(),
+        [Some(0.1), Some(0.2), Some(0.4), None]
+    );
+    let c = ChangeColour::halo2_slots(&h1, true);
+    assert_eq!(
+        c.iter().map(first).collect::<Vec<_>>(),
+        [Some(0.3), Some(0.2), Some(0.4), None]
+    );
+    // The multiplayer cyborg: A and B (functions, no permutation), its
+    // armour reading C: four empty slots, the player's colours go in.
+    let mp = [ChangeColour::default(), ChangeColour::default()];
+    assert_eq!(
+        ChangeColour::halo2_slots(&mp, true),
+        vec![ChangeColour::default(); 4]
+    );
+    assert_eq!(ChangeColour::halo2_slots(&[], false).len(), 4);
+}
+
+/// Rebuilt scenery with change colours: `obje +0xac` holds one element
+/// per slot, each with Halo 1's permutations (weight, lower, upper bound)
+/// as its initial permutations, any variant, and no functions.
+#[test]
+fn rebuilt_scenery_carries_its_change_colours() {
+    use crate::h1::{ChangeColour, ColourPermutation};
+    use tags::defs::{self, Defs, Val};
+    let tree = ChangeColour {
+        permutations: vec![
+            ColourPermutation {
+                weight: 0.333,
+                lower: [1.0, 1.0, 1.0],
+                upper: [1.0, 1.0, 1.0],
+            },
+            ColourPermutation {
+                weight: 0.667,
+                lower: [0.769, 0.659, 0.4],
+                upper: [0.737, 0.675, 0.427],
+            },
+        ],
+    };
+    let obj = crate::h1::Object {
+        object_type: 6,
+        flags: 0,
+        bounding_radius: 2.5,
+        bounding_offset: [0.0; 3],
+        model: None,
+        animation: None,
+        collision: None,
+        physics: None,
+        modifier_shader: None,
+        creation_effect: None,
+        attachments: Vec::new(),
+        widgets: Vec::new(),
+        change_colours: ChangeColour::halo2_slots(&[tree], false),
+    };
+    let root = crate::rebuild::scenery(&obj, None, &[], &[]).unwrap();
+    let def = Defs::builtin().group(map::FourCC(*b"scen")).unwrap();
+    let got = defs::from_built(def, &root).unwrap();
+    let n = |p: &str| match got.at(p) {
+        Some(Val::Block(b)) => b.len(),
+        other => panic!("{p}: {other:?}"),
+    };
+    assert_eq!(n("object.change_colors"), 4);
+    assert_eq!(n("object.change_colors[0].block_0"), 2);
+    for k in 1..4 {
+        assert_eq!(n(&format!("object.change_colors[{k}].block_0")), 0);
+    }
+    assert_eq!(n("object.change_colors[0].block_8"), 0);
+    let f = |p: &str| match got.at(p) {
+        Some(Val::Bytes(b)) => f32::from_le_bytes(b[..4].try_into().unwrap()),
+        other => panic!("{p}: {other:?}"),
+    };
+    let p = "object.change_colors[0].block_0[1]";
+    assert_eq!(f(&format!("{p}.unknown_0")), 0.667);
+    assert_eq!(f(&format!("{p}.unknown_4")), 0.769);
+    assert_eq!(f(&format!("{p}.unknown_c")), 0.4);
+    assert_eq!(f(&format!("{p}.unknown_10")), 0.737);
+    assert_eq!(f(&format!("{p}.unknown_18")), 0.427);
+    // Without change colours the block stays empty, as before.
+    let plain = crate::h1::Object {
+        change_colours: Vec::new(),
+        ..obj
+    };
+    let root = crate::rebuild::scenery(&plain, None, &[], &[]).unwrap();
+    let got = defs::from_built(def, &root).unwrap();
+    assert!(matches!(got.at("object.change_colors"), Some(Val::Block(b)) if b.is_empty()));
+}
+
 /// A rebuilt vehicle (a10's cryotube and the other Halo 1 vehicles with no
 /// template): the `vehi` definition's defaults, the turret role, the
 /// header and one seat per Halo 1 seat; it reads back through the
@@ -562,6 +668,7 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
         creation_effect: None,
         attachments: Vec::new(),
         widgets: Vec::new(),
+        change_colours: Vec::new(),
     };
     let seat = crate::h1::Seat {
         flags: 0x1d,
@@ -710,6 +817,7 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
         creation_effect: None,
         attachments: Vec::new(),
         widgets: Vec::new(),
+        change_colours: Vec::new(),
     };
     let role = VehicleRole {
         words: RoleWords {
@@ -957,6 +1065,7 @@ fn h1_device(group: &[u8; 4]) -> crate::h1::Device {
             creation_effect: None,
             attachments: Vec::new(),
             widgets: Vec::new(),
+            change_colours: Vec::new(),
         },
         flags: 1,
         times: [0.0, 0.0, 4.0, 0.0, 0.0, 0.0],
@@ -1331,6 +1440,7 @@ fn rebuilt_biped_is_the_role_with_halo_1s_header_and_words() {
         creation_effect: None,
         attachments: Vec::new(),
         widgets: Vec::new(),
+        change_colours: Vec::new(),
     };
     let unit = crate::h1::Unit {
         group: h1map::Group::new(b"bipd"),
@@ -1426,6 +1536,7 @@ fn rebuilt_biped_is_sized_to_halo_1_and_takes_its_counterparts_references() {
             creation_effect: None,
             attachments: Vec::new(),
             widgets: Vec::new(),
+            change_colours: Vec::new(),
         },
         camera_field_of_view: 1.2,
         biped_words: Vec::new(),
@@ -2276,6 +2387,7 @@ fn hover_points_take_their_paired_points_words() {
         creation_effect: None,
         attachments: Vec::new(),
         widgets: Vec::new(),
+        change_colours: Vec::new(),
     };
     let f = |v: f32| v.to_bits();
     let role = VehicleRole {

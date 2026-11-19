@@ -227,6 +227,9 @@ pub struct ComboIn {
     pub other: Option<Gun>,
     /// Whether the trigger is down this tick (the mind's own decision).
     pub firing: bool,
+    /// Whether a glitch may be tried (crate::glitches): the setting and
+    /// the fight around it. The default is Off.
+    pub glitch: crate::glitches::Gate,
 }
 
 /// What [`Combo::step`] asks of the pad.
@@ -241,6 +244,12 @@ pub struct ComboOut {
     pub melee: bool,
     /// A combo is under way: the weapons decision's switches wait.
     pub busy: bool,
+    /// Press reload, and jump (a glitch's presses).
+    pub reload: bool,
+    pub jump: bool,
+    /// The glitch under way (crate::glitches): the mind's own melee,
+    /// reload, switch and grenade wait for it.
+    pub trick: Option<crate::glitches::Trick>,
 }
 
 /// The combo state, kept by the mind.
@@ -257,7 +266,17 @@ pub struct Combo {
     melee_ready: u32,
     melee_until: u32,
     rng: u64,
+    /// A glitch under way (crate::glitches), and when the next may be
+    /// rolled for or started.
+    trick: Option<crate::glitches::Run>,
+    trick_roll: u32,
+    trick_ready: u32,
 }
+
+/// A glitch opening is rolled for at most this often (ticks).
+pub const TRICK_ROLL_EVERY: u32 = 30;
+/// After a glitch, the next waits this long (ticks).
+pub const TRICK_COOLDOWN: u32 = 60;
 
 fn charge(g: Option<Gun>) -> bool {
     g.is_some_and(|g| {
@@ -304,9 +323,72 @@ impl Combo {
         self.rng = rng;
     }
 
-    /// A combo is under way.
+    /// A combo or a glitch is under way.
     pub fn busy(&self) -> bool {
-        self.phase != Phase::Idle
+        self.phase != Phase::Idle || self.trick.is_some()
+    }
+
+    /// A glitch is under way.
+    pub fn tricking(&self) -> bool {
+        self.trick.is_some()
+    }
+
+    /// Stops a glitch under way (the bot got in a vehicle, or the setting
+    /// went off).
+    pub fn drop_trick(&mut self) {
+        self.trick = None;
+    }
+
+    /// The glitch's presses this tick, or `None` when there is none (and
+    /// one that has finished is put away).
+    fn trick_keys(&mut self, t: u32) -> Option<ComboOut> {
+        let run = self.trick.as_ref()?;
+        let trick = run.mac.trick;
+        match run.keys(t) {
+            Some(k) => Some(ComboOut {
+                trigger: Some(k.fire),
+                switch: k.switch,
+                melee: k.melee,
+                busy: true,
+                reload: k.reload,
+                jump: k.jump,
+                trick: Some(trick),
+            }),
+            None => {
+                self.trick = None;
+                self.trick_ready = t.wrapping_add(TRICK_COOLDOWN);
+                None
+            }
+        }
+    }
+
+    /// Rolls for a glitch at an opening and starts it; its first tick's
+    /// presses.
+    fn try_trick(&mut self, c: &ComboIn, skill: Skill) -> Option<ComboOut> {
+        use crate::glitches::{self, Moment};
+        let t = c.tick;
+        if !crate::mind::feel::reached(t, self.trick_ready)
+            || !crate::mind::feel::reached(t, self.trick_roll)
+        {
+            return None;
+        }
+        let trick = glitches::opening(
+            &c.glitch,
+            &Moment {
+                dist: c.dist,
+                on_target: c.on_target,
+                reacted: c.reacted,
+                held: c.held,
+                other: c.other,
+            },
+        )?;
+        self.trick_roll = t.wrapping_add(TRICK_ROLL_EVERY);
+        if self.uniform() >= glitches::chance(c.glitch.setting, skill) {
+            return None;
+        }
+        let mac = glitches::plan(trick, skill, &mut || self.uniform());
+        self.trick = Some(glitches::Run::new(mac, t));
+        self.trick_keys(t)
     }
 
     /// This tick's combo: drawing, charging and releasing the plasma
@@ -330,6 +412,7 @@ impl Combo {
                 self.phase = Phase::Idle;
             }
             self.was_firing = false;
+            self.trick = None;
             return out;
         }
         // Shots on the target: a once-per-pull gun's pulls, an automatic's
@@ -353,6 +436,18 @@ impl Combo {
         self.was_firing = c.firing;
 
         let t = c.tick;
+        // A glitch (crate::glitches) under way plays out; with the noob
+        // combo idle, an opening may start one.
+        if let Some(o) = self.trick_keys(t) {
+            return o;
+        }
+        if c.glitch.setting != crate::glitches::Glitches::Off
+            && matches!(self.phase, Phase::Idle | Phase::Follow(_))
+            && let Some(o) = self.try_trick(c, skill)
+        {
+            self.phase = Phase::Idle;
+            return o;
+        }
         let in_range = (COMBO_RANGE.0..COMBO_RANGE.1).contains(&c.dist);
         match self.phase {
             Phase::Idle => {

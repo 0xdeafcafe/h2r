@@ -106,6 +106,7 @@ fn input(tick: u32, held: Gun, other: Gun, dist: f32, firing: bool) -> ComboIn {
         held: Some(held),
         other: Some(other),
         firing,
+        glitch: Default::default(),
     }
 }
 

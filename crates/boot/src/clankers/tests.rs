@@ -26,7 +26,8 @@ fn the_settings_are_kept_with_every_other_setting() {
         Want {
             count: 0,
             difficulty: 1,
-            taunts: true
+            taunts: true,
+            glitches: 0,
         },
         "off by default"
     );
@@ -36,7 +37,8 @@ fn the_settings_are_kept_with_every_other_setting() {
         Want {
             count: 2,
             difficulty: 3,
-            taunts: true
+            taunts: true,
+            glitches: 0,
         }
     );
 }
@@ -63,6 +65,7 @@ fn the_driver_keeps_that_many_bots_on_the_ports_no_one_else_asked_for() {
         count: 5,
         difficulty: 2,
         taunts: true,
+        glitches: 0,
     });
     assert_eq!(d.ports(), vec![2, 3]);
     assert!(log.last().unwrap().contains("no free port"), "{log:?}");
@@ -72,12 +75,14 @@ fn the_driver_keeps_that_many_bots_on_the_ports_no_one_else_asked_for() {
         count: 1,
         difficulty: 2,
         taunts: true,
+        glitches: 0,
     });
     assert_eq!(d.ports(), vec![2], "the last added goes first");
     d.apply(Want {
         count: 0,
         difficulty: 2,
         taunts: true,
+        glitches: 0,
     });
     assert_eq!(d.ports(), Vec::<u8>::new());
     let left: Vec<BotHandle> = local.list().iter().map(|b| b.handle).collect();
@@ -93,6 +98,7 @@ fn past_the_free_ports_the_driver_adds_phantoms() {
         count: 5,
         difficulty: MIXED,
         taunts: true,
+        glitches: 0,
     });
     assert_eq!(d.ports(), vec![1, 2, 3]);
     let l = ph.list();
@@ -111,6 +117,7 @@ fn past_the_free_ports_the_driver_adds_phantoms() {
         count: 3,
         difficulty: MIXED,
         taunts: true,
+        glitches: 0,
     });
     assert!(
         ph.list().is_empty(),
@@ -126,6 +133,7 @@ fn a_difficulty_change_reaches_the_bots_already_there() {
         count: 2,
         difficulty: 0,
         taunts: true,
+        glitches: 0,
     });
     let skills = |d: &Driver| -> Vec<u8> {
         d.own
@@ -140,6 +148,7 @@ fn a_difficulty_change_reaches_the_bots_already_there() {
         count: 2,
         difficulty: MIXED,
         taunts: true,
+        glitches: 0,
     });
     assert_eq!(skills(&d), vec![1, 2], "Normal on port 1, Heroic on 2");
     assert_eq!(d.ports(), vec![1, 2], "the same bots");
@@ -155,6 +164,30 @@ fn taunts_off_reaches_the_bots_already_there() {
     s.set(TAUNTS.key, Value::Bool(false)).unwrap();
     assert!(!d.taunts.load(Ordering::Relaxed));
     assert_eq!(d.ports(), vec![1], "the same bot");
+}
+
+#[test]
+fn glitches_are_off_by_default_and_reach_the_bots_already_there() {
+    let s = store();
+    assert_eq!(Want::read(&s).glitches, 0, "off by default");
+    let local = Local::default();
+    let d = drive(&s, Driver::new(local.clone()));
+    on(&s, 1, 1);
+    assert_eq!(d.glitches.load(Ordering::Relaxed), 0);
+    // Lots, then Some: the bot it has takes each at its next frame.
+    s.set(GLITCHES.key, Value::Int(2)).unwrap();
+    assert_eq!(d.glitches.load(Ordering::Relaxed), 2);
+    assert_eq!(
+        bots::glitches::Glitches::from_index(d.glitches.load(Ordering::Relaxed)),
+        bots::glitches::Glitches::Lots
+    );
+    s.set(GLITCHES.key, Value::Int(1)).unwrap();
+    assert_eq!(Want::read(&s).glitches, 1);
+    assert_eq!(d.glitches.load(Ordering::Relaxed), 1);
+    assert_eq!(d.ports(), vec![1], "the same bot");
+    // The page has the row, last, with Off, Some and Lots.
+    assert_eq!(DEFS.last().map(|d| d.key), Some("clankers.glitches"));
+    assert_eq!(ROWS.len(), DEFS.len());
 }
 
 #[test]
@@ -929,6 +962,10 @@ fn a_opens_the_value_picker_and_the_row_has_a_description() {
     );
     assert_eq!(p.press(0), Chosen::Open(picker::NAME));
     assert_eq!(picker::current().unwrap().values, ["Off", "On"]);
+    assert_eq!(p.press(7), Chosen::Open(picker::NAME));
+    let pick = picker::current().expect("a pick");
+    assert_eq!(pick.title, "GLITCHES");
+    assert_eq!(pick.values, ["Off", "Some", "Lots"]);
     assert_eq!(
         s.get(ENABLED.key),
         Some(Value::Bool(false)),
