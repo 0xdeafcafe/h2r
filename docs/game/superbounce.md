@@ -20,6 +20,10 @@ established).
   its own. The response comes from the Havok step (`0x001c3d30`). The
   exact rule that sets the launch speed is in Havok's contact solver and
   is not decoded. **Code** for where; **Open** for the rule.
+- On the bounce tick the body is pinched below the floor between two
+  faces looking at each other, one tilted 10.6° up; the solver's two
+  opposing impulses cancel sideways and leave about 14 units/s up
+  ([contacts](#the-contacts-on-a-bounce-tick-trace)). **Trace**
 - Forced crouch (staying crouched after releasing the button under a low
   ceiling) is real. So is a crouch term that moves a mid-air biped by its
   height change. Neither was involved in any recorded bounce: all five
@@ -132,6 +136,42 @@ A third trace (fresh game, tick 2928) adds a sixth bounce: −5.40 in,
 had ended on the ground at tick 2569. Unit flags were back to
 `00000003` and the hitbox offset 0 from then on. Two melee swings with
 no target did not lunge (mode stayed 1, offset 0).
+
+### The contacts on a bounce tick (Trace)
+
+A fourth trace (2026-11-19) recorded `trace.start player.0` (every tick,
+taken inside the game) next to `havok.contacts {object: player.0}`. It
+bounced at tick 5846: −5.26 in, 12.5 cm below the floor, +9.39 out,
+standing, 315 ticks after a forced crouch had ended. Havok reported
+contacts between the player's body and the level (the fixed body) on
+that tick only, two points:
+
+| Point (x, y, z) | Normal | Distance | Impulse |
+|---|---|---|---|
+| (−10.624, 4.117, −3.200) | (0, −1, 0) | −0.253 | 9317 |
+| (−10.623, 3.941, −3.211) | (0, 0.983, 0.183) | −0.140 | 9250 |
+
+- Both pushes are nearly horizontal and face each other: the capsule,
+  once below the floor plane, is pinched between a face looking −y (at
+  the seam, y 4.12) and one looking +y tilted 10.6° up (y 3.94). It is
+  in 25 and 14 cm deep.
+- The solver answers with two almost equal impulses. Their y parts
+  nearly cancel (−224); the tilt leaves 1697 up.
+- The body's mass is 125 (`havok.bodies`, inverse mass 0.008), so the
+  sum is a velocity change of (0, −1.8, +13.6). The trace shows
+  (0, −2.1, +14.8) with gravity's tick taken out: the same direction,
+  the reported impulses about 10% short (perhaps the last solver
+  iteration's share, not the tick's whole push). **Open**
+- So the launch is not a push off the floor. It is the vertical part of
+  two large opposing pushes out of a pinch, and it grows with how deep
+  the capsule gets in. That fits the fall-speed fit above: more speed
+  toward +y drives the capsule into the −y face first and changes the
+  split.
+- Standing on the floor gives no contacts at all (843 of about 3900
+  replies had any, all in the air near geometry); the forced crouch
+  (ticks 4432 to 4792, 5453 to 5531) changed nothing: the Havok body's
+  position equals the drawn one on every tick, crouched or not, by
+  construction (the object's position is copied from the body).
 
 ## The geometry (Code, from the map)
 
