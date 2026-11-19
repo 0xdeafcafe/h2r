@@ -24,7 +24,26 @@ compatibility_date = "2026-11-01"
 # secret in every environment (`wrangler secret put H2_LIVE_SERVER_KEY
 # --env <env>`, which deploy.sh does when it is missing).
 [vars]
+LIVE_MAX_HOSTS = "4"
 H2_LIVE_ID = "live.example.net"
+
+# Dedicated host containers. Wrangler caps each fixed-size application;
+# LiveHub caps active leases across both. Keep max_instances in sync with
+# LIVE_MAX_HOSTS in each environment. Only a lease start boots an instance.
+# Cutover and production address the same Worker, namespaces and applications.
+[[containers]]
+class_name = "HostRoom"
+name = "h2-live-local-hosts-small"
+image = "./../../deploy/host/Dockerfile"
+instance_type = { vcpu = 1, memory_mib = 3072, disk_mb = 12000 }
+max_instances = 4
+
+[[containers]]
+class_name = "LargeHostRoom"
+name = "h2-live-local-hosts-large"
+image = "./../../deploy/host/Dockerfile"
+instance_type = { vcpu = 2, memory_mib = 6144, disk_mb = 12000 }
+max_instances = 4
 
 [[r2_buckets]]
 binding = "BLOBS"
@@ -36,6 +55,8 @@ bindings = [
     { name = "LIVE_HUB", class_name = "LiveHub" },
     # One per co-op session: its relay (src/relay.rs).
     { name = "COOP_RELAY", class_name = "CoopRelay" },
+    { name = "HOST_ROOM", class_name = "HostRoom" },
+    { name = "HOST_ROOM_LARGE", class_name = "LargeHostRoom" },
 ]
 
 [[migrations]]
@@ -45,6 +66,10 @@ new_sqlite_classes = ["LiveHub"]
 [[migrations]]
 tag = "v2"
 new_sqlite_classes = ["CoopRelay"]
+
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["HostRoom", "LargeHostRoom"]
 
 # The web app (web/dist, `bun run build` in web/), served by Cloudflare
 # ahead of the Worker: any path that is not a file is index.html (the app
@@ -72,6 +97,7 @@ name = "h2-live-staging"
 workers_dev = true
 
 [env.staging.vars]
+LIVE_MAX_HOSTS = "4"
 H2_LIVE_ID = "live-staging.forbes.red"
 # Discovery's `url`. deploy.sh sets it to the workers.dev address when
 # H2_LIVE_PUBLIC_URL is in its environment; otherwise https://<id>.
@@ -79,6 +105,20 @@ H2_LIVE_INVITE_ONLY = "1"
 H2_LIVE_ADMINS = "afr"
 # Published game art (`h2 live assets publish`), shared with production:
 H2_LIVE_GAME_ART_URL = "https://live-art.forbes.red/art/2f21ed4af58d0edb"
+
+[[env.staging.containers]]
+class_name = "HostRoom"
+name = "h2-live-staging-hosts-small"
+image = "./../../deploy/host/Dockerfile"
+instance_type = { vcpu = 1, memory_mib = 3072, disk_mb = 12000 }
+max_instances = 4
+
+[[env.staging.containers]]
+class_name = "LargeHostRoom"
+name = "h2-live-staging-hosts-large"
+image = "./../../deploy/host/Dockerfile"
+instance_type = { vcpu = 2, memory_mib = 6144, disk_mb = 12000 }
+max_instances = 4
 
 [[env.staging.r2_buckets]]
 binding = "BLOBS"
@@ -88,6 +128,8 @@ bucket_name = "h2-live-blobs-staging"
 bindings = [
     { name = "LIVE_HUB", class_name = "LiveHub" },
     { name = "COOP_RELAY", class_name = "CoopRelay" },
+    { name = "HOST_ROOM", class_name = "HostRoom" },
+    { name = "HOST_ROOM_LARGE", class_name = "LargeHostRoom" },
 ]
 
 # Workers Logs and traces (docs/live/live-worker.md, "Observability").
@@ -113,11 +155,26 @@ name = "h2-live"
 workers_dev = true
 
 [env.cutover.vars]
+LIVE_MAX_HOSTS = "4"
 H2_LIVE_ID = "live.forbes.red"
 H2_LIVE_PUBLIC_URL = "https://live.forbes.red"
 H2_LIVE_INVITE_ONLY = "1"
 H2_LIVE_ADMINS = "afr"
 H2_LIVE_GAME_ART_URL = "https://live-art.forbes.red/art/2f21ed4af58d0edb"
+
+[[env.cutover.containers]]
+class_name = "HostRoom"
+name = "h2-live-hosts-small"
+image = "./../../deploy/host/Dockerfile"
+instance_type = { vcpu = 1, memory_mib = 3072, disk_mb = 12000 }
+max_instances = 4
+
+[[env.cutover.containers]]
+class_name = "LargeHostRoom"
+name = "h2-live-hosts-large"
+image = "./../../deploy/host/Dockerfile"
+instance_type = { vcpu = 2, memory_mib = 6144, disk_mb = 12000 }
+max_instances = 4
 
 [[env.cutover.r2_buckets]]
 binding = "BLOBS"
@@ -127,6 +184,8 @@ bucket_name = "h2-live-blobs"
 bindings = [
     { name = "LIVE_HUB", class_name = "LiveHub" },
     { name = "COOP_RELAY", class_name = "CoopRelay" },
+    { name = "HOST_ROOM", class_name = "HostRoom" },
+    { name = "HOST_ROOM_LARGE", class_name = "LargeHostRoom" },
 ]
 
 # Workers Logs and traces (docs/live/live-worker.md, "Observability").
@@ -148,11 +207,26 @@ workers_dev = true
 routes = [{ pattern = "live.forbes.red/*", zone_name = "forbes.red" }]
 
 [env.production.vars]
+LIVE_MAX_HOSTS = "4"
 H2_LIVE_ID = "live.forbes.red"
 H2_LIVE_PUBLIC_URL = "https://live.forbes.red"
 H2_LIVE_INVITE_ONLY = "1"
 H2_LIVE_ADMINS = "afr"
 H2_LIVE_GAME_ART_URL = "https://live-art.forbes.red/art/2f21ed4af58d0edb"
+
+[[env.production.containers]]
+class_name = "HostRoom"
+name = "h2-live-hosts-small"
+image = "./../../deploy/host/Dockerfile"
+instance_type = { vcpu = 1, memory_mib = 3072, disk_mb = 12000 }
+max_instances = 4
+
+[[env.production.containers]]
+class_name = "LargeHostRoom"
+name = "h2-live-hosts-large"
+image = "./../../deploy/host/Dockerfile"
+instance_type = { vcpu = 2, memory_mib = 6144, disk_mb = 12000 }
+max_instances = 4
 
 [[env.production.r2_buckets]]
 binding = "BLOBS"
@@ -162,6 +236,8 @@ bucket_name = "h2-live-blobs"
 bindings = [
     { name = "LIVE_HUB", class_name = "LiveHub" },
     { name = "COOP_RELAY", class_name = "CoopRelay" },
+    { name = "HOST_ROOM", class_name = "HostRoom" },
+    { name = "HOST_ROOM_LARGE", class_name = "LargeHostRoom" },
 ]
 
 # Workers Logs and traces (docs/live/live-worker.md, "Observability").

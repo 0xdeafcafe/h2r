@@ -5,6 +5,10 @@
 //! a hibernatable WebSocket ([`crate::sockets`]); the hub also runs ingest
 //! and authorizes co-op relay upgrades (docs/live/live-worker.md).
 
+// Dedicated host container binding and provider.
+#[path = "hostroom.rs"]
+mod hostroom;
+
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -191,7 +195,9 @@ async fn fetch_retrying(
         .headers()
         .get("content-length")?
         .and_then(|v| v.trim().parse::<u64>().ok());
-    let kept = doretry::keeps_body(req.inner().body().is_some(), length);
+    // Dedicated tunnel admission consumes the bearer nonce, like the co-op relay.
+    let kept = hostroom::tunnel_lease(path).is_none()
+        && doretry::keeps_body(req.inner().body().is_some(), length);
     let mut req = Some(req);
     let mut attempt = 1;
     loop {
@@ -288,11 +294,18 @@ impl LiveHub {
         );
         // Title files in R2: a Durable Object's row holds at most 2 MB.
         let store = BlobsElsewhere::new(Arc::new(store), private.clone());
-        let live = Live::start_with(
+        // Include historical host events in the budget when the hub wakes.
+        let host_costs = live_server::host_costs::HostCosts::configured(
+            self.setting("LIVE_HOST_PRICES").as_deref(),
+            self.setting("LIVE_HOST_BUDGET_USD_MONTH").as_deref(),
+        )
+        .map_err(rust_error)?;
+        let live = Live::start_with_host_costs(
             Arc::new(store),
             settings.identity,
             settings.policy,
             Timers::Driven,
+            host_costs,
         )
         .await
         .map_err(|e| rust_error(format!("{e:#}")))?;
@@ -300,6 +313,11 @@ impl LiveHub {
             private,
             public: None,
         });
+        // Dedicated host leases use this environment's private container namespace.
+        live.set_host_config(live_server::hosts::HostConfig::from_env(&|name| {
+            self.setting(name)
+        }));
+        live.set_host_provider(Arc::new(hostroom::CloudflareProvider::new(self.env.clone())));
         Ok((live, js_sys::Date::now() - started, head))
     }
 }
@@ -345,7 +363,7 @@ impl LiveHub {
                 }
             });
         }
-        let sweep = live.sweep_due().map(|s| s as f64 * 1000.0);
+        let sweep = live.sweep_due_with_hosts().map(|s| s as f64 * 1000.0);
         let due = [
             sweep,
             self.sockets.next_due_ms(),
@@ -440,12 +458,17 @@ impl DurableObject for LiveHub {
         let req: HttpRequest = req.try_into()?;
         let path = req.uri().path();
         let relay = crate::relayroom::session_of(path);
-        if path == "/v1/stream" || path == "/v1/ingest" || relay.is_some() {
+        let tunnel = hostroom::tunnel_lease(path);
+        if path == "/v1/stream" || path == "/v1/ingest" || relay.is_some() || tunnel.is_some() {
             if matches!(*req.method(), http::Method::GET | http::Method::HEAD) {
                 let ip = live_server::http::client_ip_key(&live, None, req.headers());
                 if let Err(e) = live_server::http::limit_read(&live, &ip) {
                     return Response::try_from(axum::response::IntoResponse::into_response(e));
                 }
+            }
+            if let Some(id) = tunnel {
+                let id = id.to_owned();
+                return hostroom::upgrade(&live, &self.env, req, &id).await;
             }
             if let Some(session) = relay {
                 let session = session.to_owned();
@@ -485,7 +508,7 @@ impl DurableObject for LiveHub {
         let (live, _) = self.live().await?;
         // Set again below if anything is still due.
         self.alarm_at.set(Some(None));
-        live.sweep().await;
+        live.sweep_with_hosts().await;
         self.sockets.check();
         self.ingests.check();
         self.schedule(&live).await?;
