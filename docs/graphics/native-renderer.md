@@ -116,7 +116,9 @@ Structure and model geometry are queued by `0x00041040` through
 `0x00040e30` with build `0x0004cbf0` and draw `0x0004d0b0` (pushed at
 `0x000412fa`/`0x0004132b`; the transparent path instead records
 `0x00041020`). The render record is `0x004ba138 + 0x20·index`
-(`0x0002cbf0` fills it); its `+4` is the object handle, `-1` for the BSP:
+(`0x0002cbf0` fills it); its `+4` is an object's render model tag datum
+(not its handle; see "Stage 2" for how a record names its object), `-1`
+for the BSP:
 the cluster records (`0x00133390`, call at `0x00133504`) and the
 instanced-geometry records (`0x00133520`, call at `0x001336d3`) both pass
 `-1`, and the build function itself tests `[record+4] != -1`
@@ -497,8 +499,11 @@ computed transforms in guest memory. Skinning runs in the vertex shader.
 | node matrix (`0x34` bytes) | The game's `real_matrix4x3`: `+0` scale, `+4` forward, `+0x10` left, `+0x1c` up, `+0x28` position. A local point `p` goes to `scale · (p.x·forward + p.y·left + p.z·up) + position`: the bounding-sphere update `0x000bdf90..0x000be068` applies the root node exactly so, reading the block through `[body+0x116]`. The matrices are world space (the sphere it produces is the world sphere at `+0x30`). |
 | mode node `+0x28` (`0x34` bytes) | The node's inverse rest frame in the same layout (scale, then the inverse's three columns, then its position; `crates/h1models/src/tests.rs`, `node_inverse_frames_are_stored_as_columns`, and the retail check `retail_h2_mode_layouts`). A retail hlmt node is its mode node's first `0x5c` bytes (V, `crates/tags/src/defs/hlmt.txt`), so object node `i` is mode node `i`. |
 | skinning | Vertex world position `Σ wₖ · N[nₖ] · I[nₖ] · p`, with `N` the object's node matrix, `I` the mode node's inverse rest frame, `nₖ` the section's node map applied to the vertex's node index (S: that the game composes the same `N·I` for its node constants; "rest frame times inverse is the identity" is Test in h1models, the draw side is checked by the A/B). Sections without vertex nodes (classification 1) are bound to the first node of their node map, else node 0 (S). |
-| `0x0002cbf0` | Fills render record `0x004ba138 + 0x20·i` (at most `0x352` per frame, counter `0x004c0b78`): `+4` the object handle (`-1` for the BSP), `+8` a word from the caller's per-section state, `+0`, `+0xc` and `+0x1a..+0x1b` bit-packed. Its caller for objects is `0x00133f70`, which walks a per-object render state of about `0x1e4` bytes built under `0x00133ab0` (entries from `+0x48`, stride `0x18`, count `+0x166`; handle `[entry+0x44]`). Which bits are the section (LOD and permutation) is not read yet. |
+| `0x0002cbf0` | Fills render record `0x004ba138 + 0x20·i` (at most `0x352` per frame, counter `0x004c0b78`): `+4` its second stack argument, the render model (mode) tag datum (`-1` for the BSP), `+8` a word from the caller's per-section state, `+0x10` its fifth, the object's lighting (below), `+0`, `+0xc` and `+0x1a..+0x1b` bit-packed. Its caller for objects is `0x00133f70`, which walks a per-object render state built under `0x00133ab0` (`+0` the object handle, count `+0x166`, per-section words from `+0x48` with stride 4: the lighting pointer at `+0x48 + 4i`, the mode datum at `+0x5c + 4i`, both filled by `0x0003d4f0` and `0x0004b5d0`). **The record does not hold the object handle** (the first live run's walk met 209,131 object records and resolved none by reading `+4` as a handle). Which bits are the section (LOD and permutation) is not read yet. |
+| record `+0x10` → cache record → owner | How an object's render record names its object (`objects::record_owner`): `+0x10` points at `+0x44` of the object's record in the render-state cache (`0x0004b5d0`: `lea ebx, [record+0x44]`), or is 0; the cache record's `+4` is the owner's handle; the owner's body `+0xcc` holds the cache record's handle, which `0x0003ddd0` checks (`[data + 0x100·(body[+0xcc] & 0xffff) + 4] == handle`). The resolve requires all of it (pointer at a record's `+0x44`, index below the cache's high water `+0x38`, owner live by `0x000badc0`'s rules, `+0xcc` naming the record back); a record that fails stays on D3D. Code; Test on synthetic memory, Live pending. |
+| `0x000badc0` | The object lookup: slot `handle & 0xffff` below `[H+0x38]`, element `[H+0x24]·slot + [H+0x44]` (12 bytes; `0x0003ddd0` uses a fixed 12), live when its `u16` salt is non-zero and equals `handle >> 16`, body at `+8`. `objects::body` follows it. |
 | `0x0002bed5` | The return address of the base layers' layer-3 call (`call 0x00044550` at `0x0002bed0` in `render_scene_passes`, view kinds 1 and 2). The object skip acts only there, so first-person or other-kind layer draws are never touched. |
+| `0x00040136` | The return address of the other layer-3 caller (about a third of layer-3 calls in the first live run): `call 0x00044550` at `0x00040131` in the first-person draw `0x0003fdf0`, which runs after the transparents for its own record list (`0x004c8740`, `[0x0050943c]` records) under the first-person camera and projection, then `0x000445d0`. It stays on D3D: the observer would draw it with the scene camera, and first-person models are a later stage. Counted as `first person`, not as a wrong caller. |
 | `0x0004baf0`, `0x0004b5d0` | LOD choice by pixel size inside `0x00133790` ([occlusion-culling.md](occlusion-culling.md)). |
 | `0x0016d764` | Region permutation choice (Likely): the variant's region map, its regions at `+0x18`, then `0x0016dad0` ([objects.md](../formats/objects.md)). |
 | `0x00165f16` (`points::FIRST_PERSON_RENDER`) | One local player's first-person weapon and arms, after the transparents, with their own projection (camera `0x0023c110`, FOV `0x00187130`). |
@@ -683,17 +688,28 @@ tests); evidence labels below are what the tests will show once run.
   object items skipped`.
 - **Diagnostics** (added after the first live run drew nothing and
   printed no `native-objects:` line at all). Every layer-3 call of the
-  observer ends in one counted `Stop`: wrong caller (`[esp]` is not
+  observer ends in one counted `Stop`: first person (`[esp]` is
+  `0x00040136`, left to D3D), wrong caller (`[esp]` is neither that nor
   `0x0002bed5`), no host, no camera, no map, no list, no object items (no
-  item's handle names a live object), none accepted (models not loaded,
+  item's record names a live object), none accepted (models not loaded,
   refused, or shaders not native), none read (node count), draw refused,
   drawn. The first of each prints `native-objects: first layer-3 call
   ending in "<stop>": <detail>`; each distinct wrong caller prints its
   `[esp]` (up to four); every 1,800 layer-3 calls one line counts them
   all, with the definitions wanted and the summed walk (items, in layer,
-  geometry builds, with handles, live, accepted, failed writes, and up to
-  four other build functions met in layer 3). A run that draws nothing
+  geometry builds, object records, live, accepted, failed writes, and up
+  to four other build functions met in layer 3). A run that draws nothing
   says which return it took.
+- **The first diagnosed run** (03a, world D3D) printed `items 4 in layer
+  4 geometry 4 with handles 0 live 0`, then over 7,202 layer-3 calls
+  209,131 records "with handles" and none live, and 2,521 calls from
+  `[esp]` `0x00040136`. Both had one cause each: the walk read a render
+  record's `+4` as the object handle, but it is the render model datum,
+  so no lookup could succeed; the object is named through the lighting
+  pointer at `+0x10` instead (research table, `record +0x10`). The other
+  caller is the first-person draw, now counted on its own and left to
+  D3D. The transparents' entries (stage 3) read their objects the same
+  way.
 
 ### The live A/B
 
@@ -760,7 +776,8 @@ template's layer-15 passes, which do not read the other layers' targets.
   (with layer `0xf`). So an entry is drawn exactly like an opaque item,
   but with layer 15's passes, one entry at a time in sorted order.
 - The render record at `+0x28 >> 8` says what the geometry is: `+4` an
-  object handle, or `-1` for the BSP with `+0xc` bits 9..17 the cluster
+  object's render model datum (the object itself through `+0x10`, as in
+  stage 2), or `-1` for the BSP with `+0xc` bits 9..17 the cluster
   and 18..28 the instanced-geometry placement (`0x7ff` for a cluster;
   "What a world pass reads").
 

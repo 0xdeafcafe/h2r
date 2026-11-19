@@ -20,9 +20,11 @@
 //!   `0x00040f60` with the opaque path's build `0x0004cbf0` and draw
 //!   `0x0004d0b0`, once per pass of the template's layer 15 (the word at
 //!   `+0x1e` of the template's layer table: `count << 9 | first`).
-//! - The render record (`0x004ba138 + 0x20 · index`): `+4` the object
-//!   handle (`-1` for the BSP); `+0xc` bits 9..17 the cluster, bits 18..28
-//!   the instanced-geometry placement (`0x7ff` none) for BSP records.
+//! - The render record (`0x004ba138 + 0x20 · index`): `+4` the render
+//!   model tag datum (`-1` for the BSP); `+0xc` bits 9..17 the cluster,
+//!   bits 18..28 the instanced-geometry placement (`0x7ff` none) for BSP
+//!   records; an object's record names its object through its lighting
+//!   pointer `+0x10` ([`crate::objects::record_owner`]).
 //!
 //! The skip is the handler's: a `before` hook answers `ret 4` for an
 //! entry the native renderer draws, so the entry builds and draws nothing
@@ -35,7 +37,7 @@
 use std::sync::Mutex;
 
 use crate::camera::GuestRead;
-use crate::objects::ObjectFrame;
+use crate::objects::{ObjectFrame, RecordOwner, record_owner};
 use crate::skip::{RENDER_RECORDS, RENDER_RECORD_SIZE};
 
 /// The geometry entries' handler.
@@ -72,8 +74,8 @@ pub struct Entry {
 }
 
 /// Reads the geometry entry whose handler argument is `data` (the entry's
-/// `+0x24`). `None` when it cannot be read or its record is not one the
-/// geometry path fills.
+/// `+0x24`). `None` when it cannot be read, its record is not one the
+/// geometry path fills, or it is an object's whose owner does not resolve.
 pub fn read_entry(mem: &dyn GuestRead, data: u32) -> Option<Entry> {
     let entry = data.checked_sub(DATA_OFFSET)?;
     let shader = mem.read_u32(data)?;
@@ -82,15 +84,15 @@ pub fn read_entry(mem: &dyn GuestRead, data: u32) -> Option<Entry> {
     if record < 0 {
         return None;
     }
-    let at = RENDER_RECORDS + RENDER_RECORD_SIZE * record as u32;
-    let handle = mem.read_u32(at + 4)?;
-    let source = if handle != u32::MAX {
-        Source::Object(handle)
-    } else {
-        let packed = mem.read_u32(at + 0xc)?;
-        match (packed >> 18) & 0x7ff {
-            NO_PLACEMENT => Source::Cluster(((packed >> 9) & 0x1ff) as u16),
-            p => Source::Placement(p as u16),
+    let source = match record_owner(mem, record as u16)? {
+        RecordOwner::Object(handle) => Source::Object(handle),
+        RecordOwner::Unresolved => return None,
+        RecordOwner::World => {
+            let packed = mem.read_u32(RENDER_RECORDS + RENDER_RECORD_SIZE * record as u32 + 0xc)?;
+            match (packed >> 18) & 0x7ff {
+                NO_PLACEMENT => Source::Cluster(((packed >> 9) & 0x1ff) as u16),
+                p => Source::Placement(p as u16),
+            }
         }
     };
     let position = [
@@ -167,9 +169,12 @@ mod tests {
     use super::*;
     use crate::camera::tests::Mem;
 
-    const ENTRY: u32 = 0x0070_0000;
+    const ENTRY: u32 = 0x0069_0000;
 
-    fn entry(m: &mut Mem, record: u32, part: u32, handle: u32, packed: u32) {
+    /// Entry of render record `record`'s part `part`: the BSP's with
+    /// `packed` at `+0xc` for `lighting` `None`, else an object's lit by
+    /// `lighting`.
+    fn entry(m: &mut Mem, record: u32, part: u32, lighting: Option<u32>, packed: u32) {
         m.w(ENTRY + 4, (-12.5f32).to_bits());
         m.w(ENTRY + 0x20, GEOMETRY_HANDLER);
         m.w(ENTRY + 0x24, 0xe000_0042);
@@ -177,14 +182,14 @@ mod tests {
         for (i, v) in [1.0f32, 2.0, 3.0].into_iter().enumerate() {
             m.w(ENTRY + 0x64 + 4 * i as u32, v.to_bits());
         }
-        m.w(RENDER_RECORDS + 0x20 * record + 4, handle);
+        crate::objects::tests::record(m, record, lighting);
         m.w(RENDER_RECORDS + 0x20 * record + 0xc, packed);
     }
 
     #[test]
     fn a_cluster_entry_names_its_cluster_part_and_shader() {
         let mut m = Mem::default();
-        entry(&mut m, 9, 2, u32::MAX, NO_PLACEMENT << 18 | 37 << 9 | 5);
+        entry(&mut m, 9, 2, None, NO_PLACEMENT << 18 | 37 << 9 | 5);
         let e = read_entry(&m, ENTRY + DATA_OFFSET).unwrap();
         assert_eq!(
             e,
@@ -201,10 +206,16 @@ mod tests {
     #[test]
     fn placements_and_objects_are_told_apart() {
         let mut m = Mem::default();
-        entry(&mut m, 3, 0, u32::MAX, 140 << 18 | 0x1ff << 9);
+        entry(&mut m, 3, 0, None, 140 << 18 | 0x1ff << 9);
         assert_eq!(read_entry(&m, ENTRY + DATA_OFFSET).unwrap().source, Source::Placement(140));
-        entry(&mut m, 3, 0, 0xe1a3_0004, 0);
-        assert_eq!(read_entry(&m, ENTRY + DATA_OFFSET).unwrap().source, Source::Object(0xe1a3_0004));
+        // An object's: named by its lighting pointer's cache record owner,
+        // not by the record's model datum.
+        let h = crate::objects::tests::object(&mut m, 4, 0xe000_0100, 1);
+        entry(&mut m, 3, 0, Some(crate::objects::tests::lighting(4 + 7)), 0);
+        assert_eq!(read_entry(&m, ENTRY + DATA_OFFSET).unwrap().source, Source::Object(h));
+        // An object's whose owner does not resolve: not read (D3D draws it).
+        entry(&mut m, 3, 0, Some(0), 0);
+        assert_eq!(read_entry(&m, ENTRY + DATA_OFFSET), None);
         // A negative record (no render record): not geometry this reads.
         m.w(ENTRY + 0x28, 0xffff_ff00);
         assert_eq!(read_entry(&m, ENTRY + DATA_OFFSET), None);
@@ -213,7 +224,7 @@ mod tests {
     #[test]
     fn a_sealed_run_takes_no_more_entries() {
         let mut m = Mem::default();
-        entry(&mut m, 1, 0, u32::MAX, NO_PLACEMENT << 18);
+        entry(&mut m, 1, 0, None, NO_PLACEMENT << 18);
         let e = read_entry(&m, ENTRY + DATA_OFFSET).unwrap();
         let run = Run::new();
         assert!(run.push(e, None) && run.push(e, None));

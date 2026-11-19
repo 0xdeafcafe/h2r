@@ -40,7 +40,7 @@ use std::sync::{Arc, Mutex};
 use engine::memory::GuestMemory;
 use engine::points;
 use native_render::camera::{GuestRead, GuestWrite, RENDER_CAMERA, RenderCamera};
-use native_render::objects::{self, ClearedObjects, ObjectFrame, SCENE_LAYER3_RETURN, WalkStats};
+use native_render::objects::{self, ClearedObjects, FIRST_PERSON_LAYER3_RETURN, ObjectFrame, SCENE_LAYER3_RETURN, WalkStats};
 use native_render::skip::{CURRENT_LAYER, LIGHTMAP_LAYER};
 
 use crate::native_world::Mem;
@@ -99,7 +99,12 @@ static ITEMS: AtomicU64 = AtomicU64::new(0);
 /// line counts them all).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stop {
-    /// Layer 3, but `[esp]` is not the base layers' call `0x0002bed5`.
+    /// Layer 3 from the first-person draw (`[esp]` `0x00040136`): its own
+    /// view and camera, left to D3D until first person is a stage of its
+    /// own.
+    FirstPerson,
+    /// Layer 3, but `[esp]` is neither the base layers' call `0x0002bed5`
+    /// nor the first-person one.
     WrongCaller,
     NoHost,
     /// The render camera record does not read as a camera.
@@ -121,7 +126,8 @@ pub enum Stop {
 }
 
 impl Stop {
-    pub const ALL: [Stop; 10] = [
+    pub const ALL: [Stop; 11] = [
+        Stop::FirstPerson,
         Stop::WrongCaller,
         Stop::NoHost,
         Stop::NoCamera,
@@ -136,6 +142,7 @@ impl Stop {
 
     pub fn name(self) -> &'static str {
         match self {
+            Stop::FirstPerson => "first person",
             Stop::WrongCaller => "wrong caller",
             Stop::NoHost => "no host",
             Stop::NoCamera => "no camera",
@@ -150,7 +157,7 @@ impl Stop {
     }
 }
 
-static STOPS: [AtomicU64; 10] = [const { AtomicU64::new(0) }; 10];
+static STOPS: [AtomicU64; 11] = [const { AtomicU64::new(0) }; 11];
 /// Layer-3 calls of the observer, any caller.
 static LAYER3: AtomicU64 = AtomicU64::new(0);
 /// Definitions handed to `Host::want`.
@@ -161,7 +168,7 @@ static WALKS: Mutex<Option<WalkStats>> = Mutex::new(None);
 static CALLERS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 
 /// How often each [`Stop`] happened, in [`Stop::ALL`] order.
-pub fn stops() -> [u64; 10] {
+pub fn stops() -> [u64; 11] {
     std::array::from_fn(|i| STOPS[i].load(Ordering::Relaxed))
 }
 
@@ -188,7 +195,7 @@ fn add_walk(w: &WalkStats) {
     t.walked += w.walked;
     t.in_layer += w.in_layer;
     t.geometry += w.geometry;
-    t.object_handles += w.object_handles;
+    t.object_records += w.object_records;
     t.live += w.live;
     t.accepted += w.accepted;
     t.write_failed += w.write_failed;
@@ -204,11 +211,11 @@ fn add_walk(w: &WalkStats) {
 fn walk_text(w: &WalkStats) -> String {
     let builds: Vec<String> = w.other_builds.iter().map(|(b, n)| format!("{b:#010x} x{n}")).collect();
     format!(
-        "items {} in layer {} geometry {} with handles {} live {} accepted {} write failed {}, other builds [{}]",
+        "items {} in layer {} geometry {} object records {} live {} accepted {} write failed {}, other builds [{}]",
         w.walked,
         w.in_layer,
         w.geometry,
-        w.object_handles,
+        w.object_records,
         w.live,
         w.accepted,
         w.write_failed,
@@ -257,6 +264,12 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
     }
     if LAYER3.fetch_add(1, Ordering::Relaxed) % 1800 == 1 {
         eprintln!("{}", summary());
+    }
+    if ret == FIRST_PERSON_LAYER3_RETURN {
+        stop(Stop::FirstPerson, || {
+            format!("[esp] {ret:#010x}, the first-person draw's layer 3 (its own view and camera): left to D3D")
+        });
+        return;
     }
     if ret != SCENE_LAYER3_RETURN {
         stop(Stop::WrongCaller, || format!("[esp] {ret:#010x}, the base layers' call returns to {SCENE_LAYER3_RETURN:#010x}"));
