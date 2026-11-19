@@ -31,9 +31,8 @@ fn parts(p: &RawParams) -> Result<Vec<Part>, RpcError> {
     names
         .iter()
         .map(|n| {
-            Part::parse(n).ok_or_else(|| {
-                invalid(format!("unknown part {n} (one of {})", PARTS.join(", ")))
-            })
+            Part::parse(n)
+                .ok_or_else(|| invalid(format!("unknown part {n} (one of {})", PARTS.join(", "))))
         })
         .collect()
 }

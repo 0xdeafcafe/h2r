@@ -300,7 +300,9 @@ mod tests {
         assert_eq!(read(&r, Part::Object).1.len(), OBJECT_LEN as usize);
         let r = object_parts(&g, datum, &only, Some(0x20)).unwrap().unwrap();
         assert_eq!(read(&r, Part::Object).1.len(), 0x20);
-        let r = object_parts(&g, datum, &only, Some(0x10_0000)).unwrap().unwrap();
+        let r = object_parts(&g, datum, &only, Some(0x10_0000))
+            .unwrap()
+            .unwrap();
         assert_eq!(read(&r, Part::Object).1.len(), OBJECT_MAX as usize);
     }
 

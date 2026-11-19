@@ -279,12 +279,24 @@ mod tests {
         assert!(d[2].words.is_empty());
 
         let text = render(&d);
-        assert!(text.contains("object  00001000 (0xc bytes)  2 words differ"), "{text}");
-        assert!(text.contains("  +0x004  3f39999a -> 3f000000   0.725 -> 0.5"), "{text}");
+        assert!(
+            text.contains("object  00001000 (0xc bytes)  2 words differ"),
+            "{text}"
+        );
+        assert!(
+            text.contains("  +0x004  3f39999a -> 3f000000   0.725 -> 0.5"),
+            "{text}"
+        );
         // 3 and 4 are denormals as floats: words only.
         assert!(text.contains("  +0x008  00000003 -> 00000004\n"), "{text}");
-        assert!(text.contains("motion  missing: no motion -> 00004000"), "{text}");
-        assert!(text.contains("shape  00002000 (0x8 bytes) -> 00003000"), "{text}");
+        assert!(
+            text.contains("motion  missing: no motion -> 00004000"),
+            "{text}"
+        );
+        assert!(
+            text.contains("shape  00002000 (0x8 bytes) -> 00003000"),
+            "{text}"
+        );
         assert!(text.contains("not compared"), "{text}");
     }
 
@@ -298,6 +310,9 @@ mod tests {
         let d = diff(&a, &b);
         assert_eq!(d[0].words.len(), 1);
         assert_eq!(d[0].words[0].offset, 4);
-        assert_eq!((d[0].words[0].before, d[0].words[0].after), (0x0605, 0x0705));
+        assert_eq!(
+            (d[0].words[0].before, d[0].words[0].after),
+            (0x0605, 0x0705)
+        );
     }
 }

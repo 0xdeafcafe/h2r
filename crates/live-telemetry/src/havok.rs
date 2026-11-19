@@ -591,7 +591,12 @@ mod tests {
                 assert!(close(translation[2], 0.3));
                 assert_eq!(*child, ball);
                 let c = child_shape.as_ref().unwrap();
-                assert_eq!(c.kind, ShapeKind::Sphere { radius: 0.3f32.into() });
+                assert_eq!(
+                    c.kind,
+                    ShapeKind::Sphere {
+                        radius: 0.3f32.into()
+                    }
+                );
             }
             k => panic!("{k:?}"),
         }

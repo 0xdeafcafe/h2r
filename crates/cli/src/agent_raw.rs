@@ -102,7 +102,10 @@ mod tests {
     #[test]
     fn raw_becomes_world_raw() {
         let c = |s: &str| parse(&words(s)).unwrap().unwrap();
-        assert_eq!(c("raw player.0"), ("world.raw".into(), json!({"id": "player.0"})));
+        assert_eq!(
+            c("raw player.0"),
+            ("world.raw".into(), json!({"id": "player.0"}))
+        );
         assert_eq!(
             c("raw player.0 entity,shape 0x800"),
             (
@@ -135,8 +138,14 @@ mod tests {
         let a = parse_answer(before).unwrap();
         let b = parse_answer(after).unwrap();
         let text = diff_text(&a, &b);
-        assert!(text.starts_with("shape  00455000 (0x8 bytes)  1 word differs\n"), "{text}");
-        assert!(text.contains("+0x004  00000000 -> 3f000000   0 -> 0.5"), "{text}");
+        assert!(
+            text.starts_with("shape  00455000 (0x8 bytes)  1 word differs\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("+0x004  00000000 -> 3f000000   0 -> 0.5"),
+            "{text}"
+        );
         assert!(parse_answer("not json").is_err());
     }
 }

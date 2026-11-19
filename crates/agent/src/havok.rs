@@ -50,10 +50,7 @@ fn ids(objects: &[Object]) -> HashMap<u32, String> {
 }
 
 /// The datum an id names, among the listed objects.
-pub(crate) fn resolve(
-    objects: &[Object],
-    id: &str,
-) -> Result<(u32, Option<[f64; 3]>), RpcError> {
+pub(crate) fn resolve(objects: &[Object], id: &str) -> Result<(u32, Option<[f64; 3]>), RpcError> {
     if ObjectId::parse(id).is_none() {
         return Err(RpcError::new(
             code::INVALID_PARAMS,
@@ -379,7 +376,10 @@ mod tests {
         });
         let r = answer_bodies(&raw, &objects, &BodiesParams::default()).unwrap();
         let s = r.bodies[0].shape.as_ref().unwrap();
-        assert_eq!((s.addr.as_str(), s.vtable.as_str()), ("00700000", "00455500"));
+        assert_eq!(
+            (s.addr.as_str(), s.vtable.as_str()),
+            ("00700000", "00455500")
+        );
         assert_eq!(s.kind, "capsule");
         assert_eq!(s.radius, Some(0.175));
         // 0.2 between the ends, 0.35 of caps: the crouching pill's 0.55.
