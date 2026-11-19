@@ -62,9 +62,9 @@ second. `0x00044040` selects the head at
 
 Each record is `0x40` bytes in the array at `[[0x004ea950]+0x44]`. The linked
 record at `+0x38` has a frame marker at its `+8`; the handler skips duplicates
-and writes `[0x004ba038]`'s low word after admitting the record. A native
-replacement must prepare the complete callback before making any of those
-writes, then reproduce them only after native admission succeeds.
+and writes `[0x004ba038]`'s low word after admitting the record. Native
+replacement leaves the handler and these writes in place, replacing only the
+resolved draw packets after their recording has succeeded.
 
 ### Geometry and programs
 
@@ -83,14 +83,14 @@ writes, then reproduce them only after native admission succeeds.
 - The vertex program is engine slot 3 selected at `0x00043fe8`. The table at
   `[[0x00485a80]+0x5c]` gives its shader datum; the resolved shader record's
   `+0x10` is the microcode and the signed shift of `+0x0c` by 4 its start
-  slot. A native snapshot reads the program there, rather than assuming a
-  fixed projection.
+  slot. Native admission consumes D3D's resolved copy of that program and its
+  complete constants rather than assuming a fixed projection.
 - Record `+0x2c` is a bitmap datum and signed byte `+0x29` its image selector.
   `0x000144f0` takes the selector modulo the bitmap's image count and accepts
   only a 2D image, otherwise it falls back to the engine's default bitmap.
   `0x00014390` resolves the live texture header through `0x00012310`. Native
-  admission requires the selected image and its resident texture to resolve;
-  fallback and streaming cases stay on D3D.
+  admission consumes the corresponding resolved stage view; an unresolved
+  image, fallback or streaming case stays on D3D.
 
 ### Effective render state
 
@@ -123,64 +123,55 @@ the device's ordered state at the callback. The native path admits only a
 resolved disabled stencil state for now; enabled or unreadable stencil stays
 on D3D.
 
-The native hook is on `0x00044040`, after `0x00043a40` has established this
-state and before any record is processed. It does not skip `0x0002c370`, so
-the guest's target setup, shader restore, texture-cache conventions and final
-solid-offset reset still run. One immutable snapshot covers the complete
-callback: state, combiner, vertex program, ordered records, geometry and
-textures. Any unresolved item refuses the whole callback and changes no frame
-markers. The requested external pass is the small admission-seam assumption:
-the coordinator's handoff can rebind it to synchronous encode confirmation;
-until then the existing `external_passes_dropped` counter is also required in
-an A/B.
+The observers on `0x00044040` only scope the current mode and outer-list entry;
+they do not skip guest code. The actual replacement point is the ordered
+`d3d::DrawAdmission` at each resolved `D3DDevice_DrawVertices`. That snapshot
+contains the exact declaration, streams, shader inputs, state, textures,
+viewport and scissors. The guest callback still binds textures, writes every
+duplicate marker and runs the wrapper's final solid-offset reset.
 
 ## As built
 
-`impl.render.native_decals` (default off) places the context-only callback hook.
-The implementation is split into `native-render/src/decal.rs` (the pure ordered
-snapshot), `native-render/src/decal_gpu.rs` (translation and encoding),
-`feature/src/native_decals.rs` (admission, compare and tallies), and
-`boot/src/native_decals_glue.rs` (live state and resources).
+`impl.render.native_decals` (default off) enables the admission. The
+implementation is split into `native-render/src/decal.rs` (shared mode, vertex
+and quad rules), `native-render/src/decal_gpu.rs` (translation and encoding),
+`feature/src/native_decals.rs` (callback scope, compare and tallies), and
+`boot/src/native_decals_glue.rs` (resolved-draw admission).
 
 All seven mode positions and their depth, bias and blend configurations are
-implemented. The actual vertex program and live 60-word combiner (including
-`PSTEXTUREMODES` and the final-combiner latch) are translated with the shared
-NV2A compiler. The callback's records and quad lists retain their order. Each
-draw gets its own immutable uniforms; scaled target copies do not share
-per-draw uniform storage.
+implemented. The actual vertex program, all 192 vertex constants and all 16
+attribute defaults, and the live 60-word combiner (including `PSTEXTUREMODES`
+and the final-combiner latch) come from the resolved draw and are translated
+with the shared NV2A compiler. Records and quad lists retain their order.
+Each target copy gets its own immutable uniforms.
 
-Admission is deliberately narrower than the whole decal family. It currently
-requires:
+Admission requires resolved disabled stencil, the mode's exact
+depth/bias/blend/colour state, and an explicit final combiner that does not
+consume fog, the eye or a bump environment. Border samplers, two-sided
+lighting, polygon stipple, non-zero `ZBIAS`, additional supplied vertex inputs,
+and non-2D or depth-format stage-0 textures are refused. Only unsupplied `v10`
+and `v11` defaults are accepted beyond the position and diffuse streams.
 
-- resolved disabled stencil, the mode's exact depth/bias/blend/colour state,
-  and an explicit final combiner that does not consume fog, the eye or a bump
-  environment; no border sampler, two-sided lighting or polygon stipple;
-- a vertex program reading only `c[0..18]` (the live external-pass constants)
-  and inputs only from `v0`, `v3`, `v10` and `v11`;
-- a selected 2D bitmap image whose live texture header is resident, stable
-  across the callback, and has a supported unsigned non-BC colour format.
-  The native texture is decoded from that exact resource's bytes, with its
-  complete mip chain, not from a map cache. BGRA texels are losslessly
-  reordered for the native RGBA upload, as are D3DCOLOR vertex inputs.
-
-Anything else refuses the complete callback before any marker write. Late
-encode failures increment the same refusal tally. The small admission-seam
-assumption remains: `request_external_pass` is currently the commit point, and
-the coordinator's immediate-draw handoff should replace it with synchronous
-backend confirmation. Until that rebind, an accepted callback can still hit a
-late backend drop, so `external_passes_dropped` is mandatory evidence, not an
-optional performance counter.
+The handoff supplies the resident stage views directly; there is no custom
+bitmap decoder or map cache. Recording returns one range only after the draw is
+encoded on the required copy. Two-copy recording is transactional: partial
+recordings are discarded and D3D remains the owner until both recordings are
+sealed, so a late refusal cannot leave the decal undrawn. The wgpu viewport is
+target-wide, as in D3D; the resolved clip and disjoint scissor rectangles do
+the clipping at each copy's scale.
 
 ## Comparison and remaining runtime evidence
 
 `H2_NATIVE_DECALS_COMPARE=1` prepares every candidate; `=mode` selects one
 mode, and `=mode:list` one outer-list entry. Compare mode resolves state,
-geometry, shader and live textures but does not queue a native pass or skip
-D3D. Its line identifies the mode, list, record sequence, draw count and quad
-count, and whether preparation succeeded. The running tally is available as
-`(callbacks, admitted, compared)` plus counts by stable refusal reason.
+geometry, shader and live resources but does not queue a native pass or skip
+D3D. Its line identifies the mode, list, quad count, texture headers and whether
+preparation succeeded. The running tally is `(examined, admitted, compared)`
+plus counts by stable refusal reason. The handoff's per-copy decal range and
+invariant counters show actual recording and suppression.
 
 Runtime A/B still needs to prove actual replacement, exact depth/bias and
-blend, live texture identity, mixed native/D3D order, and zero late drops. No
-cargo, game run or runtime comparison was performed by the implementation
-lane. The agent API was not needed for this static work and was not expanded.
+blend, live texture identity, mixed native/D3D order, and zero unexplained
+invariants or pixel differences. No cargo, game run or runtime comparison was
+performed by the implementation lane. The agent API was not needed for this
+static work and was not expanded.

@@ -1,21 +1,19 @@
-//! GPU side of one dynamic decal callback. The callback's actual vertex
-//! program and 60-word combiner are translated, never approximated. Quad
-//! lists expand in the D3D order, and each external target copy gets fresh
-//! uniform buffers so scaled reference/view draws cannot overwrite each other.
+//! GPU side of one resolved dynamic decal draw. The actual vertex program,
+//! constants, combiner, stream bytes, stage views and clip rectangles come
+//! from the ordered draw-admission snapshot. Two-copy recording uses fresh
+//! uniform buffers on each copy and returns a real range count.
 
 use std::collections::HashMap;
-use std::ops::Range;
 
 use gfx::state::{
     BlendFactor, BlendOp, CompareFunc, CullMode, DepthBufferMode, RenderState, TextureAddress,
     TextureStageState,
 };
 use shaders::psh::{self, AlphaFunc, PixelOptions, PixelShaderDef, PixelUniforms, TextureDim};
-use shaders::vsh::{self, InputFetch, VertexOptions, VertexUniforms};
+use shaders::vsh::{self, VertexOptions, VertexUniforms};
 
-use crate::decal::{Mode, Snapshot, VERTEX_SIZE, quad_indices};
-use crate::gpu::{Image, texture};
-use crate::program::{self, ViewInputs};
+use crate::decal::{Mode, VERTEX_SIZE, Vertex, quad_indices};
+use crate::program;
 
 /// Raw per-stage state outside `gfx`'s sampler model that the combiner needs.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -29,15 +27,16 @@ pub struct StageExtras {
     pub bump_env_loffset: f32,
 }
 
-/// One decoded bitmap image selected by a record.
-#[derive(Clone, Debug)]
-pub struct DecalImage {
-    pub image: Image,
-    pub format: gfx::D3DFormat,
-    pub linear: bool,
+/// A resolved writable area in guest target pixels.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ClipRect {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
 }
 
-/// The non-geometry half of an immutable callback snapshot.
+/// The non-geometry half of an immutable resolved-draw snapshot.
 #[derive(Clone, Debug)]
 pub struct ShaderSnapshot {
     pub render: RenderState,
@@ -45,24 +44,26 @@ pub struct ShaderSnapshot {
     pub extras: [StageExtras; 4],
     pub combiner: PixelShaderDef,
     pub microcode: Vec<u8>,
-    /// Whether the guest depth format truncates stored W (not inferred from
-    /// the host attachment, which cannot represent F16/F24S8 distinctly).
+    pub provided_inputs: u16,
+    /// The draw's complete 192 constants and 16 attribute defaults.
+    pub vertex: VertexUniforms,
+    /// Whether the guest depth format truncates stored W.
     pub integer_depth: bool,
-    /// `(bitmap datum, selected image)` in first-use order is not required:
-    /// lookup is by key, draw order remains entirely in `Snapshot::draws`.
-    pub images: HashMap<(u32, u32), DecalImage>,
+    /// Linear textures are fetched in texels of the bound image.
+    pub tex_scale: Option<[f32; 4]>,
 }
 
-/// The complete callback handed from boot's admission to the external pass.
+/// One resolved draw prepared for native replacement.
 #[derive(Clone, Debug)]
 pub struct Prepared {
-    pub snapshot: Snapshot,
+    pub mode: Mode,
+    pub vertices: Vec<Vertex>,
     pub shader: ShaderSnapshot,
+    /// Empty means the guest clipped the whole draw away.
+    pub clips: Vec<ClipRect>,
 }
 
-/// The small immediate-draw target contract this lane assumes. Boot converts
-/// the handoff's `ExternalTarget` to it; nothing in the GPU code depends on
-/// the D3D crate.
+/// The target contract boot fills from `d3d::ExternalTarget`.
 pub struct DecalTarget<'a> {
     pub device: &'a wgpu::Device,
     pub queue: &'a wgpu::Queue,
@@ -75,9 +76,10 @@ pub struct DecalTarget<'a> {
     pub z_scale: f32,
     pub guest_size: (u32, u32),
     pub size: (u32, u32),
+    pub stages: [Option<&'a wgpu::TextureView>; 4],
 }
 
-/// The W-buffer clip carried by the same snapshot contract.
+/// The W-buffer clip supplied by the same ordered boundary.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DecalClip {
     pub range: [f32; 2],
@@ -187,7 +189,7 @@ struct Compiled {
     sampled: bool,
 }
 
-/// A GPU program plus the callback's immutable geometry and texture uploads.
+/// A GPU program plus the resolved draw's immutable geometry.
 pub struct DecalGpu {
     mode: Mode,
     render: RenderState,
@@ -195,18 +197,8 @@ pub struct DecalGpu {
     compiled: Compiled,
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
-    textures: HashMap<(u32, u32), wgpu::TextureView>,
-    draws: Vec<GpuDraw>,
+    clips: Vec<ClipRect>,
     pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat), wgpu::RenderPipeline>,
-}
-
-struct GpuDraw {
-    texture: (u32, u32),
-    indices: Range<u32>,
-    base_vertex: i32,
-    default_color: [u8; 4],
-    /// Linear images are fetched in texels; each draw gets its own scale.
-    tex_scale: Option<[f32; 4]>,
 }
 
 fn check_combiner_state(def: &PixelShaderDef) -> Result<(), &'static str> {
@@ -249,30 +241,20 @@ fn check_combiner_state(def: &PixelShaderDef) -> Result<(), &'static str> {
 
 /// Validates the complete shader translation without creating GPU objects,
 /// so compare-only admission exercises the same refusal cases.
-pub fn check_program(snapshot: &Snapshot, shader: &ShaderSnapshot) -> Result<(), &'static str> {
-    check_state(
-        snapshot.mode,
-        &shader.render,
-        &shader.stages,
-        &shader.extras,
-    )?;
+pub fn check_program(mode: Mode, shader: &ShaderSnapshot) -> Result<(), &'static str> {
+    check_state(mode, &shader.render, &shader.stages, &shader.extras)?;
     check_combiner_state(&shader.combiner)?;
     let program = vsh::Program::parse(&shader.microcode).map_err(|_| "vertex program")?;
-    if program::constants_read(&program)
-        .map_err(|_| "vertex constants")?
-        .iter()
-        .any(|&c| c >= 18)
+    let supplied = (1 << 0) | (1 << 3);
+    if shader.provided_inputs & !supplied != 0
+        || program.inputs_read() & !shader.provided_inputs & !((1 << 10) | (1 << 11)) != 0
     {
-        return Err("vertex constants");
-    }
-    let allowed = (1 << 0) | (1 << 3) | (1 << 10) | (1 << 11);
-    if program.inputs_read() & !allowed != 0 {
         return Err("vertex inputs");
     }
     let vs = vsh::translate(
         &program,
         &VertexOptions {
-            provided_inputs: (1 << 0) | (1 << 3),
+            provided_inputs: shader.provided_inputs,
             flat_shading: shader.render.shade_mode == gfx::state::ShadeMode::Flat,
             ..Default::default()
         },
@@ -289,7 +271,7 @@ pub fn check_program(snapshot: &Snapshot, shader: &ShaderSnapshot) -> Result<(),
             .render
             .alpha_test_enable
             .then(|| alpha_func(shader.render.alpha_func)),
-        w_buffer: snapshot.mode.w_buffered(),
+        w_buffer: mode.w_buffered(),
         flat_shading: shader.render.shade_mode == gfx::state::ShadeMode::Flat,
         ..Default::default()
     };
@@ -310,42 +292,21 @@ pub fn check_program(snapshot: &Snapshot, shader: &ShaderSnapshot) -> Result<(),
 
 fn compile(
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    snapshot: &Snapshot,
+    mode: Mode,
     shader: &ShaderSnapshot,
-) -> Result<(Compiled, HashMap<(u32, u32), wgpu::TextureView>), &'static str> {
-    check_program(snapshot, shader)?;
+) -> Result<Compiled, &'static str> {
+    check_program(mode, shader)?;
     let program = vsh::Program::parse(&shader.microcode).map_err(|_| "vertex program")?;
-    if program::constants_read(&program)
-        .map_err(|_| "vertex constants")?
-        .iter()
-        .any(|&c| c >= 18)
-    {
-        // The ordered external seam supplies the live c[0..18]. Higher
-        // registers have no equivalent snapshot yet (the handoff can rebind
-        // this check to its complete immediate-draw constant snapshot).
-        return Err("vertex constants");
-    }
-    let allowed = (1 << 0) | (1 << 3) | (1 << 10) | (1 << 11);
-    if program.inputs_read() & !allowed != 0 {
-        return Err("vertex inputs");
-    }
-    let mut fetch = [InputFetch::Float; 16];
-    fetch[3] = InputFetch::Float; // D3DCOLOR arrives as Unorm8x4.
     let vs = vsh::translate(
         &program,
         &VertexOptions {
-            provided_inputs: (1 << 0) | (1 << 3),
+            provided_inputs: shader.provided_inputs,
             flat_shading: shader.render.shade_mode == gfx::state::ShadeMode::Flat,
-            input_fetch: fetch,
             ..Default::default()
         },
     )
     .map_err(|_| "vertex translation")?;
     let def = shader.combiner.clone();
-    if !def.has_final_combiner() {
-        return Err("final combiner");
-    }
     let options = PixelOptions {
         texture_dims: [Some(TextureDim::D2), None, None, None],
         alpha_kill: shader.extras.map(|e| e.alpha_kill & 4 != 0),
@@ -353,7 +314,7 @@ fn compile(
             .render
             .alpha_test_enable
             .then(|| alpha_func(shader.render.alpha_func)),
-        w_buffer: snapshot.mode.w_buffered(),
+        w_buffer: mode.w_buffered(),
         flat_shading: shader.render.shade_mode == gfx::state::ShadeMode::Flat,
         ..Default::default()
     };
@@ -368,13 +329,11 @@ fn compile(
         return Err("pixel translation");
     }
     let wgsl = shaders::link(&vs, &ps).map_err(|_| "shader link")?;
-    shaders::validate(&wgsl).map_err(|_| "shader validation")?;
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("native decal program"),
         source: wgpu::ShaderSource::Wgsl(wgsl.into()),
     });
-    let uniform =
-        |binding| crate::program::uniform_entry(binding, wgpu::ShaderStages::VERTEX_FRAGMENT);
+    let uniform = |binding| program::uniform_entry(binding, wgpu::ShaderStages::VERTEX_FRAGMENT);
     let uniforms_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("native decal uniforms"),
         entries: &[uniform(0), uniform(1)],
@@ -438,14 +397,15 @@ fn compile(
         pixel.bump_mat[n] = e.bump_env_mat;
         pixel.bump_lum[n] = [e.bump_env_lscale, e.bump_env_loffset, 0.0, 0.0];
     }
+    if let Some(scale) = shader.tex_scale {
+        pixel.tex_scale[0] = scale;
+    }
     let mut primitive = gfx::translate::primitive_state(
         &shader.render,
         wgpu::PrimitiveTopology::TriangleList,
         gfx::translate::Capabilities::from_features(device.features()),
     );
-    // W depth and its polygon offset are written by the fragment program,
-    // not applied to the rasterized z (the D3D provider's rule).
-    if snapshot.mode.w_buffered() {
+    if mode.w_buffered() {
         primitive.bias = wgpu::DepthBiasState::default();
     }
     let mut depth = gfx::translate::depth_stencil_state(
@@ -454,81 +414,35 @@ fn compile(
         wgpu::PrimitiveTopology::TriangleList,
     )
     .ok_or("depth state")?;
-    if snapshot.mode.w_buffered() {
+    if mode.w_buffered() {
         depth.bias = wgpu::DepthBiasState::default();
     }
-    let mut textures = HashMap::new();
-    for (&key, image) in &shader.images {
-        textures.insert(
-            key,
-            texture(device, queue, &image.image, "native decal bitmap"),
-        );
-    }
-    Ok((
-        Compiled {
-            module,
-            layout,
-            uniforms_layout,
-            textures_layout,
-            sampler,
-            vertex: VertexUniforms::default(),
-            pixel,
-            primitive,
-            depth,
-            blend: gfx::translate::blend_state(&shader.render),
-            blend_constant: gfx::translate::blend_constant(&shader.render),
-            color_writes: gfx::translate::color_writes(shader.render.color_write),
-            sampled,
-        },
-        textures,
-    ))
+    Ok(Compiled {
+        module,
+        layout,
+        uniforms_layout,
+        textures_layout,
+        sampler,
+        vertex: shader.vertex.clone(),
+        pixel,
+        primitive,
+        depth,
+        blend: gfx::translate::blend_state(&shader.render),
+        blend_constant: gfx::translate::blend_constant(&shader.render),
+        color_writes: gfx::translate::color_writes(shader.render.color_write),
+        sampled,
+    })
 }
 
 impl DecalGpu {
-    /// Translates and uploads a fully admitted callback. No guest work is
-    /// suppressed until this has succeeded and the external pass is queued.
-    pub fn new(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        prepared: &Prepared,
-    ) -> Result<Self, &'static str> {
-        let (compiled, textures) = compile(device, queue, &prepared.snapshot, &prepared.shader)?;
-        let mut vertices = Vec::new();
-        let mut indices = Vec::new();
-        let mut draws = Vec::new();
-        for d in &prepared.snapshot.draws {
-            let base_vertex = i32::try_from(vertices.len()).map_err(|_| "vertex limit")?;
-            let first = u32::try_from(indices.len()).map_err(|_| "index limit")?;
-            vertices.extend_from_slice(&d.vertices);
-            indices.extend(quad_indices(d.quad_count()));
-            let end = u32::try_from(indices.len()).map_err(|_| "index limit")?;
-            let texture = (d.bitmap, d.image.ok_or("image")?);
-            let image = prepared.shader.images.get(&texture).ok_or("image")?;
-            let tex_scale = if image.linear {
-                if image.image.width == 0 || image.image.height == 0 {
-                    return Err("bitmap dimensions");
-                }
-                Some([
-                    1.0 / image.image.width as f32,
-                    1.0 / image.image.height as f32,
-                    1.0,
-                    1.0,
-                ])
-            } else {
-                None
-            };
-            draws.push(GpuDraw {
-                texture,
-                indices: first..end,
-                base_vertex,
-                default_color: d.default_color,
-                tex_scale,
-            });
-        }
+    /// Translates and uploads a fully admitted resolved draw.
+    pub fn new(device: &wgpu::Device, prepared: &Prepared) -> Result<Self, &'static str> {
+        let compiled = compile(device, prepared.mode, &prepared.shader)?;
+        let indices = quad_indices(prepared.vertices.len() as u32 / 4);
         use wgpu::util::DeviceExt;
         let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("native decal vertices"),
-            contents: bytemuck::cast_slice(&vertices),
+            contents: bytemuck::cast_slice(&prepared.vertices),
             usage: wgpu::BufferUsages::VERTEX,
         });
         let indices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -537,16 +451,19 @@ impl DecalGpu {
             usage: wgpu::BufferUsages::INDEX,
         });
         Ok(Self {
-            mode: prepared.snapshot.mode,
+            mode: prepared.mode,
             render: prepared.shader.render,
             integer_depth: prepared.shader.integer_depth,
             compiled,
             vertices,
             indices,
-            textures,
-            draws,
+            clips: prepared.clips.clone(),
             pipelines: HashMap::new(),
         })
+    }
+
+    pub fn sampled(&self) -> bool {
+        self.compiled.sampled
     }
 
     fn pipeline(
@@ -603,9 +520,8 @@ impl DecalGpu {
         })
     }
 
-    /// Records the complete callback. `false` is an encode refusal, counted by
-    /// boot; the handoff's synchronous admission can turn it into D3D fallback.
-    pub fn encode(&mut self, t: &mut DecalTarget<'_>, view: &ViewInputs, clip: DecalClip) -> bool {
+    /// Records this resolved draw on one target copy.
+    pub fn encode(&mut self, t: &mut DecalTarget<'_>, clip: DecalClip) -> bool {
         if clip.w_buffered != Some(self.mode.w_buffered())
             || t.guest_size.0 == 0
             || t.guest_size.1 == 0
@@ -621,112 +537,110 @@ impl DecalGpu {
         {
             return false;
         }
-        struct Groups {
-            uniforms: wgpu::BindGroup,
-            textures: wgpu::BindGroup,
-            range: Range<u32>,
-            base: i32,
+        let (sx, sy) = (t.size.0 / t.guest_size.0, t.size.1 / t.guest_size.1);
+        if sx == 0 || sy == 0 || t.size != (t.guest_size.0 * sx, t.guest_size.1 * sy) {
+            return false;
         }
-        let mut groups = Vec::new();
-        for d in &self.draws {
-            if d.indices.is_empty() {
-                continue;
-            }
-            let mut vu = program::frame_vertex(&self.compiled.vertex, view);
-            if !self.mode.w_buffered() {
-                vu.w_clip = None;
-                vu.w_clamp = false;
-            }
-            let [b, g, r, a] = d.default_color;
-            vu.defaults[10] = [r, g, b, a].map(|c| c as f32 / 255.0);
-            vu.defaults[11] = [0.0; 4];
-            let mut pu = self.compiled.pixel;
-            if let Some(scale) = d.tex_scale {
-                pu.tex_scale[0] = scale;
-            }
-            if self.mode.w_buffered() {
-                pu.depth = [
-                    t.z_scale,
-                    if self.render.solid_offset_enable {
-                        self.render.depth_bias
-                    } else {
-                        0.0
-                    },
-                    if self.render.solid_offset_enable {
-                        self.render.depth_bias_slope_scale
-                    } else {
-                        0.0
-                    },
-                    if self.integer_depth { 1.0 } else { 0.0 },
-                ];
-                pu.depth_range = [clip.range[0], clip.range[1], 0.0, 0.0];
-            }
-            let vertex_buffer = t.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("native decal vertex uniforms"),
-                size: VertexUniforms::SIZE as u64,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            let pixel_buffer = t.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("native decal pixel uniforms"),
-                size: PixelUniforms::SIZE as u64,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            t.queue.write_buffer(&vertex_buffer, 0, &vu.to_bytes());
-            t.queue.write_buffer(&pixel_buffer, 0, &pu.to_bytes());
-            let uniforms = t.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("native decal draw uniforms"),
-                layout: &self.compiled.uniforms_layout,
+        let clips: Vec<ClipRect> = self
+            .clips
+            .iter()
+            .map(|c| ClipRect {
+                x: c.x.saturating_mul(sx),
+                y: c.y.saturating_mul(sy),
+                width: c.width.saturating_mul(sx),
+                height: c.height.saturating_mul(sy),
+            })
+            .collect();
+        if clips.is_empty() {
+            return true;
+        }
+        let mut vu = self.compiled.vertex.clone();
+        vu.surface = [t.guest_size.0 as f32, t.guest_size.1 as f32];
+        vu.z_max = t.z_scale;
+        let scale = t.size.0 as f32 / t.guest_size.0 as f32;
+        vu.shift = if scale > 1.0 {
+            (2.0 * scale - 1.0) / (4.0 * scale)
+        } else {
+            0.0
+        };
+        vu.w_clip = self.mode.w_buffered().then_some(clip.range);
+        vu.w_clamp = self.mode.w_buffered() && clip.clamp;
+        let mut pu = self.compiled.pixel;
+        if self.mode.w_buffered() {
+            pu.depth = [
+                t.z_scale,
+                if self.render.solid_offset_enable {
+                    self.render.depth_bias
+                } else {
+                    0.0
+                },
+                if self.render.solid_offset_enable {
+                    self.render.depth_bias_slope_scale
+                } else {
+                    0.0
+                },
+                if self.integer_depth { 1.0 } else { 0.0 },
+            ];
+            pu.depth_range = [clip.range[0], clip.range[1], 0.0, 0.0];
+        }
+        let vertex_buffer = t.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("native decal vertex uniforms"),
+            size: VertexUniforms::SIZE as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let pixel_buffer = t.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("native decal pixel uniforms"),
+            size: PixelUniforms::SIZE as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        t.queue.write_buffer(&vertex_buffer, 0, &vu.to_bytes());
+        t.queue.write_buffer(&pixel_buffer, 0, &pu.to_bytes());
+        let uniforms = t.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("native decal draw uniforms"),
+            layout: &self.compiled.uniforms_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: vertex_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: pixel_buffer.as_entire_binding(),
+                },
+            ],
+        });
+        let textures = if self.compiled.sampled {
+            let Some(view) = t.stages[0] else {
+                return false;
+            };
+            t.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("native decal draw textures"),
+                layout: &self.compiled.textures_layout,
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
-                        resource: vertex_buffer.as_entire_binding(),
+                        resource: wgpu::BindingResource::TextureView(view),
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: pixel_buffer.as_entire_binding(),
+                        resource: wgpu::BindingResource::Sampler(&self.compiled.sampler),
                     },
                 ],
-            });
-            let textures = if self.compiled.sampled {
-                let Some(view) = self.textures.get(&d.texture) else {
-                    return false;
-                };
-                t.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("native decal draw textures"),
-                    layout: &self.compiled.textures_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: wgpu::BindingResource::TextureView(view),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::Sampler(&self.compiled.sampler),
-                        },
-                    ],
-                })
-            } else {
-                t.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("native decal no textures"),
-                    layout: &self.compiled.textures_layout,
-                    entries: &[],
-                })
-            };
-            groups.push(Groups {
-                uniforms,
-                textures,
-                range: d.indices.clone(),
-                base: d.base_vertex,
-            });
-        }
+            })
+        } else {
+            t.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("native decal no textures"),
+                layout: &self.compiled.textures_layout,
+                entries: &[],
+            })
+        };
         let pipeline = self
             .pipeline(t.device, t.color_format, t.depth_format)
             .clone();
-        let [x, y, width, height] = t.viewport;
         let mut pass = t.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("native decal callback"),
+            label: Some("native decal draw"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: t.color,
                 depth_slice: None,
@@ -755,28 +669,18 @@ impl DecalGpu {
             multiview_mask: None,
         });
         pass.set_pipeline(&pipeline);
-        pass.set_viewport(x, y, width, height, 0.0, 1.0);
+        pass.set_viewport(0.0, 0.0, t.size.0 as f32, t.size.1 as f32, 0.0, 1.0);
         pass.set_vertex_buffer(0, self.vertices.slice(..));
         pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+        pass.set_bind_group(0, &uniforms, &[]);
+        pass.set_bind_group(1, &textures, &[]);
         pass.set_blend_constant(self.compiled.blend_constant);
-        for g in &groups {
-            pass.set_bind_group(0, &g.uniforms, &[]);
-            pass.set_bind_group(1, &g.textures, &[]);
-            pass.draw_indexed(g.range.clone(), g.base, 0..1);
+        let count = self.indices.size() as u32 / 4;
+        for c in clips {
+            pass.set_scissor_rect(c.x, c.y, c.width, c.height);
+            pass.draw_indexed(0..count, 0, 0..1);
         }
         true
-    }
-}
-
-/// `view` for a decal external pass: the device's first 18 live constants and
-/// its W clip. Higher vertex-constant reads are refused during compilation.
-pub fn view_inputs(t: &DecalTarget<'_>, constants: &[[f32; 4]; 18], clip: DecalClip) -> ViewInputs {
-    ViewInputs {
-        constants: *constants,
-        guest_size: t.guest_size,
-        size: t.size,
-        z_scale: t.z_scale,
-        w_clip: Some((clip.range, clip.clamp)),
     }
 }
 
