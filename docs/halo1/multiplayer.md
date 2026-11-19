@@ -643,6 +643,29 @@ and manifest are the same as without it:
 cargo h2 h1 convert disc/halo1.iso bloodgulch --out ~/h2-h1maps [--pinned]
 ```
 
+**Pinned maps drop what nothing reaches** (`h1convert::fresh::prune_pinned`,
+in `Prepared::assemble`, so both the `--pinned` map and the fresh build's
+intermediate). A pinned map keeps the base's metadata where it is and puts
+every built tag after it, so it holds all of Coagulation's retail tags
+(546 effects, 708 bitmaps) beside the conversion's; once the weapons took
+Halo 1's effects and sounds (converter version 84) Blood Gulch's Halo 1
+sandbox was 0x634000 of the multiplayer 0x62c000 (`map::Error::TagMemory`
+names the groups). The fresh build's roots and edits are applied to the
+pinned set: base entries of the scenery, sound scenery, light fixture and
+crate palettes nulled in the pinned scenario's bytes, its tag list
+(`+0x3d8`) keeping a base tag only when something else reaches it, then
+every pinned base tag not reached from the scenario, the globals,
+`fresh::KEEP_GROUPS`, `fresh::KEEP_PREFIXES`, the precision collections
+and the Halo 2 HUDs is dropped, its slot left empty and its bytes free
+for built tags (`TagSet::reuse_free_space`). What a pinned map holds
+beyond datums is kept too: a tag whose bytes a kept tag's word, or the
+metadata no tag owns (blocks the scenario editor grew), points into, and
+every datum in that unowned metadata. On the fresh map Blood Gulch drops
+510 of Coagulation's tags (0x74698 bytes, most of it three `jmad`s and
+retail shaders and bitmaps); `sandbox_disc::pinned_bloodgulch_fits_its_tag_memory`
+prints the pinned map's tag memory and checks no kept tag names a dropped
+one.
+
 **Ambient sound (Built, `h1convert::ambience`, `h1sounds::looping`).**
 Halo 1 keeps a level's background sounds and sound environments in the
 structure (`sbsp +0x1fc`, `0x74` each, and `+0x208`, `0x50` each; a name

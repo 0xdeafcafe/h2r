@@ -732,7 +732,7 @@ impl Prepared {
 
     /// Writes the map with `mopp` as the structure's MOPP code block.
     pub fn build<R: Read + Seek>(&self, base: &mut Map<R>, mopp: &[u8]) -> Result<Converted> {
-        let (_, bytes, _) = self.assemble(base, mopp)?;
+        let (_, bytes, _, _) = self.assemble(base, mopp)?;
         let manifest = self.manifest(&bytes);
         Ok(Converted {
             name: map_name(&self.h1_name),
@@ -742,13 +742,14 @@ impl Prepared {
     }
 
     /// The pinned map: the set it was built from (the base decomposed,
-    /// with everything converted added), its bytes, and the converted
-    /// structure's BSP section.
+    /// with everything converted added, and the base's tags nothing
+    /// reaches dropped: [`crate::fresh::prune_pinned`]), its bytes, the
+    /// converted structure's BSP section, and what was dropped.
     pub(crate) fn assemble<R: Read + Seek>(
         &self,
         base: &mut Map<R>,
         mopp: &[u8],
-    ) -> Result<(TagSet, Vec<u8>, usize)> {
+    ) -> Result<(TagSet, Vec<u8>, usize, crate::fresh::Pruned)> {
         let mut patched = Cursor::new(Vec::new());
         scenario_edit::save::write_patched(base, &self.scenario, &mut patched)?;
         let mut patched = Map::from_reader(Cursor::new(patched.into_inner()))?;
@@ -834,6 +835,22 @@ impl Prepared {
         };
         let section = structure.write(&mut set, self.sbsp, self.ltmp)?;
 
+        // The base's metadata stays where it is and the conversion's goes
+        // after it, so the base's tags nothing reaches any more (the
+        // placements the conversion removed, their weapons' effects...)
+        // are dropped, their bytes free for the built tags, as the fresh
+        // build drops them ([`crate::fresh::prune`]): the same roots, and
+        // the precision swaps' collections and each owner's Halo 2 HUD,
+        // which no placement names (`boot::precision`, `boot::hud_swap`).
+        let mut keep: Vec<TagId> = self.applied.precision.iter().map(|p| p.1).collect();
+        keep.extend(self.hud_swaps().iter().map(|h| h[2]));
+        let pruned = crate::fresh::prune_pinned(
+            &mut set,
+            base.index_slots() as usize,
+            &crate::fresh::MULTIPLAYER,
+            &keep,
+        );
+
         // The scenario stays pinned, so its descriptor is patched with the
         // new region's place: build once to learn it (it doesn't depend on
         // the scenario's bytes), patch, build again.
@@ -857,7 +874,7 @@ impl Prepared {
         if again.bsps[section] != (file_offset, size) {
             return Err(Error::Invalid("the BSP region moved between builds"));
         }
-        Ok((set, bytes, section))
+        Ok((set, bytes, section, pruned))
     }
 }
 

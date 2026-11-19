@@ -79,6 +79,9 @@ pub struct FreshReport {
     /// set is written instead).
     pub scratch: Option<crate::scratch::ScratchReport>,
     pub scratch_failed: Option<String>,
+    /// The base's tags the pinned map it is read from dropped
+    /// ([`prune_pinned`]), before [`Self::pruned`].
+    pub pinned_pruned: Pruned,
 }
 
 /// A fresh map.
@@ -100,7 +103,7 @@ pub struct Fresh {
 impl Prepared {
     /// The converted map with nothing pinned (see the module docs).
     pub fn build_fresh<R: Read + Seek>(&self, base: &mut Map<R>, mopp: &[u8]) -> Result<Fresh> {
-        let (pinned, bytes, section) = self.assemble(base, mopp)?;
+        let (pinned, bytes, section, pinned_pruned) = self.assemble(base, mopp)?;
         let mut src = Map::from_reader(Cursor::new(&bytes[..]))?;
         let mut fresh = unpinned_copy(&pinned);
         // The pinned map keeps the base's file prefix, so the base's own
@@ -115,6 +118,7 @@ impl Prepared {
             }
         }
         let mut report = unpin_all(&pinned, &mut src, &mut fresh, &[section], &bounds, false)?;
+        report.pinned_pruned = pinned_pruned;
         if let Some(scenery) = &self.scenery {
             put_scenery(&mut fresh, scenery)?;
         }
@@ -758,7 +762,7 @@ pub fn put_scenery(set: &mut TagSet, scenery: &crate::convert::halo1::Scenery) -
     Ok(())
 }
 
-/// What [`prune`] dropped.
+/// What [`prune`] (or [`prune_pinned`]) dropped.
 #[derive(Debug, Clone, Default)]
 pub struct Pruned {
     /// Scenario palette entries naming a base tag, nulled.
@@ -767,6 +771,11 @@ pub struct Pruned {
     pub resource_entries: usize,
     /// Tags dropped, by group.
     pub groups: std::collections::BTreeMap<String, usize>,
+    /// [`prune_pinned`]: metadata bytes the dropped tags held, free for
+    /// built tags; and the unreached tags kept because a kept tag's word
+    /// points into their bytes.
+    pub freed: u64,
+    pub kept_by_pointer: usize,
 }
 
 impl Pruned {
@@ -978,6 +987,207 @@ pub fn prune_with(set: &mut TagSet, first: usize, keep: &Keep, extra: &[TagId]) 
         }
         if let Some(t) = s.tag.take() {
             *out.groups.entry(t.group.to_string()).or_default() += 1;
+        }
+    }
+    out
+}
+
+/// Where a metadata address of a pinned set lies: a pinned tag's bytes
+/// (slot, offset) or the metadata no tag owns (region, offset).
+#[derive(Clone, Copy)]
+enum At {
+    Slot(usize, usize),
+    Unowned(usize, usize),
+}
+
+fn locate(set: &TagSet, addr: u32, len: usize) -> Option<At> {
+    let inside = |base: u32, n: usize| {
+        addr.checked_sub(base)
+            .map(|o| o as usize)
+            .filter(|o| o + len <= n)
+    };
+    for (i, s) in set.slots.iter().enumerate() {
+        if let Some(TagPayload::Pinned { address, bytes }) = s.tag.as_ref().map(|t| &t.payload)
+            && let Some(o) = inside(*address, bytes.len())
+        {
+            return Some(At::Slot(i, o));
+        }
+    }
+    let p = set.pinned.as_ref()?;
+    p.unowned
+        .iter()
+        .enumerate()
+        .find_map(|(k, (a, b))| Some(At::Unowned(k, inside(*a, b.len())?)))
+}
+
+fn bytes_at(set: &mut TagSet, at: At) -> Option<&mut [u8]> {
+    match at {
+        At::Slot(i, o) => match &mut set.slots[i].tag.as_mut()?.payload {
+            TagPayload::Pinned { bytes, .. } => bytes.get_mut(o..),
+            _ => None,
+        },
+        At::Unowned(k, o) => set.pinned.as_mut()?.unowned.get_mut(k)?.1.get_mut(o..),
+    }
+}
+
+fn read_word(set: &mut TagSet, addr: u32) -> Option<u32> {
+    let at = locate(set, addr, 4)?;
+    let b = bytes_at(set, at)?;
+    Some(u32::from_le_bytes(b.get(..4)?.try_into().ok()?))
+}
+
+fn write_word(set: &mut TagSet, addr: u32, w: u32) -> Option<()> {
+    let at = locate(set, addr, 4)?;
+    bytes_at(set, at)?
+        .get_mut(..4)?
+        .copy_from_slice(&w.to_le_bytes());
+    Some(())
+}
+
+/// A pinned scenario's block field `at`: its address, count and elements'
+/// address (`+0` count, `+4` address, as every Xbox block field).
+fn pinned_block(set: &mut TagSet, at: u32) -> Option<(u32, u32, u32)> {
+    let scenario = set.scenario;
+    let address = match &set.tag(scenario)?.payload {
+        TagPayload::Pinned { address, .. } => *address,
+        _ => return None,
+    };
+    let field = address + at;
+    let count = read_word(set, field)?;
+    let elements = read_word(set, field + 4)?;
+    (count > 0 && count < 0x10000).then_some((field, count, elements))
+}
+
+/// [`prune_with`] for a pinned set: the map `Prepared::assemble` builds
+/// keeps the base's metadata in place, every retail tag of it, reached or
+/// not, and puts what the conversion built after it, so a level that adds
+/// a lot runs past the engine's tag memory. The same roots ([`Keep`],
+/// the scenario and globals, `extra`) and the same scenario edits, made
+/// in the pinned scenario's bytes: base entries of `keep.palettes`
+/// nulled, the tag list ([`SCENARIO_RESOURCES`]) keeping a base tag only
+/// when something else reaches it. Then every pinned base tag nothing
+/// reaches is dropped, its bytes free for the built tags
+/// (`TagSet::reuse_free_space`). A pinned tag keeps addresses into other
+/// tags' bytes, which reachability (datums) doesn't see: a tag whose bytes
+/// a kept tag's word (or the metadata no tag owns) points into is kept,
+/// with what it reaches. Only pinned payloads are dropped (the others hold
+/// no base metadata). `first` is the first slot the conversion added.
+pub fn prune_pinned(set: &mut TagSet, first: usize, keep: &Keep, extra: &[TagId]) -> Pruned {
+    let mut out = Pruned::default();
+    let is_base = |w: u32| ((w & 0xffff) as usize) < first && w != u32::MAX;
+    for &(at, size) in keep.palettes {
+        let Some((_, count, elements)) = pinned_block(set, at) else {
+            continue;
+        };
+        for k in 0..count {
+            let e = elements + k * size as u32;
+            if read_word(set, e + 4).is_some_and(is_base) {
+                write_word(set, e, u32::MAX);
+                write_word(set, e + 4, u32::MAX);
+                out.palette_entries += 1;
+            }
+        }
+    }
+    // Blocks the scenario editor grew lie in metadata no tag owns: the
+    // datums there are the scenario's (or a gap's, which keeps no more
+    // than it should not drop).
+    let mut roots = extra.to_vec();
+    if let Some(p) = &set.pinned {
+        let n = set.slots.len();
+        for (_, b) in &p.unowned {
+            for w in b.as_chunks::<4>().0.iter().map(|w| u32::from_le_bytes(*w)) {
+                let k = (w & 0xffff) as usize;
+                if k < n && set.slots[k].tag.as_ref().is_some_and(|t| t.id.0 == w) {
+                    roots.push(TagId(w));
+                }
+            }
+        }
+    }
+    if let Some((field, count, elements)) = pinned_block(set, SCENARIO_RESOURCES) {
+        let list: Option<Vec<u32>> = (0..count)
+            .map(|k| read_word(set, elements + 4 * k))
+            .collect();
+        if let Some(list) = list {
+            // Against what the rest reaches: the list itself left out.
+            for k in 0..count {
+                write_word(set, elements + 4 * k, u32::MAX);
+            }
+            let seen = reachable(set, keep, &roots);
+            let kept: Vec<u32> = list
+                .iter()
+                .copied()
+                .filter(|&d| {
+                    !is_base(d) || seen.get((d & 0xffff) as usize).copied().unwrap_or(false)
+                })
+                .collect();
+            out.resource_entries = list.len() - kept.len();
+            for (k, d) in kept.iter().enumerate() {
+                write_word(set, elements + 4 * k as u32, *d);
+            }
+            write_word(set, field, kept.len() as u32);
+        }
+    }
+    let seen = loop {
+        let seen = reachable(set, keep, &roots);
+        // The pinned base tags to drop, by address.
+        let mut ranges: Vec<(u32, u32, usize)> = set
+            .slots
+            .iter()
+            .enumerate()
+            .take(first)
+            .filter(|(i, _)| !seen[*i])
+            .filter_map(|(i, s)| match &s.tag.as_ref()?.payload {
+                TagPayload::Pinned { address, bytes } => {
+                    Some((*address, *address + bytes.len() as u32, i))
+                }
+                _ => None,
+            })
+            .collect();
+        ranges.sort_unstable();
+        let mut words = Vec::new();
+        for (i, s) in set.slots.iter().enumerate() {
+            if seen[i]
+                && let Some(t) = &s.tag
+            {
+                named(&t.payload, &mut words);
+            }
+        }
+        if let Some(p) = &set.pinned {
+            for (_, b) in &p.unowned {
+                words.extend(b.as_chunks::<4>().0.iter().map(|w| u32::from_le_bytes(*w)));
+            }
+        }
+        let mut hit = std::collections::BTreeSet::new();
+        for w in words {
+            let k = ranges.partition_point(|r| r.0 <= w);
+            if k > 0 && w < ranges[k - 1].1 {
+                hit.insert(ranges[k - 1].2);
+            }
+        }
+        if hit.is_empty() {
+            break seen;
+        }
+        out.kept_by_pointer += hit.len();
+        roots.extend(
+            hit.into_iter()
+                .filter_map(|i| Some(set.slots[i].tag.as_ref()?.id)),
+        );
+    };
+    for (i, s) in set.slots.iter_mut().enumerate().take(first) {
+        if seen[i] {
+            continue;
+        }
+        let dropped = match &s.tag {
+            Some(t) => match &t.payload {
+                TagPayload::Pinned { bytes, .. } => Some((bytes.len() as u64, t.group)),
+                _ => None,
+            },
+            None => None,
+        };
+        if let Some((len, group)) = dropped {
+            out.freed += len;
+            *out.groups.entry(group.to_string()).or_default() += 1;
+            s.tag = None;
         }
     }
     out

@@ -1606,3 +1606,90 @@ fn every_engine_marker_resolves_on_the_converted_objects() {
     assert!(checked > 0);
     assert!(bad.is_empty(), "{bad:#?}");
 }
+
+/// Pinned Blood Gulch (`Prepared::build`, the `--pinned` map) in each
+/// sandbox fits the engine's tag memory with room to spare: the base's
+/// tags nothing reaches are dropped (`h1convert::fresh::prune_pinned`) and
+/// the built tags take their bytes. Before (converter version 84's weapon
+/// effects, Halo 1 sandbox) it was 0x634000 of 0x62c000. And what stays
+/// is whole: no word of any kept tag names a dropped base tag, the
+/// globals, multiplayer globals and gestalt are kept, and every base tag
+/// the built scenario names is in the map.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn pinned_bloodgulch_fits_its_tag_memory() {
+    let h1 = bloodgulch();
+    let budget = map::writer::max_metadata_size(map::CacheType::Multiplayer).unwrap();
+    for sandbox in [Sandbox::Halo1, Sandbox::Halo2] {
+        let mut base = h2_map("coagulation");
+        let base_ids: Vec<(TagId, FourCC, Option<String>)> = base
+            .tags()
+            .iter()
+            .map(|t| (t.id, t.group, t.name.clone()))
+            .collect();
+        let templates = Base::read(&mut base).unwrap();
+        let mut objects = Objects::new(&h1, &templates);
+        let sha = content::Sha256::of(b"bloodgulch");
+        let p = match sandbox {
+            Sandbox::Halo1 => prepare_halo1(&h1, sha, &mut base, &mut objects).unwrap(),
+            Sandbox::Halo2 => {
+                h1convert::convert::halo1::prepare_halo2(&h1, sha, &mut base, &mut objects).unwrap()
+            }
+        };
+        let mopp = structure_mopp(&p.collision).unwrap();
+        let done = p
+            .build(&mut base, &mopp)
+            .unwrap_or_else(|e| panic!("{sandbox:?}: {e}"));
+        let word = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
+        let (memory, metadata) = (word(&done.bytes, 0x1c), word(&done.bytes, 0x18));
+        let mut out = Map::from_reader(Cursor::new(done.bytes)).unwrap();
+        let live: std::collections::HashSet<TagId> = out.tags().iter().map(|t| t.id).collect();
+        let dropped: std::collections::HashSet<u32> = base_ids
+            .iter()
+            .filter(|t| !live.contains(&t.0))
+            .map(|t| t.0.0)
+            .collect();
+        eprintln!(
+            "{sandbox:?}: tag memory {memory:#x} of {budget:#x}, {:#x} free; metadata {:#x}; {} base tags dropped",
+            budget.saturating_sub(memory),
+            metadata,
+            dropped.len(),
+        );
+        assert!(
+            memory + 0x10000 <= budget,
+            "{sandbox:?}: {memory:#x} leaves under 0x10000 of {budget:#x}"
+        );
+        assert!(!dropped.is_empty(), "nothing dropped");
+        for g in [b"matg", b"mulg", b"ugh!", b"scnr"] {
+            assert!(
+                out.tags().iter().any(|t| t.group == FourCC(*g)),
+                "{sandbox:?}: no {}",
+                FourCC(*g)
+            );
+        }
+        // No kept tag names a dropped one.
+        let ids: Vec<TagId> = out
+            .tags()
+            .iter()
+            .filter(|t| t.location.is_some())
+            .map(|t| t.id)
+            .collect();
+        let mut dangling = Vec::new();
+        for id in ids {
+            let Ok(b) = out.read_tag_bytes(id) else {
+                continue;
+            };
+            for w in b.as_chunks::<4>().0.iter().map(|w| u32::from_le_bytes(*w)) {
+                if dropped.contains(&w) {
+                    let name = out.tag(id).ok().and_then(|t| t.name.clone());
+                    let gone = base_ids
+                        .iter()
+                        .find(|t| t.0.0 == w)
+                        .and_then(|t| t.2.clone());
+                    dangling.push(format!("{name:?} names {gone:?} ({w:#x})"));
+                }
+            }
+        }
+        assert!(dangling.is_empty(), "{sandbox:?}: {dangling:#?}");
+    }
+}
