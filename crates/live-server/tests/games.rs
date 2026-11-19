@@ -31,6 +31,73 @@ fn score(tick: u64, a: i64, b: i64) -> (&'static str, Value) {
     )
 }
 
+/// Both original JSON GameFrames and their packed successors appear on the
+/// same legacy page. The cursor and the packed bytes survive either read.
+#[tokio::test]
+async fn legacy_frame_pages_offer_json_and_stored_binary() {
+    use live_proto::{game, pack, sign::EventBody};
+    let h = harness().await;
+    let host = h.create("Host").await;
+    let id = h.start_game(&host, two_player_game(&host)).await;
+    let frames = [0, 2].map(|tick| game::Frame {
+        game_id: id.clone(),
+        tick,
+        players: vec![game::FramePlayer {
+            alive: true,
+            pos: [1.0 / 65536.0, tick as f64, 0.0],
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+    let packed = pack::encode_keyframe(&frames[1]).unwrap();
+    let rows = [
+        serde_json::to_value(&frames[0]).unwrap(),
+        json!({"tick": frames[1].tick, "packed": pack::to_base64(&packed)}),
+    ];
+    let events = rows
+        .into_iter()
+        .map(|data| {
+            let body = EventBody::new(
+                &h.operator,
+                &format!("server:{}", h.id),
+                &game::stream(&id),
+                game::GAME_FRAME,
+                data,
+                time::OffsetDateTime::now_utc(),
+            );
+            live_server::store::NewEvent {
+                jws: body.sign(&h.operator).into(),
+                jws_index: None,
+                body,
+            }
+        })
+        .collect();
+    h.live.store().append(events, &[]).await.unwrap();
+
+    let path = format!("/v1/games/{id}/frames");
+    let first = h.get(&format!("{path}?format=json&limit=1")).await;
+    assert_eq!(first.status, StatusCode::OK);
+    let page = first.json();
+    assert_eq!(page["items"][0], serde_json::to_value(&frames[0]).unwrap());
+    let next = page["next"].as_str().unwrap();
+    let second = h
+        .get(&format!("{path}?format=json&cursor={next}"))
+        .await
+        .json();
+    assert_eq!(
+        second["items"],
+        json!([pack::decode_keyframe(&packed).unwrap()])
+    );
+    assert_eq!(second["position"], page["position"]);
+    let binary = h.get(&format!("{path}?cursor={next}")).await;
+    assert_eq!(binary.status, StatusCode::OK);
+    assert_eq!(binary.headers["content-type"], "application/x-h2-frames");
+    let records = pack::records(&binary.body)
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(records, vec![packed.as_slice()]);
+}
+
 #[tokio::test]
 async fn a_game_from_start_to_end() {
     let h = harness().await;

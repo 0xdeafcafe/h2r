@@ -211,6 +211,8 @@ impl Bucket {
 struct LiveGame {
     started: i64,
     campaign: bool,
+    /// A kill can be a betrayal ([`game::NewGame::has_teammates`]).
+    teammates: bool,
     map: String,
     map_id: Option<String>,
     difficulty: Option<String>,
@@ -337,6 +339,7 @@ impl Inner {
         let g = LiveGame {
             started: at,
             campaign,
+            teammates: ng.has_teammates(),
             map: ng.map.clone(),
             map_id: ng.map_id.map(|m| m.to_string()),
             difficulty: ng.difficulty.as_ref().map(|d| d.to_ascii_lowercase()),
@@ -418,7 +421,12 @@ impl Inner {
         }
         g.spree.insert(k.victim, 0);
         let killer = k.killer.filter(|&s| s != k.victim);
-        let kind = k.kind.as_str();
+        // Settled again by the teams: older hosts sent free-for-all kills
+        // as betrayals.
+        let betrayal = game::is_betrayal(g.teammates, k.killer, k.victim, |s| {
+            g.slots.get(&s).map(|slot| slot.2)
+        });
+        let kind = game::settled_kill_kind(&k.kind, k.killer, k.victim, betrayal);
         let scoring = kind == "kill" && killer.is_some();
         let mut spree = 0;
         if let Some(s) = killer.filter(|_| scoring && !bot) {
@@ -978,6 +986,45 @@ mod tests {
         assert_eq!((s.activity[0].games, s.activity[0].kills), (1, 5));
         assert_eq!(s.last_24h, s.totals);
         assert_eq!(s.all_time, s.totals);
+    }
+
+    /// Hosts before the fix sent every free-for-all kill as a betrayal:
+    /// the stats count them as kills. In a team game a kill of a teammate
+    /// is a betrayal whatever the host sent, and one of an enemy a kill.
+    #[test]
+    fn betrayals_are_settled_by_the_teams() {
+        let mut log = Log::new();
+        let everyone_on_team_0 = json!([
+            {"index": 0, "name": "Ace", "xuid": A, "team": 0},
+            {"index": 1, "name": "Bee", "xuid": B, "team": 0},
+        ]);
+        log.start(
+            "ffa",
+            json!({"team_play": false, "players": everyone_on_team_0}),
+            T0,
+        );
+        log.kill("ffa", 1, Some(0), "betrayal", "smg", T0 + 10);
+        log.kill("ffa", 0, Some(1), "betrayal", "smg", T0 + 20);
+        log.kill("ffa", 1, Some(0), "kill", "smg", T0 + 30);
+        log.end("ffa", "finished", json!({"player": 0}), T0 + 600);
+
+        let s = log.stats.summary_at(Some(7), T0 + 700);
+        let t = &s.totals;
+        assert_eq!((t.kills, t.deaths, t.betrayals), (3, 3, 0));
+        let (a, b) = (row(&s, A), row(&s, B));
+        assert_eq!((a.kills, a.betrayals, a.best_spree), (2, 0, 1));
+        assert_eq!((b.kills, b.betrayals), (1, 0));
+
+        // The default game is a team game: Ace 0, Bee and the guest 1.
+        log.start("team", json!({}), T0 + 1000);
+        log.kill("team", 2, Some(1), "kill", "smg", T0 + 1010);
+        log.kill("team", 1, Some(0), "betrayal", "smg", T0 + 1020);
+        log.end("team", "finished", json!({"team": 0}), T0 + 1600);
+        let s = log.stats.summary_at(Some(7), T0 + 1700);
+        assert_eq!((s.totals.kills, s.totals.betrayals), (4, 1));
+        let (a, b) = (row(&s, A), row(&s, B));
+        assert_eq!((a.kills, a.betrayals), (3, 0));
+        assert_eq!((b.kills, b.betrayals), (1, 1));
     }
 
     #[test]

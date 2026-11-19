@@ -104,6 +104,7 @@ const VEHICLE: u32 = 0xe003_0030;
 const TURRET: u32 = 0xe004_0040;
 const MACHINE: u32 = 0xe005_0050;
 const ELITE: u32 = 0xe006_0060;
+const GRENADE: u32 = 0xe007_0070;
 /// Scenery's object type (the type table's order, `memory::object_kind`).
 const SCENERY: u8 = 6;
 
@@ -137,6 +138,11 @@ fn tag_names() -> TagNames {
                 "objects\\vehicles\\warthog\\turrets\\chaingun\\chaingun".to_string(),
             ),
             (
+                GRENADE,
+                *b"proj",
+                "objects\\weapons\\grenade\\frag_grenade\\frag_grenade".to_string(),
+            ),
+            (
                 MACHINE,
                 *b"mach",
                 "scenarios\\objects\\machines\\lift\\lift".to_string(),
@@ -165,6 +171,10 @@ pub(crate) struct Scene {
     pub scenery: u32,
     /// Weapons from scenario placements (one in four picked up: gone).
     pub placed_weapons: u32,
+    /// Grenades in flight.
+    pub projectiles: u32,
+    /// Weapons lying where they were dropped.
+    pub loose_weapons: u32,
     pub hits_per_tick: u32,
     pub shots_per_tick: u32,
 }
@@ -184,6 +194,8 @@ pub(crate) const SCENES: [Scene; 3] = [
         machines: 10,
         scenery: 200,
         placed_weapons: 24,
+        projectiles: 4,
+        loose_weapons: 8,
         hits_per_tick: 3,
         shots_per_tick: 8,
     },
@@ -201,6 +213,8 @@ pub(crate) const SCENES: [Scene; 3] = [
         machines: 20,
         scenery: 840,
         placed_weapons: 48,
+        projectiles: 4,
+        loose_weapons: 16,
         hits_per_tick: 3,
         shots_per_tick: 8,
     },
@@ -218,6 +232,8 @@ pub(crate) const SCENES: [Scene; 3] = [
         machines: 30,
         scenery: 600,
         placed_weapons: 60,
+        projectiles: 8,
+        loose_weapons: 40,
         hits_per_tick: 4,
         shots_per_tick: 12,
     },
@@ -232,6 +248,7 @@ pub(crate) struct World {
     turrets: Vec<u32>,
     machines: Vec<u32>,
     weapons: Vec<u32>,
+    projectiles: Vec<u32>,
 }
 
 /// A point on the unit circle that goes round as `a` grows (one turn every
@@ -287,6 +304,7 @@ impl World {
             turrets: Vec::new(),
             machines: Vec::new(),
             weapons: Vec::new(),
+            projectiles: Vec::new(),
         };
         let g = &mut world.guest;
         // Vehicles first, so riders can name them.
@@ -393,6 +411,24 @@ impl World {
                 .unwrap();
             world.machines.push(s);
         }
+        for p in 0..scene.projectiles {
+            let s = slot();
+            let g = &mut world.guest;
+            let at = [p as f32 * 5.0, 20.0, 2.0];
+            fixture::put_placed(g, s, layout::OBJECT_TYPE_PROJECTILE, -1, -1, at, u32::MAX);
+            g.set_u32(body(s) + layout::BODY_DEFINITION, GRENADE)
+                .unwrap();
+            world.projectiles.push(s);
+        }
+        for w in 0..scene.loose_weapons {
+            let s = slot();
+            let g = &mut world.guest;
+            let at = [w as f32 * 1.5, -20.0, 0.1];
+            fixture::put_placed(g, s, layout::OBJECT_TYPE_WEAPON, -1, -1, at, u32::MAX);
+            g.set_u32(body(s) + layout::BODY_DEFINITION, WEAPON)
+                .unwrap();
+            set_vec(g, body(s) + layout::BODY_FORWARD, [1.0, 0.0, 0.0]);
+        }
         // Placements: scenery and weapons, records at the scenario.
         let mut records = fixture::SCENARIO + 0x1000;
         for (object_type, count, every) in [
@@ -468,9 +504,17 @@ impl World {
             );
             set_vec(g, at + layout::BODY_FORWARD, [-sin, cos, 0.0]);
             set_vec(g, at + layout::UNIT_AIM, [-sin, cos, 0.0]);
-            // World units a second (layout::BODY_VELOCITY), about the
-            // speed of the circle's four units a second.
-            set_vec(g, at + layout::BODY_VELOCITY, [-sin * 4.0, cos * 4.0, 0.0]);
+            // World units a second (layout::BODY_VELOCITY): the motion's
+            // own, as the game's is (the engine moves positions by it). The
+            // point goes round at 1 / (1 + u²) radians a unit of `a`, on a
+            // radius of four.
+            let u = ((t + i as f32) % 4.0) / 2.0 - 1.0;
+            let rate = 4.0 / (1.0 + u * u);
+            set_vec(
+                g,
+                at + layout::BODY_VELOCITY,
+                [-sin * rate, cos * rate, 0.0],
+            );
             g.set_f32(at + layout::BODY_VITALITY, 1.0).unwrap();
             g.set_f32(at + layout::BODY_SHIELD_VITALITY, 1.0).unwrap();
         }
@@ -486,6 +530,25 @@ impl World {
         for (i, s) in self.turrets.iter().enumerate() {
             let (cos, sin) = circle(t * 2.0 + i as f32);
             set_vec(g, body(*s) + layout::UNIT_AIM, [cos, sin, 0.0]);
+        }
+        // Grenades fly in a line, two seconds each, then start again.
+        for (i, s) in self.projectiles.iter().enumerate() {
+            let at = body(*s);
+            let flight = t % 2.0;
+            set_vec(
+                g,
+                at + layout::BODY_POSITION,
+                [
+                    i as f32 * 5.0 + flight * 8.0,
+                    20.0,
+                    2.0 + flight * (3.0 - flight),
+                ],
+            );
+            set_vec(
+                g,
+                at + layout::BODY_VELOCITY,
+                [8.0, 0.0, 3.0 - 2.0 * flight],
+            );
         }
         // Two machines move (lifts); the rest stand.
         for s in self.machines.iter().take(2) {
@@ -579,11 +642,13 @@ fn fnv(text: &str) -> u64 {
 }
 
 /// Each scene's output for its first 12 ticks, as hashed by [`fnv`] over
-/// [`output_json`]: what a change to the guest-side path must keep.
+/// [`output_json`], before wire quantisation. The v6 scenes include
+/// projectiles, loose items, vehicle velocity and the units' circular-motion
+/// velocity. The event sequence and all other frame fields match v4.
 const GOLDEN: [(&str, u64); 3] = [
-    ("mp16", 0x5f87e00e72613693),
-    ("mp16_1000", 0xf840a9fe4aec3427),
-    ("campaign100", 0xd8a08e706180ce67),
+    ("mp16", 0xd8cd4b39c3770c88),
+    ("mp16_1000", 0x9e34bcf10b5d0aae),
+    ("campaign100", 0x9d817f75bf7767c2),
 ];
 
 #[test]
@@ -828,6 +893,8 @@ fn wire(scene: &Scene) -> serde_json::Value {
     let minute = n as f64 / (TICKS as f64 / 30.0 / 60.0);
     serde_json::json!({
         "frames": n,
+        "encode_us_per_tick": ns.iter().sum::<u64>() as f64 / (1000.0 * f64::from(TICKS)),
+        "bytes_per_player_second": packed as f64 * 30.0 / f64::from(TICKS * scene.players),
         "encode": stats(ns),
         "packed_bytes_per_frame": packed as f64 / n as f64,
         "keyframe_bytes": key_bytes as f64 / keyframes.max(1) as f64,
@@ -882,5 +949,72 @@ fn bench_guest_tick() {
         std::fs::create_dir_all(&dir).unwrap();
         let text = serde_json::to_string_pretty(&serde_json::json!({ "scenes": results })).unwrap();
         std::fs::write(dir.join("guest.json"), text).unwrap();
+    }
+}
+
+/// Ten minutes of the seeded multiplayer fixture. Measure ingest separately
+/// from chunk compression, disk I/O and generation of the JSON control.
+#[test]
+#[ignore = "release benchmark for the viewer's full-match transfer and decode"]
+fn bench_match_wire() {
+    use live_proto::chunk::{Chunk, ChunkWriter};
+
+    const SECONDS: usize = 600;
+    let frames = live_proto::samples::multiplayer(15 * SECONDS);
+    let mut encoder = pack::Encoder::new(0, crate::server::FRAME_KEYFRAME_EVERY);
+    let mut record = Vec::new();
+    let mut encode_ns = 0;
+    let mut wire_bytes = 0;
+    let mut writer = ChunkWriter::default();
+    let dir = std::env::var_os("TELEMETRY_BENCH_OUT").map(std::path::PathBuf::from);
+    if let Some(dir) = &dir {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    let mut chunks = 0;
+    let mut binary_bytes = 0;
+    let mut json_bytes = 0;
+    let mut decoded_frames = 0;
+    let mut finish = |chunk: Chunk| {
+        let decoded = live_proto::chunk::frames(&chunk.bytes).unwrap();
+        decoded_frames += decoded.len();
+        let json = serde_json::to_vec(&decoded).unwrap();
+        binary_bytes += chunk.bytes.len();
+        json_bytes += json.len();
+        if let Some(dir) = &dir {
+            let name = format!("replay-{chunks:03}");
+            std::fs::write(dir.join(format!("{name}.bin")), &chunk.bytes).unwrap();
+            std::fs::write(dir.join(format!("{name}.json")), &json).unwrap();
+        }
+        chunks += 1;
+    };
+    for frame in &frames {
+        let ((bytes, _), ns) = time(|| encoder.encode(frame).unwrap());
+        encode_ns += ns;
+        record.clear();
+        pack::push_record(&mut record, &bytes);
+        wire_bytes += record.len();
+        if let Some(chunk) = writer.push(frame) {
+            finish(chunk);
+        }
+    }
+    finish(writer.finish().unwrap());
+    assert_eq!(decoded_frames, frames.len());
+    assert_eq!(chunks, SECONDS / 10);
+    let stats = serde_json::json!({
+        "seconds": SECONDS,
+        "players": 16,
+        "frames": frames.len(),
+        "chunks": chunks,
+        "wire_bytes": wire_bytes,
+        "bytes_per_frame": wire_bytes as f64 / frames.len() as f64,
+        "bytes_per_player_second": wire_bytes as f64 / (16 * SECONDS) as f64,
+        "encode_us_per_frame": encode_ns as f64 / (1000 * frames.len()) as f64,
+        "encode_us_per_tick": encode_ns as f64 / (1000 * 30 * SECONDS) as f64,
+        "replay_json_bytes": json_bytes,
+        "replay_binary_bytes": binary_bytes,
+    });
+    println!("{stats}");
+    if let Some(dir) = dir {
+        std::fs::write(dir.join("match.json"), stats.to_string()).unwrap();
     }
 }

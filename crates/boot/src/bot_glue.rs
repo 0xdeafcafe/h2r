@@ -919,8 +919,9 @@ impl feature::Feature for Bots {
         b.game().on_start("forget bot sound cues", |_| bots::clear_shots());
 
         // Deaths, for the emotes (bots::emote): the kill function's
-        // attacker and victim player datums and betrayal flag, read as
-        // live telemetry reads them.
+        // attacker and victim player datums, read as live telemetry reads
+        // them; a betrayal is told by the teams (the third argument is not
+        // a betrayal flag).
         let (local, phantoms) = (self.local.clone(), self.phantoms.clone());
         b.raw()
             .observe_before(&points::PLAYER_KILLED, "bots hear a death", move |o| {
@@ -930,12 +931,10 @@ impl feature::Feature for Bots {
                 let esp = o.cpu.esp;
                 let guest = o.guest();
                 let arg = |n: u32| guest.u32(esp.wrapping_add(4 * n));
-                let (Ok(attacker), Ok(victim), Ok(betrayal)) = (arg(1), arg(2), arg(3)) else {
+                let (Ok(attacker), Ok(victim)) = (arg(1), arg(2)) else {
                     return;
                 };
-                if let Ok(Some(k)) =
-                    bots::emote::kill_from_guest(&*guest, attacker, victim, betrayal != 0)
-                {
+                if let Ok(Some(k)) = bots::emote::kill_from_guest(&*guest, attacker, victim) {
                     bots::emote::kills().push(k);
                 }
             });

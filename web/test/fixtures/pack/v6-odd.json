@@ -1,0 +1,302 @@
+[
+  {
+    "game_id": "odd-game_1",
+    "tick": 77,
+    "players": [
+      {
+        "index": 3,
+        "alive": false,
+        "pos": [
+          -100000.0,
+          0.0,
+          0.333984375
+        ],
+        "yaw": -3.000466421104314
+      },
+      {
+        "index": 15,
+        "alive": true,
+        "pos": [
+          1.5,
+          -2.25,
+          1000.0
+        ],
+        "yaw": 2.500388684253595,
+        "vehicle": "vehicle_one",
+        "species": "elite",
+        "aim": [
+          0.0,
+          0.0,
+          -1.0
+        ],
+        "weapon": "energy_blade",
+        "shots": 64,
+        "stance": "dead",
+        "speed": 1000.0,
+        "actions": [
+          "grenade",
+          "melee",
+          "reload",
+          "jump",
+          "switch",
+          "pickup",
+          "jump",
+          "melee"
+        ],
+        "grenade": "plasma",
+        "vel": [
+          -999.0,
+          0.015625,
+          12.5
+        ],
+        "fire": 4294967295,
+        "body": 0.3333333333333333,
+        "shield": 4.0,
+        "seat": 63,
+        "actions_ago": [
+          900,
+          31,
+          30,
+          7,
+          2,
+          1,
+          0,
+          0
+        ],
+        "anim": {
+          "name": "s_kill:front:gut-2",
+          "frame": 32767.0
+        }
+      }
+    ],
+    "hits": [
+      {
+        "to": "p10",
+        "pos": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "amount": 2.5,
+        "kind": "fall",
+        "ago": 900
+      },
+      {
+        "from": "p01",
+        "to": "deadbeef",
+        "pos": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      }
+    ],
+    "objects": [
+      {
+        "k": "bipd",
+        "i": 0,
+        "p": [
+          1.0,
+          2.0,
+          3.0
+        ],
+        "f": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "u": [
+          0.0,
+          0.0,
+          1.0
+        ]
+      },
+      {
+        "k": "netgame",
+        "i": 32767,
+        "gone": true
+      }
+    ],
+    "cut": 123456,
+    "projectiles": [
+      {
+        "id": "e90c0001",
+        "kind": "plasma_grenade",
+        "pos": [
+          1.5,
+          -2.25,
+          1000.5
+        ],
+        "parent": "p15"
+      },
+      {
+        "id": "e90c0002",
+        "kind": "rocket",
+        "pos": [
+          -3.0,
+          4.0,
+          5.0
+        ],
+        "vel": [
+          -99.0,
+          0.5,
+          -0.015625
+        ]
+      }
+    ],
+    "items": [
+      {
+        "id": "a10d0001",
+        "kind": "powerup",
+        "pos": [
+          0.0,
+          -0.5,
+          0.25
+        ],
+        "forward": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "up": [
+          0.0,
+          0.0,
+          -1.0
+        ],
+        "equipment": true
+      }
+    ]
+  },
+  {
+    "game_id": "odd-game_1",
+    "tick": 79,
+    "players": [
+      {
+        "index": 3,
+        "alive": true,
+        "pos": [
+          -100000.0,
+          0.0,
+          0.333984375
+        ],
+        "yaw": -3.000466421104314
+      },
+      {
+        "index": 15,
+        "alive": true,
+        "pos": [
+          1.5,
+          -5.25,
+          1000.0
+        ],
+        "yaw": 2.500388684253595,
+        "vehicle": "vehicle_one",
+        "species": "elite",
+        "aim": [
+          0.0,
+          0.0,
+          -1.0
+        ],
+        "weapon": "energy_blade",
+        "shots": 64,
+        "stance": "dead",
+        "speed": 1000.0,
+        "actions": [
+          "grenade",
+          "melee",
+          "reload",
+          "jump",
+          "switch",
+          "pickup",
+          "jump",
+          "melee"
+        ],
+        "grenade": "plasma",
+        "vel": [
+          -999.0,
+          0.015625,
+          12.5
+        ],
+        "fire": 4294967295,
+        "body": 0.3333333333333333,
+        "shield": 4.0,
+        "seat": 63,
+        "actions_ago": [
+          900,
+          31,
+          30,
+          7,
+          2,
+          1,
+          0,
+          0
+        ],
+        "anim": {
+          "name": "s_kill:front:gut-2",
+          "frame": 32767.0
+        }
+      }
+    ],
+    "hits": [
+      {
+        "to": "p10",
+        "pos": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "amount": 2.5,
+        "kind": "fall",
+        "ago": 900
+      },
+      {
+        "from": "p01",
+        "to": "deadbeef",
+        "pos": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      }
+    ],
+    "objects": [
+      {
+        "k": "bipd",
+        "i": 0,
+        "gone": true
+      },
+      {
+        "k": "netgame",
+        "i": 32767,
+        "gone": true
+      }
+    ],
+    "cut": 123456,
+    "projectiles": [
+      {
+        "id": "e90c0001",
+        "kind": "plasma_grenade",
+        "pos": [
+          1.5,
+          -2.25,
+          1000.5
+        ],
+        "parent": "p15"
+      },
+      {
+        "id": "e90c0002",
+        "kind": "rocket",
+        "pos": [
+          -9.5,
+          4.25,
+          4.75
+        ],
+        "vel": [
+          -99.0,
+          0.5,
+          -0.015625
+        ]
+      }
+    ]
+  }
+]

@@ -3314,9 +3314,12 @@ list for the user to play (§11).
 4. **Emotes.** Built: `bots::emote`, in every brain (`Mind::emote`).
    - **Deaths** come from the game's kill function (`PLAYER_KILLED`,
      `0x15ce70`): `boot::bot_glue` observes it on the game thread and logs
-     the attacker and victim players, the betrayal flag and where the
-     victim's unit lies (`emote::kills()`); each brain reads the log from
-     its own cursor.
+     the attacker and victim players, whether it was a betrayal and where
+     the victim's unit lies (`emote::kills()`); each brain reads the log
+     from its own cursor. A betrayal is a teammate killed in a team game,
+     told from the players' teams and the variant's team flag: the kill
+     function's third argument is not a betrayal flag (it is set in
+     free-for-all too).
    - **Dumb** (`emote::classify`): killed by themselves or by the world
      (own grenade, fall, suicide: the kill function does not tell them
      apart; severity 0.8) and a betrayal (1.0). Not yet: stuck on

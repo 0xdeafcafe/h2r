@@ -468,6 +468,34 @@ treads are in its body above the hull's lowest point where its retail
 role's physics models have wheel shapes (the scorpion's treads; not the
 warthog's tires; tag-definitions.md, `convert::held_wheels`).
 
+**The scorpion's treads are solid; the boulders are not** (game run,
+2026-11-19, converted Blood Gulch, the scorpion's `phmo` 18,786 bytes
+with its 42 pieces, as converter version 90 builds it; the scorpion at
+[40.36, -64.01, 1.0], forward [-0.03, -0.99, -0.10]). Its pieces reach
+1.18 to each side over the back half of the tread and 1.06 over the
+front half (retail's scorpion: 1.13; its hull 0.53), from 0.10 to 0.53
+above the origin. Walking at x 41.45 or 41.59 (1.1 and 1.2 to the
+tank's left) toward -y, the player stopped at y -62.4, the treads' back
+face, was pushed out to x 41.79 and slid along the side at 1.40 from the
+centre line, the tread's edge plus the capsule; walking from x 41.59
+angled a little inward, it slid inward along the back face instead and
+stopped at [40.92, -62.37], where it stops on the centre line. Put inside the tread
+(`sim.state.set`), it was pushed out of it or stood on top (z 1.61). So
+a walking biped cannot enter the converted treads, and an earlier report
+of walking through them at 1.2 to the side was not reproduced; a path
+just outside the front half (narrower by 0.12) clears it.
+
+The boulders are another matter: the engine gives no scenery a Havok
+body, from a `phmo` or otherwise, so neither the slots (through version
+84) nor the built `phmo` (since 85) make a scenery object solid; the
+player put inside `boulder_doublewide` or `boulder_crouch` drops to the
+ground through it ([tag-definitions.md](../formats/tag-definitions.md),
+"Scenery from definitions", and [collision.md](../formats/collision.md),
+rigid bodies: only bipeds, vehicles, machines, crates and creatures get
+bodies). Retail Blood Gulch's base keeps its rocks in the structure and
+its one solid prop as a crate with a fixed body, so the fix is one of
+those two, not more scenery physics.
+
 **`hlmt` region bytes.** Each `hlmt` region (`0x10`) says which `coll`
 region it uses (`i8` at `+4`) and which physics region (`+5`); each
 permutation (`8`) its `coll` permutation (`+5`) and physics permutation

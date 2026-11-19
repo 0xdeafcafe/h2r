@@ -658,6 +658,15 @@ Each step is test-first and runs in both homes.
    protocol as `anim`. The viewer stops inferring once senders have it.
 4. **Capture:** players every tick, actor rates by distance, projectiles
    and grenades as entities, and the animation state from step 3's reader.
+   **Done (2026-11-19, packed version 6):** projectiles slower than 100
+   units a second (grenades, rockets, plasma, needles; stuck ones with
+   their parent) and loose weapons and equipment (dropped guns, the flag,
+   ball and bomb) as entities, vehicles' velocity, and position
+   prediction from velocity in deltas (step 1 of Compression, in the live
+   format itself, so chunks get it too). The animation state went out in
+   version 4. Left: players every tick (the `partial` frame in
+   [live-telemetry.md](live-telemetry.md), "Rate"), actor rates by
+   distance, projectile owners (not traced).
 5. **Server:** `FrameChunk` recording to the `BlobStore`, read through the
    API with the same visibility check as `/frames` (decided), the chunk
    list endpoint, the compressed chunk codec and its benches, and the
