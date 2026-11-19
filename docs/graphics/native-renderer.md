@@ -2039,7 +2039,7 @@ its own thread, and render-timing does not matter (the call runs).
    - the ms of `render_screen_effects`.
 4. **The screen effects** (`0x0002d140`; 03a's blur first), with their
    function values (`0x00134fc0`) read at the call. Traced (Code,
-   `h2 disasm`); nothing built yet.
+   `h2 disasm`); slice (a) built (below).
    - **The loop** (`0x00013a0d..0x00013b72`): the window `0x004b9dd0`
      as four floats twice (the corners), then per entry of the scenario
      block (`+0x3d0` count, `+0x3d4` address, `0x24` bytes): skipped when
@@ -2073,8 +2073,9 @@ its own thread, and render-timing does not matter (the call runs).
        address, `0x5c` bytes): a size from the target's (`0x0001dd60`)
        times `+0x58`, at least 64 and its area capped at `0x12c00` by a
        square root (`0x00322b0c` rounds), targets `0x19`/`0x1a` (first)
-       or `0x1b`, and with flag bit 2 `0x00021360` (not traced) else the
-       blur `0x000211a0` (ported: `engine::glow::blur`), its result in
+       or `0x1b`, and with flag bit 2 `0x00021360` (ported:
+       `engine::glow::wide`) else the blur `0x000211a0` (ported:
+       `engine::glow::blur`), its result in
        `[0x00485a78 + 4 i]`.
      - At the end the targets 1, `0x19`, `0x19` and `0x1b` are set back,
        `[0x004670bc]` set, the draw state reset (`0x00016b10`) and
@@ -2090,6 +2091,144 @@ its own thread, and render-timing does not matter (the call runs).
      path) with the engine inputs the screen-effect pass reads; (c)
      `0x00021360` traced and ported beside `blur`; (d) targets `0x19` to
      `0x1b` as stand-ins like 7 and 8. Each is a slice; (a) first.
+   - **Built: which entries draw** (`engine::screen_effects`):
+     `function_value` (`0x00134fc0` and `0x00134fe0`: the state's input
+     plus its `+0x1c`; without a parent (`+0x16` -1 or past the count)
+     the function through `0x0013bb90`, its output range unless a flag in
+     `0xf0`; with one (itself without a parent, else 0) the parent's
+     value times its own raw value, then its range), the evaluator being
+     `engine::function_eval`; `full_screen_single_view`
+     (`0x00022710`: the viewport `0x00485648` is 0, 0, 480, 640 and at
+     most one view `[0x004ba04c]`); `gated`, `corners` and `drawn` (the
+     loop: each entry's datum and four values). Tests: unit tests, and
+     `engine/tests/screen_effects_differential.rs` (`0x00134fc0` over
+     random functions of every type with parents, and the loop from
+     `0x000139ba` with `0x0002d140` stubbed, against the lifted
+     original, bit for bit).
+   - **Built: the evaluator** (`engine::function_eval`, `0x0013b390`
+     instruction for instruction): SSE in the original's operand order,
+     so a NaN keeps the sign and payload the original's does (the blend
+     is `second * r + (1 - r) * first`, type 9's `(1 - r) * first +
+     second * r`); shape `0x0017ca10` and wave `0x0017c900` over the
+     image's tables with the CRT `fmod(v, 1.0)` (`0x00373b6a`: `fprem`
+     for finite non-zero, `fldz` for a zero, a quieted NaN, the
+     indefinite for an infinity) and an x87 `fistp`; type 9 and spline
+     2 through the CRT `pow` (`0x00372d48`) on the x87 model: `fyl2x`
+     and `0x00327f84`'s `frndint`/`f2xm1`/`fscale`, negative bases by
+     `0x00372f31`'s integer and odd test, zero bases, NaNs (`faddp`),
+     infinities (`_powhlp` `0x003738a8`), the range check `0x0032806d`
+     (scaled by 2^1536 or 2^-1536) and `_handle_exc` (`0x003246b5`):
+     overflow to the rounding mode's infinity or largest value,
+     underflow to a denormal by truncation or zero, the others kept.
+     Spline 2's exponent is `rsqrtss` of one segment's squared length
+     times the halving-trick root of the other's, as the original
+     computes it. Control words with an x87 exception unmasked are
+     refused. Tests: unit tests, and the differential above with
+     `_getptd` (`0x00326079`) stubbed so the CRT's error paths run
+     lifted.
+   - **Built: what each draws** (`engine::screen_effect::plan`, one call
+     of `0x0002d140` as an `Effect`): the shader and layer 15's
+     implementation count (the template datum the shader's `+0x24`
+     points at, its definition's `+0x5c` element: the word at
+     `[+4] & 0x1ff`, then the word that many plus 15 into `[+0xc]`, its
+     high 7 bits; `Err(Data)` for `MTRP`/`3trp`, which go through a
+     virtual call). Per pass that draws: its index, implementation and
+     selector (`0x00016610`'s third and fourth arguments; skipped as the
+     original skips them), its target kind and target 1's size (window
+     width and height, halved or quartered toward zero), the strips (per
+     row of corners, per column the corner and the one below; four
+     texture coordinates by kind, 0 the corner's uv, 1 the window
+     fraction, 2 pixels from the window's top left, 3 the corner's x and
+     y, 4 the vector at `[[0x004687c0]]`, z 0 and w 1 except kind 4; plus
+     the offsets `+0x5c` when `+0x58` is above 0, u and v times
+     `[0x004b9de4]` when the set's flag bit 0 is set; the position raw,
+     from the window's top left, or that times `[0x0045dbbc]` or
+     `[0x0045dc20]`) and `Pass::pushed`, the exact words; and its
+     convolutions (kept, the blur with `glow::blur`'s draws, or
+     `0x00021360`'s registers and arguments), each with its size (the
+     area cap: x87 `fild`, `fdivr`, `fsqrt`, `_ftol2` toward zero, both
+     64 when either side is under 64). At the end the original sets
+     target `0x19` twice, the second time to `0x1a`'s saved size (as it
+     does; a native draw need not copy it). Tests: unit tests, and
+     `effect_plans_match_the_lifted_original` (`0x0002d140` lifted, its
+     callees stubbed and recorded: the template passes, every size set,
+     the convolution calls and the words pushed must be the plan's).
+   - **Built: `0x00021360`** (`engine::glow::wide`, slice (c)), the blur's
+     sibling (Code): EAX the source, ECX the draw count, XMM0 a scale,
+     then stack words passed to each draw, the two buffers, the last
+     target, a byte that first sets the combiner `0x00020f30` (XMM0 0,
+     XMM3 its eighth word), `ret 0x20`. `s = scale * [0x0045e4e0]`; per
+     draw (count above 0) the source is bound to stages 0..3 (`0x00014f60`,
+     the same sampler states as the blur) and `0x00034d90` draws into the
+     destination with EDI pointing at `s`, `s * [0x0045e1f4]`,
+     `s * [0x0045e4dc]` and `0 - s`, the buffers ping-pong as the blur's,
+     and `s` grows by `[0x0045dc0c]` (the blur's spread term). The result
+     and the copy into the last target are the blur's. `MAX_WIDE_TAPS`
+     (64) bounds it. `0x00034d90` is `0x00034a90`'s sibling: the
+     target's size (`0x0001dd60`, -1 the bound one `[0x004858b8]`), the
+     target's rectangle or the window by a byte argument, the per-stage
+     size ratios (`0x00485af4`/`0x00485b04` over the target's) and EDI's
+     four floats where `0x00034a90` takes a spread; how the four move
+     each tap is for the native draw to trace. Tests: unit test
+     `the_wide_convolution_ping_pongs_with_a_growing_scale`, and
+     `glow_differential::wide_matches_the_lifted_original` (stubbed as
+     the blur's: draws, offsets, the quad's stack words, combiner, copy
+     and result); the plan now follows a convolution after a wide one.
+   - **Built: `0x00034d90`'s grid** (`engine::screen_grid`): the grid
+     each step of `0x00021360` draws, 30 strips of 21 x 2 vertices
+     (`0x00034770` with the attribute function `0x00034100`). Each tap is
+     the rectangle at (u, v) pulled toward its centre by its EDI float,
+     weighted, when the radii (words 5 and 6) differ, by where the
+     vertex's distance from the centre (x87 `fsqrt`) falls between them,
+     times the stage's bound-over-target ratio; the position through
+     `0x000350e0`. A radial (zoom) blur. `strips()` and `pushed()` give
+     the exact words. Tests: unit tests and
+     `screen_grid_differential::the_grid_matches_the_lifted_original`.
+   - **Wired: the screen-effect hook** (`feature::native_post`, switch on
+     only): a context-only `before` on `0x0002d140`
+     (`points::SCREEN_EFFECT`) hands boot's host EAX and the four stack
+     words; `native_post_glue::plan_effect` plans the call and
+     `missing` lists what does not draw natively yet (the layer-15
+     template pass, passes into target 1, blur and wide convolutions,
+     the stand-ins for targets `0x19` to `0x1b`). Every effect is
+     refused, counted and logged once per reason, and nothing is armed:
+     the D3D path draws them all. Each piece then gets a slice and is
+     struck from `missing`; only an effect with nothing missing will be
+     armed, behind the same swallow and probe as the glow.
+   - **Built: the template pass's look** (`native_render::screen_look`):
+     `screen_look` takes the egor's shader resolved and an
+     implementation and gives layer 15's pass (one pass at the first
+     level of detail; its vertex shader, stages as the shader's bitmaps
+     or engine textures the draw supplies, stage and render states,
+     pixel shader, constants), or why it stays on D3D (no layer, several
+     passes, no such implementation, animated, engine inputs beyond the
+     instance's, engine-driven states, unset or default textures, a
+     lightmap, states the native pass does not fit). `compile_screen`
+     translates it through `program::translate_pass` over the strips'
+     inputs, `v0` the position and `v1`..`v4` the four texture
+     coordinates (`0x00101a00`, `0x00101a10 + 16 s`). Still missing
+     before `TemplatePass` leaves `missing`: reading each egor's shader
+     at load (its material, vertex program and bitmaps), the engine
+     textures layer 15 binds, and the GPU pass drawing a plan's strips.
+   - **Built: the load** (`boot::native_post_load`, the switch on, with
+     the world): every `egor` tag's shader (the definition's `+0x44`)
+     resolved, each implementation of its layer-15 pass looked at and
+     translated for every classification of its vertex shader (up to
+     16; which one a pass draws with is `0x00016610`'s to say), and the
+     stages' bitmaps decoded; refusals counted by reason, one line on
+     stderr. Held by the world (`Ready::screen_effects`) for the draw.
+   - **Traced: the engine textures** (`0x00019530`, the jump table at
+     `0x00019b68` by id - 1; `native_render::screen_look::engine_texture`):
+     1, 9, 14 and 15 the rasterizer data's bitmaps (`+0xc`, `+4`, `+0x14`);
+     render targets through `0x00014f60`: 2 and 3 target 1, 6 target 3, 8
+     target 10, 13 target 9, 17 `0x13`, 19 `0x15`, 20 `0x16`, 21 13, 22
+     `0x11`, 23 `0x17`; 5 the view's bound target `[0x004858b8]`; 24 and
+     25 the target the word `[0x00485a18 + 4 id]` names (`0x19`..`0x1b`
+     sized through `0x0001dd60`: the screen effects' own targets); 4
+     clears the stage; 10 and 12 the light's; 16, 18, 26 and 27 chosen at
+     run time; 7 and 11 null entries. A template pass binding the light's,
+     a run-time one or an invalid id is refused
+     (`ScreenRefusal::EngineTexture`); the rest the draw supplies.
 5. **`0x0002df00`, and `0x0002dd30`** before layer 17, which has the
    same shape and gets its own skip point.
 6. **Layer 17** (S: bloom), as stage 1b draws the world's other layers.

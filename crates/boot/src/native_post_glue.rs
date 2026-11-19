@@ -26,6 +26,15 @@
 //! refused after that (a target it cannot sample) keeps every later call
 //! on the D3D path; that frame's glow is missing.
 //!
+//! The scenario's screen effects (`0x0002d140`, one call per entry that
+//! draws): each call is planned (`engine::screen_effect::plan`, bit-equal
+//! to the lifted original) and refused per reason ([`Missing`]) until
+//! every piece it needs draws natively: the layer-15 template pass
+//! through `program::translate_pass`, the blur and `0x00021360`'s
+//! convolutions through the glow machinery (`engine::screen_grid` for the
+//! latter's grids), and stand-ins for targets `0x19` to `0x1b`. Nothing is
+//! armed for them yet; each reason is counted and logged once.
+//!
 //! The frame A/B, behind `H2_POST_AB=<dir>` ([`Ab`]): the view's colour
 //! where the glow lands (after the composite, before the screen effects,
 //! the fade and the HUD), from each call `H2_POST_AB_AT` names (default
@@ -45,7 +54,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use engine::colour_pass;
 use engine::glow::{self as game_glow, BlurArgs};
 use engine::memory::GuestMemory;
-use feature::native_post::{Fp, Host};
+use engine::screen_effect::{self, Convolution, Effect};
+use feature::native_post::{Fp, Host, ScreenEffect};
 use gfx::vertex::PrimitiveType;
 use native_render::camera::GuestRead;
 use native_render::glow::{self, Blend, Draw, GlowTarget, GpuGlow, Plan, Surface};
@@ -117,6 +127,84 @@ pub fn plan(mem: &dyn GuestMemory, args: [u32; 7], fp: Fp) -> Result<Option<Plan
         blend: Blend::of_states(source, dest),
     });
     Ok(Some(plan))
+}
+
+/// A piece a screen effect needs that does not draw natively yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Missing {
+    /// A layer-15 template pass (`0x00016610`, `program::translate_pass`).
+    TemplatePass,
+    /// A pass into target 1 at the window's size, a half or a quarter.
+    PassTarget,
+    /// A blur convolution (`0x000211a0`).
+    Blur,
+    /// A wide convolution (`0x00021360`, `engine::screen_grid`).
+    Wide,
+    /// The stand-ins for targets `0x19` to `0x1b` the call sets at its end.
+    StandIns,
+}
+
+impl Missing {
+    pub const ALL: [Missing; 5] = [
+        Missing::TemplatePass,
+        Missing::PassTarget,
+        Missing::Blur,
+        Missing::Wide,
+        Missing::StandIns,
+    ];
+}
+
+/// What `effect` needs that is not native yet, once each, in order.
+pub fn missing(effect: &Effect) -> Vec<Missing> {
+    let mut m = Vec::new();
+    for p in &effect.passes {
+        m.push(Missing::TemplatePass);
+        if p.kind != 0 {
+            m.push(Missing::PassTarget);
+        }
+        for c in &p.convolutions {
+            match c {
+                Convolution::Kept { .. } => {}
+                Convolution::Blur { .. } => m.push(Missing::Blur),
+                Convolution::Wide { .. } => m.push(Missing::Wide),
+            }
+        }
+    }
+    // The restores at the end run whenever the call gets past its gates.
+    m.push(Missing::StandIns);
+    m.sort();
+    m.dedup();
+    m
+}
+
+/// The most corners a call's plan reads.
+pub const MAX_CORNERS: u32 = 64;
+
+/// The plan of the call `c`: its values and corners read, then
+/// `engine::screen_effect::plan`.
+pub fn plan_effect(mem: &dyn GuestMemory, c: ScreenEffect, fp: Fp) -> Result<Option<Effect>, String> {
+    let n = c.columns.checked_mul(c.rows).filter(|&n| n <= MAX_CORNERS).ok_or("too many corners")?;
+    let word = |a: u32| mem.u32(a).map_err(err("a value or corner"));
+    let mut values = [0u32; 4];
+    for (i, v) in values.iter_mut().enumerate() {
+        *v = word(c.values.wrapping_add(4 * i as u32))?;
+    }
+    let mut corners = Vec::with_capacity(n as usize);
+    for i in 0..n {
+        let at = c.corners.wrapping_add(16 * i);
+        corners.push([word(at)?, word(at + 4)?, word(at + 8)?, word(at + 12)?]);
+    }
+    screen_effect::plan(mem, c.datum, values, c.columns, c.rows, &corners, fp.mxcsr, fp.x87_control)
+        .map_err(err("plan"))
+}
+
+static EFFECT_REFUSED: [AtomicU64; Missing::ALL.len()] = [const { AtomicU64::new(0) }; Missing::ALL.len()];
+static EFFECT_LOGGED: [AtomicBool; Missing::ALL.len()] = [const { AtomicBool::new(false) }; Missing::ALL.len()];
+static EFFECT_PLAN_LOGGED: AtomicBool = AtomicBool::new(false);
+
+/// The calls refused for each reason so far, in [`Missing::ALL`]'s order.
+pub fn effect_refusals() -> [u64; Missing::ALL.len()] {
+    std::array::from_fn(|i| EFFECT_REFUSED[i].load(Ordering::Relaxed))
 }
 
 /// The swallow's slot per quad: the view 0, target 7 1, target 8 2.
@@ -491,6 +579,31 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let Ok(mut d) = self.device.lock() else { return false };
         d.swallow(&mut DeviceMemory(mem), swallow).unwrap_or(false)
     }
+
+    fn screen_effect(&self, mem: &mut dyn GuestMemory, call: ScreenEffect, fp: Fp) -> bool {
+        let effect = match plan_effect(&*mem, call, fp) {
+            Ok(Some(e)) => e,
+            Ok(None) => return false,
+            Err(e) => {
+                if !EFFECT_PLAN_LOGGED.swap(true, Ordering::Relaxed) {
+                    eprintln!("native-post: a screen effect keeps its D3D draws: {e} (logged once)");
+                }
+                return false;
+            }
+        };
+        for m in missing(&effect) {
+            let i = Missing::ALL.iter().position(|&a| a == m).unwrap_or(0);
+            EFFECT_REFUSED[i].fetch_add(1, Ordering::Relaxed);
+            if !EFFECT_LOGGED[i].swap(true, Ordering::Relaxed) {
+                eprintln!(
+                    "native-post: screen effects keep their D3D draws: {m:?} does not draw natively yet (logged once per reason)"
+                );
+            }
+        }
+        // Armed only once nothing is missing; until then the D3D path
+        // draws every effect.
+        false
+    }
 }
 
 /// The pass a call arms.
@@ -579,6 +692,48 @@ mod tests {
         assert_eq!(arm(true, true), (true, Pass::Glow));
         assert_eq!(arm(false, false), (false, Pass::Capture), "the A/B's D3D side");
         assert_eq!(arm(false, true), (false, Pass::Capture));
+    }
+
+    fn pass(kind: u16, convolutions: Vec<Convolution>) -> screen_effect::Pass {
+        screen_effect::Pass {
+            index: 0,
+            implementation: 0,
+            selector: 0,
+            kind,
+            size: None,
+            strips: Vec::new(),
+            convolutions,
+        }
+    }
+
+    #[test]
+    fn a_screen_effect_is_refused_for_each_missing_piece() {
+        let effect = |passes| Effect {
+            shader: 0,
+            implementations: 1,
+            passes,
+        };
+        assert_eq!(missing(&effect(vec![])), vec![Missing::StandIns], "the restores always run");
+        let e = effect(vec![pass(0, vec![Convolution::Kept { result: 1 }]), pass(2, vec![])]);
+        assert_eq!(missing(&e), vec![Missing::TemplatePass, Missing::PassTarget, Missing::StandIns]);
+    }
+
+    #[test]
+    fn a_screen_effects_plan_reads_its_words() {
+        use engine::memory::FlatMemory;
+        let m = FlatMemory::new(0x0060_0000, 0x1000);
+        let fp = Fp { mxcsr: 0x1f80, x87_control: 0x027f };
+        let call = |columns, rows| ScreenEffect {
+            datum: 0xe000_0001,
+            values: 0x0060_0000,
+            columns,
+            rows,
+            corners: 0x0060_0100,
+        };
+        assert_eq!(plan_effect(&m, call(9, 9), fp), Err("too many corners".to_string()));
+        assert!(plan_effect(&m, call(2, 2), fp).is_err(), "the window is not in this memory");
+        let unreadable = ScreenEffect { values: 0x0010_0000, ..call(2, 2) };
+        assert!(plan_effect(&m, unreadable, fp).unwrap_err().starts_with("a value or corner"));
     }
 
     #[test]

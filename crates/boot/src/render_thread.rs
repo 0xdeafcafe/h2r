@@ -220,6 +220,7 @@ mod tests {
             "RENDER_LIGHT_PASSES",
             "RENDER_DYNAMIC_LIGHTS",
             "COLOUR_PASS",
+            "SCREEN_EFFECT",
         ] {
             assert!(safe.contains(&p), "{p} runs on the render thread");
         }

@@ -182,6 +182,9 @@ pub enum Error {
     /// A loop the original would run on for too long or for ever (the
     /// blur's steps at infinity): the port stops at its budget.
     Unbounded,
+    /// Tag data the port cannot read as the original does (a function
+    /// blob that does not parse, tables of the wrong size).
+    Data,
 }
 
 impl From<MemFault> for Error {
