@@ -195,7 +195,8 @@ fn the_mind_walks_to_visible_equipment_and_returns_for_its_next_spawn() {
 
     let pad = mind.step(&p, None);
     assert_eq!(mind.doing, Doing::Supply(item.at));
-    assert!(pad.left_stick.1 > 0.8);
+    // Walking toward it (the stick eases in over a few ticks).
+    assert!(pad.left_stick.1 > 0.25 && pad.left_stick.1 > pad.left_stick.0.abs());
     p.observations.supplies = Some(vec![]);
     p.tick = 1;
     mind.step(&p, None);
@@ -203,5 +204,6 @@ fn the_mind_walks_to_visible_equipment_and_returns_for_its_next_spawn() {
     p.tick = 280;
     let pad = mind.step(&p, None);
     assert_eq!(mind.doing, Doing::Supply(item.spawn));
-    assert!(pad.left_stick.1 > 0.8);
+    // Walking toward it (the stick eases in over a few ticks).
+    assert!(pad.left_stick.1 > 0.25 && pad.left_stick.1 > pad.left_stick.0.abs());
 }
