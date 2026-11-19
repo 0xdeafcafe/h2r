@@ -64,6 +64,7 @@ pub fn scenery(
         Val::tag(FourCC(*b"hlmt"), hlmt.unwrap_or(TagId::NULL)),
     )?;
     predicted_resources(b"scen", &mut r, "object", predicted)?;
+    object_change_colors(b"scen", &mut r, "object", &obj.change_colours)?;
     built(d, &r)
 }
 
@@ -1238,6 +1239,7 @@ pub fn vehicle(v: &VehicleSpec) -> Result<Block> {
         Val::Int(i64::from(high | (v.flags & 0xffff))),
     )?;
     predicted_resources(b"vehi", &mut r, "unit.obje", predicted)?;
+    object_change_colors(b"vehi", &mut r, "unit.obje", &obj.change_colours)?;
     object_effects(
         b"vehi",
         &mut r,
@@ -1441,6 +1443,7 @@ pub fn device(dev: &h1::Device, hlmt: Option<TagId>, predicted: &[Predicted]) ->
         Val::tag(FourCC(*b"hlmt"), hlmt.unwrap_or(TagId::NULL)),
     )?;
     predicted_resources(group, &mut r, "devi.obje", predicted)?;
+    object_change_colors(group, &mut r, "devi.obje", &obj.change_colours)?;
     set(&mut r, "devi.device_flags", Val::Int(dev.flags.into()))?;
     let rates = device_rates(&dev.times);
     for (name, v) in [
@@ -2492,6 +2495,7 @@ pub fn biped(
         Val::tag(FourCC(*b"hlmt"), hlmt.unwrap_or(TagId::NULL)),
     )?;
     predicted_resources(b"bipd", &mut r, "unit.obje", predicted)?;
+    object_change_colors(b"bipd", &mut r, "unit.obje", &obj.change_colours)?;
     set(
         &mut r,
         "unit.camera_field_of_view",
@@ -2633,6 +2637,58 @@ pub struct AttachmentSpec {
 
 /// The attachment primary scale field (`obje +0x94` element `+0x10`).
 pub const ATTACHMENT_PRIMARY_SCALE: &str = "string_10";
+
+/// Sets `path.change_colors` (`obje +0xac`, `0x10` each) on a rebuilt
+/// record from `colours`, already in Halo 2's slots
+/// ([`h1::ChangeColour::halo2_slots`]); none when `colours` is empty.
+/// Each element's first block is its initial permutations (`0x20` each:
+/// `+0` weight, `+4` lower and `+0x10` upper bound RGB, `+0x1c` a variant
+/// name, 0 for any), Halo 1's as they are; the second (functions) stays
+/// empty: Halo 1's darken/scale-by functions are not carried.
+///
+/// E: `object_new` reserves `0x18` bytes per element (two RGB colours,
+/// the initial and the current); `0x000be240` sets each slot white
+/// (`[0x468710]`), then, when the slot has permutations, picks one by
+/// weight among those whose `+0x1c` is 0 or the object's variant
+/// (`0x000be40e..0x000be44b`) and a colour between its bounds. The
+/// player's colours are written over slots 0 to 3 by `0x0014bfc0`
+/// through `0x000bacc0`, which leaves a slot past the object's count
+/// alone, so a player's unit needs all four.
+pub fn object_change_colors(
+    group: &[u8; 4],
+    r: &mut Record,
+    path: &str,
+    colours: &[h1::ChangeColour],
+) -> Result<()> {
+    if colours.is_empty() {
+        return Ok(());
+    }
+    let field = format!("{path}.change_colors");
+    let e = def(group)?
+        .child(&field)
+        .ok_or_else(|| Error::Invalid(format!("{} {field}", String::from_utf8_lossy(group))))?;
+    let pe = e
+        .child("block_0")
+        .ok_or_else(|| Error::Invalid(format!("{field}.block_0")))?;
+    let f = |v: f32| Val::Bytes(v.to_le_bytes().to_vec());
+    let mut out = Vec::new();
+    for c in colours {
+        let mut x = defs::default_record(e);
+        let mut perms = Vec::new();
+        for p in &c.permutations {
+            let mut y = defs::default_record(pe);
+            set(&mut y, "unknown_0", f(p.weight))?;
+            for (i, (lo, hi)) in p.lower.iter().zip(&p.upper).enumerate() {
+                set(&mut y, &format!("unknown_{:x}", 4 + 4 * i), f(*lo))?;
+                set(&mut y, &format!("unknown_{:x}", 0x10 + 4 * i), f(*hi))?;
+            }
+            perms.push(y);
+        }
+        set(&mut x, "block_0", Val::Block(perms))?;
+        out.push(x);
+    }
+    set(r, &field, Val::Block(out))
+}
 
 /// Sets `path.functions` (`obje +0x64`) on a rebuilt record.
 pub fn object_functions(

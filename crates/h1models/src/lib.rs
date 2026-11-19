@@ -21,6 +21,7 @@
 )]
 
 pub mod compressed;
+pub mod emblem;
 pub mod h1;
 pub mod jmad;
 pub mod mode;

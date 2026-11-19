@@ -596,6 +596,82 @@ built map; `tests/sandbox_disc.rs`
 `h1campaign/tests/disc.rs` (`every_campaign_level_converts`) run it on
 every converted map against what the retail base already breaks.
 
+### Change colours (`obje +0xac`, **Built**, converter version 84)
+
+Halo 2 colours a player by its object's change colours, not by its
+shader. `object_new` keeps `0x18` bytes per change colour at object
+`+0x124` (initial and current RGB). `0x000bacc0` sets one (esi the index,
+edi the RGB; bound-checked against the definition's count, both halves
+written), and `0x000bad50` reads it (E). `0x0014bfc0` writes the player's
+four colours into slots 0 to 3 through `0x000bacc0`. The colours come from
+`0x0015f330` and `0x0007f790`, which turn appearance bytes 0 to 3
+(primary, secondary, tertiary, quaternary) into RGB through the palette at
+`0x001a06a0`. In a team game `0x0007f790` makes slot 0 the team's colour
+(`0x0007f720`) and slot 1 the player's own primary. When that fails, and
+for every object that isn't a player, `0x000be240` resets the colours
+from the definition: white (`[0x468710]`) unless the slot has initial
+permutations. Then it picks one by weight among those whose variant
+(`+0x1c`) is 0 or the object's, and a colour between its bounds
+(`0x000be40e..0x000be44b`). The `obje` block at `+0xac` (`0x10` each)
+holds those permutations (`block_0`, `0x20` each: `+0` weight, `+4` lower
+RGB, `+0x10` upper RGB, `+0x1c` variant string id) and the functions
+(`block_8`) (E). So the count must reach the slots the shaders read.
+
+The shader reads them as constants. The Chief's stem
+`opaque\tex_bump_env_four_change_color` draws base x detail x 2 x the
+product over `k` of `lerp(1, colour k, change map channel k)`: red slot
+0, green 1, blue 2, alpha 3 (V2, its colour pass on coagulation's three
+instances; the layout and their values: `h1convert::shad`,
+`TEX_BUMP_ENV_FOUR_CHANGE_COLOR`).
+
+Halo 1 (V, every object tag on the disc's Blood Gulch, a10 and the
+multiplayer maps): a `soso` names its change colour source at `+0x4c` (0
+none, 1 to 4 = A to D) and masks it with its multipurpose map's blue (on
+the cyborg it covers exactly the white armour plates; red is the
+reflection mask, green near 0). An object's change colours are at
+`obje +0x164` (`0x2c` each: `+0` darken by, `+2` scale by, `+4` flags,
+`+8` and `+0x14` the function's bounds, `+0x20` permutations of `0x1c`:
+weight, lower, upper). The cyborg's armour, visor and first-person hands
+read C, which is Halo 1's player colour (the campaign cyborg's C is the
+Chief's green; the multiplayer cyborg's A and B have only functions).
+The scenery, the Scorpion's darkened hull (grey 0.45), the Covenant and
+doors read A; marines' faces, the flood and the crewman's flesh B; the
+cyborgs, the cryo tube and the cyborg helmet C. No object reads both A
+and C.
+
+The converter (**Design**):
+
+- A `soso` with a change colour that isn't cut out is drawn with
+  `tex_bump_env_four_change_color` (the black default cube when it has no
+  reflection, as retail's `elite_fp_leather` is). Its change map is the
+  multipurpose blue moved into the channel of the Halo 2 slot
+  (`h1bitmaps::mask::channel_into`, DXT5, tag
+  `<mask>_change_color_<slot>`); every other channel is 0, so the shader
+  multiplies the rest by 1. A cut-out one (the trees' leaves) stays
+  without: there is no alpha-tested change-colour stem in the base.
+- Slots: A and C go to 0, B to 1, D to 2
+  (`h1convert::shad::halo2_change_colour_slot`). C is the player's colour
+  in both games, and no object reads both A and C, so one object's slot 0
+  is C when its model's shaders read C and A otherwise
+  (`h1::halo2_slots`).
+- Every object with a Halo 1 change colour, or whose model reads C, gets
+  four elements (`rebuild::object_change_colors`): the player writer
+  needs slots 0 to 3. Each holds the Halo 1 permutations as initial
+  permutations (weight, lower, upper; variant 0). Halo 1's darken-by and
+  scale-by functions are not carried.
+
+So the cyborg's armour plates take the player's primary colour, or the
+team's in a team game. Halo 1's cyborg has one mask, so the secondary
+colour has no area to show on. Halo 2 does not team-colour vehicles; a
+vehicle keeps its own colour (the Scorpion's grey). Proof:
+`h1bitmaps` `a_multipurpose_blue_becomes_one_change_colour_channel`,
+`h1convert` `halo1_change_colours_go_to_halo2_slots` and
+`the_change_colour_layout_puts_the_mask_and_the_reflection_where_the_stem_reads_them`,
+`h1objects` `change_colours_go_to_halo2_slots_with_c_first_when_read`,
+`rebuilt_scenery_carries_its_change_colours`, and the disc tests
+`tests/model_shaders_disc.rs` (`bloodgulch_cyborg_and_scorpion_take_change_colours`)
+and `tests/rebuild_disc.rs`.
+
 ### Tuning carried over
 
 Every field in the table above is written from Halo 1 for each object:
