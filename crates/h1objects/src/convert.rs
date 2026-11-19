@@ -458,9 +458,23 @@ impl Tree {
     /// Done once: the sounds are taken out of the tree.
     pub fn install_audio(&mut self, set: &mut TagSet, add: bool) {
         let (sounds, loops) = self.audio_ids(set, add);
+        self.resolve_audio(&sounds, &loops);
+    }
+
+    /// Install all object audio or return the error to a campaign conversion.
+    /// The caller discards its in-progress tag set on failure.
+    pub fn try_install_audio(&mut self, set: &mut TagSet) -> Result<()> {
+        let (sounds, loops) = self.add_audio(set).map_err(Error::Invalid)?;
+        self.resolve_audio(&sounds, &loops);
+        self.sounds.clear();
+        self.loops.clear();
+        Ok(())
+    }
+
+    fn resolve_audio(&mut self, sounds: &[TagId], loops: &[TagId]) {
         for (_, t) in &mut self.tags {
-            rewrite_audio(&mut t.root, SOUND, &sounds);
-            rewrite_audio(&mut t.root, LOOP, &loops);
+            rewrite_audio(&mut t.root, SOUND, sounds);
+            rewrite_audio(&mut t.root, LOOP, loops);
         }
     }
 

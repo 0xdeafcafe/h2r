@@ -489,7 +489,7 @@ impl Kernel {
                     })
                     .into_iter()
                     .collect();
-                let disk = rawdisk::RawDisk::new(rawdisk::DISK_SIZE, &cache)
+                let disk = rawdisk::RawDisk::new(rawdisk::DISK_SIZE + shared.extra_disk_bytes(), &cache)
                     .map_err(|_| Error::Invalid("raw disk"))?;
                 let sectors = disk.sectors();
                 shared

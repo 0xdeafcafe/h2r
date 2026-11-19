@@ -63,6 +63,8 @@ pub struct Config {
     pub title_id: u32,
     /// Retail utility area is selected from cache partitions 3..=5.
     pub utility_partition: u8,
+    /// Additional logical space per cache partition for native campaign slots.
+    pub extra_cache_bytes: u32,
     /// Converted maps on the data partition served by a sandbox choice
     /// ([`VariantFiles`]); empty unless the boot registers some.
     pub variants: ContentVariants,
@@ -78,6 +80,7 @@ impl Config {
             data_root: data_root.into(),
             title_id,
             utility_partition: 5,
+            extra_cache_bytes: 0,
             variants: ContentVariants::default(),
             map_packages: None,
         }
@@ -157,6 +160,7 @@ pub type ChangeObserver = Box<dyn FnMut(&Changed) + Send>;
 /// put a mutex around it in the kernel. Share checks span every alias within this instance.
 #[derive(Default)]
 pub struct Vfs {
+    extra_cache_bytes: u32,
     pub namespace: Namespace,
     mounts: Vec<Mount>,
     handles: BTreeMap<u64, u64>,
@@ -168,6 +172,11 @@ pub struct Vfs {
     change_observer: Option<ChangeObserver>,
 }
 impl Vfs {
+    /// Additional logical bytes across the three host-backed cache partitions.
+    pub fn extra_disk_bytes(&self) -> u64 {
+        3 * u64::from(self.extra_cache_bytes)
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -198,6 +207,7 @@ impl Vfs {
             Err(e) => eprintln!("vfs: damaged saves not repaired: {e}"),
         }
         let mut vfs = Self::new();
+        vfs.extra_cache_bytes = config.extra_cache_bytes;
         for partition in 1..=5 {
             let name = format!("Partition{partition}");
             let mut backend = HostBackend::new(
@@ -210,7 +220,7 @@ impl Vfs {
                 match partition {
                     1 => 5 * 1024 * 1024 * 1024,
                     2 => 500 * 1024 * 1024,
-                    _ => 750 * 1024 * 1024,
+                    _ => 750 * 1024 * 1024 + u64::from(config.extra_cache_bytes),
                 },
             );
             if partition == 1 {

@@ -320,6 +320,14 @@ definitions"). The vehicle rows described below (warthog, ghost,
 scorpion, banshee, pelican, dropship, wraith, gun turret, lifepods) and
 the lifepods' quiet stand-in are history, kept for the record.
 
+**Lifepod engine audio. Built.** The a30 entry pod attaches the Halo 1
+`sound\sfx\vehicles\lifeboat` loop. Its marker is empty and its primary
+scale is zero. The rebuilt attachment names that level's converted loop,
+whose track plays `lifeboat_entry`. The other lifepod variants have no
+source engine attachment. The campaign disc test compares the ordered
+loop attachments of converted vehicles with their source and checks a30's
+entry pod explicitly. [Campaign audio evidence](sounds.md#campaign-loops-and-cache-slots-built).
+
 **Where a vehicle meets the ground (converter version 63).** Three
 things the engine reads at a vehicle's base, proved in
 `h1objects/tests/vehicle_ground_disc.rs`:

@@ -13,6 +13,7 @@
 pub mod account_screen;
 pub mod agent_glue;
 pub mod aim_assist;
+mod campaign_cache;
 pub mod campaign_cards;
 pub mod campaign_info;
 pub mod campaign_menu;
@@ -1002,6 +1003,9 @@ fn run_configured(
     // H2_MAP_DIR in place of the disc's (docs/runtime/storage.md "Map overrides");
     // with neither, the disc is mounted as it always was.
     let maps = map_override::dir();
+    campaign_cache::configure(
+        &mut features, &loaded.runtime, &mut cfg, &campaign_maps, maps.as_deref(),
+    )?;
     let packages = map_override::packages_dir(&opts.data_root);
     // Our campaigns' level pictures, added to mainmenu as the VFS serves it
     // (docs/halo1/campaign-picker.md, "Pictures").
