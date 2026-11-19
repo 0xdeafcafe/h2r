@@ -1985,6 +1985,7 @@ impl<B: Backend> Device<B> {
         &mut self, mem: &mut dyn GuestMemory, plan: &crate::ExternalPlan, pass: &mut dyn crate::ExternalPass,
         held: Option<&[Option<B::Surface>]>,
     ) -> Result<ExternalBinding<B::Surface>, ExternalRefusal> {
+        let _timer = timeline::native::Timer::start(plan.stage, timeline::native::Metric::PrepareNs);
         let request = self.external_ready(mem, pass.colour_only())?;
         let writes = pass.writes();
         if (pass.colour_only() && writes.depth_stencil) || plan.ranges == 0 {
@@ -2036,10 +2037,16 @@ impl<B: Backend> Device<B> {
             }
         };
         if let Some(rect) = rect { binding.request.rect = rect; }
-        let commands = self.backend.prepare_external(
+        let commands = match self.backend.prepare_external(
             binding.surfaces.clone(), binding.request, [None; 4], &plan,
             crate::TargetCopy::Reference, Arc::new(std::sync::Mutex::new(pass)),
-        ).map_err(D3dError::Backend)?;
+        ) {
+            Ok(commands) => commands,
+            Err(_) => {
+                self.refuse_external(ExternalRefusal::Backend);
+                return Ok(None);
+            }
+        };
         self.external_reservation(plan, binding, commands)
     }
 

@@ -104,13 +104,16 @@ fn top(s: &FrameSample) -> Vec<String> {
         .collect()
 }
 
-/// Each counter's median over the frames: what a frame usually counts.
+/// Baselines for the two relative spike causes in `causes`.
 fn medians(frames: &[FrameSample]) -> [u64; COUNTERS] {
-    std::array::from_fn(|c| {
-        let mut v: Vec<u64> = frames.iter().map(|f| f.counts[c]).collect();
+    let mut result = [0; COUNTERS];
+    for c in [Counter::Uploads, Counter::Readbacks] {
+        let i = c as usize;
+        let mut v: Vec<u64> = frames.iter().map(|f| f.counts[i]).collect();
         v.sort_unstable();
-        percentile(&v, 50.0)
-    })
+        result[i] = percentile(&v, 50.0);
+    }
+    result
 }
 
 /// Host time in file I/O, in the frame, that makes `file_io` a cause: 2 ms
@@ -192,6 +195,7 @@ pub fn summarise(
     for (i, label) in timeline::phase::counter_columns() {
         let v = frames.iter().map(|f| f.counts[i]);
         let total: u64 = v.clone().sum();
+        if i >= Counter::ALL.len() && total == 0 { continue; }
         counts.insert(
             label.to_owned(),
             CountStats {
@@ -264,7 +268,13 @@ pub fn write_csv(path: &Path, frames: &[FrameSample], marks: &[TickMark]) -> std
         .iter()
         .map(|p| format!("{}_us", p.label()))
         .collect();
-    let counts: Vec<&str> = timeline::phase::counter_columns().map(|(_, label)| label).collect();
+    let mut active = [false; COUNTERS];
+    active[..Counter::ALL.len()].fill(true);
+    for frame in frames {
+        for (used, n) in active.iter_mut().zip(&frame.counts) { *used |= *n != 0; }
+    }
+    let columns: Vec<_> = timeline::phase::counter_columns().filter(|&(i, _)| active[i]).collect();
+    let counts: Vec<_> = columns.iter().map(|&(_, label)| label).collect();
     writeln!(
         f,
         "present,end_ms,tick,map,total_us,busy_us,{},{}",
@@ -280,7 +290,7 @@ pub fn write_csv(path: &Path, frames: &[FrameSample], marks: &[TickMark]) -> std
         let phases: Vec<String> = (0..PHASES)
             .map(|i| (s.phase_ns[i] / 1000).to_string())
             .collect();
-        let counts: Vec<String> = (0..COUNTERS).map(|i| s.counts[i].to_string()).collect();
+        let counts: Vec<String> = columns.iter().map(|&(i, _)| s.counts[i].to_string()).collect();
         writeln!(
             f,
             "{},{:.3},{tick},{map},{},{},{},{}",
@@ -430,7 +440,9 @@ mod tests {
         let field = "native_particles_v1_display_ranges";
         let (slot, _) = timeline::phase::counter_columns().find(|(_, label)| *label == field).unwrap();
         frames[1].counts[slot] = 21;
-        assert_eq!(summarise(&frames, &marks(), 33.3, 2).counts[field].total, 21);
+        let summary = summarise(&frames, &marks(), 33.3, 2);
+        assert_eq!(summary.counts[field].total, 21);
+        assert_eq!(summary.counts.len(), Counter::ALL.len() + 1);
         write_csv(&path, &frames, &marks()).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
@@ -443,8 +455,9 @@ mod tests {
             lines[1]
         );
         assert!(lines[2].starts_with("8,1200.000,530,"), "{}", lines[2]);
-        assert_eq!(lines[1].split(',').count(), 6 + PHASES + COUNTERS);
+        assert_eq!(lines[1].split(',').count(), 6 + PHASES + Counter::ALL.len() + 1);
         let column = lines[0].split(',').position(|s| s == field).unwrap();
+        assert_eq!(lines[1].split(',').nth(column), Some("0"));
         assert_eq!(lines[2].split(',').nth(column), Some("21"));
     }
 }

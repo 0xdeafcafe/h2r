@@ -1769,7 +1769,8 @@ where
         copy: crate::TargetCopy,
     ) -> Result<crate::ExternalCopies, String> {
         if self.rate() != Rate::Off { return Ok(crate::ExternalCopies::Missing(copy)); }
-        self.inner.external_attachments(surfaces, textures.map(|t| t.map(Arc::as_ref)), copy)
+        let tex: [Option<&B::Texture>; 4] = textures.map(|t| t.map(|t| &**t));
+        self.inner.external_attachments(surfaces, tex, copy)
     }
 
     fn prepare_external(
@@ -1783,7 +1784,8 @@ where
             plan.stage.count(timeline::native::Metric::RefusedReplay, items);
             return Ok(None);
         }
-        self.inner.prepare_external(surfaces, request, textures.map(|t| t.map(Arc::as_ref)), plan, copy, pass)
+        let tex: [Option<&B::Texture>; 4] = textures.map(|t| t.map(|t| &**t));
+        self.inner.prepare_external(surfaces, request, tex, plan, copy, pass)
     }
 
     fn commit_external(&mut self, recording: crate::ExternalRecording) {

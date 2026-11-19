@@ -836,7 +836,9 @@ h2 agent --socket /tmp/h2-play.sock hostpads
   `UNAVAILABLE` (the agent starts a quiet collection when nothing else
   does, so they are on unless something stopped them).
 - **Native renderer counters.** `profile.counters` and `profile.capture`
-  use the same frame columns as `H2_FRAME_STATS_CSV`. Each
+  use the field names of `H2_FRAME_STATS_CSV`. Each agent response and
+  capture CSV includes native columns with activity in its window. The
+  streaming `H2_FRAME_STATS_CSV` writes a fixed header at startup. Each
   `native_<stage>_` prefix includes examined and suppressed guest items,
   refusals by reason, prepare and encode nanoseconds, GPU buffers and bind
   groups created, upload bytes and pipeline misses. Per-view columns

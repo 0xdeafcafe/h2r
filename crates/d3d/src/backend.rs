@@ -1440,6 +1440,8 @@ pub struct RecordingBackend {
     /// by default). Taken, a pass is recorded in
     /// [`external`](Self::external), not encoded (there is no GPU).
     pub external_passes: bool,
+    /// Synthetic host error during confirmed attachment lookup.
+    pub external_prepare_error: Option<String>,
     /// The external passes taken: `(colour, depth)` surfaces, in order.
     pub external: Vec<(u32, u32)>,
     /// Per pass taken, the surfaces it samples ([`ExternalPass::sampled`]).
@@ -1759,6 +1761,15 @@ impl Backend for RecordingBackend {
         };
         self.calls.push(Recorded::ReadSurface { surface, len });
         Ok(vec![self.readback_fill; len])
+    }
+
+    fn external_attachments(
+        &mut self, _: ExternalSurfaces<Self::Surface>, _: [Option<&Self::Texture>; 4], copy: TargetCopy,
+    ) -> Result<ExternalCopies, String> {
+        match &self.external_prepare_error {
+            Some(error) => Err(error.clone()),
+            None => Ok(ExternalCopies::Missing(copy)),
+        }
     }
 
     fn supports_external_pass(&self) -> bool {

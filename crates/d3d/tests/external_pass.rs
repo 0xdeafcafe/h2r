@@ -536,3 +536,18 @@ fn an_indexed_intermediate_can_be_drawn_and_read_at_1x_and_refuses_a_mixed_scale
         assert_eq!(pixels[1], if scale == 1 { 255 } else { 0 });
     }
 }
+
+#[test]
+fn a_backend_prepare_error_leaves_the_device_ready_for_the_guest_draw() {
+    let mut backend = RecordingBackend::default();
+    backend.external_passes = true;
+    backend.external_prepare_error = Some("surface lookup failed".to_owned());
+    let (mut d, mut m) = create(backend, UploadPolicy::Always);
+    set_states(&mut d, &mut m);
+    assert!(d.prepare_external_pass(&mut m, plan(1), Box::new(InvalidRecording)).unwrap().is_none());
+    assert_eq!(d.stats().external_refusals[d3d::ExternalRefusal::Backend.index()], 1);
+    quad_vb(&mut m, 0., 0., 32., 32., 0xff009900);
+    bind_quad(&mut d, &mut m);
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    assert_eq!(d.backend.draws().len(), 1);
+}

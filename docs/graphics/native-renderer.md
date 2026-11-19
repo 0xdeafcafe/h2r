@@ -66,6 +66,15 @@ Commit splices only previously sealed command buffers into the D3D submission
 order. Commit has no remaining stage callbacks or target lookups. With interpolated
 presentation active, confirmed replacements keep the guest draw for replay.
 
+A confirmed admission on the threaded backend needs a synchronous worker
+round trip. `encode_pending` closes the preceding merged D3D pass, and each
+physical copy gets a private command buffer. World and object hooks batch a
+view into one reservation. A packet holder can batch consecutive native draws
+on the same targets in a single `ExternalPlan` and encode their ranges in
+guest order. End the batch before any guest-owned draw, target/state change
+that the batch does not reproduce, or guest-visible read. A one-draw helper
+pays the full admission cost.
+
 At a drained boundary, the held-packet entry is
 `Device::prepare_external_bound_at(mem, plan, pass, slots, rect)`. It compares
 each saved `Option<B::Surface>` against its slot's current guest header. The
@@ -104,7 +113,7 @@ World placement transforms are initialized once at map load.
 | `examined`, `suppressed` | Guest items considered and items committed. Multi-range passes override `ExternalPass::items(ranges)` to report their logical item count. |
 | `refused_ownership`, `refused_resources`, `refused_inputs` | Unowned items, unavailable surfaces or bindings, and rejected stage preflight. |
 | `refused_ranges`, `refused_masks`, `refused_validation`, `refused_replay` | Incomplete range count, failed reversible guest mask edit, wgpu validation error, and original draws retained for interpolation. |
-| `prepare_ns`, `encode_ns` | Host wall nanoseconds in backend preparation and private command recording, respectively. |
+| `prepare_ns`, `encode_ns` | Host wall nanoseconds in native selection/resource preparation and private command recording, respectively. |
 | `buffers`, `bind_groups`, `upload_bytes`, `pipeline_misses` | Actual creations and bytes charged through the submission arena and counted `gfx::churn` operations during the stage. |
 | `v<V>_<C>_recorded`, `v<V>_<C>_ranges` | Ranges the stage recorded on this copy, including discarded attempts, and ranges committed. |
 | `v<V>_invariants`, `v<V>_<C>_invariants`, `v<V>_<C>_refused` | Range-count mismatches across copies, mismatches on this copy, and transactions refused by this copy. Each stage/view/copy mismatch logs once. |
