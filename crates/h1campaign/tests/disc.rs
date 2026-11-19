@@ -1109,7 +1109,7 @@ fn check_authored_uncover_rules<R: std::io::Read + std::io::Seek>(
     let count = word(&encoded[..8]);
     assert_eq!(encoded.len(), 8 + count as usize * 16);
     let references = scenario.references();
-    let rules: std::collections::BTreeMap<_, _> = encoded.as_bytes()[8..].chunks_exact(16)
+    let rules: std::collections::HashMap<_, _> = encoded.as_bytes()[8..].chunks_exact(16)
         .zip(&references[references.len() - count as usize..])
         .map(|(row, character)| {
             assert_eq!(character.group(), FourCC(*b"char"));
