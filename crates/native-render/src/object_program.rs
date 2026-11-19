@@ -449,7 +449,7 @@ pub(crate) mod tests {
     #[test]
     fn every_opaque_material_goes_through_its_programs_lit_or_not() {
         use tags::material::{Material, ResolvedLayer, ResolvedPass};
-        let of = |layer: u8, implementations: Vec<ResolvedImplementation>| Material {
+        let of = |layer: usize, implementations: Vec<ResolvedImplementation>| Material {
             shader: map::TagId(0xe000_0010),
             template: map::TagId(0xe000_0011),
             inputs: Default::default(),
