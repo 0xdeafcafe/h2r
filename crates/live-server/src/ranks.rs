@@ -350,6 +350,9 @@ impl Live {
                 return Ok(());
             };
             let started = &g.started.game;
+            if started.sim.is_some() {
+                return Ok(());
+            }
             let finished = g
                 .ended
                 .as_ref()

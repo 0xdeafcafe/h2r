@@ -68,6 +68,7 @@ pub mod relay;
 pub mod reports;
 pub mod rt;
 mod sessions;
+mod sim_runs;
 pub mod sql;
 #[cfg(feature = "native")]
 pub mod sqlite;

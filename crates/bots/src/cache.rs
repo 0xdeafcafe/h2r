@@ -32,7 +32,7 @@ pub const VERSION: u32 = 2;
 /// generator. Every file built by another version is stale and is built
 /// again (`crate::autonav`); the `generator_output_is_pinned` test in
 /// `nav/tests.rs` fails when the output changes and this does not.
-pub const GENERATOR: u32 = 1;
+pub const GENERATOR: u32 = 3;
 
 /// The header's length: magic, format version, [`Stamp`].
 pub const HEADER_LEN: usize = 20;
@@ -105,7 +105,6 @@ pub fn file_name(map: &str, bsp: usize) -> String {
 pub fn build(bsp: &Bsp) -> Result<MapData, String> {
     let pf = pathfind::generate::generate(bsp, 0, 0, &pathfind::generate::Options::default())
         .map_err(|e| e.to_string())?;
-    let nav = NavMesh::from_pathfinding(&pf, &Build::default());
     let mut polys: Vec<Vec<V3>> = Vec::with_capacity(bsp.surfaces.len());
     for s in 0..bsp.surfaces.len() {
         if let Some(ring) = pathfind::generate::surface_edges(bsp, s) {
@@ -113,6 +112,7 @@ pub fn build(bsp: &Bsp) -> Result<MapData, String> {
         }
     }
     let walls = Walls::from_polygons(polys.iter().map(Vec::as_slice));
+    let nav = NavMesh::from_collision(&pf, &Build::default(), &walls);
     Ok(MapData { nav, walls })
 }
 

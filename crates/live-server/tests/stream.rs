@@ -275,6 +275,7 @@ async fn ingest_fans_out_and_records_frames() {
         issue_token(key, id, "live.test", method, live_server::app::now())
     };
     let new = NewGame {
+        sim: None,
         console: None,
         map: "lockout".into(),
         mode: "multiplayer".into(),
@@ -440,6 +441,7 @@ async fn frames_carry_species_aim_weapon_and_shots() {
     let (live, addr) = serve(Policy::default()).await;
     let (key, account) = create(&live, "Host").await;
     let new = NewGame {
+        sim: None,
         console: None,
         map: "lockout".into(),
         mode: "multiplayer".into(),
@@ -595,6 +597,7 @@ async fn campaign_frames_carry_vehicles_and_actors() {
     let (live, addr) = serve(Policy::default()).await;
     let (key, account) = create(&live, "Host").await;
     let new = NewGame {
+        sim: None,
         console: None,
         map: "03a_oldmombasa".into(),
         mode: "campaign".into(),

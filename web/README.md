@@ -90,8 +90,17 @@ profile and the server (`/dash/server`: service admin) sit under settings.
 Open **Games** (`/dash/games`) and select **Halo 2** to see recent games and,
 when signed in, your service record. Its link to the stats site (named by
 `STATS_NAME` in `src/brand.ts`) opens `/games/halo2`.
-The Halo admin area (MOTD, playlists, custom content) is on the stats site
+The Halo admin area (MOTD, playlists, custom content, Clanker Training) is on the stats site
 at `/games/halo2/admin` ([docs/live/live-admin.md](../docs/live/live-admin.md)).
+
+**Clanker Training** is available there with an admin account
+(`/games/halo2/admin?tab=training`). It lists opt-in
+[`h2 sim --upload` recordings](../docs/runtime/sim.md#watching-in-uplink)
+and batches. Filter by map, tuning or batch, select two matches to compare
+their summaries, or open a match for its report, bot stats and the shared
+game viewer. Running streams follow the live edge. The **Live** control
+returns to it after a seek. The training page shows the measured simulation
+speed and the same viewer switches to replay at the end.
 Keyboard: arrows move, Enter (or `a`) selects,
 Escape / Backspace / ArrowLeft (or `b`) goes back; the mouse works too.
 

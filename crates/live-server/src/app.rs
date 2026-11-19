@@ -169,6 +169,7 @@ pub struct Live {
     writes: RateLimiter,
     creates: RateLimiter,
     team_writes: tokio::sync::Mutex<()>,
+    pub(crate) sim_writes: tokio::sync::Mutex<()>,
     pub(crate) session_writes: tokio::sync::Mutex<()>,
     /// Serializes ranking, so a game is ranked once.
     pub(crate) rank_writes: tokio::sync::Mutex<()>,
@@ -533,6 +534,7 @@ impl Live {
             writes: RateLimiter::new(policy.write_rate.0, policy.write_rate.1),
             creates: RateLimiter::new(policy.create_rate.0, policy.create_rate.1),
             team_writes: Default::default(),
+            sim_writes: Default::default(),
             session_writes: Default::default(),
             rank_writes: Default::default(),
             round_writes: Default::default(),
@@ -1104,6 +1106,11 @@ impl Live {
             read.iter()
                 .filter_map(|e| match viewer {
                     crate::sessions::Viewer::Operator => Some(e.to_wire()),
+                    _ if crate::sim_runs::is_sim_stream(&e.body.stream)
+                        && query.stream.as_deref() != Some(e.body.stream.as_str()) =>
+                    {
+                        None
+                    }
                     _ => crate::sessions::wire_for(&s, e, viewer),
                 })
                 .collect()
@@ -1162,6 +1169,7 @@ impl Live {
             .to_string(),
             recent_games: s
                 .games_newest()
+                .filter(|g| g.started.game.sim.is_none())
                 .filter(|g| g.xuids.contains(&a.xuid))
                 .filter(|g| g.shows_to(viewer, |x, y| s.is_friends(x, y)))
                 .take(RECENT_GAMES)
@@ -1202,6 +1210,7 @@ impl Live {
             .to_string(),
             recent_games: s
                 .games_newest()
+                .filter(|g| g.started.game.sim.is_none())
                 .filter(|g| g.xuids.contains(&b.xuid))
                 .filter(|g| g.shows_to(viewer, |x, y| s.is_friends(x, y)))
                 .take(RECENT_GAMES)

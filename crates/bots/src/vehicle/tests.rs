@@ -14,16 +14,45 @@ pub(crate) fn vehicle(id: u32, class: Class, at: Vec3, seats: &[SeatRole]) -> Ve
         forward: [1.0, 0.0, 0.0],
         up: [0.0, 0.0, 1.0],
         health: 1.0,
+        alternate_fire: false,
+        hull: None,
         on: None,
         seats: seats
             .iter()
-            .map(|&role| Seat { role, rider: None })
+            .map(|&role| Seat {
+                role,
+                rider: None,
+                entries: vec![Entry {
+                    at: [at[0], at[1] + 0.65, at[2] + crate::mind::EYE],
+                    forward: [0.0, 1.0, 0.0],
+                    radius: 1.6,
+                    facing: 1.4,
+                    look: 1.0,
+                    max_distance: 4.0,
+                }],
+                boards: None,
+            })
             .collect(),
     }
 }
 
 pub(crate) fn ghost(id: u32, at: Vec3) -> Vehicle {
-    vehicle(id, Class::Scout, at, &[SeatRole::Driver])
+    let mut g = vehicle(
+        id,
+        Class::Scout,
+        at,
+        &[SeatRole::Driver, SeatRole::Passenger],
+    );
+    g.seats[1].boards = Some(0);
+    g.seats[1].entries = vec![Entry {
+        at: [at[0] - 0.25, at[1], at[2] + crate::mind::EYE],
+        forward: [-1.0, 0.0, 0.0],
+        radius: 1.0,
+        facing: 2.0,
+        look: 1.3,
+        max_distance: 3.0,
+    }];
+    g
 }
 
 /// A Warthog `id` (driver, passenger) and its gun `id + 1` (a gunner's
@@ -38,6 +67,8 @@ pub(crate) fn warthog(id: u32, at: Vec3) -> [Vehicle; 2] {
     let mut gun = vehicle(id + 1, Class::Turret, at, &[SeatRole::Gunner]);
     gun.on = Some(id);
     gun.position = [at[0] - 1.0, at[1], at[2] + 0.5];
+    gun.seats[0].entries[0].at = [at[0] - 1.15, at[1], at[2] + crate::mind::EYE];
+    gun.seats[0].entries[0].forward = [-1.0, 0.0, 0.0];
     [hog, gun]
 }
 
@@ -62,11 +93,10 @@ fn the_type_names_the_class_in_the_tags_order() {
             Class::Unknown
         ]
     );
-    // Ghosts, Warthogs and Scorpions are driven; the Banshee is later.
-    for c in [Class::Scout, Class::Jeep, Class::Tank] {
+    for c in [Class::Scout, Class::Jeep, Class::Tank, Class::Fighter] {
         assert!(c.spec().drive, "{c:?}");
     }
-    for c in [Class::Fighter, Class::Turret, Class::Boat, Class::Unknown] {
+    for c in [Class::Turret, Class::Boat, Class::Unknown] {
         assert!(!c.spec().drive, "{c:?}");
     }
     assert!(

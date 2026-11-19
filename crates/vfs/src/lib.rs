@@ -382,6 +382,13 @@ impl Vfs {
         let (mount, path) = self.resolve(name).ok()?;
         self.mounts[mount].backend.host_file(&path)
     }
+    /// The entries of the directory `name` (any object name or link), as
+    /// its backend lists them: for host-side readers that look for a file
+    /// by its contents (a map by its header's name), not for the guest.
+    pub fn list_directory(&mut self, name: &str) -> Result<Vec<DirectoryEntry>> {
+        let (mount, path) = self.resolve(name)?;
+        self.mounts[mount].backend.read_directory(&path)
+    }
     /// Which map exactly `name` serves, when it isn't the retail disc map:
     /// a map package's `MapId`, or a whole-file override's. `None` means
     /// retail (or not a map). See [`Backend::map_id`].

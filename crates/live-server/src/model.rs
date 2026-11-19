@@ -77,6 +77,9 @@ pub const KEPT_KILLS: usize = 50;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Game {
     pub started: GameStarted,
+    pub(crate) sim_report: Option<crate::sim_runs::StoredReport>,
+    pub(crate) sim_recorded_bytes: u64,
+    pub(crate) sim_recording_limited: bool,
     pub started_at: String,
     pub position: u64,
     pub players: Vec<Player>,
@@ -95,6 +98,28 @@ pub struct Game {
 }
 
 impl Game {
+    /// Settles a recorded kill's kind by the players' teams
+    /// ([`game::is_betrayal`]): hosts before the fix sent free-for-all
+    /// kills as betrayals.
+    pub fn settle_kill(&self, kill: &mut game::PlayerKilled) {
+        let betrayal = game::is_betrayal(
+            self.started.game.has_teammates(),
+            kill.killer,
+            kill.victim,
+            |index| {
+                self.players
+                    .iter()
+                    .chain(&self.started.game.players)
+                    .find(|p| p.index == index)
+                    .map(|p| p.team)
+            },
+        );
+        let kind = game::settled_kill_kind(&kill.kind, kill.killer, kill.victim, betrayal);
+        if kind != kill.kind {
+            kill.kind = kind.to_string();
+        }
+    }
+
     pub fn summary(&self) -> game::GameSummary {
         let g = &self.started.game;
         game::GameSummary {
@@ -131,6 +156,9 @@ impl Game {
         viewer: crate::sessions::Viewer,
         friends: impl Fn(Xuid, Xuid) -> bool,
     ) -> bool {
+        if self.started.game.sim.is_some() {
+            return viewer.is_admin();
+        }
         let Some(c) = &self.coop else { return true };
         crate::sessions::finished_shows_to(
             c.visibility,
@@ -146,7 +174,8 @@ impl Game {
         if author.to_string() == self.started.host {
             return true;
         }
-        matches!(author, live_proto::Author::Account { xuid, .. } if self.xuids.contains(xuid))
+        self.started.game.sim.is_none()
+            && matches!(author, live_proto::Author::Account { xuid, .. } if self.xuids.contains(xuid))
     }
 }
 
@@ -405,6 +434,9 @@ impl Model {
                 coop,
                 players,
                 started,
+                sim_report: None,
+                sim_recorded_bytes: 0,
+                sim_recording_limited: false,
                 started_at: b.at.clone(),
                 position: e.position,
                 scoreboard: Vec::new(),
@@ -424,6 +456,12 @@ impl Model {
         let Some(g) = s.games.get_mut(id) else { return };
         g.last_activity = g.last_activity.max(at);
         match b.kind.as_str() {
+            crate::sim_runs::REPORT_STORED if g.started.game.sim.is_some() => {
+                g.sim_report = data::<crate::sim_runs::StoredReport>(e);
+            }
+            crate::sim_runs::RECORDING_LIMITED if g.started.game.sim.is_some() => {
+                g.sim_recording_limited = true;
+            }
             game::PLAYER_JOINED => {
                 let Some(d) = data::<game::PlayerJoined>(e) else {
                     return;
@@ -440,9 +478,10 @@ impl Model {
                 g.players.retain(|p| p.index != d.index);
             }
             game::PLAYER_KILLED => {
-                let Some(kill) = data::<game::PlayerKilled>(e) else {
+                let Some(mut kill) = data::<game::PlayerKilled>(e) else {
                     return;
                 };
+                g.settle_kill(&mut kill);
                 g.last_tick = Some(kill.tick);
                 if g.kills.len() == KEPT_KILLS {
                     g.kills.pop_front();
@@ -469,6 +508,11 @@ impl Model {
                 }
             }
             live_proto::chunk::FRAME_CHUNK => {
+                if g.started.game.sim.is_some()
+                    && let Some(bytes) = b.data["bytes"].as_u64()
+                {
+                    g.sim_recorded_bytes = g.sim_recorded_bytes.saturating_add(bytes);
+                }
                 if let Some(tick) = b.data.get("to_tick").and_then(|t| t.as_u64()) {
                     g.last_tick = Some(g.last_tick.map_or(tick, |t| t.max(tick)));
                 }
@@ -843,6 +887,41 @@ mod tests {
         }
         log.push(&format!("presence-{X}"), "SignedOut", json!({"xuid": X}));
         assert!(log.model.read().presence.is_empty());
+    }
+
+    /// A game record's kills read as kills in free-for-all, though hosts
+    /// before the fix sent them as betrayals (every player on team 0); in a
+    /// team game a teammate killed is a betrayal.
+    #[test]
+    fn game_kills_settle_betrayals_by_the_teams() {
+        let mut log = Log::new();
+        let start = |id: &str, team_play: bool| {
+            json!({"game_id": id, "host": "server:h", "map": "lockout",
+            "mode": "multiplayer", "team_play": team_play, "players": [
+                {"index": 0, "name": "afr", "team": 0},
+                {"index": 1, "name": "Clanker 1", "team": 0, "bot": true},
+                {"index": 2, "name": "Clanker 2", "team": 1, "bot": true},
+            ]})
+        };
+        let kill = |victim: u32, killer: u32, kind: &str| json!({"tick": 30, "victim": victim, "killer": killer, "kind": kind});
+        for (id, team_play) in [("ffa", false), ("team", true)] {
+            let stream = format!("game-{id}");
+            log.push(&stream, "GameStarted", start(id, team_play));
+            log.push(&stream, "PlayerKilled", kill(1, 0, "betrayal"));
+            log.push(&stream, "PlayerKilled", kill(2, 0, "betrayal"));
+            log.push(&stream, "PlayerKilled", kill(0, 1, "kill"));
+            log.push(&stream, "PlayerKilled", kill(0, 0, "suicide"));
+        }
+        let s = log.model.read();
+        let kinds = |id: &str| -> Vec<String> {
+            s.games[id]
+                .kills
+                .iter()
+                .map(|k| k.kill.kind.clone())
+                .collect()
+        };
+        assert_eq!(kinds("ffa"), ["kill", "kill", "kill", "suicide"]);
+        assert_eq!(kinds("team"), ["betrayal", "kill", "betrayal", "suicide"]);
     }
 
     #[test]
