@@ -1855,6 +1855,68 @@ pub const BIPED_BODY: BodyWords = BodyWords {
     word_1e: 1,
 };
 
+/// `phmo +0x38`: the rigid bodies, `0x90` each; a body's flags at `+0x18`,
+/// motion at `+0x1a` and [`BodyWords::word_1e`] at `+0x1e` (`u16` each).
+pub const PHMO_RIGID_BODIES: usize = 0x38;
+pub const RIGID_BODY_SIZE: usize = 0x90;
+
+/// The rigid body words of the base map's scenery physics models: over
+/// every rigid body of every `phmo` a `scen` of the base names (through
+/// its `hlmt`, [`crate::convert::h2::HLMT_PHYSICS_MODEL`]), the words
+/// most of them hold, with how many bodies there were; `None` when no
+/// scenery of the base has a physics model.
+///
+/// Converted scenery is built a physics model from its Halo 1 collision
+/// with these words. Through converter version 84 it had none, only its
+/// `coll`'s BSP physics slots, and the player walked through Blood
+/// Gulch's boulders (game run, 2026-11-19): no Havok body belonged to any
+/// scenery placement. Retail Coagulation, Blood Gulch's base, gives
+/// every scenery with collision a `phmo` (6 of 6).
+///
+/// E, how the engine reads the motion: the body builder `0x001d5940`
+/// maps `+0x1a` 0..5 to Havok motions 2..7 (the jump table at
+/// `0x001d5bd4`, cases `0x001d5a01`..`0x001d5a24`), then makes it 7
+/// whatever the word when its caller asks for a fixed body (`0x001d5a29`).
+pub fn scenery_body(base: &crate::base::Base) -> Result<Option<(BodyWords, usize)>> {
+    let model = crate::convert::h2::MODEL;
+    let physics = crate::convert::h2::HLMT_PHYSICS_MODEL;
+    let mut votes = std::collections::BTreeMap::<(u16, u16, u16), usize>::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for t in base.tags.iter().filter(|t| t.1 == FourCC(*b"scen")) {
+        let bytes = base.root(t.0)?;
+        let Some(h) = base.reference(&bytes, model) else {
+            continue;
+        };
+        let Some(p) = base.reference(&base.root(h)?, physics) else {
+            continue;
+        };
+        if !seen.insert(p) {
+            continue;
+        }
+        let phmo = base.root(p)?;
+        let mut i = 0;
+        while let Some(rb) = base.element(&phmo, PHMO_RIGID_BODIES, RIGID_BODY_SIZE, i)? {
+            let h = |o: usize| u16::from_le_bytes([rb[o], rb[o + 1]]);
+            *votes.entry((h(0x18), h(0x1a), h(0x1e))).or_default() += 1;
+            i += 1;
+        }
+    }
+    let total = votes.values().sum();
+    Ok(votes
+        .into_iter()
+        .max_by_key(|(w, c)| (*c, std::cmp::Reverse(*w)))
+        .map(|((flags, motion, word_1e), _)| {
+            (
+                BodyWords {
+                    flags,
+                    motion,
+                    word_1e,
+                },
+                total,
+            )
+        }))
+}
+
 /// The global material every built piece names, with the index retail
 /// shapes of that material hold at header `+6` (V: the disc's
 /// `high_small_door`; the index's table is not established).

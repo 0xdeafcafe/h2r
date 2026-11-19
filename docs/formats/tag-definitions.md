@@ -343,12 +343,31 @@ words as the turret role's `0x6c..0x74`) and the `hlmt`'s `0x34..0x44`
 (five decreasing floats); coagulation (12) and beavercreek (17) give the
 same object words (beavercreek also `0x1c`) and no `hlmt` majority.
 
-**Physics.** None of the rebuilt scenery gets a `phmo`: Havok sees it
-through its `coll`'s BSP physics slots, one per BSP (docs/halo1/objects.md,
-"Collision for Havok"). Retail holds both forms (V: 05a 11 scenery with
-collision and no `phmo`, 5 with one; beavercreek 6 and 3; coagulation 0
-and 6), and the slots key Halo 1's own surfaces exactly, where a built
-`phmo` is the BSP's solid cells (an enclosing hull past 64).
+**Physics** (since converter version 85). Scenery whose Halo 1 collision
+holds solid space gets a `phmo` built from it as a device's is (one rigid
+body per collision node, on its model node, of the node's solid cells;
+"Physics models from Halo 1"), whose bodies take the words the base's
+scenery bodies hold (`rebuild::scenery_body`: flags `+0x18`, motion
+`+0x1a`, `+0x1e`, the most common over every body of every scenery
+`phmo` of the base), and its `coll` then has no BSP physics slots
+(retail: nothing with a `phmo` has them). Other scenery with collision
+(no solid cell, or a base whose scenery has no `phmo`) keeps the slots.
+Through version 84 no scenery had a `phmo`, and in a game run on
+converted Blood Gulch (2026-11-19) the player walked through a boulder
+with its slots in place, and no Havok body belonged to any of the map's
+50 scenery placements (docs/halo1/objects.md, open items). Retail holds
+both forms (V: 05a 11 scenery with collision and no `phmo`, 5 with one;
+beavercreek 6 and 3; coagulation 0 and 6), so the slots are a retail
+form, but which engine path puts a slots-only object in the Havok world
+was not found. E, the motion word: the body builder `0x001d5940` maps
+`+0x1a` 0..5 to Havok motions 2..7 (jump table `0x001d5bd4`) and makes
+the motion 7 whatever the word when its caller asks (`0x001d5a29`).
+Proof: `tests/rebuild_disc.rs`, `every_scenery_rebuilds_from_its_definition`
+(a `phmo` exactly where the collision is solid and the base has scenery
+bodies, every body with their words, no slots beside it) and
+`scenery_bodies_take_the_bases_scenery_words` (Coagulation's scenery
+bodies hold one pattern, the one taken). Whether the player now stops
+at the boulders is the game run's to show.
 
 **Not carried:** Halo 1's attachments (on the ten levels and the
 multiplayer maps: 58 `ligh`, 24 `effe`, 13 `lsnd`, 5 `pctl`; no light or

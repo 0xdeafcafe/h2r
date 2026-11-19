@@ -770,9 +770,9 @@ attachments name a contrail (236 attachments) names the converted one.
   alone do not put converted scenery in the Havok world. Retail
   Coagulation, Blood Gulch's base, gives every scenery with collision a
   `phmo` (6 of 6, V: `h2 object coagulation ...`; the trees' rigid bodies
-  on node 0 or -1), which is the form to build (as devices do, from Halo
-  1's collision cells, `Converter::built_physics`), once a retail
-  scenery `phmo`'s body words (motion, flags) are read off the base.
+  on node 0 or -1). Since converter version 85 scenery with solid Halo 1
+  collision gets one, built as devices' are, with the base's scenery
+  body words (tag-definitions.md, "Scenery from definitions", Physics).
   Which object code adds a slots-only scenery's shapes to the world is
   not found (the slot shapes are built by `0x00246c60` from the `coll`
   post-process `0x002122b0`; no reader of slot `+0x40` or `+0x50` was

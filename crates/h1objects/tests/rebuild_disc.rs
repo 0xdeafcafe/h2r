@@ -13,8 +13,13 @@
 //!   again, pin nothing, hold no raw data and reference only converted
 //!   tags; the known fields are Halo 1's (type, bounds, the model chain,
 //!   the predicted resources), the unknown spans the base's scenery role
-//!   words, and Havok sees the scenery through its `coll`'s BSP physics
-//!   slots (no `phmo`), as retail's.
+//!   words, and Havok sees the scenery through a `phmo` built from Halo
+//!   1's collision where that holds solid space (its rigid bodies holding
+//!   the base's scenery body words, its `coll` no BSP physics slots), else
+//!   through its `coll`'s BSP physics slots.
+//! - `scenery_bodies_take_the_bases_scenery_words`: the retail scenery
+//!   rigid body words on each base; on Coagulation every scenery with
+//!   collision has a `phmo` and all their bodies hold one pattern.
 //! - `retail_scenery_has_bsp_physics_and_predicts_its_model`: on the bases,
 //!   the retail rule the rebuilt scenery follows: scenery with collision
 //!   and no `phmo` is the norm, and scenery predicts its render model and
@@ -214,6 +219,8 @@ fn every_scenery_rebuilds_from_its_definition() {
         let stand_in = base.model_shader.as_ref().map(|m| m.shader);
         let mut seen = HashSet::new();
         let mut role = None;
+        let body = h1objects::rebuild::scenery_body(&base).unwrap();
+        println!("{base_name}: scenery rigid body words {body:?}");
         for level in levels {
             if !wanted(&level) {
                 continue;
@@ -285,7 +292,46 @@ fn every_scenery_rebuilds_from_its_definition() {
                 for (p, w) in &words.hlmt {
                     assert_eq!(word(&hr, p), *w, "{name}: hlmt {p}");
                 }
-                assert_eq!(reference(&hr, "physics_model"), None, "{name}: phmo");
+                // A physics model exactly where Halo 1's collision holds
+                // solid space and the base's scenery has physics models,
+                // its every rigid body holding their words.
+                let solid = obj.collision.is_some_and(|cl| {
+                    h1::Collision::read(&h1, h1.tag(cl).unwrap())
+                        .unwrap()
+                        .nodes
+                        .iter()
+                        .filter_map(|n| n.bsps.first())
+                        .any(|b| {
+                            !h1objects::physics::solid_cells(
+                                &h1convert::collision::convert(b).unwrap(),
+                            )
+                            .is_empty()
+                        })
+                });
+                let phmo = reference(&hr, "physics_model");
+                assert_eq!(phmo.is_some(), solid && body.is_some(), "{name}: phmo");
+                if let (Some(p), Some((words, _))) = (phmo, body) {
+                    let pc = local(tree, p).expect("a built phmo");
+                    assert_eq!(pc.group, FourCC(*b"phmo"));
+                    let pr = read_back(tree, pc, &name, None, &mut stand_ins);
+                    let Some(Val::Block(rbs)) = pr.at("rigid_bodies") else {
+                        panic!("{name}: rigid bodies")
+                    };
+                    assert!(!rbs.is_empty(), "{name}: rigid bodies");
+                    for rb in rbs {
+                        let w = word(rb, "unknown_18");
+                        assert_eq!(
+                            (
+                                w as u16,
+                                (w >> 16) as u16,
+                                (word(rb, "unknown_1c") >> 16) as u16
+                            ),
+                            (words.flags, words.motion, words.word_1e),
+                            "{name}: rigid body words"
+                        );
+                    }
+                    *tally.entry("built phmo".into()).or_default() += 1;
+                }
                 let mode = reference(&hr, "render_model").expect("a render model");
                 let mc = local(tree, mode).unwrap();
                 assert_eq!(mc.group, FourCC(*b"mode"));
@@ -305,14 +351,22 @@ fn every_scenery_rebuilds_from_its_definition() {
                 };
                 assert_eq!(regions.len(), mode_regions.len(), "{name}: regions");
 
-                // Havok's view: the coll's BSP physics slots, one per BSP.
+                // Havok's view: the phmo, or else the coll's BSP physics
+                // slots, one per BSP (retail: nothing with a phmo has them).
                 if let Some(cl) = coll {
                     assert_eq!(local(tree, cl).map(|x| x.group), Some(FourCC(*b"coll")));
                     assert_eq!(c.coll_reports.len(), 1, "{name}: one coll");
                     let cr = &c.coll_reports[0].1;
-                    assert_eq!(cr.bsp_physics, cr.bsps, "{name}: a BSP physics slot per BSP");
                     assert!(cr.bsps > 0, "{name}: BSPs");
-                    *tally.entry("collision, BSP physics".into()).or_default() += 1;
+                    if phmo.is_some() {
+                        assert_eq!(cr.bsp_physics, 0, "{name}: no slots beside a phmo");
+                    } else {
+                        assert_eq!(
+                            cr.bsp_physics, cr.bsps,
+                            "{name}: a BSP physics slot per BSP"
+                        );
+                        *tally.entry("collision, BSP physics".into()).or_default() += 1;
+                    }
                 } else {
                     *tally.entry("no collision".into()).or_default() += 1;
                 }
@@ -407,10 +461,78 @@ fn retail_scenery_has_bsp_physics_and_predicts_its_model() {
         // through its coll's BSP physics slots (collision_disc.rs,
         // `retail_static_scenery_carries_bsp_physics`).
         statics += rows.get("collision true, phmo false").copied().unwrap_or(0);
-        let modes = kinds.get(&(0xffff_0002, "mode".into())).copied().unwrap_or(0);
+        let modes = kinds
+            .get(&(0xffff_0002, "mode".into()))
+            .copied()
+            .unwrap_or(0);
         let bitmaps = kinds.get(&(0, "bitm".into())).copied().unwrap_or(0);
         assert!(modes > 0 && bitmaps > 0, "{base_name}: {kinds:?}");
-        assert_eq!(first.keys().collect::<Vec<_>>(), ["mode"], "{base_name}: the model first");
+        assert_eq!(
+            first.keys().collect::<Vec<_>>(),
+            ["mode"],
+            "{base_name}: the model first"
+        );
     }
     assert!(statics > 0, "retail scenery with collision and no phmo");
+}
+
+/// The words built scenery bodies take (`rebuild::scenery_body`): on each
+/// base, every rigid body of every scenery `phmo` and how many hold each
+/// (flags `+0x18`, motion `+0x1a`, `+0x1e`); on Coagulation, Blood
+/// Gulch's base, every scenery with collision has a `phmo` and all their
+/// bodies hold one pattern, the one `scenery_body` returns.
+#[test]
+#[ignore = "reads the Halo 2 disc ($H2_DISC)"]
+fn scenery_bodies_take_the_bases_scenery_words() {
+    use h1objects::rebuild::{PHMO_RIGID_BODIES, RIGID_BODY_SIZE, scenery_body};
+    for base_name in ["coagulation", "beavercreek", "05a_deltaapproach"] {
+        let mut m = h2_map(base_name);
+        let base = Base::read(&mut m).unwrap();
+        let mut seen = HashSet::new();
+        let mut votes = BTreeMap::<(u16, u16, u16), Vec<String>>::new();
+        let (mut with_coll, mut with_phmo) = (0, 0);
+        for t in base.tags.iter().filter(|t| t.1 == FourCC(*b"scen")) {
+            let r = base.root(t.0).unwrap();
+            let Some(h) = base.reference(&r, h2::MODEL) else {
+                continue;
+            };
+            let hr = base.root(h).unwrap();
+            // `hlmt +0x8`: the collision model.
+            let coll = base.reference(&hr, 0x8).is_some();
+            let phmo = base.reference(&hr, h2::HLMT_PHYSICS_MODEL);
+            with_coll += usize::from(coll);
+            with_phmo += usize::from(coll && phmo.is_some());
+            let Some(p) = phmo else { continue };
+            if !seen.insert(p) {
+                continue;
+            }
+            let pr = base.root(p).unwrap();
+            let mut i = 0;
+            while let Some(rb) = base
+                .element(&pr, PHMO_RIGID_BODIES, RIGID_BODY_SIZE, i)
+                .unwrap()
+            {
+                let h = |o: usize| u16::from_le_bytes([rb[o], rb[o + 1]]);
+                votes
+                    .entry((h(0x18), h(0x1a), h(0x1e)))
+                    .or_default()
+                    .push(t.2.clone());
+                i += 1;
+            }
+        }
+        let body = scenery_body(&base).unwrap();
+        println!(
+            "{base_name}: {with_phmo} of {with_coll} scenery with collision have a phmo; bodies (flags, motion, +0x1e): {votes:#?}; scenery_body {body:?}"
+        );
+        if base_name == "coagulation" {
+            assert_eq!(
+                with_phmo, with_coll,
+                "every Coagulation scenery with collision"
+            );
+            assert_eq!(votes.len(), 1, "one pattern: {votes:?}");
+            let ((flags, motion, word_1e), _) = votes.iter().next().unwrap();
+            let (w, _) = body.unwrap();
+            assert_eq!((w.flags, w.motion, w.word_1e), (*flags, *motion, *word_1e));
+        }
+    }
 }

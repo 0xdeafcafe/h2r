@@ -333,9 +333,11 @@ fn campaign_collision_converts_and_answers_as_halo1() {
 }
 
 /// A level's objects (`$H1_LEVEL`, default a10) through the converter on
-/// its campaign base: BSP physics on exactly the scenery `coll`s (no
-/// `phmo`), and region 0 of every `hlmt` with a `coll` selects a
-/// collision region. Prints the bytes the slots add.
+/// its campaign base: BSP physics only on scenery `coll`s with no `phmo`
+/// (since converter version 85 scenery whose Halo 1 collision is solid
+/// gets a built `phmo` instead, `rebuild_disc.rs`), and region 0 of every
+/// `hlmt` with a `coll` selects a collision region. Prints the bytes the
+/// slots add.
 #[test]
 #[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
 fn level_objects_select_collision_with_bsp_physics() {
@@ -421,7 +423,6 @@ fn level_objects_select_collision_with_bsp_physics() {
         "{} coll tags, {slots} BSP physics slots ({extra} bytes with their MOPP code); {scenery} hlmts select a collision region",
         conv.coll_reports.len()
     );
-    assert!(slots > 0);
 }
 
 /// Halo 1's collision as convex pieces (`h1objects::physics`), on every
