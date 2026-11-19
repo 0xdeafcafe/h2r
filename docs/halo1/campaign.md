@@ -493,7 +493,7 @@ What each layer writes, from the base map up:
 | Donors | `h1campaign::donor`: each character `h1ai`'s table names, copied whole from the first donor that has it (`03a_oldmombasa`, `04b_floodlab`, `06a_sentinelwalls`) by `h1sounds::transplant`: the tag tree, its raw, and its sounds' gestalt entries | The sentinel (its animation graph does not relocate) and the crewman (no donor) |
 | AI | `h1ai`: squad groups, squads, zones, orders, character palette. Characters the base lacks and no donor brought fall back to the marine (marine kinds) or the folder's first | Sentinels: `none` |
 | Scripts | `h1scripts` with `Missing::Stub` and each level's cutscene policy (below); `ai_place` with one argument. A startup script `h1_initial_encounters` places the encounters Halo 1 creates at load. Hooks: object, unit and vehicle names, `short`, team and difficulty as `0xffff0000 \| index`; trigger volumes as the index; AI squads as the index and squad groups as `0x40000000 \| index`; string IDs interned; sounds as the converted tag's datum (encodings V: every such atom in 05a's and 03a's retail scripts). Halo 1's cutscene flags, camera points, titles and device groups written to Halo 2's blocks in Halo 1's order (`h1scripts::level`), their atoms the index (a device group's runtime datum); the seat-mapping table `+0x228` built from the vehicles' seat labels (`h1scripts::seats`); navpoints `default`; looping sounds, effects, damage and animation graphs by tag name among the converted tags. Squads with no starting locations that the scripts name are kept empty (`h1ai`), so their names resolve. Script references resolved by tag name ([scripts.md](scripts.md), "Level data the scripts name") | Looping sounds left out for room (Sounds, below), effects, damage effects, animation graphs and object definitions with no converted tag of that name: `none` |
-| Sounds | The `snd!` tags the scripts name (`h1sounds`, onto the base's gestalt), halving the count until the gestalt's 16-bit indices fit; each permutation's length at `+6`, which the scripts' waits read (`sound_impulse_time` is Halo 2's `sound_impulse_language_time`). `h1sounds::audit` reads every sound of a converted level back: a10's 3,988 play exactly what they were made from. The looping sounds (`lsnd`: music and ambience) the scripts start, stop or switch (`sound_looping_start`, `_stop`, `_set_alternate`), with their tracks' sounds (`h1sounds::looping`), in first-use order while they fit the map file (Music, below). Every BSP's background sounds and sound environments (`h1convert::ambience`, all BSPs' together) as the scenario's palettes `+0x250`/`+0x258` and each structure's copy (`sbsp+0xd4`/`+0xdc`) | Every other sound; looping sounds past the map file's size limit; lifepods drop the pelican template's engine loops |
+| Sounds | The `snd!` tags the scripts name (`h1sounds`, onto the base's gestalt), halving the count until the gestalt's 16-bit indices fit; each permutation's length at `+6`, which the scripts' waits read (`sound_impulse_time` is Halo 2's `sound_impulse_language_time`). `h1sounds::audit` reads every sound of a converted level back: a10's 3,988 play exactly what they were made from. The looping sounds (`lsnd`: music and ambience) the scripts start, stop or switch (`sound_looping_start`, `_stop`, `_set_alternate`), with their tracks' sounds (`h1sounds::looping`) — **Built**: every one of them, their samples in the campaign's sound bank (`h1sounds::bank`), the augmented `single_player_shared.map` all ten levels share, with the BSPs' background sounds' samples too (Music, below). Every BSP's background sounds and sound environments (`h1convert::ambience`, all BSPs' together) as the scenario's palettes `+0x250`/`+0x258` and each structure's copy (`sbsp+0xd4`/`+0xdc`) | Every other sound; lifepods drop the pelican template's engine loops (their own loops come with the lifepod's vehicle remake, `objects`) |
 | Text | Nothing: the base's English table stays as it is. `h1text::Locales::extending` builds on the base's table (its rows and blob first, new rows after) for when Halo 1's text is converted | Halo 1's string lists and HUD messages; the scripts' HUD text builtins are stubbed |
 
 ### Cutscenes (played on eight levels)
@@ -854,26 +854,28 @@ The bound is `0xc24000`; the base alone is `0xaed000`.
   it has no music.
 - **Music, ambience and the map file.** Halo 2's campaign map file is
   capped at `0x11800000` bytes (`map::writer::cache_size_limit`, the
-  header validator's table at `0x00214ed0`). On the pinned base (its own
-  raw kept whole) a level's BSPs, textures, sounds and the clusters'
-  background sounds (`h1convert::ambience`, from `0x177810` bytes on c20
-  to `0xc8a108` on c10) leave little for the scripts' looping sounds,
-  which Halo 1 ships as Xbox ADPCM, kept as they are. A level over the cap
-  (`Error::FileSize`) is converted again with that many fewer music bytes
-  (and 256 KiB margin; the looping sounds go in in the order the scripts
-  first name them while they fit), down to none; then with that many
-  fewer background sound bytes (`scenario::bound_ambience`: an entry left
+  header validator's table at `0x00214ed0`). The level's looping sounds
+  and background sounds, which Halo 1 ships as Xbox ADPCM kept as they
+  are, no longer compete for it (**Built**, `h1sounds::bank`): their
+  samples live in the campaign's augmented `single_player_shared.map`
+  (see [sounds.md](sounds.md), "The sound bank"), shared by all ten
+  levels, and a level over the cap with them out of the file is over it
+  for its own data. The ladder of last resorts stands for that: a level
+  over the cap (`Error::FileSize`) is converted again with that many
+  fewer biped dialogue bytes, down to none; then with that many fewer
+  background sound entries (`scenario::bound_ambience`: an entry left
   out keeps its palette slot and tracks, with null sounds, so the
   clusters' indices stand), down to none; then without the cutscenes'
   animation graphs, which the cutscenes need. Each retry is in the
-  report (`Report::retries`). Only d40 goes past the music: without music
-  it is still `0x12254800`, so its 13 background sounds are silenced and
-  its graphs dropped (`0x118f0c00` without them). The sound-zone split of
-  the clusters (`h1convert::structure::sound_zones`) costs next to
+  report (`Report::retries`). Before the bank (2026-11-19): the looping
+  sounds went in in first-use order while they fit — a30 kept 5 of 16,
+  b30 6 of 14 — and d40, still `0x12254800` without music, had its 13
+  background sounds silenced and its graphs dropped. The sound-zone split
+  of the clusters (`h1convert::structure::sound_zones`) costs next to
   nothing: Halo 1's sections already outnumber the zones everywhere but
   c40's BSPs 3 and 4 (1 and 2 sections to 4: 322 and 710 vertices more).
   Building the levels fresh (no pinned base, its unreachable raw
-  dropped) frees 30 to 60 MB of file a level and is the fix.
+  dropped) frees 30 to 60 MB of file a level.
 
 Hooks left `none` after the level data, seat table and kept squads
 (2026-11-17, `h1scripts` round 2; the table's columns are from round 3,

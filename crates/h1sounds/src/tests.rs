@@ -654,3 +654,77 @@ fn a_moved_sound_takes_its_gestalt_entries_and_flag_bits() {
         Err(Error::Unsupported(_))
     ));
 }
+
+/// A reader over a campaign's augmented `single_player_shared.map`
+/// (`crate::bank`): every chunk it is asked for names that file.
+struct SharedCache<'a>(&'a [u8]);
+impl tags::sound::ResourceReader for SharedCache<'_> {
+    fn check(&self, p: RawPointer, size: u32) -> tags::Result<()> {
+        assert_eq!(p.file, ResourceFile::SinglePlayerShared);
+        assert!(p.offset as usize + size as usize <= self.0.len());
+        Ok(())
+    }
+    fn read_raw(&mut self, p: RawPointer, size: u32) -> tags::Result<Vec<u8>> {
+        Ok(self.0[p.offset as usize..][..size as usize].to_vec())
+    }
+}
+
+/// A sound installed with a sound bank keeps its samples out of the map:
+/// the gestalt holds stored pointers naming `single_player_shared.map`,
+/// the map's own raw stays empty, and the bank's file carries exactly the
+/// bytes the pointers name, so the sound reads back as it converted.
+#[test]
+fn a_banked_sound_points_into_the_shared_cache() {
+    let (s, file) = invented(1);
+    let c = convert_sound(&s, &file).unwrap();
+    let expect: Vec<u8> = c
+        .ranges
+        .iter()
+        .flat_map(|r| &r.permutations)
+        .flat_map(|p| &p.chunks)
+        .flatten()
+        .copied()
+        .collect();
+    let bank = crate::bank::SoundBank::new(0x1000);
+    let mut set = TagSet::new(CacheType::Campaign, "s", "invented\\s");
+    let ids = crate::install_sounds_with(
+        &mut set,
+        vec![("a\\one".into(), c)],
+        Some(&bank),
+    )
+    .unwrap();
+    assert!(set.raw.is_empty(), "no sample bytes in the map");
+    let g = SoundGestalt::from_set(&set).unwrap();
+    assert!(g.chunks.iter().all(|c| matches!(&c.pointer,
+        ChunkPointer::Stored(p) if p & crate::bank::FILE_BITS == crate::bank::FILE_BITS)));
+    // The bank's file: the retail bytes as they are, then every chunk at
+    // the offset its pointer names.
+    let retail = vec![0x23u8; 0x1000];
+    let (bank_file, index) = bank.finish(&retail).unwrap();
+    assert_eq!(&bank_file[..0x1000], &retail[..]);
+    let mut named = Vec::new();
+    for c in &g.chunks {
+        let ChunkPointer::Stored(p) = c.pointer else {
+            unreachable!("checked above")
+        };
+        let at = (p & !crate::bank::FILE_BITS) as usize;
+        named.extend_from_slice(&bank_file[at..at + c.size as usize]);
+    }
+    assert_eq!(named, expect);
+    assert_eq!(index.chunks.len(), g.chunks.len());
+
+    // Built, the sound reads back through the gestalt as the engine finds
+    // it, its chunks streamed from the shared cache.
+    let (out, _) = set.build().unwrap();
+    let mut m = Map::from_reader(Cursor::new(&out[..])).unwrap();
+    let tg = tags::sound::Gestalt::read(&mut m).unwrap();
+    let mut read = Vec::new();
+    for id in ids {
+        let h = tags::sound::read_header(&mut m, id).unwrap();
+        let r = tg.resolve(&h).unwrap();
+        for p in r.ranges.iter().flat_map(|r| &r.permutations) {
+            read.extend(tg.read_encoded(p, &mut SharedCache(&bank_file)).unwrap());
+        }
+    }
+    assert_eq!(read, expect);
+}

@@ -23,7 +23,9 @@
 //! with the structure's next round.
 
 use h1map::{H1Map, TagRef};
-use h1sounds::looping::{Looping, SNDE, install_environment, install_looping};
+use h1sounds::looping::{
+    Looping, SNDE, install_environment, install_looping, install_looping_with,
+};
 use map::build::TagSet;
 use map::{FourCC, TagId};
 
@@ -218,8 +220,21 @@ impl Ambience {
 
     /// Adds every looping sound (with its sounds) and sound environment.
     pub fn install(&self, set: &mut TagSet) -> Result<Installed> {
+        self.install_with(set, None)
+    }
+
+    /// [`Self::install`] with the looping sounds' chunks stored in a
+    /// [`h1sounds::bank::SoundBank`] when there is one: a converted
+    /// campaign level's background sounds, kept out of the level's own
+    /// file (docs/halo1/sounds.md, "The sound bank").
+    pub fn install_with(
+        &self,
+        set: &mut TagSet,
+        bank: Option<&h1sounds::bank::SoundBank>,
+    ) -> Result<Installed> {
         let loops: Vec<Looping> = self.backgrounds.iter().map(|(_, l)| l.clone()).collect();
-        let ids = install_looping(set, &loops).map_err(|e| Error::Sound(e.to_string()))?;
+        let ids =
+            install_looping_with(set, &loops, bank).map_err(|e| Error::Sound(e.to_string()))?;
         let backgrounds = self
             .backgrounds
             .iter()

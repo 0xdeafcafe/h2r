@@ -791,8 +791,9 @@ pub fn fresh_root() -> Block {
 /// Writes the scenario layers into `set` (built from the base), leaving
 /// out what `lean` says ([`crate::Lean`]; object textures are left out in
 /// `lib.rs`). Unless `lean` leaves out the music, `music` caps the looping
-/// sounds' sample bytes (the map file's own bound) and `dialogue` the
-/// rebuilt bipeds' dialogue sounds'.
+/// sounds' sample bytes (the map file's own bound; with [`Options::bank`]
+/// their samples are not in this file, so every one goes in) and
+/// `dialogue` the rebuilt bipeds' dialogue sounds'.
 /// `bsps[k]` is Halo 1 BSP `k`, converted.
 #[allow(clippy::too_many_arguments)]
 pub fn write(
@@ -1211,6 +1212,7 @@ pub fn write(
                 } else {
                     music
                 },
+                opts.bank,
                 (!lean.leaves_out(crate::Lean::CutsceneData) && opts.cutscene_data)
                     .then_some(opts.cutscene_graphs),
                 crate::cutscenes::policy(opts, &h1.header().name.to_ascii_lowercase()),
@@ -1784,6 +1786,7 @@ fn install_scripts(
     level_data: bool,
     seat_table: bool,
     music: u64,
+    bank: Option<&h1sounds::bank::SoundBank>,
     cutscene_data: Option<bool>,
     cutscenes: h1scripts::compile::Cutscenes,
     aliases: &crate::h2assets::Aliases,
@@ -1840,7 +1843,8 @@ fn install_scripts(
     let (sounds, sounds_dropped) = install_named_sounds(h1, set, &c, max_sounds)?;
     // The looping sounds (`lsnd`: music and ambience) the scripts start,
     // found by the tag-name lookup below.
-    let (looping, looping_dropped, looping_bytes) = install_looping_sounds(h1, set, &c, music);
+    let (looping, looping_dropped, looping_bytes) =
+        install_looping_sounds(h1, set, &c, music, bank);
     // Animation graphs the cutscenes name, and their animation names
     // (crate::cutscenes).
     // Recorded animations (Halo 2 `scnr +0x110`), in Halo 1's order. Both
@@ -2012,15 +2016,20 @@ fn looping_names(h1: &H1Map, c: &h1scripts::compile::Compiled) -> Vec<String> {
 }
 
 /// Converts and installs the looping sounds the scripts name, in first-use
-/// order while their samples fit in `budget` bytes (0 installs none).
-/// Returns the installed tags, per sound left out why, and the sample bytes
-/// added. The ones that fit go in at once or none do (a failure leaves
-/// `set` as it was).
+/// order. With a [`SoundBank`] every one of them goes in: their samples
+/// live past a retail `single_player_shared.map` the whole campaign
+/// shares, not in the level's own file, so the map file's size bound
+/// leaves nothing out (`docs/halo1/sounds.md`, "The sound bank"). Without
+/// one they go in while their samples fit in `budget` bytes (0 installs
+/// none). Returns the installed tags, per sound left out why, and the
+/// sample bytes added to this map's own file. The ones that fit go in at
+/// once or none do (a failure leaves `set` as it was).
 fn install_looping_sounds(
     h1: &H1Map,
     set: &mut TagSet,
     c: &h1scripts::compile::Compiled,
     budget: u64,
+    bank: Option<&h1sounds::bank::SoundBank>,
 ) -> (Vec<TagId>, Vec<String>, u64) {
     let mut loops = Vec::new();
     let mut dropped = Vec::new();
@@ -2039,22 +2048,24 @@ fn install_looping_sounds(
                 continue;
             }
         };
-        let new: u64 = l
-            .sounds
-            .iter()
-            .filter(|(s, _)| !counted.contains(s))
-            .map(|(_, s)| sample_bytes(s))
-            .sum();
-        if bytes + new > budget {
-            dropped.push(format!("{n}: over the map file's size limit"));
-            continue;
+        if bank.is_none() {
+            let new: u64 = l
+                .sounds
+                .iter()
+                .filter(|(s, _)| !counted.contains(s))
+                .map(|(_, s)| sample_bytes(s))
+                .sum();
+            if bytes + new > budget {
+                dropped.push(format!("{n}: over the map file's size limit"));
+                continue;
+            }
+            bytes += new;
         }
-        bytes += new;
         counted.extend(l.sounds.iter().map(|(s, _)| s.clone()));
         loops.push(l);
     }
     match on_trial(set, |trial| {
-        h1sounds::looping::install_looping(trial, &loops)
+        h1sounds::looping::install_looping_with(trial, &loops, bank)
     }) {
         Ok(ids) => (ids, dropped, bytes),
         Err(e) => {

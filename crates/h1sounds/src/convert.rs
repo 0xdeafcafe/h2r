@@ -12,7 +12,11 @@
 //!    [`SoundGestalt`], adds the chunks to the [`TagSet`] as raw resources,
 //!    and returns the `snd!` as a [`Converted`] whose indices point at them.
 //!    [`install_sounds`] does this for a list of sounds and writes the
-//!    gestalt back.
+//!    gestalt back. The `_with` variants of both store the chunks in a
+//!    [`SoundBank`] instead — an augmented `single_player_shared.map` —
+//!    which a converted campaign level's looping sounds do, their samples
+//!    too long for the level map's own size bound (docs/halo1/sounds.md,
+//!    "The sound bank").
 //!
 //! Samples are copied as stored. A Halo 1 permutation chain (a permutation
 //! and the ones its `next` index continues with) becomes one Halo 2
@@ -23,6 +27,7 @@ use h1models::Converted;
 use map::build::{Block, TagSet};
 use map::{FourCC, TagId};
 
+use crate::bank::SoundBank;
 use crate::gestalt::{Chunk, ChunkPointer, SoundGestalt, blocks};
 use crate::h1::{Compression, Sound};
 use crate::{Error, Result, class};
@@ -324,6 +329,19 @@ impl ConvertedSound {
     /// Appends this sound's entries to `gestalt`, its chunks to `set` as raw
     /// resources, and returns its `snd!`.
     pub fn add_to(self, gestalt: &mut SoundGestalt, set: &mut TagSet) -> Result<Converted> {
+        self.add_to_with(gestalt, set, None)
+    }
+
+    /// [`Self::add_to`] with the chunks stored in a [`SoundBank`] instead
+    /// of the map's own raw when there is one: a looping sound of a
+    /// converted campaign level, which the level's file-size bound would
+    /// otherwise drop (docs/halo1/sounds.md, "The sound bank").
+    pub fn add_to_with(
+        self,
+        gestalt: &mut SoundGestalt,
+        set: &mut TagSet,
+        bank: Option<&SoundBank>,
+    ) -> Result<Converted> {
         let mut header = self.header;
         let playback = gestalt.push(blocks::PLAYBACKS, &self.playback, true);
         put_u16(&mut header, snd::PLAYBACK, index16("playback", playback)?);
@@ -366,9 +384,12 @@ impl ConvertedSound {
                 let count = index16("chunk count", p.chunks.len())?;
                 for c in p.chunks {
                     let len = c.len() as u32;
-                    let raw = set.add_raw(c, CHUNK_ALIGN);
+                    let pointer = match bank {
+                        Some(b) => ChunkPointer::Stored(b.pointer(&c)?),
+                        None => ChunkPointer::Local(set.add_raw(c, CHUNK_ALIGN)),
+                    };
                     gestalt.chunks.push(Chunk {
-                        pointer: ChunkPointer::Local(raw),
+                        pointer,
                         size: len,
                         runtime: u32::MAX,
                     });
@@ -408,10 +429,20 @@ pub fn install_sounds(
     set: &mut TagSet,
     sounds: Vec<(String, ConvertedSound)>,
 ) -> Result<Vec<TagId>> {
+    install_sounds_with(set, sounds, None)
+}
+
+/// [`install_sounds`] with every chunk stored in a [`SoundBank`] when
+/// there is one ([`ConvertedSound::add_to_with`]).
+pub fn install_sounds_with(
+    set: &mut TagSet,
+    sounds: Vec<(String, ConvertedSound)>,
+    bank: Option<&SoundBank>,
+) -> Result<Vec<TagId>> {
     let mut gestalt = SoundGestalt::from_set(set)?;
     let mut ids = Vec::with_capacity(sounds.len());
     for (name, s) in sounds {
-        let c = s.add_to(&mut gestalt, set)?;
+        let c = s.add_to_with(&mut gestalt, set, bank)?;
         ids.push(
             c.install(set, &name)
                 .map_err(|e| Error::Invalid(e.to_string()))?,

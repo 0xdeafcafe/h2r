@@ -1413,16 +1413,47 @@ fn every_campaign_sound_plays_what_it_was_made_from() {
         let base_name = h1campaign::base_for(level);
         let base_bytes = h2_bytes(base_name);
         let mut base = Map::from_reader(Cursor::new(base_bytes.clone())).unwrap();
+        // The campaign's sound bank: the level's looping sounds (music and
+        // ambience) store their samples past the retail
+        // `single_player_shared.map`, and every one of them converts
+        // instead of the ones that fit the map file's size limit
+        // (docs/halo1/sounds.md, "The sound bank").
+        let sp_shared = h2_bytes("single_player_shared");
+        let bank = h1sounds::bank::SoundBank::new(sp_shared.len() as u32);
         let opts = Options {
             scripts: Some(&s),
             sounds: 1000,
             donors: Some(&donors),
+            bank: Some(&bank),
             ..Default::default()
         };
         let done = h1campaign::convert(&h1, &mut base, &opts).unwrap();
+        let (bank_file, bank_index) = bank.finish(&sp_shared).unwrap();
         let mut retail: Vec<(&str, &[u8])> = vec![(base_name, &base_bytes)];
         retail.extend(donors.maps.iter().map(|(n, b)| (n.as_str(), b.as_slice())));
-        let a = h1sounds::audit::audit(&done.bytes, Some(&h1), &retail).unwrap();
+        let a = h1sounds::audit::audit_with(&done.bytes, Some(&h1), &retail, Some(&bank_file))
+            .unwrap();
+        // The bank's file is the retail one with the chunks past it and the
+        // copy-time checksum recomputed; its index names every chunk.
+        assert_eq!(&bank_file[..sp_shared.len()], &sp_shared[..]);
+        assert_eq!(
+            u32::from_le_bytes(bank_file[0x2d0..0x2d4].try_into().unwrap()),
+            map::checksum::engine_xor(&bank_file[0x800..])
+        );
+        assert!(bank_index.chunks.iter().all(|c| c.offset as usize >= sp_shared.len()));
+        println!(
+            "{level} on {base_name}: {} sounds, {} from Halo 1 ({:.1} s), {} retail, {} permutations; \
+             {} unmatched {:?}; sound bank {} chunks ({:.1} MiB past retail)",
+            a.sounds,
+            a.converted,
+            a.converted_seconds,
+            a.retail,
+            a.permutations,
+            a.unmatched.len(),
+            &a.unmatched[..a.unmatched.len().min(10)],
+            bank_index.chunks.len(),
+            (bank_file.len() - sp_shared.len()) as f64 / 1048576.0
+        );
         println!(
             "{level} on {base_name}: {} sounds, {} from Halo 1 ({:.1} s), {} retail, {} permutations; \
              {} unmatched {:?}",
@@ -1436,6 +1467,20 @@ fn every_campaign_sound_plays_what_it_was_made_from() {
         );
         for p in &a.problems {
             println!("  {p}");
+        }
+        // Nothing is left out for the map file's size limit any more: with
+        // the bank, every looping sound the scripts name converts.
+        if done.report.lean == h1campaign::Lean::Everything {
+            let dropped = done
+                .report
+                .scenario
+                .scripts
+                .as_ref()
+                .map_or(&[], |s| &s.looping_dropped);
+            assert!(
+                dropped.is_empty(),
+                "{level}: looping sounds left out: {dropped:?}"
+            );
         }
         if !a.problems.is_empty() || !a.unmatched.is_empty() {
             failed.push(format!(

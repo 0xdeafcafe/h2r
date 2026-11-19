@@ -20,6 +20,11 @@
 //!
 //! A sound whose chunks point at the wrong bytes, or at too few, plays as a
 //! short buzz that repeats; this finds it without running the game.
+//!
+//! A chunk's pointer can name another cache file (`shared`,
+//! `single_player_shared`); [`audit_with`] reads the single-player shared
+//! one from bytes the caller gives — a converted campaign level built with
+//! a sound bank (`crate::bank`) keeps its looping sounds' chunks there.
 
 use std::collections::HashMap;
 use std::io::Cursor;
@@ -106,10 +111,14 @@ fn block_len(header: &[u8]) -> Option<usize> {
 
 /// Every `snd!` of `bytes` (a whole map file) by name, read through its
 /// gestalt; what can't be read goes to `problems`, prefixed with `label`.
+/// `shared`, when given, is the whole `single_player_shared.map` the map's
+/// campaign plays with (a converted level's augmented one, `bank`): a
+/// chunk that names it is read from there.
 fn read_map(
     bytes: &[u8],
     label: &str,
     problems: &mut Vec<String>,
+    shared: Option<&[u8]>,
 ) -> Result<HashMap<String, Read>> {
     let mut m = Map::from_reader(Cursor::new(bytes))?;
     let mut out = HashMap::new();
@@ -189,19 +198,32 @@ fn read_map(
                         unreachable!("decoded chunks are stored pointers")
                     };
                     stored.push((ptr, len));
-                    if ptr >> 30 != 0 {
-                        local = None;
-                        continue;
-                    }
-                    let at_byte = ptr as usize;
-                    match bytes.get(at_byte..at_byte + len as usize) {
+                    // A chunk's top two bits name its file: this one, or
+                    // one of the shared caches. The single-player shared
+                    // cache can be given; anything else is only recorded.
+                    let file = match ptr >> 30 {
+                        0 => bytes,
+                        3 => match shared {
+                            Some(s) => s,
+                            None => {
+                                local = None;
+                                continue;
+                            }
+                        },
+                        _ => {
+                            local = None;
+                            continue;
+                        }
+                    };
+                    let at_byte = (ptr & 0x3fff_ffff) as usize;
+                    match file.get(at_byte..at_byte + len as usize) {
                         Some(s) => {
                             if let Some(l) = local.as_mut() {
                                 l.extend_from_slice(s);
                             }
                         }
                         None => {
-                            bad(format!("{at}: chunk at {ptr:#x}+{len:#x} past the file"));
+                            bad(format!("{at}: chunk at {ptr:#x}+{len:#x} past its file"));
                             local = None;
                         }
                     }
@@ -248,13 +270,42 @@ fn shared_fields(h: &[u8; snd::LEN]) -> Vec<u8> {
 /// against the same-named sound in the first of `retail` (`(label, map
 /// bytes)`) that has one.
 pub fn audit(built: &[u8], h1: Option<&H1Map>, retail: &[(&str, &[u8])]) -> Result<Audit> {
+    audit_with(built, h1, retail, None)
+}
+
+/// [`audit`] with the campaign's `single_player_shared.map` given whole
+/// (`shared`): a converted level built with a sound bank
+/// (`crate::bank`) keeps its looping sounds' chunks there, past the
+/// retail bytes, and this reads them back from it as the engine does,
+/// from the loaded cache file the pointer's top bits name.
+pub fn audit_with(
+    built: &[u8],
+    h1: Option<&H1Map>,
+    retail: &[(&str, &[u8])],
+    shared: Option<&[u8]>,
+) -> Result<Audit> {
     let mut a = Audit::default();
-    let out = read_map(built, "built", &mut a.problems)?;
+    // The copy machine compares the checksum at +0x2d0 with the XOR of
+    // everything it copies (docs/formats/map-format.md, "Checksum
+    // evidence"); an augmented single_player_shared.map that got it wrong
+    // would never load, so say so here rather than at boot.
+    if let Some(s) = shared
+        && s.len() >= 0x800
+    {
+        let at = u32_at(s, 0x2d0);
+        if at != map::checksum::engine_xor(&s[0x800..]) {
+            a.problems.push(
+                "single_player_shared.map: checksum at +0x2d0 does not cover the whole file"
+                    .into(),
+            );
+        }
+    }
+    let out = read_map(built, "built", &mut a.problems, shared)?;
     a.sounds = out.len();
     let mut sources = Vec::with_capacity(retail.len());
     for (label, bytes) in retail {
         let mut ignored = Vec::new();
-        sources.push(read_map(bytes, label, &mut ignored)?);
+        sources.push(read_map(bytes, label, &mut ignored, shared)?);
     }
     let mut names: Vec<&String> = out.keys().collect();
     names.sort();

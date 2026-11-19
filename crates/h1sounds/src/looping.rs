@@ -282,6 +282,17 @@ impl Looping {
 /// looping sound, or the set's own `lsnd` of that path. Returns the
 /// looping sounds' datums, in order.
 pub fn install_looping(set: &mut TagSet, loops: &[Looping]) -> Result<Vec<TagId>> {
+    install_looping_with(set, loops, None)
+}
+
+/// [`install_looping`] with the sounds' chunks stored in a [`SoundBank`]
+/// when there is one ([`crate::install_sounds_with`]): a converted
+/// campaign level's looping sounds, kept out of the level's own file.
+pub fn install_looping_with(
+    set: &mut TagSet,
+    loops: &[Looping],
+    bank: Option<&crate::bank::SoundBank>,
+) -> Result<Vec<TagId>> {
     let snd = FourCC(*b"snd!");
     let mut ids: HashMap<String, TagId> = HashMap::new();
     let mut new = Vec::new();
@@ -298,7 +309,7 @@ pub fn install_looping(set: &mut TagSet, loops: &[Looping]) -> Result<Vec<TagId>
     }
     let names: Vec<String> = new.iter().map(|(n, _)| n.clone()).collect();
     if !new.is_empty() {
-        let got = crate::install_sounds(set, new)?;
+        let got = crate::install_sounds_with(set, new, bank)?;
         ids.extend(names.into_iter().zip(got));
     }
     let mut out = Vec::with_capacity(loops.len());

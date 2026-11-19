@@ -14,6 +14,8 @@ map.workspace = true
 # `Converted { group, root, raw }` and `install`, shared with the other converters.
 h1models = { path = "../h1models" }
 thiserror.workspace = true
+# Sound bank chunks are addressed by content (crates/h1sounds/src/bank.rs).
+sha2 = "0.10"
 
 [dev-dependencies]
 xiso.workspace = true

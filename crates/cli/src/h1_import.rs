@@ -600,6 +600,12 @@ struct DiscConverter {
     donors: OnceLock<Result<h1campaign::donor::Donors, String>>,
     /// The disc's `ui.map` (the maps' cards).
     card_ui: OnceLock<Option<H1Map>>,
+    /// The campaign's sound bank (`h1sounds::bank`), grown in place
+    /// across runs: the level's looping sounds live in it.
+    bank: OnceLock<Result<Arc<h1sounds::bank::SoundBank>, String>>,
+    /// The bank's chunks at the last [`Self::write_sound_bank`], so an
+    /// unchanged bank isn't written again.
+    bank_written: Mutex<usize>,
     /// The Halo 2 maps' bytes by name, each read once.
     bases: Mutex<BTreeMap<String, Arc<OnceLock<Result<Arc<Vec<u8>>, String>>>>>,
     /// The Halo 1 maps read, by name, while a job still to finish
@@ -628,6 +634,8 @@ impl DiscConverter {
             scripting: OnceLock::new(),
             donors: OnceLock::new(),
             card_ui: OnceLock::new(),
+            bank: OnceLock::new(),
+            bank_written: Mutex::new(0),
             bases: Mutex::new(BTreeMap::new()),
             h1_maps: Mutex::new(BTreeMap::new()),
             write: Mutex::new(()),
@@ -684,6 +692,88 @@ impl DiscConverter {
             .as_ref()
             .map_err(|e| anyhow!("{e}"))?;
         Ok(bytes.clone())
+    }
+
+    /// The campaign's sound bank, read once: the bank a previous import
+    /// wrote under the campaign's folder when its file still begins with
+    /// this disc's `single_player_shared.map` (grown in place, so levels
+    /// already converted keep their chunk pointers), else a new one.
+    fn sound_bank(&self) -> Result<Arc<h1sounds::bank::SoundBank>> {
+        let cell = self.bank.get_or_init(|| {
+            let retail = match self.h2_base_file("single_player_shared") {
+                Ok(b) => b,
+                Err(e) => return Err(format!("{e:#}")),
+            };
+            let dir = campaign_dir(&self.data);
+            let read = |name: &str| std::fs::read(dir.join(name));
+            let bank = match (read(h1sounds::bank::FILE_NAME), read(h1sounds::bank::INDEX_NAME)) {
+                (Ok(file), Ok(index)) => match std::str::from_utf8(&index)
+                    .map_err(|e| e.to_string())
+                    .and_then(|t| h1sounds::bank::Index::parse(t).map_err(|e| e.to_string()))
+                {
+                    Ok(index) => match h1sounds::bank::SoundBank::load_matching(&retail, &file, &index)
+                    {
+                        Ok(b) => {
+                            eprintln!(
+                                "halo1: sound bank: {} chunks from an earlier import, {} bytes",
+                                index.chunks.len(),
+                                file.len() - retail.len()
+                            );
+                            b
+                        }
+                        Err(e) => {
+                            eprintln!("halo1: sound bank: an earlier import's bank is unusable ({e}); starting a new one");
+                            h1sounds::bank::SoundBank::new(retail.len() as u32)
+                        }
+                    },
+                    Err(e) => {
+                        eprintln!("halo1: sound bank: an earlier import's index is unreadable ({e}); starting a new one");
+                        h1sounds::bank::SoundBank::new(retail.len() as u32)
+                    }
+                },
+                _ => h1sounds::bank::SoundBank::new(retail.len() as u32),
+            };
+            Ok(Arc::new(bank))
+        });
+        cell.clone().map_err(|e| anyhow!("{e}"))
+    }
+
+    /// Writes the sound bank's map and index under the campaign's folder,
+    /// whole and through a rename, when the bank grew since the last
+    /// write. Called with the write lock held, before the level map that
+    /// names its chunks: a level is never on disk pointing at chunks the
+    /// bank file doesn't hold.
+    fn write_sound_bank(&self) -> Result<()> {
+        let bank = self.sound_bank()?;
+        let mut written = self.bank_written.lock().unwrap_or_else(|e| e.into_inner());
+        let chunks = bank.chunks();
+        if chunks == *written {
+            return Ok(());
+        }
+        let retail = self.h2_base_file("single_player_shared")?;
+        let (file, index) = bank
+            .finish(&retail)
+            .with_context(|| "writing the campaign's sound bank")?;
+        let dir = campaign_dir(&self.data);
+        std::fs::create_dir_all(&dir).with_context(|| dir.display().to_string())?;
+        for (name, bytes) in [
+            (h1sounds::bank::FILE_NAME, &file[..]),
+            (h1sounds::bank::INDEX_NAME, index.to_text().as_bytes()),
+        ] {
+            let to = dir.join(name);
+            let tmp = to.with_extension("tmp");
+            std::fs::write(&tmp, bytes)
+                .and_then(|_| std::fs::rename(&tmp, &to))
+                .with_context(|| to.display().to_string())?;
+        }
+        *written = chunks;
+        h1map::phase::note(|| {
+            format!(
+                "sound bank: {chunks} chunks, {:#x} bytes past the retail single_player_shared.map",
+                file.len() - retail.len()
+            )
+        });
+        Ok(())
     }
 
     /// A multiplayer job's map, converted and built as the import writes
@@ -780,10 +870,12 @@ impl DiscConverter {
             .unwrap_or_else(|e| e.into_inner())
             .get(level)
             .map(|e| e.campaign.clone());
+        let bank = self.sound_bank()?;
         let opts = h1campaign::Options {
             assets,
             shared: shared.as_deref(),
             base_file: Some(&base_file),
+            bank: Some(bank.as_ref()),
             ..h1_cmd::campaign_options(scripting, Some(donors))
         };
         let done = h1map::phase::time("convert", || h1campaign::convert(h1, &mut base, &opts))?;
@@ -831,6 +923,8 @@ impl DiscConverter {
                 let name = file.file_name().context("the variant's file")?;
                 let _w = self.lock_write();
                 h1map::phase::time("write", || -> Result<()> {
+                    // The bank before the map: the map's sounds name it.
+                    self.write_sound_bank()?;
                     self.out(dir.to_path_buf())?
                         .write(&[name.to_string_lossy().into_owned()], &done.bytes)?;
                     Ok(())
@@ -845,6 +939,8 @@ impl DiscConverter {
                 let dir = campaign_dir(&self.data);
                 let _w = self.lock_write();
                 h1map::phase::time("write", || -> Result<()> {
+                    // The bank before the map: the map's sounds name it.
+                    self.write_sound_bank()?;
                     h1_cmd::write_campaign_level(
                         &self.out(dir.clone())?,
                         &dir,

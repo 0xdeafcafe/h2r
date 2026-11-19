@@ -200,6 +200,13 @@ pub struct Options<'a> {
     /// The base's whole file, when the caller holds it: read in place
     /// rather than copied out of the base map.
     pub base_file: Option<&'a [u8]>,
+    /// The sound bank this campaign's levels share (`h1sounds::bank`):
+    /// with one, the looping sounds the scripts name and the BSPs'
+    /// background sounds store their samples past a retail
+    /// `single_player_shared.map` instead of the level's own file, so
+    /// none is dropped for the map file's size bound. `None` (the
+    /// default) keeps every sample in the level, as multiplayer does.
+    pub bank: Option<&'a h1sounds::bank::SoundBank>,
 }
 
 /// What a level's conversions onto one base share ([`Options::shared`]):
@@ -306,6 +313,7 @@ impl Default for Options<'_> {
             assets: h2assets::Assets::Halo1,
             shared: None,
             base_file: None,
+            bank: None,
         }
     }
 }
@@ -359,6 +367,11 @@ pub struct Report {
     pub ambience_bytes: u64,
     /// Background sounds left silent for the map file's size limit.
     pub ambience_silenced: Vec<String>,
+    /// The sound bank this conversion stored looping sound samples in
+    /// ([`Options::bank`]): the chunks it holds after this level (shared
+    /// with the campaign's other levels), and the bytes past the retail
+    /// `single_player_shared.map`.
+    pub bank: (usize, u64),
 }
 
 /// The lean ladder: what a conversion of a level over the engine's tag
@@ -428,6 +441,13 @@ impl std::fmt::Display for Report {
             self.ambience_bytes,
             self.lean
         )?;
+        if self.bank.0 > 0 {
+            writeln!(
+                f,
+                "  sound bank: {} chunks, {:#x} bytes past the retail single_player_shared.map",
+                self.bank.0, self.bank.1
+            )?;
+        }
         if let Some(s) = &self.scratch {
             writeln!(
                 f,
@@ -648,9 +668,14 @@ fn convert_with<R: Read + Seek>(
     set.slots[slot].name = Some(scenario_path.clone());
 
     // The level's background sounds and sound environments, which the
-    // clusters and the scenario's palettes name.
+    // clusters and the scenario's palettes name. With a sound bank, their
+    // samples live in the campaign's `single_player_shared.map`, not this
+    // file.
     let raw_before: u64 = set.raw.iter().map(|r| r.bytes.len() as u64).sum();
-    let sounds = phase::time("ambience", || ambience.install(&mut set))?.bounded();
+    let sounds = phase::time("ambience", || {
+        ambience.install_with(&mut set, opts.bank)
+    })?
+    .bounded();
     report.ambience_bytes = set.raw.iter().map(|r| r.bytes.len() as u64).sum::<u64>() - raw_before;
 
     // Halo 1's indoor fog, if the level has one, is the scenario's
@@ -709,6 +734,9 @@ fn convert_with<R: Read + Seek>(
             &mut report,
         )
     })?;
+    if let Some(b) = opts.bank {
+        report.bank = (b.chunks(), b.region_bytes());
+    }
 
     // Built without the bound, so an overflow can say by how much and
     // where the bytes went.
