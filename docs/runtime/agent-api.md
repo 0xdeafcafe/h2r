@@ -774,6 +774,47 @@ How it behaves (**Code**, with tests in `crates/agent`, `crates/xapi` and
   parted) and `past_end` (left live). One recording or replay at a time.
   A replay only reproduces a run from the same starting state: until
   `state.*` exists, that means starting both from the same boot.
+
+#### `input.host`: the host controllers
+
+`input.host` (`h2 agent hostpads`, read-only, no params) shows the
+controllers the host's input layer has, before the game sees anything.
+Use it when a pad, a button or the touchpad doesn't do what it should.
+It answers from the last input sync (`syncs` counts them), which runs
+whenever the game reads its pads. Boot adds it wherever the game has XAPI
+input (`crates/boot/src/debug_menu_glue.rs`, `crates/agent/src/hostpads.rs`).
+
+- `devices`: each controller as its own backend reads it, before any
+  merging (`input::HostBackend::devices`). From Apple GameController:
+  `backend` (`game-controller`), `id`, `name` (the vendor name), `profile`
+  (the extended profile's class: `dualsense`, `dualshock4`, `extended`, or
+  `micro` for an Apple TV remote), `category` (the framework's product
+  category, such as "DualShock 4"), and the state below. Other backends
+  don't describe their pads yet; theirs show under `pads`.
+- `pads`: each pad the input manager polled, as the debug menu's gate is
+  handed it: `backend` (the top-level one, such as `keyboard-fallback`),
+  `key` (backend index and id, the gate's key), `name`, `physical`, `port`
+  (0 to 3, or null) and the state. With the keyboard on, player one is a
+  single pad that merges the first controller with the keyboard.
+- The state, in both lists: `touchpad` (null without one, else `click`,
+  and `primary` and `secondary` as `[x, y]` from -1 to 1 with +y up, or
+  null for a lifted finger), `buttons` (`south east west north
+  left_bumper right_bumper back start left_stick right_stick dpad_up
+  dpad_down dpad_left dpad_right`; GameController's menu button is
+  `start`, Options is `back`), `left_stick`, `right_stick`, `triggers`.
+- `gate`: null with no debug menu, else `open`, `syncs`, and per pad `key`,
+  `touchpad`, `click`, `chord` (click and Start together), `chord_pending`
+  (Start held back waiting for the click), `opened_by_press` (the click
+  that opened the menu is still down) and `latched` (buttons hidden until
+  let go) ([debug-menu.md](debug-menu.md)).
+- `notes`: where a touchpad goes missing, in words: a plain `extended`
+  profile, a DualShock 4 profile without touchpad elements, a touchpad
+  under `devices` but on no pad the gate sees, no debug menu.
+
+```sh
+H2_AGENT=/tmp/h2-play.sock h2 play           # then, holding the touchpad down:
+h2 agent --socket /tmp/h2-play.sock hostpads
+```
 - **Capture.** `profile.capture {ticks | ms, budget_ms, spikes, sample}`
   keeps every frame-stats row (`timeline::phase`, the numbers
   `H2_FRAME_STATS` prints) over the window, then answers: `frames`, `fps`,
