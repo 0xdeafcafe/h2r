@@ -1,13 +1,11 @@
 # Replay fidelity: what the viewer gets, and a better track (design)
 
-The web viewer at live.forbes.red replays ended games from recorded
-telemetry frames, in 3D and on the 2D map. It works, but it isn't yet the
-best picture of a game: campaign replays flickered, motion is coarse, and
-shots, jumps and deaths land up to a second away from where they really
-happened. This page measures what we record today, says why the replay
-looks the way it does, and proposes a denser, tick-exact "spectator track"
-for both homes. **Only the game clock (below) is built.** The rest is a
-proposal for review.
+The web viewer replays recorded telemetry in 3D and on the 2D map.
+Current recordings use game ticks and independent chunks of up to 150
+samples. After archive publication, the viewer seeks into independently
+decodable H2AR segments. Older one-frame-per-second recordings are still
+readable. The measurements below preserve the baseline that motivated
+the spectator track proposal. [Capture and packed formats](live-telemetry.md#packed-frames)
 
 It sits next to [theater.md](../game/theater.md), which records a game's
 *inputs* for an exact re-simulation. The spectator track here records what
@@ -43,8 +41,8 @@ Fixed at both ends:
   still rewind. The timeline reads frames and events in log order, and
   starts each run just after the one before. Given the events' own
   `GameFrame`s it places every event exactly, and a kill logged before its
-  run's first recorded frame starts that run itself. The replay now reads
-  frames only from `/frames` (step 2), so events are placed into the
+  run's first recorded frame starts that run itself. The legacy replay reader fetches
+  those frames from `/frames`, so events are placed into the
   frames' runs by their order and ticks (`GameClock.place`), which is
   exact except for an event in the second before a run's first frame. `ReplayTimeline.cuts`
   lists where the runs begin. Players at exactly the origin facing +x (the
@@ -59,7 +57,25 @@ session.rs, and "a recording whose ticks run backwards" in
 is the engine's tick plus the offset for the run it's in. Every later
 proposal on this page uses it.
 
-## What we capture today (measured)
+## Current recording and playback
+
+The game samples on even ticks (15 Hz at the retail 30 Hz tick rate).
+New captures keep the samples admitted by the game and server throttle
+in chunks. Shots, actions and hits carry timing offsets where available.
+Device travel is tracked separately from world poses. A delta omits quiet
+devices and a complete machine-aware key seeds their last known travel.
+
+The live wire uses v8 when negotiated. The recorder currently writes
+v7 in H2CK chunks, and the archive reader also accepts sources with a
+mix of v7 and v8 records. The live codec does not
+change the sampling rate or the captured field grids. The same decoded
+frames go into H2AR for finished games. A segment's index can seed device
+travel at its start even if the first frame is sparse. The viewer holds
+known travel between updates and starts fresh across cuts and rewinds.
+[Live wire and archive handoff](live-telemetry.md#packed-frames) ·
+[Archive API](live-api.md#finished-replay-archives)
+
+## Original 1 Hz recording (measured on 2026-11-18)
 
 From the code, and from four campaign games and the frame API read on
 2026-11-18 (`GET /v1/games/{id}/frames`, `/v1/events?stream=game-…`).
@@ -148,7 +164,7 @@ bytes. The players, the part people watch, cost almost nothing.
   (a crash or a quit, most likely). Worth a look on its own; it's out of
   scope here.
 
-## Why the replay looks the way it does
+## What the 1 Hz recording looked like
 
 With one sample a second, at uneven times:
 
@@ -217,7 +233,7 @@ and a velocity, sent like vehicles. Fast bullets stay synthesized from
 | actors within 30 units of a player | 15 Hz | |
 | actors further away | 5 Hz | the existing nearest-first order picks who's near |
 | projectiles | 30 Hz while they exist | a few at once |
-| machines, scenery | when they change | today the whole set every recorded second |
+| machines, scenery | when they change | the original recorder repeated them every recorded second |
 
 The game reads every tick already. Sending players every tick means
 building a frame every tick (about 15–60 µs on the worker today, under
@@ -370,11 +386,11 @@ work above. What differs from the plan:
   Steps 1 to 4 above need the codec to know the fields, so they are a
   codec 2, written against the frame version once it settles. The header's
   codec byte lets old and new chunks sit side by side.
-- **Each chunk's first frame lists every machine** (as recorded frames
-  did), so a reader that starts at any chunk has every door.
-- **`GameFrame` recording stopped** for new frames and the JSON `/frames`
-  read is gone; the packed `/frames` read stays for older games. The
-  viewer reads the chunks and falls back to `/frames` when a game has none.
+- **Each chunk starts with a key.** It repeats the latest known machine
+  poses and travel so a reader can start there.
+- **`GameFrame` recording stopped** for new frames. The viewer reads
+  chunks and uses the legacy `/frames` endpoint for games recorded before
+  chunks. The endpoint still has a JSON view for those games.
 
 Measured and expected sizes:
 
@@ -384,7 +400,7 @@ Measured and expected sizes:
 | chunk raw, a minute at 15 Hz | about 260 KB | about 800 KB | 1.56 MB (measured) |
 | stored (deflate) | about 0.85–0.9× raw: 220–240 KB | 700–750 KB | 0.93× (measured) |
 | target | 100 KB | 120 KB | |
-| today: `GameFrame` log events a minute (1 Hz) | about 190 KB | about 550 KB | |
+| original `GameFrame` log events a minute (1 Hz) | about 190 KB | about 550 KB | |
 
 The first two columns are estimates from `pack_tests`' per-frame sizes;
 `cargo test -p live-proto --release chunk::tests::chunk_sizes_per_minute
@@ -671,11 +687,10 @@ Each step is test-first and runs in both homes.
    API with the same visibility check as `/frames` (decided), the chunk
    list endpoint, the compressed chunk codec and its benches, and the
    parity case. **First cut done** ([Chunks as built](#chunks-as-built-first-cut-2026-11-18)):
-   recording, the index, the reads, codec 1 (deflate), `GameFrame`
-   recording and JSON `/frames` retired, the viewer on chunks. Left: codec
-   2 (steps 1–4 of Compression) and the parity case. Then retire `GameFrame` recording for new games, and
-   **remove the public JSON `/frames` read** (decided: the viewer is its
-   only user). The packed `/frames` read stays for older games.
+   recording, the index, reads, codec 1 (deflate) and chunk playback.
+   New recordings use chunks. H2AR now provides the separate compressed,
+   seekable format for finished games. The legacy `/frames` read still
+   serves older recordings. [Archive migration](replay-migration.md)
 6. **Viewer:** the chunk reader, Hermite sampling, one-shots on their tick,
    and live extrapolation.
 
@@ -684,8 +699,8 @@ Each step is test-first and runs in both homes.
 - **Retention:** keep every game at full detail. Put the effort into
   compression ([Compression](#compression-decided-the-work-goes-here)),
   with byte and decode-time targets proved by benches.
-- **JSON `/frames`:** removed once chunks exist. The packed read stays for
-  games recorded before them.
+- **Legacy `/frames`:** the viewer uses chunks or H2AR for newer recordings.
+  The legacy endpoint serves older games in packed or JSON form.
 - **Chunk visibility:** chunks are read through the API with the same
   check as `/frames` (friends-only co-op games stay private), never from a
   public bucket URL.

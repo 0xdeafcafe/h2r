@@ -1,6 +1,6 @@
 # Migrating finished game recordings
 
-`h2 live frames migrate` scans the admin recording inventory in pages of 32. Each step reads a bounded segment from a finished game, decodes its original records, and verifies that the archive reproduces every decoded frame. Sources include v1–v7 packed streams, H2CK chunks, and signed GameFrame rows containing JSON fields or base64 keyframes. A game can have several source types. Historical coordinates and directions retain the exact values their original decoder produced.
+`h2 live frames migrate` scans the admin recording inventory in pages of 32. Each step reads a bounded segment from a finished game, decodes its original records, and verifies that the archive reproduces every decoded frame. Sources include v1–v8 packed streams, H2CK chunks, and signed GameFrame rows containing JSON fields or base64 keyframes. A game can have several source types. Historical coordinates and directions retain the exact values their original decoder produced. The published index records machine travel seeds per segment for accurate seeks on sparse frames. [Archive API](live-api.md#finished-replay-archives)
 
 The local server and Cloudflare Worker expose the same admin operations. Use an installed CLI and server/Worker release with replay archives. The local commands below sign with the local server operator key. For a different server directory, pass `--data DIR`. For production set `H2_LIVE_ADMIN` to the gamertag of a locally held admin account registered on that server.
 
@@ -64,4 +64,4 @@ Rollback checks the two digests against the current game pointer and records the
 h2 live frames rollback "${GAME_ID:?set the game ID}" --archive-sha256 "${ARCHIVE_SHA256:?set the archive digest}" --backup-sha256 "${BACKUP_SHA256:?set the backup digest}" --server https://live.forbes.red --as "${H2_LIVE_ADMIN:?set the local admin gamertag}"
 ```
 
-For local rollback use the local server URL and the operator's `--data` directory. Keep the backup prefix available after rollback. Runtime decoder retirement and backup lifecycle changes are separate rollout steps gated on the operator's production verification. At that gate, the planned ingest policy is to reject v1–v6 with an upgrade-required message and accept v7 from reinstalled clients.
+For local rollback use the local server URL and the operator's `--data` directory. Keep the backup prefix available after rollback. Runtime decoder retirement and backup lifecycle changes are separate rollout steps gated on the operator's production verification. At that gate, the planned ingest policy is to reject v1–v6 with an upgrade-required message and continue accepting v7 and negotiated v8.

@@ -4,6 +4,14 @@ This document records the original design, implementation traces and
 outstanding game checks. The player-options checks are below. Section 11
 lists the original multiplayer checks.
 
+Navigation generator 5 routes through lifts and teleporters, including
+converted Halo 1 one-way exits. Bots build pickup beliefs from sight and
+dated teammate reports, choose firing positions and investigate sounds.
+Seeded personality traits shape those choices and match events change
+temperament. See [Navigation](#32-navigation),
+[Belief and map knowledge](#belief-and-map-knowledge) and
+[Personality and temperament](#personality-and-temperament).
+
 What we want: multiplayer bots ("Clankers") that play Halo 2 multiplayer by
 the game's own rules. They can be added to a custom game from Game Setup.
 They can also fill a Live match in **Clankermatch**, a matchmaking row that
@@ -811,6 +819,26 @@ and its aim searched until it goes off at the target; the bot throws only
 when one does (built: `bots::grenades`, "Built: weapon skill" in §10).
 The numbers in the table are starting points; tuning them needs runs
 (§11).
+
+#### Phantom aim diagnosis and next steps
+
+In the Midship replay on 2026-11-19
+(`531b5da3ceab388417c044afcf18e01a`), four phantoms fired 2,231 shots.
+They dealt positive damage to opponents on 14 bullet hits and 9 melee
+hits. Three local Clankers fired 1,372 shots and landed 236 bullet hits.
+The hits show that phantom actions reached the host.
+
+The integrated phantom adapter turns a half-stick input at about 54°/s.
+The local Midship response is about 9°/s yaw or 5°/s pitch at the same
+deflection before assist. The phantom's aim-assist record was also
+empty. Treat the turn response and assist as separate findings. Match
+the two paths before using their hit rates to tune the brain.
+
+The shared pad-to-action path for local and phantom seats is in progress.
+Clanker Training needs phantom seats before aim tuning so the comparison
+includes the remote action path. Compare the hand-written aim with a
+planned hand-built aim net in simulation. Use matched maps, lineups and
+seeds and record results per seat. [Simulation coverage](../runtime/sim.md#more-than-four)
 
 ### 3.5 Emotes (the teabag layer)
 

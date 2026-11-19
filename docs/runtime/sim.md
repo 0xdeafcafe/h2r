@@ -217,8 +217,11 @@ distributed would change every Split Screen game's simulation (bots.md
 decided against it). So 5 to 16 bots means hosting a System Link custom
 game through the menus, as `h2 bots test` drives the Live one
 (`crates/cli/src/bots_drive.rs`). **Not built here**: the batch runner
-refuses more than four bots and says why. It is the next slice once the
-direct path has run.
+refuses more than four bots and says why. A phantom trial is also needed
+with four or fewer bots. Clanker Training uploads currently exercise the
+local pad path. Add a hosted trial with named phantom seats and bound
+player units, and report shots and opposing damage per seat before
+comparing aim controllers. [Phantom aim](../game/bots.md#phantom-aim-diagnosis-and-next-steps)
 
 ### Match file
 
@@ -397,7 +400,12 @@ in the list with replay available after the match. They buffer packed
 telemetry locally and take turns uploading after they finish. The batch prints
 its Live batch ID and writes it to `batch.json`. Fork seed runs stay local.
 
-The same game stream becomes the replay at the end. The CLI still saves the
+The same game stream becomes the replay at the end. Uploads use the
+game's telemetry frames, which include machine travel when sampled.
+The finished-game viewer switches to the archive when it is published.
+[Replay playback](../live/replay-fidelity.md#current-recording-and-playback)
+
+The CLI still saves the
 local report, including when an upload fails. Training games are private
 and excluded from public stats and ranks. The
 [Live API](../live/live-api.md#clanker-training) describes the storage limits.

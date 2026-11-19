@@ -26,6 +26,16 @@ HTTP service replaces those services; nothing here speaks their wire format.
 The in-game custom games browser (the System Link browser's dormant Live
 mode) and session visibility are in [live-custom-games.md](live-custom-games.md).
 
+## Ping-aware host selection (in progress)
+
+SBMM is adding a host-selection step that considers measured RTT as well
+as skill. A proposed group needs an eligible host that every member can
+reach. The server prototype widens the skill and latency windows with
+queue time, then prefers the lowest worst-player RTT. On equal worst
+RTT it prefers a peer host, then the lower median. A dedicated host
+must improve the worst route to displace a peer. The current OptiMatch
+search and join path is described below. [Dedicated host](dedicated-host.md)
+
 ## 1. What the retail game calls
 
 Confidences are [live-boundary.md](live-boundary.md)'s (`confirmed` is
@@ -826,6 +836,13 @@ test `optimatch_searches_find_sessions_in_the_partys_level_window`
 
 ## 8. Ranks: what the game does, and what the server does
 
+The stats site's **Ranked** page at `/games/halo2/ranks` builds its
+playlist menu from the served hopper file and the Clankermatch marks.
+The menu groups Ranked, Unranked and Clankermatch. The selected playlist
+shows its game types and size rules. The board shows levels and XP
+progress and marks bot accounts. Unranked playlists have no standings
+and can link to recent games. [Ranked page](../../web/src/stats/Ranks.tsx)
+
 ### 8.1 In the retail game (static reading)
 
 Read statically from the 5849 XBE; nothing was run. Addresses are guest
@@ -938,13 +955,9 @@ owned, with no guest pointers. §8.4 has how the server uses them.
 
 Status: agreed with the coordinator and the bots lane (2026-11-18;
 their side is [bots.md](../game/bots.md) §9.4). The arbitration half is
-built. The bots half is built for matchmaking games; the clanker
-playlist pieces wait on the bots lane's `clankermatch` kind and
-`ranks_as` mark (the list is at the end of "Bots in ranks"). The bots
-lane owns the bot accounts and their events
-(`POST /games/bots`, the roster, `bot: true` on a game's player entries;
-[bots.md](../game/bots.md) §9). This lane owns how bots are ranked and
-how arbitration checks a ranked game.
+built. Clankermatch uses its own game kind and the hopper's
+`ranks_as` mark to resolve the leaderboard. Bot accounts and their
+events are described in [bots.md](../game/bots.md) §9.
 
 The user's rules (2026-11-18):
 

@@ -170,6 +170,11 @@ machines"):
   object's root pose and tag name. The viewer samples the device animation
   with those values. Earlier recordings keep their world-pose playback.
 
+For a retail-based mod, the game start reports the retail base in
+`map` and the installed package in `map_id`. The cache header's short alias
+resolves to that package. The join uses the content ID and the report can
+group with games on the same base. [Map packages](../game/maps.md#package-offers)
+
 Game starts say their `kind`: `campaign` for campaign mode, with
 `difficulty` from the active options' `+0x12a` word (0 easy to 3
 legendary; anything else leaves it out); multiplayer games are `custom`
@@ -226,8 +231,7 @@ While it is set:
   as above), but each is only the tick, the BSP, a `cut` if one is due and
   `cinematic: true`: no players, actors, vehicles, hits, machines or
   objects. The game thread skips the world scan for them. A frame of
-  nothing costs a few bytes, and keeps the live view and the 1 Hz recording
-  told, where no frames would look like a stalled game.
+  nothing costs a few bytes, and keeps the live view and recorded chunks advancing through the cutscene.
 - Kills are not sent (the kill hook reads the byte as the kill happens, and
   the worker also drops one queued in a cutscene); hits and shots counted
   in it are dropped, and actors' shots with them.
@@ -641,27 +645,28 @@ stream sends only the ones that changed.
 
 ## Packed frames
 
-### Version 8 implementation plan
+### Version 8 live wire
 
-Negotiate v8 on live connections. A sender and reader that have only agreed
-to packed v7 continue using v7. Both native and Worker ingest, replay and
-archive processing dispatch by the stored version nibble. The viewer uses
-the same dispatch for live and replay records.
+The game reads discovery when it opens or reconnects its ingest socket.
+It selects v8 if the server advertises `ingest_frame_versions: [8]` and
+falls back to v7 otherwise. Native and Worker servers both advertise v8.
+The viewer requests `frames=packed&frame_version=8`. Subscribers that
+omit the version keep receiving v7. Readers dispatch on each record's
+version nibble, including when a replay contains records from different
+versions. The current H2CK writer and standalone frame pages still use v7.
+[Discovery and stream API](live-api.md#streams-websocket)
 
-Keep the length-prefixed container, v7 field grids and a complete key every
-150 samples. Each v8 key embeds an independently decodable v7 key with its
-machine baseline. Between keys, send one forward byte-range-coded packet per
-sample using causal field predictions, grouped unchanged fields and adaptive
-symbol frequencies. The envelope carries version, key flag, stream id and
-sequence; deltas also carry the tick increment. A discontinuity requires a
-fresh key. A subscriber joins at a complete key and reads each subsequent
-record in order. The key seeds the field history and dictionary and resets the
-probability tables, so there is no separate probability-model snapshot.
+V8 keeps the length-prefixed container and v7 field grids. Each key
+embeds a complete v7 key including the known machine travel. Between
+keys, a forward byte-range coder writes one packet per sample, using
+causal field predictions, grouped unchanged fields and adaptive symbol
+frequencies. The key resets the field history, dictionary and symbol
+tables. A subscriber starts at a key and receives the following deltas
+in order. An existing stream has a key at least every 150 samples.
 
-An upgraded server advertises `ingest_frame_versions: [8]` in discovery.
-The game reads discovery on each new connection and selects v8 only when
-listed. The packed subscriber opts in with `frames=packed&frame_version=8`.
-Standalone signed frame pages and the v7 writer keep their existing encoding.
+The seeded 16-player match used about 81 bytes per player per second on
+v8 and about 145 on v7, including keys and record lengths.
+[Measurement workload](../engine/live-telemetry.md#match-and-measurement)
 
 After the usual ULEB record length, the first byte is
 `8 | (key << 4) | (min(sid, 7) << 5)`. Slot 7 adds ULEB `sid - 7`.
@@ -669,10 +674,6 @@ A ULEB sequence follows. A key carries one bare v7 key of stream 0,
 sequence 0. A delta carries ULEB tick increment and one terminated range
 payload. Each stream maintains independent prediction and probability
 state. A successful key supersedes earlier versions for that stream ID.
-
-Verify every reconstructed field, mixed versions, cuts and joining mid-stream.
-Compare framed production encoders in alternating pairs on the same 9,000
-samples before enabling v8 by default.
 
 Frames travel bit-packed: game to server (`/v1/ingest`, binary messages),
 server to readers (`/v1/stream?frames=packed`), recorded frames at rest
@@ -686,7 +687,7 @@ on an individual chunk or the legacy frame page. Live JSON readers use
 `web/test/fixtures/pack` (written by the Rust tests from invented frames,
 read by the TypeScript tests) keep the two in step.
 
-### Bits and numbers
+### Bits and numbers (v1–v7)
 
 Bits are written least significant first into bytes, first byte first.
 
@@ -889,8 +890,9 @@ shared count.
 ### Streams, keyframes and gaps
 
 An encoder starts with a keyframe and sends one again every N frames (the
-game: 150; the server's reader stream: 15), when the game id changes, when
-the tick goes backwards, at a v7 checkpoint cut, and when the string table would pass 4096 strings.
+game: 150, v7 subscriber stream: 15, v8 subscriber stream: 150). It also
+sends one when the game ID changes, ticks go backwards, a checkpoint cuts
+the recording, or the string table would pass 4096 entries.
 A decoder keeps the last frame and string table per stream id; a delta
 whose sequence is not the next one it expects (a dropped frame, or joining
 mid-stream) is a gap: it drops deltas until the next keyframe. The reader
@@ -905,8 +907,8 @@ The first four bits select the decoder. Version 7 writes all seven
 entity lists introduced through v6. A delta requires the preceding sequence
 number and a base of the same version. Live subscribers recover at a
 keyframe, and each recorded chunk begins with one. Rust and web fixtures
-cover versions 1 through 7, including a v6 stream with vehicle velocities,
-projectiles and dropped items. Recorded chunks keep their original bytes.
+cover versions 1 through 8, including old v7 records without machine travel
+and v8 keys and deltas. Recorded chunks keep their original bytes.
 An old JSON `GameFrame` and a later base64-packed one are both readable
 through the legacy frame page.
 
@@ -919,8 +921,11 @@ consume JSON can keep using the JSON representations.
 The viewer requests the archive-capable chunk index when a match ends.
 Until publication it uses the original recording. Publication switches the
 reader to independently decodable H2AR segments and keeps the current
-playhead, speed and pause state. The index maps source ticks across checkpoint
-rewinds, so a time link can fetch its target segment directly. The viewer
+playhead, speed and pause state. Each segment index entry may carry a
+`machine_entry` seed with the last known device travel from its run. A cut,
+rewind or complete travel baseline starts fresh. The seed restores quiet
+doors and lifts on a seek without inserting synthetic frame rows. The
+index maps source ticks across checkpoint rewinds, so a time link can fetch its target segment directly. The viewer
 loads a neighbour near a segment edge to interpolate through it and releases
 distant segments after a seek.
 

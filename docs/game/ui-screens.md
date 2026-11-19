@@ -178,7 +178,10 @@ shows download progress. A failure says `Failed` on the row. A cold list
 opens with one waiting row. Its class reserves forty slots through
 `Rows::growing_capacity` and adds the returned rows without changing the
 focused handle. Later catalogue updates wait for the next visit. A pack
-has room for Download All and all forty maps.
+has room for Download All and all forty maps. The action count includes
+only maps eligible to start or retry. The browser uses the base map's
+bitmap or the neutral lobby picture. Change Map and the lobby use the
+selected slot's art. [Map selection](map-select.md)
 
 The detail page uses the pregame lobby's action row, status panel, picture
 and table. Facts and changes are `ScreenSpec::texts` over

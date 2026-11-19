@@ -1,18 +1,17 @@
 # Maps: new, edited, patched and shared (design)
 
-Status: design, with the foundation built and confirmed in the game by the
-owner (2026-11-17): `crates/content` (manifest,
-`MapId`, PPF/IPS/BPS readers and writers, resolver), the VFS and boot
-wiring for package offers (§3),
-the scenario editor's "Save as package" and "Open package" (§8), and new
-maps in 1.0's map list (§4). Sections marked **Built** say exactly what exists; see also
-§7. Agreed with the Live session (network side) and built on
-the feature engine's content packs ([feature-engine.md](../engine/feature-engine.md),
-"Content packs"). What exists today: the editor (`h2-editor`,
-[editor.md](../editor/editor.md), [scenario-editor.md](../editor/scenario-editor.md)) saves
-edited `.map` files, and `H2_MAP_DIR` makes the runtime serve
-`\maps\<name>.map` from a host folder ([storage.md](../runtime/storage.md), "Map
-overrides"). Everything below builds on those two.
+The package loader, editor package tools, multiplayer slots and Live
+downloads are built. A package gets its own slot if there is room. Retail
+and Map Pack slots keep their original paths. The VFS resolves the
+package and applies its file patches when the game opens the mod path.
+See [multiplayer map selection](map-select.md) for the menu and
+[the Mods UI review](mods-ui-review.md) for the offline checks.
+
+The editor saves edited `.map` files. `H2_MAP_DIR` remains a separate
+developer override for `\maps\<name>.map`. The resolver validates and
+lists map-variant packs. Applying those packs at load is planned. [Scenario editor](../editor/scenario-editor.md) ·
+[Storage](../runtime/storage.md#map-overrides) ·
+[Feature engine](../engine/feature-engine.md)
 
 The goals, in the user's words: simple; new maps, edited maps and patch
 files (PPF, SPPF and the like) applied by the Rust runtime itself at boot;
@@ -32,8 +31,9 @@ Every map the game loads is resolved from:
 - zero or more **file patches**, applied in order to the base's bytes:
   PPF, SPPF, Serenity, or our own;
 - zero or more **content packs** of kind `map-variant`
-  ([feature-engine.md](../engine/feature-engine.md)): field-level edits (move this
-  weapon, change that spawn) applied to the loaded tag data in memory.
+  ([feature-engine.md](../engine/feature-engine.md)): field-level edits such
+  as spawn or weapon placement. Packages list and validate these layers.
+  Applying them to loaded tag data is planned.
 
 A **map package** is the manifest that lists those, plus display data:
 
@@ -189,6 +189,9 @@ records for the next boot.
 
 A mod on a retail base uses a short alias containing its list ID and
 part of its content hash. Standalone maps keep their name where unique.
+Aliases identify the exact package to Live. The match report uses the
+retail base name for grouping and carries the package identity in
+`map_id`. [Map identity in telemetry](../live/live-telemetry.md)
 Old generated offers are cleaned up when their package disappears or
 exceeds the slot budget. Older materialised copies in those offers are
 replaced by placeholders. The source package keeps its layers and image.
@@ -783,8 +786,9 @@ game" below.
   size and installed count. A opens the pack. Download All comes first,
   followed by every listed map. On this screen maps omit an exact repeated
   pack-name prefix. Details and Change Map use the published name.
-  X on a map downloads that map. A or X on Download All starts the missing
-  maps. A partially installed pack counts completed maps toward the pack
+  X on a map downloads that map. A or X on Download All starts maps that can still be downloaded,
+  including failed maps eligible for retry. Installed and in-flight maps
+  are excluded from the action count. A partially installed pack counts completed maps toward the pack
   percentage. B returns to the parent row. If a restored pack is gone,
   the page says so and shows B Back.
 - **Installing.** Download runs `MapGate::install` on a thread of its own
@@ -861,8 +865,9 @@ Remove (`MapGate::remove`) deletes only a `live-<id>` directory of
 hand is refused), then tells the boot to retire that generated offer.
 
 **The picture** in Select Map, Game Setup and the lobby comes from the
-chosen slot. The game's Mods browser can also use the base map's
-preview bitmap (`mod_slots::pictures`).
+chosen slot. The Mods browser and its detail page look up the base
+map's bitmap by filename (`mod_slots::pictures`). They use the neutral
+lobby picture when the base bitmap is missing.
 
 **What it changes** (`features`) is read off the map at import:
 `h2 live maps import` has the base and the modded map in hand and compares
@@ -968,7 +973,7 @@ server is updated):
 | content | **Built.** `crates/content`: manifest, `MapId`, PPF/IPS/BPS readers, resolver; the vfs serves packages from `<data>/maps/` (with `H2_MAP_DIR` kept as a shortcut) | — |
 | editor | **Built** (§8): save as package (one PPF3 or BPS layer against the base, manifest, image, optional `active.toml`), open packages; `map-variant` packs not yet | content |
 | map list | **Built** (§4): new maps as content packages with a built `patch.lvl`; the Map Pack through `h2 import-mappack` | the 1.0 research |
-| live | `map_id` in sessions, hoppers and telemetry; the content store; join-time download; admin; art keys | content (`MapId`) |
+| live | **Built** (§5): package identity in sessions and telemetry, content storage, join-time download, and moderation | content (`MapId`) |
 | realtime | **Built:** packages installed mid-session served at the next open, stale cache slots dropped (§3). Next: the editor-to-game socket for `map-variant` edits | feature engine loader hook |
 | formats | SPPF and Serenity readers | sample patches from the user |
 
@@ -1011,11 +1016,9 @@ first). The form and the package layout are in
 [multiplayer.md](../halo1/multiplayer.md#converting-a-map-built-h1convertconvert-h2-h1-convert).
 Nothing yet picks a variant by a setting.
 
-**One slot per installed package.** The game keeps the disc and Map
-Pack slots at their original paths. Each package that fits gets its
-own slot and content path. Several packages can use the same retail
-base at the same time. The game ignores `active.toml` when allocating
-slots and loading maps. Existing package directories need no edits.
+The generated offers in §4 give packages their own paths and slots.
+The game ignores legacy `active.toml` choices. Existing package
+directories work as installed.
 
 **Resolution** starts when the VFS first opens that package's path:
 
