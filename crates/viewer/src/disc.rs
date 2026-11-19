@@ -321,12 +321,10 @@ impl Source for Region {
     }
 }
 
-/// The runtime's data root, where `h2 import halo1` writes: `$H2_DATA`,
-/// else `h2boot-data` in the temporary directory (as `h2 play` defaults).
+/// The runtime's data root, where `h2 import halo1` writes: `h2 play`'s
+/// default ([`content::store::default_data_root`], `$H2_DATA` if set).
 pub fn data_root() -> PathBuf {
-    std::env::var_os("H2_DATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::temp_dir().join("h2boot-data"))
+    content::store::default_data_root()
 }
 
 /// A converted Halo 1 map under `data` by the name the game knows it by
