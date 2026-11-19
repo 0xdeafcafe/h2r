@@ -6,8 +6,10 @@
 
 import { describe, expect, test } from "bun:test";
 import {
-  escapeHtml, gameHeaderHtml, gameHeaderJson, gameHeaderModel, packEmblem, teamName,
+  escapeHtml, gameHeaderHtml, gameHeaderJson, gameHeaderModel, teamName,
 } from "../src/stats/gameHeader";
+import { packEmblem } from "../src/lib/art";
+import { emblemPath } from "../src/lib/emblem";
 import { fixtureGame } from "./fixtures/game-header-game";
 import type { GamePlayerState } from "../src/state/reducer";
 
@@ -79,6 +81,14 @@ describe("the game header's model", () => {
     }
   });
 
+  test("the header uses the game's appearance and follows a remote server selection", () => {
+    const game = fixtureGame();
+    const host = game.players[0]!;
+    const player = gameHeaderModel(game, "https://another.example").teams?.[1]?.players[0];
+    expect(player?.emblemSrc).toBe("https://another.example" + emblemPath(host.xuid!, host.appearance));
+    expect(player?.emblemSrc).toBe("https://another.example/art/emblem/30-7-3-6-8-2.png");
+  });
+
   test("team names are the eight the site uses", () => {
     expect(teamName(0)).toBe("Red");
     expect(teamName(7)).toBe("Brown");
@@ -100,8 +110,8 @@ describe("the game header's markup", () => {
     expect(html).toContain("<header><span>Blue</span><b>20</b></header>");
     // A name that needs escaping, escaped.
     expect(html).toContain("<span>Rock &amp; Roll</span>");
-    // The emblem: the art pack's file, at a fixed size.
-    expect(html).toMatch(/<img class="emblem" src="\/art\/emblems\/[0-9]{2}-[a-z-]+\.webp" /);
+    expect(html).toContain('<img class="emblem emblem--game" src="/art/emblem/30-7-3-6-8-2.png"');
+    expect(html).toContain('data-emblem-fallback="/art/emblems/17-half-disc-stack.webp"');
   });
 
   test("every emblem element has fixed dimensions, so nothing shifts as it loads", () => {

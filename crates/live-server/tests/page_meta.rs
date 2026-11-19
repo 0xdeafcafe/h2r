@@ -247,9 +247,14 @@ async fn a_game_page_carries_its_header_pre_rendered() {
     assert!(live.contains("<b>Team Slayer</b> on Lockout"), "{live}");
     assert!(live.contains(r#"s-gamehead-flag--live">LIVE<"#), "{live}");
     // Both players, each with their emblem at a fixed size.
-    assert_eq!(live.matches(r#"<img class="emblem""#).count(), 2, "{live}");
-    for img in live.split(r#"<img class="emblem""#).skip(1) {
+    assert_eq!(
+        live.matches(r#"<img class="emblem emblem--game""#).count(),
+        2,
+        "{live}"
+    );
+    for img in live.split(r#"<img class="emblem emblem--game""#).skip(1) {
         let tag = &img[..img.find('>').unwrap()];
+        assert!(tag.contains(r#"src="/art/emblem/"#), "{tag}");
         assert!(tag.contains(r#"width="16""#), "{tag}");
         assert!(tag.contains(r#"height="16""#), "{tag}");
     }

@@ -37,7 +37,7 @@ use crate::sqlstore::SqlStore;
 async fn fetch(
     req: HttpRequest,
     env: Env,
-    _ctx: Context,
+    ctx: Context,
 ) -> Result<http::Response<axum::body::Body>> {
     let path = req.uri().path().to_string();
     // Game art is a redirect or a 404 from here, without waking the hub.
@@ -45,6 +45,9 @@ async fn fetch(
         .var(crate::settings::GAME_ART_URL)
         .ok()
         .map(|v| v.to_string());
+    if crate::site::is_emblem(&path) {
+        return Ok(crate::emblem::image(&req, art_url.as_deref(), &ctx).await);
+    }
     if let Some(art) = crate::site::game_art(art_url.as_deref(), &path, req.uri().query()) {
         use axum::response::IntoResponse;
         return Ok(match art {

@@ -1,6 +1,5 @@
 // The fixture game behind the game-header fixtures: a finished team Slayer
-// with two teams, a bot, a player with no account (so their emblem is
-// picked from their name), and a name that needs escaping. The generator
+// with two teams, full and partial appearances, a bot, and a name that needs escaping. The generator
 // (gen-game-header.ts) writes its model and markup to game-header.json and
 // game-header.html; the Rust side (crates/live-server/src/page_header.rs)
 // renders the same model and must write the same markup.
@@ -36,8 +35,10 @@ export function fixtureGame(): GameState {
     winner: { team: 1 },
     start_tick: 0,
     players: {
-      0: player({ index: 0, name: "afr", xuid: "0009000000000042", team: 0, local: true }),
-      1: player({ index: 1, name: "Sneaky Pete", xuid: "0009000000000043", team: 1 }),
+      0: player({ index: 0, name: "afr", xuid: "0009000000000042", team: 0, local: true, appearance: {
+        emblem: { fg: 30, bg: 7 }, colours: { primary: 3, secondary: 6, tertiary: 8, quaternary: 2 },
+      } }),
+      1: player({ index: 1, name: "Sneaky Pete", xuid: "0009000000000043", team: 1, appearance: { colours: { primary: 7 } } }),
       2: player({ index: 2, name: "Clanker-7", team: 1, bot: true }),
       3: player({ index: 3, name: "Rock & Roll", team: 0 }),
     },

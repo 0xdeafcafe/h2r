@@ -41,6 +41,7 @@ pub mod copy;
 pub mod default_hopper;
 pub mod default_motd;
 pub mod dispatch;
+pub mod emblem;
 pub mod filestore;
 pub mod games;
 pub mod guard;

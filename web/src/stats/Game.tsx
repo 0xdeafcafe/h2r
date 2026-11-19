@@ -26,6 +26,7 @@ import { TICKS_PER_SECOND } from "../state/frames";
 import GameViewer from "../viewer/GameViewer";
 import Transport, { replayKey } from "../viewer/Transport";
 import { createReplaySession } from "../viewer/session";
+import { emblemOrigin } from "../lib/emblem";
 import { gameHeaderModel, showGameHeader } from "./gameHeader";
 import "../styles/stats-game.css";
 import { STATS_ROOT, statsPath } from "../routes";
@@ -45,7 +46,7 @@ export default function Game() {
   // the game moves on, hidden when there is no game to show.
   createEffect(() => {
     const g = game();
-    if (g) showGameHeader(gameHeaderModel(g));
+    if (g) showGameHeader(gameHeaderModel(g, emblemOrigin(live.server().base, location.origin)));
     else if (missing()) showGameHeader(null);
     else showGameHeader(undefined);
   });

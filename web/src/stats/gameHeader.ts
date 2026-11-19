@@ -1,20 +1,10 @@
-// The game page's header: what the game was, who played and how it stands,
-// with each player's emblem — pre-rendered into the page's HTML by the
-// servers (crates/live-server/src/page_header.rs builds the same model and
-// writes this same markup; the fixtures under web/test/fixtures keep the
-// two in step) and then adopted by the client as it is, so the page's
-// first paint is the final header. Until now the whole page was client
-// rendered: every emblem started as the art pack's placeholder pick and
-// swapped to the canvas-composited one once the server's game art arrived
-// (state/gameart.ts `emblemUrl`), so the emblem flickered on load. The
-// header's emblems are the art pack's own deterministic symbols instead —
-// static, cacheable files, the same from either server and from the
-// client — and never swap.
-//
-// Everything here except the node management at the bottom is pure, so the
-// parity test can run it; the Rust side mirrors it function for function.
+// The pre-rendered game header is mirrored by live-server's page_header.rs.
+// Fixtures hold both renderers to the same markup and client adoption keeps
+// the existing DOM while its model still matches.
 
 import type { GameState } from "../state/reducer";
+import { emblemArt, packEmblem } from "../lib/art";
+import { emblemPath } from "../lib/emblem";
 import { titleCase } from "../lib/format";
 
 // ---- the model ----
@@ -24,8 +14,10 @@ export interface HeaderPlayer {
   name: string;
   /** What the emblem is picked from: the XUID when known, else the name. */
   seed: string;
-  /** The art pack emblem (0..23), picked stably from the seed. */
+  /** Fallback from the art pack. */
   emblem: number;
+  /** The composed game-art emblem. Older page metadata omits it. */
+  emblemSrc?: string;
   /** This player's colour, `#rrggbb`. */
   colour: string;
   /** A bot (a Clanker): marked beside the name. Left out when not. */
@@ -67,32 +59,6 @@ export interface GameHeaderModel {
 }
 
 // ---- shared constants (mirrored in page_header.rs) ----
-
-/** The art pack's emblems, by index (lib/art.ts `EMBLEMS`). */
-const PACK_EMBLEMS = [
-  "01-double-arch", "02-pebble-stack", "03-folded-ribbon", "04-nested-waves", "05-notched-bars", "06-rising-hooks",
-  "07-maze", "08-stepping-stones", "09-crescent-dot", "10-doorways", "11-three-fins", "12-pebble-orbit",
-  "13-pillars", "14-open-link", "15-stepped-bridge", "16-paired-drops", "17-half-disc-stack", "18-capsule-dots",
-  "19-curved-fan", "20-wave-bands", "21-roof-stack", "22-folded-loop", "23-river", "24-offset-orbits",
-];
-
-/** A stable index for a seed (components/Emblem.tsx `pick`): FNV-1a, mod
- *  the pack's size, spread better than a plain sum. */
-export function packEmblem(seed: string): number {
-  let h = 2166136261;
-  for (let i = 0; i < seed.length; i++) h = Math.imul(h ^ seed.charCodeAt(i), 16777619);
-  return (h >>> 0) % 24;
-}
-
-/** The emblem's files at `size` CSS pixels (lib/art.ts `image`): the 1x
- *  and @2x WebPs in web/public/art. */
-export function packEmblemSrc(index: number, size: number): { src: string; srcset: string } {
-  const name = PACK_EMBLEMS[((index % 24) + 24) % 24];
-  const one = `/art/emblems/${name}.webp`, two = `/art/emblems/${name}@2x.webp`;
-  // The files' 1x size is 128px, so a header-sized emblem uses the 1x for
-  // 1x screens and the @2x for the rest.
-  return size > 128 ? { src: two, srcset: `${two} 1x` } : { src: one, srcset: `${one} 1x, ${two} 2x` };
-}
 
 /** Team colours, by team index (map/palette.ts `FALLBACK.teams`, which the
  *  page's own CSS never overrides — `--map-team-<i>` is never defined). */
@@ -148,12 +114,13 @@ function resultWords(g: GameState): string | null {
 
 const playerSeed = (p: GameState["players"][number]): string => p.xuid ?? p.name;
 
-function headerPlayer(g: GameState, p: GameState["players"][number], withScores: boolean): HeaderPlayer {
+function headerPlayer(g: GameState, p: GameState["players"][number], withScores: boolean, base: string): HeaderPlayer {
   const score = g.scores[p.index]?.score;
   return {
     name: p.name,
     seed: playerSeed(p),
     emblem: packEmblem(playerSeed(p)),
+    emblemSrc: base + emblemPath(playerSeed(p), p.appearance),
     colour: g.team_play ? teamColour(p.team) : ffaColour(p.index),
     ...(p.bot === true ? { bot: true as const } : {}),
     ...(withScores && score !== undefined ? { score } : {}),
@@ -163,7 +130,7 @@ function headerPlayer(g: GameState, p: GameState["players"][number], withScores:
 /** The header's model for a game, as the servers build it from the read
  *  model (page_header.rs `model_for`): the same fields, in the same order.
  *  Players stand by score then index; teams by score then team. */
-export function gameHeaderModel(g: GameState): GameHeaderModel {
+export function gameHeaderModel(g: GameState, base = ""): GameHeaderModel {
   const campaign = g.mode === "campaign";
   const map = titleCase(g.map.split(/[\\/]/).pop()!.replace(/\.map$/i, "").trim());
   const live = g.status === "live";
@@ -172,7 +139,7 @@ export function gameHeaderModel(g: GameState): GameHeaderModel {
   const rows = Object.values(g.players)
     .slice()
     .sort((a, b) => (g.scores[b.index]?.score ?? 0) - (g.scores[a.index]?.score ?? 0) || a.index - b.index)
-    .map((p) => ({ team: p.team, player: headerPlayer(g, p, !campaign) }));
+    .map((p) => ({ team: p.team, player: headerPlayer(g, p, !campaign, base) }));
   if (campaign || !g.team_play) {
     return {
       game: g.game_id, live,
@@ -218,12 +185,14 @@ export function escapeHtml(s: string): string {
   return out;
 }
 
-/** The emblem `<img>`: the pack's file, at a fixed size, so nothing shifts
- *  and nothing ever swaps it. */
-function emblemImg(seedIndex: number, size: number): string {
+/** Fixed dimensions reserve space while the image loads. */
+function emblemImg(player: HeaderPlayer, size: number): string {
   const e = escapeHtml;
-  const { src, srcset } = packEmblemSrc(seedIndex, size);
-  return `<img class="emblem" src="${e(src)}" srcset="${e(srcset)}" width="${size}" height="${size}" alt="" decoding="async" draggable="false">`;
+  const { src, srcset } = emblemArt(player.emblem, size);
+  const image = player.emblemSrc
+    ? `class="emblem emblem--game" src="${e(player.emblemSrc)}" data-emblem-fallback="${e(src)}"`
+    : `class="emblem" src="${e(src)}" srcset="${e(srcset)}"`;
+  return `<img ${image} width="${size}" height="${size}" alt="" decoding="async" draggable="false">`;
 }
 
 /** The header's markup. One line, no whitespace between tags, so the
@@ -236,7 +205,7 @@ export function gameHeaderHtml(m: GameHeaderModel): string {
     + (m.result ? `<span>${e(m.result)}</span>` : "")
     + `<small>${e(m.type)}</small>`;
   const player = (p: HeaderPlayer) =>
-    `<li class="s-gamehead-player" style="--row:${e(p.colour)}">${emblemImg(p.emblem, 16)}<span>${e(p.name)}</span>`
+    `<li class="s-gamehead-player" style="--row:${e(p.colour)}">${emblemImg(p, 16)}<span>${e(p.name)}</span>`
     + (p.bot ? `<i class="s-gamehead-bot">bot</i>` : "")
     + (p.score !== undefined ? `<b class="s-gamehead-pscore">${p.score}</b>` : "")
     + `</li>`;

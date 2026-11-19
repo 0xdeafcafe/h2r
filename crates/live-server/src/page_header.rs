@@ -1,16 +1,8 @@
 //! The game page's pre-rendered header (web/src/stats/gameHeader.ts, the
 //! web side's half and the source of the fixtures this file is held to).
 //!
-//! The game viewer page's header — what the game was, who played, how it
-//! stands, each player's emblem — is written into the page's HTML by both
-//! of the app's homes, so the first paint is the final header. Until now
-//! the page was rendered wholly in the browser and every emblem started
-//! as the art pack's placeholder pick, then swapped to the canvas-
-//! composited one once the server's game art had been fetched
-//! (web/src/state/gameart.ts `emblemUrl`): the emblem flickered on load.
-//! The header's emblems are the art pack's own deterministic symbols
-//! instead — static cacheable files, the same from either server and from
-//! the client — so nothing swaps and nothing shifts.
+//! Both homes write the game header into the initial HTML. Each player's
+//! image points directly at the composed emblem route ([`crate::emblem`]).
 //!
 //! [`model_for`] builds the header's model from the read model, as an
 //! anonymous reader sees it; [`render`] writes its markup; [`json`] is the
@@ -50,6 +42,9 @@ pub struct HeaderPlayer {
     pub seed: String,
     /// The art pack emblem (0..23), picked stably from the seed.
     pub emblem: u32,
+    /// The composed image. Older page metadata only carried the fallback.
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "emblemSrc")]
+    pub emblem_src: Option<String>,
     /// This player's colour, `#rrggbb`.
     pub colour: String,
     /// A bot (a Clanker): marked beside the name. Left out when not.
@@ -109,26 +104,22 @@ const PACK_EMBLEMS: [&str; 24] = [
     "19-curved-fan", "20-wave-bands", "21-roof-stack", "22-folded-loop", "23-river", "24-offset-orbits",
 ];
 
-/// A stable index for a seed (components/Emblem.tsx `pick`): FNV-1a over
-/// the seed's UTF-16 units, mod the pack's size.
+/// A stable fallback for a seed (web/src/lib/art.ts).
 fn pack_emblem(seed: &str) -> u32 {
-    let mut h: u32 = 2166136261;
-    for u in seed.encode_utf16() {
-        h = (h ^ u32::from(u)).wrapping_mul(16777619);
-    }
-    h % PACK_EMBLEMS.len() as u32
+    crate::emblem::fnv(seed, 0) % PACK_EMBLEMS.len() as u32
 }
 
-/// The emblem's files at the header's 16px (web/src/lib/art.ts `image`):
-/// the files' 1x size is 128px, so the 1x serves 1x screens and the @2x
-/// the rest.
-fn emblem_img(index: u32) -> String {
-    let name = PACK_EMBLEMS[(index % PACK_EMBLEMS.len() as u32) as usize];
+fn emblem_img(player: &HeaderPlayer) -> String {
+    let name = PACK_EMBLEMS[(player.emblem % PACK_EMBLEMS.len() as u32) as usize];
     let one = format!("/art/emblems/{name}.webp");
-    let two = format!("/art/emblems/{name}@2x.webp");
-    format!(
-        r#"<img class="emblem" src="{one}" srcset="{one} 1x, {two} 2x" width="16" height="16" alt="" decoding="async" draggable="false">"#
-    )
+    let image = if let Some(src) = &player.emblem_src {
+        let src = page_meta::escape(src);
+        format!(r#"<img class="emblem emblem--game" src="{src}" data-emblem-fallback="{one}""#)
+    } else {
+        let two = format!("/art/emblems/{name}@2x.webp");
+        format!(r#"<img class="emblem" src="{one}" srcset="{one} 1x, {two} 2x""#)
+    };
+    format!(r#"{image} width="16" height="16" alt="" decoding="async" draggable="false">"#)
 }
 
 /// Team colours, by team index (web/src/map/palette.ts `FALLBACK.teams`,
@@ -257,22 +248,26 @@ fn build(
     // team for the fold below.
     let mut rows: Vec<&Player> = summary.players.iter().collect();
     rows.sort_by_key(|p| std::cmp::Reverse((score_of(scoreboard, p.index).unwrap_or(0), std::cmp::Reverse(p.index))));
-    let header_player = |p: &Player| HeaderPlayer {
-        name: p.name.clone(),
-        seed: p.xuid.map(|x| x.to_string()).unwrap_or_else(|| p.name.clone()),
-        emblem: 0,
-        colour: if summary.team_play {
-            team_colour(p.team).into()
-        } else {
-            ffa_colour(p.index).into()
-        },
-        bot: p.is_bot().then_some(true),
-        score: (!campaign).then(|| score_of(scoreboard, p.index)).flatten(),
+    let header_player = |p: &Player| {
+        let seed = p
+            .xuid
+            .map(|x| x.to_string())
+            .unwrap_or_else(|| p.name.clone());
+        HeaderPlayer {
+            name: p.name.clone(),
+            emblem: pack_emblem(&seed),
+            emblem_src: Some(crate::emblem::image_path(&seed, p.appearance)),
+            seed,
+            colour: if summary.team_play {
+                team_colour(p.team).into()
+            } else {
+                ffa_colour(p.index).into()
+            },
+            bot: p.is_bot().then_some(true),
+            score: (!campaign).then(|| score_of(scoreboard, p.index)).flatten(),
+        }
     };
-    let mut players: Vec<HeaderPlayer> = rows.iter().map(|p| header_player(p)).collect();
-    for p in &mut players {
-        p.emblem = pack_emblem(&p.seed);
-    }
+    let players: Vec<HeaderPlayer> = rows.iter().copied().map(header_player).collect();
     let title = if campaign {
         map.clone()
     } else {
@@ -412,7 +407,7 @@ pub fn render(m: &GameHeaderModel) -> String {
         format!(
             r#"<li class="s-gamehead-player" style="--row:{}">{}<span>{}</span>{}{}</li>"#,
             e(&p.colour),
-            emblem_img(p.emblem),
+            emblem_img(p),
             e(&p.name),
             if p.bot == Some(true) { bot } else { "" },
             score,
@@ -471,9 +466,10 @@ pub fn json(m: &GameHeaderModel) -> String {
 /// `html` with the header for `m` in place of its [`BEGIN`]..[`END`]
 /// block; without one, unchanged (an older build simply shows no header).
 pub fn inject(html: &str, m: &GameHeaderModel) -> String {
-    let Some(b) = html.find(BEGIN)
-        && let Some(e) = html[b..].find(END)
-    else {
+    let Some(b) = html.find(BEGIN) else {
+        return html.to_string();
+    };
+    let Some(e) = html[b..].find(END) else {
         return html.to_string();
     };
     let e = b + e + END.len();
@@ -535,10 +531,52 @@ mod tests {
             started_at: "2026-11-18T20:00:00.000Z".into(),
             ended_at: Some("2026-11-18T20:11:30.000Z".into()),
             players: vec![
-                Player { index: 0, name: "afr".into(), xuid: Some(live_proto::Xuid::parse("0009000000000042").unwrap()), team: 0, local: Some(true), appearance: None, bot: None },
-                Player { index: 1, name: "Sneaky Pete".into(), xuid: Some(live_proto::Xuid::parse("0009000000000043").unwrap()), team: 1, local: Some(false), appearance: None, bot: None },
-                Player { index: 2, name: "Clanker-7".into(), xuid: None, team: 1, local: Some(false), appearance: None, bot: Some(true) },
-                Player { index: 3, name: "Rock & Roll".into(), xuid: None, team: 0, local: Some(false), appearance: None, bot: None },
+                Player {
+                    index: 0,
+                    name: "afr".into(),
+                    xuid: Some(live_proto::Xuid::parse("0009000000000042").unwrap()),
+                    team: 0,
+                    local: Some(true),
+                    appearance: Some(game::Appearance {
+                        emblem_foreground: Some(30),
+                        emblem_background: Some(7),
+                        primary: Some(3),
+                        secondary: Some(6),
+                        tertiary: Some(8),
+                        quaternary: Some(2),
+                    }),
+                    bot: None,
+                },
+                Player {
+                    index: 1,
+                    name: "Sneaky Pete".into(),
+                    xuid: Some(live_proto::Xuid::parse("0009000000000043").unwrap()),
+                    team: 1,
+                    local: Some(false),
+                    appearance: Some(game::Appearance {
+                        primary: Some(7),
+                        ..game::Appearance::default()
+                    }),
+                    bot: None,
+                },
+                Player {
+                    index: 2,
+                    name: "Clanker-7".into(),
+                    xuid: None,
+                    team: 1,
+                    local: Some(false),
+                    appearance: None,
+                    bot: Some(true),
+                },
+                Player {
+                    index: 3,
+                    name: "Rock & Roll".into(),
+                    xuid: None,
+                    team: 0,
+                    local: Some(false),
+                    appearance: None,
+                    bot: None,
+                },
             ],
             teams: Some(vec![
                 live_proto::game::TeamScore { team: 0, score: 18 },
@@ -613,6 +651,7 @@ mod tests {
                 name: "</script>".into(),
                 seed: "</script>".into(),
                 emblem: 0,
+                emblem_src: None,
                 colour: "#ff6f61".into(),
                 bot: None,
                 score: None,

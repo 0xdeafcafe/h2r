@@ -441,6 +441,8 @@ pub fn router_with_site(live: Arc<Live>, site: &Site) -> Router {
     };
     #[cfg(not(feature = "native"))]
     let _ = published;
+    #[cfg(feature = "native")]
+    let api = api.merge(crate::art::emblem_routes(site.game_art.clone()));
     with_web(api, pages, site.web.as_deref()).layer(middleware::from_fn(crate::caching::layer))
 }
 

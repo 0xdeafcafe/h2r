@@ -9,6 +9,7 @@ import { writeFileSync } from "node:fs";
 import { gameHeaderHtml, gameHeaderJson, gameHeaderModel } from "../../src/stats/gameHeader";
 import { fixtureGame } from "./game-header-game";
 
+// Generate for the page origin, as both server-side renderers do.
 const model = gameHeaderModel(fixtureGame());
 writeFileSync(new URL("game-header.json", import.meta.url), gameHeaderJson(model) + "\n");
 writeFileSync(new URL("game-header.html", import.meta.url), gameHeaderHtml(model) + "\n");
