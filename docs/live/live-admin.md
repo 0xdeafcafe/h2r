@@ -275,7 +275,9 @@ re-extracted once.
 ```
 
 All three lists come from the main menu map (code:
-`crates/cli/src/live_catalog.rs`):
+`crates/cli/src/live_catalog.rs`; the two level lists through
+`tags::ui_levels`, the reader the boot's map select and the editor's Maps
+list share):
 
 - `maps`: the globals tag's multiplayer levels (`matg +0x178` element 0,
   block at `+0x10`, `0xc64`-byte entries: `+0` id, `+0xc` nine 32-unit

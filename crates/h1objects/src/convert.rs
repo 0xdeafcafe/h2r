@@ -659,8 +659,34 @@ struct PoweredPoint {
     point: crate::rebuild::Point,
     node: i16,
     position: [f32; 3],
-    /// The point's object-space x (forward).
-    x: f32,
+    /// The point's object-space position (x forward, y left).
+    object: [f32; 3],
+}
+
+/// The order to write a vehicle's friction points in: point `i` of the
+/// result rides the role's wheel sphere `i` ([`crate::rebuild::role_spheres`]).
+/// Each sphere in turn takes the nearest point not yet taken (object
+/// space); points past the last sphere follow in their own order. V: the
+/// engine reads friction point `i`'s suspension from the phantom's sphere
+/// `i` (the per-point loop at `0x2067dd` takes its compression from
+/// contact slot `i`, `0x207ab0`), so a point paired with a sphere at the
+/// other end of the vehicle pushes up where the other end sinks. Halo 1's
+/// warthog lists its back tires first and the retail spheres run front
+/// first; so paired, the converted warthog pitched onto its nose at spawn
+/// (forward z -0.93) and stood level once paired by position (forward z
+/// 0.08 and 0.14 on Blood Gulch's slopes, both warthogs).
+pub fn sphere_order(points: &[[f32; 3]], spheres: &[[f32; 3]]) -> Vec<usize> {
+    let mut left: Vec<usize> = (0..points.len()).collect();
+    let mut out = Vec::with_capacity(points.len());
+    for s in spheres {
+        let d = |i: &usize| (0..3).map(|a| (points[*i][a] - s[a]).powi(2)).sum::<f32>();
+        let Some(k) = (0..left.len()).min_by(|a, b| d(&left[*a]).total_cmp(&d(&left[*b]))) else {
+            break;
+        };
+        out.push(left.remove(k));
+    }
+    out.extend(left);
+    out
 }
 
 /// Adds a marker per powered point to a Halo 1 model before conversion:
@@ -2079,11 +2105,24 @@ impl<'a> Converter<'a> {
             .map(|s| crate::rebuild::seat_names(s, &markers))
             .collect();
         // Each seat's camera track: Halo 1's first (the loose one where
-        // it has two), converted. A seat with none keeps none, and the
-        // engine falls back to the globals' default unit track.
+        // it has two), converted. A seat with none takes what Halo 1 falls
+        // back to: the unit's own track, else Halo 1's default unit track.
+        // Left empty, the engine would fall back to Halo 2's globals
+        // default, Halo 1's default stored unconverted, which its track
+        // search reads backwards (crate::rebuild::camera_track).
+        let fallback = u.camera_tracks.first().copied().or_else(|| {
+            self.h1
+                .tags()
+                .iter()
+                .find(|t| {
+                    t.group.0.to_be_bytes() == *b"trak"
+                        && t.name == DEFAULT_UNIT_CAMERA_TRACK
+                })
+                .map(|t| t.id)
+        });
         let mut tracks = 0;
         for (names, seat) in seats.iter_mut().zip(&u.seats) {
-            let Some(&t) = seat.camera_tracks.first() else { continue };
+            let Some(t) = seat.camera_tracks.first().copied().or(fallback) else { continue };
             match self.camera_track(self.h1_tag(t)?) {
                 Ok(id) => {
                     names.camera_track = Some(id);
@@ -2098,10 +2137,14 @@ impl<'a> Converter<'a> {
             Some(m) => {
                 let (model, _) =
                     h1models::model_from_map(self.h1, self.h1_tag(m)?, &ModelOptions::default())?;
-                self.powered_points(&u.object, &model)?
-                    .into_iter()
-                    .map(|p| p.point)
-                    .collect()
+                let points = self.powered_points(&u.object, &model)?;
+                let spheres = role
+                    .as_ref()
+                    .map(crate::rebuild::role_spheres)
+                    .unwrap_or_default();
+                let at: Vec<[f32; 3]> = points.iter().map(|p| p.object).collect();
+                let order = sphere_order(&at, &spheres);
+                order.into_iter().map(|i| points[i].point.clone()).collect()
             }
             None => Vec::new(),
         };
@@ -2282,23 +2325,29 @@ impl<'a> Converter<'a> {
             if out.iter().any(|p| p.point.marker == marker) {
                 continue;
             }
+            let region_index = model
+                .regions
+                .iter()
+                .position(|r| !region.is_empty() && crate::coll::sid_name(&r.name) == region)
+                .map_or(-1, |i| i as i16);
             out.push(PoweredPoint {
                 point: crate::rebuild::Point {
                     marker,
                     region,
+                    region_index,
                     steered: false,
                 },
                 node,
                 position: local,
-                x: m.position[0],
+                object: m.position,
             });
         }
         // A point ahead of the points' middle steers (the warthog's front
         // tires, Halo 1's object space has x forward).
         if !out.is_empty() {
-            let middle = out.iter().map(|p| p.x).sum::<f32>() / out.len() as f32;
+            let middle = out.iter().map(|p| p.object[0]).sum::<f32>() / out.len() as f32;
             for p in &mut out {
-                p.point.steered = p.x > middle + 1e-3;
+                p.point.steered = p.object[0] > middle + 1e-3;
             }
         }
         Ok(out)
@@ -2630,8 +2679,31 @@ impl<'a> Converter<'a> {
             }
         };
         let volume: f32 = parts.iter().flat_map(|p| &p.1).map(|h| h.volume).sum();
+        let mut wheels_left_out = 0;
         let bodies = match kind {
             PhysicsKind::Vehicle => {
+                let phys = match obj.physics {
+                    Some(p) => Some(h1::Physics::read(self.h1, self.h1_tag(p)?)?),
+                    None => None,
+                };
+                // Wheels and treads stay out of the body: Halo 2 drives a
+                // vehicle on its friction points (springs at the wheel
+                // markers), and its hull rides above them.
+                let wheels = phys
+                    .as_ref()
+                    .map(|p| wheel_nodes(p, &model.nodes))
+                    .unwrap_or_default();
+                let hull: Vec<_> = parts
+                    .iter()
+                    .filter(|(n, _)| !wheels.contains(n))
+                    .cloned()
+                    .collect();
+                let parts = if hull.is_empty() {
+                    parts
+                } else {
+                    wheels_left_out = parts.len() - hull.len();
+                    hull
+                };
                 let total = parts.iter().map(|p| p.1.len()).sum();
                 let mut pieces = Vec::new();
                 for (node, cells) in parts {
@@ -2642,11 +2714,8 @@ impl<'a> Converter<'a> {
                     let m = Transform { r, t };
                     pieces.extend(cap(cells, total).iter().map(|h| h.transformed(&m)));
                 }
-                let phys = match obj.physics {
-                    Some(p) => Some(h1::Physics::read(self.h1, self.h1_tag(p)?)?),
-                    None => None,
-                };
                 let mass = phys
+                    .as_ref()
                     .map(|p| p.mass)
                     .filter(|m| m.is_finite() && *m > 0.0)
                     .unwrap_or(volume * DENSITY);
@@ -2662,7 +2731,11 @@ impl<'a> Converter<'a> {
                     let total = cells.len();
                     let pieces = cap(cells, total);
                     let mass = pieces.iter().map(|h| h.volume).sum::<f32>() * DENSITY;
-                    crate::rebuild::Body { node, pieces, mass }
+                    crate::rebuild::Body {
+                        node,
+                        pieces,
+                        mass,
+                    }
                 })
                 .collect(),
         };
@@ -2678,12 +2751,17 @@ impl<'a> Converter<'a> {
             .collect();
         let pieces: usize = bodies.iter().map(|b| b.pieces.len()).sum();
         let how = format!(
-            "built from Halo 1's coll: {} rigid bodies, {pieces} convex pieces{}",
+            "built from Halo 1's coll: {} rigid bodies, {pieces} convex pieces{}{}",
             bodies.len(),
             if enclosed {
                 " (over the piece cap: one enclosing piece per node)"
             } else {
                 ""
+            },
+            if wheels_left_out > 0 {
+                format!(" ({wheels_left_out} wheel and tread nodes left to the friction points)")
+            } else {
+                String::new()
             }
         );
         let words = if kind == PhysicsKind::Biped {
@@ -3100,3 +3178,52 @@ pub fn weapon_classes(votes: HashMap<(String, String), usize>) -> HashMap<String
     }
     best.into_iter().map(|(k, (_, c))| (k, c)).collect()
 }
+
+/// The model nodes of a vehicle's wheels and treads: each node a gripping
+/// powered mass point rides ([`h1::POWERED_GROUND_FRICTION`]; the
+/// warthog's four tire nodes, the scorpion's four tread nodes) and every
+/// node under one.
+///
+/// Halo 1 moves a vehicle on its mass points alone, so its collision may
+/// reach below them: the warthog's tires go 0.02 below the origin and its
+/// scenario spots stand them on the ground. Halo 2 holds a vehicle up on
+/// its friction points, springs at the wheel markers, and keeps the body's
+/// shapes clear of the ground (V: the retail warthog's and scorpion's
+/// physics models have no wheel or tread shape, their lowest points 0.18
+/// and 0.22 above the origin). Built into the body, the converted
+/// warthog's tires spawned up to 0.14 into Blood Gulch's ground (a game
+/// run, `havok.contacts`), and Havok threw it over.
+pub fn wheel_nodes(phys: &h1::Physics, nodes: &[h1models::h1::Node]) -> Vec<i16> {
+    let grips: Vec<i16> = phys
+        .mass_points
+        .iter()
+        .filter(|m| {
+            m.powered_mass_point >= 0
+                && phys
+                    .powered_flags
+                    .get(m.powered_mass_point as usize)
+                    .is_some_and(|f| f & h1::POWERED_GROUND_FRICTION != 0)
+        })
+        .map(|m| m.model_node)
+        .filter(|&n| n > 0)
+        .collect();
+    (0..nodes.len() as i16)
+        .filter(|&n| {
+            let mut at = n;
+            for _ in 0..nodes.len() {
+                if grips.contains(&at) {
+                    return true;
+                }
+                match nodes.get(at as usize) {
+                    Some(x) if x.parent >= 0 => at = x.parent,
+                    _ => break,
+                }
+            }
+            false
+        })
+        .collect()
+}
+
+/// Halo 1's default unit camera track, in every Halo 1 map: the track a
+/// seat uses when neither it nor its unit names one.
+pub const DEFAULT_UNIT_CAMERA_TRACK: &str = "globals\\default unit camera track";

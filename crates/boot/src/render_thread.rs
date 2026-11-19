@@ -116,6 +116,7 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     // hidden; the render thread never meets these points.
     ("bots", "RENDER_FRAME", AFTER),
     ("bots", "SOUND_UPDATE", AFTER),
+    ("bots", "SOUND_LISTENERS_UPDATE", AFTER),
     (
         "bots",
         "PLAYER_KILLED",
@@ -126,6 +127,7 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "PLAYERS_SCREEN_UNJOINED",
         "a players screen event on the game thread; signs a bot in with guest calls",
     ),
+    ("bots", "PLAYERS_SCREEN_UPDATE", AFTER),
     (
         "bots",
         "PREGAME_LOBBY_INPUT",

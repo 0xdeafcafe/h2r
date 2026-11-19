@@ -598,6 +598,34 @@ Halo ring were already built this way.
   role's steering points, the rest the majority over the others. Through
   version 75 every point took one majority over all four, the back
   pair's word, so no converted wheel steered.
+  Since converter version 77 the points are written in the order of
+  the role's phantom spheres (`rebuild::role_spheres`: the physics
+  element's first multisphere, count at `+0x6c`, centres from `+0x70`,
+  `0x10` each): each sphere in turn takes the nearest point left
+  (`convert::sphere_order`). E: the engine takes friction point `i`'s
+  suspension compression from the phantom's sphere `i` (the per-point
+  loop at `0x2067dd`; `0x207ab0` writes the point's radius less the
+  sphere's ground distance, clamped to the radius; the spring is the
+  role's `+0x2b4` and `+0x2b8`). Halo 1 lists the warthog's back tires
+  first and the retail spheres run front first, so through version 76
+  each front marker took a back sphere's compression: as the nose sank
+  the back spheres rose and the front springs let go, and the converted
+  warthog pitched onto its nose at spawn (forward z -0.93, game run
+  2026-11-19). Paired by position both Blood Gulch warthogs stood level
+  (forward z 0.08 and 0.14 on the slopes) and slept within 70 ticks.
+  The friction point's region index (`+0x48`) is its region's own
+  index among the `hlmt` regions, -1 for none (V: the retail warthog's
+  4, 7, 3, 6, its four wheel regions; the scorpion's -1); through
+  version 76 it was the role's word. E: `0x205fd1` turns a point off
+  once that region's damage state reaches `+0x42`.
+  The rigid body leaves the wheels and treads out (`convert::wheel_nodes`:
+  the gripping points' nodes and every node under them) since version
+  77: Halo 2 holds a vehicle up on its friction-point springs, and V
+  the retail warthog's `phmo` has no wheel shape (a hull on node 0 whose
+  lowest point is 0.18 above the origin, and a bumper box). With the
+  tires in the body, their lowest point 0.018 below the origin sank up
+  to 0.144 into the ground at spawn and the depenetration threw the
+  warthog about 4.8 units (game run, 2026-11-19).
 - **Control** (`+0x1f2`, the 16 bits after `vehicle_type`,
   `rebuild::VEHI_CONTROL`): the majority over the base's vehicles of the
   same `vehicle_type`. V, every `vehi` on every map of the retail disc:
@@ -644,8 +672,20 @@ Halo ring were already built this way.
   track's nine points value for value (`tests/vehicle_camera_disc.rs`).
   Through version 75 no seat named a track, so the engine used that
   default, whose top point is 3.9 above the camera marker where the
-  warthog's own is 3.5 (Halo 1) or 2.05 (the retail warthog's). A seat
-  Halo 1 gives no track (the scorpion's passengers) still names none.
+  warthog's own is 3.5 (Halo 1) or 2.05 (the retail warthog's).
+  Since version 77 each point's orientation is written conjugated
+  (`h1models::h1::h2_rotation`): Halo 1 stores rotations as the
+  conjugate of Halo 2's. E: the following camera (`0x23cbb0`) bisects
+  the track (`0x23c980`, sampling with `0x23c300`) for the point whose
+  forward axis's elevation matches the look pitch, assuming elevation
+  rises along the track. V: every retail track rises from -90 to +90
+  degrees; Halo 1's, read unconjugated, fall, so the search ended on the
+  first point, the top one, 3.5 above the warthog's camera marker
+  whatever the pitch (`tests/vehicle_camera_disc.rs`,
+  `retail_tracks_rise_halo_1s_fall`). Halo 2's default unit track is a
+  byte copy of Halo 1's and falls too, so a seat Halo 1 gives no track
+  takes the unit's (`unit +0x1f4`), else Halo 1's `globals\default unit
+  camera track`, converted. Not yet checked by eye in a game run.
 
 Named on the way:
 

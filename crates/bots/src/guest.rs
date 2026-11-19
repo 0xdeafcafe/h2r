@@ -618,6 +618,15 @@ pub struct Hidden {
     globals: u32,
     count: u16,
     map: [u32; 4],
+    /// The users taken out, as a mask (bit `u` for user `u`).
+    users: u32,
+}
+
+impl Hidden {
+    /// The local users taken out, as a mask.
+    pub fn users(&self) -> u32 {
+        self.users
+    }
 }
 
 /// Takes the bots' local users out of the local player count and map, so
@@ -652,6 +661,7 @@ pub fn hide(m: &mut dyn GuestMemory, bots: u32) -> R<Option<Hidden>> {
         globals,
         count,
         map,
+        users: users.iter().fold(0, |acc, u| acc | 1 << u),
     }))
 }
 
@@ -660,6 +670,98 @@ pub fn restore(m: &mut dyn GuestMemory, h: &Hidden) -> R<()> {
     m.set_u16(h.globals + LOCAL_COUNT, h.count)?;
     for (u, v) in (0u32..).zip(h.map) {
         m.set_u32(h.globals + LOCAL_MAP + 4 * u, v)?;
+    }
+    Ok(())
+}
+
+// ---- the bots' ears (section 4.3, "Listeners") ----
+
+/// The sound globals (`[0x4e6380]`): one listener record per local user,
+/// `0x48` bytes apart, user `u`'s "active" byte at `+0x8e + 0x48 * u`
+/// (`0x127400` sets it for each mapped user and, for an unmapped one,
+/// leaves it as it was; `0x127d00`, which picks the listener a starting
+/// sound is for, walks the four and skips inactive ones).
+pub const SOUND_GLOBALS: u32 = 0x004e_6380;
+pub const LISTENER_ACTIVE: u32 = 0x8e;
+pub const LISTENER_STRIDE: u32 = 0x48;
+
+/// Marks the listeners of the users [`hide`] took out (`h`) inactive, so
+/// no sound that starts is taken as heard by a bot. The listener update
+/// (`0x127400`) never clears the byte for a user it skips, so a bot's
+/// listener made before its user was hidden would otherwise stay active
+/// where the bot last stood. Returns the users whose listener was active.
+pub fn quiet_listeners(m: &mut dyn GuestMemory, h: &Hidden) -> R<u32> {
+    let sound = m.u32(SOUND_GLOBALS)?;
+    if sound == 0 {
+        return Ok(0);
+    }
+    let mut quieted = 0;
+    for u in 0..4u32 {
+        if h.users & 1 << u == 0 {
+            continue;
+        }
+        let at = sound + LISTENER_ACTIVE + LISTENER_STRIDE * u;
+        if m.u8(at)? != 0 {
+            m.set_u8(at, 0)?;
+            quieted |= 1 << u;
+        }
+    }
+    Ok(quieted)
+}
+
+// ---- the players screen's panes (section 4.3, "The players screen") ----
+
+/// The game's controller handles, one dword per port (what `XInputOpen`
+/// gave it; 0 is no controller). The players screen's update
+/// (`PLAYERS_SCREEN_UPDATE`) reads them through `0x18f8b8` and `0x1249d0`.
+pub const PAD_HANDLES: u32 = 0x004e_61cc;
+
+/// What [`hide_pads`] changed, for [`restore_pads`]: each port's handle,
+/// 0 where nothing was hidden.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HiddenPads {
+    handles: [u32; 4],
+}
+
+impl HiddenPads {
+    /// The ports hidden, as a mask.
+    pub fn ports(&self) -> u32 {
+        (0..4u32)
+            .filter(|&p| self.handles[p as usize] != 0)
+            .fold(0, |m, p| m | 1 << p)
+    }
+}
+
+/// Makes the bots' controllers (`bots`, a port mask) look unplugged to
+/// what runs next: their handles are zeroed. Around the players screen's
+/// update, a bot's pane then reads as an empty port ("CONNECT
+/// CONTROLLER"), whether or not the bot is signed in, and the human's
+/// pane is untouched. `None` when no bot port has a controller.
+pub fn hide_pads(m: &mut dyn GuestMemory, bots: u32) -> R<Option<HiddenPads>> {
+    let mut h = HiddenPads::default();
+    for p in 0..4u32 {
+        if bots & 1 << p == 0 {
+            continue;
+        }
+        let at = PAD_HANDLES + 4 * p;
+        let handle = m.u32(at)?;
+        if handle != 0 {
+            h.handles[p as usize] = handle;
+            m.set_u32(at, 0)?;
+        }
+    }
+    Ok((h.ports() != 0).then_some(h))
+}
+
+/// Puts back what [`hide_pads`] zeroed, where the handle is still 0 (a
+/// handle the game wrote in the meantime is kept).
+pub fn restore_pads(m: &mut dyn GuestMemory, h: &HiddenPads) -> R<()> {
+    for p in 0..4u32 {
+        let handle = h.handles[p as usize];
+        let at = PAD_HANDLES + 4 * p;
+        if handle != 0 && m.u32(at)? == 0 {
+            m.set_u32(at, handle)?;
+        }
     }
     Ok(())
 }
@@ -679,8 +781,11 @@ pub const UNIT_AIM: u32 = 0x168;
 /// Object body damage flags bit 2: the body is depleted (dead).
 pub const BODY_DEPLETED: u16 = 1 << 2;
 
-/// A player's living unit: its origin and aim.
-fn living_unit(m: &dyn GuestMemory, p: &players::Player) -> R<Option<([f32; 3], [f32; 3])>> {
+/// A player's living unit: its origin, aim and body.
+fn living_unit(
+    m: &dyn GuestMemory,
+    p: &players::Player,
+) -> R<Option<([f32; 3], [f32; 3], objects::Body)>> {
     let Some(unit) = p.unit(m)? else {
         return Ok(None);
     };
@@ -690,7 +795,11 @@ fn living_unit(m: &dyn GuestMemory, p: &players::Player) -> R<Option<([f32; 3], 
     if kind != objects::BIPED || body.damage_flags(m)? & BODY_DEPLETED != 0 {
         return Ok(None);
     }
-    Ok(Some((body.position(m)?, m.vec3(body.addr + UNIT_AIM)?)))
+    Ok(Some((
+        body.position(m)?,
+        m.vec3(body.addr + UNIT_AIM)?,
+        body,
+    )))
 }
 
 /// The game's tick count (30 a second) while a game is loaded, the main
@@ -776,15 +885,20 @@ pub fn perceive_as(m: &dyn GuestMemory, who: Who) -> R<Perception> {
         if !p.listed(m)? {
             continue;
         }
-        let Some((position, aim)) = living_unit(m, &p)? else {
+        let Some((position, aim, body)) = living_unit(m, &p)? else {
             continue;
         };
         let team = i16::from(p.team(m)?);
         if is(m, &p, who)? {
+            // Ammunition is extra: a fault reading it leaves the bot
+            // playing without it (section 3.6), not blind.
             out.me = Some(Me {
                 position,
                 aim,
                 team,
+                shield: body.shield(m)?,
+                health: body.health(m)?,
+                arms: crate::arms::read(m, body.addr).ok(),
             });
         } else {
             out.others.push(Seen {
@@ -793,6 +907,9 @@ pub fn perceive_as(m: &dyn GuestMemory, who: Who) -> R<Perception> {
                 team,
             });
         }
+    }
+    if out.me.is_some() {
+        out.pickups = crate::arms::pickups(m).unwrap_or_default();
     }
     Ok(out)
 }

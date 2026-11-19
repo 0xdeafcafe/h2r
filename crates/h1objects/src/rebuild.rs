@@ -482,6 +482,44 @@ pub const ANY_FACING: f32 = std::f32::consts::PI;
 pub const SEAT_FLAGS: &str = "unknown_0";
 /// `vehi +0x2f8`, the physics block (one element on every retail vehicle).
 pub const VEHI_PHYSICS: &str = "block_2f8";
+/// The physics element's first shape when it is the wheels' phantom
+/// multisphere: its sphere count at `+0x6c` (V: the retail warthog 4,
+/// the scorpion 8, the ghost 0), the spheres from `+0x70`, `0x10` each
+/// (centre x, y, z in the vehicle's space, then radius; V: the retail
+/// warthog's front pair first, left before right, then the back pair).
+pub const PHANTOM_SPHERE_COUNT: u32 = 0x6c;
+/// See [`PHANTOM_SPHERE_COUNT`].
+pub const PHANTOM_SPHERES: u32 = 0x70;
+/// The most spheres one multisphere holds (V: the scorpion's twelve are
+/// eight and a second shape's four).
+pub const PHANTOM_MAX_SPHERES: u32 = 8;
+
+/// The centres of the role's phantom spheres ([`PHANTOM_SPHERE_COUNT`]),
+/// in order; none when the role's physics element has none. Friction
+/// point `i` takes its suspension from sphere `i`
+/// ([`crate::convert::sphere_order`]).
+pub fn role_spheres(role: &VehicleRole) -> Vec<[f32; 3]> {
+    let Some(e) = role
+        .words
+        .blocks
+        .iter()
+        .find(|(p, _)| p == VEHI_PHYSICS)
+        .and_then(|(_, e)| e.first())
+    else {
+        return Vec::new();
+    };
+    let word = |at: u32| {
+        let name = format!("unknown_{at:x}");
+        e.iter().find(|(p, _)| *p == name).map_or(0, |(_, w)| *w)
+    };
+    let n = word(PHANTOM_SPHERE_COUNT).min(PHANTOM_MAX_SPHERES);
+    (0..n)
+        .map(|i| {
+            let at = PHANTOM_SPHERES + i * 0x10;
+            std::array::from_fn(|a| f32::from_bits(word(at + 4 * a as u32)))
+        })
+        .collect()
+}
 
 fn role(r: &mut Record, table: &[(&str, u32)]) -> Result<()> {
     for (path, word) in table {
@@ -641,9 +679,21 @@ pub struct SeatNames {
 pub const SEAT_CAMERA_TRACKS: &str = "block_74";
 
 /// A Halo 2 camera track (`trak`) with Halo 1's control points: the
-/// same layout, position and orientation quaternion per point (V:
-/// Halo 2's `globals\default_unit_camera_track` holds Halo 1's default
-/// unit track's points value for value; `tests/vehicle_camera_disc.rs`).
+/// same layout, each point's position as it is and its orientation in
+/// Halo 2's convention, the conjugate ([`h1models::h1::h2_rotation`]).
+///
+/// The engine places the following camera by searching the track for the
+/// look pitch (E: `0x0023c980` bisects the track parameter in `[0, 1]`,
+/// samples the spline at `0x0023c300` and compares the elevation of the
+/// sampled orientation's forward axis, `atan2(z, |xy|)`, with the pitch).
+/// The search assumes the elevation rises along the track, as on every
+/// retail track (V: -90 degrees at the first point, the camera above
+/// looking down, to +90 at the last). Halo 1's stored orientations run the
+/// other way (+90 to -90), so taken as they are the search walked off one
+/// end of the track and left the camera at its first point, 3.5 above the
+/// warthog's marker and 4.7 above the scorpion's, whatever the pitch.
+/// (Halo 2's `globals\default_unit_camera_track` is Halo 1's default
+/// track copied value for value and runs the same wrong way.)
 pub fn camera_track(t: &h1::CameraTrack) -> Result<Block> {
     let d = def(b"trak")?;
     let mut r = defs::default_record(d);
@@ -653,11 +703,28 @@ pub fn camera_track(t: &h1::CameraTrack) -> Result<Block> {
     for (position, orientation) in &t.points {
         let mut x = defs::default_record(pd);
         set(&mut x, "position", Val::floats(position))?;
-        set(&mut x, "orientation", Val::floats(orientation))?;
+        set(
+            &mut x,
+            "orientation",
+            Val::floats(&h1models::h1::h2_rotation(*orientation)),
+        )?;
         out.push(x);
     }
     set(&mut r, "control_points", Val::Block(out))?;
     built(d, &r)
+}
+
+/// The key the engine searches a camera track by: the elevation, in
+/// radians, of the forward axis `(1, 0, 0)` turned by a control point's
+/// orientation `q` (i, j, k, w), `atan2(z, |xy|)` (E: `0x0023c300` turns
+/// the axis, `0x0023c980` takes the angle and bisects on it). Rises along
+/// every retail track ([`camera_track`]).
+pub fn camera_elevation(q: [f32; 4]) -> f32 {
+    let [x, y, z, w] = q;
+    let fx = 2.0 * (x * x + w * w) - 1.0;
+    let fy = 2.0 * (w * z + x * y);
+    let fz = 2.0 * (x * z - w * y);
+    fz.atan2(fx.hypot(fy))
 }
 
 /// Halo 2's names for a Halo 1 seat on a model with `markers` (Halo 1's
@@ -762,6 +829,18 @@ pub const FRICTION_REGION: &str = "string_44";
 pub const HOVER_MARKER: &str = "string_0";
 pub const HOVER_REGION: &str = "string_34";
 
+/// `+0x48` of a friction point: the index of its region ([`FRICTION_REGION`])
+/// among the model's `hlmt` regions, low half; the high half 0, or
+/// `0xffffffff` for no region. V: the retail warthog's four hold 4, 7, 3
+/// and 6, its `lf_wheel`, `rf_wheel`, `lb_wheel` and `rb_wheel`; the
+/// scorpion's, which name none, `0xffffffff`. Taken from the role as a
+/// word, as through converter version 76, the converted warthog's back
+/// points held 6 and its front 7 of a model with three regions; the
+/// converted warthog then stood on its nose at spawn once its tires were
+/// out of its body (game runs of the 77 experiment), as if the front
+/// points held nothing up.
+pub const FRICTION_REGION_INDEX: &str = "unknown_48";
+
 /// A friction point's flags (`+4`) and the bit its steering wheels hold.
 /// V: on the retail warthog the two front points hold `0x26` and the two
 /// back ones `0x32`: the front pair alone has bit 2, the back pair alone
@@ -777,6 +856,9 @@ pub const FRICTION_STEERS: u32 = 1 << 2;
 pub struct Point {
     pub marker: String,
     pub region: String,
+    /// That region's index among the model's regions (the `hlmt`'s), -1
+    /// for none ([`FRICTION_REGION_INDEX`]).
+    pub region_index: i16,
     /// Whether the point steers: it lies ahead of the powered points'
     /// middle (the warthog's front tires). It takes the role's steering
     /// words ([`VehicleRole::friction_steered`]) where the role has them.
@@ -1256,6 +1338,18 @@ pub fn vehicle(v: &VehicleSpec) -> Result<Block> {
                 role_words(&mut x, words)?;
                 set(&mut x, marker, Val::text(&p.marker))?;
                 set(&mut x, region, Val::text(&p.region))?;
+                if block == VEHI_FRICTION {
+                    let index: u32 = if p.region_index >= 0 {
+                        p.region_index as u32
+                    } else {
+                        u32::MAX
+                    };
+                    set(
+                        &mut x,
+                        FRICTION_REGION_INDEX,
+                        Val::Bytes(index.to_le_bytes().to_vec()),
+                    )?;
+                }
                 out.push(x);
             }
             set(&mut r, block, Val::Block(out))?;

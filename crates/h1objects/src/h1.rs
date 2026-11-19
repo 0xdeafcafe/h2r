@@ -475,6 +475,12 @@ pub struct Seat {
     pub camera_tracks: Vec<TagId>,
 }
 
+/// The unit's own camera tracks (`0x1f4`, elements as a seat's): the
+/// tracks a seat with none of its own uses, before the globals' default
+/// unit track. V: the cyborg's one (`camera\\biped_small_tight`); none on
+/// Blood Gulch's vehicles, whose seats hold theirs.
+pub const UNIT_CAMERA_TRACKS: usize = 0x1f4;
+
 /// A seat's camera tracks block (`0xd0`) and its element size.
 pub const SEAT_CAMERA_TRACKS: usize = 0xd0;
 pub const SEAT_CAMERA_TRACK_SIZE: usize = 0x1c;
@@ -522,6 +528,8 @@ pub struct Unit {
     /// vehicle.
     pub biped_words: Vec<(usize, u32)>,
     pub seats: Vec<Seat>,
+    /// The unit's own camera tracks ([`UNIT_CAMERA_TRACKS`]).
+    pub camera_tracks: Vec<TagId>,
     /// A biped's collision size ([`BIPED_SIZE`]); `None` for a vehicle.
     pub size: Option<BipedSize>,
     /// Every reference in the tag's bytes (root and its blocks).
@@ -588,6 +596,10 @@ impl Unit {
             camera_field_of_view: f32_at(b, 0x1a0),
             biped_words,
             seats,
+            camera_tracks: elements(map, b, UNIT_CAMERA_TRACKS, SEAT_CAMERA_TRACK_SIZE)?
+                .into_iter()
+                .filter_map(|t| reference(map, t, 0))
+                .collect(),
             size: (g == b"bipd" && b.len() >= BIPED_SIZE + 12).then(|| BipedSize {
                 standing_height: f32_at(b, BIPED_SIZE),
                 crouching_height: f32_at(b, BIPED_SIZE + 4),

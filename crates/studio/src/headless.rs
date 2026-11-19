@@ -682,7 +682,7 @@ mod tests {
     fn the_map_pack_group_lists_and_opens_a_pack_map() {
         use crate::app::map_pack::content_root;
         use crate::script::{Button, Step};
-        use crate::ui::map_pack::Shown;
+        use crate::ui::map_list::{Group, Shown};
         let _turn = ONE_CONTEXT.lock().unwrap_or_else(|e| e.into_inner());
         let mut h = match Headless::new([1280.0, 1600.0], 1.0) {
             Ok(h) => h,
@@ -696,7 +696,7 @@ mod tests {
         let mut app = App::new();
         app.set_data_root(dir.join("data"));
         h.frames(&mut app, 3).unwrap();
-        assert_eq!(h.studio.map_pack.shown, Some(Shown::Hint));
+        assert_eq!(h.studio.map_list.shown(Group::MapPack), Some(&Shown::Hint));
 
         let pack = content_root(&dir.join("data")).join("4d53006400000101");
         std::fs::create_dir_all(&pack).unwrap();
@@ -715,8 +715,8 @@ mod tests {
         app.refresh_packages();
         h.frames(&mut app, 3).unwrap();
         assert_eq!(
-            h.studio.map_pack.shown,
-            Some(Shown::Maps(vec![("Ridge".into(), true)]))
+            h.studio.map_list.shown(Group::MapPack),
+            Some(&Shown::Maps(vec![("Ridge".into(), true)]))
         );
         h.step(&mut app, &Step::Click("Ridge##pack-ridge".into(), Button::Left))
             .unwrap();
@@ -734,6 +734,66 @@ mod tests {
             .count();
         assert!(orange >= 100, "the thumbnail is drawn: {orange} pixels");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The Maps list names and pictures every group through its widgets
+    /// (`app::map_cards_tests`' invented files): a folder of maps with a
+    /// main menu lists its campaign level and multiplayer map by the
+    /// menu's names, each with its picture beside it, and the shared cache
+    /// and the menu itself by file name with none; a package with an image
+    /// of its own shows it; the Map Pack, not installed, its hint. A click
+    /// on a named map opens it. The window is tall enough for the Tools
+    /// pane to show every group unscrolled. Skipped without a wgpu
+    /// adapter.
+    #[test]
+    fn the_maps_list_names_and_pictures_every_group() {
+        use crate::app::map_cards_tests::{Temp, maps_folder, package_with_picture};
+        use crate::script::{Button, Step};
+        use crate::ui::map_list::{Group, Shown};
+        let _turn = ONE_CONTEXT.lock().unwrap_or_else(|e| e.into_inner());
+        let mut h = match Headless::new([1280.0, 1600.0], 1.0) {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!("skipping: {e}");
+                return;
+            }
+        };
+        let t = Temp::new("headless");
+        let maps = maps_folder(&t.0);
+        package_with_picture(&t.0.join("data"));
+        let mut app = App::new();
+        app.set_data_root(t.0.join("data"));
+        app.dispatch(Action::OpenSource(maps));
+        app.wait_cards();
+        h.frames(&mut app, 3).unwrap();
+        let rows = |v: &[(&str, bool)]| {
+            Some(Shown::Maps(
+                v.iter().map(|(l, p)| (l.to_string(), *p)).collect(),
+            ))
+        };
+        assert_eq!(
+            h.studio.map_list.shown(Group::Halo2).cloned(),
+            rows(&[
+                ("The Pier", true),
+                ("mainmenu", false),
+                ("shared", false),
+                ("Yard", true)
+            ])
+        );
+        assert_eq!(
+            h.studio.map_list.shown(Group::Packages).cloned(),
+            rows(&[("Yard Edit", true)])
+        );
+        assert_eq!(h.studio.map_list.shown(Group::MapPack), Some(&Shown::Hint));
+        assert_eq!(h.studio.map_list.shown(Group::Halo1), None);
+        h.step(
+            &mut app,
+            &Step::Click("The Pier##map-02_pier".into(), Button::Left),
+        )
+        .unwrap();
+        h.frames(&mut app, 2).unwrap();
+        assert_eq!(app.loaded_map(), Some("02_pier"));
+        assert!(app.session.is_open());
     }
 
     /// Dear ImGui allows one context at a time: the tests take turns.

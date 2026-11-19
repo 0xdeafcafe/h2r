@@ -143,6 +143,7 @@ impl App {
     /// Re-read the packages under the data root.
     pub fn refresh_packages(&mut self) {
         self.packages = packages::list(&self.session.maps_dir());
+        self.read_package_cards();
         self.refresh_map_pack();
     }
 
@@ -164,6 +165,7 @@ impl App {
             self.h1_maps.len()
         ));
         self.h1 = Some(src);
+        self.read_halo1_cards();
         true
     }
 

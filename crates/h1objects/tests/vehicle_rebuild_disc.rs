@@ -51,7 +51,7 @@ use h1objects::base::Base;
 use h1objects::convert::{Converter, Tree, template_candidates};
 use h1objects::rebuild::{
     H1_SEAT_FLAGS, H1_VEHICLE_FLAGS, H1_VEHICLE_TYPE, SEAT_BOARDING, SEAT_DRIVER, SEAT_FLAGS, SEAT_GUNNER,
-    SEAT_NEEDS_DRIVER, SEAT_NOT_NON_PLAYER, SEAT_NOT_PLAYER, VEHI_CONTROL, VEHI_FRICTION, VEHI_GEARS, VEHI_HOVER, VEHI_PHYSICS, VEHI_SEATS,
+    FRICTION_REGION_INDEX, PHANTOM_MAX_SPHERES, PHANTOM_SPHERE_COUNT, PHANTOM_SPHERES, SEAT_NEEDS_DRIVER, SEAT_NOT_NON_PLAYER, SEAT_NOT_PLAYER, VEHI_CONTROL, VEHI_FRICTION, VEHI_GEARS, VEHI_HOVER, VEHI_PHYSICS, VEHI_SEATS,
 };
 use h1objects::{Converted, h1};
 use map::{FourCC, Map, TagId};
@@ -547,7 +547,46 @@ fn powered_mass_points_become_friction_and_hover_points() {
                 x => panic!("{name}: point {k} region {x:?}"),
             };
             assert!(regions.contains(&region), "{name}: {marker} region {region} of {regions:?}");
+            if *block == VEHI_FRICTION {
+                // +0x48 is the region's own index among the hlmt's
+                // regions, never a word borrowed from the role.
+                let Some(Val::Block(hr)) = h.at("regions") else { panic!() };
+                let names: Vec<String> = hr.iter().map(|r| text(r, "name")).collect();
+                let want = names
+                    .iter()
+                    .position(|n| h1objects::coll::sid_name(n) == region)
+                    .map_or(u32::MAX, |i| i as u32);
+                assert_eq!(word(p, FRICTION_REGION_INDEX), want, "{name}: {marker} region index of {names:?}");
+            }
             println!("{name}: {block}[{k}] marker {marker}, region {region}, {} instances", ms.len());
+        }
+        if *block == VEHI_FRICTION {
+            // Point k rides the phantom's sphere k (h1objects::convert::
+            // sphere_order): its Halo 1 position is nearer that sphere
+            // than any other. Halo 1 lists the warthog's back tires first;
+            // the spheres run front first.
+            let Some(Val::Block(ph)) = r.at(VEHI_PHYSICS) else { panic!() };
+            let n = word(&ph[0], &format!("unknown_{PHANTOM_SPHERE_COUNT:x}")).min(PHANTOM_MAX_SPHERES) as usize;
+            let spheres: Vec<[f32; 3]> = (0..n)
+                .map(|i| {
+                    std::array::from_fn(|a| {
+                        let at = PHANTOM_SPHERES as usize + i * 0x10 + 4 * a;
+                        f32::from_bits(word(&ph[0], &format!("unknown_{at:x}")))
+                    })
+                })
+                .collect();
+            assert_eq!(spheres.len(), points.len(), "{name}: a sphere per point");
+            for (k, p) in points.iter().enumerate() {
+                let Some(Val::String(Str::Text(marker))) = p.get("string_0") else { panic!() };
+                let at = powered
+                    .iter()
+                    .find(|m| h1objects::coll::sid_name(&m.name) == *marker)
+                    .unwrap_or_else(|| panic!("{name}: no mass point for {marker}"))
+                    .position;
+                let d = |s: &[f32; 3]| (0..3).map(|a| (at[a] - s[a]).powi(2)).sum::<f32>();
+                let nearest = (0..n).min_by(|x, y| d(&spheres[*x]).total_cmp(&d(&spheres[*y]))).unwrap();
+                assert_eq!(nearest, k, "{name}: {marker} at {at:?} rides sphere {k} of {spheres:?}");
+            }
         }
         let Some(Val::Block(gears)) = r.at(VEHI_GEARS) else { panic!() };
         println!("{name}: {} gears", gears.len());

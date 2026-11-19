@@ -30,38 +30,18 @@ use std::io::{Read, Seek};
 use anyhow::{Context, Result, anyhow};
 use map::{CacheType, FourCC, Map};
 use serde::{Deserialize, Serialize};
-use tags::{Language, Localization, StringId};
+use tags::{Language, Localization, StringId, ui_levels};
 
 /// The catalog's format, bumped only for changes a client cannot read.
 pub const CATALOG_VERSION: u32 = 1;
 /// Its file name inside the art directory.
 pub const CATALOG: &str = "catalog.json";
 
-/// `matg +0x178`: the UI level data block; its element 0 holds the
-/// multiplayer levels at `+0x10`.
-const MATG_LEVELS: usize = 0x178;
-const LEVEL_DATA_SIZE: u32 = 0x18;
-const LEVEL_DATA_MP: usize = 0x10;
-/// The level select's campaign levels in the same element: `+0` campaign
-/// id, `+4` map id, `+8` the picture (tag reference, ID at `+0xc`), `+0x10`
-/// nine 32-unit UTF-16 names, `+0x250` nine 128-unit descriptions.
-const LEVEL_DATA_CAMPAIGN: usize = 0x8;
-pub const CAMPAIGN_LEVEL_SIZE: usize = 0xb50;
-const CAMPAIGN_PICTURE: usize = 0xc;
-const CAMPAIGN_NAME: usize = 0x10;
-const CAMPAIGN_DESC: usize = 0x250;
-/// `matg +0x170`: the levels the game starts; element 0 holds a block of
-/// `0x108`-byte entries (`+0` campaign id, `+4` map id, `+8` scenario path).
-const MATG_START_LEVELS: usize = 0x170;
-pub const START_LEVEL_SIZE: usize = 0x108;
-/// One multiplayer level: `+0` map id, `+0xc` nine 32-unit UTF-16 names,
-/// `+0x24c` nine 128-unit UTF-16 descriptions, `+0xb4c` the scenario path.
-pub const LEVEL_SIZE: usize = 0xc64;
-const LEVEL_NAME: usize = 0xc;
-const LEVEL_DESC: usize = 0x24c;
-const LEVEL_PATH: usize = 0xb4c;
-/// More would not be a level list.
-const MAX_LEVELS: u32 = 256;
+/// The level lists' layout is `tags::ui_levels`'s (shared with the boot's
+/// map select and the editor's Maps list); the sizes stay named here.
+pub const CAMPAIGN_LEVEL_SIZE: usize = ui_levels::CAMPAIGN_LEVEL_SIZE;
+pub const START_LEVEL_SIZE: usize = ui_levels::START_LEVEL_SIZE;
+pub const LEVEL_SIZE: usize = ui_levels::MP_LEVEL_SIZE;
 
 /// `goof +0x20` its `unic` (tag reference: group, datum), `+0x28` the
 /// built-in variants block of `0x14`-byte entries (`+0` name string id,
@@ -145,18 +125,6 @@ fn le32(b: &[u8], at: usize) -> Option<u32> {
     Some(u32::from_le_bytes(b.get(at..at + 4)?.try_into().ok()?))
 }
 
-fn utf16(b: &[u8], at: usize, units: usize) -> String {
-    let raw = b.get(at..at + units * 2).unwrap_or_default();
-    let units: Vec<u16> = raw
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
-        .take_while(|u| *u != 0)
-        .collect();
-    String::from_utf16_lossy(&units)
-}
-
 /// A `(count, address)` tag block at `at`, read whole with `read`.
 fn block(
     b: &[u8],
@@ -178,41 +146,22 @@ fn block(
     read(addr, n * size as u32).with_context(|| format!("block at {addr:#x} is outside the map"))
 }
 
-/// The multiplayer levels from a globals tag's bytes; `read` resolves a
-/// tag-memory address. Unused slots (id `0xffffffff` or no name) are left
-/// out.
+/// The multiplayer levels from a globals tag's bytes
+/// (`ui_levels::mp_levels`); `read` resolves a tag-memory address. Unused
+/// slots (id `0xffffffff` or no name) are left out.
 pub fn levels(
     matg: &[u8],
     read: &mut dyn FnMut(u32, u32) -> Option<Vec<u8>>,
 ) -> Result<Vec<MapEntry>> {
-    let data = block(matg, MATG_LEVELS, LEVEL_DATA_SIZE as usize, 16, read)?;
-    if data.is_empty() {
-        return Err(anyhow!("the globals have no level data"));
-    }
-    let all = block(&data, LEVEL_DATA_MP, LEVEL_SIZE, MAX_LEVELS, read)?;
-    Ok(all
-        .as_chunks::<LEVEL_SIZE>()
-        .0
-        .iter()
-        .filter_map(|e| {
-            let id = le32(e, 0)?;
-            let name = utf16(e, LEVEL_NAME, 32);
-            if id == u32::MAX || name.is_empty() {
-                return None;
-            }
-            let path = &e[LEVEL_PATH..LEVEL_PATH + 0x100];
-            let path = String::from_utf8_lossy(
-                &path[..path.iter().position(|c| *c == 0).unwrap_or(path.len())],
-            )
-            .into_owned();
-            let key = stem(&path);
-            Some(MapEntry {
-                id,
-                name,
-                description: utf16(e, LEVEL_DESC, 128),
-                key,
-                kind: None,
-            })
+    Ok(ui_levels::mp_levels(matg, read)?
+        .into_iter()
+        .filter(|l| !l.name.is_empty())
+        .map(|l| MapEntry {
+            id: l.id,
+            key: stem(&l.path),
+            name: l.name,
+            description: l.description,
+            kind: None,
         })
         .collect())
 }
@@ -232,64 +181,26 @@ fn stem(path: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// The campaign levels from a globals tag's bytes, in the order the game
-/// lists the levels it can start, each named by the level select's entry
-/// with the same campaign and map id. A level the level select does not
-/// name is left out.
+/// The campaign levels from a globals tag's bytes
+/// (`ui_levels::campaign_levels`), in the order the game lists the levels
+/// it can start, each named by the level select's entry with the same
+/// campaign and map id. A level the level select does not name is left
+/// out.
 pub fn campaign_levels(
     matg: &[u8],
     read: &mut dyn FnMut(u32, u32) -> Option<Vec<u8>>,
 ) -> Result<Vec<CampaignLevel>> {
-    let start = block(matg, MATG_START_LEVELS, 8, 16, read)?;
-    if start.is_empty() {
-        return Err(anyhow!("the globals have no level list"));
-    }
-    let paths = block(&start, 0, START_LEVEL_SIZE, MAX_LEVELS, read)?;
-    let data = block(matg, MATG_LEVELS, LEVEL_DATA_SIZE as usize, 16, read)?;
-    if data.is_empty() {
-        return Err(anyhow!("the globals have no level data"));
-    }
-    let ui = block(
-        &data,
-        LEVEL_DATA_CAMPAIGN,
-        CAMPAIGN_LEVEL_SIZE,
-        MAX_LEVELS,
-        read,
-    )?;
-    let ui: Vec<&[u8]> = ui
-        .as_chunks::<CAMPAIGN_LEVEL_SIZE>()
-        .0
-        .iter()
-        .map(|e| e.as_slice())
-        .collect();
-    Ok(paths
-        .as_chunks::<START_LEVEL_SIZE>()
-        .0
-        .iter()
-        .filter_map(|e| {
-            let (campaign, id) = (le32(e, 0)?, le32(e, 4)?);
-            let path = &e[8..];
-            let path =
-                String::from_utf8_lossy(&path[..path.iter().position(|c| *c == 0)?]).into_owned();
-            let key = stem(&path)?;
-            let u = ui
-                .iter()
-                .find(|u| le32(u, 0) == Some(campaign) && le32(u, 4) == Some(id))?;
-            let name = utf16(u, CAMPAIGN_NAME, 32);
-            if name.is_empty() {
-                return None;
-            }
-            let picture = le32(u, CAMPAIGN_PICTURE).filter(|p| *p != u32::MAX);
-            Some(CampaignLevel {
-                entry: MapEntry {
-                    id,
-                    name,
-                    description: utf16(u, CAMPAIGN_DESC, 128),
-                    key: Some(key),
-                    kind: Some("campaign".into()),
-                },
-                picture,
-            })
+    Ok(ui_levels::campaign_levels(matg, read)?
+        .into_iter()
+        .map(|l| CampaignLevel {
+            entry: MapEntry {
+                id: l.map_id,
+                key: stem(&l.path),
+                name: l.name,
+                description: l.description,
+                kind: Some("campaign".into()),
+            },
+            picture: l.picture,
         })
         .collect())
 }
@@ -495,6 +406,11 @@ fn read_variants<R: Read + Seek>(map: &mut Map<R>, l: &Localization) -> Result<V
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tags::ui_levels::{
+        CAMPAIGN_DESC, CAMPAIGN_NAME, CAMPAIGN_PICTURE, LEVEL_DATA_CAMPAIGN, LEVEL_DATA_MP,
+        MATG_LEVELS, MATG_START_LEVELS, MP_DESC as LEVEL_DESC, MP_NAME as LEVEL_NAME,
+        MP_PATH as LEVEL_PATH,
+    };
 
     /// Invented tag memory: `(address, bytes)` regions.
     struct Mem(Vec<(u32, Vec<u8>)>);

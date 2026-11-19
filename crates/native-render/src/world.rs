@@ -97,6 +97,31 @@ pub struct WorldDraw {
     pub bounds: Aabb,
     /// The batch it is drawn in ([`World::batches`]).
     pub batch: u32,
+    /// The vertex registers its section supplies, bit `n` for `v<n>` as a
+    /// material program reads them (`crate::program::INPUTS`): `v0` the
+    /// position always, `v1` the texture coordinate, `v2..v4` the
+    /// normal, binormal and tangent, `v5` the lighting vector, `v6` the
+    /// lightmap coordinate; each only when the section has it for every
+    /// vertex (the rest read zero, or the default normal).
+    pub inputs: u16,
+}
+
+/// [`WorldDraw::inputs`] of a section with `n` vertices.
+fn section_inputs(s: &SectionInput, lit: bool) -> u16 {
+    let n = s.positions.len();
+    let has = |len: usize| len == n;
+    [
+        true,
+        has(s.uvs.len()),
+        has(s.normals.len()),
+        has(s.binormals.len()),
+        has(s.tangents.len()),
+        has(s.lighting.len()),
+        lit,
+    ]
+    .iter()
+    .enumerate()
+    .fold(0, |m, (i, &on)| if on { m | 1 << i } else { m })
 }
 
 /// One transparent part (kind 4) of a section, placed in the world: what
@@ -246,6 +271,7 @@ impl WorldBuilder {
         let n = section.positions.len();
         let lit = section.lightmap_uvs.len() == n;
         let lightmap = lightmap.filter(|_| lit);
+        let inputs = section_inputs(section, lit);
         let base = self.vertices.len() as u32;
         for i in 0..n {
             let normal = section.normals.get(i).copied().unwrap_or([0.0, 0.0, 1.0]);
@@ -311,6 +337,7 @@ impl WorldBuilder {
                 index_count,
                 bounds,
                 batch: 0,
+                inputs,
             });
         }
     }
@@ -506,6 +533,31 @@ mod tests {
         assert!(w.draws.iter().all(|d| w.batches[d.batch as usize].material == d.material));
         assert_eq!(w.lightmap_keys(), vec![other.unwrap(), PAGE.unwrap()]);
         assert_eq!(w.materials(), vec![1, 5]);
+    }
+
+    #[test]
+    fn a_draw_says_which_vertex_registers_its_section_supplies() {
+        let mut full = quad(0, false, true);
+        full.binormals = vec![[1.0, 0.0, 0.0]; 4];
+        full.tangents = vec![[0.0, 1.0, 0.0]; 4];
+        full.lighting = vec![[0.0, 0.0, 1.0]; 4];
+        let mut short = full.clone();
+        short.lighting.pop();
+        let mut b = WorldBuilder::new();
+        b.add_section(Owner::Cluster(0), &full, &Placement::IDENTITY, PAGE);
+        b.add_section(Owner::Cluster(1), &short, &Placement::IDENTITY, PAGE);
+        b.add_section(Owner::Cluster(2), &quad(0, false, false), &Placement::IDENTITY, PAGE);
+        let w = b.finish();
+        let inputs: Vec<_> = w.draws.iter().map(|d| (d.owner, d.inputs)).collect();
+        assert_eq!(
+            inputs,
+            vec![
+                (Owner::Cluster(2), 0b000_0111),
+                (Owner::Cluster(0), 0b111_1111),
+                (Owner::Cluster(1), 0b101_1111),
+            ],
+            "unlit with no frame: v0..v2 (sorted first, no page); every register; a short lighting stream is none (v5)"
+        );
     }
 
     #[test]

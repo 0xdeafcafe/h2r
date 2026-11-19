@@ -116,7 +116,13 @@ The window is made of panels that dock together:
   folder of maps), the path of what is open, and its maps. Below them,
   **Map Pack** lists the Map Pack's maps, **Packages** lists the map packages you have saved, and **Halo 1** the
   Halo 1 maps (section 4). Clicking any of them opens it in the Scenario
-  tool.
+  tool. Each map is listed as the game's menus show it: its name
+  (**Containment**, not `containment.map`) with a small picture beside
+  it. Hover a map to see the whole picture, its description and, in grey,
+  which file it is and where it comes from (for example
+  `03a_oldmombasa.map, on the Halo 2 disc`). The maps that are not levels
+  (`mainmenu`, `shared`, `single_player_shared`) keep their file names,
+  and their tooltip says what they are for.
 - **Outliner** (bottom left), **Viewport** (middle) and **Inspector**
   (right) show the tool you are in. In Game variants the outliner becomes
   **Variants** and the viewport **Settings**; in Playlists they become
@@ -188,6 +194,13 @@ starting equipment. It doesn't change the level's geometry.
 Click a map in the **Maps** list. The status bar says `opened <map>`,
 with how many triangles and placements it has and how much of its art
 could be drawn.
+
+The names, descriptions and pictures come from your disc's
+`mainmenu.map`: the multiplayer maps as **Select Map** shows them, the
+campaign levels as **Select Level** shows them. The editor reads them in
+the background when a disc or folder opens, so for a moment after opening
+the list shows file names. A folder of maps without `mainmenu.map` keeps
+its file names.
 
 ![Ascension open with nothing selected: its groups in the outliner, the level framed in the viewport, and the opened message in the log and status bar](../images/editor/window.jpg)
 
@@ -471,7 +484,8 @@ others.
 ### Your packages in the Maps list
 
 Every package in the data folder is listed under **Packages** in **Maps**,
-by the name you gave it. Click one to keep working on it: the editor opens
+by the name you gave it, with its image beside it when the package has
+one (`[package] image`) and its description in the tooltip. Click one to keep working on it: the editor opens
 its map from your disc and the package over it, ready to edit. **File >
 Save as package...** then offers the same **Directory**, so saving updates
 that package. (The disc that has the package's map must be open.)
@@ -519,7 +533,8 @@ The editor can show Halo 1 maps too.
 ([multiplayer.md](../halo1/multiplayer.md)), each is listed under
 **Halo 1** twice, once per sandbox: for example **Blood Gulch (H1
 sandbox)** (Halo 1's weapons and vehicles) and **Blood Gulch (H2
-sandbox)** (Halo 2's). Click one to open it in the Scenario tool and
+sandbox)** (Halo 2's), with the picture and description Halo 1's menu
+has for it. Click one to open it in the Scenario tool and
 edit it like any map. Saving it with **File > Save as package...** makes a
 new package (its **Directory** starts as `<map>-edit`), listed under
 **Packages**; the imported map is left as it was.
@@ -551,7 +566,10 @@ over the converted one.*
 
 **Looking at Halo 1 maps.** Open your Halo 1 disc image or a folder of
 Halo 1 maps with **Open...** (or start with `--halo1`), and its maps are
-listed under **Halo 1** with an eye. Click one to look at it: its level
+listed under **Halo 1**, by the names Halo 1's own menus give them
+(**Blood Gulch**, **The Pillar of Autumn**) with their pictures, read
+from the disc's `ui.map`. A map those menus don't list (and `ui` itself)
+keeps its file name and an eye. Click one to look at it: its level
 (textured and lit by its own lightmaps, without its sky or scenery) and its multiplayer
 spawn points, flags, weapon spawns and vehicles, which you can select to
 see their details. These maps are read only (the outliner says `Halo 1:

@@ -745,11 +745,13 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
         crate::rebuild::Point {
             marker: "tire_front_left".into(),
             region: "left_front_tire".into(),
+            region_index: 2,
             steered: true,
         },
         crate::rebuild::Point {
             marker: "tire_back_left".into(),
             region: String::new(),
+            region_index: -1,
             steered: false,
         },
     ];
@@ -835,6 +837,10 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
         Some(&Val::text("left_front_tire"))
     );
     assert_eq!(got.at("block_2f0[1].unknown_8").cloned(), word(0x4160_0000));
+    // Each point's region index is its own, never the role's: the front
+    // point's region is the model's third, the back point names none.
+    assert_eq!(got.at("block_2f0[0].unknown_48").cloned(), word(2));
+    assert_eq!(got.at("block_2f0[1].unknown_48").cloned(), word(0xffff_ffff));
     // The role's control word (the scorpion's 2 drives as a tank).
     assert_eq!(got.at("unknown_1f2"), Some(&Val::Bytes(vec![2, 0])));
     // The front point steers with the role's steering words, the back one
@@ -864,7 +870,10 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
 }
 
 /// A Halo 1 camera track becomes a Halo 2 `trak` with the same points, in
-/// order, and reads back through the definition.
+/// order, each orientation the conjugate, and reads back through the
+/// definition. Halo 1's orientations (here its warthog's top, middle and
+/// bottom points) look up at the top of the track; converted, the
+/// elevation the engine searches by rises along it, as on retail tracks.
 #[test]
 fn camera_track_keeps_halo_1s_control_points() {
     use tags::defs::{self, Defs, Val};
@@ -890,10 +899,31 @@ fn camera_track_keeps_halo_1s_control_points() {
         );
         assert_eq!(
             got.at(&format!("control_points[{i}].orientation")),
-            Some(&Val::floats(q))
+            Some(&Val::floats(&[-q[0], -q[1], -q[2], q[3]]))
         );
     }
     assert!(got.at("control_points[3].position").is_none());
+    let elevation = |q: [f32; 4]| crate::rebuild::camera_elevation(q).to_degrees();
+    // As stored, Halo 1's first point looks straight up.
+    assert!((elevation(h1.points[0].1) - 90.0).abs() < 0.1);
+    let conv: Vec<f32> = (0..3)
+        .map(|i| match got.at(&format!("control_points[{i}].orientation")) {
+            Some(Val::List(q)) => {
+                let q: Vec<f32> = q
+                    .iter()
+                    .map(|v| match v {
+                        Val::Float(f) => *f,
+                        other => panic!("component {other:?}"),
+                    })
+                    .collect();
+                elevation([q[0], q[1], q[2], q[3]])
+            }
+            other => panic!("orientation {other:?}"),
+        })
+        .collect();
+    assert!((conv[0] + 90.0).abs() < 0.1, "{conv:?}");
+    assert!(conv[1].abs() < 0.1, "{conv:?}");
+    assert!((conv[2] - 90.0).abs() < 0.1, "{conv:?}");
     let again = defs::to_built(def, &got, &mut |_| None).unwrap();
     assert_eq!(defs::from_built(def, &again).unwrap(), got);
 }
@@ -1307,6 +1337,7 @@ fn rebuilt_biped_is_the_role_with_halo_1s_header_and_words() {
             .map(|w| (w.1, (w.1 as f32).to_bits()))
             .collect(),
         seats: Vec::new(),
+        camera_tracks: Vec::new(),
         size: None,
         references: Vec::new(),
     };
@@ -1395,6 +1426,7 @@ fn rebuilt_biped_is_sized_to_halo_1_and_takes_its_counterparts_references() {
         camera_field_of_view: 1.2,
         biped_words: Vec::new(),
         seats: Vec::new(),
+        camera_tracks: Vec::new(),
         size: Some(size),
         references: Vec::new(),
     };
@@ -2054,4 +2086,125 @@ fn the_reserve_maximum_is_the_total_less_the_loaded() {
     assert_eq!(reserve_maximum(24, 4), 20);
     assert_eq!(reserve_maximum(0, 0), 0);
     assert_eq!(reserve_maximum(4, 8), 0);
+}
+
+/// A vehicle's wheels are the nodes its gripping powered mass points ride
+/// and the nodes under them; hover points (the ghost's) and points on the
+/// root are not wheels.
+#[test]
+fn wheel_nodes_are_the_gripping_points_nodes_and_below() {
+    use crate::h1::{MassPoint, POWERED_GROUND_FRICTION, Physics};
+    let node = |name: &str, parent: i16| h1models::h1::Node {
+        name: name.into(),
+        next_sibling: -1,
+        first_child: -1,
+        parent,
+        translation: [0.0; 3],
+        rotation: [0.0, 0.0, 0.0, 1.0],
+        distance_from_parent: 0.0,
+    };
+    // hull, suspension, engine (under the suspension), tire (under the
+    // engine), a gun on the hull.
+    let nodes = [
+        node("hull", -1),
+        node("suspension", 0),
+        node("engine", 1),
+        node("tire", 2),
+        node("gun", 0),
+    ];
+    let point = |powered: i16, model_node: i16| MassPoint {
+        name: String::new(),
+        powered_mass_point: powered,
+        model_node,
+        mass: 1.0,
+        density: 1.0,
+        position: [0.0; 3],
+        radius: 0.25,
+    };
+    let phys = |flags: u32, points: Vec<MassPoint>| Physics {
+        mass: 1.0,
+        center_of_mass: [0.0; 3],
+        density: 1.0,
+        gravity_scale: 1.0,
+        moments: [1.0; 3],
+        powered_mass_points: 2,
+        powered_flags: vec![flags, 0],
+        mass_points: points,
+    };
+    let wheel_nodes = crate::convert::wheel_nodes;
+    // The warthog's way: the gripping point rides the tire.
+    let warthog = phys(POWERED_GROUND_FRICTION, vec![point(-1, 0), point(0, 3), point(1, 4)]);
+    assert_eq!(wheel_nodes(&warthog, &nodes), vec![3]);
+    // The scorpion's: on the suspension, so everything under it too.
+    let tank = phys(POWERED_GROUND_FRICTION, vec![point(0, 1)]);
+    assert_eq!(wheel_nodes(&tank, &nodes), vec![1, 2, 3]);
+    // The ghost's antigravity points do not grip.
+    let hover = phys(1 << 6, vec![point(0, 3)]);
+    assert!(wheel_nodes(&hover, &nodes).is_empty());
+    // A gripping point on the root leaves the body whole.
+    let root = phys(POWERED_GROUND_FRICTION, vec![point(0, 0)]);
+    assert!(wheel_nodes(&root, &nodes).is_empty());
+}
+
+/// Each phantom sphere takes the nearest friction point left: Halo 1's
+/// back-first warthog tires come out in the spheres' front-first order,
+/// and points past the last sphere keep their own order.
+#[test]
+fn friction_points_follow_the_phantom_spheres() {
+    use crate::convert::sphere_order;
+    // Halo 1's order: back left, back right, front left, front right.
+    let points = [
+        [-0.6, 0.4, 0.0],
+        [-0.6, -0.4, 0.0],
+        [0.7, 0.4, 0.0],
+        [0.7, -0.4, 0.0],
+    ];
+    // The spheres' order: front left, front right, back left, back right.
+    let spheres = [
+        [0.67, 0.388, 0.19],
+        [0.67, -0.388, 0.19],
+        [-0.63, 0.388, 0.19],
+        [-0.63, -0.388, 0.19],
+    ];
+    assert_eq!(sphere_order(&points, &spheres), vec![2, 3, 0, 1]);
+    // Fewer spheres than points: the rest follow in order.
+    assert_eq!(sphere_order(&points, &spheres[..1]), vec![2, 0, 1, 3]);
+    // No spheres (a hover vehicle): Halo 1's order.
+    assert_eq!(sphere_order(&points, &[]), vec![0, 1, 2, 3]);
+    // More spheres than points: each point once.
+    assert_eq!(sphere_order(&points[..2], &spheres), vec![0, 1]);
+}
+
+/// The role's phantom spheres come from its physics element's words: the
+/// count at `+0x6c` and the centres from `+0x70`.
+#[test]
+fn role_spheres_read_the_physics_elements_multisphere() {
+    use crate::rebuild::{RoleWords, VEHI_PHYSICS, VehicleRole, role_spheres};
+    let f = |v: f32| v.to_bits();
+    let role = VehicleRole {
+        words: RoleWords {
+            members: vec!["jeep".into()],
+            root: Vec::new(),
+            blocks: vec![(
+                VEHI_PHYSICS.into(),
+                vec![vec![
+                    ("unknown_6c".into(), 2),
+                    ("unknown_70".into(), f(0.67)),
+                    ("unknown_74".into(), f(0.388)),
+                    ("unknown_78".into(), f(0.19)),
+                    ("unknown_7c".into(), f(0.25)),
+                    ("unknown_80".into(), f(-0.63)),
+                    // y left out: a zero word is not kept.
+                    ("unknown_88".into(), f(0.19)),
+                    ("unknown_90".into(), f(9.0)),
+                ]],
+            )],
+        },
+        ..Default::default()
+    };
+    assert_eq!(
+        role_spheres(&role),
+        vec![[0.67, 0.388, 0.19], [-0.63, 0.0, 0.19]]
+    );
+    assert!(role_spheres(&VehicleRole::default()).is_empty());
 }

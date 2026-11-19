@@ -363,6 +363,17 @@ impl NavMesh {
 
     /// A\*: the polygons and edges from `start`'s polygon to `goal`'s.
     pub fn corridor(&self, start: u32, goal: u32) -> Option<Vec<u32>> {
+        self.corridor_avoiding(start, goal, &|_| false)
+    }
+
+    /// [`NavMesh::corridor`] never taking an edge `skip` rules out (one a
+    /// bot got stuck on, docs/game/bots.md section 3.2).
+    pub fn corridor_avoiding(
+        &self,
+        start: u32,
+        goal: u32,
+        skip: &dyn Fn(&Edge) -> bool,
+    ) -> Option<Vec<u32>> {
         #[derive(PartialEq)]
         struct Open(f32, u32);
         impl Eq for Open {}
@@ -404,6 +415,9 @@ impl NavMesh {
             let here = self.polys[i as usize].center;
             for &ei in self.out.get(i as usize).into_iter().flatten() {
                 let e = &self.edges[ei as usize];
+                if skip(e) {
+                    continue;
+                }
                 let there = self.polys[e.to as usize].center;
                 let m = mid(e.a, e.b);
                 let g = best[i as usize] + dist(here, m) + dist(m, there) + penalty(e.kind);
@@ -420,9 +434,20 @@ impl NavMesh {
     /// Waypoints from `from` to `to`: the funnel over the corridor's
     /// portals. Each waypoint says how it is reached.
     pub fn path(&self, from: V3, to: V3) -> Option<Vec<Waypoint>> {
+        self.path_avoiding(from, to, &|_| false)
+    }
+
+    /// [`NavMesh::path`] over a corridor that never takes an edge `skip`
+    /// rules out.
+    pub fn path_avoiding(
+        &self,
+        from: V3,
+        to: V3,
+        skip: &dyn Fn(&Edge) -> bool,
+    ) -> Option<Vec<Waypoint>> {
         let start = self.locate(from, 1.0)?;
         let goal = self.locate(to, 1.0)?;
-        let corridor = self.corridor(start, goal)?;
+        let corridor = self.corridor_avoiding(start, goal, skip)?;
         Some(funnel(self, from, to, &corridor))
     }
 }
@@ -585,6 +610,11 @@ impl Follower {
     /// The goal, if any.
     pub fn goal(&self) -> Option<V3> {
         self.path.last().map(|w| w.at)
+    }
+
+    /// The waypoint it is walking to, if any.
+    pub fn waypoint(&self) -> Option<V3> {
+        self.path.get(self.next).map(|w| w.at)
     }
 
     pub fn steer(&mut self, at: V3, frame: u64) -> Steer {

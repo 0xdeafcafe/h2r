@@ -13,7 +13,7 @@ use tags::material::Register;
 use tags::shader::StageStates;
 
 use crate::gpu::{Image, texture};
-use crate::look::{PassLook, Stage};
+use crate::look::{PassLook, Stage, WorldPass};
 use crate::pass_state::PassState;
 use crate::world::{LightmapKey, World, WorldVertex};
 
@@ -64,6 +64,13 @@ pub struct MaterialProgram {
     /// The vertex uniforms but for the view's constants, surface and depth.
     pub vertex: VertexUniforms,
     pub pixel: PixelUniforms,
+    /// The vertex registers (bit `n` for `v<n>`) the program reads from
+    /// the world vertex ([`INPUTS`]).
+    pub inputs: u16,
+    /// A world pass's own pipeline state ([`compile_world`]); `None`
+    /// draws with the opaque world's (depth test `LessEqual` and write, no
+    /// blend, no cull).
+    pub state: Option<PassState>,
 }
 
 /// Translates `look`'s pass with its vertex program `microcode` (the
@@ -105,7 +112,158 @@ pub fn compile_pass(
         signed: t.signed,
         vertex: t.vertex,
         pixel: t.pixel,
+        inputs: t.inputs,
+        state: None,
     })
+}
+
+/// A world material's layer-3 pass, translated for the native world, or
+/// why the material stays on the D3D path. On top of [`compile`]:
+///
+/// - the pass's own state (alpha test, depth, colour writes, cull;
+///   [`crate::look::layer3_pass`]);
+/// - every vertex constant the program reads is one the native pass sets:
+///   the view's (`c[0..18]`, from the device each frame), the instance's
+///   (`c[18..]`), the model rows and the texture-coordinate decompression.
+///   Anything else is uploaded per draw by the structure draw (`c[21]`,
+///   `c[24]`, `c[31]`, `c[174]`, ...) or by the lights, and would read
+///   zero here; relative addressing cannot be bounded;
+/// - [`world_parity`]: nothing the D3D path takes from device state the
+///   native pass does not have (fog, bump matrices, the eye, borders).
+pub fn compile_world(pass: &WorldPass, microcode: &[u8]) -> Result<MaterialProgram, String> {
+    world_parity(&pass.look)?;
+    let program = vsh::Program::parse(microcode).map_err(|e| format!("vertex program: {e:?}"))?;
+    let set = set_constants(&pass.look.vertex_constants);
+    if let Some(c) = constants_read(&program)?.into_iter().find(|&c| !set(c)) {
+        return Err(format!("vertex program reads c[{c}], which the native pass does not set"));
+    }
+    let mut p = compile_pass(&pass.look, microcode, pass.state.alpha_test)?;
+    p.state = Some(pass.state);
+    Ok(p)
+}
+
+/// Whether the native world sets constant `c` (hardware numbering) for a
+/// pass with instance constants `instance`.
+fn set_constants(instance: &[Register]) -> impl Fn(u8) -> bool + '_ {
+    move |c| {
+        let c = usize::from(c);
+        c < VIEW_CONSTANTS
+            || (MODEL_ROWS..MODEL_ROWS + 3).contains(&c)
+            || c == TEXCOORD_DECOMPRESSION
+            || instance.iter().any(|r| usize::from(r.index) == c && r.written != 0)
+    }
+}
+
+/// The constant registers (hardware numbering) `program` reads, sorted;
+/// an error when one is addressed relative to `a0.x`.
+pub fn constants_read(program: &vsh::Program) -> Result<Vec<u8>, String> {
+    let mut read = Vec::new();
+    for i in &program.instructions {
+        for s in i.sources() {
+            if let vsh::SrcReg::Const { index, relative } = s.reg {
+                if relative {
+                    return Err("vertex program addresses constants relative to a0.x".into());
+                }
+                read.push(index);
+            }
+        }
+    }
+    read.sort_unstable();
+    read.dedup();
+    Ok(read)
+}
+
+/// What the D3D path takes from the device's state at a world draw where
+/// the native pass has nothing to match it with; a pass that depends on
+/// one stays on the D3D path:
+///
+/// - **Fog.** Any combiner reading the fog register: its colour is
+///   `SET_FOG_COLOR` and its factor the fog unit's, and the pass does not
+///   set `FOGENABLE`, so both are whatever the device holds. A definition
+///   without a final combiner as well: D3D then programs one from the fog
+///   and specular states (`PixelShaderDef::with_default_final_combiner`).
+///   The world's layer-3 passes on 03a program their own final combiner
+///   and read no fog (the world is fogged by a later layer), so this
+///   refuses none of them.
+/// - **Texture modes** that read device state the native pass does not
+///   have: the bump-environment matrices (`D3DTSS_BUMPENV*`), the eye of
+///   the reflection modes, BRDF.
+/// - **Border addressing** on a sampled stage (the D3D path may supply
+///   the border in the shader).
+pub fn world_parity(look: &PassLook) -> Result<(), String> {
+    let def = PixelShaderDef::from_bytes(&look.pixel_shader).map_err(|e| format!("pixel shader: {e:?}"))?;
+    let c = def.decode();
+    let Some(f) = c.final_combiner else {
+        return Err("no final combiner (D3D builds one from the fog and specular states)".into());
+    };
+    let fog = c
+        .stages
+        .iter()
+        .flat_map(|s| s.rgb.inputs.iter().chain(&s.alpha.inputs))
+        .chain(&[f.a, f.b, f.c, f.d, f.e, f.f, f.g])
+        .any(|i| i.reg == psh::Reg::Fog);
+    if fog {
+        return Err("reads the fog register".into());
+    }
+    for (n, m) in c.texture_modes.iter().enumerate() {
+        use psh::TexMode as M;
+        if matches!(
+            m,
+            M::BumpEnvMap | M::BumpEnvMapLum | M::Brdf | M::DotRflctDiff | M::DotRflctSpec | M::DotRflctSpecConst
+        ) {
+            return Err(format!("stage {n} texture mode {m:?} reads device state"));
+        }
+    }
+    for (n, s) in look.stage_states.iter().enumerate().take(4) {
+        let sampled = look.textures[n] != Stage::Empty;
+        if sampled && [s.address_u, s.address_v, s.address_w].contains(&ADDRESS_BORDER) {
+            return Err(format!("stage {n} addresses the border"));
+        }
+    }
+    Ok(())
+}
+
+/// `D3DTADDRESS_BORDER`.
+const ADDRESS_BORDER: u8 = 4;
+
+/// Whether every part of `material` in `world` can be drawn with
+/// `program`, or why not: each part's section supplies every vertex
+/// register the program reads (a missing one would read zero where the
+/// D3D path streams the real data or binds another implementation), and
+/// where the program samples the lightmap, each part has a page and
+/// `page` has it decoded. The game's skip is per shader, so one part that
+/// cannot be drawn keeps the whole material on the D3D path.
+pub fn world_fit(world: &World, material: u16, program: &MaterialProgram, page: &dyn Fn(LightmapKey) -> bool) -> Result<(), String> {
+    const NAMES: [&str; 7] = [
+        "positions",
+        "texture coordinates",
+        "normals",
+        "binormals",
+        "tangents",
+        "lighting vectors",
+        "lightmap coordinates",
+    ];
+    let lightmap = program
+        .stages
+        .iter()
+        .zip(&program.dims)
+        .any(|(s, d)| *s == Stage::Lightmap && d.is_some());
+    for d in world.draws.iter().filter(|d| d.material == material) {
+        let missing = program.inputs & !d.inputs;
+        if missing != 0 {
+            let n = missing.trailing_zeros() as usize;
+            return Err(format!("a part has no {} (v{n})", NAMES.get(n).unwrap_or(&"stream")));
+        }
+        if lightmap {
+            let Some(key) = d.lightmap else {
+                return Err("a part has no lightmap page".into());
+            };
+            if !page(key) {
+                return Err("a part's lightmap page does not decode".to_string());
+            }
+        }
+    }
+    Ok(())
 }
 
 /// What [`translate_pass`] translates: one implementation's programs,
@@ -131,6 +289,8 @@ pub(crate) struct Translated {
     pub signed: [[bool; 4]; 4],
     pub vertex: VertexUniforms,
     pub pixel: PixelUniforms,
+    /// `v<n>` read from the vertex stream (within [`INPUT_MASK`]).
+    pub inputs: u16,
 }
 
 /// The vertex program and pixel shader through `shaders`, and the uniforms
@@ -193,12 +353,24 @@ pub(crate) fn translate_pass(p: &PassParts<'_>) -> Result<Translated, String> {
         put(&mut vertex.defaults, r);
     }
     let (c0, c1) = def.embedded_constants();
-    let mut pixel = PixelUniforms { c0, c1, ..Default::default() };
+    // `D3DTSS_MIPMAPLODBIAS`, applied in the shader as the D3D path does
+    // (`d3d::nv2a`; a wgpu sampler has no bias).
+    let mut pixel = PixelUniforms { c0, c1, lod_bias: lod_bias(samplers), ..Default::default() };
     if let Some((_, reference)) = p.alpha_test {
         // Compared with the alpha rounded to 1/255 (`xps.alpha_ref.x`).
         pixel.alpha_ref = [f32::from(reference), 0.0, 0.0, 0.0];
     }
-    Ok(Translated { wgsl, samplers, dims: ps.textures, signed, vertex, pixel })
+    let inputs = program.inputs_read() & INPUT_MASK;
+    Ok(Translated { wgsl, samplers, dims: ps.textures, signed, vertex, pixel, inputs })
+}
+
+/// Each stage's `D3DTSS_MIPMAPLODBIAS` (f32 bits), zero when not finite,
+/// as `d3d::nv2a` passes it (the shader clamps it to the NV2A's range).
+pub fn lod_bias(samplers: [Option<StageStates>; 4]) -> [f32; 4] {
+    samplers.map(|s| {
+        let b = s.map_or(0.0, |s| f32::from_bits(s.mip_lod_bias));
+        if b.is_finite() { b } else { 0.0 }
+    })
 }
 
 fn alpha_func(f: wgpu::CompareFunction) -> psh::AlphaFunc {
@@ -297,13 +469,23 @@ pub fn frame_pixel(base: &PixelUniforms, view: &ViewInputs) -> PixelUniforms {
     }
 }
 
-/// The wgpu sampler for a stage's states (XDK values: address 1 wrap, 2
-/// mirror, 3 clamp, 4 border, 5 mirror once; filter 1 point, else linear;
-/// mip filter 0 none, 1 point, 2 linear).
+/// The wgpu sampler for a stage's states, made as the D3D path makes it
+/// (`gfx::translate::SamplerKey::from_stage`: anisotropic filtering,
+/// `MAXMIPLEVEL` as the smallest LOD, no mip filter as level 0 only;
+/// border addressing clamps to the edge). States `gfx` does not decode
+/// fall back to the XDK values read directly (address 1 wrap, 2 mirror,
+/// 3 clamp, 4 border, 5 clamp to edge; filter 1 point, else linear; mip
+/// filter 0 none, 1 point, 2 linear).
 pub fn sampler_descriptor(s: Option<&StageStates>) -> wgpu::SamplerDescriptor<'static> {
+    if let Some(t) = s.and_then(stage_state) {
+        let caps = gfx::translate::Capabilities::from_features(wgpu::Features::empty());
+        let mut d = gfx::translate::SamplerKey::from_stage(&t, caps).descriptor();
+        d.label = Some("native world program");
+        return d;
+    }
     let address = |a: u8| match a {
-        2 | 5 => wgpu::AddressMode::MirrorRepeat,
-        3 | 4 => wgpu::AddressMode::ClampToEdge,
+        2 => wgpu::AddressMode::MirrorRepeat,
+        3..=5 => wgpu::AddressMode::ClampToEdge,
         _ => wgpu::AddressMode::Repeat,
     };
     let filter = |f: u8| if f == 1 { wgpu::FilterMode::Nearest } else { wgpu::FilterMode::Linear };
@@ -332,6 +514,24 @@ pub fn sampler_descriptor(s: Option<&StageStates>) -> wgpu::SamplerDescriptor<'s
         lod_max_clamp: if s.mip_filter == 0 { 0.0 } else { 32.0 },
         ..Default::default()
     }
+}
+
+/// A stage's sampler states as `gfx` holds them, `None` when one does not
+/// decode.
+fn stage_state(s: &StageStates) -> Option<gfx::state::TextureStageState> {
+    use gfx::state::{TextureAddress as A, TextureFilter as F};
+    let mut t = gfx::state::TextureStageState::default_for_stage(0);
+    t.address_u = A::from_xbox(u32::from(s.address_u))?;
+    t.address_v = A::from_xbox(u32::from(s.address_v))?;
+    t.address_w = A::from_xbox(u32::from(s.address_w))?;
+    t.mag_filter = F::from_xbox(u32::from(s.mag_filter))?;
+    t.min_filter = F::from_xbox(u32::from(s.min_filter))?;
+    t.mip_filter = F::from_xbox(u32::from(s.mip_filter))?;
+    t.mip_lod_bias = f32::from_bits(s.mip_lod_bias);
+    t.max_mip_level = u32::from(s.max_mip_level);
+    t.max_anisotropy = u32::from(s.max_anisotropy).max(1);
+    t.border_color = s.border_color;
+    Some(t)
 }
 
 /// One compiled program's GPU side: its module, uniforms, samplers, stage
@@ -619,7 +819,8 @@ impl ProgramSet {
     /// Makes the pipelines for these target formats (before the pass).
     pub fn pipelines(&mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat) {
         for g in self.materials.values_mut() {
-            g.pipeline(device, color, depth, None);
+            let state = g.program.state;
+            g.pipeline(device, color, depth, state.as_ref());
         }
     }
 
@@ -809,5 +1010,172 @@ mod tests {
         assert_eq!(d.lod_max_clamp, 0.0, "no mip filter: level 0 only");
         s.mip_filter = 2;
         assert_eq!(sampler_descriptor(Some(&s)).mipmap_filter, wgpu::MipmapFilterMode::Linear);
+    }
+
+    #[test]
+    fn samplers_are_made_as_the_d3d_path_makes_them() {
+        // 03a's bump stage: anisotropic (filter 3) at 4, trilinear.
+        let mut s = stage_states();
+        (s.mag_filter, s.min_filter, s.mip_filter, s.max_anisotropy) = (3, 3, 2, 4);
+        (s.address_u, s.address_v, s.address_w) = (5, 4, 1);
+        s.max_mip_level = 2;
+        let d = sampler_descriptor(Some(&s));
+        let caps = gfx::translate::Capabilities::from_features(wgpu::Features::empty());
+        let want = gfx::translate::SamplerKey::from_stage(&stage_state(&s).unwrap(), caps).descriptor();
+        assert_eq!(d.anisotropy_clamp, 4);
+        assert_eq!((d.mag_filter, d.min_filter, d.mipmap_filter), (want.mag_filter, want.min_filter, want.mipmap_filter));
+        assert_eq!(
+            (d.address_mode_u, d.address_mode_v, d.address_mode_w),
+            (wgpu::AddressMode::ClampToEdge, wgpu::AddressMode::ClampToEdge, wgpu::AddressMode::Repeat),
+            "5 is clamp to edge, not mirror; the border clamps to the edge"
+        );
+        assert_eq!((d.lod_min_clamp, d.lod_max_clamp), (2.0, 32.0), "MAXMIPLEVEL is the smallest LOD");
+        // A value gfx does not decode still makes a sampler.
+        s.mag_filter = 9;
+        assert_eq!(sampler_descriptor(Some(&s)).address_mode_u, wgpu::AddressMode::ClampToEdge);
+    }
+
+    fn stage_states() -> StageStates {
+        StageStates {
+            address_u: 1,
+            address_v: 1,
+            address_w: 1,
+            mag_filter: 2,
+            min_filter: 2,
+            mip_filter: 2,
+            mip_lod_bias: 0,
+            max_mip_level: 0,
+            max_anisotropy: 0,
+            color_key_op: 0,
+            color_sign: 0,
+            alpha_kill: 0,
+            border_color: 0,
+            color_key_color: 0,
+            unread: [0; 2],
+        }
+    }
+
+    #[test]
+    fn the_lod_bias_reaches_the_pixel_uniforms() {
+        let mut s = stage_states();
+        s.mip_lod_bias = (-0.5f32).to_bits();
+        let mut nan = stage_states();
+        nan.mip_lod_bias = f32::NAN.to_bits();
+        let look = PassLook { stage_states: vec![s, nan], ..plain_look() };
+        let p = compile(&look, &plain_program()).unwrap();
+        assert_eq!(p.pixel.lod_bias, [-0.5, 0.0, 0.0, 0.0]);
+    }
+
+    /// `plain_look` with a final combiner (`rgb = r0`, D3D's own without
+    /// fog), as the world's layer-3 passes have one.
+    fn final_look(fog: bool) -> PassLook {
+        let mut def = shaders::PixelShaderDef::default();
+        (def.final_inputs_abcd, def.final_inputs_efg) = psh::d3d_default_final_combiner(fog, false);
+        PassLook { pixel_shader: def.to_bytes(), ..plain_look() }
+    }
+
+    fn world_pass(look: PassLook) -> WorldPass {
+        let state = PassState {
+            blend: None,
+            blend_constant: wgpu::Color::TRANSPARENT,
+            color_writes: wgpu::ColorWrites::ALL,
+            depth_write: true,
+            depth_compare: wgpu::CompareFunction::LessEqual,
+            primitive: wgpu::PrimitiveState::default(),
+            alpha_test: Some((wgpu::CompareFunction::Greater, 0x40)),
+        };
+        WorldPass { look, state }
+    }
+
+    #[test]
+    fn a_world_pass_compiles_with_its_state() {
+        let p = compile_world(&world_pass(final_look(false)), &plain_program()).expect("compiles");
+        shaders::validate(&p.wgsl).expect("valid WGSL");
+        let state = p.state.expect("its own state");
+        assert_eq!(state.alpha_test, Some((wgpu::CompareFunction::Greater, 0x40)));
+        assert!(p.wgsl.contains("xps.alpha_ref.x"), "the alpha test is in the fragment shader");
+        assert_eq!(p.inputs, 0b100_0011, "v0, v1, v6");
+        assert!(compile(&final_look(false), &plain_program()).unwrap().state.is_none());
+    }
+
+    #[test]
+    fn world_passes_that_read_device_state_stay_on_the_d3d_path() {
+        let refusal = |look: PassLook| compile_world(&world_pass(look), &plain_program()).unwrap_err();
+        assert!(refusal(plain_look()).contains("no final combiner"));
+        assert_eq!(refusal(final_look(true)), "reads the fog register");
+        let mut def = PixelShaderDef::from_bytes(&final_look(false).pixel_shader).unwrap();
+        def.texture_modes = 0x06 << 5;
+        let bump = PassLook { pixel_shader: def.to_bytes(), ..final_look(false) };
+        assert!(refusal(bump).contains("BumpEnvMap"));
+        let mut border = stage_states();
+        border.address_v = 4;
+        let bordered = PassLook {
+            textures: [Stage::Lightmap, Stage::Empty, Stage::Empty, Stage::Empty],
+            stage_states: vec![border],
+            ..final_look(false)
+        };
+        assert_eq!(refusal(bordered), "stage 0 addresses the border");
+        let unsampled = PassLook { stage_states: vec![border], ..final_look(false) };
+        assert!(compile_world(&world_pass(unsampled), &plain_program()).is_ok(), "only a sampled stage counts");
+    }
+
+    #[test]
+    fn a_world_program_reads_only_the_constants_the_native_pass_sets() {
+        use shaders::vsh::encode::{Inst, Operand as O, program};
+        use shaders::vsh::{MacOp, OutReg};
+        let reads = |c: u8| {
+            program(&[
+                Inst::mac(MacOp::Dp4, Some(O::v(0)), Some(O::c(c)), None).to_out(false, OutReg::Pos, 0xf),
+                Inst::mac(MacOp::Mov, Some(O::v(1)), None, None).to_out(false, OutReg::T(0), 0xf),
+            ])
+        };
+        let pass = world_pass(final_look(false));
+        for c in [0, 7, 17, 19, 50, 52, 172] {
+            assert!(compile_world(&pass, &reads(c)).is_ok(), "c[{c}] is set");
+        }
+        for c in [18, 21, 24, 31, 53, 174] {
+            let e = compile_world(&pass, &reads(c)).unwrap_err();
+            assert_eq!(e, format!("vertex program reads c[{c}], which the native pass does not set"));
+        }
+        let relative = program(&[Inst::mac(MacOp::Mov, Some(O::c_rel(10)), None, None).to_out(false, OutReg::Pos, 0xf)]);
+        assert!(compile_world(&pass, &relative).unwrap_err().contains("relative"));
+    }
+
+    #[test]
+    fn a_material_fits_the_world_only_when_every_part_can_be_drawn() {
+        use crate::world::{Owner, PartInput, Placement, SectionInput, WorldBuilder};
+        let page = LightmapKey { page: 1, palette: 0 };
+        let section = |material, lit: bool, lighting: bool| SectionInput {
+            positions: vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            uvs: vec![[0.0; 2]; 3],
+            lightmap_uvs: if lit { vec![[0.5; 2]; 3] } else { Vec::new() },
+            normals: vec![[0.0, 0.0, 1.0]; 3],
+            binormals: vec![[1.0, 0.0, 0.0]; 3],
+            tangents: vec![[0.0, 1.0, 0.0]; 3],
+            lighting: if lighting { vec![[0.0, 0.0, 1.0]; 3] } else { Vec::new() },
+            parts: vec![PartInput { material, transparent: false, triangles: vec![[0, 1, 2]] }],
+        };
+        let mut b = WorldBuilder::new();
+        b.add_section(Owner::Cluster(0), &section(1, true, true), &Placement::IDENTITY, Some(page));
+        b.add_section(Owner::Cluster(1), &section(2, true, true), &Placement::IDENTITY, Some(page));
+        b.add_section(Owner::Cluster(2), &section(2, true, false), &Placement::IDENTITY, Some(page));
+        b.add_section(Owner::Cluster(3), &section(3, false, true), &Placement::IDENTITY, Some(page));
+        let world = b.finish();
+        // The per-pixel lightmap program: every register, the lightmap at
+        // stage 3.
+        let mut p = compile(&plain_look(), &plain_program()).unwrap();
+        p.inputs = INPUT_MASK;
+        p.stages[3] = Stage::Lightmap;
+        p.dims[3] = Some(TextureDim::D2);
+        let all = |_: LightmapKey| true;
+        assert_eq!(world_fit(&world, 1, &p, &all), Ok(()));
+        assert_eq!(world_fit(&world, 2, &p, &all), Err("a part has no lighting vectors (v5)".to_string()));
+        assert_eq!(world_fit(&world, 3, &p, &all), Err("a part has no lightmap coordinates (v6)".to_string()));
+        assert_eq!(world_fit(&world, 1, &p, &|_: LightmapKey| false), Err("a part's lightmap page does not decode".to_string()));
+        // A program that reads neither: the unlit part fits.
+        p.inputs = 0b11;
+        p.stages[3] = Stage::Empty;
+        p.dims[3] = None;
+        assert_eq!(world_fit(&world, 3, &p, &|_: LightmapKey| false), Ok(()));
     }
 }

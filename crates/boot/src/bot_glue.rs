@@ -4,8 +4,8 @@
 //! - The process-wide [`bots::local::global`] bots are an input backend,
 //!   added after the host's own pads, so they can be added at any time
 //!   (`H2_BOTS=<n>` adds `n` brains at boot; the agent API can add more).
-//! - On the players screen or in a pregame lobby the glue signs each bot
-//!   in itself, with the game's own sign-in and a profile made from the
+//! - On the Split Screen players screen or in a pregame lobby the glue
+//!   signs each bot in itself, with the game's own sign-in and a profile made from the
 //!   human's ([`bots::guest::sign_in_then`]), before `SOUND_UPDATE`. A
 //!   bot never presses a button to join (see "The join gate"). A bot's A
 //!   that still reaches the players screen's handler for a controller with
@@ -35,7 +35,14 @@
 //!   taken out of the local player map ([`bots::guest::hide`]), so the
 //!   views, HUDs and listeners are the humans' only. With the pipelined
 //!   render the snapshot is taken inside `RENDER_FRAME`, so it has them
-//!   hidden too; both points run on the game thread.
+//!   hidden too; both points run on the game thread. The listener update
+//!   (`SOUND_LISTENERS_UPDATE`), which the per-frame update also calls
+//!   outside `SOUND_UPDATE`, gets the same window, and the bots' listeners
+//!   are marked inactive ([`bots::guest::quiet_listeners`]).
+//! - Around the players screen's update (`PLAYERS_SCREEN_UPDATE`) the
+//!   bots' controller handles read as none ([`bots::guest::hide_pads`]),
+//!   so its panes show the humans only ("CONNECT CONTROLLER" on a bot's
+//!   port), joined or not.
 //!
 //! - Phantom peers ([`bots::phantom::global`], docs/game/bots.md §5.1):
 //!   before each `RENDER_FRAME`, once a multiplayer game this console hosts
@@ -47,10 +54,11 @@
 //! profile, a human has one to copy, no game runs ([`to_sign_in`]) and
 //! one of two screens is up ([`screen`]):
 //!
-//! - the players screen takes player one's input and nothing sits on
-//!   windows 0 to 4 (a dialog, or the profile chooser:
-//!   [`crate::ui_watch::dialog`]); the bot's port also gets its bit in the
-//!   screen's join mask;
+//! - the players screen in Split Screen (mode 1; in Xbox Live, System
+//!   Link or an invitation's mode it is no join screen, so the human has
+//!   it alone) takes player one's input and nothing sits on windows 0 to
+//!   4 (a dialog, or the profile chooser: [`crate::ui_watch::dialog`]);
+//!   the bot's port also gets its bit in the screen's join mask;
 //! - a pregame lobby (Live or System Link custom game), read from its
 //!   squad session ([`bots::lobby::pregame`]), since `ui_watch` reads the
 //!   lobby as no screen. The sign-in is all: the session's per-frame
@@ -80,7 +88,8 @@
 //! never sees a bot's pad go.
 //!
 //! With no bots every hook returns at once. The bots stay signed in until
-//! they are taken off; going back to the players screen finds them joined.
+//! they are taken off; going back to the players screen finds them joined,
+//! though its panes do not show them.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -157,13 +166,30 @@ impl Screen {
     }
 }
 
-/// Which screen the gate is on: the players screen when it takes player
-/// one's input (`top`, [`crate::ui_watch::read`]); otherwise the pregame
-/// lobby when its session is up (`pregame`, [`bots::lobby::in_pregame`])
-/// and no game runs (`in_game`); otherwise the top screen read, if any.
+/// The players screen's mode for Split Screen (`+0x610`, `0x25240c`):
+/// the only one whose bots join on it.
+pub const SPLIT_SCREEN: u32 = 1;
+
+/// Which screen the gate is on: the players screen in Split Screen when it
+/// takes player one's input (`top`, [`crate::ui_watch::read`], mode
+/// [`SPLIT_SCREEN`]); otherwise the pregame lobby when its session is up
+/// (`pregame`, [`bots::lobby::in_pregame`]) and no game runs (`in_game`);
+/// otherwise the top screen read, if any.
+///
+/// The players screen in any other mode (Xbox Live 3, System Link 2, an
+/// invitation 4, or a mode not read) is not a join screen: there the bots
+/// would show as the human's local players, and the user wants that screen
+/// to be theirs alone. It reads as the lobby when a pregame session is up
+/// under it, else as itself (`0x1e`), where no one joins; the bots join in
+/// the pregame lobby that follows, as opponents. Split Screen has no such
+/// lobby (its local session is not networked), so there the players screen
+/// is still where they join. Either way the screen's panes never show a
+/// bot (`PLAYERS_SCREEN_UPDATE`, [`bots::guest::hide_pads`]).
 pub fn screen(top: Option<crate::ui_watch::Top>, pregame: bool, in_game: bool) -> Screen {
     match top {
-        Some(t) if t.id == crate::ui_watch::JOIN_SCREEN => Screen::Players { screen: t.screen },
+        Some(t) if t.id == crate::ui_watch::JOIN_SCREEN && t.mode == Some(SPLIT_SCREEN) => {
+            Screen::Players { screen: t.screen }
+        }
         _ if pregame && !in_game => Screen::Lobby,
         _ => Screen::Other(top.map(|t| t.id)),
     }
@@ -417,6 +443,10 @@ pub struct Bots {
     offline_ids: Arc<Mutex<[Option<[u8; guest::ID_LEN]>; 4]>>,
     /// A Start press in the lobby waits for its start-state line.
     pressed: Arc<AtomicBool>,
+    /// The bot controllers hidden around the players screen's update.
+    panes: Arc<Mutex<Option<guest::HiddenPads>>>,
+    /// The bot users hidden around the listener update.
+    listeners: Arc<Mutex<Option<Hidden>>>,
     /// The last lobby facts line said.
     lobby_said: Arc<Mutex<String>>,
     /// When the Xbox Live and the sign-in tries were last made.
@@ -445,6 +475,8 @@ impl Bots {
             live: Arc::default(),
             offline_ids: Arc::default(),
             pressed: Arc::default(),
+            panes: Arc::default(),
+            listeners: Arc::default(),
             lobby_said: Arc::default(),
             live_every: Arc::default(),
             sign_in_every: Arc::default(),
@@ -505,6 +537,68 @@ impl feature::Feature for Bots {
                 eprintln!("bots: signing {name} in on port {port}");
                 c.answer_async(move |cx| Box::pin(guest::sign_in(cx, port, bots, name, buffer)))
             });
+
+        // The players screen's panes: a bot port reads as no controller
+        // while the screen lays them out, so the screen shows the humans
+        // only, joined or not (docs/game/bots.md §4.3).
+        let (local, panes) = (self.local.clone(), Arc::clone(&self.panes));
+        b.raw().before(
+            &points::PLAYERS_SCREEN_UPDATE,
+            "hide bot controllers from the players screen",
+            move |c| {
+                let bots = local.port_mask();
+                if bots == 0 {
+                    return Ok(Flow::Continue);
+                }
+                let rt = Arc::clone(c.ctx.runtime());
+                *lock(&panes) = guest::hide_pads(&mut *rt.memory(), bots).ok().flatten();
+                Ok(Flow::Continue)
+            },
+        );
+        let panes = Arc::clone(&self.panes);
+        b.raw().after(
+            &points::PLAYERS_SCREEN_UPDATE,
+            "bot controllers back",
+            move |c| {
+                if let Some(h) = lock(&panes).take() {
+                    let rt = Arc::clone(c.ctx.runtime());
+                    guest::restore_pads(&mut *rt.memory(), &h).map_err(|e| fault(e.addr))?;
+                }
+                Ok(())
+            },
+        );
+
+        // The listeners, wherever they are updated: SOUND_UPDATE's own call
+        // runs inside its window, but the per-frame update `0x18c060` calls
+        // the listener update outside it, and there the bots' users were
+        // made listeners, so a bot's own sounds started as heard by it
+        // (docs/game/bots.md §4.3, "Listeners").
+        let (local, listeners) = (self.local.clone(), Arc::clone(&self.listeners));
+        b.raw().before(
+            &points::SOUND_LISTENERS_UPDATE,
+            "hide bot listeners",
+            move |c| {
+                let bots = local.port_mask();
+                if bots == 0 {
+                    return Ok(Flow::Continue);
+                }
+                let rt = Arc::clone(c.ctx.runtime());
+                *lock(&listeners) = hide_quiet(&mut *rt.memory(), bots);
+                Ok(Flow::Continue)
+            },
+        );
+        let listeners = Arc::clone(&self.listeners);
+        b.raw().after(
+            &points::SOUND_LISTENERS_UPDATE,
+            "bot listeners back",
+            move |c| {
+                if let Some(h) = lock(&listeners).take() {
+                    let rt = Arc::clone(c.ctx.runtime());
+                    guest::restore(&mut *rt.memory(), &h).map_err(|e| fault(e.addr))?;
+                }
+                Ok(())
+            },
+        );
 
         // A Start press in the lobby while bots are in: the start state is
         // logged before the next SOUND_UPDATE (once per press).
@@ -892,7 +986,7 @@ impl feature::Feature for Bots {
                 if bots == 0 {
                     return Ok(Flow::Continue);
                 }
-                *lock(&sound) = guest::hide(&mut *rt.memory(), bots).ok().flatten();
+                *lock(&sound) = hide_quiet(&mut *rt.memory(), bots);
                 Ok(Flow::Continue)
             },
         );
@@ -911,6 +1005,15 @@ impl feature::Feature for Bots {
         b.snapshot(feature::SnapshotPolicy::Stateless);
         Ok(())
     }
+}
+
+/// Hides the bots' users ([`bots::guest::hide`]) and makes their listeners
+/// inactive ([`bots::guest::quiet_listeners`]), for the sound frame and
+/// the listener update.
+fn hide_quiet(mem: &mut runtime::Guest, bots: u32) -> Option<Hidden> {
+    let h = guest::hide(&mut *mem, bots).ok().flatten()?;
+    let _ = guest::quiet_listeners(&mut *mem, &h);
+    Some(h)
 }
 
 /// The loaded map's short name (the cache header's, `0x547898`).
@@ -1048,6 +1151,37 @@ mod tests {
         assert_eq!(Screen::Other(None).name(), "none");
         assert_eq!(PLAYERS.mask_screen(), Some(0x8000_0000));
         assert_eq!(Screen::Lobby.mask_screen(), None, "no mask in the lobby");
+    }
+
+    /// The players screen in `mode` (1 Split Screen, 2 System Link, 3 Xbox
+    /// Live, 4 an invitation).
+    fn players_in(mode: Option<u32>) -> Option<Top> {
+        on(JOIN_SCREEN).map(|t| Top { mode, ..t })
+    }
+
+    #[test]
+    fn only_split_screen_bots_join_on_the_players_screen() {
+        let empty = |_: u8| Some(false);
+        // The user's ask: the Xbox Live players screen is theirs alone.
+        for mode in [Some(2), Some(3), Some(4), None] {
+            let at = screen(players_in(mode), false, false);
+            assert_eq!(at, Screen::Other(Some(JOIN_SCREEN)), "mode {mode:?}");
+            assert_eq!(at.mask_screen(), None, "no join mask in mode {mode:?}");
+            assert!(
+                to_sign_in(at, None, 0b1110, empty, true, false).is_empty(),
+                "mode {mode:?}: no bot signs in on the players screen"
+            );
+            // A pregame session up under it: they join as in the lobby
+            // (no mask), and the panes hide them anyway.
+            assert_eq!(screen(players_in(mode), true, false), Screen::Lobby);
+        }
+        // Split Screen: no lobby to join in, so the players screen.
+        let split = screen(players_in(Some(SPLIT_SCREEN)), false, false);
+        assert_eq!(split, PLAYERS);
+        assert_eq!(
+            to_sign_in(split, None, 0b1110, empty, true, false),
+            vec![1, 2, 3]
+        );
     }
 
     #[test]

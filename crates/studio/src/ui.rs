@@ -8,6 +8,7 @@
 //! [`Action`]s.
 
 mod inspector;
+pub mod map_list;
 pub mod map_pack;
 mod outliner;
 mod play;
@@ -104,8 +105,8 @@ pub struct Studio {
     pub play: play::PlayUi,
     /// The Tags tool's UI state (its field panel's too).
     pub tags: tags::TagsUi,
-    /// The Maps list's Map Pack pictures.
-    pub map_pack: map_pack::MapPackUi,
+    /// The Maps list's pictures, and what each group drew.
+    pub map_list: map_list::MapListUi,
 }
 
 impl Studio {
@@ -128,13 +129,14 @@ impl Studio {
             inspector: inspector::InspectorState::default(),
             play: play::PlayUi::default(),
             tags: tags::TagsUi::default(),
-            map_pack: map_pack::MapPackUi::default(),
+            map_list: map_list::MapListUi::default(),
         }
     }
 
     /// Build one frame of UI and run the actions it produced.
     pub fn frame(&mut self, ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>) {
         app.poll_convert();
+        app.poll_cards();
         self.play.update(app);
         let mut actions = Vec::new();
         self.shortcuts(ui, app, &mut actions);
@@ -657,7 +659,8 @@ impl Studio {
         gpu: &mut Gpu<'_>,
         actions: &mut Vec<Action>,
     ) {
-        let mut pack = std::mem::take(&mut self.map_pack);
+        let mut list = std::mem::take(&mut self.map_list);
+        list.begin();
         ui.window(&self.keys.tools).build(|| {
             self.heading(ui, "Tools");
             for tool in ToolKind::ALL {
@@ -696,71 +699,37 @@ impl Studio {
                     ui.text_wrapped("Open a disc image, a .map file or a folder of maps.");
                 }
             }
-            let loaded = app
-                .loaded_map()
-                .filter(|_| app.opened_package().is_none() && app.opened_pack_map().is_none())
-                .map(str::to_owned);
-            for name in app.maps() {
-                let on = loaded.as_deref() == Some(name.as_str());
-                if ui
-                    .selectable_config(format!("{}  {name}##map-{name}", icon::MAP))
-                    .selected(on)
-                    .build()
-                    && !on
-                {
-                    actions.push(Action::SelectMap(name.clone()));
-                }
-            }
+            map_list::halo2(ui, app, &mut list, gpu, actions);
             let bold = self.fonts.bold;
             let heading = |ui: &Ui, text: &str| {
                 let f = ui.push_font(bold);
                 ui.text(text);
                 f.pop();
             };
-            map_pack::group(ui, app, &mut pack, gpu, heading, actions);
-            self.library_lists(ui, app, actions);
+            map_pack::group(ui, app, &mut list, gpu, heading, actions);
+            self.library_lists(ui, app, &mut list, gpu, actions);
         });
-        self.map_pack = pack;
+        self.map_list = list;
     }
 
     /// The Maps list's other groups after the Map Pack ([`map_pack`]): user
     /// packages, then Halo 1 (converted packages, and the maps of an open
-    /// Halo 1 source, read-only).
-    fn library_lists(&self, ui: &Ui, app: &App, actions: &mut Vec<Action>) {
-        let opened = app.opened_package().map(str::to_owned);
-        let entry = |e: &editor_core::packages::PackageEntry, actions: &mut Vec<Action>| {
-            let key = e.key();
-            let on = opened.as_deref() == Some(key.as_str());
-            if ui
-                .selectable_config(format!("{}  {}##pkg-{key}", icon::PACKAGE, e.label()))
-                .selected(on)
-                .build()
-                && !on
-            {
-                actions.push(Action::OpenPackageEntry(key.clone()));
-            }
-            ui.set_item_tooltip(format!(
-                "{}\nin <data>/maps/{}{}",
-                if !e.derived && let Some(m) = app.pack_map_named(&e.map) {
-                    format!("an edit of the Map Pack's {} ({})", m.name, e.map)
-                } else if e.derived {
-                    format!("a new map, loaded as {}", e.map)
-                } else {
-                    format!("an edit of {}", e.map)
-                },
-                e.dir,
-                match &e.halo1 {
-                    Some(o) => format!("\nconverted from Halo 1's {}", o.map),
-                    None => String::new(),
-                }
-            ));
-        };
+    /// Halo 1 source, read-only), each a [`map_list`] row.
+    fn library_lists(
+        &self,
+        ui: &Ui,
+        app: &App,
+        st: &mut map_list::MapListUi,
+        gpu: &mut Gpu<'_>,
+        actions: &mut Vec<Action>,
+    ) {
+        let opened = app.opened_package();
         let (h1, own): (Vec<_>, Vec<_>) = app.packages().iter().partition(|e| e.halo1.is_some());
         if !own.is_empty() {
             ui.spacing();
             self.heading(ui, "Packages");
             for e in own {
-                entry(e, actions);
+                package_row(ui, app, st, gpu, map_list::Group::Packages, e, opened, actions);
             }
         }
         if h1.is_empty() && app.halo1_source().is_none() {
@@ -769,7 +738,7 @@ impl Studio {
         ui.spacing();
         self.heading(ui, "Halo 1");
         for e in h1 {
-            entry(e, actions);
+            package_row(ui, app, st, gpu, map_list::Group::Halo1, e, opened, actions);
         }
         if let Some(src) = app.halo1_source() {
             ui.text_disabled(format!(
@@ -777,18 +746,7 @@ impl Studio {
                 icon::DISC,
                 src.path().display()
             ));
-            let loaded = app.loaded_halo1();
-            for name in app.halo1_maps() {
-                let on = loaded == Some(name.as_str());
-                if ui
-                    .selectable_config(format!("{}  {name}##h1-{name}", icon::EYE))
-                    .selected(on)
-                    .build()
-                    && !on
-                {
-                    actions.push(Action::SelectHalo1Map(name.clone()));
-                }
-            }
+            map_list::halo1(ui, app, st, gpu, actions);
         }
     }
 
@@ -1389,6 +1347,50 @@ fn tool_icon(tool: ToolKind) -> &'static str {
         ToolKind::UiScreens => icon::EYE,
         ToolKind::Hud => icon::CROSSHAIR,
         ToolKind::Tags => icon::BOX,
+    }
+}
+
+/// A package's row in the Maps list: its name, its `[package] image` and
+/// `description` when it has them, and what it is an edit of.
+#[allow(clippy::too_many_arguments)]
+fn package_row(
+    ui: &Ui,
+    app: &App,
+    st: &mut map_list::MapListUi,
+    gpu: &mut Gpu<'_>,
+    group: map_list::Group,
+    e: &editor_core::packages::PackageEntry,
+    opened: Option<&str>,
+    actions: &mut Vec<Action>,
+) {
+    let key = e.key();
+    let label = e.label();
+    let from = format!(
+        "{}\nin <data>/maps/{}{}",
+        if !e.derived && let Some(m) = app.pack_map_named(&e.map) {
+            format!("an edit of the Map Pack's {} ({})", m.name, e.map)
+        } else if e.derived {
+            format!("a new map, loaded as {}", e.map)
+        } else {
+            format!("an edit of {}", e.map)
+        },
+        e.dir,
+        match &e.halo1 {
+            Some(o) => format!("\nconverted from Halo 1's {}", o.map),
+            None => String::new(),
+        }
+    );
+    let row = map_list::Row {
+        key: format!("pkg-{key}"),
+        label: &label,
+        icon: icon::PACKAGE,
+        selected: opened == Some(key.as_str()),
+        picture: app.package_picture(&e.dir),
+        description: e.description.as_deref().unwrap_or(""),
+        from: &from,
+    };
+    if st.row(ui, gpu, group, &row) {
+        actions.push(Action::OpenPackageEntry(key.clone()));
     }
 }
 
