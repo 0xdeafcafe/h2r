@@ -369,6 +369,26 @@ fn p1_8_palettes_are_part_of_the_texture_cache_identity() {
     assert_eq!(d.backend.uploads(), 4);
 }
 
+/// The palette bound at a stage reads back as its entries (what a native
+/// pass expands a P8 texture through), sized by the header's size bits;
+/// a stage with none bound has none.
+#[test]
+fn a_stage_palette_reads_back_its_entries() {
+    let (mut d, mut m) = rec();
+    p8_texture(&mut m);
+    assert_eq!(d.stage_palette(&m, 2), None);
+    m.write_u32(0x8000_0000 | PAL_DATA, 0xFF80_7F01).unwrap();
+    m.write_u32(0x8000_0000 | PAL_DATA + 4, 0x0102_0304).unwrap();
+    d.set_palette(&mut m, 2, PAL_A).unwrap();
+    let p = d.stage_palette(&m, 2).unwrap();
+    assert_eq!(p.len(), 256);
+    assert_eq!(&p[..3], &[0xFF80_7F01, 0x0102_0304, 0]);
+    // 32 entries (size code 3).
+    m.write_u32(PAL_A, 1 | (3 << 16) | 0x0100_0000 | (3 << 30)).unwrap();
+    assert_eq!(d.stage_palette(&m, 2).map(|p| p.len()), Some(32));
+    assert_eq!(d.stage_palette(&m, 4), None);
+}
+
 /// `COLORSIGN` is part of the texture cache identity too: signed channels
 /// are stored biased, so one texture read signed and unsigned is two host
 /// textures, and the draw still carries the stage's sign bits.

@@ -720,11 +720,11 @@ mod tests {
             ("Alpha", "coop-probe: session start returned 1"),
             (
                 "Alpha",
-                "coop-probe: game start: options mode 1, simulation mode sync-server (3), x",
+                "coop-probe: game start: options mode 1, simulation mode sync-server (2), x",
             ),
             (
                 "Bravo",
-                "coop-probe: game start: options mode 1, simulation mode sync-client (2), x",
+                "coop-probe: game start: options mode 1, simulation mode sync-client (3), x",
             ),
         ]);
         let v = verdict(&l, true).unwrap();

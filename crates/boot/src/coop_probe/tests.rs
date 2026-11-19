@@ -624,14 +624,14 @@ fn the_simulation_mode_and_latches_are_reported_on_change() {
     assert_eq!(read_sim(&m), None);
     let g = 0x0200_0000;
     m.set_u32(points::SIM_GLOBALS.base, g);
-    m.set_u32(g + 8, 3);
+    m.set_u32(g + 8, 2);
     m.set_u32(g + 0x28, 77);
     m.wr(g + 0x2c, &[0]);
     let s = read_sim(&m).unwrap();
     assert_eq!(
         s,
         Sim {
-            mode: 3,
+            mode: 2,
             update: 77,
             desync: 0,
             ended: 0
@@ -639,7 +639,7 @@ fn the_simulation_mode_and_latches_are_reported_on_change() {
     );
     assert_eq!(
         sim_changes(None, s, Some(10)),
-        ["simulation mode sync-server (3) at tick 10"]
+        ["simulation mode sync-server (2) at tick 10"]
     );
     assert!(sim_changes(Some(s), s, Some(11)).is_empty());
     let bad = Sim { desync: 1, ..s };
@@ -658,8 +658,26 @@ fn the_simulation_mode_and_latches_are_reported_on_change() {
     assert!(sim_changes(Some(s), ended, Some(14))[0].contains("ended latch"));
     assert_eq!(
         (mode_name(2), role(2), role(3), role(1)),
-        ("sync-client", "guest", "host", "local")
+        ("sync-server", "host", "guest", "local")
     );
+    // The world's numbering, from the game's through 0x68da8.
+    let names: Vec<_> = (1..=5)
+        .map(|game| {
+            let world = bots::phantom::session::world_mode(game).unwrap();
+            (mode_name(world), role(world))
+        })
+        .collect();
+    assert_eq!(
+        names,
+        [
+            ("local", "local"),
+            ("sync-client", "guest"),
+            ("sync-server", "host"),
+            ("dist-client", "guest"),
+            ("dist-server", "host"),
+        ]
+    );
+    assert_eq!((mode_name(0), mode_name(6)), ("none", "?"));
 }
 
 #[test]

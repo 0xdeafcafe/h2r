@@ -1743,6 +1743,24 @@ impl<B: Backend> Device<B> {
         self.backend.supports_external_pass()
     }
 
+    /// The `A8R8G8B8` entries of the palette bound at `stage` now
+    /// (`SetPalette`), as the D3D path samples a P8 texture there: `None`
+    /// when none is bound or it does not read. Read-only, for a native
+    /// pass that expands the same indices itself.
+    pub fn stage_palette(&self, mem: &dyn GuestMemory, stage: usize) -> Option<Vec<u32>> {
+        let header = *self.palettes.get(stage)?;
+        if header == 0 {
+            return None;
+        }
+        let p = PaletteHeader::read(mem, header).ok()?;
+        if p.resource.kind() != ResourceType::Palette {
+            return None;
+        }
+        let va = self.cfg.address_map.to_virtual(p.resource.data);
+        let bytes = mem.read_vec(va, 4 * p.entries() as usize).ok()?;
+        Some(bytes.chunks_exact(4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect())
+    }
+
     /// Asks for `pass` to draw into the bound colour target and depth with
     /// the current viewport (docs/graphics/native-renderer.md): recorded
     /// after the next drain of the push buffer (the next D3D entry), in

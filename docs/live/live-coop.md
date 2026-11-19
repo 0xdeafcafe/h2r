@@ -66,14 +66,20 @@ Evidence labels, as in [theater.md](../game/theater.md):
 
 ### 1.1 The simulation modes
 
-[local] The simulation globals pointer is at `0x004CF77C` (set by the
-initialization callback `0x00067e30`); the mode is the dword at `+8`. The
-name table at `0x00468c64` gives the values in order: none, local,
-sync-client, sync-server, dist-client, dist-server (0 to 5). Game options
-carry the same value as a byte at `+4` (`G+0x0c` in
+[local] There are two mode numberings, and they differ. The **game
+mode** is the byte in game options at `+4` (`G+0x0c` in
 [live-gamestate.md](live-gamestate.md)); the options check `0x00138180`
-accepts 0 to 5. The new-map callback `0x00067ee0` reads it and builds the
-simulation world (`0x00068c00`).
+accepts 0 to 5, and the name table at `0x00468c64` names it: none, local,
+sync-client, sync-server, dist-client, dist-server (0 to 5). The
+**simulation world's mode** is the dword at `+8` of the simulation globals
+(pointer at `0x004CF77C`, set by the initialization callback
+`0x00067e30`). The new-map callback `0x00067ee0` reads the game mode and
+builds the simulation world (`0x00068c00`), which maps it through the jump
+table at `0x00068da8`: game 1, 2, 3, 4, 5 become world 1, 3, 2, 5, 4. So in
+the world's numbering 2 is the synchronous server, 3 the synchronous
+client, 4 the distributed server and 5 the distributed client (the name
+table does not index it). Only 0 and 1 mean the same in both. Everything
+below says "world mode" or "game mode" where it matters.
 
 [local] The session's game-start routine `0x0006ec80` computes it. With
 `S` the session:
@@ -86,9 +92,10 @@ simulation world (`0x00068c00`).
 | peer count | `S+0x54` | [guess] the word before the 16-entry peer array at `S+0x58` (stride `0x10C`) |
 | player count | `S+0x1118` | directly after that array; compared with the session's player limit at `0x00063e4f` |
 
-The mode written to options `+4` is 1 for protocol 0, `2 + is_host` for
-protocol 1 and `4 + is_host` for protocol 2. So a synchronous session
-makes the host a sync-server and everyone else a sync-client.
+The game mode written to options `+4` is 1 for protocol 0, `2 + is_host`
+for protocol 1 and `4 + is_host` for protocol 2. So a synchronous session
+makes the host a sync-server (game mode 3, world mode 2) and everyone else a
+sync-client (game mode 2, world mode 3).
 
 [local] The protocol is chosen in `0x00064060`, which the lobby's "set
 variant" call `0x0019a728` reaches: a session of type 0 (local) gets
@@ -157,9 +164,11 @@ envelope:
   referenced from the game-state code at `0x00123e23`). [guess] That flag
   is "save the game state on this tick", which would put checkpoints
   inside the synchronous stream.
-- **After, `0x000684e0`.** Mode 2 (sync-client) calls `0x00069880`, mode 4
-  (dist-client) calls two other routines, and the servers only advance
-  the update number.
+- **After, `0x000684e0`.** World mode 2 (the sync-server) calls
+  `0x00069880`, world mode 4 (the dist-server) calls two other routines, and
+  the clients (world 3 and 5) only advance the update number. (This step
+  reads the world's mode; it was once written with the game's names, which
+  put the roles the other way round.)
 - **Client catch-up, `0x000698e0`.** Takes a received update, checks it is
   the next one (else sets `+0x2c`), and then calls `game_tick` in a loop
   while `0x00069300` reports ticks pending. A sync-client is driven by the
@@ -858,7 +867,7 @@ Every line on stderr starts `coop-probe:`.
 | `joinable: true (retail false; ...)` | the presence predicate's answer changed |
 | `session start: session ...`, then `campaign with 2 peers: showing the start 1 peer until OPTIONS_NEW`, `peer count back to 2 before OPTIONS_NEW`, `session start returned 1 (the game starts)` | the session start on that machine, the bypass and its undo. `returned 0 (refused)` means it refused for some other reason (the line before it shows the session) |
 | `game limits: campaign peer limit 1 -> 2` | the host's game-start parameters were corrected |
-| `game start: options mode 1, simulation mode sync-server (3), scenarios\solo\...` | a map activated: options mode 1 is campaign; the simulation mode is the dword at simulation globals `+8` (section 1.1). The host should say `sync-server (3)` and the guest `sync-client (2)`. `local (1)` means the start did not take the synchronous path |
+| `game start: options mode 1, simulation mode sync-server (2), scenarios\solo\...` | a map activated: options mode 1 is campaign; the simulation mode is the dword at simulation globals `+8`, the world's numbering (section 1.1). The host should say `sync-server (2)` and the guest `sync-client (3)`. `local (1)` means the start did not take the synchronous path |
 | `simulation mode ... at tick T` | the mode changed |
 | `hash log <data>/coop-probe/<time>-<pid>-<role>.hashes` | the per-tick hash file for this game; `hashing the game-state block at 0x...: N pools` follows on the first tick |
 | `OUT OF SYNC: the retail latch (simulation globals +0x2c) is set at tick T, update U` | **the retail desync latch fired** (update number, tick or random seed mismatch, or an update out of order; section 1.3). The most important line |
@@ -944,7 +953,7 @@ the same architecture (section 6, item 6).
    retail lobby screen for a campaign.
 5. Host: press Start (the usual start of a System Link game).
 6. Both: `session start ... returned 1`, then `game start: options mode
-   1, simulation mode sync-server (3)` on the host and `sync-client (2)`
+   1, simulation mode sync-server (2)` on the host and `sync-client (3)`
    on the guest. Play for a few minutes: move both players, fight, reach a
    checkpoint, let a cutscene run. Quit from the pause menu when it is
    clearly broken or after ten minutes or so.
@@ -1251,8 +1260,8 @@ Checklist (stderr lines in brackets):
 8. Host: start the game from the lobby. From here it is section 9's
    probe: `coop-probe: session start ...`, `campaign with 2 peers: showing
    the start 1 peer`, `session start returned 1`, then `game start: options
-   mode 1, simulation mode sync-server (3)` on the host and `sync-client
-   (2)` on the guest, and the hash files. 9.4 says what each failure looks
+   mode 1, simulation mode sync-server (2)` on the host and `sync-client
+   (3)` on the guest, and the hash files. 9.4 says what each failure looks
    like. Play a few minutes: both move, a fight, a checkpoint, a cutscene.
 9. Skulls: with a skull on in the host's profile, the guest's stderr says
    `skulls: co-op campaign start with the host's skulls: ...`; with one of
@@ -2106,7 +2115,7 @@ adds it on the same tick.
 | the level, its loaded BSP and zone set | no: map data | loads the host's level and BSP **before** asking (the accept repeats both); a BSP switch while joining is refused by the hold |
 | sound | no | starts silent; looping sounds the state names start on the next update ([guess]) |
 | HLE state (Live session, XNet, invites) | no | its own: it accepted the invite and is in the session |
-| network/session tables (peers, session players, simulation globals `0x4CF77C`) | no | the newcomer joins the network session as a sync-client (mode 2) at update T+1; the session player array (`S+0x4F90`) comes from the session join, as for a lobby guest |
+| network/session tables (peers, session players, simulation globals `0x4CF77C`) | no | the newcomer joins the network session as a sync-client (world mode 3) at update T+1; the session player array (`S+0x4F90`) comes from the session join, as for a lobby guest |
 | local player mapping (which slot is "me") | no, per machine | set from the accept's slot before the first update |
 | our features' host-side state (coop-players leash, skulls) | no | skulls are sim settings carried in the session (Sim scope); the leash is recomputed each tick |
 
@@ -2333,22 +2342,22 @@ latency` line (15.4) is how a run will put numbers on it.
 [local] By what the code does (the simulation globals `*0x004cf77c`,
 mode at `+8`):
 
-- **The update builder** (mode 2 in the "after" step `0x000684e0`):
+- **The update builder** (world mode 2, the sync-server, in the "after" step `0x000684e0`):
   `0x00069880` walks the peer views and `0x000860b0` sends each the
   whole tick's record (message `0x27`) **at once**, through the channel
   send `0x00075e80`; a view still joining gets it queued instead
   (`0x000869a0`). No batching of ticks at this layer.
-- **A follower** (mode 3): `0x00069040` sends this console's actions for
+- **A follower** (world mode 3, the sync-client): `0x00069040` sends this console's actions for
   the tick (message `0x28`, `0x180` bytes: a sequence number, the update
   number minus one, up to four local players' `0x5c` byte actions) at
   once through `0x00085fc0`, and takes its records from the queue the
   network fills (`0x0006ac30`). The `0x27` handler `0x00094990` calls
   the catch-up `0x000698e0`, which runs `game_tick` while ticks are
   pending: an update is simulated as soon as the game reads it.
-- [open] The name table at `0x00468c64` puts sync-client at index 2 and
-  sync-server at 3, the reverse of these behaviours; either the table
-  is not indexed by this mode or section 1.3's labels are swapped. The
-  roles above are what matter here.
+- [local] The name table at `0x00468c64` puts sync-client at index 2 and
+  sync-server at 3, the reverse of these behaviours, because the table
+  names the game mode and this is the world's (section 1.1: the jump table
+  at `0x00068da8` maps game 2, 3 to world 3, 2). Settled.
 
 [local] The update record is bit-packed (`0x000b2710` encodes through
 `0x00087d00`, field by field), so the `0x4048` passed to the channel is
