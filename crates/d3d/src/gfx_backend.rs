@@ -128,6 +128,9 @@ struct PendingPass {
 const MAX_ENCODED_PASSES: usize = 1024;
 
 
+type ExternalViews = (wgpu::TextureView, wgpu::TextureFormat, wgpu::TextureView,
+    wgpu::TextureFormat, (u32, u32), Vec<Option<crate::SampledLevel>>);
+
 /// Rendering through `gfx`.
 pub struct GfxBackend {
     /// The GPU context.
@@ -202,6 +205,8 @@ pub struct GfxBackend {
     /// pending pass here instead of submitting it), and the render passes
     /// they hold.
     open: Option<(wgpu::CommandEncoder, usize)>,
+    /// Ordered segments before the current open encoder.
+    external_prefix: Vec<wgpu::CommandBuffer>,
     /// [`set_defer_side_passes`](Self::set_defer_side_passes).
     defer_side_passes: bool,
     /// The scratch depth a colour-only external pass gets, by size.
@@ -318,6 +323,7 @@ impl GfxBackend {
             prev_frame_end: None,
             swap_finish: SwapFinish::from_env(),
             open: None,
+            external_prefix: Vec::new(),
             defer_side_passes: std::env::var_os("H2_GFX_SIDE_SUBMIT").is_none_or(|v| v != "1"),
             scratch_depth: None,
         }
@@ -540,6 +546,69 @@ impl GfxBackend {
         }
     }
 
+    fn external_views(
+        &mut self, color: SurfaceId, depth: SurfaceId, sampled: Vec<Option<SurfaceId>>,
+    ) -> Result<Option<ExternalViews>, String> {
+        // The sampled levels' own views (as `surface_texture` gives them).
+        let sampled: Vec<Option<crate::backend::SampledLevel>> = sampled
+            .into_iter()
+            .map(|s| {
+                let s = self.store.get(s?).ok()?;
+                let t = s.texture();
+                let sampleable = t.usage().contains(wgpu::TextureUsages::TEXTURE_BINDING)
+                    && gfx::program::filterable(t.format(), self.ctx.device.features());
+                sampleable.then(|| crate::backend::SampledLevel { view: s.view().clone(), size: (t.width(), t.height()) })
+            })
+            .collect();
+        let attachment = |s: &gfx::surface::Surface| {
+            let single = s.desc().samples <= 1;
+            let drawable = s.texture().usage().contains(wgpu::TextureUsages::RENDER_ATTACHMENT);
+            (single && drawable).then(|| {
+                (
+                    s.texture().create_view(&wgpu::TextureViewDescriptor {
+                        base_mip_level: 0,
+                        mip_level_count: Some(1),
+                        ..Default::default()
+                    }),
+                    s.wgpu_format(),
+                    (s.texture().width(), s.texture().height()),
+                )
+            })
+        };
+        let c = self.store.get(color).map_err(|e| e.to_string())?;
+        let Some((cv, cf, size)) = attachment(c) else { return Ok(None) };
+        let (dv, df) = if depth == color {
+            // Colour only: a scratch depth of the colour's size.
+            const SCRATCH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+            if self.scratch_depth.as_ref().is_none_or(|(s, _)| *s != size) {
+                let t = self.ctx.device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("external pass scratch depth"),
+                    size: wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: SCRATCH,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    view_formats: &[],
+                });
+                self.scratch_depth = Some((size, t.create_view(&wgpu::TextureViewDescriptor::default())));
+            }
+            let Some((_, v)) = &self.scratch_depth else { return Ok(None) };
+            (v.clone(), SCRATCH)
+        } else {
+            let d = self.store.get(depth).map_err(|e| e.to_string())?;
+            let Some((dv, df, dsize)) = attachment(d) else { return Ok(None) };
+            if !df.is_depth_stencil_format() || dsize != size {
+                return Ok(None);
+            }
+            (dv, df)
+        };
+        if cf.is_depth_stencil_format() {
+            return Ok(None);
+        }
+        Ok(Some((cv, cf, dv, df, size, sampled)))
+    }
+
     /// Submits the pending pass, if any, and every pass encoded before it.
     pub fn flush(&mut self) -> Result<(), String> {
         let encoded = self.encode_pending();
@@ -562,6 +631,8 @@ impl GfxBackend {
     fn submit_open(&mut self) {
         if let Some((enc, _)) = self.open.take() {
             self.submit(enc);
+        } else if !self.external_prefix.is_empty() {
+            self.submit(self.ctx.device.create_command_encoder(&Default::default()));
         }
     }
 
@@ -859,7 +930,7 @@ impl GfxBackend {
             let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "queue submit");
             self.ctx
                 .queue
-                .submit(copies.into_iter().chain(open).chain([enc.finish()]))
+                .submit(copies.into_iter().chain(self.external_prefix.drain(..)).chain(open).chain([enc.finish()]))
         };
         for r in self.unsubmitted_reports.drain(..) {
             r.submitted(index.clone());
@@ -1556,6 +1627,52 @@ impl Backend for GfxBackend {
         Ok(true)
     }
 
+    fn external_attachments(
+        &mut self, surfaces: crate::ExternalSurfaces<SurfaceId>, textures: [Option<&Self::Texture>; 4],
+        copy: crate::TargetCopy,
+    ) -> Result<Option<Vec<crate::backend::ExternalAttachments>>, String> {
+        // Finish pending D3D work before the device can give up its guest draws.
+        self.encode_pending()?;
+        let sampled = surfaces.sampled.into_iter().map(Some).collect();
+        let Some((cv, cf, dv, df, size, sampled)) = self.external_views(surfaces.color, surfaces.depth, sampled)? else {
+            return Ok(None);
+        };
+        if sampled.iter().any(Option::is_none) {
+            return Ok(None);
+        }
+        let mut slots = Vec::with_capacity(surfaces.slots.len());
+        for (slot, guest_size) in surfaces.slots.into_iter().zip(surfaces.slot_sizes) {
+            let Some(id) = slot else { slots.push(None); continue };
+            let s = self.store.get(id).map_err(|e| e.to_string())?;
+            let t = s.texture();
+            if s.desc().samples > 1 || t.format().is_depth_stencil_format()
+                || !t.usage().contains(wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT)
+                || !gfx::program::filterable(t.format(), self.ctx.device.features()) {
+                return Ok(None);
+            }
+            slots.push(Some(crate::ExternalColor {
+                guest_size: guest_size.ok_or("missing guest slot dimensions")?,
+                sample: s.view().clone(),
+                attachment: t.create_view(&wgpu::TextureViewDescriptor { mip_level_count: Some(1), ..Default::default() }),
+                format: t.format(),
+                size: (t.width(), t.height()),
+            }));
+        }
+        let stages = textures.map(|t| t.and_then(|t| t.view.clone()));
+        if (0..4).any(|i| textures[i].is_some() && stages[i].is_none()) { return Ok(None); }
+        Ok(Some(vec![crate::backend::ExternalAttachments {
+            device: self.ctx.device.clone(), queue: self.ctx.queue.clone(), color: cv, color_format: cf,
+            depth: dv, depth_format: df, size, sampled, slots, copy, stages,
+        }]))
+    }
+
+    fn commit_external(&mut self, recording: crate::ExternalRecording) {
+        if let Some((enc, _)) = self.open.take() {
+            self.external_prefix.push(enc.finish());
+        }
+        self.external_prefix.push(recording.commands);
+    }
+
     fn supports_external_pass(&self) -> bool {
         true
     }
@@ -1568,59 +1685,8 @@ impl Backend for GfxBackend {
         request: crate::backend::ExternalPassRequest,
         mut pass: Box<dyn crate::backend::ExternalPass>,
     ) -> Result<bool, String> {
-        // The sampled levels' own views (as `surface_texture` gives them).
-        let sampled: Vec<Option<crate::backend::SampledLevel>> = sampled
-            .into_iter()
-            .map(|s| {
-                let s = self.store.get(s?).ok()?;
-                let t = s.texture();
-                let sampleable = t.usage().contains(wgpu::TextureUsages::TEXTURE_BINDING)
-                    && gfx::program::filterable(t.format(), self.ctx.device.features());
-                sampleable.then(|| crate::backend::SampledLevel { view: s.view().clone(), size: (t.width(), t.height()) })
-            })
-            .collect();
-        let attachment = |s: &gfx::surface::Surface| {
-            let single = s.desc().samples <= 1;
-            let drawable = s.texture().usage().contains(wgpu::TextureUsages::RENDER_ATTACHMENT);
-            (single && drawable).then(|| {
-                (
-                    s.texture().create_view(&wgpu::TextureViewDescriptor {
-                        base_mip_level: 0,
-                        mip_level_count: Some(1),
-                        ..Default::default()
-                    }),
-                    s.wgpu_format(),
-                    (s.texture().width(), s.texture().height()),
-                )
-            })
-        };
-        let c = self.store.get(color).map_err(|e| e.to_string())?;
-        let Some((cv, cf, size)) = attachment(c) else { return Ok(false) };
-        let (dv, df) = if depth == color {
-            // Colour only: a scratch depth of the colour's size.
-            const SCRATCH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
-            if self.scratch_depth.as_ref().is_none_or(|(s, _)| *s != size) {
-                let t = self.ctx.device.create_texture(&wgpu::TextureDescriptor {
-                    label: Some("external pass scratch depth"),
-                    size: wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: SCRATCH,
-                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                    view_formats: &[],
-                });
-                self.scratch_depth = Some((size, t.create_view(&wgpu::TextureViewDescriptor::default())));
-            }
-            let Some((_, v)) = &self.scratch_depth else { return Ok(false) };
-            (v.clone(), SCRATCH)
-        } else {
-            let d = self.store.get(depth).map_err(|e| e.to_string())?;
-            let Some((dv, df, dsize)) = attachment(d) else { return Ok(false) };
-            if !df.is_depth_stencil_format() || dsize.0 < size.0 || dsize.1 < size.1 {
-                return Ok(false);
-            }
-            (dv, df)
+        let Some((cv, cf, dv, df, size, sampled)) = self.external_views(color, depth, sampled)? else {
+            return Ok(false);
         };
         let _p = timeline::phase::enter(timeline::phase::Phase::Encode);
         // After the draws recorded so far, in the same submission.
@@ -1638,6 +1704,9 @@ impl Backend for GfxBackend {
             guest_size: request.surface_size,
             size,
             sampled: &sampled,
+            slots: &[],
+            copy: crate::TargetCopy::Reference,
+            stages: [None; 4],
         });
         self.open = Some((enc, passes + 1));
         Ok(true)

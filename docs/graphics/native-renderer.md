@@ -8,6 +8,54 @@ labels as in [feature-engine.md](../engine/feature-engine.md): **Code**
 game data: addresses and offsets are research points, everything else is
 read from the user's disc at run time.
 
+## Ordered replacement handoff
+
+World, objects and held post packets use the device reservation below. Geometry
+hooks for particles, decals, HUD, gel producers and world layers can register
+`Device::add_draw_admission(Arc<dyn DrawAdmission>)`. The device calls admissions
+in registration order at the resolved draw, for immediate, inline, indexed and
+array geometry. Scope ownership to the current producer and match the complete
+state. Returning `None` leaves the draw available to the next admission. A
+failed preparation of a claimed draw falls through to the original D3D draw.
+
+```rust
+trait DrawAdmission: Send + Sync {
+    fn admit(&self, snapshot: &DrawSnapshot<'_>)
+        -> Option<(ExternalPlan, Box<dyn ExternalPass>)>;
+}
+
+// At a hook outside draw submission, drain the preceding guest commands.
+let reservation = device.prepare_external_pass(mem, plan, pass)?;
+if let Some(reservation) = reservation {
+    // Apply reversible mask edits here. Drop the reservation to cancel.
+    reservation.commit();
+}
+```
+
+`DrawSnapshot::draw` borrows the exact `ResolvedDraw` that D3D can still issue.
+It includes vertex declaration, streams, indices, shader inputs (microcode,
+constants, defaults, pixel definition and combiner state), raw and translated
+render and stage state, texture headers and formats, viewport and scissors.
+The snapshot adds bound colour/depth headers and palette headers and entries.
+The device replaces only the draw packet. The guest's shader setup and
+stencil tail still run, including when adjacent draws have different owners.
+
+`ExternalPlan { stage, view, ranges, slots }` promises a positive number of
+geometry or effect ranges on **each** participating copy. `slots` is an indexed
+`Vec<Option<ExternalSlot>>`; each populated slot names a guest colour surface
+header and whether it will be written. `ExternalPass::writes()` declares writes
+to the bound colour and depth/stencil. In `record_ranges(ExternalTarget) -> usize`,
+`target.copy` is `Reference` or `Display`, `target.stages` holds the four resident
+stage views for a resolved draw, and `target.slots[i]` supplies the live surface's
+attachment, sample view, format and texel size for this copy. Record only in
+the supplied encoder. A queue submission or write to a live texture would
+escape cancellation. A declared sampled header or intermediate surface that
+cannot be resolved on one required copy refuses the entire replacement.
+
+Recording takes place during prepare. Partial recordings are discarded.
+Commit splices only previously sealed command buffers into the D3D submission
+order. Commit has no remaining stage callbacks or target lookups.
+
 ## Why a new shape
 
 Today a frame on Old Mombasa costs about 25 ms of game-thread time in the
