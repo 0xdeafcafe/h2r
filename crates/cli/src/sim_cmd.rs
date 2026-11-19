@@ -27,6 +27,7 @@ const USAGE: &str = "usage:
                           [--disc ISO] [--out DIR] [--data DIR] [--tier ...] [--pace PACE]
                           [--upload [--as GAMERTAG] [--server URL]]
   h2 sim compare <results dir>
+  h2 sim audit-merge OUTPUT INPUT [INPUT ...]
 
 A match file names the map, the game type, the limits, the seed and up to 16
 bots (one to four local pads, remaining seats phantom peers) with their skill, team and tuning (docs/runtime/sim.md, \"Match file\").
@@ -39,7 +40,7 @@ Choose a stored admin account with --as, or leave it off if there is only one.
 --data defaults to h2's data root; its bots/ must hold the map's nav mesh
 (`h2 bots nav <map>`): sim mode never builds one.
 
-`batch` runs maps x seeds (x arms with mode = \"separate\") as child
+`batch` runs maps x game_types x seeds (x arms with mode = \"separate\") as child
 processes, --parallel at once (default: half the cores), each with its own
 data directory under <out>/runs/<id>/ (removed after unless --keep-data;
 its bots/ linked to --data's), and writes <out>/compare.json and
@@ -59,6 +60,18 @@ pub fn run(args: Vec<String>) -> Result<()> {
             let c = compare_dir(Path::new(&dir))?;
             print!("{}", c.table());
             Ok(())
+        }
+        Some("audit-merge") => {
+            let output = it.next().context(USAGE)?;
+            let mut report = boot::host_audit::Report::default();
+            for input in it {
+                let file = File::open(&input).with_context(|| format!("opening {input}"))?;
+                let run = serde_json::from_reader(std::io::BufReader::new(file))
+                    .with_context(|| format!("reading {input}"))?;
+                report.merge(run)?;
+            }
+            anyhow::ensure!(report.runs != 0, "no completed audit runs");
+            report.write(Path::new(&output))
         }
         _ => bail!("{USAGE}"),
     }
@@ -353,6 +366,12 @@ fn run_one(args: Vec<String>) -> Result<()> {
         );
     }
     println!("report: {}", report.display());
+    if std::env::var_os(boot::host_audit::MODULE_ENV).is_some_and(|v| !v.is_empty()) {
+        let report: sim::metrics::Report =
+            serde_json::from_reader(std::io::BufReader::new(std::fs::File::open(report)?))?;
+        anyhow::ensure!(matches!(report.result.end, sim::metrics::End::TickLimit | sim::metrics::End::GameOver),
+            "host module did not finish the match: {}", r.stop);
+    }
     Ok(())
 }
 
@@ -405,6 +424,9 @@ impl RunDir {
     fn report(&self) -> PathBuf {
         self.dir.join("report.json")
     }
+    fn audit(&self) -> PathBuf {
+        self.dir.join("audit.json")
+    }
     fn log(&self) -> PathBuf {
         self.dir.join("log.txt")
     }
@@ -423,6 +445,24 @@ fn make_data(run: &RunDir, shared: &Path) -> Result<()> {
         #[cfg(unix)]
         std::os::unix::fs::symlink(&bots, &link)
             .with_context(|| format!("linking {}", link.display()))?;
+    }
+    Ok(())
+}
+
+/// Isolate the selected Map Pack offer with the rest of the run's data.
+fn stage_map_pack(run: &RunDir, shared: &Path, map: &str) -> Result<()> {
+    let Some((_, _, file)) = boot::map_bases::map_pack_file(shared, map) else {
+        return Ok(());
+    };
+    let dir = file.parent().context("Map Pack map has no offer directory")?;
+    let relative = dir.strip_prefix(shared)?;
+    let target = run.data().join(relative);
+    std::fs::create_dir_all(&target)?;
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if entry.file_type()?.is_file() {
+            std::fs::copy(entry.path(), target.join(entry.file_name()))?;
+        }
     }
     Ok(())
 }
@@ -452,6 +492,7 @@ fn spawn(
     socket: Option<&Path>,
     snapshots: &Path,
     batch: Option<(&str, &Path)>,
+    audit: bool,
 ) -> Result<Child> {
     let log = std::fs::File::create(run.log())?;
     let err = log.try_clone()?;
@@ -461,6 +502,10 @@ fn spawn(
         .env_remove(BATCH_ID_ENV)
         .env_remove(BATCH_LOCKS_ENV)
         .env(snapshot::store::ENV, snapshots);
+    child.env_remove(boot::host_audit::ENV);
+    if audit {
+        child.env(boot::host_audit::ENV, run.audit());
+    }
     if let Some((id, locks)) = batch {
         child
             .arg("--upload")
@@ -533,7 +578,7 @@ fn seed_snapshot(
     n: usize,
 ) -> Result<()> {
     let socket = socket_for(n);
-    let mut child = spawn(common, run, Some(&socket), snapshots, None)?;
+    let mut child = spawn(common, run, Some(&socket), snapshots, None, false)?;
     let r = (|| -> Result<()> {
         let mut c = connect(&mut child, &socket, Duration::from_secs(600))?;
         wait_playing(&mut c, &mut child, 30, Duration::from_secs(900))?;
@@ -562,9 +607,10 @@ fn run_child(
     snapshots: &Path,
     n: usize,
     batch: Option<(&str, &Path)>,
+    audit: bool,
 ) -> Result<String> {
     let socket = fork.map(|_| socket_for(n));
-    let mut child = spawn(common, run, socket.as_deref(), snapshots, batch)?;
+    let mut child = spawn(common, run, socket.as_deref(), snapshots, batch, audit)?;
     let mut how = "boot".to_string();
     if let (Some(name), Some(socket)) = (fork, socket.as_deref()) {
         let loaded = (|| -> Result<()> {
@@ -620,6 +666,13 @@ fn batch(args: Vec<String>) -> Result<()> {
     let b =
         sim::config::load_batch(&file).map_err(|e| anyhow::anyhow!("{}:\n{e}", file.display()))?;
     let fork = fork || b.config.fork;
+    let audit = b.config.audit;
+    if fork && boot::sim_glue::use_light_host()? {
+        bail!("light audio snapshots are unavailable; set H2_FEATURES=-host-light for a full headless fork");
+    }
+    if audit && fork {
+        bail!("audit requires a fresh boot per run");
+    }
     if fork
         && b.runs.iter().any(|r| {
             r.config
@@ -707,6 +760,7 @@ fn batch(args: Vec<String>) -> Result<()> {
         std::fs::create_dir_all(&rd.dir)?;
         std::fs::write(rd.matched(), toml::to_string(&r.config)?)?;
         let _ = std::fs::remove_file(rd.report());
+        let _ = std::fs::remove_file(rd.audit());
     }
     common.disc = Some(disc);
     // --fork: one seed run per map and game type, first.
@@ -721,6 +775,7 @@ fn batch(args: Vec<String>) -> Result<()> {
             std::fs::create_dir_all(&seed.dir)?;
             std::fs::write(seed.matched(), toml::to_string(&r.config)?)?;
             make_data(&seed, &shared)?;
+            stage_map_pack(&seed, &shared, &r.map)?;
             let got = seed_snapshot(&common, &seed, &name, &snapshots, 10_000 + n);
             match &got {
                 Ok(()) => println!("fork: {name} saved"),
@@ -746,7 +801,8 @@ fn batch(args: Vec<String>) -> Result<()> {
                     let name = snapshot_name(&r.map, &r.config.game_type);
                     let from = (fork && forks.get(&name) == Some(&true)).then_some(name.as_str());
                     let how = make_data(&rd, &shared)
-                        .and_then(|()| run_child(&common, &rd, from, &snapshots, n, batch))
+                        .and_then(|()| stage_map_pack(&rd, &shared, &r.map))
+                        .and_then(|()| run_child(&common, &rd, from, &snapshots, n, batch, audit))
                         .unwrap_or_else(|e| {
                             failed.fetch_add(1, Ordering::Relaxed);
                             format!("failed: {e:#}")
@@ -766,6 +822,37 @@ fn batch(args: Vec<String>) -> Result<()> {
             });
         }
     });
+    if audit {
+        let mut merged = boot::host_audit::Report::default();
+        let mut missing = Vec::new();
+        for r in &b.runs {
+            let run = RunDir::new(&b.out, &r.id);
+            let complete = std::fs::File::open(run.report()).ok()
+                .and_then(|f| serde_json::from_reader::<_, sim::metrics::Report>(std::io::BufReader::new(f)).ok())
+                .is_some_and(|r| r.ticks > 0 && matches!(r.result.end, sim::metrics::End::TickLimit | sim::metrics::End::GameOver));
+            if !complete {
+                missing.push(&r.id);
+                continue;
+            }
+            let path = run.audit();
+            match std::fs::File::open(&path) {
+                Ok(file) => merged.merge(serde_json::from_reader(std::io::BufReader::new(file))?)?,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => missing.push(&r.id),
+                Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+            }
+        }
+        merged.missing_runs.extend(missing.iter().map(|id| (*id).clone()));
+        merged.write(&b.out.join("audit.json"))?;
+        std::fs::write(
+            b.out.join("audit-missing.json"),
+            serde_json::to_vec_pretty(&missing)?,
+        )?;
+        std::fs::write(
+            b.out.join("audit-equipment-gaps.json"),
+            serde_json::to_vec_pretty(&merged.equipment_gaps())?,
+        )?;
+        println!("audit: {} runs, {} missing reports", merged.runs, missing.len());
+    }
     let c = compare_dir(&b.out)?;
     let table = c.table();
     std::fs::write(

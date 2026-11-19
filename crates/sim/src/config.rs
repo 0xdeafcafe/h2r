@@ -717,6 +717,12 @@ pub struct BatchConfig {
     /// One run per map (default: the match's).
     #[serde(default)]
     pub maps: Vec<String>,
+    /// One run per game type (default: the match's).
+    #[serde(default)]
+    pub game_types: Vec<String>,
+    /// Write a coverage report per child and one merged report.
+    #[serde(default)]
+    pub audit: bool,
     /// One run per seed (default: the match's).
     #[serde(default)]
     pub seeds: Vec<u64>,
@@ -850,17 +856,16 @@ pub fn plan(
     } else {
         config.seeds.clone()
     };
-    let team_play = base_match.team_play.unwrap_or(false);
-    // Which arm each bot plays for, per run kind.
-    let versus = |i: usize, b: &BotSpec| -> usize {
-        if arms.len() < 2 {
-            return 0;
-        }
-        if team_play {
-            usize::from(b.team.unwrap_or((i % 2) as u8) % 2)
-        } else {
-            i % 2
-        }
+    let game_types = if config.game_types.is_empty() {
+        vec![base_match.game_type.clone()]
+    } else {
+        config.game_types.iter().filter_map(|name| match GameType::parse(name) {
+            Ok(kind) => Some(kind.name().to_string()),
+            Err(e) => {
+                problems.push(e);
+                None
+            }
+        }).collect()
     };
     let mut runs = Vec::new();
     let kinds: Vec<Option<usize>> = match (mode, arms.len()) {
@@ -868,72 +873,98 @@ pub fn plan(
         _ => vec![None],
     };
     for map in &maps {
-        for &seed in &seeds {
-            for kind in &kinds {
-                let mut c = base_match.clone();
-                c.map = map.clone();
-                c.seed = seed;
-                c.bots = base_match
-                    .bots
-                    .iter()
-                    .enumerate()
-                    .map(|(i, b)| {
-                        let a = kind.unwrap_or_else(|| versus(i, b));
-                        let arm = &arms[a];
-                        let mut spec = b.clone();
-                        spec.params = None;
-                        spec.tuning = Some(own[i].overlay(&arm.params));
-                        if let Some(s) = &arm.params.skill {
-                            spec.skill = Some(s.clone());
+        for game_type in &game_types {
+            for &seed in &seeds {
+                for kind in &kinds {
+                    let mut c = base_match.clone();
+                    c.map = map.clone();
+                    c.game_type = game_type.clone();
+                    c.team_play = if config.game_types.is_empty() {
+                        base_match.team_play
+                    } else {
+                        match GameType::parse(game_type) {
+                            Ok(GameType::Ctf | GameType::Assault) => Some(true),
+                            Ok(GameType::Juggernaut) => Some(false),
+                            _ => base_match.team_play,
                         }
-                        if team_play && spec.team.is_none() {
-                            spec.team = Some((i % 2) as u8);
+                    };
+                    let team_play = c.team_play.unwrap_or(false);
+                    c.seed = seed;
+                    c.bots = base_match
+                        .bots
+                        .iter()
+                        .enumerate()
+                        .map(|(i, b)| {
+                            let a = kind.unwrap_or_else(|| {
+                                if arms.len() < 2 {
+                                    0
+                                } else if team_play {
+                                    usize::from(b.team.unwrap_or((i % 2) as u8) % 2)
+                                } else {
+                                    i % 2
+                                }
+                            });
+                            let arm = &arms[a];
+                            let mut spec = b.clone();
+                            spec.params = None;
+                            spec.tuning = Some(own[i].overlay(&arm.params));
+                            if let Some(s) = &arm.params.skill {
+                                spec.skill = Some(s.clone());
+                            }
+                            if team_play && spec.team.is_none() {
+                                spec.team = Some((i % 2) as u8);
+                            }
+                            spec.arm = Some(arm.name.clone());
+                            spec
+                        })
+                        .collect();
+                    let name = if config.game_types.is_empty() {
+                        safe(map)
+                    } else {
+                        format!("{}-{}", safe(map), safe(game_type))
+                    };
+                    let id = match kind {
+                        Some(a) => format!("{name}-s{seed}-{}", safe(&arms[*a].name)),
+                        None => format!("{name}-s{seed}"),
+                    };
+                    // Each planned match must itself check.
+                    if let Err(e) = resolve(c.clone(), &|_| Ok(BotParams::default())) {
+                        problems.push(format!("run {id}: {}", e.replace('\n', "; ")));
+                    }
+                    let swapped_run = if mode == Mode::SeatSwap {
+                        c.seats_swapped = Some(false);
+                        let mut swapped = c.clone();
+                        swapped.seats_swapped = Some(true);
+                        for b in &mut swapped.bots {
+                            b.kind = b.kind.swapped();
                         }
-                        spec.arm = Some(arm.name.clone());
-                        spec
-                    })
-                    .collect();
-                let id = match kind {
-                    Some(a) => format!("{}-s{seed}-{}", safe(map), safe(&arms[*a].name)),
-                    None => format!("{}-s{seed}", safe(map)),
-                };
-                // Each planned match must itself check.
-                if let Err(e) = resolve(c.clone(), &|_| Ok(BotParams::default())) {
-                    problems.push(format!("run {id}: {}", e.replace('\n', "; ")));
-                }
-                let swapped_run = if mode == Mode::SeatSwap {
-                    c.seats_swapped = Some(false);
-                    let mut swapped = c.clone();
-                    swapped.seats_swapped = Some(true);
-                    for b in &mut swapped.bots {
-                        b.kind = b.kind.swapped();
-                    }
-                    if let Err(e) = resolve(swapped.clone(), &|_| Ok(BotParams::default())) {
-                        problems.push(format!("run {id}-swapped: {e}"));
-                    }
-                    Some(Run {
-                        id: format!("{id}-swapped"),
+                        if let Err(e) = resolve(swapped.clone(), &|_| Ok(BotParams::default())) {
+                            problems.push(format!("run {id}-swapped: {e}"));
+                        }
+                        Some(Run {
+                            id: format!("{id}-swapped"),
+                            map: map.clone(),
+                            seed,
+                            config: swapped,
+                        })
+                    } else {
+                        None
+                    };
+                    runs.push(Run {
+                        id,
                         map: map.clone(),
                         seed,
-                        config: swapped,
-                    })
-                } else {
-                    None
-                };
-                runs.push(Run {
-                    id,
-                    map: map.clone(),
-                    seed,
-                    config: c,
-                });
-                runs.extend(swapped_run);
+                        config: c,
+                    });
+                    runs.extend(swapped_run);
+                }
             }
         }
     }
     let mut ids: Vec<&str> = runs.iter().map(|r| r.id.as_str()).collect();
     ids.sort_unstable();
     if ids.windows(2).any(|w| w[0] == w[1]) {
-        problems.push("two runs share an id: repeated maps or seeds".to_string());
+        problems.push("two runs share an id: repeated maps, game types or seeds".to_string());
     }
     if !problems.is_empty() {
         problems.dedup();

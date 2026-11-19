@@ -782,6 +782,18 @@ impl<B: Backend> Backend for DiagBackend<B> {
     fn drop_pixel_count(&mut self, ticket: u64) {
         self.inner.drop_pixel_count(ticket)
     }
+    fn uses_texture_placeholders(&self) -> bool {
+        self.inner.uses_texture_placeholders()
+    }
+    fn texture_placeholder(
+        &mut self,
+        desc: &gfx::texture::TextureDesc,
+    ) -> Result<Self::Texture, String> {
+        let inner = self.inner.texture_placeholder(desc)?;
+        let id = self.next_texture;
+        self.next_texture += 1;
+        Ok(Tracked { id, inner })
+    }
     fn upload_texture(&mut self, texture: &DecodedTexture) -> Result<Self::Texture, String> {
         let r = self.inner.upload_texture(texture);
         if let Some(s) = &mut self.sweep {

@@ -4218,6 +4218,26 @@ impl<B: Backend> Device<B> {
             levels: desc.levels,
         };
         let identity = pc.identity();
+        if self.backend.uses_texture_placeholders() {
+            if self.cache.get(&key).is_some_and(|cached| {
+                cached.identity == identity && cached.palette == pal
+            }) {
+                self.stats.texture_hits += 1;
+                return Ok((key, info));
+            }
+            let host = self.backend.texture_placeholder(&desc).map_err(D3dError::Backend)?;
+            self.cache.insert(key, CachedTexture {
+                identity,
+                palette: pal,
+                va,
+                len,
+                generation: self.tracker.generation(),
+                hash: 0,
+                info,
+                host,
+            });
+            return Ok((key, info));
+        }
         let policy = self.cfg.upload;
         let read_all = |mem: &dyn GuestMemory| -> Result<(Vec<u8>, Option<Vec<u8>>), D3dError> {
             let t = mem.read_vec(va, len as usize)?;

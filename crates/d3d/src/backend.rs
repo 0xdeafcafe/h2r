@@ -586,6 +586,14 @@ pub trait Backend: Send {
     fn destroy_surface(&mut self, surface: Self::Surface) -> Result<(), String>;
     /// Uploads a decoded guest texture.
     fn upload_texture(&mut self, texture: &DecodedTexture) -> Result<Self::Texture, String>;
+    /// Whether the backend can supply descriptor-only textures. Such handles
+    /// never back real drawing, and no texel or palette data is needed.
+    fn uses_texture_placeholders(&self) -> bool {
+        false
+    }
+    fn texture_placeholder(&mut self, _desc: &TextureDesc) -> Result<Self::Texture, String> {
+        Err("the backend has no descriptor-only texture handles".into())
+    }
     /// Whether BC formats pass through (decides the decode path).
     fn bc_supported(&self) -> bool;
     /// Clears the whole of the given attachments.
@@ -1238,6 +1246,14 @@ impl DrawJudge for DrawsEverything {
     }
     fn draw(&mut self, _: &ResolvedDraw, _: [Option<bool>; 4]) -> DrawOutcome {
         DrawOutcome::Drawn
+    }
+}
+
+impl RecordingBackend {
+    /// A handle for a headless draw. It has no sample storage.
+    pub fn texture_placeholder_id(&mut self) -> u32 {
+        self.next += 1;
+        self.next
     }
 }
 

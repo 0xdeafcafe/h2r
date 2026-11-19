@@ -429,6 +429,7 @@ fn apply(session: &mut Session, work: Work) -> Option<Box<Snapshot>> {
             session.set_placements(placements);
         }
         Work::Tick(snapshot) => {
+            let _cpu = timeline::host::Subsystem::TelemetryWorker.span();
             session.sample(&snapshot);
             return Some(snapshot);
         }

@@ -85,6 +85,12 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
     install_headless(rt, None)
 }
 
+/// No display backend. Leftover lobby and loading draws carry texture
+/// descriptors and handles through the ABI without copying the pixels.
+pub fn install_light(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
+    install_with(rt, Headless(RecordingBackend::default(), true))
+}
+
 /// [`install`], with in-between frames on the headless GPU backend when
 /// `interp` (from [`interpolation`], asked with [`interp_render_thread`])
 /// is given (docs/game/high-framerate.md "E1", "Headless"): the backend at
@@ -843,7 +849,7 @@ fn all_black(px: &[u8]) -> bool {
 /// a copy of every draw (streams included) for the whole run; the report's
 /// draw counts come from `DiagBackend`.
 #[derive(Default)]
-pub struct Headless(RecordingBackend);
+pub struct Headless(RecordingBackend, bool);
 
 impl Headless {
     fn forget<T>(&mut self, r: T) -> T {
@@ -891,6 +897,12 @@ impl d3d::backend::Backend for Headless {
     fn upload_texture(&mut self, texture: &gfx::texture::DecodedTexture) -> Result<u32, String> {
         let r = self.0.upload_texture(texture);
         self.forget(r)
+    }
+    fn uses_texture_placeholders(&self) -> bool {
+        self.1
+    }
+    fn texture_placeholder(&mut self, _: &gfx::texture::TextureDesc) -> Result<u32, String> {
+        Ok(self.0.texture_placeholder_id())
     }
     fn bc_supported(&self) -> bool {
         self.0.bc_supported()
@@ -1562,6 +1574,19 @@ pub fn w_buffer_mapping(s: d3d::DepthScale) -> engine::render_loop::occlusion::D
 mod tests {
     use super::*;
     use d3d::backend::Backend;
+
+    #[test]
+    fn light_textures_use_handles_without_retaining_payloads() {
+        let mut light = Headless(RecordingBackend::default(), true);
+        let desc = gfx::texture::TextureDesc::new(
+            gfx::D3DFormat::LinA8R8G8B8, gfx::texture::TextureKind::D2, 64, 32, 1, 1,
+        );
+        assert!(light.uses_texture_placeholders());
+        let a = light.texture_placeholder(&desc).unwrap();
+        let b = light.texture_placeholder(&desc).unwrap();
+        assert_ne!(a, b);
+        assert_eq!(light.held(), 0);
+    }
 
     /// A headless run's frame stats name the counters it can't fill and
     /// the switch that fills them; a GPU run, or no frame stats, says

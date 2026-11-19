@@ -104,7 +104,7 @@ pub fn mount<R: vfs::Rewrite + 'static>(
     maps: Option<&Path>,
     campaign_maps: &[(String, PathBuf)],
 ) -> vfs::Result<vfs::Vfs> {
-    if maps.is_none() && campaign_maps.is_empty() {
+    if maps.is_none() && cfg.server_maps.is_none() && campaign_maps.is_empty() {
         return match fonts {
             Some(r) => vfs::Vfs::with_disc_rewrite(cfg, disc, r),
             None => vfs::Vfs::with_disc(cfg, disc),
@@ -123,6 +123,13 @@ pub fn mount<R: vfs::Rewrite + 'static>(
             "campaigns: {} map(s) served from <data>/campaigns",
             campaign_maps.len()
         );
+    }
+    if let Some(server_maps) = cfg.server_maps.clone() {
+        let disc = vfs::MapOverrideBackend::server_maps(disc, server_maps);
+        return match maps {
+            Some(maps) => finish(cfg, vfs::MapOverrideBackend::new(disc, maps), fonts),
+            None => finish(cfg, disc, fonts),
+        };
     }
     match maps {
         Some(maps) => {

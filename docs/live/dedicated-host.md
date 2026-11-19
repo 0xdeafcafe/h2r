@@ -68,15 +68,17 @@ Rates checked November 19, 2026. The figures assume one running instance per occ
 ## Light host
 
 Run `h2 serve --system-link --host-light` with the existing prebuilt image.
-An operator still uses the retail lobby to create and start the game. The
+Clanker Training uses the same profile, adds bot seats, and defaults to
+unpaced. An operator still uses the retail lobby to create and start a
+dedicated game. The
 machine-only lobby and remote join lifecycle above still need a game run.
 
 | Area | What the profile does and why |
 |---|---|
 | World, HUD, effects | `sim-frame` skips every steady-state world call to `0x00223240`. This drops the world, HUD, and effect draw paths reached there. It calls `0x0012b2e0` for the frame clock, advances counters at `0x00485aa0` and `0x004ba034`, and clears `0x004e6098`. Guest effect updates stay because the tick reads the counters. The software D3D shim keeps display timing and device ABI, with no GPU, display presentation, or render thread. [Skip](../../crates/feature/src/sim_frame.rs) · [Read-back census](../runtime/sim.md#2-what-can-be-skipped-and-what-cant) |
-| UI and movies | Bink takes the existing skip return, including intro, attract and credits. The lobby and loading frames keep the guest menu path and cache housekeeping. Animation has a tick-side request at `0x001236f0` and a render-side load at `0x001237e0`. Test animation-driven hit and melee behaviour in a real match. [Movie mode](../../crates/boot/src/movies_glue.rs) · [Animation dependency](../graphics/pipelined-render.md#the-new-dependency-sites) |
+| UI and movies | Bink takes the existing skip return, including intro, attract and credits. The lobby and loading frames keep the guest menu path and cache housekeeping. The menu layer at `0x00147af1` dispatches virtual callbacks, so a blanket guest-side skip needs a write audit. Animation has a tick-side request at `0x001236f0` and a render-side load at `0x001237e0`. Test animation-driven hit and melee behaviour in a real match. [Movie mode](../../crates/boot/src/movies_glue.rs) · [Animation dependency](../graphics/pipelined-render.md#the-new-dependency-sites) |
 | Audio | The guest polls buffer status and position and waits for stream events. `StreamGetStatus` at `0x0037f591` has a pause bit read at `0x002ae4c4`. The same logical 256-frame grid advances cursors and delivers status, events and callbacks with no sample mixing, output queue, sink or output thread. `SetBufferData` and PCM/ADPCM stream packets validate the guest ranges without reading their sample bytes in DirectSound. Machine snapshots are unavailable with this audio profile because their audio section contains samples. [DirectSound state](../../crates/dsound/src/state.rs) · [Output clock](../../crates/dsound/src/output.rs) |
-| Map I/O | The world skip avoids render-initiated texture streaming in steady state. ISO reads and immutable DVD-directory `.map` reads can use read-only file-backed mappings. Keep those source files intact for the lifetime of each process. The retail copy to the writable cache, loading-screen bitmap reads, and guest sound-cache and WMA reads still run. Shared cache calls serve several resource types, and the audio shim only owns the payload after the guest submits it. [DVD reads](../../crates/vfs/src/disc.rs) · [Directory reads](../../crates/vfs/src/dir_disc.rs) · [Cache copy](../../crates/boot/src/map_copy.rs) · [Codec](../../crates/dsound/src/xwma.rs) |
+| Map I/O | The world skip avoids render-initiated texture streaming in steady state. The D3D shim takes the descriptor-only texture path before reading or decoding texels, including lobby and loading frames. ISO reads and immutable DVD-directory `.map` reads can use read-only file-backed mappings. Keep those source files intact for the lifetime of each process. The retail copy to the writable cache, loading-screen bitmap reads, and guest sound-cache and WMA reads still run. Shared cache calls serve several resource types, and the audio shim only owns the payload after the guest submits it. [DVD reads](../../crates/vfs/src/disc.rs) · [Directory reads](../../crates/vfs/src/dir_disc.rs) · [Cache copy](../../crates/boot/src/map_copy.rs) · [Codec](../../crates/dsound/src/xwma.rs) |
 | Memory | The guest has 64 MiB of RAM per process. The OS can share clean native code pages when processes open the same dylib or DLL. The loader registers pointers and selectors, and dispatch tables, guest RAM, cache metadata and network state are private. Use separate `--data` directories and the same immutable image. The light profile omits kernel-call trace wrappers and frame-time history, including during a long lobby wait. [Guest RAM](../../crates/runtime/src/guest.rs) · [Module loading and boot](../../crates/boot/src/lib.rs) |
 | Clock and network | The kernel sleeps when logical time leads wall time. It wakes for vblank, packet-related guest work and audio completion deadlines as needed on the way to the next 30 Hz gameplay tick. XNet performs one receive per guest poll and uses an OS wait for timed `select`. [Pacer](../../crates/kernel/src/pacer.rs) · [XNet sockets](../../crates/live-hle/src/network.rs) |
 | Bots and telemetry | `--host-bots` enables bot support for explicit adds. `H2_BOTS` also opts in and supplies the roster. The configured telemetry feature follows the regular boot and encoder path, including packed v8 where the build and ingest negotiate it. Accountless System Link can select a local capture with `H2_TELEMETRY_FILE`. [Feature registration](../../crates/boot/src/registration.rs) · [Telemetry configuration](../../crates/live-telemetry/src/config.rs) |
@@ -88,6 +90,49 @@ planning figures from the two-bot sim and the earlier process allowance.
 Replication, map loads and the map itself can move either number. RSS counts
 shared pages in each process. Measure the fleet’s incremental RAM separately
 before sizing by game count.
+
+### Server maps
+
+`h2 server-map strip ORIGINAL.map OUTPUT.map` writes a sparse copy. Use
+`h2 server-map verify ORIGINAL.map OUTPUT.map` to compare SHA-256 over
+every retained byte, including all tag headers, tag blocks, BSP metadata,
+strings, and the cache header. The verifier checks the original cache
+checksum and bounds too. Set `H2_SERVER_MAP_DIR` to the directory of
+verified copies. Name disc and official Map Pack copies by the original
+filename and packaged mod copies by the original map ID followed by
+`.map`. If a copy is missing or its header or length differs, the light
+host uses the original. Keep matched files immutable while mounted.
+
+The stripper clears known local bitmap LOD and low-detail payloads and
+classifiable PCM and Xbox ADPCM sample spans. It keeps WMA, IMA, unknown
+or externally referenced ranges, and other raw resources. The guest can
+read codec bytes before DirectSound sees a packet (WMA decoder
+`0x0038a0c5`–`0x0038a1cc`). Render also feeds the animation cache used
+from the tick. Keep the original cache alongside its verified override.
+The result has the same logical length, with allocated size reduced by
+the page-aligned holes. The command prints both sizes. Container savings
+depend on the captured files and on the layer format preserving holes or
+compressing zeros. Use the provisional RSS allowance above until measured.
+[Stripper](../../crates/cli/src/server_map.rs) · [Mount](../../crates/vfs/src/map_override.rs)
+
+### Measure before pruning
+
+Set `H2_HOST_AUDIT` to a report path and query `h2 agent hostaudit` before
+terminating a live host. The [sim corpus](../runtime/sim.md#host-audit-corpus)
+collects the same guest function coverage, tag reads, and subsystem CPU
+totals. Keep normal light-host traffic and fleet sizing runs unaudited.
+
+Candidate removals cover effects and lights, first-person animation and
+camera shake, sound objects, cloth and antenna updates, and HUD and menu
+state. Require a read/write trace and tick-hash parity for each switch.
+Effect dispatch at `0x0017a8a0` can apply damage or spawn objects, and
+particles share RNG and counters. Audio status, positions and completion
+events are gameplay-visible. Keep those paths and the rest of the guest
+tick until their cosmetic work can be isolated. A missing tag read or
+entry in one corpus is evidence to investigate. Map sub-tag pruning stays
+off until indirect reads and uncovered equipment are accounted for. The
+optional clang host module faults with a guest address on an uncovered
+entry. Use the full light image for live games.
 
 ### Compare against ordinary headless serve
 
@@ -112,7 +157,7 @@ non-overlapping 30-tick windows after the first 300 ticks.
 
 ```sh
 for ticks in 300 360 420 480 540; do
-  host_agent wait "{"phase":"gameplay","map_ticks":$ticks}" 90000 >/dev/null &&
+  host_agent wait "{\"phase\":\"gameplay\",\"map_ticks\":$ticks}" 90000 >/dev/null &&
     host_agent hostmetrics || break
 done | tee "$trial/$label-metrics.txt"
 ```
@@ -122,9 +167,9 @@ and `rss_bytes`. Check `wall_ms_per_tick` against 33.3 ms. The match
 check is remote movement, hits, death and respawn, results, and a second
 round on the same host. The render consumes shared RNG at
 `0x001032a0`, so the rendered control and the light host can diverge in
-lockstep. For an isolated tick-hash comparison use two runs of the same sim
-match with `render_every = 0`, setting `H2_FEATURES=audio.clock-only` on one.
-Compare with `h2 lockstep` as in the [sim checks](../runtime/sim.md#first-runs).
+lockstep. The hash also includes guest texture and sample buffers. Compare
+repeat runs from a clean seed and use the same hash to gate each candidate
+prune. Cross-profile parity is still open. See the [sim checks](../runtime/sim.md#first-runs).
 
 ## Routing, assignment and arbitration
 

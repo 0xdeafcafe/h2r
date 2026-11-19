@@ -148,6 +148,7 @@ pub mod method {
     pub const HOST_PERF: &str = "host.perf";
     /// Recent tick cost and process resource use.
     pub const HOST_METRICS: &str = "host.metrics";
+    pub const HOST_AUDIT: &str = "host.audit";
     /// The fallback interpreter's entry addresses, by instructions
     /// interpreted (`{"top": 20}`): where generated code still stops.
     pub const PROFILE_FALLBACKS: &str = "profile.fallbacks";
