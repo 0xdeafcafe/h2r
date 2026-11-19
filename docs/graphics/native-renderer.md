@@ -687,6 +687,58 @@ first look step. Materials without a decodable base map keep their D3D
 draws (the skip leaves their items alone) and are not drawn natively.
 Transparent parts (kind 4) are not in layer 3 and are left out.
 
+### Object lighting
+
+The first lit run (03a, objects native, 4,677 of 7,202 layer-3 calls
+drawn) drew the wall vent flat, bright grey-white where the D3D path
+shades it dim: the fixed term above is not the game's lighting, so a
+material that reads the object's lighting must not be drawn with it.
+How the game lights an object's layer-3 pass (Code, `h2 disasm`;
+`native_render::object_lighting` has the table):
+
+- **The constants.** The object geometry draw `0x0004d0b0` calls
+  `0x0004d9c0`, which hands the render record's lighting pointer
+  (`+0x10`, cache record `+0x44`) to `0x0001bd50`: that makes it the
+  current lighting `[0x00485a58]` and marks the engine inputs that read
+  it dirty. The shader draw then evaluates the implementation's dirty
+  inputs (`0x0001ae70`: scalars at `0x000336f0`, vectors at
+  `0x00033980`), and `0x00019be0` writes each of the implementation's
+  engine vertex constants (implementation `+0x124`, records of the pass's
+  `+0x38`: register bits 0..3, bank bit 4, mode bits 5..9, input byte 3)
+  into bank 1, uploaded as hardware `c[18 + i]` by `0x00018e80` (bank 0
+  is the vertex attribute defaults, `0x00018d70`). So the lit vertex
+  programs read their lighting from `c[18 + i]`, the registers their
+  implementation names, computed from vector inputs 3, 4, 14..17, 21..24,
+  35, 40 and 42..45 and scalars 23 and 37 (the table in
+  `object_lighting`).
+- **The implementation.** The build `0x0004cbf0` picks which of the
+  pass's implementations an object draws from its lighting: 0 when the
+  byte `+0x76` is not `0xff`, 1 when it is, 2 for a shader flag. On 03a
+  the object passes' programs are the `lightmap_dynamic*` and `sh_dynamic`
+  vertex shaders (`h2 tags 03a_oldmombasa vrtx`).
+- **The transform.** `0x0004d830` uploads a single-node object's matrix
+  (record `+0x1c`) as three registers at hardware `c[50]`.
+- **The port.** `object_lighting::vector_input` and `scalar_input` give
+  every lighting input but vector 40 and scalar 37 (a value of the object
+  whose handle is the lighting's `+0`, walked up its parents by
+  `0x00033670`); `tests/object_lighting_differential.rs` checks them bit
+  for bit (NaN for NaN) against the lifted `0x00033980` and `0x000336f0`
+  on seeded states. The hook copies each drawn object's `0x78` lighting
+  bytes and the inputs' defaults into its `ObjectFrame`
+  (`objects::object_lighting`: body `+0xcc`, the record still its own),
+  so the pass has the frame's values whatever the cache does next.
+- **The refusal.** The native pass does not apply them yet: its program
+  is ours, not the game's `lightmap_dynamic`/`sh_dynamic`, and what each
+  register means (ambient, a light's colour or direction) is the vertex
+  programs' business, not read. So a material whose layer-3 pass reads
+  any lighting input in any implementation
+  (`look::object_lighting_input`) is refused at load and keeps its D3D
+  draws: never drawn unlit. Expect most lit objects back on D3D until the
+  next step, which runs the object passes through their own vertex
+  programs (as the world's go through `program`) with `c[18 + i]` filled
+  from these inputs (`ResolvedImplementation::vector_bindings`) and the
+  node matrices where the programs read them.
+
 ### Pipelined render
 
 The observer reads the object array and bodies during the render. With
@@ -824,6 +876,16 @@ not measured; `render-census` can give it). So with the world already
 native, expect about 2 to 4 ms off `0x0002bed0` and `cpu`, plus their
 `encode`/`submit` share on the render thread. Layers 1, 5, 7, 8 and the
 dynamic-light passes keep their object draws in this cut.
+
+### Other builds in layer 3
+
+The walk's `other builds [0x0004de20 x15580]` are decorators (Likely):
+`0x0004de20` is the build the layer draw's handler table (`0x00041640`)
+gives the BSP's decorator placements (`[[0x004e0348] + 0x238]`, entries
+of `0x18` bytes whose first byte indexes the scenario's decorator palette
+at `+0x37c`, 8 bytes each with the set's datum at `+4`). They have no
+render record, are not objects, and neither skip touches them (both take
+only build `0x0004cbf0`): they stay on D3D, a later world stage.
 
 ## Stage 3: transparents (design)
 

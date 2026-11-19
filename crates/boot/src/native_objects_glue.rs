@@ -323,17 +323,33 @@ fn decoded(o: &mut Opened, bitmap: TagId) -> Option<Image> {
     i
 }
 
-/// A transparent material the models' pass can stand in for: one layer-15
-/// pass without an alpha test (S), and its shader's base map.
-fn transparent_material(o: &mut Opened, shader: TagId) -> Option<(Image, PassState)> {
+/// `shader` resolved, through the map's shader library (read once).
+fn material(o: &mut Opened, shader: TagId) -> Option<tags::material::Material> {
     if o.lib.is_none() {
         let lib = tags::material::ShaderLibrary::read(&mut o.map);
         if let Err(e) = &lib {
-            eprintln!("native-objects: the shader tags do not read ({e}); objects' transparents stay on D3D");
+            eprintln!("native-objects: the shader tags do not read ({e}); every object stays on D3D");
         }
         o.lib = Some(lib.ok());
     }
-    let material = o.lib.as_mut()?.as_mut()?.material(shader, None).ok()?;
+    o.lib.as_mut()?.as_mut()?.material(shader, None).ok()
+}
+
+/// Why an opaque material stays on D3D for its lighting: its layer-3
+/// pass reads the object's lighting, which the native pass does not apply
+/// yet (`look::object_lighting_input`), or it does not resolve, so that
+/// cannot be ruled out. Never drawn unlit.
+fn lighting_refusal(o: &mut Opened, shader: TagId) -> Option<String> {
+    let Some(m) = material(o, shader) else {
+        return Some("the material does not resolve".into());
+    };
+    look::object_lighting_input(&m).map(|input| format!("reads lighting input {input:?}"))
+}
+
+/// A transparent material the models' pass can stand in for: one layer-15
+/// pass without an alpha test (S), and its shader's base map.
+fn transparent_material(o: &mut Opened, shader: TagId) -> Option<(Image, PassState)> {
+    let material = material(o, shader)?;
     let state = match look::transparent_passes(&material).ok()?.as_slice() {
         [one] => one.state,
         _ => return None,
@@ -353,8 +369,13 @@ fn load_model(o: &mut Opened, def: u32) -> Result<(CpuModel, Vec<u16>, ObjectTra
     let loaded = model_load::load_object_model(&mut o.map, &o.ctx, &mut o.raw, id)?;
     let mut base_maps = HashMap::new();
     let mut shaders = Vec::new();
+    let mut unlit = Vec::new();
     for m in loaded.model.materials() {
         let Some(&shader) = loaded.shaders.get(usize::from(m)) else { continue };
+        if let Some(why) = lighting_refusal(o, shader) {
+            unlit.push(format!("{:#010x} {why}", shader.0));
+            continue;
+        }
         let Some(bitmap) = load::base_map(&mut o.map, shader) else { continue };
         if let Some(image) = decoded(o, bitmap) {
             base_maps.insert(m, image);
@@ -376,6 +397,9 @@ fn load_model(o: &mut Opened, def: u32) -> Result<(CpuModel, Vec<u16>, ObjectTra
     let kept: HashSet<u16> = transparents.iter().map(|t| t.0).collect();
     let model = keep_materials(loaded.model, &base_maps, &kept);
     if model.draws.is_empty() {
+        if !unlit.is_empty() {
+            return Err(format!("its materials are lit per object, which the native pass does not apply yet: {}", unlit.join(", ")).into());
+        }
         return Err("no material with a base map".into());
     }
     Ok((
