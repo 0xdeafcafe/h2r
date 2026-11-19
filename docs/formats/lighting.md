@@ -126,6 +126,13 @@ For `30`, sign-extend each component to `s` and compute
 The engine interpolates these vectors for CPU surface queries. The meanings
 of their individual channels beyond that use remain open.
 
+The GPU reads the same words another way: the stream format table
+(`0x0043f408`) declares type `30`'s one attribute (semantic 8) with format
+code 16, `NORMPACKED3`, so a vertex program gets `s/1023`, `s/1023`,
+`s/511`, clamped at -1 (the geometry normal decoder). A renderer standing
+in for the game's draws takes that decode
+(`native_render::load::program_lighting_vector`).
+
 Bucket flag bit 0 gates a four-byte-per-vertex offset patch at
 `0x0004d326` and `0x0004d396`; bit 1 gates the colour stream at
 `0x0004dc95`/`0x000d35a0`. A second descriptor of type `2e` uses offset

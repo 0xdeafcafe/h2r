@@ -100,16 +100,37 @@ pub fn section_input(s: &Section) -> Option<SectionInput> {
     })
 }
 
-/// A section's signed lighting vectors (stream `30`,
-/// `tags::lighting::vertex_lighting`); empty without that stream.
+/// A section's signed lighting vectors (stream `30`, found by
+/// `tags::lighting::vertex_lighting`) as the vertex program reads them
+/// ([`program_lighting_vector`]); empty without that stream.
 pub fn lighting_vectors(s: &Section) -> Vec<[f32; 3]> {
     s.vertex_buffers
         .iter()
         .find_map(|vb| match vertex_lighting(s, vb) {
-            Ok(Some(VertexLighting::Vector(v))) => Some(v),
+            Ok(Some(VertexLighting::Vector(_))) => Some(
+                s.data(vb)
+                    .chunks_exact(4)
+                    .map(|b| program_lighting_vector(u32::from_le_bytes([b[0], b[1], b[2], b[3]])))
+                    .collect(),
+            ),
             _ => None,
         })
         .unwrap_or_default()
+}
+
+/// One stream-`30` word as the GPU hands it to the vertex program: the
+/// stream format table (`0x0043f408`, type `0x30`) declares its one
+/// attribute (semantic 8) with format code 16, `NORMPACKED3`, so the
+/// hardware decodes `s / 1023`, `s / 1023`, `s / 511`, clamped at -1
+/// (`tags::geometry::unpack_normpacked3`, the D3D path's
+/// `xvs_normpacked3`). Not the CPU's midpoint decode
+/// (`tags::lighting::unpack_lighting_vector`, `(2 s + 1) / (2^bits - 1)`,
+/// docs/formats/lighting.md), which sits up to half a step higher in every
+/// component: with it the native world's layer 3 came out one level darker
+/// than the D3D path's on about 4% of 03a's pixels (03000), clusters and
+/// placements alike.
+pub fn program_lighting_vector(word: u32) -> [f32; 3] {
+    tags::geometry::unpack_normpacked3(word)
 }
 
 fn key(info: Option<&LightmapRenderInfo>) -> Option<LightmapKey> {
@@ -379,5 +400,20 @@ mod tests {
         assert_eq!(key(Some(&info(-1, 2))), None);
         assert_eq!(key(Some(&info(3, -1))), None);
         assert_eq!(key(None), None);
+    }
+
+    #[test]
+    fn the_lighting_vector_is_read_as_the_vertex_program_reads_it() {
+        // Zero is zero to the hardware, not the midpoint decode's half step.
+        assert_eq!(program_lighting_vector(0), [0.0; 3]);
+        assert_ne!(tags::lighting::unpack_lighting_vector(0), [0.0; 3]);
+        // The largest fields are one; the smallest clamp to -1.
+        let max = 1023 | 1023 << 11 | 511 << 22;
+        let min = 1024 | 1024 << 11 | 512 << 22;
+        assert_eq!(program_lighting_vector(max), [1.0; 3]);
+        assert_eq!(program_lighting_vector(min), [-1.0; 3]);
+        // x 10, y -3, z 100: over 1023, 1023 and 511 (NORMPACKED3).
+        let w = 10 | (0x7ff - 2) << 11 | 100 << 22;
+        assert_eq!(program_lighting_vector(w), [10.0 / 1023.0, -3.0 / 1023.0, 100.0 / 511.0]);
     }
 }

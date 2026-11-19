@@ -97,6 +97,10 @@ pub struct RigidProgram {
     pub vertex: VertexUniforms,
     /// The vertex registers the rigid program reads.
     pub inputs: u16,
+    /// The program's instruction words (four per instruction, no
+    /// header): what the D3D path's draw of a placement binds, for
+    /// telling its draws apart (`d3d::uniform_compare`).
+    pub words: Vec<u32>,
 }
 
 /// Translates `look`'s pass with its vertex program `microcode` (the
@@ -187,7 +191,11 @@ pub fn compile_rigid(pass: &WorldPass, microcode: &[u8]) -> Result<RigidProgram,
         return Err(format!("rigid vertex program reads c[{c}], which the native pass does not set"));
     }
     let p = compile_pass(&pass.look, microcode, pass.state.alpha_test)?;
-    Ok(RigidProgram { wgsl: p.wgsl, vertex: p.vertex, inputs: p.inputs })
+    let words = microcode[4..4 + 16 * program.instructions.len()]
+        .chunks_exact(4)
+        .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .collect();
+    Ok(RigidProgram { wgsl: p.wgsl, vertex: p.vertex, inputs: p.inputs, words })
 }
 
 /// Whether every instanced-placement part of `material` in `world` can be
@@ -1090,6 +1098,39 @@ impl ProgramSet {
     pub fn rigid_len(&self) -> usize {
         self.rigid.len()
     }
+
+    /// What placement `instance`'s draws of each material take in a frame
+    /// of `view`, by material ascending: the rigid program's words and
+    /// its vertex and pixel uniforms, as [`ProgramSet::prepare`] uploads
+    /// them (a diagnostic, `H2_NATIVE_WORLD_DUMP`).
+    pub fn rigid_uniforms(&self, instance: u32, view: &ViewInputs) -> Vec<RigidUniforms> {
+        let mut out: Vec<RigidUniforms> = self
+            .rigid
+            .iter()
+            .filter_map(|(&material, r)| {
+                let (_, rows) = r.slots.iter().find(|s| s.0 == instance)?;
+                let pixel = self.materials.get(&material)?.program.pixel;
+                Some(RigidUniforms {
+                    material,
+                    words: r.program.words.clone(),
+                    vertex: rigid_vertex(&r.program.vertex, view, rows),
+                    pixel: frame_pixel(&pixel, view),
+                })
+            })
+            .collect();
+        out.sort_by_key(|u| u.material);
+        out
+    }
+}
+
+/// One material's rigid draw of a placement ([`ProgramSet::rigid_uniforms`]).
+#[derive(Clone, Debug)]
+pub struct RigidUniforms {
+    pub material: u16,
+    /// The rigid program's instruction words ([`RigidProgram::words`]).
+    pub words: Vec<u32>,
+    pub vertex: VertexUniforms,
+    pub pixel: PixelUniforms,
 }
 
 #[cfg(test)]
@@ -1439,6 +1480,10 @@ mod tests {
         assert_eq!(r.vertex.constants[POSITION_DECOMPRESSION], [1.0; 4], "the BSP's decompression is the identity");
         assert_eq!(r.vertex.constants[POSITION_DECOMPRESSION + 1], [0.0; 4]);
         assert_eq!(r.vertex.constants[19], [2.0, 3.0, 0.0, 0.0], "the instance's constants");
+        let code = rigid_program(true);
+        let count = vsh::Program::parse(&code).unwrap().instructions.len();
+        assert_eq!(r.words.len(), 4 * count, "four words an instruction, no header");
+        assert_eq!(r.words[0], u32::from_le_bytes([code[4], code[5], code[6], code[7]]));
         assert_eq!(
             compile_rigid(&pass, &rigid_program(false)).unwrap_err(),
             "the rigid vertex program does not read the model rows c[50..52]"

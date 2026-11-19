@@ -350,16 +350,17 @@ impl d3d::ExternalPass for WorldPass {
                 }
                 return;
             };
-            gpu.prepare_programs(
-                t.queue,
-                &ViewInputs {
-                    constants,
-                    guest_size: t.guest_size,
-                    size: t.size,
-                    z_scale: t.z_scale,
-                    w_clip: self.w_clip,
-                },
-            );
+            let view = ViewInputs {
+                constants,
+                guest_size: t.guest_size,
+                size: t.size,
+                z_scale: t.z_scale,
+                w_clip: self.w_clip,
+            };
+            gpu.prepare_programs(t.queue, &view);
+            if let Some(dump) = Diagnostics::get().dump {
+                arm_dump(&self.ready, gpu, &view, dump);
+            }
         }
         let diag = Diagnostics::get();
         gpu.set_cull(!diag.no_cull);
@@ -424,6 +425,12 @@ struct Diagnostics {
     /// parts drawn natively, the rest left to the D3D path (their items
     /// not skipped): which kind a difference belongs to.
     owners: Owners,
+    /// `H2_NATIVE_WORLD_DUMP=placement[:material]`: the uniforms the
+    /// native pass draws that placement's rigid draws of the material (its
+    /// lowest without one) with, against the D3D path's draws of it
+    /// ([`arm_dump`]; with `H2_NATIVE_WORLD_OWNERS=clusters`, so that the
+    /// D3D path draws the placement).
+    dump: Option<(u32, Option<u16>)>,
 }
 
 impl Diagnostics {
@@ -436,8 +443,9 @@ impl Diagnostics {
                 no_cull: on("H2_NATIVE_WORLD_NO_CULL"),
                 probe: std::env::var("H2_NATIVE_WORLD_PROBE").ok().and_then(|v| parse_probe(&v)),
                 owners: std::env::var("H2_NATIVE_WORLD_OWNERS").ok().and_then(|v| Owners::parse(&v)).unwrap_or_default(),
+                dump: std::env::var("H2_NATIVE_WORLD_DUMP").ok().and_then(|v| parse_dump(&v)),
             };
-            if d.trace || d.no_cull || d.owners != Owners::All {
+            if d.trace || d.no_cull || d.owners != Owners::All || d.dump.is_some() {
                 eprintln!("native-world: diagnostics {d:?}");
             }
             d
@@ -490,6 +498,67 @@ fn trace(
 }
 
 /// `"x,y"` as a probe pixel.
+/// `placement[:material]` ([`Diagnostics::dump`]).
+fn parse_dump(v: &str) -> Option<(u32, Option<u16>)> {
+    let (instance, material) = match v.split_once(':') {
+        Some((i, m)) => (i, Some(m.trim().parse::<u16>().ok()?)),
+        None => (v, None),
+    };
+    Some((instance.trim().parse::<u32>().ok()?, material))
+}
+
+/// The world [`arm_dump`] last armed for (its `Ready`'s address).
+static DUMPED: Mutex<usize> = Mutex::new(0);
+
+/// Once per loaded world: prints the uniforms the native pass draws
+/// placement `instance`'s rigid draws of `material` with in this frame,
+/// and arms `d3d::uniform_compare` with them, which prints, for the D3D
+/// path's next draws with the same rows and program, every read constant,
+/// read input and uniform that differs. Draws of the placement natively
+/// are skipped on the D3D path, so this wants the placements left to it
+/// (`H2_NATIVE_WORLD_OWNERS=clusters`).
+fn arm_dump(ready: &Arc<Ready>, gpu: &GpuWorld, view: &ViewInputs, (instance, material): (u32, Option<u16>)) {
+    let key = Arc::as_ptr(ready) as usize;
+    let mut dumped = DUMPED.lock().unwrap_or_else(|e| e.into_inner());
+    if *dumped == key {
+        return;
+    }
+    *dumped = key;
+    let draws = gpu.rigid_uniforms(instance, view);
+    let materials: Vec<u16> = draws.iter().map(|d| d.material).collect();
+    let Some(d) = draws.into_iter().find(|d| material.is_none_or(|m| m == d.material)) else {
+        eprintln!("native-world dump: placement {instance} has no rigid draws of {material:?} here (materials {materials:?})");
+        return;
+    };
+    let label = format!("placement {instance} material {}", d.material);
+    let read: Vec<String> = d
+        .vertex
+        .constants
+        .iter()
+        .enumerate()
+        .skip(d3d::VIEW_CONSTANTS)
+        .filter(|(_, c)| **c != [0.0; 4])
+        .map(|(n, c)| format!("c[{n}] {c:?}"))
+        .collect();
+    eprintln!(
+        "native-world dump {label} (materials {materials:?}): {} program words; beyond the view's: {}; defaults {:?}; w_clip {:?} clamp {} shift {}",
+        d.words.len(),
+        read.join(", "),
+        d.vertex.defaults,
+        d.vertex.w_clip,
+        d.vertex.w_clamp,
+        d.vertex.shift
+    );
+    d3d::uniform_compare::arm(d3d::uniform_compare::Expected {
+        label,
+        words: d.words,
+        vertex: d.vertex,
+        pixel: d.pixel,
+        streamed: program::INPUT_MASK,
+        draws: 4,
+    });
+}
+
 fn parse_probe(v: &str) -> Option<(f32, f32)> {
     let (x, y) = v.split_once(',')?;
     let (x, y) = (x.trim().parse::<f32>().ok()?, y.trim().parse::<f32>().ok()?);
@@ -1407,6 +1476,10 @@ mod tests {
 
     #[test]
     fn the_probe_finds_the_covering_triangle_its_depth_and_edge() {
+        assert_eq!(parse_dump("282"), Some((282, None)));
+        assert_eq!(parse_dump(" 282 : 107 "), Some((282, Some(107))));
+        assert_eq!(parse_dump("282:"), None);
+        assert_eq!(parse_dump("girder"), None);
         assert_eq!(parse_probe("520, 80"), Some((520.0, 80.0)));
         assert_eq!(parse_probe("520"), None);
         assert_eq!(parse_probe("x,1"), None);
