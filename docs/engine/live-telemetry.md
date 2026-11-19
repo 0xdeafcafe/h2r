@@ -8,20 +8,26 @@ over 18,000 simulation ticks, with a keyframe every 150 samples. Live byte
 counts include record length prefixes. Each of the 60 ten-second replay chunks
 starts with its own keyframe. Transfer sizes are response-body bytes.
 
-| Ten-minute match | v4 | v6 baseline |
-|---|---:|---:|
-| Live bytes/player/s | 272.09 | 254.71 |
-| Live bytes/frame | 290.23 | 271.69 |
-| Encode µs/frame | 15.72 | 17.09 |
-| Encode µs/simulation tick | 7.86 | 8.54 |
-| Replay JSON bytes | 68,037,538 | 88,675,937 |
-| Replay JSON gzip bytes | 11,773,243 | 13,052,003 |
-| Replay binary chunk bytes | 2,405,346 | 2,110,374 |
-| Decode full replay JSON, ms | 219.39 | 344.97 |
-| Inflate and decode full binary replay, ms | 236.67 | 176.83 |
+| Ten-minute match | v4 | v6 baseline | v7 |
+|---|---:|---:|---:|
+| Live bytes/player/s | 272.09 | 254.71 | **145.25** |
+| Live bytes/frame | 290.23 | 271.69 | **154.93** |
+| Encode µs/frame | 15.72 | 17.09 | 17.20 |
+| Encode µs/simulation tick | 7.86 | 8.54 | 8.60 |
+| Replay JSON bytes | 68,037,538 | 88,675,937 | 90,082,165 |
+| Replay JSON gzip bytes | 11,773,243 | 13,052,003 | 13,517,251 |
+| Replay binary chunk bytes | 2,405,346 | 2,110,374 | **1,322,664** |
+| Decode full replay JSON, ms | 219.39 | 372.96 | 257.68 |
+| Inflate and decode full binary replay, ms | 236.67 | 200.80 | **165.35** |
+
+The v7 scene uses 43.0% fewer live bytes and 37.3% fewer replay bytes than
+v6. Its replay is 1.47% of the uncompressed JSON transfer and 9.78% of the
+gzip JSON transfer. The 30-second seeded size regression includes all lists,
+record lengths and keyframes, and requires **under 147 B/player/s**.
 
 V4 is included for historical context. Its input predates projectiles,
-dropped items and vehicle velocities. The v6 baseline is the merged
+dropped items and vehicle velocities. The v7 measurement uses wire revision `afe9fa2c`.
+The v6 baseline is the merged
 `84ebbd6f` with the same input scene and list schema as v7. Its guest-scene
 output differs from v4 only in projectile and dropped-item lists, vehicle
 velocity and the units’ synthetic circular-motion velocity. All events in
@@ -40,6 +46,24 @@ of five full-match decodes, alternating the order. Binary includes chunk
 inflation and reconstruction of viewer frames. JSON includes UTF-8 decoding
 and parsing. The separate gzip size uses level 6 per JSON response. Timings
 are Bun 1.4.2 on the development machine and vary with concurrent work.
+
+## Which changes saved bytes
+
+At the v7 grid resolution, continuing the previous angular and velocity
+trend on equal tick spans brought the match to 179.94 B/player/s. Coding
+changes to player and actor edit masks in field-frequency order reduced
+that to 157.62. Reusing a player's exact position for a matching hit and
+giving in-order edits a one-bit opcode brought it to 145.25. Off-player
+impacts still carry their own coordinates. These savings depend on the
+workload. For example, the synthetic scene places all 13,388 hit positions
+on players.
+
+Fresh raw DEFLATE streams at level 1 made one- and two-frame packets larger
+in aggregate. Over the final match's replay records, choosing compression
+only when smaller saved 0.19% in either case, even before a codec flag.
+The one-frame trial cost about 15 µs per packet on this machine. Live packets
+therefore carry the packed bits directly. Replay chunks amortise compression
+over up to 150 frames and use DEFLATE only when it reduces the stored length.
 
 ## Error at a captured tick
 
