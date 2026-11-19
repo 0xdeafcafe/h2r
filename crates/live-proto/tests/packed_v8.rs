@@ -1,6 +1,6 @@
 //! Time only the production encoding path, in both orders in one release binary.
 use live_proto::{game::Frame, pack, samples};
-use std::{hint::black_box, time::Instant};
+use std::{hint::black_box, path::PathBuf, time::Instant};
 
 fn encode(frames: &[Frame], version: u8) -> (usize, f64) {
     let mut writer = pack::Encoder::with_version(0, 150, version).unwrap();
@@ -25,6 +25,8 @@ fn quiet_v8_pair() {
     let frames = samples::multiplayer(9000);
     let mut enc = pack::Encoder::with_version(0, 150, 8).unwrap();
     let mut dec = pack::Decoder::new();
+    // H2_V8_DUMP names one file containing the same ULEB-framed records as a socket.
+    let mut dump = std::env::var_os("H2_V8_DUMP").map(|p| (PathBuf::from(p), Vec::new()));
     let mut join_bytes = 0;
     for (i, f) in frames.iter().enumerate() {
         let (record, key) = enc.encode(f).unwrap();
@@ -39,7 +41,24 @@ fn quiet_v8_pair() {
             dec.decode(&record).unwrap().frame,
             pack::quantize(f).unwrap()
         );
+        if let Some((_, bytes)) = &mut dump {
+            pack::push_record(bytes, &record);
+        }
     }
+    let dump_len = dump.map(|(path, bytes)| {
+        assert_eq!(
+            pack::records(&bytes).map(Result::unwrap).count(),
+            frames.len()
+        );
+        std::fs::write(&path, &bytes).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
+        println!(
+            "dumped {} verified records ({} bytes) to {}",
+            frames.len(),
+            bytes.len(),
+            path.display()
+        );
+        bytes.len()
+    });
     let mut ratios = Vec::new();
     for i in 0..6 {
         let ((v7b, v7), (v8b, v8)) = if i % 2 == 0 {
@@ -49,6 +68,9 @@ fn quiet_v8_pair() {
             (encode(&frames, 7), b)
         };
         assert_eq!(v7b, 1_394_368);
+        if let Some(n) = dump_len {
+            assert_eq!(v8b, n);
+        }
         assert!(v8b < 85 * 9600);
         ratios.push(v8 / v7);
         println!(
