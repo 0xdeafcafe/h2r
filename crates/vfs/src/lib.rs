@@ -76,6 +76,8 @@ pub struct Config {
     pub map_packages: Option<PathBuf>,
     /// Use read-only mappings for the immutable DVD, when possible.
     pub mmap_disc: bool,
+    /// Verified server copies, keyed by DVD filename or installed MapId.
+    pub server_maps: Option<PathBuf>,
 }
 impl Config {
     pub fn new(data_root: impl Into<PathBuf>, title_id: u32) -> Self {
@@ -87,6 +89,7 @@ impl Config {
             content_maps: ContentMaps::default(),
             map_packages: None,
             mmap_disc: false,
+            server_maps: None,
         }
     }
     /// Host directory behind `T:`: `<data_root>/disk/Partition1/TDATA/<TITLE>`.
@@ -233,6 +236,7 @@ impl Vfs {
                         VariantFiles::new(backend, variants).with_packages(
                             config.content_maps.clone(),
                             &config.data_root.join("maps"),
+                            config.server_maps.clone(),
                         ),
                     )?,
                 }

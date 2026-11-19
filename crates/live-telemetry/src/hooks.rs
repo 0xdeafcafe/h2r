@@ -379,7 +379,10 @@ impl feature::Feature for TelemetryFeature {
             .on_start("match start", move |o| t.protect(|| t.start(&o.guest())));
         let t = Arc::clone(&self.0);
         b.frame()
-            .on_tick("sample", move |o| t.protect(|| t.sample(&o.guest())));
+            .on_tick("sample", move |o| {
+                let _cpu = timeline::host::Subsystem::Telemetry.span();
+                t.protect(|| t.sample(&o.guest()));
+            });
         let t = Arc::clone(&self.0);
         b.game()
             .on_end("end", move |o| t.protect(|| t.end(&o.guest())));

@@ -26,7 +26,7 @@ pub use event::{
 pub use hooks::{Telemetry, TelemetryFeature, install};
 pub use layout::LIKELY_FIELDS;
 pub use memory::{
-    ThingState, active_bsp, actors, game_info, game_tick, hit, loaded_map_name, object, players,
+    ThingState, active_bsp, actors, game_info, game_tick, hit, loaded_map_name, object, object_definition, players,
     snapshot, team_scores, things, world, yaw,
 };
 pub use pipeline::Pipeline;

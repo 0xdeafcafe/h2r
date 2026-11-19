@@ -75,6 +75,7 @@ mod lockstep_cmd;
 mod map_testbuild;
 mod mappack_cmd;
 mod maps;
+mod server_map;
 mod movies_cmd;
 mod object;
 mod play_cloud;
@@ -97,6 +98,7 @@ const USAGE: &str = "usage: h2 <command> [disc]
   build <disc>            lift, emit and compile the whole XBE (docs/runtime/BOOT.md)
   run <disc>              build if needed, then boot it natively on the kernel HLE
   play <disc>             build if needed, then play it in a window (docs/runtime/app.md)
+  server-map strip|verify ORIGINAL.map SERVER.map
   serve <disc>            run headless with the agent API; --system-link [--host-light]
                           (docs/runtime/agent-api.md)
   agent <call>            call a running game's agent API: status, count, query,
@@ -277,6 +279,9 @@ fn main() -> Result<()> {
     }
     if cmd == "strings" {
         return strings::run(args.collect());
+    }
+    if cmd == "server-map" {
+        return server_map::run(args.collect());
     }
     if cmd == "map" {
         return map_testbuild::run(args.collect());

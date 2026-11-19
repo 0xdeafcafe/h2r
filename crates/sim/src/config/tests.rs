@@ -430,6 +430,25 @@ fn the_documented_examples_load() {
 }
 
 #[test]
+fn light_host_corpus_expands_all_maps_modes_and_seeds() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/runtime/sim-examples/light-host-corpus.toml");
+    let batch = load_batch(&path).unwrap();
+    assert!(batch.config.audit);
+    assert_eq!(batch.runs.len(), 23 * 7 * 3);
+    for run in batch.runs {
+        let match_ = resolve(run.config, &no_files).unwrap();
+        assert!(match_.distributed());
+        assert_eq!(match_.bots.len(), 4);
+        match match_.config.game_type.as_str() {
+            "ctf" | "assault" => assert!(match_.team_play),
+            "juggernaut" => assert!(!match_.team_play),
+            _ => {}
+        }
+    }
+}
+
+#[test]
 fn planned_runs_write_back_as_toml() {
     let b = batch(
         BATCH,

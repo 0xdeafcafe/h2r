@@ -181,6 +181,17 @@ active gameplay windows after loading. A stale sample can survive a gap in
 ticks. The CPU fields exclude sleeping. The wall field shows the pace the
 host actually sustained. [Tick sampler](../../crates/boot/src/host_metrics.rs)
 
+### `host.audit`
+
+Set `H2_HOST_AUDIT=/path/to/audit.json` before boot to enable this method.
+`h2 agent hostaudit` takes no parameters. It writes a snapshot to that
+configured path and returns the path, ticks, observed and registered
+function counts, tag range count and inclusive CPU timing. An orderly
+exit writes the final snapshot. Call the method before terminating a
+dedicated process externally. The collector changes dispatch and memory
+watch costs, so use `host.metrics` in an ordinary run for sizing.
+[Report fields and corpus](sim.md#host-audit-corpus)
+
 ### `ui`: what the menus and HUD show
 
 The client gets the **stack of open screens**, not pixels:

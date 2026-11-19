@@ -39,6 +39,7 @@ pub mod h1_options;
 pub mod h1_options_row;
 pub mod h1_variants;
 pub mod health;
+pub mod host_audit;
 mod host_metrics;
 pub mod host_perf;
 pub mod hot_glue;
@@ -127,7 +128,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 pub use live_hle::LiveConfig;
-use runtime::{Event, GuestFn};
+use runtime::Event;
 
 /// The bridge source linked into the generated dylib.
 pub const BRIDGE: &str = include_str!("../c/boot_bridge.c");
@@ -177,6 +178,17 @@ pub fn read_xbe(path: &Path) -> Result<Vec<u8>> {
 /// (`<dylib>.stamp`) once linked; [`run`] refuses a dylib whose stamp
 /// differs, and `h2 run` rebuilds instead.
 pub fn build_stamp(xbe_bytes: &[u8]) -> String {
+    let mut stamp = full_build_stamp(xbe_bytes);
+    if let Some(path) = host_audit::module_from_env() {
+        let fingerprint = std::fs::read(&path)
+            .map(|bytes| format!("{:016x}", fallback::fnv64(&bytes)))
+            .unwrap_or_else(|_| format!("unreadable {}", path.display()));
+        stamp.push_str(&format!("host module {fingerprint}\n"));
+    }
+    stamp
+}
+
+fn full_build_stamp(xbe_bytes: &[u8]) -> String {
     match stamp_flags(stamp_target()) {
         Ok(flags) => stamp_with(
             xbe_bytes,
@@ -354,7 +366,15 @@ pub fn build(xbe_bytes: &[u8], out: &Path, jobs: usize) -> Result<PathBuf> {
     );
     let src = out.join("src");
     let t = Instant::now();
-    let w = emit::write_module(&owners, &src)?;
+    let hot = host_audit::module_from_env()
+        .map(|path| host_audit::module_owners(&path, &full_build_stamp(xbe_bytes)))
+        .transpose()?;
+    let w = emit::write_module_with_hot(
+        &owners,
+        &src,
+        emit::Codegen::from_env().map_err(anyhow::Error::msg)?,
+        hot.as_ref(),
+    )?;
     eprintln!(
         "emit: {:.1}s, {} owners, {} files ({} rewritten), {:.1} MB of C, {} entries, {} resumes",
         t.elapsed().as_secs_f64(),
@@ -403,31 +423,6 @@ pub fn build(xbe_bytes: &[u8], out: &Path, jobs: usize) -> Result<PathBuf> {
         .with_context(|| format!("stamping {}", lib.display()))?;
     eprintln!("build: {:.1}s", total.elapsed().as_secs_f64());
     Ok(lib)
-}
-
-#[repr(C)]
-struct GenEntry {
-    addr: u32,
-    kind: u32,
-    f: Option<GuestFn>,
-    abi_version: Option<unsafe extern "C" fn() -> u32>,
-}
-
-#[repr(C)]
-struct GenResume {
-    pc: u32,
-    owner: u32,
-    start: u32,
-}
-
-#[repr(C)]
-struct GenModule {
-    abi_version: u32,
-    entry_count: u32,
-    resume_count: u32,
-    reserved: u32,
-    entries: *const GenEntry,
-    resumes: *const GenResume,
 }
 
 /// A loaded generated module. Keep it alive while the runtime may call it.
@@ -585,16 +580,21 @@ pub unsafe fn load_module(path: &Path, rt: &runtime::Runtime, xbe_bytes: &[u8]) 
         > = lib.get(b"h2x87bridge_install")?;
         let fns = shim::x87_helpers();
         install_x87(fns.as_ptr(), fns.len() as u32);
-        let module: libloading::Symbol<*const GenModule> = lib.get(b"h2gen_module")?;
+        let module: libloading::Symbol<*const runtime::H2GenModule> = lib.get(b"h2gen_module")?;
         let m = &**module;
         if m.abi_version != runtime::cpu::ABI_VERSION {
             bail!("module table ABI {}", m.abi_version);
         }
         let entries = std::slice::from_raw_parts(m.entries, m.entry_count as usize);
+        if std::env::var_os(host_audit::ENV).is_some_and(|p| !p.is_empty()) {
+            anyhow::ensure!(std::env::var("H2_BOOT_TRAMPOLINE").as_deref() != Ok("1"),
+                "host audit requires registry dispatch");
+            rt.enable_guest_coverage(entries);
+        }
         let resumes = std::slice::from_raw_parts(m.resumes, m.resume_count as usize);
         let mut rows = Vec::with_capacity(entries.len());
         for e in entries {
-            let (Some(f), Some(v)) = (e.f, e.abi_version) else {
+            let (Some(f), Some(v)) = (e.handler, e.abi_version) else {
                 bail!("entry {:#x}: null row", e.addr)
             };
             if v() != runtime::cpu::ABI_VERSION {
@@ -864,31 +864,46 @@ fn run_configured(
     live: &LiveConfig,
     sim: Option<(sim_glue::Sim, Option<telemetry::TelemetryConfig>)>,
 ) -> Result<RunReport> {
-    let host_light = host.host_light;
-    if host_light {
+    // H2_SIM and the CLI sim entry share the dedicated profile. The explicit
+    // switch off supplies a stock headless control for the same roster.
+    let (sim_mode, upload) = match sim {
+        Some((sim, upload)) => (Some(sim), upload),
+        None => (sim_glue::from_env()?, None),
+    };
+    let switches = feature::Switches::from_env().map_err(anyhow::Error::msg)?;
+    let host_light =
+        host.host_light || (sim_mode.is_some() && switches.feature("host-light", true));
+    if host_audit::module_from_env().is_some() {
+        anyhow::ensure!(host_light, "H2_HOST_MODULE requires the light host profile");
         anyhow::ensure!(
-            live.enabled
-                && host.gfx.is_none()
-                && host.gfx_view.is_none()
-                && !host.render_thread
-                && std::env::var_os("H2_BOOT_GFX").is_none(),
-            "light host requires enabled networking and no graphics backend (unset H2_BOOT_GFX)"
+            std::env::var("H2_BOOT_TRAMPOLINE").as_deref() != Ok("1"),
+            "H2_HOST_MODULE requires registry dispatch"
         );
-        anyhow::ensure!(
-            opts.d3d && opts.bink && opts.dsound && opts.xapi,
-            "light host requires the guest D3D, Bink, DirectSound and XAPI shims"
-        );
-        anyhow::ensure!(
-            sim.is_none() && std::env::var_os(sim::ENV).is_none_or(|v| v.is_empty()),
-            "light host uses the network lobby; unset H2_SIM"
-        );
+    }
+    if host.host_light {
+        anyhow::ensure!(live.enabled && sim_mode.is_none(),
+            "--host-light serves the network lobby; unset H2_SIM");
         anyhow::ensure!(
             host.level.is_none() && std::env::var_os("H2_LEVEL").is_none_or(|v| v.is_empty()),
             "light host starts in the network lobby; unset H2_LEVEL"
         );
     }
+    if host_light || sim_mode.is_some() {
+        anyhow::ensure!(
+            host.gfx.is_none()
+                && host.gfx_view.is_none()
+                && !host.render_thread
+                && std::env::var_os("H2_BOOT_GFX").is_none(),
+            "light host and sim require a headless backend (unset H2_BOOT_GFX)"
+        );
+        anyhow::ensure!(
+            opts.d3d && opts.bink && opts.dsound && opts.xapi,
+            "light host and sim require the guest D3D, Bink, DirectSound and XAPI shims"
+        );
+    }
     let bots = opts.xapi
         && (!host_light
+            || sim_mode.is_some()
             || host.host_bots
             || std::env::var_os(bots::ENV).is_some_and(|v| !v.is_empty()));
     d3d_diag::keep_present_history(!host_light);
@@ -948,11 +963,6 @@ fn run_configured(
         t.elapsed().as_secs_f64()
     );
     let k = kernel::Kernel::for_image(&mut loaded).context("attaching the kernel")?;
-    // H2_SIM=<match file>: sim mode (sim_glue.rs, docs/runtime/sim.md).
-    let (sim_mode, upload) = match sim {
-        Some((sim, upload)) => (Some(sim), upload),
-        None => (sim_glue::from_env()?, None),
-    };
     // The disc's map hashes, shared by the package resolver and the Live
     // map gate's bases (docs/game/maps.md §5): each disc map is read at most
     // once a session, or not at all when the stamp under <data>/maps/cache
@@ -977,21 +987,34 @@ fn run_configured(
     };
     // Features declare their hooks here; the plan is built and installed
     // once, below, after the last of them (docs/engine/feature-engine.md).
-    let mut features =
-        feature::Registry::new(feature::Switches::from_env().map_err(anyhow::Error::msg)?);
+    let audit = host_audit::Audit::from_env(|| match tier {
+        tier::Tier::Clang => build_stamp(xbe_bytes),
+        tier::Tier::Fast => tier::fast_stamp(xbe_bytes),
+    }, host_light);
+    anyhow::ensure!(
+        audit.is_none() || host_audit::module_from_env().is_none(),
+        "host audit requires a full generated module"
+    );
+    anyhow::ensure!(
+        audit.is_none() || !switches.feature("render-census", false),
+        "host audit and render-census both use the guest access trap"
+    );
+    let mut features = feature::Registry::new(switches);
     // Our text on the cannot-connect dialog when Live is off or its server
     // is unreachable (docs/live/live.md, "Client HLE: Live not set up").
     live_notice::install(&loaded.runtime, live).context("installing the Live notice")?;
     std::fs::create_dir_all(&opts.data_root)?;
     let mut cfg = vfs::Config::new(&opts.data_root, x.certificate.title_id);
     cfg.mmap_disc = host_light;
+    if host_light {
+        cfg.server_maps = std::env::var_os("H2_SERVER_MAP_DIR")
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from);
+    }
     // Converted Halo 1 maps follow the sandbox chosen per game (h1_variants).
     cfg.variants = h1_variants::mp_variants();
     cfg.content_maps = new_maps::mounted_packages();
     let uploading_sim = upload.is_some();
-    if sim_mode.is_some() && host.gfx.is_some() {
-        anyhow::bail!("{}: sim mode is headless; this host has a window", sim::ENV);
-    }
     if opts.xapi && host.input.is_none() {
         if sim_mode.is_some() {
             // No keyboard pad: all four ports are the bots'.
@@ -1301,6 +1324,7 @@ fn run_configured(
             }
             None => d3d_glue::install_with(&loaded.runtime, b)?,
         }),
+        (true, None) if host_light => Some(d3d_glue::install_light(&loaded.runtime)?),
         (true, None) => Some(d3d_glue::install_headless(&loaded.runtime, interp)?),
     };
     // Vblanks on the 60 Hz logical clock (docs/graphics/d3d.md "Vertical blank"),
@@ -1318,10 +1342,7 @@ fn run_configured(
         d3d_glue::install_back_surfaces(&loaded.runtime)?;
     }
     let pad = host.pad_speaker.take();
-    // Use the same audio path in a deterministic sim A/B without the LAN
-    // lobby, the map mount changes, or a rendered control.
-    let clock_only_audio = host_light
-        || (sim_mode.is_some() && features.switches().feature("audio.clock-only", false));
+    let clock_only_audio = host_light;
     let ds = if opts.dsound && clock_only_audio {
         Some(dsound_glue::install_clock_only(&loaded.runtime, &k, xbe_bytes)?)
     } else {
@@ -1471,8 +1492,10 @@ fn run_configured(
         );
     }
     if host_light {
-        let frame = feature::sim_frame::SimFrame::new(0)
-            .on_skip(d3d_diag::note_skipped_present);
+        let frame = match &sim_mode {
+            Some(sim) => sim.frame().clone(),
+            None => feature::sim_frame::SimFrame::new(0).on_skip(d3d_diag::note_skipped_present),
+        };
         anyhow::ensure!(
             features.add(&frame).map_err(anyhow::Error::msg)?,
             "light host requires sim-frame (H2_FEATURES)"
@@ -1481,7 +1504,14 @@ fn run_configured(
     if let Some(a) = &agent {
         host_metrics::install(&mut features, &a.agent, host_light)?;
     }
-    // Sim mode's render skip and metrics, and match.* on the agent.
+    if let Some(audit) = &audit {
+        anyhow::ensure!(features.add(audit).map_err(anyhow::Error::msg)?,
+            "H2_HOST_AUDIT needs the host-audit feature");
+        if let Some(a) = &agent {
+            audit.add_method(&a.agent, Arc::clone(&loaded.runtime));
+        }
+    }
+    // Sim match metrics and match.* on the agent.
     if let Some(s) = &sim_mode {
         s.install(&mut features)?;
         if let Some(a) = &agent {
@@ -1500,6 +1530,12 @@ fn run_configured(
     let installed = plan
         .install(&loaded.runtime)
         .context("installing the feature plan")?;
+    if let Some(audit) = &audit {
+        if let Some(why) = installed.off_reason("host-audit") {
+            anyhow::bail!("host audit needs its feature hooks: {why}");
+        }
+        audit.installed(&installed);
+    }
     if host_light && let Some(why) = installed.off_reason(feature::sim_frame::ID) {
         anyhow::bail!("light host needs sim-frame: {why}");
     }
@@ -1557,8 +1593,7 @@ fn run_configured(
     } else {
         Some(trace::install_bounded(
             &loaded.runtime,
-            // Sim mode writes no kernel trace file (docs/runtime/sim.md §2).
-            if sim_mode.is_some() { None } else { opts.trace.as_deref() },
+            opts.trace.as_deref(),
             host.trace_limit.unwrap_or(usize::MAX),
         )?)
     };
@@ -1571,15 +1606,15 @@ fn run_configured(
     )
     .context("creating the entry thread")?;
     m.max_transfers_per_slice = opts.transfers_per_slice;
-    // H2_BOOT_REALTIME: hold the host back to real time (wall pacing); the
-    // schedule is unchanged.
-    if host_light || std::env::var_os("H2_BOOT_REALTIME").is_some() {
-        m.pacer = Some(kernel::pacer::Pacer::real_time());
-    }
-    // Sim mode: the match's pace (unpaced by default).
-    if let Some(s) = &sim_mode {
-        m.pacer = s.pacer();
-    }
+    // Shared profile. Training can run unpaced while a LAN host sleeps
+    // on the normal logical deadlines.
+    m.pacer = if let Some(sim) = &sim_mode {
+        sim.pacer()
+    } else if host_light || std::env::var_os("H2_BOOT_REALTIME").is_some() {
+        Some(kernel::pacer::Pacer::real_time())
+    } else {
+        None
+    };
     eprintln!("entry {:#010x}, running", loaded.cpu.eip);
     let t = Instant::now();
     // One slice at a time so XAPI's input pump runs between slices
@@ -1788,6 +1823,9 @@ fn run_configured(
             host_stop = true;
             break;
         }
+    }
+    if let Some(audit) = &audit {
+        audit.finish(&loaded.runtime)?;
     }
     let sim_upload_result = match &sim_mode {
         Some(s) => match s.finish() {

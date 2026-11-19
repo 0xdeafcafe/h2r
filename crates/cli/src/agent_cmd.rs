@@ -62,6 +62,7 @@ or a short form:
   sample-status          profile.sample.status
   hostperf               host.perf: the newest host perf line
   hostmetrics            host.metrics: tick cost, CPU and RSS
+  hostaudit              host.audit: coverage and attribution so far
   ui                     ui.screen: the menu screen player one's input goes to (H2_UI_WATCH=1)
   frame [draws] [max N] [constants R[..S][,...]] [snap N[,M...]]
                          render.frame: record the next whole frame and
@@ -551,6 +552,7 @@ fn parse_call(words: &[String]) -> Result<(String, Value)> {
         "sample-status" => Some(method::SAMPLE_STATUS),
         "hostperf" => Some(method::HOST_PERF),
         "hostmetrics" => Some(method::HOST_METRICS),
+        "hostaudit" => Some(method::HOST_AUDIT),
         "render" => Some(method::RENDER_STATS),
         "ui" => Some(method::UI_SCREEN),
         _ => None,

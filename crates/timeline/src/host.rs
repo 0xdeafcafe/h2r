@@ -76,9 +76,21 @@ impl Gauge {
     #[inline]
     pub fn record(&self, ns: u64) {
         if enabled() {
-            self.n.fetch_add(1, Ordering::Relaxed);
-            self.sum_ns.fetch_add(ns, Ordering::Relaxed);
-            self.max_ns.fetch_max(ns, Ordering::Relaxed);
+            self.record_enabled(ns);
+        }
+    }
+
+    fn record_enabled(&self, ns: u64) {
+        self.n.fetch_add(1, Ordering::Relaxed);
+        self.sum_ns.fetch_add(ns, Ordering::Relaxed);
+        self.max_ns.fetch_max(ns, Ordering::Relaxed);
+    }
+
+    fn reading(&self) -> Taken {
+        Taken {
+            n: self.n.load(Ordering::Relaxed),
+            sum_ns: self.sum_ns.load(Ordering::Relaxed),
+            max_ns: self.max_ns.load(Ordering::Relaxed),
         }
     }
 
@@ -107,6 +119,61 @@ impl Gauge {
 impl Default for Gauge {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+static SUBSYSTEM_AUDIT: AtomicBool = AtomicBool::new(false);
+
+/// Opt in independently of the frame-based host perf line.
+pub fn set_subsystem_audit(enabled: bool) {
+    SUBSYSTEM_AUDIT.store(enabled, Ordering::Relaxed);
+}
+
+#[derive(Clone, Copy)]
+pub enum Subsystem {
+    Bots,
+    Telemetry,
+    TelemetryWorker,
+}
+
+impl Subsystem {
+    fn gauge(self) -> &'static Gauge {
+        static BOTS: Gauge = Gauge::new();
+        static TELEMETRY: Gauge = Gauge::new();
+        static TELEMETRY_WORKER: Gauge = Gauge::new();
+        match self {
+            Self::Bots => &BOTS,
+            Self::Telemetry => &TELEMETRY,
+            Self::TelemetryWorker => &TELEMETRY_WORKER,
+        }
+    }
+
+    pub fn span(self) -> SubsystemSpan {
+        let start = if SUBSYSTEM_AUDIT.load(Ordering::Relaxed) {
+            thread_cpu_ns()
+        } else {
+            None
+        };
+        SubsystemSpan { subsystem: self, start }
+    }
+
+    pub fn reading(self) -> Taken {
+        self.gauge().reading()
+    }
+}
+
+pub struct SubsystemSpan {
+    subsystem: Subsystem,
+    start: Option<u64>,
+}
+
+impl Drop for SubsystemSpan {
+    fn drop(&mut self) {
+        if let Some(start) = self.start
+            && let Some(end) = thread_cpu_ns()
+        {
+            self.subsystem.gauge().record_enabled(end.saturating_sub(start));
+        }
     }
 }
 

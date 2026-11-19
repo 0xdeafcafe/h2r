@@ -812,6 +812,7 @@ impl feature::Feature for Bots {
             &points::RENDER_FRAME,
             "bot pads; hide bot views",
             move |c| {
+                let _cpu = timeline::host::Subsystem::Bots.span();
                 let bots = local.port_mask();
                 let any_phantoms = !phantoms.is_empty();
                 let f = frame.fetch_add(1, Ordering::Relaxed);

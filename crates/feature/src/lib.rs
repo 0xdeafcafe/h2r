@@ -118,6 +118,7 @@ pub enum Flow {
 /// runtime, for guest memory and the clock. Observers must not write guest
 /// memory (by convention: the guard is mutable).
 pub struct Obs<'a> {
+    pub thread_id: u32,
     pub cpu: &'a CpuAbi,
     pub runtime: &'a Arc<Runtime>,
     /// The address the chain is installed at.

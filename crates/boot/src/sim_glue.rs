@@ -130,6 +130,13 @@ impl Inner {
 #[derive(Clone)]
 pub struct Sim(Arc<Inner>);
 
+/// Whether sim uses the shared light profile. Off supplies a full headless
+/// control and supports the old machine-snapshot workflow.
+pub fn use_light_host() -> Result<bool> {
+    let switches = feature::Switches::from_env().map_err(anyhow::Error::msg)?;
+    Ok(switches.feature("host-light", true))
+}
+
 /// The match file `H2_SIM` names, read and checked; `None` when unset.
 /// `H2_BOOT_GFX` is refused: sim mode has no GPU.
 pub fn from_env() -> Result<Option<Sim>> {
@@ -436,11 +443,13 @@ impl Sim {
         Some(p)
     }
 
-    /// The render skip and the metrics, into the plan.
+    /// The frame skip shared with a dedicated host. The report reads its counters.
+    pub(crate) fn frame(&self) -> &SimFrame {
+        &self.0.frame
+    }
+
+    /// Match-specific hooks. Boot installs the light profile separately.
     pub fn install(&self, features: &mut feature::Registry) -> Result<()> {
-        features
-            .add(&self.0.frame)
-            .map_err(|e| anyhow::anyhow!("sim frame: {e}"))?;
         features
             .add(&SimMetrics(Arc::clone(&self.0)))
             .map_err(|e| anyhow::anyhow!("sim metrics: {e}"))?;

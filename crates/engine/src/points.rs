@@ -228,6 +228,24 @@ points! { ALL;
     /// Game activation after the scenario's cache is loaded: options in EAX,
     /// AL 1 once the map and its first BSP are in.
     GAME_ACTIVATE @ 0x0018_f000: [fn(options: eax) -> al ret 0]; "docs/runtime/level-boot.md";
+    CACHE_TAGS_LOAD @ 0x0012_28f0: [opaque], Optional; "docs/engine/engine-map.md";
+    CACHE_BSP_FIXUP @ 0x0012_2b40: [opaque], Optional; "docs/engine/engine-map.md";
+    TAG_LOOKUP @ 0x0012_2c10: [opaque], Optional; "docs/engine/tag_get_checked.md";
+    OBJECTS_PRE_PHYSICS @ 0x000b_6f10: [opaque], Optional; "docs/engine/engine-map.md";
+    WORLD_PHYSICS @ 0x001c_3d30: [opaque], Optional; "docs/engine/engine-map.md";
+    OBJECTS_POST_PHYSICS @ 0x000b_7060: [opaque], Optional; "docs/engine/engine-map.md";
+    OBJECTS_FINALIZE @ 0x000b_7150: [opaque], Optional; "docs/engine/engine-map.md";
+    AI_UPDATE @ 0x001c_83c0: [opaque], Optional; "docs/engine/engine-map.md";
+    SCRIPT_UPDATE @ 0x0020_9310: [opaque], Optional; "docs/engine/engine-map.md";
+    EFFECT_PART_CREATE @ 0x0017_a8a0: [opaque], Optional; "docs/engine/engine-map.md";
+    PARTICLE_SYSTEM_UPDATE @ 0x0024_7140: [opaque], Optional; "docs/engine/engine-map.md";
+    CAMERA_DIRECTOR @ 0x0015_54b0: [opaque], Optional; "docs/engine/engine-map.md";
+    CAMERA_OBSERVER @ 0x0016_f280: [opaque], Optional; "docs/engine/engine-map.md";
+    CAMERA_FIRST_PERSON @ 0x0023_c110: [opaque], Optional; "docs/engine/engine-map.md";
+    UI_UPDATE @ 0x0014_79c3: [opaque], Optional; "docs/engine/engine-map.md";
+    UI_RENDER_LAYERS @ 0x0014_7af1: [opaque], Optional; "docs/engine/engine-map.md";
+    NETWORK_PRE_UPDATE @ 0x0008_df50: [opaque], Optional; "docs/engine/engine-map.md";
+    NETWORK_POST_UPDATE @ 0x0008_dfc0: [opaque], Optional; "docs/engine/engine-map.md";
     /// The game-end path; the end latch is game globals `+0x1128`.
     GAME_END @ 0x0013_89c0: [opaque]; "docs/live/live-gamestate.md";
     /// A player was killed: `(attacker player, victim player, flag, packed

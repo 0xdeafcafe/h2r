@@ -519,22 +519,89 @@ Stepping is the existing `session.pause` and `session.step N`.
 
 ## 10. Expected speed-up
 
-From the Old Mombasa split above (a campaign level, heavier than a 4-bot
-multiplayer map): the tick and the per-frame work are 6.2 to 7.8 ms of a
-28 to 34 ms headless frame. Skipping the render front-end and the D3D
-layer under it, and the trace file, leaves about 8 to 10 ms a frame with
-audio and the scheduler, so **about 3.5x a headless run, and about 3.5x to
-4x real time** on Old Mombasa. A multiplayer map with four bots has no AI
-actors and less to simulate (**S**: about 3 to 5 ms a tick), which would
-be **6x to 10x real time per process**. Parallel processes multiply that
-by the cores used, less memory bandwidth: each process is about 1 GB
-(64 MB of guest RAM, the module, the map caches).
+Clanker Training uses the [dedicated light profile](../live/dedicated-host.md#light-host).
+The default skips steady-state world draws, uses descriptor-only texture
+handles in the D3D shim, runs the audio clock without mixing, and maps the
+disc read-only. Verified server-map copies are picked up from
+`H2_SERVER_MAP_DIR`. Distributed System Link seats and packed telemetry
+use their ordinary paths. Sim uses the match's pace, with unpaced as the
+default. Dedicated serve waits for real-time deadlines.
 
-What limits it, in order: the guest code of the tick itself (generated C,
-x87 and SSE helpers, guest memory accessors; docs/perf/), then the
-logical mixer, then the bots' own thinking (perception, nav, per bot per
-frame). The first number to look at after a run is the report's
-`wall.speedup`.
+The prior two-bot run took about 11.9 ms/tick. Its entire kernel, XAPI and
+DirectSound bucket was 1.5–2.1 ms/tick, so removing the mixer alone could
+only save part of that bucket. Allow **10–12 ms/tick and 1 GiB RSS per
+process** as a starting point for a comparable unaudited workload.
+Guest RAM accounts for 64 MiB. Keep the module and immutable maps shared
+across processes. The guest tick, replication, telemetry and bot
+thinking remain, and the distributed configuration needs a fresh
+measurement. For 5,000 games at 1,800 ticks, that range is about 25–30
+core-hours of tick work before loading and match setup. Use the smaller
+of available effective cores and available memory divided by measured
+incremental RAM. With eight effective cores and 12 GiB available, start
+sizing from at most eight workers before allowing for headroom. Use
+`wall.speedup` from an ordinary batch and `host.metrics` for RSS and CPU.
+
+## Host audit corpus
+
+Build the full clang image with the usual optimization setting. Prepare
+bot navigation data and install the owned Map Packs in `H2_DATA`. Set
+`H2_DISC`, `H2_IMAGE` and `H2_DATA` to absolute paths. Run the matrix
+with the original caches so it can report all observed guest reads.
+
+```sh
+env -u H2_HOST_MODULE -u H2_SERVER_MAP_DIR H2_OPT=2 h2 sim batch docs/runtime/sim-examples/light-host-corpus.toml --disc "$H2_DISC" --out "$H2_IMAGE" --tier clang --data "$H2_DATA" --parallel 4 --pace unpaced
+```
+
+The matrix plans 483 matches across 23 Xbox multiplayer maps, seven game
+types, and three seeds with four legendary distributed bots. Missing
+assets, unsupported Map Packs and incomplete matches are reported in
+`docs/runtime/sim-examples/results/light-host-corpus/audit-missing.json`.
+Add deployed mod maps and targeted matches for equipment the bots miss.
+The report records the weapon fired, the weapon/vehicle/equipment tag
+inventory, player vehicle occupancy, and observed powerup pickup. A
+vehicle seat observation does not establish that a bot drove the vehicle
+or used its weapon. A map and game-type matrix alone cannot cover every
+weapon, vehicle, powerup, objective or lobby transition.
+
+Find the per-run `audit.json` under `runs/<id>/` and the merged
+`audit.json` beside `audit-missing.json`. The batch also writes
+`audit-equipment-gaps.json` with indexed datums lacking an observed use. Reports from the same image,
+profile and registry union their guest owners, entry/resume selectors,
+tag lookup requests and byte ranges. Combine additional matches with
+`h2 sim audit-merge OUTPUT INPUT [INPUT ...]`. Tag spans are relative to each datum and
+are traced at 64-byte line granularity after load or BSP fixation.
+The watch observes checked guest reads, including observer reads, and
+can miss early loading reads, raw physical access and out-of-line data.
+Unidentified tag epochs and missing hooks are recorded.
+
+CPU totals are inclusive across the object, physics, AI, effects,
+particles, sound, camera, first-person, HUD/UI and network functions
+with mapped hooks. Bot and telemetry times come from their Rust entry
+points. The telemetry worker has a separate bucket for consumed samples.
+Divide each total by report ticks for an inclusive per-tick
+attribution. Nested buckets overlap, and totals include lobby and load
+work where the hook runs. Auditing bypasses generated native direct
+calls to count visible entries. Inlined blocks with no selector cannot
+be counted separately. Use an unaudited batch for throughput.
+
+The experimental `H2_HOST_MODULE` build option accepts a complete
+`audit.json` from the matching full clang image. Use a separate output
+directory and keep that same report path set when launching it.
+
+```sh
+H2_OPT=2 H2_HOST_MODULE="$H2_AUDIT_REPORT" h2 build "$H2_DISC" --out "$H2_SMALL_IMAGE" --tier clang
+```
+
+Cold bodies keep their registry and selectors and stop the guest with a
+logged address on first entry. Re-run that case with the full light
+image, add it to the corpus and rebuild. An audit with missing runs or
+hooks cannot build the small module. The full image remains the default.
+Compare a candidate against the full light image with the existing
+`H2_LOCKSTEP`/`h2 lockstep` check before relying on any prune. Same-profile
+repeatability needs to pass first. Cross-profile equality is still open
+because the render reads and advances shared state and the hash includes
+guest buffers. The light tick keeps guest cosmetic updates and all tag
+headers and blocks while those dependencies are being traced.
 
 ## What needs a run
 
@@ -600,7 +667,7 @@ h2 sim batch docs/runtime/sim-examples/batch.toml --dry-run
 H2_OPT=2 h2 sim batch docs/runtime/sim-examples/batch.toml --disc disc/halo2.iso --parallel 3
 
 # 5. The same batch forked from spawn snapshots (falls back per run).
-H2_OPT=2 h2 sim batch docs/runtime/sim-examples/batch.toml --disc disc/halo2.iso --parallel 3 --fork
+H2_FEATURES=-host-light H2_OPT=2 h2 sim batch docs/runtime/sim-examples/batch.toml --disc disc/halo2.iso --parallel 3 --fork
 h2 sim compare docs/runtime/sim-examples/results/aggressive-vs-base
 ```
 
@@ -609,8 +676,8 @@ Notes for the runs:
 - `h2 sim` never builds: it stops with `h2 build` when the image is not
   current for this `h2` (as `h2 serve` does).
 - Each batch run has its own data directory (`<out>/runs/<id>/data`, its
-  `bots/` linked to `--data`'s), so a map from a map pack installed only in
-  the shared data directory is not there; disc maps are.
+  `bots/` linked to `--data`'s). For supported Map Pack runs the batch
+  stages the selected offer from the shared data directory.
 - The match's pace replaces `H2_BOOT_REALTIME` (unpaced unless the match
   says otherwise).
 

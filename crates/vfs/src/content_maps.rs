@@ -4,7 +4,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     fs::File,
     io::{self, Read, Seek, SeekFrom},
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
@@ -117,6 +117,7 @@ enum Reader {
         overlay: Overlay,
     },
     File(FileSource, HostFile),
+    Mapped(memmap2::Mmap, HostFile),
 }
 
 pub(crate) struct Served {
@@ -127,7 +128,7 @@ pub(crate) struct Served {
 }
 
 impl Served {
-    fn new(library: &Library, map: ContentMap) -> Result<Self> {
+    fn new(library: &Library, map: ContentMap, server_maps: Option<&Path>) -> Result<Self> {
         let mut base = map.base.as_ref().map(Region::open).transpose()?;
         let mut empty: &[u8] = &[];
         let source: &mut dyn Source = match &mut base {
@@ -176,6 +177,26 @@ impl Served {
             len,
             alias,
         };
+        if let Some(dir) = server_maps {
+            let path = dir.join(format!("{}.map", served.id()));
+            if let Ok(mut file) = File::open(&path) {
+                // Compare the source before apply_alias edits the name.
+                let mut header = [0; 0x800];
+                let n = served.read_source(0, &mut header)?;
+                let size = file.metadata()?.len();
+                if n == header.len()
+                    && crate::map_override::matching_server_copy(&mut file, size, len, &header)
+                {
+                    if let Some(mapping) = crate::disc::map_read_only(&file) {
+                        served.reader = Reader::Mapped(mapping, HostFile { path, offset: 0, len });
+                    } else {
+                        served.reader = Reader::File(FileSource::new(file)?, HostFile { path, offset: 0, len });
+                    }
+                } else {
+                    eprintln!("map packages: {}: server copy header or length differs", path.display());
+                }
+            }
+        }
         let mut magic = [0; 4];
         if served.alias.is_some()
             && (len < 0x800 || served.read_at(0, &mut magic)? != 4 || &magic != b"daeh")
@@ -191,16 +212,27 @@ impl Served {
 
     pub(crate) fn host_file(&self) -> Option<HostFile> {
         match (&self.reader, self.alias) {
-            (Reader::File(_, file), None) => Some(file.clone()),
+            (Reader::File(_, file) | Reader::Mapped(_, file), None) => Some(file.clone()),
             _ => None,
         }
     }
 
+    fn read_source(&mut self, offset: u64, buf: &mut [u8]) -> Result<usize> {
+        match &mut self.reader {
+            Reader::File(file, _) => Ok(file.read_at(offset, buf)?),
+            Reader::Overlay { base, overlay } => Ok(overlay.read_at(&mut **base, offset, buf)?),
+            Reader::Mapped(map, _) => {
+                let n = self.len.saturating_sub(offset).min(buf.len() as u64) as usize;
+                if n > 0 {
+                    crate::disc::copy_mapped(map, offset, &mut buf[..n])?;
+                }
+                Ok(n)
+            }
+        }
+    }
+
     pub(crate) fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> Result<usize> {
-        let n = match &mut self.reader {
-            Reader::File(file, _) => file.read_at(offset, buf)?,
-            Reader::Overlay { base, overlay } => overlay.read_at(&mut **base, offset, buf)?,
-        };
+        let n = self.read_source(offset, buf)?;
         // The game's checksum covers the body from 0x800 onward.
         if let Some(alias) = &self.alias {
             let start = offset.max(0x198);
@@ -219,16 +251,18 @@ impl Served {
 pub(crate) struct ContentFiles {
     maps: ContentMaps,
     library: Library,
+    server_maps: Option<PathBuf>,
     files: HashMap<String, Served>,
     open: HashMap<String, usize>,
     removed: std::collections::HashSet<String>,
 }
 
 impl ContentFiles {
-    pub(crate) fn new(maps: ContentMaps, root: &Path) -> Self {
+    pub(crate) fn new(maps: ContentMaps, root: &Path, server_maps: Option<PathBuf>) -> Self {
         Self {
             maps,
             library: Library::open(root),
+            server_maps,
             files: HashMap::new(),
             open: HashMap::new(),
             removed: Default::default(),
@@ -258,7 +292,7 @@ impl ContentFiles {
                 .is_none_or(|file| !file.map.same_source(&map))
             {
                 self.files
-                    .insert(key.clone(), Served::new(&self.library, map)?);
+                    .insert(key.clone(), Served::new(&self.library, map, self.server_maps.as_deref())?);
             }
         }
         self.files.get_mut(&key).ok_or(Error::ObjectNameNotFound)

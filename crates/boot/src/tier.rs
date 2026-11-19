@@ -96,7 +96,9 @@ fn fast_stamp_with(xbe_bytes: &[u8], passes: &str, opt: &str) -> String {
 
 /// Whether `dylib` exists and its stamp is the fast tier's for this image.
 pub fn fast_current(xbe_bytes: &[u8], dylib: &Path) -> bool {
-    dylib.exists() && std::fs::read_to_string(crate::stamp_path(dylib)).is_ok_and(|s| s == fast_stamp(xbe_bytes))
+    crate::host_audit::module_from_env().is_none()
+        && dylib.exists()
+        && std::fs::read_to_string(crate::stamp_path(dylib)).is_ok_and(|s| s == fast_stamp(xbe_bytes))
 }
 
 /// Whether `dylib` is a current module of either tier, and which.
@@ -180,6 +182,8 @@ pub fn prepare(xbe_bytes: &[u8], disc: &Path, out: &Path, choice: Choice, jobs: 
 /// Lift the image and compile it with the Cranelift fast tier into
 /// `out/fast/libh2game.dylib`, stamped with [`fast_stamp`].
 pub fn build_fast(xbe_bytes: &[u8], out: &Path, jobs: usize) -> Result<PathBuf> {
+    anyhow::ensure!(crate::host_audit::module_from_env().is_none(),
+        "H2_HOST_MODULE requires the clang tier");
     let total = Instant::now();
     if emit::compile::Arch::target().map_err(anyhow::Error::msg)? != emit::compile::Arch::host() {
         bail!("the fast tier builds for this host only; unset H2_EMIT_TARGET");

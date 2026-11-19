@@ -133,11 +133,36 @@ struct Served {
     len: u64,
 }
 
+struct ServerPack {
+    mapping: memmap2::Mmap,
+    file: HostFile,
+}
+
+fn map_pack_name(path: &str) -> Option<&str> {
+    let mut components = path.split('\\');
+    let (root, title, content_dir, offer, name) = (
+        components.next()?, components.next()?, components.next()?,
+        components.next()?, components.next()?,
+    );
+    if !root.eq_ignore_ascii_case("TDATA")
+        || content_dir != crate::CONTENT_DIR
+        || components.next().is_some()
+        || !content::map_pack::is_offer(u32::from_str_radix(title, 16).ok()?, u64::from_str_radix(offer, 16).ok()?)
+    {
+        return None;
+    }
+    let (stem, ext) = name.rsplit_once('.')?;
+    (ext.eq_ignore_ascii_case("map") && content::map_pack::is_map(&stem.to_ascii_lowercase()))
+        .then_some(name)
+}
+
 /// [`ContentVariants`] over `inner` (the data partition's host backend).
 pub struct VariantFiles<B> {
     inner: B,
     variants: ContentVariants,
     packages: Option<ContentFiles>,
+    server_dir: Option<PathBuf>,
+    server_packs: BTreeMap<String, Option<ServerPack>>,
     /// Per lower-case path: handles open, and the variant they read.
     open: BTreeMap<String, (usize, bool)>,
     /// The variant each path was last opened with.
@@ -152,6 +177,8 @@ impl<B: Backend> VariantFiles<B> {
             inner,
             variants,
             packages: None,
+            server_dir: None,
+            server_packs: BTreeMap::new(),
             open: BTreeMap::new(),
             last_opened: BTreeMap::new(),
             files: BTreeMap::new(),
@@ -162,13 +189,43 @@ impl<B: Backend> VariantFiles<B> {
         mut self,
         maps: crate::ContentMaps,
         root: &std::path::Path,
+        server_maps: Option<std::path::PathBuf>,
     ) -> Self {
-        self.packages = Some(ContentFiles::new(maps, root));
+        self.server_dir = server_maps.clone();
+        self.packages = Some(ContentFiles::new(maps, root, server_maps));
         self
     }
 
     fn package(&mut self, path: &str) -> Option<&mut ContentFiles> {
         self.packages.as_mut().filter(|maps| maps.contains(path))
+    }
+
+    fn server_pack(&mut self, path: &str) -> Option<&ServerPack> {
+        let dir = self.server_dir.as_ref()?;
+        let name = map_pack_name(path)?;
+        let key = path.to_ascii_lowercase();
+        if !self.server_packs.contains_key(&key) {
+            let selected = (|| {
+                let source = dir.join(name.to_ascii_lowercase());
+                let mut file = File::open(&source).ok()?;
+                let size = file.metadata().ok()?.len();
+                let original = self.inner.stat(path).ok()?;
+                let mut header = [0; 0x800];
+                let n = self.inner.read_at(path, 0, &mut header).ok()?;
+                if n != header.len() || !crate::map_override::matching_server_copy(
+                    &mut file, size, original.end_of_file, &header,
+                ) {
+                    eprintln!("map pack: {}: server copy header or length differs", source.display());
+                    return None;
+                }
+                Some(ServerPack {
+                    mapping: crate::disc::map_read_only(&file)?,
+                    file: HostFile { path: source, offset: 0, len: size },
+                })
+            })();
+            self.server_packs.insert(key.clone(), selected);
+        }
+        self.server_packs.get(&key)?.as_ref()
     }
 
     fn refuse_package(&mut self, path: &str) -> Result<()> {
@@ -267,6 +324,13 @@ impl<B: Backend> Backend for VariantFiles<B> {
         {
             return p.served(path)?.read_at(offset, buffer);
         }
+        if let Some(pack) = self.server_pack(path) {
+            let len = pack.file.len.saturating_sub(offset).min(buffer.len() as u64) as usize;
+            if len > 0 {
+                crate::disc::copy_mapped(&pack.mapping, offset, &mut buffer[..len])?;
+            }
+            return Ok(len);
+        }
         let Some(served) = self.served(path) else {
             return self.inner.read_at(path, offset, buffer);
         };
@@ -289,7 +353,8 @@ impl<B: Backend> Backend for VariantFiles<B> {
         let Some((_, halo1, pair)) = self.variant(path) else {
             return match self.package(path) {
                 Some(p) => p.served(path).ok()?.host_file(),
-                None => self.inner.host_file(path),
+                None => self.server_pack(path).map(|pack| pack.file.clone())
+                    .or_else(|| self.inner.host_file(path)),
             };
         };
         let len = self.served(path)?.ok()?.len;
