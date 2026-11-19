@@ -735,17 +735,22 @@ pub(crate) mod tests {
         use gfx::state::{CompareFunc, CullMode, RenderStateType as R};
         let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
         let slot = |t: R| (0..=255u8).find(|&s| R::from_guest_index(&table, u32::from(s)) == Some(t)).unwrap();
-        let with = |states: &[(R, u32)]| {
+        // The states every opaque pass sets (`pass_state` refuses one
+        // without ALPHABLENDENABLE or ZWRITEENABLE), then `extra`.
+        let with = |extra: &[(R, u32)]| {
             let mut imp = lit();
-            imp.render_states =
-                states.iter().map(|&(t, value)| tags::shader::RenderStateValue { state: slot(t), value }).collect();
+            imp.render_states = [(R::ColorWriteEnable, 0x0101_0101), (R::AlphaBlendEnable, 0), (R::ZWriteEnable, 1)]
+                .iter()
+                .chain(extra)
+                .map(|&(t, value)| tags::shader::RenderStateValue { state: slot(t), value })
+                .collect();
             imp
         };
         let fetch = [shaders::vsh::InputFetch::Float; 16];
         // The rebar's shape: depth equal, no writes, CULLMODE unset.
         let equal = with(&[(R::ZFunc, CompareFunc::Equal.xbox_value()), (R::ZWriteEnable, 0)]);
         assert!(!sets_cull(&equal));
-        let p = object_pass(map::TagId(0xe000_0001), &equal, &rigid_program(), WORLD, fetch, true).unwrap();
+        let p = object_pass(map::TagId(0xe000_0001), &equal, &rigid_program(), WORLD, fetch, true).unwrap_or_else(|e| panic!("{e}"));
         assert!(p.program.inherits_cull, "CULLMODE unset: the device's at the pass");
         assert_eq!(p.program.state.unwrap().primitive.cull_mode, None, "its own state culls nothing");
         // Drawn as `LitObjects` draws it: the device's cull and winding.
@@ -756,7 +761,7 @@ pub(crate) mod tests {
         // One that sets it keeps its own.
         let own = with(&[(R::CullMode, CullMode::Cw.xbox_value())]);
         assert!(sets_cull(&own));
-        let p = object_pass(map::TagId(0xe000_0001), &own, &rigid_program(), WORLD, fetch, true).unwrap();
+        let p = object_pass(map::TagId(0xe000_0001), &own, &rigid_program(), WORLD, fetch, true).unwrap_or_else(|e| panic!("{e}"));
         assert!(!p.program.inherits_cull);
         assert!(p.program.state.unwrap().primitive.cull_mode.is_some());
     }
