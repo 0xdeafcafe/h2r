@@ -1,4 +1,5 @@
 use h1ai::conversations::{Conversation, Line, Participant, SpeakerScopes};
+use hs::h1_conversation::{BUILTINS, Op};
 
 use super::*;
 use crate::compile::{Cutscenes, compile_with_conversations};
@@ -62,15 +63,19 @@ fn conversation_calls_reference_the_generated_worker_and_state() {
         ("sleep_until", 21, VOID, &[], true),
         ("not", 26, BOOL, &[BOOL], false),
         ("object_get_health", 69, REAL, &[H2_OBJECT], false),
+        (BUILTINS[0].0, BUILTINS[0].1, VOID, &[LONG; 4], false),
+        ("cs_stack_command_script", 367, VOID, &[19, 21], false),
+        ("cs_command_script_running", 370, BOOL, &[19, 21], false),
+        ("cs_command_script_queued", 371, BOOL, &[19, 21], false),
+        ("cs_look_object", 394, VOID, &[BOOL, H2_OBJECT], false),
+        ("cs_face_object", 400, VOID, &[BOOL, H2_OBJECT], false),
         (
-            "sound_impulse_start",
-            597,
+            "cs_approach",
+            429,
             VOID,
-            &[H2_SOUND, H2_OBJECT, REAL],
+            &[H2_OBJECT, REAL, REAL, REAL],
             false,
         ),
-        ("sound_impulse_language_time", 602, LONG, &[H2_SOUND], false),
-        ("sound_impulse_stop", 603, VOID, &[H2_SOUND], false),
     ] {
         target.builtins.insert(
             name.into(),
@@ -104,9 +109,9 @@ fn conversation_calls_reference_the_generated_worker_and_state() {
     ];
     let scenes = [Conversation {
         name: "test_scene".into(),
-        flags: 0,
+        flags: 0x20,
         trigger_distance: 0.0,
-        run_to_player_distance: 0.0,
+        run_to_player_distance: 3.0,
         participants: vec![Participant {
             flags: 0,
             selection: 0,
@@ -117,9 +122,9 @@ fn conversation_calls_reference_the_generated_worker_and_state() {
             encounter: None,
         }],
         lines: vec![Line {
-            flags: 8,
+            flags: 0x18,
             speaker: 0,
-            addressee_kind: 0,
+            addressee_kind: 1,
             addressee: -1,
             pause_after: 0.5,
             sounds,
@@ -175,11 +180,52 @@ fn conversation_calls_reference_the_generated_worker_and_state() {
         "use the captured actor with a placement fallback"
     );
     assert_eq!(scnr.scripts().iter().filter(|s| s.kind() == 2).count(), 1);
-    for opcode in [597, 602, 603] {
+    let ops: std::collections::HashSet<_> = scnr
+        .nodes()
+        .iter()
+        .filter(|n| !n.atom() && !n.script_call() && n.opcode() == BUILTINS[0].1)
+        .map(|n| {
+            let head = scnr.node(Datum(n.data())).unwrap();
+            scnr.node(head.next()).unwrap().data()
+        })
+        .collect();
+    for op in [
+        Op::StartSound,
+        Op::PollSound,
+        Op::StopSound,
+        Op::Actor,
+        Op::Focus,
+        Op::Score,
+        Op::RememberVoice,
+        Op::CancelCommand,
+    ] {
+        assert!(ops.contains(&(op as u32)));
+    }
+    let command = |name: &str| {
+        scnr.scripts()
+            .iter()
+            .enumerate()
+            .find(|(_, script)| {
+                script.kind() == 5
+                    && script
+                        .name()
+                        .unwrap()
+                        .starts_with(&format!("__h1cv0_{name}_"))
+            })
+            .unwrap()
+    };
+    for (index, script, expected) in [
+        (command("approach").0, command("approach").1, &[429u16][..]),
+        (command("face").0, command("face").1, &[394u16, 400][..]),
+    ] {
+        let builtins = scnr.reached_builtins([script.root()]).unwrap();
+        for opcode in expected {
+            assert!(builtins.contains(opcode));
+        }
         assert!(
             scnr.nodes()
                 .iter()
-                .any(|n| !n.atom() && !n.script_call() && n.opcode() == opcode)
+                .any(|n| n.atom() && n.opcode() == 21 && n.data() as u16 == index as u16)
         );
     }
     let actor = out.hooks.iter().find(|h| h.token == "actor").unwrap();

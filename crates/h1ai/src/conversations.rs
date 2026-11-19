@@ -28,6 +28,14 @@ impl Conversation {
     pub fn delays_start(&self) -> bool {
         self.flags & 0x40 != 0
     }
+
+    pub fn runs_to_player(&self) -> bool {
+        self.flags & 0x20 != 0 && self.run_to_player_distance > 0.0
+    }
+
+    pub fn requires_player_attention(&self) -> bool {
+        self.flags & 0x80 != 0
+    }
 }
 
 /// One role in the cast. Voice slots index the line's parallel sound array.
@@ -70,7 +78,47 @@ pub struct Line {
     pub sounds: [Option<String>; 6],
 }
 
+/// The object one cast member should turn to during a line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Addressee {
+    Player,
+    Role(usize),
+}
+
 impl Line {
+    pub fn faces(&self, role: usize) -> Option<Addressee> {
+        let speaker = usize::try_from(self.speaker).ok()?;
+        let target = match self.addressee_kind {
+            1 => Some(Addressee::Player),
+            2 => usize::try_from(self.addressee)
+                .ok()
+                .filter(|&i| i != speaker)
+                .map(Addressee::Role),
+            _ => None,
+        };
+        if role == speaker {
+            return target;
+        }
+        if target == Some(Addressee::Role(role)) {
+            return (self.flags & 1 != 0).then_some(Addressee::Role(speaker));
+        }
+        if self.flags & 2 != 0 {
+            Some(Addressee::Role(speaker))
+        } else if self.flags & 4 != 0 {
+            target
+        } else {
+            None
+        }
+    }
+
+    pub fn waits_for_speaker(&self) -> bool {
+        self.flags & 0x10 != 0
+    }
+
+    pub fn waits_for_cast(&self) -> bool {
+        self.flags & 0x20 != 0
+    }
+
     /// Hold at the end of the line until `ai_conversation_advance`.
     pub fn waits_for_advance(&self) -> bool {
         self.flags & 8 != 0
@@ -80,7 +128,18 @@ impl Line {
 /// Converted AI sources for a role with no authored encounter. Whole
 /// encounter groups can be used when every populated squad matches.
 #[derive(Debug, Default)]
-pub struct SpeakerScopes(BTreeMap<u16, Vec<String>>);
+pub struct SpeakerScopes {
+    by_type: BTreeMap<u16, Vec<String>>,
+    pub leaders: Vec<LeaderSquad>,
+}
+
+/// The original unique-leader rule for a converted marine squad.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LeaderSquad {
+    pub squad: u16,
+    pub encounter: u16,
+    pub selection: u16,
+}
 
 impl SpeakerScopes {
     pub fn from_plan(plan: &crate::convert::Plan) -> Self {
@@ -119,11 +178,14 @@ impl SpeakerScopes {
                 }
             }
         }
-        Self(result)
+        Self {
+            by_type: result,
+            leaders: plan.conversation_leaders.clone(),
+        }
     }
 
     pub fn for_actor_type(&self, actor_type: u16) -> &[String] {
-        self.0.get(&actor_type).map_or(&[], Vec::as_slice)
+        self.by_type.get(&actor_type).map_or(&[], Vec::as_slice)
     }
 }
 
@@ -226,6 +288,30 @@ fn decode(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn conversation_line_faces_the_player_or_the_addressed_role() {
+        let mut line = Line {
+            flags: 1 | 4 | 0x20,
+            speaker: 0,
+            addressee_kind: 2,
+            addressee: 1,
+            pause_after: 0.0,
+            sounds: Default::default(),
+        };
+        assert_eq!(line.faces(0), Some(Addressee::Role(1)));
+        assert_eq!(line.faces(1), Some(Addressee::Role(0)));
+        assert_eq!(line.faces(2), Some(Addressee::Role(1)));
+        assert!(line.waits_for_cast());
+        line.flags = 2 | 0x10;
+        assert_eq!(line.faces(1), None);
+        assert_eq!(line.faces(2), Some(Addressee::Role(0)));
+        assert!(line.waits_for_speaker());
+        line.addressee_kind = 1;
+        line.flags = 4;
+        assert_eq!(line.faces(0), Some(Addressee::Player));
+        assert_eq!(line.faces(2), Some(Addressee::Player));
+    }
 
     #[test]
     fn conversation_reads_role_names_and_parallel_voice_slots() {

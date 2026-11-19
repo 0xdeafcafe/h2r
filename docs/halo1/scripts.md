@@ -490,7 +490,8 @@ Halo 1's start evaluator (`0x000f2fb0`) returns whether the request was
 accepted. Its status evaluator reads 0 idle, 1 trying, 2 assembling,
 3 playing, 4 waiting for advance, 5 failed to start, 6 complete and 7
 aborted (`0x00142770` and `0x00142809`). The generated script exposes that
-scale. It reports 2 once a cast is ready and scheduled for the worker.
+scale. It reports 2 once a cast is ready and through any wait for the
+first speaker to assemble.
 The line query starts at -1 while the request is pending, counts lines from
 zero and returns 999 when idle or terminal, as at `0x00142710`.
 Pauses and advance remain asynchronous. A stop followed by a new start
@@ -510,11 +511,12 @@ reset value -1, is preserved.
 
 The synthetic tests check the generated roots, speaker references and sound
 datums. The ignored disc tests check every campaign scene against Halo 2's
-retail catalog and exercise playback, hold, advance and stop/restart on
-the Rust HS scheduler with an in-memory sound clock.
+retail catalog and exercise playback, hold, advance, stop/restart and
+simultaneous voices sharing one tag on the Rust HS scheduler. Boot unit
+tests cover the native call ABI and the cast rules.
 
 ```sh
-cargo test -p h1ai -p h1scripts --lib conversation
+cargo test -p boot -p h1ai -p h1scripts --lib conversation
 H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso \
   cargo test -p h1scripts --test conversations_disc -- --ignored
 ```

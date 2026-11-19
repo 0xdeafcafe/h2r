@@ -17,6 +17,7 @@ mod cast;
 mod catalog;
 mod check;
 mod expression;
+pub mod h1_conversation;
 mod scenario;
 mod source;
 pub mod vm;

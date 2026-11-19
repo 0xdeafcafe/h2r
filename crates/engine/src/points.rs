@@ -222,6 +222,7 @@ macro_rules! globals {
 }
 
 points! { ALL;
+    HS_CONVERSATION_EVALUATE @ 0x002a_b130: [fn(opcode: stack 0) ret 12]; "docs/halo1/ai.md";
     /// `game_tick`: the per-tick phases, then the tick count. Called once per
     /// simulated tick by `game_update_ticks`.
     GAME_TICK @ 0x0013_7fe0: [fn() ret 0]; "docs/engine/engine-map.md";

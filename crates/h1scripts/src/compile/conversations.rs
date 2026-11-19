@@ -1,12 +1,16 @@
-//! Conversations expressed with retail Halo 2 scripts and sound impulses.
+/Users/afr/Source/github.com/0xdeafcafe/h2recomp/.claude/worktrees/h1-push-conversations/crates/h1scripts/src/compile/conversations.rs:
+
+//! Conversations expressed with retail Halo 2 scripts and per-voice playback.
 //! The binder runs synchronously. Only the conversation's worker sleeps.
 
 use super::*;
 use h1ai::conversations::{Conversation, Participant, SpeakerScopes};
+use hs::h1_conversation::{ACTOR_CAPACITY, Op};
 use std::collections::HashSet;
 
 mod emit;
 mod playback;
+mod staging;
 
 use emit::*;
 
@@ -33,18 +37,23 @@ const SCAN_CHUNKS: usize = 4;
 #[derive(Clone)]
 struct Alias {
     unit: Global,
-    voice: Global,
 }
 
 #[derive(Clone)]
 struct Role {
     unit: Global,
     voice: Global,
+    voices: u16,
 }
 
 struct CastScratch {
     actors: Global,
     candidate: Global,
+    rank: Global,
+    voice: Global,
+    profile_base: u32,
+    seed: Option<Script>,
+    best: Global,
     count: Global,
     cursor: Global,
     scope_cursor: Global,
@@ -94,9 +103,47 @@ pub(super) fn build(
             program.add_alias(name)?;
         }
     }
+    let profile_base = program.compiler.out.globals.len() as u32;
+    let has_cast = scenes
+        .iter()
+        .flat_map(|s| &s.participants)
+        .any(|p| !p.radio());
+    if has_cast {
+        for _ in 0..ACTOR_CAPACITY {
+            program.global("voice_history", long(0))?;
+        }
+    }
+    let seed = if !has_cast || scopes.leaders.is_empty() {
+        None
+    } else {
+        let first = program.compiler.out.globals.len() as u32;
+        for leader in &scopes.leaders {
+            // Eight bits of rule, twelve each of encounter and squad.
+            let packed = u32::from(leader.selection) << 24
+                | u32::from(leader.encounter) << 12
+                | u32::from(leader.squad);
+            program.global("leader", long(packed))?;
+        }
+        Some(program.script(
+            "seed_voices",
+            3,
+            bridge(
+                Op::RefreshVoices,
+                [first, scopes.leaders.len() as u32, profile_base],
+            ),
+        )?)
+    };
     let scratch = CastScratch {
         actors: program.global("actors", Expr::None(OBJECT_LIST))?,
         candidate: program.global("candidate", Expr::None(OBJECT))?,
+        rank: program.global("rank", Expr::Real(f32::MIN))?,
+        voice: program.global("candidate_voice", short(-1))?,
+        profile_base,
+        seed,
+        best: {
+            program.global("voice_table", long(profile_base))?;
+            program.global("best", Expr::Real(f32::MIN))?
+        },
         count: program.global("count", short(0))?,
         cursor: program.global("cursor", short(0))?,
         scope_cursor: program.global("scope", short(0))?,
@@ -257,7 +304,6 @@ impl<'c, 's> Program<'c, 's> {
         if !self.aliases.contains_key(&name) {
             let alias = Alias {
                 unit: self.global("alias", Expr::None(OBJECT))?,
-                voice: self.global("voice", short(-1))?,
             };
             self.aliases.insert(name, alias);
         }
@@ -333,6 +379,7 @@ struct Scene<'p, 'c, 's, 'a> {
     status: Global,
     line: Global,
     sound: Global,
+    instance: Global,
     request: Global,
     working: Global,
     advanced: Global,
@@ -350,9 +397,21 @@ impl<'p, 'c, 's, 'a> Scene<'p, 'c, 's, 'a> {
             roles.push(if participant.radio() {
                 None
             } else {
+                let unit = program.global("actor", Expr::None(OBJECT))?;
+                let voice = program.global("profile", short(-1))?;
+                let mut words = participant
+                    .voices
+                    .chunks_exact(2)
+                    .map(|v| long(u32::from(v[0] as u16) | (u32::from(v[1] as u16) << 16)));
+                // Native scoring reads these five consecutive globals for each role.
+                let voices = program.global("voices", words.next().unwrap())?.index;
+                for word in words {
+                    program.global("voices", word)?;
+                }
                 Some(Role {
-                    unit: program.global("actor", Expr::None(OBJECT))?,
-                    voice: program.global("profile", short(-1))?,
+                    unit,
+                    voice,
+                    voices,
                 })
             });
         }
@@ -361,6 +420,7 @@ impl<'p, 'c, 's, 'a> Scene<'p, 'c, 's, 'a> {
             status: program.global("status", short(0))?,
             line: program.global("line", short(NO_LINE))?,
             sound: program.global("sound", Expr::None(SOUND))?,
+            instance: program.global("instance", long(u32::MAX))?,
             request: program.global("request", Expr::Number(h2t::LONG, 0))?,
             working: program.global("working", Expr::Number(h2t::LONG, 0))?,
             advanced: program.global("advanced", boolean(false))?,
@@ -378,6 +438,9 @@ impl<'p, 'c, 's, 'a> Scene<'p, 'c, 's, 'a> {
             .flatten()
             .map(|r| r.unit.set(Expr::None(OBJECT)))
             .collect();
+        if let Some(seed) = &self.scratch.seed {
+            body.push(seed.call());
+        }
         let source = self.source;
         // Exact names reserve their actor before searching the squad rosters.
         for named in [true, false] {
@@ -447,43 +510,48 @@ impl<'p, 'c, 's, 'a> Scene<'p, 'c, 's, 'a> {
                 tests.push(not(eq(taken.unit.get(), candidate.clone())));
             }
         }
-        if participant.selection == 2 {
-            // Halo 1 selection 2 (0x00143f9b) matches the player's vehicle.
-            let parent = call("object_get_parent", OBJECT, [candidate.clone()]);
-            let player = call(
-                "list_get",
-                OBJECT,
-                [call("players", OBJECT_LIST, []), short(0)],
-            );
-            tests.push(not(eq(parent.clone(), Expr::None(OBJECT))));
-            tests.push(eq(parent, call("object_get_parent", OBJECT, [player])));
+        let first = self.roles.iter().flatten().next().unwrap().unit.index;
+        let count = self.roles.iter().flatten().count();
+        if count > u8::MAX as usize {
+            return Err(invalid(
+                "conversation cast has more than 255 physical roles",
+            ));
         }
-        let voice = participant
-            .voices
-            .iter()
-            .copied()
-            .find(|&v| v >= 0)
-            .unwrap_or(-1);
-        let default_voice = short(voice.into());
-        let store = |voice: Expr| {
+        let options =
+            (u32::from(first) << 16) | (count as u32) << 8 | u32::from(participant.selection);
+        let accept = when(
+            and(tests),
             begin(
                 h2t::VOID,
-                [role.unit.set(candidate.clone()), role.voice.set(voice)],
-            )
-        };
+                [
+                    bridge(
+                        Op::Score,
+                        [scratch.candidate.operand(), u32::from(role.voices), options],
+                    ),
+                    when(
+                        pred(">", [scratch.rank.get(), scratch.best.get()]),
+                        begin(
+                            h2t::VOID,
+                            [
+                                scratch.best.set(scratch.rank.get()),
+                                role.unit.set(candidate),
+                                role.voice.set(scratch.voice.get()),
+                            ],
+                        ),
+                    ),
+                ],
+            ),
+        );
+        let reset = scratch.best.set(Expr::Real(f32::MIN));
         if let Some(name) = &participant.existing_name {
             let named = Expr::As(OBJECT, Box::new(Expr::Hook(OBJECT_NAME, name.clone())));
-            let (speaker, voice) = match self.program.alias(Some(name)) {
-                Some(alias) => (
-                    either(alive(alias.unit.get()), alias.unit.get(), named),
-                    either(alive(alias.unit.get()), alias.voice.get(), default_voice),
-                ),
-                None => (named, default_voice),
-            };
-            return Ok(vec![
-                scratch.candidate.set(speaker),
-                when(and(tests), store(voice)),
-            ]);
+            let speaker = self
+                .program
+                .alias(Some(name))
+                .map_or(named.clone(), |alias| {
+                    either(alive(alias.unit.get()), alias.unit.get(), named)
+                });
+            return Ok(vec![reset, scratch.candidate.set(speaker), accept]);
         }
         let (scope, count) = if let Some(scope) = &participant.encounter {
             (Expr::Hook(AI, scope.clone()), 1)
@@ -503,13 +571,7 @@ impl<'p, 'c, 's, 'a> Scene<'p, 'c, 's, 'a> {
                 (selector.call(), scopes.len())
             }
         };
-        let accept = when(and(tests), store(default_voice));
-        let more = || {
-            and([
-                eq(role.unit.get(), Expr::None(OBJECT)),
-                pred("<", [scratch.cursor.get(), scratch.count.get()]),
-            ])
-        };
+        let more = || pred("<", [scratch.cursor.get(), scratch.count.get()]);
         let step = when(
             more(),
             begin(
@@ -555,6 +617,7 @@ impl<'p, 'c, 's, 'a> Scene<'p, 'c, 's, 'a> {
         select.extend((0..SCAN_CHUNKS).map(|_| chunk.call()));
         select.push(scratch.actors.set(Expr::None(OBJECT_LIST)));
         if count == 1 {
+            select.insert(0, reset);
             return Ok(select);
         }
         select.push(
@@ -562,15 +625,8 @@ impl<'p, 'c, 's, 'a> Scene<'p, 'c, 's, 'a> {
                 .scope_cursor
                 .set(add_one(h2t::SHORT, scratch.scope_cursor.get())),
         );
-        let scan = self.program.script(
-            "scan",
-            3,
-            when(
-                eq(role.unit.get(), Expr::None(OBJECT)),
-                begin(h2t::VOID, select),
-            ),
-        )?;
-        let mut attempts = vec![scratch.scope_cursor.set(short(0))];
+        let scan = self.program.script("scan", 3, begin(h2t::VOID, select))?;
+        let mut attempts = vec![reset, scratch.scope_cursor.set(short(0))];
         attempts.extend((0..count).map(|_| scan.call()));
         Ok(attempts)
     }

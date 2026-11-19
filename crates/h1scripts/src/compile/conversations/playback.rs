@@ -2,7 +2,7 @@
 
 use h1ai::conversations::Line;
 
-use super::*;
+use super::{staging::Staging, *};
 
 impl Scene<'_, '_, '_, '_> {
     fn in_status(&self, status: i32) -> Expr {
@@ -20,25 +20,35 @@ impl Scene<'_, '_, '_, '_> {
         ])
     }
 
-    fn finish(&self, status: i32) -> Expr {
+    fn stop_sound(&self) -> Expr {
+        bridge(Op::StopSound, [self.instance.operand(), 0, 0])
+    }
+
+    fn finish(&self, status: i32, staging: &Staging) -> Expr {
         begin(
             h2t::VOID,
             [
-                call("sound_impulse_stop", h2t::VOID, [self.sound.get()]),
+                self.stop_sound(),
                 self.sound.set(Expr::None(SOUND)),
                 self.line.set(short(NO_LINE)),
                 self.status.set(short(status)),
-            ],
+            ]
+            .into_iter()
+            .chain(staging.stop()),
         )
     }
 
     pub(super) fn build(mut self) -> Result<Entry> {
         let cast = self.cast()?;
+        let staging = Staging::build(&mut self)?;
         let required_body = self.required_alive();
-        let near_body = self.near_player();
+        let near_body = staging.ready(&self);
         let advance_body = when(self.in_status(HOLD), self.advanced.set(boolean(true)));
-        let stop_body = when(self.active(), self.finish(ABORTED));
-        let running_body = and([not(self.new_request()), self.in_status(PLAYING)]);
+        let stop_body = when(self.active(), self.finish(ABORTED, &staging));
+        let running_body = and([
+            not(self.new_request()),
+            or([self.in_status(READY), self.in_status(PLAYING)]),
+        ]);
         let required = self.program.script("required", 3, required_body)?;
         let near = self.program.script("near", 3, near_body)?;
         let advance = self.program.script("advance", 3, advance_body)?;
@@ -46,20 +56,19 @@ impl Scene<'_, '_, '_, '_> {
         let running = self.program.script("running", 3, running_body)?;
         let mut names = Vec::new();
         for (participant, role) in self.source.participants.iter().zip(&self.roles) {
-            if let (Some(role), Some(alias)) = (
-                role,
-                self.program.alias(participant.assigned_name.as_deref()),
-            ) {
-                names.push(when(
-                    alive(role.unit.get()),
-                    begin(
-                        h2t::VOID,
-                        [
-                            alias.unit.set(role.unit.get()),
-                            alias.voice.set(role.voice.get()),
-                        ],
-                    ),
-                ));
+            if let Some(role) = role {
+                let mut publish = vec![bridge(
+                    Op::RememberVoice,
+                    [
+                        role.unit.operand(),
+                        role.voice.operand(),
+                        self.scratch.profile_base,
+                    ],
+                )];
+                if let Some(alias) = self.program.alias(participant.assigned_name.as_deref()) {
+                    publish.push(alias.unit.set(role.unit.get()));
+                }
+                names.push(when(alive(role.unit.get()), begin(h2t::VOID, publish)));
             }
         }
         let publish = self.program.script("publish", 3, begin(h2t::VOID, names))?;
@@ -71,7 +80,15 @@ impl Scene<'_, '_, '_, '_> {
             body.push(boolean(true));
             begin(h2t::BOOLEAN, body)
         };
-        let failed = begin(h2t::BOOLEAN, [self.finish(FAILED), boolean(false)]);
+        let failed = begin(
+            h2t::BOOLEAN,
+            [self.finish(FAILED, &staging), boolean(false)],
+        );
+        let wait_for_player = if self.source.delays_start() {
+            enqueue(TRYING)
+        } else {
+            failed.clone()
+        };
         let reset = self.request.set(add_one(h2t::LONG, self.request.get()));
         let start_body = either(
             self.active(),
@@ -85,7 +102,7 @@ impl Scene<'_, '_, '_, '_> {
                     cast.call(),
                     either(
                         required.call(),
-                        either(near.call(), enqueue(READY), enqueue(TRYING)),
+                        either(near.call(), enqueue(READY), wait_for_player),
                         failed,
                     ),
                 ],
@@ -95,16 +112,25 @@ impl Scene<'_, '_, '_, '_> {
 
         let mut play = vec![
             when(self.in_status(TRYING), publish.call()),
-            self.status.set(short(PLAYING)),
+            self.status.set(short(READY)),
         ];
+        play.extend(staging.start());
         for (i, line) in self.source.lines.iter().enumerate() {
             if line.speaker == -1 {
                 continue;
             }
-            let step = self.play_line(i, line, &running)?;
-            play.push(when(running.call(), step));
+            let step = self.play_line(i, line, &running, &staging)?;
+            let ready = when(
+                running.call(),
+                begin(h2t::VOID, [self.status.set(short(PLAYING)), step]),
+            );
+            let wait = staging.wait(line, &running);
+            play.push(when(
+                running.call(),
+                begin(h2t::VOID, wait.into_iter().chain([ready])),
+            ));
         }
-        play.push(when(running.call(), self.finish(DONE)));
+        play.push(when(running.call(), self.finish(DONE, &staging)));
         let mut worker = vec![
             wait_until(or([self.in_status(TRYING), self.in_status(READY)]), 1),
             self.working.set(self.request.get()),
@@ -128,7 +154,11 @@ impl Scene<'_, '_, '_, '_> {
                 not(self.new_request()),
                 or([self.in_status(TRYING), self.in_status(READY)]),
             ]),
-            either(required.call(), begin(h2t::VOID, play), self.finish(FAILED)),
+            either(
+                and([required.call(), or([self.in_status(READY), near.call()])]),
+                begin(h2t::VOID, play),
+                self.finish(FAILED, &staging),
+            ),
         ));
         self.program.script("worker", 2, begin(h2t::VOID, worker))?;
 
@@ -141,7 +171,13 @@ impl Scene<'_, '_, '_, '_> {
         })
     }
 
-    fn play_line(&self, index: usize, line: &Line, running: &Script) -> Result<Expr> {
+    fn play_line(
+        &self,
+        index: usize,
+        line: &Line,
+        running: &Script,
+        staging: &Staging,
+    ) -> Result<Expr> {
         let role_index = line.speaker as usize;
         let participant = self.source.participants.get(role_index).ok_or_else(|| {
             invalid(format!(
@@ -151,11 +187,9 @@ impl Scene<'_, '_, '_, '_> {
         })?;
         let role = self.roles[role_index].as_ref();
         let unit = || role.map_or(Expr::None(OBJECT), |role| role.unit.get());
-        let emitter = if participant.nonspatial() {
-            Expr::None(OBJECT)
-        } else {
-            unit()
-        };
+        let emitter = role
+            .filter(|_| !participant.nonspatial())
+            .map_or(u32::MAX, |role| role.unit.operand());
         let mut sound = line
             .sounds
             .iter()
@@ -173,30 +207,31 @@ impl Scene<'_, '_, '_, '_> {
             }
         }
         let mut play = vec![self.line.set(short(index as i32)), self.sound.set(sound)];
-        let ended = pred(
-            "<=",
+        let (face, release): (Vec<_>, Vec<_>) = staging.face(self, line).into_iter().unzip();
+        play.extend(face);
+        let lost = || role.map_or(boolean(false), |_| not(alive(unit())));
+        let ended = begin(
+            h2t::BOOLEAN,
             [
-                call("sound_impulse_language_time", h2t::LONG, [self.sound.get()]),
-                Expr::Number(h2t::LONG, 0),
+                bridge(Op::PollSound, [self.instance.operand(), 0, 0]),
+                eq(self.instance.get(), long(u32::MAX)),
             ],
         );
-        let lost = || role.map_or(boolean(false), |_| not(alive(unit())));
         play.push(when(
             not(eq(self.sound.get(), Expr::None(SOUND))),
             begin(
                 h2t::VOID,
                 [
-                    call(
-                        "sound_impulse_start",
-                        h2t::VOID,
-                        [self.sound.get(), emitter, Expr::Real(1.0)],
+                    bridge(
+                        Op::StartSound,
+                        [self.sound.operand(), emitter, self.instance.operand()],
                     ),
                     wait_until(or([not(running.call()), lost(), ended]), 1),
                 ],
             ),
         ));
-
-        let mut after = vec![self.sound.set(Expr::None(SOUND))];
+        let mut after = release.clone();
+        after.push(self.sound.set(Expr::None(SOUND)));
         let pause = (line.pause_after * 30.0)
             .round()
             .clamp(0.0, i16::MAX as f32) as i32;
@@ -248,13 +283,12 @@ impl Scene<'_, '_, '_, '_> {
         let absent = if participant.flags & 7 != 0 {
             begin(
                 h2t::VOID,
-                [
-                    call("sound_impulse_stop", h2t::VOID, [self.sound.get()]),
-                    self.sound.set(Expr::None(SOUND)),
-                ],
+                release
+                    .into_iter()
+                    .chain([self.stop_sound(), self.sound.set(Expr::None(SOUND))]),
             )
         } else {
-            self.finish(ABORTED)
+            self.finish(ABORTED, staging)
         };
         play.push(when(running.call(), either(lost(), absent.clone(), after)));
         Ok(either(lost(), absent, begin(h2t::VOID, play)))

@@ -139,6 +139,8 @@ pub struct Plan {
     pub characters: Vec<CharacterChoice>,
     /// Command lists, for the scripts lane.
     pub command_scripts: Vec<CommandScript>,
+    /// Source unique-speaker selection by converted squad.
+    pub conversation_leaders: Vec<crate::conversations::LeaderSquad>,
     /// What didn't carry over, one line each.
     pub notes: Vec<String>,
 }
@@ -156,6 +158,7 @@ fn letter(group: u16) -> String {
 pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
     let mut notes = Vec::new();
     let mut ai = ScenarioAi::default();
+    let mut conversation_leaders = Vec::new();
 
     // Character palette: one entry per distinct retail character, in the
     // order the actor palette first needs it.
@@ -336,6 +339,13 @@ pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
                     emitter_vehicle: -1,
                 })
                 .collect::<Vec<_>>();
+            if !unplaced && character.is_some_and(|i| characters[i].h1_type.0 == 7) {
+                conversation_leaders.push(crate::conversations::LeaderSquad {
+                    squad: ai.squads.len() as u16,
+                    encounter: ei as u16,
+                    selection: s.unique_leader,
+                });
+            }
             ai.squads.push(h2::Squad {
                 name,
                 flags: 0,
@@ -402,6 +412,7 @@ pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
         ai,
         characters,
         command_scripts,
+        conversation_leaders,
         notes,
     }
 }

@@ -2,6 +2,7 @@
 //! the ordinary compiler's node and string allocation.
 
 use hs::Datum;
+use hs::h1_conversation::{BUILTINS, Op};
 
 use super::{CALL, Compiler, GLOBAL, Hook, NONE, New, Result, SCRIPT_CALL, h2t, invalid};
 
@@ -13,6 +14,10 @@ pub(super) struct Global {
 }
 
 impl Global {
+    pub(super) fn operand(&self) -> u32 {
+        self.index.into()
+    }
+
     pub(super) fn get(&self) -> Expr {
         Expr::Global(self.clone())
     }
@@ -30,6 +35,10 @@ pub(super) struct Script {
 }
 
 impl Script {
+    pub(super) fn command(&self) -> Expr {
+        Expr::Command(self.clone())
+    }
+
     pub(super) fn call(&self) -> Expr {
         Expr::Script(self.clone())
     }
@@ -44,6 +53,7 @@ pub(super) enum Expr {
     As(u16, Box<Self>),
     Global(Global),
     Script(Script),
+    Command(Script),
     Call(&'static str, u16, Vec<Self>),
 }
 
@@ -58,6 +68,7 @@ impl Expr {
             Self::Real(_) => h2t::REAL,
             Self::Global(g) => g.ty,
             Self::Script(s) => s.ty,
+            Self::Command(_) => 21,
         }
     }
 
@@ -97,6 +108,12 @@ impl Expr {
                     data: g.index.into(),
                 })
             }
+            Self::Command(s) => c.literal(
+                expected,
+                21,
+                0xffff_0000 | u32::from(s.index),
+                s.name.as_bytes(),
+            ),
             Self::Script(s) => {
                 // The argumentless head is immutable and can be shared by
                 // the scanner's repeated calls. Each call has its own sibling.
@@ -148,6 +165,18 @@ pub(super) fn add_one(ty: u16, value: Expr) -> Expr {
         ty,
         [Expr::As(h2t::REAL, Box::new(value)), Expr::Real(1.0)],
     )
+}
+
+pub(super) fn bridge(op: Op, operands: [u32; 3]) -> Expr {
+    call(
+        BUILTINS[0].0,
+        h2t::VOID,
+        std::iter::once(op as u32).chain(operands).map(long),
+    )
+}
+
+pub(super) fn long(value: u32) -> Expr {
+    Expr::Number(h2t::LONG, value as i32)
 }
 
 pub(super) fn short(value: i32) -> Expr {

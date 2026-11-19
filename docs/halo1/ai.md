@@ -299,32 +299,65 @@ Halo 1 sounds with the other script sounds and resolves their datums.
 |---|---|---|
 | Participant | Flags `02`, selection `04`, actor type `06`, use and assign object name `08`/`0a`, six voice selectors `18`, encounter token `24` and compiled AI selector `44` | `0x00143c00` selects a role, `0x001440f3` compares voice selectors, and `0x0014476c` installs the chosen unit under the assigned object name |
 | Line | Flags `00`, speaker `02`, addressee kind/index `04`/`06`, post-line pause in seconds `0c`, six `snd!` references starting `1c` | `0x001425a0` takes the cast's voice slot, resolves the sound and converts the pause to ticks. `0x00144abd` waits for advance on flag `0x08` |
-| Conversation | Delay flag `0x40` and trigger distance `24` | `0x00144466` tests the distance, and `0x00144b7a` retries at 30-tick intervals |
+| Conversation | Delay flag `0x40`, trigger distance `24`, run distance `28` | `0x00144466` tests the distance, and `0x00144b7a` retries at 30-tick intervals |
 
-Selection 1 is a radio role with no cast member (`0x00143c4e`).
-Selections 6 and 7 use a cast member's voice and send it through the radio
-channel (`0x001426a3`, `0x00144992`). Other roles use their named unit or
-search the live object list of a
-converted encounter. Roles without an authored encounter search converted
-squads matching their actor type. Selection 2 checks the player's vehicle
-as in `0x00143f9b`. A cast uses distinct live units and makes an assigned
-name available to subsequent script expressions. The worker keeps the cast
-through the scene and uses any recorded profile from a previous named role
-to pick its alternate voice. Fresh casts use the first authored profile
-because the Halo 2 unit has its own dialogue profile.
+**Built.** Cast selection ranks distinct living units in the authored
+encounter or the converted rosters for their actor type. The original
+selection switch (`0x00143f6d`) checks allegiance, shared vehicles, unmounted
+actors or preference for a unique voice. The bridge reads Halo 2's live
+campaign alliance matrix (`0x001df560`) and vehicle driver (`0x002a4270`).
+Candidates closer to players and to an already cast peer get the original
+distance and view-direction weights (`0x00143a96`, `0x00144026`).
+Voice selection prefers the exact persona, then the wildcard, then an
+eligible generic alternative (`0x001440e2`). A salted profile recorded in
+scenario globals follows a cast member into later scenes and checkpoints.
+Assigned object names still resolve to their captured actors.
 
-Halo 2 plays each line with `sound_impulse_start` (597,
-`0x002a9e00`). The worker waits on `sound_impulse_language_time` (602,
-`0x002a9fe0`), then applies the source pause and any wait-for-advance flag.
-A stop cancels the current impulse with builtin 603 (`0x002aa020`) and
-invalidates the worker's current request. See [scripts.md](scripts.md) for
-the script-visible states.
+**Built.** The map carries the source marine squads' unique-leader rules.
+The native cast bridge seeds 100 or 101 from the live squad roster before
+binding roles. Halo 1's selection at `0x0013e563` supplies the forced,
+random and encounter-size cases. The first spawned living member of each
+new cohort takes the voice, leaving its peers generic. Halo 2 provides the
+current roster through the same squad chain read by `0x00204d30`.
 
-The scripted adaptation leaves movement and gaze with Halo 2's current AI
-orders. Halo 1's run-to-player movement, line addressee facing and
-situation-specific cast preferences still need an engine equivalent. The
-stock impulse API identifies playback by sound tag, so simultaneous uses
-of one sound share a playback query and stop handle.
+**Built.** Flag `0x20` runs the cast toward the focus player using the
+source distance at `+0x28` (Halo 1 `0x0014476c`). Line flags `0x10` and
+`0x20` wait for the speaker or the cast to finish moving
+(`0x001448db`). Halo 2's native `cs_approach` (429,
+`0x002a81b0`) does the movement and pathfinding. The scene chooses
+a live focus player and applies the view cone when flag `0x80`
+requires attention (`0x001445de`).
+
+**Built.** The speaker, the addressee and other participants turn as their
+line directs (`0x00144c30`). Halo 2's `cs_face_object` and
+`cs_look_object` (400 and 394) run as temporary commands stacked over the
+actors' existing commands (`0x00276480`). Line completion or a scene
+stop removes only its own commands by script and actor (`0x00258540`).
+Selection 1 supplies an unbound radio voice. Selections 6 and 7 bind
+an actor and route the voice over radio (`0x001426a3`, `0x00144992`).
+
+**Built.** Every spoken line owns its native sound instance. Spatial
+voices use the unit's mouth marker and the biped lip-sync path
+(`0x001891d0`, `0x00109220`). Radio uses the engine's untracked impulse
+entry (`0x00189fe0`). Workers poll the salted sound datum until it ends
+before applying the authored pause and advance flag. Stopping calls the
+engine by instance (`0x00126360`), so overlapping lines sharing a
+`snd!` tag keep separate timing and stop handles.
+
+The converted-map hook claims **builtin slot 845** only. Its retail
+descriptor is four longs returning void and its original evaluator
+(`0x002ab130`) discards the call. The shared table is
+`hs::h1_conversation::BUILTINS`. Approach, facing and queue queries use
+stock builtin slots. The converted-map operation validates scenario
+global types and uses salted object, actor and sound handles.
+
+The converted cast ranks candidates with Halo 2 positions, alliances and
+aim. Halo 1 adds a BSP visibility bonus to the cast score and rotates
+fresh ambient voices through its biped dialogue permutations. The
+converted cast uses the authored scripted alternatives for fresh generic
+actors. Unique voices are initialized on the live Halo 2 roster when a
+cast is requested, so a cohort can differ after migration before its
+first conversation.
 
 ### Characters (the stopgap)
 

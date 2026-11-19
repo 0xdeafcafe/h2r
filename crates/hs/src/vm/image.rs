@@ -124,6 +124,11 @@ impl VmImage {
         }
     }
 
+    /// Mark a retail-discarded builtin as supplied by the host engine.
+    pub fn use_engine_builtin(&mut self, index: u16) {
+        self.discarded.remove(&index);
+    }
+
     pub fn discarded(&self) -> &BTreeMap<u16, Native> {
         &self.discarded
     }

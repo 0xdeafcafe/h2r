@@ -17,14 +17,14 @@ use h1scripts::{
     compile::{Compiled, Cutscenes, Missing, compile_with_conversations},
     translate::{Table, Target},
 };
-use hs::vm::{Cell, Engine, EngineCall, EngineError, Vm, VmImage};
+use hs::h1_conversation::{BUILTINS, Op};
+use hs::vm::{Cell, Engine, EngineCall, EngineError, HsType, ScenarioGlobals, Vm, VmImage};
 
 const BASE: u32 = 0x8000_0000;
-const START: u16 = 597;
-const TIME: u16 = 602;
-const STOP: u16 = 603;
+const BRIDGE: u16 = BUILTINS[0].1;
 const ACTOR: u32 = 0xe000_0001;
 const ACTOR_NAME: i16 = 2;
+const SECOND_ACTOR: u32 = 0xe000_0002;
 
 fn disc(env: &str, name: &str) -> PathBuf {
     std::env::var_os(env).map(PathBuf::from).unwrap_or_else(|| {
@@ -74,7 +74,16 @@ fn h2() -> (hs::Catalog, Target, VmImage) {
     for scenario in &scenarios {
         target.observe_externals(scenario);
     }
-    let image = VmImage::from_xbe(&xbe, &catalog).unwrap();
+    assert!(
+        catalog.function(BRIDGE).unwrap().name().is_none(),
+        "slot 845 retail use"
+    );
+    let mut image = VmImage::from_xbe(&xbe, &catalog).unwrap();
+    assert!(
+        image.discarded().contains_key(&BRIDGE),
+        "retail slot must be discarded"
+    );
+    image.use_engine_builtin(BRIDGE);
     (catalog, target, image)
 }
 
@@ -114,6 +123,16 @@ fn every_campaign_conversation_compiles_with_its_source_sounds() {
         let t = Tables::read(map).unwrap();
         let plan = h1ai::convert::convert(&ai, &Default::default());
         let scopes = SpeakerScopes::from_plan(&plan);
+        if level == "a30" {
+            let leader = scopes
+                .leaders
+                .iter()
+                .find(|leader| {
+                    plan.ai.squads[leader.squad as usize].name == "first_marine/left_back"
+                })
+                .unwrap();
+            assert_eq!(leader.selection, 3);
+        }
         let code = compile(&t, h1, &target, &ai.conversations, &scopes);
         for missing in &code.missing {
             assert!(
@@ -170,6 +189,20 @@ fn every_campaign_conversation_compiles_with_its_source_sounds() {
             .filter(|u| generated.iter().any(|d| d.slot() == u.slot))
             .collect();
         assert!(bad.is_empty(), "{level}: {bad:#?}");
+        let compiled_approach = sc.scripts()[t.scripts.len()..]
+            .iter()
+            .filter(|s| s.kind() == 5 && s.name().unwrap().starts_with("__h1cv0_approach_"))
+            .count();
+        assert_eq!(
+            compiled_approach,
+            ai.conversations
+                .iter()
+                .filter(|scene| {
+                    scene.runs_to_player() && scene.participants.iter().any(|p| !p.radio())
+                })
+                .count(),
+            "{level}: run-to-player command scripts"
+        );
         let workers = sc.scripts()[t.scripts.len()..]
             .iter()
             .filter(|s| s.kind() == 2)
@@ -194,6 +227,7 @@ struct DialogueEngine {
     player_distance: f32,
     playing: BTreeMap<u32, i32>,
     starts: Vec<(u32, u32)>,
+    next_sound: u32,
     stops: Vec<u32>,
 }
 
@@ -205,13 +239,13 @@ impl Engine for DialogueEngine {
         &mut self.seed
     }
     fn object_type(&mut self, object: u32) -> Option<u8> {
-        (object == ACTOR && self.actor_alive).then_some(0)
+        (matches!(object, ACTOR | SECOND_ACTOR) && self.actor_alive).then_some(0)
     }
     fn object_from_name(&mut self, name: i16) -> u32 {
-        if name == ACTOR_NAME && self.actor_alive {
-            ACTOR
-        } else {
-            u32::MAX
+        match name {
+            ACTOR_NAME if self.actor_alive => ACTOR,
+            n if n == ACTOR_NAME + 1 && self.actor_alive => SECOND_ACTOR,
+            _ => u32::MAX,
         }
     }
     fn object_list_new(&mut self, _: &[u32]) -> u32 {
@@ -223,38 +257,69 @@ impl Engine for DialogueEngine {
     fn call(&mut self, c: EngineCall<'_>) -> Result<Cell, EngineError> {
         let subject = c.arguments.first().copied().unwrap_or(Cell::NONE).0;
         match c.index {
-            28 => return Ok(Cell(0xe100_0000)), // players
-            69 => {
-                return Ok(Cell::from_real(if subject == ACTOR && self.actor_alive {
+            28 => Ok(Cell(0xe100_0000)), // players
+            69 => Ok(Cell::from_real(
+                if matches!(subject, ACTOR | SECOND_ACTOR) && self.actor_alive {
                     1.0
                 } else {
                     0.0
-                }));
+                },
+            )),
+            114 => Ok(Cell::from_real(self.player_distance)),
+            _ => Err(EngineError::Failed(format!(
+                "unexpected builtin {}",
+                c.index
+            ))),
+        }
+    }
+
+    fn call_with_globals(
+        &mut self,
+        c: EngineCall<'_>,
+        mut globals: ScenarioGlobals<'_>,
+    ) -> Result<Cell, EngineError> {
+        if c.index != BRIDGE {
+            return self.call(c);
+        }
+        let [op, a, b, out] = c.arguments else {
+            panic!("conversation builtin arguments")
+        };
+        let (a, b, out) = (a.0, b.0, out.0);
+        match Op::decode(op.0).unwrap() {
+            Op::Score => {
+                let requested = globals.get(b, HsType::LONG).unwrap().0 as i16;
+                assert!(globals.set(a + 1, HsType::REAL, Cell::from_real(1.0)));
+                assert!(globals.set(a + 2, HsType::SHORT, Cell(u32::from(requested as u16))));
             }
-            114 => return Ok(Cell::from_real(self.player_distance)),
-            START => {
-                self.starts.push((subject, c.arguments[1].0));
-                self.playing.insert(subject, self.tick + 5);
+            Op::RememberVoice => {}
+            Op::StartSound => {
+                let tag = globals
+                    .get(a, HsType(hs::h1_conversation::SOUND))
+                    .unwrap()
+                    .0;
+                let object = globals.get(b, HsType::OBJECT).unwrap_or(Cell::NONE).0;
+                self.starts.push((tag, object));
+                self.next_sound += 1;
+                let duration = if object == SECOND_ACTOR { 10 } else { 5 };
+                self.playing.insert(self.next_sound, self.tick + duration);
+                assert!(globals.set(out, HsType::LONG, Cell(self.next_sound)));
             }
-            TIME => {
-                let end = self.playing.get(&subject).copied().unwrap_or(self.tick);
-                return Ok(Cell::from_long((end - self.tick).max(0)));
-            }
-            STOP => {
-                if self
-                    .playing
-                    .remove(&subject)
-                    .is_some_and(|end| end > self.tick)
+            Op::PollSound | Op::StopSound => {
+                let handle = globals.get(a, HsType::LONG).unwrap().0;
+                let stop = matches!(Op::decode(op.0), Some(Op::StopSound));
+                if stop
+                    || self
+                        .playing
+                        .get(&handle)
+                        .is_none_or(|&end| end <= self.tick)
                 {
-                    self.stops.push(subject);
+                    if self.playing.remove(&handle).is_some() && stop {
+                        self.stops.push(handle);
+                    }
+                    assert!(globals.set(a, HsType::LONG, Cell::NONE));
                 }
             }
-            _ => {
-                return Err(EngineError::Failed(format!(
-                    "unexpected builtin {}",
-                    c.index
-                )));
-            }
+            _ => panic!("unexpected conversation operation {}", op.0),
         }
         Ok(Cell::ZERO)
     }
@@ -313,10 +378,14 @@ fn conversation_vm_plays_holds_advances_and_restarts() {
             voices: [1, -1, -1, -1, -1, -1],
             encounter: None,
         });
-        scene.flags |= 0x40;
+        scene.flags = 0x40;
         scene.trigger_distance = 12.0;
-        scene.lines[0].flags |= 8;
-        scene.lines[1].flags &= !8;
+        scene.lines[0].flags = 8;
+        scene.lines[1].flags = 0;
+        for line in &mut scene.lines {
+            line.addressee_kind = 0;
+            line.addressee = -1;
+        }
         let paths = scene
             .lines
             .iter()
@@ -329,11 +398,25 @@ fn conversation_vm_plays_holds_advances_and_restarts() {
             references: Vec::new(),
             ..t
         };
-        let mut compiled = compile(&t, h1, &target, &[scene], &SpeakerScopes::default());
+        let mut concurrent = scene.clone();
+        concurrent.name = "concurrent".into();
+        concurrent.lines.truncate(1);
+        concurrent.lines[0].flags = 0;
+        concurrent.lines[0].pause_after = 0.0;
+        concurrent.participants.last_mut().unwrap().existing_name = Some("second_actor".into());
+        let mut compiled = compile(
+            &t,
+            h1,
+            &target,
+            &[scene, concurrent],
+            &SpeakerScopes::default(),
+        );
         let sound = |i| 0x1234_0000 | i as u32;
         let left = compiled.resolve_hooks(|h| {
             if h.token == "test_actor" {
                 Some(0xffff_0000 | ACTOR_NAME as u32)
+            } else if h.token == "second_actor" {
+                Some(0xffff_0000 | (ACTOR_NAME + 1) as u32)
             } else {
                 paths.iter().position(|p| p == &h.token).map(sound)
             }
@@ -342,26 +425,34 @@ fn conversation_vm_plays_holds_advances_and_restarts() {
         let bytes = compiled.scenario_bytes(BASE);
         let sc = hs::Scenario::decode(&bytes, BASE).unwrap();
         sc.validate(&h2_catalog).unwrap();
-        let script = |purpose: &str| {
+        let script_at = |purpose: &str, scene: usize| {
             sc.scripts()
                 .iter()
-                .position(|s| {
+                .enumerate()
+                .filter(|(_, s)| {
                     s.name()
                         .unwrap()
                         .starts_with(&format!("__h1cv0_{purpose}_"))
                 })
-                .unwrap() as u16
+                .nth(scene)
+                .unwrap()
+                .0 as u16
         };
-        let global = |purpose: &str| {
+        let script = |purpose| script_at(purpose, 0);
+        let global_at = |purpose: &str, scene: usize| {
             sc.globals()
                 .iter()
-                .position(|g| {
+                .enumerate()
+                .filter(|(_, g)| {
                     g.name()
                         .unwrap()
                         .starts_with(&format!("__h1cv0_{purpose}_"))
                 })
+                .nth(scene)
                 .unwrap()
+                .0
         };
+        let global = |purpose| global_at(purpose, 0);
         let (start, stop, advance) = (script("start"), script("stop"), script("advance"));
         let status = |vm: &Vm<'_>| vm.global(global("status")).unwrap().short();
         let line = |vm: &Vm<'_>| vm.global(global("line")).unwrap().short();
@@ -394,7 +485,7 @@ fn conversation_vm_plays_holds_advances_and_restarts() {
         assert_eq!((status(&vm), line(&vm)), (3, 0));
         vm.call_script(&mut engine, stop).unwrap().unwrap();
         assert_eq!((status(&vm), line(&vm)), (7, 999));
-        assert_eq!(engine.stops, [sound(0)]);
+        assert_eq!(engine.stops, [1]);
 
         // Starting again on the same tick must not resume the cancelled worker.
         assert!(
@@ -413,6 +504,27 @@ fn conversation_vm_plays_holds_advances_and_restarts() {
             [(sound(0), ACTOR), (sound(0), ACTOR), (sound(1), u32::MAX)]
         );
         assert_eq!(line(&vm), 999);
+
+        // Two physical speakers may overlap one sound tag. Aborting the first
+        // must leave the second instance live until its own end tick.
+        vm.call_script(&mut engine, start).unwrap().unwrap();
+        vm.call_script(&mut engine, script_at("start", 1))
+            .unwrap()
+            .unwrap();
+        tick_until(&mut vm, &mut engine, |_, e| e.starts.len() == 5);
+        assert_eq!(
+            &engine.starts[3..],
+            &[(sound(0), ACTOR), (sound(0), SECOND_ACTOR)]
+        );
+        let second = |vm: &Vm<'_>| vm.global(global_at("status", 1)).unwrap().short();
+        assert_eq!(second(&vm), 3);
+        vm.call_script(&mut engine, stop).unwrap().unwrap();
+        assert_eq!(engine.stops, [1, 4]);
+        assert!(engine.playing.contains_key(&5));
+        let end = engine.playing[&5];
+        tick_until(&mut vm, &mut engine, |vm, _| second(vm) == 6);
+        assert_eq!(engine.tick, end);
+        assert_eq!(engine.stops, [1, 4]);
         exercised = true;
     });
     assert!(

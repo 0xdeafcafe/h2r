@@ -119,6 +119,24 @@ impl Target {
             })
             .collect();
         crate::identified::name_unnamed(&mut builtins, c);
+        for (name, index) in hs::h1_conversation::BUILTINS {
+            if let Ok(f) = c.function(index)
+                && f.evaluate() == hs::h1_conversation::EVALUATE
+                && f.return_type() == 4
+                && f.parameters() == [8; 4]
+                && f.flags() & 2 == 0
+            {
+                builtins.insert(
+                    name.into(),
+                    H2Builtin {
+                        index,
+                        return_type: f.return_type(),
+                        parameters: f.parameters().to_vec(),
+                        special: false,
+                    },
+                );
+            }
+        }
         Self {
             builtins,
             types: c.types().to_vec(),
