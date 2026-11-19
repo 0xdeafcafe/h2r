@@ -237,6 +237,10 @@ points! { ALL;
     /// One weapon barrel fires: stdcall `(weapon object datum, barrel
     /// index)`. One call is one shot (likely).
     WEAPON_FIRE @ 0x0010_4150: [fn(weapon: stack 0, barrel: stack 1) ret 8], Optional; "docs/live/live-gamestate.md";
+    /// Attach a weapon to a unit, or detach when the unit is -1.
+    ITEM_SET_UNIT @ 0x0010_ca80: [fn(item: eax, unit: stack 0) ret 4], Optional; "docs/game/bots.md";
+    /// Successful power-up application before the consumed equipment is deleted.
+    POWERUP_TAKEN @ 0x000a_89c0: [fn(unit: ecx, definition: edx) ret 0], Optional; "docs/game/bots.md";
     /// A damage report is applied to its victim: the report in EDI, the
     /// victim object datum on the stack. Called once per damage instance.
     DAMAGE_REPORT @ 0x000d_9640: [fn(report: edi, victim: stack 0) ret 4], Optional; "docs/live/live-gamestate.md";
@@ -765,6 +769,15 @@ points! { ALL;
 }
 
 globals! { GLOBALS;
+    /// Multiplayer engine state and its per-variant views (§3.7).
+    GAME_ENGINE @ 0x004e_9ae8; "docs/game/bots.md";
+    CTF_ASSAULT_GLOBALS @ 0x0051_ec80; "docs/game/bots.md";
+    ODDBALL_GLOBALS @ 0x0051_ecc4; "docs/game/bots.md";
+    KOTH_GLOBALS @ 0x0051_ecc8; "docs/game/bots.md";
+    TERRITORIES_GLOBALS @ 0x0051_eccc; "docs/game/bots.md";
+    JUGGERNAUT_GLOBALS @ 0x0051_0c9c; "docs/game/bots.md";
+    /// Loaded matg metadata. Its multiplayer reference leads to the weapon list.
+    GLOBALS_TAG @ 0x004e_034c; "docs/game/bots.md";
     /// Pointer to the game globals: active options at `+8`, "map active" at
     /// `+0x1120`, the end latch at `+0x1128`.
     GAME_GLOBALS @ 0x004e_6948; "docs/runtime/level-boot.md";

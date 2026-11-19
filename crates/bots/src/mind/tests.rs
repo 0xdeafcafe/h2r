@@ -795,6 +795,7 @@ const HOME: Vec3 = [2.0, 5.0, 0.0];
 /// carried by `carrier`.
 fn carrying(carrier: Option<u32>, at: Vec3) -> Objective {
     Objective {
+        state: Default::default(),
         game: Game::Ctf,
         me: 1,
         items: vec![Item {
@@ -973,6 +974,7 @@ fn the_objective_comes_before_chasing_and_roaming() {
 fn the_ball_carrier_runs_from_the_nearest_enemy() {
     let mut m = Mind::new(Skill::Normal, 3);
     let ball = Objective {
+        state: Default::default(),
         game: Game::Oddball,
         me: 1,
         items: vec![Item {
@@ -1028,6 +1030,7 @@ fn the_ball_carrier_runs_from_the_nearest_enemy() {
 #[test]
 fn in_the_hill_it_stays_and_out_of_it_it_goes_there() {
     let hill = |c: Vec3| Objective {
+        state: Default::default(),
         game: Game::Koth,
         me: 1,
         items: vec![],
