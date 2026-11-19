@@ -289,6 +289,14 @@ points! { ALL;
     RENDER_SCENE_PASSES @ 0x0002_bcd0: [opaque]; "docs/graphics/e3-lighting.md";
     /// Sets the render stencil mode, including after the scene passes return.
     RENDER_STENCIL_MODE @ 0x0001_5370: [opaque]; "docs/graphics/native-renderer.md";
+    /// The additional shadow-caster pass (layer 10/11 pair after the main lights).
+    ADDITIONAL_SHADOW_CASTERS @ 0x0003_0ed0: [opaque]; "docs/graphics/native-shadows.md";
+    /// The scene call that walks the object shadow list.
+    OBJECT_SHADOW_LIST @ 0x0003_35e0: [opaque]; "docs/graphics/native-shadows.md";
+    /// Gathers the object shadow candidates.
+    GATHER_OBJECT_SHADOWS @ 0x0003_3400: [opaque]; "docs/graphics/native-shadows.md";
+    /// One object's shadow (caster and receiver layers).
+    OBJECT_SHADOW @ 0x0003_2350: [opaque]; "docs/graphics/native-shadows.md";
     /// One dynamic decal callback: `0x00163cd0` calls it in stored list order
     /// after `0x00043a40` selects the mode and its state. Stack `(list, unused)`,
     /// `ret 8`; the only native decal replacement point.
@@ -335,6 +343,8 @@ points! { ALL;
     /// is followed by one; it ends the layer's state and sets the current
     /// layer (`[0x00467130]`) to 0.
     LAYER_END @ 0x0004_45d0: [opaque]; "docs/graphics/native-renderer.md";
+    /// Ordered geometry dispatch from LAYER_ENTRIES (seven stack arguments).
+    LIGHT_GEOMETRY_DRAW @ 0x0004_d0b0: [fn(shader: stack 0, arg: stack 1, variant: stack 2, layer: stack 3, selector: stack 4, part: stack 5, entry: stack 6) ret 28], Hot; "docs/graphics/layer-draw.md";
     /// The layer draw's setup call (ESI = `0x00485b48`).
     LAYER_SETUP @ 0x0001_6b10: [opaque]; "docs/graphics/layer-draw.md";
     /// Draws a list's entries for a layer: builds them, then calls each
