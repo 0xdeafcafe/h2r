@@ -11,7 +11,7 @@ const USAGE: &str = "usage:
   h2 build <disc.iso|default.xbe> [--out DIR] [--jobs N] [--check] [--tier fast|clang]
   h2 run   <disc.iso> [--out DIR] [--tier auto|fast|clang] [--data DIR] [--fresh-data] [--slices N] [--transfers N] [--no-stopgaps] [--no-d3d] [--no-bink] [--no-dsound] [--no-xapi] [--no-mappack] [--no-halo1]
            [--movies DIR | --no-movies] [--settings DIR]
-  h2 serve <disc.iso> [--socket PATH] [--system-link] [run's options]
+  h2 serve <disc.iso> [--socket PATH] [--system-link [--host-light [--host-bots]]] [run's options]
 
 --out defaults to $TMPDIR/h2boot (generated C, objects, libh2game.dylib).
 --tier (or H2_TIER): `build` builds clang's optimised module by default, or
@@ -52,7 +52,10 @@ exits, for `h2 agent` and other clients (docs/runtime/agent-api.md). It never
 builds: when --out's dylib isn't current it stops and says so. Use the same
 H2_OPT the image was built with.
 --system-link enables the XNet sockets for a headless LAN game. Choose System
-  Link in the normal menus. No Live account or service URL is required.";
+  Link in the normal menus. No Live account or service URL is required.
+--host-light skips steady-state world rendering, uses a silent sound clock,
+  disables kernel tracing and paces to real time. Requires --system-link.
+--host-bots enables bot support on a light host. H2_BOTS also enables it.";
 
 pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     let tmp = std::env::temp_dir();
@@ -64,6 +67,8 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     let mut slices = if serve { u64::MAX } else { 100_000u64 };
     let mut socket = None;
     let mut system_link = false;
+    let mut host_light = false;
+    let mut host_bots = false;
     let mut transfers = 50_000_000u64;
     let mut disc = None;
     let mut stopgaps = true;
@@ -91,6 +96,8 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             "--background" if cmd == "build" => background = true,
             "--tier" => tier = Some(boot::tier::Choice::parse(&val()?)?),
             "--system-link" => system_link = true,
+            "--host-light" => host_light = true,
+            "--host-bots" => host_bots = true,
             "--socket" if serve => socket = Some(PathBuf::from(val()?)),
             "--settings" if cmd != "build" => settings_dir = Some(PathBuf::from(val()?)),
             "--no-stopgaps" => stopgaps = false,
@@ -110,6 +117,13 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
         }
     }
     let live = headless_live_config(serve, system_link)?;
+    check_host_options(serve, system_link, host_light, host_bots)?;
+    if host_light && (!d3d || !bink || !dsound || !xapi) {
+        bail!("--host-light needs the guest D3D, Bink, DirectSound and XAPI shims");
+    }
+    if host_light && matches!(movies, boot::movies_glue::Movies::Dir(_)) {
+        bail!("--host-light skips movies; remove --movies");
+    }
     let disc = disc
         .or_else(|| std::env::var_os("H2_DISC").map(PathBuf::from))
         .context(USAGE)?;
@@ -184,6 +198,8 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
         crate::h1_import::auto_import(&disc, &data);
     }
     let host = boot::Host {
+        host_light,
+        host_bots,
         settings: settings_dir.map(|d| settings_store(cmd, &d)),
         ..boot::Host::default()
     };
@@ -220,6 +236,16 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     );
     println!("stop: {}", r.stop);
     println!("last eip: {:#010x}", r.eip);
+    Ok(())
+}
+
+fn check_host_options(serve: bool, system_link: bool, light: bool, bots: bool) -> Result<()> {
+    if light && !(serve && system_link) {
+        bail!("--host-light requires h2 serve --system-link");
+    }
+    if bots && !light {
+        bail!("--host-bots requires --host-light");
+    }
     Ok(())
 }
 
@@ -361,6 +387,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn light_host_and_its_bots_are_explicit_opt_ins() {
+        assert!(check_host_options(true, true, true, false).is_ok());
+        assert!(check_host_options(true, true, true, true).is_ok());
+        assert!(check_host_options(true, true, false, false).is_ok());
+        assert!(check_host_options(true, false, true, false).is_err());
+        assert!(check_host_options(false, true, true, false).is_err());
+        assert!(check_host_options(true, true, false, true).is_err());
     }
 
     #[test]

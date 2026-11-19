@@ -220,7 +220,7 @@ pub fn install_with_sinks(
     open: SinkOpener,
     pad: Option<PadSpeaker>,
 ) -> anyhow::Result<Audio> {
-    install_parts(rt, k, Some(xbe), open, pad)
+    install_parts(rt, k, Some(xbe), Some(open), pad)
 }
 
 /// [`install_with_sink`] without the native WMA codec (it needs the retail
@@ -231,14 +231,23 @@ pub fn install_without_wma(
     k: &Arc<kernel::Kernel>,
     open: SinkOpener,
 ) -> anyhow::Result<Audio> {
-    install_parts(rt, k, None, open, None)
+    install_parts(rt, k, None, Some(open), None)
+}
+
+/// Installs the guest sound API and its logical completion clock.
+pub fn install_clock_only(
+    rt: &Arc<runtime::Runtime>,
+    k: &Arc<kernel::Kernel>,
+    xbe: &[u8],
+) -> anyhow::Result<Audio> {
+    install_parts(rt, k, Some(xbe), None, None)
 }
 
 fn install_parts(
     rt: &Arc<runtime::Runtime>,
     k: &Arc<kernel::Kernel>,
     xbe: Option<&[u8]>,
-    open: SinkOpener,
+    open: Option<SinkOpener>,
     pad: Option<PadSpeaker>,
 ) -> anyhow::Result<Audio> {
     let mixer = Arc::new(Mutex::new(audio::Mixer::new(RATE as u32)));
@@ -271,17 +280,22 @@ fn install_parts(
         s.attach_router_sink(move |router| hle.direct_sound().set_pad_router(router));
     }
     let origin = k.clock().counter();
+    let pacing = if open.is_some() {
+        dsound::Pacing::Logical {
+            origin,
+            max_queued: std::time::Duration::from_millis(250),
+            playout: Some(playout_from_env()),
+        }
+    } else {
+        dsound::Pacing::Completions { origin }
+    };
     let output = hle
         .spawn_output(
             Arc::clone(rt),
-            move || BoxedSink(open()),
+            move || BoxedSink(open.expect("playback opens a sink")()),
             dsound::OutputConfig {
                 period: std::time::Duration::from_millis(5),
-                pacing: dsound::Pacing::Logical {
-                    origin,
-                    max_queued: std::time::Duration::from_millis(250),
-                    playout: Some(playout_from_env()),
-                },
+                pacing,
                 halt_when: None,
                 side,
             },

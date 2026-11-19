@@ -32,11 +32,16 @@ pub struct DirDiscBackend {
     entries: BTreeMap<String, Node>,
     volume_bytes: u64,
     /// The last file read, kept open: the game streams maps in many reads.
-    open: Option<(String, File)>,
+    open: Option<(String, File, Option<memmap2::Mmap>)>,
+    mmap: bool,
 }
 
 impl DirDiscBackend {
     pub fn open(root: impl AsRef<Path>) -> Result<Self> {
+        Self::open_with_mapping(root, false)
+    }
+
+    fn open_with_mapping(root: impl AsRef<Path>, mmap: bool) -> Result<Self> {
         let root = root.as_ref().to_path_buf();
         if !std::fs::metadata(&root)?.is_dir() {
             return Err(Error::ObjectPathNotFound);
@@ -82,6 +87,7 @@ impl DirDiscBackend {
             entries,
             volume_bytes,
             open: None,
+            mmap,
         })
     }
 
@@ -178,13 +184,22 @@ impl Backend for DirDiscBackend {
             return Ok(0);
         }
         let key = path.to_ascii_lowercase();
-        let host = node.host.clone();
-        let file = match &mut self.open {
-            Some((k, f)) if *k == key => f,
-            slot => &mut slot.insert((key, File::open(host)?)).1,
-        };
-        file.seek(SeekFrom::Start(offset))?;
-        file.read_exact(&mut buffer[..len])?;
+        if self.open.as_ref().is_none_or(|opened| opened.0 != key) {
+            let file = File::open(&node.host)?;
+            let mapping = if self.mmap && key.ends_with(".map") {
+                crate::disc::map_read_only(&file)
+            } else {
+                None
+            };
+            self.open = Some((key, file, mapping));
+        }
+        let (_, file, mapping) = self.open.as_mut().expect("DVD file opened above");
+        if let Some(map) = mapping {
+            crate::disc::copy_mapped(map, offset, &mut buffer[..len])?;
+        } else {
+            file.seek(SeekFrom::Start(offset))?;
+            file.read_exact(&mut buffer[..len])?;
+        }
         Ok(len)
     }
     fn volume_info(&mut self) -> Result<VolumeInfo> {
@@ -216,11 +231,18 @@ pub enum AnyDisc {
 
 /// The DVD at `path`: a disc image or a directory of the disc's files.
 pub fn open_disc(path: impl AsRef<Path>) -> Result<AnyDisc> {
+    open_disc_with_mapping(path, false)
+}
+
+/// The DVD mount for an immutable disc. Mapping permits multiple processes
+/// to use the same file-backed pages. Keep the underlying files unmodified
+/// while hosts are running. Non-mappable inputs use the normal reads.
+pub fn open_disc_with_mapping(path: impl AsRef<Path>, mmap: bool) -> Result<AnyDisc> {
     let path = path.as_ref();
     if std::fs::metadata(path)?.is_dir() {
-        Ok(AnyDisc::Dir(DirDiscBackend::open(path)?))
+        Ok(AnyDisc::Dir(DirDiscBackend::open_with_mapping(path, mmap)?))
     } else {
-        Ok(AnyDisc::Image(crate::DiscBackend::open(path)?))
+        Ok(AnyDisc::Image(crate::DiscBackend::open_with_mapping(path, mmap)?))
     }
 }
 
@@ -328,6 +350,27 @@ mod tests {
         assert!(matches!(
             d.create("new.txt", false, 0),
             Err(Error::MediaWriteProtected)
+        ));
+    }
+
+    #[test]
+    fn mapped_and_streamed_maps_return_the_same_partial_reads() {
+        let t = tree();
+        let mut streamed = open_disc(&t.0).unwrap();
+        let mut mapped = open_disc_with_mapping(&t.0, true).unwrap();
+        for offset in [0, 19, 250, 256, u64::MAX] {
+            let mut a = [0; 32];
+            let mut b = [0; 32];
+            let path = "maps\\mainmenu.map";
+            assert_eq!(
+                streamed.read_at(path, offset, &mut a),
+                mapped.read_at(path, offset, &mut b)
+            );
+            assert_eq!(a, b);
+        }
+        assert!(matches!(
+            &mapped,
+            AnyDisc::Dir(d) if d.open.as_ref().is_some_and(|file| file.2.is_some())
         ));
     }
 

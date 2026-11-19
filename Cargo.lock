@@ -7083,6 +7083,7 @@ name = "vfs"
 version = "0.1.0"
 dependencies = [
  "content",
+ "memmap2",
  "rustix 1.1.6",
  "thiserror 2.0.21",
  "xiso",

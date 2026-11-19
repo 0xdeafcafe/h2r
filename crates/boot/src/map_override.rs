@@ -170,7 +170,8 @@ pub fn mount_with_hashes<R: vfs::Rewrite + 'static>(
     }
     // A level's Halo 2-assets map, when there is one, is served while the
     // pregame screen chooses Halo 2's assets (docs/halo1/campaign.md §5).
-    let disc = vfs::CampaignMapsBackend::new(vfs::open_disc(disc)?, campaign_maps.iter().cloned())
+    let dvd = vfs::open_disc_with_mapping(disc, cfg.mmap_disc)?;
+    let disc = vfs::CampaignMapsBackend::new(dvd, campaign_maps.iter().cloned())
         .with_assets(
             crate::h1_variants::campaign_choice(),
             crate::h1_variants::campaign_alternates(campaign_maps),

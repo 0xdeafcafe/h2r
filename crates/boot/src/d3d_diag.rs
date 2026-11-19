@@ -54,7 +54,15 @@ pub fn note_skipped_present() {
 }
 
 /// Wall-clock time of every present, for the frame-rate report.
+static KEEP_PRESENT_HISTORY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 static PRESENT_TIMES: Mutex<Vec<std::time::Instant>> = Mutex::new(Vec::new());
+
+pub fn keep_present_history(keep: bool) {
+    KEEP_PRESENT_HISTORY.store(keep, std::sync::atomic::Ordering::Relaxed);
+    if !keep {
+        *PRESENT_TIMES.lock().unwrap() = Vec::new();
+    }
+}
 
 /// Wall-clock frame rate: presents per second over the run since `start`,
 /// and over a window with its mean, median and worst frame time: from
@@ -1087,7 +1095,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
         }
         self.stats.lock().unwrap().presents += 1;
         let n = PRESENTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-        {
+        if KEEP_PRESENT_HISTORY.load(std::sync::atomic::Ordering::Relaxed) {
             let mut times = PRESENT_TIMES.lock().unwrap();
             let now = std::time::Instant::now();
             // A heartbeat for long runs: where the run is, and how fast the last 100 went.

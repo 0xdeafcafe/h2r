@@ -85,5 +85,5 @@ perf = ["dep:perf"]
 # The fixture generated module, for hooks run through the real Runner.
 runtime-test-probe = { path = "../runtime/test-probe" }
 
-[target.'cfg(unix)'.dev-dependencies]
+[target.'cfg(unix)'.dependencies]
 libc = "0.2"

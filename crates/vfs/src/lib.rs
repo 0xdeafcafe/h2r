@@ -20,7 +20,7 @@ mod write_behind;
 
 pub use backend::Backend;
 pub use campaign_maps::CampaignMapsBackend;
-pub use dir_disc::{AnyDisc, DirDiscBackend, open_disc};
+pub use dir_disc::{AnyDisc, DirDiscBackend, open_disc, open_disc_with_mapping};
 pub use disc::DiscBackend;
 pub use host::{HostBackend, METADATA_STALE, flush_pending_metadata};
 pub use map_override::{MapOverrideBackend, MapOverrideNotice};
@@ -70,6 +70,8 @@ pub struct Config {
     /// ([`PackageBackend::over_map_pack`], docs/game/maps.md "Importing a
     /// mod"); `None` serves the partition as it is.
     pub map_packages: Option<PathBuf>,
+    /// Use read-only mappings for the immutable DVD, when possible.
+    pub mmap_disc: bool,
 }
 impl Config {
     pub fn new(data_root: impl Into<PathBuf>, title_id: u32) -> Self {
@@ -79,6 +81,7 @@ impl Config {
             utility_partition: 5,
             variants: ContentVariants::default(),
             map_packages: None,
+            mmap_disc: false,
         }
     }
     /// Host directory behind `T:`: `<data_root>/disk/Partition1/TDATA/<TITLE>`.
@@ -256,7 +259,7 @@ impl Vfs {
     pub fn with_disc(config: Config, disc: impl AsRef<std::path::Path>) -> Result<Self> {
         // Fail a bad image before creating persistent storage directories.
         // A directory holding the disc's files serves as well (tvOS).
-        let disc = open_disc(disc)?;
+        let disc = open_disc_with_mapping(disc, config.mmap_disc)?;
         let mut vfs = Self::with_storage(config)?;
         vfs.mount(CDROM_DEVICE, disc)?;
         Ok(vfs)
@@ -268,7 +271,7 @@ impl Vfs {
         disc: impl AsRef<std::path::Path>,
         rewrite: impl Rewrite + 'static,
     ) -> Result<Self> {
-        let disc = open_disc(disc)?;
+        let disc = open_disc_with_mapping(disc, config.mmap_disc)?;
         let mut vfs = Self::with_storage(config)?;
         vfs.mount(CDROM_DEVICE, RewriteBackend::new(disc, rewrite))?;
         Ok(vfs)

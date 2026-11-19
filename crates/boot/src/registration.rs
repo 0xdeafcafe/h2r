@@ -45,8 +45,8 @@ pub struct CoreInputs<'a> {
     pub level: Option<level_boot::Request>,
     /// `H2_PERF_FROM=level`: wait for the level-loaded mark.
     pub perf_level: bool,
-    /// The XAPI layer is on (bots and the Clankers page need pads).
-    pub xapi: bool,
+    /// Install bots and the Clankers page (requires XAPI pads).
+    pub bots: bool,
 }
 
 /// What [`register_core`] decided, for the install lines after the plan.
@@ -186,7 +186,7 @@ pub fn register_core(features: &mut feature::Registry, i: CoreInputs<'_>) -> any
     // signed in on the players screen, their views and listeners hidden.
     // `H2_BOTS` adds brains at boot; idle with none.
     let mut bots_on = false;
-    if i.xapi {
+    if i.bots {
         bot_glue::add_from_env();
         bots_on = bot_glue::install(features, i.data_root).context("installing the bots")?;
         // The Clankers page and its Game Setup row (stage 7).
@@ -217,6 +217,7 @@ pub struct LateInputs<'a> {
     pub rt: &'a Arc<Runtime>,
     pub lockstep: lockstep_glue::Config,
     pub agent: AgentSource,
+    pub allow_bot_add: bool,
     pub xa: Option<&'a xapi_glue::Shared>,
     /// From [`pipeline_for`].
     pub pipeline: feature::pipeline_render::PipelineRender,
@@ -268,7 +269,7 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
         // Over TCP (the Xbox app) a refused port must not stop the game:
         // it runs on, undriven, and says why.
         AgentSource::Socket(path) if matches!(agent_proto::Endpoint::from(path.clone()), agent_proto::Endpoint::Tcp(_)) => {
-            match agent_glue::AgentGlue::install(features, path, xa, input_replay) {
+            match agent_glue::AgentGlue::install(features, path, xa, input_replay, i.allow_bot_add) {
                 Ok(a) => Some(a),
                 Err(e) => {
                     eprintln!("agent: not listening: {e:#}");
@@ -276,7 +277,9 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
                 }
             }
         }
-        AgentSource::Socket(path) => Some(agent_glue::AgentGlue::install(features, path, xa, input_replay)?),
+        AgentSource::Socket(path) => Some(agent_glue::AgentGlue::install(
+            features, path, xa, input_replay, i.allow_bot_add,
+        )?),
         // The debug menu talks to an agent: a local one, with no socket.
         AgentSource::Local => Some(agent_glue::AgentGlue::local()),
         AgentSource::None => None,
@@ -407,7 +410,9 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     custom_games::set_mods_row(mods_on);
     // Clankermatch (docs/game/bots.md §8): the Live menu's row splits the
     // OptiMatch playlists into the server's clanker hoppers and the rest.
-    crate::clankermatch::install(features, i.live.clone()).context("installing Clankermatch")?;
+    if i.allow_bot_add {
+        crate::clankermatch::install(features, i.live.clone()).context("installing Clankermatch")?;
+    }
     // Back to the Xbox Live menu, the cursor is on the browser or co-op
     // row the player chose, past the four rows retail restores.
     custom_games::install_cursor(features).context("installing the Live menu's cursor")?;

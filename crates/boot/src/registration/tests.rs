@@ -108,7 +108,7 @@ pub(crate) fn registry(case: &Case) -> feature::Registry {
             packages: nowhere,
             level: None,
             perf_level: case.level,
-            xapi: case.xapi,
+            bots: case.xapi,
         },
     )
     .unwrap();
@@ -128,6 +128,7 @@ pub(crate) fn registry(case: &Case) -> feature::Registry {
             rt: &rt,
             lockstep,
             agent: if case.agent { AgentSource::Local } else { AgentSource::None },
+            allow_bot_add: true,
             xa: None,
             pipeline,
             coop_probe: case
