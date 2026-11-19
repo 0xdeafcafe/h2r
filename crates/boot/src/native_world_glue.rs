@@ -559,6 +559,7 @@ fn arm_dump(ready: &Arc<Ready>, gpu: &GpuWorld, view: &ViewInputs, (instance, ma
         options: d.options,
         def: d.def,
         pixel_options: d.pixel_options,
+        textures: d.textures,
         draws: 4,
     });
 }
@@ -1283,11 +1284,25 @@ fn decode_stage<R: std::io::Read + std::io::Seek>(
         return Err(StageRefusal::Image("is not a bitmap"));
     };
     let image = b.images.get(index).ok_or(StageRefusal::Image("has no such image"))?;
-    let d = assets::decode_image(image, files).map_err(|_| StageRefusal::Image("does not decode"))?;
+    let (d, blocks) = assets::decode_image_blocks(image, files).map_err(|_| StageRefusal::Image("does not decode"))?;
     if refuse_linear && d.desc.format.layout() == gfx::format::Layout::Linear {
         return Err(StageRefusal::Here("is a linear texture"));
     }
-    stage_image(image.format, d.levels, stage, palette)
+    let (image, palettized) = stage_image(image.format, d.levels, stage, palette)?;
+    Ok((with_blocks(image, blocks), palettized))
+}
+
+/// `image` with its BC blocks, when the D3D path uploads the bitmap as BC
+/// (`assets::decode_image_blocks`): the native pass then samples the same
+/// GPU-decoded texels. The CPU decoder (`gfx::dxt`) truncates the
+/// interpolated colours, the GPU rounds them, which left native lit
+/// surfaces one level darker than the D3D path's on a few percent of
+/// pixels.
+fn with_blocks(image: Image, blocks: Option<assets::BlockLevels>) -> Image {
+    let Some(b) = blocks else { return image };
+    let mut levels: Vec<_> = b.levels.into_iter().filter(|l| l.face == 0 && l.depth <= 1).collect();
+    levels.sort_by_key(|l| l.level);
+    image.with_blocks(b.host.to_wgpu(), levels.into_iter().map(|l| l.rgba).collect())
 }
 
 /// A stage bitmap's decoded levels as the stage samples them, and whether

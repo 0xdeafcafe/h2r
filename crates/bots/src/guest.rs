@@ -869,7 +869,8 @@ pub fn perceive(m: &dyn GuestMemory, port: u32) -> R<Perception> {
 }
 
 /// What the bot `who` sees: in a multiplayer game, itself and every other
-/// player with a living unit. Outside one, nothing.
+/// player with a living unit, the weapons lying about and the objective.
+/// Outside one, nothing.
 pub fn perceive_as(m: &dyn GuestMemory, who: Who) -> R<Perception> {
     let mut out = Perception::default();
     let globals = m.u32(points::GAME_GLOBALS.base)?;
@@ -881,6 +882,7 @@ pub fn perceive_as(m: &dyn GuestMemory, who: Who) -> R<Perception> {
     let Some(array) = players::array(m)? else {
         return Ok(out);
     };
+    let mut me_index = None;
     for (handle, p) in array.live(m, 16)? {
         if !p.listed(m)? {
             continue;
@@ -890,6 +892,7 @@ pub fn perceive_as(m: &dyn GuestMemory, who: Who) -> R<Perception> {
         };
         let team = i16::from(p.team(m)?);
         if is(m, &p, who)? {
+            me_index = Some(u32::from(handle.index()));
             // Ammunition is extra: a fault reading it leaves the bot
             // playing without it (section 3.6), not blind.
             out.me = Some(Me {
@@ -908,8 +911,11 @@ pub fn perceive_as(m: &dyn GuestMemory, who: Who) -> R<Perception> {
             });
         }
     }
-    if out.me.is_some() {
+    if let Some(me) = me_index {
         out.pickups = crate::arms::pickups(m).unwrap_or_default();
+        // The objective is extra too: a fault leaves the bot playing as in
+        // Slayer (section 3.7).
+        out.objective = crate::objective::read(m, me).ok().flatten();
     }
     Ok(out)
 }
