@@ -257,7 +257,7 @@ where
                         }
                         Ok(None) => match d
                             .swallow_before_entry(e.name)
-                            .and_then(|()| abi::call(&e, &mut d, &mut mem, &regs))
+                            .and_then(|()| d.call_residual_entry(&e, &mut mem, &regs))
                         {
                             Ok(o) => {
                                 apply(cpu, o);

@@ -10,15 +10,19 @@ const STAGES: [&str; 9] = ["world", "objects", "transparents", "lights", "post",
 #[derive(Clone, Copy, Debug)]
 #[repr(usize)]
 pub enum Metric {
-    Examined, Suppressed, RefusedOwnership, RefusedResources, RefusedRanges, RefusedMasks,
+    Examined, Suppressed, RefusedOwnership, RefusedResources, RefusedRanges, RefusedMasks, RefusedInputs, RefusedValidation, RefusedReplay,
     PrepareNs, EncodeNs, Buffers, BindGroups, UploadBytes, PipelineMisses,
 }
-const METRICS: [&str; 12] = ["examined", "suppressed", "refused_ownership", "refused_resources", "refused_ranges",
-    "refused_masks", "prepare_ns", "encode_ns", "buffers", "bind_groups", "upload_bytes", "pipeline_misses"];
+const METRICS: [&str; 15] = ["examined", "suppressed", "refused_ownership", "refused_resources", "refused_ranges",
+    "refused_masks", "refused_inputs", "refused_validation", "refused_replay", "prepare_ns", "encode_ns", "buffers", "bind_groups", "upload_bytes", "pipeline_misses"];
 
 // Four Xbox player views and a bucket for non-player views.
 const VIEWS: usize = 5;
-const STRIDE: usize = METRICS.len() + VIEWS * 3;
+const VIEW_METRICS: [&str; 9] = [
+    "reference_ranges", "display_ranges", "invariants", "reference_recorded", "display_recorded",
+    "reference_invariants", "display_invariants", "reference_refused", "display_refused",
+];
+const STRIDE: usize = METRICS.len() + VIEWS * VIEW_METRICS.len();
 pub(crate) const COLUMNS: usize = STAGES.len() * STRIDE;
 pub(crate) fn labels() -> &'static [String] {
     static LABELS: OnceLock<Vec<String>> = OnceLock::new();
@@ -27,7 +31,7 @@ pub(crate) fn labels() -> &'static [String] {
         for stage in STAGES {
             for name in METRICS { out.push(format!("native_{stage}_{name}")); }
             for view in ["0", "1", "2", "3", "other"] {
-                for name in ["reference_ranges", "display_ranges", "invariants"] {
+                for name in VIEW_METRICS {
                     out.push(format!("native_{stage}_v{view}_{name}"));
                 }
             }
@@ -38,33 +42,56 @@ pub(crate) fn labels() -> &'static [String] {
 
 impl Stage {
     pub fn count(self, metric: Metric, n: u64) {
-        phase::count_index(17 + self as usize * STRIDE + metric as usize, n);
+        phase::count_index(phase::Counter::ALL.len() + self as usize * STRIDE + metric as usize, n);
     }
 
     fn view_index(self, view: u32) -> usize {
-        17 + self as usize * STRIDE + METRICS.len() + (view as usize).min(VIEWS - 1) * 3
+        phase::Counter::ALL.len() + self as usize * STRIDE + METRICS.len() + (view as usize).min(VIEWS - 1) * VIEW_METRICS.len()
     }
 
     pub fn recorded(self, view: u32, display: bool, ranges: usize) {
         phase::count_index(self.view_index(view) + usize::from(display), ranges as u64);
     }
 
-    pub fn invariant(self, view: u32) {
+    pub fn attempted(self, view: u32, display: bool, ranges: usize) {
+        phase::count_index(self.view_index(view) + 3 + usize::from(display), ranges as u64);
+    }
+
+    pub fn copy_refused(self, view: u32, display: bool) {
+        phase::count_index(self.view_index(view) + 7 + usize::from(display), 1);
+    }
+
+    pub fn invariant(self, view: u32, display: bool) {
         phase::count_index(self.view_index(view) + 2, 1);
+        phase::count_index(self.view_index(view) + 5 + usize::from(display), 1);
     }
 }
 
-pub struct Timer(Option<(Stage, Metric, std::time::Instant)>);
+thread_local! {
+    static ACTIVE: std::cell::Cell<Option<Stage>> = const { std::cell::Cell::new(None) };
+}
+
+/// Charge actual GPU resource operations to the stage currently executing
+/// on this thread. A shared device may serve more than one backend.
+#[inline]
+pub fn resource(metric: Metric, n: u64) {
+    if phase::enabled() && let Some(stage) = ACTIVE.with(std::cell::Cell::get) {
+        stage.count(metric, n);
+    }
+}
+
+pub struct Timer(Option<(Stage, Metric, std::time::Instant, Option<Stage>)>);
 
 impl Timer {
     pub fn start(stage: Stage, metric: Metric) -> Self {
-        Self(phase::enabled().then(|| (stage, metric, std::time::Instant::now())))
+        Self(phase::enabled().then(|| (stage, metric, std::time::Instant::now(), ACTIVE.with(|a| a.replace(Some(stage))))))
     }
 }
 
 impl Drop for Timer {
     fn drop(&mut self) {
-        if let Some((stage, metric, start)) = self.0 {
+        if let Some((stage, metric, start, previous)) = self.0 {
+            ACTIVE.with(|a| a.set(previous));
             stage.count(metric, start.elapsed().as_nanos() as u64);
         }
     }

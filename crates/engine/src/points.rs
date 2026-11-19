@@ -281,8 +281,18 @@ points! { ALL;
     /// `render_game_view`: one game view (camera, render state, scene
     /// passes, UI composition).
     RENDER_GAME_VIEW @ 0x0002_b790: [opaque]; "docs/engine/engine-map.md";
+    /// The alternate view path selected by the render view record.
+    RENDER_ALTERNATE_VIEW @ 0x0002_c790: [opaque]; "docs/graphics/render-loop.md";
+    /// End-of-frame rendering after the view loop, before the final blit.
+    RENDER_FRAME_TAIL @ 0x0001_3b90: [opaque]; "docs/graphics/native-renderer.md";
     /// `render_scene_passes`: the scene pass sequence of one view.
     RENDER_SCENE_PASSES @ 0x0002_bcd0: [opaque]; "docs/graphics/e3-lighting.md";
+    /// Sets the render stencil mode, including after the scene passes return.
+    RENDER_STENCIL_MODE @ 0x0001_5370: [opaque]; "docs/graphics/native-renderer.md";
+    /// One dynamic decal callback: `0x00163cd0` calls it in stored list order
+    /// after `0x00043a40` selects the mode and its state. Stack `(list, unused)`,
+    /// `ret 8`; the only native decal replacement point.
+    DECAL_RENDER @ 0x0004_4040: [fn(list: stack 0, unused: stack 1) ret 8]; "docs/graphics/native-decals-research.md";
     /// `render_dynamic_lights`: the visible lights, each gathered and drawn
     /// with `RENDER_LIGHT_PASSES` (`render_scene_passes` calls it after
     /// layer 7).
@@ -314,8 +324,10 @@ points! { ALL;
     /// `0x0002d140` at `0x0002d4b7` per pass): stack `(shader, layer,
     /// implementation, selector, target, 0)`, AL whether the pass draws
     /// (`engine::screen_effect::template_draws`; `0x0002d4be` skips the
-    /// pass when it does not), `ret 0x18`. Hooked only by `H2_POST_TRACE`.
+    /// pass when it does not), `ret 0x18`. Post trace and native gels hook it.
     TEMPLATE_PASS @ 0x0001_6610: [fn(shader: stack 0, layer: stack 1, implementation: stack 2, selector: stack 3, target: stack 4, flags: stack 5) -> al ret 24], Optional; "docs/graphics/native-renderer.md";
+    /// Full-target template quad; its gel caller returns to 0x1675a.
+    TEMPLATE_QUAD @ 0x0001_5ec0: [fn(target: stack 0) ret 4], Optional; "docs/graphics/native-gels.md";
     /// Draws the current layer (`[0x00467130]`) of the current list: layer
     /// setup, then `LAYER_ENTRIES` for the layers in its mask.
     LAYER_DRAW @ 0x0004_4550: [opaque]; "docs/graphics/layer-draw.md";

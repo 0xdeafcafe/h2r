@@ -1078,11 +1078,9 @@ impl Backend for HostBackend {
     /// Empty the volume directory and its metadata directory, keeping both
     /// roots ([`HostBackend::empty_roots`]).
     fn format(&mut self) -> Result<()> {
-        // Queued writes land in the files about to go; their errors with them.
+        // Land queued writes before deleting their files. Keep errors for
+        // files that survive a failed format.
         self.settle_all();
-        if let Some(wb) = &self.write_behind {
-            wb.clear_errors();
-        }
         self.handles.clear();
         // Held throughout so no flusher stores a record mid-format. A
         // format that fails partway keeps the pending metadata of the files
@@ -1103,9 +1101,10 @@ impl Backend for HostBackend {
         };
         let emptied = self.empty_roots(&mut before_unlink);
         if let Err(error) = emptied {
-            // Listings, usage and per-path state may describe removed
-            // entries; keep only what still names a surviving file.
-            let (atimes, dirty_data, reservations) = {
+            // Listings and usage may describe removed entries. Drop
+            // per-path state only when we can establish that the entry
+            // is gone. A later lookup still reports any access error.
+            let (mut atimes, mut dirty_data, mut reservations) = {
                 let mut cache = self.cache.borrow_mut();
                 cache.directories.clear();
                 cache.used_bytes = None;
@@ -1115,19 +1114,32 @@ impl Backend for HostBackend {
                     std::mem::take(&mut cache.reservations),
                 )
             };
-            let exists = |path: &String| self.resolve(path, false).is_ok();
-            written.retain(|path, _| exists(path));
-            let atimes = atimes.into_iter().filter(|(p, _)| exists(p)).collect();
-            let dirty_data = dirty_data.into_iter().filter(exists).collect();
-            let reservations = reservations
-                .into_iter()
-                .filter(|(p, _)| exists(p))
-                .collect();
+            let may_survive = |path: &str| {
+                !matches!(
+                    self.resolve(path, false),
+                    Err(Error::ObjectNameNotFound | Error::ObjectPathNotFound)
+                )
+            };
+            written.retain(|path, _| may_survive(path));
+            atimes.retain(|path, _| may_survive(path));
+            dirty_data.retain(|path| may_survive(path));
+            reservations.retain(|path, _| may_survive(path));
+            if let Some(wb) = &self.write_behind {
+                wb.retain_errors(|host| {
+                    !matches!(
+                        fs::symlink_metadata(host).map_err(Error::from),
+                        Err(Error::ObjectNameNotFound | Error::NotADirectory)
+                    )
+                });
+            }
             let mut cache = self.cache.borrow_mut();
             cache.atimes = atimes;
             cache.dirty_data = dirty_data;
             cache.reservations = reservations;
             return Err(error);
+        }
+        if let Some(wb) = &self.write_behind {
+            wb.clear_errors();
         }
         written.clear();
         *self.cache.borrow_mut() = Cache::default();
@@ -1918,6 +1930,44 @@ mod tests {
         backend.format().unwrap();
         assert_eq!(backend.pending_written(), 0);
         assert!(!backend.root.join("data").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_format_keeps_state_for_an_unreadable_path() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = Temp::new();
+        let mut backend = temp.backend().with_write_behind(false);
+        backend.set_stale(Duration::from_secs(3600));
+        let path = "folder\\data";
+        backend.create("folder", true, 0).unwrap();
+        backend
+            .create_allocated(path, false, 0, 2 * FATX_CLUSTER_SIZE, 1)
+            .unwrap();
+        backend.write_at(path, 0, b"x").unwrap();
+        assert_eq!(backend.read_at(path, 0, &mut [0]), Ok(1));
+        let before = backend.stat(path).unwrap();
+        let folder = backend.root.join("folder");
+        let permissions = fs::metadata(&folder).unwrap().permissions();
+        fs::set_permissions(&folder, fs::Permissions::from_mode(0o000)).unwrap();
+        // A privileged test process can still read a mode-000 directory.
+        if fs::read_dir(&folder).is_ok() {
+            fs::set_permissions(&folder, permissions).unwrap();
+            return;
+        }
+        let formatted = backend.format();
+        let unresolved = backend.stat(path);
+        fs::set_permissions(&folder, permissions).unwrap();
+
+        assert_eq!(formatted, Err(Error::AccessDenied));
+        assert_eq!(unresolved, Err(Error::AccessDenied));
+        assert_eq!(backend.pending_written(), 1);
+        assert!(backend.cache.borrow().atimes.contains_key(path));
+        assert!(backend.cache.borrow().dirty_data.contains(path));
+        assert_eq!(backend.stat(path), Ok(before));
+        backend.format().unwrap();
+        assert_eq!(backend.stat(path), Err(Error::ObjectPathNotFound));
     }
 
     #[test]

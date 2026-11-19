@@ -34,6 +34,7 @@
 
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
 use gfx::texture::{DecodeOptions, TextureDesc, decode_texture};
 use gfx::vertex::{
@@ -60,10 +61,13 @@ use crate::shader::{CONSTANTS, Microcode, PROGRAM_SLOTS, ShaderInputs, VertexPro
 use crate::state::{DrawState, StateWords, Translator, slot};
 use crate::vertex_cache::{IndexCache, Probe, VertexCache};
 
+mod admission_scope;
 mod display;
 mod fragments;
 mod mirror;
+mod native_residual;
 mod raster;
+use native_residual::{EntryKind, Residual};
 mod snap;
 mod visibility;
 
@@ -1027,6 +1031,8 @@ pub struct Device<B: Backend> {
     /// since the last drain, issued after the next one in the order asked.
     pending_external: Vec<Box<dyn crate::backend::ExternalPass>>,
     admissions: Vec<Arc<dyn crate::DrawAdmission>>,
+    scoped_admission: Option<(Arc<ScopeState>, Arc<dyn crate::DrawAdmission>)>,
+    residual: Residual,
     /// The draws of a pass being swallowed ([`Device::swallow`]).
     swallowing: Option<Swallowing<B>>,
     /// How the last swallow that ended early ended
@@ -1136,6 +1142,21 @@ fn d3dcolor_to_rgba(c: u32) -> [f32; 4] {
     ]
 }
 
+#[derive(Default)]
+struct ScopeState {
+    closed: AtomicBool,
+    committed: AtomicBool,
+}
+
+/// A producer call may replace only its first geometry emission. Dropping
+/// the handle disarms it even if a callback or early return bypasses the exit hook.
+#[must_use]
+pub struct DrawScope(Arc<ScopeState>);
+
+impl Drop for DrawScope {
+    fn drop(&mut self) { self.0.closed.store(true, AtomicOrdering::Release); }
+}
+
 struct ExternalBinding<S> {
     surfaces: crate::ExternalSurfaces<S>,
     request: crate::ExternalPassRequest,
@@ -1154,7 +1175,6 @@ fn complete_recordings(plan: &crate::ExternalPlan, c: &[crate::ExternalRecording
 #[must_use = "drop to cancel, commit after applying reversible guest edits"]
 pub struct PreparedExternal<'a, B: Backend> {
     device: &'a mut Device<B>,
-    plan: crate::ExternalPlan,
     recordings: Vec<crate::ExternalRecording>,
     binding: ExternalBinding<B::Surface>,
 }
@@ -1162,7 +1182,6 @@ pub struct PreparedExternal<'a, B: Backend> {
 impl<B: Backend> PreparedExternal<'_, B> {
     pub fn commit(self) {
         for recording in self.recordings {
-            self.plan.stage.recorded(self.plan.view, recording.copy == crate::TargetCopy::Display, recording.ranges);
             self.device.backend.commit_external(recording);
         }
         for (header, _) in self.binding.colors {
@@ -1258,6 +1277,8 @@ impl<B: Backend> Device<B> {
             pending_grid: None,
             pending_external: Vec::new(),
             admissions: Vec::new(),
+            scoped_admission: None,
+            residual: Residual::default(),
             swallowing: None,
             swallow_mismatch: None,
             trace: None,
@@ -1315,6 +1336,13 @@ impl<B: Backend> Device<B> {
     /// The last recorded stop.
     pub fn last_stop(&self) -> Option<&HleStop> {
         self.last_stop.as_ref()
+    }
+
+    /// How many frames the game has swapped so far ([`Device::swap`]'s
+    /// count): a draw recorded now is shown by swap `swap_count() + 1`,
+    /// the number `H2_*` frame shots (`frame-NNNNN.png`) take.
+    pub fn swap_count(&self) -> u32 {
+        self.swap_count
     }
 
     /// Present parameters of the created device.
@@ -1992,6 +2020,30 @@ impl<B: Backend> Device<B> {
         self.admissions.push(admission);
     }
 
+    /// Enter a guest helper that emits a single candidate draw. Drain earlier
+    /// packets before arming it. A nested helper supersedes the outer candidate.
+    pub fn begin_draw_scope(
+        &mut self, mem: &mut dyn GuestMemory, admission: Arc<dyn crate::DrawAdmission>,
+    ) -> Result<Option<DrawScope>, D3dError> {
+        let drained = self.begin_external_boundary(mem);
+        self.scoped_admission = None;
+        if !drained? { return Ok(None); }
+        let scope = Arc::new(ScopeState::default());
+        self.scoped_admission = Some((scope.clone(), admission));
+        Ok(Some(DrawScope(scope)))
+    }
+
+    /// Drain this helper's inline emission while its call identity is still
+    /// live. Returns true only after the native replacement has committed.
+    pub fn end_draw_scope(&mut self, mem: &mut dyn GuestMemory, scope: DrawScope) -> Result<bool, D3dError> {
+        if self.scoped_admission.as_ref().is_some_and(|(s, _)| Arc::ptr_eq(s, &scope.0)) {
+            let drained = self.begin_external_boundary(mem);
+            self.scoped_admission = None;
+            drained?;
+        }
+        Ok(scope.0.committed.load(AtomicOrdering::Acquire))
+    }
+
     /// Drain work preceding the hook and reserve an entire replacement. A pending
     /// guest callback must run first. It remains queued on refusal.
     pub fn prepare_external_pass(
@@ -2032,6 +2084,7 @@ impl<B: Backend> Device<B> {
         &mut self, mem: &mut dyn GuestMemory, plan: &crate::ExternalPlan, pass: &mut dyn crate::ExternalPass,
         held: Option<&[Option<B::Surface>]>,
     ) -> Result<ExternalBinding<B::Surface>, ExternalRefusal> {
+        let _timer = timeline::native::Timer::start(plan.stage, timeline::native::Metric::PrepareNs);
         let request = self.external_ready(mem, pass.colour_only())?;
         let writes = pass.writes();
         if (pass.colour_only() && writes.depth_stencil) || plan.ranges == 0 {
@@ -2072,15 +2125,27 @@ impl<B: Backend> Device<B> {
         &mut self, mem: &mut dyn GuestMemory, plan: crate::ExternalPlan, mut pass: Box<dyn crate::ExternalPass>,
         slots: Option<Vec<Option<B::Surface>>>, rect: Option<(u32, u32, u32, u32)>,
     ) -> Result<Option<PreparedExternal<'_, B>>, D3dError> {
+        let items = pass.items(plan.ranges) as u64;
         let mut binding = match self.external_binding(mem, &plan, &mut *pass, slots.as_deref()) {
             Ok(b) => b,
-            Err(why) => { self.refuse_external(why); return Ok(None); }
+            Err(why) => {
+                self.refuse_external(why);
+                plan.stage.count(timeline::native::Metric::Examined, items);
+                plan.stage.count(timeline::native::Metric::RefusedResources, items);
+                return Ok(None);
+            }
         };
         if let Some(rect) = rect { binding.request.rect = rect; }
-        let commands = self.backend.prepare_external(
+        let commands = match self.backend.prepare_external(
             binding.surfaces.clone(), binding.request, [None; 4], &plan,
             crate::TargetCopy::Reference, Arc::new(std::sync::Mutex::new(pass)),
-        ).map_err(D3dError::Backend)?;
+        ) {
+            Ok(commands) => commands,
+            Err(_) => {
+                self.refuse_external(ExternalRefusal::Backend);
+                return Ok(None);
+            }
+        };
         self.external_reservation(plan, binding, commands)
     }
 
@@ -2093,7 +2158,7 @@ impl<B: Backend> Device<B> {
             return Ok(None);
         };
         for &(_, surface) in &binding.colors { self.before_target_write(surface)?; }
-        Ok(Some(PreparedExternal { device: self, plan, binding, recordings }))
+        Ok(Some(PreparedExternal { device: self, binding, recordings }))
     }
 
     /// Render-state slot `slot` (guest numbering) as the setters stored it
@@ -2780,6 +2845,7 @@ impl<B: Backend> Device<B> {
             pass.depth_clip(self.depth_clip(mem, z_max));
         }
         let colour_only = pass.colour_only();
+        let writes = pass.writes();
         // The levels it samples, as a draw binding them now would sample
         // them in place; `None` where one cannot be.
         let sampled = pass
@@ -2795,6 +2861,7 @@ impl<B: Backend> Device<B> {
                 // gives it a scratch depth; `Backend::external_pass`).
                 Ok((color, depth)) => match if colour_only { Some(color) } else { depth } {
                     None => Err(ExternalRefusal::NoDepth),
+                    Some(_) if writes.color && self.before_target_write(color).is_err() => Err(ExternalRefusal::Failed),
                     Some(depth) => match self.backend.external_pass(color, depth, sampled, request, pass) {
                         Ok(true) => Ok(()),
                         Ok(false) => Err(ExternalRefusal::Backend),
@@ -2804,7 +2871,11 @@ impl<B: Backend> Device<B> {
             },
         };
         match issued {
-            Ok(()) => self.stats.external_passes += 1,
+            Ok(()) => {
+                self.stats.external_passes += 1;
+                if writes.color { self.mark_color_written(self.render_target); }
+                if writes.depth_stencil && !colour_only { self.mark_depth_written(); }
+            }
             Err(why) => self.refuse_external(why),
         }
     }
@@ -4148,7 +4219,7 @@ impl<B: Backend> Device<B> {
     ) -> Result<(), D3dError> {
         const E: &str = "D3DDevice_SetRenderTarget";
         self.live(E)?;
-        self.sync_push_buffer(mem)?;
+        self.sync_residual_entry(mem, EntryKind::Bind)?;
         let target = if target == 0 {
             self.render_target
         } else {
@@ -4204,7 +4275,7 @@ impl<B: Backend> Device<B> {
     ) -> Result<(), D3dError> {
         const E: &str = "D3DDevice_SetRenderTarget (same size, 0x3f7b30)";
         self.live(E)?;
-        self.sync_push_buffer(mem)?;
+        self.sync_residual_entry(mem, EntryKind::Bind)?;
         if target == 0 {
             return Err(D3dError::invalid(E, "null render target"));
         }
@@ -4237,11 +4308,17 @@ impl<B: Backend> Device<B> {
         // new one is acquired before the old one is stamped and released.
         // Staged, so a release that stops leaves every count and the
         // binding as they were.
+        let move_refs = !self.residual.enabled
+            || [target, z_stencil, self.render_target, self.depth_stencil]
+                .into_iter()
+                .any(|header| self.title_surface(header));
         let mut refs = Staged::default();
-        self.acquire_surface(&mut refs, mem, target)?;
-        self.release_surface(&mut refs, mem, entry, self.render_target)?;
-        self.release_surface(&mut refs, mem, entry, self.depth_stencil)?;
-        self.acquire_surface(&mut refs, mem, z_stencil)?;
+        if move_refs {
+            self.acquire_surface(&mut refs, mem, target)?;
+            self.release_surface(&mut refs, mem, entry, self.render_target)?;
+            self.release_surface(&mut refs, mem, entry, self.depth_stencil)?;
+            self.acquire_surface(&mut refs, mem, z_stencil)?;
+        }
         if target != self.render_target {
             self.leave_target(mem)?;
         }
@@ -4259,8 +4336,10 @@ impl<B: Backend> Device<B> {
                 self.write_back(mem, old, WritebackCause::DepthBinding)?;
             }
         }
-        let destroys = refs.commit(mem)?;
-        self.destroy_resources(mem, destroys)?;
+        if move_refs {
+            let destroys = refs.commit(mem)?;
+            self.destroy_resources(mem, destroys)?;
+        }
         self.render_target = target;
         self.depth_stencil = z_stencil;
         let dev = self.cfg.layout.device;
@@ -5103,6 +5182,8 @@ impl<B: Backend> Device<B> {
         streams: &mut Vec<StreamBytes>,
     ) -> Result<(), D3dError> {
         let entry = parts.entry;
+        // Consume the candidate even when it proves empty, clipped or unresolved.
+        let scoped = self.scoped_admission.take().filter(|(state, _)| !state.closed.load(AtomicOrdering::Acquire));
         if self.swallowing.as_ref().is_some_and(|s| !s.holding)
             && !matches!(entry, "inline Begin/End" | "D3DDevice_End")
         {
@@ -5238,25 +5319,30 @@ impl<B: Backend> Device<B> {
         } else {
             (draw, snapshots)
         };
-        let admission = if self.swallowing.is_some() || self.admissions.is_empty()
+        let admission = if self.swallowing.is_some() || (scoped.is_none() && self.admissions.is_empty())
             || !draw.state.bad.is_empty() || self.hw.zpass_count_enable
         {
             None
         } else {
             let snapshot = crate::DrawSnapshot {
-                draw: &draw, palettes: self.palettes,
+                draw: &draw, vertex_shader: self.vertex_shader, pixel_shader: self.pixel_shader,
+                bound_textures: self.textures, sampled_stages: sampled, palettes: self.palettes,
                 palette_entries: std::array::from_fn(|i| self.stage_palette(mem, i)),
                 color_header: self.render_target, depth_header: self.depth_stencil,
             };
-            self.admissions.iter().find_map(|a| a.admit(&snapshot))
+            if let Some((_, stage)) = &scoped {
+                crate::backend::admit_draw(stage.as_ref(), &snapshot)
+            } else {
+                self.admissions.iter().find_map(|stage| crate::backend::admit_draw(stage.as_ref(), &snapshot))
+            }
         };
         let replacement = admission.and_then(|(plan, mut pass)| {
             use timeline::native::Metric;
-            plan.stage.count(Metric::Examined, 1);
             match self.external_binding(mem, &plan, &mut *pass, None) {
                 Ok(binding) => Some((plan, pass, binding)),
                 Err(why) => {
                     self.refuse_external(why);
+                    plan.stage.count(Metric::Examined, 1);
                     plan.stage.count(Metric::RefusedResources, 1);
                     None
                 }
@@ -5274,20 +5360,28 @@ impl<B: Backend> Device<B> {
                 .or_else(|| keys[i].and_then(|k| self.cache.get(&k)).map(|c| &c.host))
         });
         self.stats.draws += 1;
+        let replacement = replacement.filter(|(plan, pass, _)| {
+            let missing = (0..4).any(|i| sampled[i] && draw.textures[i].is_some() && textures[i].is_none());
+            if missing {
+                let items = pass.items(plan.ranges) as u64;
+                plan.stage.count(timeline::native::Metric::Examined, items);
+                plan.stage.count(timeline::native::Metric::RefusedResources, items);
+            }
+            !missing
+        });
         if let Some((plan, pass, binding)) = replacement {
-            let stage = plan.stage;
             let commands = self.backend.prepare_external(
                 binding.surfaces.clone(), binding.request, textures, &plan, crate::TargetCopy::Reference,
                 Arc::new(std::sync::Mutex::new(pass)),
             );
             if let Ok(Some(recordings)) = commands && complete_recordings(&plan, &recordings) {
                 for &(_, surface) in &binding.colors { self.before_target_write(surface)?; }
-                PreparedExternal { device: self, plan, binding, recordings }.commit();
-                stage.count(timeline::native::Metric::Suppressed, 1);
+                PreparedExternal { device: self, binding, recordings }.commit();
+                if let Some((scope, _)) = scoped { scope.committed.store(true, AtomicOrdering::Release); }
                 *streams = draw.streams;
                 return Ok(());
             }
-            stage.count(timeline::native::Metric::RefusedResources, 1);
+            self.stats.external_passes_dropped += 1;
         }
         let (outcome, spare) = self.backend.draw_owned(color, depth, draw, textures);
         *streams = spare;

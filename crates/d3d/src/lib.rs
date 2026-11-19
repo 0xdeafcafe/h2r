@@ -55,12 +55,12 @@ pub mod vblank;
 pub mod vertex_cache;
 
 pub use backend::{
-    DrawAdmission, DrawSnapshot, ExternalColor, ExternalPlan, ExternalRecording, ExternalSlot, ExternalSurfaces, ExternalWrites, SharedReplacement, TargetCopy,
+    DrawAdmission, DrawSnapshot, ExternalColor, ExternalCopies, ExternalPlan, ExternalRecording, ExternalSlot, ExternalSurfaces, ExternalWrites, SharedReplacement, TargetCopy,
     Backend, ChannelMask, DepthGridRequest, DepthGridResult, DepthClip, DepthGridSink, DrawOutcome, ExternalPass, ExternalPassRequest, ExternalTarget, SampledLevel, VIEW_CONSTANTS, external_viewport, GuestLayoutKind, PixelRect, Recorded, RecordingBackend,
     RectClear, ResolvedDraw, StreamBytes, StreamData, CachedBytes, CachedIndices, IndexData, Viewport,
 };
 pub use device::{
-    DepthScale, Device, DeviceConfig, ExternalRefusal, GuestRange, OcclusionSink, PreparedExternal,
+    DepthScale, Device, DeviceConfig, DrawScope, ExternalRefusal, GuestRange, OcclusionSink, PreparedExternal,
     PresentParameters, Stats, Swallow, SwallowCall, SwallowOriginal, SwallowPass, SwallowRefusal,
     SwallowTarget, Traced, TracedDraw, WritebackCause, WritebackCauses,
 };
