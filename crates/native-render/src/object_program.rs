@@ -131,13 +131,16 @@ pub fn object_pass(
     Ok(ObjectPass { program, implementation: imp.clone(), normalization })
 }
 
-/// Why objects with `material` stay on D3D for their lighting, or `None`
-/// when no implementation of its layer-3 passes (first level of detail)
-/// reads it, or one reads only what the object path gives (the program
-/// path then draws the implementations that compile, and an object whose
-/// records draw another stays on D3D). Never drawn unlit.
-pub fn lighting_refusal(material: &tags::material::Material) -> Option<String> {
-    crate::look::object_lighting_input(material)?;
+/// Why objects' parts with `material` stay on D3D, or `None` when an
+/// implementation of its layer-3 passes (first level of detail) reads only
+/// what the object path gives: the program path then draws the
+/// implementations that compile, and an object whose records draw another
+/// stays on D3D. Every opaque material goes this way, whether or not it
+/// reads the object's lighting: a stand-in (the models' base map and fixed
+/// light, posed from the object's own nodes) matches neither the game's
+/// shading nor, for an animated object, the rows its draw uploads. A
+/// material without a layer-3 pass is not drawn at layer 3 at all.
+pub fn program_refusal(material: &tags::material::Material) -> Option<String> {
     let layers = material.layers.iter().filter(|l| l.lod == 0 && l.layer == crate::look::LIGHTMAP_LAYER);
     let mut reasons = Vec::new();
     for imp in layers.flat_map(|l| &l.passes).flat_map(|p| &p.implementations) {
@@ -145,6 +148,9 @@ pub fn lighting_refusal(material: &tags::material::Material) -> Option<String> {
             Ok(()) => return None,
             Err(e) => reasons.push(format!("implementation {}: {e}", imp.index)),
         }
+    }
+    if reasons.is_empty() {
+        return Some("it has no layer-3 pass".into());
     }
     Some(reasons.join("; "))
 }
@@ -438,6 +444,32 @@ pub(crate) mod tests {
             ],
             vec![VectorBinding { source: 23, target: vertex(1, 0b1000) }],
         )
+    }
+
+    #[test]
+    fn every_opaque_material_goes_through_its_programs_lit_or_not() {
+        use tags::material::{Material, ResolvedLayer, ResolvedPass};
+        let of = |layer: u8, implementations: Vec<ResolvedImplementation>| Material {
+            shader: map::TagId(0xe000_0010),
+            template: map::TagId(0xe000_0011),
+            inputs: Default::default(),
+            layers: vec![ResolvedLayer {
+                lod: 0,
+                layer,
+                passes: vec![ResolvedPass { index: 0, pass: map::TagId(0xe000_0001), implementations }],
+            }],
+        };
+        let layer3 = crate::look::LIGHTMAP_LAYER;
+        // Reading none of the object's lighting: the programs still draw
+        // it (no base-map stand-in).
+        let unlit = implementation(InputReads::default(), Vec::new(), Vec::new());
+        assert_eq!(program_refusal(&of(layer3, vec![unlit.clone()])), None);
+        assert_eq!(program_refusal(&of(layer3, vec![lit()])), None);
+        let mut time = unlit.clone();
+        time.input_reads.scalars |= 1 << 2;
+        assert!(program_refusal(&of(layer3, vec![time.clone()])).unwrap().contains("implementation 0: reads scalar input 2"));
+        assert_eq!(program_refusal(&of(layer3, vec![time, unlit.clone()])), None, "one implementation is enough");
+        assert_eq!(program_refusal(&of(layer3 + 1, vec![unlit])).as_deref(), Some("it has no layer-3 pass"));
     }
 
     #[test]

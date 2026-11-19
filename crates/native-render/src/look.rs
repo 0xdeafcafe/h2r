@@ -270,8 +270,8 @@ pub enum LightingInput {
 /// The first lighting input any implementation of `material`'s layer-3
 /// passes (first level of detail) reads, or `None`. Every implementation
 /// counts: the build picks the one an object draws from its lighting
-/// (`0x0004cd35`). The native objects pass applies none of them yet, so a
-/// material that reads one stays on the D3D path: never drawn unlit.
+/// (`0x0004cd35`). The object program path puts each in per object
+/// (`object_program`); this names the first, for diagnostics and tests.
 pub fn object_lighting_input(material: &Material) -> Option<LightingInput> {
     use crate::object_lighting::{LIGHTING_SCALARS, LIGHTING_VECTORS};
     let layers = material.layers.iter().filter(|l| l.lod == 0 && l.layer == LIGHTMAP_LAYER);
