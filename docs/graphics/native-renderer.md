@@ -105,7 +105,8 @@ lightmap `0x004e0344`, [structure-bsp.md](../formats/structure-bsp.md)):
   same gap for anything far in a cinematic). That did not close the
   02000 slivers either (the 2026-11-19 A/B: 1490 px, max 87, unchanged).
   To tell the remaining causes apart, `H2_NATIVE_WORLD_TRACE=1` prints a
-  line per pass (the first 8, then every 250th: the clip, whether draws
+  line per pass (the first 8, then every 250th, or every `n`th with
+  `H2_NATIVE_WORLD_TRACE_EVERY=n`: the clip, whether draws
   are W-buffered, the render camera and its view-projection beside the
   constants `c[0..3]`, the cull's count), and `H2_NATIVE_WORLD_NO_CULL=1`
   draws every part without the CPU cull. With the trace,
@@ -174,11 +175,12 @@ lightmap `0x004e0344`, [structure-bsp.md](../formats/structure-bsp.md)):
   back faces. Such a pass is now marked (`look::WorldPass::inherits_cull`)
   and takes the device's `CULLMODE` and `FRONTFACE` at the layer-3 call
   (`Device::cull_state`, read from the guest's render-state array as the
-  stencil is; `program::InheritedCull`). By default only the placements'
-  rigid draws take it (the ones compared);
-  `H2_NATIVE_WORLD_INHERIT_CULL=all` gives it to the clusters too and
-  `=none` to neither (S: that the structure draw sets no cull of its own
-  between the layer-3 call and the clusters' draws). The other fields
+  stencil is; `program::InheritedCull`). That made 01000, 03000 and
+  04000 match exactly (w19). The clusters take it too: 02000's 81
+  cluster pixels on a curb (box [120,327]-[235,374]) went with it and
+  nothing else changed (w21), so that is the default;
+  `H2_NATIVE_WORLD_INHERIT_CULL=placements` gives it to the placements
+  only and `=none` to neither. The other fields
   the compare listed change nothing: `explicit_final` is the device's
   final-combiner latch, which only matters when both final-combiner
   input words are zero (`PixelShaderDef::has_final_combiner`), and a
@@ -759,9 +761,8 @@ vector (`v1`) and view vector (`v0`), and the lightmap (stage 3). Its
      `_combined` templates) set `ZFUNC` equal without depth writes. A
      state the pass does not set is inherited from the previous draw on
      the D3D path (S, not traced): `ZFUNC` is taken as `LessEqual`, and
-     an unset `CULLMODE` takes the device's at the layer-3 call for the
-     placements (`InheritedCull`, above; nothing where it does not
-     read). It refuses: engine-driven render or stage states, a
+     an unset `CULLMODE` takes the device's at the layer-3 call
+     (`InheritedCull`, above; nothing where it does not read). It refuses: engine-driven render or stage states, a
      blending pass, fog enabled, stencil, depth bias.
    - `program::compile_world` translates the pass (inputs `v0..v6` from
      the world vertex: position, uv, normal, binormal, tangent, lighting
