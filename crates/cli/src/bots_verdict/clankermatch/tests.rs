@@ -192,7 +192,7 @@ fn a_whole_run_passes() {
         "{r}"
     );
     assert!(
-        r.contains("4 players in the lobby (the playlist starts at 2)"),
+        r.contains("8 players in the game's lobby (the playlist starts at 2)"),
         "{r}"
     );
     assert!(
