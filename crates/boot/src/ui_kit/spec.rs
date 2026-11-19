@@ -68,6 +68,9 @@ pub struct RowSpec {
     #[serde(flatten)]
     pub kind: RowKind,
     pub press: Press,
+    /// Footer commands specific to this row, when the screen has them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompts: Option<Vec<Prompt>>,
     /// The focused row's description, when the screen has one.
     pub description: Option<String>,
     /// The string ids the row shows (empty for texts served by slot).
@@ -80,6 +83,7 @@ impl RowSpec {
             label: label.into(),
             kind: RowKind::Action,
             press: Press::Act,
+            prompts: None,
             description: None,
             ids: Vec::new(),
         }
@@ -92,6 +96,7 @@ impl RowSpec {
                 current,
             },
             press: Press::Step,
+            prompts: None,
             description: None,
             ids: Vec::new(),
         }
@@ -103,6 +108,7 @@ impl RowSpec {
                 value: value.into(),
             },
             press: Press::Nothing,
+            prompts: None,
             description: None,
             ids: Vec::new(),
         }
@@ -115,6 +121,7 @@ impl RowSpec {
                 max_chars,
             },
             press: Press::Keyboard,
+            prompts: None,
             description: None,
             ids: Vec::new(),
         }
@@ -321,9 +328,14 @@ impl ScreenSpec {
             dialog: None,
         }
     }
+    fn focused_prompts(&self) -> &[Prompt] {
+        self.rows.get(self.focus).and_then(|r| r.prompts.as_deref()).unwrap_or(&self.prompts)
+    }
+
     /// The footer legend as drawn, when the prompts go there.
     pub fn footer_text(&self) -> Option<String> {
-        (self.footer && !self.prompts.is_empty()).then(|| footer_legend(&self.prompts))
+        let prompts = self.focused_prompts();
+        (self.footer && !prompts.is_empty()).then(|| footer_legend(prompts))
     }
     /// The focused row's description (the screen's help line when it has
     /// one) with the legend under it, as drawn.
@@ -354,8 +366,8 @@ impl ScreenSpec {
             }
         }
         s.push_str(&format!("; focus {}", self.focus));
-        if !self.prompts.is_empty() {
-            s.push_str(&format!("; prompts {}", legend_named(&self.prompts)));
+        if !self.focused_prompts().is_empty() {
+            s.push_str(&format!("; prompts {}", legend_named(self.focused_prompts())));
         }
         s
     }

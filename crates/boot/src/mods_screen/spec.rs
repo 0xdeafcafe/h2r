@@ -11,7 +11,7 @@ use live_hle::mods::{InstallDone, ListDone, ModEntry, ModPage, ModsError, Progre
 
 use super::{
     DETAIL, DETAIL_FOOTER, DETAIL_TITLE, LIST_FOOTER, LIST_TITLE, PACK, PACK_FOOTER, PACK_TITLE,
-    PANEL_TEXTS, Repo, SCREEN, Slots, Source, Top, page_layout, prompts,
+    PANEL_TEXTS, Repo, SCREEN, Slots, Source, Top, page_layout,
 };
 use crate::list_class::PictureSpec;
 use crate::ui_kit::input::Input;
@@ -141,7 +141,7 @@ pub fn list_spec(repo: &Repo) -> ScreenSpec {
             crate::campaign_menu::PICTURE_SIZE,
         ),
     ];
-    s.prompts = prompts(SCREEN, false);
+    s.prompts = repo.prompts(SCREEN, Some(0));
     s.footer = true;
     s.inputs = vec![Input::Up, Input::Down, Input::A, Input::B, Input::X];
     s.ids = vec![Slots::id(LIST_TITLE), Slots::id(LIST_FOOTER)];
@@ -157,6 +157,7 @@ pub fn list_spec(repo: &Repo) -> ScreenSpec {
         if let Some(d) = repo.list_description(row) {
             r = r.describe(&d);
         }
+        r.prompts = Some(repo.prompts(SCREEN, Some(row)));
         s.rows.push(r);
     }
     s
@@ -177,7 +178,7 @@ pub fn pack_spec(repo: &Repo) -> ScreenSpec {
             crate::campaign_menu::PICTURE_SIZE,
         ),
     ];
-    s.prompts = prompts(PACK, false);
+    s.prompts = repo.prompts(PACK, Some(0));
     s.footer = true;
     s.inputs = vec![Input::Up, Input::Down, Input::A, Input::B, Input::X];
     s.ids = vec![Slots::id(PACK_TITLE), Slots::id(PACK_FOOTER)];
@@ -192,6 +193,7 @@ pub fn pack_spec(repo: &Repo) -> ScreenSpec {
         if let Some(d) = repo.pack_description(row) {
             r = r.describe(&d);
         }
+        r.prompts = Some(repo.prompts(PACK, Some(row)));
         s.rows.push(r);
     }
     s
@@ -224,8 +226,7 @@ pub fn detail_spec(repo: &Repo) -> ScreenSpec {
             text: texts[i].clone(),
         })
         .collect();
-    let here = repo.selected().is_some_and(|e| repo.is_installed(&e.id));
-    s.prompts = prompts(DETAIL, here);
+    s.prompts = repo.prompts(DETAIL, Some(0));
     s.footer = true;
     s.inputs = vec![Input::A, Input::B, Input::X];
     s.ids = vec![Slots::id(DETAIL_TITLE), Slots::id(DETAIL_FOOTER)];

@@ -488,12 +488,9 @@ impl Repo {
             changed: AtomicU64::new(1),
         });
         repo.texts.set(LIST_TITLE, "Mods");
-        repo.texts
-            .set(LIST_FOOTER, &footer_legend(&prompts(SCREEN, false)));
-        repo.texts
-            .set(DETAIL_FOOTER, &footer_legend(&prompts(DETAIL, false)));
-        repo.texts
-            .set(PACK_FOOTER, &footer_legend(&prompts(PACK, false)));
+        repo.footer(SCREEN, Some(0));
+        repo.footer(DETAIL, Some(0));
+        repo.footer(PACK, Some(0));
         repo.refresh_menu();
         repo
     }
@@ -915,9 +912,7 @@ impl Repo {
             g.removing = None;
         }
         self.texts.set(DETAIL_TITLE, &cut(&e.name, 40));
-        let here = Self::is_here(&self.lock(), &e.id);
-        self.texts
-            .set(DETAIL_FOOTER, &footer_legend(&prompts(DETAIL, here)));
+        self.footer(DETAIL, Some(0));
         self.set_panel();
         self.touch();
         Chosen::Open(DETAIL)
@@ -974,7 +969,11 @@ impl Repo {
     /// The open pack and its maps, newest first. A vanished pack has no actions.
     pub fn pack(&self) -> Option<(String, Vec<ModEntry>)> {
         let g = self.lock();
-        let name = g.pack.clone()?;
+        Some((g.pack.clone()?, Self::pack_maps(&g)?))
+    }
+
+    fn pack_maps(g: &Inner) -> Option<Vec<ModEntry>> {
+        let name = g.pack.as_ref()?;
         let List::Loaded(items) = &g.list else {
             return None;
         };
@@ -983,7 +982,7 @@ impl Repo {
             .filter(|e| e.pack.as_deref() == Some(name.as_str()))
             .cloned()
             .collect();
-        (!maps.is_empty()).then_some((name, maps))
+        (!maps.is_empty()).then_some(maps)
     }
 
     /// The map at the open pack's row `row` (row 0 is Download All).
@@ -1276,14 +1275,13 @@ impl Repo {
     /// now, the pictures are read again (its slot's may have changed), and
     /// the screens' texts are set again.
     fn after_change(&self, e: &ModEntry) {
-        let (here, on_page) = {
+        let on_page = {
             let mut g = self.lock();
             g.pictures = None;
-            (Self::is_here(&g, &e.id), g.selected == Some(e.id))
+            g.selected == Some(e.id)
         };
         if on_page {
-            self.texts
-                .set(DETAIL_FOOTER, &footer_legend(&prompts(DETAIL, here)));
+            self.footer(DETAIL, Some(0));
             self.set_panel();
         }
         self.touch();
@@ -1500,24 +1498,68 @@ pub fn cut(s: &str, max: usize) -> String {
     out
 }
 
-/// The footer legends: the list's A opens a map's page (or a pack's
-/// list) and X downloads; a pack's list's the same; the page's A and X
-/// (its one row's action) download, or remove a map that is `here`.
-pub fn prompts(screen: &str, here: bool) -> Vec<Prompt> {
-    if screen == DETAIL {
-        vec![
-            Prompt::new(
-                &[Glyph::A, Glyph::X],
-                if here { "Remove" } else { "Download" },
-            ),
-            Prompt::new(&[Glyph::B], "Back"),
-        ]
-    } else {
-        vec![
-            Prompt::new(&[Glyph::A], "Details"),
-            Prompt::new(&[Glyph::X], "Download"),
-            Prompt::new(&[Glyph::B], "Back"),
-        ]
+impl Repo {
+    /// The commands the focused row can perform right now. X on a list
+    /// only installs. Removal and its confirmation belong to the map page.
+    fn prompts(&self, screen: &str, row: Option<i16>) -> Vec<Prompt> {
+        let g = self.lock();
+        let download = |e: &ModEntry| {
+            match g.installs.get(&e.id) {
+                Some(Install::Downloading { .. }) => None,
+                _ if Self::is_here(&g, &e.id) => None,
+                Some(Install::Failed(_)) => Some("Retry"),
+                _ => Some("Download"),
+            }
+        };
+        let bulk = |maps: &[ModEntry]| maps.iter().any(|e| download(e).is_some()).then_some("Download All");
+        let (a, x) = match (screen, row) {
+            (SCREEN, Some(r)) => match Self::top_at(&g, r) {
+                Some(Top::Map(e)) => (Some("Details"), download(&e)),
+                Some(Top::Pack(_, maps)) => (Some("Open"), bulk(&maps)),
+                None if r == 0 => match &g.list {
+                    List::Failed(_) => (Some("Retry"), None),
+                    List::Loaded(_) => (Some("Refresh"), None),
+                    List::Loading => (None, None),
+                },
+                None => (None, None),
+            },
+            (PACK, Some(r)) => match Self::pack_maps(&g) {
+                Some(maps) if r == 0 => {
+                    let action = bulk(&maps);
+                    (action, action)
+                }
+                Some(maps) if r > 0 => match maps.get(r as usize - 1) {
+                    Some(e) => (Some("Details"), download(e)),
+                    None => (None, None),
+                },
+                _ => (None, None),
+            },
+            (DETAIL, Some(0)) => {
+                let action = g.selected.and_then(|id| {
+                    let List::Loaded(items) = &g.list else { return None };
+                    let e = items.iter().find(|e| e.id == id)?;
+                    if g.removing == Some(id) { Some("Confirm") }
+                    else if Self::is_here(&g, &id) { Some("Remove") }
+                    else { download(e) }
+                });
+                (action, action)
+            }
+            _ => (None, None),
+        };
+        let mut prompts = Vec::new();
+        if let Some(text) = a {
+            prompts.push(Prompt::new(&[Glyph::A], if a == x { "or" } else { text }));
+        }
+        if let Some(text) = x {
+            prompts.push(Prompt::new(&[Glyph::X], text));
+        }
+        prompts.push(Prompt::new(&[Glyph::B], "Back"));
+        prompts
+    }
+
+    fn footer(&self, screen: &str, row: Option<i16>) -> u32 {
+        let slot = match screen { DETAIL => DETAIL_FOOTER, PACK => PACK_FOOTER, _ => LIST_FOOTER };
+        self.texts.set(slot, &footer_legend(&self.prompts(screen, row)))
     }
 }
 
@@ -1575,6 +1617,9 @@ impl ListRows {
 }
 
 impl Rows for ListRows {
+    fn focused_footer(&self, row: Option<i16>) -> Option<u32> {
+        Some(self.0.footer(SCREEN, row))
+    }
     fn title(&self) -> u32 {
         Slots::id(LIST_TITLE)
     }
@@ -1647,6 +1692,9 @@ impl PackRows {
 }
 
 impl Rows for PackRows {
+    fn focused_footer(&self, row: Option<i16>) -> Option<u32> {
+        Some(self.0.footer(PACK, row))
+    }
     fn title(&self) -> u32 {
         Slots::id(PACK_TITLE)
     }
@@ -1716,6 +1764,9 @@ impl DetailRows {
 }
 
 impl Rows for DetailRows {
+    fn focused_footer(&self, row: Option<i16>) -> Option<u32> {
+        Some(self.0.footer(DETAIL, row))
+    }
     fn title(&self) -> u32 {
         Slots::id(DETAIL_TITLE)
     }

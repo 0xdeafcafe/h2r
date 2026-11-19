@@ -144,6 +144,10 @@ pub trait Rows: Send + Sync {
     fn description(&self, _row: i16) -> Option<u32> {
         None
     }
+    /// A focus- or state-dependent footer slot, refreshed with the description.
+    fn focused_footer(&self, _row: Option<i16>) -> Option<u32> {
+        None
+    }
     /// The picture's tint (red, green, blue multipliers) for row `row`, for
     /// a class with a picture ([`ListClass::picture`]); `None` leaves it.
     fn tint(&self, _row: i16) -> Option<[f32; 3]> {
@@ -1547,7 +1551,12 @@ pub async fn row_text(
             // it through `0x230134` into the widget), so a slot of ours
             // set here is written before it is named.
             let description = focused.and_then(|r| rows.description(r));
+            let footer = rows.focused_footer(focused);
             cx.write(|m| rows.write_texts(m))?;
+            if let Some(id) = footer {
+                cx.call(GuestCall::new(points::TEXT_SET.base)
+                    .edi(screen.wrapping_add(FOOTER)).esi(screen).args([id])).await?;
+            }
             set_panel_texts(&cx, screen, &shown, rows.as_ref()).await?;
             if let Some(id) = description {
                 cx.call(
@@ -3212,6 +3221,9 @@ mod tests {
             fn description(&self, _row: i16) -> Option<u32> {
                 Some(0x200)
             }
+            fn focused_footer(&self, row: Option<i16>) -> Option<u32> {
+                (row == Some(0)).then_some(0x201)
+            }
             fn live_text(&self) -> LiveText {
                 LiveText {
                     writes: vec![(0x0062_0000, b"hi\0".to_vec())],
@@ -3258,6 +3270,8 @@ mod tests {
             .args([0x200]);
         draw();
         let run = draw();
+        assert!(run.calls.contains(&Gc::new(points::TEXT_SET.base)
+            .edi(SCREEN + FOOTER).esi(SCREEN).args([0x201])));
         assert_eq!(run.guest.bytes(0x0062_0000, 3).unwrap(), b"hi\0");
         assert_eq!(run.calls.last(), Some(&set), "the focus did not move");
     }

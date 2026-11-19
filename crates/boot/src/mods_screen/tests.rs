@@ -646,16 +646,27 @@ fn slots_are_served_once_placed() {
 #[test]
 fn the_footers_say_what_a_and_x_do() {
     let texts = |p: Vec<Prompt>| p.into_iter().map(|p| p.text).collect::<Vec<_>>();
-    assert_eq!(
-        texts(prompts(SCREEN, false)),
-        ["Details", "Download", "Back"]
-    );
-    // The page's one row is its action: A and X both do it.
-    assert_eq!(texts(prompts(DETAIL, false)), ["Download", "Back"]);
-    assert_eq!(texts(prompts(DETAIL, true)), ["Remove", "Back"]);
-    assert_eq!(prompts(DETAIL, false)[0].glyphs, [Glyph::A, Glyph::X]);
-    // X is the button the class's action takes (event button word 2).
-    assert_eq!(prompts(SCREEN, false)[1].glyphs, [Glyph::X]);
+    let (_, repo) = listed(with_pack(), None);
+    let commands = |screen, row| texts(repo.prompts(screen, Some(row)));
+    assert_eq!(commands(SCREEN, 0), ["Details", "Download", "Back"]);
+    assert_eq!(commands(SCREEN, 1), ["Open", "Download All", "Back"]);
+    repo.press_list(1);
+    assert_eq!(commands(PACK, 0), ["or", "Download All", "Back"]);
+    repo.press_pack(2);
+    assert_eq!(commands(DETAIL, 0), ["or", "Download", "Back"]);
+    repo.act();
+    assert_eq!(commands(DETAIL, 0), ["Back"]);
+    repo.install_done(id(3), Ok(()));
+    assert_eq!(commands(PACK, 2), ["Details", "Back"]);
+    assert_eq!(commands(DETAIL, 0), ["or", "Remove", "Back"]);
+    repo.act();
+    assert_eq!(commands(DETAIL, 0), ["or", "Confirm", "Back"]);
+    let rows = DetailRows::new(Arc::clone(&repo));
+    assert_eq!(rows.focused_footer(Some(0)), Some(Slots::id(DETAIL_FOOTER)));
+    assert!(repo.texts.get(DETAIL_FOOTER).unwrap().contains("CONFIRM"));
+    let mut spec = spec::pack_spec(&repo);
+    spec.focus = 2;
+    assert_eq!(spec.footer_text(), Some(footer_legend(&repo.prompts(PACK, Some(2)))));
     assert_eq!(X_ONLY, [crate::list_class::X_BUTTON]);
     assert_eq!(crate::list_class::X_BUTTON, 2);
     let classes = classes(&Repo::new(Arc::new(Fake::default()), None));
