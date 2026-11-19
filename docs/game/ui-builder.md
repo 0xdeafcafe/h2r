@@ -95,7 +95,11 @@ the bitmap widget, and alpha to `+0x64`.
 header layout's second rectangle) as `<glyph> WORDS` with two spaces
 between prompts, as retail does. When a header layout has no second
 rectangle, the legend is a text block on the panel's bottom edge, which
-the checks treat the same way.
+the checks treat the same way. For a list with commands that depend on
+focus, a row can supply its own `RowSpec::prompts`. In game its
+`Rows::focused_footer` returns a string slot to set on the widget after
+focus moves or `live_text` asks for a redraw. Changing the string in
+memory alone leaves the previous legend on screen.
 
 **Code entry input.** Up and down change the digit under the cursor,
 left and right move the cursor, A submits, B cancels. The list's one row is
