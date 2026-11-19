@@ -225,25 +225,25 @@ points! { ALL;
     /// The HaloScript evaluator shared by argument-evaluating discarded builtins.
     HS_DISCARDED_EVALUATE @ 0x002a_b6c0: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/ai-control.md";
     /// How strongly the observing actor prioritizes one candidate.
-    AI_TARGET_SCORE @ 0x0026_5d30: [fn(actor: stack 0, interest: stack 1) -> xmm0 ret 8], hot; "docs/halo1/ai-control.md";
+    AI_TARGET_SCORE @ 0x0026_5d30: [fn(actor: stack 0, interest: stack 1) -> xmm0 ret 8], Hot; "docs/halo1/ai-control.md";
     /// Finalizes the actor's current interest after examining perception records.
-    AI_SELECT_INTEREST @ 0x0026_6640: [fn(actor: stack 0) ret 4], hot; "docs/halo1/ai-control.md";
+    AI_SELECT_INTEREST @ 0x0026_6640: [fn(actor: stack 0) ret 4], Hot; "docs/halo1/ai-control.md";
     /// The actor's contribution to outgoing damage calculation.
     AI_DAMAGE_MODIFIER @ 0x001c_8440: [fn(actor: ecx, multiplier: edx, packet: stack 0) -> al ret 4]; "docs/halo1/ai-control.md";
     /// Selects the uncover behavior from presearch when a tracked target is available.
-    AI_PRESEARCH_UNCOVER @ 0x001b_44d0: [fn(actor: stack 0, state: stack 1) -> eax ret 8], hot; "docs/halo1/ai-control.md";
+    AI_PRESEARCH_UNCOVER @ 0x001b_44d0: [fn(actor: stack 0, state: stack 1) -> eax ret 8], Hot; "docs/halo1/ai-control.md";
     /// Ranks uncover from its own behavior descriptor.
-    AI_UNCOVER_RANK @ 0x001b_84a0: [fn(actor: stack 0) -> eax ret 4], hot; "docs/halo1/ai-control.md";
+    AI_UNCOVER_RANK @ 0x001b_84a0: [fn(actor: stack 0) -> eax ret 4], Hot; "docs/halo1/ai-control.md";
     AI_UNCOVER_ENTER @ 0x001b_8540: [fn(actor: stack 0, record: stack 1) -> al ret 8]; "docs/halo1/ai-control.md";
     AI_UNCOVER_BEGIN @ 0x001b_85a0: [fn(actor: stack 0, record: stack 1) -> al ret 8]; "docs/halo1/ai-control.md";
     AI_UNCOVER_UPDATE @ 0x001b_89d0: [fn(actor: stack 0, record: stack 1) ret 8]; "docs/halo1/ai-control.md";
     AI_UNCOVER_CONTROL @ 0x001b_8ae0: [fn(actor: stack 0, record: stack 1) ret 8]; "docs/halo1/ai-control.md";
     /// Starts a firing burst, setting the actor timer and angular spread.
-    AI_FIRE_BURST @ 0x001f_e620: [fn(actor: eax, firing: ebx, weapon: stack 0) ret 4], hot; "docs/halo1/ai-control.md";
+    AI_FIRE_BURST @ 0x001f_e620: [fn(actor: eax, firing: ebx, weapon: stack 0) ret 4], Hot; "docs/halo1/ai-control.md";
     /// Chooses the pause between bursts and saves it in the actor timer.
-    AI_FIRE_PAUSE @ 0x001f_ed70: [fn(actor: eax, firing: ecx) ret 0], hot; "docs/halo1/ai-control.md";
+    AI_FIRE_PAUSE @ 0x001f_ed70: [fn(actor: eax, firing: ecx) ret 0], Hot; "docs/halo1/ai-control.md";
     /// Stages the actor's movement, aim and trigger commands for its unit.
-    AI_SUBMIT_UNIT_CONTROL @ 0x001e_4390: [fn(actor: eax) ret 0], hot; "docs/halo1/ai-control.md";
+    AI_SUBMIT_UNIT_CONTROL @ 0x001e_4390: [fn(actor: eax) ret 0], Hot; "docs/halo1/ai-control.md";
     HS_UNIT_GRENADE_COUNT @ 0x002a_4310: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/ai-control.md";
     /// HaloScript's object awareness evaluator, index 305.
     HS_AI_SEE_OBJECT @ 0x002a_53b0: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/ai-control.md";
