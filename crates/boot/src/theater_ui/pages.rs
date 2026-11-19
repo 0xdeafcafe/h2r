@@ -31,7 +31,7 @@ const PANEL: u32 = TAB_PANEL + 1;
 
 const FILMS_LAYOUT: ListLayout = ListLayout {
     skin: 2,
-    anchor: [-254, 125],
+    anchor: [-254, 113],
     bitmaps_left_of: i16::MIN,
     visible: 10,
 };

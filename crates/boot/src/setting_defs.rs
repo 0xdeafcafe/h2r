@@ -919,6 +919,7 @@ mod tests {
                 ("H2_HALO1_HUD", "halo2"),
                 ("H2_COOP_MAX_PLAYERS", "4"),
                 ("H2_COOP_JOIN_IN_PROGRESS", "0"),
+                ("H2_COOP_LOOK_PREDICTION", "0"),
                 ("H2_VOICE_INPUT", "default"),
                 ("H2_VOICE_OUTPUT", "game"),
                 ("H2_VOICE_MODE", "ptt"),
@@ -940,6 +941,7 @@ mod tests {
         }
         assert_eq!(coop_max_players(&s), 4);
         assert!(!coop_join_in_progress(&s));
+        assert_eq!(s.get(COOP_LOOK_PREDICTION.key), Some(Value::Bool(false)));
         assert_eq!(s.get(TOUCH_ACCEL.key), Some(Value::Int(0)));
         assert_eq!(s.get(TOUCH_AUTO_FIRE.key), Some(Value::Bool(true)));
         assert_eq!(halo1_sandbox(&s), "h2");
@@ -1108,6 +1110,7 @@ mod tests {
         let (s, p) = with_env(&data, &[]);
         assert!(p.is_empty(), "{p:?}");
         assert!(!coop_join_in_progress(&s));
+        assert_eq!(s.get(COOP_LOOK_PREDICTION.key), Some(Value::Bool(false)));
         let (s, _) = with_env(&data, &[("H2_COOP_JOIN_IN_PROGRESS", "1")]);
         assert!(coop_join_in_progress(&s));
     }

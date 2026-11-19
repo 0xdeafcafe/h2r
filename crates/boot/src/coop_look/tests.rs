@@ -360,7 +360,9 @@ fn settings_and_registered_agent_method_are_available_in_live_coop() {
     a.between_slices(&mut Reader, 0);
     let line = rx.try_recv().unwrap();
     let reply: serde_json::Value = serde_json::from_str(&line).unwrap();
-    assert_eq!(reply["result"], json!({"latest":0,"frames":[]}));
+    // Host methods also carry the agent's `at` stamp (theater films).
+    assert_eq!(reply["result"]["latest"], json!(0));
+    assert_eq!(reply["result"]["frames"], json!([]));
 }
 
 /// Replay the on-foot portion of a real stick capture without the game.
