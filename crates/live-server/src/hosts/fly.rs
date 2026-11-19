@@ -334,9 +334,15 @@ pub fn machine_env(
     base: u16,
     public_ip: Option<Ipv4Addr>,
 ) -> Result<BTreeMap<String, String>, HostError> {
+    if lease.transport != Transport::Udp {
+        return Err(config_error("Fly hosts require UDP transport"));
+    }
+    let public_ip = public_ip
+        .filter(|ip| !ip.is_unspecified() && !ip.is_broadcast() && !ip.is_multicast())
+        .ok_or_else(|| config_error("Fly UDP needs LIVE_FLY_PUBLIC_IP (the app's dedicated IPv4)"))?;
     let lease_json = serde_json::to_string(lease)
         .map_err(|_| config_error("could not encode Fly host lease"))?;
-    let mut env = BTreeMap::from([
+    Ok(BTreeMap::from([
         ("H2_LEASE".to_string(), lease.id.clone()),
         ("H2_HOST_LEASE_JSON".to_string(), lease_json),
         ("H2_LIVE".to_string(), boot.live_url.clone()),
@@ -344,24 +350,17 @@ pub fn machine_env(
         ("H2_DATA_URL".to_string(), boot.data_url.clone()),
         ("H2_DATA_SHA".to_string(), boot.data_sha256.clone()),
         ("H2_BASE_PORT".to_string(), base.to_string()),
-    ]);
-    if lease.transport == Transport::Udp {
-        let public_ip = public_ip
-            .filter(|ip| !ip.is_unspecified() && !ip.is_broadcast() && !ip.is_multicast())
-            .ok_or_else(|| config_error("Fly UDP needs LIVE_FLY_PUBLIC_IP (the app's dedicated IPv4)"))?;
-        env.insert("H2_XNET_ADDR".into(), format!("{GLOBAL_BIND}:{base}"));
-        env.insert("H2_PUBLIC_ADDR".into(), public_ip.to_string());
-    }
-    Ok(env)
+        ("H2_XNET_ADDR".into(), format!("{GLOBAL_BIND}:{base}")),
+        ("H2_PUBLIC_ADDR".into(), public_ip.to_string()),
+    ]))
 }
 
 /// `POST /v1/apps/{app}/machines` for this lease: region from the lease
 /// (else the configured default), the class's guest, the lease env,
 /// `auto_destroy` (a host that ends by itself removes its machine) and
 /// `restart: no` (a crashed host is not restarted; the lifecycle reads
-/// the failure and falls back). A UDP lease claims its port window as
-/// services; a Tunnel lease needs none — its datagrams arrive through
-/// the Live tunnel instead.
+/// the failure and falls back). Each machine claims its UDP port window
+/// as Fly services.
 pub fn create_request(
     lease: &HostLease,
     boot: &HostBoot,
@@ -382,10 +381,7 @@ pub fn create_request(
             restart: MachineRestart {
                 policy: "no".to_string(),
             },
-            services: match lease.transport {
-                Transport::Udp => services(base),
-                Transport::Tunnel => Vec::new(),
-            },
+            services: services(base),
             metadata: BTreeMap::from([("h2-lease".to_string(), lease.id.clone())]),
         },
     })
@@ -819,19 +815,20 @@ mod tests {
     }
 
     #[test]
-    fn a_tunnel_lease_gets_no_services_and_the_default_region() {
+    fn fly_machine_requires_udp_and_a_public_ip() {
         let mut lease = lease();
         lease.transport = Transport::Tunnel;
         lease.region = None;
         let mut fly = config();
-        fly.public_ip = None;
-        let request = create_request(&lease, &boot(), &fly).unwrap();
-        assert_eq!(request.region, "iad");
-        assert!(request.config.services.is_empty());
-        assert!(!request.config.env.contains_key("H2_XNET_ADDR"));
-        assert!(!request.config.env.contains_key("H2_PUBLIC_ADDR"));
+        let error = create_request(&lease, &boot(), &fly).unwrap_err();
+        assert!(error.to_string().contains("require UDP"));
 
         lease.transport = Transport::Udp;
+        let request = create_request(&lease, &boot(), &fly).unwrap();
+        assert_eq!(request.region, "iad");
+        assert!(!request.config.services.is_empty());
+
+        fly.public_ip = None;
         let error = create_request(&lease, &boot(), &fly).unwrap_err();
         assert!(error.to_string().contains("LIVE_FLY_PUBLIC_IP"));
     }

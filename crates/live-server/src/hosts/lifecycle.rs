@@ -1,4 +1,5 @@
 use super::*;
+use live_proto::hosts::Transport;
 
 impl Live {
     #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
@@ -38,6 +39,11 @@ impl Live {
     }
 
     pub async fn request_host(&self, mut lease: HostLease) -> ApiResult<HostLease> {
+        // Fly hosts use direct UDP. Normalize before comparing retries or
+        // writing the lease, so matchmaking and the supervisor agree.
+        if lease.provider == ProviderKind::Fly {
+            lease.transport = Transport::Udp;
+        }
         let (provider, boot) = {
             let _write = self.hosts.writes.lock().await;
             let version = self.hosts.version();
