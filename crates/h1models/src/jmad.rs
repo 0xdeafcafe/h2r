@@ -294,16 +294,15 @@ pub(crate) fn borrow_slots(
 /// (`reload_empty`, `fire_1`, ...), so without this a slot filled by an
 /// animation labelled for another (the assault rifle's `reload-empty` slot
 /// holds its `reload-full`) has no action, and its animation never plays.
+///
+/// A graph whose `fire-1` slot is empty but which has an animation
+/// labelled `firing` ([`FIRST_PERSON_FIRING`]) also gets `fire_1` naming
+/// it ([`first_person_fire`]).
 pub(crate) fn first_person_slots(
     g: &Graph,
     tree: &mut BTreeMap<String, BTreeMap<String, BTreeMap<String, Vec<(String, usize)>>>>,
 ) {
-    // Only a weapon's first-person graph (every animation `first-person
-    // ...`) is read this way.
-    let first_person = |a: &crate::h1::Animation| {
-        a.name.split(' ').next() == Some(crate::names::FIRST_PERSON)
-    };
-    if g.animations.is_empty() || !g.animations.iter().all(first_person) {
+    if !is_first_person(g) {
         return;
     }
     for (k, &slot) in g.first_person_slots.iter().enumerate() {
@@ -326,6 +325,108 @@ pub(crate) fn first_person_slots(
             actions.push((name.action, index));
         }
     }
+    first_person_fire(g, tree);
+}
+
+/// Only a weapon's first-person graph (every animation `first-person ...`)
+/// is read as one.
+pub(crate) fn is_first_person(g: &Graph) -> bool {
+    !g.animations.is_empty()
+        && g
+            .animations
+            .iter()
+            .all(|a| a.name.split(' ').next() == Some(crate::names::FIRST_PERSON))
+}
+
+/// The label of the assault rifle's firing animation, which no slot holds.
+pub const FIRST_PERSON_FIRING: &str = "first-person firing";
+
+/// `fire_1` for a first-person graph that has none, naming its
+/// [`FIRST_PERSON_FIRING`] animation. V (every first-person graph on the
+/// disc's maps, Blood Gulch, a10, c10, d40): the assault rifle's is the
+/// only one whose `fire-1` slot (2) is empty while it has a firing
+/// animation, `first-person firing`, a 21-frame base animation no slot
+/// holds; the flamethrower, ball and flag have neither. Halo 1 plays
+/// first-person animations by slot, so it plays none for the assault
+/// rifle's shots (I: no slot names it, and nothing else in the graph
+/// does). Halo 2 gives every weapon that fires a `fire_1` (V: 13 of the
+/// Chief's 17 retail first-person graphs on Coagulation have it; the four
+/// without are the flag, ball, bomb and energy sword, which do not fire),
+/// and without one a converted assault rifle fired with no recoil
+/// animation.
+pub(crate) fn first_person_fire(
+    g: &Graph,
+    tree: &mut BTreeMap<String, BTreeMap<String, BTreeMap<String, Vec<(String, usize)>>>>,
+) {
+    let slot = crate::h1::FIRST_PERSON_SLOTS[2];
+    let fire = map_name(&format!("{} {slot}", crate::names::FIRST_PERSON));
+    let Some(index) = g.animations.iter().position(|a| a.name == FIRST_PERSON_FIRING) else {
+        return;
+    };
+    let actions = tree
+        .entry(fire.mode)
+        .or_default()
+        .entry(fire.class)
+        .or_default()
+        .entry(fire.kind)
+        .or_default();
+    if !actions.iter().any(|(a, _)| *a == fire.action) {
+        actions.push((fire.action, index));
+    }
+}
+
+/// `(mode, class, type)` -> that type's overlay animations, `(name,
+/// animation index)`.
+pub(crate) type Overlays = BTreeMap<(String, String, String), Vec<(String, usize)>>;
+
+/// A first-person graph's overlay animations (Halo 1 type 1: `moving`,
+/// `overlays`, the needler's `ammunition`, the plasma pistol's
+/// `overcharged-jitter`), taken out of the actions into the overlays of
+/// their type (the type's `+0xc` block). The engine finds a first-person
+/// overlay by name in that block, not among the actions: `0x001dbc80`
+/// searches the type's `+0xc` (stride 8: string ID, graph index, animation
+/// index; `0x001dbd01..0x001dbd12`) through `0x001dd560`, and the
+/// first-person setup asks it for `overcharged_jitter`, `overlays`,
+/// `ammunition` and `pitch_and_turn` (`0x0016821f..0x00168282`, through
+/// `0x001cb520`/`0x001cb9d0`) and for `moving` (`0x001672d6`). V: every
+/// retail first-person graph on Coagulation keeps `moving`, `overlays`,
+/// `pitch_and_turn` (and the needler's `ammunition`, sprint's `sprint`) in
+/// that block and none of them among its actions. Until converter version
+/// 79 they were actions, so no Halo 1 weapon swayed as it moved. Halo 1's
+/// `overlays` keeps its name; Halo 2 also asks for `pitch_and_turn`, which
+/// Halo 1 has no animation for (S: Halo 1's 9-frame `overlays` is the one
+/// the two have in common by name and frame count; which of Halo 2's two it
+/// corresponds to is not established).
+pub(crate) fn first_person_overlays(
+    g: &Graph,
+    tree: &mut BTreeMap<String, BTreeMap<String, BTreeMap<String, Vec<(String, usize)>>>>,
+) -> Overlays {
+    let mut out = Overlays::new();
+    if !is_first_person(g) {
+        return out;
+    }
+    let overlay = |i: usize| g.animations.get(i).is_some_and(|a| a.kind == AnimType::Overlay);
+    for (mode, classes) in tree.iter_mut() {
+        for (class, types) in classes.iter_mut() {
+            for (kind, actions) in types.iter_mut() {
+                let (overlays, rest): (Vec<_>, Vec<_>) =
+                    actions.drain(..).partition(|&(_, i)| overlay(i));
+                *actions = rest;
+                if !overlays.is_empty() {
+                    out.insert((mode.clone(), class.clone(), kind.clone()), overlays);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// An action or overlay entry (`ACTION_LEN`): its name, graph index -1
+/// (this graph), the animation index.
+fn action_block((action, index): &(String, usize)) -> Block {
+    let mut b = Block::zeroed(ACTION_LEN);
+    b.string_id(0, action).put_i16(4, -1).put_i16(6, *index as i16);
+    b
 }
 
 /// Converts a Halo 1 animation graph. A graph without its own node block
@@ -425,6 +526,7 @@ pub fn convert_graph(g: &Graph, skeleton: Option<&[AnimNode]>) -> Result<(Conver
     }
     borrow_slots(g, &names, &mut tree);
     first_person_slots(g, &mut tree);
+    let overlays = first_person_overlays(g, &mut tree);
     while resource.len() % 0x200 != 0 {
         resource.push(0);
     }
@@ -460,19 +562,17 @@ pub fn convert_graph(g: &Graph, skeleton: Option<&[AnimNode]>) -> Result<(Conver
                     let types = types
                         .into_iter()
                         .map(|(kind, actions)| {
-                            let actions = actions
-                                .into_iter()
-                                .map(|(action, index)| {
-                                    let mut b = Block::zeroed(ACTION_LEN);
-                                    b.string_id(0, &action)
-                                        .put_i16(4, -1)
-                                        .put_i16(6, index as i16);
-                                    b
-                                })
-                                .collect::<Vec<_>>();
+                            let actions = actions.iter().map(action_block).collect::<Vec<_>>();
+                            let over = overlays
+                                .get(&(mode.clone(), class.clone(), kind.clone()))
+                                .map(|o| o.iter().map(action_block).collect::<Vec<_>>())
+                                .unwrap_or_default();
                             let mut b = Block::zeroed(TYPE_LEN);
                             b.string_id(0, &kind);
                             b.block(4, actions.len() as u32, sorted_array(actions, ACTION_LEN));
+                            if !over.is_empty() {
+                                b.block(0xc, over.len() as u32, sorted_array(over, ACTION_LEN));
+                            }
                             b
                         })
                         .collect::<Vec<_>>();

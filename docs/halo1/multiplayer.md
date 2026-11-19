@@ -1290,7 +1290,15 @@ that reflection over dark base maps (the sniper rifle's averages 35 of
 person. Not carried: the `soso` multipurpose map (`+0xbc`), which masks
 the reflection in Halo 1; the reflection is masked by the base map's
 alpha instead (`tests/model_shaders_disc.rs`,
-`bloodgulch_sniper_metal_reflects_its_cube_map`). A material with no Halo 1 base map to read names the
+`bloodgulch_sniper_metal_reflects_its_cube_map`). Every weapon `soso` on
+Blood Gulch has one, and on this (Xbox) disc its mask is the red channel
+(V: the sniper rifle's, DXT1 512x512, is red only, mostly dark: the metal
+reflects in places). The weapons' base maps are DXT1 with no alpha, so
+the converted weapons reflect everywhere at full strength. `tex_bump_env`
+has no mask map of its own: its only mask is the colour pass's alpha
+(base × detail), so carrying the multipurpose map means baking its red
+into the base map's alpha (a new bitmap per base and multipurpose pair,
+in a format with alpha); not done yet. A material with no Halo 1 base map to read names the
 base's model shader itself; Blood Gulch has none. The sky model's
 materials name copies of the base's sky shaders drawing Halo 1's sky
 bitmaps at Halo 1's scale (`h1convert::sky_shaders`, sky.md "The

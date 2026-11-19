@@ -913,6 +913,9 @@ fn a_first_person_slot_names_its_action_for_the_animation_it_holds() {
     assert_eq!(g.first_person_slots, slots);
     g.animations[0].name = "first-person idle".into();
     g.animations[1].name = "first-person reload-full".into();
+    // A base animation, as Halo 1's reloads are (an overlay would go to
+    // the type's overlays).
+    g.animations[1].kind = h1::AnimType::Base;
     let (out, _) = jmad::convert_graph(&g, None).unwrap();
     let (bytes, ids) = build(vec![(out, "invented\\graph")]);
     let mut map = Map::from_reader(Cursor::new(bytes)).unwrap();
@@ -942,6 +945,92 @@ fn a_first_person_slot_names_its_action_for_the_animation_it_holds() {
             ("reload_full".to_owned(), 1),
         ]
     );
+}
+
+/// The converted first-person graph's one type (`any`, `any`, `any`): its
+/// actions (`+0x4`) and its overlays (`+0xc`), `(name, animation index)`
+/// each, sorted.
+fn first_person_type(g: &h1::Graph) -> (Vec<(String, i16)>, Vec<(String, i16)>) {
+    let (out, _) = jmad::convert_graph(g, None).unwrap();
+    let (bytes, ids) = build(vec![(out, "invented\\graph")]);
+    let mut map = Map::from_reader(Cursor::new(bytes)).unwrap();
+    let base = map.tag(ids[0]).unwrap().location.unwrap().address;
+    let b = map.read_tag_bytes(ids[0]).unwrap();
+    let strings = map.strings().to_vec();
+    let w = |a: u32| u32::from_le_bytes(b[(a - base) as usize..][..4].try_into().unwrap());
+    let name = |sid: u32| strings[(sid & 0xff_ffff) as usize].clone().unwrap();
+    let level = |a: u32, stride: u32| -> Vec<(String, u32)> {
+        (0..w(a)).map(|i| (name(w(w(a + 4) + i * stride)), w(a + 4) + i * stride)).collect()
+    };
+    let modes = level(base + 0x34, 0x14);
+    assert_eq!(modes.iter().map(|m| m.0.as_str()).collect::<Vec<_>>(), ["any"]);
+    let classes = level(modes[0].1 + 4, 0x14);
+    let types = level(classes[0].1 + 4, 0x34);
+    assert_eq!(types.len(), 1);
+    let entries = |at: u32| {
+        let mut e: Vec<(String, i16)> = level(at, 8)
+            .into_iter()
+            .map(|(n, a)| {
+                assert_eq!(w(a + 4) as i16, -1, "{n}: this graph");
+                (n, (w(a + 4) >> 16) as i16)
+            })
+            .collect();
+        e.sort();
+        e
+    };
+    (entries(types[0].1 + 4), entries(types[0].1 + 0xc))
+}
+
+/// The assault rifle's `fire-1` slot is empty and its firing animation is
+/// labelled `firing`: the graph gets `fire_1` naming it, beside `firing`.
+/// Its overlay (`moving`) goes to the type's overlays, not its actions:
+/// the engine finds a first-person overlay there (`0x001dbc80`).
+#[test]
+fn a_first_person_graph_fires_its_firing_animation_and_keeps_overlays_apart() {
+    let (img, at) = synthetic_graph();
+    let mut g = h1::Graph::read(&img, at).unwrap();
+    assert_eq!(g.animations[1].kind, h1::AnimType::Overlay);
+    g.animations[0].name = "first-person firing".into();
+    g.animations[1].name = "first-person moving".into();
+    g.first_person_slots = vec![-1, -1, -1, 1];
+    let (actions, overlays) = first_person_type(&g);
+    assert_eq!(actions, [("fire_1".to_owned(), 0), ("firing".to_owned(), 0)]);
+    assert_eq!(overlays, [("moving".to_owned(), 1)]);
+}
+
+/// A filled `fire-1` slot keeps its animation: `firing` does not take
+/// `fire_1` from it.
+#[test]
+fn a_filled_fire_slot_keeps_its_animation() {
+    let (img, at) = synthetic_graph();
+    let mut g = h1::Graph::read(&img, at).unwrap();
+    g.animations[0].name = "first-person fire-1".into();
+    g.animations[1].name = "first-person firing".into();
+    g.animations[1].kind = h1::AnimType::Base;
+    g.first_person_slots = vec![-1, -1, 0];
+    let (actions, overlays) = first_person_type(&g);
+    assert_eq!(actions, [("fire_1".to_owned(), 0), ("firing".to_owned(), 1)]);
+    assert!(overlays.is_empty());
+}
+
+/// Third-person graphs keep their overlays among the actions, as before:
+/// only first-person overlays are moved.
+#[test]
+fn a_third_person_graph_keeps_its_overlays_as_actions() {
+    let (img, at) = synthetic_graph();
+    let g = h1::Graph::read(&img, at).unwrap();
+    let (out, _) = jmad::convert_graph(&g, None).unwrap();
+    let (bytes, ids) = build(vec![(out, "invented\\graph")]);
+    let mut map = Map::from_reader(Cursor::new(bytes)).unwrap();
+    let base = map.tag(ids[0]).unwrap().location.unwrap().address;
+    let b = map.read_tag_bytes(ids[0]).unwrap();
+    let w = |a: u32| u32::from_le_bytes(b[(a - base) as usize..][..4].try_into().unwrap());
+    let el = |a: u32, i: u32, stride: u32| w(a + 4) + i * stride;
+    let mode = el(base + 0x34, 0, 0x14);
+    let class = el(mode + 4, 0, 0x14);
+    let ty = el(class + 4, 0, 0x34);
+    assert!(w(ty + 4) >= 2, "move_front and aim_still among the actions");
+    assert_eq!(w(ty + 0xc), 0, "no overlays block");
 }
 
 /// No converted animation names a blend screen: the graph has none, and

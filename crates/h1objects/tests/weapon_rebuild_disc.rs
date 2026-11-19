@@ -193,7 +193,11 @@ fn halo_1_and_halo_2_pairs_agree_on_the_named_fields() {
 
 /// A converted graph's mode names, its `+0x54` string-ID pairs, and every
 /// action name under its modes.
-fn graph_modes(root: &map::build::Block) -> (Vec<String>, Vec<(String, String)>, Vec<String>) {
+/// A converted graph's modes, its `+0x54` pairs, and every type's actions
+/// (`+0x4`) and overlays (`+0xc`, `block_c`), by name.
+fn graph_modes(
+    root: &map::build::Block,
+) -> (Vec<String>, Vec<(String, String)>, Vec<String>, Vec<String>) {
     let r = defs::from_built(def(b"jmad"), root).unwrap();
     let text = |v: Option<&Val>| match v {
         Some(Val::String(defs::Str::Text(t))) => t.clone(),
@@ -204,12 +208,16 @@ fn graph_modes(root: &map::build::Block) -> (Vec<String>, Vec<(String, String)>,
         _ => Vec::new(),
     };
     let mut actions = Vec::new();
+    let mut overlays = Vec::new();
     let modes = block(&r, "modes");
     for m in &modes {
         for c in block(m, "classes") {
             for t in block(&c, "types") {
                 for a in block(&t, "actions") {
                     actions.push(text(a.at("name")));
+                }
+                for o in block(&t, "block_c") {
+                    overlays.push(text(o.at("string_0")));
                 }
             }
         }
@@ -222,6 +230,7 @@ fn graph_modes(root: &map::build::Block) -> (Vec<String>, Vec<(String, String)>,
         modes.iter().map(|m| text(m.at("name"))).collect(),
         pairs,
         actions,
+        overlays,
     )
 }
 
@@ -469,6 +478,17 @@ fn every_weapon_equipment_and_projectile_rebuilds() {
                             secondary == -1 || (0..w.triggers.len() as i16).contains(&secondary),
                             "{name}: secondary barrel {secondary}"
                         );
+                        // The plasma pistol's charge, Halo 1's words:
+                        // charging time 0.6, charged time 45, overcharged
+                        // action 0, charged illumination 1, spew time 0.
+                        if name.ends_with("plasma pistol") {
+                            let f = |k: usize| f32::from_bits(word(k));
+                            assert_eq!(
+                                (f(7), f(8), word(9), f(10), f(11)),
+                                (0.6, 45.0, 0, 1.0, 0.0),
+                                "{name}: charge"
+                            );
+                        }
                     }
                     *counts.entry("weap triggers".into()).or_default() += triggers.len();
                     let Some(Val::Block(barrels)) = r.at("barrels") else {
@@ -506,7 +526,7 @@ fn every_weapon_equipment_and_projectile_rebuilds() {
                         if let Some(a) = reference(&fp[0], "animations") {
                             let g = local(&c.tree, a).expect("a converted graph");
                             assert_eq!(g.group, FourCC(*b"jmad"));
-                            let (modes, pairs, _) = graph_modes(&g.root);
+                            let (modes, pairs, _, _) = graph_modes(&g.root);
                             assert_eq!(modes, ["any"], "{name}: first-person modes");
                             assert_eq!(
                                 pairs,
@@ -865,7 +885,13 @@ fn grenade_blocks_pair_across_the_discs() {
 /// Coagulation has the one mode `any` and `+0x54` the one pair (`any`,
 /// `any`); Blood Gulch's converted first-person graphs (built in
 /// `every_weapon_equipment_and_projectile_rebuilds`) hold the same, and
-/// their action names are listed against retail's.
+/// their action names are listed against retail's. Retail keeps its
+/// first-person overlays (`moving`, `overlays`, `pitch_and_turn`, ...) in
+/// each type's `+0xc`, none among the actions; the converted graphs put
+/// Halo 1's overlay animations there too, under names retail's overlays
+/// use or the engine asks for (`overcharged_jitter`, `0x0016821f`). The
+/// assault rifle, whose `fire-1` slot is empty, fires its `firing`
+/// animation as `fire_1`.
 #[test]
 #[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
 fn first_person_graphs_take_retail_modes() {
@@ -878,6 +904,7 @@ fn first_person_graphs_take_retail_modes() {
             .unwrap_or_default()
     };
     let mut retail = std::collections::BTreeSet::new();
+    let mut retail_overlays = std::collections::BTreeSet::new();
     let mut graphs = 0;
     for (id, g, name, _) in &base.tags {
         if *g != FourCC(*b"jmad") || !name.contains("\\fp\\") {
@@ -909,6 +936,10 @@ fn first_person_graphs_take_retail_modes() {
                 for a in 0..u32_at(&ty, 4) as usize {
                     retail.insert(s(u32_at(&base.element(&ty, 4, 8, a).unwrap().unwrap(), 0)));
                 }
+                for o in 0..u32_at(&ty, 0xc) as usize {
+                    let e = base.element(&ty, 0xc, 8, o).unwrap().unwrap();
+                    retail_overlays.insert(s(u32_at(&e, 0)));
+                }
             }
         }
         graphs += 1;
@@ -937,7 +968,7 @@ fn first_person_graphs_take_retail_modes() {
         let Some(a) = fp.first().and_then(|e| reference(e, "animations")) else {
             continue;
         };
-        let (modes, pairs, actions) = graph_modes(&local(&c.tree, a).unwrap().root);
+        let (modes, pairs, actions, overlays) = graph_modes(&local(&c.tree, a).unwrap().root);
         assert_eq!(modes, ["any"], "{}", t.name);
         // Every slot Halo 1 plays an animation from has its action, under
         // the slot's own name (the assault rifle's reload-empty slot
@@ -951,7 +982,24 @@ fn first_person_graphs_take_retail_modes() {
             }
             let word = h1models::h1::FIRST_PERSON_SLOTS[k];
             let action = h1models::names::map_name(&format!("first-person {word}")).action;
-            assert!(actions.contains(&action), "{}: slot {k} {word} -> {action}", t.name);
+            // An overlay animation's slot is an overlay; any other an
+            // action.
+            let (here, other) = match g.animations[*s as usize].kind {
+                h1models::h1::AnimType::Overlay => (&overlays, &actions),
+                _ => (&actions, &overlays),
+            };
+            assert!(here.contains(&action), "{}: slot {k} {word} -> {action}", t.name);
+            assert!(!other.contains(&action), "{}: {action} in both", t.name);
+        }
+        for o in &overlays {
+            assert!(
+                retail_overlays.contains(o) || o == "overcharged_jitter",
+                "{}: overlay {o}",
+                t.name
+            );
+        }
+        if t.name.contains("assault rifle") {
+            assert!(actions.iter().any(|a| a == "fire_1"), "{}: fire_1", t.name);
         }
         assert_eq!(
             pairs,

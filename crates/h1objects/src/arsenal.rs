@@ -392,6 +392,24 @@ impl TriggerWords {
     pub fn charging_time(&self) -> f32 {
         f32::from_bits(self.0[7])
     }
+    /// `+0x20` f32: charged time, `+0x24` i16: overcharged action,
+    /// `+0x28` f32: charged illumination, `+0x2c` f32: spew time. S for
+    /// the names (the order Halo 1's trigger keeps from `+0x4c`,
+    /// [`H1_TRIGGER_CHARGED`]); V: retail's plasma pistol, the only charging
+    /// trigger on Coagulation, holds 0, 0, 1.0 and 0 there, and its
+    /// charging time (`+0x1c`, 0.6) is Halo 1's `+0x48`.
+    pub fn charged_time(&self) -> f32 {
+        f32::from_bits(self.0[8])
+    }
+    pub fn overcharged_action(&self) -> i16 {
+        self.0[9] as i16
+    }
+    pub fn charged_illumination(&self) -> f32 {
+        f32::from_bits(self.0[10])
+    }
+    pub fn spew_time(&self) -> f32 {
+        f32::from_bits(self.0[11])
+    }
 }
 
 /// `+0xc` for a firing behaviour ([`TriggerWords::new`]).
@@ -412,6 +430,16 @@ pub const H1_TRIGGER_ONE_PER_PRESS: u32 = 0x8;
 /// pistol's first trigger, the only nonzero one on Blood Gulch, and Halo
 /// 2's plasma pistol charges for 0.6 at trigger `+0x1c`).
 pub const H1_TRIGGER_CHARGING_TIME: usize = 0x48;
+/// Halo 1 trigger `+0x4c..+0x5c`, after the charging time: f32 charged
+/// time, i16 overcharged action (and 2 bytes of pad), f32 charged
+/// illumination, f32 spew time; then the charging effect's reference at
+/// `+0x5c`. S for the names; V for the values on Blood Gulch's plasma
+/// pistol, the only trigger that charges: 45.0, 0, 1.0, 0, and no charging
+/// effect. They become Halo 2's trigger `+0x20..+0x30` word for word
+/// ([`TriggerWords::charged_time`]): the plasma pistol's charged
+/// illumination is 1.0 in both games. The charging effect is not carried
+/// (no Halo 1 trigger on the disc's multiplayer maps names one).
+pub const H1_TRIGGER_CHARGED: usize = 0x4c;
 
 /// The Halo 2 triggers for Halo 1's (`h1`, each `h1::TRIGGER_SIZE`
 /// bytes), whose barrels are one per Halo 1 trigger in order. Halo 1
@@ -433,6 +461,12 @@ pub fn h2_triggers(h1: &[Vec<u8>]) -> Vec<TriggerWords> {
         [first, _, ..] if charging(first) > 0.0 => {
             let mut t = TriggerWords::new(0, 2, 0, 1);
             t.0[7] = charging(first).to_bits();
+            // Charged time, overcharged action (its i16 alone), charged
+            // illumination, spew time.
+            for k in 0..4 {
+                t.0[8 + k] = u32_at(first, H1_TRIGGER_CHARGED + 4 * k);
+            }
+            t.0[9] &= 0xffff;
             vec![t]
         }
         _ => h1

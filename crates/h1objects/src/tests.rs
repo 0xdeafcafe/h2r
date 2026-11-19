@@ -2079,6 +2079,33 @@ fn every_halo1_trigger_gets_a_halo2_trigger_naming_its_barrel() {
     assert_eq!(h2_triggers(&[h1_trigger(0, 0.6)])[0].behaviour(), 0);
 }
 
+/// A charging trigger carries Halo 1's charge after its charging time:
+/// charged time, overcharged action, charged illumination and spew time
+/// (Halo 1 `+0x4c..+0x5c`, Halo 2 `+0x20..+0x30`), as Blood Gulch's
+/// plasma pistol holds them (45.0, 0, 1.0, 0); the overcharged action's
+/// pad stays 0.
+#[test]
+fn a_charging_trigger_carries_its_charge() {
+    use crate::arsenal::{H1_TRIGGER_CHARGED, h2_triggers};
+    let mut first = h1_trigger(0, 0.6);
+    let at = H1_TRIGGER_CHARGED;
+    first[at..at + 4].copy_from_slice(&45.0f32.to_le_bytes());
+    first[at + 4..at + 8].copy_from_slice(&0xabcd_0002u32.to_le_bytes());
+    first[at + 8..at + 12].copy_from_slice(&1.0f32.to_le_bytes());
+    first[at + 12..at + 16].copy_from_slice(&0.25f32.to_le_bytes());
+    let c = h2_triggers(&[first, h1_trigger(4, 0.0)])[0];
+    assert_eq!(c.charging_time(), 0.6);
+    assert_eq!(c.charged_time(), 45.0);
+    assert_eq!(c.overcharged_action(), 2);
+    assert_eq!(c.0[9], 2, "the pad after the action stays 0");
+    assert_eq!(c.charged_illumination(), 1.0);
+    assert_eq!(c.spew_time(), 0.25);
+    // A trigger that does not charge carries none of it.
+    let mut plain = h1_trigger(0, 0.0);
+    plain[at..at + 4].copy_from_slice(&45.0f32.to_le_bytes());
+    assert_eq!(h2_triggers(&[plain])[0].charged_time(), 0.0);
+}
+
 #[test]
 fn the_reserve_maximum_is_the_total_less_the_loaded() {
     use crate::arsenal::reserve_maximum;

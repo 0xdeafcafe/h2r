@@ -174,6 +174,38 @@ assault rifle had no `reload_empty` action. Slot words 6 (`light-on`) and
 19 (`misfire-2`) are S: no Blood Gulch graph fills them with an animation
 of that label.
 
+**The assault rifle's firing (converter version 79).** Its `fire-1` slot
+(2) is empty, and its 21-frame base animation `first-person firing` fills
+no slot: of every first-person graph on Blood Gulch, a10, c10 and d40 it is
+the only one with a firing animation and an empty `fire-1` slot (the
+flamethrower, ball and flag have no firing animation at all). Halo 1 plays
+by slot, so it plays nothing on the assault rifle's shots (I). Halo 2
+gives every weapon that fires a `fire_1` (13 of the Chief's 17 retail
+first-person graphs on Coagulation; the four without, flag, ball, bomb and
+energy sword, do not fire), so the converted graph names `fire_1` for
+`first-person firing` when no slot or label took it
+(`jmad::first_person_fire`). Before, the converted assault rifle fired
+with no recoil animation.
+
+**First-person overlays (converter version 79).** Halo 1's first-person
+overlay animations (type 1: every graph's `moving` and `overlays`, the
+needler's `ammunition`, the plasma pistol's `overcharged-jitter`) go to
+their type's overlays block (`+0xc`, 8 bytes each: string ID, graph index
+-1, animation index), not its actions (`jmad::first_person_overlays`). E:
+the overlay lookup `0x001dbc80` searches the type's `+0xc` with stride 8
+through `0x001dd560` (`0x001dbd01..0x001dbd12`), and the first-person
+setup asks it for `overcharged_jitter`, `overlays`, `ammunition` and
+`pitch_and_turn` (`0x0016821f..0x00168282`, through `0x001cb520` and
+`0x001cb9d0`) and for `moving` (`0x001672d6`). V: every retail first-person
+graph on Coagulation keeps `moving`, `overlays` and `pitch_and_turn` (the
+needler also `ammunition`, some `sprint`) there and none of them among its
+actions. Until version 79 they were actions, where the engine never looks
+for an overlay. Halo 1's `overlays` keeps its name; Halo 2's
+`pitch_and_turn` has no Halo 1 animation (which of Halo 2's two 9-frame
+overlays Halo 1's 9-frame `overlays` matches is not established). Third-
+person graphs keep their overlays among the actions, as before (retail
+keeps those in `+0xc` too: `aim_still_up`, `look`, ...; not changed here).
+
 The units, weapons and vehicles blocks map fixed engine slots to animation
 indices. They are not read: names are mapped from the animations' own names
 instead (below). **Some graphs have no node block** (the warthog, ghost,
@@ -352,8 +384,15 @@ section:
 | Section groups (`34`, `0xc`) | one: detail levels `0x3f` (all six) at `00`, compound nodes (`04` block) empty; the LOD bytes at `3c`..`41` stay 0, naming it | V: all 181 of 05a's `mode`s have exactly this. E: `0x00137650` reads `groups[byte[3c + lod]]`'s `+4` (compound node count) with no count check and adds the node count; an empty block faulted at `0x0013767a` (a30's second crash) |
 
 Header flags (`04`): left 0. Retail sets `0x8` on all and `0x4` on 167
-of 181 (not the first-person models); with `0x4` set, `0x00137650`
-skips the section group and counts one. Meaning not established.
+of 181 (on Coagulation: `0x4` on 103 of 121 `mode`s, 17 of the 22
+first-person ones; `0x8` on all 121); with `0x4` set, `0x00137650`
+skips the section group and counts one. Its callers are the object draw
+`0x0004b5d0` (`0x0004b854`) and `0x0003e393`, which size a per-draw
+record from the count. Without the bit the count is the section group's
+compound nodes plus the node count, which every converted model has (one
+group, no compound nodes), so the general path is taken and holds (every
+converted model draws). No reader of `0x8` was found. Left 0: setting
+`0x4` only changes the count, and nothing drawn is known to need it.
 
 Left empty: the node
 map block at `50`, errors, PRT info and render leaves, and the section
@@ -433,7 +472,7 @@ the cyborg).
 | action `melee` | `melee` (unchanged) | V3 (`combat:rifle:any:melee`, `combat:pistol:any:melee` on the retail elite; `melee_strike_1..3` are first-person actions only) |
 | action `throw-grenade` | `throw_grenade` | V3 (`combat:sword:any:throw_grenade` on the masterchief) |
 | vehicle actions `stand opening` / `stand closing` | `combat:opening` / `combat:closing` | V3 — the only actions any retail vehicle graph carries (banshee, scorpion, pelican, `c_turret_ap`, the phantom and wraith turrets) |
-| `first-person <action>` (a weapon's first-person graph) | mode, class and type `any`, animation `first_person:<action>`; `melee` becomes `melee_strike_1`; the graph's `+0x54` the one pair (`any`, `any`) | V3 (every retail first-person graph on Coagulation, 34, has the one mode `any` and that pair; h1objects `first_person_graphs_take_retail_modes`, which lists the converted actions retail has and has not: 19 shared on Blood Gulch, and `ammunition`, `enter`, `firing`, `light_off`, `moving`, `overcharged_jitter`, `overheating_again`, `overlays`, `reload_full2`, `stealth_melee` it lacks) |
+| `first-person <action>` (a weapon's first-person graph) | mode, class and type `any`, animation `first_person:<action>`; `melee` becomes `melee_strike_1`; the graph's `+0x54` the one pair (`any`, `any`) | V3 (every retail first-person graph on Coagulation, 34, has the one mode `any` and that pair; h1objects `first_person_graphs_take_retail_modes`, which lists the converted actions retail has and has not: 19 shared on Blood Gulch, and `ammunition`, `enter`, `firing`, `light_off`, `moving`, `overcharged_jitter`, `overheating_again`, `overlays`, `reload_full2`, `stealth_melee` it lacks; since converter version 79 `ammunition`, `moving`, `overcharged_jitter` and `overlays` are overlays, not actions, and the assault rifle has `fire_1`: First-person overlays and The assault rifle's firing above) |
 | `%n` | `:var<n>` on the action | Design; retail variant suffixes (`:var0`, ...) sit on animation names, never on tree actions |
 
 **No Halo 2 equivalent, or not mapped:**
