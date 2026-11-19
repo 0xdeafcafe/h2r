@@ -893,3 +893,53 @@ fn only_inputs_outside_the_instance_make_a_pass_per_draw() {
     w32(&mut v, 0x104, 1);
     assert!(per_draw_inputs(&pass(vec![[0, 1, 3, 21]], vec![5]), &Implementation::decode(&v).unwrap()));
 }
+
+/// `input_reads`: the masks, the engine constants' sources (pixel modes
+/// 0..3 scalar and 4 vector in byte 2; vertex modes in bits 5..9 of the
+/// word) and the fragment selectors, each kind in its own mask.
+#[test]
+fn input_reads_unions_masks_bindings_and_selectors() {
+    let range = |start: u16, count: u8| IndexRange { start, count };
+    let ext = |bytes: [u8; 4]| ExternalBinding { bytes };
+    let frag = |selector: i16| CombinerFragment { selector, base: 0 };
+    let imp = Implementation {
+        textures: IndexRange::default(),
+        render_states: IndexRange::default(),
+        stage_states: IndexRange::default(),
+        pixel_shader: [0; PSDEF_SIZE],
+        fragments: range(0, 3),
+        unknown_f8: [0; 4],
+        vertex_shader: TagRef { group: map::FourCC(*b"xtrv"), id: map::TagId(u32::MAX) },
+        scalar_inputs: 1 << 21,
+        vector_inputs: 1 << 40,
+        int_inputs: 1 << 4,
+        unknown_118: 0,
+        restore_states: IndexRange::default(),
+        animated_render_states: IndexRange::default(),
+        animated_stage_states: IndexRange::default(),
+        external_pixel_constants: range(0, 3),
+        external_vertex_constants: range(3, 2),
+        unknown_126: [0; 12],
+    };
+    let spas = PassPostprocess {
+        implementations: vec![imp.clone()],
+        textures: Vec::new(),
+        render_states: Vec::new(),
+        stage_states: Vec::new(),
+        // -1 is fixed; 6 an integer; 40 is out of the integers' range.
+        fragments: vec![frag(-1), frag(6), frag(40)],
+        variants: Vec::new(),
+        stages: Vec::new(),
+        externals: vec![
+            ext([0, 0, 2, 16]),    // pixel, mode 2: scalar 16
+            ext([0, 0, 4, 5]),     // pixel, mode 4: vector 5
+            ext([0, 0, 6, 9]),     // pixel, mode 6: a stage size
+            ext([4 << 5, 0, 0, 6]), // vertex, mode 4: vector 6
+            ext([1 << 5, 0, 0, 3]), // vertex, mode 1: scalar 3
+        ],
+    };
+    let r = input_reads(&spas, &imp);
+    assert_eq!(r.scalars, 1 << 21 | 1 << 16 | 1 << 3);
+    assert_eq!(r.vectors, 1 << 40 | 1 << 5 | 1 << 6);
+    assert_eq!(r.ints, 1 << 4 | 1 << 6);
+}
