@@ -162,8 +162,9 @@ impl Converter<'_> {
         rounds: Option<i16>,
     ) -> Result<TagId> {
         let t = self.h1_tag(id)?;
-        if let Some(d) = self.done.get(&t.id.0) {
-            return Ok(*d);
+        let key = (id, rounds);
+        if let Some(&mode) = self.render_models.get(&key) {
+            return Ok(mode);
         }
         let (h1_model, _) = h1models::model_from_map(self.h1, t, &ModelOptions::default())?;
         let shaders = self.model_shaders(rep, &h1_model, rounds);
@@ -175,7 +176,9 @@ impl Converter<'_> {
             &ModelOptions { shaders },
         )?;
         crate::rebuild::mode_materials(&mut mode.root, &padded)?;
-        self.cached(t, mode)
+        let mode = self.tree.push(&t.name, mode);
+        self.render_models.insert(key, mode);
+        Ok(mode)
     }
 
     /// A converted animation graph, once.
@@ -233,7 +236,7 @@ impl Converter<'_> {
         rep.physics = Some("none (rebuilt weapons borrow no phmo)".into());
         let rounds = w.rounds_counter();
         let hlmt = self.model(&mut rep, &w.object, None, &tag.name, true, rounds)?;
-        let predicted = self.predicted(&w.object)?;
+        let predicted = self.predicted(hlmt);
         let d = Defs::builtin().group(FourCC(*b"weap")).expect("weap");
         let bd = d.child("barrels").expect("barrels");
         let fd = d.child("barrels.block_e4").expect("firing effects");
@@ -484,7 +487,7 @@ impl Converter<'_> {
         let mut rep = Self::rebuilt_report(tag, cp.as_ref().map(|c| c.0), self.base);
         rep.physics = Some("none (rebuilt equipment borrows no phmo)".into());
         let hlmt = self.model(&mut rep, &e.object, None, &tag.name, true, None)?;
-        let predicted = self.predicted(&e.object)?;
+        let predicted = self.predicted(hlmt);
         let mut parts = arsenal::EquipmentParts {
             hlmt,
             predicted,

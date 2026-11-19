@@ -6,10 +6,10 @@ use h1map::testing::{BASE, SCNR_ID, Spec, build_with_extra_tags, group, put};
 use h1map::{H1Map, HEADER_LEN};
 use h1models::h1::MODE_HEADER;
 use h1objects::base::Base;
-use h1objects::convert::{Converter, local};
+use h1objects::convert::{Converter, local, local_index};
 use h1objects::h1::{MAGAZINE_SIZE, WEAP_SIZE, WEAPON_PRIMARY_AMMUNITION, Weapon};
 use map::{FourCC, TagId};
-use tags::defs::{Defs, Target, Val, from_built};
+use tags::defs::{Defs, Record, Target, Val, from_built};
 use tags::object::Metadata;
 
 fn counter_map() -> H1Map {
@@ -37,9 +37,14 @@ fn counter_map() -> H1Map {
                 "digits",
                 bitmap::HEADER_LEN + DIGITS * bitmap::IMAGE_LEN,
             ),
+            spec(
+                b"weap",
+                "short_magazine",
+                WEAP_SIZE + FUNCTION_SIZE + MAGAZINE_SIZE,
+            ),
         ],
     );
-    let first = built.data_at.len() - 5;
+    let first = built.data_at.len() - 6;
     let id = |i: usize| SCNR_ID + (first + i) as u32;
     let at = |i: usize| built.data_at[first + i].unwrap();
     let address = |offset: usize| BASE + (offset - HEADER_LEN) as u32;
@@ -49,22 +54,23 @@ fn counter_map() -> H1Map {
     let b = &mut built.file;
     put(b, 8, file_len);
 
-    let weapon = at(0);
-    let function = weapon + WEAP_SIZE;
-    let magazine = function + FUNCTION_SIZE;
-    put(b, weapon, 2); // obje type: weapon
-    put(b, weapon + 0x28, group(b"mode"));
-    put(b, weapon + 0x34, id(1));
-    put(b, weapon + 0x45c, group(b"mode"));
-    put(b, weapon + 0x468, id(2));
-    put(b, weapon + 0x330, u32::from(WEAPON_PRIMARY_AMMUNITION));
-    put(b, weapon + 0x158, 1);
-    put(b, weapon + 0x15c, address(function));
-    put(b, function + 0xc, 1); // A out scales by A in
-    put(b, function + 0x2c, 1.0f32.to_bits());
-    put(b, weapon + 0x4f0, 1);
-    put(b, weapon + 0x4f4, address(magazine));
-    put(b, magazine + 0xa, u32::from(LOADED));
+    for (weapon, loaded) in [(at(0), LOADED), (at(5), LOADED / 2)] {
+        let function = weapon + WEAP_SIZE;
+        let magazine = function + FUNCTION_SIZE;
+        put(b, weapon, 2); // obje type: weapon
+        put(b, weapon + 0x28, group(b"mode"));
+        put(b, weapon + 0x34, id(1));
+        put(b, weapon + 0x45c, group(b"mode"));
+        put(b, weapon + 0x468, id(2));
+        put(b, weapon + 0x330, u32::from(WEAPON_PRIMARY_AMMUNITION));
+        put(b, weapon + 0x158, 1);
+        put(b, weapon + 0x15c, address(function));
+        put(b, function + 0xc, 1); // A out scales by A in
+        put(b, function + 0x2c, 1.0f32.to_bits());
+        put(b, weapon + 0x4f0, 1);
+        put(b, weapon + 0x4f4, address(magazine));
+        put(b, magazine + 0xa, u32::from(loaded));
+    }
 
     for model in [at(1), at(2)] {
         let shaders = model + MODE_HEADER;
@@ -111,15 +117,13 @@ fn counter_map() -> H1Map {
     H1Map::from_decompressed(built.file).unwrap()
 }
 
-#[test]
-fn both_weapon_models_use_the_same_ammunition_digits() {
-    let h1 = counter_map();
+fn counter_base() -> Base {
     let fixed = Bound {
         id: TagId(0xe200_0001),
         scale: [1.0, 1.0],
         lod_offset: 0.0,
     };
-    let base = Base {
+    Base {
         meta: Metadata {
             base: 0,
             bytes: Vec::new(),
@@ -137,35 +141,77 @@ fn both_weapon_models_use_the_same_ammunition_digits() {
             ),
         }),
         materials: Vec::new(),
+    }
+}
+
+fn shader(conv: &Converter<'_>, name: &str) -> Option<TagId> {
+    conv.tree
+        .tags
+        .iter()
+        .position(|(n, c)| n == name && c.group == FourCC(*b"shad"))
+        .map(local)
+}
+
+fn weapon_materials(conv: &Converter<'_>, weapon: TagId) -> [[TagId; 2]; 2] {
+    let record = |id| {
+        let c = &conv.tree.tags[local_index(id).unwrap()].1;
+        let def = Defs::builtin().group(c.group).unwrap();
+        from_built(def, &c.root).unwrap()
     };
-    let weapon = h1.tags().iter().find(|t| t.name == "weapon").unwrap();
+    let reference = |r: &Record, field: &str| match r.at(field) {
+        Some(Val::Ref {
+            target: Target::Id(id),
+            ..
+        }) => *id,
+        other => panic!("{field}: {other:?}"),
+    };
+    let weapon = record(weapon);
+    let hlmt = record(reference(&weapon, "item.obje.model"));
+    let world = reference(&hlmt, "render_model");
+    let first_person = reference(&weapon, "first_person[0].model");
+    assert_eq!(
+        weapon.at("item.obje.predicted_resources[0].tag"),
+        Some(&Val::Datum(Target::Id(world))),
+    );
+    [world, first_person].map(|id| {
+        let model = record(id);
+        std::array::from_fn(|i| reference(&model, &format!("materials[{i}].shader")))
+    })
+}
+
+#[test]
+fn both_weapon_models_use_the_same_ammunition_digits() {
+    let h1 = counter_map();
+    let base = counter_base();
+    let weapon = h1.find(h1map::Group::new(b"weap"), "weapon").unwrap();
     assert_eq!(Weapon::read(&h1, weapon).unwrap().rounds_counter(), Some(24));
     let mut conv = Converter::new(&h1, &base);
-    conv.object(weapon).unwrap();
+    let id = conv.object(weapon).unwrap();
 
-    let tags = &conv.tree.tags;
-    let find = |name: &str, group| {
-        tags.iter()
-            .enumerate()
-            .find(|(_, (n, c))| n == name && c.group == FourCC(group))
-    };
-    assert!(find("counter", *b"shad").is_none());
-    let digits = ["counter_ones", "counter_tens"].map(|name| {
-        let (i, _) = find(name, *b"shad").expect("converted digit");
-        local(i)
-    });
-    let def = Defs::builtin().group(FourCC(*b"mode")).unwrap();
-    for name in ["world", "first_person"] {
-        let (_, (_, model)) = find(name, *b"mode").expect("converted model");
-        let model = from_built(def, &model.root).unwrap();
-        for (i, id) in digits.into_iter().enumerate() {
-            match model.at(&format!("materials[{i}].shader")) {
-                Some(Val::Ref {
-                    target: Target::Id(shader),
-                    ..
-                }) => assert_eq!(*shader, id, "{name} material {i}"),
-                other => panic!("{name} material {i}: {other:?}"),
-            }
+    assert!(shader(&conv, "counter").is_none());
+    let digits = ["counter_ones", "counter_tens"].map(|name| shader(&conv, name).unwrap());
+    assert_eq!(weapon_materials(&conv, id), [digits; 2]);
+}
+
+#[test]
+fn shared_weapon_models_use_their_own_magazine_limit() {
+    let h1 = counter_map();
+    let base = counter_base();
+    for order in [["short_magazine", "weapon"], ["weapon", "short_magazine"]] {
+        let mut conv = Converter::new(&h1, &base);
+        let converted = order.map(|name| {
+            let tag = h1.find(h1map::Group::new(b"weap"), name).unwrap();
+            (name, conv.object(tag).unwrap())
+        });
+        let static_shader = shader(&conv, "counter").unwrap();
+        let digits = ["counter_ones", "counter_tens"].map(|name| shader(&conv, name).unwrap());
+        for (name, id) in converted {
+            let want = if name == "short_magazine" {
+                [static_shader; 2]
+            } else {
+                digits
+            };
+            assert_eq!(weapon_materials(&conv, id), [want; 2], "{name} in {order:?}");
         }
     }
 }

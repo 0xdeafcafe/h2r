@@ -814,6 +814,8 @@ pub struct Converter<'a> {
     /// ([`Self::dialogue`]).
     pub dialogue_bytes: u64,
     done: HashMap<u32, TagId>,
+    /// Render models by source tag and weapon counter's loaded maximum.
+    render_models: HashMap<(h1map::TagId, Option<i16>), TagId>,
     colls: HashMap<(u32, bool), TagId>,
     coll_names: HashMap<(u32, bool), Vec<(String, Vec<String>)>>,
     /// Per converted `coll`, the `hlmt` materials it needs
@@ -898,6 +900,7 @@ impl<'a> Converter<'a> {
             tree: Tree::default(),
             coll_reports: Vec::new(),
             done: HashMap::new(),
+            render_models: HashMap::new(),
             colls: HashMap::new(),
             coll_names: HashMap::new(),
             coll_materials: HashMap::new(),
@@ -1489,13 +1492,12 @@ impl<'a> Converter<'a> {
         };
         let scenery = h1::OBJECT_TYPES.get(obj.object_type as usize) == Some(&b"scen");
         let mode_tag = self.h1_tag(mode_id)?;
-        let (h1_model, mode) = match self.done.get(&mode_tag.id.0) {
-            // Converted already (shared by two objects): only the Halo 1
-            // model is needed again.
-            Some(_) => h1models::model_from_map(self.h1, mode_tag, &ModelOptions::default())?,
+        let (mut h1_model, _) =
+            h1models::model_from_map(self.h1, mode_tag, &ModelOptions::default())?;
+        let key = (mode_id, rounds);
+        let mode = match self.render_models.get(&key) {
+            Some(&mode) => mode,
             None => {
-                let (mut h1_model, _) =
-                    h1models::model_from_map(self.h1, mode_tag, &ModelOptions::default())?;
                 // A vehicle's powered mass points become markers, which
                 // its friction or hover points name (crate::rebuild::Point).
                 if h1::OBJECT_TYPES.get(obj.object_type as usize) == Some(&b"vehi") {
@@ -1523,10 +1525,11 @@ impl<'a> Converter<'a> {
                 if rebuild {
                     crate::rebuild::mode_materials(&mut mode.root, &padded)?;
                 }
-                (h1_model, mode)
+                let mode = self.tree.push(&mode_tag.name, mode);
+                self.render_models.insert(key, mode);
+                mode
             }
         };
-        let mode = self.cached(mode_tag, mode)?;
         let mut hlmt = match template_hlmt {
             Some(t) => Block::new(self.base.root(t)?),
             None => Block::zeroed(
@@ -1804,7 +1807,7 @@ impl<'a> Converter<'a> {
         if let Some(kind) = self.scenery_physics(&object)? {
             self.object_physics(&mut rep, hlmt, &object, &tag.name, kind)?;
         }
-        let predicted = self.predicted(&object)?;
+        let predicted = self.predicted(hlmt);
         let words = self.scenery_role()?.map(|r| r.scen).unwrap_or_default();
         let (root, roles) = crate::provenance::capture(|| {
             crate::rebuild::scenery(&object, hlmt, &predicted, &words)
@@ -2540,7 +2543,7 @@ impl<'a> Converter<'a> {
         let hlmt = self.model(&mut rep, &dev.object, None, &tag.name, true, None)?;
         rep.physics = Some("none (no Halo 1 collision to build from)".into());
         self.object_physics(&mut rep, hlmt, &dev.object, &tag.name, PhysicsKind::Device)?;
-        let predicted = self.predicted(&dev.object)?;
+        let predicted = self.predicted(hlmt);
         let mut root = crate::rebuild::device(&dev, hlmt, &predicted)?;
         rep.no_home.push(
             "devi sounds and effects (Halo 1 effe references): null; the device is silent".into(),
@@ -2611,7 +2614,7 @@ impl<'a> Converter<'a> {
             &tag.name,
             PhysicsKind::Vehicle { wheels },
         )?;
-        let predicted = self.predicted(&u.object)?;
+        let predicted = self.predicted(hlmt);
         let (markers, bounds) = match u.object.model {
             Some(m) => {
                 let model =
@@ -3024,7 +3027,7 @@ impl<'a> Converter<'a> {
             ));
         }
         self.object_physics(&mut rep, hlmt, &u.object, &tag.name, PhysicsKind::Biped)?;
-        let predicted = self.predicted(&u.object)?;
+        let predicted = self.predicted(hlmt);
         let mut swap = None;
         let hud = if health_hud::is_player_biped(&tag.name) {
             let tpl_root = self.base.root(cid)?;
@@ -3407,20 +3410,23 @@ impl<'a> Converter<'a> {
     }
 
     /// The resources an object built from scratch predicts
-    /// ([`crate::rebuild::Predicted`]): its converted render model, then
-    /// every converted bitmap its shaders draw. V: every retail vehicle
+    /// ([`crate::rebuild::Predicted`]): the render model its `hlmt` names,
+    /// then every converted bitmap its shaders draw. V: every retail vehicle
     /// lists its `mode` once (`+0` 2, `+2` -1) and its bitmaps (`+0` 0,
     /// `+2` 0), the model first.
-    fn predicted(&self, obj: &h1::Object) -> Result<Vec<crate::rebuild::Predicted>> {
-        let Some(m) = obj.model else {
-            return Ok(Vec::new());
+    fn predicted(&self, hlmt: Option<TagId>) -> Vec<crate::rebuild::Predicted> {
+        let Some((_, hlmt)) = hlmt.and_then(local_index).and_then(|k| self.tree.tags.get(k)) else {
+            return Vec::new();
         };
-        let Some(&mode) = self.done.get(&self.h1_tag(m)?.id.0) else {
-            return Ok(Vec::new());
+        let Some(mode) = hlmt.root.fixups.iter().find_map(|f| match &f.kind {
+            FixupKind::TagRef(id) if f.offset == h2::HLMT_RENDER as u32 => Some(*id),
+            _ => None,
+        }) else {
+            return Vec::new();
         };
         let mut out = vec![crate::rebuild::Predicted::RenderModel(mode)];
-        let Some((_, conv)) = self.tree.tags.get(mode.0 as usize & 0xffff) else {
-            return Ok(out);
+        let Some((_, conv)) = local_index(mode).and_then(|k| self.tree.tags.get(k)) else {
+            return out;
         };
         let mut shaders = Vec::new();
         self.locals_in(&conv.root, FourCC(*b"shad"), &mut shaders);
@@ -3430,7 +3436,7 @@ impl<'a> Converter<'a> {
             self.locals_in(&c.root, FourCC(*b"bitm"), &mut bitmaps);
         }
         out.extend(bitmaps.into_iter().map(crate::rebuild::Predicted::Bitmap));
-        Ok(out)
+        out
     }
 
     fn unit(&mut self, tag: &Tag) -> Result<TagId> {
