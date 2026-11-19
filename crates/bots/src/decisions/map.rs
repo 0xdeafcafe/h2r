@@ -69,17 +69,23 @@ impl MapMemory {
     pub(super) fn observe(&mut self, p: &Perception, me: Me, map: Option<&MapData>) {
         self.deaths
             .retain(|(_, t)| p.tick.wrapping_sub(*t) < HOT_TICKS);
+        let visible = |at: Vec3| {
+            let dist = distance(me.position, at);
+            let facing = (0..3)
+                .map(|i| (at[i] - me.position[i]) * me.aim[i])
+                .sum::<f32>();
+            dist <= 25.0
+                && (dist < 3.0 || facing > dist * 0.42)
+                && map.is_none_or(|m| crate::perceive::in_view(me, at, 0.2, Some(m)))
+        };
         self.timers
-            .observe(p.tick, p.observations.supplies.as_deref(), |at| {
-                let dist = distance(me.position, at);
-                let facing = (0..3)
-                    .map(|i| (at[i] - me.position[i]) * me.aim[i])
-                    .sum::<f32>();
-                dist <= 25.0
-                    && (dist < 3.0 || facing > dist * 0.42)
-                    && map.is_none_or(|m| crate::perceive::in_view(me, at, 0.2, Some(m)))
-            });
+            .observe(p.tick, p.observations.supplies.as_deref(), visible);
+        self.timers.update_known(p, visible);
         self.timers.carriers(p, me);
+    }
+
+    pub(super) fn holder(&self, id: u32) -> bool {
+        self.timers.holder(id)
     }
 
     pub(crate) fn due(
@@ -90,8 +96,9 @@ impl MapMemory {
         stuck: &Stuck,
         map: Option<&MapData>,
         experience: &crate::experience::Experience,
+        trip: super::supplies::Trip,
     ) -> Option<Vec3> {
-        self.timers.due(me, tick, skill, |at| {
+        self.timers.due(me, tick, skill, trip, |at| {
             (!self.hot(at, tick, 3.0) && !stuck.blocked(at, tick))
                 .then(|| map.map_or(0., |m| m.places.strength(at)) + 0.3 * experience.success(at))
         })

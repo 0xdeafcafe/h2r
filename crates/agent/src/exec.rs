@@ -27,7 +27,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::reader::{GameStatus, Reader};
+use crate::reader::{GameStatus, Reader, TagNames};
 
 mod snap;
 pub use snap::{SnapshotMachine, Snapshots};
@@ -35,7 +35,7 @@ pub use snap::{SnapshotMachine, Snapshots};
 /// One connection.
 pub type ConnId = u64;
 
-/// Who may call a host method ([`Agent::add_method`]).
+/// Who may call a registered method ([`Agent::add_method`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Access {
     /// Any connection: it only reads.
@@ -44,6 +44,21 @@ pub enum Access {
     /// it acts on the game (pad input, the profiler), and a one-shot
     /// `h2 agent` call should not need `session.claim` first.
     Act,
+    /// Only the connection that holds control through `session.claim`.
+    Claimed,
+}
+
+impl Access {
+    fn check(self, controller: Option<ConnId>, conn: ConnId) -> Result<(), RpcError> {
+        let message = match self {
+            Self::Act | Self::Claimed if controller.is_some_and(|c| c != conn) => {
+                "another connection holds control"
+            }
+            Self::Claimed if controller.is_none() => "session.claim first on this connection",
+            _ => return Ok(()),
+        };
+        Err(RpcError::new(code::NOT_CONTROLLER, message))
+    }
 }
 
 /// A method the game's host answers ([`Agent::add_method`]): params in,
@@ -63,14 +78,65 @@ pub struct GameCtx<'a> {
     /// The stamp of this boundary.
     pub at: At,
     host: &'a mut BTreeMap<String, (Access, HostMethod)>,
+    /// Set by [`GameCtx::defer`]: the answer comes at a later boundary.
+    later: Option<(Later, u64)>,
 }
 
+/// A deferred answer ([`GameCtx::defer`]): polled at each boundary after
+/// the one that asked, `None` until it is ready.
+pub type Later = Box<dyn FnMut(&mut GameCtx<'_>) -> Option<Result<Value, RpcError>> + Send>;
+
+/// The longest a deferred answer may wait, in game ticks, and in wall time
+/// whatever the ticks (a game that stopped ticking).
+pub const DEFER_TICKS_MAX: u64 = 300;
+const DEFER_WALL: Duration = Duration::from_secs(60);
+
 impl GameCtx<'_> {
+    /// Runs an operation once with guest memory at this boundary.
+    pub(crate) fn with_guest<T>(
+        &mut self,
+        f: impl FnOnce(&mut dyn engine::GuestMemory) -> Result<T, RpcError>,
+    ) -> Result<T, RpcError> {
+        let mut f = Some(f);
+        let mut out = None;
+        let ran = self.reader.with_guest(&mut |m| {
+            if let Some(f) = f.take() {
+                out = Some(f(m));
+            }
+        });
+        match out {
+            Some(r) if ran => r,
+            _ => Err(RpcError::new(
+                code::UNAVAILABLE,
+                "no guest memory here (the game isn't running)",
+            )),
+        }
+    }
+
     /// Answers a host method (`ui.screen`, `input.state`) as a client
     /// would get it, when the host registered one of that name.
     pub fn host(&mut self, name: &str, params: Value) -> Option<Result<Value, RpcError>> {
         self.host.get_mut(name).map(|(_, f)| f(params))
     }
+
+    /// Answers later: `poll` runs at each boundary from the next one until
+    /// it gives the answer, or `ticks` game ticks pass (at most
+    /// [`DEFER_TICKS_MAX`]; then `TIMEOUT`). For work the game does at its
+    /// next tick (guest calls a method queued). What the method returns is
+    /// dropped. A paused game holds the answer until it steps.
+    pub fn defer(&mut self, ticks: u64, poll: Later) {
+        self.later = Some((poll, ticks.clamp(1, DEFER_TICKS_MAX)));
+    }
+}
+
+/// A game method's answer still coming ([`GameCtx::defer`]).
+struct Deferred {
+    conn: ConnId,
+    id: Option<Value>,
+    poll: Later,
+    from_ticks: u64,
+    tick_limit: u64,
+    deadline: Instant,
 }
 
 /// With no tick for this long the game counts as loading, and world reads
@@ -154,6 +220,10 @@ struct State {
     snapshots: Option<Box<dyn Snapshots>>,
     /// Saves and loads waiting for a quiescent slice boundary.
     snap_jobs: VecDeque<snap::Job>,
+    /// Game methods' answers still coming ([`GameCtx::defer`]).
+    deferred: Vec<Deferred>,
+    /// Names `world.*` results' tags ([`Agent::set_tag_names`]).
+    tag_names: Option<Mutex<Box<dyn TagNames>>>,
 }
 
 /// A `profile.capture` waiting for its window to pass.
@@ -454,6 +524,12 @@ impl Agent {
         self.lock().sampler = Some(sampler);
     }
 
+    /// Where `world.*` results' `tag_name`s come from (the loaded map's
+    /// tag names); without it objects carry only the `tag` datum.
+    pub fn set_tag_names(&self, names: Box<dyn TagNames>) {
+        self.lock().tag_names = Some(Mutex::new(names));
+    }
+
     #[cfg(test)]
     pub(crate) fn input_for_tests(&self) -> Arc<Mutex<Input>> {
         Arc::clone(&self.lock().input)
@@ -491,6 +567,7 @@ impl Agent {
         s.mark_tick();
         s.record_tick(reader);
         s.serve(reader, Where::Tick);
+        s.settle_deferred(reader);
         s.settle_waits();
         s.settle_capture();
         let mut snap = s.arm_snapshots();
@@ -510,6 +587,7 @@ impl Agent {
                 .unwrap_or_else(|e| e.into_inner())
                 .0;
             s.serve(reader, Where::Tick);
+            s.settle_deferred(reader);
             s.settle_waits();
             s.settle_capture();
             snap = s.arm_snapshots();
@@ -544,6 +622,9 @@ impl Agent {
         // every SLICE_REFRESH, for waits and events.
         let due = s.slice_refresh.is_none_or(|t| t.elapsed() >= SLICE_REFRESH);
         let idle_work = !s.ticking() && due && (!s.waits.is_empty() || s.wants_events());
+        if !s.deferred.is_empty() && !s.ticking() {
+            s.settle_deferred(reader);
+        }
         if s.pending.is_empty() && !idle_work {
             if !s.waits.is_empty() {
                 s.settle_waits();
@@ -749,6 +830,7 @@ impl State {
             .chain(self.waits.iter().map(|w| w.conn))
             .chain(self.capture.as_ref().map(|c| c.conn))
             .chain(self.snap_jobs.iter().map(|j| j.conn()))
+            .chain(self.deferred.iter().map(|d| d.conn))
             .collect();
         let dead: BTreeSet<ConnId> = self
             .conns
@@ -760,6 +842,7 @@ impl State {
             self.pending.retain(|(c, _)| !dead.contains(c));
             self.waits.retain(|w| !dead.contains(&w.conn));
             self.snap_jobs.retain(|j| !dead.contains(&j.conn()));
+            self.deferred.retain(|d| !dead.contains(&d.conn));
         }
         self.conns
             .retain(|id, c| !c.dead && (!c.closing || busy.contains(id)));
@@ -804,6 +887,64 @@ impl State {
             }
         }
         self.pending = keep;
+    }
+
+    /// Polls the deferred answers: answers what is ready, times out what
+    /// waited too long.
+    fn settle_deferred(&mut self, reader: &mut dyn Reader) {
+        if self.deferred.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        let at = self.at();
+        for mut d in std::mem::take(&mut self.deferred) {
+            let fresh = self.ticks == d.from_ticks;
+            let out = if fresh {
+                None
+            } else {
+                let mut ctx = GameCtx {
+                    reader: &mut *reader,
+                    at: at.clone(),
+                    host: &mut self.host,
+                    later: None,
+                };
+                (d.poll)(&mut ctx)
+            };
+            let out = match out {
+                Some(r) => Some(r),
+                None if self.ticks - d.from_ticks >= d.tick_limit || now >= d.deadline => {
+                    let mut e = RpcError::new(
+                        code::TIMEOUT,
+                        format!(
+                            "the game didn't answer within {} ticks (it runs the work at its next tick)",
+                            self.ticks - d.from_ticks
+                        ),
+                    );
+                    e.data = Some(to_value(&at));
+                    Some(Err(e))
+                }
+                None => None,
+            };
+            match (out, d.id.take()) {
+                (None, id) => {
+                    d.id = id;
+                    self.deferred.push(d);
+                }
+                (Some(_), None) => {}
+                (Some(r), Some(id)) => {
+                    let r = match r {
+                        Ok(mut v) => {
+                            if let Value::Object(o) = &mut v {
+                                o.entry("at").or_insert_with(|| to_value(&at));
+                            }
+                            Response::ok(id, v)
+                        }
+                        Err(e) => Response::err(id, e),
+                    };
+                    self.send(d.conn, r);
+                }
+            }
+        }
     }
 
     fn settle_waits(&mut self) {
@@ -862,11 +1003,8 @@ impl State {
         }
         let p = req.params;
         if let Some((access, _)) = self.host.get(m) {
-            if *access == Access::Act && self.controller.is_some_and(|c| c != conn) {
-                return Some(Err(RpcError::new(
-                    code::NOT_CONTROLLER,
-                    "another connection holds control",
-                )));
+            if let Err(e) = access.check(self.controller, conn) {
+                return Some(Err(e));
             }
             let at = to_value(self.at());
             let (_, f) = self.host.get_mut(m)?;
@@ -896,18 +1034,28 @@ impl State {
             let at = self.at();
             let stamp = to_value(&at);
             let (access, f) = self.game_methods.get_mut(m)?;
-            if *access == Access::Act && self.controller.is_some_and(|c| c != conn) {
-                return Some(Err(RpcError::new(
-                    code::NOT_CONTROLLER,
-                    "another connection holds control",
-                )));
+            if let Err(e) = access.check(self.controller, conn) {
+                return Some(Err(e));
             }
             let mut ctx = GameCtx {
                 reader,
                 at,
                 host: &mut self.host,
+                later: None,
             };
-            return Some(f(p, &mut ctx).map(|mut v| {
+            let out = f(p, &mut ctx);
+            if let (Ok(_), Some((poll, ticks))) = (&out, ctx.later.take()) {
+                self.deferred.push(Deferred {
+                    conn,
+                    id: req.id,
+                    poll,
+                    from_ticks: self.ticks,
+                    tick_limit: ticks,
+                    deadline: Instant::now() + DEFER_WALL,
+                });
+                return None;
+            }
+            return Some(out.map(|mut v| {
                 if let Value::Object(o) = &mut v {
                     o.entry("at").or_insert(stamp);
                 }
@@ -1096,11 +1244,16 @@ impl State {
     }
 
     fn objects(&self, reader: &mut dyn Reader) -> Result<Vec<Object>, RpcError> {
-        reader.objects().map_err(|e| {
+        let mut objects = reader.objects().map_err(|e| {
             let mut err = RpcError::new(code::UNAVAILABLE, format!("reading the world: {e}"));
             err.data = Some(to_value(self.at()));
             err
-        })
+        })?;
+        if let Some(names) = &self.tag_names {
+            let mut names = names.lock().unwrap_or_else(|e| e.into_inner());
+            crate::reader::name_tags(&mut **names, &mut objects);
+        }
+        Ok(objects)
     }
 
     fn count(&self, reader: &mut dyn Reader, p: CountParams) -> Result<Counts, RpcError> {
@@ -1408,9 +1561,11 @@ pub fn query(objects: Vec<Object>, p: &QueryParams) -> Result<Page, RpcError> {
             }
         }),
     };
+    let tag = p.tag.as_deref().map(TagMatch::new);
     let mut hits: Vec<Object> = objects
         .into_iter()
         .filter(|o| p.kind.as_ref().is_none_or(|k| k.contains(&o.kind)))
+        .filter(|o| tag.as_ref().is_none_or(|t| t.matches(o)))
         .collect();
     if let (Some(c), Some(n)) = (center, &p.near) {
         hits = hits
@@ -1438,6 +1593,45 @@ pub fn query(objects: Vec<Object>, p: &QueryParams) -> Result<Page, RpcError> {
         more: offset + page.len() < total,
         objects: page,
     })
+}
+
+/// A query's `tag`: a datum, or text the tag's name contains.
+enum TagMatch {
+    Datum(u32),
+    Name(String),
+}
+
+impl TagMatch {
+    fn new(t: &str) -> TagMatch {
+        let t = t.trim();
+        let hex = t.strip_prefix("0x").unwrap_or(t);
+        if hex.len() == 8
+            && let Ok(d) = u32::from_str_radix(hex, 16)
+        {
+            return TagMatch::Datum(d);
+        }
+        TagMatch::Name(fold_tag_name(t))
+    }
+
+    fn matches(&self, o: &Object) -> bool {
+        match self {
+            TagMatch::Datum(d) => {
+                o.tag
+                    .as_deref()
+                    .and_then(|t| u32::from_str_radix(t, 16).ok())
+                    == Some(*d)
+            }
+            TagMatch::Name(n) => o
+                .tag_name
+                .as_deref()
+                .is_some_and(|name| fold_tag_name(name).contains(n.as_str())),
+        }
+    }
+}
+
+/// A tag name for matching: lower case, `/` as `\`.
+fn fold_tag_name(name: &str) -> String {
+    name.to_ascii_lowercase().replace('/', "\\")
 }
 
 pub(crate) fn trim(v: Value, fields: Option<&[String]>) -> Value {

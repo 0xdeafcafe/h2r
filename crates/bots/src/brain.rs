@@ -67,6 +67,15 @@ pub struct Observations {
     pub contacts: Vec<Contact>,
     /// An empty successful pickup scan can indicate that a weapon was taken.
     pub pickups_scanned: bool,
+    /// Public simulation ticks per second for estimating placement service.
+    pub service_rate: Option<u16>,
+    /// Power weapon instances identified during the existing object scan.
+    pub held_power: Vec<u32>,
+    /// Recent successful pickup events, matched to witnessed removals.
+    pub takes: Vec<crate::decisions::supplies::Take>,
+    /// Living unit handles and their visible weapon objects, for recognizing
+    /// a pickup without transferring a memory to a new life or player.
+    pub supply_players: Vec<crate::decisions::supplies::Player>,
     /// Occupied power weapon and power-up placements. None means the host
     /// could not check the ground this tick. An empty scan is meaningful.
     pub supplies: Option<Vec<crate::decisions::supplies::Supply>>,

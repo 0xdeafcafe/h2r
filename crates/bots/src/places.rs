@@ -1,7 +1,7 @@
 //! Static map knowledge. Traffic is a proxy: how often a polygon lies on
 //! shortest (fewest portals) paths across the mesh from sampled origins.
 use crate::brain::Vec3;
-use crate::decisions::distance;
+use crate::decisions::{distance, supplies::Powerup};
 use crate::los::Walls;
 use crate::mind::{CHEST, EYE};
 use crate::nav::NavMesh;
@@ -19,7 +19,7 @@ pub struct PowerPad {
     pub site: u8,
     pub at: Vec3,
     pub period: Option<u32>,
-    pub powerup: bool,
+    pub powerup: Option<Powerup>,
     pub model: Option<u32>,
 }
 
@@ -201,7 +201,12 @@ impl Places {
             }
             for w in [
                 u32::from(p.site),
-                u32::from(p.powerup),
+                match p.powerup {
+                    None => 0,
+                    Some(Powerup::Overshield) => 1,
+                    Some(Powerup::Camo) => 2,
+                    Some(Powerup::Mixed) => 3,
+                },
                 p.period.unwrap_or(0),
                 p.model.unwrap_or(u32::MAX),
             ] {
@@ -256,8 +261,10 @@ impl Places {
                 }
                 let site = u8::try_from(word()?).ok()?;
                 let powerup = match word()? {
-                    0 => false,
-                    1 => true,
+                    0 => None,
+                    1 => Some(Powerup::Overshield),
+                    2 => Some(Powerup::Camo),
+                    3 => Some(Powerup::Mixed),
                     _ => return None,
                 };
                 let p = word()?;
@@ -395,7 +402,9 @@ mod tests {
                 spawn: [12., 12., 0.],
                 at: [12., 12., 0.],
                 respawn: Some(120 * 30),
-                powerup: false,
+                powerup: None,
+                on_disturbance: true,
+                disabled: false,
             });
         paired_worlds(Some(&map), [(a, b)]);
     }

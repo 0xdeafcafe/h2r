@@ -1294,10 +1294,10 @@ mod objective_reads {
             ],
             "the teleporter is not a spot"
         );
-        // With no designator bound the designator is the team.
+        // Clearing the mask removes the binding, even if the table still has a value.
         g.put_u16(ENGINE + DESIGNATOR_MASK, 0);
         let o = perceive(&g, 1).unwrap().objective.unwrap();
-        assert_eq!(o.spots[0].team, Some(0));
+        assert_eq!(o.spots[0].team, None);
     }
 
     #[test]
@@ -1320,6 +1320,243 @@ mod objective_reads {
     }
 
     #[test]
+    fn territories_resolve_the_marker_owner_salt_and_contesting_players() {
+        use crate::objective::{State, Territory};
+        let mut g = ctf_game([0.0; 3], [0.0; 3]);
+        let t = ENGINE + 0xfc;
+        g.put_u32(ENGINE + ENGINE_INDEX, 8)
+            .put_u32(points::TERRITORIES_GLOBALS.base, t)
+            .put_u16(t + 0x114, 2)
+            .put_u16(t + 0x60, 1)
+            .put_u16(t + 0x62, 0)
+            .put_u32(t + 0x70, 0xe0000000)
+            .put_u32(t + 0x74, 0xe0010002)
+            .put_u8(t + 0x95, 255)
+            .put_u8(t + 0x9d, 0)
+            .put_u8(t + 0xa5, 0);
+        flags(
+            &mut g,
+            &[
+                ([9.0; 3], kind::TERRITORY, 8),
+                ([1.0; 3], kind::TERRITORY, 8),
+            ],
+        );
+        let read = perceive(&g, 1).unwrap().objective.unwrap();
+        assert_eq!(
+            read.state,
+            State::Territories(vec![
+                Territory {
+                    at: [1.0; 3],
+                    owner: Some(0),
+                    owner_team: Some(0),
+                    occupants: 6
+                },
+                Territory {
+                    at: [9.0; 3],
+                    owner: None,
+                    owner_team: None,
+                    occupants: 0
+                },
+            ])
+        );
+    }
+
+    #[test]
+    fn assault_reads_the_bomb_team_active_plates_and_receiving_team() {
+        use crate::objective::State;
+        let mut g = ctf_game([1.0; 3], [0.0; 3]);
+        let a = ENGINE + 0xfc;
+        g.put_u32(ENGINE + ENGINE_INDEX, 9)
+            .put_u32(points::CTF_ASSAULT_GLOBALS.base, a)
+            .put_u16(ENGINE + 0xc, 3)
+            .put_u32(GAME + 0x240, 1)
+            .put_u32(a + 0x1f4, 1)
+            .put_u32(ENGINE + OBJECTIVE_COUNT, 1);
+        record(&mut g, 0, 0xb0030003, 8, u32::MAX, u32::MAX);
+        flags(
+            &mut g,
+            &[
+                ([1.0; 3], kind::BOMB_RETURN, 0),
+                ([2.0; 3], kind::BOMB_RETURN, 0),
+                ([3.0; 3], kind::BOMB_RETURN, 1),
+            ],
+        );
+        for d in 0..9 {
+            g.put_u16(a + 0x14 + 2 * d, u16::MAX)
+                .put_u16(a + 0x26 + 2 * d, u16::MAX)
+                .put_u16(a + 0x1a0 + 2 * d, u16::MAX);
+        }
+        g.put_u16(a + 0x26, 1)
+            .put_u16(a + 0x16, 2)
+            .put_u16(a + 0x1b0, 18)
+            .put_u8(a + 0x178, 10);
+        let read = perceive(&g, 1).unwrap().objective.unwrap();
+        assert_eq!(read.items[0].team, 8);
+        assert_eq!(
+            read.state,
+            State::Assault {
+                defending: Some(1),
+                armed: 256,
+                arming: 256,
+                planted: 256
+            }
+        );
+        assert_eq!(
+            read.spots
+                .iter()
+                .map(|s| (s.team, s.position))
+                .collect::<Vec<_>>(),
+            [(Some(1), [2.0; 3]), (Some(0), [3.0; 3])]
+        );
+        g.put_u32(GAME + 0x240, 0);
+        assert!(matches!(
+            perceive(&g, 1).unwrap().objective.unwrap().state,
+            State::Assault {
+                defending: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn juggernaut_mask_transfers_and_oddball_accepts_neutral_type_four() {
+        let mut g = ctf_game([0.0; 3], [0.0; 3]);
+        g.put_u32(ENGINE + ENGINE_INDEX, 7)
+            .put_u32(points::JUGGERNAUT_GLOBALS.base, ENGINE + 0xfc);
+        for slot in [1, 2] {
+            g.put_u16(ENGINE + 0xfc, 1 << slot);
+            assert_eq!(
+                perceive(&g, 1).unwrap().objective.unwrap().am_juggernaut(),
+                slot == 1
+            );
+        }
+        g.put_u32(ENGINE + ENGINE_INDEX, 3)
+            .put_u32(points::ODDBALL_GLOBALS.base, ENGINE + 0xfc)
+            .put_u32(ENGINE + 0xfc + 12, 0)
+            .put_u32(ENGINE + 0xfc + 16, 1)
+            .put_u32(ENGINE + 0xfc + 20, 2);
+        flags(
+            &mut g,
+            &[([1.0; 3], 4, 8), ([2.0; 3], 4, 0), ([3.0; 3], 3, 8)],
+        );
+        let read = perceive(&g, 1).unwrap().objective.unwrap();
+        assert_eq!(read.spots.len(), 1);
+        assert_eq!(read.spots[0].position, [1.0; 3]);
+    }
+
+    #[test]
+    fn the_live_spawner_counts_seconds_at_each_placements_tick_phase() {
+        use crate::decisions::supplies::Clock;
+        let mut g = ctf_game([0.0; 3], [0.0; 3]);
+        let time = KOTH;
+        g.put_u32(points::GAME_TIME.base, time)
+            .put_u16(time + 2, 20)
+            .put_u32(SCN + 0x120, 4);
+        for (i, n) in (0..4).zip([2, 1, 0, u16::MAX]) {
+            g.put_u16(ENGINE + 0x7e0 + 8 * i, n);
+        }
+        assert_eq!(
+            intel::clocks(&g, 40).unwrap(),
+            [
+                Clock::Due(80),
+                Clock::Due(41),
+                Clock::Idle {
+                    service: 42,
+                    rate: 20,
+                    deleted: false
+                },
+                Clock::Disabled
+            ]
+        );
+        assert_eq!(intel::clocks(&g, 39).unwrap()[0], Clock::Due(60));
+        let observe = |g: &FakeGuest| perceive_for_brain(g, Who::Port(1)).unwrap().0;
+        let before = observe(&g);
+        g.put_u16(ENGINE + 0x7e0, 29);
+        assert_ne!(intel::clocks(&g, 40).unwrap()[0], Clock::Due(80));
+        crate::perceive::honesty::paired_worlds(
+            Some(&crate::cache::MapData::default()), [(before, observe(&g))],
+        );
+    }
+
+    #[test]
+    fn observations_read_both_held_object_handles_and_powerup_effects() {
+        let mut g = ctf_game([0.0; 3], [0.0; 3]);
+        let body = BODIES + 2 * 0x400;
+        g.put_u8(body + 0x212, 1)
+            .put_u8(body + 0x213, 2)
+            .put_u32(body + 0x21c, 0xb0030003)
+            .put_u32(body + 0x220, 0xb0040004)
+            .put_f32(body + 0xf0, 1.6)
+            .put_u16(PLAYERS_DATA + 2 * 0x21c + 0x198, 45);
+        let p = perceive(&g, 1).unwrap();
+        let holder = p
+            .observations
+            .supply_players
+            .iter()
+            .find(|p| p.id == 2)
+            .unwrap();
+        assert_eq!(holder.hands, [Some(0xb0030003), Some(0xb0040004)]);
+        assert!(holder.overshield && holder.camo);
+        assert_eq!(holder.unit, 0xb0020002);
+    }
+
+    #[test]
+    fn successful_weapon_and_equipment_events_identify_the_exact_placement_player_and_tick() {
+        let mut g = ctf_game([1.0; 3], [0.0; 3]);
+        let object = 0xb0030003;
+        let unit = 0xb0010001;
+        let body = BODIES + 3 * 0x400;
+        let unit_body = BODIES + 0x400;
+        let site = FLAGS + 0x90;
+        g.put_u32(points::GAME_TIME.base, KOTH)
+            .put_u32(KOTH + 8, 113)
+            .put_u32(SCN + 0x120, 2)
+            .put_u32(SCN + 0x124, FLAGS)
+            .put_u32(ENGINE + 0x7dc + 8, object)
+            .put_u8(body + 0xaf, 1)
+            .put_u32(body + 0x14, u32::MAX)
+            .put_u32(unit_body + 0x13c, 0xe0010001);
+        for k in 0..3 {
+            g.put_f32(site + 0x40 + 4 * k, 1.0);
+        }
+        let expected = crate::decisions::supplies::Take {
+            at: [1.; 3],
+            site: 1,
+            object,
+            unit,
+            player: 1,
+            tick: 113,
+        };
+        assert_eq!(
+            pickups::take(&g, object, unit, objects::WEAPON, None).unwrap(),
+            Some(expected)
+        );
+        g.put_u32(ENGINE + 0x7dc + 8, object ^ (1 << 16));
+        assert_eq!(
+            pickups::take(&g, object, unit, objects::WEAPON, None).unwrap(),
+            None
+        );
+        g.put_u32(ENGINE + 0x7dc + 8, object)
+            .put_u8(OBJECTS_DATA + 3 * 0xc + 3, intel::EQUIPMENT)
+            .put_u32(body, 0xd0040004)
+            .put_u32(STACK, 0x151fd2)
+            .put_u32(STACK + 0x20, object);
+        assert_eq!(
+            pickups::equipment_event(&g, STACK, unit, 0xd0040004).unwrap(),
+            Some(expected)
+        );
+        assert_eq!(
+            pickups::equipment_event(&g, STACK, unit, 0xd0050004).unwrap(),
+            None
+        );
+        g.put_u32(STACK, 0x111111);
+        assert_eq!(
+            pickups::equipment_event(&g, STACK, unit, 0xd0040004).unwrap(),
+            None
+        );
+    }
+
+    #[test]
     fn koth_reads_the_hill_in_play_from_its_corners() {
         let mut g = ctf_game([0.0; 3], [0.0; 3]);
         g.put_u32(ENGINE + ENGINE_INDEX, 4);
@@ -1332,18 +1569,30 @@ mod objective_reads {
                 ([24.0, 4.0, 1.0], kind::HILL + 1, 8),
                 ([20.0, 4.0, 1.0], kind::HILL + 1, 8),
                 ([24.0, 0.0, 1.0], kind::HILL + 1, 8),
+                ([2.0, 2.0, 0.0], kind::HILL, 8),
+                ([2.0, -2.0, 0.0], kind::HILL, 8),
             ],
         );
         g.put_u32(KOTH_GLOBALS, KOTH).map(KOTH, 0x200);
-        g.put_u32(KOTH + KOTH_HILL, 1);
+        g.put_u32(KOTH + KOTH_HILL, 1)
+            .put_u32(KOTH + 0x60, 4)
+            .put_u16(KOTH + 0x1a8, 2);
+        for i in 0..4 {
+            g.put_u32(KOTH + 4 * i, i + 2);
+        }
         let o = perceive(&g, 1).unwrap().objective.unwrap();
         assert_eq!(o.game, Game::Koth);
         assert!(o.spots.is_empty());
+        assert!(o.in_hill(1, [0.0; 3]));
+        assert!(!o.in_hill(2, [22.0, 2.0, 1.0]));
         let h: Hill = o.hill.expect("a hill");
         assert_eq!(h.corners.len(), 4);
         assert_eq!(h.center(), [22.0, 2.0, 1.0]);
         // The hill moves.
-        g.put_u32(KOTH + KOTH_HILL, 0);
+        g.put_u32(KOTH + KOTH_HILL, 0).put_u16(KOTH + 0x1a8, 0);
+        for (i, f) in (0..4).zip([0, 1, 6, 7]) {
+            g.put_u32(KOTH + 4 * i, f);
+        }
         let h = perceive(&g, 1).unwrap().objective.unwrap().hill.unwrap();
         assert_eq!(h.center(), [2.0, 0.0, 0.0]);
         // Out of range: no hill.

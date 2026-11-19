@@ -39,6 +39,22 @@ pub(crate) fn observe(
         .filter(|o| visible(o.position, CHEST))
         .map(|o| o.id)
         .collect();
+    p.observations
+        .supply_players
+        .retain(|player| Some(player.id) == own || seen.contains(&player.id));
+    let players = &p.observations.supply_players;
+    p.observations.held_power.retain(|object| {
+        players
+            .iter()
+            .any(|player| player.hands.contains(&Some(*object)))
+    });
+    p.observations.takes.retain(|e| {
+        Some(e.player) == own
+            || (visible(e.at, 0.2)
+                && players
+                    .iter()
+                    .any(|player| player.id == e.player && player.unit == e.unit))
+    });
     p.observations.contacts.retain(|c| seen.contains(&c.id));
     p.others
         .retain(|o| (p.teams && p.me.is_some_and(|me| me.team == o.team)) || seen.contains(&o.id));
@@ -55,6 +71,22 @@ pub(crate) fn observe(
         items.retain(|s| visible(s.at, 0.2));
     }
     if let Some(o) = &mut p.objective {
+        let known = p
+            .others
+            .iter()
+            .map(|p| p.id)
+            .chain(own)
+            .filter(|&id| id < 16)
+            .fold(0u16, |mask, id| mask | (1u16 << id));
+        match &mut o.state {
+            crate::objective::State::Hill { occupants } => *occupants &= known,
+            crate::objective::State::Territories(sites) => {
+                for site in sites {
+                    site.occupants &= known;
+                }
+            }
+            _ => {}
+        }
         o.items.retain(|item| {
             item.carrier.is_some_and(|id| Some(id) == own)
                 || visible(item.position, CHEST)
@@ -182,6 +214,7 @@ pub(crate) mod honesty {
             p.objective = Some(Objective {
                 me: 0,
                 game: Game::Oddball,
+                state: Default::default(),
                 hill: None,
                 spots: vec![],
                 items: vec![Item {
@@ -240,6 +273,25 @@ pub(crate) mod honesty {
                             team: 2,
                             position: at,
                         });
+                        b.observations
+                            .supply_players
+                            .push(crate::decisions::supplies::Player {
+                                id: 3,
+                                unit: 37,
+                                position: at,
+                                hands: [Some(18), None],
+                                overshield: true,
+                                camo: false,
+                            });
+                        b.observations.held_power.push(18);
+                        b.observations.takes.push(crate::decisions::supplies::Take {
+                            at,
+                            site: 2,
+                            object: 18,
+                            player: 3,
+                            unit: 37,
+                            tick,
+                        });
                         b.pickups.push(Pickup {
                             id: 18,
                             position: at,
@@ -254,7 +306,9 @@ pub(crate) mod honesty {
                             spawn: at,
                             at,
                             respawn: Some(900),
-                            powerup: true,
+                            powerup: Some(crate::decisions::supplies::Powerup::Camo),
+                            on_disturbance: true,
+                            disabled: false,
                         });
                     }
                     (a, b)

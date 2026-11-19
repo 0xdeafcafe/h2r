@@ -490,10 +490,46 @@ fn generator_output_is_pinned() {
     }
     s.extend_from_slice(&(d.walls.tris.len() as u64).to_le_bytes());
     d.walls.tris.iter().flatten().for_each(|v| mm(v, &mut s));
+    // The floor scene pins collision generation. Add a short ride competing
+    // with a walk and a junction with a clear sightline to a distant lane.
+    let polys: Vec<_> = [0., 3.25, 20.]
+        .map(|x| floor_quad(x - 1., -1., 0., 2., 2.))
+        .into();
+    let links = [
+        (0, 1, Kind::Walk),
+        (0, 1, Kind::Lift),
+        (1, 0, Kind::Walk),
+        (0, 2, Kind::Walk),
+        (2, 0, Kind::Walk),
+    ];
+    let edges = links
+        .into_iter()
+        .map(|(from, to, kind)| Edge {
+            from,
+            to,
+            kind,
+            a: polys[from as usize].center,
+            b: polys[to as usize].center,
+        })
+        .collect();
+    let junction = NavMesh::new(polys, edges);
+    let route = junction.corridor(0, 1).unwrap();
+    assert_eq!(route.len(), 1);
+    s.push(junction.edges[route[0] as usize].kind as u8);
+    let places = crate::places::Places::build(&junction, &crate::los::Walls::default(), &[]);
+    s.extend([places.lanes.len() as u8, places.vantages.len() as u8]);
+    for lane in &places.lanes {
+        mm(lane, &mut s);
+    }
+    for v in &places.vantages {
+        mm(&v.at, &mut s);
+        mm(&v.watches, &mut s);
+        s.extend_from_slice(&((v.score * 1000.).round() as i64).to_le_bytes());
+    }
     let got = (crate::cache::GENERATOR, crate::autonav::fingerprint(&s));
     assert_eq!(
         got,
-        (4, 0x96880c12653c7760),
+        (5, 0x8603e7037fa1cfc0),
         "the nav output changed: bump cache::GENERATOR and record the new pair"
     );
 }

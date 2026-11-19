@@ -122,7 +122,10 @@ h2 agent edit revert
 ```
 
 Names (`edit get "shaders\...\metal" ...`) need the loaded map's file,
-which `h2 serve` finds through the VFS; datums always work.
+which `h2 serve` finds through the VFS; datums always work. A name
+several tags share (a weapon's `weap`, `hlmt`, `mode`, `coll` and `jmad`)
+needs its group: `group`, `shad:shaders\...\metal` or
+`shaders\...\metal.shad`.
 
 ## Methods
 

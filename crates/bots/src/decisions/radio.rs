@@ -114,8 +114,8 @@ impl Radio {
         calls
     }
 
-    pub fn publish_supply(&mut self, c: SupplyCall) {
-        if self.tick == Some(c.tick) {
+    pub fn publish_supply(&mut self, c: SupplyCall, now: u32) {
+        if self.tick == Some(now) && now.wrapping_sub(c.tick) <= CALL_TICKS {
             self.pending_supplies.push(c);
         }
     }

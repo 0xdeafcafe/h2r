@@ -1,5 +1,6 @@
 //! Familiar power-item placements, independent of which objects exist in
 //! this match. Unknown/modded collections can still be learned by sight.
+use crate::decisions::supplies::Powerup;
 use crate::places::PowerPad;
 use map::{FourCC, Map, TagId};
 use std::io::{Read, Seek};
@@ -9,7 +10,10 @@ fn word(b: &[u8], at: usize) -> u32 {
     u32::from_le_bytes(b[at..at + 4].try_into().unwrap())
 }
 
-fn collection<R: Read + Seek>(map: &mut Map<R>, id: TagId) -> Option<(bool, Option<u32>, i16)> {
+fn collection<R: Read + Seek>(
+    map: &mut Map<R>,
+    id: TagId,
+) -> Option<(Option<Powerup>, Option<u32>, i16)> {
     let tag = map.tag(id).ok()?;
     if tag.group != FourCC(*b"itmc") {
         return None;
@@ -19,7 +23,7 @@ fn collection<R: Read + Seek>(map: &mut Map<R>, id: TagId) -> Option<(bool, Opti
     let view = TagView::new(&b, addr);
     let period = i16::from_le_bytes(view.at(8, 2).ok()?.try_into().ok()?);
     let mut models = Vec::new();
-    let mut powerup = None;
+    let mut powerup: Option<Option<Powerup>> = None;
     for e in view.block(&b, 0, 0x10).ok()? {
         let object = map.tag(TagId(word(e, 8))).ok()?;
         let name = object
@@ -34,21 +38,22 @@ fn collection<R: Read + Seek>(map: &mut Map<R>, id: TagId) -> Option<(bool, Opti
                 b"weap",
                 "shotgun" | "energy_sword" | "sniper_rifle" | "beam_rifle" | "rocket_launcher"
                 | "fuel_rod_gun" | "brute_shot" | "flak_cannon",
-            ) => false,
-            (
-                b"eqip",
-                "powerup_invisibility"
-                | "powerup_super_shield"
-                | "active_camouflage"
-                | "overshield"
-                | "over_shield",
-            ) => true,
+            ) => None,
+            (b"eqip", "powerup_invisibility" | "active_camouflage") => Some(Powerup::Camo),
+            (b"eqip", "powerup_super_shield" | "overshield" | "over_shield") => {
+                Some(Powerup::Overshield)
+            }
             _ => return None,
         };
-        if powerup.is_some_and(|previous| equipment != previous) {
-            return None;
-        }
-        powerup = Some(equipment);
+        powerup = Some(match powerup {
+            Some(previous) if previous != equipment => {
+                if previous.is_none() || equipment.is_none() {
+                    return None;
+                }
+                Some(Powerup::Mixed)
+            }
+            _ => equipment,
+        });
         models.push(object.id.0);
     }
     let first = *models.first()?;
@@ -69,7 +74,7 @@ pub(super) fn read<R: Read + Seek>(
         .block(view.bytes(), 0x120, 0x90)
         .map_err(|e| e.to_string())?
         .into_iter()
-        .take(128)
+        .take(100)
         .enumerate()
     {
         let id = TagId(word(e, 0x5c));

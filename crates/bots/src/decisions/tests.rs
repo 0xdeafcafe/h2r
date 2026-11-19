@@ -48,7 +48,12 @@ fn scene(id: u32, tick: u32, players: &[Seen]) -> Perception {
 }
 
 fn brain(seed: u64, board: &Mutex<Radio>) -> Brain {
-    let mut b = Brain::new(Skill::Legendary, seed);
+    let mut b = Brain::new(Skill::Legendary, seed).with_tuning(crate::tuning::Tuning {
+        perception_ticks: Some(0),
+        motor_ticks: Some(0),
+        button_sigma_ms: Some(0.0),
+        ..Default::default()
+    });
     b.epoch = radio::lock(board).epoch;
     b
 }
@@ -394,6 +399,7 @@ fn own_death_changes_the_carriers_corridor_until_the_zone_cools() {
     let mut carrier = p;
     carrier.tick = 21;
     carrier.objective = Some(Objective {
+        state: Default::default(),
         game: Game::Ctf,
         me: 4,
         items: vec![Item {
@@ -441,6 +447,7 @@ fn a_ball_holder_finds_and_holds_a_screened_position() {
     };
     let mut p = scene(0, 1, &[player(0, 0, 0.0, 0.0)]);
     p.objective = Some(Objective {
+        state: Default::default(),
         game: Game::Oddball,
         me: 0,
         items: vec![Item {
@@ -470,6 +477,7 @@ fn the_hill_is_contested_while_firing_and_a_defender_stays_inside() {
     let mut p = scene(0, 0, &ps);
     let corners = square(-6.0, -2.0, 4.0).verts;
     p.objective = Some(Objective {
+        state: Default::default(),
         game: Game::Koth,
         me: 0,
         items: vec![],
@@ -502,6 +510,7 @@ fn a_visible_enemy_cannot_pull_an_escort_away_from_the_carrier() {
     ];
     let mut p = scene(0, 0, &ps);
     p.objective = Some(Objective {
+        state: Default::default(),
         game: Game::Ctf,
         me: 0,
         items: vec![Item {
@@ -561,6 +570,7 @@ fn an_oddball_hunter_prioritizes_the_visible_carrier() {
     let mut p = scene(0, 0, &ps);
     p.teams = false;
     p.objective = Some(Objective {
+        state: Default::default(),
         game: Game::Oddball,
         me: 0,
         items: vec![Item {
@@ -597,6 +607,7 @@ fn a_contested_hill_draws_fire_to_the_opponent_scoring_in_it() {
         [7.0, 2.0, 0.0],
     ];
     p.objective = Some(Objective {
+        state: Default::default(),
         game: Game::Koth,
         me: 0,
         items: vec![],
@@ -613,6 +624,7 @@ fn an_attacker_keeps_progressing_when_a_close_enemy_baits_it_away_from_the_flag(
     let ps = [player(0, 0, 0.0, 0.0), player(1, 1, 3.0, 0.0)];
     let mut p = scene(0, 0, &ps);
     p.objective = Some(Objective {
+        state: Default::default(),
         game: Game::Ctf,
         me: 0,
         items: vec![Item {
@@ -681,6 +693,7 @@ fn a_dry_bot_holds_a_scoring_hill_with_the_only_gun_outside() {
         },
     });
     p.objective = Some(Objective {
+        state: Default::default(),
         game: Game::Koth,
         me: 0,
         items: vec![],

@@ -305,3 +305,153 @@ fn the_movement_is_told_the_range_and_when_to_take_cover() {
     assert_eq!(m.kit, Kit::Reload);
     assert!(m.fight.wants_cover);
 }
+
+#[test]
+fn a_due_powerup_stays_the_destination_during_a_fight() {
+    use crate::decisions::supplies::{Powerup, Supply};
+    let site = [6.0, 0.0, 0.0];
+    let item = Supply {
+        site: 0,
+        object: 23,
+        spawn: site,
+        at: site,
+        disabled: false,
+        on_disturbance: true,
+        respawn: Some(30),
+        powerup: Some(Powerup::Camo),
+    };
+    let me = bot(Some(holding(Trigger::Automatic, rounds(36, 108))));
+    let mut m = Mind::new(Skill::Legendary, 14);
+    let mut p = Perception {
+        me: Some(me),
+        ..Default::default()
+    };
+    p.observations.supplies = Some(vec![item]);
+    m.step(&p, None);
+    p.tick = 1;
+    p.observations.supplies = Some(vec![]);
+    p.observations.service_rate = Some(30);
+    let foe = enemy(2, [13.0, 3.0, 0.0]);
+    p.others.push(foe);
+    let (_, intent) = m.decide(&p, me, &p.others, None);
+    assert_eq!(intent.chosen.unwrap().id, foe.id);
+    assert_eq!(intent.anchor, Some((site, crate::nav::REACHED)));
+}
+
+#[test]
+fn holding_y_requests_a_second_smg_even_when_the_primary_is_full() {
+    let mut a = holding(Trigger::Automatic, rounds(36, 108));
+    let smg = a.held.as_mut().unwrap();
+    smg.profile.dual = Some(arms::DualGun::Smg);
+    let pickup = arms::Pickup {
+        id: 9,
+        position: [0.1, 0.0, 0.0],
+        gun: *smg,
+    };
+    let mut p = Perception {
+        me: Some(bot(Some(a))),
+        pickups: vec![pickup],
+        ..Default::default()
+    };
+    let mut m = Mind::new(Skill::Heroic, 77);
+    for t in 0..10 {
+        p.tick = t;
+        let pad = m.step(&p, None);
+        assert!(pad.buttons.contains(SWITCH));
+        assert!(!pad.buttons.contains(RELOAD));
+    }
+    a.left = Some(pickup.gun);
+    p.me = Some(bot(Some(a)));
+    p.tick += 1;
+    assert!(!m.step(&p, None).buttons.contains(SWITCH));
+}
+
+#[test]
+fn the_dual_plasma_pistol_charges_and_releases_in_either_hand() {
+    use arms::DualGun;
+    let pistol = Gun {
+        def: 12,
+        ammo: Ammo::Battery(1.0),
+        profile: Profile {
+            dual: Some(DualGun::PlasmaPistol),
+            trigger: Trigger::Charge,
+            shot_speed: 11.0,
+            ..Default::default()
+        },
+    };
+    let smg = Gun {
+        def: 13,
+        ammo: rounds(36, 108),
+        profile: Profile {
+            dual: Some(DualGun::Smg),
+            trigger: Trigger::Automatic,
+            shot_speed: 400.0,
+            ..Default::default()
+        },
+    };
+    for right in [true, false] {
+        let me = bot(Some(Arms {
+            held: Some(if right { pistol } else { smg }),
+            left: Some(if right { smg } else { pistol }),
+            ..Default::default()
+        }));
+        let mut m = Mind::new(Skill::Legendary, 4);
+        let mut streak = 0;
+        let mut charged_release = false;
+        let mut automatic_pulls = 0;
+        let mut aim = me;
+        for tick in 0..180 {
+            let pad = step(&mut m, aim, vec![enemy(2, [6.0, 0.0, 0.0])], false, tick);
+            aim.aim = turned(aim.aim, &pad);
+            let (pistol, smg) = if right {
+                (pad.right_trigger, pad.left_trigger)
+            } else {
+                (pad.left_trigger, pad.right_trigger)
+            };
+            automatic_pulls += usize::from(smg > 0.0);
+            if pistol > 0.0 {
+                streak += 1;
+            } else {
+                charged_release |= streak >= crate::weapons::CHARGE_TICKS;
+                streak = 0;
+            }
+        }
+        assert!(
+            charged_release && automatic_pulls > 0,
+            "pistol in right hand: {right}"
+        );
+    }
+}
+
+#[test]
+fn juggernaut_transfer_changes_the_fight_and_the_bot_melees_as_juggernaut() {
+    use crate::objective::{Game, Objective, State};
+    let mut m = Mind::new(Skill::Legendary, 7);
+    let mut p = Perception {
+        me: Some(bot(Some(holding(Trigger::Automatic, rounds(36, 108))))),
+        others: vec![enemy(2, [8.0, 0.0, 0.0]), enemy(3, [1.0, 0.0, 0.0])],
+        objective: Some(Objective {
+            game: Game::Juggernaut,
+            state: State::Juggernauts(4),
+            me: 1,
+            items: vec![],
+            spots: vec![],
+            hill: None,
+        }),
+        ..Default::default()
+    };
+    m.step(&p, None);
+    assert_eq!(m.doing, Doing::Fight(2));
+    p.objective.as_mut().unwrap().state = State::Juggernauts(2);
+    p.others.remove(0);
+    let mut hit = false;
+    for tick in 1..90 {
+        p.tick = tick;
+        let pad = m.step(&p, None);
+        assert_eq!(m.doing, Doing::Fight(3));
+        hit |= pad.buttons.contains(MELEE);
+        let me = p.me.as_mut().unwrap();
+        me.aim = turned(me.aim, &pad);
+    }
+    assert!(hit);
+}

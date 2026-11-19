@@ -156,7 +156,12 @@ fn jump_clear(walls: &Walls, a: V3, b: V3, crouch: bool) -> bool {
             }
             for h in [0.025, 0.28, 1.0] {
                 let offset = |n| [0.0, 0.0, if h == 1.0 { height(n) } else { h }];
-                if !walls.clear(add(lo, offset(i - 1)), add(hi, offset(i))) {
+                // Adjacent samples share their endpoints. Count contact
+                // there too, so a wall at a sample cannot fall between rays.
+                if walls
+                    .hit(add(lo, offset(i - 1)), add(hi, offset(i)))
+                    .is_some()
+                {
                     return false;
                 }
             }
@@ -608,7 +613,9 @@ impl NavMesh {
             let dz = z - m[2];
             let landing = [p[0], p[1], z];
             if reach == b.probe && dz.abs() <= b.step {
-                if standing_clear(walls, m) && standing_clear(walls, landing) {
+                // At a step seam the higher tread is part of the floor.
+                let seam = [m[0], m[1], m[2].max(z)];
+                if standing_clear(walls, seam) && standing_clear(walls, landing) {
                     return Some(edge(to, Kind::Walk));
                 }
                 continue;

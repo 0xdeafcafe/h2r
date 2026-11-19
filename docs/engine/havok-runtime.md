@@ -1,15 +1,15 @@
 # Havok at run time: world, bodies and contacts
 
 How the retail game keeps its Havok world in guest memory, as far as
-`havok.bodies` and `havok.contacts` read it
+`havok.bodies`, `havok.contacts` and `havok.agents` read it
 ([agent-api.md](../runtime/agent-api.md), "havok"). Written 2026-11-18 for
 the superbounce work ([superbounce.md](../game/superbounce.md)): which
 surface pushed the biped's body, and how hard.
 
 Static reading of `default.xbe` with `h2 disasm`; nothing here was
-checked in a running game (shapes added 2026-11-19). The readers
-(`crates/live-telemetry/src/havok.rs`, constants in `layout.rs`) are
-tested over synthetic guest memory only.
+checked in a running game for these layout notes. Synthetic fixtures for
+the two readers live in `crates/live-telemetry/src/havok.rs` and
+`crates/live-telemetry/src/havok_agents/tests.rs`.
 No Havok SDK headers or code were used; names (island, entity, motion,
 contact constraint) are descriptive. No game data is on this page.
 
@@ -31,8 +31,10 @@ given), **S** (inferred or assumed; check before building on it).
 - An entity's shape is at `+0x0c`. A biped's is a capsule: its tag's
   standing or crouching pill, picked when the body is built
   ([Shapes](#shapes)). **Code**
-- Which triangle of the level a point is on is not in the constraint; it
-  would be in the collision agents. Not read. **Open**
+- The island pair list leads to the BV-tree agent's cached child shape keys.
+  For the structure MOPP, type-1 keys name BSP surface polygons. Each known
+  convex child exposes its support vertices, separating bound and contact
+  IDs. See [Collision agents](#collision-agents). **Code**
 
 ## The world
 
@@ -82,7 +84,8 @@ body in the fixed island without an owner). The other way round, object
 `+0xb4` to component, component `+0x70` bodies, is `0x001d08e0`
 (`layout::BODY_PHYSICS`). The component's rigid bodies are an array at
 `+0x70`, count `+0x74`, `0x60` each with the entity at `+0x40` (the
-release loop `0x001d022a`); its shapes another at `+0x7c`, count `+0x80`,
+release loop at `0x001d022a`). The capacity is at `+0x78`
+(`0x001cfa9a..0x001cfabb`). Its shapes are another array at `+0x7c`, count `+0x80`,
 `0x0c` each with the shape at `+0x08` (`0x001d01e0`, which drops a
 reference from each). **Code**
 
@@ -119,8 +122,10 @@ A capsule's centre is (a + b) × 0.5 (`0x001d6f5a`, constant
 - when biped `+0x3dc` is 3 (what 3 is: **Open**), sphere `[+0x3ff]` of
   `bipd +0x284` (its transform, `+0x30`).
 
-**Code.** The pills are the tag's: a body's shape pointer names its
-pill, standing or crouching, and the capsule's height (|b − a| + 2 ×
+**Code.** The selected pill comes from the tag. A body's shape can also
+wrap that pill: the type-`0x17` shape (vtable `0x004122f0`, constructor
+`0x002dbfe7`) delegates its bounding box and support queries to the child
+at `+0x30` (`0x002dbe24`, `0x002dbd52`). The capsule's height (|b − a| + 2 ×
 radius) is that pill's height (`bipd +0x268` standing, `+0x26c`
 crouching; read from the tags in
 [tag-definitions.md](../formats/tag-definitions.md), "Bipeds from
@@ -207,6 +212,145 @@ velocity change the contact gave that body on the solver's last step.
 Whether the world step (`0x00311100`) solves more than once per game tick
 is not established, so a per-tick sum is **Open**.
 
+## Collision agents
+
+**Code.** The persistent pair list belongs to a *simulation island*. Its constructor
+clears the array at island `+0x68` (data), `+0x6c` (count), `+0x70` (capacity with
+ownership flag) at `0x00317211`. The destructor frees capacity × 16 bytes at
+`0x0031733a..0x0031734c`. `0x00278b60` walks these 16-byte records. During an
+island step (`0x00317d55..0x00317d71`), both update paths fetch the pair array
+and call the agent's virtual `+0x10` with the two collidables in entry order
+(`0x003179a8..0x003179d4`, `0x00317a2c..0x00317a3e`,
+`0x00317c5f..0x00317cae`). An object's
+component can own several bodies. The reader matches each body's embedded
+broadphase handle against either side of the pair, across active, inactive and
+fixed islands.
+
+- **Code.** Pair `+0x00/+0x04` are pointers to broadphase handles. Subtract
+  `0x10` to reach each collidable (`0x00278b90..0x00278ba0`). The rigid body's
+  collidable starts at entity `+0x0c`, where its shape pointer is stored
+  (`0x003125ca`). Thus the handle lives at entity `+0x1c`. For collidable type
+  1 at `+0x18`, the owner is the entity pointer at collidable `+0x20`
+  (`0x00278bb8..0x00278bc2`, back-pointer set at `0x00312604`).
+- **Code.** Pair `+0x08` points to a separately allocated agent. Both shape
+  types select the factory at `0x00278c33..0x00278c6d`, and its result is
+  stored at `0x00278c6f`. A pair can exist without an agent (filter failure
+  at `0x00278be6..0x00278bf5`, cleanup at `0x00278e0b`). Pair `+0x0c`
+  receives 0 or −1 on the creation paths at `0x00278d0f..0x00278d34`.
+  One processing mode uses nonnegative values to set the input threshold
+  to `world[+0x244] + pair_word * world[+0x248]` and uses −1000 when negative
+  (`0x003179eb..0x00317a29`, `0x00317af1..0x00317b06`). It can increment
+  or decrement this word (`0x00317ab9`, `0x00317ac9`). The API preserves its bits.
+- **Code.** Agent `+0x00` is the vtable, `+0x04` is the allocation size
+  (u16), `+0x08` is the contact manager. The BV-tree factory stores all
+  three at `0x002e9633..0x002e9644`. Destruction passes the size to the
+  allocator (`0x002e95af..0x002e95bf`, also `0x002f438f..0x002f439f`
+  for a convex agent). `cache.hex` covers the inline allocation including
+  this header. A filtered child can instead point to the shared empty agent
+  at `0x004805a4` (`0x002e9a42`, `0x00301a40`). Its constructor writes
+  vtable `0x0041357c` and a null manager at `0x00301a52..0x00301a59`;
+  the reader takes only the 12-byte header.
+
+### BV-tree, MOPP and the welded structure
+
+**Code.** There are direct and wrapped paths to the same child list.
+
+- The BV-tree agents are `0x40` bytes. Vtable `0x00412a98` takes side B as
+  the tree (`0x002e9620`, `0x002ea472..0x002ea4c1`). Vtable `0x00412adc`
+  swaps A and B (`0x002eb4e0`, `0x002eb9a6..0x002eb9b0`). The two-MOPP
+  factory installs `0x00412b08` or `0x00412b28` at
+  `0x002ebb57/0x002ebb96`, with the same two dispatch orders.
+- The level builder sets the structure MOPP's vtable to `0x00456160` at
+  `0x001c3b4d`. When the switch at `0x0047f06d` is on, the level body gets
+  a type-`0x14` wrapper (vtable `0x00455540`, MOPP at `+0x0c`,
+  `0x001c3bd7..0x001c3bff`, type getter `0x0009fce0`). The convex
+  welding agents are `0x00412f5c` for tree B and `0x00412f7c` for tree A
+  (`0x002f9bd1..0x002f9bfa`, `0x002fa091..0x002fa0ba`). The former
+  unwraps B and calls the ordinary BV-tree update at `0x002fa349..0x002fa37b`;
+  the latter swaps the arguments at `0x002faa6e..0x002faa80`. The sphere
+  variants `0x00412fb0/0x00412fd0` take the same orders
+  (`0x002fb13a`, `0x002fb9ba`, `0x002fb18a..0x002fb1ac`, `0x002fb930`).
+- Agent `+0x0c/+0x10/+0x14` is the data/count/capacity array of 12-byte
+  child entries (`0x002e95f7..0x002e95fd`, `0x002ea464..0x002ea46f`,
+  `0x002e9fd0..0x002e9fe8`). Child `+0x00` is the complete 32-bit key,
+  `+0x08` is the child agent pointer. Both are written after dispatch
+  (`0x002e9a29..0x002e9a50`), then the key selects the shape and the child
+  receives the process call (`0x002ea4b5..0x002ea4e7`). The welded path
+  reads the same fields at `0x002fa3f0..0x002fa41a`. Child `+0x04` is
+  copied when entries move (`0x002e98ae`), meaning **Open**.
+- Parent `+0x20/+0x30` hold the last query AABB's min and max in the tree's
+  frame. `0x002e96cf..0x002e9716` gets the transformed box. With caching
+  enabled, the comparison at `0x002e9730..0x002e9784` can reuse the list.
+  Otherwise the update stores both corners (`0x002e9793`, `0x002e9797`)
+  and calls the box query (`0x002e97ce`). A key is a candidate even when
+  its child has zero contact points.
+- For the structure MOPP, type 1 (`key >> 29`) names a collision BSP surface
+  by `key & 0xffff` (`0x001ef3e0..0x001ef3fa`, `0x001ef451`). Its shape
+  is the polygon made from that surface's vertex ring (`0x001edd00`).
+  Other key types and other trees retain the full key without a surface index.
+  See [MOPP keys](../formats/mopp.md#keys).
+
+### Convex child state
+
+**Code.** The ordinary convex factory allocates `0xf0` bytes at
+`0x002ee3b0..0x002ee3da` and installs `0x00412c48` at `0x002ee313`.
+Halo's optional type-`0x17` factory allocates `0x100`, calls the same
+constructor and installs `0x00412290` (`0x002dae61..0x002daea7`).
+The biped wrapper vtable `0x004122f0` has type getter `0x0009f550`
+(returning `0x17`). Both its support query and its lookup by cached vertex
+ID delegate to the pill currently at shape `+0x30`
+(`0x002dbd52..0x002dbd59`, `0x002dbdc6..0x002dbdcd`).
+
+- Agent `+0x0c..+0x13` stores four u16 support vertex IDs. Bytes
+  `+0x14/+0x15` give the number for shape A and B in *child dispatch order*.
+  B's IDs start after A's. `0x002ee34f/0x002ee360` pass the embedded cache
+  to initialisation. `0x002ff050..0x002ff09d` seeds both IDs and counts.
+  `0x003048ad..0x003048f5` uses the counts to reconstruct the vertices
+  from each shape. For a structure polygon these IDs select ring vertices
+  at `shape+0x20+16*id` (`0x001ee3f0..0x001ee3fa`).
+- Agent `+0x18` is the manifold count. Slots at `+0x30 + 0x30*i` contain
+  the manager's u16 contact ID at slot `+0x1c`. The manager returns the
+  ID at `0x00302e2f`, and `0x00302e32..0x00302e4f` stores it and raises
+  the count. The insertion path tests against four at `0x00302d73`.
+  The removal loop (`0x002eee44..0x002eee50`, `0x003029e4..0x003029fd`)
+  consumes these IDs in reverse. They index the contact constraint's
+  [point ID map](#the-contact-manager-and-its-constraint).
+- Agent `+0x20` (xyz) is the cached separating axis and `+0x2c` is the
+  cached separation bound. Construction sets the bound to −1
+  (`0x002ee374`). A positive bound enables a motion projection onto the
+  axis that reduces the bound and can skip a fresh closest-feature query
+  (`0x002eeb7c..0x002eeb9c`, `0x002eebda..0x002eec29`).
+  `0x002eee2b..0x002eee41` stores an axis and a tolerance-adjusted bound.
+  Axis bytes can survive after the bound has been invalidated.
+- In `0x00412290` only, `+0xf0` saves which side used the swept support
+  offset (A adds 1, B adds 2, `0x002db40a`, `0x002db52d..0x002db537`,
+  stores `0x002db5ec` and `0x002db284`). The offset comes from motion and a type-`0x17`
+  shape threshold (`0x002db331..0x002db36c`, `0x002db3e7..0x002db406`).
+  Both its ordinary and welding paths can reseed the feature IDs and set
+  the bound to −1 when the side mask changes or a sweep is active
+  (`0x002db551..0x002db5cb`, `0x002db1e4..0x002db25e`).
+- The welding pass also builds temporary `0x80`-byte records with child
+  agent, shape, key and flags (`0x002fa380..0x002fa397`,
+  `0x002fa47d..0x002fa4e2`). It tests B's feature count against 1 and 2
+  at `0x002fa59c..0x002fa5d5`. **S**: those cases distinguish vertex or
+  edge candidates for welding. Which state, if any, persists across an
+  actual forced crouch and predicts a bounce remains **Open**.
+
+### Physics component character contacts
+
+**Code.** At component `+0x88` the game keeps a different array, populated
+by Halo's contact callback (`0x00277b80`, append `0x001d0400`). Count is
+`+0x8c` (`0x001d0407`), while `+0x90 & 0x7fffffff` gives *capacity*.
+The append compares capacity with count + 1, grows by `0x48`-byte elements,
+then stores the new count (`0x001d0507..0x001d0539`). Capacity can stay
+high after entries are removed.
+The component constructor initialises these three words at
+`0x001cf9c6..0x001cf9d2`. The existing
+`world.object` field `physics.support.contacts` decodes their keys, points,
+normals and flags; the offsets and ground-test reads are listed in
+[the agent API](../runtime/agent-api.md). Use the island pair list to inspect
+the collision agents themselves.
+
 ## Halo's listeners
 
 Halo registers a listener object (`0x002784c0`) with the world, which
@@ -221,10 +365,9 @@ through property `0x2001`; none reads contact points. **Code**
   body on the crouching pill (see "A biped's shape"). `world.raw` and
   `havok.bodies` show it on a trace.
 
-- **The surface.** A point does not say which triangle of the level it
-  is on. The shape key is with the collision agent (the pair array at
-  `0x00278b60` keeps an agent per pair at `+0x08`; the level's MOPP agent
-  has a child per triangle). Reading it means decoding the agents.
+- **Cache lifetime.** Which pairs and children survive a forced crouch and
+  whether their feature IDs or separation bounds predict a later bounce.
+  The child entry's second word and per-step welding decisions also remain open.
 - **Motion types** 6 and 7 and entity `+0x40`: which is keyframed and
   which fixed.
 - **Property `+0x04`, `+0x14`, `+0x18`**: the solver's use.

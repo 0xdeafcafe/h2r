@@ -161,7 +161,7 @@ pub fn register_core(features: &mut feature::Registry, i: CoreInputs<'_>) -> any
     let custom_maps: Option<skulls_custom::MapLocator> = i.vfs.map(|vfs| -> skulls_custom::MapLocator {
         Box::new(move |map| {
             let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
-            let file = v.host_file(&format!("\\Device\\CdRom0\\maps\\{map}.map"))?;
+            let file = crate::map_override::map_file(&mut v, map)?;
             Some(telemetry::MapFile { path: file.path, offset: file.offset, len: file.len })
         })
     });

@@ -109,6 +109,7 @@ impl Decisions {
         };
         let mut changed = false;
         for k in kills {
+            self.map.timers.forget_holder(k.victim);
             if self
                 .trade
                 .is_some_and(|(killer, _, since)| k.victim == killer && k.tick >= since)
@@ -329,10 +330,12 @@ impl Fight<'_> {
                 .p
                 .objective
                 .as_ref()
-                .and_then(|o| o.hill.as_ref())
-                .is_some_and(|h| h.contains(o.position))
+                .is_some_and(|objective| objective.in_hill(o.id, o.position))
         {
             weight /= 1.0 + 3.0 * awareness(self.skill);
+        }
+        if d.map.holder(o.id) {
+            weight /= 1.0 + awareness(self.skill);
         }
         if self.opening(o, traits) {
             weight /= 1.0 + (0.8 + traits.aggression) * awareness(self.skill);
@@ -417,12 +420,12 @@ impl Fight<'_> {
 
     fn leash(&self, target: Seen, traits: Personality) -> Option<(Vec3, f32)> {
         let goal = self.goal?;
-        if self
-            .p
-            .objective
-            .as_ref()
-            .is_some_and(|o| o.game == crate::objective::Game::Koth)
-        {
+        if self.p.objective.as_ref().is_some_and(|o| {
+            matches!(
+                o.game,
+                crate::objective::Game::Koth | crate::objective::Game::Territories
+            )
+        }) {
             return match goal {
                 Goal::Go(at) => Some((at, 0.0)),
                 Goal::Hold(at, r) => Some((at, r)),

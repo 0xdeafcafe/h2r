@@ -425,6 +425,15 @@ fn a_power_weapon_nearby_is_taken_and_the_worse_gun_dropped() {
         decide_by_range(&smg_held, Some(8.0), false, false, &ps),
         Kit::Fine
     );
+    // At the pad there is time to grab the respawn during a fight.
+    let underfoot = Pickup {
+        position: [0.2, 0.0, 0.0],
+        ..ps[0]
+    };
+    assert_eq!(
+        decide_by_range(&smg_held, Some(8.0), false, false, &[underfoot]),
+        Kit::Seek(underfoot)
+    );
     // Not with a power weapon already.
     let armed = arms(
         Some(with(SHOTGUN, shotgun(), full())),
@@ -512,6 +521,7 @@ fn world() -> World {
             .put_u32(e + 8, addr);
         g.map(addr, 0x400);
     }
+    g.put_u16(FLAG_TAG + 0x290, 1);
     let br_mags = BR_TAG + 0x300;
     g.put_u32(BR_TAG + WEAP_MAGAZINES, 1)
         .put_u32(BR_TAG + WEAP_MAGAZINES + 4, br_mags)
@@ -681,6 +691,7 @@ fn the_handling_reads_from_the_weapon_and_projectile_tags() {
             rate: 6.0,
             pellets: 1,
             shot_speed: 400.0,
+            ..Profile::default()
         }
     );
     assert_eq!(p.role(), Role::Precise);
@@ -837,6 +848,7 @@ fn decisions_ground_scan_matches_live_items_to_their_spawn_and_clock() {
         .put_f32(SITES + 0x40, 29.5)
         .put_u16(SITES + 0x0e, 13)
         .put_f32(SITES + 0x90 + 0x40, 40.0)
+        .put_u32(SITES + 0x90 + 0x58, u32::from_be_bytes(*b"itmc"))
         .put_u32(SITES + 0x90 + 0x5c, COLLECTION_ID)
         .put_u32(TAG_INDEX + 0x18, 4)
         .put_u32(TAG_ENTRIES + 0x30, u32::from_be_bytes(*b"itmc"))
@@ -848,23 +860,61 @@ fn decisions_ground_scan_matches_live_items_to_their_spawn_and_clock() {
         object: DatumHandle::new(0xb003, 3).raw(),
         spawn: [29.5, 0.0, 0.0],
         at: [30.0, 0.0, 0.0],
+        disabled: false,
+        on_disturbance: true,
         respawn: Some(13 * 30),
-        powerup: false,
+        powerup: None,
     };
     let eq = Supply {
         site: 1,
         object: DatumHandle::new(0xb004, 4).raw(),
         spawn: [40.0, 0.0, 0.0],
         at: [40.0, 0.0, 0.0],
+        disabled: false,
+        on_disturbance: true,
         respawn: Some(31 * 30),
-        powerup: true,
+        powerup: Some(crate::decisions::supplies::Powerup::Overshield),
     };
     for kind in [2, 3] {
         g.put_u16(FLAG_TAG + 0x12c, kind);
         let sample = ground(g, None).unwrap();
         assert_eq!(sample.weapons.len(), 1);
+        let eq = Supply {
+            powerup: Some(if kind == 2 {
+                crate::decisions::supplies::Powerup::Overshield
+            } else {
+                crate::decisions::supplies::Powerup::Camo
+            }),
+            ..eq
+        };
         assert_eq!(sample.supplies.unwrap(), [gun, eq], "equipment type {kind}");
     }
+    let globals = SCENARIO + 0x6000;
+    let time = globals + 0x1000;
+    g.put_u32(points::GAME_GLOBALS.base, globals)
+        .put_u32(points::GAME_TIME.base, time)
+        .put_u16(time + 2, 20)
+        .put_u8(SITES + 0x14, 0)
+        .put_u8(SITES + 0x90 + 0x14, 1)
+        .put_u8(globals + 0x211, 2)
+        .put_u8(globals + 0x208, 3);
+    let sites = ground(g, None).unwrap().supplies.unwrap();
+    assert_eq!(
+        sites[0].respawn,
+        Some(6 * 20),
+        "half seconds truncate before conversion to ticks"
+    );
+    assert_eq!(sites[1].respawn, Some(62 * 20));
+    g.put_u8(globals + 0x211, 1)
+        .put_u16(COLLECTION + 8, 0)
+        .put_u8(globals + 0x208, 0);
+    let sites = ground(g, None).unwrap().supplies.unwrap();
+    assert_eq!(sites[0].respawn, None);
+    assert_eq!(
+        sites[1].respawn,
+        Some(30 * 20),
+        "retail default with zero collection interval"
+    );
     // A grenade is equipment too. A dropped gun far from its placement
     // is still an ordinary pickup and cannot establish a spawn point.
     g.put_u16(FLAG_TAG + 0x12c, 6)
@@ -879,4 +929,108 @@ fn decisions_ground_scan_matches_live_items_to_their_spawn_and_clock() {
     let sample = ground(g, None).unwrap();
     assert!(sample.supplies.is_none());
     assert_eq!(sample.weapons.len(), 1);
+}
+
+#[test]
+fn the_dual_pickup_table_checks_both_hands_and_range() {
+    use DualGun::*;
+    let weapon = |dual| Gun {
+        profile: Profile { dual, ..smg() },
+        ..with(SMG, smg(), full())
+    };
+    for right in [
+        Some(Smg),
+        Some(PlasmaRifle),
+        Some(PlasmaPistol),
+        Some(Needler),
+        None,
+    ] {
+        for left in [
+            Some(Smg),
+            Some(PlasmaRifle),
+            Some(PlasmaPistol),
+            Some(Needler),
+            None,
+        ] {
+            let a = arms(Some(weapon(right)), None);
+            let p = Pickup {
+                id: 72,
+                position: [0.2, 0.0, 0.0],
+                gun: weapon(left),
+            };
+            let pick = |d| decide_by_range(&a, Some(d), false, false, &[p]);
+            let expected = matches!(
+                (right, left),
+                (Some(Smg), Some(Smg | PlasmaRifle | PlasmaPistol))
+                    | (Some(PlasmaRifle | PlasmaPistol), Some(Smg))
+                    | (Some(Needler), Some(Needler))
+            );
+            assert_eq!(pick(4.0) == Kit::Dual(p), expected, "{right:?} + {left:?}");
+            assert_ne!(pick(30.0), Kit::Dual(p));
+            let busy = Arms {
+                left: Some(weapon(left)),
+                ..a
+            };
+            assert_ne!(decide_by_range(&busy, None, true, true, &[p]), Kit::Dual(p));
+        }
+    }
+}
+
+#[test]
+fn the_tag_flag_and_the_maps_multiplayer_list_identify_offhand_candidates() {
+    let mut w = world();
+    let g = &mut w.g;
+    let matg = TAGS + 0x1000;
+    let mulg = matg + 0x400;
+    let universal = mulg + 0x100;
+    let list = universal + 0x100;
+    let pistol = def_raw(PP, 1);
+    let read = |g: &FakeGuest| {
+        super::gun(g, DatumHandle::new(0xb002, 2))
+            .unwrap()
+            .unwrap()
+            .0
+            .profile
+            .dual
+    };
+    g.put_u32(points::GLOBALS_TAG.base, matg)
+        .put_u32(matg + 0x16c, 0xf001_0003)
+        .put_u32(TAG_INDEX + 0x18, 4)
+        .put_u32(TAG_ENTRIES + 0x30, u32::from_be_bytes(*b"mulg"))
+        .put_u32(TAG_ENTRIES + 0x34, 0xf001_0003)
+        .put_u32(TAG_ENTRIES + 0x38, mulg)
+        .put_u32(mulg + 8, 1)
+        .put_u32(mulg + 12, universal)
+        .put_u32(universal + 0x68, 10)
+        .put_u32(universal + 0x6c, list)
+        .map(list, 80)
+        .put_u32(list + 6 * 8 + 4, pistol);
+    for (flags, expected) in [
+        (0, None),
+        (1 << 22, Some(DualGun::PlasmaPistol)),
+        (1 << 23, Some(DualGun::PlasmaPistol)),
+    ] {
+        g.put_u32(PP_TAG + 0x12c, flags);
+        assert_eq!(read(g), expected);
+    }
+    g.put_u32(list + 6 * 8 + 4, pistol ^ (1 << 16));
+    assert_eq!(read(g), None, "stale salted reference");
+}
+
+#[test]
+fn the_sword_has_a_battery_even_without_a_barrel_and_objectives_are_never_supplies() {
+    let mut w = world();
+    let body = BODIES + 4 * 0x400;
+    w.g.put_f32(body + WEAPON_AGE, 0.25)
+        .put_f32(FLAG_TAG + WEAP_CONE_RANGE, 6.0);
+    for (kind, ammo) in [
+        (0, Ammo::Battery(0.75)),
+        (1, Ammo::None),
+        (2, Ammo::None),
+        (4, Ammo::None),
+    ] {
+        w.g.put_u16(FLAG_TAG + 0x290, kind);
+        let def = WeaponDef::read(&w.g, FLAG_TAG).unwrap();
+        assert_eq!(def.ammo(&w.g, body).unwrap(), ammo);
+    }
 }

@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::brain::Me;
-use crate::decisions::Intent;
+use crate::decisions::{Intent, supplies::Trip};
 
 impl Mind {
     pub(super) fn decide(
@@ -12,10 +12,18 @@ impl Mind {
         seen: &[Seen],
         map: Option<&MapData>,
     ) -> (Option<Goal>, Intent) {
-        let goal = p
-            .objective
-            .as_ref()
-            .and_then(|o| objective::plan(o, &me, &p.others, p.teams));
+        let goal = p.objective.as_ref().and_then(|o| {
+            objective::plan(
+                o,
+                &me,
+                if o.game == objective::Game::Juggernaut {
+                    seen
+                } else {
+                    &p.others
+                },
+                p.teams,
+            )
+        });
         // Once a tick: a repeated frame returns the last pad before this.
         if let Some(map) = map {
             self.decisions.map.familiarize(
@@ -26,7 +34,7 @@ impl Mind {
             );
         }
         self.decisions.observe(p, me, map);
-        let intent = self.decisions.decide(
+        let mut intent = self.decisions.decide(
             &Fight {
                 p,
                 me,
@@ -37,6 +45,22 @@ impl Mind {
             },
             self.target.map(|(id, _)| id),
         );
+        if goal.is_none()
+            && intent.chosen.is_some()
+            && !self.recovering
+            && self.decisions.posture != Posture::Withdraw
+            && let Some(pad) = self.decisions.map.due(
+                me,
+                p.tick,
+                self.skill,
+                &self.stuck,
+                map,
+                &self.experience,
+                Trip::Contest,
+            )
+        {
+            intent.anchor = Some((pad, crate::nav::REACHED));
+        }
         (goal, intent)
     }
 
@@ -57,7 +81,7 @@ impl Mind {
         self.doing = match (intent.chosen, self.kit, goal) {
             (_, _, Some(Goal::Carry(at))) => Doing::Carry(at),
             (_, _, Some(Goal::Keep)) => Doing::Keep,
-            (_, Kit::Seek(pk), _) => Doing::Rearm(pk.position),
+            (_, Kit::Seek(pk) | Kit::Dual(pk), _) => Doing::Rearm(pk.position),
             (Some(o), _, _) => Doing::Fight(o.id),
             (None, _, Some(g)) => Doing::Play(g),
             _ => self.between_fights(p, me, intent.support, calm, map),
@@ -88,10 +112,15 @@ impl Mind {
         }
         if calm
             && self.kit == Kit::Fine
-            && let Some(at) =
-                self.decisions
-                    .map
-                    .due(me, p.tick, self.skill, &self.stuck, map, &self.experience)
+            && let Some(at) = self.decisions.map.due(
+                me,
+                p.tick,
+                self.skill,
+                &self.stuck,
+                map,
+                &self.experience,
+                Trip::Search,
+            )
         {
             return Doing::Supply(at);
         }
