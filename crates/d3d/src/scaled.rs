@@ -1636,25 +1636,28 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
     fn external_attachments(
         &mut self, surfaces: crate::ExternalSurfaces<Self::Surface>, textures: [Option<&Self::Texture>; 4],
         copy: crate::TargetCopy,
-    ) -> Result<Option<Vec<crate::backend::ExternalAttachments>>, String> {
+    ) -> Result<crate::ExternalCopies, String> {
         let reference = surfaces.try_map(|s| Some(s.reference)).expect("every surface has a reference");
         let rt = textures.map(|t| t.map(|t| &t.reference));
         self.before_shared_write(&surfaces.color);
         for slot in surfaces.slots.iter().flatten() { self.before_shared_write(slot); }
-        let Some(mut commands) = self.reference.external_attachments(reference, rt, copy)? else {
-            return Ok(None);
+        let mut commands = match self.reference.external_attachments(reference, rt, copy)? {
+            crate::ExternalCopies::Ready(copies) => copies,
+            missing => return Ok(missing),
         };
-        if self.awake() && (surfaces.color.view.is_some() || surfaces.depth.view.is_some()
-            || surfaces.slots.iter().flatten().any(|s| s.view.is_some())) {
-            let Some(view) = surfaces.try_map(|s| self.live(s.view)) else { return Ok(None) };
+        let needs_view = |s: &Self::Surface| s.view.is_some() || self.frame == Some(s.size)
+            || (self.shadow_factor() > 1 && self.shadow_at(&s.reference).is_some());
+        if self.awake() && (needs_view(&surfaces.color) || needs_view(&surfaces.depth)
+            || surfaces.slots.iter().flatten().any(needs_view)) {
+            let Some(view) = surfaces.try_map(|s| self.live(s.view)) else { return Ok(crate::ExternalCopies::Missing(crate::TargetCopy::Display)) };
             let vt = textures.map(|t| t.and_then(|t| t.view.as_ref()));
-            if (0..4).any(|i| textures[i].is_some() && vt[i].is_none()) { return Ok(None); }
-            let Some(display) = self.view.external_attachments(view, vt, crate::TargetCopy::Display)? else {
-                return Ok(None);
-            };
-            commands.extend(display);
+            if (0..4).any(|i| textures[i].is_some() && vt[i].is_none()) { return Ok(crate::ExternalCopies::Missing(crate::TargetCopy::Display)); }
+            match self.view.external_attachments(view, vt, crate::TargetCopy::Display)? {
+                crate::ExternalCopies::Ready(display) => commands.extend(display),
+                missing => return Ok(missing),
+            }
         }
-        Ok(Some(commands))
+        Ok(crate::ExternalCopies::Ready(commands))
     }
 
     fn commit_external(&mut self, recording: crate::ExternalRecording) {

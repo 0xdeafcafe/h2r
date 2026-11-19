@@ -197,6 +197,8 @@ pub fn encodings() -> Vec<Encoding> {
         }
     }
     x87(&mut add);
+    add("xlat".into(), vec![0xd7]);
+    add("xlat-fs".into(), vec![0x64, 0xd7]);
     list
 }
 
@@ -466,6 +468,11 @@ impl Inputs {
             }
         }
         let mut memory = (0..512).map(|_| self.next() as u8).collect::<Vec<_>>();
+        if instruction.mnemonic() == Mnemonic::Xlatb {
+            // Place the whole lookup table within the seeded bytes while
+            // retaining the edge or random index in AL.
+            s.ebx = DATA + 256;
+        }
         // Short, bounded REP including zero; addr16 cases seed low pages as well.
         if instruction.is_string_instruction() {
             s.ecx = edge.map_or_else(|| self.next() % 17, |n| [0, 1, 2, 8, 16][n % 5]);

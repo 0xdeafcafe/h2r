@@ -322,6 +322,8 @@ points! { ALL;
     /// (`engine::screen_effect::template_draws`; `0x0002d4be` skips the
     /// pass when it does not), `ret 0x18`. Hooked only by `H2_POST_TRACE`.
     TEMPLATE_PASS @ 0x0001_6610: [fn(shader: stack 0, layer: stack 1, implementation: stack 2, selector: stack 3, target: stack 4, flags: stack 5) -> al ret 24], Optional; "docs/graphics/native-renderer.md";
+    /// Full-target template quad; its gel caller returns to 0x1675a.
+    TEMPLATE_QUAD @ 0x0001_5ec0: [fn(target: stack 0) ret 4], Optional; "docs/graphics/native-gels.md";
     /// Draws the current layer (`[0x00467130]`) of the current list: layer
     /// setup, then `LAYER_ENTRIES` for the layers in its mask.
     LAYER_DRAW @ 0x0004_4550: [opaque]; "docs/graphics/layer-draw.md";

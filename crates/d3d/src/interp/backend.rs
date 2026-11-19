@@ -1767,15 +1767,25 @@ where
     fn external_attachments(
         &mut self, surfaces: crate::ExternalSurfaces<Self::Surface>, textures: [Option<&Self::Texture>; 4],
         copy: crate::TargetCopy,
-    ) -> Result<Option<Vec<crate::backend::ExternalAttachments>>, String> {
-        self.inner.external_attachments(surfaces, textures, copy)
+    ) -> Result<crate::ExternalCopies, String> {
+        if self.rate() != Rate::Off { return Ok(crate::ExternalCopies::Missing(copy)); }
+        let tex: [Option<&B::Texture>; 4] = textures.map(|t| t.map(|t| &**t));
+        self.inner.external_attachments(surfaces, tex, copy)
     }
 
     fn prepare_external(
         &mut self, surfaces: crate::ExternalSurfaces<Self::Surface>, request: crate::ExternalPassRequest,
         textures: [Option<&Self::Texture>; 4], plan: &crate::ExternalPlan, copy: crate::TargetCopy, pass: crate::SharedReplacement,
     ) -> Result<Option<Vec<crate::ExternalRecording>>, String> {
-        self.inner.prepare_external(surfaces, request, textures, plan, copy, pass)
+        if self.rate() != Rate::Off {
+            // Replay needs the original geometry to rebuild an intermediate view.
+            let items = pass.lock().map_err(|_| "native pass poisoned")?.items(plan.ranges) as u64;
+            plan.stage.count(timeline::native::Metric::Examined, items);
+            plan.stage.count(timeline::native::Metric::RefusedReplay, items);
+            return Ok(None);
+        }
+        let tex: [Option<&B::Texture>; 4] = textures.map(|t| t.map(|t| &**t));
+        self.inner.prepare_external(surfaces, request, tex, plan, copy, pass)
     }
 
     fn commit_external(&mut self, recording: crate::ExternalRecording) {
