@@ -153,6 +153,14 @@ pub trait Rows: Send + Sync {
     fn picture(&self, _row: i16) -> Option<u32> {
         None
     }
+    /// The image of its bitmap the picture shows, set once as the screen
+    /// opens ([`set_image`]), for a class with a picture
+    /// ([`ListClass::picture`]): a page's own icon in Quick Options'
+    /// game type picture (`crate::ui_kit::dialog::QUICK_PICTURE`). The
+    /// widget's constructor starts it at image 0. `None` leaves it.
+    fn picture_image(&self) -> Option<u16> {
+        None
+    }
     /// Text that changes while the screen is up, asked at each row text:
     /// bytes to write to guest memory first (the strings the ids this
     /// class shows are served from), and whether the description must be
@@ -182,6 +190,12 @@ pub trait Rows: Send + Sync {
     /// whose items have one text ([`ListClass::lines`]); `None` draws
     /// [`Rows::texts`].
     fn line(&self, _row: i16) -> Option<String> {
+        None
+    }
+    /// The string id of the class's panel text `i` ([`ListClass::panel`]):
+    /// set when the screen opens and again whenever the description is;
+    /// `None` leaves it empty.
+    fn panel_text(&self, _i: usize) -> Option<u32> {
         None
     }
 }
@@ -686,6 +700,32 @@ pub fn set_tint(m: &mut dyn GuestMemory, widget: u32, tint: [f32; 3]) -> Result<
 /// A bitmap widget's block definition (`+0x70`, set by its constructor
 /// `0x2b01eb`).
 pub const WIDGET_BLOCK: u32 = 0x70;
+/// A bitmap widget's image index (`0x2b0a14` stores it; the constructor
+/// `0x2b01eb` zeroes it, whatever its block says).
+pub const WIDGET_IMAGE: u32 = 0x88;
+/// A `bitm` tag's image count (`0x2b0a14` checks the index against it).
+pub const BITMAP_IMAGES: u32 = 0x44;
+
+/// Sets bitmap widget `widget`'s image to `index`, as `0x2b0a14` does:
+/// only when its bitmap is loaded and has that many images. Whether it
+/// did.
+pub fn set_image(m: &mut dyn GuestMemory, widget: u32, index: u16) -> Result<bool, MemFault> {
+    let block = m.u32(widget.wrapping_add(WIDGET_BLOCK))?;
+    if block == 0 {
+        return Ok(false);
+    }
+    let datum = m.u32(block.wrapping_add(BITMAP_HANDLE as u32))?;
+    if datum == u32::MAX {
+        return Ok(false);
+    }
+    let entries = m.u32(points::TAG_ENTRIES.base)?;
+    let tag = m.u32(entries.wrapping_add((datum & 0xffff) * 0x10 + 8))?;
+    if tag == 0 || u32::from(index) >= m.u32(tag.wrapping_add(BITMAP_IMAGES))? {
+        return Ok(false);
+    }
+    m.set_u16(widget.wrapping_add(WIDGET_IMAGE), index)?;
+    Ok(true)
+}
 
 /// Points bitmap widget `widget` at `bitm` datum `datum`: its block's
 /// reference ([`BITMAP_HANDLE`]), which the draw reads each frame. The
@@ -731,17 +771,46 @@ impl TextBlock {
     }
 }
 
+/// A text of a class's own that belongs to no row (a page's body, a
+/// table's label or value, a checklist column; [`ListClass::panel`]): a
+/// text block definition like [`TextBlock`]'s, right-justified or not and
+/// with the retail block's render depth bias, its string set by
+/// [`Rows::panel_text`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PanelText {
+    pub block: TextBlock,
+    /// Right-justified (flags bit 1), else left (bit 0).
+    pub right: bool,
+    /// The block's render depth bias (`+0x28`).
+    pub bias: i16,
+}
+
+impl PanelText {
+    /// The block's bytes, as [`TextBlock::bytes`] with its justification
+    /// and bias.
+    pub fn bytes(&self) -> [u8; TEXT_BLOCK_SIZE as usize] {
+        let mut b = self.block.bytes();
+        let flags: u32 = if self.right { 2 } else { 1 };
+        b[0..4].copy_from_slice(&flags.to_le_bytes());
+        b[0x28..0x2a].copy_from_slice(&self.bias.to_le_bytes());
+        b
+    }
+}
+
 /// The description widget of each open screen of a class and the row it
 /// shows, so row text sets it only when the focus moved.
 #[derive(Default)]
 pub struct Shown(Mutex<Vec<ShownEntry>>);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct ShownEntry {
     screen: u32,
     widget: u32,
     picture: Option<u32>,
     row: Option<i16>,
+    /// The panel texts' widgets, in [`ListClass::panel`]'s order (0 for
+    /// one that could not be made).
+    panel: Vec<u32>,
 }
 
 /// Screens remembered at once; a screen is set up again before it draws, so
@@ -761,6 +830,7 @@ impl Shown {
             widget,
             picture: None,
             row: None,
+            panel: Vec::new(),
         });
         if v.len() > SHOWN_KEPT {
             v.remove(0);
@@ -772,6 +842,20 @@ impl Shown {
         if let Some(e) = self.lock().iter_mut().find(|e| e.screen == screen) {
             e.picture = Some(widget);
         }
+    }
+    /// Screen `screen`'s panel text widgets are `widgets`.
+    pub fn set_panel(&self, screen: u32, widgets: Vec<u32>) {
+        if let Some(e) = self.lock().iter_mut().find(|e| e.screen == screen) {
+            e.panel = widgets;
+        }
+    }
+    /// Screen `screen`'s panel text widgets.
+    pub fn panel(&self, screen: u32) -> Vec<u32> {
+        self.lock()
+            .iter()
+            .find(|e| e.screen == screen)
+            .map(|e| e.panel.clone())
+            .unwrap_or_default()
     }
     /// Screen `screen`'s picture widget.
     pub fn picture(&self, screen: u32) -> Option<u32> {
@@ -810,6 +894,15 @@ const FRAME_BLOCK: u32 = PICTURE_BLOCK + BITMAP_BLOCK_SIZE;
 /// Where [`push`] builds its request (0x20 bytes), at the end of the page.
 const PUSH_BLOCK: u32 = 0x1000 - 0x20;
 const _: () = assert!(PUSH_BLOCK >= FRAME_BLOCK + BITMAP_BLOCK_SIZE);
+/// Where a class's panel art blocks go ([`ListClass::panel`]), then its
+/// text blocks: past the tag copy, before the push request.
+const PANEL_BLOCKS: u32 = 0x400;
+const _: () = assert!(PANEL_BLOCKS >= TAG_COPY + TAG_COPY_SIZE);
+/// Panel art and texts a class has at most.
+pub const MAX_PANEL_ART: usize = 4;
+pub const MAX_PANEL_TEXTS: usize = 40;
+const PANEL_TEXT_BLOCKS: u32 = PANEL_BLOCKS + MAX_PANEL_ART as u32 * BITMAP_BLOCK_SIZE;
+const _: () = assert!(PANEL_TEXT_BLOCKS + MAX_PANEL_TEXTS as u32 * TEXT_BLOCK_SIZE <= PUSH_BLOCK);
 
 /// Where a class's description block goes, the block, and where to keep
 /// each screen's widget.
@@ -825,6 +918,19 @@ pub struct Description {
     /// at `frame_at` ([`ListClass::frame`]).
     pub frame: Option<PictureSpec>,
     pub frame_at: u32,
+    /// The class's panel ([`ListClass::panel`]): its art, its texts, the
+    /// rows that name the texts' strings, and where their blocks go.
+    pub panel: Panel,
+    pub panel_at: u32,
+    pub rows: Option<Arc<dyn Rows>>,
+}
+
+/// A class's own art and texts that belong to no row ([`ListClass::panel`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Panel {
+    /// Retail bitmap blocks, made widgets before the texts (backings).
+    pub art: Vec<PictureSpec>,
+    pub texts: Vec<PanelText>,
 }
 
 /// A screen of the `ui` model.
@@ -937,6 +1043,7 @@ pub struct ListClass {
     lines: bool,
     loader: Arc<AtomicU32>,
     dialog: Option<crate::ui_kit::dialog::DialogBase>,
+    panel: Panel,
 }
 
 impl ListClass {
@@ -963,6 +1070,7 @@ impl ListClass {
             lines: false,
             loader: Arc::new(AtomicU32::new(0)),
             dialog: None,
+            panel: Panel::default(),
         }
     }
     /// Opened in a game too (the pause menu's Video and Voice): there its
@@ -1003,6 +1111,27 @@ impl ListClass {
     pub fn frame(mut self, spec: PictureSpec) -> Self {
         self.frame = Some(spec);
         self
+    }
+    /// With art and texts of its own that belong to no row: retail
+    /// backings (made before the texts) and text blocks whose strings
+    /// [`Rows::panel_text`] names, set when the screen opens and again
+    /// with the description (a mod's page: docs/game/maps.md "A mod's
+    /// page"). Only a class with a description shows them. At most
+    /// [`MAX_PANEL_ART`] and [`MAX_PANEL_TEXTS`].
+    pub fn panel(mut self, panel: Panel) -> Self {
+        assert!(
+            panel.art.len() <= MAX_PANEL_ART && panel.texts.len() <= MAX_PANEL_TEXTS,
+            "{}: a panel of {} art and {} texts",
+            self.id,
+            panel.art.len(),
+            panel.texts.len()
+        );
+        self.panel = panel;
+        self
+    }
+    /// The class's panel.
+    pub fn panel_of(&self) -> &Panel {
+        &self.panel
     }
     /// With its list placed and skinned by `layout` ([`ListLayout`]).
     pub fn layout(mut self, layout: ListLayout) -> Self {
@@ -1274,6 +1403,13 @@ pub fn player_mask(m: &dyn GuestMemory, chain: u32) -> Result<Option<u32>, MemFa
 /// Opens our screen `screen` for the player of `chain` (`0x149f1e(mask,
 /// loader)`). Says why when it cannot.
 pub async fn open(cx: &Cx, chain: u32, screen: &str) -> Result<(), EntryError> {
+    // The value picker is `low_level_settings` in the main menu and the
+    // large dialog in a game (`crate::ui_kit::picker`).
+    let screen = if screen == crate::ui_kit::picker::NAME && cx.read(ingame).unwrap_or(false) {
+        crate::ui_kit::picker::GAME_NAME
+    } else {
+        screen
+    };
     let Some(loader) = loader_of(screen) else {
         eprintln!("ui: {screen} is not a screen of ours (or its class is off); not opened");
         return Ok(());
@@ -1384,7 +1520,13 @@ pub async fn row_text(
         let moved = shown.focus(screen, focused);
         let widget = moved.or_else(|| live.redraw.then(|| shown.widget(screen)).flatten());
         if let Some(widget) = widget {
-            if let Some(id) = focused.and_then(|r| rows.description(r)) {
+            // `TEXT_SET` copies the string as it sets it (`0x253b1a` reads
+            // it through `0x230134` into the widget), so a slot of ours
+            // set here is written before it is named.
+            let description = focused.and_then(|r| rows.description(r));
+            cx.write(|m| rows.write_texts(m))?;
+            set_panel_texts(&cx, screen, &shown, rows.as_ref()).await?;
+            if let Some(id) = description {
                 cx.call(
                     GuestCall::new(points::TEXT_SET.base)
                         .edi(widget)
@@ -1673,13 +1815,94 @@ pub async fn setup_pane_footer(
             d.shown.set_widget(screen, widget);
             if let Some(spec) = d.picture {
                 add_picture(&cx, screen, &spec, d.picture_at, Some(&d.shown), name).await?;
+                let image = d.rows.as_ref().and_then(|r| r.picture_image());
+                if let (Some(picture), Some(image)) = (d.shown.picture(screen), image) {
+                    if !cx.write(|m| set_image(m, picture, image))? {
+                        once(
+                            &PICTURE_MISSING,
+                            &format!("{name}: the picture has no image {image}"),
+                        );
+                    }
+                }
             }
             if let Some(spec) = d.frame {
                 add_picture(&cx, screen, &spec, d.frame_at, None, name).await?;
             }
+            add_panel(&cx, screen, &d, name).await?;
         }
     }
     Ok(Ret::new(r.eax, 4))
+}
+
+/// The class's panel ([`ListClass::panel`]): its art as bitmap widgets
+/// (backings first), then each text block a text widget with its string
+/// set ([`Rows::panel_text`], the rows' texts written first).
+async fn add_panel(cx: &Cx, screen: u32, d: &Description, name: &str) -> Result<(), EntryError> {
+    if d.panel.art.is_empty() && d.panel.texts.is_empty() {
+        return Ok(());
+    }
+    for (i, spec) in d.panel.art.iter().enumerate() {
+        let at = d.panel_at + i as u32 * BITMAP_BLOCK_SIZE;
+        add_picture(cx, screen, spec, at, None, name).await?;
+    }
+    if let Some(rows) = &d.rows {
+        cx.write(|m| rows.write_texts(m))?;
+    }
+    let texts_at = d.panel_at + MAX_PANEL_ART as u32 * BITMAP_BLOCK_SIZE;
+    let mut widgets = Vec::with_capacity(d.panel.texts.len());
+    for (i, t) in d.panel.texts.iter().enumerate() {
+        let at = texts_at + i as u32 * TEXT_BLOCK_SIZE;
+        cx.write(|m| m.write(at, &t.bytes()))?;
+        let widget = cx
+            .call(
+                GuestCall::new(points::PANE_TEXT_ADD.base)
+                    .ebx(screen)
+                    .args([0, at]),
+            )
+            .await?
+            .eax;
+        if widget == 0 {
+            once(
+                &PICTURE_MISSING,
+                &format!("{name}: no panel text {i} (no memory for the widget)"),
+            );
+        }
+        widgets.push(widget);
+    }
+    d.shown.set_panel(screen, widgets);
+    if let Some(rows) = &d.rows {
+        set_panel_texts(cx, screen, &d.shown, rows.as_ref()).await?;
+    }
+    Ok(())
+}
+
+/// Sets each panel text widget of `screen` to its string.
+async fn set_panel_texts(
+    cx: &Cx,
+    screen: u32,
+    shown: &Shown,
+    rows: &dyn Rows,
+) -> Result<(), EntryError> {
+    let texts: Vec<(u32, u32)> = shown
+        .panel(screen)
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, widget)| rows.panel_text(i).filter(|_| widget != 0).map(|id| (widget, id)))
+        .collect();
+    // Written before `TEXT_SET` copies them (see `row_text`).
+    if !texts.is_empty() {
+        cx.write(|m| rows.write_texts(m))?;
+    }
+    for (widget, id) in texts {
+        cx.call(
+            GuestCall::new(points::TEXT_SET.base)
+                .edi(widget)
+                .esi(screen)
+                .args([id]),
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 /// Said once per run: the picture could not be made (the line says why).
@@ -1825,6 +2048,9 @@ impl feature::Feature for ListClass {
                 picture_at: tables + PICTURE_BLOCK,
                 frame: self.frame,
                 frame_at: tables + FRAME_BLOCK,
+                panel: self.panel.clone(),
+                panel_at: tables + PANEL_BLOCKS,
+                rows: Some(Arc::clone(&rows)),
             });
         let footer = self.footer;
         let setup_pane_at = b.entry("set up pane", move |cx| -> EntryFuture {
@@ -2244,6 +2470,197 @@ mod tests {
         }
     }
 
+    /// The value picker opened as the game opens it, and every string it
+    /// names read the way `TEXT_SET` (`0x253b1a`) reads one: from the
+    /// slot at the moment of the call. It opened blank on the Clankers
+    /// and Halo 1 Options pages (2026-11-19): its class took its title's
+    /// slot at build, before any pick, and nothing filled it after; the
+    /// description's slot was set after the texts were written, so the
+    /// call read it empty. Here the class is "built" first, a row's A
+    /// offers its pick, the loader runs (the rows the Controls rows'
+    /// array is asked for, and the texts in memory before the
+    /// constructor), the pane set-up sets the title, and row text draws
+    /// each value and the focused row's description.
+    #[test]
+    fn the_value_picker_opens_with_its_pick_on_the_games_path() {
+        use crate::ui_kit::picker::{self, Pick, Picker};
+        use crate::ui_kit::screen::SLOT_LEN;
+        let _serial = LOADING.lock().unwrap_or_else(|e| e.into_inner());
+        const TEXTS: u32 = 0x0068_0000;
+        const ITEM: u32 = 0x0060_0000;
+        let p = Arc::new(Picker::new(false));
+        p.slot_texts().base.store(TEXTS, Ordering::SeqCst);
+        let family = p.slot_texts().family;
+        let rows: Arc<dyn Rows> = Arc::clone(&p) as Arc<dyn Rows>;
+        // What a `TEXT_SET` of `id` shows: the slot's string as it is now.
+        let shown = move |m: &dyn GuestMemory, id: u32| -> String {
+            assert!(family.owns(id), "{id:#x} is not the picker's");
+            let mut b = vec![0u8; SLOT_LEN as usize];
+            m.read(TEXTS + (id - family.base) * SLOT_LEN, &mut b).unwrap();
+            let end = b.iter().position(|c| *c == 0).unwrap_or(b.len());
+            String::from_utf8_lossy(&b[..end]).into_owned()
+        };
+
+        // Built at boot, before any pick: the title's id is taken here.
+        let title = rows.title();
+        // A on a row of four values, the second held.
+        let values = ["25", "50", "75", "100"].map(String::from).to_vec();
+        let chosen = Arc::new(Mutex::new(None));
+        let set = {
+            let chosen = Arc::clone(&chosen);
+            Arc::new(move |i: usize| {
+                *chosen.lock().unwrap() = Some(i);
+                format!("score -> {i}")
+            })
+        };
+        let pick = Pick::new(
+            "Score to Win Round:",
+            values.clone(),
+            1,
+            "Points to win a round.",
+            set,
+        );
+        assert_eq!(picker::offer(pick), Some(picker::NAME));
+
+        // The loader.
+        let mut g = guest();
+        g.map(SCREEN, ui::CONTROLS_SCREEN_SIZE)
+            .map(ROWS - 0x20, 0x200)
+            .map(TEXTS, family.len * SLOT_LEN);
+        g.put_u16(REQUEST + 2, 0x4)
+            .put_u32(REQUEST + 4, 5)
+            .put_u32(REQUEST + 8, 4);
+        g.put_u32(STACK, 0xdead).put_u32(STACK + 4, REQUEST);
+        let e = entries();
+        let f = {
+            let rows = Arc::clone(&rows);
+            move |cx| -> EntryFuture { Box::pin(load(cx, e, Arc::clone(&rows), picker::NAME)) }
+        };
+        let regs = Regs {
+            esp: STACK,
+            ..Default::default()
+        };
+        let during = std::sync::Mutex::new(None);
+        let run = testing::run(&f, g, regs, |c, m| {
+            if c.target == points::CONTROLS_SCREEN_CTOR.base {
+                let texts: Vec<String> = (0..values.len() as u32)
+                    .map(|i| shown(&*m, family.id(3 + i)))
+                    .collect();
+                *during.lock().unwrap() = Some((
+                    array_count(crate::speaker_row::LIST_NAME, 7),
+                    shown(&*m, title),
+                    texts,
+                ));
+                construct(m, 7);
+            }
+            Regs {
+                eax: if c.target == points::UI_ALLOC.base { SCREEN } else { 0 },
+                ..Default::default()
+            }
+        });
+        assert_eq!(run.result, Ok(Ret::new(SCREEN, 4)));
+        let (asked, title_text, value_texts) = during.lock().unwrap().take().expect("constructed");
+        assert_eq!(asked, 4, "the Controls rows' array is asked for the four values");
+        assert_eq!(
+            title_text, "SCORE TO WIN ROUND",
+            "the title is written before the screen is built"
+        );
+        assert_eq!(value_texts, values);
+        let live = Screen::at(SCREEN)
+            .list()
+            .row_array(&run.guest)
+            .unwrap()
+            .live(&run.guest, 16)
+            .unwrap();
+        assert_eq!(live.len(), 4, "a row per value");
+        let mut g = run.guest;
+
+        // The pane set-up: the title on the header, as `TEXT_SET` reads it.
+        g.put_u32(STACK + 4, 0x55);
+        let f = move |cx| -> EntryFuture {
+            Box::pin(setup_pane_footer(cx, title, None, None, picker::NAME))
+        };
+        let regs = Regs {
+            esp: STACK,
+            ecx: SCREEN,
+            ..Default::default()
+        };
+        let header = std::sync::Mutex::new(Vec::new());
+        let run = testing::run(&f, g, regs, |c, m| {
+            if c.target == points::TEXT_SET.base {
+                header.lock().unwrap().push((c.edi, shown(&*m, c.args[0])));
+            }
+            Regs::default()
+        });
+        assert_eq!(run.result, Ok(Ret::new(0, 4)));
+        assert_eq!(
+            *header.lock().unwrap(),
+            [(Some(Screen::at(SCREEN).header()), "SCORE TO WIN ROUND".to_string())]
+        );
+        let mut g = run.guest;
+
+        // Row text for each item, row 0 focused: each value on its item,
+        // the description once, as the calls read them.
+        let list = SCREEN + ui::LIST;
+        let described = Arc::new(Shown::default());
+        described.set_widget(SCREEN, 0x9000);
+        g.map(ITEM, Item::SIZE);
+        let mut drawn = Vec::new();
+        for row in 0..values.len() as u32 {
+            g.put_u32(STACK + 4, ITEM).put_u32(STACK + 8, 0);
+            Item::at(ITEM)
+                .set_row(&mut g, Some(DatumHandle::new(0x8001, row)))
+                .unwrap();
+            let f = {
+                let (rows, described) = (Arc::clone(&rows), Arc::clone(&described));
+                move |cx| -> EntryFuture {
+                    Box::pin(row_text(cx, Arc::clone(&rows), Some(Arc::clone(&described)), None))
+                }
+            };
+            let regs = Regs {
+                esp: STACK,
+                ecx: list,
+                ..Default::default()
+            };
+            let sets = std::sync::Mutex::new(Vec::new());
+            let run = testing::run(&f, g, regs, |c, m| {
+                if c.target == points::TEXT_SET.base {
+                    sets.lock().unwrap().push((c.edi, shown(&*m, c.args[0])));
+                }
+                Regs {
+                    eax: match c.target {
+                        t if t == points::ITEM_TEXT.base => 0x7000 + c.args[1],
+                        t if t == points::LIST_FOCUSED_ROW.base => {
+                            DatumHandle::new(0x8001, 0).raw()
+                        }
+                        _ => 0,
+                    },
+                    ..Default::default()
+                }
+            });
+            assert_eq!(run.result, Ok(Ret::new(0, 8)));
+            drawn.push(sets.into_inner().unwrap());
+            g = run.guest;
+        }
+        let label = Some(0x7000 + crate::ui::LABEL_SLOT);
+        assert_eq!(
+            drawn[0],
+            [
+                (label, "25".to_string()),
+                (Some(0x9000), "Points to win a round.".to_string())
+            ],
+            "the first item draws, then the focused row's description"
+        );
+        for (row, sets) in drawn.iter().enumerate().skip(1) {
+            assert_eq!(*sets, [(label, values[row].clone())], "row {row}");
+        }
+
+        // A on the third value sets it through the row's setter, and the
+        // action closes the picker.
+        assert_eq!(rows.press(2), Chosen::Act);
+        assert_eq!(*chosen.lock().unwrap(), Some(2));
+    }
+
     /// In a game a row is one line (the in-game items have one text):
     /// label and value in a slot of the class's, its id set on text 0.
     #[test]
@@ -2633,6 +3050,9 @@ mod tests {
             picture_at: 0,
             frame: None,
             frame_at: 0,
+            panel: Panel::default(),
+            panel_at: 0,
+            rows: None,
         };
         let f =
             move |cx| -> EntryFuture { Box::pin(setup_pane(cx, 0x77, Some(d.clone()), "test")) };
@@ -2923,6 +3343,9 @@ mod tests {
             picture_at: TABLES + PICTURE_BLOCK,
             frame: None,
             frame_at: TABLES + FRAME_BLOCK,
+            panel: Panel::default(),
+            panel_at: 0,
+            rows: None,
         };
         let f =
             move |cx| -> EntryFuture { Box::pin(setup_pane(cx, 0x77, Some(d.clone()), "test")) };
@@ -2978,6 +3401,9 @@ mod tests {
             picture_at: TABLES + PICTURE_BLOCK,
             frame: Some(frame),
             frame_at: TABLES + FRAME_BLOCK,
+            panel: Panel::default(),
+            panel_at: 0,
+            rows: None,
         };
         let f =
             move |cx| -> EntryFuture { Box::pin(setup_pane(cx, 0x77, Some(d.clone()), "test")) };

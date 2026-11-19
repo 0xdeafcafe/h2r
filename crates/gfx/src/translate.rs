@@ -28,6 +28,9 @@ pub struct Capabilities {
     pub texture_compression_bc: bool,
     /// `DEPTH32FLOAT_STENCIL8`: lets depth/stencil surfaces be read back.
     pub depth32_stencil8: bool,
+    /// `DEPTH_CLIP_CONTROL`: `PrimitiveState::unclipped_depth`, for draws
+    /// that clamp depth ([`primitive_state`]).
+    pub depth_clip_control: bool,
 }
 
 impl Capabilities {
@@ -38,6 +41,7 @@ impl Capabilities {
         clamp_to_border: true,
         texture_compression_bc: true,
         depth32_stencil8: true,
+        depth_clip_control: true,
     };
     /// Nothing optional available (the lowest common denominator).
     pub const NONE: Self = Self {
@@ -46,6 +50,7 @@ impl Capabilities {
         clamp_to_border: false,
         texture_compression_bc: false,
         depth32_stencil8: false,
+        depth_clip_control: false,
     };
 
     /// The optional wgpu features the renderer asks for, intersected with
@@ -56,6 +61,7 @@ impl Capabilities {
             | wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER
             | wgpu::Features::TEXTURE_COMPRESSION_BC
             | wgpu::Features::DEPTH32FLOAT_STENCIL8
+            | wgpu::Features::DEPTH_CLIP_CONTROL
     }
 
     /// Reads capabilities from enabled device features.
@@ -66,8 +72,25 @@ impl Capabilities {
             clamp_to_border: f.contains(wgpu::Features::ADDRESS_MODE_CLAMP_TO_BORDER),
             texture_compression_bc: f.contains(wgpu::Features::TEXTURE_COMPRESSION_BC),
             depth32_stencil8: f.contains(wgpu::Features::DEPTH32FLOAT_STENCIL8),
+            depth_clip_control: f.contains(wgpu::Features::DEPTH_CLIP_CONTROL),
         }
     }
+}
+
+/// Says once, on stderr, that a draw clamps depth but the device has no
+/// `DEPTH_CLIP_CONTROL`, so it is clipped instead ([`primitive_state`]).
+/// Returns whether this call said it.
+pub fn depth_clamp_unsupported() -> bool {
+    static SAID: std::sync::Once = std::sync::Once::new();
+    let mut said = false;
+    SAID.call_once(|| {
+        eprintln!(
+            "gfx: the device has no DEPTH_CLIP_CONTROL: draws that clamp depth \
+             (D3DRS_DEPTHCLIPCONTROL) are clipped at the near and far planes instead"
+        );
+        said = true;
+    });
+    said
 }
 
 /// [`CompareFunc`] -> wgpu.
@@ -264,6 +287,20 @@ pub fn depth_stencil_state(
 /// on back faces), so it is carried over too. Window y points down on the
 /// NV2A and in wgpu's framebuffer, so windings match.
 /// Only the front fill mode is honoured (wgpu has one polygon mode).
+///
+/// A draw that clamps depth ([`RenderState::depth_clamp`]) has its depth
+/// unclipped when the device has `DEPTH_CLIP_CONTROL`: the NV2A clamps
+/// depth outside the clip range rather than culling it. Without the
+/// feature it is clipped as before ([`depth_clamp_unsupported`] says so
+/// once). The other planes still clip: the WebGPU spec, 23.2.4 "Primitive
+/// Clipping", bounds the clip volume by `-w <= x <= w`, `-w <= y <= w` and
+/// `0 <= z <= w`, and with `unclippedDepth` only drops the last ("the clip
+/// volume is not bounded in the z dimension"), so w < 0 stays clipped (the
+/// x and y bounds need w >= 0) and clipping makes no vertex at w = 0 with
+/// x or y away from 0. On Metal, wgpu-hal 30.0.2 (`metal/device.rs`, render
+/// pipeline creation) sets `MTLDepthClipMode::Clamp` for it, which Apple
+/// documents as "Clamp fragments outside the near or far planes" (only the
+/// near and far planes).
 pub fn primitive_state(
     rs: &RenderState,
     topology: wgpu::PrimitiveTopology,
@@ -289,7 +326,7 @@ pub fn primitive_state(
         strip_index_format: None,
         front_face,
         cull_mode,
-        unclipped_depth: false,
+        unclipped_depth: rs.depth_clamp && caps.depth_clip_control,
         polygon_mode,
         conservative: false,
     }
@@ -601,6 +638,48 @@ mod tests {
         assert_eq!(primitive_state(&s, topo, Capabilities::ALL).cull_mode, Some(wgpu::Face::Front));
         s.cull_mode = CullMode::Ccw;
         assert_eq!(primitive_state(&s, topo, Capabilities::ALL).cull_mode, Some(wgpu::Face::Back));
+    }
+
+    #[test]
+    fn depth_clamp_unclips_depth_where_the_device_can() {
+        let topo = wgpu::PrimitiveTopology::TriangleList;
+        let mut s = rs();
+        assert!(!primitive_state(&s, topo, Capabilities::ALL).unclipped_depth);
+        s.depth_clamp = true;
+        assert!(primitive_state(&s, topo, Capabilities::ALL).unclipped_depth);
+        // Without DEPTH_CLIP_CONTROL the draw is clipped, as before.
+        assert!(!primitive_state(&s, topo, Capabilities::NONE).unclipped_depth);
+        let caps = Capabilities {
+            depth_clip_control: false,
+            ..Capabilities::ALL
+        };
+        assert!(!primitive_state(&s, topo, caps).unclipped_depth);
+        // The rest of the primitive state is the clamp's business only.
+        let mut c = s;
+        c.depth_clamp = false;
+        let a = primitive_state(&s, topo, Capabilities::ALL);
+        let b = primitive_state(&c, topo, Capabilities::ALL);
+        assert_eq!(
+            wgpu::PrimitiveState {
+                unclipped_depth: false,
+                ..a
+            },
+            b
+        );
+    }
+
+    #[test]
+    fn depth_clip_control_is_asked_for_and_read_back() {
+        assert!(Capabilities::wanted_features().contains(wgpu::Features::DEPTH_CLIP_CONTROL));
+        assert!(Capabilities::from_features(wgpu::Features::DEPTH_CLIP_CONTROL).depth_clip_control);
+        assert!(!Capabilities::from_features(wgpu::Features::empty()).depth_clip_control);
+    }
+
+    #[test]
+    fn missing_depth_clip_control_is_said_once() {
+        let said = (0..3).filter(|_| depth_clamp_unsupported()).count();
+        assert!(said <= 1);
+        assert!(!depth_clamp_unsupported());
     }
 
     #[test]

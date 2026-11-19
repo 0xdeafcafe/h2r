@@ -17,6 +17,13 @@
 //! publishing account (`author`). What a mod changes (`features`), the
 //! game types it is made for and its version are read when the server
 //! lists them (docs/game/maps.md §5, "A mod's page"), unknown ids dropped.
+//! An admin's details add screenshots (`images`, each fetched from
+//! `/v1/maps/{id}/images/{n}`) and what the mod contains in words
+//! (`contents`); `description` is then the admin's longer one. A mod
+//! that came out in a map pack names it (`pack`, its id, and `pack_name`);
+//! the page says each pack's info once (`packs`), which every entry of it
+//! carries as [`ModEntry::pack_info`], so the screen can group a pack's
+//! maps and show the pack's own page.
 
 use serde::Deserialize;
 
@@ -50,6 +57,56 @@ pub struct ModEntry {
     pub gametypes: Vec<String>,
     /// Its own version, when the server lists one.
     pub version: Option<String>,
+    /// Screenshots, in order: the `n`th is `/v1/maps/{id}/images/{n}`.
+    pub images: Vec<ModImage>,
+    /// What it contains, one line each (`projectile swap: ...`).
+    pub contents: Vec<String>,
+    /// The map pack it came out in, by name (the pack's id when the
+    /// server has no info for it).
+    pub pack: Option<String>,
+    /// That pack's info, when the server lists it.
+    pub pack_info: Option<ModPack>,
+    /// What the pack is: the entry's own `pack.description`, else its
+    /// info's description.
+    pub pack_description: Option<String>,
+}
+
+/// A map pack, as its maps' page shows it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ModPack {
+    /// `ai-revision`: what [`ModEntry`]s of it are grouped by.
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    /// Who made or compiled it, on one line (`A & B`).
+    pub authors: Option<String>,
+    /// `YYYY`, `YYYY-MM` or `YYYY-MM-DD`.
+    pub released: Option<String>,
+    pub source_url: Option<String>,
+    /// Its images: the `n`th is [`ModPack::image_path`].
+    pub images: Vec<ModImage>,
+}
+
+impl ModPack {
+    /// The API path of image `n`.
+    pub fn image_path(&self, n: usize) -> String {
+        format!("/v1/mappacks/{}/images/{n}", self.id)
+    }
+}
+
+/// One screenshot of a mod, as its page captions it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ModImage {
+    pub caption: Option<String>,
+    /// Who made the image.
+    pub credit: Option<String>,
+}
+
+impl ModEntry {
+    /// The API path of screenshot `n`.
+    pub fn image_path(&self, n: usize) -> String {
+        format!("/v1/maps/{}/images/{n}", self.id)
+    }
 }
 
 /// A page of the list.
@@ -249,15 +306,121 @@ struct RawEntry {
     gametypes: Vec<String>,
     #[serde(default)]
     version: Option<String>,
+    #[serde(default)]
+    images: Vec<RawImage>,
+    #[serde(default)]
+    contents: Vec<String>,
+    #[serde(default)]
+    pack: Option<RawPackRef>,
+    #[serde(default)]
+    pack_name: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RawPack {
+    id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    authors: Vec<String>,
+    #[serde(default)]
+    released: Option<String>,
+    #[serde(default)]
+    source_url: Option<String>,
+    #[serde(default)]
+    images: Vec<RawImage>,
+}
+
+impl RawPack {
+    fn into_pack(self) -> ModPack {
+        let authors: Vec<String> = self
+            .authors
+            .into_iter()
+            .filter_map(|a| text(Some(a)))
+            .collect();
+        let authors = match authors.as_slice() {
+            [] => None,
+            [one] => Some(one.clone()),
+            [rest @ .., last] => Some(format!("{} & {last}", rest.join(", "))),
+        };
+        ModPack {
+            name: text(Some(self.name)).unwrap_or_else(|| self.id.clone()),
+            id: self.id,
+            description: text(self.description),
+            authors,
+            released: text(self.released),
+            source_url: text(self.source_url),
+            images: self.images.into_iter().map(RawImage::into_image).collect(),
+        }
+    }
+}
+
+impl RawImage {
+    fn into_image(self) -> ModImage {
+        ModImage {
+            caption: text(self.caption),
+            credit: text(self.credit),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct RawImage {
+    #[serde(default)]
+    caption: Option<String>,
+    #[serde(default)]
+    credit: Option<String>,
+}
+
+fn text(v: Option<String>) -> Option<String> {
+    v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
 
 #[derive(Deserialize)]
 struct RawCredits {
     #[serde(default)]
     authors: Vec<String>,
+    /// The release a credit names (a pack's name), the pack when the
+    /// entry names none.
+    #[serde(default)]
+    release: Option<String>,
+}
+
+/// A mod's pack: its name, or an object with a name and a description.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RawPackRef {
+    Name(String),
+    Pack {
+        name: String,
+        #[serde(default)]
+        description: Option<String>,
+    },
+}
+
+/// `s` trimmed, or None when blank.
+fn some_text(s: Option<&str>) -> Option<String> {
+    s.map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 impl RawEntry {
+    /// The pack's name and description: `pack`, else the credit's release.
+    fn pack(&self) -> (Option<String>, Option<String>) {
+        match &self.pack {
+            Some(RawPackRef::Name(n)) if !n.trim().is_empty() => (some_text(Some(n)), None),
+            Some(RawPackRef::Pack { name, description }) if !name.trim().is_empty() => {
+                (some_text(Some(name)), some_text(description.as_deref()))
+            }
+            _ => (
+                some_text(self.credits.as_ref().and_then(|c| c.release.as_deref())),
+                None,
+            ),
+        }
+    }
     /// `credits.authors` as one line, else `credit`; blanks are none.
     fn credit_line(&self) -> Option<String> {
         let authors: Vec<&str> = self
@@ -288,6 +451,8 @@ struct RawPage {
     cursor: Option<serde_json::Value>,
     #[serde(default)]
     position: u64,
+    #[serde(default)]
+    packs: Vec<RawPack>,
 }
 
 impl From<RawPage> for ModPage {
@@ -297,11 +462,30 @@ impl From<RawPage> for ModPage {
             Some(serde_json::Value::Number(n)) => Some(n.to_string()),
             _ => None,
         };
+        let packs: Vec<ModPack> = r.packs.into_iter().map(RawPack::into_pack).collect();
         ModPage {
             items: r
                 .items
                 .into_iter()
-                .map(|e| ModEntry {
+                .map(|e| {
+                    let (named, described) = e.pack();
+                    let pack_info = match &e.pack {
+                        Some(RawPackRef::Name(id)) => {
+                            packs.iter().find(|p| p.id == id.trim()).cloned()
+                        }
+                        _ => None,
+                    };
+                    let pack = text(e.pack_name.clone())
+                        .or_else(|| pack_info.as_ref().map(|p| p.name.clone()))
+                        .or(named);
+                    let pack_description = described
+                        .or_else(|| pack_info.as_ref().and_then(|p| p.description.clone()));
+                    (e, pack, pack_info, pack_description)
+                })
+                .map(|(e, pack, pack_info, pack_description)| ModEntry {
+                    pack_info,
+                    pack,
+                    pack_description,
                     credit: e.credit_line(),
                     id: e.id,
                     name: e.name,
@@ -322,6 +506,13 @@ impl From<RawPage> for ModPage {
                         .version
                         .map(|v| v.trim().to_string())
                         .filter(|v| !v.is_empty()),
+                    images: e.images.into_iter().map(RawImage::into_image).collect(),
+                    contents: e
+                        .contents
+                        .into_iter()
+                        .map(|l| l.trim().to_string())
+                        .filter(|l| !l.is_empty())
+                        .collect(),
                 })
                 .collect(),
             cursor,
@@ -413,6 +604,38 @@ mod tests {
         assert_eq!(e.credit, None);
     }
 
+    #[test]
+    fn a_pack_reads_as_a_name_an_object_or_the_credits_release() {
+        let page: ModPage = serde_json::from_value(serde_json::json!({
+            "items": [
+                {"id": ID, "name": "A", "author": "M", "base": "lockout", "pack": " Phantom Mappack "},
+                {"id": ID, "name": "B", "author": "M", "base": "lockout",
+                 "pack": {"name": "AI Revision", "description": "Bots that think. "}},
+                {"id": ID, "name": "C", "author": "M", "base": "lockout",
+                 "credits": {"authors": ["X"], "release": "Hockey Fans"}},
+                {"id": ID, "name": "D", "author": "M", "base": "lockout", "pack": " ",
+                 "credits": {"release": "DoorM4n Legacy"}},
+                {"id": ID, "name": "E", "author": "M", "base": "lockout"}
+            ]
+        }))
+        .unwrap();
+        let packs: Vec<(Option<&str>, Option<&str>)> = page
+            .items
+            .iter()
+            .map(|e| (e.pack.as_deref(), e.pack_description.as_deref()))
+            .collect();
+        assert_eq!(
+            packs,
+            [
+                (Some("Phantom Mappack"), None),
+                (Some("AI Revision"), Some("Bots that think.")),
+                (Some("Hockey Fans"), None),
+                (Some("DoorM4n Legacy"), None),
+                (None, None),
+            ]
+        );
+    }
+
     fn entry(position: Option<u64>) -> ModEntry {
         ModEntry {
             id: ID.parse().unwrap(),
@@ -429,7 +652,82 @@ mod tests {
             features: Vec::new(),
             gametypes: Vec::new(),
             version: None,
+            images: Vec::new(),
+            contents: Vec::new(),
+            pack: None,
+            pack_info: None,
+            pack_description: None,
         }
+    }
+
+    #[test]
+    fn a_packs_maps_name_it_and_carry_its_info() {
+        let page: ModPage = serde_json::from_value(serde_json::json!({
+            "items": [
+                {"id": ID, "name": "Zombiebar", "author": "afr", "base": "zanzibar",
+                 "pack": "ai-revision", "pack_name": "Halo 2 Remapped AI Revision"},
+                {"id": ID, "name": "Lone", "author": "afr", "base": "lockout",
+                 "pack": "no-info"},
+                {"id": ID, "name": "Plain", "author": "afr", "base": "lockout"}
+            ],
+            "packs": [{
+                "id": "ai-revision", "name": "Halo 2 Remapped AI Revision",
+                "description": "Custom maps with AI.", "authors": ["Zone 117", " ", "Detox"],
+                "released": "2007-06", "images": [{"sha256": "01".repeat(32), "caption": "menu"}]
+            }]
+        }))
+        .unwrap();
+        let [bar, lone, plain] = &page.items[..] else {
+            panic!("three items")
+        };
+        assert_eq!(bar.pack.as_deref(), Some("Halo 2 Remapped AI Revision"));
+        let info = bar.pack_info.as_ref().unwrap();
+        assert_eq!(info.id, "ai-revision");
+        assert_eq!(info.authors.as_deref(), Some("Zone 117 & Detox"));
+        assert_eq!(info.released.as_deref(), Some("2007-06"));
+        assert_eq!(info.images[0].caption.as_deref(), Some("menu"));
+        assert_eq!(info.image_path(0), "/v1/mappacks/ai-revision/images/0");
+        assert_eq!(
+            lone.pack.as_deref(),
+            Some("no-info"),
+            "the id when there is no info"
+        );
+        assert_eq!(lone.pack_info, None);
+        assert_eq!(
+            (plain.pack.as_ref(), plain.pack_info.as_ref()),
+            (None, None)
+        );
+    }
+
+    #[test]
+    fn an_admins_images_and_contents_read() {
+        let page: ModPage = serde_json::from_value(serde_json::json!({
+            "items": [{
+                "id": ID, "name": "Beasthog", "author": "afr", "base": "zanzibar",
+                "description": "A longer one.",
+                "images": [
+                    {"sha256": "01".repeat(32), "caption": " The hog ", "credit": "Bocked"},
+                    {"sha256": "02".repeat(32)}
+                ],
+                "contents": ["model swap: warthog uses the scorpion model", " "]
+            }]
+        }))
+        .unwrap();
+        let e = &page.items[0];
+        assert_eq!(e.description.as_deref(), Some("A longer one."));
+        assert_eq!(
+            e.images,
+            [
+                ModImage {
+                    caption: Some("The hog".into()),
+                    credit: Some("Bocked".into())
+                },
+                ModImage::default()
+            ]
+        );
+        assert_eq!(e.image_path(1), format!("/v1/maps/{ID}/images/1"));
+        assert_eq!(e.contents, ["model swap: warthog uses the scorpion model"]);
+        assert!(entry(None).images.is_empty() && entry(None).contents.is_empty());
     }
 
     #[test]

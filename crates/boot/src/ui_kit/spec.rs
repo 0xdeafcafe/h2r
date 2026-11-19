@@ -240,6 +240,23 @@ impl From<TextBlock> for DescriptionBlock {
     }
 }
 
+/// A text of the screen that belongs to no row: a block of its pane set
+/// once when the screen opens (a page's body, a table's cells, a
+/// checklist), never focused or pressed ([`crate::list_class::PanelText`]
+/// in game).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct PaneText {
+    /// The widget id the view, the checks and the JSON use (`panel.body`).
+    pub id: String,
+    /// `top, left, bottom, right`, Y up, screen centre origin.
+    pub rect: [i16; 4],
+    pub font: i16,
+    pub colour: [f32; 3],
+    /// Right-justified (a table's value column), else left.
+    pub right: bool,
+    pub text: String,
+}
+
 /// A screen of ours, described.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ScreenSpec {
@@ -251,6 +268,10 @@ pub struct ScreenSpec {
     pub rows: Vec<RowSpec>,
     pub focus: usize,
     pub description: Option<DescriptionBlock>,
+    /// The screen's own line in the description block, in place of the
+    /// focused row's description: a page's help line, as Quick Options'
+    /// `quick_options_help` is ([`crate::ui_kit::screen::KitScreen::header`]).
+    pub help: Option<String>,
     /// The legend under the description (or alone when there is none).
     pub prompts: Vec<Prompt>,
     /// The inputs the screen takes itself; B and Back close unless taken.
@@ -266,6 +287,12 @@ pub struct ScreenSpec {
     /// Retail art the screen adds of its own (a frame, a picture), drawn
     /// over the frame art the layout keeps.
     pub art: Vec<crate::ui_kit::view::PaneArt>,
+    /// Retail backing art the screen's own texts sit on by design (the
+    /// pregame lobby's panels under a mod's page): drawn first, held
+    /// neither to a list nor to its pixels ([`crate::ui_kit::view::Layer::Panel`]).
+    pub panel: Vec<crate::ui_kit::view::PaneArt>,
+    /// Texts that belong to no row ([`PaneText`]), drawn over the art.
+    pub texts: Vec<PaneText>,
     /// A modal dialog over the screen beneath, drawn by
     /// [`crate::ui_kit::dialog::dialog_view`] rather than as a list
     /// (docs/game/ui-builder.md "Screen kinds").
@@ -282,12 +309,15 @@ impl ScreenSpec {
             rows: Vec::new(),
             focus: 0,
             description: None,
+            help: None,
             prompts: Vec::new(),
             inputs: Vec::new(),
             scrolls: false,
             footer: false,
             ids: Vec::new(),
             art: Vec::new(),
+            panel: Vec::new(),
+            texts: Vec::new(),
             dialog: None,
         }
     }
@@ -295,9 +325,11 @@ impl ScreenSpec {
     pub fn footer_text(&self) -> Option<String> {
         (self.footer && !self.prompts.is_empty()).then(|| footer_legend(&self.prompts))
     }
-    /// The focused row's description with the legend under it, as drawn.
+    /// The focused row's description (the screen's help line when it has
+    /// one) with the legend under it, as drawn.
     pub fn description_text(&self) -> Option<String> {
-        let row = self.rows.get(self.focus)?.description.clone();
+        let focused = self.rows.get(self.focus)?;
+        let row = self.help.clone().or_else(|| focused.description.clone());
         let legend = if self.footer {
             String::new()
         } else {

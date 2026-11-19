@@ -435,8 +435,12 @@ impl Geometry {
                     .collect(),
                 ..base
             },
+            // Any other skin is `default`'s or a copy of it (`default6`,
+            // skin 22, the value picker's: the same text, bar and cap,
+            // only its scroll arrows elsewhere).
             ListPlace::Moved {
                 anchor,
+                skin,
                 bitmaps_left_of,
                 ..
             } => Geometry {
@@ -446,7 +450,7 @@ impl Geometry {
                 item_colour: [0.560784, 0.694118, 0.811765],
                 label: (rect(28, 20, 8, 210), 1, 0),
                 value: None,
-                skin: 0,
+                skin: if skin == PICKER_SKIN { skin } else { 0 },
                 item_art: vec![
                     ItemArt {
                         index: 0,
@@ -474,6 +478,10 @@ impl Geometry {
         }
     }
 }
+
+/// `default6` (skin 22): `default`'s item with its arrows moved, the value
+/// picker's list skin (`crate::ui_kit::dialog::PICKER_LIST`).
+pub const PICKER_SKIN: i16 = 22;
 
 fn rgb(v: [f32; 3]) -> [u8; 3] {
     v.map(|x| (x.clamp(0.0, 1.0) * 255.0) as u8)
@@ -507,6 +515,23 @@ pub fn view_of(s: &ScreenSpec, g: &Geometry, m: &dyn Metrics, state: &str) -> Vi
                 a.at[0] + a.size[0] as i16,
             ],
             layer: Layer::Frame,
+            alpha: 255,
+            kind: Kind::Art {
+                art: a.art,
+                size: a.size,
+            },
+        });
+    }
+    for (k, a) in s.panel.iter().enumerate() {
+        w.push(Widget {
+            id: format!("panel.{k}"),
+            rect: [
+                a.at[1],
+                a.at[0],
+                a.at[1] - a.size[1] as i16,
+                a.at[0] + a.size[0] as i16,
+            ],
+            layer: Layer::Panel,
             alpha: 255,
             kind: Kind::Art {
                 art: a.art,
@@ -605,6 +630,18 @@ pub fn view_of(s: &ScreenSpec, g: &Geometry, m: &dyn Metrics, state: &str) -> Vi
                 size: a.size,
             },
         });
+    }
+    for t in &s.texts {
+        let [top, left, bottom, right] = t.rect;
+        let lines = wrap(&t.text, i32::from(right - left), &|x| m.width(t.font, x));
+        w.push(text(
+            t.id.clone(),
+            rect(top, left, bottom, right),
+            t.font,
+            u8::from(t.right),
+            lines.join("\n"),
+            rgb(t.colour),
+        ));
     }
     if let (Some(d), Some(t)) = (s.description, s.description_text()) {
         let [top, left, bottom, right] = d.rect;

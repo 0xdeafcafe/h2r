@@ -555,3 +555,40 @@ fn a_corridor_can_avoid_an_edge() {
         "{p:?}"
     );
 }
+
+#[test]
+fn the_follower_previews_a_turn_and_checks_the_foot_line() {
+    let walk = |at| Waypoint {
+        at,
+        kind: Kind::Walk,
+    };
+    let path = vec![walk([2.0, 0.0, 0.0]), walk([2.0, 2.0, 0.0])];
+    let mut follower = Follower::new(path, 0);
+    let at = [1.6, 0.0, 0.0];
+    assert_eq!(follower.corner(at), Some([2.0, 2.0, 0.0]));
+    assert!(follower.pace(at) < follower.pace([0.0; 3]));
+    let blocked = follower.steer_with_clearance(at, 1, |d| {
+        assert!(d[1] > 0.1, "{d:?}");
+        false
+    });
+    assert_eq!(blocked.dir, [1.0, 0.0]);
+    let clear = follower.steer_with_clearance(at, 2, |_| true);
+    assert!(clear.dir[1] > 0.1);
+    let mut gap = Follower::new(
+        vec![
+            walk([2.0, 0.0, 0.0]),
+            Waypoint {
+                at: [3.0, 0.0, 0.0],
+                kind: Kind::Jump,
+            },
+        ],
+        0,
+    );
+    assert_eq!(gap.corner(at), None);
+    assert_eq!(gap.pace(at), 1.0);
+    assert_eq!(
+        gap.steer_with_clearance(at, 1, |_| panic!("no blend into a jump"))
+            .dir,
+        [1.0, 0.0]
+    );
+}

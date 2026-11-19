@@ -11,9 +11,11 @@ mod agent_flight;
 #[cfg(unix)]
 mod agent_hot_cmd;
 #[cfg(unix)]
+mod agent_raw;
+#[cfg(unix)]
 mod agent_run;
 mod agent_sim;
-mod testmap_cmd;
+mod sim_cmd;
 mod anim;
 mod bitmap;
 mod boot_cmd;
@@ -23,14 +25,16 @@ mod bots_progress;
 mod bots_test_cmd;
 mod bots_verdict;
 mod collision;
-mod coop_probe_cmd;
 mod coop_drive;
+mod coop_probe_cmd;
 mod coop_test_cmd;
 mod coop_verdict;
 mod effects;
 mod emit_cache;
 mod emit_output;
 mod extract_shaders;
+#[cfg(unix)]
+mod follow;
 mod fonts;
 mod h1_cmd;
 mod h1_import;
@@ -39,41 +43,41 @@ mod lab;
 mod lighting;
 mod lights;
 mod live_accounts;
+mod live_admin;
 mod live_art;
 mod live_basemap;
 mod live_catalog;
+mod live_cmd;
 mod live_features;
 mod live_geometry;
+mod live_halo1;
 mod live_layers;
 mod live_looks;
-mod live_scenario;
-mod live_scripted;
-mod live_mods;
-mod live_models;
-mod live_weapons;
-mod live_render;
-mod live_sky;
-mod live_weather;
-mod live_admin;
-mod live_cmd;
-mod live_maps;
-mod live_mod_import;
-mod live_mod_features;
-mod live_halo1;
 mod live_mappack;
+mod live_maps;
+mod live_maps_details;
+mod live_mod_contents;
+mod live_mod_features;
+mod live_mod_import;
+mod live_models;
+mod live_mods;
+mod live_plasma;
 mod live_query;
 mod live_recovery;
+mod live_render;
+mod live_scenario;
+mod live_scripted;
+mod live_sky;
+mod live_weapons;
+mod live_weather;
 mod lockstep_cmd;
-mod mappack_cmd;
 mod map_testbuild;
-mod tag_repo_cmd;
+mod mappack_cmd;
 mod maps;
 mod movies_cmd;
 mod object;
-#[cfg(unix)]
-mod follow;
-mod play_cmd;
 mod play_cloud;
+mod play_cmd;
 mod play_live;
 mod safe_out;
 mod scripts;
@@ -81,6 +85,8 @@ mod settings_cmd;
 mod shader;
 mod sound;
 mod strings;
+mod tag_repo_cmd;
+mod testmap_cmd;
 mod tunnel;
 mod ui;
 mod web_build;
@@ -103,6 +109,10 @@ const USAGE: &str = "usage: h2 <command> [disc]
                           background; F5 restarts into it (docs/runtime/app.md)
   settings list|get|set   our settings (field of view, frame rate, ...) in
                           <data>/settings.toml (docs/game/settings-menu.md)
+  sim run <match.toml>    a bot match without rendering, faster than real time,
+                          ending in a JSON report (docs/runtime/sim.md)
+  sim batch <batch.toml>  many matches in parallel, A/B tuning compared;
+                          sim compare <dir> prints the comparison again
   lockstep <a> <b>        compare two H2_LOCKSTEP traces; exit 1 if they differ
                           (docs/game/high-framerate.md)
   coop-probe diff <a> <b> compare two H2_COOP_PROBE hash logs: first tick and pool
@@ -243,14 +253,18 @@ fn perf_cmd(cmd: &str, args: Vec<String>) -> Result<()> {
 
 #[cfg(not(feature = "perf"))]
 fn perf_cmd(cmd: &str, _: Vec<String>) -> Result<()> {
-    bail!("h2 {cmd} needs the perf feature: cargo run --release -p cli --features perf -- {cmd} ...")
+    bail!(
+        "h2 {cmd} needs the perf feature: cargo run --release -p cli --features perf -- {cmd} ..."
+    )
 }
 
 fn main() -> Result<()> {
     // Live presence says which build this is (docs/game/game-options.md 3).
     boot::live_glue::set_build(app::BuildInfo::baked().sha);
     let mut args = std::env::args().skip(1);
-    let Some(cmd) = args.next() else { bail!("{USAGE}") };
+    let Some(cmd) = args.next() else {
+        bail!("{USAGE}")
+    };
     if cmd == "lighting" {
         return lighting::run(args.collect());
     }
@@ -312,6 +326,9 @@ fn main() -> Result<()> {
     }
     if cmd == "live" {
         return live_cmd::run(args.collect());
+    }
+    if cmd == "sim" {
+        return sim_cmd::run(args.collect());
     }
     if cmd == "lockstep" {
         std::process::exit(lockstep_cmd::run(args.collect())?);
@@ -379,9 +396,17 @@ fn main() -> Result<()> {
     let mut roots = Vec::new();
     while let Some(a) = args.next() {
         match a.as_str() {
-            "--functions" => functions_out = Some(PathBuf::from(args.next().context("--functions needs a path")?)),
+            "--functions" => {
+                functions_out = Some(PathBuf::from(
+                    args.next().context("--functions needs a path")?,
+                ))
+            }
             "--explain" => explain.push(args.next().context("--explain needs an address")?),
-            "--against" => against = Some(PathBuf::from(args.next().context("--against needs a path")?)),
+            "--against" => {
+                against = Some(PathBuf::from(
+                    args.next().context("--against needs a path")?,
+                ))
+            }
             "--list" => list = true,
             "--force" => force = true,
             "--no-xcheck" => no_xcheck = true,
@@ -390,14 +415,27 @@ fn main() -> Result<()> {
             "--stats" => lift_opts.stats = true,
             "--histogram" => lift_opts.histogram = true,
             "--run-entry" => lift_opts.run_entry = true,
-            "--out" => lift_opts.out = Some(PathBuf::from(args.next().context("--out needs a path")?)),
+            "--out" => {
+                lift_opts.out = Some(PathBuf::from(args.next().context("--out needs a path")?))
+            }
             "--abi-header" => {
-                lift_opts.abi_header = Some(PathBuf::from(args.next().context("--abi-header needs a path")?))
+                lift_opts.abi_header = Some(PathBuf::from(
+                    args.next().context("--abi-header needs a path")?,
+                ))
             }
             "--no-build" => lift_opts.no_build = true,
-            "--arch" => lift_opts.arch = Some(args.next().context("--arch needs host, all, arm64 or x86_64")?),
+            "--arch" => {
+                lift_opts.arch = Some(
+                    args.next()
+                        .context("--arch needs host, all, arm64 or x86_64")?,
+                )
+            }
             "--jobs" => {
-                let n: usize = args.next().context("--jobs needs a positive count")?.parse().context("--jobs needs a positive count")?;
+                let n: usize = args
+                    .next()
+                    .context("--jobs needs a positive count")?
+                    .parse()
+                    .context("--jobs needs a positive count")?;
                 if n == 0 {
                     bail!("--jobs needs a positive count");
                 }
@@ -406,7 +444,9 @@ fn main() -> Result<()> {
             "--no-emit-cache" => lift_opts.no_emit_cache = true,
             "--allow-repo-output" => lift_opts.allow_repo_output = true,
             "--passes" => lift_opts.passes = Some(args.next().context("--passes needs a spec")?),
-            "--dump" => lift_opts.dump.push(args.next().context("--dump needs an address")?),
+            "--dump" => lift_opts
+                .dump
+                .push(args.next().context("--dump needs an address")?),
             "-h" | "--help" => bail!("{USAGE}"),
             _ => positional.push(PathBuf::from(a)),
         }
@@ -446,7 +486,10 @@ fn main() -> Result<()> {
 }
 
 fn is_disc(p: &Path) -> bool {
-    let ext = p.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
+    let ext = p
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
     p.is_file() && matches!(ext.as_deref(), Some("iso" | "xbe"))
 }
 
@@ -468,7 +511,10 @@ fn default_disc() -> Result<PathBuf> {
         .filter(|p| is_disc(p) && p.extension().is_some_and(|e| e.eq_ignore_ascii_case("iso")))
         .collect();
     pick_default_disc(isos).with_context(|| {
-        format!("no disc given and none found in {} (put your .iso there or set H2_DISC)", dir.display())
+        format!(
+            "no disc given and none found in {} (put your .iso there or set H2_DISC)",
+            dir.display()
+        )
     })
 }
 
@@ -487,7 +533,8 @@ fn pick_default_disc(mut isos: Vec<PathBuf>) -> Option<PathBuf> {
         return Some(p.clone());
     }
     isos.sort();
-    isos.into_iter().find(|p| !OTHER_DISCS.contains(&name(p).as_str()))
+    isos.into_iter()
+        .find(|p| !OTHER_DISCS.contains(&name(p).as_str()))
 }
 
 fn open_iso(path: &Path) -> Result<Xiso<BufReader<File>>> {
@@ -500,7 +547,9 @@ fn open_iso(path: &Path) -> Result<Xiso<BufReader<File>>> {
 fn load_xbe(path: &Path) -> Result<Vec<u8>> {
     safe_out::protect(path);
     let mut magic = [0u8; 4];
-    File::open(path).with_context(|| format!("opening {}", path.display()))?.read_exact(&mut magic)?;
+    File::open(path)
+        .with_context(|| format!("opening {}", path.display()))?
+        .read_exact(&mut magic)?;
     if &magic == b"XBEH" {
         return Ok(fs::read(path)?);
     }
@@ -514,14 +563,31 @@ fn info(path: &Path) -> Result<()> {
     let x = xbe::Xbe::parse(&data)?;
     let c = &x.certificate;
     println!("title      {} ({:08X})", c.title_name, c.title_id);
-    println!("build      {:?}, cert version {}, regions {:#x}", x.kind, c.version, c.game_regions);
-    println!("base       {:#010x}, image size {:#x}", x.base, x.size_of_image);
+    println!(
+        "build      {:?}, cert version {}, regions {:#x}",
+        x.kind, c.version, c.game_regions
+    );
+    println!(
+        "base       {:#010x}, image size {:#x}",
+        x.base, x.size_of_image
+    );
     println!("entry      {:#010x}", x.entry);
-    println!("thunks     {:#010x} ({} kernel imports)", x.kernel_thunk, x.kernel_imports()?.len());
+    println!(
+        "thunks     {:#010x} ({} kernel imports)",
+        x.kernel_thunk,
+        x.kernel_imports()?.len()
+    );
     println!("\nsections");
     for s in &x.sections {
-        let kind = if analyze::is_code_section(s) { "code" } else { "data" };
-        println!("  {:<10} {:#010x} {:>9} {} {kind}", s.name, s.va, s.vsize, s.flags);
+        let kind = if analyze::is_code_section(s) {
+            "code"
+        } else {
+            "data"
+        };
+        println!(
+            "  {:<10} {:#010x} {:>9} {} {kind}",
+            s.name, s.va, s.vsize, s.flags
+        );
     }
     println!("\nlibraries");
     for l in &x.libraries {
@@ -547,26 +613,40 @@ fn extract(path: &Path, out: &Path, force: bool) -> Result<()> {
     extract_to(&mut iso, path, out, force)
 }
 
-fn extract_to<R: Read + std::io::Seek>(iso: &mut Xiso<R>, path: &Path, out: &Path, force: bool) -> Result<()> {
+fn extract_to<R: Read + std::io::Seek>(
+    iso: &mut Xiso<R>,
+    path: &Path,
+    out: &Path,
+    force: bool,
+) -> Result<()> {
     let entries = iso.entries()?;
     if out.is_file() {
-        bail!("{} is a file, not an output directory (is the argument order <disc> <out-dir>?)", out.display());
+        bail!(
+            "{} is a file, not an output directory (is the argument order <disc> <out-dir>?)",
+            out.display()
+        );
     }
     let dir = safe_out::OutDir::new(out, force)?.protecting(path);
     for e in &entries {
         // Paths come from the disc: refuse anything that could escape `out`.
         let rel = e.path.trim_start_matches('/');
-        if rel.split('/').any(|p| p.is_empty() || p == "." || p == ".." || p.contains('\\')) {
+        if rel
+            .split('/')
+            .any(|p| p.is_empty() || p == "." || p == ".." || p.contains('\\'))
+        {
             bail!("refusing unsafe path on disc: {:?}", e.path);
         }
         let comps: Vec<String> = rel.split('/').map(str::to_string).collect();
         if e.is_dir {
-            dir.create_dir(&comps).with_context(|| format!("creating {}", e.path))?;
+            dir.create_dir(&comps)
+                .with_context(|| format!("creating {}", e.path))?;
             continue;
         }
         // Streams straight into the guarded temp file; published only when whole.
         dir.write_with(&comps, |f| {
-            iso.copy_to(e, f).map(drop).map_err(|x| std::io::Error::other(x.to_string()))
+            iso.copy_to(e, f)
+                .map(drop)
+                .map_err(|x| std::io::Error::other(x.to_string()))
         })
         .with_context(|| format!("writing {}", e.path))?;
     }
@@ -602,10 +682,15 @@ fn disasm(disc: &Path, addr: &Path, count: Option<&PathBuf>) -> Result<()> {
         u32::from_str_radix(s.trim_start_matches("0x"), 16).with_context(|| format!("bad hex: {s}"))
     };
     let va = parse(addr)?;
-    let n: usize = count.map(|c| c.to_string_lossy().parse()).transpose()?.unwrap_or(20);
+    let n: usize = count
+        .map(|c| c.to_string_lossy().parse())
+        .transpose()?
+        .unwrap_or(20);
     let data = load_xbe(disc)?;
     let x = xbe::Xbe::parse(&data)?;
-    let s = x.section_containing(va).with_context(|| format!("{va:#x} is not in any section"))?;
+    let s = x
+        .section_containing(va)
+        .with_context(|| format!("{va:#x} is not in any section"))?;
     let avail = (s.va + s.raw_size.min(s.vsize)).saturating_sub(va) as usize;
     let bytes = x.bytes_at(va, avail)?;
     let mut dec = Decoder::with_ip(32, bytes, va as u64, DecoderOptions::NONE);
@@ -615,7 +700,10 @@ fn disasm(disc: &Path, addr: &Path, count: Option<&PathBuf>) -> Result<()> {
         text.clear();
         fmt.format(&insn, &mut text);
         let off = (insn.ip() as u32 - va) as usize;
-        let hex: String = bytes[off..off + insn.len()].iter().map(|b| format!("{b:02x}")).collect();
+        let hex: String = bytes[off..off + insn.len()]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
         println!("{:#010x}  {hex:<20} {text}", insn.ip());
     }
     Ok(())
@@ -637,36 +725,67 @@ fn run_symbols(path: &Path, list: bool, xcheck: bool, db_dir: Option<PathBuf>) -
     let x = xbe::Xbe::parse(&data)?;
     let dir = db_dir.unwrap_or_else(|| symbols::default_db_dir(&repo_root()));
     let r = symbols::identify(&x, &dir)?;
-    let starts: Option<BTreeSet<u32>> =
-        if xcheck { Some(analyze::analyze(&x)?.functions.keys().copied().collect()) } else { None };
+    let starts: Option<BTreeSet<u32>> = if xcheck {
+        Some(analyze::analyze(&x)?.functions.keys().copied().collect())
+    } else {
+        None
+    };
 
     println!("linked libraries");
     for l in &x.libraries {
         println!("  {:<10} {}.{}.{}", l.name, l.major, l.minor, l.build);
     }
     if !r.unscanned_libraries.is_empty() {
-        println!("  (no signature database for: {})", r.unscanned_libraries.join(", "));
+        println!(
+            "  (no signature database for: {})",
+            r.unscanned_libraries.join(", ")
+        );
     }
     println!("\nlibrary     found  candidates  ltcg  ambiguous  on-start  off-start");
     let mut total = 0;
     for (lib, (n, amb, ltcg)) in &r.counts() {
         let (mut on, mut off) = (0, 0);
         if let Some(st) = &starts {
-            for m in r.matches.iter().filter(|m| m.library == *lib && m.kind == Kind::Function) {
-                if st.contains(&m.va) { on += 1 } else { off += 1 }
+            for m in r
+                .matches
+                .iter()
+                .filter(|m| m.library == *lib && m.kind == Kind::Function)
+            {
+                if st.contains(&m.va) {
+                    on += 1
+                } else {
+                    off += 1
+                }
             }
         }
         let cand = r.candidate_symbols.get(lib).copied().unwrap_or(0);
-        let (a, b) = if starts.is_some() { (on.to_string(), off.to_string()) } else { ("-".into(), "-".into()) };
+        let (a, b) = if starts.is_some() {
+            (on.to_string(), off.to_string())
+        } else {
+            ("-".into(), "-".into())
+        };
         println!("{lib:<10} {n:>6} {cand:>11} {ltcg:>5} {amb:>10} {a:>9} {b:>10}");
         total += n;
     }
     println!("{:<10} {total:>6}", "total");
     if let Some(st) = &starts {
-        let uniq: BTreeSet<u32> = r.matches.iter().filter(|m| m.kind == Kind::Function).map(|m| m.va).collect();
+        let uniq: BTreeSet<u32> = r
+            .matches
+            .iter()
+            .filter(|m| m.kind == Kind::Function)
+            .map(|m| m.va)
+            .collect();
         let on = uniq.iter().filter(|v| st.contains(v)).count();
-        let shared = r.matches.iter().filter(|m| m.shared).map(|m| m.va).collect::<BTreeSet<_>>().len();
-        println!("{shared} addresses carry more than one name (weak signatures from different library flavours)");
+        let shared = r
+            .matches
+            .iter()
+            .filter(|m| m.shared)
+            .map(|m| m.va)
+            .collect::<BTreeSet<_>>()
+            .len();
+        println!(
+            "{shared} addresses carry more than one name (weak signatures from different library flavours)"
+        );
         println!(
             "\n{} distinct addresses identified: {} are `h2 analyze` function starts, {} are not",
             uniq.len(),
@@ -685,7 +804,13 @@ fn run_symbols(path: &Path, list: bool, xcheck: bool, db_dir: Option<PathBuf>) -
         }
         println!();
         for m in &r.matches {
-            let flag = starts.as_ref().map_or("", |s| if s.contains(&m.va) { "" } else { " [not a function start]" });
+            let flag = starts.as_ref().map_or("", |s| {
+                if s.contains(&m.va) {
+                    ""
+                } else {
+                    " [not a function start]"
+                }
+            });
             println!(
                 "{:#010x} {:<9} {:<5} {}{}{}{}{}",
                 m.va,
@@ -705,7 +830,10 @@ fn run_symbols(path: &Path, list: bool, xcheck: bool, db_dir: Option<PathBuf>) -
 fn run_fpstats(path: &Path, roots: &[String]) -> Result<()> {
     let roots = roots
         .iter()
-        .map(|r| u32::from_str_radix(r.trim_start_matches("0x"), 16).with_context(|| format!("bad hex: {r}")))
+        .map(|r| {
+            u32::from_str_radix(r.trim_start_matches("0x"), 16)
+                .with_context(|| format!("bad hex: {r}"))
+        })
         .collect::<Result<Vec<_>>>()?;
     let data = load_xbe(path)?;
     let x = xbe::Xbe::parse(&data)?;
@@ -727,7 +855,8 @@ fn run_analyze(
     if !explain.is_empty() {
         // Per byte: ? unknown, I instruction start, i instruction body, d data.
         for e in explain {
-            let va = u32::from_str_radix(e.trim_start_matches("0x"), 16).with_context(|| format!("bad hex: {e}"))?;
+            let va = u32::from_str_radix(e.trim_start_matches("0x"), 16)
+                .with_context(|| format!("bad hex: {e}"))?;
             for row in 0..4u32 {
                 let start = va.wrapping_sub(16) + row * 16;
                 let mut line = format!("{start:#010x} ");
@@ -741,13 +870,21 @@ fn run_analyze(
                 let owners: Vec<String> = owners
                     .iter()
                     .map(|o| {
-                        format!("{o:#x}{}", a.functions.get(o).map_or(String::new(), |f| format!("({:?})", f.source)))
+                        format!(
+                            "{o:#x}{}",
+                            a.functions
+                                .get(o)
+                                .map_or(String::new(), |f| format!("({:?})", f.source))
+                        )
                     })
                     .collect();
                 println!("{line}  {}", owners.join(" "));
             }
             if let Some(f) = a.functions.get(&va) {
-                println!("  function start, found by {:?}, returns: {}", f.source, f.returns);
+                println!(
+                    "  function start, found by {:?}, returns: {}",
+                    f.source, f.returns
+                );
             }
             if a.labels.contains(&va) {
                 println!("  label (address-taken code inside a function)");
@@ -760,15 +897,23 @@ fn run_analyze(
     if let Some(out) = functions_out {
         let mut s = String::new();
         for f in a.functions.values() {
-            s.push_str(&format!("{:#010x} {:<10} {:?}\n", f.start, f.section, f.source));
+            s.push_str(&format!(
+                "{:#010x} {:<10} {:?}\n",
+                f.start, f.section, f.source
+            ));
         }
         write_guarded(&out, path, force, s.as_bytes())?;
         println!("wrote {} functions to {}", a.functions.len(), out.display());
     }
     if let Some(tsv) = against {
-        let text = fs::read_to_string(&tsv).with_context(|| format!("reading {}", tsv.display()))?;
+        let text =
+            fs::read_to_string(&tsv).with_context(|| format!("reading {}", tsv.display()))?;
         let theirs = analyze::compare::parse_ghidra_tsv(&text);
-        println!("\ncompared with {} ({} functions)", tsv.display(), theirs.len());
+        println!(
+            "\ncompared with {} ({} functions)",
+            tsv.display(),
+            theirs.len()
+        );
         print!("{}", analyze::compare::compare(&a, &theirs));
     }
     Ok(())
@@ -801,7 +946,9 @@ fn run_lift(path: &Path, opts: &LiftOpts) -> Result<()> {
     let lifter = lift::Lifter::new(&a, &x)?;
     for d in &opts.dump {
         let va = parse_hex(d)?;
-        let f = lifter.lift(va).with_context(|| format!("no discovered function at {va:#x}"))?;
+        let f = lifter
+            .lift(va)
+            .with_context(|| format!("no discovered function at {va:#x}"))?;
         print!("{f}");
     }
     if opts.histogram {
@@ -811,21 +958,36 @@ fn run_lift(path: &Path, opts: &LiftOpts) -> Result<()> {
         let mut running = 0;
         for (m, n) in &h {
             running += n;
-            println!("{m:<16} {n:>8} {:>6.2}% {:>6.2}%", 100.0 * *n as f64 / total as f64, 100.0 * running as f64 / total as f64);
+            println!(
+                "{m:<16} {n:>8} {:>6.2}% {:>6.2}%",
+                100.0 * *n as f64 / total as f64,
+                100.0 * running as f64 / total as f64
+            );
         }
     }
     if opts.run_entry {
-        let run = lift::harness::run_to_kernel(&x, &lifter, 1_000_000).map_err(anyhow::Error::msg)?;
-        println!("{} steps, {} distinct instructions: {:x?}", run.steps, run.executed, run.stop);
+        let run =
+            lift::harness::run_to_kernel(&x, &lifter, 1_000_000).map_err(anyhow::Error::msg)?;
+        println!(
+            "{} steps, {} distinct instructions: {:x?}",
+            run.steps, run.executed, run.stop
+        );
         let regs = ["eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"];
         for (n, v) in regs.iter().zip(run.cpu.gpr) {
             println!("  {n} = {v:#010x}");
         }
-        println!("  eflags = {:#010x} (defined {:#x})", run.cpu.eflags, run.cpu.flags_valid);
+        println!(
+            "  eflags = {:#010x} (defined {:#x})",
+            run.cpu.eflags, run.cpu.flags_valid
+        );
         let esp = run.cpu.gpr[4];
         for i in 0..11 {
             let v = run.mem.read_u32(esp + 4 * i).unwrap_or(0);
-            println!("  [esp+{:#04x}] = {v:#010x}{}", 4 * i, if i == 0 { "  (return address)" } else { "" });
+            println!(
+                "  [esp+{:#04x}] = {v:#010x}{}",
+                4 * i,
+                if i == 0 { "  (return address)" } else { "" }
+            );
         }
     }
     if opts.stats || (!opts.histogram && !opts.run_entry && opts.dump.is_empty()) {
@@ -846,10 +1008,14 @@ fn run_emit(path: &Path, opts: &LiftOpts) -> Result<()> {
         bail!("--run-entry requires the host architecture (use --arch host or all)");
     }
     let total = Instant::now();
-    let out = opts.out.clone().unwrap_or_else(|| std::env::temp_dir().join("h2gen"));
+    let out = opts
+        .out
+        .clone()
+        .unwrap_or_else(|| std::env::temp_dir().join("h2gen"));
     // Validate both locations before even creating the output lock file.
     let out = emit_output::location(&out, opts.allow_repo_output)?;
-    let object_cache = emit_output::location(&emit::compile::obj_dir(&out), opts.allow_repo_output)?;
+    let object_cache =
+        emit_output::location(&emit::compile::obj_dir(&out), opts.allow_repo_output)?;
     let _transaction = emit_output::OutputLock::acquire(&out)?;
     emit_output::reject_symlinks(&object_cache)?;
     let data = load_xbe(path)?;
@@ -863,10 +1029,20 @@ fn run_emit(path: &Path, opts: &LiftOpts) -> Result<()> {
     let codegen = emit::Codegen::from_env().map_err(anyhow::Error::msg)?;
     // The passes and code generation choices change the C, so they are part
     // of the key.
-    let cache_key = emit_cache::key(&data, &std::env::current_exe()?, &emit_cache::settings(&passes, codegen))?;
+    let cache_key = emit_cache::key(
+        &data,
+        &std::env::current_exe()?,
+        &emit_cache::settings(&passes, codegen),
+    )?;
     // Tracing is explicitly requested analysis work, even on a cache hit.
-    let reuse = !opts.no_emit_cache && std::env::var_os("H2_TRACE").is_none() && emit_cache::valid(&out, &cache_key);
-    println!("emit cache: {:.3}s, {}", t.elapsed().as_secs_f64(), if reuse { "hit" } else { "miss" });
+    let reuse = !opts.no_emit_cache
+        && std::env::var_os("H2_TRACE").is_none()
+        && emit_cache::valid(&out, &cache_key);
+    println!(
+        "emit cache: {:.3}s, {}",
+        t.elapsed().as_secs_f64(),
+        if reuse { "hit" } else { "miss" }
+    );
     if !reuse {
         emit_cache::invalidate(&out)?;
         let t = Instant::now();
@@ -874,7 +1050,10 @@ fn run_emit(path: &Path, opts: &LiftOpts) -> Result<()> {
         println!("analyze: {:.3}s", t.elapsed().as_secs_f64());
         let t = Instant::now();
         let owners = emit::plan_image(&a, &x, passes)?;
-        println!("lift + plan: {:.3}s ({passes:?})", t.elapsed().as_secs_f64());
+        println!(
+            "lift + plan: {:.3}s ({passes:?})",
+            t.elapsed().as_secs_f64()
+        );
         let t = Instant::now();
         let w = emit::write_module_with(&owners, &src, codegen)?;
         println!(
@@ -952,10 +1131,16 @@ fn run_emit(path: &Path, opts: &LiftOpts) -> Result<()> {
         println!("host bridge + link: {:.3}s", t.elapsed().as_secs_f64());
         let (cpu, transfer, ctx) = emit_run_entry(&x, &dylib)?;
         println!("{transfer:x?}");
-        for (n, v) in ["eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"].iter().zip(cpu.gpr) {
+        for (n, v) in ["eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"]
+            .iter()
+            .zip(cpu.gpr)
+        {
             println!("  {n} = {v:#010x}");
         }
-        println!("  eflags = {:#010x} (defined {:#x}), events {:?}", cpu.eflags, cpu.eflags_defined, ctx.events);
+        println!(
+            "  eflags = {:#010x} (defined {:#x}), events {:?}",
+            cpu.eflags, cpu.eflags_defined, ctx.events
+        );
     }
     println!("total: {:.3}s", total.elapsed().as_secs_f64());
     Ok(())
@@ -1073,7 +1258,10 @@ mod tests {
     fn extract_streams_files_and_creates_empty_directories() {
         let d = scratch("extract");
         let max_read = std::rc::Rc::new(std::cell::Cell::new(0));
-        let spy = Spy { inner: std::io::Cursor::new(tiny_xiso()), max_read: max_read.clone() };
+        let spy = Spy {
+            inner: std::io::Cursor::new(tiny_xiso()),
+            max_read: max_read.clone(),
+        };
         let mut iso = Xiso::open(spy).unwrap();
         let out = d.join("out");
         extract_to(&mut iso, &d.join("disc.xiso"), &out, false).unwrap();
@@ -1084,7 +1272,11 @@ mod tests {
         assert_eq!(got.len(), BIG);
         assert!(got.iter().enumerate().all(|(i, b)| *b == (i % 251) as u8));
         // ...and arrived in small reads, never as one whole-file buffer.
-        assert!(max_read.get() <= 64 << 10, "largest read was {} bytes", max_read.get());
+        assert!(
+            max_read.get() <= 64 << 10,
+            "largest read was {} bytes",
+            max_read.get()
+        );
         // Re-extracting over existing files needs --force.
         assert!(extract_to(&mut iso, &d.join("disc.xiso"), &out, false).is_err());
         extract_to(&mut iso, &d.join("disc.xiso"), &out, true).unwrap();
@@ -1104,7 +1296,10 @@ mod tests {
         load_xbe(&xbe).unwrap();
         let out = safe_out::OutDir::new(&d, true).unwrap();
         for n in ["junk.dat", "x.dat"] {
-            assert!(out.write(&[n.to_string()], b"x").is_err(), "{n} was overwritten");
+            assert!(
+                out.write(&[n.to_string()], b"x").is_err(),
+                "{n} was overwritten"
+            );
         }
         assert_eq!(fs::read(&junk).unwrap(), b"not a disc at all");
         assert_eq!(fs::read(&xbe).unwrap(), b"XBEH synthetic");

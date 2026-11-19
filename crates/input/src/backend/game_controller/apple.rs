@@ -56,7 +56,7 @@ use objc2_game_controller::{
 };
 
 use super::remote::RemoteSnapshot;
-use super::{ControllerSource, Locality, RawPad, RawTouchpad, RumblePlan, Snapshot, plan_rumble};
+use super::{ControllerSource, Locality, Profile, RawPad, RawTouchpad, RumblePlan, Snapshot, plan_rumble};
 
 /// Longest a CoreHaptics continuous event may last; the player loops it.
 const EVENT_SECONDS: f64 = 30.0;
@@ -155,6 +155,10 @@ struct Entry {
     profile: Option<Retained<GCExtendedGamepad>>,
     /// A remote's micro gamepad, when there is no extended profile.
     micro: Option<Retained<GCMicroGamepad>>,
+    /// The extended profile's class, or micro.
+    kind: Profile,
+    /// `productCategory`.
+    category: Option<String>,
     /// Written on the private handler queue, copied by `poll`.
     snapshot: Arc<Mutex<Snapshot>>,
     remote: Arc<Mutex<RemoteSnapshot>>,
@@ -352,11 +356,21 @@ impl AppleSource {
                 let (profile, snapshot, plan) = self.attach(c.clone());
                 let remote = Arc::new(Mutex::new(RemoteSnapshot::default()));
                 let micro = if profile.is_none() { self.attach_micro(&c, &remote) } else { None };
+                let kind = match (&profile, &micro) {
+                    (Some(p), _) => profile_kind(p),
+                    (None, Some(_)) => Profile::Micro,
+                    (None, None) => Profile::Extended,
+                };
+                // SAFETY: property read on a live object.
+                let category = Some(unsafe { c.productCategory() }.to_string())
+                    .filter(|s| !s.is_empty());
                 self.entries.push(Entry {
                     key: self.next_key,
                     controller: c,
                     profile,
                     micro,
+                    kind,
+                    category,
                     snapshot,
                     remote,
                     plan,
@@ -405,9 +419,24 @@ fn read(gp: &GCExtendedGamepad) -> Snapshot {
     }
 }
 
+/// The class of an extended profile: a DualSense's and a DualShock 4's are
+/// subclasses that carry the touchpad.
+fn profile_kind(gp: &GCExtendedGamepad) -> Profile {
+    if gp.downcast_ref::<GCDualSenseGamepad>().is_some() {
+        Profile::DualSense
+    } else if gp.downcast_ref::<GCDualShockGamepad>().is_some() {
+        Profile::DualShock4
+    } else {
+        Profile::Extended
+    }
+}
+
 /// The touchpad of a DualSense (`GCDualSenseGamepad`) or a DualShock 4
-/// (`GCDualShockGamepad`, whose elements are optional), both subclasses of
-/// the extended profile the handler is given.
+/// (`GCDualShockGamepad`), both subclasses of the extended profile the
+/// handler is given. A DualShock 4's three touchpad elements are each
+/// optional in the API; whichever exist are read (a missing finger reads
+/// as lifted, a missing click as up), so a missing finger element never
+/// hides the click.
 fn read_touchpad(gp: &GCExtendedGamepad) -> Option<RawTouchpad> {
     // SAFETY: property reads on live objects, on the profile's queue.
     let pair = |d: &GCControllerDirectionPad| unsafe { (d.xAxis().value(), d.yAxis().value()) };
@@ -425,14 +454,17 @@ fn read_touchpad(gp: &GCExtendedGamepad) -> Option<RawTouchpad> {
     // SAFETY: as above.
     unsafe {
         let (click, primary, secondary) = (
-            ds4.touchpadButton()?,
-            ds4.touchpadPrimary()?,
-            ds4.touchpadSecondary()?,
+            ds4.touchpadButton(),
+            ds4.touchpadPrimary(),
+            ds4.touchpadSecondary(),
         );
+        if click.is_none() && primary.is_none() && secondary.is_none() {
+            return None;
+        }
         Some(RawTouchpad {
-            click: click.isPressed(),
-            primary: pair(&primary),
-            secondary: pair(&secondary),
+            click: click.is_some_and(|b| b.isPressed()),
+            primary: primary.map_or((0.0, 0.0), |d| pair(&d)),
+            secondary: secondary.map_or((0.0, 0.0), |d| pair(&d)),
         })
     }
 }
@@ -468,6 +500,8 @@ impl ControllerSource for AppleSource {
                 RawPad {
                     key: e.key,
                     name,
+                    profile: e.kind,
+                    category: e.category.clone(),
                     snapshot: *lock(&e.snapshot),
                     supports_rumble: e.plan.is_some(),
                     remote: e.micro.as_ref().map(|_| *lock(&e.remote)),

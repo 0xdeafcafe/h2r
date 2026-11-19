@@ -57,13 +57,13 @@ fn whole_run() -> Vec<&'static str> {
         "bots: Rusty Lugnut on port 1 is on Xbox Live as its own bot account, beside port 0's",
         "bots: Bent Sprocket on port 2 is on Xbox Live as its own bot account, beside port 0's",
         "bots: Loose Bolt on port 3 is on Xbox Live as its own bot account, beside port 0's",
+        "bots: phantom Tin Can waits: not a lobby it can join (this console does not host it (session host peer 0, this console's peer 1))",
+        "bots: phantom Tin Can joins (peer 1, in the pregame lobby)",
+        "bots: phantom Oil Slick joins (peer 2, in the pregame lobby)",
         "bots-test: session s-1: 4 filled (public 4, private 0), 0 joined",
         "bots-drive: press a on screen none (Start Game: 3 local bots on Xbox Live)",
         "bots: start state 9, blocked by nothing (ready); port 1 ..., port 2 ..., port 3 ...",
         "bots-test: status phase loading mode multiplayer map lockout",
-        "bots: phantom Tin Can waits: this console is not the game's host yet (no game)",
-        "bots: phantom Tin Can joins (peer 1)",
-        "bots: phantom Oil Slick joins (peer 2)",
         "bots-test: status phase gameplay mode multiplayer map lockout",
         "bots-test: session s-1: 6 filled (public 6, private 0), 0 joined",
         "bots-test: game g1 on lockout: 6 players, 5 bots (5 with an account)",
@@ -127,7 +127,10 @@ fn a_whole_run_passes() {
     assert!(r.ends_with("verdict: PASS\n"), "{r}");
     assert!(r.contains("Rusty Lugnut (000b000000000001)"), "{r}");
     assert!(r.contains("port 1 in the players screen"), "{r}");
-    assert!(r.contains("2 joined: Oil Slick, Tin Can"), "{r}");
+    assert!(
+        r.contains("2 joined in the pregame lobby: Oil Slick, Tin Can"),
+        "{r}"
+    );
     assert!(r.contains("6 filled, 0 joined (needs 6)"), "{r}");
     assert!(r.contains("on lockout"), "{r}");
 }
@@ -285,8 +288,29 @@ fn phantoms_that_wait_or_fail_are_named() {
     let v = run(&plan(5), &lines);
     let (n, c) = v.first_failure().unwrap();
     assert_eq!(n, 10);
-    assert!(c.detail.starts_with("1 of 2 joined"), "{}", c.detail);
+    assert!(
+        c.detail.starts_with("1 of 2 joined the pregame lobby (`"),
+        "{}",
+        c.detail
+    );
     assert!(c.lines.iter().any(|l| l.contains("Tin Can waits")));
+    // Joined, but only once the game ran: the lobby join did not happen.
+    let lines: Vec<&str> = whole_run()
+        .into_iter()
+        .map(|l| match l.strip_suffix(", in the pregame lobby)") {
+            Some(_) if l.contains("Oil Slick") => "bots: phantom Oil Slick joins (peer 2)",
+            _ => l,
+        })
+        .collect();
+    let v = run(&plan(5), &lines);
+    let (n, c) = v.first_failure().unwrap();
+    assert_eq!(n, 10);
+    assert!(
+        c.detail
+            .contains("1 of 2 joined the pregame lobby, the rest only once the game ran"),
+        "{}",
+        c.detail
+    );
     let mut lines = whole_run();
     lines.push("clankers: Oil Slick (phantom, rostered): the phantoms are full");
     let v = run(&plan(5), &lines);
@@ -426,6 +450,18 @@ fn the_line_readers() {
     assert_eq!(
         phantom_joined("bots: phantom Clanker 4 joins (peer 1)"),
         Some("Clanker 4")
+    );
+    assert_eq!(
+        phantom_joined("bots: phantom Clanker 4 joins (peer 1, in the pregame lobby)"),
+        Some("Clanker 4")
+    );
+    assert_eq!(
+        phantom_joined_lobby("bots: phantom Clanker 4 joins (peer 1, in the pregame lobby)"),
+        Some("Clanker 4")
+    );
+    assert_eq!(
+        phantom_joined_lobby("bots: phantom Clanker 4 joins (peer 1)"),
+        None
     );
     assert!(!phantom_failed(
         "clankers: Tin Can (phantom, rostered) on (Normal)"

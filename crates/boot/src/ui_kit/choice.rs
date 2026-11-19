@@ -7,9 +7,10 @@
 //! from the setting: a [`Kind::Choice`]'s labels, a [`Kind::Int`]'s steps
 //! (else every whole number of its range), or Off and On for a
 //! [`Kind::Bool`]. On a kit screen it is a value row ([`ChoiceRow::row`]):
-//! left and right step through the choices and wrap, A steps right, as
-//! every value row of the kit does, and each step is saved at once like
-//! any setting (the store's change callbacks see it).
+//! left and right step through the choices and wrap, A opens the value
+//! picker on them (`crate::ui_kit::picker`, retail's `low_level_settings`),
+//! as every value row of the kit does, and each change is saved at once
+//! like any setting (the store's change callbacks see it).
 //!
 //! ```ignore
 //! static COUNT: ChoiceRow = ChoiceRow::new(&BOTS_COUNT, "Count", "How many bots join.");

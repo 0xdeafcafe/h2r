@@ -51,6 +51,15 @@ pub enum DialogBase {
     /// (-254, 87) and a help line above it; the game's own settings
     /// dialog. Only in `mainmenu.map`.
     QuickOptions,
+    /// `low_level_settings` (screen 223, the variant editor's and Quick
+    /// Options' value picker): the large dialog's panel and header layout
+    /// 2 (title "SCORE TO WIN ROUND", legend in its footer), a six-row
+    /// list of one-text items on `default6` (skin 22, its scroll arrows
+    /// at the list's left) at (-231, 30), and the setting's description
+    /// in a text block on the right ([`PICKER_HELP_TEXT`]). Only in
+    /// `mainmenu.map`; in a game the picker is the large dialog laid out
+    /// the same way (`crate::ui_kit::picker`).
+    ValuePicker,
 }
 
 impl DialogBase {
@@ -58,6 +67,7 @@ impl DialogBase {
         match self {
             DialogBase::Large => LARGE_SCREEN_ID,
             DialogBase::QuickOptions => QUICK_OPTIONS_SCREEN_ID,
+            DialogBase::ValuePicker => VALUE_PICKER_SCREEN_ID,
         }
     }
     /// Where a row's value goes: alone in the value column of Quick
@@ -66,7 +76,7 @@ impl DialogBase {
     /// large dialog's one-text skin.
     pub fn style(self) -> crate::ui_kit::spec::ValueStyle {
         match self {
-            DialogBase::Large => crate::ui_kit::spec::ValueStyle::Inline,
+            DialogBase::Large | DialogBase::ValuePicker => crate::ui_kit::spec::ValueStyle::Inline,
             DialogBase::QuickOptions => crate::ui_kit::spec::ValueStyle::Setting,
         }
     }
@@ -77,6 +87,7 @@ impl DialogBase {
         match self {
             DialogBase::Large => None,
             DialogBase::QuickOptions => Some(QUICK_HELP_TEXT),
+            DialogBase::ValuePicker => Some(PICKER_HELP_TEXT),
         }
     }
     /// The base pane's bitmaps (by block index) that are the retail
@@ -84,8 +95,16 @@ impl DialogBase {
     /// Quick Options' game type picture beside the variant's name.
     pub fn content_bitmaps(self) -> &'static [u16] {
         match self {
-            DialogBase::Large => &[],
+            DialogBase::Large | DialogBase::ValuePicker => &[],
             DialogBase::QuickOptions => &[1],
+        }
+    }
+    /// Where a page on this base shows its icon: Quick Options' game
+    /// type picture ([`QUICK_PICTURE`]); the other bases have none.
+    pub fn picture(self) -> Option<crate::list_class::PictureSpec> {
+        match self {
+            DialogBase::QuickOptions => Some(QUICK_PICTURE),
+            DialogBase::Large | DialogBase::ValuePicker => None,
         }
     }
     /// Whether its tag is in the game maps' interfaces (`shared.map`,
@@ -97,6 +116,8 @@ impl DialogBase {
 
 /// `quick_options`'s screen id.
 pub const QUICK_OPTIONS_SCREEN_ID: i16 = 222;
+/// `low_level_settings`' screen id: the value picker.
+pub const VALUE_PICKER_SCREEN_ID: i16 = 223;
 
 /// What a dialog shows besides its title and legend (the spec's `title`
 /// and `prompts`).
@@ -226,6 +247,84 @@ pub const QUICK_LIST: ListAt = ListAt {
 };
 pub const QUICK_LIST_ROWS: usize = 11;
 
+/// Quick Options' game type picture: pane 0's bitmap block 1,
+/// `mp_games2.bitm` (eleven 40 x 40 icons, the variant's game type's
+/// filled by code) at (-267, 166), depth 3, the pane's animation (31),
+/// left of the variant's name and the help line. A page of ours on Quick
+/// Options shows its own icon of the set there
+/// ([`crate::ui_kit::screen::KitScreen::header`]): the block copied
+/// ([`crate::list_class::ListClass::picture`]) and its image set as the
+/// screen opens ([`crate::list_class::Rows::picture_image`]). The block's
+/// own image field is 0, as `PictureSpec::image` checks.
+/// `ui_kit::screens::tests::preview_and_check_against_the_disc` holds it
+/// to the disc's block.
+pub const QUICK_PICTURE: crate::list_class::PictureSpec = crate::list_class::PictureSpec {
+    screen_id: QUICK_OPTIONS_SCREEN_ID as u32,
+    pane: 0,
+    bitmap: 1,
+    image: 0,
+    at: [-267, 166],
+    animation: QUICK_ANIMATION,
+};
+/// The picture's size: every `mp_games2` icon is 40 x 40 (image 9, 41).
+pub const QUICK_PICTURE_SIZE: [u16; 2] = [40, 40];
+/// The picture block's render depth bias.
+pub const QUICK_PICTURE_DEPTH: i16 = 3;
+
+/// [`QUICK_PICTURE`] showing icon `image`, as the preview draws it.
+pub fn quick_icon(image: u16) -> PaneArt {
+    PaneArt {
+        art: Art::Screen {
+            screen_id: QUICK_OPTIONS_SCREEN_ID,
+            pane: QUICK_PICTURE.pane as u16,
+            index: QUICK_PICTURE.bitmap as u16,
+            image: image as i16,
+        },
+        at: QUICK_PICTURE.at,
+        size: QUICK_PICTURE_SIZE,
+        depth: QUICK_PICTURE_DEPTH,
+    }
+}
+/// `mp_games2.bitm`'s icons (read off `mainmenu.map`, 2026-11-19), as
+/// the pages of ours use them.
+pub mod icon {
+    /// A Spartan standing: Slayer's. The Clankers page's.
+    pub const SPARTAN: u16 = 0;
+    /// A banner of three stars. The Halo 1 Options page's.
+    pub const BANNER: u16 = 9;
+    /// How many there are.
+    pub const COUNT: u16 = 11;
+}
+
+/// `low_level_settings`' list: `default6` (skin 22: `default`'s one text
+/// and row bar, its scroll arrows at (-27, 24) and (-27, -88)), six rows
+/// from (-231, 30), each 22 high; more values than that scroll.
+pub const PICKER_LIST: ListAt = ListAt {
+    anchor: [-231, 30],
+    skin: 22,
+};
+pub const PICKER_LIST_ROWS: usize = 6;
+/// `low_level_settings`' description block (pane 0's text block 0,
+/// string `description`, filled by code): right of the list, from the
+/// header's bottom to the footer's top, left-justified, font 1, the pale
+/// blue, the pane's animation (23). Where the picker says what the
+/// setting does ("Points are earned in Slayer for...").
+pub const PICKER_HELP: Rect = rect(74, 15, -80, 250);
+pub const PICKER_HELP_TEXT: crate::list_class::TextBlock = crate::list_class::TextBlock {
+    rect: [
+        PICKER_HELP.top,
+        PICKER_HELP.left,
+        PICKER_HELP.bottom,
+        PICKER_HELP.right,
+    ],
+    font: 1,
+    colour: [0.388235, 0.580392, 0.756863],
+    animation: PICKER_ANIMATION,
+};
+/// `low_level_settings`' pane and text animation slot (1-based), as
+/// `error_dialog_large`'s.
+pub const PICKER_ANIMATION: u16 = 23;
+
 /// The text column's edges: the header layout's title rectangle's.
 pub const LEFT: i16 = -243;
 pub const RIGHT: i16 = 255;
@@ -257,6 +356,38 @@ impl DialogGeometry {
         let large = DialogGeometry::large();
         match base {
             DialogBase::Large => large,
+            DialogBase::ValuePicker => {
+                // The large dialog's four panel blocks, as
+                // `low_level_settings` has them (same bitmaps, places and
+                // depth; its own animations).
+                let panel = large
+                    .panel
+                    .iter()
+                    .map(|p| PaneArt {
+                        art: match p.art {
+                            Art::Screen {
+                                pane, index, image, ..
+                            } => Art::Screen {
+                                screen_id: VALUE_PICKER_SCREEN_ID,
+                                pane,
+                                index,
+                                image,
+                            },
+                            other => other,
+                        },
+                        ..*p
+                    })
+                    .collect();
+                let list = PICKER_LIST;
+                DialogGeometry {
+                    screen_id: VALUE_PICKER_SCREEN_ID,
+                    panel,
+                    list,
+                    list_items: PICKER_LIST_ROWS,
+                    rows: Geometry::fallback(Self::list_place(list, PICKER_LIST_ROWS)),
+                    ..large
+                }
+            }
             DialogBase::QuickOptions => {
                 let art = |index: u16, at: [i16; 2], size: [u16; 2], depth: i16| PaneArt {
                     art: Art::Screen {
@@ -474,6 +605,7 @@ fn row_widgets(s: &ScreenSpec, d: &DialogSpec, g: &DialogGeometry, m: &dyn Metri
     list.focus = s.focus;
     list.style = s.style;
     list.description = s.description;
+    list.help = s.help.clone();
     list.list = DialogGeometry::list_place(g.list, shown);
     let rows = Geometry {
         visible: shown,
@@ -559,6 +691,20 @@ pub fn dialog_view(
         ));
     }
     w.extend(row_widgets(s, d, g, m));
+    // The screen's own art (a page's icon in Quick Options' picture).
+    for (k, a) in s.art.iter().enumerate() {
+        let r = art_rect(a);
+        w.push(Widget {
+            id: format!("art.{k}"),
+            rect: [r.top, r.left, r.bottom, r.right],
+            layer: Layer::Frame,
+            alpha: 255,
+            kind: Kind::Art {
+                art: a.art,
+                size: a.size,
+            },
+        });
+    }
     if let Some(c) = &d.cells {
         let [cw, ch] = g.cell.size.map(i32::from);
         let lh = m.line_height(g.header_font);

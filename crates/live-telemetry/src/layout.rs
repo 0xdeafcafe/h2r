@@ -484,6 +484,35 @@ pub const CONTACT_PROPERTY_SIZE: u32 = 0x1c;
 pub const PROPERTY_IMPULSE: u32 = 0x00;
 pub const PROPERTY_FRICTION: u32 = 0x08;
 pub const PROPERTY_RESTITUTION: u32 = 0x0c;
+/// An object header's body size (`u16`): the allocator `0x000bc2c6` stores
+/// the type descriptor's runtime body size (`+8`, `0x000b7bd6`) here.
+pub const OBJECT_BODY_SIZE: u32 = 0x06;
+/// A physics component's rigid body count, next to `COMPONENT_BODIES`
+/// (the release loop at `0x001d022a`); entries `0x60` apart (`0x001d08ec`).
+pub const COMPONENT_BODY_COUNT: u32 = 0x74;
+pub const COMPONENT_BODY_SIZE: u32 = 0x60;
+/// An entity's collidable shape: the world object constructor copies the
+/// construction info's shape here and takes a reference (`0x003125ca`,
+/// `0x00312609`); the biped's info gets its pill at `0x001d71bc`.
+pub const ENTITY_SHAPE: u32 = 0x0c;
+/// A shape's type is its virtual `+0x14`; these are the getters (each a
+/// `mov eax, type; ret`) for the types `havok.bodies` decodes. Halo's tag
+/// shapes (vtables `0x00455500`, `0x004554c0`, `0x00455498`) and Havok's
+/// (`0x00455458`, `0x00455418`, `0x004553f0`) share them.
+pub const SHAPE_TYPE_SLOT: u32 = 0x14;
+pub const SHAPE_TYPE_SPHERE_FN: u32 = 0x0009_cd90;
+pub const SHAPE_TYPE_CAPSULE_FN: u32 = 0x0009_b910;
+pub const SHAPE_TYPE_TRANSFORM_FN: u32 = 0x002d_e7a0;
+/// A sphere's or capsule's radius (`0x002ded6f`, `0x002de0ff`).
+pub const SHAPE_RADIUS: u32 = 0x0c;
+/// A capsule's two end points, each with the radius in `w` (the
+/// constructor `0x002de0a0`; the bounding box `0x002de0f0`).
+pub const CAPSULE_A: u32 = 0x10;
+pub const CAPSULE_B: u32 = 0x20;
+/// A transform shape's child (`0x002de870`) and its transform (`+0x10`,
+/// `0x002de85f`), the translation in the last column (`0x001d6fe3`).
+pub const TRANSFORM_CHILD: u32 = 0x0c;
+pub const TRANSFORM_TRANSLATION: u32 = 0x40;
 /// Units per second the hitbox offset decays by (`0x004407b8`).
 pub const HITBOX_OFFSET_RATE: f32 = 0.15;
 pub const BIPED_MODE_GROUND: u8 = 1;

@@ -601,7 +601,13 @@ static LOADED: Mutex<Loaded> = Mutex::new(Loaded {
 pub fn map_loaded(map: &str) {
     let mut l = LOADED.lock().unwrap_or_else(|e| e.into_inner());
     l.changed(map);
+    crate::decisions::radio::map_loaded();
     cache::set_current(None);
+}
+
+/// The loaded map's short name (empty: none).
+pub fn loaded() -> String {
+    LOADED.lock().unwrap_or_else(|e| e.into_inner()).name.clone()
 }
 
 /// Offers `map`'s data to the bots ([`cache::set_current`]); see

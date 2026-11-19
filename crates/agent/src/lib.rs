@@ -16,12 +16,16 @@
 //! * [`render`] records one frame's passes and draws for `render.frame`
 //!   (boot's backend wrapper feeds [`render::PROBE`]) and answers
 //!   `render.stats` from what the host registers.
+//! * [`hostpads`] answers `input.host`: the host controllers as the input
+//!   layer and the debug menu's gate see them.
 //! * [`menu`] connects the debug menu as an in-process client, and adds
 //!   `settings.*` and `perf.overlay` for it (docs/runtime/debug-menu.md).
 //! * [`Reader`] is what it reads: [`GuestReader`] over `live-telemetry`'s
 //!   readers in the game, a fake in tests.
 //! * [`havok`] answers `havok.bodies` and `havok.contacts`: the Havok
 //!   world's rigid bodies and contact points ([`Agent::add_game_method`]).
+//! * [`raw`] answers `world.raw`: an object's body, physics component,
+//!   Havok entity, motion and shape as raw bytes, for before/after diffs.
 //! * [`sim`] answers `sim.*`: simulated players (through the bots),
 //!   host writes to player state, the game's own teleport, give and spawn
 //!   (`sim::calls`, whose feature makes the calls at the next tick and
@@ -40,9 +44,11 @@
 mod capture;
 mod exec;
 pub mod havok;
+pub mod hostpads;
 pub mod hot;
 mod loads;
 pub mod menu;
+pub mod raw;
 mod reader;
 pub mod render;
 mod server;

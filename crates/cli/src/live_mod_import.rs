@@ -335,6 +335,73 @@ fn retail_twin(
     Ok(None)
 }
 
+/// The base map and the mod over it, as `import` reads them: `input` (a
+/// whole modded map, or a PPF, IPS or BPS; `format` names which, else it
+/// is sniffed) over the retail map `base` from the disc at `disc`, or from
+/// the map pack disc `mappack`. For `h2 live maps analyze`.
+pub fn mod_over_base(
+    input: &Path,
+    format: Option<&str>,
+    disc: &Path,
+    mappack: Option<&Path>,
+    base: &str,
+) -> Result<(Vec<u8>, Vec<u8>)> {
+    let bytes = std::fs::read(input).with_context(|| format!("reading {}", input.display()))?;
+    mod_bytes_over_base(
+        bytes,
+        &input.display().to_string(),
+        format,
+        disc,
+        mappack,
+        base,
+    )
+}
+
+/// [`mod_over_base`] of a mod already read (`what` names it in errors).
+pub fn mod_bytes_over_base(
+    bytes: Vec<u8>,
+    what: &str,
+    format: Option<&str>,
+    disc: &Path,
+    mappack: Option<&Path>,
+    base: &str,
+) -> Result<(Vec<u8>, Vec<u8>)> {
+    let input = Path::new(what);
+    let kind = match format {
+        Some(f) => InputKind::named(f)
+            .ok_or_else(|| anyhow!("format {f:?} is not map, ppf, ips or bps"))?,
+        None => InputKind::sniff(&bytes).ok_or_else(|| {
+            anyhow!(
+                "{}: not a map, PPF, IPS or BPS file (give --format)",
+                input.display()
+            )
+        })?,
+    };
+    let base = base.to_ascii_lowercase();
+    if !is_map_name(&base) {
+        bail!("{base:?} is not a map name (lockout, midship, ...)");
+    }
+    let mut d =
+        vfs::open_disc(disc).map_err(|e| anyhow!("opening the disc {}: {e}", disc.display()))?;
+    let pack = match mappack {
+        Some(iso) => crate::live_mappack::from_iso(iso)
+            .with_context(|| format!("reading the map pack disc {}", iso.display()))?,
+        None => Vec::new(),
+    };
+    let (base_bytes, _) = read_base(&mut d, &pack, mappack, &base)?;
+    let target = match kind {
+        InputKind::Map => {
+            if !live_proto::maps::is_whole_map(&bytes) {
+                bail!("{}: not a map file (no cache header)", input.display());
+            }
+            bytes
+        }
+        _ => apply(&base_bytes, &bytes)
+            .context("the patch does not apply to the base map: is --base the right map?")?,
+    };
+    Ok((base_bytes, target))
+}
+
 /// What `h2 live maps import` was asked.
 #[derive(Debug, Clone, Default)]
 pub struct ImportOptions {

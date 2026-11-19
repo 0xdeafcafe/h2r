@@ -38,6 +38,7 @@ fn arms(held: Option<Gun>, other: Option<Gun>) -> Arms {
         held,
         other,
         grenades: [0, 0],
+        ..Arms::default()
     }
 }
 fn decide(a: &Arms, enemy: Option<f32>, calm: bool, pickups: &[Pickup]) -> Kit {
@@ -692,4 +693,207 @@ fn the_handling_reads_from_the_weapon_and_projectile_tags() {
     w.g.put_u32(TAG_ENTRIES + 0x30, u32::from_be_bytes(*b"weap"));
     let a = read(&w.g, w.unit).unwrap();
     assert_eq!(a.held.unwrap().profile.shot_speed, 0.0);
+}
+
+// ---- weapon skill: pairing, reloading the other gun, dual wielding ----
+
+#[test]
+fn two_short_guns_take_a_long_one_dropping_the_worse() {
+    let rifle_on_floor = [Pickup {
+        id: 1,
+        position: [8.0, 0.0, 0.0],
+        gun: with(BR, rifle(), full()),
+    }];
+    // The SMG in hand is the worse of SMG and shotgun: it goes for the
+    // rifle, which replaces it.
+    let smg_held = arms(
+        Some(with(SMG, smg(), full())),
+        Some(with(SHOTGUN, shotgun(), full())),
+    );
+    assert_eq!(
+        decide_by_range(&smg_held, None, true, true, &rifle_on_floor),
+        Kit::Seek(rifle_on_floor[0])
+    );
+    // The shotgun in hand: switch first, so the SMG is dropped.
+    let shotgun_held = arms(
+        Some(with(SHOTGUN, shotgun(), full())),
+        Some(with(SMG, smg(), full())),
+    );
+    assert_eq!(
+        decide_by_range(&shotgun_held, None, true, true, &rifle_on_floor),
+        Kit::Switch
+    );
+    // A long and a short already: nothing to do. Nor in a fight, nor at
+    // Easy, nor beyond PAIR_RANGE.
+    let paired = arms(
+        Some(with(SMG, smg(), full())),
+        Some(with(BR, rifle(), full())),
+    );
+    let smg_floor = [Pickup {
+        gun: with(SMG + 1, smg(), full()),
+        ..rifle_on_floor[0]
+    }];
+    assert_eq!(
+        decide_by_range(&paired, None, true, true, &smg_floor),
+        Kit::Fine
+    );
+    assert_eq!(
+        decide_by_range(&smg_held, Some(6.0), false, false, &rifle_on_floor),
+        Kit::Fine
+    );
+    assert_eq!(decide(&smg_held, None, true, &rifle_on_floor), Kit::Fine);
+    let far = [Pickup {
+        position: [PAIR_RANGE + 1.0, 0.0, 0.0],
+        ..rifle_on_floor[0]
+    }];
+    assert_eq!(
+        decide_by_range(&smg_held, None, true, true, &far),
+        Kit::Fine
+    );
+}
+
+#[test]
+fn out_of_a_fight_the_other_gun_is_drawn_to_reload_it() {
+    let a = arms(
+        Some(with(BR, rifle(), full())),
+        Some(with(SMG, smg(), rounds(10, 60, 100, 240))),
+    );
+    assert_eq!(decide_by_range(&a, None, true, true, &[]), Kit::Switch);
+    // Then, holding it, it reloads.
+    let b = arms(a.other, a.held);
+    assert_eq!(decide_by_range(&b, None, true, true, &[]), Kit::Reload);
+    // Not under fire, not at Easy.
+    assert_eq!(decide_by_range(&a, Some(8.0), false, false, &[]), Kit::Fine);
+    assert_eq!(decide(&a, None, true, &[]), Kit::Fine);
+}
+
+#[test]
+fn the_aim_assist_reach_moves_the_switch() {
+    // A magnum reaching 10 is out of its band at 18; a rifle reaching 30
+    // is not: at 18 a bot with both takes the rifle.
+    let magnum = Profile {
+        cone_range: 10.0,
+        pull_range: 10.0,
+        ..handling(Trigger::Single, 0, 1, 400.0)
+    };
+    let long_rifle = Profile {
+        cone_range: 30.0,
+        pull_range: 30.0,
+        ..rifle()
+    };
+    let a = arms(
+        Some(with(PP, magnum, full())),
+        Some(with(BR, long_rifle, full())),
+    );
+    assert_eq!(
+        decide_by_range(&a, Some(19.0), false, false, &[]),
+        Kit::Switch
+    );
+    assert_eq!(decide_by_range(&a, Some(8.0), false, false, &[]), Kit::Fine);
+}
+
+#[test]
+fn the_unit_reads_its_left_hand_and_grenade_type() {
+    let mut w = world();
+    // Dual wielding: the pistol (slot 2) in the left hand; plasma
+    // grenades selected.
+    w.g.put_u8(w.unit + UNIT_LEFT_WEAPON_INDEX, 2)
+        .put_u8(w.unit + UNIT_GRENADE_SELECTED, 1);
+    let a = read(&w.g, w.unit).unwrap();
+    assert_eq!(a.held.unwrap().def, def_raw(BR, 0));
+    assert_eq!(a.left.expect("the pistol").def, def_raw(PP, 1));
+    assert_eq!(a.other, None);
+    assert_eq!(a.selected, 1);
+    // Not dual wielding (-1): the pistol is the other gun.
+    w.g.put_u8(w.unit + UNIT_LEFT_WEAPON_INDEX, 0xff);
+    let a = read(&w.g, w.unit).unwrap();
+    assert_eq!(a.left, None);
+    assert_eq!(a.other.unwrap().def, def_raw(PP, 1));
+}
+
+#[test]
+fn decisions_read_only_the_held_magazines_reload_window() {
+    let mut w = world();
+    let mag = BODIES + 0x400 + WEAPON_MAGAZINES;
+    assert!(!held_empty_magazine(&w.g, w.unit).unwrap());
+    w.g.put_u16(mag + MAGAZINE_LOADED, 0);
+    assert!(held_empty_magazine(&w.g, w.unit).unwrap());
+    w.g.put_u16(mag + MAGAZINE_RESERVE, 0);
+    assert!(!held_empty_magazine(&w.g, w.unit).unwrap(), "entirely dry");
+    w.g.put_u16(mag + MAGAZINE_RESERVE, 10)
+        .put_u8(w.unit + UNIT_WEAPON_INDEX, 2);
+    assert!(
+        !held_empty_magazine(&w.g, w.unit).unwrap(),
+        "other gun holstered"
+    );
+}
+
+#[test]
+fn decisions_ground_scan_matches_live_items_to_their_spawn_and_clock() {
+    use crate::decisions::supplies::Supply;
+    const SCENARIO: u32 = 0x006a_0000;
+    const SITES: u32 = SCENARIO + 0x1000;
+    const COLLECTION: u32 = TAGS + 0xc00;
+    const COLLECTION_ID: u32 = 0xd210_0003;
+    let mut w = world();
+    let g = &mut w.g;
+    // An ordinary two-zoom gun, and a piece of equipment whose clock comes
+    // from its item collection. The gun has a per-placement override.
+    g.put_u16(BR_TAG + WEAP_ZOOM_LEVELS, 2)
+        .put_u32(BR_TAG + WEAP_TRIGGERS, 1)
+        .put_u32(BR_TAG + WEAP_TRIGGERS + 4, BR_TAG + 0x380)
+        .put_u16(BR_TAG + 0x380 + TRIGGER_DEF_BEHAVIOUR, 1)
+        .put_u8(OBJECTS_DATA + 4 * 0xc + 3, crate::guest::intel::EQUIPMENT)
+        .put_u32(TAG_ENTRIES + 0x20, u32::from_be_bytes(*b"eqip"))
+        .put_u16(FLAG_TAG + 0x12c, 2)
+        .put_u8(BODIES + 3 * 0x400 + 0xaf, 0)
+        .put_u8(BODIES + 4 * 0x400 + 0xaf, 1)
+        .put_u32(points::SCENARIO.base, SCENARIO)
+        .put_u32(SCENARIO + 0x120, 2)
+        .put_u32(SCENARIO + 0x124, SITES)
+        .put_f32(SITES + 0x40, 29.5)
+        .put_u16(SITES + 0x0e, 13)
+        .put_f32(SITES + 0x90 + 0x40, 40.0)
+        .put_u32(SITES + 0x90 + 0x5c, COLLECTION_ID)
+        .put_u32(TAG_INDEX + 0x18, 4)
+        .put_u32(TAG_ENTRIES + 0x30, u32::from_be_bytes(*b"itmc"))
+        .put_u32(TAG_ENTRIES + 0x34, COLLECTION_ID)
+        .put_u32(TAG_ENTRIES + 0x38, COLLECTION)
+        .put_u16(COLLECTION + 8, 31);
+    let gun = Supply {
+        site: 0,
+        object: DatumHandle::new(0xb003, 3).raw(),
+        spawn: [29.5, 0.0, 0.0],
+        at: [30.0, 0.0, 0.0],
+        respawn: Some(13 * 30),
+        powerup: false,
+    };
+    let eq = Supply {
+        site: 1,
+        object: DatumHandle::new(0xb004, 4).raw(),
+        spawn: [40.0, 0.0, 0.0],
+        at: [40.0, 0.0, 0.0],
+        respawn: Some(31 * 30),
+        powerup: true,
+    };
+    for kind in [2, 3] {
+        g.put_u16(FLAG_TAG + 0x12c, kind);
+        let sample = ground(g, None).unwrap();
+        assert_eq!(sample.weapons.len(), 1);
+        assert_eq!(sample.supplies.unwrap(), [gun, eq], "equipment type {kind}");
+    }
+    // A grenade is equipment too. A dropped gun far from its placement
+    // is still an ordinary pickup and cannot establish a spawn point.
+    g.put_u16(FLAG_TAG + 0x12c, 6)
+        .put_f32(BODIES + 3 * 0x400 + 0x64, 10.0);
+    let sample = ground(g, None).unwrap();
+    assert_eq!(sample.weapons.len(), 1);
+    assert!(sample.supplies.unwrap().is_empty());
+
+    // An unreadable equipment definition makes this an unknown supply
+    // sample. It cannot hide the readable rifle or start a phantom clock.
+    g.put_u32(TAG_ENTRIES + 0x28, 0x00dd_0000);
+    let sample = ground(g, None).unwrap();
+    assert!(sample.supplies.is_none());
+    assert_eq!(sample.weapons.len(), 1);
 }

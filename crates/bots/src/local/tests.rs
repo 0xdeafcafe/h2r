@@ -78,6 +78,26 @@ fn adding_checks_the_port_and_the_count() {
 }
 
 #[test]
+fn sim_mode_takes_all_four_ports() {
+    let l = Local::default();
+    assert_eq!(l.capacity(), MAX_LOCAL);
+    l.set_capacity(4);
+    assert_eq!(l.capacity(), 4);
+    for p in 0..4 {
+        l.add(p, "bot", idle()).unwrap();
+    }
+    assert_eq!(l.list().len(), 4);
+    // Ports run out before a fifth place would matter.
+    assert_eq!(l.add(4, "e", idle()), Err(Error::NoSuchPort(4)));
+    let m = manager(&l, 0);
+    assert_eq!(m.connected_mask(), 0b1111);
+    l.set_capacity(9);
+    assert_eq!(l.capacity(), 4);
+    l.set_capacity(0);
+    assert_eq!(l.capacity(), 1);
+}
+
+#[test]
 fn a_removed_bot_stays_plugged_and_idle_until_unplugged() {
     let l = Local::default();
     let h = l.add(1, "a", Box::new(|_: &Frame<'_>| forward())).unwrap();
@@ -158,6 +178,27 @@ fn leaving_bots_wait_out_the_game_then_sign_out_then_unplug() {
             sign_out: vec![],
             unplug: vec![a],
         }
+    );
+}
+
+#[test]
+fn a_bot_holding_a_saved_profile_gives_it_back_out_of_a_game() {
+    // Bots on ports 1 and 3; port 3's slot holds a saved profile file (a
+    // chooser picked the user's profile for its controller), port 0 is
+    // the human's own.
+    let saved = |p: u8| p == 3 || p == 0;
+    assert_eq!(release_step(false, 0b1010, saved), vec![3]);
+    assert!(
+        release_step(true, 0b1010, saved).is_empty(),
+        "never while a game runs"
+    );
+    assert!(
+        release_step(false, 0b1010, |p| p == 0).is_empty(),
+        "the human's profile is the human's"
+    );
+    assert!(
+        release_step(false, 0b0010, |p| p == 3).is_empty(),
+        "a port with no bot is not touched"
     );
 }
 

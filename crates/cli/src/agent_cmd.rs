@@ -51,17 +51,26 @@ or a short form:
                          or '{\"player\":1,\"at_tick\":900,\"steps\":[{\"buttons\":[\"rt\"],\"ticks\":30}]}'
   unpress                input.release: let go of everything
   padstate               input.state: every player's pad, recording or replay
+  hostpads               input.host: the host controllers (profile, touchpad, buttons)
+                         as their backend and the debug menu see them
   sample-start [hz]      profile.sample.start (the game thread; the Xbox app)
   sample-stop            profile.sample.stop: writes LocalState\\profile.h2prof
   sample-status          profile.sample.status
   hostperf               host.perf: the newest host perf line
   ui                     ui.screen: the menu screen player one's input goes to (H2_UI_WATCH=1)
-  frame [draws] [snap N[,M...]]  render.frame: record the next whole frame and
+  frame [draws] [max N] [constants R[..S][,...]] [snap N[,M...]]
+                         render.frame: record the next whole frame and
                          print it: passes (target, clears, draws by outcome,
                          primitive, entry, texture formats), copies and reads,
-                         native render paths; `draws` lists each draw; `snap`
-                         reads passes N... back as PNGs under the cache
-                         directory's frames/ (waits up to 10 s for the frame)
+                         native render paths; `draws` lists each draw (at
+                         most `max`, 2000) with its vertex side and depth
+                         state (mode, W-buffered, func, write, viewport z,
+                         viewport scale/offset z, clip range, full scale,
+                         clamp); `constants` lists those vertex constant
+                         registers (D3D numbering, -96..95, at most 32) on
+                         each draw, and implies `draws`; `snap` reads passes
+                         N... back as PNGs under the cache directory's
+                         frames/ (waits up to 10 s for the frame)
   loads [N]              load.timeline: the last N (8) level loads, BSP
                          switches and stalls: stall and settle times, and the
                          bytes read, uploads and compiles in each; a stall
@@ -83,6 +92,7 @@ or a short form:
 {HOT}
 {SIM}
 {FLIGHT}
+{RAW}
 
 Input calls need no claim while nobody holds control; once a connection
 does, only it may send them. Queued steps outlive the connection and play out.
@@ -100,6 +110,7 @@ fn usage() -> String {
         .replace("{HOT}", crate::agent_hot_cmd::USAGE)
         .replace("{SIM}", crate::agent_sim::USAGE)
         .replace("{FLIGHT}", crate::agent_flight::USAGE)
+        .replace("{RAW}", crate::agent_raw::USAGE)
 }
 
 pub fn run(args: Vec<String>) -> Result<()> {
@@ -142,6 +153,9 @@ pub fn run(args: Vec<String>) -> Result<()> {
     // Reads a file; no game needed.
     if first == "flight" && rest.get(1).is_some_and(|w| w == "show") {
         return crate::agent_flight::show(&rest[2..]);
+    }
+    if first == "raw-diff" {
+        return crate::agent_raw::diff_files(&rest[1..]);
     }
     let path = socket.unwrap_or_else(agent_proto::default_socket);
     let mut c = Client::connect(&path).with_context(|| {
@@ -331,10 +345,52 @@ fn frame_params(words: &[String]) -> Result<Value> {
                     .with_context(|| format!("snap: pass numbers, not {list}"))?;
                 p["snap"] = json!(passes);
             }
-            other => bail!("frame: unexpected {other} (draws, snap N[,M...])"),
+            "max" => {
+                let n = it.next().context("max needs a draw count, e.g. max 5000")?;
+                let n: u64 = n
+                    .parse()
+                    .with_context(|| format!("max: a draw count, not {n}"))?;
+                p["max_draws"] = json!(n);
+            }
+            "constants" => {
+                let list = it
+                    .next()
+                    .context("constants needs registers, e.g. constants -38..-35,58")?;
+                p["constants"] = json!(constant_registers(list)?);
+                p["draws"] = json!(true);
+            }
+            other => bail!(
+                "frame: unexpected {other} (draws, max N, constants R[..S][,...], snap N[,M...])"
+            ),
         }
     }
     Ok(p)
+}
+
+/// `constants`' registers: `N` or an inclusive range `A..B`, by commas
+/// (`-38..-35,58`).
+fn constant_registers(list: &str) -> Result<Vec<i32>> {
+    let mut regs = Vec::new();
+    for item in list.split(',') {
+        let item = item.trim();
+        let reg = |s: &str| {
+            s.trim()
+                .trim_start_matches('c')
+                .parse::<i32>()
+                .with_context(|| format!("constants: a register number, not {s}"))
+        };
+        match item.split_once("..") {
+            Some((a, b)) => {
+                let (a, b) = (reg(a)?, reg(b)?);
+                if b < a {
+                    bail!("constants: {item} runs backwards");
+                }
+                regs.extend(a..=b);
+            }
+            None => regs.push(reg(item)?),
+        }
+    }
+    Ok(regs)
 }
 
 /// `render.frame`: arms, then reads until the frame it armed is in.
@@ -460,6 +516,9 @@ fn parse_call(words: &[String]) -> Result<(String, Value)> {
     if let Some(r) = crate::agent_flight::parse(words) {
         return r;
     }
+    if let Some(r) = crate::agent_raw::parse(words) {
+        return r;
+    }
     let name = words[0].as_str();
     let arg = words.get(1);
     let extra = |n: usize| -> Result<()> {
@@ -479,6 +538,7 @@ fn parse_call(words: &[String]) -> Result<(String, Value)> {
         "stop" => Some(method::INPUT_STOP),
         "unpress" => Some(method::INPUT_RELEASE),
         "padstate" => Some(method::INPUT_STATE),
+        "hostpads" => Some(method::INPUT_HOST),
         "sample-stop" => Some(method::SAMPLE_STOP),
         "sample-status" => Some(method::SAMPLE_STATUS),
         "hostperf" => Some(method::HOST_PERF),
@@ -682,6 +742,7 @@ mod tests {
             )
         );
         assert_eq!(c("padstate"), ("input.state".into(), Value::Null));
+        assert_eq!(c("hostpads"), ("input.host".into(), Value::Null));
         assert_eq!(
             c("record fight replace"),
             (
@@ -787,7 +848,24 @@ mod tests {
             frame_params(&words("frame draws snap 0,3")).unwrap(),
             json!({"arm": true, "draws": true, "snap": [0, 3]})
         );
-        for bad in ["frame loud", "frame snap", "frame snap x"] {
+        assert_eq!(
+            frame_params(&words("frame constants -38..-36,c58 max 50")).unwrap(),
+            json!({
+                "arm": true,
+                "draws": true,
+                "constants": [-38, -37, -36, 58],
+                "max_draws": 50
+            })
+        );
+        for bad in [
+            "frame loud",
+            "frame snap",
+            "frame snap x",
+            "frame constants",
+            "frame constants 5..3",
+            "frame constants x",
+            "frame max",
+        ] {
             assert!(frame_params(&words(bad)).is_err(), "{bad}");
         }
     }

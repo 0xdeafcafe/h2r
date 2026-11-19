@@ -333,6 +333,62 @@ fn edge_on_triangles_do_not_bound_the_scale() {
     assert_eq!(convert::model_scale(None, 800.0), 1.0);
 }
 
+/// A card in a plane through the sky's origin, spanning it, between two
+/// far dome triangles: Halo 1 sees it edge-on, but in Halo 2 the eye sits
+/// a hair off that plane and the card is a wall at that distance, over the
+/// whole level. It is dropped; the dome triangles stay, wound as they were.
+#[test]
+fn edge_on_triangles_are_dropped_from_the_sky_model() {
+    let mut m = strip_model(&[
+        // A dome triangle in the plane x = 5000.
+        [5000.0, -500.0, 100.0],
+        [5000.0, 500.0, 100.0],
+        [5000.0, 0.0, 900.0],
+        // The card, in the plane z = 0, around the origin.
+        [-3000.0, -3000.0, 0.0],
+        [3000.0, -3000.0, 0.0],
+        [0.0, 3000.0, 0.0],
+        // A dome triangle in the plane z = 3000.
+        [-4000.0, -4000.0, 3000.0],
+        [4000.0, -4000.0, 3000.0],
+        [0.0, 4000.0, 3000.0],
+    ]);
+    let tris = [[0, 1, 2], [3, 4, 5], [6, 7, 8]];
+    m.geometries[0].parts[0].strip = h1models::h1::triangles_strip(&tris);
+    let nearest = convert::nearest_surface(&m).expect("a surface");
+    assert!((nearest - 3000.0).abs() < 1e-2, "{nearest}");
+    assert_eq!(convert::drop_edge_on(&mut m), 1);
+    assert_eq!(
+        h1models::h1::strip_triangles(&m.geometries[0].parts[0].strip),
+        vec![[0, 1, 2], [6, 7, 8]]
+    );
+    assert_eq!(
+        convert::nearest_surface(&m),
+        Some(nearest),
+        "the scale is unchanged"
+    );
+    assert_eq!(convert::drop_edge_on(&mut m), 0, "nothing left to drop");
+}
+
+/// A part whose every triangle is edge-on goes; a geometry keeps its last
+/// part (with no triangle) rather than none.
+#[test]
+fn a_part_left_empty_goes_but_not_a_geometrys_last() {
+    let mut m = strip_model(&[[10.0, -500.0, 0.0], [10.0, 500.0, 0.0], [5000.0, 0.0, 0.0]]);
+    let mut far = m.geometries[0].parts[0].clone();
+    for v in &mut far.vertices {
+        v.position[2] = 2000.0;
+    }
+    m.geometries[0].parts.push(far);
+    m.geometries.push(m.geometries[0].clone());
+    m.geometries[1].parts.truncate(1);
+    assert_eq!(convert::drop_edge_on(&mut m), 2);
+    assert_eq!(m.geometries[0].parts.len(), 1);
+    assert_eq!(m.geometries[0].parts[0].vertices[0].position[2], 2000.0);
+    assert_eq!(m.geometries[1].parts.len(), 1);
+    assert!(m.geometries[1].parts[0].strip.is_empty());
+}
+
 /// The scale moves the nearest surface out to the level's reach, and never
 /// shrinks a sky that is already farther.
 #[test]

@@ -11,7 +11,10 @@
 //! (crate::live_mod_import) and publishes it. `list` prints what the
 //! server has. `credit` sets who made published packages (an admin's
 //! `PUT /v1/maps/{id}/credit`), one by flags or many from a credits file
-//! (docs/game/mod-credits.toml).
+//! (docs/game/mod-credits.toml). `analyze` reports what a mod contains
+//! and `details` sets published packages' descriptions, screenshots,
+//! reports and map packs (crate::live_maps_details,
+//! docs/game/mod-details.toml).
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
@@ -49,6 +52,21 @@ pub const USAGE: &str = "usage: h2 live maps <command>
                           the file is [[mod]] tables of map_id, authors,
                           release, released, source_url, notes; packages
                           already credited so are left alone
+  analyze FILE --base MAP [--disc ISO] [--mappack ISO] [--format F]
+                [--map-id ID] [--out REPORT.toml]
+  analyze --map-id ID [--server URL] [--disc ISO] [--mappack ISO] [--out ..]
+                          what a mod (a modded .map, or a .ppf/.ips/.bps;
+                          or a published package's layer) contains over
+                          your disc's map: tag classes, swaps, stats,
+                          placements; --out writes the report for
+                          details --contents
+  details --file DETAILS.toml [--images DIR] [--contents DIR] [--dry-run]
+                [--server URL] [--as GAMERTAG] [--data DIR]
+                          set published packages' descriptions, screenshots
+                          (DIR/<slug>/, uploaded by --as), contents reports
+                          (DIR/<slug>.toml) and map packs, as an admin (or
+                          the operator's key with --data); what already
+                          says so is left alone
 
   Categories: gameplay, weapons, vehicles, visuals, maps, other.";
 
@@ -221,6 +239,102 @@ pub fn run(mut args: Args) -> Result<()> {
             }
             Ok(())
         }
+        Some("analyze") => {
+            args = args.shift();
+            let server = args.take("--server")?;
+            let base = args.take("--base")?;
+            let disc = args.take("--disc")?;
+            let mappack = args.take("--mappack")?;
+            let format = args.take("--format")?;
+            let map_id = args.take("--map-id")?;
+            let out = args.take("--out")?;
+            let file = match args.positional_for(USAGE)?.as_slice() {
+                [] => None,
+                [f] => Some(std::path::PathBuf::from(f)),
+                _ => bail!("analyze takes one mod file\n\n{USAGE}"),
+            };
+            let client = match &file {
+                Some(_) => None,
+                None => Some(Client::connect(server)?),
+            };
+            let disc = match disc {
+                Some(d) => std::path::PathBuf::from(d),
+                None => crate::default_disc()?,
+            };
+            let mappack = mappack
+                .map(std::path::PathBuf::from)
+                .or_else(|| crate::mappack_cmd::discover(&disc));
+            let a = crate::live_maps_details::analyze(
+                &crate::live_maps_details::AnalyzeOptions {
+                    input: file,
+                    disc,
+                    mappack,
+                    base,
+                    format,
+                    map_id,
+                },
+                client.as_ref(),
+            )?;
+            for line in &a.contents.lines {
+                println!("{line}");
+            }
+            if a.contents.lines.is_empty() {
+                println!("(no changes found)");
+            }
+            if let Some(out) = out {
+                std::fs::write(&out, toml::to_string(&a)?)
+                    .with_context(|| format!("writing {out}"))?;
+                println!("wrote {out}");
+            }
+            Ok(())
+        }
+        Some("details") => {
+            args = args.shift();
+            let server = args.take("--server")?;
+            let as_tag = args.take("--as")?;
+            let data = args.take("--data")?;
+            let file = args
+                .take("--file")?
+                .context("details takes --file DETAILS.toml")?;
+            let images = args.take("--images")?.map(std::path::PathBuf::from);
+            let contents = args.take("--contents")?.map(std::path::PathBuf::from);
+            let dry_run = args.flag("--dry-run");
+            if !args.positional_for(USAGE)?.is_empty() {
+                bail!("details takes no positional arguments\n\n{USAGE}");
+            }
+            let text = std::fs::read_to_string(&file).with_context(|| format!("reading {file}"))?;
+            let parsed =
+                crate::live_maps_details::DetailsFile::parse(&text).context(file.clone())?;
+            let (packs, mods) =
+                crate::live_maps_details::wanted(&parsed, images.as_deref(), contents.as_deref())?;
+            let client = Client::connect(server)?;
+            let account = match (&data, &as_tag) {
+                (Some(_), None) => None,
+                _ => Some(Signer::Account(pick_account(
+                    &client,
+                    &accounts_path()?,
+                    as_tag.as_deref(),
+                )?)),
+            };
+            let admin = match data {
+                Some(d) => Signer::Operator(crate::live_cmd::operator(Some(d), &client)?),
+                None => {
+                    Signer::Account(pick_account(&client, &accounts_path()?, as_tag.as_deref())?)
+                }
+            };
+            let done = crate::live_maps_details::apply_details(
+                &client,
+                &admin,
+                account.as_ref(),
+                &packs,
+                &mods,
+                dry_run,
+            )?;
+            for line in done {
+                println!("{line}");
+            }
+            Ok(())
+        }
         _ => bail!("{USAGE}"),
     }
 }
@@ -305,7 +419,7 @@ pub(crate) enum Signer {
 }
 
 impl Signer {
-    fn token(&self, client: &Client, method: &str) -> Result<String> {
+    pub(crate) fn token(&self, client: &Client, method: &str) -> Result<String> {
         Ok(match self {
             Signer::Account(me) => {
                 let key = me.key_pair()?;

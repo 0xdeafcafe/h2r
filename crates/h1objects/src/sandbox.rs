@@ -27,6 +27,13 @@ impl<'a> Objects<'a> {
             conv: Converter::new(h1, base),
         }
     }
+
+    /// What has been converted so far ([`Halo1Objects::take`] hands it
+    /// over and leaves it empty): the role audit reads the tags and their
+    /// role values from it (`tests/role_audit_disc.rs`).
+    pub fn tree(&self) -> &Tree {
+        &self.conv.tree
+    }
 }
 
 impl Halo1Objects for Objects<'_> {

@@ -112,7 +112,8 @@ several games sit side by side (`h2 coop test` does both).
 Keys: Escape START, Space or Enter A, V or Backspace B, E X, Q Y, Tab BACK,
 arrows d-pad, WASD left stick, mouse look (click to capture). Cmd+Q quits,
 Cmd+F fullscreen, Cmd+P pause, F3 the watermark, ` (backquote) the debug menu
-(touchpad click + Options on a DualSense or DualShock 4; H2_DEBUG_MENU=0 turns it off;
+(a touchpad click on a DualSense or DualShock 4; H2_DEBUG_MENU=0 turns it off;
+`h2 agent hostpads` shows what the pads report;
 docs/runtime/debug-menu.md). With --follow, F5 restarts into a ready update
 and F6 hides the banner. --bindings reads a TOML table (docs/input/input.md).
 --icons (or H2_ICONS) picks the button pictures in prompts: auto, the default,

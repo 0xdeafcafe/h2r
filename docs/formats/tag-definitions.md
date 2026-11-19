@@ -343,12 +343,42 @@ words as the turret role's `0x6c..0x74`) and the `hlmt`'s `0x34..0x44`
 (five decreasing floats); coagulation (12) and beavercreek (17) give the
 same object words (beavercreek also `0x1c`) and no `hlmt` majority.
 
-**Physics.** None of the rebuilt scenery gets a `phmo`: Havok sees it
-through its `coll`'s BSP physics slots, one per BSP (docs/halo1/objects.md,
-"Collision for Havok"). Retail holds both forms (V: 05a 11 scenery with
-collision and no `phmo`, 5 with one; beavercreek 6 and 3; coagulation 0
-and 6), and the slots key Halo 1's own surfaces exactly, where a built
-`phmo` is the BSP's solid cells (an enclosing hull past 64).
+**Physics** (since converter version 85). Scenery whose Halo 1 collision
+holds solid space gets a `phmo` built from it as a device's is (one rigid
+body per collision node, on its model node, of the node's solid cells;
+"Physics models from Halo 1"), whose bodies take the flags `+0x18` and
+motion `+0x1a` the base's scenery bodies hold (`rebuild::scenery_body`,
+the most common over every body of every scenery `phmo` of the base;
+V coagulation: all six bodies flags 0, motion 2) and each its own size
+class `+0x1e` (since version 87, `rebuild::size_class`: the class of the
+base body, any `phmo`, nearest in bounding radius). V, every rigid body
+of every `phmo` on coagulation, beavercreek and 05a: `+0x1e` rises with
+the bounding radius `+0x14`, 3 from 0.30 to 0.70, 4 from 0.73 to 1.23,
+5 from 1.39 to 1.96, 6 from 2.13 to 9.73 (1 and 2 overlap below 0.48);
+coagulation's trees hold 5 at 1.72 to 1.82 and 6 at 2.53 and 7.33, so
+no one value is the scenery's. E: `0x001d5ec0` takes the largest over an
+object's bodies (`0x001d63fd`) and `0x001d69d0` picks a creature's
+collision layer by it (`0x001d6a32`: up to 1 layer 4, 5 and over 5,
+else 3); what reads it for scenery was not found. Its `coll` then has no BSP physics slots
+(retail: nothing with a `phmo` has them). Other scenery with collision
+(no solid cell, or a base whose scenery has no `phmo`) keeps the slots.
+Through version 84 no scenery had a `phmo`, and in a game run on
+converted Blood Gulch (2026-11-19) the player walked through a boulder
+with its slots in place, and no Havok body belonged to any of the map's
+50 scenery placements (docs/halo1/objects.md, open items). Retail holds
+both forms (V: 05a 11 scenery with collision and no `phmo`, 5 with one;
+beavercreek 6 and 3; coagulation 0 and 6), so the slots are a retail
+form, but which engine path puts a slots-only object in the Havok world
+was not found. E, the motion word: the body builder `0x001d5940` maps
+`+0x1a` 0..5 to Havok motions 2..7 (jump table `0x001d5bd4`) and makes
+the motion 7 whatever the word when its caller asks (`0x001d5a29`).
+Proof: `tests/rebuild_disc.rs`, `every_scenery_rebuilds_from_its_definition`
+(a `phmo` exactly where the collision is solid and the base has scenery
+bodies, every body with their words, no slots beside it) and
+`scenery_bodies_take_the_bases_scenery_words` (Coagulation's scenery
+bodies hold one flags and motion pattern, the one taken, and each its
+size class by its radius among the base's other bodies). Whether the player now stops
+at the boulders is the game run's to show.
 
 **Not carried:** Halo 1's attachments (on the ten levels and the
 multiplayer maps: 58 `ligh`, 24 `effe`, 13 `lsnd`, 5 `pctl`; no light or
@@ -630,14 +660,44 @@ Halo ring were already built this way.
   4, 7, 3, 6, its four wheel regions; the scorpion's -1); through
   version 76 it was the role's word. E: `0x205fd1` turns a point off
   once that region's damage state reaches `+0x42`.
-  The rigid body leaves the wheels and treads out (`convert::wheel_nodes`:
-  the gripping points' nodes and every node under them) since version
-  77: Halo 2 holds a vehicle up on its friction-point springs, and V
-  the retail warthog's `phmo` has no wheel shape (a hull on node 0 whose
-  lowest point is 0.18 above the origin, and a bumper box). With the
-  tires in the body, their lowest point 0.018 below the origin sank up
-  to 0.144 into the ground at spawn and the depenetration threw the
-  warthog about 4.8 units (game run, 2026-11-19).
+  The wheels and treads (`convert::wheel_nodes`: the gripping points'
+  nodes and every node under them) follow the role (since version 86):
+  where most of the role's members have wheel or tread shapes in their
+  `phmo` (`rebuild::member_wheel_shapes`, since version 87: most of
+  the member's friction points name no region or a region its `phmo`
+  has; `VehicleRole::wheel_shapes`)
+  the body holds them above the hull's lowest point, each wheel node's
+  cells cut there and enclosed in one piece (`convert::held_wheels`);
+  otherwise they stay out. Halo 2 holds a vehicle up on its
+  friction-point springs and keeps its body clear of the ground either
+  way. V, coagulation:
+  the retail scorpion's `phmo` has two tread shapes reaching 1.13 either
+  side where its hull reaches 0.53, from 0.22 above the origin where the
+  hull's lowest point is 0.25; the retail warthog's has no wheel shape
+  (a hull on node 0 whose lowest point is 0.18 above the origin, and a
+  bumper box). The warthog's four friction points name its wheel
+  regions (`lf_wheel` ...; hlmt regions 4, 7, 3, 6), which its `phmo`
+  (regions `bumper`, `hull`; bodies on nodes `hull` and `bumper`) does
+  not have; the scorpion's twelve name none, its `phmo` one region,
+  `hull`, two bodies on no node. Every friction marker of both hangs
+  from node 0, so the markers' nodes cannot tell wheels from hull, and
+  in version 86 a width test (polyhedra reaching the nearest friction
+  marker) said yes to the warthog too. So the converted scorpion holds
+  its treads and the converted warthog leaves its tires out, as retail.
+  Versions 77 to 85 left the wheels and treads out
+  entirely, and the user walked through the converted scorpion's treads
+  on Blood Gulch (2026-11-19) though its `coll` carried them, so a biped
+  meets a vehicle through its `phmo` (inferred from that run; the engine
+  path was not traced). Before version 77, with the tires whole in the
+  body, their lowest point 0.018 below the origin sank up to 0.144 into
+  the ground at spawn and the depenetration threw the warthog about 4.8
+  units (game run, 2026-11-19). Proof: `tests/vehicle_rebuild_disc.rs`,
+  `wheels_and_treads_are_solid_above_the_hull` (the retail scorpion's
+  reach; the base's scorpion has wheel shapes, its warthog none, and the
+  converted roles agree; the converted scorpion reaches its treads'
+  sides, the warthog no further than its hull, neither under the hull's
+  lowest point; the ghost has no wheel nodes), and
+  `held_wheels_keep_what_is_above_the_floor`.
 - **Control** (`+0x1f2`, the 16 bits after `vehicle_type`,
   `rebuild::VEHI_CONTROL`): the majority over the base's vehicles of the
   same `vehicle_type`. V, every `vehi` on every map of the retail disc:
@@ -669,6 +729,51 @@ Halo ring were already built this way.
   the warthog, tank the scorpion, hover the ghost and wraith, flier the
   banshee, dropship the pelican and phantom. The turret type keeps the
   disc-wide turret tables, as does a type the base has none of.
+  **Since converter version 84 the role is taken over only the members
+  whose friction and hover points together are nearest the Halo 1
+  vehicle's powered mass points** (`rebuild::nearest_members`; every
+  member on a tie). A majority over vehicles tuned apart leaves zero
+  wherever no word has half the votes: Coagulation's hover type is the
+  ghost (3 hover points), the spectre (4) and the wraith (6), which
+  agree on few driving words, so through version 83 the converted Blood
+  Gulch ghost held zero in 16 root words the retail ghost fills
+  (`+0x1d0`..`+0x1dc`, `+0x1f4` 5.0, `+0x1f8` 2.5, `+0x204`, `+0x208`,
+  `+0x218`, `+0x22c`, `+0x230`, `+0x238`, `+0x254`, `+0x2d8`, `+0x2dc`, `+0x2e4`; V, read
+  live from the converted map against the base's three) and zero at
+  `+0x8`, `+0x10` and `+0x14` of each hover point (the retail ghost's
+  3.75 on its back point and 1.85 on its front pair, 0.5 and 0.45, 1.0),
+  and did not move under its driver (user report, converted Blood Gulch,
+  2026-11-19). Halo 1's ghost has three powered points, so its role is
+  the retail ghost alone (`tests/vehicle_rebuild_disc.rs`,
+  `ghost_takes_the_retail_ghosts_role`). The retail ghost's hover points
+  are not alike (its back point holds strength 3.75 and height 0.5, its
+  front pair 1.85 and 0.45), so with a one-member role whose hover
+  points match Halo 1's in number each converted point takes one retail
+  point's own words (`VehicleRole::hover_each`), paired by position:
+  each retail point's marker is placed in the vehicle's space through
+  its render model's rest pose (`rebuild::marker_positions`: the hover
+  point's marker `+0` names a `mode` marker group, whose first marker's
+  translation is carried through its node), and in the retail order each
+  takes the nearest Halo 1 powered point left (`convert::sphere_order`,
+  as friction points take phantom spheres). With a marker missing or
+  counts that differ, every point takes the majority as before.
+- **Seat flag bit 15** (`rebuild::SEAT_OPENS`). E: on entering a seat
+  the engine tests bit 15 of the seat's flags (`0x000d12b0`, the test at
+  `0x000d1302`; called from the seat change at `0x000ea979`, `0x000eab64`,
+  `0x000eb1ff`) and, set, sends the vehicle unit action `0x17`; on
+  leaving (`0x000d1360`, test at `0x000d13b2`; from `0x000ea7a5`,
+  `0x000ea8ba`) action `0x18`. The action table at `0x004677c8` gives
+  them `0x000e9370` and `0x000e9500`, which start the animation state
+  `0x0700005c` or `0x0700005d` (string IDs of seven characters, D:
+  `opening` and `closing` by length, not read off the string table) on
+  the vehicle and the objects attached to it. No other read of bit 15 of
+  a seat's flags was found (every `vehi +0x1cc` load followed by a bit 15
+  test, over the whole `.text`). The retail ghost driver holds it
+  (`0x801c`); Halo 1 has no such seat flag and its graphs no such state,
+  so since converter version 84 a rebuilt seat never takes it from the
+  role (the one-member ghost role would have carried it). It is not a
+  grenade switch: the converted ghost's driver throwing grenades is not
+  explained here.
 - **References**: the unit's weapons are Halo 1's converted weapons
   where they convert (no Halo 1 vehicle weapon converts yet, each listed
   in the report). Since version 50 the attachments are Halo 1's looping
@@ -1406,9 +1511,15 @@ starts from the definition default, then:
   (impact, and detonation: Halo 1's attached detonation damage or the
   first `jpt!` its detonation effect names). The slots Halo 1 has nothing
   converted for take the **Halo 2 counterpart's reference** (the
-  `TEMPLATES` row; references only): melee damage, effects and sounds (Halo 1's `effe` and
-  most `snd!` are not converted), the barrels' firing effects. A
-  projectile takes no `jpt!` from Halo 2. The HUD (`+0x2b0`) is Halo 1's
+  `TEMPLATES` row; references only): effects and sounds, the barrels'
+  firing effects. A projectile takes no `jpt!` from Halo 2. Since
+  converter v86 the slots named by the retail tags they hold
+  (`arsenal::WEAPON_OVERHEATED`, `WEAPON_MELEE_DAMAGE`,
+  `WEAPON_MELEE_RESPONSE`, `PROJECTILE_DETONATION_STARTED`,
+  `PROJECTILE_AIRBORNE_DETONATION`, `PROJECTILE_DETONATION`,
+  `PROJECTILE_SUPER_DETONATION`, `PROJECTILE_FLYBY_SOUND`) and the
+  material effects take Halo 1's converted tags, or none
+  ([../halo1/role-audit.md](../halo1/role-audit.md)). The HUD (`+0x2b0`) is Halo 1's
   `wphi` converted (`Converter::weapon_hud`, docs/halo1/hud.md); the
   counterpart's `nhdt` is the weapon's Halo 2 HUD in its HUD pair.
 

@@ -55,9 +55,35 @@ impl Default for Me {
     }
 }
 
+/// Extra observations used by the decision layer. A driver without these
+/// can still run the ordinary weapon, objective and targeting decisions.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Observations {
+    /// Own player slot and team, including while waiting to respawn.
+    pub player: Option<(u32, i16)>,
+    /// Cues on living players. Enemy cues only inform decisions in view.
+    pub contacts: Vec<Contact>,
+    /// An empty successful pickup scan can indicate that a weapon was taken.
+    pub pickups_scanned: bool,
+    /// Occupied power weapon and power-up placements. None means the host
+    /// could not check the ground this tick. An empty scan is meaningful.
+    pub supplies: Option<Vec<crate::decisions::supplies::Supply>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Contact {
+    pub id: u32,
+    pub aim: Vec3,
+    pub shield: Option<f32>,
+    /// Empty magazine with rounds in reserve. A window to push, inferred
+    /// from the held weapon rather than a reload animation.
+    pub empty_magazine: bool,
+}
+
 /// What the bot knows this tick.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Perception {
+    pub observations: Observations,
     /// `None` while the bot has no living unit (dead, or not in a game).
     pub me: Option<Me>,
     /// The other players with living units.
@@ -204,6 +230,7 @@ mod tests {
     fn look(me: Me, others: Vec<Seen>, teams: bool) -> HostPadState {
         step(
             &Perception {
+                observations: Default::default(),
                 me: Some(me),
                 others,
                 teams,
@@ -261,6 +288,7 @@ mod tests {
     fn it_looks_up_at_a_target_above() {
         let up = step(
             &Perception {
+                observations: Default::default(),
                 me: Some(me([1.0, 0.0, 0.0])),
                 others: vec![Seen {
                     id: 0,
@@ -288,6 +316,7 @@ mod tests {
     #[test]
     fn the_nearest_enemy_is_the_target() {
         let p = Perception {
+            observations: Default::default(),
             me: Some(me([1.0, 0.0, 0.0])),
             others: vec![seen(9.0, 0.0, 1), seen(0.0, 2.0, 0), seen(4.0, 0.0, 1)],
             teams: true,

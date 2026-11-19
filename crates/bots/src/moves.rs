@@ -9,7 +9,7 @@
 //! - **Range**: closes in from beyond the weapon's range, backs off inside
 //!   it ([`preferred_range`], a seam for the weapons decision).
 //! - **Hit reactions**: a shield drop is a hit. It may reverse the strafe
-//!   at once (a juke), jump, or (at range) crouch for a moment.
+//!   at once (a juke) or (at range) crouch for a moment.
 //! - **Retreat and reload**: backs away to a spot the enemy cannot see
 //!   ([`cover`], a ray against the walls), else straight back; never
 //!   stands still to reload.
@@ -44,8 +44,6 @@ pub struct Style {
     pub stand: f32,
     /// The chance, on a hit, to reverse the strafe at once.
     pub juke: f32,
-    /// The chance, on a hit, to jump.
-    pub jump: f32,
     /// The chance, on a hit beyond [`CROUCH_RANGE`], to crouch a moment.
     pub crouch: f32,
     /// How hard it backs off inside its range (0: it never does).
@@ -61,7 +59,6 @@ impl Style {
                 strafe: (40, 80),
                 stand: 0.35,
                 juke: 0.0,
-                jump: 0.0,
                 crouch: 0.0,
                 keep: 0.0,
                 cover: false,
@@ -70,7 +67,6 @@ impl Style {
                 strafe: (20, 50),
                 stand: 0.15,
                 juke: 0.2,
-                jump: 0.1,
                 crouch: 0.0,
                 keep: 0.6,
                 cover: true,
@@ -79,7 +75,6 @@ impl Style {
                 strafe: (12, 35),
                 stand: 0.05,
                 juke: 0.5,
-                jump: 0.25,
                 crouch: 0.1,
                 keep: 0.85,
                 cover: true,
@@ -88,7 +83,6 @@ impl Style {
                 strafe: (8, 26),
                 stand: 0.0,
                 juke: 0.7,
-                jump: 0.35,
                 crouch: 0.15,
                 keep: 1.0,
                 cover: true,
@@ -159,6 +153,8 @@ pub struct Moves {
     /// The strafe: +1 left of the enemy line, -1 right, 0 standing; and
     /// the tick it changes.
     pub side: f32,
+    /// Deflection for this strafe, set once per rhythm change.
+    pace: f32,
     until: u32,
     jump_until: u32,
     jump_ready: u32,
@@ -168,9 +164,8 @@ pub struct Moves {
     anchor: Option<(Vec3, u32)>,
     /// The cover spot and the tick it is looked for again.
     pub cover: Option<(Vec3, u32)>,
-    /// Hit reactions so far (for tests and logs).
+    /// Jukes so far (for tests and logs).
     pub jukes: u32,
-    pub hit_jumps: u32,
 }
 
 fn dist_xy(a: Vec3, b: Vec3) -> f32 {
@@ -185,6 +180,7 @@ impl Moves {
         Moves {
             rng: (seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ 0x6d6f_7665_7321) | 1,
             side: 1.0,
+            pace: 0.8,
             until: 0,
             jump_until: 0,
             jump_ready: 0,
@@ -194,7 +190,6 @@ impl Moves {
             anchor: None,
             cover: None,
             jukes: 0,
-            hit_jumps: 0,
         }
     }
 
@@ -214,6 +209,15 @@ impl Moves {
         self.shield = None;
     }
 
+    pub(crate) fn release(&mut self, tick: u32) {
+        self.calm();
+        self.until = tick;
+        self.jump_until = tick;
+        self.jump_ready = tick;
+        self.crouch_until = tick;
+        self.react_ready = tick;
+    }
+
     /// This tick's footwork. Without a map: straight at the enemy (or
     /// straight back when retreating), as stage 1 did.
     pub fn fight(&mut self, i: &FightIn, map: Option<&MapData>, bodies: &[Vec3]) -> FightMove {
@@ -224,7 +228,7 @@ impl Moves {
         let f = [to[0] / flat, to[1] / flat];
         let mut out = FightMove::default();
 
-        // A hit: juke, jump or crouch, at the skill's odds.
+        // A hit: juke or crouch, at the skill's odds.
         let hurt = self.shield.is_some_and(|s| i.shield < s - HIT);
         self.shield = Some(i.shield);
         if hurt && reached(t, self.react_ready) {
@@ -234,11 +238,7 @@ impl Moves {
                 self.until = t.wrapping_add(st.strafe.0);
                 self.jukes += 1;
             }
-            if !i.rush && self.uniform() < st.jump && reached(t, self.jump_ready) {
-                self.jump_until = t.wrapping_add(JUMP_TICKS);
-                self.jump_ready = t.wrapping_add(JUMP_COOLDOWN);
-                self.hit_jumps += 1;
-            } else if flat > CROUCH_RANGE && self.uniform() < st.crouch {
+            if !i.rush && flat > CROUCH_RANGE && self.uniform() < st.crouch {
                 self.crouch_until = t.wrapping_add(CROUCH_TICKS);
             }
         }
@@ -248,6 +248,7 @@ impl Moves {
             let d = if back { [-f[0], -f[1]] } else { f };
             out.walk = around_bodies(i.at, d, bodies);
             out.jump = !reached(t, self.jump_until);
+            out.crouch = !out.jump && !reached(t, self.crouch_until);
             return out;
         };
 
@@ -267,8 +268,9 @@ impl Moves {
                 };
                 let span = st.strafe.1.saturating_sub(st.strafe.0) as f32;
                 self.until = t.wrapping_add(st.strafe.0 + (self.uniform() * span) as u32);
+                self.pace = 0.62 + 0.36 * self.uniform();
             }
-            let side = [-f[1] * self.side, f[0] * self.side];
+            let side = [-f[1] * self.side * self.pace, f[0] * self.side * self.pace];
             let (near, far) = i.range;
             let fwd = if i.retreat {
                 -0.8
@@ -307,7 +309,7 @@ impl Moves {
         // Footing: the way it wants, else the other side, else straight
         // forward or back, else stand.
         if norm2(d) > 1e-3 && !standable(m, i.at, d) {
-            let side = [-f[1] * self.side, f[0] * self.side];
+            let side = [-f[1] * self.side * self.pace, f[0] * self.side * self.pace];
             let along = d[0] * f[0] + d[1] * f[1];
             let other = [-side[0] + f[0] * along, -side[1] + f[1] * along];
             let fwd = if along.abs() > 0.1 {
@@ -383,6 +385,16 @@ fn step_floor(m: &MapData, q: [f32; 2], from_z: f32) -> Option<f32> {
 /// stands in the way at knee height. Off the mesh (no floor found under
 /// it), only that the point ahead is on it.
 pub fn standable(m: &MapData, at: Vec3, d: [f32; 2]) -> bool {
+    step_clear(m, at, d, &PROBES)
+}
+
+/// Shorter check for a bend just before a cleared corner. Long probes
+/// would keep the hand straight until it had already gone past the turn.
+pub(crate) fn bend_clear(m: &MapData, at: Vec3, d: [f32; 2]) -> bool {
+    step_clear(m, at, d, &[0.22, 0.45])
+}
+
+fn step_clear(m: &MapData, at: Vec3, d: [f32; 2], probes: &[f32]) -> bool {
     let l = norm2(d);
     if l < 1e-3 {
         return true;
@@ -395,7 +407,7 @@ pub fn standable(m: &MapData, at: Vec3, d: [f32; 2]) -> bool {
             .is_some();
     };
     let mut prev = here;
-    for s in PROBES {
+    for &s in probes {
         let q = [at[0] + u[0] * s, at[1] + u[1] * s];
         let Some(z) = step_floor(m, q, prev) else {
             return false;

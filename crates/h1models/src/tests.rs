@@ -396,6 +396,11 @@ fn check_graph(
             }
         }
     }
+    // Every animation reads as the engine reads it.
+    for (i, a) in src.animations.iter().enumerate() {
+        let p = g.engine_problems(i, &resource);
+        assert!(p.is_empty(), "{}: {p:?}", a.name);
+    }
     src.animations
         .iter()
         .enumerate()
@@ -1654,6 +1659,25 @@ fn a_converted_model_carries_the_engine_s_marker_names() {
     assert!(crate::mode::marker_aliases(&["left_hand", "head"]).is_empty());
 }
 
+/// A strip built from a triangle list reads back as that list, in order
+/// and winding, whatever the triangles' parity in the strip they came from.
+#[test]
+fn a_triangle_list_strip_reads_back_as_the_list() {
+    let strip = [0u16, 1, 2, 3, 4, 5, 5, 6, 6, 7, 8];
+    let tris = h1::strip_triangles(&strip);
+    for keep in [
+        tris.clone(),
+        vec![tris[1]],
+        vec![tris[0], tris[2], tris[3]],
+        Vec::new(),
+    ] {
+        assert_eq!(h1::strip_triangles(&h1::triangles_strip(&keep)), keep);
+    }
+    // Triangles sharing vertices across the join still read back whole.
+    let shared = vec![[0, 1, 2], [2, 1, 0], [2, 3, 1]];
+    assert_eq!(h1::strip_triangles(&h1::triangles_strip(&shared)), shared);
+}
+
 // ---------------------------------------------------------------------------
 // Vehicle graphs
 // ---------------------------------------------------------------------------
@@ -1784,6 +1808,12 @@ fn reads_a_vehicle_graph_s_tables() {
         h1::weapon_types(&img, at).unwrap(),
         [("cg".to_owned(), "fixed".to_owned())]
     );
+    // The same classes in a graph without a vehicles element (a biped's,
+    // whose converted graph holds only the types its animations name).
+    let (mut img, at) = vehicle_image();
+    let o = (at - BASE) as usize;
+    img.0[o + 0x24..o + 0x28].fill(0);
+    assert!(h1::weapon_types(&img, at).unwrap().is_empty());
     // A graph without the tables has none.
     let (img, at) = synthetic_graph();
     let g = h1::Graph::read(&img, at).unwrap();
@@ -1954,6 +1984,12 @@ fn a_vehicle_graph_takes_halo_2s_vehicle_layout() {
         r.map[raw.offset as usize + off as usize]
     };
     assert_eq!((0..5).map(codec).collect::<Vec<_>>(), [8, 3, 8, 3, 3]);
+    // Every blob starts 16-byte aligned: codec 8's rotation reads are
+    // `movaps` (E `0x0028c589`). Animation 2 followed 0 and 1 at a
+    // 4-aligned offset through converter version 88.
+    for i in 0..6 {
+        assert_eq!(r.w(anims + i * 0x6c + 0x28) % 16, 0, "animation {i}");
+    }
 
     // Suspension: the one element whose mass point has a marker.
     let susp = r.level(r.base + 0x3c, 0x28);
@@ -2000,6 +2036,44 @@ fn a_vehicle_graph_takes_halo_2s_vehicle_layout() {
 
     // Every animation still decodes to Halo 1's frames, the codec 8 ones
     // exactly up to float rounding.
+    let (bytes, ids) = build(vec![(out, "invented\\graph")]);
+    for (name, e) in check_graph(&g, &[], bytes, ids[0]) {
+        assert!(e[0] < 2e-4 && e[1] == 0.0 && e[2] == 0.0, "{name}: {e:?}");
+    }
+}
+
+/// A base animation with a blend screen keeps its static stream, padded
+/// so its codec 8 stream after it starts 16-byte aligned (E: `movaps` at
+/// `0x0028c589`); the static size covers the padding and the clip decodes
+/// to Halo 1's frames.
+#[test]
+fn a_blend_screen_after_a_static_stream_is_aligned() {
+    let mut g = vehicle_graph();
+    // Steering and aim as base animations whose static stream holds one
+    // scale (node 0's, a default channel of the source): 0x24 bytes, so
+    // codec 8 would follow at +0x24. The other channels are animated.
+    let base = g.animations[5].clone();
+    for i in [0, 2] {
+        g.animations[i] = h1::Animation {
+            name: g.animations[i].name.clone(),
+            animated: [0b111, 0b111, 0b110],
+            ..base.clone()
+        };
+    }
+    let (out, _) = jmad::convert_graph(&g, None).unwrap();
+    let r = Raw32::new(out.clone());
+    let anims = r.w(r.base + 0x30);
+    let res_ptr = r.w(r.base + 0xb0);
+    let raw = RawPointer::decode(r.w(res_ptr + 8)).unwrap();
+    for i in [0u32, 2] {
+        let a = anims + i * 0x6c;
+        let off = r.w(a + 0x28) as usize;
+        let static_size = (r.w(a + 0x40) >> 16) as usize;
+        assert_eq!(r.map[raw.offset as usize + off], 1, "codec 1 first");
+        assert_eq!(static_size, 0x30, "0x24 padded to 16");
+        assert_eq!((off + static_size) % 16, 0);
+        assert_eq!(r.map[raw.offset as usize + off + static_size], 8);
+    }
     let (bytes, ids) = build(vec![(out, "invented\\graph")]);
     for (name, e) in check_graph(&g, &[], bytes, ids[0]) {
         assert!(e[0] < 2e-4 && e[1] == 0.0 && e[2] == 0.0, "{name}: {e:?}");

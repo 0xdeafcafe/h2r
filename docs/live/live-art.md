@@ -56,7 +56,7 @@ entry; a single BSP of a level that could not be read is listed as
 `map/<stem>/bsp_<index>` and the level keeps its other BSPs.
 `GEOMETRY_VERSION` is 1 (`views.json` is unchanged; the web viewer checks
 it); the art's `EXTRACTOR_VERSION` (part of the cache
-key) is 24, so a disc extracted by an older build is extracted again
+key) is 25, so a disc extracted by an older build is extracted again
 (10 added the layers, the sky and `extras.name`; 12 the surface
 pictures, texture coordinates and the `scenario` node; 13 the base map
 from the shader's passes, pictures as files beside `map.glb`, the gzip
@@ -71,7 +71,7 @@ pictures and views, surface pictures at the disc's full size; 22 the
 bipeds' strafing, backwards and crouched movement clips, the vehicle seat
 poses `any:seat_<mode>`, the models' `seats` table and `asset.extras.lift`;
 23 installed mods' art and scripted spawns; 24 the sky's see-through
-layers keep their pictures).
+layers keep their pictures; 25 exports the animated plasma pass on lift geometry).
 
 ### `map.glb`
 
@@ -182,6 +182,16 @@ layers keep their pictures).
   half; `alphaMode: MASK`) or `additive` (added; no depth). Multiplying,
   doubling and additive materials are `KHR_materials_unlit`; effects are
   double-sided.
+- **Plasma.** A `transparent/plasma_alpha` surface keeps its geometry and
+  texture coordinates under its BSP or placed model. Its unlit material
+  names the coverage mask in `baseColorTexture`, the two noise textures
+  by index in `extras.noise`, and the pass data in `extras.plasma`.
+  `uv` holds the scale, offset and optional per-axis scroll
+  (`from`, `to`, `period` in seconds) of noise A, noise B and the mask,
+  in that order. `colors` holds the three RGB constants used to tint and
+  brighten the pass. The viewer adds the masked result with depth testing
+  and no depth writes. The separate 2D tactical views still use their
+  simplified glass class for those triangles.
 - **Sky.** `asset.extras.sky`, when the scenario has a sky: `name` (the
   sky tag's file name), `glb` (`"sky.glb"`, beside `map.glb`, when its
   model could be built), `clear` (the clear colour, RGB 0..1, when not
@@ -283,10 +293,12 @@ radiosity parameters), and the haze drowned Halo 1's maps in cyan.
 
 **Loading.** The viewer draws the level as soon as `map.glb` has loaded,
 untextured (each look shows its class material), then fetches the
-pictures six at a time (`textures3d.ts` `deferTextures`,
-`streamTextures`) and swaps each in when it arrives: the images are
-decoded off the main thread (`createImageBitmap`, no flip, no colour
-conversion). Placed objects of one model are instanced (below). Every
+pictures sixteen at a time (`textures3d.ts` `deferTextures`,
+`streamTextures`; `PICTURES_AT_ONCE` in `scene.ts`) and swaps each in
+when it arrives: the images are decoded off the main thread
+(`createImageBitmap`, no flip, no colour conversion). Player, weapon and
+vehicle models wait for `map.glb` (`ModelLibrary.hold`), so they don't
+share its bandwidth. Placed objects of one model are instanced (below). Every
 art URL the site builds carries the manifest's `source` stamp (`?v=<first
 16 characters>`, `web/src/map/geometry.ts`); the picture and sky URLs
 keep it. The art server (`crates/live-server/src/art.rs`) answers a
@@ -311,6 +323,47 @@ fully textured, ms):
 
 The geometry is most of the wait; gzip takes Outskirts' to about a third
 on the wire.
+
+**Performance (measured 2026-11-19).** `bun run bench:viewer` (in `web/`,
+after `bun run build`; `web/bench/viewer.bench.ts`) serves the built site
+locally with the API and art from live.forbes.red, opens a game's page
+with `?view=3d&perf` in headless Chrome and reports the load (requests,
+bytes on the wire, ms to the first frame with the level and to fully
+textured; median of cold runs, then one warm) and, with the replay
+playing, draw calls, triangles and CPU ms per frame in `update()` and in
+`draw()` (three.js's submission, not GPU time), with AO on and off.
+`--profile` adds the functions the page spent its time in; `--census`
+the visible meshes; `--timeline` every request. `?perf` puts the scene on
+`window.h2Viewer`; the scene marks `h2-viewer:first-map-frame` and
+`h2-viewer:textured` with User Timing. On a 10-core Mac (cold, cache
+off; load times swing with the network, by a second or two):
+
+| | before | after |
+|---|---|---|
+| Old Mombasa (AI, 5 zones): first frame / textured | 5037 / 17017 ms | 2385 / 6398 ms |
+| Old Mombasa, AO on: draw calls, draw ms | 3762, 19.6 (p95 20.9) | 1931, 9.8 (p95 10.5) |
+| Old Mombasa: update ms | 1.3 (p95 18.3) | 1.1 (p95 1.3) |
+| Cyclotron (4 players): first frame / textured | 1654 / 5011 ms | 1413 / 2838 ms |
+| Cyclotron, AO on: draw calls, draw ms | 931, 5.1 (p95 5.5) | 497, 3.2 (p95 3.4) |
+
+What changed: the ambient occlusion reads the depth the scene was drawn
+with (the composer's target has a depth texture, `aopass.ts`) instead of
+drawing the whole scene again for its own depth and normals, which also
+had three look each mesh's program up again (skinned, instanced and plain
+meshes shared that one material); the world matrices are updated once a
+frame, not once per pass and again for the labels; floor probes for
+bipeds' feet (`ground.ts`) go to a grid of the level's triangles
+(`floorgrid.ts`) rather than raycasting every triangle of the level (the
+update's 12 to 18 ms spikes on a campaign level); pictures sixteen at a
+time (each is a round trip of 100 to 300 ms to the art host, so six at a
+time was latency-bound: a campaign level's 197 took 12 s), and models
+after the level. What is left, by the profile: the shadow pass redraws
+every caster each frame though the level never moves (about half the
+remaining draw calls; a cached static shadow map would halve them), and
+three's per-object program checks (`getProgram`) between skinned and
+plain meshes in that pass. A campaign level with its AI is ~1900 draw
+calls, of which the AI's skinned meshes are about 450 (223 meshes, drawn
+and shadowed).
 
 `web/src/viewer/textures3d.ts` keeps both materials of every textured
 mesh (the look and the class material its primitive's `flat` names), so
@@ -783,7 +836,12 @@ step for that and for video memory.
    so cutting at a half keeps what is at least a quarter: the leaves of
    the campaign's trees and bushes keep only 0.5 % to 3 % of their pixels
    at a half. Triangles keep their stored texture coordinates and weld
-   on them too (1/4096).
+   on them too (1/4096). The plasma pass uses layer 15 instead. Ascension,
+   Midship and Ivory Tower have kind-4 parts on their placed lift models.
+   Lockout's beam is in its BSP. Each resolves the same additive pass
+   with two noise maps on stages 1 and 2 and a mask on stage 3. The
+   extractor reads the time-driven UV properties by destination
+   component and preserves the individual periods and directions.
 11. **Scenario objects.** The placement blocks of the object type table
    (docs/formats/objects.md) other than machines: scenery `+0x50`, vehicles
    `+0x70`, equipment `+0x80`, weapons `+0x90`, controls `+0xb8`, light

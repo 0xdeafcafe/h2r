@@ -6,6 +6,8 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import { plugin } from "bun";
 import { afterChange, canFullscreen, setFullscreen, type FullscreenDoc } from "../src/viewer/fullscreen";
 import type { GameState } from "../src/state/reducer";
+import { ReplayTimeline } from "../src/state/replay";
+import type { ReplaySession } from "../src/viewer/session";
 
 /** An element and a document that record what full screen asked of them. */
 function fakes(opts: { api?: boolean; refuse?: boolean; enabled?: boolean } = {}) {
@@ -84,6 +86,7 @@ const game = (over: Partial<GameState> = {}): GameState => ({
 let render: (url: string, g: GameState, extra?: Record<string, unknown>) => string;
 let viewerMode: (view: string | undefined, ok: boolean) => string;
 let keyIsForControl: (t: EventTarget | null) => boolean;
+let renderControls: (session: ReplaySession) => string;
 
 beforeAll(async () => {
   const ROUTER = `${import.meta.dir}/../node_modules/@solidjs/router/dist/index.jsx`;
@@ -107,8 +110,10 @@ beforeAll(async () => {
   const { createComponent } = await import("solid-js");
   const { Router, Route } = await import(ROUTER);
   const mod = await import("../src/viewer/GameViewer");
+  const { default: Transport } = await import("../src/viewer/Transport");
   viewerMode = mod.viewerMode;
   keyIsForControl = mod.keyIsForControl;
+  renderControls = (session) => renderToString(() => createComponent(Transport, { session, matchStartTick: 0 }));
   render = (url, g, extra = {}) => renderToString(() => createComponent(Router, {
     url,
     get children() {
@@ -126,6 +131,23 @@ beforeAll(async () => {
 });
 
 describe("the inline viewer", () => {
+  test("the Live control shows when following or behind and disappears for a replay", () => {
+    const timeline = new ReplayTimeline([
+      { game_id: "g1", tick: 0, players: [] },
+      { game_id: "g1", tick: 30, players: [] },
+    ], []);
+    const noop = () => {};
+    const renderAt = (live: boolean, following: boolean) => renderControls({
+      timeline: () => timeline, error: () => null, tick: () => following ? 30 : 10,
+      playing: () => following, speed: () => 1, isLive: () => live, followingLive: () => following,
+      goLive: noop, toggle: noop, seek: noop, setSpeed: noop, stepFrame: noop, stepMark: noop, watchKill: noop,
+      frame: () => ({ players: [], markers: [], seen: null }), soughtAt: () => 0, camera: () => null,
+    });
+    expect(renderAt(true, true)).toMatch(/class="replay-live" aria-pressed="true"[^>]*>Live<\/button>/);
+    expect(renderAt(true, false)).toMatch(/class="replay-live" aria-pressed="false"[^>]*>Live<\/button>/);
+    expect(renderAt(false, false)).not.toContain("replay-live");
+  });
+
   test("mounts in the page: its bar, the 2D map in its stage, the controls under it, and a full screen button", () => {
     const html = render("/games/halo2/games/g1", game());
     expect(html).toMatch(/<section class="gv\s*"/);
