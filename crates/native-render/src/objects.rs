@@ -206,9 +206,10 @@ pub fn clear_objects(
         match mem.read_u32(item) {
             Some(GEOMETRY_BUILD) => out.walk.geometry += 1,
             Some(build) => {
-                match out.walk.other_builds.iter_mut().find(|(b, _)| *b == build) {
-                    Some((_, n)) => *n += 1,
-                    None if out.walk.other_builds.len() < 4 => out.walk.other_builds.push((build, 1)),
+                let builds = &mut out.walk.other_builds;
+                match builds.iter().position(|(b, _)| *b == build) {
+                    Some(i) => builds[i].1 += 1,
+                    None if builds.len() < 4 => builds.push((build, 1)),
                     None => {}
                 }
                 continue;
