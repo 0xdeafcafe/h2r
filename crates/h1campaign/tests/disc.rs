@@ -809,73 +809,6 @@ fn a30_converts_onto_its_base_and_reads_back() {
             }
             println!("placed at startup: {:?}", r.initial);
         }
-
-        // Platoons the scripts name: a squad group of the platoon's squads
-        // under the encounter's group (the ai lane's handoff; a30's dropship
-        // waves are placed and boarded as whole platoons). The first wave's
-        // landing platoon holds the grunt and elite squads; every argument
-        // of place, count and actor queries names the group, while a
-        // migration's destination keeps a squad (a group there would move
-        // no one).
-        if opts.ai {
-            let view = tags::geometry::TagView::new(&bytes, addr);
-            let ai = h1ai::h2::ScenarioAi::read(&view).unwrap();
-            let wave = ai
-                .squad_groups
-                .iter()
-                .position(|x| x.name == "first_wave")
-                .unwrap();
-            let toon = ai
-                .squad_groups
-                .iter()
-                .position(|x| x.name == "first_wave/wave_1_lz_toon")
-                .expect("the first wave's landing platoon as a squad group");
-            assert_eq!(ai.squad_groups[toon].parent as usize, wave);
-            let members: Vec<usize> = ai
-                .squads
-                .iter()
-                .enumerate()
-                .filter(|(_, q)| q.parent as usize == toon)
-                .map(|(i, _)| i)
-                .collect();
-            let name = |i: usize| ai.squads[i].name.as_str();
-            assert!(
-                members
-                    .iter()
-                    .any(|&i| name(i).ends_with("wave_1_lz_grunt"))
-                    && members.iter().any(|&i| name(i).ends_with("wave_1_lz_elite")),
-                "the platoon holds its grunt and elite squads: {:?}",
-                members.iter().map(|&i| name(i)).collect::<Vec<_>>()
-            );
-            // The scripts' atoms for the platoon name the group...
-            let mut platoon_atoms = 0;
-            for n in hs_s.nodes().iter().filter(|n| n.live() && n.atom()) {
-                if hs_s.string(n.string_offset()).ok()
-                    != Some("first_wave/wave_1_lz_toon")
-                {
-                    continue;
-                }
-                assert_eq!(n.data(), 0x4000_0000 | toon as u32);
-                platoon_atoms += 1;
-            }
-            assert!(platoon_atoms > 0, "the scripts name the platoon");
-            // ...but a migration's destination names a squad of the
-            // encounter.
-            for n in hs_s.nodes().iter().filter(|n| n.live() && n.atom()) {
-                if hs_s.string(n.string_offset()).ok()
-                    != Some("rubble_wave/wave_2_attack_toon")
-                {
-                    continue;
-                }
-                assert_eq!(
-                    ai.squads
-                        .get(n.data() as usize)
-                        .map(|q| q.name.split('/').next().unwrap_or("")),
-                    Some("rubble_wave"),
-                    "the destination is a squad of rubble_wave"
-                );
-            }
-        }
     }
 
     // Sounds: each converted one (named as in Halo 1) resolves through the
@@ -935,58 +868,6 @@ fn a30_converts_onto_its_base_and_reads_back() {
     // Listed by the Halo 1 campaign manifest under the map's own path.
     let text = h1campaign::manifest::manifest_for(None, "a30").unwrap();
     h1campaign::manifest::check(&text, "a30").unwrap();
-}
-
-/// Every slot the serving table claims is one of the Halo 2 builtins no
-/// retail script calls whose evaluator is the shared discarded stub
-/// (docs/halo1/scripts.md, "Serving missing builtins"): not one a retail
-/// map names, not one `h1scripts::identified` names by position, and of
-/// the stub shape the game's `h1-scripts` feature patches. Reading every
-/// map's scripts names the builtins, as `hs::Catalog::observe` does.
-#[test]
-#[ignore = "reads disc/halo2.iso"]
-fn served_slots_are_unnamed_discarded_stubs() {
-    let mut iso = h2_iso();
-    let e = iso.find("default.xbe").unwrap();
-    let xbe_bytes = iso.read(&e).unwrap();
-    let mut catalog = hs::Catalog::from_xbe(&xbe::Xbe::parse(&xbe_bytes).unwrap()).unwrap();
-    for e in iso
-        .entries()
-        .unwrap()
-        .into_iter()
-        .filter(|e| !e.is_dir && e.path.ends_with(".map"))
-    {
-        let mut m = Map::from_reader(Cursor::new(iso.read(&e).unwrap())).unwrap();
-        catalog
-            .observe(&hs::Scenario::read(&mut m).unwrap())
-            .unwrap();
-    }
-    for s in h1builtins::SERVED {
-        let f = catalog.function(s.slot).unwrap();
-        assert!(
-            f.name().is_none(),
-            "{}: slot {} is {} (a retail script calls it)",
-            s.name,
-            s.slot,
-            f.name().unwrap_or("?")
-        );
-        assert_eq!(
-            f.evaluate(),
-            h1builtins::NULL_STUB_EVALUATE,
-            "{}: slot {}'s evaluator",
-            s.name,
-            s.slot
-        );
-        assert!(
-            h1scripts::identified::IDENTIFIED
-                .iter()
-                .all(|i| i.index != s.slot),
-            "{}: slot {} is claimed by an identification too",
-            s.name,
-            s.slot
-        );
-    }
-    println!("{} served slots checked", h1builtins::SERVED.len());
 }
 
 /// Every Halo 1 level's converted scripts only ask the retail interpreter

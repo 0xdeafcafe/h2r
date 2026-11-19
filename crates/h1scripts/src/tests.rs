@@ -15,7 +15,6 @@ const PASS: u16 = 3;
 const VOID: u16 = 4;
 const BOOL: u16 = 5;
 const SHORT: u16 = 7;
-const LONG: u16 = 8;
 const STRING: u16 = 9;
 const AI: u16 = 11;
 const OBJECT: u16 = 12;
@@ -559,58 +558,6 @@ fn extension_policy_keeps_missing_calls_for_the_vm() {
     assert_eq!(names[&(crate::compile::EXTENSION_BASE + 5)], "gone");
 }
 
-/// One served builtin: `game_time`, the first entry of
-/// [`h1builtins::SERVED`], in its own invented tables so the fixture's own
-/// catalog is untouched.
-#[test]
-fn served_builtins_compile_to_their_slot_under_either_policy() {
-    let served = h1builtins::by_name("game_time").unwrap();
-    let mut b = Builder::default();
-    let root = b.call(1, LONG, "game_time", &[]);
-    let t = read(&scenario(
-        &b,
-        &[("clock", 3, LONG, root)],
-        &[],
-    ))
-    .unwrap();
-    // 0 begin (special form), 1 game_time; no Halo 2 builtin of the name.
-    let c = Catalog::new(
-        vec![f("begin", PASS, 0x2000, &[]), f("game_time", LONG, ORDINARY, &[])],
-        h1_types(),
-        ["startup", "dormant", "continuous", "static", "stub"]
-            .map(String::from)
-            .to_vec(),
-    )
-    .unwrap();
-    let h2 = h2_target();
-    let table = Table::build(&c, &h2);
-    assert_eq!(table.builtin(1).unwrap().kind, Kind::Missing);
-    for policy in [Missing::Stub, Missing::Extension] {
-        let out = compile(&t, &c, &table, &h2, policy, &["sound\\x".into()]).unwrap();
-        assert_eq!(out.served.len(), 1, "{policy:?}");
-        assert!(out.served[0].name.starts_with("game_time (slot"));
-        assert!(out.missing.is_empty());
-        let s = hs::Scenario::decode(&out.scenario_bytes(BASE), BASE).unwrap();
-        assert_eq!(s.builtin_names().unwrap()[&served.slot], "game_time");
-        // The retail rules accept the call with the slot's patch known.
-        let patch: Vec<(u16, u16, &[u16])> = h1builtins::SERVED
-            .iter()
-            .map(|s| (s.slot, s.returns, s.params))
-            .collect();
-        let mut functions = vec![(PASS, 2, 0x2000, vec![PASS])];
-        functions.resize(served.slot as usize + 1, (VOID, 0, 0x2ab130, vec![]));
-        let kinds = ["startup", "dormant", "continuous", "static", "stub"]
-            .map(String::from)
-            .to_vec();
-        let catalog = hs::Catalog::invented(h2.types.clone(), kinds, functions);
-        s.validate_served(&catalog, &patch).unwrap();
-        // And without it, for this zero-argument builtin, as the discarded
-        // stub it is: retail runs it, returning 0, until the feature
-        // patches the slot's return type.
-        s.validate(&catalog).unwrap();
-    }
-}
-
 #[test]
 fn hooks_resolve_into_atoms() {
     let (_, mut out) = compiled(Missing::Stub);
@@ -715,7 +662,6 @@ mod level_and_seats {
             type_name: ty.into(),
             h1_type: String::new(),
             token: token.into(),
-            direct: None,
         }
     }
 

@@ -225,14 +225,6 @@ points! { ALL;
     /// `game_tick`: the per-tick phases, then the tick count. Called once per
     /// simulated tick by `game_update_ticks`.
     GAME_TICK @ 0x0013_7fe0: [fn() ret 0]; "docs/engine/engine-map.md";
-    /// The HaloScript return path (`0x209ae0`): every builtin or script
-    /// return flows through it. EAX the value, ECX the thread datum; the
-    /// callee's declared return type (the builtin descriptor's, or the
-    /// script's) and the call node's own type decide the cast, then the
-    /// value is written through the parent frame's destination and the
-    /// frame popped. A `before` may change EAX (docs/halo1/scripts.md,
-    /// "Serving missing builtins").
-    HS_RETURN @ 0x0020_9ae0: [fn(value: eax, thread: ecx) ret 0]; "docs/halo1/scripts.md";
     /// Game activation after the scenario's cache is loaded: options in EAX,
     /// AL 1 once the map and its first BSP are in.
     GAME_ACTIVATE @ 0x0018_f000: [fn(options: eax) -> al ret 0]; "docs/runtime/level-boot.md";

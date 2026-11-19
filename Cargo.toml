@@ -9,7 +9,6 @@ license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 hs = { path = "crates/hs" }
-h1builtins = { path = "crates/h1builtins" }
 tags = { path = "crates/tags" }
 map = { path = "crates/map" }
 assets = { path = "crates/assets" }

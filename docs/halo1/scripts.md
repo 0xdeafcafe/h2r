@@ -171,7 +171,7 @@ under an index nobody calls. Value types map by name; Halo 2 lacks
 
 ### Builtins named by position
 
-`translate::Target::from_catalog` also names 30 Halo 2 builtins no retail
+`translate::Target::from_catalog` also names 25 Halo 2 builtins no retail
 script calls (`h1scripts::identified::IDENTIFIED`), so the Halo 1
 builtins of those names translate like any other. Halo 2's table keeps
 Halo 1's order with entries inserted between, so each is the only unnamed
@@ -183,25 +183,13 @@ name) is Halo 1's: the recordings 138 to 142 (between
 which reads the scenario's recorded animations; held at converter
 version 27, played from 28 with the streams rewritten by
 `h1campaign::recordings`), `object_set_facing` 106,
-`vehicle_riders` 236 (E: the same fixed-signature wrapper into each
-game's argument evaluator, between `vehicle_unload` and `vehicle_driver`
-as Halo 1's 121; a30's checkpoints free the jeep's riders through it),
-`ai_free_units` 289 (E: the argument evaluated, one call on the list,
-between `ai_attach_units` and `ai_place` as Halo 1's 157),
 `scenery_animation_start` 184 and `_at_frame` 188, `unit_open` 194,
 `unit_close` 195, `custom_animation_list` 205,
 `unit_custom_animation_at_frame` 206, `unit_is_playing_custom_animation`
 207, `unit_enter_vehicle` 216, `unit_suspended` 249, `camera_set_relative`
 451, `camera_set_animation` 452, `camera_set_first_person` 456,
 `camera_set_dead` 457 (an object in Halo 2), `object_pvs_set_camera` 471,
-`cinematic_set_title_delayed` 561, `game_all_quiet` 586 and
-`game_safe_to_speak` 587 (E: the two `() -> boolean` after
-`game_safe_to_save`; the quiet one's callee builds the same
-recent-damage query, magic `0x86868686` and window `0x20`; a30's
-checkpoints wait on both), `vehicle_hover` 621,
-`cinematic_set_near_clip_distance` 710 (E: the camera globals' near clip
-written as Halo 1's does, before Halo 2's own far-clip addition) and
-`show_hud` 625
+`cinematic_set_title_delayed` 561, `vehicle_hover` 621 and `show_hud` 625
 (the first of three boolean-to-boolean builtins after
 `hud_cinematic_fade`; the weakest). For waits outside the cutscenes:
 `device_get_power` 255 (`(device) -> real`, between `device_set_power`
@@ -471,70 +459,6 @@ those textures (tag memory `0xc23000` of `0xc24000`), so its hooks are as
 before and its objects draw with the base's model shader.
 Most `ai` hooks still left name Halo 1 platoons (`…_toon`) or encounters
 used as squads; Halo 2 has no platoons.
-
-## Serving missing builtins
-
-`crates/h1builtins` is the table the converter and the game share for the
-Halo 1 builtins Halo 2's table has no counterpart for (Step 2's
-**Missing**, minus what the Rust HS VM would have bound): each entry names
-the Halo 1 builtin, the Halo 2 **slot** its calls compile to, the served
-signature and the fallback value. Every lane that owns a family of Halo 1
-builtins claims its slots there, and only there, so a merge can check for
-clashes (the AI-control lane's slot 300, for one, is not among them;
-`h1builtins::claims` lists the table's own).
-
-A slot is one of the 288 Halo 2 builtins no retail script calls whose
-evaluator is the shared discarded stub (`0x2ab130`: the thread off the
-stack, `0` returned through the return path `0x209ae0`, three arguments
-popped; the disc test `served_slots_are_unnamed_discarded_stubs`, and
-boot's `h1_scripts_xbe`, check every entry against the discs and the XBE).
-The lowest, from the survey: 68, 116, 120–122, 130–135, 147….
-
-The compile (`compile::expr`) emits the call with the slot's index as its
-opcode and the Halo 1 name as its head, under either `Missing` policy —
-retail runs it as the slot's discarded stub — and lists it in
-`Compiled::served`. Arguments must be atoms (literals, globals, names): a
-call with a nested argument is stubbed like any other missing one, because
-nothing evaluates it (below).
-
-The game's `h1-scripts` feature (`crates/boot/src/h1_scripts.rs`,
-`features.h1-scripts`) makes the call real:
-
-- **The descriptor patch**, once per run at game activation: the slot's
-  declared return type becomes `passthrough` (3). The return path
-  `0x209ae0` skips the cast for a passthrough callee (`cmp dx,3; je`
-  `0x00209b4c`), so the hook's raw EAX reaches whatever the call node's
-  parent expects. A slot whose evaluator is not the stub is left alone and
-  named, so a wrong entry cannot shadow a builtin that is real there.
-- **The return hook**, a `before` on the `HS_RETURN` point (`0x209ae0`,
-  where every builtin and script return lands: EAX the value, ECX the
-  thread datum). When the thread's frame names a served call, the hook
-  reads the arguments off the atom nodes — the slot's stub evaluates
-  nothing, which is why the compile only serves atom arguments — runs the
-  implementation registered for the builtin (`h1_scripts::implement`) and
-  puts its value in EAX, encoded for the call node's own type, before the
-  retail body writes it through the parent frame's destination and pops
-  the frame. With no implementation the fallback value is returned
-  ([`Served::done`], the stub policy's done values), so a `sleep_until`
-  on the call ends either way.
-
-Implementations receive the arguments as 32-bit values and `&mut dyn
-GuestMemory`, and must not call guest code: the hook runs inside the
-interpreter's dispatch, and a guest call from there has no continuation
-yet (hs_vm.md, "Next steps", the adapter contract's suspension). The
-layout the hook walks: the thread array `0x4F9384` (elements at the
-header's `+0x44`, `0x418` each, the current frame at `+0x10` and the
-frame's expression at `+4`), the node array `0x4F9394` (elements at
-`+0x44`, `0x14` each), and the scenario globals' cells `0x4F9380`
-(elements at `+0x44`, `0x8` each, the cell at `+4`, one per global in
-table order as `hs_new_map` allocates them).
-
-Served today: `game_time` (slot 68; the ticks since the game started,
-read from the game globals `0x510C54 + 8` — a30's extraction timeouts).
-
-`hs.threads` and `hs.globals` (crates/agent's `hs_state`) read the same
-state for the agent API: every live script thread with its script, kind
-and wake tick, and every scenario global with its value.
 
 ## Open questions
 

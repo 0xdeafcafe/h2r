@@ -27,7 +27,7 @@ use crate::{Error, Result};
 /// prints it): the most common firing position flags, zone flags and area
 /// type, and order style `-1` (none; 175 retail orders), which needs no
 /// style palette entry.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Options {
     /// Flags of each firing position.
     pub firing_position_flags: u16,

@@ -70,17 +70,6 @@ pub const IDENTIFIED: &[Identified] = &[
     ),
     id("recording_kill", 141, "void", &["unit"]),
     id("recording_time", 142, "short", &["unit"]),
-    // Halo 1 121, between vehicle_unload (233) and vehicle_driver (237) as
-    // in Halo 1 (117, 122): the only `(unit) -> object_list` there, and
-    // the standard fixed-signature wrapper into each game's argument
-    // evaluator (Halo 1 `0xf1190`, Halo 2 `0x2a4230`). a30's checkpoints
-    // free who rides the jeep through it.
-    id("vehicle_riders", 236, "object_list", &["unit"]),
-    // Halo 1 157, between ai_attach_units (287) and ai_place (290): the
-    // only `(object_list) -> void` in the gap, and the same body — the
-    // argument evaluated, one call on the list (Halo 1 `0x141140`, Halo 2
-    // `0x273150`), void returned.
-    id("ai_free_units", 289, "void", &["object_list"]),
     // Halo 1 90, 91; before scenery_animation_start_loop (185) and after
     // scenery_animation_start_relative (186) and its loop (187).
     id(
@@ -126,6 +115,12 @@ pub const IDENTIFIED: &[Identified] = &[
         "void",
         &["unit", "vehicle", "string_id"],
     ),
+    // Halo 1 121, between vehicle_unload (233) and vehicle_driver (237) as
+    // in Halo 1 (117, 122): the only `(unit) -> object_list` there, and
+    // the standard fixed-signature wrapper into each game's argument
+    // evaluator (Halo 1 `0xf1190`, Halo 2 `0x2a4230`). a30's checkpoints
+    // free who rides the jeep through it.
+    id("vehicle_riders", 236, "object_list", &["unit"]),
     // After unit_has_weapon (242), as in Halo 1's table (a30's sniper
     // tutorial).
     id(
@@ -256,6 +251,6 @@ mod tests {
             }
         }
         assert!(IDENTIFIED.windows(2).all(|w| w[0].index < w[1].index));
-        assert_eq!(IDENTIFIED.len(), 30);
+        assert_eq!(IDENTIFIED.len(), 29);
     }
 }

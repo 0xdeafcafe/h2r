@@ -37,7 +37,6 @@ pub mod game_glue;
 pub mod game_setup_help;
 pub mod h1_options;
 pub mod h1_options_row;
-pub mod h1_scripts;
 pub mod h1_variants;
 pub mod health;
 pub mod host_perf;

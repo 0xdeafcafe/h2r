@@ -125,33 +125,6 @@ impl Catalog {
         })
     }
 
-    /// A catalog of invented descriptors, for tests of the checks (a real
-    /// one comes from an XBE). Each entry is one builtin: its return type,
-    /// flags, evaluate address and parameter types.
-    pub fn invented(
-        types: Vec<String>,
-        script_kinds: Vec<String>,
-        functions: Vec<(u16, u16, u32, Vec<u16>)>,
-    ) -> Self {
-        Self {
-            functions: functions
-                .into_iter()
-                .map(|(return_type, flags, evaluate, parameters)| Builtin {
-                    descriptor: 0,
-                    return_type,
-                    flags,
-                    evaluate,
-                    usage: None,
-                    parameters,
-                    name: None,
-                })
-                .collect(),
-            types,
-            script_kinds,
-            external_global_types: Vec::new(),
-        }
-    }
-
     pub fn type_name(&self, ty: u16) -> Result<&str> {
         self.types
             .get(ty as usize)

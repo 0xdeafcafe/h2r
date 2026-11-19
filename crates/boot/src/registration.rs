@@ -23,7 +23,7 @@ use runtime::Runtime;
 
 use crate::{
     agent_glue, aim_assist, bot_glue, campaign_menu, cheats, clankers, coop_probe, custom_games,
-    game_setup_help, h1_options, h1_options_row, h1_scripts, health, hud, hud_swap, layout_glue, level_boot, lockstep_glue,
+    game_setup_help, h1_options, h1_options_row, health, hud, hud_swap, layout_glue, level_boot, lockstep_glue,
     map_copy, map_select, map_slots, precision, signin_screen, skulls, skulls_custom, skulls_menu,
     skulls_mp, snapshot_probe, telemetry, touch_glue, ui, ui_watch, variant_ext, variant_page, xapi_glue,
 };
@@ -171,12 +171,6 @@ pub fn register_core(features: &mut feature::Registry, i: CoreInputs<'_>) -> any
     // regeneration, health packs, a health meter. Off (Halo 2's) until the
     // map's identity or the H2_HEALTH_MODEL debug override says Halo 1.
     let health_on = health::install(features).context("installing the health model")?;
-    // Halo 1 script builtins the engine serves through sacrificial slots
-    // (docs/halo1/scripts.md, "Serving missing builtins"): the families'
-    // implementations run here, with the stub fallback when a lane has not
-    // registered one.
-    h1_scripts::H1Scripts::install(features)
-        .context("installing the served Halo 1 builtins")?;
     // Precision variants on converted Halo 1 maps in the Halo 2 sandbox
     // (docs/halo1/multiplayer.md): the battle rifle for the SMG at game
     // activation, from the swaps each package's manifest records.
