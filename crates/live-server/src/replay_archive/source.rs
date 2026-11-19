@@ -10,12 +10,6 @@ use crate::Live;
 use crate::app::{ApiError, conflict, invalid};
 use crate::store::{Query, RecordedEvent};
 
-pub(super) const TICKS: u64 = 900;
-const FRAMES: usize = 900;
-// Both source and reconstructed frames live in memory during verification.
-// Close dense segments early to leave room for the codec on a Worker.
-const JSON_BUDGET: usize = 8 << 20;
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct Cursor {
     pub after: u64,
@@ -42,16 +36,8 @@ impl Batch {
         if frame.game_id != id {
             return Err(invalid("recording contains a frame from another game"));
         }
-        if let (Some(first), Some(last)) = (self.frames.first(), self.frames.last())
-            && (frame.cut.is_some()
-                || frame.tick < last.tick
-                || frame.tick.saturating_sub(first.tick) >= TICKS
-                || self.frames.len() == FRAMES)
-        {
-            return Ok(false);
-        }
         let json = serde_json::to_vec(&frame).map_err(|e| invalid(e.to_string()))?;
-        if !self.frames.is_empty() && self.json_bytes + json.len() > JSON_BUDGET {
+        if live_proto::archive::starts_segment(&self.frames, self.json_bytes, &frame, json.len()) {
             return Ok(false);
         }
         self.json_bytes += json.len();
