@@ -219,9 +219,34 @@ fn converted_blood_gulch_graphs_read_as_the_engine_reads_them() {
     assert!(vehicles >= 3, "{vehicles} vehicles converted");
 
     let mut set = TagSet::new(CacheType::Multiplayer, "h1test", "invented\\h1test");
+    // The graphs name what they play: the first-person graphs' sound
+    // events name converted sounds (docs/halo1/models.md, "Animation
+    // sounds"). Those go in first, with their gestalt, and the graphs'
+    // placeholders point at them; a graph naming another converted tag
+    // (a `local` placeholder) would need it in the map too, so none may.
+    let mut tree = c.tree;
+    tree.install_audio(&mut set, true);
+    assert!(tree.audio_notes.is_empty(), "{:?}", tree.audio_notes);
+    fn locals(b: &map::build::Block, out: &mut Vec<usize>) {
+        use map::build::FixupKind;
+        for f in &b.fixups {
+            match &f.kind {
+                FixupKind::Block { child, .. }
+                | FixupKind::Data(child)
+                | FixupKind::Pointer(child) => locals(child, out),
+                FixupKind::TagRef(t) | FixupKind::TagId(t) => {
+                    out.extend(h1objects::convert::local_index(*t))
+                }
+                _ => {}
+            }
+        }
+    }
     let mut installed = Vec::new();
-    for (name, t) in &c.tree.tags {
+    for (name, t) in &tree.tags {
         if t.group == FourCC(*b"jmad") {
+            let mut named = Vec::new();
+            locals(&t.root, &mut named);
+            assert!(named.is_empty(), "{name} names converted tags {named:?}");
             let id = t.clone().install(&mut set, name).expect("install");
             installed.push((id, name.clone()));
         }
