@@ -188,6 +188,17 @@ for those instances only (`map_select::MapSelect`, feature `map-select`).
     the dialog shows that map's picture and description;
   - **maps**: the category's maps in its order, each with the retail
     array's lock byte for that id.
+
+  Two things lose a row the array holds. The constructor skips a locked
+  one (above), and a map id no slot of the loaded list holds has no name
+  (the row text below names it from its slot; the constructor only skips
+  its picture). Our catalogue comes from the disc and the packages on the
+  host, the game's slots from its own content scan, so they can differ.
+  Before each array is written, `map_select::unshown` compares them and
+  the console says which rows won't show by name and why:
+  `map select: Maps(MapPack): 4 of 9 rows won't show by name
+  (Containment (0x514): not in the game's list, ...)`. Nothing is said
+  when every row has an unlocked slot.
 - **Row text** (`MAP_LIST_ROW_TEXT` `0x2c9ac4` notes which list is
   drawing; `MP_LEVEL_NAME` `0x2afd70` answers). The row text looks up the
   row's slot (`0x19c5f0`) and calls `0x2afd70(slot)` at `0x2c9afc` for its
@@ -257,6 +268,8 @@ Tests (`boot` `map_select::tests`):
 - reading a slot, a package's `patch.lvl` (its path as 1.0 makes it), and
   a directory with no record; one category or none leaves the retail
   list;
+- rows the dialog won't name: a map id no slot holds, and a locked
+  one (`rows_the_dialog_will_not_name_are_those_the_game_lacks_or_locks`);
 - the arrays: category mode lists each category's first map unlocked,
   maps mode the category's maps with the retail lock bytes; a written
   array reads back as the game reads the retail one (`FakeGuest`); row
@@ -292,6 +305,29 @@ name, description and image read from its directory.
 
 ## Needs a game run
 
+0. **Open (2026-11-19): the Map Pack lists five of nine.** The owner saw
+   Warlock, Sanctuary, Turf, Backwash and Elongation under Map Pack, the
+   five in the middle of its order (sort 140 to 180); Containment (130),
+   Gemini, Relic and Terminal (190 to 210) were missing. Checked offline,
+   none of these is the cause:
+   - all nine packages are installed and signed, each `patch.lvl` passes
+     1.0's CRC and type checks, the nine ids are distinct from each other,
+     the retail ids and the 13 converted maps' ids;
+   - the catalogue has all nine (`by category (Halo 2 12, Map Pack 9,
+     Halo: CE 13)` at boot), and 12 + 22 packages fit the 50 slots;
+   - all nine records' flags are 0, so no lock byte (only Foundation's
+     slot has flag bit 0, `0x19c7e0` locks by that bit alone);
+   - the dialog's list (screen `0xce`) lays out 14 items (`visible_items`
+     in `mainmenu.map`), and the constructor (`0x2c9928`) builds 14 item
+     widgets, so nine rows need no scroll;
+   - no team-count or game-type filter is on the constructor's path.
+
+   What's left is the game's side: whether its slots hold all nine ids
+   after its own scan, and what the four rows show (blank, or not there).
+   Change Map, then Map Pack: the `won't show by name` line above names
+   the rows whose id no slot holds. With the line and nine rows, the
+   game's scan missed those packages; without it, the rows are lost in
+   the dialog.
 1. With a Map Pack, a converted Halo 1 map or a package replacing a disc
    map installed, the console says `map select: by category (Halo 2 12,
    Map Pack 9, ...)` at boot.
