@@ -164,6 +164,19 @@ impl Editor {
     }
 
     fn select(&mut self, g: &Guest, idx: &index::TagIndex, sel: &TagSel) -> Result<index::Entry> {
+        self.select_in(g, idx, sel, &[])
+    }
+
+    /// [`Self::select`], a bare name resolved among the tags of `among`
+    /// (any group when empty). A name is `name`, `group:name` or
+    /// `name.group`; a group given that way is taken as is.
+    fn select_in(
+        &mut self,
+        g: &Guest,
+        idx: &index::TagIndex,
+        sel: &TagSel,
+        among: &[FourCC],
+    ) -> Result<index::Entry> {
         let t = sel.tag.trim();
         let hex = t.strip_prefix("0x").unwrap_or(t);
         if hex.len() == 8 && hex.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -172,14 +185,19 @@ impl Editor {
         }
         let (name, group) = match &sel.group {
             Some(gr) => (t, Some(gr.as_str())),
-            None => match t.rsplit_once('.') {
-                Some((n, gr)) if parse_fourcc(gr).is_some() && !gr.contains('\\') => (n, Some(gr)),
+            None => match (t.split_once(':'), t.rsplit_once('.')) {
+                (Some((gr, n)), _) if gr.len() <= 4 && !gr.contains('\\') => (n, Some(gr)),
+                (_, Some((n, gr))) if parse_fourcc(gr).is_some() && !gr.contains('\\') => {
+                    (n, Some(gr))
+                }
                 _ => (t, None),
             },
         };
         let group = group
             .map(|gr| {
-                parse_fourcc(gr).ok_or_else(|| Error::invalid(format!("{gr:?} is not a group")))
+                // `scen:` for `scen`, and `bot:` for `bot ` (three letters).
+                parse_fourcc(&format!("{gr:<4}"))
+                    .ok_or_else(|| Error::invalid(format!("{gr:?} is not a group")))
             })
             .transpose()?;
         let Some(names) = self.names(g, idx) else {
@@ -187,16 +205,39 @@ impl Editor {
                 "{t:?}: no tag names for this map (name tags by datum, from edit.tags)"
             )));
         };
-        match names.find(name, group).as_slice() {
-            [] => Err(Error::invalid(format!("no tag named {name:?}"))),
-            [(d, _)] => index::by_datum(g, idx, *d).map_err(Error::invalid),
-            many => Err(Error::invalid(format!(
-                "{name:?} names {} tags ({}): give the group",
-                many.len(),
-                many.iter()
-                    .map(|(_, g)| group_text(*g))
+        let all = names.find(name, group);
+        let found: Vec<_> = if group.is_none() && !among.is_empty() {
+            all.iter()
+                .filter(|(_, g)| among.contains(g))
+                .copied()
+                .collect()
+        } else {
+            all.clone()
+        };
+        let groups = |l: &[(u32, FourCC)]| {
+            l.iter()
+                .map(|(_, g)| group_text(*g))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        match (found.as_slice(), all.as_slice()) {
+            ([], []) => Err(Error::invalid(format!("no tag named {name:?}"))),
+            ([], others) => Err(Error::invalid(format!(
+                "{name:?} names no {} tag (it names {} tag(s): {})",
+                among
+                    .iter()
+                    .map(|g| group_text(*g))
                     .collect::<Vec<_>>()
-                    .join(", ")
+                    .join("/"),
+                others.len(),
+                groups(others)
+            ))),
+            ([(d, _)], _) => index::by_datum(g, idx, *d).map_err(Error::invalid),
+            (many, _) => Err(Error::invalid(format!(
+                "{name:?} names {} tags ({}): give the group, as {}:{name}",
+                many.len(),
+                groups(many),
+                group_text(many[0].1)
             ))),
         }
     }
@@ -206,12 +247,31 @@ impl Editor {
     /// `edit.*` resolves it); the entry and its name when known. For
     /// callers that act on a tag rather than edit it (`sim.give`).
     pub fn find_tag(&mut self, g: &Guest, tag: &str) -> Result<(index::Entry, Option<String>)> {
+        self.find_tag_in(g, tag, &[])
+    }
+
+    /// [`Self::find_tag`], a bare name resolved among the tags of the
+    /// groups `among` (any group when empty): a weapon's name finds its
+    /// `weap` tag though its model, collision and animations share it. A
+    /// `group:name` or `name.group` is taken as given.
+    pub fn find_tag_in(
+        &mut self,
+        g: &Guest,
+        tag: &str,
+        among: &[&str],
+    ) -> Result<(index::Entry, Option<String>)> {
+        let among = among
+            .iter()
+            .map(|gr| {
+                parse_fourcc(gr).ok_or_else(|| Error::invalid(format!("{gr:?} is not a group")))
+            })
+            .collect::<Result<Vec<_>>>()?;
         let idx = self.index(g)?;
         let sel = TagSel {
             tag: tag.to_owned(),
             group: None,
         };
-        let e = self.select(g, &idx, &sel)?;
+        let e = self.select_in(g, &idx, &sel, &among)?;
         let name = self
             .names(g, &idx)
             .and_then(|n| n.name(e.datum))

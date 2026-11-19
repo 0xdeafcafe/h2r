@@ -27,10 +27,12 @@ pub const USAGE: &str = "  sim add <local|phantom> [script|recording|brain] [tea
   sim give <player.N|sim.N> <weap tag> [loaded=N] [reserve=N] [keep]
                          sim.give: the game makes the weapon and the unit
                          holds it (keep: added beside its weapons instead);
-                         the tag is a datum or a name, / or \\ (edit tags weap)
+                         the tag is a datum or a name, / or \\ (edit tags weap),
+                         looked for among weap tags; group:name gives the group
   sim spawn <tag> pos=[x,y,z] [yaw=DEG]
                          sim.spawn: the game makes the object (vehi, weap,
-                         eqip, scen, bipd, ...) there
+                         eqip, scen, bipd, ...) there; a name is looked for
+                         among object groups (vehi:name to pick one)
   sim view [root...]     sim.view: at session ui player object count sim input
   sim expect <pointer> <op> [JSON]  sim.expect, judged in the game at one tick
                          (several: one quoted expectation per argument)

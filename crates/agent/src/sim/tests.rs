@@ -514,24 +514,41 @@ const WEAP_TAG: u32 = 0xe100_0010;
 const VEHI_TAG: u32 = 0xe200_0020;
 
 impl super::calls::Tags for FakeTags {
-    fn find(&mut self, tag: &str) -> Result<super::calls::TagRef, String> {
-        let (datum, group, name) = match tag {
-            "objects\\weapons\\rifle\\battle_rifle\\battle_rifle" | "0xe1000010" => (
-                WEAP_TAG,
-                "weap",
-                "objects\\weapons\\rifle\\battle_rifle\\battle_rifle",
-            ),
-            "objects\\vehicles\\warthog\\warthog" => {
-                (VEHI_TAG, "vehi", "objects\\vehicles\\warthog\\warthog")
-            }
-            "shaders\\metal" => (0xe300_0030, "shad", "shaders\\metal"),
-            _ => return Err(format!("no tag named {tag:?}")),
+    /// As a map names them: a weapon's name is also its model's (`hlmt`),
+    /// a vehicle's its render model's (`mode`).
+    fn find(&mut self, tag: &str, among: &[&str]) -> Result<super::calls::TagRef, String> {
+        const BR: &str = "objects\\weapons\\rifle\\battle_rifle\\battle_rifle";
+        const HOG: &str = "objects\\vehicles\\warthog\\warthog";
+        let rows = [
+            (WEAP_TAG, "weap", BR),
+            (0xe100_0011, "hlmt", BR),
+            (VEHI_TAG, "vehi", HOG),
+            (0xe200_0021, "mode", HOG),
+            (0xe300_0030, "shad", "shaders\\metal"),
+        ];
+        let (group, name) = match tag.split_once(':') {
+            Some((g, n)) => (Some(g), n),
+            None => (None, tag),
         };
-        Ok(super::calls::TagRef {
-            datum,
-            group: group.into(),
-            name: Some(name.into()),
-        })
+        let found: Vec<_> = rows
+            .iter()
+            .filter(|(d, g, n)| {
+                (*n == name || name == format!("{d:#010x}"))
+                    && match group {
+                        Some(want) => *g == want,
+                        None => among.is_empty() || among.contains(g),
+                    }
+            })
+            .collect();
+        match found.as_slice() {
+            [(datum, group, name)] => Ok(super::calls::TagRef {
+                datum: *datum,
+                group: (*group).into(),
+                name: Some((*name).into()),
+            }),
+            [] => Err(format!("no tag named {tag:?}")),
+            many => Err(format!("{tag:?} names {} tags: give the group", many.len())),
+        }
     }
 }
 
@@ -816,6 +833,65 @@ fn spawn_makes_an_object_tag_at_a_point() {
         json!({"tag": "shaders\\metal", "pos": [0, 0, 0]}),
     );
     assert_eq!(e["code"], code::INVALID_PARAMS, "{e}");
+}
+
+#[test]
+fn give_and_spawn_resolve_a_shared_name_among_their_groups() {
+    let (h, q) = with_calls();
+    let mut game = game();
+    // The battle rifle's name is also its model's: give looks among weap.
+    h.deferred(
+        &mut game,
+        method::GIVE,
+        json!({"player": "player.0", "weapon": "objects\\weapons\\rifle\\battle_rifle\\battle_rifle"}),
+    );
+    let calls = the_game_makes(&q, |_| Err("not this time".into()));
+    assert!(
+        matches!(
+            calls[0],
+            super::calls::Call::Give {
+                weapon: WEAP_TAG,
+                ..
+            }
+        ),
+        "{calls:?}"
+    );
+    h.agent.on_tick(&mut game);
+    h.reply();
+    // The warthog's is also its render model's: spawn looks among objects.
+    h.deferred(
+        &mut game,
+        method::SPAWN,
+        json!({"tag": "objects\\vehicles\\warthog\\warthog", "pos": [0, 0, 0]}),
+    );
+    let calls = the_game_makes(&q, |_| Err("not this time".into()));
+    assert!(
+        matches!(calls[0], super::calls::Call::Spawn { tag: VEHI_TAG, .. }),
+        "{calls:?}"
+    );
+    h.agent.on_tick(&mut game);
+    h.reply();
+    // group:name is taken as given: the model is no weapon.
+    let e = h.err(
+        &mut game,
+        method::GIVE,
+        json!({"player": "player.0", "weapon": "hlmt:objects\\weapons\\rifle\\battle_rifle\\battle_rifle"}),
+    );
+    assert_eq!(e["code"], code::INVALID_PARAMS, "{e}");
+    assert!(
+        e["message"].as_str().unwrap().contains("not a weapon"),
+        "{e}"
+    );
+    h.deferred(
+        &mut game,
+        method::SPAWN,
+        json!({"tag": "vehi:objects\\vehicles\\warthog\\warthog", "pos": [0, 0, 0]}),
+    );
+    let calls = the_game_makes(&q, |_| Err("not this time".into()));
+    assert!(matches!(
+        calls[0],
+        super::calls::Call::Spawn { tag: VEHI_TAG, .. }
+    ));
 }
 
 #[test]

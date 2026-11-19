@@ -501,11 +501,14 @@ impl Sim {
         Ok(session)
     }
 
-    fn find_tag(&mut self, tag: &str) -> Result<calls::TagRef, RpcError> {
+    /// `tag` resolved in the loaded map, a bare name among the tags of
+    /// `among` (a weapon's name is also its model's, collision's and
+    /// animations').
+    fn find_tag(&mut self, tag: &str, among: &[&str]) -> Result<calls::TagRef, RpcError> {
         let tags = self.tags.as_mut().ok_or_else(|| {
             unavailable("no tag lookup here (the game has no edit.* tags)".to_string())
         })?;
-        tags.find(tag).map_err(invalid)
+        tags.find(tag, among).map_err(invalid)
     }
 
     fn give(&mut self, v: Value, ctx: &mut GameCtx<'_>) -> R {
@@ -516,7 +519,7 @@ impl Sim {
         let session = self.host_write(ctx)?;
         let index = self.target(&p.player, ctx)?;
         let q = self.calls()?;
-        let tag = self.find_tag(&p.weapon)?;
+        let tag = self.find_tag(&p.weapon, &["weap"])?;
         if tag.group != "weap" {
             return Err(invalid(format!(
                 "{}: a {} tag, not a weapon (weap)",
@@ -570,7 +573,7 @@ impl Sim {
         let facing = wire::facing_vector(p.yaw, None, None).map_err(invalid)?;
         let session = self.host_write(ctx)?;
         let q = self.calls()?;
-        let tag = self.find_tag(&p.tag)?;
+        let tag = self.find_tag(&p.tag, wire::OBJECT_GROUPS)?;
         if !wire::OBJECT_GROUPS.contains(&tag.group.as_str()) {
             return Err(invalid(format!(
                 "{}: a {} tag; objects are {}",

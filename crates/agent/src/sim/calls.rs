@@ -211,7 +211,9 @@ impl TagRef {
 
 /// Finds tags in the loaded map by datum or name (`edit.*`'s rules).
 pub trait Tags: Send {
-    fn find(&mut self, tag: &str) -> Result<TagRef, String>;
+    /// `tag` by datum, `group:name`, `name.group` or a bare name, which
+    /// is looked for among the tags of `among` (any group when empty).
+    fn find(&mut self, tag: &str, among: &[&str]) -> Result<TagRef, String>;
 }
 
 /// [`Tags`] over `hot_tags`' editor (names from the loaded map's file).
@@ -221,10 +223,10 @@ pub struct MapTags {
 }
 
 impl Tags for MapTags {
-    fn find(&mut self, tag: &str) -> Result<TagRef, String> {
+    fn find(&mut self, tag: &str, among: &[&str]) -> Result<TagRef, String> {
         let mut out = None;
         let ed = &mut self.editor;
-        (self.guest)(&mut |g| out = Some(ed.find_tag(g, tag)));
+        (self.guest)(&mut |g| out = Some(ed.find_tag_in(g, tag, among)));
         let (e, name) = out.ok_or("no guest memory")?.map_err(|e| e.message)?;
         Ok(TagRef {
             datum: e.datum,

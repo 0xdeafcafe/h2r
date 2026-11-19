@@ -1374,14 +1374,22 @@ calls are queued.
   only if the unit's own weapon choice (`0xcdeb0`) picks it. `ammo`
   writes the new weapon's first magazine once it is made. The tag is a
   datum or a name with `/` or `\` (names come from the map file, as
-  `edit.tags` lists them: `h2 agent edit tags weap`). The answer:
+  `edit.tags` lists them: `h2 agent edit tags weap`). A bare name is
+  looked for among `weap` tags only: a weapon shares its name with its
+  model, render model, collision and animations (`hlmt mode coll jmad`),
+  so on Halo 1 Blood Gulch `weapons\sniper rifle\sniper rifle` named five
+  tags and was refused. `group:name` (`weap:weapons\sniper rifle\sniper
+  rifle`) or `name.group` gives the group outright. The answer:
   `weapon` (`tag`, `group`, `name`), `object`, `mode`, `held`.
 - **`sim.spawn`** makes an object as the netgame equipment spawn does
   (`0x15ab94..0x15abe6`): `placement_data_new` with no owner, the
   position at placement `+0x1c`, forward and up at `+0x28`/`+0x34`, then
   `object_new`. Any object group `object_new` knows (`bipd vehi weap eqip
-  garb proj scen mach ctrl lifi ssce bloc crea`). The answer: `object`,
-  `pos` (where it was made), `tag`.
+  garb proj scen mach ctrl lifi ssce bloc crea`). A bare name is looked
+  for among those groups, so `vehicles\warthog\warthog` finds the `vehi`
+  and not its model's tags; if it names tags in more than one of them
+  the answer asks for the group (`vehi:vehicles\warthog\warthog`). The
+  answer: `object`, `pos` (where it was made), `tag`.
 
 All three are host writes: refused in a co-op session or on a
 multiplayer client, and only at a tick boundary, as `sim.state.set`.
