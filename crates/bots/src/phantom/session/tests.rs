@@ -1274,6 +1274,94 @@ mod lobby {
         }
     }
 
+    /// The party's squad session beside a Clankermatch's target session.
+    const PARTY: u32 = 0x0076_0000;
+
+    /// The user's Clankermatch (cm-run2): the empty search hosted, so the
+    /// life cycle is 6 (`session type 6`) and the lobby is the target
+    /// session (`[0x52736c]`), this console its host; the party's squad
+    /// session (`[0x527364]`) is live beside it with this console's one
+    /// peer. [`lobby`]'s session is the target here.
+    fn matchmaking() -> FakeGuest {
+        let mut g = lobby();
+        g.put_u32(l::SESSION_TYPE, 6)
+            .put_u32(l::TARGET_SESSION, S)
+            .put_u32(points::SQUAD_SESSION.base, PARTY)
+            .map(PARTY, 0x8000)
+            .put_u32(PARTY + STATE, STATE_LIVE)
+            .put_u32(PARTY + PROTOCOL, PROTOCOL_DISTRIBUTED)
+            .put_u32(PARTY + MAX_PEERS, 16)
+            .put_u32(PARTY + MAX_PLAYERS, 16)
+            .put_u32(PARTY + PEER_COUNT, 1)
+            .put_u32(PARTY + PLAYER_COUNT, 1)
+            .put_u32(PARTY + PLAYER_MASK, 1);
+        g
+    }
+
+    #[test]
+    fn a_clankermatch_lobby_this_console_hosts_takes_phantoms_in_its_target_session() {
+        let g = matchmaking();
+        assert_eq!(host_lobby(&g), Ok(S), "the target session, not the party's");
+        assert_eq!(live_session(&g), Some(S));
+        assert_eq!(owned_session(&g), Some(S));
+
+        let ph = Phantoms::default();
+        let h = ph.add(who(1, "Widget Rotor"), None, idle()).unwrap();
+        let mut g = matchmaking();
+        let log = ph.tick(&mut g, 0).unwrap();
+        assert_eq!(
+            log,
+            vec!["bots: phantom Widget Rotor joins (peer 1, in the pregame lobby)".to_owned()]
+        );
+        assert_eq!(find_peer(&g, S, machine_id(h)).unwrap(), Some(1));
+        assert_eq!(g.u32(S + PLAYER_COUNT).unwrap(), 2);
+        // Its hopper status is the host's, so the matchmaking start
+        // (0x66050) passes it.
+        let p = S + PEERS + PEER_SIZE;
+        assert_eq!(g.u32(p + PEER_HOPPERS + 4 * HOPPER).unwrap(), 1);
+        // The party's session is left alone.
+        assert_eq!(g.u32(PARTY + PEER_COUNT).unwrap(), 1);
+        assert_eq!(g.u32(PARTY + PLAYER_COUNT).unwrap(), 1);
+    }
+
+    #[test]
+    fn a_clankermatch_this_console_joined_or_still_searching_makes_them_wait() {
+        // Someone else's match: wait.
+        let mut g = matchmaking();
+        g.put_u32(S + HOST_PEER, 1).put_u32(S + PEER_COUNT, 2);
+        assert_eq!(host_lobby(&g), Err(NotNow::Wait));
+        // Still searching: no target session yet.
+        let mut g = matchmaking();
+        g.put_u32(l::TARGET_SESSION, 0);
+        assert_eq!(host_lobby(&g), Err(NotNow::Wait));
+        let ph = Phantoms::default();
+        ph.add(who(1, "A"), None, idle()).unwrap();
+        assert!(ph.tick(&mut g, 0).unwrap().is_empty());
+        assert_eq!(g.u32(PARTY + PEER_COUNT).unwrap(), 1, "never the party's");
+    }
+
+    /// The matchmade game (life cycle 8) runs in the target session: the
+    /// phantoms stay in it, and a game this console hosts takes them.
+    #[test]
+    fn a_matchmade_game_is_the_target_sessions() {
+        let ph = Phantoms::default();
+        let h = ph.add(who(1, "A"), None, idle()).unwrap();
+        let mut g = matchmaking();
+        ph.tick(&mut g, 0).unwrap();
+        g.put_u32(l::SESSION_TYPE, 8)
+            .put_u32(points::GAME_TIME.base, TIME);
+        assert_eq!(host_session(&g), Ok(S));
+        assert_eq!(live_session(&g), Some(S));
+        assert!(
+            ph.tick(&mut g, 1)
+                .unwrap()
+                .iter()
+                .all(|l| !l.contains("joins"))
+        );
+        assert_eq!(find_peer(&g, S, machine_id(h)).unwrap(), Some(1));
+        assert_eq!(g.u32(PARTY + PEER_COUNT).unwrap(), 1);
+    }
+
     /// One phantom a frame, as the Clankermatch fill seats them: still a
     /// peer each.
     #[test]

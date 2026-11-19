@@ -345,9 +345,11 @@ pub trait Rosters: Send + Sync {
         request: live_proto::bots::RosterRequest,
         done: Box<dyn FnOnce(Result<live_proto::bots::Roster, String>) + Send>,
     ) -> Result<(), String>;
-    /// The bot accounts in the hosted game now ([`Driver::session_bots`]):
-    /// the hosted session is told of them as players. Never waits.
-    fn players(&self, _bots: Vec<live_proto::Xuid>) {}
+    /// The bot accounts in the hosted game now ([`Driver::session_bots`]),
+    /// rostered for `session` (the roster in force's, `None` with none):
+    /// that session is told of them as players, and no other. Never
+    /// waits.
+    fn players(&self, _session: Option<String>, _bots: Vec<live_proto::Xuid>) {}
     /// The hosted session and its hopper's mark while this console hosts
     /// a clanker hopper's lobby: a Clankermatch (docs/game/bots.md §8.4),
     /// which the driver fills with the playlist's bots. Never waits.
@@ -373,8 +375,8 @@ impl Rosters for live_hle::Hle {
     ) -> Result<(), String> {
         self.roster_bots(request, done)
     }
-    fn players(&self, bots: Vec<live_proto::Xuid>) {
-        self.set_session_players(bots)
+    fn players(&self, session: Option<String>, bots: Vec<live_proto::Xuid>) {
+        self.set_session_players(session.as_deref(), bots)
     }
     fn clanker_match(&self) -> Option<(String, live_proto::hopper::clankers::ClankerHopper)> {
         self.clanker_hosted()
@@ -967,7 +969,10 @@ impl Driver {
 
     /// Tells the hosted session its players ([`Driver::session_bots`]),
     /// while a roster is in force and once more after, so the bots it
-    /// was told of leave it.
+    /// was told of leave it. The bots go to the session their roster is
+    /// for ([`Driver::roster_in_force`]) and no other: a Clankermatch
+    /// host advertises its party's lobby session beside the match, and
+    /// the server refuses a roster's bots anywhere else.
     fn report_players(&self) {
         let Some(rosters) = &self.rosters else {
             return;
@@ -975,7 +980,12 @@ impl Driver {
         let bots = self.session_bots();
         let had = self.reported.swap(!bots.is_empty(), Ordering::Relaxed);
         if had || !bots.is_empty() {
-            rosters.players(bots);
+            let session = if bots.is_empty() {
+                None
+            } else {
+                self.roster_in_force()
+            };
+            rosters.players(session, bots);
         }
     }
 

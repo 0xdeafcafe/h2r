@@ -2039,6 +2039,9 @@ run yet).**
   matchmaking branch (`0x199971`: lobby kind 6, session `+0x49a4` 2), so
   a matchmaking lobby passes it: `bots::lobby::pregame` holds there and
   the bot glue's lobby gate signs local bots in, as in a custom game.
+  **Wrong for the lobby the bots fill** (cm-run2, below): that holds for
+  the party's lobby before the search; once the search hosts, the life
+  cycle is 6 and the lobby is the target session.
 - **What the start counts.** The matchmaking branch's state comes from
   `0x66050(session, hopper)` (through `0x63e90`, hopper `+0x49c8` via
   `0x641f0`), mapped to the status texts by `0x19a5fd`. It reads, per
@@ -2080,6 +2083,78 @@ run yet).**
   whether the game balances a matchmade team game itself at the start
   (then the phantoms' teams are its, not `clankermatch::balance`'s).
 
+**The matchmaking host's lobby (traced 2026-11-19 from the user's
+Clankermatch, cm-run2; built, no run yet).** The search hosted (`session
+893954eb98f2e2fe advertised`) and the log said `bots: lobby facts: lobby
+true, networking true, session type 6, session state 5: no pregame
+lobby`; every local bot's gate said `screen 0xd2 (top 0xd2), dialog
+none, signed_in false (slot 0x1): waits`, no phantom joined, and the
+lobby never started.
+
+- **Two sessions.** Beside the squad session `[0x527364]` (the party's,
+  whose Live session `84ad6bf112ae91df` was advertised when the playlist
+  was pressed) the game keeps a target session `[0x52736c]`: the
+  session a matchmaking search joins or hosts.
+  `0x65340` picks the session the game plays in by the life-cycle type
+  `[0x527334]` (table `0x65520`): types 1 to 4 the squad session, 6 to 9
+  the target session, 5 none. `0x59780` prefers the target session
+  whenever it has a state; `0x593e0` tears both down.
+- **The life cycle.** `[0x527334]` indexes ten state objects
+  (`[0x527338 + 4·type]`, set up by `0x58f22`): type 6 is the object at
+  `0x527500` (`0x70190`, the matchmaking one: its timers, `0x705f0`'s
+  searching states). `0x19a279` maps the types to lobby kinds: 1 and 2
+  give 3 (pregame), 6 and 7 give 2, 3 and 8 give 4 (a game: the in-game
+  player diff `0x83220` runs only for types 3 and 8), 4 and 9 give 5, 5
+  gives 7. So 6 is the hosted matchmaking lobby, 8 its game; the custom
+  game's are 1 or 2 and 3.
+- **The screen.** `0xd2` (constructor `0x2519f7`, vtable `0x45a398`)
+  is the matchmaking lobby's. Its input `0x251afa` takes B and Back
+  (buttons 1 and 13, `0x25217b`) and X (3), nothing else: a second
+  controller's A or Start does nothing there. The custom lobby's join
+  press (`0x250c80`) needs `0x19a279` 3 and refuses in a countdown or in
+  types 2 and 3 (`0x19a902`), so on retail a guest joins a matchmaking
+  party in its lobby before the search, never after it.
+- **But the session adds any local user.** The per-frame pass `0x63d80`
+  runs `0x65770` on every session with a state (the three at
+  `[0x4ce03c]`), the target session too, and `0x646b0` and `0x65a60` read
+  the session's state (3 to 8) and room (`+0x54` against `+0x4990`,
+  `+0x1118`+1 against `+0x4994`), never the type. A bot signed in while
+  the target session is up is added to it like any local user, as in the
+  custom lobby. The party's squad session is in state 5 too, so the pass
+  adds it there as well, as it would a guest signed in before the search.
+- **Built.** `bots::lobby::game_session` mirrors `0x65340` (types 6 to 9
+  the target session, else the squad's). `Facts` reads the target
+  session's state and host in types 6 and 7, and
+  `lobby::matchmaking_host` is a matchmaking lobby this console hosts
+  (type 6 or 7, the target session in a lobby state, its host peer this
+  console's). The join gate opens on `lobby::joinable` (a pregame lobby or
+  that), so the local bots sign in there, with no screen pressed. The
+  phantoms' `host_lobby`, `live_session`, `owned_session` and the in-game
+  `host_session` read the game session too, so a Clankermatch's phantoms
+  join the target session (its hopper statuses are the host's, so
+  `0x66050` passes them) and stay in it for the matchmade game (type 8).
+  A matchmaking lobby another console hosts, or a search with no target
+  session yet, takes none. The facts line says it: `bots: lobby facts:
+  lobby true, networking true, session type 6, session state 5, match
+  session state 5 (this console hosts it): a matchmaking lobby this
+  console hosts`. `bots: lobby players: N in the game's session` says
+  the target session's player count (`+0x1118`) on each change: what the
+  matchmaking start counts.
+- **The re-search every ~4 minutes** is the game's: the hopper's search
+  timeout (`+0x59c`, read at `0x71c7a` against the time the lobby was
+  hosted; 150 000 ms in the small playlists) runs out on a lobby that
+  never reached its start, the game deletes its target session, searches
+  again and hosts a new one (`80f478...`, then `86334c...`). The fill
+  already follows it (`the game moved from session ... asking Live to
+  carry its bots there`). With the bots in the target session the lobby
+  reaches its fewest players within the fill's 15 s or so, far inside the
+  timeout, and the start wait (`+0x5a4`, 0 at the playlist's most
+  players) starts it. Nothing on our side abandons the session, so
+  nothing is changed for it; a run that still re-searches with the lobby
+  full says the start is held elsewhere.
+- **Live.** The match's bots went to the party's Live session too, and
+  each was refused there (§9.5): now only the roster's session is told.
+
 **Grep the run's log** (`h2 play ... 2>&1 | tee run.log`), in order:
 
 1. `live: clankermatch: clanker hoppers [8, 9, 10]` at logon (or `the
@@ -2102,8 +2177,12 @@ run yet).**
    Live rostered bots for session <id>` (or `no roster from Live (...):
    host-made bots`).
 7. `clankers: Clanker N on (...)` and `clankers: Clanker N is <gamertag>
-   on Xbox Live (bot account ...)` for the local bots, then `bots:` gate
-   and sign-in lines for ports 1 to 3 in the `lobby`; `clankers:
+   on Xbox Live (bot account ...)` for the local bots, then `bots: lobby
+   facts: ... session type 6, session state 5, match session state 5
+   (this console hosts it): a matchmaking lobby this console hosts` and
+   `bots:` gate and sign-in lines for ports 1 to 3 in the `lobby`
+   (`screen lobby`), then `bots: lobby players: N in the game's session`
+   rising; `clankers:
    <gamertag> (phantom, rostered) on (...)` for the rest: on the books.
 8. `bots: phantom <gamertag> joins (peer N, in the pregame lobby)` in
    the lobby, before the countdown. `bots: phantom ... waits: not a lobby
@@ -2131,7 +2210,10 @@ reservations, the peer properties, the configuration, the teams, the
 switch, and a phantom joining the lobby, staying for the game, leaving,
 rejoining and waiting; `phantom::session::tests::in_game`: the start's
 wait without phantom machines, a phantom standing in the game, the bot
-mark on local bots), `-p live-hle --lib clankermatch` (the delay and the run),
+mark on local bots; `lobby::a_clankermatch_...`: the target session),
+`-p bots --lib lobby` (the game session by life cycle, the matchmaking
+host's lobby, its player count), `-p live-hle --lib players_tests` (the
+bots told to their roster's session only), `-p live-hle --lib clankermatch` (the delay and the run),
 `-p live-proto bots hopper::clankers`, `-p live-telemetry
 games_say_their_kind a_bots_name_reads_without_its_mark`, `-p cli
 bots_drive coop_drive`, and the server's: `-p live-server --test
@@ -2378,10 +2460,16 @@ showed 0 filled with six players in the game. So the host says who plays.
 Every second (`clankers::frame`) while a roster is in force, the driver
 hands the HLE the bot accounts in the game (`Driver::session_bots`: the
 local bots' accounts and the rostered phantoms the game made players for);
-`Hle::set_session_players` tells each session the console hosts of them
-and of its signed-in users, as `PlayerJoined` and `PlayerLeft` on
-`session-<id>` for only what changed (`sessions::players_diff`; zero and
-host-made xuids never). One more call after the roster ends sends the
+`Hle::set_session_players` tells the session the roster is for
+(`Driver::roster_in_force`) of them, and each session the console hosts of
+its signed-in users, as `PlayerJoined` and `PlayerLeft` on `session-<id>`
+for only what changed (`sessions::session_players`, `players_diff`; zero
+and host-made xuids never). Only that session: a Clankermatch host
+advertises its party's lobby session (made before the search) beside the
+match the search hosted, and the user's run (cm-run2) told both, so every
+`PlayerJoined` and `PlayerLeft` on the party's (`84ad...`) came back 400
+(`unknown player`: the bots are leased to the match alone) while the
+match's were taken. One more call after the roster ends sends the
 bots' leaves. The server takes a `PlayerJoined` for a human account, or
 for a bot of the session's latest roster when its host posts it
 (`bots::leased_to`), and a `PlayerLeft` for anyone in the session, so a
@@ -4435,8 +4523,8 @@ again first is waited out. The game runs to its own end: Rumble Slayer's
 | 6 | Local bots planned for the lobby | `clankers: clankermatch: N local bots join the lobby` with the plan's N |
 | 7 | Local bots seated and signed in, in the lobby | per local port, after the hosting line: `clankers: Clanker P on`, `bots: join gate port P: ...: signs in`, `bots: signing ... on port P ...`; it says whether in the lobby |
 | 8 | Local bots on Xbox Live as bot accounts | per port, `Clanker P is G on Xbox Live (bot account 000b...)` and `G on port P is on Xbox Live as its own bot account` |
-| 9 | The lobby reached the playlist's fewest players | the most filled or joined players the server's session showed between the hosting line and the start |
-| 10 | The countdown ran and the game started | `session.status` phase `loading` or `gameplay` after the hosting line |
+| 9 | The lobby reached the playlist's fewest players | the most players the game's own session had (`bots: lobby players: N in the game's session`, the game session's `+0x1118`) between the hosting line and the start; the Live server's count (`bots-test: session ...`) is what the host told it and no longer counts (cm-run2 listed "4 joined" with no bot in the lobby) |
+| 10 | The countdown ran and the game started | `session.status` phase `loading` or `gameplay` on a multiplayer map after the hosting line: not `map mainmenu` or mode `main_menu` (cm-run2's `loading` was the main menu coming back) |
 | 11 | Gameplay on a map | phase `gameplay`, not campaign, after the start |
 | 12 | Phantoms joined the lobby before the start | `bots: phantom G joins (peer K, in the pregame lobby)` for each phantom before the start, and no phantom failure |
 | 13 | Game record: kind clankermatch | the newest `GET /v1/games` record (`bots-test: game ... kind K, playlist P`) has kind `clankermatch` and at least the local bots with `bot: true` |

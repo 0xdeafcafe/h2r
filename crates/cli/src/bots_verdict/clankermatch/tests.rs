@@ -73,12 +73,14 @@ fn whole_run() -> Vec<&'static str> {
         "bots: join gate port 3: screen lobby (top none), dialog none, signed_in false (slot 0x1): signs in",
         "bots: signing Clanker 3 in on port 3 in the pregame lobby",
         "bots: Loose Bolt on port 3 is on Xbox Live as its own bot account, beside port 0's",
+        "bots: lobby players: 4 in the game's session",
         "bots-test: session 0123456789abcdef: 4 filled (public 4, private 0), 0 joined",
         "clankers: Tin Can (phantom, rostered) on (Normal)",
         "bots: phantom Tin Can joins (peer 1, in the pregame lobby)",
         "bots: phantom Oil Slick joins (peer 2, in the pregame lobby)",
         "bots: phantom Spare Gear joins (peer 3, in the pregame lobby)",
         "bots: phantom Hex Nut joins (peer 4, in the pregame lobby)",
+        "bots: lobby players: 8 in the game's session",
         "bots-test: status phase loading mode multiplayer map lockout",
         "bots-test: status phase gameplay mode multiplayer map lockout",
         "bots-test: session 0123456789abcdef: 8 filled (public 8, private 0), 0 joined",
@@ -367,8 +369,8 @@ fn a_lobby_short_of_players_fails_step_9_and_10() {
     })
     .into_iter()
     .map(|l| {
-        if l.starts_with("bots-test: session") {
-            "bots-test: session 0123456789abcdef: 1 filled (public 1, private 0), 0 joined"
+        if l.starts_with("bots: lobby players") {
+            "bots: lobby players: 1 in the game's session"
         } else {
             l
         }
@@ -378,11 +380,53 @@ fn a_lobby_short_of_players_fails_step_9_and_10() {
     let v = run(&plan, &lines);
     let (n, r) = first(&v);
     assert_eq!(n, 9, "{r}");
-    assert!(r.contains("at most 1 players in the lobby of the 4"), "{r}");
+    assert!(
+        r.contains("at most 1 players in the game's lobby of the 4"),
+        "{r}"
+    );
     assert!(!v.checks[9].pass);
     assert!(
         v.checks[9].detail.contains("short of its fewest players"),
         "{r}"
+    );
+}
+
+/// cm-run2: the Live server listed 4 joined (the host's report), the
+/// game's lobby never had a bot, and the "loading" that came was the main
+/// menu's. Steps 9 and 10 passed on those; now neither does.
+#[test]
+fn the_servers_count_and_the_main_menus_loading_are_no_start() {
+    let lines: Vec<&str> = without(&whole_run(), |l| {
+        l.starts_with("bots: lobby players")
+            || l.starts_with("bots-test: status phase loading")
+            || l.starts_with("bots-test: status phase gameplay")
+    })
+    .into_iter()
+    .flat_map(|l| {
+        if l.starts_with("bots: phantom Hex Nut joins") {
+            vec![
+                l,
+                "bots-test: session 0123456789abcdef: 1 filled (public 1, private 0), 4 joined",
+                "bots-test: status phase loading mode main_menu map mainmenu",
+                "bots-test: status phase menu mode main_menu map mainmenu",
+            ]
+        } else {
+            vec![l]
+        }
+    })
+    .collect();
+    let v = run(&slayer(), &lines);
+    assert!(!v.checks[8].pass, "{}", v.checks[8].detail);
+    assert!(
+        v.checks[8].detail.contains("no `bots: lobby players: N`"),
+        "{}",
+        v.checks[8].detail
+    );
+    assert!(!v.checks[9].pass, "{}", v.checks[9].detail);
+    assert!(
+        v.checks[9].detail.contains("no multiplayer map loaded"),
+        "{}",
+        v.checks[9].detail
     );
 }
 

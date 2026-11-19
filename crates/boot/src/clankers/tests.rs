@@ -272,6 +272,8 @@ struct FakeLive {
     playlist: Mutex<Option<String>>,
     asked: Mutex<Vec<(RosterRequest, Option<Done>)>>,
     players: Mutex<Vec<Vec<Xuid>>>,
+    /// The session each `players` call named.
+    player_sessions: Mutex<Vec<Option<String>>>,
     clanker: Mutex<Option<(String, live_proto::hopper::clankers::ClankerHopper)>>,
 }
 
@@ -286,7 +288,8 @@ impl Rosters for FakeLive {
         self.asked.lock().unwrap().push((request, Some(done)));
         Ok(())
     }
-    fn players(&self, bots: Vec<Xuid>) {
+    fn players(&self, session: Option<String>, bots: Vec<Xuid>) {
+        self.player_sessions.lock().unwrap().push(session);
         self.players.lock().unwrap().push(bots);
     }
     fn clanker_match(&self) -> Option<(String, live_proto::hopper::clankers::ClankerHopper)> {
@@ -468,6 +471,12 @@ fn the_hosted_session_is_told_of_the_bot_accounts_in_the_game() {
     assert_eq!(d.session_bots(), vec![x(1), x(2), x(3)]);
     d.report_players();
     assert_eq!(*live.players.lock().unwrap(), vec![vec![x(1), x(2), x(3)]]);
+    // Named for the session the roster is for, so no other session this
+    // console advertises (a Clankermatch's party lobby) is told of them.
+    assert_eq!(
+        *live.player_sessions.lock().unwrap(),
+        vec![Some(SESSION.to_owned())]
+    );
     // Once the game made them, the phantoms too.
     let own = d.own.lock().unwrap();
     let all: Vec<PhantomHandle> = ph.list().iter().map(|p| p.handle).collect();
@@ -486,6 +495,11 @@ fn the_hosted_session_is_told_of_the_bot_accounts_in_the_game() {
     d.report_players();
     assert_eq!(live.players.lock().unwrap().len(), 2);
     assert_eq!(live.players.lock().unwrap()[1], vec![]);
+    assert_eq!(
+        live.player_sessions.lock().unwrap()[1],
+        None,
+        "users only now"
+    );
 }
 
 #[test]

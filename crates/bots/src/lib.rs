@@ -174,7 +174,7 @@ impl local::PadSource for Brain {
         if f.machine.is_none()
             && (guest::game_mode(f.guest) == Some(guest::MODE_MULTIPLAYER)
                 || (guest::slot_held(f.guest, u32::from(f.port)).unwrap_or(false)
-                    && lobby::in_pregame(f.guest)))
+                    && lobby::in_joinable(f.guest)))
         {
             self.fidget.pad(f.frame)
         } else {

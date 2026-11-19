@@ -43,8 +43,16 @@ pub const SESSION_TYPE: u32 = 0x0052_7334;
 pub const LOBBY_ON: u32 = 0x004d_8ba0;
 /// 1 when this console failed to load the map (`0x65280`).
 pub const MAP_FAILED_HERE: u32 = 0x004c_d8f8;
-/// The squad session's address.
+/// The squad session's address: the party's session, the one a custom
+/// game's lobby and game are played in.
 pub const SESSION: u32 = 0x0052_7364;
+/// The target session's address: the session a matchmaking search hosts
+/// or joins, and its game is played in, beside the party's squad session
+/// (docs/game/bots.md §8.4, "The matchmaking host's lobby"). `0x65340`
+/// picks the squad session for life-cycle types 1 to 4 and this one for
+/// 6 to 9 (its table at `0x65520`); `0x59780` prefers it whenever it has
+/// a state.
+pub const TARGET_SESSION: u32 = 0x0052_736c;
 /// Session `+0x741c`: its state; 3 to 8 is a lobby (or a game) the start
 /// checks read.
 pub const STATE: u32 = 0x741c;
@@ -52,6 +60,8 @@ pub const STATE: u32 = 0x741c;
 /// the party leader's console.
 pub const LEADER_PEER: u32 = 0x50;
 pub const PEER: u32 = 0x72d8;
+/// Session `+0x40`: the host's peer; equal to `+0x72d8` on the host.
+pub const HOST_PEER: u32 = 0x40;
 /// Session `+0x54`: the peer count; the peers at `+0x58`, `0x10c` each,
 /// their map status at peer `+0x88` and its progress at `+0x8c`.
 pub const PEER_COUNT: u32 = 0x54;
@@ -60,6 +70,37 @@ pub const PEER_SIZE: u32 = 0x10c;
 pub const PEER_MAP: u32 = 0x88;
 /// Session `+0x49a8`: a countdown is set; `+0x49ac` its seconds.
 pub const COUNTDOWN: u32 = 0x49a8;
+
+/// The session the game plays in for life-cycle type `session_type`
+/// (`0x65340`'s table at `0x65520`): the target session for the
+/// matchmaking types 6 to 9 (6 and 7 the matchmaking lobby, 8 its game,
+/// 9 after it), else the squad session (1 and 2 a custom game's lobby, 3
+/// its game, 4 after it; 0 and 5, which `0x65340` gives none, keep the
+/// squad session as before).
+pub fn game_session_at(session_type: u32) -> u32 {
+    if (6..=9).contains(&session_type) {
+        TARGET_SESSION
+    } else {
+        SESSION
+    }
+}
+
+/// Whether `session_type` is a matchmaking lobby's (6 or 7: `0x19a279`
+/// gives both 2).
+pub fn matchmaking_type(session_type: u32) -> bool {
+    matches!(session_type, 6 | 7)
+}
+
+/// The session the game plays in now ([`game_session_at`] of the
+/// life-cycle type `[0x527334]`, read as 0 with networking off), or 0.
+pub fn game_session(m: &dyn GuestMemory) -> R<u32> {
+    let ty = if m.u8(NETWORKING)? != 0 {
+        m.u32(SESSION_TYPE)?
+    } else {
+        0
+    };
+    m.u32(game_session_at(ty))
+}
 
 /// The start states (`0x19a2ce`), as the status line names them
 /// (`0x19a50f`, the strings in `mainmenu.map`).
@@ -82,6 +123,12 @@ pub struct Facts {
     pub countdown: Option<i32>,
     /// Each peer's map status (`1` failed, `2` loading, `3` and `4` done).
     pub maps: Vec<u32>,
+    /// In a matchmaking lobby (types 6 and 7): the target session's state,
+    /// when there is one ([`TARGET_SESSION`]).
+    pub target_state: Option<u32>,
+    /// In a matchmaking lobby: this console hosts the target session (its
+    /// host peer `+0x40` is its own `+0x72d8`).
+    pub target_host: bool,
 }
 
 /// Whether `state` is one the start checks take as a lobby (`0x58d70`).
@@ -98,8 +145,18 @@ pub fn facts(m: &dyn GuestMemory) -> R<Facts> {
         map_failed_here: m.u32(MAP_FAILED_HERE)? == 1,
         ..Facts::default()
     };
+    if !f.networking {
+        return Ok(f);
+    }
+    if matchmaking_type(f.session_type) {
+        let t = m.u32(TARGET_SESSION)?;
+        if t != 0 {
+            f.target_state = Some(m.u32(t + STATE)?);
+            f.target_host = m.u32(t + HOST_PEER)? == m.u32(t + PEER)?;
+        }
+    }
     let s = m.u32(SESSION)?;
-    if !f.networking || s == 0 {
+    if s == 0 {
         return Ok(f);
     }
     let state = m.u32(s + STATE)?;
@@ -138,17 +195,65 @@ pub fn pregame(f: &Facts) -> bool {
         && f.state.is_some_and(lobby_state)
 }
 
-/// The log line for what [`pregame`] read, so a run shows which fact
+/// Whether these facts are a matchmaking lobby this console hosts: the
+/// life cycle in a matchmaking lobby type (6 or 7, [`matchmaking_type`])
+/// with the target session ([`TARGET_SESSION`], where the search hosted)
+/// in a lobby state and this console its host. That is a Clankermatch's
+/// lobby: the empty search hosts it (§8.4), and the hopper's countdown
+/// starts it once the target session has its players.
+///
+/// Retail adds a local player there as anywhere: the per-frame
+/// local-player pass (`0x63d80` → `0x65770`) runs on every session with a
+/// state, the target session too, and adds each signed-in local user it
+/// has no player for, whatever the life-cycle type (`0x646b0` and
+/// `0x65a60` read the session's state and room, never the type). The
+/// matchmaking screen (`0xd2`, constructor `0x2519f7`, input `0x251afa`)
+/// takes only B and Back (and X), so a second controller cannot sign in
+/// there, and the custom lobby's join press (`0x250c80`) refuses outside
+/// type 1 (`0x19a902`, `0x19a279`). A bot signs in with the game's own
+/// sign-in, presses nothing, and the pass adds it.
+pub fn matchmaking_host(f: &Facts) -> bool {
+    f.lobby_on
+        && f.networking
+        && matchmaking_type(f.session_type)
+        && f.target_state.is_some_and(lobby_state)
+        && f.target_host
+}
+
+/// Whether a bot may join the lobby these facts read: a pregame lobby
+/// ([`pregame`]) or a matchmaking lobby this console hosts
+/// ([`matchmaking_host`]).
+pub fn joinable(f: &Facts) -> bool {
+    pregame(f) || matchmaking_host(f)
+}
+
+/// The log line for what [`joinable`] read, so a run shows which fact
 /// held a lobby back.
 pub fn pregame_line(f: &Facts) -> String {
+    let target = if matchmaking_type(f.session_type) {
+        format!(
+            ", match session state {}{}",
+            f.target_state
+                .map_or_else(|| "none".to_owned(), |s| s.to_string()),
+            if f.target_host {
+                " (this console hosts it)"
+            } else {
+                " (another console hosts it)"
+            }
+        )
+    } else {
+        String::new()
+    };
     format!(
-        "bots: lobby facts: lobby {}, networking {}, session type {}, session state {}: {}",
+        "bots: lobby facts: lobby {}, networking {}, session type {}, session state {}{target}: {}",
         f.lobby_on,
         f.networking,
         f.session_type,
         f.state.map_or_else(|| "none".to_owned(), |s| s.to_string()),
         if pregame(f) {
             "a pregame lobby"
+        } else if matchmaking_host(f) {
+            "a matchmaking lobby this console hosts"
         } else {
             "no pregame lobby"
         }
@@ -158,6 +263,36 @@ pub fn pregame_line(f: &Facts) -> String {
 /// [`pregame`] over guest memory; a read that faults is no lobby.
 pub fn in_pregame(m: &dyn GuestMemory) -> bool {
     facts(m).is_ok_and(|f| pregame(&f))
+}
+
+/// [`joinable`] over guest memory; a read that faults is no lobby.
+pub fn in_joinable(m: &dyn GuestMemory) -> bool {
+    facts(m).is_ok_and(|f| joinable(&f))
+}
+
+/// Session `+0x1118`: the session's player count, what the matchmaking
+/// start counts (`0x66050`, the match check `0x7e2df`).
+pub const PLAYER_COUNT: u32 = 0x1118;
+
+/// The players in the lobby a bot may join ([`joinable`]), as the game
+/// counts them: the game session's player count ([`game_session`],
+/// `+0x1118`). `None` out of such a lobby.
+pub fn lobby_players(m: &dyn GuestMemory, f: &Facts) -> R<Option<u32>> {
+    if !joinable(f) {
+        return Ok(None);
+    }
+    let s = game_session(m)?;
+    if s == 0 {
+        return Ok(None);
+    }
+    Ok(Some(m.u32(s + PLAYER_COUNT)?))
+}
+
+/// The log line for [`lobby_players`]: what `h2 bots test` reads as the
+/// lobby's own count (the Live server's count of a session is what the
+/// host told it, not the game's).
+pub fn players_line(n: u32) -> String {
+    format!("bots: lobby players: {n} in the game's session")
 }
 
 /// The map check (`0x652a0`) over the peers of a session in a lobby

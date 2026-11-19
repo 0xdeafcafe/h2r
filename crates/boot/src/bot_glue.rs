@@ -73,7 +73,11 @@
 //!   second controller's profile chosen in the lobby. On Live it waits
 //!   for the user's Xbox Live identity (a local user with the offline id's
 //!   flags `0xBAD00000` counts as none there, `0x646df`), which the bot
-//!   gets from [`bots::guest::go_live_as`] within 30 frames.
+//!   gets from [`bots::guest::go_live_as`] within 30 frames;
+//! - a matchmaking lobby this console hosts (a Clankermatch after its
+//!   empty search: life cycle 6, screen `0xd2`), read from the target
+//!   session ([`bots::lobby::matchmaking_host`]). The same sign-in: the
+//!   local-player pass runs on the target session too.
 //!
 //! Each port's gate is logged when it changes, naming the screen it
 //! thinks is up (`players`, `lobby`, the top screen's id or `none`), and
@@ -150,7 +154,9 @@ pub enum Screen {
     /// mask (`+8`) at `screen`.
     Players { screen: u32 },
     /// A pregame lobby (Live or System Link custom game,
-    /// [`bots::lobby::pregame`]) and no game runs. The lobby is read from
+    /// [`bots::lobby::pregame`]), or a matchmaking lobby this console
+    /// hosts (a Clankermatch, [`bots::lobby::matchmaking_host`]: the
+    /// target session, screen `0xd2`), and no game runs. The lobby is read from
     /// its squad session, not from the screens: it shares its window and
     /// slot with the screens over it, and `ui_watch` reads it as no screen
     /// (the user's run: `top none`). A bot joins with the game's sign-in
@@ -192,7 +198,8 @@ pub const SPLIT_SCREEN: u32 = 1;
 /// Which screen the gate is on: the players screen in Split Screen when it
 /// takes player one's input (`top`, [`crate::ui_watch::read`], mode
 /// [`SPLIT_SCREEN`]); otherwise the pregame lobby when its session is up
-/// (`pregame`, [`bots::lobby::in_pregame`]) and no game runs (`in_game`);
+/// (`pregame`, [`bots::lobby::in_joinable`]: a pregame lobby, or a
+/// matchmaking lobby this console hosts) and no game runs (`in_game`);
 /// otherwise the top screen read, if any.
 ///
 /// The players screen in any other mode (Xbox Live 3, System Link 2, an
@@ -479,6 +486,8 @@ pub struct Bots {
     owners: Arc<Mutex<Option<Hidden>>>,
     /// The last lobby facts line said.
     lobby_said: Arc<Mutex<String>>,
+    /// The lobby's player count last said (`bots::lobby::players_line`).
+    players_said: Arc<Mutex<Option<u32>>>,
     /// When the Xbox Live and the sign-in tries were last made.
     live_every: Arc<Every>,
     sign_in_every: Arc<Every>,
@@ -509,6 +518,7 @@ impl Bots {
             listeners: Arc::default(),
             owners: Arc::default(),
             lobby_said: Arc::default(),
+            players_said: Arc::default(),
             live_every: Arc::default(),
             sign_in_every: Arc::default(),
             skipped: Arc::default(),
@@ -760,6 +770,7 @@ impl feature::Feature for Bots {
             Arc::clone(&self.gates),
         );
         let lobby_said = Arc::clone(&self.lobby_said);
+        let players_said = Arc::clone(&self.players_said);
         b.raw().before(
             &points::RENDER_FRAME,
             "bot pads; hide bot views",
@@ -817,7 +828,7 @@ impl feature::Feature for Bots {
                 let facts = bots::lobby::facts(g).ok();
                 let on = screen(
                     top,
-                    facts.as_ref().is_some_and(bots::lobby::pregame),
+                    facts.as_ref().is_some_and(bots::lobby::joinable),
                     guest::in_game(g),
                 );
                 // What the lobby read gave, once per change.
@@ -827,6 +838,16 @@ impl feature::Feature for Bots {
                     if *said != line {
                         eprintln!("{line}");
                         *said = line;
+                    }
+                    // The lobby's own player count, once per change: what
+                    // a Clankermatch's start counts.
+                    let n = bots::lobby::lobby_players(g, f).ok().flatten();
+                    let mut said = lock(&players_said);
+                    if *said != n {
+                        if let Some(n) = n {
+                            eprintln!("{}", bots::lobby::players_line(n));
+                        }
+                        *said = n;
                     }
                 }
                 let mut open = [false; 4];
@@ -1032,7 +1053,7 @@ impl feature::Feature for Bots {
                         let in_game = guest::in_game(&*mem);
                         let on = screen(
                             crate::ui_watch::read(&*mem).top,
-                            bots::lobby::in_pregame(&*mem),
+                            bots::lobby::in_joinable(&*mem),
                             in_game,
                         );
                         let dialog = crate::ui_watch::dialog(&*mem);
