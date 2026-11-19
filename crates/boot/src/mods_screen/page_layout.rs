@@ -96,7 +96,7 @@ pub const STATUS: TextBlock = text([75, -258, 56, 45], HINT_BLUE);
 /// pale blue and right (bias 5). Widened left into the gutter so each
 /// cell has its own box. Right edge 272, the title-safe area's
 /// (the lobby's runs to 276 and 279).
-pub const TABLE_LEFT: i16 = 83;
+pub const TABLE_LEFT: i16 = 76;
 pub const VALUE_LEFT: i16 = 163;
 pub const TABLE_RIGHT: i16 = 272;
 pub const TABLE_TOP: i16 = 177;
