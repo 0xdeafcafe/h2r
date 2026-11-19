@@ -129,8 +129,8 @@ Compare with `h2 lockstep` as in the [sim checks](../runtime/sim.md#first-runs).
 ## Lifecycle
 
 Live requests one host per match. Before asking a provider to start it, Live
-checks the monthly budget and counts active leases, including hosts still
-starting. `LIVE_MAX_HOSTS` defaults to 4. A refused request leaves matchmaking
+checks the monthly budget and counts hosts that are starting, serving a
+match, or awaiting provider cleanup. `LIVE_MAX_HOSTS` defaults to 4. A refused request leaves matchmaking
 free to use a peer host.
 
 | Event on the `hosts` stream | What Live records |
@@ -139,13 +139,16 @@ free to use a peer host.
 | `HostBooting` | The provider reference used to check or stop this instance. |
 | `HostReady` | The endpoint registered with the lease's own credential and the time from request to registration. Clients can now join. |
 | `HostPlaying` | The current player count. Live keeps the highest count for the match. |
-| `HostEnded` | The reason, elapsed time and peak players. The slot becomes available again. A boot timeout or crash leaves the lease in `Failed`. |
+| `HostEnded` | The reason, elapsed time and peak players. A boot timeout or crash leaves the lease in `Failed`. |
 
 On startup Live replays these server-signed events before it serves requests.
 The host token and signed game-data URL are passed directly to the provider.
 The boot deadline is 60 seconds from the request. After registration, the
 idle timeout defaults to 120 seconds and the hard limit to 1,800 seconds from
-the request. The lease carries both limits so replay preserves its deadlines.
+the request. An occupied, playing host can run through to the hard limit.
+When a supervisor reports the match ended, it has five seconds to exit.
+Live then checks the provider and stops a lingering instance before releasing
+its slot. A stored cursor lets cleanup resume after a restart.
 
 Set `LIVE_HOST_DATA_URL` to the signed URL for the owner's bundle and
 `LIVE_HOST_DATA_SHA256` to its 64-character SHA-256 digest. Set
