@@ -41,7 +41,7 @@ impl d3d::ExternalPass for Begin {
     fn encode(&mut self, t: d3d::ExternalTarget<'_>) {
         // Compare the guest-resolution reference. ScaledBackend also sends
         // the same external pass to its optional high-resolution copy.
-        if t.size != t.guest_size {
+        if t.copy != d3d::TargetCopy::Reference {
             return;
         }
         let Some(constants) = self.constants else { return };
@@ -69,6 +69,10 @@ impl d3d::ExternalPass for Begin {
                 let bitmap = match program.stages[n] {
                     LightStage::Empty => return None,
                     LightStage::Bitmap { bitmap, image } => world.images.get(&(n, bitmap, image))?,
+                    LightStage::Gel if light.binding.is_some() => {
+                        let (w, h) = light.binding.as_ref()?.guest_size;
+                        return Some(format!("linear gel target 13 {w}x{h}"));
+                    }
                     LightStage::Gel => world.gels.get(&d.gel?)?,
                     stage => {
                         let image = if stage == LightStage::Normalization {
@@ -109,7 +113,7 @@ pub(super) struct End(pub(super) u32);
 
 impl d3d::ExternalPass for End {
     fn encode(&mut self, t: d3d::ExternalTarget<'_>) {
-        if t.size == t.guest_size {
+        if t.copy == d3d::TargetCopy::Reference {
             d3d::uniform_compare::end_light(self.0);
         }
     }

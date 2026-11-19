@@ -1759,12 +1759,14 @@ preparation still waits synchronously for each reservation.
    the world's lit parts with their materials' layer-12 and 13 passes.
    **Implemented for cluster geometry. The headless 03a A/B is pending.**
    `boot::native_lights_glue` checks the loaded map and BSP, resolves
-   the whole active list and checks resources before the feature skips
-   the call. A successful plan owns its world, ranges, programs, cull
-   state and light constants through submission. The existing device
-   tail and bound-target guards apply. A refused light runs its original
-   passes. Placements, objects, shadow maps and animated gels remain on
-   that path.
+   the sorted layer and reserves both physical copies before advancing the
+   guest dispatch cursor. Placements, objects and shadow maps keep their
+   D3D draws. A shader-driven gel requires a fresh target-13 binding from
+   the original constants call. The consumer pins that read-only slot in
+   its reservation, samples the matching physical copy and normalizes
+   linear texture coordinates by the guest gel width and height. A
+   missing invocation, slot or copy keeps the whole light on D3D.
+   See [native gels](native-gels.md) for the producer and comparison prefix.
    - **Engine textures** (`0x00019530`, a jump table at `0x00019b68`
      indexed by id - 1; Code): ids 1, 9 and 14 are bitmaps from the
      globals' rasterizer data (`[0x00485a80]`, set by `0x00022590` from

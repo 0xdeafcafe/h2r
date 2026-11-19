@@ -54,6 +54,7 @@ pub const SPLIT_LAYERS: [(u32, u32); 3] = [(14, 0x0003_13e2), (12, 0x0003_144f),
 pub struct Dispatch<'a> {
     pub light: Light,
     pub serial: u64,
+    pub shader_gel: Option<(u32, u32)>,
     pub view_target: [u32; 8],
     pub sorted: &'a SortedLayer,
     pub split: bool,
@@ -63,6 +64,8 @@ pub trait Host: Send + Sync {
     /// Confirm all target copies. Consume only the confirmed prefix on
     /// this stack before publishing any draw to the worker.
     fn submit(&self, mem: &mut dyn GuestMemory, dispatch: Dispatch<'_>, esi: &mut u32) -> bool;
+    /// Before the guest constants or gel quad for this invocation.
+    fn checkpoint_gel(&self, serial: u64);
     fn target(&self) -> Option<[u32; 8]>;
     fn end_layer(&self, mem: &mut dyn GuestMemory);
 }
@@ -75,6 +78,7 @@ static SPLIT_ENABLED: AtomicBool = AtomicBool::new(false);
 struct Candidate {
     light: Light,
     serial: u64,
+    shader_gel: Option<(u32, u32)>,
     layer: u32,
     inside_layer: bool,
 }
@@ -229,12 +233,22 @@ fn begin_light(mem: &dyn GuestMemory, entry: Entry) {
     light.constants = light_constants(mem, &entry);
     let prepare = || {
         let c = light.constants.ok_or("unreadable light constants")?;
-        if c.animated_gel { return Err("animated gel requires its produced target 13"); }
+        let shader_gel = if c.animated_gel {
+            if light.definition != entry.eax { return Err("light definition differs from the constants call"); }
+            let table = mem.u32(engine::tags::TAG_ENTRIES_GLOBAL).map_err(|_| "unreadable light tag table")?;
+            let ptr = mem.u32(table.wrapping_add((entry.eax & 0xffff) << 4).wrapping_add(8))
+                .map_err(|_| "unreadable gel definition")?;
+            let shader = mem.u32(ptr.wrapping_add(engine::light_passes::DEFINITION_GEL_SHADER))
+                .map_err(|_| "unreadable gel shader")?;
+            let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone().ok_or("no light host")?;
+            host.checkpoint_gel(serial);
+            Some((ptr, shader))
+        } else { None };
         let or = mem.u32(LIGHT_LIST + 8).map_err(|_| "unreadable light layer mask")?;
-        light_list::single_layer(or, c.flags, c.definition_flags)
+        light_list::single_layer(or, c.flags, c.definition_flags).map(|layer| (layer, shader_gel))
     };
     match prepare() {
-        Ok(layer) => CANDIDATE.set(Some(Candidate { light, serial, layer, inside_layer: false })),
+        Ok((layer, shader_gel)) => CANDIDATE.set(Some(Candidate { light, serial, layer, shader_gel, inside_layer: false })),
         Err(why) => { refused(why); reference::refused(light); }
     }
 }
@@ -255,7 +269,7 @@ fn geometry(mem: &mut dyn GuestMemory, esp: u32, esi: &mut u32) -> bool {
     let Some(host) = host else { return refused("no light host"); };
     let Some(view_target) = VIEW_TARGET.get() else { return refused("light view target unavailable"); };
     let accepted = match light_list::sorted(&Ro(mem), LIGHT_LIST, c.layer, esp, *esi) {
-        Ok(sorted) => host.submit(mem, Dispatch { light: c.light, serial: c.serial, view_target,
+        Ok(sorted) => host.submit(mem, Dispatch { light: c.light, serial: c.serial, shader_gel: c.shader_gel, view_target,
             sorted: &sorted, split: SPLIT_ENABLED.load(Ordering::Relaxed) }, esi),
         Err(why) => refused(why),
     };

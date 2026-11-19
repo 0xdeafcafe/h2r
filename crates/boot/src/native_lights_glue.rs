@@ -2,6 +2,7 @@
 //! immutable draw resources. Only the confirmed, suppressed prefix commits.
 mod compare;
 
+use crate::native_gels_glue::{Binding, Checkpoint, Outputs};
 use compare::{Begin, End, ProbeState};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Range;
@@ -48,6 +49,8 @@ impl d3d::GuestMemory for DeviceMemory<'_> {
 struct Glue<B: d3d::backend::Backend + Send + 'static> {
     device: d3d::abi::SharedDevice<B>,
     state: State,
+    gels: Arc<Outputs>,
+    checkpoint: Mutex<Option<(u64, Checkpoint)>>,
     /// What preparation returned, by reason ([`Tally`]).
     tally: Mutex<Tally>,
     order: Mutex<RunOrder>,
@@ -163,7 +166,28 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         }
     }
 
-    fn prepare_light(&self, d: &d3d::Device<B>, mem: &dyn GuestMemory, light: &Light, sorted: &SortedLayer, split: bool)
+    fn gel_binding(&self, mem: &dyn GuestMemory, serial: u64, identity: Option<(u32, u32)>,
+        c: &LightConstants) -> Result<Option<Binding>, Keep>
+    {
+        let Some((definition, shader)) = identity else {
+            return if c.animated_gel { Err(Keep::Unsupported("missing gel invocation")) } else { Ok(None) };
+        };
+        use native_render::gels;
+        if c.flags & engine::light_passes::flag::CONTEXT_ZERO != 0
+            || c.definition_flags & engine::light_passes::DEFINITION_TEXTURE_18 != 0
+            || mem.u8(gels::BUILDING).ok() != Some(0)
+            || mem.u32(gels::DEFINITION).ok() != Some(definition)
+            || mem.u32(definition.wrapping_add(engine::light_passes::DEFINITION_GEL_SHADER)).ok() != Some(shader)
+        { return Err(Keep::Unsupported("engine texture 10 does not select this gel invocation")); }
+        let (_, before) = self.checkpoint.lock().unwrap_or_else(|e| e.into_inner())
+            .take_if(|(id, _)| *id == serial).ok_or(Keep::Unsupported("missing gel entry checkpoint"))?;
+        let target = gels::Target::read(&ReadMemory(mem)).ok_or(Keep::Unsupported("unavailable gel target 13"))?;
+        self.gels.binding_after(before, definition, shader, target.surface)
+            .filter(|b| b.guest_size == target.size)
+            .map(Some).ok_or(Keep::Unsupported("no matching target 13 binding for this light"))
+    }
+
+    fn prepare_light(&self, d: &d3d::Device<B>, mem: &dyn GuestMemory, light: &Light, sorted: &SortedLayer, split: bool, binding: Option<Binding>)
         -> Result<(PreparedLight, usize), Keep>
     {
         let constants = constants(light)?;
@@ -181,7 +205,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         let world = ready.lights.as_ref().ok_or(Keep::NoWorld)?;
         let parts = select_parts(&world.clusters, &sorted.entries, split)?;
         let consumed = parts.len();
-        let draws = world.resolve_parts(&constants, parts)?;
+        let draws = world.resolve_parts(&constants, parts, binding.is_some())?;
         if draws.is_empty() {
             return Err(Keep::Unsupported("no supported light draws in the active list"));
         }
@@ -215,7 +239,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             return Err(Keep::Unsupported("unreadable inherited CULLMODE or FRONTFACE"));
         }
         let cull = InheritedCull { device: cull, clusters: true, placements: false };
-        Ok((PreparedLight { ready, constants, handle: light.handle, draws, cull, scissor }, consumed))
+        Ok((PreparedLight { ready, constants, handle: light.handle, draws, cull, scissor, binding }, consumed))
     }
 }
 
@@ -239,7 +263,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
     }
 
     fn reserve(&self, mem: &mut dyn GuestMemory, dispatch: Dispatch<'_>, esi: &mut u32) -> Result<bool, Keep> {
-        let Dispatch { light, serial, view_target, sorted, split: split_enabled } = dispatch;
+        let Dispatch { light, serial, shader_gel, view_target, sorted, split: split_enabled } = dispatch;
         self.end_probe(None, None);
         let mut probe = self.compare.as_ref().map(|p| p.lock().unwrap_or_else(|e| e.into_inner()));
         let mut d = self.device.lock().map_err(|_| Keep::Unsupported("device unavailable"))?;
@@ -249,7 +273,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         if d.bound_target() != view_target {
             return Err(Keep::Unsupported("light view target changed"));
         }
-        let (plan, count) = self.prepare_light(&d, mem, &light, sorted, split_enabled)?;
+        let binding = self.gel_binding(mem, serial, shader_gel, &constants(&light)?)?;
+        let (plan, count) = self.prepare_light(&d, mem, &light, sorted, split_enabled, binding)?;
         if Self::probe(&mut d, mem, &plan, probe.as_deref_mut()) {
             eprintln!("native-lights compare: projected scissor {:?}, consuming {count}/{} sorted dispatches",
                 plan.scissor, sorted.entries.len());
@@ -275,15 +300,18 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         let mut order = self.order.lock().unwrap_or_else(|e| e.into_inner());
         let gel = plan.constants.gel;
         let targets = d.stats().target_changes;
-        let key = order.key(serial, gel, targets, split);
+        let isolated = split || plan.binding.is_some();
+        let key = order.key(serial, gel, targets, isolated);
         let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
-        let request = d3d::ExternalPlan {
-            stage: timeline::native::Stage::Lights, view, ranges: count, slots: Vec::new(),
+        let mut request = d3d::ExternalPlan {
+            stage: timeline::native::Stage::Lights, view, ranges: count,
+            slots: Vec::new(),
         };
+        let gel_slot = plan.binding.map(|binding| binding.append(&mut request));
         let reason = Arc::new(Mutex::new(None));
-        let pass = RunPass { light: plan, view: None, clip: None, key,
+        let pass = RunPass { light: plan, view: None, clip: None, key, gel_slot,
             bundles: [None, None], refusal: Arc::clone(&reason) };
-        let reservation = d.prepare_external_bound(&mut DeviceMemory(mem), request, Box::new(pass), Vec::new())
+        let reservation = d.prepare_external_pass(&mut DeviceMemory(mem), request, Box::new(pass))
             .map_err(|_| Keep::Unsupported("could not drain or confirm the light"))?
             .ok_or_else(|| reason.lock().unwrap_or_else(|e| e.into_inner()).take()
                 .unwrap_or(Keep::Unsupported("target binding, validation or range count refused the light")))?;
@@ -295,7 +323,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         }
         reservation.commit();
         timeline::native::Stage::Lights.count(timeline::native::Metric::Suppressed, count as u64);
-        order.previous = (!split).then_some((serial, gel, targets, key));
+        order.previous = (!isolated).then_some((serial, gel, targets, key));
         Ok(split)
     }
 }
@@ -324,6 +352,10 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         }
     }
 
+    fn checkpoint_gel(&self, serial: u64) {
+        *self.checkpoint.lock().unwrap_or_else(|e| e.into_inner()) = Some((serial, self.gels.checkpoint()));
+    }
+
     fn target(&self) -> Option<[u32; 8]> {
         self.device.lock().ok().map(|d| d.bound_target())
     }
@@ -333,9 +365,6 @@ fn constants(light: &Light) -> Result<LightConstants, Keep> {
     let c = light.constants.ok_or(Keep::NoConstants)?;
     if c.shadowed() {
         return Err(Keep::Shadowed);
-    }
-    if c.animated_gel {
-        return Err(Keep::Unsupported("animated gel renders into target 13"));
     }
     Ok(c)
 }
@@ -509,10 +538,10 @@ pub(crate) fn light_textures<R: std::io::Read + std::io::Seek>(
 }
 
 /// Installs the host over the world's state (`native_world_glue::install`).
-pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>, state: State) {
+pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>, state: State, gels: Arc<Outputs>) {
     feature::native_lights::set_host(Arc::new(Glue {
         device: Arc::clone(device),
-        state,
+        state, gels, checkpoint: Mutex::default(),
         tally: Mutex::new(Tally::default()),
         order: Mutex::default(),
         compare: (std::env::var("H2_NATIVE_LIGHTS_COMPARE").as_deref() == Ok("1")).then(Mutex::default),
@@ -583,7 +612,7 @@ pub struct LightsWorld {
 }
 
 impl LightsWorld {
-    fn resolve_parts(&self, c: &native_render::lights::LightConstants, parts: Vec<(usize, usize, WorldDraw)>)
+    fn resolve_parts(&self, c: &native_render::lights::LightConstants, parts: Vec<(usize, usize, WorldDraw)>, produced_gel: bool)
         -> Result<Vec<Planned>, Keep>
     {
         // Resolved without the colours, which each light's uniforms take
@@ -606,7 +635,7 @@ impl LightsWorld {
                     if compiled.program.inputs & !draw.inputs != 0 {
                         return Err(Keep::Unsupported("cluster lacks a vertex stream read by its light program"));
                     }
-                    self.binds(&compiled.program, c.gel)?;
+                    self.binds(&compiled.program, c.gel, produced_gel)?;
                     if let Some(previous) = out.last_mut()
                         && previous.material == m && previous.layer == layer && Arc::ptr_eq(&previous.compiled, &compiled)
                     {
@@ -648,7 +677,7 @@ impl LightsWorld {
 
     /// Whether every texture `program` samples is loaded, with `gel` the
     /// light's; the first that is not, when one is not.
-    fn binds(&self, program: &LightProgram, gel: Option<u32>) -> Result<(), Keep> {
+    fn binds(&self, program: &LightProgram, gel: Option<u32>, produced_gel: bool) -> Result<(), Keep> {
         for (stage, (s, d)) in program.stages.iter().zip(&program.dims).enumerate() {
             if d.is_none() {
                 continue;
@@ -658,7 +687,7 @@ impl LightsWorld {
                 LightStage::Bitmap { bitmap, image } => (self.images.contains_key(&(stage, bitmap, image)), "stage bitmap"),
                 LightStage::Normalization => (self.normalization.is_some(), "normalization cube"),
                 LightStage::Attenuation => (self.attenuation.is_some(), "attenuation volume"),
-                LightStage::Gel => (gel.is_some_and(|g| self.gels.contains_key(&g)), "gel"),
+                LightStage::Gel => (produced_gel || gel.is_some_and(|g| self.gels.contains_key(&g)), "gel"),
             };
             if !loaded {
                 return Err(Keep::Unloaded(what));
@@ -852,6 +881,7 @@ struct PreparedLight {
     draws: Vec<Planned>,
     cull: InheritedCull,
     scissor: [u32; 4],
+    binding: Option<Binding>,
 }
 
 impl PreparedLight {
@@ -866,7 +896,7 @@ impl PreparedLight {
             frame: &c.frame,
             gel: c.gel,
             gel_view: None,
-            gel_scale: None,
+            gel_scale: self.binding.map(Binding::tex_scale),
             ranges: p.ranges.clone(),
         }
     }
@@ -895,6 +925,7 @@ struct RunPass {
     view: Option<[[f32; 4]; d3d::VIEW_CONSTANTS]>,
     clip: Option<d3d::DepthClip>,
     key: u64,
+    gel_slot: Option<usize>,
     bundles: [Option<(native_render::light_gpu::LightBundles, [u32; 4])>; 2],
     refusal: Arc<Mutex<Option<Keep>>>,
 }
@@ -946,7 +977,16 @@ impl RunPass {
         if gpu.lights().is_none() {
             gpu.set_lights(LightSet::new(t.device, t.queue, lw.normalization.as_ref(), lw.attenuation.as_ref()));
         }
-        let draws: Vec<_> = self.light.draws.iter().map(|p| self.light.draw(p)).collect();
+        // Resolve the pinned slot for this physical copy before any guest cursor moves.
+        let sample = match &self.light.binding {
+            Some(binding) => Some(binding.sample(t, self.gel_slot.ok_or("missing gel slot")?).ok_or("target 13 has no matching sample view on this copy")?),
+            None => None,
+        };
+        let draws: Vec<_> = self.light.draws.iter().map(|p| {
+            let mut draw = self.light.draw(p);
+            draw.gel_view = sample;
+            draw
+        }).collect();
         let recorded = gpu.prepare_lights(
             t.device, t.queue, t.color_format, t.depth_format, &view, &draws,
             &mut |stage, s| match s {
@@ -1229,7 +1269,7 @@ mod tests {
         };
         assert!(constants(&light(Some(c))).is_ok());
         assert!(matches!(constants(&light(Some(LightConstants { flags: 4 | 0x20, ..c }))), Err(Keep::Shadowed)));
-        assert!(matches!(constants(&light(Some(LightConstants { animated_gel: true, ..c }))), Err(Keep::Unsupported(_))));
+        assert!(constants(&light(Some(LightConstants { animated_gel: true, ..c }))).unwrap().animated_gel);
         assert!(matches!(constants(&light(None)), Err(Keep::NoConstants)));
     }
 

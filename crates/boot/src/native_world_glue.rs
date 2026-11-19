@@ -256,10 +256,10 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
         state: Arc::clone(&state),
     }));
     crate::native_transparents_glue::install(device, Arc::clone(&state));
-    crate::native_lights_glue::install(device, state);
+    let gels = crate::native_gels_glue::install(device);
+    crate::native_lights_glue::install(device, state, gels);
     // The post loads its own screen effects (`native_post_glue::EffectsSlot`).
     crate::native_post_glue::install(device);
-    crate::native_gels_glue::install(device);
 }
 
 /// The world's GPU side, uploaded from its CPU side by the first pass that
@@ -780,6 +780,10 @@ pub(crate) fn palettes_hold(used: &StagePalettes, bound: &dyn Fn(usize) -> Optio
 
 /// The hook's guest memory as the device reads it, read-only.
 pub(crate) struct ReadMemory<'a>(pub(crate) &'a dyn GuestMemory);
+
+impl native_render::camera::GuestRead for ReadMemory<'_> {
+    fn read_u32(&self, addr: u32) -> Option<u32> { self.0.u32(addr).ok() }
+}
 
 impl d3d::GuestMemory for ReadMemory<'_> {
     fn read(&self, addr: u32, out: &mut [u8]) -> Result<(), d3d::GuestError> {
