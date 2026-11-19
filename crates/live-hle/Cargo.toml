@@ -17,6 +17,7 @@ toml = "0.9"
 ureq = { version = "2", default-features = false, features = ["tls"] }
 time = "0.3"
 url = "2"
+tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 
 [dev-dependencies]
 live-server = { path = "../live-server" }

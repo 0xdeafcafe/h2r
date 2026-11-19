@@ -48,6 +48,8 @@ pub use arbitration::{Arbitration, ArbitrationRound};
 mod storage_api;
 mod teams;
 pub mod traffic;
+pub mod tunnel_client;
+pub use tunnel_client::{TunnelHandle, connect_tunnel};
 pub use teams::{MEMBER_SIZE, TEAM_PROPERTIES_SIZE, TEAM_SIZE};
 mod ui;
 pub use network_config::{COOP_PORT_OFFSET, NetworkConfig};

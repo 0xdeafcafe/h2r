@@ -3,8 +3,8 @@
 Status: contract, implemented apart from what the sections mark as not
 built (federation among them). The service is `crates/live-server`
 ([live.md](live.md)). Everything here is JSON over HTTP on one port
-(default `127.0.0.1:8074`), plus three WebSockets (stream, ingest and the
-co-op relay). Identity, signing, tokens
+(default `127.0.0.1:8074`), plus WebSockets for streaming, ingest, the
+co-op relay and the dedicated host tunnel. Identity, signing, tokens
 and discovery are in [live-security.md](live-security.md); this page refers
 to it as §n. Every client is given a base URL and finds the rest from
 `GET /.well-known/h2live.json`.
@@ -1438,6 +1438,33 @@ port + 4.
 
 Invalid JSON bodies return `400`. Requests exceeding a body cap return
 `413`. Lease and inventory reads use the shared per-IP API rate limit.
+
+## Dedicated host tunnel
+
+A client joins a tunnel endpoint with a WebSocket upgrade at
+`GET /v1/hosts/{lease}/tunnel`. The upgrade carries the roster member's
+`sessions.relay` bearer in the `Authorization` header. The client uses
+the endpoint URL directly and sends one frame per binary message.
+
+| Byte offset | Size | Field |
+|---|---|---|
+| 0 | 1 | Version, currently 1 |
+| 1 | 1 | Kind, 0 for datagram, 1 for hello, 2 for bye |
+| 2 | 2 | Port offset 0 through 6, little-endian |
+| 4 | 4 | Peer ID, little-endian |
+| 8 | 0–1264 | Payload bytes |
+
+The client starts each connection with an empty hello on port 0 and
+peer 0. The host replies with a hello on port 0, the client's assigned
+nonzero peer ID and the **host's** synthetic IPv4 address as four octets
+in network order (`10.77.x.y`). All client frames have peer 0. Host
+datagrams carry the recipient's assigned ID. The port names the game
+channel in both directions. A zero-length datagram is valid.
+
+The client sends a WebSocket Ping every five seconds. On transport loss
+it attempts one fresh upgrade and hello. A bye has port 0 and an empty
+payload. The sender follows it with a WebSocket close. The host uses
+the recipient's ID for its bye. A bye ends the session.
 
 ## Game-invite mailboxes
 
