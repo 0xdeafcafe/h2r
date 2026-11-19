@@ -1198,6 +1198,48 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         })
     }
 
+    fn queue_world_draw(
+        &mut self, candidate: crate::backend::QueuedWorldDraw<u32>,
+        textures: [Option<&Self::Texture>; 4],
+    ) -> bool {
+        if candidate.plan.stage != timeline::native::Stage::World || !self.external_pass
+            || self.check().is_err() || self.judge.is_none()
+            || self.judge_draw(&candidate.fallback, textures) != DrawOutcome::Drawn
+        {
+            return false;
+        }
+        let ids = textures.map(|t| t.map(|t| t.id));
+        self.post(move |w| {
+            let draw = candidate.fallback;
+            let color = w.surface(candidate.surfaces.color)?;
+            let depth = w.surface(candidate.surfaces.depth)?;
+            let mut textures = [None; 4];
+            for (slot, id) in textures.iter_mut().zip(ids) {
+                if let Some(id) = id {
+                    *slot = Some(w.textures.get(&id).ok_or_else(|| format!("render thread: texture {id} is not live"))?);
+                }
+            }
+            if let Some(surfaces) = candidate.surfaces.try_map(|s| w.surfaces.get(s).copied())
+                && let Ok(Some(recordings)) = w.inner.prepare_external(
+                    surfaces, candidate.request, textures, &candidate.plan, crate::TargetCopy::Reference, candidate.pass,
+                )
+                && crate::device::complete_recordings(&candidate.plan, &recordings)
+            {
+                for recording in recordings { w.inner.commit_external(recording); }
+                (candidate.finished)(None);
+                return Ok(());
+            }
+            let result = w.inner.draw(color, Some(depth), &draw, textures);
+            (candidate.finished)(Some(&result));
+            let outcome = result?;
+            if outcome != DrawOutcome::Drawn {
+                w.shared.miss(format!("{}: answered Drawn, the backend gave {outcome:?}", draw.entry));
+            }
+            Ok(())
+        });
+        true
+    }
+
     fn commit_external(&mut self, recording: crate::ExternalRecording) {
         self.post(move |w| {
             w.inner.commit_external(recording);
