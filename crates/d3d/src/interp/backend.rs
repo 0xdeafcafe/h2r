@@ -1764,6 +1764,13 @@ where
         self.inner.request_depth_grid(surface, request, sink)
     }
 
+    fn external_attachments(
+        &mut self, surfaces: crate::ExternalSurfaces<Self::Surface>, textures: [Option<&Self::Texture>; 4],
+        copy: crate::TargetCopy,
+    ) -> Result<Option<Vec<crate::backend::ExternalAttachments>>, String> {
+        self.inner.external_attachments(surfaces, textures, copy)
+    }
+
     fn prepare_external(
         &mut self, surfaces: crate::ExternalSurfaces<Self::Surface>, request: crate::ExternalPassRequest,
         textures: [Option<&Self::Texture>; 4], plan: &crate::ExternalPlan, copy: crate::TargetCopy, pass: crate::SharedReplacement,
