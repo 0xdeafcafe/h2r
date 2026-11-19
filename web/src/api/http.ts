@@ -1,6 +1,7 @@
 // REST helpers. Every URL derives from the chosen server target.
 
 import type { AccountKeyEntry, Frame, GameDetail, GameSummary, MapOutline, WireEvent, AccountSummary, PresenceEntry } from "./types";
+import type { SimDetail, SimFilter, SimRun } from "../admin/simRuns";
 import type { ServerTarget } from "./server";
 import { formatSkullsParam } from "../lib/skulls";
 import { decodeKeyframes } from "./pack";
@@ -159,6 +160,10 @@ export function api(t: ServerTarget, reader: Reader = async () => null) {
      *  who may not see it); `bearer` overrides the reader's token. */
     game: async (id: string, s?: AbortSignal, bearer?: string | null) =>
       getJson<GameDetail>(u("/games/" + encodeURIComponent(id)), s, bearer === undefined ? await who() : bearer),
+    simRuns: async (filters: SimFilter, s?: AbortSignal) =>
+      page<SimRun>(await getJson(u("/admin/sim-runs", { ...filters }), s, await who())),
+    simRun: async (id: string, s?: AbortSignal) =>
+      getJson<SimDetail>(u("/admin/sim-runs/" + encodeURIComponent(id)), s, await who()),
     /** All recorded frames in a tick range: from the game's frame chunks
      *  (docs/live/live-api.md, "Frame chunks"), or, for a game recorded
      *  before them (its index is empty, or the server has none), its
@@ -256,7 +261,10 @@ export function api(t: ServerTarget, reader: Reader = async () => null) {
       (await all<WireEvent>("/events", { stream, limit: 1000, exclude: opts.exclude }, s)).items,
     /** The reader stream, resuming after `from` (exclusive), without the 1 Hz GameFrame events. */
     /** `auth`: the first message will be a `read` token (`?auth=1`). */
-    streamUrl: (from: number | null, auth = false) => u("/stream", { from: from ?? 0, exclude: "GameFrame", frames: "packed", auth: auth ? 1 : undefined }),
+    streamUrl: (from: number | null, auth = false, game?: string) => u("/stream", {
+      from: from ?? 0, exclude: "GameFrame", frames: "packed", auth: auth ? 1 : undefined,
+      games: game, stream: game ? "game-" + game : undefined,
+    }),
     /** The reader's token now, for a stream's auth message. */
     readToken: who,
   };

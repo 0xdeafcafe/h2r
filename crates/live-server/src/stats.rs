@@ -334,6 +334,9 @@ impl Inner {
             return;
         };
         let ng = &s.game;
+        if ng.sim.is_some() {
+            return;
+        }
         let campaign = ng.mode == "campaign";
         let kind = ng.kind().to_string();
         let g = LiveGame {

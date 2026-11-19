@@ -42,7 +42,13 @@ use object_store::{
 /// The key prefixes that hold the server's blobs, which `h2 live store copy`
 /// moves. Nothing else in the data directory (the key, the database) is a
 /// blob.
-pub const PREFIXES: &[&str] = &["content/", "storage/", "art/", FRAMES_PREFIX];
+pub const PREFIXES: &[&str] = &[
+    "content/",
+    "storage/",
+    "art/",
+    FRAMES_PREFIX,
+    crate::sim_runs::REPORT_PREFIX,
+];
 
 /// Recorded games' frame chunks: `frames/<game id>/<first tick>`
 /// (crate::games::chunk_key).

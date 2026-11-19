@@ -132,6 +132,20 @@ impl Match {
     fn clock(&self, tick: u64) -> u64 {
         tick.saturating_add(self.tick_offset)
     }
+
+    fn mark_cut(&mut self, tick: u64) {
+        if self.clock(tick) <= self.sent_tick {
+            let offset = self.sent_tick + 2 - tick;
+            self.tick_offset = offset + offset % 2;
+        }
+        self.tick = tick;
+        self.cut = Some(tick);
+        self.last_score_tick = tick;
+        self.shots.clear();
+        self.actor_shots.clear();
+        self.units.clear();
+        self.hits.clear();
+    }
 }
 
 pub struct Session {
@@ -140,6 +154,7 @@ pub struct Session {
     /// The Live account signed in on local player slot 0, if any: that
     /// player's roster entries carry its XUID.
     signed_in: Option<live_proto::Xuid>,
+    sim: Option<live_proto::game::SimGame>,
     current: Option<Match>,
     /// Set while the console is in a matchmaking game.
     playlist: Option<Playlist>,
@@ -247,6 +262,7 @@ impl Session {
             host: host.into(),
             console,
             signed_in: None,
+            sim: None,
             current: None,
             playlist: None,
             bots: None,
@@ -263,10 +279,19 @@ impl Session {
         self
     }
 
+    pub fn with_sim(mut self, sim: live_proto::game::SimGame) -> Self {
+        self.sim = Some(sim);
+        self
+    }
+
+    pub fn is_sim(&self) -> bool {
+        self.sim.is_some()
+    }
+
     /// Sets the signed-in account's XUID on the player who plays from local
     /// slot 0. Other players keep whatever the game said (nothing, today).
     fn link(&self, players: &mut [PlayerState]) {
-        link(self.signed_in, self.bots.as_ref(), players);
+        link(self.signed_in, self.bots.as_ref(), players, self.is_sim());
     }
 
     /// The server's bot roster the next multiplayer games run with
@@ -333,6 +358,10 @@ impl Session {
         players: Vec<PlayerState>,
         teams: Vec<live_proto::game::TeamScore>,
     ) {
+        let is_sim = self.is_sim();
+        if is_sim && info.mode != "multiplayer" {
+            return;
+        }
         let mut players = players;
         self.link(&mut players);
         // Campaign re-activates the same map on every checkpoint revert and
@@ -340,30 +369,22 @@ impl Session {
         // copy of the active options): that is still the same game.
         if let Some(current) = &mut self.current
             && !current.ended
-            && current.campaign
-            && info.mode == "campaign"
             && current.map == info.map
+            && ((current.campaign && info.mode == "campaign") || is_sim)
         {
-            if info.tick + current.tick_offset <= current.sent_tick {
-                let offset = current.sent_tick + 2 - info.tick;
-                current.tick_offset = offset + offset % 2;
-            }
-            current.tick = info.tick;
-            current.cut = Some(info.tick);
-            current.last_score_tick = info.tick;
-            current.shots.clear();
-            current.actor_shots.clear();
-            current.units.clear();
-            current.hits.clear();
+            current.mark_cut(info.tick);
             return;
         }
         self.end_previous();
         if !info.is_match() {
             return;
         }
-        let game_id = live_proto::sign::random_id();
+        let sim = self.sim.as_ref();
+        let game_id = sim.map_or_else(live_proto::sign::random_id, |sim| {
+            live_proto::game::sim_game_id(&sim.run_id)
+        });
         let campaign = info.mode == "campaign";
-        let playlist = if campaign {
+        let playlist = if campaign || sim.is_some() {
             None
         } else {
             self.playlist.clone()
@@ -380,6 +401,7 @@ impl Session {
             None
         };
         let game = live_proto::game::NewGame {
+            sim: sim.cloned(),
             console: self.console.clone(),
             map: info.map.clone(),
             mode: info.mode.clone(),
@@ -400,7 +422,7 @@ impl Session {
                 .or_else(|| {
                     self.bots
                         .as_ref()
-                        .filter(|_| !campaign)
+                        .filter(|_| !campaign && sim.is_none())
                         .and_then(|b| b.session_id.clone())
                 }),
             playlist_id: playlist.map(|p| p.id),
@@ -477,7 +499,7 @@ impl Session {
         }
     }
 
-    fn end_previous(&mut self) {
+    pub(crate) fn end_previous(&mut self) {
         let Some(current) = self.current.take() else {
             return;
         };
@@ -514,19 +536,25 @@ impl Session {
     pub fn sample(&mut self, snapshot: &Snapshot) {
         let signed_in = self.signed_in;
         let bots = self.bots.as_ref();
+        let sim = self.is_sim();
         let Some(current) = &mut self.current else {
             return;
         };
         if current.ended {
             return;
         }
+        if sim && snapshot.tick < current.tick {
+            // `h2 sim batch --fork` can load a snapshot without another
+            // map start. Keep the recording's ticks monotonic across it.
+            current.mark_cut(snapshot.tick);
+        }
         current.tick = snapshot.tick;
         let clock = current.clock(snapshot.tick);
         // Most ticks the roster is as it was: nothing joined or left, and
         // nothing to copy.
-        if !same_roster(signed_in, bots, &current.players, &snapshot.players) {
+        if !same_roster(signed_in, bots, &current.players, &snapshot.players, sim) {
             let mut linked = snapshot.players.clone();
-            link(signed_in, bots, &mut linked);
+            link(signed_in, bots, &mut linked, sim);
             Self::roster_changed(&mut self.output, current, &snapshot.players, linked);
         }
         for (player, object) in snapshot.players.iter().zip(&snapshot.objects) {
@@ -929,7 +957,11 @@ fn identity(
     signed_in: Option<live_proto::Xuid>,
     bots: Option<&Bots>,
     p: &PlayerState,
+    sim: bool,
 ) -> (Option<live_proto::Xuid>, Option<bool>) {
+    if sim {
+        return (None, Some(true));
+    }
     if let Some(b) = bots.filter(|b| b.plays(p)) {
         let xuid = match p.local_user {
             None => b.xuid(p.machine),
@@ -945,9 +977,14 @@ fn identity(
 
 /// Gives local player 0 the signed-in account's XUID, and marks each bot
 /// (a rostered phantom with its own xuid).
-fn link(signed_in: Option<live_proto::Xuid>, bots: Option<&Bots>, players: &mut [PlayerState]) {
+fn link(
+    signed_in: Option<live_proto::Xuid>,
+    bots: Option<&Bots>,
+    players: &mut [PlayerState],
+    sim: bool,
+) {
     for p in players.iter_mut() {
-        (p.player.xuid, p.player.bot) = identity(signed_in, bots, p);
+        (p.player.xuid, p.player.bot) = identity(signed_in, bots, p, sim);
     }
 }
 
@@ -957,6 +994,7 @@ fn same_roster(
     bots: Option<&Bots>,
     current: &[PlayerState],
     fresh: &[PlayerState],
+    sim: bool,
 ) -> bool {
     current.len() == fresh.len()
         && current.iter().zip(fresh).all(|(c, f)| {
@@ -981,7 +1019,7 @@ fn same_roster(
                 appearance: wire_appearance,
                 bot: _,
             } = player;
-            let (xuid, bot) = identity(signed_in, bots, f);
+            let (xuid, bot) = identity(signed_in, bots, f, sim);
             c.datum == *datum
                 && c.appearance == *appearance
                 && c.local_user == *local_user
@@ -1916,6 +1954,26 @@ mod tests {
         assert_eq!(frame.players[0].yaw, -std::f64::consts::FRAC_PI_2);
         assert_eq!(frame.players[0].vehicle.as_deref(), Some("90020001"));
         assert!(frame.players[0].alive);
+    }
+
+    #[test]
+    fn sim_session_marks_snapshot_rewinds_as_cuts() {
+        let mut session = Session::new("test", None).with_sim(live_proto::game::SimGame {
+            run_id: "forked".into(),
+            batch_id: None,
+            seed: "42".into(),
+            gametype: "slayer".into(),
+            pace: "unpaced".into(),
+            bots: vec![],
+            deferred: false,
+        });
+        let players = vec![player(0, 1)];
+        session.start(&info(), players.clone());
+        session.sample(&snapshot(34, players.clone()));
+        session.sample(&snapshot(30, players));
+        let got = frames(&mut session);
+        assert_eq!((got[0].tick, got[0].cut), (34, None));
+        assert_eq!((got[1].tick, got[1].cut), (36, Some(30)));
     }
 
     fn frames(session: &mut Session) -> Vec<Frame> {
@@ -2888,19 +2946,19 @@ mod tests {
         let xuid = live_proto::Xuid::parse("0009a1b2c3d4e5f6").unwrap();
         let fresh = vec![player(0, 1), player(1, 2)];
         let mut current = fresh.clone();
-        link(Some(xuid), None, &mut current);
-        assert!(same_roster(Some(xuid), None, &current, &fresh));
+        link(Some(xuid), None, &mut current, false);
+        assert!(same_roster(Some(xuid), None, &current, &fresh, false));
         assert!(
-            !same_roster(None, None, &current, &fresh),
+            !same_roster(None, None, &current, &fresh, false),
             "the link is part of it"
         );
         let mut renamed = fresh.clone();
         renamed[1].player.name = "Q".into();
-        assert!(!same_roster(Some(xuid), None, &current, &renamed));
+        assert!(!same_roster(Some(xuid), None, &current, &renamed, false));
         let mut scored = fresh.clone();
         scored[0].stats.kills = 1;
-        assert!(!same_roster(Some(xuid), None, &current, &scored));
-        assert!(!same_roster(Some(xuid), None, &current, &fresh[..1]));
+        assert!(!same_roster(Some(xuid), None, &current, &scored, false));
+        assert!(!same_roster(Some(xuid), None, &current, &fresh[..1], false));
     }
 
     #[test]

@@ -27,7 +27,12 @@ use crate::store::{EventStore, Query, StoreError};
 
 /// What the blob copy moves: the server's blobs (and recorded games' frame
 /// chunks), nothing else in the data directory (its key, its database).
-pub const PREFIXES: &[&str] = &["content/", "storage/", crate::blobs::FRAMES_PREFIX];
+pub const PREFIXES: &[&str] = &[
+    "content/",
+    "storage/",
+    crate::blobs::FRAMES_PREFIX,
+    crate::sim_runs::REPORT_PREFIX,
+];
 
 const BATCH: usize = 500;
 
