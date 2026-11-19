@@ -1,4 +1,6 @@
+use std::ffi::OsStr;
 use std::fs::{self, DirBuilder};
+use std::io::{self, Read};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
@@ -21,7 +23,7 @@ extern "C" fn request_stop(_: libc::c_int) {
     STOPPING.store(true, Ordering::Relaxed);
 }
 
-pub(super) fn watch_signals() -> Result<()> {
+pub(super) fn watch_stop_requests() -> Result<()> {
     for signal in [libc::SIGINT, libc::SIGTERM] {
         // SAFETY: the handler only stores to a lock-free atomic.
         let old = unsafe { libc::signal(signal, request_stop as *const () as libc::sighandler_t) };
@@ -29,7 +31,22 @@ pub(super) fn watch_signals() -> Result<()> {
             return Err(std::io::Error::last_os_error()).context("installing host signal handler");
         }
     }
+    if std::env::var_os("H2_HOST_PARENT_PIPE").as_deref() == Some(OsStr::new("1")) {
+        thread::Builder::new()
+            .name("host-parent-pipe".into())
+            .spawn(|| watch_parent_pipe(io::stdin().lock(), &STOPPING))
+            .context("starting host parent pipe watcher")?;
+    }
     Ok(())
+}
+
+fn watch_parent_pipe(mut pipe: impl Read, stopping: &AtomicBool) {
+    // The pipe carries no commands. Its write end keeps the lease alive.
+    let result = io::copy(&mut pipe, &mut io::sink());
+    stopping.store(true, Ordering::Relaxed);
+    if let Err(error) = result {
+        eprintln!("h2 host: parent pipe read failed: {error}");
+    }
 }
 
 pub(super) fn stopping() -> bool {
@@ -105,6 +122,7 @@ impl Game {
         cmd.stdin(Stdio::null())
             .env_remove(agent_proto::ENV)
             .env_remove("H2_HOST_LEASE_JSON")
+            .env_remove("H2_HOST_PARENT_PIPE")
             .env("H2_LEASE", &lease.id)
             .env("H2_HOST_LIVE_URL", live.base())
             .env("H2_HOST_TOKEN", &opts.token)
@@ -246,5 +264,34 @@ fn route_ip() -> Option<Ipv4Addr> {
     match socket.local_addr().ok()? {
         SocketAddr::V4(addr) => Some(*addr.ip()),
         SocketAddr::V6(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parent_pipe_drains_input_and_stops_at_eof() {
+        struct Pipe<'a> {
+            bytes: &'a [u8],
+            stopping: &'a AtomicBool,
+        }
+
+        impl Read for Pipe<'_> {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                assert!(!self.stopping.load(Ordering::Relaxed));
+                self.bytes.read(buf)
+            }
+        }
+
+        let stopping = AtomicBool::new(false);
+        let mut pipe = Pipe {
+            bytes: b"ignored",
+            stopping: &stopping,
+        };
+        watch_parent_pipe(&mut pipe, &stopping);
+        assert!(pipe.bytes.is_empty());
+        assert!(stopping.load(Ordering::Relaxed));
     }
 }

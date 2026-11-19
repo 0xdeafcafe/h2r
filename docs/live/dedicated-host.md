@@ -139,6 +139,11 @@ state reports `Crashed` and returns 1. The child has up to 60 seconds
 after spawn to reach the lobby. The provider also enforces its boot
 deadline from the original lease request.
 
+The local provider sets `H2_HOST_PARENT_PIPE=1` and holds the write end of
+the supervisor's stdin pipe for the lease. When the provider exits, EOF
+requests the same shutdown as SIGTERM, so the supervisor closes the lobby
+and reaps its game child. Cloud providers leave this variable unset.
+
 Bot-only leases with a `sim-<run_id>` assignment use the existing
 unpaced simulator in a dedicated child process. The supervisor registers
 the lease and starts the child with the verified disc and prebuilt clang

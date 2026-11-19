@@ -144,7 +144,7 @@ pub(super) fn run(args: impl Iterator<Item = String>) -> Result<()> {
         .context("h2 host run requires H2_HOST_LEASE_JSON from the provider")?;
     let lease = decode_lease(&opts.lease, &lease_json)?;
     let live = Live::new(&opts.live, &opts.lease, &opts.token)?;
-    process::watch_signals()?;
+    process::watch_stop_requests()?;
     let region = opts.region.as_deref().or(lease.region.as_deref());
     eprintln!(
         "h2 host {}: provisioning for {} ({})",
