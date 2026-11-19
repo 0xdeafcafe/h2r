@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 use engine::points;
 use native_render::camera::GuestRead;
 use native_render::skip::{CURRENT_LAYER, CURRENT_LIST, STENCIL_OFF_FLAGS};
-use native_render::world_layers::{Texaccum, opaque_layer};
+use native_render::world_layers::{Site, Texaccum, layer_site, opaque_layer};
 
 use crate::native_world::Mem;
 use crate::{BuildError, Builder, Feature, Manifest};
@@ -40,6 +40,7 @@ pub fn compare_frames() -> &'static [u64] {
 pub struct Layer {
     pub number: u32,
     pub caller_return: u32,
+    pub site: Site,
     pub list: u32,
     pub stencil_off: bool,
     pub texaccum: Option<Texaccum>,
@@ -70,9 +71,11 @@ impl Feature for NativeWorldLayers {
                 let mem = Mem(&mut *guest);
                 let layer = mem.read_u32(CURRENT_LAYER).filter(|&n| opaque_layer(n));
                 LAYER.set(layer.map(|number| {
+                    let caller_return = mem.read_u32(o.cpu.esp).unwrap_or(0);
                     Layer {
                         number,
-                        caller_return: mem.read_u32(o.cpu.esp).unwrap_or(0),
+                        caller_return,
+                        site: layer_site(number, caller_return),
                         list: mem.read_u32(CURRENT_LIST).unwrap_or(0),
                         stencil_off: mem
                             .read_u32(STENCIL_OFF_FLAGS)

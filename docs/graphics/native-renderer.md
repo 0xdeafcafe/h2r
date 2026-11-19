@@ -880,6 +880,29 @@ dimensions alone do not establish the same target. The diagnostic keeps
 every guest draw. Frame and pass color checks use the agent API
 (`render.frame` and `render.stats`).
 
+### Scene and exceptional draw sites
+
+The retail return sites distinguish uses of the same layer number.
+
+| Site | Draw calls | State and ownership |
+|---|---|---|
+| Scene kinds 1 and 2 | Layer 1 `0x0002be45`, layer 3 `0x0002bed0`, layer 5 `0x0002bf34`, layer 8 `0x0002bfa5` | Layer 1 binds target 1 and usually clears. Layers 3, 5 and 8 select the scene target at `0x004858b8`. Layers 1 and 3 start with stencil mode 1. Layers 5 and 8 start with mode 0. Layer 8 also requires the byte at `0x004ba022`. |
+| Scene middle | Layer 7 `0x0002c034`, layer 2 `0x0002c05b` | Layer 7 follows `0x000335e0` and precedes the dynamic lights. Layer 2 draws after the lights and after `0x0002c370(1)`. Both take their setup through `0x00044370`. |
+| Alternate scene kinds | Layers 1, 3, 5, 2 at `0x0002bd57`, `0x0002bd6f`, `0x0002bd87`, `0x0002bda3` | All use the general layer begin. The main scene's target-1 and clear sequence is elsewhere. |
+| First person | Layers 1, 3, 8, 7 at `0x000400a6`, `0x00040131`, `0x000401a2`, `0x0004026c` | The first-person list and projection are separate. The two scene calls to this chain straddle the first-person light step. |
+| Sky | `0x0002c0bc` to `0x0003ede0` to `0x0004c690` | The sky has its own setup inside a stencil-mode-2 bracket and its renderer issues an indexed strip at `0x0004c976`, with shader layer 15 and explicit cull disable. This path sits outside the layer loop and the diagnostic labels its indexed draw `Sky`. |
+
+Within the normal geometry handler, the layer-5 object branch at
+`0x0004d22f` can select a subpart mask after resolving the object's
+geometry. The emitter at `0x0004daa0` can issue multiple indexed slices
+from that mask, and layer 5 sorts with `0x0003bbd0`. Preserve both the
+slices and their order. The geometry handler switches stencil immediately
+before the emitter in layers 1 and 3, then runs its stencil tail after
+the emitter. Its prefix also handles per-record fade and geometry state.
+The same layer's entries may use other handlers from the live list, so
+a replacement needs the observed standard geometry call as well as the
+layer ID.
+
 ## Stage 2: objects and skinning (design)
 
 Bipeds, vehicles, weapons, equipment, scenery, machines and crates: every

@@ -17,6 +17,40 @@ const GEOMETRY_EMITTER_RETURN: u32 = 0x0004_d626;
 /// arguments follow it as in layer-draw.md.
 const HANDLER_FRAME: u32 = 0x78;
 
+/// The separate sky-model renderer, called by 0x0003ede0.
+pub const SKY_INDEXED_RETURN: u32 = 0x0004_c97b;
+
+/// The caller that set up this layer's list, attachments and state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Site {
+    Scene,
+    AlternateView,
+    FirstPerson,
+    Sky,
+    Other,
+}
+
+/// Return addresses after calls to the layer draw in 0x0002bcd0 and
+/// 0x0003fdf0. Match the layer as well: a scene's target-1 setup is
+/// specific to its layer-1 call.
+pub fn layer_site(layer: u32, return_address: u32) -> Site {
+    match (layer, return_address) {
+        (1, 0x0002_be4a)
+        | (3, 0x0002_bed5)
+        | (5, 0x0002_bf39)
+        | (8, 0x0002_bfaa)
+        | (7, 0x0002_c039)
+        | (2, 0x0002_c060) => Site::Scene,
+        (1, 0x0002_bd5c) | (3, 0x0002_bd74) | (5, 0x0002_bd8c) | (2, 0x0002_bda8) => {
+            Site::AlternateView
+        }
+        (1, 0x0004_00ab) | (3, 0x0004_0136) | (8, 0x0004_01a7) | (7, 0x0004_0271) => {
+            Site::FirstPerson
+        }
+        _ => Site::Other,
+    }
+}
+
 /// Scene layers whose indexed draws can be compared.
 pub fn opaque_layer(layer: u32) -> bool {
     matches!(layer, 1 | 2 | 3 | 5 | 7 | 8)
@@ -162,9 +196,29 @@ mod tests {
             Geometry::read(&mem, STACK, 1).unwrap().owner,
             Owner::Placement(17)
         );
+        let handle = crate::objects::tests::object(&mut mem, 5, 0xe000_0100, 1);
+        draw(&mut mem, 4, 0, 29 << 9);
+        crate::objects::tests::record(&mut mem, 4, Some(crate::objects::tests::lighting(5 + 7)));
+        assert_eq!(
+            Geometry::read(&mem, STACK, 1).unwrap().owner,
+            Owner::Object {
+                handle,
+                model: 0xe100_0004,
+                section: 29
+            },
+        );
         assert_eq!(Geometry::read(&mem, STACK, 3), None);
         mem.w(STACK + EMITTER_RETURN_SLOT, 0xbeef);
         assert_eq!(Geometry::read(&mem, STACK, 1), None);
+    }
+
+    #[test]
+    fn the_same_layer_number_has_different_view_sites() {
+        assert_eq!(layer_site(1, 0x0002_be4a), Site::Scene);
+        assert_eq!(layer_site(1, 0x0002_bd5c), Site::AlternateView);
+        assert_eq!(layer_site(1, 0x0004_00ab), Site::FirstPerson);
+        assert_eq!(layer_site(3, 0x0002_be4a), Site::Other);
+        assert_eq!(layer_site(2, 0x0002_c060), Site::Scene);
     }
 
     #[test]

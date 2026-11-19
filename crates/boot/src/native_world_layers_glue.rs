@@ -6,7 +6,7 @@ use d3d::backend::ResolvedDraw;
 use d3d::shader::VertexProcessing;
 use feature::native_world_layers::{Layer, compare_frames, current};
 use native_render::camera::GuestRead;
-use native_render::world_layers::{DRAW_INDEXED_VERTICES, Geometry};
+use native_render::world_layers::{DRAW_INDEXED_VERTICES, Geometry, SKY_INDEXED_RETURN, Site};
 
 struct Memory<'a>(&'a runtime::Guest);
 
@@ -58,20 +58,34 @@ pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(
             index,
             "boot:native world layers indexed",
             move |cpu, ctx, selector| {
-                let context = current()
-                    .filter(|_| frames.contains(&(crate::d3d_diag::presents() + 1)))
-                    .and_then(|layer| {
-                        let guest = ctx.memory();
-                        let mem = Memory(&guest);
-                        let target = device.lock().ok()?.bound_target();
-                        Some(DrawContext {
-                            layer,
-                            target,
-                            geometry: Geometry::read(&mem, cpu.esp, layer.number),
-                            index_count: cpu.esp.checked_add(8).and_then(|a| mem.read_u32(a)),
-                            return_address: mem.read_u32(cpu.esp)?,
-                        })
-                    });
+                let context = (|| {
+                    if !frames.contains(&(crate::d3d_diag::presents() + 1)) {
+                        return None;
+                    }
+                    let guest = ctx.memory();
+                    let mem = Memory(&guest);
+                    let return_address = mem.read_u32(cpu.esp)?;
+                    let layer = if return_address == SKY_INDEXED_RETURN {
+                        Layer {
+                            number: 15,
+                            caller_return: return_address,
+                            site: Site::Sky,
+                            list: 0,
+                            stencil_off: false,
+                            texaccum: None,
+                        }
+                    } else {
+                        current()?
+                    };
+                    let target = device.lock().ok()?.bound_target();
+                    Some(DrawContext {
+                        layer,
+                        target,
+                        geometry: Geometry::read(&mem, cpu.esp, layer.number),
+                        index_count: cpu.esp.checked_add(8).and_then(|a| mem.read_u32(a)),
+                        return_address,
+                    })
+                })();
                 let _restore = Restore(DRAW.replace(context));
                 Ok(previous.invoke(cpu, ctx, selector))
             },
@@ -127,8 +141,9 @@ pub(crate) fn compare_draw(
         (t, t.surface == Some(c.target[0]), stages)
     });
     eprintln!(
-        "native-world-layers: d3d frame={frame} layer={} layer_return={:#010x} list={:#010x} indexed_return={:#010x} geometry={:?} primitive={:?} indices={:?} vertices={} vs={shader:x?} inputs={:#06x} attachments={color:?}/{depth:?} guest={:#010x}/{:#010x} texaccum={texaccum:?} texture_ids={textures:?} clip={:?} pixels={:?} w={w_buffer} w_clip={w_clip:?} clamp={} z={:?}/{:?}/{} stencil_off={} stencil={:?} color_write={:?} cull={:?}/{:?} alpha={}/{:?}/{} {outcome:?}",
+        "native-world-layers: d3d frame={frame} layer={} site={:?} layer_return={:#010x} list={:#010x} indexed_return={:#010x} geometry={:?} primitive={:?} indices={:?} vertices={} vs={shader:x?} inputs={:#06x} attachments={color:?}/{depth:?} guest={:#010x}/{:#010x} texaccum={texaccum:?} texture_ids={textures:?} clip={:?} pixels={:?} w={w_buffer} w_clip={w_clip:?} clamp={} z={:?}/{:?}/{} stencil_off={} stencil={:?} color_write={:?} cull={:?}/{:?} alpha={}/{:?}/{} {outcome:?}",
         layer.number,
+        layer.site,
         layer.caller_return,
         layer.list,
         c.return_address,
