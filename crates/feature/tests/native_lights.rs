@@ -7,8 +7,11 @@ use feature::{Registry, Switches};
 fn the_switch_off_places_nothing() {
     let mut r = Registry::new(Switches::parse("").unwrap());
     r.add(&NativeLights).unwrap();
-    let text = r.build(&Base).unwrap().text();
+    let plan = r.build(&Base).unwrap();
+    let text = plan.text();
     assert!(!text.contains("native_lights"), "{text}");
+    // Nothing placed, nothing held: no snapshot blocker.
+    assert!(plan.snapshot_blockers().is_empty());
 }
 
 #[test]
@@ -51,6 +54,25 @@ fn splitting_requires_both_switches() {
 fn render_timing_on_places_nothing() {
     let mut r = Registry::new(Switches::parse("impl.render.native_lights=on,render-timing").unwrap());
     r.add(&NativeLights).unwrap();
-    let text = r.build(&Base).unwrap().text();
+    let plan = r.build(&Base).unwrap();
+    let text = plan.text();
     assert!(!text.contains("native_lights"), "{text}");
+    // Nothing placed, nothing held: no snapshot blocker.
+    assert!(plan.snapshot_blockers().is_empty());
+}
+
+/// Placed, its section (no bytes) forgets the open run and the split
+/// light at a load.
+#[test]
+fn placed_its_snapshot_policy_is_a_section() {
+    let mut r = Registry::new(Switches::parse("impl.render.native_lights=on").unwrap());
+    assert!(r.add(&NativeLights).unwrap());
+    let plan = r.build(&Base).unwrap();
+    let policies: Vec<_> = plan
+        .snapshot
+        .iter()
+        .map(|f| (f.id, f.policy.name()))
+        .collect();
+    assert_eq!(policies, vec![(native_lights::ID, "section")]);
+    assert!(plan.snapshot_blockers().is_empty());
 }

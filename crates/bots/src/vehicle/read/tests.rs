@@ -157,11 +157,15 @@ fn the_vehicles_their_seats_and_their_riders_are_read() {
         vec![
             Seat {
                 role: SeatRole::Driver,
-                rider: Some(Rider { player: 0, team: 0 })
+                rider: Some(Rider { player: 0, team: 0 }),
+                entries: Vec::new(),
+                boards: None,
             },
             Seat {
                 role: SeatRole::Passenger,
-                rider: None
+                rider: None,
+                entries: Vec::new(),
+                boards: None,
             },
         ]
     );
@@ -242,4 +246,68 @@ fn composing_turns_and_moves_a_local_pose() {
     assert!(near(p, [0.0, 4.0, 3.0]), "{p:?}");
     assert!(near(f, [0.0, 1.0, 0.0]));
     assert!(near(u, [0.0, 0.0, 1.0]));
+}
+
+#[test]
+fn reads_a_seat_entry_marker_in_its_live_node_and_checks_the_tag_radius() {
+    let mut g = world();
+    let hlmt = TAGS + 0x4000;
+    let mode = TAGS + 0x5000;
+    let groups = mode + 0x200;
+    let marker = mode + 0x240;
+    let name = 0x0c00_0da6;
+    g.put_u32(TAG_INDEX + 0x18, 5);
+    for (i, kind, at) in [(3, *b"hlmt", hlmt), (4, *b"mode", mode)] {
+        let e = TAG_ENTRIES + i * 0x10;
+        g.put_u32(e, u32::from_be_bytes(kind))
+            .put_u32(e + 4, tag(i))
+            .put_u32(e + 8, at)
+            .map(at, 0x400);
+    }
+    let seat = TAGS + 0x400;
+    g.put_u32(TAGS + 0x38, tag(3))
+        .put_u32(hlmt + 4, tag(4))
+        .put_u32(mode + 0x14, 1)
+        .put_u32(mode + 0x18, mode + 0x120)
+        .put_f32(mode + 0x128, -0.7)
+        .put_f32(mode + 0x12c, 0.8)
+        .put_f32(mode + 0x130, -0.1)
+        .put_f32(mode + 0x134, 1.2)
+        .put_u32(mode + 0x58, 1)
+        .put_u32(mode + 0x5c, groups)
+        .put_u32(groups, name)
+        .put_u32(groups + 4, 1)
+        .put_u32(groups + 8, marker)
+        .put_u32(seat + 0xc, name)
+        .put_f32(seat + 0x98, 0.85)
+        .put_f32(seat + 0x9c, 1.4)
+        .put_f32(seat + 0xa0, 1.0)
+        .put_f32(seat + 0xa4, 3.0)
+        .put_u16(body(2) + 0x114, 0x34)
+        .put_u16(body(2) + 0x116, 0x200);
+    g.put_f32(marker + 0x1c, 1.0);
+    vec3(&mut g, marker + 4, [0.5, 0.25, 0.2]);
+    let node = body(2) + 0x200;
+    g.put_f32(node, 1.0);
+    vec3(&mut g, node + 4, [0.0, 1.0, 0.0]);
+    vec3(&mut g, node + 0x10, [-1.0, 0.0, 0.0]);
+    vec3(&mut g, node + 0x1c, [0.0, 0.0, 1.0]);
+    vec3(&mut g, node + 0x28, [10.0, 20.0, 1.4]);
+    let sight = sight(&g, Who::Port(1)).unwrap();
+    let hog = sight.get(handle(2).raw()).unwrap();
+    assert_eq!(hog.spec().half_width, 0.8 + 0.12);
+    let entry = hog.seats[0].entries[0];
+    assert!(near(entry.at, [9.75, 20.5, 1.6]));
+    assert!(near(entry.forward, [0.0, 1.0, 0.0]));
+    assert_eq!(entry.radius, 0.85);
+    assert!(crate::vehicle::plan::in_entry(
+        hog,
+        entry,
+        [9.75, 21.3, 1.0]
+    ));
+    assert!(!crate::vehicle::plan::in_entry(
+        hog,
+        entry,
+        [9.75, 21.4, 1.0]
+    ));
 }

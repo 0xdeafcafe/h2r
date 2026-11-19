@@ -171,11 +171,11 @@ const KNOWN: &[Rule] = &[
         "weap",
         "*",
         "snd!",
-        "owned by h1-weap-snd: pickup (ref_264) and zoom (ref_26c, ref_274) sounds",
+        "owned by h1-weap-snd: pickup (pickup_sound) and zoom (zoom_in_sound, zoom_out_sound) sounds",
     ),
     (
         "weap",
-        "ref_140",
+        "ready_effect",
         "effe",
         "owned by h1-weap-snd: the ready effect (V: needler ready); Halo 1's weap +0x33c",
     ),
@@ -291,7 +291,7 @@ const KNOWN: &[Rule] = &[
     ),
     (
         "eqip",
-        "item.ref_124",
+        "item.detonation_effect",
         "effe",
         "bug: the grenade's detonation effect when shot (V: airborne_detonation, equipment_detonation); Halo 1's item detonation effect: read it",
     ),

@@ -53,7 +53,7 @@ Event types so far (payload fields):
 | `presence-<xuid>` | `SignedIn`, `PresenceChanged`, `SignedOut`, `PresenceExpired` | `xuid`, `state`, `game_id?`, `activity?`, `build?`, `capabilities?` (below) |
 | `game-<id>` | `GameStarted` | `game_id`, `console`, `map`, `mode` (`campaign`/`multiplayer`), `variant?`, `team_play`, `score_limit?`, `time_limit_s?`, `players`, `kind?`, `playlist?`, `playlist_id?`, `difficulty?`, `online?` (below) |
 | `game-<id>` | `PlayerJoined`, `PlayerLeft` | `player` (below) / `index` |
-| `game-<id>` | `PlayerKilled` | `tick`, `victim`, `killer?`, `weapon?`, `kind` (`kill`/`suicide`/`betrayal`/`world`) |
+| `game-<id>` | `PlayerKilled` | `tick`, `victim`, `killer?`, `weapon?`, `kind` (`kill`/`suicide`/`betrayal`/`world`; `betrayal` only for a teammate killed in a team game or campaign, `live_proto::game::is_betrayal`, and readers settle a stored `kill` or `betrayal` again by the teams, since older hosts sent free-for-all kills as betrayals) |
 | `game-<id>` | `ScoreChanged` | `tick`, `players: [{index, score, kills, deaths, assists}]`, `teams?: [{team, score}]` |
 | `game-<id>` | `FrameChunk` | a stored chunk of the game's recorded frames ([Frame chunks](#frame-chunks)) |
 | `game-<id>` | `GameFrame` | a frame (below), recorded at 1 Hz for replays by servers before frame chunks |
@@ -180,7 +180,7 @@ animation they play:
 `name` is the animation's name in the unit's graph, `[a-z0-9_:-]{1,64}`;
 `frame` the frame in it, 0 to 32767, kept to a sixteenth.
 
-A frame may also carry `hits`, `bsp` and `machines`:
+A frame may also carry `hits`, `bsp`, `machines` and `machine_positions`:
 
 ```json
 "hits": [ { "from": "p0", "to": "90070007", "weapon": "battle_rifle",
@@ -188,7 +188,8 @@ A frame may also carry `hits`, `bsp` and `machines`:
 "bsp": 1,
 "machines": [ { "node": "scarab_0", "id": "90090009", "kind": "scarab",
                 "pos": [0.0, 0.0, 10.0], "forward": [1.0, 0.0, 0.0],
-                "up": [0.0, 0.0, 1.0], "position": 0.5 } ]
+                "up": [0.0, 0.0, 1.0] } ],
+"machine_positions": [ { "i": 7, "p": 128 } ]
 ```
 
 `hits` is the damage dealt since the previous frame, oldest first, at most
@@ -205,11 +206,20 @@ machines and other big scripted movers (doors, elevators, the scarab): those
 that moved since the previous frame, all of them in a game's first frame,
 at most 128. `node` is map.glb's `machines` child for it,
 `<tag stem>_<scenario placement index>`, absent when the scenario did not
-place it; `kind` the `mach` tag stem; `position` the device position, 0
-(closed, bottom) to 1. The server refuses unknown stances, actions and
-grenades, negative or non-finite speeds and amounts, more than 8 actions,
-64 hits or 128 machines, machine nodes outside `[a-z0-9_]{1,64}` and
-positions outside 0..1.
+place it. `kind` is the `mach` tag stem. Older frames may carry an
+additional `position` (0..1) on each entry.
+
+`machine_positions` gives the changed device travel values independently
+of the world poses. `i` is the scenario machine index (0..32767) and `p`
+is its position byte (0 closed or at the start, 255 fully open or at the
+end). Entries are sorted by index, at most 255, one per index. A packed v7
+keyframe is a complete baseline, including at a recorded chunk start.
+An omitted index on a keyframe has unknown travel. An omitted index on a
+delta holds the last value. A `cut` clears the preceding run's state.
+
+The server refuses unknown stances, actions and grenades, negative or
+non-finite speeds and amounts, more than 8 actions, 64 hits or 128 machine
+poses, invalid machine node names, and legacy positions outside 0..1.
 
 A frame may also carry `objects`, the scenario's placed objects that are
 not where the scenario put them (docs/live/live-telemetry.md, "Scenario
@@ -234,6 +244,38 @@ A frame may carry `cut`: a campaign checkpoint revert or restart happened
 just before it, and the engine's clock came back to that tick (the game's
 ticks keep counting; see below). Only the first frame of the new run has it.
 
+From senders on packed format version 6, a frame may carry
+`projectiles` and `items`, and vehicles their `vel`:
+
+```json
+"projectiles": [ { "id": "e90c0001", "kind": "plasma_grenade",
+                   "pos": [4.0, 5.0, 6.0], "vel": [3.0, 0.0, 2.5] },
+                 { "id": "e90c0002", "kind": "plasma_grenade",
+                   "pos": [1.5, 2.0, 0.5], "parent": "90070007" } ],
+"items": [ { "id": "a2f00f00", "kind": "flag", "pos": [20.0, -12.0, 0.5],
+             "forward": [1.0, 0.0, 0.0], "up": [0.0, 0.0, 1.0] },
+           { "id": "a10d0001", "kind": "overshield", "equipment": true,
+             "pos": [0.0, 3.0, 0.2], "forward": [0.0, 1.0, 0.0],
+             "up": [0.0, 0.0, 1.0] } ]
+```
+
+`projectiles` are projectiles in flight slower than 100 game units a
+second (grenades, rockets, plasma, needles; bullets live a tick or two and
+are drawn from the shooter's `fire` and `aim`) or stuck to something, at
+most 64: `id` the object datum (new for each throw or shot, gone when it
+detonates), `kind` the `proj` tag stem or `unknown`, `pos` the world
+position, `vel` game units a second (absent when stuck), `parent` what it
+is stuck to (a player's, actor's or vehicle's id), and then `pos` is that
+object's position. `items` are weapons and equipment lying loose that no
+scenario placement or netgame spawn made (those are `objects`): dropped
+guns, the flag, the ball, the bomb, at most 128; `kind` is the `weap` stem,
+or with `equipment: true` the `eqip` stem. A held flag, ball or bomb is the
+carrier's `weapon` (`flag`, `ball`, `assault_bomb`). A vehicle's `vel` is
+its velocity like a unit's. The server refuses non-finite positions or
+velocities, velocities over 1000, zero `forward`/`up`, ids or kinds outside
+`[a-z0-9_]{1,32}`, a projectile that is its own parent, and more than 64
+projectiles or 128 items.
+
 A frame may carry `cinematic: true`: a campaign cutscene is playing. The
 game sends such frames on its clock as ever, with the tick and `bsp` (and a
 `cut` when one is due) but no players, actors, vehicles, hits, machines or
@@ -244,10 +286,8 @@ either side of it into it. Absent means false.
 Shots, actions and hits of frames that are dropped (the 15 Hz throttle, a
 full sink queue) go to the next delivered frame (`fire`, `actions_ago` and
 hits' `ago` placed again against that frame's tick, those older than they
-can say dropped, and a `cut` kept), and a recorded 1 Hz frame
-holds every one of them since the previous recorded frame (capped as
-above). A recorded frame also lists every machine the game has sent, at its
-latest state, so a replay can start at any second.
+can say dropped, and a `cut` kept), and a recorded frame holds the values admitted by the throttle. The first
+frame of a recorded chunk repeats the latest machine poses and travel.
 
 Campaign plays as one game per mission (mode `campaign`, no scores): a
 checkpoint revert or restart of the same mission continues it, and its
@@ -318,8 +358,10 @@ A chunk carries packed records as they are, so a new packed frame version
 changes nothing here. A chunk inflates to at most 16 MiB. `GET
 /v1/games/{id}/chunks` lists a game's chunks and `GET
 /v1/games/{id}/chunks/{first tick}` returns one, with the same visibility
-check as the game. A seek reads the index once and fetches the one chunk
-whose window holds the tick.
+check as the game. The binary response is the stored blob byte for byte.
+An explicit `?format=json` returns a JSON array of its decoded frames. The
+query gives each representation its own URL in the edge cache. A seek reads
+the index once and fetches the one chunk whose window holds the tick.
 
 ## Read endpoints
 
@@ -337,7 +379,7 @@ whose window holds the tick.
 | `GET /v1/games/{id}` | summary plus scoreboard and the last 50 kills; 404, as for no game, for a co-op game the reader may not see ([Co-op games](#co-op-games)) |
 | `GET /v1/games/{id}/chunks` | the game's [frame chunk](#frame-chunks) index: `{game_id, chunk_ticks, ended, items}`, `items` the `FrameChunk` data oldest first; empty for a game recorded before chunks |
 | `GET /v1/games/{id}/chunks/{tick}` | one chunk by its first tick, `application/x-h2-chunk`; checked against its index entry's hash. Anonymous reads are `public, max-age=31536000, immutable` (it is never rewritten) |
-| `GET /v1/games/{id}/frames?from_tick=&to_tick=` | a game recorded before frame chunks: its `GameFrame`s as an `application/x-h2-frames` container of packed keyframes (docs/live/live-telemetry.md, "Packed frames"), the next cursor in `x-next` and the head position in `x-position`. The JSON read (`format=json`) is gone: `400` |
+| `GET /v1/games/{id}/frames?from_tick=&to_tick=` | a game recorded before frame chunks: its `GameFrame`s as an `application/x-h2-frames` container of packed keyframes (docs/live/live-telemetry.md, "Packed frames"), the next cursor in `x-next` and the head position in `x-position`. `format=json` returns the decoded page as `{items,next,position}` |
 | `GET /v1/maps/{map}/outline` | top-down map outline (see below), 404 until a console has uploaded it |
 | `GET /v1/snapshot` | what a page needs on load, in one read at one log position: `{position, accounts, presence, live, ended, details, tail}`. `accounts` is `/v1/accounts?limit=1000`, `presence` is `/v1/presence`, `live` and `ended` are `/v1/games?state=…&limit=100`, `details` is `/v1/games/{id}` for every live game and the 40 newest ended ones, and `tail` is the last 300 log events up to `position` without `GameFrame` (as on the stream). Each part has the reader's visibility applied, as at its own endpoint ([Co-op games](#co-op-games)) |
 | `GET /v1/events?from=&type=&stream=&limit=` | raw log, oldest first, at most 200 a page; without the events of co-op games and sessions the reader may not see ([Co-op games](#co-op-games), "The log"): a page can be short or empty with a `next`; without network addresses for anyone but the operator ([Network addresses](#network-addresses)); invitations, friend events, content and player reports and bans only to whom they concern ([Private events](#private-events)) |
@@ -403,6 +445,46 @@ death to a bot a career death. The game record keeps every one of them.
 `activity` lists hours with any game starts or kills, within the window
 and at most 30 days back. There are no headshots or medals: the events do
 not carry them (the web app derives medals itself).
+
+## Clanker Training
+
+Simulation runs use the normal game stream, ingest socket and replay archive.
+The native server uses its private blob store. The Worker uses its private
+`BLOBS` R2 binding for the packed recording and the JSON report.
+
+| Endpoint | Token | Contract |
+|---|---|---|
+| `POST /v1/admin/sim-runs` | `games.write` | Admin starts a game with the normal game-start body and a required `sim` object. Returns `201` and `{game_id, position}`. The same host and start body can retry the same run ID. |
+| `GET /v1/admin/sim-runs` | `read` | Lists runs newest first, 50 per page. Accepts `map`, `tuning` (case-insensitive arm or parameter text), `batch` and `before` (the previous page's `next`). |
+| `GET /v1/admin/sim-runs/{game_id}` | `read` | Returns `{run, game, report}`. `game` is the normal game detail and `report` is the original JSON or null while the upload is pending. |
+| `PUT /v1/admin/sim-runs/{game_id}/report` | `games.write` | The admin who hosted the ended recording stores its `h2-sim-report/1` JSON. Returns `204`. An identical retry succeeds. A different report for that run returns `409`. |
+
+The `sim` object carries `run_id`, optional `batch_id`, `seed` as a decimal
+string (all 64 bits), `gametype`, `pace`, resolved `bots` including tuning,
+and `deferred`. The game ID is `sim-<run_id>`. The list includes the game
+summary, current scoreboard, tick count, measured speed, report result and
+optional determinism data. The run status is `running`, `finished`, or
+`interrupted` for a lost recording with no report.
+
+For a live viewer, open the normal `/v1/stream` with `auth=1`,
+`frames=packed`, `games=<game_id>` and `stream=game-<game_id>`. The first
+message carries an admin's `read` token. Scoped sim streams close when the
+token expires, so reconnect with a fresh token. Replay frame and event reads
+use the standard game-specific endpoints with an admin `read` token.
+General game lists, dashboard snapshots and streams, stats and ranks
+exclude sim runs. Sim-specific requests from signed-in non-admins are
+refused. Anonymous and non-admin replay requests see no such game.
+
+The archive captures frames on game time (up to one frame every two ticks).
+Live fan-out keeps the ordinary 15 Hz wall-clock limit. A deferred run
+accepts packed frames at completion and has no live fan-out.
+
+Reports are capped at 512 KiB. Simulation recordings have an in-game hour
+limit and an archive cap of 32 MiB per run. The list and detail set
+`recording_limited` when the archive hits its byte limit. The client also
+bounds each deferred recording's local buffer at 32 MiB. Reports are stored
+under `sim/<game_id>/` and frames under `frames/<game_id>/` in the private
+store. These limits apply in both Live homes.
 
 ## Usage
 
@@ -1363,8 +1445,8 @@ are small). Without it, frames for every live game are sent.
 for it), and the stream then sends what that account may see: the events
 and frames of a friends-only or invite-only co-op game or session go only to
 readers allowed to see it ([Co-op games](#co-op-games)). On a public server
-the token's expiry does not close the socket. Without `auth`, a public
-stream is anonymous and leaves those events out.
+the token's expiry closes only explicitly scoped [sim streams](#clanker-training).
+Without `auth`, a public stream is anonymous and leaves those events out.
 
 `?frames=packed` sends frames as binary messages instead: each a container
 of packed frame records (docs/live/live-telemetry.md, "Packed frames"), one
@@ -1477,6 +1559,29 @@ coverage = background: 1;  foreground: max(red, blue)
 colour for *a*, a second background colour for *b*). The masks were
 measured on the disc. Which profile colour fills which mask has not been
 confirmed against the game.
+
+**Composed emblem images.** `GET /art/emblem/{fg}-{bg}-{primary}-{secondary}-{tertiary}-{quaternary}.png`
+takes foreground (0–63) and background (0–31) layer numbers followed by
+four palette indices (0–255, wrapped to the palette length). For example,
+`/art/emblem/30-7-3-6-8-2.png` displays layers 30 and 7 with colours 3 and 6
+on the foreground and 8 and 2 on the background. The server uses the
+extraction's palette when it contains at least two valid colours and
+otherwise uses the web app's default 18 colours.
+
+The web client uses `s` plus eight lowercase hex digits for a seed-derived
+selector when an appearance field is absent. If a seeded colour depends
+on an overridden primary or tertiary, a final hyphen-separated field
+carries the original primary and tertiary hashes as 16 lowercase hex
+digits. A colour can also be an explicit `rRRGGBB` value with lowercase
+hex digits.
+
+The route redirects to the current revision's `?v=<revision>` URL, which
+returns a PNG at the background mask's pixel size. The foreground scales
+to fit it. Successful images with shared game art are served with
+`Cache-Control: public, max-age=31536000, immutable`. Loopback-only art
+keeps a private cache policy. Invalid specs return 400. Missing art,
+layers, or revisions return 404, and these replies are uncached. The same
+access rules apply as for `/art/game/*`.
 
 ## Clarifications (2026-11-15)
 

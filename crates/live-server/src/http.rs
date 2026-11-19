@@ -343,6 +343,16 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
             "/v1/accounts/{gamertag}/ranks/{playlist}",
             get(crate::ranks::player_history),
         )
+        .route(
+            "/v1/admin/sim-runs",
+            get(crate::sim_runs::list).post(crate::sim_runs::start),
+        )
+        .route("/v1/admin/sim-runs/{id}", get(crate::sim_runs::detail))
+        .route(
+            "/v1/admin/sim-runs/{id}/report",
+            axum::routing::put(crate::sim_runs::upload)
+                .layer(DefaultBodyLimit::max(crate::sim_runs::MAX_REPORT)),
+        )
         .route("/v1/admin/status", get(crate::status::get_admin_status))
         .route("/v1/admin/usage", get(crate::usage::get_overview))
         .route("/v1/admin/usage/accounts", get(crate::usage::get_accounts))
@@ -441,6 +451,8 @@ pub fn router_with_site(live: Arc<Live>, site: &Site) -> Router {
     };
     #[cfg(not(feature = "native"))]
     let _ = published;
+    #[cfg(feature = "native")]
+    let api = api.merge(crate::art::emblem_routes(site.game_art.clone()));
     with_web(api, pages, site.web.as_deref()).layer(middleware::from_fn(crate::caching::layer))
 }
 
@@ -486,6 +498,11 @@ async fn app_page(live: &Live, index: &std::path::Path, req: Request) -> Respons
     );
     let meta = crate::page_meta::describe(live, path);
     let body = crate::page_meta::page_html(&html, &meta, &origin, path);
+    // A game page's header, pre-rendered above the app (page_header.rs).
+    let body = match &meta.header {
+        Some(header) => crate::page_header::inject(&body, header),
+        None => body,
+    };
     (
         [(
             header::CONTENT_TYPE,
@@ -1066,7 +1083,11 @@ async fn start_game(
     body: Result<Bytes, BytesRejection>,
 ) -> ApiResult<Response> {
     let bytes = body_bytes(body)?;
-    let new = serde_json::from_slice(&bytes).map_err(|e| invalid(format!("game: {e}")))?;
+    let new: live_proto::game::NewGame =
+        serde_json::from_slice(&bytes).map_err(|e| invalid(format!("game: {e}")))?;
+    if new.sim.is_some() {
+        return Err(invalid("simulation games start at /v1/admin/sim-runs"));
+    }
     let created = live.start_game(bearer(&headers), new).await?;
     Ok(json(StatusCode::CREATED, &created))
 }
@@ -1113,19 +1134,37 @@ async fn game_frames(
     } else {
         crate::games::FRAMES_PAGE
     };
-    // The JSON read is gone (docs/live/live-api.md, "Frame chunks"):
-    // games since then are read as chunks, older ones packed.
-    match p.get("format").map(String::as_str) {
-        None | Some("") | Some("packed") => {}
-        Some(_) => {
-            return Err(invalid(
-                "format must be packed; frames are read as chunks (/v1/games/{id}/chunks)",
-            ));
-        }
-    }
+    let as_json = match p.get("format").map(String::as_str) {
+        None | Some("" | "packed") => false,
+        Some("json") => true,
+        Some(_) => return Err(invalid("format must be packed or json")),
+    };
     let page = live
         .recorded_frame_data(game_id(&id)?, from_tick, to_tick, paging.after, limit)
         .await?;
+    if as_json {
+        let items: Vec<live_proto::game::Frame> = page
+            .items
+            .into_iter()
+            .filter_map(
+                |item| match item.get("packed").and_then(serde_json::Value::as_str) {
+                    Some(data) => live_proto::pack::decode_keyframe(
+                        &live_proto::pack::from_base64(data).ok()?,
+                    )
+                    .ok(),
+                    None => serde_json::from_value(item).ok(),
+                },
+            )
+            .collect();
+        return Ok(json(
+            StatusCode::OK,
+            &live_proto::Page {
+                items,
+                next: page.next,
+                position: page.position,
+            },
+        ));
+    }
     // A container of keyframes; the page's cursor and head in headers.
     let mut body = Vec::new();
     for item in &page.items {
@@ -1183,6 +1222,7 @@ async fn game_chunk(
     State(live): Shared,
     headers: HeaderMap,
     Path((id, tick)): Path<(String, String)>,
+    Params(query): Params<HashMap<String, String>>,
 ) -> ApiResult<Response> {
     let token = bearer(&headers);
     let viewer = live.read_viewer(token)?;
@@ -1191,15 +1231,26 @@ async fn game_chunk(
     let tick: u64 = tick
         .parse()
         .map_err(|_| invalid("the chunk is named by its first tick"))?;
+    let as_json = match query.get("format").map(String::as_str) {
+        None | Some("" | "packed") => false,
+        Some("json") => true,
+        Some(_) => return Err(invalid("format must be packed or json")),
+    };
     let bytes = live.frame_chunk(id, tick).await?;
-    let mut resp = (
-        [(
-            header::CONTENT_TYPE,
-            HeaderValue::from_static(crate::games::CHUNK_TYPE),
-        )],
-        bytes,
-    )
-        .into_response();
+    // The query keeps the representations distinct for URL-keyed edge caches.
+    let mut resp = if as_json {
+        let frames = live_proto::chunk::frames(&bytes).map_err(|e| invalid(e.to_string()))?;
+        json(StatusCode::OK, &frames)
+    } else {
+        (
+            [(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static(crate::games::CHUNK_TYPE),
+            )],
+            bytes,
+        )
+            .into_response()
+    };
     if token.is_none() {
         resp.headers_mut().insert(
             header::CACHE_CONTROL,

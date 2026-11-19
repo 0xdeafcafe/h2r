@@ -2,8 +2,9 @@
 //! Guest calls stand in for map-dependent queries (which seat, weapon, zoom).
 use super::*;
 use crate::{
-    local::Frame,
+    local::{Frame, PadSource},
     phantom::{Identity, Phantoms, machine_id},
+    tuning::PhantomLatency,
 };
 use engine::entry::{self, GuestCall, Regs, Ret};
 use input::host::HostButton;
@@ -12,8 +13,33 @@ const STACK: u32 = 0x781000;
 const OUT: u32 = 0x782000;
 const UNIT: u32 = BODY + 0x400;
 
+struct TimedSource<F>(F, PhantomLatency);
+
+impl<F: FnMut(&Frame<'_>) -> HostPadState + Send> PadSource for TimedSource<F> {
+    fn pad(&mut self, f: &Frame<'_>) -> HostPadState {
+        self.0(f)
+    }
+
+    fn phantom_latency(&self) -> PhantomLatency {
+        self.1
+    }
+}
+
 fn game(
     source: impl FnMut(&Frame<'_>) -> HostPadState + Send + 'static,
+) -> (Phantoms, FakeGuest, u32) {
+    game_with_latency(
+        source,
+        PhantomLatency {
+            ping_ms: Some(0.0),
+            jitter_ms: 0.0,
+        },
+    )
+}
+
+fn game_with_latency(
+    source: impl FnMut(&Frame<'_>) -> HostPadState + Send + 'static,
+    latency: PhantomLatency,
 ) -> (Phantoms, FakeGuest, u32) {
     let ph = Phantoms::default();
     let h = ph
@@ -24,7 +50,7 @@ fn game(
                 ..Default::default()
             },
             None,
-            Box::new(source),
+            Box::new(TimedSource(source, latency)),
         )
         .unwrap();
     let mut g = hosted();
@@ -129,6 +155,51 @@ pub(super) fn gather(ph: &Phantoms, g: FakeGuest, slot: u32) -> FakeGuest {
         guest::game_tick(&g).unwrap()
     );
     g
+}
+
+#[test]
+fn phantom_ping_delays_controls_in_the_action_record() {
+    let latency = PhantomLatency {
+        ping_ms: Some(80.0),
+        jitter_ms: 0.0,
+    };
+    let (ph, mut g, slot) = game_with_latency(
+        |f| {
+            if f.tick == Some(100) {
+                HostPadState {
+                    left_stick: (0.0, 0.75),
+                    right_trigger: 1.0,
+                    ..pad(HostButton::East)
+                }
+            } else {
+                HostPadState::default()
+            }
+        },
+        latency,
+    );
+    for (tick, pressed) in [
+        (100, false),
+        (101, false),
+        (102, true),
+        (102, true),
+        (103, false),
+    ] {
+        at_tick(&mut g, tick);
+        g = gather(&ph, g, slot);
+        assert_eq!(g.u32(slot + SLOT_STAMP).unwrap(), tick);
+        assert_eq!(g.u32(OUT).unwrap() & 0x30 != 0, pressed);
+        assert_eq!(g.f32(OUT + 0xc).unwrap(), if pressed { 0.75 } else { 0.0 });
+        assert_eq!(g.f32(OUT + 0x14).unwrap(), if pressed { 1.0 } else { 0.0 });
+    }
+
+    // Rewind while an old report is in flight. It can't reach the new stream.
+    at_tick(&mut g, 100);
+    g = gather(&ph, g, slot);
+    for tick in 5..10 {
+        at_tick(&mut g, tick);
+        g = gather(&ph, g, slot);
+        assert_eq!(g.u32(OUT).unwrap() & 0x30, 0);
+    }
 }
 
 #[test]

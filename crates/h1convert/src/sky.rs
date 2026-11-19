@@ -190,8 +190,29 @@ impl Sky {
         let model = match &self.model {
             Some((n, c)) => {
                 let mut c = c.clone();
+                // Only the bitmaps a shader copy draws
+                // ([`SkyTemplates::drawn`]): a dome's star detail has no
+                // stage, and nothing would name it. A picture drawn
+                // through its opaque copy
+                // (`sky_shaders::H1SkyShader::opaque_picture`)
+                // is drawn as that copy, not itself.
+                let drawn: std::collections::HashSet<h1map::TagId> = self
+                    .shaders
+                    .iter()
+                    .flatten()
+                    .filter(|s| set.find(SHAD, &s.name).is_none())
+                    .filter_map(|s| Some((s, recipe(s)?)))
+                    .flat_map(|(s, r)| {
+                        let picture = s.opaque_picture();
+                        templates
+                            .drawn(r)
+                            .into_iter()
+                            .filter(move |k| Some(*k) != picture)
+                            .filter_map(|k| s.maps.get(k).map(|m| m.bitmap))
+                    })
+                    .collect();
                 let mut ids = std::collections::HashMap::new();
-                for (h1id, name, b) in &self.bitmaps {
+                for (h1id, name, b) in self.bitmaps.iter().filter(|b| drawn.contains(&b.0)) {
                     let id = match set.find(b.group, name) {
                         Some(id) => id,
                         None => b.clone().install(set, name).map_err(|e| err(&e))?,

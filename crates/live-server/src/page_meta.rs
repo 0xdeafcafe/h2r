@@ -75,6 +75,11 @@ pub struct PageMeta {
     /// `profile` for a player, else `website`.
     #[serde(default = "website")]
     pub kind: String,
+    /// The game page's pre-rendered header ([`crate::page_header`]), when
+    /// the page names a game the reader may see: what the servers inject
+    /// into the app's HTML beside these tags. Never in the tags themselves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header: Option<crate::page_header::GameHeaderModel>,
 }
 
 fn website() -> String {
@@ -240,12 +245,14 @@ pub fn describe_static(path: &str) -> PageMeta {
         description: description.into(),
         side: Side::Dash,
         kind: website(),
+        header: None,
     };
     let stats = |page: Option<&str>, description: &str| PageMeta {
         page: page.map(str::to_string),
         description: description.into(),
         side: Side::Stats,
         kind: website(),
+        header: None,
     };
     const DASH: &str = "The dashboard of a community online service for h2recomp: who is online, games running now, friends, clans and matchmaking.";
     const STATS: &str = "Live games, leaderboards, service records and carnage reports from a community online service for h2recomp.";
@@ -298,19 +305,23 @@ fn title_case(s: &str) -> String {
 }
 
 /// The page at `path` as an anonymous reader sees it: [`describe_static`],
-/// with the player, game or clan it names filled in from the read model.
-/// A server whose reads need an account says nothing beyond the static.
+/// with the player, game or clan it names filled in from the read model,
+/// and a game page's pre-rendered header ([`crate::page_header`]) beside
+/// it. A server whose reads need an account says nothing beyond the static.
 pub fn describe(live: &Live, path: &str) -> PageMeta {
-    let base = describe_static(path);
+    let mut base = describe_static(path);
     if live.authorize_read(None).is_err() {
         return base;
     }
+    let header = crate::page_header::model_for(live, path);
     match subject(path) {
-        Some(Subject::Player(tag)) => player(live, &tag).unwrap_or(base),
-        Some(Subject::Game(id)) => game(live, &id).unwrap_or(base),
-        Some(Subject::Clan(id)) => clan(live, &id, base.side).unwrap_or(base),
-        None => base,
+        Some(Subject::Player(tag)) => base = player(live, &tag).unwrap_or(base),
+        Some(Subject::Game(id)) => base = game(live, &id).unwrap_or(base),
+        Some(Subject::Clan(id)) => base = clan(live, &id, base.side).unwrap_or(base),
+        None => {}
     }
+    base.header = header;
+    base
 }
 
 fn player(live: &Live, tag: &str) -> Option<PageMeta> {
@@ -330,6 +341,7 @@ fn player(live: &Live, tag: &str) -> Option<PageMeta> {
         description: record_line(&name, row),
         side: Side::Stats,
         kind: "profile".into(),
+        header: None,
     })
 }
 
@@ -488,6 +500,7 @@ fn game(live: &Live, id: &str) -> Option<PageMeta> {
         description: format!("{}.", parts.join(" · ")),
         side: Side::Stats,
         kind: website(),
+        header: None,
     })
 }
 
@@ -517,6 +530,7 @@ fn clan(live: &Live, id: &str, side: Side) -> Option<PageMeta> {
         description,
         side,
         kind: website(),
+        header: None,
     })
 }
 
@@ -801,6 +815,7 @@ mod tests {
             description: "one\ntwo".into(),
             side: Side::Stats,
             kind: "profile".into(),
+            header: None,
         };
         let t = render(
             &meta,

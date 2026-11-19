@@ -366,6 +366,23 @@ impl SkyTemplates {
         [sky, shared].into_iter().find(|l| self.library.has(l))
     }
 
+    /// The maps (indices into [`H1SkyShader::maps`]) the shader `recipe`
+    /// rebuilds draws, as [`Self::copy`] binds them: the picture; a cloud
+    /// layer's mask and tile, or its tile alone on the shared layout. The
+    /// others (a dome's star mask, twinkle and stars) have no stage, so
+    /// their bitmaps aren't added: nothing would name them, and a fresh
+    /// map leaves them out anyway. Empty when no layout fits.
+    pub fn drawn(&self, recipe: Recipe) -> Vec<usize> {
+        let Some(layout) = self.layout(recipe) else {
+            return Vec::new();
+        };
+        match recipe {
+            Recipe::Picture(k) | Recipe::Additive(k) => vec![k],
+            Recipe::Clouds { mask, tile } if layout == &shad::SKY_CLOUDS => vec![mask, tile],
+            Recipe::Clouds { tile, .. } => vec![tile],
+        }
+    }
+
     /// The rebuilt shader for `recipe`, each map of the shader given as
     /// its installed bitmap's datum, scale and LOD offset (`maps`, indexed
     /// as [`H1SkyShader::maps`]). `None` when no layout fits or a map is
@@ -431,6 +448,56 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    /// Only the maps a rebuilt sky shader draws get their bitmaps added
+    /// (`Sky::install`): Blood Gulch's clear afternoon added its dome's
+    /// `detail star twinkle`, which no stage names, so the pinned map held
+    /// a bitmap nothing reached and the fresh map left it out.
+    #[test]
+    fn a_sky_shader_draws_only_its_recipe_s_maps() {
+        let stem = |l: &shad::Layout, k: u32| (l.stem, TagId(0xe000_0100 + k));
+        // A layout counts only with its stem and its default bitmaps
+        // (`Library::has`).
+        let fixed: Vec<(shad::Fixed, shad::Bound)> = shad::Fixed::ALL
+            .iter()
+            .enumerate()
+            .map(|(k, f)| {
+                let id = TagId(0xe000_0200 + k as u32);
+                let scale = [1.0, 1.0];
+                (*f, shad::Bound { id, scale, lod_offset: 0.0 })
+            })
+            .collect();
+        let sky = SkyTemplates {
+            library: shad::Library::new(
+                &[
+                    stem(&shad::SKY_PICTURE, 0),
+                    stem(&shad::SKY_CLOUDS, 1),
+                    stem(&shad::SKY_ADDITIVE, 2),
+                ],
+                &fixed,
+            ),
+            fallback: None,
+        };
+        // A dusk dome: star mask, twinkle, stars, then the picture.
+        let dusk = shader(
+            true,
+            false,
+            &[[3.0, 3.0], [8.0, 8.0], [18.0, 18.0], [1.0, 1.0]],
+        );
+        assert_eq!(sky.drawn(recipe(&dusk).unwrap()), [3]);
+        let clouds = shader(true, false, &[[1.0, 1.0], [4.0, 4.0]]);
+        assert_eq!(sky.drawn(recipe(&clouds).unwrap()), [0, 1]);
+        let glow = shader(false, true, &[[6.0, 6.0], [1.0, 1.0]]);
+        assert_eq!(sky.drawn(recipe(&glow).unwrap()), [1]);
+        // Without the sky stems a cloud layer draws its tile alone.
+        let shared = SkyTemplates {
+            library: shad::Library::new(&[stem(&shad::ONE_ALPHA_ENV, 3)], &fixed),
+            fallback: None,
+        };
+        assert_eq!(shared.drawn(recipe(&clouds).unwrap()), [1]);
+        // No layout: nothing drawn, nothing added.
+        assert!(SkyTemplates::default().drawn(Recipe::Picture(0)).is_empty());
     }
 
     #[test]

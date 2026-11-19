@@ -343,42 +343,56 @@ words as the turret role's `0x6c..0x74`) and the `hlmt`'s `0x34..0x44`
 (five decreasing floats); coagulation (12) and beavercreek (17) give the
 same object words (beavercreek also `0x1c`) and no `hlmt` majority.
 
-**Physics** (since converter version 85). Scenery whose Halo 1 collision
-holds solid space gets a `phmo` built from it as a device's is (one rigid
-body per collision node, on its model node, of the node's solid cells;
-"Physics models from Halo 1"), whose bodies take the flags `+0x18` and
-motion `+0x1a` the base's scenery bodies hold (`rebuild::scenery_body`,
-the most common over every body of every scenery `phmo` of the base;
-V coagulation: all six bodies flags 0, motion 2) and each its own size
-class `+0x1e` (since version 87, `rebuild::size_class`: the class of the
-base body, any `phmo`, nearest in bounding radius). V, every rigid body
-of every `phmo` on coagulation, beavercreek and 05a: `+0x1e` rises with
-the bounding radius `+0x14`, 3 from 0.30 to 0.70, 4 from 0.73 to 1.23,
-5 from 1.39 to 1.96, 6 from 2.13 to 9.73 (1 and 2 overlap below 0.48);
-coagulation's trees hold 5 at 1.72 to 1.82 and 6 at 2.53 and 7.33, so
-no one value is the scenery's. E: `0x001d5ec0` takes the largest over an
-object's bodies (`0x001d63fd`) and `0x001d69d0` picks a creature's
-collision layer by it (`0x001d6a32`: up to 1 layer 4, 5 and over 5,
-else 3); what reads it for scenery was not found. Its `coll` then has no BSP physics slots
-(retail: nothing with a `phmo` has them). Other scenery with collision
-(no solid cell, or a base whose scenery has no `phmo`) keeps the slots.
-Through version 84 no scenery had a `phmo`, and in a game run on
-converted Blood Gulch (2026-11-19) the player walked through a boulder
-with its slots in place, and no Havok body belonged to any of the map's
-50 scenery placements (docs/halo1/objects.md, open items). Retail holds
-both forms (V: 05a 11 scenery with collision and no `phmo`, 5 with one;
-beavercreek 6 and 3; coagulation 0 and 6), so the slots are a retail
-form, but which engine path puts a slots-only object in the Havok world
-was not found. E, the motion word: the body builder `0x001d5940` maps
-`+0x1a` 0..5 to Havok motions 2..7 (jump table `0x001d5bd4`) and makes
-the motion 7 whatever the word when its caller asks (`0x001d5a29`).
-Proof: `tests/rebuild_disc.rs`, `every_scenery_rebuilds_from_its_definition`
-(a `phmo` exactly where the collision is solid and the base has scenery
-bodies, every body with their words, no slots beside it) and
-`scenery_bodies_take_the_bases_scenery_words` (Coagulation's scenery
-bodies hold one flags and motion pattern, the one taken, and each its
-size class by its radius among the base's other bodies). Whether the player now stops
-at the boulders is the game run's to show.
+**Physics** (converter versions 85 to 91; removed in 92). Scenery whose
+Halo 1 collision held solid space got a `phmo` built from it as a
+device's is, its bodies taking the base's scenery body flags and motion
+(`+0x18`, `+0x1a`; V coagulation: all six bodies flags 0, motion 2) and
+each a size class `+0x1e` by its bounding radius (V, every rigid body of
+every `phmo` on coagulation, beavercreek and 05a: `+0x1e` rises with the
+bounding radius `+0x14`, 3 from 0.30 to 0.70, 4 from 0.73 to 1.23, 5 from
+1.39 to 1.96, 6 from 2.13 to 9.73; E: `0x001d5ec0` takes the largest over
+an object's bodies and `0x001d69d0` picks a creature's collision layer by
+it). Retail holds both forms (V: 05a 11 scenery with collision and no
+`phmo`, 5 with one; beavercreek 6 and 3; coagulation 0 and 6). The built
+`phmo` was inert (below), so since version 96 converted scenery has no
+`phmo` and its `coll` keeps one BSP physics slot per BSP, as retail
+scenery with no `phmo`; each placement's collision is merged into the
+level's instead (`h1convert::scenery_collision`,
+docs/halo1/multiplayer.md, "Collision"). Proof:
+`tests/rebuild_disc.rs`, `every_scenery_rebuilds_from_its_definition`
+(no `phmo`, a slot per BSP).
+
+**It does not: the engine never gives scenery a Havok body** (2026-11-19).
+E: the only place an object gets a physics component and rigid bodies
+from its `phmo` is `0x001c35f0` (it calls `0x001cf0b0` for the component
+at `0x001c3667`, then `0x001cf120`), and it returns at `0x001c361c`
+unless the object's type (object table entry `+3`) is in the mask
+`0x1883`: biped 0, vehicle 1, machine 7, crate 11, creature 12. Scenery
+(6) never passes. `0x001cf120` itself switches on the type (byte table
+`0x001cf20c`, jump table `0x001cf1f4`) and has cases for exactly those
+five; every other type's index is 5, whose jump-table entry is zero. The
+other callers of `0x001cf120` (`0x000c54d1` for units, `0x000f1053`,
+`0x001c37d2`, `0x001d3ffb`) rebuild a component the object already has.
+Rigid bodies are built in two places only, the level's at `0x001c3c32`
+and an object component's at `0x001d72c2`. Game run (converted Blood
+Gulch, converter version 90, `h2 agent`): `havok.bodies` lists the eight
+vehicles, the player and the level, and no body for any of the 50
+scenery placements, though the map holds the boulders' `phmo` tags
+(`edit.tags phmo`); the player put (`sim.state.set`) at the middle of
+`boulder_doublewide` and of `boulder_crouch` drops through each to the
+ground under its origin (z 0.32 and 0.10, the boulders' origins 0.31
+and 0.09). So the scenery `phmo` built since version 85 is inert, and
+the slots before it were too.
+
+Retail does not rely on scenery for solid props either. V, coagulation
+(Blood Gulch's base): no tag on the map names a rock or a boulder, so
+its rocks are structure; its scenery are the flag and teleporter bases,
+bushes and trees; and its one solid placed prop, the `powerhaus`, is a
+crate (`bloc`) whose `phmo` body holds motion `5` (Havok motion 7,
+fixed), flags 0, on node 0. A converted Halo 1 scenery object with solid
+collision is therefore solid to bipeds and vehicles only as structure
+(instanced geometry) or as a crate with a fixed body; neither is built
+yet.
 
 **Not carried:** Halo 1's attachments (on the ten levels and the
 multiplayer maps: 58 `ligh`, 24 `effe`, 13 `lsnd`, 5 `pctl`; no light or
@@ -610,10 +624,26 @@ Halo ring were already built this way.
   named as the mass point (`tire_front_left`), at the mass point's
   position in its node's space. V: Halo 1's mass point positions are in
   object space (each warthog tire point lies within its radius of its
-  tire node's default position). A point that grips the ground (Halo 1
-  powered mass point flag bit 0: the warthog's tires, the scorpion's
-  treads; the ghost's antigravity points hold bit 6) rides the root node
-  (0); any other point rides its own node. No marker is rotated. V: the
+  tire node's default position). Every point rides the root node (0),
+  at its Halo 1 position (since converter version 94). Through version
+  93 only a point that grips the ground (Halo 1 powered mass point flag
+  bit 0: the warthog's tires, the scorpion's treads) did; any other
+  rode its own node, and the ghost's antigravity points (bit 6) put its
+  back point, `hull back seat`, on the seat node. A hover point whose
+  marker is on another node gives no lift (game run, 2026-11-19,
+  converted Blood Gulch): with a driver the ghost rode nose up at 19.9
+  degrees on its tail, its origin 0.17 above the ground; the back point
+  at eight times its strength changed nothing, while zeroing the front
+  pair dropped the nose, and the back point named any node-0 marker
+  lifted the tail. The same marker moved live to node 0 at the same
+  place in the object (node 0 translation (-0.643, 0, -0.091)) held the
+  ghost at pitch -7.7, 0.33 above the ground, as the retail ghost rides
+  (pitch -7.9, 0.39), and it drove. V: every friction and hover marker
+  of every vehicle on coagulation, beavercreek and 05a_deltaapproach
+  (83 points) is on node 0 (`every_powered_point_rides_the_root_node`).
+  The point's region is unchanged: a gripping point's is the root
+  node's collision region, any other's its own node's. No marker is
+  rotated. V: the
   retail warthog's four tire markers are on node 0, 0.23 below it (the
   wheel centres, 0.19 above the origin, where Halo 1's tire points are),
   facing out along their axles; the scorpion's tread markers are on
@@ -1511,15 +1541,46 @@ starts from the definition default, then:
   (impact, and detonation: Halo 1's attached detonation damage or the
   first `jpt!` its detonation effect names). The slots Halo 1 has nothing
   converted for take the **Halo 2 counterpart's reference** (the
-  `TEMPLATES` row; references only): effects and sounds, the barrels'
-  firing effects. A projectile takes no `jpt!` from Halo 2. Since
-  converter v86 the slots named by the retail tags they hold
-  (`arsenal::WEAPON_OVERHEATED`, `WEAPON_MELEE_DAMAGE`,
+  `TEMPLATES` row; references only): each firing effect's damage
+  (the shot's rumble and shake: a `jpt!` from Halo 1 carries only damage
+  bounds) and the slots below Halo 1 has no counterpart for. A
+  projectile takes no `jpt!` from Halo 2. Since converter v86 the slots
+  named by the retail tags they hold (`arsenal::WEAPON_OVERHEATED`, which
+  is the weapon's `overheated_effect` below, `WEAPON_MELEE_DAMAGE`,
   `WEAPON_MELEE_RESPONSE`, `PROJECTILE_DETONATION_STARTED`,
   `PROJECTILE_AIRBORNE_DETONATION`, `PROJECTILE_DETONATION`,
   `PROJECTILE_SUPER_DETONATION`, `PROJECTILE_FLYBY_SOUND`) and the
   material effects take Halo 1's converted tags, or none
-  ([../halo1/role-audit.md](../halo1/role-audit.md)). The HUD (`+0x2b0`) is Halo 1's
+  ([../halo1/role-audit.md](../halo1/role-audit.md)).
+- **What a shot and a reload play** (converter version 97): each barrel's
+  firing effects (`barrels.block_e4`, `0x34`) are its Halo 1 trigger's
+  (`+0x108`, `0x84`: `h1::FiringEffect`), one element per Halo 1
+  element, the firing, misfire and empty effects (Halo 1 `+0x24`,
+  `+0x34`, `+0x44`) converted with `Converter::effect` (their `snd!`
+  parts with `h1sounds`) into `ref_4`, `ref_c`, `ref_14`
+  (`arsenal::FIRING_EFFECT_REFS`); one Halo 1 names as a bare `snd!`
+  (the plasma rifle's empty effect) is converted as a sound and named
+  as one, which retail's slots also hold. Each magazine's reloading effect
+  (Halo 1 `+0x38`) is Halo 1's at magazine `+0x34`. Until version 97
+  every barrel took the counterpart's firing effects, so the assault
+  rifle fired with the SMG's sound (its counterpart, `TEMPLATES`) and a
+  weapon with no counterpart (the vehicle guns) had none and fired
+  silent; magazines had no reloading effect. Live (converter version
+  83, Blood Gulch, `h2 agent edit get`): each of the eight converted
+  hand weapons' `block_e4` elements was datum for datum a retail
+  weapon's, and the three converted vehicle guns had none. V
+  (`weapon_sounds_disc`): Halo 1 firing effects hold `effe` or `snd!`
+  only at `+0x24/+0x34/+0x44` and `jpt!` only at `+0x54/+0x64/+0x74` on every
+  map; retail's `ref_4..ref_14` hold `effe` or `snd!` and
+  `ref_1c..ref_2c` `jpt!`; on Blood Gulch every weapon's built firing
+  and reloading effects are Halo 1's by path and play Halo 1's sounds.
+  The weapon's own effects and sounds (ready, overheated, detonation,
+  light, pickup, zoom, collision) and the chambering effect are Halo 1's
+  too, or empty (docs/halo1/objects.md, "Weapon effects and sounds"),
+  and the first-person graphs carry Halo 1's animation sounds
+  (docs/halo1/models.md, "Animation sounds"). Not carried yet: the shot counts (`+0` of both elements; Halo 2's word
+  stays the role's: live on converted Blood Gulch every retail element,
+  33 weapons' worth, holds i16 1, 1, so the role word is that). The HUD (`+0x2b0`) is Halo 1's
   `wphi` converted (`Converter::weapon_hud`, docs/halo1/hud.md); the
   counterpart's `nhdt` is the weapon's Halo 2 HUD in its HUD pair.
 

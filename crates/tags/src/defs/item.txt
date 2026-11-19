@@ -18,24 +18,22 @@ struct item 0x12c
   0xf0 string string_f0
   0xf4 unknown 0x4
   0xf8 unknown 0x4
-  0xfc unknown 0x4
-  0x100 unknown 0x4
+  0xfc tagref collision_sound -- V: snd! on retail items (docs/halo1/objects.md, "Weapon effects and sounds")
   0x104 block block_104 0x8 align 4
     0x0 tagref ref_0
   0x10c tagref ref_10c
   0x114 unknown 0x4
   0x118 unknown 0x4
-  0x11c unknown 0x4
-  0x120 unknown 0x4
-  0x124 tagref ref_124
+  0x11c tagref detonating_effect -- S: effe group words on retail items; Halo 1 item +0x2e8
+  0x124 tagref detonation_effect -- S: effe group words on retail items; Halo 1 item +0x2f8
 group weap 0x31c
   0x0 struct item item -- the item layer
-  0x12c unknown 0x4
+  0x12c u32 weapon_flags -- E: bits 22 and 23 permit the off hand (0xcd8a8..0xcd8d7, 0xcdaee..0xcdb0d)
   0x130 unknown 0x4
   0x134 unknown 0x4
   0x138 unknown 0x4
   0x13c unknown 0x4
-  0x140 tagref ref_140
+  0x140 tagref ready_effect -- E/V: docs/halo1/objects.md, "Weapon effects and sounds"
   0x148 unknown 0x4
   0x14c unknown 0x4
   0x150 unknown 0x4
@@ -45,11 +43,10 @@ group weap 0x31c
   0x160 unknown 0x4
   0x164 unknown 0x4
   0x168 unknown 0x4
-  0x16c tagref ref_16c
+  0x16c tagref overheated_effect -- E/V: docs/halo1/objects.md, "Weapon effects and sounds"
   0x174 unknown 0x4
   0x178 unknown 0x4
-  0x17c unknown 0x4
-  0x180 unknown 0x4
+  0x17c tagref detonation_effect -- E/V: docs/halo1/objects.md, "Weapon effects and sounds"
   0x184 unknown 0x4
   0x188 unknown 0x4
   0x18c unknown 0x4
@@ -90,23 +87,22 @@ group weap 0x31c
   0x238 unknown 0x4
   0x23c unknown 0x4
   0x240 unknown 0x4
-  0x244 unknown 0x4
-  0x248 unknown 0x4
-  0x24c unknown 0x4
-  0x250 unknown 0x4
+  0x244 tagref light_power_on_effect -- S: effe group words on retail weapons; Halo 1 weap +0x420
+  0x24c tagref light_power_off_effect -- S: effe group words on retail weapons; Halo 1 weap +0x430
   0x254 unknown 0x4
   0x258 unknown 0x4
   0x25c unknown 0x4
   0x260 unknown 0x4
-  0x264 tagref ref_264
-  0x26c tagref ref_26c
-  0x274 tagref ref_274
+  0x264 tagref pickup_sound -- E/V: docs/halo1/objects.md, "Weapon effects and sounds"
+  0x26c tagref zoom_in_sound -- E/V: docs/halo1/objects.md, "Weapon effects and sounds"
+  0x274 tagref zoom_out_sound -- E/V: docs/halo1/objects.md, "Weapon effects and sounds"
   0x27c unknown 0x4
   0x280 unknown 0x4
   0x284 unknown 0x4
   0x288 string string_288
   0x28c string string_28c
-  0x290 unknown 0x4
+  0x290 i16 multiplayer_weapon_type -- E/V: 0 ordinary, 1 flag or bomb, 2 ball, 4 juggernaut powerup (0x101280, Zanzibar)
+  0x292 unknown 0x2
   0x294 unknown 0x4
   0x298 unknown 0x4
   0x29c unknown 0x4
@@ -136,11 +132,10 @@ group weap 0x31c
     0x28 unknown 0x4
     0x2c unknown 0x4
     0x30 unknown 0x4
-    0x34 tagref ref_34
+    0x34 tagref reloading_effect -- V: effe on retail's SMG; Halo 1 magazine +0x38
     0x3c unknown 0x4
     0x40 unknown 0x4
-    0x44 unknown 0x4
-    0x48 unknown 0x4
+    0x44 tagref chambering_effect -- S: between two jpt! group words like the reloading effect's; Halo 1 magazine +0x48
     0x4c unknown 0x4
     0x50 unknown 0x4
     0x54 block block_54 0xc align 4

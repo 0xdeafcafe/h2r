@@ -33,7 +33,14 @@ fn flick(skill: Skill, seed: u64) -> Vec<f32> {
     let mut pitch = 0.0;
     (0..90)
         .map(|tick| {
-            let error = hand.track(skill, 1, tick, (yaw, pitch), ray(target), ray(target));
+            let error = hand.track(
+                skill,
+                1,
+                tick,
+                (yaw, pitch),
+                [ray(target), ray(target)],
+                0.0,
+            );
             let next = hand.steer(skill, Some(error), 1);
             assert!(next.0.hypot(next.1) <= 1.000_001);
             assert!(
@@ -78,8 +85,22 @@ fn flick_error_falls_overshoots_then_settles_with_micro_jitter() {
 fn tracking_lags_faster_bearings_more_and_crosses_the_wrap() {
     let error = |before| {
         let mut hand = Hand::new(17);
-        hand.track(Skill::Legendary, 1, 0, (0.4, 0.0), ray(before), ray(before));
-        hand.track(Skill::Legendary, 1, 1, (0.4, 0.0), ray(0.4), ray(0.4))[0]
+        hand.track(
+            Skill::Legendary,
+            1,
+            0,
+            (0.4, 0.0),
+            [ray(before), ray(before)],
+            0.0,
+        );
+        hand.track(
+            Skill::Legendary,
+            1,
+            1,
+            (0.4, 0.0),
+            [ray(0.4), ray(0.4)],
+            0.0,
+        )[0]
     };
     assert!(error(0.25) < error(0.38) - 0.14);
     let d = angle_error((3.13, 0.0), (-3.13, 0.0));
@@ -110,6 +131,7 @@ fn the_hand_checks_the_opening_as_it_passes_a_doorway() {
         [-2.0, 0.5, 2.0],
     ];
     let map = MapData {
+        places: Default::default(),
         nav: NavMesh::default(),
         walls: Walls::from_polygons([&wall[..]]),
     };
@@ -133,6 +155,7 @@ fn a_muffled_shot_draws_a_delayed_bearing_and_a_distant_one_does_not() {
         [-1.0, 1.0, 2.0],
     ];
     let map = MapData {
+        places: Default::default(),
         nav: NavMesh::default(),
         walls: Walls::from_polygons([&wall[..]]),
     };
@@ -163,4 +186,33 @@ fn a_muffled_shot_draws_a_delayed_bearing_and_a_distant_one_does_not() {
         .expect("it heard the closer report");
     assert!((1.24..1.9).contains(&yaw), "{yaw}");
     assert_eq!(hand.sound(eye, 140, Some(&map), &[]), None);
+}
+
+#[test]
+fn temperament_aim_noise_changes_only_the_tracking_error() {
+    use crate::decisions::{Behavior, MoodView, Personality};
+
+    for skill in Skill::ALL {
+        let behavior = Behavior {
+            personality: Personality {
+                caution: 1.0,
+                ..Personality::for_skill(7, skill)
+            },
+            mood: MoodView {
+                tilt: 1.0,
+                fear: 1.0,
+                ..MoodView::default()
+            },
+        };
+        let extra = behavior.aim_noise_extra();
+        let mut calm = Hand::new(7);
+        let mut upset = Hand::new(7);
+        for tick in 0..120 {
+            // No lag, lead or flick in this sightline: only tracking noise.
+            let target = [ray(0.0); 2];
+            let base = calm.track(skill, 1, tick, (0.0, 0.0), target, 0.0);
+            let changed = upset.track(skill, 1, tick, (0.0, 0.0), target, extra);
+            assert_eq!(changed, crate::human_input::tracking_noise(base, extra));
+        }
+    }
 }

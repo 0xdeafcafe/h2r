@@ -48,7 +48,7 @@ content package per map (<data>/disk/Partition1/TDATA/4D530064/$c/<offer id>/)
 so Halo 2 1.0 lists them, and copies the title update that matches your Halo 2
 disc to <data>/updates/4D530064/<version>/.
 The update is never placed where the game would launch it. --data defaults to
-$TMPDIR/h2boot-data, as for `h2 play`. --disc defaults to $H2_DISC, then the
+the data root, as for `h2 play`. --disc defaults to $H2_DISC, then the
 first .iso in disc/. See docs/game/map-pack.md.";
 
 #[derive(Debug, PartialEq)]
@@ -425,7 +425,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         }
         Err(e) => bail!("{e}\n\n{USAGE}"),
     };
-    let data = a.data.clone().unwrap_or_else(|| std::env::temp_dir().join("h2boot-data"));
+    let data = a.data.clone().unwrap_or_else(content::store::default_data_root);
     let base = if a.update {
         let disc = match a.disc.clone() {
             Some(d) => d,

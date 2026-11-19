@@ -55,6 +55,22 @@ pub trait Halo1Objects {
     /// time: its index among the tags [`ObjectTags::install`] adds.
     fn first_person_arms(&mut self, id: h1map::TagId) -> std::result::Result<usize, String>;
 
+    /// The collision of the Halo 1 object tag `name` of `group`, in object
+    /// space, as Halo 2 BSPs: for each collision node with any, its BSP of
+    /// the first permutation of its region (the one a converted
+    /// placement, which names no variant, draws), placed by the render
+    /// model's default pose. Empty when it has no collision; the default
+    /// reads none. [`merge_scenery_collision`] puts each placed scenery
+    /// object's into the level's.
+    fn collision(
+        &mut self,
+        group: [u8; 4],
+        name: &str,
+    ) -> std::result::Result<Vec<tags::collision::Bsp>, String> {
+        let _ = (group, name);
+        Ok(Vec::new())
+    }
+
     /// Everything converted so far, ready to add to a map.
     fn take(&mut self) -> ObjectTags;
 }
@@ -308,6 +324,8 @@ pub fn prepare_halo1<R: Read + Seek>(
     // (weapons, grenades, powerups, a vehicle's).
     let mut kinds: Vec<u8> = Vec::new();
     let mut spawns: Vec<(Halo1Spawn, usize)> = Vec::new();
+    // The Halo 1 vehicles the spawns place, converted, by name.
+    let mut placed_vehicles: Vec<String> = Vec::new();
     for sp in plan_objects(h1)? {
         let group = if sp.is_vehicle() { *b"vehc" } else { *b"itmc" };
         let c = match collections
@@ -322,6 +340,9 @@ pub fn prepare_halo1<R: Read + Seek>(
                 for it in &sp.items {
                     match objects.object(it.group, &it.name) {
                         Ok(k) => {
+                            if &it.group == b"vehi" && !placed_vehicles.contains(&it.name) {
+                                placed_vehicles.push(it.name.clone());
+                            }
                             entries.push((k, it.weight));
                             kind.get_or_insert(halo1_netgame_type(it.group, &it.name));
                         }
@@ -371,7 +392,8 @@ pub fn prepare_halo1<R: Read + Seek>(
             None
         }
     };
-    let scenery = plan_scenery(h1, objects, first, &mut applied.unresolved)?;
+    let mut scenery = plan_scenery(h1, objects, first, &mut applied.unresolved)?;
+    merge_scenery_collision(objects, &mut p, &mut scenery, &mut applied.unresolved)?;
     // The player's first-person arms: Halo 1's, which Halo 1's
     // first-person graphs name node for node (the engine binds them by
     // name; Halo 2's arms match no node of them).
@@ -405,6 +427,13 @@ pub fn prepare_halo1<R: Read + Seek>(
         });
     }
     let weapon_list = plan_weapon_list(h1, base, objects, first, &mut applied.unresolved)?;
+    let vehicle_list = plan_vehicle_list(
+        base,
+        objects,
+        first,
+        &placed_vehicles,
+        &mut applied.unresolved,
+    )?;
     let starting = plan_starting_equipment(
         h1,
         base,
@@ -471,6 +500,7 @@ pub fn prepare_halo1<R: Read + Seek>(
     p.player_hands = player_hands;
     p.grenades = grenades;
     p.weapon_list = weapon_list;
+    p.vehicle_list = vehicle_list;
     Ok(p)
 }
 
@@ -624,6 +654,28 @@ fn plan_weapon_list<R: Read + Seek>(
     first: usize,
     unresolved: &mut Vec<String>,
 ) -> Result<Vec<(usize, TagId)>> {
+    let mut out = Vec::new();
+    for (i, name) in base_list(base, crate::globals::List::Weapons)? {
+        let name = name.as_str();
+        let Some(h1_name) = halo1_weapon(h1, name) else {
+            unresolved.push(format!("weapon list {i}: {name} has no Halo 1 weapon on the map"));
+            continue;
+        };
+        match objects.object(*b"weap", &h1_name) {
+            Ok(k) => out.push((i, added_datum(first + k))),
+            Err(w) => unresolved.push(format!("weapon list {i}: {h1_name}: {w}")),
+        }
+    }
+    Ok(out)
+}
+
+/// The base `mulg`'s universal `list` (`crate::globals::List`): each
+/// entry that names a tag, with the tag's name ("?" for none). Empty when
+/// the base has no globals or multiplayer globals.
+fn base_list<R: Read + Seek>(
+    base: &mut Map<R>,
+    list: crate::globals::List,
+) -> Result<Vec<(usize, String)>> {
     let find = |base: &Map<R>, group: &[u8; 4]| {
         base.tags()
             .iter()
@@ -651,27 +703,93 @@ fn plan_weapon_list<R: Read + Seek>(
         return Ok(Vec::new());
     };
     let bytes = base.read_tag_bytes(mulg)?;
-    let list = crate::globals::weapon_list(&bytes, address)?;
-    let names: Vec<(TagId, String)> = base
-        .tags()
+    let entries = crate::globals::universal_list(&bytes, address, list)?;
+    Ok(entries
         .iter()
-        .map(|t| (t.id, t.name.clone().unwrap_or_default()))
-        .collect();
+        .enumerate()
+        .filter_map(|(i, id)| {
+            let id = (*id)?;
+            let name = base
+                .tags()
+                .iter()
+                .find(|t| t.id == id)
+                .and_then(|t| t.name.clone())
+                .unwrap_or_else(|| "?".into());
+            Some((i, name))
+        })
+        .collect())
+}
+
+/// The Halo 1 vehicle of `placed` (the Halo 1 vehicles the spawns place)
+/// that stands for the Halo 2 vehicle `h2_name`: one whose Halo 2
+/// equivalent ([`crate::sandbox::h2_equivalent`]) is the role named as
+/// the vehicle (`warthog` for `objects\vehicles\warthog\warthog`, not
+/// the rocket warthog's `warthog_gauss`); else, for a role Halo 1 has no
+/// vehicle of, one of the same netgame type
+/// ([`crate::sandbox::VehicleClass::netgame_type`]: the wraith takes the
+/// scorpion, the other heavy vehicle the variant's heavy chooser picks
+/// between). `None` when the spawns place neither, or the vehicle has no
+/// class (the spectre, the turrets).
+pub fn halo1_vehicle_for<'a>(h2_name: &str, placed: &'a [String]) -> Option<&'a str> {
+    let last = h2_name
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(h2_name)
+        .to_ascii_lowercase();
+    let class = crate::sandbox::vehicle_class(&last)?;
+    let role = |n: &str| match h2_equivalent(n) {
+        Some(H2Item::Vehicle(r)) => Some(r),
+        _ => None,
+    };
+    placed
+        .iter()
+        .find(|n| role(n) == Some(last.as_str()))
+        .or_else(|| {
+            // Only a role no Halo 1 vehicle stands for falls back.
+            if crate::sandbox::TABLE
+                .iter()
+                .any(|(_, i)| *i == H2Item::Vehicle(class.role))
+            {
+                return None;
+            }
+            placed.iter().find(|n| {
+                role(n)
+                    .and_then(crate::sandbox::vehicle_class)
+                    .is_some_and(|c| c.netgame_type == class.netgame_type)
+            })
+        })
+        .map(String::as_str)
+}
+
+/// The Halo 1 sandbox's vehicle list: each entry of the base's `mulg`
+/// vehicle list ([`crate::globals::UNIVERSAL_VEHICLES`]) whose vehicle
+/// the spawns place a Halo 1 vehicle for ([`halo1_vehicle_for`]) gets
+/// that vehicle, so a game variant's vehicle option that swaps a vehicle
+/// for another of its class gives a Halo 1 one. The other entries (the
+/// spectre and the turrets, which have no class; a vehicle the map
+/// places none of, as Blood Gulch's banshee) keep the base's and are
+/// reported. As the list names the base's
+/// vehicles, a pinned map kept every retail vehicle and all it names
+/// (`fresh::prune_pinned`): pointed at the Halo 1 vehicles, those the
+/// map's spawns stand in for are dropped.
+fn plan_vehicle_list<R: Read + Seek>(
+    base: &mut Map<R>,
+    objects: &mut dyn Halo1Objects,
+    first: usize,
+    placed: &[String],
+    unresolved: &mut Vec<String>,
+) -> Result<Vec<(usize, TagId)>> {
     let mut out = Vec::new();
-    for (i, id) in list.iter().enumerate() {
-        let Some(id) = id else { continue };
-        let name = names
-            .iter()
-            .find(|(t, _)| t == id)
-            .map(|(_, n)| n.as_str())
-            .unwrap_or("?");
-        let Some(h1_name) = halo1_weapon(h1, name) else {
-            unresolved.push(format!("weapon list {i}: {name} has no Halo 1 weapon on the map"));
+    for (i, name) in base_list(base, crate::globals::List::Vehicles)? {
+        let Some(h1_name) = halo1_vehicle_for(&name, placed) else {
+            unresolved.push(format!(
+                "vehicle list {i}: {name} has no Halo 1 vehicle the map places; the base's stays"
+            ));
             continue;
         };
-        match objects.object(*b"weap", &h1_name) {
+        match objects.object(*b"vehi", h1_name) {
             Ok(k) => out.push((i, added_datum(first + k))),
-            Err(w) => unresolved.push(format!("weapon list {i}: {h1_name}: {w}")),
+            Err(w) => unresolved.push(format!("vehicle list {i}: {h1_name}: {w}")),
         }
     }
     Ok(out)
@@ -751,6 +869,24 @@ pub struct Scenery {
     pub placements: Vec<Vec<u8>>,
     /// Halo 1 placements left out (their palette entry didn't convert).
     pub dropped: usize,
+    /// Each placement written, as Halo 1 has it, in order.
+    pub placed: Vec<PlacedScenery>,
+    /// Placements whose collision joined the level's
+    /// ([`merge_scenery_collision`]).
+    pub solid: usize,
+}
+
+/// A placed Halo 1 scenery object: its tag, where it stands, and whether
+/// it is there from the start (Halo 1's "not placed automatically" bit,
+/// `+4` bit 0, clear).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlacedScenery {
+    pub name: String,
+    /// Position (`+8`).
+    pub position: [f32; 3],
+    /// Yaw, pitch and roll in radians (`+0x14`).
+    pub rotation: [f32; 3],
+    pub at_start: bool,
 }
 
 impl Scenery {
@@ -803,7 +939,7 @@ pub fn plan_scenery(
     let space = h1.tag_space();
     let palette = space.block_at(scnr, layout::SCENERY_PALETTE.0, layout::SCENERY_PALETTE.1)?;
     let mut out = Scenery::default();
-    // Halo 1 palette index -> Halo 2's.
+    // Halo 1 palette index -> Halo 2's, and the tag's name.
     let mut index = Vec::new();
     for e in &palette {
         let name = h1map::TagRef::read(e, 0)
@@ -815,7 +951,7 @@ pub fn plan_scenery(
         };
         match objects.object(*b"scen", &name) {
             Ok(k) => {
-                index.push(Some(out.palette.len() as u16));
+                index.push(Some((out.palette.len() as u16, name)));
                 out.palette.push(added_datum(first + k));
             }
             Err(w) => {
@@ -826,15 +962,76 @@ pub fn plan_scenery(
     }
     for e in space.block_at(scnr, layout::SCENERY.0, layout::SCENERY.1)? {
         let p = i16::from_le_bytes([e[0], e[1]]);
-        match usize::try_from(p).ok().and_then(|p| index.get(p).copied().flatten()) {
-            Some(k) => {
+        match usize::try_from(p)
+            .ok()
+            .and_then(|p| index.get(p).cloned().flatten())
+        {
+            Some((k, name)) => {
                 let unique = out.placements.len() as u32;
                 out.placements.push(scenery_placement(e, k, unique));
+                let f = |at: usize| f32::from_le_bytes(e[at..at + 4].try_into().expect("4"));
+                out.placed.push(PlacedScenery {
+                    name,
+                    position: [f(8), f(0xc), f(0x10)],
+                    rotation: [f(0x14), f(0x18), f(0x1c)],
+                    at_start: u16::from_le_bytes([e[4], e[5]]) & 1 == 0,
+                });
             }
             None => out.dropped += 1,
         }
     }
     Ok(out)
+}
+
+/// Puts the collision of every placed scenery object that has one into
+/// the level's ([`crate::scenery_collision`]): the engine gives scenery no
+/// Havok body, so Halo 1's rocks and trees are solid only as structure,
+/// the way retail Halo 2 builds its rocks. Each placement there from the
+/// start has its object's collision ([`Halo1Objects::collision`]) moved
+/// to its place and merged into `p.collision`, its new leaves in the
+/// cluster of the level leaf each stands in (`p.sound_leaves`); its
+/// surfaces take collision material 0 (every converted collision material
+/// is the base's one template, `structure::Templates`). The object still
+/// draws as scenery. A placement whose collision can't be read or doesn't
+/// fit Halo 2's packed fields is listed in `unresolved` and stays
+/// walk-through. Counts the placements merged in `scenery.solid`.
+pub fn merge_scenery_collision(
+    objects: &mut dyn Halo1Objects,
+    p: &mut Prepared,
+    scenery: &mut Scenery,
+    unresolved: &mut Vec<String>,
+) -> Result<()> {
+    use crate::scenery_collision::{Pose, merge, transformed};
+    let mut collisions: std::collections::HashMap<String, Vec<tags::collision::Bsp>> =
+        std::collections::HashMap::new();
+    for placed in scenery.placed.iter().filter(|s| s.at_start) {
+        let name = &placed.name;
+        let bsps = collisions.entry(name.clone()).or_insert_with(|| {
+            objects.collision(*b"scen", name).unwrap_or_else(|w| {
+                unresolved.push(format!("scenery {name}: collision not read: {w}"));
+                Vec::new()
+            })
+        });
+        let pose = Pose::placement(placed.position, placed.rotation);
+        let mut joined = false;
+        for bsp in bsps.iter() {
+            match transformed(bsp, &pose).and_then(|world| merge(&mut p.collision, &world, 0)) {
+                Ok(m) => {
+                    for l in m.stand_ins {
+                        let c = p.sound_leaves.get(l).copied().unwrap_or(0);
+                        p.sound_leaves.push(c);
+                    }
+                    joined |= m.slots > 0;
+                }
+                Err(e) => unresolved.push(format!(
+                    "scenery {name} at {:?}: collision not merged into the level's: {e}",
+                    placed.position
+                )),
+            }
+        }
+        scenery.solid += usize::from(joined);
+    }
+    Ok(())
 }
 
 /// [`prepare`] for the Halo 2 sandbox with Halo 1's scenery: its `scen`
@@ -848,7 +1045,10 @@ pub fn prepare_halo2<R: Read + Seek>(
 ) -> Result<Prepared> {
     let mut p = prepare(h1, source_sha256, base, Sandbox::Halo2)?;
     let first = base.index_slots() as usize + p.applied.collections.len();
-    let scenery = plan_scenery(h1, objects, first, &mut p.applied.unresolved)?;
+    let mut scenery = plan_scenery(h1, objects, first, &mut p.applied.unresolved)?;
+    let mut unresolved = std::mem::take(&mut p.applied.unresolved);
+    merge_scenery_collision(objects, &mut p, &mut scenery, &mut unresolved)?;
+    p.applied.unresolved = unresolved;
     p.objects = Some(objects.take());
     p.objects_first = first;
     p.scenery = Some(scenery);
@@ -961,11 +1161,49 @@ mod tests {
         let sc = Scenery {
             palette: vec![added_datum(5), added_datum(6)],
             placements: vec![b.clone(), b],
-            dropped: 0,
+            ..Scenery::default()
         };
         assert_eq!(sc.palette_block().bytes.len(), 2 * SCENERY_PALETTE_ENTRY);
         assert_eq!(sc.palette_block().fixups.len(), 2);
         assert_eq!(sc.placements_block().bytes.len(), 2 * SCENERY_PLACEMENT);
+    }
+
+    /// Each Coagulation vehicle list entry and the Blood Gulch vehicle
+    /// that stands for it: the warthog's is the plain warthog, not the
+    /// rocket warthog; the wraith's the scorpion (Halo 1 has no wraith;
+    /// both are heavy vehicles); the spectre and turrets have none, nor
+    /// has the banshee when the spawns place none.
+    #[test]
+    fn a_vehicle_list_entry_takes_the_placed_halo1_vehicle_of_its_role() {
+        let placed: Vec<String> = [
+            "vehicles\\rwarthog\\rwarthog",
+            "vehicles\\warthog\\mp_warthog",
+            "vehicles\\ghost\\ghost_mp",
+            "vehicles\\scorpion\\scorpion_mp",
+        ]
+        .map(String::from)
+        .to_vec();
+        let v = |n: &str| halo1_vehicle_for(n, &placed);
+        assert_eq!(
+            v("objects\\vehicles\\warthog\\warthog"),
+            Some("vehicles\\warthog\\mp_warthog")
+        );
+        assert_eq!(
+            v("objects\\vehicles\\ghost\\ghost"),
+            Some("vehicles\\ghost\\ghost_mp")
+        );
+        assert_eq!(
+            v("objects\\vehicles\\scorpion\\scorpion"),
+            Some("vehicles\\scorpion\\scorpion_mp")
+        );
+        assert_eq!(v("objects\\vehicles\\banshee\\banshee"), None);
+        // Halo 1 has no wraith: the other heavy vehicle stands for it.
+        assert_eq!(
+            v("objects\\vehicles\\wraith\\wraith"),
+            Some("vehicles\\scorpion\\scorpion_mp")
+        );
+        assert_eq!(v("objects\\vehicles\\spectre\\spectre"), None);
+        assert_eq!(v("objects\\vehicles\\c_turret_ap\\c_turret_ap"), None);
     }
 
     #[test]

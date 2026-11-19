@@ -1,0 +1,306 @@
+import { A, useSearchParams } from "@solidjs/router";
+import { For, Show, createEffect, createMemo, createResource, createSignal, on, onCleanup, onMount } from "solid-js";
+import { wsUrl } from "../api/server";
+import type { PlayerKilled } from "../api/types";
+import { GameView } from "../stats/Game";
+import { Panel } from "../stats/Layout";
+import { usDateTime } from "../stats/fmt";
+import { identity } from "../state/identity";
+import { frameHub, live } from "../state/live";
+import { applyGameSnapshot, initialState } from "../state/reducer";
+import { StreamClient } from "../state/stream";
+import {
+  comparisonRows, determinismLabel, resultLabel, runsByBatch, scoreLabel, speedLabel, trainingHref, tuningLabel,
+  type SimDetail, type SimFilter, type SimPlayer, type SimRun,
+} from "./simRuns";
+
+const REFRESH_MS = 5000;
+
+function refreshVisible(refresh: () => void) {
+  onMount(() => {
+    const timer = setInterval(() => { if (!document.hidden) refresh(); }, REFRESH_MS);
+    onCleanup(() => clearInterval(timer));
+  });
+}
+
+async function load<T>(read: () => Promise<T>) {
+  try {
+    return { data: await read(), error: null };
+  } catch (e) {
+    return { data: null, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+export default function ClankerTraining() {
+  return (
+    <Show when={identity.me() && `${live.server().base}|${identity.me()!.xuid}`} keyed>
+      <Training />
+    </Show>
+  );
+}
+
+function Training() {
+  const [params] = useSearchParams<{ run?: string; batch?: string }>();
+  return (
+    <Show when={typeof params.run === "string" && params.run} keyed
+      fallback={<RunList batch={() => typeof params.batch === "string" ? params.batch : undefined} />}>
+      {(id) => <RunDetail id={id} />}
+    </Show>
+  );
+}
+
+function RunList(props: { batch: () => string | undefined }) {
+  const [filters, setFilters] = createSignal<SimFilter>({});
+  const [cursors, setCursors] = createSignal<string[]>([]);
+  const [selection, setSelection] = createSignal<SimRun[]>([]);
+  const [runs, { refetch }] = createResource(
+    () => ({ ...filters(), batch: filters().batch ?? props.batch(), before: cursors().at(-1) }),
+    (query) => load(() => live.api().simRuns(query)),
+  );
+  refreshVisible(() => { if (!runs.loading) void refetch(); });
+  createEffect(on(props.batch, () => { setFilters({}); setCursors([]); }, { defer: true }));
+  function filter(event: SubmitEvent) {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget as HTMLFormElement);
+    const field = (name: string) => String(data.get(name) ?? "").trim();
+    setCursors([]);
+    setFilters({ map: field("map"), tuning: field("tuning"), batch: field("batch") });
+  }
+  function pick(run: SimRun) {
+    setSelection((old) => old.some((r) => r.game_id === run.game_id)
+      ? old.filter((r) => r.game_id !== run.game_id)
+      : old.length < 2 ? [...old, run] : old);
+  }
+  const compared = () => selection().map((saved) =>
+    runs.latest?.data?.items.find((run) => run.game_id === saved.game_id) ?? saved);
+  return (
+    <>
+      <Panel title="Clanker Training" right={<button class="s-btn" onClick={() => void refetch()}>Refresh</button>}>
+        <form class="adm-row" onSubmit={filter}>
+          <label class="adm-field"><span>Map</span><input name="map" /></label>
+          <label class="adm-field"><span>Tuning</span><input name="tuning" /></label>
+          <label class="adm-field"><span>Batch</span><input name="batch" value={props.batch() ?? ""} /></label>
+          <button class="s-btn" type="submit">Filter</button>
+        </form>
+        <Show when={runs.latest?.error}>{(message) => <p class="s-bad" role="alert">{message()}</p>}</Show>
+        <Show when={runs.latest?.data} fallback={<Show when={runs.loading}><p>Loading sim runs…</p></Show>}>
+          {(page) => (
+            <>
+              <TrainingRuns runs={page().items} selected={selection().map((run) => run.game_id)} onSelect={pick} />
+              <Show when={selection().length > 0}>
+                <button class="s-btn" onClick={() => setSelection([])}>Clear comparison</button>
+              </Show>
+              <Show when={cursors().length > 0 || page().next}>
+                <div class="adm-row">
+                  <button class="s-btn" disabled={!cursors().length || runs.loading} onClick={() => setCursors((c) => c.slice(0, -1))}>Previous</button>
+                  <button class="s-btn" disabled={!page().next || runs.loading} onClick={() => setCursors((c) => [...c, page().next!])}>Next</button>
+                </div>
+              </Show>
+            </>
+          )}
+        </Show>
+      </Panel>
+      <Show when={compared().length === 2}>
+        <RunComparison left={compared()[0]!} right={compared()[1]!} />
+      </Show>
+    </>
+  );
+}
+
+function RunStatus(props: { run: SimRun }) {
+  return (
+    <Show when={props.run.status === "running"} fallback={props.run.status === "finished" ? "Finished" : "Interrupted"}>
+      <span class="s-live-tag">Running</span>{props.run.sim.deferred ? " · Replay after match" : " · Live"}
+    </Show>
+  );
+}
+
+export function TrainingRuns(props: { runs: SimRun[]; selected: string[]; onSelect: (run: SimRun) => void }) {
+  return (
+    <Show when={props.runs.length} fallback={<p>No sim runs match these filters.</p>}>
+      <div class="adm-sim-tables">
+        <For each={runsByBatch(props.runs)}>
+          {(group) => (
+            <section class="adm-sim-batch">
+              <h3><Show when={group.id} fallback="Single runs">{(id) => <A href={trainingHref(undefined, id())} title={id()}>Batch {id().slice(0, 8)}</A>}</Show></h3>
+              <table class="s-stats">
+                <thead><tr><th scope="col">Match</th><th scope="col">Bots</th><th scope="col">Result</th><th scope="col">Ticks</th><th scope="col">Speed</th><th scope="col">Compare</th></tr></thead>
+                <tbody><For each={group.runs}>{(run) => (
+                  <tr>
+                    <td>
+                      <A href={trainingHref(run.game_id, group.id ?? undefined)}>{run.map} · {run.sim.gametype}</A>
+                      <small>{usDateTime(run.started_at)}</small>
+                      <RunStatus run={run} />
+                    </td>
+                    <td><For each={run.sim.bots}>{(bot) => (
+                      <Show when={bot.tuning} fallback={<div>{bot.name ?? "Clanker"} <small>{tuningLabel(bot)}</small></div>}>
+                        <details class="adm-sim-tuning">
+                          <summary>{bot.name ?? "Clanker"} <small>{tuningLabel(bot)}</small></summary>
+                          <pre>{JSON.stringify(bot.tuning, null, 2)}</pre>
+                        </details>
+                      </Show>
+                    )}</For></td>
+                    <td>{resultLabel(run)}<small>{scoreLabel(run)}</small>
+                      <Show when={determinismLabel(run.determinism)}>{(label) => <small>{label()}</small>}</Show>
+                    </td>
+                    <td>{run.ticks.toLocaleString()}</td>
+                    <td>{speedLabel(run.speedup)}</td>
+                    <td><input
+                      type="checkbox"
+                      aria-label={`Compare ${run.map} run ${run.sim.run_id}`}
+                      checked={props.selected.includes(run.game_id)}
+                      disabled={props.selected.length >= 2 && !props.selected.includes(run.game_id)}
+                      onChange={() => props.onSelect(run)}
+                    /></td>
+                  </tr>
+                )}</For></tbody>
+              </table>
+            </section>
+          )}
+        </For>
+      </div>
+    </Show>
+  );
+}
+
+export function RunComparison(props: { left: SimRun; right: SimRun }) {
+  return (
+    <Panel title="Compare runs">
+      <table class="s-stats">
+        <thead><tr>
+          <th scope="col">Metric</th>
+          <For each={[props.left, props.right]}>{(run) => <th scope="col"><A href={trainingHref(run.game_id)}>{run.sim.run_id.slice(0, 8)}</A></th>}</For>
+        </tr></thead>
+        <tbody>
+          <For each={comparisonRows(props.left, props.right)}>{([label, a, b]) => (
+            <tr><th scope="row">{label}</th><td>{a}</td><td>{b}</td></tr>
+          )}</For>
+          <tr>
+            <th scope="row">Bot parameters</th>
+            <For each={[props.left, props.right]}>{(run) => (
+              <td><details class="adm-sim-tuning"><summary>Show parameters</summary><pre>{JSON.stringify(run.sim.bots, null, 2)}</pre></details></td>
+            )}</For>
+          </tr>
+        </tbody>
+      </table>
+    </Panel>
+  );
+}
+
+function RunDetail(props: { id: string }) {
+  const [request, { refetch }] = createResource(() => props.id, (id) => load(() => live.api().simRun(id)));
+  const detail = () => request.latest?.data;
+  const game = createMemo(() => {
+    const found = detail();
+    if (!found) return;
+    const state = initialState();
+    applyGameSnapshot(state, found.game);
+    return state.games[found.game.game_id];
+  });
+
+  refreshVisible(() => {
+    const run = detail()?.run;
+    if (!request.loading && (!run || run.status === "running" || (run.status === "finished" && !run.has_report))) {
+      void refetch();
+    }
+  });
+  createEffect(on(
+    () => {
+      const run = detail()?.run;
+      return run?.status === "running" && !run.sim.deferred ? run.game_id : undefined;
+    },
+    (id) => {
+      if (!id) return;
+      const api = live.api();
+      const stream = new StreamClient({
+        url: (from) => wsUrl(api.streamUrl(from, true, id)),
+        auth: api.readToken,
+        connect: (url) => {
+          const socket = new WebSocket(url);
+          socket.binaryType = "arraybuffer";
+          return socket as unknown as import("../state/stream").SocketLike;
+        },
+      }, {
+        onEvent: (event) => {
+          if (event.type === "GameEnded") void refetch();
+          if (event.type === "PlayerKilled") {
+            const kill = event.data as PlayerKilled;
+            frameHub.get(id).addDeath(kill.victim, kill.tick, performance.now(), kill.pos);
+          }
+        },
+        onFrame: (frame) => { if (frame.game_id === id) frameHub.push(frame, performance.now()); },
+        onCaughtUp: () => {},
+      });
+      stream.start(detail()?.game.position ?? null);
+      onCleanup(() => stream.stop());
+    },
+  ));
+  onCleanup(() => frameHub.drop(props.id));
+
+  return (
+    <>
+      <A href={trainingHref(undefined, detail()?.run.sim.batch_id)}>‹ Clanker Training</A>
+      <Show when={request.latest?.error}>{(message) => <p class="s-bad" role="alert">{message()}</p>}</Show>
+      <Show when={detail()} fallback={<Show when={request.loading}><p>Loading sim run…</p></Show>}>
+        {(found) => (
+          <>
+            <RunReport detail={found()} />
+            <Show when={!(found().run.status === "running" && found().run.sim.deferred)}
+              fallback={<p class="adm-note">The replay will be available after this match finishes.</p>}>
+              <Show when={game()}>{(g) => <div class="s-game"><GameView game={g()} embedded /></div>}</Show>
+            </Show>
+            <BotStats detail={found()} />
+          </>
+        )}
+      </Show>
+    </>
+  );
+}
+
+export function RunReport(props: { detail: SimDetail }) {
+  const run = () => props.detail.run;
+  return (
+    <Panel title={`${run().map} · ${run().sim.gametype}`} right={<RunStatus run={run()} />}>
+      <dl class="adm-sim-facts">
+        <div><dt>Started</dt><dd>{usDateTime(run().started_at)}</dd></div>
+        <div><dt>Run ID</dt><dd>{run().sim.run_id}</dd></div>
+        <Show when={run().sim.batch_id}>{(id) => <div><dt>Batch</dt><dd><A href={trainingHref(undefined, id())}>{id()}</A></dd></div>}</Show>
+        <div><dt>Seed</dt><dd>{run().sim.seed}</dd></div>
+        <div><dt>Pace</dt><dd>{run().sim.pace}</dd></div>
+        <div><dt>Sim speed</dt><dd>{run().speedup === null ? "—" : `${speedLabel(run().speedup)} real time`}</dd></div>
+        <div><dt>Ticks</dt><dd>{run().ticks.toLocaleString()}</dd></div>
+        <div><dt>Result</dt><dd>{resultLabel(run())}</dd></div>
+        <div><dt>Score</dt><dd>{scoreLabel(run())}</dd></div>
+      </dl>
+      <Show when={run().recording_limited}><p>The recording reached its size limit. The replay shows the captured portion.</p></Show>
+      <details class="adm-hint"><summary>Bot tuning</summary><pre>{JSON.stringify(run().sim.bots, null, 2)}</pre></details>
+      <Show when={run().determinism != null}>
+        <details class="adm-hint" open><summary>Determinism</summary><pre>{JSON.stringify(run().determinism, null, 2)}</pre></details>
+      </Show>
+      <Show when={props.detail.report} fallback={<Show when={run().status === "finished"}><p>Report pending.</p></Show>}>
+        {(report) => <details class="adm-hint"><summary>Report JSON</summary><pre>{JSON.stringify(report(), null, 2)}</pre></details>}
+      </Show>
+    </Panel>
+  );
+}
+
+export function BotStats(props: { detail: SimDetail }) {
+  const players = (): SimPlayer[] => props.detail.report?.players.filter((p) => p.bot) ??
+    props.detail.run.scoreboard.map((score) => ({
+      ...score, bot: true, name: props.detail.game.players.find((p) => p.index === score.index)?.name ?? `Clanker ${score.index + 1}`,
+    }));
+  return (
+    <Panel title="Bot stats">
+      <Show when={players().length} fallback={<p>Stats will appear once the bots start scoring.</p>}>
+        <table class="s-stats">
+          <thead><tr><th scope="col">Bot</th><th scope="col">Score</th><th scope="col">Kills</th><th scope="col">Deaths</th><th scope="col">Accuracy</th></tr></thead>
+          <tbody><For each={players()}>{(p) => (
+            <tr><th scope="row">{p.name}{p.arm ? ` · ${p.arm}` : ""}</th><td>{p.score}</td><td>{p.kills}</td><td>{p.deaths}</td>
+              <td>{p.accuracy != null && p.shots !== 0 ? `${(p.accuracy * 100).toFixed(1)}%` : "—"}</td>
+            </tr>
+          )}</For></tbody>
+        </table>
+      </Show>
+    </Panel>
+  );
+}

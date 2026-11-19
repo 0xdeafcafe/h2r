@@ -115,6 +115,15 @@ pub fn new_view() {
     VIEW_TARGET.set(target);
 }
 
+/// Forgets the pending light candidate and the view's target, without
+/// refusing or setting anything back: a snapshot load, whose guest RAM is
+/// not the memory they were read from. Takes no device lock (unlike
+/// [`new_view`], which asks the host for the next view's target).
+pub fn forget_runs() {
+    CANDIDATE.take();
+    VIEW_TARGET.set(None);
+}
+
 /// The light `handle` as the passes would draw it, with the caller's
 /// shadow decision and weight. `None` when the record cannot be read, is
 /// gone, or fails the record's checks (`light::LightRecord::check`).
@@ -290,10 +299,16 @@ impl Feature for NativeLights {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
+        // Switched off, or not placed with render-timing: no hooks, nothing
+        // held. Placed: the pending light (`CANDIDATE`) and the view's
+        // target (`VIEW_TARGET`) belong to the render they were read in,
+        // so a load drops them ([`forget_runs`]).
         if !on(b.switches()) {
+            b.snapshot(crate::SnapshotPolicy::Stateless);
             return Ok(());
         }
         if b.switches().feature(crate::render_timing::ID, false) {
+            b.snapshot(crate::SnapshotPolicy::Stateless);
             eprintln!("native-lights: not placed with render-timing on (its light passes' timer needs their end)");
             return Ok(());
         }
@@ -353,7 +368,10 @@ impl Feature for NativeLights {
                 })
                 .context_only();
         }
-        b.snapshot(crate::SnapshotPolicy::Stateless);
+        b.snapshot(crate::SnapshotPolicy::section(Vec::new, |_, _| {
+            forget_runs();
+            Ok(())
+        }));
         Ok(())
     }
 }

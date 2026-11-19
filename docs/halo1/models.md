@@ -60,7 +60,7 @@ unused.
 | `b8` | nodes, stride `0x9c` | V1 |
 | `c4` | regions, stride `0x4c` | V1 |
 | `d0` | geometries, stride `0x30` | V1 |
-| `dc` | shaders, stride `0x20`: tag reference (`00`), i16 permutation (`10`) | V1 (references name `soso`/`schi`/... tags) |
+| `dc` | shaders, stride `0x20`: tag reference (`00`), i16 permutation (`10`): which digit a numeric `schi` draws ([objects.md](objects.md), "Ammunition counter") | V1 (references name `soso`/`schi`/... tags); the assault rifle's first-person model names its `numbers` twice, permutations 1 and 0 |
 
 **Marker** (`0x40`): `char[32]` name, `34` block of instances (`0x20`):
 i8 region, i8 permutation, i8 node, pad, f32x3 translation (`04`), f32x4
@@ -460,7 +460,7 @@ section:
 | Sections | one per Halo 1 geometry | |
 | Section record | classification (`00`, `18`): 2 if every vertex has one node, 3 if any has two; vertex, triangle and part counts; max nodes per vertex (`14`); compression flags 3 (`1a`); node map size at `24` and `25`, subpart count at `28`, rigid node -1 at `2c` (S); block info with the tag's own datum, runtime offset -8, `1f` = 1, handle `ffffffff` | map-format.md, structure-bsp.md; `24`..`2c` S |
 | Raw block | `blkh`, section struct `0x70`, resources each behind `rsrc`, `blkf`. Resources: parts (`00`), subparts (`08`), indices (`20`), 3 descriptors (`38`), node map (`64`), 3 vertex streams | structure-bsp.md |
-| Parts | one per Halo 1 part, a **triangle list** (flag `0x8`): the strip unrolled with the parity above and degenerates dropped. Kind 2 when its shader is a `soso`, else 4. Material = Halo 1 shader index. `0e` max nodes, `0f` 1, centroid at `10`, its nodes (section-local) at `1c`, weights at `20` (S) | structure-bsp.md; kinds: only "0 and 5 not drawn" is E |
+| Parts | one per Halo 1 part, a **triangle list** (flag `0x8`): the strip unrolled with the parity above and degenerates dropped. A sky's model instead keeps Halo 1's strip behind one repeat of its first index, no flag and an empty placeholder subpart, since the sky draw draws every part as a strip ([sky.md](sky.md), "Strips"; `ModelOptions::strips`). Kind 2 when its shader is a `soso`, else 4. Material = Halo 1 shader index. `0e` max nodes, `0f` 1, centroid at `10`, its nodes (section-local) at `1c`, weights at `20` (S) | structure-bsp.md; kinds: only "0 and 5 not drawn" is E |
 | Subparts | one per part covering its indices, `+4` = `ffff` | |
 | Node map | the nodes this geometry's vertices use, ascending | map-format.md |
 | Vertices | type `04` (s16 position, u8 node) or `06` (s16 position, two u8 nodes, u8 weights summing to 255); `19` s16 texcoords; `1b` normal, binormal, tangent repacked 11:11:10 | map-format.md |
@@ -578,7 +578,9 @@ grenades left from its origin (inferred: the lookup's fallback).
 | Modes tree | mode -> class -> type -> actions from the mapped names; action graph index -1. **Every level in ascending string-ID order** (converter version 64), laid out so when the map is built (`map::build::Block::sorted_by_string_id`): the engine finds a mode, class, type and action by binary search over signed string IDs (E `0x001dd560`, from the graph lookup `0x001db170`; every retail graph on Coagulation is so ordered, V). Through version 63 the levels were in name order, which hid names from the search: on Blood Gulch (version 60) the cyborg's graph found `combat:<class>:<type>:idle` for none of the Halo 1 weapons, so the player could neither start with nor pick up any of them ([objects.md](objects.md), "Holding is finding"). The tree also carries Halo 1's **borrowed slots**: Halo 1 finds a unit's animations through slot tables (`antr +0x0c` units, `0x64` each, label at +0, weapon classes at +0x58; a class is `0xbc`, label at +0, slot indices (`i16`) at +0x98, types at +0xb0; a type is `0x3c`, label at +0, slots at +0x30), and a slot may name another class's animation (every cyborg class's throw slot is `stand rifle throw-grenade`). Each such slot becomes an action of the borrowing mode, class and type naming the same animation, unless that path already has the action |
 | Resource (`0x14`) | the tag's datum, size, local raw pointer, `ffffffff`, 0 |
 
-Left empty: sound and effect references and events, blend screens (but a vehicle's, above),
+Animation sounds (converter version 97, first-person graphs): see
+"Animation sounds" below. Left empty: effect references and events,
+blend screens (but a vehicle's, above),
 inheritance, the `+0x54` string-ID pairs (count >= 1 on every retail graph;
 meaning unknown; written only on first-person graphs, as (`any`, `any`)), static poses, and the header word at `+8`.
 
@@ -804,3 +806,28 @@ first-person body.
 - Overlay semantics: Halo 1 overlays are copied verbatim (frame 0 is not
   subtracted). The engine may expect a different reference.
 - Every name in the table above.
+
+## Animation sounds
+
+Halo 1 keeps a graph's sounds in `antr +0x54` (`0x14` each: a `snd!`
+reference and 4 bytes of padding) and gives an animation at most one:
+`+0x3c` i16 the reference index (-1 none), `+0x3e` i16 the frame. V
+(`weapon_sounds_disc::halo1_animation_sounds`, every map): every element
+names a `snd!` at `+0` and nothing else. The first-person reloads,
+readies and the rest of a weapon's handling sounds are these.
+
+Halo 2 holds a graph's sound references at `jmad +0x14` (`0xc`: group,
+datum, u16 flags) and each animation's sound events at `+0x54` (8: i16
+reference index, i16 frame, string ID). The engine's event walk
+`0x001c7450` reads the frame events (`+0x4c`, `+0x50`) and the sound
+events (`0x001c7545` `+0x54`, `0x001c7564` `+0x58`) of the animation
+and plays those whose frame the update passed (E). The string ID is
+written empty (S: `retail_animation_sound_events` prints retail's).
+
+`h1models::sounds` reads Halo 1's and, after `jmad::convert_graph`,
+writes them into the converted graph (`add_sound_events`): the sounds
+`h1objects` converted, in order, and one event per animation that plays
+one; a sound that did not convert takes its events with it. The
+weapons' first-person graphs carry them (`Converter::graph`); unit,
+vehicle and cutscene graphs do not yet. Before version 97 every
+converted graph was silent: a converted weapon reloaded without a sound.

@@ -535,6 +535,13 @@ pub fn restore_pending(mem: &mut dyn GuestMemory) {
     }
 }
 
+/// Drops the pending restore without setting anything back: a snapshot
+/// load, whose guest RAM is not the memory those bits were cleared in.
+/// The loaded item lists are the loaded render's, built again each frame.
+pub fn forget_pending() {
+    CLEARED.lock().unwrap_or_else(|e| e.into_inner()).take();
+}
+
 pub struct NativeObjects;
 
 impl Feature for NativeObjects {
@@ -544,9 +551,20 @@ impl Feature for NativeObjects {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
+        // Switched off: no hooks, nothing held. On: the host's models are
+        // keyed by the map name it reads from guest RAM at every ask, so
+        // a load re-keys them; the counters and logged-once sets only
+        // count. The one thing held for the guest is `CLEARED`, the bits
+        // to set back at the next layer draw, which a load drops
+        // ([`forget_pending`]).
         if !b.switches().feature(SWITCH, false) {
+            b.snapshot(crate::SnapshotPolicy::Stateless);
             return Ok(());
         }
+        b.snapshot(crate::SnapshotPolicy::section(Vec::new, |_, _| {
+            forget_pending();
+            Ok(())
+        }));
         b.raw()
             .observe_before(&points::LAYER_DRAW, "native_objects_skip", |o| {
                 let mut g = o.guest();
@@ -556,7 +574,6 @@ impl Feature for NativeObjects {
             .after_feature(crate::render_timing::ID)
             .after_feature(crate::native_world::ID)
             .context_only();
-        b.snapshot(crate::SnapshotPolicy::Stateless);
         Ok(())
     }
 }

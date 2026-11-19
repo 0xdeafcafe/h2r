@@ -266,7 +266,7 @@ Bink, unnamed D3D or DSound internals, or XAPI helpers named by hand.
 | fallback unread-target cache | fnv64 of the XBE + source hash | `crates/boot/src/fallback.rs:503-513` | safe |
 | object cache | per-source fnv64 | `crates/emit/src/compile.rs:292` | safe to share between images |
 | default out dirs `$TMPDIR/h2gen`, `$TMPDIR/h2boot` | none | cli | two images thrash one dylib slot |
-| data root `$TMPDIR/h2boot-data` (and `Config::for_title`) | title ID only | `boot/src/lib.rs:378`, `vfs` | 1.0 and the update share saves and the cache partition (see section 4) |
+| data root `~/Library/Application Support/h2recomp/data` (and `Config::for_title`) | title ID only | `boot/src/lib.rs:378`, `vfs` | 1.0 and the update share saves and the cache partition (see section 4) |
 | `h2 play --follow` caches | commit only | `crates/cli/src/follow.rs:1091,1103` | stamp check still applies |
 | title ID + entry gates | `0x4d530064` + `0x2d0aee` | `analyze/dispatch.rs:35`, `lift/crt.rs`, `hs/catalog.rs` | probably excluded, since an update relinks and the entry moves. But a build that keeps the entry would be wrongly accepted |
 | exact 1.0 SHA-256 | `wma::RETAIL_SHA256` | `crates/wma/src/lib.rs:20`; also `engine/tests/differential.rs:44` | **boot fails**: `boot/src/dsound_glue.rs:136` propagates the `from_xbe` error |

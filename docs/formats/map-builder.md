@@ -155,7 +155,9 @@ must stay under the per-type cache size limit, and `+0x1c` under
 `max_metadata_size(cache_type)` (the largest retail map of the type on the
 disc), or under the pinned source map's own `+0x1c` if that is larger: the
 map-pack maps `turf` (0x68b000), `gemini` and `triplicate` are above the
-multiplayer bound (0x62c000) as shipped, and load.
+multiplayer bound (0x62c000) as shipped, and load. A map over it is
+`Error::TagMemory`, which says how far over, the metadata's share (built
+and pinned tags apart) and the twelve groups taking the most metadata.
 Slots are capped at `0xffff`. A string ID must be under 128 bytes (its
 fixed slot) and its index under 2^24.
 
@@ -193,6 +195,20 @@ built, padding, slack up to the old size), then after it. With
 move retail tags away from their old addresses while reusing freed space).
 `check_tag_memory = false` skips the tag-memory bound below; only for
 offline round trips of maps already at the bound.
+
+A pinned map's BSP space is fixed too: every region loads at the same
+base, the metadata sits right after the largest, and pinned metadata
+cannot move. A built BSP region larger than the pinned one is refused
+("BSP space outgrew the pinned metadata base"). `check_bsp_space = false`
+lets it run on into the metadata's virtual range: the reader still finds
+every BSP tag through its own region and every metadata tag through the
+metadata's, but the engine could not load the map. Only for an
+intermediate map read back offline and laid out anew: `h1convert`'s fresh
+build (`Prepared::build_fresh`) builds its pinned intermediate so, because
+merging placed scenery into the level's collision grows Boarding Action's
+region past Beaver Creek's; the fresh map has no pinned base and sizes its
+BSP space to its own regions. Builder test:
+`a_bsp_region_past_the_pinned_bsp_space_is_refused_unless_unchecked`.
 
 A `Block` with a sharing key (`Block::shared(key)`) is placed once per
 region: every later block with the same key gets the first one's address

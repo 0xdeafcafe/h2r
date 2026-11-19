@@ -12,6 +12,7 @@ fn profile(trigger: Trigger, zoom: i16, pellets: i16, shot_speed: f32, reach: f3
         cone_range: reach,
         pull_range: reach,
         rate: 6.0,
+        ..Profile::default()
     }
 }
 fn gun(p: Profile, ammo: Ammo) -> Gun {

@@ -306,7 +306,7 @@ pub type Halo1Refs = Vec<(String, FourCC, TagId)>;
 ///   `proj +0x18c` super detonation;
 /// - `proj +0x138`: `bullet_flyby_*` on 8 bullets; Halo 1's `proj +0x204`
 ///   flyby sound.
-pub const WEAPON_OVERHEATED: &str = "ref_16c";
+pub const WEAPON_OVERHEATED: &str = "overheated_effect";
 pub const WEAPON_MELEE_DAMAGE: &str = "ref_1bc";
 pub const WEAPON_MELEE_RESPONSE: &str = "ref_1c4";
 pub const PROJECTILE_DETONATION_STARTED: &str = "ref_e8";
@@ -360,18 +360,85 @@ pub struct WeaponParts {
     /// Halo 1's first-person model and animations, converted.
     pub first_person: (Option<TagId>, Option<TagId>),
     /// From the Halo 2 counterpart: root references (HUD, melee damage,
-    /// effects, sounds), per barrel its references, and per barrel its
-    /// firing effects' references.
+    /// effects, sounds) and per barrel its references.
     pub halo2: Halo2Refs,
-    /// Halo 1's converted tags over those ([`Halo1Refs`]: overheated
-    /// effect, melee damage and response, material effects).
+    /// Halo 1's converted tags over those ([`Halo1Refs`]): the weapon's
+    /// own effects and sounds ([`WEAPON_EFFECTS`], the overheated effect
+    /// among them), melee damage and response, material effects. A slot
+    /// listed here holds none where Halo 1 names none.
     pub halo1: Halo1Refs,
     pub barrel_halo2: Vec<Halo2Refs>,
-    pub firing_effects: Vec<Vec<Halo2Refs>>,
+    /// Per Halo 1 trigger, its firing effects, converted ([`FiringParts`]).
+    pub firing_effects: Vec<Vec<FiringParts>>,
+    /// Per Halo 1 magazine, its reloading and chambering effects,
+    /// converted.
+    pub magazine_effects: Vec<[Option<(FourCC, TagId)>; 2]>,
     /// The weapon class and type a unit's graph holds it by
     /// ([`WEAPON_CLASS`], [`WEAPON_TYPE_NAME`]); `None` leaves both null.
     pub animation: Option<(String, String)>,
 }
+
+/// One firing effect of a barrel (`barrels.block_e4`, `0x34`) from Halo
+/// 1's trigger firing effect (`h1::FiringEffect`): its converted firing,
+/// misfire and empty effects, and the damage (rumble and shake) the Halo 2
+/// counterpart's barrel names. A shot plays the effect: until converter
+/// version 97 the effects were the counterpart's too, so the assault
+/// rifle fired with the SMG's sound and a weapon with no counterpart (the
+/// vehicle guns) had no firing effect and fired silent.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FiringParts {
+    /// Each with its group: Halo 1 names a `snd!` as well as an `effe`
+    /// here (the plasma rifle's empty effect), and the Halo 2 slot takes
+    /// either ([`FIRING_EFFECT_REFS`]).
+    pub effects: [Option<(FourCC, TagId)>; 3],
+    pub damage: [Option<TagId>; 3],
+}
+
+/// `barrels.block_e4` references, in Halo 1's order: firing, misfire and
+/// empty effect (`effe` or `snd!`: retail Halo 2 names both there, and so
+/// does Halo 1's element), then
+/// firing, misfire and empty damage (`jpt!`). V: on every retail weapon
+/// the first three hold `effe` or `snd!` and the last three `jpt!`
+/// (`weapon_sounds_disc`); names S, by Halo 1's order.
+pub const FIRING_EFFECT_REFS: [&str; 3] = ["ref_4", "ref_c", "ref_14"];
+pub const FIRING_DAMAGE_REFS: [&str; 3] = ["ref_1c", "ref_24", "ref_2c"];
+/// [`FIRING_DAMAGE_REFS`]' offsets in the element.
+pub const FIRING_DAMAGE_AT: [usize; 3] = [0x1c, 0x24, 0x2c];
+
+/// Magazine `+0x34`: the reloading effect (`effe`). V: retail's SMG
+/// names an effect here; Halo 1's magazine `+0x38`.
+pub const MAGAZINE_RELOADING_EFFECT: &str = "reloading_effect";
+/// Magazine `+0x44`: the chambering effect. S: it sits between two `jpt!`
+/// group words (`+0x3c`, `+0x4c`) as the reloading effect does before
+/// `+0x3c`; Halo 1's magazine `+0x48`.
+pub const MAGAZINE_CHAMBERING_EFFECT: &str = "chambering_effect";
+
+/// The weapon's own effects and sounds, written from Halo 1: (Halo 2
+/// path, Halo 1 `weap` offset of the reference). The Halo 2 slots
+/// (docs/halo1/objects.md, "Weapon effects and sounds"): every retail
+/// weapon on Coagulation names only `effe` in the effects and `snd!` in
+/// the sounds (`needler\ready`, `plasma_rifle\overheated`,
+/// `smg\smg_ammo`, `sniper_rifle\zoom_in`, `zoom_out`); E: the zoom
+/// sounds are read at `0x000c5ba0` (out, `+0x278`) and `0x000c5ba8` (in,
+/// `+0x270`) by magnification, the pickup sound at `0x000a009a`
+/// (`+0x268`, played by `0x001896c0` for a weapon), the overheated and
+/// detonation effects at `0x000cf12c` (`+0x170`) and `0x000cf19f`
+/// (`+0x180`); each skips a null datum. Until converter version 97 these
+/// were the counterpart's: drawing the assault rifle played the needler's
+/// ready effect (the SMG's), picking it up the SMG's ammunition sound.
+pub const WEAPON_EFFECTS: &[(&str, usize)] = &[
+    ("ready_effect", 0x33c),
+    ("overheated_effect", 0x374),
+    ("detonation_effect", 0x384),
+    ("light_power_on_effect", 0x420),
+    ("light_power_off_effect", 0x430),
+    ("pickup_sound", 0x490),
+    ("zoom_in_sound", 0x4a0),
+    ("zoom_out_sound", 0x4b0),
+    ("item.collision_sound", 0x258),
+    ("item.detonating_effect", 0x2e8),
+    ("item.detonation_effect", 0x2f8),
+];
 
 /// `weap +0x288`, `+0x28c`: the weapon class and type (string IDs) the
 /// holder's animation graph is looked up by. A unit takes a weapon only
@@ -599,6 +666,15 @@ pub fn weapon(w: &h1::Weapon, b: &[u8], parts: &WeaponParts, role: &Role) -> Res
                 m.rounds_loaded_maximum,
             )),
         )?;
+        if let Some(fx) = parts.magazine_effects.get(mags.len()) {
+            for (path, x) in [MAGAZINE_RELOADING_EFFECT, MAGAZINE_CHAMBERING_EFFECT]
+                .iter()
+                .zip(fx)
+            {
+                let (g, id) = x.unwrap_or((FourCC(*b"effe"), TagId::NULL));
+                set(&mut e, path, Val::tag(g, id))?;
+            }
+        }
         mags.push(e);
     }
     set(&mut r, "magazines", Val::Block(mags))?;
@@ -631,17 +707,21 @@ pub fn weapon(w: &h1::Weapon, b: &[u8], parts: &WeaponParts, role: &Role) -> Res
             ),
         )?;
         let mut effects = Vec::new();
-        if let Some(list) = parts.firing_effects.get(i).or(parts.firing_effects.last()) {
-            for (k, h) in list.iter().enumerate() {
-                let mut x = defs::default_record(fd);
-                words(
-                    &mut x,
-                    &format!("barrels[{i}].block_e4[{k}]."),
-                    role.element("barrels.block_e4"),
-                )?;
-                refs(&mut x, h)?;
-                effects.push(x);
+        for (k, f) in parts.firing_effects.get(i).into_iter().flatten().enumerate() {
+            let mut x = defs::default_record(fd);
+            words(
+                &mut x,
+                &format!("barrels[{i}].block_e4[{k}]."),
+                role.element("barrels.block_e4"),
+            )?;
+            for (path, fx) in FIRING_EFFECT_REFS.iter().zip(f.effects) {
+                let (g, id) = fx.unwrap_or((FourCC(*b"effe"), TagId::NULL));
+                set(&mut x, path, Val::tag(g, id))?;
             }
+            for (path, id) in FIRING_DAMAGE_REFS.iter().zip(f.damage) {
+                set(&mut x, path, Val::tag(FourCC(*b"jpt!"), id.unwrap_or(TagId::NULL)))?;
+            }
+            effects.push(x);
         }
         set(&mut e, "block_e4", Val::Block(effects))?;
         barrels.push(e);

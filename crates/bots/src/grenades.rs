@@ -461,6 +461,8 @@ pub const FRIENDLY: f32 = 3.0;
 /// switch grenades button (Black on the default layout) changes it.
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct Hand {
+    /// A solved throw is waiting for the off hand to be released.
+    pub drop_left: bool,
     /// Look at this point (far along the throw) instead.
     pub look: Option<Vec3>,
     /// Pull the left trigger.
@@ -662,9 +664,34 @@ impl Thrower {
     /// This tick: aim and make a throw under way, or roll for a new one at
     /// `m.mark` and solve it against `world`.
     pub fn step(&mut self, m: &Moment<'_>, world: &dyn Solid, skill: Skill) -> Hand {
-        let k = GrenadeSkill::of(skill);
+        self.step_with_left(m, world, skill, false, 1.0)
+    }
+
+    pub(crate) fn step_with_left(
+        &mut self,
+        m: &Moment<'_>,
+        world: &dyn Solid,
+        skill: Skill,
+        dual: bool,
+        rate: f32,
+    ) -> Hand {
+        let mut k = GrenadeSkill::of(skill);
+        k.per_minute *= rate;
         if self.plan.is_none() {
             self.consider(m, world, &k);
+        }
+        if dual
+            && !m.busy
+            && let Some(plan) = self.plan
+        {
+            if m.tick.wrapping_sub(plan.since) <= AIM_WAIT {
+                return Hand {
+                    drop_left: true,
+                    ..Default::default()
+                };
+            }
+            self.plan = None;
+            self.ready = m.tick.wrapping_add(RETRY);
         }
         self.follow(m, &k)
     }

@@ -232,6 +232,13 @@ pub fn restore_pending(mem: &mut dyn GuestMemory) {
     }
 }
 
+/// Drops the pending restore without setting anything back: a snapshot
+/// load, whose guest RAM is not the memory those bits were cleared in.
+/// The loaded item lists are the loaded render's, built again each frame.
+pub fn forget_pending() {
+    CLEARED.lock().unwrap_or_else(|e| e.into_inner()).take();
+}
+
 pub struct NativeWorld;
 
 impl Feature for NativeWorld {
@@ -241,9 +248,19 @@ impl Feature for NativeWorld {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
+        // Switched off: no hooks, nothing held. On: the host's GPU world
+        // is keyed by the map name, BSP address and index it reads from
+        // guest RAM at every ask, so a load re-keys it; the one thing
+        // held for the guest is `CLEARED`, the bits to set back at the
+        // next layer draw, which a load drops ([`forget_pending`]).
         if !on(b.switches()) {
+            b.snapshot(crate::SnapshotPolicy::Stateless);
             return Ok(());
         }
+        b.snapshot(crate::SnapshotPolicy::section(Vec::new, |_, _| {
+            forget_pending();
+            Ok(())
+        }));
         b.raw()
             .observe_before(&points::LAYER_DRAW, "native_world_skip", |o| {
                 let mut g = o.guest();
@@ -251,7 +268,6 @@ impl Feature for NativeWorld {
             })
             .after_feature(crate::render_timing::ID)
             .context_only();
-        b.snapshot(crate::SnapshotPolicy::Stateless);
         Ok(())
     }
 }

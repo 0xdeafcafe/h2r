@@ -210,6 +210,11 @@ pub struct Prepared {
     /// map is built ([`crate::globals::set_weapon_list`]); empty keeps
     /// the base's.
     pub weapon_list: Vec<(usize, TagId)>,
+    /// The Halo 1 sandbox's vehicle list entries (entry, a Halo 1 vehicle
+    /// among the added objects), written over the base `mulg`'s when the
+    /// map is built ([`crate::globals::set_universal_list`]); empty keeps
+    /// the base's.
+    pub vehicle_list: Vec<(usize, TagId)>,
     /// The base's scenario with the placements applied.
     scenario: Scenario,
     /// The base's structure BSP and lightmap slots, reused.
@@ -554,6 +559,7 @@ pub fn prepare<R: Read + Seek>(
         player_hands: None,
         grenades: Vec::new(),
         weapon_list: Vec::new(),
+        vehicle_list: Vec::new(),
         scenario,
         sbsp,
         ltmp,
@@ -732,27 +738,85 @@ impl Prepared {
 
     /// Writes the map with `mopp` as the structure's MOPP code block.
     pub fn build<R: Read + Seek>(&self, base: &mut Map<R>, mopp: &[u8]) -> Result<Converted> {
-        let (_, bytes, _) = self.assemble(base, mopp)?;
+        Ok(self.build_pruned(base, mopp)?.0)
+    }
+
+    /// [`Self::build`], with what pinned pruning dropped and why each
+    /// kept tag stayed ([`crate::fresh::Pruned::why`]).
+    pub fn build_pruned<R: Read + Seek>(
+        &self,
+        base: &mut Map<R>,
+        mopp: &[u8],
+    ) -> Result<(Converted, crate::fresh::Pruned)> {
+        let (_, bytes, _, pruned) = self.assemble(base, mopp, false)?;
         let manifest = self.manifest(&bytes);
-        Ok(Converted {
-            name: map_name(&self.h1_name),
-            bytes,
-            manifest,
-        })
+        Ok((
+            Converted {
+                name: map_name(&self.h1_name),
+                bytes,
+                manifest,
+            },
+            pruned,
+        ))
     }
 
     /// The pinned map: the set it was built from (the base decomposed,
-    /// with everything converted added), its bytes, and the converted
-    /// structure's BSP section.
+    /// with everything converted added, and the base's tags nothing
+    /// reaches dropped: [`crate::fresh::prune_pinned`]), its bytes, the
+    /// converted structure's BSP section, and what was dropped.
+    /// An `intermediate` one (for [`Prepared::build_fresh`], which lays
+    /// every tag out anew and takes the BSP from the set) may outgrow the
+    /// base's BSP space: placed scenery merged into the level's collision
+    /// ([`halo1::merge_scenery_collision`]) grows Boarding Action's region
+    /// past Beaver Creek's, and the pinned metadata cannot move up to make
+    /// room (`map::build::TagSet::check_bsp_space`).
     pub(crate) fn assemble<R: Read + Seek>(
         &self,
         base: &mut Map<R>,
         mopp: &[u8],
-    ) -> Result<(TagSet, Vec<u8>, usize)> {
+        intermediate: bool,
+    ) -> Result<(TagSet, Vec<u8>, usize, crate::fresh::Pruned)> {
+        let (mut set, section, pruned) = self.pinned_set(base, mopp, intermediate)?;
+
+        // The scenario stays pinned, so its BSP descriptor is patched with
+        // the new region's place: build once to learn it (it doesn't
+        // depend on the scenario's bytes), patch, build again.
+        let (_, layout) = set.build()?;
+        let (file_offset, size) = layout.bsps[section];
+        let scenario = set.scenario;
+        let tag = set.tag_mut(scenario).ok_or(Error::Invalid("no scenario"))?;
+        let map::build::TagPayload::Pinned { address, bytes } = &mut tag.payload else {
+            return Err(Error::Invalid("the base scenario should be pinned"));
+        };
+        let (at, _, _) = bsp_descriptor(bytes, *address)?;
+        let off = at.wrapping_sub(*address) as usize;
+        bytes[off..off + 4].copy_from_slice(&file_offset.to_le_bytes());
+        bytes[off + 4..off + 8].copy_from_slice(&size.to_le_bytes());
+        bytes[off + 8..off + 12].copy_from_slice(&layout.bsp_base.to_le_bytes());
+        let (bytes, again) = set.build()?;
+        if again.bsps[section] != (file_offset, size) {
+            return Err(Error::Invalid("the BSP region moved between builds"));
+        }
+        Ok((set, bytes, section, pruned))
+    }
+
+    /// The pinned set [`Self::assemble`] builds, before it is built: the
+    /// base decomposed with everything converted added and the base's
+    /// tags nothing reaches dropped ([`crate::fresh::prune_pinned`]), the
+    /// converted structure's BSP section, and what was dropped and why
+    /// each kept tag stayed ([`crate::fresh::Pruned::why`]). For seeing
+    /// what a map that doesn't fit its tag memory keeps.
+    pub fn pinned_set<R: Read + Seek>(
+        &self,
+        base: &mut Map<R>,
+        mopp: &[u8],
+        intermediate: bool,
+    ) -> Result<(TagSet, usize, crate::fresh::Pruned)> {
         let mut patched = Cursor::new(Vec::new());
         scenario_edit::save::write_patched(base, &self.scenario, &mut patched)?;
         let mut patched = Map::from_reader(Cursor::new(patched.into_inner()))?;
         let mut set = TagSet::from_map(&mut patched)?;
+        set.check_bsp_space = !intermediate;
         // The vehicle collections the placements build first (their
         // datums were picked from the first added slot), then the
         // converted objects.
@@ -771,6 +835,13 @@ impl Prepared {
         }
         if !self.weapon_list.is_empty() {
             crate::globals::set_weapon_list(&mut set, &self.weapon_list)?;
+        }
+        if !self.vehicle_list.is_empty() {
+            crate::globals::set_universal_list(
+                &mut set,
+                crate::globals::List::Vehicles,
+                &self.vehicle_list,
+            )?;
         }
 
         set.name = map_name(&self.h1_name);
@@ -834,30 +905,37 @@ impl Prepared {
         };
         let section = structure.write(&mut set, self.sbsp, self.ltmp)?;
 
-        // The scenario stays pinned, so its descriptor is patched with the
-        // new region's place: build once to learn it (it doesn't depend on
-        // the scenario's bytes), patch, build again.
-        let (_, layout) = set.build()?;
-        let (file_offset, size) = layout.bsps[section];
-        let scenario = set.scenario;
-        let tag = set.tag_mut(scenario).ok_or(Error::Invalid("no scenario"))?;
-        let map::build::TagPayload::Pinned { address, bytes } = &mut tag.payload else {
-            return Err(Error::Invalid("the base scenario should be pinned"));
-        };
-        park_trigger_volumes(bytes, *address)?;
-        crate::sky::patch_scenario(bytes, *address, &skies)?;
-        clear_base_blocks(bytes)?;
-        crate::ambience::patch_scenario(bytes, *address, &ambience)?;
-        let (at, _, _) = bsp_descriptor(bytes, *address)?;
-        let off = at.wrapping_sub(*address) as usize;
-        bytes[off..off + 4].copy_from_slice(&file_offset.to_le_bytes());
-        bytes[off + 4..off + 8].copy_from_slice(&size.to_le_bytes());
-        bytes[off + 8..off + 12].copy_from_slice(&layout.bsp_base.to_le_bytes());
-        let (bytes, again) = set.build()?;
-        if again.bsps[section] != (file_offset, size) {
-            return Err(Error::Invalid("the BSP region moved between builds"));
+        // The scenario's own edits (none depends on the layout), before
+        // the pruning below, so the base's sky, decorators and ambience
+        // they replace are no longer named.
+        {
+            let scenario = set.scenario;
+            let tag = set.tag_mut(scenario).ok_or(Error::Invalid("no scenario"))?;
+            let map::build::TagPayload::Pinned { address, bytes } = &mut tag.payload else {
+                return Err(Error::Invalid("the base scenario should be pinned"));
+            };
+            park_trigger_volumes(bytes, *address)?;
+            crate::sky::patch_scenario(bytes, *address, &skies)?;
+            clear_base_blocks(bytes)?;
+            crate::ambience::patch_scenario(bytes, *address, &ambience)?;
         }
-        Ok((set, bytes, section))
+
+        // The base's metadata stays where it is and the conversion's goes
+        // after it, so the base's tags nothing reaches any more (the
+        // placements the conversion removed, their weapons' effects...)
+        // are dropped, their bytes free for the built tags, as the fresh
+        // build drops them ([`crate::fresh::prune`]): the same roots, and
+        // the precision swaps' collections and each owner's Halo 2 HUD,
+        // which no placement names (`boot::precision`, `boot::hud_swap`).
+        let mut keep: Vec<TagId> = self.applied.precision.iter().map(|p| p.1).collect();
+        keep.extend(self.hud_swaps().iter().map(|h| h[2]));
+        let pruned = crate::fresh::prune_pinned(
+            &mut set,
+            base.index_slots() as usize,
+            &crate::fresh::MULTIPLAYER,
+            &keep,
+        );
+        Ok((set, section, pruned))
     }
 }
 

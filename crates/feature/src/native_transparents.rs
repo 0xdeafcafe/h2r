@@ -170,6 +170,13 @@ impl Feature for NativeTransparents {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
+        // Stateless, on or off: what it holds (`OPEN`, the run entries
+        // join, and `OBJECTS_DRAWN`) lasts one view and every view's
+        // first observer forgets it ([`new_view`]); a save comes between
+        // renders, with the pipelined render drained. It changes no guest
+        // memory, and the host's materials are native-objects' models,
+        // keyed by map name.
+        b.snapshot(crate::SnapshotPolicy::Stateless);
         if !on(b.switches()) {
             return Ok(());
         }
@@ -202,7 +209,6 @@ impl Feature for NativeTransparents {
                 });
             })
             .context_only();
-        b.snapshot(crate::SnapshotPolicy::Stateless);
         Ok(())
     }
 }

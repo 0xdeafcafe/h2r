@@ -176,6 +176,13 @@ pub fn tuning(p: &BotParams) -> bots::tuning::Tuning {
         caution: p.caution,
         teamwork: p.teamwork,
         objective_focus: p.objective_focus,
+        perception_ticks: p.perception_ticks,
+        motor_ticks: p.motor_ticks,
+        button_sigma_ms: p.button_sigma_ms,
+        stick_step: p.stick_step,
+        thumb_switch_ticks: p.thumb_switch_ticks,
+        phantom_ping_ms: p.phantom_ping_ms,
+        phantom_jitter_ms: p.phantom_jitter_ms,
     }
 }
 
@@ -186,9 +193,11 @@ pub fn doing_name(d: &bots::mind::Doing) -> &'static str {
         Doing::Idle => "idle",
         Doing::Fight(_) => "fight",
         Doing::Chase(_) => "chase",
+        Doing::HoldAngle(_) => "hold_angle",
         Doing::Roam => "roam",
         Doing::Support(_) => "support",
         Doing::Supply(_) => "supply",
+        Doing::Vantage(_) => "vantage",
         Doing::Rearm(_) => "rearm",
         Doing::Recover(_) => "recover",
         Doing::Carry(_) => "carry",
@@ -547,6 +556,19 @@ pub struct Metered {
 }
 
 impl PadSource for Metered {
+    fn brain_view(&self) -> Option<bots::BrainView> {
+        Some(self.brain.view())
+    }
+
+    fn reset_input(&mut self) {
+        self.brain.reset_input();
+        self.last_tick = None;
+    }
+
+    fn phantom_latency(&self) -> bots::tuning::PhantomLatency {
+        self.brain.phantom_latency()
+    }
+
     fn pad(&mut self, f: &Frame<'_>) -> HostPadState {
         let pad = self.brain.pad(f);
         if let Some(t) = f.tick
@@ -706,7 +728,12 @@ impl feature::Feature for SimMetrics {
                     (|| {
                         let attacker = g.u32(esp.wrapping_add(4))?;
                         let victim = g.u32(esp.wrapping_add(8))?;
-                        let betrayal = g.u32(esp.wrapping_add(0x0c))? != 0;
+                        // A betrayal by the teams, as the bots tell it: the
+                        // third argument is not a betrayal flag.
+                        let betrayal = bots::emote::kill_from_guest(&*g, attacker, victim)
+                            .ok()
+                            .flatten()
+                            .is_some_and(|k| k.betrayal);
                         let tick = telemetry::game_tick(&g)?;
                         Ok::<_, runtime::GuestFault>((attacker, victim, betrayal, tick))
                     })()
@@ -825,6 +852,13 @@ mod tests {
             teamwork: Some(0.3),
             objective_focus: Some(0.4),
             skill: Some("heroic".into()),
+            perception_ticks: Some(3),
+            motor_ticks: Some(4),
+            button_sigma_ms: Some(1.5),
+            stick_step: Some(0.25),
+            thumb_switch_ticks: Some(2),
+            phantom_ping_ms: Some(80.0),
+            phantom_jitter_ms: Some(2.5),
         };
         let t = tuning(&p);
         assert_eq!(t.reaction, Some(4));
@@ -834,6 +868,23 @@ mod tests {
             (Some(true), Some(6), Some(2))
         );
         assert_eq!(t.objective_focus, Some(0.4));
+        assert_eq!(
+            t.input_limits(bots::mind::Skill::Legendary),
+            bots::tuning::InputLimits {
+                perception_ticks: 3,
+                motor_ticks: 4,
+                button_sigma_ms: 1.5,
+                stick_step: 0.25,
+                thumb_switch_ticks: 2,
+            }
+        );
+        assert_eq!(
+            t.phantom_latency(),
+            bots::tuning::PhantomLatency {
+                ping_ms: Some(80.0),
+                jitter_ms: 2.5
+            }
+        );
         assert!(tuning(&BotParams::default()).is_empty());
     }
 
@@ -847,6 +898,12 @@ mod tests {
         }
         assert_eq!(doing_name(&bots::mind::Doing::Fight(3)), "fight");
         assert_eq!(doing_name(&bots::mind::Doing::Keep), "keep");
+        let vantage = bots::places::Vantage {
+            at: [0., 0., 2.],
+            watches: [10., 0., 0.],
+            score: 0.75,
+        };
+        assert_eq!(doing_name(&bots::mind::Doing::Vantage(vantage)), "vantage");
         for d in sim::metrics::OBJECTIVE_DOINGS {
             assert!(["carry", "keep", "play"].contains(&d));
         }

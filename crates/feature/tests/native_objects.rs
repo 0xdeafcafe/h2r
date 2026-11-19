@@ -44,8 +44,26 @@ fn the_plan_orders_it_inside_render_timing_and_the_world() {
 fn the_switch_off_places_nothing() {
     let mut r = Registry::new(Switches::parse("").unwrap());
     r.add(&NativeObjects).unwrap();
-    let text = r.build(&Base).unwrap().text();
+    let plan = r.build(&Base).unwrap();
+    let text = plan.text();
     assert!(!text.contains("native_objects"), "{text}");
+    // Nothing placed, nothing held: no snapshot blocker.
+    assert!(plan.snapshot_blockers().is_empty());
+}
+
+/// On, its section (no bytes) drops the pending restore at a load.
+#[test]
+fn on_its_snapshot_policy_is_a_section() {
+    let mut r = Registry::new(Switches::parse("impl.render.native_objects=on").unwrap());
+    assert!(r.add(&NativeObjects).unwrap());
+    let plan = r.build(&Base).unwrap();
+    let policies: Vec<_> = plan
+        .snapshot
+        .iter()
+        .map(|f| (f.id, f.policy.name()))
+        .collect();
+    assert_eq!(policies, vec![(native_objects::ID, "section")]);
+    assert!(plan.snapshot_blockers().is_empty());
 }
 
 const LIST: u32 = 0x004c_1a48;
@@ -315,6 +333,15 @@ fn objects_skip_layer_3_hand_over_their_nodes_and_get_their_bits_back() {
     native_objects::restore_pending(&mut m);
     assert_eq!(masks(&m)[0], 0b0100);
 
+    // A snapshot load between a layer 3 and the next layer draw drops the
+    // pending restore: the loaded RAM is not the memory it was made in.
+    m.set_u32(ITEMS + 0x10, 0b1010).unwrap();
+    native_objects::before_layer(&mut m, SCENE_LAYER3_RETURN);
+    assert_eq!(masks(&m)[0], 0b0010);
+    native_objects::forget_pending();
+    native_objects::restore_pending(&mut m);
+    assert_eq!(masks(&m)[0], 0b0010, "nothing set back after the load");
+
     // Both objects resolve. The host accepts only B's record. The two
     // accepted candidates are separated by a guest-owned part of A.
     m.set_u32(ITEMS + 0x10, 0b1010).unwrap();
@@ -332,6 +359,7 @@ fn objects_skip_layer_3_hand_over_their_nodes_and_get_their_bits_back() {
     assert_eq!(masks(&m), all);
     native_objects::restore_pending(&mut m);
     assert_eq!(masks(&m), all);
+
 }
 
 /// Alone at the layer draw, and with the world, the chain runs on the

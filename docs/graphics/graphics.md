@@ -585,8 +585,8 @@ software-renders structure BSPs through the same shared geometry decoder
 
 All three open a map by its name on the disc (`/maps/<name>.map`), else a
 `.map` file by path, else a Halo 1 map `h2 import halo1` converted under the
-runtime data root (`$H2_DATA`, else `h2boot-data` in the temporary
-directory): `campaigns/halo1/<name>.map` for a campaign level,
+runtime data root (`$H2_DATA`, else
+`~/Library/Application Support/h2recomp/data`): `campaigns/halo1/<name>.map` for a campaign level,
 `maps/<name>/h1/<name>.map` (or `h2/`) for a multiplayer map, so `bsp a30`
 or `viewer h1_<map> <mode tag>` works once the import has run
 (`viewer::disc::converted`). An installed mod (a map package under

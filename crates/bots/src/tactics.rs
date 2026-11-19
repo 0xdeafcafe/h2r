@@ -66,6 +66,15 @@ pub struct Style {
 }
 
 impl Style {
+    pub(crate) fn with_behavior(skill: Skill, behavior: crate::decisions::Behavior) -> Style {
+        let mut style = Self::of(skill);
+        // Patient bots keep their eyes on a corner, even on Easy. A panicky
+        // bot lets the direction of travel take over when leaving a fight.
+        style.pre_aim =
+            (style.pre_aim || behavior.personality.wait_weight() > 0.43) && behavior.fear() < 0.30;
+        style
+    }
+
     pub fn of(skill: Skill) -> Style {
         match skill {
             Skill::Easy => Style {
@@ -312,6 +321,10 @@ impl Tactics {
     }
 
     /// Forgets everyone (the bot died).
+    pub(crate) fn forget(&mut self, id: u32) {
+        self.known.retain(|notice| notice.id != id);
+    }
+
     pub fn reset(&mut self) {
         self.known.clear();
         self.pull = None;

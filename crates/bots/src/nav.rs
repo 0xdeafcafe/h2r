@@ -27,6 +27,10 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use tags::pathfinding::PathfindingData;
 
+use crate::los::Walls;
+
+mod traversal;
+
 pub type V3 = [f32; 3];
 
 /// How a link is crossed.
@@ -35,6 +39,20 @@ pub enum Kind {
     Walk = 0,
     Drop = 1,
     Jump = 2,
+    CrouchJump = 3,
+    Teleporter = 4,
+    Lift = 5,
+    Elevator = 6,
+}
+
+impl Kind {
+    /// Links whose endpoints are a takeoff/trigger and a separate landing.
+    pub fn traversal(self) -> bool {
+        matches!(
+            self,
+            Self::CrouchJump | Self::Teleporter | Self::Lift | Self::Elevator
+        )
+    }
 }
 
 /// One polygon: a walkable surface.
@@ -49,7 +67,8 @@ pub struct Poly {
 }
 
 /// A directed link from one polygon to another, crossed at the segment
-/// `a`-`b` on the `from` side.
+/// `a`-`b` on the `from` side. For traversal links these are the entry
+/// and landing, respectively.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Edge {
     pub from: u32,
@@ -92,7 +111,63 @@ fn penalty(k: Kind) -> f32 {
         Kind::Walk => 0.0,
         Kind::Drop => 0.5,
         Kind::Jump => 2.0,
+        Kind::CrouchJump => 2.5,
+        Kind::Teleporter | Kind::Lift | Kind::Elevator => 0.0,
     }
+}
+
+// masterchief_mp capsule heights: docs/game/superbounce.md.
+pub(crate) const STANDING: f32 = 0.725;
+const CROUCHED: f32 = 0.5;
+const CROUCH_GAIN: f32 = STANDING - CROUCHED;
+
+pub(crate) fn standing_clear(walls: &Walls, floor: V3) -> bool {
+    walls.clear(
+        add(floor, [0.0, 0.0, 0.025]),
+        add(floor, [0.0, 0.0, STANDING]),
+    )
+}
+
+fn jump_clear(walls: &Walls, a: V3, b: V3, crouch: bool) -> bool {
+    // Sample a feet arc and sweep vertical slices of the capsule at the
+    // centre and shoulders. Crouching lifts the feet during the ascent.
+    let side = sub(b, a);
+    let line = [side[1], -side[0], 0.0];
+    let shoulder = scale(line, 0.16 / len(line).max(1e-6));
+    let at = |t: f32| {
+        let p = add(a, scale(side, t));
+        let rise = 1.44 * t * (1.0 - t);
+        add(p, [0.0, 0.0, rise])
+    };
+    let height = |step| {
+        if crouch && step >= 2 {
+            CROUCHED
+        } else {
+            STANDING
+        }
+    };
+    for side in [scale(shoulder, -1.0), [0.0; 3], shoulder] {
+        for i in 1..=12 {
+            let lo = add(side, at((i - 1) as f32 / 12.0));
+            let hi = add(side, at(i as f32 / 12.0));
+            let low = [0.0, 0.0, 0.025];
+            if !walls.clear(add(hi, low), add(hi, [0.0, 0.0, height(i)])) {
+                return false;
+            }
+            for h in [0.025, 0.28, 1.0] {
+                let offset = |n| [0.0, 0.0, if h == 1.0 { height(n) } else { h }];
+                // Adjacent samples share their endpoints. Count contact
+                // there too, so a wall at a sample cannot fall between rays.
+                if walls
+                    .hit(add(lo, offset(i - 1)), add(hi, offset(i)))
+                    .is_some()
+                {
+                    return false;
+                }
+            }
+        }
+    }
+    true
 }
 
 fn sub(a: V3, b: V3) -> V3 {
@@ -177,6 +252,27 @@ impl Poly {
         }
         (self.d - n[0] * p[0] - n[1] * p[1]) / n[2]
     }
+
+    /// Nearest point on the surface, nudged away from a boundary edge.
+    pub(crate) fn interior_near(&self, target: V3, inset: f32) -> V3 {
+        let mut p = target;
+        if !self.contains_xy(target) {
+            p = self
+                .verts
+                .iter()
+                .zip(self.verts.iter().cycle().skip(1))
+                .map(|(&a, &b)| closest_xy(a, b, target))
+                .min_by(|a, b| dist_xy(*a, target).total_cmp(&dist_xy(*b, target)))
+                .unwrap_or(self.center);
+        }
+        let d = dist_xy(self.center, p);
+        p = add(
+            p,
+            scale(sub(self.center, p), (inset / d.max(1e-6)).min(1.0)),
+        );
+        p[2] = self.z_at(p);
+        p
+    }
 }
 
 const CELL: f32 = 4.0;
@@ -213,6 +309,7 @@ pub struct NavMesh {
     /// is not walked across (a wall, a ledge). Portal ends here keep
     /// [`CLEARANCE`].
     corners: HashSet<Key>,
+    shortcuts: bool,
 }
 
 fn cell(v: f32) -> i32 {
@@ -259,12 +356,16 @@ impl NavMesh {
                 }
             }
         }
+        let shortcuts = edges
+            .iter()
+            .any(|e| matches!(e.kind, Kind::Teleporter | Kind::Lift | Kind::Elevator));
         NavMesh {
             polys,
             edges,
             out,
             grid,
             corners,
+            shortcuts,
         }
     }
 
@@ -280,6 +381,9 @@ impl NavMesh {
     /// pulled in by [`CLEARANCE`]. A portal narrower than that shrinks to
     /// a point between its ends (the middle when both are corners).
     pub fn portal(&self, e: &Edge) -> (V3, V3) {
+        if e.kind.traversal() {
+            return (e.a, e.a);
+        }
         let (a, b, cut_a, cut_b) = self.clip(e);
         let ab = sub(b, a);
         let l = (ab[0] * ab[0] + ab[1] * ab[1]).sqrt();
@@ -402,6 +506,10 @@ impl NavMesh {
     /// collision surface), with walk links where two share an edge, and
     /// the step, drop and jump links of `b`.
     pub fn from_pathfinding(pf: &PathfindingData, b: &Build) -> Self {
+        Self::from_collision(pf, b, &Walls::default())
+    }
+
+    pub(crate) fn from_collision(pf: &PathfindingData, b: &Build, walls: &Walls) -> Self {
         let none = u16::MAX;
         let mut polys = Vec::with_capacity(pf.sectors.len());
         for (k, s) in pf.sectors.iter().enumerate() {
@@ -423,6 +531,10 @@ impl NavMesh {
             }
             polys.push(Poly::new(verts));
         }
+        let standing: Vec<_> = polys
+            .iter()
+            .map(|p| standing_clear(walls, p.center))
+            .collect();
         let mut edges = Vec::new();
         let mut boundary = Vec::new();
         for link in &pf.links {
@@ -432,6 +544,12 @@ impl NavMesh {
             );
             match (link.left_sector, link.right_sector) {
                 (l, r) if l != none && r != none => {
+                    if !standing[usize::from(l)]
+                        || !standing[usize::from(r)]
+                        || !standing_clear(walls, mid(a, b2))
+                    {
+                        continue;
+                    }
                     edges.push(Edge {
                         from: l.into(),
                         to: r.into(),
@@ -454,7 +572,10 @@ impl NavMesh {
         }
         let base = NavMesh::new(polys, Vec::new());
         for (from, a, e) in boundary {
-            if let Some(edge) = base.cross_link(from, a, e, b) {
+            if standing[from as usize]
+                && let Some(edge) = base.cross_link(from, a, e, b, walls)
+                && standing[edge.to as usize]
+            {
                 edges.push(edge);
             }
         }
@@ -462,7 +583,7 @@ impl NavMesh {
     }
 
     /// What lies past the boundary edge `a`-`e` of polygon `from`.
-    fn cross_link(&self, from: u32, a: V3, e: V3, b: &Build) -> Option<Edge> {
+    fn cross_link(&self, from: u32, a: V3, e: V3, b: &Build, walls: &Walls) -> Option<Edge> {
         let poly = &self.polys[from as usize];
         let m = mid(a, e);
         // Outward: perpendicular to the edge, away from the polygon.
@@ -483,26 +604,40 @@ impl NavMesh {
             b: e,
             kind,
         };
-        // Just past the edge: a seam, a step down or a drop.
-        let near = add(m, scale(out, b.probe));
-        if let Some((to, z)) = self.below(near, m[2] + b.max_jump_up, from) {
+        let takeoff = add(m, scale(out, -0.28));
+        for reach in [b.probe, b.max_gap] {
+            let p = add(m, scale(out, reach));
+            let Some((to, z)) = self.below(p, m[2] + b.max_jump_up + CROUCH_GAIN, from) else {
+                continue;
+            };
             let dz = z - m[2];
-            if dz.abs() <= b.step {
-                return Some(edge(to, Kind::Walk));
+            let landing = [p[0], p[1], z];
+            if reach == b.probe && dz.abs() <= b.step {
+                // At a step seam the higher tread is part of the floor.
+                let seam = [m[0], m[1], m[2].max(z)];
+                if standing_clear(walls, seam) && standing_clear(walls, landing) {
+                    return Some(edge(to, Kind::Walk));
+                }
+                continue;
             }
-            if dz < 0.0 && -dz <= b.max_drop {
-                return Some(edge(to, Kind::Drop));
+            if reach == b.probe && dz < -b.step && -dz <= b.max_drop {
+                if standing_clear(walls, m) && standing_clear(walls, landing) {
+                    return Some(edge(to, Kind::Drop));
+                }
+                continue;
             }
-            if dz > 0.0 {
+            if -dz > b.max_drop {
+                continue;
+            }
+            if dz <= b.max_jump_up && jump_clear(walls, takeoff, landing, false) {
                 return Some(edge(to, Kind::Jump));
             }
-        }
-        // Across a gap: jump.
-        let far = add(m, scale(out, b.max_gap));
-        if let Some((to, z)) = self.below(far, m[2] + b.max_jump_up, from) {
-            let dz = z - m[2];
-            if dz <= b.max_jump_up && -dz <= b.max_drop {
-                return Some(edge(to, Kind::Jump));
+            if jump_clear(walls, takeoff, landing, true) {
+                return Some(Edge {
+                    a: takeoff,
+                    b: landing,
+                    ..edge(to, Kind::CrouchJump)
+                });
             }
         }
         None
@@ -568,14 +703,20 @@ impl NavMesh {
             return None;
         }
         let goal_at = self.polys[goal as usize].center;
+        // A straight-line lower bound stops being admissible when a link
+        // can cross that distance more quickly than walking.
+        let estimate = |at| {
+            if self.shortcuts {
+                0.0
+            } else {
+                dist(at, goal_at)
+            }
+        };
         let mut best = vec![f32::INFINITY; n];
         let mut came: Vec<Option<u32>> = vec![None; n];
         let mut heap = BinaryHeap::new();
         best[start as usize] = 0.0;
-        heap.push(Open(
-            dist(self.polys[start as usize].center, goal_at),
-            start,
-        ));
+        heap.push(Open(estimate(self.polys[start as usize].center), start));
         while let Some(Open(_, i)) = heap.pop() {
             if i == goal {
                 let mut path = Vec::new();
@@ -595,16 +736,84 @@ impl NavMesh {
                     continue;
                 }
                 let there = self.polys[e.to as usize].center;
-                let m = mid(e.a, e.b);
-                let g = best[i as usize] + dist(here, m) + dist(m, there) + penalty(e.kind);
+                let travel = if e.kind.traversal() {
+                    let transit = match e.kind {
+                        // Cost in walking-distance equivalents. At six
+                        // ticks per unit, include trigger/platform wait and
+                        // charge exposed airborne time by duration. These
+                        // rates are estimates shared with supply travel.
+                        Kind::Teleporter => 6.0 / 6.0,
+                        Kind::Lift => (8.0 + dist(e.a, e.b) * 2.7 * 1.25) / 6.0,
+                        Kind::Elevator => (24.0 + dist(e.a, e.b) * 4.8 * 1.25) / 6.0,
+                        _ => dist(e.a, e.b),
+                    };
+                    dist(here, e.a) + transit + dist(e.b, there)
+                } else {
+                    let m = mid(e.a, e.b);
+                    dist(here, m) + dist(m, there)
+                };
+                let g = best[i as usize] + travel + penalty(e.kind);
                 if g < best[e.to as usize] {
                     best[e.to as usize] = g;
                     came[e.to as usize] = Some(ei);
-                    heap.push(Open(g + dist(there, goal_at), e.to));
+                    heap.push(Open(g + estimate(there), e.to));
                 }
             }
         }
         None
+    }
+
+    /// A ground vehicle uses only walk portals with room for its chassis.
+    /// The portal centers give steering points inside the available span.
+    pub(crate) fn vehicle_path(
+        &self,
+        from: V3,
+        to: V3,
+        half_width: f32,
+        height: f32,
+        walls: &Walls,
+    ) -> Option<Vec<V3>> {
+        let (start, _) = self.nearest(from, 1.2, 0.5, 1.5)?;
+        let (goal, to) = self.nearest(to, 2.0, 0.5, 1.5)?;
+        let corridor = self.corridor_avoiding(start, goal, &|e| {
+            e.kind != Kind::Walk || self.vehicle_portal(e, half_width, height, walls).is_none()
+        })?;
+        let mut points: Vec<_> = corridor
+            .into_iter()
+            .filter_map(|i| self.vehicle_portal(&self.edges[i as usize], half_width, height, walls))
+            .collect();
+        points.push(to);
+        Some(points)
+    }
+
+    fn vehicle_portal(&self, e: &Edge, half_width: f32, height: f32, walls: &Walls) -> Option<V3> {
+        let (a, b, cut_a, cut_b) = self.clip(e);
+        let width = dist_xy(a, b);
+        let clearance_a = if cut_a || self.is_corner(a) {
+            half_width
+        } else {
+            0.0
+        };
+        let clearance_b = if cut_b || self.is_corner(b) {
+            half_width
+        } else {
+            0.0
+        };
+        if width <= clearance_a + clearance_b {
+            return None;
+        }
+        let span = sub(b, a);
+        let at = add(
+            a,
+            scale(span, (clearance_a + width - clearance_b) / (2.0 * width)),
+        );
+        let cross = scale(span, half_width / width);
+        for q in [sub(at, cross), at, add(at, cross)] {
+            if !walls.clear(add(q, [0.0, 0.0, 0.15]), add(q, [0.0, 0.0, height])) {
+                return None;
+            }
+        }
+        Some(at)
     }
 
     /// Waypoints from `from` to `to`: the funnel over the corridor's
@@ -645,7 +854,9 @@ impl NavMesh {
         };
         let mut path = vec![Waypoint { at: q, kind }];
         path.extend(funnel(self, q, to, &corridor));
-        path.dedup_by(|b, a| dist_xy(a.at, b.at) < 1e-4 && b.kind == Kind::Walk);
+        path.dedup_by(|b, a| {
+            dist_xy(a.at, b.at) < 1e-4 && b.kind == Kind::Walk && !a.kind.traversal()
+        });
         Some(path)
     }
 }
@@ -682,14 +893,30 @@ fn funnel(mesh: &NavMesh, from: V3, to: V3, corridor: &[u32]) -> Vec<Waypoint> {
         }
         // Funnel up to the special edge, aimed at its nearest point.
         let at = closest_on(ea, eb, start);
-        for (k, c) in pull(start, at, &run).into_iter().enumerate() {
+        let mut approach = pull(start, at, &run);
+        if e.kind.traversal() && (pending == Kind::Walk || approach.len() > 1) {
+            approach.pop();
+        }
+        for (k, c) in approach.into_iter().enumerate() {
             out.push(Waypoint {
                 at: c,
                 kind: if k == 0 { pending } else { Kind::Walk },
             });
         }
-        pending = e.kind;
-        start = at;
+        if e.kind.traversal() {
+            // The entry is followed by its exact landing. The follower
+            // consumes both before looking at another walking waypoint.
+            out.push(Waypoint { at, kind: e.kind });
+            out.push(Waypoint {
+                at: e.b,
+                kind: Kind::Walk,
+            });
+            pending = Kind::Walk;
+            start = e.b;
+        } else {
+            pending = e.kind;
+            start = at;
+        }
         run.clear();
     }
     let corners = pull(start, to, &run);
@@ -699,7 +926,7 @@ fn funnel(mesh: &NavMesh, from: V3, to: V3, corridor: &[u32]) -> Vec<Waypoint> {
             kind: if k == 0 { pending } else { Kind::Walk },
         });
     }
-    out.dedup_by(|b, a| dist_xy(a.at, b.at) < 1e-4 && b.kind == Kind::Walk);
+    out.dedup_by(|b, a| dist_xy(a.at, b.at) < 1e-4 && b.kind == Kind::Walk && !a.kind.traversal());
     out
 }
 
@@ -783,6 +1010,9 @@ pub struct Steer {
     /// The direction to move, in world XY, unit length or zero.
     pub dir: [f32; 2],
     pub jump: bool,
+    pub crouch: bool,
+    /// The entry and landing are under control of the traversal.
+    pub traversing: bool,
     /// The path is done or lost; plan again.
     pub replan: bool,
 }
@@ -797,6 +1027,7 @@ pub struct Follower {
     best: f32,
     best_frame: u64,
     jumped: bool,
+    transit: Option<traversal::Transit>,
     /// The goal it was asked for, when the path ends elsewhere (a goal off
     /// the mesh ends at the nearest point on it).
     target: Option<V3>,
@@ -825,6 +1056,7 @@ impl Follower {
             best: f32::INFINITY,
             best_frame: frame,
             jumped: false,
+            transit: None,
             target: None,
         }
     }
@@ -861,6 +1093,18 @@ impl Follower {
         (dot < 0.91 * a[0].hypot(a[1]) * b[0].hypot(b[1])).then_some(next.at)
     }
 
+    pub(crate) fn committed(&self) -> bool {
+        self.transit.is_some_and(|t| t.armed())
+    }
+
+    pub(crate) fn crouch_jumping(&self) -> bool {
+        self.transit.is_some()
+            && self
+                .path
+                .get(self.next)
+                .is_some_and(|w| w.kind == Kind::CrouchJump)
+    }
+
     pub(crate) fn pace(&self, at: V3) -> f32 {
         let Some(w) = self.path.get(self.next) else {
             return 0.0;
@@ -892,19 +1136,33 @@ impl Follower {
         frame: u64,
         clear: impl FnOnce([f32; 2]) -> bool,
     ) -> Steer {
-        while let Some(w) = self.path.get(self.next) {
-            let d = dist_xy(w.at, at);
-            if w.at[2] - at[2] > FELL + d {
-                // Below it with no way up from here.
-                return Steer {
-                    replan: true,
-                    ..Steer::default()
+        while let Some(w) = self.path.get(self.next).copied() {
+            if w.kind.traversal() {
+                let Some(exit) = self.path.get(self.next + 1).map(|w| w.at) else {
+                    return Steer {
+                        replan: true,
+                        ..Steer::default()
+                    };
                 };
+                if let Some(steer) = traversal::follow(w, exit, at, frame, &mut self.transit) {
+                    return steer;
+                }
+                self.transit = None;
+                self.next += 2;
+            } else {
+                let d = dist_xy(w.at, at);
+                if w.at[2] - at[2] > FELL + d {
+                    // Below it with no way up from here.
+                    return Steer {
+                        replan: true,
+                        ..Steer::default()
+                    };
+                }
+                if d > REACHED {
+                    break;
+                }
+                self.next += 1;
             }
-            if d > REACHED {
-                break;
-            }
-            self.next += 1;
             self.best = f32::INFINITY;
             self.best_frame = frame;
             self.jumped = false;
@@ -1026,6 +1284,10 @@ impl NavMesh {
                 0 => Kind::Walk,
                 1 => Kind::Drop,
                 2 => Kind::Jump,
+                3 => Kind::CrouchJump,
+                4 => Kind::Teleporter,
+                5 => Kind::Lift,
+                6 => Kind::Elevator,
                 _ => return None,
             };
             if from as usize >= n || to as usize >= n {

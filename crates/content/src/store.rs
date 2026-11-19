@@ -23,9 +23,23 @@ use crate::{
 pub const MAPS_DIR: &str = "maps";
 
 /// The runtime's default data root, as `h2 play`, `h2 run` and `h2
-/// settings` use when `--data` is not given: `$TMPDIR/h2boot-data`.
+/// settings` use when `--data` is not given: a persistent directory,
+/// `~/Library/Application Support/h2recomp/data` (every Unix) or
+/// `%LOCALAPPDATA%\h2recomp\data` on Windows. `H2_DATA` names another.
+/// It was `$TMPDIR/h2boot-data`, which the system purges and which differs
+/// per shell session, so saves went missing; nothing is taken from there.
 pub fn default_data_root() -> PathBuf {
-    std::env::temp_dir().join("h2boot-data")
+    if let Some(d) = std::env::var_os("H2_DATA").filter(|d| !d.is_empty()) {
+        return PathBuf::from(d);
+    }
+    let base = if cfg!(windows) {
+        std::env::var_os("LOCALAPPDATA").filter(|p| !p.is_empty()).map(PathBuf::from)
+    } else {
+        std::env::var_os("HOME")
+            .filter(|p| !p.is_empty())
+            .map(|h| PathBuf::from(h).join("Library/Application Support"))
+    };
+    base.map_or_else(|| std::env::temp_dir().join("h2boot-data"), |b| b.join("h2recomp").join("data"))
 }
 
 /// `<data>/maps`.

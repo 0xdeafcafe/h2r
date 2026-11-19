@@ -189,6 +189,27 @@ pub struct BotParams {
     pub teamwork: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub objective_focus: Option<f32>,
+    /// World samples are this many game ticks old.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub perception_ticks: Option<u32>,
+    /// Nominal ticks from a decision to the pad report.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub motor_ticks: Option<u32>,
+    /// Button-edge timing standard deviation in milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub button_sigma_ms: Option<f32>,
+    /// Stick travel per tick in stick radii.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stick_step: Option<f32>,
+    /// Ticks between right-stick use and face-button use.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thumb_switch_ticks: Option<u32>,
+    /// Phantom round-trip latency in milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phantom_ping_ms: Option<f32>,
+    /// Maximum phantom one-way variation in milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phantom_jitter_ms: Option<f32>,
 }
 
 impl BotParams {
@@ -213,6 +234,13 @@ impl BotParams {
             caution: pick(&self.caution, &over.caution),
             teamwork: pick(&self.teamwork, &over.teamwork),
             objective_focus: pick(&self.objective_focus, &over.objective_focus),
+            perception_ticks: pick(&self.perception_ticks, &over.perception_ticks),
+            motor_ticks: pick(&self.motor_ticks, &over.motor_ticks),
+            button_sigma_ms: pick(&self.button_sigma_ms, &over.button_sigma_ms),
+            stick_step: pick(&self.stick_step, &over.stick_step),
+            thumb_switch_ticks: pick(&self.thumb_switch_ticks, &over.thumb_switch_ticks),
+            phantom_ping_ms: pick(&self.phantom_ping_ms, &over.phantom_ping_ms),
+            phantom_jitter_ms: pick(&self.phantom_jitter_ms, &over.phantom_jitter_ms),
         }
     }
 
@@ -259,6 +287,31 @@ impl BotParams {
         }
         if self.reaction.is_some_and(|r| r > 300) {
             out.push(format!("{at}: reaction: at most 300 ticks"));
+        }
+        for (name, value, lo, hi) in [
+            (
+                "perception_ticks",
+                self.perception_ticks.map(|v| v as f32),
+                0.0,
+                30.0,
+            ),
+            ("motor_ticks", self.motor_ticks.map(|v| v as f32), 0.0, 30.0),
+            ("button_sigma_ms", self.button_sigma_ms, 0.0, 12.0),
+            ("stick_step", self.stick_step, 0.1, 0.6),
+            (
+                "thumb_switch_ticks",
+                self.thumb_switch_ticks.map(|v| v as f32),
+                1.0,
+                6.0,
+            ),
+            ("phantom_ping_ms", self.phantom_ping_ms, 0.0, 1000.0),
+            ("phantom_jitter_ms", self.phantom_jitter_ms, 0.0, 50.0),
+        ] {
+            if let Some(v) = value
+                && !(lo..=hi).contains(&v)
+            {
+                out.push(format!("{at}: {name} = {v}: {lo} to {hi}"));
+            }
         }
         let on_off = self.burst_on.is_some() || self.burst_off.is_some();
         if self.burst == Some(false) && on_off {

@@ -77,7 +77,7 @@ pub const OBJECT_TYPES: [&[u8; 4]; 12] = [
 ];
 
 /// The shared `obje` header.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Object {
     /// `0x00`: index into [`OBJECT_TYPES`].
     pub object_type: u16,
@@ -202,7 +202,7 @@ impl Object {
 }
 
 /// A weapon's magazine (`0x70`).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Magazine {
     pub flags: u32,
     /// `+4` rounds recharged per second, `+6` total initial, `+8` total
@@ -225,7 +225,7 @@ pub struct Magazine {
 }
 
 /// A weapon's trigger (`0x114`).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Trigger {
     pub flags: u32,
     /// `+4` rounds per second, from and to.
@@ -260,13 +260,43 @@ pub struct Trigger {
     pub projectile: Option<TagId>,
     /// `+0xb8` heat generated per round.
     pub heat_per_round: f32,
-    /// `+0x108` firing effects (`0x84`): each holds references only read
-    /// here.
-    pub firing_effects: Vec<Vec<Option<TagId>>>,
+    /// `+0x108` firing effects (`0x84`, [`FiringEffect`]).
+    pub firing_effects: Vec<FiringEffect>,
+}
+
+/// A trigger's firing effect element (`FIRING_EFFECT_SIZE`): what a shot
+/// plays. V (`weapon_sounds_disc`, every map): the only references in an
+/// element are `effe` at [`FIRING_EFFECT_EFFECTS`] and `jpt!` at
+/// [`FIRING_EFFECT_DAMAGE`]; names S.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FiringEffect {
+    /// `+0`, `+2` (i16): the shot counts the element covers, lower and upper.
+    pub shot_count: [i16; 2],
+    /// Firing, misfire and empty effects (`effe`).
+    pub effects: [Option<TagId>; 3],
+    /// Firing, misfire and empty damage (`jpt!`: the shot's rumble and
+    /// camera shake).
+    pub damage: [Option<TagId>; 3],
+}
+
+pub const FIRING_EFFECT_SIZE: usize = 0x84;
+/// The firing, misfire and empty effect references of a firing effect.
+pub const FIRING_EFFECT_EFFECTS: [usize; 3] = [0x24, 0x34, 0x44];
+/// The firing, misfire and empty damage references of a firing effect.
+pub const FIRING_EFFECT_DAMAGE: [usize; 3] = [0x54, 0x64, 0x74];
+
+impl FiringEffect {
+    pub fn read(map: &H1Map, e: &[u8]) -> Self {
+        Self {
+            shot_count: [i16_at(e, 0), i16_at(e, 2)],
+            effects: FIRING_EFFECT_EFFECTS.map(|o| reference(map, e, o)),
+            damage: FIRING_EFFECT_DAMAGE.map(|o| reference(map, e, o)),
+        }
+    }
 }
 
 /// `weap`.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Weapon {
     pub object: Object,
     pub flags: u32,
@@ -275,6 +305,13 @@ pub struct Weapon {
     /// `pr`, `rl`, `sr`, `pp`, `ne`, `ft`; `cg`, `cannon`, `gun` on vehicle
     /// weapons. V (Blood Gulch, every `weap`).
     pub label: String,
+    /// `0x330` to `0x336`: the A to D in sources (`u16` each), Halo 1's
+    /// weapon enum; [`WEAPON_PRIMARY_AMMUNITION`] among them. D (Blood
+    /// Gulch's assault rifle: A 14, B 2, C 12, D 0).
+    pub inputs: [u16; 4],
+    /// The object's functions ([`functions`]); function `k` is the
+    /// object's output `k` (A to D out).
+    pub functions: Vec<Function>,
     /// `0x338` seconds.
     pub ready_time: f32,
     pub ready_effect: Option<TagId>,
@@ -363,14 +400,9 @@ impl Weapon {
                     first_person_offset: vec3(t, 0x84),
                     projectile: reference(map, t, 0x94),
                     heat_per_round: f32_at(t, 0xb8),
-                    firing_effects: elements(map, t, 0x108, 0x84)?
+                    firing_effects: elements(map, t, 0x108, FIRING_EFFECT_SIZE)?
                         .into_iter()
-                        .map(|e| {
-                            crate::refs::scan(map, e)
-                                .into_iter()
-                                .map(|f| f.tag)
-                                .collect()
-                        })
+                        .map(|e| FiringEffect::read(map, e))
                         .collect(),
                 })
             })
@@ -379,6 +411,8 @@ impl Weapon {
             object: Object::read(map, b)?,
             flags: u32_at(b, 0x308),
             label: name32(b, 0x30c),
+            inputs: std::array::from_fn(|i| u16_at(b, 0x330 + 2 * i)),
+            functions: functions(map, b)?,
             ready_time: f32_at(b, 0x338),
             ready_effect: reference(map, b, 0x33c),
             heat_recovery_threshold: f32_at(b, 0x34c),
@@ -406,6 +440,43 @@ impl Weapon {
             magazines,
             triggers,
         })
+    }
+}
+
+/// Halo 1's weapon input source (`weap +0x330`) "primary ammunition":
+/// the first magazine's rounds loaded over its loaded maximum. D: the
+/// assault rifle's B in, which its A out passes on, and its first-person
+/// counter (`h1convert::shad::H1Numeric`, A out × 60) shows the rounds
+/// loaded. Its 12 (illumination) and 14 (integrated light) drive its
+/// other two functions.
+pub const WEAPON_PRIMARY_AMMUNITION: u16 = 2;
+
+impl Weapon {
+    /// The loaded maximum of the first magazine when the weapon's A out
+    /// is its primary ammunition ([`WEAPON_PRIMARY_AMMUNITION`]) as it
+    /// is: function 0 is "one" scaled by the input naming it, not
+    /// inverted, with no period, map, steps, add, result scale or bounds
+    /// of its own. Halo 1's numeric shaders count A out × their limit
+    /// (`h1convert::shad::H1Numeric`), so with the limit at this maximum
+    /// they count the rounds loaded. `None` otherwise.
+    pub fn rounds_counter(&self) -> Option<i16> {
+        let f = self.functions.first()?;
+        let k = usize::from(f.scale_function_by)
+            .checked_sub(1)
+            .filter(|&k| k < 4)?;
+        let plain = f.function == 0
+            && f.flags & 1 == 0
+            && f.scale_period_by == 0
+            && f.map_to == 0
+            && f.add == 0
+            && f.scale_result_by == 0
+            && f.step_count <= 1
+            && f.sawtooth_count <= 1
+            && f.bounds == [0.0, 1.0];
+        (plain && self.inputs[k] == WEAPON_PRIMARY_AMMUNITION)
+            .then(|| self.magazines.first().map(|m| m.rounds_loaded_maximum))
+            .flatten()
+            .filter(|&m| m > 0)
     }
 }
 

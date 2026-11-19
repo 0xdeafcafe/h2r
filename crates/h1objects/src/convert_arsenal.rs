@@ -147,29 +147,41 @@ impl Converter<'_> {
     pub fn first_person_arms(&mut self, id: h1map::TagId) -> Result<TagId> {
         let t = self.h1_tag(id)?;
         let mut rep = Self::report(t, "none: a render model on its own");
-        let out = self.render_model(&mut rep, id);
+        let out = self.render_model(&mut rep, id, None);
         self.tree.reports.push(rep);
         out
     }
 
     /// A converted render model on its own (the first-person model), with
-    /// its shaders, once.
-    fn render_model(&mut self, rep: &mut ObjectReport, id: h1map::TagId) -> Result<TagId> {
+    /// its shaders, once. `rounds`: the weapon's, when its counters count
+    /// its rounds ([`crate::h1::Weapon::rounds_counter`]).
+    fn render_model(
+        &mut self,
+        rep: &mut ObjectReport,
+        id: h1map::TagId,
+        rounds: Option<i16>,
+    ) -> Result<TagId> {
         let t = self.h1_tag(id)?;
-        if let Some(d) = self.done.get(&t.id.0) {
-            return Ok(*d);
+        let key = (id, rounds);
+        if let Some(&mode) = self.render_models.get(&key) {
+            return Ok(mode);
         }
         let (h1_model, _) = h1models::model_from_map(self.h1, t, &ModelOptions::default())?;
-        let shaders = self.model_shaders(rep, &h1_model);
+        let shaders = self.model_shaders(rep, &h1_model, rounds);
         let mut padded = shaders.clone();
         padded.resize(h1_model.shaders.len(), TagId::NULL);
         let mut mode = h1models::mode::convert_model(
             &h1_model,
             h1models::short_name(&t.name),
-            &ModelOptions { shaders },
+            &ModelOptions {
+                shaders,
+                ..ModelOptions::default()
+            },
         )?;
         crate::rebuild::mode_materials(&mut mode.root, &padded)?;
-        self.cached(t, mode)
+        let mode = self.tree.push(&t.name, mode);
+        self.render_models.insert(key, mode);
+        Ok(mode)
     }
 
     /// A converted animation graph, once.
@@ -179,7 +191,29 @@ impl Converter<'_> {
             return Ok(*d);
         }
         let m = model.map(|m| self.h1_tag(m)).transpose()?;
-        let (_, _, conv) = h1models::graph_from_map(self.h1, t, m)?;
+        let (_, _, mut conv) = h1models::graph_from_map(self.h1, t, m)?;
+        // The sounds its animations play (the reloads, the ready), as Halo
+        // 2 sound events (`h1models::sounds`).
+        let sounds = h1models::sounds::read(self.h1, t)?;
+        if !sounds.events.is_empty() {
+            let mut rep = Self::report(t, "none: the graph's sounds");
+            let mut targets = Vec::new();
+            for r in &sounds.refs {
+                let got = match r.map(|id| self.h1_tag(id)).transpose()? {
+                    Some(s) => self.sound(s, &mut rep),
+                    None => None,
+                };
+                targets.push(got);
+            }
+            h1models::sounds::add_sound_events(&mut conv.root, &sounds, &targets)?;
+            rep.no_home.push(format!(
+                "{} animation sound events, {} of {} sounds converted",
+                sounds.events.len(),
+                targets.iter().flatten().count(),
+                targets.len()
+            ));
+            self.tree.reports.push(rep);
+        }
         self.cached(t, conv)
     }
 
@@ -225,11 +259,16 @@ impl Converter<'_> {
         let cp = self.counterpart(b"weap", &tag.name);
         let mut rep = Self::rebuilt_report(tag, cp.as_ref().map(|c| c.0), self.base);
         rep.physics = Some("none (rebuilt weapons borrow no phmo)".into());
-        let hlmt = self.model(&mut rep, &w.object, None, &tag.name, true)?;
-        let predicted = self.predicted(&w.object)?;
+        let rounds = w.rounds_counter();
+        let hlmt = self.model(&mut rep, &w.object, None, &tag.name, true, rounds)?;
+        let predicted = self.predicted(hlmt);
         let d = Defs::builtin().group(FourCC(*b"weap")).expect("weap");
         let bd = d.child("barrels").expect("barrels");
         let fd = d.child("barrels.block_e4").expect("firing effects");
+        // Per counterpart barrel, its firing effects' damage (the shot's
+        // rumble and shake): `jpt!` from Halo 1 carries only damage bounds,
+        // so these stay Halo 2's, as the melee damage does.
+        let mut halo2_damage: Vec<Vec<[Option<TagId>; 3]>> = Vec::new();
         let mut parts = arsenal::WeaponParts {
             hlmt,
             predicted,
@@ -254,14 +293,57 @@ impl Converter<'_> {
                 parts
                     .barrel_halo2
                     .push(arsenal::halo2_refs(self.base, bd, &e, &["projectile"]));
-                let mut fx = Vec::new();
+                let mut list = Vec::new();
                 let mut k = 0;
                 while let Some(x) = self.base.element(&e, 0xe4, fd.size as usize, k)? {
-                    fx.push(arsenal::halo2_refs(self.base, fd, &x, &[]));
+                    list.push(arsenal::FIRING_DAMAGE_AT.map(|at| self.base.reference(&x, at)));
                     k += 1;
                 }
-                parts.firing_effects.push(fx);
+                halo2_damage.push(list);
                 i += 1;
+            }
+        }
+        // What a shot plays: Halo 1's effects, converted (their sounds with
+        // them), never the counterpart's.
+        for (i, t) in w.triggers.iter().enumerate() {
+            let mut list = Vec::new();
+            let barrel_damage = halo2_damage.get(i).or(halo2_damage.last());
+            for (k, f) in t.firing_effects.iter().enumerate() {
+                let damage = barrel_damage
+                    .and_then(|l| l.get(k).or(l.last()))
+                    .copied()
+                    .unwrap_or_default();
+                for (j, n) in damage
+                    .iter()
+                    .flatten()
+                    .filter_map(|j| Some((j, self.base.name(*j)?.1)))
+                {
+                    rep.no_home.push(format!(
+                        "Halo 2 reference barrels[{i}].block_e4[{k}] damage: jpt! {n} ({j:?})"
+                    ));
+                }
+                list.push(arsenal::FiringParts {
+                    effects: f.effects.map(|e| self.weapon_slot(e, &mut rep)),
+                    damage,
+                });
+            }
+            parts.firing_effects.push(list);
+        }
+        for m in &w.magazines {
+            let fx = [
+                self.weapon_slot(m.reloading_effect, &mut rep),
+                self.weapon_slot(m.chambering_effect, &mut rep),
+            ];
+            parts.magazine_effects.push(fx);
+        }
+        // The weapon's own effects and sounds: Halo 1's, or none.
+        parts
+            .halo2
+            .retain(|r| !arsenal::WEAPON_EFFECTS.iter().any(|(p, _)| *p == r.0));
+        for (path, at) in arsenal::WEAPON_EFFECTS {
+            let id = h1::reference(self.h1, &bytes, *at);
+            if let Some((g, x)) = self.weapon_slot(id, &mut rep) {
+                parts.halo1.push(((*path).to_owned(), g, x));
             }
         }
         for t in &w.triggers {
@@ -284,7 +366,7 @@ impl Converter<'_> {
             parts.projectiles.push(p);
         }
         let fp_model = match w.first_person_model {
-            Some(m) => Some(self.render_model(&mut rep, m)?),
+            Some(m) => Some(self.render_model(&mut rep, m, rounds)?),
             None => None,
         };
         let fp_anim = match w.first_person_animations {
@@ -316,18 +398,20 @@ impl Converter<'_> {
                         rep.no_home.push(format!("HUD: {s}"));
                     }
                 }
-                Err(e) => rep.no_home.push(format!("HUD: Halo 1's does not convert: {e}")),
+                Err(e) => rep
+                    .no_home
+                    .push(format!("HUD: Halo 1's does not convert: {e}")),
             }
         }
-        // Halo 1's in the slots named by pairs (arsenal::WEAPON_OVERHEATED).
-        let overheated = self.h1_effect(w.overheated, "overheated effect", &mut rep)?;
+        // Halo 1's in the slots named by pairs (arsenal::WEAPON_MELEE_DAMAGE),
+        // after the weapon's own effects and sounds above (the overheated
+        // effect, arsenal::WEAPON_OVERHEATED, is one of those).
         let melee = self.h1_damage(w.melee_damage, "melee damage", &mut rep)?;
         let response = self.h1_damage(w.melee_response, "melee response", &mut rep)?;
-        parts.halo1 = vec![
-            arsenal::halo1_ref(arsenal::WEAPON_OVERHEATED, b"effe", overheated),
+        parts.halo1.extend([
             arsenal::halo1_ref(arsenal::WEAPON_MELEE_DAMAGE, b"jpt!", melee),
             arsenal::halo1_ref(arsenal::WEAPON_MELEE_RESPONSE, b"jpt!", response),
-        ];
+        ]);
         if let Some(f) = self.h1_foot(&bytes[..h1::WEAP_SIZE.min(bytes.len())], &mut rep)? {
             parts
                 .halo1
@@ -368,6 +452,36 @@ impl Converter<'_> {
         Ok(id)
     }
 
+    /// A weapon's Halo 1 effect or sound slot converted, by the group of
+    /// the tag it names (`effe` with [`Converter::effect`], `snd!` with
+    /// [`Converter::sound`]); one that does not convert is left out, the
+    /// reason in `rep`.
+    fn weapon_slot(
+        &mut self,
+        id: Option<h1map::TagId>,
+        rep: &mut ObjectReport,
+    ) -> Option<(FourCC, TagId)> {
+        let t = self.h1_tag(id?).ok()?;
+        if t.group == h1map::Group::new(b"snd!") {
+            return Some((FourCC(*b"snd!"), self.sound(t, rep)?));
+        }
+        Some((FourCC(*b"effe"), self.weapon_effect(id, rep)?))
+    }
+
+    /// A weapon's Halo 1 effect converted ([`Converter::effect`]); one that
+    /// does not convert is left out, the reason in `rep`.
+    fn weapon_effect(&mut self, id: Option<h1map::TagId>, rep: &mut ObjectReport) -> Option<TagId> {
+        let t = self.h1_tag(id?).ok()?;
+        match self.effect(t) {
+            Ok(x) => Some(x),
+            Err(e) => {
+                rep.no_home
+                    .push(format!("effe {}: not converted ({e})", t.name));
+                None
+            }
+        }
+    }
+
     /// `counterpart`: the Halo 2 projectile the counterpart weapon's barrel
     /// fires, when there is one.
     pub(super) fn projectile(&mut self, tag: &Tag, counterpart: Option<TagId>) -> Result<TagId> {
@@ -379,7 +493,7 @@ impl Converter<'_> {
             .or_else(|| self.counterpart(b"proj", &tag.name));
         let mut rep = Self::rebuilt_report(tag, cp.as_ref().map(|c| c.0), self.base);
         rep.physics = Some("none (rebuilt projectiles borrow no phmo)".into());
-        let hlmt = self.model(&mut rep, &p.object, None, &tag.name, true)?;
+        let hlmt = self.model(&mut rep, &p.object, None, &tag.name, true, None)?;
         let impact_damage = match p.impact_damage {
             Some(j) => Some(self.damage(j)?),
             None => None,
@@ -476,8 +590,8 @@ impl Converter<'_> {
         let cp = self.counterpart(b"eqip", &tag.name);
         let mut rep = Self::rebuilt_report(tag, cp.as_ref().map(|c| c.0), self.base);
         rep.physics = Some("none (rebuilt equipment borrows no phmo)".into());
-        let hlmt = self.model(&mut rep, &e.object, None, &tag.name, true)?;
-        let predicted = self.predicted(&e.object)?;
+        let hlmt = self.model(&mut rep, &e.object, None, &tag.name, true, None)?;
+        let predicted = self.predicted(hlmt);
         let mut parts = arsenal::EquipmentParts {
             hlmt,
             predicted,

@@ -391,7 +391,10 @@ code cited are marked unverified.
 | scenario placement index | `+0x1a` | `i16` | confirmed | `object_create` by name (`0x000bb670`) passes the name's placement index to `0x000bf0f0`, which hands it to the placement-data builder `0x000d5060` (call `0x000bf152`; stored at placement data `+0x10`, `0x000d520b`); `object_new` copies placement data `+0x10` here (`0x000b7c87`) with the object identifier (`+0xa4`, `+0xa8`); -1 for objects the scenario did not place (`0x000b7c63`). Index into the object type's scenario block (docs/live/live-telemetry.md, "Scenario objects") |
 | netgame equipment index | `+0xaf` | `i8` | confirmed | The netgame spawner `0x0015aad0` writes the spawn's index into `scnr+0x120` here (`0x0015ac15`) after `object_new`, which sets `0xff` (`0x000b7db1`); deletion (`0x000b85c3`) calls `0x0015b220` to clear the spawn's object |
 | machine object type | header `+3` = 7 | `u8` | likely | The engine's type order (biped 0, vehicle 1, weapon 2 confirmed); the scarab of `03a`/`03b` is a `mach` tag, in `08a` a `scen` |
-| device position | device `+0x140` | `f32` 0..1 | likely | The machine network-state builder `0x000a3df0` copies it under flag `0x400`, next to the desired value of the device group at `+0x13c` (flag `0x800`); `0x00106e24` compares it with 0.9 |
+| equipment and projectile object types | header `+3` = 3, 5 | `u8` | confirmed | The type table at `0x00468630` (bipd 0, vehi 1, weap 2, eqip 3, garb 4, proj 5, ...; `layout::OBJECT_TYPE_*`). Frames send projectiles (`proj`, position `+0x64`, velocity `+0x88` as the projectile update moves them, `0x000f8ee2` on) and loose weapons and equipment (no parent, `+0x1a` and `+0xaf` both -1) from the world scan (packed version 6) |
+| device position | device `+0x140` | `f32` 0..1 | confirmed | The machine network-state builder `0x000a3df0` copies it under flag `0x400`. The machine update at `0x0011546d` adds the tick's travel to it. The device code passes it to the normalized-frame setter `0x001c6620` at call site `0x00106930`. |
+| device power | device `+0x134` | `f32` 0..1 | confirmed | The setter's caller at `0x00106945` and `0x0010695d` uses it to blend powered and depowered rates. The viewer needs only the resulting position. |
+| device position channel | device `+0x18c` | animation channel | confirmed | `0x00108721` takes its address when starting the position action. The existing channel layout applies. Its graph datum is at `+0x18c` and its signed animation index at `+0x192`. The setter `0x001c6622` checks the index at channel `+6` for -1 and resolves the animation using the graph at channel `+0`. |
 | damage reporting type | report `+0x00` low 6 bits | enum | likely | 6-bit value; value names unverified |
 
 `0x000d9640` applies a report to its victim: it adds `+0x44` (clamped to 1
@@ -410,7 +413,7 @@ Standard four-argument stack convention, callee pops 16 bytes:
 |---|---:|---|---|
 | attacker player datum | `[esp+0x04]` | `u32` | Finally attributed killer; `0xffffffff` for none |
 | victim player datum | `[esp+0x08]` | `u32` | Victim player |
-| betrayal flag | `[esp+0x0c]` | `u32`/`bool` | Friendly-fire/betrayal classification |
+| unknown flag | `[esp+0x0c]` | `u32` | **Not** a betrayal flag: it is set for free-for-all kills between enemies too (seen 2026-11-19, a Clankers free-for-all whose every kill was sent as a betrayal). Nothing reads it; a betrayal is a teammate killed in a team game (`live_proto::game::is_betrayal`). |
 | packed damage code | `[esp+0x10]` | `u8` in low byte | Low 6 bits damage type, high 2 bits modifier |
 
 The direct call is at `0x001ea460` inside attribution routine `0x001e9fa0`. It follows recent-damage attribution, so the killer is final. It is not universal for campaign AI or arbitrary units: a game engine/statborg and a victim player index are required.

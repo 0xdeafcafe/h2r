@@ -88,13 +88,13 @@ pub(crate) enum Work {
     Tick(Box<Snapshot>),
     Kill(Box<Kill>),
     End(Box<Snapshot>),
+    FinishSim(serde_json::Value),
 }
 
 pub(crate) struct Kill {
     pub tick: u64,
     pub attacker: Option<u32>,
     pub victim: u32,
-    pub betrayal: bool,
     pub object: Option<ObjectState>,
     /// A HaloScript cinematic was playing: the kill is not counted.
     pub cinematic: bool,
@@ -146,6 +146,8 @@ impl Shared {
         snapshot.machines.clear();
         snapshot.placed.clear();
         snapshot.bodies.clear();
+        snapshot.projectiles.clear();
+        snapshot.items.clear();
         snapshot.hits.clear();
         let mut spare = self.spare.lock().unwrap();
         if spare.len() < SPARE_SNAPSHOTS {
@@ -191,10 +193,18 @@ pub struct Pipeline {
     session: Arc<Mutex<Session>>,
     logged: AtomicBool,
     worker: Option<JoinHandle<()>>,
+    queued_ticks: usize,
 }
 
 impl Pipeline {
     pub fn new<S: Sink>(session: Session, mut sink: S) -> Self {
+        // A sim can advance through several seconds during the initial
+        // network handshake. Retain more of those ticks before folding.
+        let queued_ticks = if session.is_sim() {
+            120
+        } else {
+            MAX_QUEUED_TICKS
+        };
         let shared = Arc::new(Shared::default());
         let session = Arc::new(Mutex::new(session));
         let worker = {
@@ -210,6 +220,7 @@ impl Pipeline {
             session,
             logged: AtomicBool::new(false),
             worker: Some(worker),
+            queued_ticks,
         }
     }
 
@@ -226,7 +237,7 @@ impl Pipeline {
         let full = queue.work.len() >= MAX_QUEUED;
         match work {
             Work::Tick(snapshot) => {
-                let behind = full || queue.ticks >= MAX_QUEUED_TICKS;
+                let behind = full || queue.ticks >= self.queued_ticks;
                 let left = match queue.work.back_mut() {
                     Some(Work::Tick(last)) if behind => Some(fold(last, snapshot)),
                     // Only with a start, kill or end last, past MAX_QUEUED:
@@ -357,7 +368,13 @@ fn run(shared: &Shared, session: &Mutex<Session>, sink: &mut dyn Sink) {
             if failed {
                 continue;
             }
-            let done = apply(&mut session, work);
+            let (done, report) = match work {
+                Work::FinishSim(report) => {
+                    session.end_previous();
+                    (None, Some(report))
+                }
+                work => (apply(&mut session, work), None),
+            };
             for output in session.take_output() {
                 let sent = match output {
                     Output::Event(event) => sink.event(event),
@@ -371,6 +388,13 @@ fn run(shared: &Shared, session: &Mutex<Session>, sink: &mut dyn Sink) {
             }
             if let Some(snapshot) = done {
                 shared.recycle(snapshot);
+            }
+            if !failed
+                && let Some(report) = report
+                && let Err(error) = sink.finish_sim(report)
+            {
+                failed = true;
+                shared.fail(error);
             }
         }
         drop(session);
@@ -413,12 +437,12 @@ fn apply(session: &mut Session, work: Work) -> Option<Box<Snapshot>> {
                 tick,
                 attacker,
                 victim,
-                betrayal,
                 object,
                 cinematic,
             } = *kill;
-            session.kill(tick, attacker, victim, betrayal, object, cinematic);
+            session.kill(tick, attacker, victim, object, cinematic);
         }
+        Work::FinishSim(_) => unreachable!("handled by the worker"),
         Work::End(snapshot) => {
             session.end(&snapshot);
             return Some(snapshot);
@@ -561,7 +585,6 @@ mod tests {
             tick,
             attacker: None,
             victim: 0,
-            betrayal: false,
             object: None,
             cinematic: false,
         }))

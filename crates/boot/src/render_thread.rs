@@ -171,6 +171,16 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     ("bots", "GAME_ACTIVATE", AFTER),
     (
         "bots",
+        "ITEM_SET_UNIT",
+        "weapon attachment reads the live placement and player tables before the weapon leaves its pad",
+    ),
+    (
+        "bots",
+        "POWERUP_TAKEN",
+        "power-up pickup reads the live equipment and its recipient before the simulation deletes the equipment",
+    ),
+    (
+        "bots",
         "WEAPON_FIRE",
         "a shot in the simulation, on the game thread; the bots hear it",
     ),

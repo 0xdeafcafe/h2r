@@ -303,6 +303,13 @@ impl Feature for NativePost {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
+        // Stateless, on or off: no history carried between frames (no
+        // temporal AA, no exposure adaptation); every call is drawn from
+        // what the guest asks for at its entry. The host's screen effects
+        // are keyed by the map name it reads from guest RAM, and its proof
+        // and fallback sets (by effect tag) only ever send an effect back
+        // to the D3D path, which draws the same picture.
+        b.snapshot(crate::SnapshotPolicy::Stateless);
         let native = on(b.switches());
         if !native && !CAPTURE.load(Ordering::Relaxed) {
             return Ok(());
@@ -364,7 +371,6 @@ impl Feature for NativePost {
                 }
             }
         }
-        b.snapshot(crate::SnapshotPolicy::Stateless);
         Ok(())
     }
 }

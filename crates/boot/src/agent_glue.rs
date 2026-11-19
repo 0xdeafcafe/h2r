@@ -18,7 +18,10 @@
 //! `render.frame` and `render.stats` (crates/agent's `render`, over
 //! [`crate::render_probe`] and the draw wrapper in [`crate::d3d_diag`]).
 //! `sim.*` ([`install_sim`]) gets its session kind from `coop_probe`'s
-//! readers ([`session_view`]).
+//! readers ([`session_view`]); its teleports, `sim.give` and `sim.spawn`
+//! call the game's own functions through the `agent-calls` feature
+//! (`agent::sim::calls`), and find tags as `edit.*` does
+//! (`hot_glue::map_tags`, set once the runtime is up).
 //!
 //! `state.*` (machine snapshots) is the boot loop's: it installs the store
 //! on the agent and runs due saves and loads between slices
@@ -35,6 +38,8 @@ use serde_json::{Value, json};
 /// The agent attached to one run.
 pub struct AgentGlue {
     pub agent: agent::Agent,
+    /// `sim.*`'s state; `None` for [`AgentGlue::local`].
+    pub sim: Option<agent::sim::SimHandle>,
     /// `None` for [`AgentGlue::local`]: no socket, only in-process clients.
     server: Option<agent::Server>,
 }
@@ -65,9 +70,19 @@ impl AgentGlue {
         }
         let agent = agent::Agent::new();
         add_host_methods(&agent);
-        let _sim = install_sim(&agent);
+        let sim = install_sim(&agent);
+        // The game's own functions for sim (teleports, give, spawn): a
+        // `before` on the tick that makes the calls queued for it.
+        let calls = agent::sim::calls::shared();
+        match registry.add(&agent::sim::calls::CallsFeature(calls.clone())) {
+            Ok(true) => sim.set_calls(calls),
+            Ok(false) => eprintln!(
+                "agent: agent-calls switched off by H2_FEATURES; sim teleports, give and spawn are off"
+            ),
+            Err(e) => anyhow::bail!("agent-calls: {e}"),
+        }
         agent::havok::install(&agent);
-        agent::raw::install(&agent);
+        agent::raw::install(&agent, &sim);
         // On the game thread: the sampler's main target.
         crate::sampling::set_game_thread();
         let server = agent::Server::listen_on(&endpoint, agent.clone())
@@ -109,6 +124,7 @@ impl AgentGlue {
         );
         Ok(AgentGlue {
             agent,
+            sim: Some(sim),
             server: Some(server),
         })
     }
@@ -123,6 +139,7 @@ impl AgentGlue {
         agent.set_no_tick_hook();
         AgentGlue {
             agent,
+            sim: None,
             server: None,
         }
     }

@@ -59,12 +59,23 @@ impl Default for Me {
 /// can still run the ordinary weapon, objective and targeting decisions.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Observations {
+    /// Strictly leading on the public scoreboard.
+    pub ahead: bool,
     /// Own player slot and team, including while waiting to respawn.
     pub player: Option<(u32, i16)>,
     /// Cues on living players. Enemy cues only inform decisions in view.
     pub contacts: Vec<Contact>,
     /// An empty successful pickup scan can indicate that a weapon was taken.
     pub pickups_scanned: bool,
+    /// Public simulation ticks per second for estimating placement service.
+    pub service_rate: Option<u16>,
+    /// Power weapon instances identified during the existing object scan.
+    pub held_power: Vec<u32>,
+    /// Recent successful pickup events, matched to witnessed removals.
+    pub takes: Vec<crate::decisions::supplies::Take>,
+    /// Living unit handles and their visible weapon objects, for recognizing
+    /// a pickup without transferring a memory to a new life or player.
+    pub supply_players: Vec<crate::decisions::supplies::Player>,
     /// Occupied power weapon and power-up placements. None means the host
     /// could not check the ground this tick. An empty scan is meaningful.
     pub supplies: Option<Vec<crate::decisions::supplies::Supply>>,
@@ -72,12 +83,16 @@ pub struct Observations {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Contact {
+    /// Model of the weapon visibly in hand.
+    pub weapon: Option<u32>,
     pub id: u32,
     pub aim: Vec3,
     pub shield: Option<f32>,
-    /// Empty magazine with rounds in reserve. A window to push, inferred
-    /// from the held weapon rather than a reload animation.
+    /// A visible reload can create a window to push. The guest observer
+    /// leaves this false until it can recognize the animation.
     pub empty_magazine: bool,
+    /// The biped is requesting crouch this tick.
+    pub crouching: bool,
 }
 
 /// What the bot knows this tick.

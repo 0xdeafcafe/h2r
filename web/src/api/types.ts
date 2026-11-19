@@ -95,6 +95,38 @@ export interface FrameVehicle {
   parent?: string | null;
   /** Where it aims (a turret), game coordinates. */
   aim?: [number, number, number] | null;
+  /** Velocity, game units a second, as players' and actors' `vel` (version 6). */
+  vel?: [number, number, number] | null;
+}
+
+/** A projectile in flight that a viewer can see fly: grenades, rockets,
+ *  plasma, needles (slower than 100 units a second; faster ones live a
+ *  tick or two and are drawn from `fire` and `aim`). Version 6. */
+export interface FrameProjectile {
+  /** The object id: new each throw or shot, gone when it detonates. */
+  id: string;
+  /** The `proj` tag's stem: "frag_grenade", "plasma_grenade", "rocket", ... or "unknown". */
+  kind: string;
+  /** World position; with `parent`, that object's position. */
+  pos: [number, number, number];
+  /** Velocity, game units a second; absent when stuck. */
+  vel?: [number, number, number] | null;
+  /** What it is stuck to (a plasma grenade on a unit or vehicle): that
+   *  object's id as players, actors and vehicles carry it. */
+  parent?: string | null;
+}
+
+/** A weapon or equipment lying loose that no placement or netgame spawn
+ *  made (those are `objects`): a dropped gun, flag, ball or bomb. Version 6. */
+export interface FrameItem {
+  id: string;
+  /** The `weap` tag's stem ("flag", "ball", "assault_bomb", "battle_rifle"), or with `equipment` the `eqip`'s; "unknown" when not known. */
+  kind: string;
+  pos: [number, number, number];
+  forward: [number, number, number];
+  up: [number, number, number];
+  /** An `eqip` tag (grenades, powerups), not a `weap`. */
+  equipment?: boolean;
 }
 
 /** Damage dealt: "p<index>" for players, else an object id. */
@@ -156,6 +188,13 @@ export interface FrameActor {
   anim?: FrameAnim | null;
 }
 
+/** A placed machine's travel, keyed by its scenario placement index. */
+export interface MachinePosition {
+  i: number;
+  /** 0..255, where 255 is the end of the animation. */
+  p: number;
+}
+
 export interface Frame {
   game_id: GameId;
   tick: number;
@@ -166,6 +205,7 @@ export interface Frame {
   /** The structure BSP the game has loaded. */
   bsp?: number | null;
   machines?: FrameMachine[];
+  machine_positions?: MachinePosition[];
   /** Scenario placements not where the scenario put them (moved or gone),
    *  every one each frame, by kind then index. */
   objects?: FrameObject[];
@@ -174,8 +214,12 @@ export interface Frame {
   cut?: number | null;
   /** A campaign cinematic is playing: the frame has no players, actors,
    *  vehicles, hits, machines or objects to draw, only its tick and BSP
-   *  (packed version 5). */
+   *  (packed version 5; every version 6 frame carries the bit). */
   cinematic?: boolean;
+  /** Projectiles in flight (version 6). */
+  projectiles?: FrameProjectile[];
+  /** Loose weapons and equipment (version 6). */
+  items?: FrameItem[];
 }
 
 /** A scenario placement that moved (`p`, `f`, `u`) or is gone: map.glb's

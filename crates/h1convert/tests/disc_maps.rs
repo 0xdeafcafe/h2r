@@ -96,7 +96,9 @@ fn bitmaps<R: std::io::Read + std::io::Seek>(
 
 /// Tags the skies add: each sky and its model, and the shader copies and
 /// Halo 1 bitmaps (those the structure's textures don't already add) of
-/// `m` past `base_slots` named for the skies' Halo 1 shaders and bitmaps.
+/// `m` past `base_slots` named for the skies' Halo 1 shaders and the
+/// bitmaps they draw; then the opaque picture copies and the sky lights'
+/// lens flares and their bitmaps, each counted once.
 fn sky_tags(
     p: &h1convert::convert::Prepared,
     m: &Map<Cursor<Vec<u8>>>,
@@ -416,12 +418,31 @@ fn check_h1_textures(
         let TagData::Bitmap(b) = d.data else {
             panic!("{name}: {bn} isn't a bitmap")
         };
-        let tag = h1
-            .tags()
-            .iter()
-            .find(|t| &t.name == bn && t.group.to_string() == "bitm")
-            .unwrap()
-            .clone();
+        let h1_bitmap = |n: &str| {
+            h1.tags()
+                .iter()
+                .find(|t| t.name == n && t.group.to_string() == "bitm")
+                .cloned()
+        };
+        // A plasma picture with its brightness as alpha (converter v90,
+        // `shad::brightness_mask_name`: `<Halo 1 bitmap>_brightness_<gain
+        // x 1000>`) is no Halo 1 bitmap: its pixels are derived, so it is
+        // checked to decode with its source's image count only.
+        let Some(tag) = h1_bitmap(bn) else {
+            let (stem, gain) = bn
+                .rsplit_once("_brightness_")
+                .unwrap_or_else(|| panic!("{name}: {bn} is no Halo 1 bitmap"));
+            assert!(gain.parse::<u32>().is_ok(), "{name}: {bn}");
+            let src_tag = h1_bitmap(stem).unwrap_or_else(|| panic!("{name}: {bn}: no {stem}"));
+            let src = h1map::bitmap::Bitmap::read(h1, &src_tag).unwrap();
+            assert_eq!(b.images.len(), src.images.len(), "{name}: {bn}");
+            for (i, im) in b.images.iter().enumerate() {
+                assets::decode_image(im, files)
+                    .unwrap_or_else(|e| panic!("{name}: {bn} [{i}]: {e}"));
+                images += 1;
+            }
+            continue;
+        };
         let src = h1map::bitmap::Bitmap::read(h1, &tag).unwrap();
         assert_eq!(b.images.len(), src.images.len(), "{name}: {bn}");
         for (i, im) in b.images.iter().enumerate() {
@@ -895,16 +916,33 @@ fn every_multiplayer_map_converts_and_keeps_the_bases_bitmaps() {
         }
         // Then Halo 1's textures: a bitmap per converted bitmap and a
         // shader per copy.
-        assert_eq!(
-            m.index_slots() as usize,
-            base_slots
-                + collections.len()
-                + p.textures.bitmaps.len()
-                + p.textures.copies.len()
-                + sky_tags(&p, &m, base_slots)
-                + ambience_tags(&p),
-            "{name}"
-        );
+        let expected = base_slots
+            + collections.len()
+            + p.textures.bitmaps.len()
+            + p.textures.copies.len()
+            + sky_tags(&p, &m, base_slots)
+            + ambience_tags(&p);
+        if m.index_slots() as usize != expected {
+            // What the conversion added, to see which part the count
+            // misses: every added tag, and the added slots left empty.
+            let added: Vec<String> = m
+                .tags()
+                .iter()
+                .filter(|t| t.id.index() >= base_slots)
+                .map(|t| format!("{} {}", t.group, t.name.as_deref().unwrap_or("?")))
+                .collect();
+            let live = m.tags().iter().filter(|t| t.id.index() >= base_slots).count();
+            eprintln!(
+                "{name}: {} slots from {base_slots}, {live} live: collections {}, texture bitmaps {}, copies {}, sky {}, ambience {}; added: {added:#?}",
+                m.index_slots() as usize - base_slots,
+                collections.len(),
+                p.textures.bitmaps.len(),
+                p.textures.copies.len(),
+                sky_tags(&p, &m, base_slots),
+                ambience_tags(&p),
+            );
+        }
+        assert_eq!(m.index_slots() as usize, expected, "{name}");
         check_structure_texturing(name, &mut m, &mut base, &done.bytes, &p);
         let skies = check_skies(name, &mut m, &p, base_slots);
         eprintln!("    skies: {skies:?}");
@@ -1011,20 +1049,41 @@ fn every_multiplayer_map_converts_and_keeps_the_bases_bitmaps() {
         let got = bitmaps(&mut m, &mut converted_files);
         std::fs::remove_file(&path).unwrap();
         // The converted lightmap took the base's lightmap bitmap's slot:
-        // every other image is the base's.
+        // every other image is the base's, less the base bitmaps nothing
+        // in the converted map reaches, which pinned pruning drops
+        // (`fresh::prune_pinned`): no tag of those names is left.
         let slot_name = p.lightmap.as_ref().map(|l| l.replaces.clone());
         let lightmap_name = slot_name.clone().unwrap_or_default();
-        let want: Vec<_> = want.into_iter().filter(|w| w.0 != lightmap_name).collect();
+        let present: std::collections::HashSet<String> = m
+            .tags()
+            .iter()
+            .filter(|t| t.group == FourCC(*b"bitm"))
+            .filter_map(|t| t.name.clone())
+            .collect();
+        let (want, pruned): (Vec<_>, Vec<_>) = want
+            .into_iter()
+            .filter(|w| w.0 != lightmap_name)
+            .partition(|w| present.contains(&w.0));
+        let pruned_bitmaps: std::collections::BTreeSet<&str> =
+            pruned.iter().map(|w| w.0.as_str()).collect();
+        eprintln!(
+            "    pinned pruning dropped {} base bitmaps ({} images)",
+            pruned_bitmaps.len(),
+            pruned.len()
+        );
         let converted_lightmap = format!("{}_lightmap", h1convert::convert::scenario_path(name));
         let got: Vec<_> = got
             .into_iter()
             .filter(|g| g.0 != converted_lightmap)
             .filter(|g| !p.textures.bitmaps.iter().any(|(n, _)| *n == g.0))
             .filter(|g| {
-                !p.skies
-                    .skies
-                    .iter()
-                    .any(|s| s.bitmaps.iter().any(|b| b.1 == g.0))
+                !p.skies.skies.iter().any(|s| {
+                    s.bitmaps.iter().any(|b| b.1 == g.0)
+                        || s.flares
+                            .iter()
+                            .flatten()
+                            .any(|f| f.bitmap.as_ref().is_some_and(|b| b.0 == g.0))
+                })
             })
             // A dome picture's opaque copy (`Sky::opaque_bitmaps`), and a
             // sky flare's bitmap the level added (one of the base's own

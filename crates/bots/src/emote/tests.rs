@@ -216,20 +216,44 @@ fn a_kill_is_read_from_the_kill_functions_arguments() {
     let victim = DatumHandle::new(0xe002, 2);
     g.put_u16(PD + 2 * 0x21c, 0xe002)
         .put_u32(PD + 2 * 0x21c + 0x2c, unit.raw());
-    let attacker = DatumHandle::new(0xe001, 1).raw();
-    let k = kill_from_guest(&g, attacker, victim.raw(), true)
+    // Player 1 is on the victim's team (both 0), player 0 on team 1.
+    g.put_u16(PD + 0x21c, 0xe001);
+    g.put_u16(PD, 0xe000).put_u8(PD + 0xc0, 1);
+    // A free-for-all game.
+    const GAME: u32 = 0x0064_0000;
+    g.map(points::GAME_GLOBALS.base & !0xfff, 0x1000)
+        .put_u32(points::GAME_GLOBALS.base, GAME)
+        .map(GAME, 0x400)
+        .put_u32(GAME + crate::guest::OPTIONS, crate::guest::MODE_MULTIPLAYER);
+    let teammate = DatumHandle::new(0xe001, 1).raw();
+    let enemy = DatumHandle::new(0xe000, 0).raw();
+    let k = kill_from_guest(&g, teammate, victim.raw())
         .unwrap()
         .unwrap();
-    assert_eq!((k.attacker, k.victim, k.betrayal), (Some(1), 2, true));
-    assert_eq!(k.at, Some([4.0, 5.0, 6.0]));
-    let world = kill_from_guest(&g, u32::MAX, victim.raw(), false)
-        .unwrap()
-        .unwrap();
-    assert_eq!(world.attacker, None);
     assert_eq!(
-        kill_from_guest(&g, attacker, u32::MAX, false).unwrap(),
-        None
+        (k.attacker, k.victim, k.betrayal),
+        (Some(1), 2, false),
+        "free-for-all has no teammates, though both are on team 0"
     );
+    assert_eq!(k.at, Some([4.0, 5.0, 6.0]));
+    // A team game: a teammate killed is a betrayal, an enemy is not, nor
+    // is a suicide.
+    g.put_u32(GAME + crate::guest::OPTIONS + crate::guest::VARIANT_FLAGS, 1);
+    let k = kill_from_guest(&g, teammate, victim.raw())
+        .unwrap()
+        .unwrap();
+    assert!(k.betrayal);
+    let k = kill_from_guest(&g, enemy, victim.raw()).unwrap().unwrap();
+    assert_eq!((k.attacker, k.betrayal), (Some(0), false));
+    let k = kill_from_guest(&g, victim.raw(), victim.raw())
+        .unwrap()
+        .unwrap();
+    assert!(!k.betrayal);
+    let world = kill_from_guest(&g, u32::MAX, victim.raw())
+        .unwrap()
+        .unwrap();
+    assert_eq!((world.attacker, world.betrayal), (None, false));
+    assert_eq!(kill_from_guest(&g, teammate, u32::MAX).unwrap(), None);
 }
 
 #[test]
@@ -258,4 +282,27 @@ fn the_mind_crouches_over_a_body_and_stands_still() {
         (pad.left_stick, pad.right_stick, pad.right_trigger),
         ((0.0, 0.0), (0.0, 0.0), 0.0)
     );
+}
+
+#[test]
+fn temperament_showboating_raises_own_kill_taunts_behind_the_same_gates() {
+    let k = kill(Some(1), 2, false, HERE, 0);
+    let count = |taunt, weight| {
+        (0..512)
+            .filter(|&seed| {
+                let mut e = Emoter::new(taunt, seed);
+                e.hear_with_style(&[k], Some(1), weight);
+                assert_eq!(e.step(HERE, false, true, 1), None);
+                e.step(HERE, false, false, 2).is_some()
+            })
+            .count()
+    };
+    assert_eq!(count(0.0, 2.0), 0);
+    assert!(count(0.5, 1.8) > count(0.5, 0.4) * 2);
+
+    let mut e = armed(0);
+    assert_eq!(e.step(HERE, false, false, 1), Some(true));
+    e.taunt = 0.0;
+    assert_eq!(e.step(HERE, false, false, 2), None);
+    assert!(!e.busy());
 }

@@ -2351,6 +2351,90 @@ fn role_spheres_read_the_physics_elements_multisphere() {
     assert!(role_spheres(&VehicleRole::default()).is_empty());
 }
 
+/// A weapon fires Halo 1's effects: each barrel takes its own trigger's
+/// firing effects (firing, misfire, empty) in order, with the damage the
+/// parts give, and a barrel whose trigger has none gets none (before
+/// converter version 97 every barrel took the Halo 2 counterpart's, the
+/// last one's when it had fewer barrels). A magazine takes Halo 1's
+/// reloading and chambering effects, and the root's Halo 1 references
+/// win over the counterpart's.
+#[test]
+fn a_weapon_fires_and_reloads_with_halo1_s_effects() {
+    use crate::arsenal::{
+        FIRING_DAMAGE_REFS, FIRING_EFFECT_REFS, FiringParts, MAGAZINE_CHAMBERING_EFFECT,
+        MAGAZINE_RELOADING_EFFECT, Role, WeaponParts, weapon,
+    };
+    use crate::h1::{Magazine, TRIGGER_SIZE, Trigger, WEAP_SIZE, Weapon};
+    use tags::defs::{self, Defs, Record, Target, Val};
+
+    let w = Weapon {
+        magazines: vec![Magazine::default()],
+        triggers: vec![Trigger::default(), Trigger::default()],
+        ..Default::default()
+    };
+    let b = vec![0u8; WEAP_SIZE + 2 * TRIGGER_SIZE];
+    let shake = TagId(0xe123_0045);
+    let (effe, snd) = (FourCC(*b"effe"), FourCC(*b"snd!"));
+    let parts = WeaponParts {
+        firing_effects: vec![vec![
+            FiringParts {
+                // Halo 1's empty effect may be a sound (the plasma rifle's).
+                effects: [Some((effe, local(3))), None, Some((snd, local(4)))],
+                damage: [Some(shake), None, None],
+            },
+            FiringParts {
+                effects: [Some((effe, local(5))), None, None],
+                damage: [None; 3],
+            },
+        ]],
+        magazine_effects: vec![[
+            Some((FourCC(*b"effe"), local(6))),
+            Some((FourCC(*b"effe"), local(7))),
+        ]],
+        // The counterpart's ready effect is replaced by Halo 1's sound.
+        halo2: vec![("ready_effect".into(), FourCC(*b"effe"), TagId(0xe5ee_0479))],
+        halo1: vec![("ready_effect".into(), FourCC(*b"snd!"), local(8))],
+        ..Default::default()
+    };
+    let root = weapon(&w, &b, &parts, &Role::default()).unwrap();
+    let d = Defs::builtin().group(FourCC(*b"weap")).unwrap();
+    let r = defs::from_built(d, &root).unwrap();
+    let block = |r: &Record, p: &str| match r.at(p) {
+        Some(Val::Block(b)) => b.clone(),
+        x => panic!("{p}: {x:?}"),
+    };
+    let target = |r: &Record, p: &str| match r.at(p) {
+        Some(Val::Ref {
+            target: Target::Id(id),
+            ..
+        }) if *id != TagId::NULL => Some(*id),
+        Some(Val::Ref { .. }) => None,
+        x => panic!("{p}: {x:?}"),
+    };
+    let barrels = block(&r, "barrels");
+    assert_eq!(barrels.len(), 2);
+    let fx = block(&barrels[0], "block_e4");
+    assert_eq!(fx.len(), 2);
+    let effects = |e: &Record| FIRING_EFFECT_REFS.map(|p| target(e, p));
+    let damage = |e: &Record| FIRING_DAMAGE_REFS.map(|p| target(e, p));
+    assert_eq!(effects(&fx[0]), [Some(local(3)), None, Some(local(4))]);
+    // The group word is the target's, written by the builder (a `snd!`
+    // placeholder's is `snd!`): `from_built` reads it back as 0, so the
+    // groups are checked on the built map (`weapon_sounds_disc`).
+    assert_eq!(damage(&fx[0]), [Some(shake), None, None]);
+    assert_eq!(effects(&fx[1]), [Some(local(5)), None, None]);
+    assert!(
+        block(&barrels[1], "block_e4").is_empty(),
+        "the second trigger has no firing effects of its own"
+    );
+    let mags = block(&r, "magazines");
+    assert_eq!(target(&mags[0], MAGAZINE_RELOADING_EFFECT), Some(local(6)));
+    assert_eq!(target(&mags[0], MAGAZINE_CHAMBERING_EFFECT), Some(local(7)));
+    assert_eq!(target(&r, "ready_effect"), Some(local(8)));
+    // Slots no part names are empty.
+    assert_eq!(target(&r, "pickup_sound"), None);
+}
+
 /// A vehicle's role is taken over the base vehicles of its type whose
 /// friction and hover points are nearest Halo 1's powered points: the
 /// ghost's three against Coagulation's ghost (3), spectre (4) and wraith

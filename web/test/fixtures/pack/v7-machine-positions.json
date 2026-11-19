@@ -1,0 +1,77 @@
+[
+  {
+    "game_id": "g",
+    "tick": 10,
+    "players": []
+  },
+  {
+    "game_id": "g",
+    "tick": 12,
+    "players": [],
+    "machine_positions": [
+      {
+        "i": 7,
+        "p": 64
+      },
+      {
+        "i": 23,
+        "p": 200
+      }
+    ]
+  },
+  {
+    "game_id": "g",
+    "tick": 14,
+    "players": [],
+    "machine_positions": [
+      {
+        "i": 7,
+        "p": 128
+      }
+    ]
+  },
+  {
+    "game_id": "g",
+    "tick": 16,
+    "players": []
+  },
+  {
+    "game_id": "g",
+    "tick": 18,
+    "players": [],
+    "machine_positions": [
+      {
+        "i": 7,
+        "p": 255
+      }
+    ]
+  },
+  {
+    "game_id": "g",
+    "tick": 20,
+    "players": [],
+    "machine_positions": [
+      {
+        "i": 23,
+        "p": 40
+      }
+    ],
+    "cut": 2
+  },
+  {
+    "game_id": "g",
+    "tick": 22,
+    "players": []
+  },
+  {
+    "game_id": "g",
+    "tick": 24,
+    "players": [],
+    "machine_positions": [
+      {
+        "i": 23,
+        "p": 168
+      }
+    ]
+  }
+]

@@ -26,6 +26,27 @@ fn the_switch_places_it_and_the_ab_places_it_observing() {
     assert!(placed("impl.render.native_post=on,render-timing").is_some(), "the call still runs: timing is fine");
 }
 
+/// Off or on, it holds nothing a load must drop: never a blocker.
+#[test]
+fn its_snapshot_policy_is_stateless_on_or_off() {
+    for switches in ["", "impl.render.native_post=on"] {
+        let mut r = Registry::new(Switches::parse(switches).unwrap());
+        assert!(r.add(&NativePost).unwrap());
+        let plan = r.build(&Base).unwrap();
+        let policies: Vec<_> = plan
+            .snapshot
+            .iter()
+            .map(|f| (f.id, f.policy.name()))
+            .collect();
+        assert_eq!(
+            policies,
+            vec![(native_post::ID, "stateless")],
+            "{switches:?}"
+        );
+        assert!(plan.snapshot_blockers().is_empty(), "{switches:?}");
+    }
+}
+
 #[test]
 fn the_colour_pass_has_a_return_boundary() {
     let plan = placed("impl.render.native_post=on").expect("placed");

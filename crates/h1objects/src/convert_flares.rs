@@ -157,8 +157,8 @@ impl Converter<'_> {
         let object = h1::Object::read(self.h1, b)?;
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
         rep.physics = Some("none (garbage has no physics model)".into());
-        let hlmt = self.model(&mut rep, &object, None, &tag.name, true)?;
-        let predicted = self.predicted(&object)?;
+        let hlmt = self.model(&mut rep, &object, None, &tag.name, true, None)?;
+        let predicted = self.predicted(hlmt);
         let role = crate::arsenal::role(self.base, b"garb", &[])?
             .map(|r| r.root)
             .unwrap_or_default();

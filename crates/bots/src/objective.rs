@@ -7,7 +7,7 @@
 //! has the addresses, the evidence and how sure each is. In short:
 //!
 //! - the game-engine globals `E = [0x4e9ae8]`: `+0xc14` the engine index
-//!   (1 CTF, 3 Oddball, 4 King of the Hill, 8 Territories, 9 Assault),
+//!   (1 CTF, 3 Oddball, 4 King of the Hill, 7 Juggernaut, 8 Territories, 9 Assault),
 //!   `+0xc18` how many objective objects there are (at most 8) and
 //!   `+0xc1c` their records, `0x10` each: the object, its team (in
 //!   Oddball the ball's number), the unit carrying it and that unit's
@@ -32,7 +32,7 @@ type R<T> = Result<T, MemFault>;
 // ---- where it lives ----
 
 /// Holds the game-engine globals' address (`0xc9c` bytes).
-pub const GAME_ENGINE: u32 = 0x004e_9ae8;
+pub const GAME_ENGINE: u32 = points::GAME_ENGINE.base;
 /// `E+0xc14`: the engine index in play (`i32`; `0x1574c0` copies the
 /// variant's `+0x44` there and sets 0 when that engine has no globals).
 pub const ENGINE_INDEX: u32 = 0xc14;
@@ -57,7 +57,7 @@ pub const DESIGNATOR_TEAMS: u32 = 0x10;
 pub const DESIGNATORS: u16 = 9;
 
 /// Holds King of the Hill's globals' address (`E+0xfc` in a KotH game).
-pub const KOTH_GLOBALS: u32 = 0x0051_ecc8;
+pub const KOTH_GLOBALS: u32 = points::KOTH_GLOBALS.base;
 /// In them: the hill in play (`i32`, 0 to 7).
 pub const KOTH_HILL: u32 = 0x1a0;
 
@@ -76,6 +76,7 @@ pub mod kind {
     pub const CTF_RETURN: u16 = 1;
     pub const BOMB_SPAWN: u16 = 2;
     pub const BOMB_RETURN: u16 = 3;
+    pub const TERRITORY: u16 = 10;
     pub const BALL_SPAWN: u16 = 4;
     /// Hill `n`'s corners are type `HILL + n`, `n` 0 to 7.
     pub const HILL: u16 = 11;
@@ -84,12 +85,13 @@ pub mod kind {
 
 // ---- what the bot knows ----
 
-/// The objective gametypes (Slayer and Juggernaut have none).
+/// Game variants with a role, item or scoring zone to play.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Game {
     Ctf,
     Oddball,
     Koth,
+    Juggernaut,
     Territories,
     Assault,
 }
@@ -101,6 +103,7 @@ impl Game {
             1 => Game::Ctf,
             3 => Game::Oddball,
             4 => Game::Koth,
+            7 => Game::Juggernaut,
             8 => Game::Territories,
             9 => Game::Assault,
             _ => return None,
@@ -189,10 +192,40 @@ impl Hill {
 /// How far above or below a hill's centre still counts as in it.
 pub const HILL_HEIGHT: f32 = 2.0;
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct Territory {
+    pub at: Vec3,
+    pub owner: Option<u32>,
+    pub owner_team: Option<i16>,
+    pub occupants: u16,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum State {
+    #[default]
+    Unknown,
+    Hill {
+        occupants: u16,
+    },
+    Territories(Vec<Territory>),
+    Juggernauts(u16),
+    Assault {
+        defending: Option<i16>,
+        armed: u16,
+        arming: u16,
+        planted: u16,
+    },
+}
+
+fn member(mask: u16, player: u32) -> bool {
+    player < 16 && mask & (1 << player) != 0
+}
+
 /// The objective as the bot sees it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Objective {
     pub game: Game,
+    pub state: State,
     /// The bot's own player index (as [`Seen::id`]): to know what it
     /// carries and its role.
     pub me: u32,
@@ -200,6 +233,40 @@ pub struct Objective {
     pub spots: Vec<Spot>,
     /// King of the Hill's hill in play.
     pub hill: Option<Hill>,
+}
+
+impl Objective {
+    /// Hold the primary use action only for a loose item this goal can take.
+    pub(crate) fn take_at(&self, goal: Option<Goal>, me: Me) -> bool {
+        let Some(Goal::Go(at)) = goal else {
+            return false;
+        };
+        dist(me.position,at) < crate::mind::TAKE_RANGE && self.items.iter().any(|i|{
+            i.position==at && i.carrier.is_none() && match self.game {
+                Game::Oddball => true,
+                Game::Ctf => i.team!=me.team,
+                Game::Assault => (i.team==me.team || i.team==8)
+                    && !matches!(self.state,State::Assault {planted,..} if member(planted,i.team as u32)),
+                _ => false,
+            }
+        })
+    }
+
+    pub(crate) fn in_hill(&self, id: u32, at: Vec3) -> bool {
+        match self.state {
+            State::Hill { occupants } => member(occupants, id),
+            _ => self.hill.as_ref().is_some_and(|h| h.contains(at)),
+        }
+    }
+    pub(crate) fn am_juggernaut(&self) -> bool {
+        matches!(self.state, State::Juggernauts(mask) if member(mask,self.me))
+    }
+    pub(crate) fn juggernaut_opponent(&self, id: u32) -> Option<bool> {
+        match self.state {
+            State::Juggernauts(mask) => Some(member(mask, id) != member(mask, self.me)),
+            _ => None,
+        }
+    }
 }
 
 // ---- reading it ----
@@ -217,48 +284,185 @@ pub fn read(m: &dyn GuestMemory, me: u32) -> R<Option<Objective>> {
     let mut out = Objective {
         game,
         me,
-        items: read_items(m, e)?,
+        state: State::Unknown,
+        items: match game {
+            Game::Assault | Game::Ctf | Game::Oddball => read_items(m, e)?,
+            _ => Vec::new(),
+        },
         spots: Vec::new(),
         hill: None,
     };
-    let flags = netgame_flags(m)?;
-    let teams = designators(m, e)?;
-    let team_of = |d: u16| -> Option<i16> {
-        match teams {
-            // No designator bound: take the designator for the team.
-            None => (d < 8).then_some(d as i16),
-            Some(t) => t.get(usize::from(d)).copied().flatten(),
+    match game {
+        Game::Juggernaut => {
+            let j = m.u32(points::JUGGERNAUT_GLOBALS.base)?;
+            if j != 0 {
+                out.state = State::Juggernauts(m.u16(j)?);
+            }
         }
-    };
-    let wanted: &[u16] = match game {
-        Game::Ctf => &[kind::CTF_SPAWN, kind::CTF_RETURN],
-        Game::Assault => &[kind::BOMB_SPAWN, kind::BOMB_RETURN],
-        Game::Oddball => &[kind::BALL_SPAWN],
-        Game::Koth | Game::Territories => &[],
-    };
-    for &(position, ty, d) in &flags {
-        if wanted.contains(&ty) {
-            out.spots.push(Spot {
-                kind: ty,
-                team: team_of(d),
-                position,
-            });
+        Game::Territories => out.state = State::Territories(territories(m, &netgame_flags(m)?)?),
+        Game::Koth => read_hill(m, &netgame_flags(m)?, &mut out)?,
+        Game::Oddball => {
+            let balls = m.u32(points::ODDBALL_GLOBALS.base)?;
+            if balls != 0 {
+                let flags = netgame_flags(m)?;
+                for i in 0..3 {
+                    let index = m.u32(balls + 0xc + 4 * i)?;
+                    if let Some(&(position, kind::BALL_SPAWN, 8)) = flags.get(index as usize) {
+                        out.spots.push(Spot {
+                            kind: kind::BALL_SPAWN,
+                            team: None,
+                            position,
+                        });
+                    }
+                }
+            }
         }
-    }
-    if game == Game::Koth {
-        let k = m.u32(KOTH_GLOBALS)?;
-        if k != 0 {
-            let n = m.i32(k + KOTH_HILL)?;
-            if (0..i32::from(kind::HILLS)).contains(&n) {
-                let ty = kind::HILL + n as u16;
-                let corners: Vec<Vec3> = flags.iter().filter(|f| f.1 == ty).map(|f| f.0).collect();
-                if !corners.is_empty() {
-                    out.hill = Some(Hill { corners });
+        Game::Ctf | Game::Assault => {
+            let flags = netgame_flags(m)?;
+            let teams = designators(m, e)?;
+            let (plates, active_teams) = if game == Game::Assault {
+                (read_assault(m, &mut out)?, m.u16(e + 0xc)?)
+            } else {
+                (Vec::new(), 0)
+            };
+            for (index, (position, kind, d)) in flags.into_iter().enumerate() {
+                let team = teams.get(usize::from(d)).copied().flatten();
+                let wanted = match game {
+                    Game::Ctf => matches!(kind, kind::CTF_SPAWN | kind::CTF_RETURN),
+                    _ => {
+                        kind == kind::BOMB_SPAWN
+                            || kind == kind::BOMB_RETURN
+                                && team.is_some_and(|t| member(active_teams, t as u32))
+                                && plates.contains(&(d, index as u16))
+                    }
+                };
+                if wanted {
+                    out.spots.push(Spot {
+                        kind,
+                        team,
+                        position,
+                    });
                 }
             }
         }
     }
     Ok(Some(out))
+}
+
+/// The arming and plant routines address both plates by designator.
+fn read_assault(m: &dyn GuestMemory, out: &mut Objective) -> R<Vec<(u16, u16)>> {
+    let mut plates = Vec::new();
+    let a = m.u32(points::CTF_ASSAULT_GLOBALS.base)?;
+    if a == 0 {
+        return Ok(plates);
+    }
+    let g = m.u32(points::GAME_GLOBALS.base)?;
+    let defending = if g != 0 && m.i32(g + 0x240)? == 1 {
+        let team = m.i32(a + 0x1f4)?;
+        (0..8).contains(&team).then_some(team as i16)
+    } else {
+        None
+    };
+    let mut armed = 0;
+    let mut arming = 0;
+    let mut planted = 0;
+    for team in 0..9 {
+        let state = m.u8(a + 0x170 + team)?;
+        if state & 2 != 0 {
+            planted |= 1 << team;
+        }
+        if state & 8 != 0 {
+            armed |= 1 << team;
+        }
+        if m.u16(a + 0x1a0 + 2 * team)? as i16 >= 0 {
+            arming |= 1 << team;
+        }
+    }
+    for d in 0..9 {
+        for offset in [0x14, 0x26] {
+            let index = m.u16(a + offset + 2 * d)?;
+            if index != u16::MAX {
+                plates.push((d as u16, index));
+            }
+        }
+    }
+    out.state = State::Assault {
+        defending,
+        armed,
+        arming,
+        planted,
+    };
+    Ok(plates)
+}
+
+fn read_hill(m: &dyn GuestMemory, flags: &[(Vec3, u16, u16)], out: &mut Objective) -> R<()> {
+    let k = m.u32(KOTH_GLOBALS)?;
+    if k == 0 {
+        return Ok(());
+    }
+    out.state = State::Hill {
+        occupants: m.u16(k + 0x1a8)?,
+    };
+    let id = m.i32(k + KOTH_HILL)?;
+    let count = m.i32(k + 0x60)?;
+    if !(0..i32::from(kind::HILLS)).contains(&id) || !(4..=16).contains(&count) || count % 2 != 0 {
+        return Ok(());
+    }
+    let mut corners = Vec::with_capacity(count as usize);
+    for i in 0..count as u32 {
+        let index = m.u32(k + 4 * i)?;
+        let Some(&(at, ty, _)) = flags.get(index as usize) else {
+            return Ok(());
+        };
+        if ty != kind::HILL + id as u16 {
+            return Ok(());
+        }
+        corners.push(at);
+    }
+    out.hill = Some(Hill { corners });
+    Ok(())
+}
+
+fn territories(m: &dyn GuestMemory, flags: &[(Vec3, u16, u16)]) -> R<Vec<Territory>> {
+    let t = m.u32(points::TERRITORIES_GLOBALS.base)?;
+    let mut out = Vec::new();
+    if t == 0 {
+        return Ok(out);
+    }
+    let players = engine::view::players::array(m)?;
+    let mut occupants = [0u16; 8];
+    if let Some(players) = &players {
+        for (h, player) in players.live(m, 16)? {
+            if player.listed(m)? && player.unit(m)?.is_some() {
+                let site = m.u8(t + 0x95 + 8 * u32::from(h.index()))?;
+                if let Some(mask) = occupants.get_mut(usize::from(site)) {
+                    *mask |= 1 << h.index();
+                }
+            }
+        }
+    }
+    let n = (m.u16(t + 0x114)? as i16).clamp(0, 8) as usize;
+    for (i, &occupants) in occupants.iter().take(n).enumerate() {
+        let flag = m.u16(t + 0x60 + 2 * i as u32)?;
+        let Some(&(at, kind::TERRITORY, _)) = flags.get(usize::from(flag)) else {
+            continue;
+        };
+        let owner = DatumHandle::from_raw(m.u32(t + 0x70 + 4 * i as u32)?);
+        let owner = match (owner, &players) {
+            (Some(h), Some(array)) => match array.get(m, h)? {
+                Some(p) if p.listed(m)? => Some((u32::from(h.index()), i16::from(p.team(m)?))),
+                _ => None,
+            },
+            _ => None,
+        };
+        out.push(Territory {
+            at,
+            owner: owner.map(|p| p.0),
+            owner_team: owner.map(|p| p.1),
+            occupants,
+        });
+    }
+    Ok(out)
 }
 
 /// The registered flags, balls and bombs.
@@ -297,20 +501,17 @@ fn read_items(m: &dyn GuestMemory, e: u32) -> R<Vec<Item>> {
     Ok(out)
 }
 
-/// Each designator's game team, or `None` when no designator is bound.
-fn designators(m: &dyn GuestMemory, e: u32) -> R<Option<[Option<i16>; 9]>> {
+/// Each bound designator's game team.
+fn designators(m: &dyn GuestMemory, e: u32) -> R<[Option<i16>; 9]> {
     let mask = m.u16(e + DESIGNATOR_MASK)?;
-    if mask == 0 {
-        return Ok(None);
-    }
     let mut t = [None; 9];
     for d in 0..DESIGNATORS {
         if mask & 1 << d != 0 {
             let team = m.u16(e + DESIGNATOR_TEAMS + 2 * u32::from(d))? as i16;
-            t[usize::from(d)] = (team >= 0).then_some(team);
+            t[usize::from(d)] = (0..8).contains(&team).then_some(team);
         }
     }
-    Ok(Some(t))
+    Ok(t)
 }
 
 /// The scenario's netgame flags: (position, type, team designator).
@@ -422,14 +623,59 @@ pub fn plan(o: &Objective, me: &Me, others: &[Seen], teams: bool) -> Option<Goal
         Game::Koth => {
             let h = o.hill.as_ref()?;
             let c = h.center();
+            if let State::Hill { occupants } = o.state {
+                return Some(if member(occupants, o.me) {
+                    Goal::Hold(me.position, 0.0)
+                } else {
+                    Goal::Go(c)
+                });
+            }
             if h.contains(me.position) {
                 Some(Goal::Hold(c, (h.radius() * HILL_KEEP).max(0.5)))
             } else {
                 Some(Goal::Go(c))
             }
         }
-        // Next (docs/game/bots.md section 3.7): the territories' owners.
-        Game::Territories => None,
+        Game::Territories => {
+            let State::Territories(sites) = &o.state else {
+                return None;
+            };
+            let allied =
+                |s: &Territory| s.owner == Some(o.me) || teams && s.owner_team == Some(me.team);
+            let priority = |s: &Territory| {
+                let hostile = others
+                    .iter()
+                    .any(|p| !friend(p.id) && member(s.occupants, p.id));
+                match (allied(s), hostile, member(s.occupants, o.me)) {
+                    (true, true, _) | (false, _, true) => 0,
+                    (false, _, _) => 1,
+                    _ => 2,
+                }
+            };
+            let site = sites.iter().min_by(|a, b| {
+                priority(a)
+                    .cmp(&priority(b))
+                    .then_with(|| dist(a.at, me.position).total_cmp(&dist(b.at, me.position)))
+            })?;
+            Some(if member(site.occupants, o.me) {
+                Goal::Hold(me.position, 0.0)
+            } else {
+                Goal::Go(site.at)
+            })
+        }
+        Game::Juggernaut => {
+            let State::Juggernauts(mask) = o.state else {
+                return None;
+            };
+            let target = nearest(
+                me.position,
+                others
+                    .iter()
+                    .filter(|p| member(mask, o.me) != member(mask, p.id))
+                    .map(|p| (p, p.position)),
+            )?;
+            Some(Goal::Hunt(target.id, target.position))
+        }
     }
 }
 
@@ -447,7 +693,7 @@ fn flag_plan(o: &Objective, me: &Me, mates: &[u32], friend: &dyn Fn(u32) -> bool
             at,
             o.spots
                 .iter()
-                .filter(|s| s.kind == ty && mine(s) == ours)
+                .filter(|s| s.kind == ty && s.team.is_some() && mine(s) == ours)
                 .map(|s| (s, s.position)),
         )
         .map(|s| s.position)
@@ -534,25 +780,38 @@ fn bomb_plan(
     friend: &dyn Fn(u32) -> bool,
 ) -> Option<Goal> {
     let at = me.position;
+    let defending = match o.state {
+        State::Assault { defending, .. } => defending,
+        _ => None,
+    };
     let plate = |ours| {
-        let find = |kind| {
-            nearest(
-                at,
-                o.spots
-                    .iter()
-                    .filter(|s| {
-                        s.kind == kind
-                            && s.team
-                                .is_some_and(|t| (0..8).contains(&t) && (t == me.team) == ours)
-                    })
-                    .map(|s| (s, s.position)),
-            )
-            .map(|s| s.position)
-        };
-        find(kind::BOMB_RETURN).or_else(|| find(kind::BOMB_SPAWN))
+        nearest(
+            at,
+            o.spots
+                .iter()
+                .filter(|s| {
+                    let Some(team) = s.team else { return false };
+                    s.kind == kind::BOMB_RETURN
+                        && (0..8).contains(&team)
+                        && if ours {
+                            team == me.team
+                        } else {
+                            team != me.team && defending.is_none_or(|d| d == team)
+                        }
+                })
+                .map(|s| (s, s.position)),
+        )
+        .map(|s| s.position)
     };
     let theirs = plate(false);
-    if o.items.iter().any(|i| i.carrier == Some(o.me)) {
+    if let Some(bomb) = o.items.iter().find(|i| i.carrier == Some(o.me)) {
+        if let State::Assault { armed, arming, .. } = o.state
+            && member(arming, bomb.team as u32)
+            && !member(armed, bomb.team as u32)
+            && theirs.is_some_and(|p| dist(at, p) < 0.5)
+        {
+            return Some(Goal::Carry(at));
+        }
         return Some(Goal::Carry(theirs.unwrap_or(at)));
     }
     let closest = |want: &dyn Fn(&Item) -> bool| {
@@ -566,6 +825,11 @@ fn bomb_plan(
     let bomb = closest(&|i| i.carrier.is_none() && (i.team == me.team || i.team == 8));
     let defender = role_of(o.me, mates) == Role::Defend;
     let home = plate(true);
+    if defending == Some(me.team) {
+        return incoming
+            .and_then(|b| b.carrier.map(|id| Goal::Hunt(id, b.position)))
+            .or_else(|| home.map(|p| Goal::Hold(p, DEFEND_RADIUS)));
+    }
     if let Some(b) = incoming
         && (defender
             || (escort.is_none() && bomb.is_none())
@@ -583,6 +847,9 @@ fn bomb_plan(
         return Some(Goal::Escort(b.position));
     }
     if let Some(b) = bomb {
+        if matches!(o.state, State::Assault { planted, .. } if member(planted,b.team as u32)) {
+            return Some(Goal::Hold(b.position, DEFEND_RADIUS));
+        }
         if let Some(plate) = theirs
             && dist(plate, b.position) <= HOME
         {
@@ -599,7 +866,7 @@ fn bomb_plan(
                 Goal::Go(b.position)
             });
         }
-        if !defender || home.is_none() {
+        if !defender || home.is_none() || defending.is_some() {
             return Some(Goal::Go(b.position));
         }
     }
@@ -636,6 +903,16 @@ fn ball_plan(o: &Objective, me: &Me, friend: &dyn Fn(u32) -> bool) -> Option<Goa
         .iter()
         .find(|i| i.carrier.is_some_and(friend))
         .map(|i| Goal::Escort(i.position))
+        .or_else(|| {
+            nearest(
+                at,
+                o.spots
+                    .iter()
+                    .filter(|s| s.kind == kind::BALL_SPAWN)
+                    .map(|s| (s, s.position)),
+            )
+            .map(|s| Goal::Go(s.position))
+        })
 }
 
 #[cfg(test)]

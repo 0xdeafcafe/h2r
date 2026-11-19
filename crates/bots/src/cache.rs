@@ -25,14 +25,14 @@ pub fn current() -> Option<std::sync::Arc<MapData>> {
 /// The file's first bytes and format version. Version 1 had no
 /// [`Stamp`]; it reads as stale ([`crate::autonav::Status::OldFormat`]).
 pub const MAGIC: &[u8; 4] = b"H2BT";
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 /// The nav generator's version. **Bump it whenever the data a map builds
 /// changes**: `bots::nav`, `bots::los`, [`build`] or `crates/pathfind`'s
 /// generator. Every file built by another version is stale and is built
 /// again (`crate::autonav`); the `generator_output_is_pinned` test in
 /// `nav/tests.rs` fails when the output changes and this does not.
-pub const GENERATOR: u32 = 1;
+pub const GENERATOR: u32 = 5;
 
 /// The header's length: magic, format version, [`Stamp`].
 pub const HEADER_LEN: usize = 20;
@@ -83,6 +83,7 @@ pub fn read_header(b: &[u8]) -> Option<(u32, Option<Stamp>)> {
 pub struct MapData {
     pub nav: NavMesh,
     pub walls: Walls,
+    pub places: crate::places::Places,
 }
 
 /// The file name for `map` (the cache's map name) and structure BSP
@@ -105,7 +106,6 @@ pub fn file_name(map: &str, bsp: usize) -> String {
 pub fn build(bsp: &Bsp) -> Result<MapData, String> {
     let pf = pathfind::generate::generate(bsp, 0, 0, &pathfind::generate::Options::default())
         .map_err(|e| e.to_string())?;
-    let nav = NavMesh::from_pathfinding(&pf, &Build::default());
     let mut polys: Vec<Vec<V3>> = Vec::with_capacity(bsp.surfaces.len());
     for s in 0..bsp.surfaces.len() {
         if let Some(ring) = pathfind::generate::surface_edges(bsp, s) {
@@ -113,7 +113,12 @@ pub fn build(bsp: &Bsp) -> Result<MapData, String> {
         }
     }
     let walls = Walls::from_polygons(polys.iter().map(Vec::as_slice));
-    Ok(MapData { nav, walls })
+    let nav = NavMesh::from_collision(&pf, &Build::default(), &walls);
+    Ok(MapData {
+        nav,
+        walls,
+        places: Default::default(),
+    })
 }
 
 impl MapData {
@@ -135,6 +140,7 @@ impl MapData {
                 }
             }
         }
+        self.places.encode(&mut o);
         o
     }
 
@@ -152,7 +158,7 @@ impl MapData {
         let mut at = h + 4 + n;
         let count = u32_at(at)? as usize;
         at += 4;
-        if b.len() != at.checked_add(count.checked_mul(36)?)? {
+        if b.len() < at.checked_add(count.checked_mul(36)?)? {
             return None;
         }
         let mut tris = Vec::with_capacity(count);
@@ -170,6 +176,7 @@ impl MapData {
             MapData {
                 nav,
                 walls: Walls::new(tris),
+                places: crate::places::Places::decode(&b[at..])?,
             },
             stamp,
         ))
@@ -193,6 +200,7 @@ mod tests {
             kind: Kind::Walk,
         };
         let d = MapData {
+            places: Default::default(),
             nav: NavMesh::new(vec![floor, other], vec![e]),
             walls: Walls::new(vec![[[5.0, 0.0, 0.0], [5.0, 1.0, 0.0], [5.0, 0.0, 1.0]]]),
         };

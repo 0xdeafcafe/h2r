@@ -33,6 +33,7 @@ export function liveFrameSource(gameId: string, roster: () => Map<number, Roster
       hits: buf.sampleHits(now),
       bsp: buf.sampleBsp(now),
       machines: buf.sampleMachines(now),
+      machinePositions: buf.sampleMachinePositions(now),
       objects: buf.sampleObjects(now),
       cinematic: buf.cinematic(now),
       markers: buf.liveMarkers(now, MARKER_TTL_MS).map((m) => ({

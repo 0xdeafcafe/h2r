@@ -237,17 +237,26 @@ the nav mesh comes from. A bot sees an enemy only when all three hold:
 - the enemy is inside the bot's view cone;
 - a reaction delay has passed (§3.4).
 
-The bot knows nothing it could not see or hear: a gunshot, a radar blip or a
-teammate's callout. The radar uses the game's own rule: an enemy that
-moves, and is not crouched, inside the radar range.
+The host gives each bot its own view, teammate HUD markers, audible shots,
+radio calls and public match information. Motion-tracker blips would be
+another legitimate input once a reader for the game's displayed blips exists.
+
+Each brain keeps a short, tick-stamped history of world samples, vehicle
+sight, nearby grenades, sound, deaths and teammate callouts. It thinks
+from the newest sample at least `perception_ticks` old. A repeated poll
+in the same tick reuses the previous pad. Local slots sample through the
+host's ordinary input path. If the host skips a sample, the brain can use
+an older observation. The first live sample after a respawn starts a
+fresh history.
 
 ### 3.2 Navigation
 
 Every map gets a nav mesh, built offline from the BSP collision by our own
-tool and cached by map checksum. It is not committed, because it is derived
-from the disc. The tool is `crates/pathfind`'s generator
-(`pathfind::generate::generate`): today it emits H2 pathfinding sectors from
-collision for converted maps. Bots need its sector graph, not the tag.
+tool and cached by map fingerprint. `bots::autonav::build_map` reads the
+scenario and builds one `<map>.<bsp>.bots` per BSP. `bots::cache::build`
+starts with the sectors from `pathfind::generate::generate`. The bot
+generator adds its links and collision probes to those sectors. Generator
+version 5 regenerates earlier caches and includes tactical places.
 
 The mesh holds:
 
@@ -257,12 +266,20 @@ The mesh holds:
   - **drop**: a ledge to a lower surface within the fall-damage limit;
   - **jump**: a gap or ledge reachable at the biped's jump arc, checked by
     sweeping the arc against collision;
-  - **crouch-jump**: as jump, a little higher;
-  - **teleporter**: from the scenario's teleporter netgame flags;
-  - **lift**: man cannons and gravity lifts, from scenery and device
-    positions;
-  - **vehicle**: not built. Vehicles follow the bipeds' mesh for now
-    (§3.9).
+  - **crouch-jump**: a separate takeoff and landing for ledges reachable
+    with the smaller capsule. The follower presses A, detects the rise,
+    then holds crouch two simulation ticks after takeoff until it reaches
+    the landing.
+  - **teleporter**: directed links from each sender to all of its
+    channel's receivers on this BSP. The bot walks into the trigger,
+    keeps its approach direction briefly and resumes at the receiver.
+    An unexpected receiver or a timeout causes a replan.
+  - **lift**: directed links from a placed gravity lift, launcher or
+    elevator to a BSP landing. The bot steps on, lets the lift pick it
+    up, then steers toward the landing. On a moving platform it waits
+    until the platform is level with the exit before stepping off.
+  - **vehicle**: the ground-vehicle planner filters the walk graph by
+    chassis clearance and checks each steering span (§3.9).
 
 Paths come from A\* over the sector graph, smoothed with a funnel pass and
 followed by steering:
@@ -273,6 +290,175 @@ followed by steering:
 
 A move becomes a left-stick vector relative to the bot's facing. A bot
 never warps.
+
+**Traversal evidence and estimates.**
+
+| Input | Evidence |
+|---|---|
+| Teleporter flag position, type and channel | `scnr+0x118`, stride `0x20`, position `+0`, types `7` and `8` at `+0x10`, identifier `+0x14`. See `scenario-edit/src/layout.rs`, `h1convert/src/apply.rs` and the retail checks in `h1convert/tests/h2_scenario.rs`. |
+| Scenery, machine and crate placement | `scnr+0x50`/ `+0x58` (scenery block / palette, strides `0x5c` / `0x28`) and `+0xa8` / `+0xb0` (machine, `0x48` / `0x28`). Palette index `+0`, flags `+4` (bit 0 suppresses automatic placement), position `+8`, yaw `+0x14`, palette datum `+4`. See the object-type table `0x00468630`, palette access `0x000a743b` and `scenario-edit/src/layout.rs`. Crates use the placement at `+0x328` (stride `0x4c`) and palette at `+0x330`. |
+| Lift object identity and travel | The retail machine palette places `power_boost` on Ascension, `grav_colossus` four times on Colossus and `elevator_cyclotron` on Cyclotron. Name patterns for modded placements, the launch direction, travel envelope and exit timing are **[guess]**. The generator scans for a landing that fits a standing biped and checks the path against the BSP. The reverse axis used for Ascension projects onto elevated playable BSP geometry. |
+| Jump and standing clearance | Retail multiplayer Chief has standing height 0.725 and crouch height 0.5. See [superbounce.md](superbounce.md) and its traces of `0x000df66e`, `0x000dd8e0` and `0x000e2a06`. The sampled arc, shoulder offsets, and takeoff timing are **[guess]**. |
+
+The generator checks headroom at walk-sector centres and portals. The
+steering layer checks the standing capsule ahead on the floor, including
+within a single polygon and when strafing. A jump samples the swept arc
+at the centre and both shoulders for roof and body clearance. Teleporter
+cost includes walking to the sender and walking from the receiver. Lift
+cost includes boarding and travel time plus a 25% allowance for exposure during the ride. On
+graphs with these links the search uses a zero distance heuristic so a
+shortcut remains admissible even when its entrance is away from the goal.
+At six ticks per walking unit, the teleporter transit allowance is six
+ticks. A lift budgets eight ticks to board plus 2.7 ticks per unit of
+travel. A platform elevator budgets 24 ticks to board plus 4.8 ticks per
+unit. The exposure allowance applies to travel. All rates are estimates.
+
+#### Traversal audit by map
+
+Counts are **directed edges**. The source scan used the retail Xbox disc,
+the nine installed Multiplayer Map Pack scenarios and thirteen installed
+H1 conversions. It read scenario flags and automatic scenery, machine and
+crate placements. An independent offline probe checked endpoints against
+fingerprint-matched cached BSP triangles and walk polygons. The counts
+below are the expected output of the new Rust generator. The ignored
+`bots/tests/map_corpus.rs` test rebuilds all 34 from source and checks
+those expectations. A landing that clears the BSP still needs a ride in
+the game to establish which deck the engine actually reaches.
+
+| Retail H2 scenario | Teleporter | Lift | Placement or remaining gap |
+|---|---:|---:|---|
+| ascension | 1 | 1 | One-way channel and angled `power_boost`. |
+| beavercreek | 2 | 0 | Reciprocal channels. |
+| burial_mounds | 0 | 0 | No matching placement. |
+| coagulation | 2 | 0 | Two outbound base channels. |
+| colossus | 0 | 5 | Four `grav_colossus` machines and the high power-lift crate. |
+| cyclotron (Ivory Tower) | 0 | 4 | Central elevator and three HVAC lifts. |
+| foundation | 0 | 4 | Four short HVAC lifts. |
+| headlong | 1 | 2 | One-way channel and two steam lifts. |
+| lockout | 0 | 1 | Tube with an overhanging exit. Check the landing deck. |
+| midship | 0 | 5 | Two Covenant power lifts and three midpillar placements. Check which bodies the midpillars actually move. |
+| waterworks | 2 | 0 | Two outbound channels. The crusher is a dynamic hazard. |
+| zanzibar | 0 | 0 | The wheel and gates move. Their changing surfaces have no timed edges. |
+
+| Map Pack scenario | Teleporter | Lift | Placement or remaining gap |
+|---|---:|---:|---|
+| containment | 2 | 0 | Both receivers are about 3.0 units above their landing. Gate state is dynamic. |
+| warlock | 4 | 4 | Reciprocal channels and four lift crates. Check the exit height on all four. |
+| deltatap (Sanctuary) | 0 | 0 | No matching placement. |
+| turf | 0 | 0 | No matching placement. |
+| backwash | 0 | 4 | Four central lift machines. |
+| dune (Relic) | 2 | 0 | Reciprocal channels. The static graph can suggest the switch-controlled portal while it is disabled. A failed ride triggers recovery. |
+| elongation | 0 | 0 | Conveyor surfaces have no timed ride edges. |
+| gemini | 4 | 0 | No clear ascent found for the two named gravity columns. The effect and upper crate provide no verified player ride. |
+| triplicate (Terminal) | 0 | 0 | Train and crossing gates are dynamic hazards. |
+
+The later Blastacular maps Tombstone (`highplains`) and Desolation
+(`derelict`) were absent from the available assets. Their link counts are
+unverified. See [Title updates and maps](../runtime/title-updates.md).
+
+| Converted H1 scenario | Teleporter | Lift |
+|---|---:|---:|
+| h1_beavercreek | 2 | 0 |
+| h1_bloodgulch | 2 | 0 |
+| h1_boardingaction | 8 | 0 |
+| h1_carousel | 4 | 0 |
+| h1_chillout | 3 | 0 |
+| h1_damnation | 2 | 0 |
+| h1_hangemhigh | 0 | 0 |
+| h1_longest | 0 | 0 |
+| h1_prisoner | 0 | 0 |
+| h1_putput (Chiron TL-34) | 30 | 0 |
+| h1_ratrace | 4 | 0 |
+| h1_sidewinder | 4 | 0 |
+| h1_wizard | 4 | 0 |
+
+The converter writes type 7 senders and type 8 receivers. Matching their
+channel preserves Blood Gulch's two one-way base exits and Sidewinder's
+mixed layout. On Sidewinder, channels 2 and 3 have opposite endpoints.
+The scan found no automatically placed machines or lift-family objects
+on the thirteen conversions. Sidewinder has blast-door collision scenery.
+Whether any converted scenery moves under a script requires a game run.
+
+The jump probe found ledges above standing-jump reach with a clear
+crouched arc on Lockout (0.40 units), H2 Beaver Creek (0.36), H1 Blood
+Gulch (0.57) and H1 Sidewinder (0.40). These are candidates for the
+existing crouch-jump follower. Check takeoff, ceiling clearance and
+landing with a player-sized biped. There is no separate ladder action.
+
+#### Belief and map knowledge
+
+**What can reach a decision.** The local and phantom pads both pass host
+candidates through `perceive::observe` before combat, movement, radio or
+memory. The paired-world harness in `perceive::honesty` runs seeded brains
+with separate radios, comparing projected inputs, controller output,
+chosen activity, kit and outgoing enemy call. One fixture puts a hidden
+enemy and power weapon behind a base wall on an H1-shaped valley. A
+second pair starts at the production guest reader, changing a hidden
+biped's state in the synthetic object table before either brain runs.
+
+| Host input audited | Information the bot receives |
+|---|---|
+| Living unit table, aim and weapon slots | Enemies must pass view cone and BSP sight. Teammate positions act as HUD markers. Aim and the visible held weapon require sight on either team. Exact opponent shields, reserves and magazine counts are unavailable. Body avoidance, weapon seeking and group decisions use the filtered list. |
+| Ground objects and placement records | A visible weapon supplies its model. Its remaining ammo becomes known when held. Occupied power sites require sight. A successful scan establishes emptiness only at a known pad the bot can inspect. A failed scan supplies no observation. |
+| Vehicles and seats | A visible hull or the bot's own ride supplies the model, pose and seat layout. Identifying a rider on another vehicle also requires sight of that player. Remote vehicle health uses a neutral estimate. The bot can read its own ride's health. |
+| Objective globals | Game mode, objective geometry, bases and the active hill are public. A loose objective or enemy carrier requires sight. Friendly carriers can be followed by their teammate marker. |
+| Shots, projectiles and death log | Audible shots give a direction for a look or search. A grenade dodge requires a close, visible projectile. The kill feed supplies identities. A fresh visible body or the bot's own death can supply a position. |
+| Scoreboard, radio and map tags | Scores and team membership are public. Radio distributes dated observations on completed ticks. Static placement periods and player starts describe the map. No variant countdown or actual enemy spawn selection feeds the planner. |
+
+A visible power item has probability 1 and a visibly empty pad has
+probability 0 for this tick. Away from the pad, an empty observation
+gradually loses weight. Estimate the return using a witnessed period,
+then a placement override, then the item collection default, with a
+60-second prior if all are unknown. Only a continuously watched pickup
+and return of a new object can teach a period. Last seeing the item
+elsewhere in someone's hands or hearing a teammate call the pad empty
+also changes the estimate. A carried model is attributable only when it
+matches one known pad. A recognizable object in either hand is specific
+to its placement. Indirect reports always retain uncertainty and retain
+the original observation tick through perception and radio delays.
+Distance, recent danger, the strength of the nearby position and past
+visits all affect whether a trip is worthwhile.
+
+`h1convert` writes the H1 spawn time to the H2 scenario equipment record
+at `+0x0e` in seconds. The converted Blood Gulch has explicit 120-second
+sniper and 90-second rocket placements. Every inspected Sidewinder
+placement has zero there. Its rocket collection supplies 120 seconds,
+and its sniper collection also has zero. Before inspection the cache gives
+the bot its 60-second prior. Once it inspects the placement, the traced
+engine default of 30 seconds and the public variant setting refine that estimate.
+These values describe the bot's expectation.
+
+The cache stores common lanes, sightlines, vantage positions, player
+starts and power pads alongside the mesh and BSP walls. Up to sixteen
+sample origins estimate which sectors lie on many shortest paths. A
+vantage scores sightlines to those lanes, elevation over them, nearby
+solid cover and distinct exits. Spatial sampling and successive spacing
+passes distribute candidates across the map. A replay of the scorer on
+older fingerprint-matched geometry selected 32 positions each on Blood
+Gulch and Sidewinder, spanning about 115 × 134 and 99 × 102 world units
+in plan respectively. The corpus test checks coverage after regeneration.
+
+A calm sniper or precision gunner can seek a position and face the lane
+it covers. A bot ahead on the scoreboard can hold a nearby vantage.
+Patience extends the wait at a projected return, and a favorite weapon can
+tip the choice between two nearby pads. A patient long-range gunner or one
+carrying its favorite rifle gives a stronger sightline more weight.
+Skill and tuned awareness affect how many places and pad locations it
+recognizes, how far it will go, and how accurately it estimates arrival.
+A once-visible enemy can be chased at its last observed position. When an
+idle bot hears a gunshot, it can turn toward the coarse bearing after a
+5–8 tick reaction delay, then walk a short distance in that direction.
+The sound gives it neither a combat target nor a reason to fire. A kill
+announcement retires the old sighting and may prompt a look toward a
+plausible out-of-view map start. Search confidence expires on the existing
+enemy-memory clock.
+
+Per-bot experience records verified supply visits and confirmed kills
+from a recent firing position in coarse map regions. A versioned serde
+snapshot can be restored to another brain. A future Live profile adapter
+can store it under the persistent ranked bot's account and map revision
+on the local server and worker. Within this lane the brain owns it in
+memory. It survives match resets for that brain's lifetime.
 
 **Getting unstuck** (`crates/bots/src/stuck.rs`, built). A pure state
 machine, run every tick the bot is walking somewhere (chase, roam, going
@@ -388,7 +574,8 @@ These are the inputs to that design.
 |---|---|
 | fight | a visible enemy; my health; my weapon against theirs at that range |
 | chase | an enemy seen recently, its last known position |
-| pick up weapon or powerup | how much better it is than what I hold; distance; the respawn timer |
+| hold angle | a patient bot keeps aiming at its last sighting for a moment |
+| pick up weapon or powerup | improvement over the held gun, distance, estimated availability and position strength |
 | seek health | shields down, no enemy in view (cover, then a wait for recharge) |
 | play the objective | gametype; my role (carrier, escort, defend, attack); team state |
 | flee | outgunned, low health, a grenade nearby |
@@ -407,8 +594,8 @@ guarding its flag or escorting a carrier. Target choice combines the
 existing range, turn and stickiness costs with the objective, teammates'
 calls, recent kills and visible openings. A bot that loses sight plays its
 objective first. In Slayer it can recover shields, respond to a call,
-regroup after withdrawing, collect a due supply, investigate its last
-sighting, or roam. A team call alone never authorizes a shot.
+regroup after withdrawing, collect a due supply, hold an angle, investigate
+its last sighting, or roam. A team call alone never authorizes a shot.
 
 Reload (X) and switch weapons (Y) take 5–13 ticks of stable intent,
 depending on skill, then hold 2–4 ticks. Retries are at least 2 s apart
@@ -426,12 +613,60 @@ when another enemy is within 2.5 of the target, three times before pushing
 in with a short gun; and at twice the rate at where an enemy went out of
 view in the last 2 s, while chasing. Each throw is flown against the map's
 collision and aimed to land (`bots::grenades`, "Built: weapon skill" in
-§10); none while dual wielding.
+§10). In a dual-wield fight the bot can drop its left-hand gun for a
+throw it has already lined up, then waits for the hand to be free.
 
-Each bot seed produces its own aggression, caution, teamwork and objective
-focus. Skill scales how readily it notices an opening, how far it responds
-to teammates and how early it sets out for a supply. Changing difficulty
-preserves the personality.
+#### Personality and temperament
+
+A Clanker's identity seed fixes its trait draws and favorite weapon family.
+Offline bots use a seat seed. Live roster bots use the server's personality
+seed in both local and phantom seats. A difficulty change maps the same
+draws into the new bands. At the same difficulty, a persistent bot starts
+every match with the same traits and a fresh mood.
+
+| Trait | What changes in play | Easy | Normal | Heroic | Legendary |
+|---|---|---|---|---|---|
+| Aggression | Takes openings and closes distance | .05–.95 | .12–.92 | .24–.90 | .35–.88 |
+| Caution | Respects being outnumbered and routes around recent danger | .05–.90 | .16–.88 | .30–.84 | .46–.82 |
+| Teamwork | Responds to radio calls and helps teammates | .08–.85 | .18–.88 | .32–.88 | .46–.87 |
+| Objective focus | Stays closer to the assignment during a fight | .05–.90 | .18–.88 | .35–.90 | .48–.89 |
+| Composure | Has smaller swings in mood and settles faster | .08–.50 | .28–.70 | .50–.86 | .73–.96 |
+| Patience | Holds a strafe or a corner longer before chasing | .05–.48 | .22–.72 | .42–.85 | .65–.91 |
+| Showboating | Attempts riskier melee and sword lunges and taunts more often | .10–.95 | .10–.87 | .12–.75 | .15–.67 |
+| Weapon loyalty | Favors a weapon family and may take a short detour for it during a lull | .05–.95 | .13–.88 | .20–.80 | .28–.72 |
+| Chattiness | Refreshes radio sightings more often. New targets and urgent help go out immediately | .05–.95 | .12–.90 | .25–.83 | .36–.80 |
+
+Each trait is drawn independently and uniformly inside its band's lower and
+upper bounds. The narrower bands give Legendary bots more consistent
+discipline while leaving room for aggressive Clankers. Favorites are drawn
+from automatic guns, precision rifles and pistols, shotguns, snipers, splash
+weapons, and swords. Loyalty biases existing pickup choices and can justify
+a short detour for a visible favorite when the bot is calm and free to rearm.
+
+Confidence, tilt, and fear each run from 0 to 1. Enemy kills build confidence,
+with a larger gain as the streak grows. A death breaks the streak, drops
+confidence, and raises tilt and fear. Betrayals and losing a recent favored
+duel add extra tilt. A duel is favored when the bot sees one opponent with no
+nearby teammate in the fight, holds a weapon ready at that range, and has a
+shield lead of at least 0.30. While dead, the bot can read two crouch requests
+by its killer within 8 m of the body in the first 3 s as a taunt.
+
+The three mood values decay with game time, with half-lives of about 8 to
+17 s depending on composure. Confident bots commit to more fights. Tilt
+can make a bot press and throw grenades more often. It remembers the killer
+for up to 10 s and may favor that opponent in view or pursue its last
+sighting. A frightened bot is quicker to withdraw and regroup with a
+teammate. These choices respect combat range, objective and input gates.
+The human-input layer caps extra tracking noise from tilt and fear at 10%.
+Each match pad still passes through the controller's stick slew, button
+timing and thumb coordination limits before reaching a local port or the
+phantom's delayed uplink.
+
+The map decision layer uses `Personality::wait_weight()` for patience
+near a predicted spawn and `Personality::weapon_interest(role)` to value a
+favorite weapon there. A patient sniper with a favorite rifle will also travel
+farther for a firing position that overlooks a stronger lane. See [the agent bot view](../runtime/agent-api.md#sim-simulated-players-and-direct-state)
+for the live traits and mood.
 
 ### 3.4 Aim
 
@@ -441,6 +676,10 @@ on a stick.
 | Part | Easy | Normal | Heroic | Legendary |
 |---|---|---|---|---|
 | fresh reaction (ticks from first sight) | 10–18 | 7–13 | 5–9 | 5–8 |
+| perception delay (ticks) | 3 | 3 | 2 | 2 |
+| motor/controller delay (ticks) | 2 | 2 | 2 | 1 |
+| continuous delay (ms at 30 Hz) | 167 | 167 | 133 | 100 |
+| button-edge timing σ (ms) | 8 | 6 | 4.5 | 3 |
 | tracking error (std. dev. of the angle) | large | medium | small | very small |
 | lead (fraction of the needed lead) | 0.3 | 0.6 | 0.85 | 1.0 |
 | flick overshoot | large | some | little | little |
@@ -448,9 +687,19 @@ on a stick.
 | grenades (arc solve) | rarely, poor | sometimes | often, good | often, good |
 | weapon choice by range | no | partly | yes | yes |
 
-Each encounter samples a reaction delay around the skill's normal pace.
-Already-alert reactions trend sooner with a five-tick floor (167 ms).
-A brief occlusion keeps the reaction clock and clears the velocity sample.
+The continuous delay covers seeing a rendered change and getting a new
+controller report into the game. Easy and Normal share a five-tick budget
+at 30 Hz. Their hesitation and timing precision differ. Heroic sees the
+change one tick sooner, and Legendary also returns a report one tick
+sooner. These are tuning defaults for playtesting.
+
+The first-sight reaction remains the time to notice and commit to a new
+target after its first visible sample reaches the brain. The five-tick
+floor (167 ms) applies to that reaction. The first input arrives after the
+perception delay, one reaction wait and the motor delay, with up to a
+tick of scatter on a button edge. Later decisions on the same target use
+the same continuous pipeline. A brief occlusion keeps the reaction
+clock and clears the velocity sample.
 
 The right thumb takes several ticks to cross the stick well. Large flicks
 carry a little past the target before settling. Small correlated errors and
@@ -458,6 +707,28 @@ the occasional larger misread vary by skill. Fast crossings leave more
 tracking lag than slow ones. The local virtual pad uses the game's stick
 response, look acceleration and aim assist at sensitivity 3. Phantom
 actions use a nominal sensitivity-3 curve with a 3 rad/s ceiling.
+
+At the controller boundary, each stick stays within its unit circle and
+can travel at most 0.45 stick radii per tick. A full reversal takes at
+least five reports. The model uses a standard two-thumb grip. The right
+thumb can press one of A/B/X/Y/Black/White while the right stick is
+centred, or use the stick or its click. It can switch between those jobs
+once per tick (33 ms) by default. A short press can be missed while the
+stick returns to centre. The left thumb can move its stick and click it.
+The index fingers can use the triggers during a face-button press.
+
+Button and trigger transitions draw independent, centred Gaussian timing
+errors using a per-bot seed. An error of, for example, 6 ms has a 6/33.3
+chance to shift the report by a tick in the direction of the error.
+Reports slip by at most one tick. At zero motor delay an early edge can
+only land on the current tick. Two edges on the same boundary can erase a
+short tap. Sticks use the nominal motor delay. The same seed, samples and
+tuning reproduce the same input.
+
+`bots::tuning::Tuning` exposes `perception_ticks`, `motor_ticks`,
+`button_sigma_ms`, `stick_step`, `thumb_switch_ticks`, `phantom_ping_ms`
+and `phantom_jitter_ms`. The sim accepts these in bot tuning files
+([sim.md](../runtime/sim.md#bot-parameters-from-a-file)).
 
 Lead comes from the target's velocity and the weapon's projectile speed,
 read from the tag at load; hitscan needs no lead. A grenade's throw is
@@ -471,23 +742,9 @@ The numbers in the table are starting points; tuning them needs runs
 
 The user asked: "make them teabag if you do something dumb". The emote is a
 short burst of crouch presses over a body, made with the real crouch input.
-Nothing else is changed.
-
-These events count as a **dumb** death. The detector reads them from the
-kill event, the shots hook and perception:
-
-- the human died to their own grenade, to a fall, or by suicide, with the bot
-  near;
-- the human got stuck: no progress for 3 s against geometry, in the bot's
-  view;
-- the human missed a shot at point-blank range (under 3 m, three or more
-  shots, no hit);
-- the human ran out of ammo mid-fight (an empty magazine and no reserve
-  while an enemy was in view);
-- the bot killed the human in a 1v1 that the human started with a big
-  advantage: shields full against the bot's broken, a power weapon, or
-  attacking from behind;
-- the human betrayed a teammate.
+The kill feed supplies the body position and the event. Self-kills (including
+world deaths) and betrayals can prompt a taunt. Showboats can also taunt over
+their own ordinary kills, at a lower rate.
 
 The bot may emote only when:
 
@@ -499,14 +756,16 @@ The bot may emote only when:
 
 When it does, it presses crouch 3 to 6 times at a human rhythm (built:
 130 to 200 ms per press), for 2 s at most, and stops at once if an enemy
-appears. Built in stage 4 for self-kills and betrayals (§10).
+appears, an objective takes priority, or taunts are turned off.
 
 How often it happens:
 
-    chance = personality.taunt × severity(event)
+    chance = clamp(taunt × severity(event) × showboating_weight, 0, 1)
 
-`taunt` is 0..1 and comes from the personality. It is 0 when the Clankers
-page's **Taunts** setting is off. A persistent bot has its own taunt value.
+Severity is 1 for a betrayal, 0.8 for a self-kill, and 0.35 for the bot's own
+ordinary kill. Showboating and current confidence set the weight. The
+Clankers page's **Taunts** switch sets `taunt` to 0 when off. A persistent bot
+has its own base taunt value.
 
 ### 3.6 Weapons and ammunition (traced)
 
@@ -540,11 +799,13 @@ datums, each resolved like any object (salt and type 2, weapon) and its
 definition through the tag entry (datum compared). A weapon whose
 definition ages (`0x101d20`'s test) is a **battery**: `1 - W+0x184`. One
 with magazines and no aging barrel is **rounds**: the first magazine,
-loaded `W+0x22c` of `+0xa`, reserve `W+0x22a` of `+0xc`. One with neither
-is **not a gun**: the flag, the ball and the bomb (likely; their tags
-were not looked at) and possibly the energy sword (not checked: if its
-barrel ages it reads as a battery). The held weapon is the slot `U+0x212`
-names; the other is the first other slot with a weapon.
+loaded `W+0x22c` of `+0xa`, reserve `W+0x22a` of `+0xc`. The retail
+energy sword has no magazines or barrels and uses battery age. On
+exhaustion `0x101e69..0x101e74` replaces its definition with the tag at
+`D+0x304`, the depleted blade on Zanzibar. The multiplayer weapon type
+excludes the flag, bomb, ball and Juggernaut item from supplies. The two
+hands use slots `U+0x212` and `U+0x213`. The first other occupied slot
+is the stowed weapon.
 
 `arms::pickups` walks the objects array (at most 2048) for live weapon
 objects with no parent: placed weapons from the netgame spawns and dropped
@@ -574,8 +835,7 @@ launcher, fuel rod, brute shot); once per pull with 4 or more
 projectiles a **scatter** gun (shotgun); once per pull otherwise
 **precise** (magnum, battle rifle, carbine); held or charged **spray**
 (SMG, plasma rifle, needler, plasma pistol); no trigger but aim assist a
-**blade** (energy sword; the flag, ball and bomb are expected to have no
-aim assist, not checked). Each role has a band it is best at and a range
+**blade** (energy sword). The Zanzibar flag, ball and bomb each have a trigger. Each role has a band it is best at and a range
 it shoots to (world units):
 
 | Role | Band (`arms::preferred_range`) | Shoots from, to | Rating |
@@ -624,6 +884,63 @@ The presses are Halo 2's Default layout (X reload and action, Y switch,
 B melee, A jump, left stick click crouch), which every bot's profile is
 given whatever the human uses (`guest::bot_block`, §4.2).
 
+**Dual wielding and power items.** The following fields were checked against
+retail code and Zanzibar tag metadata. The weapons list belongs to the
+loaded map, so object handles and tag datums can change between games.
+
+| Field | Where | Trace |
+|---|---|---|
+| Off-hand eligibility | `D+0x12c`, u32 bits 22 or 23 | `0xcd8a8..0xcd8d7` tests the pickup. `0xcdaee..0xcdb0d` disables both off-hand choices if the primary fails the same test. Actions 5/6 recheck both objects through `0x101640` at `0xcd1a6` and `0xcd1b5`. Bit 23 also suppresses the primary pickup choices. The preferred retail pairs all have bit 22. |
+| Weapon identity | `matg=[0x4e034c]`, mulg datum at `matg+0x16c`, universal block at mulg `+8/+0xc`, weapon list at universal `+0x68/+0x6c` | `0x15eb80` searches the eight-byte entries for the weapon datum at `+4`. Zanzibar entries 1, 6, 7, 8 and 9 resolve to SMG, plasma pistol, plasma rifle, brute plasma rifle and needler. Unrecognized definitions skip the pairing policy. |
+| Multiplayer weapon type | `D+0x290`, i16 | Getter `0x101280`; the Assault carrier check at `0x24044d` compares with 1. Zanzibar has 0 for an ordinary gun or sword, 1 for a flag or bomb, 2 for a ball and 4 for the Juggernaut item. |
+| Placement and nominal interval | object `+0xaf`, signed index into scenario `+0x120/+0x124`, stride `0x90`; spawn XYZ at placement `+0x40` | `0x15ae00` indexes the placement from the object. `0x15ac50` reads signed seconds at placement `+0xe`, then collection `+8` through the `itmc/vehc` reference at placement `+0x58/+0x5c`; zero falls through to 30 seconds. |
+| Variant interval | placement class byte `+0x14`; game globals `G+0x211` for class 0, `G+0x208` for classes 1–7 | `0x15b0ef..0x15b134` applies option 1 disabled, 2 half, 3 double; other values keep the interval. |
+| Live placement record | `E+0x7dc+8i`, 100 records; `+0` object datum, `+4` i16 seconds remaining, `+6` vehicle abandonment count | `0x15ace0` initializes the table, `0x15b24f` clears the deleted object. `0x15b03f..0x15b1aa` starts, decrements and spawns on zero. A sampled zero means the next service checks the start condition (placement i16 `+0x12`, mode 0 on use/movement, mode 1 on depletion, or a deleted object in either mode). Negative disables it. `0x15b005` increments the separate vehicle count. |
+| Clock phase | `[0x510c54]+2` tick rate, `+8` game tick | `0x15aef2..0x15af07` services a placement when its index and the tick have the same remainder modulo tick rate. A deadline is the next service tick plus (remaining seconds minus one) more periods. **[guess]** The bot samples after the service on a coincident tick. Before that service the projected deadline can be one service period late. The engine can also postpone a spawn. |
+| Overshield and camouflage | `eqip+0x12c` i16 values 2 and 3; `+0x130` effect seconds | `0x151ef5..0x151f99` converts seconds to ticks and dispatches. Overshield calls `0xd6af0` (unit `+0x10a` bit 4 while charging, shield `+0xf0` above 1 when charged). Camouflage calls `0x152000` with effect index zero, storing ticks at player `+0x198`. |
+
+On Default controls a held Y asks for the secondary interaction at
+`0x14f8ff..0x14f911`. `0x151940` selects weapon actions 5/6 for that
+hand and 3/4 for the primary interaction (hold X). A short Y release
+goes through `0x14f96f` and `0x151aa0` to drop the weapon selected by
+`U+0x213`. The fallback action 19 goes through `0xe8de0`, clearing
+the hand at `0xe84f1` and removing the inventory entry through `0xce920`.
+A consumed hold suppresses that release. Normal and above
+seek two SMGs, plasma rifle plus SMG, plasma pistol plus SMG, or two
+needlers. In combat they take a pair only within pickup distance and
+inside both guns' effective bands. Either hand can charge the pistol.
+Against a group, a target beyond the left gun's band, or a recently lost
+target, the thrower first solves a safe grenade arc. It taps Y and waits
+for the left slot to clear before using the grenade trigger.
+
+The placement table has no last-taken timestamp. The host keeps the last
+successful take per placement, with these two read-only gameplay observers:
+
+| Event | Source | Checks |
+|---|---|---|
+| Weapon taken | `0x10ca80`, EAX item, first stack argument new unit. The attach branch sets item `+0x12c` bits 0 and 2, stores the unit at `+0x154` and registers carried objectives at `0x10cb8f`. | Ignore detach (unit -1). Match the salted object to the live placement record and its position to the pad. Resolve the biped's `+0x13c` player and verify the player's `+0x2c` unit. Record game tick `[0x510c54]+8`. |
+| Equipment taken | `0x151ea0` dispatches the effect. On success it calls `0xa89c0` with ECX unit and EDX equipment definition, then deletes the item at `0x151fe7`. Rejected pickups skip this call. | At the notification entry verify return PC `0x151fd2`. The pickup function's second stack argument is now at `ESP+0x20`. Resolve the equipment datum and check its definition, placement and player as above. |
+
+Only a bot watching that pad can use the event to date its removal.
+The salted object must match and the event tick must fall between its
+last sighting on the pad and the first empty scan. If the observer is
+unavailable, **[guess]** the first empty scan dates the pickup (up to 30
+ticks late). After a gap in sight the bot leaves the time unknown.
+For a witnessed disturbance or consumed power-up, the bot estimates the
+next eligible service from the event tick, placement index, tick rate
+and learned or public interval. The host's live countdown remains available
+as an offline trace. The bot cannot tell if the engine postpones the spawn.
+The travel policy budgets 12 ticks per world unit
+plus a 20-tick lead at Legendary, scaled down at lower skills. Bots fight from a due pad,
+and yield to objective or retreat orders. Rockets, both sniper-class
+rifles and the live sword qualify by their handling. A visible hand
+holding the same salted weapon object identifies the wielder. For a
+consumed power-up the success event identifies the player and unit. The
+bot remembers a visible recipient. Without an event, a sole visible
+player within one world unit with the matching effect is **[guess]**
+ownership. Ambiguous fallback observations remain unassigned. A later sighting refreshes the memory; death, a new unit,
+a visibly expired effect or ten seconds without confirmation clears it.
+
 ### 3.7 Objectives (traced)
 
 Stage 5. The bot reads the gametype, the objective objects and the
@@ -648,49 +965,50 @@ names the gametype by `V+0x44` and the weapons by tag name.
 | record: carrying unit | `+8` | `u32` datum, -1 none | confirmed | `0x15e250` (picked up) writes its second argument; `0x15e460` (dropped) writes -1 |
 | record: carrying player | `+0xc` | `u32` datum, -1 none | confirmed | `0x15e250` copies the unit's `+0x13c` (its player, live-gamestate.md); `0x15e300` refreshes it; `0x15e460` writes -1 |
 | carried flag on the weapon | weapon `+0x16c` bit 7 (bit 6: registered) | `u8` | confirmed | `0x15e2d4` `or 80h`, `0x15e49c` `and 7Fh`; `0x15e0a5` `or 40h`, `0x15e1b6` `and 0BFh` |
-| who registers | | | confirmed | callers of `0x15e050`: CTF and Assault (`0x2423d9`), Oddball (`0x2bc26c`), `0x2c0a7d` (another engine's, not looked at), and the network and object-create paths `0xa228f`, `0xd0ab5`; KotH and Territories register nothing |
-| team designators in use | `E+8` | `u16` mask | likely | `0x158990` tests `1 << i` against it for `i` 0 to 8 |
-| each designator's team | `E+0x10 + 2i` | `i16`, 9 | likely | `0x158990(team)` returns the `i` whose entry is the team; `0x1574c0` sets all to -1. Which code fills them is not traced (the team set builder `0x157790` is the candidate) |
+| who registers | | | confirmed | callers of `0x15e050`: CTF and Assault (`0x2423d9`), Oddball (`0x2bc26c`), `0x2c0a7d` (Territories registers the marker object with its territory index), and the network and object-create paths `0xa228f`, `0xd0ab5` |
+| team designators in use | `E+8` | `u16` mask | confirmed | `0x158990` tests `1 << i` against it for `i` 0 to 8 |
+| each designator's team | `E+0x10 + 2i` | `i16`, 9 | confirmed | `0x157790` builds the active-team mask at `E+6` and calls `0x157670` at `0x157a30`. The latter clears the mapping to -1, pairs a designator from `E+4` with an active team, updates masks `E+8/E+0xa` and writes the entry at `0x15770b..0x15771a`. `0x158990` performs the inverse lookup |
 | netgame flags | `[[0x4e0350]+0x11c]`, count `[..+0x118]`, `0x20` each | | confirmed | `0x243b69`: `mov ecx,[4E0350h]; mov edx,[ecx+11Ch]; shl ...,5` |
 | flag type, team, identifier | `+0x10`, `+0x12`, `+0x14` | `u16` each | confirmed | `0x19ec40`, the engine's flag query, compares the three with its arguments (-1 matches any) |
 | flag game flags | `+0x16` | `u16` | likely | `0x243b8f`: bits 1, 2 and 4 against `V+0x104` (`G+0x240`), the CTF variant's flag setting |
 | type 0, 1: CTF flag spawn, flag return | | | confirmed | `0x243b10(spawn?)`: type `al ? 0 : 1` for CTF |
 | type 2, 3: bomb spawn, bomb return (the plate) | | | confirmed | as above, `al ? 2 : 3` when the engine is 9 |
-| type 4: ball spawn | | | likely | the community enum; on the disc all are team 8 (`crates/h1convert/tests/h2_scenario.rs`); Oddball's `0x2bc1b0` reads a spawn index per ball from its globals, not the type |
+| type 4: ball spawn | | | confirmed | Oddball init `0x2bc2e0..0x2bc32a` queries type 4, designator 8, any identifier and at most three indices into its globals at `+0xc` |
 | type 11 to 18: hill `0` to `7`'s corners | | | confirmed | KotH's init `0x2bd140` collects the types `0xb..0x12` it finds, as `type - 11`, into `0x5092f0` (count `0x5092e8`); `0x2bdc70` asks `0x19ec40` for type `0xb + hill` |
 | CTF and Assault globals | `[0x51ec80]` (= `E+0xfc`) | pointer | confirmed | `0x240160` zeroes `0x82` dwords from `E+0xfc` and stores the address there |
 | ...: per-designator flag spawn, return | `+0x02 + 2i`, `+0x14 + 2i` | `i16` netgame flag index | confirmed | `0x240160`'s loop `0x2401a0`; `0x2422d0` takes `+0x02` at `0x158990(team)` |
 | ...: neutral flag or bomb spawn | `+0x38` | `i32` index | confirmed | `0x2401e6`; `0x2422d0` for team 8 |
-| ...: per-team state bits | `+0x170 + team` | `u8`, 9 | likely | value `8`: armed (Assault: set, with `1`, when the timer below reaches `V+0x108` seconds, `0x2405a0`) |
-| ...: per-team timer | `+0x1a0 + 2·team` | `i16`, 9 | likely | the Assault arming count (`0x240575..0x24058d`); -1 at a flag spawn (`0x2422e6`) |
-| ...: one team | `+0x1f4` | `i32` | likely | `0x161eb0(-1)` when `V+0x104 == 1` (`0x2402a4`); `0x243a80` compares teams with it (the side that has a flag in one-flag CTF and Assault) |
+| ...: per-team state bits | `+0x170 + team` | `u8`, 9 | confirmed | Mask 8 marks armed at `0x2405a0`. Mask 2 marks planted at `0x242d25` after `0x15e360` releases the bomb at the scoring plate. |
+| ...: per-team timer | `+0x1a0 + 2·team` | `i16`, 9 | confirmed | the Assault arming count (`0x240575..0x24058d`); -1 at a flag spawn (`0x2422e6`) |
+| One-bomb defending team | `A+0x1f4`, A is the CTF/Assault globals | i32 game team | confirmed | `0x2402a4` selects it when `G+0x240 == 1`. `0x243a80` spawns the bomb for the other side. The scoring check at `0x242fc6..0x242fd6` requires the plate team to equal this field and differ from the carrier team. |
+| Bomb team and active plates | record `+4` / weapon `+0x17e`; `A+0x14+2d`, `A+0x26+2d` | i16 team or neutral 8; two i16 flag indices per designator | confirmed | `0x2422d0..0x2423d9` uses the spawn team as the registration argument. Both the arming-volume check `0x244680` and scoring check `0x242ef0` consult the two selected plates. `0x242f65..0x242f7f` requires the game team in the `E+0xc` mask. A score needs the carrier within one world unit of a qualifying plate. |
 | Oddball globals | `[0x51ecc4]` | pointer | confirmed | the only global of Oddball's functions besides the shared ones |
 | ...: each ball's spawn | `+0xc + 4·ball` | `i32` netgame flag index | confirmed | `0x2bc1bb` |
 | King of the Hill globals | `[0x51ecc8]` (= `E+0xfc`) | pointer | confirmed | `0x2bd157` |
 | ...: the hill's corners | `+0x00`, `4` each, count `+0x60` | `i32` netgame flag index | confirmed | `0x2bdc96` asks for at most 16 into it; the count is made even and at least 4 is needed (`0x2bdc9b..0x2bdca7`) |
 | ...: the hill in play | `+0x1a0` | `i32`, 0 to 7 | confirmed | `0x2bd20b` sets 0 at start; `0x2bd77f` moves it on (`0x2bd0b0` picks the next), when `+0x1a4` runs out |
 | ...: ticks until the hill moves | `+0x1a4` | `i32` | confirmed | `0x2bd747..0x2bd772`: counted down, reset to `V+0xf4` (`G+0x230`) seconds × the tick rate; never when that is 0 |
-| ...: players in the hill | `+0x1a8` | `u16` mask by player index | likely | built at `0x2bd6d0` from each player's `+0x1b8` (`i16`, not 0 while in the hill); an event when it changes |
-| Territories globals | `[0x51eccc]` | pointer | likely | the only global of Territories' functions; not read further |
+| ...: players in the hill | `+0x1a8` | `u16` mask by player index | confirmed | `0x2be880` checks the live unit against the current hill bounds and geometry. `0x2bd304` increments player `+0x1b8` inside and clears it outside. `0x2bd6d0..0x2bd71d` builds the scoring mask from nonzero counters before the hill-move update |
+| Territories globals and markers | `T=[0x51eccc]=E+0xfc`, `T+0x114` i16 count, `T+0x60+2i` i16 flag index | up to eight | confirmed | `0x2bf310` initializes T. `0x2bf5b0` queries netgame type 10, any designator, identifier i; `0x2bf61d` stores the first matching flag. Additional markers size the capture volume. |
+| Territory owner | `T+0x70+4i` | salted player datum | confirmed | `0x2c075d` writes it; `0x2bfa3f` checks its salt. `0x2c0006..0x2c0047` compares team through player `+0xc0`. A stale owner gives no team. |
+| Territory occupants | `T+0x95+8p` | signed byte by player slot | confirmed | `0x2bfc40` tests the unit against the marker and the radius and height values at `T+0/+0x20/+0x40+4i`. `0x2bfd83` stores the territory index on entry, `0x2bfe1d` stores -1 on exit. Multiple players can occupy one site. |
+| Juggernaut identity | `J=[0x510c9c]=E+0xfc`, `J+0` | u16 player-slot mask | confirmed | Engine 7 initializes J at `0x1921d0`. `0x1922db..0x192339` tests the victim and transfers the role to the killer through `0x192970`. |
 | the flag, ball, bomb tags | globals tag (`[0x4e034c]`) `+0x16c` the multiplayer block: `+0xc` → `+4` flag, `+0xc` ball, `+0x3c` bomb | `u32` tag datum | confirmed | `0x242261` (bomb, engine 9) and `0x24228b` (flag) create the object from it; Oddball `0x2bc231` the ball |
 
 **How the bot reads them** (`objective::read`, from `perceive_as` once
 it has found itself):
 
-- the gametype is `E+0xc14`; Slayer, Juggernaut and anything else read
-  as no objective;
+- the gametype is `E+0xc14`; Slayer and unsupported engines read as no objective;
 - each record gives an item: the object, its team, and the carrier's
   player index (as `Seen::id`). A carried item is where its carrier's unit
   is; otherwise where the object is. A record whose object is gone is
   skipped;
 - the netgame flags the gametype uses become spots (CTF: types 0 and 1;
   Assault: 2 and 3; Oddball: 4), each with the game team its designator
-  stands for (`E+8`, `E+0x10`), or the designator itself when no
-  designator is bound;
-- in King of the Hill, the hill is the netgame flags of type `11 +` the
-  hill in play. Its centre is their mean, its radius their mean distance
-  from it; a bot is in it inside the corners (sorted round the centre)
-  and within 2 world units of its height.
+  stands for (`E+8`, `E+0x10`). An unbound designator has no team;
+- in King of the Hill the active corner list supplies a destination.
+  The live occupancy mask determines who is scoring. Geometry remains an
+  approximation for loose pickups and observations without a scoring mask.
 
 A fault leaves `Perception::objective` `None`: the bot plays as in Slayer.
 
@@ -718,27 +1036,42 @@ CTF uses this order.
    within 4 world units, fighting from there.
 
 Oddball: carrying, **keep** it; a free ball, **go** for it; an enemy's,
-**hunt** them; a teammate's, **escort** them.
+**hunt** them; a teammate's, **escort** them. Between balls, approach
+the closest neutral type-4 spawn selected by Oddball init.
 
-King of the Hill: out of the hill, **go** to its centre; in it, **hold**
-within 0.6 of its radius and fight from there. When the hill moves, the
-bot goes to the new one.
+**King of the Hill.** Approach the current corners' centre, hold the spot
+where the engine counts the bot inside, and fight from there. Moving
+the hill rebuilds its corners. The bot follows the next scoring mask.
 
-**Assault.** An attacker takes a friendly or neutral bomb to the enemy
-plate. Teammates escort the carrier and guard the plate during the plant.
-If the bomb lies on the plate, the closest teammate goes to it and the
-others cover. Defenders guard their own plate and intercept enemy
-carriers. The planner uses possession, team and proximity. The fuse state
-and one-bomb variant's attacking-side flag still need a game check.
+**Assault.** Take a friendly or neutral bomb to an active enemy plate.
+In one-bomb, only the designated defender's plates score. Carrying the
+bomb on foot inside the arming volume advances the counter toward
+`G+0x244` seconds times tick rate. Outside, it falls by three per tick
+to a floor of -1. Stay on the plate through arming; when armed, close to
+score. The engine releases the planted bomb, records the planter at
+`A+0x17c+4·bombTeam` and sets the planted bit. Escorts cover that bomb.
+Defenders guard the plate or intercept the enemy carrier. An ordinary
+dropped friendly bomb can be recovered by the nearest teammate.
 
-**Territories: next.** Its globals (`[0x51eccc]`) were found but not
-read; the territories' positions are presumably the netgame flags of the
-community's type 10, and their owners somewhere in those globals. Until
-then a bot plays Territories as Slayer.
+**Territories.** Relieve a friendly capture site occupied by an enemy,
+finish a capture already under way, then take an unowned or hostile site.
+Break equal priorities by distance. The bot holds its position inside
+the chosen volume while fighting. FFA ownership follows the player slot.
 
-**Picking up.** The flag, ball and bomb are walked over. Whether Halo 2
-takes them by walking over or needs the action button held is a game-run
-check (§11.2); the bot does not press it.
+**Juggernaut.** Hunters engage the visible Juggernaut and ignore fellow
+hunters. On a transfer, the new Juggernaut can rush a visible hunter
+while firing, then melee up close. Movement bonuses come from the game
+variant. The role mask alone reveals no target position to the planner.
+
+**Picking up.** Approach the chosen item and hold X while it remains
+loose within pickup range. `0x1517ec..0x1518d6` gives a nonzero
+multiplayer weapon type the contextual interaction kind 7. The held-X
+path accepts kinds 1 and 7 at `0x15195c` and requests primary pickup.
+There is also a proximity path (`0x15098f`) whose primary pickup is
+gated by inventory at `0x150dd0`. In Assault the pickup predicate
+`0x2415d3..0x241611` rejects a planted bomb or a non-neutral bomb
+belonging to another team. A bot returning its own CTF flag just
+touches it. Once possession changes the carrier releases X.
 
 ### 3.8 Glitches (built, not checked in a game)
 
@@ -763,7 +1096,7 @@ Taunts path: store, `clankers::Want::read`, the driver's shared
 `AtomicU8`, then `Mind::glitches` at the bot's next frame, local bots and
 phantoms alike.
 
-**The tricks.** Presses at 30 ticks a second, as Legendary does them:
+**The tricks.** Nominal requested presses at 30 ticks a second:
 
 | Trick | Presses (tick: button) | When | Source |
 |---|---|---|---|
@@ -781,12 +1114,33 @@ the battle rifle's burst (`BURST`) are not traced. They are starting
 points to tune in a game run. The battle rifle is told from the tag: once
 per pull, one zoom level, a magazine of 30 or more.
 
-**Skill.** Each press after the first is late by up to 0 ticks
-(Legendary), 1 (Heroic), 2 (Normal) or 1 to 3 (Easy). Late presses miss
-windows the way a player's do: Easy's sword fly often lands its X outside
-the two-tick window and is an ordinary switch. Skill also scales how
-often it tries: Easy 40% of the setting's chance, Normal 70%, Heroic 90%,
-Legendary all of it.
+**Skill.** Tricks request the same sequence at every skill. The pad
+pipeline scatters its edges (§3.4), so a miss is an ordinary melee,
+switch, reload, shot or jump. The trigger's charge and release in the
+noob combo and short pulls on other weapons go through the same pipeline.
+Skill also scales how often it tries. Easy takes 40% of the setting's
+chance, Normal 70%, Heroic 90% and Legendary all of it.
+
+These are timing-window pass rates from 4,000 seeded controller-model
+trials per skill and technique, with the right stick at rest. The
+criterion is that the delivered presses arrive in order and within a
+tick of each nominal gap, keeping required holds such as X at R for BXR.
+A melee cancel or second BR pull can't precede its nominal opening. The
+sword fly needs X one or two ticks after Y. The plasma overcharge row
+checks the nominal 24-tick hold. These rates measure pad timing. Whether
+the retail engine accepts an attempt depends on the weapon, target,
+movement and host behavior. Super-bounce landings need a physics run.
+
+| Delivered sequence | Easy | Normal | Heroic | Legendary |
+|---|---:|---:|---:|---:|
+| BXR | 80.5% | 85.7% | 89.3% | 93.4% |
+| BYYR | 66.4% | 74.8% | 80.5% | 87.2% |
+| BXB | 79.7% | 85.3% | 89.0% | 93.2% |
+| Double shot | 80.4% | 85.6% | 89.2% | 93.4% |
+| Quad shot | 49.7% | 61.5% | 69.8% | 80.3% |
+| Sword fly | 56.6% | 65.1% | 73.0% | 81.2% |
+| Crouch jump | 98.0% | 99.0% | 99.5% | 99.8% |
+| Plasma overcharge hold | 84.6% | 87.7% | 90.6% | 93.7% |
 
 **How often.** A fight trick is rolled for at most once a second while
 one fits: 15% a roll on Some, 60% on Lots (times the skill's share), and
@@ -844,18 +1198,11 @@ a reload glitch from any range, but only off host". Clankers play on the
 host. Whether the cancels work for a host-side player is the first thing
 to check.
 
-**Tests** (`cargo test -p bots glitches`, and
-`cargo test -p boot clankers`): each trick's presses and timing at
-Legendary; lateness within each skill's slop and never out of order;
-sword flying clean at Legendary and Heroic and often missed on Easy; the
-gate (Off never, never carrying, losing or before reacting, the trick
-that fits each moment); the combo scheduler playing B, X, R in order,
-often on Lots, less on Some, never on Off; the show-off clock (Off never,
-Lots 25 to 80 in ten calm minutes, never when not calm); the bounce run
-(walks on, standing jump, drift, a launch ends it, plain and caught
-landings retry until the tries run out); a roaming mind crouch jumping on
-Lots and never on Off; the setting off by default and reaching the
-driver.
+**Tests.** `cargo test -p bots glitches` checks the requested timing,
+the openings and setting, the show-off clock and super-bounce state
+machine. `cargo test -p bots human_input -- --nocapture` checks the
+delivered timing, delay, seeded replay and controller limits.
+`cargo test -p boot clankers` covers the setting and driver.
 
 **Game run (checklist).** For the user. Use one Clanker against you on
 Legendary with Glitches on Lots. The agent API reads what happened:
@@ -890,33 +1237,17 @@ is a yes or no:
 8. **Never.** It does none of these carrying the flag or the ball, with
    its shields down, or with a second enemy close by.
 
-### 3.9 Vehicles (built: first slice)
+### 3.9 Vehicles
 
 The user, after playing the Clankers: "clankers also don't seem to
 interact with vehicles, try and board, go and take, lock on with
-rockets." The first slice (`crates/bots/src/vehicle.rs` and
-`vehicle/`, glued into the mind by `crates/bots/src/mind/ride.rs`):
+rockets." The vehicle code lives in `crates/bots/src/vehicle.rs`, `vehicle/` and
+`mind/ride.rs`. The bot sees each seat and its rider. It can enter a free
+vehicle, board a slow enemy, pilot a Banshee, drive ground vehicles and
+man a turret. A rocket launcher holds its lock on a vehicle before firing.
 
-1. **Rocket lock-on.** A rocket launcher at an enemy in a vehicle is held
-   on the vehicle's middle until it locks, then fired.
-2. **Perception.** Every vehicle, its seats, who sits in each (by player
-   and team), and the bot's own seat.
-3. **Go and take.** A calm bot walks to a free Ghost, Warthog or Scorpion
-   near it, stands beside the driver's seat and holds X; or mans the gun
-   of a teammate's Warthog.
-4. **Drive.** A driver follows the nav mesh to where it is going,
-   steering by the camera as a player does, shoots with the vehicle's
-   guns, runs infantry over, backs up when stuck, and gets out when the
-   vehicle is about to blow up, flipped, stuck for good, or where it was
-   going needs feet. A gunner or passenger shoots, and gets out when
-   nobody drives.
-5. **Board.** An enemy vehicle close and slow is boarded (X by it).
-
-**Fields.** No new disassembly was done for this slice (the lane ran no
-disassembler). Every field below comes from an earlier trace, except the
-two marked "not traced", which come from Halo 2's tag definitions and
-need a run or a trace (§12). `O` is an object's body, `U` a unit's, `V` a
-`vehi` tag's metadata, `S` one of its seat definitions.
+**Fields.** `O` is an object's body, `U` a unit's, `V` a `vehi` tag's
+metadata and `S` one of its seat definitions.
 
 | Field | Where | Type | Confidence | From |
 |---|---|---|---|---|
@@ -926,8 +1257,14 @@ need a run or a trace (§12). `O` is an object's body, `U` a unit's, `V` a
 | wrecked | `O+0x10a` bit 2 | `u16` | confirmed | `0xd6800` (`guest::BODY_DEPLETED`) |
 | the unit's seat | `U+0x1fc` | `i16`, -1 none | confirmed | live-telemetry `layout::UNIT_SEAT`: the enter-vehicle routine `0xea1f0` stores it (`0xea405`), leaving stores -1 (`0xea995`) |
 | seats block | `V+0x1c8` count, `+0x1cc` pointer | `i32`, `u32` | confirmed | `crates/tags/src/defs/unit.txt` (`group vehi`, `block_1c8`, `0xb0` each; the seat label at `+4` checked against 05a's scripts, `h1scripts::seats`); the stride is `0xea1f0`'s `imul edi,0xb0` (`0xea330`) |
-| seat flags | `S+0` | `u32` | position confirmed (the field before the label); **bits not traced** | bit 2 driver, bit 3 gunner, from Halo 2's tag definition (the seat flags' order: invisible, locked, driver, gunner, ...). With no seat flagged driver, the first seat that is not a gunner's is taken for the driver's (`vehicle::read::roles`) |
-| vehicle type | `V+0x1f0` | `u16` | position confirmed; **names not traced** | objects.md: the vehicle code compares it with 5 and 6 (`0xef545`). The order (tank, jeep, boat, plane, scout, fighter, turret) is Halo 2's tag definition's; 5 the Banshee's flying and 6 the turret fit the two compares |
+| seat flags | `S+0` | `u32` | traced and disc-checked | Driver bit 2, gunner bit 3, boarding bit 11, forbids players bit 16. See `h1objects::rebuild` and `h1objects/tests/vehicle_rebuild_disc.rs` (`0x000cc810`, `0x000c8c87`, `0x000c92c0`). The first unflagged passenger is used as fallback driver **[guess]**. |
+| boarding target seat | `S+0x3e` | `i16` | traced | `0x000c92c0`, `h1objects::rebuild::SEAT_BOARDING` |
+| entry marker and admission limits | `S+0xc`, `+0x98`, `+0x9c`, `+0xa0`, `+0xa4` | string ID, four `f32`s | traced and disc-checked | `0x000c6fb0` resolves the marker, with the object's origin for an empty ID. `0x000c9040` checks eye-to-marker radius, marker facing, look cone and distance to the vehicle. See `h1objects/tests/vehicle_ground_disc.rs`. |
+| render-model reference and marker data | `V+0x38` → `hlmt+4` → `mode` | tag datums | traced and disc-checked | `defs/obje.txt` and `defs/hlmt.txt`. In `defs/mode.txt`, `mode+0x58` is the `0xc`-byte group block (ID `+0`, markers at `+4`); the `0x24`-byte marker holds variant indices at `+0/+1`, a node at `+2`, translation `+4` and quaternion `+0x10`. |
+| live marker transform | `O+0x114/+0x116` | block size and signed relative offset | traced | [native-renderer.md](../graphics/native-renderer.md#research-points-code-unless-marked-h2-disasm). Stride `0x34`; matrix scale `+0`, forward `+4`, left `+0x10`, up `+0x1c`, position `+0x28`. |
+| chassis dimensions | `mode+0x14` compression block | position bounds | disc-checked | `defs/mode.txt`; each record begins with six floats giving xyz min/max. The planner uses lateral extent and vertical span, with margin and class fallbacks **[guess]**. |
+| vehicle type | `V+0x1f0` | `u16` | traced and disc-checked | `0xef545` compares it with 5 and 6. `h1objects::rebuild::H1_VEHICLE_TYPE` and its disc test compare the classes by vehicle (tank 0, jeep 1, scout 4, fighter 5, turret 6). |
+| fighter secondary weapon | `V+0x1c0`, `weap+0x2c8/+0x2d0` | weapon references, trigger and barrel blocks | traced and disc-checked | `defs/unit.txt` and `bots::arms`. The retail Ascension Banshee weapon has two triggers and barrels. Barrel 1's projectile is `banshee_bomb`. The tag establishes availability in the weapon definition. The game decides whether the variant will fire it. |
 | the gun mounted on a Warthog | a vehicle object whose parent is the Warthog; its gunner's parent is the gun | | confirmed | live-telemetry.md (`parent` on a frame vehicle); `live-telemetry` `vehicle_mount` |
 | a rocket launcher | `weap` zoom levels `+0x1fe` 1, and the blast role (§3.6) | | checked on Zanzibar's tags (zoom) | §3.6's handling table: the rocket launcher is the only blast weapon with a zoom level |
 
@@ -967,20 +1304,24 @@ fuel rod's zoom was not looked at (it is not on Zanzibar). If it has one,
 a bot with it waits a second at a vehicle and then fires: slower, not
 wrong.
 
-**Which vehicles.** By class (`vehicle::Class::spec`, data):
+**Which vehicles.** By class (`vehicle::Class::spec`).
 
-| Class (`V+0x1f0`) | Taken | Driver shoots | Where to stand to get in (forward, left of its origin) |
-|---|---|---|---|
-| jeep (Warthog) | driver; its gun as a teammate's gunner | no | driver (0, 0.8); gun (-1.2, 0) |
-| scout (Ghost, Spectre, Wraith) | driver | yes | (-0.2, 0.7) |
-| tank (Scorpion) | driver | yes | (0, 1.4) |
-| fighter (Banshee), boat, plane, a turret on its own | no (the Banshee is later) | | |
+| Class | Seat taken | Controller behavior |
+|---|---|---|
+| Jeep (Warthog) | Driver | Ground routing |
+| Scout (Ghost, Spectre, Wraith) | Driver | Ground routing and primary fire |
+| Tank (Scorpion) | Driver | Ground routing and primary fire |
+| Fighter (Banshee) | Driver | Altitude control, attack runs, boost, evasive rolls and landing |
+| Turret | Gunner, standalone or on a teammate's vehicle | Track and fire into the contested area, dismount if flanked |
+| Boat or plane | None | |
 
-The points are guesses at the seats' sides: the game picks the seat whose
-entry point is nearest, and the seats' entry markers and radius (`S+0x98`,
-by the field order) are not read yet. A side that does not take is tried
-from the other side (mirrored); a Warthog's driver on the right gets the
-passenger's seat, which is still a ride.
+The bot looks up the chosen seat's entry markers in the actual vehicle's
+render model and places them using the live node matrices. Scorpion and
+Wraith driver seats can offer two positions. It searches for a stand point
+on the floor within the tag's radius and facing limits, looks at the marker
+and holds X while in range of the seat. The stand-point offsets and the
+0.6 world-unit eye height used in this check are **[guess]**. A retry
+uses a closer point covered by the same entry data.
 
 **Go and take** (`vehicle::plan::take`, `Mind::mount_plan`). Only calm
 (no enemy in view for 1.5 s), not carrying, not going for a weapon, and
@@ -995,13 +1336,16 @@ the skill's range that:
   of the bot's distance): they have it;
 - it has not given up on, or got out of, in the last 10 s.
 
-With the skill's gunner option, a teammate's Warthog with a free gun
-counts too, 4 units worse than a free vehicle. It walks the nav mesh to
-the point beside the seat, then stands and holds X (the action button,
-Default layout) for 40 ticks; then the other side for 40; then gives up
-on it for 10 s. Getting in is read back from `U+0x1fc` and the parent:
-from then on the mind is in the vehicle. It also gives up after 12 s, or
-when the seat is taken or an enemy gets in.
+The bot walks to a valid entry point and tries X (action, Default layout)
+for up to 40 ticks. It retries closer, then shuns the vehicle for 10 s.
+It confirms entry using `U+0x1fc` and the parent. It abandons the attempt
+after 12 s, when the seat is taken, or when an enemy gets in.
+
+**Turrets.** A standalone turret or a free gun on a nearby teammate's
+vehicle is worth taking when it has a clear line to recent enemy contact
+or the objective the bot is defending or hunting. On the gun, an enemy
+within 1.8, or within 5 and off the firing line on the same floor, can
+make the bot dismount **[guess]**.
 
 | | Easy | Normal | Heroic | Legendary |
 |---|---|---|---|---|
@@ -1014,9 +1358,9 @@ when the seat is taken or an enemy gets in.
 **Board** (`vehicle::plan::board`). An enemy (in free-for-all, anyone)
 driving a vehicle (not a Banshee) on the bot's level (within 1 in height),
 within the skill's boarding range, slower than its boarding speed: in a
-fight or not, the bot runs straight at the driver's side and holds X
-within 1.2 of the vehicle's middle. It lets go when the vehicle speeds off
-or after 3 s. Speeds come from the vehicles' positions tick to tick
+fight or not, the bot approaches an authored boarding marker targeting
+the occupied driver's seat and holds X when it meets the admission checks.
+It lets go when the vehicle speeds off or after 3 s. Speeds come from the vehicles' positions tick to tick
 (`vehicle::Memory`), not from `O+0x88`, whose units are not checked.
 
 **Drive** (`vehicle::drive`, `Mind::ride`). Halo 2 steers a Ghost or a
@@ -1025,10 +1369,11 @@ the player looks. The driver:
 
 - goes to the objective's point, else the enemy it fights, else where an
   enemy was last seen, else a roaming goal (§3.2);
-- plans a route on the nav mesh (the bipeds' mesh: there is no vehicle
-  mesh yet) and drives at a carrot, the furthest of the next route points
-  within 4 (a point is passed within 1.5, or when the next one is
-  nearer);
+- plans over walk edges whose portals fit the vehicle and routes through
+  their clear spans. Centre and wheel-line probes check floor, overhead
+  room and walls before steering, cutting a corner, reversing or trying
+  to splatter someone. With an objective on an unreachable road it
+  dismounts to finish on foot;
 - looks at the carrot (or the enemy it fights) and pushes the stick that
   way, full ahead when the camera is on it, down to 0.35 at a turn of 1.6
   radians or more;
@@ -1038,6 +1383,23 @@ the player looks. The driver:
   Scorpion's; not a Warthog driver's);
 - under throttle and slower than 0.4 a second for 1.5 s, backs up for 1 s;
   the third time within 15 s it is stuck for good.
+
+**Fly** (`vehicle::flight`). The Banshee aims and climbs toward a cruise
+height, uses hull-width collision probes and pitches into a visible
+target for a strafe run. It breaks off at close range, boosts away, and
+uses a lateral evasive roll when damaged and high enough. It requests a
+fuel rod bomb on an aligned downward run when the fighter tag has a
+secondary trigger and barrel. It descends for an objective dismount or
+a damaged vehicle. Cruise height, collision envelope, combat ranges,
+cooldowns and landing tolerances are **[guess]**.
+
+The Default Xbox pad uses left trigger for boost (also recorded in
+`input::touch_layout::DRIVER`) and right trigger for primary fire.
+The original manual describes the Banshee's secondary fuel rod weapon
+and its ability to roll and loop. A with the left stick for the roll,
+and B for the bomb, are **[guess]** in the phantom action path pending a
+game run. The phantom lane already maps these pad buttons and triggers
+to actions (§5.1). [Original Xbox manual](https://halo.wiki.gallery/images/7/76/H2_Human_Manual.pdf)
 
 A gunner aims and shoots (the gun's trigger held in the skill's bursts); a
 passenger shoots its own gun as on foot. With nothing to shoot they look
@@ -1054,12 +1416,9 @@ for 10 s, so it does not get straight back in.
 (Coagulation, Headlong, Waterworks, Zanzibar), Slayer, Normal or
 Legendary (`H2_BOTS_SKILL=legendary`). §11.4 is the checklist.
 
-**Open** (§12): the seat flag bits and the type's names (the two "not
-traced" rows); the lock time and whether it needs a zoom; the entry
-points (the seats' markers and `S+0x98`); entry and exit on each seat
-in a run (the X tests are traced in §5.1); a vehicle nav mesh (wider
-clearance, no jumps); the Banshee; driving tactics beyond "at the enemy" (circling, keeping
-range for a gunner); and a Warthog driver waiting for its gunner.
+**Open** (§12): local and phantom observations of each seat's entry and
+exit, the lock time and zoom requirement, and measured lift and flight
+behavior. A Warthog driver waiting for its gunner remains open.
 
 ## 4. Way in 1: local slots
 
@@ -1077,8 +1436,9 @@ inserted controller and opens it with `XInputOpen`, and every
 - The agent tap's `input.pad` still merges over the bot's pad. Tests and
   scripts can use that to steer a bot.
 
-The brain writes one `Gamepad` per bot into shared state each tick. The
-backend's `poll` hands it back.
+The brain gives the local backend a pad report after its motor delay.
+The backend's `poll` hands it to the host's regular controller input path
+without an additional network delay.
 
 ### 4.2 Signing a bot in (traced)
 
@@ -1992,6 +2352,17 @@ which `0x185e81..0x185ea9` passes to the action builder.
   count, now honoured.
 - Colours and emblem in the configuration ([guess] `+0x40..+0x7b`); a
   phantom wears the host's until then.
+
+**Phantom ping.** Each phantom has a seeded 40–80 ms round-trip ping by
+default. The host samples its pad at 30 Hz and queues the report for
+one-way delivery after half that ping plus uniform jitter of up to ±4 ms.
+Arrival is rounded up to the next simulation sample, normally one or two
+ticks later. The host builds and stamps the action record at arrival
+using the current weapon and facing. While it waits, it holds the latest
+arrived pad. Several packets arriving together can collapse to the newest
+report. A new unit or a break in the stream clears the queue.
+`phantom_ping_ms` sets round-trip time, with 0 for immediate delivery.
+`phantom_jitter_ms` sets the one-way jitter bound.
 
 ### 5.2 Why phantoms are needed
 
@@ -3105,9 +3476,9 @@ list for the user to play (§11).
      - a drop goes one way only; a jump links both ways only if each way
        qualifies.
 
-     Not yet: teleporters, lifts and crouch-jumps (later, with objectives);
-     headroom (a ceiling over a floor is walked under as if it were not
-     there).
+     The builder adds scenario teleporter and lift links, sweeps
+     standing and crouched jump arcs, and checks standing headroom
+     (§3.2).
    - **Paths**: A\* over the polygons, then the funnel (simple stupid
      funnel) over the edges' portals, with a drop or jump as a forced
      corner. `nav::Follower` steers along the waypoints: it moves on 0.3
@@ -3116,13 +3487,13 @@ list for the user to play (§11).
    - **Walls** (`los::Walls`): every collision surface as triangles on a
      2 m grid, for line of sight (stage 3).
    - **The file.** `<data>/bots/<map>.<bsp>.bots`: magic `H2BT`, format
-     version 2, the **stamp** (the generator version
+     version 3, the **stamp** (the generator version
      `cache::GENERATOR` and the source map's fingerprint), then the mesh
-     and the walls. The data comes from the disc, so it stays on this
+     and the walls and tactical places. The data comes from the disc, so it stays on this
      machine and out of git. When the loaded map's name (`0x547898`)
      changes, the glue loads `<map>.0.bots` on a thread of its own. Until
-     then, or with no file, the bots walk straight at their goal and see
-     through walls, as in stage 1.
+     the data is ready, the bots can walk toward known goals. Host visual
+     contacts require a loaded BSP.
    - **Built for you** (`bots::autonav`, `boot::bots_nav_auto`). At boot a
      worker thread (named `bots-nav`, at utility QoS on Apple systems)
      looks at every map the game can load, as the VFS serves it: the
@@ -3314,9 +3685,12 @@ list for the user to play (§11).
 4. **Emotes.** Built: `bots::emote`, in every brain (`Mind::emote`).
    - **Deaths** come from the game's kill function (`PLAYER_KILLED`,
      `0x15ce70`): `boot::bot_glue` observes it on the game thread and logs
-     the attacker and victim players, the betrayal flag and where the
-     victim's unit lies (`emote::kills()`); each brain reads the log from
-     its own cursor.
+     the attacker and victim players, whether it was a betrayal and where
+     the victim's unit lies (`emote::kills()`); each brain reads the log
+     from its own cursor. A betrayal is a teammate killed in a team game,
+     told from the players' teams and the variant's team flag: the kill
+     function's third argument is not a betrayal flag (it is set in
+     free-for-all too).
    - **Dumb** (`emote::classify`): killed by themselves or by the world
      (own grenade, fall, suicide: the kill function does not tell them
      apart; severity 0.8) and a betrayal (1.0). Not yet: stuck on
@@ -3349,8 +3723,7 @@ list for the user to play (§11).
      6 times over the spot (about one time in four: 0.3 × 0.8). It never
      does it while it sees you shooting at it, and not twice in 30 s. With
      Taunts off on the Clankers page it never does.
-5. **Objectives.** Built for CTF, Oddball and King of the Hill; Assault
-   as a guess; Territories next (§3.7).
+5. **Objectives.** CTF, Oddball, King of the Hill, Assault, Territories and Juggernaut (§3.7).
    - **Traced** (§3.7): the engine index `E+0xc14`; the objective records
      at `E+0xc18`/`E+0xc1c` (flag, ball, bomb; team; carrier unit and
      player); the netgame flags and their types (0/1 CTF, 2/3 bomb and
@@ -4260,8 +4633,7 @@ list for the user to play (§11).
      reads as `Arms::left`; the left trigger fires it with the right's
      aim (a charge gun charges and lets go on target, a once-per-pull
      gun is pulled at its rate, an automatic held); no grenades then.
-     The bot does not yet choose to dual wield: picking a gun up into the
-     left hand needs the `weap` tag's dual-wield flag, not traced.
+     The pickup policy, hold-Y action and grenade trade are traced in §3.6.
    - Tests: `-p bots --lib grenades` (`a_grenade_falls_as_gravity_says`,
      `a_frag_bounces_on_and_goes_off_its_fuse_after_the_first_touch`,
      `a_wall_throws_a_frag_back`, `a_plasma_sticks_to_a_player_in_its_way`,
@@ -4302,8 +4674,6 @@ list for the user to play (§11).
        block, `+0x40` stride; which field);
      - the damage effect radius of the frag and plasma explosions (`jpt!`
        upper radius) for the safety distance (3 assumed);
-     - the `weap` flag that allows dual wielding, and which button picks a
-       gun up into the left hand;
      - a target's shield (the body's `+0xf0`, already read for the bot
        itself in `brain::Me`) in `brain::Seen`, so the melee finish and
        the noob combo's swap follow real shields, not shots on target.
@@ -4358,22 +4728,14 @@ list for the user to play (§11).
    opportunity for three seconds. In free-for-all, a visible pair aiming
    at each other presents an opening to a third player.
 
-   A nearby numerical disadvantage prompts withdrawal. With enough shield,
-   bots close on opponents with low shield or an empty magazine with
-   reserve rounds. The latter is a reload opportunity inferred from the
-   held weapon. Weapon minimum ranges still apply. CTF and Assault
-   carriers try routes away from recent sightings. Deaths of the bot and
-   its teammates mark dangerous routes for up to 20 seconds across
-   respawns. If the only route crosses danger, the bot can still score.
+   A visible numerical disadvantage prompts withdrawal. Weapon minimum
+   ranges still apply. CTF and Assault carriers try routes away from
+   recent sightings. The bot's own death and visible teammate deaths can
+   mark a dangerous approach for up to 20 seconds across respawns.
 
-   The host fills `brain::Observations` in `guest::perceive_as` with the
-   player slot and team, aim, shield and held magazine cue. The ground
-   scan supplies placed power weapons, overshield and camouflage. Supplies use
-   the scenario equipment placement and the placement or item collection
-   respawn time. A continuously observed return of a new object can teach
-   the actual period. Kill identity and body position come from the
-   existing `emote::KillLog`. A map load or a match tick rewind clears the
-   radio, learned supplies and danger memory. The coordinator's unit-test
+   See §3.2 for the host perception boundary and supply beliefs, and §3.6
+   for the pickup observers. Map loads and tick rewinds clear the radio,
+   supply observations and danger memory. The coordinator's unit-test
    filters are `decisions`, `objective::tests`, `arms::tests::decisions_`,
    `guest::tests::decisions_` and `mind` under `cargo test -p bots --lib`.
    The in-game checks are in §11.3.
@@ -4404,14 +4766,10 @@ list for the user to play (§11).
         pins have): today only the default lineup's clanker playlists,
         kept where a published file has the same playlist id at the same
         index.
-9. **Vehicles.** First slice built (§3.9): rocket lock-on, the vehicles'
-   perception, going to take a free Ghost, Warthog or Scorpion (or a
-   teammate's Warthog gun), driving along the bipeds' nav mesh, shooting
-   from a seat, splattering, getting out, boarding. Tests:
-   `vehicle::` (the planners, and the reader on synthetic memory) and
-   `mind::ride::` (the mind end to end). Next: a game run (§11.4), the
-   untraced fields (§12), a vehicle nav graph, the Banshee, and driving
-   tactics.
+9. **Vehicles.** Built (§3.9): seat entry and boarding from live tag
+   markers, rocket lock-on, chassis clearance for ground routes, Banshee
+   flight and turret take/leave decisions. Fixtures live under
+   `vehicle::` and `mind::ride::`. The game-run checklist is in §11.4.
 
 ## 10.1 Library surface (for the agent API)
 
@@ -4585,8 +4943,12 @@ on Lockout and Midship with a human:
     fight, and one with two long guns to an SMG or shotgun.
 24. After a fight a bot draws its other gun when that one's magazine is
     low, and reloads it.
-25. A bot that dual wields (give it two SMGs in a variant, if one can)
-    fires both triggers and throws no grenades.
+25. Put a second SMG beside a Normal or higher SMG bot, then try plasma
+    rifle + SMG, needler + needler and plasma pistol + SMG in both orders.
+    Check the left-slot pickup, both triggers and the charged pistol shot.
+    At long range the bot should keep its rifle. Present a group at grenade
+    range and check that a short Y drops the left gun before the throw.
+    Repeat with a friendly in the blast area and with a wall across the arc.
 26. A magnum bot backs off to its rifle at a shorter range than before;
     a bot with an SMG stops spraying at you across the map.
 
@@ -4622,9 +4984,8 @@ CTF on Lockout or Beaver Creek:
 
 1. With both flags home, one bot per team runs for the enemy flag and
    (with three or more on the team) one stays near its own flag.
-2. A bot reaching the enemy flag picks it up by walking over it. If it
-   stands on it and nothing happens, Halo 2 needs the action button:
-   note it (§3.7, "Picking up").
+2. A bot reaching the enemy flag takes it even with a full inventory.
+   Check the X hold while the flag is loose and its release on pickup.
 3. A bot carrying the flag runs home along the floor, does not shoot,
    does not drop it (no weapon switch) and does not stop to reload or
    for a gun, even with its shields down. It melees a human standing in
@@ -4651,7 +5012,7 @@ King of the Hill (Midship or Lockout):
     chasing out of it.
 12. When the hill moves, they go to the new one within a few seconds.
 13. A bot in the hill counts as in it (the hill's colour and the score
-    say so): the corners and height test (§3.7) agree with the game's.
+    say so). Check the score on a different floor over the same XY and after a move.
 
 Assault (if tried):
 
@@ -4661,6 +5022,17 @@ Assault (if tried):
 All:
 
 15. No bot teabags while carrying, guarding or in the hill.
+16. Rotate a one-bomb round. Check both teams swap roles, the carrier
+    stays until armed and plants on the active plate, and escorts cover
+    a planted bomb while recovering a loose one.
+17. In team Territories, contest a friendly site while a neutral site
+    is closer. Watch the bot relieve it and hold through a capture. In
+    FFA, check that another player's territory counts as hostile.
+18. Kill the Juggernaut in front of two hunters. Check they switch to
+    the new Juggernaut and leave one another alone. As Juggernaut the
+    bot should close on a visible opponent and melee.
+19. In Oddball check the first spawn and a reset against a neutral type-4
+    marker on the map.
 
 ### 11.3 Decisions boost in play (checklist)
 
@@ -4675,7 +5047,8 @@ Oddball checks, use a map with a nav mesh and more than one way through.
    normal reaction delay.
 2. **Odds and openings.** Isolate one bot against two nearby opponents.
    Watch it back off, then regroup when sight breaks. Try a one-on-one
-   with a depleted shield or an empty magazine. In free-for-all, fight
+   with a depleted shield or an empty magazine hidden from the bot. Changing
+   those values alone should produce the same decision. In free-for-all, fight
    another player in sight of a third bot and watch for it to close.
 3. **CTF.** Drop the home flag while a teammate is carrying the enemy
    flag. Check the return, then the escort and home guard assignments.
@@ -4691,8 +5064,20 @@ Oddball checks, use a map with a nav mesh and more than one way through.
    to it.
 6. **Supplies.** Let a calm bot see you take a sniper rifle, rockets,
    overshield or camouflage. Watch it return near the next spawn. Repeat
-   with the pickup hidden. An unseen disappearance should start no clock.
+   with the pickup hidden. An unseen disappearance cannot date a return.
+   Contest a due pad with a sword or rockets and check the bot can fight
+   from pickup range. Try half, double and disabled respawns. Compare its
+   arrival with the actual service tick. Hand a sniper to another player
+   in view and check the bot recognizes the new wielder. Repeat with a
+   hidden handover and check that the old sighting decays.
    Repeat on Easy with the same roster to compare the timing.
+7. **Outdoor map knowledge.** On H1 Blood Gulch and Sidewinder, give a
+   Clanker a sniper and watch which lane it faces. Repeat from the other
+   base, with a lead and with a visible opponent. Verify both flanks are
+   reachable, a lead can produce a hold, and combat interrupts it.
+   Let it inspect an empty sniper pad and turn away. Swap the hidden
+   respawn state while preserving all cues, then expose the pad and
+   look for a change only when the bot can inspect it.
 
 ### 11.4 Vehicles in play (checklist)
 
@@ -4722,6 +5107,43 @@ or Headlong (Slayer), Normal, then Legendary. Each line is a yes or no.
    the gun's bit 3; `+0x1f0` reads 1 for the Warthog, 4 for the Ghost, 5
    for the Banshee.
 
+### 11.5 Traversal and sandbox movement in play (checklist)
+
+1. On Coagulation or Beaver Creek, put a goal closer through a
+   teleporter and watch a bot enter the sender, arrive and resume walking
+   on the correct floor. Repeat with the chosen receiver blocked or on a
+   map with two receivers on one channel.
+2. On Ascension and Colossus, start below the lift exit. Check that the
+   bot enters the launch area, steers after pickup and walks off at the
+   upper landing. On Cyclotron, repeat for the moving elevator and check
+   the bot stays aboard while it rises.
+3. On a low-ledge route, check that A starts the jump, crouch follows
+   takeoff and the bot reaches its landing. On a low-roof route, check
+   that the bot turns away from the standing-height obstruction.
+4. On Ascension, watch a bot enter the Banshee, climb, make a strafing
+   run and boost out. Damage it above the ground and check the evasive
+   roll. Check secondary fire with a variant that enables the fuel rod
+   bomb. Check the bot descends before exiting for an objective.
+5. On Zanzibar or Headlong, watch a bot take a standalone gun covering
+   the fight, then dismount when approached from the side. Repeat with a
+   teammate driving a Warthog using a gauss or chaingun turret.
+6. On Coagulation or Headlong, approach a Scorpion or Wraith from either
+   side and a Warthog from beside the driver door. Compare the bot's X
+   press to the actual seat marker in each case. In a Ghost or Warthog,
+   choose a goal with a pedestrian shortcut and a wide detour. Check
+   the bot follows the wide route and clears the turns.
+7. Repeat traversal jumps, Banshee button actions and vehicle entry and
+   exit in both local slots and Clankermatch. Inspect playback through
+   `h2 agent` and the existing `sim.*` and world methods (§10.1).
+8. On H1 Blood Gulch verify both outbound portals from their bases. On
+   Sidewinder exercise both directions between the paired pads and each
+   outbound-only pad. Try a crouch-jump route above standing reach on
+   both maps. Check whether Sidewinder's blast-door scenery moves.
+9. On Containment watch both high receivers through free fall. Check
+   the actual player exit on all four Warlock lifts, the Lockout tube and
+   Midship's midpillars. Try Gemini's columns with a player. On Relic
+   compare traversal before and after activation of the portal switch.
+
 ## 12. Next tracing (offline)
 
 Done for stage 1 (§4.1 to §4.3): the pad seam, the slot flags and the
@@ -4741,28 +5163,17 @@ Still open:
   §8.5). The button masks and selection fields have static traces.
 - Which font slots draw player names in the lobby, scoreboard and carnage
   report.
-- For objectives (§3.7): Territories' globals `[0x51eccc]` (the
-  territories, their owners and who contests them) and the netgame flag
-  type of a territory; who fills the designator map `E+0x10` (the team
-  set builder `0x157790`); in Assault, the bomb record's team and the
-  attacking side (`+0x1f4`); the fourth caller of `0x15e050`
-  (`0x2c0a7d`); whether a ball's spawn is netgame flag type 4 in the
-  engine (Oddball's init); and King of the Hill's in-hill test (player
-  `+0x1b8`) against our geometric one.
-- For vehicles (§3.9): the seat flags' bits (`S+0`: driver 2, gunner 3
-  assumed) and the type's values (`V+0x1f0`), from the enter-vehicle
-  routine `0xea1f0` and its caller (which seat a player near a vehicle
-  gets, and how the entry point is picked: the seats' entry markers and
-  `S+0x98`); the rocket launcher's lock (the weapon or projectile fields
-  that time it, and whether a zoom is needed); whether entering is a hold
-  of X and leaving a press; and the units of `O+0x88` (velocity).
-- For the weapons layer (§3.6): whether the flag, ball, bomb and energy
-  sword's `weap` tags have no magazines and no aging barrel (the sword
-  should read as a battery to be sought); the `weap` field naming the
-  multiplayer objective kind, to rule them out by name rather than by
-  shape; the heat of plasma weapons (overheating reads as nothing today);
-  and whether a pickup's respawn timer is readable (the netgame equipment
-  index `+0xaf`, docs/live/live-gamestate.md).
+- For objectives, the traced fields and their writers are in §3.7. The
+  outstanding checks are pickup behavior, rotated one-bomb rounds, hill
+  transitions and capture volumes in play (§11.2).
+- For vehicles (§3.9): verify the rocket launcher's lock time and zoom
+  requirement, the units of `O+0x88` (velocity), the Banshee's secondary
+  fire and roll in phantom play, and whether tag dimensions need a
+  larger margin on tight turns. For lifts (§3.2), measure the launch
+  trajectory and ride time on the retail maps.
+- For weapons (§3.6), trace plasma heat and compare the predicted service
+  phase with a witnessed pickup and actual return on local and phantom
+  pads, including alternate H1 sandboxes and multiplayer variants.
 
 ## 13. Testing (`h2 bots test`)
 
@@ -4793,7 +5204,7 @@ h2 bots verdict <bots.log>   # the verdict of a log again
    the run uses clang's full build and never the Cranelift fast tier; it
    first waits while a background clang build of `--out` is still writing
    `clang-build.log`. The run's data starts with the `[graphics]` table of
-   `--settings-from`'s `settings.toml` (by default `$TMPDIR/h2boot-data`,
+   `--settings-from`'s `settings.toml` (by default `~/Library/Application Support/h2recomp/data`,
    the data root `h2 play` uses), so the window renders with the user's
    own video settings.
 3. Presses through the menus over the game's agent socket

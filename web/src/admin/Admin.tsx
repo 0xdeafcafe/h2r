@@ -5,8 +5,8 @@
 // and admins, importing an account, the server's status) is the dashboard's
 // "server" screens, linked from the title bar (./tabs.ts).
 
-import { Show, createSignal } from "solid-js";
-import { A } from "@solidjs/router";
+import { Show, lazy } from "solid-js";
+import { A, useSearchParams } from "@solidjs/router";
 import { Crumbs, Panel, Tabs, Title } from "../stats/Layout";
 import { identity } from "../state/identity";
 import { adminState } from "./state";
@@ -17,10 +17,12 @@ import { ADMIN_TABS, IMPORT_ACCOUNT, SERVER_ADMIN, adminTab } from "./tabs";
 import "../styles/admin.css";
 import { STATS_ROOT } from "../routes";
 
+const ClankerTraining = lazy(() => import("./ClankerTraining"));
+
 export default function Admin() {
-  // ?tab=hopper opens the playlists (the dashboard links here).
-  const asked = typeof location !== "undefined" ? new URLSearchParams(location.search).get("tab") : null;
-  const [tab, setTab] = createSignal<string>(adminTab(asked));
+  const [params, setParams] = useSearchParams<{ tab?: string; run?: string; batch?: string }>();
+  const tab = () => adminTab(params.tab ?? null);
+  const setTab = (id: string) => setParams({ tab: id === "motd" ? undefined : id, run: undefined, batch: undefined });
   const admin = adminState.isMeAdmin;
   return (
     <div class="s-full">
@@ -74,6 +76,9 @@ export default function Admin() {
               </Show>
               <Show when={tab() === "content"}>
                 <ContentAdmin />
+              </Show>
+              <Show when={tab() === "training"}>
+                <ClankerTraining />
               </Show>
             </Show>
           )}

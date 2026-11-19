@@ -573,6 +573,43 @@ fn hud_thresholds_are_bytes_not_raw_pointers() {
     assert_eq!(&inferred, Schema::builtin());
 }
 
+/// The weapon slots no retail tag fills but Halo 1's weapons do (the
+/// flashlight's power-on and power-off effects, the detonation effects,
+/// the collision sound, the magazines' chambering effect) are tag
+/// references in the checked-in schema, as inference makes them
+/// ([`super::infer::apply_engine_refs`]): without, an extract read the
+/// converted assault rifle's flashlight effect as bytes, with no tag.
+#[test]
+fn weapon_slots_retail_leaves_empty_are_tag_references() {
+    let weap = FourCC(*b"weap");
+    let schema = Schema::builtin();
+    let root = &schema.groups[&weap];
+    let Some(Field::Block(magazine)) = root.fields.get(&0x2c0) else {
+        panic!("weap +0x2c0 is no block");
+    };
+    for &(group, path, offset) in super::infer::ENGINE_REFS {
+        assert_eq!(group, weap);
+        let s = if path.is_empty() { root } else { &**magazine };
+        assert_eq!(
+            s.fields.get(&offset),
+            Some(&Field::TagRef),
+            "{path:x?} +{offset:#x}"
+        );
+    }
+    // What inference made of them before: no field.
+    let mut inferred = schema.clone();
+    let r = inferred.groups.get_mut(&weap).unwrap();
+    for o in [0xfc, 0x11c, 0x124, 0x17c, 0x244, 0x24c] {
+        r.fields.remove(&o);
+    }
+    let Some(Field::Block(m)) = r.fields.get_mut(&0x2c0) else {
+        unreachable!()
+    };
+    m.fields.remove(&0x44);
+    super::infer::apply_engine_refs(&mut inferred);
+    assert_eq!(&inferred, schema);
+}
+
 /// An `nhdt` whose widgets hold thresholds at `+0x18` (Halo 1's "Reload":
 /// rounds loaded below 11, `00 0b 01 00`) moves into a built map with those
 /// bytes as they were, and the text widget keeps its justification. Taken

@@ -18,7 +18,7 @@ const INDEX: &str = "<!doctype html>\n<html>\n  <head>\n    <meta charset=\"UTF-
     <!-- page-meta -->\n    <title>Live Dashboard</title>\n    <!-- /page-meta -->\n    \
     <meta name=\"h2-dash-name\" content=\"Live Dashboard\" />\n    \
     <meta name=\"h2-stats-name\" content=\"h2 Uplink\" />\n  </head>\n  \
-    <body><div id=\"root\"></div></body>\n</html>\n";
+    <body><!-- game-header --><!-- /game-header --><div id=\"root\"></div></body>\n</html>\n";
 
 struct Web {
     app: axum::Router,
@@ -221,6 +221,99 @@ async fn names_are_escaped_into_the_html() {
     let body = web.page(&format!("/games/halo2/games/{id}")).await;
     assert!(!body.contains("<script>\"x\""), "{body}");
     assert!(body.contains("&lt;script&gt;&quot;x&quot;&lt;/script&gt; on Lockout"));
+}
+
+/// The game page's header (crates/live-server/src/page_header.rs), through
+/// the router: pre-rendered into the HTML above the app, with the emblem
+/// every player carries, at a fixed size — so the page's first paint is
+/// the final header and nothing swaps once the app boots.
+#[tokio::test]
+async fn a_game_page_carries_its_header_pre_rendered() {
+    let h = harness().await;
+    let host = h.create("Host").await;
+    let id = h.start_game(&host, two_player_game(&host)).await;
+    let web = Web::new(&h);
+
+    // A live game: the header says what, who and how it stands.
+    let live = web.page(&format!("/games/halo2/games/{id}")).await;
+    assert!(
+        live.contains(r#"<div id="game-header" class="s-gamehead-shell" data-game="#),
+        "{live}"
+    );
+    assert!(
+        live.contains(r#"<script type="application/json" id="game-header-model">"#),
+        "{live}"
+    );
+    assert!(live.contains("<b>Team Slayer</b> on Lockout"), "{live}");
+    assert!(live.contains(r#"s-gamehead-flag--live">LIVE<"#), "{live}");
+    // Both players, each with their emblem at a fixed size.
+    assert_eq!(
+        live.matches(r#"<img class="emblem emblem--game""#).count(),
+        2,
+        "{live}"
+    );
+    for img in live.split(r#"<img class="emblem emblem--game""#).skip(1) {
+        let tag = &img[..img.find('>').unwrap()];
+        assert!(tag.contains(r#"src="/art/emblem/"#), "{tag}");
+        assert!(tag.contains(r#"width="16""#), "{tag}");
+        assert!(tag.contains(r#"height="16""#), "{tag}");
+    }
+    assert!(live.contains("<span>Host</span>"), "{live}");
+    assert!(live.contains("<span>Guest</span>"), "{live}");
+    // Above the app, and the model beside it is the JSON the client
+    // re-derives, so it adopts what is already there.
+    assert!(
+        live.find(r#"id="game-header""#).unwrap() < live.find(r#"<div id="root">"#).unwrap(),
+        "{live}"
+    );
+    let model = live
+        .split(r#"id="game-header-model">"#)
+        .nth(1)
+        .unwrap()
+        .split("</script>")
+        .next()
+        .unwrap()
+        .to_string();
+    let parsed: serde_json::Value = serde_json::from_str(&model).unwrap();
+    assert_eq!(parsed["game"], json!(id));
+    assert_eq!(parsed["live"], json!(true));
+
+    // Only a game page carries one.
+    let list = web.page("/games/halo2/games").await;
+    assert!(!list.contains(r#"id="game-header""#), "{list}");
+
+    // The game ends: the header follows, without being asked again.
+    let end = h.batch(
+        &host,
+        &id,
+        &[
+            (
+                "ScoreChanged",
+                json!({"tick": 40, "players": [{"index": 0, "score": 2, "kills": 2, "deaths": 0, "assists": 0}],
+                       "teams": [{"team": 0, "score": 50}, {"team": 1, "score": 43}]}),
+            ),
+            (
+                "GameEnded",
+                json!({"tick": 900, "reason": "finished", "winner": {"team": 0}}),
+            ),
+        ],
+    );
+    assert_eq!(
+        h.post_batch(&host, &id, end).await.status,
+        StatusCode::CREATED
+    );
+    let ended = web.page(&format!("/games/halo2/games/{id}")).await;
+    assert!(ended.contains(r#"s-gamehead-flag">FINAL<"#), "{ended}");
+    assert!(ended.contains("<span>Red Team won</span>"), "{ended}");
+    assert!(ended.contains("<header><span>Red</span><b>50</b></header>"), "{ended}");
+
+    // The JSON the Worker asks for carries the header too.
+    let j = h
+        .get(&format!("/v1/page-meta?path=/games/halo2/games/{id}"))
+        .await;
+    assert_eq!(j.status, StatusCode::OK);
+    assert_eq!(j.json()["header"]["game"], json!(id));
+    assert_eq!(j.json()["header"]["result"], json!("Red Team won"));
 }
 
 #[tokio::test]

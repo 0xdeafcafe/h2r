@@ -67,7 +67,7 @@ and the converter's version, so a rerun converts only what is missing or
 stale; --force converts everything again. `h2 play`, `h2 run` and `h2 serve`
 run this by themselves when halo1.iso is next to the Halo 2 disc.
 
-The disc defaults to disc/halo1.iso; --data to $TMPDIR/h2boot-data, as for
+The disc defaults to disc/halo1.iso; --data to the data root, as for
 `h2 play`; --disc (the Halo 2 disc, whose maps are the bases) to $H2_DISC,
 else halo2.iso beside the Halo 1 disc, else disc/halo2.iso. --copy-source
 also copies the disc's campaign maps as they are (compressed) into

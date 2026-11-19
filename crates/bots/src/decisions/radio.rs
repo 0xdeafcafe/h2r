@@ -2,9 +2,11 @@
 //! tick, listen to completed ticks only, so pad polling order is irrelevant.
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
+use super::supplies::Supply;
 use crate::brain::{Perception, Vec3};
 
 const CALL_TICKS: u32 = 75;
+pub(super) const MAX_REPORT_INTERVAL: u32 = 24;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Call {
@@ -16,12 +18,45 @@ pub(crate) struct Call {
     pub help: bool,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct SupplyCall {
+    pub sender: u32,
+    pub team: i16,
+    pub item: Supply,
+    pub present: bool,
+    pub tick: u32,
+}
+
+/// Rate-limit repeat sightings. New targets and urgent help go out immediately.
+#[derive(Clone, Debug, Default)]
+pub(super) struct Voice(Option<Call>);
+
+impl Voice {
+    pub fn report(&mut self, call: Option<Call>, interval: u32) -> Option<Call> {
+        let Some(call) = call else {
+            self.0 = None;
+            return None;
+        };
+        if self.0.is_some_and(|old| {
+            old.target == call.target
+                && (!call.help || old.help)
+                && call.tick.wrapping_sub(old.tick) < interval
+        }) {
+            return None;
+        }
+        self.0 = Some(call);
+        Some(call)
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct Radio {
     pub epoch: u64,
     tick: Option<u32>,
     ready: Vec<Call>,
     pending: Vec<Call>,
+    supplies: Vec<SupplyCall>,
+    pending_supplies: Vec<SupplyCall>,
 }
 
 impl Radio {
@@ -30,6 +65,8 @@ impl Radio {
         self.tick = None;
         self.ready.clear();
         self.pending.clear();
+        self.supplies.clear();
+        self.pending_supplies.clear();
     }
 
     pub fn advance(&mut self, tick: u32) {
@@ -40,6 +77,15 @@ impl Radio {
             self.reset();
         }
         self.tick = Some(tick);
+        self.supplies.retain(|c| tick - c.tick <= CALL_TICKS);
+        for c in self.pending_supplies.drain(..) {
+            self.supplies.retain(|old| {
+                (old.team, old.item.site, old.sender) != (c.team, c.item.site, c.sender)
+            });
+            if tick - c.tick <= CALL_TICKS {
+                self.supplies.push(c);
+            }
+        }
         self.ready.retain(|c| tick - c.tick <= CALL_TICKS);
         for call in self.pending.drain(..) {
             self.ready.retain(|c| c.sender != call.sender);
@@ -73,9 +119,28 @@ impl Radio {
                 c.sender != id
                     && c.team == team
                     && p.others.iter().any(|o| o.id == c.sender && o.team == team)
-                    && p.others.iter().any(|o| o.id == c.target && o.team != team)
             })
             .collect()
+    }
+
+    pub fn supply_calls(&self, p: &Perception) -> Vec<SupplyCall> {
+        let Some((id, team)) = p.observations.player.filter(|_| p.teams) else {
+            return vec![];
+        };
+        let mut calls: Vec<_> = self
+            .supplies
+            .iter()
+            .copied()
+            .filter(|c| c.sender != id && c.team == team)
+            .collect();
+        calls.sort_by_key(|c| (c.tick, c.sender));
+        calls
+    }
+
+    pub fn publish_supply(&mut self, c: SupplyCall, now: u32) {
+        if self.tick == Some(now) && now.wrapping_sub(c.tick) <= CALL_TICKS {
+            self.pending_supplies.push(c);
+        }
     }
 
     pub fn publish(&mut self, call: Call) {
