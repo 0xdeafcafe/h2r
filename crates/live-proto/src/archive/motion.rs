@@ -38,7 +38,7 @@ fn vec3(v: &Value) -> Option<[f64; 3]> {
     Some([a[0].as_f64()?, a[1].as_f64()?, a[2].as_f64()?])
 }
 
-fn rotated(base: [f64; 3], delta: f64) -> Result<[u32; 2]> {
+pub(crate) fn rotated(base: [f64; 3], delta: f64) -> Result<[u32; 2]> {
     let c = sin(delta + std::f64::consts::FRAC_PI_2);
     let s = sin(delta);
     pack::oct([

@@ -432,3 +432,30 @@ fn bench_live_floor_deflate() {
         ns.as_secs_f64() * 1e6 / frames.len() as f64
     );
 }
+
+#[path = "pack_floor/arithmetic.rs"]
+mod arithmetic;
+#[path = "pack_floor/native.rs"]
+mod native;
+
+#[test]
+fn research_grids_round_trip() {
+    for (pos, aim) in [(false, true), (true, false)] {
+        COARSE_POSITION.set(pos);
+        COARSE_AIM.set(aim);
+        let mut enc = Encoder::new(0, 3);
+        let mut dec = Decoder::new();
+        for frame in crate::samples::multiplayer(8)
+            .into_iter()
+            .chain(crate::samples::campaign(4))
+        {
+            let record = enc.encode(&frame).unwrap().0;
+            assert_eq!(
+                dec.decode(&record).unwrap().frame,
+                quantize(&frame).unwrap()
+            );
+        }
+        COARSE_POSITION.set(false);
+        COARSE_AIM.set(false);
+    }
+}

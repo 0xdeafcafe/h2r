@@ -341,6 +341,7 @@ fn dvel(q: [i64; 3]) -> [f64; 3] {
 
 /// An object id: a datum (8 hex digits), a player (`p<index>`) or text.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
 enum Id {
     Datum(u32),
     Player(u32),
@@ -377,6 +378,7 @@ impl Id {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
 enum Val {
     None,
     Bool(bool),
@@ -991,6 +993,15 @@ fn as_dir(v: &Val) -> Result<[f64; 3]> {
         _ => Err(PackError::Bad("expected a direction")),
     }
 }
+fn as_unit_aim(v: &Val) -> Result<Option<[f64; 3]>> {
+    #[cfg(test)]
+    if floor::COARSE_AIM.get()
+        && let Val::Dir(q) = v
+    {
+        return Ok(Some(unoct_grid(*q, 4094.0)));
+    }
+    as_opt_dir(v)
+}
 fn as_opt_dir(v: &Val) -> Result<Option<[f64; 3]>> {
     match v {
         Val::None => Ok(None),
@@ -1079,7 +1090,7 @@ fn player_of(e: &Entity) -> Result<FramePlayer> {
         yaw: dyaw(as_int(&e[3])?),
         vehicle: as_opt_id(&e[4])?,
         species: as_opt_str(&e[5])?,
-        aim: as_opt_dir(&e[6])?,
+        aim: as_unit_aim(&e[6])?,
         weapon: as_opt_str(&e[7])?,
         shots: as_opt_int(&e[8])?.map(|n| n as u32),
         stance: as_enum(&e[9], &STANCES)?,
@@ -1160,7 +1171,7 @@ fn actor_of(e: &Entity) -> Result<FrameActor> {
         species: as_str(&e[1])?,
         pos: as_pos(&e[2])?,
         yaw: dyaw(as_int(&e[3])?),
-        aim: as_opt_dir(&e[4])?,
+        aim: as_unit_aim(&e[4])?,
         weapon: as_opt_str(&e[5])?,
         shots: as_opt_int(&e[6])?.map(|n| n as u32),
         team: as_opt_str(&e[7])?,
@@ -1449,6 +1460,10 @@ fn read_angle_component(r: &mut BitReader, base: Option<u32>, wrap: bool) -> Res
             u32::try_from(v).map_err(|_| PackError::Bad("direction out of range"))
         };
     }
+    #[cfg(test)]
+    if floor::SHORT_AXIS.get() {
+        return Ok(r.bits(12)? as u32);
+    }
     Ok(r.bits(14)? as u32)
 }
 
@@ -1697,10 +1712,27 @@ fn write_entity(w: &mut BitWriter, schema: &[Field], e: &Entity, t: &Table) {
     }
 }
 
+fn read_schema_field(
+    r: &mut BitReader,
+    schema: &[Field],
+    i: usize,
+    prev: Option<&Val>,
+    strings: &[String],
+    ticks: u64,
+) -> Result<Val> {
+    #[cfg(test)]
+    floor::before_field(schema, i);
+    let result = read_field(r, schema[i], prev, strings, ticks);
+    #[cfg(test)]
+    floor::SHORT_AXIS.set(false);
+    result
+}
+
 fn read_entity(r: &mut BitReader, schema: &[Field], strings: &[String]) -> Result<Entity> {
     schema
         .iter()
-        .map(|field| read_field(r, *field, None, strings, 0))
+        .enumerate()
+        .map(|(i, _)| read_schema_field(r, schema, i, None, strings, 0))
         .collect()
 }
 
@@ -2189,7 +2221,9 @@ fn read_delta(
                     (Some((pi, _)), Some(_)) if idx == pi => {
                         error = Some([r.seg(PREDICT_K)?, r.seg(PREDICT_K)?, r.seg(PREDICT_K)?]);
                     }
-                    _ => e[idx] = read_field(r, schema[idx], Some(&before[idx]), strings, dt)?,
+                    _ => {
+                        e[idx] = read_schema_field(r, schema, idx, Some(&before[idx]), strings, dt)?
+                    }
                 }
             }
             if let (Some((pi, vi)), Some(a), Some(err)) = (motion, base, error) {

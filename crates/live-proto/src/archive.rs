@@ -2,6 +2,8 @@
 //! Content-Encoding: br). The inflated H2AR stream transposes the complete
 //! Frame tree by field and array ordinal across the segment's timeline.
 mod motion;
+#[cfg(test)]
+pub(crate) use motion::rotated;
 mod numbers;
 
 use crate::game::Frame;
