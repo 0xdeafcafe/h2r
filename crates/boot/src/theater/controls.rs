@@ -170,7 +170,7 @@ pub(crate) fn library_methods(
                 }
                 let Some(active) = player.as_ref() else {
                     return if name == api::STATE {
-                        Ok(serde_json::json!({"id":null}))
+                        Ok(serde_json::json!({"id":null,"active":false}))
                     } else {
                         Err(unavailable("no film loaded".into()))
                     };

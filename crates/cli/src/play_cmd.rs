@@ -503,7 +503,7 @@ fn watch_signals(_: app::Closer) -> Arc<AtomicBool> {
 mod theater;
 
 pub fn run(args: Vec<String>) -> Result<()> {
-    run_with_theater(args, None)
+    run_with_theater(args, Some(theater::open_library))
 }
 
 pub(crate) fn run_with_theater(

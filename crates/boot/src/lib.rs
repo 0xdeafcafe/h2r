@@ -1280,6 +1280,11 @@ fn run_configured(
     let level_name = level.as_ref().map(|l| l.name.clone());
     // Every feature the plan gets up to the touch glue is registered in
     // `registration` (and its tests build the plan from the same code).
+    let film_dir = || {
+        std::env::var_os("H2_FILM_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| opts.data_root.join("films"))
+    };
     let theater = if let Some((theater, open)) = host.theater.take() {
         let stamp = match tier {
             tier::Tier::Clang => build_stamp(xbe_bytes),
@@ -1287,7 +1292,7 @@ fn run_configured(
         };
         theater.install(
             &mut features,
-            &opts.data_root.join("films"),
+            &film_dir(),
             stamp,
             live.server_url.as_deref(),
             open,
@@ -1689,9 +1694,6 @@ fn run_configured(
         }
     }
     if !replaying && let Some(a) = &agent {
-        let dir = std::env::var_os("H2_FILM_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| opts.data_root.join("films"));
         let parent = dylib.parent().unwrap_or(Path::new("."));
         let out = if tier == tier::Tier::Fast {
             parent.parent().unwrap_or(parent)
@@ -1700,7 +1702,7 @@ fn run_configured(
         };
         theater::library_methods(
             &a.agent,
-            dir,
+            film_dir(),
             opts.disc.clone(),
             out.to_owned(),
             opts.data_root.clone(),

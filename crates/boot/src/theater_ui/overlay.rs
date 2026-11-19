@@ -417,9 +417,6 @@ impl Session {
             (Request::Play, Ok(_)) => {
                 self.ready = true;
                 self.notice = None;
-                if let Some(start) = self.track.as_ref().and_then(|t| t.range.map(|r| r.0)) {
-                    self.send("theater.seek", json!({ "tick": start }), Request::Seek);
-                }
             }
             (Request::Play, Err(error)) => {
                 self.ready = false;
@@ -435,10 +432,10 @@ impl Session {
                         self.track = None;
                     } else {
                         track.read(s);
-                        if track.range.is_some_and(|(_, end)| track.tick >= end)
+                        if let Some((start, end)) = track.range
+                            && (track.tick < start || track.tick >= end)
                             && !self.pending.values().any(|r| matches!(r, Request::Seek))
                         {
-                            let (start, _) = track.range.expect("clip range exists");
                             self.send("theater.seek", json!({ "tick": start }), Request::Seek);
                         }
                     }
@@ -499,7 +496,12 @@ impl Session {
             _ if !self.ready => {}
             Control::Pause => {
                 if !self.pending.values().any(|r| matches!(r, Request::Pause)) {
-                    self.send("theater.pause", json!({}), Request::Pause);
+                    let method = if track.paused {
+                        agent_proto::theater::PLAY
+                    } else {
+                        agent_proto::theater::PAUSE
+                    };
+                    self.send(method, json!({}), Request::Pause);
                 }
             }
             Control::Skip(seconds) => {
@@ -511,7 +513,7 @@ impl Session {
                 if speed != track.speed {
                     self.send(
                         "theater.speed",
-                        json!({ "x": SPEEDS[speed] }),
+                        json!({ "speed": SPEEDS[speed] }),
                         Request::Speed(speed),
                     );
                 }
