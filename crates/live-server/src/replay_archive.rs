@@ -30,7 +30,7 @@ pub(crate) struct Recording {
     pub legacy_frames: u64,
     pub next_version: u64,
     pub requested: bool,
-    retry_at: i64,
+    pub(crate) retry_at: i64,
     pub published: bool,
     pub rolled_back: bool,
     pub parts: Arc<Vec<job::Part>>,
