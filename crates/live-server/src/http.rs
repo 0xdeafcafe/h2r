@@ -169,6 +169,23 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
             axum::routing::put(crate::content::put_credit),
         )
         .route(
+            "/v1/maps/{map}/details",
+            axum::routing::put(crate::content::put_details),
+        )
+        .route(
+            "/v1/maps/{map}/images/{n}",
+            get(crate::content::get_map_detail_image),
+        )
+        .route("/v1/mappacks", get(crate::content::list_packs))
+        .route(
+            "/v1/mappacks/{pack}",
+            axum::routing::put(crate::content::put_pack),
+        )
+        .route(
+            "/v1/mappacks/{pack}/images/{n}",
+            get(crate::content::get_pack_image),
+        )
+        .route(
             "/v1/content/{sha256}/report",
             post(crate::content::report_content),
         )

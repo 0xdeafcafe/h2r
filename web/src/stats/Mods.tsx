@@ -9,7 +9,7 @@ import { live } from "../state/live";
 import { identity } from "../state/identity";
 import { mapTitle } from "../state/gameart";
 import { seedPackages } from "../state/maps";
-import { formatBytes, lookupFromResponse, parseMapSummaries, type MapDetail, type MapSummary } from "../lib/maps";
+import { formatBytes, lookupFromResponse, packImageUrl, packageScreenshotUrl, parseMapSummaries, type MapDetail, type MapImage, type MapSummary } from "../lib/maps";
 import {
   DOWNLOAD_NOTE, MOD_CATEGORIES, MOD_SORTS, baseOptions, categoryLabel, modMakers, releasedText, cursorCurrent, cursorNext, cursorPage,
   cursorPrev, cursorStart, downloadsText, type CursorStack, modHref, modListParams, modMissingText, modQueryFromSearch, modQueryKey, modSearchParams,
@@ -218,6 +218,38 @@ export function ModPage() {
   );
 }
 
+/** The admin's screenshots, each with its caption and who made it; one
+ *  that fails to load is left out. */
+function ModShots(props: { images: MapImage[]; url: (n: number) => string }) {
+  const [broken, setBroken] = createSignal<number[]>([]);
+  return (
+    <ul class="s-mod-shots">
+      <For each={props.images}>
+        {(img, i) => (
+          <Show when={!broken().includes(i())}>
+            <li>
+              <a href={props.url(i())} target="_blank" rel="noopener noreferrer">
+                <img src={props.url(i())} alt={img.caption ?? "Screenshot"} loading="lazy" decoding="async"
+                  onError={() => setBroken((b) => [...b, i()])} />
+              </a>
+              <Show when={img.caption || img.credit || img.source_url}>
+                <p class="s-mod-shot-cap">
+                  {img.caption}
+                  <Show when={img.credit || img.source_url}>
+                    <span class="s-dim"> {img.caption ? "· " : ""}{img.credit ? `image: ${img.credit}` : "image"}
+                      <Show when={img.source_url}>{(u) => <> (<a href={u()} target="_blank" rel="noopener noreferrer nofollow">{new URL(u()).host}</a>)</>}</Show>
+                    </span>
+                  </Show>
+                </p>
+              </Show>
+            </li>
+          </Show>
+        )}
+      </For>
+    </ul>
+  );
+}
+
 function ModMissing(props: { state: "unknown" | "gone" | "error" }) {
   const t = () => modMissingText(props.state === "unknown" || props.state === "gone" ? props.state : "error");
   return (
@@ -277,6 +309,7 @@ function ModDetail(props: { m: MapDetail; missing: string[] }) {
             <div><dt>Downloads</dt><dd>{num(m().downloads)}</dd></div>
             <div><dt>Published</dt><dd title={longDate(m().published_at)}>{dotDate(m().published_at)}</dd></div>
             <Show when={makers()}>{(c) => <div><dt>{(credits()?.authors.length ?? 0) > 1 ? "Authors" : "Author"}</dt><dd>{c()}</dd></div>}</Show>
+            <Show when={m().pack_info?.name ?? m().pack_name ?? m().pack}>{(p) => <div><dt>Pack</dt><dd>{p()}</dd></div>}</Show>
             <Show when={credits()?.release}>{(r) => <div><dt>Released as</dt><dd>{r()}</dd></div>}</Show>
             <Show when={credits()?.released}>{(d) => <div><dt>Released</dt><dd>{releasedText(d())}</dd></div>}</Show>
             <div><dt>Uploaded by</dt><dd><A href={playerHref(m().author.gamertag)}>{m().author.gamertag}</A></dd></div>
@@ -289,6 +322,39 @@ function ModDetail(props: { m: MapDetail; missing: string[] }) {
           <Show when={props.missing.length}><p class="s-bad">The server is missing {props.missing.length} of this mod's files, so it can't be downloaded right now.</p></Show>
         </div>
       </div>
+      <Show when={m().images?.length}>
+        <Title class="s-title--rule">Screenshots</Title>
+        <ModShots images={m().images ?? []} url={(n) => packageScreenshotUrl(live.server().api, m().map_id, n)} />
+      </Show>
+      <Show when={(m().report?.lines ?? m().contents ?? []).length}>
+        <Title class="s-title--rule" help="Read off the mod's map against the retail map it is built on: the tags it adds or changes, the references it swaps, the stats it changes and what it places.">What's Inside</Title>
+        <ul class="s-mod-contents">
+          <For each={m().report?.lines ?? m().contents ?? []}>{(l) => <li>{l}</li>}</For>
+        </ul>
+      </Show>
+      <Show when={m().pack_info}>
+        {(p) => (
+          <>
+            <Title class="s-title--rule">From {p().name}</Title>
+            <div class="s-mod-pack">
+              <Show when={p().authors.length || p().released}>
+                <p class="s-dim">
+                  {p().authors.length ? `by ${p().authors.join(", ")}` : ""}
+                  {p().authors.length && p().released ? " · " : ""}
+                  {p().released ? releasedText(p().released!) : ""}
+                </p>
+              </Show>
+              <Show when={p().description}>{(d) => <p class="s-mod-desc-full">{d()}</p>}</Show>
+              <Show when={p().source_url}>
+                {(u) => <p class="s-mod-source">From <a href={u()} target="_blank" rel="noopener noreferrer nofollow">{new URL(u()).host}</a></p>}
+              </Show>
+            </div>
+            <Show when={p().images.length}>
+              <ModShots images={p().images} url={(n) => packImageUrl(live.server().api, p().id, n)} />
+            </Show>
+          </>
+        )}
+      </Show>
       <Title class="s-title--rule">Base Map</Title>
       <div class="s-mod-base">
         <A href={modsHref({ sort: "new", base: m().base.map.toLowerCase() })} class="s-mod-pic">

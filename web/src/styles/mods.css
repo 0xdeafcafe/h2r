@@ -61,6 +61,13 @@
 .s-grid tbody tr.s-mod-total { background: #101e33; }
 .s-mod-report { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 0 8px 12px; font-size: 11px; }
 .s-mod-report .s-linkbtn { margin-left: auto; font-size: 11px !important; }
+.s-mod-shots { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; padding: 0 8px 10px; }
+.s-mod-shots img { display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: cover; background: #0d0d0d; border: 1px solid #444; }
+.s-mod-shots a:hover img { border-color: #7f9db9; }
+.s-mod-shot-cap { margin-top: 3px !important; font-size: 11px; line-height: 14px; color: #c9c9c9; }
+.s-mod-pack { padding: 0 8px 8px; font-size: 11px; }
+.s-mod-pack p + p { margin-top: 4px !important; }
+.s-mod-contents { padding: 0 8px 10px 24px; font-size: 11px; line-height: 16px; color: #d6d6d6; list-style: square; }
 .s-mod-note { font-size: 11px; line-height: 15px; color: #c9c9c9; }
 .s-mod-cats li.on a { color: #fff; font-weight: bold; }
 
