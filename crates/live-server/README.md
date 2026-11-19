@@ -83,7 +83,7 @@ What is built of [live-api.md](../../docs/live/live-api.md):
 | `GET /v1/games/{id}/frames?from_tick=&to_tick=&cursor=&limit=` | recorded frames, oldest first, 600 a page |
 | `POST /v1/games/{id}/events` | `games.write`; body: one batch JWS by the host or a player |
 | `GET /v1/ingest` | WebSocket: `auth`, then `frame` / `events` / `ping` |
-| `PUT /v1/maps/{map}/outline` | `games.write`, ≤ 2 MiB; first upload wins, operator may replace |
+| `PUT /v1/maps/{map}/outline` | admin or operator's `games.write`, ≤ 2 MiB, stores or replaces the outline |
 | `GET /v1/maps/{map}/outline` | the outline JSON |
 
 Also built, in [live-api.md](../../docs/live/live-api.md): teams

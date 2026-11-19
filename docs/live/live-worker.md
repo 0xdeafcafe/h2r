@@ -289,9 +289,10 @@ Two drivers run the session:
 the game socket's logic, driven by axum's task on a machine and by the hub
 (`crates/live-worker/src/ingest.rs`). The hub handles each ingest socket's
 messages one at a time, behind an async lock, since a message's work awaits
-the store. Its attachment keeps the author and the token's end; the packed
-decoder is not kept, so after a wake the sender's next keyframe picks its
-frames up again.
+the store. The shared session checks the 16 KiB message cap before parsing
+the auth message or decoding any frames. The attachment keeps the author
+and token expiry. After a wake, the sender's next keyframe restarts the
+packed decoder.
 
 ## Timers and hibernation
 
@@ -353,17 +354,16 @@ see [live-telemetry.md](live-telemetry.md).
 
 ## The co-op relay
 
-`/v1/sessions/{id}/relay` goes to a `CoopRelay` Durable Object named by
-the session id (`crates/live-worker/src/relay.rs`), so a session's
-datagrams never touch the hub. The client speaks the machine's protocol:
-its first message is `{kind: "auth", token}` with `sessions.relay`.
+`/v1/sessions/{id}/relay` begins at the hub. The upgrade request carries a
+`sessions.relay` bearer token, just as on a machine. After admission, a
+`CoopRelay` Durable Object named by the session id forwards datagrams.
 
-- **Membership.** The relay hands the token to the hub as
-  `POST /v1/sessions/{id}/relay/ticket`. The hub spends the token's `jti`,
-  checks the account is the host or an accepted guest of an open co-op
-  session, and signs a ticket: session, xuid, author, the token's `exp`,
-  and the ticket's own end, 15 s on (`relay::TICKET_S`). The relay checks
-  it with the server's public key.
+- **Membership.** The hub spends the token's `jti`, checks that the
+  account is the host or an accepted guest of an open co-op session,
+  and signs a 15-second ticket containing the session, XUID, author and
+  token expiry. It then forwards the upgrade to the relay object, which
+  verifies the ticket before accepting the socket. An `auth` message
+  later refreshes the token through `POST /v1/sessions/{id}/relay/ticket`.
 - **Rechecks.** On a machine the relay rechecks membership every 5 s. Here,
   a member whose ticket has run out gets a new one from the hub with the
   old ticket (`{"ticket": ...}`, no token), in the background, so no
@@ -374,11 +374,11 @@ its first message is `{kind: "auth", token}` with `sessions.relay`.
   4413, faster than `relay_rate` with 4429; `{kind: "peer", present}`
   when the other arrives or leaves.
 - **Hibernation.** Sockets are hibernatable, with the ticket as the
-  attachment; the room is rebuilt from them after a wake. The token's end
-  and the 10 s auth deadline are the object's alarm.
+  attachment. The room is rebuilt after a wake, and the object's alarm
+  closes sockets when their tokens expire.
 
-The ticket endpoint is public: a client could fetch a ticket itself, but
-it carries nothing the account could not learn anyway.
+The ticket endpoint can also issue a ticket directly to an authenticated
+member, and accepts a current ticket for renewal.
 
 ## Cost of the relay
 

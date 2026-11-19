@@ -7,7 +7,7 @@
 //! ```
 //!
 //! It makes four accounts (Alpha, Bravo, Charlie, Delta, or `--prefix`ed
-//! names), signs them in, stores an outline for `lockout`, plays a short
+//! names), signs them in, tries to store an outline for `lockout`, plays a short
 //! free-for-all on `midship` to the end, then hosts a Team Slayer game on
 //! `lockout` over the ingest socket: frames at 10 Hz, a kill every two
 //! seconds and presence pings every 30 for `--seconds`, left live at exit
@@ -166,6 +166,7 @@ fn main() {
         );
     match req.send_string(&outline.to_string()) {
         Ok(_) => println!("outline lockout"),
+        Err(ureq::Error::Status(403, _)) => println!("outline upload requires an admin"),
         Err(ureq::Error::Status(409, _)) => println!("outline lockout (already there)"),
         Err(e) => panic!("outline: {e}"),
     }

@@ -25,7 +25,7 @@ use crate::app::{
     ApiError, Live, conflict, forbidden, invalid, not_found, now, sign_error, unauthorized,
 };
 use crate::model::{Game, nonce_key};
-use crate::store::{NewEvent, Query, StoreError};
+use crate::store::{NewEvent, Query};
 
 /// Live frames go to readers at most this often per game.
 const FRAME_INTERVAL: Duration = Duration::from_millis(1000 / 15);
@@ -1075,8 +1075,8 @@ impl Live {
         }
     }
 
-    /// `PUT /v1/maps/{map}/outline`: the first upload of a map wins; the
-    /// operator may replace it.
+    /// `PUT /v1/maps/{map}/outline`: admin-managed geometry shared by every
+    /// game on the map.
     pub async fn put_outline(
         &self,
         bearer: Option<&str>,
@@ -1085,6 +1085,9 @@ impl Live {
     ) -> Result<Value, ApiError> {
         let author = self.authenticate(bearer, lxm::GAMES_WRITE)?;
         self.rate_limit(&author, lxm::GAMES_WRITE)?;
+        if !self.admins.is_admin(&author, &self.model.read()) {
+            return Err(forbidden("only an admin may upload a map outline"));
+        }
         if !game::valid_id(map) {
             return Err(invalid("map must be [A-Za-z0-9_-]{1,64}"));
         }
@@ -1093,26 +1096,15 @@ impl Live {
         if outline.map != map {
             return Err(invalid("the outline's map is not the path's"));
         }
-        let operator = matches!(author, Author::Server(_));
-        let stream = game::map_stream(map);
-        let expect = if operator {
-            Vec::new()
-        } else {
-            vec![(stream.clone(), 0)]
-        };
-        if !operator && self.model.read().outlines.contains_key(map) {
-            return Err(conflict("this map already has an outline"));
-        }
         let sha256 = sign::hex(&Sha256::digest(bytes));
         self.store.put_blob(&sha256, bytes).await?;
         let data = json!({"map": map, "sha256": sha256, "size": bytes.len(), "source": author.to_string()});
-        let event = self.server_event(stream, game::MAP_OUTLINE_STORED, data.clone());
-        let recorded = match self.store.append(vec![event], &expect).await {
-            Err(StoreError::Conflict { .. }) => {
-                return Err(conflict("this map already has an outline"));
-            }
-            r => r?,
-        };
+        let event = self.server_event(
+            game::map_stream(map),
+            game::MAP_OUTLINE_STORED,
+            data.clone(),
+        );
+        let recorded = self.store.append(vec![event], &[]).await?;
         self.wait_applied(recorded[0].position).await?;
         Ok(data)
     }

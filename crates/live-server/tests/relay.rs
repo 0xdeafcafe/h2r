@@ -12,19 +12,16 @@ use axum::http::{Method, StatusCode};
 use common::*;
 use futures_util::{SinkExt, StreamExt};
 use live_proto::session::{NewSession, Slots};
-use live_proto::{ClientMessage, lxm, mailbox};
+use live_proto::{lxm, mailbox};
 use live_server::Policy;
-use live_server::relay::{
-    CLOSE_CONFLICT, CLOSE_FORBIDDEN, CLOSE_RATE, CLOSE_TOO_LARGE, MAX_RELAY_MESSAGE,
-};
+use live_server::relay::{CLOSE_CONFLICT, CLOSE_RATE, CLOSE_TOO_LARGE, MAX_RELAY_MESSAGE};
 use live_server::store::MemoryStore;
 use serde_json::json;
-use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::{Error, Message};
 
 type Socket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
-
-const CLOSE_UNAUTHORIZED: u16 = 4401;
 
 async fn serve(policy: Policy) -> (Harness, SocketAddr) {
     let h = start(std::sync::Arc::new(MemoryStore::new()), policy).await;
@@ -120,21 +117,33 @@ fn url(addr: SocketAddr, id: &str) -> String {
     format!("ws://{addr}/v1/sessions/{id}/relay")
 }
 
-fn auth(h: &Harness, user: &User, method: &str) -> Message {
-    let token = h.token(&user.key, &user.author, method);
-    Message::Text(
-        serde_json::to_string(&ClientMessage::Auth { token })
-            .unwrap()
-            .into(),
-    )
+async fn upgrade(addr: SocketAddr, id: &str, token: Option<&str>) -> Result<Socket, Error> {
+    let mut req = url(addr, id).into_client_request()?;
+    if let Some(token) = token {
+        req.headers_mut()
+            .insert("authorization", format!("Bearer {token}").parse().unwrap());
+    }
+    tokio_tungstenite::connect_async(req)
+        .await
+        .map(|(ws, _)| ws)
 }
 
 async fn open(h: &Harness, addr: SocketAddr, id: &str, user: &User) -> Socket {
-    let (mut ws, _) = tokio_tungstenite::connect_async(url(addr, id))
-        .await
-        .unwrap();
-    ws.send(auth(h, user, lxm::SESSIONS_RELAY)).await.unwrap();
-    ws
+    let token = h.token(&user.key, &user.author, lxm::SESSIONS_RELAY);
+    upgrade(addr, id, Some(&token)).await.unwrap()
+}
+
+async fn expect_upgrade_refused(
+    addr: SocketAddr,
+    id: &str,
+    token: Option<&str>,
+    expected: StatusCode,
+) {
+    match upgrade(addr, id, token).await {
+        Err(Error::Http(resp)) => assert_eq!(resp.status(), expected),
+        Err(e) => panic!("expected HTTP {expected}, got {e}"),
+        Ok(_) => panic!("expected HTTP {expected}, but got a socket"),
+    }
 }
 
 async fn next(ws: &mut Socket) -> Message {
@@ -221,32 +230,29 @@ async fn only_the_two_members_of_an_open_coop_session_get_in() {
     assert_eq!(h.sign_in(&pending).await.status, StatusCode::CREATED);
     invite(&h, &host, &pending, &id).await;
 
-    // Not invited, and invited but not accepted.
+    // A refused admission never upgrades the request.
     for user in [&stranger, &pending] {
-        let mut ws = open(&h, addr, &id, user).await;
-        let why = expect_close(&mut ws, CLOSE_FORBIDDEN).await;
-        assert!(why.contains("not a member"), "{why}");
+        let token = h.token(&user.key, &user.author, lxm::SESSIONS_RELAY);
+        expect_upgrade_refused(addr, &id, Some(&token), StatusCode::FORBIDDEN).await;
     }
-    // A token for another method; no auth message at all.
-    let (mut ws, _) = tokio_tungstenite::connect_async(url(addr, &id))
-        .await
-        .unwrap();
-    ws.send(auth(&h, &host, lxm::SESSIONS_WRITE)).await.unwrap();
-    expect_close(&mut ws, CLOSE_UNAUTHORIZED).await;
-    let (mut ws, _) = tokio_tungstenite::connect_async(url(addr, &id))
-        .await
-        .unwrap();
-    ws.send(Message::Binary(vec![1].into())).await.unwrap();
-    expect_close(&mut ws, CLOSE_UNAUTHORIZED).await;
-    // No such session.
-    let mut ws = open(&h, addr, "0123456789abcdef", &host).await;
-    expect_close(&mut ws, CLOSE_FORBIDDEN).await;
-    // A session that is not a co-op one, even for its own host.
+    expect_upgrade_refused(addr, &id, None, StatusCode::UNAUTHORIZED).await;
+    let wrong = h.token(&host.key, &host.author, lxm::SESSIONS_WRITE);
+    expect_upgrade_refused(addr, &id, Some(&wrong), StatusCode::UNAUTHORIZED).await;
+
+    let token = h.token(&host.key, &host.author, lxm::SESSIONS_RELAY);
+    expect_upgrade_refused(
+        addr,
+        "0123456789abcdef",
+        Some(&token),
+        StatusCode::NOT_FOUND,
+    )
+    .await;
+
     let other = h.create("Other").await;
     let custom = session(&h, &other, "custom").await;
-    let mut ws = open(&h, addr, &custom, &other).await;
-    let why = expect_close(&mut ws, CLOSE_FORBIDDEN).await;
-    assert!(why.contains("co-op"), "{why}");
+    let token = h.token(&other.key, &other.author, lxm::SESSIONS_RELAY);
+    expect_upgrade_refused(addr, &custom, Some(&token), StatusCode::FORBIDDEN).await;
+    assert_eq!(h.live.relays().rooms(), 0);
 
     // With both members in, a second accepted guest finds the room full.
     let late = h.create("Late").await;

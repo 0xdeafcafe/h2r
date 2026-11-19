@@ -281,13 +281,41 @@ struct Command {
 pub(crate) struct Service {
     sender: SyncSender<Command>,
     metrics: Arc<Metrics>,
-    /// Every session the worker has read, by id: what its host advertised
+    /// The sessions the worker read most recently: what their hosts advertised
     /// (the skulls, docs/game/skulls.md "In multiplayer"; a co-op
     /// campaign, docs/live/live-coop.md) and who is in it.
     pub seen: Seen,
 }
-/// Sessions by session id, as last read from the server.
-pub(crate) type Seen = Arc<Mutex<BTreeMap<String, live_proto::session::Session>>>;
+pub(crate) type Seen = Arc<Mutex<SessionCache>>;
+
+/// Keep at least a full server page, plus room for individual finds.
+const MAX_SEEN_SESSIONS: usize = 1024;
+
+#[derive(Default)]
+pub(crate) struct SessionCache {
+    by_id: BTreeMap<String, (u64, live_proto::session::Session)>,
+    by_age: BTreeMap<u64, String>,
+    next: u64,
+}
+
+impl SessionCache {
+    pub(crate) fn get(&self, id: &str) -> Option<&live_proto::session::Session> {
+        self.by_id.get(id).map(|(_, session)| session)
+    }
+
+    fn remember(&mut self, session: &live_proto::session::Session) {
+        let id = &session.session_id;
+        self.next += 1;
+        if let Some((old, _)) = self.by_id.insert(id.clone(), (self.next, session.clone())) {
+            self.by_age.remove(&old);
+        }
+        self.by_age.insert(self.next, id.clone());
+        if self.by_id.len() > MAX_SEEN_SESSIONS {
+            let (_, oldest) = self.by_age.pop_first().expect("the cache has an entry");
+            self.by_id.remove(&oldest);
+        }
+    }
+}
 impl Service {
     pub fn start(base: String, options: ServerOptions) -> std::io::Result<Self> {
         let (sender, receiver) = mpsc::sync_channel::<Command>(64);
@@ -1047,12 +1075,12 @@ impl Worker {
         self.saw(&items);
         Ok(items)
     }
-    /// Keeps each session read, for a guest's game start (the host's
+    /// Keeps recent sessions, for a guest's game start (the host's
     /// skulls) and its co-op join screen (the campaign, the host).
     fn saw(&self, sessions: &[live_proto::session::Session]) {
         let mut seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
         for s in sessions {
-            seen.insert(s.session_id.clone(), s.clone());
+            seen.remember(s);
         }
     }
     /// Whether a session's map can be had (docs/game/maps.md §5): checked for a
@@ -1844,4 +1872,45 @@ pub(crate) fn presence_data(
         }
     }
     data
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recent_session_cache_bounds_churn_and_keeps_refreshed_rows() {
+        let mut seen = SessionCache::default();
+        let mut row: live_proto::session::Session = serde_json::from_value(json!({
+            "session_id": "", "host": "acct:0009000000000001@live.test",
+            "host_xuid": "0009000000000001", "host_gamertag": "Host", "xnkid": "",
+            "endpoint": {"addr": "127.0.0.1", "port": 1000, "source": "observed"},
+            "advertisement": {
+                "port": 1000, "host_address": [], "attributes": {},
+                "slots": live_proto::session::Slots::default()
+            },
+            "since": "", "last_activity": 0, "state": "open"
+        }))
+        .unwrap();
+        let id = |n: usize| format!("{n:016x}");
+        for n in 0..MAX_SEEN_SESSIONS {
+            row.session_id = id(n);
+            seen.remember(&row);
+        }
+
+        row.session_id = id(0);
+        row.advertisement.name = Some("Refreshed".into());
+        seen.remember(&row);
+        row.session_id = id(MAX_SEEN_SESSIONS);
+        seen.remember(&row);
+
+        assert_eq!(seen.by_id.len(), MAX_SEEN_SESSIONS);
+        assert_eq!(seen.by_age.len(), MAX_SEEN_SESSIONS);
+        assert!(seen.get(&id(1)).is_none());
+        assert_eq!(
+            seen.get(&id(0)).unwrap().advertisement.name.as_deref(),
+            Some("Refreshed")
+        );
+        assert_eq!(seen.get(&id(MAX_SEEN_SESSIONS)), Some(&row));
+    }
 }

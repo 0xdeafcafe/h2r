@@ -772,8 +772,8 @@ a running game) instead of all of RAM.
 
 **Live server**: `GET /v1/sessions/{id}/relay` ([live-api.md](live-api.md),
 "Co-op relay"): a WebSocket for the two members of an open session
-advertised with `flags: "coop"`, authenticated with a `sessions.relay`
-token, 1200 bytes a message, rate-limited per socket
+advertised with `flags: "coop"`. The upgrade uses a `sessions.relay`
+bearer token. The relay caps messages at 1200 bytes and rate-limits each socket
 (`Policy::relay_rate`). It forwards bytes and never reads or stores them.
 
 **What the tests prove** (`cargo test -p coop -p lockstep -p live-server`):

@@ -204,14 +204,14 @@ impl R2 {
             .ok_or_else(|| not_found(location))?;
         let range = returned(&options.range, o.size());
         let (m, a) = (meta(&o), attributes(&o));
-        let bytes = match o.body() {
-            Some(b) => b.bytes().await.map_err(generic)?,
-            None => Vec::new(),
+        let body = match o.body() {
+            Some(b) => SendWrapper::new(b.stream().map_err(generic)?)
+                .map(|chunk| chunk.map(Bytes::from).map_err(generic))
+                .boxed(),
+            None => stream::empty().boxed(),
         };
         Ok(GetResult {
-            payload: GetResultPayload::Stream(
-                stream::once(async { Ok(Bytes::from(bytes)) }).boxed(),
-            ),
+            payload: GetResultPayload::Stream(body),
             meta: m,
             range,
             attributes: a,

@@ -485,8 +485,8 @@ the same author arrives.
 
 **Map outlines.** `PUT /v1/maps/{map}/outline` (`games.write`, 2 MiB) stores
 the outline as a blob and a server-signed `MapOutlineStored` (`{map,
-sha256, size, source}`) on `map-<map>`. The first upload wins (409 after);
-the operator may replace it. `GET` returns the bytes.
+sha256, size, source}`) on `map-<map>`. Admins and the operator can
+upload and replace outlines. `GET` returns the bytes.
 
 **Managers.** One sweeper task (every 5 s) ends what clients leave behind,
 as the server: presence with no event or ping for 90 s gets
@@ -1794,6 +1794,10 @@ The host/search APIs in [live-matchmaking.md](live-matchmaking.md) sections
 configured. Without a server they retain the local host/empty-search behavior.
 These APIs advertise and discover lobbies. They do not implement a matchmaker,
 ranked arbitration or NAT traversal. Invitation delivery is described next.
+
+The game client retains the 1,024 most recently read session advertisements
+for joins and playlist lookups. A successful lookup refreshes a session's
+place in the cache.
 
 Create copies the four slot counts and the attribute list before returning a
 task. Update consumes only dirty attributes and replaces the slot counts;

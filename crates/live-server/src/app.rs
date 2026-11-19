@@ -98,6 +98,8 @@ pub struct Policy {
     pub invite_only: bool,
     /// Per author and method: requests per second, burst.
     pub write_rate: (f64, u32),
+    /// HTTP API reads per client IP: requests per second, burst.
+    pub read_rate: (f64, u32),
     /// Account creation, server-wide.
     pub create_rate: (f64, u32),
     /// Presence with no event or ping for this long expires.
@@ -120,7 +122,9 @@ pub struct Policy {
     /// Cloud saves: item cap, quota and item count per account
     /// (docs/live/live-cloud-saves.md).
     pub storage: crate::cloud_saves::StorageLimits,
-    /// Account recovery lockout per gamertag: wrong codes allowed, the
+    /// Account recovery requests per client IP: requests per second, burst.
+    pub recover_rate: (f64, u32),
+    /// Recovery lockout per gamertag and IP: wrong codes allowed, the
     /// first lockout, its cap (live-security.md §1, Recovery).
     pub recover_lockout: (u32, Duration, Duration),
 }
@@ -131,6 +135,7 @@ impl Default for Policy {
             private: false,
             invite_only: false,
             write_rate: (10.0, 30),
+            read_rate: (30.0, 120),
             create_rate: (1.0, 10),
             presence_ttl_s: 90,
             game_idle_s: 300,
@@ -141,6 +146,7 @@ impl Default for Policy {
             public: Default::default(),
             content: Default::default(),
             storage: Default::default(),
+            recover_rate: (1.0, 10),
             recover_lockout: (
                 crate::recovery::FREE_FAILURES,
                 crate::recovery::LOCK_BASE,
@@ -167,6 +173,7 @@ pub struct Live {
     pub(crate) ingest: crate::games::IngestState,
     jtis: ReplayGuard,
     writes: RateLimiter,
+    pub(crate) reads: RateLimiter,
     creates: RateLimiter,
     team_writes: tokio::sync::Mutex<()>,
     pub(crate) sim_writes: tokio::sync::Mutex<()>,
@@ -496,6 +503,7 @@ impl Live {
         let recovery = Arc::new(crate::recovery::Recovery::new(
             &identity,
             crate::guard::Backoff::new(free, base, max),
+            RateLimiter::new(policy.recover_rate.0, policy.recover_rate.1),
         ));
         dispatcher.subscribe(recovery.clone());
         let signins = Arc::new(crate::signins::Registry::new(&identity));
@@ -532,6 +540,7 @@ impl Live {
             ingest: Default::default(),
             jtis: ReplayGuard::default(),
             writes: RateLimiter::new(policy.write_rate.0, policy.write_rate.1),
+            reads: RateLimiter::new(policy.read_rate.0, policy.read_rate.1),
             creates: RateLimiter::new(policy.create_rate.0, policy.create_rate.1),
             team_writes: Default::default(),
             sim_writes: Default::default(),
@@ -923,11 +932,6 @@ impl Live {
             ErrorCode::Unavailable,
             "could not allocate a XUID",
         ))
-    }
-
-    /// The server-wide limit on account creation, shared by recovery.
-    pub(crate) fn allow_create(&self, what: &str) -> bool {
-        self.creates.allow(what)
     }
 
     /// `POST /v1/events`: one signed event (security §2), by the token's

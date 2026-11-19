@@ -10,14 +10,15 @@
 //! current code or enrol an authenticator, and reset it
 //! (`recovery.write`). A new device recovers with the gamertag and a
 //! current code: the server checks the code (one step either side, each
-//! step used once), counts wrong ones against the gamertag with an
-//! exponential lockout, and appends a `KeyAdded` it signs itself, with the
-//! device's signed request as proof and `"via": "totp"`.
+//! step used once), applies exponential backoff per gamertag and client IP,
+//! and appends a server-signed `KeyAdded` with the device's signed request
+//! as proof and `"via": "totp"`.
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+use axum::Extension;
 use axum::body::Bytes;
 use axum::extract::rejection::BytesRejection;
 use axum::extract::{Path, State};
@@ -31,7 +32,8 @@ use serde_json::{Value, json};
 
 use crate::app::{ApiError, Live, forbidden, invalid, not_found, now, sign_error};
 use crate::dispatch::Subscriber;
-use crate::guard::{Backoff, ReplayGuard};
+use crate::guard::{Backoff, RateLimiter, ReplayGuard};
+use crate::http::ClientIp;
 use crate::store::{NewEvent, RecordedEvent};
 
 /// The server's event holding an account's sealed secret; the newest one
@@ -49,18 +51,24 @@ pub struct Recovery {
     sealed: RwLock<HashMap<Xuid, String>>,
     key: [u8; 32],
     issuer: String,
-    pub(crate) lockout: Backoff,
+    lockout: Backoff,
+    attempts: RateLimiter,
     /// `(xuid, step)` pairs already used.
     used: ReplayGuard,
 }
 
 impl Recovery {
-    pub fn new(identity: &crate::identity::ServerIdentity, lockout: Backoff) -> Self {
+    pub fn new(
+        identity: &crate::identity::ServerIdentity,
+        lockout: Backoff,
+        attempts: RateLimiter,
+    ) -> Self {
         Recovery {
             sealed: RwLock::default(),
             key: identity.derive(SEAL_LABEL),
             issuer: identity.id.clone(),
             lockout,
+            attempts,
             used: ReplayGuard::default(),
         }
     }
@@ -161,11 +169,12 @@ pub async fn reset(
 /// `POST /v1/accounts/{gamertag}/recover`.
 pub async fn recover(
     live: &Live,
+    ip: &str,
     path_tag: &Gamertag,
     body: &RecoverBody,
     device: Option<crate::signins::Device>,
 ) -> Result<CreatedAccount, ApiError> {
-    if !live.allow_create("accounts.recover") {
+    if !live.recovery.attempts.allow(ip) {
         return Err(ApiError::new(
             ErrorCode::RateLimited,
             "too many recoveries; try again shortly",
@@ -179,12 +188,12 @@ pub async fn recover(
         return Err(invalid("the request is for another gamertag"));
     }
     let code = recovery::parse_code(&body.code).ok_or_else(|| invalid("the code is six digits"))?;
-    let lock = tag.key();
+    let lock = format!("{}|{ip}", tag.key());
     if let Some(left) = live.recovery.lockout.locked(&lock) {
         return Err(ApiError::new(
             ErrorCode::RateLimited,
             format!(
-                "too many wrong codes for this gamertag; try again in {} s",
+                "too many wrong codes for this gamertag from your address; try again in {} s",
                 left.as_secs().max(1)
             ),
         ));
@@ -267,8 +276,9 @@ pub async fn post_recovery(
     Ok(crate::http::json(StatusCode::CREATED, &info))
 }
 
-pub async fn post_recover(
+pub(crate) async fn post_recover(
     State(live): Shared,
+    Extension(ClientIp(ip)): Extension<ClientIp>,
     headers: HeaderMap,
     Path(tag): Path<String>,
     body: Result<Bytes, BytesRejection>,
@@ -277,6 +287,6 @@ pub async fn post_recover(
     let bytes = body.map_err(|e| invalid(e.body_text()))?;
     let body: RecoverBody =
         serde_json::from_slice(&bytes).map_err(|e| invalid(format!("body: {e}")))?;
-    let created = recover(&live, &tag, &body, crate::signins::device_of(&headers)).await?;
+    let created = recover(&live, &ip, &tag, &body, crate::signins::device_of(&headers)).await?;
     Ok(crate::http::json(StatusCode::CREATED, &created))
 }

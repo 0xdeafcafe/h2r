@@ -93,7 +93,7 @@ impl RateLimiter {
 }
 
 /// Locks a key out after `free` failures, for `base` doubling with each
-/// further failure (capped at `max`): wrong recovery codes per gamertag.
+/// further failure (capped at `max`): wrong recovery codes per gamertag and IP.
 /// A success clears it; a key quiet for `max` starts over.
 pub struct Backoff {
     free: u32,

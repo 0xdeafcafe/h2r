@@ -1,6 +1,7 @@
 //! The HTTP and WebSocket API (docs/live/live-api.md) over [`Live`].
 
 use std::collections::HashMap;
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -78,7 +79,8 @@ fn invalid(m: impl Into<String>) -> ApiError {
     ApiError::new(ErrorCode::Invalid, m)
 }
 
-pub(crate) fn bearer(headers: &HeaderMap) -> Option<&str> {
+/// The compact token carried by an Authorization bearer header.
+pub fn bearer(headers: &HeaderMap) -> Option<&str> {
     headers
         .get(header::AUTHORIZATION)?
         .to_str()
@@ -388,6 +390,7 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
         })
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(axum::Extension(facts))
+        .layer(middleware::from_fn_with_state(live.clone(), guard_request))
         .layer(middleware::from_fn(cors))
         .with_state(live)
 }
@@ -542,6 +545,56 @@ impl WithStatus for Response {
         *self.status_mut() = status;
         self
     }
+}
+
+/// Use the transport's trusted client address, or one fallback bucket when
+/// the transport supplies none. An IPv6 prefix shares one bucket across
+/// its interface addresses.
+pub fn client_ip_key(live: &Live, peer: Option<SocketAddr>, headers: &HeaderMap) -> String {
+    live.policy()
+        .public
+        .client_ip(peer, headers)
+        .map(|ip| ip.to_canonical())
+        .map_or_else(
+            || "unknown".into(),
+            |ip| match ip {
+                IpAddr::V4(ip) => ip.to_string(),
+                IpAddr::V6(ip) => {
+                    let prefix = Ipv6Addr::from_bits(ip.to_bits() & (u128::MAX << 64));
+                    format!("{prefix}/64")
+                }
+            },
+        )
+}
+
+/// Charge an API read or WebSocket upgrade to this client's bucket.
+pub fn limit_read(live: &Live, ip: &str) -> Result<(), ApiError> {
+    if live.reads.allow(ip) {
+        Ok(())
+    } else {
+        Err(ApiError::new(
+            ErrorCode::RateLimited,
+            "too many reads; try again shortly",
+        ))
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct ClientIp(pub String);
+
+async fn guard_request(State(live): Shared, mut req: Request, next: Next) -> Response {
+    let peer = req
+        .extensions()
+        .get::<crate::ConnectInfo<SocketAddr>>()
+        .map(|c| c.0);
+    let ip = client_ip_key(&live, peer, req.headers());
+    if matches!(*req.method(), Method::GET | Method::HEAD)
+        && let Err(e) = limit_read(&live, &ip)
+    {
+        return e.into_response();
+    }
+    req.extensions_mut().insert(ClientIp(ip));
+    next.run(req).await
 }
 
 /// CORS (security §6): reads are open to any origin, writes to none. A

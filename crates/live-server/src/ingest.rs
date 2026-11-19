@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::{ApiError, Live};
 use crate::games::reply_error;
-use crate::http::auth_message;
+use crate::http::{MAX_WS_MESSAGE, auth_message};
 use crate::stream::{CLOSE_UNAUTHORIZED, Out};
 
 fn author_of(token_text: &str) -> Option<Author> {
@@ -102,6 +102,9 @@ impl IngestSession {
     /// A text message: the auth message, a fresh token, a frame, an
     /// events batch or a ping. What to send back; a close ends it.
     pub async fn on_text(&mut self, text: &str) -> Vec<Out> {
+        if text.len() > MAX_WS_MESSAGE {
+            return vec![Out::Close(1009, "message too large".into())];
+        }
         let Some((author, _)) = &self.author else {
             return match auth_message(&self.live, text, lxm::GAMES_WRITE) {
                 Ok(exp) => {
@@ -158,6 +161,9 @@ impl IngestSession {
     /// refusals reply. A frame that does not decode (a gap after a refused
     /// or lost frame) is refused until the sender's next keyframe.
     pub async fn on_binary(&mut self, bytes: &[u8]) -> Vec<Out> {
+        if bytes.len() > MAX_WS_MESSAGE {
+            return vec![Out::Close(1009, "message too large".into())];
+        }
         let Some((author, _)) = &self.author else {
             return vec![Self::auth_timed_out()];
         };
