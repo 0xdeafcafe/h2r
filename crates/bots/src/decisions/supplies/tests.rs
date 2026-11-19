@@ -244,7 +244,7 @@ fn seeing_only_one_side_of_a_displaced_item_cannot_confirm_a_pickup() {
     let mut timers = Timers::default();
     check(&mut timers, 0, &[SUPPLY]);
     timers.observe(1, Some(&[]), |at| at == PAD);
-    let site = timers.0[0];
+    let site = timers.sites[0];
     assert!(site.present && !site.watched);
     assert_eq!(site.taken, None);
     assert!(site.probability(1, 0., 1.) < 1.);
