@@ -311,3 +311,48 @@ fn a_swallow_left_unfinished_is_a_mismatch() {
     assert_eq!(d.stats().swallow_mismatches, 1);
     assert_eq!(placed.load(Ordering::Relaxed), 0);
 }
+
+/// A pass that binds its own target plans no slot 0: its first draw's
+/// target is its slot's whatever was bound when armed, the same one or
+/// another (a screen effect binds target 0 itself, `0x00016610`).
+#[test]
+fn a_pass_without_slot_0_takes_the_target_its_first_draw_finds() {
+    let (mut d, mut m, back) = setup(takes());
+    let placed = Arc::new(AtomicU32::new(0));
+    let own = |placed: &Arc<AtomicU32>| Swallow {
+        targets: vec![1, 1],
+        primitive: PrimitiveType::QuadList,
+        vertices: 4,
+        shapes: Vec::new(),
+        drop: true,
+        pass: Box::new(Placed(Arc::clone(placed), true)),
+    };
+    assert!(d.swallow(&mut m, own(&placed)).unwrap());
+    quad(&mut m);
+    quad(&mut m);
+    assert_eq!(d.drain_until_callback(&mut m).unwrap(), None);
+    let s = d.stats();
+    assert_eq!((s.swallowed_draws, s.swallow_mismatches), (2, 0), "the target bound when armed");
+    assert_eq!(placed.load(Ordering::Relaxed), 1);
+    assert!(d.swallow(&mut m, own(&placed)).unwrap());
+    d.set_render_target(&mut m, LEVEL_A, 0).unwrap();
+    quad(&mut m);
+    quad(&mut m);
+    assert_eq!(d.drain_until_callback(&mut m).unwrap(), None);
+    let s = d.stats();
+    assert_eq!((s.swallowed_draws, s.swallow_mismatches), (4, 0), "another, bound after arming");
+    d.set_render_target(&mut m, back, 0).unwrap();
+    // With slot 0 planned, a draw into another target ends it, and says
+    // how.
+    let pinned = Swallow { targets: vec![0], ..own(&placed) };
+    assert!(d.swallow(&mut m, pinned).unwrap());
+    d.set_render_target(&mut m, LEVEL_A, 0).unwrap();
+    quad(&mut m);
+    assert_eq!(d.drain_until_callback(&mut m).unwrap(), None);
+    assert_eq!(d.stats().swallow_mismatches, 1);
+    let why = d.swallow_mismatch().unwrap();
+    assert!(why.starts_with("draw 0 of 1: planned QuadList x4 into slot 0") && why.ends_with("into another target"), "{why}");
+    assert!(d.swallow(&mut m, own(&placed)).unwrap());
+    assert!(d.swallow(&mut m, own(&placed)).unwrap());
+    assert_eq!(d.swallow_mismatch(), Some("armed over it at draw 0 of 2"));
+}

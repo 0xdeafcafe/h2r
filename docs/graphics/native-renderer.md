@@ -2474,7 +2474,7 @@ effect per egor.
      colour does not convolve natively (its quads draw under its states).
      The swallow takes each draw's own shape (`d3d::Swallow::shapes`: the
      strips of `SET_BEGIN_END` 6, the quads `Begin(7)` of four), the quads
-     into slots 2..4 for `0x19`..`0x1b`. Each egor is probed on its own
+     into slots 3..5 for `0x19`..`0x1b`. Each egor is probed on its own
      before its draws are dropped, and falls back on its own: a refused
      pass, a failed probe or a swallow mismatch (charged to the egor that
      armed last) keeps that egor's later calls on D3D and no other's. With these, the blur misses nothing and
@@ -2505,6 +2505,29 @@ effect per egor.
      under a triangle is refused (`ScreenRefused::NoStrips`). With these
      a wide convolution misses nothing and is armed with the switch on
      (off by default).
+   - **Fixed: the first mainmenu A/B armed nothing** (1500 presents,
+     pixel-identical): the effects loaded, but the first probe's swallow
+     ended at its first strip (`swallowed_draws` was the glow's six per
+     frame exactly), and the effect fell back. The likely cause: slot 0
+     is the target bound when the swallow is armed, and `0x00016610`
+     binds each pass's own target (`0x00014bc0` of 0 or 1, Code,
+     `0x0001675c..0x00016765`). `0x0002d140` has two callers,
+     `render_screen_effects` (`0x00013b52`, 2 x 2 corners) and the UI
+     (`0x0022bbbb`, 3 x 3), and the UI's call need not have target 0
+     bound. A screen call's swallow now plans no slot 0
+     (`native_post_glue::SLOT_BOUND` 1, target 1 slot 2, the stand-ins
+     3..5), and `d3d::Swallow` pins slot 0 only when a draw plans it.
+     The device says how a swallow ended (`Device::swallow_mismatch`:
+     the draw, its planned shape and slot, what was pushed, after
+     another draw or into another target, or armed over), and the glue
+     logs it with the fall-back. Arming over an unfinished swallow is
+     charged to that one, not the new one. A proof holds for the egor
+     and the plan it probed (`Proofs`): a call of another shape is
+     probed again before any of its strips are dropped. A convolution
+     drawn after the last pass is refused (`PassTarget`): the native pass
+     is issued into the target bound at the last draw. `H2_POST_SHAPES`
+     writes each call's plan (egor, probe or drop, slot:primitive x
+     count), the first 64 calls.
 5. **`0x0002df00`, and `0x0002dd30`** before layer 17, which has the
    same shape and gets its own skip point.
 6. **Layer 17** (S: bloom), as stage 1b draws the world's other layers.
