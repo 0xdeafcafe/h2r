@@ -371,7 +371,7 @@ impl SessionKind {
             ),
             SessionKind::MpClient => Err(
                 "a multiplayer client: the host owns the game state and overwrites a client's writes; \
-                 run sim.state.set on the host",
+                 send the request to the host",
             ),
             SessionKind::Unknown => Err(
                 "the session kind is unknown (no session probe, or it couldn't be read), so a write \
@@ -400,7 +400,7 @@ pub struct SessionView {
     pub protocol: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub campaign: Option<bool>,
-    /// Whether `sim.state.set` may write now.
+    /// Whether `sim.state.set` and `world.poke` may write in this session.
     pub writes: bool,
     /// Why not, when it may not.
     #[serde(default, skip_serializing_if = "Option::is_none")]

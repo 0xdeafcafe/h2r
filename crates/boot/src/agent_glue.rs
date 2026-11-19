@@ -82,7 +82,7 @@ impl AgentGlue {
             Err(e) => anyhow::bail!("agent-calls: {e}"),
         }
         agent::havok::install(&agent);
-        agent::raw::install(&agent);
+        agent::raw::install(&agent, &sim);
         // On the game thread: the sampler's main target.
         crate::sampling::set_game_thread();
         let server = agent::Server::listen_on(&endpoint, agent.clone())
