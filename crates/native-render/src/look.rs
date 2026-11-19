@@ -79,6 +79,66 @@ pub enum Refusal {
     EngineVertexConstant(u8),
     /// Something in the pass is animated.
     Animated,
+    /// The pass's render states do not fit the native pass
+    /// ([`crate::pass_state::pass_state`]).
+    State(StateRefusal),
+    /// The pass reads engine-driven render states.
+    EngineRenderStates,
+    /// The pass reads engine-driven texture stage states.
+    EngineStageStates,
+    /// The pass blends with what is under it (the native world draws
+    /// opaque layer-3 passes only).
+    Blended,
+}
+
+/// A world material's layer-3 pass with the pipeline state its render
+/// states give.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorldPass {
+    pub look: PassLook,
+    pub state: PassState,
+}
+
+/// [`layer3_look`] with the pass's own render states: depth test and
+/// write, colour writes, alpha test and cull, as the D3D path applies them
+/// on entry (`0x00018900`). A pass that reads engine-driven render or stage
+/// states, or blends, stays on the D3D path. Where the implementation does
+/// not set `CULLMODE` itself it inherits the previous draw's (S: not
+/// traced), so the native pass culls nothing there: the world is opaque
+/// and depth-tested, so drawing a back face changes nothing that a front
+/// face in front of it does not cover.
+pub fn layer3_pass(material: &Material) -> Result<WorldPass, Refusal> {
+    let look = layer3_look(material)?;
+    let imp = layer3_implementation(material).ok_or(Refusal::NoLayer3)?;
+    if !imp.engine_render_states.is_empty() {
+        return Err(Refusal::EngineRenderStates);
+    }
+    if !imp.engine_stage_states.is_empty() {
+        return Err(Refusal::EngineStageStates);
+    }
+    let mut state = pass_state(&imp.render_states).map_err(Refusal::State)?;
+    if state.blend.is_some() {
+        return Err(Refusal::Blended);
+    }
+    if !sets_state(&imp.render_states, gfx::state::RenderStateType::CullMode) {
+        state.primitive.cull_mode = None;
+    }
+    Ok(WorldPass { look, state })
+}
+
+/// Whether `states` set `which` (build 5849's slots).
+fn sets_state(states: &[tags::shader::RenderStateValue], which: gfx::state::RenderStateType) -> bool {
+    let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
+    states
+        .iter()
+        .any(|s| gfx::state::RenderStateType::from_guest_index(&table, u32::from(s.state)) == Some(which))
+}
+
+/// The implementation [`layer3_look`] takes.
+fn layer3_implementation(material: &Material) -> Option<&ResolvedImplementation> {
+    let layer = material.layers.iter().find(|l| l.lod == 0 && l.layer == LIGHTMAP_LAYER)?;
+    let [pass] = layer.passes.as_slice() else { return None };
+    pass.implementations.iter().find(|i| samples_lightmap(i))
 }
 
 /// The layer-3 pass of `material` (first level of detail), or why not.
@@ -225,7 +285,7 @@ pub fn world_program<R: Read + Seek>(map: &mut Map<R>, meta: &Metadata, vrtx: Ta
 mod tests {
     use super::*;
     use tags::material::{EngineInputs, ResolvedLayer, ResolvedPass, StageTexture};
-    use tags::shader::RenderStateValue;
+    use tags::shader::{ExternalBinding, RenderStateValue};
 
     fn texture(source: TextureSource) -> Option<StageTexture> {
         Some(StageTexture { source, size: None, stage_size: None })
@@ -329,6 +389,76 @@ mod tests {
             RenderStateValue { state: slot(R::ZWriteEnable), value: 0 },
         ];
         imp
+    }
+
+    fn slot(t: gfx::state::RenderStateType) -> u8 {
+        let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
+        (0..=255u8)
+            .find(|&s| gfx::state::RenderStateType::from_guest_index(&table, u32::from(s)) == Some(t))
+            .unwrap()
+    }
+
+    /// The states the 03a world passes set: no blend, depth writes, all
+    /// colour channels; then `extra`.
+    fn opaque(mut imp: ResolvedImplementation, extra: &[(gfx::state::RenderStateType, u32)]) -> ResolvedImplementation {
+        use gfx::state::RenderStateType as R;
+        imp.render_states = [(R::ColorWriteEnable, 0x0101_0101), (R::AlphaBlendEnable, 0), (R::ZWriteEnable, 1)]
+            .iter()
+            .chain(extra)
+            .map(|&(t, value)| RenderStateValue { state: slot(t), value })
+            .collect();
+        imp
+    }
+
+    #[test]
+    fn a_world_pass_takes_its_own_states() {
+        use gfx::state::{CompareFunc, CullMode, RenderStateType as R};
+        let m = material(3, vec![vec![opaque(implementation(0, true), &[])]]);
+        let p = layer3_pass(&m).unwrap();
+        assert_eq!(p.look, layer3_look(&m).unwrap());
+        assert_eq!(p.state.blend, None);
+        assert!(p.state.depth_write);
+        assert_eq!(p.state.depth_compare, wgpu::CompareFunction::LessEqual, "ZFUNC unset: the world's");
+        assert_eq!(p.state.primitive.cull_mode, None, "CULLMODE unset: nothing culled");
+        assert_eq!(p.state.color_writes, wgpu::ColorWrites::ALL);
+        assert_eq!(p.state.alpha_test, None);
+        // 03a's alpha-tested world passes.
+        let tested = opaque(
+            implementation(0, true),
+            &[(R::AlphaTestEnable, 1), (R::AlphaRef, 0xff), (R::AlphaFunc, CompareFunc::Less.xbox_value())],
+        );
+        let p = layer3_pass(&material(3, vec![vec![tested]])).unwrap();
+        assert_eq!(p.state.alpha_test, Some((wgpu::CompareFunction::Less, 0xff)));
+        // A pass that sets its cull mode keeps it.
+        let culled = opaque(implementation(0, true), &[(R::CullMode, CullMode::Cw.xbox_value())]);
+        assert!(layer3_pass(&material(3, vec![vec![culled]])).unwrap().state.primitive.cull_mode.is_some());
+        // Depth equal, no writes: as set.
+        let equal = opaque(implementation(0, true), &[(R::ZFunc, CompareFunc::Equal.xbox_value()), (R::ZWriteEnable, 0)]);
+        let p = layer3_pass(&material(3, vec![vec![equal]])).unwrap();
+        assert_eq!((p.state.depth_compare, p.state.depth_write), (wgpu::CompareFunction::Equal, false));
+    }
+
+    #[test]
+    fn world_passes_outside_the_native_state_stay_on_the_d3d_path() {
+        use gfx::state::{BlendFactor, RenderStateType as R};
+        let refusal = |imp| layer3_pass(&material(3, vec![vec![imp]])).unwrap_err();
+        assert_eq!(refusal(implementation(0, true)), Refusal::State(StateRefusal::Unset("ALPHABLENDENABLE")));
+        let blended = opaque(
+            implementation(0, true),
+            &[(R::AlphaBlendEnable, 1), (R::SrcBlend, BlendFactor::One.xbox_value()), (R::DestBlend, BlendFactor::One.xbox_value())],
+        );
+        assert_eq!(refusal(blended), Refusal::Blended);
+        assert_eq!(refusal(opaque(implementation(0, true), &[(R::FogEnable, 1)])), Refusal::State(StateRefusal::Fog));
+        let mut engine = opaque(implementation(0, true), &[]);
+        engine.engine_render_states = vec![ExternalBinding { bytes: [0; 4] }];
+        assert_eq!(refusal(engine), Refusal::EngineRenderStates);
+        let mut engine = opaque(implementation(0, true), &[]);
+        engine.engine_stage_states = vec![ExternalBinding { bytes: [0; 4] }];
+        assert_eq!(refusal(engine), Refusal::EngineStageStates);
+        // Every layer-3 refusal still applies.
+        let mut texaccum = opaque(implementation(0, true), &[]);
+        texaccum.textures[0] = texture(TextureSource::Engine(3));
+        assert_eq!(refusal(texaccum), Refusal::EngineTexture(3));
     }
 
     #[test]

@@ -47,12 +47,14 @@ fn its_layer_draw_chain_runs_on_the_render_thread() {
 }
 
 #[test]
-fn material_programs_are_off_unless_asked_and_need_the_world() {
+fn material_programs_are_on_with_the_world_and_need_it() {
     let on = |s: &str| native_world::programs_on(&Switches::parse(s).unwrap());
-    assert!(!on(""));
-    assert!(on("impl.render.native_world_programs=on"));
+    assert!(native_world::PROGRAMS_DEFAULT);
+    assert!(!on(""), "the world is off by default");
+    assert!(on("impl.render.native_world=on"), "on with the world");
+    assert!(!on("impl.render.native_world=on,impl.render.native_world_programs=off"), "stage 1 for the A/B");
     assert!(!on("impl.render.native_world=off,impl.render.native_world_programs=on"));
-    assert!(!on("impl.render=on"), "looked up exactly, not through impl.render");
+    assert!(on("impl.render.native_world=on,impl.render=off"), "looked up exactly, not through impl.render");
 }
 
 /// The plan text with the native world and a pipeline that is on.
@@ -66,9 +68,11 @@ fn plan_with_pipeline(switches: &str) -> String {
 }
 
 #[test]
-fn it_is_on_by_default_and_keeps_pipelining() {
-    assert!(native_world::DEFAULT);
+fn it_is_off_by_default_and_on_keeps_pipelining() {
+    assert!(!native_world::DEFAULT);
     let text = plan_with_pipeline("");
+    assert!(!text.contains("native_world"), "{text}");
+    let text = plan_with_pipeline("impl.render.native_world=on");
     assert!(text.contains("native_world_skip"), "{text}");
     assert!(text.contains("pipelined frame"), "{text}");
 }
