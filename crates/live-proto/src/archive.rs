@@ -328,7 +328,10 @@ fn read_node(r: &mut Reader<'_>, n: usize, depth: usize) -> Result<Vec<Value>> {
             indexes
                 .into_iter()
                 .map(|i| {
-                    let s = dict.get(i as usize).ok_or(Error::Invalid)?;
+                    let s = usize::try_from(i)
+                        .ok()
+                        .and_then(|i| dict.get(i))
+                        .ok_or(Error::Invalid)?;
                     r.charge_strings(s.len())?;
                     Ok(Value::from(*s))
                 })

@@ -142,3 +142,50 @@ fn archive_size_budget() {
     let (archive, stored) = scene(samples::multiplayer(450), "mp16");
     assert!(archive * 4 <= stored, "{archive} vs {stored}");
 }
+
+#[test]
+fn segment_boundaries_follow_source_order_and_memory_budget() {
+    let frame = |tick| Frame {
+        game_id: "game".into(),
+        tick,
+        ..Default::default()
+    };
+    let open = [frame(40), frame(68)];
+    assert!(!starts_segment(
+        &open,
+        MAX_SOURCE_BYTES - 80,
+        &frame(68),
+        80
+    ));
+    assert!(starts_segment(&open, MAX_SOURCE_BYTES - 80, &frame(69), 81));
+    assert!(starts_segment(&open, 0, &frame(40 + SPAN_TICKS), 1));
+    assert!(starts_segment(&open, 0, &frame(65), 1));
+    let cut = Frame {
+        cut: Some(17),
+        ..frame(70)
+    };
+    assert!(starts_segment(&open, 0, &cut, 1));
+    assert!(!starts_segment(&[], 0, &cut, MAX_SOURCE_BYTES + 1));
+}
+
+#[test]
+fn invalid_columns_fail_before_expanding_their_payload() {
+    fn rows(bytes: &[u8], n: usize) -> Result<Vec<Value>> {
+        let mut r = Reader {
+            bytes,
+            nodes: MAX_NODES,
+            strings: MAX_STRINGS,
+        };
+        read_node(&mut r, n, 0)
+    }
+    // An array of 4097 slots per row, a negative string dictionary index,
+    // a float with infinite IEEE bits, and more nodes than a segment allows.
+    let mut oversized = vec![1, 0];
+    put(&mut oversized, 4097 << 1);
+    assert!(rows(&oversized, 900).is_err());
+    assert!(rows(&[2, 2, 1, b'a', 1, b'b', 0, 1], 2).is_err());
+    let mut inf = vec![5, 0, 0];
+    put(&mut inf, f64::INFINITY.to_bits() << 1);
+    assert!(rows(&inf, 1).is_err());
+    assert!(rows(&[0, 0], MAX_NODES + 1).is_err());
+}
