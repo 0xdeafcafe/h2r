@@ -644,6 +644,7 @@ fn cinematic_calls_keep_halo1_s_ticks() {
 fn encounter_controls_emit_live_evaluators_and_native_orders() {
     use h1ai::control::Operation;
     use h1scripts::compile::{Cutscenes, Missing, compile_with_ai};
+    use hs::h1_ai_slots::{CLAIMS, CONTROL, Operation as RuntimeOperation};
 
     let (catalog, maps) = h1();
     let target = h2();
@@ -655,10 +656,13 @@ fn encounter_controls_emit_live_evaluators_and_native_orders() {
         assert_eq!(target.builtins[binding.name].index, binding.index);
     }
     let mut installed_operations = std::collections::BTreeSet::new();
-    let mut magic = 0;
+    for claim in CLAIMS {
+        assert!(claim.matches(descriptors.function(claim.slot).unwrap()));
+    }
+    let mut runtime_operations = std::collections::BTreeSet::new();
     let mut counted_spawn = 0;
     let mut vehicle = 0;
-    let mut by_unit = 0;
+    let mut grenades = false;
     let mut explicit_distance = false;
     for (name, map) in &maps {
         let tables = Tables::read(map).unwrap();
@@ -708,7 +712,12 @@ fn encounter_controls_emit_live_evaluators_and_native_orders() {
                     .unwrap()
             };
             match node.opcode() {
-                300 => magic += 1,
+                CONTROL => {
+                    let head = scenario.node(hs::Datum(node.data())).unwrap();
+                    let operation = RuntimeOperation::from_marker(head.data()).unwrap();
+                    runtime_operations.insert(operation as u16);
+                }
+                280 => grenades = true,
                 291 => {
                     counted_spawn += 1;
                     let count = scenario.node(first().next()).unwrap();
@@ -722,7 +731,6 @@ fn encounter_controls_emit_live_evaluators_and_native_orders() {
                     );
                     assert!((first().data() as usize) < plan.ai.squads.len());
                 }
-                335 => by_unit += 1,
                 343 => {
                     vehicle += 1;
                     let seat = scenario
@@ -752,6 +760,16 @@ fn encounter_controls_emit_live_evaluators_and_native_orders() {
     }
     // A missing parent call can remove a translated descendant. These
     // assertions check that the converted graphs still reach each family.
-    assert!(magic > 0 && counted_spawn > 0 && vehicle > 0 && by_unit > 0);
+    for operation in [
+        RuntimeOperation::SeePlayers,
+        RuntimeOperation::Free,
+        RuntimeOperation::FreeUnits,
+        RuntimeOperation::MigrateUnits,
+        RuntimeOperation::Teleport,
+        RuntimeOperation::TeleportUnsupported,
+    ] {
+        assert!(runtime_operations.contains(&(operation as u16)), "{operation:?}");
+    }
+    assert!(counted_spawn > 0 && vehicle > 0 && grenades);
     assert!(explicit_distance);
 }

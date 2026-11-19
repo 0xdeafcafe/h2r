@@ -23,7 +23,10 @@ and translation. Runtime behavior still needs the integration build.
 | `ai_follow_target_players`, `ai_follow_target_ai`, `ai_follow_target_disable` | Halo 1's setters (`0x000efd90` to `0x000eff19`) update the encounter selected by the low word. Halo 2 order flag `0x10` chooses the closest player (`0x00204489`), and `0x20` follows the order of squad `+0x4e` (`0x00204f09`). The four retail Halo 1 AI-target calls name a squad in the same encounter. The leader's own follow link clears before its peers follow it. Disabling follow selects each squad's ordinary order. Follow orders default to 4 m, as in several of Halo 2's campaign orders. |
 | `ai_follow_distance` | A single finite literal before the encounter's only follow call in the same `begin` becomes that order's radius. This is the c20 campaign shape. Halo 1 `0x000efd71` stores that literal on the encounter. Halo 2 `0x00204668` reads the radius from order `+0x50`. |
 | `ai_migrate` | Halo 2's 308 accepts encounter sources and bare squad destinations. It rejects group destinations at `0x002a54cc`. The converter resolves literal Halo 1 encounter and platoon destinations per source squad, preferring compatible variants and character types as in the selector at `0x001402a0`. Literal platoon sources expand to their member squads. |
-| `ai_migrate_by_unit` | The retail Halo 1 uses name a single unit. Compiles to `ai_migrate (object_get_ai unit) destination`. Halo 2 `0x00272ff0` returns an actor reference with kind 2, which the migration routine iterates at `0x00274155`. |
+| `ai_migrate_by_unit` | Evaluates the HaloScript object list, collects the actors of its units and vehicles’ riders, and migrates each with Halo 2 `0x001e3400`. Group destinations prefer a squad of the same actor type. |
+| `ai_free`, `ai_free_units` | Call Halo 2's actor migration routine `0x001e3400` with no destination. It unlinks the old squad at `0x00203ed0` and puts the actor on the free-actor list at `0x00203f60`. A unit-list argument is evaluated by the VM and traversed through the native list pool. |
+| `ai_teleport_to_starting_location` and its unsupported-only form | Select a starting pose in the actor's current squad and set the unit's transform with Halo 2 `0x000b7430`, then wake physics at `0x000b7360`. Halo 1 `0x00141510` checks support before the conditional move. The port uses Halo 2's biped support flag and seat attachment. When a start has no name, it selects the nearest available start in the squad. |
+| `ai_grenades` | Binds native 280. Halo 2 `0x002a4da1` writes the boolean at AI globals `+0x340`, read by grenade logic at `0x001ae48b` and `0x001e2d69`. Halo 1 `0x000f086d` writes its AI grenade gate. |
 | `ai_spawn_actor` | Calls the two-argument overload of `ai_place` (291, `0x002a5010`) with count 1. For a literal platoon, the first member is selected as in Halo 1 `0x001422c0`. Ordinary `ai_place` uses the one-argument overload (290). |
 | `ai_go_to_vehicle` | Calls the seat-specific form of Halo 2's `ai_vehicle_enter` (343, `0x002a5ec0`), with native pathing and seat assignment through `0x00274a50`. A string literal resolves through the existing scenario seat mapping. Rebuilt transport labels such as `p_riderlm` keep their row and side. The two-argument overload (344) selects seats without the mapping. |
 | `ai_status` | Preserves the existing combat-status ladder and comparison lowering in `h1scripts::compile`. The translation survey now counts it as an adapter. The mapping of Halo 1 status 6 to Halo 2 visible status is described in [scripts.md](scripts.md). |
@@ -40,30 +43,35 @@ The scenario order fields `+0x4c` and `+0x4e` are distinct. Halo 2
 `h1ai::h2::Order` now exposes both fields, and the converter writes them
 at those offsets.
 
-The awareness hook is limited to converted campaign maps. The other
-opcodes sharing `0x002ab6c0` go through their original evaluator. The
-hook keeps its pending arguments and return on the retail interpreter's
-frame, with no host state across game ticks. Its unit tests use
-synthetic guest bytes and a guest call oracle. Static disc analysis and
-these tests do not require an Agent API method.
+## Builtin slot claims
+
+The named `hs::h1_ai_slots::CLAIMS` table contains every slot this lane
+hooks. All other builtin bindings use their retail evaluator directly.
+
+| Slot | Retail descriptor | Use in converted maps |
+|---|---|---|
+| 300 | `(ai) -> void`, discard evaluator `0x002ab6c0` | A function-head data word starting with `0x4831` selects the converted operation and argument types. An older converted map's unmarked call still gives player awareness. |
+| 305 | `(ai, object) -> void`, evaluator `0x002a53b0` | Group-aware object awareness. |
+
+The hook keeps pending arguments and results on the retail interpreter's
+frame. The other opcodes sharing `0x002ab6c0` use their retail evaluator.
+Static disc analysis and the synthetic guest tests need no running game
+or Agent API method.
 
 ## Open
 
-The remaining campaign calls need runtime behavior for free actors
-(`ai_free`, `ai_free_units`, `ai_attach_free`), vehicle encounter
+The remaining campaign calls need runtime behavior for `ai_attach_free`, vehicle encounter
 assignment and opportunistic boarding (`ai_vehicle_encounter`,
 `ai_vehicle_enterable_distance`, `ai_vehicle_enterable_actor_type`,
 `ai_vehicle_enterable_disable`, `ai_going_to_vehicle`), automatic
 migration targeting (`ai_automatic_migration_target`), linked activation
 (`ai_link_activation`), `ai_playfight`, actor-local target preferences
 (`ai_try_to_fight`, `ai_try_to_fight_player`, `ai_try_to_fight_nothing`),
-`ai_timer_expire`, `ai_migrate_and_speak`, both starting-location
-teleport forms and `ai_grenades`. The explicit maneuver path also leaves
+`ai_timer_expire` and `ai_migrate_and_speak`. The explicit maneuver path also leaves
 Halo 1's automatic platoon triggers open.
 
 Other unsupported forms include a dynamic follow radius, following an
 arbitrary unit or another encounter, `ai_go_to_vehicle_override`,
-migrating a computed object list,
 and a maneuver with a stripped destination or cyclic migration edges.
 The follow, maneuver and order conversions use Halo 2's native behavior
 for the resulting squads. In particular, selecting an attack, defend or
@@ -76,6 +84,7 @@ Conversations and command lists have separate converter lanes.
 
 ```sh
 cargo test -p h1ai --test convert
+cargo test -p hs --lib h1_ai_slots
 cargo test -p h1scripts --lib ai_control
 cargo test -p boot --lib h1_ai_control
 H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso cargo test -p h1scripts --test disc encounter_controls_emit_live_evaluators_and_native_orders -- --ignored

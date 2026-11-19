@@ -647,6 +647,7 @@ dependencies = [
  "gfx",
  "hot-render",
  "hot-tags",
+ "hs",
  "iced-x86",
  "input",
  "ir",

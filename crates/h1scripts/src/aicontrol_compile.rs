@@ -1,7 +1,8 @@
 //! Lower scripted platoon actions into the level's Halo 2 orders and squads.
 
 use h1ai::control::{Action, Control, Platoon};
-use hs::Datum;
+use hs::h1_ai_slots::{CONTROL, CONTROL_TOKEN, Operation as RuntimeOperation};
+use hs::{Datum, Node};
 
 use super::{CALL, Compiler, GLOBAL, New, definition, h2t};
 use crate::{Result, aicontrol, catalog::types, invalid};
@@ -63,8 +64,27 @@ impl Compiler<'_> {
         args: &[Datum],
         expected: u16,
     ) -> Result<Option<Datum>> {
+        let op = match name {
+            "ai_magically_see_players" => Some(RuntimeOperation::SeePlayers),
+            "ai_free" => Some(RuntimeOperation::Free),
+            "ai_free_units" => Some(RuntimeOperation::FreeUnits),
+            "ai_migrate_by_unit" => Some(RuntimeOperation::MigrateUnits),
+            "ai_teleport_to_starting_location" => Some(RuntimeOperation::Teleport),
+            "ai_teleport_to_starting_location_if_unsupported" => {
+                Some(RuntimeOperation::TeleportUnsupported)
+            }
+            _ => None,
+        };
+        if let Some(op) = op
+            && self
+                .h2
+                .builtins
+                .get("ai_magically_see_players")
+                .is_some_and(|b| b.index == CONTROL)
+        {
+            return self.runtime_control(op, args, expected).map(Some);
+        }
         match name {
-            "ai_migrate_by_unit" => return self.migrate_unit(args, expected),
             "ai_allow_dormant"
                 if self.h2.builtins.contains_key("ai_force_active")
                     && self.h2.builtins.contains_key("not") =>
@@ -230,29 +250,25 @@ impl Compiler<'_> {
         ))
     }
 
-    fn migrate_unit(&mut self, args: &[Datum], expected: u16) -> Result<Option<Datum>> {
-        let [unit, destination] = args else {
-            return Ok(None);
-        };
-        let unit_node = self.t.node(*unit)?;
-        // Every retail call in Halo 1 uses a single named unit. Preserve
-        // list-valued calls as unsupported until a list iterator is available.
-        if !unit_node.atom()
-            || unit_node.global()
-            || !matches!(
-                self.h1.type_name(unit_node.opcode())?,
-                "unit_name" | "vehicle_name" | "object_name"
-            )
-            || !self.h2.builtins.contains_key("object_get_ai")
-            || !self.h2.builtins.contains_key("ai_migrate")
-        {
-            return Ok(None);
+    fn runtime_control(
+        &mut self,
+        op: RuntimeOperation,
+        args: &[Datum],
+        expected: u16,
+    ) -> Result<Datum> {
+        let parameters = op.parameters();
+        if args.len() != parameters.len() {
+            return Err(invalid(format!("wrong arity for {op:?}")));
         }
-        let ai = self.ty(types::AI)?;
-        let unit = self.expr(*unit, hs::casts::types::OBJECT)?;
-        let actor = self.control_call("object_get_ai", ai, &[unit])?;
-        let to = self.expr(*destination, ai)?;
-        self.control_call("ai_migrate", expected, &[actor, to])
-            .map(Some)
+        let mut compiled = Vec::with_capacity(args.len());
+        for (&arg, &ty) in args.iter().zip(parameters) {
+            compiled.push(self.expr(arg, ty)?);
+        }
+        let call = self.call(CONTROL, CALL, expected, CONTROL_TOKEN.as_bytes(), &compiled);
+        let head = Datum(self.out.nodes[call.slot()].data());
+        let mut wire = self.out.nodes[head.slot()].encode();
+        wire[16..20].copy_from_slice(&op.marker().to_le_bytes());
+        self.out.nodes[head.slot()] = Node::decode(&wire)?;
+        Ok(call)
     }
 }

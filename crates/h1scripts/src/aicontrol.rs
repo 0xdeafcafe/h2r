@@ -23,6 +23,13 @@ pub struct Binding {
 
 pub const BINDINGS: &[Binding] = &[
     Binding {
+        name: "ai_grenades",
+        index: 280,
+        evaluator: 0x002a_4d70,
+        returns: "void",
+        arguments: &["boolean"],
+    },
+    Binding {
         name: "ai_detach",
         index: 288,
         evaluator: 0x002a_4f20,
@@ -50,8 +57,8 @@ pub const BINDINGS: &[Binding] = &[
         // The reserved (ai) slot shares the retail discarded evaluator.
         // boot::h1_ai_control supplies its body on converted campaign maps.
         name: "ai_magically_see_players",
-        index: 300,
-        evaluator: 0x002a_b6c0,
+        index: hs::h1_ai_slots::CONTROL,
+        evaluator: hs::h1_ai_slots::DISCARD_EVALUATOR,
         returns: "void",
         arguments: &["ai"],
     },

@@ -5,13 +5,16 @@
 use engine::entry::{Cx, EntryError, GuestCall, Ret};
 use engine::memory::{GuestMemory, MemFault};
 use feature::{BuildError, Builder, Flow, Manifest, points};
+use hs::h1_ai_slots::{self, Operation};
+
+mod actors;
 
 const NONE: u32 = u32::MAX;
 const AI_GROUP: u32 = 0x4000_0000;
 const AI_KIND: u32 = 0xc000_0000;
 
-const MAGICALLY_SEE_PLAYERS: u16 = 300;
-const MAGICALLY_SEE_OBJECT: u16 = 305;
+const MAGICALLY_SEE_PLAYERS: u16 = h1_ai_slots::CONTROL;
+const MAGICALLY_SEE_OBJECT: u16 = h1_ai_slots::SEE_OBJECT;
 const BUILTIN_TABLE: u32 = 0x0047_44e0;
 const EVAL_ARGUMENTS: u32 = 0x0020_9d50;
 const EVAL_RETURN: u32 = 0x0020_9ae0;
@@ -37,14 +40,17 @@ impl feature::Feature for AiControl {
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         b.raw().before(
             &points::HS_DISCARDED_EVALUATE,
-            "AI awareness of players",
+            "ported Halo 1 AI controls",
             |call| {
                 if call.arg_u32("opcode") != Some(u32::from(MAGICALLY_SEE_PLAYERS))
                     || !is_converted_campaign(call)
                 {
                     return Ok(Flow::Continue);
                 }
-                call.answer_async(|cx| Box::pin(see(cx, MAGICALLY_SEE_PLAYERS)))
+                let Some(operation) = call_operation(call) else {
+                    return Ok(Flow::Continue);
+                };
+                call.answer_async(move |cx| Box::pin(dispatch(cx, operation)))
             },
         );
         b.raw().before(
@@ -107,33 +113,93 @@ fn squads(m: &dyn GuestMemory, ai: u32) -> Result<Vec<u32>, MemFault> {
     Ok(out)
 }
 
-async fn see(cx: Cx, opcode: u16) -> Result<Ret, EntryError> {
+/// Retail's fixed evaluator and return routines use these same arrays.
+/// Check the salted nodes before interpreting a spare head-atom word.
+fn call_operation(call: &mut feature::Call<'_>) -> Option<Operation> {
+    use engine::{DatumHandle, datum::DatumArray};
+
+    let thread = call.arg_u32("thread")?;
+    let mem = call.ctx.runtime().memory();
+    let m = &*mem;
+    let threads = DatumArray::at(m.u32(0x004f_9384).ok()?);
+    let thread = threads.try_get(m, DatumHandle(thread)).ok()??;
+    let frame = m.u32(thread + 0x10).ok()?;
+    let expression = m.u32(frame + 4).ok()?;
+    let nodes = DatumArray::at(m.u32(0x004f_9394).ok()?);
+    let expression = nodes.try_get(m, DatumHandle(expression)).ok()??;
+    let head = m.u32(expression + 16).ok()?;
+    let head = nodes.try_get(m, DatumHandle(head)).ok()??;
+    if m.u16(head + 2).ok()? != MAGICALLY_SEE_PLAYERS || m.u16(head + 4).ok()? != 2 {
+        return None;
+    }
+    match m.u32(head + 16).ok()? {
+        // Older converted maps used the stock one-argument profile.
+        0 => Some(Operation::SeePlayers),
+        marker => Operation::from_marker(marker),
+    }
+}
+
+async fn arguments(
+    cx: &Cx,
+    opcode: u16,
+    types: Option<&[u16]>,
+) -> Result<Option<Vec<u32>>, EntryError> {
     let thread = cx.arg(1)?;
     let first = cx.arg(2)?;
-    let (descriptor, count) = cx.read(|m| {
-        let descriptor = m.u32(BUILTIN_TABLE + 4 * u32::from(opcode))?;
-        Ok::<_, MemFault>((descriptor, u32::from(m.u16(descriptor + 0xc)?)))
-    })?;
+    let (pointer, count, packed) = if let Some(types) = types {
+        let words: Vec<_> = types
+            .chunks(2)
+            .map(|pair| u32::from(pair[0]) | (u32::from(pair.get(1).copied().unwrap_or(0)) << 16))
+            .collect();
+        // GuestCall places its trailing words here, above the four
+        // arguments and return address. The evaluator copies results
+        // into its own HS frame before returning to us.
+        let pointer = cx.entry().esp.wrapping_sub(4 * words.len() as u32);
+        (pointer, types.len() as u32, words)
+    } else {
+        let (descriptor, count) = cx.read(|m| {
+            let descriptor = m.u32(BUILTIN_TABLE + 4 * u32::from(opcode))?;
+            Ok::<_, MemFault>((descriptor, u32::from(m.u16(descriptor + 0xc)?)))
+        })?;
+        (descriptor + 0xe, count, Vec::new())
+    };
     let slots = cx
-        .call(GuestCall::new(EVAL_ARGUMENTS).args([thread, count, descriptor + 0xe, first]))
+        .call(
+            GuestCall::new(EVAL_ARGUMENTS)
+                .args([thread, count, pointer, first].into_iter().chain(packed)),
+        )
         .await?
         .eax;
-    // The retail argument evaluator returns zero while a child expression
-    // is pending. The interpreter resumes this same opcode with first=0.
     if slots == 0 {
-        return Ok(Ret::new(0, 12));
+        // A child expression is pending. The interpreter resumes this
+        // same call with first=0.
+        return Ok(None);
     }
+    let values = cx.read(|m| {
+        (0..count)
+            .map(|i| m.u32(slots + 4 * i))
+            .collect::<Result<_, _>>()
+    })?;
+    Ok(Some(values))
+}
+
+async fn complete(cx: &Cx, value: u32) -> Result<Ret, EntryError> {
+    let result = cx
+        .call(GuestCall::new(EVAL_RETURN).eax(value).ecx(cx.arg(1)?))
+        .await?;
+    Ok(Ret::new(result.eax, 12))
+}
+
+async fn awareness(cx: &Cx, subject: u32, object: Option<u32>) -> Result<(), EntryError> {
     let (squads, objects) = cx.read(|m| {
-        let squads = squads(m, m.u32(slots)?)?;
-        let objects = if opcode == MAGICALLY_SEE_PLAYERS {
-            crate::coop_players::players(m)
+        let squads = squads(m, subject)?;
+        let objects = match object {
+            Some(unit) => (unit != NONE).then_some(unit).into_iter().collect(),
+            None => crate::coop_players::players(m)
                 .into_iter()
                 .map(|player| player.unit)
                 .filter(|&unit| unit != NONE)
-                .collect::<Vec<_>>()
-        } else {
-            let unit = m.u32(slots + 4)?;
-            (unit != NONE).then_some(unit).into_iter().collect()
+                .collect::<Vec<_>>(),
         };
         Ok::<_, MemFault>((squads, objects))
     })?;
@@ -143,10 +209,56 @@ async fn see(cx: Cx, opcode: u16) -> Result<Ret, EntryError> {
                 .await?;
         }
     }
-    let result = cx
-        .call(GuestCall::new(EVAL_RETURN).eax(0).ecx(thread))
-        .await?;
-    Ok(Ret::new(result.eax, 12))
+    Ok(())
+}
+
+async fn see(cx: Cx, opcode: u16) -> Result<Ret, EntryError> {
+    let Some(args) = arguments(&cx, opcode, None).await? else {
+        return Ok(Ret::new(0, 12));
+    };
+    awareness(&cx, args[0], args.get(1).copied()).await?;
+    complete(&cx, 0).await
+}
+
+async fn dispatch(cx: Cx, op: Operation) -> Result<Ret, EntryError> {
+    let Some(args) = arguments(&cx, MAGICALLY_SEE_PLAYERS, Some(op.parameters())).await? else {
+        return Ok(Ret::new(0, 12));
+    };
+    if op == Operation::SeePlayers {
+        awareness(&cx, args[0], None).await?;
+    } else if cx.read(actors::active)? {
+        match op {
+            Operation::Free => {
+                for actor in cx.read(|m| actors::selected(m, args[0]))? {
+                    actors::move_actor(&cx, actor, NONE).await?;
+                }
+            }
+            Operation::FreeUnits => {
+                for actor in cx.read(|m| actors::actors_of_units(m, args[0]))? {
+                    actors::move_actor(&cx, actor, NONE).await?;
+                }
+            }
+            Operation::MigrateUnits => {
+                let moves = cx.read(|m| {
+                    let mut moves = Vec::new();
+                    for actor in actors::actors_of_units(m, args[0])? {
+                        if let Some(destination) = actors::migrate_to(m, actor, args[1])? {
+                            moves.push((actor, destination));
+                        }
+                    }
+                    Ok::<_, MemFault>(moves)
+                })?;
+                for (actor, destination) in moves {
+                    actors::move_actor(&cx, actor, destination).await?;
+                }
+            }
+            Operation::Teleport | Operation::TeleportUnsupported => {
+                actors::teleport(&cx, args[0], op == Operation::TeleportUnsupported).await?;
+            }
+            Operation::SeePlayers => unreachable!(),
+        }
+    }
+    complete(&cx, 0).await
 }
 
 #[cfg(test)]
@@ -247,6 +359,68 @@ mod tests {
                 (1, 0x8000_0003),
             ]
         );
+        assert_eq!(run.result, Ok(Ret::new(0, 12)));
+    }
+
+    #[test]
+    fn free_uses_the_native_squad_unlink_for_each_selected_actor() {
+        use engine::datum::layout;
+
+        const ARRAY: u32 = 0x0083_0000;
+        const ROWS: u32 = 0x0084_0000;
+        const USED: u32 = 0x0085_0000;
+        const AI: u32 = 0x0086_0000;
+        const STRIDE: u32 = 0x100;
+        let mut guest = guest(MAGICALLY_SEE_PLAYERS, 1);
+        guest
+            .put_u32(actors::AI_GLOBALS, AI)
+            .put_u8(AI + 1, 1)
+            .put_u32(actors::ACTORS, ARRAY)
+            .put_u32(ARRAY + layout::ELEMENT_SIZE, STRIDE)
+            .put_u32(ARRAY + layout::HIGH_WATER, 3)
+            .put_u32(ARRAY + layout::DATA, ROWS)
+            .put_u32(ARRAY + layout::BITMAP, USED)
+            .put_u32(USED, 0b111)
+            .put_u16(ROWS, 0x8200)
+            .put_u16(ROWS + STRIDE, 0x8201)
+            .put_u16(ROWS + 2 * STRIDE, 0x8202)
+            .put_u32(ROWS + 0x30, 0)
+            .put_u32(ROWS + STRIDE + 0x30, 2)
+            .put_u32(ROWS + 2 * STRIDE + 0x30, 1);
+        let run = testing::run(
+            &|cx| -> EntryFuture { Box::pin(dispatch(cx, Operation::Free)) },
+            guest,
+            Regs {
+                esp: STACK,
+                ..Default::default()
+            },
+            |call, _| {
+                if call.target == EVAL_ARGUMENTS {
+                    assert_eq!(
+                        call.args,
+                        [THREAD, 1, STACK - 4, 1, u32::from(hs::casts::types::AI)]
+                    );
+                    Regs {
+                        eax: SLOTS,
+                        ..Default::default()
+                    }
+                } else {
+                    Regs::default()
+                }
+            },
+        );
+        let moves: Vec<_> = run.calls[1..3]
+            .iter()
+            .map(|c| (c.target, c.eax, c.args.as_slice()))
+            .collect();
+        assert_eq!(
+            moves,
+            [
+                (0x001e_3400, Some(0x8200_0000), &[NONE][..]),
+                (0x001e_3400, Some(0x8202_0002), &[NONE][..]),
+            ]
+        );
+        assert_eq!(run.calls[3].target, EVAL_RETURN);
         assert_eq!(run.result, Ok(Ret::new(0, 12)));
     }
 
