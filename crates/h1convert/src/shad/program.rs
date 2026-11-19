@@ -9,6 +9,8 @@ use tags::shader::{IndexRange, TemplatePostprocess};
 use super::{Layout, Root, build_record, set};
 use crate::{Error, Result};
 
+pub mod scope_filters;
+
 const SPAS: FourCC = FourCC(*b"spas");
 
 fn def(group: &[u8; 4]) -> &'static StructDef {
@@ -129,6 +131,33 @@ pub(super) fn pass(
     states: &[(u8, u32)],
     restore: &[(u8, u32)],
 ) -> Result<Block> {
+    pass_with_inputs(
+        vertex_shader,
+        pixel,
+        textures,
+        address,
+        mip_filter,
+        states,
+        restore,
+        &[],
+        &[],
+        0,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn pass_with_inputs(
+    vertex_shader: TagId,
+    pixel: &PixelShaderDef,
+    textures: &[(u8, u8)],
+    address: u8,
+    mip_filter: u8,
+    states: &[(u8, u32)],
+    restore: &[(u8, u32)],
+    pixel_bindings: &[[u8; 4]],
+    vertex_bindings: &[[u8; 4]],
+    scalars: u64,
+) -> Result<Block> {
     let d = def(b"spas");
     let pp = d.child("postprocess").expect("spas postprocess");
     let mut body = defs::default_record(pp);
@@ -148,6 +177,18 @@ pub(super) fn pass(
                 Val::Word(u32::from_le_bytes(bytes[0xd6..0xda].try_into().unwrap())),
             ),
             ("pixel_shader_tail", byte_list(&bytes[0xda..])),
+            (
+                "scalar_inputs",
+                Val::List(vec![int(scalars as u32), int((scalars >> 32) as u32)]),
+            ),
+            (
+                "external_pixel_constants",
+                range(0, pixel_bindings.len() as u16),
+            ),
+            (
+                "external_vertex_constants",
+                range(pixel_bindings.len() as u16, vertex_bindings.len() as u16),
+            ),
             ("vertex_shader", Val::tag(FourCC(*b"vrtx"), vertex_shader)),
             (
                 "restore_states",
@@ -190,6 +231,15 @@ pub(super) fn pass(
             ]
         }),
     )?;
+    children(
+        &mut body,
+        pp,
+        "engine_bindings",
+        pixel_bindings
+            .iter()
+            .chain(vertex_bindings)
+            .map(|bytes| vec![("bytes", byte_list(bytes))]),
+    )?;
     let mut root = defs::default_record(d);
     set(&mut root, "postprocess", Val::Block(vec![body]))?;
     encode(d, &root)
@@ -229,14 +279,16 @@ pub fn scope_pass(vertex_shader: TagId) -> Result<Block> {
     )
 }
 
-/// Layer 15 draws the scope pass with the identity screen texture transform.
-pub fn scope_stem(pass_id: TagId) -> Result<Block> {
+fn scope_template(passes: &[TagId]) -> Result<Block> {
     use tags::shader::{
         ImplementationBindings, ParameterBinding, TagRef, TemplateLod, TemplatePass,
     };
 
     let mut layers = vec![IndexRange::default(); 25];
-    layers[15] = IndexRange { start: 0, count: 1 };
+    layers[15] = IndexRange {
+        start: 0,
+        count: passes.len() as u16,
+    };
     let graph = TemplatePostprocess {
         lods: vec![TemplateLod {
             layers: IndexRange {
@@ -247,20 +299,20 @@ pub fn scope_stem(pass_id: TagId) -> Result<Block> {
             unknown_6: 0,
         }],
         layers,
-        passes: vec![TemplatePass {
-            pass: TagRef {
-                group: SPAS,
-                id: pass_id,
-            },
-            implementations: IndexRange { start: 0, count: 1 },
-        }],
+        passes: passes
+            .iter()
+            .map(|&id| TemplatePass {
+                pass: TagRef { group: SPAS, id },
+                implementations: IndexRange { start: 0, count: 1 },
+            })
+            .collect(),
         implementations: vec![ImplementationBindings {
-            vertex_constants: IndexRange { start: 0, count: 2 },
+            vertex_constants: IndexRange { start: 0, count: 8 },
             ..ImplementationBindings::default()
         }],
-        // Full vector writes to c[18] and c[19] (retail's screen_xform_4).
-        bindings: [0x01d0, 0x01f1]
-            .into_iter()
+        // Identity rows for texture stages 0 through 3, c[18]..c[25].
+        bindings: (0..8)
+            .map(|i| 0x01d0 + i + 0x20 * (i % 2))
             .enumerate()
             .map(|(i, word)| ParameterBinding {
                 word,
@@ -286,7 +338,7 @@ pub fn scope_instance(stem_id: TagId) -> Result<Block> {
         animation: None,
         tint: None,
     };
-    let vectors = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]];
+    let vectors = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]].repeat(4);
     let rec = build_record(&layout, stem_id, &[], &[], &vectors, None)?;
     encode(super::shad_def(), &rec)
 }

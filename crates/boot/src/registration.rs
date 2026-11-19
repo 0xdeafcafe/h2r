@@ -353,6 +353,9 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     features
         .add(&feature::native_lights::NativeLights)
         .map_err(|e| anyhow::anyhow!("native lights: {e}"))?;
+    features
+        .add(&feature::h1_scope_zoom::ScopeZoom)
+        .map_err(|e| anyhow::anyhow!("Halo 1 scope zoom: {e}"))?;
     // The view's post passes on the native GPU renderer
     // (H2_FEATURES=impl.render.native_post=on, off by default;
     // docs/graphics/native-renderer.md, stage 5): a context-only hook at

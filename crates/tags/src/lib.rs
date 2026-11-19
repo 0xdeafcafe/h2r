@@ -49,6 +49,7 @@ pub mod material;
 /// Shader instances, templates and passes (`shad`, `stem`, `spas`); see
 /// `docs/formats/shader-instances.md`.
 pub mod shader;
+pub mod scope_zoom;
 /// Lightmap, sky and atmosphere tags; see `docs/formats/lighting.md`.
 pub mod lighting;
 #[cfg(test)]

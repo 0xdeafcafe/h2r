@@ -315,6 +315,11 @@ points! { ALL;
     /// columns, rows, &corners)` (`engine::screen_effect::plan`), `ret
     /// 0x10`.
     SCREEN_EFFECT @ 0x0002_d140: [fn(datum: eax, values: stack 0, columns: stack 1, rows: stack 2, corners: stack 3) ret 16]; "docs/graphics/native-renderer.md";
+    /// Screen convolution blur, also called by the colour pass. From
+    /// 0x0002da96, stack arguments 0 and 1 are the steps and tap spread.
+    SCREEN_CONVOLUTION_BLUR @ 0x0002_11a0: [opaque]; "docs/graphics/native-renderer.md";
+    /// A unit's integrated-light update, called at the end of its tick.
+    UNIT_LIGHT_UPDATE @ 0x000c_50a0: [fn(unit: eax) ret 0]; "docs/halo1/hud.md";
     /// A shader template's pass set up (`0x00016610`, called by
     /// `0x0002d140` at `0x0002d4b7` per pass): stack `(shader, layer,
     /// implementation, selector, target, 0)`, AL whether the pass draws

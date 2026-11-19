@@ -341,15 +341,46 @@ screen-effect draw. The pass samples the HUD's engine texture 16
 (E `0x0022bb20`, `0x0022bb9f`, `0x00019817`) and blends black
 into the view by the mask's luminance. Its UVs come from the position
 normalized inside the current viewport (E `0x0002d5e0`), so each view
-gets the whole mask. This covers the mask compositor. The optional
-Halo 1 FOV-driven blur and colour filters in the same source effect
-still need their own conversion.
+gets the whole mask.
 
-The synthetic checks read the mask references, the zoom gate and the
-viewport-specific sequence numbers, and evaluate the pixel combiner.
-`scope_masks_use_the_hud_screen_effect_in_each_view` resolves the
-rebuilt tags and checks the two mask images against Halo 1's disc.
-The scope still needs an in-game check with the weapon zoom levels.
+### Zoom blur and colour filters (**Built**)
+
+The same Halo 1 effect has a separate zoom gate and two
+angle/radius pairs at `+0x40`. The draw interpolates between them
+using the rendered camera's FOV, clamps to the endpoints and skips blur
+in split screen (E `0x000d6bd2`–`0x000d6c63`). The pistol, rocket
+launcher and sniper rifle specify the curve (V, Blood Gulch). The
+converted full-screen effect copies the current view to target 1,
+uses Halo 2's screen convolution (`0x0002da96` → `0x000211a0`)
+with the interpolated spread, and blends that result by mask alpha
+before the mask's luminance overlay. It uses Halo 2's four-tap
+convolution kernel, with two steps, at half resolution. Halo 1 used
+radially spaced taps (E `0x0006bacc`–`0x0006bc36`).
+
+Desaturation at `+0x6c` and tint at `+0x8c` have independent
+zoom and night-vision gates and strengths. The colour pass averages
+the scene's RGB for desaturation and uses that luminance for the
+additive or blended tint. Each filter can limit its coverage using
+the scope mask's luminance (E `0x000d6c6e`–`0x000d6e23`,
+`0x0006cb9d`–`0x0006cde8`). The sniper uses both filters, with green
+additive tint, in full and split screen (V, Blood Gulch and a30).
+The four Halo 1 script channels start at 1 (E `0x000805bf`,
+`0x0011a8fe`), and the retail maps leave them at that value. The
+converted draw uses those initial values for the valid channels.
+
+The `h1-scope-zoom` feature reads the profile only on converted HUD
+effect draws (`0x0022bbbb`). It supplies the current view's blur radius
+and the two colour strengths. The local flashlight button toggles
+night vision on supported scopes. The unit-light update at
+`0x000c50a0` advances its fade with simulation time, using Halo 1's
+rise and fall rates (`0x00045c6c`, `0x00045cae`). State follows the
+local unit and resets when the game activates.
+
+The synthetic checks cover the gates, the FOV curve, the per-view
+runtime inputs, the fade and the pixel combiner. The ignored disc
+check `scope_masks_use_the_hud_screen_effect_in_each_view` resolves
+the rebuilt shader passes and checks the mask images and zoom
+profiles against the discs. In-game appearance remains to be verified.
 
 ### The sniper rifle's angle ticks
 

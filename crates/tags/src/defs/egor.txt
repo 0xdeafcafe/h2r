@@ -1,6 +1,7 @@
 # Screen effect. The HUD submits it to the same draw as a scenario effect.
 group egor 0x90 align 4
-  0x0 unknown 0x40
+  0x0 u32[13] h1_zoom_profile -- h2recomp metadata; see scope_zoom.rs
+  0x34 unknown 0xc
   0x40 tagref shader groups=shad -- E 0x0002d1dd, 0x0002d4ac: layer 15
   0x48 unknown 0x40
   0x88 block passes 0xac align 4 -- E 0x0002d369
@@ -14,4 +15,10 @@ group egor 0x90 align 4
     0x60 u16 render_target -- E 0x0002d441: 0 draws into the current target
     0x62 unknown 0x42
     0xa4 block filters 0x5c align 4 -- E 0x0002d8d1: optional follow-up filter passes
-      0x0 unknown 0x5c
+      0x0 flags16 flags bits=skip_when_first_zero|skip_when_second_zero|wide -- E 0x0002d927
+      0x2 unknown 0x42
+      0x44 f32 steps -- E 0x0002da8b
+      0x48 f32 spread -- E 0x0002da81
+      0x4c f32 growth -- E 0x0002da7e
+      0x50 unknown 0x8
+      0x58 f32 resolution_scale -- E 0x0002d98d
