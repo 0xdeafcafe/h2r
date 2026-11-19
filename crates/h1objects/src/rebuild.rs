@@ -1881,7 +1881,7 @@ pub fn scenery_body(base: &crate::base::Base) -> Result<Option<(BodyWords, usize
     let model = crate::convert::h2::MODEL;
     let physics = crate::convert::h2::HLMT_PHYSICS_MODEL;
     let mut votes = std::collections::BTreeMap::<(u16, u16, u16), usize>::new();
-    let mut seen = std::collections::BTreeSet::new();
+    let mut seen = std::collections::HashSet::new();
     for t in base.tags.iter().filter(|t| t.1 == FourCC(*b"scen")) {
         let bytes = base.root(t.0)?;
         let Some(h) = base.reference(&bytes, model) else {
@@ -1901,7 +1901,7 @@ pub fn scenery_body(base: &crate::base::Base) -> Result<Option<(BodyWords, usize
             i += 1;
         }
     }
-    let total = votes.values().sum();
+    let total: usize = votes.values().sum();
     Ok(votes
         .into_iter()
         .max_by_key(|(w, c)| (*c, std::cmp::Reverse(*w)))
