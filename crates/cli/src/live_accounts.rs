@@ -120,7 +120,6 @@ impl LocalAccount {
     }
 
     /// Whether this entry is for the server with `id` at `base`.
-    #[cfg(feature = "desktop")]
     pub fn is_on(&self, base: &str, id: &str) -> bool {
         match &self.server_id {
             Some(sid) => sid == id,
@@ -146,7 +145,6 @@ impl LocalAccount {
     }
 }
 
-#[cfg(feature = "desktop")]
 pub fn author_id(xuid: Xuid, server_id: &str) -> String {
     Author::Account {
         xuid,
