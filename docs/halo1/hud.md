@@ -284,6 +284,14 @@ leaves the word out (`tags::schema::infer::ENGINE_DATA`,
 docs/formats/tag-schema.md step 9), so the bytes reach the map as
 written. The live proof of the gate above wrote the thresholds into
 memory with `edit.set`, after the build, which is why it did not see this.
+Live, v83 map (2026-11-19): writing each weapon's thresholds back with
+`edit.set` (`bitmap_widgets[3].raw_18`, assault rifle `0x00010b00`)
+hid "Reload" at 60 loaded, showed it at 5 loaded with 180 in reserve, and
+showed "No ammo" alone at nothing loaded and nothing in reserve. Every
+other weapon's HUD, drawn on the held assault rifle by pointing its `hud`
+reference at it, had its panel, count, icon and meter where Halo 1 puts
+them and no widget over another; only the always-on "Reload" overlapped
+the crosshair.
 
 ### Zoom level
 
