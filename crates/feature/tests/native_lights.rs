@@ -51,6 +51,29 @@ fn its_chains_run_on_the_render_thread() {
 }
 
 #[test]
+fn splitting_places_its_layer_observers_on_the_render_thread() {
+    let mut r = Registry::new(Switches::parse("impl.render.native_lights=on").unwrap());
+    r.add(&NativeLights).unwrap();
+    assert!(!r.build(&Base).unwrap().text().contains("native_lights_split"), "off by default");
+    let mut r = Registry::new(Switches::parse("impl.render.native_lights=on,impl.render.native_lights_split=on").unwrap());
+    r.add(&NativeLights).unwrap();
+    let plan = r.build(&Base).unwrap();
+    for point in ["LAYER_DRAW", "LAYER_END"] {
+        let chain = plan
+            .chains
+            .values()
+            .find(|c| c.point.name == point)
+            .unwrap_or_else(|| panic!("placed at {point}"));
+        assert!(!chain.needs_shadow(), "{point}: nothing after the body");
+        assert!(chain.render_thread().is_ok(), "{point}");
+    }
+    // Without the lights, nothing splits.
+    let mut r = Registry::new(Switches::parse("impl.render.native_lights_split=on").unwrap());
+    r.add(&NativeLights).unwrap();
+    assert!(!r.build(&Base).unwrap().text().contains("native_lights"));
+}
+
+#[test]
 fn render_timing_on_places_nothing() {
     let mut r = Registry::new(Switches::parse("impl.render.native_lights=on,render-timing").unwrap());
     r.add(&NativeLights).unwrap();

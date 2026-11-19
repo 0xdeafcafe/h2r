@@ -579,6 +579,45 @@ mod tests {
     }
 
     #[test]
+    fn engine_textures_are_sampled_unsigned_or_the_pass_stays_on_d3d() {
+        let stage = |color_sign| tags::shader::StageStates {
+            address_u: 1,
+            address_v: 1,
+            address_w: 1,
+            mag_filter: 2,
+            min_filter: 2,
+            mip_filter: 2,
+            mip_lod_bias: 0,
+            max_mip_level: 0,
+            max_anisotropy: 0,
+            color_key_op: 0,
+            color_sign,
+            alpha_kill: 0,
+            border_color: 0,
+            color_key_color: 0,
+            unread: [0; 2],
+        };
+        let mut look = sphere_look();
+        look.stage_states = vec![stage(0); 4];
+        let p = compile_light(&look, &light_program()).expect("unsigned engine stages compile");
+        assert_eq!(p.signed, [[false; 4]; 4], "stored as decoded, no bias");
+        // D3DTSIGN_RSIGNED on the normalization cube (stage 1) or the
+        // attenuation volume (stage 3): their textures are not stored
+        // biased, so the light keeps its D3D passes rather than read them
+        // unsigned.
+        for n in [1, 3] {
+            let mut signed = look.clone();
+            signed.stage_states[n] = stage(1 << 29);
+            let e = compile_light(&signed, &light_program()).unwrap_err();
+            assert!(e.contains("not stored biased"), "stage {n}: {e}");
+        }
+        // An instance bitmap's signed channels are stored biased.
+        let mut bitmap = look.clone();
+        bitmap.stage_states[0] = stage(1 << 29);
+        assert_eq!(compile_light(&bitmap, &light_program()).expect("biased").signed[0], [true, false, false, false]);
+    }
+
+    #[test]
     fn lights_differing_only_in_constants_share_a_gpu_pass() {
         use crate::light_gpu::light_gpu_key;
         let look = sphere_look();

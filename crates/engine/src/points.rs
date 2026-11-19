@@ -295,6 +295,10 @@ points! { ALL;
     /// Draws the current layer (`[0x00467130]`) of the current list: layer
     /// setup, then `LAYER_ENTRIES` for the layers in its mask.
     LAYER_DRAW @ 0x0004_4550: [opaque]; "docs/graphics/layer-draw.md";
+    /// The layer's end: every `LAYER_DRAW` call in `RENDER_LIGHT_PASSES`
+    /// is followed by one; it ends the layer's state and sets the current
+    /// layer (`[0x00467130]`) to 0.
+    LAYER_END @ 0x0004_45d0: [opaque]; "docs/graphics/native-renderer.md";
     /// The layer draw's setup call (ESI = `0x00485b48`).
     LAYER_SETUP @ 0x0001_6b10: [opaque]; "docs/graphics/layer-draw.md";
     /// Draws a list's entries for a layer: builds them, then calls each

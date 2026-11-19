@@ -18,7 +18,9 @@ use crate::world::WorldVertex;
 pub use shaders::psh::TextureDim;
 
 /// A texture with layers: a cube map's six faces or a volume's slices,
-/// level 0 only.
+/// with its mip chain. The D3D path uploads the whole chain and the light
+/// passes' samplers filter between mips (03a: mip filter linear), so the
+/// native textures carry it too.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LayeredImage {
     pub dim: TextureDim,
@@ -28,9 +30,40 @@ pub struct LayeredImage {
     pub layers: u32,
     /// Layer after layer, rows of RGBA8.
     pub rgba: Vec<u8>,
+    /// Levels 1.. ([`Self::level_size`]), each laid out as `rgba`.
+    pub mips: Vec<Vec<u8>>,
 }
 
 impl LayeredImage {
+    /// Level `level`'s `(width, height, layers)`: each halved down to 1, a
+    /// cube's six faces kept.
+    pub fn level_size(&self, level: u32) -> (u32, u32, u32) {
+        let half = |v: u32| (v >> level).max(1);
+        let layers = match self.dim {
+            TextureDim::Cube => 6,
+            _ => half(self.layers),
+        };
+        (half(self.width), half(self.height), layers)
+    }
+
+    /// The image with its levels 1.. in order; the chain stops at the first
+    /// level whose bytes do not fit its size, or below 1x1x1 (1x1 for a
+    /// cube).
+    pub fn with_mips(mut self, mips: Vec<Vec<u8>>) -> Self {
+        for (i, bytes) in mips.into_iter().enumerate() {
+            let below = self.level_size(i as u32);
+            if below.0 == 1 && below.1 == 1 && (self.dim == TextureDim::Cube || below.2 == 1) {
+                break;
+            }
+            let (w, h, l) = self.level_size(i as u32 + 1);
+            if bytes.len() != (w * h * l * 4) as usize {
+                break;
+            }
+            self.mips.push(bytes);
+        }
+        self
+    }
+
     /// A cube map from its faces `(face, width, height, rgba)` in any order:
     /// all six, square, the same size.
     pub fn cube(mut faces: Vec<(u32, u32, u32, Vec<u8>)>) -> Option<Self> {
@@ -48,6 +81,7 @@ impl LayeredImage {
             height: h,
             layers: 6,
             rgba: faces.into_iter().flat_map(|f| f.3).collect(),
+            mips: Vec::new(),
         })
     }
 
@@ -62,6 +96,7 @@ impl LayeredImage {
             height,
             layers: depth,
             rgba,
+            mips: Vec::new(),
         })
     }
 }
@@ -81,28 +116,36 @@ pub fn layered_texture(device: &wgpu::Device, queue: &wgpu::Queue, image: &Layer
     let t = device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
         size,
-        mip_level_count: 1,
+        mip_level_count: 1 + image.mips.len() as u32,
         sample_count: 1,
         dimension,
         format: wgpu::TextureFormat::Rgba8Unorm,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
-    queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture: &t,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        &image.rgba,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(4 * image.width),
-            rows_per_image: Some(image.height),
-        },
-        size,
-    );
+    for (level, bytes) in std::iter::once(&image.rgba).chain(&image.mips).enumerate() {
+        let level = level as u32;
+        let (w, h, layers) = image.level_size(level);
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &t,
+                mip_level: level,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            bytes,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * w),
+                rows_per_image: Some(h),
+            },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: layers,
+            },
+        );
+    }
     t.create_view(&wgpu::TextureViewDescriptor {
         dimension: Some(view),
         ..Default::default()
@@ -618,6 +661,22 @@ mod tests {
         }
         assert_eq!(run_layout(0, 256), (Vec::new(), 0));
         assert_eq!(run_layout(1, 0).1, v + p, "no alignment asked");
+    }
+
+    #[test]
+    fn layered_mips_halve_to_one_and_a_cube_keeps_six_faces() {
+        let v = LayeredImage::volume(4, 2, 8, vec![0; 4 * 2 * 8 * 4]).unwrap();
+        assert_eq!((v.level_size(1), v.level_size(2), v.level_size(3)), ((2, 1, 4), (1, 1, 2), (1, 1, 1)));
+        let chain = vec![vec![1; 2 * 4 * 4], vec![2; 2 * 4], vec![3; 4], vec![4; 4]];
+        let v = v.with_mips(chain);
+        assert_eq!(v.mips, vec![vec![1; 32], vec![2; 8], vec![3; 4]], "nothing below 1x1x1");
+        let v = LayeredImage::volume(4, 2, 8, vec![0; 256]).unwrap().with_mips(vec![vec![1; 32], vec![2; 4], vec![3; 4]]);
+        assert_eq!(v.mips.len(), 1, "stops at a level that does not fit");
+
+        let c = LayeredImage::cube((0..6).map(|f| (f, 2, 2, vec![0; 16])).collect()).unwrap();
+        assert_eq!(c.level_size(1), (1, 1, 6));
+        let c = c.with_mips(vec![vec![5; 24], vec![6; 24]]);
+        assert_eq!(c.mips, vec![vec![5; 24]], "a cube ends at 1x1");
     }
 
     #[test]

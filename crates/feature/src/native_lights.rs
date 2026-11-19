@@ -36,17 +36,36 @@
 //!
 //! With `render-timing` on nothing is placed: its timed light passes need
 //! the body's end, which a skipped light never reaches.
+//!
+//! **Split lights** ([`SPLIT_SWITCH`], off by default). A light the host
+//! does not draw whole (it meets a world surface left to D3D, or a live
+//! object) may still have native world surfaces: [`Host::split`] names
+//! their shaders, the light joins the run for them and is not skipped, and
+//! two more context-only observers keep its D3D passes off those surfaces:
+//! before the layer draw, for the light passes' own draws of layers 14, 12
+//! and 13 on the light's list ([`SPLIT_LAYERS`], by return address), the
+//! layer's bit is cleared on those shaders' BSP items
+//! (`native_render::skip::clear_structure`; objects' items keep it); before
+//! the layer's end (`LAYER_END`, which follows each of those draws) it is
+//! set back. So each surface gets the light once: its native surfaces in
+//! the run's pass, the rest from its D3D passes. The two sets of pixels do
+//! not overlap (the lit passes test depth equal against what layer 3 laid
+//! down), so the run's pass coming before the light's D3D draws changes
+//! nothing.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use engine::handle::DatumHandle;
 use engine::memory::GuestMemory;
 use engine::points;
 use engine::render::light;
-use native_render::camera::{GuestRead, RENDER_CAMERA, RenderCamera};
+use native_render::camera::{GuestRead, GuestWrite, RENDER_CAMERA, RenderCamera};
 use native_render::lights::{LIGHT_PASSES_CLEANUP, Light, LightConstants, Run, TAIL_CLIP, TAIL_ZEROES};
+use native_render::skip;
 
+use crate::native_world::{Mem, Pending};
 use crate::{BuildError, Builder, Feature, Flow, Manifest};
 
 pub const ID: &str = "native-lights";
@@ -57,6 +76,29 @@ pub const SWITCH: &str = "impl.render.native_lights";
 pub fn on(switches: &crate::Switches) -> bool {
     switches.feature(SWITCH, false)
 }
+
+/// Split lights ([`split_layer`]): a light the host cannot draw whole
+/// (it meets a world surface left to D3D, or a live object) draws its
+/// native world surfaces natively and keeps its D3D passes for the rest.
+/// Off by default; looked up exactly; only with the native lights on.
+pub const SPLIT_SWITCH: &str = "impl.render.native_lights_split";
+
+/// Whether [`SPLIT_SWITCH`] is on (only with the native lights on).
+pub fn split_on(switches: &crate::Switches) -> bool {
+    on(switches) && switches.feature(SPLIT_SWITCH, false)
+}
+
+/// The light's list, which `RENDER_LIGHT_PASSES` makes current for its
+/// layers (`0x000312c4`; a list as `native_render::skip` reads it: its
+/// count at `+4`, the light's first item at `+0xc`, the items at `+0x14`).
+pub const LIGHT_LIST: u32 = 0x004c_1a60;
+
+/// `RENDER_LIGHT_PASSES`' draws of the layers a split light takes from
+/// its native surfaces, by the layer draw's return address: 14
+/// (`0x000313dd`), 12 (`0x0003144a`) and 13 (`0x000314ca`). Layers 10 and
+/// 11 (shadowed lights only) and the first-person lights' draws on the
+/// same list (`0x000404b0`) are not split.
+pub const SPLIT_LAYERS: [(u32, u32); 3] = [(14, 0x0003_13e2), (12, 0x0003_144f), (13, 0x0003_14cf)];
 
 /// What draws the lights: boot's glue over the GPU and the device.
 pub trait Host: Send + Sync {
@@ -74,6 +116,13 @@ pub trait Host: Send + Sync {
     /// The device's bound target now (`d3d::Device::bound_target`); `None`
     /// when it cannot say (nothing is skipped then).
     fn target(&self) -> Option<[u32; 8]>;
+    /// For a light it does not draw whole ([`Host::accepts`] no, or its
+    /// sphere meets a live object): the world shaders (tag indices) whose
+    /// surfaces it draws natively for `light`, while the light's D3D passes
+    /// draw everything else. `None` (the default) or empty: all to D3D.
+    fn split(&self, _mem: &dyn GuestMemory, _light: &Light) -> Option<Arc<HashSet<u16>>> {
+        None
+    }
 }
 
 static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
@@ -88,6 +137,34 @@ static VIEW_TARGET: Mutex<Option<[u32; 8]>> = Mutex::new(None);
 static TARGET_MOVED: AtomicU64 = AtomicU64::new(0);
 /// Lights the host would draw left to D3D because they meet an object.
 static OBJECTS_MET: AtomicU64 = AtomicU64::new(0);
+/// Whether lights may be split ([`set_split`]).
+static SPLIT_ENABLED: AtomicBool = AtomicBool::new(false);
+/// The light whose passes are running, when split: the shaders whose
+/// world items lose its layers. Set by the light's `before`, so the next
+/// light's clears it.
+static SPLIT: Mutex<Option<Arc<HashSet<u16>>>> = Mutex::new(None);
+/// The items a split light's layer draw is running without, until the
+/// layer's end sets them back.
+static SPLIT_CLEARED: Mutex<Option<Pending>> = Mutex::new(None);
+/// Lights split, layer draws split, world items left out of them.
+static SPLITS: AtomicU64 = AtomicU64::new(0);
+static SPLIT_DRAWS: AtomicU64 = AtomicU64::new(0);
+static SPLIT_ITEMS: AtomicU64 = AtomicU64::new(0);
+
+/// Lets lights split (the feature's build, with [`SPLIT_SWITCH`] on).
+pub fn set_split(on: bool) {
+    SPLIT_ENABLED.store(on, Ordering::Relaxed);
+}
+
+/// Lights split, their layer draws that left world items to the native
+/// pass, and those items.
+pub fn split_counts() -> (u64, u64, u64) {
+    (
+        SPLITS.load(Ordering::Relaxed),
+        SPLIT_DRAWS.load(Ordering::Relaxed),
+        SPLIT_ITEMS.load(Ordering::Relaxed),
+    )
+}
 
 /// Installs the host (boot). Without one nothing is skipped.
 pub fn set_host(host: Arc<dyn Host>) {
@@ -127,6 +204,7 @@ pub fn object_refusals() -> u64 {
 /// bound target now is the view's.
 pub fn new_view() {
     OPEN.lock().unwrap_or_else(|e| e.into_inner()).take();
+    SPLIT.lock().unwrap_or_else(|e| e.into_inner()).take();
     let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
     // The host's target takes the device lock: asked before VIEW_TARGET is
     // taken, so no guard is held across it.
@@ -235,6 +313,8 @@ pub fn on_light(mem: &mut dyn GuestMemory, esp: u32) -> bool {
 /// constants ([`light_constants`]).
 pub fn on_light_at(mem: &mut dyn GuestMemory, esp: u32, entry: Option<Entry>) -> bool {
     LIGHTS.fetch_add(1, Ordering::Relaxed);
+    // A new light's passes: the last light's split is over.
+    SPLIT.lock().unwrap_or_else(|e| e.into_inner()).take();
     let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
         return false;
     };
@@ -249,13 +329,14 @@ pub fn on_light_at(mem: &mut dyn GuestMemory, esp: u32, entry: Option<Entry>) ->
         return false;
     };
     light.constants = entry.and_then(|e| light_constants(mem, &e));
-    if !host.accepts(mem, &light) {
-        return false;
-    }
+    let whole = host.accepts(mem, &light);
     let (centre, radius) = light.bounds;
-    if native_render::objects::object_meets_sphere(&Ro(mem), centre, radius) {
+    if whole && native_render::objects::object_meets_sphere(&Ro(mem), centre, radius) {
         OBJECTS_MET.fetch_add(1, Ordering::Relaxed);
-        return false;
+        return split(&*host, mem, light);
+    }
+    if !whole {
+        return split(&*host, mem, light);
     }
     // The tail sets the view's target back; skipped, it must still be bound.
     let view = *VIEW_TARGET.lock().unwrap_or_else(|e| e.into_inner());
@@ -286,6 +367,84 @@ pub fn zero_tail(mem: &mut dyn GuestMemory) -> bool {
     TAIL_ZEROES
         .iter()
         .all(|&(addr, bytes)| mem.write(addr, &[0u8; 4][..bytes as usize]).is_ok())
+}
+
+/// A light the host does not draw whole. With splitting on and world
+/// shaders the host draws for it ([`Host::split`]), the light joins the
+/// run (its native surfaces, drawn at the run's pass, which the device
+/// issues at its next entry: this light's own first D3D call) and its D3D
+/// passes run without those shaders' world items in layers 14, 12 and 13
+/// ([`split_layer`]), so each surface is lit once. Returns `false`: the
+/// passes run, and do their own tail.
+fn split(host: &dyn Host, mem: &mut dyn GuestMemory, light: Light) -> bool {
+    if !SPLIT_ENABLED.load(Ordering::Relaxed) {
+        return false;
+    }
+    let Some(shaders) = host.split(mem, &light).filter(|s| !s.is_empty()) else {
+        return false;
+    };
+    // The run's pass draws into the bound target: the view's, as for a
+    // skipped light.
+    let view = *VIEW_TARGET.lock().unwrap_or_else(|e| e.into_inner());
+    if view.is_none() || host.target() != view {
+        TARGET_MOVED.fetch_add(1, Ordering::Relaxed);
+        return false;
+    }
+    if !join(host, &Ro(mem), light) {
+        return false;
+    }
+    *SPLIT.lock().unwrap_or_else(|e| e.into_inner()) = Some(shaders);
+    SPLITS.fetch_add(1, Ordering::Relaxed);
+    false
+}
+
+/// The observer before the layer draw (`ret` its return address): sets
+/// back what the last split layer left out, then, for a split light's
+/// layer 14, 12 or 13 on [`LIGHT_LIST`] ([`SPLIT_LAYERS`]), clears the
+/// layer's bit on the world items of the light's native shaders
+/// (`skip::clear_structure`: BSP clusters and instances only, so objects
+/// keep their D3D light) for [`layer_end`] to set back.
+pub fn split_layer(mem: &mut dyn GuestMemory, ret: u32) {
+    restore_split(mem);
+    let Some(shaders) = SPLIT.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
+        return;
+    };
+    let mut m = Mem(mem);
+    let Some(layer) = m.read_u32(skip::CURRENT_LAYER) else {
+        return;
+    };
+    if !SPLIT_LAYERS.contains(&(layer, ret)) || m.read_u32(skip::CURRENT_LIST) != Some(LIGHT_LIST) {
+        return;
+    }
+    let Some(c) = skip::clear_structure(&mut m, layer, &|shader| shaders.contains(&(shader as u16))) else {
+        return;
+    };
+    SPLIT_DRAWS.fetch_add(1, Ordering::Relaxed);
+    SPLIT_ITEMS.fetch_add(c.items.len() as u64, Ordering::Relaxed);
+    let left = c.items.iter().map(|&item| m.read_u32(item + 0x10).unwrap_or(0)).collect();
+    *SPLIT_CLEARED.lock().unwrap_or_else(|e| e.into_inner()) = Some(Pending { cleared: c, left });
+}
+
+/// The observer before the layer's end (`LAYER_END`, right after each
+/// layer draw of the light passes): sets back what [`split_layer`] left
+/// out, on the items that still hold the mask it left: right after the
+/// draw, before anything else reads the list (where the list is emptied
+/// between lights is not traced).
+pub fn layer_end(mem: &mut dyn GuestMemory) {
+    restore_split(mem);
+}
+
+fn restore_split(mem: &mut dyn GuestMemory) {
+    let Some(p) = SPLIT_CLEARED.lock().unwrap_or_else(|e| e.into_inner()).take() else {
+        return;
+    };
+    let mut m = Mem(mem);
+    let bit = 1u32 << p.cleared.layer;
+    for (&item, &left) in p.cleared.items.iter().zip(&p.left) {
+        if m.read_u32(item + 0x10) == Some(left) {
+            let _ = m.write_u32(item + 0x10, left | bit);
+        }
+    }
 }
 
 /// Adds the light to the open run, or opens one; `false` when no pass
@@ -358,6 +517,25 @@ impl Feature for NativeLights {
                 }
             })
             .context_only();
+        let split = split_on(b.switches());
+        set_split(split);
+        if split {
+            b.raw()
+                .observe_before(&points::LAYER_DRAW, "native_lights_split", |o| {
+                    let mut g = o.guest();
+                    let ret = g.u32(o.cpu.esp).unwrap_or(0);
+                    split_layer(&mut *g, ret);
+                })
+                .after_feature(crate::native_world::ID)
+                .after_feature(crate::native_objects::ID)
+                .context_only();
+            b.raw()
+                .observe_before(&points::LAYER_END, "native_lights_split_end", |o| {
+                    let mut g = o.guest();
+                    layer_end(&mut *g);
+                })
+                .context_only();
+        }
         b.snapshot(crate::SnapshotPolicy::Stateless);
         Ok(())
     }

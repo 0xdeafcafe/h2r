@@ -1238,6 +1238,55 @@ skipped light never reaches.
        lights planned and the kept ones by reason, most first. The
        feature's own line (drawn natively, runs, meeting an object) only
        prints when a run opens.
+     - Engine textures' texels (Code, V on 03a's `tile_metal_dark`): the
+       light passes' samplers for the normalization cube and the
+       attenuation volume carry no `D3DTSS_COLORSIGN` (the implementations'
+       stage states; an engine-set stage state refuses the pass in
+       `light_look`), and the combiners expand the cube with `bx2`, so
+       both are sampled unsigned. The D3D path decodes them with
+       `gfx::decode_texture` and the stage's sign bits (none), so the
+       native upload is the decode as it is, with no bias; a pass whose
+       engine stage reads signed channels is refused by
+       `program::translate_pass` (not stored biased) and the light keeps
+       its D3D passes. The samplers filter between mips (mip filter
+       linear) and the D3D path uploads the whole chain, so
+       `LayeredImage` carries it too (`with_mips`, `level_size`;
+       `layered` takes each level's faces in order). Test:
+       `the_native_light_textures_hold_the_texels_the_d3d_path_uploads`
+       (synthetic X8R8G8B8 cube and AL8 volume through both decodes,
+       every face, level and texel).
+     - **Split lights** (Code, `impl.render.native_lights_split`, off by
+       default). A light that meets a surface left to D3D, or a live
+       object, keeps all its D3D passes. Split instead: the light draws
+       its native world surfaces natively and its D3D passes draw the
+       rest, each surface once. `RENDER_LIGHT_PASSES` draws layers 14, 12
+       and 13 on the light's list `0x004c1a60` through the layer draw,
+       each followed by the layer's end `0x000445d0` (`points::LAYER_END`;
+       it sets the current layer back to 0). Where the list is emptied
+       between lights is not traced (`0x00030fa0` moves its `+0xc` up to
+       the count and zeroes its OR, so items can stay in the buffer), so
+       the bits go back at each layer's end rather than waiting for a
+       rebuild. The host's `split`
+       (`LightsWorld::plan_split`: the parts its sphere meets, whatever
+       else it meets, and their materials' shaders; refused when one of
+       those shaders also draws a surface left to D3D) names the
+       shaders; the light joins the run and its passes run; before each
+       of those three layer draws (matched by return address,
+       `0x000313e2`, `0x0003144f`, `0x000314cf`, so the first-person
+       lights' draws on the same list are not touched) the layer's bit
+       is cleared on those shaders' BSP items (`skip::clear_structure`),
+       and before the layer's end it is set back on the items that still
+       hold the mask it left. Objects' items are not BSP items, so the
+       D3D passes light objects. The run's pass is issued at the device's
+       next entry, the split light's own first D3D call, so its native
+       surfaces are lit just before its D3D ones; the lit passes test
+       depth equal, so a pixel is one surface's and the order between the
+       two sets does not matter (S: a transparent surface lit at the same
+       depth as an opaque one would see the two in the other order).
+       Residual: an unreadable item ends the clear early, and the items
+       left would be lit twice (the game reads the same items right
+       after). Tests: `a_split_light_lights_each_surface_once`
+       (feature's `native_lights_split`), and the placement test.
 
 4. **Objects**, through the models as stage 3's objects.
 5. **Shadows**: layer 10 into our depth texture, the term in the light's
