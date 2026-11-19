@@ -1026,7 +1026,7 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Res
     let mut decoder = StageDecoder::new(palettes);
     let mut palettized = Vec::new();
     let mut rigid_refused = Refused::new();
-    let (programs, stage_images, refused) = if programs_on {
+    let (programs, mut stage_images, refused) = if programs_on {
         let out = material_programs(&mut map, &mut files, &shaders, &world, &lightmaps, &mut decoder);
         native.extend(out.programs.keys().copied());
         palettized = out.palettized;

@@ -563,6 +563,7 @@ fn arm_compare(
                 depth: (uniforms.depth.0, uniforms.depth.1, Default::default()),
                 textures: uniforms.textures,
                 samplers: uniforms.samplers,
+                color: None,
                 draws: 4,
             });
         }

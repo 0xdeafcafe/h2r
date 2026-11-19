@@ -87,7 +87,7 @@ pub(crate) fn load<R: std::io::Read + std::io::Seek>(
     let materials: Vec<u16> = world.draws.iter().map(|d| d.material).collect::<BTreeSet<_>>().into_iter().collect();
     if !materials.is_empty() {
         match tags::material::ShaderLibrary::read(map) {
-            Ok(lib) => {
+            Ok(mut lib) => {
                 let mut refused: HashMap<String, usize> = HashMap::new();
                 let mut rigid_refused: HashMap<String, usize> = HashMap::new();
                 for &m in &materials {

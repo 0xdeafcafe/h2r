@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 
 use engine::memory::GuestMemory;
 use engine::points;
-use native_render::camera::GuestRead;
+use native_render::camera::{GuestRead, GuestWrite};
 use native_render::objects::{
     self, ClearedObjects, FIRST_PERSON_LAYER3_RETURN, ItemDraw, ItemKey, ObjectFrame, RECORD_MODEL,
     RecordOwner,

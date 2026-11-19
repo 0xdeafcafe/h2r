@@ -400,14 +400,11 @@ fn compile(
     if let Some(scale) = shader.tex_scale {
         pixel.tex_scale[0] = scale;
     }
-    let mut primitive = gfx::translate::primitive_state(
+    let primitive = gfx::translate::primitive_state(
         &shader.render,
         wgpu::PrimitiveTopology::TriangleList,
         gfx::translate::Capabilities::from_features(device.features()),
     );
-    if mode.w_buffered() {
-        primitive.bias = wgpu::DepthBiasState::default();
-    }
     let mut depth = gfx::translate::depth_stencil_state(
         &shader.render,
         Some(wgpu::TextureFormat::Depth24PlusStencil8),

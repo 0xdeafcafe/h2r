@@ -9,7 +9,7 @@ fn refused_boundary_keeps_callback_and_following_commands_in_order() {
     let (mut device, mut mem) = create(RecordingBackend::new(), UploadPolicy::Tracked);
     let dev = mem.read_u32(d3d::GuestLayout::HALO2.p_device).unwrap();
     let mut put = mem.read_u32(dev).unwrap();
-    let header = |method, count| (count << 18) | method;
+    let header = |method: u32, count: u32| (count << 18) | method;
     // Invented callback address/context, never invoked by this test.
     for word in [
         header(0x1d8c, 2),

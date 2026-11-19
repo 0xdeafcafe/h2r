@@ -49,7 +49,7 @@ use std::sync::{Arc, Mutex};
 
 use engine::memory::GuestMemory;
 use engine::points;
-use native_render::camera::GuestRead;
+use native_render::camera::{GuestRead, GuestWrite};
 use native_render::skip::{
     self, Cleared, CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, ITEM_SIZE, MAX_ITEMS, RENDER_RECORDS,
     RENDER_RECORD_SIZE,
@@ -292,7 +292,7 @@ fn census_at(mem: &dyn GuestMemory, ret: u32) {
         let skip = mem.u32(WATER_GATE).map(|w| w & 0x10 != 0).unwrap_or(false);
         let cleared = mem.u32(WATER_CLEARED).unwrap_or(0);
         format!(", water gate {} (bit 4 of {WATER_GATE:#x}), cleared byte {cleared}", if skip { "skipped" } else { "drawing" })
-    });
+    }).unwrap_or_default();
     let mut callers = String::new();
     for (k, v) in t.callers.iter().take(8) {
         let c = match k {
@@ -408,7 +408,23 @@ impl Feature for NativeWater {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use native_render::camera::tests::Mem;
+    use std::collections::HashMap;
+
+    /// Sparse guest words for the census tests.
+    #[derive(Default)]
+    struct Mem(HashMap<u32, u32>);
+
+    impl Mem {
+        fn w(&mut self, addr: u32, v: u32) {
+            self.0.insert(addr, v);
+        }
+    }
+
+    impl GuestRead for Mem {
+        fn read_u32(&self, addr: u32) -> Option<u32> {
+            self.0.get(&addr).copied()
+        }
+    }
 
     const LIST: u32 = 0x004c_1a48;
     const ITEMS: u32 = 0x0060_0000;

@@ -543,7 +543,7 @@ mod tests {
         v.constants[MODEL_ROWS] = [9.0; 4];
         v.constants[31] = [7.0; 4];
         let draw = |words| observe(words, &v, &e.pixel, &e.options, (&e.def, &e.pixel_options),
-            (&e.primitive, None), &[sampler(wgpu::FilterMode::Linear); 4], &[None; 4]);
+            (&e.primitive, None, color()), &[sampler(wgpu::FilterMode::Linear); 4], &[None; 4]);
         draw(&e.words);
         draw(&e.words[4..]);
         end_light(43);

@@ -12,7 +12,7 @@ fn program(color: &str) -> Program {
         cull_mode: gfx::state::CullMode::None,
         ..Default::default()
     };
-    let stage = gfx::state::TextureStageState::default();
+    let stage = gfx::state::TextureStageState::default_for_stage(0);
     let caps = gfx::translate::Capabilities::from_features(wgpu::Features::empty());
     Program {
         wgsl: format!(

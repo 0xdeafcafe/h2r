@@ -106,7 +106,7 @@ pub fn census<R: std::io::Read + std::io::Seek>(map: &mut Map<R>, shaders: &[Tag
     if materials.is_empty() {
         return;
     }
-    let Ok(lib) = tags::material::ShaderLibrary::read(map) else {
+    let Ok(mut lib) = tags::material::ShaderLibrary::read(map) else {
         eprintln!("native-water: the shader tags do not read; no census");
         return;
     };
@@ -179,7 +179,7 @@ pub(crate) fn load<R: std::io::Read + std::io::Seek>(
     let mut parts: Vec<((Owner, u8), (u32, u32, Option<LightmapKey>, u16))> = Vec::new();
     let materials: Vec<u16> = world.transparents.iter().map(|t| t.material).collect::<BTreeSet<_>>().into_iter().collect();
     if !materials.is_empty() {
-        if let Ok(lib) = tags::material::ShaderLibrary::read(map) {
+        if let Ok(mut lib) = tags::material::ShaderLibrary::read(map) {
             let mut refused: HashMap<String, usize> = HashMap::new();
             for &m in &materials {
                 let Some(&shader) = shaders.get(usize::from(m)) else { continue };
