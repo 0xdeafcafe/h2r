@@ -2071,6 +2071,21 @@ its own thread, and render-timing does not matter (the call runs).
      the D3D path draws them all. Each piece then gets a slice and is
      struck from `missing`; only an effect with nothing missing will be
      armed, behind the same swallow and probe as the glow.
+   - **Built: the template pass's look** (`native_render::screen_look`):
+     `screen_look` takes the egor's shader resolved and an
+     implementation and gives layer 15's pass (one pass at the first
+     level of detail; its vertex shader, stages as the shader's bitmaps
+     or engine textures the draw supplies, stage and render states,
+     pixel shader, constants), or why it stays on D3D (no layer, several
+     passes, no such implementation, animated, engine inputs beyond the
+     instance's, engine-driven states, unset or default textures, a
+     lightmap, states the native pass does not fit). `compile_screen`
+     translates it through `program::translate_pass` over the strips'
+     inputs, `v0` the position and `v1`..`v4` the four texture
+     coordinates (`0x00101a00`, `0x00101a10 + 16 s`). Still missing
+     before `TemplatePass` leaves `missing`: reading each egor's shader
+     at load (its material, vertex program and bitmaps), the engine
+     textures layer 15 binds, and the GPU pass drawing a plan's strips.
 5. **`0x0002df00`, and `0x0002dd30`** before layer 17, which has the
    same shape and gets its own skip point.
 6. **Layer 17** (S: bloom), as stage 1b draws the world's other layers.
