@@ -76,10 +76,10 @@ fn segment(name: &str, d: Duration, a: Option<&Totals>, b: Option<&Totals>) -> L
                     .insert(p.label().into(), ms(Duration::from_nanos(ns)));
             }
         }
-        for c in Counter::ALL {
-            let n = t.counts[c as usize];
+        for (i, label) in timeline::phase::counter_columns() {
+            let n = t.counts[i];
             if n > 0 {
-                s.counts.insert(c.label().into(), n);
+                s.counts.insert(label.into(), n);
             }
         }
     }

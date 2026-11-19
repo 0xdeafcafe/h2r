@@ -23,6 +23,7 @@
 
 pub mod host;
 pub mod phase;
+pub mod native;
 
 use std::cell::Cell;
 use std::collections::HashMap;
