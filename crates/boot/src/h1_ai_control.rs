@@ -104,6 +104,7 @@ impl feature::Feature for AiControl {
                 Ok(Flow::Continue)
             },
         );
+        playfight::register_firing_hooks(b);
         b.raw().after(
             &points::AI_TARGET_SCORE,
             "score a Halo 1 actor's preferred target",

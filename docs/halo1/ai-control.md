@@ -36,7 +36,7 @@ and translation. Runtime behavior still needs the integration build.
 | `ai_vehicle_encounter`, `ai_vehicle_enterable_*`, `ai_going_to_vehicle` | Use salted vehicle handles and persistent HaloScript globals for the registry. Halo 1 `0x00140e70` assigns the vehicle and moves its occupants. Halo 1 `0x0013f2d0` defaults boarding distance to 8 m and the setters add team, actor-type or squad criteria. The continuous control uses Halo 2 `0x00274a50` to pick seats and request native boarding. It moves riders to the assigned squad with `0x001e3400`. The count reads queued type `0x4c` commands and their vehicle dwords as written at `0x00274d47` and copied to the actor queue at `0x001a81de`. The converted registry holds 96 simultaneous vehicle records on maps using the setters. |
 | `ai_link_activation` | Links the encounter groups by direction. A continuous HaloScript call reads each native squad's active bit (`0x00203ca4`), follows links starting from active encounters and calls the native activator `0x00203bf0` for linked squads. The Halo 1 setter `0x0013a680` permits three links per source. |
 | `ai_try_to_fight`, `ai_try_to_fight_player`, `ai_try_to_fight_nothing` | A salted actor handle owns the saved preference, following Halo 1 `0x0013f710`–`0x0013f7c9`. It adds the stock 10-point preferred-target bonus to eligible candidates in Halo 2's scorer `0x00265d30`. Clearing the preference returns the actor to ordinary target selection. |
-| `ai_playfight` | The encounter switch applies Halo 1's 0.3 outgoing damage multiplier (`0x001475f5`, called for the damage owner at `0x0009575c`) in the corresponding Halo 2 actor damage modifier at `0x001c8440`. It preserves the native damage and hit-report pipeline. |
+| `ai_playfight` | The encounter switch applies Halo 1's 0.3 outgoing damage multiplier (`0x001475f5`, called for the damage owner at `0x0009575c`) in the corresponding Halo 2 actor damage modifier at `0x001c8440`. The burst setup at Halo 2 `0x001fe620` applies Halo 1's 0.6 duration multiplier and doubles angular spread plus one degree (`0x00162436`, `0x00162492`). The pause at `0x001fed70` uses Halo 1's 1.7 multiplier from `0x001616ea`. The game retains its native firing and hit processing. |
 | `ai_timer_expire` | Clears the native squad activation countdown read at `0x0020207a`. For literal squads with Halo 1 flag `0x10`, the call also invokes player awareness, as at Halo 1 `0x0013e25a`. |
 | `ai_status` | Preserves the existing combat-status ladder and comparison lowering in `h1scripts::compile`. The translation survey now counts it as an adapter. The mapping of Halo 1 status 6 to Halo 2 visible status is described in [scripts.md](scripts.md). |
 | `ai_living_fraction` | Binds Halo 2's 327. `0x002a59a0` divides living actors by spawned actors, using the counted result of `0x00273f30`. |
@@ -70,8 +70,8 @@ or Agent API method.
 
 ## Open
 
-The source playfight firing and aiming adjustments at `0x001616ea`
-and `0x00162492` still need Halo 2 equivalents. Halo 1's script-held
+The source playfight exception to the character behavior predicate at
+`0x00163c8c` still needs a Halo 2 equivalent. Halo 1's script-held
 initial combat delay (squad flag `0x8`) is separate from Halo 2's timer.
 Computed `ai_timer_expire` selections still need their source flag data.
 The aim/movement-state override on Halo 1 platoon flag `0x1` and

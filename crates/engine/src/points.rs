@@ -228,6 +228,10 @@ points! { ALL;
     AI_TARGET_SCORE @ 0x0026_5d30: [fn(actor: stack 0, interest: stack 1) -> xmm0 ret 8], hot; "docs/halo1/ai-control.md";
     /// The actor's contribution to outgoing damage calculation.
     AI_DAMAGE_MODIFIER @ 0x001c_8440: [fn(actor: ecx, multiplier: edx, packet: stack 0) -> al ret 4]; "docs/halo1/ai-control.md";
+    /// Starts a firing burst, setting the actor timer and angular spread.
+    AI_FIRE_BURST @ 0x001f_e620: [fn(actor: eax, firing: ebx, weapon: stack 0) ret 4], hot; "docs/halo1/ai-control.md";
+    /// Chooses the pause between bursts and saves it in the actor timer.
+    AI_FIRE_PAUSE @ 0x001f_ed70: [fn(actor: eax, firing: ecx) ret 0], hot; "docs/halo1/ai-control.md";
     HS_UNIT_GRENADE_COUNT @ 0x002a_4310: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/ai-control.md";
     /// HaloScript's object awareness evaluator, index 305.
     HS_AI_SEE_OBJECT @ 0x002a_53b0: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/ai-control.md";
