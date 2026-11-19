@@ -8,18 +8,19 @@
 //!   through the VFS (the world's locator, `native_world_glue::locate`)
 //!   with its shared maps and the object tag context. Each definition the
 //!   feature meets is sent once; the worker resolves its model
-//!   (`native_render::model_load`), decodes each material's base map, and
-//!   drops the draws of materials whose base map does not decode (their
-//!   items keep their D3D draws). The model is queued for upload and its
+//!   (`native_render::model_load`) and compiles its opaque materials'
+//!   programs (below), dropping the materials that refuse (their items
+//!   keep their D3D draws). The model is queued for upload and its
 //!   definition and shaders are published in the native set. A refused
 //!   model (a run-time permutation, a node mismatch, nothing opaque) is
 //!   logged once and its objects stay on the D3D path.
 //! - **Per view.** The device gets an `ObjectsPass` with the camera and the
 //!   objects' node matrices; on the render thread it uploads the queued
 //!   models, packs and culls the objects, and draws them skinned.
-//! - **Lit materials** (docs/graphics/native-renderer.md, "Object
-//!   programs"). A material whose layer-3 pass reads the object's lighting
-//!   is drawn through the game's own vertex program and pixel shader, per
+//! - **Opaque materials** (docs/graphics/native-renderer.md, "Object
+//!   programs"). Every opaque material, whether or not its layer-3 pass
+//!   reads the object's lighting ("lit" parts in the names here), is drawn
+//!   through the game's own vertex program and pixel shader, per
 //!   implementation of its layer-3 pass that compiles (a record picks one
 //!   by its `+0` bits 29..31; an object whose records pick one some lit
 //!   part lacks stays on D3D), its section's streams laid out as the game's
@@ -27,7 +28,7 @@
 //!   first seen) and its per-object constants (vertex and combiner) put in
 //!   per draw. A material none of whose implementations compiles for every
 //!   section and stage stays on D3D whole, with the reasons; never drawn
-//!   unlit.
+//!   with the base-map stand-in (that is for transparent parts only).
 //! - **Transparent parts** (stage 3, with `impl.render.native_transparents`
 //!   on too). The worker also takes each transparent material with a
 //!   single layer-15 pass, no alpha test and a base map that decodes (S:
@@ -344,7 +345,7 @@ fn spawn_worker(
                         let Some(s) = st.as_mut().filter(|s| s.name == name) else { return };
                         let mut set = (*s.set).clone();
                         set.definitions.insert(def as u16, nodes);
-                        set.shaders.extend(shaders);
+                        set.shaders.extend(shaders.into_iter().map(|s| (def as u16, s)));
                         if lit > 0 {
                             set.lit.insert(def as u16, lit_implementations);
                         }
@@ -476,16 +477,15 @@ fn material(o: &mut Opened, shader: TagId) -> Option<tags::material::Material> {
     o.lib.as_mut()?.as_mut()?.material(shader, None).ok()
 }
 
-/// Why an opaque material stays on D3D for its lighting: its layer-3
-/// pass reads an input of the object's the object path cannot give
-/// (`object_program::lighting_refusal`), or it does not resolve, so that
-/// cannot be ruled out. Never drawn unlit: one that reads only what is
-/// given is drawn through its programs ([`lit_material`]) or refused there.
-fn lighting_refusal(o: &mut Opened, shader: TagId) -> Option<String> {
+/// Why an opaque material stays on D3D: no layer-3 implementation reads
+/// only what the object path gives (`object_program::program_refusal`),
+/// or it does not resolve. One that does is drawn through its programs
+/// ([`lit_material`]) or refused there; never with a stand-in.
+fn program_refusal(o: &mut Opened, shader: TagId) -> Option<String> {
     let Some(m) = material(o, shader) else {
         return Some("the material does not resolve".into());
     };
-    native_render::object_program::lighting_refusal(&m)
+    native_render::object_program::program_refusal(&m)
 }
 
 /// A transparent material the models' pass can stand in for: one layer-15
@@ -509,31 +509,25 @@ fn transparent_material(o: &mut Opened, shader: TagId) -> Option<(Image, PassSta
 fn load_model(o: &mut Opened, def: u32) -> Result<(CpuModel, Vec<u16>, ObjectTransparents), load::Error> {
     let id = tag_of(&o.map, def).ok_or("no such tag")?;
     let loaded = model_load::load_object_model(&mut o.map, &o.ctx, &mut o.raw, id)?;
-    let mut base_maps = HashMap::new();
+    // Every opaque material through its own programs, or left to D3D: the
+    // base-map stand-in is not used for opaque parts (it is neither the
+    // game's shading nor, for an animated object, the pose its records'
+    // rows give: the scarab of 03a's intro).
+    let base_maps = HashMap::new();
     let mut shaders = Vec::new();
     let mut unlit = Vec::new();
     let mut lit_materials = HashMap::new();
     for m in loaded.model.materials() {
         let Some(&shader) = loaded.shaders.get(usize::from(m)) else { continue };
-        if let Some(why) = lighting_refusal(o, shader) {
+        if let Some(why) = program_refusal(o, shader) {
             unlit.push(format!("{:#010x} {why}", shader.0));
             continue;
         }
         match lit_material(o, shader) {
-            Some(Ok(lit)) => {
+            Ok(lit) => {
                 lit_materials.insert(m, lit);
-                continue;
             }
-            Some(Err(why)) => {
-                unlit.push(format!("{:#010x} {why}", shader.0));
-                continue;
-            }
-            None => {}
-        }
-        let Some(bitmap) = load::base_map(&mut o.map, shader) else { continue };
-        if let Some(image) = decoded(o, shader, bitmap) {
-            base_maps.insert(m, image);
-            shaders.push(shader.0 as u16);
+            Err(why) => unlit.push(format!("{:#010x} {why}", shader.0)),
         }
     }
     let mut transparents = Vec::new();
@@ -581,13 +575,10 @@ fn load_model(o: &mut Opened, def: u32) -> Result<(CpuModel, Vec<u16>, ObjectTra
     ))
 }
 
-/// What a material whose layer-3 pass reads the object's lighting draws
-/// with: `None` when it reads none (the base-map path draws it), else the
-/// material and its shader's values (`shad +0x44`, `+0x48`), or why they
-/// do not read.
-fn lit_material(o: &mut Opened, shader: TagId) -> Option<Result<LitMaterial, String>> {
-    let material = material(o, shader)?;
-    look::object_lighting_input(&material)?;
+/// What an opaque material's programs draw with: the material and its
+/// shader's values (`shad +0x44`, `+0x48`), or why they do not read.
+fn lit_material(o: &mut Opened, shader: TagId) -> Result<LitMaterial, String> {
+    let material = material(o, shader).ok_or("the material does not resolve")?;
     let read = || -> Result<LitMaterial, String> {
         if o.formats.is_none() {
             return Err("the game's stream formats do not read".into());
@@ -601,7 +592,7 @@ fn lit_material(o: &mut Opened, shader: TagId) -> Option<Result<LitMaterial, Str
             material: material.clone(),
         })
     };
-    Some(read())
+    read()
 }
 
 /// The shader instance's values the object inputs scale by (`shad +0x44`

@@ -61,9 +61,12 @@ pub struct NativeSet {
     /// Object definitions by tag index (the low word of the body's `+0`
     /// datum), each with its model's node count.
     pub definitions: HashMap<u16, usize>,
-    /// Shaders by tag index (the low word of an item's `+8`): the
-    /// materials the pass draws; the rest keep their D3D draws.
-    pub shaders: HashSet<u16>,
+    /// Per definition, the shaders by tag index (the low word of an item's
+    /// `+8`) whose materials the pass draws for it; the rest keep their D3D
+    /// draws. Per definition: a shader one model draws through its programs
+    /// may be refused for another (its sections' programs differ), and an
+    /// item of that one must keep its draw.
+    pub shaders: HashSet<(u16, u16)>,
     /// Definitions with parts drawn through their own programs, each with
     /// the implementations (bit `n`) every such part has: an object of one
     /// is drawn only with its lighting (and the root value inputs 40 and 37
@@ -74,7 +77,7 @@ pub struct NativeSet {
 
 impl NativeSet {
     pub fn accepts(&self, definition: u32, shader: u32) -> bool {
-        self.definitions.contains_key(&(definition as u16)) && self.shaders.contains(&(shader as u16))
+        self.definitions.contains_key(&(definition as u16)) && self.shaders.contains(&(definition as u16, shader as u16))
     }
 
     pub fn node_count(&self, definition: u32) -> Option<usize> {

@@ -932,18 +932,29 @@ How the game lights an object's layer-3 pass (Code, `h2 disasm`;
   (`objects::object_lighting`: body `+0xcc`, the record still its own),
   so the pass has the frame's values whatever the cache does next.
 - **The refusal.** The native models pass does not apply them: its
-  program is ours, not the game's `lightmap_dynamic`/`sh_dynamic`. So a
-  material whose layer-3 pass reads any lighting input in any
-  implementation is refused at load and keeps its D3D draws: never drawn
-  unlit (`object_program::lighting_refusal`, which names an input the
-  object path cannot give, or says the program draw is not wired yet).
+  program is ours, not the game's `lightmap_dynamic`/`sh_dynamic`. So no
+  opaque material is drawn by it (below): one none of whose layer-3
+  implementations reads only what the object path gives is refused at
+  load and keeps its D3D draws (`object_program::program_refusal`, which
+  names what each implementation reads that the path cannot give, or says
+  it has no layer-3 pass).
 
 ### Object programs
 
-An object material whose layer-3 pass reads the object's lighting is
-drawn with the game's own vertex program and pixel shader
-(`native_render::object_program`, `object_program_gpu`), each piece with
-synthetic tests:
+Every opaque object material, whether or not its layer-3 pass reads the
+object's lighting, is drawn with the game's own vertex program and pixel
+shader (`native_render::object_program`, `object_program_gpu`), or left
+to D3D, each piece with synthetic tests. The models pass's base-map
+stand-in (base map, fixed ambient and directional light, posed from the
+object's own node matrices) is no longer used for opaque parts: on 03a's
+intro (frame 02000) the scarab's materials that read no lighting were
+drawn by it, flat and dark where the game lights them, and posed apart
+from its parts drawn through their programs, which use the rows its
+records upload and matched D3D pixel for pixel. The native set accepts a
+shader per definition (`NativeSet::shaders` holds `(definition, shader)`):
+a material one model draws through its programs may be refused for
+another whose sections take other programs, and that one's items keep
+their D3D draws.
 
 - **The vertex block.** What the game's upload would hold for one drawn
   object: `c[0..18]` the view's; `c[18 + i]` the implementation's

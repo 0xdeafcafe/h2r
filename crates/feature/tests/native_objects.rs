@@ -174,7 +174,7 @@ fn objects_skip_layer_3_hand_over_their_nodes_and_get_their_bits_back() {
     {
         let mut set = stub.set.lock().unwrap();
         set.definitions.insert(DEF_A as u16, 2);
-        set.shaders.insert(0x10);
+        set.shaders.insert((DEF_A as u16, 0x10));
     }
     native_objects::set_host(stub.clone());
 
@@ -207,7 +207,11 @@ fn objects_skip_layer_3_hand_over_their_nodes_and_get_their_bits_back() {
 
     // B's model loaded with another node count than the object has: B
     // stays on the D3D path.
-    stub.set.lock().unwrap().definitions.insert(DEF_B as u16, 5);
+    {
+        let mut set = stub.set.lock().unwrap();
+        set.definitions.insert(DEF_B as u16, 5);
+        set.shaders.insert((DEF_B as u16, 0x10));
+    }
     native_objects::before_layer(&mut m, SCENE_LAYER3_RETURN);
     assert_eq!(masks(&m), vec![0b0010, 0b1010, 0b1010, 0b1010]);
     assert_eq!(stub.drawn.lock().unwrap()[1].1.len(), 1);
@@ -283,7 +287,7 @@ fn objects_skip_layer_3_hand_over_their_nodes_and_get_their_bits_back() {
 /// pipelined render thread: context-only observers before, nothing after.
 #[test]
 fn its_layer_draw_chain_runs_on_the_render_thread() {
-    let mut r = Registry::new(Switches::parse("impl.render.native_objects=on").unwrap());
+    let mut r = Registry::new(Switches::parse("impl.render.native_world=on,impl.render.native_objects=on").unwrap());
     assert!(r.add(&feature::native_world::NativeWorld).unwrap());
     assert!(r.add(&NativeObjects).unwrap());
     let plan = r.build(&Base).unwrap();
@@ -295,4 +299,15 @@ fn its_layer_draw_chain_runs_on_the_render_thread() {
     assert_eq!(chain.observe_before.len(), 2, "the world's and the objects'");
     assert!(!chain.needs_shadow());
     assert!(chain.render_thread().is_ok());
+}
+
+#[test]
+fn a_shader_is_accepted_only_for_the_definitions_that_draw_it() {
+    let mut set = NativeSet::default();
+    set.definitions.insert(DEF_A as u16, 2);
+    set.definitions.insert(DEF_B as u16, 2);
+    set.shaders.insert((DEF_A as u16, 0x10));
+    assert!(set.accepts(DEF_A, 0x10));
+    assert!(!set.accepts(DEF_B, 0x10), "B's model refused the material: its items keep their D3D draws");
+    assert!(!set.accepts(DEF_A, 0x11));
 }
