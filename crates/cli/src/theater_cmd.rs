@@ -139,6 +139,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
             .env("H2_TELEMETRY", "0");
         for key in [
             "H2_FILM_OUT",
+            boot::agent_glue::HOST_TCP_ENV,
             "H2_HOST_TOKEN",
             "H2_HOST_LIVE_URL",
             "H2_TUNNEL_LISTEN",
