@@ -109,6 +109,17 @@ fn missing_scans_hidden_pads_and_long_gaps_do_not_date_a_pickup() {
 }
 
 #[test]
+fn seeing_only_one_side_of_a_displaced_item_cannot_confirm_a_pickup() {
+    let mut timers = Timers::default();
+    check(&mut timers, 0, &[SUPPLY]);
+    timers.observe(1, Some(&[]), |at| at == PAD);
+    let site = timers.0[0];
+    assert!(site.present && !site.watched);
+    assert_eq!(site.taken, None);
+    assert!(site.probability(1, 0., 1.) < 1.);
+}
+
+#[test]
 fn unknown_respawn_period_is_learned_only_from_a_watched_cycle() {
     let item = Supply {
         respawn: None,
@@ -146,7 +157,7 @@ fn two_identical_items_keep_independent_clocks() {
     }
     check(&mut t, 103, &[]);
     assert_eq!(t.due(bot(), 260, Skill::Legendary, |_| Some(0.)), Some(PAD));
-    t.observe(390, Some(&[SUPPLY]), |at| at == PAD);
+    t.observe(390, Some(&[SUPPLY]), |at| at == PAD || at == SUPPLY.at);
     assert_eq!(
         t.due(bot(), 390, Skill::Legendary, |_| Some(0.)),
         Some(other.spawn)
@@ -287,10 +298,26 @@ fn a_visible_carrier_is_weak_evidence_for_a_unique_known_pad() {
 #[test]
 fn an_unvisited_power_pad_can_be_worth_the_trip_and_a_visible_empty_one_is_not() {
     let mut timers = Timers::default();
-    for (site,x) in [(1,8.),(2,10.)] {
-        timers.familiar(crate::places::PowerPad{site,at:[x,0.,0.],period:Some(1500),powerup:true,model:None}, 0);
+    for (site, x) in [(1, 8.), (2, 10.)] {
+        timers.familiar(
+            crate::places::PowerPad {
+                site,
+                at: [x, 0., 0.],
+                period: Some(1500),
+                powerup: true,
+                model: None,
+            },
+            0,
+        );
     }
-    assert_eq!(timers.due(armed(),0,Skill::Legendary,|p| Some(if p[0]==10. {0.8} else {0.})),Some([10.,0.,0.]));
-    timers.observe(1,Some(&[]), |_|true);
-    assert_eq!(timers.due(armed(),1,Skill::Legendary,|_|Some(1.)),None);
+    assert_eq!(
+        timers.due(armed(), 0, Skill::Legendary, |p| Some(if p[0] == 10. {
+            0.8
+        } else {
+            0.
+        })),
+        Some([10., 0., 0.])
+    );
+    timers.observe(1, Some(&[]), |_| true);
+    assert_eq!(timers.due(armed(), 1, Skill::Legendary, |_| Some(1.)), None);
 }

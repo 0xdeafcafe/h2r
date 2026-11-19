@@ -736,8 +736,8 @@ impl NavMesh {
                         // charge exposed airborne time by duration. These
                         // rates are estimates shared with supply travel.
                         Kind::Teleporter => 6.0 / 6.0,
-                        Kind::Lift => (8.0 + dist(e.a,e.b) * 2.7 * 1.25) / 6.0,
-                        Kind::Elevator => (24.0 + dist(e.a,e.b) * 4.8 * 1.25) / 6.0,
+                        Kind::Lift => (8.0 + dist(e.a, e.b) * 2.7 * 1.25) / 6.0,
+                        Kind::Elevator => (24.0 + dist(e.a, e.b) * 4.8 * 1.25) / 6.0,
                         _ => dist(e.a, e.b),
                     };
                     dist(here, e.a) + transit + dist(e.b, there)

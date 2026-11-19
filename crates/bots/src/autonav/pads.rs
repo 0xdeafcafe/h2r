@@ -40,7 +40,8 @@ fn collection<R: Read + Seek>(map: &mut Map<R>, id: TagId) -> Option<(bool, Opti
                 "powerup_invisibility"
                 | "powerup_super_shield"
                 | "active_camouflage"
-                | "overshield" | "over_shield",
+                | "overshield"
+                | "over_shield",
             ) => true,
             _ => return None,
         };

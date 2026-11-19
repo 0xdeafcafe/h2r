@@ -226,6 +226,36 @@ fn it_chases_where_it_last_saw_someone_then_forgets() {
 }
 
 #[test]
+fn public_death_replaces_the_last_sighting_with_a_fading_possible_spawn() {
+    let mut m = Mind::new(Skill::Normal, 17);
+    let mut map = MapData::default();
+    let possible = [-12., 0., 0.];
+    map.places.starts = vec![[10., 0., 0.], possible];
+    look(&mut m, X, vec![enemy(1, [5., 0., 0.])], 0, Some(&map));
+    let p = Perception {
+        me: me([0.; 3], X),
+        tick: 1,
+        ..Default::default()
+    };
+    let death = crate::emote::Kill {
+        seq: 1,
+        tick: 1,
+        attacker: Some(2),
+        victim: 1,
+        betrayal: false,
+        at: None,
+    };
+    m.hear_deaths(&p, &[death], Some(&map));
+    assert_eq!(m.last_seen, None);
+    assert_eq!(m.search, Some((possible, 1)));
+    let pad = m.step(&p, Some(&map));
+    assert_eq!(m.doing, Doing::Support(possible));
+    assert_eq!(pad.right_trigger, 0.);
+    look(&mut m, X, vec![], 2 + MEMORY_TICKS, Some(&map));
+    assert_eq!(m.doing, Doing::Roam);
+}
+
+#[test]
 fn with_a_nav_mesh_it_roams_somewhere_it_can_reach() {
     let map = MapData {
         places: Default::default(),

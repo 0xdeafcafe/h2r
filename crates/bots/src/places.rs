@@ -368,6 +368,11 @@ mod tests {
         map.walls =
             Walls::from_polygons([&[[8., 8., 0.], [8., 16., 0.], [8., 16., 4.], [8., 8., 4.]][..]]);
         let a = Perception {
+            observations: crate::brain::Observations {
+                player: Some((0, 0)),
+                supplies: Some(Vec::new()),
+                ..Default::default()
+            },
             me: Some(Me {
                 position: [4., 12., 0.],
                 ..Default::default()
@@ -380,6 +385,18 @@ mod tests {
             team: 1,
             position: [12., 12., 0.],
         });
+        b.observations
+            .supplies
+            .as_mut()
+            .unwrap()
+            .push(crate::decisions::supplies::Supply {
+                site: 1,
+                object: 71,
+                spawn: [12., 12., 0.],
+                at: [12., 12., 0.],
+                respawn: Some(120 * 30),
+                powerup: false,
+            });
         paired_worlds(Some(&map), [(a, b)]);
     }
 }

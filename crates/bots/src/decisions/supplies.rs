@@ -140,13 +140,16 @@ impl Timers {
         visible: impl Fn(Vec3) -> bool,
     ) {
         for site in &mut self.0 {
-            if let Some(items) = ground
-                && visible(site.supply.spawn)
+            let item = ground.and_then(|items| {
+                items
+                    .iter()
+                    .find(|s| s.site == site.supply.site && visible(s.at))
+                    .copied()
+            });
+            if item.is_some()
+                || (ground.is_some() && visible(site.supply.spawn) && visible(site.supply.at))
             {
-                site.observe(
-                    tick,
-                    items.iter().find(|s| s.site == site.supply.site).copied(),
-                );
+                site.observe(tick, item);
             } else {
                 // A witnessed pickup still has its deadline while the bot
                 // is away, but the duration of this cycle can't be learned.

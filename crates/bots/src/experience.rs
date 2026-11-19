@@ -182,7 +182,10 @@ mod tests {
         m.enter("lockout");
         assert_eq!(m.firing_position(at), 0.);
         let mut restored = Experience::default();
-        restored.restore(m.snapshot()).unwrap();
+        let bytes = serde_json::to_vec(&m.snapshot()).unwrap();
+        restored
+            .restore(serde_json::from_slice(&bytes).unwrap())
+            .unwrap();
         restored.enter("h1_bloodgulch");
         assert_eq!(restored.success(at), 0.2);
         assert_eq!(restored.firing_position(at), 0.2);

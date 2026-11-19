@@ -7,8 +7,7 @@ use std::io::{BufReader, Read, Seek};
 use std::path::PathBuf;
 
 fn measure<R: Read + Seek>(map: &mut Map<R>) -> (usize, usize) {
-    let name = map.header().name.as_str();
-    let name = name.to_owned();
+    let name = map.header().name.clone();
     let data = autonav::build_map(map).unwrap_or_else(|e| panic!("{name}: {e}"));
     let edges = || data.iter().flat_map(|d| &d.nav.edges);
     let tele = edges().filter(|e| e.kind == Kind::Teleporter).count();
@@ -35,8 +34,38 @@ fn measure<R: Read + Seek>(map: &mut Map<R>) -> (usize, usize) {
             "{name} needs crouch jumps and power pads"
         );
     }
-    if name == "h1_bloodgulch" {
-        assert!(places.pads.iter().any(|p| p.period == Some(120 * 30)));
+    if matches!(name.as_str(), "h1_bloodgulch" | "h1_sidewinder") {
+        let portals = edges().filter(|e| e.kind == Kind::Teleporter);
+        let near =
+            |a: [f32; 3], b: [f32; 3]| (0..3).map(|i| (a[i] - b[i]).powi(2)).sum::<f32>() < 1.0;
+        let reciprocal = portals
+            .clone()
+            .filter(|p| portals.clone().any(|q| near(p.a, q.b) && near(p.b, q.a)))
+            .count();
+        assert_eq!(
+            reciprocal,
+            if name == "h1_sidewinder" { 2 } else { 0 },
+            "{name}"
+        );
+        let (sniper, rocket) = if name == "h1_bloodgulch" {
+            (Some(120 * 30), Some(90 * 30))
+        } else {
+            (None, Some(120 * 30))
+        };
+        for (model, expected) in [("sniper_rifle", sniper), ("rocket_launcher", rocket)] {
+            assert!(
+                places.pads.iter().any(|pad| {
+                    pad.period == expected
+                        && pad
+                            .model
+                            .and_then(|id| map.tag(map::TagId(id)).ok())
+                            .and_then(|tag| tag.name.as_deref())
+                            .and_then(|path| path.rsplit(['/', '\\']).next())
+                            .is_some_and(|name| name.replace(' ', "_") == model)
+                }),
+                "{name} {model}: {expected:?}"
+            );
+        }
     }
     println!(
         "{name}: {tele} teleporter, {lift} lift, {jumps} crouch jump, {} vantages",
@@ -89,12 +118,11 @@ fn map_corpus_traversal_and_places() {
     ];
     let mut iso = xiso::Xiso::open(BufReader::new(File::open(&disc).unwrap())).unwrap();
     let mut found = BTreeMap::new();
-    for e in iso
-        .entries()
-        .unwrap()
-        .into_iter()
-        .filter(|e| expected.iter().any(|(n,_,_)| e.path.ends_with(&format!("/{n}.map"))))
-    {
+    for e in iso.entries().unwrap().into_iter().filter(|e| {
+        expected
+            .iter()
+            .any(|(n, _, _)| e.path.ends_with(&format!("/{n}.map")))
+    }) {
         let base = iso.partition_offset() + u64::from(e.sector) * xiso::SECTOR;
         let mut map = Map::from_region(
             BufReader::new(File::open(&disc).unwrap()),

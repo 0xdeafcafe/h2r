@@ -499,14 +499,19 @@ impl Mind {
         let checked = match self.doing {
             Doing::Supply(goal) | Doing::Rearm(goal) => map.and_then(|m| {
                 let items = p.observations.supplies.as_deref()?;
-                let pad = m.places.pads.iter().filter(|s| len(sub(s.at,goal))<=1.5)
-                    .min_by(|a,b|len(sub(a.at,goal)).total_cmp(&len(sub(b.at,goal))))?;
-                (len(sub(pad.at,me.position))<=2. && crate::perceive::in_view(me,pad.at,0.2,map))
-                    .then(||(pad.at,items.iter().any(|s|s.site==pad.site)))
+                let pad = m
+                    .places
+                    .pads
+                    .iter()
+                    .filter(|s| len(sub(s.at, goal)) <= 1.5)
+                    .min_by(|a, b| len(sub(a.at, goal)).total_cmp(&len(sub(b.at, goal))))?;
+                (len(sub(pad.at, me.position)) <= 2.
+                    && crate::perceive::in_view(me, pad.at, 0.2, map))
+                .then(|| (pad.at, items.iter().any(|s| s.site == pad.site)))
             }),
             _ => None,
         };
-        self.experience.visit(me.position,checked);
+        self.experience.visit(me.position, checked);
         let (goal, intent) = self.decide(p, me, &seen, map);
         let chosen = intent
             .chosen
@@ -884,12 +889,14 @@ impl Mind {
                 }
             }
             Doing::Vantage(v) => {
-                if len(sub(me.position,v.at)) < 0.8 {
-                    look = Some(up(v.watches,CHEST));
+                if len(sub(me.position, v.at)) < 0.8 {
+                    look = Some(up(v.watches, CHEST));
                     self.follower = None;
                 } else {
-                    walk = self.go(me.position,v.at,p.tick,map,&mut pad,&bodies);
-                    if walk.is_none() || self.gave_up { self.stuck.blacklist(v.at,p.tick); }
+                    walk = self.go(me.position, v.at, p.tick, map, &mut pad, &bodies);
+                    if walk.is_none() || self.gave_up {
+                        self.stuck.blacklist(v.at, p.tick);
+                    }
                 }
             }
             Doing::Support(at) | Doing::Supply(at) => {
@@ -1185,7 +1192,11 @@ impl Mind {
             self.buttons.release();
             self.fidget.reset();
         }
-        if pad.right_trigger>0. && let Doing::Fight(target)=self.doing { self.experience.fired(me.position,target,p.tick); }
+        if pad.right_trigger > 0.
+            && let Doing::Fight(target) = self.doing
+        {
+            self.experience.fired(me.position, target, p.tick);
+        }
         self.last_pad = pad;
         pad
     }

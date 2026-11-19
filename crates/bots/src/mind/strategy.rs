@@ -95,8 +95,13 @@ impl Mind {
         {
             return Doing::Supply(at);
         }
-        if let Some(at) = last {
-            return Doing::Chase(at);
+        if let Some((_, at, seen)) = self.last_seen {
+            // A distant, old sighting is less likely to pay for a long chase.
+            let confidence = 1.0 - p.tick.wrapping_sub(seen) as f32 / MEMORY_TICKS as f32;
+            let travel = len(sub(at, me.position)) * 6.0 / MEMORY_TICKS as f32;
+            if confidence > travel.min(0.65) {
+                return Doing::Chase(at);
+            }
         }
         if let Some((at, heard)) = self.search {
             let confidence = 1.0 - p.tick.wrapping_sub(heard) as f32 / MEMORY_TICKS as f32;

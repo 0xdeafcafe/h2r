@@ -53,7 +53,7 @@ impl MapMemory {
         }
     }
 
-    pub(super) fn familiarize(&mut self, map: &MapData, tick: u32, sense: f32, personality: f32) {
+    pub(crate) fn familiarize(&mut self, map: &MapData, tick: u32, sense: f32, personality: f32) {
         if self.familiar {
             return;
         }
@@ -77,7 +77,7 @@ impl MapMemory {
                     .sum::<f32>();
                 dist <= 25.0
                     && (dist < 3.0 || facing > dist * 0.42)
-                    && map.is_none_or(|m| m.walls.clear(raised(me.position, EYE), raised(at, 0.2)))
+                    && map.is_none_or(|m| crate::perceive::in_view(me, at, 0.2, Some(m)))
             });
         self.timers.carriers(p, me);
     }

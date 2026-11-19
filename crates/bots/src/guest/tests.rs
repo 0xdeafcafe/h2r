@@ -1385,18 +1385,18 @@ fn decisions_observe_player_slot_while_dead_and_only_live_contacts() {
 
 #[test]
 fn decisions_lead_reads_only_competing_scoreboard_rows_including_dead_players() {
-    let roster = [(0,0), (1,0), (2,1)];
-    let mut g = game(&[(0,0,0,[0.;3],X,false)],true,&[0]);
+    let roster = [(0, 0), (1, 0), (2, 1)];
+    let mut g = game(&[(0, 0, 0, [0.; 3], X, false)], true, &[0]);
     let engine = 0x006b0000;
-    g.put_u32(crate::objective::GAME_ENGINE,engine);
-    g.put_u32(engine+0x304,1);
-    g.put_u16(engine+0x4c8,3);
-    g.put_u16(engine+0x4c8+0x12,2);
-    assert!(intel::ahead(&g,0,true,&roster).unwrap());
-    g.put_u16(engine+0x4c8+0x12,3);
-    assert!(!intel::ahead(&g,0,true,&roster).unwrap());
-    g.put_u16(engine+0x308,5);
-    g.put_u16(engine+0x308+0x1c,6);
-    g.put_u16(engine+0x308+2*0x1c,2);
-    assert!(!intel::ahead(&g,0,false,&roster).unwrap());
+    g.put_u32(crate::objective::GAME_ENGINE, engine);
+    g.put_u32(engine + 0x304, 1);
+    g.put_u16(engine + 0x4c8, 3);
+    g.put_u16(engine + 0x4c8 + 0x12, 2);
+    assert!(intel::ahead(&g, 0, true, &roster).unwrap());
+    g.put_u16(engine + 0x4c8 + 0x12, 3);
+    assert!(!intel::ahead(&g, 0, true, &roster).unwrap());
+    g.put_u16(engine + 0x308, 5);
+    g.put_u16(engine + 0x308 + 0x1c, 6);
+    g.put_u16(engine + 0x308 + 2 * 0x1c, 2);
+    assert!(!intel::ahead(&g, 0, false, &roster).unwrap());
 }

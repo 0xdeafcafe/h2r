@@ -603,6 +603,35 @@ fn floor_quad(x: f32, y: f32, z: f32, w: f32, h: f32) -> Poly {
 }
 
 #[test]
+fn walking_beats_a_short_exposed_lift() {
+    let polys = vec![
+        floor_quad(0., 0., 0., 1., 1.),
+        floor_quad(2.8, 0., 0., 1., 1.),
+    ];
+    let a = polys[0].center;
+    let b = polys[1].center;
+    // The ride alone plus boarding takes less time than walking. Exposure
+    // makes the 2.8-unit walk preferable. Both edges share the same ends.
+    let ride = Edge {
+        from: 0,
+        to: 1,
+        a,
+        b,
+        kind: Kind::Lift,
+    };
+    let walk = Edge {
+        kind: Kind::Walk,
+        ..ride
+    };
+    assert_eq!(
+        NavMesh::new(polys, vec![ride, walk])
+            .corridor(0, 1)
+            .unwrap(),
+        [1]
+    );
+}
+
+#[test]
 fn short_traversals_win_over_a_longer_walking_route() {
     let polys = vec![
         floor_quad(0.0, 0.0, 0.0, 2.0, 2.0),

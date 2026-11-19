@@ -693,6 +693,7 @@ dependencies = [
  "map",
  "pathfind",
  "serde",
+ "serde_json",
  "tags",
  "xiso",
 ]
