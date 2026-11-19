@@ -996,6 +996,8 @@ fn every_foot_converts() {
 #[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
 fn entry_lifepod_burns_at_its_halo1_marker_and_rate() {
     use h1objects::particles::{self, TICK};
+    use tags::effects::function::Function;
+    use tags::effects::h1_attachment::{PointPhysics, population_word};
 
     let m = h1_level("a30").unwrap();
     let base = Base::read(&mut h2_map("05a_deltaapproach")).unwrap();
@@ -1047,12 +1049,19 @@ fn entry_lifepod_burns_at_its_halo1_marker_and_rate() {
     let effect = read_back(effect, name);
     assert_eq!(effect.at("loop_start_event"), Some(&Val::Int(0)));
     assert_eq!(text(&block(&effect, "locations")[0], "marker"), burn.marker);
-    let event = &block(&effect, "events")[0];
-    let bounds = [
-        emitter.duration[0] + emitter.transition[0],
-        emitter.duration[1] + emitter.transition[1],
-    ];
-    assert_eq!(event.at("duration_bounds"), Some(&Val::floats(&bounds)));
+    let events = block(&effect, "events");
+    assert_eq!(events.len(), 2);
+    assert_eq!(emitter.minimum_population, 10.0);
+    for (event, bounds) in events.iter().zip([emitter.duration, emitter.transition]) {
+        assert_eq!(event.at("duration_bounds"), Some(&Val::floats(&bounds)));
+        assert_eq!(
+            event.at("attachment_population"),
+            Some(&Val::Int(
+                population_word([emitter.minimum_population; 2], false).into()
+            )),
+        );
+    }
+    let event = &events[0];
     let states: Vec<_> = ty.states.iter().filter(|s| s.lasts()).collect();
     let systems = block(event, "particle_systems");
     assert_eq!(systems.len(), states.len());
@@ -1064,6 +1073,32 @@ fn entry_lifepod_burns_at_its_halo1_marker_and_rate() {
         assert_eq!(particle.group, FourCC(*b"prt3"));
         assert!(name.ends_with(&state.name));
         let emitter_record = &block(system, "emitters")[0];
+        let movement = target(emitter_record, "movement").1.unwrap();
+        assert_eq!(resolve(&c.tree, movement), Some(FourCC(*b"pmov")));
+        let (name, tag) = &c.tree.tags[movement.index()];
+        let movement = read_back(tag, name);
+        assert_eq!(movement.at("movements[0].kind"), Some(&Val::Int(1)));
+        let parameters = block(&block(&movement, "movements")[0], "parameters");
+        let source = m.tag(state.physics.unwrap()).unwrap();
+        let bytes = m.tag_data(source).unwrap();
+        let f32_at = |i: usize| f32::from_le_bytes(bytes[i..i + 4].try_into().unwrap());
+        let mut extended = [[0; 4]; 2];
+        for (i, parameter) in parameters.iter().enumerate() {
+            let Some(Val::Data(curve)) = parameter.at("function") else {
+                panic!("missing collision curve");
+            };
+            assert_eq!(
+                Function::parse(curve).unwrap().range,
+                [f32_at(0x2c + 4 * i); 2]
+            );
+            for (word, bytes) in extended[i].iter_mut().zip(curve[12..].chunks_exact(4)) {
+                *word = u32::from_le_bytes(bytes.try_into().unwrap());
+            }
+        }
+        let physical = PointPhysics::from_words(extended).unwrap();
+        assert_eq!(physical.mass, f32_at(4));
+        assert_eq!(physical.drag, [f32_at(0x24), f32_at(0x28)]);
+        assert!(physical.acceleration[0] > 0.0);
         let Some(Val::Data(rate)) = emitter_record.at("property_8.function") else {
             panic!("particle rate");
         };

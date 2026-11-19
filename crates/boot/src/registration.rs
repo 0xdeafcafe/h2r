@@ -167,6 +167,9 @@ pub fn register_core(features: &mut feature::Registry, i: CoreInputs<'_>) -> any
     });
     let skulls_custom_on = skulls_custom::install(features, i.settings.clone(), telemetry.clone(), custom_maps)
         .context("installing our skulls")?;
+    features
+        .add(&crate::h1_particle_physics::H1ParticlePhysics)
+        .context("installing Halo 1 attachment particle physics")?;
     // Halo 1's health model on Halo 1 maps (docs/halo1/health.md): no body
     // regeneration, health packs, a health meter. Off (Halo 2's) until the
     // map's identity or the H2_HEALTH_MODEL debug override says Halo 1.

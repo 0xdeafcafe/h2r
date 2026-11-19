@@ -16,7 +16,7 @@ group effe 0x30 align 4
   0xc block locations 0x4 align 4 -- E 0x0017a380 checks a part's location against this count
     0x0 string marker -- V: a marker name of the object the effect plays on; name D
   0x14 block events 0x38 align 4 -- E 0x0017a380 and 0x00178eb0 step 0x38
-    0x0 pad 0x4
+    0x0 u32 attachment_population -- H1PC effects only, see tags::effects::h1_attachment
     0x4 f32 skip_fraction -- V range 0..1; name D
     0x8 f32[2] delay_bounds -- V seconds; name D
     0x10 f32[2] duration_bounds -- V 1/30 on most; name D

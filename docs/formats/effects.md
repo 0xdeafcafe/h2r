@@ -348,6 +348,16 @@ property side only; the meaning of kinds and ids (gravity, drag, collision,
 turbulence, ...) is not decoded. A movement-stage executor (`0x00247470`
 region) was not read far enough to name them.
 
+For converted Halo 1 object attachments, kind 1 parameters 0 and 1 are
+built from the source point-physics tangential friction and normal
+rebound (`0x002b939f`, `0x002b93f2`, `0x002b94c9`). The two constant
+curves use their auxiliary words for the source point-physics
+coefficients. Birth geometry is in the emitter speed curve’s auxiliary
+words. The `H1PC` discriminator in `effe +0x28` enables population
+thresholds in the first word of each event. See
+[object attachments](../halo1/objects.md#object-attachments) for the
+runtime consumers.
+
 ### Simulating and drawing a particle: what is and is not known
 
 Known: the particle instance record is 0x40 bytes (**E**, array

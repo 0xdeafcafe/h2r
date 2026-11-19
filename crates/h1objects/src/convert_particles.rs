@@ -307,11 +307,42 @@ impl Converter<'_> {
         };
         let mut ids = Vec::new();
         for (ty, states) in self.particle_types(tag)? {
+            if ty.initial_count == 0
+                && !ty
+                    .emitter_states
+                    .iter()
+                    .any(|s| s.particles_per_second > 0.0)
+            {
+                continue;
+            }
+            let name = format!("{}\\{}\\attached_{marker}", tag.name, ty.name);
+            let mut particles = Vec::new();
+            for (index, (particle, source)) in states.into_iter().enumerate() {
+                let movement = if let Some(physics) = source.physics.or(ty.default_physics) {
+                    let p = crate::particle_movement::Halo1Physics::read(self.h1, physics)?;
+                    let root =
+                        p.movement(ty.flags, source.collision_radius_scale * ty.particle_radius)?;
+                    Some(self.tree.push(
+                        &format!("{name}\\movement_{index}"),
+                        Converted {
+                            group: FourCC(*b"pmov"),
+                            root,
+                            raw: Vec::new(),
+                        },
+                    ))
+                } else {
+                    None
+                };
+                particles.push(particles::AttachmentParticle {
+                    tag: particle,
+                    source,
+                    movement,
+                });
+            }
             let (root, roles) = crate::provenance::capture(|| {
-                particles::attached_particle_effect(&ty, &states, marker, &role)
+                particles::attached_particle_effect(&ty, &particles, marker, &role)
             });
             if let Some(root) = root? {
-                let name = format!("{}\\{}\\attached_{marker}", tag.name, ty.name);
                 let id = self.tree.push(
                     &name,
                     Converted {

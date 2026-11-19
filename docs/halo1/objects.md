@@ -223,15 +223,38 @@ reads the emission-state rate in particles per second (`pctl` state
 (`0x00247100`). State durations, timed transitions and loop mode
 come from Halo 1. Halo 2 evaluates the transition rates over native
 event time. The existing particle-state conversion supplies the
-textures, sizes, tints and lifetimes. Each state still has its own
-particle appearance, and the source particle physics and minimum
-population timing are unconverted.
+textures, sizes, tints and lifetimes. Visual states still have separate
+native emitters.
+
+**Built** for attachment physics. The native emitter inherits the owner’s
+motion. Its birth hook (`0x00249170`) uses the source’s radial scatter or
+directional kick (`0x0010f2d0`, `0x0010f150` in Halo 1). Each particle
+state’s `pphy` supplies the mass, collision radius scale, air and liquid
+drag, buoyancy, friction and rebound. A marked native `pmov` stage keeps
+Halo 2’s collision sweep and bounce (`0x002b9060`). The movement hook
+applies Halo 1’s point forces before that sweep (`0x00080720` in Halo 1),
+choosing the coefficients from the active BSP’s liquid plane where
+present, and applies the source type’s death flags. Halo 2’s particle
+initialisation and simulation own all mutable particle state.
+
+**Built** for the minimum-population clock. Each native phase carries
+the source minimum (including the transition endpoints and the
+attachment-scale flag). After Halo 2 steps its emitters
+(`0x00179020`), the clock shortens the remaining phase time to 30%
+when the live count is below that threshold. Halo 1 does this at
+`0x0010f928` before advancing the particle-state clock. To account
+for parallel visual states, the hook counts the largest surviving
+stream per phase and includes surviving streams from earlier phases.
+The conversion continues to use separate visual layers and their
+individual lifetimes, so the count can differ from Halo 1's sequential
+particles. Particle forces use the active BSP’s physical liquid
+volumes where available.
 
 On a30 the entry pod's `burn` marker carries `burning big debris`,
 starting at zero particles and emitting 30 per second (V).
 `effects_disc::entry_lifepod_burns_at_its_halo1_marker_and_rate`
-checks the model marker, the effect loop, the two visible states and
-the emitter rate. `placed_object_builders_keep_halo1_attachments`
+checks the model marker, the effect loop, the visible states, the
+emitter rate, the minimum population and the native collision curves. `placed_object_builders_keep_halo1_attachments`
 checks the attachment paths across object kinds.
 
 ### `cont` (root `0x144`) and contrail attachments

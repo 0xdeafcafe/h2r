@@ -258,6 +258,12 @@ points! { ALL;
     /// `object_update` (`0xbc470`, its only caller): stun timers, shield
     /// recharge, and the body's regeneration (`0xd63de`..`0xd64b5`).
     OBJECT_DAMAGE_UPDATE @ 0x000d_5de0: [fn(object: stack 0) -> al ret 4]; "docs/halo1/health.md";
+    /// Update one effect's native particle systems for this event step.
+    EFFECT_STEP_EMITTERS @ 0x0017_9020: [fn(effect: stack 0, elapsed: stack 1, dt: stack 2) ret 12]; "docs/halo1/objects.md";
+    /// Dispatch one native movement operator over an emitter's particle list.
+    PARTICLE_MOVEMENT_STAGE @ 0x002b_8da0: [fn(stage: eax, head: esi, dt: stack 1) ret 12]; "docs/halo1/objects.md";
+    /// Initialise a particle's local position and velocity at birth.
+    PARTICLE_INITIALISE @ 0x0024_9170: [fn(emitter: stack 0, particle: edi) ret 8]; "docs/halo1/objects.md";
     /// Restore an object's body to full (EAX the object datum), AL 1 when
     /// it did (refused when full or depleted). Its only caller is the
     /// powerup pickup's health case (`0x151f73`).

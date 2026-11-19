@@ -43,6 +43,7 @@ pub mod convert;
 pub mod h1;
 pub mod h1hud;
 pub mod health_hud;
+mod particle_movement;
 pub mod particles;
 pub mod physics;
 pub mod provenance;
