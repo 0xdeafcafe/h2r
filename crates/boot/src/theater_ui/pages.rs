@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use runtime::memory::{GuestMemory, MemFault, Permissions};
+use engine::memory::{GuestMemory, MemFault};
+use runtime::guest::Permissions;
 
 use super::{DETAIL, Entry, FILMS, Load, Theater};
 use crate::list_class::{
