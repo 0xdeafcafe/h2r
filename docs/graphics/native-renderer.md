@@ -1173,11 +1173,37 @@ skipped light never reaches.
      one uniform group per light (`LightGpu`); `boot::native_lights_glue`
      reads the light textures' bitmaps from `matg +0x10c`
      (`light_bitmaps`, `light_textures`) and says which lights are
-     drawable (constants, no shadow). `accepts` still says no: the run's
-     pass over the world's lit parts is not wired yet. Next: the host side
-     (resolving the light's materials, the engine textures from the
-     globals' rasterizer bitmaps and the gel, the pass's draw over the
-     lit parts).
+     drawable (constants, no shadow).
+   - **Host wiring** (Code; `boot::native_lights_glue`). Texture 10, the
+     gel (`0x00019530`'s id-10 case, `engine::light_passes::gel`): with
+     the context's first word non-zero (`[0x004858c8]`, copied by
+     `0x0004a1e0`), the definition's flag `0x80000` clear and no gel
+     shader at `+0xe0`, image 0 of the bitmap at `+0x7c`; the hook keeps
+     it in `LightConstants::gel`, and a pass sampling any other texture 10
+     keeps the light on D3D. At world load, with the switch on and before
+     the world drops the materials left to D3D (`load`): each material's
+     shader and instance inputs, the vertex programs and stage images of
+     every implementation of its layer-12 and 13 passes, the light
+     textures, the gels of the map's `ligh` tags, the opaque parts of
+     native materials with lit layers, and the bounds of every other
+     surface that has (or may have) lit layers: materials left to D3D
+     and transparents. Per light (`LightsWorld::plan`): the parts whose
+     bounds meet the light's sphere (`Aabb::meets_sphere`, an
+     over-approximation: the attenuation map fades the rest), none if
+     the sphere meets one of those other surfaces; per material the
+     implementation `0x00030da0`/`0x00030e00` would take, resolved with the
+     light's inputs, `light_look` and `compile_light`, cached by inputs
+     (`LookCache`). `accepts` is `drawable` and a plan; `open` asks for one
+     external pass per run, which plans the run's lights at its issue and
+     draws them with `GpuWorld::encode_lights` (`light_gpu::LightSet`: the
+     engine textures and gels uploaded once, one `LightGpu` per
+     `light_gpu_key`, so lights whose inputs differ only in constants share
+     a pipeline with their own uniforms). With the switch off the hooks are
+     not placed, so `light_constants` never runs, and nothing loads.
+     Open: objects (a native light's object passes are skipped with the
+     rest until stage 4's objects item); a light whose colour animates
+     resolves its materials again each frame (the key holds the colours);
+     the uniform buffers are made per light per frame.
 
 4. **Objects**, through the models as stage 3's objects.
 5. **Shadows**: layer 10 into our depth texture, the term in the light's
