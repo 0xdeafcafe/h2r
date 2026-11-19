@@ -542,6 +542,18 @@ mod tests {
         ])
     }
 
+    /// Implementation 1 of a layer-12 pass with a pixel shader that fits
+    /// its stages (2D, cube, none, volume).
+    fn sphere_look() -> LightLook {
+        use shaders::psh::bits::{TEX_CUBEMAP, TEX_NONE, TEX_PROJECT2D, TEX_PROJECT3D, texture_modes};
+        let def = shaders::PixelShaderDef {
+            texture_modes: texture_modes([TEX_PROJECT2D, TEX_CUBEMAP, TEX_NONE, TEX_PROJECT3D]),
+            ..Default::default()
+        };
+        let m = material(DIFFUSE_LAYER, vec![implementation(1, TextureSource::Engine(9))]);
+        LightLook { pixel_shader: def.to_bytes(), ..light_look(&m, DIFFUSE_LAYER, 1).unwrap() }
+    }
+
     #[test]
     fn a_sphere_light_pass_binds_a_cube_and_a_volume() {
         use shaders::psh::bits::{TEX_CUBEMAP, TEX_NONE, TEX_PROJECT2D, TEX_PROJECT3D, texture_modes};
@@ -569,8 +581,7 @@ mod tests {
     #[test]
     fn lights_differing_only_in_constants_share_a_gpu_pass() {
         use crate::light_gpu::light_gpu_key;
-        let m = material(DIFFUSE_LAYER, vec![implementation(1, TextureSource::Engine(9))]);
-        let look = light_look(&m, DIFFUSE_LAYER, 1).unwrap();
+        let look = sphere_look();
         let p = compile_light(&look, &light_program()).expect("compiles");
         let mut brighter = p.clone();
         brighter.vertex.constants[18] = [2.0; 4];
@@ -643,8 +654,7 @@ mod tests {
 
     #[test]
     fn colours_go_where_the_resolve_put_them() {
-        let m = material(DIFFUSE_LAYER, vec![implementation(1, TextureSource::Engine(9))]);
-        let look = light_look(&m, DIFFUSE_LAYER, 1).unwrap();
+        let look = sphere_look();
         let mut p = compile_light(&look, &light_program()).expect("compiles");
         p.vertex.constants[20] = [0.0, 0.0, 0.0, 7.0];
         p.pixel.c0[2] = shaders::psh::argb(0x4000_0011);

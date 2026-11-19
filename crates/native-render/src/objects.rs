@@ -105,6 +105,11 @@ pub fn object_meets_sphere(mem: &dyn GuestRead, centre: [f32; 3], radius: f32) -
 
 /// Whether two spheres share a point; anything not finite meets.
 pub fn spheres_meet(a: ([f32; 3], f32), b: ([f32; 3], f32)) -> bool {
+    // Checked before any `max`, which would turn a NaN radius into 0.
+    let finite = a.0.iter().chain(&b.0).chain([&a.1, &b.1]).all(|x| x.is_finite());
+    if !finite {
+        return true;
+    }
     let d2: f32 = (0..3).map(|k| (a.0[k] - b.0[k]) * (a.0[k] - b.0[k])).sum();
     let reach = a.1.max(0.0) + b.1.max(0.0);
     !(d2.is_finite() && reach.is_finite()) || d2 <= reach * reach
