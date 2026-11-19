@@ -36,6 +36,7 @@ export function project(frame) {
     if (!Array.isArray(rows)) continue;
     const units = name === "players" || name === "actors";
     out[name] = rows.map((e, i) => {
+      if (!e || typeof e !== "object" || Array.isArray(e)) return e;
       const row = { ...e };
       if (typeof e.yaw === "number") {
         const q = ((Math.round((e.yaw / TAU) * 16384) % 16384) + 16384) % 16384;
@@ -84,6 +85,7 @@ export function restore(frame) {
   for (const [name, rows] of Object.entries(frame)) {
     if (!Array.isArray(rows)) continue;
     for (const row of rows) {
+      if (!row || typeof row !== "object" || Array.isArray(row)) continue;
       if ("$y" in row) {
         row.yaw = dyaw(row.$y);
         delete row.$y;
