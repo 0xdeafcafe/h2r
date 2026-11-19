@@ -46,6 +46,40 @@ pub struct Body {
     pub inv_mass: f64,
     pub friction: f64,
     pub restitution: f64,
+    /// The collidable's shape (`layout::ENTITY_SHAPE`); `None` without one
+    /// or where it does not read.
+    pub shape: Option<Shape>,
+}
+
+/// What kind of shape, by its type getter (`layout::SHAPE_TYPE_*_FN`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ShapeKind {
+    /// End points `a` and `b` in the body's frame, and the radius.
+    Capsule {
+        a: [f64; 3],
+        b: [f64; 3],
+        radius: f64,
+    },
+    Sphere {
+        radius: f64,
+    },
+    /// A child shape moved by a transform. The child is decoded, but not
+    /// its own children; `None` where it does not read.
+    Transform {
+        translation: [f64; 3],
+        child: u32,
+        child_shape: Option<Box<Shape>>,
+    },
+    /// Another type: only the pointer and vtable.
+    Other,
+}
+
+/// A Havok shape (docs/engine/havok-runtime.md, "Shapes").
+#[derive(Debug, Clone, PartialEq)]
+pub struct Shape {
+    pub addr: u32,
+    pub vtable: u32,
+    pub kind: ShapeKind,
 }
 
 /// One contact point of a contact constraint.
@@ -158,6 +192,46 @@ pub fn entity_object(m: &dyn GuestMemory, entity: u32) -> Result<Option<u32>, Me
     Ok((object != u32::MAX).then_some(object))
 }
 
+/// The shape at `addr`, its children followed `depth` levels.
+fn shape_at(m: &dyn GuestMemory, addr: u32, depth: u32) -> Result<Shape, MemFault> {
+    let vtable = m.u32(addr)?;
+    let kind = match m.u32(vtable.wrapping_add(layout::SHAPE_TYPE_SLOT))? {
+        layout::SHAPE_TYPE_CAPSULE_FN => ShapeKind::Capsule {
+            a: vector(m, addr + layout::CAPSULE_A)?,
+            b: vector(m, addr + layout::CAPSULE_B)?,
+            radius: f64::from(m.f32(addr + layout::SHAPE_RADIUS)?),
+        },
+        layout::SHAPE_TYPE_SPHERE_FN => ShapeKind::Sphere {
+            radius: f64::from(m.f32(addr + layout::SHAPE_RADIUS)?),
+        },
+        layout::SHAPE_TYPE_TRANSFORM_FN => {
+            let child = m.u32(addr + layout::TRANSFORM_CHILD)?;
+            let child_shape = if child != 0 && depth > 0 {
+                shape_at(m, child, depth - 1).ok().map(Box::new)
+            } else {
+                None
+            };
+            ShapeKind::Transform {
+                translation: vector(m, addr + layout::TRANSFORM_TRANSLATION)?,
+                child,
+                child_shape,
+            }
+        }
+        _ => ShapeKind::Other,
+    };
+    Ok(Shape { addr, vtable, kind })
+}
+
+/// An entity's shape, decoded; `None` without one. A shape that does not
+/// read is `None` too: it only adds detail to the body.
+pub fn entity_shape(m: &dyn GuestMemory, entity: u32) -> Result<Option<Shape>, MemFault> {
+    let addr = m.u32(entity + layout::ENTITY_SHAPE)?;
+    if addr == 0 {
+        return Ok(None);
+    }
+    Ok(shape_at(m, addr, 1).ok())
+}
+
 fn body(m: &dyn GuestMemory, entity: u32, state: IslandState) -> Result<Body, MemFault> {
     let motion = m.u32(entity + layout::RIGID_MOTION)?;
     if motion == 0 {
@@ -173,6 +247,7 @@ fn body(m: &dyn GuestMemory, entity: u32, state: IslandState) -> Result<Body, Me
         inv_mass: f64::from(m.f32(motion + layout::MOTION_INV_MASS)?),
         friction: f64::from(m.f32(entity + layout::ENTITY_FRICTION)?),
         restitution: f64::from(m.f32(entity + layout::ENTITY_RESTITUTION)?),
+        shape: entity_shape(m, entity)?,
     })
 }
 
@@ -251,6 +326,9 @@ mod tests {
     const ISLANDS: u32 = 0x10_1000;
     const COMPONENTS: u32 = 0x10_2000;
     const COMPONENT_DATA: u32 = 0x10_3000;
+    /// Fake vtables (only their type getter slot) and shapes.
+    const VTABLES: u32 = 0x14_0000;
+    const SHAPES: u32 = 0x14_1000;
     /// Island `i` at `ISLAND + i × 0x1000`, entity `i` at `ENTITY + i ×
     /// 0x1000` (its motion at `+0x400`, properties at `+0x800`).
     const ISLAND: u32 = 0x11_0000;
@@ -455,5 +533,85 @@ mod tests {
         let mut g = world();
         g.set_u32(entity(0) + 0x800 + 8, 0x2002).unwrap();
         assert_eq!(entity_object(&g, entity(0)).unwrap(), None);
+    }
+
+    /// A vtable at `VTABLES + 0x100 × n` whose type getter is `getter`.
+    fn vtable(g: &mut Guest, n: u32, getter: u32) -> u32 {
+        let v = VTABLES + 0x100 * n;
+        g.set_u32(v + layout::SHAPE_TYPE_SLOT, getter).unwrap();
+        v
+    }
+
+    #[test]
+    fn reads_a_capsule_and_a_transformed_sphere() {
+        let mut g = world();
+        let capsule = vtable(&mut g, 0, layout::SHAPE_TYPE_CAPSULE_FN);
+        let sphere = vtable(&mut g, 1, layout::SHAPE_TYPE_SPHERE_FN);
+        let transform = vtable(&mut g, 2, layout::SHAPE_TYPE_TRANSFORM_FN);
+        let other = vtable(&mut g, 3, 0x0012_3450);
+
+        // Entity 0: a capsule from (0, 0, 0.175) to (0, 0, 0.55).
+        let pill = SHAPES;
+        g.set_u32(pill, capsule).unwrap();
+        g.set_f32(pill + layout::SHAPE_RADIUS, 0.175).unwrap();
+        vec3(&mut g, pill + layout::CAPSULE_A, [0.0, 0.0, 0.175]);
+        vec3(&mut g, pill + layout::CAPSULE_B, [0.0, 0.0, 0.55]);
+        g.set_u32(entity(0) + layout::ENTITY_SHAPE, pill).unwrap();
+
+        // Entity 1: a transform lifting a sphere of radius 0.3.
+        let (t, ball) = (SHAPES + 0x100, SHAPES + 0x200);
+        g.set_u32(ball, sphere).unwrap();
+        g.set_f32(ball + layout::SHAPE_RADIUS, 0.3).unwrap();
+        g.set_u32(t, transform).unwrap();
+        g.set_u32(t + layout::TRANSFORM_CHILD, ball).unwrap();
+        vec3(&mut g, t + layout::TRANSFORM_TRANSLATION, [0.0, 0.0, 0.3]);
+        g.set_u32(entity(1) + layout::ENTITY_SHAPE, t).unwrap();
+
+        // Entity 2: a type not decoded.
+        g.set_u32(SHAPES + 0x300, other).unwrap();
+        g.set_u32(entity(2) + layout::ENTITY_SHAPE, SHAPES + 0x300)
+            .unwrap();
+
+        let b = bodies(&g).unwrap();
+        let s = b[0].shape.as_ref().unwrap();
+        assert_eq!((s.addr, s.vtable), (pill, capsule));
+        match &s.kind {
+            ShapeKind::Capsule { a, b, radius } => {
+                assert!(close(a[2], 0.175) && close(b[2], 0.55));
+                assert!(close(*radius, 0.175));
+            }
+            k => panic!("{k:?}"),
+        }
+        match &b[1].shape.as_ref().unwrap().kind {
+            ShapeKind::Transform {
+                translation,
+                child,
+                child_shape,
+            } => {
+                assert!(close(translation[2], 0.3));
+                assert_eq!(*child, ball);
+                let c = child_shape.as_ref().unwrap();
+                assert_eq!(
+                    c.kind,
+                    ShapeKind::Sphere {
+                        radius: 0.3f32.into()
+                    }
+                );
+            }
+            k => panic!("{k:?}"),
+        }
+        assert_eq!(b[2].shape.as_ref().unwrap().kind, ShapeKind::Other);
+    }
+
+    #[test]
+    fn a_shape_that_does_not_read_leaves_the_body() {
+        let mut g = world();
+        // No shape: none. An unmapped one: none, the body still reads.
+        assert_eq!(bodies(&g).unwrap()[0].shape, None);
+        g.set_u32(entity(0) + layout::ENTITY_SHAPE, 0x0300_0000)
+            .unwrap();
+        let b = bodies(&g).unwrap();
+        assert_eq!(b.len(), 3);
+        assert_eq!(b[0].shape, None);
     }
 }

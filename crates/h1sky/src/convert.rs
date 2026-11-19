@@ -146,8 +146,15 @@ pub fn sky_from_map(map: &h1map::H1Map, tag: &h1map::Tag) -> Result<FromMap> {
                 tag.group
             )));
         }
-        let (h1_model, converted) =
-            h1models::model_from_map(map, tag, &h1models::mode::ModelOptions::default())?;
+        let options = h1models::mode::ModelOptions::default();
+        let (mut h1_model, mut converted) = h1models::model_from_map(map, tag, &options)?;
+        if drop_edge_on(&mut h1_model) > 0 {
+            converted = h1models::mode::convert_model(
+                &h1_model,
+                h1models::short_name(&tag.name),
+                &options,
+            )?;
+        }
         model_scale = self::model_scale(nearest_surface(&h1_model), level_reach(map));
         shaders = h1_model.shaders.iter().map(|s| s.tag).collect();
         Some((tag.name.clone(), converted))
@@ -252,17 +259,10 @@ pub fn nearest_surface(model: &h1models::h1::Model) -> Option<f32> {
     let mut nearest: Option<f32> = None;
     for part in model.geometries.iter().flat_map(|g| &g.parts) {
         for t in h1models::h1::strip_triangles(&part.strip) {
-            let Some([a, b, c]) = t
-                .iter()
-                .map(|&i| part.vertices.get(usize::from(i)).map(|v| v.position))
-                .collect::<Option<Vec<_>>>()
-                .and_then(|v| <[[f32; 3]; 3]>::try_from(v).ok())
-            else {
+            let Some([a, b, c]) = corners(part, t) else {
                 continue;
             };
-            let n = cross(sub(b, a), sub(c, a));
-            let len = dot(n, n).sqrt();
-            if len == 0.0 || (dot(n, a) / len).abs() < EDGE_ON {
+            if edge_on(a, b, c) {
                 continue;
             }
             let d = origin_to_triangle(a, b, c);
@@ -270,6 +270,66 @@ pub fn nearest_surface(model: &h1models::h1::Model) -> Option<f32> {
         }
     }
     nearest
+}
+
+/// The positions of triangle `t`'s corners in `part`, if its indices are
+/// in range.
+fn corners(part: &h1models::h1::Part, t: [u16; 3]) -> Option<[[f32; 3]; 3]> {
+    let p = |i: u16| part.vertices.get(usize::from(i)).map(|v| v.position);
+    Some([p(t[0])?, p(t[1])?, p(t[2])?])
+}
+
+/// Whether triangle `abc` is seen edge-on from the sky's origin: its plane
+/// passes within [`EDGE_ON`] of it, or it has no area.
+fn edge_on(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> bool {
+    let n = cross(sub(b, a), sub(c, a));
+    let len = dot(n, n).sqrt();
+    len == 0.0 || (dot(n, a) / len).abs() < EDGE_ON
+}
+
+/// Drops the triangles of a Halo 1 sky model seen edge-on from its origin
+/// ([`edge_on`]), the ones [`nearest_surface`] leaves out; returns how many.
+///
+/// Halo 1 draws the sky around the eye, first, so such a triangle is a
+/// line on screen, or a sliver behind the level. Halo 2 centres the sky on
+/// the camera too but draws it after the opaque level, depth-tested
+/// ([`model_scale`]), and the eye is never exactly on the plane: the camera
+/// position the sky is moved to and the view's own origin differ in the
+/// last bits. A triangle whose plane passes a hair from the eye, and that
+/// spans the point nearest it, is then a wall at that hair's distance: it
+/// covers half the screen at a stored depth near 0, in front of all the
+/// level. With them gone every surface left is at least the nearest one,
+/// which the model scale puts past the level. On the retail disc a50's
+/// `skynight0` has 12, b30's clear afternoon 20 and Damnation's dusk 1;
+/// a10's skies have none (docs/halo1/sky.md, "Edge-on triangles").
+///
+/// A part left with no triangle is removed, unless it is its geometry's
+/// last: that one keeps an empty strip.
+pub fn drop_edge_on(model: &mut h1models::h1::Model) -> usize {
+    let mut dropped = 0;
+    for g in &mut model.geometries {
+        for part in &mut g.parts {
+            let tris = h1models::h1::strip_triangles(&part.strip);
+            let kept: Vec<[u16; 3]> = tris
+                .iter()
+                .copied()
+                .filter(|&t| corners(part, t).is_none_or(|[a, b, c]| !edge_on(a, b, c)))
+                .collect();
+            if kept.len() < tris.len() {
+                dropped += tris.len() - kept.len();
+                part.strip = h1models::h1::triangles_strip(&kept);
+            }
+        }
+        let mut k = 0;
+        while k < g.parts.len() {
+            if g.parts.len() > 1 && g.parts[k].strip.is_empty() {
+                g.parts.remove(k);
+            } else {
+                k += 1;
+            }
+        }
+    }
+    dropped
 }
 
 /// The model scale (`sky +0x14`) that keeps every surface of a sky whose

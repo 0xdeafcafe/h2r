@@ -26,7 +26,8 @@ fn the_settings_are_kept_with_every_other_setting() {
         Want {
             count: 0,
             difficulty: 1,
-            taunts: true
+            taunts: true,
+            glitches: 0,
         },
         "off by default"
     );
@@ -36,7 +37,8 @@ fn the_settings_are_kept_with_every_other_setting() {
         Want {
             count: 2,
             difficulty: 3,
-            taunts: true
+            taunts: true,
+            glitches: 0,
         }
     );
 }
@@ -63,6 +65,7 @@ fn the_driver_keeps_that_many_bots_on_the_ports_no_one_else_asked_for() {
         count: 5,
         difficulty: 2,
         taunts: true,
+        glitches: 0,
     });
     assert_eq!(d.ports(), vec![2, 3]);
     assert!(log.last().unwrap().contains("no free port"), "{log:?}");
@@ -72,12 +75,14 @@ fn the_driver_keeps_that_many_bots_on_the_ports_no_one_else_asked_for() {
         count: 1,
         difficulty: 2,
         taunts: true,
+        glitches: 0,
     });
     assert_eq!(d.ports(), vec![2], "the last added goes first");
     d.apply(Want {
         count: 0,
         difficulty: 2,
         taunts: true,
+        glitches: 0,
     });
     assert_eq!(d.ports(), Vec::<u8>::new());
     let left: Vec<BotHandle> = local.list().iter().map(|b| b.handle).collect();
@@ -93,6 +98,7 @@ fn past_the_free_ports_the_driver_adds_phantoms() {
         count: 5,
         difficulty: MIXED,
         taunts: true,
+        glitches: 0,
     });
     assert_eq!(d.ports(), vec![1, 2, 3]);
     let l = ph.list();
@@ -111,6 +117,7 @@ fn past_the_free_ports_the_driver_adds_phantoms() {
         count: 3,
         difficulty: MIXED,
         taunts: true,
+        glitches: 0,
     });
     assert!(
         ph.list().is_empty(),
@@ -126,6 +133,7 @@ fn a_difficulty_change_reaches_the_bots_already_there() {
         count: 2,
         difficulty: 0,
         taunts: true,
+        glitches: 0,
     });
     let skills = |d: &Driver| -> Vec<u8> {
         d.own
@@ -140,6 +148,7 @@ fn a_difficulty_change_reaches_the_bots_already_there() {
         count: 2,
         difficulty: MIXED,
         taunts: true,
+        glitches: 0,
     });
     assert_eq!(skills(&d), vec![1, 2], "Normal on port 1, Heroic on 2");
     assert_eq!(d.ports(), vec![1, 2], "the same bots");
@@ -155,6 +164,30 @@ fn taunts_off_reaches_the_bots_already_there() {
     s.set(TAUNTS.key, Value::Bool(false)).unwrap();
     assert!(!d.taunts.load(Ordering::Relaxed));
     assert_eq!(d.ports(), vec![1], "the same bot");
+}
+
+#[test]
+fn glitches_are_off_by_default_and_reach_the_bots_already_there() {
+    let s = store();
+    assert_eq!(Want::read(&s).glitches, 0, "off by default");
+    let local = Local::default();
+    let d = drive(&s, Driver::new(local.clone()));
+    on(&s, 1, 1);
+    assert_eq!(d.glitches.load(Ordering::Relaxed), 0);
+    // Lots, then Some: the bot it has takes each at its next frame.
+    s.set(GLITCHES.key, Value::Int(2)).unwrap();
+    assert_eq!(d.glitches.load(Ordering::Relaxed), 2);
+    assert_eq!(
+        bots::glitches::Glitches::from_index(d.glitches.load(Ordering::Relaxed)),
+        bots::glitches::Glitches::Lots
+    );
+    s.set(GLITCHES.key, Value::Int(1)).unwrap();
+    assert_eq!(Want::read(&s).glitches, 1);
+    assert_eq!(d.glitches.load(Ordering::Relaxed), 1);
+    assert_eq!(d.ports(), vec![1], "the same bot");
+    // The page has the row, last, with Off, Some and Lots.
+    assert_eq!(DEFS.last().map(|d| d.key), Some("clankers.glitches"));
+    assert_eq!(ROWS.len(), DEFS.len());
 }
 
 #[test]
@@ -272,6 +305,8 @@ struct FakeLive {
     playlist: Mutex<Option<String>>,
     asked: Mutex<Vec<(RosterRequest, Option<Done>)>>,
     players: Mutex<Vec<Vec<Xuid>>>,
+    /// The session each `players` call named.
+    player_sessions: Mutex<Vec<Option<String>>>,
     clanker: Mutex<Option<(String, live_proto::hopper::clankers::ClankerHopper)>>,
 }
 
@@ -286,7 +321,8 @@ impl Rosters for FakeLive {
         self.asked.lock().unwrap().push((request, Some(done)));
         Ok(())
     }
-    fn players(&self, bots: Vec<Xuid>) {
+    fn players(&self, session: Option<String>, bots: Vec<Xuid>) {
+        self.player_sessions.lock().unwrap().push(session);
         self.players.lock().unwrap().push(bots);
     }
     fn clanker_match(&self) -> Option<(String, live_proto::hopper::clankers::ClankerHopper)> {
@@ -468,6 +504,12 @@ fn the_hosted_session_is_told_of_the_bot_accounts_in_the_game() {
     assert_eq!(d.session_bots(), vec![x(1), x(2), x(3)]);
     d.report_players();
     assert_eq!(*live.players.lock().unwrap(), vec![vec![x(1), x(2), x(3)]]);
+    // Named for the session the roster is for, so no other session this
+    // console advertises (a Clankermatch's party lobby) is told of them.
+    assert_eq!(
+        *live.player_sessions.lock().unwrap(),
+        vec![Some(SESSION.to_owned())]
+    );
     // Once the game made them, the phantoms too.
     let own = d.own.lock().unwrap();
     let all: Vec<PhantomHandle> = ph.list().iter().map(|p| p.handle).collect();
@@ -486,6 +528,11 @@ fn the_hosted_session_is_told_of_the_bot_accounts_in_the_game() {
     d.report_players();
     assert_eq!(live.players.lock().unwrap().len(), 2);
     assert_eq!(live.players.lock().unwrap()[1], vec![]);
+    assert_eq!(
+        live.player_sessions.lock().unwrap()[1],
+        None,
+        "users only now"
+    );
 }
 
 #[test]
@@ -720,28 +767,84 @@ fn a_matchmade_session_asks_for_its_playlists_bots() {
 
 // ---- Clankermatch (docs/game/bots.md §8.4) ----
 
+/// A Clankermatch hosted by this console for `mark`, with Clankers off on
+/// the page: the playlist decides.
+fn clankermatch(
+    session: &'static str,
+    mark: live_proto::hopper::clankers::ClankerHopper,
+) -> (Arc<FakeLive>, Phantoms, Arc<Driver>) {
+    let (_s, live, ph, d) = rostered_driver(Some(session));
+    *live.playlist.lock().unwrap() = Some(mark.hopper_id.to_string());
+    *live.clanker.lock().unwrap() = Some((session.into(), mark));
+    (live, ph, d)
+}
+
+fn hopper(hopper_id: u32, players: u32, teams: u32) -> live_proto::hopper::clankers::ClankerHopper {
+    live_proto::hopper::clankers::ClankerHopper {
+        hopper_id,
+        playlist_id: hopper_id + 1,
+        players,
+        teams,
+        ranks_as: None,
+    }
+}
+
+fn local_accounts(d: &Driver) -> Vec<Option<u64>> {
+    d.seats()
+        .into_iter()
+        .filter_map(|s| match s {
+            Seat::Port(_, h) => Some(d.local.account_of(h).map(|a| a.xuid)),
+            Seat::Phantom(..) => None,
+        })
+        .collect()
+}
+
+/// The user's run on f5d3010c: the local bots showed in the party, and
+/// the matchmade start said player 2's controller was not plugged in. A
+/// Clankermatch's bots are all phantoms.
 #[test]
-fn a_clankermatch_lobby_fills_with_phantoms_one_at_a_time_on_balanced_teams() {
-    use live_proto::hopper::clankers::ClankerHopper;
+fn a_clankermatch_takes_no_controller_port() {
+    assert_eq!(MATCH_LOCAL, 0);
+}
+
+/// The fill marks its phantoms the match's alone while it runs, so they
+/// never join the party's lobby, and clears it once they are gone.
+#[test]
+fn a_clankermatchs_phantoms_are_the_matchs_alone() {
+    use std::time::{Duration, Instant};
+    const SESSION: &str = "00000000000000c5";
+    let (live, ph, d) = clankermatch(SESSION, hopper(8, 8, 0));
+    assert!(!ph.match_only());
+    let t0 = Instant::now();
+    d.tick_match(t0);
+    assert!(ph.match_only(), "set before the first is seated");
+    live.answer(0, Ok(roster(SESSION, 7, 0.5)));
+    d.tick_match(t0 + Duration::from_secs(60));
+    assert_eq!(ph.list().len(), 7);
+    assert!(ph.match_only());
+    *live.clanker.lock().unwrap() = None;
+    *live.session.lock().unwrap() = None;
+    d.tick_match(t0 + Duration::from_secs(61));
+    d.tick_match(t0 + Duration::from_secs(61) + FILL_GONE + Duration::from_secs(2));
+    assert!(ph.list().is_empty());
+    assert!(!ph.match_only(), "cleared once they are gone");
+}
+
+#[test]
+fn a_clankermatch_lobby_fills_local_bots_first_then_phantoms_on_balanced_teams() {
     use std::time::{Duration, Instant};
     const SESSION: &str = "00000000000000c1";
-    let (_s, live, ph, d) = rostered_driver(Some(SESSION));
-    // The page's Clankers stay off: the playlist decides. A 4 v 4 clanker
-    // hopper hosted by this console (descriptor 9).
-    *live.playlist.lock().unwrap() = Some("9".into());
-    *live.clanker.lock().unwrap() = Some((
-        SESSION.into(),
-        ClankerHopper {
-            hopper_id: 9,
-            playlist_id: 10,
-            players: 8,
-            teams: 2,
-            ranks_as: None,
-        },
-    ));
+    // A 4 v 4 clanker hopper hosted by this console (descriptor 9).
+    let (live, ph, d) = clankermatch(SESSION, hopper(9, 8, 2));
     let t0 = Instant::now();
     let log = d.tick_match(t0);
     assert!(log.iter().any(|l| l.contains("7 bots join")), "{log:?}");
+    // The run says which bots sit in the lobby and which join the game.
+    assert!(
+        log.iter()
+            .any(|l| l.contains("0 local bots join the lobby") && l.contains("7 phantoms join")),
+        "{log:?}"
+    );
     assert!(d.on(), "the nav mesh is wanted");
     // One roster for the whole lobby, for the playlist, its skill the
     // server's (from the human's level), with teams.
@@ -756,26 +859,34 @@ fn a_clankermatch_lobby_fills_with_phantoms_one_at_a_time_on_balanced_teams() {
             carry_from: None,
         }]
     );
-    // Nobody seated before the roster: no host-made bots to replace.
-    assert!(ph.list().is_empty());
+    // Nobody seated before the roster: no local bot on Live as the
+    // human's guest, no host-made bot for it to replace.
+    d.tick_match(t0 + Duration::from_secs(60));
+    assert!(d.seats().is_empty() && ph.list().is_empty());
+    let (live, ph, d) = clankermatch(SESSION, hopper(9, 8, 2));
+    d.tick_match(t0);
     live.answer(0, Ok(roster(SESSION, 7, 0.5)));
-    assert!(ph.list().is_empty(), "the first bot's time has not come");
+    assert!(d.seats().is_empty(), "the first bot's time has not come");
     let schedule =
         crate::clankermatch::schedule(7, u64::from_str_radix(SESSION, 16).unwrap() ^ 0xc1a4);
     for (i, at) in schedule.iter().enumerate() {
         if i > 0 {
             d.tick_match(t0 + *at - Duration::from_millis(1));
-            assert_eq!(ph.list().len(), i, "bot {i} not before its time");
+            assert_eq!(d.seats().len(), i, "bot {i} not before its time");
         }
         d.tick_match(t0 + *at);
-        assert_eq!(ph.list().len(), i + 1, "bot {i} at {at:?}");
+        assert_eq!(d.seats().len(), i + 1, "bot {i} at {at:?}");
+        // Every one a phantom: no controller port.
+        assert!(d.ports().is_empty(), "bot {i}");
+        assert_eq!(ph.list().len(), i + 1, "bot {i}");
     }
-    assert!(d.ports().is_empty(), "phantoms only: no local bots");
     assert_eq!(live.requests().len(), 1, "asked once, not per bot");
-    // The roster's bot 2 asked for team 1; the rest balance around it and
-    // the human (team 0): 3 bots on red, 4 on blue, 4 v 4.
+    // The phantoms are the roster's seven, in order.
+    let x = |i: u64| SERVER_XUID_MARK | (0x100 * 7 + i);
+    let phantoms: Vec<u64> = ph.list().iter().map(|p| p.identity.xuid).collect();
+    assert_eq!(phantoms, (1..=7).map(x).collect::<Vec<_>>());
+    // Around the human on red (0): three join it, four go blue, 4 v 4.
     let teams: Vec<Option<u8>> = ph.list().iter().map(|p| p.team).collect();
-    assert_eq!(teams[1], Some(1));
     assert_eq!(
         teams.iter().filter(|t| **t == Some(0)).count(),
         3,
@@ -792,30 +903,20 @@ fn a_clankermatch_lobby_fills_with_phantoms_one_at_a_time_on_balanced_teams() {
     *live.session.lock().unwrap() = None;
     let end = t0 + *schedule.last().unwrap();
     d.tick_match(end + Duration::from_secs(1));
-    assert_eq!(ph.list().len(), 7, "a handoff's gap keeps them");
+    assert_eq!(d.seats().len(), 7, "a handoff's gap keeps them");
     // Left for good: they go.
     d.tick_match(end + FILL_GONE + Duration::from_secs(2));
     assert!(ph.list().is_empty());
+    assert!(d.ports().is_empty() && d.seats().is_empty());
+    assert!(d.local.list().is_empty(), "nothing on the local books");
     assert!(!d.on());
 }
 
 #[test]
 fn a_clankermatch_balances_around_the_hosts_real_team() {
-    use live_proto::hopper::clankers::ClankerHopper;
     use std::time::Instant;
     const SESSION: &str = "00000000000000c3";
-    let (_s, live, ph, d) = rostered_driver(Some(SESSION));
-    *live.playlist.lock().unwrap() = Some("9".into());
-    *live.clanker.lock().unwrap() = Some((
-        SESSION.into(),
-        ClankerHopper {
-            hopper_id: 9,
-            playlist_id: 10,
-            players: 8,
-            teams: 2,
-            ranks_as: None,
-        },
-    ));
+    let (live, ph, d) = clankermatch(SESSION, hopper(9, 8, 2));
     // The host's player is on blue (team 1), as the game says.
     d.set_host_team(Some(1));
     let t0 = Instant::now();
@@ -829,51 +930,145 @@ fn a_clankermatch_balances_around_the_hosts_real_team() {
     let schedule =
         crate::clankermatch::schedule(7, u64::from_str_radix(SESSION, 16).unwrap() ^ 0xc1a4);
     d.tick_match(t0 + schedule[0]);
-    assert_eq!(ph.list().len(), 1);
+    assert_eq!(d.seats().len(), 1);
     d.set_host_team(Some(0));
     d.tick_match(t0 + *schedule.last().unwrap());
-    assert_eq!(ph.list().len(), 7);
-    // The roster's bot 2 asked for blue: with the human there too, the
-    // rest balance to 4 v 4: four bots on red, three on blue.
+    assert_eq!(d.seats().len(), 7);
+    // The human on blue: three phantoms with it, four on red, 4 v 4.
     let teams: Vec<Option<u8>> = ph.list().iter().map(|p| p.team).collect();
-    assert_eq!(teams[1], Some(1));
-    assert_eq!(
-        teams.iter().filter(|t| **t == Some(0)).count(),
-        4,
-        "{teams:?}"
-    );
     assert_eq!(
         teams.iter().filter(|t| **t == Some(1)).count(),
         3,
         "{teams:?}"
     );
+    assert_eq!(
+        teams.iter().filter(|t| **t == Some(0)).count(),
+        4,
+        "{teams:?}"
+    );
 }
 
 #[test]
-fn a_clankermatch_refused_a_roster_seats_host_made_phantoms() {
-    use live_proto::hopper::clankers::ClankerHopper;
+fn a_clankermatch_of_two_v_two_is_three_phantoms() {
+    use std::time::{Duration, Instant};
+    const SESSION: &str = "00000000000000c4";
+    let (live, ph, d) = clankermatch(SESSION, hopper(10, 4, 2));
+    let t0 = Instant::now();
+    d.tick_match(t0);
+    live.answer(0, Ok(roster(SESSION, 3, 0.5)));
+    d.tick_match(t0 + Duration::from_secs(60));
+    // No port: one phantom with the human (red, 0), two on blue.
+    assert!(d.ports().is_empty());
+    let teams: Vec<Option<u8>> = ph.list().iter().map(|p| p.team).collect();
+    assert_eq!(
+        teams.iter().filter(|t| **t == Some(0)).count(),
+        1,
+        "{teams:?}"
+    );
+    assert_eq!(
+        teams.iter().filter(|t| **t == Some(1)).count(),
+        2,
+        "{teams:?}"
+    );
+}
+
+#[test]
+fn a_clankermatch_refused_a_roster_seats_host_made_bots() {
     use std::time::{Duration, Instant};
     const SESSION: &str = "00000000000000c2";
-    let (_s, live, ph, d) = rostered_driver(Some(SESSION));
-    *live.clanker.lock().unwrap() = Some((
-        SESSION.into(),
-        ClankerHopper {
-            hopper_id: 8,
-            playlist_id: 9,
-            players: 4,
-            teams: 0,
-            ranks_as: None,
-        },
-    ));
+    let (live, ph, d) = clankermatch(SESSION, hopper(8, 8, 0));
     let t0 = Instant::now();
     d.tick_match(t0);
     d.tick_match(t0 + Duration::from_secs(60));
-    assert!(ph.list().is_empty(), "waiting for the roster");
+    assert!(d.seats().is_empty(), "waiting for the roster");
     live.answer(0, Err("refused".into()));
+    // Free for all of 8: seven host-made phantoms, no port.
+    assert!(d.ports().is_empty());
     let l = ph.list();
-    assert_eq!(l.len(), 3, "free for all of 4: three bots");
+    assert_eq!(l.len(), 7);
     assert!(
         l.iter()
             .all(|p| live_proto::bots::is_local_xuid(Xuid(p.identity.xuid)) && p.team.is_none())
     );
+    let names: Vec<&str> = l.iter().map(|p| p.identity.gamertag.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "Clanker 1",
+            "Clanker 2",
+            "Clanker 3",
+            "Clanker 4",
+            "Clanker 5",
+            "Clanker 6",
+            "Clanker 7"
+        ]
+    );
+}
+
+/// A on a row opens the value picker on it (the On/Off row too, as
+/// retail's two-value settings do), and the Game Setup row has its own
+/// description in the page's family.
+#[test]
+fn a_opens_the_value_picker_and_the_row_has_a_description() {
+    use crate::ui::Chosen;
+    use crate::ui_kit::picker;
+    let s = store();
+    let p = page(Arc::clone(&s));
+    assert_eq!(p.press(2), Chosen::Open(picker::NAME));
+    let pick = picker::current().expect("a pick");
+    assert_eq!(pick.title, "DIFFICULTY");
+    assert_eq!(pick.values.len(), 5, "the four skills and Mixed");
+    assert_eq!(
+        pick.opener,
+        crate::ui_kit::view::Opener::GAME_SETUP_CLANKERS
+    );
+    assert_eq!(p.press(0), Chosen::Open(picker::NAME));
+    assert_eq!(picker::current().unwrap().values, ["Off", "On"]);
+    assert_eq!(p.press(7), Chosen::Open(picker::NAME));
+    let pick = picker::current().expect("a pick");
+    assert_eq!(pick.title, "GLITCHES");
+    assert_eq!(pick.values, ["Off", "Some", "Lots"]);
+    assert_eq!(
+        s.get(ENABLED.key),
+        Some(Value::Bool(false)),
+        "opening changes nothing"
+    );
+    let help = p.row_help_id().expect("a description");
+    assert!(IDS.owns(help));
+    assert_ne!(help, p.row_label_id());
+    assert!(p.slots() <= IDS.len);
+    assert!(ROW_HELP.len() < 120, "a few lines under Game Setup's list");
+}
+
+/// The page has Quick Options' header: its line in the help line whatever
+/// the focus (not the focused row's description, which the value picker
+/// shows), a Spartan in the game type picture, both in the spec the
+/// preview draws.
+#[test]
+fn the_page_has_quick_options_header() {
+    use crate::list_class::Rows;
+    use crate::ui_kit::dialog::{QUICK_HELP, QUICK_PICTURE, icon, quick_icon};
+    use crate::ui_kit::spec::Describe;
+    let p = page(store());
+    let header = Rows::description(&p, 0).expect("the help line");
+    assert_eq!(
+        Rows::description(&p, 5),
+        Some(header),
+        "the same whatever the focus"
+    );
+    assert!(IDS.owns(header));
+    assert_ne!(Some(header), p.row_help_id());
+    assert_eq!(Rows::description(&p, 99), None, "no such row");
+    assert_eq!(Rows::picture_image(&p), Some(icon::SPARTAN));
+    assert!(p.slots() <= IDS.len);
+    let s = p.spec();
+    assert_eq!(s.help.as_deref(), Some(HEADER_HELP));
+    assert_eq!(s.description_text().as_deref(), Some(HEADER_HELP));
+    assert_eq!(s.art, [quick_icon(icon::SPARTAN)]);
+    assert_eq!(s.art[0].at, QUICK_PICTURE.at);
+    // The rows keep their own descriptions, for the picker.
+    assert!(s.rows.iter().all(|r| r.description.is_some()));
+    // One line on the kit's own measure in Quick Options' help line.
+    let room = i32::from(QUICK_HELP.right) - i32::from(QUICK_HELP.left);
+    assert!(crate::ui_kit::spec::fallback::width(HEADER_HELP) <= room);
 }

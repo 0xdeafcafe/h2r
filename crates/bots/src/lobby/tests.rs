@@ -301,3 +301,135 @@ fn a_on_the_start_game_row_from_a_controller_with_a_profile_is_a_start_press() {
         "no such port"
     );
 }
+
+/// The target session a Clankermatch's empty search hosts.
+const T: u32 = 0x0072_0000;
+
+/// The user's Clankermatch run (cm-run2): the search hosted, the party's
+/// squad session in state 5, life cycle 6 (`session type 6`), screen
+/// `0xd2`; the target session live with this console its host.
+fn matchmaking_host_lobby() -> FakeGuest {
+    let mut g = lobby(&[4]);
+    g.put_u32(SESSION_TYPE, 6)
+        .put_u32(TARGET_SESSION, T)
+        .map(T, 0x7500)
+        .put_u32(T + STATE, 5)
+        .put_u32(T + HOST_PEER, 0)
+        .put_u32(T + PEER, 0);
+    g
+}
+
+#[test]
+fn the_game_session_is_the_target_session_in_matchmaking() {
+    // 0x65340's table (0x65520): types 1 to 4 the squad session, 6 to 9
+    // the target session.
+    for ty in [0, 1, 2, 3, 4, 5] {
+        assert_eq!(game_session_at(ty), SESSION, "type {ty}");
+    }
+    for ty in 6..=9 {
+        assert_eq!(game_session_at(ty), TARGET_SESSION, "type {ty}");
+    }
+    let g = matchmaking_host_lobby();
+    assert_eq!(game_session(&g), Ok(T));
+    assert_eq!(game_session(&lobby(&[4])), Ok(S));
+    // Networking off: the life cycle reads as none, the squad session.
+    let mut g = matchmaking_host_lobby();
+    g.put_u8(NETWORKING, 0);
+    assert_eq!(game_session(&g), Ok(S));
+}
+
+#[test]
+fn a_matchmaking_lobby_this_console_hosts_takes_bots() {
+    let g = matchmaking_host_lobby();
+    let f = facts(&g).unwrap();
+    assert!(!pregame(&f), "not a pregame lobby: type 6");
+    assert!(matchmaking_host(&f));
+    assert!(joinable(&f));
+    assert!(in_joinable(&g));
+    assert!(!in_pregame(&g));
+    assert_eq!(
+        pregame_line(&f),
+        "bots: lobby facts: lobby true, networking true, session type 6, session state 5, \
+         match session state 5 (this console hosts it): a matchmaking lobby this console hosts"
+    );
+    // Type 7 too (0x19a279 gives 6 and 7 both 2), and every lobby state.
+    let mut g = matchmaking_host_lobby();
+    g.put_u32(SESSION_TYPE, 7);
+    assert!(in_joinable(&g));
+    for state in 3..=8 {
+        let mut g = matchmaking_host_lobby();
+        g.put_u32(T + STATE, state);
+        assert!(in_joinable(&g), "state {state}");
+    }
+    // A custom lobby is still one.
+    assert!(in_joinable(&lobby(&[4])));
+}
+
+#[test]
+fn a_matchmaking_lobby_another_console_hosts_or_its_game_takes_none() {
+    // Joined someone's match: their lobby, not ours to fill.
+    let mut g = matchmaking_host_lobby();
+    g.put_u32(T + HOST_PEER, 1);
+    let f = facts(&g).unwrap();
+    assert!(!joinable(&f));
+    assert_eq!(
+        pregame_line(&f),
+        "bots: lobby facts: lobby true, networking true, session type 6, session state 5, \
+         match session state 5 (another console hosts it): no pregame lobby"
+    );
+    // No target session yet (the search runs).
+    let mut g = matchmaking_host_lobby();
+    g.put_u32(TARGET_SESSION, 0);
+    let f = facts(&g).unwrap();
+    assert!(!joinable(&f));
+    assert!(pregame_line(&f).contains("match session state none"));
+    // The target session out of the lobby states.
+    for state in [0, 2, 9] {
+        let mut g = matchmaking_host_lobby();
+        g.put_u32(T + STATE, state);
+        assert!(!in_joinable(&g), "state {state}");
+    }
+    // The matchmade game (8) and after it (9): not a lobby.
+    for ty in [8, 9] {
+        let mut g = matchmaking_host_lobby();
+        g.put_u32(SESSION_TYPE, ty);
+        assert!(!in_joinable(&g), "type {ty}");
+    }
+    let mut g = matchmaking_host_lobby();
+    g.put_u8(LOBBY_ON, 0);
+    assert!(!in_joinable(&g), "no lobby");
+}
+
+#[test]
+fn a_matchmaking_lobby_keeps_the_start_states_reading_of_the_squad() {
+    // 0x19a2ce reads the squad session (0x59670) and gives 1 for any type
+    // but 1 and 2: the matchmaking lobby has no Start.
+    let f = facts(&matchmaking_host_lobby()).unwrap();
+    assert_eq!(f.state, Some(5));
+    assert_eq!(expected(&f), 1);
+}
+
+#[test]
+fn the_lobbys_players_are_the_game_sessions() {
+    let mut g = matchmaking_host_lobby();
+    g.put_u32(T + PLAYER_COUNT, 4).put_u32(S + PLAYER_COUNT, 1);
+    let f = facts(&g).unwrap();
+    assert_eq!(
+        lobby_players(&g, &f),
+        Ok(Some(4)),
+        "the target's, not the party's"
+    );
+    assert_eq!(
+        players_line(4),
+        "bots: lobby players: 4 in the game's session"
+    );
+    let mut g = lobby(&[4]);
+    g.put_u32(S + PLAYER_COUNT, 2);
+    let f = facts(&g).unwrap();
+    assert_eq!(lobby_players(&g, &f), Ok(Some(2)));
+    // Out of a joinable lobby: none.
+    let mut g = matchmaking_host_lobby();
+    g.put_u32(T + HOST_PEER, 1);
+    let f = facts(&g).unwrap();
+    assert_eq!(lobby_players(&g, &f), Ok(None));
+}

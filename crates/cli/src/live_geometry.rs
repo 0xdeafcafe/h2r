@@ -155,6 +155,8 @@ pub enum Surface {
     /// decals and overlays, glows, light volumes, waterfalls
     /// ([`crate::live_layers`]).
     Layer(Layer),
+    /// Additive plasma with a textured pass and a glass class for static views.
+    Plasma,
     /// Nothing; the triangle's facing decides.
     Unknown,
 }
@@ -239,9 +241,13 @@ pub fn surface_from_name(name: &str) -> Surface {
 /// - other cloud templates (`..._clouds`: waterfalls, spray, smoke cards)
 ///   are alpha-blended `effect` layers;
 /// - templates in a `water` folder or named for water or waves are water;
+/// - the plasma template uses its own additive pass;
 /// - other templates in a `transparent` folder blend over what is behind
 ///   them: glass, unless the shader's name says otherwise.
 pub fn surface_from_template(template: &str) -> Option<Surface> {
+    if crate::live_plasma::is_template(template) {
+        return Some(Surface::Plasma);
+    }
     let mut parts = template.rsplit(['\\', '/']);
     let own = parts.next().unwrap_or(template).to_ascii_lowercase();
     let folder = parts.next().unwrap_or_default().to_ascii_lowercase();
@@ -273,7 +279,7 @@ pub fn surface_of(name: Option<&str>, template: Option<&str>) -> Surface {
     let by_name = name.map_or(Surface::Unknown, surface_from_name);
     match (by_template, by_name) {
         (Some(Surface::Sky), _) | (_, Surface::Sky) => Surface::Sky,
-        (Some(t @ (Surface::Layer(_) | Surface::Class(Class::Water))), _) => t,
+        (Some(t @ (Surface::Layer(_) | Surface::Plasma | Surface::Class(Class::Water))), _) => t,
         (_, n @ Surface::Class(_)) => n,
         (Some(t), _) => t,
         (None, n) => n,
@@ -285,6 +291,7 @@ pub fn surface_of(name: Option<&str>, template: Option<&str>) -> Surface {
 /// overhangs and ceilings are `default`.
 pub fn classify(surface: Surface, face_normal: [f32; 3]) -> Class {
     match surface {
+        Surface::Plasma => return Class::Glass,
         Surface::Class(c @ (Class::Water | Class::Foliage | Class::Glass)) => return c,
         _ if face_normal[2] >= 0.6 => return Class::Floor,
         Surface::Class(c) => return c,
@@ -529,7 +536,8 @@ const WELD: f32 = 1024.0;
 /// share a position and normal (and texture coordinate, 1/4096, when
 /// textured) within a class and look. A vertex normal that is missing or
 /// points against its triangle is replaced by the face normal. Glass and
-/// water keep their class's look: they are never textured.
+/// water keep their class colours. Plasma shares the static glass class
+/// and carries a look for the web viewer.
 pub fn build_mesh(tris: &[Tri]) -> LevelMesh {
     /// Grid position, normal and texture coordinate.
     type WeldKey = ([i32; 3], [i8; 3], [i32; 2]);
@@ -551,7 +559,7 @@ pub fn build_mesh(tris: &[Tri]) -> LevelMesh {
         }
         let face = face.map(|v| v / len);
         let class = classify(t.surface, face);
-        let look = t.look.filter(|_| !class.transparent());
+        let look = t.look.filter(|_| !class.transparent() || t.surface == Surface::Plasma);
         let uv_ok = t.uv.iter().flatten().all(|v| v.is_finite());
         let b = builders.entry((class, look)).or_insert_with(|| Builder {
             prim: Primitive {
@@ -907,12 +915,12 @@ impl<'a> Pictures<'a> {
     }
 
     /// A picture's file, relative to the glb: `tex/<bitmap>.webp` (eight
-    /// hex digits; `<bitmap>m.webp` for a cut-out picture).
+    /// hex digits, with an `m` suffix for cutouts and `p` for plasma).
     pub fn file(key: (u32, crate::live_looks::Cutout), e: &crate::live_looks::Encoded) -> String {
-        let cut = if key.1 == crate::live_looks::Cutout::Mask {
-            "m"
-        } else {
-            ""
+        let cut = match key.1 {
+            crate::live_looks::Cutout::Opaque => "",
+            crate::live_looks::Cutout::Mask => "m",
+            crate::live_looks::Cutout::Plasma => "p",
         };
         let ext = match e.mime {
             "image/webp" => "webp",
@@ -1047,13 +1055,8 @@ pub fn write_nodes_with(
                 "mode": 4
             })
         }
-        /// The material of look `k`, written the first time.
-        fn look_material(&mut self, k: u32) -> Option<usize> {
-            if let Some(&m) = self.look_material_of.get(&k) {
-                return Some(m);
-            }
-            let look = self.pictures.looks.get(k as usize)?;
-            let key = (look.texture.bitmap, look.cutout);
+        /// A picture shared by every material that samples it.
+        fn picture(&mut self, key: (u32, crate::live_looks::Cutout)) -> Option<usize> {
             let texture = match self.picture_of.get(&key) {
                 Some(&t) => t,
                 None => {
@@ -1080,6 +1083,17 @@ pub fn write_nodes_with(
                     self.textures.len() - 1
                 }
             };
+            Some(texture)
+        }
+
+        /// The material of look `k`, written the first time.
+        fn look_material(&mut self, k: u32) -> Option<usize> {
+            if let Some(&m) = self.look_material_of.get(&k) {
+                return Some(m);
+            }
+            let pictures = self.pictures;
+            let look = pictures.looks.get(k as usize)?;
+            let texture = self.picture((look.texture.bitmap, look.cutout))?;
             let mut base = json!({"index": texture});
             if look.scale != [1.0, 1.0] {
                 base["extensions"] = json!({"KHR_texture_transform": {"scale": look.scale}});
@@ -1098,6 +1112,22 @@ pub fn write_nodes_with(
                 m["alphaMode"] = json!("MASK");
                 m["alphaCutoff"] = json!(0.5);
                 m["doubleSided"] = json!(true);
+            }
+            if let Some((plasma, [a, b])) = &look.plasma {
+                let noise = [
+                    self.picture((a.bitmap, look.cutout))?,
+                    self.picture((b.bitmap, look.cutout))?,
+                ];
+                m["alphaMode"] = json!("BLEND");
+                m["extensions"] = json!({"KHR_materials_unlit": {}});
+                m["pbrMetallicRoughness"]["baseColorFactor"] = json!([
+                    srgb_to_linear(plasma.colors[0][0]),
+                    srgb_to_linear(plasma.colors[0][1]),
+                    srgb_to_linear(plasma.colors[0][2]),
+                    1.0
+                ]);
+                m["extras"] = json!({"plasma": plasma, "noise": noise});
+                self.unlit = true;
             }
             self.materials.push(m);
             self.look_material_of.insert(k, self.materials.len() - 1);
@@ -1183,7 +1213,9 @@ pub fn write_nodes_with(
                 }));
                 out["attributes"]["TEXCOORD_0"] = json!(base + 3);
                 out["material"] = json!(m);
-                out["extras"] = json!({"class": class.name(), "flat": flat});
+                if self.materials[m]["extras"]["plasma"].is_null() {
+                    out["extras"] = json!({"class": class.name(), "flat": flat});
+                }
             }
             out
         }
@@ -1394,9 +1426,29 @@ pub struct MapEntry {
     /// Halo 2's own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub game: Option<String>,
-    /// Its display name, when the catalog does not have it (Halo 1 maps).
+    /// Its display name, when the catalog does not have it (Halo 1 maps,
+    /// mods: the package's name).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// An installed mod (`crate::live_mods`): its `MapId` (as games report
+    /// it), the map it is played as, and the SHA-256 of its patched map.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub map_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+}
+
+impl MapEntry {
+    /// The entry's mod fields from its package.
+    pub fn with_mod(mut self, info: &crate::live_mods::ModInfo) -> MapEntry {
+        self.name = Some(info.name.clone()).filter(|n| !n.is_empty());
+        self.map_id = Some(info.map_id.to_string());
+        self.base = Some(info.base.clone());
+        self.sha256 = Some(info.sha256.to_string());
+        self
+    }
 }
 
 /// Counts and timings for one map.
@@ -1433,6 +1485,10 @@ pub struct MapStats {
     pub objects: usize,
     pub object_models: usize,
     pub object_model_triangles: usize,
+    /// Placements a script creates, and effects a script plays
+    /// (`crate::live_scripted`).
+    pub scripted_objects: usize,
+    pub spawners: usize,
     pub classes: BTreeMap<&'static str, usize>,
     pub shaders_named: usize,
     pub materials: usize,
@@ -1752,7 +1808,8 @@ pub fn model_triangles(
                 .get(usize::from(part.material))
                 .copied()
                 .unwrap_or(Surface::Class(Class::Metal));
-            // Machines are drawn solid only: their decals and glows are left out.
+            // Decals and ordinary effect layers are separate from the model.
+            // Plasma travels with its placement like the rest of its mesh.
             if !surface.is_level() {
                 continue;
             }
@@ -1992,6 +2049,9 @@ pub struct Level {
     /// models (model space) and placements, for the `scenario` node.
     pub object_models: Vec<MachineModel>,
     pub objects: Vec<crate::live_scenario::PlacedObject>,
+    /// Effects the scenario's scripts play, where and how often
+    /// (`asset.extras.spawners`; `crate::live_scripted`).
+    pub spawners: Vec<crate::live_scripted::EffectSpawner>,
 }
 
 impl Level {
@@ -2051,6 +2111,7 @@ impl Level {
             looks: Looks::default(),
             object_models: Vec::new(),
             objects: Vec::new(),
+            spawners: Vec::new(),
         })
     }
 
@@ -2253,6 +2314,12 @@ impl Level {
             more.insert(
                 "weather".into(),
                 serde_json::to_value(&self.weather).expect("plain data"),
+            );
+        }
+        if !self.spawners.is_empty() {
+            more.insert(
+                "spawners".into(),
+                serde_json::to_value(&self.spawners).expect("plain data"),
             );
         }
         let glb = write_nodes_with(
@@ -2479,17 +2546,21 @@ pub fn gameplay_from(switches: &[(i16, i16)], scripted: &BTreeSet<usize>) -> BTr
     out
 }
 
-/// [`gameplay_from`] for a map: its switch volumes and its scripts,
-/// decompiled with the disc's own executable.
-fn gameplay_bsps(disc: &Disc, map: &mut MapReader) -> Result<BTreeSet<usize>> {
-    let switches = bsp_switches(map)?;
+/// A map's scripts, decompiled with the disc's own executable.
+fn script_source(disc: &Disc, map: &mut MapReader) -> Result<String> {
     let bytes = disc.read("/default.xbe")?;
     let xbe = xbe::Xbe::parse(&bytes)?;
     let mut catalog = hs::Catalog::from_xbe(&xbe)?;
     let scripts = hs::Scenario::read(map)?;
     catalog.observe(&scripts)?;
-    let source = scripts.decompile(&catalog, None)?.source;
-    Ok(gameplay_from(&switches, &scripted_switches(&source)))
+    Ok(scripts.decompile(&catalog, None)?.source)
+}
+
+/// [`gameplay_from`] for a map: its switch volumes and its scripts' source.
+fn gameplay_bsps(map: &mut MapReader, source: &Result<String>) -> Result<BTreeSet<usize>> {
+    let switches = bsp_switches(map)?;
+    let source = source.as_ref().map_err(|e| anyhow!("{e:#}"))?;
+    Ok(gameplay_from(&switches, &scripted_switches(source)))
 }
 
 /// Opens one map and builds its level, one mesh per scenario BSP. A BSP
@@ -2515,7 +2586,7 @@ fn load_level(disc: &Disc, m: &MapFile, kind: MapKind, stats: &mut MapStats) -> 
             stats.materials += surfaces.len();
             let bsp = StructureRender::read(&mut map, bsp_id)
                 .with_context(|| format!("reading BSP {bsp_id}"))?;
-            // Solid surfaces' pictures (glass and water keep their colour).
+            // Pictures for solid surfaces and the plasma pass.
             let material_looks: Vec<Option<u32>> = material_shader_ids(&mut map, bsp_id)
                 .unwrap_or_default()
                 .into_iter()
@@ -2610,8 +2681,11 @@ fn load_level(disc: &Disc, m: &MapFile, kind: MapKind, stats: &mut MapStats) -> 
         }
     }
     stats.backdrop_triangles = level.backdrops.values().map(LevelMesh::triangles).sum();
+    // The scripts, read once: for the BSPs gameplay reaches and for what
+    // they spawn.
+    let source = script_source(disc, &mut map);
     if level.bsp_count > 1 {
-        match gameplay_bsps(disc, &mut map) {
+        match gameplay_bsps(&mut map, &source) {
             Ok(g) => {
                 let cinematic = (0..level.bsp_count).filter(|i| !g.contains(i)).collect();
                 level = level.with_cinematic(cinematic);
@@ -2653,6 +2727,26 @@ fn load_level(disc: &Disc, m: &MapFile, kind: MapKind, stats: &mut MapStats) -> 
             skipped.insert(format!("map/{}/machines", m.name()), format!("{e:#}"));
         }
     }
+    let scripted = match &source {
+        Ok(src) => crate::live_scenario::read_scripted(&mut map, src).unwrap_or_else(|e| {
+            skipped.insert(format!("map/{}/scripts", m.name()), format!("{e:#}"));
+            Default::default()
+        }),
+        Err(e) => {
+            skipped.insert(format!("map/{}/scripts", m.name()), format!("{e:#}"));
+            Default::default()
+        }
+    };
+    if !scripted.unresolved.is_empty() {
+        let names: Vec<&str> = scripted.unresolved.iter().map(String::as_str).collect();
+        skipped.insert(
+            format!("map/{}/scripts", m.name()),
+            format!("names the scenario does not have: {}", names.join(", ")),
+        );
+    }
+    stats.scripted_objects = scripted.placements.len();
+    stats.spawners = scripted.effects.len();
+    level.spawners = scripted.effects.clone();
     match crate::live_scenario::load_objects(
         &mut map,
         &mut files,
@@ -2660,6 +2754,7 @@ fn load_level(disc: &Disc, m: &MapFile, kind: MapKind, stats: &mut MapStats) -> 
         level.bsp_count,
         &mut skipped,
         &mut level.looks,
+        &scripted,
     ) {
         Ok((models, placed)) => {
             stats.objects = placed.len();
@@ -2671,6 +2766,11 @@ fn load_level(disc: &Disc, m: &MapFile, kind: MapKind, stats: &mut MapStats) -> 
         Err(e) => {
             skipped.insert(format!("map/{}/objects", m.name()), format!("{e:#}"));
         }
+    }
+    // Shaders the textured looks could not draw (a mod's own templates
+    // among them): drawn in their surface class's colour, and named here.
+    if let Some(note) = crate::live_looks::fallback_note(&level.looks.fallbacks) {
+        skipped.insert(format!("map/{}/shaders", m.name()), note);
     }
     level.skipped.extend(skipped);
     stats.kind = Some(kind);
@@ -2722,11 +2822,12 @@ pub fn extract(disc: &Disc, out: &Path) -> Extracted {
                 .map(|m| (m, MapKind::Campaign)),
         )
         .chain(disc.halo1_maps().filter_map(|m| Some((m, halo1_kind(m)?))))
+        .chain(disc.mod_maps().filter_map(|m| Some((m, halo1_kind(m)?))))
         .collect();
     extract_maps(disc, &maps, out)
 }
 
-/// A converted Halo 1 map's kind, by its cache type.
+/// A converted Halo 1 map's or a mod's kind, by its cache type.
 fn halo1_kind(m: &MapFile) -> Option<MapKind> {
     match m.cache_type()? {
         CacheType::Multiplayer => Some(MapKind::Multiplayer),
@@ -2741,6 +2842,11 @@ pub(crate) fn extract_maps(disc: &Disc, maps: &[(&MapFile, MapKind)], out: &Path
     let halo1: HashMap<String, String> = maps
         .iter()
         .filter_map(|(m, _)| Some((m.name().to_string(), m.halo1.as_ref()?.name.clone())))
+        .collect();
+    // A mod's entry carries its package's name, MapId, base and hash.
+    let mods: HashMap<String, crate::live_mods::ModInfo> = maps
+        .iter()
+        .filter_map(|(m, _)| Some((m.name().to_string(), m.package.clone()?)))
         .collect();
     let workers = std::thread::available_parallelism().map_or(4, |n| n.get());
     let mut result = Extracted::default();
@@ -2848,7 +2954,11 @@ pub(crate) fn extract_maps(disc: &Disc, maps: &[(&MapFile, MapKind)], out: &Path
                 .contains_key(&level.stem)
                 .then(|| crate::live_halo1::GAME.to_string()),
             name: halo1.get(&level.stem).filter(|n| !n.is_empty()).cloned(),
+            ..Default::default()
         };
+        if let Some(info) = mods.get(&level.stem) {
+            entry = entry.with_mod(info);
+        }
         let views: Vec<ViewEntry> = plan
             .into_iter()
             .map(|(e, _)| e)

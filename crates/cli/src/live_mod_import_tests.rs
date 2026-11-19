@@ -148,9 +148,19 @@ unknown_key = "ignored"
     // repository's extras for publish.
     let text = std::fs::read_to_string(out.dir.join(MANIFEST_FILE)).unwrap();
     assert_eq!(&Manifest::from_toml(&text).unwrap(), m);
-    let (category, source) = extras_in(&out.dir).unwrap();
-    assert_eq!(category.as_deref(), Some("weapons"));
-    assert_eq!(source.as_deref(), Some("https://example.invalid/mods/42"));
+    let extras = extras_in(&out.dir).unwrap();
+    assert_eq!(extras.category.as_deref(), Some("weapons"));
+    assert_eq!(
+        extras.source_url.as_deref(),
+        Some("https://example.invalid/mods/42")
+    );
+    // The older one-name `author` is the credit's one author.
+    let credit = extras.credit.unwrap();
+    assert_eq!(credit.authors, ["An Old Modder"]);
+    assert_eq!(
+        credit.source_url.as_deref(),
+        Some("https://example.invalid/mods/42")
+    );
     assert!(
         std::fs::read_dir(&out.dir)
             .unwrap()
@@ -186,7 +196,9 @@ fn a_same_length_map_becomes_a_ppf_and_flags_win_over_the_sidecar() {
     assert_eq!(out.manifest.patches[0].file, "mod.ppf");
     let layer = std::fs::read(out_dir.join("mod.ppf")).unwrap();
     assert_eq!(apply(&f.lockout, &layer).unwrap(), modded);
-    assert_eq!(extras_in(&out_dir).unwrap().0.as_deref(), Some("gameplay"));
+    let extras = extras_in(&out_dir).unwrap();
+    assert_eq!(extras.category.as_deref(), Some("gameplay"));
+    assert_eq!(extras.credit, None, "no credit given, none made up");
 }
 
 #[test]
@@ -292,10 +304,15 @@ fn an_imported_mod_publishes_only_its_delta() {
         "p.map",
         &modded,
         Some(
-            "name = \"Lockout Remix\"\nauthor = \"Someone Else\"\nbase_map = \"lockout\"\ncategory = \"maps\"\nsource_url = \"https://example.invalid/r\"\n",
+            "name = \"Lockout Remix\"\nauthors = [\"Someone Else\", \" A Friend \"]\nauthor = \"Ignored For Authors\"\nrelease = \"Remix v2\"\nreleased = \"2005-06\"\nbase_map = \"lockout\"\ncategory = \"maps\"\nsource_url = \"https://example.invalid/r\"\n",
         ),
     );
     let out = import(&f.opts(input)).unwrap();
+    assert_eq!(
+        out.manifest.package.author.as_deref(),
+        Some("Someone Else & A Friend"),
+        "the manifest's one line for older readers"
+    );
 
     let server = live_server::start_embedded(
         live_server::MEMORY_DB,
@@ -323,8 +340,12 @@ fn an_imported_mod_publishes_only_its_delta() {
     let answer = crate::live_maps::publish(&client, &accounts, None, &out.dir, None, None).unwrap();
     let s = &answer.map.summary;
     assert_eq!(s.name, "Lockout Remix");
-    assert_eq!(s.credit.as_deref(), Some("Someone Else"));
-    assert_eq!(s.author.gamertag, "Importer");
+    assert_eq!(s.credit.as_deref(), Some("Someone Else & A Friend"));
+    let credits = s.credits.as_ref().unwrap();
+    assert_eq!(credits.authors, ["Someone Else", "A Friend"]);
+    assert_eq!(credits.release.as_deref(), Some("Remix v2"));
+    assert_eq!(credits.released.as_deref(), Some("2005-06"));
+    assert_eq!(s.author.gamertag, "Importer", "the publisher, apart");
     assert_eq!(s.category.as_deref(), Some("maps"));
     assert_eq!(s.source_url.as_deref(), Some("https://example.invalid/r"));
     assert_eq!(s.size, out.layer_size, "only the delta was uploaded");
@@ -549,4 +570,43 @@ fn no_retail_map_of_either_disc_is_shared() {
     assert!(e.contains("--mappack"), "{e}");
     let e = err(p.opts(modded, "turf"));
     assert!(e.contains("has no turf.map either"), "{e}");
+}
+
+#[test]
+fn the_mods_page_extras_reach_the_package_for_publish() {
+    let f = Fixture::new("page");
+    let mut modded = f.lockout.clone();
+    modded[0x2000..0x2040].fill(3);
+    // Invented maps the map reader can't read: nothing is derived, so the
+    // package lists the sidecar's features, in the checklist's order.
+    let input = f.mod_dir(
+        "page",
+        "hogs.map",
+        &modded,
+        Some(
+            "base_map = \"lockout\"\nfeatures = [\"scripts\", \"vehicles\", \"vehicles\"]\n\
+             gametypes = [\"ctf\"]\nversion = \" 1.2 \"\n",
+        ),
+    );
+    let out = import(&f.opts(input)).unwrap();
+    let extras = PageExtras::read(&out.dir).unwrap();
+    assert_eq!(extras.features, ["vehicles", "scripts"]);
+    assert_eq!(extras.gametypes, ["ctf"]);
+    assert_eq!(extras.version.as_deref(), Some("1.2"));
+    let mut doc = live_proto::maps::MapDocument::new(out.manifest.clone(), None);
+    extras.apply(&mut doc);
+    assert!(doc.validate_extras().is_ok());
+    assert_eq!(doc.features, ["vehicles", "scripts"]);
+
+    // An id the checklist doesn't know is refused, not dropped.
+    let bad = f.mod_dir(
+        "bad",
+        "hogs.map",
+        &modded,
+        Some("base_map = \"lockout\"\nfeatures = [\"teleporters\"]\n"),
+    );
+    let e = import(&f.opts(bad)).unwrap_err();
+    assert!(format!("{e:#}").contains("teleporters"), "{e:#}");
+    // No sidecar features and nothing derived: none listed.
+    assert_eq!(PageExtras::read(&f.root).unwrap(), PageExtras::default());
 }

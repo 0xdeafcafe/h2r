@@ -39,16 +39,23 @@
 //!   (`SOUND_LISTENERS_UPDATE`), which the per-frame update also calls
 //!   outside `SOUND_UPDATE`, gets the same window, and the bots' listeners
 //!   are marked inactive ([`bots::guest::quiet_listeners`]).
+//! - Around `SOUND_OWNER_USER`, which a starting sound asks whose own
+//!   sound it is, the bots' users are hidden too, so a bot's guns,
+//!   footsteps and voice start as positioned world sounds, not as plain
+//!   sounds in the human's ears.
 //! - Around the players screen's update (`PLAYERS_SCREEN_UPDATE`) the
 //!   bots' controller handles read as none ([`bots::guest::hide_pads`]),
 //!   so its panes show the humans only ("CONNECT CONTROLLER" on a bot's
 //!   port), joined or not.
 //!
 //! - Phantom peers ([`bots::phantom::global`], docs/game/bots.md §5.1):
-//!   before each `RENDER_FRAME`, once a multiplayer game this console hosts
-//!   runs, pending phantoms are written into the session and the game makes
-//!   their players; each joined phantom's pad becomes its action. When the
-//!   game ends they leave the session and wait for the next.
+//!   before each `RENDER_FRAME`, while this console hosts a pregame lobby
+//!   (System Link or Xbox Live) or a multiplayer game, pending phantoms are
+//!   written into the session as joining peers, so the lobby lists them
+//!   and the game makes their players; each joined phantom's pad becomes
+//!   its action in a game. When this console hosts no session any more
+//!   they leave it and wait for the next (`H2_PHANTOM_LOBBY=0`: they join
+//!   only a running game and leave when it ends).
 //!
 //! **The join gate.** A bot is signed in only while its own slot has no
 //! profile, a human has one to copy, no game runs ([`to_sign_in`]) and
@@ -67,6 +74,12 @@
 //!   for the user's Xbox Live identity (a local user with the offline id's
 //!   flags `0xBAD00000` counts as none there, `0x646df`), which the bot
 //!   gets from [`bots::guest::go_live_as`] within 30 frames.
+//!
+//! Never in a matchmaking lobby (life cycle 6, screen `0xd2`): there the
+//! local-player pass adds a local user to the party's squad session as
+//! well as the match's, and the matchmade start checks each local
+//! player's controller, which a bot's port fails. A Clankermatch's bots
+//! are all phantoms (docs/game/bots.md §8.4, "Phantoms only").
 //!
 //! Each port's gate is logged when it changes, naming the screen it
 //! thinks is up (`players`, `lobby`, the top screen's id or `none`), and
@@ -89,6 +102,15 @@
 //! leaving bot whose slot holds no profile and no Live is unplugged
 //! ([`bots::local::leave_step`], [`bots::guest::slot_held`]). A game never
 //! sees a bot's pad go.
+//!
+//! **Never a saved profile.** A bot is signed in with no profile file
+//! (`-1`), only on an empty slot ([`bots::guest::sign_in_then`]), so it
+//! never holds, hides or saves one of the user's profiles. Should a slot
+//! of a bot's hold a saved profile anyway (a chooser opened for its
+//! controller and took a stray A), the glue signs it out once no game
+//! runs ([`bots::local::release_step`], [`bots::guest::saved_profile`]):
+//! the profile is offered again, nothing is saved, and the join gate signs
+//! the bot back in with its own block.
 //!
 //! With no bots every hook returns at once. The bots stay signed in until
 //! they are taken off; going back to the players screen finds them joined,
@@ -134,7 +156,10 @@ pub enum Screen {
     /// mask (`+8`) at `screen`.
     Players { screen: u32 },
     /// A pregame lobby (Live or System Link custom game,
-    /// [`bots::lobby::pregame`]) and no game runs. The lobby is read from
+    /// [`bots::lobby::pregame`]) and no game runs. Never a matchmaking
+    /// lobby: a local user there is added to the party's session too, and
+    /// the matchmade start checks each local player's controller
+    /// (docs/game/bots.md §8.4, "Phantoms only"). The lobby is read from
     /// its squad session, not from the screens: it shares its window and
     /// slot with the screens over it, and `ui_watch` reads it as no screen
     /// (the user's run: `top none`). A bot joins with the game's sign-in
@@ -322,6 +347,15 @@ pub fn to_sign_in(
         .collect()
 }
 
+/// The log line for bots whose slot holds a saved profile
+/// ([`bots::local::release_step`]) as the glue signs them out.
+pub fn release_line(ports: &[u8]) -> String {
+    format!(
+        "bots: the bots on ports {ports:?} hold a saved profile (a chooser gave it to them): \
+         signing them out so it is offered again; nothing is saved"
+    )
+}
+
 /// The log line for one bot the glue signs in, and where: on the players
 /// screen (with its join mask) or in the pregame lobby (the session adds
 /// the player itself).
@@ -450,8 +484,12 @@ pub struct Bots {
     panes: Arc<Mutex<Option<guest::HiddenPads>>>,
     /// The bot users hidden around the listener update.
     listeners: Arc<Mutex<Option<Hidden>>>,
+    /// The bot users hidden around a sound's owner lookup.
+    owners: Arc<Mutex<Option<Hidden>>>,
     /// The last lobby facts line said.
     lobby_said: Arc<Mutex<String>>,
+    /// The lobby's player count last said (`bots::lobby::players_line`).
+    players_said: Arc<Mutex<Option<u32>>>,
     /// When the Xbox Live and the sign-in tries were last made.
     live_every: Arc<Every>,
     sign_in_every: Arc<Every>,
@@ -480,7 +518,9 @@ impl Bots {
             pressed: Arc::default(),
             panes: Arc::default(),
             listeners: Arc::default(),
+            owners: Arc::default(),
             lobby_said: Arc::default(),
+            players_said: Arc::default(),
             live_every: Arc::default(),
             sign_in_every: Arc::default(),
             skipped: Arc::default(),
@@ -603,6 +643,35 @@ impl feature::Feature for Bots {
             },
         );
 
+        // A sound starting on an object: the game asks whose own sound it
+        // is (a mapped local user's unit, or what it holds), and that
+        // user's sounds play as plain sounds in the ears, with no position,
+        // distance or walls. The bots are local users, so their guns,
+        // footsteps, grenades and voices all played in the human's ears
+        // (docs/game/bots.md §4.3, "Whose sound"). With the bots' users
+        // hidden the walk finds only the humans, and a bot's sound starts
+        // positioned, as a remote player's does.
+        let (local, owners) = (self.local.clone(), Arc::clone(&self.owners));
+        b.raw()
+            .before(&points::SOUND_OWNER_USER, "hide bot owners", move |c| {
+                let bots = local.port_mask();
+                if bots == 0 {
+                    return Ok(Flow::Continue);
+                }
+                let rt = Arc::clone(c.ctx.runtime());
+                *lock(&owners) = guest::hide(&mut *rt.memory(), bots).ok().flatten();
+                Ok(Flow::Continue)
+            });
+        let owners = Arc::clone(&self.owners);
+        b.raw()
+            .after(&points::SOUND_OWNER_USER, "bot owners back", move |c| {
+                if let Some(h) = lock(&owners).take() {
+                    let rt = Arc::clone(c.ctx.runtime());
+                    guest::restore(&mut *rt.memory(), &h).map_err(|e| fault(e.addr))?;
+                }
+                Ok(())
+            });
+
         // A Start press in the lobby while bots are in: the start state is
         // logged before the next SOUND_UPDATE (once per press).
         let (local, pressed) = (self.local.clone(), Arc::clone(&self.pressed));
@@ -638,6 +707,43 @@ impl feature::Feature for Bots {
                 if let Ok(Some(_)) = bots::lobby::start_row_press(&*o.guest(), item, row) {
                     pressed.store(true, Ordering::Relaxed);
                 }
+            },
+        );
+
+        // A phantom's machine has no simulation view, so the game's "is
+        // this machine in the game" says no and its player never spawns
+        // (docs/game/bots.md §5.1, "Phantoms in the game"): yes for a
+        // phantom with a peer in the session.
+        let phantoms = self.phantoms.clone();
+        b.raw().before(
+            &points::MACHINE_IN_GAME,
+            "phantoms: their machines are in the game",
+            move |c| {
+                let at = c.cpu.eax;
+                let rt = Arc::clone(c.ctx.runtime());
+                let id = rt.memory().read::<6>(at);
+                if !id.is_ok_and(|id| phantoms.stands_for(id)) {
+                    return Ok(Flow::Continue);
+                }
+                c.cpu.eax = (c.cpu.eax & !0xff) | 1;
+                Ok(Flow::Return(c.ret(0)?))
+            },
+        );
+
+        let phantoms = self.phantoms.clone();
+        b.raw().before(
+            &points::SIMULATION_SLOT_ACTION,
+            "phantoms: sample the pad for this simulation tick",
+            move |c| {
+                let slot = c.arg_u32("slot").unwrap_or(0);
+                let rt = Arc::clone(c.ctx.runtime());
+                if !phantoms.owns_action_slot(&*rt.memory(), slot) {
+                    return Ok(Flow::Continue);
+                }
+                let phantoms = phantoms.clone();
+                c.answer_async(move |cx| {
+                    Box::pin(async move { phantoms.slot_action(cx, slot).await })
+                })
             },
         );
 
@@ -683,6 +789,7 @@ impl feature::Feature for Bots {
             Arc::clone(&self.gates),
         );
         let lobby_said = Arc::clone(&self.lobby_said);
+        let players_said = Arc::clone(&self.players_said);
         b.raw().before(
             &points::RENDER_FRAME,
             "bot pads; hide bot views",
@@ -697,7 +804,13 @@ impl feature::Feature for Bots {
                 let rt = Arc::clone(c.ctx.runtime());
                 crate::clankers::frame(f, || {
                     let mem = rt.memory();
-                    bots::phantom::session::host_team(&*mem).ok().flatten()
+                    // In the lobby this console hosts, its session
+                    // player's team (no player datum before a game, and a
+                    // stale one after); else its player's.
+                    let s = bots::phantom::session::lobby_host_team(&*mem)
+                        .ok()
+                        .flatten();
+                    s.or_else(|| bots::phantom::session::host_team(&*mem).ok().flatten())
                 });
                 if bots == 0 && !any_phantoms {
                     return Ok(Flow::Continue);
@@ -712,6 +825,17 @@ impl feature::Feature for Bots {
                 }
                 if bots == 0 {
                     return Ok(Flow::Continue);
+                }
+                // The local bots' names carry the bot mark, as phantoms'
+                // do (docs/game/bots.md §8.2.2), on the session's host.
+                match bots::phantom::session::mark_local_bots(&mut *mem, bots) {
+                    Ok(slots) if !slots.is_empty() => {
+                        eprintln!(
+                            "bots: the bot mark on local bots' names (session players {slots:?})"
+                        )
+                    }
+                    Ok(_) => {}
+                    Err(e) => eprintln!("bots: bot mark: fault at {:#x}", e.addr),
                 }
                 // The join gate, per port, logged when it changes; a bot it
                 // lets through presses nothing (the sign-in is before
@@ -733,6 +857,16 @@ impl feature::Feature for Bots {
                     if *said != line {
                         eprintln!("{line}");
                         *said = line;
+                    }
+                    // The lobby's own player count, once per change: what
+                    // a Clankermatch's start counts.
+                    let n = bots::lobby::lobby_players(g, f).ok().flatten();
+                    let mut said = lock(&players_said);
+                    if *said != n {
+                        if let Some(n) = n {
+                            eprintln!("{}", bots::lobby::players_line(n));
+                        }
+                        *said = n;
                     }
                 }
                 let mut open = [false; 4];
@@ -769,6 +903,20 @@ impl feature::Feature for Bots {
                 }
                 Ok(())
             });
+
+        // The same weapon-fire point used by Live telemetry, as a sound
+        // cue. It can only draw a bot's gaze.
+        let (local, phantoms) = (self.local.clone(), self.phantoms.clone());
+        b.raw()
+            .observe_before(&points::WEAPON_FIRE, "bots hear shots", move |o| {
+                if (!local.is_empty() || !phantoms.is_empty())
+                    && let Some(weapon) = o.arg_u32("weapon")
+                {
+                    bots::observe_shot(&*o.guest(), weapon);
+                }
+            })
+            .optional();
+        b.game().on_start("forget bot sound cues", |_| bots::clear_shots());
 
         // Deaths, for the emotes (bots::emote): the kill function's
         // attacker and victim player datums and betrayal flag, read as
@@ -960,6 +1108,31 @@ impl feature::Feature for Bots {
                             Box::pin(async move {
                                 let r = guest::sign_in_then(cx, joins, bots, buffer, screen, then)
                                     .await;
+                                busy.store(false, Ordering::Relaxed);
+                                r
+                            })
+                        });
+                    }
+                }
+                if !busy.load(Ordering::Relaxed) {
+                    let release = {
+                        let mem = rt.memory();
+                        let in_game = guest::in_game(&*mem);
+                        local::release_step(in_game, local.joining_mask(), |p| {
+                            guest::saved_profile(&*mem, u32::from(p))
+                                .ok()
+                                .flatten()
+                                .is_some()
+                        })
+                    };
+                    if !release.is_empty() {
+                        eprintln!("{}", release_line(&release));
+                        busy.store(true, Ordering::Relaxed);
+                        let busy = Arc::clone(&busy);
+                        let then = points::SOUND_UPDATE.base;
+                        return c.answer_async(move |cx| -> engine::entry::EntryFuture {
+                            Box::pin(async move {
+                                let r = guest::sign_out_then(cx, release, then).await;
                                 busy.store(false, Ordering::Relaxed);
                                 r
                             })
@@ -1328,6 +1501,13 @@ mod tests {
             sign_in_skip(true, false, false),
             Some("no human profile to copy (no port without a bot has a profile)")
         );
+    }
+
+    #[test]
+    fn the_release_line_names_the_ports() {
+        let line = release_line(&[1, 3]);
+        assert!(line.starts_with("bots: the bots on ports [1, 3] hold a saved profile"));
+        assert!(line.ends_with("nothing is saved"));
     }
 
     #[test]

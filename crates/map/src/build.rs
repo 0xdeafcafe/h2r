@@ -642,7 +642,10 @@ impl TagSet {
                 ));
             }
         }
-        let end = u64::from(h.index_offset) + u64::from(h.index_size) + u64::from(h.tag_data_size);
+        // The region as read: a modded map's overstated `+0x18` is cut to
+        // the file (`Map::metadata_size`).
+        let end =
+            u64::from(h.index_offset) + u64::from(h.index_size) + u64::from(map.metadata_size());
         if end != u64::from(h.file_size) || map.storage_length() != end {
             return Err(Error::Unsupported("metadata does not end the file".into()));
         }
@@ -760,7 +763,7 @@ impl TagSet {
                     .and_then(|n| n.checked_sub(h.tag_data_size))
                     .ok_or(Error::Invalid("metadata memory size"))?,
                 metadata_base: space.virtual_base,
-                metadata_size: h.tag_data_size,
+                metadata_size: map.metadata_size(),
                 unowned,
             }),
         })

@@ -426,3 +426,353 @@ async fn downloads_are_replayed_from_the_log() {
     let _ = std::fs::remove_dir_all(&store_dir);
     let _ = std::fs::remove_dir_all(&data_dir);
 }
+
+fn operator(h: &Harness) -> (&'static str, String) {
+    (
+        "authorization",
+        format!(
+            "Bearer {}",
+            h.token(&h.operator, "server:live.test", lxm::CONTENT_MODERATE)
+        ),
+    )
+}
+
+async fn put_credit(h: &Harness, auth: (&'static str, String), id: &MapId, body: Value) -> Resp {
+    h.call(
+        Method::PUT,
+        &format!("/v1/maps/{id}/credit"),
+        &[auth],
+        body.to_string(),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn the_credit_is_the_mods_makers_not_the_publishers() {
+    let store_dir = temp_dir();
+    let data_dir = temp_dir();
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let mut m = Mod::new("credit", "zanzibar", "Beasthog");
+    m.credit = Some("Importer Guess");
+    m.source_url = Some("https://example.invalid/old");
+    let id = MapId::of(&m.doc().manifest);
+    {
+        let store: Arc<dyn EventStore> = Arc::new(FileStore::open(&store_dir).await.unwrap());
+        let h = start(store, policy()).await;
+        h.live.set_data_dir(&data_dir);
+        let a = h.create("Publisher").await;
+        let x = h.create("Stranger").await;
+
+        // The publisher's document credit wins over the manifest's author.
+        let mut doc = m.doc();
+        doc.credit = Some(live_proto::maps::Credit {
+            authors: vec!["Group Bocked".into()],
+            released: Some("2005".into()),
+            ..Default::default()
+        });
+        let patch = m.patch();
+        let r = h
+            .call(
+                Method::PUT,
+                &format!("/v1/content/{}", Sha256::of(&patch)),
+                &[h.bearer(&a, lxm::CONTENT_WRITE)],
+                Body::from(patch),
+            )
+            .await;
+        assert!(r.status.is_success(), "{}", r.error());
+        let r = put_map(&h, &a, &doc).await;
+        assert_eq!(r.status, StatusCode::CREATED, "{}", r.error());
+        let item = &list(&h, "").await["items"][0];
+        assert_eq!(item["author"]["gamertag"], "Publisher");
+        assert_eq!(item["credit"], "Group Bocked");
+        assert_eq!(item["credits"]["authors"][0], "Group Bocked");
+        assert_eq!(item["credits"]["released"], "2005");
+        assert_eq!(item["source_url"], "https://example.invalid/old");
+
+        // Only an admin corrects it; a bad credit is refused.
+        let fix = serde_json::json!({
+            "authors": [" Synch ", "l PPF l NeoN"],
+            "release": "Ownage Modz Pack",
+            "released": "2006-01",
+            "source_url": "https://example.invalid/new",
+        });
+        let r = put_credit(&h, h.bearer(&a, lxm::CONTENT_MODERATE), &id, fix.clone()).await;
+        assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.error());
+        let r = put_credit(&h, h.bearer(&x, lxm::CONTENT_MODERATE), &id, fix.clone()).await;
+        assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.error());
+        let r = put_credit(&h, operator(&h), &id, serde_json::json!({"released": "05"})).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", r.error());
+        let r = put_credit(&h, operator(&h), &id, serde_json::json!({"who": "x"})).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", r.error());
+        let r = put_credit(&h, operator(&h), &MapId([9; 32]), fix.clone()).await;
+        assert_eq!(r.status, StatusCode::NOT_FOUND, "{}", r.error());
+        let r = put_credit(&h, operator(&h), &id, fix.clone()).await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.error());
+        let answer = r.json();
+        assert_eq!(answer["map"]["credit"], "Synch & l PPF l NeoN");
+
+        let detail = h.get(&format!("/v1/maps/{id}")).await.json();
+        let s = &detail["map"];
+        assert_eq!(
+            s["credits"]["authors"],
+            serde_json::json!(["Synch", "l PPF l NeoN"])
+        );
+        assert_eq!(s["credits"]["release"], "Ownage Modz Pack");
+        assert_eq!(s["source_url"], "https://example.invalid/new");
+        assert_eq!(s["author"]["gamertag"], "Publisher", "the publisher stays");
+        // The manifest is the publisher's, as signed.
+        assert_eq!(s["manifest"]["package"]["author"], "Importer Guess");
+        assert_eq!(s["map_id"], id.to_string());
+        // Searching finds the credited author.
+        assert_eq!(names(&list(&h, "q=synch").await), ["Beasthog"]);
+        assert_eq!(names(&list(&h, "q=importer").await), Vec::<String>::new());
+    }
+    // Replayed from the log; then cleared back to the publisher's.
+    let store: Arc<dyn EventStore> = Arc::new(FileStore::open(&store_dir).await.unwrap());
+    let h = start(store, policy()).await;
+    h.live.set_data_dir(&data_dir);
+    let item = &list(&h, "").await["items"][0];
+    assert_eq!(item["credit"], "Synch & l PPF l NeoN");
+    let r = put_credit(&h, operator(&h), &id, serde_json::json!({})).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.error());
+    let item = &list(&h, "").await["items"][0];
+    assert_eq!(item["credit"], "Group Bocked");
+    drop(h);
+    let _ = std::fs::remove_dir_all(&store_dir);
+    let _ = std::fs::remove_dir_all(&data_dir);
+}
+
+async fn upload(h: &Harness, u: &User, bytes: Vec<u8>) {
+    let r = h
+        .call(
+            Method::PUT,
+            &format!("/v1/content/{}", Sha256::of(&bytes)),
+            &[h.bearer(u, lxm::CONTENT_WRITE)],
+            Body::from(bytes),
+        )
+        .await;
+    assert!(r.status.is_success(), "{}", r.error());
+}
+
+async fn put_admin(h: &Harness, auth: (&'static str, String), path: &str, body: Value) -> Resp {
+    h.call(Method::PUT, path, &[auth], body.to_string()).await
+}
+
+/// An admin's details (docs/game/maps.md §5, "Details"): a longer
+/// description, screenshots served from the content store, a contents
+/// report and the map pack, over the publisher's manifest, kept in the
+/// log; and the pack's own info, listed with the maps that name it.
+#[tokio::test]
+async fn details_and_packs_are_an_admins_and_are_listed() {
+    let store_dir = temp_dir();
+    let data_dir = temp_dir();
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let mut m = Mod::new("details", "zanzibar", "Zombiebar");
+    m.description = Some("Short.");
+    let id = MapId::of(&m.doc().manifest);
+    let shot = b"\x89PNG\r\n\x1a\ninvented screenshot".to_vec();
+    let menu = b"\xff\xd8\xffinvented pack menu".to_vec();
+    let text = b"not an image".to_vec();
+    {
+        let store: Arc<dyn EventStore> = Arc::new(FileStore::open(&store_dir).await.unwrap());
+        let h = start(store, policy()).await;
+        h.live.set_data_dir(&data_dir);
+        let a = h.create("Publisher").await;
+        upload(&h, &a, m.patch()).await;
+        let r = put_map(&h, &a, &m.doc()).await;
+        assert_eq!(r.status, StatusCode::CREATED, "{}", r.error());
+        for b in [&shot, &menu, &text] {
+            upload(&h, &a, b.clone()).await;
+        }
+        let path = format!("/v1/maps/{id}/details");
+        let details = serde_json::json!({
+            "description": "A longer one.\nWith zombies.",
+            "images": [{"sha256": Sha256::of(&shot).to_string(), "caption": "the bar",
+                        "credit": "Badsmiley", "source_url": "https://example.invalid/post"}],
+            "contents": {"lines": ["new AI characters: 2"], "scripts": true},
+            "features": ["scripts", "ai"],
+            "pack": "ai-revision"
+        });
+        // Only an admin; checked; the images must be stored images.
+        let r = put_admin(
+            &h,
+            h.bearer(&a, lxm::CONTENT_MODERATE),
+            &path,
+            details.clone(),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.error());
+        for bad in [
+            serde_json::json!({"blurb": "x"}),
+            serde_json::json!({"features": ["cheats"]}),
+            serde_json::json!({"pack": "AI Revision"}),
+            serde_json::json!({"images": [{"sha256": "07".repeat(32)}]}),
+            serde_json::json!({"images": [{"sha256": Sha256::of(&text).to_string()}]}),
+        ] {
+            let r = put_admin(&h, operator(&h), &path, bad.clone()).await;
+            assert_eq!(r.status, StatusCode::BAD_REQUEST, "{bad}: {}", r.error());
+        }
+        let r = put_admin(
+            &h,
+            operator(&h),
+            &format!("/v1/maps/{}/details", MapId([9; 32])),
+            details.clone(),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::NOT_FOUND, "{}", r.error());
+        let r = put_admin(&h, operator(&h), &path, details.clone()).await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.error());
+        assert_eq!(
+            r.json()["map"]["description"],
+            "A longer one.\nWith zombies."
+        );
+
+        // The pack's info.
+        let pack = serde_json::json!({
+            "name": "Halo 2 Remapped AI Revision", "authors": ["Zone 117"],
+            "released": "2007-06", "description": "Custom maps with AI.",
+            "images": [{"sha256": Sha256::of(&menu).to_string(), "caption": "the menu"}]
+        });
+        let r = put_admin(
+            &h,
+            h.bearer(&a, lxm::CONTENT_MODERATE),
+            "/v1/mappacks/ai-revision",
+            pack.clone(),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.error());
+        let r = put_admin(&h, operator(&h), "/v1/mappacks/AI%20Revision", pack.clone()).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", r.error());
+        let r = put_admin(
+            &h,
+            operator(&h),
+            "/v1/mappacks/ai-revision",
+            serde_json::json!({"name": " "}),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", r.error());
+        let r = put_admin(&h, operator(&h), "/v1/mappacks/ai-revision", pack.clone()).await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.error());
+    }
+    // Replayed from the log.
+    let store: Arc<dyn EventStore> = Arc::new(FileStore::open(&store_dir).await.unwrap());
+    let h = start(store, policy()).await;
+    h.live.set_data_dir(&data_dir);
+    let page = list(&h, "").await;
+    let item = &page["items"][0];
+    assert_eq!(item["description"], "A longer one.\nWith zombies.");
+    assert_eq!(item["images"][0]["caption"], "the bar");
+    assert_eq!(
+        item["image"],
+        Sha256::of(&shot).to_string(),
+        "no preview: the first shot"
+    );
+    assert_eq!(item["features"], serde_json::json!(["scripts", "ai"]));
+    assert_eq!(
+        item["contents"],
+        serde_json::json!(["new AI characters: 2"])
+    );
+    assert_eq!(item["pack"], "ai-revision");
+    assert_eq!(item["pack_name"], "Halo 2 Remapped AI Revision");
+    assert_eq!(page["packs"][0]["id"], "ai-revision");
+    assert_eq!(page["packs"][0]["authors"][0], "Zone 117");
+    assert_eq!(
+        names(&list(&h, "q=zombies").await),
+        ["Zombiebar"],
+        "the long description is searched"
+    );
+
+    let detail = h.get(&format!("/v1/maps/{id}")).await.json();
+    let d = &detail["map"];
+    assert_eq!(d["report"]["scripts"], true);
+    assert_eq!(d["pack_info"]["name"], "Halo 2 Remapped AI Revision");
+    assert_eq!(
+        d["manifest"]["package"]["description"], "Short.",
+        "the manifest is as signed"
+    );
+
+    let r = h.get(&format!("/v1/maps/{id}/images/0")).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.headers["content-type"], "image/png");
+    assert_eq!(r.body, shot);
+    assert_eq!(h.get(&format!("/v1/maps/{id}/image")).await.body, shot);
+    assert_eq!(
+        h.get(&format!("/v1/maps/{id}/images/1")).await.status,
+        StatusCode::NOT_FOUND
+    );
+    let r = h.get("/v1/mappacks/ai-revision/images/0").await;
+    assert_eq!(r.headers["content-type"], "image/jpeg");
+    assert_eq!(r.body, menu);
+    let packs = h.get("/v1/mappacks").await.json();
+    assert_eq!(packs["items"][0]["id"], "ai-revision");
+
+    // Cleared: the publisher's again, and the pack gone.
+    let r = put_admin(
+        &h,
+        operator(&h),
+        &format!("/v1/maps/{id}/details"),
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.error());
+    let r = put_admin(&h, operator(&h), "/v1/mappacks/ai-revision", Value::Null).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.error());
+    let page = list(&h, "").await;
+    let item = &page["items"][0];
+    assert_eq!(item["description"], "Short.");
+    assert!(
+        item.get("images").is_none() && item.get("pack").is_none() && item.get("image").is_none()
+    );
+    assert!(page.get("packs").is_none());
+    assert!(
+        h.get("/v1/mappacks").await.json()["items"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    drop(h);
+    let _ = std::fs::remove_dir_all(&store_dir);
+    let _ = std::fs::remove_dir_all(&data_dir);
+}
+
+/// The Mods page's checklist data (docs/game/maps.md §5, "A mod's page"):
+/// features, game types and version are checked at publish and listed,
+/// in the list and on the map's own answer; a document without them
+/// lists none.
+#[tokio::test]
+async fn features_game_types_and_version_are_checked_and_listed() {
+    let h = repo(Arc::new(MemoryStore::new()), policy()).await;
+    let a = h.create("Modder").await;
+    let m = Mod::new("features", "lockout", "Lockout Hogs");
+    let patch = m.patch();
+    let r = h
+        .call(
+            Method::PUT,
+            &format!("/v1/content/{}", Sha256::of(&patch)),
+            &[h.bearer(&a, lxm::CONTENT_WRITE)],
+            Body::from(patch),
+        )
+        .await;
+    assert!(r.status.is_success(), "{}", r.error());
+    let mut doc = m.doc();
+    doc.features = vec!["vehicles".into(), "cheats".into()];
+    let r = put_map(&h, &a, &doc).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", r.error());
+    doc.features = vec!["vehicles".into(), "scripts".into()];
+    doc.gametypes = vec!["ctf".into(), "slayer".into()];
+    doc.version = Some("1.2".into());
+    let r = put_map(&h, &a, &doc).await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.error());
+    let item = &list(&h, "").await["items"][0];
+    assert_eq!(item["features"], serde_json::json!(["vehicles", "scripts"]));
+    assert_eq!(item["gametypes"], serde_json::json!(["ctf", "slayer"]));
+    assert_eq!(item["version"], "1.2");
+    let id = MapId::of(&doc.manifest);
+    let one = h.get(&format!("/v1/maps/{id}")).await.json();
+    assert_eq!(one["map"]["features"], item["features"]);
+
+    publish(&h, &a, &Mod::new("plain", "lockout", "Lockout Plain")).await;
+    let plain = &list(&h, "").await["items"][0];
+    assert_eq!(plain["name"], "Lockout Plain");
+    assert!(plain.get("features").is_none() && plain.get("version").is_none());
+}

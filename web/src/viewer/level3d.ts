@@ -1,7 +1,9 @@
 // What of a loaded level the 3D view shows, and the air around it: the
 // zones (`bsp_<n>`: the one in play, one picked, or all; cutscene zones on
 // request), the far scenery, the layers (decals, effects), the sky and the
-// fog, the water's ripples and the weather (water3d.ts, weather3d.ts). The scene hands it the glb once loaded and asks it to dress each
+// fog, the water's ripples and the weather (water3d.ts, weather3d.ts), and
+// where the level's scripts play effects (spawners.ts: a mark that bursts
+// at each play, shown with the effects). The scene hands it the glb once loaded and asks it to dress each
 // frame before drawing; the toolbar reads `info()` and flips its switches.
 // Kept apart from the players, vehicles and machines.
 //
@@ -10,8 +12,14 @@
 import * as THREE from "three";
 import { FOG_CLEAR, SkyDome, gameFog, useGameFog, skyColour, skyOf, skyUrl, type SkyInfo } from "./sky3d";
 import { waterUniforms } from "./water3d";
+import type { LevelPlasma } from "./plasma3d";
 import { WeatherLook, weatherOf } from "./weather3d";
+import { pulse, spawnersOf, type Spawner } from "./spawners";
+import { gameToGl } from "../map/views";
 import { bspNumber, isBackdrop, isCinematic, layerNode, zoneList, zoneVisibility, type ZoneBox, type ZoneEntry, type ZonePick } from "./zones";
+
+/** A scripted effect spawner's mark, shared by all (game units). */
+const SPAWN_MARK = new THREE.OctahedronGeometry(0.35);
 
 /** What the toolbar offers for a level. */
 export interface LevelInfo {
@@ -39,10 +47,14 @@ export class LevelLook {
   private backdrop = false;
   private decals = true;
   private effects = true;
+  private plasma: LevelPlasma | null = null;
   private skyOn = true;
   private fogOn = true;
   private weatherOn = true;
   private weather = new WeatherLook();
+  /** The scripts' effect spawners' marks (spawners.ts). */
+  private spawnMarks = new THREE.Group();
+  private spawners: Array<{ s: Spawner; mesh: THREE.Mesh }> = [];
   private hazeColour = new THREE.Color();
   private hazeDensity = 0.002;
   /** The uniforms the level's water shares (water3d.ts); `wet` once a
@@ -65,12 +77,29 @@ export class LevelLook {
     this.haze = scene.fog instanceof THREE.FogExp2 ? scene.fog : new THREE.FogExp2(0x7f9fb6, 0.002);
     this.hazeColour.copy(this.haze.color);
     scene.add(this.weather.group);
+    this.spawnMarks.name = "spawners";
+    scene.add(this.spawnMarks);
+  }
+
+  /** A mark per scripted effect spawner: a small diamond at its spot. */
+  private adoptSpawners(list: Spawner[]) {
+    for (const s of list) {
+      const mesh = new THREE.Mesh(SPAWN_MARK, new THREE.MeshBasicMaterial({ color: "#ffb347", transparent: true, opacity: 0.5, depthWrite: false, fog: false }));
+      mesh.name = `spawner:${s.script}:${s.at}`;
+      mesh.position.set(...gameToGl(s.pos[0], s.pos[1], s.pos[2]));
+      mesh.userData = { effect: s.effect, script: s.script, period: s.period };
+      mesh.renderOrder = 3;
+      this.spawnMarks.add(mesh);
+      this.spawners.push({ s, mesh });
+    }
   }
 
   /** Takes a loaded level: finds its zones and layers wherever they are in
    *  the tree, and loads its sky (in the background). */
-  adopt(root: THREE.Object3D, assetExtras: unknown, mapUrl: string) {
+  adopt(root: THREE.Object3D, assetExtras: unknown, mapUrl: string, plasma?: LevelPlasma) {
     this.clear();
+    this.plasma = plasma ?? null;
+    plasma?.setShown(this.effects);
     const gen = this.generation;
     root.traverse((o) => {
       const kind = layerNode(o.name);
@@ -98,6 +127,7 @@ export class LevelLook {
     if (r) this.water.uWaterSky.value.setRGB(r[0], r[1], r[2], THREE.SRGBColorSpace);
     else this.water.uWaterSky.value.setRGB(0.55, 0.68, 0.8, THREE.SRGBColorSpace);
     this.weather.adopt(weatherOf(assetExtras));
+    this.adoptSpawners(spawnersOf(assetExtras));
     this.skyReady = Promise.resolve();
     if (this.skyInfo?.glb) {
       const dome = new SkyDome();
@@ -119,14 +149,21 @@ export class LevelLook {
     this.zones = [];
     this.boxes = [];
     this.layers = [];
+    this.plasma = null;
     this.sky?.dispose();
     this.sky = null;
     this.skyInfo = null;
     this.background = null;
     this.weather.clear();
+    for (const { mesh } of this.spawners) (mesh.material as THREE.Material).dispose();
+    this.spawnMarks.clear();
+    this.spawners = [];
     this.wet = false;
     this.apply();
   }
+
+  /** Plasma never contributes surfaces to the floor probe. */
+  isPlasma(material: THREE.Material): boolean { return this.plasma?.has(material) ?? false; }
 
   /** The zone in play; whether that changed it. */
   setActive(bsp: number | null): boolean {
@@ -149,7 +186,7 @@ export class LevelLook {
   setCinematic(on: boolean) { this.cinematic = on; this.apply(); }
   setBackdrop(on: boolean) { this.backdrop = on; this.apply(); }
   setDecals(on: boolean) { this.decals = on; this.apply(); }
-  setEffects(on: boolean) { this.effects = on; this.apply(); }
+  setEffects(on: boolean) { this.effects = on; this.plasma?.setShown(on); this.apply(); }
   setSky(on: boolean) { this.skyOn = on; this.apply(); }
   setFog(on: boolean) { this.fogOn = on; this.apply(); }
   setWeather(on: boolean) { this.weatherOn = on; this.weather.setOn(on); this.apply(); }
@@ -161,7 +198,16 @@ export class LevelLook {
     const weather = this.weather.active();
     if (weather) this.weather.place(time, focus, distance);
     if (this.wet) this.water.uWaterTime.value = time;
-    return weather || this.wet;
+    const bursting = this.effects && this.spawners.some(({ s }) => s.looping && s.period);
+    if (bursting) {
+      for (const { s, mesh } of this.spawners) {
+        const k = pulse(s, time);
+        mesh.scale.setScalar(1 + k);
+        (mesh.material as THREE.MeshBasicMaterial).opacity = 0.35 + 0.6 * k;
+      }
+    }
+    const scrolling = this.plasma?.animate(time) ?? false;
+    return weather || this.wet || bursting || scrolling;
   }
 
   info(): LevelInfo {
@@ -174,7 +220,7 @@ export class LevelLook {
       active: this.active,
       backdrop: this.zones.some((z) => isBackdrop(z.name)),
       decals: this.layers.some((l) => l.kind === "decals"),
-      effects: this.layers.some((l) => l.kind === "effects"),
+      effects: this.layers.some((l) => l.kind === "effects") || this.spawners.length > 0 || !!this.plasma?.any(),
       sky: !!this.skyInfo,
       fog: !!this.skyInfo?.fog,
       weather: this.weather.has(),
@@ -186,6 +232,7 @@ export class LevelLook {
     const show = zoneVisibility(this.zones, this.active, { backdrop: this.backdrop, cinematic: this.cinematic, pick: this.pick });
     this.zones.forEach((z, i) => { z.obj.visible = show[i]!; });
     for (const l of this.layers) l.obj.visible = l.kind === "decals" ? this.decals : this.effects;
+    this.spawnMarks.visible = this.effects;
     if (this.sky) this.sky.group.visible = this.skyOn;
     this.scene.background = this.skyOn && this.background ? this.background : this.gradient;
     this.weather.group.visible = this.weatherOn;
@@ -227,5 +274,5 @@ export class LevelLook {
     this.scene.fog = this.fog;
   }
 
-  dispose() { this.clear(); this.weather.dispose(); }
+  dispose() { this.clear(); this.weather.dispose(); this.scene.remove(this.spawnMarks); }
 }

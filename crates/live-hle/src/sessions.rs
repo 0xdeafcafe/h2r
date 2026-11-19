@@ -167,6 +167,27 @@ pub(crate) struct Sessions {
     /// Clanker hoppers' search runs ([`crate::clankermatch::Hold`]).
     clanker_hold: crate::clankermatch::Hold,
 }
+/// The players hosted session `id` holds: this console's signed-in
+/// `users`, and `bots` when `id` is the session they were rostered for
+/// (`bots_in`). The server leases a roster's bots to its session alone
+/// and refuses them in any other (`unknown player`, a 400): the user's
+/// Clankermatch run told the party's lobby session (advertised before the
+/// search) of the match's bots, and every `PlayerJoined` and `PlayerLeft`
+/// there was refused. Zero and host-made bot xuids are never reported.
+pub(crate) fn session_players(
+    id: [u8; 8],
+    users: &[u64],
+    bots_in: Option<[u8; 8]>,
+    bots: &[live_proto::Xuid],
+) -> BTreeSet<live_proto::Xuid> {
+    let bots = if bots_in == Some(id) { bots } else { &[] };
+    users
+        .iter()
+        .map(|u| live_proto::Xuid(*u))
+        .chain(bots.iter().copied())
+        .filter(|x| x.0 != 0 && !live_proto::bots::is_local_xuid(*x))
+        .collect()
+}
 /// What a hosted session must be told to hold `want` when it was told of
 /// `had`: (joined, left). Zero and host-made bot xuids are never reported:
 /// the server knows neither.
@@ -310,9 +331,13 @@ impl Sessions {
     /// The host's game holds `bots` beside its signed-in users (boot, from
     /// the bot driver while a roster is in force): each hosted session is
     /// told of its players with `PlayerJoined` and `PlayerLeft`, so the
-    /// Live session counts them (docs/game/bots.md section 9.5).
+    /// Live session counts them (docs/game/bots.md section 9.5). The bots
+    /// are `session`'s alone, the one their roster leased them to
+    /// ([`session_players`]); every other session this console advertises
+    /// (a Clankermatch's party lobby beside its match) gets its users only.
     pub fn set_players(
         &mut self,
+        session: Option<[u8; 8]>,
         bots: &[live_proto::Xuid],
         service: Option<&Service>,
         connection: Option<&Session>,
@@ -324,14 +349,7 @@ impl Sessions {
             return;
         };
         for (id, record) in &self.records {
-            let want: BTreeSet<live_proto::Xuid> = record
-                .session
-                .host_users
-                .iter()
-                .map(|u| live_proto::Xuid(*u))
-                .chain(bots.iter().copied())
-                .filter(|x| x.0 != 0 && !live_proto::bots::is_local_xuid(*x))
-                .collect();
+            let want = session_players(*id, &record.session.host_users, session, bots);
             let had = self.reported.entry(*id).or_default();
             let (joined, left) = players_diff(had, &want);
             if joined.is_empty() && left.is_empty() {
@@ -1457,7 +1475,7 @@ mod say_tests {
 
 #[cfg(test)]
 mod players_tests {
-    use super::players_diff;
+    use super::{players_diff, session_players};
     use live_proto::Xuid;
     use std::collections::BTreeSet;
 
@@ -1481,6 +1499,40 @@ mod players_tests {
         assert_eq!(
             players_diff(&set(&[host, bot]), &set(&[host, other])),
             (vec![Xuid(other)], vec![Xuid(bot)])
+        );
+    }
+
+    /// The user's Clankermatch run: the party's lobby session
+    /// (84ad6bf112ae91df, advertised before the search) and the match the
+    /// search hosted (893954eb98f2e2fe) were both this console's, and the
+    /// match's bots went to both; the party's refused each one (400).
+    #[test]
+    fn bots_go_only_to_the_session_they_were_rostered_for() {
+        let host = 0x0009_0000_0000_0001;
+        let bot = Xuid(0x000b_0000_0000_0002);
+        let party = 0x84ad_6bf1_12ae_91dfu64.to_be_bytes();
+        let game = 0x8939_54eb_98f2_e2feu64.to_be_bytes();
+        assert_eq!(
+            session_players(game, &[host], Some(game), &[bot]),
+            set(&[host, bot.0])
+        );
+        assert_eq!(
+            session_players(party, &[host], Some(game), &[bot]),
+            set(&[host]),
+            "the party's lobby gets its users only"
+        );
+        // No roster in force: users only, so bots told before leave.
+        assert_eq!(session_players(game, &[host], None, &[]), set(&[host]));
+        assert_eq!(session_players(game, &[host], None, &[bot]), set(&[host]));
+        // The game moved (a re-host): the bots follow the new session.
+        let next = 0x80f4_7828_6be3_a884u64.to_be_bytes();
+        assert_eq!(
+            session_players(game, &[host], Some(next), &[bot]),
+            set(&[host])
+        );
+        assert_eq!(
+            session_players(next, &[host], Some(next), &[bot]),
+            set(&[host, bot.0])
         );
     }
 

@@ -67,12 +67,11 @@ fn the_skills_move_better_in_order() {
         assert!(w[1].strafe.1 < w[0].strafe.1, "changes more often");
         assert!(w[1].stand <= w[0].stand);
         assert!(w[1].juke >= w[0].juke);
-        assert!(w[1].jump >= w[0].jump);
         assert!(w[1].keep >= w[0].keep);
     }
     // Easy: no tricks at all.
     let easy = Style::of(Skill::Easy);
-    assert_eq!((easy.juke, easy.jump, easy.cover), (0.0, 0.0, false));
+    assert_eq!((easy.juke, easy.cover), (0.0, false));
 }
 
 /// The strafe side each tick, for `ticks` ticks at range 5 (inside the
@@ -110,7 +109,11 @@ fn legendary_changes_direction_often_and_easy_is_predictable() {
     assert!(easy.iter().any(|&y| y.abs() < 1e-3));
     assert!(legendary.iter().all(|&y| y.abs() > 0.5));
     // The same seed is the same dance.
-    assert_eq!(sides(Skill::Heroic, 4, 300), sides(Skill::Heroic, 4, 300));
+    let a = sides(Skill::Heroic, 4, 300);
+    assert_eq!(a, sides(Skill::Heroic, 4, 300));
+    assert_ne!(a, sides(Skill::Heroic, 5, 300));
+    assert!(legendary.iter().any(|&y| (0.6..0.8).contains(&y.abs())));
+    assert!(legendary.iter().any(|&y| (0.8..1.0).contains(&y.abs())));
 }
 
 #[test]
@@ -180,13 +183,12 @@ fn shot_at(skill: Skill, ticks: u32) -> (Moves, usize) {
 }
 
 #[test]
-fn shot_at_a_good_bot_jukes_and_jumps_and_an_easy_one_does_not() {
+fn shots_can_make_a_bot_juke_but_do_not_make_it_jump() {
     let (legendary, jumps) = shot_at(Skill::Legendary, 1200);
     assert!(legendary.jukes >= 5, "{}", legendary.jukes);
-    assert!(legendary.hit_jumps >= 3, "{}", legendary.hit_jumps);
-    assert!(jumps > 0);
+    assert_eq!(jumps, 0);
     let (easy, jumps) = shot_at(Skill::Easy, 1200);
-    assert_eq!((easy.jukes, easy.hit_jumps, jumps), (0, 0, 0));
+    assert_eq!((easy.jukes, jumps), (0, 0));
 }
 
 #[test]

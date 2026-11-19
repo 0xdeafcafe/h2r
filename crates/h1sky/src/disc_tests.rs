@@ -360,11 +360,19 @@ fn real_h1_disc_every_sky_stays_behind_its_level() {
                 continue;
             }
             let m = map.tag(from.sky.model.id).unwrap();
-            let (model, _) = h1models::model_from_map(&map, m, &Default::default()).unwrap();
+            let (mut model, _) = h1models::model_from_map(&map, m, &Default::default()).unwrap();
             let nearest = convert::nearest_surface(&model).expect("a sky model has a surface");
+            let edge_on = convert::drop_edge_on(&mut model);
+            assert_eq!(
+                convert::nearest_surface(&model),
+                Some(nearest),
+                "{name} {}: dropping edge-on triangles keeps the nearest surface",
+                t.name
+            );
             let s = from.model_scale;
             println!(
-                "{name} {}: nearest {nearest:.1}, reach {reach:.1}, scale {s:.3}",
+                "{name} {}: nearest {nearest:.1}, reach {reach:.1}, scale {s:.3}, \
+                 {edge_on} edge-on triangles dropped",
                 t.name
             );
             assert!(s >= 1.0, "{name} {}: scale {s}", t.name);

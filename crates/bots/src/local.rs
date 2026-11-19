@@ -39,8 +39,8 @@ pub const ID_BASE: u64 = 0xc1a4_0000;
 
 /// What a source sees each frame.
 pub struct Frame<'a> {
-    /// Frames since the glue started: once a rendered frame, menus
-    /// included.
+    /// Input sample number. Local pads use rendered frames, including menus.
+    /// A phantom advances once per simulation sample, including catch-up ticks.
     pub frame: u64,
     /// The game's tick (30 a second) while a game is loaded, `None` in the
     /// menus ([`crate::guest::game_tick`]). Ticks are not frames: a slow
@@ -153,7 +153,8 @@ pub enum Error {
     NoSuchPort(u8),
     /// Another bot asked for that port.
     PortTaken(u8),
-    /// [`MAX_LOCAL`] bots already.
+    /// [`MAX_LOCAL`] bots already (or the capacity
+    /// [`Local::set_capacity`] gave).
     Full,
     NoSuchBot(BotHandle),
 }
@@ -163,7 +164,7 @@ impl std::fmt::Display for Error {
         match self {
             Error::NoSuchPort(p) => write!(f, "port {p}: ports are 0 to 3"),
             Error::PortTaken(p) => write!(f, "port {p} already has a bot"),
-            Error::Full => write!(f, "{MAX_LOCAL} local bots already"),
+            Error::Full => f.write_str("every local bot place is taken"),
             Error::NoSuchBot(h) => write!(f, "no bot {}", h.0),
         }
     }
@@ -189,6 +190,8 @@ struct Bot {
 struct State {
     bots: Vec<Bot>,
     next: u32,
+    /// [`Local::set_capacity`]; `None`: [`MAX_LOCAL`].
+    capacity: Option<usize>,
 }
 
 /// The local bots of one machine. Cheap to clone; clones share.
@@ -198,6 +201,19 @@ pub struct Local(Arc<Mutex<State>>);
 impl Local {
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
         self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// How many bots it takes: [`MAX_LOCAL`], leaving port 0 to a human,
+    /// unless set otherwise.
+    pub fn capacity(&self) -> usize {
+        self.lock().capacity.unwrap_or(MAX_LOCAL)
+    }
+
+    /// Takes up to `n` bots (1 to 4). Sim mode has no human and no
+    /// keyboard pad, so all four ports can be bots
+    /// (docs/runtime/sim.md §4).
+    pub fn set_capacity(&self, n: usize) {
+        self.lock().capacity = Some(n.clamp(1, 4));
     }
 
     /// Puts a bot named `name` on `port`, driven by `source`.
@@ -224,7 +240,7 @@ impl Local {
             b.account = None;
             return Ok(b.handle);
         }
-        if s.bots.len() >= MAX_LOCAL {
+        if s.bots.len() >= s.capacity.unwrap_or(MAX_LOCAL) {
             return Err(Error::Full);
         }
         let handle = BotHandle(s.next);
@@ -456,6 +472,24 @@ pub fn leave_step(
         }
     }
     step
+}
+
+/// The bots' ports (`joining`, a mask: [`Local::joining_mask`]) whose slot
+/// holds a saved profile file (`saved`, [`crate::guest::saved_profile`]),
+/// to sign out (`SLOT_SIGN_OUT`) while no game runs (`in_game`). A bot is
+/// only ever signed in with no file, so a file there is a real profile a
+/// chooser gave the bot's controller (a stray A): the slot keeps it in
+/// use, so every chooser hides it, and the save pass would write the bot's
+/// block over it. Signed out, the profile is offered again and the join
+/// gate signs the bot in with its own block. Out of a game only: the
+/// bot's player is in it.
+pub fn release_step(in_game: bool, joining: u32, saved: impl Fn(u8) -> bool) -> Vec<u8> {
+    if in_game {
+        return Vec::new();
+    }
+    (0..4u8)
+        .filter(|&p| joining & 1 << p != 0 && saved(p))
+        .collect()
 }
 
 /// The input backend: one always-connected, synthesised pad per bot.

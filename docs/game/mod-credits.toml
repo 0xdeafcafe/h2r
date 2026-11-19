@@ -1,0 +1,565 @@
+# Who made each mod published on h2 live (live.forbes.red), as of 2026-11-19.
+#
+# Every package below was imported and published by the account "afr", which
+# is the uploader, not the author. This file is the correction: the original
+# author(s) as the release credited them (handles kept as written), the
+# original release's name and date when known, and where it came from.
+#
+# Apply it with an admin account (or the operator's key, --data DIR):
+#
+#   h2 live maps credit --file docs/game/mod-credits.toml --dry-run
+#   h2 live maps credit --file docs/game/mod-credits.toml
+#
+# Each [[mod]] is checked against the server first (the map_id must be listed
+# under that name); packages already credited so are left alone. The server
+# records an admin's credit as a server-signed MapCredited event; the
+# manifest the uploader signed, and its MapId, are unchanged
+# (docs/game/maps.md section 5, "Credits").
+#
+# Keys read: map_id, name, authors, release, released (YYYY, YYYY-MM or
+# YYYY-MM-DD), source_url, notes. `base`, `confidence` and `evidence` are for
+# the reader. authors = [] means nobody could be found: the package then
+# says "unknown author", never the uploader.
+#
+# Researched 2026-11-19 from the original release posts, readmes and patch
+# headers (archive.org / web.archive.org copies of halomods.com,
+# assassin4hire.com, theppfnoobs.com, se7ensins.com); see each `evidence`.
+
+[[mod]]
+map_id = "5acdecdfbbfb69c69c4b1ca4b275134c5077766fd1603132c116bd6f3d5765b0"
+name = "Zombiebar"
+base = "zanzibar"
+authors = ["Badsmiley"]
+released = "2007-06"
+source_url = "https://web.archive.org/web/20090208202552/http://www.halomods.com/forums/viewtopic.php?t=61177"
+confidence = "high"
+evidence = "AI Revision release post map list by Zone 117 (halomods.com, 2007-06-16, archived): https://web.archive.org/web/20090208202552/http://www.halomods.com/forums/viewtopic.php?t=61177"
+notes = "Halo 2 Remapped AI Revision pack compiled by Zone 117 (menu), auto-patcher by Detox; released 2007-06-16."
+
+[[mod]]
+map_id = "9143891a7eb36edf3862e91a2d8a19a74e520fcc0432535c4c967540bf827329"
+name = "Canyon (Relic)"
+base = "dune"
+authors = []
+release = "Canyon"
+released = "2006-03"
+source_url = "https://web.archive.org/web/2006/http://www.assassin4hire.com/upload/details.php?file=247"
+confidence = "unknown"
+evidence = "assassin4hire details page (file=247, dated 29/03/2006) names no uploader and has no description; rar holds only Canyon.ppf (DotHalo header 'for dune unmodded.map', no author)"
+notes = "Commenters at the time could not tell which map it was for. Its patch data opens identically to 'cool dune mash pit mod' (same first patched blocks), so it may share an author, but that is unproven. Web searches found nothing else."
+
+[[mod]]
+map_id = "cf0df3b82a7720c0b15eb05afdc0060f1dac35d5a5268310f1c9aa8f9c744fb5"
+name = "Q*bert"
+base = "containment"
+authors = ["CaptPoopface"]
+release = "qBert v3"
+source_url = "https://web.archive.org/web/20120126045314/http://www.se7ensins.com/forums/threads/phantom-map-pack-v1-and-v2.185536/"
+confidence = "high"
+evidence = "Phantom Mappack release post map list (se7ensins, 2010-03-31, archived): https://web.archive.org/web/20120126045314/http://www.se7ensins.com/forums/threads/phantom-map-pack-v1-and-v2.185536/"
+notes = "Phantom Mappack (v1/v2) compiled by iBotPeaches (Connor Tumbleson, posting as BrainHacker), released 2010-01-08; iBotPeaches is the compiler, not the map author."
+
+[[mod]]
+map_id = "ae915ea40fe543f5d73ea8bda5e71e7319b43892f59f3b94c2433538d49fbb02"
+name = "Ownage Modz Warlock"
+base = "warlock"
+authors = ["Synch"]
+release = "Ownage Modz"
+released = "2006-01"
+source_url = "https://web.archive.org/web/2007/http://www.assassin4hire.com/upload/uploads/upload-1136181867-Ownage%20Modz.rar"
+confidence = "high"
+evidence = "Read Me.txt in the rar: 'Ownage Modz By Synch - 1/1/06'; PPF headers '<Map> --[Ownage Modz]-- By Synch'"
+
+[[mod]]
+map_id = "f280a812110d399c00fcd2f1dd3f282104d0c0073c1ccfe0509232590e608301"
+name = "Ownage Modz Turf"
+base = "turf"
+authors = ["Synch"]
+release = "Ownage Modz"
+released = "2006-01"
+source_url = "https://web.archive.org/web/2007/http://www.assassin4hire.com/upload/uploads/upload-1136181867-Ownage%20Modz.rar"
+confidence = "high"
+evidence = "Read Me.txt in the rar: 'Ownage Modz By Synch - 1/1/06'; PPF headers '<Map> --[Ownage Modz]-- By Synch'"
+
+[[mod]]
+map_id = "9ec3f6bf806387f3e8e12c6c85c687830deb8ba27a114a6facd8a3988aea524c"
+name = "Ownage Modz Terminal"
+base = "triplicate"
+authors = ["Synch"]
+release = "Ownage Modz"
+released = "2006-01"
+source_url = "https://web.archive.org/web/2007/http://www.assassin4hire.com/upload/uploads/upload-1136181867-Ownage%20Modz.rar"
+confidence = "high"
+evidence = "Read Me.txt in the rar: 'Ownage Modz By Synch - 1/1/06'; PPF headers '<Map> --[Ownage Modz]-- By Synch'"
+
+[[mod]]
+map_id = "3a8ea3fa157f8ea18ede3195cb76208e53da7f8aab5da1adc71b22ef1139db8a"
+name = "Ownage Modz Sanctuary"
+base = "deltatap"
+authors = ["Synch"]
+release = "Ownage Modz"
+released = "2006-01"
+source_url = "https://web.archive.org/web/2007/http://www.assassin4hire.com/upload/uploads/upload-1136181867-Ownage%20Modz.rar"
+confidence = "high"
+evidence = "Read Me.txt in the rar: 'Ownage Modz By Synch - 1/1/06'; PPF headers '<Map> --[Ownage Modz]-- By Synch'"
+
+[[mod]]
+map_id = "a95d34425c5b287c4f2e91e48358a82907d09a9a19be4f4fd8e62ad99db3f560"
+name = "Ownage Modz Relic"
+base = "dune"
+authors = ["Synch"]
+release = "Ownage Modz"
+released = "2006-01"
+source_url = "https://web.archive.org/web/2007/http://www.assassin4hire.com/upload/uploads/upload-1136181867-Ownage%20Modz.rar"
+confidence = "high"
+evidence = "Read Me.txt in the rar: 'Ownage Modz By Synch - 1/1/06'; PPF headers '<Map> --[Ownage Modz]-- By Synch'"
+
+[[mod]]
+map_id = "4baf4bd72d8ade0644f53fa04e19304b186171a8610dab4c2c8a893750569a7c"
+name = "Ownage Modz Gemini"
+base = "gemini"
+authors = ["Synch"]
+release = "Ownage Modz"
+released = "2006-01"
+source_url = "https://web.archive.org/web/2007/http://www.assassin4hire.com/upload/uploads/upload-1136181867-Ownage%20Modz.rar"
+confidence = "high"
+evidence = "Read Me.txt in the rar: 'Ownage Modz By Synch - 1/1/06'; PPF headers '<Map> --[Ownage Modz]-- By Synch'"
+
+[[mod]]
+map_id = "a6b5b6a499537d7ac094b2ffaa1cc92fdcdcdc7999438f280748b167e61a6e76"
+name = "Ownage Modz Elongation"
+base = "elongation"
+authors = ["Synch"]
+release = "Ownage Modz"
+released = "2006-01"
+source_url = "https://web.archive.org/web/2007/http://www.assassin4hire.com/upload/uploads/upload-1136181867-Ownage%20Modz.rar"
+confidence = "high"
+evidence = "Read Me.txt in the rar: 'Ownage Modz By Synch - 1/1/06'; PPF headers '<Map> --[Ownage Modz]-- By Synch'"
+
+[[mod]]
+map_id = "b73d0525e499cc50cd7f0154ead762c509a73afa4c4eb78f376b8546197fc306"
+name = "Ownage Modz Containment"
+base = "containment"
+authors = ["Synch"]
+release = "Ownage Modz"
+released = "2006-01"
+source_url = "https://web.archive.org/web/2007/http://www.assassin4hire.com/upload/uploads/upload-1136181867-Ownage%20Modz.rar"
+confidence = "high"
+evidence = "Read Me.txt in the rar: 'Ownage Modz By Synch - 1/1/06'; PPF headers '<Map> --[Ownage Modz]-- By Synch'"
+
+[[mod]]
+map_id = "b7f0869ee200cd1e46e2f9a3e090ddebbb2bf78d670b0d33628d7607aa4bf46b"
+name = "Ownage Modz Backwash"
+base = "backwash"
+authors = ["Synch"]
+release = "Ownage Modz"
+released = "2006-01"
+source_url = "https://web.archive.org/web/2007/http://www.assassin4hire.com/upload/uploads/upload-1136181867-Ownage%20Modz.rar"
+confidence = "high"
+evidence = "Read Me.txt in the rar: 'Ownage Modz By Synch - 1/1/06'; PPF headers '<Map> --[Ownage Modz]-- By Synch'"
+
+[[mod]]
+map_id = "28e4e22a1b06ad30263b4ab7320776ca61dc823155668c2e8a2b46969bab716e"
+name = "Nightwinder 2"
+base = "containment"
+authors = ["MrMurder"]
+release = "Nightwinder2"
+released = "2007-03"
+source_url = "https://archive.org/details/nightwinder2"
+confidence = "high"
+evidence = "Phantom release list 'Nightwinder2 (MrMurder's)' https://web.archive.org/web/20120126045314/http://www.se7ensins.com/forums/threads/phantom-map-pack-v1-and-v2.185536/; Connor Tumbleson blog; archive.org item 'Nightwinder 2 : Mr. Murder' dated 2007-03-18"
+notes = "Current credit's 'iBotModz credits iBotPeaches' is wrong: iBotPeaches only compiled/reposted it; original halomods.com thread by MrMurder, 2007-03-18. Phantom Mappack (v1/v2) compiled by iBotPeaches (Connor Tumbleson, posting as BrainHacker), released 2010-01-08; iBotPeaches is the compiler, not the map author."
+
+[[mod]]
+map_id = "1cc3c9daa089ca2a115deb240b2479abddcb5cef9b6fa0c0dbf77954d9a46816"
+name = "Night Ops"
+base = "containment"
+authors = ["T Beezie"]
+released = "2007-06"
+source_url = "https://web.archive.org/web/20090208202552/http://www.halomods.com/forums/viewtopic.php?t=61177"
+confidence = "high"
+evidence = "AI Revision release post map list by Zone 117 (halomods.com, 2007-06-16, archived): https://web.archive.org/web/20090208202552/http://www.halomods.com/forums/viewtopic.php?t=61177"
+notes = "Halo 2 Remapped AI Revision pack compiled by Zone 117 (menu), auto-patcher by Detox; released 2007-06-16."
+
+[[mod]]
+map_id = "bc42b3d5502821f766d6cbc5269f012bd3bba04b2dc953d26f3ff1b71a9c9970"
+name = "Foundry"
+base = "gemini"
+authors = ["DarkShallFall"]
+source_url = "https://web.archive.org/web/20120126045314/http://www.se7ensins.com/forums/threads/phantom-map-pack-v1-and-v2.185536/"
+confidence = "high"
+evidence = "Phantom Mappack release post map list (se7ensins, 2010-03-31, archived): https://web.archive.org/web/20120126045314/http://www.se7ensins.com/forums/threads/phantom-map-pack-v1-and-v2.185536/"
+notes = "Phantom Mappack (v1/v2) compiled by iBotPeaches (Connor Tumbleson, posting as BrainHacker), released 2010-01-08; iBotPeaches is the compiler, not the map author."
+
+[[mod]]
+map_id = "ae58d622bc293c026baa1df91ef4d9c6f859670444262b6ce0fd8f803fded6aa"
+name = "Cool Dune Mash Pit Mod"
+base = "dune"
+authors = []
+release = "dune mash pit"
+released = "2006-03"
+source_url = "https://web.archive.org/web/2006/http://www.assassin4hire.com/upload/details.php?file=233"
+confidence = "unknown"
+evidence = "assassin4hire details pages file=233/234 (17/03/2006) give only a weapon-swap description, no uploader; PPF header is generic 'Patch Generated by DotHalo for dune.map'"
+notes = "Uploaded twice (as 'dune mash pit (relic)' and 'dune mash pit'); description: BR->sniper with 360 AA, SMG->rocket, rocket->sniper tower base, etc. Searches (se7ensins etc.) only show it was known as 'dune mash pit'; no author found."
+
+[[mod]]
+map_id = "5b5b00e376a1c3349943f718743c167d39c8e3b5862b9a6b6fb09f717d6bc67a"
+name = "DKong"
+base = "containment"
+authors = ["killershard"]
+release = "Donkey Kong Extreme"
+source_url = "https://web.archive.org/web/20120126045314/http://www.se7ensins.com/forums/threads/phantom-map-pack-v1-and-v2.185536/"
+confidence = "high"
+evidence = "Phantom Mappack release post map list (se7ensins, 2010-03-31, archived): https://web.archive.org/web/20120126045314/http://www.se7ensins.com/forums/threads/phantom-map-pack-v1-and-v2.185536/"
+notes = "Phantom Mappack (v1/v2) compiled by iBotPeaches (Connor Tumbleson, posting as BrainHacker), released 2010-01-08; iBotPeaches is the compiler, not the map author."
+
+[[mod]]
+map_id = "b952d4c4cbc93db324da8aca574ffc4099a29e98241e6cf68f197596d36bf032"
+name = "Blockfort"
+base = "gemini"
+authors = ["halo0001"]
+release = "BlockFortFinal"
+source_url = "https://web.archive.org/web/20120126045314/http://www.se7ensins.com/forums/threads/phantom-map-pack-v1-and-v2.185536/"
+confidence = "high"
+evidence = "Phantom Mappack release post map list (se7ensins, 2010-03-31, archived): https://web.archive.org/web/20120126045314/http://www.se7ensins.com/forums/threads/phantom-map-pack-v1-and-v2.185536/"
+notes = "Phantom Mappack (v1/v2) compiled by iBotPeaches (Connor Tumbleson, posting as BrainHacker), released 2010-01-08; iBotPeaches is the compiler, not the map author."
+
+[[mod]]
+map_id = "0677b8a345fef361ec2360fbba6fa8d26e8f9f4fd9758b97ccf4b486c34ad1bd"
+name = "BioDrop"
+base = "triplicate"
+authors = ["DarkShallFall"]
+released = "2008-05"
+source_url = "https://ibotmodz.net/forum/topic/3528-darkshallfall-biodrop/"
+confidence = "high"
+evidence = "Phantom release list 'BioDrop (DarkShallFall)' https://web.archive.org/web/20120126045314/http://www.se7ensins.com/forums/threads/phantom-map-pack-v1-and-v2.185536/; iBotModz repost '[DarkShallFall] BioDrop' (2008-05-30) of the Remnantmods release (2008-05-26)"
+notes = "Current credit's 'iBotModz credits SmokiestGrunl' is wrong: SmokiestGrunl was only a Phantom beta tester. Handle spelled 'Darkshallfall' by Connor Tumbleson's blog, 'DarkShallFall' in the release posts. Phantom Mappack (v1/v2) compiled by iBotPeaches (Connor Tumbleson, posting as BrainHacker), released 2010-01-08; iBotPeaches is the compiler, not the map author."
+
+[[mod]]
+map_id = "2104834e598da98c85ce1b5901d4a6cb069518fef1674e624d923aa44d5b9698"
+name = "AI War"
+base = "containment"
+authors = ["T Beezie"]
+released = "2007-06"
+source_url = "https://web.archive.org/web/20090208202552/http://www.halomods.com/forums/viewtopic.php?t=61177"
+confidence = "high"
+evidence = "AI Revision release post map list by Zone 117 (halomods.com, 2007-06-16, archived): https://web.archive.org/web/20090208202552/http://www.halomods.com/forums/viewtopic.php?t=61177"
+notes = "Halo 2 Remapped AI Revision pack compiled by Zone 117 (menu), auto-patcher by Detox; released 2007-06-16."
+
+[[mod]]
+map_id = "c1712f25a6326f35f653caf31d5edee7281c6d4fe4f8c0e3e9fc06a83fc373c0"
+name = "Zombies In The Mist"
+base = "cyclotron"
+authors = ["MilyardoX2"]
+released = "2007-06"
+source_url = "https://web.archive.org/web/20090208202552/http://www.halomods.com/forums/viewtopic.php?t=61177"
+confidence = "high"
+evidence = "AI Revision release post map list by Zone 117 (halomods.com, 2007-06-16, archived): https://web.archive.org/web/20090208202552/http://www.halomods.com/forums/viewtopic.php?t=61177"
+notes = "Halo 2 Remapped AI Revision pack compiled by Zone 117 (menu), auto-patcher by Detox; released 2007-06-16."
+
+[[mod]]
+map_id = "fbf1fb71c6dc07d264eea2431e55fecc35031e49d4f331414aa6d37682a2d820"
+name = "They Rose From The Snow"
+base = "burial_mounds"
+authors = ["Uncutshadow"]
+released = "2007-06"
+source_url = "https://web.archive.org/web/20090208202552/http://www.halomods.com/forums/viewtopic.php?t=61177"
+confidence = "high"
+evidence = "AI Revision release post map list by Zone 117 (halomods.com, 2007-06-16, archived): https://web.archive.org/web/20090208202552/http://www.halomods.com/forums/viewtopic.php?t=61177"
+notes = "Halo 2 Remapped AI Revision pack compiled by Zone 117 (menu), auto-patcher by Detox; released 2007-06-16."
+
+[[mod]]
+map_id = "0a92534d3782053a834a59d7e2f208ee99c398c8b7c93da27223295aaa573496"
+name = "Soccer Mounds"
+base = "burial_mounds"
+authors = ["Freakazoid"]
+source_url = "https://web.archive.org/web/20120126045314/http://www.se7ensins.com/forums/threads/phantom-map-pack-v1-and-v2.185536/"
+confidence = "high"
+evidence = "Phantom Mappack release post map list (se7ensins, 2010-03-31, archived): https://web.archive.org/web/20120126045314/http://www.se7ensins.com/forums/threads/phantom-map-pack-v1-and-v2.185536/"
+notes = "Project Mimesis re-host credits '^Fr3aKaZoid & CasperLT1'; Phantom list and Connor Tumbleson's blog say Freakazoid alone. Also shipped earlier in Killtrocity Mappack v2 (#37). Phantom Mappack (v1/v2) compiled by iBotPeaches (Connor Tumbleson, posting as BrainHacker), released 2010-01-08; iBotPeaches is the compiler, not the map author."
+
+[[mod]]
+map_id = "0271d484d74d9b8e3e5098ca5cb87fc35f65ea19c408775f48caec8171255489"
+name = "PPF Noobs Zanzibar"
+base = "zanzibar"
+authors = ["l PPF l NeoN"]
+release = "The PPF Noobs Map Package"
+released = "2006-10"
+source_url = "https://web.archive.org/web/20070112055613/http://www.theppfnoobs.com/Mods/The%20PPF%20Noobs%20Map%20Package.rar"
+confidence = "high"
+evidence = "Readme 'Made By l PPF l NeoN.txt' in the rar: 'These mods were made by l PPF l NeoN!'; files dated Oct 2006"
+notes = "Released by The PPF Noobs group (site owners l PPF l NeoN, l PPF l H3MP, l PPF l JXModz)."
+
+[[mod]]
+map_id = "9a77ec4a87bc2760f6de69eeff2cfb3f34a3f4c91705910d5344b9cb15e68ef3"
+name = "PPF Noobs Waterworks"
+base = "waterworks"
+authors = ["l PPF l NeoN"]
+release = "The PPF Noobs Map Package"
+released = "2006-10"
+source_url = "https://web.archive.org/web/20070112055613/http://www.theppfnoobs.com/Mods/The%20PPF%20Noobs%20Map%20Package.rar"
+confidence = "high"
+evidence = "Readme 'Made By l PPF l NeoN.txt' in the rar: 'These mods were made by l PPF l NeoN!'; files dated Oct 2006"
+notes = "Released by The PPF Noobs group (site owners l PPF l NeoN, l PPF l H3MP, l PPF l JXModz)."
+
+[[mod]]
+map_id = "209ae689b24477213411fabf447fe84e3449b66a8391dbf8173e5c13381e6e20"
+name = "PPF Noobs Midship"
+base = "midship"
+authors = ["l PPF l NeoN"]
+release = "The PPF Noobs Map Package"
+released = "2006-10"
+source_url = "https://web.archive.org/web/20070112055613/http://www.theppfnoobs.com/Mods/The%20PPF%20Noobs%20Map%20Package.rar"
+confidence = "high"
+evidence = "Readme 'Made By l PPF l NeoN.txt' in the rar: 'These mods were made by l PPF l NeoN!'; files dated Oct 2006"
+notes = "Released by The PPF Noobs group (site owners l PPF l NeoN, l PPF l H3MP, l PPF l JXModz)."
+
+[[mod]]
+map_id = "b80425cc4d7c7d7b36deb3c77cf8b310c666675d6f83b7a5d4610cf6fb5f6a19"
+name = "PPF Noobs Lockout"
+base = "lockout"
+authors = ["l PPF l NeoN"]
+release = "The PPF Noobs Map Package"
+released = "2006-10"
+source_url = "https://web.archive.org/web/20070112055613/http://www.theppfnoobs.com/Mods/The%20PPF%20Noobs%20Map%20Package.rar"
+confidence = "high"
+evidence = "Readme 'Made By l PPF l NeoN.txt' in the rar: 'These mods were made by l PPF l NeoN!'; files dated Oct 2006"
+notes = "Released by The PPF Noobs group (site owners l PPF l NeoN, l PPF l H3MP, l PPF l JXModz)."
+
+[[mod]]
+map_id = "63d3bf5cc31b090cfc89117866b7d2c060ba34ff6cd0056bed0702326324f0ee"
+name = "PPF Noobs Headlong"
+base = "headlong"
+authors = ["l PPF l NeoN"]
+release = "The PPF Noobs Map Package"
+released = "2006-10"
+source_url = "https://web.archive.org/web/20070112055613/http://www.theppfnoobs.com/Mods/The%20PPF%20Noobs%20Map%20Package.rar"
+confidence = "high"
+evidence = "Readme 'Made By l PPF l NeoN.txt' in the rar: 'These mods were made by l PPF l NeoN!'; files dated Oct 2006"
+notes = "Released by The PPF Noobs group (site owners l PPF l NeoN, l PPF l H3MP, l PPF l JXModz)."
+
+[[mod]]
+map_id = "63c93168c0fe1cbc08ed15d6aca5577b2d7cfacf7d0f786f36054536aa7d8d4c"
+name = "PPF Noobs Foundation"
+base = "foundation"
+authors = ["l PPF l NeoN"]
+release = "The PPF Noobs Map Package"
+released = "2006-10"
+source_url = "https://web.archive.org/web/20070112055613/http://www.theppfnoobs.com/Mods/The%20PPF%20Noobs%20Map%20Package.rar"
+confidence = "high"
+evidence = "Readme 'Made By l PPF l NeoN.txt' in the rar: 'These mods were made by l PPF l NeoN!'; files dated Oct 2006"
+notes = "Released by The PPF Noobs group (site owners l PPF l NeoN, l PPF l H3MP, l PPF l JXModz)."
+
+[[mod]]
+map_id = "d5d3dec2cc40b0ac79a995c030cc000a6a24fb7bb3b44e4134173c7cc3cd305f"
+name = "PPF Noobs Cyclotron"
+base = "cyclotron"
+authors = ["l PPF l NeoN"]
+release = "The PPF Noobs Map Package"
+released = "2006-10"
+source_url = "https://web.archive.org/web/20070112055613/http://www.theppfnoobs.com/Mods/The%20PPF%20Noobs%20Map%20Package.rar"
+confidence = "high"
+evidence = "Readme 'Made By l PPF l NeoN.txt' in the rar: 'These mods were made by l PPF l NeoN!'; files dated Oct 2006"
+notes = "Released by The PPF Noobs group (site owners l PPF l NeoN, l PPF l H3MP, l PPF l JXModz)."
+
+[[mod]]
+map_id = "2e65996fb876e440745dd02f4e4338c8de185d80c20d1f17b08795d7e478b8fc"
+name = "PPF Noobs Colossus"
+base = "colossus"
+authors = ["l PPF l NeoN"]
+release = "The PPF Noobs Map Package"
+released = "2006-10"
+source_url = "https://web.archive.org/web/20070112055613/http://www.theppfnoobs.com/Mods/The%20PPF%20Noobs%20Map%20Package.rar"
+confidence = "high"
+evidence = "Readme 'Made By l PPF l NeoN.txt' in the rar: 'These mods were made by l PPF l NeoN!'; files dated Oct 2006"
+notes = "Released by The PPF Noobs group (site owners l PPF l NeoN, l PPF l H3MP, l PPF l JXModz)."
+
+[[mod]]
+map_id = "07e0a116b6b913e68e5c9a971c3b8b585c1098d14deb20757a198abd4fc3024b"
+name = "PPF Noobs Coagulation"
+base = "coagulation"
+authors = ["l PPF l NeoN"]
+release = "The PPF Noobs Map Package"
+released = "2006-10"
+source_url = "https://web.archive.org/web/20070112055613/http://www.theppfnoobs.com/Mods/The%20PPF%20Noobs%20Map%20Package.rar"
+confidence = "high"
+evidence = "Readme 'Made By l PPF l NeoN.txt' in the rar: 'These mods were made by l PPF l NeoN!'; files dated Oct 2006"
+notes = "Released by The PPF Noobs group (site owners l PPF l NeoN, l PPF l H3MP, l PPF l JXModz)."
+
+[[mod]]
+map_id = "52f29a06df9087fb3a5ca0210b024c1960c142a1e1842e493773d117ab611f8c"
+name = "PPF Noobs Burial_Mounds"
+base = "burial_mounds"
+authors = ["l PPF l NeoN"]
+release = "The PPF Noobs Map Package"
+released = "2006-10"
+source_url = "https://web.archive.org/web/20070112055613/http://www.theppfnoobs.com/Mods/The%20PPF%20Noobs%20Map%20Package.rar"
+confidence = "high"
+evidence = "Readme 'Made By l PPF l NeoN.txt' in the rar: 'These mods were made by l PPF l NeoN!'; files dated Oct 2006"
+notes = "Released by The PPF Noobs group (site owners l PPF l NeoN, l PPF l H3MP, l PPF l JXModz)."
+
+[[mod]]
+map_id = "2efbc117753d55dc93b78fa2d0d99b0c71c2ee360b738dbbdaaf748f1afc7a70"
+name = "PPF Noobs Beavercreek"
+base = "beavercreek"
+authors = ["l PPF l NeoN"]
+release = "The PPF Noobs Map Package"
+released = "2006-10"
+source_url = "https://web.archive.org/web/20070112055613/http://www.theppfnoobs.com/Mods/The%20PPF%20Noobs%20Map%20Package.rar"
+confidence = "high"
+evidence = "Readme 'Made By l PPF l NeoN.txt' in the rar: 'These mods were made by l PPF l NeoN!'; files dated Oct 2006"
+notes = "Released by The PPF Noobs group (site owners l PPF l NeoN, l PPF l H3MP, l PPF l JXModz)."
+
+[[mod]]
+map_id = "f6cee559f5c337155f0b1201df1cbc6f5b0bf1eaf818ffe70315a18def23e658"
+name = "PPF Noobs Ascension"
+base = "ascension"
+authors = ["l PPF l NeoN"]
+release = "The PPF Noobs Map Package"
+released = "2006-10"
+source_url = "https://web.archive.org/web/20070112055613/http://www.theppfnoobs.com/Mods/The%20PPF%20Noobs%20Map%20Package.rar"
+confidence = "high"
+evidence = "Readme 'Made By l PPF l NeoN.txt' in the rar: 'These mods were made by l PPF l NeoN!'; files dated Oct 2006"
+notes = "Released by The PPF Noobs group (site owners l PPF l NeoN, l PPF l H3MP, l PPF l JXModz)."
+
+[[mod]]
+map_id = "b6e74c842a981a904a0001f14c92753ac550681f8055ec50d6a16c7f6ada0599"
+name = "Marines vs Teh Flood"
+base = "lockout"
+authors = ["T Beezie"]
+release = "Marines vs. Teh Flood"
+released = "2007-06"
+source_url = "https://web.archive.org/web/20090208202552/http://www.halomods.com/forums/viewtopic.php?t=61177"
+confidence = "high"
+evidence = "AI Revision release post map list by Zone 117 (halomods.com, 2007-06-16, archived): https://web.archive.org/web/20090208202552/http://www.halomods.com/forums/viewtopic.php?t=61177"
+notes = "Halo 2 Remapped AI Revision pack compiled by Zone 117 (menu), auto-patcher by Detox; released 2007-06-16."
+
+[[mod]]
+map_id = "5982c604386af8441a75082238a05ad257ffe61d69c7c23f18b1803a10a52251"
+name = "Lockout Paintball"
+base = "lockout"
+authors = ["Barringer"]
+source_url = "https://web.archive.org/web/20120126045314/http://www.se7ensins.com/forums/threads/phantom-map-pack-v1-and-v2.185536/"
+confidence = "high"
+evidence = "Phantom Mappack release post map list (se7ensins, 2010-03-31, archived): https://web.archive.org/web/20120126045314/http://www.se7ensins.com/forums/threads/phantom-map-pack-v1-and-v2.185536/"
+notes = "Phantom Mappack (v1/v2) compiled by iBotPeaches (Connor Tumbleson, posting as BrainHacker), released 2010-01-08; iBotPeaches is the compiler, not the map author."
+
+[[mod]]
+map_id = "d2db6aa378d9f4458b3550854134af055df2d3ebe8c9dfc4dc7fbf2fe15ad5d7"
+name = "The Landfill"
+base = "mainmenu"
+authors = ["NRA"]
+release = "The Landfill AKA The Secret Level"
+released = "2005"
+source_url = "https://web.archive.org/web/2005/http://www.halomods.com/bocked/index.php?id=ppfs"
+confidence = "high"
+evidence = "PPF header: 'The Landfill. Patch Mainmenu.map. Made by NRA.'; listed on Group Bocked PPFs page as Mainmenu (UK PAL) https://web.archive.org/web/2005/http://www.halomods.com/bocked/index.php?id=ppfs"
+notes = "NRA is named as a Group Bocked associate in the site news (April 2005). Targets the UK PAL mainmenu.map."
+
+[[mod]]
+map_id = "5f6dec41d52f22f43cb4599be1caa099d44fcc432d3980e0783d19249ab6cd1f"
+name = "Coconut Gun"
+base = "zanzibar"
+authors = ["norulezapply"]
+release = "Coconut gun"
+released = "2005"
+source_url = "https://web.archive.org/web/2005/http://www.halomods.com/bocked/index.php?id=ppfs"
+confidence = "high"
+evidence = "PPF header: 'Coconut gun by norulezapply'; Group Bocked PPFs page lists it for Zanzibar (SMG shoots coconuts) https://web.archive.org/web/2005/http://www.halomods.com/bocked/index.php?id=ppfs"
+notes = "norulezapply founded Group Bocked. The Bocked page confirms the target map is Zanzibar."
+
+[[mod]]
+map_id = "a2418598339e10d5521279534de1f9f327ca9aa925c15b79a056106e736f40f1"
+name = "Wraith Grenade"
+base = "zanzibar"
+authors = ["Group Bocked"]
+release = "Wraith Grenades"
+released = "2005"
+source_url = "https://web.archive.org/web/2005/http://www.halomods.com/bocked/index.php?id=ppfs"
+confidence = "high"
+evidence = "PPF header says 'Made by Group Bocked'; listed on Group Bocked PPFs page https://web.archive.org/web/2005/http://www.halomods.com/bocked/index.php?id=ppfs"
+notes = "Group Bocked (halomods.com/bocked) was founded 2004 by norulezapply; members per the About page: norulezapply, farklem, Xbox_War3z (XIU), D3fault_dot_Xbe, s00pcan, PUCHYKILLER, KEtCHuP_bOMB. No per-member credit found for this patch."
+
+[[mod]]
+map_id = "636e0fc119c286e57563b63e39e54f558bee1d4361161cf80c92644ba6558c88"
+name = "Heavy Weapons"
+base = "zanzibar"
+authors = ["Group Bocked"]
+release = "Heavy Weapons"
+released = "2005"
+source_url = "https://web.archive.org/web/2005/http://www.halomods.com/bocked/index.php?id=ppfs"
+confidence = "high"
+evidence = "PPF header says 'Made by Group Bocked'; listed on Group Bocked PPFs page https://web.archive.org/web/2005/http://www.halomods.com/bocked/index.php?id=ppfs"
+notes = "Group Bocked (halomods.com/bocked) was founded 2004 by norulezapply; members per the About page: norulezapply, farklem, Xbox_War3z (XIU), D3fault_dot_Xbe, s00pcan, PUCHYKILLER, KEtCHuP_bOMB. No per-member credit found for this patch."
+
+[[mod]]
+map_id = "1f57d72caea4e1338e8b3f41831c0ada43341f1117155fd023f66807480c0509"
+name = "Gravity Rifle (Coagulation)"
+base = "coagulation"
+authors = ["Group Bocked"]
+release = "Gravity Rifle(Not Skinned)"
+released = "2005"
+source_url = "https://web.archive.org/web/2005/http://www.halomods.com/bocked/index.php?id=ppfs"
+confidence = "high"
+evidence = "PPF header 'Made by GB.' (Group Bocked); listed on Group Bocked PPFs page https://web.archive.org/web/2005/http://www.halomods.com/bocked/index.php?id=ppfs"
+notes = "Group Bocked (halomods.com/bocked) was founded 2004 by norulezapply; members per the About page: norulezapply, farklem, Xbox_War3z (XIU), D3fault_dot_Xbe, s00pcan, PUCHYKILLER, KEtCHuP_bOMB. No per-member credit found for this patch."
+
+[[mod]]
+map_id = "073a09bb4b9196f52bb4f2f02d4fe8909fe9ce70e90c00dc28f43dbe0b996ad5"
+name = "Fusion Coil Gun"
+base = "zanzibar"
+authors = ["Group Bocked"]
+release = "Fusion Coil Gun"
+released = "2005"
+source_url = "https://web.archive.org/web/2005/http://www.halomods.com/bocked/index.php?id=ppfs"
+confidence = "high"
+evidence = "PPF header says 'Made by Group Bocked'; listed on Group Bocked PPFs page https://web.archive.org/web/2005/http://www.halomods.com/bocked/index.php?id=ppfs"
+notes = "Group Bocked (halomods.com/bocked) was founded 2004 by norulezapply; members per the About page: norulezapply, farklem, Xbox_War3z (XIU), D3fault_dot_Xbe, s00pcan, PUCHYKILLER, KEtCHuP_bOMB. No per-member credit found for this patch."
+
+[[mod]]
+map_id = "82eb43d1de89f325886d60e57e25fd0588cd457bcc1f7730a52456967d3c4f4e"
+name = "Dual Wield Anything"
+base = "zanzibar"
+authors = ["Group Bocked"]
+release = "Duel Weild Anything"
+released = "2005-04"
+source_url = "https://web.archive.org/web/2005/http://www.halomods.com/bocked/index.php?id=ppfs"
+confidence = "high"
+evidence = "PPF header says 'Made by Group Bocked'; listed on Group Bocked PPFs page https://web.archive.org/web/2005/http://www.halomods.com/bocked/index.php?id=ppfs"
+notes = "Group Bocked (halomods.com/bocked) was founded 2004 by norulezapply; members per the About page: norulezapply, farklem, Xbox_War3z (XIU), D3fault_dot_Xbe, s00pcan, PUCHYKILLER, KEtCHuP_bOMB. No per-member credit found for this patch."
+
+[[mod]]
+map_id = "3f364c8dcd06df54cef6ca3b29d40ee7b677c9eb35d4df2107290ae95ca97408"
+name = "Nuke Launcher (Coagulation)"
+base = "coagulation"
+authors = ["Group Bocked"]
+release = "Nuke for Coagulation"
+released = "2005-02"
+source_url = "https://web.archive.org/web/2005/http://www.halomods.com/bocked/index.php?id=ppfs"
+confidence = "high"
+evidence = "PPF header says 'Made by Group Bocked'; listed on Group Bocked PPFs page https://web.archive.org/web/2005/http://www.halomods.com/bocked/index.php?id=ppfs"
+notes = "Group Bocked news, February 6th 2005: 'We just released a new mod called Nuke for Coagulation'. Group Bocked (halomods.com/bocked) was founded 2004 by norulezapply; members per the About page: norulezapply, farklem, Xbox_War3z (XIU), D3fault_dot_Xbe, s00pcan, PUCHYKILLER, KEtCHuP_bOMB. No per-member credit found for this patch."
+
+[[mod]]
+map_id = "6400dd1317e1dac4d2d478c86ee20d17273f9490ab962e12be120016ec79cc29"
+name = "Beasthog"
+base = "zanzibar"
+authors = ["Group Bocked"]
+release = "Beasthog Version 1"
+released = "2005-02"
+source_url = "https://web.archive.org/web/2005/http://www.halomods.com/bocked/index.php?id=ppfs"
+confidence = "high"
+evidence = "PPF header says 'Made by Group Bocked'; listed on Group Bocked PPFs page https://web.archive.org/web/2005/http://www.halomods.com/bocked/index.php?id=ppfs"
+notes = "Group Bocked (halomods.com/bocked) was founded 2004 by norulezapply; members per the About page: norulezapply, farklem, Xbox_War3z (XIU), D3fault_dot_Xbe, s00pcan, PUCHYKILLER, KEtCHuP_bOMB. No per-member credit found for this patch."
+
+[[mod]]
+map_id = "53ec1d86b819ef8ba41966ef983c918bff7e1d0c79068f8828f49d0cb9ac1b68"
+name = "Beezie Bot Canyon"
+base = "coagulation"
+authors = ["T Beezie"]
+released = "2007-06"
+source_url = "https://web.archive.org/web/20090208202552/http://www.halomods.com/forums/viewtopic.php?t=61177"
+confidence = "high"
+evidence = "AI Revision release post map list by Zone 117 (halomods.com, 2007-06-16, archived): https://web.archive.org/web/20090208202552/http://www.halomods.com/forums/viewtopic.php?t=61177"
+notes = "Confirmed by the pack's map list, not just the name. Halo 2 Remapped AI Revision pack compiled by Zone 117 (menu), auto-patcher by Detox; released 2007-06-16."

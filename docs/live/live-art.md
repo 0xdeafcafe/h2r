@@ -56,7 +56,7 @@ entry; a single BSP of a level that could not be read is listed as
 `map/<stem>/bsp_<index>` and the level keeps its other BSPs.
 `GEOMETRY_VERSION` is 1 (`views.json` is unchanged; the web viewer checks
 it); the art's `EXTRACTOR_VERSION` (part of the cache
-key) is 22, so a disc extracted by an older build is extracted again
+key) is 25, so a disc extracted by an older build is extracted again
 (10 added the layers, the sky and `extras.name`; 12 the surface
 pictures, texture coordinates and the `scenario` node; 13 the base map
 from the shader's passes, pictures as files beside `map.glb`, the gzip
@@ -69,7 +69,9 @@ reflection tints and shaders whose compiled data another shader shares;
 textures; 21 packing (Brotli and gzip copies, meshopt where it pays), WebP
 pictures and views, surface pictures at the disc's full size; 22 the
 bipeds' strafing, backwards and crouched movement clips, the vehicle seat
-poses `any:seat_<mode>`, the models' `seats` table and `asset.extras.lift`).
+poses `any:seat_<mode>`, the models' `seats` table and `asset.extras.lift`;
+23 installed mods' art and scripted spawns; 24 the sky's see-through
+layers keep their pictures; 25 exports the animated plasma pass on lift geometry).
 
 ### `map.glb`
 
@@ -152,8 +154,21 @@ poses `any:seat_<mode>`, the models' `seats` table and `asset.extras.lift`).
   block), `tag` (the object tag's file name), `pos`, `forward`, `up` and
   `scale` (game coordinates, as for machines), `bsp` (the zone the
   placement says it belongs to, when it names one) and, for `netgame`,
-  `item` (the drawn object's group: `weap`, `vehi`, `eqip`). The views do
-  not draw these objects, and they are not in `bounds` or the frame.
+  `item` (the drawn object's group: `weap`, `vehi`, `eqip`), and `script`
+  for a placement a script creates (below). The views do not draw these
+  objects, and they are not in `bounds` or the frame.
+- **Scripted spawns** (`live_scripted`). A placement the level does not
+  make at the start (flag bit 0) is drawn when one of the scenario's
+  scripts creates it, and any placement a script creates carries
+  `extras.script`: `name` (the script), `looping` (a `continuous` script)
+  and `period` (seconds between runs, when its sleeps say). Effects a
+  script plays are `asset.extras.spawners`, a list of `script`, `effect`
+  (the effect tag as the script names it), `at` (the cutscene flag or
+  object it is played at), `pos` (game coordinates), `looping` and
+  `period`. The 3D view marks each spawner with a diamond that bursts at
+  each play (`viewer/spawners.ts`), shown with the effects. Mods use these
+  for vehicles that arrive later, respawning turrets and effects (a
+  projectile salvo) on a loop; retail multiplayer maps have almost none.
 - **Layers.** Decals and effect surfaces (pipeline steps 4 and 7) are in a
   BSP's child nodes `decals_<index>` (`extras.decals: true`) and
   `effects_<index>` (`extras.effects: true`), `decals` and `effects` on a
@@ -167,6 +182,16 @@ poses `any:seat_<mode>`, the models' `seats` table and `asset.extras.lift`).
   half; `alphaMode: MASK`) or `additive` (added; no depth). Multiplying,
   doubling and additive materials are `KHR_materials_unlit`; effects are
   double-sided.
+- **Plasma.** A `transparent/plasma_alpha` surface keeps its geometry and
+  texture coordinates under its BSP or placed model. Its unlit material
+  names the coverage mask in `baseColorTexture`, the two noise textures
+  by index in `extras.noise`, and the pass data in `extras.plasma`.
+  `uv` holds the scale, offset and optional per-axis scroll
+  (`from`, `to`, `period` in seconds) of noise A, noise B and the mask,
+  in that order. `colors` holds the three RGB constants used to tint and
+  brighten the pass. The viewer adds the masked result with depth testing
+  and no depth writes. The separate 2D tactical views still use their
+  simplified glass class for those triangles.
 - **Sky.** `asset.extras.sky`, when the scenario has a sky: `name` (the
   sky tag's file name), `glb` (`"sky.glb"`, beside `map.glb`, when its
   model could be built), `clear` (the clear colour, RGB 0..1, when not
@@ -179,7 +204,15 @@ poses `any:seat_<mode>`, the models' `seats` table and `asset.extras.lift`).
   axes), textured, every region's first permutation at the highest detail
   under 30,000 triangles; its `asset.extras.blend` says per material, in
   order, `opaque`, `alpha` or `additive` (from the template's words:
-  `add`; `alpha`, `cloud(s)`).
+  `add`; `alpha`, `cloud(s)`). Nearly every sky layer is a
+  `transparent\sky_*` (or `two_alpha_clouds`) template: the alpha ones
+  carry their picture as `baseColorTexture`, blended by its alpha
+  (`live_models::Surfaces::Sky`), not the glass tint an object's
+  see-through surfaces get; one whose bitmaps' names none read as a base
+  map takes its first own picture (`live_models::sky_picture`). Before
+  extractor 24 every alpha layer was that glass tint (`GLASS`, alpha
+  0.35), so the viewer drew each sky as a faint dark veil over its fog
+  colour, which read as no sky at all.
 - **Weather.** `asset.extras.weather`, when a BSP has any: per weather
   system (per BSP palette entry with a `weat` tag and clusters), `name`
   (the palette entry's), `kind` (`rain`, `snow`, else `motes`, from words
@@ -260,10 +293,12 @@ radiosity parameters), and the haze drowned Halo 1's maps in cyan.
 
 **Loading.** The viewer draws the level as soon as `map.glb` has loaded,
 untextured (each look shows its class material), then fetches the
-pictures six at a time (`textures3d.ts` `deferTextures`,
-`streamTextures`) and swaps each in when it arrives: the images are
-decoded off the main thread (`createImageBitmap`, no flip, no colour
-conversion). Placed objects of one model are instanced (below). Every
+pictures sixteen at a time (`textures3d.ts` `deferTextures`,
+`streamTextures`; `PICTURES_AT_ONCE` in `scene.ts`) and swaps each in
+when it arrives: the images are decoded off the main thread
+(`createImageBitmap`, no flip, no colour conversion). Player, weapon and
+vehicle models wait for `map.glb` (`ModelLibrary.hold`), so they don't
+share its bandwidth. Placed objects of one model are instanced (below). Every
 art URL the site builds carries the manifest's `source` stamp (`?v=<first
 16 characters>`, `web/src/map/geometry.ts`); the picture and sky URLs
 keep it. The art server (`crates/live-server/src/art.rs`) answers a
@@ -288,6 +323,47 @@ fully textured, ms):
 
 The geometry is most of the wait; gzip takes Outskirts' to about a third
 on the wire.
+
+**Performance (measured 2026-11-19).** `bun run bench:viewer` (in `web/`,
+after `bun run build`; `web/bench/viewer.bench.ts`) serves the built site
+locally with the API and art from live.forbes.red, opens a game's page
+with `?view=3d&perf` in headless Chrome and reports the load (requests,
+bytes on the wire, ms to the first frame with the level and to fully
+textured; median of cold runs, then one warm) and, with the replay
+playing, draw calls, triangles and CPU ms per frame in `update()` and in
+`draw()` (three.js's submission, not GPU time), with AO on and off.
+`--profile` adds the functions the page spent its time in; `--census`
+the visible meshes; `--timeline` every request. `?perf` puts the scene on
+`window.h2Viewer`; the scene marks `h2-viewer:first-map-frame` and
+`h2-viewer:textured` with User Timing. On a 10-core Mac (cold, cache
+off; load times swing with the network, by a second or two):
+
+| | before | after |
+|---|---|---|
+| Old Mombasa (AI, 5 zones): first frame / textured | 5037 / 17017 ms | 2385 / 6398 ms |
+| Old Mombasa, AO on: draw calls, draw ms | 3762, 19.6 (p95 20.9) | 1931, 9.8 (p95 10.5) |
+| Old Mombasa: update ms | 1.3 (p95 18.3) | 1.1 (p95 1.3) |
+| Cyclotron (4 players): first frame / textured | 1654 / 5011 ms | 1413 / 2838 ms |
+| Cyclotron, AO on: draw calls, draw ms | 931, 5.1 (p95 5.5) | 497, 3.2 (p95 3.4) |
+
+What changed: the ambient occlusion reads the depth the scene was drawn
+with (the composer's target has a depth texture, `aopass.ts`) instead of
+drawing the whole scene again for its own depth and normals, which also
+had three look each mesh's program up again (skinned, instanced and plain
+meshes shared that one material); the world matrices are updated once a
+frame, not once per pass and again for the labels; floor probes for
+bipeds' feet (`ground.ts`) go to a grid of the level's triangles
+(`floorgrid.ts`) rather than raycasting every triangle of the level (the
+update's 12 to 18 ms spikes on a campaign level); pictures sixteen at a
+time (each is a round trip of 100 to 300 ms to the art host, so six at a
+time was latency-bound: a campaign level's 197 took 12 s), and models
+after the level. What is left, by the profile: the shadow pass redraws
+every caster each frame though the level never moves (about half the
+remaining draw calls; a cached static shadow map would halve them), and
+three's per-object program checks (`getProgram`) between skinned and
+plain meshes in that pass. A campaign level with its AI is ~1900 draw
+calls, of which the AI's skinned meshes are about 450 (223 meshes, drawn
+and shadowed).
 
 `web/src/viewer/textures3d.ts` keeps both materials of every textured
 mesh (the look and the class material its primitive's `flat` names), so
@@ -396,6 +472,55 @@ with the Halo 2 disc's shared maps.
   they do not decompile, no BSP is flagged cinematic and the level lists
   `map/<stem>/cinematic` under `skipped` (all its BSPs are drawn). Nothing
   of the maps is in the repository; the tests build invented packages.
+
+### Mods
+
+Installed mods, the map packages under `<data>/maps/`
+([maps.md](../game/maps.md)), get art of their own, extracted from the
+patched map the game would load (`live_mods`), so the 3D view of a game
+on a mod draws the mod's level, objects, scripted spawns and pictures,
+not the retail map's.
+
+- **Where.** The same data root as the map pack and Halo 1 maps:
+  `--installed DATA` (default: the one `h2 play` uses), and the default
+  data root for `h2 play --live-local`. Every valid package with patch
+  layers is a mod; converted Halo 1 maps (packages with a variant per
+  sandbox) are left to the Halo 1 section above.
+- **Resolving.** Each package goes through `content::Library` as the
+  game's package backend resolves it: its layers over the disc's map of
+  its `[base] map` (or the map pack map `h2 import-mappack` installed),
+  the base checked against the package's SHA-256, or its own whole map for
+  a derived map. An offset-patched (PPF, IPS) result is written once into
+  `<out>.mods/` beside the output while the extraction runs and removed
+  after; a materialised (BPS) result is read from `<data>/maps/cache/`. A
+  package that does not resolve (no base, a base that differs, a damaged
+  patch) is left out with a `mods:` notice.
+- **Keys.** A mod's stem is `mod-<first 16 hex digits of its MapId>`,
+  never its base map's name, so it never stands in for the retail map and
+  two mods of one map are two entries. Its manifest entry carries `name`
+  (the package's), `map_id` (all 64 hex digits, as games report it),
+  `base` (the map it is played as) and `sha256` (of the patched map). The
+  art's cache key covers every installed mod's `MapId`, which hashes the
+  base's SHA-256 and every layer's, so a new, changed or removed mod
+  extracts again, and one that fails to resolve does not make every start
+  extract again.
+- **Content.** Everything is read from the patched map: the BSPs, the
+  scenario's placements and netgame equipment (however many the mod has,
+  wherever it moved them, whatever tags it names), machines, scripted
+  spawns, the sky and weather, and the pictures (bitmap tags and their
+  pixel data, the mod's own tags and retail-named tags it changed alike).
+  Pictures are cached per level by tag ID while it is extracted and
+  written under `map/<stem>/`, so no picture is shared by name with the
+  base map's. The shared maps (`shared`, `single_player_shared`) are the
+  disc's, as in the game.
+- **In the web.** A game's view looks its art up by `map_id` first
+  (`map/views.ts` `mapFilesFor`) and draws the mod's entry when there is
+  one, else the base map's (when the package says its geometry is the
+  base's) or nothing.
+- **Shaders.** A solid shader whose base map cannot be found or decoded
+  (a mod's own template among them) is drawn in its surface class's
+  colour, and the level lists `map/<stem>/shaders` under `skipped`: how
+  many and which templates.
 
 ### `views.json`
 
@@ -711,7 +836,12 @@ step for that and for video memory.
    so cutting at a half keeps what is at least a quarter: the leaves of
    the campaign's trees and bushes keep only 0.5 % to 3 % of their pixels
    at a half. Triangles keep their stored texture coordinates and weld
-   on them too (1/4096).
+   on them too (1/4096). The plasma pass uses layer 15 instead. Ascension,
+   Midship and Ivory Tower have kind-4 parts on their placed lift models.
+   Lockout's beam is in its BSP. Each resolves the same additive pass
+   with two noise maps on stages 1 and 2 and a mask on stage 3. The
+   extractor reads the time-driven UV properties by destination
+   component and preserves the individual periods and directions.
 11. **Scenario objects.** The placement blocks of the object type table
    (docs/formats/objects.md) other than machines: scenery `+0x50`, vehicles
    `+0x70`, equipment `+0x80`, weapons `+0x90`, controls `+0xb8`, light
@@ -720,7 +850,7 @@ step for that and for video memory.
    0x28-byte entries), read like machine placements, plus the zone at
    `+0x2c` (i16, kept when it is one of the scenario's BSPs). A placement
    whose flags (`+4`) have bit 0 set is created by a script, not at the
-   start, and is left out: on the disc these are the cutscenes' props
+   start, and is left out unless the scripts read below create it: on the disc these are the cutscenes' props
    (capital ships, a ring world, drop pods stacked under a level), the
    weapons a cutscene hands out and vehicles brought in later. Then the
    netgame equipment (`scnr+0x120`, 0x90-byte entries; docs/game/forge.md):
@@ -733,6 +863,22 @@ step for that and for video memory.
    fail are listed under `skipped` as `map/<stem>/object_<kind>_<index>`.
    On the retail disc: Lockout 50 objects (30 spawns), Zanzibar 165,
    campaign levels 17 to 854.
+
+   **Scripted spawns** (`live_scripted`). The scripts, decompiled once
+   per map with the disc's executable (the same source the cinematic test
+   reads), are read as text for `object_create`, `object_create_anew` and
+   their `_containing` forms (scenario object names, `scnr+0x48`, stride
+   `0x24`: name `+0`, object type `+0x20`, placement `+0x22`), and
+   `effect_new` (at a cutscene flag, `scnr+0x1e0`, stride `0x38`: name
+   `+4`, position `+0x24`) and `effect_new_on_object_marker` (at the named
+   object's placement). Static scripts are followed through the scripts
+   that call them (four levels deep). A `continuous` script's period is
+   the sum of its literal `(sleep N)` ticks at 30 a second (at least one
+   tick); `sleep_until`, a computed sleep or `(sleep -1)` leave it unknown.
+   A placement any such script creates is drawn even when its flags say
+   it is not made at the start, and carries the script. Names the
+   scenario lacks are listed as `map/<stem>/scripts`; a level whose
+   scripts do not decompile lists the reason there.
 12. **Write.** `map.glb` as soon as a map is built, then every (map, view)
    picture in parallel, then `views.json`; the manifest is written last by
    the art extractor.
@@ -788,8 +934,12 @@ teleporters, links and lifts. Do not commit anything they write.
 - Machines and objects are at rest: a door is drawn as its model's default
   pose has it, the wheel does not turn, and a vehicle sits in its model's
   rest pose. Each object is drawn as its regions' first permutations, not
-  the variant the placement names. Objects a script creates later are not
-  drawn, nor bipeds (AI come from the frames). A multiplayer spawn shows
+  the variant the placement names. Objects a script creates are drawn
+  where the scenario places them, once, whatever the script does next
+  (the period is in `extras.script`); a script that creates an object by
+  a computed name, from a folder, or under a condition is read only as far
+  as its literal calls go. Bipeds are not drawn (AI come from the frames).
+  A multiplayer spawn shows
   the heaviest entry of its collection: the game rolls it, and gametype
   settings can swap it.
 - Campaign levels sit in large backdrop planes (sea or ground around the
@@ -805,6 +955,13 @@ teleporters, links and lifts. Do not commit anything they write.
   lightmaps: a glow is its picture added, a waterfall does not flow.
   Decals on dynamic objects, and particle systems (campaign fires, smoke,
   sparks) are not in the BSP and not extracted.
+- Scripted effects are marks, not effects: no particles or projectiles
+  are simulated, and an effect played on an object marker is placed at the
+  object's origin. Projectiles a weapon or a device fires on its own (no
+  script) are not read.
+- Player and weapon models (`model/...`) are the disc's: a mod that
+  changes a weapon's or a biped's model gets its level and placed objects
+  from the patched map, but players are drawn with the retail models.
 - A level with several skies (one per zone) gets only the first with a
   model. Additive sky layers (haze, glows) are left out by the viewer:
   without the shader's constants they wash the sky out.

@@ -20,6 +20,7 @@
 //! its source. [`slot_bytes`] is the one place an entry's slot is built,
 //! for [`apply`] and for what the panel shows.
 
+use live_proto::hopper::defaults;
 use live_proto::hopper::{
     DWORDS, HOPPERS, HopperError, HopperFile, HopperText, MAX_DESCRIPTION, MAX_NAME, MAX_RECORDS,
     MAX_STRING, MAX_TITLE, RECORD, Record, VARIANT_AT, VARIANT_SIZE, Variant, set_slot_record,
@@ -156,6 +157,89 @@ pub struct EditHopper {
     pub ranges: [u32; 3],
     pub dwords: Vec<u32>,
     pub records: Vec<EditRecord>,
+    /// Make this hopper a playlist of this template's kind when written
+    /// ([`create_playlist`]; a default playlist id,
+    /// [`defaults::templates`]): its whole descriptor first, then the
+    /// fields above.
+    pub template: Option<u32>,
+    /// Make this hopper an unused slot when written ([`clear_playlist`]).
+    pub clear: bool,
+}
+
+/// An unused slot (type 0, which the game reads as no hopper) not being
+/// made a playlist, or a playlist being cleared.
+pub fn is_unused(h: &EditHopper) -> bool {
+    h.clear || (h.hopper_type == 0 && h.template.is_none())
+}
+
+/// Makes `h` a playlist of the kind of the default playlist `template`:
+/// its type, status 0, range fields and dwords as that template's
+/// descriptor has them (the rest of the descriptor is written by
+/// [`apply`]). An unused slot also takes the template's title,
+/// description and first entry; a playlist keeps its text and entries.
+/// False for an id that is not a template.
+pub fn create_playlist(h: &mut EditHopper, template: u32) -> bool {
+    let Some(t) = defaults::template(template) else {
+        return false;
+    };
+    let mut scratch = HopperFile::blank();
+    if scratch.create_from(0, &t).is_err() {
+        return false;
+    }
+    let Ok(d) = scratch.hopper(0) else {
+        return false;
+    };
+    let fresh = is_unused(h) || h.records.is_empty();
+    if fresh {
+        let Some(first) = t.entries().into_iter().next() else {
+            return false;
+        };
+        let Some(key) = defaults::builtin_key(&first.variant) else {
+            return false;
+        };
+        let Some(r) = builtin_record(first.map_id, key) else {
+            return false;
+        };
+        h.title = clip(t.title, MAX_TITLE);
+        h.description = clip(t.description, MAX_DESCRIPTION);
+        h.records = vec![r];
+    }
+    h.template = Some(template);
+    h.clear = false;
+    h.hopper_type = d.hopper_type;
+    h.status = 0;
+    // The template's bytes from +0x51b read as no name; an old name would
+    // be written over its validated table.
+    h.name = String::new();
+    h.ranges = d.ranges;
+    h.dwords = d.dwords;
+    true
+}
+
+/// Makes `h` an unused slot when written.
+pub fn clear_playlist(h: &mut EditHopper) {
+    h.clear = true;
+    h.template = None;
+    h.hopper_type = 0;
+    h.records.clear();
+}
+
+/// An entry with built-in variant `key` ([`defaults::builtin_variants`])
+/// on map `map_id`, weight 1, in a zero-filled slot.
+pub fn builtin_record(map_id: u32, key: &str) -> Option<EditRecord> {
+    let v = defaults::builtin_variant(key)?;
+    let mut slot = vec![0; RECORD];
+    slot[VARIANT_AT..].copy_from_slice(v.bytes());
+    let inside = slot_record(&slot);
+    Some(EditRecord {
+        id: map_id,
+        string: inside.string,
+        flags: inside.flags,
+        dwords: [1, inside.dwords[1]],
+        variant: Some(slot_variant(&slot)),
+        src: None,
+        picked: Some(Box::new(*v.bytes())),
+    })
 }
 
 /// The working copy of a file: all 16 hoppers, each record pointing at its
@@ -190,6 +274,8 @@ pub fn load(file: &HopperFile) -> Vec<EditHopper> {
                 ranges: h.ranges,
                 dwords: h.dwords,
                 records,
+                template: None,
+                clear: false,
             }
         })
         .collect()
@@ -199,6 +285,16 @@ pub fn load(file: &HopperFile) -> Vec<EditHopper> {
 /// builder's `hopperErrors`, with the server's own checks.
 pub fn hopper_errors(h: &EditHopper) -> Vec<String> {
     let mut errs = Vec::new();
+    if h.clear {
+        return errs;
+    }
+    if is_unused(h) {
+        errs.push(
+            "this slot is unused: make a playlist here (choose its kind) or undo the change"
+                .to_string(),
+        );
+        return errs;
+    }
     if !(1..=5).contains(&h.hopper_type) {
         errs.push("type must be 1 to 5".to_string());
     }
@@ -326,6 +422,19 @@ pub fn apply(base: &HopperFile, edited: &[EditHopper]) -> Result<HopperFile, App
             continue;
         }
         let i = h.index;
+        if h.clear {
+            out.clear_hopper(i)?;
+            continue;
+        }
+        if let Some(id) = h.template {
+            let t = defaults::template(id).ok_or_else(|| {
+                ApplyError::Invalid(vec![format!(
+                    "Playlist {}: there is no playlist template {id}",
+                    i + 1
+                )])
+            })?;
+            out.create_from(i, &t)?;
+        }
         if h.records != was.records {
             let mut slots = Vec::with_capacity(h.records.len());
             for (j, r) in h.records.iter().enumerate() {
@@ -363,7 +472,8 @@ pub fn apply(base: &HopperFile, edited: &[EditHopper]) -> Result<HopperFile, App
             d.record_count = h.records.len() as u32;
             out.set_hopper(i, &d)?;
         }
-        if h.title != was.title || h.description != was.description {
+        // A template wrote its own text, so the playlist's goes back on.
+        if h.template.is_some() || h.title != was.title || h.description != was.description {
             out.set_text(
                 i,
                 &HopperText {
@@ -824,6 +934,61 @@ mod tests {
             // Only the weight (+0x248) is set before the variant.
             *b == 0 || (0x248..0x24c).contains(&k)
         }));
+    }
+
+    #[test]
+    fn an_unused_slot_becomes_a_playlist_the_game_loads() {
+        use live_proto::hopper::check_descriptor;
+        let f = HopperFile::default_set();
+        let base = load(&f);
+        let i = defaults::playlists().len();
+        assert!(is_unused(&base[i]));
+        // Untouched unused slots never block a save; a title alone in one
+        // says what to do.
+        let mut m = base.clone();
+        m[i].title = "Modtacular".into();
+        let errs = errors(&base, &m);
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        assert!(errs[0].starts_with("Playlist 12: this slot is unused"));
+        // From a template: one entry, the template's rules.
+        let mut m = base.clone();
+        assert!(!create_playlist(&mut m[i], 99));
+        assert!(create_playlist(&mut m[i], 2));
+        assert_eq!(m[i].records.len(), 1);
+        assert_eq!(m[i].hopper_type, 4);
+        m[i].title = "Modtacular".into();
+        assert_eq!(errors(&base, &m), Vec::<String>::new());
+        let out = apply(&f, &m).unwrap();
+        let d = out.descriptor(i).unwrap();
+        assert_eq!(check_descriptor(&d), vec![]);
+        assert_eq!(d.playlist_id, 12);
+        assert_eq!(out.text(i).unwrap().title, "Modtacular");
+        assert_eq!(out.problems(&defaults::retail_map_ids()), vec![]);
+        let e = out.entry(i, 0).unwrap();
+        assert_eq!(e.variant, defaults::variants::team_slayer());
+        // Clearing it again gives back the file it came from.
+        let mut again = load(&out);
+        clear_playlist(&mut again[i]);
+        assert!(is_unused(&again[i]));
+        let back = apply(&out, &again).unwrap();
+        assert!(back.image() == f.image());
+    }
+
+    #[test]
+    fn another_kind_keeps_a_playlists_text_and_entries() {
+        use live_proto::hopper::check_descriptor;
+        let f = HopperFile::default_set();
+        let mut m = load(&f);
+        let entries = m[0].records.clone();
+        assert!(create_playlist(&mut m[0], 7));
+        assert_eq!(m[0].title, "Rumble Pit");
+        assert_eq!(m[0].records, entries);
+        let out = apply(&f, &m).unwrap();
+        let d = out.descriptor(0).unwrap();
+        assert_eq!(check_descriptor(&d), vec![]);
+        assert_eq!(d.hopper_type, 1, "Free for All is unranked");
+        assert_eq!(out.text(0).unwrap().title, "Rumble Pit");
+        assert_eq!(d.playlist_id, 1, "the id stays the playlist's own");
     }
 
     #[test]

@@ -1318,10 +1318,19 @@ fn depth_clamp(table: &RenderStateTable, draw: &ResolvedDraw) -> bool {
     clamps_depth(raw(table, draw, RS_DEPTHCLIPCONTROL))
 }
 
+/// Whether `draw` clamps out-of-range depth, read with the default
+/// render-state table (the one [`Nv2aShaders`] starts with): for
+/// diagnostics that hold a draw but no provider (`render.frame`).
+pub fn draw_clamps_depth(draw: &ResolvedDraw) -> bool {
+    static TABLE: std::sync::LazyLock<RenderStateTable> =
+        std::sync::LazyLock::new(RenderStateTable::default);
+    depth_clamp(&TABLE, draw)
+}
+
 /// Whether a `D3DRS_DEPTHCLIPCONTROL` value clamps out-of-range depth
 /// (bits 7:4 = 1, `D3DDCC_DEPTHCLAMP`).
 pub fn clamps_depth(depth_clip_control: u32) -> bool {
-    (depth_clip_control >> 4) & 0xF == 1
+    gfx::state::clamps_depth(depth_clip_control)
 }
 
 /// The w clip range of a W-buffered draw: the pushed `[CLIP_MIN,

@@ -4,6 +4,7 @@
 //! bit.
 use audio::dsound::{MixIn, Source3d, StreamId, Vec3};
 use audio::fx::{EnvSpec, FilterKind, FilterSpec, I3dl2Source, LfoSpec, Stage};
+use audio::mixer::MixInId;
 use audio::snap::SnapshotError;
 use audio::{I3dl2Listener, Mixer, SoundBuffer, Stream, WaveFormat};
 use snapshot::{BuildKey, Header, Snapshot, SnapshotWriter};
@@ -61,8 +62,8 @@ fn reverb_env() -> I3dl2Listener {
 /// Buffers (looping, filtered, enveloped, occluded, through mix bins and
 /// the reverb; and a plain 3D one with Doppler), a stream with queued
 /// packets and a pitch LFO sending into a 3D mix-in and a tapped bin, and
-/// the reverb on. Returns the mixer and the stream's id.
-fn scene() -> (Mixer, StreamId) {
+/// the reverb on. Returns the mixer and the stream and mix-in ids.
+fn scene() -> (Mixer, StreamId, MixInId) {
     let mut m = Mixer::new(RATE);
     m.set_reverb(Some(reverb_env()));
     m.set_master_volume(-200);
@@ -168,7 +169,7 @@ fn scene() -> (Mixer, StreamId) {
         st.submit(&pcm(300, 1, |i| ((i + 300 * p) as f32 * 0.013).cos()))
             .unwrap();
     }
-    (m, s)
+    (m, s, mix)
 }
 
 fn render(m: &mut Mixer, blocks: usize) -> Vec<f32> {
@@ -196,7 +197,7 @@ fn carry_on(m: &mut Mixer, s: StreamId) -> (Vec<u32>, Vec<u32>, usize) {
 
 #[test]
 fn a_loaded_mixer_renders_the_saved_ones_pcm_bit_for_bit() {
-    let (mut a, s) = scene();
+    let (mut a, s, _) = scene();
     let before = render(&mut a, 3);
     assert!(before.iter().any(|v| *v != 0.0), "the scene is audible");
     let file = save(&a);
@@ -222,7 +223,7 @@ fn a_loaded_mixer_renders_the_saved_ones_pcm_bit_for_bit() {
 
 #[test]
 fn a_snapshot_loads_twice_into_one_mixer() {
-    let (mut a, s) = scene();
+    let (mut a, s, _) = scene();
     render(&mut a, 5);
     let file = save(&a);
     let want = carry_on(&mut a, s);
@@ -236,7 +237,7 @@ fn a_snapshot_loads_twice_into_one_mixer() {
 
 #[test]
 fn a_mixer_at_another_rate_refuses_the_section_unchanged() {
-    let (mut a, _) = scene();
+    let (mut a, _, _) = scene();
     render(&mut a, 2);
     let file = save(&a);
     let mut b = Mixer::new(48_000);
@@ -248,4 +249,26 @@ fn a_mixer_at_another_rate_refuses_the_section_unchanged() {
     assert_eq!(b.stream_count(), 0);
     assert!(b.reverb().is_none());
     assert!(render(&mut b, 1).iter().all(|v| *v == 0.0));
+}
+
+#[test]
+fn headphone_filter_snapshot_keeps_history_and_an_in_progress_ramp() {
+    let (mut source, stream, mix) = scene();
+    source.set_hrtf(true);
+    render(&mut source, 2);
+    source.mix_in_mut(mix).unwrap().set_source_3d(Some(Source3d {
+        position: Vec3::new(2.0, 1.0, -1.0),
+        ..Source3d::default()
+    }));
+    source.render(&mut [0.0; 30]);
+    let file = save(&source);
+    let snapshot = Snapshot::open(&file, &key()).unwrap();
+    let mut loaded = Mixer::new(RATE);
+    assert!(matches!(
+        loaded.load_snapshot(&snapshot),
+        Err(SnapshotError::Mismatch(_))
+    ));
+    loaded.set_hrtf(true);
+    loaded.load_snapshot(&snapshot).unwrap();
+    assert_eq!(carry_on(&mut loaded, stream), carry_on(&mut source, stream));
 }

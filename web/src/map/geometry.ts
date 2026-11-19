@@ -4,7 +4,7 @@
 
 import { createEffect, createSignal, type Accessor } from "solid-js";
 import { gameArt } from "../state/gameart";
-import { mapStem, parseViews, viewImageFile, type MapViews } from "./views";
+import { mapFilesFor, parseViews, viewImageFile, type MapViews } from "./views";
 import { fetchFeatures, type MapFeatures } from "./features";
 import { modelUrl } from "../viewer/models";
 
@@ -31,17 +31,22 @@ function loadViews(u: string): Promise<MapViews | null> {
   return p;
 }
 
-/** The geometry for a map; null until known, and when the server has none. */
-export function geometryFor(map: Accessor<string | undefined>): Accessor<MapGeometry | null> {
+/** The geometry for a map; null until known, and when the server has none.
+ *  With the game's MapId, an installed mod's own geometry when the art has
+ *  it (views.ts `mapFilesFor`), else the map name's. */
+export function geometryFor(
+  map: Accessor<string | undefined>,
+  mapId: Accessor<string | null | undefined> = () => null,
+): Accessor<MapGeometry | null> {
   const [geo, set] = createSignal<MapGeometry | null>(null);
   createEffect(() => {
-    const art = gameArt(), m = map();
+    const art = gameArt(), m = map(), id = mapId();
     set(null);
-    const files = art && m ? art.manifest.maps?.[mapStem(m)] : undefined;
+    const files = art && m ? mapFilesFor(art.manifest.maps, m, id)?.files : undefined;
     if (!art || !files) return;
     const stamp = art.manifest.source;
     const glb = files.geometry ? url(art.root, files.geometry, stamp) : null;
-    const still = () => gameArt() === art && map() === m;
+    const still = () => gameArt() === art && map() === m && mapId() === id;
     if (!files.views) { set({ glb, views: null, image: () => "" }); return; }
     const viewsFile = files.views;
     void loadViews(url(art.root, viewsFile, stamp)).then((views) => {

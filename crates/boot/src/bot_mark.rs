@@ -6,18 +6,26 @@
 //! (`crate::icons`): so no font slot, whichever UI element it serves, is
 //! left without it, and the font-slot trace (keyboard-charset.md, "Which
 //! font draws which field") is not needed for it. The glyph is drawn in
-//! code (`font::gear`); nothing comes from the disc.
+//! code (`font::gear`); nothing comes from the disc. The same rewrite
+//! adds the Mods list's state marks (`font::mod_marks`: U+2605 new,
+//! U+2713 installed, U+2193 downloading), drawn in code the same way.
 
 /// Adds the gear to every font file.
 pub struct GearRewrite;
 
 impl GearRewrite {
-    /// The font with the gear added, or `None` if it is not a font or draws
-    /// U+2699 already.
+    /// The font with the gear and the Mods list's marks
+    /// (`font::mod_marks`: new, installed, downloading) added, or `None` if
+    /// it is not a font or draws them all already.
     pub fn patch(original: &[u8]) -> Option<Vec<u8>> {
         let font = font::Font::parse(original).ok()?;
-        let gear = font::gear::replacement(&font)?;
-        let out = font::patch::apply(original, &[gear]).ok()?;
+        let mut add: Vec<font::patch::Replacement> =
+            font::gear::replacement(&font).into_iter().collect();
+        add.extend(font::mod_marks::replacements(&font));
+        if add.is_empty() {
+            return None;
+        }
+        let out = font::patch::apply(original, &add).ok()?;
         font::Font::parse(&out).ok()?.validate().ok()?;
         Some(out)
     }
@@ -74,6 +82,11 @@ mod tests {
         // 18 ascent and no 'H': seven tenths, 12 pixels.
         assert_eq!((g.record.width, g.record.height), (12, 12));
         assert!(g.pixels.iter().any(|p| p >> 12 == 0xf));
+        for unit in font::mod_marks::MARKS {
+            let m = f.glyph(unit).unwrap();
+            assert_eq!((m.record.width, m.record.height), (12, 12), "U+{unit:04X}");
+            assert!(font::mod_marks::has_glyph(&f, unit));
+        }
         // A font that has it is left alone.
         assert_eq!(r.rewrite("maps\\fonts\\again", &out), None);
         assert_eq!(r.rewrite("maps\\fonts\\junk", b"not a font"), None);

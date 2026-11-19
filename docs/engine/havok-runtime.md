@@ -7,8 +7,9 @@ the superbounce work ([superbounce.md](../game/superbounce.md)): which
 surface pushed the biped's body, and how hard.
 
 Static reading of `default.xbe` with `h2 disasm`; nothing here was
-checked in a running game. The readers (`crates/live-telemetry/src/havok.rs`,
-constants in `layout.rs`) are tested over synthetic guest memory only.
+checked in a running game (shapes added 2026-11-19). The readers
+(`crates/live-telemetry/src/havok.rs`, constants in `layout.rs`) are
+tested over synthetic guest memory only.
 No Havok SDK headers or code were used; names (island, entity, motion,
 contact constraint) are descriptive. No game data is on this page.
 
@@ -27,6 +28,9 @@ given), **S** (inferred or assumed; check before building on it).
   (position, normal, separation distance) and a parallel array of point
   properties (the impulse the solver applied, friction, restitution).
   **Code**
+- An entity's shape is at `+0x0c`. A biped's is a capsule: its tag's
+  standing or crouching pill, picked when the body is built
+  ([Shapes](#shapes)). **Code**
 - Which triangle of the level a point is on is not in the constraint; it
   would be in the collision agents. Not read. **Open**
 
@@ -61,6 +65,8 @@ the island's entity array were found. **Code**
 
 | Field | Offset | Evidence |
 |---|---|---|
+| vtable | `0x00414310` for a rigid body | its constructor `0x00311bc8` (**Code**) |
+| shape | `+0x0c`: the collidable's shape (`+0x10` shape key, -1; `+0x14` points into the motion, `0x00311c1f`) | the world object constructor `0x00312590` copies the construction info's shape (info `+0x04`) to `+0x0c` and takes a reference on it (`0x003125ca`, `0x00312609`) (**Code**) |
 | properties | `+0x30`: pointer to (key, value) pairs of 8 bytes, count `+0x34` | `0x001c3f33`-`0x001c3f42` (**Code**) |
 | motion | `+0x3c` (pointer) | `0x001d08f6` (**Code**) |
 | does not move (byte) | `+0x40`: non-zero, `0x001d09dd` reports zero velocity | (**Code** for the read; the meaning is **S**) |
@@ -74,7 +80,62 @@ datum handle at component `+0x08` (`0x001c3fa4`), then the object table
 (`0x004e0300`). The level's body has no such property (**S**: it is the
 body in the fixed island without an owner). The other way round, object
 `+0xb4` to component, component `+0x70` bodies, is `0x001d08e0`
-(`layout::BODY_PHYSICS`).
+(`layout::BODY_PHYSICS`). The component's rigid bodies are an array at
+`+0x70`, count `+0x74`, `0x60` each with the entity at `+0x40` (the
+release loop `0x001d022a`); its shapes another at `+0x7c`, count `+0x80`,
+`0x0c` each with the shape at `+0x08` (`0x001d01e0`, which drops a
+reference from each). **Code**
+
+## Shapes
+
+A shape is a reference-counted object: vtable `+0x00`, reference count
+`+0x06` (16 bits; tag shapes hold `0x80`, `0x001c23bb`), user data
+`+0x08`. Its type is its virtual `+0x14` (`0x001d6f52`), a getter that
+returns a constant. **Code**
+
+| Type | Getter | Vtables (Halo's tag shape, Havok's) | Fields | Evidence |
+|---|---|---|---|---|
+| 4 sphere | `0x0009cd90` | `0x004554c0`, `0x00455418` | radius `+0x0c` | bounding box `0x002ded6f` (**Code**) |
+| 7 capsule | `0x0009b910` | `0x00455500`, `0x00455458` | radius `+0x0c`; end points `+0x10` and `+0x20`, each with the radius in `w` | constructor `0x002de0a0`; bounding box `0x002de0f0` (radius plus tolerance, both points) (**Code**) |
+| `0x15` transform | `0x002de7a0` | `0x00455498`, `0x004553f0` | child `+0x0c`; transform `+0x10` (rotation columns), translation `+0x40` | bounding box `0x002de850`; `0x001d6fe3` takes `+0x40` as the centre (**Code**) |
+
+Halo's vtables differ from Havok's in slot 0 (`0x001c2360`, `0x001c2370`,
+`0x001c2380` against Havok's `0x00244930`); the other slots seen are the
+same functions. `havok.bodies` tells types by the getter, so both read.
+A capsule's centre is (a + b) × 0.5 (`0x001d6f5a`, constant
+`0x0045dbbc`). **Code**
+
+### A biped's shape
+
+`0x001cf120` builds an object's physics by its type; a biped's
+(`0x001d6b80`) calls `0x001d6d00` with the `bipd` character physics
+(`bipd +0x264`), which picks the shape (`0x001d6dd6`-`0x001d6e01`):
+
+- pills (`bipd +0x28c`, `0x50` each, the shape at `+0x20`) when there are
+  any: pill 1 when the crouch request (unit flags bit 23, `0x001d6bc6`)
+  or a melee lunge (`0x000e0dc0`) is on, else pill 0;
+- otherwise sphere `0` or `1` of `bipd +0x294` (`0x80` each, the
+  transform at `+0x30`);
+- when biped `+0x3dc` is 3 (what 3 is: **Open**), sphere `[+0x3ff]` of
+  `bipd +0x284` (its transform, `+0x30`).
+
+**Code.** The pills are the tag's: a body's shape pointer names its
+pill, standing or crouching, and the capsule's height (|b − a| + 2 ×
+radius) is that pill's height (`bipd +0x268` standing, `+0x26c`
+crouching; read from the tags in
+[tag-definitions.md](../formats/tag-definitions.md), "Bipeds from
+definitions").
+
+The shape is chosen only when the body is built. `0x001c3770` rebuilds
+an object's body (out of the world, `0x001d01c0` releases bodies and
+shapes, `0x001cf120` builds, back in); the biped update calls it when it
+sets or clears the crouch request (`0x000e293c`) and when a lunge starts
+(`0x000e29a8`), among 17 direct callers. **Code.** So a body built
+crouching stays on the crouching pill until something rebuilds it. The
+clear at `0x000e2928` (the standing capsule fits) goes through the same
+rebuild, so a forced crouch that ends there should leave the standing
+pill (**S**); whether every way out does is **Open**, and
+`havok.bodies`' `shape.height` shows it directly.
 
 ## Motion
 
@@ -155,6 +216,10 @@ collision listener array is **S**). The callbacks seen (`0x002789f0`,
 through property `0x2001`; none reads contact points. **Code**
 
 ## Open
+
+- **Crouch and the shape.** Whether any path leaves a standing biped's
+  body on the crouching pill (see "A biped's shape"). `world.raw` and
+  `havok.bodies` show it on a trace.
 
 - **The surface.** A point does not say which triangle of the level it
   is on. The shape key is with the collision agent (the pair array at

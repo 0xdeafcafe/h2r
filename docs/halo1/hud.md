@@ -125,7 +125,11 @@ child first, as Halo 1 draws it: E `0x000dbded`; V: the assault rifle's
 `<wphi name>_h1_weapon_hud`. The rebuilt weapon (`convert_arsenal`) names
 it at `weap +0x2b0`; the Halo 2 counterpart's `nhdt` becomes the Halo 2
 side of the weapon's HUD pair. `weapon_hud` is the function to call for
-any other builder of a `weap`.
+any other builder of a `weap`. A chain with no element at all (V: the
+multiplayer maps' flamethrower, `flame thrower` → `master fuel`) draws
+nothing in Halo 1 and becomes an `nhdt` with no widget (since converter
+v87; before, it was refused and the flamethrower kept the shotgun's
+Halo 2 HUD). A chain whose elements all fail to convert is refused.
 
 Halo 1's `wphi` layout, from its draw (E, Halo 1's XBE, `0x000db5d0`..,
 `ebx` the `wphi`): child `+0x00`, anchor `+0x3c`, static elements `+0x60`
@@ -272,6 +276,26 @@ D: shown while the condition holds, not for 3 s after it starts and not
 flashing (a widget has no timer; the plain shader does not flash). The
 flash colour's alpha is 0 (additive in Halo 1), so the sprite draws at
 its own alpha, as an aim crosshair's.
+
+v83 showed "Reload" on a full magazine (seen 2026-11-19 on the hud
+serve: assault rifle, 60 loaded, 180 in reserve). The converter wrote the
+thresholds right (`00 0b 01 00` at the widget's `+0x18`), but the
+from-scratch map build reads every tag through the inferred schema, which
+typed that word as a raw-resource pointer; it copied "the resource" at
+file offset `0x10b00` and wrote the copy's offset there (`00 da 22 01` in
+the built map: rounds loaded below 218, so always). Since v84 the schema
+leaves the word out (`tags::schema::infer::ENGINE_DATA`,
+docs/formats/tag-schema.md step 9), so the bytes reach the map as
+written. The live proof of the gate above wrote the thresholds into
+memory with `edit.set`, after the build, which is why it did not see this.
+Live, v83 map (2026-11-19): writing each weapon's thresholds back with
+`edit.set` (`bitmap_widgets[3].raw_18`, assault rifle `0x00010b00`)
+hid "Reload" at 60 loaded, showed it at 5 loaded with 180 in reserve, and
+showed "No ammo" alone at nothing loaded and nothing in reserve. Every
+other weapon's HUD, drawn on the held assault rifle by pointing its `hud`
+reference at it, had its panel, count, icon and meter where Halo 1 puts
+them and no widget over another; only the always-on "Reload" overlapped
+the crosshair.
 
 ### Zoom level
 

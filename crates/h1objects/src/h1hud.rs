@@ -2181,6 +2181,28 @@ mod tests {
         assert!(kinds.contains(&(0x00, FixupKind::StringId("h1_grenade_count_1".into()))));
     }
 
+    /// A weapon HUD chain with no element (the multiplayer maps'
+    /// flamethrower) is an `nhdt` with no widget: an empty bitmap widget
+    /// block and no text block, the tag Halo 1's empty HUD becomes.
+    #[test]
+    fn a_weapon_hud_with_no_element_is_an_nhdt_with_no_widget() {
+        let root = nhdt(&[], &[]);
+        assert_eq!(root.bytes.len(), NHDT_ROOT);
+        assert_eq!(
+            &root.bytes[0..4],
+            &u32::from_be_bytes(*b"nhdt").to_le_bytes()
+        );
+        let blocks: Vec<_> = root
+            .fixups
+            .iter()
+            .filter_map(|f| match &f.kind {
+                FixupKind::Block { count, child } => Some((f.offset, *count, child.bytes.len())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(blocks, [(NHDT_BITMAP_WIDGETS as u32, 0, 0)]);
+    }
+
     #[test]
     fn the_motion_sensor_centre_is_halo1s_placement_up_from_the_bottom_left() {
         let mut b = vec![0u8; unhi::SIZE];
@@ -2319,5 +2341,46 @@ mod tests {
             .filter(|f| matches!(f.kind, FixupKind::TagRef(_)))
             .count();
         assert_eq!(refs, 4);
+    }
+
+    /// The map builds after the conversion (fresh, from scratch) read every
+    /// tag through the schema and rewrite what it calls a pointer. Every
+    /// field the converter writes as a value (inputs, state words and
+    /// thresholds, anchor, flags, sequences, offsets, registration, special;
+    /// a text's justification and font) must be no schema field, or it
+    /// comes out changed: v83's "Reload" thresholds at `+0x18` were taken
+    /// for a raw pointer and showed the warning on a full magazine.
+    #[test]
+    fn the_values_written_are_bytes_to_the_map_builds() {
+        use tags::schema::{Field, Schema};
+        let nhdt = &Schema::builtin().groups[&map::FourCC(*b"nhdt")];
+        let block = |at: u32| match &nhdt.fields[&at] {
+            Field::Block(c) => c.clone(),
+            f => panic!("nhdt +{at:#x} is {f:?}"),
+        };
+        // The fields the converter fixes up: the name, the bitmap and
+        // shader references (bitmap widgets); the name, shader and string
+        // (texts); and the bitmap widgets' effects block, left empty.
+        let cases = [
+            (
+                block(NHDT_BITMAP_WIDGETS as u32),
+                BITMAP_WIDGET_SIZE,
+                vec![0, widget::BITMAP, widget::SHADER, widget::EFFECTS],
+            ),
+            (
+                block(NHDT_TEXT_WIDGETS as u32),
+                text::SIZE,
+                vec![text::NAME, text::SHADER, text::STRING, 0x4c],
+            ),
+        ];
+        for (s, size, fixed) in cases {
+            assert_eq!(s.size as usize, size);
+            for (&o, f) in &s.fields {
+                assert!(
+                    fixed.contains(&(o as usize)),
+                    "+{o:#x} is a schema {f:?} the converter writes as a value"
+                );
+            }
+        }
     }
 }

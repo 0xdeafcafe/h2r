@@ -235,6 +235,20 @@ channel's parameters) takes three paths:
   `0x2211e0` sets the mix-in's `SetI3DL2Source` (obstruction and
   occlusion) and `SetFilter`.
 
+**Whose ears.** Every gain above is computed against one of the game's
+own listeners (one per local user, `0x48`-byte records at
+`[0x4e6380] + 0x88`), the one the sound was given when it started
+(`0x127d00`, kept at sound `+0xa1`). The DirectSound listener is not one
+of them: the listener update `0x127400` sets it (`0x220790`,
+`SetPosition` at `0x2207ba` with `DS3D_DEFERRED`, committed once a frame
+at `0x21f1fc`) to the origin facing +x, and mix-in positions are relative
+to the sound's own listener. A sound the game takes as a local user's
+own (`0x18d4f0`) starts with no position at all and plays at full level
+in the ears; with local bots that sent every bot's sounds to the human,
+which no DirectSound setting could undo (docs/game/bots.md §4.3, "Whose
+sound"). The shim applies `DS3D_DEFERRED` settings at once; Halo commits
+every frame, so only the moment inside a frame differs.
+
 So the attenuation lives in mix-bin volumes, and those must survive
 `SetOutputBuffer`. The library keeps a voice's bin list and a per-bin
 volume table apart (`crates/dsound/src/mixbins.rs`, from `0x37bc89`

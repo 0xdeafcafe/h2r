@@ -611,6 +611,35 @@ pub fn list_for(cat: &Catalogue, mode: Mode, flags: &dyn Fn(u32) -> u8) -> Vec<(
     }
 }
 
+/// The rows of `items` (as [`list_for`] makes them) the retail dialog
+/// won't show by name, each with why: a map id none of the loaded list's
+/// `slots` holds (the row text asks `0x19c5f0` for its slot and names it
+/// from there, `0x2c9afc`), or a lock byte, which the list's constructor
+/// skips unless the profiles' progress allows it (`0x2c99cc`). Our
+/// catalogue is read from the disc and the packages on the host; the
+/// game's list is what its own content scan (`0x19c120`) applied, so a
+/// map in one and not the other shows here.
+pub fn unshown(cat: &Catalogue, items: &[(u32, u8)], slots: &[u32]) -> Vec<(String, &'static str)> {
+    let name = |id: u32| {
+        cat.all()
+            .find(|m| m.id == id)
+            .map_or_else(|| format!("{id:#x}"), |m| format!("{} ({id:#x})", m.name))
+    };
+    items
+        .iter()
+        .filter_map(|&(id, lock)| {
+            let why = if !slots.contains(&id) {
+                "not in the game's list"
+            } else if lock != 0 {
+                "locked"
+            } else {
+                return None;
+            };
+            Some((name(id), why))
+        })
+        .collect()
+}
+
 /// The level-array shape a list is built from: 8-byte elements, the
 /// lock byte at `+2`, the map id at `+4`.
 const ELEMENT: i32 = 8;
@@ -817,7 +846,27 @@ fn write_ours(
     let retail = mem.u32(LEVEL_ARRAY).unwrap_or(0);
     let flags = read_flags(&*mem, retail);
     let flag = |id: u32| flags.iter().find(|(i, _)| *i == id).map_or(0, |(_, f)| *f);
-    let items = list_for(&sel.catalogue(), mode, &flag);
+    let cat = sel.catalogue();
+    let items = list_for(&cat, mode, &flag);
+    let slots: Vec<u32> = crate::mod_slots::read_slots(&crate::layout_glue::ReadGm(&*mem))
+        .iter()
+        .map(crate::mod_slots::Slot::id)
+        .collect();
+    // No slots read (not the main menu's globals): nothing to compare.
+    let lost = if slots.is_empty() {
+        Vec::new()
+    } else {
+        unshown(&cat, &items, &slots)
+    };
+    if !lost.is_empty() {
+        let lost: Vec<String> = lost.iter().map(|(m, why)| format!("{m}: {why}")).collect();
+        eprintln!(
+            "map select: {mode:?}: {} of {} rows won't show by name ({})",
+            lost.len(),
+            items.len(),
+            lost.join(", ")
+        );
+    }
     let written =
         engine::memory::GuestMemory::write(&mut *mem, region + NAME_AT, b"map select list\0")
             .and_then(|()| write_list(&mut *mem, region + ARRAY_AT, region + NAME_AT, &items));

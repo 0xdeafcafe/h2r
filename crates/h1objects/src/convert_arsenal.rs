@@ -47,6 +47,71 @@ impl Converter<'_> {
         Ok(r)
     }
 
+    /// Halo 1's material effects: the first `foot` the Halo 1 root `b`
+    /// names, converted ([`Converter::foot`]); `None` when it names none
+    /// or it does not convert (noted).
+    fn h1_foot(&mut self, b: &[u8], rep: &mut ObjectReport) -> Result<Option<TagId>> {
+        let foot = h1map::Group::new(b"foot");
+        let Some(t) = crate::refs::scan(self.h1, b)
+            .into_iter()
+            .find(|f| f.group == foot)
+            .and_then(|f| f.tag)
+        else {
+            return Ok(None);
+        };
+        let t = self.h1_tag(t)?;
+        Ok(match self.foot(t, rep) {
+            Ok(x) => Some(x),
+            Err(e) => {
+                rep.no_home
+                    .push(format!("material effects {}: not converted ({e})", t.name));
+                None
+            }
+        })
+    }
+
+    /// Halo 1's effect `id`, converted ([`Converter::effect`]); `None`
+    /// when there is none or it does not convert (noted as `what`).
+    fn h1_effect(
+        &mut self,
+        id: Option<h1map::TagId>,
+        what: &str,
+        rep: &mut ObjectReport,
+    ) -> Result<Option<TagId>> {
+        let Some(id) = id else {
+            return Ok(None);
+        };
+        let t = self.h1_tag(id)?;
+        Ok(match self.effect(t) {
+            Ok(x) => Some(x),
+            Err(e) => {
+                rep.no_home
+                    .push(format!("{what} {}: not converted ({e})", t.name));
+                None
+            }
+        })
+    }
+
+    /// Halo 1's damage effect `id`, converted ([`Self::damage`]); `None`
+    /// when there is none or it does not convert (noted as `what`).
+    fn h1_damage(
+        &mut self,
+        id: Option<h1map::TagId>,
+        what: &str,
+        rep: &mut ObjectReport,
+    ) -> Result<Option<TagId>> {
+        let Some(id) = id else {
+            return Ok(None);
+        };
+        Ok(match self.damage(id) {
+            Ok(x) => Some(x),
+            Err(e) => {
+                rep.no_home.push(format!("{what}: not converted ({e})"));
+                None
+            }
+        })
+    }
+
     /// The base's Halo 2 counterpart of a Halo 1 tag (the first
     /// [`super::TEMPLATES`] row the base holds): only its references are
     /// used, for slots Halo 1 has nothing converted for.
@@ -151,15 +216,17 @@ impl Converter<'_> {
             return Err(Error::Truncated("jpt! root"));
         }
         let role = self.item_role(b"jpt!")?;
-        let root = arsenal::damage(b, &role)?;
-        self.cached(
+        let (root, roles) = crate::provenance::capture(|| arsenal::damage(b, &role));
+        let id = self.cached(
             t,
             Converted {
                 group: FourCC(*b"jpt!"),
-                root,
+                root: root?,
                 raw: Vec::new(),
             },
-        )
+        )?;
+        self.tree.note_roles(id, roles);
+        Ok(id)
     }
 
     /// The first `jpt!` a Halo 1 effect names (its events' parts), for a
@@ -323,9 +390,30 @@ impl Converter<'_> {
                     .push(format!("HUD: Halo 1's does not convert: {e}")),
             }
         }
+        // Halo 1's in the slots named by pairs (arsenal::WEAPON_MELEE_DAMAGE),
+        // after the weapon's own effects and sounds above (the overheated
+        // effect, arsenal::WEAPON_OVERHEATED, is one of those).
+        let melee = self.h1_damage(w.melee_damage, "melee damage", &mut rep)?;
+        let response = self.h1_damage(w.melee_response, "melee response", &mut rep)?;
+        parts.halo1.extend([
+            arsenal::halo1_ref(arsenal::WEAPON_MELEE_DAMAGE, b"jpt!", melee),
+            arsenal::halo1_ref(arsenal::WEAPON_MELEE_RESPONSE, b"jpt!", response),
+        ]);
+        if let Some(f) = self.h1_foot(&bytes[..h1::WEAP_SIZE.min(bytes.len())], &mut rep)? {
+            parts
+                .halo1
+                .push(arsenal::halo1_ref(arsenal::ITEM_FOOT, b"foot", Some(f)));
+        }
         let role = self.item_role(b"weap")?;
-        let root = arsenal::weapon(&w, &bytes, &parts, &role)?;
-        for (p, g, id) in &parts.halo2 {
+        let (root, roles) =
+            crate::provenance::capture(|| arsenal::weapon(&w, &bytes, &parts, &role));
+        let root = root?;
+        let halo1 = &parts.halo1;
+        for (p, g, id) in parts
+            .halo2
+            .iter()
+            .filter(|r| !halo1.iter().any(|h| h.0 == r.0))
+        {
             let n = self.base.name(*id).map_or("?", |n| n.1);
             rep.no_home.push(format!("Halo 2 reference {p}: {g} {n}"));
         }
@@ -338,6 +426,7 @@ impl Converter<'_> {
                 raw: Vec::new(),
             },
         );
+        self.tree.note_roles(id, roles);
         if let (Some(halo2), Some((_, _, halo1))) =
             (halo2_hud, parts.halo2.iter().find(|r| r.0 == "hud"))
         {
@@ -409,6 +498,7 @@ impl Converter<'_> {
             impact_damage,
             detonation_damage,
             halo2: Vec::new(),
+            halo1: Vec::new(),
             responses: arsenal::responses(self.h1, b, &self.base.materials)?,
         };
         if let Some((_, root)) = &cp {
@@ -423,10 +513,42 @@ impl Converter<'_> {
             // Every damage slot is Halo 1's or none.
             parts.halo2.retain(|r| r.1 != FourCC(*b"jpt!"));
         }
+        // Halo 1's in the slots named by pairs (arsenal::PROJECTILE_FLYBY_SOUND).
+        let started = self.h1_effect(p.detonation_started, "detonation started", &mut rep)?;
+        let detonation = self.h1_effect(p.effect, "detonation effect", &mut rep)?;
+        let sup = self.h1_effect(p.super_detonation, "super detonation", &mut rep)?;
+        let flyby = match p.flyby_sound {
+            Some(s) => {
+                let t = self.h1_tag(s)?;
+                self.sound(t, &mut rep)
+            }
+            None => None,
+        };
+        parts.halo1 = vec![
+            arsenal::halo1_ref(arsenal::PROJECTILE_DETONATION_STARTED, b"effe", started),
+            arsenal::halo1_ref(arsenal::PROJECTILE_AIRBORNE_DETONATION, b"effe", detonation),
+            arsenal::halo1_ref(arsenal::PROJECTILE_DETONATION, b"effe", detonation),
+            arsenal::halo1_ref(arsenal::PROJECTILE_SUPER_DETONATION, b"effe", sup),
+            arsenal::halo1_ref(arsenal::PROJECTILE_FLYBY_SOUND, b"snd!", flyby),
+        ];
+        if let Some(f) = self.h1_foot(b, &mut rep)? {
+            parts.halo1.push(arsenal::halo1_ref(
+                arsenal::PROJECTILE_FOOT,
+                b"foot",
+                Some(f),
+            ));
+        }
         let role = self.item_role(b"proj")?;
-        let root = arsenal::projectile(&p, b, &parts, &role)?;
+        let (root, roles) =
+            crate::provenance::capture(|| arsenal::projectile(&p, b, &parts, &role));
+        let root = root?;
         let root = self.halo1_attachments(*b"proj", "object", root, b, &p.object, &mut rep)?;
-        for (path, g, id) in &parts.halo2 {
+        let halo1 = &parts.halo1;
+        for (path, g, id) in parts
+            .halo2
+            .iter()
+            .filter(|r| !halo1.iter().any(|h| h.0 == r.0))
+        {
             let n = self.base.name(*id).map_or("?", |n| n.1);
             rep.no_home
                 .push(format!("Halo 2 reference {path}: {g} {n}"));
@@ -437,14 +559,16 @@ impl Converter<'_> {
             parts.responses.len()
         ));
         self.tree.reports.push(rep);
-        Ok(self.tree.push(
+        let id = self.tree.push(
             &tag.name,
             Converted {
                 group: FourCC(*b"proj"),
                 root,
                 raw: Vec::new(),
             },
-        ))
+        );
+        self.tree.note_roles(id, roles);
+        Ok(id)
     }
 
     pub(super) fn equipment(&mut self, tag: &Tag) -> Result<TagId> {
@@ -459,25 +583,40 @@ impl Converter<'_> {
             hlmt,
             predicted,
             halo2: Vec::new(),
+            halo1: Vec::new(),
         };
         if let Some((_, root)) = &cp {
             parts.halo2 = arsenal::halo2_refs(self.base, d, root, &["item.obje.model"]);
         }
+        let eb = h1::tag_bytes(self.h1, tag, b"eqip", h1::EQIP_SIZE)?;
+        if let Some(f) = self.h1_foot(eb, &mut rep)? {
+            parts
+                .halo1
+                .push(arsenal::halo1_ref(arsenal::ITEM_FOOT, b"foot", Some(f)));
+        }
         let role = self.item_role(b"eqip")?;
-        let root: Block = arsenal::equipment(&e, &parts, &role)?;
-        for (path, g, id) in &parts.halo2 {
+        let (root, roles) = crate::provenance::capture(|| arsenal::equipment(&e, &parts, &role));
+        let root: Block = root?;
+        let halo1 = &parts.halo1;
+        for (path, g, id) in parts
+            .halo2
+            .iter()
+            .filter(|r| !halo1.iter().any(|h| h.0 == r.0))
+        {
             let n = self.base.name(*id).map_or("?", |n| n.1);
             rep.no_home
                 .push(format!("Halo 2 reference {path}: {g} {n}"));
         }
         self.tree.reports.push(rep);
-        Ok(self.tree.push(
+        let id = self.tree.push(
             &tag.name,
             Converted {
                 group: FourCC(*b"eqip"),
                 root,
                 raw: Vec::new(),
             },
-        ))
+        );
+        self.tree.note_roles(id, roles);
+        Ok(id)
     }
 }

@@ -460,6 +460,7 @@ fn rebuilt_scenery_has_only_definition_bytes() {
         creation_effect: None,
         attachments: Vec::new(),
         widgets: Vec::new(),
+        change_colours: Vec::new(),
     };
     let hlmt = map::TagId(0xe001_0002);
     let (mode_id, bitm) = (map::TagId(0xe001_0003), map::TagId(0xe001_0004));
@@ -538,6 +539,111 @@ fn rebuilt_scenery_has_only_definition_bytes() {
     );
 }
 
+/// Halo 1's change colours in Halo 2's slots: A and C share slot 0, the
+/// one the model reads starting there (C on the cyborg, whose Halo 1
+/// player colour is C; A elsewhere); B goes to 1, D to 2; always four, so
+/// a player's unit takes the player's four colours.
+#[test]
+fn change_colours_go_to_halo2_slots_with_c_first_when_read() {
+    use crate::h1::{ChangeColour, ColourPermutation};
+    let one = |v: f32| ChangeColour {
+        permutations: vec![ColourPermutation {
+            weight: 1.0,
+            lower: [v; 3],
+            upper: [v; 3],
+        }],
+    };
+    let h1 = [one(0.1), one(0.2), one(0.3), one(0.4)];
+    let first = |c: &ChangeColour| c.permutations.first().map(|p| p.lower[0]);
+    let a = ChangeColour::halo2_slots(&h1, false);
+    assert_eq!(
+        a.iter().map(first).collect::<Vec<_>>(),
+        [Some(0.1), Some(0.2), Some(0.4), None]
+    );
+    let c = ChangeColour::halo2_slots(&h1, true);
+    assert_eq!(
+        c.iter().map(first).collect::<Vec<_>>(),
+        [Some(0.3), Some(0.2), Some(0.4), None]
+    );
+    // The multiplayer cyborg: A and B (functions, no permutation), its
+    // armour reading C: four empty slots, the player's colours go in.
+    let mp = [ChangeColour::default(), ChangeColour::default()];
+    assert_eq!(
+        ChangeColour::halo2_slots(&mp, true),
+        vec![ChangeColour::default(); 4]
+    );
+    assert_eq!(ChangeColour::halo2_slots(&[], false).len(), 4);
+}
+
+/// Rebuilt scenery with change colours: `obje +0xac` holds one element
+/// per slot, each with Halo 1's permutations (weight, lower, upper bound)
+/// as its initial permutations, any variant, and no functions.
+#[test]
+fn rebuilt_scenery_carries_its_change_colours() {
+    use crate::h1::{ChangeColour, ColourPermutation};
+    use tags::defs::{self, Defs, Val};
+    let tree = ChangeColour {
+        permutations: vec![
+            ColourPermutation {
+                weight: 0.333,
+                lower: [1.0, 1.0, 1.0],
+                upper: [1.0, 1.0, 1.0],
+            },
+            ColourPermutation {
+                weight: 0.667,
+                lower: [0.769, 0.659, 0.4],
+                upper: [0.737, 0.675, 0.427],
+            },
+        ],
+    };
+    let obj = crate::h1::Object {
+        object_type: 6,
+        flags: 0,
+        bounding_radius: 2.5,
+        bounding_offset: [0.0; 3],
+        model: None,
+        animation: None,
+        collision: None,
+        physics: None,
+        modifier_shader: None,
+        creation_effect: None,
+        attachments: Vec::new(),
+        widgets: Vec::new(),
+        change_colours: ChangeColour::halo2_slots(&[tree], false),
+    };
+    let root = crate::rebuild::scenery(&obj, None, &[], &[]).unwrap();
+    let def = Defs::builtin().group(map::FourCC(*b"scen")).unwrap();
+    let got = defs::from_built(def, &root).unwrap();
+    let n = |p: &str| match got.at(p) {
+        Some(Val::Block(b)) => b.len(),
+        other => panic!("{p}: {other:?}"),
+    };
+    assert_eq!(n("object.change_colors"), 4);
+    assert_eq!(n("object.change_colors[0].block_0"), 2);
+    for k in 1..4 {
+        assert_eq!(n(&format!("object.change_colors[{k}].block_0")), 0);
+    }
+    assert_eq!(n("object.change_colors[0].block_8"), 0);
+    let f = |p: &str| match got.at(p) {
+        Some(Val::Bytes(b)) => f32::from_le_bytes(b[..4].try_into().unwrap()),
+        other => panic!("{p}: {other:?}"),
+    };
+    let p = "object.change_colors[0].block_0[1]";
+    assert_eq!(f(&format!("{p}.unknown_0")), 0.667);
+    assert_eq!(f(&format!("{p}.unknown_4")), 0.769);
+    assert_eq!(f(&format!("{p}.unknown_c")), 0.4);
+    assert_eq!(f(&format!("{p}.unknown_10")), 0.737);
+    assert_eq!(f(&format!("{p}.unknown_18")), 0.427);
+    // Without change colours the block stays empty, as before.
+    let plain = crate::h1::Object {
+        change_colours: Vec::new(),
+        ..obj
+    };
+    let root = crate::rebuild::scenery(&plain, None, &[], &[]).unwrap();
+    let got = defs::from_built(def, &root).unwrap();
+    assert!(matches!(got.at("object.change_colors"), Some(Val::Block(b)) if b.is_empty()));
+}
+
 /// A rebuilt vehicle (a10's cryotube and the other Halo 1 vehicles with no
 /// template): the `vehi` definition's defaults, the turret role, the
 /// header and one seat per Halo 1 seat; it reads back through the
@@ -562,6 +668,7 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
         creation_effect: None,
         attachments: Vec::new(),
         widgets: Vec::new(),
+        change_colours: Vec::new(),
     };
     let seat = crate::h1::Seat {
         flags: 0x1d,
@@ -710,6 +817,7 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
         creation_effect: None,
         attachments: Vec::new(),
         widgets: Vec::new(),
+        change_colours: Vec::new(),
     };
     let role = VehicleRole {
         words: RoleWords {
@@ -721,8 +829,9 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
             )],
         },
         // Driver, gunner and passenger seats' words; the driver's flags
-        // carry a bit Halo 1 lacks (kept), a boarding bit and a closed-to-
-        // players bit (dropped) and a gunner bit (Halo 1's bits win).
+        // carry a bit Halo 1 lacks (19, kept), a boarding bit, a closed-to-
+        // players bit and the opens-the-vehicle bit (11, 16, 15: dropped)
+        // and a gunner bit (Halo 1's bits win).
         seats: [
             vec![
                 ("unknown_0".into(), 0x0009_8808),
@@ -736,6 +845,9 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
         friction: Some(vec![("unknown_8".into(), 0x4160_0000), ("unknown_4".into(), 0x32)]),
         friction_steered: Some(vec![("unknown_8".into(), 0x4160_0000), ("unknown_4".into(), 0x26)]),
         hover: None,
+        hover_each: Vec::new(),
+        hover_at: Vec::new(),
+        wheel_shapes: false,
         gears: vec![vec![
             ("unknown_0".into(), 0x4795_6a00),
             ("raw_14".into(), 0x4000_1234),
@@ -806,7 +918,7 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
     // Each seat takes its kind's words.
     assert_eq!(got.at("block_1c8[0].unknown_20").cloned(), word(0x3f00_0000));
     assert_eq!(got.at("block_1c8[1].unknown_20").cloned(), word(0x3d00_0000));
-    assert_eq!(got.at("block_1c8[0].unknown_0").cloned(), word(0x0008_8014));
+    assert_eq!(got.at("block_1c8[0].unknown_0").cloned(), word(0x0008_0014));
     assert_eq!(got.at("block_1c8[1].unknown_0").cloned(), word(0x60));
     // Halo 1's entry markers face the vehicle's forward: no facing test,
     // whatever the role's seats hold.
@@ -953,6 +1065,7 @@ fn h1_device(group: &[u8; 4]) -> crate::h1::Device {
             creation_effect: None,
             attachments: Vec::new(),
             widgets: Vec::new(),
+            change_colours: Vec::new(),
         },
         flags: 1,
         times: [0.0, 0.0, 4.0, 0.0, 0.0, 0.0],
@@ -1327,6 +1440,7 @@ fn rebuilt_biped_is_the_role_with_halo_1s_header_and_words() {
         creation_effect: None,
         attachments: Vec::new(),
         widgets: Vec::new(),
+        change_colours: Vec::new(),
     };
     let unit = crate::h1::Unit {
         group: h1map::Group::new(b"bipd"),
@@ -1422,6 +1536,7 @@ fn rebuilt_biped_is_sized_to_halo_1_and_takes_its_counterparts_references() {
             creation_effect: None,
             attachments: Vec::new(),
             widgets: Vec::new(),
+            change_colours: Vec::new(),
         },
         camera_field_of_view: 1.2,
         biped_words: Vec::new(),
@@ -2239,7 +2354,7 @@ fn role_spheres_read_the_physics_elements_multisphere() {
 /// A weapon fires Halo 1's effects: each barrel takes its own trigger's
 /// firing effects (firing, misfire, empty) in order, with the damage the
 /// parts give, and a barrel whose trigger has none gets none (before
-/// converter version 84 every barrel took the Halo 2 counterpart's, the
+/// converter version 92 every barrel took the Halo 2 counterpart's, the
 /// last one's when it had fewer barrels). A magazine takes Halo 1's
 /// reloading and chambering effects, and the root's Halo 1 references
 /// win over the counterpart's.
@@ -2318,4 +2433,191 @@ fn a_weapon_fires_and_reloads_with_halo1_s_effects() {
     assert_eq!(target(&r, "ready_effect"), Some(local(8)));
     // Slots no part names are empty.
     assert_eq!(target(&r, "pickup_sound"), None);
+}
+
+/// A vehicle's role is taken over the base vehicles of its type whose
+/// friction and hover points are nearest Halo 1's powered points: the
+/// ghost's three against Coagulation's ghost (3), spectre (4) and wraith
+/// (6) is the ghost alone; a tie keeps every member it ties.
+#[test]
+fn vehicle_role_takes_the_members_nearest_halo_1s_points() {
+    use crate::rebuild::nearest_members;
+    assert_eq!(nearest_members(&[3, 4, 6], 3), vec![0]);
+    assert_eq!(nearest_members(&[3, 4, 6], 5), vec![1, 2]);
+    assert_eq!(nearest_members(&[3, 4, 6], 9), vec![2]);
+    assert_eq!(nearest_members(&[0, 0], 0), vec![0, 1]);
+    assert_eq!(nearest_members(&[4], 8), vec![0]);
+    assert!(nearest_members(&[], 3).is_empty());
+}
+
+/// With a one-member role whose hover points match the vehicle's in
+/// number, point `i` takes the member's hover point `i`'s own words (the
+/// retail ghost's back point is stronger than its front pair); with a
+/// count that differs, every point takes the majority.
+#[test]
+fn hover_points_take_their_paired_points_words() {
+    use crate::rebuild::{VEHI_HOVER, VehicleRole, VehicleSpec};
+    use tags::defs::{self, Defs, Val};
+    let obj = crate::h1::Object {
+        object_type: 1,
+        flags: 0,
+        bounding_radius: 1.0,
+        bounding_offset: [0.0; 3],
+        model: None,
+        animation: None,
+        collision: None,
+        physics: None,
+        modifier_shader: None,
+        creation_effect: None,
+        attachments: Vec::new(),
+        widgets: Vec::new(),
+        change_colours: Vec::new(),
+    };
+    let f = |v: f32| v.to_bits();
+    let role = VehicleRole {
+        hover: Some(vec![("unknown_8".into(), f(1.85))]),
+        hover_each: vec![
+            vec![("unknown_8".into(), f(3.75))],
+            vec![("unknown_8".into(), f(1.85))],
+            vec![
+                ("unknown_8".into(), f(1.85)),
+                ("unknown_10".into(), f(0.45)),
+            ],
+        ],
+        hover_at: vec![[-0.4, 0.0, 0.0], [0.3, 0.3, 0.0], [0.3, -0.3, 0.0]],
+        ..Default::default()
+    };
+    let point = |m: &str| crate::rebuild::Point {
+        marker: m.into(),
+        region: String::new(),
+        region_index: -1,
+        steered: false,
+    };
+    let def = Defs::builtin().group(map::FourCC(*b"vehi")).unwrap();
+    let build = |points: &[crate::rebuild::Point]| {
+        let root = crate::rebuild::vehicle(&VehicleSpec {
+            object: &obj,
+            bounds: None,
+            hlmt: None,
+            seats: &[],
+            predicted: &[],
+            camera_field_of_view: 1.0,
+            vehicle_type: 4,
+            flags: 0,
+            weapons: &[],
+            role: Some(&role),
+            points,
+            attachments: &[],
+            functions: &[],
+            creation_effect: None,
+        })
+        .unwrap();
+        defs::from_built(def, &root).unwrap()
+    };
+    let word = |w: f32| Some(Val::Bytes(f(w).to_le_bytes().to_vec()));
+    let got = build(&[point("hull"), point("left"), point("right")]);
+    let at = |r: &defs::Record, i: usize, k: &str| r.at(&format!("{VEHI_HOVER}[{i}].{k}")).cloned();
+    assert_eq!(at(&got, 0, "unknown_8"), word(3.75));
+    assert_eq!(at(&got, 1, "unknown_8"), word(1.85));
+    assert_eq!(at(&got, 2, "unknown_10"), word(0.45));
+    assert_eq!(at(&got, 1, "unknown_10"), word(0.0));
+    let got = build(&[point("a"), point("b")]);
+    assert_eq!(at(&got, 0, "unknown_8"), word(1.85));
+    assert_eq!(at(&got, 1, "unknown_8"), word(1.85));
+}
+
+/// A wheel's pieces are cut at the hull's lowest point and what is left
+/// is one piece; a wheel wholly under it gives none; a hull of no pieces
+/// (an infinite floor) holds no wheel.
+#[test]
+fn held_wheels_keep_what_is_above_the_floor() {
+    use crate::convert::held_wheels;
+    // An axis box, lo..hi.
+    let cube = |lo: [f64; 3], hi: [f64; 3]| {
+        let mut planes = Vec::new();
+        for a in 0..3 {
+            let mut n = [0.0; 3];
+            n[a] = 1.0;
+            planes.push((n, -hi[a]));
+            n[a] = -1.0;
+            planes.push((n, lo[a]));
+        }
+        crate::physics::hull(&planes).unwrap()
+    };
+    let tread = vec![
+        cube([-1.0, 0.5, -0.5], [0.0, 1.0, 0.5]),
+        cube([0.0, 0.5, -0.5], [1.0, 1.0, 0.5]),
+    ];
+    let sunk = vec![cube([-1.0, -1.0, -0.5], [1.0, -0.5, -0.1])];
+    let held = held_wheels(&[tread, sunk], 0.0);
+    assert_eq!(held.len(), 1, "the sunk wheel gives nothing");
+    let (lo, hi) = held[0].vertices.iter().fold(
+        ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]),
+        |(mut lo, mut hi), v| {
+            for a in 0..3 {
+                lo[a] = lo[a].min(v[a]);
+                hi[a] = hi[a].max(v[a]);
+            }
+            (lo, hi)
+        },
+    );
+    for (got, want) in lo
+        .iter()
+        .zip([-1.0, 0.5, 0.0])
+        .chain(hi.iter().zip([1.0, 1.0, 0.5]))
+    {
+        assert!((got - want).abs() < 1e-3, "{lo:?}..{hi:?}");
+    }
+    assert!((held[0].volume - 0.5).abs() < 1e-3, "{}", held[0].volume);
+    let one = cube([0.0, 0.0, -1.0], [1.0, 1.0, 1.0]).above(0.25).unwrap();
+    assert!((one.volume - 0.75).abs() < 1e-4);
+    assert!(cube([0.0; 3], [1.0; 3]).above(2.0).is_none());
+    assert!(held_wheels(&[vec![cube([0.0; 3], [1.0; 3])]], f32::INFINITY).is_empty());
+}
+
+/// A rebuilt seat's gunner role is Halo 1's alone: the role word's player
+/// gunner bit (`0x000cc810` makes a seat with it, ridden by a player, the
+/// vehicle's gunner) is dropped, so a driver seat whose role word carries
+/// it (the retail warthog driver's `0x48014`) does not fire the gun.
+#[test]
+fn a_rebuilt_seat_s_gunner_is_halo_1_s_alone() {
+    use crate::rebuild::{SEAT_DRIVER, SEAT_GUNNER, SEAT_PLAYER_GUNNER, seat_flags};
+    let driver = seat_flags(0x14, 0x48014);
+    assert_eq!(driver & SEAT_PLAYER_GUNNER, 0, "{driver:#x}");
+    assert_eq!(driver & SEAT_GUNNER, 0, "{driver:#x}");
+    assert_ne!(driver & SEAT_DRIVER, 0, "{driver:#x}");
+    // Halo 1's gunner keeps its bit whatever the role word.
+    assert_ne!(seat_flags(0x198, 0) & SEAT_GUNNER, 0);
+    assert_ne!(seat_flags(0x198, SEAT_PLAYER_GUNNER) & SEAT_GUNNER, 0);
+    // Other role bits above Halo 1's pass through.
+    assert_eq!(seat_flags(0, 1 << 20), 1 << 20);
+}
+
+/// A slot Halo 1 fills (`arsenal::Halo1Refs`) holds Halo 1's converted
+/// tag, or none where Halo 1 names none, over the counterpart's; the
+/// counterpart's other slots stay.
+#[test]
+fn halo1_slots_replace_the_counterparts_references() {
+    use crate::arsenal::{self, PROJECTILE_DETONATION, PROJECTILE_FLYBY_SOUND};
+    use tags::defs::{self, Defs, Target, Val};
+    let d = Defs::builtin().group(FourCC(*b"proj")).unwrap();
+    let mut r = defs::default_record(d);
+    let retail = TagId(0xe123_0045);
+    let halo2 = vec![
+        (PROJECTILE_FLYBY_SOUND.to_owned(), FourCC(*b"snd!"), retail),
+        (PROJECTILE_DETONATION.to_owned(), FourCC(*b"effe"), retail),
+        ("ref_140".to_owned(), FourCC(*b"effe"), retail),
+    ];
+    let halo1 = vec![
+        arsenal::halo1_ref(PROJECTILE_FLYBY_SOUND, b"snd!", None),
+        arsenal::halo1_ref(PROJECTILE_DETONATION, b"effe", Some(local(3))),
+    ];
+    arsenal::all_refs(&mut r, &halo2, &halo1).unwrap();
+    let target = |p: &str| match r.at(p) {
+        Some(Val::Ref { target, .. }) => target.clone(),
+        v => panic!("{p}: {v:?}"),
+    };
+    assert_eq!(target(PROJECTILE_FLYBY_SOUND), Target::Null);
+    assert_eq!(target(PROJECTILE_DETONATION), Target::Id(local(3)));
+    assert_eq!(target("ref_140"), Target::Id(retail));
 }

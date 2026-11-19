@@ -313,9 +313,59 @@ pub fn infer(maps: &mut [MapSample]) -> Schema {
         }
         schema = next;
     }
+    apply_engine_data(&mut schema);
     pair_raw_sizes(&mut schema, maps);
     apply_engine_strides(&mut schema);
     schema
+}
+
+/// Words the engine reads as data that inference takes for raw-resource
+/// pointers: `(group, block path, offset)`. Their retail values are small,
+/// 4-aligned numbers that pass for file offsets (step 4), so they came out
+/// raw, and a fresh or from-scratch build copied "the resource" they named
+/// and wrote a new file offset over them.
+///
+/// - `nhdt` bitmap widgets (`+0x8`) and text widgets (`+0x10`), `+0x18`:
+///   three threshold bytes the state gate compares with the weapon's state
+///   (E `0x0013ac8f`..`0x0013acbd`: `+0x18` against the battery's age,
+///   `+0x19` the rounds loaded, `+0x1a` the rounds in reserve, each a byte;
+///   the text widget's gate is the same call, `0x0013a63d`). V: a converted
+///   Blood Gulch whose Halo 1 "Reload" widget was written `00 0b 01 00`
+///   there came out of the from-scratch build as `00 da 22 01`, a file
+///   offset: rounds loaded below 218, so "Reload" showed on a full
+///   magazine. The text widget's `+0x2c`, which inference paired with it as
+///   the resource's size, is the justification (E `0x0022ac0b`).
+pub const ENGINE_DATA: &[(FourCC, &[u32], u32)] = &[
+    (FourCC(*b"nhdt"), &[0x8], 0x18),
+    (FourCC(*b"nhdt"), &[0x10], 0x18),
+];
+
+/// Applies [`ENGINE_DATA`] to a schema: the word is no field (copied as
+/// bytes), and no size is paired with it.
+pub fn apply_engine_data(schema: &mut Schema) {
+    fn at<'a>(s: &'a mut Struct, path: &[u32]) -> Option<&'a mut Struct> {
+        match path.split_first() {
+            None => Some(s),
+            Some((o, rest)) => match s.fields.get_mut(o)? {
+                Field::Block(child) => at(child, rest),
+                _ => None,
+            },
+        }
+    }
+    for &(group, path, offset) in ENGINE_DATA {
+        let Some(s) = schema
+            .groups
+            .get_mut(&group)
+            .and_then(|root| at(root, path))
+        else {
+            continue;
+        };
+        if matches!(s.fields.get(&offset), Some(Field::Raw)) {
+            s.fields.remove(&offset);
+        }
+        s.fields
+            .retain(|_, f| !matches!(f, Field::RawSize(of) if *of == offset));
+    }
 }
 
 /// Root block element sizes the engine settles where the data can't:

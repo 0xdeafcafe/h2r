@@ -250,3 +250,115 @@ fn usage_names_no_drive_and_progress() {
     let u = err(&["test", "--help"]);
     assert!(u.contains("--no-drive") && u.contains("progress.json") && u.contains("900"));
 }
+
+#[test]
+fn clankermatch_is_asked_for_by_flag_or_playlist() {
+    let o = opts(&["test"]);
+    assert_eq!(o.clankermatch, None);
+    let o = opts(&["test", "--clankermatch"]);
+    assert_eq!(o.clankermatch, Some(CmPlaylist::Slayer));
+    assert_eq!(o.timeout, Duration::from_secs(900));
+    let o = opts(&["test", "--playlist", "teams", "--keep"]);
+    assert_eq!(o.clankermatch, Some(CmPlaylist::Teams));
+    assert!(o.keep);
+    let o = opts(&["test", "--playlist", "Doubles", "--clankermatch"]);
+    assert_eq!(
+        o.clankermatch,
+        Some(CmPlaylist::Doubles),
+        "the flag keeps it"
+    );
+    let o = opts(&["test", "--clankermatch", "--no-drive"]);
+    assert_eq!(o.timeout, Duration::from_secs(1200));
+    let o = opts(&["test", "--clankermatch", "--timeout", "600"]);
+    assert_eq!(o.timeout, Duration::from_secs(600));
+    assert!(err(&["test", "--playlist", "swat"]).contains("slayer, teams or doubles"));
+    assert!(err(&["test", "--clankermatch", "--count", "3"]).contains("--count and --map"));
+    assert!(
+        err(&["test", "--playlist", "slayer", "--map", "lockout"]).contains("--count and --map")
+    );
+    assert!(err(&["test", "--help"]).contains("--clankermatch"));
+}
+
+#[test]
+fn clankermatch_leaves_clankers_off() {
+    let o = opts(&["test", "--clankermatch", "--wait-clang"]);
+    let g = plan(&o, "http://s", Path::new("/r"), Path::new("/a.sock"));
+    let a = g.args.join(" ");
+    assert!(a.contains("--set clankers.enabled=false"), "{a}");
+    assert!(!a.contains("clankers.count"), "{a}");
+    assert!(a.contains("Halo 2 — clankermatch test"), "{a}");
+    assert!(a.ends_with("--tier clang"), "{a}");
+    for w in g.args.windows(2).filter(|w| w[0] == "--set") {
+        crate::settings_cmd::set_flag(&w[1]).unwrap();
+    }
+}
+
+#[test]
+fn the_clankermatch_plans_come_from_the_built_in_lineup() {
+    let s = cm_plan(CmPlaylist::Slayer, "Tester").unwrap();
+    assert_eq!(
+        (s.title.as_str(), s.hopper, s.row, s.min, s.max, s.teams),
+        ("Clanker Slayer", 8, 0, 2, 8, 0)
+    );
+    assert_eq!((s.bots, s.local, s.phantoms()), (7, 0, 7), "phantoms only");
+    let t = cm_plan(CmPlaylist::Teams, "Tester").unwrap();
+    assert_eq!(
+        (t.title.as_str(), t.hopper, t.row, t.max, t.teams),
+        ("Clanker Teams", 9, 1, 8, 2)
+    );
+    assert_eq!((t.bots, t.local, t.phantoms()), (7, 0, 7));
+    let d = cm_plan(CmPlaylist::Doubles, "Tester").unwrap();
+    assert_eq!(
+        (d.title.as_str(), d.hopper, d.row, d.max, d.teams),
+        ("Clanker Doubles", 10, 2, 4, 2)
+    );
+    assert_eq!((d.bots, d.local, d.phantoms()), (3, 0, 3));
+    for p in [&s, &t, &d] {
+        assert!((2..=p.max).contains(&p.min), "{p:?}");
+        // The plan line reads back.
+        assert_eq!(CmPlan::read(&[p.line().as_str()]).as_ref(), Some(p));
+    }
+
+    // A fresh server's marks (the built-in lineup's) agree; a server
+    // without the hopper, or with another lineup, stops the run.
+    use live_proto::hopper::{HOPPERS, HopperFile, clankers::ClankerHoppers};
+    let file = HopperFile::default_set();
+    let served: Vec<_> = (0..HOPPERS)
+        .filter_map(|i| file.descriptor(i).ok())
+        .collect();
+    let marks = ClankerHoppers::of_defaults(&served);
+    for p in [&s, &t, &d] {
+        check_marks(p, &marks).unwrap();
+    }
+    let e = check_marks(&s, &ClankerHoppers::default()).unwrap_err();
+    assert!(format!("{e:#}").contains("not 8 (Clanker Slayer)"), "{e:#}");
+    let only_teams = ClankerHoppers {
+        hoppers: marks
+            .hoppers
+            .iter()
+            .filter(|h| h.hopper_id == 9)
+            .copied()
+            .collect(),
+    };
+    let e = check_marks(&t, &only_teams).unwrap_err();
+    assert!(format!("{e:#}").contains("row 0"), "{e:#}");
+}
+
+#[test]
+fn a_clankermatch_game_line_has_its_kind_and_playlist() {
+    let page = serde_json::json!({"items": [{
+        "game_id": "g1",
+        "map": "lockout",
+        "kind": "clankermatch",
+        "playlist": "Clanker Slayer",
+        "players": [
+            {"index": 0, "name": "Tester", "xuid": "0009000000000001", "team": 0},
+            {"index": 1, "name": "Rusty Lugnut", "xuid": "000B000000000001", "team": 1, "bot": true}
+        ]
+    }]});
+    assert_eq!(
+        cm_game_from(&page).unwrap(),
+        "bots-test: game g1 on lockout: 2 players, 1 bots (1 with an account), kind \
+         clankermatch, playlist Clanker Slayer"
+    );
+}

@@ -126,7 +126,10 @@ fn word(r: &mut Record, path: &str, w: u32) -> Result<()> {
     set(r, path, Val::Bytes(w.to_le_bytes().to_vec()))
 }
 
-fn words(r: &mut Record, ws: &[(String, u32)]) -> Result<()> {
+/// Writes role words into `r`, noting them under `scope`, `r`'s path in
+/// the tag ([`crate::provenance`]).
+fn words(r: &mut Record, scope: &str, ws: &[(String, u32)]) -> Result<()> {
+    crate::provenance::note_words(scope, ws);
     for (p, w) in ws {
         word(r, p, *w)?;
     }
@@ -269,6 +272,59 @@ fn refs(r: &mut Record, list: &Halo2Refs) -> Result<()> {
     Ok(())
 }
 
+/// The counterpart's references, then Halo 1's over them: a slot Halo 1
+/// fills ([`Halo1Refs`]) holds Halo 1's converted tag, or none where
+/// Halo 1 names none.
+pub(crate) fn all_refs(r: &mut Record, halo2: &Halo2Refs, halo1: &Halo1Refs) -> Result<()> {
+    refs(r, halo2)?;
+    refs(r, halo1)
+}
+
+/// References a slot takes from Halo 1, written over the counterpart's
+/// ([`Halo2Refs`]): (path, group, converted tag or [`TagId::NULL`] where
+/// Halo 1 names none or it did not convert).
+pub type Halo1Refs = Vec<(String, FourCC, TagId)>;
+
+/// Halo 1 references in slots named by the retail tags they hold. V
+/// (`tests/role_audit_disc.rs`, Blood Gulch on Coagulation, the
+/// counterparts' references by slot):
+///
+/// - `weap +0x16c`: the plasma pistol's and plasma rifle's `overheated`
+///   effects; Halo 1's `weap +0x374` overheated effect;
+/// - `weap +0x1bc`: `smash_melee` or `strike_melee` on 8 of 8 weapons,
+///   `+0x1c4` their `_melee_response` on 8 of 8; Halo 1's `weap +0x394`
+///   melee damage and `+0x3a4` melee response. The five slots after
+///   (`+0x1cc` .. `+0x1ec`, more `strike`/`smash` damage) are Halo 2
+///   melee kinds Halo 1 has no counterpart for;
+/// - `proj +0xe8`: the plasma grenade's `detonation_start`; Halo 1's
+///   `proj +0x1f4` detonation started;
+/// - `proj +0xf0`: `airborne_detonation` on all 3 that have one, `+0xf8`
+///   the detonation (`detonation`, `standard_detonation`, the frag's
+///   `airborne_detonation`): Halo 1 has one detonation effect
+///   (`proj +0x1ac`), which takes both;
+/// - `proj +0x110`: the needle's `super_detonation`; Halo 1's
+///   `proj +0x18c` super detonation;
+/// - `proj +0x138`: `bullet_flyby_*` on 8 bullets; Halo 1's `proj +0x204`
+///   flyby sound.
+pub const WEAPON_OVERHEATED: &str = "overheated_effect";
+pub const WEAPON_MELEE_DAMAGE: &str = "ref_1bc";
+pub const WEAPON_MELEE_RESPONSE: &str = "ref_1c4";
+pub const PROJECTILE_DETONATION_STARTED: &str = "ref_e8";
+pub const PROJECTILE_AIRBORNE_DETONATION: &str = "ref_f0";
+pub const PROJECTILE_DETONATION: &str = "ref_f8";
+pub const PROJECTILE_SUPER_DETONATION: &str = "ref_110";
+pub const PROJECTILE_FLYBY_SOUND: &str = "ref_138";
+
+/// `obje +0x54`, the material effects (`foot`), under each group's
+/// object header.
+pub const ITEM_FOOT: &str = "item.obje.foot_ref_54";
+pub const PROJECTILE_FOOT: &str = "object.foot_ref_54";
+
+/// One Halo 1 slot: `path` of `group` takes `id`, or none.
+pub fn halo1_ref(path: &str, group: &[u8; 4], id: Option<TagId>) -> (String, FourCC, TagId) {
+    (path.to_owned(), FourCC(*group), id.unwrap_or(TagId::NULL))
+}
+
 fn header(
     r: &mut Record,
     path: &str,
@@ -306,13 +362,14 @@ pub struct WeaponParts {
     /// From the Halo 2 counterpart: root references (HUD, melee damage,
     /// effects, sounds) and per barrel its references.
     pub halo2: Halo2Refs,
+    /// Halo 1's converted tags over those ([`Halo1Refs`]): the weapon's
+    /// own effects and sounds ([`WEAPON_EFFECTS`], the overheated effect
+    /// among them), melee damage and response, material effects. A slot
+    /// listed here holds none where Halo 1 names none.
+    pub halo1: Halo1Refs,
     pub barrel_halo2: Vec<Halo2Refs>,
     /// Per Halo 1 trigger, its firing effects, converted ([`FiringParts`]).
     pub firing_effects: Vec<Vec<FiringParts>>,
-    /// Root references converted from Halo 1 ([`WEAPON_EFFECTS`]): they
-    /// replace the counterpart's in those slots, which stay empty where
-    /// Halo 1 names nothing.
-    pub halo1: Halo2Refs,
     /// Per Halo 1 magazine, its reloading and chambering effects,
     /// converted.
     pub magazine_effects: Vec<[Option<(FourCC, TagId)>; 2]>,
@@ -325,7 +382,7 @@ pub struct WeaponParts {
 /// 1's trigger firing effect (`h1::FiringEffect`): its converted firing,
 /// misfire and empty effects, and the damage (rumble and shake) the Halo 2
 /// counterpart's barrel names. A shot plays the effect: until converter
-/// version 84 the effects were the counterpart's too, so the assault
+/// version 92 the effects were the counterpart's too, so the assault
 /// rifle fired with the SMG's sound and a weapon with no counterpart (the
 /// vehicle guns) had no firing effect and fired silent.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -366,7 +423,7 @@ pub const MAGAZINE_CHAMBERING_EFFECT: &str = "chambering_effect";
 /// `+0x270`) by magnification, the pickup sound at `0x000a009a`
 /// (`+0x268`, played by `0x001896c0` for a weapon), the overheated and
 /// detonation effects at `0x000cf12c` (`+0x170`) and `0x000cf19f`
-/// (`+0x180`); each skips a null datum. Until converter version 84 these
+/// (`+0x180`); each skips a null datum. Until converter version 92 these
 /// were the counterpart's: drawing the assault rifle played the needler's
 /// ready effect (the SMG's), picking it up the SMG's ammunition sound.
 pub const WEAPON_EFFECTS: &[(&str, usize)] = &[
@@ -554,9 +611,8 @@ pub fn h2_triggers(h1: &[Vec<u8>]) -> Vec<TriggerWords> {
 pub fn weapon(w: &h1::Weapon, b: &[u8], parts: &WeaponParts, role: &Role) -> Result<Block> {
     let d = def(b"weap")?;
     let mut r = defs::default_record(d);
-    words(&mut r, &role.root)?;
-    refs(&mut r, &parts.halo2)?;
-    refs(&mut r, &parts.halo1)?;
+    words(&mut r, "", &role.root)?;
+    all_refs(&mut r, &parts.halo2, &parts.halo1)?;
     header(&mut r, "item.obje", WEAPON_TYPE, &w.object, parts.hlmt)?;
     if let Some((class, kind)) = &parts.animation {
         set(&mut r, WEAPON_CLASS, Val::text(class))?;
@@ -569,9 +625,13 @@ pub fn weapon(w: &h1::Weapon, b: &[u8], parts: &WeaponParts, role: &Role) -> Res
     // Magazines.
     let md = d.child("magazines").expect("weap magazines");
     let mut mags = Vec::new();
-    for m in &w.magazines {
+    for (i, m) in w.magazines.iter().enumerate() {
         let mut e = defs::default_record(md);
-        words(&mut e, role.element("magazines"))?;
+        words(
+            &mut e,
+            &format!("magazines[{i}]."),
+            role.element("magazines"),
+        )?;
         set(
             &mut e,
             "unknown_4",
@@ -625,7 +685,7 @@ pub fn weapon(w: &h1::Weapon, b: &[u8], parts: &WeaponParts, role: &Role) -> Res
     let mut barrels = Vec::new();
     for (i, t) in w.triggers.iter().enumerate() {
         let mut e = defs::default_record(bd);
-        words(&mut e, role.element("barrels"))?;
+        words(&mut e, &format!("barrels[{i}]."), role.element("barrels"))?;
         if let Some(h) = parts.barrel_halo2.get(i).or(parts.barrel_halo2.last()) {
             refs(&mut e, h)?;
         }
@@ -647,9 +707,13 @@ pub fn weapon(w: &h1::Weapon, b: &[u8], parts: &WeaponParts, role: &Role) -> Res
             ),
         )?;
         let mut effects = Vec::new();
-        for f in parts.firing_effects.get(i).into_iter().flatten() {
+        for (k, f) in parts.firing_effects.get(i).into_iter().flatten().enumerate() {
             let mut x = defs::default_record(fd);
-            words(&mut x, role.element("barrels.block_e4"))?;
+            words(
+                &mut x,
+                &format!("barrels[{i}].block_e4[{k}]."),
+                role.element("barrels.block_e4"),
+            )?;
             for (path, fx) in FIRING_EFFECT_REFS.iter().zip(f.effects) {
                 let (g, id) = fx.unwrap_or((FourCC(*b"effe"), TagId::NULL));
                 set(&mut x, path, Val::tag(g, id))?;
@@ -732,6 +796,9 @@ pub struct ProjectileParts {
     /// The Halo 2 counterpart's references (effects, sounds) for the
     /// slots Halo 1 has nothing converted for.
     pub halo2: Halo2Refs,
+    /// Halo 1's converted tags over those ([`Halo1Refs`]: detonation
+    /// effects, flyby sound, material effects).
+    pub halo1: Halo1Refs,
     /// The material responses ([`responses`]).
     pub responses: Vec<(&'static str, i16, Response)>,
 }
@@ -745,8 +812,8 @@ pub fn projectile(
 ) -> Result<Block> {
     let d = def(b"proj")?;
     let mut r = defs::default_record(d);
-    words(&mut r, &role.root)?;
-    refs(&mut r, &parts.halo2)?;
+    words(&mut r, "", &role.root)?;
+    all_refs(&mut r, &parts.halo2, &parts.halo1)?;
     header(&mut r, "object", PROJECTILE_TYPE, &p.object, parts.hlmt)?;
     for (path, at, per_tick) in PROJECTILE_WORDS {
         let w = if *per_tick {
@@ -1005,6 +1072,9 @@ pub struct EquipmentParts {
     pub hlmt: Option<TagId>,
     pub predicted: Vec<Predicted>,
     pub halo2: Halo2Refs,
+    /// Halo 1's converted tags over those ([`Halo1Refs`]: material
+    /// effects).
+    pub halo1: Halo1Refs,
 }
 
 /// The `eqip` root from Halo 1's equipment. A health pack needs a positive
@@ -1012,8 +1082,8 @@ pub struct EquipmentParts {
 pub fn equipment(e: &h1::Equipment, parts: &EquipmentParts, role: &Role) -> Result<Block> {
     let d = def(b"eqip")?;
     let mut r = defs::default_record(d);
-    words(&mut r, &role.root)?;
-    refs(&mut r, &parts.halo2)?;
+    words(&mut r, "", &role.root)?;
+    all_refs(&mut r, &parts.halo2, &parts.halo1)?;
     header(&mut r, "item.obje", EQUIPMENT_TYPE, &e.object, parts.hlmt)?;
     rebuild::predicted_resources(b"eqip", &mut r, "item.obje", &parts.predicted)?;
     set(&mut r, "powerup_type", Val::Int(e.powerup_type.into()))?;
@@ -1032,7 +1102,7 @@ pub fn equipment(e: &h1::Equipment, parts: &EquipmentParts, role: &Role) -> Resu
 pub fn damage(b: &[u8], role: &Role) -> Result<Block> {
     let d = def(b"jpt!")?;
     let mut r = defs::default_record(d);
-    words(&mut r, &role.root)?;
+    words(&mut r, "", &role.root)?;
     let f = |at: usize| f32::from_bits(u32_at(b, at));
     set(&mut r, "damage_lower_bound", Val::Float(f(H1_DAMAGE_LOWER)))?;
     set(

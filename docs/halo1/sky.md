@@ -282,6 +282,55 @@ reaches about a million units; retail Halo 2 skies reach 2.8 million
 (Delta Approach's, 14,200 units at scale 200).
 `real_h1_disc_every_sky_stays_behind_its_level` checks every sky.
 
+### Edge-on triangles
+
+The triangles `nearest_surface` leaves out are dropped from the converted
+model (`h1sky::convert::drop_edge_on`, converter version 82). In Halo 1
+they are lines on screen, or slivers behind the level. In Halo 2 the eye is
+never exactly on their plane: the sky is moved to the camera position, and
+the view's own origin differs from it in the last bits. A triangle whose
+plane passes a hair from the eye, and that spans the point nearest it, would
+be a wall at that distance, in front of the whole level. Dropping them
+changes no nearest surface, so no model scale. On the retail disc a50's
+`skynight0` has 12, b30's clear afternoon 20 and Damnation's dusk 1. a10's
+two skies have none: every surface is at least 6,829 units out.
+
+a10's grey slab has another cause, in the renderer, and is open. It only
+shows when the cryo bay's clusters, which have no sky, are forced to sky 0
+(`+0x6e` = 0 on all 33), so it is not what a player sees. It is
+`sky\space\space` drawn over walls 5 to 10 units away:
+
+- The sky's draws are W-buffered and depth-clamped, LessEqual with no depth
+  write, after the level. Their constants match the walls'.
+- At the slab's pixels the sky's fragments store w under 1,000 depth units
+  (about 0.06 world units at the level's 16,384 per unit). They come from
+  triangles with a vertex behind the eye (w < 0). Every vertex is over
+  10,000 units out, so a correct clip would leave no on-screen fragment
+  nearer than thousands of units.
+- With the depth clipped (before `unclipped_depth`), a clamped draw's clip
+  z is `w / 2` (`xvs_fixup`), so the host's near plane is w = 0. Moving it
+  out with a WGSL override, to z = (w - n) / 2, thinned the slab at
+  n = 256 and 10,000 and removed it at n = 1,000,000 (3,716 slab-grey
+  pixels left in pass 11, from 138,803).
+- A fixed n is no fix: the full-screen clamped fan drawn after the sky
+  (`inline Begin/End`, a pass-through program) sits at w of about 16,000
+  (1 unit) and would be culled.
+- Clamped draws now have `unclipped_depth` (see
+  [Shaders](../graphics/shaders.md)). That is emulation correctness for
+  the NV2A's depth clamp, not a fix for the slab: on a build with it the
+  slab is unchanged (138,803 pixels). With every program overridden to
+  clip z = `k * w - e`, k = -1 or e = 1e30 changes nothing, so the depth
+  really is unclipped. Yet z still changes coverage: e from 5,000 to
+  5,000,000 leaves about 88,400 slab pixels, and e of 5e7 or more the
+  full 138,803, though no vertex has w between 1e4 and 1e8.
+
+The open hypothesis: the host rasterizer mishandles the parts of these
+triangles that lie far off screen near w = 0 (huge x / w), a guard-band
+problem rather than a depth-range one. If so, guard-band clip planes for
+clamped draws, clip distances `K w +- x` and `K w +- y` (wgpu
+`CLIP_DISTANCES`), would bound x / w and y / w without culling anything on
+screen, the fan included. Untested: it needs a build, not an override.
+
 ### The model's shaders
 
 The converted model's material `k` is Halo 1's model shader `k`.
@@ -318,6 +367,26 @@ horizon land) and the rest tile detail over it (stars at 8 to 18×,
 detail ground at 12 to 30×), or a single map. Halo 1's `A8` cloud masks
 sample white with their alpha, so `two_alpha_clouds`' `rgb = t1 × t2`
 keeps the tile's colour.
+
+A dome's picture is drawn opaque when its own alpha is not the shader's
+(`H1SkyShader::opaque_picture`, converter version 85). A `schi` map's
+`u16` pair at `+0x2c` is how the next map combines with what the maps
+before made, colour then alpha: 0 keeps the current value, 1 takes the
+next map's, 2 multiplies, 3 doubles a multiply, 4 adds (our names, from
+the values on every `schi` sky shader on the disc). Every dome (clear,
+dusk, night) stacks star layers, then the picture last, every alpha
+function 0, so its alpha is the first star map's (DXT1 or Y8: opaque),
+`sky_shaders::alpha_reach`. The other domes' pictures are X8R8G8B8, but
+Blood Gulch's and b30's `sky clear blue` is A8R8G8B8 whose alpha, a star
+mask, is 0 over most of it (mean 53 of 255). `sky_one_alpha_env` draws
+`t3.rgb × t3.a` with alpha `t3.a`, so Blood Gulch's sky drew black with
+the planet and ring over it. The converted shader draws a copy of the
+picture named `<bitmap> opaque` (`h1convert::sky::opaque_name`), its
+alpha set to 255 in place (`h1bitmaps::convert::force_opaque`: the alpha
+byte, nibble or bit, DXT3's explicit alpha, DXT5's endpoints). A
+picture whose alpha is the shader's keeps it: the planets and rings
+(`sotr`), the horizon land's cut-out (alpha function 1), single-map
+clouds. `sky_pictures_disc` checks every sky on the disc.
 
 The vectors come in pairs, `[su, 0, 0, 0]` then `[0, sv, 0, 0]`, and pair
 `p` scales bitmap parameter `p`: Coagulation's cloud cover tiles

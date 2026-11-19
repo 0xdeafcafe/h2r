@@ -316,9 +316,15 @@ iPhone; Escape leaves that too); the canvas and the 2D map refit either way
 (`viewer/fullscreen.ts`). The viewer's keys (the replay's Space, arrows,
 `,` `.` `<` `>` `k`, and the 3D view's) are its own only while it has the
 focus or the pointer is over it, so the page keeps them otherwise. The 2D
-map, the 3D view and the scrubber read one replay session
-(`src/viewer/session.ts`; other tabs on the same game keep in step over a
-`BroadcastChannel`). `?view=3d` opens the 3D view (with `cam`, `cut`, `see`
+map, the 3D view and the scrubber share one session (`src/viewer/session.ts`).
+Finished games autoplay without audio from the first recorded frame.
+Use `?t=12.5` to start playing 12.5 seconds into the recording. Playback
+controls used in one replay tab also apply to other open tabs on that game.
+Live games open at the live edge. Scrub back through up to 450 recent
+frames (about 30 seconds at 15 frames per second), or select **Live** to
+return to the edge. The history fills as the tab receives frames. When the
+match ends, the recording takes over at the current playhead with the same
+play or pause state. `?view=3d` opens the 3D view (with `cam`, `cut`, `see`
 and `ao` as below) and `?map=iso-ne` picks a view, so both can be linked
 to; the old pop-out address, `/games/halo2/games/:id/3d`, goes to the game
 page with the 3D view showing. The mock builds
@@ -356,9 +362,10 @@ are the same to it. Two more ways in (`viewer/cutaway.ts`): **Cut** (key
 `c`, `[` and `]` or the slider) hides the level above a height, and while
 following a player keeps to just over their head; **See-through** (key `x`
 steps off, *in focus* and *everyone*; *in focus* by default) cuts away
-whatever of the level lies between the camera and the
+whatever of the level, its machines (doors, lifts, platforms) and its
+placed objects lies between the camera and the
 player being followed (or pointed at in the scoreboard), else every player
-(up to 8, nearest the camera first), a cone to each with a dithered rim,
+(up to 8, nearest the camera first), a cone to each with a clean edge,
 leaving the floor they stand on, so a player inside a building is seen
 through its walls and roof. Only a surface that is in the way is cut: one
 the line of sight passes through, near where it crosses, with the player
@@ -366,7 +373,18 @@ behind it (its normal is the triangle's own, from the shader's
 derivatives; floors, terrain and ceilings count as level). Ground under or
 beside the line, a step near the player and a wall running alongside stay,
 so open terrain keeps its sand instead of showing a hole to the sky; *everyone* cuts to all of them as well as the
-one in focus. Players, vehicles and machines are never cut. Both are a clipping
+one in focus. Machines and placed objects are cut exactly as the level
+is, in world space (an instanced batch through each instance's own
+matrix), so a lift in front of a player goes with the wall behind it
+instead of standing whole in the hole; players and vehicles (the frames'
+and the level's parked ones, which a player may be riding) are never cut.
+The rim is a hard edge, not a dither: a per-pixel dither speckled the
+boundary, crawled as the camera moved, and the occlusion, which reads the
+scene's own depth, picked the speckle up as dark freckles. The occlusion
+takes both cuts because it reads that depth (and, without a depth texture,
+its own normal pass is patched the same way); the see-through leaves
+shadows alone, so a room seen through its roof keeps the shade the roof
+gives it. Both are a clipping
 plane and a few lines in the map materials' shaders, shared by all of
 them, so a big level costs no more. `?cut=<height>` and `?see=0` on the
 pop-out page set them from a link. (Culling front faces instead was
@@ -465,6 +483,13 @@ optional; a frame without them draws as before.
   ticked); its "Show" menu switches the backdrop, cutscene zones, decals,
   effects, sky and fog. The camera and the lights fit the playable zones
   only (`viewer/level3d.ts`).
+- *Mods* (`map/views.ts` `mapFilesFor`, `map/geometry.ts`). A game on a
+  map package (`map_id`) draws the mod's own entry of the art when there
+  is one (`mod-<id>`, carrying the `map_id`): its level, objects and
+  pictures extracted from the patched map. Without one, the base map's,
+  unless the package changed the geometry (docs/live/live-art.md, "Mods").
+  Effects the level's scripts play (`asset.extras.spawners`) are diamonds
+  that burst at each play, shown with the effects (`viewer/spawners.ts`).
 - *Layers, sky and fog* (`viewer/layers3d.ts`, `viewer/sky3d.ts`). A zone's
   `decals_<n>` and `effects_<n>` meshes are drawn with their pictures,
   after the level and without depth: decals pulled just in front of their
@@ -503,6 +528,30 @@ a translucent column with an arrow along its push
 with chevrons, reading the extras from the head of the glb (a streamed read
 that stops after the JSON, never the meshes). Both have a "Lifts &
 teleporters" button when the map has any.
+
+The lift's rendered glow is part of the map art. Ascension and Midship
+carry it on their placed objects, Lockout in the level geometry, and
+Ivory Tower (`cyclotron`) on its air lifts. The extractor reads their
+`plasma_alpha` shader's layer-15 pass and exports two noise maps, the beam
+mask, tint constants and the time-driven UV offsets. The viewer streams
+those pictures alongside the map textures and combines them in one
+unlit additive pass. It tests against the solid scene's depth and writes
+no depth.
+The emitter's solid parts still use their ordinary materials. The
+**Effects** switch controls these glows, and reduced motion holds the
+texture at the start of its cycle. **Lifts & teleporters** controls the
+guide separately. The plasma pass approximates the game's shading with
+its mask, tint and scrolling textures. Attached particles still require
+effect playback.
+
+To refresh an existing art directory with the updated CLI, run
+
+```sh
+h2 live assets extract --disc disc/halo2.iso --out "/path/to/game-art"
+```
+
+Use the same `--mappack` and `--installed` inputs as for your previous export.
+If the viewer uses published art, republish the refreshed directory.
 
 ## Names, icons and link previews
 

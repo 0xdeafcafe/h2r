@@ -4,6 +4,10 @@
 //!   viewer [--disc ISO] --png OUT [--force] [--size WxH] [--yaw D]
 //!          [--pitch D] [--shade flat|smooth|normals] <map> <tag>  screenshot
 //!   viewer [--disc ISO] --all <map>...                decode every mode tag
+//!   viewer [--disc ISO] --list                        disc maps and installed mods
+//!
+//! `<map>` may be an installed mod: `mod:<package dir>` (as `--list` shows
+//! it) opens the patched map the game would load, built in memory.
 //!
 //! The disc defaults to `H2_DISC` or `disc/halo2.iso`. Nothing is written
 //! except an explicitly requested PNG, which is never written through a
@@ -31,11 +35,14 @@ use winit::window::{Window, WindowId};
 const USAGE: &str = "usage: viewer [--disc ISO] <map> <mode tag name>
        viewer [--disc ISO] --png OUT [--force] [--size WxH] [--yaw DEG] [--pitch DEG] [--shade flat|smooth|normals] [--lod N] <map> <tag>
        viewer [--disc ISO] --all <map>...   (or --all all)
-<map> is a disc map, a .map file, or a Halo 1 map converted under $H2_DATA";
+       viewer [--disc ISO] --list           disc maps and installed mods
+<map> is a disc map, a .map file, a Halo 1 map converted under $H2_DATA,
+or an installed mod, mod:<package dir> (see --list)";
 
 struct Args {
     disc: Option<PathBuf>,
     all: bool,
+    list: bool,
     png: Option<PathBuf>,
     force: bool,
     size: (u32, u32),
@@ -72,6 +79,7 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
     let mut a = Args {
         disc: None,
         all: false,
+        list: false,
         png: None,
         force: false,
         size: (1024, 768),
@@ -88,6 +96,7 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
         match s.as_str() {
             "--disc" => a.disc = Some(next()?.into()),
             "--all" => a.all = true,
+            "--list" => a.list = true,
             "--png" => a.png = Some(next()?.into()),
             "--force" => a.force = true,
             "--size" => a.size = parse_size(&next()?)?,
@@ -141,6 +150,18 @@ fn sections_for(model: &RenderModelGeometry, lod: Option<usize>) -> Vec<usize> {
     out
 }
 
+/// A mod's `--list` line: what to pass, its name, its base and `MapId`.
+fn list_line(m: &disc::InstalledMod) -> String {
+    format!(
+        "{}{}  {} (on {}, map_id {})",
+        disc::MOD_PREFIX,
+        m.dir,
+        m.name,
+        m.base,
+        &m.map_id[..16.min(m.map_id.len())]
+    )
+}
+
 fn describe(model: &RenderModelGeometry, mesh: &Mesh) {
     println!(
         "{}: {} regions, {} sections, {} nodes, {} materials; drawing {} sections, {} parts, {} triangles",
@@ -163,6 +184,15 @@ fn describe(model: &RenderModelGeometry, mesh: &Mesh) {
 fn main() -> Result<()> {
     let args = parse(std::env::args().skip(1))?;
     let disc = disc::Disc::open(&disc::disc_path(args.disc.clone())?)?;
+    if args.list {
+        for name in disc.map_names() {
+            println!("{name}");
+        }
+        for m in disc::installed_mods(&disc::data_root()) {
+            println!("{}", list_line(&m));
+        }
+        return Ok(());
+    }
     if args.all {
         let maps = if args.positional.iter().any(|m| m == "all") {
             disc.map_names()
@@ -391,6 +421,21 @@ mod tests {
             assert!(args(&["--pitch", bad]).is_err());
             assert!(args(&["--yaw", bad]).is_err());
         }
+    }
+
+    #[test]
+    fn mods_are_listed_by_what_opens_them() {
+        assert!(args(&["--list"]).unwrap().list);
+        let m = disc::InstalledMod {
+            dir: "lockout-hogs".into(),
+            name: "Lockout Hogs".into(),
+            base: "lockout".into(),
+            map_id: "ab".repeat(32),
+        };
+        assert_eq!(
+            list_line(&m),
+            "mod:lockout-hogs  Lockout Hogs (on lockout, map_id abababababababab)"
+        );
     }
 
     #[test]

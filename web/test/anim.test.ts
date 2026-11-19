@@ -291,6 +291,14 @@ describe("damage as a view draws it", () => {
     expect(merged.map((h) => [h.to, h.kind, h.amount])).toEqual([["p1", "bullet", 9], ["e1000", "bullet", 1], ["p1", "melee", 70], [null, "bullet", 0.1], [null, "bullet", 0.1]]);
   });
 
+  test("a hit that did no damage is no hit", () => {
+    const merged = mergeHits([hit({ from: null, kind: "guardians", amount: 0 }), hit({ amount: 0 }), hit({ amount: 3 })]);
+    expect(merged.map((h) => [h.kind, h.amount])).toEqual([["bullet", 3]]);
+    const q = new HitQueue();
+    q.observe({ tick: 30, hits: [hit({ from: null, kind: "guardians", amount: 0 })] }, 1000, people());
+    expect(q.live(1000, people())).toHaveLength(0);
+  });
+
   test("a hit draws a line from attacker to victim that fades fast, and a marker with the number that lingers", () => {
     const q = new HitQueue(), where = people();
     q.observe({ tick: 30, hits: [hit()] }, 1000, where);

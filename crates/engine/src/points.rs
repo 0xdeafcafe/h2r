@@ -431,6 +431,11 @@ points! { ALL;
     /// The Game Setup list's row chosen: jumps through a ten-entry table by
     /// the row's action with no bounds check.
     SQUAD_SETTINGS_ROW_CHOSEN @ 0x002b_b801: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/halo1/multiplayer.md";
+    /// The Game Setup dialog's update (vtable `0x45c524`): sets the
+    /// description, the "current" label and value, and the picture for
+    /// the focused row's action (a jump table of ten at `0x2bbea8`; any
+    /// other action gets none of them and image 0), then the base update.
+    SQUAD_SETTINGS_UPDATE @ 0x002b_bbf6: [fn(screen: ecx) ret 0]; "docs/game/ui-builder.md";
     /// Whether the OptiMatch playlist list shows hopper `index` (0..16):
     /// the range, two gates and the descriptor's validity (tail `jmp` to
     /// `0x001934f0`). Its one caller is the list's item builder
@@ -523,6 +528,14 @@ points! { ALL;
     /// started. Refuses a campaign session with more than one peer
     /// (`0x6eea5`).
     SESSION_GAME_START @ 0x0006_ec80: [fn(session: edx, flag: stack 0) -> al ret 4]; "docs/live/live-coop.md";
+    /// Whether a machine (its 6-byte id at EAX) is in the game, AL: 1 with
+    /// no simulation or for this console's machine, else its simulation
+    /// view's `+0x78` (0 with no view). The player update (`0x14d2a0`, its
+    /// only caller) copies it into each player's flag bit 0, and only
+    /// players with it spawn (`0x14d3a0`).
+    MACHINE_IN_GAME @ 0x0006_86e0: [fn(machine: eax) -> al ret 0]; "docs/game/bots.md";
+    /// Gather one stored remote action into this tick's simulation update.
+    SIMULATION_SLOT_ACTION @ 0x0008_4990: [fn(slot: stack 0, action: stack 1) -> al ret 8]; "docs/game/bots.md";
     /// Clear and default a game-options block (ESI). The session start
     /// calls it right after its peer and player checks.
     OPTIONS_NEW @ 0x0013_8110: [fn(options: esi) ret 0]; "docs/runtime/level-boot.md";
@@ -731,6 +744,16 @@ points! { ALL;
     /// Called from `SOUND_UPDATE` (`0x125c1e`) and, outside it, from the
     /// per-frame update `0x18c060` (`0x18c07f`, from `0x137ef8`).
     SOUND_LISTENERS_UPDATE @ 0x0012_7400: [fn(arg: stack 0) ret 4]; "docs/game/bots.md";
+    /// Whose own sound is this (stdcall, `ret 12`): when `*kind` is 1 (a
+    /// positioned sound), walks the four local users (`[0x4e8c20] + 0xc`)
+    /// and, for the first mapped one in first person (`0x155760`) whose
+    /// player's unit is `object` or carries it (`0xbafb0`), sets `*kind`
+    /// to 0 (a plain sound, no position: heard in that user's ears) and
+    /// `*user` (when not null) to the user. Called when a sound starts on
+    /// an object: `0x1890e5`, `0x18935f`, `0x189441`, `0x18cf76`,
+    /// `0x18d4dc`, on the game thread (the object and effect updates and the
+    /// per-frame update `0x18c060`), not inside `SOUND_UPDATE`'s window.
+    SOUND_OWNER_USER @ 0x0018_d4f0: [fn(object: stack 0, kind: stack 1, user: stack 2) ret 12]; "docs/game/bots.md";
     /// The map cache copy machine: one state step per call (submit a
     /// 1 MiB read or write job, take its result, checksum, publish), AL
     /// returned and ignored by its callers. They step it only while the

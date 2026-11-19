@@ -97,6 +97,76 @@ pub struct Object {
     pub attachments: Vec<Option<TagId>>,
     /// `0x14c` widgets (`0x20`), `+0` a reference.
     pub widgets: Vec<Option<TagId>>,
+    /// `0x164` change colours (`0x2c`), A to D in Halo 1's order as read.
+    /// The converter puts them in Halo 2's slots
+    /// ([`ChangeColour::halo2_slots`]) before the object is rebuilt.
+    pub change_colours: Vec<ChangeColour>,
+}
+
+/// One of an object's change colours (`obje +0x164`, `0x2c` each): `+0`
+/// darken by and `+2` scale by (i16 function sources), `+4` flags, `+8`
+/// and `+0x14` the lower and upper bound (RGB) a function scales
+/// between, `+0x20` its permutations (`0x1c` each). Only the
+/// permutations are kept: they are the colour an object starts with.
+/// V (docs/halo1/objects.md "Change colours"): the boulders' and trees'
+/// one permutation or three, the campaign cyborg's C (the Chief's green,
+/// lower and upper bound equal); the multiplayer cyborg's A and B have a
+/// function and no permutation.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ChangeColour {
+    pub permutations: Vec<ColourPermutation>,
+}
+
+/// A change colour's permutation (`0x1c`): `+0` weight, `+4` lower and
+/// `+0x10` upper bound (RGB, 0..1); the object picks one by weight and a
+/// colour between the bounds.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ColourPermutation {
+    pub weight: f32,
+    pub lower: [f32; 3],
+    pub upper: [f32; 3],
+}
+
+impl ChangeColour {
+    /// Stride of `obje +0x164`.
+    pub const SIZE: usize = 0x2c;
+    /// Stride of its permutations (`+0x20`).
+    pub const PERMUTATION_SIZE: usize = 0x1c;
+
+    fn read(map: &H1Map, e: &[u8]) -> Result<Self> {
+        let permutations = elements(map, e, 0x20, Self::PERMUTATION_SIZE)?
+            .into_iter()
+            .map(|p| ColourPermutation {
+                weight: f32_at(p, 0),
+                lower: vec3(p, 4),
+                upper: vec3(p, 0x10),
+            })
+            .collect();
+        Ok(Self { permutations })
+    }
+
+    /// `h1` (A to D, as read) in Halo 2's four slots: slot `k` holds the
+    /// Halo 1 colour whose source
+    /// `h1convert::shad::halo2_change_colour_slot` sends to `k`. A and C
+    /// both go to slot 0; `reads_c` (the object's model shaders read C,
+    /// the player's colour in Halo 1) says which of them the object's
+    /// slot 0 starts as. A slot with nothing (or the one of A and C not
+    /// read) is empty: white, no tint. Always four, so a player's unit
+    /// takes all four of the player's colours
+    /// (`h1convert::shad::halo2_change_colour_slot`).
+    pub fn halo2_slots(h1: &[ChangeColour], reads_c: bool) -> Vec<ChangeColour> {
+        let mut out = vec![ChangeColour::default(); 4];
+        for (k, c) in h1.iter().enumerate().take(4) {
+            let source = k as u16 + 1;
+            if (source == 1 && reads_c) || (source == 3 && !reads_c) {
+                continue;
+            }
+            if let Some(slot) = h1convert::shad::halo2_change_colour_slot(source) {
+                out[slot] = c.clone();
+            }
+        }
+        out
+    }
 }
 
 impl Object {
@@ -123,6 +193,10 @@ impl Object {
             creation_effect: reference(map, b, 0xa0),
             attachments: refs(0x140, 0x48)?,
             widgets: refs(0x14c, 0x20)?,
+            change_colours: elements(map, b, 0x164, ChangeColour::SIZE)?
+                .into_iter()
+                .map(|e| ChangeColour::read(map, e))
+                .collect::<Result<_>>()?,
         })
     }
 }

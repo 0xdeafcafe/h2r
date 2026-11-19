@@ -61,6 +61,39 @@ pub struct Body {
     /// From `near`'s body, with `near`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub distance: Option<f64>,
+    /// The collidable's shape, where it reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shape: Option<Shape>,
+}
+
+/// A Havok shape (docs/engine/havok-runtime.md, "Shapes"). Positions are in
+/// the body's frame.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Shape {
+    /// Guest address, 8 hex digits.
+    pub addr: String,
+    /// Its vtable, 8 hex digits: Halo's tag shapes and Havok's own differ
+    /// for the same type.
+    pub vtable: String,
+    /// `capsule`, `sphere`, `transform` or `other`.
+    pub kind: String,
+    /// A capsule's or sphere's radius.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub radius: Option<f64>,
+    /// A capsule's end points.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub a: Option<[f64; 3]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub b: Option<[f64; 3]>,
+    /// A capsule's whole height: |b − a| + 2 × radius.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<f64>,
+    /// A transform's translation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub translation: Option<[f64; 3]>,
+    /// A transform's child shape: its address, decoded where it reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child: Option<Box<Shape>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
