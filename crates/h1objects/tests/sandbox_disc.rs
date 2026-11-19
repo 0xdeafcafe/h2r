@@ -1627,6 +1627,7 @@ fn pinned_bloodgulch_fits_its_tag_memory() {
             .iter()
             .map(|t| (t.id, t.group, t.name.clone()))
             .collect();
+        let first = base.index_slots() as usize;
         let templates = Base::read(&mut base).unwrap();
         let mut objects = Objects::new(&h1, &templates);
         let sha = content::Sha256::of(b"bloodgulch");
@@ -1655,6 +1656,57 @@ fn pinned_bloodgulch_fits_its_tag_memory() {
             metadata,
             dropped.len(),
         );
+        // The largest base tags kept, and what names each (by datum), to
+        // see what holds the room.
+        let all: Vec<(TagId, FourCC, Option<String>)> = out
+            .tags()
+            .iter()
+            .filter(|t| t.location.is_some())
+            .map(|t| (t.id, t.group, t.name.clone()))
+            .collect();
+        let mut bytes_of = std::collections::HashMap::new();
+        for (id, _, _) in &all {
+            if let Ok(b) = out.read_tag_bytes(*id) {
+                bytes_of.insert(*id, b);
+            }
+        }
+        let mut kept: Vec<(usize, &(TagId, FourCC, Option<String>))> = all
+            .iter()
+            .filter(|t| t.0.index() < first)
+            .map(|t| (bytes_of.get(&t.0).map_or(0, Vec::len), t))
+            .collect();
+        kept.sort_by(|a, b| b.0.cmp(&a.0));
+        let kept_total: usize = kept.iter().map(|k| k.0).sum();
+        eprintln!(
+            "{sandbox:?}: {} base tags kept, {kept_total:#x} bytes; the largest and what names them:",
+            kept.len()
+        );
+        for (len, (id, g, n)) in kept.iter().take(40) {
+            let by: Vec<String> = all
+                .iter()
+                .filter(|o| o.0 != *id)
+                .filter(|o| {
+                    bytes_of.get(&o.0).is_some_and(|b| {
+                        b.as_chunks::<4>()
+                            .0
+                            .iter()
+                            .any(|w| u32::from_le_bytes(*w) == id.0)
+                    })
+                })
+                .take(4)
+                .map(|o| format!("{} {}", o.1, o.2.as_deref().unwrap_or("?")))
+                .collect();
+            eprintln!("  {len:#8x} {g} {}  <- {by:?}", n.as_deref().unwrap_or("?"));
+        }
+        let mut groups: std::collections::BTreeMap<String, (usize, usize)> = Default::default();
+        for (len, (_, g, _)) in &kept {
+            let e = groups.entry(g.to_string()).or_default();
+            e.0 += 1;
+            e.1 += len;
+        }
+        let mut groups: Vec<_> = groups.into_iter().collect();
+        groups.sort_by(|a, b| b.1.1.cmp(&a.1.1));
+        eprintln!("  by group: {:?}", &groups[..groups.len().min(15)]);
         assert!(
             memory + 0x10000 <= budget,
             "{sandbox:?}: {memory:#x} leaves under 0x10000 of {budget:#x}"

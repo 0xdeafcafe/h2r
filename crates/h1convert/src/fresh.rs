@@ -1058,111 +1058,201 @@ fn pinned_block(set: &mut TagSet, at: u32) -> Option<(u32, u32, u32)> {
     (count > 0 && count < 0x10000).then_some((field, count, elements))
 }
 
-/// What a pinned set reaches ([`reachable`] from `keep`, the scenario,
-/// the globals and `roots`), with what a pinned map holds beyond datums:
-/// metadata no tag owns (blocks the scenario editor grew) is live when a
-/// reached tag's word, or a live region's, points into it, and its datums
-/// are reached; a base tag (slot under `first`) that a reached tag's or a
-/// live region's word points into is reached, with what it reaches.
-/// `roots` gains those tags; returns the slots reached and how many tags
-/// were kept for a pointer.
-fn pinned_reach(
-    set: &TagSet,
-    keep: &Keep,
-    first: usize,
-    roots: &mut Vec<TagId>,
-) -> (Vec<bool>, usize) {
-    let n = set.slots.len();
-    let regions: Vec<(u32, u32, Vec<u32>)> = set.pinned.as_ref().map_or(Vec::new(), |p| {
-        let mut v: Vec<(u32, u32, Vec<u32>)> = p
-            .unowned
-            .iter()
-            .map(|(a, b)| {
-                let words = b
-                    .as_chunks::<4>()
-                    .0
-                    .iter()
-                    .map(|w| u32::from_le_bytes(*w))
-                    .collect();
-                (*a, *a + b.len() as u32, words)
-            })
-            .collect();
-        v.sort_by_key(|r| r.0);
-        v
-    });
-    let find = |ranges: &[(u32, u32, usize)], w: u32| {
-        let k = ranges.partition_point(|r| r.0 <= w);
-        (k > 0 && w < ranges[k - 1].1).then(|| ranges[k - 1].2)
-    };
-    let region_ranges: Vec<(u32, u32, usize)> = regions
-        .iter()
-        .enumerate()
-        .map(|(k, r)| (r.0, r.1, k))
-        .collect();
-    let mut by_pointer = 0;
-    loop {
-        let seen = reachable(set, keep, roots);
-        let mut tags: Vec<(u32, u32, usize)> = set
-            .slots
-            .iter()
-            .enumerate()
-            .take(first)
-            .filter(|(i, _)| !seen[*i])
-            .filter_map(|(i, s)| match &s.tag.as_ref()?.payload {
-                TagPayload::Pinned { address, bytes } => {
-                    Some((*address, *address + bytes.len() as u32, i))
-                }
-                _ => None,
-            })
-            .collect();
-        tags.sort_unstable();
-        let mut words = Vec::new();
+/// A pinned set's metadata by address: each pinned tag's bytes and each
+/// stretch no tag owns, sorted, for reading words at an address.
+struct Space<'a> {
+    /// (start, end, bytes, owner slot or `None` for unowned).
+    parts: Vec<(u32, u32, &'a [u8], Option<usize>)>,
+}
+
+impl<'a> Space<'a> {
+    fn new(set: &'a TagSet) -> Self {
+        let mut parts = Vec::new();
         for (i, s) in set.slots.iter().enumerate() {
-            if seen[i]
-                && let Some(t) = &s.tag
+            if let Some(TagPayload::Pinned { address, bytes }) = s.tag.as_ref().map(|t| &t.payload)
             {
-                named(&t.payload, &mut words);
+                parts.push((*address, *address + bytes.len() as u32, &bytes[..], Some(i)));
             }
         }
-        // Live regions, and their words in turn.
-        let mut live = vec![false; regions.len()];
-        let mut k = 0;
-        while k < words.len() {
-            if let Some(r) = find(&region_ranges, words[k])
-                && !live[r]
-            {
-                live[r] = true;
-                words.extend_from_slice(&regions[r].2);
-            }
-            k += 1;
-        }
-        let mut new = std::collections::BTreeSet::new();
-        for &w in &words {
-            if let Some(i) = find(&tags, w) {
-                new.insert(i);
+        if let Some(p) = &set.pinned {
+            for (a, b) in &p.unowned {
+                parts.push((*a, *a + b.len() as u32, &b[..], None));
             }
         }
-        let pointed = new.len();
-        for (r, region) in regions.iter().enumerate() {
-            if !live[r] {
-                continue;
-            }
-            for &w in &region.2 {
-                let i = (w & 0xffff) as usize;
-                if i < n && !seen[i] && set.slots[i].tag.as_ref().is_some_and(|t| t.id.0 == w) {
-                    new.insert(i);
+        parts.sort_by_key(|p| p.0);
+        Self { parts }
+    }
+
+    /// The part holding `addr`, by index.
+    fn part(&self, addr: u32) -> Option<usize> {
+        let k = self.parts.partition_point(|p| p.0 <= addr);
+        (k > 0 && addr < self.parts[k - 1].1).then_some(k - 1)
+    }
+
+    fn word(&self, addr: u32) -> Option<u32> {
+        let p = &self.parts[self.part(addr)?];
+        let o = (addr - p.0) as usize;
+        Some(u32::from_le_bytes(p.2.get(o..o + 4)?.try_into().ok()?))
+    }
+}
+
+/// What one pinned element array names, by the schema (`s`, `count`
+/// elements at `at`), depth first through its blocks: every word of every
+/// array it holds (as the fresh build's [`named`] reads a built tree: a
+/// datum may sit in a field the schema doesn't describe), and every
+/// array's address. Bytes no array covers (an emptied block's old
+/// elements, a removed placement's) are not read. `None` when an array is
+/// not in the metadata or is implausibly long: the caller then reads the
+/// tag word by word.
+fn walk(
+    space: &Space,
+    s: &tags::schema::Struct,
+    at: u32,
+    count: u32,
+    depth: usize,
+    words: &mut Vec<u32>,
+    arrays: &mut Vec<u32>,
+) -> Option<()> {
+    if depth > 32 || count > 0x10_0000 {
+        return None;
+    }
+    let len = count.checked_mul(s.size)?;
+    for o in (0..len / 4).map(|k| k * 4) {
+        words.push(space.word(at.checked_add(o)?)?);
+    }
+    for e in 0..count {
+        let base = at + e * s.size;
+        for (off, f) in &s.fields {
+            if let Field::Block(child) = f {
+                let n = space.word(base + off)?;
+                let p = space.word(base + off + 4)?;
+                if n > 0 && p != 0 {
+                    arrays.push(p);
+                    walk(space, child, p, n, depth + 1, words, arrays)?;
                 }
             }
         }
-        if new.is_empty() {
-            return (seen, by_pointer);
-        }
-        by_pointer += pointed;
-        roots.extend(
-            new.into_iter()
-                .filter_map(|i| Some(set.slots[i].tag.as_ref()?.id)),
-        );
     }
+    Some(())
+}
+
+/// What a pinned set reaches from `keep`, the scenario, the globals and
+/// `roots`, as the fresh build would see it. A pinned tag with a schema
+/// layout names what its arrays hold ([`walk`], from its root through
+/// every block, so stale words outside them, an emptied block's old
+/// elements or a removed placement's, keep nothing); one without (or whose walk leaves
+/// the metadata) names every word in it, as a datum and as an address. A
+/// built tag names its fixups and words ([`named`]). A tag whose bytes
+/// hold an array a reached tag points to is reached too (pinned arrays can
+/// sit in another tag's range), and so is every datum in metadata no tag
+/// owns that a word-read tag points into. Returns the slots reached and
+/// how many were reached only by such an address.
+fn pinned_reach(set: &TagSet, keep: &Keep, roots: &[TagId]) -> (Vec<bool>, usize) {
+    let n = set.slots.len();
+    let space = Space::new(set);
+    let schema = Schema::builtin();
+    let mut seen = vec![false; n];
+    let mut todo = Vec::new();
+    let mut by_pointer = 0;
+    let mark = |i: usize, seen: &mut Vec<bool>, todo: &mut Vec<usize>| {
+        if i < n && !seen[i] && set.slots[i].tag.is_some() {
+            seen[i] = true;
+            todo.push(i);
+            true
+        } else {
+            false
+        }
+    };
+    for (i, s) in set.slots.iter().enumerate() {
+        let Some(t) = &s.tag else { continue };
+        if t.id == set.scenario
+            || t.id == set.globals
+            || keep.groups.iter().any(|g| t.group == FourCC(**g))
+            || roots.contains(&t.id)
+            || s.name
+                .as_deref()
+                .is_some_and(|n| keep.prefixes.iter().any(|p| n.starts_with(p)))
+        {
+            mark(i, &mut seen, &mut todo);
+        }
+    }
+    let datum = |w: u32| {
+        let k = (w & 0xffff) as usize;
+        (k < n && set.slots[k].tag.as_ref().is_some_and(|t| t.id.0 == w)).then_some(k)
+    };
+    let mut live_gaps = std::collections::HashSet::new();
+    let (mut datums, mut arrays) = (Vec::new(), Vec::new());
+    while let Some(i) = todo.pop() {
+        let Some(t) = &set.slots[i].tag else { continue };
+        datums.clear();
+        arrays.clear();
+        let mut words_too = false;
+        match &t.payload {
+            TagPayload::Pinned { address, bytes } => {
+                let walked = schema.groups.get(&t.group).and_then(|s| {
+                    let (mut d, mut a) = (Vec::new(), Vec::new());
+                    walk(&space, s, *address, 1, 0, &mut d, &mut a).map(|()| (d, a))
+                });
+                match walked {
+                    Some((d, a)) => {
+                        datums = d;
+                        arrays = a;
+                    }
+                    None => {
+                        datums.extend(
+                            bytes
+                                .as_chunks::<4>()
+                                .0
+                                .iter()
+                                .map(|w| u32::from_le_bytes(*w)),
+                        );
+                        words_too = true;
+                    }
+                }
+            }
+            other => {
+                named(other, &mut datums);
+                words_too = true;
+            }
+        }
+        if words_too {
+            arrays.extend(datums.iter().copied());
+        }
+        // Addresses: the tag or gap holding each.
+        let mut k = 0;
+        while k < arrays.len() {
+            let a = arrays[k];
+            k += 1;
+            let Some(p) = space.part(a) else { continue };
+            match space.parts[p].3 {
+                Some(owner) if owner != i => {
+                    if mark(owner, &mut seen, &mut todo) {
+                        by_pointer += 1;
+                    }
+                }
+                None if words_too && live_gaps.insert(p) => {
+                    // A gap a word-read tag points into: its words name
+                    // tags and point on.
+                    let words: Vec<u32> = space.parts[p]
+                        .2
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .map(|w| u32::from_le_bytes(*w))
+                        .collect();
+                    datums.extend(words.iter().copied());
+                    arrays.extend(words);
+                }
+                _ => {}
+            }
+        }
+        for &w in &datums {
+            if let Some(k) = datum(w) {
+                mark(k, &mut seen, &mut todo);
+            }
+        }
+    }
+    (seen, by_pointer)
 }
 
 /// [`prune_with`] for a pinned set: the map `Prepared::assemble` builds
@@ -1175,9 +1265,10 @@ fn pinned_reach(
 /// when something else reaches it. Then every pinned base tag nothing
 /// reaches is dropped, its bytes free for the built tags
 /// (`TagSet::reuse_free_space`). A pinned tag keeps addresses into other
-/// tags' bytes and into metadata no tag owns, which reachability (datums)
-/// doesn't see ([`pinned_reach`]). Only pinned payloads are dropped (the others hold
-/// no base metadata). `first` is the first slot the conversion added.
+/// tags' bytes and into metadata no tag owns, and stale words no array of
+/// it covers: reachability walks it by the schema ([`pinned_reach`]).
+/// Only pinned payloads are dropped (the others hold no base metadata).
+/// `first` is the first slot the conversion added.
 pub fn prune_pinned(set: &mut TagSet, first: usize, keep: &Keep, extra: &[TagId]) -> Pruned {
     let mut out = Pruned::default();
     let is_base = |w: u32| ((w & 0xffff) as usize) < first && w != u32::MAX;
@@ -1194,7 +1285,7 @@ pub fn prune_pinned(set: &mut TagSet, first: usize, keep: &Keep, extra: &[TagId]
             }
         }
     }
-    let mut roots = extra.to_vec();
+    let roots = extra.to_vec();
     if let Some((field, count, elements)) = pinned_block(set, SCENARIO_RESOURCES) {
         let list: Option<Vec<u32>> = (0..count)
             .map(|k| read_word(set, elements + 4 * k))
@@ -1204,7 +1295,7 @@ pub fn prune_pinned(set: &mut TagSet, first: usize, keep: &Keep, extra: &[TagId]
             for k in 0..count {
                 write_word(set, elements + 4 * k, u32::MAX);
             }
-            let (seen, _) = pinned_reach(set, keep, first, &mut roots.clone());
+            let (seen, _) = pinned_reach(set, keep, &roots);
             let kept: Vec<u32> = list
                 .iter()
                 .copied()
@@ -1219,7 +1310,7 @@ pub fn prune_pinned(set: &mut TagSet, first: usize, keep: &Keep, extra: &[TagId]
             write_word(set, field, kept.len() as u32);
         }
     }
-    let (seen, by_pointer) = pinned_reach(set, keep, first, &mut roots);
+    let (seen, by_pointer) = pinned_reach(set, keep, &roots);
     out.kept_by_pointer = by_pointer;
     for (i, s) in set.slots.iter_mut().enumerate().take(first) {
         if seen[i] {
@@ -1248,6 +1339,7 @@ mod pinned_prune_tests {
     use map::build::{PinnedImage, Slot, TagEntry};
 
     const BASE: u32 = 0x8000_0000;
+    const N: usize = 10;
 
     fn id(i: usize) -> TagId {
         TagId(((0xe174 + i as u32) << 16) | i as u32)
@@ -1257,17 +1349,31 @@ mod pinned_prune_tests {
         bytes[at..at + 4].copy_from_slice(&w.to_le_bytes());
     }
 
-    /// A pinned set: a scenario, globals and four base tags, each at its
-    /// address; metadata no tag owns at `+0xa00` and `+0xc00`.
+    fn bytes(set: &mut TagSet, i: usize) -> &mut Vec<u8> {
+        match &mut set.slots[i].tag.as_mut().expect("tag").payload {
+            TagPayload::Pinned { bytes, .. } => bytes,
+            _ => panic!("slot {i} is not pinned"),
+        }
+    }
+
+    /// A pinned set: a scenario and globals (zeros), a tag of a group the
+    /// schema doesn't know (`zzzz`, read word by word) and an `MGS2`
+    /// (walked by the schema: a block at `+0x8` of `0x98` elements, a tag
+    /// reference at `+4`; `0x10` bytes after them), both roots; metadata no tag owns at `+0xa00`
+    /// and `+0xc00`.
     fn set() -> TagSet {
         let mut set = TagSet::new(CacheType::Multiplayer, "m", "s");
-        let tags: [(&[u8; 4], &str, u32, usize); 6] = [
+        let tags: [(&[u8; 4], &str, u32, usize); N] = [
             (b"scnr", "s", 0, 0x400),
             (b"matg", "globals", 0x400, 0x40),
-            (b"bitm", "pointed", 0x800, 0x40),
-            (b"shad", "named from a live gap", 0x900, 0x40),
-            (b"bitm", "named from a dead gap", 0xb00, 0x40),
-            (b"mode", "nothing", 0xd00, 0x40),
+            (b"zzzz", "read word by word", 0x500, 0x40),
+            (b"bitm", "pointed into", 0x900, 0x40),
+            (b"shad", "named from a gap pointed into", 0x600, 0x40),
+            (b"bitm", "named from a gap nothing points into", 0x700, 0x40),
+            (b"MGS2", "walked", 0xe00, 0xb8),
+            (b"bitm", "named by a field", 0x800, 0x40),
+            (b"mode", "named by a word no field holds", 0xb00, 0x40),
+            (b"mode", "named by nothing", 0xd00, 0x40),
         ];
         for (i, (g, name, at, len)) in tags.iter().enumerate() {
             set.slots.push(Slot {
@@ -1285,9 +1391,9 @@ mod pinned_prune_tests {
         set.scenario = id(0);
         set.globals = id(1);
         let mut live = vec![0u8; 0x10];
-        put(&mut live, 4, id(3).0);
+        put(&mut live, 4, id(4).0);
         let mut dead = vec![0u8; 0x10];
-        put(&mut dead, 4, id(4).0);
+        put(&mut dead, 4, id(5).0);
         set.pinned = Some(PinnedImage {
             header: Vec::new(),
             file: Vec::new(),
@@ -1300,13 +1406,18 @@ mod pinned_prune_tests {
             metadata_size: 0x1000,
             unowned: vec![(BASE + 0xa00, live), (BASE + 0xc00, dead)],
         });
-        // The scenario points into tag 2's bytes and into the first gap.
-        if let Some(TagPayload::Pinned { bytes, .. }) =
-            set.slots[0].tag.as_mut().map(|t| &mut t.payload)
-        {
-            put(bytes, 0x10, BASE + 0x804);
-            put(bytes, 0x14, BASE + 0xa00);
-        }
+        // `zzzz` points into tag 3's bytes and into the first gap.
+        let b = bytes(&mut set, 2);
+        put(b, 0x10, BASE + 0x904);
+        put(b, 0x14, BASE + 0xa00);
+        // `MGS2`: one element at `+0x10` whose reference names tag 7, and
+        // after it a stale datum no array covers.
+        let b = bytes(&mut set, 6);
+        put(b, 0xa8, id(8).0);
+        put(b, 0x8, 1);
+        put(b, 0xc, BASE + 0xe10);
+        put(b, 0x10 + 0x4, u32::from_be_bytes(*b"bitm"));
+        put(b, 0x10 + 0x8, id(7).0);
         set
     }
 
@@ -1316,23 +1427,31 @@ mod pinned_prune_tests {
         prefixes: &[],
     };
 
-    /// A pinned map holds what no datum names: a kept tag's address into
-    /// another tag's bytes, and datums in metadata no tag owns that a kept
-    /// tag points into (blocks the scenario editor grew). Those stay; a
-    /// gap nothing points into keeps nothing, and the rest is dropped.
+    /// A pinned map holds what no datum names: an address into another
+    /// tag's bytes, and datums in metadata no tag owns that a tag points
+    /// into (blocks the scenario editor grew). A tag the schema knows names
+    /// only what its arrays hold, so a stale word no array covers keeps
+    /// nothing (an emptied block's old elements, a removed placement's). A gap nothing
+    /// points into keeps nothing, and what nothing reaches is dropped.
     #[test]
-    fn a_pinned_set_keeps_what_its_addresses_reach() {
+    fn a_pinned_set_keeps_what_its_fields_and_addresses_reach() {
+        let roots = [id(2), id(6)];
         let mut set = set();
-        let p = prune_pinned(&mut set, 6, &NOTHING, &[]);
+        let p = prune_pinned(&mut set, N, &NOTHING, &roots);
         let kept: Vec<bool> = set.slots.iter().map(|s| s.tag.is_some()).collect();
-        assert_eq!(kept, [true, true, true, true, false, false]);
-        assert_eq!(p.tags(), 2);
-        assert_eq!(p.freed, 0x80);
+        assert_eq!(
+            kept,
+            [
+                true, true, true, true, true, false, true, true, false, false
+            ]
+        );
+        assert_eq!(p.tags(), 3);
+        assert_eq!(p.freed, 0xc0);
         assert_eq!(p.kept_by_pointer, 1);
         // A conversion's tag (from `first` on) is never dropped.
         let mut set = super::pinned_prune_tests::set();
-        prune_pinned(&mut set, 5, &NOTHING, &[]);
-        assert!(set.slots[5].tag.is_some());
-        assert!(set.slots[4].tag.is_none());
+        prune_pinned(&mut set, N - 1, &NOTHING, &roots);
+        assert!(set.slots[N - 1].tag.is_some());
+        assert!(set.slots[8].tag.is_none());
     }
 }

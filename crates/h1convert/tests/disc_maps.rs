@@ -835,16 +835,33 @@ fn every_multiplayer_map_converts_and_keeps_the_bases_bitmaps() {
         }
         // Then Halo 1's textures: a bitmap per converted bitmap and a
         // shader per copy.
-        assert_eq!(
-            m.index_slots() as usize,
-            base_slots
-                + collections.len()
-                + p.textures.bitmaps.len()
-                + p.textures.copies.len()
-                + sky_tags(&p, &m, base_slots)
-                + ambience_tags(&p),
-            "{name}"
-        );
+        let expected = base_slots
+            + collections.len()
+            + p.textures.bitmaps.len()
+            + p.textures.copies.len()
+            + sky_tags(&p, &m, base_slots)
+            + ambience_tags(&p);
+        if m.index_slots() as usize != expected {
+            // What the conversion added, to see which part the count
+            // misses: every added tag, and the added slots left empty.
+            let added: Vec<String> = m
+                .tags()
+                .iter()
+                .filter(|t| t.id.index() >= base_slots)
+                .map(|t| format!("{} {}", t.group, t.name.as_deref().unwrap_or("?")))
+                .collect();
+            let live = m.tags().iter().filter(|t| t.id.index() >= base_slots).count();
+            eprintln!(
+                "{name}: {} slots from {base_slots}, {live} live: collections {}, texture bitmaps {}, copies {}, sky {}, ambience {}; added: {added:#?}",
+                m.index_slots() as usize - base_slots,
+                collections.len(),
+                p.textures.bitmaps.len(),
+                p.textures.copies.len(),
+                sky_tags(&p, &m, base_slots),
+                ambience_tags(&p),
+            );
+        }
+        assert_eq!(m.index_slots() as usize, expected, "{name}");
         check_structure_texturing(name, &mut m, &mut base, &done.bytes, &p);
         let skies = check_skies(name, &mut m, &p, base_slots);
         eprintln!("    skies: {skies:?}");

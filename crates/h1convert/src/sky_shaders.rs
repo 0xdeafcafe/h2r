@@ -368,6 +368,17 @@ mod tests {
     #[test]
     fn a_sky_shader_draws_only_its_recipe_s_maps() {
         let stem = |l: &shad::Layout, k: u32| (l.stem, TagId(0xe000_0100 + k));
+        // A layout counts only with its stem and its default bitmaps
+        // (`Library::has`).
+        let fixed: Vec<(shad::Fixed, shad::Bound)> = shad::Fixed::ALL
+            .iter()
+            .enumerate()
+            .map(|(k, f)| {
+                let id = TagId(0xe000_0200 + k as u32);
+                let scale = [1.0, 1.0];
+                (*f, shad::Bound { id, scale, lod_offset: 0.0 })
+            })
+            .collect();
         let sky = SkyTemplates {
             library: shad::Library::new(
                 &[
@@ -375,7 +386,7 @@ mod tests {
                     stem(&shad::SKY_CLOUDS, 1),
                     stem(&shad::SKY_ADDITIVE, 2),
                 ],
-                &[],
+                &fixed,
             ),
             fallback: None,
         };
@@ -392,7 +403,7 @@ mod tests {
         assert_eq!(sky.drawn(recipe(&glow).unwrap()), [1]);
         // Without the sky stems a cloud layer draws its tile alone.
         let shared = SkyTemplates {
-            library: shad::Library::new(&[stem(&shad::ONE_ALPHA_ENV, 3)], &[]),
+            library: shad::Library::new(&[stem(&shad::ONE_ALPHA_ENV, 3)], &fixed),
             fallback: None,
         };
         assert_eq!(shared.drawn(recipe(&clouds).unwrap()), [1]);

@@ -658,11 +658,16 @@ every pinned base tag not reached from the scenario, the globals,
 `fresh::KEEP_GROUPS`, `fresh::KEEP_PREFIXES`, the precision collections
 and the Halo 2 HUDs is dropped, its slot left empty and its bytes free
 for built tags (`TagSet::reuse_free_space`). What a pinned map holds
-beyond datums is kept too (`fresh::pinned_reach`): metadata no tag owns
-(blocks the scenario editor grew) is live when a kept tag's word, or a
-live gap's, points into it, and its datums are kept; a base tag whose
-bytes such a word points into is kept, with what it reaches. A gap
-nothing points into keeps nothing. The scenario's own edits (trigger
+and less (`fresh::pinned_reach`): a pinned tag the schema describes is
+walked from its root through its blocks and names every word of the
+arrays it holds (as the fresh build reads a built tree), so stale words
+no array covers (an emptied block's old elements, a removed
+placement's) keep nothing; an array it points to in another tag's bytes
+keeps that tag. A tag the schema doesn't describe (or whose walk leaves
+the metadata) is read word by word, every word a datum and an address:
+metadata no tag owns that it points into is read the same way, and a
+base tag it points into is kept. A gap nothing points into keeps
+nothing. The scenario's own edits (trigger
 volumes parked, Halo 1's skies and ambience, the base's light fixtures
 and decorators emptied) are made before this, so the base's sky,
 ambience and decorators they replace go too. On the fresh map Blood Gulch drops
