@@ -10,9 +10,25 @@ use serde::{Deserialize, Serialize};
 
 use crate::clock::Pace;
 
-/// Halo 2 has four local players; the direct path is four bots
-/// (docs/runtime/sim.md §5, "More than four").
-pub const MAX_BOTS: usize = 4;
+/// The retail session player limit.
+pub const MAX_BOTS: usize = 16;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SeatKind {
+    #[default]
+    Local,
+    Phantom,
+}
+
+impl SeatKind {
+    pub fn swapped(self) -> Self {
+        match self {
+            Self::Local => Self::Phantom,
+            Self::Phantom => Self::Local,
+        }
+    }
+}
 
 /// Variant settings are numbered `0..0x70` (`variants::record`).
 pub const MAX_SETTING: u32 = 0x70;
@@ -343,6 +359,8 @@ impl BotParams {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BotSpec {
+    #[serde(default)]
+    pub kind: SeatKind,
     /// Shown in the report (default `Clanker <port>`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -380,6 +398,9 @@ pub struct MatchConfig {
     pub map: String,
     #[serde(default = "default_game_type")]
     pub game_type: String,
+    /// Set by paired batch planning. False is the original layout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seats_swapped: Option<bool>,
     /// Seconds; 0 or unset: the type's default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub time_limit_s: Option<u32>,
@@ -411,15 +432,16 @@ pub struct MatchConfig {
 /// A bot as a run uses it: everything resolved.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Bot {
-    /// Its controller port, which is its place in the match file.
-    pub port: u8,
+    pub seat: u8,
+    pub port: Option<u8>,
+    pub kind: SeatKind,
     pub name: String,
     pub skill: Skill,
     pub team: Option<u8>,
     /// The tuning file and the inline tuning, the skill folded in.
     pub params: BotParams,
     pub arm: Option<String>,
-    /// The brain's random seed: from the match seed and the port.
+    /// The brain's random seed: from the match seed and the logical seat.
     pub seed: u64,
 }
 
@@ -437,6 +459,10 @@ pub struct Match {
 }
 
 impl Match {
+    pub fn distributed(&self) -> bool {
+        self.bots.iter().any(|b| b.kind == SeatKind::Phantom)
+    }
+
     /// The match as JSON for the report: the file with every bot's tuning
     /// resolved inline (no paths), so a report says what was played.
     pub fn resolved_json(&self) -> serde_json::Value {
@@ -447,6 +473,7 @@ impl Match {
             .bots
             .iter()
             .map(|b| BotSpec {
+                kind: b.kind,
                 name: Some(b.name.clone()),
                 skill: Some(b.skill.name().into()),
                 team: b.team,
@@ -459,10 +486,10 @@ impl Match {
     }
 }
 
-/// The brain seed of the bot on `port` in a match with `seed`
-/// (SplitMix64 of the two, so neighbouring seeds and ports differ).
-pub fn bot_seed(seed: u64, port: u8) -> u64 {
-    let mut x = seed ^ (u64::from(port) + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+/// The brain seed of the bot in logical `seat` in a match with `seed`
+/// (SplitMix64 of the two, so neighbouring seeds and seats differ).
+pub fn bot_seed(seed: u64, seat: u8) -> u64 {
+    let mut x = seed ^ (u64::from(seat) + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15);
     x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
     x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
     x ^ (x >> 31)
@@ -516,14 +543,16 @@ pub fn resolve(
         problems.push(format!("pace: {e}"));
         Pace::Unpaced
     });
-    if config.bots.is_empty() {
-        problems.push("no [[bot]]: a match needs 1 to 4 bots".to_string());
+    let locals = config
+        .bots
+        .iter()
+        .filter(|b| b.kind == SeatKind::Local)
+        .count();
+    if !(1..=4).contains(&locals) {
+        problems.push(format!("{locals} local bots: a match needs 1 to 4 local bots including the host. Additional seats use System Link phantoms"));
     }
     if config.bots.len() > MAX_BOTS {
-        problems.push(format!(
-            "{} bots: the direct path has {MAX_BOTS} local players at most; 5 to 16 need a System Link game, which sim mode does not host yet (docs/runtime/sim.md §5)",
-            config.bots.len()
-        ));
+        problems.push(format!("a session supports at most {MAX_BOTS} players"));
     }
     if config.max_ticks == Some(0) {
         problems.push("max_ticks = 0: leave it out for no limit".to_string());
@@ -557,9 +586,10 @@ pub fn resolve(
         }
     }
     let mut bots = Vec::new();
+    let mut next_port = 0;
     for (i, spec) in config.bots.iter().enumerate().take(MAX_BOTS) {
         let at = format!("bot {}", i + 1);
-        let port = i as u8;
+        let seat = i as u8;
         let file = match &spec.params {
             Some(p) => read(p).unwrap_or_else(|e| {
                 problems.push(format!("{at}: params: {e}"));
@@ -583,22 +613,28 @@ pub fn resolve(
             problems.push(format!("{at}: team {t}: 0 to 7"));
         }
         let team = if team_play {
-            Some(spec.team.unwrap_or(port % 2))
+            Some(spec.team.unwrap_or(seat % 2))
         } else {
             spec.team
         };
         bots.push(Bot {
-            port,
+            seat,
+            kind: spec.kind,
+            port: (spec.kind == SeatKind::Local).then(|| {
+                let p = next_port;
+                next_port += 1;
+                p
+            }),
             name: spec
                 .name
                 .clone()
                 .filter(|n| !n.trim().is_empty())
-                .unwrap_or_else(|| format!("Clanker {port}")),
+                .unwrap_or_else(|| format!("Clanker {seat}")),
             skill,
             team,
             params,
             arm: spec.arm.clone(),
-            seed: bot_seed(config.seed, port),
+            seed: bot_seed(config.seed, seat),
         });
     }
     if team_play && bots.len() >= 2 {
@@ -644,14 +680,24 @@ pub enum Mode {
     Versus,
     /// Every match twice: all bots A, then all bots B.
     Separate,
+    SeatSwap,
 }
 
 impl Mode {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Versus => "versus",
+            Self::Separate => "separate",
+            Self::SeatSwap => "seat_swap",
+        }
+    }
+
     pub fn parse(s: &str) -> Result<Mode, String> {
         match s.trim().to_ascii_lowercase().as_str() {
             "versus" | "vs" => Ok(Mode::Versus),
             "separate" => Ok(Mode::Separate),
-            _ => Err(format!("unknown mode {s:?} (versus, separate)")),
+            "seat_swap" => Ok(Mode::SeatSwap),
+            _ => Err(format!("unknown mode {s:?} (versus, separate, seat_swap)")),
         }
     }
 }
@@ -855,12 +901,32 @@ pub fn plan(
                 if let Err(e) = resolve(c.clone(), &|_| Ok(BotParams::default())) {
                     problems.push(format!("run {id}: {}", e.replace('\n', "; ")));
                 }
+                let swapped_run = if mode == Mode::SeatSwap {
+                    c.seats_swapped = Some(false);
+                    let mut swapped = c.clone();
+                    swapped.seats_swapped = Some(true);
+                    for b in &mut swapped.bots {
+                        b.kind = b.kind.swapped();
+                    }
+                    if let Err(e) = resolve(swapped.clone(), &|_| Ok(BotParams::default())) {
+                        problems.push(format!("run {id}-swapped: {e}"));
+                    }
+                    Some(Run {
+                        id: format!("{id}-swapped"),
+                        map: map.clone(),
+                        seed,
+                        config: swapped,
+                    })
+                } else {
+                    None
+                };
                 runs.push(Run {
                     id,
                     map: map.clone(),
                     seed,
                     config: c,
                 });
+                runs.extend(swapped_run);
             }
         }
     }

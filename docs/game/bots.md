@@ -551,10 +551,8 @@ clock and clears the velocity sample.
 The right thumb takes several ticks to cross the stick well. Large flicks
 carry a little past the target before settling. Small correlated errors and
 the occasional larger misread vary by skill. Fast crossings leave more
-tracking lag than slow ones. The local virtual pad uses the game's stick
-response, look acceleration and aim assist at sensitivity 3. Phantom
-actions use the same sensitivity-3 base axis rates and the loaded map’s
-right-stick response table (§5.1).
+tracking lag than slow ones. Both virtual pads use the game's stick response, look acceleration and
+aim assist at sensitivity 3 (§5.1).
 
 At the controller boundary, each stick stays within its unit circle and
 can travel at most 0.45 stick radii per tick. A full reversal takes at
@@ -2202,6 +2200,13 @@ host. A repeated gather in one tick reuses that action. Local bots keep
 their normal retail controller polling. A phantom samples once per game
 tick and advances the button clock by elapsed simulation milliseconds.
 
+The image-backed test `retail_pad_sequence_matches_local_angles_target_and_fire`
+uses `H2_DISC`, its matching `H2_RETAIL_MODULE`, and a multiplayer checkpoint
+in `H2_PAD_CHECKPOINT`. Capture the checkpoint with the agent API's
+`state.save` while port zero is on foot, the menu is closed and an opponent
+is inside the weapon’s assist cone. The test compares the full actions and
+requires movement of the aim angles, a selected target and a fire bit.
+
 **Open, for a run**:
 
 - **Clients and the phantom's address.** A real client opens a channel to
@@ -2245,13 +2250,14 @@ at tick 1284 to −26° at 1300 while the human's bearing stayed within
 6° of level. Using the local response removes this excess gain from the
 delayed control loop. Post-change hit rates require another hosted match.
 
-**Training coverage.** `h2 sim run` and `h2 sim batch` level-boot up to
-four local pads. Uploading the result to Clanker Training doesn't enter
-the remote gather. A batch with phantom coverage needs a distributed
-System Link host, identities for the remote seats, a wait for their live
-player/unit bindings, and per-seat shot and opposing-damage totals. Keep
-the seed and lineups the same when comparing local and phantom controls.
-See [Headless simulation](../runtime/sim.md#more-than-four).
+**Training coverage.** A sim match with a `kind = "phantom"` seat hosts
+a private System Link game. Its brain, uplink, remote gather and retail
+action builder run as they do on a normal host. Training waits for every
+configured seat to bind to a player and unit before counting combat.
+The paired Midship example switches transport for each named bot while
+keeping its team, tuning, map and seed. The report compares shots,
+opposing hits and damage dealt and taken per seat.
+[Headless simulation](../runtime/sim.md#more-than-four)
 
 ### 5.2 Why phantoms are needed
 

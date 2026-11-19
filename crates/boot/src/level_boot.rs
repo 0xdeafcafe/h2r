@@ -606,14 +606,23 @@ pub fn edit_variant<M: Gm>(m: &mut M, buf: u32, settings: &[(u32, i32)]) -> std:
     if !m.rd(at, &mut raw) {
         return Err(format!("the variant at {at:#x} is unreadable"));
     }
-    let mut v = variants::GameVariant::from_bytes(&raw).map_err(|e| e.to_string())?;
-    for &(id, value) in settings {
-        v.set(variants::SettingId(id), value).map_err(|e| format!("setting {id} = {value}: {e}"))?;
-    }
+    let v = configured_variant(&raw, settings)?;
     if !m.wr(at, &v.to_bytes()) {
         return Err(format!("the variant at {at:#x} is unwritable"));
     }
     Ok(())
+}
+
+/// Apply match settings to retail's default variant in either startup path.
+pub(super) fn configured_variant(
+    raw: &[u8],
+    settings: &[(u32, i32)],
+) -> std::result::Result<variants::GameVariant, String> {
+    let mut v = variants::GameVariant::from_bytes(raw).map_err(|e| e.to_string())?;
+    for &(id, value) in settings {
+        v.set(variants::SettingId(id), value).map_err(|e| format!("setting {id} = {value}: {e}"))?;
+    }
+    Ok(v)
 }
 
 /// A guest call: target, stack arguments (first argument first), and EAX

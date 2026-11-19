@@ -28,8 +28,8 @@ const USAGE: &str = "usage:
                           [--upload [--as GAMERTAG] [--server URL]]
   h2 sim compare <results dir>
 
-A match file names the map, the game type, the limits, the seed and 1 to 4
-bots with their skill, team and tuning (docs/runtime/sim.md, \"Match file\").
+A match file names the map, the game type, the limits, the seed and up to 16
+bots (one to four local pads, remaining seats phantom peers) with their skill, team and tuning (docs/runtime/sim.md, \"Match file\").
 `run` boots headless with no rendering, no keyboard and the match's bots,
 and writes a JSON report (--report, default $TMPDIR/h2sim/<match>.report.json).
 It never builds: build the image first with `h2 build` (same H2_OPT).
@@ -43,7 +43,9 @@ Choose a stored admin account with --as, or leave it off if there is only one.
 processes, --parallel at once (default: half the cores), each with its own
 data directory under <out>/runs/<id>/ (removed after unless --keep-data;
 its bots/ linked to --data's), and writes <out>/compare.json and
-compare.txt. --dry-run lists the runs. --fork boots each map once, saves a
+compare.txt. With mode = \"seat_swap\" each map/seed plays twice, once with
+each seat layout, and compare.json includes their paired differences.
+--dry-run lists the runs. For all-local rosters, --fork boots each map once, saves a
 snapshot at spawn (state.save), and has every run load it, or boot on its
 own when the snapshot is refused (docs/runtime/sim.md, \"Forking from spawn\").";
 
@@ -585,13 +587,7 @@ fn run_child(
         let _ = std::fs::remove_file(s);
     }
     if !status.success() {
-        if batch.is_some() {
-            bail!(
-                "sim upload child exited {status}; see {}",
-                run.log().display()
-            );
-        }
-        how.push_str(&format!("; exit {status}"));
+        bail!("sim child exited {status}; see {}", run.log().display());
     }
     Ok(how)
 }
@@ -624,6 +620,18 @@ fn batch(args: Vec<String>) -> Result<()> {
     let b =
         sim::config::load_batch(&file).map_err(|e| anyhow::anyhow!("{}:\n{e}", file.display()))?;
     let fork = fork || b.config.fork;
+    if fork
+        && b.runs.iter().any(|r| {
+            r.config
+                .bots
+                .iter()
+                .any(|b| b.kind == sim::config::SeatKind::Phantom)
+        })
+    {
+        bail!(
+            "distributed runs need a fresh System Link session per game; remove --fork or fork = true"
+        );
+    }
     let parallel = parallel
         .or(b.config.parallel)
         .unwrap_or_else(|| std::thread::available_parallelism().map_or(2, |n| (n.get() / 2).max(1)))
@@ -644,8 +652,9 @@ fn batch(args: Vec<String>) -> Result<()> {
             .iter()
             .map(|x| {
                 format!(
-                    "{}:{}",
+                    "{}:{:?}:{}",
                     x.name.as_deref().unwrap_or("bot"),
+                    x.kind,
                     x.arm.as_deref().unwrap_or("-")
                 )
             })
@@ -688,7 +697,7 @@ fn batch(args: Vec<String>) -> Result<()> {
             "batch": file.display().to_string(),
             "live_batch_id": batch_id,
             "arms": arms,
-            "mode": format!("{:?}", b.mode).to_ascii_lowercase(),
+            "mode": b.mode.name(),
             "fork": fork,
             "runs": b.runs.iter().map(|r| &r.id).collect::<Vec<_>>(),
         }))?,
@@ -771,9 +780,14 @@ fn batch(args: Vec<String>) -> Result<()> {
     );
     print!("{table}");
     println!("\n{}", b.out.join("compare.json").display());
-    if upload && failed.load(Ordering::Relaxed) > 0 {
+    if b.mode == sim::config::Mode::SeatSwap
+        && c.seat_swap.as_ref().map_or(0, |s| s.pairs) * 2 != b.runs.len()
+    {
+        bail!("seat comparison is incomplete; see compare.json and the run logs");
+    }
+    if failed.load(Ordering::Relaxed) > 0 {
         bail!(
-            "{} sim uploads failed; see the run logs",
+            "{} sim runs failed; see the run logs",
             failed.load(Ordering::Relaxed)
         );
     }
@@ -783,19 +797,22 @@ fn batch(args: Vec<String>) -> Result<()> {
 /// Reads `<dir>/runs/*/report.json` and compares them, arms in
 /// `batch.json`'s order when it is there.
 fn compare_dir(dir: &Path) -> Result<sim::compare::Comparison> {
-    let arms: Vec<String> = std::fs::read_to_string(dir.join("batch.json"))
+    let manifest = std::fs::read_to_string(dir.join("batch.json"))
         .ok()
-        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-        .and_then(|v| serde_json::from_value(v["arms"].clone()).ok())
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
         .unwrap_or_default();
+    let arms = serde_json::from_value::<Vec<String>>(manifest["arms"].clone()).unwrap_or_default();
     let runs = dir.join("runs");
-    let mut ids: Vec<String> = std::fs::read_dir(&runs)
-        .with_context(|| format!("reading {}", runs.display()))?
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().is_dir())
-        .filter_map(|e| e.file_name().into_string().ok())
-        .filter(|id| !id.starts_with("seed-"))
-        .collect();
+    let mut ids: Vec<String> = match serde_json::from_value(manifest["runs"].clone()) {
+        Ok(planned) => planned,
+        Err(_) => std::fs::read_dir(&runs)
+            .with_context(|| format!("reading {}", runs.display()))?
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir())
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter(|id| !id.starts_with("seed-"))
+            .collect(),
+    };
     ids.sort();
     let mut reports = Vec::new();
     let mut missing = Vec::new();

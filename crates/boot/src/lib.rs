@@ -914,6 +914,11 @@ fn run_configured(
         t.elapsed().as_secs_f64()
     );
     let k = kernel::Kernel::for_image(&mut loaded).context("attaching the kernel")?;
+    // H2_SIM=<match file>: sim mode (sim_glue.rs, docs/runtime/sim.md).
+    let (sim_mode, upload) = match sim {
+        Some((sim, upload)) => (Some(sim), upload),
+        None => (sim_glue::from_env()?, None),
+    };
     // The disc's map hashes, shared by the package resolver and the Live
     // map gate's bases (docs/game/maps.md §5): each disc map is read at most
     // once a session, or not at all when the stamp under <data>/maps/cache
@@ -922,7 +927,20 @@ fn run_configured(
     let map_gate = live
         .enabled
         .then(|| map_bases::gate(&opts.disc, &opts.data_root, disc_hashes.clone()));
-    let _live = live_glue::install(&loaded.runtime, &k, live, map_gate.clone())?;
+    let sim_network = sim_mode
+        .as_ref()
+        .filter(|s| s.matched().distributed())
+        .map(|_| sim_glue::hosted::Network::reserve())
+        .transpose()?;
+    let _live = if let Some(net) = &sim_network {
+        let lan = LiveConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        live_glue::install_with_network(&loaded.runtime, &k, &lan, net.config.clone(), None)?
+    } else {
+        live_glue::install(&loaded.runtime, &k, live, map_gate.clone())?
+    };
     // Features declare their hooks here; the plan is built and installed
     // once, below, after the last of them (docs/engine/feature-engine.md).
     let mut features =
@@ -934,11 +952,6 @@ fn run_configured(
     let mut cfg = vfs::Config::new(&opts.data_root, x.certificate.title_id);
     // Converted Halo 1 maps follow the sandbox chosen per game (h1_variants).
     cfg.variants = h1_variants::mp_variants();
-    // H2_SIM=<match file>: sim mode (sim_glue.rs, docs/runtime/sim.md).
-    let (sim_mode, upload) = match sim {
-        Some((sim, upload)) => (Some(sim), upload),
-        None => (sim_glue::from_env()?, None),
-    };
     let uploading_sim = upload.is_some();
     if sim_mode.is_some() && host.gfx.is_some() {
         anyhow::bail!("{}: sim mode is headless; this host has a window", sim::ENV);
@@ -1100,7 +1113,7 @@ fn run_configured(
     let campaigns = campaigns.map(|c| campaign_menu::prepare(c, host.settings.clone()));
     let level = match (host.level.take(), &sim_mode) {
         (Some(l), _) => Some(l),
-        (None, Some(s)) => Some(s.level_request(&opts.disc, &opts.data_root)?),
+        (None, Some(s)) => s.level_request(&opts.disc, &opts.data_root)?,
         (None, None) => level_boot::from_env(&opts.disc, Some(&opts.data_root)).context("H2_LEVEL")?,
     };
     let perf_from_var = std::env::var("H2_PERF_FROM").ok();
@@ -1154,7 +1167,7 @@ fn run_configured(
         if !core.bots_on {
             anyhow::bail!("sim: the bots are off (H2_FEATURES or no XAPI); a match needs them");
         }
-        s.add_bots();
+        s.add_bots()?;
     }
     let _telemetry = core.telemetry;
     if uploading_sim && _telemetry.is_none() {
@@ -1715,7 +1728,7 @@ fn run_configured(
                         .finish_sim(report)
                         .map_err(anyhow::Error::msg)
                 }),
-            Err(error) if uploading_sim => Err(error),
+            Err(error) if uploading_sim || s.matched().distributed() => Err(error),
             Err(error) => {
                 eprintln!("sim: {error:#}");
                 Ok(())
@@ -1947,7 +1960,7 @@ fn run_configured(
     drop(m);
     drop(loaded);
     drop(module);
-    sim_upload_result.context("uploading the simulation to Live")?;
+    sim_upload_result.context("finishing the simulation")?;
     Ok(report)
 }
 

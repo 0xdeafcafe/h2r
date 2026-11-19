@@ -5,12 +5,11 @@
 //! What it does to a boot (wired in `run_hosted_with_live`):
 //!
 //! - **The level** is the match's multiplayer map, through the level boot's
-//!   direct path, with the bot count, the game type and the variant
-//!   settings handed over as a [`level_boot::MpSetup`].
+//!   direct path for local pads or a System Link lobby for mixed seats.
 //! - **The input** has no keyboard pad: all four ports are free for bots
 //!   ([`bots::local::Local::set_capacity`]).
 //! - **The bots** are the match file's, each a [`bots::Brain`] with its
-//!   skill, its seed (from the match seed and its port) and its tuning, in a
+//!   skill, its seed (from the match seed and its logical seat) and its tuning, in a
 //!   [`Metered`] wrapper that counts what only the brain knows.
 //! - **The render front-end** is skipped in world frames
 //!   ([`feature::sim_frame`]); the pipelined render is off, the kernel
@@ -49,6 +48,8 @@ use sim::config::{BotParams, Match};
 use sim::metrics::{BotInfo, BrainTick, End, Finish, PlayerSample, Report, Tally, TickSample};
 
 use crate::level_boot;
+use std::collections::BTreeMap;
+pub(crate) mod hosted;
 
 /// The engine's shared random seed: a pointer to the struct whose first
 /// word it is (docs/graphics/pipelined-render.md, "random").
@@ -62,6 +63,7 @@ const MAX_FIRED: usize = 512;
 pub enum Phase {
     /// Booting, loading, or a game that is not the match.
     Waiting,
+    Binding,
     Playing,
     Over,
 }
@@ -70,6 +72,7 @@ impl Phase {
     fn name(self) -> &'static str {
         match self {
             Phase::Waiting => "waiting",
+            Phase::Binding => "binding",
             Phase::Playing => "playing",
             Phase::Over => "over",
         }
@@ -77,6 +80,8 @@ impl Phase {
 }
 
 struct State {
+    machines: BTreeMap<u8, [u8; 6]>,
+    bindings: BTreeMap<u8, u8>,
     tally: Tally,
     phase: Phase,
     end: Option<End>,
@@ -91,6 +96,7 @@ struct State {
 
 struct Inner {
     path: PathBuf,
+    hosted_map: std::sync::OnceLock<level_boot::Request>,
     matched: Match,
     report_path: Option<PathBuf>,
     frame: SimFrame,
@@ -263,6 +269,33 @@ pub fn shooters(s: &telemetry::Snapshot, fired: &[u32]) -> Vec<u8> {
     out
 }
 
+/// Match local controllers and phantom machine IDs to actual spawned units.
+fn seat_bindings(
+    m: &Match,
+    machines: &BTreeMap<u8, [u8; 6]>,
+    snap: &telemetry::Snapshot,
+) -> BTreeMap<u8, u8> {
+    let mut bindings = BTreeMap::new();
+    for b in &m.bots {
+        let Some((i, p)) = snap.players.iter().enumerate().find(|(_, p)| match b.port {
+            Some(port) => p.controller == Some(port) && p.local_user.is_some(),
+            None => p.local_user.is_none() && machines.get(&b.seat) == Some(&p.machine),
+        }) else {
+            continue;
+        };
+        if p.unit == u32::MAX
+            || snap.objects.get(i).and_then(Option::as_ref).is_none()
+            || (m.team_play && b.team.map(i32::from) != Some(p.player.team))
+        {
+            continue;
+        }
+        if let Ok(index) = u8::try_from(p.player.index) {
+            bindings.insert(b.seat, index);
+        }
+    }
+    bindings
+}
+
 /// The player whose unit is `object`, from the last sample.
 fn player_of_unit(last: Option<&TickSample>, object: u32) -> Option<u8> {
     last?
@@ -294,10 +327,13 @@ impl Sim {
             .on_skip(crate::d3d_diag::note_skipped_present);
         Sim(Arc::new(Inner {
             path,
+            hosted_map: Default::default(),
             matched,
             report_path,
             frame,
             state: Mutex::new(State {
+                machines: Default::default(),
+                bindings: Default::default(),
                 tally: Tally::new(),
                 phase: Phase::Waiting,
                 end: None,
@@ -318,7 +354,11 @@ impl Sim {
 
     /// The match's level request, and its multiplayer setup handed to the
     /// level boot.
-    pub fn level_request(&self, disc: &Path, data_root: &Path) -> Result<level_boot::Request> {
+    pub fn level_request(
+        &self,
+        disc: &Path,
+        data_root: &Path,
+    ) -> Result<Option<level_boot::Request>> {
         let m = &self.0.matched;
         let req = level_boot::resolve_in(
             disc,
@@ -333,41 +373,58 @@ impl Sim {
                 req.name
             );
         }
+        if m.distributed() {
+            anyhow::ensure!(
+                req.map != u32::MAX,
+                "sim: no retail lobby map ID for {}",
+                req.name
+            );
+            self.0
+                .hosted_map
+                .set(req)
+                .map_err(|_| anyhow::anyhow!("sim: hosted map already selected"))?;
+            return Ok(None);
+        }
         level_boot::set_mp_setup(level_boot::MpSetup {
             players: m.bots.len() as u32,
             game_type: m.game_type.list_index(),
             settings: m.variant.clone(),
             label: m.game_type.name().into(),
         })?;
-        Ok(req)
+        Ok(Some(req))
     }
 
-    /// The match's bots on ports 0 up, all four places open.
-    pub fn add_bots(&self) {
+    /// Register each brain with its planned local controller or phantom peer.
+    pub fn add_bots(&self) -> Result<()> {
         let local = bots::local::global();
         local.set_capacity(4);
         for b in &self.0.matched.bots {
             let brain = bots::Brain::new(skill(b.skill), b.seed).with_tuning(tuning(&b.params));
             let source = Metered {
+                seat: b.seat,
                 brain,
                 sim: Arc::clone(&self.0),
                 last_tick: None,
             };
-            match local.add(b.port, &b.name, Box::new(source)) {
-                Ok(h) => eprintln!(
-                    "sim: {} (bot {}, {}{}) wants port {}",
-                    b.name,
-                    h.0,
-                    b.skill.name(),
-                    b.arm
-                        .as_deref()
-                        .map(|a| format!(", arm {a}"))
-                        .unwrap_or_default(),
-                    b.port
-                ),
-                Err(e) => eprintln!("sim: {}: {e}", b.name),
+            if let Some(port) = b.port {
+                local
+                    .add(port, &b.name, Box::new(source))
+                    .map_err(anyhow::Error::msg)?;
+            } else {
+                let id = bots::phantom::Identity {
+                    xuid: live_proto::bots::local_xuid(u32::from(b.seat) + 1).0,
+                    gamertag: b.name.clone(),
+                    ..Default::default()
+                };
+                let handle =
+                    bots::phantom::add(id, b.team, Box::new(source)).map_err(anyhow::Error::msg)?;
+                self.0
+                    .lock()
+                    .machines
+                    .insert(b.seat, bots::phantom::machine_id(handle));
             }
         }
+        Ok(())
     }
 
     /// The pacer for the match's pace (`None`: unpaced).
@@ -402,7 +459,16 @@ impl Sim {
     /// still ends).
     pub fn keep_running(&self) -> bool {
         let inner = &self.0;
-        if let Some(limit) = inner.matched.config.max_wall_s
+        let binding_timeout = (inner.matched.distributed()
+            && matches!(inner.lock().phase, Phase::Waiting | Phase::Binding))
+        .then_some(180);
+        if let Some(limit) = inner
+            .matched
+            .config
+            .max_wall_s
+            .into_iter()
+            .chain(binding_timeout)
+            .min()
             && inner.created.elapsed().as_secs() >= limit
             && !inner.stop.load(Ordering::Acquire)
         {
@@ -449,6 +515,13 @@ impl Sim {
                 .with_context(|| format!("writing the report {}", path.display()))?;
             eprintln!("sim: report {}", path.display());
         }
+        if self.matched().distributed() && self.0.lock().bindings.len() != self.matched().bots.len()
+        {
+            bail!(
+                "sim: distributed match ended before all {} seats had a player and a spawned unit",
+                self.matched().bots.len()
+            );
+        }
         Ok(r)
     }
 
@@ -484,6 +557,7 @@ impl Sim {
             "game_type": inner.matched.game_type.name(),
             "bots": inner.matched.bots.len(),
             "phase": s.phase.name(),
+            "bound_seats": s.bindings,
             "ticks": s.tally.ticks(),
             "max_ticks": inner.matched.config.max_ticks,
             "game_seconds": sp.game_seconds(),
@@ -507,6 +581,9 @@ fn build_report(inner: &Inner, s: &State) -> Report {
         .bots
         .iter()
         .map(|b| BotInfo {
+            seat: b.seat,
+            kind: b.kind,
+            player: s.bindings.get(&b.seat).copied(),
             port: b.port,
             name: b.name.clone(),
             arm: b.arm.clone(),
@@ -514,6 +591,19 @@ fn build_report(inner: &Inner, s: &State) -> Report {
         .collect();
     let f = inner.frame.stats();
     let mut notes = s.notes.clone();
+    if inner.matched.distributed() && s.bindings.len() != inner.matched.bots.len() {
+        let missing = inner
+            .matched
+            .bots
+            .iter()
+            .filter(|b| !s.bindings.contains_key(&b.seat))
+            .map(|b| format!("{} ({:?} seat {})", b.name, b.kind, b.seat))
+            .collect::<Vec<_>>();
+        notes.push(format!(
+            "waiting for player/unit bindings: {}",
+            missing.join(", ")
+        ));
+    }
     notes.push(format!(
         "frames: {} world frames skipped, {} rendered (render_every {}), {} menu or loading frames",
         f.skipped, f.rendered_world, inner.matched.config.render_every, f.other
@@ -549,6 +639,7 @@ fn build_report(inner: &Inner, s: &State) -> Report {
 /// A bot's brain, counting per game tick what only it knows: stuck, its
 /// repaths, its activity.
 pub struct Metered {
+    seat: u8,
     brain: bots::Brain,
     sim: Arc<Inner>,
     last_tick: Option<u32>,
@@ -569,6 +660,9 @@ impl PadSource for Metered {
     }
 
     fn pad(&mut self, f: &Frame<'_>) -> HostPadState {
+        if self.sim.matched.distributed() && self.sim.lock().phase != Phase::Playing {
+            return HostPadState::default();
+        }
         let pad = self.brain.pad(f);
         if let Some(t) = f.tick
             && self.last_tick != Some(t)
@@ -582,7 +676,11 @@ impl PadSource for Metered {
             };
             let mut s = self.sim.lock();
             if s.phase == Phase::Playing {
-                s.tally.brain(f.port, b);
+                if let Some(&player) = s.bindings.get(&self.seat) {
+                    s.tally.brain_for_player(player, b);
+                } else {
+                    s.tally.brain(f.port, b);
+                }
             }
         }
         pad
@@ -603,6 +701,9 @@ impl feature::Feature for SimMetrics {
     fn build(&self, b: &mut feature::Builder) -> std::result::Result<(), feature::BuildError> {
         // A load (a fork) winds the tick back; the tally starts again there.
         b.snapshot(feature::SnapshotPolicy::Stateless);
+        if self.0.matched.distributed() {
+            hosted::install(b, Arc::clone(&self.0))?;
+        }
         let me = Arc::clone(&self.0);
         b.game().on_start("sim: match start", move |o| {
             let g = o.guest();
@@ -611,21 +712,39 @@ impl feature::Feature for SimMetrics {
                 return;
             }
             let tick = telemetry::game_tick(&g).unwrap_or(0);
+            if let Some(req) = me.hosted_map.get() {
+                if !level_boot::active_game(&*g)
+                    .is_some_and(|(mode, path)| level_boot::is_wanted(Some(req), mode, &path))
+                {
+                    return;
+                }
+            }
             drop(g);
             let mut s = me.lock();
+            s.bindings.clear();
             s.tally.start((tick & 0xffff_ffff) as u32);
-            s.phase = Phase::Playing;
+            s.phase = if me.matched.distributed() {
+                Phase::Binding
+            } else {
+                Phase::Playing
+            };
             s.set_up = false;
             s.fired.clear();
-            s.first_tick = Some(Instant::now());
+            s.first_tick = (s.phase == Phase::Playing).then(Instant::now);
             eprintln!("sim: match started at tick {tick}");
         });
         let me = Arc::clone(&self.0);
         b.frame().on_tick("sim: tick sample", move |o| {
-            if me.lock().phase != Phase::Playing {
+            if !matches!(me.lock().phase, Phase::Playing | Phase::Binding) {
                 return;
             }
             let g = o.guest();
+            if me.matched.distributed()
+                && me.lock().phase == Phase::Binding
+                && bots::phantom::session::host_session(&*g).is_err()
+            {
+                return;
+            }
             let snap = telemetry::snapshot(&g);
             let ended = g
                 .u32(telemetry::layout::GAME_GLOBALS_PTR)
@@ -639,6 +758,18 @@ impl feature::Feature for SimMetrics {
                 Ok(snap) => {
                     let fired = std::mem::take(&mut s.fired);
                     let sample = tick_sample(&snap);
+                    if s.phase == Phase::Binding {
+                        s.bindings = seat_bindings(&me.matched, &s.machines, &snap);
+                        if !s.set_up || s.bindings.len() != me.matched.bots.len() {
+                            if ended {
+                                me.end(&mut s, End::GameOver);
+                            }
+                            return;
+                        }
+                        s.phase = Phase::Playing;
+                        s.first_tick = Some(Instant::now());
+                        s.tally.start(sample.tick);
+                    }
                     let resets = s.tally.resets();
                     s.tally.tick(&sample);
                     if s.tally.resets() != resets {
@@ -646,7 +777,10 @@ impl feature::Feature for SimMetrics {
                         // timed, seeded and teamed from here.
                         s.first_tick = Some(Instant::now());
                         s.set_up = false;
-                        eprintln!("sim: the tick jumped to {} (a snapshot load); counting from here", sample.tick);
+                        eprintln!(
+                            "sim: the tick jumped to {} (a snapshot load); counting from here",
+                            sample.tick
+                        );
                     }
                     for p in shooters(&snap, &fired) {
                         s.tally.shot(p);
@@ -689,9 +823,21 @@ impl feature::Feature for SimMetrics {
         b.raw()
             .observe_before(&points::WEAPON_FIRE, "sim: shots", move |o| {
                 if let Some(w) = o.arg_u32("weapon") {
+                    let g = o.guest();
+                    let parent = engine::view::objects::get(&*g, engine::DatumHandle(w))
+                        .ok()
+                        .flatten()
+                        .and_then(|(_, weapon)| weapon.parent(&*g).ok().flatten());
+                    drop(g);
                     let mut s = me.lock();
-                    if s.phase == Phase::Playing && s.fired.len() < MAX_FIRED {
-                        s.fired.push(w);
+                    if s.phase == Phase::Playing {
+                        if let Some(p) =
+                            parent.and_then(|unit| player_of_unit(s.tally.last(), unit.raw()))
+                        {
+                            s.tally.shot(p);
+                        } else if s.fired.len() < MAX_FIRED {
+                            s.fired.push(w);
+                        }
                     }
                 }
             })
@@ -715,6 +861,7 @@ impl feature::Feature for SimMetrics {
                     player_of_datum(hit.owner_player),
                     target,
                     hit.body + hit.shield,
+                    me.matched.team_play,
                 );
             })
             .optional();
@@ -758,29 +905,34 @@ impl feature::Feature for SimMetrics {
             .before(&points::GAME_TICK, "sim: seed and teams", move |c| {
                 {
                     let s = me.lock();
-                    if s.phase != Phase::Playing || s.set_up {
+                    if !matches!(s.phase, Phase::Playing | Phase::Binding) || s.set_up {
                         return Ok(Flow::Continue);
                     }
                 }
                 let rt = Arc::clone(c.ctx.runtime());
                 let mut g = rt.memory();
                 let mut notes = Vec::new();
-                match write_seed(&mut g, me.matched.config.seed) {
+                let seed = write_seed(&mut g, me.matched.config.seed);
+                let seeded = seed.is_ok();
+                match seed {
                     Ok(v) => eprintln!("sim: seed {:#010x} written", v),
                     Err(e) => notes.push(format!("the seed was not written: {e:?}")),
                 }
-                if me.matched.team_play {
+                if me.matched.team_play && !me.matched.distributed() {
                     notes.extend(write_teams(&mut g, &me.matched));
                 }
                 drop(g);
                 let mut s = me.lock();
-                s.set_up = true;
+                s.set_up = seeded || !me.matched.distributed();
                 for n in notes {
                     eprintln!("sim: {n}");
-                    s.notes.push(n);
+                    if !s.notes.contains(&n) {
+                        s.notes.push(n);
+                    }
                 }
                 Ok(Flow::Continue)
-            });
+            })
+            .last();
         Ok(())
     }
 }
@@ -807,10 +959,13 @@ fn write_teams(g: &mut runtime::Guest, m: &Match) -> Vec<String> {
     };
     for b in &m.bots {
         let Some(team) = b.team else { continue };
-        let Some(p) = players.iter().find(|p| p.controller == Some(b.port)) else {
+        let Some(p) = players
+            .iter()
+            .find(|p| b.port.is_some() && p.controller == b.port)
+        else {
             notes.push(format!(
-                "{}: no player on port {} for its team",
-                b.name, b.port
+                "{}: no player bound to seat {} for its team",
+                b.name, b.seat
             ));
             continue;
         };
@@ -995,6 +1150,36 @@ mod tests {
         assert_eq!(player_of_unit(None, 0xe002), None);
         assert_eq!(player_of_datum(u32::MAX), None);
         assert_eq!(player_of_datum(0xe5a4_0002), Some(2));
+    }
+
+    #[test]
+    fn bindings_require_the_phantom_machine_and_both_unit_objects() {
+        let sim = sim_with("map='midship'\n[[bot]]\nkind='phantom'\n[[bot]]\n");
+        let machines = BTreeMap::from([(0, [7; 6])]);
+        let mut snap = telemetry::Snapshot {
+            players: vec![player(6, Some(0), 11), player(2, None, 12)],
+            objects: vec![Some(object(None, None, 1., 0)), None],
+            ..Default::default()
+        };
+        assert_eq!(
+            seat_bindings(sim.matched(), &machines, &snap),
+            BTreeMap::from([(1, 6)])
+        );
+        snap.objects[1] = snap.objects[0].clone();
+        assert_eq!(
+            seat_bindings(sim.matched(), &machines, &snap),
+            BTreeMap::from([(1, 6)])
+        );
+        snap.players[1].machine = [7; 6];
+        assert_eq!(
+            seat_bindings(sim.matched(), &machines, &snap),
+            BTreeMap::from([(0, 2), (1, 6)])
+        );
+        snap.players[1].unit = u32::MAX;
+        assert_eq!(
+            seat_bindings(sim.matched(), &machines, &snap),
+            BTreeMap::from([(1, 6)])
+        );
     }
 
     #[test]

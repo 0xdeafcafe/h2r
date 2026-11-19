@@ -143,6 +143,12 @@ pub struct Wall {
 /// One player's line in the report.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PlayerReport {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seat: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<crate::config::SeatKind>,
+    #[serde(default)]
+    pub opposing_hits: u64,
     pub index: u8,
     pub name: String,
     /// A bot of ours.
@@ -209,13 +215,17 @@ impl Report {
 /// A bot as the tally knows it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BotInfo {
-    pub port: u8,
+    pub seat: u8,
+    pub kind: crate::config::SeatKind,
+    pub player: Option<u8>,
+    pub port: Option<u8>,
     pub name: String,
     pub arm: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
 struct Acc {
+    opposing_hits: u64,
     shots: u64,
     hits: u64,
     damage_dealt: f64,
@@ -376,7 +386,7 @@ impl Tally {
 
     /// A damage report: `attacker` (if a player) hurt `victim` (if a
     /// player) by `damage` (body plus shield, in the game's units).
-    pub fn hit(&mut self, attacker: Option<u8>, victim: Option<u8>, damage: f32) {
+    pub fn hit(&mut self, attacker: Option<u8>, victim: Option<u8>, damage: f32, team_play: bool) {
         let damage = if damage.is_finite() {
             f64::from(damage.max(0.0))
         } else {
@@ -388,7 +398,22 @@ impl Tally {
         if let Some(a) = attacker
             && victim.is_some_and(|v| v != a)
         {
+            let team = |who| {
+                self.last
+                    .as_ref()?
+                    .players
+                    .iter()
+                    .find(|p| Some(p.index) == who)?
+                    .team
+            };
+            let opposing = !team_play
+                || team(attacker)
+                    .zip(team(victim))
+                    .is_some_and(|(a, b)| a != b);
             let acc = self.acc.entry(a).or_default();
+            if opposing && damage > 0.0 {
+                acc.opposing_hits += 1;
+            }
             acc.hits += 1;
             acc.damage_dealt += damage;
         }
@@ -421,6 +446,10 @@ impl Tally {
         let Some(player) = self.player_of_port(port) else {
             return;
         };
+        self.brain_for_player(player, b);
+    }
+
+    pub fn brain_for_player(&mut self, player: u8, b: BrainTick) {
         let a = self.acc.entry(player).or_default();
         if b.stuck {
             a.stuck_ticks += 1;
@@ -490,9 +519,14 @@ impl Tally {
             let sample = last.players.iter().find(|p| p.index == i);
             let a = self.acc.get(&i).cloned().unwrap_or_default();
             let port = sample.and_then(|p| p.controller);
-            let bot = port.and_then(|c| bots.iter().find(|b| b.port == c));
+            let bot = bots.iter().find(|b| {
+                b.player == Some(i) || (b.player.is_none() && b.port.is_some() && b.port == port)
+            });
             let shots = a.shots;
             players.push(PlayerReport {
+                seat: bot.map(|b| b.seat),
+                kind: bot.map(|b| b.kind),
+                opposing_hits: a.opposing_hits,
                 index: i,
                 name: sample
                     .map(|p| p.name.clone())
@@ -648,11 +682,11 @@ mod tests {
         for _ in 0..4 {
             t.shot(0);
         }
-        t.hit(Some(0), Some(1), 0.25);
-        t.hit(Some(0), Some(0), 0.5); // own grenade: taken, not dealt
-        t.hit(None, Some(1), 1.0); // the world
-        t.hit(Some(0), None, 1.0); // a vehicle or a crate
-        t.hit(Some(0), Some(1), f32::NAN);
+        t.hit(Some(0), Some(1), 0.25, false);
+        t.hit(Some(0), Some(0), 0.5, false); // own grenade: taken, not dealt
+        t.hit(None, Some(1), 1.0, false); // the world
+        t.hit(Some(0), None, 1.0, false); // a vehicle or a crate
+        t.hit(Some(0), Some(1), f32::NAN, false);
         let r = t.report(Finish {
             team_play: false,
             ..Finish::bare(End::Stopped)
@@ -660,9 +694,27 @@ mod tests {
         let a = r.player(0).unwrap();
         assert_eq!((a.shots, a.hits), (4, 2));
         assert_eq!(a.accuracy, 0.5);
+        assert_eq!(a.opposing_hits, 1);
         assert_eq!(a.damage_dealt, 0.25);
         assert_eq!(a.damage_taken, 0.5);
         assert_eq!(r.player(1).unwrap().damage_taken, 1.25);
+    }
+
+    #[test]
+    fn opposing_hits_exclude_friendly_self_and_zero_damage() {
+        let mut t = Tally::new();
+        let mut players = vec![p(0, Some(0), 0), p(1, None, 0), p(2, None, 0)];
+        for (p, team) in players.iter_mut().zip([0, 0, 1]) {
+            p.team = Some(team);
+        }
+        t.tick(&sample(1, players));
+        for (v, dmg) in [(0, 1.), (1, 2.), (2, 3.), (2, 0.)] {
+            t.hit(Some(0), Some(v), dmg, true);
+        }
+        let r = t.report(Finish::bare(End::GameOver));
+        assert_eq!(r.player(0).unwrap().opposing_hits, 1);
+        assert_eq!(r.player(0).unwrap().damage_dealt, 5.);
+        assert_eq!(r.player(2).unwrap().damage_taken, 3.);
     }
 
     #[test]
@@ -707,7 +759,10 @@ mod tests {
         t.brain(2, busy(false, 0, "roam")); // new life: count restarts
         t.brain(2, busy(false, 2, "roam"));
         let bots = [BotInfo {
-            port: 2,
+            seat: 2,
+            kind: crate::config::SeatKind::Local,
+            player: None,
+            port: Some(2),
             name: "Clanker 2".into(),
             arm: Some("b".into()),
         }];
