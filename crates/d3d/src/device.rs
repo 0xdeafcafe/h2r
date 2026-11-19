@@ -43,7 +43,7 @@ use gfx::xdk::RenderStateTable;
 use gfx::{Clear, D3DFormat};
 
 use crate::backend::{
-    Backend, CachedBytes, CachedIndices, DrawOutcome, IndexData, ResolvedDraw, StreamBytes,
+    Backend, CachedBytes, CachedIndices, DrawOutcome, GuestLayoutKind, IndexData, ResolvedDraw, StreamBytes,
     StreamData, TargetInfo, TextureInfo, Viewport,
 };
 use crate::dirty::{UploadPolicy, WriteTracker, hash_bytes};
@@ -320,14 +320,21 @@ pub struct Stats {
     /// External passes dropped (no colour or depth bound, the backend
     /// refused).
     pub external_passes_dropped: u64,
-    /// Draws a [`Swallow`] dropped (or, observing, matched).
+    /// Immediate draws that matched a post call, including observations.
     pub swallowed_draws: u64,
-    /// Swallows ended early: a draw that is not the next one planned, or
-    /// one armed over another not finished ([`Device::swallow`]).
+    /// Post calls that began holding originals.
+    pub swallow_calls: u64,
+    /// Original packets discarded after a confirmed replacement.
+    pub swallow_draws_dropped: u64,
+    /// Retained original packets submitted after a refusal.
+    pub swallow_draws_replayed: u64,
+    /// Native replacements encoded for every live copy.
+    pub swallow_commits: u64,
+    /// Calls stopped by a draw or a call boundary.
     pub swallow_mismatches: u64,
-    /// Swallows not armed to drop because their pass could not be issued
-    /// ([`Device::swallow`]): the draws stay the D3D path's.
+    /// Calls refused or rolled back, and their reasons.
     pub swallow_refusals: u64,
+    pub swallow_reasons: [u64; SwallowRefusal::ALL.len()],
     /// External passes dropped, by [`ExternalRefusal`] (its index in
     /// [`ExternalRefusal::ALL`]).
     pub external_refusals: [u64; ExternalRefusal::ALL.len()],
@@ -690,10 +697,73 @@ pub struct DepthScale {
 pub type OcclusionSink =
     std::sync::Arc<dyn Fn(crate::backend::DepthGridResult, DepthScale) + Send + Sync>;
 
+/// The guest call that owns a post transaction. Its return hook closes
+/// the transaction even if the call drew fewer primitives than planned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SwallowCall {
+    pub entry: u32,
+    pub esp: u32,
+    pub ret: u32,
+}
+
+/// Reasons a post call's originals stayed on the D3D path.
+#[repr(usize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SwallowRefusal {
+    Admission,
+    Shape,
+    CallBoundary,
+    Dependency,
+    Resource,
+    Encode,
+}
+
+impl SwallowRefusal {
+    pub const ALL: [Self; 6] = [
+        Self::Admission, Self::Shape, Self::CallBoundary, Self::Dependency, Self::Resource, Self::Encode,
+    ];
+
+    pub fn index(self) -> usize {
+        self as usize
+    }
+}
+
+/// The packet and stage bindings resolved at its original draw boundary.
+pub struct SwallowOriginal<'a> {
+    pub draw: &'a ResolvedDraw,
+    /// Guest texel addresses of sampled stages, with aliases normalized.
+    pub source_data: [Option<u32>; 4],
+    pub sampled: [bool; 4],
+}
+
+/// The memory and guest size behind one matched colour slot.
+#[derive(Clone, Copy)]
+pub struct SwallowTarget {
+    pub data: u32,
+    pub size: (u32, u32),
+}
+
+/// Validates the live state of the original packets before native recording.
+pub trait SwallowPass: crate::backend::ExternalPass {
+    fn validate(&self, _originals: &[SwallowOriginal<'_>], _slots: &[Option<SwallowTarget>]) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn after_commit(&mut self) -> Option<Box<dyn crate::backend::ExternalPass>> {
+        None
+    }
+}
+
 /// A pass whose draws the host draws itself ([`Device::swallow`]): the
-/// game's own code runs, so it leaves every state, and only its draws are
-/// dropped.
+/// game's own code runs. Matching draws are retained until its return.
 pub struct Swallow {
+    pub call: SwallowCall,
+    /// For each draw, the D3DDevice_End return address, or `None` for a
+    /// pushed primitive. Unlisted draws must be pushed.
+    pub end_returns: Vec<Option<u32>>,
+    /// Known guest surface headers by slot. A missing header is pinned
+    /// from the first matching draw. Slot 0 defaults to the bound header.
+    pub headers: Vec<Option<u32>>,
     /// Per draw, in order, the slot of the colour target it draws into:
     /// 0 the target bound when armed; another slot the target its first
     /// draw finds, the same for each of its draws and distinct from every
@@ -707,11 +777,10 @@ pub struct Swallow {
     /// takes `shapes[i]` while `i` is below its length): a pass of mixed
     /// draws.
     pub shapes: Vec<(PrimitiveType, usize)>,
-    /// Drop the draws; `false` draws them and only places `pass` (a
-    /// capture of what the game drew).
+    /// Replace the draws; `false` observes them for a D3D capture.
     pub drop: bool,
-    /// Issued after the last draw, into the targets bound then.
-    pub pass: Box<dyn crate::backend::ExternalPass>,
+    /// Issued at return, with the last draw's target and the live slots.
+    pub pass: Box<dyn SwallowPass>,
 }
 
 /// What the device saw while tracing ([`Device::trace`]): a runtime
@@ -757,28 +826,41 @@ pub struct TracedDraw {
 /// Events a trace keeps; those past it are counted.
 pub const TRACE_CAP: usize = 512;
 
-struct Swallowing {
-    targets: Vec<u8>,
+struct Swallowing<B: Backend> {
+    plan: Swallow,
     next: usize,
     headers: Vec<Option<u32>>,
-    primitive: PrimitiveType,
-    vertices: usize,
-    shapes: Vec<(PrimitiveType, usize)>,
-    drop: bool,
-    /// `Stats::draws` when the next planned draw comes: no other draw in
-    /// between.
-    draws: u64,
-    pass: Option<Box<dyn crate::backend::ExternalPass>>,
+    surfaces: Vec<Option<SwallowSurface<B::Surface>>>,
+    packets: Vec<SwallowPacket<B>>,
+    last: Option<(B::Surface, crate::backend::ExternalPassRequest)>,
+    holding: bool,
+    end_return: Option<u32>,
+    return_cookie: Option<u32>,
 }
 
-/// What becomes of an inline draw under a swallow.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SwallowSurface<S> {
+    surface: S,
+    header: u32,
+    identity: [u32; 3],
+    size: (u32, u32),
+}
+
+struct SwallowPacket<B: Backend> {
+    color: B::Surface,
+    depth: Option<B::Surface>,
+    draw: ResolvedDraw,
+    source_data: [Option<u32>; 4],
+    sampled: [bool; 4],
+    snapshots: [Option<B::Texture>; 4],
+    keys: [Option<TextureKey>; 4],
+    cached: HashMap<TextureKey, CachedTexture<B::Texture>>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Fate {
-    /// Not the pass's (or nothing armed): drawn.
     Drawn,
-    /// The pass's, dropped.
-    Dropped,
-    /// The pass's, drawn (observing).
+    Held,
     Observed,
 }
 
@@ -945,7 +1027,7 @@ pub struct Device<B: Backend> {
     /// since the last drain, issued after the next one in the order asked.
     pending_external: Vec<Box<dyn crate::backend::ExternalPass>>,
     /// The draws of a pass being swallowed ([`Device::swallow`]).
-    swallowing: Option<Swallowing>,
+    swallowing: Option<Swallowing<B>>,
     /// How the last swallow that ended early ended
     /// ([`Device::swallow_mismatch`]).
     swallow_mismatch: Option<String>,
@@ -1693,6 +1775,7 @@ impl<B: Backend> Device<B> {
         match self.drain(mem, false) {
             Ok(_) => Ok(()),
             Err(e) => {
+                self.swallow_abort(SwallowRefusal::Dependency, || "push stream interrupted the post call".into())?;
                 self.fault = Some(format!(
                     "{e} (push-buffer command at {:#010x})",
                     self.consumed
@@ -1763,6 +1846,7 @@ impl<B: Backend> Device<B> {
         match self.drain(mem, true) {
             Ok(Some(cb)) => {
                 self.stats.push_callbacks += 1;
+                self.swallow_abort(SwallowRefusal::Dependency, || "push callback interrupted the post call".into())?;
                 // Like any other write-back failure (KickOff, Swap, ...),
                 // not latched: the targets stay dirty and the next call
                 // tries again. The callback waits with them.
@@ -1775,6 +1859,9 @@ impl<B: Backend> Device<B> {
             Ok(None) => {
                 // Everything queued before this entry has been recorded:
                 // the depth now is what the draws so far left.
+                if self.pending_grid.is_some() || !self.pending_external.is_empty() {
+                    self.swallow_abort(SwallowRefusal::Dependency, || "an external job interrupted the post call".into())?;
+                }
                 if let Some(ask) = self.pending_grid.take() {
                     self.issue_depth_grid(mem, ask);
                 }
@@ -1943,50 +2030,19 @@ impl<B: Backend> Device<B> {
         self.pending_external.push(pass);
     }
 
-    /// Arms `s` (docs/graphics/native-renderer.md, stage 5): the next
-    /// immediate-mode draws, one per entry of [`Swallow::targets`], are the
-    /// pass's: pushed `Begin`/`End`s and those through the
-    /// `D3DDevice_End` entry alike (other entries' draws are not).
-    /// What is queued drains first, as before any entry, so only draws
-    /// pushed after this call count. Each must be the next one planned:
-    /// an inline `Begin`/`End` of [`Swallow::primitive`] with
-    /// [`Swallow::vertices`] vertices, no other draw since the last, into
-    /// its slot's colour target (slot 0 the one bound now; another slot the
-    /// target its first draw finds, each slot its own target). With
-    /// [`Swallow::drop`] each is dropped, else drawn. After the last,
-    /// [`Swallow::pass`] is issued into the targets bound then, in its
-    /// place. A draw that is not the next planned ends the swallow
-    /// ([`Stats::swallow_mismatches`]): it and every draw after it are
-    /// drawn, and the pass is not issued. Draws already dropped stay
-    /// dropped.
-    ///
-    /// `Ok(false)` with nothing armed when a push-buffer callback is
-    /// queued first (kept for the next entry), no colour target is bound,
-    /// the plan is empty, or (dropping) the pass could not be issued into
-    /// the targets bound now or is not colour-only
-    /// ([`ExternalPass::colour_only`](crate::backend::ExternalPass::colour_only);
-    /// [`Stats::swallow_refusals`], the reason counted and logged as its
-    /// issue would). Arming over a swallow not
-    /// finished ends that one as a mismatch.
+    /// Drains earlier work and arms one guest post call. Only draws
+    /// issued inside that call can satisfy its plan. Its return, a
+    /// mismatch, or a conflicting operation ends the transaction.
     pub fn swallow(&mut self, mem: &mut dyn GuestMemory, s: Swallow) -> Result<bool, D3dError> {
-        const E: &str = "swallow";
-        self.live(E)?;
+        self.live("swallow")?;
+        self.swallow_abort(SwallowRefusal::CallBoundary, || "another post call entered".into())?;
         self.traced(|| Traced::Arming);
         if let Some(cb) = self.drain_until_callback(mem)? {
             self.undelivered = Some(cb);
+            self.swallow_refused(SwallowRefusal::Dependency);
             return Ok(false);
         }
-        if let Some(old) = self.swallowing.take() {
-            self.stats.swallow_mismatches += 1;
-            self.swallow_mismatch = Some(format!("armed over it at draw {} of {}", old.next, old.targets.len()));
-        }
-        if s.targets.is_empty() || self.render_target == 0 {
-            return Ok(false);
-        }
-        // Dropping needs the pass issued in their place: what its issue
-        // checks is checked here, before any draw is dropped. Its target is
-        // slot 0's, bound now and at the last draw; the depth bound then is
-        // not known now, so the pass must be colour-only.
+        let Some(&last) = s.targets.iter().max() else { return Ok(false) };
         if s.drop {
             let ready = if s.pass.colour_only() {
                 self.external_ready(mem, true).map(|_| ())
@@ -1994,28 +2050,59 @@ impl<B: Backend> Device<B> {
                 Err(ExternalRefusal::NoDepth)
             };
             if let Err(why) = ready {
-                self.stats.swallow_refusals += 1;
+                self.swallow_refused(SwallowRefusal::Admission);
                 self.refuse_external(why);
                 return Ok(false);
             }
         }
-        let slots = s.targets.iter().map(|&t| usize::from(t)).max().unwrap_or(0) + 1;
-        let mut headers = vec![None; slots];
-        headers[0] = s.targets.contains(&0).then_some(self.render_target);
-        let draws = s.targets.len();
-        self.traced(|| Traced::Armed { draws });
+        let slots = usize::from(last) + 1;
+        let mut headers = s.headers.clone();
+        headers.resize(slots, None);
+        if s.targets.contains(&0) {
+            headers[0] = Some(self.render_target);
+        }
+        self.swallow_mismatch = None;
+        self.traced(|| Traced::Armed { draws: s.targets.len() });
+        self.stats.swallow_calls += u64::from(s.drop);
+        if s.drop {
+            timeline::native::Stage::Post.count(timeline::native::Metric::Examined, s.targets.len() as u64);
+        }
         self.swallowing = Some(Swallowing {
-            targets: s.targets,
             next: 0,
             headers,
-            primitive: s.primitive,
-            vertices: s.vertices,
-            shapes: s.shapes,
-            drop: s.drop,
-            draws: self.stats.draws,
-            pass: Some(s.pass),
+            surfaces: vec![None; slots],
+            packets: Vec::new(),
+            last: None,
+            holding: false,
+            end_return: None,
+            return_cookie: None,
+            plan: s,
         });
         Ok(true)
+    }
+
+    /// Finishes a post call before its caller runs another command. A
+    /// final pushed draw may still be queued at the guest return.
+    pub fn finish_swallow(&mut self, mem: &mut dyn GuestMemory, entry: u32, esp: u32) -> Result<(), D3dError> {
+        if !self.swallowing.as_ref().is_some_and(|s| s.plan.call.entry == entry && s.plan.call.esp == esp) {
+            return Ok(());
+        }
+        match self.drain_until_callback(mem) {
+            Ok(None) => {}
+            Ok(Some(cb)) => {
+                self.undelivered = Some(cb);
+                return self.swallow_abort(SwallowRefusal::Dependency, || "post call returned with a push callback".into());
+            }
+            Err(error) => {
+                self.swallow_abort(SwallowRefusal::Dependency, || "post call's push drain failed".into())?;
+                return Err(error);
+            }
+        }
+        let Some(s) = self.swallowing.as_ref() else { return Ok(()) };
+        if s.next != s.plan.targets.len() {
+            return self.swallow_abort(SwallowRefusal::CallBoundary, || "post call returned before its last planned draw".into());
+        }
+        self.swallow_commit(mem)
     }
 
     /// Whether a swallow is armed.
@@ -2082,55 +2169,365 @@ impl<B: Backend> Device<B> {
         self.traced(|| Traced::Draw(TracedDraw { entry, primitive, vertices, inline, push, target, draws, fate }));
     }
 
-    /// What becomes of inline draw `d` under the armed swallow.
-    fn swallow_fate(&mut self, d: &ImmediateDraw) -> Fate {
-        let Some(s) = self.swallowing.as_mut() else { return Fate::Drawn };
+    /// Called before a D3D entry drains pushed commands. Its stack must
+    /// still descend from the post hook's frame. Entry-ended strips also
+    /// match the specific guest End call site in the plan.
+    pub fn swallow_caller(
+        &mut self,
+        mem: &dyn GuestMemory,
+        esp: u32,
+        ret: u32,
+        has_return_hook: impl FnOnce(u32) -> bool,
+    ) -> Result<(), D3dError> {
+        let Some(s) = self.swallowing.as_mut() else { return Ok(()) };
+        let cookie = mem.read_u32(s.plan.call.esp).ok();
+        let owns_call = match s.return_cookie {
+            Some(saved) => cookie == Some(saved),
+            None => cookie.is_some_and(has_return_hook),
+        };
+        if esp >= s.plan.call.esp || ret == s.plan.call.ret || !owns_call {
+            return self.swallow_abort(SwallowRefusal::CallBoundary, || format!("D3D caller {ret:#010x} left the post call"));
+        }
+        s.return_cookie = cookie;
+        s.end_return = Some(ret);
+        Ok(())
+    }
+
+    /// An entry that can observe or mutate pixels, resources or queued
+    /// work must see the originals. Pure state setters can run in place.
+    pub(crate) fn swallow_before_entry(&mut self, entry: &'static str) -> Result<(), D3dError> {
+        if self.swallowing.is_none() {
+            return Ok(());
+        }
+        if entry.starts_with("D3DDevice_SetVertexData")
+            || entry.starts_with("D3DDevice_SetVertexShader")
+            || entry.starts_with("D3DDevice_SetTextureState")
+            || entry.starts_with("D3DDevice_SetRenderTarget")
+            || matches!(entry,
+                "D3DDevice_Begin" | "D3DDevice_End" | "D3DDevice_SetTexture" | "D3DDevice_SetPalette"
+                | "D3DDevice_SetRenderState_Simple" | "D3DDevice_SetShaderConstantMode"
+                | "D3DDevice_SetViewport" | "D3DDevice_SetScissors" | "D3DDevice_SetPixelShader"
+                | "D3DDevice_LoadVertexShaderProgram" | "D3DDevice_SelectVertexShaderDirect"
+                | "D3D_MakeRequestedSpace" | "D3D viewport push fragment" | "D3D push fragment (0x3f6390)"
+                | "D3D_UpdateProjectionViewportTransform" | "D3D transform/viewport push (0x3f6f40)"
+                | "D3D commit deferred state (0x400fa0)")
+        {
+            return Ok(());
+        }
+        self.swallow_abort(SwallowRefusal::Dependency, || format!("{entry} is a post transaction boundary"))
+    }
+
+    fn swallow_fate(&mut self, d: &ImmediateDraw, push: bool) -> Result<Fate, D3dError> {
+        let Some(s) = self.swallowing.as_mut() else { return Ok(Fate::Drawn) };
         let target = self.render_target;
-        let slot = usize::from(s.targets[s.next]);
+        let Some(&slot) = s.plan.targets.get(s.next) else {
+            self.swallow_abort(SwallowRefusal::Shape, || "extra draw before the post call returned".into())?;
+            return Ok(Fate::Drawn);
+        };
+        let slot = usize::from(slot);
         let into = match s.headers[slot] {
             Some(h) => h == target,
             None => target != 0 && !s.headers.contains(&Some(target)),
         };
-        let (primitive, vertices) = s.shapes.get(s.next).copied().unwrap_or((s.primitive, s.vertices));
-        let fits = d.inline.is_empty()
-            && d.primitive == primitive
-            && d.vertices.len() == vertices
-            && self.stats.draws == s.draws
-            && into;
-        if !fits {
-            self.swallow_mismatch = Some(format!(
-                "draw {} of {}: planned {primitive:?} x{vertices} into slot {slot}, pushed {:?} x{}{}{}{}",
-                s.next,
-                s.targets.len(),
-                d.primitive,
-                d.vertices.len(),
-                if d.inline.is_empty() { "" } else { ", an inline array" },
-                if self.stats.draws == s.draws { "" } else { ", after another draw" },
+        let (primitive, vertices) = s.plan.shapes.get(s.next).copied().unwrap_or((s.plan.primitive, s.plan.vertices));
+        let end = s.plan.end_returns.get(s.next).copied().flatten();
+        let origin = if push { end.is_none() } else { end.is_some() && end == s.end_return };
+        if !origin || !into || !d.inline.is_empty() || d.primitive != primitive || d.vertices.len() != vertices {
+            let detail = format!(
+                "draw {} of {}: planned {primitive:?} x{vertices} into slot {slot}, got {:?} x{}{}{}",
+                s.next, s.plan.targets.len(), d.primitive, d.vertices.len(),
                 if into { "" } else { ", into another target" },
-            ));
-            self.swallowing = None;
-            self.stats.swallow_mismatches += 1;
-            return Fate::Drawn;
+                if origin { "" } else { ", from another emitter" },
+            );
+            self.swallow_abort(SwallowRefusal::Shape, || detail)?;
+            return Ok(Fate::Drawn);
         }
         s.headers[slot] = Some(target);
+        s.holding = s.plan.drop;
         self.stats.swallowed_draws += 1;
-        if s.drop { Fate::Dropped } else { Fate::Observed }
+        Ok(if s.holding { Fate::Held } else { Fate::Observed })
     }
 
-    /// After a swallowed draw (dropped, or drawn when observing): the next
-    /// planned, or the pass in place of the last.
-    fn swallow_advance(&mut self, mem: &mut dyn GuestMemory) {
-        let Some(s) = self.swallowing.as_mut() else { return };
-        s.next += 1;
-        s.draws = self.stats.draws;
-        if s.next < s.targets.len() {
-            return;
+    fn swallow_refused(&mut self, reason: SwallowRefusal) {
+        self.stats.swallow_refusals += 1;
+        self.stats.swallow_reasons[reason.index()] += 1;
+        use timeline::native::{Metric, Stage};
+        let metric = match reason {
+            SwallowRefusal::CallBoundary => Metric::RefusedOwnership,
+            SwallowRefusal::Shape => Metric::RefusedRanges,
+            _ => Metric::RefusedResources,
+        };
+        Stage::Post.count(metric, 1);
+    }
+
+    fn swallow_abort(&mut self, reason: SwallowRefusal, detail: impl FnOnce() -> String) -> Result<(), D3dError> {
+        let Some(s) = self.swallowing.take() else { return Ok(()) };
+        if matches!(reason, SwallowRefusal::Shape | SwallowRefusal::CallBoundary) {
+            self.stats.swallow_mismatches += 1;
         }
-        let pass = s.pass.take();
-        self.swallowing = None;
-        if let Some(pass) = pass {
-            self.issue_external_pass(mem, pass);
+        let detail = detail();
+        self.traced(|| Traced::Note(format!("post {:?} returned to {:#010x}: {reason:?}: {detail}", s.plan.call, s.plan.call.ret)));
+        self.swallow_mismatch = Some(detail);
+        self.swallow_refused(reason);
+        self.swallow_replay(s.packets)
+    }
+
+    fn swallow_replay(&mut self, packets: Vec<SwallowPacket<B>>) -> Result<(), D3dError> {
+        for p in packets {
+            let textures = std::array::from_fn(|i| {
+                p.snapshots[i].as_ref().or_else(|| p.keys[i].and_then(|k| p.cached.get(&k)).map(|c| &c.host))
+            });
+            let entry = p.draw.entry;
+            let (outcome, spare) = self.backend.draw_owned(p.color, p.depth, p.draw, textures);
+            self.recycle_streams(spare);
+            self.stats.draws += 1;
+            self.stats.inline_draws += u64::from(entry == "inline Begin/End");
+            self.stats.swallow_draws_replayed += 1;
+            match outcome.map_err(D3dError::Backend)? {
+                DrawOutcome::Drawn => {}
+                DrawOutcome::Skipped(reason) => self.events.push(Event::DrawSkipped { entry, reason }),
+                DrawOutcome::Unsupported(detail) => return Err(D3dError::Unimplemented { entry, detail }),
+            }
+            for (key, texture) in p.cached {
+                self.cache.entry(key).or_insert(texture);
+            }
         }
+        Ok(())
+    }
+
+    /// Captures the generation (host surface and guest identity) that
+    /// this specific draw used. A texture level can be recreated on a
+    /// later bind even when its guest header address is unchanged.
+    fn swallow_target(
+        &mut self,
+        mem: &dyn GuestMemory,
+        color: B::Surface,
+        draw: &ResolvedDraw,
+    ) -> Result<(), D3dError> {
+        let Some(s) = self.swallowing.as_mut() else { return Ok(()) };
+        let header = self.render_target;
+        let identity = PixelContainer::read(mem, header)?.identity();
+        let target = SwallowSurface { surface: color, header, identity, size: (draw.target.width, draw.target.height) };
+        let slot = usize::from(s.plan.targets[s.next]);
+        if s.surfaces[slot].is_some_and(|old| old != target)
+            || s.surfaces.iter().enumerate().any(|(i, t)| i != slot && t.is_some_and(|t| t.surface == color))
+        {
+            return self.swallow_abort(SwallowRefusal::Resource, || format!("post target slot {slot} changed generation or aliased another slot"));
+        }
+        s.surfaces[slot] = Some(target);
+        let Some(z_scale) = self.guest_z_scale(mem) else {
+            return self.swallow_abort(SwallowRefusal::Resource, || "post target's Z scale is unreadable".into());
+        };
+        let v = draw.viewport;
+        let request = crate::backend::ExternalPassRequest {
+            rect: (v.x, v.y, v.width, v.height),
+            surface_size: target.size,
+            z_scale,
+        };
+        self.swallowing.as_mut().expect("post call").last = Some((color, request));
+        Ok(())
+    }
+
+    /// Verify that an upcoming resource operation cannot destroy, refill
+    /// or alias a surface with pending draws. Direct sampling of an exact
+    /// lazy RTT level is ordered with the original draws on replay.
+    fn swallow_resource(
+        &mut self,
+        mem: &dyn GuestMemory,
+        header: u32,
+        sample_sign: Option<u32>,
+    ) -> Result<(), D3dError> {
+        let Some(s) = self.swallowing.as_ref() else { return Ok(()) };
+        if s.packets.is_empty() || header == 0 {
+            return Ok(());
+        }
+        let live = PixelContainer::read(mem, header).ok();
+        let desc = live.and_then(|pc| crate::texdesc::from_header(pc.format, pc.size).ok());
+        let start = live.map(|pc| u64::from(self.cfg.address_map.to_virtual(pc.resource.data)));
+        let len = desc.as_ref().and_then(|d| crate::texdesc::total_size(d).ok());
+        let overlaps = |base: u32, bytes: u32| {
+            start.zip(len).is_none_or(|(a, n)| {
+                let b = u64::from(base);
+                a < b + u64::from(bytes) && b < a + n as u64
+            })
+        };
+        let conflicts = s.surfaces.iter().flatten().any(|t| {
+            let Ok(current) = PixelContainer::read(mem, t.header) else { return true };
+            if current.identity() != t.identity {
+                return true;
+            }
+            if let Some(level) = self.rtt.get(&t.header) {
+                if !overlaps(level.data, level.len()) {
+                    return false;
+                }
+                if self.rtt_stores.get(&t.header).is_some_and(|stores| !stores.is_empty())
+                    || self.tracker.dirty_since(level.data, level.len(), level.generation)
+                {
+                    return true;
+                }
+                if sample_sign.is_none() {
+                    return header != t.header;
+                }
+                let aliases = self.rtt.iter().any(|(&other, candidate)| {
+                    other != t.header && overlaps(candidate.data, candidate.len())
+                });
+                return aliases || !self.rtt_lazy()
+                    || sample_sign.is_some_and(|bits| bits & COLOR_SIGN_MASK != 0)
+                    || t.header == self.render_target
+                    || start != Some(u64::from(level.data))
+                    || !desc.as_ref().is_some_and(|d| {
+                        d.kind == gfx::texture::TextureKind::D2 && d.levels == 1
+                            && matches!(d.format, D3DFormat::A8R8G8B8 | D3DFormat::LinA8R8G8B8)
+                            && (d.width, d.height, d.format) == (level.width, level.height, level.format)
+                            && (d.format.layout() == gfx::format::Layout::Swizzled
+                                || level.layout == GuestLayoutKind::Linear { pitch: d.pitch.max(d.width * 4) })
+                    });
+            }
+            // A frame-buffer sample makes an immediate snapshot: it must
+            // see any queued draw into that memory before the snapshot.
+            let base = self.cfg.address_map.to_virtual(current.resource.data);
+            sample_sign.is_some() && overlaps(base, FRAME_DATA_SPAN)
+        });
+        if conflicts {
+            self.swallow_abort(SwallowRefusal::Resource, || format!("resource {header:#010x} needs the original post pixels"))?;
+        }
+        Ok(())
+    }
+
+    fn swallow_target_switch(
+        &mut self,
+        mem: &dyn GuestMemory,
+        target: u32,
+        depth: u32,
+    ) -> Result<(), D3dError> {
+        if self.swallowing.is_none() {
+            return Ok(());
+        }
+        if target != self.render_target && !self.rtt_lazy() && self.rtt.contains_key(&self.render_target) {
+            self.swallow_abort(SwallowRefusal::Dependency, || "target switch writes back the original post pixels".into())?;
+        }
+        self.swallow_resource(mem, target, None)?;
+        self.swallow_resource(mem, depth, None)
+    }
+
+    fn swallow_before_destroy(&mut self, header: u32) -> Result<(), D3dError> {
+        let uses_resource = self.swallowing.as_ref().is_some_and(|s| {
+            s.surfaces.iter().flatten().any(|t| {
+                t.header == header || self.rtt.get(&t.header).is_some_and(|level| level.parent == header)
+            })
+        });
+        if uses_resource {
+            self.swallow_abort(SwallowRefusal::Dependency, || format!("post draw resource {header:#010x} is being destroyed"))?;
+        }
+        Ok(())
+    }
+
+    /// The last draw pins the main attachment and viewport, even if the
+    /// guest's tail has since restored other targets or viewport state.
+    fn swallow_commit(&mut self, mem: &mut dyn GuestMemory) -> Result<(), D3dError> {
+        use crate::{ExternalPlan, ExternalSlot, ExternalSurfaces, TargetCopy};
+        use timeline::native::{Metric, Stage};
+
+        let s = self.swallowing.as_ref().expect("post call at return");
+        if s.last.is_none() || (s.plan.drop && s.packets.len() != s.plan.targets.len()) {
+            return self.swallow_abort(SwallowRefusal::Shape, || "post call did not resolve all its draws".into());
+        }
+        if s.plan.drop {
+            for target in s.surfaces.iter().flatten() {
+                let live = if let Some(level) = self.rtt.get(&target.header) {
+                    // A screen effect restores the guest size words on its
+                    // way out. Check the actual host level it drew into.
+                    level.surface == target.surface && level.identity == target.identity
+                } else {
+                    PixelContainer::read(mem, target.header).is_ok_and(|pc| pc.identity() == target.identity)
+                };
+                if !live {
+                    return self.swallow_abort(SwallowRefusal::Resource, || "post target changed before return".into());
+                }
+            }
+            let originals: Vec<_> = s.packets.iter().map(|p| SwallowOriginal { draw: &p.draw, source_data: p.source_data, sampled: p.sampled }).collect();
+            let slots: Vec<_> = s.surfaces.iter().map(|slot| slot.map(|t| SwallowTarget {
+                data: self.cfg.address_map.to_virtual(t.identity[0]),
+                size: t.size,
+            })).collect();
+            if let Err(detail) = s.plan.pass.validate(&originals, &slots) {
+                return self.swallow_abort(SwallowRefusal::Resource, || detail);
+            }
+        }
+        let mut s = self.swallowing.take().expect("post call");
+        let capture = s.plan.pass.after_commit();
+        let (color, request) = s.last.expect("the matched call drew");
+        let mut pass: Box<dyn crate::backend::ExternalPass> = s.plan.pass;
+        pass.view_constants(&std::array::from_fn(|r| self.constant(r)));
+        pass.depth_clip(self.depth_clip(mem, request.z_scale));
+
+        if !s.plan.drop {
+            match self.backend.external_pass(color, color, Vec::new(), request, pass) {
+                Ok(true) => self.stats.external_passes += 1,
+                Ok(false) => self.refuse_external(ExternalRefusal::Backend),
+                Err(_) => self.refuse_external(ExternalRefusal::Failed),
+            }
+            return Ok(());
+        }
+
+        let plan = ExternalPlan {
+            stage: Stage::Post,
+            view: u32::MAX,
+            ranges: s.packets.len(),
+            slots: s.surfaces.iter().map(|slot| slot.map(|slot| ExternalSlot { header: slot.header, written: true })).collect(),
+        };
+        let surfaces = ExternalSurfaces {
+            color,
+            depth: color,
+            sampled: Vec::new(),
+            slots: s.surfaces.iter().map(|slot| slot.map(|t| t.surface)).collect(),
+            slot_sizes: s.surfaces.iter().map(|slot| slot.map(|t| t.size)).collect(),
+        };
+        let recordings = self.backend.prepare_external(
+            surfaces, request, [None; 4], &plan, TargetCopy::Reference,
+            Arc::new(std::sync::Mutex::new(pass)),
+        );
+        if let Ok(Some(recordings)) = recordings
+            && complete_recordings(&plan, &recordings)
+        {
+            for recording in recordings {
+                Stage::Post.recorded(plan.view, recording.copy == TargetCopy::Display, recording.ranges);
+                self.backend.commit_external(recording);
+            }
+            Stage::Post.count(Metric::Suppressed, plan.ranges as u64);
+            self.stats.swallow_draws_dropped += plan.ranges as u64;
+            self.stats.swallow_commits += 1;
+            self.stats.external_passes += 1;
+            if let Some(capture) = capture {
+                let _ = self.backend.external_pass(color, color, Vec::new(), request, capture);
+            }
+            self.traced(|| Traced::Note(format!("post {:?}: committed {} draws", s.plan.call, plan.ranges)));
+            for packet in s.packets {
+                self.recycle_streams(packet.draw.streams);
+                for (key, texture) in packet.cached {
+                    self.cache.entry(key).or_insert(texture);
+                }
+            }
+            return Ok(());
+        }
+        self.swallow_refused(SwallowRefusal::Encode);
+        self.swallow_mismatch = Some("native encoding refused a live target copy".into());
+        self.refuse_external(ExternalRefusal::Backend);
+        self.traced(|| Traced::Note(format!("post {:?}: native encode refused, replaying {} draws", s.plan.call, plan.ranges)));
+        self.swallow_replay(s.packets)
+    }
+
+    /// Pins the packet's exact bindings. Static textures leave the cache
+    /// while held so later cache replacements cannot invalidate them.
+    fn swallow_hold(&mut self, mut packet: SwallowPacket<B>) {
+        for key in packet.keys.iter().flatten().copied() {
+            if let Some(texture) = self.cache.remove(&key) {
+                packet.cached.insert(key, texture);
+            }
+        }
+        let s = self.swallowing.as_mut().expect("matching packet");
+        s.holding = false;
+        s.packets.push(packet);
     }
 
     /// Counts and logs (once per reason) a pass not issued.
@@ -2392,6 +2789,7 @@ impl<B: Backend> Device<B> {
                             self.push_slot(mem, slot, w)?;
                         }
                         None if m == crate::hw::method::CLEAR_REPORT_VALUE => {
+                            self.swallow_abort(SwallowRefusal::Dependency, || "pixel report interrupted the post call".into())?;
                             self.clear_report(c.at, w)?;
                             self.stats.hw_methods += 1;
                         }
@@ -2784,6 +3182,7 @@ impl<B: Backend> Device<B> {
                 format!("{header:#010x} is not a title resource"),
             ));
         }
+        self.swallow_before_destroy(header)?;
         // A level drawn into keeps its pixels in the parent's texels, and
         // so do the bytes the alias mirror holds over it.
         let spans: Vec<(u64, u64)> = self
@@ -3631,6 +4030,7 @@ impl<B: Backend> Device<B> {
         target: u32,
         z_stencil: u32,
     ) -> Result<(), D3dError> {
+        self.swallow_target_switch(mem, target, z_stencil)?;
         self.surface_for(mem, entry, target, false)?;
         if z_stencil != 0 {
             self.surface_for(mem, entry, z_stencil, true)?;
@@ -4506,10 +4906,17 @@ impl<B: Backend> Device<B> {
         streams: &mut Vec<StreamBytes>,
     ) -> Result<(), D3dError> {
         let entry = parts.entry;
+        if self.swallowing.as_ref().is_some_and(|s| !s.holding)
+            && !matches!(entry, "inline Begin/End" | "D3DDevice_End")
+        {
+            self.swallow_abort(SwallowRefusal::Shape, || format!("{entry} drew during the post call"))?;
+        }
         if parts.vertex_count == 0 {
+            self.swallow_abort(SwallowRefusal::Shape, || "empty post draw".into())?;
             return Ok(());
         }
         let Some((clip, clip_rects)) = self.draw_clip(mem)? else {
+            self.swallow_abort(SwallowRefusal::Shape, || "post draw clipped away".into())?;
             // The viewport and scissors leave nothing to draw into.
             return Ok(());
         };
@@ -4530,6 +4937,9 @@ impl<B: Backend> Device<B> {
         for stage in 0..4 {
             let header = self.textures[stage];
             if header != 0 {
+                if self.swallowing.is_some() {
+                    self.swallow_resource(mem, header, Some(extras[stage].color_sign))?;
+                }
                 match self.frame_texture(mem, header, sampled[stage], extras[stage].color_sign)? {
                     FrameTexture::No => {}
                     FrameTexture::Snapshot(info, t) => {
@@ -4547,6 +4957,7 @@ impl<B: Backend> Device<B> {
                         continue;
                     }
                     FrameTexture::Skip(reason) if sampled[stage] => {
+                        self.swallow_abort(SwallowRefusal::Resource, || "post draw's sampled frame texture is unavailable".into())?;
                         self.stats.draws += 1;
                         self.events.push(Event::DrawSkipped { entry, reason });
                         return Ok(());
@@ -4585,6 +4996,7 @@ impl<B: Backend> Device<B> {
                 }
             }
         }
+        self.swallow_target_switch(mem, self.render_target, self.depth_stencil)?;
         let target = self.target_info(mem)?;
         let (color, depth) = self.current_targets(mem, entry)?;
         let writes_depth = writes_depth_or_stencil(&state.render, target.depth_format);
@@ -4614,6 +5026,32 @@ impl<B: Backend> Device<B> {
             texture_info,
             glyph_cache,
         };
+        self.swallow_target(mem, color, &draw)?;
+        if self.swallowing.as_ref().is_some_and(|s| s.holding) {
+            if writes_depth || draw.hw.zpass_count_enable || !draw.state.bad.is_empty()
+                || self.depth_color.is_some_and(|c| c.header == self.render_target)
+                || (depth.is_some()
+                    && (draw.state.render.depth_mode != gfx::state::DepthBufferMode::Disabled
+                        || draw.state.render.stencil.enable))
+                || aliases.iter().any(Option::is_some) || depth_levels.iter().any(Option::is_some)
+            {
+                self.swallow_abort(SwallowRefusal::Dependency, || "post draw has depth or pixel-count dependencies".into())?;
+            } else {
+                // Track dirty levels at the original point in the
+                // stream. Either the replacement or replay writes them.
+                self.mark_written(false);
+                let source_data = std::array::from_fn(|stage| {
+                    if !sampled[stage] { return None; }
+                    let header = draw.textures[stage]?;
+                    let tex = PixelContainer::read(mem, header).ok()?;
+                    Some(self.cfg.address_map.to_virtual(tex.resource.data))
+                });
+                self.swallow_hold(SwallowPacket {
+                    color, depth, draw, source_data, sampled, snapshots, keys, cached: HashMap::default(),
+                });
+                return Ok(());
+            }
+        }
         let textures: [Option<&B::Texture>; 4] = std::array::from_fn(|i| {
             snapshots[i]
                 .as_ref()
@@ -4980,11 +5418,7 @@ impl<B: Backend> Device<B> {
         self.swallow_immediate(mem, E, d, None).map(|_| ())
     }
 
-    /// An immediate-mode draw, pushed (`push` the address of its `End`) or
-    /// through the `D3DDevice_End` entry (`0x0002d140` draws its strips
-    /// so), under the armed swallow ([`Device::swallow`]): drawn unless
-    /// the pass drops it, then the swallow advanced if it was the pass's.
-    /// Whether it was drawn.
+    /// Handles both pushed draws and strips ended by D3DDevice_End.
     fn swallow_immediate(
         &mut self,
         mem: &mut dyn GuestMemory,
@@ -4993,25 +5427,27 @@ impl<B: Backend> Device<B> {
         push: Option<u32>,
     ) -> Result<bool, D3dError> {
         let armed = self.swallowing.is_some();
-        let fate = self.swallow_fate(&d);
+        let fate = self.swallow_fate(&d, push.is_some())?;
         if self.trace.is_some() {
             let name = match fate {
-                Fate::Dropped => "dropped",
+                Fate::Held => "held",
                 Fate::Observed => "observed",
                 Fate::Drawn if armed => "mismatch",
                 Fate::Drawn => "drawn",
             };
-            let (p, v, i) = (d.primitive, d.vertices.len(), d.inline.len());
-            self.trace_draw(entry, p, v, i, push, Some(name));
+            self.trace_draw(entry, d.primitive, d.vertices.len(), d.inline.len(), push, Some(name));
         }
-        let drawn = fate != Fate::Dropped;
-        if drawn {
-            self.immediate_draw(mem, entry, d)?;
+        let result = self.immediate_draw(mem, entry, d);
+        if result.is_err() {
+            self.swallow_abort(SwallowRefusal::Dependency, || "resolving an original draw failed".into())?;
         }
-        if fate != Fate::Drawn {
-            self.swallow_advance(mem);
+        result?;
+        if let Some(s) = self.swallowing.as_mut()
+            && fate != Fate::Drawn
+        {
+            s.next += 1;
         }
-        Ok(drawn)
+        Ok(fate != Fate::Held || self.swallowing.is_none())
     }
 
     /// Turns an assembled immediate-mode primitive into a draw, against the

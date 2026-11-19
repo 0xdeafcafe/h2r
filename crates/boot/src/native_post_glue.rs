@@ -3,52 +3,11 @@
 //! runs it, with its quads dropped on the device and the native glow
 //! drawn in place of the last.
 //!
-//! At the call's entry ([`feature::native_post`]) the host plans the glow
-//! from its seven words ([`plan`]: `engine::colour_pass::parameters`, the
-//! three combiner blocks and the blur's steps from `engine::glow`, each
-//! bit-equal to the lifted original, and `native_render::glow`'s frame
-//! words), then arms `d3d::Device::swallow` with one entry per quad
-//! ([`targets`]): a four-vertex fan into the view's target (slot 0, bound
-//! at the call), target 7 (slot 1) or target 8 (slot 2). The device drops
-//! exactly those and issues the glow ([`native_render::glow::GpuGlow`])
-//! after the last. A quad the plan does not have ends the swallow: it and
-//! the rest are drawn by the D3D path and the glow is not; the host then
-//! logs it and keeps every later call on the D3D path. Anything it cannot
-//! plan (a copy after the blur, a target it does not know) is not armed.
-//!
-//! The glow and the A/B's capture are colour-only passes (the composite
-//! binds no depth). Nothing is dropped before the glow is known to draw:
-//! the device refuses to arm a drop when the pass could not be issued (no
-//! GPU backend, no colour target; counted and logged once per reason), and
-//! the host first observes one call with a [`Probe`] that checks, on the
-//! GPU's thread, that the glow would draw into the target it gets
-//! (`native_render::glow::check`). Only then are quads dropped. A glow
-//! refused after that (a target it cannot sample) keeps every later call
-//! on the D3D path; that frame's glow is missing.
-//!
-//! The scenario's screen effects (`0x0002d140`, one call per entry that
-//! draws): each call is planned (`engine::screen_effect::plan`, bit-equal
-//! to the lifted original) and refused per reason ([`Missing`]) until
-//! every piece it needs draws natively: the blur's and `0x00021360`'s
-//! convolutions through the glow machinery (the latter's grids made by
-//! `engine::screen_grid`), a last pass into target 1, and stand-ins for
-//! targets `0x19` to `0x1b`. The layer-15 template pass is missing only for a
-//! pass whose program did not load with the map (`native_post_load`,
-//! run by this glue at the first call on a map: [`EffectsSlot`]), that samples an engine texture the native pass
-//! does not supply ([`pass_drawable`]), or in a call that reads target 1
-//! before drawing it ([`call_ordered`]); it draws through
-//! `native_render::screen_gpu`, into the bound target or a stand-in for
-//! target 1 ([`dest`]). A call with nothing missing is armed as the glow
-//! is: one swallow of its strips (every strip a triangle strip of twice
-//! the columns, [`SLOT_BOUND`] the target the pass binds and
-//! [`SLOT_TARGET1`] target 1, never slot 0), a [`ScreenProbe`] first for
-//! each plan (observed, nothing dropped), then the [`ScreenPass`] in place
-//! of the strips; a swallow that ends early keeps every later call of
-//! that egor on the D3D path, the device's account of it logged. The stand-ins are missing only for a call with a drawn
-//! convolution (the end of the call draws nothing: [`missing`]), so a
-//! call of passes into the bound target with nothing convolved
-//! (`desaturate`'s shape) is armed with the switch on; each reason the
-//! rest are refused for is counted and logged once.
+//! Entry hooks plan the guest's glow and screen draws. The device retains
+//! their original packets through the call's return, then either commits
+//! a complete native recording on every live copy or replays the packets.
+//! Each native pass uses the original targets' live attachments and
+//! formats. The checks run on every call, including after a map reload.
 //!
 //! The frame A/B, behind `H2_POST_AB=<dir>` ([`Ab`]): the view's colour
 //! where the glow lands (after the composite, before the screen effects,
@@ -64,15 +23,16 @@
 
 use std::io::BufReader;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::time::{Duration, Instant};
 
 use engine::colour_pass;
 use engine::glow::{self as game_glow, BlurArgs, WideArgs, WideDraw};
 use engine::memory::GuestMemory;
 use engine::screen_effect::{self, Convolution, Effect};
 use engine::screen_grid::{self, Grid};
-use feature::native_post::{self as post_feature, Fp, Host, ScreenEffect};
+use feature::native_post::{self as post_feature, CallSite, Fp, Host, PostCall, ScreenEffect};
 use gfx::vertex::PrimitiveType;
 use map::{Map, ResourceFile, TagId};
 use native_render::camera::GuestRead;
@@ -536,113 +496,205 @@ pub fn screen_swallow(call: &ScreenCall) -> Option<SwallowPlan> {
     Some(draws.into_iter().unzip())
 }
 
-/// The native screen effect, in place of a call's strips.
+/// The direct D3DDevice_End at the end of a layer-15 strip.
+const SCREEN_STRIP_END: u32 = 0x0002_d8b2;
+
+fn screen_end_returns(call: &ScreenCall) -> Vec<Option<u32>> {
+    let mut returns = Vec::new();
+    for (_, _, strips, convolutions) in &call.passes {
+        returns.extend(std::iter::repeat_n(Some(SCREEN_STRIP_END), strips.len()));
+        for draw in convolutions.iter().flat_map(|c| &c.draws) {
+            let count = draw.grid.as_ref().map_or(1, |g| g.strips.len());
+            returns.extend(std::iter::repeat_n(None, count));
+        }
+    }
+    returns
+}
+
+fn target_header(mem: &dyn GuestMemory, index: u32) -> Option<u32> {
+    let addr = glow::TARGETS.checked_add(index.checked_mul(glow::TARGET_STRIDE)?)?;
+    mem.u32(addr + 0x88).ok().filter(|&h| h != 0)
+}
+
+fn slot<'a>(target: &d3d::ExternalTarget<'a>, slot: usize) -> Option<&'a d3d::ExternalColor> {
+    target.slots.get(slot)?.as_ref()
+}
+
+fn call_entry(kind: PostCall) -> u32 {
+    match kind {
+        PostCall::Colour => 0x0002_14f0,
+        PostCall::Screen => 0x0002_d140,
+    }
+}
+
+fn swallow_call(site: CallSite) -> d3d::SwallowCall {
+    d3d::SwallowCall { entry: call_entry(site.kind), esp: site.esp, ret: site.ret }
+}
+
+type ScreenCache = Arc<Mutex<(Weak<ScreenEffects>, ScreenSet)>>;
+
 struct ScreenPass {
     effects: Arc<ScreenEffects>,
     call: ScreenCall,
-    screens: Arc<Mutex<(usize, ScreenSet)>>,
+    screens: ScreenCache,
 }
 
-impl d3d::ExternalPass for ScreenPass {
-    fn colour_only(&self) -> bool {
-        true
+impl ScreenPass {
+    fn effect(&self, key: ScreenKey) -> Option<&native_render::screen_look::ScreenProgram> {
+        self.effects.program(self.call.egor, key.1, key.2)
     }
 
-    fn encode(&mut self, mut t: d3d::ExternalTarget<'_>) {
+    fn record(&self, t: d3d::ExternalTarget<'_>) -> Result<usize, screen_gpu::ScreenRefused> {
         let mut screens = self.screens.lock().unwrap_or_else(|e| e.into_inner());
-        // A new map's effects: the passes made for the last are stale.
-        let epoch = Arc::as_ptr(&self.effects) as usize;
-        if screens.0 != epoch {
+        if !screens.0.ptr_eq(&Arc::downgrade(&self.effects)) {
             screens.1.clear();
-            screens.0 = epoch;
+            screens.0 = Arc::downgrade(&self.effects);
         }
         let mut draws = Vec::new();
         for (key, dest, strips, convolutions) in &self.call.passes {
-            let Some(program) = self.effects.program(self.call.egor, key.1, key.2) else {
-                screen_refused(self.call.egor, &screen_gpu::ScreenRefused::NoProgram);
-                return;
-            };
-            let values = self.call.values;
-            draws.push(ScreenDraw { key: *key, program, strips, dest: *dest, values, convolutions });
+            let program = self.effect(*key).ok_or(screen_gpu::ScreenRefused::NoProgram)?;
+            draws.push(ScreenDraw { key: *key, program, strips, dest: *dest, values: self.call.values, convolutions });
         }
         let images = &self.effects.images;
-        let mut stage_image = |s: ScreenStage| match s {
+        let mut stage_image = |stage| match stage {
             ScreenStage::Bitmap { bitmap, image } => images.get(&(bitmap, image)).cloned(),
             _ => None,
         };
+        let bound = slot(&t, SLOT_BOUND as usize).ok_or(screen_gpu::ScreenRefused::Attachment(0))?;
+        let target1 = slot(&t, SLOT_TARGET1 as usize).map(|s| &s.attachment);
+        let convolutions = std::array::from_fn(|i| slot(&t, usize::from(SLOT_STAND_INS) + i).map(|s| &s.attachment));
         let target = ScreenTarget {
             device: t.device,
             queue: t.queue,
-            encoder: &mut *t.encoder,
-            color: t.color,
-            color_format: t.color_format,
-            guest_size: t.guest_size,
-            size: t.size,
+            encoder: t.encoder,
+            color: &bound.attachment,
+            target1,
+            convolutions,
+            guest_size: bound.guest_size,
+            size: bound.size,
             z_scale: t.z_scale,
         };
-        if let Err(r) = screens.1.encode(target, &draws, self.call.frame.as_ref(), &mut stage_image) {
-            screen_refused(self.call.egor, &r);
-        }
+        screens.1.encode(target, &draws, self.call.frame.as_ref(), &mut stage_image)
     }
 }
 
-/// Screen effect `egor` not drawn after its strips were dropped: that
-/// frame's is missing, and its later calls keep the D3D path.
-fn screen_refused(egor: TagId, r: &screen_gpu::ScreenRefused) {
-    if !SCREEN_REFUSAL_LOGGED.swap(true, Ordering::Relaxed) {
-        eprintln!(
-            "native-post: the screen effect {:#010x} was not drawn: {r:?}; this frame's is missing, its later calls keep the D3D path (logged once)",
-            egor.0
-        );
-    }
-    fall_back(egor);
-}
+impl d3d::ExternalPass for ScreenPass {
+    fn colour_only(&self) -> bool { true }
 
-/// Before any strip is dropped: whether each pass of the call would draw
-/// into the target its strips went to (all drawn by D3D).
-struct ScreenProbe {
-    effects: Arc<ScreenEffects>,
-    call: ScreenCall,
-    /// The swallow it observed, what a pass it proves is dropped for.
-    plan: SwallowPlan,
-}
+    // Only prepared recordings can replace a screen call.
+    fn encode(&mut self, _: d3d::ExternalTarget<'_>) {}
 
-impl d3d::ExternalPass for ScreenProbe {
-    fn colour_only(&self) -> bool {
-        true
-    }
-
-    fn encode(&mut self, t: d3d::ExternalTarget<'_>) {
-        let mut ordered = Vec::new();
-        let checked = self.call.passes.iter().try_for_each(|(key, dest, _, convolutions)| {
-            let program = self.effects.program(self.call.egor, key.1, key.2).ok_or(screen_gpu::ScreenRefused::NoProgram)?;
-            ordered.push((program, *dest, &convolutions[..]));
-            screen_gpu::check(t.color, program)
-        });
-        let checked = checked
-            .and_then(|()| screen_gpu::check_order(ordered.iter().copied()))
-            .and_then(|()| {
-                let frame = self.call.frame.as_ref();
-                screen_gpu::check_convolutions(t.color, frame, ordered.iter().map(|(p, _, c)| (*p, *c)))
-            });
-        match checked {
-            Ok(()) => {
-                if prove(self.call.egor, std::mem::take(&mut self.plan)) {
-                    eprintln!(
-                        "native-post: the screen effect {:#010x} can draw into the bound target; its strips are dropped from its next call",
-                        self.call.egor.0
-                    );
-                }
-            }
-            Err(r) => {
-                if fall_back(self.call.egor) {
-                    eprintln!(
-                        "native-post: the screen effect {:#010x} cannot draw into the bound target: {r:?}; it keeps its D3D strips",
-                        self.call.egor.0
-                    );
-                }
+    fn record_ranges(&mut self, t: d3d::ExternalTarget<'_>) -> usize {
+        match self.record(t) {
+            Ok(count) => count,
+            Err(error) => {
+                log_rejection(|| format!("screen effect {:#010x} on live target: {error:?}", self.call.egor.0));
+                0
             }
         }
+    }
+}
+
+impl d3d::SwallowPass for ScreenPass {
+    fn validate(&self, originals: &[d3d::SwallowOriginal<'_>], slots: &[Option<d3d::SwallowTarget>]) -> Result<(), String> {
+        let mut originals = originals.iter();
+        let mut drawn = screen_gpu::Drawn::default();
+        for (key, dest, strips, convolutions) in &self.call.passes {
+            let program = self.effect(*key).ok_or("missing screen program")?;
+            let reads = drawn.reads(program, *dest).map_err(|e| format!("{e:?}"))?;
+            for _ in strips {
+                let original = originals.next().ok_or("missing screen strip")?;
+                let draw = original.draw;
+                let state = &draw.state.render;
+                if !matches_colour_state(draw, program.state.blend, program.state.color_writes, program.state.alpha_test)
+                    || (state.blend_enable && gfx::translate::blend_constant(state) != program.state.blend_constant)
+                {
+                    return Err(format!("screen effect {:#010x}: live strip colour state differs from its program", self.call.egor.0));
+                }
+                for (stage, source) in reads.iter().enumerate() {
+                    if let Some(index) = source {
+                        check_source(original, stage, screen_slot(*index), slots)?;
+                    }
+                }
+            }
+            for q in convolutions.iter().flat_map(|c| &c.draws) {
+                for _ in 0..q.grid.as_ref().map_or(1, |g| g.strips.len()) {
+                    let original = originals.next().ok_or("missing convolution draw")?;
+                    if !matches_colour_state(original.draw, None, wgpu::ColorWrites::ALL, None) {
+                        return Err(format!("screen effect {:#010x}: live convolution colour state differs", self.call.egor.0));
+                    }
+                    for stage in 0..4 {
+                        if original.sampled[stage] {
+                            check_source(original, stage, screen_slot(q.source), slots)?;
+                        }
+                    }
+                }
+            }
+            drawn.pass(program, *dest, convolutions).map_err(|e| format!("{e:?}"))?;
+        }
+        Ok(())
+    }
+}
+
+fn screen_slot(target: u32) -> Option<u8> {
+    match target {
+        0 => Some(SLOT_BOUND),
+        1 => Some(SLOT_TARGET1),
+        _ => screen_gpu::stand_in(target).map(|i| SLOT_STAND_INS + i as u8),
+    }
+}
+
+fn check_source(
+    original: &d3d::SwallowOriginal<'_>,
+    stage: usize,
+    slot: Option<u8>,
+    slots: &[Option<d3d::SwallowTarget>],
+) -> Result<(), String> {
+    let target = slot.and_then(|i| slots.get(usize::from(i))).copied().flatten();
+    let info = original.draw.texture_info[stage];
+    let extras = original.draw.extras[stage];
+    if let (Some(target), Some(info)) = (target, info)
+        && original.source_data[stage] == Some(target.data)
+        && target.size == (info.width, info.height)
+        && info.levels == 1
+        && extras.color_key_op == 0
+        && extras.color_sign == 0
+        && extras.alpha_kill == 0
+        && matches!(info.format, gfx::D3DFormat::LinA8R8G8B8 | gfx::D3DFormat::A8R8G8B8)
+    {
+        return Ok(());
+    }
+    Err(format!("live source for stage {stage} differs from post slot {slot:?} ({info:?})"))
+}
+
+fn matches_colour_state(
+    draw: &d3d::ResolvedDraw,
+    blend: Option<wgpu::BlendState>,
+    writes: wgpu::ColorWrites,
+    alpha: Option<(wgpu::CompareFunction, u8)>,
+) -> bool {
+    use gfx::state::{CompareFunc, CullMode, FillMode};
+    let state = &draw.state.render;
+    let live_alpha = (state.alpha_test_enable && state.alpha_func != CompareFunc::Always)
+        .then(|| (gfx::translate::compare_function(state.alpha_func), state.alpha_ref));
+    gfx::translate::blend_state(state) == blend
+        && gfx::translate::color_writes(state.color_write) == writes
+        && live_alpha == alpha
+        && state.cull_mode == CullMode::None
+        && state.fill_mode == FillMode::Solid
+        && state.back_fill_mode == FillMode::Solid
+        && !state.fog_enable
+        && draw.clip_rects.is_empty()
+        && draw.clip.is_some_and(|c| c.is_whole(draw.target.width, draw.target.height))
+}
+
+fn log_rejection(detail: impl FnOnce() -> String) {
+    static LOGGED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    let mut logged = LOGGED.lock().unwrap_or_else(|e| e.into_inner());
+    let detail = detail();
+    if logged.len() < 32 && !logged.contains(&detail) {
+        eprintln!("native-post: {detail}. Using the D3D draws.");
+        logged.push(detail);
     }
 }
 
@@ -756,115 +808,20 @@ pub fn effect_line(call: ScreenEffect, ret: u32) -> String {
     )
 }
 
-/// A set of egors, noted once each.
-pub struct Egors(Mutex<Vec<TagId>>);
-
-impl Egors {
-    pub const fn new() -> Self {
-        Egors(Mutex::new(Vec::new()))
-    }
-
-    pub fn contains(&self, egor: TagId) -> bool {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).contains(&egor)
-    }
-
-    /// Notes `egor`; whether it was not noted before.
-    pub fn insert(&self, egor: TagId) -> bool {
-        let mut v = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        let new = !v.contains(&egor);
-        if new {
-            v.push(egor);
-        }
-        new
-    }
-}
-
-/// The egors whose swallow ended early or whose pass cannot draw: their
-/// later calls keep the D3D path, each on its own (a refused blur leaves
-/// desaturate armed).
-static SCREEN_FELL_BACK: Egors = Egors::new();
-/// The egors a [`ScreenProbe`] found draw into the bound target, each
-/// with the plan of the call it probed: one effect's passes prove nothing
-/// of another's, and one call's shape nothing of another's (the UI's
-/// calls take 3 x 3 corners, `render_screen_effects`' 2 x 2), so a call
-/// whose plan was not probed is probed first, never dropped.
-static SCREEN_PROVED: Proofs = Proofs::new();
-
-/// Egors, each with the swallow plans proved for it.
-pub struct Proofs(Mutex<Vec<(TagId, SwallowPlan)>>);
-
-impl Proofs {
-    pub const fn new() -> Self {
-        Proofs(Mutex::new(Vec::new()))
-    }
-
-    pub fn contains(&self, egor: TagId, plan: &SwallowPlan) -> bool {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|(e, p)| *e == egor && p == plan)
-    }
-
-    /// Notes `plan` proved for `egor`; whether it was not before.
-    pub fn insert(&self, egor: TagId, plan: SwallowPlan) -> bool {
-        let mut v = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        let new = !v.iter().any(|(e, p)| *e == egor && *p == plan);
-        if new {
-            v.push((egor, plan));
-        }
-        new
-    }
-}
-/// The egor of the last screen swallow armed (its datum), what a
-/// mismatch after it is charged to.
-static LAST_SCREEN: AtomicU32 = AtomicU32::new(u32::MAX);
-/// Whether the last screen swallow armed dropped its strips.
-static LAST_SCREEN_DROP: AtomicBool = AtomicBool::new(false);
-/// The egors whose probe ended early, said once each.
-static PROBE_MISMATCH_LOGGED: Egors = Egors::new();
-
-/// A screen swallow for `egor` ended early (`dropped`: it dropped its
-/// strips). A probe dropped nothing, so only that call is lost to the
-/// proof: it stays unproved and its next call probes again. A drop lost
-/// that frame's strips: the egor keeps the D3D path from then. Whether
-/// it fell back (first time).
-fn screen_mismatch(egor: TagId, dropped: bool) -> bool {
-    dropped && fall_back(egor)
-}
-
-/// Whether `egor` was proved with `plan`.
-fn proved(egor: TagId, plan: &SwallowPlan) -> bool {
-    SCREEN_PROVED.contains(egor, plan)
-}
-
-/// Notes `egor` proved with `plan`; whether it was not before.
-fn prove(egor: TagId, plan: SwallowPlan) -> bool {
-    SCREEN_PROVED.insert(egor, plan)
-}
-
-/// Whether `egor` keeps the D3D path.
-fn fell_back(egor: TagId) -> bool {
-    SCREEN_FELL_BACK.contains(egor)
-}
-
-/// `egor`'s later calls keep the D3D path; whether they did not before.
-fn fall_back(egor: TagId) -> bool {
-    SCREEN_FELL_BACK.insert(egor)
-}
-static SCREEN_REFUSAL_LOGGED: AtomicBool = AtomicBool::new(false);
-/// Which hook armed the last swallow (a mismatch is that one's).
-static LAST_SWALLOW: AtomicU8 = AtomicU8::new(NONE_ARMED);
-const NONE_ARMED: u8 = 0;
-const GLOW_ARMED: u8 = 1;
-const SCREEN_ARMED: u8 = 2;
-
 /// The swallow's slot per quad: the view 0, target 7 1, target 8 2.
 pub fn targets(plan: &Plan) -> Vec<u8> {
     plan.draws
         .iter()
-        .map(|d| match d.dest {
-            Surface::View => 0,
-            Surface::Down => 1,
-            Surface::Other => 2,
-        })
+        .map(|d| glow_slot(d.dest))
         .collect()
+}
+
+fn glow_slot(surface: Surface) -> u8 {
+    match surface {
+        Surface::View => 0,
+        Surface::Down => 1,
+        Surface::Other => 2,
+    }
 }
 
 /// A quad of `0x00034420`: `D3DDevice_Begin(7)`, four vertices.
@@ -968,6 +925,9 @@ static READBACKS: Mutex<Vec<Readback>> = Mutex::new(Vec::new());
 fn capture(t: &mut d3d::ExternalTarget<'_>, stem: &str) {
     let Some(ab) = Ab::get() else { return };
     let texture = t.color.texture();
+    if !texture.usage().contains(wgpu::TextureUsages::COPY_SRC) {
+        return;
+    }
     let Some(bpp) = t.color_format.block_copy_size(None) else { return };
     let (w, h) = (texture.width(), texture.height());
     let padded = (w * bpp).div_ceil(256) * 256;
@@ -1063,43 +1023,60 @@ fn write(r: &Readback) -> Result<(), String> {
     Ok(())
 }
 
-/// The native glow, in place of the pass's last quad.
+/// The native glow, recorded against the call's view and blur levels.
 struct GlowPass {
     plan: Plan,
     gpu: Arc<Mutex<GpuGlow>>,
-    /// `Some(stem)`: capture after drawing.
-    capture: Option<String>,
+    capture: Option<CapturePass>,
 }
 
 impl d3d::ExternalPass for GlowPass {
-    fn colour_only(&self) -> bool {
-        true
-    }
+    fn colour_only(&self) -> bool { true }
 
-    fn encode(&mut self, mut t: d3d::ExternalTarget<'_>) {
-        pump(t.device);
-        let drawn = self.gpu.lock().unwrap_or_else(|e| e.into_inner()).encode(
+    fn encode(&mut self, _: d3d::ExternalTarget<'_>) {}
+
+    fn record_ranges(&mut self, t: d3d::ExternalTarget<'_>) -> usize {
+        let intermediates = [1, 2].map(|i| slot(&t, i).map(|s| &s.attachment));
+        let result = self.gpu.lock().unwrap_or_else(|e| e.into_inner()).encode(
             GlowTarget {
                 device: t.device,
                 queue: t.queue,
-                encoder: &mut *t.encoder,
+                encoder: t.encoder,
                 color: t.color,
-                color_format: t.color_format,
+                intermediates,
                 guest_size: t.guest_size,
                 size: t.size,
             },
             &self.plan,
         );
-        if let Err(r) = drawn {
-            GLOW_REFUSED.fetch_add(1, Ordering::Relaxed);
-            if !GLOW_REFUSAL_LOGGED.swap(true, Ordering::Relaxed) {
-                eprintln!("native-post: the glow was not drawn: {r:?}; this frame's glow is missing, later calls keep the D3D path (logged once)");
+        match result {
+            Ok(()) => self.plan.draws.len(),
+            Err(error) => {
+                log_rejection(|| format!("glow on live target: {error:?}"));
+                0
             }
-            FELL_BACK.store(true, Ordering::Relaxed);
         }
-        if let Some(stem) = &self.capture {
-            capture(&mut t, stem);
+    }
+}
+
+impl d3d::SwallowPass for GlowPass {
+    fn validate(&self, originals: &[d3d::SwallowOriginal<'_>], slots: &[Option<d3d::SwallowTarget>]) -> Result<(), String> {
+        for (original, want) in originals.iter().zip(&self.plan.draws) {
+            let blend = want.blend.map(Blend::state);
+            if !matches_colour_state(original.draw, blend, wgpu::ColorWrites::ALL, None) {
+                return Err(format!("glow into {:?}: live quad colour state differs", want.dest));
+            }
+            for stage in 0..4 {
+                if original.sampled[stage] {
+                    check_source(original, stage, want.stages[stage].map(glow_slot), slots)?;
+                }
+            }
         }
+        Ok(())
+    }
+
+    fn after_commit(&mut self) -> Option<Box<dyn d3d::ExternalPass>> {
+        self.capture.take().map(|pass| Box::new(pass) as Box<dyn d3d::ExternalPass>)
     }
 }
 
@@ -1119,48 +1096,11 @@ impl d3d::ExternalPass for CapturePass {
     }
 }
 
-/// Before any quad is dropped: whether the glow would draw into the
-/// target this call's quads went to (observed, all drawn by D3D). Proved,
-/// later calls drop their quads; refused, they keep them.
-struct Probe {
-    plan: Plan,
-    capture: Option<String>,
-}
+impl d3d::SwallowPass for CapturePass {}
 
-impl d3d::ExternalPass for Probe {
-    fn colour_only(&self) -> bool {
-        true
-    }
-
-    fn encode(&mut self, mut t: d3d::ExternalTarget<'_>) {
-        pump(t.device);
-        match glow::check(t.color, t.guest_size, &self.plan) {
-            Ok(()) => {
-                if !PROVED.swap(true, Ordering::Relaxed) {
-                    eprintln!("native-post: the glow can draw into the view's target; its quads are dropped from the next call");
-                }
-            }
-            Err(r) => {
-                if !FELL_BACK.swap(true, Ordering::Relaxed) {
-                    eprintln!("native-post: the glow cannot draw into the view's target: {r:?}; the colour pass keeps its D3D quads");
-                }
-            }
-        }
-        if let Some(stem) = &self.capture {
-            capture(&mut t, stem);
-        }
-    }
-}
-
-static GLOW_REFUSED: AtomicU64 = AtomicU64::new(0);
-static GLOW_REFUSAL_LOGGED: AtomicBool = AtomicBool::new(false);
-static PLAN_LOGGED: AtomicBool = AtomicBool::new(false);
-/// A swallow ended early, or the glow cannot draw: later calls keep the
-/// D3D path.
-static FELL_BACK: AtomicBool = AtomicBool::new(false);
-/// A [`Probe`] found the glow draws into the view's target.
-static PROVED: AtomicBool = AtomicBool::new(false);
-static NO_GPU_LOGGED: AtomicBool = AtomicBool::new(false);
+static GLOW_PLAN_REFUSED: AtomicU64 = AtomicU64::new(0);
+static SCREEN_PLAN_REFUSED: AtomicU64 = AtomicU64::new(0);
+const SUMMARY_PERIOD: Duration = Duration::from_secs(5);
 
 struct Glue<B: d3d::backend::Backend + Send + 'static> {
     device: d3d::abi::SharedDevice<B>,
@@ -1168,76 +1108,81 @@ struct Glue<B: d3d::backend::Backend + Send + 'static> {
     /// The current map's screen effects, loaded here whatever the native
     /// world does ([`EffectsSlot`]).
     effects: Arc<Mutex<EffectsSlot>>,
-    /// The screen passes on the GPU, with the address of the effects they
-    /// were made for.
-    screens: Arc<Mutex<(usize, ScreenSet)>>,
+    screens: ScreenCache,
     calls: AtomicU64,
-    mismatches: AtomicU64,
+    summary: Mutex<Option<Instant>>,
+    glow_commits: AtomicU64,
+    screen_commits: AtomicU64,
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
-    fn colour_pass(&self, mem: &mut dyn GuestMemory, args: [u32; 7], fp: Fp, native: bool) -> bool {
+    fn colour_pass(&self, mem: &mut dyn GuestMemory, site: CallSite, args: [u32; 7], fp: Fp, native: bool) -> bool {
         self.trace_end();
         let call = self.calls.fetch_add(1, Ordering::Relaxed) + 1;
         let ab = Ab::get();
-        let capturing = ab.is_some_and(|a| a.captures(call));
-        let stem = |side: &str| capturing.then(|| format!("{side}-{call:06}"));
-        let Ok((mismatches, why, gpu)) = self
-            .device
-            .lock()
-            .map(|d| (d.stats().swallow_mismatches, d.swallow_mismatch().map(String::from), d.can_external_pass()))
-        else {
-            return false;
-        };
-        if !gpu && !NO_GPU_LOGGED.swap(true, Ordering::Relaxed) {
-            eprintln!(
-                "native-post: no external passes in this run (no GPU backend: headless without H2_BOOT_GFX), so the glow stays D3D's and the A/B writes nothing; H2_BOOT_GFX=<dir> H2_BOOT_GFX_EVERY=never renders on the GPU"
-            );
-        }
-        self.note_mismatches(mismatches, why);
-        let native = native && !FELL_BACK.load(Ordering::Relaxed);
-        if !native && !ab.is_some_and(|a| a.pumps(call)) {
+        let pumping = ab.is_some_and(|a| a.pumps(call));
+        if !native && !pumping {
             return false;
         }
         let plan = match plan(&*mem, args, fp) {
             Ok(Some(p)) => p,
             Ok(None) => return false,
-            Err(e) => {
-                if !PLAN_LOGGED.swap(true, Ordering::Relaxed) {
-                    eprintln!("native-post: the colour pass keeps its D3D quads: {e} (logged once)");
-                }
+            Err(error) => {
+                GLOW_PLAN_REFUSED.fetch_add(1, Ordering::Relaxed);
+                log_rejection(|| format!("glow plan: {error}"));
                 return false;
             }
         };
+        let capturing = ab.is_some_and(|a| a.captures(call));
+        let capture = |side: &str| CapturePass(capturing.then(|| format!("{side}-{call:06}")));
         let targets = targets(&plan);
-        let (drop, pass) = arm(native, PROVED.load(Ordering::Relaxed));
-        let pass: Box<dyn d3d::ExternalPass> = match pass {
-            Pass::Glow => Box::new(GlowPass {
-                plan,
-                gpu: Arc::clone(&self.gpu),
-                capture: stem("native"),
-            }),
-            Pass::Probe => Box::new(Probe {
-                plan,
-                capture: stem("d3d"),
-            }),
-            Pass::Capture => Box::new(CapturePass(stem("d3d"))),
+        let pass: Box<dyn d3d::SwallowPass> = if native {
+            Box::new(GlowPass { plan, gpu: Arc::clone(&self.gpu), capture: pumping.then(|| capture("native")) })
+        } else {
+            Box::new(capture("d3d"))
         };
-        let swallow = d3d::Swallow {
+        let headers = vec![None, target_header(mem, glow::TARGET_DOWN), target_header(mem, glow::TARGET_OTHER)];
+        self.arm(mem, d3d::Swallow {
+            call: swallow_call(site),
+            end_returns: Vec::new(),
+            headers,
             targets,
             primitive: QUAD.0,
             vertices: QUAD.1,
             shapes: Vec::new(),
-            drop,
+            drop: native,
             pass,
-        };
-        self.arm(mem, swallow, GLOW_ARMED, TagId(u32::MAX))
+        })
     }
 
-    fn screen_effect(&self, mem: &mut dyn GuestMemory, call: ScreenEffect, fp: Fp) -> bool {
-        let armed = self.effect(mem, call, fp);
+    fn screen_effect(&self, mem: &mut dyn GuestMemory, site: CallSite, call: ScreenEffect, fp: Fp) -> bool {
+        let armed = self.effect(mem, site, call, fp);
         self.note(|| format!("hook: armed {armed}"));
         armed
+    }
+
+    fn finish(&self, mem: &mut dyn GuestMemory, kind: PostCall, esp: u32) {
+        if let Ok(mut device) = self.device.lock() {
+            let before = device.stats();
+            if let Err(error) = device.finish_swallow(&mut DeviceMemory(mem), call_entry(kind), esp) {
+                eprintln!("native-post: finishing {kind:?}: {error}");
+            }
+            let after = device.stats();
+            if after.swallow_refusals > before.swallow_refusals
+                && let Some(detail) = device.swallow_mismatch()
+            {
+                log_rejection(|| format!("{kind:?}: {detail}"));
+            }
+            let counter = match kind {
+                PostCall::Colour => &self.glow_commits,
+                PostCall::Screen => &self.screen_commits,
+            };
+            counter.fetch_add(after.swallow_commits - before.swallow_commits, Ordering::Relaxed);
+            self.trace_summary(after);
+        }
+        if kind == PostCall::Screen {
+            self.trace_end();
+        }
     }
 
     fn trace_effect(&self, _mem: &mut dyn GuestMemory, call: ScreenEffect, ret: u32) {
@@ -1266,6 +1211,31 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
+    fn trace_summary(&self, stats: d3d::Stats) {
+        if post_feature::trace_spec().is_none() {
+            return;
+        }
+        let now = Instant::now();
+        let mut last = self.summary.lock().unwrap_or_else(|e| e.into_inner());
+        if last.is_some_and(|last| now.duration_since(last) < SUMMARY_PERIOD) {
+            return;
+        }
+        *last = Some(now);
+        let device_reasons = d3d::SwallowRefusal::ALL
+            .map(|reason| format!("{reason:?}={}", stats.swallow_reasons[reason.index()]))
+            .join(" ");
+        let missing = Missing::ALL.into_iter().zip(effect_refusals())
+            .map(|(reason, count)| format!("{reason:?}={count}"))
+            .collect::<Vec<_>>().join(" ");
+        eprintln!(
+            "native-post: H2_POST_TRACE summary swallowed_calls={} dropped={} replayed={} committed={} glow={} screen={} refused={} {device_reasons} glow_plan={} screen_plan={} {missing}",
+            stats.swallow_calls, stats.swallow_draws_dropped, stats.swallow_draws_replayed,
+            stats.swallow_commits, self.glow_commits.load(Ordering::Relaxed),
+            self.screen_commits.load(Ordering::Relaxed), stats.swallow_refusals,
+            GLOW_PLAN_REFUSED.load(Ordering::Relaxed), SCREEN_PLAN_REFUSED.load(Ordering::Relaxed),
+        );
+    }
+
     /// Adds `note` to the trace running, if one is.
     fn note(&self, note: impl FnOnce() -> String) {
         if !TRACE.lock().unwrap_or_else(|e| e.into_inner()).running {
@@ -1299,7 +1269,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
     }
 
     /// [`Host::screen_effect`]'s body.
-    fn effect(&self, mem: &mut dyn GuestMemory, call: ScreenEffect, fp: Fp) -> bool {
+    fn effect(&self, mem: &mut dyn GuestMemory, site: CallSite, call: ScreenEffect, fp: Fp) -> bool {
         let (mut effect, values) = match plan_effect(&*mem, call, fp) {
             Ok(Some(e)) => e,
             Ok(None) => {
@@ -1307,6 +1277,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                 return false;
             }
             Err(e) => {
+                SCREEN_PLAN_REFUSED.fetch_add(1, Ordering::Relaxed);
                 if !EFFECT_PLAN_LOGGED.swap(true, Ordering::Relaxed) {
                     eprintln!("native-post: a screen effect keeps its D3D draws: {e} (logged once)");
                 }
@@ -1343,16 +1314,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             return false;
         }
         let Some(effects) = effects else { return false };
-        let Ok((mismatches, why)) = self.device.lock().map(|d| (d.stats().swallow_mismatches, d.swallow_mismatch().map(String::from)))
-        else {
-            return false;
-        };
-        self.note_mismatches(mismatches, why);
-        if fell_back(egor) {
-            self.note(|| "hook: this egor fell back to D3D earlier".into());
-            return false;
-        }
         let Ok(depth) = mem.u32(screen_effect::constant::DEPTH) else {
+            SCREEN_PLAN_REFUSED.fetch_add(1, Ordering::Relaxed);
             self.note(|| "hook: the depth constant is unreadable".into());
             return false;
         };
@@ -1368,18 +1331,18 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             self.note(|| "hook: nothing to swallow (no strips, or a convolution into no stand-in)".into());
             return false;
         };
-        let drop = proved(egor, &plan);
-        dump_plan(egor, drop, &plan);
-        self.note(|| format!("hook: plan {}", plan_line(egor, drop, &plan)));
-        let (targets, shapes) = plan.clone();
+        dump_plan(egor, true, &plan);
+        self.note(|| format!("hook: plan {}", plan_line(egor, true, &plan)));
+        let (targets, shapes) = plan;
         let (primitive, vertices) = shapes[0];
-        let pass: Box<dyn d3d::ExternalPass> = if drop {
-            Box::new(ScreenPass { effects, call, screens: Arc::clone(&self.screens) })
-        } else {
-            Box::new(ScreenProbe { effects, call, plan })
-        };
-        let swallow = d3d::Swallow { targets, primitive, vertices, shapes, drop, pass };
-        self.arm(mem, swallow, SCREEN_ARMED, egor)
+        let end_returns = screen_end_returns(&call);
+        let headers = [None, Some(0), Some(1), Some(0x19), Some(0x1a), Some(0x1b)]
+            .map(|index| index.and_then(|index| target_header(mem, index))).to_vec();
+        let pass = Box::new(ScreenPass { effects, call, screens: Arc::clone(&self.screens) });
+        self.arm(mem, d3d::Swallow {
+            call: swallow_call(site), end_returns, headers, targets, primitive, vertices, shapes, drop: true, pass,
+        })
+
     }
 }
 
@@ -1390,80 +1353,12 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         map_effects(&self.effects, mem, &mut |name| spawn_load(name, Arc::clone(&self.effects)))
     }
 
-    /// Arms `swallow` for the hook `kind` (`egor` a screen effect's), the
-    /// last swallow armed from then. When arming ends the one before
-    /// unfinished (the device counts it a mismatch), that one is charged
-    /// for it here, not the new one.
-    fn arm(&self, mem: &mut dyn GuestMemory, swallow: d3d::Swallow, kind: u8, egor: TagId) -> bool {
-        let dropping = swallow.drop;
-        let Ok(mut d) = self.device.lock() else { return false };
-        let before = d.stats().swallow_mismatches;
-        let armed = d.swallow(&mut DeviceMemory(mem), swallow).unwrap_or(false);
-        let after = d.stats().swallow_mismatches;
-        let why = d.swallow_mismatch().map(String::from);
-        std::mem::drop(d);
-        if after > before {
-            self.note_mismatches(after, why);
-        }
-        if armed {
-            LAST_SWALLOW.store(kind, Ordering::Relaxed);
-            if kind == SCREEN_ARMED {
-                LAST_SCREEN.store(egor.0, Ordering::Relaxed);
-                LAST_SCREEN_DROP.store(dropping, Ordering::Relaxed);
-            }
-        }
-        armed
-    }
-
-    /// The device's swallow mismatches went up to `mismatches` (`why`,
-    /// the device's account of the last): the last swallow armed ended
-    /// early. The glow's later calls keep the D3D path; a screen effect's
-    /// do only when it had dropped strips ([`screen_mismatch`]).
-    fn note_mismatches(&self, mismatches: u64, why: Option<String>) {
-        if mismatches <= self.mismatches.swap(mismatches, Ordering::Relaxed) {
-            return;
-        }
-        let why = why.unwrap_or_default();
-        if LAST_SWALLOW.load(Ordering::Relaxed) == SCREEN_ARMED {
-            let egor = TagId(LAST_SCREEN.load(Ordering::Relaxed));
-            let dropped = LAST_SCREEN_DROP.load(Ordering::Relaxed);
-            if screen_mismatch(egor, dropped) {
-                eprintln!(
-                    "native-post: the screen effect {:#010x} drew a strip its plan did not have ({why}); that call fell back to D3D, and its later calls keep it",
-                    egor.0
-                );
-            } else if !dropped && PROBE_MISMATCH_LOGGED.insert(egor) {
-                eprintln!(
-                    "native-post: the screen effect {:#010x}'s probe met a strip its plan did not have ({why}); nothing was dropped, its next call probes again (logged once)",
-                    egor.0
-                );
-            }
-        } else if !FELL_BACK.swap(true, Ordering::Relaxed) {
-            eprintln!(
-                "native-post: the colour pass drew a quad its plan did not have ({why}); that call's glow fell back to D3D, and every later call keeps it"
-            );
-        }
-    }
-}
-
-/// The pass a call arms.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Pass {
-    /// The native glow, its quads dropped.
-    Glow,
-    /// The check before any drop, its quads drawn.
-    Probe,
-    /// The A/B's D3D side, its quads drawn.
-    Capture,
-}
-
-/// Whether a call drops its quads, and its pass: `native` (the switch,
-/// no fall-back), once the glow is `proved` to draw.
-fn arm(native: bool, proved: bool) -> (bool, Pass) {
-    match (native, proved) {
-        (true, true) => (true, Pass::Glow),
-        (true, false) => (false, Pass::Probe),
-        (false, _) => (false, Pass::Capture),
+    fn arm(&self, mem: &mut dyn GuestMemory, swallow: d3d::Swallow) -> bool {
+        let Ok(mut device) = self.device.lock() else { return false };
+        device.swallow(&mut DeviceMemory(mem), swallow).unwrap_or_else(|error| {
+            eprintln!("native-post: arming the call: {error}");
+            false
+        })
     }
 }
 
@@ -1557,9 +1452,11 @@ pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::a
         device: Arc::clone(device),
         gpu: Arc::new(Mutex::new(GpuGlow::new())),
         effects: Arc::new(Mutex::new(EffectsSlot::default())),
-        screens: Arc::new(Mutex::new((0, ScreenSet::new()))),
+        screens: Arc::new(Mutex::new((Weak::new(), ScreenSet::new()))),
         calls: AtomicU64::new(0),
-        mismatches: AtomicU64::new(0),
+        summary: Mutex::new(None),
+        glow_commits: AtomicU64::new(0),
+        screen_commits: AtomicU64::new(0),
     }));
 }
 
@@ -1610,45 +1507,6 @@ mod tests {
         assert_eq!(captured, vec![601, 602, 603, 1500, 1501, 1502]);
         assert!(ab.pumps(603 + AB_TAIL) && !ab.pumps(604 + AB_TAIL), "each window's tail");
         assert!(!ab.pumps(600) && !ab.pumps(1499));
-    }
-
-    #[test]
-    fn nothing_is_dropped_before_the_glow_is_proved() {
-        assert_eq!(arm(true, false), (false, Pass::Probe), "observe and check first");
-        assert_eq!(arm(true, true), (true, Pass::Glow));
-        assert_eq!(arm(false, false), (false, Pass::Capture), "the A/B's D3D side");
-        assert_eq!(arm(false, true), (false, Pass::Capture));
-    }
-
-    /// desaturate proved says nothing of the blur: each egor's first call
-    /// is a probe.
-    #[test]
-    fn each_screen_effect_is_probed_on_its_own() {
-        let (a, b) = (TagId(0xe0ff_0001), TagId(0xe0ff_0002));
-        let plan = |n: usize| (vec![SLOT_BOUND; n], vec![(PrimitiveType::TriangleStrip, 4); n]);
-        assert!(!proved(a, &plan(1)));
-        assert!(prove(a, plan(1)) && !prove(a, plan(1)), "noted once");
-        assert!(proved(a, &plan(1)) && !proved(b, &plan(1)));
-        // The same egor called with another shape (the UI's 3 x 3 corners
-        // after render_screen_effects' 2 x 2) is probed again first.
-        assert!(!proved(a, &plan(2)));
-        assert!(!proved(a, &(vec![SLOT_BOUND], vec![(PrimitiveType::TriangleStrip, 6)])));
-    }
-
-    /// A refused or mismatched blur keeps only the blur on D3D:
-    /// desaturate stays armed.
-    #[test]
-    fn a_fallback_is_its_effects_alone() {
-        let (blur, desaturate) = (TagId(0xe0ff_0011), TagId(0xe0ff_0012));
-        assert!(!fell_back(blur) && !fell_back(desaturate));
-        screen_refused(blur, &screen_gpu::ScreenRefused::ConvolutionStates);
-        assert!(fell_back(blur) && !fell_back(desaturate), "a refused pass");
-        assert!(!fall_back(blur), "noted once");
-        let mismatched = TagId(0xe0ff_0013);
-        assert!(fall_back(mismatched));
-        assert!(fell_back(mismatched) && !fell_back(desaturate), "a mismatch is charged to its egor");
-        let set = Egors::new();
-        assert!(set.insert(desaturate) && set.contains(desaturate) && !set.contains(blur));
     }
 
     fn pass(kind: u16, convolutions: Vec<Convolution>) -> screen_effect::Pass {
@@ -2096,12 +1954,10 @@ mod tests {
             capture: None,
         };
         assert!(glow.colour_only(), "the composite binds no depth");
-        assert!(Probe { plan, capture: None }.colour_only());
         assert!(CapturePass(None).colour_only());
         let effects = Arc::new(crate::native_post_load::ScreenEffects::default());
         let call = || ScreenCall { egor: EGOR, passes: Vec::new(), values: [0; 4], frame: None };
-        assert!(ScreenProbe { effects: Arc::clone(&effects), call: call(), plan: Default::default() }.colour_only());
-        let screens = Arc::new(Mutex::new((0, ScreenSet::new())));
+        let screens = Arc::new(Mutex::new((Weak::new(), ScreenSet::new())));
         assert!(ScreenPass { effects, call: call(), screens }.colour_only(), "the screen passes bind no depth");
     }
 
@@ -2165,19 +2021,6 @@ mod tests {
         assert!(template_line(args, 0x0002_d4bc, Ok(false)).ends_with("; the port says it skips"));
         assert!(template_line(args, 0x0002_d4bc, Err("Data".into())).ends_with("; the port fails: Data"));
         assert_eq!(post_feature::return_line("0x00016610", 0x1234_5600), "0x00016610 returned, AL 0");
-    }
-
-    /// A probe that meets a strip its plan lacks dropped nothing: the
-    /// egor is not proved and its next call probes again. A drop that
-    /// does keeps the egor on D3D from then.
-    #[test]
-    fn only_a_dropping_swallow_that_ends_early_falls_back() {
-        let (probed, dropped) = (TagId(0xe0ff_0021), TagId(0xe0ff_0022));
-        assert!(!screen_mismatch(probed, false));
-        assert!(!fell_back(probed) && !proved(probed, &(vec![SLOT_BOUND], vec![(PrimitiveType::TriangleStrip, 4)])), "probes again");
-        assert!(screen_mismatch(dropped, true));
-        assert!(fell_back(dropped));
-        assert!(!screen_mismatch(dropped, true), "said once");
     }
 
     /// `H2_POST_TRACE=N` traces each egor's first `N` calls, numbered

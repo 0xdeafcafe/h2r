@@ -2087,17 +2087,11 @@ frame.
 
 ### Hook point and order
 
-The calls run; their draws are what the native renderer takes over.
-For the colour pass (the only part native so far), one context-only
-`before` on `COLOUR_PASS` (`0x000214f0`) arms the device to drop the
-pass's own quads and to draw the native glow in place of the last
-(order of work, item 2). So the glow lands where the game's composite
-did: after layer 17, before the screen effects, `0x0002df00`, the fade
-and the HUD, once per view, in the game's order; and the game's code
-leaves every state, register and guest word as it always does.
-
-The hook has nothing after its body, so the pipelined render runs it on
-its own thread, and render-timing does not matter (the call runs).
+The colour pass (`COLOUR_PASS`, `0x000214f0`) and each screen effect
+(`SCREEN_EFFECT`, `0x0002d140`) run their guest bodies. The entry
+hook records the caller, stack frame and plan. The return
+continuation closes the plan before the guest caller resumes. Under
+`H2_PIPELINE_RENDER`, these hooks require the game thread.
 
 ### What the native post draws
 
@@ -2154,90 +2148,66 @@ its own thread, and render-timing does not matter (the call runs).
 
 ### Stage 5 status
 
-With `impl.render.native_post` off (the default) everything here draws
-on D3D, and the host only observes. With it on, a call is armed only
-once nothing in it is missing (`native_post_glue::Missing`, counted and
-logged once per reason). It is then probed before any of its draws are
-dropped, and it falls back on its own: the glow alone, and each screen
-effect per egor.
+`H2_FEATURES=impl.render.native_post=on` enables the experimental
+replacement. The default uses D3D. Each enabled call either commits
+one complete replacement or draws all its originals. An effect whose
+plan requires an unsupported input or an unavailable live target
+uses D3D for that call.
 
-| Effect kind | With the switch on | Why, or what refuses it |
-|---|---|---|
-| Colour pass glow (`0x000214f0`) | Armed after its probe | Refused when its plan fails (a blur past `MAX_BLUR_STEPS`, a target it cannot read). A refused draw or a swallow mismatch keeps every later glow on D3D. |
-| Screen effect, passes into the bound target, nothing convolved (`desaturate`'s shape) | Armed after its probe | `TemplatePass` when a pass's program did not load, or a stage binds an engine texture that is not supplied (`screen_gpu::supplied`). |
-| Pass into target 1, read by a later pass | Armed | `PassTarget` when the pass into target 1 is the call's last, or has no size. `TemplatePass` when target 1 is read before the call drew it (`call_ordered`). |
-| Kept convolution (flag bit 0 or 1 with its value 0) | Armed | Nothing to refuse: it draws nothing, and its result is the pass's target. |
-| Blur convolution (`0x000211a0`) | Armed (blur egor; waiting on the mainmenu A/B) | `Blur` and `StandIns` without the quads' frame. At the probe: a convolving pass that blends or masks colour (`ConvolutionStates`), a combiner that does not compile, the colour not sampleable. |
-| Wide convolution (`0x00021360`) | Armed (built; not run live yet) | `Wide` and `StandIns` without the frame, or when a grid cannot be made (`grid_of`: the source bound at no size, the grid's arithmetic failing). At the probe: as the blur, plus a grid strip under a triangle (`NoStrips`). |
-| A pass `0x00016610` does not draw (no vertex shader for its implementation) | Left out of the plan (`skip_undrawn`); a gate that cannot be read is refused (`TemplateSkipped`) | `0x0002d140` skips it whole, strips and convolutions, so the native pass does too. |
-| Convolution that copies its result (`0x000351a0`) | Refused (`TemplatePass`) | Not drawable natively. `0x0002d140` passes -1, so it never happens. |
-| A screen effect's plan that fails (too many corners, unreadable values, a convolution past its budget) | D3D | Logged once ("a screen effect keeps its D3D draws"). |
-| `0x0002df00` (`late`), `0x0002dd30` | D3D | Not traced yet (step 5 below). |
-| Layer 17, the fade `0x00040890`, the UI and HUD | D3D | Not started (steps 6 to 8). |
+| Effect | Native admission |
+|---|---|
+| Colour pass glow | The window, combiners, target sizes and blur steps must plan successfully. The live quads and attachments must match. |
+| Screen strips into target 0 or target 1 | All drawn layer-15 passes must have loaded programs and supported bindings. A target 1 read requires an earlier write in the same call. |
+| Kept convolution | It emits no draws. Its result names the pass's target. |
+| Blur and wide convolutions | The quads or grids must plan successfully and match the live attachments and colour state. |
+| Template pass skipped by `0x00016610` | The host leaves that pass and its convolutions out of the plan. An unreadable gate refuses the call. |
+| `0x0002df00`, `0x0002dd30`, layer 17, fade, UI and HUD | D3D. |
 
 ### Order of work
 
-1. **The hook and its order** (built: `feature::native_post`,
-   `impl.render.native_post`, off by default; point `COLOUR_PASS`,
-   `0x000214f0`). The first design skipped `render_screen_effects`
-   whole and redid what it leaves (its prologue first); it is replaced
-   by the swallow below, under which the game's code runs and leaves
-   every state itself, so nothing is redone. `native_render::post`'s
-   `PostFrame` (the call's gates) stays for the screen effects.
-2. **The swallow** (built: `d3d::Device::swallow`). At the colour
-   pass's entry a context-only `before` (nothing after its body, so the
-   pipelined render runs it on its own thread; fine with render-timing,
-   since the call runs) hands the host the call's seven stack words and
-   the caller's MXCSR and x87 control word. The host plans the glow
-   (`boot::native_post_glue::plan`: `colour_pass::parameters` on those
-   words, then `glow::pass_a`, `blur_combiner`, `blur` and `pass_b`) and
-   arms the device with one entry per quad (`targets`): the view's
-   target (slot 0, the one bound at the entry), target 7 (1) or 8 (2).
-   Arming drains what is queued first, so only quads the pass pushes
-   count. Each must be the next planned: an inline `Begin(7)`/`End`
-   (a four-vertex fan, `0x00034420`), no other draw since the last, into
-   its slot's target (a slot's first quad fixes its target; slots
-   differ). Each is dropped; the native glow is issued in place of the
-   last, into the targets bound then (the composite's: the view). Any
-   other draw ends the swallow (`Stats::swallow_mismatches`): it and
-   every draw after it are drawn by the D3D path and the glow is not;
-   the host logs it and keeps every later call on the D3D path. The
-   quads already dropped stay dropped (S: one frame without its glow or
-   with a composite over stale 7 and 8; the plan matches the game's
-   control flow bit for bit, so this takes a port that is wrong). A call
-   the host cannot plan (a copy after the blur, a target it does not
-   know) is not armed.
+1. **The hooks** (`feature::native_post`). The glow draws after
+   layer 17 and before the screen effects. The entry hooks pass
+   guest arguments, MXCSR and the x87 control word to the host. The
+   guest runs all its setters and its tail with either draw path.
 
-   Nothing is dropped unless the glow will be drawn. The glow and the
-   A/B's capture are colour-only external passes
-   (`ExternalPass::colour_only`): the composite binds no depth, so the
-   device issues them with none and the GPU backend gives them a scratch
-   depth (`Backend::external_pass` with the colour as its own depth).
-   The device refuses to arm a drop, dropping nothing, when the pass
-   could not be issued into the targets bound at the entry (no external
-   passes in the backend, no colour target, an unreadable header) or is
-   not colour-only (`Stats::swallow_refusals`). Every pass not issued is
-   counted by reason (`Stats::external_refusals`, `ExternalRefusal`)
-   and each reason logged once (`d3d: an external pass was dropped:
-   ...`). The host then observes its first call with a probe that checks
-   on the GPU's thread that the glow would draw into the target it gets
-   (`native_render::glow::check`: the target can be sampled, is the
-   plan's size, every block compiles); only then are quads dropped. A
-   probe or glow refused keeps every later call on the D3D path (logged).
-   The first A/B on 03a ran headless (no `H2_BOOT_GFX`, so no GPU
-   backend): every pass was dropped (`Unsupported`) after its quads
-   were, and no capture could be made; both are now refused up front and
-   logged. A backend that takes the pass on the render thread and then
-   refuses it there (a multisampled or non-drawable target) is not seen
-   in time: the probe's pass is never encoded, so nothing is dropped.
+2. **The call transaction** (`d3d::Device::swallow`). Arming drains
+   previously queued pushes. The active guest frame is identified by
+   its entry, entry ESP, caller's return address and live return
+   continuation. D3D entries must still be inside that frame. Each
+   matching draw supplies a primitive, count, emitter and colour
+   slot. A layer-15 strip must come from the `D3DDevice_End` return
+   site `0x0002d8b2`. Glow quads and convolution draws use the pushed
+   path.
 
-   Tests: d3d `swallow` (exactly the plan's quads dropped and nothing
-   after, the pass issued colour-only after the last; a missing or extra
-   quad, another draw or another shape ends it; an unfinished swallow;
-   through the render thread; a backend that takes no passes or a pass
-   that needs depth drops nothing; each refusal counted), boot
-   `native_post_glue::tests` (nothing dropped before the probe; every
-   pass colour-only), feature `native_post`.
+   The device resolves each original at its usual draw boundary and
+   retains the packet, binding handles, textures and stream bytes.
+   The first draw into a slot pins the host surface and its guest
+   resource identity. Target switches and direct RTT samples can
+   proceed while their bindings preserve access to the held
+   surfaces. Pixel observations or resource operations that depend
+   on those writes trigger replay before the operation.
+
+   The return continuation drains any remaining pushed draws from
+   the call and requires the full planned sequence. A mismatch,
+   extra draw, interruption or early return replays the packets in
+   order. The last matched draw supplies the primary target and
+   viewport even if the guest tail restored its state. Native
+   recording uses the live slot surfaces and sizes. The backend
+   keeps each copy's commands cancellable until all copies have
+   recorded the expected ranges. A failed encode discards those
+   commands and replays the originals.
+
+   The call validates live packet state and attachments each time.
+   Under render scaling, a replacement that uses a reference-only
+   intermediate together with a live display target falls back.
+   Start A/B runs at `H2_RENDER_SCALE=1`.
+
+   Tests in `d3d/tests/swallow.rs` compare the original packets at
+   every mismatch position and across target switches, and check
+   same-shape draws from a different End caller. GPU tests compare
+   both colour attachments after a failed encode and check that a
+   successful replacement writes the intermediate back to the guest.
+
 3. **The colour pass.** Its numbers are built: `engine::colour_pass`
    (`arguments`: the caller's half with `0x000137a0`'s curves;
    `parameters`: the callee's override record and clamps;
@@ -2288,10 +2258,9 @@ effect per egor.
       scales; `VERTEX` is the screen shader for them; `program` compiles
       a block through `shaders::psh` with its stages linear (`tex_scale`
       one over the guest size) and fog off; `GpuGlow::encode` draws a
-      plan's quads in order into stand-ins for targets 7 and 8
-      (`Rgba8Unorm`, the guest size times the copy's scale) and the
-      view's colour, sampling it directly (gfx's colour surfaces are
-      `TEXTURE_BINDING`), the composite with the blend of
+      plan's quads into live targets 7 and 8 and the view's colour,
+      using each attachment's format and loading its existing
+      pixels. The composite uses the blend of
       `0x000222d0`'s states (`Blend`: source `ONE` or
       `INVDESTCOLOR` by the sixth argument, destination `ONE` unless
       the seventh's byte is set, alpha alike). The down-sample and
@@ -2303,8 +2272,8 @@ effect per egor.
       quads are dropped (item 2). `0x00034a90`'s `0x000142f0(10)` sets
       `NV097_SET_BLEND_ENABLE` (`0x00040304`) to 0 for the down-sample
       and the blur (Code), so they draw unblended, as `GpuGlow` does.
-   4. The switch on draws the glow natively; after the frame A/B below
-      it can become the default.
+   4. Default-on admission requires complete, pixel-identical
+      replacements across representative views and effects.
 
    **The frame A/B** for the glow: the same frame (a fixed save, view
    and time, `H2_FEATURES` differing only in `impl.render.native_post`)
@@ -2316,20 +2285,20 @@ effect per egor.
    spread over the run, intro and gameplay), `H2_POST_AB_COUNT` calls
    each (default 1), into
    `<dir>/<native|d3d>-<call>-<w>x<h>.png`, one per copy of the target
-   under the render scale. With the switch off the hook is placed for it
-   and observes the same quads, dropping none, so the D3D side is
-   captured at the same draw. It needs the GPU backend: a headless run
-   writes nothing (logged); set `H2_BOOT_GFX=<dir>
-   H2_BOOT_GFX_EVERY=never`. With the switch on the first call is the
-   probe's (a D3D-side capture if it falls in the window), so start the
-   window after it. Compare:
-   - the two captures per pixel, within a small tolerance for filtering
-     (max and mean error and the count over it);
-   - `swallow_mismatches` 0 and `swallowed_draws` the quads planned on
-     both sides, `external_passes_dropped` steady;
-   - the frame's next draws (the screen effects, the fade, the HUD) as
-     d3d records them: equal (the game's code left the same states);
-   - the ms of `render_screen_effects`.
+   under the render scale. With the switch off the hook observes
+   the same quads for a D3D capture. It queues a native capture after
+   the replacement commits. For headless GPU rendering set
+   `H2_BOOT_GFX=<dir>` and `H2_BOOT_GFX_EVERY=never`.
+
+   Compare the same view and call. Check that the expected glow and
+   screen replacements committed, with no unexpected refusals or
+   replays. Compare pixels on each changed intermediate, its next D3D
+   consumer and the final image. Require zero unexplained pixel
+   differences. The glow A/B files capture the composite. Use the
+   agent API's `render.frame` and stage counters to inspect the other
+   passes and confirm coverage. Keep a D3D measurement of
+   `render_screen_effects` for the cost comparison.
+
 4. **The screen effects** (`0x0002d140`; 03a's blur first), with their
    function values (`0x00134fc0`) read at the call. Traced (Code,
    `h2 disasm`); slice (a) built (below).
@@ -2383,7 +2352,7 @@ effect per egor.
      pass through `program::translate_pass` (the world's and lights'
      path) with the engine inputs the screen-effect pass reads; (c)
      `0x00021360` traced and ported beside `blur`; (d) targets `0x19` to
-     `0x1b` as stand-ins like 7 and 8. Each is a slice; (a) first.
+     `0x1b` as convolution targets like 7 and 8. Each is a slice; (a) first.
    - **Built: which entries draw** (`engine::screen_effects`):
      `function_value` (`0x00134fc0` and `0x00134fe0`: the state's input
      plus its `+0x1c`; without a parent (`+0x16` -1 or past the count)
@@ -2477,17 +2446,11 @@ effect per egor.
      `0x000350e0`. A radial (zoom) blur. `strips()` and `pushed()` give
      the exact words. Tests: unit tests and
      `screen_grid_differential::the_grid_matches_the_lifted_original`.
-   - **Wired: the screen-effect hook** (`feature::native_post`, switch on
-     only): a context-only `before` on `0x0002d140`
-     (`points::SCREEN_EFFECT`) hands boot's host EAX and the four stack
-     words; `native_post_glue::plan_effect` plans the call and
-     `missing` lists what does not draw natively yet (the layer-15
-     template pass, passes into target 1, blur and wide convolutions,
-     the stand-ins for targets `0x19` to `0x1b`). Every effect is
-     refused, counted and logged once per reason, and nothing is armed:
-     the D3D path draws them all. Each piece then gets a slice and is
-     struck from `missing`; only an effect with nothing missing will be
-     armed, behind the same swallow and probe as the glow.
+   - **The screen-effect hooks** (`feature::native_post`). The entry
+     hands boot's host EAX and the four stack words. The host plans
+     the drawn passes and refuses unsupported inputs before arming.
+     The return hooks commit the staged recording or replay the call.
+
    - **Built: the template pass's look** (`native_render::screen_look`):
      `screen_look` takes the egor's shader resolved and an
      layer pass and implementation and gives that pass of layer 15 (at
@@ -2550,24 +2513,14 @@ effect per egor.
      final combiner as reading them). Its WGSL writes no depth
      (`PassParts::w_buffer` off). The engine constants are the call's
      (below).
-   - **Built: the GPU pass, unarmed** (`native_render::screen_gpu`,
-     `native_post_glue`'s `ScreenPass` and `ScreenProbe`): each strip a
-     triangle strip of `StripVertex` (attribute 0 the position, z and w
-     `[0x0045dd40]`; 1..4 the texture coordinates), the translated
-     program with the target's guest size as its surface and the
-     device's depth scale as its `z_max`, each render-target stage
-     fetched in its texels (`tex_scale`, as a linear texture), no depth,
-     no culling (S: the D3D path's cull mode is inherited; the A/B checks
-     the facing), the pass's blend and colour writes. Of the engine
-     textures only the view's (5) is supplied, as a copy of the bound
-     colour taken before each pass that samples it (S: 5 and `kind` 0
-     both resolve to target 0 while `[0x004858b8]` is clear). The host
-     strikes `TemplatePass` from `missing` for a pass whose program
-     loaded and whose stages are all bound (`pass_drawable`), and arms a
-     call with nothing missing as the glow is armed: one swallow of its
-     strips (slot 0, `SET_BEGIN_END` 6, twice the columns), a probe
-     first, then the pass in place of the strips; a mismatch after a
-     screen swallow keeps every later call on D3D.
+   - **The GPU pass** (`native_render::screen_gpu`). It translates
+     the layer-15 program at the target's guest size with the
+     device's depth scale. Engine stages read the view, target 1 or
+     a convolution result. A stage reading the view takes an
+     ordered copy before the pass. Each attachment uses its live
+     format and loads existing contents. Partial strips, colour
+     masks and consecutive writes preserve the surrounding pixels.
+
    - **Traced: the end of the call draws nothing**
      (`0x0002dae8..0x0002db64`): `0x0001ddd0` writes the sizes of
      targets 1, `0x19` and `0x1b` back into the target table (`+0x80`,
@@ -2577,33 +2530,15 @@ effect per egor.
      saved size, and `0x1a` never), `0x00016b10` applies the last pass's
      restore states and clears the draw-state cache at `0x00485b48`,
      `[0x004670bc]` is set and `0x00485a78`/`7c` cleared. The game runs
-     it on both paths, so the stand-ins for `0x19`..`0x1b` are missing
-     only for a call with a drawn (blur or wide) convolution, which
-     renders into them; a pass sampling them (engine textures 24 and 25)
-     is not drawable on its own. A call of passes into the bound target
-     with every convolution kept, the shape of
-     `effects\screen_effects\desaturate` (one pass, kind 0, none
-     convolved, stage 0 the view), now misses nothing and is armed with
-     the switch on: a probe on its first call, its strips dropped for the
-     native pass after. The blur (`kind` 1 and a convolution in its first
-     pass) stays on D3D.
-   - **Built: passes into target 1** (`screen_gpu::Dest`): a pass of
-     `kind` 1..3 draws into a stand-in for target 1, its guest size the
-     plan's (the window's, a half, a quarter) and its texels that times
-     the copy's render scale, cleared first (S: the strips cover it); a
-     later pass of the call samples it as engine textures 2 and 3, in its
-     texels. Target 1 read before a pass of the call drew it (what the
-     D3D path left there), or by the pass drawing it, is refused
-     (`screen_gpu::check_order`, `native_post_glue::call_ordered`). The
-     swallow sends target 1's strips to slot 1. `PassTarget` stays
-     missing only for a pass into target 1 that is the call's last (the
-     native pass is issued into the target bound at the last strip) or
-     has no size. Nothing more is armed by it: the only egor with such a
-     pass, the blur, still misses its convolution and the stand-ins, and
-     its second pass reads engine pixel constants and engine texture 24.
-     (S: what the D3D side later reads of target 1 is not this call's,
-     since its strips are dropped; target 1 is scratch to the screen
-     effects, as 7 and 8 are to the glow.)
+     it on both paths. The backend records into the physical
+     surface used by each original draw, even when the tail changes
+     the guest size fields.
+   - **Target 1** (`screen_gpu::Dest`). A pass of kind 1..3 uses
+     slot 2 at the window's size, a half or a quarter. Engine
+     textures 2 and 3 can sample that output in later passes of the
+     call. Reading target 1 before the call draws into it or while
+     the same pass writes it refuses the replacement.
+
    - **Built: the call's engine constants**
      (`screen_look::ScreenConstants`): `0x0002d140` copies its four
      values to `0x004c19b0`, and the scalar evaluator `0x000336f0` (its
@@ -2633,30 +2568,17 @@ effect per egor.
      the combiner is `0x00020f30`'s at strength 0 and `y` 0
      (`engine::glow::blur_combiner`), and each quad goes through
      `0x00034a90` with its tenth argument 0: the window's rectangle in
-     the stand-in's pixels, four taps, each stage's coordinates scaled by
-     its source's size over the stand-in's (`0x00034bf7`..`0x00034c27`),
+     the target's pixels, four taps, each stage's coordinates scaled by
+     its source's size over the target's (`0x00034bf7`..`0x00034c27`),
      the quad `glow::quad` gives the glow's, drawn by the glow's
-     `glow::QuadDrawer` (the glow now draws through it too). The quads go
-     into stand-ins for `0x19`..`0x1b` (`screen_gpu::STAND_INS`, at the
-     plan's guest size times the copy's scale, `STAND_IN_FORMAT`; S: an
-     8-bit target as 7 and 8), each cleared when the call first draws
-     into it; their source is the pass's target (the bound colour, or
-     target 1's stand-in) or the stand-in the last quad drew. Engine
-     textures 24 and 25 bind the target the pass's convolution `n` left in
-     `[0x00485a78 + 4 n]` (`screen_gpu::Bound::Result`), refused before
-     one set it in the call, since `0x0002d140` clears them on its way out
-     (`screen_gpu::Drawn`, `check_order`). A pass that blends or masks
-     colour does not convolve natively (its quads draw under its states).
-     The swallow takes each draw's own shape (`d3d::Swallow::shapes`: the
-     strips of `SET_BEGIN_END` 6, the quads `Begin(7)` of four), the quads
-     into slots 3..5 for `0x19`..`0x1b`. Each egor is probed on its own
-     before its draws are dropped, and falls back on its own: a refused
-     pass, a failed probe or a swallow mismatch (charged to the egor that
-     armed last) keeps that egor's later calls on D3D and no other's. With these, the blur misses nothing and
-     is armed with the switch on (off by default).
+     `glow::QuadDrawer`. The quads bind the live levels
+     `0x19`..`0x1b` (slots 3..5). Engine textures 24 and 25 resolve
+     the results in the order the call produces them. A convolution
+     whose colour state or source differs keeps the original draws.
+
    - **Built: the wide convolution** (`0x00021360`; `screen_gpu::ConvolutionGrid`,
      `native_post_glue::wide_grid`, `grid_of`). `0x0002d140` passes it
-     the words `+0x50`, `+0x54`, the stand-ins, -1, 1, 0, 0, so its
+     the words `+0x50`, `+0x54`, the convolution targets, -1, 1, 0, 0, so its
      combiner is the blur's (`0x00020f30` with XMM0 0 and XMM3 its eighth
      word, 0), its stages are bound as the blur's (clamp, linear), and
      each draw is `0x00034d90` (Code, `0x00021455..0x00021485`) with the
@@ -2665,89 +2587,33 @@ effect per egor.
      two words its radii, EDI the draw's offsets, each stage's ratio the
      size `0x00014f60` bound the source at (`0x0001dd60` of it: the
      pass's target as the call sized it, `screen_effect::target_size`,
-     or a stand-in at the pair's size) over the stand-in's. The glue
+     or a convolution target at the pair's size) over the target's. The glue
      makes each draw's 30 strips of 42 vertices with
      `engine::screen_grid::strips` (the original's arithmetic, under the
      call's MXCSR and x87 control word), the taps in texels of that bound
      size; `glow::QuadDrawer::draw_grid` draws them through
-     `glow::GRID_VERTEX` (attribute 0 the position in the stand-in's
+     `glow::GRID_VERTEX` (attribute 0 the position in the target's
      pixels, 1..4 the taps; z and w ignored as the quad's are: no depth
      test and w the same at every vertex) and the blur's combiner with
      its stages scaled by the bound size. The swallow takes each strip
-     as `SET_BEGIN_END` 6 of 42 (`0x00034770`) into the stand-in's slot.
+     as `SET_BEGIN_END` 6 of 42 (`0x00034770`) into the target's slot.
      A grid that cannot be made keeps the call on D3D
      (`Missing::Wide`), as does a missing frame; a grid with a strip
      under a triangle is refused (`ScreenRefused::NoStrips`). With these
      a wide convolution misses nothing and is armed with the switch on
      (off by default).
-   - **Fixed: the first mainmenu A/B armed nothing** (1500 presents,
-     pixel-identical): the effects loaded, but the first probe's swallow
-     ended at its first strip (`swallowed_draws` was the glow's six per
-     frame exactly), and the effect fell back. The likely cause: slot 0
-     is the target bound when the swallow is armed, and `0x00016610`
-     binds each pass's own target (`0x00014bc0` of 0 or 1, Code,
-     `0x0001675c..0x00016765`). `0x0002d140` has two callers,
-     `render_screen_effects` (`0x00013b52`, 2 x 2 corners) and the UI
-     (`0x0022bbbb`, 3 x 3), and the UI's call need not have target 0
-     bound. A screen call's swallow now plans no slot 0
-     (`native_post_glue::SLOT_BOUND` 1, target 1 slot 2, the stand-ins
-     3..5), and `d3d::Swallow` pins slot 0 only when a draw plans it.
-     The device says how a swallow ended (`Device::swallow_mismatch`:
-     the draw, its planned shape and slot, what was pushed, after
-     another draw or into another target, or armed over), and the glue
-     logs it with the fall-back. Arming over an unfinished swallow is
-     charged to that one, not the new one. A proof holds for the egor
-     and the plan it probed (`Proofs`): a call of another shape is
-     probed again before any of its strips are dropped. A convolution
-     drawn after the last pass is refused (`PassTarget`): the native pass
-     is issued into the target bound at the last draw. `H2_POST_SHAPES`
-     writes each call's plan (egor, probe or drop, slot:primitive x
-     count), the first 64 calls.
-   - **Then: the strips were never pushed.** With those, the next A/B
-     said `draw 0 of 1: planned TriangleStrip x4 into slot 1, pushed
-     QuadList x0, an inline array, after another draw` for the one egor
-     the menu calls (`0xe4380218`, `render_screen_effects`' 2 x 2): the
-     first draws after arming were the UI's, so `0x0002d140` drew
-     nothing. The plan assumed `0x00016610` draws (the differential stubs
-     it so), but `0x0002d140` skips a pass whole when it does not
-     (`0x0002d4be`). Its gate is now ported,
-     `screen_effect::template_draws` (Code, `0x00016610..0x000166ed`:
-     the template at the shader's `+4`, its `+0x5c` count, layer 15's bit
-     and word, the pass the implementation names, and the selector's
-     implementation's `+0x100` not -1), and a call with a pass it skips
-     keeps its D3D draws (`Missing::TemplateSkipped`). The menu's other
-     egor is never called there; the blur needs another scene.
-   - **The next A/B was the same**: no `TemplateSkipped`, the same
-     mismatch. So the static reading is set aside for a runtime account,
-     `H2_POST_TRACE=N` (`N,after`; empty, 4): for each egor's first `N`
-     calls of `0x0002d140` the device keeps, from the hook to the next hook of
-     either kind (`d3d::Traced`, the first 512 events): every D3D entry
-     the runtime calls and its guest return address (so a call from
-     inside `0x0002d140..0x0002db67` is its own); `Arming` before the
-     drain at arming, so a draw pushed before the hook shows ahead of
-     `Armed`; every draw with its entry, primitive, vertex count, inline
-     array words, the push-buffer address of its `End`, the colour target,
-     `Stats::draws` before it, and a pushed draw's fate (`drawn`,
-     `dropped`, `observed`, `mismatch`). The host adds the call, the
-     hook's plan, whether it armed or what it refused, and each
-     `0x00016610` (`points::TEMPLATE_PASS`, a context-only `before`) with
-     its words, caller and what `template_draws` says of it. `,after`
-     notes the returns of `0x00016610` (AL) and `0x0002d140`, after-hooks
-     that keep those chains off the pipelined render thread. Each line
-     is `native-post: H2_POST_TRACE #<call> ...`, the trace written when
-     it ends.
-   - **Fixed: the strip comes through the `D3DDevice_End` entry.** The
-     trace said `0x0002d140` draws (`0x00016610` from `0x0002d4bc`, the
-     port agreeing; the commit from `0x0002d51b`), but its strip is
-     `D3DDevice_End` called from `0x0002d8b2` (`Begin`,
-     `SetVertexData4f`, `End` as entries), not a pushed `Begin`/`End`.
-     The swallow watched only pushed draws, so the strip drew and the
-     UI's next pushed quad was taken for it. Both paths now go through
-     `Device::swallow_immediate`. A probe that ends early dropped
-     nothing, so the egor is only left unproved and its next call probes
-     again; only a dropping swallow that ends early keeps the egor on D3D
-     (`screen_mismatch`). A call made while the map's effects are still
-     loading is no longer counted as a `TemplatePass` refusal.
+   - **Runtime diagnostics.** An early menu A/B reported identical
+     images while no screen replacement committed. The menu and
+     gameplay can call `0x0002d140` with different bound targets and
+     grid sizes. `H2_POST_SHAPES=1` logs the first 64 screen plans.
+     `H2_POST_TRACE=N` records the first `N` calls per egor (default
+     four), including D3D caller addresses and draw fates. `,after`
+     includes template return values. While post calls arrive it
+     prints a cumulative summary every five seconds with held calls,
+     dropped and replayed draws, glow and screen commits, and refusals
+     by reason. `H2_FRAME_STATS` includes the native post examined,
+     suppressed, refused and recorded-range columns.
+
 5. **`0x0002df00`, and `0x0002dd30`** before layer 17, which has the
    same shape and gets its own skip point.
 6. **Layer 17** (S: bloom), as stage 1b draws the world's other layers.

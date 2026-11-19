@@ -234,17 +234,29 @@ where
                     Ok(mut d) => match {
                         // H2_POST_TRACE: the entry and its caller, before
                         // the draws its drain executes.
-                        if d.tracing() {
-                            d.trace_call(e.name, mem.read_u32(regs.esp).unwrap_or(0));
+                        let ret = (d.tracing() || d.swallowing())
+                            .then(|| mem.read_u32(regs.esp).unwrap_or(0));
+                        if let Some(ret) = ret {
+                            d.trace_call(e.name, ret);
                         }
-                        d.drain_until_callback(&mut mem)
+                        ret.map_or(Ok(()), |ret| {
+                            d.swallow_caller(&mem, regs.esp, ret, |token| {
+                                ctx.live_continuations()
+                                    .iter()
+                                    .any(|c| c.token == token && c.origin == "feature: after hooks")
+                            })
+                        })
+                        .and_then(|()| d.drain_until_callback(&mut mem))
                     } {
                         Ok(Some(cb)) => {
                             drop(d);
                             drop(guest);
                             return deliver_push_callback(cpu, ctx, &dev, cb, addr);
                         }
-                        Ok(None) => match abi::call(&e, &mut d, &mut mem, &regs) {
+                        Ok(None) => match d
+                            .swallow_before_entry(e.name)
+                            .and_then(|()| abi::call(&e, &mut d, &mut mem, &regs))
+                        {
                             Ok(o) => {
                                 apply(cpu, o);
                                 let destroys = d.take_pending_destroys();
