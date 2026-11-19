@@ -208,11 +208,21 @@ fn on_live_as_account(text: &str) -> Option<u8> {
         .then(|| port.parse::<u8>().ok())?
 }
 
-/// `bots: phantom NAME joins (peer N)`: the name.
+/// `bots: phantom NAME joins (peer N)` (a running game) or `... joins
+/// (peer N, in the pregame lobby)`: the name.
 fn phantom_joined(text: &str) -> Option<&str> {
     let rest = text.strip_prefix("bots: phantom ")?;
     let (name, after) = rest.rsplit_once(" joins (peer ")?;
     after.ends_with(')').then_some(name)
+}
+
+/// What a phantom join line ends with when it joined the pregame lobby
+/// (`bots::phantom::Phantoms::tick`).
+const IN_LOBBY: &str = ", in the pregame lobby)";
+
+/// [`phantom_joined`] for a join in the pregame lobby: the name.
+fn phantom_joined_lobby(text: &str) -> Option<&str> {
+    phantom_joined(text).filter(|_| text.ends_with(IN_LOBBY))
 }
 
 /// A phantom that could not be made: a `failed` line about a phantom, or
@@ -686,19 +696,25 @@ pub fn verdict(log: &str) -> Option<Verdict> {
         }
     });
 
-    // 10. The phantoms joined.
+    // 10. The phantoms joined the pregame lobby (docs/game/bots.md §5.1,
+    // "Phantoms in the pregame lobby").
     let want = plan.phantoms();
     let joined: BTreeSet<&str> = l.texts.iter().filter_map(|t| phantom_joined(t)).collect();
+    let in_lobby: BTreeSet<&str> = l
+        .texts
+        .iter()
+        .filter_map(|t| phantom_joined_lobby(t))
+        .collect();
     let failed = l.last(3, phantom_failed);
     checks.push(if want == 0 {
         check(
-            "phantoms joined",
+            "phantoms joined the pregame lobby",
             failed.is_empty(),
             "none asked for (count 3 or less)".into(),
             failed,
         )
     } else {
-        let pass = joined.len() >= want && failed.is_empty();
+        let pass = in_lobby.len() >= want && failed.is_empty();
         let mut lines = l.last(want, |t| phantom_joined(t).is_some());
         lines.extend(failed.iter().cloned());
         if !pass {
@@ -707,21 +723,29 @@ pub fn verdict(log: &str) -> Option<Verdict> {
             }));
         }
         check(
-            "phantoms joined",
+            "phantoms joined the pregame lobby",
             pass,
             if pass {
                 format!(
-                    "{} joined: {}",
-                    joined.len(),
-                    Vec::from_iter(joined).join(", ")
+                    "{} joined in the pregame lobby: {}",
+                    in_lobby.len(),
+                    Vec::from_iter(in_lobby).join(", ")
                 )
             } else if !failed.is_empty() {
                 "a phantom failed".into()
+            } else if joined.len() >= want {
+                format!(
+                    "{} of {want} joined the pregame lobby, the rest only once the game ran: \
+                     the lobby join is off (H2_PHANTOM_LOBBY=0) or never saw this console host \
+                     the lobby (a wait line says why)",
+                    in_lobby.len()
+                )
             } else {
                 format!(
-                    "{} of {want} joined (`bots: phantom NAME joins (peer N)`); they join once \
-                     the game this console hosts runs, so a wait line says why not",
-                    joined.len()
+                    "{} of {want} joined the pregame lobby (`bots: phantom NAME joins (peer N, \
+                     in the pregame lobby)`); they join the lobby this console hosts, so a wait \
+                     line says why not",
+                    in_lobby.len()
                 )
             },
             lines,

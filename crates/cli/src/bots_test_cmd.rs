@@ -83,8 +83,8 @@ signed in; Clankers on; on Xbox Live (not Split Screen or System Link);
 hosting a Live custom game (the session advertised); the Live roster; each local
 bot through the join gate; each local bot on Xbox Live as a bot account
 (000b...); the start state; gameplay on a map (--map NAME: on that map;
-the map is the lobby's, this does not pick it); the phantoms joined; the
-session holding 1 + count players; the game record's bots (bot: true).
+the map is the lobby's, this does not pick it); the phantoms joined the
+pregame lobby; the session holding 1 + count players; the game record's bots (bot: true).
 It exits non-zero when a check failed.
 
 The merged log (bots.log) and the game's whole stderr (Tester.log) go to
@@ -108,8 +108,8 @@ in; the clanker hoppers (server and game); the Clankermatch row's
 playlists; the clanker search; the search ending with this console
 hosting; the local bots planned; each seated and signed in, in the lobby;
 each on Xbox Live as a bot account; the lobby at the playlist's fewest
-players; the countdown and start; gameplay; the phantoms joining after
-the start; the game record (kind clankermatch, bot: true); the local
+players; the countdown and start; gameplay; the phantoms joining the
+lobby before the start; the game record (kind clankermatch, bot: true); the local
 bots leaving after the game. --timeout is 900 s (1200 with --no-drive).";
 
 pub const TAG: &str = "Tester";

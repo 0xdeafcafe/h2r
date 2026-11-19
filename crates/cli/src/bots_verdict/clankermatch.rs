@@ -1,9 +1,9 @@
 //! The verdict of a Clankermatch run (`h2 bots test --clankermatch`,
 //! docs/game/bots.md §8 and §13, "Clankermatch"): the Xbox Live menu's
 //! Clankermatch row, a clanker playlist, the HLE's empty search, the lobby
-//! this console hosts filled first by local bots (so it reaches the
-//! playlist's fewest players and starts) and then by phantoms once the
-//! game runs, the game record, and the bots going once the player leaves.
+//! this console hosts filled by local bots and phantoms (so it reaches the
+//! playlist's fewest players and starts), the game record, and the bots
+//! going once the player leaves.
 //!
 //! The merged log is the custom game test's ([`super`]), with
 //! `bots-test: clankermatch plan: ...` in place of its plan line, the
@@ -12,7 +12,7 @@
 
 use super::{
     Check, Log, Plan, Verdict, account_line, check, gate_port, on_live_as_account, phantom_failed,
-    phantom_joined, read_session, read_status, signing_port,
+    phantom_joined, phantom_joined_lobby, read_session, read_status, signing_port,
 };
 
 const PLAN: &str = "bots-test: clankermatch plan: ";
@@ -626,25 +626,29 @@ pub fn verdict(l: &Log, plan: CmPlan) -> Verdict {
         ),
     });
 
-    // 12. The phantoms joined, after the start and not before.
+    // 12. The phantoms joined the lobby, before the start (§5.1,
+    // "Phantoms in the pregame lobby").
     let want = plan.phantoms();
     let joins: Vec<usize> = (0..l.texts.len())
         .filter(|&i| phantom_joined(l.texts[i]).is_some())
         .collect();
-    let early: Vec<usize> = joins
-        .iter()
-        .copied()
-        .filter(|&i| start.is_none_or(|s| i < s))
-        .collect();
-    let late: Vec<&str> = joins
-        .iter()
-        .filter(|&&i| start.is_some_and(|s| i > s))
-        .filter_map(|&i| phantom_joined(l.texts[i]))
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect();
+    // Who joined the lobby before the start, and who only after it.
+    let mut early = std::collections::BTreeSet::new();
+    let mut late = std::collections::BTreeSet::new();
+    for &i in &joins {
+        let Some(name) = phantom_joined(l.texts[i]) else {
+            continue;
+        };
+        if phantom_joined_lobby(l.texts[i]).is_some() && start.is_none_or(|s| i < s) {
+            early.insert(name);
+        } else if start.is_some_and(|s| i > s) {
+            late.insert(name);
+        }
+    }
+    let late: Vec<&str> = late.difference(&early).copied().collect();
+    let early: Vec<&str> = early.into_iter().collect();
     let failed = l.last(3, phantom_failed);
-    let pass = late.len() >= want && early.is_empty() && failed.is_empty();
+    let pass = early.len() >= want && failed.is_empty();
     let mut lines: Vec<String> = joins
         .iter()
         .rev()
@@ -659,25 +663,27 @@ pub fn verdict(l: &Log, plan: CmPlan) -> Verdict {
         }));
     }
     checks.push(check(
-        "phantoms joined after the start",
+        "phantoms joined the lobby before the start",
         pass,
         if pass && want == 0 {
             "none planned".into()
         } else if pass {
-            format!("{} joined: {}", late.len(), late.join(", "))
+            format!("{} joined in the lobby: {}", early.len(), early.join(", "))
         } else if !failed.is_empty() {
             "a phantom failed".into()
-        } else if !early.is_empty() {
+        } else if !late.is_empty() {
             format!(
-                "{} phantom(s) joined before the game started: a phantom cannot be a lobby \
-                 player (§5.1); the fill seated it before the local bots",
-                early.len()
+                "{} of {want} joined the lobby; {} joined only once the game ran: the lobby \
+                 join is off (H2_PHANTOM_LOBBY=0) or never saw this console host the lobby",
+                early.len(),
+                late.len()
             )
         } else {
             format!(
-                "{} of {want} joined after the start (`bots: phantom NAME joins (peer N)`); \
-                 they join once the game this console hosts runs, so a wait line says why not",
-                late.len()
+                "{} of {want} joined the lobby (`bots: phantom NAME joins (peer N, in the \
+                 pregame lobby)`); they join the lobby this console hosts, so a wait line says \
+                 why not",
+                early.len()
             )
         },
         lines,
