@@ -626,6 +626,36 @@ fn entity_transforms_stay_inside_the_v7_error_bounds() {
     }
 }
 
+#[test]
+fn hit_positions_can_refer_to_any_player_in_the_same_frame() {
+    let mut frames = samples::multiplayer(4);
+    let mut encoder = Encoder::new(0, 150);
+    let mut decoder = Decoder::new();
+    for (i, f) in frames.iter_mut().enumerate() {
+        f.players.reverse();
+        if i == 2 {
+            f.players.clear();
+        }
+        // First and last ordinals work after a reorder. The off-player
+        // position and the no-player frame use absolute coordinates.
+        f.hits = f
+            .players
+            .iter()
+            .rev()
+            .map(|p| FrameHit {
+                pos: p.pos,
+                ..FrameHit::default()
+            })
+            .collect();
+        f.hits.push(FrameHit {
+            pos: [-200.0004, 1.0, 0.0],
+            ..FrameHit::default()
+        });
+        let record = encoder.encode(f).unwrap().0;
+        assert_eq!(decoder.decode(&record).unwrap().frame, quantize(f).unwrap());
+    }
+}
+
 /// Two units move through an irregular run, correct a single axis, swap
 /// slots, cross the yaw seam and then seek to a cut.
 fn motion_stream() -> Vec<Frame> {

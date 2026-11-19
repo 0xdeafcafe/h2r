@@ -29,7 +29,9 @@ use crate::game::{
 /// Latest encoder version. V7 adds finer grids, sparse vector residuals,
 /// repeated edit masks and change-only positions relative to dead reckoning.
 /// V6 introduced vehicle velocity, projectiles and loose items.
-pub const VERSION: u64 = 7;
+pub const VERSION: u64 = V7;
+// Keep historical decoding tied to the wire version when the writer advances.
+const V7: u64 = 7;
 /// V4 was the last ordinary frame format without a cinematic bit.
 pub const V4: u64 = 4;
 /// V5 was used for cinematic frames from v4 senders.
@@ -626,7 +628,7 @@ fn schema_of(version: u64) -> Option<Schema> {
         V4 => schema(&LISTS_V4, HIT, true, false),
         CINEMATIC_VERSION => schema(&LISTS_V4, HIT, true, true),
         6 => schema(&LISTS, HIT, true, true),
-        VERSION => schema(&LISTS, HIT, true, true),
+        V7 => schema(&LISTS, HIT, true, true),
         _ => return None,
     })
 }
@@ -1364,7 +1366,7 @@ fn read_vector(
 ) -> Result<[i64; 3]> {
     let mut q = prev.copied().unwrap_or_default();
     for v in &mut q {
-        let residual = if r.version < VERSION {
+        let residual = if r.version < V7 {
             // Both legacy grids have exactly half the new scale.
             r.seg(if prev.is_some() { old_k } else { abs_k })? * 2
         } else if prev.is_none() {
@@ -1526,7 +1528,7 @@ fn read_value(
             1,
             7,
         )?),
-        Kind::Angle if r.version < VERSION => Val::Int(r.bits(12)? * 4),
+        Kind::Angle if r.version < V7 => Val::Int(r.bits(12)? * 4),
         Kind::Angle => Val::Int(u64::from(read_angle_component(
             r,
             match prev {
@@ -1535,7 +1537,7 @@ fn read_value(
             },
             true,
         )?)),
-        Kind::Dir if r.version < VERSION => {
+        Kind::Dir if r.version < V7 => {
             let q = [r.bits(12)? as u32, r.bits(12)? as u32];
             if q.iter().any(|&v| v > 4094) {
                 return Err(PackError::Bad("direction out of range"));
@@ -1570,7 +1572,7 @@ fn read_value(
             _ => return Err(PackError::Bad("unknown id form")),
         },
         Kind::AnimPhase => {
-            if r.version == VERSION
+            if r.version >= V7
                 && let Some(phase) = advanced_phase(prev, ticks)
                 && r.bit()?
             {
@@ -1905,11 +1907,9 @@ fn unit_mask(list: usize) -> Option<&'static UnitMask> {
     }
 }
 
-/// A list against the previous frame's: the count, then until it is
-/// reached either `0` and a run of unchanged entities taken in order from
-/// the previous list, or `1` and one entity: `1`, the previous entity it
-/// is (relative to the one after the last taken), a changed-field mask and
-/// the changed fields; or `0` and the whole entity.
+/// List count, then operations until the new list is complete. V7 codes
+/// the common edit at the cursor as one bit. In read order, 00 copies a
+/// predicted run, 010 inserts an entity and 011 edits at a relative slot.
 fn write_delta(
     w: &mut BitWriter,
     schema: &[Field],
@@ -2031,7 +2031,7 @@ fn read_delta(
     } else {
         None
     };
-    let layout = if r.version == VERSION {
+    let layout = if r.version >= V7 {
         unit_mask(list)
     } else {
         None
@@ -2049,7 +2049,7 @@ fn read_delta(
         New,
     }
     while out.len() < n {
-        let op = if r.version == VERSION && r.bit()? {
+        let op = if r.version >= V7 && r.bit()? {
             Edit::Here
         } else if !r.bit()? {
             Edit::Run
@@ -2095,7 +2095,7 @@ fn read_delta(
             };
             if let Some(layout) = layout {
                 last_mask ^= layout.read(r)?;
-            } else if r.version < VERSION || r.bit()? {
+            } else if r.version < V7 || r.bit()? {
                 last_mask = 0;
                 for (idx, f) in schema.iter().enumerate() {
                     if !f.key && r.bit()? {
@@ -2391,14 +2391,14 @@ impl Decoder {
         }
         let mut hits = Vec::new();
         let dt = state.tick - prev.tick;
-        if version == VERSION && !key {
+        if version >= V7 && !key {
             prev.advance(dt);
             state.anchors = std::mem::take(&mut prev.anchors);
             state.span = dt;
         }
         for (n, (fields, max)) in schema.lists.iter().enumerate() {
             if n == 3 {
-                hits = if version == VERSION {
+                hits = if version >= V7 {
                     read_hits(&mut r, &state.lists[0], &state.strings)?
                 } else {
                     read_full(&mut r, schema.hit, MAX_FRAME_HITS, &state.strings)?
