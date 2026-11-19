@@ -641,6 +641,54 @@ mod server_test {
         verify.unwrap();
         assert_eq!(done.totals.frames, 1);
         assert_eq!(done.unpublished, 1);
+
+        // Damage only the archived copy in this temporary database. Verify
+        // must name the failed game. Its original signed rows and backup
+        // remain available for the operator's guarded rollback.
+        let client = Client::at(&server.url).unwrap();
+        let index: serde_json::Value = client
+            .get("/games/historic/chunks", &[("format", "archive".into())])
+            .unwrap();
+        let hash = index["items"][0]["sha256"].as_str().unwrap();
+        rt.block_on(server.live.store().put_blob(hash, b"damaged"))
+            .unwrap();
+        let (failed, report) = command("--verify");
+        assert!(failed.is_err());
+        assert_eq!(report.failed[0].job.game.game_id, "historic");
+        assert_eq!(
+            rt.block_on(server.live.store().head()).unwrap(),
+            applied_head
+        );
+        let mut remote = Remote::from_args(&mut Args(vec![
+            "--server".into(),
+            server.url.clone(),
+            "--data".into(),
+            data_dir.to_str().unwrap().into(),
+        ]))
+        .unwrap();
+        let req = remote
+            .client
+            .agent
+            .get(&remote.client.url("/admin/replay-archives/historic"));
+        let info: serde_json::Value = remote.request(req, None).unwrap();
+        live_cmd::run(vec![
+            "frames".into(),
+            "rollback".into(),
+            "historic".into(),
+            "--archive-sha256".into(),
+            info["archive_sha256"].as_str().unwrap().into(),
+            "--backup-sha256".into(),
+            info["backup_sha256"].as_str().unwrap().into(),
+            "--data".into(),
+            data_dir.to_str().unwrap().into(),
+            "--server".into(),
+            server.url.clone(),
+        ])
+        .unwrap();
+        let source_index: serde_json::Value = client
+            .get("/games/historic/chunks", &[("format", "archive".into())])
+            .unwrap();
+        assert!(source_index.get("archive_sha256").is_none());
         let originals = rt
             .block_on(server.live.store().read(&live_server::store::Query {
                 after: 0,
