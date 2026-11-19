@@ -1009,6 +1009,241 @@ fn a30_converts_onto_its_base_and_reads_back() {
 /// separated) limits the levels.
 #[test]
 #[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
+fn retail_ai_control_hooks_match_spawn_follow_and_uncover_paths() {
+    let mut source = h1_iso();
+    let entry = source.find("/default.xbe").unwrap();
+    let source = source.read(&entry).unwrap();
+    let source = xbe::Xbe::parse(&source).unwrap();
+    let mut target = h2_iso();
+    let entry = target.find("default.xbe").unwrap();
+    let target = target.read(&entry).unwrap();
+    let target = xbe::Xbe::parse(&target).unwrap();
+    let call = |image: &xbe::Xbe<'_>, at: u32, expected| {
+        let bytes = image.bytes_at(at, 5).unwrap();
+        assert_eq!(bytes[0], 0xe8);
+        let displacement = u32::from_le_bytes(bytes[1..].try_into().unwrap());
+        assert_eq!(at.wrapping_add(5).wrapping_add(displacement), expected);
+    };
+    call(&source, 0x001415af, 0x0013b270);
+    call(&source, 0x0013e381, 0x0013b270);
+    call(&source, 0x0013bd1f, 0x0013b500);
+    call(&source, 0x0013eb01, 0x0013e280);
+    call(&source, 0x0013eb0d, 0x0013c910);
+    call(&target, 0x001c7813, 0x00200930);
+    assert_eq!(&target.bytes_at(0x00200957, 5).unwrap()[1..], &0xc760u32.to_le_bytes());
+    assert_eq!(&target.bytes_at(0x0020098a, 5).unwrap()[1..], &0x163cu32.to_le_bytes());
+    call(&target, 0x002016ab, 0x002039d0);
+    call(&target, 0x00201912, 0x00203780);
+    call(&target, 0x00274d61, 0x001a80e0);
+    let uncover = target.read_u32(0x0046eeb8 + 35 * 4).unwrap();
+    assert_eq!(uncover, 0x0047e908);
+    assert_eq!(target.read_u32(uncover + 0x10).unwrap(), 0x001b84a0);
+    assert_eq!(target.read_u32(uncover + 0x18).unwrap(), 0x001b8540);
+    assert_eq!(target.read_u32(uncover + 0x40).unwrap(), 0x001b85a0);
+    assert_eq!(target.read_u32(uncover + 0x44).unwrap(), 0x001b89d0);
+    assert_eq!(target.read_u32(uncover + 0x48).unwrap(), 0x001b8ae0);
+    call(&source, 0x001674be, 0x00165720);
+    call(&source, 0x0016573b, 0x0016e070);
+    call(&target, 0x001b2134, 0x002605d0);
+    call(&target, 0x001b2190, 0x002626b0);
+    let presearch = target.read_u32(0x0046eeb8 + 28 * 4).unwrap();
+    assert_eq!(target.read_u32(presearch + 0x10).unwrap(), 0x001b44d0);
+}
+
+#[test]
+#[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
+fn retail_uncover_and_combat_timer_contact_rules() {
+    let mut source = h1_iso();
+    let source_entry = source.find("/default.xbe").unwrap();
+    let source = source.read(&source_entry).unwrap();
+    let source = xbe::Xbe::parse(&source).unwrap();
+    let mut target = h2_iso();
+    let target_entry = target.find("default.xbe").unwrap();
+    let target = target.read(&target_entry).unwrap();
+    let target = xbe::Xbe::parse(&target).unwrap();
+
+    // Actor-defined time and damage operands and the two inclusive thresholds.
+    assert_eq!(&source.bytes_at(0x163c96, 6).unwrap()[2..], &0x2d8u32.to_le_bytes());
+    assert_eq!(&source.bytes_at(0x163ce6, 6).unwrap()[2..], &0x324u32.to_le_bytes());
+    assert_eq!(source.bytes_at(0x163cdf, 4).unwrap(), [0x3b, 0xc1, 0x7d, 2]);
+    assert_eq!(source.bytes_at(0x163d07, 5).unwrap(), [0xf6, 0xc4, 5, 0x7a, 2]);
+    assert_eq!(source.read_u32(0x1f0aa8).unwrap(), 30.0f32.to_bits());
+    assert_eq!(source.read_u32(0x1f0ca0).unwrap(), (1.0f32 / 60.0).to_bits());
+    assert_eq!(source.bytes_at(0x966e6, 3).unwrap(), [0x83, 0xf8, 60]);
+
+    // Only the focused prop contributes awareness. Encounter timers use the
+    // actor's own mode and baseline. An actor in combat 5 releases its squad.
+    assert_eq!(source.bytes_at(0x1507e9, 6).unwrap(), [0x8b, 0x82, 0x70, 2, 0, 0]);
+    assert_eq!(source.bytes_at(0x152e76, 10).unwrap(),
+        [0xc7, 0x86, 0x6c, 2, 0, 0, 0xff, 0xff, 0xff, 0xff]);
+    assert_eq!(source.bytes_at(0x150943, 7).unwrap(), [0x66, 0x83, 0x79, 0x32, 0, 0x7e, 0x22]);
+    let combat: Vec<_> = source.bytes_at(0x1f025c, 24).unwrap().chunks_exact(2)
+        .map(|word| u16::from_le_bytes(word.try_into().unwrap())).collect();
+    assert_eq!(combat, [0, 0, 0, 1, 2, 2, 3, 4, 5, 5, 7, 7]);
+    assert_eq!(source.bytes_at(0x13db0c, 16).unwrap(),
+        [0x66, 0x83, 0x7d, 0x6a, 3, 0x75, 0x0e, 0x66, 0x8b, 0x45, 0x6e, 0x66, 0x3b, 0x45, 0x72, 0x7e]);
+    assert_eq!(source.bytes_at(0x167bff, 5).unwrap(), [0x66, 0x83, 0x7e, 0x6e, 5]);
+
+    // Native H2 focus assignment, recognition timestamp and damage packet.
+    assert_eq!(target.bytes_at(0x267798, 6).unwrap(), [0x89, 0xbe, 0x38, 3, 0, 0]);
+    assert_eq!(target.bytes_at(0x1e3531, 5).unwrap(), [0xe8, 0x0a, 0x31, 8, 0]);
+    assert_eq!(target.bytes_at(0x200d11, 3).unwrap(), [0x8b, 0x48, 0x10]);
+    assert_eq!(target.bytes_at(0x265006, 3).unwrap(), [0x89, 0x4d, 0x10]);
+    assert_eq!(target.bytes_at(0x0d7cfc, 2).unwrap(), [0xf3, 0xab]);
+    assert_eq!(target.bytes_at(0x0d8e5e, 5).unwrap(), [0xf3, 0x0f, 0x11, 0x4f, 0x28]);
+    assert_eq!(target.bytes_at(0x0d9013, 3).unwrap(), [0xc2, 0x0c, 0]);
+}
+
+fn check_authored_uncover_rules<R: std::io::Read + std::io::Seek>(
+    level: &str,
+    source: &h1map::H1Map,
+    map: &Map<R>,
+    scenario: &hs::Scenario,
+    characters: &[(String, String)],
+) {
+    let global = scenario.globals().last().unwrap();
+    assert_eq!(global.name().unwrap(), hs::h1_ai_slots::PERCEPTION_STATE);
+    let offset = scenario.node(global.root()).unwrap().data();
+    let encoded = scenario.string(offset).unwrap();
+    let word = |s| u32::from_str_radix(s, 16).unwrap();
+    let count = word(&encoded[..8]);
+    assert_eq!(encoded.len(), 8 + count as usize * 16);
+    let references = scenario.references();
+    let rules: std::collections::BTreeMap<_, _> = encoded.as_bytes()[8..].chunks_exact(16)
+        .zip(&references[references.len() - count as usize..])
+        .map(|(row, character)| {
+            assert_eq!(character.group(), FourCC(*b"char"));
+            let row = std::str::from_utf8(row).unwrap();
+            (character.id(), [word(&row[..8]), word(&row[8..])])
+        }).collect();
+    assert_eq!(rules.len(), count as usize);
+    for (variant, character) in characters {
+        if character == "none" {
+            continue;
+        }
+        let variant = source.find(h1map::Group::new(b"actv"), variant).unwrap();
+        let variant = h1ai::h1::actor_variant(source, variant).unwrap();
+        let actor = source.tag(variant.actor.id).unwrap();
+        let bytes = source.tag_data(actor).unwrap();
+        let expected = [0x2d8, 0x324].map(|at| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()));
+        let tag = map.tags().iter()
+            .find(|t| t.group == FourCC(*b"char") && t.name.as_deref() == Some(character.as_str()))
+            .unwrap();
+        assert_eq!(rules[&tag.id], expected, "{level}: {}", variant.name);
+        if character.starts_with("h1_ai\\character_") {
+            assert_eq!(tag.index_size, 0, "{level}: {character} is an alias");
+            assert!(map.tags().iter().any(|original| {
+                original.group == FourCC(*b"char")
+                    && original.index_size != 0
+                    && original.index_address == tag.index_address
+            }), "{level}: {character} keeps its native character payload");
+        }
+    }
+}
+
+fn check_authored_automatic_destinations(
+    level: &str,
+    source: &h1map::H1Map,
+    converted: &hs::Scenario,
+    scenario_tag: &[u8],
+    tag_base: u32,
+    catalog: &h1scripts::Catalog,
+) {
+    use hs::h1_ai_slots::{Operation, decode_words, migration as wire};
+
+    let count = |offset| {
+        u32::from_le_bytes(scenario_tag[offset..offset + 4].try_into().unwrap()) as usize
+    };
+    let (squads, groups, orders) = (count(0x160), count(0x158), count(0x240));
+    assert!(squads > 335, "{level}: retained physical squads");
+    assert!(engine::campaign_squad_pool::holds(squads, groups));
+
+    let reachable = converted.reachable(converted.roots()).unwrap();
+    let payload = reachable.into_iter().find_map(|datum| {
+        let node = converted.node(datum).unwrap();
+        if node.atom() || node.opcode() != hs::h1_ai_slots::CONTROL {
+            return None;
+        }
+        let head = converted.node(hs::Datum(node.data())).unwrap();
+        if head.data() != Operation::FollowWithSourcePositions.marker() {
+            return None;
+        }
+        let base = converted.node(head.next()).unwrap();
+        let offset = converted.node(base.next()).unwrap().data() as usize;
+        converted.strings().get(offset..)?.split(|&b| b == 0).next()
+    }).expect("runtime follow geometry");
+    let ai = h1ai::h1::H1Ai::read(source).unwrap();
+    let tables = h1scripts::Tables::read(source).unwrap();
+    let subjects = h1scripts::aicontrol::retained_subjects(&tables, catalog);
+    if level == "b40" {
+        let view = tags::geometry::TagView::new(scenario_tag, tag_base);
+        let native = h1ai::h2::ScenarioAi::read(&view).unwrap();
+        let mut named = std::collections::BTreeSet::new();
+        let mut expanded = 0;
+        let mut formerly_omitted = 0;
+        for &(group, squad) in &subjects.migration_destinations {
+            let encounter = &ai.encounters[usize::from(group)];
+            let source = &encounter.squads[usize::from(squad)];
+            let name: String = format!("{}/{}", encounter.name, source.name).chars().take(31).collect();
+            let index = native.squads.iter().enumerate().find(|(index, dest)| {
+                dest.parent == group as i16 && dest.name.eq_ignore_ascii_case(&name) && !named.contains(index)
+            }).unwrap_or_else(|| panic!("missing native b40 destination {name}")).0;
+            named.insert(index);
+            expanded += usize::from(index >= 344);
+            formerly_omitted += usize::from((47..=63).contains(&group));
+        }
+        assert_eq!(formerly_omitted, 18);
+        assert!(expanded > 0);
+    }
+
+    let mut shared = 0;
+    for (index, encounter) in ai.encounters.iter().enumerate() {
+        let at = index * 2 * wire::HEADER;
+        let entries = wire::Location::decode(&payload[at..at + wire::HEADER]).unwrap();
+        let points = wire::Location::decode(&payload[at + wire::HEADER..at + 2 * wire::HEADER]).unwrap();
+        let expected = subjects.follow_encounters.as_ref()
+            .is_none_or(|groups| groups.contains(&(index as u16)));
+        let source: Vec<_> = encounter.squads.iter()
+            .filter(|squad| expected && squad.flags & 0x20 != 0).collect();
+        assert_eq!(usize::from(entries.rows), source.len(), "{level}: {}", encounter.name);
+        if source.is_empty() {
+            continue;
+        }
+        let at = entries.offset as usize;
+        let size = usize::from(entries.rows) * wire::Route::WIDTH;
+        let rows = decode_words(&payload[at..at + size]).unwrap();
+        let mut groups = 0;
+        for (row, source) in rows.chunks_exact(wire::Route::WIDTH / 4).zip(source) {
+            let route = wire::Route::decode(row).unwrap();
+            assert!(route.squad == u16::MAX || usize::from(route.squad) < squads);
+            for order in route.orders {
+                assert!(order == u16::MAX || usize::from(order) < orders);
+            }
+            if route.squad != u16::MAX && route.orders != [u16::MAX; 2] {
+                shared += 1;
+            }
+            let attacking = source.groups[0] | source.groups[1] | source.groups[2];
+            let defending = source.groups[3] | source.groups[4] | source.groups[5];
+            assert_eq!(route.masks, [attacking, defending]);
+            groups |= attacking | defending;
+        }
+        let at = points.offset as usize;
+        let size = usize::from(points.rows) * wire::POINT_WIDTH;
+        let words = decode_words(&payload[at..at + size]).unwrap();
+        let encoded: Vec<_> = words.chunks_exact(wire::POINT_WIDTH / 4)
+            .map(|row| wire::read_point(row).unwrap()).collect();
+        let original: Vec<_> = encounter.firing_positions.iter()
+            .filter(|point| point.group < 26 && groups & (1 << point.group) != 0)
+            .map(|point| (usize::from(point.group), point.position)).collect();
+        assert_eq!(encoded, original, "{level}: source firing positions for {}", encounter.name);
+    }
+    assert!(shared > 0, "{level}: expected reusable native squads");
+    assert!(converted.globals().iter()
+        .any(|global| global.name().ok() == Some(hs::h1_ai_slots::TELEPORT_STATE)));
+}
+
+#[test]
+#[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
 fn every_level_s_scripts_run_on_the_retail_interpreter() {
     let s = scripting();
     let donors = donors();
@@ -1053,6 +1288,9 @@ fn every_level_s_scripts_run_on_the_retail_interpreter() {
             h1campaign::convert(&h1, &mut base, &opts).unwrap_or_else(|e| panic!("{level}: {e}"));
         let mut m = Map::from_reader(Cursor::new(done.bytes)).unwrap();
         let sc = hs::Scenario::read(&mut m).unwrap();
+        check_authored_uncover_rules(
+            level, &h1, &m, &sc, &done.report.scenario.ai.as_ref().unwrap().characters,
+        );
         let found = sc.unrunnable(&catalog).unwrap();
         // Every `switch_bsp` in Halo 1's scripts (whose literal the
         // translation keeps: Halo 2's `switch_bsp` takes the same short)
@@ -1060,6 +1298,9 @@ fn every_level_s_scripts_run_on_the_retail_interpreter() {
         // descriptors keep Halo 1's order and count.
         let scnr = m.scenario().unwrap().clone();
         let bytes = m.read_tag_bytes(scnr.id).unwrap();
+        if matches!(level, "a50" | "b40") {
+            check_authored_automatic_destinations(level, &h1, &sc, &bytes, scnr.location.unwrap().address, &s.catalog);
+        }
         let bsps = u32::from_le_bytes(bytes[0x210..0x214].try_into().unwrap());
         assert_eq!(bsps as usize, h1.structure_bsps().unwrap().len());
         // Every reached atom naming a cutscene flag, camera point, title or

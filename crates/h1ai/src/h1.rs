@@ -85,6 +85,8 @@ pub struct Actor {
     pub more_flags: u32,
     /// Type (`u16 +0x14`).
     pub kind: ActorType,
+    /// Ordinary uncover requirements, in seconds and a fraction of body vitality.
+    pub uncover: [f32; 2],
 }
 
 /// An `actv` tag: an actor with a unit, a weapon and tuning.
@@ -380,6 +382,7 @@ pub fn actor(m: &H1Map, t: &Tag) -> Result<Actor> {
         flags: u32_at(b, 0),
         more_flags: u32_at(b, 4),
         kind: ActorType(u16_at(b, 0x14)),
+        uncover: [f32_at(b, 0x2d8), f32_at(b, 0x324)],
     })
 }
 

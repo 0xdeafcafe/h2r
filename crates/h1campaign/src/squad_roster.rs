@@ -103,7 +103,7 @@ fn select(src: &mut H1Ai, uses: &Uses, groups: usize) -> HashSet<usize> {
                 output_index += usize::from(named);
                 return named;
             }
-            if engine::squad_pool::partition(count, groups).is_none()
+            if !engine::campaign_squad_pool::holds(count, groups)
                 && !named
                 && !initially_created
                 && !uses.dynamic_place
@@ -128,10 +128,11 @@ pub(crate) fn prepare(
     tables: &Tables,
     requests: &[h1ai::control::Request],
     options: &mut h1ai::convert::Options,
+    followed: Option<&std::collections::BTreeSet<u16>>,
 ) -> HashSet<usize> {
     let mut uses = Uses::read(tables);
     let mut maneuver = h1ai::control::maneuver_targets(src, requests);
-    maneuver.extend(h1ai::control::automatic_migration_targets(src));
+    maneuver.extend(h1ai::control::automatic_migration_targets(src, followed));
     let destinations: HashSet<u32> = requests.iter()
         .filter(|r| r.operation == h1ai::control::Operation::Migrate)
         .filter_map(|r| r.target)
@@ -242,7 +243,7 @@ mod tests {
             }
             let count: usize = ai.encounters.iter().map(|e| e.squads.len()).sum();
             assert!(
-                engine::squad_pool::partition(count, ai.encounters.len()).is_some(),
+                engine::campaign_squad_pool::holds(count, ai.encounters.len()),
                 "{level} {count}"
             );
             if level == "a50" {

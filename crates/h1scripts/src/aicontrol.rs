@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 pub(crate) const RENAMES: &[(&str, &str)] = &[
     ("ai_magically_see_unit", "ai_magically_see_object"),
-    ("ai_go_to_vehicle", "ai_vehicle_enter"),
+    ("ai_go_to_vehicle_override", "ai_vehicle_enter"),
     ("ai_dialogue_triggers", "ai_dialogue_enable"),
 ];
 
@@ -163,6 +163,7 @@ pub(crate) fn runtime_operation(name: &str) -> Option<hs::h1_ai_slots::Operation
 
     match name {
         "ai_magically_see_players" => Some(RuntimeOperation::SeePlayers),
+        "ai_go_to_vehicle" => Some(RuntimeOperation::VehicleEnter),
         "ai_vehicle_encounter" => Some(RuntimeOperation::VehicleEncounter),
         "ai_vehicle_enterable_distance" => Some(RuntimeOperation::VehicleDistance),
         "ai_vehicle_enterable_actor_type" => Some(RuntimeOperation::VehicleActorType),
@@ -175,6 +176,7 @@ pub(crate) fn runtime_operation(name: &str) -> Option<hs::h1_ai_slots::Operation
         "ai_try_to_fight_nothing" => Some(RuntimeOperation::ClearPreference),
         "ai_playfight" => Some(RuntimeOperation::Playfight),
         "ai_link_activation" => Some(RuntimeOperation::LinkActivation),
+        "ai_timer_expire" => Some(RuntimeOperation::ExpireSquadTimers),
         "ai_automatic_migration_target" => Some(RuntimeOperation::AutomaticMigrationTarget),
         "ai_follow_target_players" => Some(RuntimeOperation::FollowPlayers),
         "ai_follow_target_ai" => Some(RuntimeOperation::FollowAi),
@@ -278,6 +280,65 @@ pub(crate) fn request(
         reference: ai(arg)?,
         target,
     })
+}
+
+/// References that should guide the choice of empty squads retained in the
+/// rebuilt map. An unknown follow subject can select any encounter.
+#[derive(Default)]
+pub struct RetainedSubjects {
+    pub follow_encounters: Option<std::collections::BTreeSet<u16>>,
+    pub teleport_subjects: Option<std::collections::BTreeSet<u32>>,
+    pub migration_destinations: std::collections::BTreeSet<(u16, u8)>,
+}
+
+pub fn retained_subjects(tables: &crate::Tables, catalog: &crate::Catalog) -> RetainedSubjects {
+    let mut retained = RetainedSubjects {
+        follow_encounters: Some(Default::default()),
+        teleport_subjects: Some(Default::default()),
+        ..RetainedSubjects::default()
+    };
+    let literal_ai = |node: &hs::Node| {
+        node.atom() && !node.global() && node.opcode() == crate::catalog::types::AI
+    };
+    for node in tables.nodes.iter().filter(|n| n.live() && !n.atom() && !n.script_call()) {
+        let Ok(function) = catalog.function(node.opcode()) else {
+            continue;
+        };
+        let first = || {
+            let head = tables.node(hs::Datum(node.data())).ok()?;
+            tables.node(head.next()).ok()
+        };
+        match function.name.as_str() {
+            "ai_follow_target_players" | "ai_follow_target_ai" | "ai_follow_target_unit" => {
+                if let Some(subject) = first().filter(|n| literal_ai(n)) {
+                    if let Some(encounters) = &mut retained.follow_encounters {
+                        encounters.insert(subject.data() as u16);
+                    }
+                } else {
+                    retained.follow_encounters = None;
+                }
+            }
+            "ai_teleport_to_starting_location" | "ai_teleport_to_starting_location_if_unsupported" => {
+                if let Some(subject) = first().filter(|n| literal_ai(n)) {
+                    if let Some(subjects) = &mut retained.teleport_subjects {
+                        subjects.insert(subject.data());
+                    }
+                } else {
+                    retained.teleport_subjects = None;
+                }
+            }
+            "ai_migrate" | "ai_migrate_and_speak" | "ai_migrate_by_unit" | "ai_vehicle_encounter" => {
+                if let Some(destination) = first().and_then(|arg| tables.node(arg.next()).ok())
+                    .filter(|n| literal_ai(n) && n.data() >> 30 == 2)
+                {
+                    let ai = destination.data();
+                    retained.migration_destinations.insert((ai as u16, (ai >> 16) as u8));
+                }
+            }
+            _ => {}
+        }
+    }
+    retained
 }
 
 /// Level data has to be built from the original squad and platoon indices

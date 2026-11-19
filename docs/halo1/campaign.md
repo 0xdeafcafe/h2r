@@ -844,9 +844,11 @@ The bound is `0xc24000`; the base alone is `0xaed000`.
   On levels over the squad cap, the converter can omit unreferenced
   squads in encounters with deferred creation when no placement call
   can reach them. Script-named migration targets retain their own
-  indices. Before the engine populates the arrays at `0x00200b30`,
-  `engine::squad_pool` adjusts their capacities within the original two
-  allocations. See ai.md for the call sites and readback coverage.
+  indices. The campaign allocator reserves 384 squad records and 100 groups.
+  Before `0x00200b30` populates them, the runtime exposes the scenario's
+  required squad count, with 335 as the retail minimum. The group array
+  stays at its allocated address across map loads. See ai-control.md for
+  the allocator and b40 readback checks.
 - **Cutscene flags, camera points, titles and device groups.** The
   engine indexes these blocks without a check (b40 faulted at
   `0x002a003f` in `object_teleport`, reading flag -1): a call naming one

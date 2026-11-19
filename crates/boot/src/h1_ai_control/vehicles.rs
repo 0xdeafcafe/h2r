@@ -228,6 +228,46 @@ pub(super) async fn assign(cx: &Cx, handle: u32, destination: u32) -> Result<(),
     Ok(())
 }
 
+/// The normal Halo 1 call skips actors already on their way to a vehicle.
+pub(super) async fn enter_if_unassigned(
+    cx: &Cx,
+    subject: u32,
+    handle: u32,
+    seats: u32,
+) -> Result<(), EntryError> {
+    let candidates = cx.read(|m| {
+        let Some(vehicle) = vehicle(m, handle)? else {
+            return Ok(Vec::new());
+        };
+        let position = vehicle.position(m)?;
+        let mut candidates = Vec::new();
+        for actor in actors::selected(m, subject)? {
+            if pending(m, actor)?.is_none()
+                && let Some((_, unit)) = objects::get(m, DatumHandle(actor.unit))?
+            {
+                let distance = squared_distance(position, unit.position(m)?);
+                candidates.push((distance, actor.handle));
+            }
+        }
+        candidates.sort_by(|(left, _), (right, _)| left.total_cmp(right));
+        Ok::<_, MemFault>(candidates)
+    })?;
+    for (_, actor) in candidates {
+        request_seat(cx, actor, handle, seats).await?;
+    }
+    Ok(())
+}
+
+async fn request_seat(cx: &Cx, actor: u32, handle: u32, seats: u32) -> Result<(), EntryError> {
+    cx.call(
+        GuestCall::new(ENTER)
+            .eax(handle)
+            .ecx(0x8000_0000 | u32::from(actor as u16))
+            .args([seats, 0]),
+    ).await?;
+    Ok(())
+}
+
 pub(super) async fn tick(cx: &Cx, base: u32) -> Result<(), EntryError> {
     let rules = cx.read(|m| {
         let mut rules = Vec::new();
@@ -291,13 +331,7 @@ async fn board(cx: &Cx, rule: Rule) -> Result<(), EntryError> {
         Ok::<_, MemFault>(candidates)
     })?;
     for (_, actor) in candidates {
-        cx.call(
-            GuestCall::new(ENTER)
-                .eax(rule.handle)
-                .ecx(0x8000_0000 | u32::from(actor as u16))
-                .args([NONE, 0]),
-        )
-        .await?;
+        request_seat(cx, actor, rule.handle, NONE).await?;
     }
     Ok(())
 }

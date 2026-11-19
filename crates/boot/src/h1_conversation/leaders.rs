@@ -211,7 +211,7 @@ pub(super) fn install(b: &mut Builder, pending: u32) {
 
     let state = Arc::clone(&calls);
     b.raw().before(
-        &points::HS_CONVERSATION_ACTOR_SPAWN,
+        &points::AI_SPAWN_AT_SQUAD_START,
         "select the source unit's voice bank",
         move |call| {
             let (thread, esp, start) = (call.ctx.thread_id, call.cpu.esp, call.cpu.ecx as u16);
@@ -241,7 +241,7 @@ pub(super) fn install(b: &mut Builder, pending: u32) {
 
     let state = Arc::clone(&calls);
     b.raw().after(
-        &points::HS_CONVERSATION_ACTOR_SPAWN,
+        &points::AI_SPAWN_AT_SQUAD_START,
         "complete the actor placement",
         move |call| {
             let key = (call.ctx.thread_id, call.cpu.esp.wrapping_sub(12));

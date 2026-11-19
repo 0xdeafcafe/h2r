@@ -408,8 +408,19 @@ pub fn compile_scenario(
         let root = c.expr(s.root, ty)?;
         c.out.scripts[i] = definition(&s.name, s.kind, ty, root, i)?;
     }
+    let (hook_state, teleport) = c.install_ai_ticks()?;
+    let timers = c.install_combat_timers()?;
+    // Keep lookup markers together after the variable-length state tables.
     c.cinematic_marker()?;
-    c.install_ai_ticks()?;
+    if let Some(state) = hook_state {
+        c.declare_state_word(hs::h1_ai_slots::HOOK_STATE, state)?;
+    }
+    if let Some(base) = timers {
+        c.declare_state_word(hs::h1_ai_slots::timers::PHASED_GLOBAL, base)?;
+    }
+    if let Some(base) = teleport {
+        c.declare_state_word(hs::h1_ai_slots::TELEPORT_STATE, u32::from(base))?;
+    }
     c.install_platoon_tick()?;
     c.out.references = t
         .references
@@ -420,6 +431,7 @@ pub fn compile_scenario(
     if let Some((scenes, _)) = conversation_data {
         conversations::append_sound_references(&mut c.out, scenes);
     }
+    c.install_perception_state()?;
     if c.out.nodes.len() > MAX_NODES {
         return Err(invalid(format!(
             "{} nodes, Halo 2 holds {MAX_NODES}",

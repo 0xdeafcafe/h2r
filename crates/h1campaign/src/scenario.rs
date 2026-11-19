@@ -123,11 +123,8 @@ fn cluster_datum(b: &BspSlot) -> Block {
     e
 }
 
-/// Squads the engine holds: the AI's squad array at load (`0x00200974`,
-/// `mov ebx,14Fh`, `0x98` per datum) takes one datum per scenario squad
-/// (`+0x160`, `0x74` each; filled by `0x00200b30`), and a squad past it
-/// faults at `0x00200c44`. **E**.
-pub const MAX_SQUADS: usize = 0x14f;
+/// Squad records reserved in the native campaign game-state allocation.
+pub const MAX_SQUADS: usize = engine::campaign_squad_pool::LIMIT;
 /// Squad groups the engine holds: the array at `0x002009ad` (`mov
 /// ebx,64h`, `0x38` per datum), one datum per `+0x158` element. **E**.
 pub const MAX_SQUAD_GROUPS: usize = 0x64;
@@ -1103,18 +1100,55 @@ pub fn write(
     let mut retained = ai_src.clone();
     let mut ai_options = h1ai::convert::Options::default();
     let mut requests = Vec::new();
-    let generated_starts = if let Some(tables) = source_tables.as_ref().filter(|_| opts.ai) {
+    let mut selection = None;
+    let mut generated_starts = std::collections::HashSet::new();
+    if let Some(tables) = source_tables.as_ref().filter(|_| opts.ai) {
         if let Some(scripts) = opts.scripts {
             ai_options.first_command_script = Some(u16::try_from(tables.scripts.len()).map_err(|_| invalid("too many scripts"))?);
             requests = h1scripts::aicontrol::requests(tables, &scripts.catalog);
         }
-        crate::squad_roster::prepare(&mut retained, tables, &requests, &mut ai_options)
-    } else {
-        Default::default()
-    };
+        let subjects = opts.scripts.map(|scripts| {
+            h1scripts::aicontrol::retained_subjects(tables, &scripts.catalog)
+        });
+        generated_starts = crate::squad_roster::prepare(
+            &mut retained, tables, &requests, &mut ai_options,
+            subjects.as_ref().and_then(|s| s.follow_encounters.as_ref()),
+        );
+        if let Some(subjects) = subjects {
+            let groups = retained.encounters.len() + ai_options.platoon_groups.len();
+            let selected = crate::ai_control_roster::prepare(
+                &ai_src, &mut retained, &generated_starts, &subjects, &requests, groups,
+            )?;
+            generated_starts = selected.generated_starts.iter().copied().collect();
+            selection = Some((selected, subjects));
+        }
+    }
     let weapons = ai_weapons::install(&mut root, weapon_palette, &ai_weapon_tags)?;
     let mut plan = h1map::phase::time("ai", || h1ai::convert::convert_for_map(&retained, &ai_options, pathfinding, &weapons));
-    let ai_control = h1ai::control::prepare(&ai_src, &mut plan, &ai_options, &requests);
+    let mut ai_control = if let Some((retained, _)) = &selection {
+        h1ai::control::prepare_with_indices(
+            &ai_src, &mut plan, &ai_options, &requests, retained.squad_indices.clone(),
+        )
+    } else {
+        h1ai::control::prepare(&ai_src, &mut plan, &ai_options, &requests)
+    };
+    if let Some((retained, subjects)) = &selection {
+        h1ai::control::install_teleport_starts(
+            &ai_src, &mut ai_control, subjects.teleport_subjects.as_ref(),
+        );
+        h1ai::control::install_automatic_destinations(
+            &ai_src, &mut plan, &ai_options, &mut ai_control,
+            &retained.overflow_hosts, subjects.follow_encounters.as_ref(),
+        ).map_err(|error| invalid(format!("AI migration orders: {error}")))?;
+    }
+    if opts.scripts.is_some_and(|scripts| {
+        scripts.target.builtins.get("ai_magically_see_players")
+            .is_some_and(|builtin| builtin.index == hs::h1_ai_slots::CONTROL)
+    }) {
+        for &squad in ai_control.combat_timers.keys() {
+            plan.ai.squads[usize::from(squad)].delay = 0.0;
+        }
+    }
     if opts.ai {
         kit.equip(&mut root, &mut plan)?;
         for (i, bsp) in structures.iter().enumerate() {
@@ -1144,10 +1178,10 @@ pub fn write(
         }
     }
     if opts.ai
-        && engine::squad_pool::partition(plan.ai.squads.len(), plan.ai.squad_groups.len()).is_none()
+        && !engine::campaign_squad_pool::holds(plan.ai.squads.len(), plan.ai.squad_groups.len())
     {
         return Err(invalid(format!(
-            "ai: {} squads and {} squad groups, the combined squad and group pools cannot hold them",
+            "ai: {} squads and {} squad groups, the native campaign squad and group pools cannot hold them",
             plan.ai.squads.len(),
             plan.ai.squad_groups.len()
         )));
@@ -1166,51 +1200,12 @@ pub fn write(
             }
         }
     }
-    let mut chars = Vec::new();
-    let resolve = |p: &str| -> Option<TagId> {
-        let find = |p: &str| {
-            set.slots.iter().find_map(|s| {
-                let t = s.tag.as_ref()?;
-                (t.group == FourCC(*b"char") && s.name.as_deref() == Some(p)).then_some(t.id)
-            })
-        };
-        if plan
-            .characters
-            .iter()
-            .any(|c| c.h2_character == p && h1ai::convert::rebuilds_character(c.h1_type))
-        {
-            return find(p);
-        }
-        find(p).or_else(|| {
-            // Stand-ins for characters the base lacks: the marine for
-            // marine kinds, else the folder's first.
-            let folder = p.rsplit_once('\\')?.0;
-            if p.contains("\\marine\\") {
-                find("objects\\characters\\marine\\ai\\marine")
-            } else {
-                set.slots.iter().find_map(|s| {
-                    let t = s.tag.as_ref()?;
-                    (t.group == FourCC(*b"char") && s.name.as_deref()?.starts_with(folder))
-                        .then_some(t.id)
-                })
-            }
-        })
-    };
-    for c in &plan.characters {
-        let got = resolve(&c.h2_character);
-        if opts.ai && h1ai::convert::rebuilds_character(c.h1_type) && got.is_none() {
-            return Err(invalid(format!(
-                "missing rebuilt character {}",
-                c.h2_character
-            )));
-        }
-        let name = got
-            .and_then(|id| set.slots[id.index()].name.clone())
-            .unwrap_or_else(|| "none".into());
-        chars.push((c.h1_variant.clone(), name));
-    }
+    let (characters, chars) = crate::ai_control_characters::resolve(
+        h1, set, &plan, &mut ai_control, opts.ai, opts.ai && opts.scripts.is_some(),
+    )?;
+    let mut characters = characters.into_iter();
     let blocks = plan
-        .blocks(|p| resolve(p).or(Some(TagId::NULL)))
+        .blocks_with_characters(|_| characters.next())
         .map_err(|e| invalid(format!("ai: {e}")))?;
     if opts.ai {
         blocks
@@ -2127,15 +2122,30 @@ fn install_scripts(
         })
         .collect();
     let mut resolved = 0;
+    let mut missing_character = None;
     for at in SCRIPT_FIELDS {
         put_block(root, at, 0, Vec::new());
     }
-    c.install(root, |_, name| {
-        let r = by_name.get(name).copied().or_else(|| aliases.by_name(name));
+    c.install(root, |group, name| {
+        let r = if group == h1map::Group::new(b"char") {
+            let group = FourCC(*b"char");
+            let tag = tags_by_name
+                .get(&(group, name.to_ascii_lowercase()))
+                .map(|&id| (group, id));
+            if tag.is_none() {
+                missing_character = Some(name.to_owned());
+            }
+            tag
+        } else {
+            by_name.get(name).copied().or_else(|| aliases.by_name(name))
+        };
         resolved += usize::from(r.is_some());
         r
     })
     .map_err(|e| invalid(format!("scripts: {e}")))?;
+    if let Some(name) = missing_character {
+        return Err(invalid(format!("scripts: missing AI character reference {name}")));
+    }
     Ok(ScriptReport {
         scripts: c.scripts.len(),
         globals: c.globals.len(),

@@ -226,18 +226,38 @@ points! { ALL;
     HS_DISCARDED_EVALUATE @ 0x002a_b6c0: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/ai-control.md";
     /// How strongly the observing actor prioritizes one candidate.
     AI_TARGET_SCORE @ 0x0026_5d30: [fn(actor: stack 0, interest: stack 1) -> xmm0 ret 8], hot; "docs/halo1/ai-control.md";
+    /// Finalizes the actor's current interest after examining perception records.
+    AI_SELECT_INTEREST @ 0x0026_6640: [fn(actor: stack 0) ret 4], hot; "docs/halo1/ai-control.md";
     /// The actor's contribution to outgoing damage calculation.
     AI_DAMAGE_MODIFIER @ 0x001c_8440: [fn(actor: ecx, multiplier: edx, packet: stack 0) -> al ret 4]; "docs/halo1/ai-control.md";
+    /// Selects the uncover behavior from presearch when a tracked target is available.
+    AI_PRESEARCH_UNCOVER @ 0x001b_44d0: [fn(actor: stack 0, state: stack 1) -> eax ret 8], hot; "docs/halo1/ai-control.md";
+    /// Ranks uncover from its own behavior descriptor.
+    AI_UNCOVER_RANK @ 0x001b_84a0: [fn(actor: stack 0) -> eax ret 4], hot; "docs/halo1/ai-control.md";
+    AI_UNCOVER_ENTER @ 0x001b_8540: [fn(actor: stack 0, record: stack 1) -> al ret 8]; "docs/halo1/ai-control.md";
+    AI_UNCOVER_BEGIN @ 0x001b_85a0: [fn(actor: stack 0, record: stack 1) -> al ret 8]; "docs/halo1/ai-control.md";
+    AI_UNCOVER_UPDATE @ 0x001b_89d0: [fn(actor: stack 0, record: stack 1) ret 8]; "docs/halo1/ai-control.md";
+    AI_UNCOVER_CONTROL @ 0x001b_8ae0: [fn(actor: stack 0, record: stack 1) ret 8]; "docs/halo1/ai-control.md";
+    /// Starts a firing burst, setting the actor timer and angular spread.
+    AI_FIRE_BURST @ 0x001f_e620: [fn(actor: eax, firing: ebx, weapon: stack 0) ret 4], hot; "docs/halo1/ai-control.md";
+    /// Chooses the pause between bursts and saves it in the actor timer.
+    AI_FIRE_PAUSE @ 0x001f_ed70: [fn(actor: eax, firing: ecx) ret 0], hot; "docs/halo1/ai-control.md";
+    /// Stages the actor's movement, aim and trigger commands for its unit.
+    AI_SUBMIT_UNIT_CONTROL @ 0x001e_4390: [fn(actor: eax) ret 0], hot; "docs/halo1/ai-control.md";
     HS_UNIT_GRENADE_COUNT @ 0x002a_4310: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/ai-control.md";
     /// HaloScript's object awareness evaluator, index 305.
     HS_AI_SEE_OBJECT @ 0x002a_53b0: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/ai-control.md";
     HS_CONVERSATION_SPAWN_WAVE @ 0x0020_1520: [fn(count: eax, squad: stack 0, location: stack 1) ret 16]; "docs/halo1/ai.md";
-    HS_CONVERSATION_ACTOR_SPAWN @ 0x0020_3780: [fn(location: ecx, squad: stack 0) -> eax ret 8]; "docs/halo1/ai.md";
     HS_CONVERSATION_UNIT_NEW @ 0x000c_4410: [fn(unit: stack 0) ret 12]; "docs/halo1/ai.md";
     HS_CONVERSATION_MAP_DISPOSE @ 0x0020_9290: [fn() ret 0]; "docs/halo1/ai.md";
     /// `game_tick`: the per-tick phases, then the tick count. Called once per
     /// simulated tick by `game_update_ticks`.
     GAME_TICK @ 0x0013_7fe0: [fn() ret 0]; "docs/engine/engine-map.md";
+    /// Choose and reserve an available actor starting location.
+    AI_CHOOSE_SQUAD_START @ 0x0020_39d0: [fn(squad: eax, available: stack 0, excluded: stack 1) -> eax ret 8]; "docs/halo1/ai-control.md";
+    /// Spawn an actor using the chosen starting location index.
+    AI_SPAWN_AT_SQUAD_START @ 0x0020_3780: [fn(context: eax, start: ecx, squad: stack 0, flags: stack 1) -> eax ret 8]; "docs/halo1/ai-control.md";
+    AI_SQUADS_ALLOCATE @ 0x0020_0930: [fn() ret 0]; "docs/halo1/ai-control.md";
     AI_SQUADS_INITIALIZE @ 0x0020_0b30: [fn() ret 0]; "docs/halo1/ai.md";
     /// The frame's local tick batch and its elapsed seconds output.
     GAME_UPDATE_TICKS @ 0x0013_7f70: [fn(ticks: eax, elapsed: ebx) ret 0]; "docs/halo1/script-builtins.md";
@@ -307,8 +327,6 @@ points! { ALL;
     /// Finish the character physics mode's velocity calculation.
     CHARACTER_MOTION_STATE @ 0x001e_5b50: [fn(input: eax, state: ecx, output: esi) ret 0]; "docs/halo1/ai.md";
     AI_COMMAND_TARGETS @ 0x0025_a380: [fn(actor: stack 0) ret 4]; "docs/halo1/ai.md";
-    /// Actor firing-pattern setup selects a new burst duration from EBX+0x20/+0x24.
-    AI_FIRE_BURST @ 0x001f_e620: [fn(actor: eax, pattern: ebx) ret 4]; "docs/halo1/ai.md";
     /// Clear HS threads and instantiate scenario globals and persistent scripts.
     HS_NEW_MAP @ 0x0020_90a0: [fn() ret 0]; "docs/halo1/scripts.md";
 

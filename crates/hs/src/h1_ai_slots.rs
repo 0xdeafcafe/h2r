@@ -8,6 +8,8 @@
 
 mod platoons;
 pub use platoons::{PlatoonRule, PlatoonTrigger, decode_words, encode_words};
+pub mod timers;
+pub mod migration;
 
 use crate::casts::types::{AI, BOOLEAN, LONG, OBJECT, OBJECT_LIST, REAL, SHORT, STRING, VOID};
 
@@ -17,6 +19,7 @@ pub const SEE_OBJECT: u16 = 305;
 const UNIT: u16 = 51;
 const TEAM: u16 = 45;
 pub const ACTOR_TYPE: u16 = 46;
+const UNIT_SEAT_MAPPING: u16 = 12;
 
 pub const VEHICLE_ROWS: u16 = 96;
 pub const VEHICLE_WIDTH: u16 = 11;
@@ -32,6 +35,7 @@ pub enum Registry {
     Playfight,
     TargetPreference,
     Follow,
+    TeleportStarts,
 }
 
 impl Registry {
@@ -42,6 +46,7 @@ impl Registry {
             Self::Playfight => 4,
             Self::TargetPreference => 512,
             Self::Follow => FOLLOW_WORDS + MIGRATION_WORDS * 2,
+            Self::TeleportStarts => 0, // Sized from authored starts by the compiler.
         }
     }
 
@@ -68,13 +73,15 @@ impl Registry {
             Self::Vehicles => Some(Operation::VehicleTick),
             Self::ActivationLinks => Some(Operation::ActivationTick),
             Self::Follow => Some(Operation::FollowTick),
-            Self::Playfight | Self::TargetPreference => None,
+            Self::Playfight | Self::TargetPreference | Self::TeleportStarts => None,
         }
     }
 }
 
 /// The final global packs the indices of data needed by native hooks.
 pub const HOOK_STATE: &str = "h1_ai_hook_state";
+pub const TELEPORT_STATE: &str = "h1_ai_teleport_state";
+pub const PERCEPTION_STATE: &str = "h1_ai_perception_state";
 
 pub const CONTROL_TOKEN: &str = "h1_ai_control";
 pub const DISCARD_EVALUATOR: u32 = 0x002a_b6c0;
@@ -157,6 +164,13 @@ pub enum Operation {
     AutomaticMigrationTarget = 31,
     PlatoonTick = 32,
     SetManeuver = 33,
+    TimerTick = 34,
+    ExpireSquadTimers = 35,
+    VehicleEnter = 36,
+    FollowWithDestinations = 37,
+    TeleportReserved = 38,
+    TeleportUnsupportedReserved = 39,
+    FollowWithSourcePositions = 40,
 }
 
 impl Operation {
@@ -201,6 +215,13 @@ impl Operation {
             31 => Self::AutomaticMigrationTarget,
             32 => Self::PlatoonTick,
             33 => Self::SetManeuver,
+            34 => Self::TimerTick,
+            35 => Self::ExpireSquadTimers,
+            36 => Self::VehicleEnter,
+            37 => Self::FollowWithDestinations,
+            38 => Self::TeleportReserved,
+            39 => Self::TeleportUnsupportedReserved,
+            40 => Self::FollowWithSourcePositions,
             _ => return None,
         })
     }
@@ -238,7 +259,11 @@ impl Operation {
 
     pub const fn parameters(self) -> &'static [u16] {
         match self {
-            Self::SeePlayers | Self::Free | Self::Teleport | Self::TeleportUnsupported => &[AI],
+            Self::SeePlayers
+            | Self::Free
+            | Self::Teleport
+            | Self::TeleportUnsupported
+            | Self::ExpireSquadTimers => &[AI],
             Self::FreeUnits => &[OBJECT_LIST],
             Self::MigrateUnits => &[OBJECT_LIST, AI],
             Self::MigrateSpeak => &[AI, AI, STRING],
@@ -251,6 +276,7 @@ impl Operation {
             Self::VehicleDisable => &[UNIT, LONG],
             Self::VehicleTick => &[LONG],
             Self::VehicleCount => &[UNIT],
+            Self::VehicleEnter => &[AI, UNIT, UNIT_SEAT_MAPPING],
             Self::AttachFree => &[UNIT, LONG],
             Self::TimerExpire => &[AI, BOOLEAN],
             Self::LinkActivation => &[AI, AI, LONG],
@@ -264,7 +290,10 @@ impl Operation {
             Self::FollowAi => &[AI, AI, LONG],
             Self::FollowUnit => &[AI, UNIT, LONG],
             Self::FollowDistance => &[AI, REAL, LONG],
-            Self::FollowTick => &[LONG],
+            Self::FollowTick | Self::TimerTick => &[LONG],
+            Self::FollowWithDestinations => &[LONG, STRING],
+            Self::FollowWithSourcePositions => &[LONG, LONG],
+            Self::TeleportReserved | Self::TeleportUnsupportedReserved => &[AI, LONG],
             Self::AutomaticMigrationTarget => &[AI, BOOLEAN, LONG],
         }
     }

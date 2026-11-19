@@ -90,6 +90,7 @@ fn invented() -> H1Ai {
                     flags: 0,
                     more_flags: 0,
                     kind: ActorType(0),
+                    uncover: [0.0; 2],
                 },
             ),
             (
@@ -99,6 +100,7 @@ fn invented() -> H1Ai {
                     flags: 0,
                     more_flags: 0,
                     kind: ActorType(2),
+                    uncover: [0.0; 2],
                 },
             ),
         ],
@@ -154,6 +156,36 @@ fn invented() -> H1Ai {
         voice_definitions: Vec::new(),
         reference_counts: [0; 3],
     }
+}
+
+#[test]
+fn automatic_routes_keep_source_ordinals_when_native_names_are_identical() {
+    let mut source = invented();
+    let encounter = &mut source.encounters[0];
+    encounter.name = "the exact same native squad name".into();
+    for (index, squad) in encounter.squads.iter_mut().enumerate() {
+        squad.flags |= 0x20;
+        squad.groups[0] = 1 << index;
+    }
+    let mut retained = source.clone();
+    retained.encounters[0].squads.pop();
+    let opts = Options::default();
+    let mut plan = convert(&retained, &opts);
+    assert_eq!(plan.ai.squads[0].name, plan.ai.squads[1].name);
+    let mut controls = h1ai::control::prepare_with_indices(
+        &source, &mut plan, &opts, &[], vec![vec![Some(0), Some(1), None]],
+    );
+    h1ai::control::install_automatic_destinations(
+        &source, &mut plan, &opts, &mut controls, &[(0, 0)].into_iter().collect(), None,
+    ).unwrap();
+    let routes = &controls.automatic_encounters[&0].destinations;
+    assert_eq!(routes[0].squad, Some(0));
+    assert_eq!(routes[1].squad, Some(1));
+    assert_eq!(routes[0].orders, None);
+    assert_eq!(routes[1].orders, None);
+    assert_eq!(routes[2].squad, Some(0));
+    assert!(routes[2].orders.is_some());
+    assert_eq!(routes.iter().map(|route| route.masks[0]).collect::<Vec<_>>(), [1, 2, 4]);
 }
 
 #[test]
@@ -341,6 +373,20 @@ fn placement_list_reads_back_as_a_command_script() {
 fn an_unresolved_character_is_an_error() {
     let plan = convert(&invented(), &Options::default());
     assert!(plan.blocks(|_| None).is_err());
+}
+
+#[test]
+fn variants_with_different_uncover_rules_keep_separate_palette_entries() {
+    let mut src = invented();
+    let mut actor = src.actors[0].1.clone();
+    actor.uncover = [0.5, 0.1];
+    let other_actor = TagId(3);
+    src.actors.push((other_actor, actor));
+    src.actor_palette[2].as_mut().unwrap().actor.id = other_actor;
+    let plan = convert(&src, &Options::default());
+    assert_eq!(plan.characters[0].h2_character, plan.characters[2].h2_character);
+    assert_eq!(plan.characters[0].uncover, [0.0; 2]);
+    assert_eq!(plan.characters[2].uncover, [0.5, 0.1]);
 }
 
 #[test]
@@ -575,12 +621,15 @@ fn automatic_platoon_rules_retain_routes_and_use_the_selected_platoons_health() 
     encounter.squads[0].platoon = 0;
     encounter.squads[0].groups[3] = 1 << 2;
     encounter.squads[0].maneuver_to = 2;
+    encounter.squads[0].flags = 0x18;
     encounter.squads[1].platoon = 1;
     assert!(maneuver_targets(&source, &[]).contains("first/empty"));
 
     let opts = Options::default();
     let mut plan = convert(&source, &opts);
     let control = prepare(&source, &mut plan, &opts, &[]);
+    assert_eq!(control.combat_timers[&0].flags, 0x18);
+    assert_eq!(control.combat_timers[&0].seconds, 2.0);
     let [rule] = control.platoon_rules.as_slice() else {
         panic!("one platoon has automatic rules");
     };

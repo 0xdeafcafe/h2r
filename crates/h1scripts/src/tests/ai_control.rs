@@ -162,3 +162,33 @@ fn a_follow_radius_is_folded_only_when_its_setter_precedes_the_only_follow() {
         );
     }
 }
+
+#[test]
+fn squad_retention_prioritizes_literal_migration_and_follows_only_active_encounters() {
+    let mut types = h1_types();
+    types.resize(18, "unused".into());
+    types[17] = "ai".into();
+    types[usize::from(AI)] = "old_ai".into();
+    let catalog = Catalog::new(
+        vec![
+            f("begin", PASS, 0x2000, &[]),
+            f("ai_follow_target_players", VOID, ORDINARY, &[17]),
+            f("ai_migrate", VOID, ORDINARY, &[17, 17]),
+        ],
+        types,
+        vec!["startup".into()],
+    )
+    .unwrap();
+    let mut builder = Builder::default();
+    let following = builder.atom(17, 17, "beach", 7);
+    let from = builder.atom(17, 17, "beach/scouts", 0x8000_0007);
+    let to = builder.atom(17, 17, "Beach/Cliff", 0x8001_0007);
+    let follow = builder.call(1, VOID, "ai_follow_target_players", &[following]);
+    let migrate = builder.call(2, VOID, "ai_migrate", &[from, to]);
+    let root = builder.call(0, VOID, "begin", &[follow, migrate]);
+    let tables = read(&scenario(&builder, &[("main", 0, VOID, root)], &[])).unwrap();
+
+    let retained = crate::aicontrol::retained_subjects(&tables, &catalog);
+    assert_eq!(retained.follow_encounters.unwrap(), [7].into_iter().collect());
+    assert_eq!(retained.migration_destinations, [(7, 1)].into_iter().collect());
+}

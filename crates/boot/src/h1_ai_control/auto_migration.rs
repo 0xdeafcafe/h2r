@@ -17,8 +17,8 @@ use super::{
 };
 
 const WORDS: u32 = Registry::Follow.words() as u32;
-const ALLOWED: u32 = FOLLOW_WORDS as u32;
-const ENABLED: u32 = ALLOWED + MIGRATION_WORDS as u32;
+pub(super) const ALLOWED: u32 = FOLLOW_WORDS as u32;
+pub(super) const ENABLED: u32 = ALLOWED + MIGRATION_WORDS as u32;
 
 type R<T> = Result<T, MemFault>;
 
@@ -28,7 +28,7 @@ fn bit(start: u32, section: u32, squad: u32) -> Option<(u32, u32)> {
         .then_some((start + (section + word) * state::STRIDE, 1 << (squad % 32)))
 }
 
-fn has(m: &dyn GuestMemory, start: u32, section: u32, squad: u32) -> R<bool> {
+pub(super) fn has(m: &dyn GuestMemory, start: u32, section: u32, squad: u32) -> R<bool> {
     let Some((at, mask)) = bit(start, section, squad) else {
         return Ok(false);
     };
@@ -40,6 +40,7 @@ pub(super) fn set(cx: &Cx, reference: u32, enabled: bool, base: u32) -> R<()> {
         let Some(start) = state::registry(m, base, WORDS)? else {
             return Ok(());
         };
+        super::follow::set_virtual_destinations(m, start, reference, enabled)?;
         for squad in squads(m, reference)? {
             if let Some((at, mask)) = bit(start, ENABLED, squad) {
                 let old = m.u32(at)?;
@@ -50,11 +51,11 @@ pub(super) fn set(cx: &Cx, reference: u32, enabled: bool, base: u32) -> R<()> {
     })
 }
 
-fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
+pub(super) fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
     a.into_iter().zip(b).map(|(a, b)| (a - b).powi(2)).sum()
 }
 
-fn anchor(
+pub(super) fn anchor(
     m: &dyn GuestMemory,
     population: &[Actor],
     candidates: &[[f32; 3]],
@@ -78,24 +79,28 @@ fn anchor(
     Ok(nearest.map(|(_, target)| target))
 }
 
-fn nearest_firing_position(m: &dyn GuestMemory, squad: u32, anchor: [f32; 3]) -> R<Option<f32>> {
-    let Some(definition) = actors::squad_record(m, squad)? else {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Destination {
+    pub squad: u32,
+    pub order: u16,
+}
+
+fn nearest_firing_position(
+    m: &dyn GuestMemory,
+    destination: Destination,
+    anchor: [f32; 3],
+) -> R<Option<f32>> {
+    let Some(runtime) = squad_control::runtime(m, destination.squad)? else {
         return Ok(None);
     };
-    let Some(runtime) = squad_control::runtime(m, squad)? else {
-        return Ok(None);
-    };
-    let mut order = u32::from(m.u16(runtime + 0x2a)?);
-    if order == u32::from(u16::MAX) {
-        order = u32::from(m.u16(definition + 0x42)?);
-    }
+    let order = u32::from(destination.order);
     let scenario = m.u32(points::SCENARIO.base)?;
     if order >= m.u32(scenario + 0x240)? {
         return Ok(None);
     }
     let order = m.u32(scenario + 0x244)? + order * 0x7c;
     let area_set = order
-        + if m.u8(runtime + 0x60)? == 0 {
+        + if m.u16(runtime + 0x2a)? != destination.order || m.u8(runtime + 0x60)? == 0 {
             0x54
         } else {
             0x5c
@@ -132,8 +137,8 @@ fn nearest_firing_position(m: &dyn GuestMemory, squad: u32, anchor: [f32; 3]) ->
     Ok(nearest.is_finite().then(|| nearest.sqrt()))
 }
 
-fn destination(choices: &[(u32, f32, bool)], radius: f32) -> Option<u32> {
-    let &(squad, nearest, _) = choices.iter().min_by(|a, b| a.1.total_cmp(&b.1))?;
+pub(super) fn destination<T: Copy>(choices: &[(T, f32, bool)], radius: f32) -> Option<T> {
+    let &(dest, nearest, _) = choices.iter().min_by(|a, b| a.1.total_cmp(&b.1))?;
     let farthest = choices
         .iter()
         .filter(|c| c.2)
@@ -141,60 +146,119 @@ fn destination(choices: &[(u32, f32, bool)], radius: f32) -> Option<u32> {
         .max_by(f32::total_cmp);
     farthest
         .is_none_or(|old| old - nearest > radius)
-        .then_some(squad)
+        .then_some(dest)
+}
+
+pub(super) struct Migration {
+    pub destination: Destination,
+    pub actors: Vec<Actor>,
+}
+
+pub(super) fn read_destinations(m: &dyn GuestMemory, at: u32) -> R<Vec<Destination>> {
+    if at == super::NONE {
+        return Ok(Vec::new());
+    }
+    let parse = hs::h1_ai_slots::decode_words;
+    let Some(length) = parse(&m.bytes(at, 4)?).and_then(|words| words.first().copied()) else {
+        return Ok(Vec::new());
+    };
+    let Some(words) = parse(&m.bytes(at + 4, usize::from(length))?) else {
+        return Ok(Vec::new());
+    };
+    if words.len() % 2 != 0 {
+        return Ok(Vec::new());
+    }
+    Ok(words.chunks_exact(2).map(|pair| Destination {
+        squad: u32::from(pair[0]), order: pair[1],
+    }).collect())
 }
 
 pub(super) fn plan(
     m: &dyn GuestMemory,
     start: u32,
     members: &[u32],
+    deferred: &[Destination],
     anchors: &[[f32; 3]],
     radius: f32,
-) -> R<Vec<(Actor, u32)>> {
+) -> R<Option<Migration>> {
     if anchors.is_empty() {
-        return Ok(Vec::new());
+        return Ok(None);
     }
+    let carriers: BTreeSet<_> = deferred.iter().filter(|d| members.contains(&d.squad))
+        .map(|d| d.squad).collect();
     let mut participants = BTreeSet::new();
     let mut candidates = Vec::new();
+    let mut occupied_orders = std::collections::BTreeMap::new();
     for &squad in members {
-        if has(m, start, ALLOWED, squad)? {
+        let allowed = has(m, start, ALLOWED, squad)?;
+        if !allowed && !carriers.contains(&squad) {
+            continue;
+        }
+        let (Some(definition), Some(runtime)) = (
+            actors::squad_record(m, squad)?,
+            squad_control::runtime(m, squad)?,
+        ) else {
+            continue;
+        };
+        let current = m.u16(runtime + 0x2a)?;
+        let initial = m.u16(definition + 0x42)?;
+        let virtual_order = deferred.contains(&Destination { squad, order: current });
+        if allowed || virtual_order {
             participants.insert(squad);
-            if has(m, start, ENABLED, squad)? {
-                candidates.push(squad);
-            }
+            occupied_orders.insert(squad, if current == u16::MAX { initial } else { current });
+        }
+        if allowed && has(m, start, ENABLED, squad)? {
+            // A carrier's authored order stays eligible after a migration
+            // has installed one of the orders it hosts.
+            let order = if current == u16::MAX || virtual_order { initial } else { current };
+            candidates.push(Destination { squad, order });
         }
     }
-    if candidates.is_empty() {
-        return Ok(Vec::new());
-    }
+    candidates.extend(deferred.iter().filter(|entry| carriers.contains(&entry.squad)).copied());
     let population: Vec<_> = actors::all(m)?
         .into_iter()
         .filter(|actor| participants.contains(&actor.squad))
         .collect();
-    if population.is_empty() {
-        return Ok(Vec::new());
+    if population.is_empty() || candidates.is_empty() {
+        return Ok(None);
     }
     let Some(anchor) = anchor(m, &population, anchors)? else {
-        return Ok(Vec::new());
+        return Ok(None);
     };
     let mut choices = Vec::new();
-    for squad in candidates {
-        if let Some(distance) = nearest_firing_position(m, squad, anchor)? {
+    for candidate in candidates {
+        if let Some(distance) = nearest_firing_position(m, candidate, anchor)? {
             choices.push((
-                squad,
+                candidate,
                 distance,
-                population.iter().any(|actor| actor.squad == squad),
+                population.iter().any(|actor| {
+                    actor.squad == candidate.squad
+                        && (occupied_orders.get(&actor.squad).copied() == Some(candidate.order)
+                            || !carriers.contains(&actor.squad))
+                }),
             ));
         }
     }
-    let Some(to) = destination(&choices, radius) else {
-        return Ok(Vec::new());
+    let Some(destination) = destination(&choices, radius) else {
+        return Ok(None);
     };
-    Ok(population
-        .into_iter()
-        .filter(|actor| actor.squad != to)
-        .map(|actor| (actor, to))
-        .collect())
+    let actors = population.into_iter().filter(|actor| actor.squad != destination.squad).collect();
+    Ok(Some(Migration { destination, actors }))
+}
+
+pub(super) async fn apply(cx: &Cx, migration: Migration) -> Result<(), engine::entry::EntryError> {
+    let dest = migration.destination;
+    let current = cx.read(|m| {
+        squad_control::runtime(m, dest.squad)?.map(|at| m.u16(at + 0x2a)).transpose()
+    })?;
+    if current != Some(dest.order) {
+        cx.call(engine::entry::GuestCall::new(0x0027_5cb0)
+            .eax(dest.squad).ecx(u32::from(dest.order))).await?;
+    }
+    for actor in migration.actors {
+        actors::move_actor(cx, actor, dest.squad).await?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -8,20 +8,28 @@ fn globals(m: &mut FakeGuest) -> u32 {
     m.map(points::SCENARIO.base, 4)
         .put_u32(points::SCENARIO.base, sc)
         .map(sc, 0x200)
-        .put_u32(sc + 0x1c0, n + 2)
+        .put_u32(sc + 0x1c0, n + 5)
         .put_u32(sc + 0x1c4, defs)
-        .map(defs, (n + 2) * 40)
+        .map(defs, (n + 5) * 40)
         .map(hs_pool::GLOBALS, 4)
         .put_u32(hs_pool::GLOBALS, pool)
         .map(pool, layout::HEADER_SIZE)
-        .put_u32(pool + layout::HIGH_WATER, hs_pool::EXTERNALS + n + 2)
+        .put_u32(pool + layout::HIGH_WATER, hs_pool::EXTERNALS + n + 5)
         .put_u32(pool + layout::DATA, data)
-        .map(cells, (n + 2) * 8)
+        .map(cells, (n + 5) * 8)
         .map(points::GAME_TIME.base, 4)
         .put_u32(points::GAME_TIME.base, clock)
         .map(clock, 16);
     m.write(defs, Field::Active.name().as_bytes()).unwrap();
     m.write(defs + n * 40, MARKER.as_bytes()).unwrap();
+    for (i, marker) in [
+        hs::h1_ai_slots::HOOK_STATE,
+        hs::h1_ai_slots::timers::PHASED_GLOBAL,
+        hs::h1_ai_slots::TELEPORT_STATE,
+        hs::h1_ai_slots::PERCEPTION_STATE,
+    ].iter().enumerate() {
+        m.write(defs + (n + 1 + i as u32) * 40, marker.as_bytes()).unwrap();
+    }
     cells
 }
 

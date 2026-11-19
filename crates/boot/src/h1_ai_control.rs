@@ -9,7 +9,9 @@ use hs::h1_ai_slots::{self, Operation};
 
 mod actors;
 mod auto_migration;
+mod contact;
 mod follow;
+mod follow_geometry;
 mod platoons;
 mod playfight;
 mod preference;
@@ -17,6 +19,11 @@ mod speech;
 #[path = "h1_ai_control/squads.rs"]
 mod squad_control;
 mod state;
+mod teleport;
+mod timers;
+mod uncover;
+mod uncover_limits;
+mod uncover_targetless;
 mod vehicles;
 
 const NONE: u32 = u32::MAX;
@@ -100,6 +107,23 @@ impl feature::Feature for AiControl {
                     };
                     let mut guest = call.ctx.runtime().memory();
                     let _ = playfight::scale_damage(&mut *guest, actor, multiplier);
+                }
+                Ok(Flow::Continue)
+            },
+        );
+        playfight::register_firing_hooks(b);
+        uncover::register_playfight_hook(b);
+        uncover_limits::register(b);
+        uncover_targetless::register(b);
+        teleport::register_spawn_hook(b);
+        b.raw().before(
+            &points::AI_SUBMIT_UNIT_CONTROL,
+            "hold actor movement during the Halo 1 combat timer",
+            |call| {
+                if is_converted_campaign(call) {
+                    let actor = call.cpu.eax;
+                    let mut guest = call.ctx.runtime().memory();
+                    let _ = timers::hold_movement(&mut *guest, actor);
                 }
                 Ok(Flow::Continue)
             },
@@ -321,6 +345,12 @@ async fn dispatch(cx: Cx, op: Operation) -> Result<Ret, EntryError> {
             Operation::Teleport | Operation::TeleportUnsupported => {
                 actors::teleport(&cx, args[0], op == Operation::TeleportUnsupported).await?;
             }
+            Operation::TeleportReserved | Operation::TeleportUnsupportedReserved => {
+                let pools = cx.read(|m| teleport::pools(m, args[1]))?;
+                actors::teleport_reserved(
+                    &cx, args[0], op == Operation::TeleportUnsupportedReserved, &pools,
+                ).await?;
+            }
             Operation::Maneuver => actors::maneuver(&cx, args[0]).await?,
             Operation::PlatoonTick => platoons::tick(&cx, args[0]).await?,
             Operation::SetManeuver => platoons::set(&cx, args[0], args[1] as u8 != 0)?,
@@ -332,6 +362,16 @@ async fn dispatch(cx: Cx, op: Operation) -> Result<Ret, EntryError> {
                 squad_control::expire(&cx, args[0])?;
                 if args[1] as u8 != 0 {
                     awareness(&cx, args[0], None).await?;
+                }
+            }
+            Operation::TimerTick | Operation::ExpireSquadTimers => {
+                let revealed = if op == Operation::TimerTick {
+                    timers::tick(&cx, args[0])?
+                } else {
+                    timers::expire(&cx, args[0])?
+                };
+                for squad in revealed {
+                    awareness(&cx, squad, None).await?;
                 }
             }
             Operation::LinkActivation => squad_control::link(&cx, args[0], args[1], args[2])?,
@@ -346,8 +386,13 @@ async fn dispatch(cx: Cx, op: Operation) -> Result<Ret, EntryError> {
             Operation::AutomaticMigrationTarget => {
                 auto_migration::set(&cx, args[0], args[1] as u8 != 0, args[2])?;
             }
-            Operation::FollowTick => follow::tick(&cx, args[0]).await?,
+            Operation::FollowTick | Operation::FollowWithDestinations | Operation::FollowWithSourcePositions => {
+                follow::tick(&cx, op, args[0], args.get(1).copied().unwrap_or(NONE)).await?;
+            }
             Operation::VehicleTick => vehicles::tick(&cx, args[0]).await?,
+            Operation::VehicleEnter => {
+                vehicles::enter_if_unassigned(&cx, args[0], args[1], args[2]).await?;
+            }
             Operation::VehicleCount => value = cx.read(|m| vehicles::count(m, args[0]))?,
             operation if operation.registry() == Some(hs::h1_ai_slots::Registry::Vehicles) => {
                 vehicles::configure(&cx, operation, &args)?;

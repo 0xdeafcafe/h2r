@@ -45,8 +45,8 @@ impl Cells {
         }
         let defs = m.u32(sc + 0x1c4).ok()?;
         let mut label = [0; 32];
-        // The optional AI registry index follows ours.
-        let index = (count.saturating_sub(2)..count).rev().find(|&i| {
+        // Up to four AI markers follow ours: hooks, timers, teleport and perception.
+        let index = (count.saturating_sub(5)..count).rev().find(|&i| {
             m.read(defs + i * 40, &mut label).is_ok()
                 && label[..MARKER.len()] == *MARKER.as_bytes()
                 && label[MARKER.len()] == 0

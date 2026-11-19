@@ -868,7 +868,11 @@ fn encounter_controls_emit_live_evaluators_and_native_orders() {
         let source = h1ai::h1::H1Ai::read(map).unwrap();
         let opts = h1ai::convert::Options::default();
         let mut plan = h1ai::convert::convert(&source, &opts);
-        let controls = h1ai::control::prepare(&source, &mut plan, &opts, &requests);
+        let mut controls = h1ai::control::prepare(&source, &mut plan, &opts, &requests);
+        let subjects = h1scripts::aicontrol::retained_subjects(&tables, &catalog);
+        h1ai::control::install_teleport_starts(
+            &source, &mut controls, subjects.teleport_subjects.as_ref(),
+        );
         if requests
             .iter()
             .any(|r| r.operation == Operation::FollowDistance)
@@ -916,6 +920,13 @@ fn encounter_controls_emit_live_evaluators_and_native_orders() {
                         let operation = RuntimeOperation::from_marker(head.data()).unwrap();
                         assert_eq!(operation.slot(), node.opcode());
                         runtime_operations.insert(operation as u16);
+                        if operation == RuntimeOperation::VehicleEnter {
+                            vehicle += 1;
+                            let seat = scenario
+                                .node(scenario.node(first().next()).unwrap().next())
+                                .unwrap();
+                            assert_eq!(descriptors.type_name(seat.value_type()).unwrap(), "unit_seat_mapping");
+                        }
                     }
                 }
                 280 => grenades = true,
@@ -968,22 +979,25 @@ fn encounter_controls_emit_live_evaluators_and_native_orders() {
         RuntimeOperation::FreeUnits,
         RuntimeOperation::MigrateUnits,
         RuntimeOperation::MigrateSpeak,
-        RuntimeOperation::Teleport,
-        RuntimeOperation::TeleportUnsupported,
-        RuntimeOperation::Maneuver,
+        RuntimeOperation::TeleportReserved,
+        RuntimeOperation::TeleportUnsupportedReserved,
+        RuntimeOperation::SetManeuver,
+        RuntimeOperation::PlatoonTick,
         RuntimeOperation::VehicleEncounter,
         RuntimeOperation::VehicleDistance,
         RuntimeOperation::VehicleActorType,
         RuntimeOperation::VehicleDisable,
         RuntimeOperation::VehicleTick,
         RuntimeOperation::VehicleCount,
+        RuntimeOperation::VehicleEnter,
         RuntimeOperation::FollowPlayers,
         RuntimeOperation::FollowAi,
         RuntimeOperation::FollowDisable,
         RuntimeOperation::FollowDistance,
         RuntimeOperation::FollowTick,
         RuntimeOperation::AutomaticMigrationTarget,
-        RuntimeOperation::TimerExpire,
+        RuntimeOperation::ExpireSquadTimers,
+        RuntimeOperation::TimerTick,
         RuntimeOperation::LinkActivation,
         RuntimeOperation::ActivationTick,
         RuntimeOperation::Playfight,

@@ -14,6 +14,45 @@ fn switch_name(platoon: Platoon) -> String {
     format!("h1_maneuver_{}_{}", platoon.encounter, platoon.index)
 }
 
+fn encode_follow_geometry(control: &Control) -> Result<String> {
+    use hs::h1_ai_slots::migration as wire;
+
+    let mut blocks = String::new();
+    let mut directory = String::with_capacity(wire::DIRECTORY);
+    for group in 0..wire::GROUPS {
+        let Some(encounter) = control.automatic_encounters.get(&(group as u16)) else {
+            encode_words(&mut directory, [0; 6]);
+            continue;
+        };
+        let offset = |len: usize| -> Result<[u16; 2]> {
+            let value = u32::try_from(wire::DIRECTORY + len)
+                .map_err(|_| invalid("AI follow coordinates exceed the script string table"))?;
+            Ok([(value >> 16) as u16, value as u16])
+        };
+        let count = |len: usize| -> Result<u16> {
+            u16::try_from(len).map_err(|_| invalid("too many AI follow rows in an encounter"))
+        };
+        let [hi, lo] = offset(blocks.len())?;
+        encode_words(&mut directory, [hi, lo, count(encounter.destinations.len())?]);
+        for d in &encounter.destinations {
+            wire::Route {
+                squad: d.squad.unwrap_or(u16::MAX),
+                orders: d.orders.unwrap_or([u16::MAX; 2]),
+                posture_squad: d.platoon_member.unwrap_or(u16::MAX),
+                defending: d.defending,
+                masks: d.masks,
+            }.append(&mut blocks);
+        }
+        let [hi, lo] = offset(blocks.len())?;
+        encode_words(&mut directory, [hi, lo, count(encounter.firing_positions.len())?]);
+        for &(group, point) in &encounter.firing_positions {
+            wire::point(&mut blocks, group, point);
+        }
+    }
+    directory.push_str(&blocks);
+    Ok(directory)
+}
+
 impl Compiler<'_> {
     pub(super) fn install_maneuver_switches(&mut self) -> Result<()> {
         let Some(control) = self.ai_control else {
@@ -83,6 +122,19 @@ impl Compiler<'_> {
         if let Some(op) = aicontrol::runtime_operation(name)
             && aicontrol::runtime_target(self.h2, op).is_some()
         {
+            if op == RuntimeOperation::ExpireSquadTimers
+                && let Some(control) = self.ai_control
+                && let [reference] = args
+                && let Some(request) = aicontrol::request(name, self.t.node(*reference)?, self.t)
+                && let Some(actions) = control.actions.get(&request)
+            {
+                return self.emit_actions(control, actions, args, expected).map(Some);
+            }
+            if matches!(op, RuntimeOperation::Teleport | RuntimeOperation::TeleportUnsupported)
+                && self.ai_control.is_some()
+            {
+                return self.teleport_control(op, args, expected).map(Some);
+            }
             return self.runtime_control(op, args, expected).map(Some);
         }
         match name {
@@ -299,8 +351,12 @@ impl Compiler<'_> {
                     reveal_players,
                 } => {
                     let squad = self.ai_literal(squad)?;
-                    let reveal = self.number(h2t::BOOLEAN, i32::from(reveal_players));
-                    self.runtime_control_call(RuntimeOperation::TimerExpire, &[squad, reveal], ty)?
+                    if self.has_runtime_control() {
+                        self.runtime_control_call(RuntimeOperation::ExpireSquadTimers, &[squad], ty)?
+                    } else {
+                        let reveal = self.number(h2t::BOOLEAN, i32::from(reveal_players));
+                        self.runtime_control_call(RuntimeOperation::TimerExpire, &[squad, reveal], ty)?
+                    }
                 }
                 Action::Spawn(squad) => {
                     let squad = self.ai_literal(squad)?;
@@ -375,6 +431,34 @@ impl Compiler<'_> {
         self.runtime_control_call(op, &compiled, expected)
     }
 
+    fn teleport_control(
+        &mut self,
+        op: RuntimeOperation,
+        args: &[Datum],
+        expected: u16,
+    ) -> Result<Datum> {
+        let [reference] = args else {
+            return Err(invalid("teleport argument count"));
+        };
+        let reference = self.expr(*reference, self.ty(types::AI)?)?;
+        let base = self.registry_base(Registry::TeleportStarts)?;
+        let base = self.number(h2t::LONG, i32::from(base));
+        let operation = if op == RuntimeOperation::Teleport {
+            RuntimeOperation::TeleportReserved
+        } else {
+            RuntimeOperation::TeleportUnsupportedReserved
+        };
+        self.runtime_control_call(operation, &[reference, base], expected)
+    }
+
+    fn registry_words(&self, registry: Registry) -> usize {
+        if registry == Registry::TeleportStarts {
+            return 1 + self.ai_control.map_or(0, |control| control.teleport_starts.values()
+                .map(|starts| 1 + 2 * starts.len().div_ceil(32)).sum::<usize>());
+        }
+        usize::from(registry.words())
+    }
+
     fn registry_base(&mut self, registry: Registry) -> Result<u16> {
         if let Some(&(_, base)) = self.ai_registries.iter().find(|(r, _)| *r == registry) {
             return Ok(base);
@@ -383,49 +467,62 @@ impl Compiler<'_> {
         // these cells now so that later families can append their own.
         let start = self.out.globals.len();
         let base = u16::try_from(start).map_err(|_| invalid("global count"))?;
-        let end = start + usize::from(registry.words());
-        if end > hs::MAX_DEFINITIONS {
+        if start + self.registry_words(registry) > hs::MAX_DEFINITIONS {
             return Err(invalid("converted AI state exceeds the Halo 2 global pool"));
         }
-        for index in 0..registry.words() {
-            let initial =
-                if registry == Registry::Follow && index >= hs::h1_ai_slots::FOLLOW_WORDS {
-                    let word = (index - hs::h1_ai_slots::FOLLOW_WORDS)
-                        % hs::h1_ai_slots::MIGRATION_WORDS;
-                    self.ai_control.map_or(0, |control| {
-                        control
-                            .automatic_migration
-                            .range(word * 32..(word + 1) * 32)
-                            .fold(0u32, |bits, &id| bits | 1 << (id % 32))
-                            as i32
-                    })
-                } else {
-                    registry.initial(index)
-                };
-            let root = self.global_constant(h2t::LONG, initial);
-            let global = start + usize::from(index);
-            let name = format!("h1_ai_state_{global}");
-            if self
-                .t
-                .globals
-                .iter()
-                .any(|g| g.name.eq_ignore_ascii_case(&name))
-            {
-                return Err(invalid(format!("global name collision: {name}")));
+        let mut words = Vec::with_capacity(self.registry_words(registry));
+        if registry == Registry::TeleportStarts {
+            let empty = Default::default();
+            let pools = self.ai_control.map_or(&empty, |control| &control.teleport_starts);
+            words.push(pools.len() as u32);
+            for (&squad, starts) in pools {
+                let count = u16::try_from(starts.len())
+                    .map_err(|_| invalid("too many AI starts in a squad"))?;
+                words.push(u32::from(squad) << 16 | u32::from(count));
+                for block in starts.chunks(32) {
+                    let preferred = block.iter().enumerate().fold(0u32, |mask, (index, required)| {
+                        mask | (u32::from(*required) << index)
+                    });
+                    words.extend([preferred, u32::MAX >> (32 - block.len())]);
+                }
             }
-            self.out
-                .globals
-                .push(definition(&name, h2t::LONG, 0, root, global)?);
+        } else {
+            for index in 0..registry.words() {
+                let initial =
+                    if registry == Registry::Follow && index >= hs::h1_ai_slots::FOLLOW_WORDS {
+                        let word = (index - hs::h1_ai_slots::FOLLOW_WORDS)
+                            % hs::h1_ai_slots::MIGRATION_WORDS;
+                        self.ai_control.map_or(0, |control| {
+                            control
+                                .automatic_migration
+                                .range(word * 32..(word + 1) * 32)
+                                .fold(0u32, |bits, &id| bits | 1 << (id % 32))
+                                as i32
+                        })
+                    } else {
+                        registry.initial(index)
+                    };
+                words.push(initial as u32);
+            }
+        }
+        for (offset, value) in words.into_iter().enumerate() {
+            self.declare_state_word(&format!("h1_ai_state_{}", start + offset), value)?;
         }
         self.ai_registries.push((registry, base));
         Ok(base)
     }
 
-    pub(super) fn install_ai_ticks(&mut self) -> Result<()> {
+    pub(super) fn install_ai_ticks(&mut self) -> Result<(Option<u32>, Option<u16>)> {
+        let mut teleport_base = None;
         let mut hook_state = u32::MAX;
         for (registry, base) in std::mem::take(&mut self.ai_registries) {
             if let Some(shift) = registry.hook_shift() {
                 hook_state = (hook_state & !(0xffff << shift)) | (u32::from(base) << shift);
+            }
+            if registry == Registry::TeleportStarts
+                && self.ai_control.is_some_and(|control| !control.teleport_starts.is_empty())
+            {
+                teleport_base = Some(base);
             }
             let Some(operation) = registry.tick() else {
                 continue;
@@ -440,7 +537,19 @@ impl Compiler<'_> {
                 return Err(invalid(format!("script name collision: {name}")));
             }
             let base = self.number(h2t::LONG, i32::from(base));
-            let root = self.runtime_control_call(operation, &[base], h2t::VOID)?;
+            let root = if operation == RuntimeOperation::FollowTick
+                && let Some(control) = self.ai_control
+                && !control.automatic_encounters.is_empty()
+            {
+                let encoded = encode_follow_geometry(control)?;
+                // This is metadata in the script string section. The VM
+                // evaluates its integer offset, never the data as a token.
+                let offset = self.intern(encoded.as_bytes());
+                let payload = self.number(h2t::LONG, offset as i32);
+                self.runtime_control_call(RuntimeOperation::FollowWithSourcePositions, &[base, payload], h2t::VOID)?
+            } else {
+                self.runtime_control_call(operation, &[base], h2t::VOID)?
+            };
             self.out.scripts.push(definition(
                 &name,
                 2,
@@ -449,24 +558,75 @@ impl Compiler<'_> {
                 self.out.scripts.len(),
             )?);
         }
-        if hook_state != u32::MAX {
-            // Native hooks can locate these registries in constant time.
-            let name = hs::h1_ai_slots::HOOK_STATE;
-            let index = self.out.globals.len();
-            if index >= hs::MAX_DEFINITIONS
-                || self
-                    .t
-                    .globals
-                    .iter()
-                    .any(|g| g.name.eq_ignore_ascii_case(name))
-            {
-                return Err(invalid("unable to add the AI hook state index"));
-            }
-            let root = self.number(h2t::LONG, hook_state as i32);
-            self.out
-                .globals
-                .push(definition(name, h2t::LONG, 0, root, index)?);
+        Ok(((hook_state != u32::MAX).then_some(hook_state), teleport_base))
+    }
+
+    pub(super) fn install_perception_state(&mut self) -> Result<()> {
+        use std::fmt::Write;
+
+        let Some(control) = self.ai_control else {
+            return Ok(());
+        };
+        if !self.has_runtime_control()
+            || (control.uncover.is_empty() && control.combat_timers.is_empty())
+        {
+            return Ok(());
         }
+        let mut data = format!("{:08x}", control.uncover.len());
+        for rule in control.uncover.values() {
+            let [seconds, damage] = rule.requirements;
+            write!(data, "{:08x}{:08x}", seconds.to_bits(), damage.to_bits())
+                .expect("write to String");
+            // These trailing references are normal scenario tag fixups.
+            // The fresh map writer can change the actual character datum.
+            self.out.references.push((h1map::Group::new(b"char"), rule.character.clone()));
+        }
+        let offset = self.intern(data.as_bytes());
+        self.declare_state_word(hs::h1_ai_slots::PERCEPTION_STATE, offset)
+    }
+
+    pub(super) fn install_combat_timers(&mut self) -> Result<Option<u32>> {
+        use hs::h1_ai_slots::timers;
+
+        let Some(control) = self.ai_control else {
+            return Ok(None);
+        };
+        if !self.has_runtime_control() || control.combat_timers.is_empty() {
+            return Ok(None);
+        }
+        let rows = control.combat_timers.iter().map(|(&id, timer)| (id, timer.flags, timer.seconds));
+        let mut words = timers::build(rows).ok_or_else(|| invalid("too many squads for combat timers"))?;
+        for block in 0..timers::BLOCKS as u16 {
+            let mask = control.guard_baselines.range(block * 32..(block + 1) * 32)
+                .fold(0u32, |mask, index| mask | 1 << (index % 32));
+            words.push(mask);
+        }
+        let base = self.out.globals.len();
+        if base + words.len() >= hs::MAX_DEFINITIONS {
+            return Err(invalid("converted AI timers exceed the Halo 2 global pool"));
+        }
+        for (offset, value) in words.into_iter().enumerate() {
+            self.declare_state_word(&format!("h1_ai_timer_{offset}"), value)?;
+        }
+        let name = "h1_ai_timer_tick";
+        if self.t.scripts.iter().any(|s| s.name.eq_ignore_ascii_case(name)) {
+            return Err(invalid(format!("script name collision: {name}")));
+        }
+        let argument = self.number(h2t::LONG, base as i32);
+        let root = self.runtime_control_call(RuntimeOperation::TimerTick, &[argument], h2t::VOID)?;
+        self.out.scripts.push(definition(name, 2, h2t::VOID, root, self.out.scripts.len())?);
+        Ok(Some(base as u32))
+    }
+
+    pub(super) fn declare_state_word(&mut self, name: &str, value: u32) -> Result<()> {
+        if self.out.globals.len() >= hs::MAX_DEFINITIONS {
+            return Err(invalid("converted AI state exceeds the Halo 2 global pool"));
+        }
+        if self.t.globals.iter().any(|g| g.name.eq_ignore_ascii_case(name)) {
+            return Err(invalid(format!("global name collision: {name}")));
+        }
+        let root = self.global_constant(h2t::LONG, value as i32);
+        self.out.globals.push(definition(name, h2t::LONG, 0, root, self.out.globals.len())?);
         Ok(())
     }
 

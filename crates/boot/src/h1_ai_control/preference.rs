@@ -14,9 +14,9 @@ use super::{NONE, actors, state};
 const TARGETS: Registry = Registry::TargetPreference;
 const WORDS: u32 = TARGETS.words() as u32;
 const PLAYERS: u32 = 0x3fff_ffff;
-const INTEREST: u32 = 0x0050_2418;
+pub(super) const INTEREST: u32 = 0x0050_2418;
 const PROPS: u32 = 0x0050_241c;
-const TRACKING: u32 = 0x0050_2414;
+pub(super) const TRACKING: u32 = 0x0050_2414;
 const PROP_TYPE_TABLE: u32 = 0x0047_0f16;
 const PREFERENCE_SCORE: f32 = 10.0;
 
@@ -48,7 +48,7 @@ pub(super) fn set(cx: &Cx, operation: Operation, args: &[u32]) -> R<()> {
     })
 }
 
-fn datum(m: &dyn GuestMemory, pool: u32, handle: u32) -> R<Option<u32>> {
+pub(super) fn datum(m: &dyn GuestMemory, pool: u32, handle: u32) -> R<Option<u32>> {
     let at = m.u32(pool)?;
     if at == 0 {
         return Ok(None);

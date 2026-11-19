@@ -27,6 +27,8 @@
 
 pub mod cutscenes;
 mod actor_control;
+mod ai_control_characters;
+mod ai_control_roster;
 pub mod donor;
 pub mod h2assets;
 pub mod manifest;
