@@ -64,10 +64,9 @@ impl ExternalPass for Placed {
 
 /// A recording backend that takes external passes.
 fn takes() -> RecordingBackend {
-    RecordingBackend {
-        external_passes: true,
-        ..RecordingBackend::default()
-    }
+    let mut b = RecordingBackend::default();
+    b.external_passes = true;
+    b
 }
 
 fn setup<B: Backend>(b: B) -> (Device<B>, SparseMemory, u32) {
