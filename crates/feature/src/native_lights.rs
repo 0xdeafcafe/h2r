@@ -86,6 +86,8 @@ static RUNS: AtomicU64 = AtomicU64::new(0);
 static VIEW_TARGET: Mutex<Option<[u32; 8]>> = Mutex::new(None);
 /// Lights left to D3D because the bound target was not the view's.
 static TARGET_MOVED: AtomicU64 = AtomicU64::new(0);
+/// Lights the host would draw left to D3D because they meet an object.
+static OBJECTS_MET: AtomicU64 = AtomicU64::new(0);
 
 /// Installs the host (boot). Without one nothing is skipped.
 pub fn set_host(host: Arc<dyn Host>) {
@@ -112,6 +114,13 @@ impl GuestRead for Ro<'_> {
 /// Lights left to D3D because the bound target had moved from the view's.
 pub fn target_refusals() -> u64 {
     TARGET_MOVED.load(Ordering::Relaxed)
+}
+
+/// Lights the host would draw left to D3D because their sphere meets a
+/// live object's (`objects::object_meets_sphere`): their passes light
+/// the object, which the native lights do not yet.
+pub fn object_refusals() -> u64 {
+    OBJECTS_MET.load(Ordering::Relaxed)
 }
 
 /// The observer before the dynamic lights: no run carries over, and the
@@ -243,6 +252,11 @@ pub fn on_light_at(mem: &mut dyn GuestMemory, esp: u32, entry: Option<Entry>) ->
     if !host.accepts(mem, &light) {
         return false;
     }
+    let (centre, radius) = light.bounds;
+    if native_render::objects::object_meets_sphere(&Ro(mem), centre, radius) {
+        OBJECTS_MET.fetch_add(1, Ordering::Relaxed);
+        return false;
+    }
     // The tail sets the view's target back; skipped, it must still be bound.
     let view = *VIEW_TARGET.lock().unwrap_or_else(|e| e.into_inner());
     if view.is_none() || host.target() != view {
@@ -298,7 +312,8 @@ fn join(host: &dyn Host, m: &Ro<'_>, light: Light) -> bool {
     let runs = RUNS.fetch_add(1, Ordering::Relaxed) + 1;
     if runs % 1800 == 1 {
         let (l, s, r) = counts();
-        eprintln!("native-lights: {s} of {l} dynamic lights drawn natively, in {r} runs");
+        let o = object_refusals();
+        eprintln!("native-lights: {s} of {l} dynamic lights drawn natively, in {r} runs; {o} left to D3D for meeting an object");
     }
     true
 }
