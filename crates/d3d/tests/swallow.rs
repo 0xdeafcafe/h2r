@@ -243,6 +243,41 @@ fn a_backend_that_refuses_preparation_replays_the_complete_packet_set() {
 }
 
 #[test]
+fn only_a_sampled_stage_can_force_a_post_alias_writeback() {
+    use shaders::psh::{PixelShaderDef, bits::{TEX_PROJECT2D, texture_modes}};
+
+    for sampled in [false, true] {
+        let (mut d, mut m, back) = setup(recorder());
+        let shader = MISC + 0x6000;
+        let definition = shader + 0x100;
+        m.write(definition, &PixelShaderDef {
+            texture_modes: texture_modes([0, 0, 0, if sampled { TEX_PROJECT2D } else { 0 }]),
+            ..Default::default()
+        }.to_bytes()).unwrap();
+        for (i, value) in [1, 0, definition].into_iter().enumerate() {
+            m.write_u32(shader + 4 * i as u32, value).unwrap();
+        }
+        assert!(d.swallow(&mut m, plan(true, Capture)).unwrap());
+        d.set_render_target(&mut m, LEVEL_A, 0).unwrap();
+        quad(&mut m, 0);
+        d.set_pixel_shader(&mut m, shader).unwrap();
+        // Stage 3 still names the very level this quad is drawing into.
+        d.set_texture(&mut m, 3, TEX_A).unwrap();
+        quad(&mut m, 1);
+        d.set_texture(&mut m, 3, 0).unwrap();
+        d.set_render_target(&mut m, back, 0).unwrap();
+        quad(&mut m, 2);
+        d.drain_until_callback(&mut m).unwrap();
+        finish(&mut d, &mut m);
+        let stats = d.stats();
+        assert_eq!(stats.swallow_reasons[SwallowRefusal::Resource.index()], u64::from(sampled));
+        assert_eq!(stats.swallow_reasons[SwallowRefusal::Encode.index()], u64::from(!sampled));
+        assert_eq!(stats.swallow_draws_replayed, if sampled { 1 } else { 3 });
+        assert_eq!(draws(&d).len(), 3);
+    }
+}
+
+#[test]
 fn rebinding_a_rewritten_header_replays_before_destroying_its_old_surface() {
     let (mut d, mut m, _) = setup(recorder());
     assert!(d.swallow(&mut m, plan(true, Capture)).unwrap());

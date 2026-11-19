@@ -658,6 +658,16 @@ fn check_source(
     slot: Option<u8>,
     slots: &[Option<d3d::SwallowTarget>],
 ) -> Result<(), String> {
+    check_bound_source(original, stage, slot, slots, false)
+}
+
+fn check_bound_source(
+    original: &d3d::SwallowOriginal<'_>,
+    stage: usize,
+    slot: Option<u8>,
+    slots: &[Option<d3d::SwallowTarget>],
+    opaque_entry: bool,
+) -> Result<(), String> {
     let target = slot.and_then(|i| slots.get(usize::from(i))).copied().flatten();
     let info = original.draw.texture_info[stage];
     let extras = original.draw.extras[stage];
@@ -668,7 +678,9 @@ fn check_source(
         && extras.color_key_op == 0
         && extras.color_sign == 0
         && extras.alpha_kill == 0
-        && matches!(info.format, gfx::D3DFormat::LinA8R8G8B8 | gfx::D3DFormat::A8R8G8B8)
+        && info.kind == gfx::texture::TextureKind::D2
+        && (matches!(info.format, gfx::D3DFormat::LinA8R8G8B8 | gfx::D3DFormat::A8R8G8B8)
+            || (opaque_entry && info.format == gfx::D3DFormat::LinX8R8G8B8))
     {
         return Ok(());
     }
@@ -1059,6 +1071,7 @@ impl d3d::ExternalPass for GlowPass {
                 queue: t.queue,
                 encoder: t.encoder,
                 color: &view.attachment,
+                entry_sources: t.stages,
                 intermediates,
                 guest_size: view.guest_size,
                 size: view.size,
@@ -1076,15 +1089,18 @@ impl d3d::ExternalPass for GlowPass {
 }
 
 impl d3d::SwallowPass for GlowPass {
+    fn entry_samples(&self) -> bool { true }
+
     fn validate(&self, originals: &[d3d::SwallowOriginal<'_>], slots: &[Option<d3d::SwallowTarget>]) -> Result<(), String> {
-        for (original, want) in originals.iter().zip(&self.plan.draws) {
+        for (i, (original, want)) in originals.iter().zip(&self.plan.draws).enumerate() {
             let blend = want.blend.map(Blend::state);
             if !matches_colour_state(original.draw, blend, wgpu::ColorWrites::ALL, None) {
                 return Err(format!("glow into {:?}: live quad colour state differs", want.dest));
             }
             for stage in 0..4 {
                 if original.sampled[stage] {
-                    check_source(original, stage, want.stages[stage].map(glow_slot), slots)?;
+                    let source = want.stages[stage];
+                    check_bound_source(original, stage, source.map(glow_slot), slots, i == 0 && source == Some(Surface::View))?;
                 }
             }
         }

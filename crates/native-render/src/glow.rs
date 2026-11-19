@@ -438,6 +438,8 @@ pub struct GlowTarget<'a> {
     pub queue: &'a wgpu::Queue,
     pub encoder: &'a mut wgpu::CommandEncoder,
     pub color: &'a wgpu::TextureView,
+    /// Resolved inputs of the downsample, including any XRGB alpha fixup.
+    pub entry_sources: [Option<&'a wgpu::TextureView>; 4],
     pub intermediates: [Option<&'a wgpu::TextureView>; 2],
     /// Guest pixels and this copy's texels.
     pub guest_size: (u32, u32),
@@ -707,7 +709,7 @@ impl GpuGlow {
             Surface::Other => t.intermediates[1],
         };
         let mut prepared = Vec::with_capacity(plan.draws.len());
-        for draw in &plan.draws {
+        for (index, draw) in plan.draws.iter().enumerate() {
             let dest = view_of(draw.dest).ok_or(Refused::Attachment(draw.dest))?;
             let size = if draw.dest == Surface::View { t.size } else { small };
             if !live_colour(dest, size) {
@@ -721,9 +723,17 @@ impl GpuGlow {
                     continue;
                 }
                 let Some(surface) = draw.stages[n] else { return Err(Refused::Program(format!("stage {n} has no source"))) };
-                let view = view_of(surface).ok_or(Refused::Source(surface))?;
+                let entry_view = index == 0 && surface == Surface::View;
+                let view = if entry_view { t.entry_sources[n] } else { view_of(surface) }
+                    .ok_or(Refused::Source(surface))?;
                 let size = if surface == Surface::View { t.size } else { small };
-                if dest.texture() == view.texture() || !live_colour(view, size) || !sampleable(t.device, view) {
+                let source = view.texture();
+                if dest.texture() == source
+                    || (source.width(), source.height()) != size
+                    || source.sample_count() != 1
+                    || (!entry_view && !live_colour(view, size))
+                    || !sampleable(t.device, view)
+                {
                     return Err(Refused::Source(surface));
                 }
                 *stage = Some(view);
@@ -899,6 +909,67 @@ mod tests {
     fn words(def: &PixelShaderDef) -> [u32; COMBINER_WORDS] {
         let b = def.to_bytes();
         std::array::from_fn(|i| u32::from_le_bytes([b[4 * i], b[4 * i + 1], b[4 * i + 2], b[4 * i + 3]]))
+    }
+
+    #[test]
+    fn glow_downsamples_the_resolved_view_and_composites_it_back() {
+        use psh::bits::{CHAN_ALPHA, REG_T0, final_efg, inputs};
+        let Ok(ctx) = gfx::GfxContext::headless() else { return };
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let view = gfx::OffscreenTarget::new(&ctx.device, (4, 4), format);
+        let small = gfx::OffscreenTarget::new(&ctx.device, (2, 2), format);
+        let source = ctx.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("opaque framebuffer sample"),
+            size: view.texture.size(),
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        ctx.queue.write_texture(
+            source.as_image_copy(), &[64, 128, 192, 255].repeat(16),
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(16), rows_per_image: Some(4) },
+            source.size(),
+        );
+        let sample = source.create_view(&Default::default());
+        let copy = words(&PixelShaderDef {
+            texture_modes: 1,
+            final_inputs_abcd: inputs(0, 0, 0, REG_T0),
+            final_inputs_efg: final_efg(0, 0, REG_T0 | CHAN_ALPHA, 0),
+            ..Default::default()
+        });
+        let plan = Plan {
+            window: [0.0, 0.0, 4.0, 4.0],
+            signs: [0.0; 2],
+            view: (4, 4),
+            small: (2, 2),
+            draws: [
+                (Surface::Down, Surface::View),
+                (Surface::View, Surface::Down),
+            ].map(|(dest, source)| Draw {
+                dest, stages: [Some(source), None, None, None], combiner: copy,
+                taps: 1, spread: 0.0, blend: None,
+            }).to_vec(),
+        };
+        let mut encoder = ctx.device.create_command_encoder(&Default::default());
+        let mut glow = GpuGlow::new();
+        let target = GlowTarget {
+            device: &ctx.device, queue: &ctx.queue, encoder: &mut encoder,
+            color: view.target().color, entry_sources: [None; 4],
+            intermediates: [Some(small.target().color), None],
+            guest_size: plan.view, size: plan.view,
+        };
+        assert_eq!(glow.encode(target, &plan), Err(Refused::Source(Surface::View)));
+        glow.encode(GlowTarget {
+            device: &ctx.device, queue: &ctx.queue, encoder: &mut encoder,
+            color: view.target().color, entry_sources: [Some(&sample), None, None, None],
+            intermediates: [Some(small.target().color), None],
+            guest_size: plan.view, size: plan.view,
+        }, &plan).unwrap();
+        ctx.queue.submit([encoder.finish()]);
+        assert_eq!(&view.read_pixels(&ctx)[..4], &[64, 128, 192, 255]);
     }
 
     #[test]

@@ -751,6 +751,10 @@ pub struct SwallowTarget {
 
 /// Validates the live state of the original packets before native recording.
 pub trait SwallowPass: crate::backend::ExternalPass {
+    /// Need the first original's resolved inputs (such as an opaque
+    /// framebuffer snapshot) alongside the live post attachments.
+    fn entry_samples(&self) -> bool { false }
+
     fn validate(&self, _originals: &[SwallowOriginal<'_>], _slots: &[Option<SwallowTarget>]) -> Result<(), String> {
         Ok(())
     }
@@ -2794,6 +2798,7 @@ impl<B: Backend> Device<B> {
         }
         let s = self.swallowing.take().expect("post call");
         let (color, request) = s.last.expect("the matched call drew");
+        let entry_samples = s.plan.pass.entry_samples();
         let mut pass: Box<dyn crate::backend::ExternalPass> = s.plan.pass;
         pass.view_constants(&std::array::from_fn(|r| self.constant(r)));
         pass.depth_clip(self.depth_clip(mem, request.z_scale));
@@ -2820,8 +2825,15 @@ impl<B: Backend> Device<B> {
             slots: s.surfaces.iter().map(|slot| slot.map(|t| t.surface)).collect(),
             slot_sizes: s.surfaces.iter().map(|slot| slot.map(|t| t.size)).collect(),
         };
+        let textures = std::array::from_fn(|i| {
+            let first = s.packets.first().filter(|_| entry_samples)?;
+            if !first.sampled[i] { return None; }
+            first.snapshots[i].as_ref().or_else(|| {
+                first.keys[i].and_then(|key| first.cached.get(&key)).map(|texture| &texture.host)
+            })
+        });
         let recordings = self.backend.prepare_external(
-            surfaces, request, [None; 4], &plan, TargetCopy::Reference,
+            surfaces, request, textures, &plan, TargetCopy::Reference,
             Arc::new(std::sync::Mutex::new(pass)),
         );
         if let Ok(Some(recordings)) = recordings
@@ -5341,7 +5353,13 @@ impl<B: Backend> Device<B> {
         for stage in 0..4 {
             let header = self.textures[stage];
             if header != 0 {
-                if self.swallowing.is_some() {
+                if self.swallowing.as_ref().is_some_and(|s| s.holding) && !sampled[stage] {
+                    // Stale bindings on inactive combiner stages cannot observe
+                    // held pixels. Resolving one can force an alias writeback.
+                    bound[stage] = 0;
+                    continue;
+                }
+                if self.swallowing.is_some() && sampled[stage] {
                     self.swallow_resource(mem, header, Some(extras[stage].color_sign))?;
                 }
                 match self.frame_texture(mem, header, sampled[stage], extras[stage].color_sign)? {
