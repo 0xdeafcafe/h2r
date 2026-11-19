@@ -30,7 +30,7 @@ use tags::{DecodedTag, TagData};
 
 /// Bumped when the output for a given disc would change (part of the cache
 /// key).
-pub const EXTRACTOR_VERSION: u32 = 22;
+pub const EXTRACTOR_VERSION: u32 = 24;
 /// The manifest's format, bumped only for changes a client cannot read
 /// (clients check it; added fields do not count).
 pub const MANIFEST_VERSION: u32 = 1;
@@ -466,6 +466,8 @@ pub(crate) struct MapFile {
     pub(crate) pack: Option<crate::live_mappack::PackMap>,
     /// A converted Halo 1 map's name and picture (`crate::live_halo1`).
     pub(crate) halo1: Option<crate::live_halo1::Halo1Map>,
+    /// An installed mod's package (`crate::live_mods`).
+    pub(crate) package: Option<crate::live_mods::ModInfo>,
 }
 
 impl MapFile {
@@ -504,6 +506,8 @@ pub struct Disc {
     /// Converted Halo 1 maps ([`Disc::add_halo1`]): kept apart from `maps`,
     /// so only the level geometry and previews read them.
     halo1: Vec<MapFile>,
+    /// Installed mods ([`Disc::add_mods`]): apart from `maps` too.
+    mods: Vec<MapFile>,
     /// What [`cache_key`] hashes, so added maps can join it.
     parts: Vec<(String, u32, u32, Vec<u8>)>,
     /// [`cache_key`] of the maps.
@@ -534,6 +538,7 @@ impl Disc {
                 host: None,
                 pack: None,
                 halo1: None,
+                package: None,
             });
             parts.push((e.path.clone(), e.size, e.sector, head));
         }
@@ -543,6 +548,7 @@ impl Disc {
             entries,
             maps,
             halo1: Vec::new(),
+            mods: Vec::new(),
             key: cache_key(&parts),
             parts,
         })
@@ -566,6 +572,7 @@ impl Disc {
                 host: Some((f.host.clone(), f.base)),
                 pack: Some(f.pack.clone()),
                 halo1: None,
+                package: None,
             };
             if self
                 .maps
@@ -632,6 +639,7 @@ impl Disc {
                 host: Some((f.path, 0)),
                 pack: None,
                 halo1: Some(f.info),
+                package: None,
             });
             n += 1;
         }
@@ -647,6 +655,82 @@ impl Disc {
     /// The converted Halo 1 maps added ([`Disc::add_halo1`]).
     pub(crate) fn halo1_maps(&self) -> impl Iterator<Item = &MapFile> {
         self.halo1.iter()
+    }
+
+    /// Joins the installed mods' `MapId`s to the cache key
+    /// ([`crate::live_mods::package_ids`]): each names its patched map's
+    /// bytes (the base's SHA-256 and every layer's), so a new, changed or
+    /// removed mod extracts again, and a mod that fails to resolve does
+    /// not make every start extract again.
+    pub(crate) fn key_mods(&mut self, ids: &[content::MapId]) {
+        for id in ids {
+            let part = format!("mod#{id}");
+            if !self.parts.iter().any(|p| p.0 == part) {
+                self.parts.push((part, 0, 0, Vec::new()));
+            }
+        }
+        self.key = cache_key(&self.parts);
+    }
+
+    /// Adds installed mods (`crate::live_mods`), each opened with this
+    /// disc's shared maps. Keyed by their stems (`mod-<MapId>`), never by
+    /// the base map's name, so a mod never stands in for its base; their
+    /// manifest entries carry the SHA-256 of the patched map. The cache
+    /// key comes from [`Disc::key_mods`]. Returns how many were added.
+    pub(crate) fn add_mods(&mut self, found: Vec<crate::live_mods::FoundMod>) -> usize {
+        let mut n = 0;
+        for f in found {
+            if self.mods.iter().any(|m| m.name() == f.stem) {
+                continue;
+            }
+            self.mods.push(MapFile {
+                entry: xiso::Entry {
+                    path: format!("/{}.map", f.stem),
+                    sector: 0,
+                    size: f.size,
+                    is_dir: false,
+                },
+                cache_type: cache_type(&f.head),
+                host: Some((f.path, 0)),
+                pack: None,
+                halo1: None,
+                package: Some(f.info),
+            });
+            n += 1;
+        }
+        n
+    }
+
+    /// Resolves the mods installed under the data root `data` over this
+    /// disc's maps and adds them ([`Disc::add_mods`]); offset-patched ones
+    /// are written into `scratch`, which the caller removes once the art is
+    /// extracted. Returns the notices of mods left out.
+    pub(crate) fn add_installed_mods(&mut self, data: &Path, scratch: &Path) -> Vec<String> {
+        let found = crate::live_mods::installed(data, scratch, &mut |name| {
+            self.base_source(name)
+                .map(|r| Box::new(r) as Box<dyn content::patch::Source>)
+        });
+        self.add_mods(found.mods);
+        found.notices
+    }
+
+    /// The installed mods added ([`Disc::add_mods`]).
+    pub(crate) fn mod_maps(&self) -> impl Iterator<Item = &MapFile> {
+        self.mods.iter()
+    }
+
+    /// A map of the disc or the added map pack by name, as a patch source:
+    /// the base a mod is laid over.
+    pub(crate) fn base_source(&self, name: &str) -> Option<crate::live_mods::Region> {
+        let m = self
+            .maps
+            .iter()
+            .find(|m| m.name().eq_ignore_ascii_case(name))?;
+        let (host, base) = match &m.host {
+            Some((path, base)) => (path.clone(), *base),
+            None => (self.path.clone(), self.base(&m.entry)),
+        };
+        crate::live_mods::Region::open(&host, base, m.entry.size.into()).ok()
     }
 
     /// The map pack maps added ([`Disc::add_maps`]).
@@ -1292,8 +1376,9 @@ pub fn extract(disc: &Disc, out: &Path) -> Result<Report> {
 /// `h2 live assets extract [--disc PATH] [--out DIR] [--mappack ISO]
 /// [--installed DIR] [--halo1 ISO]`: the retail disc's art, the map pack's
 /// maps from its disc and from where `h2 import-mappack` installed them
-/// under the runtime data root `installed`, and the Halo 1 maps `h2 import
-/// halo1` converted there (`halo1` imports what is missing first).
+/// under the runtime data root `installed`, the Halo 1 maps `h2 import
+/// halo1` converted there (`halo1` imports what is missing first), and the
+/// mods installed there as map packages (`crate::live_mods`).
 pub fn run(
     disc_path: PathBuf,
     out: PathBuf,
@@ -1302,6 +1387,7 @@ pub fn run(
     halo1: Option<PathBuf>,
 ) -> Result<()> {
     let mut disc = Disc::scan(&disc_path)?;
+    let installed_root = installed.clone();
     if let Some(iso) = mappack {
         let found = crate::live_mappack::from_iso(&iso)
             .with_context(|| format!("reading the map pack disc {}", iso.display()))?;
@@ -1330,7 +1416,19 @@ pub fn run(
         }
         disc.add_halo1(crate::live_halo1::installed(&root));
     }
-    let report = extract(&disc, &out)?;
+    // Installed mods, resolved over this disc's (and the map pack's) maps;
+    // offset-patched ones are written beside the output while it runs.
+    let scratch = out.with_extension("mods");
+    let _ = fs::remove_dir_all(&scratch);
+    if let Some(root) = &installed_root {
+        disc.key_mods(&crate::live_mods::package_ids(root));
+        for n in disc.add_installed_mods(root, &scratch) {
+            eprintln!("mods: {n}");
+        }
+    }
+    let report = extract(&disc, &out);
+    let _ = fs::remove_dir_all(&scratch);
+    let report = report?;
     println!("game art in {}", out.display());
     let pack: Vec<&str> = disc.pack_maps().map(|m| m.name()).collect();
     if !pack.is_empty() {
@@ -1339,6 +1437,11 @@ pub fn run(
     let halo1: Vec<&str> = disc.halo1_maps().map(|m| m.name()).collect();
     if !halo1.is_empty() {
         println!("  {:<10} {}", "halo 1", halo1.join(", "));
+    }
+    for m in disc.mod_maps() {
+        if let Some(p) = &m.package {
+            println!("  {:<10} {} ({}, on {})", "mod", m.name(), p.name, p.base);
+        }
     }
     for (prefix, n) in &report.counts {
         println!("  {prefix:<10} {n}");
@@ -1575,6 +1678,7 @@ mod tests {
             entries: Vec::new(),
             maps: Vec::new(),
             halo1: Vec::new(),
+            mods: Vec::new(),
             parts: Vec::new(),
             key: cache_key(&[]),
         }
@@ -1594,6 +1698,7 @@ mod tests {
             host: None,
             pack: None,
             halo1: None,
+            package: None,
         });
         let before = disc.key.clone();
         assert_eq!(disc.add_halo1(halo1_found("teacup", 1, b"s1")), 0, "a Halo 2 stem is kept");
@@ -1610,6 +1715,63 @@ mod tests {
         let mut same = empty_disc();
         same.add_halo1(halo1_found("h1_alpha", 1, b"s1"));
         assert_ne!(other.key, same.key, "another import stamp extracts again");
+    }
+
+    fn found_mod(id: u8, base: &str) -> crate::live_mods::FoundMod {
+        let map_id = content::MapId([id; 32]);
+        crate::live_mods::FoundMod {
+            stem: crate::live_mods::mod_stem(&map_id),
+            path: PathBuf::from(format!("/nowhere/{id}.map")),
+            size: 4096,
+            head: head(1),
+            info: crate::live_mods::ModInfo {
+                name: format!("Mod {id}"),
+                map_id,
+                base: base.into(),
+                sha256: content::Sha256([id; 32]),
+                image: None,
+            },
+        }
+    }
+
+    #[test]
+    fn mods_join_the_disc_by_map_id_and_never_take_their_base_name() {
+        let mut disc = empty_disc();
+        disc.maps.push(MapFile {
+            entry: xiso::Entry {
+                path: "/maps/teacup.map".into(),
+                sector: 0,
+                size: 1,
+                is_dir: false,
+            },
+            cache_type: Some(CacheType::Multiplayer),
+            host: None,
+            pack: None,
+            halo1: None,
+            package: None,
+        });
+        let before = disc.key.clone();
+        disc.key_mods(&[content::MapId([1; 32]), content::MapId([2; 32])]);
+        let keyed = disc.key.clone();
+        assert_ne!(keyed, before, "installed mods join the key");
+        disc.key_mods(&[content::MapId([1; 32])]);
+        assert_eq!(disc.key, keyed, "once each");
+        assert_eq!(disc.add_mods(vec![found_mod(1, "teacup"), found_mod(2, "teacup")]), 2);
+        assert_eq!(disc.add_mods(vec![found_mod(1, "teacup")]), 0, "once");
+        assert_eq!(disc.key, keyed, "resolving does not change the key");
+        let stems: Vec<_> = disc.mod_maps().map(|m| m.name().to_string()).collect();
+        assert_eq!(stems, ["mod-0101010101010101", "mod-0202020202020202"]);
+        assert_eq!(disc.maps_of(CacheType::Multiplayer).count(), 1, "the base stays the disc's");
+        assert_eq!(disc.maps_of(CacheType::Multiplayer).next().unwrap().name(), "teacup");
+        let m = disc.mod_maps().next().unwrap();
+        assert_eq!(m.cache_type(), Some(CacheType::Multiplayer));
+        assert_eq!(m.package.as_ref().unwrap().base, "teacup");
+
+        let mut changed = empty_disc();
+        changed.key_mods(&[content::MapId([1; 32]), content::MapId([3; 32])]);
+        let mut same = empty_disc();
+        same.key_mods(&[content::MapId([1; 32]), content::MapId([2; 32])]);
+        assert_ne!(changed.key, same.key, "a changed mod extracts again");
     }
 
     #[test]

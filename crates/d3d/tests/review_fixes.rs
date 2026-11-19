@@ -423,6 +423,16 @@ fn a_render_state_reads_back_as_set() {
     assert_eq!(s.depth_fail, gfx::state::StencilOp::Keep);
     d.set_render_state(&mut m, guest(R::StencilPass), 0x1234).unwrap();
     assert_eq!(d.stencil_state(&m), None, "not a stencil op");
+    // The cull as a draw takes it (the native world's inheriting passes).
+    use gfx::state::{CullMode, FrontFace};
+    d.set_render_state(&mut m, guest(R::CullMode), 0x900).unwrap();
+    d.set_render_state(&mut m, guest(R::FrontFace), 0x900).unwrap();
+    assert_eq!(d.cull_state(&m), Some((CullMode::Cw, FrontFace::Cw)));
+    d.set_render_state(&mut m, guest(R::CullMode), 0).unwrap();
+    d.set_render_state(&mut m, guest(R::FrontFace), 0x901).unwrap();
+    assert_eq!(d.cull_state(&m), Some((CullMode::None, FrontFace::Ccw)));
+    d.set_render_state(&mut m, guest(R::CullMode), 0x1234).unwrap();
+    assert_eq!(d.cull_state(&m), None, "not a cull mode");
 }
 
 /// `COLORSIGN` is part of the texture cache identity too: signed channels

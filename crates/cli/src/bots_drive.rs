@@ -69,9 +69,9 @@ use crate::coop_drive::{
 
 /// The Xbox Live menu's Custom Game row (retail row 2). The rows, with
 /// ours (`boot::custom_games`): 0 Quickmatch, 1 OptiMatch, 2 Clankermatch,
-/// 3 Custom Game, 4 Custom Game Browser, 5 Co-op Campaign, 6 Content
+/// 3 Co-op Campaign, 4 Custom Game, 5 Custom Game Browser, 6 Content
 /// Download.
-pub const CUSTOM_GAME_ROW: u32 = 3;
+pub const CUSTOM_GAME_ROW: u32 = 4;
 /// The Xbox Live menu's last row.
 pub const LIVE_LAST_ROW: u32 = 6;
 /// The Xbox Live menu's list mask on its `ui: screen none` line

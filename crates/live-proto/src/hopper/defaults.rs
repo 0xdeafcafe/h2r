@@ -26,9 +26,11 @@
 //! has no per-entry "only when installed" flag.
 
 use super::clankers::Clankers;
-use super::layout::{Descriptor, Entry, Rules, default_skill_ceiling, start_waits};
+use super::layout::{Descriptor, Entry, PLAYLIST_IDS, Rules, default_skill_ceiling, start_waits};
 use super::variant::{self as v, GameType, VariantRecord};
-use super::{HopperFile, MAX_DESCRIPTION, MAX_TITLE};
+use super::{
+    BLOCK, BLOCKS_AT, DESCRIPTOR, HOPPERS, HopperError, HopperFile, MAX_DESCRIPTION, MAX_TITLE,
+};
 
 /// The retail multiplayer levels by map id: the ids the game's level list
 /// (the globals tag, `matg +0x178`, element 0, block `+0x10`, stride
@@ -163,6 +165,61 @@ pub mod variants {
         r.put_i32(v::RESPAWN_TIME, 10);
         r.for_matchmaking()
     }
+}
+
+/// The built-in matchmaking variants by key: what an entry can be given
+/// without copying another entry's 0x130 bytes (the playlist builders'
+/// variant picker, `variant` in the admin PUT body). Each is the stock
+/// record of its game type with this module's changes; none comes from a
+/// disc.
+pub fn builtin_variants() -> Vec<(&'static str, VariantRecord)> {
+    use variants::*;
+    vec![
+        ("rumble_slayer", rumble_slayer()),
+        ("team_slayer", team_slayer()),
+        ("team_snipers", team_snipers()),
+        ("oddball", oddball()),
+        ("teamball", teamball()),
+        ("king_of_the_hill", king_of_the_hill()),
+        ("team_king", team_king()),
+        ("classic_ctf", classic_ctf()),
+        ("assault", assault()),
+        ("territories", territories()),
+    ]
+}
+
+/// The built-in variant named `key` ([`builtin_variants`]).
+pub fn builtin_variant(key: &str) -> Option<VariantRecord> {
+    builtin_variants()
+        .into_iter()
+        .find_map(|(k, v)| (k == key).then_some(v))
+}
+
+/// The key of a built-in variant with exactly these bytes, if any.
+pub fn builtin_key(v: &VariantRecord) -> Option<&'static str> {
+    builtin_variants()
+        .into_iter()
+        .find_map(|(k, b)| (b == *v).then_some(k))
+}
+
+/// The default lineup's human playlists, offered as templates for a new
+/// playlist: each gives the descriptor (type, team and party sizes, waits,
+/// timeout, skill ceiling) a playlist of its kind needs to pass the game's
+/// validator, which the editors' raw fields cannot build. The clanker
+/// playlists are left out: their mark is kept by playlist id and index
+/// ([`super::clankers`]), which a copy elsewhere would not have.
+pub fn templates() -> Vec<Playlist> {
+    playlists()
+        .into_iter()
+        .filter(|p| p.clankers.is_none())
+        .collect()
+}
+
+/// The template whose default playlist id is `playlist_id`.
+pub fn template(playlist_id: u32) -> Option<Playlist> {
+    templates()
+        .into_iter()
+        .find(|p| p.playlist_id == playlist_id)
 }
 
 /// One entry of a default playlist: `(variant, map id, weight)`.
@@ -475,6 +532,49 @@ pub fn playlists() -> Vec<Playlist> {
 }
 
 impl HopperFile {
+    /// Whether hopper `i` is an unused slot: type 0, which the game reads
+    /// as no hopper (every reader goes through the validator, which refuses
+    /// it). The default set leaves hoppers 11..15 so.
+    pub fn is_unused(&self, i: usize) -> Result<bool, HopperError> {
+        Ok(self.descriptor(i)?.hopper_type == 0)
+    }
+
+    /// The lowest playlist id (1..=100) no other used hopper has; the id is
+    /// the base of the playlist's stats ids, so it must be unique.
+    pub fn free_playlist_id(&self, i: usize) -> Option<u32> {
+        let taken: Vec<u32> = (0..HOPPERS)
+            .filter(|&j| j != i)
+            .filter_map(|j| self.descriptor(j).ok())
+            .filter(|d| d.hopper_type != 0)
+            .map(|d| d.playlist_id)
+            .collect();
+        PLAYLIST_IDS.into_iter().find(|id| !taken.contains(id))
+    }
+
+    /// Makes hopper `i` a playlist of `template`'s kind: its whole
+    /// descriptor (title and description included), status 0, with a
+    /// playlist id no other hopper uses. The entries are left as they are:
+    /// write at least one before publishing.
+    pub fn create_from(&mut self, i: usize, template: &Playlist) -> Result<(), HopperError> {
+        let mut d = template.descriptor();
+        d.playlist_id = self.free_playlist_id(i).ok_or(HopperError::NoPlaylistId)?;
+        self.set_descriptor(i, &d)
+    }
+
+    /// Makes hopper `i` an unused slot again: its descriptor and data block
+    /// all zero, as [`HopperFile::default_set`] leaves the slots it does not
+    /// fill.
+    pub fn clear_hopper(&mut self, i: usize) -> Result<(), HopperError> {
+        if i >= HOPPERS {
+            return Err(HopperError::Hopper(i));
+        }
+        let image = self.image_mut();
+        image[i * DESCRIPTOR..(i + 1) * DESCRIPTOR].fill(0);
+        let block = BLOCKS_AT + i * BLOCK;
+        image[block..block + BLOCK].fill(0);
+        Ok(())
+    }
+
     /// A complete file built from scratch: [`playlists`] in hoppers
     /// 0.., every other byte zero (unused hopper slots are all zero, which
     /// the game reads as no hopper).
@@ -653,5 +753,55 @@ mod tests {
             assert_eq!(r.problems(), vec![], "{}", r.name());
             assert_eq!(r.i32_at(v::SETTING_14), 0);
         }
+    }
+
+    #[test]
+    fn the_built_in_variants_are_keyed_clean_and_cover_the_lineup() {
+        let all = builtin_variants();
+        for (k, v) in &all {
+            assert_eq!(v.problems(), vec![], "{k}");
+            assert_eq!(builtin_variant(k).as_ref(), Some(v));
+            assert_eq!(builtin_key(v), Some(*k));
+        }
+        let mut keys: Vec<&str> = all.iter().map(|(k, _)| *k).collect();
+        keys.sort();
+        keys.dedup();
+        assert_eq!(keys.len(), all.len(), "keys are unique");
+        assert_eq!(builtin_variant("no_such_variant"), None);
+        // Every default entry carries one of them, so a template's entries
+        // can be named by key.
+        for p in playlists() {
+            for e in p.entries() {
+                assert!(builtin_key(&e.variant).is_some(), "{}", p.title);
+            }
+        }
+    }
+
+    #[test]
+    fn a_template_fills_an_unused_slot_the_game_takes_and_clearing_empties_it() {
+        let mut file = HopperFile::default_set();
+        let n = playlists().len();
+        assert!(file.is_unused(n).unwrap());
+        assert!(!file.is_unused(0).unwrap());
+        let t = template(2).unwrap();
+        assert_eq!(t.title, "Team Slayer");
+        file.create_from(n, &t).unwrap();
+        file.set_entries(n, &t.entries()[..1]).unwrap();
+        let d = file.descriptor(n).unwrap();
+        assert_eq!(check_descriptor(&d), vec![]);
+        assert_eq!(d.playlist_id, 12, "the lowest id no other playlist has");
+        assert_eq!(d.kind(), Some(t.rules.hopper_type()));
+        assert_eq!(file.problems(&retail_map_ids()), vec![]);
+        assert!(!file.is_unused(n).unwrap());
+        // Clearing makes it the all-zero slot it was.
+        file.clear_hopper(n).unwrap();
+        assert!(file.image() == HopperFile::default_set().image());
+        assert_eq!(
+            file.clear_hopper(HOPPERS),
+            Err(HopperError::Hopper(HOPPERS))
+        );
+        // Only the human playlists are templates.
+        assert!(template(9).is_none(), "clanker playlists are not templates");
+        assert_eq!(templates().len(), 8);
     }
 }

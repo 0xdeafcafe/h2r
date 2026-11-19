@@ -168,6 +168,35 @@ lightmap `0x004e0344`, [structure-bsp.md](../formats/structure-bsp.md)):
   pipeline's primitive (topology, winding, cull, fill) and depth write,
   compare and bias as `gfx::translate` derives them from the D3D draw's
   render state, against the native pipeline's (`program::pipeline_state`).
+  On 03a's 03000 that showed the girder's edge (43 px, placement 282):
+  the D3D draw culls `Front` (`CULL_CW`, front face `CW`) and the native
+  pipeline nothing. Material 107's layer-3 implementation does not set
+  `CULLMODE`, so it inherits the device's, and the native pass culled
+  nothing there: an open, single-sided girder seen from behind drew its
+  back faces. Such a pass is now marked (`look::WorldPass::inherits_cull`)
+  and takes the device's `CULLMODE` and `FRONTFACE` at the layer-3 call
+  (`Device::cull_state`, read from the guest's render-state array as the
+  stencil is; `program::InheritedCull`). By default only the placements'
+  rigid draws take it (the ones compared);
+  `H2_NATIVE_WORLD_INHERIT_CULL=all` gives it to the clusters too and
+  `=none` to neither (S: that the structure draw sets no cull of its own
+  between the layer-3 call and the clusters' draws). The other fields
+  the compare listed change nothing: `explicit_final` is the device's
+  final-combiner latch, which only matters when both final-combiner
+  input words are zero (`PixelShaderDef::has_final_combiner`), and a
+  world pass's are not (the module is the same either way, a test); the
+  D3D draw's `stipple` option with a pattern of all ones masks nothing
+  (the compare prints the pattern only when it is not all ones);
+  `fog_color` and `bump_mat`/`bump_lum` are read only by a combiner that
+  reads fog and by the bump-environment texture modes, which
+  `world_parity` refuses. Without a material the dump arms every
+  material the native pass draws the placement with, and each D3D draw
+  is compared with the one whose pixel shader it is
+  (`uniform_compare::pick`, fewest differing definition and option
+  fields): the placement's materials can share a vertex program, so 03000's
+  second kind of draw (another pixel shader, an alpha test) was compared
+  with material 107's. A D3D draw that pairs with no material exactly is
+  one the native pass may not draw at all.
   For the placements' edges,
   `H2_NATIVE_WORLD_DUMP=282[:107]` (with `H2_NATIVE_WORLD_OWNERS=clusters`,
   so that the D3D path draws the placement) prints, once per loaded
@@ -731,9 +760,10 @@ vector (`v1`) and view vector (`v0`), and the lightmap (stage 3). Its
      `ALPHAREF`, `ALPHAFUNC`), and those that sample the texaccum (the
      `_combined` templates) set `ZFUNC` equal without depth writes. A
      state the pass does not set is inherited from the previous draw on
-     the D3D path (S, not traced): `ZFUNC` is taken as `LessEqual` and
-     an unset `CULLMODE` culls nothing (the world is opaque and
-     depth-tested). It refuses: engine-driven render or stage states, a
+     the D3D path (S, not traced): `ZFUNC` is taken as `LessEqual`, and
+     an unset `CULLMODE` takes the device's at the layer-3 call for the
+     placements (`InheritedCull`, above; nothing where it does not
+     read). It refuses: engine-driven render or stage states, a
      blending pass, fog enabled, stencil, depth bias.
    - `program::compile_world` translates the pass (inputs `v0..v6` from
      the world vertex: position, uv, normal, binormal, tangent, lighting
@@ -2695,6 +2725,18 @@ effect per egor.
      that keep those chains off the pipelined render thread. Each line
      is `native-post: H2_POST_TRACE #<call> ...`, the trace written when
      it ends.
+   - **Fixed: the strip comes through the `D3DDevice_End` entry.** The
+     trace said `0x0002d140` draws (`0x00016610` from `0x0002d4bc`, the
+     port agreeing; the commit from `0x0002d51b`), but its strip is
+     `D3DDevice_End` called from `0x0002d8b2` (`Begin`,
+     `SetVertexData4f`, `End` as entries), not a pushed `Begin`/`End`.
+     The swallow watched only pushed draws, so the strip drew and the
+     UI's next pushed quad was taken for it. Both paths now go through
+     `Device::swallow_immediate`. A probe that ends early dropped
+     nothing, so the egor is only left unproved and its next call probes
+     again; only a dropping swallow that ends early keeps the egor on D3D
+     (`screen_mismatch`). A call made while the map's effects are still
+     loading is no longer counted as a `TemplatePass` refusal.
 5. **`0x0002df00`, and `0x0002dd30`** before layer 17, which has the
    same shape and gets its own skip point.
 6. **Layer 17** (S: bloom), as stage 1b draws the world's other layers.

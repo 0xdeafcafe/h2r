@@ -104,16 +104,23 @@ pub enum Refusal {
 pub struct WorldPass {
     pub look: PassLook,
     pub state: PassState,
+    /// The implementation does not set `CULLMODE`: the pass culls as the
+    /// device does when layer 3 is drawn (`crate::program::InheritedCull`),
+    /// and nothing where that is not known (`state`'s cull is `None`).
+    pub inherits_cull: bool,
 }
 
 /// [`layer3_look`] with the pass's own render states: depth test and
 /// write, colour writes, alpha test and cull, as the D3D path applies them
 /// on entry (`0x00018900`). A pass that reads engine-driven render or stage
 /// states, or blends, stays on the D3D path. Where the implementation does
-/// not set `CULLMODE` itself it inherits the previous draw's (S: not
-/// traced), so the native pass culls nothing there: the world is opaque
-/// and depth-tested, so drawing a back face changes nothing that a front
-/// face in front of it does not cover.
+/// not set `CULLMODE` itself it inherits the previous draw's: the D3D
+/// path's draws of placement 282 on 03a cull `Front` (`CULL_CW`, front face
+/// `CW`) where the pass leaves it unset (`d3d::uniform_compare`). Such a
+/// pass is marked [`WorldPass::inherits_cull`] and takes the device's cull
+/// at the pass; its own state culls nothing, for where that is not known
+/// (an open, single-sided girder seen from behind then draws its back
+/// faces: the 43 px on 03a).
 pub fn layer3_pass(material: &Material) -> Result<WorldPass, Refusal> {
     let look = layer3_look(material)?;
     let imp = layer3_implementation(material).ok_or(Refusal::NoLayer3)?;
@@ -127,10 +134,11 @@ pub fn layer3_pass(material: &Material) -> Result<WorldPass, Refusal> {
     if state.blend.is_some() {
         return Err(Refusal::Blended);
     }
-    if !sets_state(&imp.render_states, gfx::state::RenderStateType::CullMode) {
+    let inherits_cull = !sets_state(&imp.render_states, gfx::state::RenderStateType::CullMode);
+    if inherits_cull {
         state.primitive.cull_mode = None;
     }
-    Ok(WorldPass { look, state })
+    Ok(WorldPass { look, state, inherits_cull })
 }
 
 /// Whether `states` set `which` (build 5849's slots).
@@ -506,6 +514,7 @@ mod tests {
         assert!(p.state.depth_write);
         assert_eq!(p.state.depth_compare, wgpu::CompareFunction::LessEqual, "ZFUNC unset: the world's");
         assert_eq!(p.state.primitive.cull_mode, None, "CULLMODE unset: nothing culled");
+        assert!(p.inherits_cull, "CULLMODE unset: the device's at the pass");
         assert_eq!(p.state.color_writes, wgpu::ColorWrites::ALL);
         assert_eq!(p.state.alpha_test, None);
         // 03a's alpha-tested world passes.
@@ -517,7 +526,9 @@ mod tests {
         assert_eq!(p.state.alpha_test, Some((wgpu::CompareFunction::Less, 0xff)));
         // A pass that sets its cull mode keeps it.
         let culled = opaque(implementation(0, true), &[(R::CullMode, CullMode::Cw.xbox_value())]);
-        assert!(layer3_pass(&material(3, vec![vec![culled]])).unwrap().state.primitive.cull_mode.is_some());
+        let own = layer3_pass(&material(3, vec![vec![culled]])).unwrap();
+        assert!(own.state.primitive.cull_mode.is_some());
+        assert!(!own.inherits_cull);
         // Depth equal, no writes: as set.
         let equal = opaque(implementation(0, true), &[(R::ZFunc, CompareFunc::Equal.xbox_value()), (R::ZWriteEnable, 0)]);
         let p = layer3_pass(&material(3, vec![vec![equal]])).unwrap();

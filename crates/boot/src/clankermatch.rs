@@ -28,20 +28,37 @@
 //! **The search** is the HLE's (`live_hle::clankermatch`): a clanker
 //! hopper's search finds no session after 4 to 20 s, and the game hosts.
 //!
+//! **The lobby's switch.** A Live lobby's Game Setup dialog has retail's
+//! "Switch To: Matchmaking" row (action 8, or 9 in one lobby kind), whose
+//! press (`0x002bba8c`) opens the OptiMatch playlist screen through
+//! `0x002bbf06` and closes the dialog. [`SwitchRow`] adds "Switch To:
+//! Clankermatch" ([`SWITCH_ACTION`]) right under it while the server has
+//! clanker hoppers; its press sets [`active`] and runs that same press, so
+//! the party goes to the clanker playlists. Retail's row clears
+//! [`active`] first, so it always lists the human ones.
+//!
 //! **The fill.** While this console hosts a clanker hopper's lobby, the
 //! Clankers driver (`crate::clankers`) asks Live for the playlist's roster
-//! and seats its bots as phantoms one at a time ([`schedule`]), on teams
-//! [`balance`] picks.
+//! and seats its bots one at a time ([`schedule`]): local bots on the free
+//! controller ports first (`crate::clankers::max_local`), which sign in to
+//! the lobby so it reaches the playlist's fewest players and starts, then
+//! phantoms, which join once the game runs, on teams [`balance`] picks.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use feature::{BuildError, Builder, Flow, Manifest};
+use engine::entry::{EntryFuture, GuestCall, Ret};
+use feature::{BuildError, Builder, Call, Flow, Manifest};
 use live_proto::hopper::clankers::ClankerHoppers;
+use runtime::GuestFault;
+
+use crate::h1_options_row as h1row;
 
 /// The feature (`features.clankermatch`).
 pub const FEATURE: &str = "clankermatch";
+/// The lobby's "Switch To: Clankermatch" row (`features.clankermatch-switch`).
+pub const SWITCH_FEATURE: &str = "clankermatch-switch";
 
 /// The Clankermatch row's press set it; any other Live menu row's press
 /// clears it.
@@ -89,6 +106,199 @@ pub fn quickmatch_hopper(saved: u32, marks: &ClankerHoppers) -> u32 {
         NO_HOPPER
     } else {
         saved
+    }
+}
+
+// ---- the lobby's "Switch To: Clankermatch" row ----
+
+/// Retail's "Switch To: Matchmaking" actions on a Game Setup list: both go
+/// to `0x002bba8c` in the row-chosen jump table (`0x002bb884`). The
+/// constructor (`0x002bb4d2`) gives lobby kinds 4 and 5 action 8, kind 6
+/// action 9.
+pub const MATCHMAKING_SWITCHES: [i16; 2] = [8, 9];
+/// Our row's action: past the Halo 1 Options row's 10 and the Clankers
+/// row's 11. The row-chosen jump table has no bounds check, so its press
+/// must never reach the original.
+pub const SWITCH_ACTION: i16 = 12;
+/// Retail's "Switch To: Matchmaking" press (EAX the press's player chain,
+/// the list handler on the stack, `ret 4`): opens the OptiMatch playlist
+/// screen (`0x002bbf06`) for the chain's player, then closes the dialog
+/// (`0x0022eeee`, `0x0022e957`).
+pub const SWITCH_TO_MATCHMAKING: u32 = 0x002b_ba8c;
+
+/// Whether a Game Setup list with these actions gets "Switch To:
+/// Clankermatch": it has retail's "Switch To: Matchmaking", the server
+/// has clanker hoppers, and the row is not there yet.
+pub fn wants_switch_row(actions: &[i16], clanker_hoppers: bool) -> bool {
+    clanker_hoppers
+        && actions.iter().any(|a| MATCHMAKING_SWITCHES.contains(a))
+        && !actions.contains(&SWITCH_ACTION)
+}
+
+/// The list's actions with our row right under the first "Switch To:
+/// Matchmaking" (at the end when there is none).
+pub fn switch_placed(actions: &[i16]) -> Vec<i16> {
+    let at = actions
+        .iter()
+        .position(|a| MATCHMAKING_SWITCHES.contains(a))
+        .map_or(actions.len(), |i| i + 1);
+    let mut out = actions.to_vec();
+    out.insert(at, SWITCH_ACTION);
+    out
+}
+
+/// What a Game Setup press of `action` means for Clankermatch: `Some(true)`
+/// ours (the clanker playlists), `Some(false)` retail's "Switch To:
+/// Matchmaking" (the human ones), `None` any other row.
+pub fn switch_press(action: i16) -> Option<bool> {
+    if action == SWITCH_ACTION {
+        Some(true)
+    } else if MATCHMAKING_SWITCHES.contains(&action) {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// The "Switch To: Clankermatch" row on a Live lobby's Game Setup dialog.
+pub struct SwitchRow {
+    /// `None` with no Live: no clanker hoppers, so no row. Placed anyway,
+    /// so the boot plan always holds the hooks.
+    pub hle: Option<Arc<live_hle::Hle>>,
+}
+
+fn switch_text(c: &mut Call, seen: &AtomicBool) -> Result<Flow, GuestFault> {
+    let item = {
+        let mem = c.ctx.runtime().memory();
+        let item = mem.u32(c.cpu.esp + 4).ok();
+        let action = item
+            .and_then(|i| mem.u32(i + 0x70).ok())
+            .and_then(|row| h1row::row_action(&*mem, c.cpu.ecx, row));
+        item.filter(|_| action == Some(SWITCH_ACTION))
+    };
+    let Some(item) = item else {
+        return Ok(Flow::Continue);
+    };
+    if !seen.swap(true, Ordering::Relaxed) {
+        eprintln!("clankermatch: Game Setup's Switch To: Clankermatch row text");
+    }
+    let id = crate::custom_games::SWITCH_CLANKERMATCH_TEXT_ID;
+    c.answer_async(move |cx| -> EntryFuture {
+        Box::pin(async move {
+            crate::list_class::draw_texts(&cx, item, vec![(0, id)]).await?;
+            Ok(Ret::new(0, 8))
+        })
+    })
+}
+
+fn switch_chosen(c: &mut Call) -> Result<Flow, GuestFault> {
+    let list = c.cpu.ecx;
+    let (chain, action) = {
+        let mem = c.ctx.runtime().memory();
+        let row = mem.u32(c.cpu.esp + 8).ok().and_then(|p| mem.u32(p).ok());
+        (
+            mem.u32(c.cpu.esp + 4).ok(),
+            row.and_then(|row| h1row::row_action(&*mem, list, row)),
+        )
+    };
+    let Some(ours) = action.and_then(switch_press) else {
+        return Ok(Flow::Continue);
+    };
+    set_active(ours);
+    if !ours {
+        // Retail's Switch To: Matchmaking: the human playlists, as retail.
+        return Ok(Flow::Continue);
+    }
+    let Some(chain) = chain else {
+        eprintln!("clankermatch: Switch To: Clankermatch: no player chain; nothing opened");
+        return c.ret(8).map(Flow::Return);
+    };
+    eprintln!("clankermatch: Switch To: Clankermatch: opening the clanker playlists");
+    c.answer_async(move |cx| -> EntryFuture {
+        Box::pin(async move {
+            cx.call(
+                GuestCall::new(SWITCH_TO_MATCHMAKING)
+                    .eax(chain)
+                    .args([list]),
+            )
+            .await?;
+            Ok(Ret::new(0, 8))
+        })
+    })
+}
+
+impl feature::Feature for SwitchRow {
+    fn manifest(&self) -> Manifest {
+        Manifest::new(
+            SWITCH_FEATURE,
+            "Clankermatch: a \"Switch To: Clankermatch\" row under a Live lobby's \
+             \"Switch To: Matchmaking\"",
+        )
+        .doc("docs/game/bots.md")
+    }
+    fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
+        use engine::points::{
+            SQUAD_SETTINGS_LIST_CTOR as CTOR, SQUAD_SETTINGS_ROW_CHOSEN, SQUAD_SETTINGS_ROW_TEXT,
+        };
+        // The handler being built (ESI at entry); a stack in case of nesting.
+        let building: Arc<std::sync::Mutex<Vec<u32>>> = Arc::default();
+        let (b2, live) = (Arc::clone(&building), Arc::clone(&building));
+        b.raw()
+            .before(&CTOR, "note the Game Setup list", move |c| {
+                b2.lock().unwrap_or_else(|e| e.into_inner()).push(c.cpu.esi);
+                Ok(Flow::Continue)
+            })
+            .after_feature(h1row::ROW_FEATURE)
+            .after_feature(crate::clankers::ROW_FEATURE);
+        let hle = self.hle.clone();
+        b.raw()
+            .after(&CTOR, "add the Switch To: Clankermatch row", move |c| {
+                let Some(list) = building.lock().unwrap_or_else(|e| e.into_inner()).pop() else {
+                    return Ok(());
+                };
+                let marks = hle
+                    .as_ref()
+                    .is_some_and(|h| !h.clanker_hoppers().hoppers.is_empty());
+                let rt = Arc::clone(c.ctx.runtime());
+                let mut mem = rt.memory();
+                let actions = h1row::setup_actions(&*mem, list).unwrap_or_default();
+                if !wants_switch_row(&actions, marks) {
+                    return Ok(());
+                }
+                match h1row::insert_row_ordered(&mut *mem, list, switch_placed) {
+                    Ok(n) => eprintln!(
+                        "clankermatch: Game Setup list: Switch To: Clankermatch row added ({n} rows)"
+                    ),
+                    Err(why) => eprintln!(
+                        "clankermatch: Game Setup list: Switch To: Clankermatch row not added: {why}"
+                    ),
+                }
+                Ok(())
+            })
+            .after_feature(h1row::ROW_FEATURE)
+            .after_feature(crate::clankers::ROW_FEATURE);
+        let seen = Arc::new(AtomicBool::new(false));
+        b.raw()
+            .before(
+                &SQUAD_SETTINGS_ROW_TEXT,
+                "the Switch To: Clankermatch row's text",
+                move |c| switch_text(c, &seen),
+            )
+            .after_feature(h1row::ROW_FEATURE)
+            .after_feature(crate::clankers::ROW_FEATURE);
+        b.raw()
+            .before(
+                &SQUAD_SETTINGS_ROW_CHOSEN,
+                "Switch To: Clankermatch, and Switch To: Matchmaking's human playlists",
+                switch_chosen,
+            )
+            .after_feature(h1row::ROW_FEATURE)
+            .after_feature(crate::clankers::ROW_FEATURE);
+        // Never snapshot while a Game Setup list is being built.
+        b.snapshot(feature::SnapshotPolicy::forbid_while(move || {
+            h1row::building_live(&live)
+        }));
+        Ok(())
     }
 }
 
@@ -251,14 +461,18 @@ impl feature::Feature for PlaylistFilter {
     }
 }
 
-/// Adds the playlist filter; with no Live it lists every hopper.
+/// Adds the playlist filter (with no Live it lists every hopper) and the
+/// lobby's "Switch To: Clankermatch" row (with no Live, never added).
 pub fn install(
     registry: &mut feature::Registry,
     live: Option<Arc<live_hle::Hle>>,
 ) -> anyhow::Result<()> {
     registry
-        .add(&PlaylistFilter { hle: live })
+        .add(&PlaylistFilter { hle: live.clone() })
         .map_err(|e| anyhow::anyhow!("clankermatch playlists: {e}"))?;
+    registry
+        .add(&SwitchRow { hle: live })
+        .map_err(|e| anyhow::anyhow!("clankermatch switch row: {e}"))?;
     Ok(())
 }
 
@@ -314,6 +528,81 @@ mod tests {
         let none = ClankerHoppers::default();
         assert!(remembered(9, &none, false));
         assert_eq!(quickmatch_hopper(9, &none), 9);
+    }
+
+    #[test]
+    fn switch_to_clankermatch_sits_under_switch_to_matchmaking() {
+        // The Game Setup lists that have retail's Switch To: Matchmaking
+        // (constructor 0x2bb4d2): kind 4 (2, 3, 7, 8), kind 5 (Change Map,
+        // Change Rules, Quick Options, Switch To: Co-Op, Switch To:
+        // Matchmaking) and kind 6 (9, 6).
+        assert!(wants_switch_row(&[2, 3, 7, 8], true));
+        assert!(wants_switch_row(&[0, 1, 4, 6, 8], true));
+        assert!(wants_switch_row(&[9, 6], true));
+        // No matchmaking switch (kinds 0 to 3), no clanker hoppers, or
+        // already there: no row.
+        assert!(!wants_switch_row(&[0, 1, 4, 6], true));
+        assert!(!wants_switch_row(&[2, 3, 7], true));
+        assert!(!wants_switch_row(&[0, 1, 4, 6, 8], false));
+        assert!(!wants_switch_row(&[0, 1, 4, 6, 8, SWITCH_ACTION], true));
+
+        assert_eq!(switch_placed(&[2, 3, 7, 8]), [2, 3, 7, 8, SWITCH_ACTION]);
+        assert_eq!(switch_placed(&[9, 6]), [9, SWITCH_ACTION, 6]);
+        assert_eq!(switch_placed(&[1, 2]), [1, 2, SWITCH_ACTION], "none: last");
+        // Beside the Halo 1 Options (10) and Clankers (11) rows, which go
+        // above the first Switch To:, in either order of the hooks.
+        let custom = [0, 1, 4, 6, 8];
+        let theirs_first = switch_placed(&h1row::placed(&h1row::placed(&custom, 10), 11));
+        let ours_first = h1row::placed(&h1row::placed(&switch_placed(&custom), 10), 11);
+        assert_eq!(theirs_first, [0, 1, 4, 10, 11, 6, 8, SWITCH_ACTION]);
+        assert_eq!(ours_first, theirs_first);
+    }
+
+    #[test]
+    fn the_switch_rows_pick_the_playlists() {
+        assert_eq!(switch_press(SWITCH_ACTION), Some(true));
+        assert_eq!(switch_press(8), Some(false), "Switch To: Matchmaking");
+        assert_eq!(switch_press(9), Some(false), "the same press in kind 6");
+        for other in [0, 1, 2, 3, 4, 6, 7, 10, 11] {
+            assert_eq!(switch_press(other), None, "{other}");
+        }
+        // Our action is past every other Game Setup row's.
+        assert!(SWITCH_ACTION > crate::clankers::ROW_ACTION);
+        assert!(SWITCH_ACTION > h1row::OPTIONS_ACTION);
+        assert_eq!(
+            crate::custom_games::SWITCH_CLANKERMATCH_TEXT,
+            "Switch To: Clankermatch"
+        );
+    }
+
+    #[test]
+    fn the_switch_row_goes_after_the_other_game_setup_rows_on_the_plan() {
+        let mut r = feature::Registry::new(feature::Switches::defaults());
+        r.add(&h1row::SetupRow {
+            data_root: std::env::temp_dir(),
+        })
+        .unwrap();
+        let store = Arc::new(settings::Store::defaults(&crate::clankers::DEFS));
+        let page = Arc::new(crate::clankers::page(store));
+        r.add(&crate::ui_kit::screen::KitTexts(Arc::clone(&page)))
+            .unwrap();
+        r.add(&page.class()).unwrap();
+        r.add(&crate::clankers::SetupRow { page }).unwrap();
+        r.add(&SwitchRow { hle: None }).unwrap();
+        let text = r.build(&feature::Base).unwrap().text();
+        for point in [
+            "SQUAD_SETTINGS_LIST_CTOR",
+            "SQUAD_SETTINGS_ROW_TEXT",
+            "SQUAD_SETTINGS_ROW_CHOSEN",
+        ] {
+            let line = text.lines().find(|l| l.contains(point)).unwrap();
+            let (h1, clankers, ours) = (
+                line.find("h1-options-row:").unwrap(),
+                line.find("clankers-row:").unwrap(),
+                line.find("clankermatch-switch:").unwrap(),
+            );
+            assert!(h1 < clankers && clankers < ours, "{line}");
+        }
     }
 
     #[test]

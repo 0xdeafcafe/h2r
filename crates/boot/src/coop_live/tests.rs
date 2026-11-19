@@ -752,7 +752,7 @@ fn a_host_shows_and_advertises_its_guests_report() {
 // ---- the Live menu ----
 
 #[test]
-fn the_live_menu_has_seven_rows_with_co_op_above_content_download() {
+fn the_live_menu_has_seven_rows_with_co_op_above_custom_game() {
     use crate::custom_games::*;
     assert_eq!(list_count_with(LIST_NAME, VANILLA_ROWS, true), 7);
     assert_eq!(list_count_with(LIST_NAME, VANILLA_ROWS, false), 6);
@@ -764,9 +764,9 @@ fn the_live_menu_has_seven_rows_with_co_op_above_content_download() {
             Row::Retail,
             Row::Retail,
             Row::Clankermatch,
+            Row::Coop,
             Row::CustomGame,
             Row::Browser,
-            Row::Coop,
             Row::Download,
             Row::Retail
         ]
@@ -776,6 +776,21 @@ fn the_live_menu_has_seven_rows_with_co_op_above_content_download() {
         Row::Download,
         "co-op off: Content Download right after the browser"
     );
+    let off: Vec<Row> = (0..7).map(|r| row_kind_with(r, false)).collect();
+    assert_eq!(
+        off,
+        [
+            Row::Retail,
+            Row::Retail,
+            Row::Clankermatch,
+            Row::CustomGame,
+            Row::Browser,
+            Row::Download,
+            Row::Retail
+        ],
+        "co-op off: the rows close up"
+    );
+    assert_eq!(COOP_ROW + 1, CUSTOM_GAME_ROW, "co-op directly above Custom Game");
     assert_eq!(pane_of_with(COOP_ROW, 7, true), Pane::Show(COOP_PANE));
     assert_eq!(pane_of_with(ROW, 7, true), Pane::Show(BROWSER_PANE));
     assert_eq!(pane_of_with(DOWNLOAD_ROW, 7, true), Pane::Show(3));

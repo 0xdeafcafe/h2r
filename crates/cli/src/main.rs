@@ -47,6 +47,8 @@ mod live_geometry;
 mod live_layers;
 mod live_looks;
 mod live_scenario;
+mod live_scripted;
+mod live_mods;
 mod live_models;
 mod live_weapons;
 mod live_render;

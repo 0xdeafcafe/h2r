@@ -20,7 +20,7 @@ export function mapPicture(map: Accessor<string | null | undefined>, mapId: Acce
     const m = map();
     return m ? gameImage(mapKey(artStem(m)))?.url ?? null : null;
   };
-  const geo = geometryFor(() => (pkg() || preview() ? undefined : map() ?? undefined));
+  const geo = geometryFor(() => (pkg() || preview() ? undefined : map() ?? undefined), mapId);
   const base = () => {
     const p = preview();
     if (p) return p;
