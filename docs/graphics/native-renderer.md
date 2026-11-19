@@ -2197,11 +2197,11 @@ its own thread, and render-timing does not matter (the call runs).
      armed, behind the same swallow and probe as the glow.
    - **Built: the template pass's look** (`native_render::screen_look`):
      `screen_look` takes the egor's shader resolved and an
-     implementation and gives layer 15's pass (one pass at the first
-     level of detail; its vertex shader, stages as the shader's bitmaps
+     layer pass and implementation and gives that pass of layer 15 (at
+     the first level of detail; its vertex shader, stages as the shader's bitmaps
      or engine textures the draw supplies, stage and render states,
-     pixel shader, constants), or why it stays on D3D (no layer, several
-     passes, no such implementation, animated, engine inputs beyond the
+     pixel shader, constants), or why it stays on D3D (no layer, no such
+     pass or implementation, animated, engine inputs beyond the
      instance's, engine-driven states, unset or default textures, a
      lightmap, states the native pass does not fit). `compile_screen`
      translates it through `program::translate_pass` over the strips'
@@ -2212,10 +2212,9 @@ its own thread, and render-timing does not matter (the call runs).
      textures layer 15 binds, and the GPU pass drawing a plan's strips.
    - **Built: the load** (`boot::native_post_load`, the switch on, with
      the world): every `egor` tag's shader (the definition's `+0x44`)
-     resolved, each implementation of its layer-15 pass looked at and
-     translated for every classification of its vertex shader (up to
-     16; which one a pass draws with is `0x00016610`'s to say), and the
-     stages' bitmaps decoded; refusals counted by reason, one line on
+     resolved, each implementation of each of its layer-15 passes
+     looked at and translated with its vertex shader's classification-0
+     program (below), and the stages' bitmaps decoded; refusals counted by reason, one line on
      stderr. Held by the world (`Ready::screen_effects`) for the draw.
    - **Traced: the engine textures** (`0x00019530`, the jump table at
      `0x00019b68` by id - 1; `native_render::screen_look::engine_texture`):
@@ -2229,6 +2228,33 @@ its own thread, and render-timing does not matter (the call runs).
      run time; 7 and 11 null entries. A template pass binding the light's,
      a run-time one or an invalid id is refused
      (`ScreenRefusal::EngineTexture`); the rest the draw supplies.
+   - **Traced: which pass, implementation and program**
+     (`0x00016610(shader, layer, pass, implementation, target, flag)`,
+     Code): the layer's passes are the template's word at its layer
+     index (low 9 bits the first, high 7 the count, which is
+     `screen_effect::Effect::implementations`); `pass` -1 draws them all,
+     else that one (`screen_effect::Pass::implementation` names a layer
+     pass), each with implementation `implementation`
+     (`Pass::selector`; `0x132` bytes each, the vertex shader at `+0x100`,
+     -1 not drawn). After `0x0001bbf0`, `0x0001c590` loads that vertex
+     shader with classification 0 (`0x0001c2e0`, `0x1c` bytes per
+     classification), so the load translates only the first program
+     (`screen_look::SCREEN_CLASSIFICATION`), per (layer pass,
+     implementation): `effects\screen_effects\blur` has two layer-15
+     passes (`copy_fb_to_texaccum`, `copy_texaccum_to_fb`), so a layer
+     with several passes is no longer refused. What the real egors
+     (`blur`, `desaturate`) showed the look must take: their passes set
+     `ZENABLE` 0 and no ZWRITEENABLE (`pass_state` takes the depth
+     buffer off as enough; a screen pass testing or writing depth is
+     refused, `ScreenRefusal::Depth`), and `screen_xform_4` moves `v5`,
+     `v6` and `v7.w` into the colours and fog, registers the strips do
+     not push: `compile_screen` gives them the uniforms' defaults only
+     for a pixel side that reads no colour or fog
+     (`screen_look::reads_vertex_colours`, which also counts a missing
+     final combiner as reading them). Its WGSL writes no depth
+     (`PassParts::w_buffer` off). Pixel constants from the engine (the
+     blur's second pass, from the effect's values) are refused
+     (`ScreenRefusal::EnginePixelConstants`) until they are traced.
 5. **`0x0002df00`, and `0x0002dd30`** before layer 17, which has the
    same shape and gets its own skip point.
 6. **Layer 17** (S: bloom), as stage 1b draws the world's other layers.
