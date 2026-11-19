@@ -216,24 +216,51 @@ pub fn screen_vertex(base: &VertexUniforms, guest_size: (u32, u32), size: (u32, 
     u
 }
 
+/// Each stage's engine texture's guest size (0 by 0 for the rest): `view`
+/// the bound colour's, `target1` target 1's. What a size mode of the
+/// stage's engine constants reads (`0x00019530` writes the target's size
+/// into the stage when it binds it).
+pub fn stage_sizes(program: &ScreenProgram, view: (u32, u32), target1: (u32, u32)) -> [(u32, u32); 4] {
+    std::array::from_fn(|n| match program.stages[n] {
+        ScreenStage::Engine(id) => match bound(id) {
+            Some(Bound::View) => view,
+            Some(Bound::Target1) => target1,
+            None => (0, 0),
+        },
+        _ => (0, 0),
+    })
+}
+
 /// The pixel uniforms: each engine stage (a render target, linear) fetched
 /// in its texels, `view` the bound colour's guest size and `target1`
 /// target 1's; no fog.
 pub fn screen_pixel(program: &ScreenProgram, view: (u32, u32), target1: (u32, u32)) -> PixelUniforms {
     let mut p = PixelUniforms { fog: psh::fog::Fog::OFF.uniform(), ..program.pixel };
     let texels = |s: (u32, u32)| [1.0 / s.0.max(1) as f32, 1.0 / s.1.max(1) as f32, 1.0, 1.0];
+    let sizes = stage_sizes(program, view, target1);
     for n in 0..4 {
-        if program.dims[n].is_none() {
-            continue;
-        }
-        if let ScreenStage::Engine(id) = program.stages[n] {
-            p.tex_scale[n] = match bound(id) {
-                Some(Bound::Target1) => texels(target1),
-                _ => texels(view),
-            };
+        if program.dims[n].is_some() && matches!(program.stages[n], ScreenStage::Engine(_)) {
+            p.tex_scale[n] = texels(sizes[n]);
         }
     }
     p
+}
+
+/// A pass's uniforms for a call with `values` drawing into a destination
+/// `dest_guest` guest pixels (`dest_size` texels): [`screen_vertex`] and
+/// [`screen_pixel`] with what the call puts in
+/// (`ScreenConstants::apply`, the stages' sizes [`stage_sizes`]).
+pub fn screen_uniforms(
+    program: &ScreenProgram,
+    values: [u32; 4],
+    (view, target1): ((u32, u32), (u32, u32)),
+    (dest_guest, dest_size): ((u32, u32), (u32, u32)),
+    z_scale: f32,
+) -> (VertexUniforms, PixelUniforms) {
+    let mut vertex = screen_vertex(&program.vertex, dest_guest, dest_size, z_scale);
+    let mut pixel = screen_pixel(program, view, target1);
+    program.constants.apply(&mut vertex, &mut pixel, values, stage_sizes(program, view, target1));
+    (vertex, pixel)
 }
 
 /// What a screen pass draws into.
@@ -443,6 +470,8 @@ pub struct ScreenDraw<'a> {
     pub program: &'a ScreenProgram,
     pub strips: &'a [Vec<StripVertex>],
     pub dest: Dest,
+    /// The call's four values (f32 bits).
+    pub values: [u32; 4],
 }
 
 /// A texture the set keeps: its size and format, and a view of it.
@@ -556,8 +585,9 @@ impl ScreenSet {
                 _ => None,
             };
             let textures = g.textures(device, view.as_ref(), target1)?;
-            let vertex = screen_vertex(&d.program.vertex, dest_guest, dest_size, z_scale).to_bytes();
-            let pixel = screen_pixel(d.program, guest_size, target1_guest.unwrap_or((1, 1))).to_bytes();
+            let targets = (guest_size, target1_guest.unwrap_or((1, 1)));
+            let (vertex, pixel) = screen_uniforms(d.program, d.values, targets, (dest_guest, dest_size), z_scale);
+            let (vertex, pixel) = (vertex.to_bytes(), pixel.to_bytes());
             use wgpu::util::DeviceExt;
             let buffer = |label, contents: &[u8], usage| {
                 device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(label), contents, usage })
@@ -619,6 +649,7 @@ mod tests {
             vertex: VertexUniforms::default(),
             pixel: PixelUniforms::default(),
             inputs: 0x1f,
+            constants: Default::default(),
             state: PassState {
                 blend: None,
                 blend_constant: wgpu::Color::TRANSPARENT,
@@ -703,5 +734,25 @@ mod tests {
         assert_eq!(px.tex_scale[2], [1.0 / 320.0, 1.0 / 240.0, 1.0, 1.0], "target 1 in its texels");
         assert_eq!(px.fog, psh::fog::Fog::OFF.uniform());
         assert_eq!(p.dims[0], Some(TextureDim::D2));
+    }
+
+    /// The call's values into the combiner constants, its targets' guest
+    /// sizes into the vertex constants that read a stage's size.
+    #[test]
+    fn a_calls_values_and_its_targets_sizes_go_in() {
+        use tags::material::{EngineVertexConstant, VectorBinding, VectorTarget};
+        let mut p = program([ScreenStage::Engine(5), ScreenStage::Engine(3), E, E]);
+        assert_eq!(stage_sizes(&p, (640, 480), (320, 240)), [(640, 480), (320, 240), (0, 0), (0, 0)]);
+        let size = |reg, stage| (EngineVertexConstant { bank: 1, reg, mode: 13, stage, source: 0 }, 0b1111);
+        p.constants.vertex = vec![size(0, 1), size(1, 2)];
+        let complement = VectorTarget::Pixel { c1: true, slot: 8, mask: 0x00ff_0000, half: false, transform: 1 };
+        p.constants.pixel = vec![VectorBinding { source: 42, target: complement }];
+        let values = [0.0f32.to_bits(), 0.25f32.to_bits(), 0, 0];
+        let (v, px) = screen_uniforms(&p, values, ((640, 480), (320, 240)), ((640, 480), (1280, 960)), 1.0);
+        assert_eq!(v.constants[18], [640.0, 480.0, 0.0, 0.0], "the view's guest size");
+        assert_eq!(v.constants[19], [320.0, 240.0, 0.0, 0.0], "target 1's");
+        assert_eq!(v.surface, [640.0, 480.0]);
+        assert_eq!(crate::light_look::repack(px.c1[8]) & 0x00ff_0000, 191 << 16, "1 - 0.25 of 255, in red");
+        assert_eq!(px.tex_scale[1], [1.0 / 320.0, 1.0 / 240.0, 1.0, 1.0]);
     }
 }

@@ -17,7 +17,7 @@ use native_render::look;
 use native_render::screen_look::{
     SCREEN_CLASSIFICATION, ScreenProgram, ScreenStage, TEMPLATE_LAYER, compile_screen, screen_look,
 };
-use tags::material::{Material, ShaderLibrary};
+use tags::material::{EngineVertexConstant, Material, ShaderLibrary, engine_vertex_constants};
 
 use crate::native_world_glue::decode_image;
 
@@ -66,6 +66,28 @@ pub fn template_implementations(material: &Material) -> Vec<(usize, usize)> {
         .collect()
 }
 
+/// The engine vertex constants of implementation `implementation` of
+/// `material`'s layer-15 pass `layer_pass` (its `spas`'s, which the
+/// resolved material does not keep).
+fn vertex_externals(
+    lib: &mut ShaderLibrary,
+    material: &Material,
+    layer_pass: usize,
+    implementation: usize,
+) -> Result<Vec<EngineVertexConstant>, String> {
+    let pass = material
+        .layers
+        .iter()
+        .filter(|l| l.lod == 0 && l.layer == TEMPLATE_LAYER)
+        .flat_map(|l| &l.passes)
+        .find(|p| p.index == layer_pass)
+        .ok_or("no such layer pass")?
+        .pass;
+    let spas = lib.pass(pass).and_then(|p| p.compiled()).map_err(|e| format!("spas: {e}"))?;
+    let imp = spas.implementations.get(implementation).ok_or("no such implementation in the spas")?;
+    Ok(engine_vertex_constants(spas, imp))
+}
+
 /// At map load (the switch on): every egor of `map`. Says on stderr what
 /// loaded.
 pub(crate) fn load<R: std::io::Read + std::io::Seek>(map: &mut Map<R>, files: &mut assets::ResourceFiles) -> ScreenEffects {
@@ -103,7 +125,14 @@ pub(crate) fn load<R: std::io::Read + std::io::Seek>(map: &mut Map<R>, files: &m
         };
         let mut e = EffectPrograms { shader, programs: HashMap::new(), refused: HashMap::new() };
         for key @ (layer_pass, implementation) in template_implementations(&material) {
-            let look = match screen_look(&material, layer_pass, implementation) {
+            let externals = match vertex_externals(&mut lib, &material, layer_pass, implementation) {
+                Ok(x) => x,
+                Err(r) => {
+                    e.refused.insert(key, r);
+                    continue;
+                }
+            };
+            let look = match screen_look(&material, layer_pass, implementation, &externals) {
                 Ok(l) => l,
                 Err(r) => {
                     e.refused.insert(key, format!("{r:?}"));

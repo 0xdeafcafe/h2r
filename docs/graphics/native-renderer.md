@@ -2252,9 +2252,8 @@ its own thread, and render-timing does not matter (the call runs).
      for a pixel side that reads no colour or fog
      (`screen_look::reads_vertex_colours`, which also counts a missing
      final combiner as reading them). Its WGSL writes no depth
-     (`PassParts::w_buffer` off). Pixel constants from the engine (the
-     blur's second pass, from the effect's values) are refused
-     (`ScreenRefusal::EnginePixelConstants`) until they are traced.
+     (`PassParts::w_buffer` off). The engine constants are the call's
+     (below).
    - **Built: the GPU pass, unarmed** (`native_render::screen_gpu`,
      `native_post_glue`'s `ScreenPass` and `ScreenProbe`): each strip a
      triangle strip of `StripVertex` (attribute 0 the position, z and w
@@ -2309,6 +2308,29 @@ its own thread, and render-timing does not matter (the call runs).
      (S: what the D3D side later reads of target 1 is not this call's,
      since its strips are dropped; target 1 is scratch to the screen
      effects, as 7 and 8 are to the glow.)
+   - **Built: the call's engine constants**
+     (`screen_look::ScreenConstants`): `0x0002d140` copies its four
+     values to `0x004c19b0`, and the scalar evaluator `0x000336f0` (its
+     table at `0x000338d4`) returns `[0x004c19b0]` for scalar 41 and
+     `[0x004c19b4]` for 42 (`screen_look::SCREEN_SCALARS`), so a pass
+     reading those is no longer refused. The blur's
+     `copy_texaccum_to_fb` reads 41 into `c0.a` (pixel mode 3), the mix
+     of its two stages, and sets `c18`..`c21` from its stages' sizes
+     (vertex modes 14 and 15 of stages 1 and 2: `[w, 0, 0, 0]`,
+     `[0, h, 0, 0]`), which carry its coordinates into texels. Per call
+     the pass gets each combiner constant reading a value packed as
+     `0x00019ca0` packs it (the binding's transform, then
+     `pack_engine_colour`, into its lanes) and each vertex constant
+     reading a value or an engine stage's size evaluated as
+     `0x00019be0` evaluates it (`tags::material::EngineVertexConstant`,
+     from the `spas`, keeping what no later binding of the register
+     writes), the size the guest size of the target the stage binds
+     (`screen_gpu::stage_sizes`: the view's, target 1's as the call drew
+     it). The rest stay as resolved at load: the instance's scalar 21,
+     the pixel side's sizes (`0x00019ca0` takes 1 by 1), a bitmap stage's
+     size. A vertex register the resolver took from the engine that no
+     external of the implementation names is refused
+     (`ScreenRefusal::EngineVertexConstants`).
 5. **`0x0002df00`, and `0x0002dd30`** before layer 17, which has the
    same shape and gets its own skip point.
 6. **Layer 17** (S: bloom), as stage 1b draws the world's other layers.

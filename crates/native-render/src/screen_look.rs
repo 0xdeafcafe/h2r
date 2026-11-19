@@ -26,7 +26,10 @@
 //! translates it through `program::translate_pass`.
 
 use map::TagId;
-use tags::material::{INSTANCE_INTS, INSTANCE_SCALARS, InputReads, Material, Origin, Register, TextureSource};
+use tags::material::{
+    EngineInputs, EngineVertexConstant, INSTANCE_INTS, INSTANCE_SCALARS, InputReads, Material, Origin, Register, TextureSource,
+    VectorBinding, VectorTarget, engine_scalar, pack_engine_colour,
+};
 use tags::shader::{PSDEF_SIZE, StageStates};
 
 use shaders::psh::{PixelUniforms, TextureDim};
@@ -53,6 +56,105 @@ pub const SCREEN_CLASSIFICATION: u32 = 0;
 /// is only made for a pixel side that reads no colour or fog
 /// ([`reads_vertex_colours`]), where they cannot show.
 pub const LEFT_INPUTS: u16 = 0xe0;
+
+/// The engine scalar inputs a screen effect's call supplies: 41 and 42
+/// its first two values. `0x0002d140` copies the call's four values to
+/// `0x004c19b0`; the scalar evaluator `0x000336f0` (its jump table at
+/// `0x000338d4`, by input) returns `[0x004c19b0]` for 41 and
+/// `[0x004c19b4]` for 42 (Code). Blur's `copy_texaccum_to_fb` reads 41
+/// into its `c0.a`, the mix of its two stages.
+pub const SCREEN_SCALARS: u64 = 1 << 41 | 1 << 42;
+
+/// The input [`SCREEN_SCALARS`]' first value lands in (the second is
+/// one above).
+pub const FIRST_VALUE_SCALAR: usize = 41;
+
+/// The constants a pass takes from its call ([`ScreenConstants::apply`]):
+/// those reading [`SCREEN_SCALARS`] and the vertex constants sized by an
+/// engine texture's stage. The rest the load resolved for good (the
+/// instance's own inputs; the pixel side's sizes, which `0x00019ca0`
+/// takes as 1 by 1; a bitmap stage's size).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ScreenConstants {
+    /// Combiner constants from the values (`tags::material::VectorTarget::Pixel`).
+    pub pixel: Vec<VectorBinding>,
+    /// Vertex constants from the values or an engine stage's size, in
+    /// `0x00019be0`'s order, each with the components no later binding of
+    /// its register overwrites.
+    pub vertex: Vec<(EngineVertexConstant, u8)>,
+}
+
+impl ScreenConstants {
+    /// `vertex` and `pixel` (the compiled pass's) with the call's values
+    /// (f32 bits) put in, `sizes[n]` the guest size of the engine texture
+    /// at stage `n` (a size mode's stage `k` reads stage `k - 1`'s, stage 0
+    /// 1 by 1): a combiner constant packed as `0x00019ca0` packs it (the
+    /// scalar through its transform, `engine_scalar`, then
+    /// `pack_engine_colour`) into its lanes, a vertex constant as
+    /// `0x00019be0` writes it.
+    pub fn apply(&self, vertex: &mut VertexUniforms, pixel: &mut PixelUniforms, values: [u32; 4], sizes: [(u32, u32); 4]) {
+        let mut inputs = EngineInputs::default();
+        inputs.scalars[FIRST_VALUE_SCALAR] = f32::from_bits(values[0]);
+        inputs.scalars[FIRST_VALUE_SCALAR + 1] = f32::from_bits(values[1]);
+        for &(c, keep) in &self.vertex {
+            let row = match c.bank {
+                1 => vertex.constants.get_mut(18 + usize::from(c.reg)),
+                _ => vertex.defaults.get_mut(usize::from(c.reg)),
+            };
+            let Some(row) = row else { continue };
+            let size = match usize::from(c.stage) {
+                0 => (1.0, 1.0),
+                k => sizes.get(k - 1).map_or((0.0, 0.0), |s| (s.0 as f32, s.1 as f32)),
+            };
+            let mut v = *row;
+            if c.eval(&mut v, size, &inputs).is_err() {
+                continue;
+            }
+            for (n, x) in row.iter_mut().enumerate() {
+                if keep & 1 << n != 0 {
+                    *x = v[n];
+                }
+            }
+        }
+        for b in &self.pixel {
+            let VectorTarget::Pixel { c1, slot, mask, half, transform } = b.target else { continue };
+            let Some(&x) = inputs.scalars.get(usize::from(b.source)) else { continue };
+            let x = engine_scalar(x, usize::from(transform));
+            let bank = if c1 { &mut pixel.c1 } else { &mut pixel.c0 };
+            if let Some(c) = bank.get_mut(usize::from(slot)) {
+                *c = shaders::psh::argb((crate::light_look::repack(*c) & !mask) | (pack_engine_colour([x; 4], half) & mask));
+            }
+        }
+    }
+}
+
+/// Of `externals` (an implementation's engine vertex constants in order,
+/// `tags::material::engine_vertex_constants`), the ones a call puts in
+/// ([`ScreenConstants::vertex`]) for stages `textures`.
+fn call_vertex_constants(externals: &[EngineVertexConstant], textures: &[ScreenStage; 4]) -> Vec<(EngineVertexConstant, u8)> {
+    let per_call = |c: &EngineVertexConstant| match c.mode {
+        0..=3 => SCREEN_SCALARS & 1u64 << (c.source & 63) != 0,
+        _ if c.reads_size() => {
+            c.stage != 0 && matches!(textures.get(usize::from(c.stage) - 1), Some(ScreenStage::Engine(_)))
+        }
+        _ => false,
+    };
+    let mut out = Vec::new();
+    for (i, c) in externals.iter().enumerate() {
+        if !per_call(c) {
+            continue;
+        }
+        let over = externals[i + 1..]
+            .iter()
+            .filter(|l| (l.bank, l.reg) == (c.bank, c.reg))
+            .fold(0, |a, l| a | l.components());
+        let keep = c.components() & !over;
+        if keep != 0 {
+            out.push((*c, keep));
+        }
+    }
+    out
+}
 
 /// What a template pass's stage binds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -138,6 +240,8 @@ pub struct ScreenLook {
     pub pixel_shader: [u8; PSDEF_SIZE],
     pub vertex_constants: Vec<Register>,
     pub vertex_defaults: Vec<Register>,
+    /// What the call puts in.
+    pub constants: ScreenConstants,
     pub state: PassState,
 }
 
@@ -176,9 +280,9 @@ pub enum ScreenRefusal {
     State(StateRefusal),
     /// It reads engine-driven render or stage states.
     EngineStates,
-    /// Its pixel constants come from the engine (the effect's values,
-    /// which nothing supplies here yet).
-    EnginePixelConstants,
+    /// A vertex register resolved from the engine that none of the
+    /// engine vertex constants given names (not this implementation's).
+    EngineVertexConstants,
     /// It tests or writes depth (the native pass is colour-only).
     Depth,
     /// A stage binds an engine texture the draw cannot supply
@@ -189,8 +293,15 @@ pub enum ScreenRefusal {
 
 /// Implementation `implementation` of the layer-15 pass `layer_pass` of
 /// `material` (first level of detail), `material` the egor's shader
-/// resolved without engine inputs.
-pub fn screen_look(material: &Material, layer_pass: usize, implementation: usize) -> Result<ScreenLook, ScreenRefusal> {
+/// resolved without engine inputs and `externals` the implementation's
+/// engine vertex constants (`tags::material::engine_vertex_constants` of
+/// its `spas`).
+pub fn screen_look(
+    material: &Material,
+    layer_pass: usize,
+    implementation: usize,
+    externals: &[EngineVertexConstant],
+) -> Result<ScreenLook, ScreenRefusal> {
     let l = material
         .layers
         .iter()
@@ -209,7 +320,7 @@ pub fn screen_look(material: &Material, layer_pass: usize, implementation: usize
     }
     let r = imp.input_reads;
     let unsupplied = InputReads {
-        scalars: r.scalars & !INSTANCE_SCALARS,
+        scalars: r.scalars & !(INSTANCE_SCALARS | SCREEN_SCALARS),
         vectors: r.vectors,
         ints: r.ints & !INSTANCE_INTS,
     };
@@ -219,8 +330,12 @@ pub fn screen_look(material: &Material, layer_pass: usize, implementation: usize
     if !imp.engine_render_states.is_empty() || !imp.engine_stage_states.is_empty() {
         return Err(ScreenRefusal::EngineStates);
     }
-    if imp.pixel_constants_from_engine {
-        return Err(ScreenRefusal::EnginePixelConstants);
+    // Every register the resolver took from the engine is one of these.
+    let index = |c: &EngineVertexConstant| if c.bank == 1 { 18 + c.reg } else { c.reg };
+    let named = |bank: u8, i: u8| externals.iter().any(|c| c.bank == bank && index(c) == i);
+    let engine = |regs: &[Register], bank: u8| regs.iter().filter(|r| r.origin == Origin::Engine).all(|r| named(bank, r.index));
+    if !engine(&imp.vertex_constants, 1) || !engine(&imp.vertex_defaults, 0) {
+        return Err(ScreenRefusal::EngineVertexConstants);
     }
     let mut textures = [ScreenStage::Empty; 4];
     for (stage, t) in textures.iter_mut().zip(&imp.textures) {
@@ -242,6 +357,15 @@ pub fn screen_look(material: &Material, layer_pass: usize, implementation: usize
     if state.depth_write || state.depth_compare != wgpu::CompareFunction::Always {
         return Err(ScreenRefusal::Depth);
     }
+    // A combiner constant reads a value through its binding; the pixel
+    // side's sizes are 1 by 1 and the instance's scalar its own, resolved.
+    let pixel = imp
+        .scalar_bindings
+        .iter()
+        .filter(|b| matches!(b.target, VectorTarget::Pixel { .. }) && SCREEN_SCALARS & 1u64 << (b.source & 63) != 0)
+        .copied()
+        .collect();
+    let constants = ScreenConstants { pixel, vertex: call_vertex_constants(externals, &textures) };
     Ok(ScreenLook {
         pass: pass.pass,
         layer_pass,
@@ -252,6 +376,7 @@ pub fn screen_look(material: &Material, layer_pass: usize, implementation: usize
         pixel_shader: imp.pixel_shader,
         vertex_constants: imp.vertex_constants.clone(),
         vertex_defaults: imp.vertex_defaults.clone(),
+        constants,
         state,
     })
 }
@@ -269,6 +394,8 @@ pub struct ScreenProgram {
     pub pixel: PixelUniforms,
     /// `v<n>` the program reads (within [`STRIP_INPUTS`]).
     pub inputs: u16,
+    /// What the call puts in ([`ScreenConstants::apply`]).
+    pub constants: ScreenConstants,
     pub state: PassState,
 }
 
@@ -335,6 +462,7 @@ pub fn compile_screen(look: &ScreenLook, microcode: &[u8]) -> Result<ScreenProgr
         vertex: t.vertex,
         pixel: t.pixel,
         inputs: t.inputs,
+        constants: look.constants.clone(),
         state: look.state,
     })
 }
@@ -427,7 +555,7 @@ mod tests {
     #[test]
     fn the_template_pass_names_its_stages() {
         let m = material(TEMPLATE_LAYER, 1, vec![implementation(0), implementation(1)]);
-        let look = screen_look(&m, 0, 1).expect("a look");
+        let look = screen_look(&m, 0, 1, &[]).expect("a look");
         assert_eq!((look.layer_pass, look.implementation), (0, 1));
         assert_eq!(look.vertex_shader, TagId(0xe000_0011));
         assert_eq!(look.textures[0], ScreenStage::Engine(5));
@@ -441,11 +569,11 @@ mod tests {
     #[test]
     fn each_pass_of_the_layer_is_its_own_look() {
         let m = material(TEMPLATE_LAYER, 2, vec![implementation(0)]);
-        let first = screen_look(&m, 0, 0).expect("pass 0");
-        let second = screen_look(&m, 1, 0).expect("pass 1");
+        let first = screen_look(&m, 0, 0, &[]).expect("pass 0");
+        let second = screen_look(&m, 1, 0, &[]).expect("pass 1");
         assert_eq!((first.pass, second.pass), (TagId(0xe000_0200), TagId(0xe000_0201)));
         assert_eq!((first.vertex_shader, second.vertex_shader), (TagId(0xe000_0010), TagId(0xe000_0110)));
-        assert_eq!(screen_look(&m, 2, 0).unwrap_err(), ScreenRefusal::NoPass(2));
+        assert_eq!(screen_look(&m, 2, 0, &[]).unwrap_err(), ScreenRefusal::NoPass(2));
     }
 
     #[test]
@@ -463,10 +591,10 @@ mod tests {
 
     #[test]
     fn what_keeps_the_d3d_draws() {
-        let refusal = |imp: ResolvedImplementation| screen_look(&material(TEMPLATE_LAYER, 1, vec![imp]), 0, 0).unwrap_err();
-        assert_eq!(screen_look(&material(12, 1, vec![implementation(0)]), 0, 0).unwrap_err(), ScreenRefusal::NoLayer);
+        let refusal = |imp: ResolvedImplementation| screen_look(&material(TEMPLATE_LAYER, 1, vec![imp]), 0, 0, &[]).unwrap_err();
+        assert_eq!(screen_look(&material(12, 1, vec![implementation(0)]), 0, 0, &[]).unwrap_err(), ScreenRefusal::NoLayer);
         let m = material(TEMPLATE_LAYER, 1, vec![implementation(0)]);
-        assert_eq!(screen_look(&m, 0, 3).unwrap_err(), ScreenRefusal::NoImplementation(3));
+        assert_eq!(screen_look(&m, 0, 3, &[]).unwrap_err(), ScreenRefusal::NoImplementation(3));
         let mut imp = implementation(0);
         imp.input_reads = InputReads { scalars: 0, vectors: 1 << 5, ints: 0 };
         assert_eq!(refusal(imp), ScreenRefusal::Reads(InputReads { scalars: 0, vectors: 1 << 5, ints: 0 }));
@@ -477,8 +605,11 @@ mod tests {
         imp.textures[2] = texture(TextureSource::Lightmap);
         assert_eq!(refusal(imp), ScreenRefusal::Lightmap);
         let mut imp = implementation(0);
-        imp.pixel_constants_from_engine = true;
-        assert_eq!(refusal(imp), ScreenRefusal::EnginePixelConstants, "copy_texaccum_to_fb's c0");
+        imp.vertex_constants[0].origin = Origin::Engine;
+        assert_eq!(refusal(imp), ScreenRefusal::EngineVertexConstants, "c18 from externals not given");
+        let mut imp = implementation(0);
+        imp.input_reads = InputReads { scalars: 1 << 40, vectors: 0, ints: 0 };
+        assert_eq!(refusal(imp), ScreenRefusal::Reads(InputReads { scalars: 1 << 40, vectors: 0, ints: 0 }));
         let mut imp = implementation(0);
         imp.render_states = vec![
             state(RenderStateType::AlphaBlendEnable, 0),
@@ -486,6 +617,48 @@ mod tests {
             state(RenderStateType::ZWriteEnable, 0),
         ];
         assert_eq!(refusal(imp), ScreenRefusal::Depth, "a depth test");
+    }
+
+    /// `effects\screen_effects\blur`'s second pass (`copy_texaccum_to_fb`'s
+    /// shape): `c0.a` the call's first value (scalar 41, mode 3), `c18`..
+    /// `c21` its two engine stages' sizes (modes 14 and 15, stages 1 and 2).
+    #[test]
+    fn the_call_puts_in_its_values_and_its_stages_sizes() {
+        let size = |reg, mode, stage| EngineVertexConstant { bank: 1, reg, mode, stage, source: 0 };
+        let externals = [size(0, 14, 1), size(1, 15, 1), size(2, 14, 2), size(3, 15, 2)];
+        let mut imp = implementation(0);
+        imp.textures = [texture(TextureSource::Engine(24)), texture(TextureSource::Engine(3)), None, None];
+        imp.input_reads = InputReads { scalars: 1 << 41, vectors: 0, ints: 0 };
+        imp.pixel_constants_from_engine = true;
+        let alpha = VectorTarget::Pixel { c1: false, slot: 0, mask: 0xff00_0000, half: false, transform: 0 };
+        imp.scalar_bindings = vec![VectorBinding { source: 41, target: alpha }];
+        imp.vertex_constants =
+            (18..22).map(|index| Register { index, value: [0.0; 4], written: 0xf, origin: Origin::Engine }).collect();
+        let m = material(TEMPLATE_LAYER, 1, vec![imp]);
+        assert_eq!(screen_look(&m, 0, 0, &externals[..3]).unwrap_err(), ScreenRefusal::EngineVertexConstants, "c21 unnamed");
+        let look = screen_look(&m, 0, 0, &externals).expect("the call supplies it");
+        assert_eq!(look.constants.pixel, vec![VectorBinding { source: 41, target: alpha }]);
+        assert_eq!(look.constants.vertex, externals.map(|c| (c, 0b1111)).to_vec());
+        let mut vertex = VertexUniforms::default();
+        let mut pixel = PixelUniforms::default();
+        pixel.c0[0] = [0.2, 0.4, 0.6, 1.0];
+        let values = [0.5f32.to_bits(), 0, 0, 0];
+        look.constants.apply(&mut vertex, &mut pixel, values, [(160, 120), (320, 240), (0, 0), (0, 0)]);
+        let rows: [[f32; 4]; 4] = vertex.constants[18..22].try_into().unwrap();
+        assert_eq!(rows, [[160.0, 0.0, 0.0, 0.0], [0.0, 120.0, 0.0, 0.0], [320.0, 0.0, 0.0, 0.0], [0.0, 240.0, 0.0, 0.0]]);
+        assert_eq!(crate::light_look::repack(pixel.c0[0]), 0x8033_6699, "alpha 0.5 of 255, rounded; rgb kept");
+    }
+
+    /// A call's constant keeps only what no later binding of its register
+    /// writes; a size of stage 0 or of a bitmap's stage, and a scalar the
+    /// call does not supply, stay as loaded.
+    #[test]
+    fn a_calls_constants_are_the_ones_it_changes() {
+        let c = |reg, mode, stage, source| EngineVertexConstant { bank: 1, reg, mode, stage, source };
+        let bitmap = ScreenStage::Bitmap { bitmap: TagId(1), image: 0 };
+        let stages = [ScreenStage::Engine(5), bitmap, ScreenStage::Empty, ScreenStage::Empty];
+        let externals = [c(0, 13, 1, 0), c(0, 6, 0, 0), c(1, 13, 2, 0), c(2, 3, 0, 42), c(3, 3, 0, 21)];
+        assert_eq!(call_vertex_constants(&externals, &stages), vec![(c(0, 13, 1, 0), 0b1101), (c(2, 3, 0, 42), 0b1000)]);
     }
 
     /// `dp4 oPos, v0, c[0..3]; mov oT0, v1; mov oT1, v<texcoord>`.
@@ -515,7 +688,7 @@ mod tests {
             ..Default::default()
         };
         let m = material(TEMPLATE_LAYER, 1, vec![implementation(0)]);
-        ScreenLook { pixel_shader: def.to_bytes(), ..screen_look(&m, 0, 0).unwrap() }
+        ScreenLook { pixel_shader: def.to_bytes(), ..screen_look(&m, 0, 0, &[]).unwrap() }
     }
 
     #[test]

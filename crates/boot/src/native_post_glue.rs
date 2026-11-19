@@ -266,9 +266,9 @@ pub fn missing(effect: &Effect, drawable: &dyn Fn(&screen_effect::Pass) -> bool)
 /// The most corners a call's plan reads.
 pub const MAX_CORNERS: u32 = 64;
 
-/// The plan of the call `c`: its values and corners read, then
-/// `engine::screen_effect::plan`.
-pub fn plan_effect(mem: &dyn GuestMemory, c: ScreenEffect, fp: Fp) -> Result<Option<Effect>, String> {
+/// The plan of the call `c` and its values: its values and corners read,
+/// then `engine::screen_effect::plan`.
+pub fn plan_effect(mem: &dyn GuestMemory, c: ScreenEffect, fp: Fp) -> Result<Option<(Effect, [u32; 4])>, String> {
     let n = c.columns.checked_mul(c.rows).filter(|&n| n <= MAX_CORNERS).ok_or("too many corners")?;
     let word = |a: u32| mem.u32(a).map_err(err("a value or corner"));
     let mut values = [0u32; 4];
@@ -280,8 +280,9 @@ pub fn plan_effect(mem: &dyn GuestMemory, c: ScreenEffect, fp: Fp) -> Result<Opt
         let at = c.corners.wrapping_add(16 * i);
         corners.push([word(at)?, word(at + 4)?, word(at + 8)?, word(at + 12)?]);
     }
-    screen_effect::plan(mem, c.datum, values, c.columns, c.rows, &corners, fp.mxcsr, fp.x87_control)
-        .map_err(err("plan"))
+    let effect = screen_effect::plan(mem, c.datum, values, c.columns, c.rows, &corners, fp.mxcsr, fp.x87_control)
+        .map_err(err("plan"))?;
+    Ok(effect.map(|e| (e, values)))
 }
 
 static EFFECT_REFUSED: [AtomicU64; Missing::ALL.len()] = [const { AtomicU64::new(0) }; Missing::ALL.len()];
@@ -294,14 +295,17 @@ pub fn effect_refusals() -> [u64; Missing::ALL.len()] {
 }
 
 /// A call as the native pass draws it: per pass its key, destination and
-/// strips (`depth` the positions' z and w, `[0x0045dd40]`).
+/// strips (`depth` the positions' z and w, `[0x0045dd40]`), and the call's
+/// values (what its passes' engine constants read).
 pub struct ScreenCall {
     pub egor: TagId,
     pub passes: Vec<(ScreenKey, Dest, Vec<Vec<StripVertex>>)>,
+    pub values: [u32; 4],
 }
 
-/// `effect`'s passes for egor `egor` (each drawable: [`pass_drawable`]).
-pub fn screen_call(effect: &Effect, egor: TagId, depth: u32) -> ScreenCall {
+/// `effect`'s passes for egor `egor` (each drawable: [`pass_drawable`]),
+/// called with `values`.
+pub fn screen_call(effect: &Effect, egor: TagId, values: [u32; 4], depth: u32) -> ScreenCall {
     let passes = effect
         .passes
         .iter()
@@ -318,7 +322,7 @@ pub fn screen_call(effect: &Effect, egor: TagId, depth: u32) -> ScreenCall {
             (key, dest(p).unwrap_or(Dest::Bound), strips)
         })
         .collect();
-    ScreenCall { egor, passes }
+    ScreenCall { egor, passes, values }
 }
 
 /// The swallow of a call's strips: per strip its slot (0 the bound
@@ -363,7 +367,7 @@ impl d3d::ExternalPass for ScreenPass {
                 screen_refused(&screen_gpu::ScreenRefused::NoProgram);
                 return;
             };
-            draws.push(ScreenDraw { key: *key, program, strips, dest: *dest });
+            draws.push(ScreenDraw { key: *key, program, strips, dest: *dest, values: self.call.values });
         }
         let images = &self.effects.images;
         let mut stage_image = |s: ScreenStage| match s {
@@ -821,7 +825,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     }
 
     fn screen_effect(&self, mem: &mut dyn GuestMemory, call: ScreenEffect, fp: Fp) -> bool {
-        let effect = match plan_effect(&*mem, call, fp) {
+        let (effect, values) = match plan_effect(&*mem, call, fp) {
             Ok(Some(e)) => e,
             Ok(None) => return false,
             Err(e) => {
@@ -856,7 +860,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             return false;
         }
         let Ok(depth) = mem.u32(screen_effect::constant::DEPTH) else { return false };
-        let call = screen_call(&effect, egor, depth);
+        let call = screen_call(&effect, egor, values, depth);
         let Some((targets, primitive, vertices)) = screen_swallow(&call) else { return false };
         let (drop, pass): (bool, Box<dyn d3d::ExternalPass>) = if SCREEN_PROVED.load(Ordering::Relaxed) {
             let pass = ScreenPass { effects, call, screens: Arc::clone(&self.screens) };
@@ -1071,6 +1075,7 @@ mod tests {
             vertex: Default::default(),
             pixel: Default::default(),
             inputs: 0x1f,
+            constants: Default::default(),
             state: native_render::pass_state::PassState {
                 blend: None,
                 blend_constant: wgpu::Color::TRANSPARENT,
@@ -1139,20 +1144,22 @@ mod tests {
             implementations: 2,
             passes: vec![drawn_pass(3, 4), drawn_pass(3, 4)],
         };
-        let call = screen_call(&effect, EGOR, 0x4b7f_ffff);
+        let values = [0.5f32.to_bits(), 0, 0, 0];
+        let call = screen_call(&effect, EGOR, values, 0x4b7f_ffff);
         assert_eq!(call.passes.len(), 2);
+        assert_eq!(call.values, values, "what the passes' engine constants read");
         assert_eq!(call.passes[0].0, (EGOR.0, 1, 0), "(egor, layer pass, implementation)");
         assert_eq!(call.passes[0].1, Dest::Bound);
         assert_eq!(call.passes[0].2[0][0].position[2].to_bits(), 0x4b7f_ffff);
         assert_eq!(screen_swallow(&call), Some((vec![0; 6], PrimitiveType::from_xbox(6).unwrap(), 8)), "SET_BEGIN_END 6");
         let uneven = Effect { passes: vec![drawn_pass(1, 4), drawn_pass(1, 3)], ..effect.clone() };
-        assert_eq!(screen_swallow(&screen_call(&uneven, EGOR, 0)), None);
+        assert_eq!(screen_swallow(&screen_call(&uneven, EGOR, [0; 4], 0)), None);
         let empty = Effect { passes: vec![], ..effect.clone() };
-        assert_eq!(screen_swallow(&screen_call(&empty, EGOR, 0)), None);
+        assert_eq!(screen_swallow(&screen_call(&empty, EGOR, [0; 4], 0)), None);
         // Target 1's strips go to slot 1, the target the first finds.
         let into_1 = screen_effect::Pass { kind: 1, size: Some((640, 480)), ..drawn_pass(2, 4) };
         let both = Effect { passes: vec![into_1, drawn_pass(3, 4)], ..effect };
-        let call = screen_call(&both, EGOR, 0);
+        let call = screen_call(&both, EGOR, [0; 4], 0);
         assert_eq!(call.passes[0].1, Dest::Target1 { guest: (640, 480) });
         assert_eq!(screen_swallow(&call).map(|s| s.0), Some(vec![1, 1, 0, 0, 0]));
     }
@@ -1194,7 +1201,7 @@ mod tests {
         assert!(Probe { plan, capture: None }.colour_only());
         assert!(CapturePass(None).colour_only());
         let effects = Arc::new(crate::native_post_load::ScreenEffects::default());
-        let call = || ScreenCall { egor: EGOR, passes: Vec::new() };
+        let call = || ScreenCall { egor: EGOR, passes: Vec::new(), values: [0; 4] };
         assert!(ScreenProbe { effects: Arc::clone(&effects), call: call() }.colour_only());
         let screens = Arc::new(Mutex::new((0, ScreenSet::new())));
         assert!(ScreenPass { effects, call: call(), screens }.colour_only(), "the screen passes bind no depth");
