@@ -2185,3 +2185,120 @@ fn physics_models_load_as_the_engine_reads_them() {
         assert!(bad.is_empty(), "{level}: {bad:#?}");
     }
 }
+
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn scripted_ring_and_boxes_use_native_scenario_palettes() {
+    let word = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
+    let short = |b: &[u8], at: usize| u16::from_le_bytes(b[at..at + 2].try_into().unwrap());
+    for (level, source, ty, expected) in [
+        ("a10", "scenery\\halo\\halo", 6, 4),
+        ("b30", "cinematics\\props\\b30_falling_box", 11, 7),
+    ] {
+        let h1 = h1_level(level);
+        let mut base = h2_map(h1campaign::base_for(level));
+        let options = Options {
+            ai: false,
+            ..Default::default()
+        };
+        let done = h1campaign::convert(&h1, &mut base, &options).unwrap();
+        assert!(
+            !done.report.dropped.iter().any(|e| e.contains(source)),
+            "{:?}",
+            done.report.dropped
+        );
+        let mut map = Map::from_reader(Cursor::new(done.bytes)).unwrap();
+        let mem = map_memory(&mut map);
+        let root = map.read_tag_bytes(map.scenario().unwrap().id).unwrap();
+        let (placement, palette, stride) = tags::object::OBJECT_TYPES[ty].placement.unwrap();
+
+        let h1_scnr = h1.tag_data(h1.scenario()).unwrap();
+        let space = h1.tag_space();
+        let h1_names = space.block_at(h1_scnr, 0x204, 0x24).unwrap();
+        let h1_places = space.block_at(h1_scnr, 0x240, 0x78).unwrap();
+        let h1_palette = space.block_at(h1_scnr, 0x24c, 0x30).unwrap();
+        let mut found = 0;
+        for (i, name) in h1_names.iter().enumerate() {
+            if short(name, 0x20) != 1 {
+                continue;
+            }
+            let Some(original) = h1_places.get(short(name, 0x22) as usize) else {
+                continue;
+            };
+            let p = short(original, 0) as usize;
+            let Some(src) = h1_palette.get(p).and_then(|b| h1map::TagRef::read(b, 0)) else {
+                continue;
+            };
+            if !h1.tag(src.id).is_ok_and(|tag| tag.name == source) {
+                continue;
+            }
+            let name = mem
+                .slice(word(&root, 0x4c) + 0x24 * i as u32, 0x24)
+                .unwrap();
+            assert_eq!(short(name, 0x20) as usize, ty);
+            let j = u32::from(short(name, 0x22));
+            assert!(j < word(&root, placement.into()));
+            let p = mem
+                .slice(
+                    word(&root, usize::from(placement) + 4) + j * u32::from(stride),
+                    stride.into(),
+                )
+                .unwrap();
+            assert_eq!(p[0x2e] as usize, ty);
+            assert_eq!(short(p, 2) as usize, i);
+            assert_eq!(word(p, 4), u32::from(short(original, 4) & 1));
+            assert_eq!(&p[8..0x20], &original[8..0x20]);
+            let k = u32::from(short(p, 0));
+            let entry = mem
+                .slice(word(&root, usize::from(palette) + 4) + 0x28 * k, 0x28)
+                .unwrap();
+            let id = TagId(word(entry, 4));
+            let tag = map.tag(id).unwrap();
+            assert_eq!(tag.name.as_deref(), Some(source));
+            assert_eq!(tag.group.0, if ty == 6 { *b"scen" } else { *b"bloc" });
+            let object = map.read_tag_bytes(id).unwrap();
+            assert_eq!(short(&object, 0) as usize, ty);
+            assert!(f32::from_bits(word(&object, 4)) > 0.0);
+            if ty == 11 {
+                let hlmt = map.read_tag_bytes(TagId(word(&object, 0x38))).unwrap();
+                assert_eq!(
+                    map.tag(TagId(word(&hlmt, 0xc))).unwrap().group,
+                    FourCC(*b"coll")
+                );
+                let physics = map.read_tag_bytes(TagId(word(&hlmt, 0x24))).unwrap();
+                assert_eq!(word(&physics, 0x38), 1, "one dynamic rigid body per crate");
+                let body = mem.slice(word(&physics, 0x3c), 0x90).unwrap();
+                assert_eq!(short(body, 0), u16::MAX, "one body on the object");
+                assert_eq!(short(body, 0x1a), 2, "box inertia");
+            }
+            found += 1;
+        }
+        assert_eq!(found, expected, "{level}");
+
+        if level == "b30" {
+            let placed = (0..word(&root, 0x80))
+                .map(|i| {
+                    let p = mem.slice(word(&root, 0x84) + 0x38 * i, 0x38).unwrap();
+                    let index = u32::from(short(p, 0));
+                    let pe = mem.slice(word(&root, 0x8c) + 0x28 * index, 0x28).unwrap();
+                    TagId(word(pe, 4))
+                })
+                .collect::<std::collections::HashSet<_>>();
+            for (name, ty, seconds) in [
+                ("powerups\\over shield", 2, 60.0f32),
+                ("powerups\\active camouflage", 3, 45.0),
+            ] {
+                let id = map
+                    .tags()
+                    .iter()
+                    .find(|t| t.group == FourCC(*b"eqip") && t.name.as_deref() == Some(name))
+                    .unwrap()
+                    .id;
+                assert!(placed.contains(&id), "{name} was placed");
+                let tag = map.read_tag_bytes(id).unwrap();
+                assert_eq!(short(&tag, 0x12c), ty);
+                assert_eq!(f32::from_bits(word(&tag, 0x130)), seconds);
+            }
+        }
+    }
+}

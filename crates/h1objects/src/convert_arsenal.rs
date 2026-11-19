@@ -50,7 +50,7 @@ impl Converter<'_> {
     /// Halo 1's material effects: the first `foot` the Halo 1 root `b`
     /// names, converted ([`Converter::foot`]); `None` when it names none
     /// or it does not convert (noted).
-    fn h1_foot(&mut self, b: &[u8], rep: &mut ObjectReport) -> Result<Option<TagId>> {
+    pub(super) fn h1_foot(&mut self, b: &[u8], rep: &mut ObjectReport) -> Result<Option<TagId>> {
         let foot = h1map::Group::new(b"foot");
         let Some(t) = crate::refs::scan(self.h1, b)
             .into_iter()
@@ -254,7 +254,8 @@ impl Converter<'_> {
     }
 
     pub(super) fn weapon(&mut self, tag: &Tag) -> Result<TagId> {
-        let w = Weapon::read(self.h1, tag)?;
+        let mut w = Weapon::read(self.h1, tag)?;
+        self.halo2_change_colours(&mut w.object);
         let bytes = arsenal::weapon_bytes(self.h1, tag)?;
         let cp = self.counterpart(b"weap", &tag.name);
         let mut rep = Self::rebuilt_report(tag, cp.as_ref().map(|c| c.0), self.base);
@@ -420,7 +421,14 @@ impl Converter<'_> {
         let role = self.item_role(b"weap")?;
         let (root, roles) =
             crate::provenance::capture(|| arsenal::weapon(&w, &bytes, &parts, &role));
-        let root = root?;
+        let root = self.with_object_attachments(
+            *b"weap",
+            "item.obje",
+            root?,
+            &bytes,
+            &w.object,
+            &mut rep,
+        )?;
         let halo1 = &parts.halo1;
         for (p, g, id) in parts
             .halo2
@@ -485,7 +493,8 @@ impl Converter<'_> {
     /// `counterpart`: the Halo 2 projectile the counterpart weapon's barrel
     /// fires, when there is one.
     pub(super) fn projectile(&mut self, tag: &Tag, counterpart: Option<TagId>) -> Result<TagId> {
-        let p = Projectile::read(self.h1, tag)?;
+        let mut p = Projectile::read(self.h1, tag)?;
+        self.halo2_change_colours(&mut p.object);
         let b = h1::tag_bytes(self.h1, tag, b"proj", h1::PROJ_SIZE)?;
         let d = Defs::builtin().group(FourCC(*b"proj")).expect("proj");
         let cp = counterpart
@@ -555,7 +564,8 @@ impl Converter<'_> {
         let (root, roles) =
             crate::provenance::capture(|| arsenal::projectile(&p, b, &parts, &role));
         let root = root?;
-        let root = self.halo1_attachments(*b"proj", "object", root, b, &p.object, &mut rep)?;
+        let root =
+            self.with_object_attachments(*b"proj", "object", root, b, &p.object, &mut rep)?;
         let halo1 = &parts.halo1;
         for (path, g, id) in parts
             .halo2
@@ -585,7 +595,11 @@ impl Converter<'_> {
     }
 
     pub(super) fn equipment(&mut self, tag: &Tag) -> Result<TagId> {
-        let e = Equipment::read(self.h1, tag)?;
+        let mut e = Equipment::read(self.h1, tag)?;
+        if h1convert::sandbox::native_powerup(e.powerup_type) {
+            return self.powerup(tag, &e);
+        }
+        self.halo2_change_colours(&mut e.object);
         let d = Defs::builtin().group(FourCC(*b"eqip")).expect("eqip");
         let cp = self.counterpart(b"eqip", &tag.name);
         let mut rep = Self::rebuilt_report(tag, cp.as_ref().map(|c| c.0), self.base);
@@ -609,7 +623,8 @@ impl Converter<'_> {
         }
         let role = self.item_role(b"eqip")?;
         let (root, roles) = crate::provenance::capture(|| arsenal::equipment(&e, &parts, &role));
-        let root: Block = root?;
+        let root: Block =
+            self.with_object_attachments(*b"eqip", "item.obje", root?, eb, &e.object, &mut rep)?;
         let halo1 = &parts.halo1;
         for (path, g, id) in parts
             .halo2

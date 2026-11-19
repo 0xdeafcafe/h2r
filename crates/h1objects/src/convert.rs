@@ -25,11 +25,17 @@ use map::{FourCC, TagId};
 use crate::base::Base;
 use crate::coll::{convert_collision, put_sid};
 use crate::h1::{self, Unit};
-use crate::health_hud;
+use crate::{health_hud, scripted_props};
 use crate::{Error, Result};
 
+#[path = "convert_attachments.rs"]
+mod attachments_conv;
 #[path = "convert_arsenal.rs"]
 mod arsenal_conv;
+#[path = "convert_scripted_props.rs"]
+mod scripted_props_conv;
+#[path = "convert_powerups.rs"]
+mod powerups_conv;
 #[path = "convert_particles.rs"]
 mod particles_conv;
 #[path = "convert_flares.rs"]
@@ -385,6 +391,11 @@ pub enum PhysicsKind {
     /// ([`held_wheels`]; the role's [`crate::rebuild::VehicleRole::wheel_shapes`]),
     /// else left out.
     Vehicle { wheels: bool },
+    /// A scripted flyer, built from its collision or its own mass
+    /// points, and with the source inertia tensor when it has one.
+    ScriptedFlyer,
+    /// A rigid crate that falls under gravity.
+    Crate,
     /// One body per collision node, riding that node.
     Device,
     /// As a device, with a biped's rigid body words
@@ -883,15 +894,16 @@ pub struct Converter<'a> {
     particle_role: Option<Option<crate::particles::ParticleRole>>,
     /// The base's emitter role ([`crate::particles::emitter_role`]), once.
     emitter_role: Option<Option<crate::particles::EmitterRole>>,
-    /// Effects whose particles are being converted (a particle's own
-    /// effects that lead back to one are left out).
+    /// Effects being converted, including those reached through an object
+    /// the effect itself creates.
     effects_open: Vec<u32>,
     /// Objects being converted ([`Self::object`]), so one whose effects
     /// lead back to it is refused instead of recursed into.
     objects_open: Vec<u32>,
-    /// Per Halo 1 `pctl`, its lasting particle states' `prt3`s with the
-    /// state and its type's initial count ([`Self::effect_particle_systems`]).
-    pctl_done: HashMap<u32, Vec<(TagId, crate::particles::H1ParticleState, u16)>>,
+    /// Per Halo 1 `pctl`, its emitter types and converted particle states.
+    pctl_done: HashMap<u32, particles_conv::ParticleTypes>,
+    /// Looping effects that carry a particle system at a given object marker.
+    attached_particles: HashMap<(u32, String), Vec<TagId>>,
     /// Scenery role words ([`Self::scenery_role`]), computed once.
     scenery_role: Option<Option<crate::rebuild::SceneryRole>>,
     /// Per Halo 1 weapon label, the weapon class the map's graphs hold it
@@ -935,6 +947,7 @@ impl<'a> Converter<'a> {
             effects_open: Vec::new(),
             objects_open: Vec::new(),
             pctl_done: HashMap::new(),
+            attached_particles: HashMap::new(),
             decals_open: Vec::new(),
             dialogue_bytes: 0,
             scenery_role: None,
@@ -1234,13 +1247,27 @@ impl<'a> Converter<'a> {
 
     /// A Halo 1 effect from the `effe` definition
     /// ([`crate::rebuild::effect`]), converted once. Its parts keep what
-    /// converts here: sounds (`h1sounds`) and projectiles; decals, lights,
-    /// damage, particle systems, debris and particles are left out and
-    /// listed in its report.
+    /// converts here: sounds, projectiles, decals, lights, debris and
+    /// particle systems. Parts without a converter are listed in the report.
     pub fn effect(&mut self, tag: &Tag) -> Result<TagId> {
         if let Some(id) = self.done.get(&tag.id.0) {
             return Ok(*id);
         }
+        if self.effects_open.contains(&tag.id.0) {
+            return Err(Error::Invalid(format!(
+                "{}: converting it needs itself",
+                tag.name
+            )));
+        }
+        self.effects_open.push(tag.id.0);
+        let got = self.effect_uncached(tag);
+        self.effects_open.pop();
+        let id = got?;
+        self.done.insert(tag.id.0, id);
+        Ok(id)
+    }
+
+    fn effect_uncached(&mut self, tag: &Tag) -> Result<TagId> {
         let e = h1::Effect::read(self.h1, tag)?;
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
         let mut left: std::collections::BTreeMap<String, usize> = Default::default();
@@ -1314,75 +1341,7 @@ impl<'a> Converter<'a> {
             },
         );
         self.tree.note_roles(id, roles);
-        self.done.insert(tag.id.0, id);
         Ok(id)
-    }
-
-    /// The object's attachments that convert here (looping sounds,
-    /// effects, lights and contrails) and its creation effect; the rest are listed in `rep`.
-    pub fn object_effects(
-        &mut self,
-        object_bytes: &[u8],
-        obj: &h1::Object,
-        rep: &mut ObjectReport,
-    ) -> Result<(Vec<crate::rebuild::AttachmentSpec>, Option<TagId>)> {
-        let mut out = Vec::new();
-        for a in h1::attachments(self.h1, object_bytes)? {
-            let g = a.group.0.to_be_bytes();
-            let Some(id) = a.tag else { continue };
-            let t = self.h1_tag(id)?;
-            let got = match &g {
-                b"lsnd" => self.looping_sound(t, rep),
-                b"ligh" => match self.light(t) {
-                    Ok(x) => Some(x),
-                    Err(e) => {
-                        rep.no_home.push(format!("attachment ligh {}: not converted ({e})", t.name));
-                        None
-                    }
-                },
-                b"effe" => match self.effect(t) {
-                    Ok(x) => Some(x),
-                    Err(e) => {
-                        rep.no_home.push(format!("attachment effe {}: not converted ({e})", t.name));
-                        None
-                    }
-                },
-                b"cont" => match self.contrail(t) {
-                    Ok(x) => Some(x),
-                    Err(e) => {
-                        rep.no_home.push(format!("attachment cont {}: not converted ({e})", t.name));
-                        None
-                    }
-                },
-                _ => {
-                    rep.no_home.push(format!("attachment {} {}: no converter here", a.group, t.name));
-                    None
-                }
-            };
-            if let Some(tag) = got {
-                out.push(crate::rebuild::AttachmentSpec {
-                    group: g,
-                    tag,
-                    marker: a.marker,
-                    primary_scale: String::new(),
-                    h1_primary: a.primary_scale,
-                });
-            }
-        }
-        let creation = match obj.creation_effect {
-            Some(id) => {
-                let t = self.h1_tag(id)?;
-                match self.effect(t) {
-                    Ok(x) => Some(x),
-                    Err(e) => {
-                        rep.no_home.push(format!("creation effect {}: not converted ({e})", t.name));
-                        None
-                    }
-                }
-            }
-            None => None,
-        };
-        Ok((out, creation))
     }
 
     fn template(&self, group: &[u8; 4], path: &str, h2_group: &[u8; 4]) -> Result<(TagId, String)> {
@@ -1422,8 +1381,13 @@ impl<'a> Converter<'a> {
             b"weap" => self.weapon(tag),
             b"proj" => self.projectile(tag, template),
             b"eqip" => self.equipment(tag),
+            b"garb" => self.garbage_uncached(tag),
+            b"vehi" if scripted_props::replacement_group(&tag.name).is_some() => {
+                self.scripted_prop(tag)
+            }
             b"bipd" | b"vehi" => self.unit(tag),
             b"scen" => self.scenery(tag),
+            b"ssce" => self.sound_scenery(tag),
             b"mach" | b"ctrl" | b"lifi" => self.device(tag),
             _ => Err(Error::WrongGroup(tag.group.to_string(), *b"obje")),
         };
@@ -1810,7 +1774,8 @@ impl<'a> Converter<'a> {
     /// (`h1convert::scenery_collision`; docs/halo1/objects.md, "Collision
     /// for Havok").
     fn scenery(&mut self, tag: &Tag) -> Result<TagId> {
-        let mut object = h1::Object::read(self.h1, self.h1.tag_data(tag)?)?;
+        let bytes = self.h1.tag_data(tag)?;
+        let mut object = h1::Object::read(self.h1, bytes)?;
         self.halo2_change_colours(&mut object);
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
         let hlmt = self.model(&mut rep, &object, None, &tag.name, true, None)?;
@@ -1825,13 +1790,8 @@ impl<'a> Converter<'a> {
         let (root, roles) = crate::provenance::capture(|| {
             crate::rebuild::scenery(&object, hlmt, &predicted, &words)
         });
-        let root = root?;
-        let attached = object.attachments.iter().flatten().count();
-        if attached > 0 {
-            rep.no_home.push(format!(
-                "obje attachments: {attached} Halo 1 attachments (lights, effects, sounds) not carried; the block is empty"
-            ));
-        }
+        let root =
+            self.with_object_attachments(*b"scen", "object", root?, bytes, &object, &mut rep)?;
         let widgets = object.widgets.iter().flatten().count();
         if widgets > 0 {
             rep.no_home.push(format!(
@@ -2572,19 +2532,14 @@ impl<'a> Converter<'a> {
         rep.physics = Some("none (no Halo 1 collision to build from)".into());
         self.object_physics(&mut rep, hlmt, &dev.object, &tag.name, PhysicsKind::Device)?;
         let predicted = self.predicted(hlmt);
-        let mut root = crate::rebuild::device(&dev, hlmt, &predicted)?;
+        let root = crate::rebuild::device(&dev, hlmt, &predicted)?;
+        let bytes = self.h1.tag_data(tag)?;
+        let root =
+            self.with_object_attachments(*group, "devi.obje", root, bytes, &dev.object, &mut rep)?;
         rep.no_home.push(
             "devi sounds and effects (Halo 1 effe references): null; the device is silent".into(),
         );
         if lifi {
-            // A light fixture's light is its attachments (Halo 1's ligh at
-            // its markers): carried on the machine, which the engine's
-            // attachment builder lights (E 0x000bed2a).
-            let b = self.h1.tag_data(tag)?;
-            let (attachments, _) = self.object_effects(b, &dev.object, &mut rep)?;
-            if !attachments.is_empty() {
-                root = flares_conv::with_attachments(b"mach", &root, &attachments)?;
-            }
             rep.no_home.push(
                 "lifi: built as a mach (platform) with its attachments; the placement's colour and intensity are not carried".into(),
             );
@@ -2620,6 +2575,7 @@ impl<'a> Converter<'a> {
             }
             None => Vec::new(),
         };
+        let scripted = scripted_props::ScriptedVehicle::of(&tag.name);
         let role = self.vehicle_role(vehicle_type, powered.len())?;
         let mut rep = Self::report(
             tag,
@@ -2635,13 +2591,18 @@ impl<'a> Converter<'a> {
         );
         let hlmt = self.model(&mut rep, &u.object, None, &tag.name, true, None)?;
         let wheels = role.as_ref().is_some_and(|r| r.wheel_shapes);
-        self.object_physics(
-            &mut rep,
-            hlmt,
-            &u.object,
-            &tag.name,
-            PhysicsKind::Vehicle { wheels },
-        )?;
+        let kind = match scripted {
+            Some(scripted_props::ScriptedVehicle::Seat) => PhysicsKind::Device,
+            Some(scripted_props::ScriptedVehicle::Flyer) => PhysicsKind::ScriptedFlyer,
+            None => PhysicsKind::Vehicle { wheels },
+        };
+        let has_physics = self.object_physics(&mut rep, hlmt, &u.object, &tag.name, kind)?;
+        if scripted.is_some() && !has_physics {
+            return Err(Error::Invalid(format!(
+                "{}: no source physics to build",
+                tag.name
+            )));
+        }
         let predicted = self.predicted(hlmt);
         let (markers, bounds) = match u.object.model {
             Some(m) => {
@@ -2722,22 +2683,10 @@ impl<'a> Converter<'a> {
                     .push(format!("unit weapon {}: not converted ({e})", t.name)),
             }
         }
-        let (mut attachments, creation_effect) = self.object_effects(b, &u.object, &mut rep)?;
-        // Halo 1's functions, and the attachments' primary scales naming
-        // their outputs (`crate::functions`).
-        let mut notes = Vec::new();
-        let inputs = h1::FunctionInputs::read(b, u.object.object_type);
-        let converted = crate::functions::convert(&h1::functions(self.h1, b)?, &inputs, &mut notes);
-        for a in &mut attachments {
-            a.primary_scale = crate::functions::primary_scale(a.h1_primary, &converted);
-            if a.h1_primary != 0 && a.primary_scale.is_empty() {
-                notes.push(format!("attachment at {:?}: output {} not converted, always on", a.marker, a.h1_primary));
-            }
-        }
-        let functions: Vec<_> = converted.into_iter().flatten().collect();
-        rep.no_home.extend(notes.into_iter().map(|n| format!("vehi {n}")));
+        let (attachments, creation_effect, functions) =
+            self.object_attachments(b, &u.object, &mut rep)?;
         let (root, roles) = crate::provenance::capture(|| {
-            crate::rebuild::vehicle(&crate::rebuild::VehicleSpec {
+            crate::rebuild::vehicle_with_tuning(&crate::rebuild::VehicleSpec {
                 attachments: &attachments,
                 functions: &functions,
                 creation_effect,
@@ -2752,11 +2701,11 @@ impl<'a> Converter<'a> {
                 weapons: &weapons,
                 role: role.as_ref(),
                 points: &points,
-            })
+            }, scripted.and_then(|kind| kind.flight_tuning(b)))
         });
         let root = self.unit_foot(*b"vehi", root?, u, &mut rep)?;
         rep.no_home.push(format!(
-            "vehi: Halo 1's type, flags (low half), camera, {} seats (label as the rider's mode, markers), {} weapons and {} powered mass points as friction or hover points; the type's role words and gears; {} attachments (looping sounds and effects) and the creation effect from Halo 1; {} seat camera tracks Halo 1's; HUD and damage null; {} Halo 1 references",
+            "vehi: Halo 1's type, flags (low half), camera, {} seats (label as the rider's mode, markers), {} weapons and {} powered mass points as friction or hover points; the type's role words and gears; {} attachments and the creation effect from Halo 1; {} seat camera tracks Halo 1's; HUD and damage null; {} Halo 1 references",
             u.seats.len(),
             weapons.len(),
             points.len(),
@@ -3122,6 +3071,9 @@ impl<'a> Converter<'a> {
             crate::rebuild::biped(u, hlmt, &predicted, words, &parts)
         });
         let root = self.unit_foot(*b"bipd", root?, u, &mut rep)?;
+        let bytes = self.h1.tag_data(tag)?;
+        let root =
+            self.with_object_attachments(*b"bipd", "unit.obje", root, bytes, &u.object, &mut rep)?;
         let taken = crate::rebuild::reference_fields(bipd_def)
             .into_iter()
             .filter(|p| !BIPED_OWN.contains(&p.as_str()))
@@ -3169,9 +3121,9 @@ impl<'a> Converter<'a> {
         obj: &h1::Object,
         name: &str,
         kind: PhysicsKind,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let Some(h) = hlmt.filter(|h| h.0 & 0xffff_0000 == LOCAL) else {
-            return Ok(());
+            return Ok(false);
         };
         let k = h.0 as usize & 0xffff;
         let at = h2::HLMT_PHYSICS_MODEL as u32;
@@ -3184,7 +3136,7 @@ impl<'a> Converter<'a> {
             }
         };
         if has {
-            return Ok(());
+            return Ok(true);
         }
         let (phmo, how) = match self.built_physics(obj, kind)? {
             Some((block, how)) => (block, how),
@@ -3197,7 +3149,7 @@ impl<'a> Converter<'a> {
                     ),
                 )
             }
-            None => return Ok(()),
+            None => return Ok(false),
         };
         let phmo = self.tree.push(
             name,
@@ -3227,7 +3179,7 @@ impl<'a> Converter<'a> {
             crate::rebuild::set_model_materials(root, &all);
         }
         rep.physics = Some(how);
-        Ok(())
+        Ok(true)
     }
 
     /// A physics model from Halo 1's collision: each collision node's
@@ -3244,12 +3196,30 @@ impl<'a> Converter<'a> {
         kind: PhysicsKind,
     ) -> Result<Option<(Block, String)>> {
         use crate::physics::{self, Transform};
-        let (Some(c), Some(m)) = (obj.collision, obj.model) else {
+        let Some(m) = obj.model else {
             return Ok(None);
         };
-        let coll = h1::Collision::read(self.h1, self.h1_tag(c)?)?;
+        let source = if kind == PhysicsKind::ScriptedFlyer {
+            obj.physics
+                .map(|p| self.h1_tag(p))
+                .transpose()?
+                .map(|t| scripted_props::mass_properties(self.h1, t))
+                .transpose()?
+        } else {
+            None
+        };
         let (model, _) =
             h1models::model_from_map(self.h1, self.h1_tag(m)?, &ModelOptions::default())?;
+        let Some(c) = obj.collision else {
+            return match source {
+                Some((physics, mass)) => Ok(Some((
+                    scripted_props::mass_point_physics(&model, &physics, &mass)?,
+                    "built from Halo 1's phys: one body with source mass point spheres".into(),
+                ))),
+                None => Ok(None),
+            };
+        };
+        let coll = h1::Collision::read(self.h1, self.h1_tag(c)?)?;
         let world = h1models::mode::world_transforms(
             &model
                 .nodes
@@ -3288,10 +3258,14 @@ impl<'a> Converter<'a> {
         let volume: f32 = parts.iter().flat_map(|p| &p.1).map(|h| h.volume).sum();
         let mut wheels_note = String::new();
         let bodies = match kind {
-            PhysicsKind::Vehicle { wheels: hold } => {
-                let phys = match obj.physics {
-                    Some(p) => Some(h1::Physics::read(self.h1, self.h1_tag(p)?)?),
-                    None => None,
+            PhysicsKind::Vehicle { .. } | PhysicsKind::ScriptedFlyer | PhysicsKind::Crate => {
+                let hold = matches!(kind, PhysicsKind::Vehicle { wheels: true });
+                let phys = match &source {
+                    Some((physics, _)) => Some(physics.clone()),
+                    None => obj
+                        .physics
+                        .map(|p| h1::Physics::read(self.h1, self.h1_tag(p)?))
+                        .transpose()?,
                 };
                 // Wheels and treads are held above the hull's lowest
                 // point where the role's physics models have them (the
@@ -3299,10 +3273,13 @@ impl<'a> Converter<'a> {
                 // Halo 2 holds a vehicle up on its friction points
                 // (springs at the wheel markers) and its body rides clear
                 // of the ground (`held_wheels`).
-                let wheels = phys
-                    .as_ref()
-                    .map(|p| wheel_nodes(p, &model.nodes))
-                    .unwrap_or_default();
+                let wheels = if matches!(kind, PhysicsKind::Vehicle { .. }) {
+                    phys.as_ref()
+                        .map(|p| wheel_nodes(p, &model.nodes))
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
                 let place = |node: i16| {
                     let (r, t) = world
                         .get(node as usize)
@@ -3399,7 +3376,10 @@ impl<'a> Converter<'a> {
         );
         let words = match kind {
             PhysicsKind::Biped => crate::rebuild::BIPED_BODY,
-            PhysicsKind::Vehicle { .. } | PhysicsKind::Device => crate::rebuild::DEVICE_BODY,
+            PhysicsKind::Crate => scripted_props::CRATE_BODY,
+            PhysicsKind::Vehicle { .. } | PhysicsKind::ScriptedFlyer | PhysicsKind::Device => {
+                crate::rebuild::DEVICE_BODY
+            }
         };
         let joints = if kind == PhysicsKind::Biped {
             biped_ragdoll(&model.nodes, &bodies)
@@ -3412,7 +3392,13 @@ impl<'a> Converter<'a> {
             _ => how,
         };
         Ok(Some((
-            crate::rebuild::physics_model(&bodies, &nodes, words, &joints)?,
+            crate::rebuild::physics_model_with_mass(
+                &bodies,
+                &nodes,
+                words,
+                &joints,
+                source.map(|(_, mass)| mass),
+            )?,
             how,
         )))
     }
@@ -3502,6 +3488,9 @@ impl<'a> Converter<'a> {
                 Err(e) => rep.no_home.push(format!("HUD: no health meter: {e}")),
             }
         }
+        let bytes = self.h1.tag_data(tag)?;
+        let root =
+            self.with_object_attachments(g, "unit.obje", root, bytes, &u.object, &mut rep)?;
         self.stopgaps(&mut rep, &tpl_root, &[h2::MODEL]);
         self.tree.reports.push(rep);
         Ok(self.tree.push(

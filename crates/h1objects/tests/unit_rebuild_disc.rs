@@ -273,7 +273,10 @@ fn a10_vehicles_without_templates_are_rebuilt() {
         let h1 = h1_level(level);
         for t in h1.tags() {
             let g = t.group.0.to_be_bytes();
-            if &g != b"vehi" || !template_candidates(&g, &t.name).is_empty() {
+            if &g != b"vehi"
+                || !template_candidates(&g, &t.name).is_empty()
+                || h1objects::scripted_props::replacement_group(&t.name).is_some()
+            {
                 continue;
             }
             let u = h1::Unit::read(&h1, t).unwrap();
@@ -294,8 +297,8 @@ fn a10_vehicles_without_templates_are_rebuilt() {
             // What unit creation reads: the object type, the model chain,
             // the bounds.
             assert_eq!(r.at("unit.obje.object_type"), Some(&Val::Enum(1)));
-            // Halo 1's vehicle type (the fighterbomber flies; the cryotube,
-            // chairs and Halo ring are turrets).
+            // Halo 1's vehicle type: the fighterbomber flies and the
+            // cryotube and chairs use stationary seats.
             let b = h1.tag_data(t).unwrap();
             let at = h1objects::rebuild::H1_VEHICLE_TYPE;
             let h1_type = u16::from_le_bytes([b[at], b[at + 1]]);

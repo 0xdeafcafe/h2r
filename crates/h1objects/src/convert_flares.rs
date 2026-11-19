@@ -72,26 +72,6 @@ pub fn garbage(
     built(d, &r)
 }
 
-/// `root` (a `group` built by [`crate::rebuild::device`]) with
-/// `attachments` in its object header.
-pub fn with_attachments(
-    group: &[u8; 4],
-    root: &Block,
-    attachments: &[crate::rebuild::AttachmentSpec],
-) -> Result<Block> {
-    let d = def(group)?;
-    let mut r = defs::from_built(d, root).map_err(|e| Error::Invalid(e.to_string()))?;
-    let creation = match r.at("devi.obje.creation_effect") {
-        Some(Val::Ref {
-            target: defs::Target::Id(id),
-            ..
-        }) => Some(*id),
-        _ => None,
-    };
-    crate::rebuild::object_effects(group, &mut r, "devi.obje", attachments, creation)?;
-    built(d, &r)
-}
-
 /// `root` (a `ligh` built by [`crate::rebuild::light`]) naming `lens` as
 /// its lens flare (`ligh +0x90`; E `0x000c34a6` reads the datum and
 /// submits the flare with the light).
@@ -150,11 +130,14 @@ impl Converter<'_> {
     /// definition, converted once: its model chain as any rebuilt
     /// object's, and its attachments.
     pub fn garbage(&mut self, tag: &Tag) -> Result<TagId> {
-        if let Some(id) = self.done.get(&tag.id.0) {
-            return Ok(*id);
-        }
+        h1::tag_bytes(self.h1, tag, b"garb", h1::OBJE_SIZE)?;
+        self.object(tag)
+    }
+
+    pub(super) fn garbage_uncached(&mut self, tag: &Tag) -> Result<TagId> {
         let b = h1::tag_bytes(self.h1, tag, b"garb", h1::OBJE_SIZE)?;
-        let object = h1::Object::read(self.h1, b)?;
+        let mut object = h1::Object::read(self.h1, b)?;
+        self.halo2_change_colours(&mut object);
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
         rep.physics = Some("none (garbage has no physics model)".into());
         let hlmt = self.model(&mut rep, &object, None, &tag.name, true, None)?;
@@ -162,10 +145,10 @@ impl Converter<'_> {
         let role = crate::arsenal::role(self.base, b"garb", &[])?
             .map(|r| r.root)
             .unwrap_or_default();
-        let (attachments, _) = self.object_effects(b, &object, &mut rep)?;
         let (root, roles) =
-            crate::provenance::capture(|| garbage(&object, hlmt, &predicted, &role, &attachments));
-        let root = root?;
+            crate::provenance::capture(|| garbage(&object, hlmt, &predicted, &role, &[]));
+        let root =
+            self.with_object_attachments(*b"garb", "item.obje", root?, b, &object, &mut rep)?;
         self.tree.reports.push(rep);
         let id = self.tree.push(
             &tag.name,
@@ -176,7 +159,6 @@ impl Converter<'_> {
             },
         );
         self.tree.note_roles(id, roles);
-        self.done.insert(tag.id.0, id);
         Ok(id)
     }
 
@@ -230,7 +212,8 @@ mod tests {
             tag: light,
             marker: "glow".into(),
             primary_scale: String::new(),
-            h1_primary: 0,
+            secondary_scale: String::new(),
+            change_colour: -1,
         }];
         let d = def(b"garb").unwrap();
         let r = defs::from_built(d, &garbage(&object(), Some(hlmt), &[], &[], &a).unwrap()).unwrap();
@@ -271,9 +254,23 @@ mod tests {
             tag: light,
             marker: "light".into(),
             primary_scale: String::new(),
-            h1_primary: 0,
+            secondary_scale: String::new(),
+            change_colour: -1,
         }];
-        let r = defs::from_built(def(b"mach").unwrap(), &with_attachments(b"mach", &mach, &a).unwrap()).unwrap();
+        let r = defs::from_built(
+            def(b"mach").unwrap(),
+            &super::super::attachments_conv::with_attachments(
+                *b"mach",
+                "devi.obje",
+                mach,
+                &a,
+                None,
+                &[],
+                &[],
+            )
+            .unwrap(),
+        )
+        .unwrap();
         match r.at("devi.obje.attachments") {
             Some(Val::Block(e)) => assert!(names(e[0].at("type"), light)),
             x => panic!("{x:?}"),

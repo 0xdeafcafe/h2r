@@ -83,6 +83,11 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "*",
         "a damage instance in the simulation, on the game thread; scales the body and shield parts",
     ),
+    (
+        "h1-particle-physics",
+        "*",
+        "native particle simulation on the game thread, with post-step hooks around the guest bodies",
+    ),
     ("h1-health", "OBJECT_DAMAGE_UPDATE", AFTER),
     ("h1-health", "BODY_RESTORE", AFTER),
     ("h1-health", "GAME_ACTIVATE", AFTER),

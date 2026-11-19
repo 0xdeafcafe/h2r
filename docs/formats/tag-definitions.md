@@ -806,9 +806,8 @@ Halo ring were already built this way.
   explained here.
 - **References**: the unit's weapons are Halo 1's converted weapons
   where they convert (no Halo 1 vehicle weapon converts yet, each listed
-  in the report). Since version 50 the attachments are Halo 1's looping
-  sounds and effects and the creation effect Halo 1's (Effects from
-  definitions, below). HUD (`unhi`) and damage stay null: no converted
+  in the report). The attachments and creation effect are Halo 1's
+  ([Object attachments](../halo1/objects.md#object-attachments)). HUD (`unhi`) and damage stay null: no converted
   Halo 1 tag exists.
 - **Camera tracks** (seat `+0x74`, `rebuild::SEAT_CAMERA_TRACKS`): each
   seat's first Halo 1 camera track (seat `+0xd0`, `0x1c` each; the
@@ -1233,8 +1232,8 @@ Proof (`crates/h1objects/tests/effects_disc.rs`; lib tests
   fractions are Halo 1's; every part's reference resolves (a converted
   sound, or a tree tag of the part's group) with a matching
   `type_group` and a location in range; every vehicle attachment
-  resolves to a converted looping sound or effect at a marker and of a
-  group Halo 1's attachment has. 4,969 parts kept; left out: 4,801
+  resolves to a converted tag at the source marker. Attached Halo 1
+  particle systems resolve to native `effe` tags. 4,969 parts kept; left out: 4,801
   decals, 338 damage, 260 lights, 201 particle systems, 131 debris, 73
   projectiles, 46 null sounds.
 - h1campaign's `every_campaign_level_converts` installs the objects'

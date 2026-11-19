@@ -111,7 +111,7 @@ fn retail_vehicle_functions_survey() {
                 println!(
                     "  attachment {ty} marker {:?} c {:?} primary {:?} secondary {:?}",
                     text(x, "marker", &strings),
-                    x.at("unknown_c"),
+                    x.at("change_colour"),
                     text(x, "string_10", &strings),
                     text(x, "string_14", &strings)
                 );
@@ -254,7 +254,11 @@ fn converted_vehicles_scale_attachments_by_their_functions() {
             let b = h1.tag_data(t).unwrap();
             let h1_attach = h1objects::h1::attachments(&h1, b).unwrap();
             let id = c.object(t).unwrap();
-            let v = defs::from_built(def(b"vehi"), &local(&c.tree, id).unwrap().root).unwrap();
+            let vehicle = local(&c.tree, id).unwrap();
+            if vehicle.group != FourCC(*b"vehi") {
+                continue;
+            }
+            let v = defs::from_built(def(b"vehi"), &vehicle.root).unwrap();
             let fs = match v.at("unit.obje.functions") {
                 Some(Val::Block(f)) => f.clone(),
                 _ => Vec::new(),

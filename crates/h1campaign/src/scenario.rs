@@ -971,7 +971,7 @@ pub fn write(
             b.bytes[31] = 0;
             let ty = i16_at(e, 0x20);
             let at = i16_at(e, 0x22);
-            // A light fixture's name names the machine it became.
+            // A converted prop or device can change its object kind.
             let (ty, to) = placed.get(&(ty, at)).copied().unwrap_or((ty, -1));
             b.put_u16(0x20, ty as u16);
             b.put_u16(0x22, to as u16);
@@ -1510,39 +1510,42 @@ fn place_objects(
     } else {
         0
     };
-    // Per Halo 2 type: palette entries, placements, and the kinds in them.
-    let mut blocks: Vec<(u16, Vec<Block>, Vec<Block>)> = Vec::new();
+    // Keep each source palette's indices and add entries to the output
+    // palette of any prop whose native Halo 2 object kind differs.
+    let mut blocks: Vec<PlacementBlock> = Vec::new();
     for (k, pal) in KINDS.iter().zip(&palettes) {
-        let slot = match blocks.iter().position(|b| b.0 == k.h2_type) {
-            Some(i) => i,
-            None => {
-                blocks.push((k.h2_type, Vec::new(), Vec::new()));
-                blocks.len() - 1
+        let first = placement_block(&mut blocks, k.h2_type).palette.len();
+        let mut targets = Vec::with_capacity(pal.len());
+        for (i, p) in pal.iter().enumerate() {
+            let id = p.as_ref().map(palette_id);
+            let group = id.and_then(|id| set.tag(id)).map(|tag| tag.group.0);
+            let ty = placement_type(k.h2_type, group);
+            let source = placement_block(&mut blocks, k.h2_type);
+            source
+                .palette
+                .push(palette_entry(if ty == k.h2_type { id } else { None }));
+            if ty == k.h2_type {
+                targets.push(id.map(|_| (ty, first + i)));
+            } else {
+                let dest = placement_block(&mut blocks, ty);
+                targets.push(Some((ty, dest.palette.len())));
+                dest.palette.push(palette_entry(id));
             }
-        };
-        let (_, entries, out) = &mut blocks[slot];
-        let first = entries.len();
-        let ty = tags::object::OBJECT_TYPES[usize::from(k.h2_type)];
-        let (_, _, stride) = ty.placement.expect("placeable");
-        entries.extend(pal.iter().map(|p| {
-            let mut b = Block::zeroed(PALETTE);
-            b.tag_ref(0, p.as_ref().map_or(TagId::NULL, palette_id));
-            b
-        }));
-        let converted = pal.iter().filter(|p| p.is_some()).count();
+        }
+        let converted = targets.iter().flatten().count();
         let src = h1_block(h1, k.h1)?;
-        let before = out.len();
+        let mut n = 0;
         for (i, e) in src.iter().enumerate() {
             let p = i16_at(e, 0);
-            if p < 0 || pal.get(p as usize).copied().flatten().is_none() {
+            let Some((ty, palette)) = targets.get(p as usize).copied().flatten() else {
                 continue;
-            }
+            };
+            let def = tags::object::OBJECT_TYPES[usize::from(ty)];
+            let (_, _, stride) = def.placement.expect("placeable");
             let mut b = Block::zeroed(usize::from(stride));
-            b.put_u16(0, (first + p as usize) as u16);
+            b.put_u16(0, palette as u16);
             b.put_u16(2, i16_at(e, 2) as u16);
-            // Halo 1's "not placed automatically" (bit 0 of the u16 at +4)
-            // is Halo 2's "not at start" (bit 0 of the u32 at +4): objects
-            // only the scripts create, the cutscene casts among them.
+            // Halo 1's "not placed automatically" is Halo 2's "not at start".
             b.put_u32(4, u32::from(i16_at(e, 4) as u16 & h1::NOT_AUTOMATIC));
             for (j, v) in f32s::<6>(e, 8).iter().enumerate() {
                 b.put_f32(8 + 4 * j, *v);
@@ -1550,16 +1553,17 @@ fn place_objects(
             b.put_u32(0x28, UNIQUE_ID_HIGH << 16 | unique);
             unique += 1;
             b.put_u16(0x2c, 0xffff);
-            b.bytes[0x2e] = k.h2_type as u8;
+            b.bytes[0x2e] = ty as u8;
             b.bytes[0x2f] = 1;
             b.put_u16(0x32, 0xffff);
             if k.device != Device::No {
                 write_device(&mut b, e, k.device, groups);
             }
-            placed.insert((k.h1_type, i as i16), (k.h2_type as i16, out.len() as i16));
+            let out = &mut placement_block(&mut blocks, ty).placements;
+            placed.insert((k.h1_type, i as i16), (ty as i16, out.len() as i16));
             out.push(b);
+            n += 1;
         }
-        let n = out.len() - before;
         if n < src.len() {
             dropped.push(format!(
                 "{}: {} of {} placements (their palette entry did not convert)",
@@ -1571,13 +1575,58 @@ fn place_objects(
         rep.placements
             .push((k.label, n, src.len(), converted, pal.len()));
     }
-    for (h2_type, entries, out) in blocks {
-        let ty = tags::object::OBJECT_TYPES[usize::from(h2_type)];
+    for PlacementBlock {
+        object_type,
+        palette,
+        placements,
+    } in blocks
+    {
+        let ty = tags::object::OBJECT_TYPES[usize::from(object_type)];
         let (at, pal_at, stride) = ty.placement.expect("placeable");
-        put_block(root, u32::from(pal_at), PALETTE, entries);
-        put_block(root, u32::from(at), usize::from(stride), out);
+        put_block(root, u32::from(pal_at), PALETTE, palette);
+        put_block(root, u32::from(at), usize::from(stride), placements);
     }
     Ok(placed)
+}
+
+struct PlacementBlock {
+    object_type: u16,
+    palette: Vec<Block>,
+    placements: Vec<Block>,
+}
+
+fn placement_block(blocks: &mut Vec<PlacementBlock>, ty: u16) -> &mut PlacementBlock {
+    let slot = match blocks.iter().position(|b| b.object_type == ty) {
+        Some(i) => i,
+        None => {
+            blocks.push(PlacementBlock {
+                object_type: ty,
+                palette: Vec::new(),
+                placements: Vec::new(),
+            });
+            blocks.len() - 1
+        }
+    };
+    &mut blocks[slot]
+}
+
+fn palette_entry(id: Option<TagId>) -> Block {
+    let mut entry = Block::zeroed(PALETTE);
+    entry.tag_ref(0, id.unwrap_or(TagId::NULL));
+    entry
+}
+
+fn placement_type(source_type: u16, group: Option<[u8; 4]>) -> u16 {
+    // Only the scripted vehicle props can change groups here. Keep
+    // devices' existing mapping, which also controls their placement fields.
+    if source_type == 1 {
+        match group.as_ref() {
+            Some(b"bloc") => return 11,
+            Some(b"scen") => return 6,
+            _ => {}
+        }
+    }
+    source_type
 }
 
 /// The device fields of a placement ([`H2_DEVICE_FIELDS`]) from Halo 1's
