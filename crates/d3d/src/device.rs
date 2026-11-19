@@ -944,6 +944,7 @@ pub struct Device<B: Backend> {
     /// The external passes asked for ([`Device::request_external_pass`])
     /// since the last drain, issued after the next one in the order asked.
     pending_external: Vec<Box<dyn crate::backend::ExternalPass>>,
+    admissions: Vec<Arc<dyn crate::DrawAdmission>>,
     /// The draws of a pass being swallowed ([`Device::swallow`]).
     swallowing: Option<Swallowing>,
     /// How the last swallow that ended early ended
@@ -1053,6 +1054,43 @@ fn d3dcolor_to_rgba(c: u32) -> [f32; 4] {
     ]
 }
 
+struct ExternalBinding<S> {
+    surfaces: crate::ExternalSurfaces<S>,
+    request: crate::ExternalPassRequest,
+    colors: Vec<(u32, S)>,
+    depth_write: bool,
+}
+
+fn complete_recordings(plan: &crate::ExternalPlan, c: &[crate::ExternalRecording]) -> bool {
+    let copies = matches!(c, [r] if r.copy == crate::TargetCopy::Reference)
+        || matches!(c, [r, d] if r.copy == crate::TargetCopy::Reference && d.copy == crate::TargetCopy::Display);
+    copies && c.iter().all(|r| plan.complete(r.copy, r.ranges))
+}
+
+/// A complete, cancellable recording for every live copy. Borrowing the device
+/// keeps target bindings and submission order fixed while guest masks change.
+#[must_use = "drop to cancel, commit after applying reversible guest edits"]
+pub struct PreparedExternal<'a, B: Backend> {
+    device: &'a mut Device<B>,
+    plan: crate::ExternalPlan,
+    recordings: Vec<crate::ExternalRecording>,
+    binding: ExternalBinding<B::Surface>,
+}
+
+impl<B: Backend> PreparedExternal<'_, B> {
+    pub fn commit(self) {
+        for recording in self.recordings {
+            self.plan.stage.recorded(self.plan.view, recording.copy == crate::TargetCopy::Display, recording.ranges);
+            self.device.backend.commit_external(recording);
+        }
+        for (header, _) in self.binding.colors {
+            self.device.mark_color_written(header);
+        }
+        if self.binding.depth_write { self.device.mark_depth_written(); }
+        self.device.stats.external_passes += 1;
+    }
+}
+
 /// What a resolved draw needs before the backend sees it.
 struct DrawParts {
     entry: &'static str,
@@ -1137,6 +1175,7 @@ impl<B: Backend> Device<B> {
             hw: HwState::default(),
             pending_grid: None,
             pending_external: Vec::new(),
+            admissions: Vec::new(),
             swallowing: None,
             swallow_mismatch: None,
             trace: None,
@@ -1859,6 +1898,100 @@ impl<B: Backend> Device<B> {
     /// guest skips work the pass replaces.
     pub fn can_external_pass(&self) -> bool {
         self.backend.supports_external_pass()
+    }
+
+    /// Consult admissions at the actual resolved geometry emission, in registration order.
+    pub fn add_draw_admission(&mut self, admission: Arc<dyn crate::DrawAdmission>) {
+        self.admissions.push(admission);
+    }
+
+    /// Drain work preceding the hook and reserve an entire replacement. A pending
+    /// guest callback must run first. It remains queued on refusal.
+    pub fn prepare_external_pass(
+        &mut self, mem: &mut dyn GuestMemory, plan: crate::ExternalPlan, pass: Box<dyn crate::ExternalPass>,
+    ) -> Result<Option<PreparedExternal<'_, B>>, D3dError> {
+        self.live("external pass")?;
+        if let Some(cb) = self.drain_until_callback(mem)? {
+            self.undelivered = Some(cb);
+            return Ok(None);
+        }
+        self.prepare_external_inner(mem, plan, pass, None)
+    }
+
+    /// At an already drained packet boundary, use the slot handles held with
+    /// the original packets. A rebound or missing slot refuses the whole call.
+    pub fn prepare_external_bound(
+        &mut self, mem: &mut dyn GuestMemory, plan: crate::ExternalPlan, pass: Box<dyn crate::ExternalPass>,
+        slots: Vec<Option<B::Surface>>,
+    ) -> Result<Option<PreparedExternal<'_, B>>, D3dError> {
+        self.prepare_external_inner(mem, plan, pass, Some(slots))
+    }
+
+    fn external_binding(
+        &mut self, mem: &mut dyn GuestMemory, plan: &crate::ExternalPlan, pass: &mut dyn crate::ExternalPass,
+        held: Option<&[Option<B::Surface>]>,
+    ) -> Result<ExternalBinding<B::Surface>, ExternalRefusal> {
+        let request = self.external_ready(mem, pass.colour_only())?;
+        let writes = pass.writes();
+        if (pass.colour_only() && writes.depth_stencil) || plan.ranges == 0 {
+            return Err(ExternalRefusal::Targets);
+        }
+        let color = self.surface_for(mem, "external colour", self.render_target, false).map_err(|_| ExternalRefusal::Targets)?;
+        let depth = if pass.colour_only() { color } else {
+            self.surface_for(mem, "external depth", self.depth_stencil, true).map_err(|_| ExternalRefusal::NoDepth)?
+        };
+        let mut sampled = Vec::new();
+        for header in pass.sampled() {
+            let (_, s) = self.rtt_level(mem, header, 0).ok().flatten().ok_or(ExternalRefusal::Targets)?;
+            sampled.push(s);
+        }
+        let mut colors = Vec::new();
+        if writes.color { colors.push((self.render_target, color)); }
+        let mut slots = Vec::with_capacity(plan.slots.len());
+        let mut slot_sizes = Vec::with_capacity(plan.slots.len());
+        for slot in &plan.slots {
+            let Some(slot) = slot else { slots.push(None); slot_sizes.push(None); continue };
+            if slot.header == 0 { return Err(ExternalRefusal::Header); }
+            let s = self.surface_for(mem, "external slot", slot.header, false).map_err(|_| ExternalRefusal::Targets)?;
+            if slot.written && !colors.contains(&(slot.header, s)) { colors.push((slot.header, s)); }
+            let desc = self.header_desc(mem, slot.header).map_err(|_| ExternalRefusal::Header)?;
+            slot_sizes.push(Some((desc.width, desc.height)));
+            slots.push(Some(s));
+        }
+        if held.is_some_and(|held| held != slots.as_slice()) { return Err(ExternalRefusal::Targets); }
+        pass.view_constants(&std::array::from_fn(|r| self.constant(r)));
+        pass.depth_clip(self.depth_clip(mem, request.z_scale));
+        Ok(ExternalBinding {
+            surfaces: crate::ExternalSurfaces { color, depth, sampled, slots, slot_sizes },
+            request, colors, depth_write: writes.depth_stencil,
+        })
+    }
+
+    fn prepare_external_inner(
+        &mut self, mem: &mut dyn GuestMemory, plan: crate::ExternalPlan, mut pass: Box<dyn crate::ExternalPass>,
+        slots: Option<Vec<Option<B::Surface>>>,
+    ) -> Result<Option<PreparedExternal<'_, B>>, D3dError> {
+        let binding = match self.external_binding(mem, &plan, &mut *pass, slots.as_deref()) {
+            Ok(b) => b,
+            Err(why) => { self.refuse_external(why); return Ok(None); }
+        };
+        let commands = self.backend.prepare_external(
+            binding.surfaces.clone(), binding.request, [None; 4], &plan,
+            crate::TargetCopy::Reference, Arc::new(std::sync::Mutex::new(pass)),
+        ).map_err(D3dError::Backend)?;
+        self.external_reservation(plan, binding, commands)
+    }
+
+    fn external_reservation(
+        &mut self, plan: crate::ExternalPlan, binding: ExternalBinding<B::Surface>,
+        commands: Option<Vec<crate::ExternalRecording>>,
+    ) -> Result<Option<PreparedExternal<'_, B>>, D3dError> {
+        let Some(recordings) = commands.filter(|c| complete_recordings(&plan, c)) else {
+            self.refuse_external(ExternalRefusal::Backend);
+            return Ok(None);
+        };
+        for &(_, surface) in &binding.colors { self.before_target_write(surface)?; }
+        Ok(Some(PreparedExternal { device: self, plan, binding, recordings }))
     }
 
     /// Render-state slot `slot` (guest numbering) as the setters stored it
@@ -4614,6 +4747,28 @@ impl<B: Backend> Device<B> {
             texture_info,
             glyph_cache,
         };
+        let admission = if self.admissions.is_empty() || !draw.state.bad.is_empty() || self.hw.zpass_count_enable {
+            None
+        } else {
+            let snapshot = crate::DrawSnapshot {
+                draw: &draw, palettes: self.palettes,
+                palette_entries: std::array::from_fn(|i| self.stage_palette(mem, i)),
+                color_header: self.render_target, depth_header: self.depth_stencil,
+            };
+            self.admissions.iter().find_map(|a| a.admit(&snapshot))
+        };
+        let replacement = admission.and_then(|(plan, mut pass)| {
+            use timeline::native::Metric;
+            plan.stage.count(Metric::Examined, 1);
+            match self.external_binding(mem, &plan, &mut *pass, None) {
+                Ok(binding) => Some((plan, pass, binding)),
+                Err(why) => {
+                    self.refuse_external(why);
+                    plan.stage.count(Metric::RefusedResources, 1);
+                    None
+                }
+            }
+        });
         let textures: [Option<&B::Texture>; 4] = std::array::from_fn(|i| {
             snapshots[i]
                 .as_ref()
@@ -4626,6 +4781,21 @@ impl<B: Backend> Device<B> {
                 .or_else(|| keys[i].and_then(|k| self.cache.get(&k)).map(|c| &c.host))
         });
         self.stats.draws += 1;
+        if let Some((plan, pass, binding)) = replacement {
+            let stage = plan.stage;
+            let commands = self.backend.prepare_external(
+                binding.surfaces.clone(), binding.request, textures, &plan, crate::TargetCopy::Reference,
+                Arc::new(std::sync::Mutex::new(pass)),
+            );
+            if let Ok(Some(recordings)) = commands && complete_recordings(&plan, &recordings) {
+                for &(_, surface) in &binding.colors { self.before_target_write(surface)?; }
+                PreparedExternal { device: self, plan, binding, recordings }.commit();
+                stage.count(timeline::native::Metric::Suppressed, 1);
+                *streams = draw.streams;
+                return Ok(());
+            }
+            stage.count(timeline::native::Metric::RefusedResources, 1);
+        }
         let (outcome, spare) = self.backend.draw_owned(color, depth, draw, textures);
         *streams = spare;
         match outcome.map_err(D3dError::Backend)? {
