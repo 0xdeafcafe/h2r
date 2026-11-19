@@ -1387,7 +1387,7 @@ fn write_angle_component(w: &mut BitWriter, value: u32, base: Option<u32>, wrap:
         let short = (-64..64).contains(&d);
         w.bit(!short);
         if short {
-            w.seg(d, 3);
+            w.seg(d, 0);
             return;
         }
     }
@@ -1398,7 +1398,7 @@ fn read_angle_component(r: &mut BitReader, base: Option<u32>, wrap: bool) -> Res
     if let Some(base) = base
         && !r.bit()?
     {
-        let d = r.seg(3)?;
+        let d = r.seg(0)?;
         if !(-64..64).contains(&d) {
             return Err(PackError::Bad("angle residual out of range"));
         }
@@ -1430,7 +1430,7 @@ fn write_value(w: &mut BitWriter, kind: Kind, v: &Val, prev: Option<&Val>, t: &T
                 _ => None,
             },
             16,
-            3,
+            1,
         ),
         (Kind::Angle, Val::Int(n)) => write_angle_component(
             w,
@@ -1488,7 +1488,7 @@ fn write_value(w: &mut BitWriter, kind: Kind, v: &Val, prev: Option<&Val>, t: &T
                 _ => None,
             },
             8,
-            2,
+            1,
         ),
         (Kind::Agos, Val::Ints(l)) => {
             w.eg(l.len() as u64, 0);
@@ -1520,7 +1520,7 @@ fn read_value(
                 _ => None,
             },
             16,
-            3,
+            1,
             7,
         )?),
         Kind::Angle if r.version < VERSION => Val::Int(r.bits(12)? * 4),
@@ -1591,7 +1591,7 @@ fn read_value(
                 _ => None,
             },
             8,
-            2,
+            1,
             4,
         )?),
         Kind::Agos => {
@@ -1682,29 +1682,107 @@ fn read_full(
     (0..n).map(|_| read_entity(r, schema, strings)).collect()
 }
 
-/// Advance the shared base before run detection or editing. Fields without
-/// velocity stay at their last sent value. Corrections recover the exact
-/// quantized sample even on a teleport or a velocity change.
-fn advance_positions(list: &mut [Entity], schema: &[Field], ticks: u64) {
-    if list.is_empty() || !(1..=PREDICT_TICKS).contains(&ticks) {
-        return;
+/// One older quantized sample per unit slot. Keys guard roster changes.
+/// Retaining just these fields avoids keeping or cloning an extra frame.
+#[derive(Default, Clone, Copy)]
+struct UnitAnchor {
+    key: Option<u64>,
+    yaw: u32,
+    aim: Option<[u32; 2]>,
+    velocity: Option<[i64; 3]>,
+}
+
+impl UnitAnchor {
+    fn read(e: &Entity, aim: usize) -> Self {
+        Self {
+            key: match e[0] {
+                Val::Int(n) => Some(n),
+                Val::Id(Id::Datum(d)) => Some(u64::from(d)),
+                _ => None,
+            },
+            yaw: match e[3] {
+                Val::Int(n) => n as u32,
+                _ => unreachable!(),
+            },
+            aim: match e[aim] {
+                Val::Dir(q) => Some(q),
+                _ => None,
+            },
+            velocity: match e[13] {
+                Val::Vel(v) => Some(v),
+                _ => None,
+            },
+        }
     }
-    let Some((pi, vi)) = motion_fields(schema) else {
+}
+
+/// The mean velocity over this span, in 1/1024-unit position quanta.
+/// A held velocity has equal endpoints. All division rounds ties away
+/// from zero, identically in the browser. Saturation is reachable only
+/// for out-of-contract wire values.
+fn advance_position(p: &mut Val, a: [i64; 3], b: [i64; 3], ticks: u64) {
+    let Val::Pos(p) = p else {
         return;
     };
-    for e in list {
-        let Val::Vel(v) = e[vi] else {
-            continue;
-        };
-        let Val::Pos(p) = &mut e[pi] else {
-            continue;
-        };
-        for (pos, vel) in p.iter_mut().zip(v) {
-            // POS_SCALE / VEL_SCALE = 8; half away from zero. Saturation
-            // is reachable only with malformed wire integers.
-            let step = vel.saturating_mul(8 * ticks as i64);
-            *pos = pos.saturating_add(step.saturating_add(15 * step.signum()) / 30);
+    for i in 0..3 {
+        let step = a[i].saturating_add(b[i]).saturating_mul(4 * ticks as i64);
+        p[i] = p[i].saturating_add(step.saturating_add(15 * step.signum()) / 30);
+    }
+}
+
+impl StreamState {
+    /// Predict before computing any run or edit. Equal adjacent spans
+    /// can continue a unit's turn and acceleration; an irregular span
+    /// uses only its last velocity. Residuals recover the exact sample.
+    fn advance(&mut self, ticks: u64) {
+        let moving = (1..=PREDICT_TICKS).contains(&ticks);
+        for (slot, n, aim) in [(0, 0, 6), (1, 2, 4)] {
+            let list = &mut self.lists[n];
+            let history = &mut self.anchors[slot];
+            history.resize(list.len(), UnitAnchor::default());
+            for (e, prior) in list.iter_mut().zip(history) {
+                let now = UnitAnchor::read(e, aim);
+                let older = std::mem::replace(prior, now);
+                if !moving {
+                    continue;
+                }
+                let mut velocity = now.velocity;
+                if ticks == self.span && now.key.is_some() && now.key == older.key {
+                    e[3] = Val::Int(u64::from(
+                        now.yaw.wrapping_mul(2).wrapping_sub(older.yaw) & 16383,
+                    ));
+                    if let (Some(a), Some(b)) = (older.aim, now.aim) {
+                        e[aim] = Val::Dir(std::array::from_fn(|i| {
+                            (2 * (b[i] as i32) - a[i] as i32).clamp(0, DIR_MAX as i32) as u32
+                        }));
+                    }
+                    if let (Some(a), Some(b)) = (older.velocity, now.velocity) {
+                        let v =
+                            std::array::from_fn(|i| b[i].saturating_add(b[i].saturating_sub(a[i])));
+                        e[13] = Val::Vel(v);
+                        velocity = Some(v);
+                    }
+                }
+                if let (Some(a), Some(b)) = (now.velocity, velocity) {
+                    advance_position(&mut e[2], a, b, ticks);
+                }
+            }
         }
+        if moving {
+            for (n, (fields, _)) in LISTS.iter().enumerate() {
+                if n == 0 || n == 2 || self.lists[n].is_empty() {
+                    continue;
+                }
+                if let Some((pi, vi)) = motion_fields(fields) {
+                    for e in &mut self.lists[n] {
+                        if let Val::Vel(v) = e[vi] {
+                            advance_position(&mut e[pi], v, v, ticks);
+                        }
+                    }
+                }
+            }
+        }
+        self.span = ticks;
     }
 }
 
@@ -1917,6 +1995,8 @@ struct StreamState {
     game_id: String,
     tick: u64,
     bsp: Option<u64>,
+    span: u64,
+    anchors: [Vec<UnitAnchor>; 2],
     strings: Vec<String>,
     lists: [Vec<Entity>; LIST_COUNT],
 }
@@ -2038,6 +2118,9 @@ impl Encoder {
                 .insert((*s).to_owned(), state.strings.len() as u64);
             state.strings.push((*s).to_owned());
         }
+        if !key {
+            state.advance(dt);
+        }
         for (n, (schema, _)) in LISTS.iter().enumerate() {
             if n == 3 {
                 write_full(&mut w, HIT, &lists.hits, &table);
@@ -2045,7 +2128,6 @@ impl Encoder {
             if key {
                 write_full(&mut w, schema, &lists.lists[n], &table);
             } else {
-                advance_positions(&mut state.lists[n], schema, dt);
                 write_delta(&mut w, schema, &lists.lists[n], &state.lists[n], &table, dt);
             }
         }
@@ -2147,6 +2229,11 @@ impl Decoder {
         }
         let mut hits = Vec::new();
         let dt = state.tick - prev.tick;
+        if version == VERSION && !key {
+            prev.advance(dt);
+            state.anchors = std::mem::take(&mut prev.anchors);
+            state.span = dt;
+        }
         for (n, (fields, max)) in schema.lists.iter().enumerate() {
             if n == 3 {
                 hits = read_full(&mut r, schema.hit, MAX_FRAME_HITS, &state.strings)?;
@@ -2154,9 +2241,6 @@ impl Decoder {
             state.lists[n] = if key {
                 read_full(&mut r, fields, *max, &state.strings)?
             } else {
-                if version == VERSION {
-                    advance_positions(&mut prev.lists[n], fields, dt);
-                }
                 read_delta(
                     &mut r,
                     fields,
