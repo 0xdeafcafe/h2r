@@ -1534,6 +1534,50 @@ no run yet).
   had a unit, so none of it was seen; `facing` reads the unit, so a
   phantom without one is skipped.
 
+**The user's Halo 1 run (2026-11-19: Live custom game on
+`h1_bloodgulch`, 3 local Clankers and 4 phantoms, a crash a while into
+the game).** Read from the log tail and the disassembly; no run yet.
+
+- **"Every phantom got peer 4."** The log tail had all four
+  `bots: phantom Clanker N joins (peer 4, in the pregame lobby)`, and
+  then `game start: ... peer count 5 (0 other consoles)`: five peers,
+  four of them phantoms (the start facts count a peer whose machine id is
+  not a phantom's as another console). The join takes the peer at the
+  session's peer count and raises the count at once (`add_peer`, on guest
+  memory, no buffering: `RuntimeMemory::write` is immediate), so one frame
+  gives peers 1, 2, 3, 4 and frames one at a time do too (tests
+  `phantom::session::tests::lobby::four_phantoms_in_one_frame_get_a_peer_each`
+  and `phantoms_one_a_frame_get_a_peer_each`). Four distinct peers are
+  what the start found. The quoted lines were a summary of the log, not
+  the lines themselves; the next run's join lines settle it.
+- **The crash is not the peers.** `#GP` at `0x28c589` is `movaps xmm1,
+  [eax]` in `0x28c530`, codec 8's (`blend_screen`) interpolated rotation
+  (the codec table in docs/engine/engine-map.md), called from the
+  evaluation setup `0x2798a0` (return `0x279d2c`). `eax` was
+  `0x820f922c`: not 16-byte aligned, so `movaps` faults. The address is
+  the stream (`[0x504480]`) plus `0x20` plus channel × stride plus frame
+  × 16, so a blend-screen stream or its stride in the animation data that
+  map loaded is off 16-byte alignment: the converted map's data, not a
+  session structure. Every unit with an aim screen evaluates it each
+  frame, bots or not; which animation it was is for the converted map's
+  owners (h1convert / h1map), with the stream's address in the dump.
+- **The roster refusal** (`no roster from Live (the server refused:
+  0x80155100)`). Live HLE gives `0x80155100` for a 404 or 409 on `POST
+  /v1/games/bots` (`live_hle::client`, `Work::Bots`). The roster
+  handler's only 404 is `no session of yours by that id` (the session
+  looked up by id with the caller as its host, `live_server::bots`); it
+  has no 409. So the server did not have session `8615d3735dc12a62` as
+  the caller's when asked, at once after it was advertised. Not a
+  7-bot limit (the count is cut to the room, and none is a 400), and
+  custom games ask without a playlist, which is allowed. The server's log
+  line for the request says which: a model that had not applied the new
+  session yet (the Workers home reads its own copy), or another account
+  asking than the one that made it.
+- **The local bots in the game.** `join gate port 1..3: screen 0xe7 ...
+  signed_in true: waits` is the gate saying the bots are signed in
+  already, so it has nothing to do: `waits` is every gate line out of a
+  lobby. It is no sign they were left out of the game.
+
 **The action from a pad** (`session::action_from_pad`): yaw and pitch
 are absolute world angles (`0x186f99`, `0x824d0`), so the right stick
 turns from the unit's facing. A radial curve maps the stick to yaw

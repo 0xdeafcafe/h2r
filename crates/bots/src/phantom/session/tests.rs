@@ -1236,6 +1236,64 @@ mod lobby {
         assert_eq!(find_peer(&g, S, machine_id(h)).unwrap(), Some(1));
     }
 
+    /// The user's Halo 1 run logged four phantoms all "joins (peer 4, in
+    /// the pregame lobby)" and a game start with 5 peers. Four in one
+    /// frame each get a peer of their own, one after the other.
+    #[test]
+    fn four_phantoms_in_one_frame_get_a_peer_each() {
+        let ph = Phantoms::default();
+        let names = ["Clanker 4", "Clanker 5", "Clanker 6", "Clanker 7"];
+        let handles: Vec<_> = names
+            .iter()
+            .zip(1u64..)
+            .map(|(n, x)| ph.add(who(x, n), None, idle()).unwrap())
+            .collect();
+        let mut g = lobby();
+        let log = ph.tick(&mut g, 0).unwrap();
+        let want: Vec<String> = names
+            .iter()
+            .zip(1..)
+            .map(|(n, i)| format!("bots: phantom {n} joins (peer {i}, in the pregame lobby)"))
+            .collect();
+        assert_eq!(log, want);
+        assert_eq!(g.u32(S + PEER_COUNT).unwrap(), 5);
+        assert_eq!(g.u32(S + PLAYER_COUNT).unwrap(), 5);
+        for (h, i) in handles.iter().zip(1..) {
+            assert_eq!(find_peer(&g, S, machine_id(*h)).unwrap(), Some(i));
+            // Each peer's one player is its own, and points back at it.
+            let slot = g.u32(S + PEERS + i * PEER_SIZE + PEER_SLOTS).unwrap();
+            assert_eq!(g.u32(S + PLAYERS + slot * PLAYER_SIZE + P_PEER).unwrap(), i);
+        }
+        // Frames after: the same four peers, nothing said, none moved.
+        for frame in 1..4 {
+            assert!(ph.tick(&mut g, frame).unwrap().is_empty());
+        }
+        assert_eq!(g.u32(S + PEER_COUNT).unwrap(), 5);
+        for (h, i) in handles.iter().zip(1..) {
+            assert_eq!(find_peer(&g, S, machine_id(*h)).unwrap(), Some(i));
+        }
+    }
+
+    /// One phantom a frame, as the Clankermatch fill seats them: still a
+    /// peer each.
+    #[test]
+    fn phantoms_one_a_frame_get_a_peer_each() {
+        let ph = Phantoms::default();
+        let mut g = lobby();
+        for (x, i) in (1u64..=4).zip(1u32..) {
+            let name = format!("Clanker {}", x + 3);
+            ph.add(who(x, &name), None, idle()).unwrap();
+            let log = ph.tick(&mut g, u64::from(i)).unwrap();
+            assert_eq!(
+                log,
+                vec![format!(
+                    "bots: phantom {name} joins (peer {i}, in the pregame lobby)"
+                )]
+            );
+        }
+        assert_eq!(g.u32(S + PEER_COUNT).unwrap(), 5);
+    }
+
     #[test]
     fn a_lobby_this_console_joined_makes_them_wait() {
         let ph = Phantoms::default();
