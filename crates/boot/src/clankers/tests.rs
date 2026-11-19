@@ -472,6 +472,15 @@ fn a_session_made_after_the_page_was_set_gets_its_roster() {
     on(&s, 4, 0);
     assert!(live.requests().is_empty(), "no session: host-made, no ask");
     assert_eq!(ph.list().len(), 1);
+    // The h2 bots test run of 2026-11-18 never signed the game in to Live
+    // and said nothing about a roster: the log now says why none.
+    let log = d.apply(Want::read(&s));
+    assert!(
+        log.iter().any(|l| l
+            == "no roster yet: this console hosts no Xbox Live session (host-made bots until it does)"),
+        "{log:?}"
+    );
+    assert!(live.requests().is_empty());
     assert!(d.refresh().is_empty());
     *live.session.lock().unwrap() = Some("00000000000000aa".into());
     d.refresh();

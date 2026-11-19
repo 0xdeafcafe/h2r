@@ -138,6 +138,23 @@ pub fn pregame(f: &Facts) -> bool {
         && f.state.is_some_and(lobby_state)
 }
 
+/// The log line for what [`pregame`] read, so a run shows which fact
+/// held a lobby back.
+pub fn pregame_line(f: &Facts) -> String {
+    format!(
+        "bots: lobby facts: lobby {}, networking {}, session type {}, session state {}: {}",
+        f.lobby_on,
+        f.networking,
+        f.session_type,
+        f.state.map_or_else(|| "none".to_owned(), |s| s.to_string()),
+        if pregame(f) {
+            "a pregame lobby"
+        } else {
+            "no pregame lobby"
+        }
+    )
+}
+
 /// [`pregame`] over guest memory; a read that faults is no lobby.
 pub fn in_pregame(m: &dyn GuestMemory) -> bool {
     facts(m).is_ok_and(|f| pregame(&f))

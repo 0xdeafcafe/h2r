@@ -79,6 +79,8 @@ use at::*;
 pub const STATE_LIVE: u32 = 5;
 /// The distributed server's simulation mode.
 pub const MODE_DIST_SERVER: u32 = 5;
+/// The local simulation mode (Split Screen and campaign alone).
+pub const MODE_LOCAL: u32 = 1;
 pub const MAX: u32 = 16;
 
 /// Why the host cannot take a phantom now.
@@ -113,6 +115,18 @@ pub fn host_session(m: &dyn GuestMemory) -> Result<u32, NotNow> {
     }
     let shown = |v: Option<u32>| v.map_or_else(|| "?".to_owned(), |v| v.to_string());
     let mode = read(sim + SIM_MODE);
+    if mode == Some(MODE_LOCAL) {
+        // Split Screen: its session is of the local type (session `+0x18`
+        // 0, made by `0x59890(0, …)` from the players screen in mode 1),
+        // which `0x64060` gives protocol 0, and `0x6ec80` simulation mode
+        // 1. No game of it has peers; a hosted System Link or Live game is
+        // distributed (protocol 2 for every shipped engine), one console
+        // or many.
+        return Err(NotNow::NotHost(
+            "a local game (simulation mode 1, Split Screen): phantoms join System Link and Xbox Live games only"
+                .into(),
+        ));
+    }
     if mode != Some(MODE_DIST_SERVER) {
         return Err(NotNow::NotHost(format!(
             "the simulation is not the distributed server (mode {}, the server's is {MODE_DIST_SERVER})",

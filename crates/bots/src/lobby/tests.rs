@@ -138,6 +138,21 @@ fn no_session_another_type_or_a_session_out_of_the_lobby_is_no_pregame_lobby() {
 }
 
 #[test]
+fn the_lobby_facts_line_says_each_fact() {
+    let f = facts(&lobby(&[4])).unwrap();
+    assert_eq!(
+        pregame_line(&f),
+        "bots: lobby facts: lobby true, networking true, session type 2, session state 5: a pregame lobby"
+    );
+    let mut g = lobby(&[4]);
+    g.put_u32(SESSION, 0);
+    assert_eq!(
+        pregame_line(&facts(&g).unwrap()),
+        "bots: lobby facts: lobby true, networking true, session type 2, session state none: no pregame lobby"
+    );
+}
+
+#[test]
 fn a_countdown_is_state_10() {
     let mut g = lobby(&[4]);
     g.put_u8(S + COUNTDOWN, 1).put_u32(S + COUNTDOWN + 4, 5);

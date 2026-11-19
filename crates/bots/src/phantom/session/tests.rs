@@ -150,6 +150,15 @@ fn only_the_host_of_a_running_multiplayer_game_takes_phantoms() {
         host_session(&local)
     );
 
+    // The h2 bots test run: a Split Screen game, simulation mode 1.
+    let mut split = hosted();
+    split.put_u32(SIM + SIM_MODE, MODE_LOCAL);
+    assert!(
+        matches!(host_session(&split), Err(NotNow::NotHost(w)) if w.starts_with("a local game (simulation mode 1, Split Screen)")),
+        "{:?}",
+        host_session(&split)
+    );
+
     let mut class = hosted();
     class.put_u32(S + CLASS, 3);
     assert_eq!(
