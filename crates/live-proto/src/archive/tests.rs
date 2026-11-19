@@ -113,11 +113,16 @@ fn scene(frames: Vec<Frame>, name: &str) -> (usize, usize) {
 #[test]
 #[ignore = "release size and timing run"]
 fn bench_archive_scenes() {
-    scene(samples::multiplayer(9000), "mp16");
-    scene(samples::campaign(450), "campaign");
+    for (name, frames) in [
+        ("mp16", samples::multiplayer(9000)),
+        ("campaign", samples::campaign(450)),
+    ] {
+        let (archive, stored) = scene(frames, name);
+        assert!(archive * 4 <= stored, "{name}: {archive} vs {stored}");
+    }
 }
 #[test]
 fn archive_size_budget() {
     let (archive, stored) = scene(samples::multiplayer(450), "mp16");
-    assert!(archive * 3 < stored, "{archive} vs {stored}");
+    assert!(archive * 4 <= stored, "{archive} vs {stored}");
 }

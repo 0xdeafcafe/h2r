@@ -370,7 +370,7 @@ pub fn encode(frames: &[Frame]) -> Result<Vec<u8>> {
     write_node(rows.iter().collect(), &mut body, &mut remaining)?;
     drop(rows);
     let mut stored = Vec::new();
-    brotli::CompressorReader::new(body.as_slice(), 4096, 9, 18).read_to_end(&mut stored)?;
+    brotli::CompressorReader::new(body.as_slice(), 4096, 10, 18).read_to_end(&mut stored)?;
     Ok(stored)
 }
 
