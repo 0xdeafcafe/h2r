@@ -445,10 +445,13 @@ tip the choice between two nearby pads. A patient long-range gunner or one
 carrying its favorite rifle gives a stronger sightline more weight.
 Skill and tuned awareness affect how many places and pad locations it
 recognizes, how far it will go, and how accurately it estimates arrival.
-A once-visible enemy can be chased at its last observed position. An
-audible shot can prompt a short search. A kill announcement retires the
-old sighting and may prompt a look toward a plausible out-of-view map
-start. Search confidence expires on the existing enemy-memory clock.
+A once-visible enemy can be chased at its last observed position. When an
+idle bot hears a gunshot, it can turn toward the coarse bearing after a
+5–8 tick reaction delay, then walk a short distance in that direction.
+The sound gives it neither a combat target nor a reason to fire. A kill
+announcement retires the old sighting and may prompt a look toward a
+plausible out-of-view map start. Search confidence expires on the existing
+enemy-memory clock.
 
 Per-bot experience records verified supply visits and confirmed kills
 from a recent firing position in coarse map regions. A versioned serde

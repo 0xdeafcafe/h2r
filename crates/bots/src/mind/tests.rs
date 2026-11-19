@@ -1175,6 +1175,7 @@ fn a_gunshot_can_turn_the_head_without_creating_a_target() {
         tick: 0,
     }];
     let mut looked = false;
+    let mut investigated = false;
     for tick in 0..26 {
         let p = Perception {
             me: me([0.0; 3], X),
@@ -1182,16 +1183,25 @@ fn a_gunshot_can_turn_the_head_without_creating_a_target() {
             ..Perception::default()
         };
         let pad = m.step_with_cues(&p, None, &report, &[]);
-        assert_eq!(pad.left_stick, (0.0, 0.0));
         assert_eq!((pad.left_trigger, pad.right_trigger), (0.0, 0.0));
-        assert_ne!(m.doing, Doing::Fight(1));
+        assert!(!matches!(m.doing, Doing::Fight(_)));
         assert!(m.target.is_none());
         if tick < 5 {
             assert_eq!(pad.right_stick, (0.0, 0.0));
+            assert_eq!(pad.left_stick, (0.0, 0.0));
+        }
+        if let Doing::Support(at) = m.doing {
+            assert!(looked, "the glance precedes the search");
+            assert!(
+                at[1] > at[0].abs(),
+                "search along the heard bearing: {at:?}"
+            );
+            investigated |= pad.left_stick != (0.0, 0.0);
         }
         looked |= pad.right_stick.0 < -0.1;
     }
     assert!(looked);
+    assert!(investigated);
 }
 
 #[test]
