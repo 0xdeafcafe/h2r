@@ -12,13 +12,14 @@
 use std::sync::{Arc, Mutex};
 
 use engine::memory::{FlatMemory, GuestMemory};
-use feature::native_objects::{self, Host, NativeObjects, NativeSet, Stop};
+use feature::native_objects::{self, Host, NativeObjects, NativeSet, SetPart, Stop};
 use feature::plan::Base;
 use feature::{Registry, Switches};
 use native_render::camera::{RENDER_CAMERA, RenderCamera};
+use native_render::object_nodes::{RECORD_IMPLEMENTATION, RECORD_KEY, RECORD_MATRIX};
 use native_render::objects::{
-    BODY_RENDER_STATE, CACHE_LIGHTING, CACHE_OWNER, CACHE_RECORD_SIZE, FIRST_PERSON_LAYER3_RETURN, OBJECTS, ObjectFrame,
-    RECORD_LIGHTING, RECORD_MODEL, RENDER_STATE_CACHE, SCENE_LAYER3_RETURN,
+    BODY_RENDER_STATE, CACHE_LIGHTING, CACHE_OWNER, CACHE_RECORD_SIZE, FIRST_PERSON_LAYER3_RETURN, ItemDraw, ItemKey, OBJECTS,
+    ObjectFrame, RECORD_LIGHTING, RECORD_MODEL, RENDER_STATE_CACHE, SCENE_LAYER3_RETURN,
 };
 use native_render::skip::{CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, RENDER_RECORDS};
 
@@ -56,13 +57,17 @@ const CACHE_DATA: u32 = 0x0057_1000;
 const ITEMS: u32 = 0x0060_0000;
 const DEF_A: u32 = 0xe000_0100;
 const DEF_B: u32 = 0xe000_0200;
+/// The node matrix every record uploads.
+const MATRIX: u32 = 0x0060_1000;
 
 #[derive(Default)]
 struct Stub {
     set: Mutex<NativeSet>,
     wanted: Mutex<Vec<u32>>,
-    drawn: Mutex<Vec<(RenderCamera, Vec<ObjectFrame>)>>,
+    drawn: Mutex<Vec<(RenderCamera, Vec<ObjectFrame>, Vec<ItemDraw>)>>,
     refuse: Mutex<bool>,
+    /// Records whose items the host refuses to draw.
+    refuse_records: Mutex<Vec<u16>>,
 }
 
 impl Host for Stub {
@@ -72,12 +77,14 @@ impl Host for Stub {
     fn want(&self, definition: u32) {
         self.wanted.lock().unwrap().push(definition);
     }
-    fn draw(&self, camera: &RenderCamera, objects: Vec<ObjectFrame>) -> bool {
+    fn draw(&self, camera: &RenderCamera, _generation: u64, objects: Vec<ObjectFrame>, items: Vec<ItemDraw>) -> Vec<bool> {
         if *self.refuse.lock().unwrap() {
-            return false;
+            return vec![false; items.len()];
         }
-        self.drawn.lock().unwrap().push((*camera, objects));
-        true
+        let refused = self.refuse_records.lock().unwrap().clone();
+        let out = items.iter().map(|d| !d.shadow && !refused.contains(&d.key.record)).collect();
+        self.drawn.lock().unwrap().push((*camera, objects, items));
+        out
     }
 }
 
@@ -144,6 +151,14 @@ fn guest() -> (FlatMemory, u32, u32) {
         let (model, light) = owner.map_or((u32::MAX, 0), |h| (0xe100_0000 | record, lighting(h)));
         m.set_u32(at + RECORD_MODEL, model).unwrap();
         m.set_u32(at + RECORD_LIGHTING, light).unwrap();
+        // A model record of section 0, part 0, implementation 0, its
+        // node matrix at MATRIX.
+        m.set_u32(at + RECORD_KEY, 0x2000_0000).unwrap();
+        m.set_u32(at + RECORD_IMPLEMENTATION, 0).unwrap();
+        m.set_u32(at + RECORD_MATRIX, MATRIX).unwrap();
+    }
+    for k in 0..13u32 {
+        m.set_u32(MATRIX + 4 * k, (k as f32).to_bits()).unwrap();
     }
     let c = RENDER_CAMERA;
     for (i, v) in [0.0f32, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0].into_iter().enumerate() {
@@ -174,7 +189,7 @@ fn objects_skip_layer_3_hand_over_their_nodes_and_get_their_bits_back() {
     {
         let mut set = stub.set.lock().unwrap();
         set.definitions.insert(DEF_A as u16, 2);
-        set.shaders.insert((DEF_A as u16, 0x10));
+        set.parts.insert((DEF_A as u16, 0, 0), SetPart { shader: 0x10, implementations: 1, texaccum: 0 });
     }
     native_objects::set_host(stub.clone());
 
@@ -201,6 +216,12 @@ fn objects_skip_layer_3_hand_over_their_nodes_and_get_their_bits_back() {
         assert_eq!(objects.len(), 1);
         assert_eq!((objects[0].handle, objects[0].definition, objects[0].nodes.len()), (a, DEF_A, 2));
         assert_eq!(objects[0].nodes[1].position, [1.0, 0.0, 0.0]);
+        // The item, as its record picked it, with its record's rows.
+        let items = &drawn[0].2;
+        assert_eq!(items.len(), 1);
+        assert_eq!((items[0].index, items[0].object, items[0].shadow), (0, 0, false));
+        assert_eq!(items[0].key, ItemKey { record: 1, shader: 0xe000_0010, section: 0, part: 0, implementation: 0 });
+        assert_eq!(items[0].rows[0], [1.0, 4.0, 7.0, 10.0]);
     }
     native_objects::restore_pending(&mut m);
     assert_eq!(masks(&m), all);
@@ -210,7 +231,7 @@ fn objects_skip_layer_3_hand_over_their_nodes_and_get_their_bits_back() {
     {
         let mut set = stub.set.lock().unwrap();
         set.definitions.insert(DEF_B as u16, 5);
-        set.shaders.insert((DEF_B as u16, 0x10));
+        set.parts.insert((DEF_B as u16, 0, 0), SetPart { shader: 0x10, implementations: 1, texaccum: 0 });
     }
     native_objects::before_layer(&mut m, SCENE_LAYER3_RETURN);
     assert_eq!(masks(&m), vec![0b0010, 0b1010, 0b1010, 0b1010]);
@@ -301,7 +322,7 @@ fn its_layer_draw_chain_runs_on_the_render_thread() {
     assert!(chain.render_thread().is_ok());
 }
 
-/// Guest words for [`native_objects::ready`].
+/// Guest words for [`native_objects::item_refusal`].
 struct Words(std::collections::HashMap<u32, u32>);
 
 impl native_render::camera::GuestRead for Words {
@@ -310,56 +331,49 @@ impl native_render::camera::GuestRead for Words {
     }
 }
 
-/// An object whose parts sample the texture accumulation target is drawn
-/// only while the target is bound (`0x0001dcc0`'s check): decided at the
-/// hook, before its items' skip is kept, so with none bound they keep
-/// their D3D draws rather than go undrawn.
+fn key(section: u16, part: u8, shader: u32, implementation: usize) -> ItemKey {
+    ItemKey { record: 7, shader, section, part, implementation }
+}
+
+/// An item whose part's implementation samples the texture accumulation
+/// target is drawn only while the target is bound (`0x0001dcc0`'s
+/// check): decided at the hook, so with none bound it keeps its D3D draw
+/// rather than go undrawn. Its object and rows must read too.
 #[test]
-fn an_object_sampling_the_texture_accumulation_target_waits_for_it() {
+fn an_item_sampling_the_texture_accumulation_target_waits_for_it() {
     use native_render::object_nodes::TEXACCUM_TARGET;
     let mut set = NativeSet::default();
     set.definitions.insert(DEF_A as u16, 1);
-    let mut frame = ObjectFrame {
-        handle: 0x8001_0001,
-        definition: DEF_A,
-        nodes: vec![native_render::model::NodeMatrix::IDENTITY],
-        sphere: ([0.0; 3], 1.0),
-        lighting: None,
-        defaults: None,
-        node_rows: Vec::new(),
-        implementations: Vec::new(),
-    };
-    let cleared = native_render::objects::ClearedObjects::default();
+    set.parts.insert((DEF_A as u16, 2, 1), SetPart { shader: 0x10, implementations: 0b11, texaccum: 0b10 });
+    let rows = Ok(vec![[0.0; 4]; 3]);
     let mut mem = Words(Default::default());
-    assert!(native_objects::ready(&mem, &set, &cleared, &mut frame), "not a texaccum definition");
-    set.texaccum.insert(DEF_A as u16);
-    assert!(!native_objects::ready(&mem, &set, &cleared, &mut frame), "no target");
+    let refusal = |mem: &Words, implementation| native_objects::item_refusal(mem, &set, DEF_A, &key(2, 1, 0x10, implementation), true, &rows);
+    assert_eq!(refusal(&mem, 0), None, "implementation 0 does not sample it");
+    assert!(refusal(&mem, 1).unwrap().contains("texture accumulation"), "no target");
     mem.0.insert(TEXACCUM_TARGET + 0x88, 0x0123_4560);
-    assert!(native_objects::ready(&mem, &set, &cleared, &mut frame), "bound");
+    assert_eq!(refusal(&mem, 1), None, "bound");
     mem.0.insert(TEXACCUM_TARGET + 0x94, 1 << 8);
-    assert!(!native_objects::ready(&mem, &set, &cleared, &mut frame), "the byte at +0x95 set");
+    assert!(refusal(&mem, 1).is_some(), "the byte at +0x95 set");
+    let no_rows = Err("record 7: no rows".to_string());
+    assert_eq!(native_objects::item_refusal(&mem, &set, DEF_A, &key(2, 1, 0x10, 0), true, &no_rows).as_deref(), Some("record 7: no rows"));
+    assert!(native_objects::item_refusal(&mem, &set, DEF_A, &key(2, 1, 0x10, 0), false, &rows).is_some(), "its object did not read");
 }
 
-/// The pass draws an object's lit parts by the section their records
-/// name: a record of a section none of its native parts come from (a
-/// permutation other than the one loaded, or a section whose parts did not
-/// load) would lose its items undrawn, so the object is left to D3D.
+/// An item is offered by the part its record names: the definition's
+/// part at that section and index, with the item's shader and the
+/// record's implementation. Another part of the same section, another
+/// shader or an implementation the part lacks keeps its D3D draw.
 #[test]
-fn an_object_drawing_a_section_its_native_parts_lack_is_named() {
-    let mut set = NativeSet::default();
-    set.sections.extend([(DEF_A as u16, 0), (DEF_A as u16, 2), (DEF_B as u16, 1)]);
-    assert_eq!(set.missing_section(DEF_A, [0, 2]), None);
-    assert_eq!(set.missing_section(DEF_A, [0, 1, 2]), Some(1), "B's section, not A's");
-    assert_eq!(set.missing_section(DEF_B, []), None);
-}
-
-#[test]
-fn a_shader_is_accepted_only_for_the_definitions_that_draw_it() {
+fn an_item_is_accepted_only_for_the_part_and_implementation_its_record_picked() {
     let mut set = NativeSet::default();
     set.definitions.insert(DEF_A as u16, 2);
     set.definitions.insert(DEF_B as u16, 2);
-    set.shaders.insert((DEF_A as u16, 0x10));
-    assert!(set.accepts(DEF_A, 0x10));
-    assert!(!set.accepts(DEF_B, 0x10), "B's model refused the material: its items keep their D3D draws");
-    assert!(!set.accepts(DEF_A, 0x11));
+    set.parts.insert((DEF_A as u16, 4, 0), SetPart { shader: 0x10, implementations: 0b101, texaccum: 0 });
+    assert!(set.accepts(DEF_A, &key(4, 0, 0xe000_0010, 0)));
+    assert!(set.accepts(DEF_A, &key(4, 0, 0xe000_0010, 2)));
+    assert!(!set.accepts(DEF_A, &key(4, 0, 0xe000_0010, 1)), "an implementation the part lacks");
+    assert!(!set.accepts(DEF_A, &key(4, 1, 0xe000_0010, 0)), "another part of the section");
+    assert!(!set.accepts(DEF_A, &key(5, 0, 0xe000_0010, 0)), "another section");
+    assert!(!set.accepts(DEF_A, &key(4, 0, 0xe000_0011, 0)), "another shader");
+    assert!(!set.accepts(DEF_B, &key(4, 0, 0xe000_0010, 0)), "B's model refused the material");
 }

@@ -14,15 +14,15 @@
 //! - then, when the current layer is 3 and the call is the base layers'
 //!   (`[esp] == 0x0002bed5`): ask the [`Host`] which object definitions and
 //!   shaders it draws, clear layer 3's bit on those objects' items
-//!   ([`native_render::objects::clear_objects`]), copy each cleared
-//!   object's node matrices and sphere out of guest memory (and, for a
-//!   definition drawn through its own programs, its lighting and the node
-//!   rows each of its records uploads, `objects::attach_node_rows`), and
-//!   hand the copies with the view's camera to the host for one external
-//!   pass.
-//!   Objects that cannot be read or whose node count disagrees with their
-//!   model get their bits back at once (the D3D path draws them); when the
-//!   host cannot draw, all do.
+//!   ([`native_render::objects::clear_objects`]: by item, the part and
+//!   implementation its record picked, `objects::ItemKey`), copy each
+//!   cleared object's node matrices, sphere and lighting and each item's
+//!   node rows out of guest memory, and hand them, in the list's order,
+//!   with the view's camera to the host, which plans every item's draw
+//!   before the hook returns and says which it draws ([`Host::draw`]).
+//!   Exactly those keep their bits cleared: an item whose object, rows or
+//!   texture accumulation target do not read, or whose draw the host could
+//!   not resolve, gets its bit back before the layer draws.
 //!
 //! Nothing runs after the body, and the observer is context-only, so the
 //! pipelined render runs it on its own thread
@@ -43,7 +43,7 @@ use std::sync::{Arc, Mutex};
 use engine::memory::GuestMemory;
 use engine::points;
 use native_render::camera::{GuestRead, GuestWrite, RENDER_CAMERA, RenderCamera};
-use native_render::objects::{self, ClearedObjects, FIRST_PERSON_LAYER3_RETURN, ObjectFrame, SCENE_LAYER3_RETURN, WalkStats};
+use native_render::objects::{self, FIRST_PERSON_LAYER3_RETURN, ItemDraw, ItemKey, ObjectFrame, SCENE_LAYER3_RETURN, WalkStats};
 use native_render::skip::{CURRENT_LAYER, LIGHTMAP_LAYER};
 
 use crate::native_world::Mem;
@@ -58,100 +58,81 @@ pub const SWITCH: &str = "impl.render.native_objects";
 pub struct NativeSet {
     /// The map the set is for (the per-map counts start again at another).
     pub map: String,
+    /// The load the set belongs to: the host's models for one map, BSP
+    /// and load (`Host::draw` refuses a view planned against another).
+    pub generation: u64,
     /// Object definitions by tag index (the low word of the body's `+0`
     /// datum), each with its model's node count.
     pub definitions: HashMap<u16, usize>,
-    /// Per definition, the shaders by tag index (the low word of an item's
-    /// `+8`) whose materials the pass draws for it; the rest keep their D3D
-    /// draws. Per definition: a shader one model draws through its programs
-    /// may be refused for another (its sections' programs differ), and an
-    /// item of that one must keep its draw.
-    pub shaders: HashSet<(u16, u16)>,
-    /// Definitions with parts drawn through their own programs, each with
-    /// the implementations (bit `n`) every such part has: an object of one
-    /// is drawn only with its lighting (and the root value inputs 40 and 37
-    /// read), its records' node rows copied, and each record's
-    /// implementation among those.
-    pub lit: HashMap<u16, u8>,
-    /// Definitions whose parts sample the texture accumulation target
-    /// (engine texture 3): an object of one is drawn only while the target
-    /// is there to bind ([`native_render::object_nodes::texaccum_bound`]),
-    /// else its items keep their D3D draws.
-    pub texaccum: HashSet<u16>,
-    /// Per definition, the mode sections (the render record key's bits
-    /// 9..17) its parts drawn through their own programs come from: an
-    /// object whose accepted records draw another (a permutation other
-    /// than the one loaded, or a section none of whose parts loaded) would
-    /// lose those items undrawn, so its items keep their D3D draws.
-    pub sections: HashSet<(u16, u16)>,
-    /// Definitions whose objects the host is handed as drawn ones (node
-    /// rows, lighting) while their items keep their D3D draws: the host
-    /// compares its uniforms with the D3D path's draws of them
-    /// (`H2_NATIVE_OBJECTS_COMPARE` in the boot glue) and does not draw
-    /// them.
+    /// The parts the host draws, by (definition, section, part): what a
+    /// layer-3 item's render record names ([`objects::ItemKey`]). An item
+    /// is offered to the host only when its shader is the part's and its
+    /// record's implementation one the part has; the rest keep their D3D
+    /// draws.
+    pub parts: HashMap<(u16, u16, u8), SetPart>,
+    /// Definitions whose objects the host is handed as drawn ones while
+    /// their items keep their D3D draws: the host compares its uniforms
+    /// with the D3D path's draws of them (`H2_NATIVE_OBJECTS_COMPARE` in
+    /// the boot glue) and does not draw them.
     pub shadowed: HashSet<u16>,
 }
 
+/// One native part: its material's shader (tag index), the
+/// implementations it has (bit `n`), and those of them whose program
+/// samples the texture accumulation target (drawn only while the game has
+/// it bound, [`native_render::object_nodes::texaccum_bound`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SetPart {
+    pub shader: u16,
+    pub implementations: u8,
+    pub texaccum: u8,
+}
+
 impl NativeSet {
-    pub fn accepts(&self, definition: u32, shader: u32) -> bool {
-        self.definitions.contains_key(&(definition as u16)) && self.shaders.contains(&(definition as u16, shader as u16))
+    /// The part an item of `definition` with `key` draws, when the host
+    /// draws it with the key's shader and implementation.
+    pub fn part(&self, definition: u32, key: &ItemKey) -> Option<SetPart> {
+        if !self.definitions.contains_key(&(definition as u16)) {
+            return None;
+        }
+        let p = *self.parts.get(&(definition as u16, key.section, key.part))?;
+        (p.shader == key.shader as u16 && key.implementation < 8 && p.implementations & (1 << key.implementation) != 0).then_some(p)
+    }
+
+    pub fn accepts(&self, definition: u32, key: &ItemKey) -> bool {
+        self.part(definition, key).is_some()
     }
 
     pub fn node_count(&self, definition: u32) -> Option<usize> {
         self.definitions.get(&(definition as u16)).copied()
     }
-
-    /// The implementations `definition`'s parts drawn through their own
-    /// programs have (bit `n`), when it has such parts.
-    pub fn lit(&self, definition: u32) -> Option<u8> {
-        self.lit.get(&(definition as u16)).copied()
-    }
-
-    /// The first of `sections` (an object's records' sections) that
-    /// `definition`'s lit parts do not come from, if any.
-    pub fn missing_section(&self, definition: u32, sections: impl IntoIterator<Item = u16>) -> Option<u16> {
-        sections.into_iter().find(|&s| !self.sections.contains(&(definition as u16, s)))
-    }
 }
 
-/// `(definition, section)` pairs already logged by [`ready`].
-static MISSING_SECTIONS: Mutex<Option<HashSet<(u16, u16)>>> = Mutex::new(None);
-
-/// Whether frame `f` (of a definition `set` draws) has what its draw
-/// needs, after copying its node rows when it is lit: a lit object needs
-/// its lighting with the root value, every record's rows, and every
-/// record's implementation one its lit parts have.
-pub fn ready(m: &dyn GuestRead, set: &NativeSet, cleared: &ClearedObjects, f: &mut ObjectFrame) -> bool {
-    if set.node_count(f.definition) != Some(f.nodes.len()) {
-        return false;
+/// Why an accepted item is given back before the host sees it, or `None`:
+/// its object did not read with its model's node count, its record's node
+/// rows do not read, or its part samples the texture accumulation target
+/// and the game has none bound. `rows`: its record's.
+pub fn item_refusal(
+    m: &dyn GuestRead,
+    set: &NativeSet,
+    definition: u32,
+    key: &ItemKey,
+    frame_ok: bool,
+    rows: &Result<Vec<native_render::object_nodes::Row>, String>,
+) -> Option<String> {
+    if !frame_ok {
+        return Some("its object does not read with its model's node count".into());
     }
-    // Decided here, before the view's skip is kept: a part that samples
-    // the texture accumulation target with none bound would go undrawn.
-    if set.texaccum.contains(&(f.definition as u16)) && !native_render::object_nodes::texaccum_bound(m) {
-        return false;
-    }
-    let Some(implementations) = set.lit(f.definition) else {
-        return true;
+    let Some(part) = set.part(definition, key) else {
+        return Some("not a native part".into());
     };
-    if !(f.lighting.is_some_and(|l| l.root.is_some())
-        && objects::attach_node_rows(m, f, cleared).is_ok()
-        && f.implementations.iter().all(|&(_, i)| i < 8 && implementations & (1 << i) != 0))
-    {
-        return false;
+    if let Err(e) = rows {
+        return Some(e.clone());
     }
-    // Every record's section must be one the lit parts hold: the pass
-    // draws parts by section, so another's items would go undrawn.
-    if let Some(section) = set.missing_section(f.definition, f.implementations.iter().map(|&(s, _)| s)) {
-        let mut logged = MISSING_SECTIONS.lock().unwrap_or_else(|e| e.into_inner());
-        if logged.get_or_insert_with(HashSet::new).insert((f.definition as u16, section)) {
-            eprintln!(
-                "native-objects: {}: definition {:#010x}'s records draw section {section}, which none of its native parts come from; its objects stay on D3D while they do (logged once per section)",
-                set.map, f.definition
-            );
-        }
-        return false;
+    if part.texaccum & (1 << key.implementation) != 0 && !native_render::object_nodes::texaccum_bound(m) {
+        return Some("it samples the texture accumulation target and none is bound".into());
     }
-    true
+    None
 }
 
 /// What draws the objects: boot's glue over the GPU models and the device.
@@ -162,16 +143,22 @@ pub trait Host: Send + Sync {
     /// A definition met in layer 3 that the set does not hold: load its
     /// model if it has not been tried (cheap to call again).
     fn want(&self, definition: u32);
-    /// Asks the device for the view's pass over `objects`. `false`: not
-    /// drawn (the skip is undone).
-    fn draw(&self, camera: &RenderCamera, objects: Vec<ObjectFrame>) -> bool;
+    /// Plans the view's pass over `items` (in the list's order, each with
+    /// its object's frame in `objects`) against the set of `generation`,
+    /// and asks the device for it: per item whether it is drawn, decided
+    /// before the hook returns. An item is drawn only when everything its
+    /// draw needs resolved (its model's GPU side, its part and
+    /// implementation, every per-object constant, every state field); the
+    /// rest, and every item when no pass is asked for, get their bits back
+    /// before the layer draws. A `shadow` item is never drawn.
+    fn draw(&self, camera: &RenderCamera, generation: u64, objects: Vec<ObjectFrame>, items: Vec<ItemDraw>) -> Vec<bool>;
 }
 
 static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
 /// Bits cleared at the last base-layer layer 3, with each item's mask as
 /// it was left, until the next layer draw sets them back (one render runs
 /// at a time, so that is the same render's).
-static CLEARED: Mutex<Option<(ClearedObjects, Vec<u32>)>> = Mutex::new(None);
+static CLEARED: Mutex<Option<(objects::ClearedObjects, Vec<u32>)>> = Mutex::new(None);
 static VIEWS: AtomicU64 = AtomicU64::new(0);
 static DRAWN: AtomicU64 = AtomicU64::new(0);
 static OBJECTS: AtomicU64 = AtomicU64::new(0);
@@ -201,9 +188,11 @@ pub enum Stop {
     /// Live object items, none accepted (models not loaded yet, or
     /// refused, or their shaders not native).
     NoneAccepted,
-    /// Accepted items, but no object read with its model's node count.
+    /// Accepted items, but none whose object, rows and texture
+    /// accumulation target read ([`item_refusal`]).
     NoneRead,
-    /// The host could not ask the device for the pass.
+    /// The host drew none of the items (it could not plan or ask for the
+    /// pass).
     DrawRefused,
     Drawn,
 }
@@ -405,8 +394,8 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         stop(Stop::NoMap, || "the host has no native set (no loaded map name)".to_owned());
         return;
     };
-    let accept = |_handle: u32, definition: u32, shader: u32| {
-        if set.accepts(definition, shader) {
+    let accept = |_handle: u32, definition: u32, key: &ItemKey| {
+        if set.accepts(definition, key) {
             return true;
         }
         if !set.definitions.contains_key(&(definition as u16)) {
@@ -426,39 +415,54 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         if cleared.walk.live == 0 {
             stop(Stop::NoObjectItems, || w);
         } else {
-            let (d, sh) = (set.definitions.len(), set.shaders.len());
-            stop(Stop::NoneAccepted, || format!("{w}; the set has {d} definitions, {sh} shaders"));
+            let (d, p) = (set.definitions.len(), set.parts.len());
+            stop(Stop::NoneAccepted, || format!("{w}; the set has {d} definitions, {p} parts"));
         }
         return;
     }
-    let mut frames = Vec::with_capacity(cleared.handles.len());
+    // Each accepted object read once, with its model's node count.
+    let mut frames: Vec<ObjectFrame> = Vec::with_capacity(cleared.handles.len());
+    let mut frame_of: HashMap<u32, Option<usize>> = HashMap::new();
     for &h in &cleared.handles {
-        if let Some(mut f) = objects::read_object(&m, h)
-            && ready(&m, &set, &cleared, &mut f)
-        {
+        let f = objects::read_object(&m, h).filter(|f| set.node_count(f.definition) == Some(f.nodes.len()));
+        frame_of.insert(h, f.map(|f| {
             frames.push(f);
+            frames.len() - 1
+        }));
+    }
+    // Each accepted item, in the list's order, with its record's rows;
+    // the ones that cannot be drawn go back now.
+    let mut items = Vec::with_capacity(cleared.items.len());
+    for (i, (&owner, key)) in cleared.owners.iter().zip(&cleared.keys).enumerate() {
+        let object = frame_of.get(&owner).copied().flatten();
+        let definition = object.map_or(0, |o| frames[o].definition);
+        let rows = objects::record_rows(&m, key.record);
+        if item_refusal(&m, &set, definition, key, object.is_some(), &rows).is_some() {
+            continue;
         }
+        let (Some(object), Ok(rows)) = (object, rows) else { continue };
+        let shadow = set.shadowed.contains(&(definition as u16));
+        items.push(ItemDraw { index: i, object, key: *key, rows, shadow });
     }
-    // A shadowed definition's items keep their D3D draws; the host still
-    // gets its frames (`NativeSet::shadowed`).
-    let drawn: HashSet<u32> = frames.iter().filter(|f| !set.shadowed.contains(&(f.definition as u16))).map(|f| f.handle).collect();
-    let accepted = cleared.handles.len();
-    objects::keep_only(&mut m, &mut cleared, &|h: u32| drawn.contains(&h));
-    if frames.is_empty() {
-        stop(Stop::NoneRead, || {
-            format!("{accepted} accepted objects, none read with its model's node count (node block at body +0x114/+0x116)")
-        });
-        return;
-    }
-    let count = frames.len() as u64;
-    if !host.draw(&camera, frames) {
-        stop(Stop::DrawRefused, || "the device cannot take an external pass".to_owned());
+    if items.is_empty() {
+        let accepted = cleared.items.len();
         objects::restore(&mut m, &cleared);
+        stop(Stop::NoneRead, || format!("{accepted} accepted items, none whose object, rows and texture accumulation target read"));
         return;
     }
-    stop(Stop::Drawn, || format!("{count} objects, {} items", cleared.items.len()));
+    let count = items.len();
+    let indices: Vec<usize> = items.iter().map(|d| d.index).collect();
+    let drawn = host.draw(&camera, set.generation, frames, items);
+    // Exactly the items the host drew keep their bits cleared.
+    let keep: HashSet<usize> = indices.iter().zip(&drawn).filter(|(_, d)| **d).map(|(&i, _)| i).collect();
+    objects::keep_items(&mut m, &mut cleared, &|i| keep.contains(&i));
+    if cleared.items.is_empty() {
+        stop(Stop::DrawRefused, || format!("the host drew none of {count} items"));
+        return;
+    }
+    stop(Stop::Drawn, || format!("{} objects, {} of {count} items", cleared.handles.len(), cleared.items.len()));
     DRAWN.fetch_add(1, Ordering::Relaxed);
-    OBJECTS.fetch_add(count, Ordering::Relaxed);
+    OBJECTS.fetch_add(cleared.handles.len() as u64, Ordering::Relaxed);
     ITEMS.fetch_add(cleared.items.len() as u64, Ordering::Relaxed);
     if VIEWS.load(Ordering::Relaxed) % 1800 == 1 {
         let (v, d, o, i) = counts();
