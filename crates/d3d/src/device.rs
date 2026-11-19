@@ -109,6 +109,15 @@ pub const COPY_SWAP_FLAG: u32 = 0x4000;
 pub const COMMIT_KEEPS: u32 = 0xC000_0070;
 /// Most vertices one draw may use (the NV2A index range is 2^20).
 pub const MAX_VERTICES: u32 = 1 << 20;
+/// The inlined `D3DDevice_SetRenderState` (`0x00018900`'s loop, and
+/// `0x0001828e`'s): states below this one, and not simple, are deferred.
+pub const DEFERRED_STATES_END: u32 = 0x88;
+/// Image table, by render state: the `D3D__DirtyFlags` bits a deferred
+/// state sets (`0x0001895a`).
+pub const DEFERRED_DIRTY_BITS: u32 = 0x0043_E4D0;
+/// Image table, by render state: the `SetRenderState_*` setter the inlined
+/// code calls for a state from [`DEFERRED_STATES_END`] up (`0x00018979`).
+pub const RENDER_STATE_FUNCTIONS: u32 = 0x0040_38D8;
 
 /// Vertex programs [`Device::microcode`] keeps so a program the game
 /// switches back to gets its earlier shared copy.
@@ -1683,6 +1692,75 @@ impl<B: Backend> Device<B> {
         mem.write_u32(dev + field::CLIP_FLAGS, flags | 2)?;
         let put = self.push_viewport(mem, put, dev)?;
         mem.write_u32(dev + field::PUT, put)?;
+        Ok(true)
+    }
+
+    /// Render states as Halo's inlined `D3DDevice_SetRenderState` sets them
+    /// (the loop of `0x00018900`, which the shader draw-state reset
+    /// `0x00016b10` runs over the last pass's restore list), for the
+    /// prologue of a `render_screen_effects` the native renderer draws in
+    /// place of the game (docs/graphics/native-renderer.md, stage 5). Each
+    /// `(state, value)` in order: below `0x5C`, `SetRenderState_Simple`
+    /// with the image's `D3DSIMPLERENDERSTATEENCODE[state]` as the header,
+    /// then the value into `D3D__RenderState[state]`; below `0x88`, the
+    /// state's bits of the deferred dirty table ([`DEFERRED_DIRTY_BITS`])
+    /// into `D3D__DirtyFlags`, then the value; otherwise the setter the
+    /// image's function table ([`RENDER_STATE_FUNCTIONS`]) holds for the
+    /// state, which must be the `SetRenderState_*` setter of that slot.
+    /// What is queued drains first, as before any entry.
+    ///
+    /// `Ok(false)` with nothing set when a push-buffer callback is queued
+    /// first (kept for the next entry, as in
+    /// [`light_passes_tail`](Self::light_passes_tail)), or when an entry
+    /// cannot be set as the game would (a state past the slots, a header
+    /// the device does not know, a function that is not the slot's
+    /// setter): the caller keeps the D3D path.
+    pub fn set_render_states_inline(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        states: &[(u32, u32)],
+    ) -> Result<bool, D3dError> {
+        const E: &str = "inlined D3DDevice_SetRenderState";
+        self.live(E)?;
+        let layout = self.cfg.layout;
+        // Everything checked before anything is set.
+        for &(state, _) in states {
+            if state as usize >= RENDER_STATE_SLOTS {
+                return Ok(false);
+            }
+            if (state as usize) < pushbuf::SIMPLE_ENCODE_SLOTS {
+                let header = mem.read_u32(layout.simple_encode + 4 * state)?;
+                if header >> 18 != 1 || self.mirror_slot(header & 0x3_FFFF).is_none() {
+                    return Ok(false);
+                }
+            } else if state < DEFERRED_STATES_END {
+                mem.read_u32(DEFERRED_DIRTY_BITS + 4 * state)?;
+            } else {
+                let f = mem.read_u32(RENDER_STATE_FUNCTIONS + 4 * state)?;
+                if !crate::abi::RENDER_STATE_SETTERS.iter().any(|&(a, _, s)| a == f && s == state) {
+                    return Ok(false);
+                }
+            }
+        }
+        if let Some(cb) = self.drain_until_callback(mem)? {
+            self.undelivered = Some(cb);
+            return Ok(false);
+        }
+        for &(state, value) in states {
+            if (state as usize) < pushbuf::SIMPLE_ENCODE_SLOTS {
+                let header = mem.read_u32(layout.simple_encode + 4 * state)?;
+                self.set_render_state_simple(mem, header, value)?;
+            } else if state < DEFERRED_STATES_END {
+                let bits = mem.read_u32(DEFERRED_DIRTY_BITS + 4 * state)?;
+                let dirty = mem.read_u32(layout.dirty_flags)?;
+                mem.write_u32(layout.dirty_flags, dirty | bits)?;
+            } else {
+                // The setter stores the slot itself.
+                self.set_render_state(mem, state, value)?;
+                continue;
+            }
+            mem.write_u32(layout.render_state_slot(state), value)?;
+        }
         Ok(true)
     }
 

@@ -347,8 +347,10 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     // The view's post passes on the native GPU renderer
     // (H2_FEATURES=impl.render.native_post=on, off by default;
     // docs/graphics/native-renderer.md, stage 5): a context-only skip on
-    // render_screen_effects, ahead of the fade and the HUD. No host yet, so
-    // every call keeps its D3D passes and the hook only counts them.
+    // render_screen_effects, ahead of the fade and the HUD. Its host
+    // (native_post_glue, installed with the world's) sets a skipped call's
+    // prologue states but accepts no call yet, so every call keeps its D3D
+    // passes and the hook only counts them.
     features
         .add(&feature::native_post::NativePost)
         .map_err(|e| anyhow::anyhow!("native post: {e}"))?;

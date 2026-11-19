@@ -19,9 +19,9 @@
 //!   `render_view_scene`, so the native post lands where the game's did,
 //!   after the scene and before the HUD.
 //!
-//! Slice 1 has no host in boot: nothing is skipped, and the counts say
-//! what each view's call asks for (the live run's census of what 03a
-//! draws after the scene).
+//! A call the host takes still leaves what its prologue leaves
+//! ([`redo_prologue`]: the shader draw-state reset's render states through
+//! the device, then the guest stores), before the pass is asked for.
 //!
 //! With `render-timing` on nothing is placed: its timer on the scene's
 //! callees needs the call's end, which a skipped call never reaches.
@@ -32,7 +32,7 @@ use std::sync::{Arc, Mutex};
 use engine::memory::GuestMemory;
 use engine::points;
 use native_render::camera::GuestRead;
-use native_render::post::{PostFrame, SCREEN_EFFECTS_CLEANUP};
+use native_render::post::{PostFrame, Prologue, SCREEN_EFFECTS_CLEANUP};
 
 use crate::{BuildError, Builder, Feature, Flow, Manifest};
 
@@ -47,11 +47,14 @@ pub fn on(switches: &crate::Switches) -> bool {
 
 /// What draws the post: boot's glue over the GPU and the device.
 pub trait Host: Send + Sync {
-    /// Whether the host draws this call's passes natively now. It must
-    /// also leave what the call's prologue leaves (the shader draw state
-    /// reset `0x00016b10`, `[0x004670bc]`, `0x000245c0`; the design's
-    /// item 2), so a host says yes only once that is done.
+    /// Whether the host draws this call's passes natively now. The hook
+    /// then redoes the call's prologue ([`redo_prologue`]) before asking
+    /// for the pass.
     fn accepts(&self, mem: &dyn GuestMemory, frame: &PostFrame) -> bool;
+    /// The device side of the prologue: the render states the shader
+    /// draw-state reset restores (`d3d::Device::set_render_states_inline`
+    /// at this point of the render). `false`: nothing set (the call runs).
+    fn prologue(&self, mem: &mut dyn GuestMemory, states: &[(u32, u32)]) -> bool;
     /// Asks the device for an external pass drawing `frame`'s passes, at
     /// its next entry. `false`: nothing asked (the call runs).
     fn open(&self, frame: &PostFrame) -> bool;
@@ -63,6 +66,7 @@ static SKIPPED: AtomicU64 = AtomicU64::new(0);
 static COLOUR: AtomicU64 = AtomicU64::new(0);
 static LATE: AtomicU64 = AtomicU64::new(0);
 static EFFECTS: AtomicU64 = AtomicU64::new(0);
+static PROLOGUE_REFUSED: AtomicU64 = AtomicU64::new(0);
 
 /// Installs the host (boot). Without one nothing is skipped.
 pub fn set_host(host: Arc<dyn Host>) {
@@ -83,6 +87,8 @@ pub struct Counts {
     /// Calls whose screen-effect loop could draw (its gates but
     /// `0x00022710` pass, with entries).
     pub screen_effects: u64,
+    /// Calls the host accepted whose prologue could not be redone.
+    pub prologue_refused: u64,
 }
 
 pub fn counts() -> Counts {
@@ -92,6 +98,7 @@ pub fn counts() -> Counts {
         colour: COLOUR.load(Ordering::Relaxed),
         late: LATE.load(Ordering::Relaxed),
         screen_effects: EFFECTS.load(Ordering::Relaxed),
+        prologue_refused: PROLOGUE_REFUSED.load(Ordering::Relaxed),
     }
 }
 
@@ -134,11 +141,38 @@ pub fn on_screen_effects(mem: &mut dyn GuestMemory, esp: u32) -> bool {
     let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
         return false;
     };
-    if !host.accepts(&*mem, &frame) || !host.open(&frame) {
+    if !host.accepts(&*mem, &frame) {
+        return false;
+    }
+    // The prologue first: a call whose pass then cannot be asked for runs,
+    // and its own prologue sets the same again.
+    if !redo_prologue(&*host, mem) {
+        PROLOGUE_REFUSED.fetch_add(1, Ordering::Relaxed);
+        return false;
+    }
+    if !host.open(&frame) {
         return false;
     }
     SKIPPED.fetch_add(1, Ordering::Relaxed);
     true
+}
+
+/// Leaves what the prologue of `render_screen_effects` leaves
+/// (`native_render::post::Prologue`): the device's states through the
+/// host, then the guest stores in the game's order. `false` with nothing
+/// set when a word it reads or a store's target cannot be reached, or the
+/// device refuses its part.
+pub fn redo_prologue(host: &dyn Host, mem: &mut dyn GuestMemory) -> bool {
+    let Some(p) = Prologue::read(&Ro(&*mem)) else {
+        return false;
+    };
+    if !p.writes.iter().all(|(addr, bytes)| mem.bytes(*addr, bytes.len()).is_ok()) {
+        return false;
+    }
+    if !host.prologue(mem, &p.states) {
+        return false;
+    }
+    p.writes.iter().all(|(addr, bytes)| mem.write(*addr, bytes).is_ok())
 }
 
 pub struct NativePost;
