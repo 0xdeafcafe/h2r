@@ -247,3 +247,94 @@ fn bloodgulch_sniper_metal_reflects_its_cube_map() {
     assert!(display.contains(&bump), "no cube map: the tex_bump copy");
     assert!(!display.contains(&env));
 }
+
+/// Blood Gulch's fern (`scen scenery\plants\plant fern\plant fern`): its
+/// `soso` has a DXT3 base three quarters clear and no "not alpha-tested"
+/// flag, so it draws on `tex_bump_alpha_test_single_pass` with its own
+/// base, cut out as Halo 1 cuts it (the tex_bump copy drew solid cards).
+/// The Warthog's hull and the Scorpion's non-reflective hull tile their
+/// detail map by their own scale, 16 (`textures::scales_from`), where the
+/// copy and the reflection rebuild tiled it once (converter version 84).
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn bloodgulch_leaves_cut_out_and_details_tile_by_their_scale() {
+    use tags::defs::Val;
+    let h1 = h1_map("bloodgulch");
+    let mut base_map = h2_map("coagulation");
+    let library = h1convert::shad::Library::read(&mut base_map);
+    let cut = library
+        .stem(&h1convert::shad::TEX_BUMP_ALPHA_TEST)
+        .expect("the base has tex_bump_alpha_test_single_pass");
+    let base = Base::read(&mut base_map).unwrap();
+    let mut conv = Converter::new(&h1, &base);
+    for (group, name) in [
+        (b"scen", "scenery\\plants\\plant fern\\plant fern"),
+        (b"vehi", "vehicles\\warthog\\warthog"),
+        (b"vehi", "vehicles\\scorpion\\scorpion_mp"),
+    ] {
+        let t = h1
+            .tags()
+            .iter()
+            .find(|t| t.group == Group::new(group) && t.name == name)
+            .unwrap_or_else(|| panic!("{name}"));
+        conv.object(t).unwrap();
+    }
+    let tree = &conv.tree;
+    let shader = |name: &str| {
+        &tree
+            .tags
+            .iter()
+            .find(|(n, c)| n == name && c.group.0 == *b"shad")
+            .unwrap_or_else(|| panic!("{name}: a shader of the tree"))
+            .1
+            .root
+    };
+    let fern = shader("scenery\\plants\\plant fern\\shaders\\plant fern");
+    let mut refs = Vec::new();
+    tag_refs(fern, &mut refs);
+    assert!(refs.contains(&cut), "the fern is alpha-tested");
+    let names: Vec<&str> = refs
+        .iter()
+        .filter_map(|&id| {
+            (id.0 & 0xffff_0000 == local(0).0 & 0xffff_0000)
+                .then(|| tree.tags.get((id.0 & 0xffff) as usize).map(|(n, _)| n.as_str()))
+                .flatten()
+        })
+        .collect();
+    assert!(
+        names.contains(&"scenery\\plants\\plant fern\\bitmaps\\plant fern"),
+        "its own base: {names:?}"
+    );
+    // The detail's tiling: the vector the layout binds to the detail.
+    let tiling = |name: &str, layout: &h1convert::shad::Layout| {
+        let k = layout
+            .vectors
+            .iter()
+            .position(|v| *v == h1convert::shad::Vector::Tile(h1convert::shad::Role::Detail))
+            .expect("the layout tiles a detail");
+        let rec = tags::defs::from_built(h1convert::shad::shad_def(), shader(name)).unwrap();
+        match rec.at(&format!("postprocess[0].vectors[{k}].vector")) {
+            Some(Val::List(v)) => v
+                .iter()
+                .take(2)
+                .map(|x| match x {
+                    Val::Float(f) => *f,
+                    _ => f32::NAN,
+                })
+                .collect::<Vec<_>>(),
+            other => panic!("{name}: {other:?}"),
+        }
+    };
+    let hull = tiling(
+        "vehicles\\warthog\\shaders\\warthog hull",
+        &h1convert::shad::TEX_BUMP_ENV,
+    );
+    eprintln!("warthog hull detail tiling {hull:?}");
+    assert_eq!(hull, [16.0, 16.0]);
+    let plain = tiling(
+        "vehicles\\scorpion\\shaders\\hull_non_reflective",
+        &h1convert::shad::TEX_BUMP,
+    );
+    eprintln!("scorpion hull (no reflection) detail tiling {plain:?}");
+    assert_eq!(plain, [16.0, 16.0]);
+}

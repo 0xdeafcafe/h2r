@@ -1190,6 +1190,48 @@ impl H1Shader {
 
 /// `senv` flags (`+0x28`), bit 0 alpha-tested (`editor_core::halo1_art`).
 pub const SENV_FLAGS: usize = 0x28;
+/// `soso` flags (`+0x28`, as [`SENV_FLAGS`]): bit 1 two-sided, bit 2
+/// not alpha-tested, bit 3 alpha-blended decal (S, the field's order in
+/// Halo 1's model shader). V (Blood Gulch's 106 `soso`): 0, 1, 2, 3 or
+/// 8; bit 2 on none, so every model shader is alpha-tested on its base
+/// map's alpha. The plants' and trees' leaves (two-sided, DXT3 bases
+/// three quarters clear) and the weapon and ammunition decals (bit 3,
+/// DXT3) cut out where their base is clear.
+pub const SOSO_NOT_ALPHA_TESTED: u16 = 1 << 2;
+
+/// Whether a `soso` with `flags` ([`SOSO_NOT_ALPHA_TESTED`]) draws with
+/// an alpha test: Halo 1 tests a model shader's base alpha unless the
+/// flag says not to. Only a base that stores an alpha (`base_has_alpha`,
+/// [`h1_has_alpha`]) has anything to cut; an opaque one keeps the plain
+/// stem. Before converter version 84 every `soso` drew opaque: Blood
+/// Gulch's leaves are solid dark green cards in a live frame, the clear
+/// part of their texture (62 % of the broadleaf's) drawn too. A cut-out
+/// live is not shown yet: pointing the broadleaf's leaf materials at an
+/// alpha-tested shader drawing its leaf texture (ours, or retail's
+/// `br_ammo_bag` with the texture swapped in) left the cards whole, so
+/// the object path's alpha test (or the edit reaching it) needs a look of
+/// its own.
+pub fn soso_alpha_tested(flags: u16, base_has_alpha: bool) -> bool {
+    flags & SOSO_NOT_ALPHA_TESTED == 0 && base_has_alpha
+}
+
+/// Whether the Halo 1 bitmap `id`'s first image stores an alpha channel
+/// (DXT3, DXT5, A8R8G8B8, A1R5G5B5 or A4R4G4B4). DXT1 counts as opaque:
+/// Halo 1's DXT1 model bases (every weapon and vehicle on Blood Gulch)
+/// have none to test.
+pub fn h1_has_alpha(h1: &h1map::H1Map, id: h1map::TagId) -> bool {
+    use h1map::bitmap::PixelFormat as F;
+    h1.tag(id)
+        .ok()
+        .and_then(|t| h1map::bitmap::Bitmap::read(h1, t).ok())
+        .and_then(|b| {
+            b.images.first().map(|i| {
+                matches!(i.format, F::Dxt3 | F::Dxt5 | F::A8R8G8B8 | F::A1R5G5B5 | F::A4R4G4B4)
+            })
+        })
+        .unwrap_or(false)
+}
+
 /// `senv` type (`+0x2a`): 0 normal, 1 blended (the base map's alpha
 /// blends the primary and secondary detail maps), 2 blended with the
 /// base specular. V (395 `senv` on the disc): 0 or 1. Blood Gulch's
@@ -1219,7 +1261,11 @@ pub const SPLA_MAP: usize = 0xd4;
 ///   ([`crate::textures::h1_maps_of`], [`crate::textures::h1_scales_of`]);
 ///   a bump map is kept only when it is palettized bump (format 17).
 /// - `soso`: [`TEX_BUMP_ENV`] with its base and detail maps and its
-///   reflection (`soso_reflection`) when it has one, else [`TEX_BUMP`].
+///   reflection (`soso_reflection`) when it has one, else [`TEX_BUMP`],
+///   or [`TEX_BUMP_ALPHA_TEST`] when its base is cut out
+///   ([`soso_alpha_tested`], which wins over the reflection); the detail
+///   tiled by its own scale
+///   ([`crate::textures::scales_from`]).
 /// - `swat` with a ripple map: [`WATER_POOL`] (`swat_water`), falling
 ///   back to [`ONE_ALPHA_ENV`] with the base map, as without one.
 /// - `sgla`: [`ONE_ALPHA_ENV`] with the base map.
@@ -1272,7 +1318,10 @@ fn read_h1_maps(h1: &h1map::H1Map, tag: &h1map::Tag) -> Option<H1Shader> {
             let flags = d
                 .get(SENV_FLAGS..SENV_FLAGS + 2)
                 .map_or(0, |b| u16::from_le_bytes([b[0], b[1]]));
-            let alpha_tested = group == "senv" && flags & 1 != 0;
+            let alpha_tested = match group.as_str() {
+                "senv" => flags & 1 != 0,
+                _ => soso_alpha_tested(flags, m.base.is_some_and(|b| h1_has_alpha(h1, b))),
+            };
             let layout = if alpha_tested {
                 &TEX_BUMP_ALPHA_TEST
             } else {
@@ -1290,7 +1339,7 @@ fn read_h1_maps(h1: &h1map::H1Map, tag: &h1map::Tag) -> Option<H1Shader> {
                     Role::Detail,
                     H1Bound {
                         bitmap: b,
-                        scale: [s.detail; 2],
+                        scale: s.detail,
                     },
                 ));
             }
@@ -1340,7 +1389,13 @@ fn read_h1_maps(h1: &h1map::H1Map, tag: &h1map::Tag) -> Option<H1Shader> {
                     out = e;
                 }
             }
+            // A cut-out `soso` keeps its cut-out over its reflection: no
+            // layout here alpha-tests with a cube map (retail's
+            // `tex_bump_env_alpha_test` binds seven maps), and the
+            // reflection mask would take the base's alpha. Retail's ammo
+            // bags are alpha-tested without a reflection too.
             if group == "soso"
+                && !alpha_tested
                 && let Some((cube, extras)) = soso_reflection(h1, d)
             {
                 let mut env = maps.clone();
@@ -1722,6 +1777,19 @@ pub fn h1_lod_offset(h1: &h1map::H1Map, id: h1map::TagId) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A `soso` is alpha-tested on a base with an alpha unless its flags
+    /// say not (bit 2); the other bits (two-sided, decal) don't change
+    /// that, and an opaque base has nothing to test.
+    #[test]
+    fn a_model_shader_cuts_out_where_its_base_is_clear() {
+        for flags in [0, 1, 2, 3, 8] {
+            assert!(soso_alpha_tested(flags, true), "{flags}");
+            assert!(!soso_alpha_tested(flags, false), "{flags}");
+        }
+        assert!(!soso_alpha_tested(SOSO_NOT_ALPHA_TESTED, true));
+        assert!(!soso_alpha_tested(SOSO_NOT_ALPHA_TESTED | 2, true));
+    }
 
     /// A `soso`'s reflection (invented values): the tints as they are,
     /// the brightnesses as the alphas of colours 3 and 4; none with both

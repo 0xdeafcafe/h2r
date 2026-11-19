@@ -1314,7 +1314,38 @@ its whole mip chain kept, the mask sampled at each level's size (nearest).
 A base or mask that does not decode keeps the plain base. Proof: h1bitmaps
 `a_base_takes_its_masks_red_as_alpha` and the block round trips;
 `tests/model_shaders_disc.rs`, `bloodgulch_sniper_metal_reflects_its_cube_map`
-(the sniper's converted base against its multipurpose red). A material with no Halo 1 base map to read names the
+(the sniper's converted base against its multipurpose red). **Detail
+tiling and cut-outs (converter version 84).** A `soso` tiles its detail
+map by its own scale (`+0xd8`, v times `+0xec`; `textures::scales_from`):
+16 on the Warthog's hull and chain gun and the Scorpion's hull, 8 on the
+Ghost's, 10 on the cyborg's armour. Before, both the `tex_bump` copy and
+the reflection rebuild tiled it once over the base, so the corroded metal
+lay over each hull as a few large dark smears (proven live: the Ghost's
+hull detail vector set to 8 and the Warthog's to 16 each turned the flat
+panels into Halo 1's fine corroded metal). And Halo 1
+alpha-tests a model shader's base unless its flags (`+0x28`) set bit 2,
+"not alpha-tested", which no Blood Gulch `soso` does
+(`shad::soso_alpha_tested`). Where the base stores an alpha (DXT3 and the
+other alpha formats, `shad::h1_has_alpha`), the shader is rebuilt on
+`tex_bump_alpha_test_single_pass`, its reflection dropped if it has one
+(retail's `tex_bump_env_alpha_test` binds seven maps, which has no layout
+here; retail's ammunition bags are alpha-tested without a reflection
+too): the plants' and trees' leaves (DXT3, three quarters clear), the
+ammunition bags and the weapon and ammunition decals, which drew as solid
+cards on the opaque copy (a live frame shows the broadleaf's leaves as
+dark green cards). Inferred, not yet shown live: pointing the broadleaf's
+leaf materials at an alpha-tested shader drawing its leaf texture (ours,
+or retail's `br_ammo_bag` with the texture swapped in) left the cards
+whole, so the object path's alpha test, or the live edit reaching it,
+needs its own look. Proof:
+`a_model_shader_tiles_its_detail_by_its_scale`,
+`a_model_shader_cuts_out_where_its_base_is_clear`, and
+`tests/model_shaders_disc.rs`,
+`bloodgulch_leaves_cut_out_and_details_tile_by_their_scale`. Not converted
+yet: a `soso`'s self-illumination (multipurpose green times its animated
+colour, `+0x70` to `+0x8c`), its change colour (`+0x4c`, multipurpose blue
+on this disc), its detail mask (`+0xd6`) and the reflection of a
+cut-out one. A material with no Halo 1 base map to read names the
 base's model shader itself; Blood Gulch has none. The sky model's
 materials name copies of the base's sky shaders drawing Halo 1's sky
 bitmaps at Halo 1's scale (`h1convert::sky_shaders`, sky.md "The

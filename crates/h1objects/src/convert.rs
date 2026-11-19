@@ -1845,7 +1845,8 @@ impl<'a> Converter<'a> {
                 let maps = h1convert::textures::h1_maps_of(self.h1, tag)?;
                 let base = self.bitmap(maps.base?)?;
                 let detail = maps.detail.and_then(|d| self.bitmap(d));
-                let (tree, _) = template.copy(base, detail);
+                let scale = h1convert::textures::h1_scales_of(self.h1, tag).detail;
+                let (tree, _) = template.copy(base, detail, scale);
                 let conv = Converted {
                     group: FourCC(*b"shad"),
                     root: tree,
@@ -1871,6 +1872,11 @@ impl<'a> Converter<'a> {
     /// it isn't one, no map of it reads or converts, or `library` lacks
     /// every stem it could draw with; the tex_bump copy then follows.
     ///
+    /// A `soso` whose base is cut out (an alpha Halo 1 tests,
+    /// `h1convert::shad::soso_alpha_tested`: the leaves of plants and
+    /// trees, decals) takes this path onto `tex_bump_alpha_test_single_pass`
+    /// (converter version 84; they drew as solid cards before).
+    ///
     /// A `soso` with a reflection cube map takes this path too, onto
     /// `tex_bump_env` with Halo 1's cube map and tints
     /// (`h1convert::shad::read_h1`, `soso_reflection`): Halo 1's weapons
@@ -1894,9 +1900,13 @@ impl<'a> Converter<'a> {
         }
         let s = h1convert::shad::read_h1(self.h1, tag)?;
         let chosen = s.choose(library)?.clone();
-        // A `soso` is rebuilt only for its reflection (converter version
-        // 76): without one, the tex_bump copy draws it as before.
-        if group == "soso" && chosen.layout.stem != h1convert::shad::TEX_BUMP_ENV.stem {
+        // A `soso` is rebuilt for its reflection (converter version 76)
+        // or its cut-out base (84, `shad::soso_alpha_tested`): otherwise
+        // the tex_bump copy draws it as before.
+        if group == "soso"
+            && chosen.layout.stem != h1convert::shad::TEX_BUMP_ENV.stem
+            && chosen.layout.stem != h1convert::shad::TEX_BUMP_ALPHA_TEST.stem
+        {
             return None;
         }
         // On tex_bump_env the base's alpha masks the reflection: a `soso`'s
