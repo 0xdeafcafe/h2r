@@ -89,7 +89,8 @@ async fn fetch(
     let resp = fetch_retrying(&stub, Request::try_from(req)?, &method, &path).await?;
     let mut resp: worker::HttpResponse = resp.try_into()?;
     if let Some(encoding) = resp.headers_mut().remove("x-h2-stored-encoding") {
-        resp.headers_mut().insert(http::header::CONTENT_ENCODING, encoding);
+        resp.headers_mut()
+            .insert(http::header::CONTENT_ENCODING, encoding);
         resp.extensions_mut().insert(worker::EncodeBody::Manual);
     }
     Ok(resp.map(axum::body::Body::new))
@@ -138,26 +139,29 @@ async fn app_page(req: &HttpRequest, env: &Env) -> Result<http::Response<axum::b
             .get("cf-connecting-ip")
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned);
-        crate::site::app_html(&html, &origin, path, |url| async move {
-            let hub = env
-                .durable_object(HUB)
-                .ok()?
-                .id_from_name(HUB_NAME)
-                .ok()?
-                .get_stub()
-                .ok()?;
-            let headers = Headers::new();
-            if let Some(ip) = &ip {
-                headers.set("cf-connecting-ip", ip).ok()?;
+        crate::site::app_html(&html, &origin, path, |url| {
+            let ip = ip.clone();
+            async move {
+                let hub = env
+                    .durable_object(HUB)
+                    .ok()?
+                    .id_from_name(HUB_NAME)
+                    .ok()?
+                    .get_stub()
+                    .ok()?;
+                let headers = Headers::new();
+                if let Some(ip) = &ip {
+                    headers.set("cf-connecting-ip", ip).ok()?;
+                }
+                let mut init = RequestInit::new();
+                init.with_headers(headers);
+                let call = Request::new_with_init(&url, &init).ok()?;
+                let mut response = hub.fetch_with_request(call).await.ok()?;
+                if response.status_code() != 200 {
+                    return None;
+                }
+                response.text().await.ok()
             }
-            let mut init = RequestInit::new();
-            init.with_headers(headers);
-            let call = Request::new_with_init(&url, &init).ok()?;
-            let mut response = hub.fetch_with_request(call).await.ok()?;
-            if response.status_code() != 200 {
-                return None;
-            }
-            response.text().await.ok()
         })
         .await
     };
@@ -463,8 +467,12 @@ impl DurableObject for LiveHub {
         }
         // Carry the stored representation through the internal subrequest.
         // Only the outer HTTP response declares its content encoding.
-        if resp.headers().get(http::header::CONTENT_TYPE).is_some_and(|v| v == "application/x-h2-replay")
-            && let Some(encoding) = resp.headers_mut().remove(http::header::CONTENT_ENCODING) {
+        if resp
+            .headers()
+            .get(http::header::CONTENT_TYPE)
+            .is_some_and(|v| v == "application/x-h2-replay")
+            && let Some(encoding) = resp.headers_mut().remove(http::header::CONTENT_ENCODING)
+        {
             resp.headers_mut().insert("x-h2-stored-encoding", encoding);
         }
         self.schedule(&live).await?;

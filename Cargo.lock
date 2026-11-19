@@ -690,6 +690,7 @@ version = "0.1.0"
 dependencies = [
  "engine",
  "input",
+ "live-proto",
  "map",
  "pathfind",
  "serde",
@@ -3467,6 +3468,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "brotli",
+ "cc",
  "chacha20poly1305",
  "content",
  "ed25519-dalek",

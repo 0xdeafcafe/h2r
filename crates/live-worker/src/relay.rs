@@ -22,6 +22,7 @@ use std::rc::Rc;
 use axum::response::IntoResponse;
 use live_proto::sign::PublicKey;
 use live_proto::{ClientMessage, ErrorCode};
+use live_server::app::{ApiError, Live};
 use live_server::relay::{CLOSE_FORBIDDEN, Ticket, TicketReply};
 use live_server::stream::CLOSE_UNAUTHORIZED;
 use wasm_bindgen::JsValue;
