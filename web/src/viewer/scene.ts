@@ -41,6 +41,7 @@ import { ZoneFollower, bspNumber, isBackdrop, isCinematic, layerNode, type ZoneP
 import { dressWater } from "./water3d";
 import { LevelLook, type LevelInfo } from "./level3d";
 import { dressLayer } from "./layers3d";
+import { loadPlasma, type LevelPlasma } from "./plasma3d";
 import { LevelAoPass } from "./aopass";
 import { machineMatrix, machineNode, placeMachine, type MachineNode } from "./machines3d";
 import { FrameObjects } from "./objects3d";
@@ -360,8 +361,8 @@ export class ViewerScene {
       const gltf = await loading;
       if (this.disposed || gen !== this.mapGen) return false;
       // Textured primitives' class materials, for the flat look.
-      const flats = await loadFlats(gltf);
-      if (this.disposed) return false;
+      const [flats, plasma] = await Promise.all([loadFlats(gltf), loadPlasma(gltf)]);
+      if (this.disposed || gen !== this.mapGen) return false;
       const pairs: TexturePair[] = [];
       const root = gltf.scene;
       // Whatever the glb's nodes are called (`structure`, several `bsp_<n>`,
@@ -400,6 +401,13 @@ export class ViewerScene {
           return;
         }
         if (mesh.isMesh) {
+          // Plasma is already dressed and shared across its instances.
+          if (!Array.isArray(mesh.material) && plasma.has(mesh.material)) {
+            used.add(mesh.material);
+            mesh.castShadow = mesh.receiveShadow = false;
+            this.cutaway(mesh.material);
+            return;
+          }
           if (role === "machine") mesh.material = Array.isArray(mesh.material) ? mesh.material.map(own) : own(mesh.material);
           const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
           for (const m of mats) { used.add(m); if (dressWater(m, this.look.water)) wet = true; }
@@ -434,7 +442,7 @@ export class ViewerScene {
       this.clearMap();
       // Zones, far scenery, decals and effects, wherever in the tree the glb
       // keeps them, and the level's sky.
-      this.look.adopt(root, assetExtras, url);
+      this.look.adopt(root, assetExtras, url, plasma);
       this.look.wet = wet;
       this.textures.adopt(pairs);
       this.scenarioObjects.adopt(root, this.textures);
@@ -456,7 +464,7 @@ export class ViewerScene {
       this.setBounds({ min: [box.min.x, -box.max.z, box.min.y], max: [box.max.x, -box.min.z, box.max.y] }, true);
       this.showFeatures();
       this.frameCamera(true);
-      this.streamPictures(pending, used, gen);
+      this.streamPictures(pending, used, gen, plasma);
       return true;
     } catch {
       return false;
@@ -464,9 +472,10 @@ export class ViewerScene {
   }
 
   /** Fetches the map's pictures and puts each on its surfaces as it comes. */
-  private streamPictures(pending: ReturnType<typeof deferTextures>, used: ReadonlySet<THREE.Material>, gen: number) {
-    this.mapTextures = [];
-    for (const p of pending) this.mapTextures.push(...texturesSharing(p.texture, used));
+  private streamPictures(pending: ReturnType<typeof deferTextures>, used: ReadonlySet<THREE.Material>, gen: number, plasma: LevelPlasma) {
+    const textures = new Set(plasma.textures);
+    for (const p of pending) for (const t of texturesSharing(p.texture, used)) textures.add(t);
+    this.mapTextures = [...textures];
     // Floors and walls seen at a glancing angle stay sharp: the GPU's most
     // anisotropic filtering (mipmaps are made when each picture arrives).
     const aniso = mapAnisotropy(this.renderer.capabilities.getMaxAnisotropy());
@@ -474,6 +483,7 @@ export class ViewerScene {
     this.texturesReady = streamTextures(pending, (p, picture) => {
       for (const t of texturesSharing(p.texture, used)) { t.image = picture; t.needsUpdate = true; }
       this.textures.refresh();
+      plasma.refresh();
       this.dirty = true;
     }, { concurrency: PICTURES_AT_ONCE, stopped: () => this.disposed || gen !== this.mapGen }).then(() => { if (gen === this.mapGen) mark("h2-viewer:textured"); });
   }
@@ -887,6 +897,7 @@ export class ViewerScene {
     const sources: FloorSource[] = [];
     const v = new THREE.Vector3(), m = new THREE.Matrix4();
     const add = (mesh: THREE.Mesh, world: THREE.Matrix4) => {
+      if (!Array.isArray(mesh.material) && this.look.isPlasma(mesh.material)) return;
       const pos = mesh.geometry.getAttribute("position");
       if (!pos) return;
       const out = new Float32Array(pos.count * 3);

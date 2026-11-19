@@ -12,6 +12,7 @@
 import * as THREE from "three";
 import { FOG_CLEAR, SkyDome, gameFog, useGameFog, skyColour, skyOf, skyUrl, type SkyInfo } from "./sky3d";
 import { waterUniforms } from "./water3d";
+import type { LevelPlasma } from "./plasma3d";
 import { WeatherLook, weatherOf } from "./weather3d";
 import { pulse, spawnersOf, type Spawner } from "./spawners";
 import { gameToGl } from "../map/views";
@@ -46,6 +47,7 @@ export class LevelLook {
   private backdrop = false;
   private decals = true;
   private effects = true;
+  private plasma: LevelPlasma | null = null;
   private skyOn = true;
   private fogOn = true;
   private weatherOn = true;
@@ -94,8 +96,10 @@ export class LevelLook {
 
   /** Takes a loaded level: finds its zones and layers wherever they are in
    *  the tree, and loads its sky (in the background). */
-  adopt(root: THREE.Object3D, assetExtras: unknown, mapUrl: string) {
+  adopt(root: THREE.Object3D, assetExtras: unknown, mapUrl: string, plasma?: LevelPlasma) {
     this.clear();
+    this.plasma = plasma ?? null;
+    plasma?.setShown(this.effects);
     const gen = this.generation;
     root.traverse((o) => {
       const kind = layerNode(o.name);
@@ -145,6 +149,7 @@ export class LevelLook {
     this.zones = [];
     this.boxes = [];
     this.layers = [];
+    this.plasma = null;
     this.sky?.dispose();
     this.sky = null;
     this.skyInfo = null;
@@ -156,6 +161,9 @@ export class LevelLook {
     this.wet = false;
     this.apply();
   }
+
+  /** Plasma never contributes surfaces to the floor probe. */
+  isPlasma(material: THREE.Material): boolean { return this.plasma?.has(material) ?? false; }
 
   /** The zone in play; whether that changed it. */
   setActive(bsp: number | null): boolean {
@@ -178,7 +186,7 @@ export class LevelLook {
   setCinematic(on: boolean) { this.cinematic = on; this.apply(); }
   setBackdrop(on: boolean) { this.backdrop = on; this.apply(); }
   setDecals(on: boolean) { this.decals = on; this.apply(); }
-  setEffects(on: boolean) { this.effects = on; this.apply(); }
+  setEffects(on: boolean) { this.effects = on; this.plasma?.setShown(on); this.apply(); }
   setSky(on: boolean) { this.skyOn = on; this.apply(); }
   setFog(on: boolean) { this.fogOn = on; this.apply(); }
   setWeather(on: boolean) { this.weatherOn = on; this.weather.setOn(on); this.apply(); }
@@ -198,7 +206,8 @@ export class LevelLook {
         (mesh.material as THREE.MeshBasicMaterial).opacity = 0.35 + 0.6 * k;
       }
     }
-    return weather || this.wet || bursting;
+    const scrolling = this.plasma?.animate(time) ?? false;
+    return weather || this.wet || bursting || scrolling;
   }
 
   info(): LevelInfo {
@@ -211,7 +220,7 @@ export class LevelLook {
       active: this.active,
       backdrop: this.zones.some((z) => isBackdrop(z.name)),
       decals: this.layers.some((l) => l.kind === "decals"),
-      effects: this.layers.some((l) => l.kind === "effects") || this.spawners.length > 0,
+      effects: this.layers.some((l) => l.kind === "effects") || this.spawners.length > 0 || !!this.plasma?.any(),
       sky: !!this.skyInfo,
       fog: !!this.skyInfo?.fog,
       weather: this.weather.has(),
