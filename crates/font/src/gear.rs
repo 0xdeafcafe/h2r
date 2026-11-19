@@ -160,10 +160,20 @@ mod tests {
         // Patched once, it has its glyph: a second patch adds nothing.
         assert!(has_glyph(&p));
         assert_eq!(replacement(&p), None);
-        // The rest of the font is as it was.
-        assert_eq!(
+        // The rest of the font is as it was, though its pixel data sits
+        // further on behind the new glyph record.
+        let (was, now) = (
+            f.glyph(u16::from(b'H')).unwrap(),
             p.glyph(u16::from(b'H')).unwrap(),
-            f.glyph(u16::from(b'H')).unwrap()
+        );
+        assert_eq!(now.pixels, was.pixels);
+        assert_eq!(
+            (now.record.advance, now.record.width, now.record.height),
+            (was.record.advance, was.record.width, was.record.height)
+        );
+        assert_eq!(
+            (now.record.x_offset, now.record.y_offset),
+            (was.record.x_offset, was.record.y_offset)
         );
     }
 
