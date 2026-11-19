@@ -1085,7 +1085,11 @@ impl<'a> Space<'a> {
     fn new(set: &'a TagSet) -> Self {
         let mut parts = Vec::new();
         for (i, s) in set.slots.iter().enumerate() {
+            // A size-0 tag (an alias, its root in another tag's bytes)
+            // owns no byte: as a part it would hide the tag it sits in
+            // from [`Space::part`].
             if let Some(TagPayload::Pinned { address, bytes }) = s.tag.as_ref().map(|t| &t.payload)
+                && !bytes.is_empty()
             {
                 parts.push((*address, *address + bytes.len() as u32, &bytes[..], Some(i)));
             }
@@ -1307,6 +1311,12 @@ fn pinned_reach(set: &TagSet, keep: &Keep, roots: &[TagId]) -> Reached {
                     Some((d, a, skipped)) => {
                         datums = d;
                         blocks = a;
+                        // Its root too: a size-0 alias's lies in another
+                        // tag's bytes, which then holds it (in its own
+                        // bytes, [`hold`] passes over it).
+                        if let Some(s) = schema.groups.get(&t.group) {
+                            blocks.push((*address, s.size));
+                        }
                         // Arrays it couldn't walk: its own words still
                         // name tags (a datum may sit in one), but none is
                         // taken for an address.
@@ -1910,6 +1920,45 @@ mod pinned_prune_tests {
         let mut without = super::pinned_prune_tests::set();
         let all = prune_pinned(&mut without, N, &NOTHING, &[id(6)]);
         assert_eq!(all.freed - p.freed, 0x40 + 0x40);
+    }
+
+    /// A size-0 tag (an alias) reads its root in another tag's bytes: a
+    /// reached alias keeps that tag as its holder, or the pinned map's
+    /// alias pointed at freed bytes and nothing could read it (the fresh
+    /// test's `canonical` visit). It owns no byte itself, so an address
+    /// at its start still finds the tag it sits in.
+    #[test]
+    fn an_alias_keeps_the_tag_its_root_sits_in() {
+        let mut set = set();
+        set.slots[8].tag.as_mut().unwrap().group = FourCC(*b"MGS2");
+        // Tag 8's root names tag 9 (a word the alias's root reads too);
+        // past it a word names tag 5.
+        let b = bytes(&mut set, 8);
+        put(b, 0x4, id(9).0);
+        put(b, 0x3c, id(5).0);
+        set.slots.push(Slot {
+            name: Some("alias".into()),
+            tag: Some(TagEntry {
+                id: id(N),
+                group: FourCC(*b"MGS2"),
+                payload: TagPayload::Pinned {
+                    address: BASE + 0xb00,
+                    bytes: Vec::new(),
+                },
+            }),
+        });
+        let p = prune_pinned(&mut set, N + 1, &NOTHING, &[id(N)]);
+        assert!(set.slots[8].tag.is_some(), "the alias's root stays");
+        assert_eq!(
+            p.why.get(&id(8)),
+            Some(&Reach::Holds {
+                by: id(N),
+                block: BASE + 0xb00
+            })
+        );
+        assert_eq!(p.why.get(&id(9)), Some(&Reach::Datum { by: id(N) }));
+        assert!(set.slots[5].tag.is_none());
+        assert_eq!(bytes(&mut set, 8)[0x3c..0x40], u32::MAX.to_le_bytes());
     }
 
     /// A pinned scenario's object palette keeps the entries a placement

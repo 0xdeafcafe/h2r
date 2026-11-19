@@ -683,6 +683,9 @@ inside another tag (`tags::schema::walk`). Kept as metadata no tag owns
 instead, the bytes broke the fresh build (1288 references out of bounds
 on every map). Before converter version 92 such an array kept the whole
 tag and every reference in it, and the wraith model kept the wraith.
+A size-0 tag (an alias) reads its root in another tag's bytes, so a
+reached alias makes that tag its holder the same way; otherwise the
+pinned map's alias pointed at freed bytes.
 An array below the root that doesn't read (outside the
 metadata, implausibly long) is skipped, and the tag's own words then
 name tags as datums only (`Pruned::partly_walked`). Only a field the
