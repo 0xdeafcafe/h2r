@@ -12,7 +12,7 @@
 //!
 //! The sky draw (`0x0004c690`) draws every part of the sky's model as a
 //! triangle strip (`0x0004c974` pushes primitive 6), whatever the part's
-//! flags. Until converter version 92 the sky's parts were triangle lists:
+//! flags. Until converter version 93 the sky's parts were triangle lists:
 //! drawn as strips, each triangle was joined to the next two, and the
 //! ring's long triangles, spanning the haze, the inner face and the
 //! sides, drew as white slabs smeared across the sky. The ring is the sky

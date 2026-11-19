@@ -291,7 +291,7 @@ with the part's first index (`+6`) and count (`+8`). **E**. Object models
 go through another draw, which honours the list flag `0x8` (map-format.md,
 "Render-model geometry"), so converted models are lists everywhere else.
 
-Until converter version 92 the sky's parts were lists too. Drawn as strips,
+Until converter version 93 the sky's parts were lists too. Drawn as strips,
 each triangle was joined to the next two, and `render.frame` on Blood
 Gulch showed the sky's five draws as `TriangleStrip`. The dome's extra
 triangles lie on the dome, so they did not show; the planets are one quad
