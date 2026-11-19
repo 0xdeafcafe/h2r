@@ -50,6 +50,12 @@ pub struct ModEntry {
     pub gametypes: Vec<String>,
     /// Its own version, when the server lists one.
     pub version: Option<String>,
+    /// The pack it belongs to (`pack`, a name or `{name, description}`;
+    /// else its credit's `release`), which the Mods list shows as one row
+    /// opening the pack's own list. None: a map on its own.
+    pub pack: Option<String>,
+    /// What the pack is, when the server says (`pack.description`).
+    pub pack_description: Option<String>,
 }
 
 /// A page of the list.
@@ -249,15 +255,53 @@ struct RawEntry {
     gametypes: Vec<String>,
     #[serde(default)]
     version: Option<String>,
+    #[serde(default)]
+    pack: Option<RawPack>,
 }
 
 #[derive(Deserialize)]
 struct RawCredits {
     #[serde(default)]
     authors: Vec<String>,
+    /// The release a credit names (a pack's name), the pack when the
+    /// entry names none.
+    #[serde(default)]
+    release: Option<String>,
+}
+
+/// A mod's pack: its name, or an object with a name and a description.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RawPack {
+    Name(String),
+    Pack {
+        name: String,
+        #[serde(default)]
+        description: Option<String>,
+    },
+}
+
+/// `s` trimmed, or None when blank.
+fn some_text(s: Option<&str>) -> Option<String> {
+    s.map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 impl RawEntry {
+    /// The pack's name and description: `pack`, else the credit's release.
+    fn pack(&self) -> (Option<String>, Option<String>) {
+        match &self.pack {
+            Some(RawPack::Name(n)) if !n.trim().is_empty() => (some_text(Some(n)), None),
+            Some(RawPack::Pack { name, description }) if !name.trim().is_empty() => {
+                (some_text(Some(name)), some_text(description.as_deref()))
+            }
+            _ => (
+                some_text(self.credits.as_ref().and_then(|c| c.release.as_deref())),
+                None,
+            ),
+        }
+    }
     /// `credits.authors` as one line, else `credit`; blanks are none.
     fn credit_line(&self) -> Option<String> {
         let authors: Vec<&str> = self
@@ -303,6 +347,8 @@ impl From<RawPage> for ModPage {
                 .into_iter()
                 .map(|e| ModEntry {
                     credit: e.credit_line(),
+                    pack: e.pack().0,
+                    pack_description: e.pack().1,
                     id: e.id,
                     name: e.name,
                     description: e.description.filter(|d| !d.trim().is_empty()),
@@ -413,6 +459,38 @@ mod tests {
         assert_eq!(e.credit, None);
     }
 
+    #[test]
+    fn a_pack_reads_as_a_name_an_object_or_the_credits_release() {
+        let page: ModPage = serde_json::from_value(serde_json::json!({
+            "items": [
+                {"id": ID, "name": "A", "author": "M", "base": "lockout", "pack": " Phantom Mappack "},
+                {"id": ID, "name": "B", "author": "M", "base": "lockout",
+                 "pack": {"name": "AI Revision", "description": "Bots that think. "}},
+                {"id": ID, "name": "C", "author": "M", "base": "lockout",
+                 "credits": {"authors": ["X"], "release": "Hockey Fans"}},
+                {"id": ID, "name": "D", "author": "M", "base": "lockout", "pack": " ",
+                 "credits": {"release": "DoorM4n Legacy"}},
+                {"id": ID, "name": "E", "author": "M", "base": "lockout"}
+            ]
+        }))
+        .unwrap();
+        let packs: Vec<(Option<&str>, Option<&str>)> = page
+            .items
+            .iter()
+            .map(|e| (e.pack.as_deref(), e.pack_description.as_deref()))
+            .collect();
+        assert_eq!(
+            packs,
+            [
+                (Some("Phantom Mappack"), None),
+                (Some("AI Revision"), Some("Bots that think.")),
+                (Some("Hockey Fans"), None),
+                (Some("DoorM4n Legacy"), None),
+                (None, None),
+            ]
+        );
+    }
+
     fn entry(position: Option<u64>) -> ModEntry {
         ModEntry {
             id: ID.parse().unwrap(),
@@ -429,6 +507,8 @@ mod tests {
             features: Vec::new(),
             gametypes: Vec::new(),
             version: None,
+            pack: None,
+            pack_description: None,
         }
     }
 

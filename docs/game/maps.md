@@ -819,8 +819,13 @@ game" below.
 - **The screens** (`boot::mods_screen`, our list class, laid out as the
   level select is: list on the left with its bracket, picture top right,
   description under it, as the campaign picker). **Mods**: one row per
-  map (at most 40, newest first), its name and "New", "Installed" or the
-  download's "N%". The focused map's picture is on the right and under
+  map (at most 40, newest first), its name and its state as a mark after
+  it: a star (U+2605) when new, a tick (U+2713) when installed, a down
+  arrow (U+2193) and the percentage while downloading; nothing when it is
+  only on the server. Halo 2's fonts have none of the three, so they are
+  drawn into every font as the bot mark's gear is (`font::mod_marks`,
+  added by `bot_mark::GearRewrite` with the gear, the capitals' height;
+  drawn here from polygons, nothing copied). The focused map's picture is on the right and under
   it four lines: "On Lockout, by Modder", its size and downloads, what it
   changes ("Has vehicles, scripted events", or "What it changes isn't
   listed"), and its state ("X downloads it, A opens its page",
@@ -832,6 +837,20 @@ game" below.
   description says why: "Sign in to Live first", "Live is off", "Live is
   busy" or "Can't reach the server") or "Refresh" (no mods yet); A asks
   again. The **map's page** is below.
+- **Map packs.** Maps the server lists with the same pack (an entry's
+  `pack`, a name or `{name, description}`; else its credit's `release`)
+  are one row of Mods, at the place of its newest map: the pack's name,
+  and a star, a tick, the downloads' percentage together, or "N maps".
+  Its summary: "N maps, by <makers>", what it is (the pack's
+  description, else "On <base maps>"), "<size> in all, K installed",
+  "A opens it, X downloads all". A pack with one map listed is that
+  map's row. **A** opens the pack's own list (`mods.pack`, the same
+  layout, titled with the pack's name): first **Download All (N)** (N the
+  maps not here; "Downloading N%" while they run, "All Installed" after),
+  whose description is the pack's summary, then its maps, each as the
+  list shows it, A opening its page (B back to the pack). **X** on a map
+  downloads it; on Download All, or on the pack's row of Mods, every map
+  of it not here or under way. A snapshot keeps the open pack.
 - **Installing.** Download runs `MapGate::install` on a thread of its own
   (`h2-live-mod`): the join's own checks and path (the manifest from
   `/v1/maps/{id}`, the base checked against the disc, each layer from
@@ -857,9 +876,9 @@ game" below.
   "A mod's name and picture"). A mod that is a new map is installed as
   a content package then, and the game's own content scan runs again
   before the list is built.
-- **Previews.** Both screens are in the UI kit's inventory (`mods`,
-  `mods.detail`; `h2 ui preview mods.detail`), over invented entries
-  (`mods_screen::spec`).
+- **Previews.** The three screens are in the UI kit's inventory (`mods`,
+  `mods.pack`, `mods.detail`; `h2 ui preview mods.detail`), over invented
+  entries with an invented three-map pack (`mods_screen::spec`).
 - **Not built.** Paging past 40, the mod's own preview image for a map not downloaded yet (below), and
   updates (a new version of a mod is another `MapId`; nothing links the
   two yet).
@@ -1000,8 +1019,8 @@ server is updated):
    it, changing with the focus. Footer: `(A) DETAILS  (X) DOWNLOAD  (B)
    BACK`, glyphs drawn as buttons.
 2. X on a map not here: stderr `mods: downloading <name> (<id>)`; the row
-   reads `<name>  N%` then `<name>  Installed`, the summary's last line
-   follows. X on an installed map logs `mods: <name> is installed; its
+   reads `<name>  ↓ N%` (an arrow, not a box or a gap) then `<name>  ✓`,
+   the summary's last line follows; new maps end in a star. X on an installed map logs `mods: <name> is installed; its
    page removes it`. Start does nothing.
 3. A on a map: its page, titled with its name, laid out as the pregame
    lobby (compare with the lobby itself): the one action row where the
@@ -1021,6 +1040,14 @@ server is updated):
    `active.toml` no longer names it; Change Map no longer lists it.
 5. After installing a mod with an image and backing out to the list,
    re-open Mods: its picture is the mod's own (the slot's refill).
+6. A pack (a server with two or more maps of one pack, e.g. a mappack
+   imported with its release): one row, its name and a star or "N maps";
+   its summary says how many maps and by whom. A opens it, titled with
+   its name: Download All (N) first, then the maps. A on a map opens its
+   page and B comes back to the pack. A on Download All logs `mods:
+   <pack>: downloading N maps`; the row shows the pack's percentage, then
+   All Installed, and the pack's row on Mods a tick. X on a pack's row on
+   Mods does the same as Download All.
 
 ## 6. Plan
 

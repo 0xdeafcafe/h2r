@@ -171,18 +171,20 @@ description updating with the focus, the legend's glyphs drawn as buttons, B
 going back to the screen underneath, and nothing left on screen after it
 closes.
 
-The mod repository's two screens (`boot::mods_screen`, docs/game/maps.md
+The mod repository's three screens (`boot::mods_screen`, docs/game/maps.md
 §5 "Mod downloads (in game)" and "A mod's page") are list-class screens
-whose rows come from the server, like the co-op friends list, on the level
-select's layout as the campaign picker is (list, bracket, picture,
-description); a map's page is on the pregame lobby's layout instead
+whose rows come from the server, like the co-op friends list; the list
+and a map pack's list (a pack is one row of the list, opening its own:
+Download All, then its maps) are on the level select's layout as the
+campaign picker is (list, bracket, picture, description), and a row's
+state is a mark drawn into the fonts (star, tick, arrow), not a word; a map's page is on the pregame lobby's layout instead
 (docs/game/maps.md "A mod's page"): one action row, and the rest
 (body, a two-column table, a checklist) as panel texts of the class
 (`ListClass::panel`: retail backings and text blocks that belong to no
 row, their strings named by `Rows::panel_text`, set when the pane is
 built and again with the description). Their texts live in the `mod
 texts` id family (256-byte slots: a line and a description per row,
-then the page's panel texts), written when they change; a row's count
+the page's panel texts, then a line and a description per pack row), written when they change; a row's count
 is fixed when the screen opens. **Information is not a row**: a
 selectable list holds only what A does something with; facts, tables
 and checklists are panel texts (`ScreenSpec::texts`, drawn as `page.*`

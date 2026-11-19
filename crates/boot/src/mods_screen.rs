@@ -8,7 +8,18 @@
 //! map, who published it, size, downloads, what it changes, its state).
 //! A opens the map's page; X downloads the focused map there and then.
 //! Every row is something to press: with no list, its one row is Try
-//! Again (or Refresh), and why is in the description.
+//! Again (or Refresh), and why is in the description. A row's state is a
+//! mark after its name ([`mark`]): a star when new, a tick when installed,
+//! an arrow and the percentage while downloading.
+//!
+//! **Map packs.** Maps listed with the same pack (`ModEntry::pack`: the
+//! server's `pack`, else the credit's `release`) are one row of the list,
+//! at its newest map's place, saying how many maps it has. A opens the
+//! pack's list ([`PACK`], the same layout): Download All first, its
+//! description the pack's summary (how many maps and by whom, what it is,
+//! its size and how much is here), then its maps, each opening its page as
+//! the list's rows do. X on the pack's row, or on Download All, downloads
+//! every map of it not here yet.
 //!
 //! **A map's page** (docs/game/maps.md §5, "A mod's page") is laid out as
 //! the pregame lobby is ([`page_layout`]): its one row, Download (or
@@ -60,6 +71,8 @@ use crate::ui_kit::input::{Glyph, Prompt, footer_legend};
 /// The screens' ids (`list_class::loader_of`).
 pub const SCREEN: &str = "mods";
 pub const DETAIL: &str = "mods.detail";
+/// A map pack's own list: its maps, and Download All.
+pub const PACK: &str = "mods.pack";
 /// The feature id of the texts (`H2_FEATURES=-mods-screens`).
 pub const FEATURE: &str = "mods-screens";
 /// What a list asks for: the newest this many.
@@ -77,22 +90,33 @@ pub const MIN_GAP: Duration = Duration::from_secs(30);
 const TEXTS: Family = crate::ui_kit::ids::family("mod texts");
 /// A slot's bytes: room for a description of five lines.
 pub const SLOT_LEN: u32 = 256;
-/// Slot layout: the Live menu's label, the two titles and footers, then a
-/// line and a description per row of the list and of the page, then the
-/// page's panel texts ([`page_layout`]).
+/// Slot layout: the Live menu's label, the three titles and footers, then
+/// a line and a description per row of the list and of the page, the
+/// page's panel texts ([`page_layout`]), then a line and a description per
+/// row of a pack's list.
 const MENU_SLOT: u32 = 0;
 const LIST_TITLE: u32 = 1;
 const LIST_FOOTER: u32 = 2;
 const DETAIL_TITLE: u32 = 3;
 const DETAIL_FOOTER: u32 = 4;
+const PACK_TITLE: u32 = 5;
+const PACK_FOOTER: u32 = 6;
 const LIST_ROWS: u32 = 8;
 const LIST_DESCRIPTIONS: u32 = LIST_ROWS + MAX_ROWS as u32;
 const DETAIL_ROWS: u32 = LIST_DESCRIPTIONS + MAX_ROWS as u32;
 const DETAIL_DESCRIPTIONS: u32 = DETAIL_ROWS + MAX_PAGE_ROWS as u32;
 const PANEL_TEXTS: u32 = DETAIL_DESCRIPTIONS + MAX_PAGE_ROWS as u32;
-const _: () = assert!(PANEL_TEXTS + page_layout::TEXTS as u32 <= TEXTS.len);
-/// Rows the list shows at most.
+const PACK_ROWS: u32 = PANEL_TEXTS + page_layout::TEXTS as u32;
+const PACK_DESCRIPTIONS: u32 = PACK_ROWS + MAX_ROWS as u32;
+const _: () = assert!(PACK_DESCRIPTIONS + MAX_ROWS as u32 <= TEXTS.len);
+/// Rows the list (and a pack's list) shows at most.
 pub const MAX_ROWS: usize = 40;
+/// A line of a pack's summary holds this many characters (the level
+/// select's description text is 221 units wide, about 32 of conduit-12),
+/// and the pack's own words twice that less a margin for the wrap, so the
+/// summary is five lines at most.
+pub const SUMMARY_CHARS: usize = 32;
+pub const PACK_ABOUT_CHARS: usize = 50;
 /// Rows a map's page has: its action.
 pub const MAX_PAGE_ROWS: usize = 1;
 /// A row's line is cut to this many characters with "..." (the level
@@ -152,6 +176,42 @@ pub enum List {
     Loading,
     Loaded(Vec<ModEntry>),
     Failed(ModsError),
+}
+
+/// A row of the list: a map on its own, or a map pack (two or more maps
+/// listed with the same `pack`), at its newest map's place, its maps
+/// newest first.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Top {
+    Map(ModEntry),
+    Pack(String, Vec<ModEntry>),
+}
+
+/// `items` (newest first) as the list's rows ([`Top`]). A pack with only
+/// one map listed is that map's row.
+pub fn tops(items: &[ModEntry]) -> Vec<Top> {
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for p in items.iter().filter_map(|e| e.pack.as_deref()) {
+        *counts.entry(p).or_default() += 1;
+    }
+    let mut shown = BTreeSet::new();
+    let mut out = Vec::new();
+    for e in items {
+        match e.pack.as_deref() {
+            Some(p) if counts[p] > 1 => {
+                if shown.insert(p) {
+                    let maps = items
+                        .iter()
+                        .filter(|x| x.pack.as_deref() == Some(p))
+                        .cloned()
+                        .collect();
+                    out.push(Top::Pack(p.to_string(), maps));
+                }
+            }
+            _ => out.push(Top::Map(e.clone())),
+        }
+    }
+    out
 }
 
 /// A download, as the screens show it.
@@ -370,6 +430,8 @@ struct Inner {
     selected: Option<MapId>,
     installed: BTreeSet<MapId>,
     installs: BTreeMap<MapId, Install>,
+    /// The pack whose list is open.
+    pack: Option<String>,
     /// A Remove pressed once, waiting for the second press.
     removing: Option<MapId>,
     /// When the list was last asked for, and whether that read failed.
@@ -404,6 +466,7 @@ impl Repo {
                 seen,
                 shown_from: seen,
                 selected: None,
+                pack: None,
                 installed: BTreeSet::new(),
                 installs: BTreeMap::new(),
                 removing: None,
@@ -423,6 +486,8 @@ impl Repo {
             .set(LIST_FOOTER, &footer_legend(&prompts(SCREEN, false)));
         repo.texts
             .set(DETAIL_FOOTER, &footer_legend(&prompts(DETAIL, false)));
+        repo.texts
+            .set(PACK_FOOTER, &footer_legend(&prompts(PACK, false)));
         repo.refresh_menu();
         repo
     }
@@ -578,19 +643,26 @@ impl Repo {
         self.lock().list.clone()
     }
 
-    fn entry_at(g: &Inner, row: i16) -> Option<ModEntry> {
-        match &g.list {
-            List::Loaded(items) => usize::try_from(row)
-                .ok()
-                .filter(|r| *r < MAX_ROWS)
-                .and_then(|r| items.get(r))
-                .cloned(),
-            _ => None,
+    /// The list's row `row` ([`Top`]), with a list read.
+    fn top_at(g: &Inner, row: i16) -> Option<Top> {
+        let List::Loaded(items) = &g.list else {
+            return None;
+        };
+        let r = usize::try_from(row).ok().filter(|r| *r < MAX_ROWS)?;
+        tops(items).into_iter().nth(r)
+    }
+
+    /// The list's rows as they are now (none without a list).
+    pub fn tops(&self) -> Vec<Top> {
+        match &self.lock().list {
+            List::Loaded(items) => tops(items).into_iter().take(MAX_ROWS).collect(),
+            _ => Vec::new(),
         }
     }
 
     /// Row `row` of the list: the map's name and its state ("New",
-    /// "Installed", "Downloading N%", else its size); with no list, why.
+    /// "Installed", "Downloading N%", else its size), or the pack's name
+    /// and its maps' ([`Self::pack_status`]); with no list, why.
     pub fn list_row(&self, row: i16) -> Option<(String, String)> {
         let g = self.lock();
         match &g.list {
@@ -601,17 +673,20 @@ impl Repo {
             }
             List::Loaded(_) => {}
         }
-        let e = Self::entry_at(&g, row)?;
-        Some((e.name.clone(), Self::status(&g, &e)))
+        Some(match Self::top_at(&g, row)? {
+            Top::Map(e) => (e.name.clone(), Self::status(&g, &e)),
+            Top::Pack(name, maps) => (name, Self::pack_status(&g, &maps)),
+        })
     }
 
-    /// Row `row` of the list as its one line: the name, and its state
-    /// ("New", "Installed", "45%") unless that is only its size. With no
+    /// Row `row` of the list as its one line: the name, and its state as a
+    /// mark ([`mark`]: a star, a tick, an arrow and its percentage) unless
+    /// that is only its size; a pack's says how many maps it has. With no
     /// list, the one row is what A does: "Loading...", "Try Again" or
     /// "Refresh" (why is in its description).
     pub fn list_line(&self, row: i16) -> Option<String> {
         let (name, status) = self.list_row(row)?;
-        let has_entry = Self::entry_at(&self.lock(), row).is_some();
+        let has_entry = Self::top_at(&self.lock(), row).is_some();
         if !has_entry {
             return Some(match self.lock().list {
                 List::Loading => name,
@@ -619,15 +694,7 @@ impl Repo {
                 List::Loaded(_) => "Refresh".into(),
             });
         }
-        Some(match status.as_str() {
-            "" => cut(&name, LINE_CHARS),
-            s if s.ends_with(" MB") || s.ends_with(" KB") => cut(&name, LINE_CHARS),
-            s => {
-                let s = s.strip_prefix("Downloading ").unwrap_or(s);
-                let room = LINE_CHARS.saturating_sub(s.chars().count() + 2);
-                format!("{}  {s}", cut(&name, room))
-            }
-        })
+        Some(marked_line(&name, &status))
     }
 
     fn status(g: &Inner, e: &ModEntry) -> String {
@@ -646,6 +713,27 @@ impl Repo {
         }
     }
 
+    /// A pack's state on its row: its downloads' progress together while
+    /// any runs, "Installed" once every map is here, "New" when one is new,
+    /// else how many maps it has ("5 maps").
+    fn pack_status(g: &Inner, maps: &[ModEntry]) -> String {
+        let (mut done, mut total, mut running) = (0u64, 0u64, false);
+        for e in maps {
+            if let Some(Install::Downloading { done: d, total: t }) = g.installs.get(&e.id) {
+                (done, total, running) = (done + d, total + t, true);
+            }
+        }
+        if running {
+            percent(done, total)
+        } else if maps.iter().all(|e| Self::is_here(g, &e.id)) {
+            "Installed".into()
+        } else if maps.iter().any(|e| Self::status(g, e) == "New") {
+            "New".into()
+        } else {
+            format!("{} maps", maps.len())
+        }
+    }
+
     fn is_here(g: &Inner, id: &MapId) -> bool {
         match g.installs.get(id) {
             Some(Install::Done) => true,
@@ -654,11 +742,12 @@ impl Repo {
         }
     }
 
-    /// The list's description of row `row`: base map and publisher, size
-    /// and downloads, what it changes, and its state.
+    /// The list's description of row `row`: a map's base map and
+    /// publisher, size and downloads, what it changes, and its state; a
+    /// pack's summary ([`Self::pack_summary`]).
     pub fn list_description(&self, row: i16) -> Option<String> {
         let g = self.lock();
-        let Some(e) = Self::entry_at(&g, row) else {
+        let Some(top) = Self::top_at(&g, row) else {
             return (row == 0).then(|| match &g.list {
                 List::Loading => "Reading the mods on your Live server.".into(),
                 List::Failed(e) => format!("{}.\nA reads the list again.", failed_text(e)),
@@ -667,10 +756,26 @@ impl Repo {
                 }
             });
         };
+        Some(match top {
+            Top::Map(e) => Self::map_description(&g, &e),
+            Top::Pack(_, maps) => {
+                let action = if maps.iter().all(|e| Self::is_here(&g, &e.id)) {
+                    "All installed: A opens it".into()
+                } else {
+                    "A opens it, X downloads all".into()
+                };
+                Self::pack_summary(&g, &maps, action)
+            }
+        })
+    }
+
+    /// A map's description on a list: base map and publisher, size and
+    /// downloads, what it changes, and its state.
+    fn map_description(g: &Inner, e: &ModEntry) -> String {
         let mut lines = vec![format!(
             "On {}, by {}",
             mods::base_title(&e.base),
-            made_by(&e)
+            made_by(e)
         )];
         lines.push(match e.downloads {
             Some(1) => format!("{}, 1 download", mods::size_text(e.size)),
@@ -689,44 +794,68 @@ impl Repo {
         });
         lines.push(match g.installs.get(&e.id) {
             Some(Install::Failed(err)) => failed_install_text(err),
-            _ => match Self::status(&g, &e).as_str() {
+            _ => match Self::status(g, e).as_str() {
                 "Installed" => "Installed: A for its page".into(),
                 s if s.starts_with("Downloading") => s.into(),
                 _ => "X downloads it, A opens its page".into(),
             },
         });
-        Some(lines.join("\n"))
+        lines.join("\n")
+    }
+
+    /// A pack's summary: how many maps and by whom, what it is (the
+    /// server's words, else the maps it is built on), its size and how
+    /// much of it is here, then `action`.
+    fn pack_summary(g: &Inner, maps: &[ModEntry], action: String) -> String {
+        let mut makers: Vec<String> = Vec::new();
+        for m in maps.iter().map(made_by) {
+            if !makers.contains(&m) {
+                makers.push(m);
+            }
+        }
+        let about = match maps.iter().find_map(|e| e.pack_description.as_deref()) {
+            Some(d) => cut(
+                &d.split_whitespace().collect::<Vec<_>>().join(" "),
+                PACK_ABOUT_CHARS,
+            ),
+            None => {
+                let mut bases: Vec<String> = Vec::new();
+                for b in maps.iter().map(|e| mods::base_title(&e.base)) {
+                    if !bases.contains(&b) {
+                        bases.push(b);
+                    }
+                }
+                cut(&format!("On {}", bases.join(", ")), SUMMARY_CHARS)
+            }
+        };
+        let here = maps.iter().filter(|e| Self::is_here(g, &e.id)).count();
+        let size: u64 = maps.iter().map(|e| e.size).sum();
+        [
+            cut(
+                &format!("{} maps, by {}", maps.len(), makers.join(", ")),
+                SUMMARY_CHARS,
+            ),
+            about,
+            format!("{} in all, {here} installed", mods::size_text(size)),
+            action,
+        ]
+        .join("\n")
     }
 
     /// The rows the list opens with.
     pub fn list_count(&self) -> usize {
         match &self.lock().list {
-            List::Loaded(items) => items.len().clamp(1, MAX_ROWS),
+            List::Loaded(items) => tops(items).len().clamp(1, MAX_ROWS),
             _ => 1,
         }
     }
 
-    /// A press on the list's row `row`: the map's page.
+    /// A press on the list's row `row`: the map's page, or the pack's list.
     pub fn press_list(&self, row: i16) -> Chosen {
-        let picked = {
-            let mut g = self.lock();
-            let picked = Self::entry_at(&g, row);
-            if let Some(e) = &picked {
-                g.selected = Some(e.id);
-                g.removing = None;
-            }
-            picked
-        };
-        match picked {
-            Some(e) => {
-                self.texts.set(DETAIL_TITLE, &cut(&e.name, 40));
-                let here = Self::is_here(&self.lock(), &e.id);
-                self.texts
-                    .set(DETAIL_FOOTER, &footer_legend(&prompts(DETAIL, here)));
-                self.set_panel();
-                self.touch();
-                Chosen::Open(DETAIL)
-            }
+        let top = Self::top_at(&self.lock(), row);
+        match top {
+            Some(Top::Map(e)) => self.open_page(&e),
+            Some(Top::Pack(name, _)) => self.open_pack(&name),
             None => {
                 self.want_list();
                 Chosen::Stepped("mods: reading the list again".into())
@@ -734,16 +863,164 @@ impl Repo {
         }
     }
 
-    /// X on the list's row `row`: that map downloads, its page unopened.
-    /// An installed map is left alone (Remove is on its page).
+    /// Opens map `e`'s page.
+    fn open_page(&self, e: &ModEntry) -> Chosen {
+        {
+            let mut g = self.lock();
+            g.selected = Some(e.id);
+            g.removing = None;
+        }
+        self.texts.set(DETAIL_TITLE, &cut(&e.name, 40));
+        let here = Self::is_here(&self.lock(), &e.id);
+        self.texts
+            .set(DETAIL_FOOTER, &footer_legend(&prompts(DETAIL, here)));
+        self.set_panel();
+        self.touch();
+        Chosen::Open(DETAIL)
+    }
+
+    /// Opens pack `name`'s list.
+    fn open_pack(&self, name: &str) -> Chosen {
+        self.lock().pack = Some(name.to_string());
+        self.texts.set(PACK_TITLE, &cut(name, 40));
+        self.touch();
+        Chosen::Open(PACK)
+    }
+
+    /// X on the list's row `row`: that map downloads, its page unopened
+    /// (an installed map is left alone: Remove is on its page); on a pack,
+    /// every map of it not here yet.
     pub fn x_list(self: &Arc<Self>, row: Option<i16>) -> String {
-        let Some(e) = row.and_then(|r| Self::entry_at(&self.lock(), r)) else {
-            return "mods: X with no map focused".into();
-        };
+        let top = row.and_then(|r| Self::top_at(&self.lock(), r));
+        match top {
+            Some(Top::Map(e)) => self.x_map(&e),
+            Some(Top::Pack(name, maps)) => self.download_all(&name, &maps),
+            None => "mods: X with no map focused".into(),
+        }
+    }
+
+    /// X on map `e`'s row: it downloads unless it is here.
+    fn x_map(self: &Arc<Self>, e: &ModEntry) -> String {
         if Self::is_here(&self.lock(), &e.id) {
             return format!("mods: {} is installed; its page removes it", e.name);
         }
-        self.download(&e)
+        self.download(e)
+    }
+
+    /// Downloads every map of pack `name` neither here nor under way.
+    fn download_all(self: &Arc<Self>, name: &str, maps: &[ModEntry]) -> String {
+        let wanted: Vec<&ModEntry> = {
+            let g = self.lock();
+            maps.iter()
+                .filter(|e| {
+                    !Self::is_here(&g, &e.id)
+                        && !matches!(g.installs.get(&e.id), Some(Install::Downloading { .. }))
+                })
+                .collect()
+        };
+        if wanted.is_empty() {
+            return format!("mods: {name}: every map is installed or downloading");
+        }
+        for e in &wanted {
+            self.download(e);
+        }
+        format!("mods: {name}: downloading {} maps", wanted.len())
+    }
+
+    /// The open pack's name and maps, newest first (its list shows one
+    /// less than [`MAX_ROWS`] of them: its first row is Download All).
+    pub fn pack(&self) -> Option<(String, Vec<ModEntry>)> {
+        let g = self.lock();
+        let name = g.pack.clone()?;
+        let List::Loaded(items) = &g.list else {
+            return None;
+        };
+        let maps = items
+            .iter()
+            .filter(|e| e.pack.as_deref() == Some(name.as_str()))
+            .cloned()
+            .collect();
+        Some((name, maps))
+    }
+
+    /// The map at the open pack's row `row` (row 0 is Download All).
+    fn pack_entry(&self, row: i16) -> Option<ModEntry> {
+        let r = usize::try_from(row)
+            .ok()
+            .filter(|r| (1..MAX_ROWS).contains(r))?;
+        self.pack()?.1.into_iter().nth(r - 1)
+    }
+
+    /// The rows the pack's list has: Download All, then its maps.
+    pub fn pack_count(&self) -> usize {
+        self.pack()
+            .map_or(1, |(_, maps)| 1 + maps.len().min(MAX_ROWS - 1))
+    }
+
+    /// Row `row` of the pack's list: Download All (or how the downloads
+    /// go, or All Installed), then a map's line as the list has it.
+    pub fn pack_line(&self, row: i16) -> Option<String> {
+        if row == 0 {
+            let Some((_, maps)) = self.pack() else {
+                return Some("Back".into());
+            };
+            let g = self.lock();
+            let left = maps.iter().filter(|e| !Self::is_here(&g, &e.id)).count();
+            return Some(match Self::pack_status(&g, &maps).as_str() {
+                "Installed" => "All Installed".into(),
+                s if s.starts_with("Downloading") => s.into(),
+                _ => format!("Download All ({left})"),
+            });
+        }
+        let e = self.pack_entry(row)?;
+        let g = self.lock();
+        Some(marked_line(&e.name, &Self::status(&g, &e)))
+    }
+
+    /// The pack's list's description of row `row`: the pack's summary on
+    /// Download All, a map's as the list has it on the others.
+    pub fn pack_description(&self, row: i16) -> Option<String> {
+        if row == 0 {
+            let Some((_, maps)) = self.pack() else {
+                return Some("That pack is not listed any more.".into());
+            };
+            let g = self.lock();
+            let left = maps.iter().filter(|e| !Self::is_here(&g, &e.id)).count();
+            let action = match Self::pack_status(&g, &maps).as_str() {
+                "Installed" => "Every map is installed".into(),
+                s if s.starts_with("Downloading") => format!("{s}. You can leave."),
+                _ => format!("A or X downloads all {left}"),
+            };
+            return Some(Self::pack_summary(&g, &maps, action));
+        }
+        let e = self.pack_entry(row)?;
+        Some(Self::map_description(&self.lock(), &e))
+    }
+
+    /// A on the pack's row `row`: Download All, or a map's page.
+    pub fn press_pack(self: &Arc<Self>, row: i16) -> Chosen {
+        if row == 0 {
+            return match self.pack() {
+                Some((name, maps)) => Chosen::Stepped(self.download_all(&name, &maps)),
+                None => Chosen::Nothing,
+            };
+        }
+        match self.pack_entry(row) {
+            Some(e) => self.open_page(&e),
+            None => Chosen::Nothing,
+        }
+    }
+
+    /// X on the pack's row `row`: that map downloads; on Download All,
+    /// every map not here.
+    pub fn x_pack(self: &Arc<Self>, row: Option<i16>) -> String {
+        match row.filter(|r| *r != 0).and_then(|r| self.pack_entry(r)) {
+            Some(e) => self.x_map(&e),
+            None => match self.pack() {
+                Some((name, maps)) => self.download_all(&name, &maps),
+                None => "mods: no pack is open".into(),
+            },
+        }
     }
 
     /// Whether map `id` is downloaded here.
@@ -1010,13 +1287,18 @@ impl Repo {
     }
 
     /// What a machine snapshot keeps (docs/runtime/snapshots.md): the mod
-    /// whose page is open. The list and what is installed are the
-    /// server's and the disk's, read again; the texts are written again.
+    /// whose page is open and the pack whose list is. The list and what is
+    /// installed are the server's and the disk's, read again; the texts
+    /// are written again.
     pub fn save_state(&self) -> Vec<u8> {
-        let selected = self.lock().selected;
+        let (selected, pack) = {
+            let g = self.lock();
+            (g.selected, g.pack.clone())
+        };
         let mut w = snapshot::codec::Writer::new();
         w.bool(selected.is_some())
             .raw(&selected.map_or([0; 32], |id| id.0));
+        w.bool(pack.is_some()).str(pack.as_deref().unwrap_or(""));
         w.into_bytes()
     }
 
@@ -1027,14 +1309,26 @@ impl Repo {
         let r = &mut snapshot::codec::Reader::new(bytes, "mods");
         let some = r.bool().map_err(e)?;
         let id = MapId(r.array::<32>().map_err(e)?);
+        // Snapshots from before packs end here.
+        let pack = if r.remaining() == 0 {
+            None
+        } else {
+            let open = r.bool().map_err(e)?;
+            let name = r.str().map_err(e)?.to_string();
+            open.then_some(name)
+        };
         r.finish().map_err(e)?;
         {
             let mut g = self.lock();
             g.selected = some.then_some(id);
+            g.pack = pack.clone();
             g.pictures = None;
         }
         if let Some(entry) = self.selected() {
             self.texts.set(DETAIL_TITLE, &cut(&entry.name, 40));
+        }
+        if let Some(name) = &pack {
+            self.texts.set(PACK_TITLE, &cut(name, 40));
         }
         self.set_panel();
         self.texts.rewrite_all();
@@ -1067,6 +1361,38 @@ pub fn about(e: &ModEntry) -> String {
         return format!("No description. Built on {}.", mods::base_title(&e.base));
     }
     cut(&words.join(" "), ABOUT_CHARS)
+}
+
+/// A list row's state as the mark after its name (`font::mod_marks`, drawn
+/// into every font): `★` new, `✓` installed, `↓ 45%` downloading; `None`
+/// for a state that is only the size (or none), and the word itself for
+/// anything else.
+pub fn mark(status: &str) -> Option<String> {
+    let new = char::from_u32(u32::from(font::mod_marks::NEW))?;
+    let installed = char::from_u32(u32::from(font::mod_marks::INSTALLED))?;
+    let downloading = char::from_u32(u32::from(font::mod_marks::DOWNLOADING))?;
+    match status {
+        "" => None,
+        s if s.ends_with(" MB") || s.ends_with(" KB") => None,
+        "New" => Some(new.to_string()),
+        "Installed" => Some(installed.to_string()),
+        s => Some(match s.strip_prefix("Downloading ") {
+            Some(p) => format!("{downloading} {p}"),
+            None => s.to_string(),
+        }),
+    }
+}
+
+/// A row's line: `name`, then its state's [`mark`] two spaces after it,
+/// the name cut so both fit in [`LINE_CHARS`].
+pub fn marked_line(name: &str, status: &str) -> String {
+    match mark(status) {
+        None => cut(name, LINE_CHARS),
+        Some(m) => {
+            let room = LINE_CHARS.saturating_sub(m.chars().count() + 2);
+            format!("{}  {m}", cut(name, room))
+        }
+    }
 }
 
 /// The Live menu row's text for `new` new mods.
@@ -1127,9 +1453,9 @@ pub fn cut(s: &str, max: usize) -> String {
     out
 }
 
-/// The footer legends: the list's A opens a map's page and X downloads;
-/// the page's A and X (its one row's action) download, or remove a map
-/// that is `here`.
+/// The footer legends: the list's A opens a map's page (or a pack's
+/// list) and X downloads; a pack's list's the same; the page's A and X
+/// (its one row's action) download, or remove a map that is `here`.
 pub fn prompts(screen: &str, here: bool) -> Vec<Prompt> {
     if screen == DETAIL {
         vec![
@@ -1223,7 +1549,11 @@ impl Rows for ListRows {
         self.set_description(row)
     }
     fn picture(&self, row: i16) -> Option<u32> {
-        let e = Repo::entry_at(&self.0.lock(), row);
+        let e = match Repo::top_at(&self.0.lock(), row) {
+            Some(Top::Map(e)) => Some(e),
+            Some(Top::Pack(_, maps)) => maps.into_iter().next(),
+            None => None,
+        };
         self.0.picture_of(e)
     }
     fn live_text(&self) -> LiveText {
@@ -1247,6 +1577,75 @@ impl Rows for ListRows {
     }
     fn describe(&self, count: usize) -> Option<String> {
         Some(describe("Mods", count, |r| self.0.list_line(r)))
+    }
+}
+
+/// A pack's list.
+pub struct PackRows(pub Arc<Repo>, Drawn);
+
+impl PackRows {
+    pub fn new(repo: Arc<Repo>) -> Self {
+        PackRows(repo, Drawn::default())
+    }
+    fn set_description(&self, row: i16) -> Option<u32> {
+        let r = u32::try_from(row)
+            .ok()
+            .filter(|r| (*r as usize) < MAX_ROWS)?;
+        let text = self.0.pack_description(row).unwrap_or_default();
+        Some(self.0.texts.set(PACK_DESCRIPTIONS + r, &text))
+    }
+}
+
+impl Rows for PackRows {
+    fn title(&self) -> u32 {
+        Slots::id(PACK_TITLE)
+    }
+    fn count(&self) -> usize {
+        self.0.pack_count()
+    }
+    fn texts(&self, row: i16) -> Vec<(u32, u32)> {
+        let Some(line) = self.0.pack_line(row) else {
+            return Vec::new();
+        };
+        let r = row as u32;
+        self.set_description(row);
+        vec![(
+            crate::ui::LABEL_SLOT,
+            self.0.texts.set(PACK_ROWS + r, &line),
+        )]
+    }
+    fn description(&self, row: i16) -> Option<u32> {
+        self.set_description(row)
+    }
+    fn picture(&self, row: i16) -> Option<u32> {
+        let e = match row {
+            0 => self.0.pack().and_then(|(_, maps)| maps.into_iter().next()),
+            r => self.0.pack_entry(r),
+        };
+        self.0.picture_of(e)
+    }
+    fn live_text(&self) -> LiveText {
+        let redraw = self.1.stale(&self.0);
+        if redraw {
+            for r in 0..self.0.pack_count() as i16 {
+                self.set_description(r);
+            }
+        }
+        LiveText {
+            writes: Vec::new(),
+            redraw,
+        }
+    }
+    fn press(&self, row: i16) -> Chosen {
+        self.0.press_pack(row)
+    }
+    fn write_texts(&self, m: &mut dyn GuestMemory) -> Result<(), MemFault> {
+        self.0.read_pictures(m);
+        self.0.texts.write(m)
+    }
+    fn describe(&self, count: usize) -> Option<String> {
+        let title = self.0.texts.get(PACK_TITLE).unwrap_or_default();
+        Some(describe(&title, count, |r| self.0.pack_line(r)))
     }
 }
 
@@ -1383,6 +1782,20 @@ fn list_action(repo: &Arc<Repo>) -> Action {
     })
 }
 
+/// X on a pack's list: the focused map downloads, or (on Download All)
+/// every map not here.
+fn pack_action(repo: &Arc<Repo>) -> Action {
+    let repo = Arc::clone(repo);
+    Arc::new(move |cx, screen| {
+        let repo = Arc::clone(&repo);
+        Box::pin(async move {
+            let row = crate::list_class::focused_row(&cx, screen).await?;
+            eprintln!("{}", repo.x_pack(row));
+            Ok(())
+        })
+    })
+}
+
 /// X on a map's page: download, or remove.
 fn page_action(repo: &Arc<Repo>) -> Action {
     let repo = Arc::clone(repo);
@@ -1398,10 +1811,11 @@ fn page_action(repo: &Arc<Repo>) -> Action {
 /// X only: Start keeps doing nothing on these screens.
 const X_ONLY: [u32; 1] = [crate::list_class::X_BUTTON];
 
-/// The two screens' classes over `repo`: the list on the level select's
-/// list, bracket, picture and description, as the campaign picker has
-/// them; a map's page on the pregame lobby's layout ([`page_layout`]).
-pub fn classes(repo: &Arc<Repo>) -> [ListClass; 2] {
+/// The three screens' classes over `repo`: the list and a pack's list on
+/// the level select's list, bracket, picture and description, as the
+/// campaign picker has them; a map's page on the pregame lobby's layout
+/// ([`page_layout`]).
+pub fn classes(repo: &Arc<Repo>) -> [ListClass; 3] {
     [
         ListClass::with_rows(
             "mods-screen",
@@ -1415,6 +1829,14 @@ pub fn classes(repo: &Arc<Repo>) -> [ListClass; 2] {
         .action_buttons(&X_ONLY)
         .action(list_action(repo))
         .footer(Slots::id(LIST_FOOTER)),
+        ListClass::with_rows("mods-pack", PACK, Arc::new(PackRows::new(Arc::clone(repo))))
+            .layout(crate::skulls_menu::LIST_LAYOUT)
+            .description(crate::skulls_menu::DESCRIPTION_TEXT)
+            .frame(crate::skulls_menu::FRAME)
+            .picture(crate::campaign_menu::PICTURE)
+            .action_buttons(&X_ONLY)
+            .action(pack_action(repo))
+            .footer(Slots::id(PACK_FOOTER)),
         ListClass::with_rows(
             "mods-detail",
             DETAIL,

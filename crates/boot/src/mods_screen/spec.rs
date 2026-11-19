@@ -10,8 +10,8 @@ use content::MapId;
 use live_hle::mods::{InstallDone, ListDone, ModEntry, ModPage, ModsError, Progress};
 
 use super::{
-    DETAIL, DETAIL_FOOTER, DETAIL_TITLE, LIST_FOOTER, LIST_TITLE, PANEL_TEXTS, Repo, SCREEN, Slots,
-    Source, page_layout, prompts,
+    DETAIL, DETAIL_FOOTER, DETAIL_TITLE, LIST_FOOTER, LIST_TITLE, PACK, PACK_FOOTER, PACK_TITLE,
+    PANEL_TEXTS, Repo, SCREEN, Slots, Source, Top, page_layout, prompts,
 };
 use crate::list_class::PictureSpec;
 use crate::ui_kit::input::Input;
@@ -37,8 +37,9 @@ impl Source for SampleSource {
     }
 }
 
-/// Three invented mods, read through the server's own JSON shape: one with
-/// every field, one Map Pack mod with no checklist, one bare.
+/// Six invented mods, read through the server's own JSON shape: one with
+/// every field, one Map Pack mod with no checklist, three of an invented
+/// pack (the list's third row), one bare.
 pub fn sample_entries() -> Vec<ModEntry> {
     let id = |n: u8| format!("{n:02x}").repeat(32);
     let page: ModPage = serde_json::from_value(serde_json::json!({
@@ -58,6 +59,20 @@ pub fn sample_entries() -> Vec<ModEntry> {
                 "published_at": "2026-11-17T09:00:00Z"
             },
             {
+                "id": id(4), "name": "Sample Pack Ascension", "author": "Packer",
+                "base": "ascension", "size": 2_000_000, "position": 15,
+                "pack": {"name": "Sample Pack", "description": "Three classic maps remade for small teams."}
+            },
+            {
+                "id": id(5), "name": "Sample Pack Ivory Tower", "author": "Packer",
+                "base": "ivory_tower", "size": 2_500_000, "position": 14, "pack": "Sample Pack"
+            },
+            {
+                "id": id(6), "name": "Sample Pack Beaver Creek", "author": "Packer",
+                "credits": { "release": "Sample Pack" },
+                "base": "beavercreek", "size": 1_500_000, "position": 13
+            },
+            {
                 "id": id(3), "name": "Midship Rockets", "author": "Rocketeer",
                 "base": "midship", "size": 400_000, "position": 10
             }
@@ -68,13 +83,31 @@ pub fn sample_entries() -> Vec<ModEntry> {
     page.items
 }
 
+/// Which sample screen [`sample_repo`] opens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sample {
+    List,
+    Page,
+    Pack,
+}
+
+/// The list's row the sample pack is on.
+pub const SAMPLE_PACK_ROW: i16 = 2;
+
 /// A repository over [`SampleSource`] with [`sample_entries`] listed and,
-/// when `page` is set, the first one's page open.
-pub fn sample_repo(page: bool) -> Arc<Repo> {
+/// for [`Sample::Page`], the first one's page open; for [`Sample::Pack`],
+/// the sample pack's list.
+pub fn sample_repo(open: Sample) -> Arc<Repo> {
     let repo = Repo::new(Arc::new(SampleSource), None);
     repo.listed(Ok(sample_entries()));
-    if page {
-        repo.press_list(0);
+    match open {
+        Sample::List => {}
+        Sample::Page => {
+            repo.press_list(0);
+        }
+        Sample::Pack => {
+            repo.press_list(SAMPLE_PACK_ROW);
+        }
     }
     repo
 }
@@ -112,16 +145,51 @@ pub fn list_spec(repo: &Repo) -> ScreenSpec {
     s.footer = true;
     s.inputs = vec![Input::Up, Input::Down, Input::A, Input::B, Input::X];
     s.ids = vec![Slots::id(LIST_TITLE), Slots::id(LIST_FOOTER)];
-    let has_entries = !repo.entries().is_empty();
+    let tops = repo.tops();
     for row in 0..repo.list_count() as i16 {
         let line = repo.list_line(row).unwrap_or_default();
-        let press = if has_entries {
-            Press::Open(DETAIL.into())
-        } else {
-            Press::Step
+        let press = match tops.get(row as usize) {
+            Some(Top::Map(_)) => Press::Open(DETAIL.into()),
+            Some(Top::Pack(..)) => Press::Open(PACK.into()),
+            None => Press::Step,
         };
         let mut r = RowSpec::action(&line).press(press);
         if let Some(d) = repo.list_description(row) {
+            r = r.describe(&d);
+        }
+        s.rows.push(r);
+    }
+    s
+}
+
+/// A pack's list: the list's layout, Download All and then its maps, each
+/// opening its page.
+pub fn pack_spec(repo: &Repo) -> ScreenSpec {
+    let mut s = ScreenSpec::new(PACK, &repo.texts.get(PACK_TITLE).unwrap_or_default());
+    s.list = ListPlace::from(Some(crate::skulls_menu::LIST_LAYOUT));
+    s.style = ValueStyle::Inline;
+    s.description = Some(crate::skulls_menu::DESCRIPTION_TEXT.into());
+    s.scrolls = true;
+    s.art = vec![
+        art(crate::skulls_menu::FRAME, crate::skulls_menu::FRAME_SIZE),
+        art(
+            crate::campaign_menu::PICTURE,
+            crate::campaign_menu::PICTURE_SIZE,
+        ),
+    ];
+    s.prompts = prompts(PACK, false);
+    s.footer = true;
+    s.inputs = vec![Input::Up, Input::Down, Input::A, Input::B, Input::X];
+    s.ids = vec![Slots::id(PACK_TITLE), Slots::id(PACK_FOOTER)];
+    for row in 0..repo.pack_count() as i16 {
+        let line = repo.pack_line(row).unwrap_or_default();
+        let press = if row == 0 {
+            Press::Act
+        } else {
+            Press::Open(DETAIL.into())
+        };
+        let mut r = RowSpec::action(&line).press(press);
+        if let Some(d) = repo.pack_description(row) {
             r = r.describe(&d);
         }
         s.rows.push(r);

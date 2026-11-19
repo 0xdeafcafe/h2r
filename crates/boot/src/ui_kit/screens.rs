@@ -268,7 +268,7 @@ pub fn account_spec(a: &crate::account_screen::AccountScreen, now: i64) -> Scree
 }
 
 /// The screens `h2 ui preview` knows, by name.
-pub const NAMES: [&str; 18] = [
+pub const NAMES: [&str; 19] = [
     "campaigns",
     "skulls",
     "skulls.h1",
@@ -286,6 +286,7 @@ pub const NAMES: [&str; 18] = [
     "kit.dialog.large",
     "clankers",
     "mods",
+    "mods.pack",
     "mods.detail",
 ];
 
@@ -507,15 +508,21 @@ pub fn list_page(name: &str) -> Option<ListPage> {
             let s = Arc::new(crate::clankers::page(store));
             list(ListPage::new(s.class(), described(&s)))
         }
-        "mods" | "mods.detail" => {
-            use crate::mods_screen::spec::{detail_spec, list_spec, sample_repo};
-            let page = name == "mods.detail";
-            let repo = sample_repo(page);
-            let [list_class, detail_class] = crate::mods_screen::classes(&repo);
-            if page {
-                list(ListPage::new(detail_class, move || detail_spec(&repo)))
-            } else {
-                list(ListPage::new(list_class, move || list_spec(&repo)))
+        "mods" | "mods.pack" | "mods.detail" => {
+            use crate::mods_screen::spec::{
+                Sample, detail_spec, list_spec, pack_spec, sample_repo,
+            };
+            let open = match name {
+                "mods.detail" => Sample::Page,
+                "mods.pack" => Sample::Pack,
+                _ => Sample::List,
+            };
+            let repo = sample_repo(open);
+            let [list_class, pack_class, detail_class] = crate::mods_screen::classes(&repo);
+            match open {
+                Sample::Page => list(ListPage::new(detail_class, move || detail_spec(&repo))),
+                Sample::Pack => list(ListPage::new(pack_class, move || pack_spec(&repo))),
+                Sample::List => list(ListPage::new(list_class, move || list_spec(&repo))),
             }
         }
         _ => None,
@@ -747,11 +754,28 @@ mod tests {
     fn a_mods_page_is_the_lobby_layout_with_one_action() {
         assert_lobby_inside(&crate::ui_kit::preview::From::Synthetic);
         // The list keeps the level select's layout, and every row is a map
-        // its press opens.
+        // (or a pack) its press opens.
         let list = sample("mods").unwrap();
         assert_eq!(list.list, ListPlace::from(Some(skulls_menu::LIST_LAYOUT)));
+        let opens: Vec<&Press> = list.rows.iter().map(|r| &r.press).collect();
+        let (detail, pack) = (
+            Press::Open(crate::mods_screen::DETAIL.into()),
+            Press::Open(crate::mods_screen::PACK.into()),
+        );
+        assert_eq!(opens, [&detail, &detail, &pack, &detail]);
+    }
+
+    #[test]
+    fn a_mods_pack_is_the_lists_layout_download_all_then_its_maps() {
+        let s = sample("mods.pack").unwrap();
+        assert_eq!(s.list, ListPlace::from(Some(skulls_menu::LIST_LAYOUT)));
+        assert_eq!(s.title, "Sample Pack");
+        let labels: Vec<&str> = s.rows.iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(labels[0], "Download All (3)");
+        assert_eq!(labels.len(), 4);
+        assert_eq!(s.rows[0].press, Press::Act);
         assert!(
-            list.rows
+            s.rows[1..]
                 .iter()
                 .all(|r| r.press == Press::Open(crate::mods_screen::DETAIL.into()))
         );

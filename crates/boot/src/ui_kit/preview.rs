@@ -166,10 +166,11 @@ impl Disc {
         let mut files = HashMap::new();
         for name in &table {
             if !files.contains_key(name) {
-                files.insert(
-                    name.clone(),
-                    x.read(&find(&format!("/maps/fonts/{name}"))?)?,
-                );
+                // As the game opens it: with the bot mark and the Mods
+                // list's marks added (`bot_mark::GearRewrite`).
+                let raw = x.read(&find(&format!("/maps/fonts/{name}"))?)?;
+                let font = crate::bot_mark::GearRewrite::patch(&raw).unwrap_or(raw);
+                files.insert(name.clone(), font);
             }
         }
         let region = |name: &str| -> Result<assets::Region> {
