@@ -24,6 +24,29 @@ pub struct Image {
     pub rgba: Vec<u8>,
     /// Levels 1.. of the mip chain, each half the last (at least 1).
     pub mips: Vec<Vec<u8>>,
+    /// The same levels as BC blocks, for a DXT image the D3D path uploads
+    /// as BC ([`Image::with_blocks`]): uploaded instead of `rgba` where the
+    /// device takes BC textures, so the GPU decodes them as it does the
+    /// D3D path's (the CPU decoder rounds the interpolated colours down).
+    pub blocks: Option<Blocks>,
+}
+
+/// An image's levels as BC blocks ([`Image::blocks`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Blocks {
+    /// `Bc1RgbaUnorm`, `Bc2RgbaUnorm` or `Bc3RgbaUnorm`.
+    pub format: wgpu::TextureFormat,
+    /// Level 0 first, rows of 4x4 blocks, tight.
+    pub levels: Vec<Vec<u8>>,
+}
+
+/// Bytes per 4x4 block of a BC format (`None`: not one).
+pub fn block_bytes(format: wgpu::TextureFormat) -> Option<usize> {
+    match format {
+        wgpu::TextureFormat::Bc1RgbaUnorm => Some(8),
+        wgpu::TextureFormat::Bc2RgbaUnorm | wgpu::TextureFormat::Bc3RgbaUnorm => Some(16),
+        _ => None,
+    }
 }
 
 impl Image {
@@ -33,7 +56,27 @@ impl Image {
             height: 1,
             rgba: rgba.to_vec(),
             mips: Vec::new(),
+            blocks: None,
         }
+    }
+
+    /// `self` with its levels as BC blocks too, when they fit it: a BC
+    /// format, the base size a multiple of 4 (wgpu's rule, and the D3D
+    /// path's for passing blocks through), one level of blocks per level
+    /// of `self`, each of its size. Otherwise `self` as it was.
+    pub fn with_blocks(mut self, format: wgpu::TextureFormat, levels: Vec<Vec<u8>>) -> Self {
+        let Some(unit) = block_bytes(format) else { return self };
+        if !self.width.is_multiple_of(4) || !self.height.is_multiple_of(4) || levels.len() != 1 + self.mips.len() {
+            return self;
+        }
+        let fits = levels.iter().enumerate().all(|(n, l)| {
+            let (w, h) = ((self.width >> n).max(1), (self.height >> n).max(1));
+            l.len() == w.div_ceil(4) as usize * h.div_ceil(4) as usize * unit
+        });
+        if fits {
+            self.blocks = Some(Blocks { format, levels });
+        }
+        self
     }
 
     /// One level, no chain.
@@ -62,7 +105,7 @@ impl Image {
             }
             mips.push(bytes);
         }
-        Some(Self { width, height, rgba, mips })
+        Some(Self { width, height, rgba, mips, blocks: None })
     }
 }
 
@@ -237,6 +280,11 @@ pub struct GpuWorld {
 const SHADER: &str = include_str!("world.wgsl");
 
 pub(crate) fn texture(device: &wgpu::Device, queue: &wgpu::Queue, image: &Image, label: &str) -> wgpu::TextureView {
+    if let Some(b) = &image.blocks
+        && device.features().contains(wgpu::Features::TEXTURE_COMPRESSION_BC)
+    {
+        return block_texture(device, queue, image, b, label);
+    }
     let size = wgpu::Extent3d {
         width: image.width.max(1),
         height: image.height.max(1),
@@ -267,6 +315,43 @@ pub(crate) fn texture(device: &wgpu::Device, queue: &wgpu::Queue, image: &Image,
                 offset: 0,
                 bytes_per_row: Some(4 * w),
                 rows_per_image: Some(h),
+            },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+    }
+    t.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+/// `image` from its BC blocks (`gfx::upload_texture`'s copies: a level
+/// smaller than a block is copied at its physical, rounded-up size).
+fn block_texture(device: &wgpu::Device, queue: &wgpu::Queue, image: &Image, b: &Blocks, label: &str) -> wgpu::TextureView {
+    let unit = block_bytes(b.format).expect("a BC format") as u32;
+    let t = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d { width: image.width, height: image.height, depth_or_array_layers: 1 },
+        mip_level_count: b.levels.len() as u32,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: b.format,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    for (level, bytes) in b.levels.iter().enumerate() {
+        let level = level as u32;
+        let (w, h) = ((image.width >> level).max(1), (image.height >> level).max(1));
+        let (w, h) = (w.next_multiple_of(4), h.next_multiple_of(4));
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &t,
+                mip_level: level,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            bytes,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(w / 4 * unit),
+                rows_per_image: Some(h / 4),
             },
             wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         );
@@ -943,5 +1028,26 @@ mod tests {
         assert!(i.mips.is_empty(), "nothing below 1x1");
         assert_eq!(Image::from_levels(vec![(2, 2, vec![0; 3])]), None);
         assert_eq!(Image::level(1, 1, vec![9; 4]).unwrap().rgba, vec![9; 4]);
+    }
+
+    /// A DXT image keeps its blocks only where the D3D path would pass them
+    /// through: a BC format, a base size in whole blocks, and one level
+    /// of blocks of the right size per level (a level under 4x4 takes a
+    /// whole block).
+    #[test]
+    fn an_image_keeps_its_blocks_only_where_they_fit() {
+        use wgpu::TextureFormat as F;
+        let chain = || Image::from_levels(vec![level(8, 4), level(4, 2), level(2, 1), level(1, 1)]).unwrap();
+        // BC1: 8 bytes a block; 8x4 is two blocks, every smaller level one.
+        let blocks = vec![vec![1; 16], vec![2; 8], vec![3; 8], vec![4; 8]];
+        let i = chain().with_blocks(F::Bc1RgbaUnorm, blocks.clone());
+        assert_eq!(i.blocks, Some(Blocks { format: F::Bc1RgbaUnorm, levels: blocks.clone() }));
+        assert_eq!(i.rgba, chain().rgba, "the decoded texels stay");
+        assert_eq!(chain().with_blocks(F::Bc3RgbaUnorm, blocks.clone()).blocks, None, "BC3 blocks are 16 bytes");
+        assert_eq!(chain().with_blocks(F::Rgba8Unorm, blocks.clone()).blocks, None, "not a BC format");
+        assert_eq!(chain().with_blocks(F::Bc1RgbaUnorm, blocks[..3].to_vec()).blocks, None, "a level short");
+        let small = Image::from_levels(vec![level(2, 8)]).unwrap();
+        assert_eq!(small.with_blocks(F::Bc1RgbaUnorm, vec![vec![0; 16]]).blocks, None, "2x8: not whole blocks");
+        assert_eq!(block_bytes(F::Bc2RgbaUnorm), Some(16));
     }
 }
