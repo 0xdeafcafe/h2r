@@ -12,8 +12,10 @@ starts with its own keyframe. Transfer sizes are response-body bytes.
 |---|---:|---:|---:|
 | Live bytes/player/s | 272.09 | 254.71 | **145.25** |
 | Live bytes/frame | 290.23 | 271.69 | **154.93** |
-| Encode µs/frame | 15.72 | 17.09 | 17.20 |
-| Encode µs/simulation tick | 7.86 | 8.54 | 8.60 |
+| Encode µs/frame, original run | 15.72 | 17.09 | 17.20 |
+| Encode µs/simulation tick, original run | 7.86 | 8.54 | 8.60 |
+| Encode µs/frame, mean of five paired runs | — | 28.4 | 28.2 |
+| Encode µs/simulation tick, paired mean | — | 14.2 | 14.1 |
 | Replay JSON bytes | 68,037,538 | 88,675,937 | 90,082,165 |
 | Replay JSON gzip bytes | 11,773,243 | 13,052,003 | 13,517,251 |
 | Replay binary chunk bytes | 2,405,346 | 2,110,374 | **1,322,664** |
@@ -35,6 +37,12 @@ the 12-tick regression scenes match. Encode time
 covers packing each sampled frame. The per-tick figure spreads this cost
 over all 30 ticks per second. Neither figure includes game-state sampling,
 storage compression, HTTP or rendering.
+
+Five further paired release runs used separately built v6 and v7 binaries,
+checked against their distinct wire byte counts in every run. The per-pair
+v7/v6 CPU ratios ranged from 0.754 to 1.300, with a median of 0.893.
+The nearly equal means support comparable encoding cost on this scene.
+Shared-machine load varied enough to rule out a reliable speed-up estimate.
 
 Run the ignored release test `bench_match_wire` in `live-telemetry` with
 `TELEMETRY_BENCH_OUT` set to an output directory. From `web/`, run
