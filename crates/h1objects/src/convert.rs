@@ -372,13 +372,19 @@ pub const DENSITY: f32 = 28_317.0;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PhysicsKind {
     /// One body on the object, of Halo 1's `phys` mass; a stand-in
-    /// sphere when the collision gives nothing.
-    Vehicle,
+    /// sphere when the collision gives nothing. `wheels`: its wheels and
+    /// treads are held in the body above the hull's lowest point
+    /// ([`held_wheels`]; the role's [`crate::rebuild::VehicleRole::wheel_shapes`]),
+    /// else left out.
+    Vehicle { wheels: bool },
     /// One body per collision node, riding that node.
     Device,
     /// As a device, with a biped's rigid body words
     /// ([`crate::rebuild::BIPED_BODY`]); no stand-in.
     Biped,
+    /// As a device, with the base's scenery rigid body words
+    /// ([`crate::rebuild::scenery_body`]); no stand-in.
+    Scenery(crate::rebuild::BodyWords),
 }
 
 /// The ragdoll constraints of a built biped: its bodies joined over
@@ -814,8 +820,9 @@ pub struct Converter<'a> {
     /// Weapon, equipment, projectile and damage role words, per group
     /// ([`crate::arsenal::role`]).
     item_roles: HashMap<[u8; 4], crate::arsenal::Role>,
-    /// Vehicle role words, per vehicle type ([`Self::vehicle_role`]).
-    vehicle_roles: HashMap<u16, Option<crate::rebuild::VehicleRole>>,
+    /// Vehicle role words, per vehicle type and powered point count
+    /// ([`Self::vehicle_role`]).
+    vehicle_roles: HashMap<(u16, usize), Option<crate::rebuild::VehicleRole>>,
     /// Converted sounds and looping sounds by Halo 1 tag, as indices
     /// into [`Tree::sounds`] and [`Tree::loops`] (`None`: did not convert).
     sound_index: HashMap<u32, Option<usize>>,
@@ -838,6 +845,12 @@ pub struct Converter<'a> {
     pctl_done: HashMap<u32, Vec<(TagId, crate::particles::H1ParticleState, u16)>>,
     /// Scenery role words ([`Self::scenery_role`]), computed once.
     scenery_role: Option<Option<crate::rebuild::SceneryRole>>,
+    /// The base's scenery rigid body words ([`Self::scenery_body`]),
+    /// computed once.
+    scenery_body: Option<Option<crate::rebuild::BodyWords>>,
+    /// The base's rigid bodies' sizes and size classes
+    /// ([`crate::rebuild::size_classes`]), read once.
+    size_classes: Option<Vec<(f32, u16)>>,
     /// Per Halo 1 weapon label, the weapon class the map's graphs hold it
     /// under ([`Self::weapon_class`]), computed once.
     weapon_classes: Option<HashMap<String, String>>,
@@ -876,6 +889,8 @@ impl<'a> Converter<'a> {
             decals_open: Vec::new(),
             dialogue_bytes: 0,
             scenery_role: None,
+            scenery_body: None,
+            size_classes: None,
             weapon_classes: None,
         }
     }
@@ -1478,11 +1493,13 @@ impl<'a> Converter<'a> {
         // Havok sees static scenery through the phmo or, with none, through
         // the coll's BSP physics slots (crate::coll). Retail writes slots
         // only for scenery: its weapons, equipment, devices and bipeds
-        // without a phmo have none.
+        // without a phmo have none. Scenery whose Halo 1 collision is
+        // solid gets a built phmo (Self::scenery), so no slots.
+        let slots = scenery && !has_phmo && self.scenery_physics(obj)?.is_none();
         let coll = match obj.collision {
             Some(c) => {
                 let t = self.h1_tag(c)?;
-                Some(self.collision(rep, t, scenery && !has_phmo)?)
+                Some(self.collision(rep, t, slots)?)
             }
             None => None,
         };
@@ -1707,9 +1724,12 @@ impl<'a> Converter<'a> {
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
         let hlmt = self.model(&mut rep, &object, None, &tag.name, true)?;
         rep.physics = Some(match object.collision {
-            Some(_) => "none: the coll's BSP physics slots, as retail static scenery".into(),
+            Some(_) => "none: the coll's BSP physics slots (no solid Halo 1 collision, or no retail scenery phmo on the base)".into(),
             None => "none (no Halo 1 collision)".into(),
         });
+        if let Some(kind) = self.scenery_physics(&object)? {
+            self.object_physics(&mut rep, hlmt, &object, &tag.name, kind)?;
+        }
         let predicted = self.predicted(&object)?;
         let words = self.scenery_role()?.map(|r| r.scen).unwrap_or_default();
         let root = crate::rebuild::scenery(&object, hlmt, &predicted, &words)?;
@@ -1734,6 +1754,37 @@ impl<'a> Converter<'a> {
                 raw: Vec::new(),
             },
         ))
+    }
+
+    /// The physics a scenery object is built: [`PhysicsKind::Scenery`] with
+    /// the base's scenery body words when the base has any
+    /// ([`crate::rebuild::scenery_body`]) and the object's Halo 1
+    /// collision holds solid space under a model (the cells
+    /// [`Self::built_physics`] makes bodies of); `None` keeps the `coll`'s
+    /// BSP physics slots alone.
+    fn scenery_physics(&mut self, obj: &h1::Object) -> Result<Option<PhysicsKind>> {
+        let (Some(c), Some(_)) = (obj.collision, obj.model) else {
+            return Ok(None);
+        };
+        let words = match self.scenery_body {
+            Some(w) => w,
+            None => {
+                let w = crate::rebuild::scenery_body(self.base)?.map(|(w, _)| w);
+                self.scenery_body = Some(w);
+                w
+            }
+        };
+        let Some(words) = words else {
+            return Ok(None);
+        };
+        let coll = h1::Collision::read(self.h1, self.h1_tag(c)?)?;
+        for n in &coll.nodes {
+            let Some(src) = n.bsps.first() else { continue };
+            if !crate::physics::solid_cells(&h1convert::collision::convert(src)?).is_empty() {
+                return Ok(Some(PhysicsKind::Scenery(words)));
+            }
+        }
+        Ok(None)
     }
 
     /// The base map's scenery role words ([`crate::rebuild::scenery_role`]),
@@ -2208,7 +2259,16 @@ impl<'a> Converter<'a> {
         };
         let vehicle_type = word(crate::rebuild::H1_VEHICLE_TYPE) as u16;
         let flags = word(crate::rebuild::H1_VEHICLE_FLAGS);
-        let role = self.vehicle_role(vehicle_type)?;
+        // Halo 1's powered mass points, with the model they sit on.
+        let powered = match u.object.model {
+            Some(m) => {
+                let (model, _) =
+                    h1models::model_from_map(self.h1, self.h1_tag(m)?, &ModelOptions::default())?;
+                self.powered_points(&u.object, &model)?
+            }
+            None => Vec::new(),
+        };
+        let role = self.vehicle_role(vehicle_type, powered.len())?;
         let mut rep = Self::report(
             tag,
             &match &role {
@@ -2222,7 +2282,14 @@ impl<'a> Converter<'a> {
             },
         );
         let hlmt = self.model(&mut rep, &u.object, None, &tag.name, true)?;
-        self.object_physics(&mut rep, hlmt, &u.object, &tag.name, PhysicsKind::Vehicle)?;
+        let wheels = role.as_ref().is_some_and(|r| r.wheel_shapes);
+        self.object_physics(
+            &mut rep,
+            hlmt,
+            &u.object,
+            &tag.name,
+            PhysicsKind::Vehicle { wheels },
+        )?;
         let predicted = self.predicted(&u.object)?;
         let (markers, bounds) = match u.object.model {
             Some(m) => {
@@ -2267,20 +2334,25 @@ impl<'a> Converter<'a> {
                     .push(format!("seat {}: camera track not converted ({e})", seat.label)),
             }
         }
-        let points: Vec<crate::rebuild::Point> = match u.object.model {
-            Some(m) => {
-                let (model, _) =
-                    h1models::model_from_map(self.h1, self.h1_tag(m)?, &ModelOptions::default())?;
-                let points = self.powered_points(&u.object, &model)?;
-                let spheres = role
-                    .as_ref()
-                    .map(crate::rebuild::role_spheres)
-                    .unwrap_or_default();
-                let at: Vec<[f32; 3]> = points.iter().map(|p| p.object).collect();
-                let order = sphere_order(&at, &spheres);
-                order.into_iter().map(|i| points[i].point.clone()).collect()
-            }
-            None => Vec::new(),
+        let points: Vec<crate::rebuild::Point> = {
+            // Friction points follow the role's phantom spheres; hover
+            // points (a role with no friction points) the member's hover
+            // markers, so each takes the words of the retail point nearest
+            // it (`VehicleRole::hover_each`).
+            let spheres = match &role {
+                Some(r)
+                    if r.friction.is_none()
+                        && r.hover.is_some()
+                        && r.hover_at.len() == powered.len() =>
+                {
+                    r.hover_at.clone()
+                }
+                Some(r) => crate::rebuild::role_spheres(r),
+                None => Vec::new(),
+            };
+            let at: Vec<[f32; 3]> = powered.iter().map(|p| p.object).collect();
+            let order = sphere_order(&at, &spheres);
+            order.into_iter().map(|i| powered[i].point.clone()).collect()
         };
         // The unit's weapons: Halo 1's, converted where they convert.
         let mut weapons = Vec::new();
@@ -2369,19 +2441,24 @@ impl<'a> Converter<'a> {
         Ok(id)
     }
 
-    /// The vehicle type's role over the base's vehicles
-    /// ([`crate::rebuild::vehicle_role`]), computed once per type. The
-    /// turret type keeps the disc-wide turret tables
-    /// ([`crate::rebuild::TURRET_ROLE`]): `None`.
-    pub fn vehicle_role(&mut self, vehicle_type: u16) -> Result<Option<crate::rebuild::VehicleRole>> {
+    /// The vehicle type's role over the base's vehicles of that type
+    /// whose friction and hover points are nearest `points`, Halo 1's
+    /// powered mass points ([`crate::rebuild::vehicle_role`]), computed
+    /// once per type and count. The turret type keeps the disc-wide
+    /// turret tables ([`crate::rebuild::TURRET_ROLE`]): `None`.
+    pub fn vehicle_role(
+        &mut self,
+        vehicle_type: u16,
+        points: usize,
+    ) -> Result<Option<crate::rebuild::VehicleRole>> {
         if u32::from(vehicle_type) == crate::rebuild::ROLE_VEHICLE_TYPE {
             return Ok(None);
         }
-        if let Some(w) = self.vehicle_roles.get(&vehicle_type) {
+        if let Some(w) = self.vehicle_roles.get(&(vehicle_type, points)) {
             return Ok(w.clone());
         }
-        let w = crate::rebuild::vehicle_role(self.base, vehicle_type)?;
-        self.vehicle_roles.insert(vehicle_type, w.clone());
+        let w = crate::rebuild::vehicle_role(self.base, vehicle_type, Some(points))?;
+        self.vehicle_roles.insert((vehicle_type, points), w.clone());
         Ok(w)
     }
 
@@ -2733,7 +2810,7 @@ impl<'a> Converter<'a> {
         }
         let (phmo, how) = match self.built_physics(obj, kind)? {
             Some((block, how)) => (block, how),
-            None if kind == PhysicsKind::Vehicle => {
+            None if matches!(kind, PhysicsKind::Vehicle { .. }) => {
                 let (radius, mass, material) = STAND_IN_SPHERE;
                 (
                     crate::rebuild::sphere_physics(radius, [0.0, 0.0, radius], mass, material)?,
@@ -2831,40 +2908,70 @@ impl<'a> Converter<'a> {
             }
         };
         let volume: f32 = parts.iter().flat_map(|p| &p.1).map(|h| h.volume).sum();
-        let mut wheels_left_out = 0;
+        let mut wheels_note = String::new();
         let bodies = match kind {
-            PhysicsKind::Vehicle => {
+            PhysicsKind::Vehicle { wheels: hold } => {
                 let phys = match obj.physics {
                     Some(p) => Some(h1::Physics::read(self.h1, self.h1_tag(p)?)?),
                     None => None,
                 };
-                // Wheels and treads stay out of the body: Halo 2 drives a
-                // vehicle on its friction points (springs at the wheel
-                // markers), and its hull rides above them.
+                // Wheels and treads are held above the hull's lowest
+                // point where the role's physics models have them (the
+                // scorpion's treads), else left out (the warthog's tires):
+                // Halo 2 holds a vehicle up on its friction points
+                // (springs at the wheel markers) and its body rides clear
+                // of the ground (`held_wheels`).
                 let wheels = phys
                     .as_ref()
                     .map(|p| wheel_nodes(p, &model.nodes))
                     .unwrap_or_default();
-                let hull: Vec<_> = parts
-                    .iter()
-                    .filter(|(n, _)| !wheels.contains(n))
-                    .cloned()
-                    .collect();
-                let parts = if hull.is_empty() {
-                    parts
-                } else {
-                    wheels_left_out = parts.len() - hull.len();
-                    hull
-                };
-                let total = parts.iter().map(|p| p.1.len()).sum();
-                let mut pieces = Vec::new();
-                for (node, cells) in parts {
+                let place = |node: i16| {
                     let (r, t) = world
                         .get(node as usize)
                         .copied()
                         .unwrap_or((Transform::IDENTITY.r, Transform::IDENTITY.t));
-                    let m = Transform { r, t };
+                    Transform { r, t }
+                };
+                let (hull, wheel_parts): (Vec<_>, Vec<_>) =
+                    parts.into_iter().partition(|(n, _)| !wheels.contains(n));
+                let (parts, wheel_parts) = if hull.is_empty() {
+                    (wheel_parts, Vec::new())
+                } else {
+                    (hull, wheel_parts)
+                };
+                // One piece per wheel node at most.
+                let total = parts.iter().map(|p| p.1.len()).sum::<usize>()
+                    + if hold { wheel_parts.len() } else { 0 };
+                let mut pieces = Vec::new();
+                for (node, cells) in parts {
+                    let m = place(node);
                     pieces.extend(cap(cells, total).iter().map(|h| h.transformed(&m)));
+                }
+                if !hold && !wheel_parts.is_empty() {
+                    wheels_note = format!(
+                        " ({} wheel and tread nodes left out: the role's physics models have no wheel shapes)",
+                        wheel_parts.len()
+                    );
+                }
+                if hold && !wheel_parts.is_empty() {
+                    let wheel_parts: Vec<_> = wheel_parts
+                        .into_iter()
+                        .map(|(node, cells)| {
+                            let m = place(node);
+                            cells.iter().map(|h| h.transformed(&m)).collect::<Vec<_>>()
+                        })
+                        .collect();
+                    let floor = pieces
+                        .iter()
+                        .flat_map(|h| h.vertices.iter())
+                        .map(|v| v[2])
+                        .fold(f32::INFINITY, f32::min);
+                    let held = held_wheels(&wheel_parts, floor);
+                    wheels_note = format!(
+                        " ({} wheel and tread pieces, held above the hull's lowest point {floor:.3})",
+                        held.len()
+                    );
+                    pieces.extend(held);
                 }
                 let mass = phys
                     .as_ref()
@@ -2877,7 +2984,7 @@ impl<'a> Converter<'a> {
                     mass,
                 }]
             }
-            PhysicsKind::Device | PhysicsKind::Biped => parts
+            PhysicsKind::Device | PhysicsKind::Biped | PhysicsKind::Scenery(_) => parts
                 .into_iter()
                 .map(|(node, cells)| {
                     let total = cells.len();
@@ -2910,16 +3017,12 @@ impl<'a> Converter<'a> {
             } else {
                 ""
             },
-            if wheels_left_out > 0 {
-                format!(" ({wheels_left_out} wheel and tread nodes left to the friction points)")
-            } else {
-                String::new()
-            }
+            wheels_note
         );
-        let words = if kind == PhysicsKind::Biped {
-            crate::rebuild::BIPED_BODY
-        } else {
-            crate::rebuild::DEVICE_BODY
+        let words = match kind {
+            PhysicsKind::Biped => crate::rebuild::BIPED_BODY,
+            PhysicsKind::Scenery(w) => w,
+            PhysicsKind::Vehicle { .. } | PhysicsKind::Device => crate::rebuild::DEVICE_BODY,
         };
         let joints = if kind == PhysicsKind::Biped {
             biped_ragdoll(&model.nodes, &bodies)
@@ -2931,8 +3034,17 @@ impl<'a> Converter<'a> {
             (PhysicsKind::Biped, n) => format!("{how}; ragdoll of {n} constraints (crate::ragdoll)"),
             _ => how,
         };
+        // Scenery bodies take their own size class (`+0x1e`) by their size,
+        // as the base's (crate::rebuild::size_class).
+        if matches!(kind, PhysicsKind::Scenery(_)) && self.size_classes.is_none() {
+            self.size_classes = Some(crate::rebuild::size_classes(self.base)?);
+        }
+        let classes: &[(f32, u16)] = match kind {
+            PhysicsKind::Scenery(_) => self.size_classes.as_deref().unwrap_or(&[]),
+            _ => &[],
+        };
         Ok(Some((
-            crate::rebuild::physics_model(&bodies, &nodes, words, &joints)?,
+            crate::rebuild::physics_model_sized(&bodies, &nodes, words, &joints, classes)?,
             how,
         )))
     }
@@ -3359,8 +3471,9 @@ pub fn weapon_classes(votes: HashMap<(String, String), usize>) -> HashMap<String
 /// scenario spots stand them on the ground. Halo 2 holds a vehicle up on
 /// its friction points, springs at the wheel markers, and keeps the body's
 /// shapes clear of the ground (V: the retail warthog's and scorpion's
-/// physics models have no wheel or tread shape, their lowest points 0.18
-/// and 0.22 above the origin). Built into the body, the converted
+/// physics models' lowest points are 0.18 and 0.22 above the origin; the
+/// warthog's has no wheel shape, the scorpion's has its treads above
+/// that, [`held_wheels`], by the role). Built whole into the body, the converted
 /// warthog's tires spawned up to 0.14 into Blood Gulch's ground (a game
 /// run, `havok.contacts`), and Havok threw it over.
 pub fn wheel_nodes(phys: &h1::Physics, nodes: &[h1models::h1::Node]) -> Vec<i16> {
@@ -3390,6 +3503,40 @@ pub fn wheel_nodes(phys: &h1::Physics, nodes: &[h1models::h1::Node]) -> Vec<i16>
                 }
             }
             false
+        })
+        .collect()
+}
+
+/// A vehicle's wheels and treads in its body, where its role's physics
+/// models have wheel shapes ([`crate::rebuild::VehicleRole::wheel_shapes`];
+/// object space, `wheels` one list of convex pieces per wheel node): each node's pieces cut at `floor`,
+/// the lowest point of the rest of the body, and what is left enclosed in
+/// one piece; a node with nothing above `floor` gives none.
+///
+/// Halo 2 holds a vehicle up on its friction points and keeps its body's
+/// shapes clear of the ground, but the parts of the wheels above the hull
+/// are solid. V, the retail scorpion's `phmo` (coagulation): two tread
+/// shapes out to 1.13 either side, where its hull reaches 0.53, from 0.22
+/// above the origin, where the hull's lowest point is 0.25; with the
+/// converted scorpion's treads left out (versions 77 to 85) the player
+/// walked through them (a game run on Blood Gulch, 2026-11-19), its `coll`
+/// carrying them. Under the hull a wheel would meet the ground before the
+/// springs did: built whole into the body, the converted warthog's tires
+/// sank up to 0.144 into the ground at spawn and the depenetration threw
+/// it about 4.8 units (game run, 2026-11-19).
+pub fn held_wheels(wheels: &[Vec<crate::physics::Hull>], floor: f32) -> Vec<crate::physics::Hull> {
+    if !floor.is_finite() {
+        return Vec::new();
+    }
+    wheels
+        .iter()
+        .filter_map(|cells| {
+            let cut: Vec<_> = cells.iter().filter_map(|h| h.above(floor)).collect();
+            match cut.len() {
+                0 => None,
+                1 => cut.into_iter().next(),
+                _ => crate::physics::enclosing(&cut),
+            }
         })
         .collect()
 }

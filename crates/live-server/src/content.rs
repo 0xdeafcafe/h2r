@@ -20,6 +20,15 @@
 //!   admin may correct with `PUT /v1/maps/{id}/credit` (a server-signed
 //!   `MapCredited`; the manifest, its `MapId` and the publisher's
 //!   signature are untouched).
+//! - **Details**: a longer description, screenshots (content blobs, PNG
+//!   or JPEG) and a report of what the mod contains are set by an admin
+//!   with `PUT /v1/maps/{id}/details` (a server-signed `MapDetailed`, the
+//!   manifest untouched like the credit's); the screenshots are served at
+//!   `GET /v1/maps/{id}/images/{n}`. Details may name the map pack the
+//!   mod came out in; a pack's own info (name, description, authors,
+//!   images, source, date) is an admin's `PUT /v1/mappacks/{id}` (a
+//!   server-signed `MapPackSet`), listed at `GET /v1/mappacks`, with each
+//!   map list page and each map that names it.
 //! - **Moderation**: admins hide, delete and block blobs and packages,
 //!   switch an account's uploads off, and read reports. Hidden, deleted or
 //!   blocked content answers 410, and sessions on it are refused.
@@ -42,9 +51,10 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use live_proto::maps::{
     self, Action, BaseInfo, CONTENT_MODERATED, CONTENT_REPORTED, CONTENT_STORED,
-    CONTENT_UPLOADS_SET, ContentStored, Credit, Credited, Downloaded, HOPPER_PINS_SET, HopperPin,
-    LayerInfo, MAP_CREDITED, MAP_DOWNLOADED, MAP_PUBLISHED, MapAnswer, MapDetail, MapDocument,
-    MapId, MapSummary, Moderated, Reported, Sha256, Standing, Target, UploadsSet, Who,
+    CONTENT_UPLOADS_SET, ContentStored, Credit, Credited, Detailed, Details, Downloaded,
+    HOPPER_PINS_SET, HopperPin, LayerInfo, MAP_CREDITED, MAP_DETAILED, MAP_DOWNLOADED,
+    MAP_PACK_SET, MAP_PUBLISHED, MapAnswer, MapDetail, MapDocument, MapId, MapSummary, Moderated,
+    PackInfo, PackListed, PackSet, Reported, Sha256, Standing, Target, UploadsSet, Who,
 };
 use live_proto::sign::{MAX_EVENT_SKEW_S, SignedEvent, parse_time};
 use live_proto::{Author, ErrorCode, Gamertag, Page, Xuid, lxm, streams};
@@ -325,6 +335,10 @@ pub struct CatalogState {
     /// from [`Self::maps`] so a package deleted and published again keeps
     /// its correction.
     pub credits: HashMap<MapId, Credit>,
+    /// Admins' details (`MapDetailed`), kept apart like the credits.
+    pub details: HashMap<MapId, Details>,
+    /// Map packs' info (`MapPackSet`), by id.
+    pub packs: BTreeMap<String, PackInfo>,
 }
 
 impl CatalogState {
@@ -374,6 +388,20 @@ impl CatalogState {
     /// publisher's ([`MapDocument::credit`]).
     pub fn credit_of(&self, id: &MapId, p: &Package) -> Option<Credit> {
         self.credits.get(id).cloned().or_else(|| p.doc.credit())
+    }
+
+    /// The admin's details of `id`, if any.
+    pub fn details_of(&self, id: &MapId) -> Option<&Details> {
+        self.details.get(id)
+    }
+
+    /// The pack `id` names, with its info, if the server has it.
+    pub fn pack_of(&self, id: &MapId) -> Option<PackListed> {
+        let pack = self.details_of(id)?.pack.as_ref()?;
+        self.packs.get(pack).map(|info| PackListed {
+            id: pack.clone(),
+            info: info.clone(),
+        })
     }
 
     pub fn reports_of(&self, target: Target, id: &str) -> usize {
@@ -494,6 +522,30 @@ impl CatalogState {
                         }
                         None => {
                             self.credits.remove(&d.map_id);
+                        }
+                    }
+                }
+            }
+            MAP_DETAILED => {
+                if let Ok(d) = serde_json::from_value::<Detailed>(b.data.clone()) {
+                    match d.details.filter(|x| !x.is_empty()) {
+                        Some(x) => {
+                            self.details.insert(d.map_id, x);
+                        }
+                        None => {
+                            self.details.remove(&d.map_id);
+                        }
+                    }
+                }
+            }
+            MAP_PACK_SET => {
+                if let Ok(d) = serde_json::from_value::<PackSet>(b.data.clone()) {
+                    match d.pack {
+                        Some(p) => {
+                            self.packs.insert(d.id, p);
+                        }
+                        None => {
+                            self.packs.remove(&d.id);
                         }
                     }
                 }
@@ -852,10 +904,14 @@ impl Live {
             })
             .collect();
         let credit = s.credit_of(id, p);
+        let details = s.details_of(id);
+        let images = details.map(|d| d.images.clone()).unwrap_or_default();
         MapSummary {
             map_id: *id,
             name: m.package.name.clone(),
-            description: m.package.description.clone(),
+            description: details
+                .and_then(|d| d.description.clone())
+                .or_else(|| m.package.description.clone()),
             author: self.who(p.author),
             base: BaseInfo {
                 map: m.base.map.clone(),
@@ -864,8 +920,10 @@ impl Live {
             },
             size: layers.iter().map(|l| l.size).sum(),
             layers,
-            image: p.doc.image,
-            features: p.doc.features.clone(),
+            image: p.doc.image.or_else(|| images.first().map(|i| i.sha256)),
+            features: details
+                .and_then(|d| d.features.clone())
+                .unwrap_or_else(|| p.doc.features.clone()),
             gametypes: p.doc.gametypes.clone(),
             version: p.doc.version.clone(),
             geometry: m.result.as_ref().and_then(|r| r.geometry),
@@ -879,6 +937,16 @@ impl Live {
                 .and_then(|c| c.source_url.clone())
                 .or_else(|| p.doc.source_url.clone()),
             credits: credit,
+            contents: details
+                .and_then(|d| d.contents.as_ref())
+                .map(|c| c.lines.clone())
+                .unwrap_or_default(),
+            images,
+            pack: details.and_then(|d| d.pack.clone()),
+            pack_name: details
+                .and_then(|d| d.pack.as_ref())
+                .and_then(|p| s.packs.get(p))
+                .map(|p| p.name.clone()),
         }
     }
 
@@ -1025,6 +1093,8 @@ impl Live {
             map: MapDetail {
                 summary: self.map_summary(s, id, p),
                 manifest: m.clone(),
+                report: s.details_of(id).and_then(|d| d.contents.clone()),
+                pack_info: s.pack_of(id),
             },
             missing: m
                 .patches
@@ -1058,6 +1128,23 @@ impl Live {
             .ok_or_else(|| not_found("this map has no image"))?;
         let (_, bytes) = self.content(&img.to_string()).await?;
         let kind = maps::image_type(&bytes).ok_or_else(|| not_found("this map has no image"))?;
+        Ok((kind, bytes))
+    }
+
+    /// `GET /v1/maps/{map_id}/images/{n}`: the admin's `n`th screenshot
+    /// (from 0).
+    pub async fn map_detail_image(&self, id: &str, n: &str) -> ApiResult<(&'static str, Vec<u8>)> {
+        let n: usize = n.parse().map_err(|_| not_found("no such image"))?;
+        let img = self
+            .map(id)?
+            .map
+            .summary
+            .images
+            .get(n)
+            .map(|i| i.sha256)
+            .ok_or_else(|| not_found("no such image"))?;
+        let (_, bytes) = self.content(&img.to_string()).await?;
+        let kind = maps::image_type(&bytes).ok_or_else(|| not_found("no such image"))?;
         Ok((kind, bytes))
     }
 
@@ -1119,6 +1206,9 @@ impl Live {
                         let credit = s.credit_of(id, p).unwrap_or_default();
                         has(m.package.name.as_str())
                             || m.package.description.as_deref().is_some_and(has)
+                            || s.details_of(id)
+                                .and_then(|d| d.description.as_deref())
+                                .is_some_and(has)
                             || credit.authors.iter().any(|a| has(a.as_str()))
                             || credit.release.as_deref().is_some_and(has)
                             || has(m.base.map.as_str())
@@ -1313,6 +1403,148 @@ impl Live {
         let s = self.catalog.read();
         let p = s.maps.get(&id).ok_or_else(|| not_found("no such map"))?;
         Ok((recorded[0].position, self.map_summary(&s, &id, p)))
+    }
+
+    /// `PUT /v1/maps/{map_id}/details`: an admin sets a published
+    /// package's details (a server-signed `MapDetailed`): a description,
+    /// screenshots already uploaded as content (each must be a stored,
+    /// served PNG or JPEG), a contents report, features. Empty details
+    /// clear the admin's. The manifest and its signature are left as
+    /// published.
+    pub async fn set_details(
+        &self,
+        bearer: Option<&str>,
+        id: &str,
+        details: Details,
+    ) -> ApiResult<(u64, MapSummary)> {
+        let by = self.moderator(bearer)?;
+        let id: MapId = id
+            .parse()
+            .map_err(|_| invalid("a MapId is 64 hex digits"))?;
+        let mut details = details.tidy();
+        if let Some(f) = details.features.take() {
+            let ordered = maps::in_order(&f, &maps::FEATURES);
+            if ordered.len() != f.len() {
+                return Err(invalid(
+                    "features: each must be one of the checklist's, once",
+                ));
+            }
+            details.features = Some(ordered);
+        }
+        details.validate().map_err(invalid)?;
+        if !self.catalog.read().maps.contains_key(&id) {
+            return Err(not_found("no such map"));
+        }
+        self.check_images(&details.images).await?;
+        let _guard = self.content_writes.lock().await;
+        if !self.catalog.read().maps.contains_key(&id) {
+            return Err(not_found("no such map"));
+        }
+        let data = Detailed {
+            map_id: id,
+            details: (!details.is_empty()).then_some(details),
+            by,
+        };
+        let event = self.server_event(
+            maps::package_stream(&id),
+            MAP_DETAILED,
+            serde_json::to_value(&data).expect("serializes"),
+        );
+        let recorded = self.store.append(vec![event], &[]).await?;
+        self.wait_applied(recorded[0].position).await?;
+        let s = self.catalog.read();
+        let p = s.maps.get(&id).ok_or_else(|| not_found("no such map"))?;
+        Ok((recorded[0].position, self.map_summary(&s, &id, p)))
+    }
+
+    /// The images `images` name are stored, served PNGs or JPEGs.
+    async fn check_images(&self, images: &[maps::MapImage]) -> ApiResult<()> {
+        for i in images {
+            let (_, bytes) = self
+                .content(&i.sha256.to_string())
+                .await
+                .map_err(|_| invalid(format!("image {} is not stored content", i.sha256)))?;
+            if maps::image_type(&bytes).is_none() {
+                return Err(invalid(format!("image {} is not a PNG or JPEG", i.sha256)));
+            }
+        }
+        Ok(())
+    }
+
+    /// `PUT /v1/mappacks/{id}`: an admin sets a map pack's info (a
+    /// server-signed `MapPackSet`); None clears it.
+    pub async fn set_pack(
+        &self,
+        bearer: Option<&str>,
+        id: &str,
+        pack: Option<PackInfo>,
+    ) -> ApiResult<u64> {
+        let by = self.moderator(bearer)?;
+        if !maps::pack_id_ok(id) {
+            return Err(invalid("a pack id is 1 to 64 of a-z, 0-9 and -"));
+        }
+        let pack = pack.map(PackInfo::tidy);
+        if let Some(p) = &pack {
+            p.validate().map_err(invalid)?;
+            self.check_images(&p.images).await?;
+        }
+        let _guard = self.content_writes.lock().await;
+        let data = PackSet {
+            id: id.to_string(),
+            pack,
+            by,
+        };
+        let event = self.server_event(
+            maps::pack_stream(id),
+            MAP_PACK_SET,
+            serde_json::to_value(&data).expect("serializes"),
+        );
+        let recorded = self.store.append(vec![event], &[]).await?;
+        self.wait_applied(recorded[0].position).await?;
+        Ok(recorded[0].position)
+    }
+
+    /// `GET /v1/mappacks`.
+    pub fn packs(&self) -> Vec<PackListed> {
+        self.catalog
+            .read()
+            .packs
+            .iter()
+            .map(|(id, info)| PackListed {
+                id: id.clone(),
+                info: info.clone(),
+            })
+            .collect()
+    }
+
+    /// The packs `items` name, for a list page.
+    pub fn packs_of(&self, items: &[MapSummary]) -> Vec<PackListed> {
+        let s = self.catalog.read();
+        let ids: BTreeSet<&String> = items.iter().filter_map(|m| m.pack.as_ref()).collect();
+        ids.into_iter()
+            .filter_map(|id| {
+                s.packs.get(id).map(|info| PackListed {
+                    id: id.clone(),
+                    info: info.clone(),
+                })
+            })
+            .collect()
+    }
+
+    /// `GET /v1/mappacks/{id}/images/{n}`.
+    pub async fn pack_image(&self, id: &str, n: &str) -> ApiResult<(&'static str, Vec<u8>)> {
+        let n: usize = n.parse().map_err(|_| not_found("no such image"))?;
+        let img = self
+            .catalog
+            .read()
+            .packs
+            .get(id)
+            .and_then(|p| p.images.get(n))
+            .map(|i| i.sha256)
+            .ok_or_else(|| not_found("no such image"))?;
+        let (_, bytes) = self.content(&img.to_string()).await?;
+        let kind = maps::image_type(&bytes).ok_or_else(|| not_found("no such image"))?;
+        Ok((kind, bytes))
     }
 
     /// `PUT /v1/admin/uploads/{gamertag}`.
@@ -1589,7 +1821,13 @@ pub(crate) async fn list_maps(
 ) -> ApiResult<Response> {
     live.authorize_read(bearer(&headers))?;
     let page = live.maps(&MapQuery::parse(&q)?);
-    Ok(crate::http::json(StatusCode::OK, &page))
+    // The packs the page's maps name, said once for the page.
+    let packs = live.packs_of(&page.items);
+    let mut v = serde_json::to_value(&page).expect("serializes");
+    if !packs.is_empty() {
+        v["packs"] = serde_json::to_value(&packs).expect("serializes");
+    }
+    Ok(crate::http::json(StatusCode::OK, &v))
 }
 
 #[derive(Deserialize)]
@@ -1678,6 +1916,62 @@ pub(crate) async fn put_credit(
         StatusCode::OK,
         &json!({"ok": true, "position": position, "map": map}),
     ))
+}
+
+pub(crate) async fn put_details(
+    State(live): Shared,
+    headers: HeaderMap,
+    UrlPath(id): UrlPath<String>,
+    body: Result<Bytes, BytesRejection>,
+) -> ApiResult<Response> {
+    let bytes = body_text(body)?;
+    let details: Details =
+        serde_json::from_slice(&bytes).map_err(|e| invalid(format!("details: {e}")))?;
+    let (position, map) = live.set_details(bearer(&headers), &id, details).await?;
+    Ok(crate::http::json(
+        StatusCode::OK,
+        &json!({"ok": true, "position": position, "map": map}),
+    ))
+}
+
+pub(crate) async fn put_pack(
+    State(live): Shared,
+    headers: HeaderMap,
+    UrlPath(id): UrlPath<String>,
+    body: Result<Bytes, BytesRejection>,
+) -> ApiResult<Response> {
+    let bytes = body_text(body)?;
+    let pack: Option<PackInfo> =
+        serde_json::from_slice(&bytes).map_err(|e| invalid(format!("pack: {e}")))?;
+    Ok(ok(live.set_pack(bearer(&headers), &id, pack).await?))
+}
+
+pub(crate) async fn list_packs(State(live): Shared, headers: HeaderMap) -> ApiResult<Response> {
+    live.authorize_read(bearer(&headers))?;
+    Ok(crate::http::json(
+        StatusCode::OK,
+        &json!({"items": live.packs(), "position": live.position()}),
+    ))
+}
+
+pub(crate) async fn get_pack_image(
+    State(live): Shared,
+    headers: HeaderMap,
+    UrlPath((id, n)): UrlPath<(String, String)>,
+) -> ApiResult<Response> {
+    live.authorize_read(bearer(&headers))?;
+    let (kind, bytes) = live.pack_image(&id, &n).await?;
+    Ok(([(header::CONTENT_TYPE, kind)], bytes).into_response())
+}
+
+pub(crate) async fn get_map_detail_image(
+    State(live): Shared,
+    headers: HeaderMap,
+    UrlPath((id, n)): UrlPath<(String, String)>,
+) -> ApiResult<Response> {
+    live.authorize_read(bearer(&headers))?;
+    let (kind, bytes) = live.map_detail_image(&id, &n).await?;
+    Ok(([(header::CONTENT_TYPE, kind)], bytes).into_response())
 }
 
 #[derive(Deserialize)]

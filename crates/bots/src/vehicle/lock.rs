@@ -1,4 +1,4 @@
-//! The rocket launcher's lock-on (docs/game/bots.md, section 3.8,
+//! The rocket launcher's lock-on (docs/game/bots.md, section 3.9,
 //! "Lock-on"). Halo 2's rocket launcher locks on to a vehicle the
 //! reticle stays on for a moment; a locked rocket follows it. So against
 //! a vehicle the bot aims at the vehicle's middle, keeps it there until
@@ -6,7 +6,7 @@
 //! fired unlocked, at the feet for a skill that aims there
 //! (`tactics::Style::feet`).
 //!
-//! The lock's own time is not traced (section 3.8, "Open"): the bot holds
+//! The lock's own time is not traced (section 3.9, "Open"): the bot holds
 //! for [`LOCK_TICKS`] plus its skill's margin. Pure; time is the game's
 //! tick.
 

@@ -465,13 +465,20 @@ fn multiplayer_skulls_page() {
     );
 }
 
-/// The Halo 1 options screen: two rows, both step.
+/// The Halo 1 options screen: two rows, both step; A opens the value
+/// picker, as retail's two-value settings do.
 #[test]
 fn halo1_options_page() {
     use ListEffect as E;
     check(
         || list_page("h1-options"),
         vec![
+            list_case(
+                "focus-0",
+                &[A],
+                vec![E::Open(crate::ui_kit::picker::NAME)],
+                "focus 0 Sandbox = < Halo 1 >",
+            ),
             list_case(
                 "focus-0",
                 &[Down, Down],
@@ -568,7 +575,7 @@ fn kit_example_page() {
 }
 
 /// The kit's choice rows: left and right step through every choice and
-/// wrap, A steps right, up and down move the focus, B closes. X and Start
+/// wrap, A opens the value picker, up and down move the focus, B closes. X and Start
 /// run the kit's action as on every kit screen; with no action row there
 /// is nothing pending, so they leave the value alone.
 #[test]
@@ -596,9 +603,9 @@ fn kit_choices_page() {
                 vec![
                     step("left on row 1: kit.example_level -> Easy"),
                     step("left on row 1: kit.example_level -> Legendary"),
-                    E::Stepped("kit.example_level -> Easy".into()),
+                    E::Open(crate::ui_kit::picker::NAME),
                 ],
-                "focus 1 Difficulty = < Easy >",
+                "focus 1 Difficulty = < Legendary >",
             ),
             list_case(
                 "focus-0",

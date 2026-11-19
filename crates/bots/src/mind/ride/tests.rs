@@ -1,6 +1,10 @@
-//! The mind with vehicles (docs/game/bots.md, section 3.8): going to take
+//! The mind with vehicles (docs/game/bots.md, Vehicles): going to take
 //! one and holding X beside its seat, boarding, driving and shooting from
 //! a seat, getting out, and the rocket launcher's lock.
+//!
+//! The sticks are eased (mind::look's hand, mind::pad's feet) and the
+//! reaction is sampled (tactics): the tests run a few ticks before reading
+//! a stick, and look for a shot over a run rather than on one tick.
 
 use crate::arms::{Ammo, Arms, Gun, Profile, Trigger};
 use crate::brain::{Me, Perception, Seen, Vec3};
@@ -8,6 +12,7 @@ use crate::cache::MapData;
 use crate::los::Walls;
 use crate::mind::{Doing, Mind, RELOAD, Skill};
 use crate::nav::{NavMesh, Poly};
+use crate::tactics::MIN_REACTION;
 use crate::vehicle::tests::{ghost, sit, warthog};
 use crate::vehicle::{Riding, SeatRole, Sight, Vehicle, plan};
 use input::host::HostPadState;
@@ -56,13 +61,16 @@ fn a_calm_bot_walks_to_a_free_ghost_and_holds_x_beside_its_seat() {
     let mut m = Mind::new(Skill::Normal, 1);
     let g = ghost(100, [5.0, 0.0, 0.0]);
     m.see_vehicles(on_foot(vec![g.clone()]));
-    let pad = step(&mut m, bot([0.0; 3]), vec![], 0, None);
-    assert_eq!(m.doing, Doing::Mount(100));
+    let mut pad = HostPadState::default();
+    for t in 0..4 {
+        pad = step(&mut m, bot([0.0; 3]), vec![], t, None);
+        assert_eq!(m.doing, Doing::Mount(100));
+        assert!(!holds_x(&pad), "not there yet");
+    }
     assert!(pad.left_stick.1 > 0.5, "walks to it: {:?}", pad.left_stick);
-    assert!(!holds_x(&pad), "not there yet");
     // Beside the driver's seat: X.
     let side = plan::approach(&g, SeatRole::Driver, 0);
-    let pad = step(&mut m, bot(side), vec![], 1, None);
+    let pad = step(&mut m, bot(side), vec![], 4, None);
     assert!(holds_x(&pad));
     assert_eq!(pad.left_stick, (0.0, 0.0), "it stands to get in");
 }
@@ -162,27 +170,31 @@ fn driving(mut v: Vehicle) -> Sight {
     }
 }
 
-/// Steps ticks `0..=last` with one enemy at `foe`; the last pad.
-fn run(m: &mut Mind, me: Me, foe: Vec3, last: u32) -> HostPadState {
+/// Steps ticks `0..=last` with one enemy at `foe`: the last pad, and
+/// whether the trigger was down on any tick (the reaction is sampled, and
+/// a burst may be between shots on the last one).
+fn run(m: &mut Mind, me: Me, foe: Vec3, last: u32) -> (HostPadState, bool) {
     let mut pad = HostPadState::default();
+    let mut fired = false;
     for t in 0..=last {
         pad = step(m, me, vec![enemy(1, foe)], t, None);
+        fired |= pad.right_trigger > 0.0;
     }
-    pad
+    (pad, fired)
 }
 
 #[test]
 fn a_ghost_driver_runs_infantry_over_and_shoots_them() {
     let mut m = Mind::new(Skill::Normal, 1);
     m.see_vehicles(driving(ghost(100, [0.0; 3])));
-    let pad = run(&mut m, bot([0.0; 3]), [8.0, 0.0, 0.0], 12);
+    let (pad, fired) = run(&mut m, bot([0.0; 3]), [8.0, 0.0, 0.0], 30);
     assert_eq!(m.doing, Doing::Drive(100));
     assert!(
         pad.left_stick.1 > 0.9,
         "full ahead at them: {:?}",
         pad.left_stick
     );
-    assert_eq!(pad.right_trigger, 1.0, "the Ghost's guns");
+    assert!(fired, "the Ghost's guns");
     assert!(!holds_x(&pad));
 }
 
@@ -191,9 +203,9 @@ fn a_warthog_driver_drives_at_them_and_does_not_shoot() {
     let mut m = Mind::new(Skill::Normal, 1);
     let [hog, _] = warthog(100, [0.0; 3]);
     m.see_vehicles(driving(hog));
-    let pad = run(&mut m, bot([0.0; 3]), [8.0, 0.0, 0.0], 12);
+    let (pad, fired) = run(&mut m, bot([0.0; 3]), [8.0, 0.0, 0.0], 30);
     assert!(pad.left_stick.1 > 0.9, "{:?}", pad.left_stick);
-    assert_eq!(pad.right_trigger, 0.0);
+    assert!(!fired);
 }
 
 #[test]
@@ -210,9 +222,9 @@ fn a_gunner_shoots_and_leaves_the_driving_to_its_driver() {
         }),
         vehicles: vec![hog, gun],
     });
-    let pad = run(&mut m, bot([0.0; 3]), [8.0, 0.0, 0.0], 12);
+    let (pad, fired) = run(&mut m, bot([0.0; 3]), [8.0, 0.0, 0.0], 30);
     assert_eq!(m.doing, Doing::Ride(100));
-    assert_eq!(pad.right_trigger, 1.0);
+    assert!(fired);
     assert_eq!(pad.left_stick, (0.0, 0.0));
 }
 
@@ -246,9 +258,13 @@ fn with_nobody_about_the_driver_follows_a_route_turning_by_the_camera() {
     };
     let mut m = Mind::new(Skill::Normal, 1);
     m.see_vehicles(driving(ghost(100, [2.0, 2.0, 0.0])));
-    let pad = step(&mut m, bot([2.0, 2.0, 0.0]), vec![], 0, Some(&map));
+    let mut pad = HostPadState::default();
+    for t in 0..10 {
+        pad = step(&mut m, bot([2.0, 2.0, 0.0]), vec![], t, Some(&map));
+    }
     assert_eq!(m.doing, Doing::Drive(100));
-    // The one polygon's middle is up and to the left of the aim (+X).
+    // The one polygon's middle is up and to the left of the aim (+X): the
+    // eased sticks have come round to it.
     assert!(
         pad.right_stick.0 < -0.5,
         "turns left: {:?}",
@@ -281,8 +297,7 @@ fn rockets() -> Arms {
                 ..Profile::default()
             },
         }),
-        other: None,
-        grenades: [0, 0],
+        ..Arms::default()
     }
 }
 
@@ -304,13 +319,15 @@ fn first_rocket(skill: Skill, in_ghost: bool) -> Option<u32> {
 #[test]
 fn rockets_at_a_vehicle_wait_for_the_lock_and_at_infantry_do_not() {
     let k = crate::vehicle::Wheels::of(Skill::Normal).lock;
+    // The reaction is sampled (tactics::Fight::focus), at most 18 ticks.
     let at_infantry = first_rocket(Skill::Normal, false).expect("fires at infantry");
-    assert_eq!(at_infantry, Skill::Normal.aim().reaction);
+    assert!((MIN_REACTION..=18).contains(&at_infantry), "{at_infantry}");
+    assert!(at_infantry < k.hold());
     let at_ghost = first_rocket(Skill::Normal, true).expect("fires at the Ghost");
     assert_eq!(at_ghost, k.hold(), "held from first sight until locked");
     // Easy does not wait.
     let easy = first_rocket(Skill::Easy, true).expect("fires");
-    assert_eq!(easy, Skill::Easy.aim().reaction);
+    assert!((MIN_REACTION..=22).contains(&easy), "{easy}");
 }
 
 #[test]
@@ -326,7 +343,7 @@ fn rockets_aim_at_the_vehicles_middle_without_lead() {
         ..bot([0.0; 3])
     };
     let mut pad = HostPadState::default();
-    for t in 0..10 {
+    for t in 0..20 {
         pad = step(&mut m, me, vec![enemy(1, [10.0, 0.0, 0.0])], t, None);
     }
     assert!(

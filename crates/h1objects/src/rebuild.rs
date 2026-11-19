@@ -606,6 +606,22 @@ pub const SEAT_BOARDING: u32 = 1 << 11;
 pub const SEAT_NOT_PLAYER: u32 = 1 << 16;
 /// See [`SEAT_DRIVER`].
 pub const SEAT_NOT_NON_PLAYER: u32 = 1 << 17;
+/// A seat whose entry and exit open and close the vehicle. E: when a unit
+/// enters a seat the engine tests the seat's flags bit 15 (`0x000d12b0`,
+/// `shr edx,0Fh` at `0x000d1302`; called from the seat change at
+/// `0x000ea979`, `0x000eab64`, `0x000eb1ff`) and, set, sends the vehicle
+/// unit action `0x17`; on leaving (`0x000d1360`, from `0x000ea7a5`,
+/// `0x000ea8ba`) action `0x18`. Through the action table at `0x004677c8`
+/// those are `0x000e9370` and `0x000e9500`, which start the animation
+/// state string ID `0x0700005c` or `0x0700005d` (two seven-character
+/// names, D: `opening` and `closing` by length; not read off the string
+/// table) on the vehicle and the objects attached to it. No other reader
+/// of bit 15 of a seat's flags was found (every `vehi +0x1cc` read
+/// followed by a bit 15 test). The retail ghost's driver seat holds it
+/// (`0x801c`). Halo 1 has no such seat flag (it sets none above bit 10)
+/// and its graphs no such state, so a rebuilt seat never takes it from
+/// the role. It has nothing to do with grenades.
+pub const SEAT_OPENS: u32 = 1 << 15;
 /// A seat whose rider is the vehicle's gunner when a player rides it. E:
 /// the rider assignment (`0x000cc810`) makes a seat's rider the gunner
 /// (`+0x24c`, who fires the vehicle's weapon) when the seat holds
@@ -646,13 +662,18 @@ impl SeatKind {
 /// A rebuilt seat's flags: Halo 1's bits ([`H1_SEAT_FLAGS`]) over the
 /// rest of the role's word, less the bits that would keep a rider out
 /// (Halo 1 seats are neither boarding seats nor closed to players or
-/// non-players) and the player gunner bit ([`SEAT_PLAYER_GUNNER`]): who
-/// fires is Halo 1's gunner bit alone. Through converter version 83 the
+/// non-players), [`SEAT_OPENS`] (no Halo 1 vehicle opens for its
+/// rider) and the player gunner bit ([`SEAT_PLAYER_GUNNER`]): who fires
+/// is Halo 1's gunner bit alone. Through converter version 83 the
 /// warthog's driver seat took that bit from the retail warthog's, and a
 /// player driving the converted warthog fired its chaingun.
 pub fn seat_flags(h1_flags: u32, role: u32) -> u32 {
-    let closed =
-        H1_SEAT_FLAGS | SEAT_BOARDING | SEAT_NOT_PLAYER | SEAT_NOT_NON_PLAYER | SEAT_PLAYER_GUNNER;
+    let closed = H1_SEAT_FLAGS
+        | SEAT_BOARDING
+        | SEAT_NOT_PLAYER
+        | SEAT_NOT_NON_PLAYER
+        | SEAT_OPENS
+        | SEAT_PLAYER_GUNNER;
     (role & !closed) | (h1_flags & H1_SEAT_FLAGS)
 }
 
@@ -804,6 +825,23 @@ pub struct VehicleRole {
     pub friction_steered: Option<Vec<(String, u32)>>,
     /// The same for the hover points, `+0x2e8`.
     pub hover: Option<Vec<(String, u32)>>,
+    /// With one member: each of its hover points' own words, in its order
+    /// (V: the retail ghost's back point holds strength `+0x8` 3.75 and
+    /// height `+0x10` 0.5, its front pair 1.85 and 0.45, so one majority
+    /// gives all three the front pair's); empty with several members.
+    pub hover_each: Vec<Vec<(String, u32)>>,
+    /// Where those points' markers sit in the member's space, at its
+    /// render model's rest pose ([`marker_positions`]), in the same order;
+    /// empty when a marker is not found. A rebuilt vehicle's points are
+    /// paired with them by position ([`crate::convert::sphere_order`]).
+    pub hover_at: Vec<[f32; 3]>,
+    /// Whether most members with friction points carry their wheels or
+    /// treads in their physics models ([`member_wheel_shapes`]): a
+    /// rebuilt vehicle's body then holds its wheels and treads above its
+    /// hull's lowest point ([`crate::convert::held_wheels`]), and leaves
+    /// them out otherwise. V, coagulation: the scorpion's yes, the
+    /// warthog's no.
+    pub wheel_shapes: bool,
     /// The engine gears, `+0x268`: the element count most members with
     /// gears hold and each element's majority words, every 4-byte field
     /// (raw curve pointers included, kept as the words they are: the
@@ -930,9 +968,40 @@ fn gear_spans(e: &StructDef) -> Vec<(String, u32)> {
         .collect()
 }
 
+/// The members a role is taken over: the indices of `counts` (each
+/// member's friction and hover points together) nearest `points` (the
+/// Halo 1 vehicle's powered mass points), every index on a tie.
+///
+/// A role is a majority word by word, and a word on which no majority
+/// agrees is left zero. Over vehicles of one type that are tuned apart
+/// that zeroes their driving: the base's three hover vehicles (the
+/// ghost's three hover points, the spectre's four, the wraith's six)
+/// agree on few of their driving words, so through converter version 83
+/// the converted ghost held zero in 16 root words the retail ghost fills
+/// (`vehi +0x1d0`..`+0x1dc`, `+0x1f4` 5.0 and `+0x1f8` 2.5 among them)
+/// and zero at `+0x8`, `+0x10` and `+0x14` of its hover points (the
+/// retail ghost's 3.75 or 1.85, 0.5 or 0.45, and 1.0), and did not move
+/// under its driver (converted Blood Gulch, 2026-11-19). Halo 1's ghost
+/// has three powered points, so it takes the ghost alone.
+pub fn nearest_members(counts: &[usize], points: usize) -> Vec<usize> {
+    let Some(best) = counts.iter().map(|c| c.abs_diff(points)).min() else {
+        return Vec::new();
+    };
+    (0..counts.len())
+        .filter(|&i| counts[i].abs_diff(points) == best)
+        .collect()
+}
+
 /// [`VehicleRole`] over the base map's vehicles whose `vehicle_type` is
-/// `vehicle_type`; `None` when the base has none of the type.
-pub fn vehicle_role(base: &crate::base::Base, vehicle_type: u16) -> Result<Option<VehicleRole>> {
+/// `vehicle_type`; `None` when the base has none of the type. With
+/// `points` (the Halo 1 vehicle's powered mass points), over only the
+/// members whose friction and hover points are nearest that count
+/// ([`nearest_members`]); `None` takes every member of the type.
+pub fn vehicle_role(
+    base: &crate::base::Base,
+    vehicle_type: u16,
+    points: Option<usize>,
+) -> Result<Option<VehicleRole>> {
     let d = def(b"vehi")?;
     let ty = field_offset(d, "vehicle_type")? as usize;
     let flags_at = field_offset(d, "vehicle_flags")? as usize;
@@ -947,6 +1016,19 @@ pub fn vehicle_role(base: &crate::base::Base, vehicle_type: u16) -> Result<Optio
     }
     if members.is_empty() {
         return Ok(None);
+    }
+    if let Some(points) = points {
+        let counts: Vec<usize> = members
+            .iter()
+            .map(|(_, bytes)| member_points(bytes, d))
+            .collect::<Result<_>>()?;
+        let keep = nearest_members(&counts, points);
+        members = members
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| keep.contains(i))
+            .map(|(_, m)| m)
+            .collect();
     }
     let words = role_over(base, d, &members)?;
     let mut sspans = Vec::new();
@@ -995,6 +1077,18 @@ pub fn vehicle_role(base: &crate::base::Base, vehicle_type: u16) -> Result<Optio
     let fflags_at = field_offset(fdef, FRICTION_FLAGS)? as usize;
     let steers = |x: &[u8]| crate::base::u32_at(x, fflags_at) & FRICTION_STEERS != 0;
     let (hat, hdef) = block(VEHI_HOVER)?;
+    let (hover_each, hover_at) = match members.as_slice() {
+        [(_, root)] => member_hover(base, root, d, hat, hdef)?,
+        _ => (Vec::new(), Vec::new()),
+    };
+    let (mut with, mut wheeled) = (0, 0);
+    for (_, root) in &members {
+        if let Some(w) = member_wheel_shapes(base, root, d, fat, fdef)? {
+            with += 1;
+            wheeled += usize::from(w);
+        }
+    }
+    let wheel_shapes = with > 0 && 2 * wheeled > with;
     let (gat, gdef) = block(VEHI_GEARS)?;
     // Gears: the count most members with gears hold, each element's
     // majority over the members of that count.
@@ -1041,8 +1135,210 @@ pub fn vehicle_role(base: &crate::base::Base, vehicle_type: u16) -> Result<Optio
         },
         friction_steered: all_elements_where(base, &members, fat, fdef, steers)?,
         hover: all_elements(base, &members, hat, hdef)?,
+        hover_each,
+        hover_at,
+        wheel_shapes,
         gears,
     }))
+}
+
+/// `phmo +0xc0`: the physics model's regions, `0xc` each, the name a
+/// string ID at `+0`.
+pub const PHMO_REGIONS: usize = 0xc0;
+pub const PHMO_REGION_SIZE: usize = 0xc;
+
+/// Whether a base vehicle's physics model carries its wheels or treads:
+/// most of its friction points ([`VEHI_FRICTION`]) either name no region
+/// ([`FRICTION_REGION`] null: the point rides the body) or name a region
+/// the `phmo` has ([`PHMO_REGIONS`]). A vehicle with friction points and
+/// no `phmo` has none; `None` when it has no friction points.
+///
+/// V, coagulation: the warthog's four points name the wheel regions
+/// `lf_wheel`, `rf_wheel`, `lb_wheel`, `rb_wheel` (the hlmt's regions 4,
+/// 7, 3, 6), none of which its `phmo` has (its regions `bumper`, `hull`;
+/// its bodies on nodes `hull` and `bumper`, none on a tire node), so no;
+/// the scorpion's twelve points name none, and its `phmo` (one region,
+/// `hull`; two bodies on no node, node -1) holds tread shapes reaching
+/// 1.13 either side where its hull reaches 0.53, so yes. Every friction
+/// marker of both hangs from node 0, the hull, so the markers' nodes do
+/// not tell wheels from hull. E: `0x205fd1` turns a friction point off
+/// once its region is destroyed, so a point with a region is a part that
+/// can come off, which neither `phmo` gives a shape.
+pub fn member_wheel_shapes(
+    base: &crate::base::Base,
+    root: &[u8],
+    d: &StructDef,
+    at: usize,
+    e: &StructDef,
+) -> Result<Option<bool>> {
+    let region_at = field_offset(e, FRICTION_REGION)? as usize;
+    let mut regions = Vec::new();
+    while let Some(x) = base.element(root, at, e.size as usize, regions.len())? {
+        regions.push(crate::base::u32_at(&x, region_at));
+    }
+    if regions.is_empty() {
+        return Ok(None);
+    }
+    let Some(hlmt) = base.reference(root, path_offset(d, "unit.obje.model")? as usize) else {
+        return Ok(Some(false));
+    };
+    let Some(phmo) = base.reference(&base.root(hlmt)?, crate::convert::h2::HLMT_PHYSICS_MODEL)
+    else {
+        return Ok(Some(false));
+    };
+    let p = base.root(phmo)?;
+    let mut have = Vec::new();
+    while let Some(x) = base.element(&p, PHMO_REGIONS, PHMO_REGION_SIZE, have.len())? {
+        have.push(crate::base::u32_at(&x, 0));
+    }
+    let carried = regions
+        .iter()
+        .filter(|r| **r == 0 || have.contains(r))
+        .count();
+    Ok(Some(2 * carried > regions.len()))
+}
+
+/// A base vehicle's hover points ([`VEHI_HOVER`], element `e` at `at` of
+/// its root): each one's words (its nonzero 4-byte words) and where its
+/// marker sits ([`marker_positions`]; empty when a marker is not found).
+fn member_hover(
+    base: &crate::base::Base,
+    root: &[u8],
+    d: &StructDef,
+    at: usize,
+    e: &StructDef,
+) -> Result<(Vec<Vec<(String, u32)>>, Vec<[f32; 3]>)> {
+    let mut spans = Vec::new();
+    word_spans(e, "", 0, &mut spans);
+    let marker_at = field_offset(e, HOVER_MARKER)? as usize;
+    let mut words = Vec::new();
+    let mut names = Vec::new();
+    while let Some(x) = base.element(root, at, e.size as usize, words.len())? {
+        let mut t = Tally::new();
+        tally_words(&x, &spans, &mut t);
+        words.push(majority(&t));
+        names.push(crate::base::u32_at(&x, marker_at));
+    }
+    let positions = marker_positions(base, root, d, &names)?.unwrap_or_default();
+    Ok((words, positions))
+}
+
+/// Where the markers named `names` (string IDs of the base) sit in the
+/// space of the base vehicle whose root is `root`: each name's first
+/// marker in its render model (`hlmt +0` of `unit.obje.model`), its
+/// translation (`+0x4`) carried through its node (`+0x2`) at the model's
+/// rest pose (node translation `+0xc`, orientation `+0x18`, composed from
+/// the root as `h1models::mode::world_transforms` does). `None` when the
+/// model or any marker is missing.
+pub fn marker_positions(
+    base: &crate::base::Base,
+    root: &[u8],
+    d: &StructDef,
+    names: &[u32],
+) -> Result<Option<Vec<[f32; 3]>>> {
+    let Some(hlmt) = base.reference(root, path_offset(d, "unit.obje.model")? as usize) else {
+        return Ok(None);
+    };
+    let h = base.root(hlmt)?;
+    let Some(mode) = base.reference(&h, field_offset(def(b"hlmt")?, "render_model")? as usize)
+    else {
+        return Ok(None);
+    };
+    let m = base.root(mode)?;
+    let md = def(b"mode")?;
+    let child = |name: &str| -> Result<(usize, &'static StructDef)> {
+        Ok((
+            field_offset(md, name)? as usize,
+            md.child(name)
+                .ok_or_else(|| Error::Invalid(format!("mode {name}")))?,
+        ))
+    };
+    let floats = |b: &[u8], at: usize, n: usize| -> Vec<f32> {
+        (0..n)
+            .map(|k| f32::from_le_bytes(b[at + 4 * k..at + 4 * k + 4].try_into().expect("4")))
+            .collect()
+    };
+    let (nodes_at, nd) = child("nodes")?;
+    let (parent, translation, orientation) = (
+        field_offset(nd, "parent_index")? as usize,
+        field_offset(nd, "translation")? as usize,
+        field_offset(nd, "orientation")? as usize,
+    );
+    let mut nodes = Vec::new();
+    while let Some(x) = base.element(&m, nodes_at, nd.size as usize, nodes.len())? {
+        let q = floats(&x, orientation, 4);
+        let t = floats(&x, translation, 3);
+        nodes.push((
+            i16::from_le_bytes([x[parent], x[parent + 1]]),
+            [q[0], q[1], q[2], q[3]],
+            [t[0], t[1], t[2]],
+        ));
+    }
+    let world = h1models::mode::world_transforms(&nodes);
+    let (groups_at, gd) = child("marker_groups")?;
+    let markers_def = gd
+        .child("markers")
+        .ok_or_else(|| Error::Invalid("mode markers".into()))?;
+    let (group_name, markers_at) = (
+        field_offset(gd, "name")? as usize,
+        field_offset(gd, "markers")? as usize,
+    );
+    let (marker_node, marker_translation) = (
+        field_offset(markers_def, "node")? as usize,
+        field_offset(markers_def, "translation")? as usize,
+    );
+    let mut groups = Vec::new();
+    while let Some(g) = base.element(&m, groups_at, gd.size as usize, groups.len())? {
+        groups.push(g);
+    }
+    let mut out = Vec::new();
+    for name in names {
+        let Some(g) = groups
+            .iter()
+            .find(|g| crate::base::u32_at(g, group_name) == *name)
+        else {
+            return Ok(None);
+        };
+        let Some(x) = base.element(g, markers_at, markers_def.size as usize, 0)? else {
+            return Ok(None);
+        };
+        let Some((r, p)) = world.get(x[marker_node] as usize) else {
+            return Ok(None);
+        };
+        let t = floats(&x, marker_translation, 3);
+        out.push(std::array::from_fn(|a| {
+            p[a] + (0..3).map(|k| r[a][k] * t[k]).sum::<f32>()
+        }));
+    }
+    Ok(Some(out))
+}
+
+/// A field's offset through embedded structs (`unit.obje.model`).
+fn path_offset(d: &StructDef, path: &str) -> Result<u32> {
+    let (head, rest) = path
+        .split_once('.')
+        .map_or((path, None), |(h, r)| (h, Some(r)));
+    let f = d
+        .fields
+        .iter()
+        .find(|f| f.name == head)
+        .ok_or_else(|| Error::Invalid(format!("{}: no field {head}", d.name)))?;
+    match (rest, &f.kind) {
+        (None, _) => Ok(f.offset),
+        (Some(r), defs::Kind::Struct(s)) => Ok(f.offset + path_offset(s, r)?),
+        _ => Err(Error::Invalid(format!("{}: {path}", d.name))),
+    }
+}
+
+/// A base vehicle's friction and hover points together ([`VEHI_FRICTION`],
+/// [`VEHI_HOVER`] element counts), from its root.
+fn member_points(root: &[u8], d: &StructDef) -> Result<usize> {
+    let mut n = 0;
+    for block in [VEHI_FRICTION, VEHI_HOVER] {
+        let at = field_offset(d, block)? as usize;
+        n += crate::base::u32_at(root, at) as usize;
+    }
+    Ok(n)
 }
 
 fn field_offset(d: &StructDef, name: &str) -> Result<u32> {
@@ -1342,10 +1638,18 @@ pub fn vehicle(v: &VehicleSpec) -> Result<Block> {
         {
             let e = d.child(block).expect("vehi points");
             let mut out = Vec::new();
-            for p in v.points {
+            for (i, p) in v.points.iter().enumerate() {
                 let mut x = defs::default_record(e);
                 let words = match (block, p.steered, &role.friction_steered) {
                     (VEHI_FRICTION, true, Some(w)) => w,
+                    // Point i is paired with the member's hover point i
+                    // (the caller orders the points by `hover_at`).
+                    (VEHI_HOVER, _, _)
+                        if role.hover_each.len() == v.points.len()
+                            && role.hover_at.len() == v.points.len() =>
+                    {
+                        &role.hover_each[i]
+                    }
                     _ => words,
                 };
                 role_words(&mut x, words)?;
@@ -1616,7 +1920,14 @@ pub struct BodyWords {
     /// `+0x1a`, the motion: 0 to 5 are Havok motions 2 to 7 (E: the table
     /// at `0x001d5bd4`); 2 is box inertia.
     pub motion: u16,
-    /// `+0x1e`; meaning not established.
+    /// `+0x1e`, the body's size class ([`size_class`]): V, every rigid
+    /// body of every `phmo` on coagulation, beavercreek and
+    /// 05a_deltaapproach, it rises with the body's bounding sphere radius
+    /// (`+0x14`): 3 from 0.30 to 0.70, 4 from 0.73 to 1.23, 5 from 1.39 to
+    /// 1.96, 6 from 2.13 (1 and 2 overlap below 0.48). E: `0x001d5ec0`
+    /// takes the largest over an object's bodies (`0x001d63fd`) and
+    /// `0x001d69d0` picks a creature's collision layer by it (`0x001d6a32`:
+    /// up to 1 layer 4, 5 and over layer 5, else 3).
     pub word_1e: u16,
 }
 
@@ -1639,6 +1950,103 @@ pub const BIPED_BODY: BodyWords = BodyWords {
     motion: 2,
     word_1e: 1,
 };
+
+/// `phmo +0x38`: the rigid bodies, `0x90` each; a body's flags at `+0x18`,
+/// motion at `+0x1a` and [`BodyWords::word_1e`] at `+0x1e` (`u16` each).
+pub const PHMO_RIGID_BODIES: usize = 0x38;
+pub const RIGID_BODY_SIZE: usize = 0x90;
+
+/// The rigid body words of the base map's scenery physics models: over
+/// every rigid body of every `phmo` a `scen` of the base names (through
+/// its `hlmt`, [`crate::convert::h2::HLMT_PHYSICS_MODEL`]), the flags and
+/// motion most of them hold, with how many bodies there were; `None` when
+/// no scenery of the base has a physics model. The `+0x1e` returned is
+/// the most common among those bodies; a built body takes its own by its
+/// size instead ([`size_class`]; V, coagulation: 5 on the trees whose
+/// bodies reach 1.72 to 1.82, 6 on the two of 2.53 and 7.33).
+///
+/// Converted scenery is built a physics model from its Halo 1 collision
+/// with these words. Through converter version 84 it had none, only its
+/// `coll`'s BSP physics slots, and the player walked through Blood
+/// Gulch's boulders (game run, 2026-11-19): no Havok body belonged to any
+/// scenery placement. Retail Coagulation, Blood Gulch's base, gives
+/// every scenery with collision a `phmo` (6 of 6).
+///
+/// E, how the engine reads the motion: the body builder `0x001d5940`
+/// maps `+0x1a` 0..5 to Havok motions 2..7 (the jump table at
+/// `0x001d5bd4`, cases `0x001d5a01`..`0x001d5a24`), then makes it 7
+/// whatever the word when its caller asks for a fixed body (`0x001d5a29`).
+pub fn scenery_body(base: &crate::base::Base) -> Result<Option<(BodyWords, usize)>> {
+    let model = crate::convert::h2::MODEL;
+    let physics = crate::convert::h2::HLMT_PHYSICS_MODEL;
+    let mut votes = std::collections::BTreeMap::<(u16, u16), usize>::new();
+    let mut sizes = std::collections::BTreeMap::<u16, usize>::new();
+    let mut seen = std::collections::HashSet::new();
+    for t in base.tags.iter().filter(|t| t.1 == FourCC(*b"scen")) {
+        let bytes = base.root(t.0)?;
+        let Some(h) = base.reference(&bytes, model) else {
+            continue;
+        };
+        let Some(p) = base.reference(&base.root(h)?, physics) else {
+            continue;
+        };
+        if !seen.insert(p) {
+            continue;
+        }
+        let phmo = base.root(p)?;
+        let mut i = 0;
+        while let Some(rb) = base.element(&phmo, PHMO_RIGID_BODIES, RIGID_BODY_SIZE, i)? {
+            let h = |o: usize| u16::from_le_bytes([rb[o], rb[o + 1]]);
+            *votes.entry((h(0x18), h(0x1a))).or_default() += 1;
+            *sizes.entry(h(0x1e)).or_default() += 1;
+            i += 1;
+        }
+    }
+    let total: usize = votes.values().sum();
+    let word_1e = sizes
+        .into_iter()
+        .max_by_key(|(w, c)| (*c, std::cmp::Reverse(*w)))
+        .map_or(0, |(w, _)| w);
+    Ok(votes
+        .into_iter()
+        .max_by_key(|(w, c)| (*c, std::cmp::Reverse(*w)))
+        .map(|((flags, motion), _)| {
+            (
+                BodyWords {
+                    flags,
+                    motion,
+                    word_1e,
+                },
+                total,
+            )
+        }))
+}
+
+/// Every rigid body of every physics model of the base: (bounding sphere
+/// radius `+0x14`, size class `+0x1e`), for [`size_class`].
+pub fn size_classes(base: &crate::base::Base) -> Result<Vec<(f32, u16)>> {
+    let mut out = Vec::new();
+    for t in base.tags.iter().filter(|t| t.1 == FourCC(*b"phmo")) {
+        let phmo = base.root(t.0)?;
+        let mut i = 0;
+        while let Some(rb) = base.element(&phmo, PHMO_RIGID_BODIES, RIGID_BODY_SIZE, i)? {
+            let radius = f32::from_le_bytes(rb[0x14..0x18].try_into().expect("4"));
+            out.push((radius, u16::from_le_bytes([rb[0x1e], rb[0x1f]])));
+            i += 1;
+        }
+    }
+    Ok(out)
+}
+
+/// A body's size class ([`BodyWords::word_1e`]) by its bounding sphere
+/// radius: the class of the base body whose radius is nearest
+/// ([`size_classes`]); `None` with no base bodies.
+pub fn size_class(classes: &[(f32, u16)], radius: f32) -> Option<u16> {
+    classes
+        .iter()
+        .min_by(|a, b| (a.0 - radius).abs().total_cmp(&(b.0 - radius).abs()))
+        .map(|c| c.1)
+}
 
 /// The global material every built piece names, with the index retail
 /// shapes of that material hold at header `+6` (V: the disc's
@@ -1679,6 +2087,19 @@ pub fn physics_model(
     nodes: &[PhysNode],
     words: BodyWords,
     joints: &[crate::ragdoll::Constraint],
+) -> Result<Block> {
+    physics_model_sized(bodies, nodes, words, joints, &[])
+}
+
+/// [`physics_model`], each body's `+0x1e` its own size class by its
+/// bounding sphere radius ([`size_class`] over `classes`) where `classes`
+/// has any, else `words`'.
+pub fn physics_model_sized(
+    bodies: &[Body],
+    nodes: &[PhysNode],
+    words: BodyWords,
+    joints: &[crate::ragdoll::Constraint],
+    classes: &[(f32, u16)],
 ) -> Result<Block> {
     let d = def(b"phmo")?;
     let mut r = defs::default_record(d);
@@ -1839,7 +2260,11 @@ pub fn physics_model(
         set(&mut rb, "bounding_sphere_offset", Val::floats(&centre))?;
         set(&mut rb, "bounding_sphere_radius", Val::Float(radius))?;
         set(&mut rb, "unknown_18", u16_pair(words.flags, words.motion))?;
-        set(&mut rb, "unknown_1c", u16_hi(words.word_1e))?;
+        set(
+            &mut rb,
+            "unknown_1c",
+            u16_hi(size_class(classes, radius).unwrap_or(words.word_1e)),
+        )?;
         set(&mut rb, "unknown_20", f(1.0))?;
         set(&mut rb, "unknown_28", f(0.05))?;
         set(&mut rb, "shape_type", Val::Int(shape_type))?;

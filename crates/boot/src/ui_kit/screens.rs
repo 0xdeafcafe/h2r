@@ -268,7 +268,7 @@ pub fn account_spec(a: &crate::account_screen::AccountScreen, now: i64) -> Scree
 }
 
 /// The screens `h2 ui preview` knows, by name.
-pub const NAMES: [&str; 16] = [
+pub const NAMES: [&str; 21] = [
     "campaigns",
     "skulls",
     "skulls.h1",
@@ -285,6 +285,11 @@ pub const NAMES: [&str; 16] = [
     "kit.dialog",
     "kit.dialog.large",
     "clankers",
+    "mods",
+    "mods.pack",
+    "mods.detail",
+    "kit.picker",
+    "kit.picker.game",
 ];
 
 /// Every named state of screen `name` for the preview sheet: a list's
@@ -326,7 +331,7 @@ pub fn dialog_example(
     use crate::ui_kit::dialog::DialogBase;
     let (feature, name) = match base {
         DialogBase::QuickOptions => ("kit-dialog", "kit.dialog"),
-        DialogBase::Large => ("kit-dialog-large", "kit.dialog.large"),
+        DialogBase::Large | DialogBase::ValuePicker => ("kit-dialog-large", "kit.dialog.large"),
     };
     crate::ui_kit::screen::KitScreen::new(
         feature,
@@ -341,6 +346,24 @@ pub fn dialog_example(
         Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Change"),
         Prompt::new(&[Glyph::B], "Back"),
     ])
+}
+
+/// The value picker's sample: the kit's Count (nine values, so the list
+/// scrolls past its six), 4 held, over the lobby's Game Setup as the
+/// Clankers page's pickers are.
+pub fn picker_sample() -> crate::ui_kit::picker::Pick {
+    use crate::ui_kit::choice::example::{COUNT, store};
+    let store = store();
+    let values = COUNT.choices().into_iter().map(|(_, n)| n).collect();
+    let current = COUNT.index(&store);
+    crate::ui_kit::picker::Pick::new(
+        COUNT.label,
+        values,
+        current,
+        COUNT.description,
+        Arc::new(move |i| COUNT.set(&store, i)),
+    )
+    .over(crate::ui_kit::view::Opener::GAME_SETUP_CLANKERS)
 }
 
 /// The kit's choice rows on a page laid out as Game Options is (the
@@ -505,6 +528,30 @@ pub fn list_page(name: &str) -> Option<ListPage> {
             let s = Arc::new(crate::clankers::page(store));
             list(ListPage::new(s.class(), described(&s)))
         }
+        "mods" | "mods.pack" | "mods.detail" => {
+            use crate::mods_screen::spec::{
+                Sample, detail_spec, list_spec, pack_spec, sample_repo,
+            };
+            let open = match name {
+                "mods.detail" => Sample::Page,
+                "mods.pack" => Sample::Pack,
+                _ => Sample::List,
+            };
+            let repo = sample_repo(open);
+            let [list_class, pack_class, detail_class] = crate::mods_screen::classes(&repo);
+            match open {
+                Sample::Page => list(ListPage::new(detail_class, move || detail_spec(&repo))),
+                Sample::Pack => list(ListPage::new(pack_class, move || pack_spec(&repo))),
+                Sample::List => list(ListPage::new(list_class, move || list_spec(&repo))),
+            }
+        }
+        "kit.picker" | "kit.picker.game" => {
+            crate::ui_kit::picker::offer(picker_sample());
+            let p = Arc::new(crate::ui_kit::picker::Picker::new(
+                name == crate::ui_kit::picker::GAME_NAME,
+            ));
+            list(ListPage::new(p.class(), described(&p)))
+        }
         _ => None,
     }
 }
@@ -659,6 +706,110 @@ mod tests {
         }
     }
 
+    /// A mod's page is the pregame lobby's layout, drawn from `from`: its
+    /// one row (the action) where the lobby's buttons are, the lobby's
+    /// panels under it, the body and status on them, the map's picture
+    /// under them, and the table column's facts (white names left, pale
+    /// values right, 22 apart) and checklist; nothing but the action is a
+    /// row, so nothing else takes the focus.
+    fn assert_lobby_inside(from: &crate::ui_kit::preview::From<'_>) {
+        use crate::mods_screen::page_layout as l;
+        use crate::ui_kit::view::{Art, Justify, Kind, Layer};
+        let s = sample("mods.detail").unwrap();
+        assert_eq!(s.rows.len(), 1, "one row: the action");
+        assert_eq!(s.rows[0].press, Press::Act);
+        assert!(!s.scrolls);
+        assert_eq!(s.texts.len(), l::TEXTS);
+        let (v, _) = from.draw(&s, "lobby").unwrap();
+        assert_eq!(v.focus.as_deref(), Some("row.0"));
+        assert!(v.widget("row.1.label").is_none());
+        // The action's bar on the lobby buttons' band (153 to 174).
+        let bar = v.widget("row.0.art.0").unwrap().rect;
+        assert!(bar[0] <= 174 && bar[2] >= 153, "{bar:?}");
+        // The lobby's backings, at the lobby's own places, as panels.
+        for (k, spec) in l::ART.iter().enumerate() {
+            let w = v.widget(&format!("panel.{k}")).unwrap();
+            assert_eq!(w.layer, Layer::Panel);
+            assert_eq!([w.rect[1], w.rect[0]], spec.at);
+            assert!(matches!(
+                w.kind,
+                Kind::Art {
+                    art: Art::Screen {
+                        screen_id: 14,
+                        pane: 0,
+                        ..
+                    },
+                    ..
+                }
+            ));
+        }
+        // The picture: the lobby's picture widget, nothing over it.
+        let pic = v.widget("art.0").unwrap();
+        assert_eq!([pic.rect[1], pic.rect[0]], l::PICTURE.at);
+        let text = |id: &str| {
+            let w = v.widget(id).unwrap_or_else(|| panic!("no {id}"));
+            match &w.kind {
+                Kind::Text { font, justify, .. } => (w.rect, *font, *justify),
+                _ => panic!("{id} is not a text"),
+            }
+        };
+        assert_eq!(text("page.body").0, l::BODY.rect);
+        assert_eq!(text("description").0, l::STATUS.rect);
+        for k in 0..l::FACT_ROWS {
+            let (r, font, j) = text(&format!("page.fact.{k}.label"));
+            assert_eq!((r, font, j), (l::row_rect(k), 1, Justify::Left), "fact {k}");
+            let (r, _, j) = text(&format!("page.fact.{k}.value"));
+            assert_eq!((r, j), (l::row_rect(k), Justify::Right), "fact {k}");
+        }
+        assert_eq!(text("page.check.heading").0, l::row_rect(l::FACT_ROWS));
+        for w in v.widgets.iter().filter(|w| w.id.starts_with("page.")) {
+            let r = w.rect;
+            assert!(
+                r[1] >= l::TABLE_LEFT
+                    || w.id == "page.body"
+                    || (w.id.starts_with("page.check.") && r[1] >= l::CHECK_LEFT),
+                "{}: in the table column",
+                w.id
+            );
+            assert!(
+                r[2] > pic.rect[0] || r[3] < pic.rect[1] || r[1] > pic.rect[3],
+                "{}: off the picture",
+                w.id
+            );
+        }
+    }
+
+    #[test]
+    fn a_mods_page_is_the_lobby_layout_with_one_action() {
+        assert_lobby_inside(&crate::ui_kit::preview::From::Synthetic);
+        // The list keeps the level select's layout, and every row is a map
+        // (or a pack) its press opens.
+        let list = sample("mods").unwrap();
+        assert_eq!(list.list, ListPlace::from(Some(skulls_menu::LIST_LAYOUT)));
+        let opens: Vec<&Press> = list.rows.iter().map(|r| &r.press).collect();
+        let (detail, pack) = (
+            Press::Open(crate::mods_screen::DETAIL.into()),
+            Press::Open(crate::mods_screen::PACK.into()),
+        );
+        assert_eq!(opens, [&detail, &detail, &pack, &detail]);
+    }
+
+    #[test]
+    fn a_mods_pack_is_the_lists_layout_download_all_then_its_maps() {
+        let s = sample("mods.pack").unwrap();
+        assert_eq!(s.list, ListPlace::from(Some(skulls_menu::LIST_LAYOUT)));
+        assert_eq!(s.title, "Sample Pack");
+        let labels: Vec<&str> = s.rows.iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(labels[0], "Download All (3)");
+        assert_eq!(labels.len(), 4);
+        assert_eq!(s.rows[0].press, Press::Act);
+        assert!(
+            s.rows[1..]
+                .iter()
+                .all(|r| r.press == Press::Open(crate::mods_screen::DETAIL.into()))
+        );
+    }
+
     #[test]
     fn screens_describe_themselves_as_json_for_the_ui_stack() {
         let s = sample("coop").unwrap();
@@ -685,7 +836,7 @@ mod tests {
         use crate::ui_kit::layout::Issue;
         matches!(
             (screen, issue),
-            ("kit.dialog" | "kit.dialog.large" | "clankers" | "h1-options", Issue::Contrast { id, .. })
+            ("kit.dialog" | "kit.dialog.large" | "clankers" | "h1-options" | "kit.picker" | "kit.picker.game", Issue::Contrast { id, .. })
                 if id.starts_with("row.")
         )
     }
@@ -773,12 +924,37 @@ mod tests {
         for base in [
             crate::ui_kit::dialog::DialogBase::Large,
             crate::ui_kit::dialog::DialogBase::QuickOptions,
+            crate::ui_kit::dialog::DialogBase::ValuePicker,
         ] {
             assert_eq!(
                 crate::ui_kit::dialog::DialogGeometry::fallback_for(base),
                 disc.dialog_geometry_for(base).unwrap(),
                 "DialogGeometry::fallback_for({base:?}) differs from the disc"
             );
+        }
+        // The value picker's description block and list are
+        // `low_level_settings`' own.
+        {
+            use crate::ui_kit::dialog::{
+                PICKER_ANIMATION, PICKER_HELP_TEXT, PICKER_LIST, PICKER_LIST_ROWS,
+                VALUE_PICKER_SCREEN_ID,
+            };
+            let picker = disc
+                .screen(VALUE_PICKER_SCREEN_ID)
+                .expect("low_level_settings");
+            assert_eq!(picker.header_layout(), 2, "the large dialog's header");
+            let pane = &picker.panes[0];
+            assert_eq!(pane.animation.0, PICKER_ANIMATION);
+            let help = &pane.text_blocks[0];
+            let r = help.rect;
+            assert_eq!([r.top, r.left, r.bottom, r.right], PICKER_HELP_TEXT.rect);
+            assert_eq!(help.font, PICKER_HELP_TEXT.font);
+            assert_eq!(help.text_color, PICKER_HELP_TEXT.colour);
+            assert_eq!(help.animation.0, PICKER_HELP_TEXT.animation);
+            let list = &pane.lists[0];
+            assert_eq!(list.skin, PICKER_LIST.skin);
+            assert_eq!([list.anchor.x, list.anchor.y], PICKER_LIST.anchor);
+            assert_eq!(list.visible_items as usize, PICKER_LIST_ROWS);
         }
         // Quick Options' help line and list, which the Clankers and Halo 1
         // Options pages use, are its tag's own, and those pages are laid out
@@ -809,6 +985,49 @@ mod tests {
             for name in QUICK_PAGES {
                 assert_quick_options_inside(&crate::ui_kit::preview::From::Disc(&disc), name);
             }
+        }
+        // A mod's page: the pregame lobby's own blocks (pane 0), and the
+        // page laid out as the lobby on the disc's geometry too.
+        {
+            use crate::mods_screen::page_layout as l;
+            let lobby = disc
+                .screen(l::LOBBY_SCREEN_ID as i16)
+                .expect("pregame_lobby");
+            let pane = &lobby.panes[0];
+            let body = &pane.text_blocks[0];
+            let r = body.rect;
+            assert_eq!([r.top, r.left, r.right], [135, -258, 45]);
+            assert_eq!(l::BODY.rect[..2], [r.top, r.left]);
+            // The lobby's status text is conduit-13 (font 4); the page sets
+            // its body in conduit-12 (font 1) on purpose, so four lines fit.
+            assert_eq!((body.font, l::BODY.font), (4, 1));
+            assert_eq!(
+                (body.text_color, body.animation.0),
+                (l::BODY.colour, l::BODY.animation)
+            );
+            assert_eq!(body.render_depth_bias, l::TEXT_BIAS);
+            // The table column's first row: a value (right) and a name.
+            let value = &pane.text_blocks[11];
+            let r = value.rect;
+            assert_eq!(
+                [r.top, r.left, r.bottom],
+                [l::row_rect(0)[0], l::TABLE_LEFT, l::row_rect(0)[2]]
+            );
+            assert_eq!(value.flags & 3, 2, "right-justified");
+            assert_eq!(value.text_color, l::PALE_BLUE);
+            let next = &pane.text_blocks[12];
+            assert_eq!(value.rect.top - next.rect.top, l::ROW_STEP);
+            for (spec, size) in l::ART.iter().zip(l::ART_SIZES) {
+                let b = &pane.bitmaps[spec.bitmap as usize];
+                assert_eq!([b.top_left.x, b.top_left.y], spec.at);
+                assert_eq!(b.animation.0, spec.animation);
+                assert_eq!(b.image, spec.image);
+                let _ = size;
+            }
+            let pic = &pane.bitmaps[l::PICTURE.bitmap as usize];
+            assert_eq!(pic.animation.0, l::PICTURE.animation);
+            assert_eq!(pic.image, l::PICTURE.image);
+            assert_lobby_inside(&crate::ui_kit::preview::From::Disc(&disc));
         }
         // Every state passes the layout checks on the disc's art and fonts,
         // the art ones included.

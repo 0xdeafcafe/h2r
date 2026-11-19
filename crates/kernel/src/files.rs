@@ -7,6 +7,8 @@ use crate::{Action, Core, abi::Args, status};
 use runtime::{Guest, GuestFault, guest::Access};
 use vfs::{Error, Offset, OpenOptions, Timestamp, Vfs};
 
+mod save_trace;
+
 /// Xbox/NT FILE_OPEN_FOR_FREE_SPACE_QUERY create option.
 pub(crate) const FILE_OPEN_FOR_FREE_SPACE_QUERY: u32 = 0x0080_0000;
 /// Access bits that could modify the opened object or its security, including
@@ -190,9 +192,21 @@ fn offset(memory: &Guest, pointer: u32, write: bool) -> Result<vfs::Result<Offse
 }
 
 impl Core {
-    /// Runs one guest file call, charging its host wall time (microseconds,
-    /// rounded) to `Counter::FileIoUs` on whichever thread made it.
+    /// Runs one guest file call; with `H2_SAVE_TRACE` set, a call on the
+    /// save drive also prints a line (`files/save_trace.rs`).
     pub(crate) fn file_call(&mut self, memory: &mut Guest, a: &Args) -> Result<Action, GuestFault> {
+        if save_trace::enabled()
+            && let Some(pending) = save_trace::before(memory, a)
+        {
+            let r = self.file_call_timed(memory, a);
+            save_trace::after(memory, a, pending, &r);
+            return r;
+        }
+        self.file_call_timed(memory, a)
+    }
+    /// Charges the call's host wall time (microseconds, rounded) to
+    /// `Counter::FileIoUs` on whichever thread made it.
+    fn file_call_timed(&mut self, memory: &mut Guest, a: &Args) -> Result<Action, GuestFault> {
         if !timeline::phase::enabled() {
             return self.file_call_inner(memory, a);
         }

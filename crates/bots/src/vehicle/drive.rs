@@ -1,4 +1,4 @@
-//! In a vehicle (docs/game/bots.md, section 3.8, "Drive"): following a
+//! In a vehicle (docs/game/bots.md, section 3.9, "Drive"): following a
 //! route, steering, getting unstuck, and when to get out. Pure.
 //!
 //! Halo 2 steers a Ghost or a Warthog by the camera: the left stick says

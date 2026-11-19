@@ -1,4 +1,4 @@
-//! The mind with vehicles (docs/game/bots.md, section 3.8): the glue
+//! The mind with vehicles (docs/game/bots.md, section 3.9): the glue
 //! between [`Mind::step`] and the pure planners in [`crate::vehicle`].
 //!
 //! - In a vehicle, [`Mind::ride`] makes the whole pad: the driver follows
@@ -11,8 +11,11 @@
 //! - In a fight, [`Mind::lock_on`] holds a rocket launcher on a vehicle
 //!   until the lock.
 //!
-//! A child of `mind`, so it uses the mind's own walking (`Mind::go`), aim
-//! and trigger.
+//! A child of `mind`, so it uses the mind's own walking (`Mind::go`), the
+//! hand that turns the right stick (`mind::look`), the thumb that eases
+//! the left (`mind::pad::Feet`), and the trigger (`tactics`). Getting in
+//! and out are long holds of X, not taps, so they are pressed here rather
+//! than through `mind::pad::Buttons` (whose taps last 2 to 4 ticks).
 
 use super::*;
 use crate::arms::Gun;
@@ -54,16 +57,17 @@ impl Mind {
         me: &Me,
         chosen: Option<(Seen, u32)>,
         goal: Option<Goal>,
-        new_tick: bool,
+        dt: u32,
     ) -> Option<HostPadState> {
         let tick = p.tick;
-        if new_tick {
-            self.vehicles.update(tick);
-        }
+        // `step` returns the last pad for a repeated tick: this is a new one.
+        self.vehicles.update(tick);
         if chosen.is_none() {
             self.vehicles.lock.reset();
         }
         let riding = self.vehicles.sight.riding?;
+        // This pad is the whole pad and returns before the glitch gate.
+        self.drop_glitches();
         let sight = &self.vehicles.sight;
         let mut pad = HostPadState::default();
         let Some(part) = sight.get(riding.vehicle) else {
@@ -87,15 +91,22 @@ impl Mind {
         self.take = None;
         self.stuck.reset();
         self.moves.calm();
+        self.combo.reset();
+        self.grenade.reset();
 
         let eye = up(me.position, EYE);
+        let aim_at = angles(me.aim);
         let facing = crate::vehicle::flat(root.forward);
         let mut look: Option<Vec3> = None;
+        let mut aim_error: Option<[f32; 2]> = None;
         let mut go: Option<[f32; 2]> = None;
         // The fight from the seat.
-        if let Some((o, t0)) = chosen
-            && p.tick.wrapping_sub(t0) >= aim.reaction
-        {
+        let reacted = chosen.filter(|&(_, ready)| reached(p.tick, ready));
+        if reacted.is_none() {
+            self.hand.lose_target();
+            self.fight.stop_trigger(p.tick);
+        }
+        if let Some((o, _)) = reacted {
             let target = up(o.position, CHEST);
             let dist = len(sub(target, eye));
             let vel = self.tracks.get(&o.id).map_or([0.0; 3], |t| t.vel);
@@ -108,13 +119,25 @@ impl Mind {
             } else {
                 (Pull::Hold(aim.burst), dist < FIRE_RANGE, SHOT_SPEED)
             };
-            look = Some(add(target, scale(vel, aim.lead * dist / speed_of_shot)));
-            let off = angle_between(sub(target, eye), me.aim);
+            let led = add(target, scale(vel, aim.lead * dist / speed_of_shot));
+            // The hand (mind::look): flick, lag and drift as on foot.
+            aim_error = Some(self.hand.track(
+                self.skill,
+                o.id,
+                tick,
+                aim_at,
+                sub(target, eye),
+                sub(led, eye),
+            ));
+            let off = angle_between(sub(led, eye), me.aim);
             let cone = aim.fire_cone + (0.4 / dist.max(0.5)).min(0.3);
             let guns = !driver || spec.driver_guns;
-            let want = guns && off < cone && in_range;
-            if self.fight.trigger(p.tick, t0, pull, want) {
-                pad.right_trigger = 1.0;
+            if guns && in_range {
+                if self.fight.trigger(p.tick, pull, off < cone) {
+                    pad.right_trigger = 1.0;
+                }
+            } else {
+                self.fight.stop_trigger(p.tick);
             }
             // On foot and in front: run them over.
             if driver
@@ -204,8 +227,7 @@ impl Mind {
                 }
             }
             if let Some(d) = go {
-                let (yaw, _) = angles(me.aim);
-                let off = wrap(d[1].atan2(d[0]) - yaw);
+                let off = wrap(d[1].atan2(d[0]) - aim_at.0);
                 throttle = drive::throttle(off);
             }
             match self.vehicles.unstick.step(tick, speed, throttle > 0.3) {
@@ -226,7 +248,7 @@ impl Mind {
         }
 
         // Getting out.
-        if new_tick && self.vehicles.leaving.is_none() {
+        if self.vehicles.leaving.is_none() {
             self.vehicles.leaving = drive::leave(&drive::Ride {
                 health: root.health,
                 flipped: self.vehicles.flipped,
@@ -243,28 +265,23 @@ impl Mind {
             go = None;
         }
 
-        // The stick: where to go, relative to where it looks; the camera
-        // turns toward what it looks at.
-        let (yaw, pitch) = angles(me.aim);
-        if let Some(l) = look {
-            let (wy, wp) = angles(sub(l, eye));
-            let (wy, wp) = if chosen.is_some() {
-                (wy + self.err.0, wp + self.err.1)
-            } else {
-                (wy, wp)
-            };
-            pad.right_stick = (
-                (-wrap(wy - yaw) * aim.gain).clamp(-1.0, 1.0),
-                ((wp - pitch) * aim.gain).clamp(-1.0, 1.0),
-            );
+        // The right stick through the hand (mind::look): onto the target it
+        // tracks, else toward what it looks at. The left stick through the
+        // thumb (mind::pad::Feet), eased, where to go relative to the aim:
+        // the vehicle turns to go there.
+        if aim_error.is_none() {
+            aim_error = look.map(|l| angle_error(aim_at, angles(sub(l, eye))));
         }
-        if let Some(d) = go {
-            let (c, s) = (yaw.cos(), yaw.sin());
-            let (fwd, right) = (d[0] * c + d[1] * s, d[0] * s - d[1] * c);
-            let m = (fwd * fwd + right * right).sqrt().max(1e-6);
-            let k = throttle.clamp(0.0, 1.0) / m;
-            pad.left_stick = (right * k, fwd * k);
-        }
+        pad.right_stick = self.hand.steer(self.skill, aim_error, dt);
+        let [x, y] = self.feet.step(
+            go.map(|d| [d[0] * throttle, d[1] * throttle]),
+            dt,
+            1.0,
+            false,
+            |_| true,
+        );
+        let (s, c) = aim_at.0.sin_cos();
+        pad.left_stick = (x * s - y * c, x * c + y * s);
         Some(pad)
     }
 

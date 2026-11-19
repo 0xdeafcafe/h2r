@@ -20,6 +20,7 @@ use std::fmt;
 pub mod encode;
 pub mod gear;
 pub mod icons;
+pub mod mod_marks;
 pub mod patch;
 pub mod raster;
 

@@ -1,4 +1,4 @@
-//! Vehicles in guest memory (docs/game/bots.md, section 3.8, "Fields"):
+//! Vehicles in guest memory (docs/game/bots.md, section 3.9, "Fields"):
 //! the vehicle objects, their seats from the `vehi` tag, and who sits
 //! where. Everything here works on [`GuestMemory`], so the tests run on
 //! synthetic guest memory.

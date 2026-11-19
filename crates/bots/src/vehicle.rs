@@ -1,4 +1,4 @@
-//! Vehicles (docs/game/bots.md, section 3.8): what a bot knows about the
+//! Vehicles (docs/game/bots.md, section 3.9): what a bot knows about the
 //! vehicles in the world ([`Sight`], read by [`read::sight`]), and the
 //! pure planners that use it:
 //!
@@ -25,7 +25,7 @@ pub mod read;
 use crate::brain::Vec3;
 use crate::mind::Skill;
 
-/// A vehicle's kind: the `vehi` tag's type (`+0x1f0`, section 3.8).
+/// A vehicle's kind: the `vehi` tag's type (`+0x1f0`, section 3.9).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Class {
     /// Scorpion.
@@ -115,7 +115,7 @@ pub struct Spec {
 }
 
 /// What a seat is for: the seat's flags in the `vehi` tag's seats block
-/// (section 3.8).
+/// (section 3.9).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SeatRole {
     Driver,
@@ -275,7 +275,7 @@ pub struct Wheels {
     pub board_speed: f32,
     /// Drives at infantry to run them over.
     pub splatter: bool,
-    /// The rocket launcher's lock (section 3.8, "Lock-on").
+    /// The rocket launcher's lock (section 3.9, "Lock-on").
     pub lock: lock::LockSkill,
 }
 

@@ -41,6 +41,14 @@
 //!   search for the converted Halo 1 player and, on the sandboxes, Halo
 //!   2's `masterchief_mp`: flags, markers, entry distances and angles, and
 //!   the label's enter animation.
+//! - `wheels_and_treads_are_solid_above_the_hull`: the retail scorpion's
+//!   `phmo` reaches past 1.0 either side (its treads) and stays 0.2 above
+//!   the origin; the base's scorpion has wheel shapes and its warthog
+//!   none (`member_wheel_shapes`), and the converted vehicles' roles say
+//!   the same; the converted Blood Gulch scorpion's body reaches as far
+//!   as its Halo 1 tread collision does, the warthog's no further than
+//!   its hull, and nothing of either is under the hull's lowest point;
+//!   the ghost has no wheel nodes.
 
 use std::collections::{BTreeMap, HashSet};
 use std::fs::File;
@@ -196,7 +204,9 @@ fn control_follows_vehicle_type() {
                 };
                 assert_eq!(*c, want, "{base_name} {name} (type {k})");
             }
-            let role = h1objects::rebuild::vehicle_role(&base, *k).unwrap().unwrap();
+            let role = h1objects::rebuild::vehicle_role(&base, *k, None)
+                .unwrap()
+                .unwrap();
             assert_eq!(role.control, if *k == 0 { 2 } else { 0 }, "{base_name} type {k}");
         }
     }
@@ -388,7 +398,7 @@ fn every_vehicle_rebuilds_from_its_definition() {
                 assert_eq!(phys.len(), 1, "{name}: every retail vehicle has one");
 
                 // The type's role, where the base has the type.
-                let role = c.vehicle_role(h1_type).unwrap();
+                let role = c.vehicle_role(h1_type, h1_powered(&h1, &u)).unwrap();
                 if let Some(role) = &role {
                     for (p, w) in &role.words.root {
                         assert_eq!(
@@ -872,4 +882,389 @@ fn every_seat_passes_the_engines_boarding_rule() {
     println!("{seats_checked} seats, {} failures", failures.len());
     assert!(seats_checked > 100, "{seats_checked} seats");
     assert!(failures.is_empty(), "{} seats fail the boarding rule", failures.len());
+}
+
+/// Halo 1's powered mass points as the converter counts them
+/// (`Converter::powered_points`): one per distinct name; none without a
+/// model or physics.
+fn h1_powered(h1: &H1Map, u: &h1::Unit) -> usize {
+    let (Some(_), Some(p)) = (u.object.model, u.object.physics) else {
+        return 0;
+    };
+    let phys = h1::Physics::read(h1, h1.tag(p).unwrap()).unwrap();
+    phys.mass_points
+        .iter()
+        .filter(|m| m.powered_mass_point >= 0)
+        .map(|m| h1objects::coll::sid_name(&m.name))
+        .collect::<HashSet<_>>()
+        .len()
+}
+
+/// Coagulation holds three hover vehicles (the ghost, spectre and
+/// wraith) that disagree on most driving words, and a role over all three
+/// left those words zero: the converted Blood Gulch ghost held no top
+/// speed and no hover strength, and did not move under its driver
+/// (`h1objects::rebuild::nearest_members`). Halo 1's ghost has three
+/// powered points, so its role is the retail ghost alone (three hover
+/// points), and the converted ghost carries every nonzero root word of it
+/// and nonzero strength, height and damping (`+0x8`, `+0x10`, `+0x14`) on
+/// each hover point.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn ghost_takes_the_retail_ghosts_role() {
+    let mut base_map = h2_map("coagulation");
+    let base = Base::read(&mut base_map).unwrap();
+    let h1 = h1_level("bloodgulch").unwrap();
+    let t = h1
+        .tags()
+        .iter()
+        .find(|t| t.name == "vehicles\\ghost\\ghost_mp" && t.group.0.to_be_bytes() == *b"vehi")
+        .unwrap();
+    let u = h1::Unit::read(&h1, t).unwrap();
+    assert_eq!(h1_powered(&h1, &u), 3, "Halo 1 ghost's powered points");
+    let d = def(b"vehi");
+    let (ty, hover) = (
+        offset(d, "vehicle_type", 0) as usize,
+        offset(d, VEHI_HOVER, 0) as usize,
+    );
+    let mut hovers = Vec::new();
+    for x in base.tags.iter().filter(|x| x.1 == FourCC(*b"vehi")) {
+        let r = base.root(x.0).unwrap();
+        if u16::from_le_bytes([r[ty], r[ty + 1]]) == 4 {
+            hovers.push((x.2.clone(), u32_at(&r, hover)));
+        }
+    }
+    println!("coagulation's hover vehicles (hover points): {hovers:?}");
+    assert!(hovers.len() > 1, "{hovers:?}");
+
+    let all = h1objects::rebuild::vehicle_role(&base, 4, None)
+        .unwrap()
+        .unwrap();
+    let mut c = Converter::new(&h1, &base);
+    let role = c.vehicle_role(4, 3).unwrap().unwrap();
+    assert_eq!(
+        role.words.members,
+        vec!["objects\\vehicles\\ghost\\ghost".to_string()]
+    );
+    let ghost = base
+        .root(
+            base.find(b"vehi", "objects\\vehicles\\ghost\\ghost")
+                .unwrap(),
+        )
+        .unwrap();
+    for (p, w) in &role.words.root {
+        assert_eq!(u32_at(&ghost, offset(d, p, 0) as usize), *w, "role {p}");
+    }
+    let lost: Vec<_> = role
+        .words
+        .root
+        .iter()
+        .filter(|(p, _)| !all.words.root.iter().any(|(q, _)| q == p))
+        .collect();
+    println!(
+        "{} ghost words a role over every hover vehicle leaves zero: {lost:x?}",
+        lost.len()
+    );
+    assert!(lost.iter().any(|(p, _)| p == "unknown_1f4"), "{lost:?}");
+
+    let id = c.object(t).unwrap();
+    let r = read_back(local(&c.tree, id).unwrap(), "ghost_mp");
+    for (p, w) in &role.words.root {
+        assert_eq!(
+            r.at(p),
+            Some(&Val::Bytes(w.to_le_bytes().to_vec())),
+            "ghost_mp {p}"
+        );
+    }
+    let Some(Val::Block(points)) = r.at(VEHI_HOVER) else {
+        panic!()
+    };
+    assert_eq!(points.len(), 3, "hover points");
+    // Each point takes one retail point's own words, paired by position:
+    // the three retail points' words each once, and the strongest (the
+    // retail back point's) on the Halo 1 point nearest its marker.
+    assert_eq!(role.hover_each.len(), 3, "the ghost's hover points");
+    assert_eq!(role.hover_at.len(), 3, "the ghost's hover markers");
+    let word = |x: &Record, k: &str| match x.get(k) {
+        Some(Val::Bytes(b)) => u32::from_le_bytes(b[..4].try_into().unwrap()),
+        v => panic!("{k}: {v:?}"),
+    };
+    let fields = [
+        "unknown_8",
+        "unknown_10",
+        "unknown_14",
+        "unknown_18",
+        "unknown_1c",
+        "unknown_20",
+    ];
+    let mut want: Vec<Vec<u32>> = role
+        .hover_each
+        .iter()
+        .map(|w| {
+            fields
+                .iter()
+                .map(|f| w.iter().find(|(p, _)| p == f).map_or(0, |(_, x)| *x))
+                .collect()
+        })
+        .collect();
+    let mut got: Vec<Vec<u32>> = points
+        .iter()
+        .map(|p| fields.iter().map(|f| word(p, f)).collect())
+        .collect();
+    want.sort();
+    got.sort();
+    assert_eq!(got, want, "the retail ghost's hover points, each once");
+    let strength = |w: &[(String, u32)]| {
+        f32::from_bits(
+            w.iter()
+                .find(|(p, _)| p == "unknown_8")
+                .map_or(0, |(_, x)| *x),
+        )
+    };
+    let back = (0..3)
+        .max_by(|a, b| strength(&role.hover_each[*a]).total_cmp(&strength(&role.hover_each[*b])))
+        .unwrap();
+    let phys = h1::Physics::read(&h1, h1.tag(u.object.physics.unwrap()).unwrap()).unwrap();
+    let h1_points: Vec<(String, [f32; 3])> = phys
+        .mass_points
+        .iter()
+        .filter(|m| m.powered_mass_point >= 0)
+        .map(|m| (h1objects::coll::sid_name(&m.name), m.position))
+        .collect();
+    println!("retail hover markers {:?}, back {back}", role.hover_at);
+    println!("Halo 1 powered points {h1_points:?}");
+    let dist = |a: [f32; 3], b: [f32; 3]| (0..3).map(|k| (a[k] - b[k]).powi(2)).sum::<f32>();
+    let nearest = h1_points
+        .iter()
+        .min_by(|a, b| dist(a.1, role.hover_at[back]).total_cmp(&dist(b.1, role.hover_at[back])))
+        .unwrap();
+    let strongest = points
+        .iter()
+        .max_by(|a, b| {
+            f32::from_bits(word(a, "unknown_8")).total_cmp(&f32::from_bits(word(b, "unknown_8")))
+        })
+        .unwrap();
+    assert_eq!(
+        strongest.get("string_0"),
+        Some(&Val::String(Str::Text(nearest.0.clone()))),
+        "the back point's words"
+    );
+    for (k, p) in points.iter().enumerate() {
+        for f in ["unknown_8", "unknown_10", "unknown_14"] {
+            assert!(
+                matches!(p.get(f), Some(Val::Bytes(b)) if b.iter().any(|x| *x != 0)),
+                "hover point {k} {f}: {:?}",
+                p.get(f)
+            );
+        }
+    }
+}
+
+/// Lays a built tag out at `base` (blocks after their parents, aligned) so
+/// the decoder can read it.
+fn lay_out(b: &map::build::Block, base: u32) -> Vec<u8> {
+    use map::build::{Block, FixupKind};
+    fn place(b: &Block, out: &mut Vec<u8>, base: u32) -> u32 {
+        let align = b.align.max(4) as usize;
+        while out.len() % align != 0 {
+            out.push(0);
+        }
+        let at = out.len();
+        out.extend_from_slice(&b.bytes);
+        for f in &b.fixups {
+            let o = at + f.offset as usize;
+            let (n, addr) = match &f.kind {
+                FixupKind::Block { count, child } => {
+                    if *count == 0 && child.bytes.is_empty() {
+                        (0, 0)
+                    } else {
+                        (*count, place(child, out, base))
+                    }
+                }
+                FixupKind::Data(child) => (child.bytes.len() as u32, place(child, out, base)),
+                _ => continue,
+            };
+            out[o..o + 4].copy_from_slice(&n.to_le_bytes());
+            out[o + 4..o + 8].copy_from_slice(&addr.to_le_bytes());
+        }
+        base + at as u32
+    }
+    let mut out = Vec::new();
+    place(b, &mut out, base);
+    out
+}
+
+/// (widest |y|, lowest z) of points.
+fn reach(points: impl Iterator<Item = [f32; 3]>) -> (f32, f32) {
+    points.fold((0.0f32, f32::INFINITY), |(y, z), p| {
+        (y.max(p[1].abs()), z.min(p[2]))
+    })
+}
+
+/// The scorpion's treads are in its body, above its hull's lowest point,
+/// as retail's are; the warthog's tires stay out, as retail's do; the
+/// ghost has no wheel nodes. Which by the base: the retail scorpion's
+/// physics model has tread shapes, the warthog's no wheel shape
+/// ([`h1objects::rebuild::member_wheel_shapes`]), and the converted
+/// vehicles' roles say so.
+///
+/// The user walked through the converted scorpion's treads on Blood Gulch
+/// (2026-11-19): its `coll` carried them, its `phmo` (versions 77 to 85)
+/// left every wheel and tread node out. V, the retail scorpion's `phmo`
+/// (coagulation): its widest point 1.13 either side, its lowest 0.22
+/// above the origin (printed).
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn wheels_and_treads_are_solid_above_the_hull() {
+    use h1objects::physics::Transform;
+    let mut base_map = h2_map("coagulation");
+    let base = Base::read(&mut base_map).unwrap();
+
+    // Retail: the tank's tread shapes reach well past its hull's sides,
+    // and nothing of it comes within 0.2 of the ground.
+    let id = base
+        .tags
+        .iter()
+        .find(|t| t.1 == FourCC(*b"phmo") && t.2 == "objects\\vehicles\\scorpion\\scorpion")
+        .unwrap()
+        .0;
+    let retail = tags::collision::PhysicsModel::read(&mut base_map, id).unwrap();
+    let (y, z) = reach(
+        retail
+            .polyhedra
+            .iter()
+            .flat_map(|p| p.vertices.iter().copied()),
+    );
+    println!("retail scorpion phmo: widest {y}, lowest {z}");
+    assert!(y > 1.0 && z > 0.2, "retail scorpion: {y} {z}");
+    // The base's vehicles with wheel shapes: the scorpion, not the warthog.
+    let d = def(b"vehi");
+    let fat = offset(d, VEHI_FRICTION, 0) as usize;
+    let fdef = d.child(VEHI_FRICTION).unwrap();
+    for (retail_name, want) in [
+        ("objects\\vehicles\\scorpion\\scorpion", true),
+        ("objects\\vehicles\\warthog\\warthog", false),
+    ] {
+        let t = base
+            .tags
+            .iter()
+            .find(|t| t.1 == FourCC(*b"vehi") && t.2 == retail_name)
+            .unwrap();
+        let root = base.root(t.0).unwrap();
+        let got = h1objects::rebuild::member_wheel_shapes(&base, &root, d, fat, fdef).unwrap();
+        println!("retail {retail_name}: wheel shapes {got:?}");
+        assert_eq!(got, Some(want), "{retail_name}");
+    }
+
+    let h1 = h1_level("bloodgulch").unwrap();
+    // (name, has wheel nodes, holds them)
+    for (name, wheels_expected, held) in [
+        ("vehicles\\scorpion\\scorpion_mp", true, true),
+        ("vehicles\\warthog\\warthog", true, false),
+        ("vehicles\\ghost\\ghost_mp", false, false),
+    ] {
+        let t = h1
+            .tags()
+            .iter()
+            .find(|t| t.name == name && t.group.0.to_be_bytes() == *b"vehi")
+            .unwrap();
+        let u = h1::Unit::read(&h1, t).unwrap();
+        let phys = h1::Physics::read(&h1, h1.tag(u.object.physics.unwrap()).unwrap()).unwrap();
+        let model = h1models::model_from_map(
+            &h1,
+            h1.tag(u.object.model.unwrap()).unwrap(),
+            &Default::default(),
+        )
+        .unwrap()
+        .0;
+        let world = h1models::mode::world_transforms(
+            &model
+                .nodes
+                .iter()
+                .map(|n| (n.parent, n.rotation, n.translation))
+                .collect::<Vec<_>>(),
+        );
+        let wheels = h1objects::convert::wheel_nodes(&phys, &model.nodes);
+        assert_eq!(
+            !wheels.is_empty(),
+            wheels_expected,
+            "{name}: wheel nodes {wheels:?}"
+        );
+
+        // Halo 1's collision in object space: the wheels' reach and the
+        // hull's lowest point.
+        let coll = h1::Collision::read(&h1, h1.tag(u.object.collision.unwrap()).unwrap()).unwrap();
+        let (mut wheel_pts, mut hull_pts) = (Vec::new(), Vec::new());
+        for (i, n) in coll.nodes.iter().enumerate() {
+            let Some(src) = n.bsps.first() else { continue };
+            let node = model
+                .nodes
+                .iter()
+                .position(|m| m.name == n.name)
+                .or((i < model.nodes.len()).then_some(i))
+                .unwrap_or(0);
+            let (r, t) = world[node];
+            let m = Transform { r, t };
+            let bsp = h1convert::collision::convert(src).unwrap();
+            let pts = bsp.vertices.iter().map(|v| m.point(v.point));
+            if wheels.contains(&(node as i16)) {
+                wheel_pts.extend(pts);
+            } else {
+                hull_pts.extend(pts);
+            }
+        }
+        let (hull_y, floor) = reach(hull_pts.into_iter());
+        let (wheel_y, _) = reach(wheel_pts.into_iter());
+
+        // The converted body, and its role's say.
+        let mut c = Converter::new(&h1, &base);
+        let b = h1.tag_data(t).unwrap();
+        let h1_type = u16::from_le_bytes([b[H1_VEHICLE_TYPE], b[H1_VEHICLE_TYPE + 1]]);
+        let role = c.vehicle_role(h1_type, h1_powered(&h1, &u)).unwrap();
+        assert_eq!(
+            role.as_ref().is_some_and(|r| r.wheel_shapes),
+            held,
+            "{name}: the role's wheel shapes"
+        );
+        let vid = c.object(t).unwrap();
+        let r = read_back(local(&c.tree, vid).unwrap(), name);
+        let h = defs::from_built(
+            def(b"hlmt"),
+            &reference(&r, "unit.obje.model")
+                .and_then(|x| local(&c.tree, x))
+                .unwrap()
+                .root,
+        )
+        .unwrap();
+        let built = reference(&h, "physics_model")
+            .and_then(|x| local(&c.tree, x))
+            .unwrap();
+        const BASE: u32 = 0x8000_0000;
+        let p = tags::collision::PhysicsModel::decode(&lay_out(&built.root, BASE), BASE).unwrap();
+        assert!(p.validate().is_empty(), "{name}: {:?}", p.validate());
+        let (y, z) = reach(p.polyhedra.iter().flat_map(|q| q.vertices.iter().copied()));
+        let rep = c.tree.reports.iter().find(|x| x.source == name).unwrap();
+        println!(
+            "{name}: Halo 1 hull widest {hull_y} lowest {floor}, wheels widest {wheel_y}; built widest {y} lowest {z}; {:?}",
+            rep.physics
+        );
+        // Nothing of the body below the hull's lowest point...
+        assert!(
+            z >= floor - 0.01,
+            "{name}: built lowest {z} under the hull's {floor}"
+        );
+        // ...and the wheels' sides in it where held, out of it where not.
+        if held && wheel_y > hull_y {
+            assert!(
+                y >= wheel_y - 0.01,
+                "{name}: built widest {y}, the wheels reach {wheel_y}"
+            );
+        }
+        if wheels_expected && !held {
+            assert!(
+                y <= hull_y + 0.01,
+                "{name}: built widest {y}, past the hull's {hull_y}"
+            );
+        }
+    }
 }

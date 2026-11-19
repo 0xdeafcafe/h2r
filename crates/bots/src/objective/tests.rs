@@ -287,3 +287,135 @@ fn engine_indices_name_the_objective_games_only() {
     assert_eq!(Game::from_engine(8), Some(Game::Territories));
     assert_eq!(Game::from_engine(9), Some(Game::Assault));
 }
+
+#[test]
+fn the_last_teammate_escorts_a_flag_once_our_drop_is_secure() {
+    let mate = seen(1, [65.0, 0.0, 0.0], 0);
+    let escort = flag(1, mate.position, Some(mate.id));
+    let bot = me([45.0, 0.0, 0.0], 0);
+    let dropped = flag(0, [10.0, 0.0, 0.0], None);
+    assert_eq!(
+        plan(&ctf(4, vec![dropped, escort]), &bot, &[mate], true),
+        Some(Goal::Go(dropped.position))
+    );
+    assert_eq!(
+        plan(
+            &ctf(4, vec![flag(0, RED_HOME, None), escort]),
+            &bot,
+            &[mate],
+            true
+        ),
+        Some(Goal::Escort(mate.position))
+    );
+}
+
+fn assault(id: u32, items: Vec<Item>) -> Objective {
+    Objective {
+        game: Game::Assault,
+        me: id,
+        items,
+        spots: vec![
+            spot(kind::BOMB_SPAWN, 0, [12.0, 0.0, 0.0]),
+            spot(kind::BOMB_RETURN, 0, RED_HOME),
+            spot(kind::BOMB_SPAWN, 1, [88.0, 0.0, 0.0]),
+            spot(kind::BOMB_RETURN, 1, BLUE_HOME),
+        ],
+        hill: None,
+    }
+}
+
+#[test]
+fn assault_attackers_take_the_friendly_or_neutral_bomb_to_the_enemy_plate() {
+    let bot = me([22.0, 0.0, 0.0], 0);
+    let enemy_drop = flag(1, [23.0, 0.0, 0.0], None);
+    for team in [0, 8] {
+        let bomb = flag(team, [12.0, 0.0, 0.0], None);
+        assert_eq!(
+            plan(&assault(1, vec![enemy_drop, bomb]), &bot, &[], true),
+            Some(Goal::Go(bomb.position))
+        );
+        let carrying = Item {
+            carrier: Some(1),
+            ..bomb
+        };
+        assert_eq!(
+            plan(&assault(1, vec![carrying]), &bot, &[], true),
+            Some(Goal::Carry(BLUE_HOME))
+        );
+    }
+}
+
+#[test]
+fn assault_escorts_protect_the_plant_and_defenders_intercept_the_incoming_carrier() {
+    let mate = seen(1, [62.0, 0.0, 0.0], 0);
+    let theirs = seen(8, [10.0, 0.0, 0.0], 1);
+    let bot = me([10.0, 0.0, 0.0], 0);
+    let ally_bomb = flag(0, mate.position, Some(mate.id));
+    let hostile_bomb = flag(1, theirs.position, Some(theirs.id));
+    let goal = |items| plan(&assault(4, items), &bot, &[mate, theirs], true);
+    assert_eq!(goal(vec![ally_bomb]), Some(Goal::Escort(mate.position)));
+    assert_eq!(
+        goal(vec![Item {
+            position: [98.0, 1.0, 0.0],
+            ..ally_bomb
+        }]),
+        Some(Goal::Hold(BLUE_HOME, DEFEND_RADIUS))
+    );
+    assert_eq!(
+        goal(vec![ally_bomb, hostile_bomb]),
+        Some(Goal::Hunt(theirs.id, theirs.position))
+    );
+    assert_eq!(
+        goal(vec![flag(1, [70.0, 0.0, 0.0], None)]),
+        Some(Goal::Hold(RED_HOME, DEFEND_RADIUS))
+    );
+}
+
+#[test]
+fn when_the_home_defender_takes_the_flag_another_teammate_guards() {
+    let carrier = seen(9, [72.0, 0.0, 0.0], 0);
+    let o = ctf(
+        4,
+        vec![flag(0, RED_HOME, None), flag(1, carrier.position, Some(9))],
+    );
+    let mates = [carrier, seen(1, [40.0, 0.0, 0.0], 0)];
+    assert_eq!(
+        plan(&o, &me([35.0, 0.0, 0.0], 0), &mates, true),
+        Some(Goal::Hold(RED_HOME, DEFEND_RADIUS))
+    );
+}
+
+#[test]
+fn one_attacker_recovers_a_bomb_dropped_at_the_plant_while_the_rest_cover() {
+    let b = flag(0, [99.0, 0.0, 0.0], None);
+    let mate = seen(4, [97.0, 1.0, 0.0], 0);
+    let p = me([80.0, 0.0, 0.0], 0);
+    assert_eq!(
+        plan(&assault(1, vec![b]), &p, &[mate], true),
+        Some(Goal::Hold(BLUE_HOME, DEFEND_RADIUS))
+    );
+    assert_eq!(
+        plan(
+            &assault(4, vec![b]),
+            &me(mate.position, 0),
+            &[seen(1, p.position, 0)],
+            true
+        ),
+        Some(Goal::Go(b.position))
+    );
+}
+
+#[test]
+fn an_unreadable_scoring_plate_keeps_the_carrier_in_possession() {
+    let p = me([30.0, 4.0, 2.0], 0);
+    for game in [Game::Ctf, Game::Assault] {
+        let o = Objective {
+            game,
+            me: 1,
+            items: vec![flag(1, p.position, Some(1))],
+            spots: vec![],
+            hill: None,
+        };
+        assert_eq!(plan(&o, &p, &[], true), Some(Goal::Carry(p.position)));
+    }
+}

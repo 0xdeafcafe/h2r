@@ -35,8 +35,13 @@
 //!   `XOnlineGetUsers` lists (the run's `live/accounts.json`: the tester),
 //!   then New Account. A on an account row (`0x24b2ea`) copies it into
 //!   the profile and logs on (`0x24b664`). So: DOWN to row 1, A. The
-//!   dialog is known by the bots' join gate line (`dialog 0x14 (window
-//!   3, ...)`), its cursor by the list value's low 16 bits;
+//!   dialog is known by the `ui: screen none` line's dialog part
+//!   (`, dialog 0x14 dialog_live_signin (window 3, slot 4)`), or by the
+//!   bots' join gate line (`dialog 0x14 (window 3, ...)`), its cursor by
+//!   the list value's low 16 bits. The gate lines alone were not enough:
+//!   a Clankermatch run places no local bot before the roster, so it
+//!   prints none at boot, and run 20261119-115144 took the picker for any
+//!   dialog and pressed A on its no-account row five times;
 //! * the main menu: from its row to Xbox Live (row 1), A; signed in, that
 //!   opens the players' screen (`0x1e`) in mode 3 (the local bots no
 //!   longer join there: they join in the lobby, docs/game/bots.md §4.3);
@@ -98,7 +103,7 @@ pub const DIALOG_HOLD_MS: u64 = 3_000;
 /// Dialog presses on the way to the Live menu before giving up.
 pub const DIALOG_PRESSES: u32 = 6;
 /// The account picker, `dialog_live_signin` (screen 20, loader
-/// `0x24b4a9`).
+/// `0x24b4a9`); `boot::ui_watch::ACCOUNT_PICKER`.
 pub const ACCOUNT_PICKER: u32 = 0x14;
 /// The picker's first account row; row 0 is the no-account row.
 pub const PICKER_ACCOUNT_ROW: u32 = 1;
@@ -225,9 +230,15 @@ pub struct Driver {
     /// A on the players' screen for Xbox Live went; the next settled
     /// window 5 screen is the Live menu's.
     learn_live: bool,
-    /// The top dialog the bots' join gate last named (`dialog 0x14
-    /// (window 3, ...)`); `None` for `dialog none`.
+    /// The top dialog the last `ui: screen none` line or the bots' join
+    /// gate named (`dialog 0x14 (window 3, ...)`); `None` for `dialog
+    /// none` or an id not read.
     dialog_id: Option<u32>,
+    /// The dialog as the last `ui: screen none` line named it (`dialog
+    /// 0x14 dialog_live_signin (window 3, slot 4)`), for the log.
+    dialog_said: Option<String>,
+    /// The dialogs A went to on the way to Xbox Live, for the give-up.
+    dialogs_seen: BTreeSet<String>,
     /// Account rows picked in the account picker.
     picks: u32,
     /// DOWN presses in the picker since its last row change.
@@ -353,6 +364,23 @@ pub fn gate_dialog(text: &str) -> Option<Option<u32>> {
     Some(u32::from_str_radix(&hex[..end], 16).ok())
 }
 
+/// A `ui: screen none (...), dialog 0x14 dialog_live_signin (window 3,
+/// slot 4)` line's dialog part (`boot::ui_watch::Dialog::line`): the text
+/// from `dialog` on, and the id (`None` for `dialog ?`). `None` when the
+/// line names no dialog.
+pub fn line_dialog(text: &str) -> Option<(&str, Option<u32>)> {
+    if !text.starts_with("ui: screen none (") {
+        return None;
+    }
+    let at = text.rfind("), dialog ")?;
+    let part = &text[at + 3..];
+    let id = part.strip_prefix("dialog 0x").and_then(|h| {
+        let end = h.find(|c: char| !c.is_ascii_hexdigit()).unwrap_or(h.len());
+        u32::from_str_radix(&h[..end], 16).ok()
+    });
+    Some((part, id))
+}
+
 /// A players' screen mode by name, for the log.
 pub fn mode_name(mode: u32) -> &'static str {
     match mode {
@@ -385,6 +413,8 @@ impl Driver {
             live_screen: None,
             learn_live: false,
             dialog_id: None,
+            dialog_said: None,
+            dialogs_seen: BTreeSet::new(),
             picks: 0,
             picker_downs: 0,
             picked_on: None,
@@ -426,6 +456,20 @@ impl Driver {
             }
             let none = none_line(text);
             let (window, value) = none.map_or((None, None), |n| (Some(n.window), n.value));
+            match (line_dialog(text), window) {
+                (Some((said, id)), _) => {
+                    self.dialog_id = id;
+                    self.dialog_said = Some(said.to_string());
+                }
+                // No dialog up: the menus are bare.
+                (None, Some(5)) => {
+                    self.dialog_id = None;
+                    self.dialog_said = None;
+                }
+                // A dialog window without a dialog part (a game from
+                // before the part): the gate lines say, if any come.
+                _ => self.dialog_said = None,
+            }
             if value != self.list_value || window != self.window {
                 self.picker_downs = 0;
             }
@@ -581,6 +625,19 @@ impl Driver {
     /// A dialog (windows 0 to 4) takes player one's input.
     fn dialog(&self) -> bool {
         self.screen.is_none() && self.window.is_some_and(|w| w < 5)
+    }
+
+    /// The dialog up, for a press's reason and the log: as the game's line
+    /// named it, else by the id the bots' gate gave, else by its window.
+    fn dialog_name(&self) -> String {
+        if let Some(d) = &self.dialog_said {
+            return d.clone();
+        }
+        match (self.dialog_id, self.window) {
+            (Some(id), Some(w)) => format!("dialog 0x{id:02x} (window {w})"),
+            (None, Some(w)) => format!("an unnamed dialog (window {w}; the game named none)"),
+            _ => "a dialog".into(),
+        }
     }
 
     /// The account picker is up and takes player one's input.
@@ -900,9 +957,9 @@ impl Driver {
                 }
                 self.boot_presses += 1;
                 let what = if self.dialog() {
-                    "a boot dialog (the new profile's)"
+                    format!("a boot dialog, {}", self.dialog_name())
                 } else {
-                    "the title screen"
+                    "the title screen".into()
                 };
                 self.queue = vec![press("a", &format!("{what}: on to the main menu"))];
             }
@@ -922,15 +979,23 @@ impl Driver {
                 } else if self.dialog() {
                     // Another dialog on the way: A, its first button.
                     if self.quiet(now, DIALOG_HOLD_MS) {
+                        let name = self.dialog_name();
                         if self.dialog_presses >= DIALOG_PRESSES {
                             let ui = self.ui.clone();
                             self.give_up(format!(
                                 "dialogs on the way to Xbox Live after {DIALOG_PRESSES} presses; \
-                                 the last: {ui}"
+                                 the last, {name}: {ui}"
                             ));
                         } else {
                             self.dialog_presses += 1;
-                            self.queue = vec![press("a", "a dialog on the way to Xbox Live")];
+                            self.dialogs_seen.insert(name.clone());
+                            self.say(format!(
+                                "{name} on the way to Xbox Live (row {}): A, its first button",
+                                self.list_value
+                                    .map_or_else(|| "?".into(), |v| (v & 0xffff).to_string())
+                            ));
+                            self.queue =
+                                vec![press("a", &format!("{name} on the way to Xbox Live"))];
                             self.step = Step::ToLive { at: now, tries };
                         }
                     }
@@ -938,6 +1003,18 @@ impl Driver {
                     // Back on the main menu (a sign-in that failed, or a
                     // press it missed): again from its row.
                     if tries + 1 >= TRIES {
+                        let seen = if self.dialogs_seen.is_empty() {
+                            String::new()
+                        } else {
+                            format!(
+                                "; the dialogs on the way: {}",
+                                self.dialogs_seen
+                                    .iter()
+                                    .cloned()
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            )
+                        };
                         let why = if self.picks > 0 {
                             format!(
                                 "no Xbox Live menu after {TRIES} tries; back on the main menu \
@@ -948,7 +1025,7 @@ impl Driver {
                         } else {
                             format!("no Xbox Live menu after {TRIES} tries; back on the main menu")
                         };
-                        self.give_up(why);
+                        self.give_up(format!("{why}{seen}"));
                     } else {
                         self.say("back on the main menu; Xbox Live again".into());
                         self.go_live(now, tries + 1);

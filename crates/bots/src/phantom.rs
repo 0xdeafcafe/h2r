@@ -11,6 +11,10 @@
 //! Each phantom has a machine id of its own ([`machine_id`]), and its
 //! player is found by that id in the player records, never by the order of
 //! joining.
+//!
+//! A phantom joins the pregame lobby this console hosts, as a real peer
+//! joins it, and stays in the session into the game and back to the
+//! lobby; [`LOBBY_ENV`] off keeps it to the game alone.
 
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -124,6 +128,26 @@ pub fn waiting_line(gamertag: &str, why: &str) -> String {
     format!("bots: phantom {gamertag} waits: this console is not the game's host yet ({why})")
 }
 
+/// The log line for a phantom that waits because the pregame lobby up is
+/// not one it can join (`why`, from [`session::host_lobby`]).
+pub fn lobby_waiting_line(gamertag: &str, why: &str) -> String {
+    format!("bots: phantom {gamertag} waits: not a lobby it can join ({why})")
+}
+
+/// The environment switch for phantoms in the pregame lobby
+/// (docs/game/bots.md §5.1, "Phantoms in the pregame lobby"): `0`, `off`
+/// or `false` keeps them out of the lobby, joining once the game runs and
+/// leaving when it ends, as before. On by default.
+pub const LOBBY_ENV: &str = "H2_PHANTOM_LOBBY";
+
+/// Whether [`LOBBY_ENV`]'s value leaves phantoms in the lobby.
+pub fn lobby_wanted(v: Option<&str>) -> bool {
+    !matches!(
+        v.map(|v| v.trim().to_ascii_lowercase()).as_deref(),
+        Some("0" | "off" | "false" | "no")
+    )
+}
+
 #[derive(Default)]
 struct Books {
     list: Vec<Phantom>,
@@ -131,6 +155,18 @@ struct Books {
     /// Machine ids of removed phantoms whose peers are still in the
     /// session, for the game thread to take out.
     gone: Vec<[u8; 6]>,
+    /// Phantoms join only once a game runs and leave when it ends (the
+    /// lobby join off, [`LOBBY_ENV`]).
+    game_only: bool,
+}
+
+/// Where the session a phantom can join is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Phase {
+    /// A multiplayer game this console hosts runs ([`session::host_session`]).
+    Game(u32),
+    /// The pregame lobby this console hosts ([`session::host_lobby`]).
+    Lobby(u32),
 }
 
 /// The phantoms of one host. Cheap to clone; clones share.
@@ -177,6 +213,25 @@ impl Phantoms {
             waiting: None,
         });
         Ok(handle)
+    }
+
+    /// Whether `machine` is a phantom of these books with a peer in the
+    /// session: the game's "is this machine in the game" (`0x686e0`) is
+    /// answered yes for it (docs/game/bots.md §5.1, "Phantoms in the
+    /// game"), since it has no simulation view to say so.
+    pub fn stands_for(&self, machine: [u8; 6]) -> bool {
+        handle_of(machine).is_some()
+            && self
+                .lock()
+                .list
+                .iter()
+                .any(|p| p.made && p.info.machine == machine)
+    }
+
+    /// Whether phantoms join the pregame lobby (the default), or only a
+    /// running game ([`LOBBY_ENV`]).
+    pub fn set_lobby(&self, on: bool) {
+        self.lock().game_only = !on;
     }
 
     /// Takes a phantom off the books.
@@ -263,21 +318,44 @@ impl Phantoms {
 }
 
 impl Phantoms {
-    /// One frame on the game thread (docs/game/bots.md §5.1). While a
-    /// multiplayer game runs and this console hosts it, pending phantoms
-    /// get a peer and a session player, and each joined phantom's source
-    /// is asked for its pad, written as its action. Removed phantoms' peers
-    /// come out. When the game ends, every phantom's peer comes out and
-    /// the phantom waits for the next game. Returns lines for the log.
+    /// One frame on the game thread (docs/game/bots.md §5.1). While this
+    /// console hosts a pregame lobby (System Link or Xbox Live), or a
+    /// multiplayer game it hosts runs, pending phantoms get a peer, its
+    /// properties and a session player, as a real peer joining does: in
+    /// the lobby they show in its roster and the game takes them in when
+    /// it starts. Each joined phantom's source is asked for its pad in a
+    /// game, written as its action. Removed phantoms' peers come out. When
+    /// this console hosts no session any more, every phantom's peer comes
+    /// out and the phantom waits for the next. Returns lines for the log.
     pub fn tick(&self, m: &mut dyn GuestMemory, frame: u64) -> Result<Vec<String>, MemFault> {
         let mut log = Vec::new();
+        // A starting game waits for no phantom (§5.1, "Phantoms in the
+        // game"), whichever way they came in.
+        if let Some((was, now)) = session::unwait_phantoms(m)? {
+            log.push(format!(
+                "bots: phantoms: the game's start waits for real consoles only \
+                 (machines {was:#06x} -> {now:#06x})"
+            ));
+        }
         let mut b = self.lock();
-        let host = session::host_session(&*m);
+        let game = session::host_session(&*m);
+        let lobby = match &game {
+            Ok(_) => Err(session::NotNow::Wait),
+            Err(_) if b.game_only => Err(session::NotNow::Wait),
+            Err(_) => session::host_lobby(&*m),
+        };
+        let phase = match (&game, &lobby) {
+            (Ok(s), _) => Some(Phase::Game(*s)),
+            (_, Ok(s)) => Some(Phase::Lobby(*s)),
+            _ => None,
+        };
         let live = session::live_session(&*m);
 
-        // Out: removed phantoms, and all of them once the game is over.
+        // Out: removed phantoms, and all of them once this console hosts
+        // no session (with the lobby join off: once no game runs).
         let mut out: Vec<[u8; 6]> = std::mem::take(&mut b.gone);
-        if host.is_err() {
+        let keep = phase.is_some() || (!b.game_only && session::owned_session(&*m).is_some());
+        if !keep {
             for p in &mut b.list {
                 if p.made {
                     out.push(p.info.machine);
@@ -300,48 +378,89 @@ impl Phantoms {
             }
         }
 
-        let s = match host {
-            Ok(s) => s,
-            Err(session::NotNow::NotHost(why)) => {
-                // Not the host, or not yet (the first frames of a game):
-                // the phantoms wait and try again each frame, said once
-                // per phantom and reason.
-                for p in &mut b.list {
-                    if p.info.state == State::Pending && p.waiting.as_deref() != Some(why.as_str())
-                    {
-                        log.push(waiting_line(&p.info.identity.gamertag, &why));
-                        p.waiting = Some(why.clone());
-                    }
-                }
-                drop(b);
-                self.refresh_where(&*m, true)?;
-                return Ok(log);
-            }
-            Err(_) => {
-                // No game: a reason said in the last game is said again in
-                // the next.
-                for p in &mut b.list {
+        let Some(phase) = phase else {
+            // Not the host, or not yet (the first frames of a game, a
+            // lobby this console joined): the phantoms wait and try again
+            // each frame, said once per phantom and reason. No game and no
+            // lobby: a reason said before is said again next time.
+            let why = match (game, lobby) {
+                (Err(session::NotNow::NotHost(w)), _) => Some((false, w)),
+                (_, Err(session::NotNow::NotHost(w))) => Some((true, w)),
+                _ => None,
+            };
+            for p in &mut b.list {
+                let Some((lobby, why)) = &why else {
                     p.waiting = None;
+                    continue;
+                };
+                if p.info.state == State::Pending
+                    && !p.made
+                    && p.waiting.as_deref() != Some(why.as_str())
+                {
+                    let tag = &p.info.identity.gamertag;
+                    log.push(if *lobby {
+                        lobby_waiting_line(tag, why)
+                    } else {
+                        waiting_line(tag, why)
+                    });
+                    p.waiting = Some(why.clone());
                 }
-                drop(b);
-                self.refresh_where(&*m, true)?;
-                return Ok(log);
             }
+            drop(b);
+            self.refresh_where(&*m, true)?;
+            return Ok(log);
+        };
+        let (s, in_lobby) = match phase {
+            Phase::Game(s) => (s, false),
+            Phase::Lobby(s) => (s, true),
         };
 
+        // Kept: a made phantom's peer the game took out (its own removal)
+        // joins again; the others' properties follow this console's.
+        for p in &mut b.list {
+            if !p.made {
+                continue;
+            }
+            match session::find_peer(&*m, s, p.info.machine)? {
+                Some(peer) => {
+                    session::sync_props(m, s, peer, &p.info.identity.gamertag)?;
+                }
+                None => {
+                    p.made = false;
+                    p.last_tick = None;
+                    log.push(format!(
+                        "bots: phantom {} is no longer in the session: it joins again",
+                        p.info.identity.gamertag
+                    ));
+                }
+            }
+        }
+
         // In: pending phantoms with no peer yet.
+        let team_game = session::team_game(&*m, s)?;
         for p in &mut b.list {
             if p.made || matches!(p.info.state, State::Failed(_)) {
                 continue;
             }
-            let Some(config) = session::config(&*m, &p.info.identity.gamertag, p.info.team)? else {
+            let team = match p.info.team {
+                Some(t) => Some(t),
+                None if team_game => Some(session::lobby_team(&*m, s)?),
+                None => None,
+            };
+            let Some(config) = session::config_in(&*m, s, &p.info.identity.gamertag, team)? else {
                 continue; // no local player to copy yet
             };
             let mac = p.info.machine;
+            // A peer of its own left from a session this console stopped
+            // hosting and hosts again: out first, so it is never in twice.
+            if let Some(stale) = session::find_peer(&*m, s, mac)? {
+                session::remove_peer(m, s, stale)?;
+            }
             let Some(peer) = session::add_peer(m, s, mac, &p.info.identity.gamertag)? else {
                 p.info.state = State::Failed("the session has no room for another machine".into());
                 continue;
             };
+            session::sync_props(m, s, peer, &p.info.identity.gamertag)?;
             let id = session::player_id(p.info.identity.xuid, mac);
             if session::add_player(m, s, peer, id, &config)?.is_none() {
                 session::remove_peer(m, s, peer)?;
@@ -350,13 +469,44 @@ impl Phantoms {
             }
             p.made = true;
             p.waiting = None;
-            log.push(format!(
-                "bots: phantom {} joins (peer {peer})",
-                p.info.identity.gamertag
-            ));
+            log.push(if in_lobby {
+                format!(
+                    "bots: phantom {} joins (peer {peer}, in the pregame lobby)",
+                    p.info.identity.gamertag
+                )
+            } else {
+                format!(
+                    "bots: phantom {} joins (peer {peer})",
+                    p.info.identity.gamertag
+                )
+            });
+        }
+
+        // Even teams in the lobby: the phantoms with no team asked for
+        // follow the humans' moves.
+        if in_lobby {
+            let mut movable = Vec::new();
+            for p in b.list.iter().filter(|p| p.made && p.info.team.is_none()) {
+                if let Some(i) = session::find_peer(&*m, s, p.info.machine)? {
+                    movable.push((i, p.info.identity.gamertag.clone()));
+                }
+            }
+            let peers: Vec<u32> = movable.iter().map(|m| m.0).collect();
+            for (peer, from, to) in session::rebalance(m, s, &peers)? {
+                let name = movable
+                    .iter()
+                    .find(|x| x.0 == peer)
+                    .map_or("?", |x| x.1.as_str());
+                log.push(format!(
+                    "bots: phantom {name} changes team {from} -> {to} to keep the teams even"
+                ));
+            }
         }
         drop(b);
         self.refresh_where(&*m, true)?;
+        if in_lobby {
+            return Ok(log);
+        }
 
         // Actions.
         let tick = guest::game_tick(&*m);
@@ -426,12 +576,17 @@ pub fn players_by_machine(m: &dyn GuestMemory) -> Result<Vec<([u8; 6], u32)>, Me
 /// The process-wide phantoms the boot glue drives.
 pub fn global() -> &'static Phantoms {
     static G: OnceLock<Phantoms> = OnceLock::new();
-    G.get_or_init(Phantoms::default)
+    G.get_or_init(|| {
+        let p = Phantoms::default();
+        p.set_lobby(lobby_wanted(std::env::var(LOBBY_ENV).ok().as_deref()));
+        p
+    })
 }
 
 /// Adds a phantom peer with `identity` on `team` (`None`: the host
-/// balances), driven by `source` (see [`Phantoms::add`]). It joins once a
-/// multiplayer game this console hosts is running.
+/// balances), driven by `source` (see [`Phantoms::add`]). It joins the
+/// pregame lobby this console hosts (System Link or Xbox Live), or a
+/// multiplayer game it hosts once that runs.
 pub fn add(
     identity: Identity,
     team: Option<u8>,

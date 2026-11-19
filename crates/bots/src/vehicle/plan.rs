@@ -1,4 +1,4 @@
-//! On foot (docs/game/bots.md, section 3.8, "Go and take", "Board"):
+//! On foot (docs/game/bots.md, section 3.9, "Go and take", "Board"):
 //! which vehicle to go for and where to stand to get in. Pure.
 //!
 //! Getting in is the game's own: the bot stands by the seat and holds the

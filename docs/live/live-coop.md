@@ -1763,7 +1763,10 @@ without a press. The three parts of 12.5:
    player one's input changes, and `ui.screen` answers it on the agent
    socket (`h2 agent --socket <path> ui`). On the Xbox Live menu the line
    adds the row the menu restores its cursor to (`, live menu row 3`,
-   `0x510a18`). `boot::ui_watch` holds the layout. [local] It is read
+   `0x510a18`). A `ui: screen none` line with a dialog up (windows 0
+   to 4, which read as no screen) ends with the dialog's id and tag
+   name (`, dialog 0x14 dialog_live_signin (window 3, slot 4)`), and
+   `ui.screen` answers it as `dialog`. `boot::ui_watch` holds the layout. [local] It is read
    statically: the input dispatcher `0x147dbe`, the push `0x147f6d`, the
    channel test `0x1473b6` and the delivery `0x23515d`. [guess] It has
    not been seen in a run. The focused row is not read: list focus goes
