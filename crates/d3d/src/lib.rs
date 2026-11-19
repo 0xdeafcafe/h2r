@@ -50,6 +50,7 @@ pub mod shader;
 pub mod state;
 mod texdesc;
 pub mod threaded;
+pub mod uniform_compare;
 pub mod vblank;
 pub mod vertex_cache;
 

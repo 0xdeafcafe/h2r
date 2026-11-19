@@ -118,7 +118,25 @@ lightmap `0x004e0344`, [structure-bsp.md](../formats/structure-bsp.md)):
   the probe put the 43 px girder line on placement 282's edge (0.23 px
   outside its triangle, over cluster 31), and the 02000 remainder and
   01000's 3 px are edge pixels too (the van's outline, the curb): the
-  owners switch says whether the rigid path or the clusters own them. A view whose draws are not
+  owners switch says whether the rigid path or the clusters own them.
+  It split them (the 2026-11-19 runs): the placements own the girder
+  line, 01000's specks and 220 of 02000's px; the clusters the curb's 80.
+  Both also left about 4% of 03000's pixels one level darker than the
+  D3D path, in noise over every lit surface (13 400 px each, 26 800 with
+  both): the lighting vector (`v5`). The stream format table
+  (`0x0043f408`, type `0x30`) declares it `NORMPACKED3`, so the GPU reads
+  `s / 1023` (`s / 511` for z); the native world had it from the CPU's
+  midpoint decode (`(2 s + 1) / (2^bits - 1)`, [lighting.md](../formats/lighting.md)),
+  up to half a step higher in each component. It now takes the GPU's
+  decode (`load::program_lighting_vector`). For the placements' edges,
+  `H2_NATIVE_WORLD_DUMP=282[:107]` (with `H2_NATIVE_WORLD_OWNERS=clusters`,
+  so that the D3D path draws the placement) prints, once per loaded
+  world, the uniforms the native rigid draw of that placement and
+  material would take, and arms `d3d::uniform_compare`: the D3D path's
+  next draws with the same rows `c[50..52]` and the same program print
+  every constant the program reads, every input it reads (streamed by
+  one and not the other, or with other defaults) and every vertex or
+  pixel uniform that differs. A view whose draws are not
   W-buffered (`SET_CONTROL0` without z-perspective) is left to the D3D
   path (counted in the log): the programs write and clip w. The trace
   found it: every cinematic pass culled 0 of 1449 draws (and drawing
@@ -553,7 +571,7 @@ per-pixel `tex_detail` program it reads:
 | `v0` | world position | section positions |
 | `v1` | texture coordinate | section texcoords |
 | `v2`, `v3`, `v4` | the tangent frame (normal, binormal, tangent) | section tangent-frame stream |
-| `v5` | the lightmap bucket's signed lighting vector (stream `30`, [lighting.md](../formats/lighting.md)) | bucket stream, to decode |
+| `v5` | the lightmap bucket's signed lighting vector (stream `30`, [lighting.md](../formats/lighting.md)) | bucket stream, decoded as the GPU reads it (`NORMPACKED3`, not the CPU's midpoint decode) |
 | `v6` | lightmap coordinate | bucket stream `1f` |
 
 and these constants (hardware numbering, D3D register + 96):

@@ -980,6 +980,9 @@ impl ShaderProvider for Nv2aShaders {
                 pu.tex_scale[n] = [1.0 / w, 1.0 / h, 1.0, 1.0];
             }
         }
+        if let VertexSource::Microcode(words) = &key.vertex {
+            crate::uniform_compare::observe(words, &vu, &pu, draw.shader.provided_inputs);
+        }
         vu.write_bytes(&mut self.vertex_bytes);
         pu.write_bytes(&mut self.pixel_bytes);
         let group0 = bindings.uniforms(

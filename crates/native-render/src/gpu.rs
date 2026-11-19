@@ -637,6 +637,12 @@ impl GpuWorld {
         self.programs.as_ref().map_or(0, ProgramSet::len)
     }
 
+    /// Placement `instance`'s rigid draws in a frame of `view`
+    /// ([`ProgramSet::rigid_uniforms`]); empty without programs.
+    pub fn rigid_uniforms(&self, instance: u32, view: &ViewInputs) -> Vec<crate::program::RigidUniforms> {
+        self.programs.as_ref().map_or_else(Vec::new, |p| p.rigid_uniforms(instance, view))
+    }
+
     /// The frame's view for the programs' uniforms (the device's view
     /// constants, the target's sizes and depth scale).
     pub fn prepare_programs(&self, queue: &wgpu::Queue, view: &ViewInputs) {
