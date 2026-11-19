@@ -23,6 +23,7 @@ pub mod controls_text;
 pub mod coop_jip;
 pub mod coop_latency;
 pub mod coop_live;
+mod coop_look;
 pub mod coop_players;
 pub mod coop_probe;
 pub mod custom_games;

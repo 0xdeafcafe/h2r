@@ -161,6 +161,7 @@ pub mod method {
     /// reasons, the pipelined render, native render paths
     /// ([`crate::RenderStats`]).
     pub const RENDER_STATS: &str = "render.stats";
+    pub const COOP_LOOK: &str = "render.coop_look";
     /// Sim mode's match (`H2_SIM`, `boot::sim_glue`): the match file, the
     /// phase (`waiting`, `playing`, `over`), ticks, game and wall seconds,
     /// the speed-up so far, frames skipped, and the end once over.
