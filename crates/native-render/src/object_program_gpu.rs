@@ -416,8 +416,9 @@ pub type StageSource<'s> = dyn FnMut(usize, map::TagId, u32) -> Option<Image> + 
 /// material -> what it draws with): per material, every implementation it
 /// may draw ([`implementations_drawn`]) compiled for every section it is
 /// in, through the declaration the game would build there. A material
-/// with any one missing is left out whole, with the reason; the rest are
-/// the input to upload and the materials taken.
+/// with any one missing is left out whole, with the reason; one in no
+/// drawn section is neither taken nor refused; the rest are the input to
+/// upload and the materials taken.
 pub fn lit_model(
     sections: &[LitSection<'_>],
     materials: &HashMap<u16, LitMaterial>,
@@ -452,6 +453,13 @@ pub fn lit_model(
         // Buffers made for a material refused later stay unused.
         let mut built = || -> Result<Vec<(u16, Range<u32>, [Option<(LitProgramInput, usize)>; 3])>, String> {
             let pass = object_layer3(&lit.material)?;
+            // Every implementation the material may draw, whether or not
+            // a drawn section has it.
+            for &n in implementations_drawn(lit.layer_15) {
+                if !pass.implementations.iter().any(|i| i.index == n) {
+                    return Err(format!("no implementation {n}"));
+                }
+            }
             let mut parts = Vec::new();
             for s in sections {
                 let streams = s
@@ -506,6 +514,8 @@ pub fn lit_model(
             Ok(parts)
         };
         let parts = match built() {
+            // Not in a drawn section: nothing to draw, nothing taken.
+            Ok(p) if p.is_empty() => continue,
             Ok(p) => p,
             Err(e) => {
                 refused.push((m, e));
@@ -538,6 +548,7 @@ pub fn lit_model(
 mod tests {
     use super::*;
     use crate::object_lighting::Lighting;
+    use gfx::state::RenderStateType;
 
     /// Synthetic stream formats: type 1 a 3-float position (semantic 0),
     /// a 2-float coordinate (semantic 3) and a 3-float normal (semantic 2).
@@ -546,6 +557,15 @@ mod tests {
         let r = &mut t[crate::object_streams::STREAM_FORMAT_SIZE..];
         r[..8].copy_from_slice(&[1, 0, 2, 3, 1, 2, 2, 0xff]);
         StreamFormats::from_bytes(&t)
+    }
+
+    /// Render state `t` set to `value`, at its slot in the game's table.
+    fn state(t: RenderStateType, value: u32) -> tags::shader::RenderStateValue {
+        let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
+        let slot = (0..=255u8)
+            .find(|&s| RenderStateType::from_guest_index(&table, u32::from(s)) == Some(t))
+            .expect("a slot");
+        tags::shader::RenderStateValue { state: slot, value }
     }
 
     fn material(implementations: Vec<tags::material::ResolvedImplementation>) -> tags::material::Material {
@@ -584,11 +604,19 @@ mod tests {
             vertex_count: 3,
             parts: vec![(5, vec![[2, 1, 0]]), (0, vec![[0, 1, 2]])],
         };
-        let mut one = lit();
+        // An opaque pass: no blending, depth written (both must be set).
+        let opaque = || {
+            let mut imp = lit();
+            imp.render_states = vec![state(RenderStateType::AlphaBlendEnable, 0), state(RenderStateType::ZWriteEnable, 1)];
+            imp
+        };
+        let mut one = opaque();
         one.index = 1;
         let mut materials = HashMap::new();
-        materials.insert(0, LitMaterial { material: material(vec![lit(), one]), shader: ShaderValues::default(), layer_15: false });
-        materials.insert(1, LitMaterial { material: material(vec![lit()]), shader: ShaderValues::default(), layer_15: true });
+        materials.insert(0, LitMaterial { material: material(vec![opaque(), one.clone()]), shader: ShaderValues::default(), layer_15: false });
+        materials.insert(1, LitMaterial { material: material(vec![opaque()]), shader: ShaderValues::default(), layer_15: true });
+        // In no section: neither taken nor refused.
+        materials.insert(2, LitMaterial { material: material(vec![opaque(), one]), shader: ShaderValues::default(), layer_15: false });
         let mut asked = Vec::new();
         let mut vertex = |vs: map::TagId, geometry: u16, influences: u8| {
             asked.push((vs, geometry, influences));
@@ -596,7 +624,7 @@ mod tests {
         };
         let mut image = |_: usize, _: map::TagId, _: u32| -> Option<Image> { None };
         let (input, taken, refused) = lit_model(&[section], &materials, &formats(), &mut vertex, &mut image);
-        assert_eq!(taken, vec![0]);
+        assert_eq!(taken, vec![0], "refused: {refused:?}");
         assert_eq!(refused, vec![(1, "no implementation 2".to_string())], "a layer-15 level draws implementation 2");
         assert_eq!(input.programs.len(), 2);
         assert_eq!(input.buffers.len(), 1, "both implementations read v0..v2 the same way");
