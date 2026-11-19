@@ -1896,6 +1896,22 @@ impl<B: Backend> Device<B> {
         Some(rs.stencil)
     }
 
+    /// The cull mode and front face a draw recorded now would take
+    /// (`D3DRS_CULLMODE`, `D3DRS_FRONTFACE`: `SetRenderState_CullMode`
+    /// `0x3f53d0` and `_FrontFace` `0x3f5450` store them in the guest's
+    /// render-state array), decoded as draws decode them. `None` when a
+    /// slot does not read or holds a value outside its enum.
+    pub fn cull_state(&self, mem: &dyn GuestMemory) -> Option<(gfx::state::CullMode, gfx::state::FrontFace)> {
+        use gfx::state::RenderStateType as R;
+        let table = RenderStateTable::default();
+        let mut rs = gfx::state::RenderState::default();
+        for t in [R::CullMode, R::FrontFace] {
+            let guest = table.canonical_to_guest(t.index())?;
+            rs.set_raw(t, self.render_state(mem, guest)?).ok()?;
+        }
+        Some((rs.cull_mode, rs.front_face))
+    }
+
     /// The `A8R8G8B8` entries of the palette bound at `stage` now
     /// (`SetPalette`), as the D3D path samples a P8 texture there: `None`
     /// when none is bound or it does not read. Read-only, for a native

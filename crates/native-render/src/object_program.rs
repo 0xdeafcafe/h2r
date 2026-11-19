@@ -323,6 +323,7 @@ pub fn compile_object_stages(
         def: t.def,
         pixel_options: t.pixel_options,
         state: None,
+        inherits_cull: false,
         rigid: None,
     })
 }
