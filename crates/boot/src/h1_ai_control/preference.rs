@@ -133,6 +133,8 @@ mod tests {
             )
             .put_u32(0x004f_9380, GLOBAL_POOL)
             .put_u32(GLOBAL_POOL + layout::DATA, DATA)
+            // Retail's 3072 global cells bound the registry.
+            .put_u32(GLOBAL_POOL + layout::MAXIMUM_COUNT, 3072)
             .put_u32(DATA + (0x41d + WORDS) * 8 + 4, 0xffff)
             .put_u32(DATA + 0x41d * 8 + 4, 0x8200_0000)
             .put_u32(DATA + 0x41d * 8 + 12, PLAYERS)

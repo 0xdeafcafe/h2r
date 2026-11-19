@@ -155,7 +155,9 @@ fn numeric_countdown_reads_the_duration_and_start_flag_after_the_extra_argument(
     let mut timer = state.countdown.lock().unwrap();
     assert!(timer.running);
     assert_eq!(timer.remaining, 3_723_123);
-    assert_eq!((timer.digit(3), timer.digit(4), timer.digit(5), timer.digit(6)), (3, 2, 2, 0));
+    // 1:02:03.123. Retail 0x56aa0 takes place 4 as ms / 10000 mod 6, so the
+    // seconds tens of 372 ten-second units is 0, not 372 mod 10.
+    assert_eq!((timer.digit(3), timer.digit(4), timer.digit(5), timer.digit(6)), (3, 0, 2, 0));
     timer.tick(1);
     assert_eq!(timer.remaining, 3_723_090);
     timer.tick(3);

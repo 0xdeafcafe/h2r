@@ -161,6 +161,8 @@ mod tests {
             .put_u16(GROUPS + 0x20, u16::MAX)
             .put_u32(0x004f_9380, VM)
             .put_u32(VM + layout::DATA, GLOBALS)
+            // Retail's 3072 global cells bound the registry.
+            .put_u32(VM + layout::MAXIMUM_COUNT, 3072)
             .put_u32(VALUES + WORDS * 8, 0xffff_0000)
             .put_u32(VALUES, 1)
             .put_u32(ACTOR + 0x18, OBJECT_HANDLE)

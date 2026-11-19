@@ -144,6 +144,12 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "HS_UNUSED_EVALUATOR",
         "a script builtin on the simulation thread evaluates its Boolean argument in the guest",
     ),
+    (
+        "h1-hud-text",
+        "PLAYER_PRESS_INTERACT",
+        "a player's interact press in the simulation, on the game thread; swaps the powerup \
+         through guest calls it waits on",
+    ),
     ("hud", "GAME_ACTIVATE", AFTER),
     ("loaded_map", "GAME_ACTIVATE", AFTER),
     ("variant-ext-live", "GAME_ACTIVATE", AFTER),

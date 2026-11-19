@@ -50,6 +50,8 @@ fn fixture() -> FakeGuest {
         .put_u32(SOUNDS + layout::DATA, INSTANCES)
         .put_u32(SOUNDS + layout::HIGH_WATER, 2)
         .put_u32(SOUNDS + layout::ELEMENT_SIZE, 0xbc)
+        // The native start stubs write their instance rows here.
+        .map(INSTANCES, 2 * 0xbc)
         .put_u32(tags::TAG_INDEX_GLOBAL, TAG_INDEX)
         .put_u32(tags::TAG_ENTRIES_GLOBAL, TAG_ENTRIES)
         .put_u32(TAG_INDEX + tags::index_layout::GROUPS, TAG_GROUP)

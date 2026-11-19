@@ -371,7 +371,8 @@ mod tests {
     const TIME: u32 = 0x0045_1480;
 
     fn fixture() -> FlatMemory {
-        let mut mem = FlatMemory::new(0x0044_0000, 0x000e_0000);
+        // Up to the tag index global at 0x547f00.
+        let mut mem = FlatMemory::new(0x0044_0000, 0x0011_0000);
         let scenario = 0x0045_0000;
         let index = 0x0045_1800;
         let entries = 0x0045_1900;
