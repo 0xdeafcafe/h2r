@@ -362,6 +362,33 @@ fn picker_opened(text: &str) -> bool {
     text.starts_with("bots: join gate port 1: ") && text.contains(", dialog 0x14 (")
 }
 
+/// The game's own line with the account picker up (`ui: screen none
+/// (...), dialog 0x14 dialog_live_signin (...)`, `boot::ui_watch`).
+fn picker_line(text: &str) -> bool {
+    text.starts_with("ui: screen none (") && text.contains("), dialog 0x14 ")
+}
+
+/// How many times the account picker opened: by the game's `ui: screen`
+/// lines (a cursor move is another line, so only a line after one
+/// without the picker counts), else by port 1's join gate, which a run
+/// with no local bot placed yet (Clankermatch) never prints.
+fn picker_openings(texts: &[&str]) -> usize {
+    let mut up = false;
+    let mut by_ui = 0;
+    for t in texts.iter().filter(|t| t.starts_with("ui: screen ")) {
+        let now = picker_line(t);
+        if now && !up {
+            by_ui += 1;
+        }
+        up = now;
+    }
+    if by_ui > 0 {
+        by_ui
+    } else {
+        texts.iter().filter(|t| picker_opened(t)).count()
+    }
+}
+
 const TROUBLE: [&str; 7] = [
     "panicked",
     "guest thread exited",
@@ -450,7 +477,7 @@ pub fn verdict(log: &str) -> Option<Verdict> {
         (None, None) => {
             let mut lines = l.last(5, |t| t.starts_with("bots-drive"));
             lines.extend(l.last(1, |t| t.starts_with("ui: screen")));
-            let pickers = l.texts.iter().filter(|t| picker_opened(t)).count();
+            let pickers = picker_openings(&l.texts);
             let detail = if pickers > 0 {
                 format!(
                     "never on Xbox Live: the game's account picker (dialog 0x14, \
