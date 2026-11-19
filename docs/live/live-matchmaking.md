@@ -1206,3 +1206,50 @@ Each write uses a fresh `sessions.write` token.
   detail. It includes the host, whether it was dedicated, the roster,
   planned teams and the per-member RTT table. A peer host has zero RTT
   to itself. The public debug record omits network addresses.
+
+### Ad-hoc dedicated hosts
+
+Set `LIVE_DEDICATED=1` in the native server environment or in the Live
+Worker's variables. Set `LIVE_DEDICATED_HOPPERS` to a JSON object keyed
+by hopper index. A hopper is opted in when its entry supplies the map
+scenario and optionally a variant. For example, enable hopper 1 with
+`{"1":{"map":"lockout","variant":"Team Slayer"}}`. The global switch
+and each individual hopper default to off. Choose a map and variant
+supported by the playlist and the host's data bundle.
+
+For regional placement, set `LIVE_HOST_REGIONS` to a JSON object
+mapping provider region codes to IPv4 QoS base endpoints. For example,
+`{"lhr":"192.0.2.10:31000","ams":"192.0.2.20:31000","iad":null}`.
+Each endpoint answers the same UDP echo as a peer at base port plus
+two. Use `null` for a region without a probe. Set
+`LIVE_HOST_DEFAULT_REGION` to a key in that list. If both region
+settings are omitted, Live leaves placement to the provider.
+
+The queue includes configured regional probes in its existing
+`probing` response when there is room within the candidate limit. Live
+uses measurements from the current probe generation. Among regions
+measured successfully by every cohort member, it chooses the lowest
+worst-member RTT. Ties prefer the configured default and then region
+code order. If no region has measurements from every member, Live
+uses the configured default. Regional probes occupy no player seats.
+
+Live reserves a cohort with an eligible peer fallback and requests
+the dedicated host as soon as the cohort forms. The forming request
+waits for the allocation result while other members can keep polling.
+This lets the Worker schedule the first lease sweep even if polling
+stops. The playerless host occupies a machine slot, so an ad-hoc
+assignment can take at most 15 solo entrants. Cohorts reachable only
+through a registered host use the existing registered-host path.
+All ad-hoc members receive `waiting` during boot. Live binds
+`host_lease` before starting the process, so the host can publish its
+lobby under that lease. The dedicated lobby has a session ID distinct
+from the assignment ID.
+After `HostReady` supplies the session ID, the queue sends `join`
+with that ID and `frames_from_host: true`.
+
+If allocation fails, including when the budget is exhausted, or if
+the host fails to register within 60 seconds of cohort formation, the
+same assignment ID, roster, and teams move to the reserved peer. The
+elected peer receives `host` and publishes as usual. The other players
+keep polling the same search and join when the peer's lobby is
+available, with `frames_from_host: false`.

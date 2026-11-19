@@ -1,11 +1,16 @@
 //! Opt-in OptiMatch tickets. The same router and session log serve native
 //! Live and the Worker. Tickets expire on access, without a timer.
+mod dedicated;
 mod selection;
+#[cfg(test)]
+mod tests;
 
 use crate::{
     ConnectInfo,
     app::{ApiError, Live, conflict, forbidden, invalid, not_found, now},
+    hosts::HostView,
     http::{bearer, json},
+    model::Model,
 };
 use axum::{
     body::to_bytes,
@@ -16,9 +21,16 @@ use axum::{
 use live_proto::{
     Author, Xuid, lxm,
     hopper::{HALO_2_HOPPER_FILE, HOPPERS, HopperFile, Rules as HopperRules},
-    matchmaking::{ASSIGNMENT_SECONDS, Assignment, Candidate, Connectivity, MAX_CANDIDATES, Queue, Ticket},
+    hosts::{
+        DEFAULT_IDLE_TIMEOUT_S, DEFAULT_MAX_MATCH_S, HostClass, HostLease, HostState, ProviderKind,
+        Transport,
+    },
+    matchmaking::{
+        ASSIGNMENT_SECONDS, Assignment, Candidate, Connectivity, MAX_CANDIDATES, Queue, Ticket,
+    },
     session::PING_MAX_MS,
 };
+use dedicated::{DedicatedConfig, DedicatedPlaylist, RegionTable};
 use selection::{Entrant, Host, Samples};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -28,6 +40,9 @@ use std::{
 
 const TICKET_SECONDS: i64 = 10;
 const REGISTRATION_SECONDS: i64 = 3600;
+const BOOT_SECONDS: i64 = 60;
+// The playerless host still occupies one of the sixteen machine slots.
+const MAX_DEDICATED_SOLO_PLAYERS: usize = 15;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Rules {
@@ -75,10 +90,122 @@ pub(crate) struct Lease {
     pub ranked: bool,
     pub joiners: u32,
     until: i64,
+    placement: Placement,
+}
+
+enum Placement {
+    PeerOrRegistered,
+    Booting {
+        fallback: Assignment,
+    },
+    Ready {
+        session_id: String,
+    },
+}
+
+enum BootProgress {
+    Pending,
+    Ready { session_id: String, ready_ms: i64 },
+    Failed,
+}
+
+impl BootProgress {
+    fn from_view(view: Option<HostView>) -> Self {
+        let Some(view) = view else {
+            return Self::Failed;
+        };
+        match view.state {
+            HostState::Ended | HostState::Failed => Self::Failed,
+            HostState::Joinable | HostState::Playing => {
+                let session_id = view.endpoint
+                    .and_then(|endpoint| endpoint.session_id)
+                    .filter(|id| live_proto::session::valid_id(id));
+                let boot_ms = view.boot_ms.and_then(|ms| i64::try_from(ms).ok());
+                match (session_id, boot_ms) {
+                    (Some(session_id), Some(boot_ms)) => Self::Ready {
+                        session_id,
+                        ready_ms: view.lease.created_ms.saturating_add(boot_ms),
+                    },
+                    _ => Self::Pending,
+                }
+            }
+            HostState::Requested | HostState::Booting => Self::Pending,
+        }
+    }
+}
+
+impl Lease {
+    fn fallback(&mut self, clock: i64) {
+        let Placement::Booting { fallback } = &mut self.placement else {
+            return;
+        };
+        std::mem::swap(&mut self.assignment, fallback);
+        self.placement = Placement::PeerOrRegistered;
+        self.joiners = self.assignment.members.len() as u32 - 1;
+        self.until = self.until.min(clock) + ASSIGNMENT_SECONDS;
+    }
+
+    fn retain(&mut self, clock: i64) -> bool {
+        if matches!(self.placement, Placement::Booting { .. }) {
+            if self.assignment.host_lease.is_some() {
+                // A member's next poll checks when the bound host became ready.
+                return clock < self.until + ASSIGNMENT_SECONDS;
+            }
+            if self.until <= clock {
+                self.fallback(clock);
+            }
+        }
+        clock < self.until
+    }
+
+    fn poll_host(&mut self, lease_id: &str, clock: i64, progress: BootProgress) {
+        if !matches!(self.placement, Placement::Booting { .. })
+            || self.assignment.host_lease.as_deref() != Some(lease_id)
+            || clock >= self.until + ASSIGNMENT_SECONDS
+        {
+            return;
+        }
+        match progress {
+            BootProgress::Ready { session_id, ready_ms } if ready_ms < self.until * 1000 => {
+                self.placement = Placement::Ready { session_id };
+                self.until = clock + ASSIGNMENT_SECONDS;
+            }
+            BootProgress::Pending if clock < self.until => {}
+            _ => self.fallback(clock),
+        }
+    }
+
+    fn queue(&self, xuid: Xuid, model: &Model) -> Queue {
+        let assignment = &self.assignment;
+        match &self.placement {
+            Placement::Booting { .. } => Queue::Waiting {
+                assignment: assignment.clone(),
+            },
+            Placement::Ready { session_id } => Queue::Join {
+                session_id: session_id.clone(),
+                frames_from_host: true,
+            },
+            Placement::PeerOrRegistered if assignment.host == xuid => Queue::Host {
+                assignment: assignment.clone(),
+            },
+            Placement::PeerOrRegistered => {
+                if model.read().sessions.get(&assignment.id).is_some_and(|s| {
+                    s.host_xuid == assignment.host
+                        && s.state == "open"
+                        && s.advertisement.slots.public_open > 0
+                }) {
+                    Queue::Join { session_id: assignment.id.clone(), frames_from_host: false }
+                } else {
+                    Queue::Waiting { assignment: assignment.clone() }
+                }
+            }
+        }
+    }
 }
 
 #[derive(Default)]
 pub(crate) struct Matchmaker {
+    config: DedicatedConfig,
     // The title-file hash keys the cache and separates a changed lineup.
     rules: Option<(String, [Option<Rules>; HOPPERS])>,
     buckets: BTreeMap<u32, Bucket>,
@@ -89,14 +216,66 @@ pub(crate) struct Matchmaker {
 impl Matchmaker {
     fn expire(&mut self, clock: i64) {
         self.dedicated.retain(|_, until| *until > clock);
-        self.leases.retain(|_, lease| lease.until > clock);
+        self.leases.retain(|_, lease| lease.retain(clock));
         for bucket in self.buckets.values_mut() {
             bucket.expire(clock, &self.dedicated);
         }
     }
 
     pub fn lease(&self, id: &str, clock: i64) -> Option<&Lease> {
-        self.leases.get(id).filter(|l| l.until > clock)
+        self.leases.get(id).filter(|l| {
+            l.until > clock && matches!(l.placement, Placement::PeerOrRegistered)
+        })
+    }
+
+    /// The service-identity publisher must still verify the lease ID and roster.
+    pub(crate) fn dedicated_lease(&self, id: &str, clock: i64) -> Option<&Lease> {
+        self.leases.get(id).filter(|l| {
+            l.until > clock && l.assignment.host_lease.is_some()
+        })
+    }
+
+    /// Called after HostRequested is readable and before the provider starts.
+    pub(crate) fn host_requested(&mut self, host: &HostLease) -> bool {
+        self.bind_host_lease(host, now())
+    }
+
+    fn bind_host_lease(&mut self, host: &HostLease, clock: i64) -> bool {
+        if host.assignment_id.starts_with("sim-") || host.assignment_id.starts_with("custom-") {
+            return true;
+        }
+        let Some(lease) = self.leases.get_mut(&host.assignment_id) else {
+            return false;
+        };
+        if !matches!(lease.placement, Placement::Booting { .. })
+            || clock >= lease.until
+            || host.hopper != Some(lease.assignment.hopper)
+            || host.roster != lease.assignment.members
+            || lease.assignment.host_lease.as_ref().is_some_and(|id| id != &host.id)
+        {
+            return false;
+        }
+        lease.assignment.host_lease = Some(host.id.clone());
+        true
+    }
+
+    fn booting_host(&self, xuid: Xuid, hopper: u32) -> Option<(String, String)> {
+        self.leases.values().find_map(|lease| {
+            let assignment = &lease.assignment;
+            if matches!(lease.placement, Placement::Booting { .. })
+                && assignment.hopper == hopper
+                && assignment.members.contains(&xuid)
+            {
+                return Some((assignment.id.clone(), assignment.host_lease.clone()?));
+            }
+            None
+        })
+    }
+
+    fn host_request_failed(&mut self, assignment_id: &str, clock: i64) {
+        if let Some(lease) = self.leases.get_mut(assignment_id) {
+            lease.fallback(clock);
+        }
     }
 
     fn submit(
@@ -104,10 +283,10 @@ impl Matchmaker {
         ticket: Ticket,
         endpoint: SocketAddrV4,
         xuid: Xuid,
-        level: u8,
         clock: i64,
+        provider: Option<ProviderKind>,
         live: &Live,
-    ) -> Result<Queue, ApiError> {
+    ) -> Result<(Queue, Option<HostLease>), ApiError> {
         self.expire(clock);
         if ticket.dedicated && !self.dedicated.contains_key(&xuid) {
             return Err(forbidden("a dedicated host must be registered by an operator"));
@@ -119,20 +298,7 @@ impl Matchmaker {
             if lease.assignment.hopper != ticket.hopper {
                 return Err(conflict("account has an assignment on another hopper"));
             }
-            let assignment = &lease.assignment;
-            if assignment.host == xuid {
-                return Ok(Queue::Host { assignment: assignment.clone() });
-            }
-            let state = live.model.read();
-            if state.sessions.get(&assignment.id).is_some_and(|s| {
-                s.state == "open" && s.advertisement.slots.public_open > 0
-            }) {
-                return Ok(Queue::Join {
-                    session_id: assignment.id.clone(),
-                    frames_from_host: false, // dh-lease: existing registered or peer host
-                });
-            }
-            return Ok(Queue::Waiting { assignment: assignment.clone() });
+            return Ok((lease.queue(xuid, &live.model), None));
         }
 
         let rules = self.rules.as_ref()
@@ -149,27 +315,36 @@ impl Matchmaker {
                 bucket.remove(xuid);
             }
         }
+        let provider = provider.filter(|_| {
+            rules.size <= MAX_DEDICATED_SOLO_PLAYERS && self.config.enabled(ticket.hopper)
+        });
+        let regions = (provider.is_some() && !ticket.dedicated).then_some(&self.config.regions);
+        let level = live.model.read().ranks.standing(xuid, &ticket.hopper.to_string()).level;
         let bucket = self.buckets.entry(ticket.hopper).or_default();
-        bucket.submit(&ticket, xuid, endpoint, level, clock)?;
-        if let Some(lease) = bucket.assign(ticket.hopper, rules, clock)? {
+        bucket.submit(&ticket, xuid, endpoint, level, clock, regions)?;
+        let mut request = None;
+        if let Some((lease, host_request)) =
+            bucket.assign(ticket.hopper, rules, clock, &self.config, provider)?
+        {
             let assigned = lease.assignment.members.contains(&xuid)
                 || lease.assignment.host == xuid;
-            let assignment = assigned.then(|| lease.assignment.clone());
+            let reply = assigned.then(|| lease.queue(xuid, &live.model));
             self.leases.insert(lease.assignment.id.clone(), lease);
-            if let Some(assignment) = assignment {
-                return Ok(if assignment.host == xuid {
-                    Queue::Host { assignment }
-                } else {
-                    Queue::Waiting { assignment }
-                });
+            request = host_request;
+            if let Some(reply) = reply {
+                return Ok((reply, request));
             }
         }
-        Ok(Queue::Probing {
+        let reply = Queue::Probing {
             candidates: bucket.waiting.values()
                 .filter(|w| w.candidate.xuid != xuid && (!ticket.dedicated || !w.dedicated))
-                .map(|w| w.candidate.clone())
+                .map(|w| &w.candidate)
+                .chain(regions.into_iter().flat_map(RegionTable::candidates))
+                .take(MAX_CANDIDATES)
+                .cloned()
                 .collect(),
-        })
+        };
+        Ok((reply, request))
     }
 }
 
@@ -201,6 +376,7 @@ impl Bucket {
         endpoint: SocketAddrV4,
         level: u8,
         clock: i64,
+        regions: Option<&RegionTable>,
     ) -> Result<(), ApiError> {
         if self.waiting.get(&xuid).is_some_and(|w| {
             w.candidate.endpoint != endpoint || w.dedicated != ticket.dedicated
@@ -222,8 +398,13 @@ impl Bucket {
             });
         }
         let samples: Samples = ticket.samples.iter()
-            .filter(|s| s.target != xuid && self.waiting.get(&s.target)
-                .is_some_and(|w| w.candidate.generation == s.generation))
+            .filter(|s| {
+                s.target != xuid && (
+                    self.waiting.get(&s.target)
+                        .is_some_and(|w| w.candidate.generation == s.generation)
+                    || regions.is_some_and(|table| table.accepts(s))
+                )
+            })
             .map(|s| (s.target, s.rtt_ms))
             .collect();
         let entry = self.waiting.get_mut(&xuid).expect("ticket inserted");
@@ -234,21 +415,38 @@ impl Bucket {
         Ok(())
     }
 
-    fn assign(&mut self, hopper: u32, rules: Rules, clock: i64) -> Result<Option<Lease>, ApiError> {
+    fn assign(
+        &mut self,
+        hopper: u32,
+        rules: Rules,
+        clock: i64,
+        config: &DedicatedConfig,
+        provider: Option<ProviderKind>,
+    ) -> Result<Option<(Lease, Option<HostLease>)>, ApiError> {
         let players: Vec<_> = self.waiting.values().filter(|p| !p.dedicated)
             .map(Waiting::entrant).collect();
         let hosts: Vec<_> = self.waiting.values().map(Waiting::host).collect();
-        let Some(group) = selection::group(&players, &hosts, rules.size, clock) else {
+        // Reserve a fallback that satisfies the normal peer QoS window. A
+        // cohort that can only reach a registered host keeps the legacy path.
+        let peers: Vec<_> = hosts.iter().copied().filter(|h| !h.dedicated).collect();
+        let eligible = provider.zip(config.playlist(hopper));
+        let peer_group = eligible.as_ref()
+            .and_then(|_| selection::group(&players, &peers, rules.size, clock));
+        let (group, candidates, ad_hoc) = match peer_group {
+            Some(group) => (Some(group), peers.as_slice(), eligible),
+            None => (selection::group(&players, &hosts, rules.size, clock), hosts.as_slice(), None),
+        };
+        let Some(group) = group else {
             return Ok(None);
         };
         let teams = selection::teams(&group, rules.team_count);
-        let Some(selected) = selection::select_host(&group, &hosts) else {
+        let Some(selected) = selection::select_host(&group, candidates) else {
             return Ok(None);
         };
         let host = selected.host.xuid;
         let endpoint = self.waiting[&host].candidate.endpoint;
         let members: Vec<_> = group.iter().map(|p| p.xuid).collect();
-        let assignment = Assignment {
+        let mut assignment = Assignment {
             id: random_id()?,
             hopper,
             host,
@@ -256,19 +454,69 @@ impl Bucket {
             members,
             teams,
             rtt_ms: selected.rtt_ms,
-            host_lease: None, // dh-lease: existing registered or peer host
+            host_lease: None,
         };
+        let mut placement = Placement::PeerOrRegistered;
+        let mut until = clock + ASSIGNMENT_SECONDS;
+        let request = ad_hoc.map(|(provider, playlist)| {
+            let choice = config.regions.pick(&group);
+            let region = choice.as_ref().map(|c| c.region.to_owned());
+            let dedicated = Assignment {
+                // The ad-hoc host authenticates with its lease, without an XUID.
+                host: Xuid(0),
+                dedicated: true,
+                rtt_ms: choice.map(|c| c.rtt_ms).unwrap_or_default(),
+                ..assignment.clone()
+            };
+            placement = Placement::Booting {
+                fallback: std::mem::replace(&mut assignment, dedicated),
+            };
+            until = clock + BOOT_SECONDS;
+            host_request(&assignment, playlist, provider, region)
+        });
         self.remove(host);
         for &member in &assignment.members {
             self.remove(member);
         }
-        Ok(Some(Lease {
+        Ok(Some((Lease {
             joiners: assignment.members.len() as u32 - (!assignment.dedicated) as u32,
             assignment,
             endpoint,
             ranked: rules.ranked,
-            until: clock + ASSIGNMENT_SECONDS,
-        }))
+            until,
+            placement,
+        }, request)))
+    }
+}
+
+fn host_request(
+    assignment: &Assignment,
+    playlist: &DedicatedPlaylist,
+    provider: ProviderKind,
+    region: Option<String>,
+) -> HostLease {
+    let transport = match provider {
+        ProviderKind::Cloudflare => Transport::Tunnel,
+        ProviderKind::Fly | ProviderKind::Local => Transport::Udp,
+    };
+    HostLease {
+        // Live mints the lease ID and creation time.
+        id: String::new(),
+        assignment_id: assignment.id.clone(),
+        provider,
+        region,
+        class: HostClass::Small,
+        map: playlist.map.clone(),
+        map_id: None,
+        variant: playlist.variant.clone(),
+        hopper: Some(assignment.hopper),
+        max_players: assignment.members.len() as u8,
+        roster: assignment.members.clone(),
+        bots: Vec::new(),
+        transport,
+        idle_timeout_s: DEFAULT_IDLE_TIMEOUT_S,
+        max_match_s: DEFAULT_MAX_MATCH_S,
+        created_ms: 0,
     }
 }
 
@@ -353,10 +601,47 @@ pub(crate) async fn queue(State(live): State<Arc<Live>>, req: Request) -> Result
         return Err(invalid("invalid endpoint, hopper or QoS samples"));
     }
     load_rules(&live).await?;
-    let level = live.model.read().ranks.standing(xuid, &ticket.hopper.to_string()).level;
     let endpoint = SocketAddrV4::new(addr, ticket.port);
-    let result = live.matchmaking.lock().unwrap()
-        .submit(ticket, endpoint, xuid, level, now(), &live)?;
+    let clock = now();
+    let provider = live.host_provider_kind();
+    let (mut result, request) = {
+        let mut matcher = live.matchmaking.lock().unwrap();
+        if let Some((assignment, lease_id)) = matcher.booting_host(xuid, ticket.hopper) {
+            // Provider callbacks also take the matcher lock.
+            drop(matcher);
+            let progress = BootProgress::from_view(live.host_view(&lease_id));
+            matcher = live.matchmaking.lock().unwrap();
+            if let Some(lease) = matcher.leases.get_mut(&assignment) {
+                lease.poll_host(&lease_id, clock, progress);
+            }
+        }
+        matcher.submit(ticket, endpoint, xuid, clock, provider, &live)?
+    };
+    if let Some(request) = request {
+        // LiveHub schedules its next sweep after this response. Wait for the
+        // host request to be recorded with the matcher lock released.
+        let assignment_id = request.assignment_id.clone();
+        let observed = live.request_host(request).await.ok().map(|host| {
+            let progress = BootProgress::from_view(live.host_view(&host.id));
+            (host.id, progress)
+        });
+        let clock = now();
+        let mut matcher = live.matchmaking.lock().unwrap();
+        if let Some((lease_id, progress)) = observed {
+            if let Some(lease) = matcher.leases.get_mut(&assignment_id) {
+                lease.poll_host(&lease_id, clock, progress);
+            }
+        } else {
+            matcher.host_request_failed(&assignment_id, clock);
+        }
+        if matches!(result, Queue::Waiting { .. }) {
+            matcher.expire(clock);
+            result = match matcher.leases.get(&assignment_id) {
+                Some(lease) => lease.queue(xuid, &live.model),
+                None => Queue::Probing { candidates: Vec::new() },
+            };
+        }
+    }
     Ok(json(StatusCode::OK, &result))
 }
 
