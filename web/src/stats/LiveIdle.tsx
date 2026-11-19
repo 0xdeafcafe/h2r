@@ -9,13 +9,12 @@ import { A } from "@solidjs/router";
 import { statsPath } from "../routes";
 import { live } from "../state/live";
 import { endedGames, isCampaign, type GameState } from "../state/reducer";
-import { gameMapTitle, packageLookup } from "../state/maps";
+import { gameMapTitle, geometryChanged } from "../state/maps";
 import { gameTypeLine } from "../state/gametype";
 import { outlineFor } from "../state/outlines";
 import { TICKS_PER_SECOND } from "../state/frames";
 import { ReplayTimeline, fetchRecording } from "../state/replay";
 import { LoopClock, highlights, loopSpan, montageMaps, pickLastGame, type Highlight } from "../lib/lastGame";
-import { geometryChoice } from "../lib/maps";
 import { rosterFor } from "../lib/game";
 import { now } from "../lib/now";
 import type { StatsSummary } from "../lib/statsHome";
@@ -105,8 +104,8 @@ function HighlightRow(props: { h: Highlight }) {
 function LoopMap(props: { game: GameState }) {
   const roster = createMemo(() => rosterFor(props.game));
   const outline = outlineFor(() => props.game.map);
-  const sameGeometry = () => geometryChoice(packageLookup(props.game.map_id)) === "base";
-  const geometry = geometryFor(() => (sameGeometry() ? props.game.map : undefined));
+  const sameGeometry = () => !geometryChanged(props.game);
+  const geometry = geometryFor(() => (sameGeometry() ? props.game.map : undefined), () => props.game.map_id);
   const [broken, setBroken] = createSignal(false);
   const top = () => (broken() ? null : topView(geometry()?.views));
   const [tl, setTl] = createSignal<ReplayTimeline | null>(null);

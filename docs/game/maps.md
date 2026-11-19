@@ -436,9 +436,22 @@ Every package records its base, because most mods change little. Art for a
    (read client-side from the patched map);
 3. the base map's art.
 
-The 3D viewer uses the base map's geometry with the mod's placements,
-unless `[result] geometry` differs from the base's, in which case the
-geometry is extracted from the patched map.
+The 3D viewer draws an installed mod from its own art when the server
+has it: `h2 live assets extract` (and `h2 play --live-local`) resolves
+every package under `<data>/maps/` to the patched map the game loads and
+extracts it like a disc map, keyed by its `MapId`, never by its base
+map's name ([live-art.md](../live/live-art.md#mods)). That covers
+everything the mod's scenario holds: moved or extra vehicles, weapons,
+scenery, machines and spawns, new tag references, objects its scripts
+create, effects its scripts play on a loop, and its own or changed
+bitmaps and shaders. A game on a mod the server has no art for uses the
+base map's geometry, unless `[result] geometry` differs from the base's.
+
+The native viewer (`crates/viewer`) opens an installed mod as
+`mod:<package dir>` (`viewer --list` lists them with their base and
+`MapId`), built in memory the same way: its layers over the disc's base
+(or the installed map pack map), the base checked against the package's
+SHA-256.
 
 ### As built (Live)
 
@@ -507,10 +520,14 @@ geometry is extracted from the patched map.
   account's key and publishes it; `h2 live maps list [--base MAP] [--author
   GAMERTAG] [--json]` prints the server's packages.
 - **Pictures and viewer** (web): the package's image (served at
-  `/v1/maps/{id}/image`), then the base map's art; the 3D viewer uses the
-  base map's geometry unless the package has `[result] geometry`, when it
-  says "geometry changed, no 3D view" (the art manifest has no base
-  geometry hash to compare with yet, so any `geometry` counts as changed).
+  `/v1/maps/{id}/image`), then the base map's art. The 3D viewer first
+  looks for the mod's own art by `map_id` (the server's art has it when
+  the mod is installed where the art was extracted: an entry
+  `mod-<first 16 hex of the MapId>` carrying `map_id`, `base` and the
+  patched map's `sha256`), and draws that. Otherwise it uses the base
+  map's geometry unless the package has `[result] geometry`, when it says
+  "geometry changed, no 3D view" (the art manifest has no base geometry
+  hash to compare with yet, so any `geometry` counts as changed).
 
 Deviations from the design above:
 

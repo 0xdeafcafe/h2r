@@ -63,7 +63,7 @@ export default function GameViewer(props: {
 }) {
   let box!: HTMLElement;
   const [params, setParams] = useSearchParams<{ view?: string; cam?: string; ao?: string; cut?: string; see?: string }>();
-  const geometry = geometryFor(() => props.game.map);
+  const geometry = geometryFor(() => props.game.map, () => props.game.map_id);
   const mode = () => viewerMode(params.view, !geometryChanged(props.game));
   const setMode = (m: ViewerMode) => setParams({ view: m === "3d" ? "3d" : undefined }, { replace: true });
   // A killcam wants the 3D view: switch to it (it takes the camera as it opens).
