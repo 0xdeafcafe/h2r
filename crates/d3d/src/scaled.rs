@@ -1641,17 +1641,21 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         &mut self,
         color: Self::Surface,
         depth: Self::Surface,
+        sampled: Vec<Option<Self::Surface>>,
         request: crate::backend::ExternalPassRequest,
         pass: Box<dyn crate::backend::ExternalPass>,
     ) -> Result<bool, String> {
         // Both copies get the pass: the reference (what the guest reads
-        // back and what repairs come from) and the view (what is shown).
+        // back and what repairs come from) and the view (what is shown),
+        // each sampling its own copy of the sampled levels.
         let shared = SharedPass(std::sync::Arc::new(std::sync::Mutex::new(pass)));
+        let reference = sampled.iter().map(|s| s.as_ref().map(|s| s.reference)).collect();
+        let view = sampled.iter().map(|s| s.as_ref().and_then(|s| self.live(s.view))).collect();
         let drawn = self
             .reference
-            .external_pass(color.reference, depth.reference, request, Box::new(shared.clone()))?;
+            .external_pass(color.reference, depth.reference, reference, request, Box::new(shared.clone()))?;
         if let (Some(c), Some(d)) = (color.view, depth.view)
-            && !self.view.external_pass(c, d, request, Box::new(shared))?
+            && !self.view.external_pass(c, d, view, request, Box::new(shared))?
         {
             self.view_failed("external pass", "the view backend refused it".to_string());
         }

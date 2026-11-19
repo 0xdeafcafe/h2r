@@ -21,7 +21,7 @@ use crate::object_lighting::ShaderValues;
 use crate::object_program::{
     IMPLEMENTATIONS, ObjectInputs, ObjectPass, Row, object_layer3, object_pass, object_pixel_uniforms, object_vertex_uniforms,
 };
-use crate::object_program::LIGHTMAP_STREAM;
+use crate::object_program::{LIGHTMAP_STREAM, texaccum_dimensions};
 use crate::object_streams::{Element, StreamData, StreamFormats, declaration, expand, registers};
 use crate::objects::ObjectFrame;
 use crate::program::{ViewInputs, bias_signed, frame_pixel, frame_vertex, sampler_descriptor};
@@ -67,6 +67,13 @@ impl LitModelInput {
     pub fn is_empty(&self) -> bool {
         self.parts.is_empty()
     }
+
+    /// Whether a program samples the texture accumulation target
+    /// ([`crate::object_program::TEXACCUM_TEXTURE`]): a pass drawing the
+    /// model then needs the level bound ([`LitObjects::encode`]).
+    pub fn samples_texaccum(&self) -> bool {
+        self.programs.iter().any(|p| p.pass.texaccum.contains(&true))
+    }
 }
 
 struct LitBuffer {
@@ -79,8 +86,40 @@ struct LitProgram {
     pass: ObjectPass,
     module: wgpu::ShaderModule,
     layout: wgpu::PipelineLayout,
-    textures: wgpu::BindGroup,
+    textures_layout: wgpu::BindGroupLayout,
+    /// The stages' views the program owns, and every stage's sampler.
+    views: Vec<(usize, wgpu::TextureView)>,
+    samplers: Vec<wgpu::Sampler>,
+    /// Its stages' bind group, made once; `None` when a stage samples the
+    /// texture accumulation target, whose level is the pass's (made per
+    /// encode, [`texture_group`]).
+    textures: Option<wgpu::BindGroup>,
     pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat, Vec<u8>), wgpu::RenderPipeline>,
+}
+
+/// The bind group of `views` (and `extra`, the texture accumulation
+/// level's stages) with their samplers.
+fn texture_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    views: &[(usize, wgpu::TextureView)],
+    extra: &[(usize, &wgpu::TextureView)],
+    samplers: &[wgpu::Sampler],
+) -> wgpu::BindGroup {
+    let mut entries = Vec::new();
+    for (n, view) in views.iter().map(|(n, v)| (*n, v)).chain(extra.iter().copied()) {
+        entries.push(wgpu::BindGroupEntry { binding: 2 * n as u32, resource: wgpu::BindingResource::TextureView(view) });
+        entries.push(wgpu::BindGroupEntry { binding: 2 * n as u32 + 1, resource: wgpu::BindingResource::Sampler(&samplers[n]) });
+    }
+    device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("native object program textures"), layout, entries: &entries })
+}
+
+/// The texture accumulation level an encode binds: its view and its size
+/// in guest texels (the coordinates the programs give are texels of it).
+#[derive(Clone, Copy)]
+pub struct Texaccum<'a> {
+    pub view: &'a wgpu::TextureView,
+    pub guest_size: (u32, u32),
 }
 
 struct LitModel {
@@ -216,6 +255,10 @@ impl LitObjects {
                 views.push((n, self.normalization.clone()?));
                 continue;
             }
+            if pass.texaccum[n] {
+                // The pass's level, bound per encode.
+                continue;
+            }
             // Checked at load: every sampled stage has its image.
             let mut image = images[n].take().unwrap_or(Image { width: 1, height: 1, rgba: vec![0, 0, 0, 255], mips: Vec::new() });
             bias_signed(&mut image, p.signed[n]);
@@ -225,25 +268,13 @@ impl LitObjects {
             label: Some("native object program textures"),
             entries: &layout_entries,
         });
-        let mut entries = Vec::new();
-        for (n, view) in &views {
-            entries.push(wgpu::BindGroupEntry { binding: 2 * *n as u32, resource: wgpu::BindingResource::TextureView(view) });
-            entries.push(wgpu::BindGroupEntry {
-                binding: 2 * *n as u32 + 1,
-                resource: wgpu::BindingResource::Sampler(&samplers[*n]),
-            });
-        }
-        let textures = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("native object program textures"),
-            layout: &textures_layout,
-            entries: &entries,
-        });
+        let textures = (!pass.texaccum.contains(&true)).then(|| texture_group(device, &textures_layout, &views, &[], &samplers));
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("native object program"),
             bind_group_layouts: &[Some(&self.uniforms_layout), Some(&textures_layout)],
             immediate_size: 0,
         });
-        Some(LitProgram { pass, module, layout, textures, pipelines: HashMap::new() })
+        Some(LitProgram { pass, module, layout, textures_layout, views, samplers, textures, pipelines: HashMap::new() })
     }
 
     /// Whether model `index` has lit parts.
@@ -253,7 +284,10 @@ impl LitObjects {
 
     /// Draws the lit parts of `objects` (each with its model index) into
     /// `color` and `depth` (both loaded and kept), the viewport the whole
-    /// target as the programs expect. Returns the parts drawn.
+    /// target as the programs expect. A part whose program samples the
+    /// texture accumulation target is drawn only with `texaccum`, its
+    /// stages' coordinates in that level's guest texels. Returns the parts
+    /// drawn.
     #[allow(clippy::too_many_arguments)]
     pub fn encode(
         &mut self,
@@ -267,6 +301,7 @@ impl LitObjects {
         target_size: (u32, u32),
         view: &ViewInputs,
         objects: &[(u32, &ObjectFrame)],
+        texaccum: Option<Texaccum<'_>>,
     ) -> usize {
         let mut draws = Vec::new();
         let mut blocks: Vec<(VertexUniforms, PixelUniforms)> = Vec::new();
@@ -277,10 +312,20 @@ impl LitObjects {
                 let part = &m.parts[i];
                 let Some((program, buffer)) = part.implementations[imp] else { continue };
                 let pass = &m.programs[program].pass;
+                let samples_texaccum = pass.texaccum.contains(&true);
+                if samples_texaccum && texaccum.is_none() {
+                    continue;
+                }
                 let inputs = ObjectInputs { lighting: frame.lighting.as_ref(), defaults: &defaults, shader: part.shader };
                 let base = frame_vertex(&pass.program.vertex, view);
-                let Ok(vertex) = object_vertex_uniforms(&base, &pass.implementation, &inputs, rows, part.decompression) else { continue };
-                let Ok(pixel) = object_pixel_uniforms(&frame_pixel(&pass.program.pixel, view), &pass.implementation, &inputs) else { continue };
+                let Ok(mut vertex) = object_vertex_uniforms(&base, &pass.implementation, &inputs, rows, part.decompression) else { continue };
+                if let Some(t) = texaccum {
+                    texaccum_dimensions(&mut vertex, &pass.implementation, pass.texaccum, t.guest_size);
+                }
+                let Ok(mut pixel) = object_pixel_uniforms(&frame_pixel(&pass.program.pixel, view), &pass.implementation, &inputs) else { continue };
+                if let Some(t) = texaccum {
+                    texaccum_scale(&mut pixel, pass.texaccum, t.guest_size);
+                }
                 blocks.push((vertex, pixel));
                 draws.push(Draw { model, program, buffer, indices: part.indices.clone() });
             }
@@ -365,6 +410,19 @@ impl LitObjects {
             layout: &self.uniforms_layout,
             entries: &[entry(0, VertexUniforms::SIZE), entry(1, PixelUniforms::SIZE)],
         });
+        // The stages of programs sampling the texture accumulation level,
+        // with this pass's level.
+        let mut groups: HashMap<(u32, usize), wgpu::BindGroup> = HashMap::new();
+        if let Some(t) = texaccum {
+            for d in &draws {
+                let p = &self.models[&d.model].programs[d.program];
+                if p.textures.is_none() && !groups.contains_key(&(d.model, d.program)) {
+                    let extra: Vec<(usize, &wgpu::TextureView)> =
+                        (0..4).filter(|&n| p.pass.texaccum[n]).map(|n| (n, t.view)).collect();
+                    groups.insert((d.model, d.program), texture_group(device, &p.textures_layout, &p.views, &extra, &p.samplers));
+                }
+            }
+        }
         let has_stencil = depth_format.has_stencil_aspect();
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("native object programs"),
@@ -390,9 +448,10 @@ impl LitObjects {
             let b = &m.buffers[d.buffer];
             let p = &m.programs[d.program];
             let Some(pipeline) = p.pipelines.get(&(color_format, depth_format, b.registers.clone())) else { continue };
+            let Some(textures) = p.textures.as_ref().or_else(|| groups.get(&(d.model, d.program))) else { continue };
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &uniforms, o);
-            pass.set_bind_group(1, &p.textures, &[]);
+            pass.set_bind_group(1, textures, &[]);
             pass.set_blend_constant(p.pass.program.state.map_or(wgpu::Color::BLACK, |s| s.blend_constant));
             pass.set_vertex_buffer(0, b.vertices.slice(..));
             pass.set_index_buffer(b.indices.slice(..), wgpu::IndexFormat::Uint32);
@@ -404,13 +463,27 @@ impl LitObjects {
 }
 
 /// The engine's textures the lit build may bind: whether the vector
-/// normalization cube loads (engine texture 1), and what an object's draw
+/// normalization cube loads (engine texture 1), what an object's draw
 /// samples for the lightmap ([`crate::object_program::OBJECT_LIGHTMAP`])
-/// when it is uniform ([`uniform`]).
+/// when it is uniform ([`uniform`]), and whether the host binds the
+/// texture accumulation target (engine texture 3) per pass.
 #[derive(Clone, Debug, Default)]
 pub struct EngineStages {
     pub normalization: bool,
     pub lightmap: Option<Image>,
+    pub texaccum: bool,
+}
+
+/// Sets the coordinate scale of the stages in `stages` (those sampling
+/// the texture accumulation target) to one over its guest size: the
+/// game's programs address that linear target in texels, as the D3D path
+/// samples a linear texture.
+pub fn texaccum_scale(pixel: &mut PixelUniforms, stages: [bool; 4], guest_size: (u32, u32)) {
+    for (n, on) in stages.into_iter().enumerate() {
+        if on {
+            pixel.tex_scale[n] = [1.0 / guest_size.0.max(1) as f32, 1.0 / guest_size.1.max(1) as f32, 1.0, 1.0];
+        }
+    }
 }
 
 /// Whether every texel of `image`, at every level, is the same: then it
@@ -596,6 +669,12 @@ pub fn lit_model(
                             }
                             continue;
                         }
+                        if compiled.texaccum[k] {
+                            if !engine.texaccum {
+                                return Err(format!("implementation {n} stage {k} samples the texture accumulation target, which the host does not bind"));
+                            }
+                            continue;
+                        }
                         if compiled.program.stages[k] == Stage::Lightmap {
                             images[k] = engine.lightmap.clone();
                             continue;
@@ -720,7 +799,7 @@ mod tests {
         let without = lit_model(&[section.clone()], &materials, &formats(), &EngineStages::default(), &mut vertex, &mut image);
         assert!(without.taken.is_empty());
         assert!(without.refused[0].1.contains("samples the lightmap"), "{:?}", without.refused);
-        let engine = EngineStages { normalization: false, lightmap: Some(grey.clone()) };
+        let engine = EngineStages { normalization: false, lightmap: Some(grey.clone()), texaccum: false };
         let with = lit_model(&[section], &materials, &formats(), &engine, &mut vertex, &mut image);
         assert_eq!(with.taken, vec![0], "{:?}", with.refused);
         assert_eq!(with.input.programs[0].images[3], Some(grey), "stage 3 binds the object's lightmap");
@@ -728,6 +807,54 @@ mod tests {
         assert_eq!(b.registers, vec![0, 1, 2]);
         assert_eq!(b.vertices[1], [0.0, 0.0, 0.0, 1.0], "v1, the lightmap coordinates, zero");
         assert_eq!(b.vertices[3], [1.0, 0.0, 0.0, 1.0], "vertex 1's position from the section");
+    }
+
+    #[test]
+    fn an_implementation_sampling_the_texture_accumulation_target_needs_the_host_to_bind_it() {
+        use crate::object_program::TEXACCUM_TEXTURE;
+        use crate::object_program::tests::{lit, rigid_program};
+        let mut bytes = Vec::new();
+        for k in 0..3 {
+            for v in [k as f32, 0.0, 0.0, 0.5, 0.5, 0.0, 0.0, 1.0] {
+                bytes.extend(v.to_le_bytes());
+            }
+        }
+        let section = LitSection {
+            index: 0,
+            geometry: 0,
+            influences: 0,
+            decompression: [[1.0; 4]; 3],
+            streams: vec![Some((1, StreamData { bytes: &bytes, stride: 32 }))],
+            vertex_count: 3,
+            parts: vec![(0, vec![[0, 1, 2]])],
+        };
+        let mut imp = lit();
+        imp.render_states = vec![state(RenderStateType::AlphaBlendEnable, 0), state(RenderStateType::ZWriteEnable, 1)];
+        imp.textures[2] = Some(tags::material::StageTexture {
+            source: tags::material::TextureSource::Engine(TEXACCUM_TEXTURE),
+            size: None,
+            stage_size: None,
+        });
+        imp.pixel_shader = shaders::PixelShaderDef { texture_modes: 1 << 10, ..Default::default() }.to_bytes();
+        let mut materials = HashMap::new();
+        materials.insert(0, LitMaterial { material: material(vec![imp]), shader: ShaderValues::default() });
+        let mut vertex = |_: map::TagId, _: u16, _: u8| Ok::<_, String>((rigid_program(), vec![0u16, 3, 2]));
+        let mut image = |_: usize, _: map::TagId, _: u32| -> Option<Image> { None };
+        let without = lit_model(&[section.clone()], &materials, &formats(), &EngineStages::default(), &mut vertex, &mut image);
+        assert!(without.taken.is_empty());
+        assert!(without.refused[0].1.contains("texture accumulation"), "{:?}", without.refused);
+        let engine = EngineStages { texaccum: true, ..EngineStages::default() };
+        let with = lit_model(&[section], &materials, &formats(), &engine, &mut vertex, &mut image);
+        assert_eq!(with.taken, vec![0], "{:?}", with.refused);
+        assert!(with.input.samples_texaccum());
+        let pass = &with.input.programs[0].pass;
+        assert_eq!(pass.texaccum, [false, false, true, false]);
+        assert_eq!(with.input.programs[0].images[2], None, "no image: the pass's level is bound per encode");
+        // Its coordinates are texels of the level.
+        let mut pixel = pass.program.pixel.clone();
+        texaccum_scale(&mut pixel, pass.texaccum, (640, 480));
+        assert_eq!(pixel.tex_scale[2], [1.0 / 640.0, 1.0 / 480.0, 1.0, 1.0]);
+        assert_eq!(pixel.tex_scale[0], pass.program.pixel.tex_scale[0]);
     }
 
     /// Render state `t` set to `value`, at its slot in the game's table.

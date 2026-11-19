@@ -209,6 +209,7 @@ mod tests {
             animated: Vec::new(),
             engine_render_states: Vec::new(),
             engine_stage_states: Vec::new(),
+            dimension_bindings: Vec::new(),
         }
     }
 

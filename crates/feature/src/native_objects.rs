@@ -73,6 +73,11 @@ pub struct NativeSet {
     /// read), its records' node rows copied, and each record's
     /// implementation among those.
     pub lit: HashMap<u16, u8>,
+    /// Definitions whose parts sample the texture accumulation target
+    /// (engine texture 3): an object of one is drawn only while the target
+    /// is there to bind ([`native_render::object_nodes::texaccum_bound`]),
+    /// else its items keep their D3D draws.
+    pub texaccum: HashSet<u16>,
 }
 
 impl NativeSet {
@@ -97,6 +102,11 @@ impl NativeSet {
 /// record's implementation one its lit parts have.
 pub fn ready(m: &dyn GuestRead, set: &NativeSet, cleared: &ClearedObjects, f: &mut ObjectFrame) -> bool {
     if set.node_count(f.definition) != Some(f.nodes.len()) {
+        return false;
+    }
+    // Decided here, before the view's skip is kept: a part that samples
+    // the texture accumulation target with none bound would go undrawn.
+    if set.texaccum.contains(&(f.definition as u16)) && !native_render::object_nodes::texaccum_bound(m) {
         return false;
     }
     let Some(implementations) = set.lit(f.definition) else {

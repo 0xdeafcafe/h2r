@@ -1172,6 +1172,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         &mut self,
         color: u32,
         depth: u32,
+        sampled: Vec<Option<u32>>,
         request: crate::backend::ExternalPassRequest,
         pass: Box<dyn crate::backend::ExternalPass>,
     ) -> Result<bool, String> {
@@ -1183,7 +1184,8 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         let shared = Arc::clone(&self.shared);
         self.post(move |w| {
             let (c, d) = (w.surface(color)?, w.surface(depth)?);
-            if !w.inner.external_pass(c, d, request, pass)? {
+            let sampled = sampled.into_iter().map(|s| s.and_then(|s| w.surface(s).ok())).collect();
+            if !w.inner.external_pass(c, d, sampled, request, pass)? {
                 shared.miss("external_pass returned false".into());
             }
             Ok(())

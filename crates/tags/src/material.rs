@@ -189,6 +189,13 @@ pub struct ResolvedImplementation {
     /// Engine-driven render-state / stage-state bindings, raw.
     pub engine_render_states: Vec<ExternalBinding>,
     pub engine_stage_states: Vec<ExternalBinding>,
+    /// The engine vertex constants that read a stage's texture size (modes
+    /// 5..20), in the order `0x00019be0` applies them: their resolved
+    /// values hold the size the resolver knew (0 by 0 for an engine
+    /// texture's, which `0x00019530` sets when it binds it), so a host
+    /// binding an engine texture puts its size in again
+    /// ([`EngineVertexConstant::eval_size`]).
+    pub dimension_bindings: Vec<EngineVertexConstant>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -714,6 +721,11 @@ impl ShaderLibrary {
             animated,
             engine_render_states: spas.externals[imp.animated_render_states.indices()].to_vec(),
             engine_stage_states: spas.externals[imp.animated_stage_states.indices()].to_vec(),
+            dimension_bindings: spas.externals[imp.external_vertex_constants.indices()]
+                .iter()
+                .map(|&e| EngineVertexConstant::of(e))
+                .filter(|c| (5..=20).contains(&c.mode))
+                .collect(),
         })
     }
 }
@@ -1056,6 +1068,15 @@ impl EngineVertexConstant {
     pub fn eval(self, row: &mut [f32; 4], size: (f32, f32), inputs: &EngineInputs) -> Result<()> {
         eval_engine(row, usize::from(self.mode), 0, usize::from(self.source), size, inputs)
     }
+
+    /// For a size mode (5..20), its value written into `row` with `size`
+    /// the (width, height) of the texture at stage `stage - 1`; other
+    /// modes leave `row` alone.
+    pub fn eval_size(self, row: &mut [f32; 4], size: (f32, f32)) {
+        if (5..=20).contains(&self.mode) {
+            eval_size(row, usize::from(self.mode), size);
+        }
+    }
 }
 
 /// `imp`'s engine-driven vertex constants in the order `0x00019be0`
@@ -1121,23 +1142,26 @@ fn eval_engine(
                 .ok_or(Error::Invalid("engine vector index above 63"))?;
             out[..3].copy_from_slice(v);
         }
-        5..=20 => {
-            let (w, h) = dims;
-            match mode {
-                5..=8 => out[mode - 5] = w,
-                9 => (out[0], out[1]) = (w, h),
-                10 => (out[2], out[3]) = (w, h),
-                11 => (out[0], out[1]) = (0.0, 0.0),
-                12 => (out[2], out[3]) = (0.0, 0.0),
-                13 => *out = [w, h, 0.0, 0.0],
-                14 | 18 => *out = [w, 0.0, 0.0, 0.0],
-                15 | 19 => *out = [0.0, h, 0.0, 0.0],
-                16 => (out[0], out[1], out[2]) = (w, h, 1.0),
-                17 => (out[0], out[1], out[2]) = (0.0, 0.0, 0.0),
-                _ => *out = [0.0; 4],
-            }
-        }
+        5..=20 => eval_size(out, mode, dims),
         _ => return Err(Error::Invalid("engine binding mode above 20")),
     }
     Ok(())
+}
+
+/// Modes 5..20 of [`eval_engine`]: the stage's texture size `dims`.
+fn eval_size(out: &mut [f32; 4], mode: usize, dims: (f32, f32)) {
+    let (w, h) = dims;
+    match mode {
+        5..=8 => out[mode - 5] = w,
+        9 => (out[0], out[1]) = (w, h),
+        10 => (out[2], out[3]) = (w, h),
+        11 => (out[0], out[1]) = (0.0, 0.0),
+        12 => (out[2], out[3]) = (0.0, 0.0),
+        13 => *out = [w, h, 0.0, 0.0],
+        14 | 18 => *out = [w, 0.0, 0.0, 0.0],
+        15 | 19 => *out = [0.0, h, 0.0, 0.0],
+        16 => (out[0], out[1], out[2]) = (w, h, 1.0),
+        17 => (out[0], out[1], out[2]) = (0.0, 0.0, 0.0),
+        _ => *out = [0.0; 4],
+    }
 }

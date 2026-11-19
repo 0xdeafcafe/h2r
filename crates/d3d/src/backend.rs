@@ -286,6 +286,14 @@ pub trait ExternalPass: Send {
     fn colour_only(&self) -> bool {
         false
     }
+
+    /// Guest texture headers the pass samples, read when it is issued: the
+    /// render-to-texture levels the D3D path drew into them (the game's
+    /// texture accumulation target), given to [`ExternalPass::encode`] as
+    /// [`ExternalTarget::sampled`] in this order. Empty by default.
+    fn sampled(&self) -> Vec<u32> {
+        Vec::new()
+    }
 }
 
 /// The W-buffer's clip of a W-buffered vertex-program draw, as the D3D path
@@ -328,6 +336,20 @@ pub struct ExternalTarget<'a> {
     /// constants are in) and in this copy's texels (larger under the
     /// render scale).
     pub guest_size: (u32, u32),
+    pub size: (u32, u32),
+    /// Per texture header of [`ExternalPass::sampled`], in order, a view of
+    /// the render-to-texture level that holds its texels on the host (this
+    /// copy's: larger under the render scale), or `None` when there is
+    /// none to sample in place.
+    pub sampled: &'a [Option<SampledLevel>],
+}
+
+/// A render-to-texture level an [`ExternalPass`] samples
+/// ([`ExternalTarget::sampled`]).
+#[derive(Clone, Debug)]
+pub struct SampledLevel {
+    pub view: wgpu::TextureView,
+    /// Its size in this copy's texels.
     pub size: (u32, u32),
 }
 
@@ -781,16 +803,19 @@ pub trait Backend: Send {
     /// Runs `pass` into colour surface `color` and depth surface `depth`,
     /// in order after the work recorded so far. `depth` the same surface
     /// as `color`: a colour-only pass ([`ExternalPass::colour_only`]),
-    /// given a scratch depth of the colour's size. `Ok(false)`: the backend
-    /// cannot (the default) and `pass` is dropped.
+    /// given a scratch depth of the colour's size. `sampled`: per header
+    /// of [`ExternalPass::sampled`], the surface it samples, which the pass
+    /// gets a view of ([`ExternalTarget::sampled`]). `Ok(false)`: the
+    /// backend cannot (the default) and `pass` is dropped.
     fn external_pass(
         &mut self,
         color: Self::Surface,
         depth: Self::Surface,
+        sampled: Vec<Option<Self::Surface>>,
         request: ExternalPassRequest,
         pass: Box<dyn ExternalPass>,
     ) -> Result<bool, String> {
-        let _ = (color, depth, request, pass);
+        let _ = (color, depth, sampled, request, pass);
         Ok(false)
     }
     /// `GET_REPORT`: a ticket for the samples counted since the last
@@ -1153,6 +1178,8 @@ pub struct RecordingBackend {
     pub external_passes: bool,
     /// The external passes taken: `(colour, depth)` surfaces, in order.
     pub external: Vec<(u32, u32)>,
+    /// Per pass taken, the surfaces it samples ([`ExternalPass::sampled`]).
+    pub external_sampled: Vec<Vec<Option<u32>>>,
 }
 
 impl RecordingBackend {
@@ -1478,11 +1505,13 @@ impl Backend for RecordingBackend {
         &mut self,
         color: u32,
         depth: u32,
+        sampled: Vec<Option<u32>>,
         _request: ExternalPassRequest,
         _pass: Box<dyn ExternalPass>,
     ) -> Result<bool, String> {
         if self.external_passes {
             self.external.push((color, depth));
+            self.external_sampled.push(sampled);
         }
         Ok(self.external_passes)
     }

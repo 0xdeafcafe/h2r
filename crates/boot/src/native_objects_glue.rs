@@ -56,7 +56,7 @@ use native_render::model_load;
 use native_render::look;
 use native_render::object_lighting::ShaderValues;
 use native_render::object_nodes::{Compression, decompression_rows};
-use native_render::object_program_gpu::{EngineStages, LitBuild, LitMaterial, LitModelInput, LitObjects, LitSection, lit_model, uniform};
+use native_render::object_program_gpu::{EngineStages, LitBuild, LitMaterial, LitModelInput, LitObjects, LitSection, Texaccum, lit_model, uniform};
 use native_render::object_streams::{self, StreamData, StreamFormats};
 use native_render::objects::ObjectFrame;
 use native_render::pass_state::PassState;
@@ -115,6 +115,9 @@ pub(crate) struct Models {
     /// through, at their stages ([`StageDecoder::used`]): the models draw
     /// only while those stay bound.
     palettes: Mutex<StagePalettes>,
+    /// Definitions whose lit parts sample the texture accumulation target:
+    /// a view drawing one asks the device for that level.
+    texaccum: Mutex<HashSet<u16>>,
 }
 
 impl Models {
@@ -266,11 +269,22 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         if !d.can_external_pass() {
             return false;
         }
+        // An object whose lit parts sample the texture accumulation target
+        // reads the level the D3D path drew in layer 1, in place: without
+        // that the D3D path draws the view's objects.
+        let texaccum = {
+            let t = models.texaccum.lock().unwrap_or_else(|e| e.into_inner());
+            objects.iter().any(|o| t.contains(&(o.definition as u16)))
+        };
+        if texaccum && !d.samples_levels_in_place() {
+            return false;
+        }
         d.request_external_pass(Box::new(ObjectsPass {
             models,
             camera: *camera,
             objects,
             view: None,
+            texaccum,
         }));
         true
     }
@@ -331,6 +345,10 @@ fn spawn_worker(
                         let see_through = cpu.model.transparents.len();
                         let lit = cpu.lit.parts.len();
                         let lit_implementations = cpu.lit_implementations;
+                        let texaccum = cpu.lit.samples_texaccum();
+                        if texaccum {
+                            models.texaccum.lock().unwrap_or_else(|e| e.into_inner()).insert(def as u16);
+                        }
                         models.pending.lock().unwrap_or_else(|e| e.into_inner()).push(cpu);
                         if !transparents.shaders.is_empty() {
                             models
@@ -348,6 +366,9 @@ fn spawn_worker(
                         set.shaders.extend(shaders.into_iter().map(|s| (def as u16, s)));
                         if lit > 0 {
                             set.lit.insert(def as u16, lit_implementations);
+                        }
+                        if texaccum {
+                            set.texaccum.insert(def as u16);
                         }
                         s.set = Arc::new(set);
                         // No lock held across the print.
@@ -686,6 +707,7 @@ fn lit_parts(o: &mut Opened, loaded: &model_load::LoadedModel, materials: &HashM
         o.images.get(&(bitmap, image)).cloned()
     };
     let engine = EngineStages {
+        texaccum: true,
         normalization: o.normalization.as_ref().is_some_and(Option::is_some),
         lightmap: o.lightmap.clone().and_then(Result::ok),
     };
@@ -745,11 +767,18 @@ struct ObjectsPass {
     objects: Vec<ObjectFrame>,
     /// The view's constants, for the lit parts' programs.
     view: Option<[[f32; 4]; d3d::VIEW_CONSTANTS]>,
+    /// Whether a drawn object's lit parts sample the texture accumulation
+    /// target ([`native_render::object_program::TEXACCUM_HEADER`]).
+    texaccum: bool,
 }
 
 impl d3d::ExternalPass for ObjectsPass {
     fn view_constants(&mut self, constants: &[[f32; 4]; d3d::VIEW_CONSTANTS]) {
         self.view = Some(*constants);
+    }
+
+    fn sampled(&self) -> Vec<u32> {
+        if self.texaccum { vec![native_render::object_program::TEXACCUM_HEADER] } else { Vec::new() }
     }
 
     fn encode(&mut self, t: d3d::ExternalTarget<'_>) {
@@ -803,6 +832,12 @@ impl d3d::ExternalPass for ObjectsPass {
         if objects.is_empty() {
             return;
         }
+        let texaccum = texaccum_level(t.sampled, t.guest_size, t.size);
+        if self.texaccum && texaccum.is_none() && TEXACCUM_MISSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0 {
+            eprintln!(
+                "native-objects: the texture accumulation target was bound at the hook but the device gave no level for it; parts sampling it go undrawn this view (logged once, counted)"
+            );
+        }
         let view = ViewInputs {
             constants,
             guest_size: t.guest_size,
@@ -821,14 +856,42 @@ impl d3d::ExternalPass for ObjectsPass {
             t.size,
             &view,
             &objects,
+            texaccum,
         );
     }
+}
+
+/// Views whose texture accumulation level the device did not give though
+/// a drawn object's parts sample it (bound at the hook,
+/// `object_nodes::texaccum_bound`, yet no level over it after the drain):
+/// those parts go undrawn. Counted, and logged once.
+static TEXACCUM_MISSED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The texture accumulation level the pass was given, with its size in
+/// guest texels (this copy's texels over the colour's scale).
+fn texaccum_level(sampled: &[Option<d3d::SampledLevel>], guest_size: (u32, u32), size: (u32, u32)) -> Option<Texaccum<'_>> {
+    let level = sampled.first()?.as_ref()?;
+    Some(Texaccum { view: &level.view, guest_size: guest_texels(level.size, guest_size, size) })
+}
+
+/// `texels` of a level in a copy whose colour target is `size` texels for
+/// `guest` guest pixels, in guest texels.
+fn guest_texels(texels: (u32, u32), guest: (u32, u32), size: (u32, u32)) -> (u32, u32) {
+    let scale = |t: u32, g: u32, s: u32| (u64::from(t) * u64::from(g) / u64::from(s.max(1))) as u32;
+    (scale(texels.0, guest.0, size.0), scale(texels.1, guest.1, size.1))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use native_render::model::{ModelDraw, NodeMatrix};
+
+    #[test]
+    fn a_levels_texels_under_the_render_scale_are_its_guest_size() {
+        assert_eq!(guest_texels((640, 480), (640, 480), (640, 480)), (640, 480), "1x");
+        assert_eq!(guest_texels((1280, 960), (640, 480), (1280, 960)), (640, 480), "2x");
+        assert_eq!(guest_texels((320, 240), (640, 480), (1280, 960)), (160, 120), "a smaller level, scaled");
+    }
 
     #[test]
     fn materials_left_to_the_d3d_path_leave_the_model() {

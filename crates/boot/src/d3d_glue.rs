@@ -955,10 +955,11 @@ impl d3d::backend::Backend for Headless {
         &mut self,
         color: u32,
         depth: u32,
+        sampled: Vec<Option<u32>>,
         request: d3d::ExternalPassRequest,
         pass: Box<dyn d3d::ExternalPass>,
     ) -> Result<bool, String> {
-        self.0.external_pass(color, depth, request, pass)
+        self.0.external_pass(color, depth, sampled, request, pass)
     }
     fn warp_surface(&mut self, src: u32, dst: u32, h: [[f32; 3]; 3]) -> Result<bool, String> {
         let r = self.0.warp_surface(src, dst, h);

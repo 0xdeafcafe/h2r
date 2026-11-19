@@ -990,6 +990,43 @@ a material one model draws through its programs may be refused for
 another whose sections take other programs, and that one's items keep
 their D3D draws.
 
+A material with no layer-3 pass ("it has no layer-3 pass" in the load
+log) is not drawn at layer 3 at all: its items sit in other layers, which
+the objects stage does not touch, so they keep their D3D draws while the
+definition's layer-3 materials go native. On 03a masterchief
+(0xf40a1293) and 0xe703058e each have one, beside a material whose every
+implementation samples engine texture 3.
+
+- **The texture accumulation target** (engine texture 3, Code). The
+  binding `0x00019530` takes for 3 (`0x000195b2`) binds render target 1
+  through `0x00014f60` (its kind, the byte at `0x00015154 + 1`, takes
+  `0x00015044`: the texture `0x0001dcc0(1)` returns, the descriptor
+  `0x004b4b58 + 0x98` and its texture at `+4`, valid while `+0x88` is set
+  and `+0x95` clear) and writes the target's size (`+0x80`, `+0x84`) as
+  the stage's size, which engine vertex constants of modes 5..20 read.
+  Layer 1's `_combined` passes draw into it; layer 3 samples it in screen
+  space, a linear texture addressed in texels.
+  - `object_look_stages` takes the stage out of the look
+    (`EngineBound::texaccum`); it compiles as a 2D stage without a bias.
+  - The pass asks the device for the level (`ExternalPass::sampled`, the
+    header `TEXACCUM_HEADER`); after the drain the device finds the
+    render-to-texture level over it as a draw binding it would
+    (`Device::rtt_level`, in place, nothing written back) and the backend
+    gives the pass that copy's view (`ExternalTarget::sampled`, the scaled
+    copy's under the render scale). A view whose objects need it is left
+    to D3D when levels are not sampled in place
+    (`Device::samples_levels_in_place`), and an object whose parts need
+    it is left to D3D at the hook, before its items' skip is kept, when
+    the target is not bound (`object_nodes::texaccum_bound`, the check
+    `0x0001dcc0` makes; `NativeSet::texaccum`). If the device still finds
+    no level after the drain, those parts go undrawn for that view: logged
+    once and counted.
+  - Per draw the stage's coordinate scale is one over the level's guest
+    size (`texaccum_scale`), and the engine vertex constants that read
+    the stage's size (`ResolvedImplementation::dimension_bindings`, which
+    the resolver left 0 by 0 for an engine texture) get it
+    (`texaccum_dimensions`).
+
 - **The vertex block.** What the game's upload would hold for one drawn
   object: `c[0..18]` the view's; `c[18 + i]` the implementation's
   constants with every engine binding that reads the lighting put in from
