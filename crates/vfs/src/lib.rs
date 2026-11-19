@@ -185,10 +185,9 @@ impl Vfs {
         if !(3..=5).contains(&config.utility_partition) {
             return Err(Error::InvalidParameter);
         }
-        let mut vfs = Self {
-            content_maps: config.content_maps.clone(),
-            ..Self::default()
-        };
+        // `Vfs` implements Drop, so no struct update from a default.
+        let mut vfs = Self::default();
+        vfs.content_maps = config.content_maps.clone();
         for partition in 1..=5 {
             let name = format!("Partition{partition}");
             let mut backend = HostBackend::new(

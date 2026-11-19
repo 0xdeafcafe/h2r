@@ -54,8 +54,9 @@ retains its own name, description and bitmap. See
 
 A Live download or removal updates the generated offers. The next
 main-menu tick releases obsolete generated slots and runs the game's
-content scan and multiplayer array builder. A joining console can then
-use the offered map without opening Change Map. An install that exceeds
+content scan and multiplayer array builder. The refresh runs after the
+agent and skulls wrappers and before co-op lobby setup. A joining console
+can then use the offered map without opening Change Map. An install that exceeds
 the budget stays on disk and counts toward the overflow notice.
 
 `map_select::Catalogue` reads the disc slots and the offered records.

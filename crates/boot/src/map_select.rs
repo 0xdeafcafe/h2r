@@ -837,7 +837,7 @@ async fn refresh_slots(cx: &Cx, sel: &Selection) -> Result<(), EntryError> {
     });
     cx.call(GuestCall::new(crate::mod_slots::CONTENT_SCAN))
         .await?;
-    if let Some(array) = cx.read(|m| m.u32(LEVEL_ARRAY)).filter(|&a| a != 0) {
+    if let Some(array) = cx.read(|m| m.u32(LEVEL_ARRAY)).ok().filter(|&a| a != 0) {
         cx.call(GuestCall::new(crate::mod_slots::MP_ARRAY_BUILD).args([array]))
             .await?;
     }
@@ -915,11 +915,11 @@ impl feature::Feature for MapSelect {
                     })
                 })
             })
-            .after_feature(crate::skulls_custom::FEATURE)
-            .before_feature(crate::coop_probe::ID)
-            .before_feature(crate::coop_probe::LIVE_ID)
-            .before_feature(crate::coop_live::FEATURE)
-            .before_feature("sim-metrics");
+            // Keep these wrappers outside the refresh. Co-op and sim
+            // run inside it, on the tick we re-enter.
+            .first()
+            .after_feature(agent::sim::calls::FEATURE)
+            .after_feature(crate::skulls_custom::FEATURE);
 
         // The list's array for a Select Map of ours.
         let (flow, sel) = (Arc::clone(&self.flow), Arc::clone(&self.sel));
