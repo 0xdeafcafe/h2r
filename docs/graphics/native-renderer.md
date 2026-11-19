@@ -2078,12 +2078,14 @@ frame.
 - **After the scene.** `0x00040890` is a full-screen fade: when the mode
   `[0x00485870]` is not 0, it draws the colour at `0x00485874..`
   (packed by `0x00131e50`), with a blend picked through the jump table
-  at `0x00040dc0`. Then `0x00147af1` composes the UI and HUD. The HUD
-  render (`0x0013954b`, gated by `HUD_SHOWN` `0x0013939b`) is S: under
-  it; its caller chain is not traced. So the HUD is always drawn after
-  `render_screen_effects`, and the post passes need no HUD split: the
-  colour pass and the screen effects see the scene only, and the fade
-  and the HUD go over them.
+  at `0x00040dc0`. Then `0x00147af1` composes the UI. The HUD render
+  (`0x0013954b`, gated by `HUD_SHOWN` `0x0013939b`) is not under it: it
+  is the tail jump of `0x001917eb`, which `render_view_scene` calls
+  before the fade (Code, `0x00191887`; see "The UI and HUD" below). So
+  the HUD is always drawn after `render_screen_effects`, and the post
+  passes need no HUD split: the colour pass and the screen effects see
+  the scene only, the HUD goes over them, the fade over the HUD, and the
+  UI over everything.
 
 ### Hook point and order
 
@@ -2151,6 +2153,87 @@ its own thread, and render-timing does not matter (the call runs).
   the colour pass's copy already gives.
 - **`0x0002df00`**, once it is traced; until then a call with `late`
   set keeps its D3D passes.
+
+### The UI and HUD (Code, `h2 disasm`; the native-hud lane)
+
+**Where they are drawn.** `render_view_scene` (`0x0002ba10`) calls
+`0x001917eb` at `0x0002bc93` when `[0x004b9ed8]` (the view's user) is
+not -1: it asks `0x0014de70` and `0x00159170` for the user's unit,
+draws per-user overlays (`0x0019188c`, `0x00192129`, `0x0024da7d`,
+`0x0024cf66`), and tail-jumps to the HUD render `0x0013954b`. Then the
+fade `0x00040890`, then `ui_render_layers` `0x00147af1` (also called by
+the alternate view `0x0002c790` at `0x0002c884` and by `0x0002c8a0` at
+`0x0002c9bc`). `0x00147af1` takes the user in EAX (-1 every user, the
+word at `[ebp+8]` when EAX is -1), stores it at `0x0054d598`, returns
+early when `0x00155f60` says so, then for an index 0 to 4 calls the
+render slot (`+0x14`) of three layer objects (`0x0054d62c + 0x40 *
+index`, `0x0054d76c + 0x38 * index`, `0x0054d884 + 0x38 * index`); index
+4 also draws the screen managers around them (`0x00234f8c` on
+`0x0054d5c4` and `0x0054dba8`, `0x0023583e` on `0x0054d9e0`,
+`0x00234f8c` on `0x0054d99c`). Those collect and sort the screen's widgets
+(`0x002353a5`, docs/formats/ui.md, "Draw order") and call each
+widget's draw. Last, a fade-in by the clock at `0x0054d5b8` against
+`0x0054d5c0` (3 s and 4 s windows).
+
+**The draw primitives under them.** Every draw the HUD and the menus
+make that was followed ends in one of three:
+
+| Primitive | What it pushes | Who calls it |
+|---|---|---|
+| Screen quads: begin `0x00035b90` (record of `0x98` bytes), quad `0x000363a0`, end `0x00036560` (`points::SCREEN_QUADS_BEGIN`, `SCREEN_QUAD`, `SCREEN_QUADS_END`) | The begin sets up to three bitmaps (`0x00012310`, address mode wrap or clamp per stage, point or linear filter), colour writes without alpha (`SET_COLOR_MASK`), depth test off, the blend by mode (`0x000142f0`: mode 10 off, else three 12-entry tables of source factor, destination factor and equation), two vertex constant blocks (a pixel-centred screen transform over the rectangle at `0x00485648`, and a second block from the record's flips and pairs), and, with stage 0 bound and `+0x97` clear, a fixed combiner written into the PSDEF at `0x00484f68` with the record's colours packed in (`0x00131e50`). Each quad commits the state (`0x0001cf50`) and pushes one inline `Begin(7)`, four vertices of diffuse (`SET_VERTEX_DATA4UB`), coordinate and position (`SET_VERTEX_DATA2F`), and `End`: no D3D entry. | Text: `0x0001f070` (from `0x0001fa50`, 22 call sites, and `0x0001fb10`, the HUD's `0x0022aca8`), over the glyph cache `[0x004b62ac]`, one quad per glyph through the layout `0x0013f0e0`, its callback `0x0001f490` and `0x0001f3a0`. A full-screen bitmap at `0x00156960`. |
+| HUD shader quad `0x0022a664` (`points::HUD_SHADER_QUAD`) | The HUD's bitmap into `0x004e6978`/`0x004e697c` (datum, index: the shader's engine texture), the shader draw `0x0001bbf0` (EDI the shader), then `D3DDevice_Begin(7)`, per corner `SetVertexData2f(3, u, v)` and `SetVertexData4f(-1, x, y, z, w)` (z and w the float at `0x0045dd40`), `D3DDevice_End`. The coordinates are the rectangle at EAX `(u0, u1, v0, v1)`, times the bitmap's size when it is linear. | The HUD widgets (`0x0022b397` to `0x0022bca4`), the UI's shader bitmaps (`0x002b12ae`), `0x001e936a` to `0x001e95b6`, `0x0020077f`, `0x0024eca0` to `0x0024f556`. |
+| Other immediate draws (`D3DDevice_Begin` callers) | Not traced: `0x002548f0` (`0x00254e28`, `0x00255083`, with `0x00014bc0` target switches and `0x00014f60` texture binds: S, the menus' blurred backdrop), the fade's `0x00040d86`, and `0x00029b00`, `0x00037a60`, `0x0003bf20`, `0x00046ea0`. | |
+
+So text is one batch per string with a quad per glyph, each a separate
+D3D draw; that is the work a native batch removes (one draw per run of
+glyphs, the glyph cache mirrored as a texture). The HUD's bitmaps are
+shader draws: native, they need the shader's program (the stage 3
+compiler) with the HUD's engine bitmap, in screen space.
+
+**The end of the frame** (for the present's owner; Code, not changed
+here). `0x00013b90` calls `0x0001fd20`, then, when `0x0001dc40` and
+`0x0001de20` say so, copies the view's target `[0x004858b8]` through
+`0x000351a0`, then `0x0001fd00`, `0x0001fcd0` and `0x00022070`.
+`0x00013cd0` (`ret 4`) commits the state (`0x0001cf50`), writes push
+words itself (`[0x00407488]`) and calls the D3D entry at `0x003fb520`.
+`0x00013f10` (`ret 8`) locks a surface for the optional readback
+(`0x003fdb20`, `0x003fad50`, `0x003fdbc0`; bitmaps `0x001358c0`,
+`0x00135a30`), calls `0x00013d80`, and swaps at `0x000140fc`
+(`0x003f9d00`, between two `0x003f9df0`).
+
+**Built** (`impl.render.native_hud`, off by default;
+`feature::native_hud`, `boot::native_hud_glue`,
+`native_render::hud`). Four context-only hooks: the screen-quad begin,
+quad and end, and the HUD shader quad. The host plans each batch
+(`hud::Batch::read`: the record, the blend through the game's tables,
+the screen transform with the begin's own arithmetic, the bitmap) and
+refuses, logged once per reason (`hud::Refused`), every batch that is
+not one stage over the glyph cache with the text's second block. No
+quad is answered yet: every draw stays on D3D.
+
+`H2_NATIVE_HUD_COMPARE=N` (empty: 16) pairs the plan with the D3D path
+for the first `N` windows (a batch, or one HUD quad). The device traces
+from the window's first hook; two hook calls after the window closes
+the trace is taken and paired (`hud::pair`): each screen quad with the
+one pushed four-vertex fan whose `End` lies between its push-buffer put
+(`[[0x00407488]]` at the hook) and the next quad's (the batch's end
+after the last), each HUD quad with the next draw through
+`D3DDevice_End` returning to `0x0022a854`. One line per window:
+`native-hud: compare #<n> <batch or HUD quad>: <k> screen quads paired,
+<a> answered and absent, <h> HUD quads paired, <u> not drained, no
+mismatch` (or the first mismatches). A window is not compared while
+another diagnostic traces the device (`H2_POST_TRACE`).
+
+**Next.** (1) The A/B of the compare on 03a and the main menu: every
+text quad paired, none unseen. (2) Answer the text quads: the glyph
+cache mirrored as an RGBA texture (`hud::a4r4g4b4_to_rgba`, re-read when
+its texels change), the batch's combiner from the PSDEF at `0x00484f68`
+through the stage 3 compiler, its blend, address and filter, one
+external pass per run of answered quads (as the transparents' runs).
+S to verify first: that the batch's vertex program takes `oPos` from
+the begin's first block as `hud::ScreenTransform` does, and the
+coordinates times the record's `+0x40`/`+0x44`. (3) The HUD shader
+quads through the shader's program. (4) The other immediate draws.
 
 ### Stage 5 status
 
