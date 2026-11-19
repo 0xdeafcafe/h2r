@@ -2515,6 +2515,22 @@ pub const BIPED_WORDS: &[(&str, usize)] = &[
     ("unknown_2a8", 0x360),
 ];
 
+/// Sentinel flight tuning: the eleven consecutive floats at Halo 1
+/// bipd +0x324 and Halo 2 bipd +0x2cc (c40 and 04b_floodlab).
+pub const SENTINEL_FLIGHT: &[(&str, usize)] = &[
+    ("unknown_2cc", 0x324),
+    ("unknown_2d0", 0x328),
+    ("unknown_2d4", 0x32c),
+    ("unknown_2d8", 0x330),
+    ("unknown_2dc", 0x334),
+    ("unknown_2e0", 0x338),
+    ("unknown_2e4", 0x33c),
+    ("unknown_2e8", 0x340),
+    ("unknown_2ec", 0x344),
+    ("unknown_2f0", 0x348),
+    ("unknown_2f4", 0x34c),
+];
+
 /// Which retail bipeds a rebuilt biped takes its unknown spans from: the
 /// Chief, humans, or the Covenant. A Halo 1 biped of none (flood,
 /// sentinels, the monitor) takes its counterpart's
@@ -3047,7 +3063,13 @@ pub fn biped(
             set(&mut r, path, Val::text(marker))?;
         }
     }
-    for (path, at) in BIPED_WORDS {
+    if unit.biped_words.iter().any(|w| w.0 == SENTINEL_FLIGHT[0].1) {
+        // Both 04b aggressors carry these biped and character-physics flags.
+        for (field, flags) in [("unknown_1f0", 0xe00u32), ("unknown_264", 0x13)] {
+            set(&mut r, field, Val::Bytes(flags.to_le_bytes().to_vec()))?;
+        }
+    }
+    for (path, at) in BIPED_WORDS.iter().chain(SENTINEL_FLIGHT) {
         if let Some((_, w)) = unit.biped_words.iter().find(|x| x.0 == *at) {
             set(&mut r, path, Val::Bytes(w.to_le_bytes().to_vec()))?;
         }

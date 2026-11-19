@@ -2446,6 +2446,7 @@ name = "h1campaign"
 version = "0.1.0"
 dependencies = [
  "content",
+ "engine",
  "h1ai",
  "h1bitmaps",
  "h1convert",

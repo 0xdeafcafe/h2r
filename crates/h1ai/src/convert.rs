@@ -60,17 +60,22 @@ pub mod grenade {
     pub const COVENANT: u16 = 2;
 }
 
-/// A retail Halo 2 character chosen for a Halo 1 actor variant.
+/// A Halo 2 character chosen for a Halo 1 actor variant.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CharacterChoice {
     /// The Halo 1 actor variant (`actv`) path.
     pub h1_variant: String,
     /// The Halo 1 actor type.
     pub h1_type: ActorType,
-    /// The retail Halo 2 `char` path.
-    pub h2_character: &'static str,
+    /// The installed Halo 2 `char` path.
+    pub h2_character: String,
     /// Grenades the squad carries.
     pub grenade: u16,
+}
+
+/// Actor types for which campaign conversion builds a per-variant character.
+pub fn rebuilds_character(kind: ActorType) -> bool {
+    matches!(kind.0, 8 | 13)
 }
 
 /// The stopgap character table: the nearest retail Halo 2 `char` for a
@@ -183,13 +188,18 @@ pub fn convert_for_map(
             let v = src.actor_palette[i].as_ref()?;
             let kind = src.actor_of(i).map(|a| a.kind).unwrap_or(ActorType(14));
             let (path, grenade) = character_for(kind, &v.name);
+            let path = if rebuilds_character(kind) {
+                v.name.as_str()
+            } else {
+                path
+            };
             if let Some(k) = characters.iter().position(|c| c.h2_character == path) {
                 return Some(k);
             }
             characters.push(CharacterChoice {
                 h1_variant: v.name.clone(),
                 h1_type: kind,
-                h2_character: path,
+                h2_character: path.to_owned(),
                 grenade,
             });
             Some(characters.len() - 1)
@@ -231,7 +241,7 @@ pub fn convert_for_map(
                 h2::FiringPosition {
                     position: f.position,
                     reference_frame: -1,
-                    flags: opts.firing_position_flags,
+                    flags: if e.flags & 0x20 == 0 { opts.firing_position_flags } else { 0 },
                     area: *a as i16,
                     cluster: f.cluster,
                     sector,
@@ -319,7 +329,7 @@ pub fn convert_for_map(
             let mut set: Vec<AreaRef> = letters
                 .iter()
                 .enumerate()
-                .filter(|&(_, &g)| s.attacking() & (1 << g) != 0)
+                .filter(|&(_, &g)| g < 32 && s.attacking() & (1 << g) != 0)
                 .map(|(a, _)| AreaRef {
                     kind: opts.area_kind,
                     zone: zone_index,
@@ -335,10 +345,8 @@ pub fn convert_for_map(
                     })
                     .collect();
             }
-            // An empty squad has no actors to order: no order (room).
-            let order = if unplaced {
-                -1
-            } else {
+            // Migrating actors take the destination squad's order.
+            let order = {
                 ai.orders.push(h2::Order {
                     name: name.clone(),
                     style: opts.order_style,
@@ -559,7 +567,7 @@ impl Plan {
             .characters
             .iter()
             .map(|c| {
-                let id = resolve(c.h2_character)
+                let id = resolve(&c.h2_character)
                     .ok_or_else(|| Error::Invalid(format!("no char {}", c.h2_character)))?;
                 let mut e = Block::zeroed(8);
                 e.tag_ref(0, id);

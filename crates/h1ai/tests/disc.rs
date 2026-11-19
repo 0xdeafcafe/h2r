@@ -375,7 +375,15 @@ fn a30_and_a10_convert_read_back_and_sit_on_generated_pathfinding() {
                 pathfind::generate::generate(&h2, 0, 0, &Default::default()).unwrap()
             })
             .collect();
-        let plan = convert_for_map(&src, &Options::default(), &pfs, &[]);
+        let mut plan = convert_for_map(&src, &Options::default(), &pfs, &[]);
+        let floors: Vec<_> = pfs.iter().map(h1ai::floors::Floors::new).collect();
+        for (zone, enc) in plan.ai.zones.iter_mut().zip(&src.encounters) {
+            if enc.flags & 0x20 == 0 {
+                floors[zone.manual_bsp as usize]
+                    .bind(zone, |_| None)
+                    .unwrap();
+            }
+        }
         let (back, palette) = build_and_read(&plan);
         let mut want = plan.ai.clone();
         want.character_palette = palette;
@@ -387,42 +395,43 @@ fn a30_and_a10_convert_read_back_and_sit_on_generated_pathfinding() {
         );
 
         let on_any = |p: [f32; 3], below: f32| pfs.iter().any(|pf| on_sector(pf, p, below, 0.25));
-
-        // Encounters that fight in the air (a30's banshees: elite pilots
-        // whose firing positions are over the sea) have most firing
-        // positions off any floor. Those encounters are counted as flying,
-        // printed, and left out of the floor check; the rest should be on
-        // the generated sectors.
-        let flying: Vec<bool> = back
-            .zones
-            .iter()
-            .map(|z| {
-                let off = z
-                    .firing_positions
-                    .iter()
-                    .filter(|f| !on_any(f.position, 2.0))
-                    .count();
-                off * 2 > z.firing_positions.len()
-            })
-            .collect();
-        let names: Vec<&str> = back
-            .zones
-            .iter()
-            .zip(&flying)
-            .filter(|(_, f)| **f)
-            .map(|(z, _)| z.name.as_str())
-            .collect();
-        println!("  flying encounters: {names:?}");
-        let (mut fps, mut air, mut off) = (0, 0, Vec::new());
-        for (z, &fly) in back.zones.iter().zip(&flying) {
-            for f in &z.firing_positions {
+        let (mut fps, mut air) = (0, 0);
+        for (z, enc) in back.zones.iter().zip(&src.encounters) {
+            let mut authored = enc.firing_positions.clone();
+            authored.sort_by_key(|p| p.group);
+            assert_eq!(z.firing_positions.len(), authored.len());
+            for (f, original) in z.firing_positions.iter().zip(authored) {
                 fps += 1;
-                if fly {
+                if enc.flags & 0x20 != 0 {
                     air += 1;
-                } else if !on_any(f.position, 2.0) {
-                    off.push(format!("{} {:?}", z.name, f.position));
+                    assert_eq!(f.position, original.position);
+                    assert_eq!((f.flags, f.sector), (0, u32::MAX));
+                } else {
+                    use pathfind::geom::{dot, newell, sub};
+                    let pf = &pfs[z.manual_bsp as usize];
+                    let ring: Vec<_> = pf
+                        .sector_polygon(f.sector as usize)
+                        .unwrap()
+                        .into_iter()
+                        .map(|i| pf.vertices[i])
+                        .collect();
+                    let n = newell(&ring);
+                    assert!(dot(n, sub(f.position, ring[0])).abs() <= 0.001 * dot(n, n).sqrt());
+                    // For a convex sector, every edge has the point on its interior side or on the edge.
+                    let side = n[2].signum();
+                    for (a, b) in ring.iter().zip(ring.iter().cycle().skip(1)) {
+                        let edge = sub(*b, *a);
+                        let rel = sub(f.position, *a);
+                        assert!(
+                            (edge[0] * rel[1] - edge[1] * rel[0]) * side
+                                >= -0.001 * dot(edge, edge).sqrt()
+                        );
+                    }
                 }
             }
+        }
+        if level == "a30" {
+            assert_eq!(air, 584);
         }
         let (mut starts, mut starts_off) = (0, Vec::new());
         for s in &back.squads {
@@ -434,18 +443,17 @@ fn a30_and_a10_convert_read_back_and_sit_on_generated_pathfinding() {
             }
         }
         println!(
-            "{level}: {} groups, {} squads, {starts} starts ({} off sectors), {} zones, {fps} firing positions ({air} flying, {} off sectors), {} orders, {} point sets, {} characters",
+            "{level}: {} groups, {} squads, {starts} starts ({} off sectors), {} zones, {fps} firing positions ({air} flying), {} orders, {} point sets, {} characters",
             back.squad_groups.len(),
             back.squads.len(),
             starts_off.len(),
             back.zones.len(),
-            off.len(),
             back.orders.len(),
             back.point_sets.len(),
             back.character_palette.len()
         );
         let mut by: BTreeMap<&str, usize> = BTreeMap::new();
-        for o in off.iter().chain(&starts_off) {
+        for o in &starts_off {
             *by.entry(o.split(' ').next().unwrap()).or_default() += 1;
         }
         println!("  off sectors by zone or squad: {by:?}");
@@ -462,12 +470,6 @@ fn a30_and_a10_convert_read_back_and_sit_on_generated_pathfinding() {
         }
         // Off a generated sector: standing on scenery (not in the BSP), on
         // a slope steeper than 45 degrees, or in water. Bounded, not zero.
-        let ground = fps - air;
-        assert!(
-            off.len() * 50 <= ground,
-            "{level}: {} of {ground} firing positions off the generated sectors",
-            off.len()
-        );
         assert!(
             starts_off.len() * 10 <= starts,
             "{level}: {} of {starts} starting locations off the generated sectors",

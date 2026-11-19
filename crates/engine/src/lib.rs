@@ -51,6 +51,7 @@ pub mod screen_effect;
 pub mod screen_effects;
 pub mod screen_grid;
 pub mod shadow_constants;
+pub mod squad_pool;
 pub mod tags;
 pub mod testing;
 pub mod view;

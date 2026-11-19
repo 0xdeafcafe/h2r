@@ -242,6 +242,7 @@ points! { ALL;
     HS_MOVE_ANY_DIRECTION @ 0x002a_9370: [fn(index: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/script-builtins.md";
     HS_FALSE_EVALUATOR @ 0x002a_5d50: [fn(index: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/script-builtins.md";
     HS_CONSTANT_LONG_EVALUATOR @ 0x002a_c600: [fn(index: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/script-builtins.md";
+    AI_SQUADS_INITIALIZE @ 0x0020_0b30: [fn() ret 0]; "docs/halo1/ai.md";
     /// Game activation after the scenario's cache is loaded: options in EAX,
     /// AL 1 once the map and its first BSP are in.
     GAME_ACTIVATE @ 0x0018_f000: [fn(options: eax) -> al ret 0]; "docs/runtime/level-boot.md";

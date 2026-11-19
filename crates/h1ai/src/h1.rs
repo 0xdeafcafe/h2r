@@ -222,7 +222,7 @@ pub struct Encounter {
     pub search_behavior: u16,
     /// Manual BSP index (`i16 +0x2a`).
     pub manual_bsp: i16,
-    /// BSP selected when the encounter was compiled (i16 at +0x7e).
+    /// BSP assigned by the Halo 1 cache compiler (+0x7e), -1 when unassigned.
     pub bsp: i16,
     /// Respawn delay, seconds (min, max) (`+0x2c`).
     pub respawn_delay: [f32; 2],

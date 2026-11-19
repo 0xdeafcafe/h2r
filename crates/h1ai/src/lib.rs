@@ -18,6 +18,7 @@
 mod bytes;
 mod ground;
 pub mod convert;
+pub mod floors;
 pub mod h1;
 pub mod h2;
 

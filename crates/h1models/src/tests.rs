@@ -2174,3 +2174,63 @@ fn a_graph_without_vehicle_tables_is_unchanged() {
         assert_eq!(r.w(r.base + at), 0, "+{at:#x}");
     }
 }
+
+#[test]
+fn sentinel_fixed_slots_build_a_runtime_idle_and_aim_overlay() {
+    let (img, at) = synthetic_graph();
+    let mut g = h1::Graph::read(&img, at).unwrap();
+    g.animations[0].name = "stand fixed idle%0".into();
+    g.animations[1].name = "stand fixed aim-still".into();
+    let mut slots = vec![-1; 26];
+    slots[0] = 0;
+    slots[25] = 1;
+    g.units = vec![h1::UnitSlots {
+        label: "stand".into(),
+        classes: vec![h1::ClassSlots {
+            label: "fixed".into(),
+            slots,
+            screen: h1::AimScreen {
+                right_frames: 1,
+                right_yaw_per_frame: 0.35,
+                ..Default::default()
+            },
+            ..Default::default()
+        }],
+        ..Default::default()
+    }];
+    let (out, _) = jmad::convert_graph_for(&g, None, &Default::default(), true).unwrap();
+    let (bytes, ids) = build(vec![(out, "invented\\sentinel")]);
+    let mut map = Map::from_reader(Cursor::new(bytes)).unwrap();
+    let graph = tags::anim::AnimationGraph::read(&mut map, ids[0]).unwrap();
+    let strings = map.strings();
+    let mode = graph
+        .modes
+        .iter()
+        .find(|m| m.name.resolve(strings).unwrap() == Some("combat"))
+        .unwrap();
+    let class = mode
+        .classes
+        .iter()
+        .find(|c| c.name.resolve(strings).unwrap() == Some("any"))
+        .unwrap();
+    let ty = &class.types[0];
+    assert!(
+        ty.actions
+            .iter()
+            .any(|a| a.name.resolve(strings).unwrap() == Some("idle") && a.animation_index == 0)
+    );
+    for name in [
+        "aim_still_up",
+        "aim_still_down",
+        "aim_move_up",
+        "aim_move_down",
+    ] {
+        assert!(
+            ty.overlays
+                .iter()
+                .any(|a| a.name.resolve(strings).unwrap() == Some(name) && a.animation_index == 1)
+        );
+    }
+    assert_eq!(graph.animations[1].unknown_12, 0);
+    assert_eq!(graph.blend_screens.len(), 1);
+}

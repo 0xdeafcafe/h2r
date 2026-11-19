@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 # The campaign manifest a converted level is listed in.
 content.workspace = true
+engine = { path = "../engine" }
 h1map = { path = "../h1map" }
 # Structure BSP, collision, lightmap and shader choice, shared with the
 # multiplayer converter.

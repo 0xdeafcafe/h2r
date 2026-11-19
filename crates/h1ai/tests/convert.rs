@@ -162,7 +162,11 @@ fn encounters_become_groups_zones_squads_and_orders() {
     let ai = &plan.ai;
 
     // Two palette entries name one character.
-    let chars: Vec<_> = plan.characters.iter().map(|c| c.h2_character).collect();
+    let chars: Vec<_> = plan
+        .characters
+        .iter()
+        .map(|c| c.h2_character.as_str())
+        .collect();
     assert_eq!(
         chars,
         [
@@ -196,7 +200,7 @@ fn encounters_become_groups_zones_squads_and_orders() {
     assert_eq!(empty.name, "first/empty");
     assert!(empty.starting_locations.is_empty());
     assert_eq!((empty.normal_count, empty.insane_count), (0, 0));
-    assert_eq!(empty.initial_order, -1);
+    assert_eq!(ai.orders[empty.initial_order as usize].name, empty.name);
     let elites = &ai.squads[0];
     assert_eq!(elites.name, "first/elites");
     assert_eq!((elites.parent, elites.initial_zone, elites.team), (0, 0, 3));
@@ -386,4 +390,22 @@ fn the_character_table_picks_by_species_and_rank() {
     assert_eq!(c(14, "anything"), "ai\\generic");
     assert_eq!(character_for(ActorType(7), "").1, grenade::HUMAN);
     assert_eq!(character_for(ActorType(10), "").1, grenade::NONE);
+}
+
+#[test]
+fn airborne_encounters_keep_authored_altitude_and_use_no_sector() {
+    let mut src = invented();
+    let e = &mut src.encounters[0];
+    e.bsp = 3;
+    e.flags |= 0x20;
+    e.firing_positions[0].position[2] = 127.0;
+    let (ai, _) = build_and_read(&convert(&src, &Options::default()));
+    let z = &ai.zones[0];
+    assert_eq!(z.manual_bsp, 3);
+    assert!(
+        z.firing_positions
+            .iter()
+            .all(|p| p.sector == u32::MAX && p.flags == 0)
+    );
+    assert!(z.firing_positions.iter().any(|p| p.position[2] == 127.0));
 }

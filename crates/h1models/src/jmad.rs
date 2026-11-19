@@ -10,6 +10,8 @@
 //!
 //! Layouts are those `crates/tags` decodes (`docs/formats/animation.md`).
 
+mod sentinel;
+
 use std::collections::BTreeMap;
 
 use map::build::{Block, RawRef};
@@ -701,6 +703,15 @@ pub fn convert_graph_with(
     skeleton: Option<&[AnimNode]>,
     opts: &GraphOptions,
 ) -> Result<(Converted, GraphReport)> {
+    convert_graph_for(g, skeleton, opts, false)
+}
+
+pub(crate) fn convert_graph_for(
+    g: &Graph,
+    skeleton: Option<&[AnimNode]>,
+    opts: &GraphOptions,
+    sentinel: bool,
+) -> Result<(Converted, GraphReport)> {
     let node_list: &[AnimNode] = match (g.nodes.is_empty(), skeleton) {
         (false, _) => &g.nodes,
         (true, Some(s)) => s,
@@ -731,7 +742,12 @@ pub fn convert_graph_with(
     let mut tree: BTreeMap<String, BTreeMap<String, BTreeMap<String, Vec<(String, usize)>>>> =
         BTreeMap::new();
     let names = animation_names(g);
-    let plan = vehicle_plan(g, &names, opts, &mut report);
+    let mut plan = vehicle_plan(g, &names, opts, &mut report);
+    let sentinel_overlays = if sentinel {
+        sentinel::bindings(g, &mut plan, &mut tree)
+    } else {
+        Overlays::new()
+    };
     for (i, anim) in g.animations.iter().enumerate() {
         if anim.frame_count == 0 {
             return Err(Error::Unsupported(format!("{}: no frames", anim.name)));
@@ -801,6 +817,7 @@ pub fn convert_graph_with(
     borrow_slots(g, &names, &mut tree);
     first_person_slots(g, &mut tree);
     let mut overlays = first_person_overlays(g, &mut tree);
+    overlays.extend(sentinel_overlays);
     if !plan.slot_overlays.is_empty() {
         let any = || "any".to_owned();
         tree.entry(any())

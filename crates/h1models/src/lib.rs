@@ -119,7 +119,8 @@ pub fn graph_from_map_with(
         )?)),
         _ => None,
     };
-    let (out, report) = jmad::convert_graph_with(&graph, skeleton.as_deref(), opts)?;
+    let sentinel = tag.name.eq_ignore_ascii_case(r"characters\sentinel\sentinel");
+    let (out, report) = jmad::convert_graph_for(&graph, skeleton.as_deref(), opts, sentinel)?;
     Ok((graph, report, out))
 }
 
