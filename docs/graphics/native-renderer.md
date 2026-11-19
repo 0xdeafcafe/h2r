@@ -732,6 +732,15 @@ first look step. Materials without a decodable base map keep their D3D
 draws (the skip leaves their items alone) and are not drawn natively.
 Transparent parts (kind 4) are not in layer 3 and are left out.
 
+Base maps go through the world's stage decoder (`StageDecoder`, one per
+map's model worker): a palettized one (P8, P8 bump) is expanded through
+the device palette bound, when the map's first object was asked for, at
+the stage its material binds it (the first layer-3 implementation that
+names the bitmap; stage 0 otherwise), as the D3D path samples it, not
+drawn as its index in grey. The objects draw only while the palettes the
+expansions used stay bound (checked at each layer-3 view); a stage
+without a full palette refuses the material.
+
 ### Object lighting
 
 The first lit run (03a, objects native, 4,677 of 7,202 layer-3 calls

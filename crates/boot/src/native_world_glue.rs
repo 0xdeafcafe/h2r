@@ -333,13 +333,13 @@ static PALETTE_CHANGED: std::sync::atomic::AtomicBool = std::sync::atomic::Atomi
 pub type StagePalettes = [Option<Vec<u32>>; 4];
 
 /// The palettes bound at stages 0..3 now.
-fn stage_palettes<B: d3d::backend::Backend>(d: &d3d::Device<B>, mem: &dyn GuestMemory) -> StagePalettes {
+pub(crate) fn stage_palettes<B: d3d::backend::Backend>(d: &d3d::Device<B>, mem: &dyn GuestMemory) -> StagePalettes {
     std::array::from_fn(|s| d.stage_palette(&ReadMemory(mem), s))
 }
 
 /// Whether each palette a world expanded through is still the one bound
 /// at its stage (`bound`).
-fn palettes_hold(used: &StagePalettes, bound: &dyn Fn(usize) -> Option<Vec<u32>>) -> bool {
+pub(crate) fn palettes_hold(used: &StagePalettes, bound: &dyn Fn(usize) -> Option<Vec<u32>>) -> bool {
     used.iter().enumerate().all(|(s, p)| p.is_none() || bound(s) == *p)
 }
 

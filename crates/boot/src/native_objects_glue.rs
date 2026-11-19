@@ -44,7 +44,7 @@ use native_render::look;
 use native_render::objects::ObjectFrame;
 use native_render::pass_state::PassState;
 
-use crate::native_world_glue::{Raw, decode_first, locate, region};
+use crate::native_world_glue::{Raw, StageDecoder, StageImages, StagePalettes, locate, palettes_hold, region, stage_palettes};
 
 /// A model loaded on the worker, waiting for the render thread.
 struct CpuModel {
@@ -85,6 +85,10 @@ pub(crate) struct Models {
     /// Definition tag index -> its transparent parts, published after the
     /// model is queued.
     pub(crate) transparents: Mutex<HashMap<u16, ObjectTransparents>>,
+    /// The device palettes the loads expanded palettized base maps
+    /// through, at their stages ([`StageDecoder::used`]): the models draw
+    /// only while those stay bound.
+    palettes: Mutex<StagePalettes>,
 }
 
 impl Models {
@@ -152,19 +156,45 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         if name.is_empty() {
             return None;
         }
-        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if st.as_ref().map(|s| s.name.as_str()) != Some(name.as_str()) {
-            let models = Arc::new(Models::default());
-            let worker = spawn_worker(name.clone(), Arc::clone(&models), Arc::clone(&self.state));
-            *st = Some(MapState {
-                name,
-                models,
-                set: Arc::new(NativeSet::default()),
-                tried: HashSet::new(),
-                worker,
-            });
+        let current = |st: &Option<MapState>| st.as_ref().map(|s| s.name.as_str()) == Some(name.as_str());
+        let loaded = current(&*self.state.lock().unwrap_or_else(|e| e.into_inner()));
+        if !loaded {
+            // The palettes bound now, for palettized base maps (P8, P8
+            // bump), which the D3D path samples through the device palette
+            // at their stage. Read with no other lock held, as the world's.
+            let palettes = self.device.lock().ok().map(|d| stage_palettes(&d, mem)).unwrap_or_default();
+            let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            if !current(&*st) {
+                let models = Arc::new(Models::default());
+                let worker = spawn_worker(name.clone(), Arc::clone(&models), Arc::clone(&self.state), palettes);
+                *st = Some(MapState {
+                    name,
+                    models,
+                    set: Arc::new(NativeSet::default()),
+                    tried: HashSet::new(),
+                    worker,
+                });
+            }
         }
-        st.as_ref().map(|s| Arc::clone(&s.set))
+        let (set, models) = {
+            let st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let s = st.as_ref()?;
+            (Arc::clone(&s.set), Arc::clone(&s.models))
+        };
+        // A base map expanded through a palette that is no longer bound
+        // would sample other colours than the D3D path: then it draws
+        // every object.
+        let used = models.palettes.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if used.iter().any(Option::is_some) {
+            let now = self.device.lock().ok().map(|d| stage_palettes(&d, mem))?;
+            if !palettes_hold(&used, &|s| now[s].clone()) {
+                if !PALETTE_CHANGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    eprintln!("native-objects: a stage palette changed since a base map was expanded through it; the D3D path draws the objects");
+                }
+                return None;
+            }
+        }
+        Some(set)
     }
 
     fn want(&self, definition: u32) {
@@ -202,6 +232,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     }
 }
 
+static PALETTE_CHANGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Installs the host on the device (beside the world's).
 pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
     let state = Arc::new(Mutex::new(None));
@@ -214,12 +246,17 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
 
 /// The map's worker: opens the map once, then loads each definition sent.
 /// `None` when the thread cannot start (every object stays on D3D).
-fn spawn_worker(name: String, models: Arc<Models>, state: Arc<Mutex<Option<MapState>>>) -> Option<mpsc::Sender<u32>> {
+fn spawn_worker(
+    name: String,
+    models: Arc<Models>,
+    state: Arc<Mutex<Option<MapState>>>,
+    palettes: StagePalettes,
+) -> Option<mpsc::Sender<u32>> {
     let (tx, rx) = mpsc::channel::<u32>();
     std::thread::Builder::new()
         .name("native-objects load".into())
         .spawn(move || {
-            let mut opened = match open(&name) {
+            let mut opened = match open(&name, palettes) {
                 Ok(o) => o,
                 Err(e) => {
                     eprintln!("native-objects: {name}: map not opened ({e}); the D3D path draws every object");
@@ -229,7 +266,11 @@ fn spawn_worker(name: String, models: Arc<Models>, state: Arc<Mutex<Option<MapSt
             let (mut loaded, mut refused) = (0u32, 0u32);
             while let Ok(def) = rx.recv() {
                 let t0 = std::time::Instant::now();
-                match load_model(&mut opened, def) {
+                let result = load_model(&mut opened, def);
+                // Before the model is queued: a pass that draws it checks
+                // the palettes its base maps went through.
+                models.palettes.lock().unwrap_or_else(|e| e.into_inner()).clone_from(opened.decoder.used());
+                match result {
                     Ok((cpu, shaders, transparents)) => {
                         let nodes = cpu.model.inverse_binds.len();
                         let draws = cpu.model.draws.len();
@@ -274,13 +315,16 @@ struct Opened {
     map: Map<BufReader<std::fs::File>>,
     ctx: tags::object::Context,
     raw: Raw,
-    decoded: HashMap<TagId, Option<Image>>,
+    /// Base maps as their stages sample them (palettized ones expanded
+    /// through the stage's palette), shared by every model of the map.
+    decoder: StageDecoder,
+    images: StageImages,
     /// The shader tags, read at the first transparent material (`None`
     /// when they do not read: transparents stay on D3D).
     lib: Option<Option<tags::material::ShaderLibrary>>,
 }
 
-fn open(name: &str) -> Result<Opened, load::Error> {
+fn open(name: &str, palettes: StagePalettes) -> Result<Opened, load::Error> {
     let file = locate(name).ok_or("the map's file is not found")?;
     let mut map = Map::from_region(BufReader::new(std::fs::File::open(&file.path)?), file.offset, file.len)?;
     let mut files = assets::ResourceFiles::new();
@@ -299,7 +343,8 @@ fn open(name: &str) -> Result<Opened, load::Error> {
         map,
         ctx,
         raw: Raw(files),
-        decoded: HashMap::new(),
+        decoder: StageDecoder::new(palettes),
+        images: StageImages::new(),
         lib: None,
     })
 }
@@ -313,14 +358,40 @@ fn tag_of(map: &Map<BufReader<std::fs::File>>, datum: u32) -> Option<TagId> {
     map.tags().iter().find(|t| t.id.0 & 0xffff == datum & 0xffff).map(|t| t.id)
 }
 
-/// `bitmap`'s first image, decoded once per map.
-fn decoded(o: &mut Opened, bitmap: TagId) -> Option<Image> {
-    if let Some(i) = o.decoded.get(&bitmap) {
-        return i.clone();
-    }
-    let i = decode_first(&mut o.map, &mut o.raw.0, bitmap);
-    o.decoded.insert(bitmap, i.clone());
-    i
+/// `shader`'s base map `bitmap` (its first image) as the D3D path samples
+/// it: through the shared stage decoder at the stage its material binds it
+/// ([`base_map_stage`], stage 0 when no layer-3 implementation names it),
+/// so a palettized one (P8, P8 bump) is expanded through that stage's
+/// device palette, not drawn as its index. `None` when the stage cannot
+/// have it (no palette there, or it does not decode).
+fn decoded(o: &mut Opened, shader: TagId, bitmap: TagId) -> Option<Image> {
+    let stage = material(o, shader).and_then(|m| base_map_stage(&m, bitmap)).unwrap_or(0);
+    o.decoder
+        .decode(&mut o.map, &mut o.raw.0, &mut o.images, bitmap, 0, stage, false)
+        .ok()?;
+    o.images.get(&(bitmap, 0)).cloned()
+}
+
+/// The stage `material`'s layer-3 passes (first level of detail) bind
+/// `bitmap` at, in their first implementation that does.
+fn base_map_stage(material: &tags::material::Material, bitmap: TagId) -> Option<usize> {
+    let stages = material
+        .layers
+        .iter()
+        .filter(|l| l.lod == 0 && l.layer == look::LIGHTMAP_LAYER)
+        .flat_map(|l| &l.passes)
+        .flat_map(|p| &p.implementations)
+        .map(|i| i.textures.map(|t| match t.map(|t| t.source) {
+            Some(tags::material::TextureSource::Bitmap { bitmap: b, .. }) => Some(b),
+            _ => None,
+        }));
+    first_stage(stages, bitmap)
+}
+
+/// The first stage, over implementations' stage bitmaps in order, that
+/// binds `bitmap`.
+fn first_stage(mut implementations: impl Iterator<Item = [Option<TagId>; 4]>, bitmap: TagId) -> Option<usize> {
+    implementations.find_map(|stages| stages.iter().position(|&s| s == Some(bitmap)))
 }
 
 /// `shader` resolved, through the map's shader library (read once).
@@ -358,7 +429,7 @@ fn transparent_material(o: &mut Opened, shader: TagId) -> Option<(Image, PassSta
         return None;
     }
     let bitmap = load::base_map(&mut o.map, shader)?;
-    Some((decoded(o, bitmap)?, state))
+    Some((decoded(o, shader, bitmap)?, state))
 }
 
 /// Loads definition `def`'s model with its base maps; the shader indices
@@ -377,7 +448,7 @@ fn load_model(o: &mut Opened, def: u32) -> Result<(CpuModel, Vec<u16>, ObjectTra
             continue;
         }
         let Some(bitmap) = load::base_map(&mut o.map, shader) else { continue };
-        if let Some(image) = decoded(o, bitmap) {
+        if let Some(image) = decoded(o, shader, bitmap) {
             base_maps.insert(m, image);
             shaders.push(shader.0 as u16);
         }
@@ -502,5 +573,21 @@ mod tests {
         assert_eq!(t.materials(2, 0xe123_0042), Some(&[3, 5][..]));
         assert_eq!(t.materials(3, 0xe123_0042), None, "another node count");
         assert_eq!(t.materials(2, 0xe123_0043), None, "another shader");
+    }
+
+    #[test]
+    fn a_base_map_is_decoded_at_the_stage_its_material_binds_it() {
+        // The stage picks the device palette a palettized base map (P8,
+        // P8 bump) is expanded through: the first implementation that binds
+        // the bitmap names it; one that binds it nowhere has none.
+        let (base, detail) = (TagId(0xe000_0050), TagId(0xe000_0051));
+        let lightmap_only = [None, None, None, None];
+        let first = [Some(detail), None, Some(base), None];
+        let second = [Some(base), None, None, None];
+        assert_eq!(first_stage([lightmap_only, first, second].into_iter(), base), Some(2));
+        assert_eq!(first_stage([second, first].into_iter(), base), Some(0));
+        assert_eq!(first_stage([first].into_iter(), detail), Some(0));
+        assert_eq!(first_stage([lightmap_only].into_iter(), base), None);
+        assert_eq!(first_stage(std::iter::empty(), base), None);
     }
 }
