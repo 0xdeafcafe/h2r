@@ -809,6 +809,9 @@ pub struct Converter<'a> {
     /// Base maps with a reflection mask as their alpha
     /// ([`Self::masked_bitmap`]), by (base, mask) tag.
     masked_bitmaps: HashMap<(u32, u32), Option<TagId>>,
+    /// Plasma pictures with their brightness as alpha
+    /// ([`Self::brightest_bitmap`]), by (bitmap tag, gain bits).
+    brightest_bitmaps: HashMap<(u32, u32), Option<TagId>>,
     /// Biped role words, per role ([`Self::biped_role`]).
     roles: HashMap<crate::rebuild::BipedRole, Option<crate::rebuild::RoleWords>>,
     /// Weapon, equipment, projectile and damage role words, per group
@@ -862,6 +865,7 @@ impl<'a> Converter<'a> {
             sprite_bitmaps: HashMap::new(),
             meter_bitmaps: HashMap::new(),
             masked_bitmaps: HashMap::new(),
+            brightest_bitmaps: HashMap::new(),
             roles: HashMap::new(),
             item_roles: HashMap::new(),
             vehicle_roles: HashMap::new(),
@@ -1924,10 +1928,15 @@ impl<'a> Converter<'a> {
             .flatten();
         let mut maps = HashMap::new();
         for (role, m) in &chosen.maps {
-            let id = match (role, mask) {
-                (h1convert::shad::Role::Base, Some(mask)) => {
+            let id = match (role, mask, chosen.extras.brightest_mask) {
+                (h1convert::shad::Role::Base, Some(mask), _) => {
                     self.masked_bitmap(m.bitmap, mask).or_else(|| self.bitmap(m.bitmap))
                 }
+                // A plasma's picture with its brightness as alpha
+                // (converter version 86, `shad::plasma_shader`).
+                (h1convert::shad::Role::Mask, _, Some(gain)) => self
+                    .brightest_bitmap(m.bitmap, gain)
+                    .or_else(|| self.bitmap(m.bitmap)),
                 _ => self.bitmap(m.bitmap),
             };
             let Some(id) = id else { continue };
@@ -1978,6 +1987,26 @@ impl<'a> Converter<'a> {
         }
         let out = self.bake_mask(base, mask);
         self.masked_bitmaps.insert(key, out);
+        out
+    }
+
+    /// The Halo 1 bitmap `id` with `gain` times its brightest channel as
+    /// alpha, DXT5 (`h1bitmaps::mask::convert_brightest`),
+    /// `<name>_brightness_<gain × 1000>`, built once per pair. `None` when
+    /// it does not read or decode, or has more than one image.
+    fn brightest_bitmap(&mut self, id: h1map::TagId, gain: f32) -> Option<TagId> {
+        let key = (id.0, gain.to_bits());
+        if let Some(t) = self.brightest_bitmaps.get(&key) {
+            return *t;
+        }
+        let tag = self.h1.tag(id).ok()?.clone();
+        let out = h1bitmaps::mask::convert_brightest(self.h1, &tag, gain)
+            .ok()
+            .map(|conv| {
+                let name = h1convert::shad::brightness_mask_name(&tag.name, gain);
+                self.tree.push(&name, conv)
+            });
+        self.brightest_bitmaps.insert(key, out);
         out
     }
 

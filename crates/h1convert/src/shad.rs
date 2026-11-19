@@ -819,6 +819,11 @@ pub struct Extras {
     /// The colour and fade, on a layout with [`Layout::tint`] vectors;
     /// `None` keeps the layout's (white, no fade).
     pub tint: Option<Tint>,
+    /// The [`Role::Mask`] map is to be bound as a derived bitmap: the
+    /// Halo 1 picture with this gain times its brightest channel as alpha
+    /// (`h1bitmaps::mask::convert_brightest`, [`plasma_shader`]); the
+    /// caller converting the maps makes it. `None`: the map as it is.
+    pub brightest_mask: Option<f32>,
 }
 
 impl Extras {
@@ -1668,8 +1673,14 @@ fn read_h1_maps(h1: &h1map::H1Map, tag: &h1map::Tag) -> Option<H1Shader> {
             if s.additive {
                 out.extras.tint = Some(Tint::faded([1.0; 3], fade));
             }
-            if let Some((maps, _)) = plasma {
-                return Some(plasma_shader(&tag.name, &maps, fade, out));
+            if let Some((maps, _)) = plasma
+                && let Some(hue) = h1_hue(h1, maps[3].bound.bitmap)
+            {
+                let light = PlasmaLight {
+                    hue,
+                    glow: plasma_glow(h1, d).unwrap_or([0.0; 3]),
+                };
+                return Some(plasma_shader(&tag.name, &maps, fade, light, out));
             }
             Some(out)
         }
@@ -1985,17 +1996,167 @@ pub fn rgb_color(c: [f32; 3]) -> u32 {
     (b(c[0]) << 16) | (b(c[1]) << 8) | b(c[2])
 }
 
+/// The name of a plasma picture `name` converted with its brightness as
+/// alpha at `gain` ([`Extras::brightest_mask`]): `<name>_brightness_<gain
+/// × 1000>`.
+pub fn brightness_mask_name(name: &str, gain: f32) -> String {
+    format!("{name}_brightness_{}", (gain * 1000.0).round() as u32)
+}
+
+/// One `sotr` stage's size, and its fields (`d`: the stage): `+0` flags
+/// (bit 0 colour mux, bit 1 alpha mux, bit 2 [`STAGE_A_OUT_COLOR0`]),
+/// `+0x0c` and `+0x1c` colour 0's lower and upper bounds (alpha, red,
+/// green, blue), `+0x3c` the four colour inputs A to D (u16 input, u16
+/// mapping each), `+0x54` the A×B + C×D output. D: the input numbering of
+/// the teleporter shield's stages (0 zero, 1 one, 2 half, 3 −1, 4 −half,
+/// 5 to 8 `t0` to `t3`, 9 and 10 `v0` and `v1`, 11 and 12 `r0` and `r1`,
+/// 13 and 14 `c0` and `c1`, then the same 15 to 24 as alphas), mapping 0
+/// unsigned, output 1 `r0`.
+pub const SOTR_STAGE: usize = 0x70;
+/// See [`SOTR_STAGE`]: colour 0 runs between its bounds by the object's A
+/// output, not by the stage's own function. D (every `sotr` of five
+/// levels): set only on Halo 1's plasma stages whose bounds differ, the
+/// first and last stage of each plasma (the jackal's and the generator's
+/// shields: the first and the fourth); the jackal's lower bound is its
+/// shield's spent look. An object exporting no A output (the
+/// teleporter's `teleporter_base`, which has no functions) holds it at
+/// the lower bound.
+pub const STAGE_A_OUT_COLOR0: u16 = 4;
+const STAGE_C0_LOWER: usize = 0x0c;
+const STAGE_C0_UPPER: usize = 0x1c;
+const STAGE_INPUTS: usize = 0x3c;
+const STAGE_SUM_OUT: usize = 0x54;
+/// The inputs (input, mapping) of a plasma's last stage that adds the
+/// picture's colour twice: `r0.a × t3 + c0 × t3`, into `r0`.
+const PICTURE_TIMES_BAND_PLUS_C0: [(u16, u16); 4] = [(21, 0), (8, 0), (13, 0), (8, 0)];
+
+/// The colour a plasma's last stage adds under its bands, as Halo 1
+/// draws it on an object without an A output: Halo 1's last stage (`d`
+/// the `sotr`'s data) `r0 = r0.a × picture + c0 × picture` adds the
+/// picture times colour 0 wherever the bands are dark ([`PlasmaLight`]):
+/// colour 0's lower bound when [`STAGE_A_OUT_COLOR0`] drives it (that
+/// output 0), else the upper (the stage function "one", 0 in Halo 1's
+/// periodic function list whose 6 is the slide [`crate::sky_shaders`]
+/// reads). `None` when the last stage isn't that sum (the jackal's shield
+/// adds `v1 × (1 − picture.a)` instead). V (the disc): the teleporter
+/// shield's lower bound is (0, 0.329, 0.424).
+pub fn plasma_glow(h1: &h1map::H1Map, d: &[u8]) -> Option<[f32; 3]> {
+    let bytes = h1.block(h1map::Block::read(d, SOTR_STAGES)?, SOTR_STAGE).ok()?;
+    let last = bytes.chunks_exact(SOTR_STAGE).last()?;
+    let u16_at = |o: usize| u16::from_le_bytes([last[o], last[o + 1]]);
+    let f32_at = |o: usize| f32::from_le_bytes(last[o..o + 4].try_into().unwrap());
+    let inputs: [(u16, u16); 4] =
+        std::array::from_fn(|i| (u16_at(STAGE_INPUTS + 4 * i), u16_at(STAGE_INPUTS + 4 * i + 2)));
+    if inputs != PICTURE_TIMES_BAND_PLUS_C0 || u16_at(STAGE_SUM_OUT) != 1 {
+        return None;
+    }
+    let at = if u16_at(0) & STAGE_A_OUT_COLOR0 != 0 {
+        STAGE_C0_LOWER
+    } else {
+        STAGE_C0_UPPER
+    };
+    // Alpha, red, green, blue.
+    Some(std::array::from_fn(|c| f32_at(at + 4 * (c + 1)).clamp(0.0, 1.0)))
+}
+
+/// The hue of a Halo 1 bitmap's first image ([`hue`]); `None` when it
+/// doesn't decode or is black.
+pub fn h1_hue(h1: &h1map::H1Map, id: h1map::TagId) -> Option<[f32; 3]> {
+    use h1bitmaps::BitmapExt;
+    let b = h1map::bitmap::Bitmap::read(h1, h1.tag(id).ok()?).ok()?;
+    hue(&b.decode(h1, 0, 0).ok()?.rgba)
+}
+
+/// RGBA8 texels' colour with its brightest channel 1: each channel's sum
+/// over the sum of every texel's brightest channel, then scaled so the
+/// largest is 1, so the bright texels set it. `None` for black.
+pub fn hue(rgba: &[u8]) -> Option<[f32; 3]> {
+    let mut sum = [0u64; 3];
+    let mut brightest = 0u64;
+    for t in rgba.chunks_exact(4) {
+        for c in 0..3 {
+            sum[c] += u64::from(t[c]);
+        }
+        brightest += u64::from(t[0].max(t[1]).max(t[2]));
+    }
+    if brightest == 0 {
+        return None;
+    }
+    let h = sum.map(|x| x as f64 / brightest as f64);
+    let top = h.iter().copied().fold(0.0, f64::max);
+    (top > 0.0).then(|| h.map(|x| (x / top) as f32))
+}
+
+/// How a Halo 1 plasma's light maps onto [`PLASMA_ALPHA`]. Halo 1 adds
+/// `picture.rgb × (band + glow)` (the band 1 except along thin dark
+/// lines: the two noises' squared difference `s`, expanded and squared
+/// to `(2s − 1)²`, then `x(2 − x)`; the glow [`plasma_glow`]). Halo 2's
+/// stem adds `mask.a × fade × (colour 0|1 × s + colour 2|3 × q)` (`h2
+/// shader` on retail's `teleporter_plasma`: stage 6 `r0 = r1 × t1 + r0.a
+/// × c0`, `t1 = s` from stage 2, `r1` between colours 0 and 1 at stage 3,
+/// `q = r0.a` after stage 4: `s` expanded and squared three times, 1
+/// except along thin dark lines; colours 2 and 3 are stage 5's, which
+/// reads only alpha, and stage 6's, which reads only colour, so the same
+/// colour with alpha 0 in both is right whichever is which). So the mask
+/// is the picture with alpha `gain × max(r, g, b)` (its brightness;
+/// [`Self::gain`] gives back the headroom the 8-bit colours lack),
+/// colours 2 and 3 the band (`hue × (1 + glow) / gain`, Halo 1's lit
+/// picture) and colours 0 and 1 the glow (`hue × glow / gain`, lighting
+/// the dark lines by `s` as Halo 1's glow does). Exact at Halo 1's peak
+/// in the hue's brightest channel, where the register combiners' clamp
+/// to 1 meets Halo 1's; the other channels as the picture's average hue.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlasmaLight {
+    /// [`hue`] of the picture.
+    pub hue: [f32; 3],
+    /// [`plasma_glow`], 0 without one.
+    pub glow: [f32; 3],
+}
+
+impl PlasmaLight {
+    /// The hue's brightest channel.
+    fn top(&self) -> usize {
+        (0..3).fold(0, |k, c| if self.hue[c] > self.hue[k] { c } else { k })
+    }
+
+    /// `1 + glow` in the hue's brightest channel: the mask's alpha gain.
+    pub fn gain(&self) -> f32 {
+        1.0 + self.glow[self.top()]
+    }
+
+    /// Colours 0 and 1, `hue × glow / gain`.
+    pub fn glow_color(&self) -> [f32; 3] {
+        let g = self.gain();
+        std::array::from_fn(|c| self.hue[c] * self.glow[c] / g)
+    }
+
+    /// Colours 2 and 3, `hue × (1 + glow) / gain`: 1 in the brightest
+    /// channel.
+    pub fn band_color(&self) -> [f32; 3] {
+        let g = self.gain();
+        std::array::from_fn(|c| (self.hue[c] * (1.0 + self.glow[c]) / g).min(1.0))
+    }
+}
+
 /// A Halo 1 plasma ([`is_plasma`]) on [`PLASMA_ALPHA`], as Halo 2's own
 /// plasma shaders (its teleporters', the needler's) draw it: the first
 /// noise map still on bitmap 0, the second scrolling on bitmap 1 (their
-/// difference makes the moving bands), the picture on bitmap 2 (its alpha
-/// shapes them), both band colours the picture's mean colour, and the
-/// fade from Halo 1's fade mode. `plain` (the single-map rebuild) is the
-/// fallback. Lost: the offset or energy mask (map 2) and Halo 1's stage
-/// constants (the teleporter's teal base glow); the first noise's own
-/// scroll (the clouds tree animates one map).
-pub fn plasma_shader(name: &str, maps: &[ChainMap], fade: u16, plain: H1Shader) -> H1Shader {
-    let c = rgb_color(maps[3].mean);
+/// difference makes the moving bands), the picture on bitmap 2 with its
+/// brightness as alpha ([`Extras::brightest_mask`]), the colours and gain
+/// from `light` ([`PlasmaLight`]), and the fade from Halo 1's fade mode.
+/// `plain` (the single-map rebuild) is the fallback. Lost: the offset or
+/// energy mask (map 2), which only bends the bands; a glow an object's A
+/// output animates (held at the bound [`plasma_glow`] picks); the first
+/// noise's own scroll (the clouds tree animates one map).
+pub fn plasma_shader(
+    name: &str,
+    maps: &[ChainMap],
+    fade: u16,
+    light: PlasmaLight,
+    plain: H1Shader,
+) -> H1Shader {
+    let glow = rgb_color(light.glow_color());
+    let band = rgb_color(light.band_color());
     H1Shader {
         name: name.to_owned(),
         group: plain.group.clone(),
@@ -2006,9 +2167,10 @@ pub fn plasma_shader(name: &str, maps: &[ChainMap], fade: u16, plain: H1Shader) 
             (Role::Mask, maps[3].bound),
         ],
         extras: Extras {
-            colors: vec![(0, c), (1, c)],
+            colors: vec![(0, glow), (1, glow), (2, band), (3, band)],
             scroll: Some(maps[1].scroll),
             tint: Some(Tint::faded([1.0; 3], fade)),
+            brightest_mask: Some(light.gain()),
         },
         fallback: Some(Box::new(plain)),
     }
@@ -2879,7 +3041,11 @@ mod tests {
             extras: Extras::default(),
             fallback: None,
         };
-        let s = plasma_shader("shield", &maps, FADE_PARALLEL, plain.clone());
+        let light = PlasmaLight {
+            hue: [1.0, 0.5, 0.0],
+            glow: [0.25, 0.5, 1.0],
+        };
+        let s = plasma_shader("shield", &maps, FADE_PARALLEL, light, plain.clone());
         assert_eq!(s.layout, &PLASMA_ALPHA);
         assert_eq!(
             s.maps,
@@ -2889,12 +3055,62 @@ mod tests {
                 (Role::Mask, h1_bound(3, 1.0))
             ]
         );
-        // The picture's mean (0.8, 0.4, 0) as both band colours.
-        assert_eq!(s.extras.colors, vec![(0, 0x00cc_6600), (1, 0x00cc_6600)]);
+        // Gain 1 + the glow in the hue's brightest channel (red): 1.25.
+        // Colours 0 and 1 hue × glow / gain (0.2, 0.2, 0); 2 and 3 hue ×
+        // (1 + glow) / gain (1, 0.6, 0); alpha 0.
+        assert_eq!(s.extras.brightest_mask, Some(1.25));
+        assert_eq!(
+            s.extras.colors,
+            vec![
+                (0, 0x0033_3300),
+                (1, 0x0033_3300),
+                (2, 0x00ff_9900),
+                (3, 0x00ff_9900)
+            ]
+        );
         assert_eq!(s.extras.scroll, Some(maps[1].scroll));
         let t = s.extras.tint.unwrap();
         assert_eq!((t.perpendicular, t.parallel), (1.0, 0.0));
         assert_eq!(s.fallback.as_deref(), Some(&plain));
+    }
+
+    /// A hue is weighted by brightness and scaled to 1 in its brightest
+    /// channel; black has none.
+    #[test]
+    fn a_hue_is_the_bright_texels_colour_scaled_to_one() {
+        let h = hue(&[255, 0, 0, 255, 0, 0, 0, 0, 0, 128, 0, 255]).unwrap();
+        // Sums (255, 128, 0): red is 1, green 128 / 255.
+        assert_eq!(h[0], 1.0);
+        assert!((h[1] - 128.0 / 255.0).abs() < 1e-6, "{h:?}");
+        assert_eq!(h[2], 0.0);
+        assert_eq!(hue(&[0, 0, 0, 255, 0, 0, 0, 0]), None);
+    }
+
+    /// Halo 1's lit picture `m × hue × (1 + glow)` at band 1 equals the
+    /// stem's `min(1, gain × m) × band colour` in the hue's brightest
+    /// channel, saturating together; at a dark line Halo 1's `m × hue ×
+    /// glow` equals `gain × m × glow colour` (the line's `s` at 1).
+    #[test]
+    fn a_plasmas_light_matches_halo1_in_its_brightest_channel() {
+        let light = PlasmaLight {
+            hue: [0.03, 1.0, 0.16],
+            glow: [0.0, 0.329, 0.424],
+        };
+        let g = light.gain();
+        assert!((g - 1.329).abs() < 1e-6);
+        let (band, glow) = (light.band_color(), light.glow_color());
+        for m in [0.1f32, 0.3, 0.6, 0.796, 1.0] {
+            let halo1 = (m * (1.0 + 0.329)).min(1.0);
+            let ours = (g * m).min(1.0) * band[1];
+            assert!((halo1 - ours).abs() < 1e-5, "{m}: {halo1} vs {ours}");
+            if g * m <= 1.0 {
+                for c in 0..3 {
+                    let halo1 = m * light.hue[c] * light.glow[c];
+                    assert!((halo1 - g * m * glow[c]).abs() < 1e-5, "{m} {c}");
+                }
+            }
+        }
+        assert!(band.iter().chain(&glow).all(|c| (0.0..=1.0).contains(c)));
     }
 
     /// On `plasma_alpha`: the noises on bitmaps 0 and 1, the mask on 2,
@@ -2927,6 +3143,7 @@ mod tests {
                 None,
             ]),
             tint: Some(Tint::faded([1.0; 3], FADE_PARALLEL)),
+            ..Extras::default()
         };
         let rec = lib.record_with(&PLASMA_ALPHA, &maps, &extras).unwrap();
         let at = |p: &str| rec.at(p).cloned();

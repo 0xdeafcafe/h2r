@@ -1429,33 +1429,55 @@ and `tests/shad_rebuild.rs`,
 `plasma_sotrs_draw_on_plasma_alpha_and_no_other_sotr_does` (prints what
 every `sotr` becomes). Which instance colour reaches which combiner
 constant is read from the retail colour values, not the pass's
-bindings (colours 2 and 3 both 0 make the order of those two moot).
+bindings (colours 2 and 3 are written the same, alpha 0, which makes
+the order of those two moot: one is stage 5's, which reads only alpha,
+the other stage 6's, which reads only colour).
 Retail `plasma_alpha` scrolls either noise: `needler_ammo_glow` the
 second (the clouds tree, bitmap target 1, `c[22]` and `c[23]`),
 04a's `glass_gravunit_glow` the first (bitmap target 0, binding words
 `0x01d2` and `0x01f3`: `c[20]` and `c[21]`).
 
-**Teleporter receiver brightness against Halo 1.** Face on, per
-channel (`teleporter_receiver_brightness_against_halo1`, numbers from
-the disc's bitmaps). The cone (Halo 1 `dust × dust × ramp`, no doubling):
-Halo 1's mean (0.012, 0.030, 0.014) and the conversion's are equal by
-construction (the dropped dust folded in as its mean); its peak
-(0.148, 0.362, 0.175) against the conversion's (0.062, 0.154, 0.073),
-the folded dust's peak averaged away. Before version 84 the grey dust
-drew alone: peak 0.61 in every channel. The shield: Halo 1's last stage
-(`teleporter_shield` stage 6) adds `picture.rgb × (band + c0)`, `c0`
-animated from (0, 0.329, 0.424) to white, so it peaks at (0.125, 1.0,
-0.188) and glows (0 to 0.005, 0.067 to 0.202, 0.014 to 0.033) on
-average even without bands; the picture's alpha (0.10 to 0.133) only
-pulls the two noises towards each other. `plasma_alpha` can only shape
-and dim through its mask's alpha, so the conversion (mask the picture,
-colour its mean, 0x013408) peaks at (0.0005, 0.027, 0.004): about 37
-times dimmer than Halo 1 in green, with no shape (that alpha is nearly
-flat) and no glow between bands. Before version 85 it was `energy
-plasma` alone, white, peak 1.0 in every channel. Matching Halo 1 needs
-a mask whose alpha is the picture's colour (`max(r, g, b)`), with
-colours 0 and 1 the picture's hue scaled by `1 + c0`, which the
-converter's one-bitmap-per-tag pipeline can't make yet. A material with no Halo 1
+**Teleporter receiver brightness against Halo 1 (converter version
+86).** Face on, per channel (`teleporter_receiver_brightness_against_halo1`,
+numbers from the disc's bitmaps). The cone (Halo 1 `dust × dust ×
+ramp`, no doubling): Halo 1's mean (0.012, 0.030, 0.014) and the
+conversion's are equal by construction (the dropped dust folded in as
+its mean); its peak (0.148, 0.362, 0.175) against the conversion's
+(0.062, 0.154, 0.073), the folded dust's peak averaged away. Before
+version 84 the grey dust drew alone: peak 0.61 in every channel.
+
+The shield's last stage (`teleporter_shield` stage 6, and every plasma
+but the jackal's and the generator's shields) adds `picture.rgb × (band
++ c0)`. The band is 1 except along thin dark lines (the noises' squared
+difference `s`, expanded and squared, then `x(2 − x)`); `c0` runs from
+its lower to its upper bound by the object's A output (stage flag bit
+2, `shad::STAGE_A_OUT_COLOR0`: set on the plasma stages alone, whose
+bounds differ), and `teleporter_base` has no functions, so the glow is
+the lower bound, (0, 0.329, 0.424). `plasma_alpha` adds `mask.a ×
+(colour 0|1 × s + colour 2|3 × q)`, `q` the stem's own band (`s`
+expanded and squared three times: 1 but for thin dark lines), so the
+conversion (`shad::PlasmaLight`) binds the picture with its brightness
+as alpha (`h1bitmaps::mask::brightest_into_alpha`: DXT5, alpha `gain ×
+max(r, g, b)`, `<picture>_brightness_<gain × 1000>`), colours 2 and 3
+the lit band `hue × (1 + glow) / gain` and 0 and 1 the glow `hue × glow
+/ gain`, the gain `1 + glow` in the hue's brightest channel (1.329 for
+the teleporter's green), so the stem's 8-bit colours keep Halo 1's
+headroom and its clamp meets Halo 1's. Lit, Halo 1 peaks at (0.063,
+1.0, 0.134) and averages (0.005, 0.269, 0.047) over the picture, the
+conversion (0.020, 1.0, 0.173) and (0.005, 0.269, 0.046); on a dark
+line Halo 1's glow peaks at (0, 0.262, 0.040) and averages (0, 0.067,
+0.014), the conversion's (0, 0.247, 0.051) and (0, 0.066, 0.014)
+(simulated before DXT5; the test decodes the mask the converter
+writes). The red and blue peaks differ because the stem has one hue
+where Halo 1 colours each texel its own. Version 85 drew the picture's
+mean colour masked by its alpha (0.10 to 0.13, nearly flat): peak
+(0.0005, 0.027, 0.004), 37 times too dim, shapeless and with no glow;
+before that `energy plasma`, white, peak 1.0 in every channel. Lost: a
+glow an object's A output animates (the jackal's shield) holds at its
+lower bound; a plasma whose last stage is another sum (the jackal's and
+the generator's shields add `v1 × (1 − picture.a)`) gets no glow.
+
+A material with no Halo 1
 base map to read names the base's model shader itself; Blood Gulch has
 none. The sky model's
 materials name copies of the base's sky shaders drawing Halo 1's sky

@@ -1197,9 +1197,12 @@ fn plasma_sotrs_draw_on_plasma_alpha_and_no_other_sotr_does() {
     assert_eq!((v.period, v.from, v.to), (7.0, 0.0, -1.0));
     let t = extras.tint.unwrap();
     assert_eq!((t.perpendicular, t.parallel), (1.0, 0.0));
-    // Colours 0 and 1 (the band's two ends), both the picture's mean.
-    assert_eq!(extras.colors.iter().map(|c| c.0).collect::<Vec<_>>(), [0, 1]);
+    // Colours 0 and 1 the glow, 2 and 3 the lit band, each pair equal
+    // (`teleporter_receiver_brightness_against_halo1` checks the values).
+    assert_eq!(extras.colors.iter().map(|c| c.0).collect::<Vec<_>>(), [0, 1, 2, 3]);
     assert_eq!(extras.colors[0].1, extras.colors[1].1);
+    assert_eq!(extras.colors[2].1, extras.colors[3].1);
+    assert!(extras.brightest_mask.is_some_and(|g| (g - 1.329).abs() < 1e-3));
 }
 
 /// A Halo 1 bitmap's first image as RGBA8 texels, 0 to 1.
@@ -1238,11 +1241,13 @@ fn peak_and_mean(texels: &[[f32; 4]], f: impl Fn(&[f32; 4]) -> [f32; 3]) -> ([f3
 /// Halo 1's; its peak is lower, the dropped dust drawn as its mean.
 ///
 /// The shield: Halo 1's last stage adds `picture.rgb × (band + c0)`, the
-/// band 0 to 1 and `c0` stage 6's animated constant (`lo` to `hi`), so
-/// its peak is `picture.rgb × (1 + hi)` (saturated) at the brightest
-/// texel; the conversion (`plasma_alpha`) adds `mask.a × colour × band`,
-/// at most the picture's largest alpha times colour 0. Printed; the
-/// conversion must not be brighter than Halo 1 anywhere.
+/// band 1 but for thin dark lines and `c0` (the glow) stage 6's lower
+/// bound, the object having no A output; the conversion
+/// (`plasma_alpha`, `shad::PlasmaLight`) adds `mask.a × (colour 2 × q +
+/// colour 0 × s)`, the mask the picture with its brightness as alpha.
+/// Compared per texel of the picture, lit (Halo 1's band and the stem's
+/// `q` 1, `s` 0) and on a dark line (band and `q` 0, `s` at most 1):
+/// peaks and means within the tolerances the asserts give.
 #[test]
 #[ignore = "reads the Halo 1 disc ($H1_ISO)"]
 fn teleporter_receiver_brightness_against_halo1() {
@@ -1322,32 +1327,88 @@ fn teleporter_receiver_brightness_against_halo1() {
             f32::from_le_bytes(last[at + 4 * k..at + 4 * k + 4].try_into().unwrap())
         })
     };
-    let (lo, hi) = (argb(0x0c), argb(0x1c));
+    // The object's A output drives colour 0 (flag bit 2) and the
+    // teleporter exports none: the lower bound, (0, 0.329, 0.424).
+    assert_ne!(
+        u16::from_le_bytes([last[0], last[1]]) & shad::STAGE_A_OUT_COLOR0,
+        0
+    );
+    let lo = argb(0x0c);
+    let glow = [lo[1], lo[2], lo[3]];
+    assert_eq!(shad::plasma_glow(&h1, d), Some(glow));
     let s = shad::read_h1(&h1, tag).unwrap();
     assert_eq!(s.layout.stem, shad::PLASMA_ALPHA.stem);
-    let picture = h1_texels(
-        &h1,
-        s.maps
-            .iter()
-            .find(|(r, _)| *r == Role::Mask)
-            .unwrap()
-            .1
-            .bitmap,
-    );
-    let (h1_peak, _) = peak_and_mean(&picture, |t| {
-        std::array::from_fn(|c| (t[c] * (1.0 + hi[c + 1])).min(1.0))
+    let gain = s.extras.brightest_mask.unwrap();
+    let picture_id = s
+        .maps
+        .iter()
+        .find(|(r, _)| *r == Role::Mask)
+        .unwrap()
+        .1
+        .bitmap;
+    let picture = h1_texels(&h1, picture_id);
+    // The derived mask as the converter writes it (DXT5), decoded.
+    let alpha: Vec<f32> = {
+        use h1bitmaps::decode_image;
+        let b = h1map::bitmap::Bitmap::read(&h1, h1.tag(picture_id).unwrap()).unwrap();
+        let (img, px) =
+            h1bitmaps::mask::brightest_into_alpha(&b.images[0], b.pixels(&h1, 0).unwrap(), gain)
+                .unwrap();
+        let levels = decode_image(&img, &px).unwrap();
+        let l0 = levels.iter().find(|l| l.face == 0 && l.level == 0).unwrap();
+        l0.rgba
+            .chunks_exact(4)
+            .map(|t| f32::from(t[3]) / 255.0)
+            .collect()
+    };
+    assert_eq!(alpha.len(), picture.len());
+    let colour = |k: usize| {
+        let c = s.extras.colors.iter().find(|c| c.0 == k).unwrap().1;
+        [16, 8, 0].map(|sh| ((c >> sh) & 0xff) as f32 / 255.0)
+    };
+    let (glow_colour, band_colour) = (colour(0), colour(2));
+    assert_eq!((colour(1), colour(3)), (glow_colour, band_colour));
+    // Lit (band 1): Halo 1 `min(1, picture × (1 + glow))`; the stem where
+    // the noises agree (`s` 0, `q` 1): `mask.a × colour 2`.
+    let k: Vec<usize> = (0..picture.len()).collect();
+    let (h1_lit_peak, h1_lit_mean) = peak_and_mean(&picture, |t| {
+        std::array::from_fn(|c| (t[c] * (1.0 + glow[c])).min(1.0))
     });
-    let (_, h1_glow) = peak_and_mean(&picture, |t| std::array::from_fn(|c| t[c] * lo[c + 1]));
-    let colour = s.extras.colors[0].1;
-    let colour = [16, 8, 0].map(|sh| ((colour >> sh) & 0xff) as f32 / 255.0);
-    let alpha = picture.iter().fold(0.0f32, |m, t| m.max(t[3]));
-    let conv_peak = colour.map(|c| c * alpha);
+    let ours = |f: &dyn Fn(usize) -> [f32; 3]| {
+        let rows: Vec<[f32; 4]> = k
+            .iter()
+            .map(|&i| {
+                let v = f(i);
+                [v[0], v[1], v[2], 0.0]
+            })
+            .collect();
+        peak_and_mean(&rows, |t| [t[0], t[1], t[2]])
+    };
+    let (lit_peak, lit_mean) = ours(&|i| band_colour.map(|c| alpha[i] * c));
+    // A dark line (Halo 1's band 0): Halo 1 `picture × glow`; the stem
+    // there `mask.a × colour 0 × s`, at most `s` 1.
+    let (h1_glow_peak, h1_glow_mean) =
+        peak_and_mean(&picture, |t| std::array::from_fn(|c| t[c] * glow[c]));
+    let (glow_peak, glow_mean) = ours(&|i| glow_colour.map(|c| alpha[i] * c));
     eprintln!(
-        "shield: c0 lo {lo:?} hi {hi:?}; Halo 1 peak {h1_peak:?}, its unbanded glow at lo {h1_glow:?} (mean); \
-         converted peak {conv_peak:?} (colour {colour:?} × mask alpha {alpha})"
+        "shield: gain {gain}, colours 0/1 {glow_colour:?}, 2/3 {band_colour:?}\n\
+         lit:  Halo 1 peak {h1_lit_peak:?} mean {h1_lit_mean:?}; converted peak {lit_peak:?} mean {lit_mean:?}\n\
+         glow: Halo 1 peak {h1_glow_peak:?} mean {h1_glow_mean:?}; converted peak {glow_peak:?} mean {glow_mean:?}"
     );
+    // The hue's brightest channel (green) peaks where both saturate: the
+    // derived alpha is 255 there, a DXT5 endpoint, exact; 0.02 is the
+    // 8-bit colours' and the gain's rounding with room.
     assert!(
-        below(conv_peak, h1_peak),
-        "shield peak {conv_peak:?} vs Halo 1 {h1_peak:?}"
+        (lit_peak[1] - h1_lit_peak[1]).abs() <= 0.02,
+        "lit green peak"
     );
+    // Means over the picture: DXT5's alpha error is half a step either
+    // way and averages out; 0.01 per channel.
+    assert!(near(lit_mean, h1_lit_mean, 0.01), "lit mean");
+    assert!(near(glow_mean, h1_glow_mean, 0.01), "glow mean");
+    // Peaks of the other channels and of the glow: the stem has one hue
+    // where Halo 1 colours each texel its own, so a texel greener or
+    // bluer than the average differs; within 0.05.
+    assert!(near(lit_peak, h1_lit_peak, 0.05), "lit peak");
+    assert!(near(glow_peak, h1_glow_peak, 0.05), "glow peak");
 }
