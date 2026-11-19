@@ -238,7 +238,7 @@ fn a_kill_is_read_from_the_kill_functions_arguments() {
     assert_eq!(k.at, Some([4.0, 5.0, 6.0]));
     // A team game: a teammate killed is a betrayal, an enemy is not, nor
     // is a suicide.
-    g.put_u32(GAME + crate::guest::VARIANT_FLAGS, 1);
+    g.put_u32(GAME + crate::guest::OPTIONS + crate::guest::VARIANT_FLAGS, 1);
     let k = kill_from_guest(&g, teammate, victim.raw())
         .unwrap()
         .unwrap();
