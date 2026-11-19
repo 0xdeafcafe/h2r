@@ -18,6 +18,7 @@
 //! before: no vehicles.
 
 pub mod drive;
+pub mod flight;
 pub mod lock;
 pub mod plan;
 pub mod read;
@@ -62,56 +63,32 @@ impl Class {
 
     /// How bots use this kind of vehicle.
     pub fn spec(self) -> Spec {
-        match self {
-            Class::Jeep => Spec {
-                drive: true,
-                driver_guns: false,
-                driver_at: [0.0, 0.8],
-                gunner_at: [-1.2, 0.0],
-                splatter: true,
-            },
-            Class::Scout => Spec {
-                drive: true,
-                driver_guns: true,
-                driver_at: [-0.2, 0.7],
-                gunner_at: [-0.2, -0.7],
-                splatter: true,
-            },
-            Class::Tank => Spec {
-                drive: true,
-                driver_guns: true,
-                driver_at: [0.0, 1.4],
-                gunner_at: [0.0, -1.4],
-                splatter: true,
-            },
-            // The Banshee (flying) is later; boats, planes and lone
-            // turrets are not taken.
-            _ => Spec {
-                drive: false,
-                driver_guns: false,
-                driver_at: [0.0, 0.8],
-                gunner_at: [-1.0, 0.0],
-                splatter: false,
-            },
+        let (drive, driver_guns, splatter, half_width, height) = match self {
+            Class::Jeep => (true, false, true, 0.85, 1.4),
+            Class::Scout => (true, true, true, 0.85, 0.85),
+            Class::Tank => (true, true, true, 1.25, 1.4),
+            Class::Fighter => (true, true, false, 1.0, 1.2),
+            _ => (false, false, false, 0.0, 0.0),
+        };
+        Spec {
+            drive,
+            driver_guns,
+            splatter,
+            half_width,
+            height,
         }
     }
 }
 
-/// How bots use a kind of vehicle: data, not code.
+/// How bots use a kind of vehicle.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Spec {
-    /// Bots take its driver's seat and drive it.
     pub drive: bool,
-    /// The driver shoots the vehicle's own guns (the Ghost, the Scorpion);
-    /// a Warthog's driver only drives.
     pub driver_guns: bool,
-    /// Where to stand to get in, in the vehicle's frame (forward, left;
-    /// world units from its origin): the driver's side, and a gunner's
-    /// (the Warthog's back) or the other side.
-    pub driver_at: [f32; 2],
-    pub gunner_at: [f32; 2],
-    /// Running infantry over is worth driving at them.
     pub splatter: bool,
+    /// Conservative vehicle clearance envelope in world units.
+    pub half_width: f32,
+    pub height: f32,
 }
 
 /// What a seat is for: the seat's flags in the `vehi` tag's seats block
@@ -135,6 +112,19 @@ pub struct Rider {
 pub struct Seat {
     pub role: SeatRole,
     pub rider: Option<Rider>,
+    pub entries: Vec<Entry>,
+    pub boards: Option<u16>,
+}
+
+/// The engine's resolved world-space seat marker and its admission limits.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Entry {
+    pub at: Vec3,
+    pub forward: Vec3,
+    pub radius: f32,
+    pub facing: f32,
+    pub look: f32,
+    pub max_distance: f32,
 }
 
 /// One vehicle object. A mounted turret (the Warthog's gun) is one of its
@@ -151,12 +141,24 @@ pub struct Vehicle {
     pub up: Vec3,
     /// Body vitality, 0 to 1.
     pub health: f32,
+    pub alternate_fire: bool,
+    /// Model half-width and height, in world units.
+    pub hull: Option<[f32; 2]>,
     /// The vehicle this one is mounted on.
     pub on: Option<u32>,
     pub seats: Vec<Seat>,
 }
 
 impl Vehicle {
+    pub fn spec(&self) -> Spec {
+        let mut spec = self.class.spec();
+        if let Some([width, height]) = self.hull {
+            spec.half_width = width + 0.12;
+            spec.height = height + 0.12;
+        }
+        spec
+    }
+
     /// Whether it lies the right way up (its up axis within about 60
     /// degrees of the world's).
     pub fn upright(&self) -> bool {
@@ -168,6 +170,12 @@ impl Vehicle {
             .iter()
             .position(|s| s.role == role && s.rider.is_none())
     }
+    pub fn enterable(&self, role: SeatRole) -> bool {
+        self.seats.iter().any(|s| {
+            s.role == role && s.rider.is_none() && s.boards.is_none() && !s.entries.is_empty()
+        })
+    }
+
     pub fn has(&self, role: SeatRole) -> bool {
         self.seats.iter().any(|s| s.role == role)
     }
@@ -344,6 +352,7 @@ pub struct Memory {
     pub lock: lock::Lock,
     pub route: Option<drive::Route>,
     pub unstick: drive::Unstick,
+    pub flight: flight::Flight,
     /// Getting out, and why.
     pub leaving: Option<drive::Leave>,
     /// Ticks its vehicle has lain flipped; ticks nobody has driven it.
@@ -390,6 +399,7 @@ impl Memory {
                     self.going = None;
                     self.route = None;
                     self.unstick.reset();
+                    self.flight = flight::Flight::default();
                     self.leaving = None;
                     self.flipped = 0;
                     self.driverless = 0;

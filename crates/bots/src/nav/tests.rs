@@ -493,7 +493,7 @@ fn generator_output_is_pinned() {
     let got = (crate::cache::GENERATOR, crate::autonav::fingerprint(&s));
     assert_eq!(
         got,
-        (1, 0x96880c12653c7760),
+        (2, 0x96880c12653c7760),
         "the nav output changed: bump cache::GENERATOR and record the new pair"
     );
 }
@@ -590,5 +590,174 @@ fn the_follower_previews_a_turn_and_checks_the_foot_line() {
         gap.steer_with_clearance(at, 1, |_| panic!("no blend into a jump"))
             .dir,
         [1.0, 0.0]
+    );
+}
+
+fn floor_quad(x: f32, y: f32, z: f32, w: f32, h: f32) -> Poly {
+    Poly::new(vec![
+        [x, y, z],
+        [x + w, y, z],
+        [x + w, y + h, z],
+        [x, y + h, z],
+    ])
+}
+
+#[test]
+fn short_traversals_win_over_a_longer_walking_route() {
+    let polys = vec![
+        floor_quad(0.0, 0.0, 0.0, 2.0, 2.0),
+        floor_quad(1.0, -20.0, 0.0, 2.0, 2.0),
+        floor_quad(10.0, 0.0, 0.0, 2.0, 2.0),
+        floor_quad(25.0, 0.0, 0.0, 2.0, 2.0),
+    ];
+    for kind in [Kind::Teleporter, Kind::Lift] {
+        let mesh = NavMesh::new(
+            polys.clone(),
+            vec![
+                Edge {
+                    from: 0,
+                    to: 2,
+                    a: polys[0].center,
+                    b: polys[0].center,
+                    kind: Kind::Walk,
+                },
+                Edge {
+                    from: 2,
+                    to: 3,
+                    a: polys[2].center,
+                    b: polys[2].center,
+                    kind: Kind::Walk,
+                },
+                Edge {
+                    from: 0,
+                    to: 1,
+                    a: polys[0].center,
+                    b: polys[0].center,
+                    kind: Kind::Walk,
+                },
+                Edge {
+                    from: 1,
+                    to: 3,
+                    a: polys[1].center,
+                    b: polys[3].center,
+                    kind,
+                },
+            ],
+        );
+        if kind == Kind::Teleporter {
+            // Walking to the entrance initially moves further from the
+            // goal. An unmodified Euclidean heuristic misses the shortcut.
+            assert_eq!(mesh.corridor(0, 3).unwrap(), [2, 3]);
+        } else {
+            let path = mesh.corridor(1, 3).unwrap();
+            assert_eq!(path, [3]);
+            let mut edges = mesh.edges.clone();
+            // The same two corridors with a longer walking route.
+            edges[0].a = [0.0, 40.0, 0.0];
+            edges[0].b = edges[0].a;
+            assert_eq!(
+                NavMesh::new(polys.clone(), edges).corridor(0, 3).unwrap(),
+                [2, 3]
+            );
+        }
+        let bytes = mesh.to_bytes();
+        assert_eq!(NavMesh::from_bytes(&bytes).unwrap().edges, mesh.edges);
+    }
+}
+
+#[test]
+fn high_ledge_builds_a_crouch_jump_and_waits_for_takeoff_before_crouching() {
+    let bsp = floors_bsp(&[(0.0, 0.0, 2.0, 2.0, 0.0), (2.0, 0.0, 4.0, 2.0, 0.48)]);
+    let m = crate::cache::build(&bsp).unwrap();
+    let edge = m
+        .nav
+        .edges
+        .iter()
+        .find(|e| e.kind == Kind::CrouchJump)
+        .unwrap();
+    let path = m.nav.path([1.0, 1.0, 0.0], [3.0, 1.0, 0.48]).unwrap();
+    let mut f = Follower::new(path, 0);
+    assert!(!f.steer([1.0, 1.0, 0.0], 1).jump);
+    let start = f.steer(edge.a, 2);
+    assert!(start.jump && !start.crouch);
+    let airborne = [edge.a[0] + 0.1, edge.a[1], edge.a[2] + 0.1];
+    assert!(!f.steer(airborne, 3).crouch);
+    assert!(f.steer(airborne, 5).crouch);
+    assert!(!f.steer(edge.b, 6).traversing);
+}
+
+#[test]
+fn the_jump_sweep_uses_crouch_height_and_rejects_solid_obstructions() {
+    let roof = floor_quad(0.42, -1.0, 0.99, 0.25, 2.0);
+    let walls = Walls::from_polygons([roof.verts.as_slice()]);
+    let a = [0.0; 3];
+    let b = [1.0, 0.0, 0.0];
+    assert!(!jump_clear(&walls, a, b, false));
+    assert!(jump_clear(&walls, a, b, true));
+    let wall = [
+        [0.5, -1.0, 0.0],
+        [0.5, 1.0, 0.0],
+        [0.5, 1.0, 2.0],
+        [0.5, -1.0, 2.0],
+    ];
+    let walls = Walls::from_polygons([wall.as_slice()]);
+    assert!(!jump_clear(&walls, a, b, true));
+}
+
+#[test]
+fn overhead_geometry_removes_the_standing_walk_link() {
+    let bsp = floors_bsp(&[(0.0, 0.0, 2.0, 2.0, 0.0), (2.0, 0.0, 4.0, 2.0, 0.05)]);
+    let pf =
+        pathfind::generate::generate(&bsp, 0, 0, &pathfind::generate::Options::default()).unwrap();
+    let roof = floor_quad(2.0, 0.0, 0.6, 2.0, 2.0);
+    let walls = Walls::from_polygons([roof.verts.as_slice()]);
+    let nav = NavMesh::from_collision(&pf, &Build::default(), &walls);
+    assert!(nav.path([1.0, 1.0, 0.0], [3.0, 1.0, 0.05]).is_none());
+}
+
+#[test]
+fn a_vehicle_uses_the_wide_route_around_a_pedestrian_gap() {
+    let polys = vec![
+        floor_quad(0.0, 0.0, 0.0, 4.0, 4.0),
+        floor_quad(4.0, 1.6, 0.0, 2.0, 0.8),
+        floor_quad(6.0, 0.0, 0.0, 4.0, 4.0),
+        floor_quad(0.0, 4.0, 0.0, 10.0, 4.0),
+    ];
+    let edge = |from, to, a, b| Edge {
+        from,
+        to,
+        a,
+        b,
+        kind: Kind::Walk,
+    };
+    let nav = NavMesh::new(
+        polys,
+        vec![
+            edge(0, 1, [4.0, 1.6, 0.0], [4.0, 2.4, 0.0]),
+            edge(1, 2, [6.0, 1.6, 0.0], [6.0, 2.4, 0.0]),
+            edge(0, 3, [0.0, 4.0, 0.0], [4.0, 4.0, 0.0]),
+            edge(3, 2, [6.0, 4.0, 0.0], [10.0, 4.0, 0.0]),
+        ],
+    );
+    let start = [2.0, 2.0, 0.0];
+    let end = [8.0, 2.0, 0.0];
+    assert_eq!(nav.corridor(0, 2).unwrap(), [0, 1]);
+    let m = crate::cache::MapData {
+        nav,
+        walls: Walls::default(),
+    };
+    let spec = crate::vehicle::Class::Jeep.spec();
+    let path = m
+        .nav
+        .vehicle_path(start, end, spec.half_width, spec.height, &m.walls)
+        .unwrap();
+    assert_eq!(path, [[2.0, 4.0, 0.0], [8.0, 4.0, 0.0], end]);
+    assert!(!crate::vehicle::drive::clear(&m, spec, start, end));
+    let mut route = crate::vehicle::drive::Route::new(path, end);
+    assert_eq!(
+        route.carrot_clear(start, |to| crate::vehicle::drive::clear(
+            &m, spec, start, to
+        )),
+        Some([2.0, 4.0, 0.0])
     );
 }

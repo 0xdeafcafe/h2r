@@ -26,6 +26,8 @@ use std::time::Instant;
 
 use crate::cache::{self, MapData, Stamp};
 
+mod traversals;
+
 /// `H2_BOTS_NAV_AUTO`: `0` (or `off`, `false`, `no`) stops the game
 /// building nav meshes by itself. Unset or anything else: on.
 pub const ENV: &str = "H2_BOTS_NAV_AUTO";
@@ -200,6 +202,7 @@ pub fn build_map<R: Read + Seek>(map: &mut map::Map<R>) -> Result<Vec<MapData>, 
     if bsps.is_empty() {
         return Err("the scenario has no structure BSP".into());
     }
+    let placements = traversals::Placements::read(&view, map)?;
     let mut out = Vec::with_capacity(bsps.len());
     for id in bsps {
         let tag = map.tag(id).map_err(|x| e(&x))?.clone();
@@ -212,7 +215,9 @@ pub fn build_map<R: Read + Seek>(map: &mut map::Map<R>) -> Result<Vec<MapData>, 
             .map_err(|x| e(&x))?;
         let at = coll.first().ok_or("a BSP has no collision")?.as_ptr() as usize - b.as_ptr() as usize;
         let bsp = tags::collision::Bsp::decode_structure(&b, loc.address, at).map_err(|x| e(&x))?;
-        out.push(cache::build(&bsp)?);
+        let mut data = cache::build(&bsp)?;
+        placements.add_links(&mut data);
+        out.push(data);
     }
     Ok(out)
 }

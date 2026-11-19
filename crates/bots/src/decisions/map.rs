@@ -91,7 +91,13 @@ impl MapMemory {
         stuck: &Stuck,
         caution: f32,
     ) -> Option<Vec<Waypoint>> {
-        let blocked = |e: &Edge| stuck.blocks_segment(e.a, e.b, tick);
+        let blocked = |e: &Edge| {
+            if e.kind.traversal() {
+                stuck.blocked(e.a, tick) || stuck.blocked(e.b, tick)
+            } else {
+                stuck.blocks_segment(e.a, e.b, tick)
+            }
+        };
         let threat = self.route_threat;
         if !self.deaths.is_empty() || threat.is_some() {
             let danger = |p| {
@@ -102,9 +108,14 @@ impl MapMemory {
             // even when that unavoidable destination is dangerous.
             let end = nav.poly_near(goal);
             let safe = nav.path_avoiding(at, goal, &|e| {
-                let mid = std::array::from_fn(|i| (e.a[i] + e.b[i]) * 0.5);
+                let mid = if e.kind.traversal() {
+                    e.a
+                } else {
+                    std::array::from_fn(|i| (e.a[i] + e.b[i]) * 0.5)
+                };
                 blocked(e)
                     || danger(mid)
+                    || (e.kind.traversal() && Some(e.to) != end && danger(e.b))
                     || (Some(e.to) != end && danger(nav.polys[e.to as usize].center))
             });
             if safe.is_some() {
