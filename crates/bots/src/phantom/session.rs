@@ -828,6 +828,11 @@ fn bump(m: &mut dyn GuestMemory, s: u32) -> R<()> {
     m.set_u32(s + CHANGES, c.wrapping_add(1))
 }
 
+/// The players peer `p` of `s` holds (peer `+0xf8`).
+pub fn peer_players(m: &dyn GuestMemory, s: u32, p: u32) -> R<u32> {
+    m.u32(peer(s, p) + PEER_PLAYERS)
+}
+
 fn peer(s: u32, p: u32) -> u32 {
     s + PEERS + p * PEER_SIZE
 }

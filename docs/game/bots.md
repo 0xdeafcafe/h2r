@@ -1538,18 +1538,23 @@ no run yet).
 `h1_bloodgulch`, 3 local Clankers and 4 phantoms, a crash a while into
 the game).** Read from the log tail and the disassembly; no run yet.
 
-- **"Every phantom got peer 4."** The log tail had all four
-  `bots: phantom Clanker N joins (peer 4, in the pregame lobby)`, and
-  then `game start: ... peer count 5 (0 other consoles)`: five peers,
-  four of them phantoms (the start facts count a peer whose machine id is
-  not a phantom's as another console). The join takes the peer at the
-  session's peer count and raises the count at once (`add_peer`, on guest
-  memory, no buffering: `RuntimeMemory::write` is immediate), so one frame
-  gives peers 1, 2, 3, 4 and frames one at a time do too (tests
-  `phantom::session::tests::lobby::four_phantoms_in_one_frame_get_a_peer_each`
-  and `phantoms_one_a_frame_get_a_peer_each`). Four distinct peers are
-  what the start found. The quoted lines were a summary of the log, not
-  the lines themselves; the next run's join lines settle it.
+- **"Every phantom got peer 4."** The raw log has all four `bots:
+  phantom Clanker N joins (peer 4, in the pregame lobby)` (N 4 to 7),
+  after `waits: not a lobby it can join (the lobby's session is not live
+  (state 7, live is 5))`, and the start found 5 peers, 4 of them
+  phantoms. The phantoms had joined before; state 7 made them unmade
+  (no session this console hosts live) but a session not live is not
+  written, so their peers stayed. Back in state 5 each rejoin found its
+  own peer, took it out (the peers above it moving down) and added it
+  again at the end: index 4 each time, every phantom's peer moved under
+  the game. Their machine ids were distinct all along (`machine_id` of
+  each handle, host-made bots and rostered alike). **Fix:** a phantom
+  whose peer is still in the session with its player takes it back in
+  place (`bots: phantom G is still in the session (peer K): it stays`);
+  only a peer the game emptied is taken out and made anew. Tests
+  `phantom::session::tests::lobby::host_made_phantoms_back_from_a_session_not_live_keep_their_peers`,
+  `a_peer_with_no_player_is_made_anew`,
+  `four_phantoms_in_one_frame_get_a_peer_each`.
 - **The crash is not the peers.** `#GP` at `0x28c589` is `movaps xmm1,
   [eax]` in `0x28c530`, codec 8's (`blend_screen`) interpolated rotation
   (the codec table in docs/engine/engine-map.md), called from the

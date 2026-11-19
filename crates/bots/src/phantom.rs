@@ -451,9 +451,27 @@ impl Phantoms {
                 continue; // no local player to copy yet
             };
             let mac = p.info.machine;
-            // A peer of its own left from a session this console stopped
-            // hosting and hosts again: out first, so it is never in twice.
+            // A peer of its own still in the session: a session that was
+            // not live a while (state 7 on the user's Halo 1 run) left the
+            // phantoms unmade but could not take their peers out. With its
+            // player it is taken back as it is. Removing it and adding it
+            // again at the end moved every later peer down and gave each
+            // phantom the last index ("joins (peer 4)" four times). The
+            // machine id is the phantom's own (`machine_id` of its handle,
+            // roster or host-made alike), so no other phantom's peer is
+            // ever found here.
             if let Some(stale) = session::find_peer(&*m, s, mac)? {
+                if session::peer_players(&*m, s, stale)? > 0 {
+                    session::sync_props(m, s, stale, &p.info.identity.gamertag)?;
+                    p.made = true;
+                    p.waiting = None;
+                    log.push(format!(
+                        "bots: phantom {} is still in the session (peer {stale}): it stays",
+                        p.info.identity.gamertag
+                    ));
+                    continue;
+                }
+                // A peer with no player left: out, so it is never in twice.
                 session::remove_peer(m, s, stale)?;
             }
             let Some(peer) = session::add_peer(m, s, mac, &p.info.identity.gamertag)? else {
