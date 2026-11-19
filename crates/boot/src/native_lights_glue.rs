@@ -865,6 +865,8 @@ impl PreparedLight {
             colours: [inputs.colour_a, inputs.colour_b],
             frame: &c.frame,
             gel: c.gel,
+            gel_view: None,
+            gel_scale: None,
             ranges: p.ranges.clone(),
         }
     }

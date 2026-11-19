@@ -389,6 +389,9 @@ pub struct LightDraw<'a> {
     pub frame: &'a [u32; FRAME_DWORDS],
     /// The gel's `bitm` datum (image 0), for a pass that samples it.
     pub gel: Option<u32>,
+    /// Current target copy and guest-coordinate scale for engine texture 10.
+    pub gel_view: Option<&'a wgpu::TextureView>,
+    pub gel_scale: Option<[f32; 4]>,
     pub ranges: Vec<std::ops::Range<u32>>,
 }
 
@@ -397,7 +400,17 @@ impl LightDraw<'_> {
     pub fn uniforms(&self, view: &ViewInputs) -> (VertexUniforms, PixelUniforms) {
         let [a, b] = self.colours;
         let (vertex, pixel) = colour_uniforms(self.program, a, b);
-        (light_vertex(&frame_vertex(&vertex, view), self.frame), frame_pixel(&pixel, view))
+        let mut pixel = frame_pixel(&pixel, view);
+        apply_gel_scale(&mut pixel, &self.program.stages, self.gel_scale);
+        (light_vertex(&frame_vertex(&vertex, view), self.frame), pixel)
+    }
+}
+
+fn apply_gel_scale(pixel: &mut PixelUniforms, stages: &[LightStage; 4], scale: Option<[f32; 4]>) {
+    if let Some(scale) = scale {
+        for (stage, destination) in stages.iter().zip(&mut pixel.tex_scale) {
+            if *stage == LightStage::Gel { *destination = scale; }
+        }
     }
 }
 
@@ -473,8 +486,9 @@ impl LightSet {
             if d.ranges.is_empty() {
                 continue;
             }
-            let gel = match d.gel {
-                Some(g) if d.program.stages.contains(&LightStage::Gel) => self.gel(device, queue, g, &mut *gel_image),
+            let gel = match (d.gel_view, d.gel) {
+                (Some(view), _) => Some(view.clone()),
+                (None, Some(g)) if d.program.stages.contains(&LightStage::Gel) => self.gel(device, queue, g, &mut *gel_image),
                 _ => None,
             };
             let stale = self.passes.get(&d.key).is_some_and(|p| p.as_ref().is_some_and(|p| !same_gpu_pass(&p.program, d.program)));
@@ -589,6 +603,18 @@ impl LightBundles {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn linear_target_coordinates_only_scale_the_gel_stages() {
+        let mut pixel = PixelUniforms::default();
+        let original = pixel.tex_scale;
+        let stages = [LightStage::Gel, LightStage::Attenuation, LightStage::Gel, LightStage::Empty];
+        apply_gel_scale(&mut pixel, &stages, None);
+        assert_eq!(pixel.tex_scale, original);
+        let scale = [1.0 / 37.0, 1.0 / 21.0, 1.0, 1.0];
+        apply_gel_scale(&mut pixel, &stages, Some(scale));
+        assert_eq!(pixel.tex_scale, [scale, original[1], scale, original[3]]);
+    }
 
     #[test]
     fn a_cube_needs_six_square_faces_of_one_size() {
