@@ -22,6 +22,13 @@ describe("the game header's model", () => {
     expect(gameHeaderJson(gameHeaderModel(fixtureGame()))).toBe(MODEL_JSON.trim());
   });
 
+  test("variant titles preserve spaced names and title-case bare keys", () => {
+    const game = fixtureGame();
+    expect(gameHeaderModel({ ...game, variant: "team slayer" }).title).toBe("team slayer");
+    expect(gameHeaderModel({ ...game, variant: "team_slayer" }).title).toBe("Team Slayer");
+    expect(gameHeaderModel({ ...game, variant: "Team Slayer" }).title).toBe("Team Slayer");
+  });
+
   test("players stand by score then index, teams by score then team, each with its emblem", () => {
     // Blue 20 ahead of Red 18; within Blue, Sneaky Pete's 12 over the
     // Clanker's 8; a player without an account is picked from their name.

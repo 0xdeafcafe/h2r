@@ -672,7 +672,8 @@ mod tests {
         assert_eq!(title_case("01b_delta-halo"), "01b Delta Halo");
         assert_eq!(title_case("a--b"), "A B");
         assert_eq!(variant_name(None), "");
-        assert_eq!(variant_name(Some("team slayer")), "Team Slayer");
+        assert_eq!(variant_name(Some("team slayer")), "team slayer");
+        assert_eq!(variant_name(Some("team_slayer")), "Team Slayer");
         assert_eq!(variant_name(Some("Team Slayer")), "Team Slayer");
         assert_eq!(team_name(-1), "Team 0");
         assert_eq!(team_name(8), "Team 9");
