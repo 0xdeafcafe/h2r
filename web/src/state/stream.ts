@@ -183,7 +183,7 @@ export class StreamClient {
 
   private handlePacked(bytes: Uint8Array) {
     try {
-      this.frames.forEachRecord(bytes, (d) => this.h.onFrame(d.frame), true);
+      this.frames.forEachRecord(bytes, (frame) => this.h.onFrame(frame), true);
     } catch (e) {
       if (!(e instanceof PackError)) throw e;
       // A bad message: drop the rest of it.

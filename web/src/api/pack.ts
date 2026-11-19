@@ -66,6 +66,9 @@ export class BitReader {
   private end: number;
   precise = false;
   span = 0;
+  sid = 0;
+  seq = 0;
+  keyframe = false;
   constructor(private readonly bytes: Uint8Array) { this.end = bytes.length * 8; }
 
   record(start: number, end: number) {
@@ -339,6 +342,26 @@ function readEntity(r: BitReader, schema: Field[], strings: readonly string[]): 
   return e;
 }
 
+/** A v7 hit can share a quantised location with a player already decoded
+ *  for this tick. The ordinal is in the current frame's wire order. */
+function readHits(r: BitReader, fields: Field[], strings: readonly string[], players: Entity[]): Entity[] {
+  if (!r.precise || !players.length) return readFull(r, fields, 64, strings);
+  const count = readCount(r, 64);
+  const hits: Entity[] = new Array(count);
+  for (let i = 0; i < count; i++) {
+    const hit: Entity = new Array(fields.length);
+    for (let j = 0; j < fields.length; j++) {
+      if (j === 3 && r.bit()) {
+        const player = players[r.bits(4)];
+        if (!player) throw new PackError("hit refers past the player list");
+        hit[j] = player[2]!;
+      } else hit[j] = readField(r, fields[j]!, undefined, strings);
+    }
+    hits[i] = hit;
+  }
+  return hits;
+}
+
 function readCount(r: BitReader, max: number): number {
   const n = r.eg(2);
   if (n > max) throw new PackError("list too long");
@@ -439,7 +462,10 @@ function readDelta(r: BitReader, schema: Field[], max: number, prev: Entity[], s
   const out: Entity[] = [];
   let cursor = 0, mask = 0;
   while (out.length < n) {
-    if (!r.bit()) {
+    // v7 reserves the shortest code for the common in-order edit.
+    const first = r.bit();
+    const runOp = !first && (!r.precise || !r.bit());
+    if (runOp) {
       const run = r.eg(2) + 1;
       if (out.length + run > n || cursor + run > prev.length) throw new PackError("run past the list");
       if (!advancing && !out.length && run === n && n === prev.length) return prev;
@@ -450,8 +476,8 @@ function readDelta(r: BitReader, schema: Field[], max: number, prev: Entity[], s
       cursor += run;
       continue;
     }
-    if (r.bit()) {
-      const j = cursor + r.seg(0);
+    if ((r.precise && first) || r.bit()) {
+      const j = r.precise && first ? cursor : cursor + r.seg(0);
       const before = prev[j];
       if (j < 0 || !before) throw new PackError("entity refers past the list");
       // The changed fields' mask (keys never change), then their values.
@@ -653,33 +679,35 @@ export class FrameDecoder {
   }
 
   decode(bytes: Uint8Array): Decoded {
-    return this.read(new BitReader(bytes));
+    const r = new BitReader(bytes);
+    const frame = this.read(r);
+    return { sid: r.sid, seq: r.seq, keyframe: r.keyframe, frame };
   }
 
   /** Decode directly over a container, reusing the bit cursor for all
    *  records. Each read is bounded by its own length prefix. */
-  forEachRecord(bytes: Uint8Array, visit: (frame: Decoded) => void, skipGaps = false): void {
+  forEachRecord(bytes: Uint8Array, visit: (frame: Frame, sid: number, seq: number, keyframe: boolean) => void, skipGaps = false): void {
     const r = new BitReader(bytes);
     walkRecords(bytes, (start, end) => {
       r.record(start, end);
-      let frame: Decoded;
+      let frame: Frame;
       try { frame = this.read(r); }
       catch (e) {
         if (skipGaps && e instanceof PackError && e.gap) return;
         throw e;
       }
-      visit(frame);
+      visit(frame, r.sid, r.seq, r.keyframe);
     });
   }
 
-  private read(r: BitReader): Decoded {
+  private read(r: BitReader): Frame {
     const version = r.bits(4);
     r.precise = version === PACK_VERSION;
     const schema = SCHEMAS[version];
     if (!schema) throw new PackError(`packed frame version ${version} is not supported`);
-    const keyframe = r.bit();
-    const sid = r.eg(0);
-    const seq = r.eg(8);
+    const keyframe = r.keyframe = r.bit();
+    const sid = r.sid = r.eg(0);
+    const seq = r.seq = r.eg(8);
     let prev: StreamState;
     if (!keyframe) {
       const s = this.streams.get(sid);
@@ -715,7 +743,7 @@ export class FrameDecoder {
     }
     for (let n = 0; n < schema.lists.length; n++) {
       const [fields, max] = schema.lists[n]!;
-      if (n === 3) hits = readFull(r, schema.hit, 64, state.strings);
+      if (n === 3) hits = readHits(r, schema.hit, state.strings, state.lists[0]!);
       const older = dt === prev.span ? (n === 0 ? prev.previousPlayers : n === 2 ? prev.previousActors : undefined) : undefined;
       state.lists[n] = keyframe ? readFull(r, fields, max, state.strings) : readDelta(r, fields, max, prev.lists[n] ?? [], state.strings, dt, schema.predict, older);
     }
@@ -735,7 +763,7 @@ export class FrameDecoder {
     if (cut !== null) frame.cut = cut;
     if (cinematic) frame.cinematic = true;
     this.streams.set(sid, state);
-    return { sid, seq, keyframe, frame };
+    return frame;
   }
 }
 
@@ -767,9 +795,9 @@ export function records(bytes: Uint8Array): Uint8Array[] {
 /** Decodes a container of frames packed on their own (recorded frames). */
 export function decodeKeyframes(bytes: Uint8Array): Frame[] {
   const out: Frame[] = [];
-  new FrameDecoder().forEachRecord(bytes, (d) => {
-    if (!d.keyframe) throw new PackError("not a keyframe");
-    out.push(d.frame);
+  new FrameDecoder().forEachRecord(bytes, (frame, _sid, _seq, keyframe) => {
+    if (!keyframe) throw new PackError("not a keyframe");
+    out.push(frame);
   });
   return out;
 }

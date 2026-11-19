@@ -9,6 +9,29 @@ const load = (name: string) => ({
   json: JSON.parse(readFileSync(join(dir, name + ".json"), "utf8")),
 });
 
+/** V7 delta header for malformed-record tests. */
+function deltaHeader(key: { sid: number; seq: number }) {
+  const bits: number[] = [];
+  const u = (n: number, width: number) => {
+    for (let i = 0; i < width; i++) bits.push((n >> i) & 1);
+  };
+  const eg = (n: number, k: number) => {
+    const x = n + 2 ** k;
+    const width = Math.floor(Math.log2(x));
+    u(0, width - k);
+    u(1, 1);
+    u(x, width);
+  };
+  u(7, 4); u(0, 1); eg(key.sid, 0); eg(key.seq + 1, 8);
+  eg(1, 2); u(0, 3); eg(0, 1); // dt, no BSP change, cut or cinematic, zero strings
+  const bytes = () => {
+    const record = new Uint8Array(Math.ceil(bits.length / 8));
+    bits.forEach((bit, i) => { record[i >> 3]! |= bit << (i & 7); });
+    return record;
+  };
+  return { eg, u, bytes };
+}
+
 describe("packed frames", () => {
   for (const name of ["multiplayer", "campaign", "odd", "cinematic", "v1-multiplayer", "v2-multiplayer", "v3-multiplayer", "v4-multiplayer", "v4-cinematic", "v6-multiplayer", "v6-campaign", "v6-odd", "v6-cinematic", "v7-multiplayer", "v7-campaign", "v7-odd", "v7-cinematic", "v7-motion"]) {
     test(`decodes the Rust encoder's ${name} stream exactly`, () => {
@@ -110,7 +133,7 @@ describe("packed frames", () => {
     const { bin, json } = load("v7-motion");
     const d = new FrameDecoder();
     const sequence: ReturnType<typeof d.decode>[] = [];
-    d.forEachRecord(bin, f => sequence.push(f));
+    d.forEachRecord(bin, (frame, sid, seq, keyframe) => sequence.push({ frame, sid, seq, keyframe }));
     expect(sequence.map(f => f.frame.tick)).toEqual([0, 1, 3, 10, 42, 44, 45]);
     expect(sequence.map(f => f.frame)).toEqual(json);
     expect(sequence[1]!.frame.players[0]!.vel).toBe(sequence[0]!.frame.players[0]!.vel);
@@ -123,26 +146,23 @@ describe("packed frames", () => {
   test("a unit edit mask must end by its fifth group", () => {
     const d = new FrameDecoder();
     const key = d.decode(records(load("v7-motion").bin)[0]!);
-    const bits: number[] = [];
-    const u = (n: number, width: number) => {
-      for (let i = 0; i < width; i++) bits.push((n >> i) & 1);
-    };
-    const eg = (n: number, k: number) => {
-      const x = n + 2 ** k;
-      const width = Math.floor(Math.log2(x));
-      u(0, width - k);
-      u(1, 1);
-      u(x, width);
-    };
-    u(7, 4); u(0, 1); eg(key.sid, 0); eg(key.seq + 1, 8);
-    eg(1, 2); u(0, 3); eg(0, 1); // dt, no BSP change, cut or cinematic, zero strings
-    eg(1, 2); u(3, 2); eg(0, 0); // one matched player at the previous cursor
+    const { eg, u, bytes } = deltaHeader(key);
+    eg(1, 2); u(1, 1); // one matched player at the previous cursor
     for (let i = 0; i < 5; i++) u(16, 5);
-    const delta = new Uint8Array(Math.ceil(bits.length / 8));
-    bits.forEach((bit, i) => { delta[i >> 3]! |= bit << (i & 7); });
-    expect(() => d.decode(delta)).toThrow("unit mask too long");
+    expect(() => d.decode(bytes())).toThrow("unit mask too long");
     // A rejected delta leaves the stream usable at the same sequence.
     expect(d.decode(records(load("v7-motion").bin)[1]!).frame.tick).toBe(1);
+  });
+
+  test("a hit-position reference is bounded by this frame's player count", () => {
+    const d = new FrameDecoder();
+    const key = d.decode(records(load("v7-motion").bin)[0]!);
+    const { eg, u, bytes } = deltaHeader(key);
+    eg(1, 2); u(0, 2); eg(0, 2); // keep only the first player
+    eg(0, 2); eg(0, 2); // vehicles and actors
+    eg(1, 2); u(0, 3); // one hit without source, target or weapon
+    u(1, 1); u(15, 4);
+    expect(() => d.decode(bytes())).toThrow("hit refers past the player list");
   });
 
   test("container reads cannot borrow bytes from the following record", () => {

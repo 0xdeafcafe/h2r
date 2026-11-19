@@ -108,7 +108,7 @@ export async function chunkContainer(bytes: Uint8Array, inflate: Inflate = infla
 /** Every frame in a chunk, in order. */
 export async function decodeChunk(bytes: Uint8Array, inflate: Inflate = inflateRaw): Promise<Frame[]> {
   const frames: Frame[] = [];
-  new FrameDecoder().forEachRecord(await chunkContainer(bytes, inflate), d => frames.push(d.frame));
+  new FrameDecoder().forEachRecord(await chunkContainer(bytes, inflate), frame => frames.push(frame));
   return frames;
 }
 
