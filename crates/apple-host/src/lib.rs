@@ -110,6 +110,7 @@ fn guest(layout: Layout, store: Arc<settings::Store>) -> app::worker::GuestFn {
                 host.tick(k.clock().counter()) == app::Control::Continue
             })),
             on_vfs: cloud.as_ref().map(|c| c.on_vfs()),
+            ..boot::Host::default()
         };
         let opts = boot::RunOpts {
             disc: layout.disc.clone(),

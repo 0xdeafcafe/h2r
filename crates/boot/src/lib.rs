@@ -114,6 +114,7 @@ pub mod sse;
 pub mod steam_speaker;
 pub mod stopgaps;
 pub mod sweep_diag;
+pub mod theater_ui;
 pub mod tier;
 pub mod touch_glue;
 pub mod trace;
@@ -816,6 +817,8 @@ pub struct Host {
     /// agent (`H2_AGENT`'s, else a local one with no socket), and it gets
     /// the menu's host methods (`settings.*`, `perf.overlay`, `cheat.*`).
     pub debug_menu: Option<debug_menu::Shared>,
+    /// Desktop Theater controller and the film library opener supplied by the host.
+    pub theater: Option<(theater_ui::Theater, theater_ui::adapter::OpenLibrary)>,
     /// The perf overlay's on/off switch, for `perf.overlay`.
     pub perf_overlay: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// Called once with the kernel's VFS when it is attached, before the
@@ -1212,6 +1215,22 @@ fn run_configured(
     let level_name = level.as_ref().map(|l| l.name.clone());
     // Every feature the plan gets up to the touch glue is registered in
     // `registration` (and its tests build the plan from the same code).
+    let theater = if let Some((theater, open)) = host.theater.take() {
+        let stamp = match tier {
+            tier::Tier::Clang => build_stamp(xbe_bytes),
+            tier::Tier::Fast => tier::fast_stamp(xbe_bytes),
+        };
+        theater.install(
+            &mut features,
+            &opts.data_root.join("films"),
+            stamp,
+            live.server_url.as_deref(),
+            open,
+        )?;
+        Some(theater)
+    } else {
+        None
+    };
     let core = registration::register_core(
         &mut features,
         registration::CoreInputs {
@@ -1225,6 +1244,7 @@ fn run_configured(
                 ),
             },
             vfs: k.vfs(),
+            theater: theater.clone(),
             model,
             campaigns,
             settings: host.settings.clone(),
@@ -1464,7 +1484,7 @@ fn run_configured(
     // the debug menu talks to a local one with no socket.
     let agent_source = match agent_glue::socket_from_env() {
         Some(path) => registration::AgentSource::Socket(path),
-        None if host.debug_menu.is_some() => registration::AgentSource::Local,
+        None if host.debug_menu.is_some() || theater.is_some() => registration::AgentSource::Local,
         None => registration::AgentSource::None,
     };
     let watch_overrides = agent_glue::socket_from_env().is_some();
@@ -1513,6 +1533,9 @@ fn run_configured(
     )?;
     let mut harness = late.harness;
     let agent = late.agent;
+    if let (Some(theater), Some(a)) = (&theater, &agent) {
+        theater.connect(&a.agent);
+    }
     let mut snapshot_probe = late.snapshot_probe;
     // edit.* and render.* on the agent (hot_glue.rs, docs/graphics/hot-iteration.md).
     if let Some(a) = &agent {

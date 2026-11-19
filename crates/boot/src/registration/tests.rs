@@ -97,6 +97,7 @@ pub(crate) fn registry(case: &Case) -> feature::Registry {
     register_core(
         &mut features,
         CoreInputs {
+            theater: None,
             rt: &rt,
             telemetry,
             vfs: case.vfs.then(|| Arc::new(Mutex::new(vfs::Vfs::new()))),

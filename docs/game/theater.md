@@ -4,7 +4,7 @@ This is the design for a Halo 3-style Theater in h2recomp: record a game
 as a film, then watch it again with pause, fast forward, rewind, a free
 camera, another player's view, clips and screenshots. It also covers the
 "event" side: watching a game live as a spectator, with a player list and
-scoreboard. **Nothing here is built.** It depends on the determinism
+scoreboard. Playback depends on the determinism
 harness from the high-frame-rate work
 ([high-framerate.md](high-framerate.md), phase 1, built) and on
 levels running at a steady 30 fps ([gameplay-budget.md](../perf/gameplay-budget.md)).
@@ -200,6 +200,39 @@ They use the guest director (section 3, "Free camera").
   share link.
 - Player page **Films** tab: Recent (25), Saved, Clips, as cards with
   the map picture, game type, result and length.
+
+### In-game implementation
+
+The main menu's sixth row opens Films. The list uses the Mods list class
+and its live row updates. Move to the top row and use Left or Right to
+switch between Recent, Saved and Clips. An asterisk marks a film recorded
+with an incompatible image. The film page shows the map picture, facts
+and a paged roster. Use A on Delete twice to confirm. For a dedicated-host
+film, Open on the web shows the configured Live site's URL and its QR
+code over the map picture. The list shows the recording's result when
+present, or the local profile's recorded score when the names match.
+
+The desktop compositor draws the playback transport, player picker and
+camera plate after blitting the guest frame. While playback owns input,
+Back or H hides the plates. LB or J toggles the game HUD through the
+existing HUD control, and RB or F12 saves a clean guest frame under
+`<data>/films/screenshots`. Press X to mark the in and out points. Completed ranges appear in Clips. B or Escape exits the desktop playback
+session. Follow is selected at the start. Free and stick camera control
+wait for keyframes. A film's scores, kills, bookmarks and seek support
+depend on what the playback agent reports.
+
+The library adapter is in `boot::theater_ui::adapter`. The desktop runner
+accepts its opener via `play_cmd::run_with_theater`. The integration pass
+supplies an opener over `film::Library::open`, maps saved status and
+`playable_here`, and connects the existing playback methods through the
+local agent connection. Theater does not make a second socket.
+
+The coordinator can preview the guest screens and transport model with
+`h2 ui preview theater.films`, `h2 ui preview theater.film` and
+`h2 ui preview theater.playback`. The playback previews lay out the
+transport model offline. The app draws its own font, plates and QR on a
+live frame. The code-only lane left preview renders and live navigation
+for the combined test pass.
 
 ### Lanes (code only, one combined test pass)
 
