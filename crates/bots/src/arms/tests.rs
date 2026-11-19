@@ -20,7 +20,11 @@ fn rounds(loaded: i16, capacity: i16, reserve: i16, reserve_max: i16) -> Ammo {
     }
 }
 fn gun(def: u32, ammo: Ammo) -> Gun {
-    Gun { def, ammo }
+    Gun {
+        def,
+        ammo,
+        ..Default::default()
+    }
 }
 fn pickup(id: u32, x: f32, def: u32, ammo: Ammo) -> Pickup {
     Pickup {
@@ -43,6 +47,30 @@ fn decide(a: &Arms, enemy: Option<f32>, calm: bool, pickups: &[Pickup]) -> Kit {
             at: [0.0; 3],
             enemy,
             calm,
+            breather: calm,
+            by_range: false,
+            pickups,
+        },
+        |_| false,
+    )
+}
+/// As [`decide`], at Normal skill and up: picks the weapon by range; and
+/// `breather` apart from `calm`.
+fn decide_by_range(
+    a: &Arms,
+    enemy: Option<f32>,
+    calm: bool,
+    breather: bool,
+    pickups: &[Pickup],
+) -> Kit {
+    plan(
+        &Situation {
+            arms: a,
+            at: [0.0; 3],
+            enemy,
+            calm,
+            breather: breather || calm,
+            by_range: true,
             pickups,
         },
         |_| false,
@@ -128,6 +156,8 @@ fn both_dry_seeks_the_nearest_useful_pickup() {
             at: [0.0; 3],
             enemy: None,
             calm: true,
+            breather: true,
+            by_range: false,
             pickups: &ps,
         },
         |p| p.id == 3,
@@ -157,6 +187,296 @@ fn low_on_both_tops_up_nearby_when_calm() {
     assert_eq!(decide(&a, Some(6.0), false, &near), Kit::Fine);
     let far = [pickup(1, TOP_UP_RANGE + 2.0, BR, rounds(36, 36, 0, 108))];
     assert_eq!(decide(&a, None, true, &far), Kit::Fine);
+}
+
+// ---- handling: roles, ranges, and the choices they drive ----
+
+fn handling(trigger: Trigger, zoom: i16, pellets: i16, shot_speed: f32) -> Profile {
+    Profile {
+        trigger,
+        zoom,
+        pellets,
+        shot_speed,
+        ..Profile::default()
+    }
+}
+fn sniper() -> Profile {
+    handling(Trigger::Single, 2, 1, 900.0)
+}
+fn rifle() -> Profile {
+    handling(Trigger::Single, 1, 1, 400.0)
+}
+fn shotgun() -> Profile {
+    handling(Trigger::Single, 0, 15, 300.0)
+}
+fn smg() -> Profile {
+    handling(Trigger::Automatic, 0, 1, 300.0)
+}
+fn rockets() -> Profile {
+    handling(Trigger::Single, 1, 1, 30.0)
+}
+fn sword() -> Profile {
+    Profile {
+        trigger: Trigger::Absent,
+        cone_range: 2.0,
+        ..Profile::default()
+    }
+}
+fn with(def: u32, profile: Profile, ammo: Ammo) -> Gun {
+    Gun { def, ammo, profile }
+}
+fn full() -> Ammo {
+    rounds(36, 36, 108, 108)
+}
+const SNIPER: u32 = 0xa005_0005;
+const SHOTGUN: u32 = 0xa006_0006;
+const ROCKETS: u32 = 0xa007_0007;
+const SWORD: u32 = 0xa008_0008;
+
+#[test]
+fn roles_come_from_the_handling() {
+    assert_eq!(sniper().role(), Role::Sniper);
+    assert_eq!(rifle().role(), Role::Precise);
+    assert_eq!(shotgun().role(), Role::Scatter);
+    assert_eq!(smg().role(), Role::Spray);
+    assert_eq!(rockets().role(), Role::Blast);
+    assert_eq!(sword().role(), Role::Blade);
+    assert_eq!(
+        handling(Trigger::Charge, 0, 1, 60.0).role(),
+        Role::Spray,
+        "plasma pistol"
+    );
+    // The flag: no trigger and no aim assist. Not read: weapon-blind.
+    assert_eq!(handling(Trigger::Absent, 0, 0, 0.0).role(), Role::Unknown);
+    assert_eq!(Profile::default().role(), Role::Unknown);
+    assert_eq!(Trigger::from_behaviour(0), Trigger::Automatic);
+    for b in [1, 4, 5] {
+        assert_eq!(Trigger::from_behaviour(b), Trigger::Single);
+    }
+    assert_eq!(Trigger::from_behaviour(2), Trigger::Charge);
+    // Bands nest the way the weapons do.
+    assert!(Role::Scatter.band().1 < Role::Precise.band().1);
+    assert!(Role::Precise.band().1 < Role::Sniper.band().1);
+    assert!(Role::Blast.fire_range().0 > 0.0, "never at its own feet");
+    assert!(Role::Sniper.power() && Role::Blast.power() && !Role::Precise.power());
+}
+
+#[test]
+fn the_preferred_range_is_the_held_guns_band() {
+    let a = arms(
+        Some(with(SNIPER, sniper(), full())),
+        Some(with(SMG, smg(), full())),
+    );
+    assert_eq!(preferred_range(&a), Role::Sniper.band());
+    assert_eq!(preferred_range(&a.held.unwrap()), (12.0, 60.0));
+    // An empty magazine is soon reloaded: still the sniper's band...
+    let a = arms(
+        Some(with(SNIPER, sniper(), rounds(0, 4, 8, 24))),
+        Some(with(SMG, smg(), full())),
+    );
+    assert_eq!(preferred_range(&a), Role::Sniper.band());
+    // ...but a dry one is switched away from: the other's.
+    let a = arms(
+        Some(with(SNIPER, sniper(), rounds(0, 4, 0, 24))),
+        Some(with(SMG, smg(), full())),
+    );
+    assert_eq!(preferred_range(&a), Role::Spray.band());
+    // Nothing to fire: arm's length, as the melee decision says.
+    let a = arms(Some(with(SNIPER, sniper(), rounds(0, 4, 0, 24))), None);
+    assert_eq!(preferred_range(&a), MELEE_BAND);
+    assert_eq!(preferred_range(&Kit::Melee), MELEE_BAND);
+    assert_eq!(preferred_range(&Kit::Fine), Role::Unknown.band());
+}
+
+#[test]
+fn by_range_it_switches_to_the_gun_that_suits_the_distance() {
+    let a = arms(
+        Some(with(SHOTGUN, shotgun(), full())),
+        Some(with(BR, rifle(), full())),
+    );
+    assert_eq!(
+        decide_by_range(&a, Some(20.0), false, false, &[]),
+        Kit::Switch
+    );
+    assert_eq!(
+        decide(&a, Some(20.0), false, &[]),
+        Kit::Fine,
+        "Easy keeps it"
+    );
+    assert_eq!(decide_by_range(&a, Some(2.0), false, false, &[]), Kit::Fine);
+    // The rifle in hand and the enemy in its face: the shotgun...
+    let b = arms(
+        Some(with(BR, rifle(), full())),
+        Some(with(SHOTGUN, shotgun(), full())),
+    );
+    assert_eq!(
+        decide_by_range(&b, Some(2.0), false, false, &[]),
+        Kit::Switch
+    );
+    // ...and no flip-flop at a band's edge: 4.5 is just past the shotgun's
+    // band and just short of the rifle's, neither clearly wrong.
+    assert_eq!(decide_by_range(&a, Some(4.5), false, false, &[]), Kit::Fine);
+    assert_eq!(decide_by_range(&b, Some(4.5), false, false, &[]), Kit::Fine);
+    // An empty other gun is no choice.
+    let c = arms(
+        Some(with(SHOTGUN, shotgun(), full())),
+        Some(with(BR, rifle(), rounds(0, 36, 0, 108))),
+    );
+    assert_eq!(
+        decide_by_range(&c, Some(20.0), false, false, &[]),
+        Kit::Fine
+    );
+}
+
+#[test]
+fn rockets_are_put_away_close_up() {
+    let a = arms(
+        Some(with(ROCKETS, rockets(), full())),
+        Some(with(SMG, smg(), full())),
+    );
+    assert_eq!(
+        decide_by_range(&a, Some(1.5), false, false, &[]),
+        Kit::Switch
+    );
+    assert_eq!(
+        decide_by_range(&a, Some(12.0), false, false, &[]),
+        Kit::Fine
+    );
+}
+
+#[test]
+fn an_empty_magazine_in_a_fight_switches_when_that_is_faster() {
+    let a = arms(
+        Some(with(BR, rifle(), rounds(0, 36, 50, 108))),
+        Some(with(SMG, smg(), full())),
+    );
+    // The SMG is good at 5: draw it rather than reload.
+    assert_eq!(
+        decide_by_range(&a, Some(5.0), false, false, &[]),
+        Kit::Switch
+    );
+    // At 20 it is not: reload.
+    assert_eq!(
+        decide_by_range(&a, Some(20.0), false, false, &[]),
+        Kit::Reload
+    );
+    // Nobody about: reload.
+    assert_eq!(decide_by_range(&a, None, true, true, &[]), Kit::Reload);
+    // Easy always reloads.
+    assert_eq!(decide(&a, Some(5.0), false, &[]), Kit::Reload);
+}
+
+#[test]
+fn a_lull_reloads_a_half_empty_magazine() {
+    let a = arms(Some(gun(BR, rounds(15, 36, 50, 108))), None);
+    assert_eq!(decide_by_range(&a, None, false, true, &[]), Kit::Reload);
+    assert_eq!(
+        decide_by_range(&a, None, false, false, &[]),
+        Kit::Fine,
+        "still under fire"
+    );
+    assert_eq!(decide_by_range(&a, Some(5.0), false, false, &[]), Kit::Fine);
+    // Nearly full: no reload.
+    let b = arms(Some(gun(BR, rounds(30, 36, 50, 108))), None);
+    assert_eq!(decide_by_range(&b, None, false, true, &[]), Kit::Fine);
+    // Nothing to load: no reload.
+    let c = arms(Some(gun(BR, rounds(15, 36, 0, 108))), None);
+    assert_eq!(decide_by_range(&c, None, false, true, &[]), Kit::Fine);
+}
+
+#[test]
+fn an_enemy_out_of_reach_is_time_to_reload() {
+    let a = arms(Some(with(SMG, smg(), rounds(10, 60, 100, 240))), None);
+    assert_eq!(
+        decide_by_range(&a, Some(30.0), false, false, &[]),
+        Kit::Reload
+    );
+    assert_eq!(decide_by_range(&a, Some(5.0), false, false, &[]), Kit::Fine);
+}
+
+#[test]
+fn a_power_weapon_nearby_is_taken_and_the_worse_gun_dropped() {
+    let rifle_held = arms(
+        Some(with(BR, rifle(), full())),
+        Some(with(SMG, smg(), full())),
+    );
+    let ps = [pickup(1, 15.0, SNIPER, rounds(4, 4, 8, 24))];
+    let ps = [Pickup {
+        gun: with(SNIPER, sniper(), ps[0].gun.ammo),
+        ..ps[0]
+    }];
+    // The rifle is the better of the two: switch to the SMG, which the
+    // sniper rifle then replaces.
+    assert_eq!(
+        decide_by_range(&rifle_held, None, true, true, &ps),
+        Kit::Switch
+    );
+    let smg_held = arms(
+        Some(with(SMG, smg(), full())),
+        Some(with(BR, rifle(), full())),
+    );
+    assert_eq!(
+        decide_by_range(&smg_held, None, true, true, &ps),
+        Kit::Seek(ps[0])
+    );
+    // Not in a fight.
+    assert_eq!(
+        decide_by_range(&smg_held, Some(8.0), false, false, &ps),
+        Kit::Fine
+    );
+    // Not with a power weapon already.
+    let armed = arms(
+        Some(with(SHOTGUN, shotgun(), full())),
+        Some(with(BR, rifle(), full())),
+    );
+    assert_eq!(decide_by_range(&armed, None, true, true, &ps), Kit::Fine);
+    // Not further than POWER_RANGE.
+    let far = [Pickup {
+        position: [POWER_RANGE + 1.0, 0.0, 0.0],
+        ..ps[0]
+    }];
+    assert_eq!(
+        decide_by_range(&smg_held, None, true, true, &far),
+        Kit::Fine
+    );
+}
+
+#[test]
+fn dry_it_goes_for_the_better_gun_a_little_further_off() {
+    let a = arms(Some(gun(BR, rounds(0, 36, 0, 108))), None);
+    let ps = [
+        Pickup {
+            id: 1,
+            position: [5.0, 0.0, 0.0],
+            gun: with(SMG, smg(), rounds(60, 60, 0, 240)),
+        },
+        Pickup {
+            id: 2,
+            position: [9.0, 0.0, 0.0],
+            gun: with(SNIPER, sniper(), rounds(4, 4, 8, 24)),
+        },
+    ];
+    assert_eq!(decide(&a, None, true, &ps), Kit::Seek(ps[1]));
+}
+
+#[test]
+fn a_blade_is_kept_close_up_and_put_away_for_a_far_enemy() {
+    let a = arms(
+        Some(with(SWORD, sword(), Ammo::None)),
+        Some(with(BR, rifle(), full())),
+    );
+    // Not "dry": it is a sword.
+    assert_eq!(decide_by_range(&a, Some(1.0), false, false, &[]), Kit::Fine);
+    assert_eq!(
+        decide_by_range(&a, Some(20.0), false, false, &[]),
+        Kit::Switch
+    );
+    assert_eq!(
+        decide(&a, Some(20.0), false, &[]),
+        Kit::Fine,
+        "Easy keeps it"
+    );
+    assert!(a.held.unwrap().ready());
 }
 
 // ---- the traced fields, read from a fake guest ----
@@ -268,13 +588,11 @@ fn def_raw(def: u32, index: u32) -> u32 {
 fn the_unit_reads_its_held_gun_the_other_and_grenades() {
     let w = world();
     let a = read(&w.g, w.unit).unwrap();
-    assert_eq!(
-        a.held,
-        Some(Gun {
-            def: def_raw(BR, 0),
-            ammo: rounds(7, 36, 50, 108),
-        })
-    );
+    let held = a.held.expect("the rifle");
+    assert_eq!(held.def, def_raw(BR, 0));
+    assert_eq!(held.ammo, rounds(7, 36, 50, 108));
+    // No triggers, no aim assist in this fake tag: weapon-blind.
+    assert_eq!(held.role(), Role::Unknown);
     let other = a.other.expect("the pistol");
     assert_eq!(other.def, def_raw(PP, 1));
     match other.ammo {
@@ -320,4 +638,58 @@ fn a_stale_definition_reads_as_no_gun() {
             .unwrap()
             .is_none()
     );
+}
+
+#[test]
+fn the_handling_reads_from_the_weapon_and_projectile_tags() {
+    let mut w = world();
+    let g = &mut w.g;
+    // A fourth tag, a projectile at 400 a second.
+    const PROJ_TAG: u32 = TAGS + 0xc00;
+    const PROJ_DATUM: u32 = 0xa009_0003;
+    g.put_u32(TAG_INDEX + 0x18, 4);
+    let e = TAG_ENTRIES + 0x30;
+    g.put_u32(e, u32::from_be_bytes(*b"proj"))
+        .put_u32(e + 4, PROJ_DATUM)
+        .put_u32(e + 8, PROJ_TAG)
+        .map(PROJ_TAG, 0x400)
+        .put_f32(PROJ_TAG + PROJ_INITIAL_VELOCITY, 400.0);
+    // The rifle: one zoom level, one trigger firing once per pull, aim
+    // assist to 20, a barrel of 6 rounds a second firing that projectile.
+    let triggers = BR_TAG + 0x380;
+    let barrel = BR_TAG + 0x200;
+    g.put_u16(BR_TAG + WEAP_ZOOM_LEVELS, 1)
+        .put_f32(BR_TAG + WEAP_CONE_RANGE, 20.0)
+        .put_f32(BR_TAG + WEAP_PULL_RANGE, 30.0)
+        .put_u32(BR_TAG + WEAP_TRIGGERS, 1)
+        .put_u32(BR_TAG + WEAP_TRIGGERS + 4, triggers)
+        .put_u16(triggers + TRIGGER_DEF_BEHAVIOUR, 1)
+        .put_f32(barrel + BARREL_DEF_RATE, 6.0)
+        .put_u16(barrel + BARREL_DEF_PROJECTILES, 1)
+        .put_u32(barrel + BARREL_DEF_PROJECTILE, u32::from_be_bytes(*b"proj"))
+        .put_u32(barrel + BARREL_DEF_PROJECTILE + 4, PROJ_DATUM);
+    let a = read(&w.g, w.unit).unwrap();
+    let p = a.held.expect("the rifle").profile;
+    assert_eq!(
+        p,
+        Profile {
+            trigger: Trigger::Single,
+            zoom: 1,
+            cone_range: 20.0,
+            pull_range: 30.0,
+            rate: 6.0,
+            pellets: 1,
+            shot_speed: 400.0,
+        }
+    );
+    assert_eq!(p.role(), Role::Precise);
+    // The pistol has no triggers block in this fake: no trigger, and no
+    // aim assist, so weapon-blind (not a blade).
+    let pp = a.other.expect("the pistol").profile;
+    assert_eq!(pp.trigger, Trigger::Absent);
+    assert_eq!(pp.role(), Role::Unknown);
+    // A projectile reference to another group leaves the speed unknown.
+    w.g.put_u32(TAG_ENTRIES + 0x30, u32::from_be_bytes(*b"weap"));
+    let a = read(&w.g, w.unit).unwrap();
+    assert_eq!(a.held.unwrap().profile.shot_speed, 0.0);
 }

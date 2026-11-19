@@ -22,6 +22,7 @@ pub mod nav;
 pub mod objective;
 pub mod phantom;
 pub mod stuck;
+pub mod tactics;
 
 use input::host::HostPadState;
 
