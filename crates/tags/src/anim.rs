@@ -621,6 +621,73 @@ impl AnimationGraph {
             .iter()
             .position(|a| a.name.resolve(strings).ok().flatten() == Some(name))
     }
+
+    /// What the engine's own reader would trip on in animation `index`,
+    /// given the bytes of its resource (as [`Self::read_resource`] returns
+    /// them), as one message per problem; empty when it is sound.
+    ///
+    /// - The clip builds and every frame samples ([`AnimationClip`]): the
+    ///   resource index is in range, the node count is the graph's, the
+    ///   codecs are known, the channel counts equal the flag arrays and
+    ///   every read of every frame stays inside its stream.
+    /// - The blend screen (`+0x12`) is -1 or names one of the graph's
+    ///   (E `0x001daf30` indexes the block unchecked).
+    /// - A blend-screen (codec 8) stream is 16-byte aligned in the
+    ///   resource, and so is its rotation stride `[+0x14]`: its
+    ///   interpolated rotation function (`0x0028c530`, the codec table's
+    ///   record 8 at `0x47fc54`, slot `+0x1c`) loads each frame's four
+    ///   floats at `+0x20 + i * [+0x14] + frame * 16` with `movaps`
+    ///   (`0x0028c589`), which faults on an address that is not a
+    ///   multiple of 16. The engine reads a resource whole into a buffer
+    ///   of its own, so the offset in the resource decides.
+    pub fn engine_problems(&self, index: usize, resource: &[u8]) -> Vec<String> {
+        let mut out = Vec::new();
+        let Some(anim) = self.animations.get(index) else {
+            return vec![format!("animation {index} out of range")];
+        };
+        if anim.resource_index as usize >= self.resources.len() {
+            out.push(format!(
+                "resource {} of {}",
+                anim.resource_index,
+                self.resources.len()
+            ));
+        }
+        let screen = anim.unknown_12 as i8;
+        if screen != -1 && (screen < 0 || screen as usize >= self.blend_screens.len()) {
+            out.push(format!(
+                "blend screen {screen} of {}",
+                self.blend_screens.len()
+            ));
+        }
+        let clip = match self.clip_from_resource(index, resource) {
+            Ok(c) => c,
+            Err(e) => {
+                out.push(format!("clip: {e}"));
+                return out;
+            }
+        };
+        if let Some((f, e)) =
+            (0..clip.frame_count()).find_map(|f| clip.sample_frame(f).err().map(|e| (f, e)))
+        {
+            out.push(format!("frame {f} of {}: {e}", clip.frame_count()));
+        }
+        let [_, animated] = clip.codecs();
+        if animated == Some(crate::anim_sample::Codec::BlendScreen) {
+            let at = anim.data_offset as usize + usize::from(anim.sizes.static_size);
+            if !at.is_multiple_of(16) {
+                out.push(format!(
+                    "blend-screen stream at resource offset {at:#x}, not 16-byte aligned"
+                ));
+            }
+            let stride = u32_at(resource, at + 0x14);
+            if !stride.is_multiple_of(16) {
+                out.push(format!(
+                    "blend-screen rotation stride {stride:#x}, not a multiple of 16"
+                ));
+            }
+        }
+        out
+    }
 }
 
 fn decode_animation(e: &[u8], tag: &[u8], base: u32) -> Result<Animation> {

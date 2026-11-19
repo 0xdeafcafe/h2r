@@ -192,6 +192,11 @@ raw i16 words (the engine normalises; it does not divide by 32767).
 codec 2's `0x002c4de0`; the layout the functions read is the same, which the disc
 confirms for codecs 3 and 8 (codec 2 itself never occurs).
 
+Codec 8's interpolated rotation function (`0x0028c530`) loads the four floats
+with `movaps` (`0x0028c589`), so a codec 8 stream and its rotation stride must be
+16-byte aligned in the resource; every retail one is
+(`AnimationGraph::engine_problems` checks this and the other reader rules).
+
 Codec 8 clips are **aim grids**, not time series: their "frames" are the cells
 of a yaw/pitch grid, blended by aim weights at runtime. `AnimationClip::is_aim_grid`
 reports them; a viewer should not play them as an animation (41% of them show
