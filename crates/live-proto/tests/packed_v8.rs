@@ -66,3 +66,28 @@ fn quiet_v8_pair() {
         "v8 has not passed the quiet-machine shipping gate"
     );
 }
+
+#[test]
+fn v8_mixed_recording_survives_chunk_replay_and_archiving() {
+    use live_proto::{archive, chunk, game::MachinePosition};
+    let mut frames = samples::multiplayer(5);
+    frames[0].machine_positions = vec![MachinePosition { i: 11, p: 64 }];
+    frames[2].machine_positions = vec![MachinePosition { i: 11, p: 128 }];
+    frames[3].machine_positions = vec![MachinePosition { i: 17, p: 0 }];
+    let expected: Vec<_> = frames.iter().map(|f| pack::quantize(f).unwrap()).collect();
+    let mut v7 = pack::Encoder::new(6, 150);
+    let mut v8 = pack::Encoder::with_version(6, 150, 8).unwrap();
+    let mut container = Vec::new();
+    for (i, frame) in frames.iter().enumerate() {
+        let encoder = if i < 2 { &mut v7 } else { &mut v8 };
+        pack::push_record(&mut container, &encoder.encode(frame).unwrap().0);
+    }
+    for codec in [chunk::Codec::Stored, chunk::Codec::Deflate] {
+        let chunk = chunk::seal(&container, 5, frames[0].tick, frames[4].tick, codec);
+        let recovered = chunk::frames(&chunk).unwrap();
+        assert_eq!(recovered, expected);
+        let stored = archive::encode(&recovered).unwrap();
+        archive::verify(&expected, &stored).unwrap();
+        assert_eq!(archive::decode(&stored).unwrap(), expected);
+    }
+}

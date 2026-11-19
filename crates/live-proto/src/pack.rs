@@ -27,7 +27,7 @@ use crate::game::{
     ObjectKind, STANCES,
 };
 
-/// Latest encoder version. V7 adds finer grids, sparse vector residuals,
+/// Default standalone and historical writer version. V7 adds finer grids, sparse vector residuals,
 /// repeated edit masks and change-only positions relative to dead reckoning.
 /// V6 introduced vehicle velocity, projectiles and loose items.
 pub const VERSION: u64 = V7;
@@ -2335,7 +2335,8 @@ impl Encoder {
     }
 
     /// One packed frame; `Ok((bytes, keyframe))`. A frame that cannot be
-    /// packed leaves the stream as it was.
+    /// packed consumes no sequence number. V8 recovers partial projection work
+    /// with an independent key on the next successful write.
     pub fn encode(&mut self, frame: &Frame) -> Result<(Vec<u8>, bool)> {
         self.encode_with_machine_baseline(frame, None)
     }
