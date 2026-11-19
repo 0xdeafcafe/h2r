@@ -1174,6 +1174,44 @@ clients keep their async searches pending until that advertisement and
 its title QoS lobby data are ready. Opted-out clients continue to search
 the legacy lobby list without discovering queued assignments.
 
+### Joining a dedicated host
+
+The OptiMatch search stays pending while Live reserves and boots a
+dedicated host. The matchmaking screen shows “Starting a dedicated host…”.
+The client allows time for Live’s 60-second boot window and fallback,
+including for a cohort formed near the end of the search. Even if an
+assignment names the local account as a prospective host, `host_lease`
+keeps that console on the join path.
+
+When the queue returns `Queue::Join`, the Live HLE looks up the published
+session. The session’s `matchmaking.host_lease` identifies the lease even
+for clients whose first queue reply is `Queue::Join`. If the session
+detail has no assignment, a client that saw the lease while waiting can
+use that assignment when the queue sets `frames_from_host`. The HLE reads
+`GET /v1/hosts/{lease}` with the roster member’s `read` bearer. The lease’s
+`assignment_id` must match `Assignment.id` and the endpoint’s `session_id`
+must match `Queue::Join.session_id`. The dedicated session can have its own
+ID, leaving the assignment ID available for peer fallback. The matchmaking
+screen then shows `Joining dedicated host (<region>)`. Local hosts without
+a region show `local`.
+
+- With `Udp`, the HLE uses `HostEndpoint.udp` as the game’s base address
+  and keeps the identity bytes from `HostEndpoint.xnaddr`.
+- With `Tunnel`, the HLE opens `HostEndpoint.tunnel_url` on the Live API
+  using a fresh `sessions.relay` bearer. It checks lobby QoS through the
+  tunnel and gives the game the host’s published synthetic XNADDR.
+
+Both routes hand the session to the existing XNKID, QoS and XNet join
+path. The HLE keeps `Queue::Join.frames_from_host` with that published
+session ID so the uploader can leave frame uploads to the dedicated
+host. When a host ends or fails before the join completes, the client
+refreshes the queue for the server’s fallback assignment. A fresh
+assignment without a host lease uses the peer path. If that assignment
+elects this console with `Queue::Host`, the title receives its normal
+empty search and advertises the lobby.
+
+[Dedicated host contracts](dedicated-host-build.md#contracts)
+
 ### Queue API
 
 Both the native router and the Worker's LiveHub serve the same routes.

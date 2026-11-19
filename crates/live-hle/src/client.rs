@@ -196,7 +196,11 @@ pub(crate) enum MatchRequest {
         session: live_proto::session::NewSession,
         assignment: Option<String>,
     },
-    Queue(live_proto::matchmaking::Ticket),
+    Queue {
+        ticket: live_proto::matchmaking::Ticket,
+        waiting: Option<live_proto::matchmaking::Assignment>,
+    },
+    JoinDedicated(Box<crate::matchmaking::DedicatedJoin>),
     Update {
         id: String,
         update: live_proto::session::Update,
@@ -976,9 +980,9 @@ impl Worker {
         &self,
         user: &Identity,
         ticket: &live_proto::matchmaking::Ticket,
+        waiting: Option<&live_proto::matchmaking::Assignment>,
     ) -> Result<Reply, Error> {
-        use crate::matchmaking::{Outcome, Step, valid_probe_targets};
-        use live_proto::{matchmaking::Queue, session::valid_id};
+        use crate::matchmaking::{Outcome, QueueAction, Step, queue_action};
 
         let body = serde_json::to_string(ticket).map_err(|_| Error::Protocol)?;
         let bytes = match self.response(
@@ -992,46 +996,149 @@ impl Worker {
         };
         let me = Xuid(user.xuid);
         let value = serde_json::from_slice(&bytes).map_err(|_| Error::Protocol)?;
-        let step = match value {
-            Queue::Probing { candidates } if valid_probe_targets(&candidates, me) => {
+        let step = match queue_action(value, ticket.hopper, me).ok_or(Error::Protocol)? {
+            QueueAction::Probe(candidates) => {
                 let samples = crate::qos::measure(candidates, Duration::from_millis(450))
                     .map_err(|_| Error::Transport)?;
                 Step::Retry(samples)
             }
-            Queue::Waiting { assignment }
-                if assignment.hopper == ticket.hopper && assignment.members.contains(&me) =>
-            {
-                Step::Retry(Vec::new())
-            }
-            Queue::Host { assignment }
-                if assignment.hopper == ticket.hopper
-                    && assignment.host == me
-                    && valid_id(&assignment.id) =>
-            {
-                Step::Complete(Outcome::Host(assignment))
-            }
-            Queue::Join { session_id } if valid_id(&session_id) => {
-                let rows = self.matches_request(user, MatchRequest::Find(session_id.clone()))?;
-                let Some(row) = rows.first() else {
-                    return Ok(Reply::Matchmaking(Box::new(Step::Retry(Vec::new()))));
-                };
-                if !row.matchmaking.as_ref().is_some_and(|a| {
-                    a.id == session_id && a.hopper == ticket.hopper
-                        && a.host == row.host_xuid && a.members.contains(&me)
-                }) {
-                    return Err(Error::Protocol);
-                }
-                let kid = crate::sessions::wire_id(&session_id).ok_or(Error::Protocol)?;
-                let endpoint = std::net::SocketAddrV4::new(row.endpoint.addr, row.endpoint.port);
-                if crate::qos::query_why(endpoint, kid, 1).is_ok_and(|r| !r.data.is_empty()) {
-                    Step::Complete(Outcome::Join(rows))
-                } else {
-                    Step::Retry(Vec::new())
-                }
-            }
-            _ => return Err(Error::Protocol),
+            QueueAction::Wait => Step::Retry(Vec::new()),
+            QueueAction::WaitForHost(assignment) => Step::WaitingForHost(assignment),
+            QueueAction::Host(assignment) => Step::Complete(Outcome::Host(assignment)),
+            QueueAction::Join {
+                session_id,
+                frames_from_host,
+            } => self.matchmaking_join(user, ticket.hopper, &session_id, frames_from_host, waiting)?,
         };
         Ok(Reply::Matchmaking(Box::new(step)))
+    }
+    fn matchmaking_join(
+        &self,
+        user: &Identity,
+        hopper: u32,
+        session_id: &str,
+        frames_from_host: bool,
+        waiting: Option<&live_proto::matchmaking::Assignment>,
+    ) -> Result<crate::matchmaking::Step, Error> {
+        use crate::matchmaking::{DedicatedJoin, HostAction, Outcome, Step, host_action, join_assignment};
+
+        let mut rows = match self.fetch_match(user, session_id) {
+            Err(Error::Status(403 | 404 | 410)) if frames_from_host || waiting.is_some() => {
+                return Ok(Step::RequeueDedicated);
+            }
+            Err(e) if e.retryable() && (frames_from_host || waiting.is_some()) => {
+                return Ok(Step::RequeueDedicated);
+            }
+            Err(Error::Status(404)) => return Ok(Step::Retry(Vec::new())),
+            result => result?,
+        };
+        let Some(row) = rows.pop() else {
+            return Ok(if frames_from_host || waiting.is_some() {
+                Step::RequeueDedicated
+            } else {
+                Step::Retry(Vec::new())
+            });
+        };
+        row.advertisement.validate().map_err(|_| Error::Protocol)?;
+        let Some(assignment) = join_assignment(&row, waiting, hopper, Xuid(user.xuid), frames_from_host)
+        else {
+            return if frames_from_host {
+                Ok(Step::RequeueDedicated)
+            } else {
+                Err(Error::Protocol)
+            };
+        };
+        if row.xnkid != session_id {
+            return Err(Error::Protocol);
+        }
+
+        if let Some(lease) = &assignment.host_lease {
+            if !crate::matchmaking::valid_host_lease(lease) {
+                return Err(Error::Protocol);
+            }
+            let host = match self.team_json(user, &format!("/hosts/{lease}")) {
+                Err(Error::Status(403 | 404 | 410)) => return Ok(Step::RequeueDedicated),
+                Err(e) if e.retryable() => return Ok(Step::WaitingForHost(assignment.clone())),
+                result => result?,
+            };
+            let api = &self.connection.as_ref().ok_or(Error::Protocol)?.api;
+            return Ok(match host_action(host, assignment, session_id, api) {
+                HostAction::Wait => Step::WaitingForHost(assignment.clone()),
+                HostAction::Requeue => Step::RequeueDedicated,
+                HostAction::Join { route, region } => Step::CheckDedicated(Box::new(DedicatedJoin {
+                    row,
+                    hopper,
+                    route,
+                    region,
+                    frames_from_host,
+                })),
+            });
+        }
+
+        if frames_from_host {
+            // A lease-bearing queue reply can race a peer fallback in Find.
+            return Ok(Step::RequeueDedicated);
+        }
+        if assignment.id != session_id
+            || !crate::matchmaking::valid_address(row.endpoint.addr, row.endpoint.port)
+        {
+            return Err(Error::Protocol);
+        }
+        let kid = crate::sessions::wire_id(session_id).ok_or(Error::Protocol)?;
+        let address = std::net::SocketAddrV4::new(row.endpoint.addr, row.endpoint.port);
+        if self.map_ready(&row, true)
+            && crate::qos::query_why(address, kid, 1).is_ok_and(|r| !r.data.is_empty())
+        {
+            Ok(Step::Complete(Outcome::Join {
+                rows: vec![row],
+                frames_from_host,
+                dedicated: None,
+                tunnel: None,
+            }))
+        } else {
+            Ok(Step::Retry(Vec::new()))
+        }
+    }
+    fn join_dedicated(
+        &self,
+        user: &Identity,
+        join: &crate::matchmaking::DedicatedJoin,
+    ) -> Result<crate::matchmaking::Step, Error> {
+        use crate::matchmaking::{DedicatedMatch, Outcome, Step};
+
+        if !self.map_ready(&join.row, true) {
+            return Ok(Step::RequeueDedicated);
+        }
+        let tunnel = if let Some(url) = &join.route.tunnel_url {
+            let server = &self.connection.as_ref().ok_or(Error::Protocol)?.id;
+            let bearer = issue_token(&user.key, &self.author(user), server, lxm::SESSIONS_RELAY, now());
+            match crate::connect_tunnel(url.as_str(), &bearer) {
+                Ok(handle) => Some((join.route.address, handle)),
+                Err(_) => return Ok(Step::RequeueDedicated),
+            }
+        } else {
+            None
+        };
+        let kid = crate::sessions::wire_id(&join.row.session_id).ok_or(Error::Protocol)?;
+        let qos_base = tunnel
+            .as_ref()
+            .map_or(join.route.address, |(_, handle)| handle.qos_base());
+        if !crate::qos::query_why(qos_base, kid, 1).is_ok_and(|r| !r.data.is_empty()) {
+            return Ok(Step::RequeueDedicated);
+        }
+
+        let mut row = join.row.clone();
+        join.route.apply(&mut row);
+        self.saw(std::slice::from_ref(&row));
+        Ok(Step::Complete(Outcome::Join {
+            rows: vec![row],
+            frames_from_host: join.frames_from_host,
+            dedicated: Some(DedicatedMatch {
+                hopper: join.hopper,
+                route: join.route.clone(),
+            }),
+            tunnel,
+        }))
     }
     fn matches_request(
         &self,
@@ -1064,7 +1171,9 @@ impl Worker {
                         .session,
                 ]
             }
-            MatchRequest::Queue(_) => return Err(Error::Protocol),
+            MatchRequest::Queue { .. } | MatchRequest::JoinDedicated(_) => {
+                return Err(Error::Protocol);
+            }
             MatchRequest::Update { id, update } => {
                 self.match_event(
                     user,
@@ -1145,11 +1254,7 @@ impl Worker {
             item.advertisement.validate().map_err(|_| Error::Protocol)?;
             if !session::valid_id(&item.session_id)
                 || item.xnkid != item.session_id
-                || item.endpoint.port == 0
-                || item.endpoint.port > 65529
-                || item.endpoint.addr.is_unspecified()
-                || item.endpoint.addr.is_multicast()
-                || item.endpoint.addr.is_broadcast()
+                || !crate::matchmaking::valid_address(item.endpoint.addr, item.endpoint.port)
             {
                 return Err(Error::Protocol);
             }
@@ -1544,8 +1649,14 @@ impl Worker {
                     .filter(|a| a.session.id == c.session.id)
                     .ok_or(NO_SESSION)?;
                 let user = active.users.values().next().ok_or(NO_USER)?.clone();
-                if let MatchRequest::Queue(ticket) = request {
-                    return self.matchmaking(&user, ticket).map_err(|e| e.result());
+                if let MatchRequest::Queue { ticket, waiting } = request {
+                    return self.matchmaking(&user, ticket, waiting.as_ref()).map_err(Error::result);
+                }
+                if let MatchRequest::JoinDedicated(join) = request {
+                    return self
+                        .join_dedicated(&user, join)
+                        .map(|step| Reply::Matchmaking(Box::new(step)))
+                        .map_err(Error::result);
                 }
                 let rows = self
                     .matches_request(&user, request.clone())

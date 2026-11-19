@@ -852,15 +852,22 @@ impl State {
     /// The session this console joined: a registered key (`keys`, from
     /// `XNetRegisterKey`) that is not one of its own advertisements.
     pub fn joined_session(&self, keys: &[[u8; 8]]) -> Option<String> {
+        if let Some((_, id)) = self.sessions.dedicated_match(keys) {
+            return Some(id);
+        }
         let own = self.sessions.own_ids();
         keys.iter()
             .find(|k| !own.contains(k))
             .map(|k| live_proto::sign::hex(k))
     }
-    /// The playlist and session (hex) of the game about to start: this
-    /// console's own advertisement, else the joined session as last read.
+    /// The playlist and session (hex) of the game about to start: the
+    /// registered dedicated match, this console's advertisement, or the
+    /// joined session as last read, in that order.
     /// No request is made.
     pub fn matchmade(&self, keys: &[[u8; 8]]) -> Option<(u32, String)> {
+        if let Some(dedicated) = self.sessions.dedicated_match(keys) {
+            return Some(dedicated);
+        }
         if let (Some(p), Some(id)) = (self.sessions.current_playlist(), self.sessions.current_id())
         {
             return Some((p, live_proto::sign::hex(&id)));
@@ -874,6 +881,18 @@ impl State {
             .unwrap_or_else(|e| e.into_inner());
         let p = live_proto::optimatch::playlist(&seen.get(&id)?.advertisement.attributes)?;
         Some((p, id))
+    }
+    pub fn matchmaking_status(&self) -> Option<&str> {
+        self.sessions.matchmaking_status()
+    }
+    pub fn frames_from_host(&self, session_id: &str) -> bool {
+        self.sessions.frames_from_host(session_id)
+    }
+    pub fn end_match_join(&mut self, id: [u8; 8]) -> bool {
+        self.sessions.end_match_join(id)
+    }
+    pub fn has_match_tunnel(&self) -> bool {
+        self.sessions.has_match_tunnel()
     }
     /// The Live session this console hosts (16 lowercase hex digits):
     /// the advertisement it made last, while it still stands.
@@ -1102,7 +1121,7 @@ impl State {
             .unwrap();
         self.teams.store.apply(&actor, action, &now)
     }
-    pub fn invoke(&mut self, op: Operation, a: &[u32], m: &mut Guest) -> Result<u32> {
+    pub fn invoke(&mut self, op: Operation, a: &[u32], m: &mut Guest, hle: &crate::Hle) -> Result<u32> {
         use Operation::*;
         if let Teams(op) = op {
             if self.online_refs == 0 {
@@ -1159,6 +1178,7 @@ impl State {
                 a,
                 m,
                 crate::sessions::Context {
+                    hle,
                     storage: &mut self.storage,
                     host: crate::network::xnaddr(self.address),
                     users: &self.user_ids,
@@ -1636,7 +1656,7 @@ impl State {
                 if let Some(status) = self.teams.poll(a[0]) {
                     return Ok(status);
                 }
-                if let Some(status) = self.sessions.poll(a[0], m, &mut self.storage)? {
+                if let Some(status) = self.sessions.poll(a[0], m, &mut self.storage, hle)? {
                     return Ok(status);
                 }
                 if let Some(status) = self.outbox.poll(a[0]) {
