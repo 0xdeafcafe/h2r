@@ -234,6 +234,9 @@ struct Acc {
     last_repaths: u32,
 }
 
+/// A tick this far past the last one is a snapshot load, not play.
+pub const JUMP_TICKS: u32 = 30;
+
 /// The objective activities (`bots::mind::Doing`).
 pub const OBJECTIVE_DOINGS: [&str; 3] = ["carry", "keep", "play"];
 
@@ -313,11 +316,12 @@ impl Tally {
         self.last.as_ref()
     }
 
-    /// After a game tick. A tick before the last one means the machine was
+    /// After a game tick. Ticks move one at a time; a tick before the last
+    /// one, or more than [`JUMP_TICKS`] after it, means the machine was
     /// loaded from a snapshot: the tally starts again from there.
     pub fn tick(&mut self, s: &TickSample) {
         if let Some(last) = self.last_tick
-            && s.tick < last
+            && (s.tick < last || s.tick > last.saturating_add(JUMP_TICKS))
         {
             self.resets += 1;
             self.start(s.tick);
@@ -533,7 +537,7 @@ impl Tally {
         let mut notes = notes;
         if self.resets > 0 {
             notes.push(format!(
-                "the tally started again {} time(s): the tick went backwards (a snapshot load)",
+                "the tally started again {} time(s): the tick jumped (a snapshot load)",
                 self.resets
             ));
         }
@@ -738,6 +742,12 @@ mod tests {
         });
         assert_eq!(r.player(0).unwrap().shots, 0);
         assert_eq!(r.notes.len(), 1);
+        // Forward past a second's worth of ticks: a load too.
+        t.tick(&sample(51, vec![]));
+        t.tick(&sample(51 + JUMP_TICKS, vec![]));
+        assert_eq!((t.resets(), t.ticks()), (1, 3));
+        t.tick(&sample(52 + 2 * JUMP_TICKS, vec![]));
+        assert_eq!((t.resets(), t.ticks()), (2, 1));
     }
 
     #[test]

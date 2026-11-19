@@ -299,15 +299,16 @@ pub struct BotSpec {
     /// The team in a team game (0 red, 1 blue, ...).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub team: Option<u8>,
-    /// A tuning file, relative to the match file.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub params: Option<PathBuf>,
-    /// Tuning inline; over the file's.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tuning: Option<BotParams>,
     /// Which arm of an A/B batch the bot plays for (set by the batch).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arm: Option<String>,
+    /// A tuning file, relative to the match file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params: Option<PathBuf>,
+    /// Tuning inline; over the file's. Last: a TOML table follows the
+    /// plain values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tuning: Option<BotParams>,
 }
 
 fn default_game_type() -> String {
@@ -396,9 +397,9 @@ impl Match {
                 name: Some(b.name.clone()),
                 skill: Some(b.skill.name().into()),
                 team: b.team,
+                arm: b.arm.clone(),
                 params: None,
                 tuning: Some(b.params.clone()),
-                arm: b.arm.clone(),
             })
             .collect();
         serde_json::to_value(c).unwrap_or(serde_json::Value::Null)

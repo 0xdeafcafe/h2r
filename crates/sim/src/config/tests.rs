@@ -387,3 +387,18 @@ fn safe_names() {
     assert_eq!(safe("my map/1"), "my_map_1");
     assert_eq!(safe(""), "_");
 }
+
+#[test]
+fn planned_runs_write_back_as_toml() {
+    let b = batch(
+        BATCH,
+        "map = \"lockout\"\nteam_play = true\n[settings]\n83 = 1\n[[bot]]\nname = \"A\"\n[[bot]]\n",
+    )
+    .unwrap();
+    for r in &b.runs {
+        let text = toml::to_string(&r.config).unwrap();
+        let back = parse_match(&text, false).unwrap();
+        assert_eq!(back, r.config, "{text}");
+        resolve(back, &no_files).unwrap();
+    }
+}
