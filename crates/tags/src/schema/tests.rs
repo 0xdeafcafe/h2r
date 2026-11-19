@@ -684,6 +684,22 @@ fn hud_thresholds_are_bytes_not_raw_pointers() {
     assert_eq!(&inferred, Schema::builtin());
 }
 
+#[test]
+fn gear_curves_are_inline_floats_through_extraction_and_inference() {
+    let mut inferred = Schema::builtin().clone();
+    let group = FourCC(*b"vehi");
+    let Some(Field::Block(gear)) = inferred.groups.get_mut(&group).unwrap().fields.get_mut(&0x268)
+    else { panic!("missing gear block") };
+    assert!(gear.fields.is_empty());
+    for offset in [0x14, 0x1c, 0x28, 0x2c] {
+        gear.fields.insert(offset, Field::Raw);
+    }
+    gear.fields.insert(0x10, Field::RawSize(0x14));
+    gear.fields.insert(0x38, Field::Word);
+    super::infer::apply_engine_data(&mut inferred);
+    assert_eq!(&inferred, Schema::builtin());
+}
+
 /// The weapon slots no retail tag fills but Halo 1's weapons do (the
 /// flashlight's power-on and power-off effects, the detonation effects,
 /// the collision sound, the magazines' chambering effect) are tag
@@ -691,32 +707,25 @@ fn hud_thresholds_are_bytes_not_raw_pointers() {
 /// ([`super::infer::apply_engine_refs`]): without, an extract read the
 /// converted assault rifle's flashlight effect as bytes, with no tag.
 #[test]
-fn weapon_slots_retail_leaves_empty_are_tag_references() {
-    let weap = FourCC(*b"weap");
+fn converted_slots_retail_leaves_empty_are_tag_references() {
     let schema = Schema::builtin();
-    let root = &schema.groups[&weap];
-    let Some(Field::Block(magazine)) = root.fields.get(&0x2c0) else {
-        panic!("weap +0x2c0 is no block");
-    };
-    for &(group, path, offset) in super::infer::ENGINE_REFS {
-        assert_eq!(group, weap);
-        let s = if path.is_empty() { root } else { &**magazine };
-        assert_eq!(
-            s.fields.get(&offset),
-            Some(&Field::TagRef),
-            "{path:x?} +{offset:#x}"
-        );
-    }
-    // What inference made of them before: no field.
     let mut inferred = schema.clone();
-    let r = inferred.groups.get_mut(&weap).unwrap();
-    for o in [0xfc, 0x11c, 0x124, 0x17c, 0x244, 0x24c] {
-        r.fields.remove(&o);
+    for group in [b"eqip", b"garb"] {
+        let header = inferred.groups.get_mut(&FourCC(*group)).unwrap();
+        for at in [0x64, 0x94] {
+            assert!(matches!(header.fields.remove(&at), Some(Field::Block(_))));
+        }
     }
-    let Some(Field::Block(m)) = r.fields.get_mut(&0x2c0) else {
-        unreachable!()
-    };
-    m.fields.remove(&0x44);
+    for &(group, path, offset) in super::infer::ENGINE_REFS {
+        let mut record = inferred.groups.get_mut(&group).unwrap();
+        for at in path {
+            let Some(Field::Block(child)) = record.fields.get_mut(at) else {
+                panic!("{group} {path:x?} lacks block at {at:#x}");
+            };
+            record = child;
+        }
+        assert_eq!(record.fields.remove(&offset), Some(Field::TagRef), "{group} {path:x?} +{offset:#x}");
+    }
     super::infer::apply_engine_refs(&mut inferred);
     assert_eq!(&inferred, schema);
 }

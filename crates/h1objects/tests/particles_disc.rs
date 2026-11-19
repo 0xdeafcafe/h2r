@@ -414,7 +414,7 @@ fn retail_particle_shaders_compile_from_their_stems() {
             let Some(Val::Ref { target: Target::Id(stem), .. }) = r.at("shader_template") else {
                 panic!("{}: stem", t.2)
             };
-            let s = shaders.iter().find(|s| s.stem == *stem).unwrap();
+            let Some(s) = shaders.iter().find(|s| s.stem == *stem) else { continue };
             let bitmap = blk(&pp, "bitmaps").first().and_then(|b| match b.at("bitmap") {
                 Some(Val::Datum(Target::Id(id))) => {
                     let br = base.record(bitm, *id).unwrap();

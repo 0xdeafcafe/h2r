@@ -38,6 +38,7 @@ pub mod game_glue;
 pub mod game_setup_help;
 mod h1_recordings;
 mod h1_conversation;
+mod h1_drive;
 pub mod h1_options;
 pub mod h1_options_row;
 mod h1_particle_physics;

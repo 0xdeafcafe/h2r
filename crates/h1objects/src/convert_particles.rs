@@ -61,20 +61,17 @@ impl Converter<'_> {
     /// The `prt3` of particle `p` (from `tag`: a `part`, or a `pctl` whose
     /// particle state `p` stands for), pushed as `name`. Not cached.
     pub(super) fn particle_of(&mut self, tag: &Tag, name: &str, p: &H1Particle) -> Result<Option<TagId>> {
-        if self.particle_role.is_none() {
-            self.particle_role = Some(particles::particle_role(self.base)?);
+        if self.particle_shaders.is_none() {
+            self.particle_shaders = Some(particles::particle_shaders(self.base)?);
         }
-        let Some(role) = self.particle_role.clone().flatten() else {
-            return Ok(None);
-        };
+        let shaders = self.particle_shaders.as_ref().expect("initialised");
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
         rep.source = name.to_owned();
         let (want, proven) = particles::particle_stem(p.blend);
-        let shader = role
-            .shaders
+        let shader = shaders
             .iter()
             .find(|s| s.name == want)
-            .or_else(|| role.shaders.iter().find(|s| s.name == particles::particle_stem(0).0));
+            .or_else(|| shaders.iter().find(|s| s.name == particles::particle_stem(0).0));
         let Some(shader) = shader.cloned() else {
             return Ok(None);
         };
@@ -125,7 +122,7 @@ impl Converter<'_> {
             "emitter-side fields (lifespan, fade times, radius and frame animation, physics, contact deterioration, fade sizes, orientation, secondary map) not carried: Halo 2 holds them on the effect's emitter".into(),
         );
         let (root, roles) = crate::provenance::capture(|| {
-            particles::particle(p, &role, &shader, bitmap, collision, death)
+            particles::particle(p, &shader, bitmap, collision, death)
         });
         let root = root?;
         self.tree.reports.push(rep);
@@ -172,13 +169,6 @@ impl Converter<'_> {
         if total == 0 {
             return Ok(root);
         }
-        if self.emitter_role.is_none() {
-            self.emitter_role = Some(particles::emitter_role(self.base)?);
-        }
-        let Some(role) = self.emitter_role.clone().flatten() else {
-            rep.no_home.push(format!("{total} particles left out (the base has no emitter role)"));
-            return Ok(root);
-        };
         let d = tags::defs::Defs::builtin()
             .group(FourCC(*b"effe"))
             .ok_or_else(|| crate::Error::Invalid("no effe definition".into()))?;
@@ -205,7 +195,7 @@ impl Converter<'_> {
                     left += 1;
                     continue;
                 };
-                systems.push(particles::particle_system(p, &h, id, &role, d)?);
+                systems.push(particles::particle_system(p, &h, id, d)?);
             }
             for (id, location) in systems_of.get(k).into_iter().flatten() {
                 let Ok(t) = self.h1.tag(*id) else { continue };
@@ -218,7 +208,6 @@ impl Converter<'_> {
                         &state.as_effect_particle(count, *location),
                         &state.as_particle(),
                         prt3,
-                        &role,
                         d,
                     )?);
                 }
@@ -299,12 +288,6 @@ impl Converter<'_> {
         if let Some(ids) = self.attached_particles.get(&key) {
             return Ok(ids.clone());
         }
-        if self.emitter_role.is_none() {
-            self.emitter_role = Some(particles::emitter_role(self.base)?);
-        }
-        let Some(role) = self.emitter_role.clone().flatten() else {
-            return Ok(Vec::new());
-        };
         let mut ids = Vec::new();
         for (ty, states) in self.particle_types(tag)? {
             if ty.initial_count == 0
@@ -339,9 +322,7 @@ impl Converter<'_> {
                     movement,
                 });
             }
-            let (root, roles) = crate::provenance::capture(|| {
-                particles::attached_particle_effect(&ty, &particles, marker, &role)
-            });
+            let root = particles::attached_particle_effect(&ty, &particles, marker);
             if let Some(root) = root? {
                 let id = self.tree.push(
                     &name,
@@ -351,7 +332,6 @@ impl Converter<'_> {
                         raw: Vec::new(),
                     },
                 );
-                self.tree.note_roles(id, roles);
                 ids.push(id);
             }
         }

@@ -1,16 +1,7 @@
-//! Which fields of a converted tag were filled from its **role** (the
-//! base map's retail Halo 2 tags of the same kind: majority words, a
-//! counterpart's values, or retail values kept in the source) rather than
-//! from Halo 1.
-//!
-//! The builders ([`crate::rebuild`], [`crate::arsenal`],
-//! [`crate::particles`], the garbage builder) note every value they take
-//! from a role, by its path in the tag's record, as they write it; the
-//! converter collects the notes made while it builds one tag's root
-//! ([`capture`]) and keeps them with the tag ([`crate::convert::Tree::role_fields`]).
-//! A later write from Halo 1 to the same field is not un-noted: the audit
-//! (`tests/role_audit_disc.rs`, `docs/halo1/role-audit.md`) compares each
-//! note with the built tag and reports only the values still the role's.
+//! Tracks fields that depend on native Halo 2 data. A builder records a
+//! field path and value while constructing one tag. The converter keeps
+//! those notes on its tree. The audit in tests/role_audit_disc.rs checks
+//! which values survive later writes from the source and classifies them.
 //!
 //! References taken from a Halo 2 counterpart are not noted here: they are
 //! found in the built tags themselves (any reference to a base-map tag).
@@ -91,26 +82,39 @@ mod tests {
         assert_eq!(paths, ["a", "c"]);
     }
 
-    /// A builder notes its role words by their paths in the tag, and the
-    /// built tag still holds them where Halo 1 wrote nothing.
     #[test]
-    fn a_damage_effect_notes_its_role_words() {
-        let role = crate::arsenal::Role {
-            members: 1,
-            root: vec![
-                ("unknown_0".into(), 2.5f32.to_bits()),
-                ("unknown_c".into(), 3),
-            ],
-            elements: Vec::new(),
-        };
-        let b = vec![0u8; crate::arsenal::H1_JPT_MIN];
-        let (root, got) = capture(|| crate::arsenal::damage(&b, &role));
-        let paths: Vec<_> = got.iter().map(|f| f.path.as_str()).collect();
-        assert_eq!(paths, ["unknown_0", "unknown_c"]);
-        let d = tags::defs::Defs::builtin()
-            .group(map::FourCC(*b"jpt!"))
-            .unwrap();
-        let r = tags::defs::from_built(d, &root.unwrap()).unwrap();
-        assert_eq!(r.at("unknown_0"), Some(&got[0].value));
+    fn damage_encodes_the_source_motor_fade_and_duration() {
+        use tags::defs::{self, Defs, Val};
+        use tags::effects::function::Function;
+        let mut bytes = vec![0; crate::arsenal::H1_JPT_MIN];
+        for (at, value) in [(0x5c, 0.75_f32), (0x60, 0.2), (0x70, 0.25), (0x74, 0.5)] {
+            bytes[at..at+4].copy_from_slice(&value.to_le_bytes());
+        }
+        let root = crate::arsenal::damage(&bytes, None).unwrap();
+        let r = defs::from_built(Defs::builtin().group(map::FourCC(*b"jpt!")).unwrap(), &root).unwrap();
+        let Some(Val::Block(responses)) = r.at("block_6c") else { panic!("no player responses") };
+        assert_eq!(responses.len(), 3);
+        for (i, response) in responses.iter().enumerate() {
+            assert_eq!(response.at("unknown_0"), Some(&Val::Bytes((i as u32).to_le_bytes().to_vec())));
+            for (path, time, magnitude, duration) in [("data_28", "unknown_24", 0.75, 0.2f32),
+                                                       ("data_34", "unknown_30", 0.25, 0.5)] {
+                assert_eq!(response.at(time), Some(&Val::Bytes(duration.to_le_bytes().to_vec())));
+                let Some(Val::Data(data)) = response.at(path) else { panic!("{path}") };
+                let envelope = Function::parse(data).unwrap();
+                assert_eq!(envelope.evaluate(0.0, 0.0), magnitude);
+                assert_eq!(envelope.evaluate(1.0, 0.0), 0.0);
+            }
+        }
+    }
+
+    #[test]
+    fn damage_radius_and_cutoff_come_from_halo1() {
+        let mut b = vec![0; crate::arsenal::H1_JPT_MIN];
+        for (i, v) in [0.2f32, 3.5, 0.75].into_iter().enumerate() {
+            b[i*4..i*4+4].copy_from_slice(&v.to_le_bytes());
+        }
+        let (root, notes) = capture(|| crate::arsenal::damage(&b, None));
+        assert!(notes.is_empty());
+        assert_eq!(&root.unwrap().bytes[..12], &b[..12]);
     }
 }

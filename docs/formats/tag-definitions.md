@@ -741,15 +741,12 @@ Halo ring were already built this way.
   (the role took 4-byte spans only), the converted scorpion crept at
   0.05 units a second with the stick held forward; set to 2 live it
   drove at 2.5.
-- **Engine gears** (`+0x268`, `0x44` each, raw curve pointers at `+0x14`,
-  `+0x1c`, `+0x28`, `+0x2c`). Halo 1 has no counterpart: its `vehi` holds
-  no curve or raw data, only scalar speeds, and those disagree with
-  Halo 2's (below). So the gears are the type's role: the count most of
-  the role's vehicles with gears hold, each field the majority word,
-  raw pointers kept as words (the curves live in the shared map the
-  base map uses, so the converted map built on that base reads the same
-  ones). On 05a the jeep takes the warthog's four, the tank the
-  scorpion's two; hover vehicles, fliers and turrets have none.
+- **Built. Engine gears** (`+0x268`, stride `0x44`). The two torque
+  curves are inline six-float records. The XBE interpolates them at
+  `0xf15d0`, blends them at `0xf1540`, reads the speed ratio at
+  `0xf152c` and selects the next gear at `0xf18aa`. Converted H1 wheels
+  and tracks drive the contacts directly. The role descriptions below
+  record earlier converter versions. [Current mappings and XBE evidence](../halo1/role-audit.md).
 - **The type's role** (`rebuild::vehicle_role`): the turret rule over the
   base map's vehicles of the same `vehicle_type`, at conversion time:
   each 4-byte unknown span of the root, every seat, every friction and
@@ -866,13 +863,12 @@ Proof (`crates/h1objects/tests/vehicle_rebuild_disc.rs`, lib tests
   region of Halo 1's collision.
 
 What only a game run shows: driving (the friction points on Halo 1's
-tire markers with the warthog's gears, the scorpion's eight tread points
+tire markers with the source velocity controller, the scorpion's eight tread points
 where Halo 2's has twelve), hovering (the ghost's and wraith's points),
 flying for the fliers and dropships, whether a vehicle stands on its
 Halo 1 collision hull, boarding (the seat labels as modes, the entry
 markers) and the riders' poses. First suspects if driving fails: the
-marker instances' region and permutation bytes, the null friction
-material, and the gears' curves read through another vehicle's raw.
+marker instances' region and permutation bytes and the friction material.
 
 ## Bipeds from definitions (`h1objects::Options::rebuild_bipeds`)
 

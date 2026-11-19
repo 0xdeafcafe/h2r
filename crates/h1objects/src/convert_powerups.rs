@@ -141,6 +141,7 @@ mod tests {
                 object: h1::Object {
                     flags: 4,
                     bounding_radius: 0.25,
+                    acceleration_scale: 1.0,
                     object_type: 3,
                     bounding_offset: [0.0; 3],
                     model: None,

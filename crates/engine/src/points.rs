@@ -285,6 +285,10 @@ points! { ALL;
     /// `0xd8184`): the record in EDI, stdcall `(object datum, ?, damage
     /// data)`. Reads the amount at `record+0x1c` through `0xd9020`.
     BODY_DAMAGE @ 0x000d_8cb0: [fn(record: edi, object: stack 0) ret 12], Optional; "docs/game/game-options.md";
+    /// Wheel and tread controllers after the driver inputs have been read.
+    VEHICLE_TREAD_UPDATE @ 0x000f_1cd0: [fn(object: ebx, contacts: stack 0) ret 4]; "docs/halo1/role-audit.md";
+    VEHICLE_CONTACT_SOLVE @ 0x0020_56e0: [fn(object: stack 0, contacts: stack 1, fraction: stack 2, force: stack 3, torque: stack 4) ret 20]; "docs/halo1/role-audit.md";
+    VEHICLE_WHEEL_UPDATE @ 0x000f_1f80: [fn(object: stack 0, contacts: stack 1) ret 8]; "docs/halo1/role-audit.md";
     /// An object's damage update: stdcall `(object datum)`, AL whether
     /// anything changed. Called once per object per tick by
     /// `object_update` (`0xbc470`, its only caller): stun timers, shield

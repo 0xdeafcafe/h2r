@@ -945,8 +945,8 @@ fn every_foot_converts() {
             for t in m.tags().iter().filter(|t| {
                 t.group == Group::new(b"bipd") || t.group == Group::new(b"vehi")
             }) {
-                let u = h1::Unit::read(&m, t).unwrap();
-                let named = u.references.iter().find(|r| r.group == foot).and_then(|r| r.tag);
+                let offset = if t.group == Group::new(b"vehi") { 0x3d0 } else { 0x38c };
+                let named = h1::reference(&m, m.tag_data(t).unwrap(), offset);
                 if let Ok(id) = c.object(t) {
                     rebuilt.push((t, id, named));
                 }
@@ -980,7 +980,8 @@ fn every_foot_converts() {
                 let b = &tree.tags[id.0 as usize & 0xffff].1;
                 let Some(n) = named else { continue };
                 let r = defs::from_built(def(&b.group.0), &b.root).unwrap();
-                let (_, f) = target(&r, h1objects::convert::FOOT_FIELD);
+                let field = if t.group == Group::new(b"vehi") { "foot_ref_294" } else { h1objects::convert::FOOT_FIELD };
+                let (_, f) = target(&r, field);
                 let want = got.iter().find(|g| g.0.id == *n).map(|g| g.1);
                 assert_eq!(f, want, "{level} {}: material effects", t.name);
                 units += 1;
