@@ -207,9 +207,8 @@ What this means for bots:
 - A **local-slot bot** feeds the pad. Steps 1 to 3 then run for it as for a
   human, so nothing else is needed.
 - A **phantom bot** supplies its brain's pad when the host gathers the
-  remote slot for simulation. It uses the Default layout, keeps button
-  history per phantom and writes the same action format as the local
-  builder. See §5.1, “The action from a pad”, for the fields and timing.
+  remote slot for simulation. After uplink delivery the same retail reader, layout mapper and action
+  builder run against a private local-user view of that seat. See §5.1, “The action from a pad”, for the fields and timing.
 
 ### 2.3 Views (traced)
 
@@ -778,9 +777,8 @@ clock and clears the velocity sample.
 The right thumb takes several ticks to cross the stick well. Large flicks
 carry a little past the target before settling. Small correlated errors and
 the occasional larger misread vary by skill. Fast crossings leave more
-tracking lag than slow ones. The local virtual pad uses the game's stick
-response, look acceleration and aim assist at sensitivity 3. Phantom
-actions use a nominal sensitivity-3 curve with a 3 rad/s ceiling.
+tracking lag than slow ones. Both virtual pads use the game's stick response, look acceleration and
+aim assist at sensitivity 3 (§5.1).
 
 At the controller boundary, each stick stays within its unit circle and
 can travel at most 0.45 stick radii per tick. A full reversal takes at
@@ -2400,15 +2398,41 @@ The local interaction finder `0x151110(player, result)` returns the
 12 bytes copied at `+0x28`. These include the interaction kind (i16),
 detail at `+0x2a` (seat for a seat interaction), object datum at `+0x2c`
 and melee target at `+0x30` (`0x151d41`, `0x15166c`, `0x14fd37`).
-An empty target has kind zero and both datums −1. The unused aim block
-`+0x34..+0x57` has its first three datums set to −1, other fields zero,
-as initialized at `0x14d040`.
+An empty target has kind zero and both datums −1.
 
-Yaw and pitch are absolute radians at `+4/+8`. The phantom turns from
-the unit's aim vector at `+0x168` with the bot's stick curve (nominal
-3 rad/s at full deflection). The left stick supplies forward and strafe at `+0xc/+0x10`.
-Default stick layout writes left Y and negated left X at `0x21838a..0x218399`,
-which `0x185e81..0x185ea9` passes to the action builder.
+The separate shot-assist block starts at `+0x34`. The local action builder
+copies nine dwords there at `0x187074..0x187083`. Previously the phantom
+always supplied the empty block from `0x14d040`. Both strengths were
+zero, so the barrel's target check at `0x1a6a8b..0x1a6aa5` skipped
+shot magnetism even when the reticle was close enough for a local player.
+
+Both seats use the retail XInput reader `0x124c00`, profile/layout routines
+`0x190c34` and `0x217c40`, and the full player action builder `0x186ab0`.
+The builder indexes the user's 0x94-byte control history by player +0x28.
+It calls `0x185be0` for look response (including acceleration, slowdown
+and follow) and `0x1a4900` for weapon parameters and target search
+(`0x1a50a0`, `0x1a5370`). It writes yaw/pitch at +4/+8, trigger flags
+at +0 and the selected target and strengths at +0x34..+0x57. The host
+validates the returned record at `0x14d0a0`.
+
+The retail tables have four entries. At remote gather, a second executor
+uses a copy-on-write snapshot of the host world. In that view local user
+and controller zero, the two player maps at `[0x4e8c20]+0xc/+0x1c`,
+and the player's +0x24/+0x28 all refer to the phantom. Its virtual XInput
+handle supplies the arrived pad to `0x409b6c`. The seat brings its own
+raw input, button and control history between ticks. Retail binds the unit
+at `0x1872d0`; `0x1557c0` supplies the unit or vehicle camera origin for
+the observer at `0x4e9c8c`. Only the validated action crosses back to the
+host. A repeated gather in one tick reuses that action. Local bots keep
+their normal retail controller polling. A phantom samples once per game
+tick and advances the button clock by elapsed simulation milliseconds.
+
+The image-backed test `retail_pad_sequence_matches_local_angles_target_and_fire`
+uses `H2_DISC`, its matching `H2_RETAIL_MODULE`, and a multiplayer checkpoint
+in `H2_PAD_CHECKPOINT`. Capture the checkpoint with the agent API's
+`state.save` while port zero is on foot, the menu is closed and an opponent
+is inside the weapon’s assist cone. The test compares the full actions and
+requires movement of the aim angles, a selected target and a fire bit.
 
 **Open, for a run**:
 
@@ -2437,6 +2461,30 @@ arrived pad. Several packets arriving together can collapse to the newest
 report. A new unit or a break in the stream clears the queue.
 `phantom_ping_ms` sets round-trip time, with 0 for immediate delivery.
 `phantom_jitter_ms` sets the one-way jitter bound.
+
+**Midship replay, 2026-11-19.** In game
+`531b5da3ceab388417c044afcf18e01a`, the 2,672 recorded frames
+attribute 2,231 shots to the four phantoms. Fourteen bullet hits and
+nine melee hits from them dealt positive damage to opposing players.
+The three local bots recorded 1,372 shots and 236 opposing bullet hits.
+A team with no kills has no assisted kills either. The damage reports
+establish that phantom fire reached the host.
+
+The old phantom adapter treated a half-stick on either axis as about
+54°/s. The local Midship table gives about 9°/s yaw or 5°/s pitch
+for that input before aim assist. One phantom's pitch swept from +34°
+at tick 1284 to −26° at 1300 while the human's bearing stayed within
+6° of level. Using the local response removes this excess gain from the
+delayed control loop. Post-change hit rates require another hosted match.
+
+**Training coverage.** A sim match with a `kind = "phantom"` seat hosts
+a private System Link game. Its brain, uplink, remote gather and retail
+action builder run as they do on a normal host. Training waits for every
+configured seat to bind to a player and unit before counting combat.
+The paired Midship example switches transport for each named bot while
+keeping its team, tuning, map and seed. The report compares shots,
+opposing hits and damage dealt and taken per seat.
+[Headless simulation](../runtime/sim.md#more-than-four)
 
 ### 5.2 Why phantoms are needed
 
@@ -3881,8 +3929,9 @@ list for the user to play (§11).
         address")?
      5. Back in the lobby they are gone; the next game they join again.
      6. Send the `bots:` and `clankers:` lines, and anything odd in the
-        turning or lateral movement. Compare full-stick turning with the
-        adapter's nominal 3 rad/s.
+        turning or lateral movement. Compare the initial full-stick turn with
+        the sensitivity-3 rates in §5.1, then check the sustained turn
+        against a local Clanker on the same map.
      7. Also useful: on the host, the session state and the network life
         cycle (`0x527334`) during the game.
    - **Built (6c), the server side, both homes** (`live_server::bots`,
@@ -4773,7 +4822,7 @@ list for the user to play (§11).
    - Small right-stick fidgets happen when an actor is standing idle
      and on signed-in local pads in a network pregame lobby or while
      awaiting a unit. They send zero left stick, triggers and buttons.
-     The phantom action adapter applies the turn curve and translates the
+     The retail action builder applies the turn curve and translates the
      hand's button timing as described in §5.1.
    - Seeing a live grenade and getting clear of it is `bots::incoming`
      (named `grenade` on the lane; renamed at the merge so it does not

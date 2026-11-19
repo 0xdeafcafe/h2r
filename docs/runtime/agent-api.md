@@ -1224,6 +1224,19 @@ phantom bots added by the game, headless matches, and sim. Its entries have
 `name`, `kind`, `brain`, and `port` or `player` once placed or joined.
 Script and recording sources have no brain state.
 
+For a joined phantom, `h2 agent sim list` includes `clankers[].aim` once
+the host has gathered input for its current unit. `tick` is the gather
+tick. `stick` (right, up) and `trigger` are the brain's latest report.
+`arrived_stick` and `arrived_trigger` are the report delivered by the
+uplink for that gather. `action_deg` contains the accepted slot record's
+absolute [yaw, pitch] in degrees, or null if the gather was rejected.
+`fire_primary` is the accepted primary fire bit and `assist_strength` holds
+the two weapon strengths. A rejected gather reports false and zeros.
+`unit_forward` is the unit's actual aiming vector at query time.
+`assist_player` identifies the player controlling the selected aim-assist
+target when one exists. To verify damage, use `h2 agent sim view player`
+to read the target's shield and health.
+
 The `brain` object has `skill`, `personality` and `mood`. Personality
 contains the nine 0–1 traits in [the Clankers trait table](../game/bots.md#personality-and-temperament)
 and `favorite_weapon` (`spray`, `precise`, `scatter`, `sniper`, `blast`,
@@ -1492,7 +1505,7 @@ thing: simulated players added to an ordinary run.)
 
 | Method | Access | What |
 |---|---|---|
-| `match.status` | read | `match` (the file), `map`, `game_type`, `bots`, `phase` (`waiting` until the match's game starts, `playing`, `over`), `ticks` (game ticks counted since the start), `max_ticks`, `game_seconds`, `wall_s` (since the boot), `match_s` (since the first tick), `speedup` (game over match wall time), `frames` (`skipped` world frames, `rendered_world` by `render_every`, `other` menu and loading frames, `stub_faults`), `end` (`game_over`, `tick_limit`, `wall_limit`, `stopped`; `null` while it plays) |
+| `match.status` | read | `match` (the file), `map`, `game_type`, `bots`, `phase` (`waiting` until the match's game starts, `binding` until every distributed seat has a player and unit, `playing`, `over`), `bound_seats` (logical seat to player index for a distributed match), `ticks` (game ticks counted since the start), `max_ticks`, `game_seconds`, `wall_s` (since the boot), `match_s` (since the first tick), `speedup` (game over match wall time), `frames` (`skipped` world frames, `rendered_world` by `render_every`, `other` menu and loading frames, `stub_faults`), `end` (`game_over`, `tick_limit`, `wall_limit`, `stopped`; `null` while it plays) |
 | `match.report` | read | the report as it would be written now (`h2-sim-report/1`, sim.md §6): players, kills so far, a note while the match has not ended (its `result.end` is then `aborted`) |
 | `match.stop` | act | end the match: `end` becomes `stopped` (unless it had ended), the boot loop stops at the next slice and the report is written. `{stopping, end, already_over}` |
 

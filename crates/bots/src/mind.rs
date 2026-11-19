@@ -23,7 +23,8 @@ use crate::tactics::{self, Shot, Style, Tactics};
 pub(crate) mod feel;
 mod look;
 pub(crate) mod pad;
-pub(crate) use look::{TURN_RATE, turn_rate};
+#[cfg(test)]
+use look::turn_rate;
 
 use feel::{Rng, reached};
 use look::{Hand, angle_error};

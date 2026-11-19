@@ -112,7 +112,7 @@ struct Phantom {
     source: Box<dyn PadSource>,
     /// Its peer is in the host's session.
     made: bool,
-    buttons: action::ButtonState,
+    buttons: action::GatherState,
     uplink: action::Uplink,
     /// Frame-indexed sources advance once per simulation sample, across respawns.
     samples: u64,
@@ -638,6 +638,10 @@ pub fn player(handle: PhantomHandle) -> Option<u32> {
 }
 
 mod action;
+
+
+pub use action::AimView;
+pub use action::SeatInput;
 pub mod session;
 
 #[cfg(test)]

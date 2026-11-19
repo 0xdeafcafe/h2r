@@ -61,7 +61,7 @@ fn reads_a_match_file() {
     );
     assert_eq!(m.bots.len(), 2);
     let a = &m.bots[0];
-    assert_eq!((a.port, a.name.as_str(), a.team), (0, "A1", Some(0)));
+    assert_eq!((a.port, a.name.as_str(), a.team), (Some(0), "A1", Some(0)));
     // The bot's own skill wins over its file's.
     assert_eq!(a.skill, Skill::Legendary);
     assert_eq!(a.params.aggression, Some(0.8));
@@ -150,7 +150,7 @@ fn bot_counts() {
     assert!(
         resolve(none, &no_files)
             .unwrap_err()
-            .contains("1 to 4 bots")
+            .contains("1 to 4 local bots")
     );
     let five = parse_match(
         &format!("map = \"lockout\"\n{}", "[[bot]]\n".repeat(5)),
@@ -441,5 +441,56 @@ fn planned_runs_write_back_as_toml() {
         let back = parse_match(&text, false).unwrap();
         assert_eq!(back, r.config, "{text}");
         resolve(back, &no_files).unwrap();
+    }
+}
+
+#[test]
+fn swapping_seats_preserves_brains_teams_and_allocates_dense_local_ports() {
+    let b = batch("mode='seat_swap'\nout='o'\nmatch='m'\nseeds=[41,42]\n[a]\n",
+        "map='midship'\nteam_play=true\n[[bot]]\nkind='phantom'\nteam=1\n[[bot]]\nname='R'\nteam=0\n[[bot]]\nkind='phantom'\nteam=0\n").unwrap();
+    assert_eq!(b.runs.len(), 4);
+    for pair in b.runs.chunks_exact(2) {
+        let leg = |swapped| {
+            resolve(
+                pair.iter()
+                    .find(|r| r.config.seats_swapped == Some(swapped))
+                    .unwrap()
+                    .config
+                    .clone(),
+                &no_files,
+            )
+            .unwrap()
+        };
+        let (a, b) = (leg(false), leg(true));
+        assert!(a.distributed() && b.distributed());
+        assert_eq!(a.config.seed, b.config.seed);
+        assert_eq!(a.config.map, b.config.map);
+        assert_eq!(
+            a.bots.iter().map(|b| b.port).collect::<Vec<_>>(),
+            [None, Some(0), None]
+        );
+        assert_eq!(
+            b.bots.iter().map(|b| b.port).collect::<Vec<_>>(),
+            [Some(0), None, Some(1)]
+        );
+        for (a, b) in a.bots.iter().zip(&b.bots) {
+            assert_eq!(
+                (&a.name, a.seat, a.seed, a.team, &a.params, &a.arm),
+                (&b.name, b.seat, b.seed, b.team, &b.params, &b.arm)
+            );
+            assert_eq!(a.kind, b.kind.swapped());
+        }
+    }
+}
+
+#[test]
+fn swapped_layout_also_needs_a_host_and_at_most_four_pads() {
+    let spec = "out='o'\nmatch='m'\nmode='seat_swap'\n[a]\n";
+    for phantoms in [0, 5] {
+        let m = format!(
+            "map='midship'\n[[bot]]\n{}",
+            "[[bot]]\nkind='phantom'\n".repeat(phantoms)
+        );
+        assert!(batch(spec, &m).unwrap_err().contains("1 to 4 local bots"));
     }
 }

@@ -209,16 +209,25 @@ so **the direct path is four bots**: free-for-all, or 2 v 2 with teams.
 
 ### More than four
 
-Phantoms (bots.md §5) give up to 16 players, but they join only a
-**distributed** game: a System Link or Xbox Live game this console hosts.
-A level-booted local game is simulation mode 1, where phantoms wait for
-ever (bots.md, "Phantoms: not in Split Screen"). Making a local game
-distributed would change every Split Screen game's simulation (bots.md
-decided against it). So 5 to 16 bots means hosting a System Link custom
-game through the menus, as `h2 bots test` drives the Live one
-(`crates/cli/src/bots_drive.rs`). **Not built here**: the batch runner
-refuses more than four bots and says why. It is the next slice once the
-direct path has run.
+A `[[bot]]` with `kind = "phantom"` selects a distributed System Link
+match for the whole roster. `kind = "local"` is the default. Specify one
+to four local pads and up to sixteen seats in total. File order is the
+logical seat number starting at zero. Local seats receive controller
+ports in order. Each phantom receives its own machine identity.
+
+The headless host signs in the local pads (`0x18fb34`), creates a System
+Link squad (`0x199df9(0,0)`, `0x199a03(2)`), and applies the map and
+variant with retail's lobby setters (`0x19a6f2`, `0x19a728`). It waits
+for the roster and retail start state 9 before requesting the countdown
+(`0x19a78e`). Each process reserves its own loopback XNet port block.
+Headless runs reach the regular phantom uplink and remote gather.
+
+`match.status` enters `binding` on map activation. Combat sampling
+starts once the distributed server has a player and a spawned unit for
+every configured controller and phantom machine. A run that cannot
+bind the roster writes its diagnostic report and exits with an error.
+Startup allows up to 180 wall-clock seconds, subject to a shorter
+`max_wall_s`. Distributed runs boot a fresh session for each match.
 
 ### Match file
 
@@ -326,11 +335,19 @@ ticks; and the final score. The report is one JSON file per match:
 }
 ```
 
-Shots are the `WEAPON_FIRE` weapons a player's unit holds at the next
-tick's snapshot (a turret's are not counted, **S**); damage is the damage
+A shot is attributed to the firing weapon's parent unit at `WEAPON_FIRE`,
+with the next tick's held-weapon snapshot as a fallback. Damage is the damage
 report's body plus shield numbers (**S**: read as amounts, as telemetry's
 `hits` are); a hit is a report with another player's unit as the victim
 (a shotgun's pellets each count, so accuracy can pass 1).
+
+Each bot row includes its logical `seat` and transport `kind`. Only a
+local bot has a controller `port`. `opposing_hits` counts positive body
+or shield damage reports against another player on an opposing team, or
+any other player in free-for-all. Multiple pellets, splash and melee can
+produce separate reports. The original `hits`, `accuracy`,
+`damage_dealt` and `damage_taken` fields keep their previous definitions.
+Readers can continue to load earlier `h2-sim-report/1` reports.
 
 Sim runs are local by default. Set `H2_TELEMETRY_FILE` for a separate
 JSONL capture, or use `--upload` for an Uplink recording.
@@ -370,6 +387,28 @@ params = "tuning/aggressive.toml"
   (Welch). `compare.json` and a text table in the results directory.
   `h2 sim compare <dir>` prints it again.
 - `h2 sim batch --dry-run` prints the runs and stops.
+
+### Local and phantom seat swaps
+
+`mode = "seat_swap"` schedules two legs per map and seed. The second
+leg exchanges every local and phantom seat. Both lineups must fit on a
+host. Each bot keeps its name, team, tuning, arm and brain seed. The
+checked-in Legendary Midship example plays ten seed pairs, two red
+against two blue, with normal phantom latency.
+
+```sh
+H2_OPT=2 h2 sim batch docs/runtime/sim-examples/midship-seat-swap.toml --disc disc/halo2.iso --parallel 3 --pace unpaced
+```
+
+Read `compare.txt` or `compare.json` under
+`docs/runtime/sim-examples/results/midship-seat-swap/`. The
+`seat_swap` section reports `pairs`, per-seat/game `local` and `phantom`
+means, and their signed `local_minus_phantom` gap for shots, opposing
+hits, damage dealt and damage taken. One map/seed pair contributes one
+sample. Its two observations for each logical seat are matched across
+the legs. Only full rosters ending at game over or the tick limit count.
+Incomplete pairs appear in `excluded`; absent reports appear in
+`missing`. These are counts per game, so game length affects the result.
 
 ### Watching in Uplink
 
@@ -446,7 +485,7 @@ What a sim run's result depends on, and what breaks reproducibility:
 | The render thread | none: no GPU backend |
 | Audio | logical pacing into a `NullSink` |
 | Input | bots only, no keyboard. Bots read guest memory on the game thread before `RENDER_FRAME`, once a frame |
-| The bots' randomness | seeded per bot: SplitMix64 of the match seed and the port (`sim::config::bot_seed`) |
+| The bots' randomness | seeded per bot: SplitMix64 of the match seed and logical seat (`sim::config::bot_seed`) |
 | `HashMap` iteration in the bots (`mind.rs` tracks, `los`, `nav`) | lookups and `retain` only, as read (**S**: worth a check in review) |
 | The nav mesh | built in the background on a thread at the wall clock's mercy (`bots_nav_auto`): **off in sim mode** (`H2_BOTS_NAV_AUTO=0`). A map with no current mesh is reported (`"nav": "missing"`); build them first with `h2 bots nav <map>` |
 | Wall-clock limits (`max_wall_s`) | can end a match at a different tick on a slower host: the report says `"end": "wall_limit"`. Use `max_ticks` for reproducible ends |

@@ -1,6 +1,5 @@
 //! A right thumb, driven at 30 Hz. The game handles local stick input.
-//! The phantom path uses the nominal curve below because it submits an
-//! action with absolute angles in place of an Xbox pad report.
+//! The hand requests stick travel using its nominal sensitivity model.
 
 use super::feel::{Rng, limit, reached};
 use super::{Skill, TICKS, Vec3, angles, sub, wrap};
@@ -9,11 +8,13 @@ use crate::sound::ShotSound;
 
 /// Nominal radians per second at full stick for the bots' sensitivity-3
 /// profile. The curve is a tuning model for that profile.
-pub(crate) const TURN_RATE: f32 = 3.0;
+#[cfg(test)]
+const TURN_RATE: f32 = 3.0;
 const DEADZONE: f32 = 0.13;
 const LOW_GAIN: f32 = 0.55;
 const HIGH_GAIN: f32 = 1.0 - LOW_GAIN;
 
+#[cfg(test)]
 pub(crate) fn turn_rate(stick: (f32, f32)) -> (f32, f32) {
     let stick = limit([stick.0, stick.1], 1.0);
     let length = stick[0].hypot(stick[1]);
