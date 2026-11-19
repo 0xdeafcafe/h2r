@@ -973,15 +973,21 @@ impl Repo {
         self.download(e)
     }
 
+    fn download_prompt(g: &Inner, e: &ModEntry) -> Option<&'static str> {
+        match g.installs.get(&e.id) {
+            Some(Install::Downloading { .. }) => None,
+            _ if Self::is_here(g, &e.id) => None,
+            Some(Install::Failed(_)) => Some("Retry"),
+            _ => Some("Download"),
+        }
+    }
+
     /// Downloads every map of pack `name` neither here nor under way.
     fn download_all(self: &Arc<Self>, name: &str, maps: &[ModEntry]) -> String {
         let wanted: Vec<&ModEntry> = {
             let g = self.lock();
             maps.iter()
-                .filter(|e| {
-                    !Self::is_here(&g, &e.id)
-                        && !matches!(g.installs.get(&e.id), Some(Install::Downloading { .. }))
-                })
+                .filter(|e| Self::download_prompt(&g, e).is_some())
                 .collect()
         };
         if wanted.is_empty() {
@@ -1033,11 +1039,18 @@ impl Repo {
                 return Some("Pack unavailable".into());
             };
             let g = self.lock();
-            let left = maps.iter().filter(|e| !Self::is_here(&g, &e.id)).count();
-            return Some(match Self::pack_status(&g, &maps).as_str() {
-                "Installed" => "All Installed".into(),
-                s if s.starts_with("Downloading") => s.into(),
-                _ => format!("Download All ({left})"),
+            let left = maps
+                .iter()
+                .filter(|e| Self::download_prompt(&g, e).is_some())
+                .count();
+            if left > 0 {
+                return Some(format!("Download All ({left})"));
+            }
+            let state = Self::pack_status(&g, &maps);
+            return Some(if state == "Installed" {
+                "All Installed".into()
+            } else {
+                state
             });
         }
         let e = self.pack_entry(row)?;
@@ -1547,20 +1560,14 @@ impl Repo {
     /// only installs. Removal and its confirmation belong to the map page.
     fn prompts(&self, screen: &str, row: Option<i16>) -> Vec<Prompt> {
         let g = self.lock();
-        let download = |e: &ModEntry| match g.installs.get(&e.id) {
-            Some(Install::Downloading { .. }) => None,
-            _ if Self::is_here(&g, &e.id) => None,
-            Some(Install::Failed(_)) => Some("Retry"),
-            _ => Some("Download"),
-        };
         let bulk = |maps: &[ModEntry]| {
             maps.iter()
-                .any(|e| download(e).is_some())
+                .any(|e| Self::download_prompt(&g, e).is_some())
                 .then_some("Download All")
         };
         let (a, x) = match (screen, row) {
             (SCREEN, Some(r)) => match Self::top_at(&g, r) {
-                Some(Top::Map(e)) => (Some("Details"), download(&e)),
+                Some(Top::Map(e)) => (Some("Details"), Self::download_prompt(&g, &e)),
                 Some(Top::Pack(_, maps)) => (Some("Open"), bulk(&maps)),
                 None if r == 0 => match &g.list {
                     List::Failed(_) => (Some("Retry"), None),
@@ -1575,7 +1582,7 @@ impl Repo {
                     (action, action)
                 }
                 Some(maps) if r > 0 => match maps.get(r as usize - 1) {
-                    Some(e) => (Some("Details"), download(e)),
+                    Some(e) => (Some("Details"), Self::download_prompt(&g, e)),
                     None => (None, None),
                 },
                 _ => (None, None),
@@ -1591,7 +1598,7 @@ impl Repo {
                     } else if Self::is_here(&g, &id) {
                         Some("Remove")
                     } else {
-                        download(e)
+                        Self::download_prompt(&g, e)
                     }
                 });
                 (action, action)

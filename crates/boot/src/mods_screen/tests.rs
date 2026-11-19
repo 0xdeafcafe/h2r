@@ -860,9 +860,12 @@ fn a_packs_list_has_download_all_then_its_maps_each_opening_its_page() {
     assert_eq!(repo.press_pack(2), Chosen::Open(DETAIL));
     assert_eq!(repo.selected().map(|e| e.id), Some(id(3)));
     // X on a map downloads it alone.
-    assert!(repo
-        .x_pack(Some(2))
-        .starts_with("mods: downloading Phantom Ivory"));
+    assert!(
+        repo.x_pack(Some(2))
+            .starts_with("mods: downloading Phantom Ivory")
+    );
+    assert_eq!(repo.pack_line(0).as_deref(), Some("Download All (2)"));
+    assert!(repo.pack_description(0).unwrap().contains("Downloading 0%"));
     let (got, _, done) = fake.installs.lock().unwrap().pop().unwrap();
     assert_eq!(got, id(3));
     done(Ok(PathBuf::from("/data/maps/live-03")));
