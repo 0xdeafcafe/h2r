@@ -1942,6 +1942,9 @@ dependencies = [
 [[package]]
 name = "fastmem-proto"
 version = "0.1.0"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "fdeflate"
@@ -3310,6 +3313,7 @@ dependencies = [
  "libloading",
  "lift",
  "runtime",
+ "rustix 1.1.6",
  "snapshot",
  "thiserror 2.0.21",
  "timeline",
@@ -5200,6 +5204,7 @@ name = "runtime"
 version = "0.1.0"
 dependencies = [
  "iced-x86",
+ "libc",
  "runtime-test-probe",
  "rustc-hash 2.1.3",
  "thiserror 2.0.21",

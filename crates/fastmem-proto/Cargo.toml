@@ -1,11 +1,11 @@
 [package]
 name = "fastmem-proto"
-description = "Isolated prototype: Mach exception-port write watch for fastmem (macOS arm64)"
+description = "Isolated prototype: page-protection write watch on macOS arm64 and Linux x86-64"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
 publish = false
 
-# No dependencies, by design: the prototype declares the handful of Mach and
-# libc entry points it needs itself (src/sys.rs).
-[dependencies]
+# The Linux probe uses glibc's siginfo_t and ucontext_t ABI.
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
+libc = "0.2"
