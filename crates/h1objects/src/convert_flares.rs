@@ -47,6 +47,7 @@ pub fn garbage(
 ) -> Result<Block> {
     let d = def(b"garb")?;
     let mut r = defs::default_record(d);
+    crate::provenance::note_words("", role);
     for (p, w) in role {
         set(&mut r, p, Val::Bytes(w.to_le_bytes().to_vec()))?;
     }
@@ -162,7 +163,9 @@ impl Converter<'_> {
             .map(|r| r.root)
             .unwrap_or_default();
         let (attachments, _) = self.object_effects(b, &object, &mut rep)?;
-        let root = garbage(&object, hlmt, &predicted, &role, &attachments)?;
+        let (root, roles) =
+            crate::provenance::capture(|| garbage(&object, hlmt, &predicted, &role, &attachments));
+        let root = root?;
         self.tree.reports.push(rep);
         let id = self.tree.push(
             &tag.name,
@@ -172,6 +175,7 @@ impl Converter<'_> {
                 raw: Vec::new(),
             },
         );
+        self.tree.note_roles(id, roles);
         self.done.insert(tag.id.0, id);
         Ok(id)
     }

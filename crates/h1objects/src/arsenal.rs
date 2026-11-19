@@ -126,7 +126,10 @@ fn word(r: &mut Record, path: &str, w: u32) -> Result<()> {
     set(r, path, Val::Bytes(w.to_le_bytes().to_vec()))
 }
 
-fn words(r: &mut Record, ws: &[(String, u32)]) -> Result<()> {
+/// Writes role words into `r`, noting them under `scope`, `r`'s path in
+/// the tag ([`crate::provenance`]).
+fn words(r: &mut Record, scope: &str, ws: &[(String, u32)]) -> Result<()> {
+    crate::provenance::note_words(scope, ws);
     for (p, w) in ws {
         word(r, p, *w)?;
     }
@@ -485,7 +488,7 @@ pub fn h2_triggers(h1: &[Vec<u8>]) -> Vec<TriggerWords> {
 pub fn weapon(w: &h1::Weapon, b: &[u8], parts: &WeaponParts, role: &Role) -> Result<Block> {
     let d = def(b"weap")?;
     let mut r = defs::default_record(d);
-    words(&mut r, &role.root)?;
+    words(&mut r, "", &role.root)?;
     refs(&mut r, &parts.halo2)?;
     header(&mut r, "item.obje", WEAPON_TYPE, &w.object, parts.hlmt)?;
     if let Some((class, kind)) = &parts.animation {
@@ -499,9 +502,13 @@ pub fn weapon(w: &h1::Weapon, b: &[u8], parts: &WeaponParts, role: &Role) -> Res
     // Magazines.
     let md = d.child("magazines").expect("weap magazines");
     let mut mags = Vec::new();
-    for m in &w.magazines {
+    for (i, m) in w.magazines.iter().enumerate() {
         let mut e = defs::default_record(md);
-        words(&mut e, role.element("magazines"))?;
+        words(
+            &mut e,
+            &format!("magazines[{i}]."),
+            role.element("magazines"),
+        )?;
         set(
             &mut e,
             "unknown_4",
@@ -546,7 +553,7 @@ pub fn weapon(w: &h1::Weapon, b: &[u8], parts: &WeaponParts, role: &Role) -> Res
     let mut barrels = Vec::new();
     for (i, t) in w.triggers.iter().enumerate() {
         let mut e = defs::default_record(bd);
-        words(&mut e, role.element("barrels"))?;
+        words(&mut e, &format!("barrels[{i}]."), role.element("barrels"))?;
         if let Some(h) = parts.barrel_halo2.get(i).or(parts.barrel_halo2.last()) {
             refs(&mut e, h)?;
         }
@@ -569,9 +576,13 @@ pub fn weapon(w: &h1::Weapon, b: &[u8], parts: &WeaponParts, role: &Role) -> Res
         )?;
         let mut effects = Vec::new();
         if let Some(list) = parts.firing_effects.get(i).or(parts.firing_effects.last()) {
-            for h in list {
+            for (k, h) in list.iter().enumerate() {
                 let mut x = defs::default_record(fd);
-                words(&mut x, role.element("barrels.block_e4"))?;
+                words(
+                    &mut x,
+                    &format!("barrels[{i}].block_e4[{k}]."),
+                    role.element("barrels.block_e4"),
+                )?;
                 refs(&mut x, h)?;
                 effects.push(x);
             }
@@ -662,7 +673,7 @@ pub fn projectile(
 ) -> Result<Block> {
     let d = def(b"proj")?;
     let mut r = defs::default_record(d);
-    words(&mut r, &role.root)?;
+    words(&mut r, "", &role.root)?;
     refs(&mut r, &parts.halo2)?;
     header(&mut r, "object", PROJECTILE_TYPE, &p.object, parts.hlmt)?;
     for (path, at, per_tick) in PROJECTILE_WORDS {
@@ -929,7 +940,7 @@ pub struct EquipmentParts {
 pub fn equipment(e: &h1::Equipment, parts: &EquipmentParts, role: &Role) -> Result<Block> {
     let d = def(b"eqip")?;
     let mut r = defs::default_record(d);
-    words(&mut r, &role.root)?;
+    words(&mut r, "", &role.root)?;
     refs(&mut r, &parts.halo2)?;
     header(&mut r, "item.obje", EQUIPMENT_TYPE, &e.object, parts.hlmt)?;
     rebuild::predicted_resources(b"eqip", &mut r, "item.obje", &parts.predicted)?;
@@ -949,7 +960,7 @@ pub fn equipment(e: &h1::Equipment, parts: &EquipmentParts, role: &Role) -> Resu
 pub fn damage(b: &[u8], role: &Role) -> Result<Block> {
     let d = def(b"jpt!")?;
     let mut r = defs::default_record(d);
-    words(&mut r, &role.root)?;
+    words(&mut r, "", &role.root)?;
     let f = |at: usize| f32::from_bits(u32_at(b, at));
     set(&mut r, "damage_lower_bound", Val::Float(f(H1_DAMAGE_LOWER)))?;
     set(

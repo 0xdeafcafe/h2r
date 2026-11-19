@@ -330,6 +330,9 @@ pub struct Tree {
     /// Where the player's Halo 1 HUD centres the motion sensor's blips
     /// ([`crate::h1hud::sensor_centre`]), for `boot::hud_swap`.
     pub hud_sensor: Option<[i16; 2]>,
+    /// Per tag (its index in [`Tree::tags`]), the values its builder took
+    /// from a role ([`crate::provenance`]), for the role audit.
+    pub role_fields: Vec<(usize, Vec<crate::provenance::RoleField>)>,
 }
 
 /// One owner's two HUDs: Halo 1's ([`crate::h1hud`]), which the owner
@@ -507,6 +510,19 @@ impl Tree {
 }
 
 impl Tree {
+    /// Keeps the role values ([`crate::provenance::capture`]) of the tree's
+    /// tag `id` (a [`local`] datum); nothing for any other datum.
+    pub fn note_roles(&mut self, id: TagId, fields: Vec<crate::provenance::RoleField>) {
+        if let Some(k) = local_index(id)
+            && !fields.is_empty()
+        {
+            match self.role_fields.iter_mut().find(|e| e.0 == k) {
+                Some(e) => e.1.extend(fields),
+                None => self.role_fields.push((k, fields)),
+            }
+        }
+    }
+
     /// Adds `tag` as `name`, or `name_2`, `name_3`, ... when a tag of its
     /// group already has that name: a map's tags are found by group and
     /// name, so two would leave one unreachable. Halo 1 objects of two
@@ -1071,7 +1087,10 @@ impl<'a> Converter<'a> {
         if self.decal_role.is_none() {
             self.decal_role = Some(crate::rebuild::decal_role(self.base)?);
         }
-        let root = crate::rebuild::decal(&x, next, bitmap, self.decal_role.flatten().as_ref())?;
+        let (root, roles) = crate::provenance::capture(|| {
+            crate::rebuild::decal(&x, next, bitmap, self.decal_role.flatten().as_ref())
+        });
+        let root = root?;
         self.tree.reports.push(rep);
         let id = self.tree.push(
             &tag.name,
@@ -1081,6 +1100,7 @@ impl<'a> Converter<'a> {
                 raw: Vec::new(),
             },
         );
+        self.tree.note_roles(id, roles);
         self.done.insert(tag.id.0, id);
         Ok(id)
     }
@@ -1102,7 +1122,8 @@ impl<'a> Converter<'a> {
             self.light_roles.insert(kind, role);
         }
         let role = self.light_roles[&kind].as_ref();
-        let mut root = crate::rebuild::light(&l, role)?;
+        let (root, roles) = crate::provenance::capture(|| crate::rebuild::light(&l, role));
+        let mut root = root?;
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
         if let Some(lens) = self.flare_for_light(l.lens_flare, &mut rep) {
             root = flares_conv::light_with_flare(&root, lens)?;
@@ -1116,6 +1137,7 @@ impl<'a> Converter<'a> {
                 raw: Vec::new(),
             },
         );
+        self.tree.note_roles(id, roles);
         self.done.insert(tag.id.0, id);
         Ok(id)
     }
@@ -1233,7 +1255,9 @@ impl<'a> Converter<'a> {
         for (g, n) in left {
             rep.no_home.push(format!("{n} {g} parts left out (no converter here, or did not convert)"));
         }
-        let root = self.effect_particle_systems(tag, root, &mut rep)?;
+        let (root, roles) =
+            crate::provenance::capture(|| self.effect_particle_systems(tag, root, &mut rep));
+        let root = root?;
         self.tree.reports.push(rep);
         let id = self.tree.push(
             &tag.name,
@@ -1243,6 +1267,7 @@ impl<'a> Converter<'a> {
                 raw: Vec::new(),
             },
         );
+        self.tree.note_roles(id, roles);
         self.done.insert(tag.id.0, id);
         Ok(id)
     }
@@ -1671,28 +1696,33 @@ impl<'a> Converter<'a> {
                     .collect(),
             })
             .collect();
-        let root = crate::rebuild::model(&crate::rebuild::Model {
-            render: mode,
-            collision: coll.map(|c| c.0),
-            animation: jmad,
-            physics: None,
-            nodes: (count, nodes),
-            regions,
-            words,
-            materials: coll.map_or_else(Vec::new, |c| self.coll_materials[&c.1].clone()),
-        })?;
+        let (root, roles) = crate::provenance::capture(|| {
+            crate::rebuild::model(&crate::rebuild::Model {
+                render: mode,
+                collision: coll.map(|c| c.0),
+                animation: jmad,
+                physics: None,
+                nodes: (count, nodes),
+                regions,
+                words,
+                materials: coll.map_or_else(Vec::new, |c| self.coll_materials[&c.1].clone()),
+            })
+        });
+        let root = root?;
         if obj.animation.is_none() {
             rep.no_home
                 .push("no Halo 1 animation graph on the object; hlmt animation left null".into());
         }
-        Ok(Some(self.tree.push(
+        let id = self.tree.push(
             name,
             Converted {
                 group: FourCC(*b"hlmt"),
                 root,
                 raw: Vec::new(),
             },
-        )))
+        );
+        self.tree.note_roles(id, roles);
+        Ok(Some(id))
     }
 
     /// Scenery from the `scen` definition ([`crate::rebuild::scenery`]),
@@ -1712,7 +1742,10 @@ impl<'a> Converter<'a> {
         });
         let predicted = self.predicted(&object)?;
         let words = self.scenery_role()?.map(|r| r.scen).unwrap_or_default();
-        let root = crate::rebuild::scenery(&object, hlmt, &predicted, &words)?;
+        let (root, roles) = crate::provenance::capture(|| {
+            crate::rebuild::scenery(&object, hlmt, &predicted, &words)
+        });
+        let root = root?;
         let attached = object.attachments.iter().flatten().count();
         if attached > 0 {
             rep.no_home.push(format!(
@@ -1726,14 +1759,16 @@ impl<'a> Converter<'a> {
             ));
         }
         self.tree.reports.push(rep);
-        Ok(self.tree.push(
+        let id = self.tree.push(
             &tag.name,
             Converted {
                 group: FourCC(*b"scen"),
                 root,
                 raw: Vec::new(),
             },
-        ))
+        );
+        self.tree.note_roles(id, roles);
+        Ok(id)
     }
 
     /// The base map's scenery role words ([`crate::rebuild::scenery_role`]),
@@ -2312,23 +2347,25 @@ impl<'a> Converter<'a> {
         }
         let functions: Vec<_> = converted.into_iter().flatten().collect();
         rep.no_home.extend(notes.into_iter().map(|n| format!("vehi {n}")));
-        let root = crate::rebuild::vehicle(&crate::rebuild::VehicleSpec {
-            attachments: &attachments,
-            functions: &functions,
-            creation_effect,
-            object: &u.object,
-            bounds,
-            hlmt,
-            seats: &seats,
-            predicted: &predicted,
-            camera_field_of_view: u.camera_field_of_view,
-            vehicle_type,
-            flags,
-            weapons: &weapons,
-            role: role.as_ref(),
-            points: &points,
-        })?;
-        let root = self.unit_foot(*b"vehi", root, u, &mut rep)?;
+        let (root, roles) = crate::provenance::capture(|| {
+            crate::rebuild::vehicle(&crate::rebuild::VehicleSpec {
+                attachments: &attachments,
+                functions: &functions,
+                creation_effect,
+                object: &u.object,
+                bounds,
+                hlmt,
+                seats: &seats,
+                predicted: &predicted,
+                camera_field_of_view: u.camera_field_of_view,
+                vehicle_type,
+                flags,
+                weapons: &weapons,
+                role: role.as_ref(),
+                points: &points,
+            })
+        });
+        let root = self.unit_foot(*b"vehi", root?, u, &mut rep)?;
         rep.no_home.push(format!(
             "vehi: Halo 1's type, flags (low half), camera, {} seats (label as the rider's mode, markers), {} weapons and {} powered mass points as friction or hover points; the type's role words and gears; {} attachments (looping sounds and effects) and the creation effect from Halo 1; {} seat camera tracks Halo 1's; HUD and damage null; {} Halo 1 references",
             u.seats.len(),
@@ -2339,14 +2376,16 @@ impl<'a> Converter<'a> {
             u.references.iter().filter(|r| r.tag.is_some()).count()
         ));
         self.tree.reports.push(rep);
-        Ok(self.tree.push(
+        let id = self.tree.push(
             &tag.name,
             Converted {
                 group: FourCC(*b"vehi"),
                 root,
                 raw: Vec::new(),
             },
-        ))
+        );
+        self.tree.note_roles(id, roles);
+        Ok(id)
     }
 
     /// A Halo 1 camera track as a Halo 2 `trak` with the same control
@@ -2607,6 +2646,14 @@ impl<'a> Converter<'a> {
             }
             *root = tags::defs::to_built(hd, &r, &mut |_| None)
                 .map_err(|e| Error::Invalid(e.to_string()))?;
+            let copied = fields
+                .iter()
+                .map(|(path, value)| crate::provenance::RoleField {
+                    path: path.clone(),
+                    value: value.clone(),
+                })
+                .collect();
+            self.tree.note_roles(h, copied);
             rep.no_home.push(format!(
                 "hlmt: {} reference fields from {} (damage, dialogue, camouflage shaders)",
                 fields.len(),
@@ -2666,8 +2713,10 @@ impl<'a> Converter<'a> {
             hud,
             markers,
         };
-        let root = crate::rebuild::biped(u, hlmt, &predicted, words, &parts)?;
-        let root = self.unit_foot(*b"bipd", root, u, &mut rep)?;
+        let (root, roles) = crate::provenance::capture(|| {
+            crate::rebuild::biped(u, hlmt, &predicted, words, &parts)
+        });
+        let root = self.unit_foot(*b"bipd", root?, u, &mut rep)?;
         let taken = crate::rebuild::reference_fields(bipd_def)
             .into_iter()
             .filter(|p| !BIPED_OWN.contains(&p.as_str()))
@@ -2687,6 +2736,7 @@ impl<'a> Converter<'a> {
                 raw: Vec::new(),
             },
         );
+        self.tree.note_roles(id, roles);
         if let Some((halo1, halo2)) = swap {
             self.tree.hud_swaps.push(HudSwap {
                 owner: id,

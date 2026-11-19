@@ -129,15 +129,17 @@ impl Converter<'_> {
             return Err(Error::Truncated("jpt! root"));
         }
         let role = self.item_role(b"jpt!")?;
-        let root = arsenal::damage(b, &role)?;
-        self.cached(
+        let (root, roles) = crate::provenance::capture(|| arsenal::damage(b, &role));
+        let id = self.cached(
             t,
             Converted {
                 group: FourCC(*b"jpt!"),
-                root,
+                root: root?,
                 raw: Vec::new(),
             },
-        )
+        )?;
+        self.tree.note_roles(id, roles);
+        Ok(id)
     }
 
     /// The first `jpt!` a Halo 1 effect names (its events' parts), for a
@@ -253,7 +255,9 @@ impl Converter<'_> {
             }
         }
         let role = self.item_role(b"weap")?;
-        let root = arsenal::weapon(&w, &bytes, &parts, &role)?;
+        let (root, roles) =
+            crate::provenance::capture(|| arsenal::weapon(&w, &bytes, &parts, &role));
+        let root = root?;
         for (p, g, id) in &parts.halo2 {
             let n = self.base.name(*id).map_or("?", |n| n.1);
             rep.no_home.push(format!("Halo 2 reference {p}: {g} {n}"));
@@ -267,6 +271,7 @@ impl Converter<'_> {
                 raw: Vec::new(),
             },
         );
+        self.tree.note_roles(id, roles);
         if let (Some(halo2), Some((_, _, halo1))) =
             (halo2_hud, parts.halo2.iter().find(|r| r.0 == "hud"))
         {
@@ -323,7 +328,9 @@ impl Converter<'_> {
             parts.halo2.retain(|r| r.1 != FourCC(*b"jpt!"));
         }
         let role = self.item_role(b"proj")?;
-        let root = arsenal::projectile(&p, b, &parts, &role)?;
+        let (root, roles) =
+            crate::provenance::capture(|| arsenal::projectile(&p, b, &parts, &role));
+        let root = root?;
         let root = self.halo1_attachments(*b"proj", "object", root, b, &p.object, &mut rep)?;
         for (path, g, id) in &parts.halo2 {
             let n = self.base.name(*id).map_or("?", |n| n.1);
@@ -336,14 +343,16 @@ impl Converter<'_> {
             parts.responses.len()
         ));
         self.tree.reports.push(rep);
-        Ok(self.tree.push(
+        let id = self.tree.push(
             &tag.name,
             Converted {
                 group: FourCC(*b"proj"),
                 root,
                 raw: Vec::new(),
             },
-        ))
+        );
+        self.tree.note_roles(id, roles);
+        Ok(id)
     }
 
     pub(super) fn equipment(&mut self, tag: &Tag) -> Result<TagId> {
@@ -363,20 +372,23 @@ impl Converter<'_> {
             parts.halo2 = arsenal::halo2_refs(self.base, d, root, &["item.obje.model"]);
         }
         let role = self.item_role(b"eqip")?;
-        let root: Block = arsenal::equipment(&e, &parts, &role)?;
+        let (root, roles) = crate::provenance::capture(|| arsenal::equipment(&e, &parts, &role));
+        let root: Block = root?;
         for (path, g, id) in &parts.halo2 {
             let n = self.base.name(*id).map_or("?", |n| n.1);
             rep.no_home
                 .push(format!("Halo 2 reference {path}: {g} {n}"));
         }
         self.tree.reports.push(rep);
-        Ok(self.tree.push(
+        let id = self.tree.push(
             &tag.name,
             Converted {
                 group: FourCC(*b"eqip"),
                 root,
                 raw: Vec::new(),
             },
-        ))
+        );
+        self.tree.note_roles(id, roles);
+        Ok(id)
     }
 }
