@@ -14,6 +14,17 @@
 //! (`live_hle::Hle::clanker_hoppers`), without it only the others. A
 //! hopper it lets through still goes to the game's own check.
 //!
+//! **Quickmatch** searches the playlist the player last picked in
+//! OptiMatch, which the playlist list's press saves (`0x001902fc`, from
+//! `0x002b21e3`). A clanker hopper is never saved: a `before` on
+//! [`PLAYLIST_REMEMBER`](engine::points::PLAYLIST_REMEMBER) skips the save
+//! during Clankermatch or for a clanker hopper, so the human playlist
+//! picked before stays. And an `after` on
+//! [`QUICKMATCH_HOPPER`](engine::points::QUICKMATCH_HOPPER) answers "none"
+//! (-1, and Quickmatch starts nothing) for a clanker hopper saved anyway
+//! (a profile saved before the server marked it). See [`remembered`] and
+//! [`quickmatch_hopper`].
+//!
 //! **The search** is the HLE's (`live_hle::clankermatch`): a clanker
 //! hopper's search finds no session after 4 to 20 s, and the game hosts.
 //!
@@ -59,6 +70,26 @@ pub fn set_active(on: bool) {
 /// for Clankermatch, any other only for OptiMatch.
 pub fn listed(index: u32, marks: &ClankerHoppers, clankermatch: bool) -> bool {
     marks.contains(index) == clankermatch
+}
+
+/// No hopper: what Quickmatch's getter answers for a player with no saved
+/// playlist.
+pub const NO_HOPPER: u32 = u32::MAX;
+
+/// Whether the OptiMatch press saves `hopper` for Quickmatch: not in
+/// Clankermatch, and never a clanker hopper.
+pub fn remembered(hopper: u32, marks: &ClankerHoppers, clankermatch: bool) -> bool {
+    !clankermatch && !marks.contains(hopper)
+}
+
+/// The hopper Quickmatch searches, from the one saved: a clanker hopper
+/// becomes [`NO_HOPPER`]; anything else stays.
+pub fn quickmatch_hopper(saved: u32, marks: &ClankerHoppers) -> u32 {
+    if saved != NO_HOPPER && marks.contains(saved) {
+        NO_HOPPER
+    } else {
+        saved
+    }
 }
 
 // ---- the fill ----
@@ -145,12 +176,13 @@ impl feature::Feature for PlaylistFilter {
     fn manifest(&self) -> Manifest {
         Manifest::new(
             FEATURE,
-            "Clankermatch: the OptiMatch playlists split into human and clanker hoppers",
+            "Clankermatch: the OptiMatch playlists split into human and clanker hoppers; \
+             Quickmatch keeps to the human ones",
         )
         .doc("docs/game/bots.md")
     }
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        use engine::points::HOPPER_LISTED;
+        use engine::points::{HOPPER_LISTED, PLAYLIST_REMEMBER, QUICKMATCH_HOPPER};
         let hle = self.hle.clone();
         let told = Arc::new(AtomicBool::new(false));
         b.raw()
@@ -172,6 +204,46 @@ impl feature::Feature for PlaylistFilter {
                 c.cpu.eax &= !0xff;
                 c.ret(0).map(Flow::Return)
             });
+        // Quickmatch never searches a clanker hopper: the playlist list's
+        // press does not save one ...
+        let hle = self.hle.clone();
+        b.raw().before(
+            &PLAYLIST_REMEMBER,
+            "no clanker hopper for Quickmatch",
+            move |c| {
+                let Some(hle) = &hle else {
+                    return Ok(Flow::Continue);
+                };
+                let Some(hopper) = c.arg_u32("hopper") else {
+                    return Ok(Flow::Continue);
+                };
+                if remembered(hopper, &hle.clanker_hoppers(), active()) {
+                    return Ok(Flow::Continue);
+                }
+                eprintln!("clankermatch: hopper {hopper} not saved for Quickmatch");
+                c.ret(8).map(Flow::Return)
+            },
+        );
+        // ... and one saved anyway reads as none.
+        let hle = self.hle.clone();
+        b.raw().after(
+            &QUICKMATCH_HOPPER,
+            "Quickmatch skips a clanker hopper",
+            move |c| {
+                let Some(hle) = &hle else {
+                    return Ok(());
+                };
+                let saved = c.cpu.eax;
+                let hopper = quickmatch_hopper(saved, &hle.clanker_hoppers());
+                if hopper != saved {
+                    eprintln!(
+                        "clankermatch: Quickmatch's saved playlist {saved} is a clanker hopper: none"
+                    );
+                    c.cpu.eax = hopper;
+                }
+                Ok(())
+            },
+        );
         // Its state is the menu's choice and the server's marks, both read
         // afresh at each list build; nothing a snapshot would miss.
         b.snapshot(feature::SnapshotPolicy::Stateless);
@@ -222,6 +294,26 @@ mod tests {
         let none = ClankerHoppers::default();
         assert!((0..16).all(|i| listed(i, &none, false)));
         assert!((0..16).all(|i| !listed(i, &none, true)));
+    }
+
+    #[test]
+    fn quickmatch_never_gets_a_clanker_hopper() {
+        let m = marks(&[8, 9, 10]);
+        // OptiMatch saves a human hopper; Clankermatch saves nothing, and
+        // a clanker hopper is never saved.
+        assert!(remembered(2, &m, false));
+        assert!(!remembered(2, &m, true));
+        assert!(!remembered(9, &m, false));
+        assert!(!remembered(9, &m, true));
+        // Quickmatch reads a saved clanker hopper as none; a human one, or
+        // none, as saved.
+        assert_eq!(quickmatch_hopper(9, &m), NO_HOPPER);
+        assert_eq!(quickmatch_hopper(2, &m), 2);
+        assert_eq!(quickmatch_hopper(NO_HOPPER, &m), NO_HOPPER);
+        // No marks (an older server): retail.
+        let none = ClankerHoppers::default();
+        assert!(remembered(9, &none, false));
+        assert_eq!(quickmatch_hopper(9, &none), 9);
     }
 
     #[test]

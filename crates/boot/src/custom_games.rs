@@ -133,6 +133,10 @@ const REQUEST_LOADER: u32 = 0x1c;
 const LAST_ROW: u32 = 0x0051_0a18;
 /// The rows `0x231170` restores the cursor to.
 pub const RESTORED_ROWS: i16 = 4;
+/// The rows a press leaves the cursor on: ours up to Co-op Campaign
+/// (Content Download opens a dialog or the Mods screen over the menu).
+/// Rows from [`RESTORED_ROWS`] on are restored by [`LiveMenuCursor`].
+pub const REMEMBERED_ROWS: i16 = DOWNLOAD_ROW;
 /// Our row's label. It fits: the list skin's text rectangle is 190 units
 /// wide, and the label renders 136 wide in conduit-12 (180 in conduit-16).
 pub const TEXT_ID: u32 = ID_BASE + 0x32;
@@ -394,12 +398,111 @@ pub fn back_loader<M: Gm>(m: &mut M, request: u32) -> Option<u32> {
 }
 
 /// Leave the Live menu's cursor on `row` for when a screen goes back to it
-/// (the retail press stores rows 0 to 2 the same way). Only rows
-/// `0x231170` restores (below [`RESTORED_ROWS`]) are written: the browser's
-/// row 4 is not, and back from the browser leaves the cursor where the
-/// menu puts it. Returns whether it wrote.
+/// (the retail press stores rows 0 to 2 the same way). Rows below
+/// [`REMEMBERED_ROWS`] are written: `0x231170` restores the first four,
+/// [`LiveMenuCursor`] the browser's and co-op's. Returns whether it wrote.
 pub fn remember_row<M: Gm>(m: &mut M, row: i16) -> bool {
-    (0..RESTORED_ROWS).contains(&row) && m.set_u32(LAST_ROW, row as u32)
+    (0..REMEMBERED_ROWS).contains(&row) && m.set_u32(LAST_ROW, row as u32)
+}
+
+/// The row the menu's build should put the cursor on that `0x231170`
+/// will not: a stored row from [`RESTORED_ROWS`] to [`REMEMBERED_ROWS`].
+/// Rows it restores itself, and anything else (-1, nothing stored): `None`.
+pub fn cursor_row<M: Gm>(m: &M) -> Option<u32> {
+    let row = m.u32(LAST_ROW)? as i32;
+    (i32::from(RESTORED_ROWS)..i32::from(REMEMBERED_ROWS))
+        .contains(&row)
+        .then_some(row as u32)
+}
+
+// ---- the cursor past row 3 ----
+//
+// `0x231170` (the Live menu's build, vtable slot `0x458bec`, thiscall, no
+// arguments) is: `[0x54e7bc] = -1; byte [0x54e7b8] = 0;
+// 0x22ee92(screen, 0x1901fc()); 0x22f672(screen);` then, for a stored row
+// of 0 to 3, `0x24c591(list = screen+0x818 in EAX, row)`. For a stored row
+// [`cursor_row`] names, a `before` runs the same steps and sets that row.
+
+const SEARCH_STATE: u32 = 0x0054_e7bc;
+const SEARCH_FLAG: u32 = 0x0054_e7b8;
+/// The menu's local players' mask (no arguments, EAX).
+const MENU_PLAYERS: u32 = 0x0019_01fc;
+/// Fills the menu (thiscall, the mask on the stack, `ret 4`).
+const MENU_FILL: u32 = 0x0022_ee92;
+/// The menu's second build step (thiscall, no arguments).
+const MENU_FINISH: u32 = 0x0022_f672;
+/// Puts a list's cursor on a row (the list in EAX, the row on the stack,
+/// `ret 4`); a row the list does not have does nothing.
+const LIST_SET_ROW: u32 = 0x0024_c591;
+/// The menu screen's list.
+const MENU_LIST: u32 = 0x818;
+
+/// `0x231170`'s steps on `screen`, with the cursor put on `row`.
+async fn build_menu(cx: engine::entry::Cx, screen: u32, row: u32) -> engine::entry::EntryResult {
+    use engine::entry::{GuestCall, Ret};
+    cx.write(|m| {
+        m.set_u32(SEARCH_STATE, u32::MAX)?;
+        m.set_u8(SEARCH_FLAG, 0)
+    })?;
+    let players = cx.call(GuestCall::new(MENU_PLAYERS).ecx(screen)).await?;
+    cx.call(GuestCall::new(MENU_FILL).ecx(screen).args([players.eax]))
+        .await?;
+    cx.call(GuestCall::new(MENU_FINISH).ecx(screen)).await?;
+    cx.call(
+        GuestCall::new(LIST_SET_ROW)
+            .eax(screen.wrapping_add(MENU_LIST))
+            .args([row]),
+    )
+    .await?;
+    Ok(Ret::new(0, 0))
+}
+
+/// The feature (`features.live-menu-cursor`).
+pub const CURSOR_FEATURE: &str = "live-menu-cursor";
+
+/// Back to the Xbox Live menu from the browser or co-op, the cursor is on
+/// the row the player chose, as retail's is for its rows.
+pub struct LiveMenuCursor;
+
+impl feature::Feature for LiveMenuCursor {
+    fn manifest(&self) -> feature::Manifest {
+        feature::Manifest::new(
+            CURSOR_FEATURE,
+            "The Xbox Live menu's cursor back on the browser or co-op row",
+        )
+        .doc("docs/game/bots.md")
+    }
+    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
+        use engine::entry::EntryFuture;
+        use feature::Flow;
+        b.raw().before(
+            &engine::points::LIVE_MENU_CURSOR,
+            "the cursor on our row",
+            |c| {
+                let screen = c.cpu.ecx;
+                let row = {
+                    let rt = Arc::clone(c.ctx.runtime());
+                    let mem = rt.memory();
+                    cursor_row(&*mem)
+                };
+                let Some(row) = row else {
+                    return Ok(Flow::Continue);
+                };
+                c.answer_async(move |cx| -> EntryFuture { Box::pin(build_menu(cx, screen, row)) })
+            },
+        );
+        // It reads the stored row afresh at each build.
+        b.snapshot(feature::SnapshotPolicy::Stateless);
+        Ok(())
+    }
+}
+
+/// Adds [`LiveMenuCursor`].
+pub fn install_cursor(registry: &mut feature::Registry) -> anyhow::Result<()> {
+    registry
+        .add(&LiveMenuCursor)
+        .map_err(|e| anyhow::anyhow!("live menu cursor: {e}"))?;
+    Ok(())
 }
 
 /// The strings the rows and the dialog show, as `(id, text)`.
@@ -1361,20 +1464,70 @@ mod tests {
     }
 
     #[test]
-    fn a_press_leaves_the_cursor_on_its_row_where_the_menu_restores_it() {
+    fn a_press_leaves_the_cursor_on_its_row_and_the_build_restores_it() {
         let mut m = Fake::default();
         m.set_u32(LAST_ROW, 1);
         // `0x231170` restores rows 0 to 3: Clankermatch and the moved
-        // Custom Game are (their retail presses stored OptiMatch's 1 and
-        // Custom Game's old 2).
+        // Custom Game (their retail presses stored OptiMatch's 1 and
+        // Custom Game's old 2); the build hook leaves those to it.
         for row in [CLANKERMATCH_ROW, CUSTOM_GAME_ROW] {
             assert!(remember_row(&mut m, row));
             assert_eq!(m.u32(LAST_ROW), Some(row as u32));
+            assert_eq!(cursor_row(&m), None, "row {row}: retail's");
         }
-        // The browser's row 4 is past what it restores: left alone.
-        assert!(!remember_row(&mut m, ROW));
+        // The browser's row 4 and co-op's 5 are past what it restores:
+        // stored, and the build hook puts the cursor there.
+        for row in [ROW, COOP_ROW] {
+            assert!(remember_row(&mut m, row));
+            assert_eq!(m.u32(LAST_ROW), Some(row as u32));
+            assert_eq!(cursor_row(&m), Some(row as u32));
+        }
+        // Content Download opens over the menu; nothing is stored for it,
+        // nor for no row.
+        assert!(!remember_row(&mut m, DOWNLOAD_ROW));
         assert!(!remember_row(&mut m, -1));
-        assert_eq!(m.u32(LAST_ROW), Some(CUSTOM_GAME_ROW as u32));
+        assert_eq!(m.u32(LAST_ROW), Some(COOP_ROW as u32));
+        // Retail's "none" (-1) and anything out of range: retail's build.
+        m.set_u32(LAST_ROW, u32::MAX);
+        assert_eq!(cursor_row(&m), None);
+        m.set_u32(LAST_ROW, DOWNLOAD_ROW as u32);
+        assert_eq!(cursor_row(&m), None);
+    }
+
+    #[test]
+    fn the_build_puts_the_cursor_on_our_row() {
+        use engine::GuestMemory;
+        use engine::entry::{Regs, Ret, testing};
+        let mut g = engine::testing::FakeGuest::new();
+        g.map(SEARCH_FLAG, 8);
+        g.write(SEARCH_STATE, &7u32.to_le_bytes()).unwrap();
+        g.write(SEARCH_FLAG, &[1]).unwrap();
+        const SCREEN: u32 = 0x0080_0000;
+        let f = |cx: engine::entry::Cx| -> engine::entry::EntryFuture {
+            Box::pin(build_menu(cx, SCREEN, 4))
+        };
+        let run = testing::run(&f, g, Regs::default(), |c, _| Regs {
+            eax: if c.target == MENU_PLAYERS { 0b101 } else { 0 },
+            ..Regs::default()
+        });
+        assert_eq!(run.result, Ok(Ret::new(0, 0)));
+        // Retail's steps, in order, then the cursor.
+        let calls: Vec<_> = run
+            .calls
+            .iter()
+            .map(|c| (c.target, c.eax, c.ecx, c.args.clone()))
+            .collect();
+        assert_eq!(
+            calls,
+            vec![
+                (MENU_PLAYERS, None, Some(SCREEN), vec![]),
+                (MENU_FILL, None, Some(SCREEN), vec![0b101]),
+                (MENU_FINISH, None, Some(SCREEN), vec![]),
+                (LIST_SET_ROW, Some(SCREEN + MENU_LIST), None, vec![4]),
+            ]
+        );
+        assert_eq!(run.guest.u32(SEARCH_STATE), Ok(u32::MAX));
+        assert_eq!(run.guest.u8(SEARCH_FLAG), Ok(0));
     }
 
     #[test]

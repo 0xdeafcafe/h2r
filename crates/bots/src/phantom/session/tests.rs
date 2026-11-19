@@ -298,9 +298,15 @@ fn removing_a_peer_moves_the_later_ones_down() {
 fn the_configuration_is_the_hosts_with_a_name_and_team() {
     let g = hosted();
     let c = config(&g, "Bolt", Some(2)).unwrap().unwrap();
-    assert_eq!(&c[..10], &[b'B', 0, b'o', 0, b'l', 0, b't', 0, 0, 0]);
+    // The bot mark (U+2699), a space, the name.
+    assert_eq!(
+        &c[..14],
+        &[
+            0x99, 0x26, b' ', 0, b'B', 0, b'o', 0, b'l', 0, b't', 0, 0, 0
+        ]
+    );
     assert!(
-        c[10..32].iter().all(|&b| b == 0),
+        c[14..32].iter().all(|&b| b == 0),
         "the rest of the name cleared"
     );
     assert_eq!(c[CONFIG_TEAM], 2);
@@ -310,6 +316,33 @@ fn the_configuration_is_the_hosts_with_a_name_and_team() {
         0x40 + CONFIG_TEAM as u8,
         "no team asked: the host's"
     );
+}
+
+#[test]
+fn a_bots_name_is_marked_within_fifteen_units() {
+    let s = |units: Vec<u16>| String::from_utf16(&units).unwrap();
+    assert_eq!(s(marked_name("Clanker 12")), "\u{2699} Clanker 12");
+    // The longest that keeps the space: 13 characters.
+    assert_eq!(s(marked_name("Thirteen char")), "\u{2699} Thirteen char");
+    // 14: no space; 15 (the most a gamertag has): no space, its last
+    // character gone. Never more than the 15 units the name holds.
+    assert_eq!(s(marked_name("Fourteen chars")), "\u{2699}Fourteen chars");
+    assert_eq!(s(marked_name("Fifteen chars!!")), "\u{2699}Fifteen chars!");
+    for n in 1..=20 {
+        let m = marked_name(&"x".repeat(n));
+        assert!(m.len() <= CONFIG_NAME_UNITS - 1, "{n}: {}", m.len());
+        assert_eq!(m[0], MARK as u16);
+    }
+}
+
+#[test]
+fn the_host_team_is_the_first_local_players() {
+    let g = hosted();
+    assert_eq!(host_team(&g).unwrap(), Some(0x40 + CONFIG_TEAM as u8));
+    // No players array: none.
+    let mut none = FakeGuest::new();
+    none.map(points::PLAYERS.base & !0xfff, 0x1000);
+    assert_eq!(host_team(&none).unwrap(), None);
 }
 
 #[test]

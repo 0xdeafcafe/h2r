@@ -229,7 +229,9 @@ fn players_into(
         };
         let local_user = player.local_user(guest).map_err(fault)?;
         let len = player.name_units(guest, &mut units).map_err(fault)?;
-        let units = &units[..len];
+        // A bot's name as the record names it: without the mark the game
+        // draws before it (docs/game/bots.md §8.2.2).
+        let units = live_proto::bots::unmarked_units(&units[..len]);
         let name = previous
             .iter_mut()
             .find(|p| {
@@ -1600,6 +1602,21 @@ mod tests {
         assert_eq!(renamed[0].player.name, "Sneaky Pete");
         assert_eq!(stranger[0].player.name, "Sneaky Pete", "left where it was");
         assert_eq!(renamed, after);
+    }
+
+    #[test]
+    fn a_bots_name_reads_without_its_mark() {
+        let mut guest = fixture::memory();
+        fixture::put_player(&mut guest, 0, "Sneaky Pete", 0, true, u32::MAX);
+        fixture::put_player(&mut guest, 1, "\u{2699} Clanker 3", 1, false, u32::MAX);
+        let read = players(&guest).unwrap();
+        assert_eq!(read[0].player.name, "Sneaky Pete");
+        assert_eq!(read[1].player.name, "Clanker 3");
+        // Read again: the name is kept, not decoded afresh.
+        let mut previous = read.clone();
+        let kept = previous[1].player.name.as_ptr();
+        let after = players_after(&guest, &mut previous).unwrap();
+        assert_eq!(after[1].player.name.as_ptr(), kept);
     }
 
     #[test]

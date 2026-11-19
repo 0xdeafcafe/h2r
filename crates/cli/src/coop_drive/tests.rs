@@ -110,7 +110,7 @@ impl World {
             At::Main => self.games[g].main_row,
             At::Live => {
                 let r = self.games[g].live_row;
-                if r <= 3 { r } else { 0 }
+                if r <= COOP_ROW { r } else { 0 }
             }
             _ => 0,
         };
@@ -150,7 +150,7 @@ impl World {
             (At::Live, "b") => self.go(now, g, At::Join(MODE_LIVE)),
             (At::Live, "a") => match row {
                 COOP_ROW => {
-                    self.games[g].live_row = 2;
+                    self.games[g].live_row = COOP_ROW;
                     self.emit(now + 10, g, "custom games: row chosen active");
                     self.emit(
                         now + 20,
@@ -166,8 +166,9 @@ impl World {
                     }
                 }
                 BROWSER_ROW => {
-                    // The browser's row 4 is past what the menu restores:
-                    // its press leaves the stored row as it was.
+                    // The browser's row 4: its press stores it, and the
+                    // menu's build puts the cursor back on it.
+                    self.games[g].live_row = BROWSER_ROW;
                     self.emit(now + 10, g, "custom games: opening the browser");
                     self.emit(
                         now + 400,

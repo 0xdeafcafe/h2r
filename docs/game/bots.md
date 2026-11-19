@@ -1363,9 +1363,31 @@ playlist's size, so Clankermatch needs stage 6.
 
    The server knows which accounts are bots (§9). Every client patches the
    font, since every client is our recomp. A box on a stray unpatched font
-   slot is the failure mode; the font-slot audit
-   (keyboard-charset.md, "Which font draws which field") tells us which
-   slots to patch.
+   slot is the failure mode.
+
+   **Built (2026-11-19).** `font::gear` draws the gear in code (a wheel,
+   a hole and eight teeth; six below 14 pixels), square, as tall as the
+   font's 'H' above the baseline (seven tenths of the ascent without
+   one), standing on the baseline with a one-pixel gap before it.
+   `boot::bot_mark::GearRewrite` adds it to **every** file under
+   `maps\fonts` as the VFS serves it, after the icon sets
+   (`boot::icons`), unless the font has its own U+2699. The font-slot
+   audit is therefore not needed for the mark: whichever slot a field
+   uses (keyboard-charset.md, "Which font draws which field", still not
+   traced), its file has the gear. A font the rewrite cannot patch (over
+   the VFS rewrite limit, or one that does not parse) keeps a box there
+   and says so with `H2_BOOT_VERBOSE=1`.
+
+   The name budget: the configuration name holds 15 UTF-16 units and the
+   NUL (`CONFIG_NAME_UNITS` 16). `bots::phantom::session::marked_name`
+   writes the gear, a space and the tag; a 14-character tag loses the
+   space (the glyph's own gap stays), a 15-character one also its last
+   character. Every Clanker name the host makes ("Clanker 12") fits
+   whole. The game record names a bot without the mark
+   (`live_proto::bots::unmarked_units`, in `live-telemetry`'s player
+   read), so the stats read model keeps the account's gamertag and the
+   site draws its own mark from the bot flag. No player can type U+2699,
+   so only a bot's name loses anything.
 3. **Bot rank.** Bots are matched to the player's rank. The playlist sets
    bot skill from the human's level, so it is a fair fight. The level maps
    to the aim table's difficulty (§3.4) on a continuous scale, not just its
@@ -1391,10 +1413,19 @@ down one:
 A moved retail row's press rewrites the press record's row (`[[esp+8]]`)
 to its retail row and runs the original, as the co-op row does; after it
 returns, the cursor row `0x510a18` is set to the row shown (the retail
-press stored the retail row there). The menu restores its cursor only to
-rows 0 to 3 (`0x231195`: `cmp eax,4; jge`), so the browser's row 4 is no
-longer restored: back from the browser leaves the cursor where the menu
-puts it. Every Live menu press sets `clankermatch::active` (Clankermatch)
+press stored the retail row there). The browser's and co-op's presses
+store their rows too (`custom_games::remember_row`, rows 0 to 5). The
+menu restores its cursor only to rows 0 to 3 (`0x231195`: `cmp eax,4;
+jge`), so for rows 4 and 5 a `before` on the menu's build `0x00231170`
+(`engine::points::LIVE_MENU_CURSOR`, vtable `0x00458b48` slot
+`0x00458bec`, thiscall, no arguments, plain `ret`) does the build itself:
+`[0x54e7bc] = -1`, `byte [0x54e7b8] = 0`, `0x22ee92(screen,
+0x1901fc())`, `0x22f672(screen)`, then `0x24c591` (EAX the list at
+screen `+0x818`, the row on the stack, `ret 4`) with the stored row
+(`custom_games::LiveMenuCursor`, feature `live-menu-cursor`). Rows 0 to 3
+and "none" (-1) go to the retail build. The co-op row's retail-lobby
+press (which runs retail row 2's press, storing 2) now sets its own row
+after it, as the moved rows do. Every Live menu press sets `clankermatch::active` (Clankermatch)
 or clears it (any other row). `h2 bots test` and `h2 coop test --drive`
 navigate by the new rows (`agent_proto::sim::menu`, `bots_drive`).
 
@@ -1430,12 +1461,27 @@ which the HLE asks for at each logon. With no marks (an older server) the
 OptiMatch list is retail and Clankermatch's is empty.
 
 Other readers stay unfiltered: the best-skill pass `0x00065530` and the
-stats rank cache use `0x00192df0`/`0x001934f0` directly, and Quickmatch
-(row 0, `0x00231045`) starts the profile's last hopper
-(`0x001902de`) through `0x00231066`. **Known:** a playlist press saves its
-hopper as the profile's Quickmatch hopper (`0x002b21e3`, `call
-0x001902fc`), so after a Clankermatch, Quickmatch starts that clanker
-hopper (a Clankermatch, since its search finds nobody). Not changed yet.
+stats rank cache use `0x00192df0`/`0x001934f0` directly.
+
+**Quickmatch (built).** Quickmatch (row 0, `0x00231045`) starts the
+hopper `0x001902de` answers (ECX the local player; `[0x54e9dc +
+player*0xc70]`, or -1 when flag bit 4 of `[0x54e8e0 + player*0xc70]` is
+clear; its one caller `0x00231056`), through `0x001943d0` at
+`0x00231066`, which fails for -1 so nothing starts. A playlist press
+saves its hopper there (`0x002b21e3`: `push edi` (the hopper), `push
+[ebp+0Ch]` (the player), `call 0x001902fc`, `ret 8`; its only caller).
+Two hooks keep Quickmatch on human hoppers
+(`clankermatch::PlaylistFilter`):
+
+- a `before` on `0x001902fc` (`engine::points::PLAYLIST_REMEMBER`)
+  returns at once (`ret 8`, nothing saved) during Clankermatch or for a
+  clanker hopper (`clankermatch::remembered`), so the human playlist
+  picked before stays;
+- an `after` on `0x001902de` (`engine::points::QUICKMATCH_HOPPER`)
+  answers -1 for a saved clanker hopper (a profile saved before the
+  server marked it; `clankermatch::quickmatch_hopper`).
+
+With no marks (an older server) both are retail.
 The playlist screen has a second opener (`0x002bbf06`, kind 3, from
 `0x002bba93`, screen not identified); it sees whatever the last Live menu
 press left in `active`.
@@ -1467,7 +1513,14 @@ For a clanker hopper (`live_hle::clankermatch`):
    host-made bot for it to replace); if Live refuses it, host-made bots.
    In a team playlist each bot without a roster team goes to the team
    with the fewest players, then the lowest total skill
-   (`clankermatch::balance`), with the human taken to be on team 0.
+   (`clankermatch::balance`), around the human's team: the host's first
+   local listed player's configuration team (player `+0xd4 + 0x7c`,
+   `bots::phantom::session::host_team`), read twice a second by the bots'
+   frame hook (`clankers::frame`) and followed until the first bot sits,
+   then kept so no bot changes team; 0 when unknown or not one of the
+   playlist's teams. The frame hook now runs this with no bot in (it used
+   to return first, so a Clankermatch with the Clankers page off never
+   started its fill).
 3. The match starts on the hopper's normal countdown. A handoff (the
    lobby's session deleted and the game's advertised) keeps the bots and
    carries the roster (§9.5); with no hosted session for 30 s, or another
@@ -1488,12 +1541,16 @@ The empty search is what is built now.
 **Tests (no game):** `cargo test -p boot --lib custom_games` (the rows,
 panes, texts, cursor rows), `-p boot --lib coop_live` (the seven-row
 menu), `-p boot --lib clankermatch` (the filter, the schedule, the
-balance), `-p boot --lib clankers::tests::a_clankermatch` (the fill: one
-roster, one bot at a time, balanced teams, the handoff, the end, a
-refused roster), `-p live-hle --lib clankermatch` (the delay and the run),
-`-p live-proto hopper::clankers`, `-p live-telemetry
-games_say_their_kind`, `-p cli bots_drive coop_drive`, and the server's:
-`-p live-server --test clankermatch`, `-p live-worker a_clankermatch_game`.
+balance, Quickmatch's hopper), `-p boot --lib clankers::tests::a_clankermatch`
+(the fill: one roster, one bot at a time, balanced teams around the
+host's real team, the handoff, the end, a refused roster), `-p boot --lib
+bot_mark`, `-p font gear` (the glyph on a synthetic font),
+`-p bots phantom::session` (the marked name within 15 units, the host's
+team), `-p live-hle --lib clankermatch` (the delay and the run),
+`-p live-proto bots hopper::clankers`, `-p live-telemetry
+games_say_their_kind a_bots_name_reads_without_its_mark`, `-p cli
+bots_drive coop_drive`, and the server's: `-p live-server --test
+clankermatch`, `-p live-worker a_clankermatch_game`.
 
 ### 8.5 Game run (checklist)
 
@@ -1506,7 +1563,9 @@ signed in on port 0, Clankers page off.
    and each shows its own help pane (Clankermatch: "Matchmaking against
    bots..."; Custom Game its retail one).
 2. Custom Game still opens the custom game lobby; back lands on Custom
-   Game. Custom Game Browser and Content Download open as before.
+   Game. Custom Game Browser opens as before, and back from it lands on
+   Custom Game Browser (`custom games: opening the browser`); the same
+   for Co-op Campaign. Content Download opens as before.
 3. OptiMatch lists the eight human playlists and no Clanker one.
 4. Clankermatch lists only Clanker Slayer, Clanker Teams and Clanker
    Doubles (the log: `clankermatch: the playlists are the clanker
@@ -1516,15 +1575,18 @@ signed in on port 0, Clankers page off.
    game hosts its own lobby (does it? in every type: FFA and teams).
 6. The lobby fills one bot at a time, 0.5 to 3 s apart, to 8 players
    (`clankers: clankermatch: hosting clanker playlist 8 ... 7 bots join`,
-   then `... (phantom, rostered) on` each). Each shows a gamertag.
-7. Clanker Teams: 4 v 4, the human's team with three bots. Say which
-   team the human is on; if not red (team 0), the teams come out 5 v 3.
+   then `... (phantom, rostered) on` each). Each shows `⚙ ` and a
+   gamertag, the gear drawn (not a box) in the lobby, the scoreboard and
+   the carnage report; say which place shows a box, if any.
+7. Clanker Teams: 4 v 4, the human's team with three bots, whichever
+   team the human is on (`... 2 teams, the host on team N`).
 8. The match starts on its own countdown and plays; the carnage report
    lists the bots; the site shows the game as Clankermatch with its
    playlist, each bot with BOT.
 9. Leave after the game: the bots go within 30 s (`clankermatch: the game
-   is over: the bots go`). Back on the Live menu, Quickmatch: say whether
-   it starts the clanker playlist (expected, §8.3 Known).
+   is over: the bots go`). Back on the Live menu, Quickmatch starts the
+   human playlist picked last in OptiMatch, or nothing if none
+   (`clankermatch: hopper 8 not saved for Quickmatch` at the pick).
 10. With a server that has no clanker marks: OptiMatch as retail,
     Clankermatch's list empty (say how the empty list looks).
 
@@ -2776,30 +2838,22 @@ list for the user to play (§11).
      delay, the lobby fill from the playlist's roster (one at a time,
      balanced teams, skill from the server), `kind: "clankermatch"` in the
      record and in the server's read model and stats (both homes).
+   - Built since (follow-ups): the ⚙ glyph in every font and the
+     marked bot names (§8.2.2), Quickmatch kept off clanker hoppers
+     (§8.3), the cursor back on the browser's and co-op's rows (§8.3),
+     the balance around the host's real team (§8.4).
    - Next:
-     1. The ⚙ glyph (§8.2.2): draw it (no disc glyph) and add it with
-        `font::patch` like `boot::icons`, then the host writes `⚙ ` +
-        tag into each phantom's configuration name (player `+0x44`,
-        `bots::phantom::session::config`'s `set_name`); needs the font
-        slot audit (keyboard-charset.md) and a name budget check (the
-        configuration name holds 15 UTF-16 units plus the NUL).
-     2. Quickmatch after a Clankermatch starts the clanker hopper (the
-        playlist press saves it, `0x002b21e3`): skip that save while
-        `active`, or make Quickmatch skip clanker hoppers.
-     3. The cursor on the browser's row 4 is no longer restored
-        (`0x231195` restores 0 to 3): an `after` on `0x231170` that moves
-        the cursor itself.
-     4. The human's real team for the balance (read the host player's
-        configuration team) and a party of more than one human.
-     5. The search delay from the playlist's population; continuous skill
+     1. A party of more than one human (the balance takes the host's
+        player only).
+     2. The search delay from the playlist's population; continuous skill
         in the brain (§8.2.3: the brain still takes the nearest of four).
-     6. A clanker game's rank needs an arbitration round as ranked
+     3. A clanker game's rank needs an arbitration round as ranked
         matchmaking does: check whether the console registers one in an
         unranked clanker hopper, or have the server rank without (with
         sbmm-ranked).
-     7. `MatchProposed` with `host = me` and the bots as members, when
+     4. `MatchProposed` with `host = me` and the bots as members, when
         the matcher exists (sbmm-ranked).
-     8. Clanker marks for a published hopper file (an admin mark, as
+     5. Clanker marks for a published hopper file (an admin mark, as
         pins have): today only the default lineup's clanker playlists,
         kept where a published file has the same playlist id at the same
         index.

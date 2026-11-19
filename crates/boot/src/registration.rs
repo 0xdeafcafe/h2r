@@ -399,6 +399,9 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     // Clankermatch (docs/game/bots.md §8): the Live menu's row splits the
     // OptiMatch playlists into the server's clanker hoppers and the rest.
     crate::clankermatch::install(features, i.live.clone()).context("installing Clankermatch")?;
+    // Back to the Xbox Live menu, the cursor is on the browser or co-op
+    // row the player chose, past the four rows retail restores.
+    custom_games::install_cursor(features).context("installing the Live menu's cursor")?;
     // H2_SNAPSHOT_PROBE=1: count, per game tick, what would stop a machine
     // snapshot (snapshot_probe.rs, docs/runtime/snapshots.md).
     let snapshot_probe = snapshot_probe::Probe::from_env(features)?;

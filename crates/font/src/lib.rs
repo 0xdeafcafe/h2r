@@ -18,6 +18,7 @@
 use std::fmt;
 
 pub mod encode;
+pub mod gear;
 pub mod icons;
 pub mod patch;
 pub mod raster;

@@ -461,8 +461,9 @@ pub fn player_id(xuid: u64, mac: [u8; 6]) -> [u8; 12] {
 }
 
 /// A phantom's configuration: the host's own player's (`+0xd4` of the
-/// first local player) with the phantom's name, and its team when it has
-/// one (else the host's: balancing waits for the lobby teams).
+/// first local player) with the phantom's name ([`marked_name`]: the bot
+/// mark, then `name`), and its team when it has one (else the host's:
+/// balancing waits for the lobby teams).
 pub fn config(m: &dyn GuestMemory, name: &str, team: Option<u8>) -> R<Option<[u8; CONFIG_SIZE]>> {
     let Some(array) = engine::view::players::array(m)? else {
         return Ok(None);
@@ -481,9 +482,44 @@ pub fn config(m: &dyn GuestMemory, name: &str, team: Option<u8>) -> R<Option<[u8
     Ok(None)
 }
 
+/// The host's own player's team (its first local listed player's
+/// configuration), or `None` with no such player.
+pub fn host_team(m: &dyn GuestMemory) -> R<Option<u8>> {
+    let Some(array) = engine::view::players::array(m)? else {
+        return Ok(None);
+    };
+    for (_, p) in array.live(m, 16)? {
+        if p.listed(m)? && p.local_user(m)? >= 0 {
+            return Ok(Some(m.u8(p.addr + PLAYER_CONFIG + CONFIG_TEAM as u32)?));
+        }
+    }
+    Ok(None)
+}
+
+/// The mark before a bot's name: U+2699 GEAR, which our font patch draws
+/// (`font::gear`; docs/game/bots.md §8.2.2). The same as
+/// `live_proto::bots::BOT_MARK`, which takes it off again for the record.
+pub const MARK: char = '\u{2699}';
+
+/// A bot's name as the game shows it, in the configuration name's 15
+/// units: the [`MARK`], a space, then `tag`. A gamertag is 1 to 15
+/// characters, so the mark always fits: a 14-character tag loses the space
+/// (the gear's own one-pixel gap stays), a 15-character one its last.
+pub fn marked_name(tag: &str) -> Vec<u16> {
+    let max = CONFIG_NAME_UNITS - 1;
+    let tag: Vec<u16> = tag.encode_utf16().collect();
+    let mut out = vec![MARK as u16];
+    if tag.len() + 2 <= max {
+        out.push(u16::from(b' '));
+    }
+    let room = max - out.len();
+    out.extend(tag.into_iter().take(room));
+    out
+}
+
 fn set_name(c: &mut [u8; CONFIG_SIZE], name: &str) {
     c[..CONFIG_NAME_UNITS * 2].fill(0);
-    for (i, u) in name.encode_utf16().take(CONFIG_NAME_UNITS - 1).enumerate() {
+    for (i, u) in marked_name(name).into_iter().enumerate() {
         c[2 * i..2 * i + 2].copy_from_slice(&u.to_le_bytes());
     }
 }

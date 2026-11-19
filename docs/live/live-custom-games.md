@@ -301,9 +301,12 @@ kind-7 request for `0x2310b7` (`0x19b0ad`). So boot hooks two functions:
   original.
 
 A LAN browser never raises the flag, so main menu → System Link → back is
-retail. Our row press also stores row 3 in `[0x510a18]`, the row the Live
-menu's cursor starts on (`0x231170`, rows 0 to 3; the retail press stores
-rows 0 to 2 the same way), so back lands on Custom Game Browser.
+retail. Our row press also stores its row (4 since Clankermatch's row,
+docs/game/bots.md §8.3) in `[0x510a18]`, the row the Live menu's cursor
+starts on (the retail press stores rows 0 to 2 the same way). The menu's
+build `0x231170` restores only rows 0 to 3, so for rows 4 and 5 (the
+browser and co-op) `custom_games::LiveMenuCursor` does the build itself
+and puts the cursor there: back lands on Custom Game Browser.
 
 **The Map Pack dialog.** The game shows its errors in two dialog classes
 that look an error id up in the shared UI globals (`0x23661f`: ESI = a
