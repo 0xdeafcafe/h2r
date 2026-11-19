@@ -1417,7 +1417,10 @@ mod tests {
 
     #[test]
     fn nested_phases_are_self_time_and_frames_add_up() {
-        // The only test that turns the global collection on.
+        // Other timeline tests call frame(), which also feeds this global recorder.
+        let _g = crate::tests::SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        crate::TEST_NOW_NS.set(Some(0));
+        let advance_ms = |ms: u64| crate::TEST_NOW_NS.set(Some(crate::now_ns() + ms * 1_000_000));
         let csv = std::env::temp_dir().join(format!("h2-frame-stats-{}.csv", std::process::id()));
         start(Config {
             csv: Some(csv.clone()),
@@ -1426,23 +1429,19 @@ mod tests {
         })
         .unwrap();
         frame_end(0); // starts this thread's clock
-        let spin = |ms: u64| {
-            let t = std::time::Instant::now();
-            while t.elapsed() < std::time::Duration::from_millis(ms) {}
-        };
-        spin(2);
+        advance_ms(2);
         {
             let _d = enter(Phase::Decode);
-            spin(3);
+            advance_ms(3);
             {
                 let _e = enter(Phase::Encode);
                 count(Counter::Draws, 2);
-                spin(4);
+                advance_ms(4);
                 let _s = enter(Phase::Submit);
                 count(Counter::Submits, 1);
-                spin(1);
+                advance_ms(1);
             }
-            spin(1);
+            advance_ms(1);
         }
         frame_end(1);
         let w = window_summary().unwrap();
@@ -1450,17 +1449,9 @@ mod tests {
         assert!(!enabled());
         assert_eq!(w.frames, 1);
         let p = w.phase_ms;
-        let ms = |v: f64, want: f64| v >= want && v < want + 3.0;
-        assert!(
-            ms(p[0], 2.0) && ms(p[1], 4.0) && ms(p[2], 4.0) && ms(p[3], 1.0),
-            "{p:?}"
-        );
-        let sum: f64 = p.iter().sum();
-        assert!(
-            (sum - w.max_ms).abs() < 0.01,
-            "phases {sum} vs frame {}",
-            w.max_ms
-        );
+        assert_eq!(&p[..4], &[2.0, 4.0, 4.0, 1.0]);
+        assert_eq!(w.max_ms, 11.0);
+        assert_eq!(p.iter().sum::<f64>(), w.max_ms);
         assert!(report.contains("draws 2 submits 1"), "{report}");
         assert_eq!(w.count_mean[Counter::Draws as usize], 2.0);
         let text = std::fs::read_to_string(&csv).unwrap();
@@ -1486,21 +1477,21 @@ mod tests {
         guest_thread(Some(1));
         {
             let _d = enter(Phase::D3d);
-            spin(2);
+            advance_ms(2);
         }
         assert_eq!(scope_ns(Phase::D3d), Some(0));
         assert_eq!(scope_entries(Phase::D3d), Some(0));
         scope_begin(Phase::Render);
-        spin(2);
+        advance_ms(2);
         {
             let _d = enter(Phase::D3d);
-            spin(3);
+            advance_ms(3);
         }
         guest_thread(Some(2));
         assert_eq!(running_guest_thread(), Some(2));
         {
             let _d = enter(Phase::D3d);
-            spin(2);
+            advance_ms(2);
         }
         guest_thread(Some(1));
         scope_end();
@@ -1508,14 +1499,15 @@ mod tests {
             scope_ns(Phase::Render).unwrap(),
             scope_ns(Phase::D3d).unwrap(),
         );
-        assert!((2_000_000..4_000_000).contains(&render), "{render}");
-        assert!((3_000_000..5_000_000).contains(&d3d), "{d3d}");
-        assert!(thread_ns(Phase::D3d).unwrap() >= 7_000_000);
+        assert_eq!(render, 2_000_000);
+        assert_eq!(d3d, 3_000_000);
+        assert_eq!(thread_ns(Phase::D3d), Some(7_000_000));
         assert_eq!(scope_entries(Phase::D3d), Some(1), "only the scoped entry");
         guest_thread(None);
         assert_eq!(running_guest_thread(), None, "between slices");
         assert_eq!(stop(), None);
         assert!(!enabled());
         assert_eq!(running_guest_thread(), None, "stats off");
+        crate::TEST_NOW_NS.set(None);
     }
 }
