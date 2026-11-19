@@ -268,6 +268,14 @@ the Halo 1 HUD help and objective text, encounter-level AI control
 `sound_impulse_time`, which a script waits on after almost every line of
 dialogue (since mapped to `sound_impulse_language_time`).
 
+**Built.** The legacy HUD builtins, including d40's countdown, use
+the real evaluators identified by address in `h1scripts::hud`.
+The component display and blink calls use slots 657–663, whose
+Boolean arguments are evaluated by the native VM before the boot
+hook changes the component state. See [text.md](text.md) for the
+slots, scenario reference and draw path. The coverage figures above
+predate this HUD work.
+
 ## Step 3: compile
 
 `compile::compile(tables, h1_catalog, table, target, policy, reference_names)`
@@ -297,8 +305,7 @@ retail compiler writes them; literals keep their source type.
 - **Missing builtins** follow `Missing`: `Stub` replaces the call with the
   expected type's zero (`false`, `0`, `none`, void) so retail Halo 2 runs it,
   except the status queries in `compile::DONE_VALUES`, which return the
-  value those waits use as done (`game_all_quiet` and `game_safe_to_speak` true, `hud_get_timer_ticks`
-  32767). Conversation calls compiled with the level's conversation data use
+  value those waits use as done (`game_all_quiet` and `game_safe_to_speak` true). Conversation calls compiled with the level's conversation data use
   the worker state described below. `Extension` keeps the call with opcode `0x8000 + Halo 1 index` and the Halo 1
   name, for the Rust VM to bind (the retail interpreter cannot run it). Both
   list each call in `Compiled::missing`. Engine globals Halo 2's scripts

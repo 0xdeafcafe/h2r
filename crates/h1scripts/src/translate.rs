@@ -145,6 +145,7 @@ impl Target {
             }
         }
         crate::commands::identify(&mut builtins, c);
+        crate::hud::identify(&mut builtins, c);
         Self {
             overloads,
             builtins,

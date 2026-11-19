@@ -657,6 +657,13 @@ impl<'a, 's, R: Read + Seek> Walker<'a, 's, R> {
                 exact = true;
             }
         }
+        if self.group == FourCC(*b"matg")
+            && path.is_empty()
+            && let Some(bytes) = crate::localization::locale_raw_len(elem, o)
+        {
+            size = Some(bytes);
+            exact = true;
+        }
         let siblings: Vec<u32> = s
             .fields
             .iter()

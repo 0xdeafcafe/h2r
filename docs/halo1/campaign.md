@@ -647,7 +647,7 @@ and not one whose zero is already the done value: `recording_time`,
 | `game_safe_to_speak` | 5 | done value true |
 | `ai_going_to_vehicle` | 5 | `0` (none is going) |
 | `sound_impulse_time` | 4 (a10) | `sound_impulse_language_time` (the ticks the line has left) |
-| `hud_get_timer_ticks` | 3 (d40) | done value 32767: the escape timer never runs out |
+| `hud_get_timer_ticks` | 3 (d40) | Built. The native countdown returns the remaining ticks (see [text.md](text.md)). |
 | `ai_conversation_line` | 1 (b30) | the current line, or 999 when inactive |
 
 `ai_living_count`, `ai_strength`, `unit_get_health`, `volume_test_objects`

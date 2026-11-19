@@ -28,8 +28,6 @@ use crate::{Error, Result};
 /// The `unic` tag's size: 16 observed-zero build bytes, then nine
 /// `(start, count)` language ranges.
 pub const UNIC_SIZE: usize = 0x34;
-/// Where the language ranges start in a `unic`.
-const RANGES: usize = 0x10;
 /// The `matg` locale descriptors: nine, from `+0x188`, `0x1c` each.
 const MATG_DESCRIPTORS: usize = 0x188;
 const SECTOR: usize = 0x200;
@@ -66,7 +64,7 @@ impl Locales {
                 )
             })
             .collect();
-        if rows.iter().any(|r| r.1 as usize >= blob.len().max(1)) {
+        if rows.iter().any(|r| r.1 as usize >= blob.len()) {
             return Err(Error::Invalid("locale row past its blob".into()));
         }
         Ok(Self { rows, blob })
@@ -173,6 +171,26 @@ impl Locales {
         tag_path: &str,
         hmt: &Hmt,
     ) -> Result<(Converted, Vec<StringId>)> {
+        self.add_messages(set, tag_path, hmt, |message| Ok(message.plain_text()))
+    }
+
+    /// Adds a level's HUD messages, including their controller substitutions.
+    pub fn add_mission_hmt(
+        &mut self,
+        set: &mut TagSet,
+        tag_path: &str,
+        hmt: &Hmt,
+    ) -> Result<(Converted, Vec<StringId>)> {
+        self.add_messages(set, tag_path, hmt, crate::hud::localized_text)
+    }
+
+    fn add_messages(
+        &mut self,
+        set: &mut TagSet,
+        tag_path: &str,
+        hmt: &Hmt,
+        text: impl Fn(&crate::h1::HudMessage) -> Result<String>,
+    ) -> Result<(Converted, Vec<StringId>)> {
         for (i, message) in hmt.messages.iter().enumerate() {
             if hmt.messages[..i].iter().any(|m| m.name == message.name) {
                 return Err(Error::Invalid(format!(
@@ -187,7 +205,7 @@ impl Locales {
             ids.push(self.add(
                 set,
                 &format!("{tag_path}\\{}", message.name),
-                &message.plain_text(),
+                &text(message)?,
             )?);
         }
         Ok((self.unic(start, &ids)?, ids))
@@ -200,11 +218,14 @@ impl Locales {
             .map_err(|_| Error::Invalid("too many locale rows for a unic range".into()))?;
         let count = i16::try_from(ids.len())
             .map_err(|_| Error::Invalid("too many strings for a unic range".into()))?;
-        let mut root = Block::zeroed(UNIC_SIZE);
-        root.put_u16(RANGES, start as u16);
-        root.put_u16(RANGES + 2, count as u16);
+        let group = FourCC(*b"unic");
+        let def = tags::defs::Defs::builtin().group(group).expect("unic definition");
+        let root = &mut tags::defs::default_record(def);
+        root.set("english_start", tags::defs::Val::Int(i64::from(start)))?;
+        root.set("english_count", tags::defs::Val::Int(i64::from(count)))?;
+        let root = tags::defs::to_built(def, root, &mut |_| None)?;
         Ok(Converted {
-            group: FourCC(*b"unic"),
+            group,
             root,
             raw: Vec::new(),
         })
@@ -249,6 +270,8 @@ impl Locales {
     }
 }
 
+
+// Append one resource with the padding required by the retail locale loader.
 fn append_locale(prefix: &mut Vec<u8>, header_len: usize, bytes: &[u8]) -> Result<u32> {
     let start = prefix.len().next_multiple_of(SECTOR);
     let offset = start + header_len;

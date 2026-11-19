@@ -111,13 +111,10 @@ pub const SHORT_PATHS: &[(&str, &str)] = &[("tutorial_setup", "fast_setup")];
 /// What a stubbed status query returns under [`Missing::Stub`] instead of
 /// zero, where zero would hold a `sleep_until` forever. Every use in the
 /// ten levels' scripts reads the value as "done" (docs/halo1/scripts.md):
-/// The quiet and safe-to-speak tests are true, and the HUD timer never runs out.
+/// Both safety queries read true when the target lacks their evaluators.
 pub const DONE_VALUES: &[(&str, i32)] = &[
     ("game_all_quiet", 1),
     ("game_safe_to_speak", 1),
-    // d40's escape timer: `(<= (hud_get_timer_ticks) 0)` ends the level
-    // as failed; Halo 2 has no HUD timer, so it never runs out.
-    ("hud_get_timer_ticks", 32767),
 ];
 
 /// Halo 1's `ai_status` scale on Halo 2's combat status, highest first:

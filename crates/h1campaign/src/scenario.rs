@@ -820,8 +820,8 @@ pub fn write(
         Some(t) => t.clone(),
         None => Block::new(base.bytes[..ROOT].to_vec()),
     };
-    level_text.write(&mut root);
     let rep = &mut report.scenario;
+    level_text.write(&mut root);
 
     // BSP descriptors: exactly Halo 1's BSPs, in order, so its BSP
     // indices (`switch_bsp`, zones, placements) need no map. A BSP past
@@ -1267,7 +1267,6 @@ pub fn write(
                 },
                 &initial,
                 &ai_control,
-                level_text,
                 &ai_src.conversations,
                 &if opts.ai {
                     h1ai::conversations::SpeakerScopes::from_plan(&plan)
@@ -1289,6 +1288,7 @@ pub fn write(
                 rewritten,
                 crate::cutscenes::policy(opts, &h1.header().name.to_ascii_lowercase()),
                 &aliases,
+                level_text,
             )?);
         }
         None => {
@@ -1847,7 +1847,6 @@ fn install_scripts(
     targets: &Targets,
     initial: &[String],
     ai_control: &h1ai::control::Control,
-    level_text: &h1text::scenario::LevelText,
     conversations: &[h1ai::conversations::Conversation],
     speaker_scopes: &h1ai::conversations::SpeakerScopes,
     max_sounds: usize,
@@ -1859,6 +1858,7 @@ fn install_scripts(
     rewritten: crate::recordings::Report,
     cutscenes: h1scripts::compile::Cutscenes,
     aliases: &crate::h2assets::Aliases,
+    level_text: &h1text::scenario::LevelText,
 ) -> Result<ScriptReport> {
     use h1scripts::compile::{Missing, compile_scenario};
     let refs: Vec<String> = t
@@ -1966,6 +1966,8 @@ fn install_scripts(
         match h.type_name.as_str() {
             "long" if h.h1_type == "actor_variant" => free_characters.get(&h.token).map(|id| id.0),
             "string_id" => interned.get(&h.token).copied(),
+            "hud_message" => level_text.message_index(&h.token),
+            "hud_corner" => h1scripts::hud::corner(&h.token),
             "sound" => sounds.get(&h.token).map(|id| id.0),
             _ if h.h1_type == "command_voice_tag" => Some(tags_by_name
                 .get(&(FourCC(*b"udlg"), h.token.to_ascii_lowercase()))
@@ -2003,6 +2005,9 @@ fn install_scripts(
         h.h1_type == h1scripts::commands::ANIMATION_GRAPH || h.h1_type == "command_voice_sound"
     }) {
         return Err(invalid(format!("AI command {} {} could not be installed", h.type_name, h.token)));
+    }
+    if let Some(hook) = left.iter().find(|h| h.type_name == "hud_message") {
+        return Err(invalid(format!("HUD message {:?} is missing", hook.token)));
     }
     let mut unresolved: Vec<(String, usize)> = Vec::new();
     let mut samples: Vec<(String, String)> = Vec::new();

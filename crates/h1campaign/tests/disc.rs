@@ -2386,3 +2386,113 @@ fn rebuilt_crew_and_sentinel_characters_reach_their_own_animation_resources() {
         assert_eq!(graphs.len(), 1);
     }
 }
+
+#[test]
+#[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
+fn campaign_hud_text_and_builtins_round_trip() {
+    use h1scripts::hud::{BUILTINS, CONTROL_BUILTINS};
+    use h1text::h1::{Hmt, scenario_text};
+    use h1text::hud::{GROUP, MARKER, MARKER_AT, SCENARIO_HMT, localized_text};
+    use tags::{Language, Localization};
+
+    let script = scripting();
+    for (name, slot) in BUILTINS.iter().map(|&(name, slot, ..)| (name, slot)).chain(
+        CONTROL_BUILTINS
+            .iter()
+            .map(|&(name, slot, ..)| (name, slot)),
+    ) {
+        let from = script.catalog.index_of(name).unwrap();
+        let translation = script.table.builtin(from).unwrap();
+        assert_eq!(
+            translation.kind,
+            h1scripts::translate::Kind::Direct,
+            "{name}"
+        );
+        assert_eq!(translation.target.as_ref().unwrap().1.index, slot, "{name}");
+    }
+
+    // a30 exercises a message with a controller action, and d40 calls all
+    // six timer functions. Exercise both the pinned and scratch paths.
+    for (level, pinned) in [("a30", true), ("d40", false)] {
+        let h1 = h1_level(level);
+        let refs = scenario_text(&h1).unwrap();
+        let messages = h1.tag(refs.hud_messages.unwrap().id).unwrap();
+        let source = Hmt::read(&h1, messages).unwrap();
+        let mut base = h2_map(h1campaign::BASE);
+        let base_text = Localization::read(&mut base).unwrap();
+        let opts = Options {
+            objects: false,
+            ai: false,
+            scripts: Some(&script),
+            cutscene_data: false,
+            pinned,
+            ..Options::default()
+        };
+        let done = h1campaign::convert(&h1, &mut base, &opts).unwrap();
+        if !pinned {
+            assert!(done.report.fresh, "d40 should exercise relocation");
+        }
+        let mut map = Map::from_reader(Cursor::new(done.bytes)).unwrap();
+        map.validate_checksum().unwrap();
+        let scenario = map.scenario().unwrap().id;
+        let root = map.read_tag_bytes(scenario).unwrap();
+        let word = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
+        let at = SCENARIO_HMT as usize;
+        assert_eq!(word(&root, at), GROUP.as_u32());
+        let hud = map.read_tag_bytes(TagId(word(&root, at + 4))).unwrap();
+        assert_eq!(word(&hud, MARKER_AT as usize), MARKER);
+        assert_eq!(word(&hud, 0x10) as usize, source.messages.len());
+
+        let locales = Localization::read(&mut map).unwrap();
+        for language in Language::ALL {
+            let original = base_text.table(language);
+            let extended = locales.table(language);
+            assert!(extended.entries().len() >= original.entries().len());
+            for (i, entry) in original.entries().iter().enumerate() {
+                assert_eq!(extended.entries()[i].id, entry.id);
+                assert_eq!(extended.bytes(i), original.bytes(i));
+            }
+        }
+        let name = h1text::scenario::unicode_path(&messages.name);
+        let id = map
+            .tag(map::TagQuery::NameInGroup(&name, FourCC(*b"unic")))
+            .unwrap()
+            .id;
+        let unic = locales.unic(&mut map, id).unwrap();
+        let rows = locales.entries_for(&unic, Language::English).unwrap();
+        assert_eq!(rows.len(), source.messages.len());
+        for (row, original) in rows.iter().zip(&source.messages) {
+            assert_eq!(
+                locales
+                    .text_in(&unic, row.id, Language::English)
+                    .unwrap()
+                    .unwrap(),
+                localized_text(original).unwrap(),
+            );
+        }
+
+        let scripts = hs::Scenario::read(&mut map).unwrap();
+        let message_type = script.target.type_index("hud_message").unwrap();
+        let atoms: Vec<_> = scripts
+            .nodes()
+            .iter()
+            .filter(|n| n.live() && n.atom() && n.opcode() == message_type)
+            .collect();
+        assert!(!atoms.is_empty());
+        for atom in atoms {
+            let index = atom.data() as u16 as usize;
+            let name = scripts.string(atom.string_offset()).unwrap();
+            assert!(source.messages[index].name.eq_ignore_ascii_case(name));
+        }
+        if level == "d40" {
+            for slot in 667..=672 {
+                assert!(
+                    scripts.nodes().iter().any(|node| {
+                        node.live() && !node.atom() && !node.script_call() && node.opcode() == slot
+                    }),
+                    "missing timer builtin {slot}"
+                );
+            }
+        }
+    }
+}

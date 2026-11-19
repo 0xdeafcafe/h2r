@@ -645,6 +645,8 @@ dependencies = [
  "feature",
  "font",
  "gfx",
+ "h1scripts",
+ "h1text",
  "hot-render",
  "hot-tags",
  "hs",
