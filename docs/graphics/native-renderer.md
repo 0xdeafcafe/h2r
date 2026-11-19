@@ -2258,7 +2258,8 @@ through the game's tables, the screen transform with the begin's own
 arithmetic, the bitmap) and refuses, logged once per reason
 (`hud::Refused`), every batch that is not one stage over the glyph
 cache with the text's second block. Planned batches are drawn natively
-(below, "Native text"); HUD shader quads stay on D3D.
+(below, "Native text"), and so are HUD shader quads (below, "Native HUD
+quads").
 
 `H2_NATIVE_HUD_COMPARE=N` (empty: 512) pairs the plan with the D3D
 path for the first `N` quads, over the handoff's seam: the hooks queue
@@ -2328,14 +2329,33 @@ S to verify on a run: text on 03a and the menus drawn as on D3D (no
 half-pixel shift, the same weight), `Kept` lines, and segments per
 batch (`native_hud_glue::text_counts`).
 
+#### Native HUD quads
+
+A HUD shader quad (`0x0022a664`) is one resolved draw, so it goes
+through a `DrawAdmission` (`native_hud_glue::HudAdmission`): the hook
+notes the open call's corners; the admission claims the
+`D3DDevice_End` four-vertex fan with those corners and hands the device
+a pass that draws it with what D3D resolved (`hud_gpu::ScreenDraw`):
+the vertex program (`shaders::vsh`, every register a float4 at `16 r`
+as the device's immediate draws lay them out) with the draw's
+constants and defaults, the combiner as `d3d::nv2a::guest_def` builds
+it with D3D's default final combiner (`shaders::psh`, fog off), each
+sampled stage's resident view (`ExternalTarget::stages`) with its
+sampler, `tex_scale` for linear stages, bias and bump environment, the
+blend, colour writes and cull, the clip as the scissor. The device
+reserves the pass on every copy before it gives up the draw and draws
+it on D3D when that fails. Refused, logged once per reason: fixed
+function on either side, not the immediate layout, depth on,
+stencil, alpha test, fog, stipple or not solid fill, W-buffered, a clip
+of several rectangles, and a sampled stage that is not a 2D texture, is
+P8, has signed channels or a border. Programs are translated once per
+code (`hud_gpu::ScreenGpu::program`). Counts:
+`native_hud_glue::hud_counts`.
+
 **Next.** (1) The A/B on 03a and the main menu with
-`impl.render.native_hud=on`: text identical, few segments per batch.
-(2) The HUD shader quads (`0x0022a664`) through a `DrawAdmission`: one
-resolved draw each, whose snapshot carries the shader's program,
-combiner and resident stage views (`ExternalTarget::stages`); the
-admission claims a fan whose corners match the open call and draws it
-with its vertex program and combiner translated, refusing anything
-unresolved. (3) The other immediate draws.
+`impl.render.native_hud=on`: text and HUD identical, few segments per
+batch, the `Kept` and HUD lines. (2) Alpha test in both passes (the
+combiner compiler takes it). (3) The other immediate draws.
 
 ### Stage 5 status
 

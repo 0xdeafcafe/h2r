@@ -16,7 +16,15 @@
 //! counters, bound target and the glyph cache's ring stand still since
 //! the reservation; otherwise it reserves a new segment. A state the
 //! reservation's drain changed voids the segment (it draws nothing) and
-//! the quad keeps its D3D draw. HUD shader quads keep theirs.
+//! the quad keeps its D3D draw.
+//!
+//! HUD shader quads go through a draw admission on the device
+//! ([`HudAdmission`]): the hook notes the open call's corners, and the
+//! admission claims the `D3DDevice_End` fan with those corners as D3D
+//! resolved it, drawing it natively with its own vertex program,
+//! constants, combiner and resident stage views (`hud_gpu::ScreenGpu`).
+//! Anything unresolved or outside what the pass draws keeps the D3D draw,
+//! logged once per reason.
 //!
 //! `H2_NATIVE_HUD_COMPARE=N` (`feature::native_hud::compare_spec`) pairs
 //! the first `N` hooked quads with the draws the D3D path resolves for
@@ -41,7 +49,8 @@ use gfx::vertex::{PrimitiveType, VertexDataType, VertexLayout, VertexRegister};
 use native_render::camera::GuestRead;
 use native_render::hud::{self, Batch, Expect, HudQuad, Kind, Pairing, Refused};
 use native_render::hud_gpu::{
-    Atlas, Segment, TextDraw, TextGpu, TextState, TextTarget, text_program,
+    Atlas, SCREEN_STRIDE, ScreenDraw, ScreenGpu, ScreenProgram, ScreenStage, Segment, TextDraw,
+    TextGpu, TextState, TextTarget, text_program,
 };
 
 use crate::native_lights_glue::DeviceMemory;
@@ -361,6 +370,265 @@ impl d3d::ExternalPass for TextPass {
     }
 }
 
+static HUD_NATIVE: AtomicU64 = AtomicU64::new(0);
+static HUD_KEPT: AtomicU64 = AtomicU64::new(0);
+static HUD_LOGGED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// HUD shader quads drawn natively, and kept on D3D.
+pub fn hud_counts() -> (u64, u64) {
+    (
+        HUD_NATIVE.load(Ordering::Relaxed),
+        HUD_KEPT.load(Ordering::Relaxed),
+    )
+}
+
+fn hud_kept(why: &str) {
+    HUD_KEPT.fetch_add(1, Ordering::Relaxed);
+    let mut logged = HUD_LOGGED.lock().unwrap_or_else(|e| e.into_inner());
+    if logged.len() < 32 && !logged.iter().any(|w| w == why) {
+        logged.push(why.to_owned());
+        eprintln!("native-hud: a HUD shader quad keeps its D3D draw: {why} (logged once)");
+    }
+}
+
+/// A HUD shader quad as resolved by the D3D path, for the native side;
+/// or why it stays on D3D. Everything the draw depends on is taken from
+/// the resolved draw (`d3d::ResolvedDraw`): the vertex program and its
+/// constants, the combiner as `d3d::nv2a` builds it, each stage's
+/// sampler, the clip area.
+fn screen_draw(d: &d3d::ResolvedDraw) -> Result<ScreenDraw, String> {
+    use gfx::vertex::VertexDataType as T;
+    let d3d::shader::VertexProcessing::Program { microcode, .. } = &d.shader.vertex else {
+        return Err("fixed-function vertices".into());
+    };
+    let Some(ps) = &d.shader.pixel_shader else {
+        return Err("the fixed-function combiner".into());
+    };
+    let ([layout], [stream]) = (d.layout.streams.as_slice(), d.streams.as_slice()) else {
+        return Err("not one stream".into());
+    };
+    let stride = SCREEN_STRIDE as u32;
+    if d.indices.is_some() || layout.stride != stride || stream.stride != stride {
+        return Err("not an immediate draw's layout".into());
+    }
+    let mut registers = 0u16;
+    for a in &layout.attributes {
+        if a.data_type != T::Float4
+            || a.offset != 16 * u32::from(a.register.0)
+            || a.register.0 >= 16
+        {
+            return Err("not an immediate draw's layout".into());
+        }
+        registers |= 1 << a.register.0;
+    }
+    let bytes: &[u8] = &stream.data;
+    let Some(vertices) = bytes.get(..4 * SCREEN_STRIDE as usize) else {
+        return Err("the stream ends early".into());
+    };
+    let r = &d.state.render;
+    let table = gfx::xdk::RenderStateTable::default();
+    let raw = |canonical: u32| {
+        table
+            .canonical_to_guest(canonical)
+            .and_then(|g| d.raw.render.get(g as usize).copied())
+            .unwrap_or(0)
+    };
+    if r.depth_mode != gfx::state::DepthBufferMode::Disabled {
+        return Err("depth on".into());
+    }
+    if r.stencil.enable || r.alpha_test_enable || r.fog_enable {
+        return Err("stencil, alpha test or fog".into());
+    }
+    if r.fill_mode != gfx::state::FillMode::Solid || raw(STIPPLE_ENABLE) != 0 {
+        return Err("not solid fill".into());
+    }
+    if d3d::nv2a::w_buffered(d) {
+        return Err("W-buffered".into());
+    }
+    let (Some(clip), true) = (d.clip, d.clip_rects.is_empty()) else {
+        return Err("the clip area is not one rectangle".into());
+    };
+    let mut stages = [None; 4];
+    for (n, stage) in stages.iter_mut().enumerate() {
+        let Some(info) = d.texture_info[n] else {
+            continue;
+        };
+        let s = &d.state.stages[n];
+        use gfx::state::TextureAddress as A;
+        // A stage this pass cannot sample stays unbound: a combiner that
+        // reads it does not translate, and the quad stays on D3D.
+        if info.kind != gfx::texture::TextureKind::D2
+            || info.format == gfx::D3DFormat::P8
+            || d.extras[n].color_sign != 0
+            || [s.address_u, s.address_v, s.address_w].contains(&A::Border)
+        {
+            continue;
+        }
+        *stage = Some(ScreenStage {
+            sampler: gfx::translate::SamplerKey::from_stage(s, gfx::translate::Capabilities::ALL),
+            linear: (info.format.layout() == gfx::format::Layout::Linear)
+                .then_some((info.width, info.height)),
+        });
+    }
+    let def = d3d::nv2a::guest_def(
+        ps,
+        &d.shader.combiner_state,
+        d.raw
+            .render
+            .get(d3d::state::slot::PS_TEXTURE_MODES as usize)
+            .copied()
+            .unwrap_or(0),
+        d.shader.final_combiner_latch,
+    )
+    .with_default_final_combiner(false, raw(SPECULAR_ENABLE) != 0);
+    let mut primitive = gfx::translate::primitive_state(
+        r,
+        wgpu::PrimitiveTopology::TriangleList,
+        gfx::translate::Capabilities::ALL,
+    );
+    primitive.unclipped_depth = false;
+    Ok(ScreenDraw {
+        microcode: microcode.to_vec(),
+        provided_inputs: d.shader.provided_inputs,
+        flat: r.shade_mode == gfx::state::ShadeMode::Flat,
+        constants: Box::new(*d.shader.constants),
+        defaults: d.shader.vertex_defaults,
+        def,
+        stages,
+        alpha_kill: std::array::from_fn(|n| d.extras[n].alpha_kill & 4 != 0),
+        lod_bias: std::array::from_fn(|n| {
+            let b = d.state.stages[n].mip_lod_bias;
+            if b.is_finite() { b } else { 0.0 }
+        }),
+        bump_mat: std::array::from_fn(|n| d.extras[n].bump_env_mat),
+        bump_lum: std::array::from_fn(|n| {
+            let e = &d.extras[n];
+            [e.bump_env_lscale, e.bump_env_loffset, 0.0, 0.0]
+        }),
+        surface: (d.target.width, d.target.height),
+        z_max: gfx::renderer::d3dz_max(d.target.depth_format),
+        state: TextState {
+            blend: gfx::translate::blend_state(r),
+            writes: gfx::translate::color_writes(r.color_write),
+            primitive,
+            point: false,
+        },
+        blend_constant: blend_constant(r.blend_color),
+        clip: [clip.x, clip.y, clip.width, clip.height],
+        registers,
+        vertices: vertices.to_vec(),
+    })
+}
+
+/// The external pass of one HUD shader quad.
+struct HudPass {
+    draw: ScreenDraw,
+    program: ScreenProgram,
+    gpu: Arc<Mutex<ScreenGpu>>,
+}
+
+impl d3d::ExternalPass for HudPass {
+    fn encode(&mut self, _target: d3d::ExternalTarget<'_>) {}
+
+    fn record_ranges(&mut self, t: d3d::ExternalTarget<'_>) -> usize {
+        let stages = t.stages;
+        let mut gpu = self.gpu.lock().unwrap_or_else(|e| e.into_inner());
+        usize::from(gpu.record(
+            &self.draw,
+            &self.program,
+            TextTarget {
+                device: t.device,
+                queue: t.queue,
+                encoder: t.encoder,
+                color: t.color,
+                color_format: t.color_format,
+                guest_size: t.guest_size,
+                size: t.size,
+            },
+            stages,
+        ))
+    }
+
+    fn writes(&self) -> d3d::ExternalWrites {
+        d3d::ExternalWrites {
+            color: true,
+            depth_stencil: false,
+        }
+    }
+
+    fn colour_only(&self) -> bool {
+        true
+    }
+}
+
+/// Claims the draw of the HUD shader quad whose call is open (its corners
+/// from the hook) and draws it natively: the device reserves the pass on
+/// every copy before it gives up the draw, and draws it itself when that
+/// fails.
+struct HudAdmission {
+    open: Arc<Mutex<Option<[[f32; 2]; 4]>>>,
+    gpu: Arc<Mutex<ScreenGpu>>,
+}
+
+impl d3d::DrawAdmission for HudAdmission {
+    fn admit(
+        &self,
+        snapshot: &d3d::DrawSnapshot<'_>,
+    ) -> Option<(d3d::ExternalPlan, Box<dyn d3d::ExternalPass>)> {
+        let d = snapshot.draw;
+        if d.entry != "D3DDevice_End" {
+            return None;
+        }
+        let corners = fan_corners(
+            d.primitive,
+            d.vertex_count,
+            d.indices.is_some(),
+            &d.layout,
+            &d.streams,
+        )?;
+        {
+            let mut open = self.open.lock().unwrap_or_else(|e| e.into_inner());
+            if !open.is_some_and(|c| hud::same_corners(&c, &corners)) {
+                return None;
+            }
+            *open = None;
+        }
+        let draw = match screen_draw(d) {
+            Ok(draw) => draw,
+            Err(why) => {
+                hud_kept(&why);
+                return None;
+            }
+        };
+        let program = match self
+            .gpu
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .program(&draw)
+        {
+            Ok(p) => p,
+            Err(why) => {
+                hud_kept(&why);
+                return None;
+            }
+        };
+        HUD_NATIVE.fetch_add(1, Ordering::Relaxed);
+        Some((
+            d3d::ExternalPlan {
+                stage: timeline::native::Stage::Hud,
+                view: 0,
+                ranges: 1,
+                slots: Vec::new(),
+            },
+            Box::new(HudPass {
+                draw,
+                program,
+                gpu: Arc::clone(&self.gpu),
+            }),
+        ))
+    }
+}
+
 struct Glue<B: d3d::backend::Backend> {
     compare: Option<Arc<Compare>>,
     /// `impl.render.native_hud`: draw text natively (else plan and
@@ -370,6 +638,8 @@ struct Glue<B: d3d::backend::Backend> {
     text: Mutex<Text>,
     mirror: Mutex<Option<Mirror>>,
     gpu: Arc<Mutex<TextGpu>>,
+    /// The open HUD shader quad's corners, for [`HudAdmission`].
+    hud: Arc<Mutex<Option<[[f32; 2]; 4]>>>,
 }
 
 /// The render state a draw recorded now would take, for the states the
@@ -752,8 +1022,12 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     }
 
     fn hud_quad(&self, mem: &mut dyn GuestMemory, call: HudQuadCall) {
+        let quad = HudQuad::read(&Ro(mem), call.corners, call.rect, call.args);
+        if self.native {
+            *self.hud.lock().unwrap_or_else(|e| e.into_inner()) = quad.map(|q| q.corners);
+        }
         let Some(c) = &self.compare else { return };
-        if let Some(q) = HudQuad::read(&Ro(mem), call.corners, call.rect, call.args) {
+        if let Some(q) = quad {
             c.expect(Expect {
                 kind: Kind::Hud,
                 corners: q.corners,
@@ -781,6 +1055,13 @@ pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(
         d.add_draw_admission(Arc::clone(c) as Arc<dyn d3d::DrawAdmission>);
     }
     let native = feature::Switches::from_env().is_ok_and(|s| feature::native_hud::on(&s));
+    let hud = Arc::new(Mutex::new(None));
+    if native && let Ok(mut d) = device.lock() {
+        d.add_draw_admission(Arc::new(HudAdmission {
+            open: Arc::clone(&hud),
+            gpu: Arc::new(Mutex::new(ScreenGpu::new())),
+        }) as Arc<dyn d3d::DrawAdmission>);
+    }
     feature::native_hud::set_host(Arc::new(Glue {
         compare,
         native,
@@ -788,6 +1069,7 @@ pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(
         text: Mutex::new(Text::Idle),
         mirror: Mutex::new(None),
         gpu: Arc::new(Mutex::new(TextGpu::new())),
+        hud,
     }));
 }
 

@@ -20,7 +20,8 @@
 //! - `SCREEN_QUADS_END` (`0x00036560`): the batch ends.
 //! - `HUD_SHADER_QUAD` (`0x0022a664`): one HUD shader quad (ECX the
 //!   corners, EAX the coordinate rectangle, stack the bitmap datum, its
-//!   index and the shader). Observed only.
+//!   index and the shader). The host notes the corners; the quad's own
+//!   draw is claimed, or not, where D3D resolves it (a draw admission).
 //!
 //! `H2_NATIVE_HUD_COMPARE` ([`compare_spec`]): the host queues the first
 //! quads' corners and pairs each with the draw the D3D path resolves for
