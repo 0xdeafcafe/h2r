@@ -1846,12 +1846,17 @@ directly on its own `--socket` (`H2_AGENT`, else the cache's `theater.sock`).
 
 | Method | Parameters | Result |
 |---|---|---|
-| `theater.play` | `{"id":"film-id"}` to open, `{}` to resume | `{id, starting:true}` on launch, otherwise transport state |
+| `theater.play` | `{"id":"film-id","range":[300,900]}` to open, `{}` to resume. Omit `range` for the whole film | `{id, starting:true}` on launch, otherwise transport state |
 | `theater.state` | `{}` | Transport state, or `{id:null}` with no player |
 | `theater.pause` | `{}` | Holds guest execution and reports state |
 | `theater.speed` | `{"speed":0.5}` | Sets host pacing from 0.25 to 4 times realtime |
 | `theater.seek` | `{"tick":900}` | Requests restart and unpaced replay to that tick. Direct socket clients reconnect after the restart |
 | `theater.camera` | `{"mode":"default"}` | Returns state. Other modes return `UNAVAILABLE` with `unavailable until keyframes` |
+
+The rendered player starts at the clip's first tick and loops at its end.
+Its overlay uses the player's agent socket for transport and
+`cheat.set {"name":"hide_hud","value":true}` for the HUD. A paused player
+accepts the HUD setting and applies it when rendering resumes.
 
 Transport state carries `id`, `tick`, `length_ticks`, `paused`, `speed`,
 `seeking` and `camera`, alongside the agent's usual `at` stamp. Tick zero

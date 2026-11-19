@@ -167,9 +167,30 @@ struct Shared {
     library: Mutex<Option<Box<dyn Library>>>,
     location: Mutex<Option<Location>>,
     playback: Mutex<overlay::Session>,
+    playback_dir: Option<PathBuf>,
 }
 
 impl Theater {
+    /// Construct the playback window's controller independently of the library UI.
+    pub fn playback(
+        film: FilmMeta,
+        range: Option<[u64; 2]>,
+        socket: PathBuf,
+        dir: PathBuf,
+    ) -> std::io::Result<Self> {
+        let clip = range.map(|[from_tick, to_tick]| Clip {
+            film: film.id.clone(),
+            from_tick,
+            to_tick,
+        });
+        let rpc = adapter::Playback::socket(socket)?;
+        Ok(Self(Arc::new(Shared {
+            playback: Mutex::new(overlay::Session::playback(&Entry { film, clip }, rpc)),
+            playback_dir: Some(dir),
+            ..Shared::default()
+        })))
+    }
+
     fn state(&self) -> MutexGuard<'_, State> {
         self.0.state.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -304,17 +325,33 @@ impl Theater {
 
     fn edit_clips(&self, edit: impl FnOnce(&mut Vec<Clip>)) -> Result<(), String> {
         let location = self.0.location.lock().unwrap_or_else(|e| e.into_inner());
-        let location = location.as_ref().ok_or("Clip storage is unavailable")?;
+        let dir = self
+            .0
+            .playback_dir
+            .as_ref()
+            .or_else(|| location.as_ref().map(|l| &l.dir))
+            .ok_or("Clip storage is unavailable")?;
+        let path = adapter::clips_path(dir);
         let mut state = self.state();
-        if let Some(error) = &state.clips_error {
-            return Err(error.clone());
-        }
-        let mut clips = state.clips.clone();
-        edit(&mut clips);
-        adapter::store_clips(&adapter::clips_path(&location.dir), &clips)?;
-        state.clips = clips;
+        state.clips = adapter::update_clips(&path, edit)?;
+        state.clips_error = None;
         state.changed();
         Ok(())
+    }
+
+    fn refresh_clips(&self) {
+        let location = self.0.location.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(location) = location.as_ref() else { return };
+        let clips = adapter::load_clips(&adapter::clips_path(&location.dir));
+        let mut state = self.state();
+        match clips {
+            Ok(clips) => {
+                state.clips = clips;
+                state.clips_error = None;
+            }
+            Err(error) => state.clips_error = Some(error),
+        }
+        state.changed();
     }
 
     fn url(&self, entry: &Entry) -> Option<String> {

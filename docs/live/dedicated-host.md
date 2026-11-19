@@ -245,6 +245,7 @@ game-data bundle. Every required flag can also come from the environment.
 | `--tunnel-listen` | `H2_TUNNEL_LISTEN` | Internal tunnel listener, default `0.0.0.0:31100` |
 | `--out` | `H2_IMAGE` | Prebuilt game module directory, default `$TMPDIR/h2boot` |
 | `--data` | `H2_DATA` | Writable game data directory, default private per-run scratch space |
+|  | `H2_AGENT` | Optional TCP endpoint for the child's agent, as `tcp://HOST:PORT` |
 
 On Unix, the supervisor checks that the JSON lease ID matches `--lease`
 or `H2_LEASE` before provisioning. It provisions the verified bundle under
@@ -260,6 +261,14 @@ and `live: true`. Open returns the session ID acknowledged by Live. The
 supervisor registers that ID and the endpoint once `host.lobby.state` shows a lobby. It requests
 start when the lobby is ready and has at least the reserved player count,
 or one player for an open lobby. Lease roster authorization belongs to Live.
+
+When the supervisor receives a TCP `H2_AGENT` address, the child also
+binds that address to the same agent. Both listeners share the same
+commands, state and controller claim. The child reports a bind failure
+as a startup error. Cloudflare sets `tcp://127.0.0.1:14720` for
+container-local diagnostics. HostRoom forwards the game tunnel on port
+31100. The Local provider drops any inherited `H2_AGENT` from Live so
+its leases use their own Unix sockets.
 
 For UDP, the child uses the default route's IPv4 or the IP from
 `H2_XNET_ADDR`, with the configured base port. Live receives that address

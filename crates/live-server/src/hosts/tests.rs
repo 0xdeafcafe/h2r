@@ -48,6 +48,9 @@ impl HostProvider for Fake {
         if self.fail_start.load(Ordering::Relaxed) {
             return Err(HostError::new("launch failed"));
         }
+        if self.kind == ProviderKind::Fly {
+            assert_eq!(lease.transport, Transport::Udp);
+        }
         assert!(!boot.token.is_empty());
         assert_eq!(boot.live_url, "https://live.test");
         assert_eq!(
@@ -160,6 +163,27 @@ fn operator(live: &Live, scope: &str) -> String {
         scope,
         crate::app::now(),
     )
+}
+
+#[tokio::test]
+async fn fly_requests_normalize_tunnel_before_recording_and_retrying() {
+    let fake = Arc::new(Fake::new(ProviderKind::Fly));
+    let live = start(
+        Arc::new(MemoryStore::new()),
+        &KeyPair::generate().secret_b64(),
+        fake.clone(),
+    )
+    .await;
+    let mut input = request("fly");
+    input.provider = ProviderKind::Fly;
+    input.transport = Transport::Tunnel;
+
+    let lease = live.request_host(input.clone()).await.unwrap();
+    assert_eq!(lease.transport, Transport::Udp);
+    assert_eq!(live.require_host(&lease.id).unwrap().lease, lease);
+    assert_eq!(live.request_host(input).await.unwrap(), lease);
+    assert_eq!(fake.starts.load(Ordering::Relaxed), 1);
+    register(&live, &lease).await;
 }
 
 #[tokio::test]

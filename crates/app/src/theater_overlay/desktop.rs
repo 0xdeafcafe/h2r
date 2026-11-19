@@ -16,7 +16,6 @@ pub(crate) fn key(code: KeyCode) -> Option<Key> {
         KeyCode::ArrowDown => Key::Down,
         KeyCode::BracketLeft => Key::Slower,
         KeyCode::BracketRight => Key::Faster,
-        KeyCode::KeyC => Key::Camera,
         KeyCode::KeyH => Key::Hide,
         KeyCode::KeyJ => Key::Hud,
         KeyCode::KeyX => Key::Clip,

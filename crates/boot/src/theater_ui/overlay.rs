@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use debug_menu::{Line, Tone};
+use debug_menu::{Line, Tone, sources::method::CHEAT_SET};
 use input::host::{HostButton, HostButtons, HostPadId, HostPadState};
 use input::{GatedPad, PadGate};
 use serde::Deserialize;
@@ -27,7 +27,6 @@ pub enum Key {
     Down,
     Slower,
     Faster,
-    Camera,
     Hide,
     Hud,
     Clip,
@@ -41,7 +40,6 @@ pub enum Control {
     Skip(i64),
     Speed(bool),
     Player(bool),
-    Camera,
     Hide,
     Hud,
     Mark,
@@ -49,46 +47,12 @@ pub enum Control {
     Leave,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum Camera {
-    FirstPerson,
-    #[default]
-    Follow,
-    Orbit,
-}
-
-impl Camera {
-    fn label(self) -> &'static str {
-        match self {
-            Self::FirstPerson => "First person",
-            Self::Follow => "Follow",
-            Self::Orbit => "Orbit",
-        }
-    }
-
-    fn wire(self) -> &'static str {
-        match self {
-            Self::FirstPerson => "first_person",
-            Self::Follow => "follow",
-            Self::Orbit => "orbit",
-        }
-    }
-
-    fn next(self) -> Self {
-        match self {
-            Self::Follow => Self::Orbit,
-            Self::Orbit => Self::FirstPerson,
-            Self::FirstPerson => Self::Follow,
-        }
-    }
-}
-
 /// The agent only needs to provide fields it can observe during this tier.
 /// Missing live scores keep the film's recorded roster values.
 #[derive(Debug, Default, Deserialize)]
 struct AgentState {
-    #[serde(default, alias = "playing")]
-    active: Option<bool>,
+    #[serde(default)]
+    seeking: bool,
     #[serde(default)]
     paused: Option<bool>,
     #[serde(default)]
@@ -114,8 +78,7 @@ pub(super) struct Track {
     pub paused: bool,
     pub speed: usize,
     pub players: Vec<Player>,
-    pub pov: usize,
-    camera: Camera,
+    pub selected_player: usize,
     pub hud: bool,
     pub visible: bool,
     pub marks: (Option<u64>, Option<u64>),
@@ -134,8 +97,7 @@ impl Track {
             paused: false,
             speed: 2,
             players: entry.film.players.clone(),
-            pov: 0,
-            camera: Camera::Follow,
+            selected_player: 0,
             hud: true,
             visible: true,
             marks: (None, None),
@@ -185,10 +147,10 @@ impl Track {
             self.speed = speed;
         }
         if let Some(players) = s.players {
-            let selected = self.players.get(self.pov).map(|p| &p.name);
-            self.pov = selected
+            let selected = self.players.get(self.selected_player).map(|p| &p.name);
+            self.selected_player = selected
                 .and_then(|name| players.iter().position(|p| &p.name == name))
-                .unwrap_or(self.pov.min(players.len().saturating_sub(1)));
+                .unwrap_or(self.selected_player.min(players.len().saturating_sub(1)));
             self.players = players;
         }
         if let Some(kills) = s.kills {
@@ -205,8 +167,9 @@ impl Track {
             Control::Pause => self.paused = !self.paused,
             Control::Skip(n) => self.tick = self.skip(n),
             Control::Speed(up) => self.speed = step(self.speed, SPEEDS.len(), up),
-            Control::Player(down) => self.pov = step(self.pov, self.players.len(), down),
-            Control::Camera => self.camera = self.camera.next(),
+            Control::Player(down) => {
+                self.selected_player = step(self.selected_player, self.players.len(), down);
+            }
             Control::Hide => self.visible = !self.visible,
             Control::Hud => self.hud = !self.hud,
             Control::Mark => {
@@ -222,7 +185,7 @@ impl Track {
             let score = p.score.map_or_else(|| "--".into(), |s| s.to_string());
             line(
                 format!("{name:<17} {score:>4}"),
-                if self.pov == i {
+                if self.selected_player == i {
                     Tone::Selected
                 } else {
                     Tone::Normal
@@ -230,7 +193,7 @@ impl Track {
             )
         };
         let first = self
-            .pov
+            .selected_player
             .saturating_sub(3)
             .min(self.players.len().saturating_sub(7));
         let mut players = vec![line("Players / Score", Tone::Title)];
@@ -243,11 +206,14 @@ impl Track {
                 .map(|(i, p)| player_line(i, p)),
         );
         if self.players.is_empty() {
-            players.push(line("No player POV", Tone::Greyed));
+            players.push(line("No players", Tone::Greyed));
         }
         let top_right = vec![
-            line(self.camera.label(), Tone::Title),
+            line("Default camera", Tone::Title),
             line("Free - after keyframes", Tone::Greyed),
+            line("Follow - after keyframes", Tone::Greyed),
+            line("Orbit - after keyframes", Tone::Greyed),
+            line("First person - after keyframes", Tone::Greyed),
             line(if self.hud { "HUD on" } else { "HUD off" }, Tone::Normal),
         ];
         let transport = if self.paused { "Paused" } else { "Playing" };
@@ -263,8 +229,8 @@ impl Track {
             ),
             line(self.timeline(43), Tone::Normal),
             line("A/Space Play/Pause   LT/RT or [ ] Speed", Tone::Hint),
-            line("Left/Right 5s (hold 30s)   Up/Down POV", Tone::Hint),
-            line("Y/C Camera  LB/J HUD  RB/F12 Screenshot", Tone::Hint),
+            line("Left/Right 5s (hold 30s)   Up/Down Roster", Tone::Hint),
+            line("LB/J HUD  RB/F12 Screenshot", Tone::Hint),
             line("X Mark clip   Back/H Hide   B/Esc Leave", Tone::Hint),
         ];
         if let Some(start) = self.marks.0 {
@@ -335,12 +301,11 @@ pub struct OverlayView {
 }
 
 enum Request {
-    Play,
+    Open,
     State,
     Pause,
     Seek,
     Speed(usize),
-    Camera(Camera, usize),
     Hud(bool),
 }
 
@@ -366,17 +331,25 @@ impl Session {
     }
 
     pub fn play(&mut self, entry: &Entry) -> Result<(), String> {
-        if self.track.is_some() {
+        if self.pending.values().any(|r| matches!(r, Request::Open)) {
             return Err("A film is already opening or playing".into());
         }
         let rpc = self.rpc.as_mut().ok_or("Playback agent is unavailable")?;
-        let id = rpc.play(&entry.film.id);
-        self.track = Some(Track::from_entry(entry));
-        self.pending.insert(id, Request::Play);
-        self.ready = false;
-        self.notice = Some("Opening film...".into());
-        self.last_poll = None;
+        let range = entry.clip.as_ref().map(|clip| [clip.from_tick, clip.to_tick]);
+        let id = rpc.send(
+            agent_proto::theater::PLAY,
+            json!({"id": entry.film.id, "range": range}),
+        );
+        self.pending.insert(id, Request::Open);
         Ok(())
+    }
+
+    pub fn playback(entry: &Entry, rpc: Playback) -> Self {
+        Self {
+            track: Some(Track::from_entry(entry)),
+            rpc: Some(rpc),
+            ..Self::default()
+        }
     }
 
     fn send(&mut self, method: &'static str, params: Value, kind: Request) {
@@ -398,7 +371,7 @@ impl Session {
         if let Some(seconds) = self.key_skip.held(now) {
             self.control(Control::Skip(seconds));
         }
-        if self.ready
+        if self.track.is_some()
             && self
                 .last_poll
                 .is_none_or(|last| now.duration_since(last) >= REFRESH)
@@ -408,39 +381,31 @@ impl Session {
                 .any(|req| matches!(req, Request::State))
         {
             self.last_poll = Some(now);
-            self.send("theater.state", json!({}), Request::State);
+            self.send(agent_proto::theater::STATE, json!({}), Request::State);
         }
     }
 
     fn answer(&mut self, request: Request, answer: Result<Value, String>) {
         match (request, answer) {
-            (Request::Play, Ok(_)) => {
-                self.ready = true;
-                self.notice = None;
-            }
-            (Request::Play, Err(error)) => {
-                self.ready = false;
-                self.track = None;
-                self.open_error = Some(error);
-            }
+            (Request::Open, Ok(_)) => {}
+            (Request::Open, Err(error)) => self.open_error = Some(error),
             (Request::State, Ok(value)) => {
                 if let (Some(track), Ok(s)) =
                     (&mut self.track, serde_json::from_value::<AgentState>(value))
                 {
-                    if s.active == Some(false) {
-                        self.ready = false;
-                        self.track = None;
-                    } else {
-                        track.read(s);
-                        if let Some((start, end)) = track.range
-                            && (track.tick < start || track.tick >= end)
-                            && !self.pending.values().any(|r| matches!(r, Request::Seek))
-                        {
-                            self.send("theater.seek", json!({ "tick": start }), Request::Seek);
-                        }
+                    self.ready = true;
+                    let seeking = s.seeking;
+                    track.read(s);
+                    if let Some((start, end)) = track.range
+                        && !seeking
+                        && (track.tick < start || track.tick >= end)
+                        && !self.pending.values().any(|r| matches!(r, Request::Seek))
+                    {
+                        self.send(agent_proto::theater::SEEK, json!({"tick": start}), Request::Seek);
                     }
                 }
             }
+            (Request::State, Err(_)) if !self.ready => {}
             (Request::Pause, Ok(value)) => {
                 if let Some(track) = &mut self.track {
                     track.paused = value
@@ -458,12 +423,6 @@ impl Session {
             (Request::Speed(speed), Ok(_)) => {
                 if let Some(track) = &mut self.track {
                     track.speed = speed;
-                }
-            }
-            (Request::Camera(camera, target), Ok(_)) => {
-                if let Some(track) = &mut self.track {
-                    track.camera = camera;
-                    track.pov = target;
                 }
             }
             (Request::Hud(hud), Ok(_)) => {
@@ -506,36 +465,30 @@ impl Session {
             }
             Control::Skip(seconds) => {
                 let tick = track.skip(seconds);
-                self.send("theater.seek", json!({ "tick": tick }), Request::Seek);
+                self.send(agent_proto::theater::SEEK, json!({ "tick": tick }), Request::Seek);
             }
             Control::Speed(up) => {
                 let speed = step(track.speed, SPEEDS.len(), up);
                 if speed != track.speed {
                     self.send(
-                        "theater.speed",
+                        agent_proto::theater::SPEED,
                         json!({ "speed": SPEEDS[speed] }),
                         Request::Speed(speed),
                     );
                 }
             }
             Control::Player(down) => {
-                let target = step(track.pov, track.players.len(), down);
-                if target != track.pov {
-                    let camera = track.camera;
-                    self.camera(camera, target);
-                }
-            }
-            Control::Camera => {
-                let (camera, target) = (track.camera.next(), track.pov);
-                self.camera(camera, target);
+                track.selected_player = step(track.selected_player, track.players.len(), down);
             }
             Control::Hud => {
-                let hud = !track.hud;
-                self.send(
-                    "cheat.set",
-                    json!({"name": "hide_hud", "value": !hud}),
-                    Request::Hud(hud),
-                );
+                if !self.pending.values().any(|r| matches!(r, Request::Hud(_))) {
+                    let hud = !track.hud;
+                    self.send(
+                        CHEAT_SET,
+                        json!({"name": "hide_hud", "value": !hud}),
+                        Request::Hud(hud),
+                    );
+                }
             }
             Control::Mark => {
                 if let Some(clip) = track.mark() {
@@ -544,16 +497,6 @@ impl Session {
             }
             Control::Screenshot => self.screenshot = true,
         }
-    }
-
-    fn camera(&mut self, camera: Camera, target: usize) {
-        let Some(track) = &self.track else { return };
-        let args = if track.players.get(target).is_some() {
-            json!({ "mode": camera.wire(), "target": target })
-        } else {
-            json!({ "mode": camera.wire() })
-        };
-        self.send("theater.camera", args, Request::Camera(camera, target));
     }
 
     pub fn owns_pads(&self) -> bool {
@@ -584,7 +527,6 @@ impl Session {
             Key::Faster => Control::Speed(true),
             Key::Up => Control::Player(false),
             Key::Down => Control::Player(true),
-            Key::Camera => Control::Camera,
             Key::Hide => Control::Hide,
             Key::Hud => Control::Hud,
             Key::Clip => Control::Mark,
@@ -687,7 +629,6 @@ impl PadGate for Gate {
                     (HostButton::South, Control::Pause),
                     (HostButton::East, Control::Leave),
                     (HostButton::West, Control::Mark),
-                    (HostButton::North, Control::Camera),
                     (HostButton::Back, Control::Hide),
                     (HostButton::LeftBumper, Control::Hud),
                     (HostButton::RightBumper, Control::Screenshot),
@@ -793,6 +734,95 @@ mod tests {
         );
         let timeline = track.timeline(100);
         assert!(timeline.contains('*') && timeline.contains('|') && timeline.contains('['));
+    }
+
+    #[test]
+    fn theater_overlay_lists_only_the_default_camera_as_available() {
+        let view = sample_track().view(None);
+        assert_eq!(view.top_right[0], line("Default camera", Tone::Title));
+        for (row, mode) in view.top_right[1..5]
+            .iter()
+            .zip(["Free", "Follow", "Orbit", "First person"])
+        {
+            assert_eq!(*row, line(format!("{mode} - after keyframes"), Tone::Greyed));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn theater_overlay_sends_controls_to_the_playback_agent_socket() {
+        use agent::{Access, Agent, GameStatus, Reader, Server};
+        use agent_proto::{Endpoint, Object, theater as api};
+
+        struct Empty;
+        impl Reader for Empty {
+            fn status(&mut self) -> GameStatus {
+                GameStatus::default()
+            }
+
+            fn objects(&mut self) -> Result<Vec<Object>, String> {
+                Ok(Vec::new())
+            }
+        }
+
+        let agent = Agent::new();
+        let (calls, received) = std::sync::mpsc::channel();
+        agent.add_method(api::STATE, Access::Read, |_| Ok(json!({"tick": 60})));
+        for method in [api::PAUSE, api::SPEED, api::SEEK, api::CAMERA, CHEAT_SET] {
+            let calls = calls.clone();
+            agent.add_method(method, Access::Act, move |params| {
+                calls.send((method, params)).unwrap();
+                Ok(json!({"paused": true}))
+            });
+        }
+        let path = std::env::temp_dir().join(format!(
+            "h2t-{}.sock",
+            live_proto::sign::random_id()
+        ));
+        let server = Server::listen_on(&Endpoint::Unix(path.clone()), agent.clone()).unwrap();
+        let mut track = sample_track();
+        track.players = ["A", "B"].map(|name| Player {
+            name: name.into(),
+            ..Player::default()
+        }).to_vec();
+        let mut session = Session {
+            track: Some(track),
+            rpc: Some(Playback::socket(path).unwrap()),
+            ..Session::default()
+        };
+        let drive = |session: &mut Session| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                session.pump();
+                agent.poll_theater(&mut Empty);
+                if session.ready && session.pending.is_empty() {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "playback RPC did not complete");
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        };
+        drive(&mut session);
+        session.control(Control::Player(true));
+        assert_eq!(session.track.as_ref().unwrap().selected_player, 1);
+        assert!(session.pending.is_empty(), "roster selection sent an RPC");
+        session.control(Control::Pause);
+        session.control(Control::Speed(true));
+        session.control(Control::Skip(5));
+        session.control(Control::Hud);
+        drive(&mut session);
+        assert_eq!(
+            received.try_iter().collect::<Vec<_>>(),
+            [
+                (api::PAUSE, json!({})),
+                (api::SPEED, json!({"speed": 2.0})),
+                (api::SEEK, json!({"tick": 210})),
+                (CHEAT_SET, json!({"name": "hide_hud", "value": true})),
+            ]
+        );
+        assert!(!session.track.as_ref().unwrap().hud);
+        agent.shutdown();
+        drop(server);
     }
 
     #[test]

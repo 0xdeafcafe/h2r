@@ -1919,9 +1919,7 @@ fn run_configured(
     let mut film_slices = 0;
     for slice in 0..opts.max_slices {
         if let Some(f) = &film {
-            if !f.before_slice(slice, &mut m, agent.as_ref(), &loaded.runtime, || {
-                host.between_slices.as_mut().is_none_or(|check| check(&k))
-            })? {
+            if !f.before_slice(slice, &mut m, agent.as_ref(), &loaded.runtime)? {
                 host_stop = true;
                 break;
             }

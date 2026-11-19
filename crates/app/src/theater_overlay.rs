@@ -17,7 +17,6 @@ pub enum Key {
     Down,
     Slower,
     Faster,
-    Camera,
     Hide,
     Hud,
     Clip,

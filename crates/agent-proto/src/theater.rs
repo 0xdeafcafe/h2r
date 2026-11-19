@@ -13,6 +13,8 @@ pub const METHODS: [&str; 6] = [PLAY, STATE, PAUSE, SPEED, SEEK, CAMERA];
 #[serde(deny_unknown_fields)]
 pub struct Play {
     pub id: Option<String>,
+    /// Optional clip bounds [start, end) when opening a library film.
+    pub range: Option<[u64; 2]>,
 }
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -599,7 +599,12 @@ impl Rows for ScreenRows {
                 return None;
             }
             state.change_tab(right);
-            return Some(state.tab.label().to_owned());
+            let tab = state.tab;
+            drop(state);
+            if tab == super::Tab::Clips {
+                self.theater.refresh_clips();
+            }
+            return Some(tab.label().to_owned());
         }
         let pages = state.selected.as_ref()?.film.players.len().div_ceil(ROSTER);
         if pages <= 1 {

@@ -25,6 +25,8 @@ impl Agent {
         while let Some((conn, req)) = s.pending.pop_front() {
             if agent_proto::theater::METHODS.contains(&req.method.as_str())
                 || req.method == method::METHODS
+                || (req.method == debug_menu::sources::method::CHEAT_SET
+                    && req.params["name"].as_str() == Some("hide_hud"))
             {
                 let id = req.id.clone();
                 if let (Some(id), Some(result)) = (id, s.handle(conn, req, reader)) {

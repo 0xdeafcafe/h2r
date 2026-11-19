@@ -172,9 +172,8 @@ impl Live for Preview {
                 Input::Left => Control::Skip(-5),
                 Input::Right => Control::Skip(5),
                 Input::X => Control::Mark,
-                Input::Y => Control::Camera,
                 Input::Back => Control::Hide,
-                Input::Start => return "No action".into(),
+                Input::Start | Input::Y => return "No action".into(),
             };
             if let Some(track) = &mut self.track {
                 track.simulate(control);

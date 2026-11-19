@@ -64,6 +64,9 @@ impl LocalProvider {
         let lease_json = serde_json::to_string(lease)
             .map_err(|_| HostError::new("could not encode local host lease"))?;
         let mut cmd = Command::new(bin);
+        // Each local supervisor owns a private game socket. A Live process
+        // embedded in the desktop game can have its own H2_AGENT endpoint.
+        cmd.env_remove("H2_AGENT");
         // Child keeps the write end. If Live goes away the supervisor sees
         // EOF and closes its game even when Live could not run Drop.
         cmd.env("H2_HOST_PARENT_PIPE", "1");

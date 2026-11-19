@@ -9,8 +9,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use agent_proto::Client;
+use agent_proto::{Client, Endpoint};
 use anyhow::{Context, Result, ensure};
+use boot::agent_glue::HOST_TCP_ENV;
 use live_proto::hosts::{HostLease, Transport};
 
 use super::live::Live;
@@ -136,6 +137,7 @@ impl Game {
             .env_remove("H2_BOOT_INPUT")
             .env_remove("H2_INPUT_REPLAY")
             .env_remove("H2_BOTS");
+        configure_agent_tcp(&mut cmd, std::env::var_os(agent_proto::ENV).as_deref())?;
         configure(&mut cmd, data, &socket)?;
         #[cfg(target_os = "linux")]
         stop_on_parent_death(&mut cmd);
@@ -157,6 +159,18 @@ impl Game {
         agent.set_timeout(Some(timeout))?;
         Ok(agent)
     }
+}
+
+fn configure_agent_tcp(cmd: &mut Command, inherited: Option<&OsStr>) -> Result<()> {
+    cmd.env_remove(HOST_TCP_ENV);
+    if let Some(endpoint) = inherited
+        .and_then(OsStr::to_str)
+        .filter(|value| value.starts_with("tcp:"))
+        && let Endpoint::Tcp(address) = Endpoint::parse(endpoint).map_err(anyhow::Error::msg)?
+    {
+        cmd.env(HOST_TCP_ENV, address);
+    }
+    Ok(())
 }
 
 impl Drop for Game {
@@ -275,6 +289,24 @@ fn route_ip() -> Option<Ipv4Addr> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn supervisor_forwards_only_tcp_agent_addresses_to_the_child() {
+        let mut cmd = Command::new("h2");
+        let address = |cmd: &Command| {
+            cmd.get_envs()
+                .find(|(key, _)| *key == OsStr::new(HOST_TCP_ENV))
+                .map(|(_, value)| value.map(OsStr::to_os_string))
+        };
+        configure_agent_tcp(&mut cmd, Some(OsStr::new("tcp://127.0.0.1:14720"))).unwrap();
+        assert_eq!(address(&cmd), Some(Some("127.0.0.1:14720".into())));
+
+        for value in [None, Some(OsStr::new("")), Some(OsStr::new("menu.sock"))] {
+            configure_agent_tcp(&mut cmd, value).unwrap();
+            assert_eq!(address(&cmd), Some(None));
+        }
+        assert!(configure_agent_tcp(&mut cmd, Some(OsStr::new("tcp://localhost"))).is_err());
+    }
 
     #[test]
     fn parent_pipe_drains_input_and_stops_at_eof() {
