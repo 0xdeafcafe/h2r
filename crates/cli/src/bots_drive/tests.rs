@@ -131,6 +131,14 @@ fn main_menu_to_the_lobby_to_start() {
         p,
         ["a an unnamed dialog (window 3; the game named none) on the way to Xbox Live"]
     );
+    // Said once, with the row its cursor is on.
+    assert_eq!(
+        d.take_said(),
+        [
+            "bots-drive: an unnamed dialog (window 3; the game named none) on the way to Xbox \
+          Live (row 0): A, its first button"
+        ]
+    );
     // The players' screen in Xbox Live mode: A on to the Live menu.
     d.line(9100, "ui: screen 0x1e (window 5, slot 4), mode 3");
     let p = presses(&mut d, 9200, 11000);
