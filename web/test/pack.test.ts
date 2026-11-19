@@ -10,7 +10,7 @@ const load = (name: string) => ({
 });
 
 describe("packed frames", () => {
-  for (const name of ["multiplayer", "campaign", "odd", "cinematic", "v1-multiplayer", "v2-multiplayer", "v3-multiplayer"]) {
+  for (const name of ["multiplayer", "campaign", "odd", "cinematic", "v1-multiplayer", "v2-multiplayer", "v3-multiplayer", "v4-multiplayer", "v4-cinematic"]) {
     test(`decodes the Rust encoder's ${name} stream exactly`, () => {
       const { bin, json } = load(name);
       const d = new FrameDecoder();
@@ -51,8 +51,8 @@ describe("packed frames", () => {
     expect(() => mixed.decode(records(load("v2-multiplayer").bin)[1]!)).toThrow(PackError);
   });
 
-  test("cinematic frames are version 5 keyframes in and out; the rest stay version 4", () => {
-    const recs = records(load("cinematic").bin);
+  test("before version 6, cinematic frames were version 5 keyframes in and out; the rest version 4", () => {
+    const recs = records(load("v4-cinematic").bin);
     // Version in the low four bits, the keyframe bit next.
     expect(recs.map((r) => r[0]! & 0xf)).toEqual([4, 5, 5, 4]);
     expect(recs.map((r) => (r[0]! >> 4) & 1)).toEqual([1, 1, 0, 1]);
@@ -60,6 +60,35 @@ describe("packed frames", () => {
     const frames = recs.map((r) => d.decode(r).frame);
     expect(frames.map((f) => f.cinematic === true)).toEqual([false, true, true, false]);
     expect(frames.every((f) => f.players.length === 0 && f.actors === undefined)).toBe(true);
+  });
+
+  test("version 6: every frame carries the cinematic bit, so a cutscene is deltas", () => {
+    const recs = records(load("cinematic").bin);
+    expect(recs.map((r) => r[0]! & 0xf)).toEqual([6, 6, 6, 6]);
+    expect(recs.map((r) => (r[0]! >> 4) & 1)).toEqual([1, 0, 0, 0]);
+    const d = new FrameDecoder();
+    expect(recs.map((r) => d.decode(r).frame.cinematic === true)).toEqual([false, true, true, false]);
+  });
+
+  test("version 6 projectiles, items and vehicle velocity; version 4 frames have none", () => {
+    const d = new FrameDecoder();
+    const odd = d.decode(records(load("odd").bin)[0]!).frame;
+    expect(odd.projectiles).toHaveLength(2);
+    expect(odd.projectiles![0]!.parent).toBe("p15");
+    expect(odd.projectiles![0]!.vel).toBeUndefined();
+    expect(odd.projectiles![1]!.vel).toEqual([-99, 0.5, -0.015625]);
+    expect(odd.items![0]!.equipment).toBe(true);
+    const mp = new FrameDecoder();
+    const frames = records(load("multiplayer").bin).map((r) => mp.decode(r).frame);
+    expect(frames.every((f) => (f.items ?? []).length >= 4)).toBe(true);
+    expect(frames[0]!.vehicles!.filter((v) => v.kind !== "chaingun").every((v) => v.vel !== undefined)).toBe(true);
+    const v4 = new FrameDecoder();
+    const old = records(load("v4-multiplayer").bin).map((r) => v4.decode(r).frame);
+    expect(old.every((f) => f.projectiles === undefined && f.items === undefined && (f.vehicles ?? []).every((v) => v.vel === undefined))).toBe(true);
+    // A version 4 delta never follows on from a version 6 frame.
+    const mixed = new FrameDecoder();
+    mixed.decode(records(load("multiplayer").bin)[0]!);
+    expect(() => mixed.decode(records(load("v4-multiplayer").bin)[1]!)).toThrow(PackError);
   });
 
   test("a dropped delta waits for the next keyframe", () => {

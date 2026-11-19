@@ -104,6 +104,7 @@ const VEHICLE: u32 = 0xe003_0030;
 const TURRET: u32 = 0xe004_0040;
 const MACHINE: u32 = 0xe005_0050;
 const ELITE: u32 = 0xe006_0060;
+const GRENADE: u32 = 0xe007_0070;
 /// Scenery's object type (the type table's order, `memory::object_kind`).
 const SCENERY: u8 = 6;
 
@@ -137,6 +138,11 @@ fn tag_names() -> TagNames {
                 "objects\\vehicles\\warthog\\turrets\\chaingun\\chaingun".to_string(),
             ),
             (
+                GRENADE,
+                *b"proj",
+                "objects\\weapons\\grenade\\frag_grenade\\frag_grenade".to_string(),
+            ),
+            (
                 MACHINE,
                 *b"mach",
                 "scenarios\\objects\\machines\\lift\\lift".to_string(),
@@ -165,6 +171,10 @@ pub(crate) struct Scene {
     pub scenery: u32,
     /// Weapons from scenario placements (one in four picked up: gone).
     pub placed_weapons: u32,
+    /// Grenades in flight.
+    pub projectiles: u32,
+    /// Weapons lying where they were dropped.
+    pub loose_weapons: u32,
     pub hits_per_tick: u32,
     pub shots_per_tick: u32,
 }
@@ -184,6 +194,8 @@ pub(crate) const SCENES: [Scene; 3] = [
         machines: 10,
         scenery: 200,
         placed_weapons: 24,
+        projectiles: 4,
+        loose_weapons: 8,
         hits_per_tick: 3,
         shots_per_tick: 8,
     },
@@ -201,6 +213,8 @@ pub(crate) const SCENES: [Scene; 3] = [
         machines: 20,
         scenery: 840,
         placed_weapons: 48,
+        projectiles: 4,
+        loose_weapons: 16,
         hits_per_tick: 3,
         shots_per_tick: 8,
     },
@@ -218,6 +232,8 @@ pub(crate) const SCENES: [Scene; 3] = [
         machines: 30,
         scenery: 600,
         placed_weapons: 60,
+        projectiles: 8,
+        loose_weapons: 40,
         hits_per_tick: 4,
         shots_per_tick: 12,
     },
@@ -232,6 +248,7 @@ pub(crate) struct World {
     turrets: Vec<u32>,
     machines: Vec<u32>,
     weapons: Vec<u32>,
+    projectiles: Vec<u32>,
 }
 
 /// A point on the unit circle that goes round as `a` grows (one turn every
@@ -287,6 +304,7 @@ impl World {
             turrets: Vec::new(),
             machines: Vec::new(),
             weapons: Vec::new(),
+            projectiles: Vec::new(),
         };
         let g = &mut world.guest;
         // Vehicles first, so riders can name them.
@@ -393,6 +411,24 @@ impl World {
                 .unwrap();
             world.machines.push(s);
         }
+        for p in 0..scene.projectiles {
+            let s = slot();
+            let g = &mut world.guest;
+            let at = [p as f32 * 5.0, 20.0, 2.0];
+            fixture::put_placed(g, s, layout::OBJECT_TYPE_PROJECTILE, -1, -1, at, u32::MAX);
+            g.set_u32(body(s) + layout::BODY_DEFINITION, GRENADE)
+                .unwrap();
+            world.projectiles.push(s);
+        }
+        for w in 0..scene.loose_weapons {
+            let s = slot();
+            let g = &mut world.guest;
+            let at = [w as f32 * 1.5, -20.0, 0.1];
+            fixture::put_placed(g, s, layout::OBJECT_TYPE_WEAPON, -1, -1, at, u32::MAX);
+            g.set_u32(body(s) + layout::BODY_DEFINITION, WEAPON)
+                .unwrap();
+            set_vec(g, body(s) + layout::BODY_FORWARD, [1.0, 0.0, 0.0]);
+        }
         // Placements: scenery and weapons, records at the scenario.
         let mut records = fixture::SCENARIO + 0x1000;
         for (object_type, count, every) in [
@@ -468,9 +504,17 @@ impl World {
             );
             set_vec(g, at + layout::BODY_FORWARD, [-sin, cos, 0.0]);
             set_vec(g, at + layout::UNIT_AIM, [-sin, cos, 0.0]);
-            // World units a second (layout::BODY_VELOCITY), about the
-            // speed of the circle's four units a second.
-            set_vec(g, at + layout::BODY_VELOCITY, [-sin * 4.0, cos * 4.0, 0.0]);
+            // World units a second (layout::BODY_VELOCITY): the motion's
+            // own, as the game's is (the engine moves positions by it). The
+            // point goes round at 1 / (1 + u²) radians a unit of `a`, on a
+            // radius of four.
+            let u = ((t + i as f32) % 4.0) / 2.0 - 1.0;
+            let rate = 4.0 / (1.0 + u * u);
+            set_vec(
+                g,
+                at + layout::BODY_VELOCITY,
+                [-sin * rate, cos * rate, 0.0],
+            );
             g.set_f32(at + layout::BODY_VITALITY, 1.0).unwrap();
             g.set_f32(at + layout::BODY_SHIELD_VITALITY, 1.0).unwrap();
         }
@@ -486,6 +530,25 @@ impl World {
         for (i, s) in self.turrets.iter().enumerate() {
             let (cos, sin) = circle(t * 2.0 + i as f32);
             set_vec(g, body(*s) + layout::UNIT_AIM, [cos, sin, 0.0]);
+        }
+        // Grenades fly in a line, two seconds each, then start again.
+        for (i, s) in self.projectiles.iter().enumerate() {
+            let at = body(*s);
+            let flight = t % 2.0;
+            set_vec(
+                g,
+                at + layout::BODY_POSITION,
+                [
+                    i as f32 * 5.0 + flight * 8.0,
+                    20.0,
+                    2.0 + flight * (3.0 - flight),
+                ],
+            );
+            set_vec(
+                g,
+                at + layout::BODY_VELOCITY,
+                [8.0, 0.0, 3.0 - 2.0 * flight],
+            );
         }
         // Two machines move (lifts); the rest stand.
         for s in self.machines.iter().take(2) {

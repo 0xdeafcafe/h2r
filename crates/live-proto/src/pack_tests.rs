@@ -1,7 +1,7 @@
 use super::*;
 use crate::game::{
-    Frame, FrameAnim, FrameHit, FrameObject, FramePlayer, ObjectKind, normalize_frame,
-    validate_frame,
+    Frame, FrameAnim, FrameHit, FrameItem, FrameObject, FramePlayer, FrameProjectile, ObjectKind,
+    normalize_frame, validate_frame,
 };
 use crate::samples;
 
@@ -229,6 +229,30 @@ fn odd_frame() -> Frame {
                 gone: true,
             },
         ],
+        projectiles: vec![
+            FrameProjectile {
+                id: "e90c0001".into(),
+                kind: "plasma_grenade".into(),
+                pos: [1.5, -2.25, 1000.5],
+                vel: None,
+                parent: Some("p15".into()),
+            },
+            FrameProjectile {
+                id: "e90c0002".into(),
+                kind: "rocket".into(),
+                pos: [-3.0, 4.0, 5.0],
+                vel: Some([-99.0, 0.5, -0.015625]),
+                parent: None,
+            },
+        ],
+        items: vec![FrameItem {
+            id: "a10d0001".into(),
+            kind: "powerup".into(),
+            pos: [0.0, -0.5, 0.25],
+            forward: [0.0, 1.0, 0.0],
+            up: [0.0, 0.0, -1.0],
+            equipment: true,
+        }],
         ..Frame::default()
     }
 }
@@ -391,12 +415,15 @@ fn frame_sizes_stay_under_budget() {
     // Budgets: the live stream at most a tenth of JSON, keyframes at most a
     // quarter. Version 3's velocity, shield and fire ticks cost about a
     // fifth more (226 to 282 B multiplayer live, 651 to 788 B campaign);
-    // version 4's animation on every unit another sixth (324 B, 931 B; the
-    // frame is sent whole each frame until the chunk codec predicts it).
+    // version 4's animation on every unit another sixth (324 B, 931 B).
+    // Version 6 adds grenades, dropped weapons and vehicles' velocity to
+    // the samples and predicts moving positions from their velocity, which
+    // pays for them in a delta (estimated: about 300 B and 860 B); its
+    // keyframes carry them whole.
     assert!(mp.live < 360.0, "multiplayer live {}", mp.live);
-    assert!(mp.keyframe < 960.0, "multiplayer keyframe {}", mp.keyframe);
+    assert!(mp.keyframe < 1100.0, "multiplayer keyframe {}", mp.keyframe);
     assert!(cp.live < 1000.0, "campaign live {}", cp.live);
-    assert!(cp.keyframe < 2700.0, "campaign keyframe {}", cp.keyframe);
+    assert!(cp.keyframe < 3000.0, "campaign keyframe {}", cp.keyframe);
     assert!(mp.live * 10.0 < mp.json && cp.live * 10.0 < cp.json);
 }
 
@@ -414,6 +441,8 @@ fn golden_vectors_match_the_encoder() {
     odd_b.objects[0].p = None;
     odd_b.objects[0].f = None;
     odd_b.objects[0].u = None;
+    odd_b.projectiles[1].pos = [-9.5, 4.25, 4.75];
+    odd_b.items.clear();
     let cases: [(&str, Vec<Frame>, u64); 4] = [
         ("multiplayer", samples::multiplayer(6), 4),
         ("campaign", samples::campaign(4), 3),
@@ -454,8 +483,8 @@ fn golden_vectors_match_the_encoder() {
     }
 }
 
-/// A game going into a cinematic and out again: a version 4 frame, two
-/// cinematic ones (version 5), a version 4 one.
+/// A game going into a cinematic and out again: an ordinary frame, two
+/// cinematic ones, an ordinary one.
 fn cinematic_stream() -> Vec<Frame> {
     [
         (100, 1, false),
@@ -474,11 +503,11 @@ fn cinematic_stream() -> Vec<Frame> {
     .collect()
 }
 
-/// Only a cinematic frame is version 5: every other frame stays version 4,
-/// which a reader from before version 5 reads. A change of version is a
-/// keyframe each way, since a delta follows a frame of its own version.
+/// Version 6 carries the cinematic bit on every frame, so going into a
+/// cutscene and out again is a delta each way (version 5, written only
+/// for cinematic frames, made each change a keyframe).
 #[test]
-fn cinematic_frames_alone_are_version_five() {
+fn cinematic_frames_are_deltas_in_version_six() {
     let mut frames = samples::campaign(6);
     for f in &mut frames[2..4] {
         *f = Frame {
@@ -497,6 +526,7 @@ fn cinematic_frames_alone_are_version_five() {
         let back = d.decode(&bytes).unwrap().frame;
         assert_eq!(back.cinematic, f.cinematic);
         assert_eq!(back.tick, f.tick);
+        assert_eq!(back, quantize(f).unwrap());
         seen.push((u64::from(bytes[0] & 0xf), key));
     }
     assert_eq!(
@@ -504,9 +534,9 @@ fn cinematic_frames_alone_are_version_five() {
         [
             (VERSION, true),
             (VERSION, false),
-            (CINEMATIC_VERSION, true),
-            (CINEMATIC_VERSION, false),
-            (VERSION, true),
+            (VERSION, false),
+            (VERSION, false),
+            (VERSION, false),
             (VERSION, false),
         ]
     );
@@ -522,6 +552,168 @@ fn cinematic_frames_alone_are_version_five() {
             .is_none()
     );
     assert_eq!(validate_frame(&frames[2]), Ok(()));
+}
+
+/// Version 4 and 5 streams (every game before version 6, and its chunks)
+/// still decode: `v4-multiplayer` is the multiplayer golden stream and
+/// `v4-cinematic` the cinematic one (versions 4, 5, 5, 4) as version 4's
+/// encoder wrote them. A version 4 delta never applies to a version 6
+/// frame.
+#[test]
+fn version_four_and_five_frames_still_decode() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/test/fixtures/pack");
+    for (name, versions) in [
+        ("v4-multiplayer", &[4u8; 6][..]),
+        ("v4-cinematic", &[4, 5, 5, 4][..]),
+    ] {
+        let bin = std::fs::read(dir.join(format!("{name}.bin"))).unwrap();
+        let want: Vec<Frame> = serde_json::from_str(
+            &std::fs::read_to_string(dir.join(format!("{name}.json"))).unwrap(),
+        )
+        .unwrap();
+        let recs: Vec<&[u8]> = records(&bin).collect::<Result<_>>().unwrap();
+        let got_versions: Vec<u8> = recs.iter().map(|r| r[0] & 0xf).collect();
+        assert_eq!(got_versions, versions, "{name}");
+        let mut d = Decoder::new();
+        let got: Vec<Frame> = recs.iter().map(|r| d.decode(r).unwrap().frame).collect();
+        assert_eq!(got, want, "{name}");
+        assert!(
+            got.iter()
+                .all(|f| f.projectiles.is_empty() && f.items.is_empty())
+        );
+        assert!(
+            got.iter()
+                .flat_map(|f| &f.vehicles)
+                .all(|v| v.vel.is_none())
+        );
+    }
+    let bin = std::fs::read(dir.join("v4-multiplayer.bin")).unwrap();
+    let recs: Vec<&[u8]> = records(&bin).collect::<Result<_>>().unwrap();
+    let mut e = Encoder::new(5, 100);
+    let mut d = Decoder::new();
+    d.decode(recs[0]).unwrap();
+    let frames = samples::multiplayer(2);
+    let _ = e.encode(&frames[0]).unwrap();
+    let (delta, key) = e.encode(&frames[1]).unwrap();
+    assert!(!key);
+    assert!(matches!(d.decode(&delta), Err(PackError::Gap { .. })));
+}
+
+/// Version 6's projectiles and items round trip, quantised, through
+/// keyframes and deltas, and the server's checks refuse what they can't
+/// hold.
+#[test]
+fn projectiles_and_items_round_trip() {
+    let frame = odd_frame();
+    let back = decode_keyframe(&encode_keyframe(&frame).unwrap()).unwrap();
+    assert_eq!(back, quantize(&frame).unwrap());
+    assert_eq!(back.projectiles.len(), 2);
+    let stuck = &back.projectiles[0];
+    assert_eq!(
+        (stuck.parent.as_deref(), stuck.vel),
+        (Some("p15"), None),
+        "a stuck grenade keeps what it stuck to"
+    );
+    assert_eq!(back.projectiles[1].vel, Some([-99.0, 0.5, -0.015625]));
+    assert!(back.items[0].equipment);
+    assert_eq!(back.items[0].up, [0.0, 0.0, -1.0]);
+    assert_eq!(validate_frame(&frame), Ok(()));
+    let mut f = odd_frame();
+    f.projectiles[0].parent = Some(f.projectiles[0].id.clone());
+    assert!(validate_frame(&f).is_err(), "its own parent");
+    let mut f = odd_frame();
+    f.projectiles[1].vel = Some([2000.0, 0.0, 0.0]);
+    assert!(validate_frame(&f).is_err(), "too fast");
+    let mut f = odd_frame();
+    f.items[0].forward = [0.0; 3];
+    assert!(validate_frame(&f).is_err());
+    let mut f = odd_frame();
+    f.items[0].kind = "Flag".into();
+    assert!(validate_frame(&f).is_err());
+    // Through a stream: the samples' grenades come and go, the dropped
+    // weapons stay, the vehicles carry their velocity.
+    let frames = samples::multiplayer(60);
+    let mut e = Encoder::new(2, 15);
+    let mut d = Decoder::new();
+    for f in &frames {
+        let back = d.decode(&e.encode(f).unwrap().0).unwrap().frame;
+        assert_eq!(back, quantize(f).unwrap());
+    }
+    assert!(frames.iter().any(|f| !f.projectiles.is_empty()));
+    assert!(frames.iter().any(|f| f.projectiles.is_empty()));
+    assert!(frames.iter().all(|f| f.items.len() >= 4));
+    assert!(
+        frames[0]
+            .vehicles
+            .iter()
+            .all(|v| v.kind == "chaingun" || v.vel.is_some())
+    );
+}
+
+/// Version 6 predicts a moving entity's position from its velocity: ten
+/// projectiles at constant speed cost a few bits each in a delta, where the
+/// plain difference of a fast one is twenty-odd bits an axis.
+#[test]
+fn a_steady_mover_costs_almost_nothing() {
+    let frame = |tick: u64, at: f64| Frame {
+        game_id: "predict".into(),
+        tick,
+        projectiles: (1..=10u32)
+            .map(|k| FrameProjectile {
+                id: format!("{:08x}", 0xa000_0000u32 + k),
+                kind: "rocket".into(),
+                // 15k units a second: k units a frame (two ticks).
+                pos: [f64::from(k) * at, -f64::from(k), 2.0],
+                vel: Some([15.0 * f64::from(k), 0.0, 0.0]),
+                parent: None,
+            })
+            .collect(),
+        ..Frame::default()
+    };
+    let mut e = Encoder::new(1, 100);
+    let mut d = Decoder::new();
+    let (key, _) = e.encode(&frame(100, 0.0)).unwrap();
+    d.decode(&key).unwrap();
+    let next = frame(102, 1.0);
+    let (delta, is_key) = e.encode(&next).unwrap();
+    assert!(!is_key);
+    assert_eq!(d.decode(&delta).unwrap().frame, quantize(&next).unwrap());
+    // Each: changed, matched, here, a four-bit mask and three zero errors
+    // (4 bits each): 19 bits; about 30 bytes with the header. The plain
+    // differences would be 56 bytes or more.
+    assert!(delta.len() <= 34, "{} bytes", delta.len());
+    // A gap past a second codes the plain difference, and still decodes.
+    let far = frame(140, 2.0);
+    let (delta, _) = e.encode(&far).unwrap();
+    assert_eq!(d.decode(&delta).unwrap().frame, quantize(&far).unwrap());
+    // Velocity changes, appears and goes; positions jump: every delta
+    // decodes to the frame.
+    let mut moving = frame(150, 3.0);
+    let mut e = Encoder::new(4, 100);
+    let mut d = Decoder::new();
+    for step in 0..40u64 {
+        for (i, p) in moving.projectiles.iter_mut().enumerate() {
+            let i = i as u64;
+            p.vel = match (step + i) % 5 {
+                0 => None,
+                1 => Some([0.0, 0.0, 0.0]),
+                _ => Some([
+                    (step * 7 + i) as f64 % 90.0 - 45.0,
+                    (step * 3) as f64 % 20.0,
+                    -(i as f64),
+                ]),
+            };
+            p.pos[0] += ((step * 13 + i * 5) % 11) as f64 - 5.0;
+            p.pos[2] -= 0.3 * i as f64;
+        }
+        moving.tick += 2 + 7 * (step % 6);
+        let (bytes, _) = e.encode(&moving).unwrap();
+        assert_eq!(
+            d.decode(&bytes).unwrap().frame,
+            quantize(&moving).unwrap(),
+            "step {step}"
+        );
+    }
 }
 
 /// CPU per frame: what the game's sink worker spends serialising (JSON)

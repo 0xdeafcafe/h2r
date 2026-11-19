@@ -6,16 +6,28 @@
 // The golden vectors in test/fixtures/pack, written by the Rust encoder,
 // prove the two agree.
 
-import type { Frame, FrameActor, FrameHit, FrameMachine, FrameObject, FramePlayer, FrameVehicle } from "./types";
+import type { Frame, FrameActor, FrameHit, FrameItem, FrameMachine, FrameObject, FramePlayer, FrameProjectile, FrameVehicle } from "./types";
 
-/** The version written now. Version 4 adds units' animation; version 3
- *  added units' velocity, fire ticks, vitality, seat and action ticks, hits'
- *  ticks and the frame's cut; versions 1 (vehicles without a parent and
- *  aim), 2 and 3 still read. */
-export const PACK_VERSION = 4;
-/** A cinematic frame's version: version 4 with the cinematic bit after the
- *  cut. Only frames with `cinematic` are written in it. */
+/** The version written now. Version 6 carries the cinematic bit on every
+ *  frame, adds vehicles' velocity and the projectile and item lists, and
+ *  codes a moving entity's position in a delta as the error of a
+ *  prediction from its velocity (`predict`). Version 5 was version 4 with
+ *  the cinematic bit, written only for cinematic frames; version 4 added
+ *  units' animation; version 3 units' velocity, fire ticks, vitality, seat
+ *  and action ticks, hits' ticks and the frame's cut; versions 1 (vehicles
+ *  without a parent and aim) to 5 still read. */
+export const PACK_VERSION = 6;
+/** Version 4's frames (ordinary frames before version 6). */
+export const V4 = 4;
+/** A cinematic frame's version before version 6: version 4 with the
+ *  cinematic bit after the cut. */
 export const CINEMATIC_VERSION = 5;
+/** Version 6: the Exp-Golomb order of a predicted position's error, the
+ *  longest gap predicted over, and the largest velocity component (1/64
+ *  unit a second) predicted from. */
+const PREDICT_K = 3;
+const PREDICT_TICKS = 30;
+const PREDICT_VEL = 2 ** 23;
 const POS_SCALE = 512;
 const ANGLE_BITS = 12;
 const DIR_BITS = 12;
@@ -138,9 +150,10 @@ const UNIT_V4: Field[] = [o(K.Str), o(K.Uint, 4)];
 const PLAYER_V2: Field[] = [key(K.Uint, 2), f(K.Bool), f(K.Pos), f(K.Angle), o(K.Id), o(K.Str), o(K.Dir), o(K.Str), o(K.Uint, 1), o(K.Bits, 3), o(K.Uint, 6), o(K.Actions), o(K.Bits, 1)];
 const PLAYER_V3 = [...PLAYER_V2, ...UNIT_V3];
 const PLAYER = [...PLAYER_V3, ...UNIT_V4];
-/** Version 2 adds a vehicle's parent (a turret's vehicle) and aim. */
-const VEHICLE: Field[] = [key(K.Id), f(K.Str), f(K.Pos), f(K.Dir), f(K.Dir), f(K.Bool), o(K.Id), o(K.Dir)];
-const VEHICLE_V1 = VEHICLE.slice(0, 6);
+/** Version 2 adds a vehicle's parent (a turret's vehicle) and aim; version 6 its velocity. */
+const VEHICLE_V2: Field[] = [key(K.Id), f(K.Str), f(K.Pos), f(K.Dir), f(K.Dir), f(K.Bool), o(K.Id), o(K.Dir)];
+const VEHICLE = [...VEHICLE_V2, o(K.Vel)];
+const VEHICLE_V1 = VEHICLE_V2.slice(0, 6);
 const ACTOR_V2: Field[] = [key(K.Id), f(K.Str), f(K.Pos), f(K.Angle), o(K.Dir), o(K.Str), o(K.Uint, 1), o(K.Str), o(K.Id), o(K.Bits, 3), o(K.Uint, 6), o(K.Actions), o(K.Bits, 1)];
 const ACTOR_V3 = [...ACTOR_V2, ...UNIT_V3];
 const ACTOR = [...ACTOR_V3, ...UNIT_V4];
@@ -149,21 +162,65 @@ const HIT_V2: Field[] = [o(K.Id), o(K.Id), o(K.Str), f(K.Pos), o(K.Uint, 6), o(K
 const HIT = [...HIT_V2, o(K.Uint, 1)];
 const MACHINE: Field[] = [o(K.Str), key(K.Id), f(K.Str), f(K.Pos), f(K.Dir), f(K.Dir), o(K.Bits, DEVICE_BITS)];
 const OBJECT: Field[] = [key(K.Bits, 4), key(K.Uint, 6), f(K.Bool), o(K.Pos), o(K.Dir), o(K.Dir)];
+/** Version 6: id, kind, pos, vel, parent. */
+const PROJECTILE: Field[] = [key(K.Id), f(K.Str), f(K.Pos), o(K.Vel), o(K.Id)];
+/** Version 6: id, kind, pos, forward, up, equipment. */
+const ITEM: Field[] = [key(K.Id), f(K.Str), f(K.Pos), f(K.Dir), f(K.Dir), f(K.Bool)];
 
 /** The delta-coded lists in wire order; hits go between actors and machines, always whole. */
-const LISTS: [Field[], number][] = [[PLAYER, 16], [VEHICLE, 64], [ACTOR, 128], [MACHINE, 128], [OBJECT, 2048]];
-const LISTS_V3: [Field[], number][] = [[PLAYER_V3, 16], [VEHICLE, 64], [ACTOR_V3, 128], [MACHINE, 128], [OBJECT, 2048]];
-const LISTS_V2: [Field[], number][] = [[PLAYER_V2, 16], [VEHICLE, 64], [ACTOR_V2, 128], [MACHINE, 128], [OBJECT, 2048]];
+const LISTS: [Field[], number][] = [[PLAYER, 16], [VEHICLE, 64], [ACTOR, 128], [MACHINE, 128], [OBJECT, 2048], [PROJECTILE, 64], [ITEM, 128]];
+const LISTS_V4: [Field[], number][] = [[PLAYER, 16], [VEHICLE_V2, 64], [ACTOR, 128], [MACHINE, 128], [OBJECT, 2048]];
+const LISTS_V3: [Field[], number][] = [[PLAYER_V3, 16], [VEHICLE_V2, 64], [ACTOR_V3, 128], [MACHINE, 128], [OBJECT, 2048]];
+const LISTS_V2: [Field[], number][] = [[PLAYER_V2, 16], [VEHICLE_V2, 64], [ACTOR_V2, 128], [MACHINE, 128], [OBJECT, 2048]];
 const LISTS_V1: [Field[], number][] = [[PLAYER_V2, 16], [VEHICLE_V1, 64], [ACTOR_V2, 128], [MACHINE, 128], [OBJECT, 2048]];
-/** What a version this decoder reads has: its lists, its hits, and whether the header carries a cut and the cinematic bit. */
-interface Schema { lists: [Field[], number][]; hit: Field[]; cut: boolean; cinematic: boolean }
+/** What a version this decoder reads has: its lists, its hits, whether the header carries a cut and the cinematic bit, and whether deltas predict positions (version 6). */
+interface Schema { lists: [Field[], number][]; hit: Field[]; cut: boolean; cinematic: boolean; predict: boolean }
 const SCHEMAS: Record<number, Schema> = {
-  1: { lists: LISTS_V1, hit: HIT_V2, cut: false, cinematic: false },
-  2: { lists: LISTS_V2, hit: HIT_V2, cut: false, cinematic: false },
-  3: { lists: LISTS_V3, hit: HIT, cut: true, cinematic: false },
-  [PACK_VERSION]: { lists: LISTS, hit: HIT, cut: true, cinematic: false },
-  [CINEMATIC_VERSION]: { lists: LISTS, hit: HIT, cut: true, cinematic: true },
+  1: { lists: LISTS_V1, hit: HIT_V2, cut: false, cinematic: false, predict: false },
+  2: { lists: LISTS_V2, hit: HIT_V2, cut: false, cinematic: false, predict: false },
+  3: { lists: LISTS_V3, hit: HIT, cut: true, cinematic: false, predict: false },
+  [V4]: { lists: LISTS_V4, hit: HIT, cut: true, cinematic: false, predict: false },
+  [CINEMATIC_VERSION]: { lists: LISTS_V4, hit: HIT, cut: true, cinematic: true, predict: false },
+  [PACK_VERSION]: { lists: LISTS, hit: HIT, cut: true, cinematic: true, predict: true },
 };
+const LIST_COUNT = LISTS.length;
+
+/** Where an entity's (non-optional) position and its velocity sit, when it has both: what version 6 predicts from. */
+function motionFields(schema: Field[]): [number, number] | null {
+  const pos = schema.findIndex((x) => x.kind === K.Pos && !x.opt);
+  const vel = schema.findIndex((x) => x.kind === K.Vel);
+  return pos >= 0 && vel >= 0 ? [pos, vel] : null;
+}
+const MOTION = new Map<Field[], [number, number] | null>();
+function motionOf(schema: Field[]): [number, number] | null {
+  let m = MOTION.get(schema);
+  if (m === undefined) {
+    m = motionFields(schema);
+    MOTION.set(schema, m);
+  }
+  return m;
+}
+
+/** The previous velocity a version 6 delta predicts from, `dt` ticks on: only one in range, over at most PREDICT_TICKS. */
+function predictBase(prevVel: Val | undefined, dt: number): readonly [number, number, number] | null {
+  if (dt > PREDICT_TICKS || prevVel === null || typeof prevVel !== "object" || !("vel" in prevVel)) return null;
+  const a = prevVel.vel;
+  return Math.abs(a[0]) <= PREDICT_VEL && Math.abs(a[1]) <= PREDICT_VEL && Math.abs(a[2]) <= PREDICT_VEL ? a : null;
+}
+
+/** Version 6's predicted position (live-proto `pack::predict`): the
+ *  previous one moved by the mean of the previous and new velocity (the
+ *  previous alone without a new one in range) over `dt` ticks, in 1/512
+ *  unit, rounded half up: p + floor((4 (a + b) dt + 15) / 30). */
+function predict(p: readonly number[], a: readonly [number, number, number], newVel: Val | undefined, dt: number): [number, number, number] {
+  let b = a;
+  if (newVel !== null && typeof newVel === "object" && "vel" in newVel) {
+    const v = newVel.vel;
+    if (Math.abs(v[0]) <= PREDICT_VEL && Math.abs(v[1]) <= PREDICT_VEL && Math.abs(v[2]) <= PREDICT_VEL) b = v;
+  }
+  const at = (i: number) => p[i]! + Math.floor((4 * (a[i]! + b[i]!) * dt + 15) / 30);
+  return [at(0), at(1), at(2)];
+}
 
 type Entity = Val[];
 
@@ -270,8 +327,9 @@ function readFull(r: BitReader, schema: Field[], max: number, strings: readonly 
   return out;
 }
 
-function readDelta(r: BitReader, schema: Field[], max: number, prev: readonly Entity[], strings: readonly string[]): Entity[] {
+function readDelta(r: BitReader, schema: Field[], max: number, prev: readonly Entity[], strings: readonly string[], dt: number, predicting: boolean): Entity[] {
   const n = readCount(r, max);
+  const motion = predicting ? motionOf(schema) : null;
   const out: Entity[] = [];
   let cursor = 0;
   while (out.length < n) {
@@ -290,7 +348,19 @@ function readDelta(r: BitReader, schema: Field[], max: number, prev: readonly En
       let mask = 0;
       for (let i = 0; i < schema.length; i++) if (!schema[i]!.key && r.bit()) mask |= 1 << i;
       const e = before.slice();
-      for (let i = 0; i < schema.length; i++) if (mask & (1 << i)) e[i] = readField(r, schema[i]!, before[i], strings);
+      // A predicted position: its error now, the prediction once the new
+      // velocity (a later field) is read.
+      const base = motion ? predictBase(before[motion[1]], dt) : null;
+      let error: [number, number, number] | null = null;
+      for (let i = 0; i < schema.length; i++) {
+        if (!(mask & (1 << i))) continue;
+        if (base && motion && i === motion[0]) error = [r.seg(PREDICT_K), r.seg(PREDICT_K), r.seg(PREDICT_K)];
+        else e[i] = readField(r, schema[i]!, before[i], strings);
+      }
+      if (base && motion && error) {
+        const guess = predict(before[motion[0]] as unknown as readonly number[], base, e[motion[1]], dt);
+        e[motion[0]] = [guess[0] + error[0], guess[1] + error[1], guess[2] + error[2]] as const;
+      }
       out.push(e);
       cursor = j + 1;
     } else {
@@ -353,7 +423,24 @@ function vehicleOf(e: Entity): FrameVehicle {
   // Version 1 vehicles have neither.
   if (e[6] != null) v.parent = idText(e[6]);
   if (e[7] != null) v.aim = dir(e[7]);
+  // Version 6.
+  if (e[8] != null) v.vel = velOf(e[8]);
   return v;
+}
+
+const velOf = (v: Val) => (v as { vel: readonly number[] }).vel.map((c) => c / VEL_SCALE) as [number, number, number];
+
+function projectileOf(e: Entity): FrameProjectile {
+  const p: FrameProjectile = { id: idText(e[0]!), kind: e[1] as string, pos: pos(e[2]!) };
+  if (e[3] !== null) p.vel = velOf(e[3]!);
+  if (e[4] !== null) p.parent = idText(e[4]!);
+  return p;
+}
+
+function itemOf(e: Entity): FrameItem {
+  const x: FrameItem = { id: idText(e[0]!), kind: e[1] as string, pos: pos(e[2]!), forward: dir(e[3]!), up: dir(e[4]!) };
+  if (e[5] === true) x.equipment = true;
+  return x;
 }
 
 function actorOf(e: Entity): FrameActor {
@@ -422,6 +509,8 @@ const vehicleFrom = cached(vehicleOf);
 const actorFrom = cached(actorOf);
 const machineFrom = cached(machineOf);
 const objectFrom = cached(objectOf);
+const projectileFrom = cached(projectileOf);
+const itemFrom = cached(itemOf);
 
 interface StreamState {
   seq: number;
@@ -454,7 +543,7 @@ export class FrameDecoder {
     const keyframe = r.bit();
     const sid = r.eg(0);
     const seq = r.eg(8);
-    const empty: StreamState = { seq: 0, version, gameId: "", tick: 0, bsp: null, strings: [], lists: [[], [], [], [], []] };
+    const empty: StreamState = { seq: 0, version, gameId: "", tick: 0, bsp: null, strings: [], lists: Array.from({ length: LIST_COUNT }, () => []) };
     let prev = empty;
     if (!keyframe) {
       const s = this.streams.get(sid);
@@ -479,16 +568,20 @@ export class FrameDecoder {
     if (fresh > 0) state.strings = state.strings.slice();
     for (let i = 0; i < fresh; i++) state.strings.push(readStrLiteral(r));
     let hits: Entity[] = [];
+    const dt = state.tick - prev.tick;
     schema.lists.forEach(([fields, max], n) => {
       if (n === 3) hits = readFull(r, schema.hit, 64, state.strings);
-      state.lists[n] = keyframe ? readFull(r, fields, max, state.strings) : readDelta(r, fields, max, prev.lists[n]!, state.strings);
+      state.lists[n] = keyframe ? readFull(r, fields, max, state.strings) : readDelta(r, fields, max, prev.lists[n] ?? [], state.strings, dt, schema.predict);
     });
+    for (let n = schema.lists.length; n < LIST_COUNT; n++) state.lists[n] = [];
     const frame: Frame = { game_id: state.gameId, tick: state.tick, players: state.lists[0]!.map(playerFrom) };
     const vehicles = state.lists[1]!.map(vehicleFrom);
     const actors = state.lists[2]!.map(actorFrom);
     const hitList = hits.map(hitOf);
     const machines = state.lists[3]!.map(machineFrom);
     const objects = state.lists[4]!.map(objectFrom);
+    const projectiles = state.lists[5]!.map(projectileFrom);
+    const items = state.lists[6]!.map(itemFrom);
     if (vehicles.length) frame.vehicles = vehicles;
     if (actors.length) frame.actors = actors;
     if (hitList.length) frame.hits = hitList;
@@ -497,6 +590,8 @@ export class FrameDecoder {
     if (objects.length) frame.objects = objects;
     if (cut !== null) frame.cut = cut;
     if (cinematic) frame.cinematic = true;
+    if (projectiles.length) frame.projectiles = projectiles;
+    if (items.length) frame.items = items;
     this.streams.set(sid, state);
     return { sid, seq, keyframe, frame };
   }
