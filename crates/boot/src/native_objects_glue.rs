@@ -46,6 +46,7 @@ use feature::native_objects::{Host, NativeSet};
 use map::{Map, ResourceFile, TagId};
 use native_render::camera::RenderCamera;
 use native_render::gpu::{DepthRule, Image, PassViewport};
+use native_render::light_gpu::LayeredImage;
 use native_render::instances::ObjectInput;
 use native_render::load;
 use native_render::model::Model;
@@ -54,7 +55,7 @@ use native_render::model_load;
 use native_render::look;
 use native_render::object_lighting::ShaderValues;
 use native_render::object_nodes::{Compression, decompression_rows};
-use native_render::object_program_gpu::{LitBuild, LitMaterial, LitModelInput, LitObjects, LitSection, lit_model};
+use native_render::object_program_gpu::{EngineStages, LitBuild, LitMaterial, LitModelInput, LitObjects, LitSection, lit_model, uniform};
 use native_render::object_streams::{self, StreamData, StreamFormats};
 use native_render::objects::ObjectFrame;
 use native_render::pass_state::PassState;
@@ -73,6 +74,8 @@ struct CpuModel {
     lit: LitModelInput,
     /// The implementations (bit `n`) every lit part has.
     lit_implementations: u8,
+    /// The normalization cube the lit parts' programs may sample.
+    normalization: Option<Arc<LayeredImage>>,
 }
 
 /// One definition's transparent parts the native pass draws.
@@ -148,10 +151,15 @@ pub(crate) fn upload_pending<'a>(models: &'a Models, t: &d3d::ExternalTarget<'_>
             transparents,
             lit,
             lit_implementations: _,
+            normalization,
         } = cpu;
         let i = gpu.add_model(t.device, t.queue, model, &mut |m| base_maps.remove(&m));
         if !lit.is_empty() {
-            lit_gpu.get_or_insert_with(|| LitObjects::new(t.device)).add_model(t.device, t.queue, i, lit);
+            let l = lit_gpu.get_or_insert_with(|| LitObjects::new(t.device));
+            if let Some(n) = &normalization {
+                l.set_normalization(t.device, t.queue, n);
+            }
+            l.add_model(t.device, t.queue, i, lit);
         }
         for (material, image, state) in transparents {
             // Checked on the worker; a refusal here leaves those parts
@@ -200,10 +208,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             if !current(&*st) {
                 let models = Arc::new(Models::default());
                 let worker = spawn_worker(name.clone(), Arc::clone(&models), Arc::clone(&self.state), palettes, formats);
+                let set = NativeSet { map: name.clone(), ..NativeSet::default() };
                 *st = Some(MapState {
                     name,
                     models,
-                    set: Arc::new(NativeSet::default()),
+                    set: Arc::new(set),
                     tried: HashSet::new(),
                     worker,
                 });
@@ -371,8 +380,15 @@ struct Opened {
     /// The shader tags, read at the first transparent material (`None`
     /// when they do not read: transparents stay on D3D).
     lib: Option<Option<tags::material::ShaderLibrary>>,
+    /// The vector normalization cube, loaded as the lights load it at the
+    /// first lit model (`Some(None)`: it does not load).
+    normalization: Option<Option<Arc<LayeredImage>>>,
     /// The game's stream formats (`None`: lit materials stay on D3D).
     formats: Option<StreamFormats>,
+    /// What an object's draw samples for the lightmap (the globals'
+    /// rasterizer bitmap at `+0x64`, `object_program::OBJECT_LIGHTMAP`),
+    /// read at the first lit model: the image when uniform, else why not.
+    lightmap: Option<Result<Image, String>>,
 }
 
 fn open(name: &str, palettes: StagePalettes, formats: Option<StreamFormats>) -> Result<Opened, load::Error> {
@@ -397,6 +413,8 @@ fn open(name: &str, palettes: StagePalettes, formats: Option<StreamFormats>) -> 
         decoder: StageDecoder::new(palettes),
         images: StageImages::new(),
         lib: None,
+        normalization: None,
+        lightmap: None,
         formats,
     })
 }
@@ -554,6 +572,7 @@ fn load_model(o: &mut Opened, def: u32) -> Result<(CpuModel, Vec<u16>, ObjectTra
             model,
             base_maps,
             transparents,
+            normalization: if lit.is_empty() { None } else { o.normalization.clone().flatten() },
             lit,
             lit_implementations,
         },
@@ -646,6 +665,22 @@ fn lit_parts(o: &mut Opened, loaded: &model_load::LoadedModel, materials: &HashM
             }
         }
     }
+    // The normalization cube, as the lights load it (once per map).
+    if o.normalization.is_none() {
+        let cube = match o.lib.as_ref().and_then(Option::as_ref) {
+            Some(lib) => crate::native_lights_glue::light_textures(&mut o.map, lib.metadata(), &mut o.raw.0).0.map(Arc::new),
+            None => None,
+        };
+        o.normalization = Some(cube);
+    }
+    if o.lightmap.is_none() {
+        let l = object_lightmap(o);
+        match &l {
+            Ok(i) => eprintln!("native-objects: the objects' lightmap stage loads ({}x{}, uniform)", i.width, i.height),
+            Err(why) => eprintln!("native-objects: the objects' lightmap stage stays on D3D: {why}"),
+        }
+        o.lightmap = Some(l);
+    }
     let Some(formats) = o.formats.clone() else {
         return LitBuild {
             refused: materials.keys().map(|&m| (m, "the game's stream formats do not read".to_string())).collect(),
@@ -659,7 +694,35 @@ fn lit_parts(o: &mut Opened, loaded: &model_load::LoadedModel, materials: &HashM
         o.decoder.decode(&mut o.map, &mut o.raw.0, &mut o.images, bitmap, image, stage, true).ok()?;
         o.images.get(&(bitmap, image)).cloned()
     };
-    lit_model(&sections, materials, &formats, &mut vertex, &mut image)
+    let engine = EngineStages {
+        normalization: o.normalization.as_ref().is_some_and(Option::is_some),
+        lightmap: o.lightmap.clone().and_then(Result::ok),
+    };
+    lit_model(&sections, materials, &formats, &engine, &mut vertex, &mut image)
+}
+
+/// What an object's layer-3 draw samples where its pass reads the
+/// lightmap (`native_render::object_program::OBJECT_LIGHTMAP`): the
+/// globals' rasterizer bitmap at `+0x64`, decoded as stage 3 samples it,
+/// when it is uniform (then the coordinates the draw adds do not matter).
+fn object_lightmap(o: &mut Opened) -> Result<Image, String> {
+    let lib = o.lib.as_ref().and_then(Option::as_ref).ok_or("the shader tags do not read")?;
+    let matg = o
+        .map
+        .tags()
+        .iter()
+        .find(|t| t.group.0 == *b"matg")
+        .and_then(|t| t.location.as_ref().map(|l| l.address))
+        .ok_or("no matg")?;
+    let read = |a: u32, n: usize| lib.metadata().bytes(a, n).ok().map(<[u8]>::to_vec);
+    let bitmap = crate::native_lights_glue::rasterizer_bitmap(&read, matg, native_render::object_program::OBJECT_LIGHTMAP)
+        .ok_or("the globals' rasterizer data names no bitmap at +0x64")?;
+    o.decoder.decode(&mut o.map, &mut o.raw.0, &mut o.images, bitmap, 0, 3, false)?;
+    let image = o.images.get(&(bitmap, 0)).cloned().ok_or("its image does not decode")?;
+    if !uniform(&image) {
+        return Err(format!("the globals' rasterizer bitmap {bitmap:?} ({}x{}) is not uniform, so the coordinates the draw adds (the BSP's stream 0x2e) would matter", image.width, image.height));
+    }
+    Ok(image)
 }
 
 /// Vertex shader `vs`'s program and input semantics for a section of

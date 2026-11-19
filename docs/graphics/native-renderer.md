@@ -948,13 +948,43 @@ synthetic tests:
   do), is drawn; one that does not is left out with its reason, and a
   material with none stays on D3D whole. An object whose records pick an
   implementation some lit part of its definition lacks stays on D3D.
+- **The normalization cube.** A stage sampling engine texture 1 is bound
+  to the vector normalization cube the lights load
+  (`native_lights_glue::light_textures`, the globals' rasterizer data),
+  sampled as a cube without a bias, as the lights sample it.
+- **The lightmap stage** (`object_program::OBJECT_LIGHTMAP`, Code). An
+  object's draw binds no lightmap page. The draw (`0x0004d0b0`, draw 3)
+  sets the current page `[0x00485a60]` to -1 for every record with a
+  model datum at `+4` (`0x0004d2c4`..`0x0004d2de`, `0x0004d362`, then
+  `0x0004d420`); only records without one (the BSP's instanced geometry,
+  `0x0004d367`) get a cluster's page and palette through `0x00015c90`.
+  With the page at -1 the stage setup (`0x00018c43`..`0x00018c4c`, then
+  `0x00018d1f`) binds the globals' rasterizer data element's bitmap at
+  `+0x64` (`[[0x00485a80] + 0x64]`) and no palette. The coordinates the
+  draw adds for it come from the BSP: for a record whose implementation
+  is not 2 or 3 and whose `+0xc` bits 18..28 are not `0x7ff`, the BSP's
+  `+0x64` element (stride 12) at that index holds per section a u16 that
+  `0x0004dc60` turns into the vertex offset of a stream of type `0x2e` in
+  the BSP geometry block its `+2` names (`+0x44`, stride `0x38`); the
+  streams step (`0x0001c8c0`, `0x0001ca25`) adds it with its own type's
+  format. The host loads that bitmap as stage 3 decodes it and takes it
+  only when it is uniform (every texel of every level the same): then it
+  samples the same wherever the coordinates fall, and the lit build feeds
+  the stream as zeros instead of reading the BSP. A bitmap that is not
+  uniform keeps implementation 0 on D3D, with the reason; reading the
+  BSP's stream per object section is what that would need.
 - **Combiner constants** (`object_pixel_uniforms`). A lighting vector
   bound to a pixel combiner constant is packed per object as `0x00019ca0`
   packs an engine value (`pack_engine_colour`: alpha 0, `(x + 1) / 2`
   first where the binding halves it, each channel rounded to 8 bits) into
   the byte lanes the binding keeps, the rest as compiled. A lighting
-  scalar bound there is refused: its binding does not keep the transform
-  `0x00019ca0` applies to scalars.
+  scalar goes through its binding's transform first
+  (`tags::material::engine_scalar`, the one `0x00019ca0` applies: the
+  complement, or a cosine or sine wave over one period clamped to 0..1),
+  which the binding now keeps.
+- **Which implementations a map draws.** The observer counts live layer-3
+  object items by their record's implementation and logs the counts once
+  per map, after 600 views.
 - **The node rows at the hook** (`objects::attach_node_rows`). The
   observer copies, for each record a drawn object's items name, the rows
   that record's draw would upload, one set per mode section (two records

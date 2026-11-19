@@ -279,15 +279,17 @@ pub const ATTENUATION_DATUM: u32 = 4;
 /// address), read through `read(address, len)`: `(normalization,
 /// attenuation)`, each `None` when null or unreadable.
 pub fn light_bitmaps(read: &dyn Fn(u32, usize) -> Option<Vec<u8>>, matg: u32) -> (Option<map::TagId>, Option<map::TagId>) {
+    (rasterizer_bitmap(read, matg, NORMALIZATION_DATUM), rasterizer_bitmap(read, matg, ATTENUATION_DATUM))
+}
+
+/// The bitmap datum at `offset` of the `matg`'s first rasterizer data
+/// element (`[0x00485a80] + offset`), `None` when null or unreadable.
+pub fn rasterizer_bitmap(read: &dyn Fn(u32, usize) -> Option<Vec<u8>>, matg: u32, offset: u32) -> Option<map::TagId> {
     let word = |a: u32| -> Option<u32> { Some(u32::from_le_bytes(read(a, 4)?.try_into().ok()?)) };
-    let element = || -> Option<u32> {
-        let count = word(matg.wrapping_add(RASTERIZER_DATA))?;
-        (count > 0).then_some(())?;
-        word(matg.wrapping_add(RASTERIZER_DATA + 4))
-    };
-    let Some(e) = element() else { return (None, None) };
-    let datum = |o: u32| word(e.wrapping_add(o)).filter(|&d| d != u32::MAX).map(map::TagId);
-    (datum(NORMALIZATION_DATUM), datum(ATTENUATION_DATUM))
+    let count = word(matg.wrapping_add(RASTERIZER_DATA))?;
+    (count > 0).then_some(())?;
+    let e = word(matg.wrapping_add(RASTERIZER_DATA + 4))?;
+    word(e.wrapping_add(offset)).filter(|&d| d != u32::MAX).map(map::TagId)
 }
 
 /// [`light_bitmaps`] over the map's ordinary metadata (`matg` the tag's
@@ -903,6 +905,20 @@ mod tests {
         ];
         let meta = metadata(base, 0x1000, &words);
         assert_eq!(matg_light_bitmaps(&meta, matg), (Some(TagId(0xe000_0001)), Some(TagId(0xe000_0009))));
+        // An object's lightmap stage: the element's +0x64 (0x00018d1f).
+        let read = |a: u32, n: usize| meta.bytes(a, n).ok().map(<[u8]>::to_vec);
+        assert_eq!(rasterizer_bitmap(&read, matg, 0x64), Some(TagId(0)), "an unwritten word reads as datum 0, as the game reads it");
+        // A null reference: datum -1.
+        words.push((element + 0x60, bitm));
+        words.push((element + 0x64, u32::MAX));
+        let meta = metadata(base, 0x1000, &words);
+        let read = |a: u32, n: usize| meta.bytes(a, n).ok().map(<[u8]>::to_vec);
+        assert_eq!(rasterizer_bitmap(&read, matg, 0x64), None, "a null datum");
+        words.pop();
+        words.push((element + 0x64, 0xe000_0064));
+        let meta = metadata(base, 0x1000, &words);
+        let read = |a: u32, n: usize| meta.bytes(a, n).ok().map(<[u8]>::to_vec);
+        assert_eq!(rasterizer_bitmap(&read, matg, 0x64), Some(TagId(0xe000_0064)));
         // The tag's file offset is not a metadata address.
         assert_eq!(matg_light_bitmaps(&meta, 0x200), (None, None));
         // A null reference is no bitmap.

@@ -113,8 +113,9 @@ pub enum VectorTarget {
     /// Combiner constant `slot` (0..7 the stages', 8 the final
     /// combiner's) of C1 or C0; the input packed with
     /// [`pack_engine_colour`] (`half` its option) in the byte lanes of
-    /// `mask` still its own.
-    Pixel { c1: bool, slot: u8, mask: u32, half: bool },
+    /// `mask` still its own. A scalar goes through [`engine_scalar`] with
+    /// `transform` first (`0x00019ca0`; vectors ignore it).
+    Pixel { c1: bool, slot: u8, mask: u32, half: bool, transform: u8 },
 }
 
 /// One engine vector input's binding ([`ResolvedImplementation::vector_bindings`]).
@@ -654,6 +655,7 @@ impl ShaderLibrary {
                     slot,
                     mask: CHANNEL_MASKS[mode],
                     half,
+                    transform: transform as u8,
                 };
                 engine_writes.push((target, (mode == 4).then_some(e.bytes[3])));
                 scalar_writes.push((target, (mode <= 3).then_some(e.bytes[3])));
@@ -991,7 +993,7 @@ pub(crate) fn vector_bindings(writes: &[(VectorTarget, Option<u8>)]) -> Vec<Vect
                     .fold(0, |a, c| a | c);
                 VectorTarget::Vertex { bank, reg, components: components & !over }
             }
-            VectorTarget::Pixel { c1, slot, mask, half } => {
+            VectorTarget::Pixel { c1, slot, mask, half, transform } => {
                 let over = later
                     .iter()
                     .filter_map(|(t, _)| match *t {
@@ -999,7 +1001,7 @@ pub(crate) fn vector_bindings(writes: &[(VectorTarget, Option<u8>)]) -> Vec<Vect
                         _ => None,
                     })
                     .fold(0, |a, m| a | m);
-                VectorTarget::Pixel { c1, slot, mask: mask & !over, half }
+                VectorTarget::Pixel { c1, slot, mask: mask & !over, half, transform }
             }
         };
         let empty = match target {
@@ -1029,6 +1031,23 @@ fn stage_dims(textures: &[Option<StageTexture>; 4], stage: usize) -> (f32, f32) 
 }
 
 /// `0x0001b2c0`: one engine value into a float4 register.
+/// An engine scalar through a binding's transform, as `0x00019ca0` (and
+/// the vertex constants' evaluation, with transform 0) applies it: 1 the
+/// complement, 2..5 a cosine or sine wave over one period, scaled into
+/// 0..1 and clamped; anything else the value itself.
+pub fn engine_scalar(x: f32, transform: usize) -> f32 {
+    use std::f32::consts::TAU;
+    let y = match transform {
+        1 => 1.0 - x,
+        2 => ((TAU * x).cos() + 1.0) * 0.5,
+        3 => 0.5 - (TAU * x).cos() * 0.5,
+        4 => ((TAU * x).sin() + 1.0) * 0.5,
+        5 => 0.5 - (TAU * x).sin() * 0.5,
+        _ => x,
+    };
+    if (2..=5).contains(&transform) { y.clamp(0.0, 1.0) } else { y }
+}
+
 fn eval_engine(
     out: &mut [f32; 4],
     mode: usize,
@@ -1037,24 +1056,13 @@ fn eval_engine(
     dims: (f32, f32),
     inputs: &EngineInputs,
 ) -> Result<()> {
-    use std::f32::consts::TAU;
     match mode {
         0..=3 => {
             let x = *inputs
                 .scalars
                 .get(source)
                 .ok_or(Error::Invalid("engine scalar index above 63"))?;
-            out[mode] = match transform {
-                1 => 1.0 - x,
-                2 => ((TAU * x).cos() + 1.0) * 0.5,
-                3 => 0.5 - (TAU * x).cos() * 0.5,
-                4 => ((TAU * x).sin() + 1.0) * 0.5,
-                5 => 0.5 - (TAU * x).sin() * 0.5,
-                _ => x,
-            };
-            if (2..=5).contains(&transform) {
-                out[mode] = out[mode].clamp(0.0, 1.0);
-            }
+            out[mode] = engine_scalar(x, transform);
         }
         4 => {
             let v = inputs

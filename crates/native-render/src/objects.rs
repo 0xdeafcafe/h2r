@@ -44,7 +44,7 @@
 use crate::camera::{GuestRead, GuestWrite};
 use crate::model::{NODE_MATRIX_SIZE, NodeMatrix};
 use crate::object_lighting::{Defaults, Lighting};
-use crate::object_nodes::{RECORD_IMPLEMENTATION, RECORD_KEY, Row, node_rows, record_implementation};
+use crate::object_nodes::{IMPLEMENTATIONS, RECORD_IMPLEMENTATION, RECORD_KEY, Row, node_rows, record_implementation};
 use crate::skip::{CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, ITEM_SIZE, LIGHTMAP_LAYER, RENDER_RECORD_SIZE, RENDER_RECORDS};
 
 pub const OBJECTS: u32 = 0x004e_0300;
@@ -316,6 +316,9 @@ pub struct WalkStats {
     /// Build functions of in-layer items that are not geometry, up to four
     /// distinct, with their counts.
     pub other_builds: Vec<(u32, u32)>,
+    /// Live items by the layer-3 implementation their record picks
+    /// ([`record_implementation`]).
+    pub implementations: [u32; IMPLEMENTATIONS],
 }
 
 /// What a render record draws.
@@ -456,6 +459,11 @@ pub fn clear_objects(
         };
         let (Some(def), Some(shader)) = (def, mem.read_u32(item + 8)) else { continue };
         out.walk.live += 1;
+        if let Some(r) = item_record(mem, item)
+            && let Some(w) = mem.read_u32(RENDER_RECORDS + RENDER_RECORD_SIZE * u32::from(r) + RECORD_IMPLEMENTATION)
+        {
+            out.walk.implementations[record_implementation(w)] += 1;
+        }
         if !native(handle, def, shader) {
             continue;
         }
