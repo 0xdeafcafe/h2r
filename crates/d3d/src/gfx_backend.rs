@@ -595,11 +595,7 @@ impl GfxBackend {
             let drawable = s.texture().usage().contains(wgpu::TextureUsages::RENDER_ATTACHMENT);
             (single && drawable).then(|| {
                 (
-                    s.texture().create_view(&wgpu::TextureViewDescriptor {
-                        base_mip_level: 0,
-                        mip_level_count: Some(1),
-                        ..Default::default()
-                    }),
+                    s.base_view().clone(),
                     s.wgpu_format(),
                     (s.texture().width(), s.texture().height()),
                 )
@@ -1712,7 +1708,7 @@ impl Backend for GfxBackend {
                 slots.push(Some(crate::ExternalColor {
                     guest_size: guest_size.ok_or("missing guest slot dimensions")?,
                     sample: s.view().clone(),
-                    attachment: t.create_view(&wgpu::TextureViewDescriptor { mip_level_count: Some(1), ..Default::default() }),
+                    attachment: s.base_view().clone(),
                     format: t.format(),
                     size: (t.width(), t.height()),
                 }));

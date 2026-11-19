@@ -92,7 +92,7 @@ pub struct IndexedPass {
 
 struct Prepared {
     pipeline: wgpu::RenderPipeline,
-    params: wgpu::BindGroup,
+    params: gfx::ring::UniformRun,
     textures: Option<wgpu::BindGroup>,
     streams: Vec<wgpu::Buffer>,
     indices: wgpu::Buffer,
@@ -309,7 +309,17 @@ impl IndexedPass {
             bytemuck::cast_slice(&indices[..]),
             wgpu::BufferUsages::INDEX,
         );
-        let params = immutable_uniforms(target.device, &pipeline, &program.vertex, &program.pixel);
+        let params = target.uploads.uniform_run(
+            target.device,
+            target.queue,
+            cache.bindings.uniform_layout(),
+            [VertexUniforms::SIZE, PixelUniforms::SIZE],
+            1,
+            |_, v, p| {
+                program.vertex.write_bytes(v);
+                program.pixel.write_bytes(p);
+            },
+        )?;
         Some(Prepared {
             pipeline,
             params,
@@ -374,7 +384,7 @@ impl ExternalPass for IndexedPass {
                 ..Default::default()
             });
         pass.set_pipeline(&draw.pipeline);
-        pass.set_bind_group(0, &draw.params, &[0, 0]);
+        pass.set_bind_group(0, &draw.params.group, &draw.params.offsets(0));
         if let Some(textures) = &draw.textures {
             pass.set_bind_group(1, textures, &[]);
         }
@@ -419,41 +429,6 @@ fn scaled_clip(rect: &PixelRect, scale: u32, extent: (u32, u32)) -> Option<Pixel
         y,
         width,
         height,
-    })
-}
-
-fn immutable_uniforms(
-    device: &wgpu::Device,
-    pipeline: &wgpu::RenderPipeline,
-    vertex: &VertexUniforms,
-    pixel: &PixelUniforms,
-) -> wgpu::BindGroup {
-    let mut vertex_bytes = [0; VertexUniforms::SIZE];
-    let mut pixel_bytes = [0; PixelUniforms::SIZE];
-    vertex.write_bytes(&mut vertex_bytes);
-    pixel.write_bytes(&mut pixel_bytes);
-    let uniform = |contents: &[u8]| {
-        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("opaque immutable uniforms"),
-            contents,
-            usage: wgpu::BufferUsages::UNIFORM,
-        })
-    };
-    let vertex = uniform(&vertex_bytes);
-    let pixel = uniform(&pixel_bytes);
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("opaque immutable uniform group"),
-        layout: &pipeline.get_bind_group_layout(0),
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: vertex.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: pixel.as_entire_binding(),
-            },
-        ],
     })
 }
 

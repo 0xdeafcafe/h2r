@@ -878,6 +878,7 @@ impl d3d::ExternalPass for ObjectsPass {
         lit.encode(
             t.device,
             t.queue,
+            t.uploads,
             &mut *t.encoder,
             t.color,
             t.color_format,

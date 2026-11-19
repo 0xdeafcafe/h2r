@@ -2,8 +2,7 @@
 //! programs and pixel shaders ([`crate::object_program`]): per section
 //! its vertex streams expanded once through each declaration a program
 //! needs ([`crate::object_streams`]), each program uploaded once, and per
-//! view one buffer holding every drawn part's vertex and pixel blocks at
-//! dynamic offsets (as the lights do, [`crate::light_gpu::run_layout`]),
+//! view immutable vertex and pixel blocks in the submission upload ring,
 //! then one render pass over the game's targets
 //! (docs/graphics/native-renderer.md, "Object programs").
 
@@ -15,7 +14,7 @@ use shaders::vsh::VertexUniforms;
 use wgpu::util::DeviceExt;
 
 use crate::gpu::{Image, texture};
-use crate::light_gpu::{LayeredImage, layered_texture, run_layout, uniforms_layout};
+use crate::light_gpu::{LayeredImage, layered_texture, uniforms_layout};
 use crate::look::Stage;
 use crate::object_lighting::ShaderValues;
 use crate::object_program::{
@@ -469,6 +468,7 @@ impl LitObjects {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        uploads: &gfx::ring::SubmissionUploads,
         encoder: &mut wgpu::CommandEncoder,
         color: &wgpu::TextureView,
         color_format: wgpu::TextureFormat,
@@ -537,36 +537,14 @@ impl LitObjects {
             });
             p.pipelines.insert(key, pipeline);
         }
-        let align = u64::from(device.limits().min_uniform_buffer_offset_alignment);
-        let (offsets, size) = run_layout(issued.len(), align);
-        let mut bytes = vec![0u8; size as usize];
-        for ((_, (vertex, pixel)), o) in issued.iter().zip(&offsets) {
-            let (v, p) = (o[0] as usize, o[1] as usize);
-            let vertex = vertex.to_bytes();
-            bytes[v..v + vertex.len()].copy_from_slice(&vertex);
-            let pixel = pixel.to_bytes();
-            bytes[p..p + pixel.len()].copy_from_slice(&pixel);
-        }
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("native object program uniforms"),
-            size,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        queue.write_buffer(&buffer, 0, &bytes);
-        let entry = |binding: u32, size: usize| wgpu::BindGroupEntry {
-            binding,
-            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                buffer: &buffer,
-                offset: 0,
-                size: wgpu::BufferSize::new(size as u64),
-            }),
-        };
-        let uniforms = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("native object program uniforms"),
-            layout: &self.uniforms_layout,
-            entries: &[entry(0, VertexUniforms::SIZE), entry(1, PixelUniforms::SIZE)],
-        });
+        let Some(uniforms) = uploads.uniform_run(
+            device, queue, &self.uniforms_layout, [VertexUniforms::SIZE, PixelUniforms::SIZE],
+            issued.len(), |i, v, p| {
+                let (_, (vertex, pixel)) = &issued[i];
+                vertex.write_bytes(v);
+                pixel.write_bytes(p);
+            },
+        ) else { return 0 };
         // The stages of programs sampling the texture accumulation level,
         // with this pass's level.
         let mut groups: HashMap<(u32, usize), wgpu::BindGroup> = HashMap::new();
@@ -601,7 +579,7 @@ impl LitObjects {
         });
         pass.set_viewport(0.0, 0.0, target_size.0 as f32, target_size.1 as f32, 0.0, 1.0);
         let mut drawn = 0;
-        for ((planned, _), o) in issued.iter().zip(&offsets) {
+        for (i, (planned, _)) in issued.iter().enumerate() {
             let (model, d) = (planned.0, &planned.1);
             let m = &self.models[&model];
             let b = &m.buffers[d.buffer];
@@ -609,7 +587,7 @@ impl LitObjects {
             let Some(pipeline) = p.pipelines.get(&(color_format, depth_format, b.registers.clone(), b.formats.clone(), d.state)) else { continue };
             let Some(textures) = p.textures.as_ref().or_else(|| groups.get(&(model, d.program))) else { continue };
             pass.set_pipeline(pipeline);
-            pass.set_bind_group(0, &uniforms, o);
+            pass.set_bind_group(0, &uniforms.group, &uniforms.offsets(i));
             pass.set_bind_group(1, textures, &[]);
             pass.set_blend_constant(p.pass.program.state.map_or(wgpu::Color::BLACK, |s| s.blend_constant));
             pass.set_vertex_buffer(0, b.vertices.slice(..));
