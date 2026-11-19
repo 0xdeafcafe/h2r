@@ -55,7 +55,7 @@ fn whole_run() -> Vec<&'static str> {
         "coop-live: lobby mode 6",
         "live: session 0123456789abcdef advertised for 127.0.0.1:1000",
         "clankers: clankermatch: hosting clanker playlist 8 (session 0123456789abcdef): 7 bots join over 12.0 s",
-        "clankers: clankermatch: 3 local bots join the lobby on free controller ports; 4 phantoms join when the game starts (\"bots: phantom ... joins\")",
+        "clankers: clankermatch: 3 local bots join the lobby on free controller ports; 4 phantoms join the lobby as peers (\"bots: phantom ... joins\")",
         "clankers: asking Live for 7 bots for session 0123456789abcdef",
         "clankers: Live rostered bots for session 0123456789abcdef",
         "clankers: Clanker 1 on (Normal)",
@@ -75,11 +75,11 @@ fn whole_run() -> Vec<&'static str> {
         "bots: Loose Bolt on port 3 is on Xbox Live as its own bot account, beside port 0's",
         "bots-test: session 0123456789abcdef: 4 filled (public 4, private 0), 0 joined",
         "clankers: Tin Can (phantom, rostered) on (Normal)",
+        "bots: phantom Tin Can joins (peer 1, in the pregame lobby)",
+        "bots: phantom Oil Slick joins (peer 2, in the pregame lobby)",
+        "bots: phantom Spare Gear joins (peer 3, in the pregame lobby)",
+        "bots: phantom Hex Nut joins (peer 4, in the pregame lobby)",
         "bots-test: status phase loading mode multiplayer map lockout",
-        "bots: phantom Tin Can joins (peer 1)",
-        "bots: phantom Oil Slick joins (peer 2)",
-        "bots: phantom Spare Gear joins (peer 3)",
-        "bots: phantom Hex Nut joins (peer 4)",
         "bots-test: status phase gameplay mode multiplayer map lockout",
         "bots-test: session 0123456789abcdef: 8 filled (public 8, private 0), 0 joined",
         "bots-test: game g1 on lockout: 8 players, 7 bots (7 with an account), kind clankermatch, playlist Clanker Slayer",
@@ -137,7 +137,7 @@ fn the_lines_are_read() {
     );
     assert_eq!(
         local_planned(
-            "clankers: clankermatch: 1 local bots join the lobby on free controller ports; 2 phantoms join when the game starts"
+            "clankers: clankermatch: 1 local bots join the lobby on free controller ports; 2 phantoms join the lobby as peers"
         ),
         Some(1)
     );
@@ -194,7 +194,7 @@ fn a_whole_run_passes() {
         "{r}"
     );
     assert!(
-        r.contains("4 joined: Hex Nut, Oil Slick, Spare Gear, Tin Can"),
+        r.contains("4 joined in the lobby: Hex Nut, Oil Slick, Spare Gear, Tin Can"),
         "{r}"
     );
     assert!(r.contains("Clanker Slayer: 7 bots of the 7 planned"), "{r}");
@@ -232,6 +232,39 @@ fn no_clanker_hoppers_from_the_server_fails_step_2_saying_why() {
     let (n, r) = first(&run(&slayer(), &lines));
     assert_eq!(n, 2, "{r}");
     assert!(r.contains("lack hopper 8"), "{r}");
+}
+
+#[test]
+fn a_picker_answered_signed_out_fails_step_2_naming_it() {
+    // Run 20261119-115144: the picker opened at boot and on each Xbox
+    // Live press, and was closed on its no-account row every time; no
+    // local bot was placed, so no join gate line named it. The game's
+    // own line does now; a cursor move is the same opening.
+    let picker = "ui: screen none (slot 4: window 3 active 0x8253b0b0 pending 0x0 list [0x1/0xe1670000]; slot 0: no window), dialog 0x14 dialog_live_signin (window 3, slot 4)";
+    let picker_row_1 = "ui: screen none (slot 4: window 3 active 0x8253b0b0 pending 0x0 list [0x1/0xe1680001]; slot 0: no window), dialog 0x14 dialog_live_signin (window 3, slot 4)";
+    let main = "ui: screen none (slot 4: window 5 active 0x82539070 pending 0x0 list [0x1/0xe16e0001]; slot 0: no window)";
+    let lines = [
+        "bots-test: server clanker hoppers [8, 9, 10]",
+        "live: playing as Tester (0009f57cc2a65878) on http://127.0.0.1:8077",
+        picker,
+        picker_row_1,
+        main,
+        "bots-drive: press a on screen none main menu row 1 (Xbox Live (signs in))",
+        picker,
+        main,
+        "bots-drive: stuck: no Xbox Live menu after 4 tries; back on the main menu",
+    ];
+    let v = run(&slayer(), &lines);
+    let (n, r) = first(&v);
+    assert_eq!(n, 2, "{r}");
+    assert!(
+        r.contains("account picker (dialog 0x14") && r.contains("opened 2 time(s)"),
+        "{r}"
+    );
+    assert!(
+        r.contains("bots-drive: stuck"),
+        "the drive's last words: {r}"
+    );
 }
 
 #[test]
@@ -365,21 +398,27 @@ fn a_full_lobby_that_never_starts_says_so() {
 }
 
 #[test]
-fn a_phantom_before_the_start_fails_step_12() {
+fn a_phantom_only_in_the_game_fails_step_12() {
+    // Tin Can joined once the game ran, not in the lobby.
     let mut lines = without(&whole_run(), |l| {
-        l == "bots: phantom Tin Can joins (peer 1)"
+        l.starts_with("bots: phantom Tin Can joins")
     });
-    lines.insert(30, "bots: phantom Tin Can joins (peer 1)");
+    let at = lines
+        .iter()
+        .position(|l| l.contains("phase gameplay"))
+        .unwrap();
+    lines.insert(at, "bots: phantom Tin Can joins (peer 4)");
     let (n, r) = first(&run(&slayer(), &lines));
     assert_eq!(n, 12, "{r}");
     assert!(
-        r.contains("1 phantom(s) joined before the game started"),
+        r.contains("3 of 4 joined the lobby; 1 joined only once the game ran"),
         "{r}"
     );
+    // One missing altogether.
     let lines = without(&whole_run(), |l| l.starts_with("bots: phantom Hex Nut"));
     let (n, r) = first(&run(&slayer(), &lines));
     assert_eq!(n, 12, "{r}");
-    assert!(r.contains("3 of 4 joined after the start"), "{r}");
+    assert!(r.contains("3 of 4 joined the lobby (`"), "{r}");
 }
 
 #[test]

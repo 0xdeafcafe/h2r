@@ -678,7 +678,15 @@ How it behaves (**Code**, with tests in `crates/agent`):
   last host perf line), and `ui.screen` (`h2 agent ui`): with
   `H2_UI_WATCH=1`, the menu screen player one's input goes to, read each
   tick (`boot::ui_watch`; `{"screen", "window", "slot",
-  "live_menu_row", "age_ms"}`, docs/live/live-coop.md 12.6). The input
+  "live_menu_row", "mode", "dialog", "age_ms"}`, docs/live/live-coop.md
+  12.6). `dialog` is the dialog up (the first screen on windows 0 to 4,
+  any slot), or `null`: `{"id", "name", "window", "slot"}`, with `name`
+  the dialog's tag (`dialog_live_signin` for the account picker,
+  `confirmation_dialog`, `error_dialog_ok`, ...; `boot::ui_watch::
+  dialog_name`) or `null` for an id not named yet. Dialogs read as
+  `"screen": null`, so this is how a driver tells one from another; the
+  `ui: screen none` line names it the same way (`, dialog 0x14
+  dialog_live_signin (window 3, slot 4)`). The input
   methods are host methods too, added with the agent's input tap (phase 3
   below).
 

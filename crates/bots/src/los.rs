@@ -119,30 +119,81 @@ impl Walls {
         }
         true
     }
+
+    /// The first solid thing on the way from `a` to `b`: how far along
+    /// (0 to 1) and the surface's unit normal, facing back toward `a`. For
+    /// a grenade's flight (`crate::grenades`), whose steps are short: it
+    /// tests every triangle in the cells the segment's bounding box covers.
+    pub fn hit(&self, a: V3, b: V3) -> Option<(f32, V3)> {
+        let d = sub(b, a);
+        let mut best: Option<(f32, V3)> = None;
+        let mut seen = std::collections::HashSet::new();
+        for x in cell(a[0].min(b[0]))..=cell(a[0].max(b[0])) {
+            for y in cell(a[1].min(b[1]))..=cell(a[1].max(b[1])) {
+                let Some(ts) = self.grid.get(&(x, y)) else {
+                    continue;
+                };
+                for &t in ts {
+                    if !seen.insert(t) {
+                        continue;
+                    }
+                    let tri = &self.tris[t as usize];
+                    // Closed at both ends: a step that ends exactly on a
+                    // surface, or starts on it moving in, touches it. With
+                    // the open range of `clear`, a flight whose steps land
+                    // on the plane (6 a second in 1/60 s steps reaches
+                    // x = 3 exactly) passed through it.
+                    if let Some(at) = crossing(tri, a, d)
+                        .filter(|at| (-ENDS..=1.0 + ENDS).contains(at))
+                        .map(|at| at.clamp(0.0, 1.0))
+                        && best.is_none_or(|(b, _)| at < b)
+                    {
+                        let n = cross(sub(tri[1], tri[0]), sub(tri[2], tri[0]));
+                        let l = dot(n, n).sqrt().max(1e-9);
+                        let mut n = [n[0] / l, n[1] / l, n[2] / l];
+                        if dot(n, d) > 0.0 {
+                            n = [-n[0], -n[1], -n[2]];
+                        }
+                        best = Some((at, n));
+                    }
+                }
+            }
+        }
+        best
+    }
 }
+
+/// [`Walls::hit`] counts a crossing this far (of the step) past either
+/// end: the rounding of a crossing exactly at an end.
+const ENDS: f32 = 1e-4;
 
 /// Whether the segment `o + t d`, `t` in `(0, 1)`, crosses triangle `t`
 /// (Moller-Trumbore, both faces).
 fn hits(t: &[V3; 3], o: V3, d: V3) -> bool {
+    crossing(t, o, d).is_some_and(|at| at > 1e-4 && at < 1.0 - 1e-4)
+}
+
+/// Where along the line `o + t d` it crosses triangle `t`, if it does:
+/// `t` unbounded; the callers keep the part of the segment they mean.
+fn crossing(t: &[V3; 3], o: V3, d: V3) -> Option<f32> {
     let (e1, e2) = (sub(t[1], t[0]), sub(t[2], t[0]));
     let p = cross(d, e2);
     let det = dot(e1, p);
     if det.abs() < 1e-9 {
-        return false;
+        return None;
     }
     let inv = 1.0 / det;
     let s = sub(o, t[0]);
     let u = dot(s, p) * inv;
     if !(0.0..=1.0).contains(&u) {
-        return false;
+        return None;
     }
     let q = cross(s, e1);
     let v = dot(d, q) * inv;
     if v < 0.0 || u + v > 1.0 {
-        return false;
+        return None;
     }
-    let at = dot(e2, q) * inv;
-    at > 1e-4 && at < 1.0 - 1e-4
+    Some(dot(e2, q) * inv)
 }
 
 #[cfg(test)]
@@ -180,5 +231,27 @@ mod tests {
         assert!(w.clear([-40.0, 30.0, 1.0], [40.0, 31.0, 1.0]));
         // Straight down through the wall's top edge plane, beside it.
         assert!(w.clear([6.0, 0.0, 5.0], [6.0, 0.0, -5.0]));
+    }
+
+    #[test]
+    fn a_hit_says_where_and_which_way_the_wall_faces() {
+        let w = wall();
+        let (t, n) = w.hit([4.0, 0.0, 1.0], [6.0, 0.0, 1.0]).unwrap();
+        assert!((t - 0.5).abs() < 1e-4, "{t}");
+        assert!((n[0] + 1.0).abs() < 1e-4, "faces back: {n:?}");
+        let (_, n) = w.hit([6.0, 0.0, 1.0], [4.0, 0.0, 1.0]).unwrap();
+        assert!((n[0] - 1.0).abs() < 1e-4, "{n:?}");
+        assert_eq!(w.hit([0.0, 0.0, 1.0], [4.0, 0.0, 1.0]), None);
+        assert_eq!(w.hit([0.0, 0.0, 3.0], [10.0, 0.0, 3.0]), None);
+        // A step ending exactly on the wall touches it, and so does the
+        // next one starting there: a flight cannot slip through between
+        // them. Line of sight keeps the open range.
+        let end = w.hit([4.5, 0.0, 1.0], [5.0, 0.0, 1.0]).expect("ends on it");
+        assert!((end.0 - 1.0).abs() < 1e-4, "{end:?}");
+        let start = w
+            .hit([5.0, 0.0, 1.0], [5.5, 0.0, 1.0])
+            .expect("starts on it");
+        assert!(start.0.abs() < 1e-4, "{start:?}");
+        assert!(w.clear([4.5, 0.0, 1.0], [5.0, 0.0, 1.0]));
     }
 }

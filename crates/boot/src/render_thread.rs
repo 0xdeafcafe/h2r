@@ -139,6 +139,17 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     ("bots", "SOUND_UPDATE", AFTER),
     ("bots", "SOUND_LISTENERS_UPDATE", AFTER),
     ("bots", "SOUND_OWNER_USER", AFTER),
+    ("bots", "GAME_ACTIVATE", AFTER),
+    (
+        "bots",
+        "WEAPON_FIRE",
+        "a shot in the simulation, on the game thread; the bots hear it",
+    ),
+    (
+        "bots",
+        "MACHINE_IN_GAME",
+        "the simulation's per-tick player update, on the game thread; phantoms' machines answer in the game",
+    ),
     (
         "bots",
         "PLAYER_KILLED",

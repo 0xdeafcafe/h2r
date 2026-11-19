@@ -12,6 +12,7 @@ use engine::points;
 use engine::view::{objects, players};
 
 use crate::brain::{Me, Perception, Seen};
+pub(crate) mod intel;
 
 pub type R<T> = Result<T, MemFault>;
 
@@ -920,27 +921,48 @@ pub fn perceive(m: &dyn GuestMemory, port: u32) -> R<Perception> {
 /// player with a living unit, the weapons lying about and the objective.
 /// Outside one, nothing.
 pub fn perceive_as(m: &dyn GuestMemory, who: Who) -> R<Perception> {
+    Ok(perception(m, who, false)?.0)
+}
+
+pub(crate) fn perceive_for_brain(
+    m: &dyn GuestMemory,
+    who: Who,
+) -> R<(Perception, Vec<crate::incoming::Grenade>)> {
+    perception(m, who, true)
+}
+
+fn perception(
+    m: &dyn GuestMemory,
+    who: Who,
+    sense_grenades: bool,
+) -> R<(Perception, Vec<crate::incoming::Grenade>)> {
     let mut out = Perception::default();
+    let mut grenades = Vec::new();
     let globals = m.u32(points::GAME_GLOBALS.base)?;
     if globals == 0 || m.u32(globals + OPTIONS)? != MODE_MULTIPLAYER {
-        return Ok(out);
+        return Ok((out, grenades));
     }
     out.teams = m.u32(globals + OPTIONS + VARIANT_FLAGS)? & 1 != 0;
     out.tick = game_tick(m).unwrap_or(0);
     let Some(array) = players::array(m)? else {
-        return Ok(out);
+        return Ok((out, grenades));
     };
     let mut me_index = None;
     for (handle, p) in array.live(m, 16)? {
         if !p.listed(m)? {
             continue;
         }
+        let id = u32::from(handle.index());
+        let team = i16::from(p.team(m)?);
+        let ours = is(m, &p, who)?;
+        if ours {
+            out.observations.player = Some((id, team));
+        }
         let Some((position, aim, body)) = living_unit(m, &p)? else {
             continue;
         };
-        let team = i16::from(p.team(m)?);
-        if is(m, &p, who)? {
-            me_index = Some(u32::from(handle.index()));
+        if ours {
+            me_index = Some(id);
             // Ammunition is extra: a fault reading it leaves the bot
             // playing without it (section 3.6), not blind.
             out.me = Some(Me {
@@ -952,20 +974,28 @@ pub fn perceive_as(m: &dyn GuestMemory, who: Who) -> R<Perception> {
                 arms: crate::arms::read(m, body.addr).ok(),
             });
         } else {
-            out.others.push(Seen {
-                id: u32::from(handle.index()),
-                position,
-                team,
+            out.observations.contacts.push(crate::brain::Contact {
+                id,
+                aim,
+                shield: body.shield(m).ok().filter(|s| s.is_finite()),
+                empty_magazine: crate::arms::held_empty_magazine(m, body.addr).unwrap_or(false),
             });
+            out.others.push(Seen { id, position, team });
         }
     }
     if let Some(me) = me_index {
-        out.pickups = crate::arms::pickups(m).unwrap_or_default();
+        let near = out.me.filter(|_| sense_grenades).map(|me| me.position);
+        if let Ok(ground) = crate::arms::ground(m, near) {
+            out.pickups = ground.weapons;
+            out.observations.supplies = ground.supplies;
+            out.observations.pickups_scanned = true;
+            grenades = ground.grenades;
+        }
         // The objective is extra too: a fault leaves the bot playing as in
         // Slayer (section 3.7).
         out.objective = crate::objective::read(m, me).ok().flatten();
     }
-    Ok(out)
+    Ok((out, grenades))
 }
 
 #[cfg(test)]

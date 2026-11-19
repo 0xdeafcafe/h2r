@@ -103,9 +103,9 @@ impl Driver {
             return;
         }
         if self.dialog() {
-            let ui = self.ui.clone();
+            let (ui, name) = (self.ui.clone(), self.dialog_name());
             self.give_up(format!(
-                "a dialog over the Clankermatch playlists (an empty list?): {ui}"
+                "{name} over the Clankermatch playlists (an empty list?): {ui}"
             ));
             return;
         }
@@ -287,13 +287,24 @@ impl Driver {
         }
         let unchanged = self.ui_since < self.last_press;
         let (queue, b, dialogs) = if self.dialog() {
+            let name = self.dialog_name();
             if dialogs == 0 {
-                (vec![press("a", "a dialog on the way out: A")], false, 1)
+                (
+                    vec![press("a", &format!("{name} on the way out: A"))],
+                    false,
+                    1,
+                )
             } else {
                 (
                     vec![
-                        press("down", "a dialog on the way out again: its second button"),
-                        press("a", "a dialog on the way out: A on its second button"),
+                        press(
+                            "down",
+                            &format!("{name} on the way out again: its second button"),
+                        ),
+                        press(
+                            "a",
+                            &format!("{name} on the way out: A on its second button"),
+                        ),
                     ],
                     false,
                     dialogs + 1,
