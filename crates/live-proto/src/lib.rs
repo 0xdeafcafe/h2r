@@ -33,6 +33,7 @@ pub mod skulls;
 pub mod storage;
 pub mod team;
 pub mod title_file;
+pub mod tunnel;
 
 use std::fmt;
 
