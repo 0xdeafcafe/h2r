@@ -33,14 +33,15 @@ pub(crate) fn observe(
     }
     // Allies have teammate HUD markers. Their aim and carried weapon
     // still require personal sight.
-    p.observations.contacts.retain(|c| {
-        p.others
-            .iter()
-            .any(|o| o.id == c.id && visible(o.position, CHEST))
-    });
-    p.others.retain(|o| {
-        (p.teams && p.me.is_some_and(|me| me.team == o.team)) || visible(o.position, CHEST)
-    });
+    let seen: Vec<_> = p
+        .others
+        .iter()
+        .filter(|o| visible(o.position, CHEST))
+        .map(|o| o.id)
+        .collect();
+    p.observations.contacts.retain(|c| seen.contains(&c.id));
+    p.others
+        .retain(|o| (p.teams && p.me.is_some_and(|me| me.team == o.team)) || seen.contains(&o.id));
     p.pickups.retain(|pk| visible(pk.position, 0.2));
     for pk in &mut p.pickups {
         // Someone looking at a dropped gun knows its model, not its rounds.
@@ -79,11 +80,7 @@ pub(crate) fn observe(
         // whose body is occluded. An attempted entry can still fail.
         v.health = 1.0;
         for seat in &mut v.seats {
-            seat.rider = seat.rider.filter(|r| {
-                p.others
-                    .iter()
-                    .any(|o| o.id == r.player && visible(o.position, CHEST))
-            });
+            seat.rider = seat.rider.filter(|r| seen.contains(&r.player));
         }
         true
     });

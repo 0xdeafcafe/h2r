@@ -384,7 +384,9 @@ candidates through `perceive::observe` before combat, movement, radio or
 memory. The paired-world harness in `perceive::honesty` runs seeded brains
 with separate radios, comparing projected inputs, controller output,
 chosen activity, kit and outgoing enemy call. One fixture puts a hidden
-enemy and power weapon behind a base wall on an H1-shaped valley.
+enemy and power weapon behind a base wall on an H1-shaped valley. A
+second pair starts at the production guest reader, changing a hidden
+biped's state in the synthetic object table before either brain runs.
 
 | Host input audited | Information the bot receives |
 |---|---|
