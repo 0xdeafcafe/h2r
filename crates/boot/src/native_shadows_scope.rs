@@ -161,7 +161,7 @@ impl d3d::DrawAdmission for Gate {
             Box::new(Range {
                 gpu: Arc::clone(gpu),
                 draw: Arc::new(draw.clone()),
-                packets: Vec::new(),
+                run: call.seq,
                 recorded: call.recorded.clone(),
                 map,
             }),

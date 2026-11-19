@@ -466,6 +466,11 @@ pub struct RecordedDraw {
 }
 
 impl RecordedDraw {
+    /// Resolve the cached pipeline before an ordered replacement commits.
+    pub fn pipeline_valid(&self) -> bool {
+        self.pipeline.get().is_some()
+    }
+
     /// Whether the draw adds its samples to the pass's [`PixelCounter`].
     pub fn counts_samples(&self) -> bool {
         self.count.is_some()

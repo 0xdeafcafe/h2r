@@ -1,12 +1,11 @@
 use super::*;
-use d3d::ExternalPass;
 use d3d::{
     backend::{TargetInfo, TextureInfo},
     shader::{CONSTANTS, ShaderInputs, VertexProcessing},
     state::StateWords,
 };
 use gfx::{
-    D3DFormat, OffscreenTarget,
+    Clear, D3DFormat, OffscreenTarget,
     state::{CompareFunc, CullMode, DepthBufferMode, StencilState},
     vertex::{
         PrimitiveType, StreamLayout, VertexAttribute, VertexDataType, VertexLayout, VertexRegister,
@@ -202,10 +201,10 @@ fn layer11_uses_only_its_map_and_preserves_rgb_stencil_and_alpha_test() {
         d.state.render.alpha_test_enable = alpha_test;
         d.state.render.alpha_func = CompareFunc::Greater;
         d.state.render.alpha_ref = 1;
-        let mut range = Range {
+        let range = Range {
             gpu: gpu.clone(),
             draw: Arc::new(d),
-            packets: Vec::new(),
+            run: 0,
             recorded: None,
             map: Some((Arc::new(Mutex::new(Some(map.clone()))), MapKind::Depth, MAP)),
         };
@@ -224,28 +223,12 @@ fn layer11_uses_only_its_map_and_preserves_rgb_stencil_and_alpha_test() {
             None,
         )
         .unwrap();
-        let uploads = gfx::ring::UploadPool::default().begin();
-        let destination = ExternalTarget {
-            device: &ctx.device,
-            queue: &ctx.queue,
-            encoder: &mut enc,
-            color: target.color,
-            color_format: target.color_format,
-            depth: target.depth.unwrap(),
-            depth_format: target.depth_format.unwrap(),
-            viewport: [0.0, 0.0, 16.0, 16.0],
-            z_scale: 16_777_215.0,
-            guest_size: (16, 16),
-            size: (16, 16),
-            sampled: &[],
-            slots: &[],
-            uploads: &uploads,
-            copy: d3d::TargetCopy::Reference,
-            stages: [Some(&fallback.view), None, None, None],
-            on_submit: None,
-        };
-        range.prepare_copy(&destination).unwrap();
-        assert_eq!(range.record_ranges(destination), 1);
+        let (packets, _) = range.prepare(
+            &ctx.device, d3d::TargetCopy::Reference, (16, 16), target,
+            [Some(&fallback.view), None, None, None],
+        ).unwrap();
+        assert_eq!(packets.len(), 1);
+        Renderer::encode_pass(&ctx, &mut enc, &surface.target(), Clear::NONE, &packets, None).unwrap();
         ctx.queue.submit([enc.finish()]);
         let px = surface.read_pixels(&ctx);
         assert_eq!(&px[(2 * 16 + 2) * 4..][..4], [255, 0, 255, want]);
@@ -290,6 +273,7 @@ fn mixed_native_shadow_unshadowed_and_refused_d3d_lights_match_all_d3d() {
         view: lit.texture.create_view(&Default::default()),
     };
     let render = |backend: &mut GfxBackend, native: bool| {
+        let before = backend.batch_stats().render_passes;
         let color = backend
             .create_surface(D3DFormat::A8R8G8B8, 16, 16, false)
             .unwrap();
@@ -325,27 +309,28 @@ fn mixed_native_shadow_unshadowed_and_refused_d3d_lights_match_all_d3d() {
             surface_size: (16, 16),
             z_scale: 16_777_215.0,
         };
-        for (i, original) in [&lit, &gel, &dark].into_iter().enumerate() {
+        for (i, original) in [&lit, &lit, &gel, &dark, &lit].into_iter().enumerate() {
             let mut draw = receiver();
             draw.clip = Some(d3d::PixelRect {
-                x: 4 * i as u32,
+                // The D3D gel overwrites the second native receiver.
+                x: [0, 4, 4, 8, 12][i],
                 y: 0,
                 width: 4,
                 height: 16,
             });
-            if i == 1 {
+            if i == 2 {
                 // The intervening unshadowed light reads an ordinary colour texture.
                 draw.texture_info[0].as_mut().unwrap().format = D3DFormat::LinA8R8G8B8;
                 let modes = texture_modes([TEX_PROJECT2D, 0, 0, 0]);
                 Arc::make_mut(&mut draw.raw).render[136] = modes;
                 Arc::make_mut(draw.shader.pixel_shader.as_mut().unwrap())[54] = modes;
             } else if native {
-                let output = Arc::new(Mutex::new((i == 0).then(|| map.clone())));
+                let output = Arc::new(Mutex::new((i != 3).then(|| map.clone())));
                 let pass = Range {
                     gpu: gpu.clone(),
                     draw: Arc::new(draw.clone()),
                     map: Some((output, MapKind::Depth, MAP)),
-                    packets: vec![],
+                    run: 0,
                     recorded: None,
                 };
                 let commands = backend
@@ -358,7 +343,7 @@ fn mixed_native_shadow_unshadowed_and_refused_d3d_lights_match_all_d3d() {
                         Arc::new(Mutex::new(Box::new(pass))),
                     )
                     .unwrap();
-                if i == 0 {
+                if i != 3 {
                     let commands = commands.expect("lit receiver admitted");
                     assert_eq!(commands.len(), 1);
                     for command in commands {
@@ -384,12 +369,20 @@ fn mixed_native_shadow_unshadowed_and_refused_d3d_lights_match_all_d3d() {
             );
         }
         backend.flush().unwrap();
+        if native {
+            // Clear, the first two receivers in one pass, the two D3D
+            // draws, and the final receiver after the fallback.
+            assert_eq!(backend.batch_stats().render_passes - before, 4);
+        }
         backend.store.read_color(&ctx, color).unwrap().0
     };
+    backend.set_merge_passes(true);
+    backend.set_merge_discards(true);
+    backend.set_merge_masks(true);
     let expected = render(&mut backend, false);
     let actual = render(&mut backend, true);
     assert_eq!(actual, expected);
-    for (x, alpha) in [(1, 255), (5, 128), (9, 0), (13, 64)] {
+    for (x, alpha) in [(1, 255), (5, 128), (9, 0), (13, 255)] {
         assert_eq!(actual[(16 + x) * 4 + 3], alpha);
     }
 }

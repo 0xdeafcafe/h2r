@@ -1,7 +1,8 @@
 //! One resolved range at a shadow-layer boundary. The handoff owns the
 //! original packet until this recording is complete on every live copy.
+use d3d::backend::{ExternalAttachments, ExternalDraws, ExternalPassRequest};
 use d3d::{ExternalTarget, ResolvedDraw, ShaderProvider};
-use gfx::{Clear, Draw, GfxContext, RenderTarget, Renderer, VertexStream};
+use gfx::{Draw, GfxContext, RenderTarget, Renderer, VertexStream};
 use native_render::shadow_gpu::{MapKind, SampledMap};
 use std::sync::{Arc, Mutex};
 
@@ -97,22 +98,19 @@ pub(crate) struct Range {
     pub(crate) gpu: SharedGpu,
     pub(crate) draw: Arc<ResolvedDraw>,
     pub(crate) map: Option<(Output, MapKind, u32)>,
-    pub(crate) packets: Vec<gfx::RecordedDraw>,
+    pub(crate) run: u64,
     pub(crate) recorded: Option<Arc<std::sync::atomic::AtomicUsize>>,
 }
 
 impl Range {
-    fn target<'a>(&self, t: &ExternalTarget<'a>) -> RenderTarget<'a> {
-        RenderTarget {
-            color: t.color,
-            color_format: t.color_format,
-            depth: self.draw.target.depth_format.map(|_| t.depth),
-            depth_format: self.draw.target.depth_format.map(|_| t.depth_format),
-            size: t.size,
-            samples: 1,
-        }
-    }
-    fn prepare(&self, t: &ExternalTarget<'_>) -> Option<Vec<gfx::RecordedDraw>> {
+    fn prepare(
+        &self,
+        device: &wgpu::Device,
+        copy: d3d::TargetCopy,
+        guest_size: (u32, u32),
+        target: RenderTarget<'_>,
+        mut stages: [Option<&wgpu::TextureView>; 4],
+    ) -> Option<(Vec<gfx::RecordedDraw>, bool)> {
         let mut gpu = self.gpu.lock().ok()?;
         let Gpu {
             ctx,
@@ -122,16 +120,16 @@ impl Range {
             ..
         } = &mut *gpu;
         let draw = &self.draw;
-        let target = self.target(t);
-        if &ctx.device != t.device
-            || t.copy != d3d::TargetCopy::Reference
-            || t.size != t.guest_size
-            || t.size != (draw.target.width, draw.target.height)
+        if &ctx.device != device
+            || copy != d3d::TargetCopy::Reference
+            || target.size != guest_size
+            || target.size != (draw.target.width, draw.target.height)
+            || (draw.state.render.stencil.enable
+                && !target.depth_format.is_some_and(|format| format.has_stencil_aspect()))
         {
             return None;
         }
         let map = self.map.as_ref().and_then(|(out, _, _)| out.lock().ok());
-        let mut stages = t.stages;
         for (i, info) in draw.texture_info.iter().enumerate() {
             if info.is_some() != stages[i].is_some() {
                 return None;
@@ -162,6 +160,14 @@ impl Range {
                     stages[i] = Some(&source.view);
                 }
             }
+        }
+        if stages.iter().flatten().any(|view| {
+            view.texture() == target.color.texture()
+                || target.depth.is_some_and(|depth| view.texture() == depth.texture())
+                || !view.texture().usage().contains(wgpu::TextureUsages::TEXTURE_BINDING)
+                || !gfx::program::filterable(view.texture().format(), device.features())
+        }) {
+            return None;
         }
         let prepared = shaders.prepare(ctx, renderer, draw, stages).ok()?;
         let mut state = draw.state.render;
@@ -210,12 +216,16 @@ impl Range {
                 width: r.width,
                 height: r.height,
             });
-            packets.push(renderer.record(ctx, &target, &d).ok()?);
+            let packet = renderer.record(ctx, &target, &d).ok()?;
+            if !packet.pipeline_valid() {
+                return None;
+            }
+            packets.push(packet);
         }
         if !*defer_uploads {
             gpu.flush_uploads();
         }
-        Some(packets)
+        Some((packets, prepared.discards))
     }
 }
 
@@ -252,32 +262,29 @@ impl d3d::ExternalPass for Range {
         self.recorded.is_none().then(|| Arc::clone(&self.draw))
     }
 
-    fn prepare_copy(&mut self, t: &ExternalTarget<'_>) -> Result<(), &'static str> {
-        self.packets = self
-            .prepare(t)
-            .ok_or("shadow resources or shader unavailable")?;
-        Ok(())
-    }
-    fn record_ranges(&mut self, t: ExternalTarget<'_>) -> usize {
-        let Ok(gpu) = self.gpu.lock() else { return 0 };
-        let target = self.target(&t);
-        if Renderer::encode_pass(
-            &gpu.ctx,
-            t.encoder,
-            &target,
-            Clear::NONE,
-            &self.packets,
-            None,
-        )
-        .is_ok()
-        {
-            if let Some(count) = &self.recorded {
-                count.fetch_add(self.packets.len(), std::sync::atomic::Ordering::Relaxed);
-            }
-            self.packets.len()
-        } else {
-            0
+    fn record_draws(
+        &mut self,
+        t: &ExternalAttachments,
+        request: ExternalPassRequest,
+    ) -> Option<Result<ExternalDraws, &'static str>> {
+        let has_depth = self.draw.target.depth_format.is_some();
+        let target = RenderTarget {
+            color: &t.color,
+            color_format: t.color_format,
+            depth: has_depth.then_some(&t.depth),
+            depth_format: has_depth.then_some(t.depth_format),
+            size: t.size,
+            samples: 1,
+        };
+        let Some((packets, discards)) = self.prepare(
+            &t.device, t.copy, request.surface_size, target, t.stages.each_ref().map(Option::as_ref),
+        ) else {
+            return Some(Err("shadow resources or shader unavailable"));
+        };
+        if let Some(count) = &self.recorded {
+            count.fetch_add(packets.len(), std::sync::atomic::Ordering::Relaxed);
         }
+        Some(Ok(ExternalDraws { run: self.run, packets, discards }))
     }
 }
 

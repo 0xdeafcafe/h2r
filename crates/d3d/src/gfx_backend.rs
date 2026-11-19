@@ -1752,7 +1752,9 @@ impl Backend for GfxBackend {
         }
         match recording.commands {
             crate::backend::ExternalCommands::Bundles { targets, color, depth, stencil, draws } =>
-                self.append_native(recording.copy, targets, color, depth, stencil, draws),
+                self.append_native(recording.stage, recording.copy, targets, color, depth, stencil, draws),
+            crate::backend::ExternalCommands::Draws { targets, target, draws } =>
+                self.append_native_draws(recording.stage, recording.copy, targets, target, draws),
             crate::backend::ExternalCommands::Standalone(commands) => {
                 self.finish_native_run();
                 if let Some((enc, _)) = self.open.take() {

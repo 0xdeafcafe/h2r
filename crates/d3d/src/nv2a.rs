@@ -972,6 +972,8 @@ impl ShaderProvider for Nv2aShaders {
             signed,
         ) {
             bind_groups.push(gfx::BoundGroup::new(1, g));
+        } else if compiled.dims.iter().any(Option::is_some) {
+            return Err("NV2A texture bind group unavailable".into());
         }
         Ok(PreparedShader {
             id: compiled.id,
