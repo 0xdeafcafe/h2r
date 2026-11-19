@@ -1059,6 +1059,11 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Res
     } else {
         None
     };
+    // The water/camouflage census (`native_water_glue`), read-only: with
+    // the water switch on, before the world's draws are kept.
+    if feature::Switches::from_env().is_ok_and(|s| feature::native_water::on(&s)) {
+        crate::native_water_glue::census(&mut map, &shaders, &world);
+    }
     // Draw only a native material's clusters, and its placements with its
     // rigid program: the rest keeps its D3D draws.
     let world = keep_draws(world, &|d| native.contains(&d.material) && drawn_natively(d, &rigid));
