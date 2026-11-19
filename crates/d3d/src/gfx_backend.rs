@@ -1627,10 +1627,10 @@ impl Backend for GfxBackend {
         Ok(true)
     }
 
-    fn prepare_external(
-        &mut self, surfaces: crate::ExternalSurfaces<SurfaceId>, request: crate::ExternalPassRequest,
-        textures: [Option<&Self::Texture>; 4], plan: &crate::ExternalPlan, copy: crate::TargetCopy, pass: crate::SharedReplacement,
-    ) -> Result<Option<Vec<crate::ExternalRecording>>, String> {
+    fn external_attachments(
+        &mut self, surfaces: crate::ExternalSurfaces<SurfaceId>, textures: [Option<&Self::Texture>; 4],
+        copy: crate::TargetCopy,
+    ) -> Result<Option<Vec<crate::backend::ExternalAttachments>>, String> {
         // Finish pending D3D work before the device can give up its guest draws.
         self.encode_pending()?;
         let sampled = surfaces.sampled.into_iter().map(Some).collect();
@@ -1658,25 +1658,12 @@ impl Backend for GfxBackend {
                 size: (t.width(), t.height()),
             }));
         }
-        let mut enc = self.ctx.device.create_command_encoder(&Default::default());
-        let mut pass = pass.lock().map_err(|_| "native pass poisoned")?;
-        let stages = textures.map(|t| t.and_then(|t| t.view.as_ref()));
+        let stages = textures.map(|t| t.and_then(|t| t.view.clone()));
         if (0..4).any(|i| textures[i].is_some() && stages[i].is_none()) { return Ok(None); }
-        let target = crate::ExternalTarget {
-            device: &self.ctx.device, queue: &self.ctx.queue, encoder: &mut enc,
-            color: &cv, color_format: cf, depth: &dv, depth_format: df,
-            viewport: crate::external_viewport(&request, size), z_scale: request.z_scale,
-            guest_size: request.surface_size, size, sampled: &sampled, slots: &slots, copy, stages,
-        };
-        let prepare = timeline::native::Timer::start(plan.stage, timeline::native::Metric::PrepareNs);
-        if pass.prepare_copy(&target).is_err() { return Ok(None); }
-        drop(prepare);
-        let _encode = timeline::native::Timer::start(plan.stage, timeline::native::Metric::EncodeNs);
-        let ranges = pass.record_ranges(target);
-        if !plan.complete(copy, ranges) {
-            return Ok(None);
-        }
-        Ok(Some(vec![crate::ExternalRecording { copy, ranges, commands: enc.finish() }]))
+        Ok(Some(vec![crate::backend::ExternalAttachments {
+            device: self.ctx.device.clone(), queue: self.ctx.queue.clone(), color: cv, color_format: cf,
+            depth: dv, depth_format: df, size, sampled, slots, copy, stages,
+        }]))
     }
 
     fn commit_external(&mut self, recording: crate::ExternalRecording) {
