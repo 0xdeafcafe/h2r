@@ -272,7 +272,13 @@ impl App {
                     let msg = self.session.status().to_owned();
                     self.info(msg);
                 }
-                Err(e) => self.error(e.to_string()),
+                // The disc's map stays open: say so, so its stock content
+                // is not taken for the package's.
+                Err(e) => self.error(format!(
+                    "{}: the package could not be opened ({e}); showing the disc's {} without it",
+                    entry.label(),
+                    entry.map
+                )),
             }
             return;
         }

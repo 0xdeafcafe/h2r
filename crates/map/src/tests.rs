@@ -681,3 +681,52 @@ fn appending_metadata_is_refused_outside_its_bounds() {
     edit.write_to(&mut out).unwrap();
     assert_eq!(parse(out.into_inner()).unwrap().header().meta_size, limit);
 }
+
+/// `fixture_at_end` with `+0x18` and `+0x1c` overstated past the end of
+/// the file, as a metadata-injecting modding tool leaves them: every tag
+/// still lies inside the file.
+fn overstated_at_end() -> Vec<u8> {
+    let mut b = fixture_at_end();
+    put(&mut b, 0x18, 0x600 + 0x3a4);
+    put(&mut b, 0x1c, 0x800 + 0x3a4);
+    b
+}
+
+#[test]
+fn a_metadata_region_declared_past_the_file_is_read_up_to_its_end() {
+    let mut exact = parse(fixture_at_end()).unwrap();
+    let mut map = parse(overstated_at_end()).unwrap();
+    assert_eq!(map.header().tag_data_size, 0x9a4);
+    assert_eq!(map.metadata_size(), 0x600);
+    assert_eq!(map.metadata_space(), exact.metadata_space());
+    assert_eq!(map.tags().len(), exact.tags().len());
+    for i in 0..5 {
+        assert_eq!(
+            map.read_tag_bytes(id(i)).ok(),
+            exact.read_tag_bytes(id(i)).ok(),
+            "tag {i}"
+        );
+    }
+    assert_eq!(map.scenario().unwrap().id, id(1));
+    // Growing it starts at the end of the file and writes a consistent
+    // header: `+0x18` is the region the file holds plus the growth.
+    let mut edit = map.edit();
+    assert_eq!(edit.append_metadata(&[1; 5], 4).unwrap(), META + 0x600);
+    let mut out = Cursor::new(Vec::new());
+    edit.write_to(&mut out).unwrap();
+    let result = out.into_inner();
+    let word = |o: usize| u32::from_le_bytes(result[o..o + 4].try_into().unwrap());
+    assert_eq!((word(8), word(0x18), word(0x1c)), (0x2800, 0x1600, 0x1ba4));
+    assert_eq!(&result[0x1800..0x1805], &[1; 5]);
+    let reread = parse(result).unwrap();
+    assert_eq!(reread.metadata_size(), reread.header().tag_data_size);
+}
+
+#[test]
+fn a_tag_past_the_end_of_the_file_is_refused_even_inside_the_declared_region() {
+    // The last tag (META + 0x500) ends inside the declared region (0x9a4)
+    // but past the file's end (0x600 into the region).
+    let mut b = overstated_at_end();
+    put(&mut b, TAGS + 64 + 12, 0x200);
+    assert!(matches!(parse(b), Err(Error::Bounds { .. })));
+}
