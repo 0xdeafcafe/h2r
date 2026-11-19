@@ -37,6 +37,7 @@ pub enum ViewScope {
     ViewSetup,
     Alternate,
     Scene(u32),
+    ViewTail,
 }
 
 thread_local! {
@@ -82,6 +83,18 @@ impl Feature for NativeResidual {
             .observe_before(&points::RENDER_SCENE_PASSES, "residual_scene_scope", |o| {
                 let kind = o.guest().u32(o.cpu.esp.wrapping_add(4)).ok();
                 VIEW.set(kind.map_or(ViewScope::ViewSetup, ViewScope::Scene));
+            })
+            .context_only();
+        b.raw()
+            .observe_before(&points::RENDER_STENCIL_MODE, "residual_scene_return", |o| {
+                // The scene wrapper returns to render_view_scene immediately
+                // before this stencil reset. Other callers can be inside the scene.
+                const AFTER_SCENE_STENCIL_RETURN_PC: u32 = 0x0002_bc83;
+                if matches!(VIEW.get(), ViewScope::Scene(_))
+                    && o.guest().u32(o.cpu.esp).ok() == Some(AFTER_SCENE_STENCIL_RETURN_PC)
+                {
+                    VIEW.set(ViewScope::ViewTail);
+                }
             })
             .context_only();
         b.raw()

@@ -140,58 +140,6 @@ fn summarize(frame: u64, counts: Option<&Counts>) -> Value {
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn callers_and_invocations_are_counted_by_scene_kind() {
-        let counts = Counts::from([
-            (
-                Caller {
-                    view: ViewScope::Scene(1),
-                    entry: "clear",
-                    pc: 100,
-                },
-                Count {
-                    calls: 4,
-                    backend_draws: 3,
-                },
-            ),
-            (
-                Caller {
-                    view: ViewScope::Scene(1),
-                    entry: "clear",
-                    pc: 200,
-                },
-                Count {
-                    calls: 1,
-                    backend_draws: 0,
-                },
-            ),
-            (
-                Caller {
-                    view: ViewScope::Alternate,
-                    entry: "clear",
-                    pc: 100,
-                },
-                Count {
-                    calls: 2,
-                    backend_draws: 0,
-                },
-            ),
-        ]);
-        let value = summarize(10, Some(&counts));
-        assert_eq!(value["present"], 10);
-        assert_eq!(value["views"][0]["view"], "Alternate");
-        assert_eq!(value["views"][0]["distinct_callers"], 1);
-        assert_eq!(value["views"][1]["view"], "Scene(1)");
-        assert_eq!(value["views"][1]["backend_draw_attempts"], 3);
-        assert_eq!(value["views"][1]["calls"], 5);
-        assert_eq!(value["views"][1]["distinct_callers"], 2);
-    }
-}
-
 /// Use the same resolved indexed input and two-copy reservation as the
 /// opaque layers. No sky model state, sort order or layer handler is moved.
 pub(crate) fn install<B: d3d::Backend + Send + 'static>(
@@ -251,5 +199,57 @@ impl d3d::DrawAdmission for ResidualDraws {
             },
             Box::new(pass),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn callers_and_invocations_are_counted_by_scene_kind() {
+        let counts = Counts::from([
+            (
+                Caller {
+                    view: ViewScope::Scene(1),
+                    entry: "clear",
+                    pc: 100,
+                },
+                Count {
+                    calls: 4,
+                    backend_draws: 3,
+                },
+            ),
+            (
+                Caller {
+                    view: ViewScope::Scene(1),
+                    entry: "clear",
+                    pc: 200,
+                },
+                Count {
+                    calls: 1,
+                    backend_draws: 0,
+                },
+            ),
+            (
+                Caller {
+                    view: ViewScope::Alternate,
+                    entry: "clear",
+                    pc: 100,
+                },
+                Count {
+                    calls: 2,
+                    backend_draws: 0,
+                },
+            ),
+        ]);
+        let value = summarize(10, Some(&counts));
+        assert_eq!(value["present"], 10);
+        assert_eq!(value["views"][0]["view"], "Alternate");
+        assert_eq!(value["views"][0]["distinct_callers"], 1);
+        assert_eq!(value["views"][1]["view"], "Scene(1)");
+        assert_eq!(value["views"][1]["backend_draw_attempts"], 3);
+        assert_eq!(value["views"][1]["calls"], 5);
+        assert_eq!(value["views"][1]["distinct_callers"], 2);
     }
 }

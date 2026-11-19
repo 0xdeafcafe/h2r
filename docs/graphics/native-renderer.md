@@ -2919,10 +2919,11 @@ The runtime census is selected with
 `H2_NATIVE_RESIDUAL_PROBE=2000,3000,4000`. The agent's `render.stats`
 returns the completed presents in `counters.residual.frames`. For each
 view kind it gives the invocation count and distinct `(entry, return_pc)`
-pairs, plus the draw attempts that reached the ordinary backend. `ViewSetup` covers the game-view prefix before the scene's first
-argument is available. `Alternate` is the separate `0x0002c790` view.
-`Scene(n)` uses the actual scene-pass argument. `OutsideView` includes
-the frame tail and frames that never enter a game view. The counts are
+pairs, plus the draw attempts that reached the ordinary backend.
+`ViewSetup` covers the game-view prefix. `Alternate` is the separate
+`0x0002c790` view. `Scene(n)` uses the actual scene-pass argument.
+`ViewTail` covers calls after the scene passes return. `OutsideView`
+includes the frame tail and frames that never enter a game view. The counts are
 at runtime D3D entries, before native draw admission. Pair them with
 the native suppression counters and `render.frame` to distinguish
 original entry work from draw packets that still reach the D3D renderer.
