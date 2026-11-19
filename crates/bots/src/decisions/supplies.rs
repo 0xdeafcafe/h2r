@@ -22,6 +22,7 @@ pub struct Supply {
 #[derive(Clone, Copy, Debug)]
 struct Site {
     supply: Supply,
+    unexplored: bool,
     present: bool,
     last_seen: u32,
     watched: bool,
@@ -37,6 +38,9 @@ struct Site {
 impl Site {
     /// Probability at arrival. A view now is the only certain observation.
     fn probability(&self, tick: u32, arrival: f32, sense: f32) -> f32 {
+        if self.unexplored && self.indirect.is_none() {
+            return 0.58;
+        }
         let age = tick.wrapping_sub(self.last_seen);
         if self.watched && age == 0 {
             return if self.present { 1.0 } else { 0.0 };
@@ -44,7 +48,11 @@ impl Site {
         let period = self.learned.or(self.supply.respawn).unwrap_or(1800) as f32;
         let (present, since, indirect) = self
             .indirect
-            .filter(|&(_, t)| tick.wrapping_sub(t) < age || !self.watched && t == self.last_seen)
+            .filter(|&(_, t)| {
+                self.unexplored
+                    || tick.wrapping_sub(t) < age
+                    || !self.watched && t == self.last_seen
+            })
             .map_or((self.present, self.last_seen, false), |(up, t)| {
                 (up, t, true)
             });
@@ -66,6 +74,7 @@ impl Site {
     }
 
     fn observe(&mut self, tick: u32, item: Option<Supply>) {
+        self.unexplored = false;
         let continuous = self.watched && tick.wrapping_sub(self.last_seen) <= 30;
         self.timing_cycle &= continuous;
         if let Some(item) = item {
@@ -98,6 +107,32 @@ impl Site {
 pub(super) struct Timers(Vec<Site>);
 
 impl Timers {
+    pub(super) fn familiar(&mut self, pad: crate::places::PowerPad, tick: u32) {
+        if self.0.iter().any(|s| s.supply.site == pad.site) {
+            return;
+        }
+        self.0.push(Site {
+            supply: Supply {
+                site: pad.site,
+                spawn: pad.at,
+                at: pad.at,
+                respawn: pad.period,
+                powerup: pad.powerup,
+                object: u32::MAX,
+            },
+            present: false,
+            watched: false,
+            last_seen: tick,
+            unexplored: true,
+            timing_cycle: false,
+            learned: None,
+            taken: None,
+            indirect: None,
+            broadcast: None,
+            model: pad.model,
+        });
+    }
+
     pub(super) fn observe(
         &mut self,
         tick: u32,
@@ -123,6 +158,7 @@ impl Timers {
             if !self.0.iter().any(|s| s.supply.site == supply.site) && visible(supply.at) {
                 self.0.push(Site {
                     supply,
+                    unexplored: false,
                     present: true,
                     last_seen: tick,
                     watched: true,
@@ -180,7 +216,7 @@ impl Timers {
 
     pub(super) fn hear(&mut self, supply: Supply, present: bool, tick: u32, now: u32) {
         if let Some(s) = self.0.iter_mut().find(|s| s.supply.site == supply.site) {
-            if now.wrapping_sub(tick) < now.wrapping_sub(s.last_seen)
+            if (s.unexplored || now.wrapping_sub(tick) < now.wrapping_sub(s.last_seen))
                 && s.indirect
                     .is_none_or(|(_, t)| now.wrapping_sub(tick) < now.wrapping_sub(t))
             {
@@ -189,6 +225,7 @@ impl Timers {
         } else {
             self.0.push(Site {
                 supply,
+                unexplored: false,
                 present,
                 last_seen: tick,
                 watched: false,
@@ -207,7 +244,7 @@ impl Timers {
         me: Me,
         tick: u32,
         skill: Skill,
-        avoid: impl Fn(Vec3) -> bool,
+        position_value: impl Fn(Vec3) -> Option<f32>,
     ) -> Option<Vec3> {
         let sense = awareness(skill);
         let has_power = me.arms.is_some_and(|a| {
@@ -228,11 +265,13 @@ impl Timers {
                 }
                 let dest = if on_pad { s.at } else { s.spawn };
                 let dist = distance(me.position, dest);
-                if dist > 9.0 + 25.0 * sense || avoid(dest) {
+                if dist > 9.0 + 25.0 * sense {
                     return None;
                 }
                 let chance = site.probability(tick, dist * 6.0, sense);
-                (chance >= 0.56).then_some((dist + 18.0 * (1.0 - chance), dest))
+                let strength = position_value(dest)? * sense;
+                (chance + 0.14 * strength >= 0.56)
+                    .then_some((dist + 18.0 * (1.0 - chance) - 8.0 * strength, dest))
             })
             .min_by(|a, b| a.0.total_cmp(&b.0))
             .map(|(_, p)| p)

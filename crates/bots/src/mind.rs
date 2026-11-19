@@ -196,6 +196,8 @@ pub enum Doing {
     Support(Vec3),
     /// Going to a sighted powerup or a supply expected back soon.
     Supply(Vec3),
+    /// Walk to this position, then watch the lane it covers.
+    Vantage(crate::places::Vantage),
     /// Going for the weapon at this point (section 3.6).
     Rearm(Vec3),
     /// Shields down: backing away from where the enemy was, facing it.
@@ -575,7 +577,7 @@ impl Mind {
             self.last_pad = pad;
             return pad;
         }
-        self.choose_activity(p, me, goal, &intent, calm);
+        self.choose_activity(p, me, goal, &intent, calm, map);
         // A vehicle to take or board (bots.md, Vehicles): boarding in a
         // fight too, taking only when calm; never carrying.
         if let Some(id) =
@@ -863,6 +865,15 @@ impl Mind {
                         // No way there.
                         self.stuck.blacklist(at, p.tick);
                     }
+                }
+            }
+            Doing::Vantage(v) => {
+                if len(sub(me.position,v.at)) < 0.8 {
+                    look = Some(up(v.watches,CHEST));
+                    self.follower = None;
+                } else {
+                    walk = self.go(me.position,v.at,p.tick,map,&mut pad,&bodies);
+                    if walk.is_none() || self.gave_up { self.stuck.blacklist(v.at,p.tick); }
                 }
             }
             Doing::Support(at) | Doing::Supply(at) => {

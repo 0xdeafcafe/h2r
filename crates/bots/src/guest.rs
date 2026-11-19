@@ -952,12 +952,14 @@ fn perception(
         return Ok((out, grenades));
     };
     let mut me_index = None;
+    let mut scoreboard = Vec::new();
     for (handle, p) in array.live(m, 16)? {
         if !p.listed(m)? {
             continue;
         }
         let id = u32::from(handle.index());
         let team = i16::from(p.team(m)?);
+        scoreboard.push((id, team));
         let ours = is(m, &p, who)?;
         if ours {
             out.observations.player = Some((id, team));
@@ -990,6 +992,7 @@ fn perception(
         }
     }
     if let Some(me) = me_index {
+        out.observations.ahead = intel::ahead(m, me, out.teams, &scoreboard).unwrap_or(false);
         let near = out.me.filter(|_| sense_grenades).map(|me| me.position);
         if let Ok(ground) = crate::arms::ground(m, near) {
             out.pickups = ground.weapons;

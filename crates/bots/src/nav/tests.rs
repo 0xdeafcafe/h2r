@@ -493,7 +493,7 @@ fn generator_output_is_pinned() {
     let got = (crate::cache::GENERATOR, crate::autonav::fingerprint(&s));
     assert_eq!(
         got,
-        (2, 0x96880c12653c7760),
+        (3, 0x96880c12653c7760),
         "the nav output changed: bump cache::GENERATOR and record the new pair"
     );
 }
@@ -743,6 +743,7 @@ fn a_vehicle_uses_the_wide_route_around_a_pedestrian_gap() {
     let end = [8.0, 2.0, 0.0];
     assert_eq!(nav.corridor(0, 2).unwrap(), [0, 1]);
     let m = crate::cache::MapData {
+        places: Default::default(),
         nav,
         walls: Walls::default(),
     };

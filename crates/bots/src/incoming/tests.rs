@@ -5,6 +5,7 @@ use engine::testing::FakeGuest;
 
 fn floor() -> MapData {
     MapData {
+        places: Default::default(),
         nav: NavMesh::new(
             vec![Poly::new(vec![
                 [-10.0, -10.0, 0.0],

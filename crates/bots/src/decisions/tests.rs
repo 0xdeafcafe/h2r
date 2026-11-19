@@ -352,7 +352,7 @@ fn own_death_changes_the_carriers_corridor_until_the_zone_cools() {
         victim: 4,
         betrayal: false,
     };
-    m.hear_deaths(&p, &[death]);
+    m.hear_deaths(&p, &[death], None);
     m.step(
         &Perception {
             me: None,
@@ -413,6 +413,7 @@ fn own_death_changes_the_carriers_corridor_until_the_zone_cools() {
         .steer(start, 21)
         .dir;
     let map = MapData {
+        places: Default::default(),
         nav,
         walls: Walls::default(),
     };
@@ -434,6 +435,7 @@ fn a_ball_holder_finds_and_holds_a_screened_position() {
         [-8.0, 6.0, 3.0],
     ];
     let map = MapData {
+        places: Default::default(),
         nav: NavMesh::new(vec![square(-10.0, -10.0, 20.0)], vec![]),
         walls: Walls::from_polygons([&wall[..]]),
     };
@@ -634,6 +636,7 @@ fn an_attacker_keeps_progressing_when_a_close_enemy_baits_it_away_from_the_flag(
 #[test]
 fn a_roaming_bot_prefers_the_sighting_away_from_its_last_death() {
     let map = MapData {
+        places: Default::default(),
         nav: NavMesh::new(vec![square(-20.0, -20.0, 40.0)], vec![]),
         walls: Walls::default(),
     };
@@ -653,6 +656,7 @@ fn a_roaming_bot_prefers_the_sighting_away_from_its_last_death() {
             attacker: Some(1),
             betrayal: false,
         }],
+        Some(&map),
     );
     let pad = m.step(&p, Some(&map));
     assert_eq!(m.doing, Doing::Roam);

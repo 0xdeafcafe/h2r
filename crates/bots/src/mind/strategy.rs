@@ -17,6 +17,14 @@ impl Mind {
             .as_ref()
             .and_then(|o| objective::plan(o, &me, &p.others, p.teams));
         // Once a tick: a repeated frame returns the last pad before this.
+        if let Some(map) = map {
+            self.decisions.map.familiarize(
+                map,
+                p.tick,
+                crate::decisions::awareness(self.skill),
+                self.decisions.personality.caution,
+            );
+        }
         self.decisions.observe(p, me, map);
         let intent = self.decisions.decide(
             &Fight {
@@ -39,6 +47,7 @@ impl Mind {
         goal: Option<Goal>,
         intent: &Intent,
         calm: bool,
+        map: Option<&MapData>,
     ) {
         if self.decisions.posture == Posture::Press && !self.fight.wants_cover {
             // Close to the near end of the usable band, even with a power gun.
@@ -51,11 +60,18 @@ impl Mind {
             (_, Kit::Seek(pk), _) => Doing::Rearm(pk.position),
             (Some(o), _, _) => Doing::Fight(o.id),
             (None, _, Some(g)) => Doing::Play(g),
-            _ => self.between_fights(p, me, intent.support, calm),
+            _ => self.between_fights(p, me, intent.support, calm, map),
         };
     }
 
-    fn between_fights(&self, p: &Perception, me: Me, support: Option<Vec3>, calm: bool) -> Doing {
+    fn between_fights(
+        &self,
+        p: &Perception,
+        me: Me,
+        support: Option<Vec3>,
+        calm: bool,
+        map: Option<&MapData>,
+    ) -> Doing {
         let last = self.last_seen.map(|(_, at, _)| at);
         if self.recovering
             && let Some(at) = last
@@ -72,7 +88,10 @@ impl Mind {
         }
         if calm
             && self.kit == Kit::Fine
-            && let Some(at) = self.decisions.map.due(me, p.tick, self.skill, &self.stuck)
+            && let Some(at) = self
+                .decisions
+                .map
+                .due(me, p.tick, self.skill, &self.stuck, map)
         {
             return Doing::Supply(at);
         }
@@ -88,16 +107,66 @@ impl Mind {
                 return Doing::Support(at);
             }
         }
+        if calm && let Some(map) = map {
+            let range = me
+                .arms
+                .and_then(|a| a.held)
+                .filter(|g| g.ready())
+                .map(|g| g.role());
+            let sense = crate::decisions::awareness(self.skill);
+            let long = matches!(range, Some(arms::Role::Sniper | arms::Role::Precise));
+            if long || p.observations.ahead {
+                let reach = if long { 8.0 + 45.0 * sense } else { 7.0 };
+                let known = (map.places.vantages.len() as f32 * sense).ceil() as usize;
+                let worth = |v: &crate::places::Vantage| {
+                    v.score * (10.0 + 16.0 * sense)
+                        - len(sub(v.at, me.position))
+                            * (1.0 - 0.4 * self.decisions.personality.caution)
+                };
+                if let Some(&v) = map
+                    .places
+                    .vantages
+                    .iter()
+                    .take(known)
+                    .filter(|v| {
+                        len(sub(v.at, me.position)) <= reach
+                            && !self.stuck.blocked(v.at, p.tick)
+                            && !self.decisions.map.hot(v.at, p.tick, 3.0)
+                    })
+                    .max_by(|a, b| worth(a).total_cmp(&worth(b)))
+                {
+                    return Doing::Vantage(v);
+                }
+            }
+        }
         Doing::Roam
     }
 
-    pub(crate) fn hear_deaths(&mut self, p: &Perception, kills: &[crate::emote::Kill]) {
+    pub(crate) fn hear_deaths(
+        &mut self,
+        p: &Perception,
+        kills: &[crate::emote::Kill],
+        map: Option<&MapData>,
+    ) {
         for k in kills {
             self.fight.forget(k.victim);
             if self
                 .last_seen
                 .is_some_and(|(id, _, seen)| id == k.victim && reached(k.tick, seen))
             {
+                // The kill feed retires the old contact. Look towards a
+                // plausible distant spawn, with no knowledge of the actual spawn.
+                if let (Some(me), Some(map)) = (p.me, map) {
+                    self.search = map
+                        .places
+                        .starts
+                        .iter()
+                        .filter(|&&at| !crate::perceive::in_view(me, at, CHEST, Some(map)))
+                        .max_by(|a, b| {
+                            len(sub(**a, me.position)).total_cmp(&len(sub(**b, me.position)))
+                        })
+                        .map(|&at| (at, k.tick));
+                }
                 self.last_seen = None;
                 self.tracks.remove(&k.victim);
             }

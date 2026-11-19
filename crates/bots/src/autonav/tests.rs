@@ -17,6 +17,7 @@ fn header(name: &str, kind: u32, checksum: u32) -> Vec<u8> {
 
 fn data(bsp: f32) -> MapData {
     MapData {
+        places: Default::default(),
         nav: NavMesh::new(
             vec![Poly::new(vec![[bsp, 0.0, 0.0], [2.0, 0.0, 0.0], [2.0, 2.0, 0.0]])],
             vec![],

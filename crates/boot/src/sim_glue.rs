@@ -189,6 +189,7 @@ pub fn doing_name(d: &bots::mind::Doing) -> &'static str {
         Doing::Roam => "roam",
         Doing::Support(_) => "support",
         Doing::Supply(_) => "supply",
+        Doing::Vantage(_) => "vantage",
         Doing::Rearm(_) => "rearm",
         Doing::Recover(_) => "recover",
         Doing::Carry(_) => "carry",

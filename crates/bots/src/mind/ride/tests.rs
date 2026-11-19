@@ -253,6 +253,7 @@ fn with_nobody_about_the_driver_follows_a_route_turning_by_the_camera() {
         [0.0, 20.0, 0.0],
     ]);
     let map = MapData {
+        places: Default::default(),
         nav: NavMesh::new(vec![floor], vec![]),
         walls: Walls::default(),
     };

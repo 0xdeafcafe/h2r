@@ -59,6 +59,8 @@ impl Default for Me {
 /// can still run the ordinary weapon, objective and targeting decisions.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Observations {
+    /// Strictly leading on the public scoreboard.
+    pub ahead: bool,
     /// Own player slot and team, including while waiting to respawn.
     pub player: Option<(u32, i16)>,
     /// Cues on living players. Enemy cues only inform decisions in view.

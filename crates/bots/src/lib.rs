@@ -26,6 +26,7 @@ pub mod moves;
 pub mod nav;
 pub mod objective;
 mod perceive;
+pub mod places;
 pub mod phantom;
 pub mod roam;
 mod sound;
@@ -164,7 +165,7 @@ impl Brain {
             self.epoch = epoch;
             self.retune();
         } else {
-            self.mind.hear_deaths(p, kills);
+            self.mind.hear_deaths(p, kills, map);
             self.mind.emote.hear(kills);
         }
         self.mind.decisions.inbox = inbox;

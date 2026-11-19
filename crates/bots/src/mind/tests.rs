@@ -104,6 +104,7 @@ fn the_skills_get_better_in_order() {
 #[test]
 fn a_wall_hides_an_enemy_and_so_does_its_back() {
     let map = MapData {
+        places: Default::default(),
         nav: NavMesh::default(),
         walls: wall(),
     };
@@ -227,6 +228,7 @@ fn it_chases_where_it_last_saw_someone_then_forgets() {
 #[test]
 fn with_a_nav_mesh_it_roams_somewhere_it_can_reach() {
     let map = MapData {
+        places: Default::default(),
         nav: floor(),
         walls: Walls::default(),
     };
@@ -661,6 +663,7 @@ fn with_a_nav_mesh_a_path_goes_around_where_it_got_stuck() {
         }
     }
     let map = MapData {
+        places: Default::default(),
         nav: NavMesh::new(
             vec![sq(0.0, 0.0), sq(2.0, 0.0), sq(0.0, 2.0), sq(2.0, 2.0)],
             edges,
@@ -698,6 +701,7 @@ fn with_a_nav_mesh_a_path_goes_around_where_it_got_stuck() {
 #[test]
 fn roaming_goes_where_it_last_saw_an_enemy() {
     let map = MapData {
+        places: Default::default(),
         nav: floor(),
         walls: Walls::default(),
     };
@@ -723,6 +727,7 @@ fn it_chases_someone_last_seen_in_the_air() {
     // Seen mid-jump, 2.5 over the floor: the chase goes to the floor under
     // that point instead of giving up for want of a path.
     let map = MapData {
+        places: Default::default(),
         nav: floor(),
         walls: Walls::default(),
     };
@@ -751,6 +756,7 @@ fn fighting_on_a_narrow_bridge_it_does_not_strafe_off() {
         Poly::new(vec![[x0, y0, z], [x1, y0, z], [x1, y1, z], [x0, y1, z]])
     };
     let map = MapData {
+        places: Default::default(),
         nav: NavMesh::new(
             vec![
                 quad(-20.0, -0.4, 20.0, 0.4, 2.0),
@@ -844,6 +850,7 @@ fn play(
 #[test]
 fn the_flag_carrier_walks_home_along_the_nav_mesh() {
     let map = MapData {
+        places: Default::default(),
         nav: floor(),
         walls: Walls::default(),
     };
@@ -1080,6 +1087,7 @@ fn in_the_hill_it_stays_and_out_of_it_it_goes_there() {
 #[test]
 fn occluded_positions_never_drive_the_stick_or_projectile_lead() {
     let map = MapData {
+        places: Default::default(),
         nav: NavMesh::default(),
         walls: wall(),
     };

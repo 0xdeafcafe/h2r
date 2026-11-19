@@ -10,6 +10,7 @@ pub(super) const HOT_TICKS: u32 = 600;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct MapMemory {
+    familiar: bool,
     deaths: Vec<(Vec3, u32)>,
     pub(super) timers: Timers,
     /// A defensible ball position, reconsidered on a short cooldown.
@@ -52,6 +53,19 @@ impl MapMemory {
         }
     }
 
+    pub(super) fn familiarize(&mut self, map: &MapData, tick: u32, sense: f32, personality: f32) {
+        if self.familiar {
+            return;
+        }
+        for pad in &map.places.pads {
+            let rank = (u32::from(pad.site) * 73 + (personality * 127.) as u32) % 128;
+            if rank as f32 / 128. < sense {
+                self.timers.familiar(*pad, tick);
+            }
+        }
+        self.familiar = true;
+    }
+
     pub(super) fn observe(&mut self, p: &Perception, me: Me, map: Option<&MapData>) {
         self.deaths
             .retain(|(_, t)| p.tick.wrapping_sub(*t) < HOT_TICKS);
@@ -68,13 +82,21 @@ impl MapMemory {
         self.timers.carriers(p, me);
     }
 
-    pub(crate) fn due(&self, me: Me, tick: u32, skill: Skill, stuck: &Stuck) -> Option<Vec3> {
+    pub(crate) fn due(
+        &self,
+        me: Me,
+        tick: u32,
+        skill: Skill,
+        stuck: &Stuck,
+        map: Option<&MapData>,
+    ) -> Option<Vec3> {
         self.timers.due(me, tick, skill, |at| {
-            self.hot(at, tick, 3.0) || stuck.blocked(at, tick)
+            (!self.hot(at, tick, 3.0) && !stuck.blocked(at, tick))
+                .then(|| map.map_or(0., |m| m.places.strength(at)))
         })
     }
 
-    fn hot(&self, at: Vec3, tick: u32, radius: f32) -> bool {
+    pub(crate) fn hot(&self, at: Vec3, tick: u32, radius: f32) -> bool {
         self.deaths.iter().any(|(p, t)| {
             let fade = 1.0 - tick.wrapping_sub(*t) as f32 / HOT_TICKS as f32;
             fade > 0.0 && distance(at, *p) < radius * fade.sqrt()

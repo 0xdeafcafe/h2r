@@ -45,22 +45,22 @@ fn a_witnessed_pickup_starts_a_skill_scaled_trip() {
     let mut t = Timers::default();
     check(&mut t, 0, &[SUPPLY]);
     assert_eq!(
-        t.due(bot(), 0, Skill::Legendary, |_| false),
+        t.due(bot(), 0, Skill::Legendary, |_| Some(0.)),
         None,
         "arms chooses guns on the floor"
     );
     check(&mut t, 1, &[]);
-    assert_eq!(t.due(bot(), 120, Skill::Legendary, |_| false), None);
-    assert_eq!(t.due(bot(), 240, Skill::Legendary, |_| false), Some(PAD));
-    assert_eq!(t.due(bot(), 240, Skill::Easy, |_| false), None);
-    assert_eq!(t.due(bot(), 360, Skill::Easy, |_| false), Some(PAD));
-    assert_eq!(t.due(armed(), 296, Skill::Legendary, |_| false), None);
+    assert_eq!(t.due(bot(), 120, Skill::Legendary, |_| Some(0.)), None);
+    assert_eq!(t.due(bot(), 240, Skill::Legendary, |_| Some(0.)), Some(PAD));
+    assert_eq!(t.due(bot(), 240, Skill::Easy, |_| Some(0.)), None);
+    assert_eq!(t.due(bot(), 360, Skill::Easy, |_| Some(0.)), Some(PAD));
+    assert_eq!(t.due(armed(), 296, Skill::Legendary, |_| Some(0.)), None);
     assert_eq!(
-        t.due(bot(), 296, Skill::Legendary, |_| true),
+        t.due(bot(), 296, Skill::Legendary, |_| None),
         None,
         "hot placement"
     );
-    assert_eq!(t.due(bot(), 365, Skill::Legendary, |_| false), Some(PAD));
+    assert_eq!(t.due(bot(), 365, Skill::Legendary, |_| Some(0.)), Some(PAD));
 }
 
 #[test]
@@ -72,18 +72,18 @@ fn powerups_draw_an_armed_bot_to_the_item_and_later_to_the_placement() {
     let mut t = Timers::default();
     check(&mut t, 5, &[item]);
     assert_eq!(
-        t.due(armed(), 5, Skill::Legendary, |_| false),
+        t.due(armed(), 5, Skill::Legendary, |_| Some(0.)),
         Some(item.at)
     );
     check(&mut t, 6, &[]);
-    assert_eq!(t.due(armed(), 7, Skill::Legendary, |_| false), None);
+    assert_eq!(t.due(armed(), 7, Skill::Legendary, |_| Some(0.)), None);
     assert_eq!(
-        t.due(armed(), 300, Skill::Legendary, |_| false),
+        t.due(armed(), 300, Skill::Legendary, |_| Some(0.)),
         Some(item.spawn)
     );
     check(&mut t, 306, &[item]);
     assert_eq!(
-        t.due(armed(), 306, Skill::Legendary, |_| false),
+        t.due(armed(), 306, Skill::Legendary, |_| Some(0.)),
         Some(item.at)
     );
 }
@@ -101,7 +101,7 @@ fn missing_scans_hidden_pads_and_long_gaps_do_not_date_a_pickup() {
         let removed = if gap == 2 { 80 } else { 2 };
         check(&mut t, removed, &[]);
         assert_eq!(
-            t.due(bot(), removed + 300, Skill::Legendary, |_| false),
+            t.due(bot(), removed + 300, Skill::Legendary, |_| Some(0.)),
             Some(PAD),
             "a missed pickup still leaves an empty-pad estimate, gap {gap}"
         );
@@ -124,7 +124,7 @@ fn unknown_respawn_period_is_learned_only_from_a_watched_cycle() {
         check(&mut t, 111, &[Supply { object: 90, ..item }]);
         check(&mut t, 112, &[]);
         assert_eq!(
-            t.due(bot(), 210, Skill::Normal, |_| false),
+            t.due(bot(), 210, Skill::Normal, |_| Some(0.)),
             (!interrupted).then_some(PAD)
         );
     }
@@ -145,10 +145,10 @@ fn two_identical_items_keep_independent_clocks() {
         check(&mut t, tick, &[other]);
     }
     check(&mut t, 103, &[]);
-    assert_eq!(t.due(bot(), 260, Skill::Legendary, |_| false), Some(PAD));
-    check(&mut t, 389, &[SUPPLY]);
+    assert_eq!(t.due(bot(), 260, Skill::Legendary, |_| Some(0.)), Some(PAD));
+    t.observe(390, Some(&[SUPPLY]), |at| at == PAD);
     assert_eq!(
-        t.due(bot(), 390, Skill::Legendary, |_| false),
+        t.due(bot(), 390, Skill::Legendary, |_| Some(0.)),
         Some(other.spawn)
     );
 }
@@ -167,7 +167,7 @@ fn bringing_the_same_gun_back_does_not_teach_a_respawn_period() {
     }
     check(&mut t, 101, &[gun]);
     check(&mut t, 102, &[]);
-    assert_eq!(t.due(bot(), 201, Skill::Legendary, |_| false), None);
+    assert_eq!(t.due(bot(), 201, Skill::Legendary, |_| Some(0.)), None);
 }
 
 #[test]
@@ -282,4 +282,15 @@ fn a_visible_carrier_is_weak_evidence_for_a_unique_known_pad() {
     assert!(t.0[0].probability(50, 0., 1.) < 0.3);
     assert_eq!(t.0[0].taken, None);
     assert!(t.0[0].probability(600, 0., 1.) > 0.7);
+}
+
+#[test]
+fn an_unvisited_power_pad_can_be_worth_the_trip_and_a_visible_empty_one_is_not() {
+    let mut timers = Timers::default();
+    for (site,x) in [(1,8.),(2,10.)] {
+        timers.familiar(crate::places::PowerPad{site,at:[x,0.,0.],period:Some(1500),powerup:true,model:None}, 0);
+    }
+    assert_eq!(timers.due(armed(),0,Skill::Legendary,|p| Some(if p[0]==10. {0.8} else {0.})),Some([10.,0.,0.]));
+    timers.observe(1,Some(&[]), |_|true);
+    assert_eq!(timers.due(armed(),1,Skill::Legendary,|_|Some(1.)),None);
 }

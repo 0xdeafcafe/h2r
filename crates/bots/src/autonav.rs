@@ -26,6 +26,7 @@ use std::time::Instant;
 
 use crate::cache::{self, MapData, Stamp};
 
+mod pads;
 mod traversals;
 
 /// `H2_BOTS_NAV_AUTO`: `0` (or `off`, `false`, `no`) stops the game
@@ -203,6 +204,10 @@ pub fn build_map<R: Read + Seek>(map: &mut map::Map<R>) -> Result<Vec<MapData>, 
         return Err("the scenario has no structure BSP".into());
     }
     let placements = traversals::Placements::read(&view, map)?;
+    let pads = pads::read(&view,map)?;
+    let starts: Vec<_> = view.block(view.bytes(), 0x100, 0x34).map_err(|x| e(&x))?
+        .into_iter().map(|r| std::array::from_fn(|k| f32::from_le_bytes(r[k*4..k*4+4].try_into().unwrap())))
+        .filter(|p: &[f32;3]| p.iter().all(|v| v.is_finite())).collect();
     let mut out = Vec::with_capacity(bsps.len());
     for id in bsps {
         let tag = map.tag(id).map_err(|x| e(&x))?.clone();
@@ -217,6 +222,8 @@ pub fn build_map<R: Read + Seek>(map: &mut map::Map<R>) -> Result<Vec<MapData>, 
         let bsp = tags::collision::Bsp::decode_structure(&b, loc.address, at).map_err(|x| e(&x))?;
         let mut data = cache::build(&bsp)?;
         placements.add_links(&mut data);
+        data.places = crate::places::Places::build(&data.nav,&data.walls,&starts);
+        data.places.pads = pads.iter().copied().filter(|p| data.nav.nearest(p.at,1.5,0.6,2.).is_some()).collect();
         out.push(data);
     }
     Ok(out)

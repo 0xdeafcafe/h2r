@@ -94,3 +94,39 @@ pub(super) fn held_model(m: &dyn GuestMemory, unit: u32) -> R<Option<u32>> {
     };
     Ok(body.definition(m)?.map(|d| d.raw()))
 }
+
+/// Scoreboard rows, shared layout with live-telemetry::memory::team_scores.
+pub(super) fn ahead(m: &dyn GuestMemory, me: u32, teams: bool, roster: &[(u32, i16)]) -> R<bool> {
+    let engine = m.u32(crate::objective::GAME_ENGINE)?;
+    if engine == 0 || m.u32(engine + 0x304)? == 0 {
+        return Ok(false);
+    }
+    let row = |id, team| {
+        if teams {
+            (0..8)
+                .contains(&team)
+                .then(|| engine + 0x4c8 + u32::from(team as u16) * 0x12)
+        } else {
+            (id < 16).then(|| engine + 0x308 + id * 0x1c)
+        }
+    };
+    let Some(&(_, team)) = roster.iter().find(|&&(id, _)| id == me) else {
+        return Ok(false);
+    };
+    let Some(ours) = row(me, team) else {
+        return Ok(false);
+    };
+    let score = m.u16(ours)? as i16;
+    let mut contested = false;
+    for &(id, t) in roster {
+        if let Some(theirs) = row(id, t)
+            && theirs != ours
+        {
+            if m.u16(theirs)? as i16 >= score {
+                return Ok(false);
+            }
+            contested = true;
+        }
+    }
+    Ok(contested)
+}
