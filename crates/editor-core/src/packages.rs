@@ -107,6 +107,11 @@ pub struct PackageEntry {
     pub derived: bool,
     /// Set for a converted Halo 1 map: which variant this entry is.
     pub halo1: Option<Halo1Origin>,
+    /// `[package] description`, when given.
+    pub description: Option<String>,
+    /// `[package] image`: a PNG or JPEG in the package directory, when
+    /// given (the Maps list's picture).
+    pub image: Option<String>,
 }
 
 impl PackageEntry {
@@ -163,12 +168,15 @@ pub fn list(maps: &Path) -> Vec<PackageEntry> {
             .and_then(|b| b.get("derived"))
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        let (description, image) = (get("package", "description"), get("package", "image"));
         let entry = |halo1| PackageEntry {
             dir: dir.clone(),
             name: name.clone(),
             map: map.clone(),
             derived,
             halo1,
+            description: description.clone(),
+            image: image.clone(),
         };
         let origins = halo1_origins(&table);
         if origins.is_empty() {
@@ -361,6 +369,8 @@ mod tests {
                 source_sha256: None,
                 file: None,
             }),
+            description: None,
+            image: None,
         };
         assert_eq!(e.label(), "Blood Gulch (H1 sandbox)");
         assert_eq!(e.key(), "h1_bloodgulch#H1");

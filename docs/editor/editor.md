@@ -179,7 +179,9 @@ Below the source's maps, **Maps** lists the **Map Pack**'s maps (the
 open map pack disc's, else the installed ones), then what is under
 `<data>/maps`
 (`editor_core::packages::list`, re-read when the data root changes and
-after a save), then Halo 1:
+after a save), then Halo 1. Every row has the map's card, its name,
+picture and description as the game's menus show them ("The Maps list's
+cards", below):
 
 - **Map Pack**: the nine multiplayer maps, named, ordered and pictured as
   the game's Select Map shows them ("The Map Pack", below), opened like
@@ -303,10 +305,82 @@ everything (`render::Viewport::set_overlay`), to check a conversion by
 eye. The inspector says where the map came from, and why there is no
 overlay when there is none.
 
+### The Maps list's cards
+
+Every row of the Maps list is drawn the same way (`ui::map_list::Row`):
+a map with a card shows a thumbnail of its picture (18 pt tall) beside
+the game's name for it, and on hover the whole picture (shrunk to 260 pt
+wide when larger), the name, the description wrapped at 260 pt, and a
+dim line with the file and where it comes from
+(`03a_oldmombasa.map, on the Halo 2 disc`). A map with no card keeps its
+file name and icon, and its tooltip says what it is: `mainmenu`,
+`shared` and `single_player_shared` are not levels
+(`map_cards::halo2_note`, `halo1_note`). The pictures go to the GPU once
+each, in one cache for every group keyed by the row
+(`MapListUi::texture`: `map-<name>`, `pack-<map>`, `pkg-<key>`,
+`h1-<name>`), and are replaced when a card's picture changes.
+
+Where each group's cards come from (`app::map_cards`; nothing of them is
+in the repository, all are read from the user's files):
+
+| Group | Name and description | Picture |
+|---|---|---|
+| Halo 2 (the open disc or folder) | `mainmenu.map`'s level lists in the globals tag (`tags::ui_levels`): the multiplayer list Select Map shows (`matg +0x178` element 0, block `+0x10`, `0xc64`-byte slots: name `+0xc`, description `+0x24c`) and the campaign levels Select Level shows (the start list `matg +0x170` joined with the level select's entries, block `+0x8`, `0xb50` bytes: name `+0x10`, description `+0x250`); keyed by the stem of each entry's scenario path, English | the bitmap tag each entry references (multiplayer `+0x4`, campaign `+0x8`), its first image decoded with `assets::decode_image` from `mainmenu.map` and `shared.map`, else read as a linear `ARGB8888` image (`rgba_bitmap::Template::rgba`) |
+| Map Pack | the installed `patch.lvl` records (below) | the record's preview |
+| Packages and converted Halo 1 maps | the package's name; `[package] description` | `[package] image`, a PNG or JPEG inside the package (`content::manifest::relative`); a conversion writes Halo 1's card there (`preview.png`) |
+| Halo 1 (an open Halo 1 disc or folder) | `ui.map`'s map and level lists (`h1convert::ui::mp_card`, `campaign_card`) | the same lists' bitmaps, the picture's corner of each |
+
+`tags::ui_levels` is the one reader of the main menu's lists: the boot's
+map select (`map_select::map_of_slot`) and the Live catalog
+(`cli::live_catalog::levels`, `campaign_levels`) read through it too.
+
+The cards are read off the UI thread (`map_cards::CardSet`, one thread
+a group): the Halo 2 source's when it opens and has a `mainmenu.map`, the
+Halo 1 source's when it opens and has `ui.map`, the packages' pictures
+whenever the packages are listed and one names an image. Until a reader
+finishes its group shows file names (a Halo 2 row's tooltip says the
+lists are being read); each frame takes the finished ones
+(`App::poll_cards`), and a failed reader is logged once. Screenshots
+(`--screenshot`) wait for them (`App::wait_cards`).
+
+**What each group drew** is kept for scripts and tests in
+`MapListUi::shown` (`Studio::map_list`): for each group, the hint, or a
+row a map with its label and whether its picture was shown.
+
+Tests (`app::map_cards_tests`, an invented main menu map built with
+`map::build`: a campaign level and a multiplayer map with pictures of
+their own, a free slot; the fixture map under invented level names; a
+package with a PNG):
+- `the_main_menu_s_lists_name_and_picture_the_halo_2_maps`: opening the
+  folder reads both cards on the side, with names, descriptions, kinds
+  and the menu's exact pixels; any case of the stem finds them; the
+  shared cache and the menu have none;
+- `a_source_without_a_main_menu_has_no_cards`: no reader starts;
+- `cards_take_each_picture_once_and_the_first_card_of_a_map`: each
+  picture decoded once; a stem in both lists keeps the campaign card;
+  entries with no name or path are left out; a failed or misshapen
+  picture leaves the card without one;
+- `a_package_s_image_is_its_picture`: the image read from inside the
+  package, the manifest's description and image listed; paths out of the
+  package are not followed.
+
+`tags` `ui_levels::tests`: both lists from invented tag memory (English
+only, free slots and unnamed levels left out, the join on campaign and
+map id), clean failures, and the lists of a built main menu map naming
+their bitmaps' datums.
+
+Headless (`headless::tests::the_maps_list_names_and_pictures_every_group`):
+the folder's level and map by the menu's names with their thumbnails,
+the shared cache and the menu by file name, the package with its
+picture, the Map Pack's hint; a click on a named map opens it. The Halo 1
+cards have no synthetic test (no invented `ui.map`); they are
+`h1convert::ui`'s cards, which the conversion already uses.
+
 ### The Map Pack
 
-The **Map Pack** group (`app::map_pack`, drawn by `ui::map_pack`, under
-the source's maps) has two places to take the maps from:
+The **Map Pack** group (`app::map_pack`, drawn by `ui::map_pack` with
+`ui::map_list`'s rows, under the source's maps) has two places to take
+the maps from:
 
 - the map pack disc or folder opened beside the Halo 2 disc
   (`editor_core::mappack`, above): when it is open, the group lists its
