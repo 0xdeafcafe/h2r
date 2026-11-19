@@ -1113,8 +1113,11 @@ pub fn build_tiered(
 /// Link with the published SONAME even though the output is a temporary sibling.
 /// libm supplies fma/sqrt on baseline x86-64.
 fn linux_link_args(out: &Path, temporary: &Path, objects: &[PathBuf]) -> Vec<OsString> {
+    // Direct host imports are bound by dlopen against the executable's dynamic
+    // symbol table. Keep shared-output defaults for objects and permit undefined
+    // symbols in input shared libraries as well.
     let mut args: Vec<OsString> = [
-        "-fuse-ld=lld", "-shared", "-Wl,-soname", "-Xlinker",
+        "-fuse-ld=lld", "-shared", "-Wl,--allow-shlib-undefined", "-Wl,-soname", "-Xlinker",
     ]
     .into_iter()
     .map(OsString::from)
@@ -1319,6 +1322,7 @@ mod tests {
         let args = linux_link_args(out, Path::new("/release/.temporary"), &[PathBuf::from("shard.o")]);
         assert!(args.contains(&OsString::from("-shared")));
         assert!(args.contains(&OsString::from("-fuse-ld=lld")));
+        assert!(args.contains(&OsString::from("-Wl,--allow-shlib-undefined")));
         let args: Vec<_> = args.iter().map(|a| a.to_str().unwrap()).collect();
         assert!(args.windows(3).any(|a| a == ["-Wl,-soname", "-Xlinker", "libh2game.so"]));
         assert!(args.windows(2).any(|a| a == ["-o", "/release/.temporary"]));
