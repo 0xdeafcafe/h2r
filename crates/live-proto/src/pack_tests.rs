@@ -50,7 +50,7 @@ fn quantisation_stays_inside_its_steps() {
         let back = dyaw(qyaw(yaw).unwrap());
         let diff = (back - yaw).rem_euclid(TAU);
         let diff = diff.min(TAU - diff);
-        assert!(diff <= PI / 4096.0 + 1e-9, "yaw {yaw}: {diff}");
+        assert!(diff <= PI / 16384.0 + 1e-9, "yaw {yaw}: {diff}");
         assert!(back > -PI && back <= PI);
         let a = i as f64 * 0.31;
         let b = (i as f64 * 0.17).sin() * 1.5;
@@ -58,7 +58,7 @@ fn quantisation_stays_inside_its_steps() {
         let u = unoct(oct(v).unwrap());
         let dot: f64 = v.iter().zip(u).map(|(p, q)| p * q).sum();
         let angle = dot.clamp(-1.0, 1.0).acos();
-        assert!(angle < 0.0015, "direction off by {angle} rad");
+        assert!(angle.to_degrees() <= 0.02, "direction off by {angle} rad");
         let len: f64 = u.iter().map(|c| c * c).sum::<f64>().sqrt();
         assert!((len - 1.0).abs() < 1e-12);
     }
@@ -271,7 +271,7 @@ fn keyframes_carry_every_field_alone() {
         "not a canonical player"
     );
     assert_eq!(back.hits[0].to.as_deref(), Some("p10"));
-    assert_eq!(back.players[0].pos[2], 171.0 / 512.0);
+    assert_eq!(back.players[0].pos[2], 341.0 / 1024.0);
     // Quantising twice changes nothing.
     assert_eq!(quantize(&back).unwrap(), back);
 }
@@ -427,6 +427,20 @@ fn frame_sizes_stay_under_budget() {
     assert!(mp.live * 10.0 < mp.json && cp.live * 10.0 < cp.json);
 }
 
+/// Includes the LEB record lengths, all entities and one keyframe every
+/// ten seconds. 16 players, 30 seconds at 15 Hz, with the fixed match RNG.
+#[test]
+fn bytes_per_player_second_stay_under_budget() {
+    let frames = samples::multiplayer(450);
+    let mut bytes = Vec::new();
+    for (record, _) in stream(&frames, 150) {
+        push_record(&mut bytes, &record);
+    }
+    let rate = bytes.len() as f64 / (16.0 * 30.0);
+    println!("{rate:.2} B/player/s including projectiles, vehicles, items and hits");
+    assert!(rate < 300.0, "{rate:.2} B/player/s");
+}
+
 /// The golden vectors `web/test/fixtures/pack` holds: the TypeScript
 /// decoder must read each `.bin` (a container of one stream's records)
 /// into the frames of its `.json`. `H2_UPDATE_GOLDEN=1` rewrites them.
@@ -435,6 +449,7 @@ fn golden_vectors_match_the_encoder() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/test/fixtures/pack");
     let mut odd_b = odd_frame();
     odd_b.tick += 2;
+    odd_b.cut = None;
     odd_b.players[1].pos[1] -= 3.0;
     odd_b.players[0].alive = true;
     odd_b.objects[0].gone = true;
@@ -443,11 +458,12 @@ fn golden_vectors_match_the_encoder() {
     odd_b.objects[0].u = None;
     odd_b.projectiles[1].pos = [-9.5, 4.25, 4.75];
     odd_b.items.clear();
-    let cases: [(&str, Vec<Frame>, u64); 4] = [
-        ("multiplayer", samples::multiplayer(6), 4),
-        ("campaign", samples::campaign(4), 3),
-        ("odd", vec![odd_frame(), odd_b], 15),
-        ("cinematic", cinematic_stream(), 100),
+    let cases: [(&str, Vec<Frame>, u64); 5] = [
+        ("v7-multiplayer", samples::multiplayer(6), 4),
+        ("v7-campaign", samples::campaign(4), 3),
+        ("v7-odd", vec![odd_frame(), odd_b], 15),
+        ("v7-cinematic", cinematic_stream(), 100),
+        ("v7-motion", motion_stream(), 100),
     ];
     let update = std::env::var_os("H2_UPDATE_GOLDEN").is_some();
     for (name, frames, every) in cases {
@@ -457,7 +473,9 @@ fn golden_vectors_match_the_encoder() {
         let mut d = Decoder::new();
         for f in &frames {
             let bytes = e.encode(f).unwrap().0;
-            decoded.push(d.decode(&bytes).unwrap().frame);
+            let frame = d.decode(&bytes).unwrap().frame;
+            assert_eq!(frame, quantize(f).unwrap(), "{name} tick {}", f.tick);
+            decoded.push(frame);
             push_record(&mut container, &bytes);
         }
         let json = serde_json::to_string_pretty(&decoded).unwrap() + "\n";
@@ -480,6 +498,66 @@ fn golden_vectors_match_the_encoder() {
             Some(json),
             "{name}.json is stale"
         );
+    }
+}
+
+/// Two units move through an irregular run, correct a single axis, swap
+/// slots, cross the yaw seam and then seek to a cut.
+fn motion_stream() -> Vec<Frame> {
+    [0, 1, 3, 10, 42, 44, 45]
+        .into_iter()
+        .enumerate()
+        .map(|(i, tick)| {
+            let t = tick as f64;
+            let mut players: Vec<_> = (0..2)
+                .map(|index| FramePlayer {
+                    index,
+                    alive: true,
+                    pos: [
+                        index as f64 - t / 30.0,
+                        if i == 2 { 0.003 } else { 0.0 },
+                        t / 40.0,
+                    ],
+                    yaw: (if i < 2 { TAU - 0.0003 } else { 0.0003 }) + t * 0.001,
+                    aim: Some([1.0, t * 0.001, 0.01]),
+                    vel: Some([-1.0, 0.0, 0.75]),
+                    fire: (i == 3).then_some(0b10),
+                    ..FramePlayer::default()
+                })
+                .collect();
+            if i == 3 {
+                players.swap(0, 1);
+            }
+            Frame {
+                tick,
+                game_id: "motion".into(),
+                players,
+                cut: (i == 5).then_some(3),
+                ..Frame::default()
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn irregular_motion_and_cuts_reconstruct_the_sample_at_its_tick() {
+    let frames = motion_stream();
+    let records = stream(&frames, 100);
+    let mut decoder = Decoder::new();
+    for (i, (bytes, key)) in records.iter().enumerate() {
+        assert_eq!(*key, i == 0 || i == 5);
+        if *key {
+            decoder = Decoder::new();
+        }
+        let back = decoder.decode(bytes).unwrap().frame;
+        for (p, q) in frames[i].players.iter().zip(&back.players) {
+            for axis in 0..3 {
+                assert!((p.pos[axis] - q.pos[axis]).abs() <= 0.5 / POS_SCALE);
+                assert!((p.vel.unwrap()[axis] - q.vel.unwrap()[axis]).abs() <= 0.5 / VEL_SCALE);
+            }
+            assert_eq!(p.fire, q.fire);
+        }
+        assert_eq!(back, quantize(&frames[i]).unwrap());
     }
 }
 
@@ -507,7 +585,7 @@ fn cinematic_stream() -> Vec<Frame> {
 /// cutscene and out again is a delta each way (version 5, written only
 /// for cinematic frames, made each change a keyframe).
 #[test]
-fn cinematic_frames_are_deltas_in_version_six() {
+fn cinematic_frames_remain_deltas() {
     let mut frames = samples::campaign(6);
     for f in &mut frames[2..4] {
         *f = Frame {
@@ -599,6 +677,25 @@ fn version_four_and_five_frames_still_decode() {
     assert!(matches!(d.decode(&delta), Err(PackError::Gap { .. })));
 }
 
+#[test]
+fn version_six_streams_still_decode() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/test/fixtures/pack");
+    for name in ["multiplayer", "campaign", "odd", "cinematic"] {
+        let bin = std::fs::read(dir.join(format!("v6-{name}.bin"))).unwrap();
+        let want: Vec<Frame> =
+            serde_json::from_slice(&std::fs::read(dir.join(format!("v6-{name}.json"))).unwrap())
+                .unwrap();
+        let mut decoder = Decoder::new();
+        let mut frames = Vec::new();
+        for record in records(&bin) {
+            let record = record.unwrap();
+            assert_eq!(record[0] & 15, 6);
+            frames.push(decoder.decode(record).unwrap().frame);
+        }
+        assert_eq!(frames, want, "{name}");
+    }
+}
+
 /// Version 6's projectiles and items round trip, quantised, through
 /// keyframes and deltas, and the server's checks refuse what they can't
 /// hold.
@@ -678,10 +775,8 @@ fn a_steady_mover_costs_almost_nothing() {
     let (delta, is_key) = e.encode(&next).unwrap();
     assert!(!is_key);
     assert_eq!(d.decode(&delta).unwrap().frame, quantize(&next).unwrap());
-    // Each: changed, matched, here, a four-bit mask and three zero errors
-    // (4 bits each): 19 bits; about 30 bytes with the header. The plain
-    // differences would be 56 bytes or more.
-    assert!(delta.len() <= 34, "{} bytes", delta.len());
+    // All ten predicted positions are exact: one unchanged run plus header.
+    assert!(delta.len() <= 10, "{} bytes", delta.len());
     // A gap past a second codes the plain difference, and still decodes.
     let far = frame(140, 2.0);
     let (delta, _) = e.encode(&far).unwrap();
