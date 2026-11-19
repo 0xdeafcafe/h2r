@@ -51,7 +51,11 @@ impl Live {
     /// `GET /v1/server`.
     pub fn server_facts(&self) -> Value {
         let s = self.model.read();
-        let live_games = s.games.values().filter(|g| g.ended.is_none()).count();
+        let live_games = s
+            .games
+            .values()
+            .filter(|g| g.ended.is_none() && g.started.game.sim.is_none())
+            .count();
         json!({
             "id": self.identity.id,
             "software": self.discovery().software,

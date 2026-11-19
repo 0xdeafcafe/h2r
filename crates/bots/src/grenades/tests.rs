@@ -361,3 +361,90 @@ fn no_throw_dual_wielding_without_grenades_or_out_of_range() {
     )));
     assert_eq!(th.throws, 0);
 }
+
+#[test]
+fn temperament_tilt_increases_throw_odds_without_extending_range() {
+    use crate::decisions::{Behavior, MoodView, Personality};
+
+    let skill = Skill::Legendary;
+    let mood = Behavior {
+        personality: Personality::for_skill(11, skill),
+        mood: MoodView {
+            tilt: 1.0,
+            ..MoodView::default()
+        },
+    };
+    let offers = |distance, rate, mates: &[Vec3]| {
+        (0..1024)
+            .filter(|&seed| {
+                let mut th = Thrower::new(seed);
+                let m = Moment {
+                    tick: 30,
+                    dt: 30,
+                    eye: [0.0, 0.0, 0.6],
+                    feet: [0.0; 3],
+                    aim: X,
+                    mark: Some(Mark {
+                        at: [distance, 0.0, 0.0],
+                        vel: [0.0; 3],
+                        seen: true,
+                    }),
+                    enemies: &[],
+                    mates,
+                    grenades: Some([4, 0]),
+                    selected: Some(Kind::Frag),
+                    busy: false,
+                    pushing: false,
+                };
+                th.step_with_left(&m, &Floor(0.0), skill, false, rate);
+                th.last.is_some()
+            })
+            .count()
+    };
+    assert!(offers(7.0, mood.grenade_rate(), &[]) > offers(7.0, 1.0, &[]));
+    assert_eq!(offers(RANGE.1 + 1.0, mood.grenade_rate(), &[]), 0);
+    assert_eq!(offers(7.0, mood.grenade_rate(), &[[7.0, 0.0, 0.0]]), 0);
+}
+
+#[test]
+fn a_solved_grenade_drops_the_left_gun_then_waits_for_the_empty_hand() {
+    let mut th = Thrower::new(11);
+    let mut dual = true;
+    let mut first_drop = None;
+    let mut aim = X;
+    let eye = [0.0, 0.0, 0.6];
+    for tick in 0..5400 {
+        let moment = Moment {
+            tick,
+            dt: 1,
+            eye,
+            feet: [0.0; 3],
+            aim,
+            mark: Some(Mark {
+                at: [7.0, 0.0, 0.0],
+                vel: [0.0; 3],
+                seen: true,
+            }),
+            enemies: &[],
+            mates: &[],
+            grenades: Some([4, 0]),
+            selected: Some(Kind::Frag),
+            busy: false,
+            pushing: false,
+        };
+        let hand = th.step_with_left(&moment, &Floor(0.0), Skill::Legendary, dual, 1.0);
+        if hand.drop_left {
+            assert!(dual && !hand.throw && !hand.swap && th.last.is_some());
+            let since = *first_drop.get_or_insert(tick);
+            dual = tick < since + 2;
+        }
+        if let Some(look) = hand.look {
+            aim = unit(sub(look, eye));
+        }
+        if hand.throw {
+            assert!(first_drop.is_some() && !dual);
+            return;
+        }
+    }
+    panic!("the solved throw never followed the drop");
+}

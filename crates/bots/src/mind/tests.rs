@@ -795,6 +795,7 @@ const HOME: Vec3 = [2.0, 5.0, 0.0];
 /// carried by `carrier`.
 fn carrying(carrier: Option<u32>, at: Vec3) -> Objective {
     Objective {
+        state: Default::default(),
         game: Game::Ctf,
         me: 1,
         items: vec![Item {
@@ -973,6 +974,7 @@ fn the_objective_comes_before_chasing_and_roaming() {
 fn the_ball_carrier_runs_from_the_nearest_enemy() {
     let mut m = Mind::new(Skill::Normal, 3);
     let ball = Objective {
+        state: Default::default(),
         game: Game::Oddball,
         me: 1,
         items: vec![Item {
@@ -1028,6 +1030,7 @@ fn the_ball_carrier_runs_from_the_nearest_enemy() {
 #[test]
 fn in_the_hill_it_stays_and_out_of_it_it_goes_there() {
     let hill = |c: Vec3| Objective {
+        state: Default::default(),
         game: Game::Koth,
         me: 1,
         items: vec![],
@@ -1226,6 +1229,7 @@ fn glitches_run_only_fighting_or_roaming_on_foot() {
         (Doing::Roam, true),
         (Doing::Idle, false),
         (Doing::Chase([1.0; 3]), false),
+        (Doing::HoldAngle([1.0; 3]), false),
         (Doing::Support([1.0; 3]), false),
         (Doing::Supply([1.0; 3]), false),
         (Doing::Rearm([1.0; 3]), false),
@@ -1240,18 +1244,13 @@ fn glitches_run_only_fighting_or_roaming_on_foot() {
         assert_eq!(glitch_doing(d), ok, "{d:?}");
     }
     // A show-off under way stops when the bot turns to something else.
-    let hop = || {
-        Stunt::Hop(Run::new(
-            plan(Trick::CrouchJump, Skill::Legendary, &mut || 0.5),
-            0,
-        ))
-    };
+    let hop = || Stunt::Hop(Run::new(plan(Trick::CrouchJump), 0));
     let mut m = Mind::new(Skill::Legendary, 4);
     m.glitches = Glitches::Lots;
     look(&mut m, X, vec![enemy(1, [6.0, 3.0, 0.0])], 0, None);
     m.stunt = Some(hop());
     look(&mut m, X, vec![], 5, None);
-    assert_eq!(m.doing, Doing::Chase([6.0, 3.0, 0.0]));
+    assert_eq!(m.doing, Doing::HoldAngle([6.0, 3.0, 0.0]));
     assert!(m.stunt.is_none());
     // The hook a seat's pad calls stops both kinds.
     m.stunt = Some(hop());
@@ -1272,4 +1271,27 @@ fn glitches_run_only_fighting_or_roaming_on_foot() {
     look(&mut m, X, vec![], 6, None);
     assert_eq!(m.doing, Doing::Drive(100));
     assert!(m.stunt.is_none() && !m.combo.tricking());
+}
+
+#[test]
+fn temperament_showboats_attempt_risky_melee_but_still_reach_for_the_button() {
+    let mut careful = Mind::new(Skill::Legendary, 1);
+    careful.decisions.personality.showboating = 0.15;
+    let mut showboat = careful.clone();
+    showboat.decisions.personality.showboating = 0.9;
+    let foe = || vec![enemy(1, [1.0, 0.0, 0.0])];
+    let mut first = None;
+    for tick in 0..30 {
+        let pad = look(&mut showboat, X, foe(), tick, None);
+        assert!(
+            !look(&mut careful, X, foe(), tick, None)
+                .buttons
+                .contains(MELEE)
+        );
+        if pad.buttons.contains(MELEE) {
+            first.get_or_insert(tick);
+            assert_eq!(pad.right_trigger, 0.0);
+        }
+    }
+    assert!((3..30).contains(&first.expect("showboat tries the melee")));
 }

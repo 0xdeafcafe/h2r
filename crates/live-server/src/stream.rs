@@ -104,6 +104,9 @@ impl StreamFilter {
     }
 
     fn shows_game(&self, game_id: &str) -> bool {
+        if crate::sim_runs::is_sim_id(game_id) {
+            return self.games.iter().any(|g| g == game_id);
+        }
         self.games.is_empty() || self.games.iter().any(|g| g == game_id)
     }
 }
@@ -225,6 +228,11 @@ impl StreamSession {
         Ok(out)
     }
 
+    fn sees_event(&self, e: &RecordedEvent) -> bool {
+        !crate::sim_runs::is_sim_stream(&e.body.stream)
+            || self.filter.stream.as_deref() == Some(e.body.stream.as_str())
+    }
+
     /// Every stored event after `last` that the filter keeps, then `last`
     /// moved to at least the position the read model had reached.
     async fn read_after(&self, last: &mut u64, out: &mut Vec<Out>) -> Result<(), String> {
@@ -239,7 +247,9 @@ impl StreamSession {
             for e in &batch {
                 // A hidden event is skipped, but the reader's place moves
                 // past it.
-                if let Some(w) = self.live.wire_for(e, self.viewer) {
+                if self.sees_event(e)
+                    && let Some(w) = self.live.wire_for(e, self.viewer)
+                {
                     out.push(Out::json(&StreamMessage::Event { event: Box::new(w) }));
                 }
                 *last = e.position;
@@ -284,7 +294,18 @@ impl StreamSession {
                 self.viewer = viewer;
                 // A public server's reader keeps the socket past its token;
                 // a private one must send fresh tokens.
-                self.expires = self.live.policy().private.then_some(exp);
+                self.expires = (self.live.policy().private
+                    || self
+                        .filter
+                        .games
+                        .iter()
+                        .any(|id| crate::sim_runs::is_sim_id(id))
+                    || self
+                        .filter
+                        .stream
+                        .as_deref()
+                        .is_some_and(crate::sim_runs::is_sim_stream))
+                .then_some(exp);
                 Ok(waiting)
             }
             Err(e) => Err(Out::Close(CLOSE_UNAUTHORIZED, e.message)),
@@ -310,8 +331,7 @@ impl StreamSession {
             return None;
         }
         *last = e.position;
-        self.probe
-            .matches(e)
+        (self.probe.matches(e) && self.sees_event(e))
             .then(|| self.live.wire_for(e, self.viewer))
             .flatten()
             .map(|w| Out::json(&StreamMessage::Event { event: Box::new(w) }))
@@ -363,7 +383,7 @@ impl StreamSession {
         }
         let mut out = Vec::new();
         for f in self.live.frames_since_keyframe(&self.filter.games) {
-            if self.live.frame_shows(&f, self.viewer) {
+            if self.filter.shows_game(&f.frame.game_id) && self.live.frame_shows(&f, self.viewer) {
                 self.follow.take_frame(&f, &mut out);
             }
         }

@@ -146,7 +146,12 @@ pub fn sky_from_map(map: &h1map::H1Map, tag: &h1map::Tag) -> Result<FromMap> {
                 tag.group
             )));
         }
-        let options = h1models::mode::ModelOptions::default();
+        // The sky draw draws every part as a strip
+        // (`h1models::mode::ModelOptions::strips`).
+        let options = h1models::mode::ModelOptions {
+            strips: true,
+            ..Default::default()
+        };
         let (mut h1_model, mut converted) = h1models::model_from_map(map, tag, &options)?;
         if drop_edge_on(&mut h1_model) > 0 {
             converted = h1models::mode::convert_model(

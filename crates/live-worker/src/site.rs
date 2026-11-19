@@ -1,8 +1,9 @@
 //! What the Worker answers itself, ahead of the hub: the game art at
-//! `/art/game/*`, the stats site's old addresses (`/stats/*`, a 301 to
+//! `/art/game/*`, composed emblems at `/art/emblem/*`, the stats site's old addresses (`/stats/*`, a 301 to
 //! the same page under `/games/halo2`, in entry.rs), and the app's pages
-//! (the built `index.html` with each page's link preview,
-//! [`live_server::page_meta`]).
+//! (the built `index.html` with each page's link preview
+//! [`live_server::page_meta`], and a game page's pre-rendered header
+//! [`live_server::page_header`], which the hub's answer carries).
 //!
 //! The Worker has no art files (they are the owner's, extracted from their
 //! disc). Art published to a public bucket (`h2 live assets publish`,
@@ -12,6 +13,12 @@
 //! these paths: wrangler.toml sends `/art/game/*` to the Worker first.
 
 use live_server::art::{PREFIX, published_redirect};
+
+/// Whether to serve a composed image at the edge.
+pub fn is_emblem(path: &str) -> bool {
+    path.strip_prefix(live_server::emblem::PREFIX)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+}
 
 /// What to answer a request under `/art/game`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,6 +95,8 @@ mod tests {
             "/healthz",
             "/art/game",
             "/art/game/*",
+            "/art/emblem",
+            "/art/emblem/*",
         ];
         for p in &patterns {
             let sample = p.replace('*', "x");
@@ -96,6 +105,14 @@ mod tests {
                 "{p} is sent to the Worker but is not a page"
             );
         }
+        for path in ["/art/emblem", "/art/emblem/1-2-3-4-5-6.png"] {
+            assert!(is_emblem(path));
+            assert!(patterns.iter().any(|p| {
+                p.strip_suffix('*')
+                    .map_or(*p == path, |prefix| path.starts_with(prefix))
+            }));
+        }
+        assert!(!is_emblem("/art/emblems/01-double-arch.webp"));
         for page in [
             "/",
             "/dash",

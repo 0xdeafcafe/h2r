@@ -26,7 +26,8 @@
 //      multipart upload streamed from the request body) and a cloud save,
 //      each read back; with --admin NAME (a configured admin's gamertag,
 //      free on this server), a 2 MiB title file, more than a Durable
-//      Object's SQLite row holds, published and read back; with --big,
+//      Object's SQLite row holds, published and read back, then a private
+//      Clanker Training run, its live stream and its R2 report; with --big,
 //      an upload of exactly the content cap (95 MiB, the largest whole MiB
 //      under the edge's 100 MB body limit; sent to the hub once, not teed
 //      for a retry) read back, and one byte more refused by the hub's own
@@ -48,7 +49,7 @@ import { decodeChunk } from "../../../web/src/api/chunk";
 import { canonicalJson } from "../../../web/src/state/verify";
 import { createAccount, importSeed, signCompact, type LocalAccount } from "../../../web/src/state/account";
 import { eventBody, postEvent, TYP_EVENT } from "../../../web/src/state/sign";
-import { issueToken } from "../../../web/src/admin/token";
+import { issueToken, randomId } from "../../../web/src/admin/token";
 
 const args = process.argv.slice(2);
 const base = (args.find((a) => /^https?:/.test(a)) ?? "http://127.0.0.1:8787").replace(/\/$/, "");
@@ -109,14 +110,9 @@ if (coldOnly) {
 
 // 3. Sign up.
 const tag = () => "Smoke" + Math.floor(Math.random() * 1e9).toString(36).slice(0, 6);
-let a, b;
 const t3 = performance.now();
-try {
-  a = await createAccount(api, base, aud, tag());
-  b = await createAccount(api, base, aud, tag());
-} catch (e) {
-  fail("sign-up", e);
-}
+const a = await createAccount(api, base, aud, tag()).catch((e) => fail("sign-up", e));
+const b = await createAccount(api, base, aud, tag()).catch((e) => fail("sign-up", e));
 out.sign_up = { ms: +(performance.now() - t3).toFixed(1), accounts: [a!.gamertag, b!.gamertag] };
 
 // 4. Sign in: a read with the account's own token.
@@ -412,9 +408,82 @@ let archiveGame = "";
   for (const s of [json, packed, game]) s.ws.close();
 }
 
+async function simRun(admin: LocalAccount, other: LocalAccount) {
+  const runs = api + "/admin/sim-runs";
+  const t = performance.now();
+  const batch = randomId();
+  const bots = [{ name: "Bolt", arm: "smoke", tuning: {} }];
+  const metadata = {
+    run_id: randomId(), batch_id: batch, seed: "42", gametype: "slayer",
+    pace: "unpaced", bots,
+  };
+  const id = "sim-" + metadata.run_id;
+  const headers = async (who: LocalAccount, method: string) => ({
+    authorization: `Bearer ${await issueToken(who, aud, method)}`,
+    "content-type": "application/json",
+  });
+  const read = async (path: string) => timed(path, { headers: await headers(admin, "read") });
+  const start = async (who: LocalAccount) => timed(runs, {
+    method: "POST", headers: await headers(who, "games.write"),
+    body: JSON.stringify({
+      map: "lockout", mode: "multiplayer", variant: "Slayer", tick: 0,
+      team_play: false, sim: metadata,
+      players: [{ index: 0, name: "Bolt", team: 0, bot: true }],
+    }),
+  });
+  if ((await start(other)).r.status !== 403) throw new Error("non-admin sim start accepted");
+  const started = await start(admin);
+  if (started.r.status !== 201 || JSON.parse(started.body).game_id !== id) throw new Error(started.body);
+
+  const filtered = () => read(`${runs}?batch=${batch}&tuning=smoke&map=lockout`);
+  const running = await filtered();
+  if (JSON.parse(running.body).items?.[0]?.status !== "running") throw new Error(running.body);
+  const reader = subscribe(`?auth=1&games=${id}&stream=game-${id}&frames=packed`);
+  const ingest = subscribe("", "/v1/ingest");
+  try {
+    await Promise.all([reader.opened, ingest.opened]);
+    reader.ws.send(JSON.stringify({ kind: "auth", token: await issueToken(admin, aud, "read") }));
+    await reader.until((m) => m.kind === "caught_up");
+    ingest.ws.send(JSON.stringify({ kind: "auth", token: await issueToken(admin, aud, "games.write") }));
+    ingest.ws.send(JSON.stringify({
+      kind: "frame", frame: { game_id: id, tick: 2, players: [{ index: 0, alive: true, pos: [1, 2, 3], yaw: 0 }] },
+    }));
+    await reader.untilBinary();
+    const end = eventBody(admin, { stream: `game-${id}`, type: "GameEnded", data: { reason: "finished", tick: 2, players: [] } }, Date.now());
+    const key = await importSeed(admin.key, admin.x);
+    const jws = await signCompact(key.privateKey, { alg: "EdDSA", kid: admin.kid, typ: TYP_EVENT }, canonicalJson([end]));
+    ingest.ws.send(JSON.stringify({ kind: "events", game_id: id, jws }));
+    await ingest.until((m) => m.kind === "appended");
+  } finally {
+    reader.ws.close();
+    ingest.ws.close();
+  }
+
+  const report = {
+    format: "h2-sim-report/1",
+    match: { map: "lockout", game_type: "slayer", seed: 42, bot: bots },
+    result: { end: "tick_limit" }, ticks: 2, wall: { speedup: 2.8 }, players: [],
+  };
+  const uploaded = await timed(`${runs}/${id}/report`, {
+    method: "PUT", headers: await headers(admin, "games.write"), body: JSON.stringify(report),
+  });
+  if (uploaded.r.status !== 204) throw new Error(uploaded.body);
+  const detail = await read(`${runs}/${id}`);
+  const d = JSON.parse(detail.body);
+  if (d.run?.status !== "finished" || canonicalJson(d.report) !== canonicalJson(report)) throw new Error(detail.body);
+  const chunk = await read(`${api}/games/${id}/chunks`);
+  const tick = JSON.parse(chunk.body).items?.[0]?.from_tick;
+  if (tick !== 2) throw new Error(chunk.body);
+  const bytes = await fetch(`${api}/games/${id}/chunks/${tick}`, { headers: await headers(admin, "read") });
+  if (!bytes.ok || !(await bytes.arrayBuffer()).byteLength) throw new Error("sim replay bytes missing");
+  if ((await fetch(`${runs}/${id}`)).status !== 401) throw new Error("anonymous report read accepted");
+  if ((await fetch(`${api}/games/${id}/chunks`)).status !== 404) throw new Error("anonymous replay read accepted");
+  out.sim = { id, round_trip_ms: +(performance.now() - t).toFixed(1) };
+}
+
 // 10. R2.
 {
-  const hex = async (b: Uint8Array) =>
+  const hex = async (b: Uint8Array<ArrayBuffer>) =>
     [...new Uint8Array(await crypto.subtle.digest("SHA-256", b))].map((x) => x.toString(16).padStart(2, "0")).join("");
   const random = (n: number) => {
     const b = new Uint8Array(n);
@@ -525,6 +594,11 @@ let archiveGame = "";
     const read = new Uint8Array(await (await fetch(url)).arrayBuffer());
     if (!same(read, file)) fail("r2-title-get", `${read.length} bytes back`);
     r2.title_file_round_trip_ms = +(performance.now() - t).toFixed(1);
+    try {
+      await simRun(admin, a!);
+    } catch (e) {
+      fail("sim-run", e);
+    }
   }
   out.r2 = r2;
 }

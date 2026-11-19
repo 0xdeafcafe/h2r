@@ -546,6 +546,72 @@ fn a_multipurpose_blue_becomes_one_change_colour_channel() {
     assert!(channel_into(&mask, &px, 2, 4).is_err());
 }
 
+/// A DXT3 leaf base (8x8, one mip) whose four level-0 blocks are clear,
+/// alpha 119, alpha 136 and opaque: its cut-out bump is DXT5 of the same
+/// size and chain, every texel the flat normal (within a step of
+/// `default_vector`'s 128, 128, 255), its alpha 0 below 128 and 255 from
+/// it, exactly; level 1 (the clear block again) is all 0.
+#[test]
+fn a_cut_out_base_gives_a_flat_bump_with_its_binary_alpha() {
+    use crate::mask::{CUTOUT_THRESHOLD, cutout_bump};
+    const DXT3: u16 = 15;
+    let base = image(DXT3, 0, [8, 8, 1], 1, DXT);
+    let block = |nibble: u8| {
+        let mut b = [0u8; 16];
+        b[..8].fill(nibble << 4 | nibble);
+        // A green DXT1 colour half, as Halo 1's leaves are.
+        b[8..10].copy_from_slice(&0x07e0u16.to_le_bytes());
+        b[10..12].copy_from_slice(&0x0200u16.to_le_bytes());
+        b
+    };
+    let px: Vec<u8> = [0x0, 0x7, 0x8, 0xf]
+        .into_iter()
+        .flat_map(block)
+        .cycle()
+        .take(base.pixel_size as usize)
+        .collect();
+    let (img, out) = cutout_bump(&base, &px).unwrap();
+    assert_eq!(img.format, h1map::bitmap::PixelFormat::Dxt5);
+    assert_eq!((img.width, img.height, img.mip_count), (8, 8, 1));
+    assert_eq!(img.pixel_size as usize, out.len());
+    let want = decode_image(&base, &px).unwrap();
+    let got = decode_image(&img, &out).unwrap();
+    assert_eq!(got.len(), 2);
+    for (g, w) in got.iter().zip(&want) {
+        assert_eq!((g.width, g.height), (w.width, w.height));
+        for t in 0..(g.width * g.height) as usize {
+            let n = &g.rgba[t * 4..t * 4 + 3];
+            assert!(
+                n[0].abs_diff(128) <= 1 && n[1].abs_diff(128) <= 1 && n[2] == 255,
+                "level {} texel {t}: normal {n:?}",
+                g.level
+            );
+            let a = w.rgba[t * 4 + 3];
+            let cut = if a >= CUTOUT_THRESHOLD { 255 } else { 0 };
+            assert_eq!(
+                g.rgba[t * 4 + 3],
+                cut,
+                "level {} texel {t}: base alpha {a}",
+                g.level
+            );
+        }
+    }
+    // The threshold sits between the second and third blocks.
+    let top = &got[0];
+    let alpha_at = |x: u32, y: u32| top.rgba[((y * 8 + x) * 4 + 3) as usize];
+    assert_eq!(
+        [
+            alpha_at(0, 0),
+            alpha_at(4, 0),
+            alpha_at(0, 4),
+            alpha_at(4, 4)
+        ],
+        [0, 0, 255, 255]
+    );
+    assert!(got[1].rgba.chunks_exact(4).all(|t| t[3] == 0));
+    assert_eq!(cutout_bump(&base, &px).unwrap().1, out);
+}
+
 /// A picture made opaque keeps its colour and samples alpha 255 in every
 /// format with an alpha it can set, through the swizzled, linear and DXT
 /// paths; the formats whose alpha it can't set are left as they are.

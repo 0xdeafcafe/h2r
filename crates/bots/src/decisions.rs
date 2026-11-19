@@ -2,10 +2,14 @@
 //! sightings, and each mind keeps its own memory across lives in the match.
 
 mod map;
+mod personality;
 pub(crate) mod radio;
 pub mod supplies;
 
-use radio::Call;
+pub(crate) use personality::Behavior;
+use personality::Mood;
+pub use personality::{MoodView, Personality};
+use radio::{Call, Voice};
 
 use crate::brain::{Me, Perception, Seen, Vec3};
 use crate::cache::MapData;
@@ -33,33 +37,6 @@ pub(crate) fn awareness(skill: Skill) -> f32 {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Personality {
-    pub aggression: f32,
-    pub caution: f32,
-    pub teamwork: f32,
-    pub objective_focus: f32,
-}
-
-impl Personality {
-    pub fn seeded(mut seed: u64) -> Self {
-        // SplitMix64, independent of aim and movement's random streams.
-        let mut draw = || {
-            seed = seed.wrapping_add(0x9e3779b97f4a7c15);
-            let mut n = seed;
-            n = (n ^ (n >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
-            n = (n ^ (n >> 27)).wrapping_mul(0x94d049bb133111eb);
-            ((n ^ (n >> 31)) >> 40) as f32 / 16777216.0
-        };
-        Self {
-            aggression: draw(),
-            caution: draw(),
-            teamwork: draw(),
-            objective_focus: draw(),
-        }
-    }
-}
-
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub enum Posture {
     #[default]
@@ -72,6 +49,8 @@ pub enum Posture {
 pub struct Decisions {
     pub personality: Personality,
     pub posture: Posture,
+    mood: Mood,
+    voice: Voice,
     pub(crate) map: map::MapMemory,
     pub(crate) inbox: Vec<Call>,
     pub(crate) report: Option<Call>,
@@ -86,8 +65,14 @@ pub struct Decisions {
 
 impl Decisions {
     pub fn new(seed: u64) -> Self {
+        Self::for_skill(seed, Skill::Normal)
+    }
+
+    pub(crate) fn for_skill(seed: u64, skill: Skill) -> Self {
         Self {
-            personality: Personality::seeded(seed),
+            personality: Personality::for_skill(seed, skill),
+            mood: Mood::default(),
+            voice: Voice::default(),
             posture: Posture::Normal,
             map: Default::default(),
             inbox: Vec::new(),
@@ -101,12 +86,28 @@ impl Decisions {
         }
     }
 
+    pub fn mood(&self) -> MoodView {
+        self.mood.view()
+    }
+
+    pub(crate) fn behavior(&self) -> Behavior {
+        Behavior {
+            personality: self.personality,
+            mood: self.mood(),
+        }
+    }
+
+    pub(crate) fn advance_mood(&mut self, tick: u32) {
+        self.mood.advance(tick, self.personality);
+    }
+
     /// Called before consuming this frame's roster, including while dead.
     /// A kill feed identifies the killer but never gives a firing position.
     pub(crate) fn hear(&mut self, p: &Perception, kills: &[Kill]) -> bool {
         let Some((id, team)) = p.observations.player else {
             return false;
         };
+        self.mood.hear(p, id, kills, self.personality);
         let mut changed = false;
         for k in kills {
             if self
@@ -157,6 +158,8 @@ impl Decisions {
     pub(crate) fn died(&mut self, tick: u32) {
         self.trade = None;
         self.report = None;
+        self.voice = Voice::default();
+        self.mood.favored_duel = None;
         self.hit = None;
         self.last_shield = None;
         self.withdrew = None;
@@ -172,7 +175,8 @@ impl Decisions {
         if self.posture == Posture::Withdraw {
             self.withdrew = Some(f.p.tick);
         }
-        self.report = f
+        self.read_duel(f, chosen);
+        let call = f
             .p
             .observations
             .player
@@ -186,6 +190,7 @@ impl Decisions {
                 tick: f.p.tick,
                 help: f.me.shield < 0.4 || self.hit.is_some_and(|t| f.p.tick.wrapping_sub(t) < 30),
             });
+        self.report = self.voice.report(call, self.behavior().radio_interval());
         Intent {
             chosen,
             anchor: chosen.and_then(|o| f.leash(o, self.personality)),
@@ -194,6 +199,34 @@ impl Decisions {
             } else {
                 None
             },
+        }
+    }
+
+    fn read_duel(&mut self, f: &Fight<'_>, chosen: Option<Seen>) {
+        let Some(o) = chosen else { return };
+        if f.seen.len() != 1
+            || f.engaged(o)
+            || f.p.others.iter().any(|mate| {
+                f.p.teams && mate.team == f.me.team && distance(mate.position, o.position) < 10.0
+            })
+        {
+            self.mood.favored_duel = None;
+            return;
+        }
+        if self.mood.favored_duel.is_some_and(|(id, _)| id != o.id) {
+            self.mood.favored_duel = None;
+        }
+        let ready = f.me.arms.and_then(|a| a.held).is_some_and(|g| {
+            let d = distance(f.me.position, o.position);
+            let reach = g.reach();
+            g.ready() && ((reach.fire.0..=reach.fire.1).contains(&d) || d < reach.lunge)
+        });
+        if ready
+            && f.contact(o.id)
+                .and_then(|r| r.shield)
+                .is_some_and(|s| f.me.shield - s >= 0.30)
+        {
+            self.mood.favored_duel = Some((o.id, f.p.tick));
         }
     }
 }
@@ -279,7 +312,7 @@ impl Fight<'_> {
             }
             // The lower slot holds a shared target. Higher slots peel off
             // when there is a comparable alternative, preventing oscillation.
-            if self.p.tick.wrapping_sub(c.tick) <= 15
+            if self.p.tick.wrapping_sub(c.tick) <= radio::MAX_REPORT_INTERVAL
                 && self
                     .p
                     .observations
@@ -304,19 +337,26 @@ impl Fight<'_> {
                 .p
                 .objective
                 .as_ref()
-                .and_then(|o| o.hill.as_ref())
-                .is_some_and(|h| h.contains(o.position))
+                .is_some_and(|objective| objective.in_hill(o.id, o.position))
         {
             weight /= 1.0 + 3.0 * awareness(self.skill);
         }
+        if d.map.holder(o.id) {
+            weight /= 1.0 + awareness(self.skill);
+        }
         if self.opening(o, traits) {
             weight /= 1.0 + (0.8 + traits.aggression) * awareness(self.skill);
+        }
+        if d.behavior().wants_revenge(o.id) {
+            weight *= 0.55;
         }
         weight
     }
 
     fn posture(&self, d: &Decisions, o: Seen) -> Posture {
-        let traits = d.personality;
+        let behavior = d.behavior();
+        let traits = behavior.personality;
+        let drive = behavior.drive();
         let sense = awareness(self.skill);
         let radius = 8.0 + 12.0 * sense;
         let enemies = self
@@ -335,7 +375,7 @@ impl Fight<'_> {
                     && clear(self.map, self.me.position, a.position)
             })
             .count();
-        let margin = if sense + 0.5 * traits.caution - 0.25 * traits.aggression >= 0.65 {
+        let margin = if sense + 0.5 * traits.caution - 0.25 * traits.aggression - drive >= 0.65 {
             1
         } else {
             2
@@ -346,7 +386,14 @@ impl Fight<'_> {
         if enemies > friends + margin && !distracted_pair {
             return Posture::Withdraw;
         }
-        if self.me.shield >= 0.55 && self.opening(o, traits) && sense + traits.aggression > 0.72 {
+        if behavior.fear() > 0.28 && friends == 0 && self.me.shield < 0.86 {
+            return Posture::Withdraw;
+        }
+        let opening = self.opening(o, traits) && sense + traits.aggression + drive > 0.72;
+        let bold =
+            behavior.wants_revenge(o.id) || (drive > 0.18 && traits.aggression + drive > 0.69);
+        let shield_to_press = (0.55 - 0.35 * drive).clamp(0.38, 0.70);
+        if self.me.shield >= shield_to_press && (opening || bold) {
             Posture::Press
         } else {
             Posture::Normal
@@ -355,7 +402,7 @@ impl Fight<'_> {
 
     fn support(&self, d: &Decisions) -> Option<Vec3> {
         let (id, team) = self.p.observations.player.filter(|_| self.p.teams)?;
-        let regroup = d.disengaging(self.p.tick);
+        let regroup = d.disengaging(self.p.tick) || d.behavior().fear() > 0.28;
         let reach = (12.0 + 20.0 * d.personality.teamwork) * (0.5 + awareness(self.skill));
         if !regroup
             && let Some(c) = d
@@ -392,12 +439,12 @@ impl Fight<'_> {
 
     fn leash(&self, target: Seen, traits: Personality) -> Option<(Vec3, f32)> {
         let goal = self.goal?;
-        if self
-            .p
-            .objective
-            .as_ref()
-            .is_some_and(|o| o.game == crate::objective::Game::Koth)
-        {
+        if self.p.objective.as_ref().is_some_and(|o| {
+            matches!(
+                o.game,
+                crate::objective::Game::Koth | crate::objective::Game::Territories
+            )
+        }) {
             return match goal {
                 Goal::Go(at) => Some((at, 0.0)),
                 Goal::Hold(at, r) => Some((at, r)),

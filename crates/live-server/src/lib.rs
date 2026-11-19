@@ -41,6 +41,7 @@ pub mod copy;
 pub mod default_hopper;
 pub mod default_motd;
 pub mod dispatch;
+pub mod emblem;
 pub mod filestore;
 pub mod games;
 pub mod guard;
@@ -56,6 +57,7 @@ pub mod logio;
 mod mailbox;
 pub mod model;
 pub mod mutes;
+pub mod page_header;
 pub mod page_meta;
 pub mod packed;
 #[cfg(feature = "native")]
@@ -69,6 +71,7 @@ pub mod reports;
 mod replay_archive;
 pub mod rt;
 mod sessions;
+mod sim_runs;
 pub mod sql;
 #[cfg(feature = "native")]
 pub mod sqlite;

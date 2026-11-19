@@ -22,12 +22,7 @@ export const adminState = createRoot(() => {
     const k = key();
     if (!k || known()[k] !== undefined) return;
     try {
-      const r = await fetch(
-        `${live.server().api}/accounts/${encodeURIComponent(me.gamertag)}`,
-        { headers: { accept: "application/json" } },
-      );
-      if (!r.ok) return;
-      const body = (await r.json()) as { admin?: boolean };
+      const body = await live.api().account(me.gamertag);
       setKnown({ ...known(), [k]: body.admin === true });
     } catch {
       /* offline; the Admin page shows its own error */
@@ -36,6 +31,7 @@ export const adminState = createRoot(() => {
 
   createEffect(() => {
     void live.server().base;
+    void live.wellKnown();
     void identity.me()?.xuid;
     void check();
   });

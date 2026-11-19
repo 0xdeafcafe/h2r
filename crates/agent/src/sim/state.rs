@@ -1,7 +1,11 @@
 //! `sim.state.set`'s host writes and the `player` fields `sim.view` adds,
 //! at the addresses Live telemetry reads (`live_telemetry::layout`,
-//! `engine::view`): the player record's team, and its unit's position,
-//! velocity, team, vitality, grenades and held weapon's magazine.
+//! `engine::view`): the player record's team, and its unit's team,
+//! vitality, grenades and held weapon's magazine.
+//!
+//! A position or facing is not a write here: the biped's physics put the
+//! body back at the next tick. They go to the game's own teleport
+//! ([`super::calls`]).
 //!
 //! Every value is checked before the first write, so a refused set
 //! writes nothing.
@@ -51,6 +55,66 @@ pub fn unit(m: &dyn GuestMemory, p: Player) -> Result<Option<Body>, RpcError> {
         return Ok(None);
     };
     Ok(objects::get(m, h).map_err(fault)?.map(|(_, b)| b))
+}
+
+/// The player's salted handle (what the game's player functions take).
+pub fn player_handle(m: &dyn GuestMemory, index: u32) -> Result<u32, RpcError> {
+    let p = player(m, index)?;
+    let salt = p.salt(m).map_err(fault)?;
+    Ok(engine::DatumHandle::new(salt, index).raw())
+}
+
+/// The player's unit's handle; `GONE` between lives.
+pub fn unit_handle(m: &dyn GuestMemory, index: u32) -> Result<u32, RpcError> {
+    let p = player(m, index)?;
+    match p.unit(m).map_err(fault)? {
+        Some(h) if objects::get(m, h).map_err(fault)?.is_some() => Ok(h.raw()),
+        _ => Err(RpcError::new(
+            code::GONE,
+            format!("player.{index} has no unit now (between lives)"),
+        )),
+    }
+}
+
+/// The weapon object the unit holds now, as 8 hex digits.
+pub fn held_object(m: &dyn GuestMemory, index: u32) -> Option<String> {
+    let u = unit(m, player(m, index).ok()?).ok()??;
+    let i = m.u8(u.addr + l::UNIT_WEAPON_INDEX).ok()? as i8;
+    if !(0..l::UNIT_WEAPON_SLOTS).contains(&i) {
+        return None;
+    }
+    let d = m.u32(u.addr + l::UNIT_WEAPONS + 4 * i as u32).ok()?;
+    (d != u32::MAX).then(|| format!("{d:08x}"))
+}
+
+/// Writes a weapon object's first magazine (the fields `ammo` names).
+pub fn set_magazine(
+    m: &mut dyn GuestMemory,
+    weapon: u32,
+    a: agent_proto::sim::Ammo,
+) -> Result<(), RpcError> {
+    let h = engine::DatumHandle::from_raw(weapon)
+        .ok_or_else(|| RpcError::new(code::GONE, "no weapon"))?;
+    let (_, w) = objects::get(m, h)
+        .map_err(fault)?
+        .ok_or_else(|| RpcError::new(code::GONE, format!("weapon {weapon:08x} is gone")))?;
+    for (o, n) in [
+        (l::WEAPON_MAGAZINE_LOADED, a.loaded),
+        (l::WEAPON_MAGAZINE_RESERVE, a.reserve),
+    ] {
+        if let Some(n) = n {
+            m.set_u16(w.addr + o, n as u16).map_err(fault)?;
+        }
+    }
+    Ok(())
+}
+
+/// Checks an `ammo` value alone.
+pub fn validate_ammo(a: &agent_proto::sim::Ammo) -> Result<(), RpcError> {
+    if a.loaded.iter().chain(&a.reserve).any(|n| *n < 0) {
+        return Err(bad("ammo: 0 or more"));
+    }
+    Ok(())
 }
 
 /// The held weapon's body, if the unit holds one.
@@ -128,12 +192,13 @@ pub fn validate(p: &SetParams) -> Result<(), RpcError> {
     {
         return Err(bad("grenades: 0 or more"));
     }
-    if let Some(a) = p.ammo
-        && a.loaded.iter().chain(&a.reserve).any(|n| *n < 0)
-    {
-        return Err(bad("ammo: 0 or more"));
+    if let Some(a) = &p.ammo {
+        validate_ammo(a)?;
     }
+    p.facing_vector().map_err(bad)?;
     let any = p.pos.is_some()
+        || p.yaw.is_some()
+        || p.facing.is_some()
         || p.team.is_some()
         || p.health.is_some()
         || p.shield.is_some()
@@ -141,14 +206,16 @@ pub fn validate(p: &SetParams) -> Result<(), RpcError> {
         || p.ammo.is_some();
     if !any {
         return Err(bad(
-            "nothing to set: pos, team, health, shield, grenades or ammo",
+            "nothing to set: pos, yaw/pitch or facing, team, health, shield, grenades or ammo",
         ));
     }
     Ok(())
 }
 
 /// Writes `p` to player `index`; the fields written. Checks everything
-/// (values, the unit, the held weapon) before the first write.
+/// (values, the unit, the held weapon) before the first write. `pos` and
+/// the facing are not written here (the module doc): only checked to have
+/// a unit to move.
 pub fn apply(
     m: &mut dyn GuestMemory,
     index: u32,
@@ -157,6 +224,8 @@ pub fn apply(
     validate(p)?;
     let pl = player(m, index)?;
     let needs_unit = p.pos.is_some()
+        || p.yaw.is_some()
+        || p.facing.is_some()
         || p.health.is_some()
         || p.shield.is_some()
         || p.grenades.is_some()
@@ -186,14 +255,6 @@ pub fn apply(
     let Some(u) = u else {
         return Ok(wrote);
     };
-    if let Some(pos) = p.pos {
-        u.set_position(m, pos.map(|v| v as f32)).map_err(fault)?;
-        for i in 0..3 {
-            m.set_f32(u.addr + l::BODY_VELOCITY + 4 * i, 0.0)
-                .map_err(fault)?;
-        }
-        wrote.push("pos");
-    }
     if let Some(h) = p.health {
         u.set_health(m, h as f32).map_err(fault)?;
         wrote.push("health");

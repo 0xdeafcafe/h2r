@@ -166,7 +166,10 @@ impl Converter<'_> {
         let mut mode = h1models::mode::convert_model(
             &h1_model,
             h1models::short_name(&t.name),
-            &ModelOptions { shaders },
+            &ModelOptions {
+                shaders,
+                ..ModelOptions::default()
+            },
         )?;
         crate::rebuild::mode_materials(&mut mode.root, &padded)?;
         self.cached(t, mode)

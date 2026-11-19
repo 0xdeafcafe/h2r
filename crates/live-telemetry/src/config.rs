@@ -28,6 +28,13 @@ pub enum TelemetrySinkConfig {
         base_url: String,
         account: TelemetryAccount,
     },
+    Simulation {
+        base_url: String,
+        account: TelemetryAccount,
+        game: live_proto::game::SimGame,
+        /// Deferred recordings take this exclusive lock during upload.
+        deferred_lock: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

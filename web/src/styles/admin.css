@@ -439,3 +439,52 @@
 .adm-reports li { padding: 3px 0; border-bottom: 1px solid #0003; }
 .adm-reports li span { color: var(--s-ink-dim); }
 .adm-reports li p { margin: 2px 0 0; }
+
+.adm-sim-tables {
+  width: 100%;
+  display: grid;
+  gap: 12px;
+}
+
+.adm-sim-batch {
+  overflow-x: auto;
+}
+
+.adm-sim-batch h3 {
+  margin: 0 0 6px;
+  color: var(--s-ink-soft);
+  font-size: 12px;
+}
+
+.adm-sim-batch td small {
+  display: block;
+  color: var(--s-ink-soft);
+}
+
+.adm-sim-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  margin: 0;
+}
+
+.adm-sim-facts dt {
+  color: var(--s-ink-soft);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.adm-sim-facts dd {
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.adm-sim-tuning summary { cursor: pointer; }
+
+.adm .adm-hint pre,
+.adm-sim-tuning pre {
+  max-height: 24rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

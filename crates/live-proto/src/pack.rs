@@ -16,14 +16,15 @@
 //! `web/test/fixtures/pack` (written by this module's tests) prove both
 //! sides agree.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::f64::consts::{PI, TAU};
 
 use crate::game::{
     ACTIONS, Frame, FrameActor, FrameAnim, FrameHit, FrameItem, FrameMachine, FrameObject,
     FramePlayer, FrameProjectile, FrameVehicle, GRENADES, MAX_ANIM_FRAME, MAX_FRAME_ACTIONS,
     MAX_FRAME_ACTORS, MAX_FRAME_HITS, MAX_FRAME_ITEMS, MAX_FRAME_MACHINES, MAX_FRAME_OBJECTS,
-    MAX_FRAME_PROJECTILES, MAX_FRAME_VEHICLES, MAX_PLAYERS, ObjectKind, STANCES,
+    MAX_FRAME_PROJECTILES, MAX_FRAME_VEHICLES, MAX_MACHINE_POSITIONS, MAX_PLAYERS, MachinePosition,
+    ObjectKind, STANCES,
 };
 
 /// Latest encoder version. V7 adds finer grids, sparse vector residuals,
@@ -54,7 +55,7 @@ pub const BODY_BITS: u32 = 6;
 pub const SHIELD_SCALE: f64 = 32.0;
 /// Animation frames in 1/16 of a frame.
 pub const ANIM_SCALE: f64 = 16.0;
-/// Machine device positions (0..1) in 10 bits.
+/// Legacy machine device positions (0..1) in 10 bits.
 pub const DEVICE_BITS: u32 = 10;
 /// Version 6: the Exp-Golomb order of a predicted position's error.
 pub const PREDICT_K: u32 = 3;
@@ -203,6 +204,10 @@ impl<'a> BitReader<'a> {
             self.pos += take as usize;
         }
         Ok(v)
+    }
+
+    fn remaining(&self) -> usize {
+        self.bytes.len() * 8 - self.pos
     }
 
     pub fn bit(&mut self) -> Result<bool> {
@@ -1333,6 +1338,7 @@ fn frame_of(
             .map(|b| u32::try_from(b).map_err(|_| PackError::Bad("bsp out of range")))
             .transpose()?,
         machines: map(&lists[3], machine_of)?,
+        machine_positions: Vec::new(),
         objects: map(&lists[4], object_of)?,
         cut,
         cinematic,
@@ -1345,7 +1351,7 @@ fn frame_of(
 /// quantised as the packed format carries it.
 pub fn quantize(frame: &Frame) -> Result<Frame> {
     let lists = Lists::of(frame)?;
-    frame_of(
+    let mut quantized = frame_of(
         &frame.game_id,
         frame.tick,
         frame.bsp.map(u64::from),
@@ -1353,7 +1359,11 @@ pub fn quantize(frame: &Frame) -> Result<Frame> {
         frame.cinematic,
         &lists.lists,
         &lists.hits,
-    )
+    )?;
+    quantized
+        .machine_positions
+        .clone_from(&frame.machine_positions);
+    Ok(quantized)
 }
 
 // ------------------------------------------------------------- coding
@@ -2310,7 +2320,24 @@ impl Encoder {
     /// One packed frame; `Ok((bytes, keyframe))`. A frame that cannot be
     /// packed leaves the stream as it was.
     pub fn encode(&mut self, frame: &Frame) -> Result<(Vec<u8>, bool)> {
+        self.encode_with_machine_baseline(frame, None)
+    }
+
+    /// On a keyframe, repeat the current positions for readers joining or
+    /// recovering their stream. The caller's baseline includes this frame.
+    pub fn encode_with_machine_baseline(
+        &mut self,
+        frame: &Frame,
+        baseline: Option<&BTreeMap<u16, MachinePosition>>,
+    ) -> Result<(Vec<u8>, bool)> {
         let lists = Lists::of(frame)?;
+        let positions = &frame.machine_positions;
+        if positions.len() > MAX_MACHINE_POSITIONS
+            || positions.last().is_some_and(|m| m.i > i16::MAX as u16)
+            || positions.windows(2).any(|w| w[0].i >= w[1].i)
+        {
+            return Err(PackError::Value("invalid machine positions"));
+        }
         if frame.game_id.len() > MAX_STRING {
             return Err(PackError::Value("game id too long"));
         }
@@ -2333,6 +2360,13 @@ impl Encoder {
                     || new_strings.len() as u64 > MAX_NEW_STRINGS
             }
         };
+        let baseline = baseline.filter(|_| key);
+        if baseline.is_some_and(|b| {
+            b.len() > MAX_MACHINE_POSITIONS
+                || b.iter().any(|(&i, m)| i != m.i || i > i16::MAX as u16)
+        }) {
+            return Err(PackError::Value("invalid machine position baseline"));
+        }
         let (mut state, mut table) = if key {
             new_strings.clear();
             let mut fresh = std::collections::HashSet::new();
@@ -2427,8 +2461,17 @@ impl Encoder {
         self.state = Some((state, table));
         self.next_seq += 1;
         self.since_key = if key { 1 } else { self.since_key + 1 };
+        if let Some(baseline) = baseline {
+            write_machine_positions(&mut w, baseline.values());
+        } else {
+            write_machine_positions(&mut w, frame.machine_positions.iter());
+        }
         #[cfg(test)]
-        floor::end(&w);
+        {
+            floor::set_list(LIST_COUNT+1);
+            floor::charge(&w,"machine travel");
+            floor::end(&w);
+        }
         Ok((w.finish(), key))
     }
 }
@@ -2439,6 +2482,8 @@ pub struct Decoded {
     pub sid: u64,
     pub seq: u64,
     pub keyframe: bool,
+    /// This record replaces the entire machine-travel baseline, even if empty.
+    pub machine_baseline: bool,
     pub frame: Frame,
 }
 
@@ -2545,7 +2590,7 @@ impl Decoder {
                 )?
             };
         }
-        let frame = frame_of(
+        let mut frame = frame_of(
             &state.game_id,
             state.tick,
             state.bsp,
@@ -2554,6 +2599,9 @@ impl Decoder {
             &state.lists,
             &hits,
         )?;
+        if version == V7 {
+            frame.machine_positions = read_machine_positions(&mut r)?;
+        }
         if !self.streams.contains_key(&sid) && self.streams.len() >= MAX_STREAMS {
             return Err(PackError::Bad("too many streams"));
         }
@@ -2562,9 +2610,59 @@ impl Decoder {
             sid,
             seq,
             keyframe: key,
+            machine_baseline: version == V7 && key,
             frame,
         })
     }
+}
+
+// The tail is absent for zero updates. A valid nonempty tail takes at
+// least 15 bits, so the old v7 body's zero padding is unambiguous.
+fn write_machine_positions<'a>(
+    w: &mut BitWriter,
+    positions: impl ExactSizeIterator<Item = &'a MachinePosition>,
+) {
+    let count = positions.len();
+    if count == 0 {
+        return;
+    }
+    w.eg(count as u64 - 1, 2);
+    let mut next = 0;
+    for m in positions {
+        let i = u64::from(m.i);
+        w.eg(i - next, 3);
+        w.bits(u64::from(m.p), 8);
+        next = i + 1;
+    }
+}
+
+fn read_machine_positions(r: &mut BitReader<'_>) -> Result<Vec<MachinePosition>> {
+    let mut positions = Vec::new();
+    if r.remaining() > 7 {
+        let count = r.eg(2)? + 1;
+        if count > MAX_MACHINE_POSITIONS as u64 {
+            return Err(PackError::Bad("too many machine positions"));
+        }
+        positions.reserve_exact(count as usize);
+        let mut next = 0u64;
+        for _ in 0..count {
+            let gap = r.eg(3)?;
+            let i = next
+                .checked_add(gap)
+                .filter(|&i| i <= i16::MAX as u64)
+                .ok_or(PackError::Bad("machine position index out of range"))?;
+            positions.push(MachinePosition {
+                i: i as u16,
+                p: r.bits(8)? as u8,
+            });
+            next = i + 1;
+        }
+    }
+    let padding = r.remaining();
+    if padding > 7 || r.bits(padding as u32)? != 0 {
+        return Err(PackError::Bad("bad machine position padding"));
+    }
+    Ok(positions)
 }
 
 /// A frame packed on its own (a keyframe of stream 0): a recorded frame.

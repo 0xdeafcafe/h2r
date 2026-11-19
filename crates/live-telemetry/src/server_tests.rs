@@ -226,7 +226,10 @@ fn fast() -> Timing {
 
 /// Starts a one-player game on `sink`; its local id.
 fn start(sink: &mut ServerSink) -> String {
-    let mut session = Session::new("test", None);
+    start_session(sink, Session::new("test", None))
+}
+
+fn start_session(sink: &mut ServerSink, mut session: Session) -> String {
     session.start(
         &GameInfo {
             map: "lockout".into(),
@@ -334,6 +337,95 @@ fn drive(sink: &mut ServerSink, local: &str, mut tick: u64) {
 
 fn count(kinds: &[String], kind: &str) -> usize {
     kinds.iter().filter(|k| *k == kind).count()
+}
+
+#[test]
+fn sim_sink_finishes_live_and_deferred_packed_recordings() {
+    let live = Live::new();
+    let account = live.account("Trainer");
+    live.embedded.live.grant_admin_runtime(
+        live_proto::Xuid::parse(&account.xuid).unwrap(),
+        &account.gamertag,
+    );
+    let bots = vec![serde_json::json!({"name": "A", "tuning": {"reach": 4}})];
+    for deferred in [false, true] {
+        let metadata = game::SimGame {
+            run_id: sign::random_id(),
+            batch_id: None,
+            seed: "42".into(),
+            gametype: "slayer".into(),
+            pace: "unpaced".into(),
+            bots: bots.clone(),
+            deferred,
+        };
+        let mut sink = ServerSink::new(live.embedded.url.clone(), account.clone())
+            .unwrap()
+            .with_sim(&metadata, deferred.then(|| live.dir.join("deferred.lock")));
+        let id = start_session(&mut sink, Session::new("test", None).with_sim(metadata));
+        let mut live_frames = live.embedded.live.frames();
+        let stopped = game::MachinePosition { i: 7, p: 0 };
+        for tick in [4, 6, 8] {
+            let mut f = frame(&id, tick);
+            if tick == 4 {
+                f.cut = Some(2);
+                f.machine_positions.push(stopped);
+            }
+            if tick == 6 && deferred {
+                let capture = sink.sim.as_mut().unwrap().deferred.as_mut().unwrap();
+                capture.encoder.force_keyframe();
+            }
+            sink.frame(f).unwrap();
+            if tick == 6 && deferred {
+                // This sampled frame was quiet. A fresh reader of its queued
+                // keyframe must recover the previous explicit zero.
+                let capture = sink.sim.as_ref().unwrap().deferred.as_ref().unwrap();
+                let Some(super::DeferredItem::Frame(tungstenite::Message::Binary(bytes))) =
+                    capture.items.last()
+                else {
+                    panic!("expected a queued binary frame");
+                };
+                let record = live_proto::pack::records(bytes).next().unwrap().unwrap();
+                let d = live_proto::pack::Decoder::new().decode(record).unwrap();
+                assert!(d.machine_baseline);
+                assert_eq!(d.frame.machine_positions, [stopped]);
+                assert_eq!(d.frame.cut, None);
+            }
+        }
+        if deferred {
+            assert!(live_frames.try_recv().is_err());
+        }
+        sink.event(ended(&id, 8)).unwrap();
+        sink.finish_sim(serde_json::json!({
+            "format": "h2-sim-report/1",
+            "match": {"map": "lockout", "game_type": "slayer", "seed": 42, "bot": bots},
+            "result": {"end": "tick_limit"}, "ticks": 6, "wall": {"speedup": 2.8}, "players": [],
+        }))
+        .unwrap();
+        if deferred {
+            assert!(live_frames.try_recv().is_err());
+        } else {
+            assert_eq!(live_frames.try_recv().unwrap().frame.tick, 4);
+        }
+        assert_eq!(live.kinds(&id), [game::GAME_STARTED, game::GAME_ENDED]);
+        let token = sign::issue_token(
+            &live.operator,
+            &format!("server:{}", live.discovery.id),
+            &live.discovery.id,
+            lxm::READ,
+            time::OffsetDateTime::now_utc().unix_timestamp(),
+        );
+        let detail: serde_json::Value = live
+            .agent
+            .get(&format!("{}/v1/admin/sim-runs/{id}", live.embedded.url))
+            .set("authorization", &format!("Bearer {token}"))
+            .call()
+            .unwrap()
+            .into_json()
+            .unwrap();
+        assert_eq!(detail["run"]["status"], "finished");
+        assert_eq!(detail["report"]["ticks"], 6);
+        assert_eq!(detail["game"]["players"][0]["bot"], true);
+    }
 }
 
 #[test]

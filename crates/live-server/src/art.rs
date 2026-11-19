@@ -971,3 +971,203 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 }
+
+/// The native emblem route has the same access check as the original masks.
+#[cfg(feature = "native")]
+pub fn emblem_routes(art: Option<GameArt>) -> Router {
+    use axum::routing::get;
+    let image = get(move |req: Request| {
+        let art = art.clone();
+        async move { emblem_image(art.as_ref(), req).await }
+    });
+    Router::new()
+        .route(crate::emblem::PREFIX, image.clone())
+        .route(&format!("{}/", crate::emblem::PREFIX), image.clone())
+        .route(&format!("{}/{{*file}}", crate::emblem::PREFIX), image)
+}
+
+#[cfg(feature = "native")]
+async fn emblem_image(art: Option<&GameArt>, req: Request) -> Response {
+    use crate::{caching, emblem};
+    use axum::http::StatusCode;
+
+    let missing = || emblem::error(StatusCode::NOT_FOUND);
+    let bad_request = || emblem::error(StatusCode::BAD_REQUEST);
+    let path = req.uri().path();
+    let (Some(spec), Ok(requested)) = (
+        emblem::Spec::parse(path),
+        emblem::query_revision(req.uri().query()),
+    ) else {
+        return bad_request();
+    };
+    let peer = req
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|c| c.0);
+    let Some(art) = art.filter(|art| allowed(art.share, peer, req.headers())) else {
+        return missing();
+    };
+    let Some(manifest) = read_emblem_file(&art.dir, MANIFEST, emblem::MAX_MANIFEST_BYTES)
+        .await
+        .and_then(|bytes| emblem::ArtManifest::parse(&bytes))
+    else {
+        return missing();
+    };
+    let Some(layers) = manifest.layers(&spec) else {
+        return missing();
+    };
+    let (Some(bg), Some(fg)) = tokio::join!(
+        read_emblem_file(&art.dir, layers.bg, emblem::MAX_MASK_BYTES),
+        read_emblem_file(&art.dir, layers.fg, emblem::MAX_MASK_BYTES),
+    ) else {
+        return missing();
+    };
+    let version = layers.revision(&bg, &fg);
+    match requested {
+        None => {
+            let cache = if art.share {
+                caching::REVALIDATE
+            } else {
+                caching::PRIVATE
+            };
+            return emblem::redirect(path, &version, cache);
+        }
+        Some(v) if v != version => return missing(),
+        _ => {}
+    }
+    let cache = if art.share {
+        PUBLISHED_CACHE
+    } else {
+        cache_control(true)
+    };
+    // PNG decoding and encoding are CPU work. Put it on the native blocking pool.
+    let colours = layers.colours();
+    let image = tokio::task::spawn_blocking(move || emblem::compose_png(&bg, &fg, colours)).await;
+    match image {
+        Ok(Ok(png)) => emblem::png_response(png, cache),
+        _ => missing(),
+    }
+}
+
+#[cfg(feature = "native")]
+async fn read_emblem_file(dir: &Path, file: &str, limit: usize) -> Option<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+    let file = tokio::fs::File::open(dir.join(file)).await.ok()?;
+    let mut bytes = Vec::new();
+    file.take((limit + 1) as u64)
+        .read_to_end(&mut bytes)
+        .await
+        .ok()?;
+    (bytes.len() <= limit).then_some(bytes)
+}
+
+#[cfg(all(test, feature = "native"))]
+mod emblem_tests {
+    use super::*;
+    use axum::body::{Body, to_bytes};
+    use axum::http::{Request, StatusCode, header};
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn emblem_route_versions_real_pngs_and_respects_sharing() {
+        let dir = std::env::temp_dir().join(format!(
+            "h2-art-emblem-{}-{}",
+            std::process::id(),
+            live_proto::sign::random_id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(MANIFEST),
+            br#"{
+            "version": 1, "images": {
+                "emblem/fg/0": {"file":"fg.png"},
+                "emblem/bg/0": {"file":"bg.png"}
+            }
+        }"#,
+        )
+        .unwrap();
+        let write = |file, pixel: [u8; 4]| {
+            let mut encoder =
+                png::Encoder::new(std::fs::File::create(dir.join(file)).unwrap(), 1, 1);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_image_data(&pixel).unwrap();
+            writer.finish().unwrap();
+        };
+        write("fg.png", [255, 255, 0, 0]);
+        write("bg.png", [0, 0, 255, 255]);
+
+        let path = "/art/emblem/0-0-3-1-2-4.png";
+        let app = |share| emblem_routes(GameArt::found(&dir, share));
+        let request = |path: &str, peer: Option<&str>| {
+            let mut req = Request::builder().uri(path).body(Body::empty()).unwrap();
+            if let Some(peer) = peer {
+                req.extensions_mut()
+                    .insert(ConnectInfo(peer.parse::<SocketAddr>().unwrap()));
+            }
+            req
+        };
+        let shared = app(true);
+        let alias = shared.clone().oneshot(request(path, None)).await.unwrap();
+        assert_eq!(alias.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(alias.headers()[header::CACHE_CONTROL], "no-cache");
+        let location = alias.headers()[header::LOCATION]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let image = shared
+            .clone()
+            .oneshot(request(&location, None))
+            .await
+            .unwrap();
+        assert_eq!(image.status(), StatusCode::OK);
+        assert_eq!(image.headers()[header::CONTENT_TYPE], "image/png");
+        assert_eq!(image.headers()[header::CACHE_CONTROL], PUBLISHED_CACHE);
+        let bytes = to_bytes(image.into_body(), 1024).await.unwrap();
+        let mut reader = png::Decoder::new(std::io::Cursor::new(bytes))
+            .read_info()
+            .unwrap();
+        let mut rgba = [0; 4];
+        reader.next_frame(&mut rgba).unwrap();
+        assert_eq!(rgba, [190, 40, 34, 255]);
+
+        let private = app(false);
+        let remote = private
+            .clone()
+            .oneshot(request(&location, Some("192.0.2.1:1234")))
+            .await
+            .unwrap();
+        assert_eq!(remote.status(), StatusCode::NOT_FOUND);
+        assert_eq!(remote.headers()[header::CACHE_CONTROL], "no-store");
+        let local = private
+            .oneshot(request(&location, Some("127.0.0.1:1234")))
+            .await
+            .unwrap();
+        assert_eq!(local.status(), StatusCode::OK);
+        assert_eq!(local.headers()[header::CACHE_CONTROL], cache_control(true));
+
+        let unknown = shared
+            .clone()
+            .oneshot(request("/art/emblem/1-0-3-1-2-4.png", None))
+            .await
+            .unwrap();
+        assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+        let invalid = shared
+            .clone()
+            .oneshot(request("/art/emblem/64-0-3-1-2-4.png", None))
+            .await
+            .unwrap();
+        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+        let no_art = emblem_routes(None)
+            .oneshot(request(path, None))
+            .await
+            .unwrap();
+        assert_eq!(no_art.status(), StatusCode::NOT_FOUND);
+
+        write("fg.png", [0, 0, 255, 255]);
+        let stale = shared.oneshot(request(&location, None)).await.unwrap();
+        assert_eq!(stale.status(), StatusCode::NOT_FOUND);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
