@@ -25,6 +25,7 @@ struct Seen {
     color: wgpu::TextureFormat,
     depth_is_depth: bool,
     sizes: ((u32, u32), (u32, u32)),
+    copy: d3d::TargetCopy,
 }
 
 type Got = Arc<Mutex<Vec<Seen>>>;
@@ -40,6 +41,7 @@ impl ExternalPass for Probe {
             color: t.color_format,
             depth_is_depth: t.depth_format.is_depth_stencil_format(),
             sizes: (t.guest_size, t.size),
+            copy: t.copy,
         });
         drop(t.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("probe"),
@@ -470,12 +472,19 @@ fn compatible_lights_share_one_pass_per_copy_and_refusal_keeps_both_pixels() {
         device: ctx.device.clone(), queue: ctx.queue.clone(), caps: ctx.caps });
     let (mut d, mut m) = create(d3d::ScaledBackend::new(reference, display, 2).unwrap(), UploadPolicy::Always);
     let back = d.back_buffer().unwrap();
+    let seen: Got = Arc::default();
+    assert!(d.external_pass_now(&mut m, Box::new(Probe(seen.clone()))).unwrap());
+    assert_eq!(seen.lock().unwrap().iter().map(|s| s.copy).collect::<Vec<_>>(),
+        [d3d::TargetCopy::Reference, d3d::TargetCopy::Display]);
     d.clear(&mut m, 0, 0, 0xf0, 0xff00ff00, 1., 0).unwrap();
     let baseline = GfxBackend::native_bundle_passes();
     let paint = |x, color, refuse_display| Box::new(Paint { run: 17, x, color, refuse_display, bundles: [None, None] });
     d.prepare_external_pass(&mut m, plan(1), paint(0, wgpu::Color::WHITE, false)).unwrap().unwrap().commit();
     d.prepare_external_pass(&mut m, plan(1), paint(4, wgpu::Color::BLACK, false)).unwrap().unwrap().commit();
     assert!(d.prepare_external_pass(&mut m, plan(1), paint(12, wgpu::Color::WHITE, true)).unwrap().is_none());
+    // A bundle can be well formed while its dynamic scissor is invalid for the
+    // actual render pass. Catch the validation error before taking the guest draws.
+    assert!(d.prepare_external_pass(&mut m, plan(1), paint(64, wgpu::Color::WHITE, false)).unwrap().is_none());
     drop(d.prepare_external_pass(&mut m, plan(1), paint(12, wgpu::Color::WHITE, false)).unwrap().unwrap());
     let reference = d.backend.reference_mut().read_color(back.reference).unwrap().0;
     let display = d.backend.view_mut().read_color(back.view.unwrap()).unwrap().0;

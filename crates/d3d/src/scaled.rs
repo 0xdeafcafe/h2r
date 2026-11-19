@@ -1649,8 +1649,10 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         let Some(mut commands) = self.reference.external_attachments(reference, rt, copy)? else {
             return Ok(None);
         };
-        if self.awake() && (surfaces.color.view.is_some() || surfaces.depth.view.is_some()
-            || surfaces.slots.iter().flatten().any(|s| s.view.is_some())) {
+        let needs_view = |s: &Self::Surface| s.view.is_some() || self.frame == Some(s.size)
+            || (self.shadow_factor() > 1 && self.shadow_at(&s.reference).is_some());
+        if self.awake() && (needs_view(&surfaces.color) || needs_view(&surfaces.depth)
+            || surfaces.slots.iter().flatten().any(needs_view)) {
             let Some(view) = surfaces.try_map(|s| self.live(s.view)) else { return Ok(None) };
             let vt = textures.map(|t| t.and_then(|t| t.view.as_ref()));
             if (0..4).any(|i| textures[i].is_some() && vt[i].is_none()) { return Ok(None); }

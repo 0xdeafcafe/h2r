@@ -501,6 +501,34 @@ pub struct ExternalBundles {
     pub ranges: usize,
 }
 
+impl ExternalBundles {
+    /// Use identical attachments and dynamic state for validation and final submission.
+    pub(crate) fn encode_run(encoder: &mut wgpu::CommandEncoder, color: &wgpu::TextureView,
+        depth: &wgpu::TextureView, stencil: bool, packets: &[Self]) {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("native light run"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: color, depth_slice: None, resolve_target: None,
+                ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: depth,
+                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
+                stencil_ops: stencil.then_some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
+            }),
+            ..Default::default()
+        });
+        for draws in packets {
+            let [x, y, width, height] = draws.scissor;
+            pass.set_scissor_rect(x, y, width, height);
+            for (blend, bundle) in &draws.groups {
+                pass.set_blend_constant(*blend);
+                pass.execute_bundles(std::iter::once(bundle));
+            }
+        }
+    }
+}
+
 pub enum ExternalCommands {
     Standalone(wgpu::CommandBuffer),
     Bundles {
@@ -1011,10 +1039,19 @@ pub trait Backend: Send {
             let scope = target.device.push_error_scope(wgpu::ErrorFilter::Validation);
             let bundles = pass.record_bundles(&mut target.target(request, &mut encoder));
             let (ranges, commands) = match bundles {
-                Some(draws) => (draws.ranges, ExternalCommands::Bundles {
-                    setup: encoder.finish(), targets: target.targets, color: target.color.clone(), depth: target.depth.clone(),
-                    stencil: target.depth_format.has_stencil_aspect(), draws,
-                }),
+                Some(draws) => {
+                    // Usage conflicts (e.g. sampling the colour attachment) and render-pass
+                    // compatibility are only checked when a finished bundle is executed.
+                    // Never submit this verification encoder. Both copies are still cancellable.
+                    let mut verify = target.device.create_command_encoder(&Default::default());
+                    ExternalBundles::encode_run(&mut verify, &target.color, &target.depth,
+                        target.depth_format.has_stencil_aspect(), std::slice::from_ref(&draws));
+                    drop(verify.finish());
+                    (draws.ranges, ExternalCommands::Bundles {
+                        setup: encoder.finish(), targets: target.targets, color: target.color.clone(), depth: target.depth.clone(),
+                        stencil: target.depth_format.has_stencil_aspect(), draws,
+                    })
+                }
                 None => {
                     let ranges = pass.record_ranges(target.target(request, &mut encoder));
                     (ranges, ExternalCommands::Standalone(encoder.finish()))

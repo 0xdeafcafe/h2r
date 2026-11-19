@@ -40,27 +40,7 @@ impl GfxBackend {
         let Some(run) = self.native_run.take() else { return };
         let (encoder, passes) = self.open.get_or_insert_with(||
             (self.ctx.device.create_command_encoder(&Default::default()), 0));
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("native light run"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &run.color, depth_slice: None, resolve_target: None,
-                ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
-            })],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &run.depth,
-                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
-                stencil_ops: run.stencil.then_some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
-            }),
-            ..Default::default()
-        });
-        for draws in &run.draws {
-            let [x, y, width, height] = draws.scissor;
-            pass.set_scissor_rect(x, y, width, height);
-            for (blend, bundle) in &draws.groups {
-                pass.set_blend_constant(*blend);
-                pass.execute_bundles(std::iter::once(bundle));
-            }
-        }
+        ExternalBundles::encode_run(encoder, &run.color, &run.depth, run.stencil, &run.draws);
         *passes += 1;
         PASSES[usize::from(run.copy == TargetCopy::Display)].fetch_add(1, Ordering::Relaxed);
     }
