@@ -23,13 +23,14 @@ describe("finished replay archive", () => {
   test("preserves unsigned 64-bit ticks and the sign bit of raw binary64 values", () => {
     const key = (s: string) => [s.length, ...new TextEncoder().encode(s), 0];
     const bytes = Uint8Array.from([...header, 1, 0, 4,
-      ...key("game_id"), 2, 1, 1, 103,
+      ...key("game_id"), 2, 1, 4, 0xef, 0xbb, 0xbf, 103,
       ...key("players"), 1, 0, 0,
       ...key("tick"), 4, 0, 0, 1, // unsigned reinterpretation of -1
       ...key("x"), 5, 0, 0, ...Array(9).fill(255), 1, // binary64 negative zero
     ]);
     const [frame] = decodeArchive(bytes);
     expect(frame?.tick).toBe(0xffffffffffffffffn);
+    expect(frame?.game_id).toBe("\uFEFFg");
     expect(Object.is(Reflect.get(frame!, "x"), -0)).toBe(true);
   });
 

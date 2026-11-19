@@ -9,7 +9,7 @@ type Value = Int | boolean | string | Row | Value[];
 export type ExactArchiveFrame = Omit<Frame, "tick" | "cut"> & { tick: Int; cut?: Int };
 const TAU = 2 * Math.PI;
 const DIR_MAX = 16382;
-const UTF8 = new TextDecoder("utf-8", { fatal: true });
+const UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const MAX_BODY = 16 << 20;
 
 function bad(): never { throw new PackError("invalid replay archive"); }
@@ -50,7 +50,10 @@ class Reader {
     if (typeof z === "number") return z % 2 === 0 ? z / 2 : -(z + 1) / 2;
     return (z >> 1n) ^ -(z & 1n);
   }
-  string(): string { return UTF8.decode(this.take(this.count(MAX_BODY))); }
+  string(): {value: string; bytes: number} {
+    const bytes = this.count(MAX_BODY);
+    return {value: UTF8.decode(this.take(bytes)), bytes};
+  }
   charge(n: number) { this.strings -= n; if (this.strings < 0) bad(); }
 }
 
@@ -104,7 +107,7 @@ function node(r: Reader, n: number, depth: number): Value[] {
     const rows = Array.from({ length: n }, (): Row => Object.create(null) as Row);
     const keys = r.count(128), seen = new Set<string>();
     for (let j = 0; j < keys; j++) {
-      const key = r.string();
+      const {value:key, bytes:keyBytes} = r.string();
       if (seen.has(key)) bad();
       seen.add(key);
       const presence = r.byte();
@@ -115,7 +118,7 @@ function node(r: Reader, n: number, depth: number): Value[] {
         ct = 0;
         for (let i = 0; i < n; i++) ct += (mask[i >> 3]! >> (i % 8)) & 1;
       }
-      r.charge(ct * key.length);
+      r.charge(ct * keyBytes);
       const col = node(r, ct, depth + 1);
       let pos = 0;
       for (let i = 0; i < n; i++) if (!mask || mask[i >> 3]! & (1 << (i % 8))) rows[i]![key] = col[pos++]!;
@@ -145,11 +148,15 @@ function node(r: Reader, n: number, depth: number): Value[] {
     const d = r.count(n);
     if (!d) bad();
     const dict = Array.from({ length: d }, () => r.string());
-    if (d === 1) { r.charge(n * dict[0]!.length); return new Array<string>(n).fill(dict[0]!); }
+    if (d === 1) {
+      const s = dict[0]!;
+      r.charge(n * s.bytes);
+      return new Array<string>(n).fill(s.value);
+    }
     return numbers(r, n).map(v => {
       const s = dict[Number(v)] ?? bad();
-      r.charge(s.length);
-      return s;
+      r.charge(s.bytes);
+      return s.value;
     });
   }
   if (tag === 3) return numbers(r, n).map(q => q === 0 ? false : q === 1 ? true : bad());
@@ -203,7 +210,7 @@ function restore(f: Row): ExactArchiveFrame {
       const e = row(list[i]);
       if (e.$y !== undefined) {
         const q = e.$y;
-        if (typeof q !== "number" || q < 0 || q >= 16384) bad();
+        if (typeof q !== "number" || !Number.isInteger(q) || q < 0 || q >= 16384) bad();
         const a = q * TAU / 16384;
         e.yaw = a > Math.PI ? a - TAU : a;
         delete e.$y;
@@ -219,7 +226,7 @@ function restore(f: Row): ExactArchiveFrame {
           const base = oct(ref[0]! * c - ref[1]! * s, ref[0]! * s + ref[1]! * c, ref[2]!);
           x += base[0]; y += base[1];
         }
-        if (x < 0 || x > DIR_MAX || y < 0 || y > DIR_MAX) bad();
+        if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || x > DIR_MAX || y < 0 || y > DIR_MAX) bad();
         const v = unoct(x, y, DIR_MAX);
         e[k === "r" ? "aim" : k] = v;
         delete e[tag];
