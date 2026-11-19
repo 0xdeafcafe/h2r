@@ -1,8 +1,22 @@
 //! The native HUD's host (docs/graphics/native-renderer.md, "Stage 5:
-//! post and HUD", "The UI and HUD"): it plans each batch of screen quads
-//! (`native_render::hud::Batch`: text over the glyph cache so far) and
-//! says once per reason why a batch stays on D3D. It answers no quad yet:
-//! every screen quad and HUD shader quad keeps its D3D draw.
+//! post and HUD", "The UI and HUD", "Native text"): it plans each batch of
+//! screen quads (`native_render::hud::Batch`: text over the glyph cache
+//! so far) and says once per reason why a batch stays on D3D.
+//!
+//! With `impl.render.native_hud` on, a planned batch is drawn natively in
+//! segments (`native_render::hud_gpu`). At a quad, before skipping it, the
+//! host reads what the begin set (the render states, the combiner block
+//! and that the bound combiner is it, the clip area, the viewport, the
+//! glyph cache's texels) and reserves the segment's pass on the device
+//! (`Device::prepare_external_pass`: it drains what came before, records
+//! the pass and commits it). Refused, or anything not established, the
+//! quad and the rest of the batch keep their D3D draws ([`Kept`], logged
+//! once). Reserved, the quad is skipped, and each later quad joins the
+//! segment (written into its buffers, then skipped) while the device's
+//! counters, bound target and the glyph cache's ring stand still since
+//! the reservation; otherwise it reserves a new segment. A state the
+//! reservation's drain changed voids the segment (it draws nothing) and
+//! the quad keeps its D3D draw. HUD shader quads keep theirs.
 //!
 //! `H2_NATIVE_HUD_COMPARE=N` (`feature::native_hud::compare_spec`) pairs
 //! the first `N` hooked quads with the draws the D3D path resolves for
@@ -26,6 +40,11 @@ use feature::native_hud::{Host, HudQuadCall};
 use gfx::vertex::{PrimitiveType, VertexDataType, VertexLayout, VertexRegister};
 use native_render::camera::GuestRead;
 use native_render::hud::{self, Batch, Expect, HudQuad, Kind, Pairing, Refused};
+use native_render::hud_gpu::{
+    Atlas, Segment, TextDraw, TextGpu, TextState, TextTarget, text_program,
+};
+
+use crate::native_lights_glue::DeviceMemory;
 
 struct Ro<'a>(&'a dyn GuestMemory);
 
@@ -179,11 +198,504 @@ impl d3d::DrawAdmission for Compare {
     }
 }
 
-struct Glue {
-    compare: Option<Arc<Compare>>,
+/// Why a planned text batch keeps its D3D draws from a quad on
+/// (`H2_NATIVE_HUD` text segments), each logged once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kept {
+    /// The backend draws no external pass.
+    NoExternal,
+    /// The quad's corners do not read.
+    Quad,
+    /// A render state the text pass does not draw, or one that does not
+    /// read.
+    State,
+    /// The bound combiner is not the block the begin wrote.
+    Combiner,
+    /// The combiner does not compile.
+    Program,
+    /// The clip area is not one rectangle.
+    Clip,
+    /// The glyph cache's texels do not read as its shape.
+    Atlas,
+    /// The device refused the pass.
+    Reservation,
+    /// The device's drain at the reservation changed a state the pass
+    /// was recorded with.
+    Drained,
 }
 
-impl Host for Glue {
+impl Kept {
+    pub const ALL: [Kept; 9] = [
+        Kept::NoExternal,
+        Kept::Quad,
+        Kept::State,
+        Kept::Combiner,
+        Kept::Program,
+        Kept::Clip,
+        Kept::Atlas,
+        Kept::Reservation,
+        Kept::Drained,
+    ];
+
+    pub fn index(self) -> usize {
+        Self::ALL.iter().position(|&k| k == self).unwrap_or(0)
+    }
+
+    pub fn describe(self) -> &'static str {
+        match self {
+            Kept::NoExternal => "the backend draws no external pass",
+            Kept::Quad => "the quad's corners do not read",
+            Kept::State => {
+                "a render state the text pass does not draw (depth, stencil, alpha test, fog, stipple, fill, flat shading) or that does not read"
+            }
+            Kept::Combiner => "the bound combiner is not the block the begin wrote",
+            Kept::Program => "the combiner does not compile",
+            Kept::Clip => "the clip area is not one rectangle",
+            Kept::Atlas => "the glyph cache's texels do not read as LIN_A4R4G4B4 256x256",
+            Kept::Reservation => "the device refused the pass",
+            Kept::Drained => {
+                "the device's drain at the reservation changed a state the pass was recorded with"
+            }
+        }
+    }
+}
+
+static KEPT: [AtomicU64; Kept::ALL.len()] = [const { AtomicU64::new(0) }; Kept::ALL.len()];
+static KEPT_LOGGED: AtomicU64 = AtomicU64::new(0);
+static SEGMENTS: AtomicU64 = AtomicU64::new(0);
+static NATIVE_QUADS: AtomicU64 = AtomicU64::new(0);
+
+/// Text segments reserved, quads they drew (each skipped on D3D), and
+/// batches kept on D3D by [`Kept::ALL`].
+pub fn text_counts() -> (u64, u64, [u64; Kept::ALL.len()]) {
+    (
+        SEGMENTS.load(Ordering::Relaxed),
+        NATIVE_QUADS.load(Ordering::Relaxed),
+        std::array::from_fn(|i| KEPT[i].load(Ordering::Relaxed)),
+    )
+}
+
+fn kept(k: Kept, detail: &str) {
+    let i = k.index();
+    KEPT[i].fetch_add(1, Ordering::Relaxed);
+    if KEPT_LOGGED.fetch_or(1 << i, Ordering::Relaxed) & (1 << i) == 0 {
+        eprintln!(
+            "native-hud: a text batch keeps its D3D draws: {}{detail} (logged once)",
+            k.describe()
+        );
+    }
+}
+
+/// The combiner block's words that are code, not constants (the
+/// constants, words 10..26, 43 and 44, may be set again without a new
+/// block, and the D3D path takes them from the render states as the text
+/// pass does) and not the texture modes (54, render state 136).
+fn code_word(i: usize) -> bool {
+    !(10..26).contains(&i) && !(43..45).contains(&i) && i != 54
+}
+
+/// A text batch's state on the native side.
+enum Text {
+    /// No batch, or one not planned.
+    Idle,
+    /// Planned: the next quad reserves a segment.
+    Planned(Batch),
+    /// A segment reserved: later quads extend it while the device and the
+    /// glyph cache stand still.
+    Open(Open),
+}
+
+struct Open {
+    batch: Batch,
+    draw: Arc<TextDraw>,
+    viewport: [f32; 4],
+    /// What must not change for a quad to join the segment: the device's
+    /// counters, its bound target and viewport, the glyph cache's ring.
+    stats: d3d::Stats,
+    target: [u32; 8],
+    ring: [u32; hud::GLYPH_RING_WORDS],
+}
+
+/// The glyph cache's texels as last mirrored, by bitmap header, texel
+/// address and ring: glyphs only enter the cache through the ring
+/// (`0x0001f5c0`), so the same three name the same texels.
+struct Mirror {
+    key: (u32, u32, [u32; hud::GLYPH_RING_WORDS]),
+    atlas: Arc<Atlas>,
+}
+
+/// The external pass of one text segment.
+struct TextPass {
+    draw: Arc<TextDraw>,
+    gpu: Arc<Mutex<TextGpu>>,
+}
+
+impl d3d::ExternalPass for TextPass {
+    fn encode(&mut self, _target: d3d::ExternalTarget<'_>) {}
+
+    fn record_ranges(&mut self, t: d3d::ExternalTarget<'_>) -> usize {
+        let mut gpu = self.gpu.lock().unwrap_or_else(|e| e.into_inner());
+        usize::from(gpu.record(
+            &self.draw,
+            TextTarget {
+                device: t.device,
+                queue: t.queue,
+                encoder: t.encoder,
+                color: t.color,
+                color_format: t.color_format,
+                guest_size: t.guest_size,
+                size: t.size,
+            },
+        ))
+    }
+
+    fn writes(&self) -> d3d::ExternalWrites {
+        d3d::ExternalWrites {
+            color: true,
+            depth_stencil: false,
+        }
+    }
+
+    fn colour_only(&self) -> bool {
+        true
+    }
+}
+
+struct Glue<B: d3d::backend::Backend> {
+    compare: Option<Arc<Compare>>,
+    /// `impl.render.native_hud`: draw text natively (else plan and
+    /// compare only).
+    native: bool,
+    device: d3d::abi::SharedDevice<B>,
+    text: Mutex<Text>,
+    mirror: Mutex<Option<Mirror>>,
+    gpu: Arc<Mutex<TextGpu>>,
+}
+
+/// The render state a draw recorded now would take, for the states the
+/// text pass reads; `None` when one does not read or decode.
+fn render_state<B: d3d::backend::Backend>(
+    d: &d3d::Device<B>,
+    mem: &dyn d3d::GuestMemory,
+) -> Option<gfx::state::RenderState> {
+    let table = gfx::xdk::RenderStateTable::default();
+    let mut rs = gfx::state::RenderState::default();
+    for t in TEXT_STATES {
+        let guest = table.canonical_to_guest(t.index())?;
+        rs.set_raw(t, d.render_state(mem, guest)?).ok()?;
+    }
+    Some(rs)
+}
+
+/// The render states [`render_state`] decodes.
+const TEXT_STATES: [gfx::state::RenderStateType; 14] = {
+    use gfx::state::RenderStateType as R;
+    [
+        R::ZEnable,
+        R::AlphaBlendEnable,
+        R::SrcBlend,
+        R::DestBlend,
+        R::BlendOp,
+        R::BlendColor,
+        R::ColorWriteEnable,
+        R::AlphaTestEnable,
+        R::StencilEnable,
+        R::FogEnable,
+        R::FillMode,
+        R::ShadeMode,
+        R::CullMode,
+        R::FrontFace,
+    ]
+};
+
+/// A canonical render state's raw value now (`d3d::nv2a`'s numbering).
+fn raw_state<B: d3d::backend::Backend>(
+    d: &d3d::Device<B>,
+    mem: &dyn d3d::GuestMemory,
+    canonical: u32,
+) -> Option<u32> {
+    let guest = gfx::xdk::RenderStateTable::default().canonical_to_guest(canonical)?;
+    d.render_state(mem, guest)
+}
+
+/// Every render-state word the reservation reads, and the clip area and
+/// viewport: read before the device drains and again after it, so a
+/// state the drain wrote (one the game pushed itself) is never drawn
+/// with the value it held before.
+fn state_words<B: d3d::backend::Backend>(
+    d: &d3d::Device<B>,
+    mem: &dyn d3d::GuestMemory,
+) -> (Vec<Option<u32>>, Option<[u32; 4]>, [u32; 8]) {
+    use gfx::state::RenderStateType as R;
+    let table = gfx::xdk::RenderStateTable::default();
+    let mut slots: Vec<u32> = (0..57)
+        .chain([d3d::state::slot::PS_TEXTURE_MODES])
+        .collect();
+    for t in [
+        R::StencilEnable,
+        R::StencilFunc,
+        R::StencilRef,
+        R::StencilMask,
+        R::StencilWriteMask,
+        R::StencilFail,
+        R::StencilZFail,
+        R::StencilPass,
+    ] {
+        slots.extend(table.canonical_to_guest(t.index()));
+    }
+    for c in [STIPPLE_ENABLE, SPECULAR_ENABLE] {
+        slots.extend(table.canonical_to_guest(c));
+    }
+    let mut words: Vec<Option<u32>> = slots.into_iter().map(|g| d.render_state(mem, g)).collect();
+    words.extend(TEXT_STATES.iter().map(|t| {
+        table
+            .canonical_to_guest(t.index())
+            .and_then(|g| d.render_state(mem, g))
+    }));
+    let clip = match d.clip_area(mem) {
+        Ok(Some((r, rects))) if rects.is_empty() => Some([r.x, r.y, r.width, r.height]),
+        _ => None,
+    };
+    (words, clip, d.bound_target())
+}
+
+/// `D3DRS_STIPPLEENABLE` and `D3DRS_SPECULARENABLE` (`d3d::nv2a`'s `rs`).
+const STIPPLE_ENABLE: u32 = 83;
+const SPECULAR_ENABLE: u32 = 103;
+
+/// `0xAARRGGBB` as a blend constant.
+fn blend_constant(argb: u32) -> wgpu::Color {
+    let c = |shift: u32| f64::from((argb >> shift) & 0xff) / 255.0;
+    wgpu::Color {
+        r: c(16),
+        g: c(8),
+        b: c(0),
+        a: c(24),
+    }
+}
+
+impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
+    /// The glyph cache's texels for `batch`, mirrored again only when its
+    /// header, texel address or ring moved.
+    fn atlas(
+        &self,
+        mem: &dyn GuestMemory,
+        batch: &Batch,
+        map: d3d::resource::AddressMap,
+        ring: [u32; hud::GLYPH_RING_WORDS],
+    ) -> Option<Arc<Atlas>> {
+        let m = Ro(mem);
+        let header = batch.bitmap.header;
+        let data = m.read_u32(header.checked_add(4)?)?;
+        let desc = gfx::texture::TextureDesc::from_header(
+            m.read_u32(header.checked_add(0xc)?)?,
+            m.read_u32(header.checked_add(0x10)?)?,
+        )
+        .ok()?;
+        if desc.format != gfx::D3DFormat::LinA4R4G4B4
+            || desc.kind != gfx::texture::TextureKind::D2
+            || desc.width != hud::GLYPH_SIZE
+            || desc.height != hud::GLYPH_SIZE
+        {
+            return None;
+        }
+        let key = (header, data, ring);
+        let mut mirror = self.mirror.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(m) = mirror.as_ref()
+            && m.key == key
+        {
+            return Some(Arc::clone(&m.atlas));
+        }
+        let pitch = desc.pitch as usize;
+        let side = hud::GLYPH_SIZE as usize;
+        let mut texels = vec![0u8; pitch * side];
+        mem.read(map.to_virtual(data), &mut texels).ok()?;
+        let atlas = Arc::new(Atlas::new(hud::a4r4g4b4_to_rgba(
+            &texels, side, side, pitch,
+        )?));
+        *mirror = Some(Mirror {
+            key,
+            atlas: Arc::clone(&atlas),
+        });
+        Some(atlas)
+    }
+
+    /// Reserves a segment of `batch` at `quad` (not skipped yet): the
+    /// device drains what came before, records the pass and commits it.
+    fn reserve(
+        &self,
+        mem: &mut dyn GuestMemory,
+        batch: &Batch,
+        quad: &[hud::Vertex; 4],
+    ) -> Result<Open, (Kept, String)> {
+        let k = |k: Kept| (k, String::new());
+        let Ok(mut d) = self.device.lock() else {
+            return Err(k(Kept::Reservation));
+        };
+        if !d.can_external_pass() {
+            return Err(k(Kept::NoExternal));
+        }
+        let (psdef, ring) = {
+            let m = Ro(mem);
+            let mut psdef = [0u32; hud::COMBINER_WORDS];
+            for (i, w) in psdef.iter_mut().enumerate() {
+                *w = m
+                    .read_u32(hud::COMBINER + 4 * i as u32)
+                    .ok_or(k(Kept::Combiner))?;
+            }
+            (psdef, hud::glyph_ring(&m).ok_or(k(Kept::Atlas))?)
+        };
+        let map = d.config().address_map;
+        let atlas = self.atlas(mem, batch, map, ring).ok_or(k(Kept::Atlas))?;
+        let mut dm = DeviceMemory(mem);
+        let before = state_words(&d, &dm);
+        let rs = render_state(&d, &dm).ok_or(k(Kept::State))?;
+        let stipple = raw_state(&d, &dm, STIPPLE_ENABLE).ok_or(k(Kept::State))?;
+        let specular = raw_state(&d, &dm, SPECULAR_ENABLE).ok_or(k(Kept::State))?;
+        let stencil = d.stencil_state(&dm).ok_or(k(Kept::State))?;
+        // Depth off writes none either, whatever ZWRITEENABLE holds.
+        if rs.depth_mode != gfx::state::DepthBufferMode::Disabled
+            || stencil.enable
+            || rs.alpha_test_enable
+            || rs.fog_enable
+            || stipple != 0
+            || rs.fill_mode != gfx::state::FillMode::Solid
+            || rs.shade_mode == gfx::state::ShadeMode::Flat
+        {
+            return Err(k(Kept::State));
+        }
+        let mut combiner = [0u32; 57];
+        for (i, w) in combiner.iter_mut().enumerate() {
+            *w = d.render_state(&dm, i as u32).ok_or(k(Kept::Combiner))?;
+            if code_word(i) && *w != psdef[i] {
+                return Err(k(Kept::Combiner));
+            }
+        }
+        let modes = d
+            .render_state(&dm, d3d::state::slot::PS_TEXTURE_MODES)
+            .ok_or(k(Kept::Combiner))?;
+        let def = d3d::nv2a::guest_def(&psdef, &combiner, modes, psdef[8] | psdef[9] != 0)
+            .with_default_final_combiner(false, specular != 0);
+        let program = text_program(&def).map_err(|e| (Kept::Program, format!(": {e}")))?;
+        let clip = match d.clip_area(&dm) {
+            Ok(Some((r, rects))) if rects.is_empty() => [r.x, r.y, r.width, r.height],
+            _ => return Err(k(Kept::Clip)),
+        };
+        let v = d.viewport();
+        let viewport = [v.x as f32, v.y as f32, v.width as f32, v.height as f32];
+        let mut primitive = gfx::translate::primitive_state(
+            &rs,
+            wgpu::PrimitiveTopology::TriangleList,
+            gfx::translate::Capabilities::ALL,
+        );
+        primitive.unclipped_depth = false;
+        let draw = Arc::new(TextDraw {
+            program,
+            state: TextState {
+                blend: gfx::translate::blend_state(&rs),
+                writes: gfx::translate::color_writes(rs.color_write),
+                primitive,
+                point: batch.point,
+            },
+            blend_constant: blend_constant(rs.blend_color),
+            atlas,
+            clip,
+            first: hud::text_quad(batch, viewport, quad),
+            segment: Arc::new(Segment::new()),
+        });
+        let plan = d3d::ExternalPlan {
+            stage: timeline::native::Stage::Hud,
+            view: 0,
+            ranges: 1,
+            slots: Vec::new(),
+        };
+        let pass = TextPass {
+            draw: Arc::clone(&draw),
+            gpu: Arc::clone(&self.gpu),
+        };
+        match d.prepare_external_pass(&mut dm, plan, Box::new(pass)) {
+            Ok(Some(p)) => p.commit(),
+            _ => return Err(k(Kept::Reservation)),
+        }
+        if state_words(&d, &dm) != before {
+            // The drain changed what the pass was recorded with: it draws
+            // nothing (the write lands before its commands, as an
+            // append's does) and the quad keeps its D3D draw.
+            draw.segment.void();
+            return Err(k(Kept::Drained));
+        }
+        SEGMENTS.fetch_add(1, Ordering::Relaxed);
+        NATIVE_QUADS.fetch_add(1, Ordering::Relaxed);
+        Ok(Open {
+            batch: *batch,
+            draw,
+            viewport,
+            stats: d.stats(),
+            target: d.bound_target(),
+            ring,
+        })
+    }
+
+    /// Whether `quad` joins `open` (written into its segment, so skipped):
+    /// only while nothing the segment's reservation read could have moved
+    /// and no submission could have come since.
+    fn extend(&self, mem: &dyn GuestMemory, open: &Open, quad: &[hud::Vertex; 4]) -> bool {
+        if hud::glyph_ring(&Ro(mem)) != Some(open.ring) {
+            return false;
+        }
+        {
+            let Ok(d) = self.device.lock() else {
+                return false;
+            };
+            if d.stats() != open.stats || d.bound_target() != open.target {
+                return false;
+            }
+        }
+        if !open
+            .draw
+            .segment
+            .append(&hud::text_quad(&open.batch, open.viewport, quad))
+        {
+            return false;
+        }
+        NATIVE_QUADS.fetch_add(1, Ordering::Relaxed);
+        true
+    }
+
+    /// The native side of one screen quad: whether it is drawn natively
+    /// (so skipped).
+    fn text_quad(&self, mem: &mut dyn GuestMemory, corners: u32) -> bool {
+        let mut text = self.text.lock().unwrap_or_else(|e| e.into_inner());
+        let batch = match &*text {
+            Text::Idle => return false,
+            Text::Planned(b) => *b,
+            Text::Open(o) => o.batch,
+        };
+        let Some(quad) = hud::read_quad(&Ro(mem), corners) else {
+            kept(Kept::Quad, "");
+            *text = Text::Idle;
+            return false;
+        };
+        if let Text::Open(o) = &*text
+            && self.extend(mem, o, &quad)
+        {
+            return true;
+        }
+        match self.reserve(mem, &batch, &quad) {
+            Ok(open) => {
+                *text = Text::Open(open);
+                true
+            }
+            Err((k, detail)) => {
+                kept(k, &detail);
+                *text = Text::Idle;
+                false
+            }
+        }
+    }
+}
+
+impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     fn begin(&self, mem: &mut dyn GuestMemory, record: u32) {
         let plan = Batch::read(&Ro(mem), record);
         match &plan {
@@ -191,6 +703,12 @@ impl Host for Glue {
                 PLANNED.fetch_add(1, Ordering::Relaxed);
             }
             Err(r) => refused(*r),
+        }
+        if self.native {
+            *self.text.lock().unwrap_or_else(|e| e.into_inner()) = match plan {
+                Ok(b) => Text::Planned(b),
+                Err(_) => Text::Idle,
+            };
         }
         if let Some(c) = &self.compare
             && c.left.load(Ordering::Relaxed) > 0
@@ -206,15 +724,19 @@ impl Host for Glue {
     }
 
     fn screen_quad(&self, mem: &mut dyn GuestMemory, corners: u32) -> bool {
-        let Some(c) = &self.compare else { return false };
-        let m = Ro(mem);
         // `0x000363a0` draws nothing while this word is set.
-        if m.read_u32(hud::QUADS_OFF & !3)
+        if Ro(mem)
+            .read_u32(hud::QUADS_OFF & !3)
             .is_none_or(|w| (w >> 16) as u16 != 0)
         {
             return false;
         }
-        if let Some(q) = hud::read_quad(&m, corners) {
+        if self.native && self.text_quad(mem, corners) {
+            return true;
+        }
+        if let Some(c) = &self.compare
+            && let Some(q) = hud::read_quad(&Ro(mem), corners)
+        {
             c.expect(Expect {
                 kind: Kind::Screen,
                 corners: q.map(|v| [v.x, v.y]),
@@ -223,7 +745,11 @@ impl Host for Glue {
         false
     }
 
-    fn end(&self, _mem: &mut dyn GuestMemory) {}
+    fn end(&self, _mem: &mut dyn GuestMemory) {
+        if self.native {
+            *self.text.lock().unwrap_or_else(|e| e.into_inner()) = Text::Idle;
+        }
+    }
 
     fn hud_quad(&self, mem: &mut dyn GuestMemory, call: HudQuadCall) {
         let Some(c) = &self.compare else { return };
@@ -254,7 +780,15 @@ pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(
     {
         d.add_draw_admission(Arc::clone(c) as Arc<dyn d3d::DrawAdmission>);
     }
-    feature::native_hud::set_host(Arc::new(Glue { compare }));
+    let native = feature::Switches::from_env().is_ok_and(|s| feature::native_hud::on(&s));
+    feature::native_hud::set_host(Arc::new(Glue {
+        compare,
+        native,
+        device: Arc::clone(device),
+        text: Mutex::new(Text::Idle),
+        mirror: Mutex::new(None),
+        gpu: Arc::new(Mutex::new(TextGpu::new())),
+    }));
 }
 
 #[cfg(test)]
@@ -317,6 +851,33 @@ mod tests {
             None,
             "a stream that ends early"
         );
+    }
+
+    #[test]
+    fn every_kept_reason_has_its_own_slot() {
+        let mut slots = std::collections::HashSet::new();
+        for k in Kept::ALL {
+            assert!(slots.insert(k.index()), "{k:?}");
+            assert!(!k.describe().is_empty());
+        }
+        assert!(Kept::ALL.len() <= 64, "the logged-once bits fit a word");
+    }
+
+    #[test]
+    fn the_combiner_check_skips_constants_and_texture_modes() {
+        let code: Vec<usize> = (0..57).filter(|&i| code_word(i)).collect();
+        assert!(code.contains(&0) && code.contains(&9) && code.contains(&26));
+        assert!(code.contains(&42) && code.contains(&45) && code.contains(&56));
+        for i in (10..26).chain([43, 44, 54]) {
+            assert!(!code_word(i), "{i}");
+        }
+    }
+
+    #[test]
+    fn the_blend_colour_is_argb() {
+        let c = blend_constant(0x80ff_0040);
+        assert_eq!((c.r, c.g, c.a), (1.0, 0.0, 128.0 / 255.0));
+        assert_eq!(c.b, 64.0 / 255.0);
     }
 
     #[test]

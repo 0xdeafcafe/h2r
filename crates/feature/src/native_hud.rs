@@ -13,9 +13,10 @@
 //!   expects after it.
 //! - `SCREEN_QUAD` (`0x000363a0`): one quad of the batch. When the host
 //!   answers it ([`Host::screen_quad`] `true`), the hook returns `ret 4`
-//!   in its place and the quad's words are never pushed. So far the host
-//!   answers none: every quad keeps its D3D draw, and the host only plans
-//!   and, with `H2_NATIVE_HUD_COMPARE`, pairs the plan with the draws.
+//!   in its place and the quad's words are never pushed. The host answers
+//!   a quad of a planned text batch once a native pass holding it is
+//!   reserved on the device (docs/graphics/native-renderer.md, "Native
+//!   text"); every other quad keeps its D3D draw.
 //! - `SCREEN_QUADS_END` (`0x00036560`): the batch ends.
 //! - `HUD_SHADER_QUAD` (`0x0022a664`): one HUD shader quad (ECX the
 //!   corners, EAX the coordinate rectangle, stack the bitmap datum, its
