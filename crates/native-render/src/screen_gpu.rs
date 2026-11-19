@@ -157,19 +157,47 @@ pub enum Dest {
     Target1 { guest: (u32, u32) },
 }
 
-/// One quad of a convolution (`engine::glow::BlurDraw`): `source` (0 the
-/// bound target, 1, a stand-in) bound to stages 0..3, drawn into the
-/// stand-in `dest` with four taps of `spread`.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// One draw of a convolution: `source` (0 the bound target, 1, a
+/// stand-in) bound to stages 0..3, drawn into the stand-in `dest`. The
+/// blur's (`engine::glow::BlurDraw`) is a quad with four taps of
+/// `spread`; a wide one's (`engine::glow::WideDraw`) its `grid`.
+#[derive(Clone, Debug, PartialEq)]
 pub struct ConvolutionDraw {
     pub source: u32,
     pub dest: u32,
     pub spread: f32,
+    pub grid: Option<ConvolutionGrid>,
+}
+
+/// The grid `0x00034d90` draws for a step of a wide convolution
+/// (`engine::screen_grid::strips`): its strips, each vertex its position
+/// in the stand-in's pixels and its taps in texels of `bound`, the size
+/// `0x00014f60` bound the source at (`0x00485af4`/`0x00485b04`), which
+/// the combiner's stages are scaled by.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ConvolutionGrid {
+    pub bound: (u32, u32),
+    pub strips: Vec<Vec<StripVertex>>,
+}
+
+impl ConvolutionGrid {
+    /// Whether it draws: a strip at least, each a triangle at least, the
+    /// source bound at a size.
+    pub fn check(&self) -> Result<(), ScreenRefused> {
+        if self.strips.is_empty() || self.strips.iter().any(|s| s.len() < 3) {
+            return Err(ScreenRefused::NoStrips);
+        }
+        if self.bound.0 == 0 || self.bound.1 == 0 {
+            return Err(ScreenRefused::ConvolutionSize);
+        }
+        Ok(())
+    }
 }
 
 /// One convolution of a pass, drawn after its strips: the blur
-/// `0x000211a0` (`engine::screen_effect::Convolution::Blur`), or one kept
-/// (no draws, its result the pass's target).
+/// `0x000211a0` (`engine::screen_effect::Convolution::Blur`), the wide
+/// one `0x00021360` (`Convolution::Wide`), or one kept (no draws, its
+/// result the pass's target).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ScreenConvolution {
     /// The guest size of the stand-ins it draws into.
@@ -376,8 +404,9 @@ pub fn check_order<'a>(
 
 /// Whether the convolutions after passes `passes` would draw into
 /// stand-ins next to `color` (recording nothing): the quads' frame read,
-/// the blur's combiner compiling, each convolving pass leaving blending
-/// off and every colour written, the colour sampled when a quad reads it.
+/// the blur's combiner compiling (for a quad and for a grid), each grid a
+/// triangle at least per strip, each convolving pass leaving blending
+/// off and every colour written, the colour sampled when a draw reads it.
 pub fn check_convolutions<'a>(
     color: &wgpu::TextureView,
     frame: Option<&QuadFrame>,
@@ -400,8 +429,13 @@ fn convolution_states<'a>(
             continue;
         }
         let frame = frame.ok_or(ScreenRefused::NoFrame)?;
+        let grids = quads.clone().filter_map(|q| q.grid.as_ref());
+        grids.clone().try_for_each(ConvolutionGrid::check)?;
         if compile {
             glow::program(&frame.combiner, [Some((1, 1)); 4]).map_err(ScreenRefused::Convolution)?;
+            if grids.clone().next().is_some() {
+                glow::grid_program(&frame.combiner, [Some((1, 1)); 4]).map_err(ScreenRefused::Convolution)?;
+            }
         }
         if program.state.blend.is_some() || program.state.color_writes != wgpu::ColorWrites::ALL {
             return Err(ScreenRefused::ConvolutionStates);
@@ -748,6 +782,12 @@ fn clear(encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView) {
     });
 }
 
+/// How a convolution's draw goes down: a quad's uniforms, or a grid's.
+enum Shape {
+    Quad(glow::Quad),
+    Grid(glow::GridFrame),
+}
+
 /// The screen passes on the GPU, made as calls first need them, the copy
 /// of the view's colour the passes that sample it read, target 1's
 /// stand-in, the convolutions' stand-ins for `0x19`..`0x1b` and their
@@ -805,8 +845,9 @@ impl ScreenSet {
                 None => return Err(ScreenRefused::NoProgram),
             }
         }
-        // Each quad's program, its stages its source's size, as the call
-        // leaves the targets.
+        // Each draw's program and vertex uniform: a quad's stages its
+        // source's size as the call leaves the targets, a grid's the size
+        // its taps were made for.
         let mut quads = Vec::new();
         let mut drawn = Drawn::default();
         for d in draws {
@@ -816,9 +857,19 @@ impl ScreenSet {
                 for q in &c.draws {
                     let frame = frame.ok_or(ScreenRefused::NoFrame)?;
                     let source = drawn.size(q.source, guest_size).ok_or(ScreenRefused::Unwritten(q.source))?;
-                    let stages = [Some(source); 4];
-                    let program = self.quads.program(&frame.combiner, stages).map_err(ScreenRefused::Convolution)?;
-                    quads.push((program, glow::quad(frame.window, frame.signs, c.size, stages, 4, q.spread)));
+                    quads.push(match &q.grid {
+                        None => {
+                            let stages = [Some(source); 4];
+                            let program = self.quads.program(&frame.combiner, stages).map_err(ScreenRefused::Convolution)?;
+                            (program, Shape::Quad(glow::quad(frame.window, frame.signs, c.size, stages, 4, q.spread)))
+                        }
+                        Some(g) => {
+                            // Checked by `convolution_states`.
+                            let stages = [Some(g.bound); 4];
+                            let program = self.quads.grid_program(&frame.combiner, stages).map_err(ScreenRefused::Convolution)?;
+                            (program, Shape::Grid(glow::GridFrame::of(c.size)))
+                        }
+                    });
                     drawn.convolved(q, c.size)?;
                 }
                 drawn.result(n, c);
@@ -905,7 +956,7 @@ impl ScreenSet {
             // its stand-in.
             for (n, c) in d.convolutions.iter().enumerate() {
                 for q in &c.draws {
-                    let Some((program, quad)) = quads.next() else { return Err(ScreenRefused::NoFrame) };
+                    let Some((program, shape)) = quads.next() else { return Err(ScreenRefused::NoFrame) };
                     let source = kept_view(q.source, Some(color), &self.target1, &self.stand_ins)
                         .ok_or(ScreenRefused::Unwritten(q.source))?;
                     let i = stand_in(q.dest).ok_or(ScreenRefused::ConvolutionTarget(q.dest))?;
@@ -915,7 +966,14 @@ impl ScreenSet {
                     if !std::mem::replace(&mut cleared[i], true) {
                         clear(encoder, &dest);
                     }
-                    self.quads.draw(device, encoder, &program, &quad, &dest, STAND_IN_FORMAT, None, [Some(&source); 4]);
+                    let stages = [Some(&source); 4];
+                    match (&shape, &q.grid) {
+                        (Shape::Grid(f), Some(g)) => {
+                            self.quads.draw_grid(device, encoder, &program, f, &g.strips, &dest, STAND_IN_FORMAT, None, stages)
+                        }
+                        (Shape::Quad(quad), _) => self.quads.draw(device, encoder, &program, quad, &dest, STAND_IN_FORMAT, None, stages),
+                        (Shape::Grid(_), None) => return Err(ScreenRefused::NoStrips),
+                    }
                     drawn.convolved(q, c.size)?;
                     drawn_count += 1;
                 }
@@ -1016,7 +1074,7 @@ mod tests {
         let copy = program([ScreenStage::Engine(5), E, E, E]);
         let back = program([ScreenStage::Engine(24), ScreenStage::Engine(3), E, E]);
         let into = Dest::Target1 { guest: (640, 480) };
-        let q = |source, dest| ConvolutionDraw { source, dest, spread: 1.0 };
+        let q = |source, dest| ConvolutionDraw { source, dest, spread: 1.0, grid: None };
         let blur = [ScreenConvolution { size: (320, 240), draws: vec![q(1, 0x19), q(0x19, 0x1a)], result: 0x1a }];
         let none: &[ScreenConvolution] = &[];
         assert_eq!(check_order([(&copy, into, &blur[..]), (&back, Dest::Bound, none)]), Ok(()));
@@ -1035,6 +1093,27 @@ mod tests {
         assert_eq!(check_order([(&copy, into, &onto[..])]), Err(ScreenRefused::ConvolutionTarget(1)));
         let kept = [ScreenConvolution { size: (0, 0), draws: vec![], result: 1 }];
         assert_eq!(check_order([(&copy, into, &kept[..]), (&back, Dest::Bound, none)]), Ok(()), "24 names target 1");
+    }
+
+    /// A wide convolution's draws are grids: ordered as the blur's quads,
+    /// each drawing a triangle per strip from a source bound at a size.
+    #[test]
+    fn a_grid_draws_its_strips_from_its_bound_source() {
+        let copy = program([ScreenStage::Engine(5), E, E, E]);
+        let into = Dest::Target1 { guest: (640, 480) };
+        let grid = ConvolutionGrid { bound: (640, 480), strips: vec![vec![StripVertex::default(); 42]; 30] };
+        assert_eq!(grid.check(), Ok(()));
+        let g = |source, dest| ConvolutionDraw { source, dest, spread: 0.0, grid: Some(grid.clone()) };
+        let wide = [ScreenConvolution { size: (320, 240), draws: vec![g(1, 0x19), g(0x19, 0x1a)], result: 0x1a }];
+        let mut d = Drawn::default();
+        d.pass(&copy, into, &wide).unwrap();
+        assert_eq!((d.stand_ins, d.results), ([Some((320, 240)), Some((320, 240)), None], [Some(0x1a), None]));
+        let empty = ConvolutionGrid { bound: (640, 480), strips: vec![] };
+        assert_eq!(empty.check(), Err(ScreenRefused::NoStrips));
+        let short = ConvolutionGrid { strips: vec![vec![StripVertex::default(); 2]], ..grid.clone() };
+        assert_eq!(short.check(), Err(ScreenRefused::NoStrips), "a strip under a triangle");
+        assert_eq!(ConvolutionGrid { bound: (0, 480), ..grid }.check(), Err(ScreenRefused::ConvolutionSize));
+        assert_eq!(ConvolutionGrid::default().check(), Err(ScreenRefused::NoStrips), "the order's placeholder never draws");
     }
 
     #[test]

@@ -193,7 +193,7 @@ fn window(mem: &dyn GuestMemory) -> Result<[i32; 4], Error> {
 
 /// `0x0001dd60`: target `t`'s size, as the sizes set earlier in the call
 /// (`set`) leave the table.
-fn target_size(mem: &dyn GuestMemory, t: u32, set: &[(u32, (i32, i32))]) -> Result<(i32, i32), Error> {
+pub fn target_size(mem: &dyn GuestMemory, t: u32, set: &[(u32, (i32, i32))]) -> Result<(i32, i32), Error> {
     let e = TARGETS.wrapping_add(t.wrapping_mul(TARGET_STRIDE));
     if mem.u32(e + 0x88)? != 0 && mem.u8(e + 0x95)? == 0 {
         if let Some((_, s)) = set.iter().rev().find(|(n, _)| *n == t) {

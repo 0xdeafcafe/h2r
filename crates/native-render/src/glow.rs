@@ -34,6 +34,14 @@ use std::collections::HashMap;
 use shaders::psh::{self, PixelOptions, PixelShaderDef, PixelUniforms, TextureDim};
 
 use crate::camera::GuestRead;
+use crate::screen_gpu::{STRIP_ATTRIBUTES, StripVertex, strip_ranges};
+
+/// A grid's vertex buffer: [`StripVertex`] in order.
+const STRIP_LAYOUT: [wgpu::VertexBufferLayout<'static>; 1] = [wgpu::VertexBufferLayout {
+    array_stride: std::mem::size_of::<StripVertex>() as wgpu::BufferAddress,
+    step_mode: wgpu::VertexStepMode::Vertex,
+    attributes: &STRIP_ATTRIBUTES,
+}];
 
 /// Words in a combiner block (`D3DPIXELSHADERDEF`).
 pub const COMBINER_WORDS: usize = 60;
@@ -276,6 +284,60 @@ fn vs_main(@builtin(vertex_index) i: u32) -> XboxVaryings {
 }
 "#;
 
+/// The same screen shader for the strips of a grid (`0x00034d90`, a wide
+/// convolution's draw; `engine::screen_grid`): the vertex shader
+/// `0x0001c590` binds for both draws passes its inputs through, so each
+/// vertex is attribute 0 the position in the target's pixels and 1..4
+/// the taps in the source's texels (`screen_gpu::StripVertex`), the
+/// uniform `2 / width`, `2 / height` of the target. z and w are the
+/// depth's, as the quad's are; with the depth test off and w the same at
+/// every vertex they change nothing, so the position goes out at z 0 and
+/// w 1 as [`VERTEX`]'s does.
+pub const GRID_VERTEX: &str = r#"
+struct GlowGrid {
+    dest: vec4f,
+}
+@group(0) @binding(0) var<uniform> glow: GlowGrid;
+
+struct GridIn {
+    @location(0) position: vec4f,
+    @location(1) t0: vec4f,
+    @location(2) t1: vec4f,
+    @location(3) t2: vec4f,
+    @location(4) t3: vec4f,
+}
+
+@vertex
+fn vs_main(v: GridIn) -> XboxVaryings {
+    var o: XboxVaryings;
+    o.position = vec4f(v.position.x * glow.dest.x - 1.0, 1.0 - v.position.y * glow.dest.y, 0.0, 1.0);
+    o.d0 = vec4f(0.0);
+    o.d1 = vec4f(0.0);
+    o.b0 = vec4f(0.0);
+    o.b1 = vec4f(0.0);
+    o.t0 = v.t0;
+    o.t1 = v.t1;
+    o.t2 = v.t2;
+    o.t3 = v.t3;
+    o.fog = 1.0;
+    return o;
+}
+"#;
+
+/// A grid's vertex uniform ([`GRID_VERTEX`]'s `GlowGrid`).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GridFrame {
+    /// `2 / width`, `2 / height` of the target (guest pixels).
+    pub dest: [f32; 4],
+}
+
+impl GridFrame {
+    pub fn of(dest: (u32, u32)) -> Self {
+        Self { dest: [2.0 / dest.0.max(1) as f32, 2.0 / dest.1.max(1) as f32, 0.0, 0.0] }
+    }
+}
+
 /// A block compiled for the pass.
 #[derive(Clone, Debug)]
 pub struct Program {
@@ -284,12 +346,23 @@ pub struct Program {
     /// What each stage samples (`None`: nothing).
     pub dims: [Option<TextureDim>; 4],
     pub pixel: PixelUniforms,
+    /// Drawn as a grid's strips ([`GRID_VERTEX`]), not a quad.
+    pub grid: bool,
 }
 
 /// `combiner` through the stage 3 compiler with `stages` bound, each a
 /// linear texture of that size (`tex_scale` one over it), fog off; or why
 /// it cannot be drawn.
 pub fn program(combiner: &[u32; COMBINER_WORDS], stages: [Option<(u32, u32)>; 4]) -> Result<Program, String> {
+    translate(combiner, stages, false)
+}
+
+/// [`program`] for a grid's strips ([`GRID_VERTEX`]).
+pub fn grid_program(combiner: &[u32; COMBINER_WORDS], stages: [Option<(u32, u32)>; 4]) -> Result<Program, String> {
+    translate(combiner, stages, true)
+}
+
+fn translate(combiner: &[u32; COMBINER_WORDS], stages: [Option<(u32, u32)>; 4], grid: bool) -> Result<Program, String> {
     let def = PixelShaderDef::from_words(combiner);
     let options = PixelOptions {
         texture_dims: stages.map(|s| s.map(|_| TextureDim::D2)),
@@ -319,9 +392,10 @@ pub fn program(combiner: &[u32; COMBINER_WORDS], stages: [Option<(u32, u32)>; 4]
         }
     }
     Ok(Program {
-        wgsl: format!("{}{}", ps.module(), VERTEX),
+        wgsl: format!("{}{}", ps.module(), if grid { GRID_VERTEX } else { VERTEX }),
         dims: ps.textures,
         pixel,
+        grid,
     })
 }
 
@@ -379,7 +453,7 @@ pub struct GlowTarget<'a> {
 /// and the sampler every stage of these passes binds.
 #[derive(Default)]
 pub struct QuadDrawer {
-    programs: HashMap<ProgramKey, Program>,
+    programs: HashMap<(ProgramKey, bool), Program>,
     compiled: HashMap<String, Compiled>,
     sampler: Option<wgpu::Sampler>,
 }
@@ -392,11 +466,20 @@ impl QuadDrawer {
     /// `combiner`'s program with `stages` bound ([`program`]), its
     /// translation shared with every block of the same code.
     pub fn program(&mut self, combiner: &[u32; COMBINER_WORDS], stages: [Option<(u32, u32)>; 4]) -> Result<Program, String> {
-        let key = program_key(combiner, stages);
+        self.cached(combiner, stages, false)
+    }
+
+    /// [`Self::program`] for a grid's strips ([`grid_program`]).
+    pub fn grid_program(&mut self, combiner: &[u32; COMBINER_WORDS], stages: [Option<(u32, u32)>; 4]) -> Result<Program, String> {
+        self.cached(combiner, stages, true)
+    }
+
+    fn cached(&mut self, combiner: &[u32; COMBINER_WORDS], stages: [Option<(u32, u32)>; 4], grid: bool) -> Result<Program, String> {
+        let key = (program_key(combiner, stages), grid);
         if let Some(p) = self.programs.get(&key) {
             return Ok(with_constants(p.clone(), combiner));
         }
-        let p = program(combiner, stages)?;
+        let p = translate(combiner, stages, grid)?;
         if self.programs.len() >= 256 {
             self.programs.clear();
         }
@@ -419,6 +502,39 @@ impl QuadDrawer {
         blend: Option<Blend>,
         stages: [Option<&wgpu::TextureView>; 4],
     ) {
+        self.record(device, encoder, program, bytemuck::bytes_of(quad), None, (dest, format, blend), stages);
+    }
+
+    /// Records a grid's `strips` (`screen_gpu::StripVertex`, each a
+    /// triangle strip) of a [`grid_program`] into `dest` (`frame` its
+    /// size), as [`Self::draw`] does a quad.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_grid(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        program: &Program,
+        frame: &GridFrame,
+        strips: &[Vec<StripVertex>],
+        dest: &wgpu::TextureView,
+        format: wgpu::TextureFormat,
+        blend: Option<Blend>,
+        stages: [Option<&wgpu::TextureView>; 4],
+    ) {
+        self.record(device, encoder, program, bytemuck::bytes_of(frame), Some(strips), (dest, format, blend), stages);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn record(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        program: &Program,
+        vertex_uniform: &[u8],
+        strips: Option<&[Vec<StripVertex>]>,
+        (dest, format, blend): (&wgpu::TextureView, wgpu::TextureFormat, Option<Blend>),
+        stages: [Option<&wgpu::TextureView>; 4],
+    ) {
         let sampler = self.sampler.get_or_insert_with(|| device.create_sampler(&sampler_descriptor())).clone();
         let c = self.compiled.entry(program.wgsl.clone()).or_insert_with(|| compile(device, program));
         let (module, layout) = (&c.module, &c.layout);
@@ -430,7 +546,7 @@ impl QuadDrawer {
                     module,
                     entry_point: Some("vs_main"),
                     compilation_options: Default::default(),
-                    buffers: &[],
+                    buffers: if program.grid { &STRIP_LAYOUT[..] } else { &[] },
                 },
                 primitive: wgpu::PrimitiveState {
                     topology: wgpu::PrimitiveTopology::TriangleStrip,
@@ -453,16 +569,20 @@ impl QuadDrawer {
                 cache: None,
             })
         });
-        let buffer = |label, bytes: &[u8]| {
+        let buffer = |label, bytes: &[u8], usage| {
             use wgpu::util::DeviceExt;
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some(label),
                 contents: bytes,
-                usage: wgpu::BufferUsages::UNIFORM,
+                usage,
             })
         };
-        let quad = buffer("native glow quad", bytemuck::bytes_of(quad));
-        let pixel = buffer("native glow pixel", &program.pixel.to_bytes());
+        let all: Vec<StripVertex> = strips.unwrap_or_default().iter().flatten().copied().collect();
+        if strips.is_some() && all.is_empty() {
+            return;
+        }
+        let quad = buffer("native glow vertex", vertex_uniform, wgpu::BufferUsages::UNIFORM);
+        let pixel = buffer("native glow pixel", &program.pixel.to_bytes(), wgpu::BufferUsages::UNIFORM);
         let uniforms = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("native glow uniforms"),
             layout: &c.uniforms_layout,
@@ -507,7 +627,16 @@ impl QuadDrawer {
         pass.set_pipeline(&c.pipelines[&(format, blend)]);
         pass.set_bind_group(0, &uniforms, &[]);
         pass.set_bind_group(1, &textures, &[]);
-        pass.draw(0..4, 0..1);
+        match strips {
+            None => pass.draw(0..4, 0..1),
+            Some(strips) => {
+                let vertices = buffer("native glow grid", bytemuck::cast_slice(&all), wgpu::BufferUsages::VERTEX);
+                pass.set_vertex_buffer(0, vertices.slice(..));
+                for r in strip_ranges(strips) {
+                    pass.draw(r, 0..1);
+                }
+            }
+        }
     }
 }
 
@@ -803,6 +932,25 @@ mod tests {
         assert_eq!(p.pixel.fog, psh::fog::Fog::OFF.uniform());
         let e = program(&words(&def), [None; 4]).unwrap_err();
         assert!(e.contains("nothing bound"), "{e}");
+    }
+
+    /// A wide convolution's grid: the same pixel side, the screen shader
+    /// taking each vertex's position and taps from its buffer.
+    #[test]
+    fn a_grid_compiles_with_its_vertices_as_inputs() {
+        let def = PixelShaderDef { texture_modes: 1, ..Default::default() };
+        let stages = [Some((640, 480)), None, None, None];
+        let (q, g) = (program(&words(&def), stages).unwrap(), grid_program(&words(&def), stages).unwrap());
+        shaders::validate(&g.wgsl).expect("valid WGSL");
+        assert!(g.grid && !q.grid);
+        assert!(g.wgsl.contains("@location(4) t3") && !q.wgsl.contains("GridIn"));
+        assert_eq!(g.pixel.to_bytes(), q.pixel.to_bytes(), "the pixel side is the quad's");
+        assert_eq!(g.dims, q.dims);
+        assert_eq!(GridFrame::of((320, 240)).dest, [2.0 / 320.0, 2.0 / 240.0, 0.0, 0.0]);
+        assert_eq!(std::mem::size_of::<StripVertex>(), 5 * 16, "five vec4f, locations 0..4");
+        let mut drawer = QuadDrawer::new();
+        let (dq, dg) = (drawer.program(&words(&def), stages).unwrap(), drawer.grid_program(&words(&def), stages).unwrap());
+        assert!(dg.grid && !dq.grid, "cached apart");
     }
 
     #[test]

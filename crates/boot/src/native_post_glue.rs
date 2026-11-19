@@ -29,10 +29,10 @@
 //! The scenario's screen effects (`0x0002d140`, one call per entry that
 //! draws): each call is planned (`engine::screen_effect::plan`, bit-equal
 //! to the lifted original) and refused per reason ([`Missing`]) until
-//! every piece it needs draws natively: the blur and `0x00021360`'s
-//! convolutions through the glow machinery (`engine::screen_grid` for the
-//! latter's grids), a last pass into target 1, and stand-ins for targets
-//! `0x19` to `0x1b`. The layer-15 template pass is missing only for a
+//! every piece it needs draws natively: the blur's and `0x00021360`'s
+//! convolutions through the glow machinery (the latter's grids made by
+//! `engine::screen_grid`), a last pass into target 1, and stand-ins for
+//! targets `0x19` to `0x1b`. The layer-15 template pass is missing only for a
 //! pass whose program did not load with the world
 //! (`native_post_load`), that samples an engine texture the native pass
 //! does not supply ([`pass_drawable`]), or in a call that reads target 1
@@ -66,16 +66,18 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use engine::colour_pass;
-use engine::glow::{self as game_glow, BlurArgs};
+use engine::glow::{self as game_glow, BlurArgs, WideArgs, WideDraw};
 use engine::memory::GuestMemory;
 use engine::screen_effect::{self, Convolution, Effect};
+use engine::screen_grid::{self, Grid};
 use feature::native_post::{Fp, Host, ScreenEffect};
 use gfx::vertex::PrimitiveType;
 use map::TagId;
 use native_render::camera::GuestRead;
 use native_render::glow::{self, Blend, Draw, GlowTarget, GpuGlow, Plan, Surface};
 use native_render::screen_gpu::{
-    self, ConvolutionDraw, Dest, QuadFrame, ScreenConvolution, ScreenDraw, ScreenKey, ScreenSet, ScreenTarget, StripVertex,
+    self, ConvolutionDraw, ConvolutionGrid, Dest, QuadFrame, ScreenConvolution, ScreenDraw, ScreenKey, ScreenSet, ScreenTarget,
+    StripVertex,
 };
 use native_render::screen_look::ScreenStage;
 
@@ -164,12 +166,14 @@ pub enum Missing {
     /// A blur convolution (`0x000211a0`) without its quads' frame
     /// ([`quad_frame`]).
     Blur,
-    /// A wide convolution (`0x00021360`, `engine::screen_grid`).
+    /// A wide convolution (`0x00021360`) without its frame
+    /// ([`quad_frame`]: its combiner is the blur's), or with a grid
+    /// (`engine::screen_grid`) that could not be made ([`grid_of`]).
     Wide,
     /// Stand-ins for targets `0x19` to `0x1b`, which a drawn convolution
     /// renders into (and a later pass samples through engine textures 24
-    /// and 25): the blur's are `screen_gpu`'s, so only a wide one, or a
-    /// blur without its frame, misses them.
+    /// and 25): they are `screen_gpu`'s, so only a convolution without
+    /// its frame misses them.
     StandIns,
 }
 
@@ -213,25 +217,42 @@ pub fn dest(p: &screen_effect::Pass) -> Option<Dest> {
     }
 }
 
-/// A convolution as the native pass orders and draws it: one kept its
-/// result alone, a blur its quads (`engine::glow::BlurDraw`), a wide one
-/// its draws (`engine::glow::WideDraw`; for the order only, as
-/// [`Missing::Wide`] keeps it on D3D). `None` for one that copies its
-/// result (`0x000351a0`; `0x0002d140` passes -1, so never) or at a
-/// negative size.
-pub fn screen_convolution(c: &Convolution) -> Option<ScreenConvolution> {
+/// Makes the grid of a wide convolution's draw: the pass, the call's
+/// arguments, the stand-ins' size and the draw ([`wide_grid`],
+/// [`grid_of`]).
+pub type MakeGrid<'a> = &'a dyn Fn(&screen_effect::Pass, &WideArgs, (i32, i32), &WideDraw) -> Option<ConvolutionGrid>;
+
+/// For the order alone ([`call_ordered`]): an empty grid, which
+/// `screen_gpu` never draws.
+pub fn unmade_grid(_: &screen_effect::Pass, _: &WideArgs, _: (i32, i32), _: &WideDraw) -> Option<ConvolutionGrid> {
+    Some(ConvolutionGrid::default())
+}
+
+/// A convolution of pass `p` as the native pass orders and draws it: one
+/// kept its result alone, a blur its quads (`engine::glow::BlurDraw`), a
+/// wide one its grids (`engine::glow::WideDraw`, each made by `grid`).
+/// `None` for one that copies its result (`0x000351a0`; `0x0002d140`
+/// passes -1, so never), at a negative size, or with a grid not made.
+pub fn screen_convolution(p: &screen_effect::Pass, c: &Convolution, grid: MakeGrid<'_>) -> Option<ScreenConvolution> {
     let size = |(w, h): (i32, i32)| Some((u32::try_from(w).ok()?, u32::try_from(h).ok()?));
-    let quad = |source, dest, spread| ConvolutionDraw { source, dest, spread };
     match c {
         Convolution::Kept { result } => Some(ScreenConvolution { size: (0, 0), draws: Vec::new(), result: *result }),
         Convolution::Blur { size: s, blur, .. } if blur.copy.is_none() => Some(ScreenConvolution {
             size: size(*s)?,
-            draws: blur.draws.iter().map(|d| quad(d.source, d.dest, f32::from_bits(d.spread))).collect(),
+            draws: blur
+                .draws
+                .iter()
+                .map(|d| ConvolutionDraw { source: d.source, dest: d.dest, spread: f32::from_bits(d.spread), grid: None })
+                .collect(),
             result: blur.result,
         }),
-        Convolution::Wide { size: s, wide, .. } if wide.copy.is_none() => Some(ScreenConvolution {
+        Convolution::Wide { size: s, args, wide } if wide.copy.is_none() => Some(ScreenConvolution {
             size: size(*s)?,
-            draws: wide.draws.iter().map(|d| quad(d.source, d.dest, 0.0)).collect(),
+            draws: wide
+                .draws
+                .iter()
+                .map(|d| Some(ConvolutionDraw { source: d.source, dest: d.dest, spread: 0.0, grid: Some(grid(p, args, *s, d)?) }))
+                .collect::<Option<_>>()?,
             result: wide.result,
         }),
         Convolution::Blur { .. } | Convolution::Wide { .. } => None,
@@ -240,8 +261,52 @@ pub fn screen_convolution(c: &Convolution) -> Option<ScreenConvolution> {
 
 /// `p`'s convolutions ([`screen_convolution`]), `None` if one is not
 /// drawable.
-pub fn screen_convolutions(p: &screen_effect::Pass) -> Option<Vec<ScreenConvolution>> {
-    p.convolutions.iter().map(screen_convolution).collect()
+pub fn screen_convolutions(p: &screen_effect::Pass, grid: MakeGrid<'_>) -> Option<Vec<ScreenConvolution>> {
+    p.convolutions.iter().map(|c| screen_convolution(p, c, grid)).collect()
+}
+
+/// `0x00034d90`'s inputs for draw `d` of a wide convolution into
+/// stand-ins `size` (`args` the call's; Code, `0x00021455..0x00021485`):
+/// the target the stand-in, each stage bound (`0x00014f60`, which stores
+/// `0x0001dd60`'s size of what it binds at `0x00485af4`/`0x00485b04`) at
+/// the draw's source's size, `source` for the convolution's own source
+/// and `size` for a stand-in (both of the pair are sized so), EDI the
+/// draw's offsets, stack word 4 the `1.0` pushed at `0x00021469`, words 5
+/// and 6 the call's two words, word 7's low byte (`0x00021360`'s word 6,
+/// 0 from `0x0002d140`) clear: the window's rectangle.
+pub fn wide_grid(args: &WideArgs, size: (i32, i32), d: &WideDraw, source: (i32, i32)) -> Grid {
+    let bound = if d.source == args.source { source } else { size };
+    Grid {
+        size,
+        bound: [bound; 4],
+        taps: d.offsets,
+        depth: 1.0f32.to_bits(),
+        radii: args.words,
+        full: false,
+    }
+}
+
+/// `g`'s strips (`engine::screen_grid::strips`, under the call's `fp`)
+/// for the native grid: each vertex its position and its four taps.
+/// `None` when they cannot be made, or the source is bound at no size.
+pub fn grid_of(mem: &dyn GuestMemory, fp: Fp, g: &Grid) -> Option<ConvolutionGrid> {
+    let (w, h) = g.bound[0];
+    let bound = (u32::try_from(w).ok().filter(|&w| w > 0)?, u32::try_from(h).ok().filter(|&h| h > 0)?);
+    let strips = screen_grid::strips(mem, g, fp.mxcsr, fp.x87_control).ok()?;
+    let f = f32::from_bits;
+    let strips = strips
+        .iter()
+        .map(|s| s.iter().map(|v| StripVertex { position: v.position.map(f), texcoords: v.taps.map(|t| t.map(f)) }).collect())
+        .collect();
+    Some(ConvolutionGrid { bound, strips })
+}
+
+/// The size of the source of a wide convolution of pass `p`
+/// (`0x0001dd60` as `0x0002d140` leaves it): target 1 the pass's, the
+/// bound target the table's.
+pub fn wide_source(mem: &dyn GuestMemory, p: &screen_effect::Pass, source: u32) -> Option<(i32, i32)> {
+    let set: Vec<_> = p.size.map(|s| (1, s)).into_iter().collect();
+    screen_effect::target_size(mem, source, &set).ok()
 }
 
 /// Whether `effect`'s passes and convolutions read only what the call
@@ -253,7 +318,7 @@ pub fn call_ordered(effects: Option<&ScreenEffects>, egor: TagId, effect: &Effec
         let program = usize::try_from(p.selector)
             .ok()
             .and_then(|i| effects?.program(egor, p.implementation as usize, i));
-        match (program, dest(p), screen_convolutions(p)) {
+        match (program, dest(p), screen_convolutions(p, &unmade_grid)) {
             (Some(program), Some(d), Some(c)) => passes.push((program, d, c)),
             _ => return false,
         }
@@ -273,8 +338,8 @@ pub fn quad_frame(mem: &dyn GuestMemory, fp: Fp) -> Option<QuadFrame> {
 
 /// What `effect` needs that is not native yet, once each, in order;
 /// `drawable` says whether the native template pass draws a pass
-/// ([`pass_drawable`]), `blurs` whether the blur's quads can be
-/// ([`quad_frame`] read).
+/// ([`pass_drawable`]), `blurs` whether the convolutions can be drawn
+/// ([`quad_frame`] read: the blur's quads, and the combiner of both).
 pub fn missing(effect: &Effect, drawable: &dyn Fn(&screen_effect::Pass) -> bool, blurs: bool) -> Vec<Missing> {
     let mut m = Vec::new();
     let last = effect.passes.len().saturating_sub(1);
@@ -289,7 +354,7 @@ pub fn missing(effect: &Effect, drawable: &dyn Fn(&screen_effect::Pass) -> bool,
         for c in &p.convolutions {
             match c {
                 Convolution::Kept { .. } => {}
-                Convolution::Blur { .. } if blurs => {}
+                Convolution::Blur { .. } | Convolution::Wide { .. } if blurs => {}
                 Convolution::Blur { .. } => m.extend([Missing::Blur, Missing::StandIns]),
                 Convolution::Wide { .. } => m.extend([Missing::Wide, Missing::StandIns]),
             }
@@ -337,6 +402,15 @@ static EFFECT_REFUSED: [AtomicU64; Missing::ALL.len()] = [const { AtomicU64::new
 static EFFECT_LOGGED: [AtomicBool; Missing::ALL.len()] = [const { AtomicBool::new(false) }; Missing::ALL.len()];
 static EFFECT_PLAN_LOGGED: AtomicBool = AtomicBool::new(false);
 
+/// A call refused for `m`: counted, and logged once per reason.
+fn refused(m: Missing) {
+    let i = Missing::ALL.iter().position(|a| *a == m).unwrap_or(0);
+    EFFECT_REFUSED[i].fetch_add(1, Ordering::Relaxed);
+    if !EFFECT_LOGGED[i].swap(true, Ordering::Relaxed) {
+        eprintln!("native-post: screen effects keep their D3D draws: {m:?} does not draw natively yet (logged once per reason)");
+    }
+}
+
 /// The calls refused for each reason so far, in [`Missing::ALL`]'s order.
 pub fn effect_refusals() -> [u64; Missing::ALL.len()] {
     std::array::from_fn(|i| EFFECT_REFUSED[i].load(Ordering::Relaxed))
@@ -354,8 +428,17 @@ pub struct ScreenCall {
 }
 
 /// `effect`'s passes for egor `egor` (each drawable: [`pass_drawable`],
-/// its convolutions [`screen_convolutions`]), called with `values`.
-pub fn screen_call(effect: &Effect, egor: TagId, values: [u32; 4], depth: u32, frame: Option<QuadFrame>) -> ScreenCall {
+/// its convolutions [`screen_convolutions`], the wide ones' grids made by
+/// `grid`), called with `values`; `None` when a convolution is not
+/// drawable.
+pub fn screen_call(
+    effect: &Effect,
+    egor: TagId,
+    values: [u32; 4],
+    depth: u32,
+    frame: Option<QuadFrame>,
+    grid: MakeGrid<'_>,
+) -> Option<ScreenCall> {
     let passes = effect
         .passes
         .iter()
@@ -369,16 +452,18 @@ pub fn screen_call(effect: &Effect, egor: TagId, values: [u32; 4], depth: u32, f
                     screen_gpu::strip(&words, depth)
                 })
                 .collect();
-            (key, dest(p).unwrap_or(Dest::Bound), strips, screen_convolutions(p).unwrap_or_default())
+            Some((key, dest(p).unwrap_or(Dest::Bound), strips, screen_convolutions(p, grid)?))
         })
-        .collect();
-    ScreenCall { egor, passes, values, frame }
+        .collect::<Option<_>>()?;
+    Some(ScreenCall { egor, passes, values, frame })
 }
 
 /// The swallow of a call's draws in order: per pass its strips, each a
 /// triangle strip (`SET_BEGIN_END` 6) of twice the columns, then its
-/// convolutions' quads ([`QUAD`]); each with its slot, 0 the bound
-/// target, 1 target 1, `2 + n` stand-in `n` (`screen_gpu::STAND_INS`).
+/// convolutions' draws, a blur's each a quad ([`QUAD`]), a wide one's
+/// each its grid's strips (`0x00034770`: per row a triangle strip of
+/// twice the columns and one); each with its slot, 0 the bound target, 1
+/// target 1, `2 + n` stand-in `n` (`screen_gpu::STAND_INS`).
 pub fn screen_swallow(call: &ScreenCall) -> Option<(Vec<u8>, Vec<(PrimitiveType, usize)>)> {
     let mut draws = Vec::new();
     for (_, d, strips, convolutions) in &call.passes {
@@ -386,7 +471,11 @@ pub fn screen_swallow(call: &ScreenCall) -> Option<(Vec<u8>, Vec<(PrimitiveType,
             draws.push((u8::from(*d != Dest::Bound), (PrimitiveType::TriangleStrip, s.len())));
         }
         for q in convolutions.iter().flat_map(|c| &c.draws) {
-            draws.push((2 + screen_gpu::stand_in(q.dest)? as u8, QUAD));
+            let slot = 2 + screen_gpu::stand_in(q.dest)? as u8;
+            match &q.grid {
+                None => draws.push((slot, QUAD)),
+                Some(g) => draws.extend(g.strips.iter().map(|s| (slot, (PrimitiveType::TriangleStrip, s.len())))),
+            }
         }
     }
     if draws.is_empty() {
@@ -959,13 +1048,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let frame = quad_frame(&*mem, fp);
         let m = missing(&effect, &|p| ordered && pass_drawable(effects.as_deref(), egor, p), frame.is_some());
         for m in &m {
-            let i = Missing::ALL.iter().position(|a| a == m).unwrap_or(0);
-            EFFECT_REFUSED[i].fetch_add(1, Ordering::Relaxed);
-            if !EFFECT_LOGGED[i].swap(true, Ordering::Relaxed) {
-                eprintln!(
-                    "native-post: screen effects keep their D3D draws: {m:?} does not draw natively yet (logged once per reason)"
-                );
-            }
+            refused(*m);
         }
         // Armed only once nothing is missing (never while the stand-ins
         // are); until then the D3D path draws every effect.
@@ -979,7 +1062,13 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             return false;
         }
         let Ok(depth) = mem.u32(screen_effect::constant::DEPTH) else { return false };
-        let call = screen_call(&effect, egor, values, depth, frame);
+        let grid = |p: &screen_effect::Pass, a: &WideArgs, size: (i32, i32), d: &WideDraw| {
+            grid_of(&*mem, fp, &wide_grid(a, size, d, wide_source(&*mem, p, a.source)?))
+        };
+        let Some(call) = screen_call(&effect, egor, values, depth, frame, &grid) else {
+            refused(Missing::Wide);
+            return false;
+        };
         let Some((targets, shapes)) = screen_swallow(&call) else { return false };
         let (primitive, vertices) = shapes[0];
         let (drop, pass): (bool, Box<dyn d3d::ExternalPass>) = if proved(egor) {
@@ -1185,8 +1274,8 @@ mod tests {
         assert_eq!(missing(&effect(vec![pass(0, vec![]), into_1.clone()]), yes, false), vec![Missing::PassTarget], "target 1 last");
         let unsized_1 = screen_effect::Pass { size: Some((0, 240)), ..into_1 };
         assert_eq!(missing(&effect(vec![unsized_1, pass(0, vec![])]), yes, false), vec![Missing::PassTarget], "no size");
-        // The blur: its quads draw once their frame is read; a wide one
-        // stays on D3D.
+        // The blur: its quads draw once their frame is read; so do a wide
+        // one's grids (its combiner is the frame's).
         let args = BlurArgs { source: 1, steps: 0, scale: 0, growth: 0, dest: 0x19, other: 0x1a, last: u32::MAX };
         let blur = game_glow::Blur { draws: vec![], result: 1, copy: None };
         let blurred = || effect(vec![pass(0, vec![Convolution::Blur { size: (320, 240), args, blur: blur.clone() }])]);
@@ -1195,7 +1284,8 @@ mod tests {
         let wide = game_glow::Wide { draws: vec![], result: 1, copy: None };
         let wide_args = game_glow::WideArgs { source: 1, taps: 0, scale: 0, words: [0; 2], dest: 0x19, other: 0x1a, last: u32::MAX };
         let widened = effect(vec![pass(0, vec![Convolution::Wide { size: (320, 240), args: wide_args, wide }])]);
-        assert_eq!(missing(&widened, yes, true), vec![Missing::Wide, Missing::StandIns]);
+        assert_eq!(missing(&widened, yes, false), vec![Missing::Wide, Missing::StandIns], "no frame");
+        assert_eq!(missing(&widened, yes, true), vec![], "drawn into the stand-ins");
     }
 
     /// The blur's convolution as the native pass draws it: its quads'
@@ -1209,16 +1299,119 @@ mod tests {
             game_glow::BlurDraw { source: 0x19, dest: 0x1a, spread: 2.0f32.to_bits() },
         ];
         let blur = game_glow::Blur { draws, result: 0x1a, copy: None };
-        let c = screen_convolution(&Convolution::Blur { size: (320, 240), args, blur: blur.clone() }).unwrap();
+        let p = pass(1, vec![]);
+        let c = screen_convolution(&p, &Convolution::Blur { size: (320, 240), args, blur: blur.clone() }, &unmade_grid).unwrap();
         assert_eq!((c.size, c.result), ((320, 240), 0x1a));
         assert_eq!(c.draws, vec![
-            ConvolutionDraw { source: 1, dest: 0x19, spread: 1.5 },
-            ConvolutionDraw { source: 0x19, dest: 0x1a, spread: 2.0 },
+            ConvolutionDraw { source: 1, dest: 0x19, spread: 1.5, grid: None },
+            ConvolutionDraw { source: 0x19, dest: 0x1a, spread: 2.0, grid: None },
         ]);
-        assert_eq!(screen_convolution(&Convolution::Kept { result: 1 }).map(|c| (c.draws.len(), c.result)), Some((0, 1)));
+        let kept = screen_convolution(&p, &Convolution::Kept { result: 1 }, &unmade_grid);
+        assert_eq!(kept.map(|c| (c.draws.len(), c.result)), Some((0, 1)));
         let copied = game_glow::Blur { copy: Some((0x1a, 0x1b)), ..blur.clone() };
-        assert_eq!(screen_convolution(&Convolution::Blur { size: (320, 240), args, blur: copied }), None, "0x000351a0");
-        assert_eq!(screen_convolution(&Convolution::Blur { size: (-1, 240), args, blur }), None);
+        assert_eq!(screen_convolution(&p, &Convolution::Blur { size: (320, 240), args, blur: copied }, &unmade_grid), None, "0x000351a0");
+        assert_eq!(screen_convolution(&p, &Convolution::Blur { size: (-1, 240), args, blur }, &unmade_grid), None);
+    }
+
+    /// A wide convolution as the native pass draws it: each draw its grid,
+    /// made for its own step; none when a grid is not made.
+    #[test]
+    fn a_wide_convolution_is_its_grids() {
+        let args = WideArgs { source: 1, taps: 2, scale: 0, words: [5, 6], dest: 0x19, other: 0x1a, last: u32::MAX };
+        let draws = vec![
+            WideDraw { source: 1, dest: 0x19, offsets: [1, 2, 3, 4] },
+            WideDraw { source: 0x19, dest: 0x1a, offsets: [5, 6, 7, 8] },
+        ];
+        let wide = game_glow::Wide { draws, result: 0x1a, copy: None };
+        let c = Convolution::Wide { size: (320, 240), args, wide: wide.clone() };
+        let p = screen_effect::Pass { size: Some((640, 480)), ..pass(1, vec![]) };
+        // A grid naming its step: one strip whose first tap is the offsets'.
+        let named = |_: &screen_effect::Pass, a: &WideArgs, size: (i32, i32), d: &WideDraw| {
+            let g = wide_grid(a, size, d, (640, 480));
+            let v = StripVertex { texcoords: [[f32::from_bits(d.offsets[0]); 4]; 4], ..Default::default() };
+            Some(ConvolutionGrid { bound: (g.bound[0].0 as u32, g.bound[0].1 as u32), strips: vec![vec![v; 3]] })
+        };
+        let s = screen_convolution(&p, &c, &named).unwrap();
+        assert_eq!((s.size, s.result), ((320, 240), 0x1a));
+        assert_eq!(s.draws.iter().map(|d| (d.source, d.dest)).collect::<Vec<_>>(), vec![(1, 0x19), (0x19, 0x1a)]);
+        let grids: Vec<_> = s.draws.iter().map(|d| d.grid.clone().unwrap()).collect();
+        assert_eq!((grids[0].bound, grids[1].bound), ((640, 480), (320, 240)), "the source's, then a stand-in's");
+        assert_eq!(grids[1].strips[0][0].texcoords[0][0], f32::from_bits(5));
+        assert_eq!(screen_convolution(&p, &c, &|_, _, _, _| None), None, "a grid not made");
+        let copied = Convolution::Wide { size: (320, 240), args, wide: game_glow::Wide { copy: Some((0x1a, 0x1b)), ..wide } };
+        assert_eq!(screen_convolution(&p, &copied, &named), None, "0x000351a0");
+    }
+
+    /// `0x00034d90`'s inputs as `0x00021360` pushes them.
+    #[test]
+    fn a_wide_draw_is_its_grid() {
+        let radii = [0.25f32.to_bits(), 0.75f32.to_bits()];
+        let args = WideArgs { source: 0, taps: 1, scale: 0, words: radii, dest: 0x1b, other: 0x19, last: u32::MAX };
+        let first = WideDraw { source: 0, dest: 0x1b, offsets: [1, 2, 3, 4] };
+        let g = wide_grid(&args, (160, 120), &first, (640, 480));
+        assert_eq!(g, Grid {
+            size: (160, 120),
+            bound: [(640, 480); 4],
+            taps: [1, 2, 3, 4],
+            depth: 1.0f32.to_bits(),
+            radii,
+            full: false,
+        });
+        let next = WideDraw { source: 0x1b, dest: 0x19, offsets: [0; 4] };
+        assert_eq!(wide_grid(&args, (160, 120), &next, (640, 480)).bound, [(160, 120); 4], "a stand-in, at the pair's size");
+    }
+
+    /// The grid's strips as `engine::screen_grid` makes them, each vertex
+    /// its position and taps; a source bound at no size makes none.
+    #[test]
+    fn a_grid_is_screen_grids_strips() {
+        use engine::memory::FlatMemory;
+        use engine::screen_grid::constant as k;
+        let mut m = FlatMemory::new(0x0040_0000, 0x0020_0000);
+        for (a, v) in [
+            (k::ONE, 1.0f32),
+            (k::HALF, 0.5),
+            (k::SIGN_CLEAR, -0.5),
+            (k::DOUBLE, 2.0),
+            (k::DEPTH, 1.0),
+            (k::NEAR, 0.1),
+            (k::FAR, 100.0),
+        ] {
+            m.set_u32(a, v.to_bits()).unwrap();
+        }
+        // Top 0, left 0, bottom 480, right 640.
+        for (o, v) in [(0u32, 0u16), (2, 0), (4, 480), (6, 640)] {
+            m.set_u16(screen_grid::WINDOW + o, v).unwrap();
+        }
+        let fp = Fp { mxcsr: 0x1f80, x87_control: 0x027f };
+        let args = WideArgs { source: 1, taps: 1, scale: 0, words: [0; 2], dest: 0x19, other: 0x1a, last: u32::MAX };
+        let d = WideDraw { source: 1, dest: 0x19, offsets: [0.5f32.to_bits(), 0, 0, 0] };
+        let g = wide_grid(&args, (320, 240), &d, (640, 480));
+        let grid = grid_of(&m, fp, &g).expect("made");
+        assert_eq!(grid.bound, (640, 480));
+        assert_eq!(grid.strips.len(), screen_grid::ROWS as usize);
+        assert!(grid.strips.iter().all(|s| s.len() == 2 * (screen_grid::COLUMNS as usize + 1)));
+        let exact = screen_grid::vertex(&m, &g, 3, 5, fp.mxcsr, fp.x87_control).unwrap();
+        // Row 5's strip, column 3, the upper vertex.
+        let v = grid.strips[5][6];
+        assert_eq!(v.position.map(f32::to_bits), exact.position);
+        assert_eq!(v.texcoords.map(|t| t.map(f32::to_bits)), exact.taps);
+        assert_eq!(grid.strips[0][0].position[..2], [0.0, 0.0], "the window's corner");
+        let unbound = Grid { bound: [(0, 480); 4], ..g };
+        assert_eq!(grid_of(&m, fp, &unbound), None);
+    }
+
+    /// The source of a wide convolution: target 1 the pass's size, the
+    /// bound target the table's (`0x0001dd60`'s default without a surface).
+    #[test]
+    fn a_wide_source_is_its_targets_size() {
+        use engine::memory::FlatMemory;
+        use screen_effect::{TARGETS, TARGET_STRIDE};
+        let mut m = FlatMemory::new(TARGETS, 0x1000);
+        m.set_u32(TARGETS + TARGET_STRIDE + 0x88, 1).unwrap();
+        let p = screen_effect::Pass { size: Some((320, 240)), ..pass(2, vec![]) };
+        assert_eq!(wide_source(&m, &p, 1), Some((320, 240)));
+        assert_eq!(wide_source(&m, &p, 0), Some((640, 480)));
     }
 
     #[test]
@@ -1328,7 +1521,7 @@ mod tests {
             passes: vec![drawn_pass(3, 4), drawn_pass(3, 4)],
         };
         let values = [0.5f32.to_bits(), 0, 0, 0];
-        let call = screen_call(&effect, EGOR, values, 0x4b7f_ffff, None);
+        let call = screen_call(&effect, EGOR, values, 0x4b7f_ffff, None, &unmade_grid).unwrap();
         assert_eq!(call.passes.len(), 2);
         assert_eq!(call.values, values, "what the passes' engine constants read");
         assert_eq!(call.passes[0].0, (EGOR.0, 1, 0), "(egor, layer pass, implementation)");
@@ -1337,14 +1530,14 @@ mod tests {
         let strip = (PrimitiveType::from_xbox(6).unwrap(), 8);
         assert_eq!(screen_swallow(&call), Some((vec![0; 6], vec![strip; 6])), "SET_BEGIN_END 6");
         let uneven = Effect { passes: vec![drawn_pass(1, 4), drawn_pass(1, 3)], ..effect.clone() };
-        let shapes = screen_swallow(&screen_call(&uneven, EGOR, [0; 4], 0, None)).map(|s| s.1);
+        let shapes = screen_swallow(&screen_call(&uneven, EGOR, [0; 4], 0, None, &unmade_grid).unwrap()).map(|s| s.1);
         assert_eq!(shapes, Some(vec![strip, (PrimitiveType::TriangleStrip, 6)]), "each strip its own count");
         let empty = Effect { passes: vec![], ..effect.clone() };
-        assert_eq!(screen_swallow(&screen_call(&empty, EGOR, [0; 4], 0, None)), None);
+        assert_eq!(screen_swallow(&screen_call(&empty, EGOR, [0; 4], 0, None, &unmade_grid).unwrap()), None);
         // Target 1's strips go to slot 1, the target the first finds.
         let into_1 = screen_effect::Pass { kind: 1, size: Some((640, 480)), ..drawn_pass(2, 4) };
         let both = Effect { passes: vec![into_1, drawn_pass(3, 4)], ..effect };
-        let call = screen_call(&both, EGOR, [0; 4], 0, None);
+        let call = screen_call(&both, EGOR, [0; 4], 0, None, &unmade_grid).unwrap();
         assert_eq!(call.passes[0].1, Dest::Target1 { guest: (640, 480) });
         assert_eq!(screen_swallow(&call).map(|s| s.0), Some(vec![1, 1, 0, 0, 0]));
         // A blur after the first pass: its quads into 0x19 (slot 2) and
@@ -1359,10 +1552,29 @@ mod tests {
             convolutions: vec![Convolution::Blur { size: (320, 240), args, blur }],
             ..both.passes[0].clone()
         };
-        let blurred = Effect { passes: vec![into_1, both.passes[1].clone()], ..both };
-        let (slots, shapes) = screen_swallow(&screen_call(&blurred, EGOR, [0; 4], 0, None)).unwrap();
+        let blurred = Effect { passes: vec![into_1, both.passes[1].clone()], ..both.clone() };
+        let (slots, shapes) = screen_swallow(&screen_call(&blurred, EGOR, [0; 4], 0, None, &unmade_grid).unwrap()).unwrap();
         assert_eq!(slots, vec![1, 1, 2, 3, 0, 0, 0]);
         assert_eq!(shapes[2..4], [QUAD, QUAD]);
+        // A wide one: each draw its grid's strips, into its stand-in.
+        let args = WideArgs { source: 1, taps: 2, scale: 0, words: [0; 2], dest: 0x19, other: 0x1a, last: u32::MAX };
+        let draws = vec![
+            WideDraw { source: 1, dest: 0x19, offsets: [0; 4] },
+            WideDraw { source: 0x19, dest: 0x1a, offsets: [0; 4] },
+        ];
+        let wide = game_glow::Wide { draws, result: 0x1a, copy: None };
+        let into_1 = screen_effect::Pass {
+            convolutions: vec![Convolution::Wide { size: (320, 240), args, wide }],
+            ..both.passes[0].clone()
+        };
+        let widened = Effect { passes: vec![into_1, both.passes[1].clone()], ..both };
+        let grid = |_: &screen_effect::Pass, _: &WideArgs, _: (i32, i32), _: &WideDraw| {
+            Some(ConvolutionGrid { bound: (640, 480), strips: vec![vec![StripVertex::default(); 42]; 2] })
+        };
+        let (slots, shapes) = screen_swallow(&screen_call(&widened, EGOR, [0; 4], 0, None, &grid).unwrap()).unwrap();
+        assert_eq!(slots, vec![1, 1, 2, 2, 3, 3, 0, 0, 0]);
+        assert_eq!(shapes[2..6], [(PrimitiveType::TriangleStrip, 42); 4], "0x00034770's SET_BEGIN_END 6");
+        assert!(screen_call(&widened, EGOR, [0; 4], 0, None, &|_, _, _, _| None).is_none(), "a grid not made");
     }
 
     #[test]

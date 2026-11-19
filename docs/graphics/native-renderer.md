@@ -2357,8 +2357,33 @@ its own thread, and render-timing does not matter (the call runs).
      before its draws are dropped, and falls back on its own: a refused
      pass, a failed probe or a swallow mismatch (charged to the egor that
      armed last) keeps that egor's later calls on D3D and no other's. With these, the blur misses nothing and
-     is armed with the switch on (off by default); a wide convolution
-     (`0x00021360`) still keeps its effect on D3D (`Missing::Wide`).
+     is armed with the switch on (off by default).
+   - **Built: the wide convolution** (`0x00021360`; `screen_gpu::ConvolutionGrid`,
+     `native_post_glue::wide_grid`, `grid_of`). `0x0002d140` passes it
+     the words `+0x50`, `+0x54`, the stand-ins, -1, 1, 0, 0, so its
+     combiner is the blur's (`0x00020f30` with XMM0 0 and XMM3 its eighth
+     word, 0), its stages are bound as the blur's (clamp, linear), and
+     each draw is `0x00034d90` (Code, `0x00021455..0x00021485`) with the
+     same screen vertex shader (`0x0001c590`) and states as the quad's:
+     the window's rectangle (word 7's low byte clear), depth `1.0`, the
+     two words its radii, EDI the draw's offsets, each stage's ratio the
+     size `0x00014f60` bound the source at (`0x0001dd60` of it: the
+     pass's target as the call sized it, `screen_effect::target_size`,
+     or a stand-in at the pair's size) over the stand-in's. The glue
+     makes each draw's 30 strips of 42 vertices with
+     `engine::screen_grid::strips` (the original's arithmetic, under the
+     call's MXCSR and x87 control word), the taps in texels of that bound
+     size; `glow::QuadDrawer::draw_grid` draws them through
+     `glow::GRID_VERTEX` (attribute 0 the position in the stand-in's
+     pixels, 1..4 the taps; z and w ignored as the quad's are: no depth
+     test and w the same at every vertex) and the blur's combiner with
+     its stages scaled by the bound size. The swallow takes each strip
+     as `SET_BEGIN_END` 6 of 42 (`0x00034770`) into the stand-in's slot.
+     A grid that cannot be made keeps the call on D3D
+     (`Missing::Wide`), as does a missing frame; a grid with a strip
+     under a triangle is refused (`ScreenRefused::NoStrips`). With these
+     a wide convolution misses nothing and is armed with the switch on
+     (off by default).
 5. **`0x0002df00`, and `0x0002dd30`** before layer 17, which has the
    same shape and gets its own skip point.
 6. **Layer 17** (S: bloom), as stage 1b draws the world's other layers.
