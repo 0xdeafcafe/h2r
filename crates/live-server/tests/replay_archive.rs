@@ -450,6 +450,21 @@ async fn rewound_chunk_starts_retain_each_distinct_original_in_the_blob_store() 
         h.post_batch(&host, &id, end).await.status,
         StatusCode::CREATED
     );
+    for m in h.live.frame_chunks(&id).await.unwrap() {
+        let response = h
+            .get(&format!(
+                "/v1/games/{id}/chunks/{}?sha256={}",
+                m.from_tick, m.sha256
+            ))
+            .await;
+        assert_eq!(response.status, StatusCode::OK);
+        let header = live_proto::chunk::frames(&response.body).unwrap();
+        assert_eq!(header[0].tick, m.from_tick);
+        assert_eq!(
+            live_proto::sign::hex(&<sha2::Sha256 as sha2::Digest>::digest(&response.body)),
+            m.sha256
+        );
+    }
     let frames = h.live.chunk_frames(&id).await.unwrap();
     let mut values: Vec<_> = frames.iter().map(|f| (f.bsp, f.tick)).collect();
     values.sort();

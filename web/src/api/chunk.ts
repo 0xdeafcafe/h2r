@@ -26,6 +26,7 @@ export interface ChunkMeta {
   bytes: number;
   sha256: string;
   codec: "stored" | "deflate";
+  repeatedStart?: boolean;
   raw_bytes: number;
   /** The packed frame versions inside. */
   versions: number[];
@@ -152,7 +153,7 @@ export function chunksIn(index: readonly RecordingChunk[], from?: number, to?: n
 
 /** Reads the index body; null when it is not one. */
 export function chunkIndex(body: unknown): ChunkIndex | null {
-  const o = body as Partial<ChunkIndex> | null;
+  const o = body as (Partial<ChunkIndex> & {source_order?: boolean}) | null;
   if (!o || typeof o !== "object" || !Array.isArray(o.items)) return null;
   if (typeof o.archive_sha256 === "string") {
     const index = o.archive_sha256;
@@ -183,7 +184,13 @@ export function chunkIndex(body: unknown): ChunkIndex | null {
     return {game_id:game, chunk_ticks:900, ended:true, archive_sha256:index, items};
   }
   const items = o.items.filter((c): c is ChunkMeta => typeof c?.from_tick === "number" && typeof c?.to_tick === "number");
-  items.sort((a, b) => a.from_tick - b.from_tick);
+  if (!o.source_order) items.sort((a, b) => a.from_tick - b.from_tick);
+  const starts = new Map<number, ChunkMeta>();
+  for (const c of items) {
+    const previous = starts.get(c.from_tick);
+    if (previous) previous.repeatedStart = c.repeatedStart = true;
+    starts.set(c.from_tick, c);
+  }
   return { game_id: String(o.game_id ?? ""), chunk_ticks: Number(o.chunk_ticks ?? 300), ended: o.ended === true, items };
 }
 

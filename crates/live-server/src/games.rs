@@ -609,6 +609,12 @@ impl Live {
     /// before chunks (its frames are `GameFrame`s, read with
     /// [`Live::recorded_frame_data`]).
     pub async fn frame_chunks(&self, id: &str) -> Result<Vec<ChunkMeta>, ApiError> {
+        let mut out = self.source_chunks(id).await?;
+        out.sort_by_key(|m| m.from_tick);
+        Ok(out)
+    }
+
+    pub(crate) async fn source_chunks(&self, id: &str) -> Result<Vec<ChunkMeta>, ApiError> {
         if !self.model.read().games.contains_key(id) {
             return Err(not_found("no such game"));
         }
@@ -633,17 +639,18 @@ impl Live {
                 _ => break,
             }
         }
-        out.sort_by_key(|m| m.from_tick);
         Ok(out)
     }
 
     /// `GET /v1/games/{id}/chunks/{from_tick}`: one chunk's bytes, checked
     /// against the hash its signed index entry holds.
     pub async fn frame_chunk(&self, id: &str, from_tick: u64) -> Result<Bytes, ApiError> {
+        self.frame_chunk_named(id, from_tick, None).await
+    }
+
+    pub(crate) async fn frame_chunk_named(&self, id: &str, from_tick: u64, digest: Option<&str>) -> Result<Bytes, ApiError> {
         let index = self.frame_chunks(id).await?;
-        let meta = index
-            .iter()
-            .find(|m| m.from_tick == from_tick)
+        let meta = index.iter().find(|m| m.from_tick == from_tick && digest.is_none_or(|hash| hash == m.sha256))
             .ok_or_else(|| not_found("no such chunk"))?;
         self.stored_chunk(id, meta).await
     }

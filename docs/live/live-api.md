@@ -322,7 +322,7 @@ timer. A server that stops mid-window loses at most that window.
 The private blob store uses `frames/<game id>/<first tick>-<sha256>` for
 new chunks and reads older chunks under `frames/<game id>/<first tick>`.
 The digest keeps both originals when a checkpoint rewind repeats a chunk
-start. The Worker uses R2 and the native server uses its data directory.
+start. Readers can pass the signed index entry’s `sha256` as a query parameter to disambiguate a repeated first tick. The Worker uses R2 and the native server uses its data directory.
 With neither configured, the event store holds the bytes. A server-signed
 `FrameChunk` event in the game's stream records its index entry.
 

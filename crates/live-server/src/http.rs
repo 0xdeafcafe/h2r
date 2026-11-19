@@ -1187,17 +1187,18 @@ async fn game_chunks(
     let viewer = live.read_viewer(bearer(&headers))?;
     let id = game_id(&id)?;
     live.check_game_shows(id, viewer)?;
-    if query.get("format").is_some_and(|f| f == "archive")
-        && let Some(response) = crate::replay_archive::index(&live,id) {
+    let source_order = query.get("format").is_some_and(|f| f == "archive");
+    if source_order && let Some(response) = crate::replay_archive::index(&live, id) {
         return Ok(response);
     }
-    let items = live.frame_chunks(id).await?;
+    let items = if source_order { live.source_chunks(id).await? } else { live.frame_chunks(id).await? };
     let ended = live.game(id)?.end_reason.is_some();
     Ok(json(
         StatusCode::OK,
         &serde_json::json!({
             "game_id": id,
             "chunk_ticks": live_proto::chunk::CHUNK_TICKS,
+            "source_order": source_order,
             "ended": ended,
             "items": items,
         }),
@@ -1225,7 +1226,7 @@ async fn game_chunk(
         Some("json") => true,
         Some(_) => return Err(invalid("format must be packed or json")),
     };
-    let bytes = live.frame_chunk(id, tick).await?;
+    let bytes = live.frame_chunk_named(id, tick, query.get("sha256").map(String::as_str)).await?;
     // The query keeps the representations distinct for URL-keyed edge caches.
     let mut resp = if as_json {
         let frames = live_proto::chunk::frames(&bytes).map_err(|e| invalid(e.to_string()))?;

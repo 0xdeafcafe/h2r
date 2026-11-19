@@ -141,7 +141,8 @@ export function api(t: ServerTarget, reader: Reader = async () => null) {
   async function chunk(id: string, c: RecordingChunk, s?: AbortSignal): Promise<Uint8Array> {
     const path = c.codec === "archive" ? "/archive/" + c.index + "/" + c.ordinal : "/chunks/" + c.from_tick;
     const accept = c.codec === "archive" ? "application/x-h2-replay" : CHUNK_TYPE;
-    const r = await reading(u("/games/" + encodeURIComponent(id) + path), { signal: s, headers: { accept } });
+    const query = c.codec !== "archive" && c.repeatedStart ? {sha256:c.sha256} : undefined;
+    const r = await reading(u("/games/" + encodeURIComponent(id) + path, query), { signal: s, headers: { accept } });
     if (!r.ok) throw new ApiError(r.status, "http_" + r.status, `frame chunk ${c.from_tick}: ${r.statusText}`);
     return new Uint8Array(await r.arrayBuffer());
   }
