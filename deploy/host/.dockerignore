@@ -1,17 +1,12 @@
-# Build context for deploy/host/Dockerfile: the entrypoint and what build.sh
-# staged. Build from this directory after build.sh (see README.md):
-#
-#   docker build -t h2host:local .
-#
-# stage/ holds a module compiled from the owner's own disc. It must never
-# hold the disc itself or any other game data — build.sh stages only the
-# Linux h2, the module with its stamp, and default.xbe — so the disc formats
-# stay excluded here as a backstop.
+# Allow only the files the image needs. Keep discs, game data and build
+# intermediates out of the Docker context.
 *
 !Dockerfile
 !entrypoint.sh
 !stage/
-**/.DS_Store
-**/*.iso
-**/*.xiso
-**/*.map
+stage/*
+!stage/h2
+!stage/image/
+stage/image/*
+!stage/image/libh2game.so
+!stage/image/libh2game.so.stamp

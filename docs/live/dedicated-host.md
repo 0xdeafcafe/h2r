@@ -67,34 +67,23 @@ Rates checked November 19, 2026. The figures assume one running instance per occ
 
 ## Container image
 
-The deployable artifact for both cloud providers is one image,
-[deploy/host](../../deploy/host/README.md): `debian:bookworm-slim` for
-linux/amd64 with `ca-certificates` and nothing else from apt, the Linux `h2`
-built with `--no-default-features --features host` (no window, Metal,
-AVFoundation, input devices or app icons), and the game module compiled from
-**the owner's own disc**. No game data is inside: maps and shared disc
-content are fetched at start from the owner's private bundle over
-`H2_DATA_URL`, hash-checked against `H2_DATA_SHA`, and cached per machine
-under `/var/cache/h2`.
+Both cloud providers use the same Linux/amd64 image. It runs as a non-root
+user on `debian:bookworm-slim` with `ca-certificates`. Ship the image only
+through a private registry because it contains a module compiled from the
+owner's disc.
 
-`deploy/host/build.sh` runs on the owner's Mac. It cross-builds `h2` with
-cargo-zigbuild pinned to bookworm's glibc (`x86_64-unknown-linux-gnu.2.36`,
-matching the base image), compiles the Linux module with this checkout's
-macOS `h2`, and stages the binary, the module with its stamp, and
-`default.xbe` — the boot needs the image the module was built from — into
-`deploy/host/stage/`, which `docker build` then packs. The entrypoint maps
-`H2_LEASE`, `H2_LIVE`, `H2_TOKEN`, `H2_DATA_URL`, `H2_DATA_SHA` and the
-optional `H2_REGION` onto `h2 host run` and `exec`s it, so the match process
-is the container's main process and stops with the container. The game's UDP
-ports 31000–31006 and the agent socket's 31100/tcp are exposed; there is no
-health check and no restart policy, because a host is one ad-hoc lease and
-the provider that started the container (Durable Object, Fly Machine or a
-plain `docker run`) owns liveness and stop.
+On macOS, `deploy/host/build.sh` cross-builds the headless `h2` with
+cargo-zigbuild targeting `x86_64-unknown-linux-gnu.2.36` and builds the
+module with `h2 build --arch x86_64-linux --tier clang`. Clang and lld
+use the Debian bookworm amd64 sysroot at `H2_LINUX_SYSROOT`. Docker copies
+`h2`, `libh2game.so` and its stamp from `deploy/host/stage/`. The matching
+`default.xbe` and maps come from private runtime provisioning. [Build and run instructions](../../deploy/host/README.md) · [Linux module build](../runtime/linux.md)
 
-The module is derived from the owner's disc, so the image belongs to its
-owner alone. Push it only to a private registry — Cloudflare's container
-registry for the account, or Fly's private registry — never a public one.
-The rights questions above apply to a fleet of these images unchanged.
+The entrypoint passes `H2_LEASE`, `H2_LIVE`, `H2_TOKEN`, `H2_DATA_URL`,
+`H2_DATA_SHA` and optional `H2_REGION` to `h2 host run`. The host verifies
+the bundle hash and caches the data in `/var/cache/h2`. The image exposes
+UDP ports 31000–31006 for the game and TCP 31100 for the datagram tunnel. Each
+container serves one lease and exits when that lease ends.
 
 ## Light host
 

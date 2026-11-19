@@ -1,70 +1,55 @@
-# The dedicated-host container image
+# Dedicated host image
 
-A Linux x86-64 image that runs one ad-hoc Halo 2 match host
-([docs/live/dedicated-host.md](../../docs/live/dedicated-host.md), "Container
-image"). Inside: the Linux `h2` (host profile, no GUI) and the game module
-`build.sh` compiled from **your own disc**. Not inside: any game data — maps
-and shared disc data are fetched at start from your private bundle
-(`h2 host bundle`, contract 7) and cached under `/var/cache/h2`.
+The Linux/amd64 image runs one match lease with a headless `h2` and the
+module compiled from your own disc. Use a private registry for this image.
 
-## Build
+## Build on macOS
 
-On a Mac, from the repository root (the script checks for `cargo-zigbuild`,
-`zig` and the rust target, and says what to install rather than installing
-it):
+Install [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild), Zig,
+the Rust `x86_64-unknown-linux-gnu` target and LLVM's `clang`, `ld.lld` and
+`llvm-ar`. Put the LLVM tools on `PATH` and use an amd64 Debian bookworm
+sysroot with glibc development files, Linux headers and GCC support files.
+The script checks these prerequisites and prints installation hints.
+[Linux module build](../../docs/runtime/linux.md)
+
+From the repository root, set `H2_DISC` to the owner's ISO or `default.xbe`
+and `H2_LINUX_SYSROOT` to the absolute sysroot path. Stage the host and module.
 
 ```sh
-deploy/host/build.sh /path/to/halo2.iso
-(cd deploy/host && docker build -t h2host:local .)
+deploy/host/build.sh "$H2_DISC"
 ```
 
-`build.sh` cross-builds `h2` with `cargo zigbuild --release -p cli
---no-default-features --features host --target x86_64-unknown-linux-gnu.2.36`
-(glibc 2.36 = the image's `debian:bookworm-slim`), compiles the Linux module
-from the disc with this checkout's macOS `h2` (the long step; skipped when
-the staged module is already current), and stages everything into
-`deploy/host/stage/`, which is gitignored and is the docker build context.
-
-## Run
+Pack the staged files into a local image.
 
 ```sh
-docker run --rm \
-  -p 31000-31006:31000-31006/udp -p 31100:31100 \
-  -e H2_LEASE=hl-... -e H2_LIVE=https://live.forbes.red \
-  -e H2_TOKEN=... -e H2_DATA_URL='https://...' -e H2_DATA_SHA=... \
+docker buildx build --platform linux/amd64 --load -t h2host:local deploy/host
+```
+
+The script builds the Linux host against bookworm's glibc 2.36 and uses a
+Mac build of `h2` from the same checkout to emit `libh2game.so` and its
+stamp. Set `H2_BIN` to reuse a Mac binary from that revision. Docker takes
+the staged host, module and stamp. Supply the matching code-generation
+settings at runtime if you override defaults such as `H2_OPT`.
+
+## Run one lease
+
+Prepare the owner's private game-data bundle with `h2 host bundle`. The
+host needs the matching `default.xbe` at boot, supplied with the private
+runtime data. Export the lease ID, Live URL, lease token, signed bundle
+URL and bundle SHA-256 before starting the container.
+For a UDP lease through Docker, set `H2_PUBLIC_ADDR` to the Docker host's
+IPv4 address reachable by clients.
+
+```sh
+docker run --rm --name h2host-smoke --platform linux/amd64 \
+  -p 31000-31006:31000-31006/udp \
+  -e H2_LEASE -e H2_LIVE -e H2_TOKEN -e H2_DATA_URL -e H2_DATA_SHA \
+  -e H2_REGION -e H2_OPT -e H2_PUBLIC_ADDR \
   h2host:local
 ```
 
-The entrypoint maps the environment to `h2 host run` (contract 9) and execs
-it, so the host process is the container's main process and stops cleanly
-with the container.
-
-| variable | required | maps to / default |
-|---|---|---|
-| `H2_LEASE` | yes | `--lease` |
-| `H2_LIVE` | yes | `--live` |
-| `H2_TOKEN` | yes | `--token` (never logged) |
-| `H2_DATA_URL` | yes | `--data-url` (signed; never logged) |
-| `H2_DATA_SHA` | yes | `--data-sha` |
-| `H2_REGION` | no | `--region` |
-| `H2_AGENT` | no | agent socket, default `tcp://0.0.0.0:31100` |
-| `H2_XNET_ADDR` | no | game UDP bind; unset picks this machine's address (must be unicast) |
-| `H2_IMAGE` | no | staged module dir, default `/opt/h2/image` |
-| `H2_HOST_CACHE` | no | bundle cache, default `/var/cache/h2` (mount a volume here) |
-| `H2_DATA` | no | game data root, default `/var/cache/h2/data` |
-
-Ports: `31000-31006/udp` are the game's (base 31000; channels +0/+1/+5/+6,
-QoS +2, co-op +4), `31100/tcp` the agent socket. There is no `HEALTHCHECK`
-and no restart policy — a host is ad hoc, one lease per container, and the
-provider that started it (Durable Object, Fly Machine, `docker run` above)
-owns liveness and stop.
-
-## Keep the image private
-
-The module inside is compiled from your disc. The image is for you and your
-registry only: push it to Cloudflare's container registry for the account or
-Fly's private registry, both of which serve the image to your own deploys
-alone — never to a public registry. The same rights questions as the rest of
-the project apply to a hosted fleet ([dedicated-host.md][rights]).
-
-[rights]: ../../docs/live/dedicated-host.md
+The entrypoint passes those lease and data values to `h2 host run`.
+`H2_REGION` is optional. The bundle cache defaults to `/var/cache/h2`.
+For reuse across runs, mount a volume there writable by UID 1000. The
+image exposes TCP 31100 for the Cloudflare datagram tunnel.
+[Dedicated host design](../../docs/live/dedicated-host.md#container-image)
