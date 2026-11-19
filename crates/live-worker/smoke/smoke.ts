@@ -43,8 +43,11 @@
 //
 // --seed N: then grows the log by 2N events (friend requests, declined),
 // paced under the write rate, so a restarted hub has a log to replay. --cold-only: steps 1, 2 and 6.
-import { createAccount } from "../../../web/src/state/account";
-import { postEvent } from "../../../web/src/state/sign";
+import { decodeArchive } from "../../../web/src/api/archive";
+import { decodeChunk } from "../../../web/src/api/chunk";
+import { canonicalJson } from "../../../web/src/state/verify";
+import { createAccount, importSeed, signCompact } from "../../../web/src/state/account";
+import { eventBody, postEvent, TYP_EVENT } from "../../../web/src/state/sign";
 import { issueToken } from "../../../web/src/admin/token";
 
 const args = process.argv.slice(2);
@@ -308,6 +311,7 @@ if (wakeWait > 0) {
   await postEvent(api, aud, a!, { stream: `account-${a!.xuid}`, type: "FriendRequested", data: { from: a!.xuid, to: b!.xuid } });
 }
 
+let archiveGame = "";
 // 9. Game ingest.
 {
   const t9 = performance.now();
@@ -326,7 +330,7 @@ if (wakeWait > 0) {
   });
   if (started.r.status !== 201) fail("ingest-start-game", `${started.r.status} ${started.body}`);
   const gameId: string = JSON.parse(started.body).game_id;
-  const json = subscribe(`?games=${gameId}&exclude=GameFrame`);
+  const json = subscribe(`?stream=game-${gameId}&games=${gameId}&exclude=GameFrame`);
   const packed = subscribe(`?games=${gameId}&frames=packed`);
   const game = subscribe("", "/v1/ingest");
   try {
@@ -341,6 +345,10 @@ if (wakeWait > 0) {
     game.ws.send(frame(30));
     await json.until((m) => m.kind === "frame" && m.frame?.tick === 30);
     await packed.untilBinary();
+    // Two disjoint source chunks force two alarm steps and a durable cursor.
+    await Bun.sleep(80);
+    game.ws.send(frame(960));
+    await json.until((m) => m.kind === "frame" && m.frame?.tick === 960);
     // Every reply on the ingest socket is a refusal.
     const refused = game.got.filter((m) => m.kind === "error");
     if (refused.length) throw new Error(`refused: ${JSON.stringify(refused)}`);
@@ -356,6 +364,31 @@ if (wakeWait > 0) {
   } catch (e) {
     fail("ingest-wrong-method", e);
   }
+  try {
+    const end = eventBody(a!, {stream:"game-" + gameId, type:"GameEnded", data:{tick:960,reason:"finished"}}, Date.now());
+    const key = await importSeed(a!.key, a!.x);
+    const compact = await signCompact(key.privateKey, {alg:"EdDSA", kid:key.publicJwk.kid, typ:TYP_EVENT}, canonicalJson([end]));
+    const closed = await timed(api + "/games/" + gameId + "/events", {
+      method:"POST", headers:{authorization:`Bearer ${await writeToken()}`, "content-type":"application/jose"}, body:compact,
+    });
+    if (closed.r.status !== 201) fail("archive-close", closed.body);
+    await json.until(m => m.kind === "event" && m.event?.type === "ReplayArchivePublished", 30_000);
+    const url = api + "/games/" + gameId;
+    const index = await (await fetch(url + "/chunks?format=archive")).json();
+    if (index.items?.length !== 2 || !/^[0-9a-f]{64}$/.test(index.archive_sha256)) fail("archive-index", JSON.stringify(index));
+    for (const [i, tick] of [30, 960].entries()) {
+      const raw = await fetch(url + "/chunks/" + tick);
+      const segment = await fetch(url + "/archive/" + index.archive_sha256 + "/" + i);
+      if (!raw.ok || !segment.ok || segment.headers.get("content-encoding") !== "br" ||
+          !segment.headers.get("cache-control")?.includes("immutable")) fail("archive-headers", segment.status);
+      const archived = decodeArchive(new Uint8Array(await segment.arrayBuffer()));
+      const source = await decodeChunk(new Uint8Array(await raw.arrayBuffer()));
+      if (archived.length !== 1 || archived[0]?.tick !== tick || canonicalJson(archived) !== canonicalJson(source))
+        fail("archive-r2-parity", "source and archive differ at tick " + tick);
+    }
+    archiveGame = gameId;
+    out.archive = {segments:index.items.length, archive_sha256:index.archive_sha256};
+  } catch (e) { fail("archive-alarm", e); }
   out.ingest = { game: gameId, start_subscribe_and_frame_ms: +(performance.now() - t9).toFixed(1) };
   for (const s of [json, packed, game]) s.ws.close();
 }
@@ -445,6 +478,21 @@ if (wakeWait > 0) {
   // A title file, as an admin.
   if (adminTag) {
     const admin = await createAccount(api, base, aud, adminTag);
+    const uri = api + "/admin/replay-archives/" + archiveGame;
+    const info = await (await fetch(uri, {headers:{authorization:`Bearer ${await issueToken(admin, aud, "admin.read")}`}})).json();
+    const verify = async (cursor: string | null) => {
+      const r = await timed(uri + "/step", {method:"POST",
+        headers:{authorization:`Bearer ${await issueToken(admin, aud, "admin.write")}`, "content-type":"application/json"},
+        body:JSON.stringify({mode:"verify",source_position:info.source_position,cursor})});
+      if (!r.r.ok) fail("archive-verify", r.body);
+      return JSON.parse(r.body);
+    };
+    const first = await verify(null);
+    const last = await verify(first.next);
+    if (first.done || !first.next || !last.done || last.totals.frames !== 2 || last.totals.segments !== 2 ||
+        last.archive_sha256 !== info.archive_sha256 || last.backup_sha256 !== info.backup_sha256 ||
+        canonicalJson(await verify(first.next)) !== canonicalJson(last)) fail("archive-retry", JSON.stringify(last));
+    r2.verified_archive = last.totals;
     const file = random(2 * 1024 * 1024);
     const url = `${api}/titles/4d530064/files/smoke.bin`;
     t = performance.now();
