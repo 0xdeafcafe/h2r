@@ -673,13 +673,35 @@ Halo ring were already built this way.
   and did not move under its driver (user report, converted Blood Gulch,
   2026-11-19). Halo 1's ghost has three powered points, so its role is
   the retail ghost alone (`tests/vehicle_rebuild_disc.rs`,
-  `ghost_takes_the_retail_ghosts_role`). Every hover point takes the
-  majority over the ghost's three, the front pair's words: which Halo 1
-  point is the retail back point is not decided (pairing them needs the
-  retail markers' positions), so the back point's larger strength is
-  not carried. The driver seat now takes the ghost driver's words, bit
-  15 of its flags (`0x801c` on the retail ghost driver; the mixed role
-  left `0x1c`) included; what bit 15 does is not established.
+  `ghost_takes_the_retail_ghosts_role`). The retail ghost's hover points
+  are not alike (its back point holds strength 3.75 and height 0.5, its
+  front pair 1.85 and 0.45), so with a one-member role whose hover
+  points match Halo 1's in number each converted point takes one retail
+  point's own words (`VehicleRole::hover_each`), paired by position:
+  each retail point's marker is placed in the vehicle's space through
+  its render model's rest pose (`rebuild::marker_positions`: the hover
+  point's marker `+0` names a `mode` marker group, whose first marker's
+  translation is carried through its node), and in the retail order each
+  takes the nearest Halo 1 powered point left (`convert::sphere_order`,
+  as friction points take phantom spheres). With a marker missing or
+  counts that differ, every point takes the majority as before.
+- **Seat flag bit 15** (`rebuild::SEAT_OPENS`). E: on entering a seat
+  the engine tests bit 15 of the seat's flags (`0x000d12b0`, the test at
+  `0x000d1302`; called from the seat change at `0x000ea979`, `0x000eab64`,
+  `0x000eb1ff`) and, set, sends the vehicle unit action `0x17`; on
+  leaving (`0x000d1360`, test at `0x000d13b2`; from `0x000ea7a5`,
+  `0x000ea8ba`) action `0x18`. The action table at `0x004677c8` gives
+  them `0x000e9370` and `0x000e9500`, which start the animation state
+  `0x0700005c` or `0x0700005d` (string IDs of seven characters, D:
+  `opening` and `closing` by length, not read off the string table) on
+  the vehicle and the objects attached to it. No other read of bit 15 of
+  a seat's flags was found (every `vehi +0x1cc` load followed by a bit 15
+  test, over the whole `.text`). The retail ghost driver holds it
+  (`0x801c`); Halo 1 has no such seat flag and its graphs no such state,
+  so since converter version 84 a rebuilt seat never takes it from the
+  role (the one-member ghost role would have carried it). It is not a
+  grenade switch: the converted ghost's driver throwing grenades is not
+  explained here.
 - **References**: the unit's weapons are Halo 1's converted weapons
   where they convert (no Halo 1 vehicle weapon converts yet, each listed
   in the report). Since version 50 the attachments are Halo 1's looping

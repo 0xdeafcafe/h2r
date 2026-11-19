@@ -2249,10 +2249,21 @@ impl<'a> Converter<'a> {
             }
         }
         let points: Vec<crate::rebuild::Point> = {
-            let spheres = role
-                .as_ref()
-                .map(crate::rebuild::role_spheres)
-                .unwrap_or_default();
+            // Friction points follow the role's phantom spheres; hover
+            // points (a role with no friction points) the member's hover
+            // markers, so each takes the words of the retail point nearest
+            // it (`VehicleRole::hover_each`).
+            let spheres = match &role {
+                Some(r)
+                    if r.friction.is_none()
+                        && r.hover.is_some()
+                        && r.hover_at.len() == powered.len() =>
+                {
+                    r.hover_at.clone()
+                }
+                Some(r) => crate::rebuild::role_spheres(r),
+                None => Vec::new(),
+            };
             let at: Vec<[f32; 3]> = powered.iter().map(|p| p.object).collect();
             let order = sphere_order(&at, &spheres);
             order.into_iter().map(|i| powered[i].point.clone()).collect()

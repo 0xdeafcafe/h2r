@@ -606,6 +606,22 @@ pub const SEAT_BOARDING: u32 = 1 << 11;
 pub const SEAT_NOT_PLAYER: u32 = 1 << 16;
 /// See [`SEAT_DRIVER`].
 pub const SEAT_NOT_NON_PLAYER: u32 = 1 << 17;
+/// A seat whose entry and exit open and close the vehicle. E: when a unit
+/// enters a seat the engine tests the seat's flags bit 15 (`0x000d12b0`,
+/// `shr edx,0Fh` at `0x000d1302`; called from the seat change at
+/// `0x000ea979`, `0x000eab64`, `0x000eb1ff`) and, set, sends the vehicle
+/// unit action `0x17`; on leaving (`0x000d1360`, from `0x000ea7a5`,
+/// `0x000ea8ba`) action `0x18`. Through the action table at `0x004677c8`
+/// those are `0x000e9370` and `0x000e9500`, which start the animation
+/// state string ID `0x0700005c` or `0x0700005d` (two seven-character
+/// names, D: `opening` and `closing` by length; not read off the string
+/// table) on the vehicle and the objects attached to it. No other reader
+/// of bit 15 of a seat's flags was found (every `vehi +0x1cc` read
+/// followed by a bit 15 test). The retail ghost's driver seat holds it
+/// (`0x801c`). Halo 1 has no such seat flag (it sets none above bit 10)
+/// and its graphs no such state, so a rebuilt seat never takes it from
+/// the role. It has nothing to do with grenades.
+pub const SEAT_OPENS: u32 = 1 << 15;
 /// The seat flag bits Halo 1 holds (its seat `+0`), which a rebuilt seat
 /// takes from Halo 1: Halo 1 sets none above bit 10, and on the eight
 /// pairs of `tests/vehicle_rebuild_disc.rs` its bits agree with the Halo 2
@@ -637,9 +653,10 @@ impl SeatKind {
 /// A rebuilt seat's flags: Halo 1's bits ([`H1_SEAT_FLAGS`]) over the
 /// rest of the role's word, less the bits that would keep a rider out
 /// (Halo 1 seats are neither boarding seats nor closed to players or
-/// non-players).
+/// non-players) and [`SEAT_OPENS`] (no Halo 1 vehicle opens for its
+/// rider).
 pub fn seat_flags(h1_flags: u32, role: u32) -> u32 {
-    let closed = H1_SEAT_FLAGS | SEAT_BOARDING | SEAT_NOT_PLAYER | SEAT_NOT_NON_PLAYER;
+    let closed = H1_SEAT_FLAGS | SEAT_BOARDING | SEAT_NOT_PLAYER | SEAT_NOT_NON_PLAYER | SEAT_OPENS;
     (role & !closed) | (h1_flags & H1_SEAT_FLAGS)
 }
 
@@ -791,6 +808,16 @@ pub struct VehicleRole {
     pub friction_steered: Option<Vec<(String, u32)>>,
     /// The same for the hover points, `+0x2e8`.
     pub hover: Option<Vec<(String, u32)>>,
+    /// With one member: each of its hover points' own words, in its order
+    /// (V: the retail ghost's back point holds strength `+0x8` 3.75 and
+    /// height `+0x10` 0.5, its front pair 1.85 and 0.45, so one majority
+    /// gives all three the front pair's); empty with several members.
+    pub hover_each: Vec<Vec<(String, u32)>>,
+    /// Where those points' markers sit in the member's space, at its
+    /// render model's rest pose ([`marker_positions`]), in the same order;
+    /// empty when a marker is not found. A rebuilt vehicle's points are
+    /// paired with them by position ([`crate::convert::sphere_order`]).
+    pub hover_at: Vec<[f32; 3]>,
     /// The engine gears, `+0x268`: the element count most members with
     /// gears hold and each element's majority words, every 4-byte field
     /// (raw curve pointers included, kept as the words they are: the
@@ -1026,6 +1053,10 @@ pub fn vehicle_role(
     let fflags_at = field_offset(fdef, FRICTION_FLAGS)? as usize;
     let steers = |x: &[u8]| crate::base::u32_at(x, fflags_at) & FRICTION_STEERS != 0;
     let (hat, hdef) = block(VEHI_HOVER)?;
+    let (hover_each, hover_at) = match members.as_slice() {
+        [(_, root)] => member_hover(base, root, d, hat, hdef)?,
+        _ => (Vec::new(), Vec::new()),
+    };
     let (gat, gdef) = block(VEHI_GEARS)?;
     // Gears: the count most members with gears hold, each element's
     // majority over the members of that count.
@@ -1072,8 +1103,142 @@ pub fn vehicle_role(
         },
         friction_steered: all_elements_where(base, &members, fat, fdef, steers)?,
         hover: all_elements(base, &members, hat, hdef)?,
+        hover_each,
+        hover_at,
         gears,
     }))
+}
+
+/// A base vehicle's hover points ([`VEHI_HOVER`], element `e` at `at` of
+/// its root): each one's words (its nonzero 4-byte words) and where its
+/// marker sits ([`marker_positions`]; empty when a marker is not found).
+fn member_hover(
+    base: &crate::base::Base,
+    root: &[u8],
+    d: &StructDef,
+    at: usize,
+    e: &StructDef,
+) -> Result<(Vec<Vec<(String, u32)>>, Vec<[f32; 3]>)> {
+    let mut spans = Vec::new();
+    word_spans(e, "", 0, &mut spans);
+    let marker_at = field_offset(e, HOVER_MARKER)? as usize;
+    let mut words = Vec::new();
+    let mut names = Vec::new();
+    while let Some(x) = base.element(root, at, e.size as usize, words.len())? {
+        let mut t = Tally::new();
+        tally_words(&x, &spans, &mut t);
+        words.push(majority(&t));
+        names.push(crate::base::u32_at(&x, marker_at));
+    }
+    let positions = marker_positions(base, root, d, &names)?.unwrap_or_default();
+    Ok((words, positions))
+}
+
+/// Where the markers named `names` (string IDs of the base) sit in the
+/// space of the base vehicle whose root is `root`: each name's first
+/// marker in its render model (`hlmt +0` of `unit.obje.model`), its
+/// translation (`+0x4`) carried through its node (`+0x2`) at the model's
+/// rest pose (node translation `+0xc`, orientation `+0x18`, composed from
+/// the root as `h1models::mode::world_transforms` does). `None` when the
+/// model or any marker is missing.
+pub fn marker_positions(
+    base: &crate::base::Base,
+    root: &[u8],
+    d: &StructDef,
+    names: &[u32],
+) -> Result<Option<Vec<[f32; 3]>>> {
+    let Some(hlmt) = base.reference(root, path_offset(d, "unit.obje.model")? as usize) else {
+        return Ok(None);
+    };
+    let h = base.root(hlmt)?;
+    let Some(mode) = base.reference(&h, field_offset(def(b"hlmt")?, "render_model")? as usize)
+    else {
+        return Ok(None);
+    };
+    let m = base.root(mode)?;
+    let md = def(b"mode")?;
+    let child = |name: &str| -> Result<(usize, &'static StructDef)> {
+        Ok((
+            field_offset(md, name)? as usize,
+            md.child(name)
+                .ok_or_else(|| Error::Invalid(format!("mode {name}")))?,
+        ))
+    };
+    let floats = |b: &[u8], at: usize, n: usize| -> Vec<f32> {
+        (0..n)
+            .map(|k| f32::from_le_bytes(b[at + 4 * k..at + 4 * k + 4].try_into().expect("4")))
+            .collect()
+    };
+    let (nodes_at, nd) = child("nodes")?;
+    let (parent, translation, orientation) = (
+        field_offset(nd, "parent_index")? as usize,
+        field_offset(nd, "translation")? as usize,
+        field_offset(nd, "orientation")? as usize,
+    );
+    let mut nodes = Vec::new();
+    while let Some(x) = base.element(&m, nodes_at, nd.size as usize, nodes.len())? {
+        let q = floats(&x, orientation, 4);
+        let t = floats(&x, translation, 3);
+        nodes.push((
+            i16::from_le_bytes([x[parent], x[parent + 1]]),
+            [q[0], q[1], q[2], q[3]],
+            [t[0], t[1], t[2]],
+        ));
+    }
+    let world = h1models::mode::world_transforms(&nodes);
+    let (groups_at, gd) = child("marker_groups")?;
+    let markers_def = gd
+        .child("markers")
+        .ok_or_else(|| Error::Invalid("mode markers".into()))?;
+    let (group_name, markers_at) = (
+        field_offset(gd, "name")? as usize,
+        field_offset(gd, "markers")? as usize,
+    );
+    let (marker_node, marker_translation) = (
+        field_offset(markers_def, "node")? as usize,
+        field_offset(markers_def, "translation")? as usize,
+    );
+    let mut groups = Vec::new();
+    while let Some(g) = base.element(&m, groups_at, gd.size as usize, groups.len())? {
+        groups.push(g);
+    }
+    let mut out = Vec::new();
+    for name in names {
+        let Some(g) = groups
+            .iter()
+            .find(|g| crate::base::u32_at(g, group_name) == *name)
+        else {
+            return Ok(None);
+        };
+        let Some(x) = base.element(g, markers_at, markers_def.size as usize, 0)? else {
+            return Ok(None);
+        };
+        let Some((r, p)) = world.get(x[marker_node] as usize) else {
+            return Ok(None);
+        };
+        let t = floats(&x, marker_translation, 3);
+        out.push(std::array::from_fn(|a| {
+            p[a] + (0..3).map(|k| r[a][k] * t[k]).sum::<f32>()
+        }));
+    }
+    Ok(Some(out))
+}
+
+/// A field's offset through embedded structs (`unit.obje.model`).
+fn path_offset(d: &StructDef, path: &str) -> Result<u32> {
+    let (head, rest) = path
+        .split_once('.')
+        .map_or((path, None), |(h, r)| (h, Some(r)));
+    let f = d
+        .fields
+        .iter()
+        .find(|f| f.name == head)
+        .ok_or_else(|| Error::Invalid(format!("{}: no field {head}", d.name)))?;
+    match (rest, &f.kind) {
+        (None, _) => Ok(f.offset),
+        (Some(r), defs::Kind::Struct(s)) => Ok(f.offset + path_offset(s, r)?),
+        _ => Err(Error::Invalid(format!("{}: {path}", d.name))),
+    }
 }
 
 /// A base vehicle's friction and hover points together ([`VEHI_FRICTION`],
@@ -1384,10 +1549,18 @@ pub fn vehicle(v: &VehicleSpec) -> Result<Block> {
         {
             let e = d.child(block).expect("vehi points");
             let mut out = Vec::new();
-            for p in v.points {
+            for (i, p) in v.points.iter().enumerate() {
                 let mut x = defs::default_record(e);
                 let words = match (block, p.steered, &role.friction_steered) {
                     (VEHI_FRICTION, true, Some(w)) => w,
+                    // Point i is paired with the member's hover point i
+                    // (the caller orders the points by `hover_at`).
+                    (VEHI_HOVER, _, _)
+                        if role.hover_each.len() == v.points.len()
+                            && role.hover_at.len() == v.points.len() =>
+                    {
+                        &role.hover_each[i]
+                    }
                     _ => words,
                 };
                 role_words(&mut x, words)?;

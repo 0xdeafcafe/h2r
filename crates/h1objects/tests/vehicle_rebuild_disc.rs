@@ -972,6 +972,75 @@ fn ghost_takes_the_retail_ghosts_role() {
         panic!()
     };
     assert_eq!(points.len(), 3, "hover points");
+    // Each point takes one retail point's own words, paired by position:
+    // the three retail points' words each once, and the strongest (the
+    // retail back point's) on the Halo 1 point nearest its marker.
+    assert_eq!(role.hover_each.len(), 3, "the ghost's hover points");
+    assert_eq!(role.hover_at.len(), 3, "the ghost's hover markers");
+    let word = |x: &Record, k: &str| match x.get(k) {
+        Some(Val::Bytes(b)) => u32::from_le_bytes(b[..4].try_into().unwrap()),
+        v => panic!("{k}: {v:?}"),
+    };
+    let fields = [
+        "unknown_8",
+        "unknown_10",
+        "unknown_14",
+        "unknown_18",
+        "unknown_1c",
+        "unknown_20",
+    ];
+    let mut want: Vec<Vec<u32>> = role
+        .hover_each
+        .iter()
+        .map(|w| {
+            fields
+                .iter()
+                .map(|f| w.iter().find(|(p, _)| p == f).map_or(0, |(_, x)| *x))
+                .collect()
+        })
+        .collect();
+    let mut got: Vec<Vec<u32>> = points
+        .iter()
+        .map(|p| fields.iter().map(|f| word(p, f)).collect())
+        .collect();
+    want.sort();
+    got.sort();
+    assert_eq!(got, want, "the retail ghost's hover points, each once");
+    let strength = |w: &[(String, u32)]| {
+        f32::from_bits(
+            w.iter()
+                .find(|(p, _)| p == "unknown_8")
+                .map_or(0, |(_, x)| *x),
+        )
+    };
+    let back = (0..3)
+        .max_by(|a, b| strength(&role.hover_each[*a]).total_cmp(&strength(&role.hover_each[*b])))
+        .unwrap();
+    let phys = h1::Physics::read(&h1, h1.tag(u.object.physics.unwrap()).unwrap()).unwrap();
+    let h1_points: Vec<(String, [f32; 3])> = phys
+        .mass_points
+        .iter()
+        .filter(|m| m.powered_mass_point >= 0)
+        .map(|m| (h1objects::coll::sid_name(&m.name), m.position))
+        .collect();
+    println!("retail hover markers {:?}, back {back}", role.hover_at);
+    println!("Halo 1 powered points {h1_points:?}");
+    let dist = |a: [f32; 3], b: [f32; 3]| (0..3).map(|k| (a[k] - b[k]).powi(2)).sum::<f32>();
+    let nearest = h1_points
+        .iter()
+        .min_by(|a, b| dist(a.1, role.hover_at[back]).total_cmp(&dist(b.1, role.hover_at[back])))
+        .unwrap();
+    let strongest = points
+        .iter()
+        .max_by(|a, b| {
+            f32::from_bits(word(a, "unknown_8")).total_cmp(&f32::from_bits(word(b, "unknown_8")))
+        })
+        .unwrap();
+    assert_eq!(
+        strongest.get("string_0"),
+        Some(&Val::String(Str::Text(nearest.0.clone()))),
+        "the back point's words"
+    );
     for (k, p) in points.iter().enumerate() {
         for f in ["unknown_8", "unknown_10", "unknown_14"] {
             assert!(

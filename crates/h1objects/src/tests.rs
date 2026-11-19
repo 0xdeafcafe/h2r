@@ -721,8 +721,9 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
             )],
         },
         // Driver, gunner and passenger seats' words; the driver's flags
-        // carry a bit Halo 1 lacks (kept), a boarding bit and a closed-to-
-        // players bit (dropped) and a gunner bit (Halo 1's bits win).
+        // carry a bit Halo 1 lacks (19, kept), a boarding bit, a closed-to-
+        // players bit and the opens-the-vehicle bit (11, 16, 15: dropped)
+        // and a gunner bit (Halo 1's bits win).
         seats: [
             vec![
                 ("unknown_0".into(), 0x0009_8808),
@@ -736,6 +737,8 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
         friction: Some(vec![("unknown_8".into(), 0x4160_0000), ("unknown_4".into(), 0x32)]),
         friction_steered: Some(vec![("unknown_8".into(), 0x4160_0000), ("unknown_4".into(), 0x26)]),
         hover: None,
+        hover_each: Vec::new(),
+        hover_at: Vec::new(),
         gears: vec![vec![
             ("unknown_0".into(), 0x4795_6a00),
             ("raw_14".into(), 0x4000_1234),
@@ -806,7 +809,7 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
     // Each seat takes its kind's words.
     assert_eq!(got.at("block_1c8[0].unknown_20").cloned(), word(0x3f00_0000));
     assert_eq!(got.at("block_1c8[1].unknown_20").cloned(), word(0x3d00_0000));
-    assert_eq!(got.at("block_1c8[0].unknown_0").cloned(), word(0x0008_8014));
+    assert_eq!(got.at("block_1c8[0].unknown_0").cloned(), word(0x0008_0014));
     assert_eq!(got.at("block_1c8[1].unknown_0").cloned(), word(0x60));
     // Halo 1's entry markers face the vehicle's forward: no facing test,
     // whatever the role's seats hold.
@@ -2249,4 +2252,79 @@ fn vehicle_role_takes_the_members_nearest_halo_1s_points() {
     assert_eq!(nearest_members(&[0, 0], 0), vec![0, 1]);
     assert_eq!(nearest_members(&[4], 8), vec![0]);
     assert!(nearest_members(&[], 3).is_empty());
+}
+
+/// With a one-member role whose hover points match the vehicle's in
+/// number, point `i` takes the member's hover point `i`'s own words (the
+/// retail ghost's back point is stronger than its front pair); with a
+/// count that differs, every point takes the majority.
+#[test]
+fn hover_points_take_their_paired_points_words() {
+    use crate::rebuild::{VEHI_HOVER, VehicleRole, VehicleSpec};
+    use tags::defs::{self, Defs, Val};
+    let obj = crate::h1::Object {
+        object_type: 1,
+        flags: 0,
+        bounding_radius: 1.0,
+        bounding_offset: [0.0; 3],
+        model: None,
+        animation: None,
+        collision: None,
+        physics: None,
+        modifier_shader: None,
+        creation_effect: None,
+        attachments: Vec::new(),
+        widgets: Vec::new(),
+    };
+    let f = |v: f32| v.to_bits();
+    let role = VehicleRole {
+        hover: Some(vec![("unknown_8".into(), f(1.85))]),
+        hover_each: vec![
+            vec![("unknown_8".into(), f(3.75))],
+            vec![("unknown_8".into(), f(1.85))],
+            vec![
+                ("unknown_8".into(), f(1.85)),
+                ("unknown_10".into(), f(0.45)),
+            ],
+        ],
+        hover_at: vec![[-0.4, 0.0, 0.0], [0.3, 0.3, 0.0], [0.3, -0.3, 0.0]],
+        ..Default::default()
+    };
+    let point = |m: &str| crate::rebuild::Point {
+        marker: m.into(),
+        region: String::new(),
+        region_index: -1,
+        steered: false,
+    };
+    let def = Defs::builtin().group(map::FourCC(*b"vehi")).unwrap();
+    let build = |points: &[crate::rebuild::Point]| {
+        let root = crate::rebuild::vehicle(&VehicleSpec {
+            object: &obj,
+            bounds: None,
+            hlmt: None,
+            seats: &[],
+            predicted: &[],
+            camera_field_of_view: 1.0,
+            vehicle_type: 4,
+            flags: 0,
+            weapons: &[],
+            role: Some(&role),
+            points,
+            attachments: &[],
+            functions: &[],
+            creation_effect: None,
+        })
+        .unwrap();
+        defs::from_built(def, &root).unwrap()
+    };
+    let word = |w: f32| Some(Val::Bytes(f(w).to_le_bytes().to_vec()));
+    let got = build(&[point("hull"), point("left"), point("right")]);
+    let at = |r: &defs::Record, i: usize, k: &str| r.at(&format!("{VEHI_HOVER}[{i}].{k}")).cloned();
+    assert_eq!(at(&got, 0, "unknown_8"), word(3.75));
+    assert_eq!(at(&got, 1, "unknown_8"), word(1.85));
+    assert_eq!(at(&got, 2, "unknown_10"), word(0.45));
+    assert_eq!(at(&got, 1, "unknown_10"), word(0.0));
+    let got = build(&[point("a"), point("b")]);
+    assert_eq!(at(&got, 0, "unknown_8"), word(1.85));
+    assert_eq!(at(&got, 1, "unknown_8"), word(1.85));
 }
