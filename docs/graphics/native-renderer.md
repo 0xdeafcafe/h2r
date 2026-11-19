@@ -349,7 +349,9 @@ surfaces only (the D3D ones are the game's own):
   tests `LessEqual` against it, so the native W depth must be the D3D
   path's bit for bit; one step deeper fails the test;
 - **a whole material too dark, too bright or flat**: its lightmap (the
-  P8 page through its palette, bound at stage 3) or a constant;
+  P8 page through its palette, bound at stage 3), its bump map (`P8Bump`
+  through the device palette at stage 2; black walls with bright pillars
+  was the bump sampled as its index) or a constant;
   `impl.render.native_world_programs=off` shows that material in the
   stage 1 look for comparison;
 - **shimmer or blur at a distance**: sampling (the bump stage is 4x
@@ -539,6 +541,28 @@ vector (`v1`) and view vector (`v0`), and the lightmap (stage 3). Its
      addressed in texels on the D3D path, `tex_scale`), and so must a
      lightmap page. One part that cannot be drawn keeps the whole
      material on the D3D path (the skip is per shader).
+   - Palettized stage bitmaps. `tex_bump`'s bump stage (stage 2) is
+     `P8Bump`, and `P8` is palettized too: the tag has no palette, and
+     `assets` decodes both as their index in every channel. The D3D path
+     samples them through the device palette bound at their stage, so the
+     native pass expands them through the same one: the load gets the
+     palettes bound at stages 0..3 when it starts (`Device::stage_palette`,
+     read-only), and refuses a palettized bitmap at stage 3 or at a stage
+     with no full 256-entry palette. Each ask checks that the palettes
+     the load used are still bound, and otherwise leaves the world to the
+     D3D path (said once). Research (Code, `h2 disasm`): `SetPalette`
+     (`0x3f84d0`) is called with the default palette (`[0x484DBC]`) on
+     every stage at boot and by `0x00015b70`, which also clears the
+     per-stage cache at `0x484DC0`; `0x00015c90` binds a lightmap's
+     palette and its one caller is the structure draw (`0x0004d416`), at
+     stage 3; `0x00044628` puts stage 0 back to the default. So for the
+     world's layer 3, stages 0..2 hold the default palette. Before this
+     (the first 03a A/B with programs on, 2026-11-19) the bump map was
+     sampled as its index, a grey: the bump term `bx2(t2)·L` was wrong,
+     `r0` clamped to black on most walls and floors and came out too
+     bright on others. The load names the native materials that sample a
+     palettized bitmap (`sample a palettized stage bitmap`), the first to
+     compare in an A/B.
    - Samplers are made as the D3D path makes them
      (`gfx::translate::SamplerKey::from_stage`: anisotropy, `MAXMIPLEVEL`
      as the smallest LOD, address 5 clamping to the edge), and

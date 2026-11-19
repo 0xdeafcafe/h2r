@@ -22,7 +22,11 @@
 //!   frame. Every other material is left out of the world and keeps its
 //!   D3D draws (the skip only clears items of the shaders the world draws,
 //!   and a shader only when all its materials are native). The load says
-//!   the coverage and each reason once, with counts.
+//!   the coverage and each reason once, with counts. A palettized stage
+//!   bitmap (the bump map's P8) is expanded through the device palette
+//!   bound at its stage when the load started, as the D3D path samples
+//!   it; while that palette is no longer bound the D3D path draws the
+//!   world.
 //! - **Stage 1** (`impl.render.native_world_programs=off`, for the A/B
 //!   only): every material whose base map decodes, drawn as base map
 //!   times lightmap.
@@ -84,6 +88,10 @@ pub struct Ready {
     /// What the native lights draw over this world
     /// (`native_lights_glue`; `None` with them off).
     pub(crate) lights: Option<Arc<crate::native_lights_glue::LightsWorld>>,
+    /// The device palettes the load expanded palettized stage bitmaps
+    /// through, at the stages it used them (the rest `None`): each ask
+    /// checks they are still bound.
+    palettes: StagePalettes,
 }
 
 /// The current (map, BSP) and its world.
@@ -109,16 +117,29 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             return None;
         }
         let key = (name, bsp);
-        let ready = {
-            let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            if st.0.as_ref() != Some(&key) {
+        let ready = 'ready: {
+            {
+                let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                if st.0.as_ref() == Some(&key) {
+                    match &st.1 {
+                        Load::Ready(r) => break 'ready Arc::clone(r),
+                        Load::Idle | Load::Loading | Load::Failed => return None,
+                    }
+                }
                 *st = (Some(key.clone()), Load::Loading);
+            }
+            // The palettes bound now, for the stage bitmaps that are
+            // palettized (P8, P8 bump): the D3D path samples them through
+            // the device's palette at their stage, which the load expands
+            // them through. Read with no other lock held.
+            let palettes = self.device.lock().ok().map(|d| stage_palettes(&d, mem)).unwrap_or_default();
+            {
                 let state = Arc::clone(&self.state);
                 std::thread::Builder::new()
                     .name("native-world load".into())
                     .spawn(move || {
                         let t0 = std::time::Instant::now();
-                        let out = load_ready(&key.0, key.1);
+                        let out = load_ready(&key.0, key.1, palettes);
                         let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
                         if st.0.as_ref() != Some(&key) {
                             return;
@@ -154,13 +175,18 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                     .ok()?;
                 return None;
             }
-            match &st.1 {
-                Load::Ready(r) => Arc::clone(r),
-                Load::Idle | Load::Loading | Load::Failed => return None,
-            }
         };
         let mut d = self.device.lock().ok()?;
         if !d.can_external_pass() {
+            return None;
+        }
+        // The palettes the load expanded its palettized stage bitmaps
+        // through must still be the ones bound: otherwise the D3D path
+        // draws the world (its samples would differ).
+        if !palettes_hold(&ready.palettes, &|s| d.stage_palette(&ReadMemory(mem), s)) {
+            if !PALETTE_CHANGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                eprintln!("native-world: a stage palette changed since the load expanded its bitmaps through it; the D3D path draws the world");
+            }
             return None;
         }
         d.request_external_pass(Box::new(WorldPass {
@@ -295,6 +321,39 @@ impl d3d::ExternalPass for WorldPass {
 /// Said once: a pass without view constants, batches left out.
 static NO_VIEW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static UNBOUND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static PALETTE_CHANGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The device palette at each texture stage (`A8R8G8B8` entries), or
+/// `None`: what a palettized stage bitmap (P8, P8 bump) is sampled through
+/// on the D3D path. A world keeps those of the stages it expanded
+/// bitmaps through.
+pub type StagePalettes = [Option<Vec<u32>>; 4];
+
+/// The palettes bound at stages 0..3 now.
+fn stage_palettes<B: d3d::backend::Backend>(d: &d3d::Device<B>, mem: &dyn GuestMemory) -> StagePalettes {
+    std::array::from_fn(|s| d.stage_palette(&ReadMemory(mem), s))
+}
+
+/// Whether each palette a world expanded through is still the one bound
+/// at its stage (`bound`).
+fn palettes_hold(used: &StagePalettes, bound: &dyn Fn(usize) -> Option<Vec<u32>>) -> bool {
+    used.iter().enumerate().all(|(s, p)| p.is_none() || bound(s) == *p)
+}
+
+/// The hook's guest memory as the device reads it, read-only.
+struct ReadMemory<'a>(&'a dyn GuestMemory);
+
+impl d3d::GuestMemory for ReadMemory<'_> {
+    fn read(&self, addr: u32, out: &mut [u8]) -> Result<(), d3d::GuestError> {
+        self.0.read(addr, out).map_err(|f| d3d::GuestError { addr: f.addr, len: f.len })
+    }
+    fn write(&mut self, addr: u32, data: &[u8]) -> Result<(), d3d::GuestError> {
+        Err(d3d::GuestError {
+            addr,
+            len: data.len() as u32,
+        })
+    }
+}
 
 /// Raw resource reads over the map and its shared maps.
 pub(crate) struct Raw(pub(crate) assets::ResourceFiles);
@@ -316,7 +375,7 @@ pub(crate) fn region(f: &MapFile) -> assets::Region {
 }
 
 /// Loads the world of map `name`'s BSP whose tag data sits at `bsp`.
-fn load_ready(name: &str, bsp: u32) -> Result<Ready, load::Error> {
+fn load_ready(name: &str, bsp: u32, palettes: StagePalettes) -> Result<Ready, load::Error> {
     let file = locate(name).ok_or("the map's file is not found")?;
     let mut map = Map::from_region(BufReader::new(std::fs::File::open(&file.path)?), file.offset, file.len)?;
     let mut files = assets::ResourceFiles::new();
@@ -385,10 +444,14 @@ fn load_ready(name: &str, bsp: u32) -> Result<Ready, load::Error> {
     // map decodes, drawn as base map times lightmap.
     let mut base_maps = HashMap::new();
     let mut native = HashSet::new();
+    let mut used_palettes = StagePalettes::default();
+    let mut palettized = Vec::new();
     let (mut programs, mut stage_images, refused) = if programs_on {
-        let (programs, images, refused) = material_programs(&mut map, &mut files, &shaders, &world, &lightmaps);
-        native.extend(programs.keys().copied());
-        (programs, images, refused)
+        let out = material_programs(&mut map, &mut files, &shaders, &world, &lightmaps, &palettes);
+        native.extend(out.programs.keys().copied());
+        used_palettes = out.palettes;
+        palettized = out.palettized;
+        (out.programs, out.images, out.refused)
     } else {
         let mut decoded: HashMap<TagId, Option<Image>> = HashMap::new();
         for m in world.materials() {
@@ -412,6 +475,17 @@ fn load_ready(name: &str, bsp: u32) -> Result<Ready, load::Error> {
     base_maps.retain(|m, _| native.contains(m));
     if programs_on {
         log_coverage(&mut map, &world, &shaders, &native, refused, &shared);
+        palettized.retain(|m| native.contains(m));
+        if !palettized.is_empty() {
+            // The materials whose look depends on a device palette (the
+            // bump maps' normals): the ones to compare first in an A/B.
+            let parts = world.draws.iter().filter(|d| palettized.contains(&d.material)).count();
+            eprintln!(
+                "native-world: {} native materials ({parts} parts) sample a palettized stage bitmap (P8 bump or P8) through the device's stage palette: {:?}",
+                palettized.len(),
+                palettized
+            );
+        }
     }
     // Transparent materials: each one's layer-15 passes where they all
     // translate, and the parts the native pass can draw.
@@ -445,6 +519,7 @@ fn load_ready(name: &str, bsp: u32) -> Result<Ready, load::Error> {
         shaders: Arc::new(shader_set),
         transparent_parts: Arc::new(transparent_parts),
         lights,
+        palettes: used_palettes,
     })
 }
 
@@ -557,30 +632,53 @@ fn keep_materials(mut world: World, native: &HashSet<u16>) -> World {
 /// Stage images by (bitmap, image index).
 pub type StageImages = HashMap<(TagId, u32), Image>;
 
+/// What [`material_programs`] gives.
+#[derive(Default)]
+struct Programs {
+    programs: HashMap<u16, MaterialProgram>,
+    images: StageImages,
+    refused: Refused,
+    /// The palettes palettized stage bitmaps were expanded through, at
+    /// their stages.
+    palettes: StagePalettes,
+    /// Materials with a palettized stage bitmap.
+    palettized: Vec<u16>,
+}
+
 /// The world's materials whose layer-3 pass translates and whose every
 /// part the native pass can draw with it (`program::compile_world`,
 /// `program::world_fit`), with the images their stages sample; and the
-/// others by the reason they stay on the D3D path.
+/// others by the reason they stay on the D3D path. A palettized stage
+/// bitmap is expanded through `palettes` at its stage ([`stage_image`]).
 fn material_programs<R: std::io::Read + std::io::Seek>(
     map: &mut Map<R>,
     files: &mut assets::ResourceFiles,
     shaders: &[TagId],
     world: &World,
     lightmaps: &HashMap<LightmapKey, Image>,
-) -> (HashMap<u16, MaterialProgram>, StageImages, Refused) {
-    let mut programs = HashMap::new();
-    let mut images = StageImages::new();
-    let mut refused = Refused::new();
+    palettes: &StagePalettes,
+) -> Programs {
+    let mut out = Programs::default();
+    let Programs {
+        programs,
+        images,
+        refused,
+        palettes: used,
+        palettized,
+    } = &mut out;
     let materials = world.materials();
     let mut lib = match tags::material::ShaderLibrary::read(map) {
         Ok(l) => l,
         Err(e) => {
             refused.insert(format!("the shader tags do not read ({e})"), materials);
-            return (programs, images, refused);
+            return out;
         }
     };
     let mut failed: HashSet<(TagId, u32)> = HashSet::new();
+    // The stage each palettized image was expanded at.
+    let mut expanded_at: HashMap<(TagId, u32), usize> = HashMap::new();
     for m in materials {
+        let mut uses_palette = false;
         let Some(&shader) = shaders.get(usize::from(m)) else {
             refused.entry("no shader".into()).or_default().push(m);
             continue;
@@ -597,20 +695,40 @@ fn material_programs<R: std::io::Read + std::io::Seek>(
                 program::world_fit(world, m, &p, &|k: LightmapKey| lightmaps.contains_key(&k))?;
                 for (n, s) in p.stages.iter().enumerate() {
                     let Stage::Bitmap { bitmap, image } = *s else { continue };
-                    if p.dims[n].is_none() || images.contains_key(&(bitmap, image)) {
+                    if p.dims[n].is_none() {
+                        continue;
+                    }
+                    if let Some(&at) = expanded_at.get(&(bitmap, image)) {
+                        // One expansion per image: another stage must hold
+                        // the same palette.
+                        if n == 3 || palettes[n] != palettes[at] {
+                            return Err(format!("stage {n} bitmap is palettized and was expanded through another stage's palette"));
+                        }
+                        uses_palette = true;
+                        continue;
+                    }
+                    if images.contains_key(&(bitmap, image)) {
                         continue;
                     }
                     if failed.contains(&(bitmap, image)) {
                         return Err(format!("stage {n} bitmap does not decode"));
                     }
-                    match decode_stage(map, files, bitmap, image as usize) {
-                        Ok(i) => {
+                    match decode_stage(map, files, bitmap, image as usize, n, &palettes[n]) {
+                        Ok((i, expanded)) => {
                             images.insert((bitmap, image), i);
+                            if expanded {
+                                expanded_at.insert((bitmap, image), n);
+                                used[n].clone_from(&palettes[n]);
+                                uses_palette = true;
+                            }
                         }
-                        Err(why) => {
+                        Err(StageRefusal::Image(why)) => {
                             failed.insert((bitmap, image));
                             return Err(format!("stage {n} bitmap {why}"));
                         }
+                        // Not the image's fault: it may do at another
+                        // stage.
+                        Err(StageRefusal::Palette(why)) => return Err(format!("stage {n} bitmap {why}")),
                     }
                 }
                 Ok(p)
@@ -618,33 +736,97 @@ fn material_programs<R: std::io::Read + std::io::Seek>(
         match compiled {
             Ok(p) => {
                 programs.insert(m, p);
+                if uses_palette {
+                    palettized.push(m);
+                }
             }
             Err(why) => refused.entry(why).or_default().push(m),
         }
     }
-    (programs, images, refused)
+    palettized.sort_unstable();
+    out
 }
 
-/// Image `index` of a stage's bitmap, or why the stage cannot have it: it
-/// does not decode, or it is a linear texture (addressed in texels on the
+/// Why a stage cannot have a bitmap's image: the image itself, or (only at
+/// this stage) its palette.
+#[derive(Debug, PartialEq, Eq)]
+enum StageRefusal {
+    Image(&'static str),
+    Palette(&'static str),
+}
+
+/// Image `index` of a stage's bitmap at stage `stage`, and whether it was
+/// expanded through the stage's palette; or why the stage cannot have it:
+/// it does not decode, it is a linear texture (addressed in texels on the
 /// D3D path, `tex_scale`, where the programs here take normalised
-/// coordinates).
+/// coordinates), or it is palettized and the stage has no palette for it
+/// ([`stage_image`]).
 fn decode_stage<R: std::io::Read + std::io::Seek>(
     map: &mut Map<R>,
     files: &mut assets::ResourceFiles,
     id: TagId,
     index: usize,
-) -> Result<Image, &'static str> {
-    let tags::TagData::Bitmap(b) = tags::DecodedTag::read(map, id).map_err(|_| "does not read")?.data else {
-        return Err("is not a bitmap");
+    stage: usize,
+    palette: &Option<Vec<u32>>,
+) -> Result<(Image, bool), StageRefusal> {
+    let tags::TagData::Bitmap(b) = tags::DecodedTag::read(map, id).map_err(|_| StageRefusal::Image("does not read"))?.data else {
+        return Err(StageRefusal::Image("is not a bitmap"));
     };
-    let d = assets::decode_image(b.images.get(index).ok_or("has no such image")?, files).map_err(|_| "does not decode")?;
+    let image = b.images.get(index).ok_or(StageRefusal::Image("has no such image"))?;
+    let d = assets::decode_image(image, files).map_err(|_| StageRefusal::Image("does not decode"))?;
     if d.desc.format.layout() == gfx::format::Layout::Linear {
-        return Err("is a linear texture");
+        return Err(StageRefusal::Image("is a linear texture"));
     }
-    let mut levels: Vec<_> = d.levels.into_iter().filter(|l| l.face == 0 && l.depth <= 1).collect();
+    stage_image(image.format, d.levels, stage, palette)
+}
+
+/// A stage bitmap's decoded levels as the stage samples them, and whether
+/// they went through its palette. A palettized format (P8, P8 bump)
+/// decodes as its index in every channel, and the D3D path samples it
+/// through the device palette bound at its stage: so it is expanded
+/// through `palette`, and refused at stage 3 (where the structure draw
+/// binds each lightmap's own palette, `0x00015c90`) or without a full
+/// palette. For the world's layer 3, stages 0..2 hold the device's default
+/// palette (bound on every stage at `0x00015b70`; only the lightmap binder
+/// binds another, at stage 3).
+fn stage_image(
+    format: tags::PixelFormat,
+    levels: Vec<assets::Level>,
+    stage: usize,
+    palette: &Option<Vec<u32>>,
+) -> Result<(Image, bool), StageRefusal> {
+    let palette: Option<[u32; 256]> = if matches!(format, tags::PixelFormat::P8 | tags::PixelFormat::P8Bump) {
+        if stage == 3 {
+            return Err(StageRefusal::Palette("is palettized at stage 3 (the lightmap's palette is bound there)"));
+        }
+        let p = palette
+            .as_ref()
+            .ok_or(StageRefusal::Palette("is palettized and no palette is bound at its stage"))?;
+        Some(
+            p.as_slice()
+                .try_into()
+                .map_err(|_| StageRefusal::Palette("is palettized and its stage's palette has fewer than 256 entries"))?,
+        )
+    } else {
+        None
+    };
+    let mut levels: Vec<_> = levels.into_iter().filter(|l| l.face == 0 && l.depth <= 1).collect();
     levels.sort_by_key(|l| l.level);
-    Image::from_levels(levels.into_iter().map(|l| (l.width, l.height, l.rgba)).collect()).ok_or("does not decode")
+    let image = Image::from_levels(
+        levels
+            .into_iter()
+            .map(|l| match &palette {
+                // Decoded as L8: the index in every channel.
+                Some(p) => {
+                    let indices: Vec<u8> = l.rgba.chunks_exact(4).map(|t| t[0]).collect();
+                    (l.width, l.height, load::expand_page(&indices, p))
+                }
+                None => (l.width, l.height, l.rgba),
+            })
+            .collect(),
+    )
+    .ok_or(StageRefusal::Image("does not decode"))?;
+    Ok((image, palette.is_some()))
 }
 
 /// The first image of a bitmap as RGBA, with its mip chain.
@@ -740,5 +922,72 @@ mod tests {
         let w = keep_materials(world, &native);
         assert!(w.draws.iter().all(|d| d.material == 7), "8 is not drawn natively (no stage 1 look)");
         assert!(set.contains(&0x107) && !set.contains(&0x108), "only 7's shader is skipped");
+    }
+
+    /// A 2x2 level and its 1x1 mip as `assets` decodes a P8 image: the
+    /// index in every channel.
+    fn indexed(indices: [u8; 4]) -> Vec<assets::Level> {
+        let level = |level, width, idx: &[u8]| assets::Level {
+            face: 0,
+            level,
+            width,
+            height: width,
+            depth: 1,
+            rgba: idx.iter().flat_map(|&i| [i, i, i, 0xff]).collect(),
+        };
+        vec![level(1, 1, &indices[..1]), level(0, 2, &indices)]
+    }
+
+    /// A palette of tangent-space normals packed as colours, `A8R8G8B8`.
+    fn normals() -> Vec<u32> {
+        (0..256u32).map(|i| 0xff00_0000 | ((i ^ 0x80) << 16) | ((0xff - i) << 8) | 0xfe).collect()
+    }
+
+    #[test]
+    fn a_palettized_bump_map_samples_its_stage_palette_not_its_index() {
+        // The 03a A/B: a P8 bump map sampled as its index (grey) gave the
+        // bump term a wrong normal, so `r0` clamped to black on most walls
+        // and over-brightened others. The stage samples the palette entry,
+        // as the D3D path does through the palette bound at that stage.
+        let (image, expanded) = stage_image(tags::PixelFormat::P8Bump, indexed([0, 1, 0x80, 0xff]), 2, &Some(normals())).unwrap();
+        assert!(expanded);
+        assert_eq!((image.width, image.height), (2, 2));
+        let texel = |i: usize| <[u8; 4]>::try_from(&image.rgba[4 * i..4 * i + 4]).unwrap();
+        assert_eq!(texel(0), [0x80, 0xff, 0xfe, 0xff]);
+        assert_eq!(texel(1), [0x81, 0xfe, 0xfe, 0xff]);
+        assert_eq!(texel(2), [0x00, 0x7f, 0xfe, 0xff]);
+        assert_eq!(texel(3), [0x7f, 0x00, 0xfe, 0xff]);
+        // The mip goes through the same palette.
+        assert_eq!(image.mips, vec![vec![0x80, 0xff, 0xfe, 0xff]]);
+        // Plain P8 the same.
+        assert!(stage_image(tags::PixelFormat::P8, indexed([0; 4]), 0, &Some(normals())).unwrap().1);
+    }
+
+    #[test]
+    fn a_palettized_stage_without_its_palette_stays_on_the_d3d_path() {
+        let p8 = tags::PixelFormat::P8Bump;
+        let palette = |e: StageRefusal| matches!(e, StageRefusal::Palette(_));
+        assert!(palette(stage_image(p8, indexed([0; 4]), 1, &None).unwrap_err()));
+        // Stage 3 holds each lightmap's palette.
+        assert!(palette(stage_image(p8, indexed([0; 4]), 3, &Some(normals())).unwrap_err()));
+        // A palette of fewer entries than the indices can reach.
+        assert!(palette(stage_image(p8, indexed([0; 4]), 0, &Some(normals()[..32].to_vec())).unwrap_err()));
+        // A direct format keeps its colours and needs no palette.
+        let (image, expanded) = stage_image(tags::PixelFormat::Argb8888, indexed([9, 8, 7, 6]), 3, &None).unwrap();
+        assert!(!expanded);
+        assert_eq!(&image.rgba[..4], &[9, 9, 9, 0xff]);
+    }
+
+    #[test]
+    fn a_world_draws_only_while_the_palettes_it_expanded_through_are_bound() {
+        let used: StagePalettes = [None, None, Some(normals()), None];
+        assert!(palettes_hold(&used, &|s| (s == 2).then(normals)));
+        // Other stages are not looked at.
+        assert!(palettes_hold(&used, &|s| if s == 2 { Some(normals()) } else { Some(vec![1]) }));
+        assert!(!palettes_hold(&used, &|_| None));
+        let mut other = normals();
+        other[5] = 0;
+        assert!(!palettes_hold(&used, &|_| Some(other.clone())));
+        assert!(palettes_hold(&StagePalettes::default(), &|_| None));
     }
 }
