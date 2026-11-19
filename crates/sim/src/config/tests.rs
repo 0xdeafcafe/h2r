@@ -245,6 +245,27 @@ fn overlay_takes_the_later() {
 }
 
 #[test]
+fn human_input_tuning_parses_overlays_and_rejects_out_of_range_values() {
+    let base: BotParams = toml::from_str(
+        "perception_ticks = 2\nmotor_ticks = 1\nbutton_sigma_ms = 4.5\n          stick_step = 0.45\nthumb_switch_ticks = 2\nphantom_ping_ms = 75.0\nphantom_jitter_ms = 3.0",
+    ).unwrap();
+    assert!(base.problems("base").is_empty());
+    let over: BotParams = toml::from_str("motor_ticks = 3\nphantom_ping_ms = 0.0").unwrap();
+    let got = base.overlay(&over);
+    assert_eq!(got.motor_ticks, Some(3));
+    assert_eq!(got.perception_ticks, Some(2));
+    assert_eq!(got.phantom_ping_ms, Some(0.0));
+    assert_eq!(got.button_sigma_ms, Some(4.5));
+    assert_eq!(got.stick_step, Some(0.45));
+    assert_eq!(got.thumb_switch_ticks, Some(2));
+    assert_eq!(got.phantom_jitter_ms, Some(3.0));
+
+    let bad: BotParams =
+        toml::from_str("thumb_switch_ticks = 0\nstick_step = nan\nphantom_ping_ms = -1.0").unwrap();
+    assert_eq!(bad.problems("bad").len(), 3);
+}
+
+#[test]
 fn bot_seeds_spread() {
     let mut seen = std::collections::BTreeSet::new();
     for seed in 0..50 {

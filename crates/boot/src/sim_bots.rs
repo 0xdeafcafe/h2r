@@ -175,6 +175,23 @@ impl Bots for LocalBots {
         bots::phantom::player(bots::phantom::PhantomHandle(handle))
     }
 
+    /// A game runs: the glue signs a local bot in only on the Split Screen
+    /// players screen or in a pregame lobby (`bot_glue::to_sign_in`, never
+    /// while `bots::guest::in_game`), and the game makes a player for a
+    /// newly signed-in local user only through a squad session's
+    /// local-player pass (`0x65770` -> `0x5a880`, docs/game/bots.md 4.2),
+    /// which a game started by level boot (`h2 serve`) does not have.
+    fn local_refusal(&self, m: &dyn engine::GuestMemory) -> Option<String> {
+        bots::guest::in_game(m).then(|| {
+            "a game is running: a local sim player signs in only on the Split Screen players \
+             screen or in a pregame lobby, and joins at the next game (docs/game/bots.md 4.2). \
+             Add it before the game starts; in a System Link or Live game this console hosts, a \
+             phantom joins mid-game; on a local game (h2 serve's level boot) no one can join, \
+             so drive the existing player instead (input.pad, sim.state.set, sim.give)"
+                .to_string()
+        })
+    }
+
     fn remove(&mut self, bot: Bot) -> Result<(), String> {
         match bot {
             Bot::Local { port } => {

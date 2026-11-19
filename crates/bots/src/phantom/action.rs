@@ -1,15 +1,87 @@
 //! The default pad layout at the server's per-player action gather.
 //! docs/game/bots.md §5.1 traces the offsets and guest helpers.
+use std::collections::VecDeque;
+
 use super::{
     Phantoms, handle_of,
     session::{self, at::*},
 };
-use crate::{arms, guest, local::Frame};
+use crate::{
+    arms, guest,
+    human_input::TICK_MS,
+    local::Frame,
+    mind::feel::{Rng, reached},
+    tuning::PhantomLatency,
+};
 use engine::entry::{Cx, EntryError, GuestCall, Ret};
 use engine::handle::DatumHandle;
 use engine::memory::{GuestMemory, MemFault};
 use engine::view::{objects, players};
 use input::{AnalogButton, Buttons, host::HostPadState};
+
+/// Buffered controller reports on the remote action path. Build the guest
+/// action on arrival so its absolute aim and weapon fields use current
+/// host state. A newer arrival supersedes any older queued reports.
+pub(super) struct Uplink {
+    rng: Rng,
+    default_ping_ms: f32,
+    in_flight: VecDeque<(u32, HostPadState)>,
+    arrived: HostPadState,
+    last_tick: Option<u32>,
+}
+
+impl Uplink {
+    pub(super) fn new(seed: u64) -> Self {
+        let mut rng = Rng::new(seed ^ 0x7068_616e_746f_6d73);
+        Self {
+            default_ping_ms: 40.0 + 40.0 * rng.unit(),
+            rng,
+            in_flight: VecDeque::new(),
+            arrived: HostPadState::default(),
+            last_tick: None,
+        }
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.in_flight.clear();
+        self.arrived = HostPadState::default();
+        self.last_tick = None;
+    }
+
+    fn report_at(&self, tick: u32) -> Option<HostPadState> {
+        (self.last_tick == Some(tick)).then_some(self.arrived)
+    }
+
+    fn sample(&mut self, tick: u32, pad: HostPadState, latency: PhantomLatency) -> HostPadState {
+        let ping = latency
+            .ping_ms
+            .filter(|p| p.is_finite())
+            .unwrap_or(self.default_ping_ms)
+            .clamp(0.0, 1000.0);
+        let jitter = if latency.jitter_ms.is_finite() {
+            latency.jitter_ms.clamp(0.0, 50.0)
+        } else {
+            PhantomLatency::default().jitter_ms
+        };
+        let delay = if ping > 0.0 {
+            let one_way = ping * 0.5 + jitter * self.rng.signed();
+            (one_way.max(0.0) / TICK_MS).ceil() as u32
+        } else {
+            0
+        };
+        self.in_flight.push_back((tick.wrapping_add(delay), pad));
+        if let Some(i) = self
+            .in_flight
+            .iter()
+            .rposition(|&(due, _)| reached(tick, due))
+        {
+            self.arrived = self.in_flight[i].1;
+            self.in_flight.drain(..=i);
+        }
+        self.last_tick = Some(tick);
+        self.arrived
+    }
+}
 
 #[derive(Clone, Copy, Default)]
 pub(super) struct ButtonState {
@@ -268,7 +340,7 @@ impl Phantoms {
             return false;
         }
         let b = self.lock();
-        b.hosting_game && b.list.iter().any(|p| p.made && p.info.machine == mac)
+        b.hosted_game.is_some() && b.list.iter().any(|p| p.made && p.info.machine == mac)
     }
 
     /// 0x84990(slot, out), only for a slot matched by owns_action_slot.
@@ -298,7 +370,7 @@ impl Phantoms {
                 return Ok(None);
             };
             let mut books = self.lock();
-            if !books.hosting_game {
+            if books.hosted_game.is_none() {
                 return Ok(None);
             }
             let Some(p) = books
@@ -318,28 +390,38 @@ impl Phantoms {
                     )),
                 );
             }
-            if state.sample != Some((unit, tick.wrapping_sub(1))) {
-                state = ButtonState::default();
+            if state.sample.is_some() && state.sample != Some((unit, tick.wrapping_sub(1))) {
+                p.reset_input();
+                state = p.buttons;
             }
             let dt = m.f32(m.u32(engine::points::GAME_TIME.base)? + 4)?;
-            let sample = Sample {
-                player: DatumHandle::new(player.salt(m)?, index),
-                unit,
-                body: body.addr,
-                biped: kind == objects::BIPED,
-                tick,
-                dt,
-                player_flags: player.flags(m)?,
-                pad: p.source.pad(&Frame {
+            let player_flags = player.flags(m)?;
+            let player = DatumHandle::new(player.salt(m)?, index);
+            let pad = if let Some(report) = p.uplink.report_at(tick) {
+                report
+            } else {
+                let latency = p.source.phantom_latency();
+                let pad = p.source.pad(&Frame {
                     frame: p.samples,
                     tick: Some(tick),
                     port: 4,
                     machine: Some(mac),
                     guest: m,
                     joining: false,
-                }),
+                });
+                p.samples = p.samples.saturating_add(1);
+                p.uplink.sample(tick, pad, latency)
             };
-            p.samples = p.samples.saturating_add(1);
+            let sample = Sample {
+                player,
+                unit,
+                body: body.addr,
+                biped: kind == objects::BIPED,
+                tick,
+                dt,
+                player_flags,
+                pad,
+            };
             Ok(Some((p.info.handle, state, Some(sample))))
         })?;
         let Some((handle, mut state, sample)) = input else {
@@ -383,5 +465,57 @@ impl Phantoms {
             })?;
         }
         Ok(Ret::new(1, 8))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn phantom_ping_and_jitter_replay_per_identity() {
+        let report = HostPadState {
+            right_trigger: 1.0,
+            ..Default::default()
+        };
+        let latency = PhantomLatency {
+            ping_ms: Some(2.0 * TICK_MS),
+            ..Default::default()
+        };
+        let run = || {
+            let mut uplink = Uplink::new(17);
+            (0..300)
+                .map(|tick| {
+                    uplink
+                        .sample(
+                            tick,
+                            if tick % 6 == 0 {
+                                report
+                            } else {
+                                HostPadState::default()
+                            },
+                            latency,
+                        )
+                        .right_trigger
+                        > 0.0
+                })
+                .collect::<Vec<_>>()
+        };
+        let seen = run();
+        assert_eq!(seen, run());
+        assert!(
+            seen.iter()
+                .enumerate()
+                .all(|(t, &down)| !down || matches!(t % 6, 1 | 2))
+        );
+        assert!(seen.iter().skip(1).step_by(6).any(|&down| down));
+        assert!(seen.iter().skip(2).step_by(6).any(|&down| down));
+
+        let pings = (0..100)
+            .map(|i| Uplink::new(i).default_ping_ms)
+            .collect::<Vec<_>>();
+        assert!(pings.iter().all(|p| (40.0..80.0).contains(p)));
+        assert!(pings.iter().any(|&p| p < 50.0));
+        assert!(pings.iter().any(|&p| p > 70.0));
     }
 }

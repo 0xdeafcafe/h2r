@@ -66,6 +66,14 @@ pub struct Frame<'a> {
 /// Where a bot's pad comes from: one pad per frame.
 pub trait PadSource: Send {
     fn pad(&mut self, f: &Frame<'_>) -> HostPadState;
+
+    /// The phantom's action stream was interrupted by a new unit or match.
+    fn reset_input(&mut self) {}
+
+    /// Phantom uplink timing, ignored when this source drives a local port.
+    fn phantom_latency(&self) -> crate::tuning::PhantomLatency {
+        crate::tuning::PhantomLatency::default()
+    }
 }
 
 /// A source from a closure.
