@@ -135,6 +135,19 @@ impl Gm for Guest {
     }
 }
 
+/// An entry's guest memory (`Cx::read`), read-only, for readers written
+/// over [`Gm`].
+pub struct ReadGm<'a>(pub &'a dyn engine::memory::GuestMemory);
+
+impl Gm for ReadGm<'_> {
+    fn rd(&self, addr: u32, out: &mut [u8]) -> bool {
+        self.0.read(addr, out).is_ok()
+    }
+    fn wr(&mut self, _: u32, _: &[u8]) -> bool {
+        false
+    }
+}
+
 // ---- pure logic ----
 
 /// The layout for a row of the list, if it is one of ours.

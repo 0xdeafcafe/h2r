@@ -236,6 +236,19 @@ The page (`boot::skulls_screen`, feature `skulls-page` for the hook and
   was still settling its top screen). With no close there is nothing to
   race. Closing and pressing at once (the very first build) put the
   loading screen over a page still closing, and the close took it down.
+- The difficulty list is not there while the page is up. Seen live
+  (2026-11-19, `h2 serve --settings`, a10 from the level select): at
+  Start Level the kept list's address held vtable `0x458788`, not the
+  difficulty list's `0x45d688`, so the check refused the press ("is gone;
+  not started"), nothing loaded, and each later Start Level found nothing
+  kept. The stack frees the screen under a new one and builds it again
+  when it comes back, which is why the close-then-run order always found
+  a list. A mode 0 press reads its list only for the mode byte
+  (`0x2c9d79`; from `0x2c9d9b` on, `this` is never read), so with the
+  list gone the press runs on a stand-in: the byte at `+0x2a0` in our
+  scratch page (`skulls_screen::write_stand_in`, `Target::StandIn`). A
+  mode 1 press needs the real list (`0x22eeee` finds the screen's root
+  through it) and is still refused without one.
 - From a lobby's Game Setup (mode 1, `0x2bb945`), the press only stores the
   lobby's difficulty and animates the difficulty screen out; with the page
   on top that would leave the page up over the lobby. So there the page
@@ -295,6 +308,11 @@ How the flow is made (static reading, not seen running):
   player chain and the row to a page of ours, and calls `0x2c9d38` on the
   kept list; the hook lets that one call through. So the start is
   retail's own, from either loader, and never runs into a closing screen.
+- Around the kept press `continue_level` logs window 5 slot 4's screens
+  (`skulls page: before the press: window 5 slot 4: active .., pending ..,
+  list [screen/id ..]`), and after it whether the loading screen (`0xd1`)
+  is among them, so a Start Level that loads nothing says whether the
+  press opened its loading screen (`boot::ui_watch::stack`).
 - `H2_SKULLS_CONTINUE=freed` or `=stay` forces either order, for trying
   in game only.
 

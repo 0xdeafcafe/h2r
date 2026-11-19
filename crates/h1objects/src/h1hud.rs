@@ -333,7 +333,10 @@ pub mod wphi {
     pub const NUMBERS: usize = 0x78;
     /// Crosshairs (`0x000dade0`), `0x68` each.
     pub const CROSSHAIRS: usize = 0x84;
-    /// Overlay elements, `0x68` each.
+    /// Overlay elements (`0x000dc031`..`0x000dc0b1`), `0x68` each: an
+    /// entry head as the statics' (state `+0`, flags `+2`, screen type
+    /// `+4`), then at `+0x24` a bitmap and its overlays
+    /// ([`overlay_element`]), drawn by `0x000e16b0`.
     pub const OVERLAYS: usize = 0x90;
     /// The crosshair types any of the chain uses, a mask (`0x000da6c3`).
     pub const CROSSHAIR_TYPES: usize = 0x9c;
@@ -379,6 +382,34 @@ pub mod wphi {
         pub const COLOUR: usize = 0x24;
         pub const SEQUENCE: usize = 0x46;
         pub const FLAGS: usize = 0x48;
+    }
+
+    /// An overlay element's part at entry `+0x24`, as `0x000e16b0` reads
+    /// it (`edi`): the bitmap (16-byte reference, datum `+0x0c`) and its
+    /// overlays (block `+0x10` count, `+0x14` address, `0x88` each).
+    pub mod overlay_element {
+        pub const BITMAP: usize = 0x00;
+        pub const OVERLAYS: usize = 0x10;
+        pub const OVERLAY_SIZE: usize = 0x88;
+    }
+
+    /// One overlay of an overlay element (`0x000e16b0`, `ebp`): offset and
+    /// scale as an element's (handed to the element draw `0x000e1590` as
+    /// the element is, so laid out the same way), colour `+0x24`
+    /// (`0x000e1738`), frame rate `+0x44` (`0x000e174c`: 0 shows the
+    /// sequence's first sprite), sequence `+0x48`, the conditions it
+    /// shows on `+0x4a` (a mask tested against its state's,
+    /// [`super::overlay_shown`]) and flags `+0x4c` (bit 0 flashes, bit 1
+    /// not drawn, `0x000e16dd`).
+    pub mod element_overlay {
+        pub const OFFSET: usize = 0x00;
+        pub const SCALE: usize = 0x04;
+        pub const COLOUR: usize = 0x24;
+        pub const FRAME_RATE: usize = 0x44;
+        pub const SEQUENCE: usize = 0x48;
+        pub const SHOWN_ON: usize = 0x4a;
+        pub const FLAGS: usize = 0x4c;
+        pub const FLAG_HIDDEN: u32 = 0x02;
     }
 
     /// A meter element's fill (E `0x000e20a0`): the state's value `v` (a
@@ -438,6 +469,21 @@ pub mod crosshair_type {
     pub const ZOOM_LEVEL: i16 = 1;
 }
 
+/// The conditions a weapon HUD overlay shows on (overlay `+0x4a`), as
+/// Halo 1's weapon draw builds each state's mask (E `0x000db917`..
+/// `0x000db9d6`, the rounds in reserve and loaded; the overlay draw
+/// `0x000e16e5` shows an overlay when its mask meets its state's): 1 the
+/// value is below its threshold and no reload is under way, 2 the value is
+/// 0, 4 a reload is under way, 8 none of those, and 0x10 on every state,
+/// always.
+pub mod overlay_shown {
+    pub const FLASHING: u16 = 0x01;
+    pub const EMPTY: u16 = 0x02;
+    pub const RELOADING: u16 = 0x04;
+    pub const DEFAULT: u16 = 0x08;
+    pub const ALWAYS: u16 = 0x10;
+}
+
 /// One weapon HUD entry, as read.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WeaponEntry {
@@ -470,24 +516,27 @@ pub enum WeaponEntryKind {
     /// (entry `+0x78` bit 0: divided by the weapon's magazine size,
     /// `0x000dbf5f`..`0x000dbf77`, `0x000dc0de`).
     Number(WeaponState, Number, bool),
+    /// An overlay of an overlay element (`wphi +0x90`): its state, the
+    /// conditions it shows on ([`overlay_shown`]), its frame rate and its
+    /// flags (V: the shared `ui\hud\master rounds` and `master plasma`
+    /// draw the ammunition type icon this way, shown always).
+    Overlay(WeaponState, u16, i16, u32),
 }
 
-/// Every static, meter, number and crosshair overlay of the `wphi` `tag`
-/// and its children, in Halo 1's draw order (the child first,
-/// `0x000dbded`), and how many overlay elements the chain holds.
-pub fn weapon_entries(map: &H1Map, tag: H1TagId) -> Result<(Vec<WeaponEntry>, usize)> {
+/// Every static, meter, number, overlay and crosshair overlay of the
+/// `wphi` `tag` and its children, in Halo 1's draw order (the child first,
+/// `0x000dbded`).
+pub fn weapon_entries(map: &H1Map, tag: H1TagId) -> Result<Vec<WeaponEntry>> {
     let mut out = Vec::new();
-    let mut skipped = 0;
     let mut seen = Vec::new();
-    weapon_chain(map, tag, &mut out, &mut skipped, &mut seen)?;
-    Ok((out, skipped))
+    weapon_chain(map, tag, &mut out, &mut seen)?;
+    Ok(out)
 }
 
 fn weapon_chain(
     map: &H1Map,
     tag: H1TagId,
     out: &mut Vec<WeaponEntry>,
-    skipped: &mut usize,
     seen: &mut Vec<H1TagId>,
 ) -> Result<()> {
     if seen.contains(&tag) {
@@ -497,7 +546,7 @@ fn weapon_chain(
     let t = map.tag(tag)?;
     let b = crate::h1::tag_bytes(map, t, b"wphi", wphi::SIZE)?;
     if let Some(child) = crate::h1::reference(map, b, wphi::CHILD) {
-        weapon_chain(map, child, out, skipped, seen)?;
+        weapon_chain(map, child, out, seen)?;
     }
     let raw = u16::from_le_bytes([b[wphi::ANCHOR], b[wphi::ANCHOR + 1]]);
     let anchor =
@@ -598,7 +647,33 @@ fn weapon_chain(
             });
         }
     }
-    *skipped += crate::h1::elements(map, b, wphi::OVERLAYS, wphi::OVERLAY_SIZE)?.len();
+    // Overlay elements, after the numbers (`0x000dc031`): each overlay
+    // drawn at the wphi's anchor by the element draw (`0x000e1590`).
+    use wphi::{element_overlay as eo, overlay_element as oe};
+    for e in crate::h1::elements(map, b, wphi::OVERLAYS, wphi::OVERLAY_SIZE)? {
+        let at = entry::ELEMENT;
+        let bitmap = crate::h1::reference(map, e, at + oe::BITMAP);
+        let state = WeaponState::from_halo1(i16_at(e, entry::STATE));
+        for o in crate::h1::elements(map, &e[at..], oe::OVERLAYS, oe::OVERLAY_SIZE)? {
+            out.push(WeaponEntry {
+                wphi: tag,
+                kind: WeaponEntryKind::Overlay(
+                    state,
+                    u16::from_le_bytes([o[eo::SHOWN_ON], o[eo::SHOWN_ON + 1]]),
+                    i16_at(o, eo::FRAME_RATE),
+                    u32_at(o, eo::FLAGS),
+                ),
+                screen: e[entry::SCREEN],
+                hidden: e[entry::FLAGS] & 1 != 0 || u32_at(o, eo::FLAGS) & eo::FLAG_HIDDEN != 0,
+                anchor,
+                offset: (i16_at(o, eo::OFFSET), i16_at(o, eo::OFFSET + 2)),
+                scale: [f32_at(o, eo::SCALE), f32_at(o, eo::SCALE + 4)],
+                bitmap,
+                sequence: i16_at(o, eo::SEQUENCE),
+                colour: u32_at(o, eo::COLOUR),
+            });
+        }
+    }
     Ok(())
 }
 
@@ -682,6 +757,12 @@ pub enum Skip {
     /// A static whose colour is all zero: Halo 1 draws nothing of it
     /// ([`invisible_colour`]).
     Invisible,
+    /// An overlay shown only on some conditions ([`overlay_shown`]): no
+    /// Halo 2 state flags for them are established.
+    OverlayCondition(u16),
+    /// An animated overlay (a frame rate): a Halo 2 bitmap widget shows
+    /// one sprite.
+    Animated(i16),
 }
 
 /// The widget for weapon HUD entry `e` (its bitmap converted as
@@ -708,12 +789,23 @@ pub fn weapon_widget(
     if !unscaled(e.scale) {
         return Err(Skip::Scaled(e.scale));
     }
-    if matches!(e.kind, WeaponEntryKind::Static(_)) && static_alpha(e.colour).is_none() {
+    let statik = matches!(e.kind, WeaponEntryKind::Static(_) | WeaponEntryKind::Overlay(..));
+    if statik && static_alpha(e.colour).is_none() {
         return Err(Skip::Invisible);
+    }
+    if let WeaponEntryKind::Overlay(_, shown, rate, _) = e.kind {
+        if shown & overlay_shown::ALWAYS == 0 {
+            return Err(Skip::OverlayCondition(shown));
+        }
+        if rate != 0 {
+            return Err(Skip::Animated(rate));
+        }
     }
     let bitmap = bitmap.ok_or(Skip::NothingDrawn)?;
     let (name, inputs, shader, state) = match &e.kind {
         WeaponEntryKind::Static(_) => ("h1_weapon_static", [0; 4], plain, STATE),
+        // Shown always: drawn as a static is.
+        WeaponEntryKind::Overlay(..) => ("h1_weapon_overlay", [0; 4], plain, STATE),
         WeaponEntryKind::Meter(s, _) => {
             let input = weapon_meter_input(*s).ok_or(Skip::MeterState(*s))?;
             ("h1_weapon_meter", [input, 0, 0, 0], meter, STATE)
@@ -1593,6 +1685,37 @@ mod tests {
         assert_eq!(weapon_widget(&c, Some(TagId(1)), TagId(2), TagId(3)), Err(Skip::UnzoomedOnly));
         c.kind = WeaponEntryKind::Crosshair(9, 1);
         assert_eq!(weapon_widget(&c, Some(TagId(1)), TagId(2), TagId(3)), Err(Skip::CrosshairType(9)));
+    }
+
+    #[test]
+    fn overlays_shown_always_are_drawn_as_statics() {
+        // V: the shared `master rounds` ammunition type icon, at (53, 4),
+        // sequence 0, colour 0xffe6f0ff, shown always, no frame rate.
+        let kind = |shown, rate| WeaponEntryKind::Overlay(WeaponState::TotalAmmo, shown, rate, 0);
+        let mut o = entry(kind(overlay_shown::ALWAYS, 0));
+        o.offset = (53, 4);
+        o.sequence = 0;
+        o.colour = 0xffe6f0ff;
+        let w = weapon_widget(&o, Some(TagId(1)), TagId(2), TagId(3)).unwrap();
+        assert_eq!((w.shader, w.inputs, w.state), (TagId(3), [0; 4], STATE));
+        assert_eq!((w.anchor, w.offset, w.sequence), (Anchor::TopLeft, (53, 4), 0));
+        assert_eq!(w.registration, registration(Anchor::TopLeft));
+        // Shown on a condition only, or animated: no widget.
+        o.kind = kind(overlay_shown::EMPTY | overlay_shown::RELOADING, 0);
+        assert_eq!(
+            weapon_widget(&o, Some(TagId(1)), TagId(2), TagId(3)),
+            Err(Skip::OverlayCondition(6))
+        );
+        o.kind = kind(overlay_shown::ALWAYS, 4);
+        assert_eq!(weapon_widget(&o, Some(TagId(1)), TagId(2), TagId(3)), Err(Skip::Animated(4)));
+        // Colour 0 draws nothing, as for a static.
+        o.kind = kind(overlay_shown::ALWAYS, 0);
+        o.colour = 0;
+        assert_eq!(weapon_widget(&o, Some(TagId(1)), TagId(2), TagId(3)), Err(Skip::Invisible));
+        // The split-screen one is left out.
+        o.colour = 0xffe6f0ff;
+        o.screen = SPLIT_SCREEN_ONLY;
+        assert_eq!(weapon_widget(&o, Some(TagId(1)), TagId(2), TagId(3)), Err(Skip::SplitScreen));
     }
 
     #[test]
