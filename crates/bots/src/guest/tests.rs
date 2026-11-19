@@ -1368,7 +1368,7 @@ fn decisions_observe_player_slot_while_dead_and_only_live_contacts() {
         [crate::brain::Contact {
             id: 0,
             aim: [0.0, 1.0, 0.0],
-            shield: Some(0.3),
+            shield: None,
             empty_magazine: false,
         }]
     );

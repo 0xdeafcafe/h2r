@@ -27,6 +27,7 @@ pub mod nav;
 pub mod objective;
 pub mod phantom;
 pub mod roam;
+mod perceive;
 mod sound;
 pub mod stuck;
 pub mod tactics;
@@ -211,10 +212,16 @@ impl local::PadSource for Brain {
         let alive = p.me.is_some();
         // Vehicles are extra: a fault reading them leaves the bot on foot
         // (docs/game/bots.md, Vehicles).
-        if alive {
-            self.mind
-                .see_vehicles(vehicle::read::sight_in_game(f.guest, who));
-        }
+        let mut vehicles = if alive {
+            vehicle::read::sight_in_game(f.guest, who)
+        } else {
+            vehicle::Sight::default()
+        };
+        let map = cache::current();
+        let mut p = p;
+        let mut kills = kills;
+        perceive::observe(&mut p, &mut vehicles, &mut kills, map.as_deref());
+        self.mind.see_vehicles(vehicles);
         let shots = if alive {
             sound::recent(p.tick)
         } else {
@@ -222,11 +229,11 @@ impl local::PadSource for Brain {
         };
         let pad = self.play_with_cues(
             &p,
-            cache::current().as_deref(),
+            map.as_deref(),
             &kills,
             radio::host(),
-            &shots,
-            &grenades,
+            if map.is_some() { &shots } else { &[] },
+            if map.is_some() { &grenades } else { &[] },
         );
         if alive {
             self.fidget.reset();

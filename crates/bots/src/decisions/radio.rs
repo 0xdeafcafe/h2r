@@ -73,7 +73,7 @@ impl Radio {
                 c.sender != id
                     && c.team == team
                     && p.others.iter().any(|o| o.id == c.sender && o.team == team)
-                    && p.others.iter().any(|o| o.id == c.target && o.team != team)
+
             })
             .collect()
     }

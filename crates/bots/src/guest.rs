@@ -981,8 +981,9 @@ fn perception(
             out.observations.contacts.push(crate::brain::Contact {
                 id,
                 aim,
-                shield: body.shield(m).ok().filter(|s| s.is_finite()),
-                empty_magazine: crate::arms::held_empty_magazine(m, body.addr).unwrap_or(false),
+                // These cues require a visible effect or reload animation.
+                shield: None,
+                empty_magazine: false,
             });
             out.others.push(Seen { id, position, team });
         }

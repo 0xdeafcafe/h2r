@@ -106,7 +106,7 @@ fn a_call_moves_the_receiver_without_giving_it_a_shot_or_live_enemy_position() {
     p.teams = true;
     let mut dead = p.clone();
     dead.others.retain(|s| s.id != 2);
-    assert!(board.listen(&dead).is_empty(), "target died");
+    assert_eq!(board.listen(&dead).len(), 1, "losing sight cannot retract a call");
     board.advance(12);
     board.forget_deaths(&[Kill {
         seq: 5,
