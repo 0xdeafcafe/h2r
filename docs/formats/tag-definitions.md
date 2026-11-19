@@ -576,12 +576,14 @@ Halo ring were already built this way.
   wheel centres, 0.19 above the origin, where Halo 1's tire points are),
   facing out along their axles; the scorpion's tread markers are on
   node 0 too, unrotated. Through converter version 75 the tire markers
-  rode the tire nodes, which the spin and suspension animations move. In
-  a game run (2026-11-19, converted Blood Gulch) neither change stopped
-  the warthog being thrown from its spawn: edited live before it
-  spawned, on node 0, 0.23 below it and facing out, it left its spawn
-  on the same path to the same rest, so the axle rotation (which one
-  rule would give the scorpion's gripping treads too) is not taken.
+  rode the tire nodes, which the spin and suspension animations move.
+  The axle rotation is not taken: one rule would give the scorpion's
+  gripping treads it too, and no game run has shown it helping. In a
+  game run (2026-11-19, converted Blood Gulch) the markers, edited live
+  to node 0 and facing out before the warthog spawned, left its path
+  from the spawn unchanged to the hundredth; a phmo centre-of-mass edit
+  did the same, so the engine likely reads both at load and the run
+  decides neither.
   The marker has one instance per permutation of the model's first
   region (D).
   The Halo 2 point names that marker (`+0`) and the collision region of

@@ -2255,12 +2255,13 @@ impl<'a> Converter<'a> {
                 0
             };
             // The marker keeps no rotation, as the retail scorpion's
-            // treads (V). The retail warthog's wheels face out along
-            // their axles, but turning the converted warthog's that way
-            // changed nothing in a game run (2026-11-19: the warthog left
-            // its spawn the same way with or without), and Halo 1's
-            // scorpion treads grip too, so one rule would turn them as
-            // well.
+            // treads (V), which drive this way. The retail warthog's
+            // wheels face out along their axles, but Halo 1's scorpion
+            // treads grip too, so one rule would turn them as well, and
+            // no game run has shown the turn helping the warthog (a live
+            // edit before it spawned left its path unchanged to the
+            // hundredth, as a phmo edit did, so the engine likely reads
+            // both at load).
             let (r, t) = world
                 .get(node as usize)
                 .copied()
