@@ -63,6 +63,8 @@ pub enum Action {
 pub struct Control {
     pub actions: BTreeMap<Request, Vec<Action>>,
     pub switches: BTreeSet<Platoon>,
+    /// Squads that can participate in follow-driven migration (Halo 1 flag 0x20).
+    pub automatic_migration: BTreeSet<u16>,
 }
 
 #[derive(Clone, Copy)]
@@ -126,6 +128,21 @@ pub fn maneuver_targets(source: &H1Ai, requests: &[Request]) -> BTreeSet<String>
         .collect()
 }
 
+/// Follow-driven migration uses even unoccupied squads as destinations.
+pub fn automatic_migration_targets(source: &H1Ai) -> BTreeSet<String> {
+    source
+        .encounters
+        .iter()
+        .flat_map(|encounter| {
+            encounter
+                .squads
+                .iter()
+                .filter(|squad| squad.flags & 0x20 != 0)
+                .map(|squad| squad_name(encounter, squad).to_ascii_lowercase())
+        })
+        .collect()
+}
+
 fn squad_name(encounter: &Encounter, squad: &Squad) -> String {
     format!("{}/{}", encounter.name, squad.name)
 }
@@ -159,6 +176,13 @@ fn converted_indices(source: &H1Ai, plan: &Plan) -> Vec<Vec<Option<u16>>> {
 pub fn prepare(source: &H1Ai, plan: &mut Plan, opts: &Options, requests: &[Request]) -> Control {
     let indices = converted_indices(source, plan);
     let mut control = Control::default();
+    for (encounter, ids) in source.encounters.iter().zip(&indices) {
+        for (squad, &index) in encounter.squads.iter().zip(ids) {
+            if squad.flags & 0x20 != 0 && let Some(index) = index {
+                control.automatic_migration.insert(index);
+            }
+        }
+    }
     let mut orders = BTreeMap::new();
     let mut follow_orders = BTreeMap::new();
     let radii: BTreeMap<_, _> = requests

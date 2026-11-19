@@ -1075,6 +1075,7 @@ pub fn write(
     // ([`MAX_SQUADS`]; a50 and b40 would): the scripts then name the
     // squad's encounter, its squad group ([`hook_value`]).
     named.extend(h1ai::control::maneuver_targets(&ai_src, &requests));
+    named.extend(h1ai::control::automatic_migration_targets(&ai_src));
     let empty_named = |e: &h1ai::h1::Encounter, q: &h1ai::h1::Squad| {
         q.starting_locations.is_empty()
             && named.contains(&format!("{}/{}", e.name, q.name).to_ascii_lowercase())

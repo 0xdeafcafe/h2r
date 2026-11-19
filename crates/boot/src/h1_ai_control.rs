@@ -8,6 +8,8 @@ use feature::{BuildError, Builder, Flow, Manifest, points};
 use hs::h1_ai_slots::{self, Operation};
 
 mod actors;
+mod auto_migration;
+mod follow;
 mod playfight;
 mod preference;
 mod speech;
@@ -327,6 +329,17 @@ async fn dispatch(cx: Cx, op: Operation) -> Result<Ret, EntryError> {
             }
             Operation::LinkActivation => squad_control::link(&cx, args[0], args[1], args[2])?,
             Operation::ActivationTick => squad_control::activation_tick(&cx, args[0]).await?,
+            Operation::FollowPlayers
+            | Operation::FollowAi
+            | Operation::FollowUnit
+            | Operation::FollowDisable
+            | Operation::FollowDistance => {
+                follow::configure(&cx, op, &args)?;
+            }
+            Operation::AutomaticMigrationTarget => {
+                auto_migration::set(&cx, args[0], args[1] as u8 != 0, args[2])?;
+            }
+            Operation::FollowTick => follow::tick(&cx, args[0]).await?,
             Operation::VehicleTick => vehicles::tick(&cx, args[0]).await?,
             Operation::VehicleCount => value = cx.read(|m| vehicles::count(m, args[0]))?,
             operation if operation.registry() == Some(hs::h1_ai_slots::Registry::Vehicles) => {

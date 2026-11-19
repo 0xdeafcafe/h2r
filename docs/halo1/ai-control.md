@@ -20,8 +20,9 @@ and translation. Runtime behavior still needs the integration build.
 | `ai_magically_see_players` | Halo 1 `0x00141f10` walks the player records and reads each unit at `+0x34`. Converted scripts use descriptor 300, a discarded `(ai) -> void` entry unused in the Halo 2 map survey. On a Halo 1 campaign map the hook evaluates the argument through `0x00209d50`, walks Halo 2's occupied player records and sends live player units to the same native awareness routine as 305. Halo 2 updates its existing perception records. |
 | `ai_attack`, `ai_defend` | Halo 1 `0x0013eee0` resolves an encounter to all its platoons and a squad to its own platoon. The compiler selects each member's attacking or defending order with `ai_set_orders` (333). The orders use the firing position groups at Halo 1 squad `+0x54` and `+0x60`. Halo 2 `0x00275cb0` dispatches the order to the given squad. |
 | `ai_retreat`, `ai_maneuver`, `ai_maneuver_enable` | The two explicit requests share Halo 1 callee `0x001404e0`. The converter retains the requested maneuver destinations at squad `+0x4c` where the squad budget permits and snapshots the original actors before issuing native migrations, including reciprocal and cyclic routes. Each platoon with a scripted enable switch gets one boolean HaloScript global, initially enabled, to gate its explicit migrations. |
-| `ai_follow_target_players`, `ai_follow_target_ai`, `ai_follow_target_disable` | Halo 1's setters (`0x000efd90` to `0x000eff19`) update the encounter selected by the low word. Halo 2 order flag `0x10` chooses the closest player (`0x00204489`), and `0x20` follows the order of squad `+0x4e` (`0x00204f09`). The four retail Halo 1 AI-target calls name a squad in the same encounter. The leader's own follow link clears before its peers follow it. Disabling follow selects each squad's ordinary order. Follow orders default to 4 m, as in several of Halo 2's campaign orders. |
-| `ai_follow_distance` | A single finite literal before the encounter's only follow call in the same `begin` becomes that order's radius. This is the c20 campaign shape. Halo 1 `0x000efd71` stores that literal on the encounter. Halo 2 `0x00204668` reads the radius from order `+0x50`. |
+| `ai_follow_target_players`, `ai_follow_target_ai`, `ai_follow_target_unit`, `ai_follow_target_disable` | The converted registry stores the target separately from combat orders, as the encounter setters at Halo 1 `0x000efd90`–`0x000eff19` do. It resolves a live target each tick, including targets outside the encounter, and refreshes Halo 2's native area set at `0x00204450`. The collector uses squad `+0x80` as the target object. The area iterator at `0x00205039` reads that field while retaining the current combat order. |
+| `ai_follow_distance` | The VM evaluates the radius each time the script sets it. The value applies to the next area calculation and to automatic migration. Halo 1 uses 2 m if the assigned distance is nonpositive (`0x0013cf2a`–`0x0013cf45`). |
+| `ai_automatic_migration_target` | Preserves Halo 1 squad flag `0x20` and the separately enabled destination bit (setter `0x00140014`). The follow tick compares the converted firing positions of eligible squads, applies Halo 1's hysteresis against the farthest occupied candidate (`0x0013cf45`), and moves all participating actors into the selected squad through `0x001e3400`. Disabling a destination still lets its current actors move elsewhere. |
 | `ai_migrate` | Halo 2's 308 accepts encounter sources and bare squad destinations. It rejects group destinations at `0x002a54cc`. The converter resolves literal Halo 1 encounter and platoon destinations per source squad, preferring compatible variants and character types as in the selector at `0x001402a0`. Literal platoon sources expand to their member squads. |
 | `ai_migrate_and_speak` | Moves the selected actors and requests the native combat vocalization at `0x0020ba60` for each changed actor. Halo 1 chooses advance or retreat in `0x00141fc0` and speaks after moving at `0x00141d0c`. Halo 2's `adlg` events 111 and 114 resolve through the index at `+0x1c` to patterns 138 (`newordr_advance`) and 144 (`newordr_retreat`). The native system selects an available voice line and applies its dialogue gate. |
 | `ai_migrate_by_unit` | Evaluates the HaloScript object list, collects the actors of its units and vehicles’ riders, and migrates each with Halo 2 `0x001e3400`. Group destinations prefer a squad of the same actor type. |
@@ -72,16 +73,10 @@ The source playfight firing and aiming adjustments at `0x001616ea`
 and `0x00162492` still need Halo 2 equivalents. Halo 1's script-held
 initial combat delay (squad flag `0x8`) is separate from Halo 2's timer.
 Computed `ai_timer_expire` selections still need their source flag data.
-The remaining migration work covers `ai_automatic_migration_target`,
-and automatic platoon triggers.
-
-Other unsupported forms include a dynamic follow radius, following an
-arbitrary unit or another encounter, `ai_go_to_vehicle_override`,
-and a maneuver with a stripped destination.
-The follow, maneuver and order conversions use Halo 2's native behavior
-for the resulting squads. In particular, selecting an attack, defend or
-follow order replaces the previous order. Halo 1 could keep follow state
-independently of its attack and defend state.
+Automatic platoon triggers and `ai_go_to_vehicle_override` remain open.
+Maneuvers and follow-driven migrations need their destination squads
+retained by the converter. The dynamic area collector requires the
+following squad to have an order.
 
 Conversations and command lists have separate converter lanes.
 

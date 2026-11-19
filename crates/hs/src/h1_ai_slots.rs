@@ -17,6 +17,9 @@ pub const ACTOR_TYPE: u16 = 46;
 
 pub const VEHICLE_ROWS: u16 = 96;
 pub const VEHICLE_WIDTH: u16 = 11;
+pub const FOLLOW_WORDS: u16 = 300;
+pub const MIGRATION_WORDS: u16 = 12;
+pub const DEFAULT_FOLLOW_RADIUS: f32 = 2.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Registry {
@@ -24,6 +27,7 @@ pub enum Registry {
     ActivationLinks,
     Playfight,
     TargetPreference,
+    Follow,
 }
 
 impl Registry {
@@ -33,6 +37,7 @@ impl Registry {
             Self::ActivationLinks => 128,
             Self::Playfight => 4,
             Self::TargetPreference => 512,
+            Self::Follow => FOLLOW_WORDS + MIGRATION_WORDS * 2,
         }
     }
 
@@ -40,6 +45,8 @@ impl Registry {
         match self {
             Self::Vehicles if matches!(index % VEHICLE_WIDTH, 2..=4) => 0,
             Self::Playfight => 0,
+            Self::Follow if index >= FOLLOW_WORDS || index % 3 == 0 => 0,
+            Self::Follow if index % 3 == 2 => DEFAULT_FOLLOW_RADIUS.to_bits() as i32,
             _ => -1,
         }
     }
@@ -56,6 +63,7 @@ impl Registry {
         match self {
             Self::Vehicles => Some(Operation::VehicleTick),
             Self::ActivationLinks => Some(Operation::ActivationTick),
+            Self::Follow => Some(Operation::FollowTick),
             Self::Playfight | Self::TargetPreference => None,
         }
     }
@@ -136,6 +144,13 @@ pub enum Operation {
     PreferPlayer = 22,
     ClearPreference = 23,
     MigrateSpeak = 24,
+    FollowPlayers = 25,
+    FollowAi = 26,
+    FollowUnit = 27,
+    FollowDisable = 28,
+    FollowDistance = 29,
+    FollowTick = 30,
+    AutomaticMigrationTarget = 31,
 }
 
 impl Operation {
@@ -171,6 +186,13 @@ impl Operation {
             22 => Self::PreferPlayer,
             23 => Self::ClearPreference,
             24 => Self::MigrateSpeak,
+            25 => Self::FollowPlayers,
+            26 => Self::FollowAi,
+            27 => Self::FollowUnit,
+            28 => Self::FollowDisable,
+            29 => Self::FollowDistance,
+            30 => Self::FollowTick,
+            31 => Self::AutomaticMigrationTarget,
             _ => return None,
         })
     }
@@ -192,6 +214,12 @@ impl Operation {
             | Self::VehicleActors
             | Self::VehicleDisable => Some(Registry::Vehicles),
             Self::LinkActivation => Some(Registry::ActivationLinks),
+            Self::FollowPlayers
+            | Self::FollowAi
+            | Self::FollowUnit
+            | Self::FollowDisable
+            | Self::FollowDistance
+            | Self::AutomaticMigrationTarget => Some(Registry::Follow),
             Self::Playfight => Some(Registry::Playfight),
             Self::PreferAi | Self::PreferPlayer | Self::ClearPreference => {
                 Some(Registry::TargetPreference)
@@ -220,7 +248,15 @@ impl Operation {
             Self::ActivationTick => &[LONG],
             Self::Playfight => &[AI, BOOLEAN, LONG],
             Self::PreferAi => &[AI, AI, LONG],
-            Self::PreferPlayer | Self::ClearPreference => &[AI, LONG],
+            Self::PreferPlayer
+            | Self::ClearPreference
+            | Self::FollowPlayers
+            | Self::FollowDisable => &[AI, LONG],
+            Self::FollowAi => &[AI, AI, LONG],
+            Self::FollowUnit => &[AI, UNIT, LONG],
+            Self::FollowDistance => &[AI, REAL, LONG],
+            Self::FollowTick => &[LONG],
+            Self::AutomaticMigrationTarget => &[AI, BOOLEAN, LONG],
         }
     }
 }
