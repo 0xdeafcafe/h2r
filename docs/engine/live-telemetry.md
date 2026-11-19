@@ -111,3 +111,41 @@ and web field definitions, keyframe coverage and a versioned fixture.
 The wire grammar, storage routes and compatibility rules are in the
 [telemetry reference](../live/live-telemetry.md#packed-frames) and
 [frame chunk API](../live/live-api.md#frame-chunks).
+
+## Finished replay archives
+
+The server flushes a newly ended game's live recording before queuing it for
+archival. The native timer and the Worker Durable Object alarm each process
+one independent segment per turn. A segment spans up to 900 game ticks,
+900 frames, 8 MiB of source-frame JSON, or 32 original H2CK blobs. A cut
+or rewind starts a new segment. The blob count bounds R2 reads and backup
+writes even when every tick was recorded as a separate object.
+
+Each segment stores the original decoded fields losslessly in transposed
+columns. Integer predictors retain exact residuals. Off-grid historical
+floats can use their binary64 bits. Each segment gets its own Brotli stream,
+so an HTTP reader can start at any segment. The server reads each immutable
+blob back, checks its SHA-256, verifies the decoded frames, and backs up
+original objects and signed index rows before publishing the final pointer.
+The migration receipt reports compressed payload and immutable index-node
+bytes separately. Both count toward the archive's storage cost.
+
+The following compressor comparison used identical inflated H2AR bodies from
+revision `65b71186`. Each segment was independently compressed. These are
+payload bytes, measured before the production source-byte partition was
+applied to campaign.
+
+| Compressor | Multiplayer, 10 min | Campaign, 30 s |
+|---|---:|---:|
+| Bytewise rANS, order 0 | 657,871 | 94,217 |
+| Bytewise rANS, order 1 | 636,820 | 82,646 |
+| Zstandard, level 10 | 376,672 | 46,235 |
+| Zstandard, level 19 | 349,303 | 43,084 |
+| Brotli, quality 10 | 317,000 | 40,727 |
+
+Brotli quality 11 reduced multiplayer to 307,392 bytes and took over four
+times the native compression time. The archive writer uses quality 10.
+
+Historical archives are built explicitly. The operator guide covers local
+and production dry runs, retained originals, verification and rollback.
+[Replay migration](../live/replay-migration.md)
