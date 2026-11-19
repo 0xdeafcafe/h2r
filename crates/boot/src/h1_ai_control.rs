@@ -366,7 +366,9 @@ async fn dispatch(cx: Cx, op: Operation) -> Result<Ret, EntryError> {
             Operation::AutomaticMigrationTarget => {
                 auto_migration::set(&cx, args[0], args[1] as u8 != 0, args[2])?;
             }
-            Operation::FollowTick => follow::tick(&cx, args[0]).await?,
+            Operation::FollowTick | Operation::FollowWithDestinations => {
+                follow::tick(&cx, args[0], args.get(1).copied().unwrap_or(NONE)).await?;
+            }
             Operation::VehicleTick => vehicles::tick(&cx, args[0]).await?,
             Operation::VehicleEnter => {
                 vehicles::enter_if_unassigned(&cx, args[0], args[1], args[2]).await?;

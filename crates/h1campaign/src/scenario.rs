@@ -1071,24 +1071,35 @@ pub fn write(
 
     // AI.
     let original_ai = ai_src.clone();
-    let generated_starts = if opts.ai {
-        let tables = h1scripts::Tables::read(h1)
-            .map_err(|e| invalid(format!("AI script references: {e}")))?;
-        crate::squad_roster::prepare(&mut ai_src, &tables)
-    } else {
-        Default::default()
+    let tables = opts.ai.then(|| h1scripts::Tables::read(h1)).transpose()
+        .map_err(|e| invalid(format!("AI script references: {e}")))?;
+    let generated = tables.as_ref().map_or_else(Default::default, |tables| {
+        crate::squad_roster::prepare(&mut ai_src, tables)
+    });
+    let (requests, retained) = match (tables.as_ref(), opts.scripts) {
+        (Some(tables), Some(scripts)) => {
+            let requests = h1scripts::aicontrol::requests(tables, &scripts.catalog);
+            let subjects = h1scripts::aicontrol::retained_subjects(tables, &scripts.catalog);
+            let retained = crate::ai_control_roster::prepare(
+                &original_ai, &mut ai_src, &generated, &subjects, &requests,
+            )?;
+            (requests, Some((retained, subjects)))
+        }
+        _ => (Vec::new(), None),
     };
     let ai_options = h1ai::convert::Options::default();
     let mut plan = h1map::phase::time("ai", || h1ai::convert::convert(&ai_src, &ai_options));
-    let requests = match opts.scripts.filter(|_| opts.ai) {
-        Some(scripts) => {
-            let tables = h1scripts::Tables::read(h1)
-                .map_err(|e| invalid(format!("AI script references: {e}")))?;
-            h1scripts::aicontrol::requests(&tables, &scripts.catalog)
-        }
-        None => Vec::new(),
+    let mut ai_control = h1ai::control::prepare(&original_ai, &mut plan, &ai_options, &requests);
+    if let Some((retained, subjects)) = &retained {
+        h1ai::control::install_automatic_destinations(
+            &original_ai, &mut plan, &ai_options, &mut ai_control,
+            &retained.overflow_hosts, subjects.follow_encounters.as_ref(),
+        );
+    }
+    let generated_starts: Vec<_> = match &retained {
+        Some((retained, _)) => retained.generated_starts.iter().copied().collect(),
+        None => generated.into_iter().collect(),
     };
-    let ai_control = h1ai::control::prepare(&original_ai, &mut plan, &ai_options, &requests);
     if opts.scripts.is_some_and(|scripts| {
         scripts.target.builtins.get("ai_magically_see_players")
             .is_some_and(|builtin| builtin.index == hs::h1_ai_slots::CONTROL)

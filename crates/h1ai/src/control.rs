@@ -97,6 +97,8 @@ pub struct Control {
     pub combat_timers: BTreeMap<u16, CombatTimer>,
     /// Squads that can participate in follow-driven migration (Halo 1 flag 0x20).
     pub automatic_migration: BTreeSet<u16>,
+    /// Deferred orders on a physical carrier for destinations beyond the native pool.
+    pub automatic_destinations: Vec<(u16, u16)>,
 }
 
 #[derive(Clone, Copy)]
@@ -363,6 +365,46 @@ pub fn prepare(source: &H1Ai, plan: &mut Plan, opts: &Options, requests: &[Reque
     control
 }
 
+pub fn install_automatic_destinations(
+    source: &H1Ai,
+    plan: &mut Plan,
+    opts: &Options,
+    controls: &mut Control,
+    hosts: &BTreeMap<u16, u16>,
+    followed: Option<&BTreeSet<u16>>,
+) {
+    let indices = converted_indices(source, plan);
+    let mut orders = BTreeMap::new();
+    for (&encounter, &host) in hosts {
+        if followed.is_some_and(|groups| !groups.contains(&encounter)) {
+            continue;
+        }
+        let source = &source.encounters[usize::from(encounter)];
+        for (squad, native) in source.squads.iter().zip(&indices[usize::from(encounter)]) {
+            if native.is_some() || squad.flags & 0x20 == 0 {
+                continue;
+            }
+            let defending = usize::try_from(squad.platoon).ok()
+                .and_then(|index| source.platoons.get(index))
+                .is_some_and(|platoon| platoon.flags & 4 != 0);
+            let mask = if defending { squad.groups[3] } else { squad.attacking() };
+            let key = (encounter, mask);
+            let order = if let Some(&order) = orders.get(&key) {
+                order
+            } else {
+                let Some(order) = order_from_mask(
+                    plan, opts, encounter, mask, format!("h1_auto_{encounter}_{mask:x}"),
+                ) else {
+                    continue;
+                };
+                orders.insert(key, order);
+                order
+            };
+            controls.automatic_destinations.push((host, order));
+        }
+    }
+}
+
 fn prepare_platoon_rules(
     source: &H1Ai,
     plan: &mut Plan,
@@ -597,6 +639,17 @@ fn build_order(
     } else {
         source.attacking()
     };
+    let mode = if operation == Operation::Defend { "defend" } else { "attack" };
+    order_from_mask(plan, opts, encounter, mask, format!("h1_{mode}_{squad}"))
+}
+
+fn order_from_mask(
+    plan: &mut Plan,
+    opts: &Options,
+    encounter: u16,
+    mask: u32,
+    name: String,
+) -> Option<u16> {
     let zone = &plan.ai.zones[usize::from(encounter)];
     let mut primary_areas = Vec::new();
     for (index, area) in zone.areas.iter().enumerate() {
@@ -625,14 +678,7 @@ fn build_order(
     }
     let index = i16::try_from(plan.ai.orders.len()).ok()?;
     plan.ai.orders.push(Order {
-        name: format!(
-            "h1_{}_{squad}",
-            if operation == Operation::Defend {
-                "defend"
-            } else {
-                "attack"
-            }
-        ),
+        name,
         style: opts.order_style,
         flags: 0,
         force_combat_status: 0,

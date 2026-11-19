@@ -162,6 +162,7 @@ pub enum Operation {
     TimerTick = 34,
     ExpireSquadTimers = 35,
     VehicleEnter = 36,
+    FollowWithDestinations = 37,
 }
 
 impl Operation {
@@ -209,6 +210,7 @@ impl Operation {
             34 => Self::TimerTick,
             35 => Self::ExpireSquadTimers,
             36 => Self::VehicleEnter,
+            37 => Self::FollowWithDestinations,
             _ => return None,
         })
     }
@@ -278,6 +280,7 @@ impl Operation {
             Self::FollowUnit => &[AI, UNIT, LONG],
             Self::FollowDistance => &[AI, REAL, LONG],
             Self::FollowTick | Self::TimerTick => &[LONG],
+            Self::FollowWithDestinations => &[LONG, STRING],
             Self::AutomaticMigrationTarget => &[AI, BOOLEAN, LONG],
         }
     }

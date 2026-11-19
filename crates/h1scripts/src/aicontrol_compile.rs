@@ -461,7 +461,20 @@ impl Compiler<'_> {
                 return Err(invalid(format!("script name collision: {name}")));
             }
             let base = self.number(h2t::LONG, i32::from(base));
-            let root = self.runtime_control_call(operation, &[base], h2t::VOID)?;
+            let root = if operation == RuntimeOperation::FollowTick
+                && let Some(control) = self.ai_control
+                && !control.automatic_destinations.is_empty()
+            {
+                let mut encoded = String::new();
+                encode_words(&mut encoded, control.automatic_destinations.iter().flat_map(|&(host, order)| [host, order]));
+                if encoded.len() > u16::MAX as usize {
+                    return Err(invalid("too many automatic AI destinations"));
+                }
+                let payload = self.control_string(&format!("{:04x}{encoded}", encoded.len()));
+                self.runtime_control_call(RuntimeOperation::FollowWithDestinations, &[base, payload], h2t::VOID)?
+            } else {
+                self.runtime_control_call(operation, &[base], h2t::VOID)?
+            };
             self.out.scripts.push(definition(
                 &name,
                 2,
