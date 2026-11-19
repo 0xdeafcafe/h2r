@@ -273,6 +273,13 @@ pub trait ExternalPass: Send {
     /// game's vertex programs. Called once, on the device's thread, before
     /// the backend gets the pass.
     fn view_constants(&mut self, _constants: &[[f32; 4]; VIEW_CONSTANTS]) {}
+
+    /// Whether the pass draws colour only (a full-screen post pass): the
+    /// device then issues it with no depth bound, and the backend gives it
+    /// a scratch depth ([`ExternalTarget::depth`]) it must not rely on.
+    fn colour_only(&self) -> bool {
+        false
+    }
 }
 
 /// How many vertex constants [`ExternalPass::view_constants`] gives: the
@@ -749,7 +756,9 @@ pub trait Backend: Send {
         false
     }
     /// Runs `pass` into colour surface `color` and depth surface `depth`,
-    /// in order after the work recorded so far. `Ok(false)`: the backend
+    /// in order after the work recorded so far. `depth` the same surface
+    /// as `color`: a colour-only pass ([`ExternalPass::colour_only`]),
+    /// given a scratch depth of the colour's size. `Ok(false)`: the backend
     /// cannot (the default) and `pass` is dropped.
     fn external_pass(
         &mut self,
@@ -1115,6 +1124,12 @@ pub struct RecordingBackend {
     /// While set, the checks [`Backend::gpu_fence`] hands out answer that
     /// the GPU is still busy. `None` (the default): no fences.
     pub gpu_busy: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Whether it takes external passes ([`Backend::external_pass`]; off
+    /// by default). Taken, a pass is recorded in
+    /// [`external`](Self::external), not encoded (there is no GPU).
+    pub external_passes: bool,
+    /// The external passes taken: `(colour, depth)` surfaces, in order.
+    pub external: Vec<(u32, u32)>,
 }
 
 impl RecordingBackend {
@@ -1430,5 +1445,22 @@ impl Backend for RecordingBackend {
         };
         self.calls.push(Recorded::ReadSurface { surface, len });
         Ok(vec![self.readback_fill; len])
+    }
+
+    fn supports_external_pass(&self) -> bool {
+        self.external_passes
+    }
+
+    fn external_pass(
+        &mut self,
+        color: u32,
+        depth: u32,
+        _request: ExternalPassRequest,
+        _pass: Box<dyn ExternalPass>,
+    ) -> Result<bool, String> {
+        if self.external_passes {
+            self.external.push((color, depth));
+        }
+        Ok(self.external_passes)
     }
 }

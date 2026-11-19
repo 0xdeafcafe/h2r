@@ -375,6 +375,19 @@ pub enum Refused {
     Program(String),
 }
 
+/// Whether [`GpuGlow::encode`] would draw `plan` into `color` (guest size
+/// `guest_size`), recording nothing: the target can be sampled, is the
+/// plan's size, and every block compiles.
+pub fn check(color: &wgpu::TextureView, guest_size: (u32, u32), plan: &Plan) -> Result<(), Refused> {
+    if !color.texture().usage().contains(wgpu::TextureUsages::TEXTURE_BINDING) {
+        return Err(Refused::ColourNotSampled);
+    }
+    if guest_size != plan.view {
+        return Err(Refused::ViewSize(guest_size, plan.view));
+    }
+    programs(plan).map(|_| ()).map_err(Refused::Program)
+}
+
 impl GpuGlow {
     pub fn new() -> Self {
         Self::default()
@@ -383,12 +396,7 @@ impl GpuGlow {
     /// Records `plan`'s draws in order. The stand-ins are the guest sizes
     /// times this copy's scale. Nothing is recorded when it refuses.
     pub fn encode(&mut self, mut t: GlowTarget<'_>, plan: &Plan) -> Result<(), Refused> {
-        if !t.color.texture().usage().contains(wgpu::TextureUsages::TEXTURE_BINDING) {
-            return Err(Refused::ColourNotSampled);
-        }
-        if t.guest_size != plan.view {
-            return Err(Refused::ViewSize(t.guest_size, plan.view));
-        }
+        check(t.color, t.guest_size, plan)?;
         let programs = programs(plan).map_err(Refused::Program)?;
         for (draw, program) in plan.draws.iter().zip(&programs) {
             let reads_dest = (0..4).any(|n| program.dims[n].is_some() && draw.stages[n] == Some(draw.dest));

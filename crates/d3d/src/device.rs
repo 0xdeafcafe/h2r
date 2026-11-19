@@ -325,6 +325,12 @@ pub struct Stats {
     /// Swallows ended early: a draw that is not the next one planned, or
     /// one armed over another not finished ([`Device::swallow`]).
     pub swallow_mismatches: u64,
+    /// Swallows not armed to drop because their pass could not be issued
+    /// ([`Device::swallow`]): the draws stay the D3D path's.
+    pub swallow_refusals: u64,
+    /// External passes dropped, by [`ExternalRefusal`] (its index in
+    /// [`ExternalRefusal::ALL`]).
+    pub external_refusals: [u64; ExternalRefusal::ALL.len()],
     /// Draws handed to the backend (including skipped ones).
     pub draws: u64,
     /// Inline (push-buffer) immediate draws among them.
@@ -726,6 +732,65 @@ enum Fate {
     /// The pass's, drawn (observing).
     Observed,
 }
+
+/// Why an external pass is not issued ([`Stats::external_refusals`]);
+/// each is logged once per process.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExternalRefusal {
+    /// A newer ask replaced it before the drain.
+    Replaced,
+    /// The backend draws no external passes (no GPU backend: a headless
+    /// run without `H2_BOOT_GFX`).
+    Unsupported,
+    /// No colour target bound.
+    NoColour,
+    /// No depth bound, and the pass is not colour-only.
+    NoDepth,
+    /// The colour target's header, or the device's Z scale, unreadable.
+    Header,
+    /// The bound targets have no host surfaces.
+    Targets,
+    /// The backend refused it (a target it cannot draw into).
+    Backend,
+    /// The backend failed.
+    Failed,
+}
+
+impl ExternalRefusal {
+    pub const ALL: [ExternalRefusal; 8] = [
+        ExternalRefusal::Replaced,
+        ExternalRefusal::Unsupported,
+        ExternalRefusal::NoColour,
+        ExternalRefusal::NoDepth,
+        ExternalRefusal::Header,
+        ExternalRefusal::Targets,
+        ExternalRefusal::Backend,
+        ExternalRefusal::Failed,
+    ];
+
+    /// Its index in [`ALL`](Self::ALL) and [`Stats::external_refusals`].
+    pub fn index(self) -> usize {
+        ExternalRefusal::ALL.iter().position(|&r| r == self).unwrap_or(0)
+    }
+
+    pub fn describe(self) -> &'static str {
+        match self {
+            ExternalRefusal::Replaced => "a newer pass replaced it before the drain",
+            ExternalRefusal::Unsupported => {
+                "the backend draws no external passes (no GPU backend: headless without H2_BOOT_GFX)"
+            }
+            ExternalRefusal::NoColour => "no colour target is bound",
+            ExternalRefusal::NoDepth => "no depth is bound and the pass needs one",
+            ExternalRefusal::Header => "the colour target's header or the device's Z scale is unreadable",
+            ExternalRefusal::Targets => "the bound targets have no host surfaces",
+            ExternalRefusal::Backend => "the backend refused it (a target it cannot draw into)",
+            ExternalRefusal::Failed => "the backend failed",
+        }
+    }
+}
+
+/// The refusals logged so far (a bit per [`ExternalRefusal::index`]).
+static EXTERNAL_REFUSALS_LOGGED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 struct GridAsk {
     tag: u64,
@@ -1751,7 +1816,7 @@ impl<B: Backend> Device<B> {
     /// colour or depth is bound or the backend refuses.
     pub fn request_external_pass(&mut self, pass: Box<dyn crate::backend::ExternalPass>) {
         if self.pending_external.replace(pass).is_some() {
-            self.stats.external_passes_dropped += 1;
+            self.refuse_external(ExternalRefusal::Replaced);
         }
     }
 
@@ -1772,8 +1837,12 @@ impl<B: Backend> Device<B> {
     ///
     /// `Ok(false)` with nothing armed when a push-buffer callback is
     /// queued first (kept for the next entry), no colour target is bound,
-    /// or the plan is empty. Arming over a swallow not finished ends that
-    /// one as a mismatch.
+    /// the plan is empty, or (dropping) the pass could not be issued into
+    /// the targets bound now or is not colour-only
+    /// ([`ExternalPass::colour_only`](crate::backend::ExternalPass::colour_only);
+    /// [`Stats::swallow_refusals`], the reason counted and logged as its
+    /// issue would). Arming over a swallow not
+    /// finished ends that one as a mismatch.
     pub fn swallow(&mut self, mem: &mut dyn GuestMemory, s: Swallow) -> Result<bool, D3dError> {
         const E: &str = "swallow";
         self.live(E)?;
@@ -1786,6 +1855,22 @@ impl<B: Backend> Device<B> {
         }
         if s.targets.is_empty() || self.render_target == 0 {
             return Ok(false);
+        }
+        // Dropping needs the pass issued in their place: what its issue
+        // checks is checked here, before any draw is dropped. Its target is
+        // slot 0's, bound now and at the last draw; the depth bound then is
+        // not known now, so the pass must be colour-only.
+        if s.drop {
+            let ready = if s.pass.colour_only() {
+                self.external_ready(mem, true).map(|_| ())
+            } else {
+                Err(ExternalRefusal::NoDepth)
+            };
+            if let Err(why) = ready {
+                self.stats.swallow_refusals += 1;
+                self.refuse_external(why);
+                return Ok(false);
+            }
         }
         let slots = s.targets.iter().map(|&t| usize::from(t)).max().unwrap_or(0) + 1;
         let mut headers = vec![None; slots];
@@ -1848,30 +1933,68 @@ impl<B: Backend> Device<B> {
         }
     }
 
+    /// Counts and logs (once per reason) a pass not issued.
+    fn refuse_external(&mut self, why: ExternalRefusal) {
+        use std::sync::atomic::Ordering;
+        self.stats.external_passes_dropped += 1;
+        let i = why.index();
+        self.stats.external_refusals[i] += 1;
+        if EXTERNAL_REFUSALS_LOGGED.fetch_or(1 << i, Ordering::Relaxed) & (1 << i) == 0 {
+            eprintln!("d3d: an external pass was dropped: {} (logged once)", why.describe());
+        }
+    }
+
+    /// What issuing a pass needs that is checked without touching the
+    /// targets: the backend, the bound colour (and depth unless
+    /// `colour_only`), the colour's header and the Z scale. The request.
+    fn external_ready(
+        &self,
+        mem: &mut dyn GuestMemory,
+        colour_only: bool,
+    ) -> Result<crate::backend::ExternalPassRequest, ExternalRefusal> {
+        if !self.backend.supports_external_pass() {
+            return Err(ExternalRefusal::Unsupported);
+        }
+        if self.render_target == 0 {
+            return Err(ExternalRefusal::NoColour);
+        }
+        if !colour_only && self.depth_stencil == 0 {
+            return Err(ExternalRefusal::NoDepth);
+        }
+        let d = self.header_desc(mem, self.render_target).map_err(|_| ExternalRefusal::Header)?;
+        let dev = mem.read_u32(self.cfg.layout.p_device).map_err(|_| ExternalRefusal::Header)?;
+        let z_scale = f32::from_bits(mem.read_u32(dev + field::Z_SCALE).map_err(|_| ExternalRefusal::Header)?);
+        let v = self.viewport;
+        Ok(crate::backend::ExternalPassRequest {
+            rect: (v.x, v.y, v.width, v.height),
+            surface_size: (d.width, d.height),
+            z_scale: if z_scale.is_finite() && z_scale > 0.0 { z_scale } else { 16_777_215.0 },
+        })
+    }
+
     fn issue_external_pass(&mut self, mem: &mut dyn GuestMemory, mut pass: Box<dyn crate::backend::ExternalPass>) {
         let constants: [[f32; 4]; crate::backend::VIEW_CONSTANTS] = std::array::from_fn(|r| self.constant(r));
         pass.view_constants(&constants);
-        let issued = (|| -> Option<bool> {
-            if self.render_target == 0 || self.depth_stencil == 0 {
-                return None;
-            }
-            let (color, depth) = self.current_targets(mem, "external pass").ok()?;
-            let depth = depth?;
-            let d = self.header_desc(mem, self.render_target).ok()?;
-            let dev = mem.read_u32(self.cfg.layout.p_device).ok()?;
-            let z_scale = f32::from_bits(mem.read_u32(dev + field::Z_SCALE).ok()?);
-            let v = self.viewport;
-            let request = crate::backend::ExternalPassRequest {
-                rect: (v.x, v.y, v.width, v.height),
-                surface_size: (d.width, d.height),
-                z_scale: if z_scale.is_finite() && z_scale > 0.0 { z_scale } else { 16_777_215.0 },
-            };
-            self.backend.external_pass(color, depth, request, pass).ok()
-        })();
-        if issued == Some(true) {
-            self.stats.external_passes += 1;
-        } else {
-            self.stats.external_passes_dropped += 1;
+        let colour_only = pass.colour_only();
+        let issued = match self.external_ready(mem, colour_only) {
+            Err(why) => Err(why),
+            Ok(request) => match self.current_targets(mem, "external pass") {
+                Err(_) => Err(ExternalRefusal::Targets),
+                // Colour only: the colour as its own depth (the backend
+                // gives it a scratch depth; `Backend::external_pass`).
+                Ok((color, depth)) => match if colour_only { Some(color) } else { depth } {
+                    None => Err(ExternalRefusal::NoDepth),
+                    Some(depth) => match self.backend.external_pass(color, depth, request, pass) {
+                        Ok(true) => Ok(()),
+                        Ok(false) => Err(ExternalRefusal::Backend),
+                        Err(_) => Err(ExternalRefusal::Failed),
+                    },
+                },
+            },
+        };
+        match issued {
+            Ok(()) => self.stats.external_passes += 1,
+            Err(why) => self.refuse_external(why),
         }
     }
 

@@ -1590,11 +1590,38 @@ its own thread, and render-timing does not matter (the call runs).
    with a composite over stale 7 and 8; the plan matches the game's
    control flow bit for bit, so this takes a port that is wrong). A call
    the host cannot plan (a copy after the blur, a target it does not
-   know) is not armed. Tests: d3d `swallow` (exactly the plan's quads
-   dropped and nothing after, the pass placed after the last; a missing
-   or extra quad, another draw or another shape ends it; an unfinished
-   swallow; through the render thread), boot
-   `native_post_glue::tests`, feature `native_post`.
+   know) is not armed.
+
+   Nothing is dropped unless the glow will be drawn. The glow and the
+   A/B's capture are colour-only external passes
+   (`ExternalPass::colour_only`): the composite binds no depth, so the
+   device issues them with none and the GPU backend gives them a scratch
+   depth (`Backend::external_pass` with the colour as its own depth).
+   The device refuses to arm a drop, dropping nothing, when the pass
+   could not be issued into the targets bound at the entry (no external
+   passes in the backend, no colour target, an unreadable header) or is
+   not colour-only (`Stats::swallow_refusals`). Every pass not issued is
+   counted by reason (`Stats::external_refusals`, `ExternalRefusal`)
+   and each reason logged once (`d3d: an external pass was dropped:
+   ...`). The host then observes its first call with a probe that checks
+   on the GPU's thread that the glow would draw into the target it gets
+   (`native_render::glow::check`: the target can be sampled, is the
+   plan's size, every block compiles); only then are quads dropped. A
+   probe or glow refused keeps every later call on the D3D path (logged).
+   The first A/B on 03a ran headless (no `H2_BOOT_GFX`, so no GPU
+   backend): every pass was dropped (`Unsupported`) after its quads
+   were, and no capture could be made; both are now refused up front and
+   logged. A backend that takes the pass on the render thread and then
+   refuses it there (a multisampled or non-drawable target) is not seen
+   in time: the probe's pass is never encoded, so nothing is dropped.
+
+   Tests: d3d `swallow` (exactly the plan's quads dropped and nothing
+   after, the pass issued colour-only after the last; a missing or extra
+   quad, another draw or another shape ends it; an unfinished swallow;
+   through the render thread; a backend that takes no passes or a pass
+   that needs depth drops nothing; each refusal counted), boot
+   `native_post_glue::tests` (nothing dropped before the probe; every
+   pass colour-only), feature `native_post`.
 3. **The colour pass.** Its numbers are built: `engine::colour_pass`
    (`arguments`: the caller's half with `0x000137a0`'s curves;
    `parameters`: the callee's override record and clamps;
@@ -1673,7 +1700,11 @@ its own thread, and render-timing does not matter (the call runs).
    `<dir>/<native|d3d>-<call>-<w>x<h>.png`, one per copy of the target
    under the render scale. With the switch off the hook is placed for it
    and observes the same quads, dropping none, so the D3D side is
-   captured at the same draw. Compare:
+   captured at the same draw. It needs the GPU backend: a headless run
+   writes nothing (logged); set `H2_BOOT_GFX=<dir>
+   H2_BOOT_GFX_EVERY=never`. With the switch on the first call is the
+   probe's (a D3D-side capture if it falls in the window), so start the
+   window after it. Compare:
    - the two captures per pixel, within a small tolerance for filtering
      (max and mean error and the count over it);
    - `swallow_mismatches` 0 and `swallowed_draws` the quads planned on

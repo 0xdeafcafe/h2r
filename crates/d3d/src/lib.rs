@@ -57,7 +57,7 @@ pub use backend::{
     Backend, ChannelMask, DepthGridRequest, DepthGridResult, DepthGridSink, DrawOutcome, ExternalPass, ExternalPassRequest, ExternalTarget, VIEW_CONSTANTS, external_viewport, GuestLayoutKind, PixelRect, Recorded, RecordingBackend,
     RectClear, ResolvedDraw, StreamBytes, StreamData, CachedBytes, CachedIndices, IndexData, Viewport,
 };
-pub use device::{DepthScale, Device, DeviceConfig, OcclusionSink, GuestRange, PresentParameters, Stats, Swallow, WritebackCause, WritebackCauses};
+pub use device::{DepthScale, Device, DeviceConfig, ExternalRefusal, OcclusionSink, GuestRange, PresentParameters, Stats, Swallow, WritebackCause, WritebackCauses};
 pub use dirty::{UploadPolicy, WriteTracker};
 pub use events::{D3dError, Event, HleStop};
 pub use gfx_backend::{GfxBackend, SwapFinish};
