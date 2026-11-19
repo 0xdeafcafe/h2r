@@ -1146,10 +1146,10 @@ pub fn write(
         }
     }
     if opts.ai
-        && engine::squad_pool::partition(plan.ai.squads.len(), plan.ai.squad_groups.len()).is_none()
+        && !engine::campaign_squad_pool::holds(plan.ai.squads.len(), plan.ai.squad_groups.len())
     {
         return Err(invalid(format!(
-            "ai: {} squads and {} squad groups, the combined squad and group pools cannot hold them",
+            "ai: {} squads and {} squad groups, the native campaign squad and group pools cannot hold them",
             plan.ai.squads.len(),
             plan.ai.squad_groups.len()
         )));

@@ -171,7 +171,7 @@ pub fn register_core(features: &mut feature::Registry, i: CoreInputs<'_>) -> any
     // regeneration, health packs, a health meter. Off (Halo 2's) until the
     // map's identity or the H2_HEALTH_MODEL debug override says Halo 1.
     features
-        .add(&crate::h1_squads::SquadPools)
+        .add(&crate::h1_squad_storage::SquadStorage)
         .map_err(|e| anyhow::anyhow!("campaign squad pools: {e}"))?;
     let health_on = health::install(features).context("installing the health model")?;
     features

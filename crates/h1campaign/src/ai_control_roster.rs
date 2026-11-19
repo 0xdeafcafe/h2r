@@ -23,7 +23,7 @@ pub(crate) fn prepare(
     requests: &[h1ai::control::Request],
 ) -> Result<Retained> {
     let group_count = roster.encounters.len();
-    let fits = |count| engine::squad_pool::partition(count, group_count).is_some();
+    let fits = |count| engine::campaign_squad_pool::holds(count, group_count);
     let name = |encounter: &str, squad: &str| format!("{encounter}/{squad}").to_ascii_lowercase();
     let maneuvers = h1ai::control::maneuver_targets(source, requests);
     let mut selected = BTreeMap::new();
@@ -60,7 +60,9 @@ pub(crate) fn prepare(
             {
                 automatic_rows.entry(ei).or_default().push(si);
             }
-            if existing.is_some_and(|(q, _)| !q.starting_locations.is_empty()) {
+            if !squad.starting_locations.is_empty()
+                || existing.is_some_and(|(q, _)| !q.starting_locations.is_empty())
+            {
                 keep.insert((ei, si));
             } else if maneuvers.contains(&key) {
                 optional.push((0, ei, si));
@@ -75,9 +77,15 @@ pub(crate) fn prepare(
         return Err(invalid("native AI roster cannot hold the live squads"));
     }
     optional.sort_unstable();
-    for &(_, ei, si) in &optional {
+    for &(priority, ei, si) in &optional {
         if fits(keep.len() + 1) {
             keep.insert((ei, si));
+        } else if priority < 2 {
+            let encounter = &source.encounters[ei];
+            return Err(invalid(format!(
+                "no native slot for AI destination {}/{}",
+                encounter.name, encounter.squads[si].name,
+            )));
         }
     }
 

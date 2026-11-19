@@ -1,0 +1,127 @@
+//! Reserve native game-state storage for the campaign squad arrays.
+
+use engine::{
+    campaign_squad_pool as pool,
+    entry::{Cx, EntryError, GuestCall, Ret},
+    memory::MemFault,
+};
+use feature::{BuildError, Builder, Flow, Manifest, SnapshotPolicy, points};
+
+const ALLOCATOR: u32 = 0x0051_0c2c;
+const INITIAL_HANDLES: [u32; 5] = [0x557c74, 0x557c78, 0x557c7c, 0x557c80, 0x557c84];
+
+pub(crate) struct SquadStorage;
+
+impl feature::Feature for SquadStorage {
+    fn manifest(&self) -> Manifest {
+        Manifest::new(
+            "campaign-squad-pools",
+            "Reserve native campaign squad storage",
+        )
+        .doc("docs/halo1/ai-control.md")
+    }
+
+    fn build(&self, b: &mut Builder<'_>) -> Result<(), BuildError> {
+        b.raw().before(
+            &points::AI_SQUADS_ALLOCATE,
+            "reserve AI game-state storage",
+            |call| call.answer_async(|cx| Box::pin(allocate(cx))),
+        );
+        b.raw().before(
+            &points::AI_SQUADS_INITIALIZE,
+            "set squad capacity before activation",
+            |call| {
+                let mut guest = call.ctx.runtime().memory();
+                pool::prepare(&mut *guest).map_err(|f| runtime::GuestFault {
+                    addr: f.addr,
+                    len: f.len as usize,
+                    access: if f.write {
+                        runtime::guest::Access::Write
+                    } else {
+                        runtime::guest::Access::Read
+                    },
+                    reason: runtime::guest::FaultReason::Unmapped,
+                })?;
+                Ok(Flow::Continue)
+            },
+        );
+        b.snapshot(SnapshotPolicy::Stateless);
+        Ok(())
+    }
+}
+
+async fn allocate(cx: Cx) -> Result<Ret, EntryError> {
+    let (allocator, alloc) = cx.write(|m| {
+        for address in INITIAL_HANDLES {
+            m.set_u32(address, u32::MAX)?;
+        }
+        let allocator = m.u32(ALLOCATOR)?;
+        Ok::<_, MemFault>((allocator, m.u32(m.u32(allocator)?)?))
+    })?;
+    let squad = cx
+        .call(
+            GuestCall::new(alloc)
+                .ecx(allocator)
+                .args([pool::SQUAD_BYTES]),
+        )
+        .await?
+        .eax;
+    let group = cx
+        .call(
+            GuestCall::new(alloc)
+                .ecx(allocator)
+                .args([pool::GROUP_BYTES]),
+        )
+        .await?
+        .eax;
+    cx.write(|m| pool::publish(m, squad, group, allocator))?;
+    Ok(Ret::new(0, 0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use engine::{
+        entry::{EntryFuture, Regs, testing},
+        testing::FakeGuest,
+    };
+
+    #[test]
+    fn reserve_calls_the_guest_game_state_allocator_for_both_arrays() {
+        let mut guest = FakeGuest::new();
+        let allocator = 0x800000;
+        let vtable = 0x801000;
+        let alloc = 0x810000;
+        let squad = 0x820000;
+        let group = squad + pool::SQUAD_BYTES;
+        guest
+            .put_u32(ALLOCATOR, allocator)
+            .put_u32(allocator, vtable)
+            .put_u32(vtable, alloc)
+            .map(INITIAL_HANDLES[0], 20)
+            .map(squad, pool::SQUAD_BYTES + pool::GROUP_BYTES)
+            .put_u32(0x51e9d8, 0)
+            .put_u32(0x51e9dc, 0)
+            .put(0x4561e4, b"squad group\0squad\0");
+        let run = testing::run(
+            &|cx| -> EntryFuture { Box::pin(allocate(cx)) },
+            guest,
+            Regs::default(),
+            |call, _| {
+                assert_eq!(call.target, alloc);
+                assert_eq!(call.ecx, Some(allocator));
+                let eax = match call.args.as_slice() {
+                    [pool::SQUAD_BYTES] => squad,
+                    [pool::GROUP_BYTES] => group,
+                    _ => panic!("unexpected game-state allocation"),
+                };
+                Regs {
+                    eax,
+                    ..Default::default()
+                }
+            },
+        );
+        assert_eq!(run.result, Ok(Ret::new(0, 0)));
+        assert_eq!(run.calls.len(), 2);
+    }
+}

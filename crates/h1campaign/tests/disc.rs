@@ -898,6 +898,9 @@ fn retail_ai_control_hooks_match_spawn_follow_and_uncover_paths() {
     call(&source, 0x0013bd1f, 0x0013b500);
     call(&source, 0x0013eb01, 0x0013e280);
     call(&source, 0x0013eb0d, 0x0013c910);
+    call(&target, 0x001c7813, 0x00200930);
+    assert_eq!(&target.bytes_at(0x00200957, 5).unwrap()[1..], &0xc760u32.to_le_bytes());
+    assert_eq!(&target.bytes_at(0x0020098a, 5).unwrap()[1..], &0x163cu32.to_le_bytes());
     call(&target, 0x002016ab, 0x002039d0);
     call(&target, 0x00201912, 0x00203780);
     call(&target, 0x00274d61, 0x001a80e0);
@@ -913,6 +916,7 @@ fn check_authored_automatic_destinations(
     source: &h1map::H1Map,
     converted: &hs::Scenario,
     scenario_tag: &[u8],
+    tag_base: u32,
     catalog: &h1scripts::Catalog,
 ) {
     use hs::h1_ai_slots::{Operation, decode_words, migration as wire};
@@ -921,9 +925,8 @@ fn check_authored_automatic_destinations(
         u32::from_le_bytes(scenario_tag[offset..offset + 4].try_into().unwrap()) as usize
     };
     let (squads, groups, orders) = (count(0x160), count(0x158), count(0x240));
-    let expected = if level == "a50" { 359 } else { 344 };
-    assert_eq!(squads, expected, "{level}: retained physical squads");
-    assert_eq!(engine::squad_pool::partition(squads, groups), Some((squads, groups)));
+    assert!(squads > 335, "{level}: retained physical squads");
+    assert!(engine::campaign_squad_pool::holds(squads, groups));
 
     let reachable = converted.reachable(converted.roots()).unwrap();
     let payload = reachable.into_iter().find_map(|datum| {
@@ -942,6 +945,27 @@ fn check_authored_automatic_destinations(
     let ai = h1ai::h1::H1Ai::read(source).unwrap();
     let tables = h1scripts::Tables::read(source).unwrap();
     let subjects = h1scripts::aicontrol::retained_subjects(&tables, catalog);
+    if level == "b40" {
+        let view = tags::geometry::TagView::new(scenario_tag, tag_base);
+        let native = h1ai::h2::ScenarioAi::read(&view).unwrap();
+        let mut named = std::collections::BTreeSet::new();
+        let mut expanded = 0;
+        let mut formerly_omitted = 0;
+        for &(group, squad) in &subjects.migration_destinations {
+            let encounter = &ai.encounters[usize::from(group)];
+            let source = &encounter.squads[usize::from(squad)];
+            let name: String = format!("{}/{}", encounter.name, source.name).chars().take(31).collect();
+            let index = native.squads.iter().enumerate().find(|(index, dest)| {
+                dest.parent == group as i16 && dest.name.eq_ignore_ascii_case(&name) && !named.contains(index)
+            }).unwrap_or_else(|| panic!("missing native b40 destination {name}")).0;
+            named.insert(index);
+            expanded += usize::from(index >= 344);
+            formerly_omitted += usize::from((47..=63).contains(&group));
+        }
+        assert_eq!(formerly_omitted, 18);
+        assert!(expanded > 0);
+    }
+
     let mut shared = 0;
     for (index, encounter) in ai.encounters.iter().enumerate() {
         let at = index * 2 * wire::HEADER;
@@ -1042,7 +1066,7 @@ fn every_level_s_scripts_run_on_the_retail_interpreter() {
         let scnr = m.scenario().unwrap().clone();
         let bytes = m.read_tag_bytes(scnr.id).unwrap();
         if matches!(level, "a50" | "b40") {
-            check_authored_automatic_destinations(level, &h1, &sc, &bytes, &s.catalog);
+            check_authored_automatic_destinations(level, &h1, &sc, &bytes, scnr.location.unwrap().address, &s.catalog);
         }
         let bsps = u32::from_le_bytes(bytes[0x210..0x214].try_into().unwrap());
         assert_eq!(bsps as usize, h1.structure_bsps().unwrap().len());

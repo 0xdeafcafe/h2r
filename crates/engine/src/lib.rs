@@ -34,6 +34,7 @@
 
 pub mod abi;
 pub mod colour_pass;
+pub mod campaign_squad_pool;
 pub mod datum;
 pub mod entry;
 pub mod function_eval;

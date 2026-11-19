@@ -87,27 +87,25 @@ interest. A targetless Halo 1 request uses the point selector
 
 ## Roster dependency and remaining parity work
 
-**Built.** The converter calls `h1campaign::squad_roster::prepare`
-from roster commit `97830757` to retain script-created starts. It checks
-physical counts with `engine::squad_pool::partition` from the same
-commit. The roster lane's `SquadPools` feature applies its returned
-capacities through `engine::squad_pool::prepare` before retail
-`0x00200b30`. a50 fits 359 squads and 33 groups, and b40 fits 344
-squads and 75 groups, using the existing contiguous allocation.
+**Built.** The converter uses `h1campaign::squad_roster::prepare`
+from `97830757` for script-created starts. The campaign storage hook
+uses the retail game-state allocator at `0x00200930`. Its squad array
+has room for 384 `0x98`-byte records and a bitmap. The group array
+keeps its 100 retail records and stays at its startup address. Before
+`0x00200b30` the hook sets the squad header capacity for the loaded
+scenario, with 335 as the retail minimum. The added allocation is part
+of guest game state. Its size changes the native checkpoint layout, so
+affected images and checkpoints need regeneration.
 
-Source ordinals remain distinct when Halo 2 truncates their names.
-Live rosters keep their native identities. Empty maneuver destinations
-get native slots first, then literal migration and vehicle destinations
-and other named squads. Remaining automatic destinations retain their
-source order and masks. They use native orders on a reusable squad in
-their encounter where a carrier exists. Slot 300 marker 40 passes the
-offset of the source data in the scenario script section.
+All named b40 destinations now have independent native squad indices,
+including the 16 vehicle assignments and two infantry destinations beyond
+the old 344-slot partition. Source ordinals remain distinct when Halo 2
+truncates names. Live squads, maneuver destinations and explicit
+migration targets get native records in that priority. Remaining
+unnamed automatic destinations use reusable squad orders and keep their
+source order and masks. Slot 300 marker 40 passes the offset of this data
+in the scenario script section.
 
-- The disc census found 18 named b40 destinations past the native cap.
-  They include 16 vehicle destinations and two infantry migration targets
-  in `crev_marines` and `ext_b_marines_ini`. Routes in encounters
-  without a carrier have records and orders, and still need independently
-  addressable native squad storage to receive those actors.
 - Halo 2 uncover requires a tracked interest at `0x001b8540`. Halo 1
   can choose a firing position without a tracked enemy at `0x00165720`.
   Its normal uncover predicate also has actor-definition thresholds absent
