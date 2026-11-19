@@ -138,28 +138,41 @@ original objects and signed index rows before publishing the final pointer.
 The migration receipt reports compressed payload and immutable index-node
 bytes separately. Both count toward the archive's storage cost.
 
-The ten-minute multiplayer archive spans 20 independent segments. The
-first contains 450 frames in 15,556 bytes. The browser can play it before
-the event log or any other segment arrives. The table counts immutable
-index nodes serialized with source log position 64. A different number of
-decimal digits in that position changes each node’s length by the same
-number of bytes. Backup copies, HTTP headers and signed event-log storage
-are outside these totals.
+The table uses the deployment partition. Campaign hits the 8 MiB source
+limit after 284 frames, with 166 frames in the second segment. The index
+column counts the actual immutable node representation for source log
+position 64. A different number of digits in that position changes each
+node’s length by the same number of bytes. Backup copies, HTTP headers and
+signed event-log storage are excluded from the playback totals.
 
-| Multiplayer, 16 players for 10 minutes | Stored bytes | Bytes/player-minute |
-|---|---:|---:|
-| Original deflated v7 chunks | 1,322,664 | 8,266.65 |
-| H2AR Brotli segments | 317,041 | 1,981.51 |
-| Immutable archive index nodes | 5,775 | 36.09 |
-| Archive payload plus index | **322,816** | **2,017.60** |
+| Recording | Deflated v7 bytes | H2AR segment bytes | Index bytes | Total archive bytes | Fraction of v7 | B/player-minute |
+|---|---:|---:|---:|---:|---:|---:|
+| Multiplayer, 16 players, 10 min | 1,322,664 | 317,041 | 4,275 | **321,316** | **24.29%** | 2,008.23 |
+| Campaign, 1 player, 30 s | 173,708 | 42,987 | 361 | **43,348** | **24.95%** | 86,696 |
 
-The archive and its index together occupy **24.41%** of the deflated v7
-chunks. Encoding and verification run after the match. In the quality-10
-multiplayer run, native segment encoding alone took 124–223 ms per segment.
-These CPU costs are separate from the live sender measurements above.
-Run `bun bench/archive-transfer.ts <H2_ARCHIVE_DUMP>` from `web/` for
-the byte counts, first-segment and whole-replay decode timings, and an
-exact comparison of every decoded field against the Rust export.
+One multiplayer segment contains 450 frames. The viewer can play it before
+the game event log or any of the other 19 segments arrives. Browser-side
+decode used Bun 1.4.2 and preloaded response bytes. Five timed runs
+alternated the H2AR and JSON readers after warmup. H2AR timings include
+Brotli inflation and reconstruction. JSON timings include UTF-8 decoding
+and parsing of the same frames grouped into the same segments. The byte
+totals for that JSON differ slightly from the ten-second chunks above
+because there are fewer array boundaries.
+
+| Recording | JSON bytes | First H2AR segment bytes | First decode ms, JSON / H2AR | Full decode ms, JSON / H2AR |
+|---|---:|---:|---:|---:|
+| Multiplayer | 90,082,125 | 15,556 | 13.51 / 24.28 | 290.77 / 587.94 |
+| Campaign | 13,259,743 | 24,423 | 29.24 / 46.90 | 48.28 / 70.26 |
+
+Full archive reconstruction took longer than JSON parsing on these scenes.
+An indexed seek pays the first-segment cost for its chosen segment, and
+immutable reads transfer the stored Brotli bytes directly. Native
+compression in the earlier quality-10 multiplayer run took 124–223 ms
+per segment. Source buffering, compression and exact verification happen
+after the match. Run `bun bench/archive-transfer.ts <H2_ARCHIVE_DUMP>` in
+`web/` to reproduce the browser measurements. The benchmark checks every
+decoded field against the Rust dump and enforces the quarter-size budget
+including immutable index nodes.
 
 The following compressor comparison used identical inflated H2AR bodies from
 revision `65b71186`. Each segment was independently compressed. These are
