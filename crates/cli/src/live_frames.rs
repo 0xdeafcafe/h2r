@@ -666,7 +666,7 @@ mod server_test {
         assert_eq!(done.totals.frames, 1);
         assert_eq!(done.unpublished, 1);
 
-        // Damage only the archived copy in this temporary database. Verify
+        // Damage only the archived copy in this server’s private blob store. Verify
         // must name the failed game. Its original signed rows and backup
         // remain available for the operator's guarded rollback.
         let client = Client::at(&server.url).unwrap();
@@ -674,11 +674,23 @@ mod server_test {
             .get("/games/historic/chunks", &[("format", "archive".into())])
             .unwrap();
         let hash = index["items"][0]["sha256"].as_str().unwrap();
-        rt.block_on(server.live.store().put_blob(hash, b"damaged"))
+        let private = &server
+            .live
+            .blobs()
+            .expect("embedded data directory")
+            .private;
+        let key = format!("frames/archive/{hash}");
+        let stored = rt
+            .block_on(private.get(&key))
+            .unwrap()
+            .expect("published segment");
+        assert_eq!(format!("{:x}", Sha256::digest(&stored)), hash);
+        rt.block_on(private.put(&key, b"damaged".to_vec().into(), &Default::default()))
             .unwrap();
         let (failed, report) = command("--verify");
         assert!(failed.is_err());
         assert_eq!(report.failed[0].job.game.game_id, "historic");
+        assert!(report.failed[0].reason.contains("integrity check failed"));
         assert_eq!(
             rt.block_on(server.live.store().head()).unwrap(),
             applied_head
