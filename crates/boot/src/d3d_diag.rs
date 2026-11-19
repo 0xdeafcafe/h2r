@@ -771,7 +771,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
     ) -> bool {
         let draw = &candidate.fallback;
         if self.capturing().is_some() || self.logging() || self.sweep.is_some() || self.probe.armed()
-            || crate::native_world_layers_glue::comparing() || crate::native_residual_glue::observing_draw()
+            || native_observing()
         {
             return false;
         }
@@ -1731,4 +1731,16 @@ mod tests {
         let missing: Vec<_> = tr.difference(&headless).collect();
         assert!(missing.is_empty(), "Headless does not forward {missing:?}");
     }
+}
+
+/// A native-renderer comparison or residual observer wants the ordered D3D path.
+#[cfg(feature = "gpu")]
+fn native_observing() -> bool {
+    crate::native_world_layers_glue::comparing() || crate::native_residual_glue::observing_draw()
+}
+
+/// Headless builds have no native renderer to compare against.
+#[cfg(not(feature = "gpu"))]
+fn native_observing() -> bool {
+    false
 }
