@@ -1963,11 +1963,14 @@ fn a_vehicle_graph_takes_halo_2s_vehicle_layout() {
     assert_eq!(r.w(a + 4), 1 << 16 | 0xffff);
     assert_eq!(r.name(r.w(a + 8)), "tire_back_left");
     assert_eq!(r.f(a + 0xc), 0.0);
-    assert_eq!((r.f(a + 0x10), r.f(a + 0x14)), (0.3, 0.1));
+    // The kept element is Halo 1's first (mass point 1, the one with a
+    // marker; depths -0.31445 and -0.13452), negated; the second (mass
+    // point 0, -0.3 and -0.1) has no marker and is dropped.
+    assert_eq!((r.f(a + 0x10), r.f(a + 0x14)), (0.31445, 0.13452));
     assert_eq!(r.w(a + 0x18), 0);
     assert_eq!(
         (r.f(a + 0x1c), r.f(a + 0x20), r.f(a + 0x24)),
-        (0.0, 0.3, 0.1)
+        (0.0, 0.31445, 0.13452)
     );
 
     // The object overlay.

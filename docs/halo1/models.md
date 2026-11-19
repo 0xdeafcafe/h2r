@@ -245,8 +245,13 @@ retail's are (`jmad::vehicle_plan`):
   converted).
 - **Overlays, not actions.** Every type 1 animation of a vehicle graph
   goes to its type's overlays (`+0xc`): V, no retail vehicle tree holds an
-  overlay among its actions (`retail_vehicle_graphs`); E, `acc_*` are
-  looked up through `0x1cc1a0` → `0x1dbc80`, the overlay search.
+  overlay among its actions, and no base animation among its overlays
+  (`retail_vehicle_graphs`; the overlays may also hold a replacement,
+  type 2: the wraith's `any:any:any` `crouch`). E: `acc_*` are looked up
+  through `0x1cc1a0` → `0x1dbc80`, the overlay search. What type 2 does in
+  the engine is not established; no Halo 1 vehicle graph has one (86 on
+  the disc's campaign and multiplayer maps hold types 0 and 1 only), so
+  the converter needs no rule for it.
 - **Suspension (`+0x3c`, `0x28`).** E: `0x001dceb0` copies per element the
   animation (`+4`), marker (`+8`), offset (`+0xc`), full extension
   (`+0x10`) and full compression (`+0x14`) depths, region (`+0x18`) and

@@ -20,7 +20,8 @@
 //!   warthog gun's class is `fixed`, type `cg`; the warthog's driver seat
 //!   lacks both gunner bits and its gunner seat holds `SEAT_GUNNER`.
 //! - `retail_vehicle_graphs`: on Coagulation, every vehicle graph's actions
-//!   are base animations and its overlays overlay animations; the
+//!   are base animations and its overlays overlay or replacement
+//!   animations (the wraith's `crouch` is a replacement); the
 //!   warthog's steering overlay is in `any:any:any` and names a blend
 //!   screen; the chaingun's `firing` object overlay names `barrel_spin`.
 
@@ -176,7 +177,7 @@ fn animations(r: &Record, strings: &[Option<String>]) -> Vec<(String, i64, i8)> 
 }
 
 /// Retail vehicle graphs: actions are base animations, overlays overlay
-/// animations; the warthog's steering is an overlay of `any` that names a
+/// or replacement animations; the warthog's steering is an overlay of `any` that names a
 /// blend screen; the chaingun's object overlay names `barrel_spin`.
 #[test]
 #[ignore = "reads the Halo 2 disc ($H2_DISC)"]
@@ -196,8 +197,13 @@ fn retail_vehicle_graphs() {
             for (a, i) in &actions {
                 assert_eq!(anims[*i as usize].1, 0, "{} {key} action {a}", t.2);
             }
+            // Overlays are never base animations; the wraith's `crouch`
+            // in `any:any:any` is a replacement (type 2). No Halo 1
+            // vehicle graph has a replacement (all 86 on the disc's maps
+            // hold types 0 and 1 only), so the converter's overlays are
+            // its type 1 animations.
             for (a, i) in &overlays {
-                assert_eq!(anims[*i as usize].1, 1, "{} {key} overlay {a}", t.2);
+                assert_ne!(anims[*i as usize].1, 0, "{} {key} overlay {a}", t.2);
             }
         }
         if t.2 == "objects\\vehicles\\warthog\\warthog" {
