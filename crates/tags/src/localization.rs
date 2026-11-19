@@ -222,10 +222,11 @@ impl LocaleTable {
 const MATG_LOCALES: usize = 0x188;
 const LOCALE_INDEX_STRIDE: u64 = 8;
 
-/// The exact byte count for a locale file offset in the `matg` root.
+/// The exact byte count for the locale file-offset field at `field` in the
+/// `matg` root. Returns `None` for other fields or a truncated descriptor.
 /// The loader at 0x1a01e0 uses count times eight for the index and the
 /// descriptor's byte count for text. An empty locale may still have offsets.
-pub(crate) fn matg_locale_raw_len(root: &[u8], field: u32) -> Option<u64> {
+pub fn matg_locale_raw_len(root: &[u8], field: u32) -> Option<u64> {
     let at = (field as usize).checked_sub(MATG_LOCALES)?;
     let stride = LocaleDescriptor::SIZE;
     if at >= Language::ALL.len() * stride {
