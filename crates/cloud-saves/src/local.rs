@@ -21,7 +21,7 @@ use std::sync::Arc;
 use live_proto::storage::{MAX_SEGMENTS, valid_name};
 use serde_json::Value as Json;
 
-use crate::{KIND_SAVE, KIND_SETTINGS, Key, LocalItem, Sha256};
+use crate::{KIND_SAVE, KIND_SETTINGS, Key, LocalItem, Sha256, meta_damaged};
 
 /// Halo 2's U: under a data root.
 pub fn udata_dir(data: &Path) -> PathBuf {
@@ -179,6 +179,7 @@ impl Local {
                     sha256: Sha256::of(&bytes),
                     size: bytes.len() as u64,
                     modified,
+                    damaged: false,
                 },
             );
         }
@@ -282,6 +283,7 @@ impl Local {
             sha256: Sha256::of(&bytes),
             size: bytes.len() as u64,
             modified,
+            damaged: key.kind == KIND_SAVE && meta_damaged(&key.name, &bytes),
         }))
     }
 
@@ -452,6 +454,17 @@ pub(crate) mod tests {
         );
         assert_eq!(items[&meta].modified, 1_600_000_000_000);
         assert_eq!(items[&meta].sha256, Sha256::of(b"Name=Chief"));
+        // 8-bit text with no byte-order mark is no meta file the game
+        // writes: damaged. A payload file never is.
+        assert!(items[&meta].damaged);
+        assert!(items[&Key::save("TitleMeta.xbx")].damaged);
+        assert!(!items[&payload].damaged);
+        let good: Vec<u8> = std::iter::once(0xfeff_u16)
+            .chain("Name=Chief\r\n".encode_utf16())
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        local.write(&meta, &good, 1_600_000_000_000).unwrap();
+        assert!(!local.scan().unwrap()[&meta].damaged);
         let chief = Key::new(KIND_SETTINGS, "4368696566");
         assert_eq!(items[&chief].modified, 1234);
         assert_eq!(

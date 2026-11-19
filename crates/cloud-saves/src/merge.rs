@@ -18,6 +18,11 @@
 //!    every file of it that differs, and each losing changed file is kept
 //!    as a conflict copy. A profile's or variant's files stay a set that
 //!    the game wrote together.
+//! 6. A damaged meta file here ([`crate::LocalItem::damaged`]: an empty
+//!    or torn `SaveMeta.xbx` or `TitleMeta.xbx`) counts as unchanged since
+//!    the base and takes no part in rule 5: the server's copy is pulled
+//!    over it, and it is never pushed or deleted on the server. With no
+//!    copy on the server it is left alone.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -39,6 +44,9 @@ pub enum Action {
     Push { if_match: u64, keep_remote: bool },
     /// Delete the server's item, at version `if_match`.
     DeleteRemote { if_match: u64 },
+    /// Neither side moves, and the base stays (a damaged meta file here
+    /// with nothing on the server to replace it, rule 6).
+    Leave,
 }
 
 /// Why, for the log.
@@ -57,6 +65,8 @@ pub enum Why {
     LocalNewer,
     /// Its container's conflict was decided for the other side (rule 5).
     ContainerFollows,
+    /// This machine's meta file is damaged (rule 6).
+    LocalDamaged,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,6 +94,8 @@ struct Facts<'a> {
     remote_version: u64,
     local_changed: bool,
     remote_changed: bool,
+    /// This machine's copy is a damaged meta file (rule 6).
+    damaged: bool,
 }
 
 /// The steps that bring both sides to the same state, one per item that
@@ -102,17 +114,20 @@ pub fn plan(
             let r = remote.get(key);
             let rh = r.filter(|r| !r.deleted).and_then(|r| r.sha256);
             let rv = r.map_or(0, |r| r.version);
+            let damaged = l.is_some_and(|l| l.damaged);
             Facts {
                 key,
                 local: l,
                 remote: rh,
                 remote_modified: r.map_or(0, |r| r.modified),
                 remote_version: rv,
-                local_changed: match b {
-                    Some(b) => l.map(|l| l.sha256) != b.sha256,
-                    None => l.is_some(),
-                },
+                local_changed: !damaged
+                    && match b {
+                        Some(b) => l.map(|l| l.sha256) != b.sha256,
+                        None => l.is_some(),
+                    },
                 remote_changed: rv != b.map_or(0, |b| b.version),
+                damaged,
             }
         })
         .collect();
@@ -122,7 +137,8 @@ pub fn plan(
     // change on each side over the container's conflicting files.
     let mut groups: BTreeMap<(&str, &str), (i64, i64)> = BTreeMap::new();
     for f in &facts {
-        let conflict = differ(f) && both_have(f) && f.local_changed == f.remote_changed;
+        let conflict =
+            !f.damaged && differ(f) && both_have(f) && f.local_changed == f.remote_changed;
         if conflict {
             let newest = groups.entry(f.key.group()).or_insert((i64::MIN, i64::MIN));
             newest.0 = newest.0.max(f.local.map_or(i64::MIN, |l| l.modified));
@@ -135,6 +151,11 @@ pub fn plan(
         .map(|f| {
             let (action, why) = if !differ(f) {
                 (Action::Agree, Why::Same)
+            } else if f.damaged {
+                match f.remote {
+                    Some(_) => (Action::Pull { keep_local: false }, Why::LocalDamaged),
+                    None => (Action::Leave, Why::LocalDamaged),
+                }
             } else if both_have(f)
                 && let Some(local_won) = local_wins(f)
             {
@@ -208,6 +229,7 @@ mod tests {
                         sha256: h(c),
                         size: c.len() as u64,
                         modified: *m,
+                        damaged: false,
                     },
                 )
             })
@@ -514,6 +536,101 @@ mod tests {
                     Why::LocalNewer
                 ),
             ]
+        );
+    }
+
+    /// [`local`], with `damaged` marking the damaged meta files.
+    fn local_damaged(items: &[(&str, &str, i64)], damaged: &[&str]) -> BTreeMap<Key, LocalItem> {
+        let mut out = local(items);
+        for name in damaged {
+            out.get_mut(&Key::save(name)).unwrap().damaged = true;
+        }
+        out
+    }
+
+    #[test]
+    fn a_damaged_local_meta_is_pulled_over_and_never_pushed() {
+        // Emptied after the last sync, the server untouched since: rule 2
+        // alone would push the empty file. It is pulled instead.
+        let steps = plan(
+            &base(&[(META, Some("good"), 2), (PROFILE, Some("p"), 2)]),
+            &local_damaged(&[(META, "", 900), (PROFILE, "p", 1)], &[META]),
+            &remote(&[(META, Some("good"), 2, 10), (PROFILE, Some("p"), 2, 10)]),
+        );
+        assert_eq!(
+            actions(&steps),
+            [
+                (META, Action::Pull { keep_local: false }, Why::LocalDamaged),
+                (PROFILE, Action::Agree, Why::Same),
+            ]
+        );
+        // A new machine whose file was emptied before it ever synced, and
+        // newer than the server's: still pulled, no conflict copy.
+        let steps = plan(
+            &base(&[]),
+            &local_damaged(&[(META, "", 900)], &[META]),
+            &remote(&[(META, Some("good"), 1, 10)]),
+        );
+        assert_eq!(
+            actions(&steps),
+            [(META, Action::Pull { keep_local: false }, Why::LocalDamaged)]
+        );
+        // It takes no part in its container's conflict, even when this
+        // machine's side wins it.
+        let steps = plan(
+            &base(&[(META, Some("good"), 1), (PROFILE, Some("p"), 1)]),
+            &local_damaged(&[(META, "", 900), (PROFILE, "p-here", 900)], &[META]),
+            &remote(&[(META, Some("good"), 1, 0), (PROFILE, Some("p-there"), 2, 100)]),
+        );
+        assert_eq!(
+            actions(&steps),
+            [
+                (META, Action::Pull { keep_local: false }, Why::LocalDamaged),
+                (
+                    PROFILE,
+                    Action::Push {
+                        if_match: 2,
+                        keep_remote: true
+                    },
+                    Why::LocalNewer
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_damaged_local_meta_with_nothing_on_the_server_is_left_alone() {
+        // Never on the server: not pushed.
+        let steps = plan(&base(&[]), &local_damaged(&[(META, "", 9)], &[META]), &remote(&[]));
+        assert_eq!(actions(&steps), [(META, Action::Leave, Why::LocalDamaged)]);
+        // Deleted on the server: not pushed back over the tombstone, and
+        // the tombstone is not pulled (the save's payload may still be
+        // here and named by it once repaired).
+        let steps = plan(
+            &base(&[(META, Some("good"), 2)]),
+            &local_damaged(&[(META, "", 9)], &[META]),
+            &remote(&[(META, None, 3, 10)]),
+        );
+        assert_eq!(actions(&steps), [(META, Action::Leave, Why::LocalDamaged)]);
+    }
+
+    #[test]
+    fn a_good_local_meta_edit_is_still_pushed() {
+        let steps = plan(
+            &base(&[(META, Some("old"), 2)]),
+            &local(&[(META, "new", 5)]),
+            &remote(&[(META, Some("old"), 2, 1)]),
+        );
+        assert_eq!(
+            actions(&steps),
+            [(
+                META,
+                Action::Push {
+                    if_match: 2,
+                    keep_remote: false
+                },
+                Why::LocalChanged
+            )]
         );
     }
 
