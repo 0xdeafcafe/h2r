@@ -25,6 +25,8 @@ or a short form:
   methods                session.methods
   count [kind|team]      world.count, grouped
   query [JSON]           world.query, e.g. '{\"kind\":[\"actor\"],\"near\":{\"player\":0,\"radius\":20}}'
+                         (a unit's forward is where it aims, with yaw and
+                         pitch in degrees; body_forward is its body's)
   object <id>            world.object, e.g. actor.e1230045
   counters               profile.counters (frame-stats window)
   capture <N|Nms> [sample]  profile.capture over N game ticks or N ms: frame

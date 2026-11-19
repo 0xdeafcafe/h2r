@@ -201,6 +201,24 @@ impl Editor {
         }
     }
 
+    /// The loaded map's tag `tag` names: a datum (`0xe1230045`), or a name
+    /// with an optional `.group` (resolved through the names source, as
+    /// `edit.*` resolves it); the entry and its name when known. For
+    /// callers that act on a tag rather than edit it (`sim.give`).
+    pub fn find_tag(&mut self, g: &Guest, tag: &str) -> Result<(index::Entry, Option<String>)> {
+        let idx = self.index(g)?;
+        let sel = TagSel {
+            tag: tag.to_owned(),
+            group: None,
+        };
+        let e = self.select(g, &idx, &sel)?;
+        let name = self
+            .names(g, &idx)
+            .and_then(|n| n.name(e.datum))
+            .map(str::to_owned);
+        Ok((e, name))
+    }
+
     fn describe(&mut self, g: &Guest, idx: &index::TagIndex, e: &index::Entry) -> Value {
         let name = self
             .names(g, idx)

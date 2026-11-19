@@ -62,6 +62,23 @@ fn install_edits(agent: &agent::Agent, rt: &Arc<runtime::Runtime>, maps: Option<
     );
 }
 
+/// Tag lookup for `sim.give` and `sim.spawn`: the loaded map's tags by
+/// datum or by name (names from the map's file), as `edit.*` finds them.
+pub fn map_tags(
+    rt: &Arc<runtime::Runtime>,
+    maps: Option<MapLocator>,
+) -> agent::sim::calls::MapTags {
+    let mut editor = hot_tags::Editor::new();
+    if let Some(locate) = maps {
+        editor = editor.with_names(Box::new(move |g| names(g, &locate)));
+    }
+    let rt = Arc::clone(rt);
+    agent::sim::calls::MapTags {
+        editor,
+        guest: Arc::new(move |f: &mut dyn FnMut(&mut runtime::Guest)| f(&mut rt.memory())),
+    }
+}
+
 /// The names of the map loaded in `g`, from its file.
 fn names(g: &runtime::Guest, locate: &MapLocator) -> Option<hot_tags::Names> {
     let name = crate::telemetry::loaded_map_name(g).ok()?;

@@ -448,3 +448,19 @@ fn an_edit_passes_the_write_barrier() {
     ed.revert(&mut g, None).unwrap();
     assert_eq!(g.take_dirty(id).unwrap().len(), 1, "a revert too");
 }
+
+#[test]
+fn find_tag_resolves_a_name_or_a_datum() {
+    let g = level();
+    let mut ed = Editor::new().with_names(names());
+    let (e, name) = ed.find_tag(&g, "Bitmaps/Test/Rust").unwrap();
+    assert_eq!((e.datum, e.group), (BITM2, FourCC(*b"bitm")));
+    assert_eq!(name.as_deref(), Some("bitmaps\\test\\rust"));
+    let (e, name) = ed.find_tag(&g, &format!("{SHAD:#010x}")).unwrap();
+    assert_eq!(
+        (e.datum, name.as_deref()),
+        (SHAD, Some("shaders\\test\\metal"))
+    );
+    assert!(ed.find_tag(&g, "nothing").is_err());
+    assert!(ed.find_tag(&g, "0x12345678").is_err(), "not in the index");
+}

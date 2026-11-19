@@ -159,10 +159,23 @@ fn support(s: &live_telemetry::Support) -> agent_proto::Support {
     }
 }
 
+/// `yaw` and `pitch` from `forward`.
+fn angles(o: &mut Object) {
+    if let Some((yaw, pitch)) = o.forward.and_then(agent_proto::sim::yaw_pitch) {
+        o.yaw = Some(yaw);
+        o.pitch = Some(pitch);
+    }
+}
+
 /// The fields every unit shares (a player's unit, an actor, a body).
+/// `forward` is where the unit aims (its aiming vector, which follows the
+/// camera), the body's own forward `body_forward`: a biped's body turns
+/// only as it moves, so its forward stays put while the view turns.
 fn unit_fields(o: &mut Object, s: &ObjectState) {
     o.pos = Some(s.pos);
-    o.forward = Some(s.forward);
+    o.forward = Some(s.aim.unwrap_or(s.forward));
+    o.body_forward = Some(s.forward);
+    angles(o);
     o.velocity = Some(s.motion.velocity);
     o.physics = Some(physics(&s.motion));
     o.team = s.team.map(i32::from);
@@ -199,7 +212,7 @@ pub fn actor_object(kind: Kind, a: &ActorState) -> Object {
 }
 
 pub fn vehicle_object(v: &VehicleState) -> Object {
-    Object {
+    let mut o = Object {
         id: id(Kind::Vehicle, v.datum),
         kind: Kind::Vehicle,
         pos: Some(v.pos),
@@ -208,11 +221,13 @@ pub fn vehicle_object(v: &VehicleState) -> Object {
         occupied: Some(v.occupied),
         mounted_on: v.parent.map(|p| id(Kind::Vehicle, p)),
         ..Default::default()
-    }
+    };
+    angles(&mut o);
+    o
 }
 
 pub fn machine_object(m: &MachineState) -> Object {
-    Object {
+    let mut o = Object {
         id: id(Kind::Machine, m.datum),
         kind: Kind::Machine,
         pos: Some(m.pos),
@@ -221,7 +236,9 @@ pub fn machine_object(m: &MachineState) -> Object {
         placement: m.placement,
         position: m.position,
         ..Default::default()
-    }
+    };
+    angles(&mut o);
+    o
 }
 
 #[cfg(test)]
@@ -352,6 +369,29 @@ mod tests {
         assert_eq!(o.unit.as_deref(), Some("e0050010"));
         assert_eq!(o.local_user, Some(0));
         assert_eq!(o.pos, Some([1.0, 2.0, 3.0]));
+    }
+
+    #[test]
+    fn a_unit_faces_where_it_aims_and_keeps_its_body_forward() {
+        // The body faces +x; the view has turned to -y and looks 30 up.
+        let mut u = unit();
+        let (c, s) = (30f64.to_radians().cos(), 30f64.to_radians().sin());
+        u.aim = Some([0.0, -c, s]);
+        let o = player_object(&player(0xe005_0010), Some(&u));
+        assert_eq!(o.forward, Some([0.0, -c, s]));
+        assert_eq!(o.body_forward, Some([1.0, 0.0, 0.0]));
+        assert!((o.yaw.unwrap() - 270.0).abs() < 1e-9, "{:?}", o.yaw);
+        assert!((o.pitch.unwrap() - 30.0).abs() < 1e-9, "{:?}", o.pitch);
+        // No aim read (not finite or not unit length): the body's forward.
+        let o = actor_object(
+            Kind::Actor,
+            &ActorState {
+                datum: 1,
+                object: unit(),
+            },
+        );
+        assert_eq!(o.forward, Some([1.0, 0.0, 0.0]));
+        assert_eq!((o.yaw, o.pitch), (Some(0.0), Some(0.0)));
     }
 
     #[test]

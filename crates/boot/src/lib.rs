@@ -1305,18 +1305,24 @@ pub fn run_hosted_with_live(
     let mut snapshot_probe = late.snapshot_probe;
     // edit.* and render.* on the agent (hot_glue.rs, docs/graphics/hot-iteration.md).
     if let Some(a) = &agent {
-        let maps = k.vfs().map(|vfs| -> hot_glue::MapLocator {
-            Box::new(move |map| {
-                let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
-                let file = v.host_file(&format!("\\Device\\CdRom0\\maps\\{map}.map"))?;
-                Some(telemetry::MapFile {
-                    path: file.path,
-                    offset: file.offset,
-                    len: file.len,
+        let maps = || {
+            k.vfs().map(|vfs| -> hot_glue::MapLocator {
+                Box::new(move |map| {
+                    let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
+                    let file = v.host_file(&format!("\\Device\\CdRom0\\maps\\{map}.map"))?;
+                    Some(telemetry::MapFile {
+                        path: file.path,
+                        offset: file.offset,
+                        len: file.len,
+                    })
                 })
             })
-        });
-        hot_glue::install(&a.agent, &loaded.runtime, maps, watch_overrides);
+        };
+        hot_glue::install(&a.agent, &loaded.runtime, maps(), watch_overrides);
+        // sim.give and sim.spawn find tags as edit.* does (agent_glue.rs).
+        if let Some(sim) = &a.sim {
+            sim.set_tags(Box::new(hot_glue::map_tags(&loaded.runtime, maps())));
+        }
     }
     // The debug menu's host methods and connection (debug_menu_glue.rs).
     if let Some(a) = &agent {

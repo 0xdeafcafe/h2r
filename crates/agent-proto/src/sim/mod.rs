@@ -44,6 +44,13 @@ pub mod method {
     pub const EXPECT: &str = "sim.expect";
     /// What kind of session the game is in ([`super::SessionView`]).
     pub const SESSION: &str = "sim.session";
+    /// Give a player's unit a weapon through the game's own functions
+    /// ([`super::GiveParams`]): host only, never in a co-op session.
+    pub const GIVE: &str = "sim.give";
+    /// Make an object from its tag at a position through the game's own
+    /// functions ([`super::SpawnParams`]): host only, never in a co-op
+    /// session.
+    pub const SPAWN: &str = "sim.spawn";
 
     pub const ALL: &[&str] = &[
         PLAYER_ADD,
@@ -54,6 +61,8 @@ pub mod method {
         VIEW,
         EXPECT,
         SESSION,
+        GIVE,
+        SPAWN,
     ];
 }
 
@@ -183,9 +192,21 @@ pub struct Ammo {
 pub struct SetParams {
     /// `player.<index>`, or a simulated player's `sim.<n>`.
     pub player: String,
-    /// Teleport the unit here (world units); its velocity is zeroed.
+    /// Teleport the unit here (world units), as the game's own teleport
+    /// places a player (`PLAYER_PLACE_NEAR`, `0x14e970`): out of a vehicle,
+    /// a little above the point, its physics told.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pos: Option<[f64; 3]>,
+    /// Turn the unit and its player's view: degrees about +z from +x
+    /// (`world.query`'s `yaw`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub yaw: Option<f64>,
+    /// With `yaw`: degrees up from level, -89 to 89 (default 0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pitch: Option<f64>,
+    /// Or the facing as a direction (normalised); not with `yaw`/`pitch`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub facing: Option<[f64; 3]>,
     /// The player's team and its unit's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub team: Option<i32>,
@@ -200,6 +221,100 @@ pub struct SetParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ammo: Option<Ammo>,
 }
+
+impl SetParams {
+    /// The facing asked for, as a unit vector: `facing` normalised, or
+    /// `yaw`/`pitch` in degrees. `None` when neither is given.
+    pub fn facing_vector(&self) -> Result<Option<[f64; 3]>, String> {
+        facing_vector(self.yaw, self.pitch, self.facing)
+    }
+}
+
+/// A facing from `yaw`/`pitch` (degrees) or a direction, as a unit vector.
+pub fn facing_vector(
+    yaw: Option<f64>,
+    pitch: Option<f64>,
+    facing: Option<[f64; 3]>,
+) -> Result<Option<[f64; 3]>, String> {
+    match (yaw, pitch, facing) {
+        (None, None, None) => Ok(None),
+        (Some(_), _, Some(_)) | (_, Some(_), Some(_)) => {
+            Err("facing, or yaw and pitch: not both".into())
+        }
+        (None, Some(_), None) => Err("pitch goes with yaw".into()),
+        (None, None, Some(f)) => {
+            let len = f.iter().map(|v| v * v).sum::<f64>().sqrt();
+            if !f.iter().all(|v| v.is_finite()) || len < 1e-6 {
+                return Err("facing: a direction, not zero".into());
+            }
+            Ok(Some(f.map(|v| v / len)))
+        }
+        (Some(y), p, None) => {
+            let p = p.unwrap_or(0.0);
+            if !y.is_finite() {
+                return Err("yaw: degrees".into());
+            }
+            if !(p.is_finite() && (-89.0..=89.0).contains(&p)) {
+                return Err("pitch: -89 to 89 degrees".into());
+            }
+            let (y, p) = (y.to_radians(), p.to_radians());
+            Ok(Some([p.cos() * y.cos(), p.cos() * y.sin(), p.sin()]))
+        }
+    }
+}
+
+/// A facing's yaw and pitch in degrees (yaw 0 to 360 from +x about +z).
+pub fn yaw_pitch(v: [f64; 3]) -> Option<(f64, f64)> {
+    let len = v.iter().map(|c| c * c).sum::<f64>().sqrt();
+    if !v.iter().all(|c| c.is_finite()) || len < 1e-6 {
+        return None;
+    }
+    let yaw = v[1].atan2(v[0]).to_degrees().rem_euclid(360.0);
+    let pitch = (v[2] / len).clamp(-1.0, 1.0).asin().to_degrees();
+    Some((yaw, pitch))
+}
+
+/// `sim.give`: a weapon for a player's unit, made and added by the game's
+/// own functions, as a starting profile gives one.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GiveParams {
+    /// `player.<index>`, or a simulated player's `sim.<n>`.
+    pub player: String,
+    /// The `weap` tag: a datum (`0xe1230045`) or a name
+    /// (`objects\weapons\rifle\battle_rifle\battle_rifle`), as
+    /// `edit.tags` lists them.
+    pub weapon: String,
+    /// The new weapon's first magazine, written once it is made.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ammo: Option<Ammo>,
+    /// Keep the unit's weapons and add this one as a spare (the game's
+    /// mode 1: held only if the unit's own choice picks it). Default: the
+    /// unit's weapons go and it holds the new one (mode 2).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub keep: bool,
+}
+
+/// `sim.spawn`: an object made from its tag at a position.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpawnParams {
+    /// An object tag (`weap`, `vehi`, `eqip`, `bipd`, `scen`, ...): a datum
+    /// or a name.
+    pub tag: String,
+    /// Where (world units).
+    pub pos: [f64; 3],
+    /// Which way it faces: degrees about +z from +x (default: the tag's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub yaw: Option<f64>,
+}
+
+/// The tag groups `sim.spawn` makes objects of: the object types
+/// `object_new` (`0xb7b40`) knows (its type table at `0x468630`).
+pub const OBJECT_GROUPS: &[&str] = &[
+    "bipd", "vehi", "weap", "eqip", "garb", "proj", "scen", "mach", "ctrl", "lifi", "ssce", "bloc",
+    "crea",
+];
 
 /// What kind of session the game is in, from the simulation mode
 /// (`docs/live/live-coop.md` 1.1) and the squad session.
@@ -502,6 +617,49 @@ mod tests {
             serde_json::from_value::<SetParams>(json!({"player": "player.1", "god": true}))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn facings_come_from_yaw_and_pitch_or_a_direction() {
+        let near = |a: [f64; 3], b: [f64; 3]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-9);
+        assert_eq!(facing_vector(None, None, None), Ok(None));
+        let f = facing_vector(Some(90.0), None, None).unwrap().unwrap();
+        assert!(near(f, [0.0, 1.0, 0.0]), "{f:?}");
+        let f = facing_vector(Some(180.0), Some(30.0), None)
+            .unwrap()
+            .unwrap();
+        assert!(near(f, [-(3f64.sqrt()) / 2.0, 0.0, 0.5]), "{f:?}");
+        let f = facing_vector(None, None, Some([0.0, 0.0, 2.0]))
+            .unwrap()
+            .unwrap();
+        assert!(near(f, [0.0, 0.0, 1.0]));
+        assert!(facing_vector(None, Some(10.0), None).is_err());
+        assert!(facing_vector(Some(0.0), Some(90.0), None).is_err());
+        assert!(facing_vector(Some(0.0), None, Some([1.0, 0.0, 0.0])).is_err());
+        assert!(facing_vector(None, None, Some([0.0; 3])).is_err());
+        let (y, p) = yaw_pitch([-0.939, -0.343, 0.0]).unwrap();
+        assert!((y - 200.06).abs() < 0.01 && p.abs() < 1e-9, "{y} {p}");
+        let (y, p) = yaw_pitch([0.0, 0.5, 0.5]).unwrap();
+        assert!((y - 90.0).abs() < 1e-9 && (p - 45.0).abs() < 1e-9);
+        assert_eq!(yaw_pitch([0.0; 3]), None);
+    }
+
+    #[test]
+    fn give_and_spawn_params_parse() {
+        let p: GiveParams = serde_json::from_value(json!({
+            "player": "player.0", "weapon": "0xe1230045", "ammo": {"loaded": 3}
+        }))
+        .unwrap();
+        assert!(!p.keep);
+        assert_eq!(p.ammo.unwrap().loaded, Some(3));
+        assert!(
+            serde_json::from_value::<GiveParams>(json!({"player": "player.0"})).is_err(),
+            "a weapon is required"
+        );
+        let s: SpawnParams =
+            serde_json::from_value(json!({"tag": "vehicles\\warthog", "pos": [1, 2, 3]})).unwrap();
+        assert_eq!((s.pos, s.yaw), ([1.0, 2.0, 3.0], None));
+        assert!(serde_json::from_value::<SpawnParams>(json!({"tag": "x"})).is_err());
     }
 
     #[test]

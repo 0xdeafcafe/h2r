@@ -16,10 +16,20 @@ pub const USAGE: &str = "  sim add <local|phantom> [script|recording|brain] [tea
   sim remove <sim.N|all> sim.player.remove
   sim list               sim.player.list
   sim pad <sim.N> <JSON steps> [append]  sim.player.pad
-  sim set <player.N|sim.N> key=JSON...  sim.state.set: pos=[x,y,z] team=N
-                         health=0..1 shield=0..3 grenades={\"frag\":N}
+  sim set <player.N|sim.N> key=JSON...  sim.state.set: pos=[x,y,z] (the
+                         game's own teleport, answered after the next tick)
+                         yaw=DEG [pitch=DEG] or facing=[x,y,z] (turns the
+                         unit and the player's view) team=N health=0..1
+                         shield=0..3 grenades={\"frag\":N}
                          ammo={\"loaded\":N,\"reserve\":N}; host only, never
                          in a co-op session
+  sim give <player.N|sim.N> <weap tag> [loaded=N] [reserve=N] [keep]
+                         sim.give: the game makes the weapon and the unit
+                         holds it (keep: added beside its weapons instead);
+                         the tag is a datum or a name, / or \\ (edit tags weap)
+  sim spawn <tag> pos=[x,y,z] [yaw=DEG]
+                         sim.spawn: the game makes the object (vehi, weap,
+                         eqip, scen, bipd, ...) there
   sim view [root...]     sim.view: at session ui player object count sim input
   sim expect <pointer> <op> [JSON]  sim.expect, judged in the game at one tick
                          (several: one quoted expectation per argument)
@@ -128,6 +138,47 @@ pub fn params(words: &[String]) -> Result<(&'static str, Value), RpcError> {
             let mut p = pairs(&rest[1..])?;
             p.insert("player".into(), json!(who));
             (method::STATE_SET, Value::Object(p))
+        }
+        "give" => {
+            let (Some(who), Some(weapon)) = (rest.first(), rest.get(1)) else {
+                return Err(bad(
+                    "sim give <player.N|sim.N> <weap tag> [loaded=N] [reserve=N] [keep]",
+                ));
+            };
+            let mut keep = false;
+            let mut kv = Vec::new();
+            for word in &rest[2..] {
+                match word.as_str() {
+                    "keep" => keep = true,
+                    _ => kv.push(word.clone()),
+                }
+            }
+            let mut p = pairs(&kv)?;
+            let mut ammo = Map::new();
+            for k in ["loaded", "reserve"] {
+                if let Some(v) = p.remove(k) {
+                    ammo.insert(k.into(), v);
+                }
+            }
+            if let Some(k) = p.keys().next() {
+                return Err(bad(format!("sim give: unexpected {k}")));
+            }
+            let mut p = json!({ "player": who, "weapon": weapon });
+            if !ammo.is_empty() {
+                p["ammo"] = Value::Object(ammo);
+            }
+            if keep {
+                p["keep"] = json!(true);
+            }
+            (method::GIVE, p)
+        }
+        "spawn" => {
+            let tag = rest
+                .first()
+                .ok_or_else(|| bad("sim spawn <tag> pos=[x,y,z] [yaw=DEG]"))?;
+            let mut p = pairs(&rest[1..])?;
+            p.insert("tag".into(), json!(tag));
+            (method::SPAWN, Value::Object(p))
         }
         "view" => (
             method::VIEW,
@@ -238,6 +289,35 @@ mod tests {
             )
         );
         assert_eq!(
+            p("set player.0 yaw=90 pitch=-10"),
+            (
+                method::STATE_SET,
+                json!({"player": "player.0", "yaw": 90, "pitch": -10})
+            )
+        );
+        assert_eq!(
+            p("give player.0 objects/weapons/rifle/smg/smg loaded=60 keep"),
+            (
+                method::GIVE,
+                json!({"player": "player.0", "weapon": "objects/weapons/rifle/smg/smg",
+                       "ammo": {"loaded": 60}, "keep": true})
+            )
+        );
+        assert_eq!(
+            p("give sim.1 0xe1230045"),
+            (
+                method::GIVE,
+                json!({"player": "sim.1", "weapon": "0xe1230045"})
+            )
+        );
+        assert_eq!(
+            p("spawn objects/vehicles/warthog/warthog pos=[1,2,3] yaw=45"),
+            (
+                method::SPAWN,
+                json!({"tag": "objects/vehicles/warthog/warthog", "pos": [1, 2, 3], "yaw": 45})
+            )
+        );
+        assert_eq!(
             p("remove all"),
             (method::PLAYER_REMOVE, json!({"all": true}))
         );
@@ -258,6 +338,9 @@ mod tests {
             "pad sim.1",
             "set",
             "set p health",
+            "give player.0",
+            "give player.0 0xe1230045 god=1",
+            "spawn",
             "expect",
             "fly",
         ] {

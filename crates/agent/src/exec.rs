@@ -63,7 +63,18 @@ pub struct GameCtx<'a> {
     /// The stamp of this boundary.
     pub at: At,
     host: &'a mut BTreeMap<String, (Access, HostMethod)>,
+    /// Set by [`GameCtx::defer`]: the answer comes at a later boundary.
+    later: Option<(Later, u64)>,
 }
+
+/// A deferred answer ([`GameCtx::defer`]): polled at each boundary after
+/// the one that asked, `None` until it is ready.
+pub type Later = Box<dyn FnMut(&mut GameCtx<'_>) -> Option<Result<Value, RpcError>> + Send>;
+
+/// The longest a deferred answer may wait, in game ticks, and in wall time
+/// whatever the ticks (a game that stopped ticking).
+pub const DEFER_TICKS_MAX: u64 = 300;
+const DEFER_WALL: Duration = Duration::from_secs(60);
 
 impl GameCtx<'_> {
     /// Answers a host method (`ui.screen`, `input.state`) as a client
@@ -71,6 +82,25 @@ impl GameCtx<'_> {
     pub fn host(&mut self, name: &str, params: Value) -> Option<Result<Value, RpcError>> {
         self.host.get_mut(name).map(|(_, f)| f(params))
     }
+
+    /// Answers later: `poll` runs at each boundary from the next one until
+    /// it gives the answer, or `ticks` game ticks pass (at most
+    /// [`DEFER_TICKS_MAX`]; then `TIMEOUT`). For work the game does at its
+    /// next tick (guest calls a method queued). What the method returns is
+    /// dropped. A paused game holds the answer until it steps.
+    pub fn defer(&mut self, ticks: u64, poll: Later) {
+        self.later = Some((poll, ticks.clamp(1, DEFER_TICKS_MAX)));
+    }
+}
+
+/// A game method's answer still coming ([`GameCtx::defer`]).
+struct Deferred {
+    conn: ConnId,
+    id: Option<Value>,
+    poll: Later,
+    from_ticks: u64,
+    tick_limit: u64,
+    deadline: Instant,
 }
 
 /// With no tick for this long the game counts as loading, and world reads
@@ -154,6 +184,8 @@ struct State {
     snapshots: Option<Box<dyn Snapshots>>,
     /// Saves and loads waiting for a quiescent slice boundary.
     snap_jobs: VecDeque<snap::Job>,
+    /// Game methods' answers still coming ([`GameCtx::defer`]).
+    deferred: Vec<Deferred>,
 }
 
 /// A `profile.capture` waiting for its window to pass.
@@ -491,6 +523,7 @@ impl Agent {
         s.mark_tick();
         s.record_tick(reader);
         s.serve(reader, Where::Tick);
+        s.settle_deferred(reader);
         s.settle_waits();
         s.settle_capture();
         let mut snap = s.arm_snapshots();
@@ -510,6 +543,7 @@ impl Agent {
                 .unwrap_or_else(|e| e.into_inner())
                 .0;
             s.serve(reader, Where::Tick);
+            s.settle_deferred(reader);
             s.settle_waits();
             s.settle_capture();
             snap = s.arm_snapshots();
@@ -544,6 +578,9 @@ impl Agent {
         // every SLICE_REFRESH, for waits and events.
         let due = s.slice_refresh.is_none_or(|t| t.elapsed() >= SLICE_REFRESH);
         let idle_work = !s.ticking() && due && (!s.waits.is_empty() || s.wants_events());
+        if !s.deferred.is_empty() && !s.ticking() {
+            s.settle_deferred(reader);
+        }
         if s.pending.is_empty() && !idle_work {
             if !s.waits.is_empty() {
                 s.settle_waits();
@@ -749,6 +786,7 @@ impl State {
             .chain(self.waits.iter().map(|w| w.conn))
             .chain(self.capture.as_ref().map(|c| c.conn))
             .chain(self.snap_jobs.iter().map(|j| j.conn()))
+            .chain(self.deferred.iter().map(|d| d.conn))
             .collect();
         let dead: BTreeSet<ConnId> = self
             .conns
@@ -760,6 +798,7 @@ impl State {
             self.pending.retain(|(c, _)| !dead.contains(c));
             self.waits.retain(|w| !dead.contains(&w.conn));
             self.snap_jobs.retain(|j| !dead.contains(&j.conn()));
+            self.deferred.retain(|d| !dead.contains(&d.conn));
         }
         self.conns
             .retain(|id, c| !c.dead && (!c.closing || busy.contains(id)));
@@ -804,6 +843,64 @@ impl State {
             }
         }
         self.pending = keep;
+    }
+
+    /// Polls the deferred answers: answers what is ready, times out what
+    /// waited too long.
+    fn settle_deferred(&mut self, reader: &mut dyn Reader) {
+        if self.deferred.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        let at = self.at();
+        for mut d in std::mem::take(&mut self.deferred) {
+            let fresh = self.ticks == d.from_ticks;
+            let out = if fresh {
+                None
+            } else {
+                let mut ctx = GameCtx {
+                    reader: &mut *reader,
+                    at: at.clone(),
+                    host: &mut self.host,
+                    later: None,
+                };
+                (d.poll)(&mut ctx)
+            };
+            let out = match out {
+                Some(r) => Some(r),
+                None if self.ticks - d.from_ticks >= d.tick_limit || now >= d.deadline => {
+                    let mut e = RpcError::new(
+                        code::TIMEOUT,
+                        format!(
+                            "the game didn't answer within {} ticks (it runs the work at its next tick)",
+                            self.ticks - d.from_ticks
+                        ),
+                    );
+                    e.data = Some(to_value(&at));
+                    Some(Err(e))
+                }
+                None => None,
+            };
+            match (out, d.id.take()) {
+                (None, id) => {
+                    d.id = id;
+                    self.deferred.push(d);
+                }
+                (Some(_), None) => {}
+                (Some(r), Some(id)) => {
+                    let r = match r {
+                        Ok(mut v) => {
+                            if let Value::Object(o) = &mut v {
+                                o.entry("at").or_insert_with(|| to_value(&at));
+                            }
+                            Response::ok(id, v)
+                        }
+                        Err(e) => Response::err(id, e),
+                    };
+                    self.send(d.conn, r);
+                }
+            }
+        }
     }
 
     fn settle_waits(&mut self) {
@@ -906,8 +1003,21 @@ impl State {
                 reader,
                 at,
                 host: &mut self.host,
+                later: None,
             };
-            return Some(f(p, &mut ctx).map(|mut v| {
+            let out = f(p, &mut ctx);
+            if let (Ok(_), Some((poll, ticks))) = (&out, ctx.later.take()) {
+                self.deferred.push(Deferred {
+                    conn,
+                    id: req.id,
+                    poll,
+                    from_ticks: self.ticks,
+                    tick_limit: ticks,
+                    deadline: Instant::now() + DEFER_WALL,
+                });
+                return None;
+            }
+            return Some(out.map(|mut v| {
                 if let Value::Object(o) = &mut v {
                     o.entry("at").or_insert(stamp);
                 }

@@ -569,8 +569,22 @@ pub struct Object {
     pub kind: Kind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pos: Option<[f64; 3]>,
+    /// Where it faces. For a unit (a player's, an actor, a body) this is
+    /// where it aims: the unit's aiming vector (unit `+0x168`, the vector
+    /// the held weapon's targeting ray follows, `0x000cf3d0`), so it turns
+    /// with the camera; a biped's body turns only as it moves, so its own
+    /// forward is `body_forward`. Others: the object's forward (`+0x70`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forward: Option<[f64; 3]>,
+    /// Units only: the object's own forward (`+0x70`), the body's facing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_forward: Option<[f64; 3]>,
+    /// `forward` as degrees about +z from +x, 0 to 360.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub yaw: Option<f64>,
+    /// `forward` as degrees up from level.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pitch: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub velocity: Option<[f64; 3]>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -717,6 +731,9 @@ pub struct CharacterContact {
 pub const OBJECT_FIELDS: &[&str] = &[
     "pos",
     "forward",
+    "body_forward",
+    "yaw",
+    "pitch",
     "velocity",
     "team",
     "tag",
