@@ -60,6 +60,7 @@ pub mod mods_screen;
 pub mod movies_glue;
 pub mod native_lights_glue;
 pub mod native_objects_glue;
+pub mod native_post_glue;
 pub mod native_transparents_glue;
 pub mod native_world_glue;
 pub mod new_maps;

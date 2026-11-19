@@ -44,7 +44,7 @@ fn hosted() -> FakeGuest {
     g.map(SIM_GLOBALS & !0xfff, 0x1000)
         .put_u32(SIM_GLOBALS, SIM)
         .map(SIM, 0x1000)
-        .put_u32(SIM + SIM_MODE, MODE_DIST_SERVER);
+        .put_u32(SIM + SIM_MODE, WORLD_DIST_SERVER);
     for i in 0..16 {
         g.put_u32(SIM + SIM_SLOTS + i * SLOT_SIZE, u32::MAX);
     }
@@ -125,12 +125,17 @@ fn only_the_host_of_a_running_multiplayer_game_takes_phantoms() {
     assert_eq!(host_session(&campaign), Err(NotNow::Wait));
 
     let mut client = hosted();
-    client.put_u32(SIM + SIM_MODE, 4);
+    client.put_u32(SIM + SIM_MODE, 5);
     assert!(
-        matches!(host_session(&client), Err(NotNow::NotHost(w)) if w.contains("distributed server (mode 4")),
+        matches!(host_session(&client), Err(NotNow::NotHost(w)) if w.contains("distributed server (world mode 5, distributed client;")),
         "{:?}",
         host_session(&client)
     );
+    // The run 20261119-014620: a lone Live host whose world read 4, the
+    // distributed server, taken for a client. It is the host.
+    let mut host = hosted();
+    host.put_u32(SIM + SIM_MODE, 4);
+    assert_eq!(host_session(&host), Ok(S));
 
     // States 6 to 8 tear the simulation down: never a running game.
     let mut leaving = hosted();
@@ -390,6 +395,21 @@ fn one_console_start(host: u32) -> FakeGuest {
 }
 
 #[test]
+fn the_world_numbers_its_modes_otherwise_than_the_game() {
+    // 0x68c00's jump table at 0x68da8.
+    let worlds: Vec<_> = (0..=6).map(world_mode).collect();
+    assert_eq!(
+        worlds,
+        [None, Some(1), Some(3), Some(2), Some(5), Some(4), None]
+    );
+    assert_eq!(world_mode(GAME_DIST_SERVER), Some(WORLD_DIST_SERVER));
+    assert_eq!(world_mode(MODE_LOCAL), Some(MODE_LOCAL));
+    assert_eq!(world_mode_name(WORLD_DIST_SERVER), "distributed server");
+    assert_eq!(world_mode_name(5), "distributed client");
+    assert_eq!(world_mode_name(2), "synchronous server");
+}
+
+#[test]
 fn the_start_facts_give_the_mode_the_session_start_chooses() {
     let g = one_console_start(1);
     let f = StartFacts::read(&g, S).unwrap();
@@ -413,7 +433,8 @@ fn the_start_facts_give_the_mode_the_session_start_chooses() {
         host: 0,
         ..f.clone()
     };
-    assert_eq!(host.mode(), Some(MODE_DIST_SERVER));
+    assert_eq!(host.mode(), Some(GAME_DIST_SERVER));
+    assert_eq!(host.mode().and_then(world_mode), Some(WORLD_DIST_SERVER));
     assert_eq!(
         StartFacts {
             protocol: 0,
@@ -453,7 +474,7 @@ fn a_lone_hosts_session_is_made_its_own_host_when_phantoms_are_planned() {
     assert_eq!(host_fix(&f, true), HostFix::Host { host: 1, local: 0 });
     make_host(&mut g, S, 0).unwrap();
     let after = StartFacts::read(&g, S).unwrap();
-    assert_eq!(after.mode(), Some(MODE_DIST_SERVER));
+    assert_eq!(after.mode(), Some(GAME_DIST_SERVER));
     assert!(
         matches!(host_fix(&after, true), HostFix::Keep(w) if w.contains("is the session's host"))
     );
@@ -527,6 +548,8 @@ fn the_session_is_left_alone_unless_it_can_only_be_this_consoles() {
     );
     keep(
         StartFacts {
+            // Host 0, so the peers differ and the range is what refuses.
+            host: 0,
             local: 1,
             ..base.clone()
         },
@@ -583,18 +606,22 @@ fn the_game_start_hook_says_what_it_read_and_makes_the_host() {
         log,
         vec![
             "bots: game start: session state 5, protocol 2, peer count 1 (0 other consoles), \
-             host peer 1, this console's peer 0: simulation mode 4"
+             host peer 1, this console's peer 0: game mode 4 (simulation world mode 5, \
+             distributed client)"
                 .to_owned(),
             "bots: game start: phantoms planned and no other console in the session: this \
              console hosts it (host peer 1 -> 0), so the game starts as the distributed server \
-             (mode 5)"
+             (game mode 5, world mode 4)"
                 .to_owned(),
         ]
     );
     assert_eq!(g.u32(S + HOST_PEER).unwrap(), 0);
     // Again: nothing more to do.
     let log = game_start(&mut g, S, true);
-    assert!(log[0].ends_with("simulation mode 5"), "{log:?}");
+    assert!(
+        log[0].ends_with("game mode 5 (simulation world mode 4, distributed server)"),
+        "{log:?}"
+    );
     assert!(
         log[1].contains("session as it is (this console is the session's host"),
         "{log:?}"
@@ -705,14 +732,14 @@ mod books {
         let ph = Phantoms::default();
         ph.add(who(1, "Clanker 4"), None, firing()).unwrap();
         let mut g = hosted();
-        g.put_u32(SIM + SIM_MODE, 4);
+        g.put_u32(SIM + SIM_MODE, 5);
         let log = ph.tick(&mut g, 0).unwrap();
         assert_eq!(
             log,
             vec![
                 "bots: phantom Clanker 4 waits: this console is not the game's host yet \
-                 (the simulation is not the distributed server (mode 4, the server's is 5; \
-                 session host peer 0, this console's peer 0, peer count 1))"
+                 (the simulation is not the distributed server (world mode 5, distributed \
+                 client; the server's is 4; session host peer 0, this console's peer 0, peer count 1))"
                     .to_owned()
             ]
         );
@@ -724,7 +751,7 @@ mod books {
             assert!(ph.tick(&mut g, f).unwrap().is_empty());
         }
         // Another reason is said.
-        g.put_u32(SIM + SIM_MODE, MODE_DIST_SERVER)
+        g.put_u32(SIM + SIM_MODE, WORLD_DIST_SERVER)
             .put_u32(S + STATE, 6);
         let log = ph.tick(&mut g, 5).unwrap();
         assert!(

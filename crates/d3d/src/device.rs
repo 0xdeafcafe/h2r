@@ -320,6 +320,11 @@ pub struct Stats {
     /// External passes dropped (no colour or depth bound, the backend
     /// refused).
     pub external_passes_dropped: u64,
+    /// Draws a [`Swallow`] dropped (or, observing, matched).
+    pub swallowed_draws: u64,
+    /// Swallows ended early: a draw that is not the next one planned, or
+    /// one armed over another not finished ([`Device::swallow`]).
+    pub swallow_mismatches: u64,
     /// Draws handed to the backend (including skipped ones).
     pub draws: u64,
     /// Inline (push-buffer) immediate draws among them.
@@ -679,6 +684,49 @@ pub struct DepthScale {
 pub type OcclusionSink =
     std::sync::Arc<dyn Fn(crate::backend::DepthGridResult, DepthScale) + Send + Sync>;
 
+/// A pass whose draws the host draws itself ([`Device::swallow`]): the
+/// game's own code runs, so it leaves every state, and only its draws are
+/// dropped.
+pub struct Swallow {
+    /// Per draw, in order, the slot of the colour target it draws into:
+    /// 0 the target bound when armed; another slot the target its first
+    /// draw finds, the same for each of its draws and distinct from every
+    /// other slot's.
+    pub targets: Vec<u8>,
+    /// Every draw's primitive and vertex count.
+    pub primitive: PrimitiveType,
+    pub vertices: usize,
+    /// Drop the draws; `false` draws them and only places `pass` (a
+    /// capture of what the game drew).
+    pub drop: bool,
+    /// Issued after the last draw, into the targets bound then.
+    pub pass: Box<dyn crate::backend::ExternalPass>,
+}
+
+struct Swallowing {
+    targets: Vec<u8>,
+    next: usize,
+    headers: Vec<Option<u32>>,
+    primitive: PrimitiveType,
+    vertices: usize,
+    drop: bool,
+    /// `Stats::draws` when the next planned draw comes: no other draw in
+    /// between.
+    draws: u64,
+    pass: Option<Box<dyn crate::backend::ExternalPass>>,
+}
+
+/// What becomes of an inline draw under a swallow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Fate {
+    /// Not the pass's (or nothing armed): drawn.
+    Drawn,
+    /// The pass's, dropped.
+    Dropped,
+    /// The pass's, drawn (observing).
+    Observed,
+}
+
 struct GridAsk {
     tag: u64,
     width: u32,
@@ -786,6 +834,8 @@ pub struct Device<B: Backend> {
     /// An external pass asked for ([`Device::request_external_pass`]),
     /// issued after the next drain.
     pending_external: Option<Box<dyn crate::backend::ExternalPass>>,
+    /// The draws of a pass being swallowed ([`Device::swallow`]).
+    swallowing: Option<Swallowing>,
     /// Display state: flicker filter, persisted surface, vertical blank.
     display: display::Display<B::Surface>,
     /// Render-to-texture targets, by surface header ([`RttTarget`]).
@@ -971,6 +1021,7 @@ impl<B: Backend> Device<B> {
             hw: HwState::default(),
             pending_grid: None,
             pending_external: None,
+            swallowing: None,
             display: display::Display::default(),
             rtt: HashMap::default(),
             rtt_epoch: 0,
@@ -1704,6 +1755,99 @@ impl<B: Backend> Device<B> {
         }
     }
 
+    /// Arms `s` (docs/graphics/native-renderer.md, stage 5): the next
+    /// inline draws, one per entry of [`Swallow::targets`], are the pass's.
+    /// What is queued drains first, as before any entry, so only draws
+    /// pushed after this call count. Each must be the next one planned:
+    /// an inline `Begin`/`End` of [`Swallow::primitive`] with
+    /// [`Swallow::vertices`] vertices, no other draw since the last, into
+    /// its slot's colour target (slot 0 the one bound now; another slot the
+    /// target its first draw finds, each slot its own target). With
+    /// [`Swallow::drop`] each is dropped, else drawn. After the last,
+    /// [`Swallow::pass`] is issued into the targets bound then, in its
+    /// place. A draw that is not the next planned ends the swallow
+    /// ([`Stats::swallow_mismatches`]): it and every draw after it are
+    /// drawn, and the pass is not issued. Draws already dropped stay
+    /// dropped.
+    ///
+    /// `Ok(false)` with nothing armed when a push-buffer callback is
+    /// queued first (kept for the next entry), no colour target is bound,
+    /// or the plan is empty. Arming over a swallow not finished ends that
+    /// one as a mismatch.
+    pub fn swallow(&mut self, mem: &mut dyn GuestMemory, s: Swallow) -> Result<bool, D3dError> {
+        const E: &str = "swallow";
+        self.live(E)?;
+        if let Some(cb) = self.drain_until_callback(mem)? {
+            self.undelivered = Some(cb);
+            return Ok(false);
+        }
+        if self.swallowing.take().is_some() {
+            self.stats.swallow_mismatches += 1;
+        }
+        if s.targets.is_empty() || self.render_target == 0 {
+            return Ok(false);
+        }
+        let slots = s.targets.iter().map(|&t| usize::from(t)).max().unwrap_or(0) + 1;
+        let mut headers = vec![None; slots];
+        headers[0] = Some(self.render_target);
+        self.swallowing = Some(Swallowing {
+            targets: s.targets,
+            next: 0,
+            headers,
+            primitive: s.primitive,
+            vertices: s.vertices,
+            drop: s.drop,
+            draws: self.stats.draws,
+            pass: Some(s.pass),
+        });
+        Ok(true)
+    }
+
+    /// Whether a swallow is armed.
+    pub fn swallowing(&self) -> bool {
+        self.swallowing.is_some()
+    }
+
+    /// What becomes of inline draw `d` under the armed swallow.
+    fn swallow_fate(&mut self, d: &ImmediateDraw) -> Fate {
+        let Some(s) = self.swallowing.as_mut() else { return Fate::Drawn };
+        let target = self.render_target;
+        let slot = usize::from(s.targets[s.next]);
+        let into = match s.headers[slot] {
+            Some(h) => h == target,
+            None => target != 0 && !s.headers.contains(&Some(target)),
+        };
+        let fits = d.inline.is_empty()
+            && d.primitive == s.primitive
+            && d.vertices.len() == s.vertices
+            && self.stats.draws == s.draws
+            && into;
+        if !fits {
+            self.swallowing = None;
+            self.stats.swallow_mismatches += 1;
+            return Fate::Drawn;
+        }
+        s.headers[slot] = Some(target);
+        self.stats.swallowed_draws += 1;
+        if s.drop { Fate::Dropped } else { Fate::Observed }
+    }
+
+    /// After a swallowed draw (dropped, or drawn when observing): the next
+    /// planned, or the pass in place of the last.
+    fn swallow_advance(&mut self, mem: &mut dyn GuestMemory) {
+        let Some(s) = self.swallowing.as_mut() else { return };
+        s.next += 1;
+        s.draws = self.stats.draws;
+        if s.next < s.targets.len() {
+            return;
+        }
+        let pass = s.pass.take();
+        self.swallowing = None;
+        if let Some(pass) = pass {
+            self.issue_external_pass(mem, pass);
+        }
+    }
+
     fn issue_external_pass(&mut self, mem: &mut dyn GuestMemory, mut pass: Box<dyn crate::backend::ExternalPass>) {
         let constants: [[f32; 4]; crate::backend::VIEW_CONSTANTS] = std::array::from_fn(|r| self.constant(r));
         pass.view_constants(&constants);
@@ -1879,8 +2023,14 @@ impl<B: Backend> Device<B> {
                     }
                     match self.immediate.apply(c.at, m, w)? {
                         Some(Effect::Draw(d)) => {
-                            self.stats.inline_draws += 1;
-                            self.immediate_draw(mem, "inline Begin/End", d)?;
+                            let fate = self.swallow_fate(&d);
+                            if fate != Fate::Dropped {
+                                self.stats.inline_draws += 1;
+                                self.immediate_draw(mem, "inline Begin/End", d)?;
+                            }
+                            if fate != Fate::Drawn {
+                                self.swallow_advance(mem);
+                            }
                         }
                         Some(Effect::None) => {}
                         None if self.mirror_slot(m).is_some() => {

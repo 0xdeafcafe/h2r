@@ -36,6 +36,8 @@ libloading = "0.8"
 d3d = { path = "../d3d" }
 gfx = { path = "../gfx" }
 png = "0.18"
+# The native post's A/B readback (native_post_glue).
+wgpu = "30"
 # New maps' list previews from mainmenu.map's level pictures (new_maps).
 assets = { path = "../assets" }
 native-render = { path = "../native-render" }
