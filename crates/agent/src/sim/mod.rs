@@ -463,7 +463,9 @@ impl Sim {
                     continue;
                 };
                 let mut v = serde_json::to_value(o).expect("serialises");
-                let vit = ctx.with_guest(|m| state::vitals(m, id.key)).unwrap_or_default();
+                let vit = ctx
+                    .with_guest(|m| state::vitals(m, id.key))
+                    .unwrap_or_default();
                 if let Some(obj) = v.as_object_mut() {
                     obj.extend(vit);
                 }

@@ -374,7 +374,10 @@ mod tests {
         let h = Harness::new();
         let mut game = game();
         claim(&h, &mut game);
-        h.send(method::POKE, json!({"id": "player.0", "offset": 4, "hex": "AB"}));
+        h.send(
+            method::POKE,
+            json!({"id": "player.0", "offset": 4, "hex": "AB"}),
+        );
         assert_eq!(game.g.as_ref().unwrap().u32(BODY + 4).unwrap(), 0xdead_beef);
         h.agent.on_tick(&mut game);
 
@@ -414,11 +417,17 @@ mod tests {
             (4, "a".to_owned()),
             (4, "+a".to_owned()),
         ] {
-            h.send(method::POKE, json!({"id": "player.0", "offset": offset, "hex": hex}));
+            h.send(
+                method::POKE,
+                json!({"id": "player.0", "offset": offset, "hex": hex}),
+            );
             h.agent.on_tick(&mut game);
             let v = h.reply();
             assert_eq!(error_code(&v), code::INVALID_PARAMS, "{v}");
-            assert_eq!(game.g.as_ref().unwrap().bytes(BODY, 0x465).unwrap(), original);
+            assert_eq!(
+                game.g.as_ref().unwrap().bytes(BODY, 0x465).unwrap(),
+                original
+            );
         }
     }
 
