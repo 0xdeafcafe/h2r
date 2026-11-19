@@ -2093,6 +2093,18 @@ its own thread, and render-timing does not matter (the call runs).
      16; which one a pass draws with is `0x00016610`'s to say), and the
      stages' bitmaps decoded; refusals counted by reason, one line on
      stderr. Held by the world (`Ready::screen_effects`) for the draw.
+   - **Traced: the engine textures** (`0x00019530`, the jump table at
+     `0x00019b68` by id - 1; `native_render::screen_look::engine_texture`):
+     1, 9, 14 and 15 the rasterizer data's bitmaps (`+0xc`, `+4`, `+0x14`);
+     render targets through `0x00014f60`: 2 and 3 target 1, 6 target 3, 8
+     target 10, 13 target 9, 17 `0x13`, 19 `0x15`, 20 `0x16`, 21 13, 22
+     `0x11`, 23 `0x17`; 5 the view's bound target `[0x004858b8]`; 24 and
+     25 the target the word `[0x00485a18 + 4 id]` names (`0x19`..`0x1b`
+     sized through `0x0001dd60`: the screen effects' own targets); 4
+     clears the stage; 10 and 12 the light's; 16, 18, 26 and 27 chosen at
+     run time; 7 and 11 null entries. A template pass binding the light's,
+     a run-time one or an invalid id is refused
+     (`ScreenRefusal::EngineTexture`); the rest the draw supplies.
 5. **`0x0002df00`, and `0x0002dd30`** before layer 17, which has the
    same shape and gets its own skip point.
 6. **Layer 17** (S: bloom), as stage 1b draws the world's other layers.

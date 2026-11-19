@@ -41,6 +41,64 @@ pub enum ScreenStage {
     Engine(u8),
 }
 
+/// What engine texture `id` binds (`0x00019530`, a jump table at
+/// `0x00019b68` indexed by id - 1; Code). Render targets go through
+/// `0x00014f60`; the bitmaps are the globals' rasterizer data
+/// (`[0x00485a80]`) at the offset given.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EngineTexture {
+    /// A bitmap reference in the rasterizer data, at this offset (1:
+    /// `+0xc`, the normalization cube; 9: `+4`, the attenuation volume;
+    /// 14 and 15: `+0x14`).
+    Rasterizer(u32),
+    /// Render target `n` (2 and 3: 1; 6: 3; 8: 10; 13: 9; 17: `0x13`; 19:
+    /// `0x15`; 20: `0x16`; 21: 13; 22: `0x11`; 23: `0x17`).
+    Target(u32),
+    /// The view's bound target (`[0x004858b8]`, 5).
+    View,
+    /// The target the word `[0x00485a18 + 4 id]` names (24 and 25): with
+    /// `0x19`..`0x1b` sized through `0x0001dd60`, the screen effects'
+    /// targets.
+    Slot(u32),
+    /// The stage is cleared (4).
+    Cleared,
+    /// The light's texture (10, 12): never a screen effect's.
+    Light,
+    /// Chosen at run time from other state (16: a global bitmap
+    /// `[0x004e6978]`; 18: `0x00025960`'s target or the rasterizer's
+    /// `+0x64`; 26: from the shader's template; 27: target `0x10` or
+    /// another by `[0x00485a76]`).
+    Dynamic,
+    /// A null jump-table entry (7, 11) or past the table (0, above 27).
+    Invalid,
+}
+
+/// [`EngineTexture`] for `id`.
+pub fn engine_texture(id: u8) -> EngineTexture {
+    use EngineTexture::*;
+    match id {
+        1 => Rasterizer(0xc),
+        9 => Rasterizer(4),
+        14 | 15 => Rasterizer(0x14),
+        2 | 3 => Target(1),
+        6 => Target(3),
+        8 => Target(10),
+        13 => Target(9),
+        17 => Target(0x13),
+        19 => Target(0x15),
+        20 => Target(0x16),
+        21 => Target(0xd),
+        22 => Target(0x11),
+        23 => Target(0x17),
+        5 => View,
+        24 | 25 => Slot(0x0048_5a18 + 4 * u32::from(id)),
+        4 => Cleared,
+        10 | 12 => Light,
+        16 | 18 | 26 | 27 => Dynamic,
+        _ => Invalid,
+    }
+}
+
 /// One implementation of an effect's template pass.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ScreenLook {
@@ -92,6 +150,10 @@ pub enum ScreenRefusal {
     State(StateRefusal),
     /// It reads engine-driven render or stage states.
     EngineStates,
+    /// A stage binds an engine texture the draw cannot supply
+    /// ([`engine_texture`]: the light's, one chosen at run time, or an
+    /// invalid id).
+    EngineTexture(u8),
 }
 
 /// Implementation `implementation` of `material`'s layer-15 pass (first
@@ -133,7 +195,12 @@ pub fn screen_look(material: &Material, implementation: usize) -> Result<ScreenL
         *stage = match t.map(|t| t.source) {
             None | Some(TextureSource::None) => ScreenStage::Empty,
             Some(TextureSource::Bitmap { bitmap, image, .. }) => ScreenStage::Bitmap { bitmap, image },
-            Some(TextureSource::Engine(id)) => ScreenStage::Engine(id),
+            Some(TextureSource::Engine(id)) => match engine_texture(id) {
+                EngineTexture::Light | EngineTexture::Dynamic | EngineTexture::Invalid => {
+                    return Err(ScreenRefusal::EngineTexture(id));
+                }
+                _ => ScreenStage::Engine(id),
+            },
             Some(TextureSource::UnsetSlot(s)) => return Err(ScreenRefusal::UnsetSlot(s)),
             Some(TextureSource::Default) => return Err(ScreenRefusal::DefaultTexture),
             Some(TextureSource::Lightmap) => return Err(ScreenRefusal::Lightmap),
@@ -271,6 +338,19 @@ mod tests {
     }
 
     #[test]
+    fn engine_textures_are_the_resolvers() {
+        assert_eq!(engine_texture(5), EngineTexture::View);
+        assert_eq!(engine_texture(2), EngineTexture::Target(1));
+        assert_eq!(engine_texture(13), EngineTexture::Target(9));
+        assert_eq!(engine_texture(24), EngineTexture::Slot(0x0048_5a78));
+        assert_eq!(engine_texture(25), EngineTexture::Slot(0x0048_5a7c));
+        assert_eq!(engine_texture(1), EngineTexture::Rasterizer(0xc));
+        for id in [0, 7, 11, 28, 255] {
+            assert_eq!(engine_texture(id), EngineTexture::Invalid, "{id}");
+        }
+    }
+
+    #[test]
     fn what_keeps_the_d3d_draws() {
         assert_eq!(screen_look(&material(12, 1, vec![implementation(0)]), 0).unwrap_err(), ScreenRefusal::NoLayer);
         assert_eq!(
@@ -284,6 +364,13 @@ mod tests {
         assert_eq!(
             screen_look(&material(TEMPLATE_LAYER, 1, vec![imp]), 0).unwrap_err(),
             ScreenRefusal::Reads(InputReads { scalars: 0, vectors: 1 << 5, ints: 0 })
+        );
+        let mut imp = implementation(0);
+        imp.textures[2] = texture(TextureSource::Engine(10));
+        assert_eq!(
+            screen_look(&material(TEMPLATE_LAYER, 1, vec![imp]), 0).unwrap_err(),
+            ScreenRefusal::EngineTexture(10),
+            "the light's texture"
         );
         let mut imp = implementation(0);
         imp.textures[2] = texture(TextureSource::Lightmap);
