@@ -2301,14 +2301,15 @@ A planned batch is drawn in segments, each one external pass
 - **Extension.** The pass draws its quads with an indexed indirect
   draw over buffers it made at recording (128 quads). A later quad
   joins it while the device's counters (`Device::stats`), its bound
-  target and viewport, and the glyph cache's ring (`hud::GLYPH_RING`,
-  which every glyph added moves) stand where they stood after the
-  reservation: its corners and the new count go in through the queue
+  target, viewport, clip, render states and the glyph cache's ring
+  (`hud::GLYPH_RING`, which every glyph added moves) still match the
+  reservation. Its corners and the new count go in through the queue
   (`hud_gpu::Segment::append`), and it is skipped. The backend seals
   the segment before submitting either copy, under the lock that guards
   both queue writes. Accepted writes reach the draw before submission.
-  A full or sealed segment refuses the append, so the quad reserves a
-  new segment. Ending the batch ends the segment.
+  If the state changes or the segment fills or seals, the quad tries a
+  new reservation. If that fails, D3D draws it. Ending the batch ends the
+  segment.
   This is why the pass is committed at the reservation and filled up to
   the end, not committed at the end: `PreparedExternal` borrows the
   device and cannot be held across hooks.

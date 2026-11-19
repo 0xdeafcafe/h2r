@@ -369,8 +369,8 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     // (H2_FEATURES=impl.render.native_hud=on, off by default, or
     // H2_NATIVE_HUD_COMPARE; docs/graphics/native-renderer.md, stage 5):
     // context-only hooks on the screen-quad batch (text) and the HUD shader
-    // quad. Its host (native_hud_glue) plans each batch and pairs the plan
-    // with the D3D draws; every quad keeps its D3D draw so far.
+    // quad. Its host (native_hud_glue) draws accepted quads natively and
+    // pairs the plans for D3D draws in compare mode.
     features
         .add(&feature::native_hud::NativeHud)
         .map_err(|e| anyhow::anyhow!("native hud: {e}"))?;

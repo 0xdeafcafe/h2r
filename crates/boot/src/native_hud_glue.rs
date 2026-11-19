@@ -13,10 +13,11 @@
 //! quad and the rest of the batch keep their D3D draws ([`Kept`], logged
 //! once). Reserved, the quad is skipped, and each later quad joins the
 //! segment (written into its buffers, then skipped) while the device's
-//! counters, bound target and the glyph cache's ring stand still since
-//! the reservation and submission has yet to seal the segment. Otherwise
-//! it reserves a new segment. A state change during the drain cancels the
-//! recording before commit, so the quad keeps its D3D draw.
+//! counters, bound target, viewport, clip, render states and the glyph
+//! cache's ring still match the reservation and submission has yet to seal
+//! the segment. Otherwise it reserves a new segment. A state change during
+//! the drain cancels the recording before commit, so the quad keeps its
+//! D3D draw.
 //!
 //! HUD shader quads go through a draw admission on the device
 //! ([`HudAdmission`]): the hook notes the open call's corners, and the
@@ -41,7 +42,7 @@
 //! their D3D draws; <ls> screen and <lh> HUD lost; <o> other fans; <w> waiting`.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use engine::memory::GuestMemory;
 use feature::native_hud::{Host, HudQuadCall};
@@ -318,11 +319,24 @@ struct Open {
     batch: Batch,
     draw: Arc<TextDraw>,
     viewport: [f32; 4],
-    /// What must not change for a quad to join the segment: the device's
-    /// counters, its bound target and viewport, the glyph cache's ring.
-    stats: d3d::Stats,
-    target: [u32; 8],
+    device: SegmentState,
     ring: [u32; hud::GLYPH_RING_WORDS],
+}
+
+/// Device state that must still match when a later quad joins a segment.
+struct SegmentState {
+    stats: d3d::Stats,
+    words: StateWords,
+    device_viewport: d3d::Viewport,
+}
+
+impl SegmentState {
+    fn matches<B: d3d::Backend>(&self, d: &d3d::Device<B>, mem: &dyn d3d::GuestMemory) -> bool {
+        d.stats() == self.stats
+            && d.bound_target() == self.words.target
+            && d.viewport() == self.device_viewport
+            && state_words(d, mem) == self.words
+    }
 }
 
 /// The glyph cache's texels as last mirrored, by bitmap header, texel
@@ -541,7 +555,7 @@ impl d3d::ExternalPass for HudPass {
     fn record_ranges(&mut self, t: d3d::ExternalTarget<'_>) -> usize {
         let stages = t.stages;
         let mut gpu = self.gpu.lock().unwrap_or_else(|e| e.into_inner());
-        usize::from(gpu.record(
+        if !gpu.record(
             &self.draw,
             &self.program,
             TextTarget {
@@ -554,7 +568,19 @@ impl d3d::ExternalPass for HudPass {
                 size: t.size,
             },
             stages,
-        ))
+        ) {
+            return 0;
+        }
+        // Count one logical quad after the whole reservation succeeds.
+        // The reference callback is discarded if the display copy refuses.
+        if t.copy == d3d::TargetCopy::Reference
+            && let Some(on_submit) = t.on_submit
+        {
+            on_submit.push(Box::new(|| {
+                HUD_NATIVE.fetch_add(1, Ordering::Relaxed);
+            }));
+        }
+        1
     }
 
     fn writes(&self) -> d3d::ExternalWrites {
@@ -620,7 +646,6 @@ impl d3d::DrawAdmission for HudAdmission {
                 return None;
             }
         };
-        HUD_NATIVE.fetch_add(1, Ordering::Relaxed);
         Some((
             d3d::ExternalPlan {
                 stage: timeline::native::Stage::Hud,
@@ -696,45 +721,55 @@ fn raw_state<B: d3d::backend::Backend>(
     d.render_state(mem, guest)
 }
 
-/// Every render-state word the reservation reads, and the clip area and
-/// viewport: read before the device drains and again after it, so a
-/// state the drain wrote (one the game pushed itself) is never drawn
-/// with the value it held before.
-fn state_words<B: d3d::backend::Backend>(
-    d: &d3d::Device<B>,
-    mem: &dyn d3d::GuestMemory,
-) -> (Vec<Option<u32>>, Option<[u32; 4]>, [u32; 8]) {
-    use gfx::state::RenderStateType as R;
-    let table = gfx::xdk::RenderStateTable::default();
-    let mut slots: Vec<u32> = (0..57)
-        .chain([d3d::state::slot::PS_TEXTURE_MODES])
+#[derive(PartialEq, Eq)]
+struct StateWords {
+    render: Vec<Option<u32>>,
+    clip: Option<[u32; 4]>,
+    target: [u32; 8],
+}
+
+/// Snapshot the render states, clip and target (including viewport) used
+/// at reservation. Compare it after the drain and before each append.
+fn state_words<B: d3d::Backend>(d: &d3d::Device<B>, mem: &dyn d3d::GuestMemory) -> StateWords {
+    static SLOTS: LazyLock<Vec<Option<u32>>> = LazyLock::new(|| {
+        use gfx::state::RenderStateType as R;
+        let table = gfx::xdk::RenderStateTable::default();
+        let stencil = [
+            R::StencilEnable,
+            R::StencilFunc,
+            R::StencilRef,
+            R::StencilMask,
+            R::StencilWriteMask,
+            R::StencilFail,
+            R::StencilZFail,
+            R::StencilPass,
+        ];
+        (0..57)
+            .chain([d3d::state::slot::PS_TEXTURE_MODES])
+            .map(Some)
+            .chain(
+                stencil
+                    .into_iter()
+                    .chain(TEXT_STATES)
+                    .map(|t| t.index())
+                    .chain([STIPPLE_ENABLE, SPECULAR_ENABLE])
+                    .map(|c| table.canonical_to_guest(c)),
+            )
+            .collect()
+    });
+    let render = SLOTS
+        .iter()
+        .map(|s| s.and_then(|g| d.render_state(mem, g)))
         .collect();
-    for t in [
-        R::StencilEnable,
-        R::StencilFunc,
-        R::StencilRef,
-        R::StencilMask,
-        R::StencilWriteMask,
-        R::StencilFail,
-        R::StencilZFail,
-        R::StencilPass,
-    ] {
-        slots.extend(table.canonical_to_guest(t.index()));
-    }
-    for c in [STIPPLE_ENABLE, SPECULAR_ENABLE] {
-        slots.extend(table.canonical_to_guest(c));
-    }
-    let mut words: Vec<Option<u32>> = slots.into_iter().map(|g| d.render_state(mem, g)).collect();
-    words.extend(TEXT_STATES.iter().map(|t| {
-        table
-            .canonical_to_guest(t.index())
-            .and_then(|g| d.render_state(mem, g))
-    }));
     let clip = match d.clip_area(mem) {
         Ok(Some((r, rects))) if rects.is_empty() => Some([r.x, r.y, r.width, r.height]),
         _ => None,
     };
-    (words, clip, d.bound_target())
+    StateWords {
+        render,
+        clip,
+        target: d.bound_target(),
+    }
 }
 
 /// `D3DRS_STIPPLEENABLE` and `D3DRS_SPECULARENABLE` (`d3d::nv2a`'s `rs`).
@@ -904,8 +939,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             batch: *batch,
             draw,
             viewport,
-            stats: d.stats(),
-            target: d.bound_target(),
+            device: SegmentState {
+                stats: d.stats(),
+                words: state_words(&d, &dm),
+                device_viewport: d.viewport(),
+            },
             ring,
         })
     }
@@ -913,14 +951,14 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
     /// Whether `quad` joins `open` (written into its segment, so skipped):
     /// only while nothing the segment's reservation read could have moved
     /// and no submission could have come since.
-    fn extend(&self, mem: &dyn GuestMemory, open: &Open, quad: &[hud::Vertex; 4]) -> bool {
+    fn extend(&self, mem: &mut dyn GuestMemory, open: &Open, quad: &[hud::Vertex; 4]) -> bool {
         if hud::glyph_ring(&Ro(mem)) != Some(open.ring) {
             return false;
         }
         let Ok(d) = self.device.lock() else {
             return false;
         };
-        if d.stats() != open.stats || d.bound_target() != open.target {
+        if !open.device.matches(&d, &DeviceMemory(mem)) {
             return false;
         }
         if !open
@@ -1079,6 +1117,66 @@ pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(
 mod tests {
     use super::*;
     use gfx::vertex::{StreamLayout, VertexAttribute};
+
+    #[test]
+    fn a_render_state_change_refuses_extension_even_with_the_same_counters_and_target() {
+        let push = d3d::GuestRange {
+            addr: 0x0041_0000,
+            len: 0x1_0000,
+        };
+        let scratch = d3d::GuestRange {
+            addr: 0x0042_0000,
+            len: 0x1000,
+        };
+        let cfg = d3d::DeviceConfig::halo2(push, scratch);
+        let mut d = d3d::Device::new(cfg, d3d::RecordingBackend::default());
+        let mut mem = engine::memory::FlatMemory::new(0x0040_0000, 0x5_0000);
+        // Synthetic aligned methods, sufficient to initialize the device.
+        for slot in 0..d3d::pushbuf::SIMPLE_ENCODE_SLOTS as u32 {
+            let header = (1 << 18) | (4 * (slot + 1));
+            mem.set_u32(cfg.layout.simple_encode + 4 * slot, header)
+                .unwrap();
+        }
+        let params = scratch.addr + scratch.len;
+        let mut dm = DeviceMemory(&mut mem);
+        d3d::PresentParameters {
+            width: 64,
+            height: 64,
+            back_buffer_format: gfx::D3DFormat::A8R8G8B8.raw(),
+            back_buffer_count: 1,
+            multisample_type: 0,
+            swap_effect: 0,
+            enable_auto_depth_stencil: false,
+            auto_depth_stencil_format: 0,
+            flags: 0,
+            refresh_rate: 0,
+            presentation_interval: 0,
+            buffer_surface: 0,
+            depth_stencil_surface: 0,
+        }
+        .write(&mut dm, params)
+        .unwrap();
+        d.create_device(&mut dm, 0, params, 0).unwrap();
+        let state = SegmentState {
+            stats: d.stats(),
+            words: state_words(&d, &dm),
+            device_viewport: d.viewport(),
+        };
+        assert_eq!(state.words.clip, Some([0, 0, 64, 64]));
+        assert!(state.matches(&d, &dm));
+
+        let slot = gfx::xdk::RenderStateTable::default()
+            .canonical_to_guest(gfx::state::RenderStateType::BlendColor.index())
+            .unwrap();
+        let blend_color = d.render_state(&dm, slot).unwrap();
+        d3d::GuestMemory::write_u32(&mut dm, cfg.layout.render_state_slot(slot), blend_color ^ 1)
+            .unwrap();
+
+        assert_eq!(d.stats(), state.stats);
+        assert_eq!(d.bound_target(), state.words.target);
+        assert_eq!(d.viewport(), state.device_viewport);
+        assert!(!state.matches(&d, &dm));
+    }
 
     fn fan(
         stride: u32,
