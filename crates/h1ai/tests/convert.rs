@@ -366,3 +366,127 @@ fn named_platoons_become_child_squad_groups() {
     assert_eq!(plain.ai.squad_groups.len(), 1);
     assert!(plain.ai.squads.iter().all(|q| q.parent == 0));
 }
+
+#[test]
+fn scripted_platoon_controls_follow_source_indices_and_round_trip() {
+    use h1ai::control::{Action, Operation, Platoon, Request, maneuver_targets, prepare};
+
+    let mut source = invented();
+    let encounter = &mut source.encounters[0];
+    encounter.platoons.push(h1ai::h1::Platoon {
+        name: "front".into(),
+        flags: 0,
+    });
+    encounter.squads[0].platoon = 0;
+    encounter.squads[0].groups[3] = 1;
+    encounter.squads[0].maneuver_to = 2;
+    encounter.squads[2].groups[0] = 1 << 2;
+
+    let request = |operation, reference, target| Request {
+        operation,
+        reference,
+        target,
+    };
+    let defend = request(Operation::Defend, 0x8000_0000, None);
+    let maneuver = request(Operation::Maneuver, 0x4000_0000, None);
+    let enable = request(Operation::ManeuverEnable, 0, None);
+    let follow = request(Operation::FollowPlayers, 0x8000_0000, None);
+    let leader = request(Operation::FollowAi, 0, Some(0x8001_0000));
+    let stop = request(Operation::FollowDisable, 0, None);
+    let requests = [defend, maneuver, enable, follow, leader, stop];
+
+    assert_eq!(
+        maneuver_targets(&source, &requests)
+            .into_iter()
+            .collect::<Vec<_>>(),
+        ["first/empty"]
+    );
+    let opts = Options::default();
+    let mut plan = convert(&source, &opts);
+    let actions = prepare(&source, &mut plan, &opts, &requests);
+    let platoon = Platoon {
+        encounter: 0,
+        index: 0,
+    };
+    assert_eq!(
+        actions.actions[&maneuver],
+        [Action::Migrate {
+            from: 0,
+            to: 2,
+            platoon: Some(platoon)
+        }]
+    );
+    assert_eq!(actions.actions[&enable], [Action::Enable(platoon)]);
+    assert!(actions.switches.contains(&platoon));
+
+    let (back, _) = build_and_read(&plan);
+    let [Action::SetOrder { squad: 0, order }] = actions.actions[&defend].as_slice() else {
+        panic!("one defending squad");
+    };
+    assert_eq!(back.orders[usize::from(*order)].primary_areas[0].area, 0);
+    let destination = back.squads[2].initial_order as usize;
+    assert_eq!(back.orders[destination].primary_areas[0].area, 1);
+
+    let order_for = |request, target| {
+        actions.actions[&request]
+            .iter()
+            .find_map(|action| match *action {
+                Action::SetOrder { squad, order } if squad == target => {
+                    Some(&back.orders[usize::from(order)])
+                }
+                _ => None,
+            })
+            .unwrap()
+    };
+    let player_order = order_for(follow, 0);
+    assert_eq!((player_order.flags, player_order.follow_squad), (0x10, -1));
+    assert_eq!(player_order.follow_radius, 4.0);
+    let ai_order = order_for(leader, 0);
+    assert_eq!(
+        (
+            ai_order.flags,
+            ai_order.follow_squad,
+            ai_order.entry_script_index
+        ),
+        (0x20, 1, -1)
+    );
+    assert_eq!(order_for(leader, 1).flags, 0);
+    assert_eq!(order_for(stop, 0).flags, 0);
+    assert!(back.check_indices().is_empty());
+}
+
+#[test]
+fn encounter_migration_chooses_a_destination_for_each_character() {
+    use h1ai::control::{Action, Operation, Request, prepare};
+
+    let mut source = invented();
+    let mut target = source.encounters[0].clone();
+    target.name = "second".into();
+    target.squads.pop();
+    target.squads.reverse();
+    source.encounters.push(target);
+    let opts = Options::default();
+    let mut plan = convert(&source, &opts);
+    let migrate = Request {
+        operation: Operation::Migrate,
+        reference: 0,
+        target: Some(1),
+    };
+    let routes = prepare(&source, &mut plan, &opts, &[migrate]);
+    assert_eq!(
+        routes.actions[&migrate][0],
+        Action::Migrate {
+            from: 0,
+            to: 4,
+            platoon: None
+        }
+    );
+    assert_eq!(
+        routes.actions[&migrate][1],
+        Action::Migrate {
+            from: 1,
+            to: 3,
+            platoon: None
+        }
+    );
+}

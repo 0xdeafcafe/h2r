@@ -23,6 +23,7 @@ pub mod vm;
 mod wire;
 
 pub use cast::{Unrunnable, castable};
+pub mod h1_ai_slots;
 pub mod casts {
     pub use crate::cast::types;
 }

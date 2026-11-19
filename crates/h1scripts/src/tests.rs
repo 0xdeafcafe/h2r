@@ -1131,8 +1131,6 @@ fn ai_status_reads_halo2_s_combat_status_on_halo1_s_scale() {
         n = rest;
     }
     assert!(n.atom() && n.data() == 0);
-    // ai_living_fraction is Halo 2's ai_strength.
-    assert!(crate::translate::RENAMES.contains(&("ai_living_fraction", "ai_strength")));
 }
 
 /// `(op (ai_status x) k)` becomes one comparison of `ai_combat_status`
@@ -1463,3 +1461,6 @@ fn negative_sleeps_become_sleep_forever() {
     assert_eq!(other.len(), 1);
     assert_eq!((other[0].value_type(), other[0].data() as u16), (SCRIPT, 1));
 }
+
+#[path = "tests/ai_control.rs"]
+mod ai_control;

@@ -72,6 +72,7 @@ effect, `2f8` detonation effect (V1: groups).
 | Offset | Field | Evidence |
 |---|---|---|
 | `308` | u32 flags; `30c` label (`char[32]`): the weapon type the units' graphs animate it by (`stand rifle ar idle`): `ar`, `hp`, `sg`, `pr`, `rl`, `sr`, `pp`, `ne`, `ft`; `cg`, `cannon`, `gun` on vehicle guns | S; V1 (every Blood Gulch `weap`) |
+| `330`..`336` | u16 A to D in sources, the weapon enum: 2 primary ammunition, 12 illumination, 14 integrated light ("Ammunition counter") | D (the assault rifle: 14, 2, 12, 0) |
 | `338` | f32 ready time, `33c` ready effect | S, V1 |
 | `34c`..`360` | heat recovery threshold, overheated threshold, detonation threshold, detonation fraction, heat loss per second, illumination | S; V1 (set on the plasma rifle, zero on the assault rifle) |
 | `374`, `384` | overheated, detonation effects | S |
@@ -816,6 +817,64 @@ vehicle keeps its own colour (the Scorpion's grey). Proof:
 `rebuilt_scenery_carries_its_change_colours`, and the disc tests
 `tests/model_shaders_disc.rs` (`bloodgulch_cyborg_and_scorpion_take_change_colours`)
 and `tests/rebuild_disc.rs`.
+
+### Ammunition counter (**Built**, converter version 95)
+
+The assault rifle's first-person model shows the rounds loaded on two
+digits at its back. Halo 1 and Halo 2 draw such a counter differently.
+
+**Halo 1** (E, Halo 1's XBE; D, Blood Gulch). The digits are a
+`schi` with the numeric flag (flags `+0x29` bit 7): `weapons\assault
+rifle\fp\shaders\numbers`, counter limit (`+0x28`) 60, one additive map,
+`numbers_plate`, whose ten images are the digits 0 to 9. The model
+(`weapons\assault rifle\fp\fp`) names that shader twice in its shader
+block, with permutation (`mode +0xdc` element `+0x10`) 1 on the left digit
+and 0 on the right. The model draw (`0x00067ad1`..`0x00067c32`) gives a
+numeric `schi` image `(n / base^p) mod base` of its first map: `base` the
+bitmap's image count, `p` the entry's permutation, and
+`n = floor(limit × out + 0.5)` clamped to 0..limit, `out` the object's A
+out (D out when the bitmap has eight images: the rifle's `compass`, limit
+8). Extra flags (`+0x60`) bit 1 takes an engine number instead
+(`[0x2e34a0]`, `0x00056aa0`). The rifle's A out is its function 0, "one"
+scaled by B in, and its B in (`weap +0x332`) is 2, primary ammunition: the
+rounds loaded over 60. So permutation 0 is the ones and 1 the tens of the
+rounds loaded.
+
+**Halo 2** (E, V). The battle rifle's digits are two `shad`s, `tens` and
+`ones`, on `opaque\illum_detail` (additive on layer 7), bitmap 0 its own
+`numbers_plate` of ten images. Each animates bitmap 0's frame (and an
+identity texture transform) from one property whose input is a weapon
+function: `primary_ammunition_tens` or `primary_ammunition_ones`, an
+identity mapped onto 0 to 10. The weapon's function handler
+(`0x000ff600`..`0x000ffc57`) answers those with the tens or ones digit of
+magazine 0's rounds loaded (weapon `+0x22c`) times 0.1, so the frame is
+the digit (`h1convert::shad::AMMUNITION_DIGITS`, `COUNTER_TREE`).
+
+**The conversion.** When a weapon's A out is its primary ammunition as it
+is (`h1::Weapon::rounds_counter`, the first magazine's loaded maximum),
+its first-person model's numeric `schi` entries whose bitmap has ten
+images, whose limit is that maximum and whose permutation is 0 or 1 become
+Halo 2 counter digits (`Converter::counter_shader`): one `shad` per digit,
+`<schi>_ones` or `<schi>_tens`, on `illum_detail` with retail's counter
+tree, drawing Halo 1's digits (`h1convert::shad::counter_shader`). The
+detail is the plain grey default and colour 0 white, so the digit draws
+as Halo 1's additive `schi` drew it; Halo 1's digits carry their colour.
+Any other numeric `schi`, and every model of a weapon whose counters
+don't count its rounds, converts as before. Before version 95 both
+entries drew one `one_add_illum` copy of the digits' first image, so the
+rifle read 00 whatever it held.
+
+Not converted: the rifle's `compass` (D out, the compass heading over
+eight images). It still draws its first image.
+
+Proof: `h1convert` unit tests
+`a_counter_digit_is_halo2s_ammunition_digit_only_when_it_counts_the_rounds`
+and `a_counter_digit_draws_on_illum_detail_its_frame_from_the_weapons_digit`,
+`tests/shad_rebuild.rs` `ammunition_counter_instances_share_one_tree`
+(retail's counters against the tree and properties written), and
+`h1objects/tests/model_shaders_disc.rs`
+`bloodgulch_assault_rifle_counter_shows_the_rounds_loaded`. The digits
+changing as the rifle fires needs a live check.
 
 ### Tuning carried over
 

@@ -131,6 +131,7 @@ fn the_hand_checks_the_opening_as_it_passes_a_doorway() {
         [-2.0, 0.5, 2.0],
     ];
     let map = MapData {
+        places: Default::default(),
         nav: NavMesh::default(),
         walls: Walls::from_polygons([&wall[..]]),
     };
@@ -154,6 +155,7 @@ fn a_muffled_shot_draws_a_delayed_bearing_and_a_distant_one_does_not() {
         [-1.0, 1.0, 2.0],
     ];
     let map = MapData {
+        places: Default::default(),
         nav: NavMesh::default(),
         walls: Walls::from_polygons([&wall[..]]),
     };

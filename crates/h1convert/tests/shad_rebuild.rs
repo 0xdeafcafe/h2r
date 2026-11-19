@@ -19,6 +19,10 @@
 //!   checked: its template is the layout's stem, every datum in it is the
 //!   stem, a default bitmap of the base, or a Halo 1 map's (so nothing of
 //!   a Halo 2 shader instance is in it), and its tiling is Halo 1's.
+//! - **Ammunition counters** (`ammunition_counter_instances_share_one_tree`):
+//!   retail's counter digits (the battle rifle's `ones` and `tens`) are
+//!   `illum_detail` with `shad::COUNTER_TREE` and the properties
+//!   `shad::counter_properties` writes.
 //! - **Texture kinds** (`every_rebuilt_bitmap_is_its_slots_retail_kind`):
 //!   each slot of each layout's stem is one kind (2D, cube, volume) on
 //!   every retail instance; the base's default bitmaps and every Halo 1
@@ -992,6 +996,131 @@ fn water_pool_instances_share_one_tree() {
     }
     eprintln!("{checked} retail water_pool instances; reflection kinds {reflections:?}");
     assert_eq!(checked, 14);
+}
+
+/// Retail's ammunition counters: every `shad` whose animated property
+/// reads `primary_ammunition_ones` or `_tens` is on `illum_detail` with
+/// [`shad::COUNTER_TREE`], its digits (ten images) in bitmap 0, and the
+/// ten properties [`shad::counter_properties`] writes for its input: the
+/// battle rifle's `ones` and `tens`, what `h1objects` draws Halo 1's
+/// assault rifle counter with.
+#[test]
+#[ignore = "reads the Halo 2 disc ($H2_DISC)"]
+fn ammunition_counter_instances_share_one_tree() {
+    use tags::effects::function::{Function, FunctionType};
+    let disc = std::env::var("H2_DISC").expect("set H2_DISC");
+    let tree = &shad::COUNTER_TREE;
+    let mut seen = HashSet::new();
+    let mut inputs: BTreeMap<String, usize> = BTreeMap::new();
+    for (name, base, size) in h2_maps(&disc) {
+        let mut map = open(&disc, base, size);
+        let Ok(lib) = ShaderLibrary::read(&mut map) else {
+            continue;
+        };
+        let strings = map.strings().to_vec();
+        // String ID 0 is no string (a time-driven property).
+        let sid = |id: u32| match id {
+            0 => String::new(),
+            _ => strings
+                .get((id & 0x00ff_ffff) as usize)
+                .cloned()
+                .flatten()
+                .unwrap_or_default(),
+        };
+        let ids: Vec<(TagId, String)> = map
+            .tags()
+            .iter()
+            .filter(|t| t.group == SHAD && t.location.is_some())
+            .map(|t| (t.id, t.name.clone().unwrap_or_default()))
+            .collect();
+        for (id, sname) in ids {
+            let Ok(sh) = lib.shader(id) else { continue };
+            let Ok(p) = sh.compiled() else { continue };
+            let p = p.clone();
+            let Some(input) = p
+                .properties
+                .iter()
+                .map(|q| sid(q.input))
+                .find(|s| shad::AMMUNITION_DIGITS.contains(&s.as_str()))
+            else {
+                continue;
+            };
+            if !seen.insert(sname.clone()) {
+                continue;
+            }
+            let at = format!("{name}: {sname}");
+            let stem = map
+                .tag(sh.template.id)
+                .ok()
+                .and_then(|t| t.name.clone())
+                .unwrap_or_default();
+            assert_eq!(stem, shad::ILLUM_DETAIL.stem, "{at}");
+            assert_eq!(p.lods.len(), 1, "{at}");
+            assert_eq!(p.lods[0].layer_mask, 1 << tree.animated_layer, "{at}");
+            assert_eq!(p.layers.len(), usize::from(tree.layers), "{at}");
+            let a = &p.implementations[0];
+            let got = [
+                a.bitmaps,
+                a.render_states,
+                a.stage_states,
+                a.pixel_constants,
+                a.vertex_constants,
+            ]
+            .map(|r| (r.start, u16::from(r.count)));
+            assert_eq!(got, tree.implementation, "{at}");
+            let binds: Vec<[u8; 4]> = p
+                .animations
+                .iter()
+                .map(|b| [b.target, b.b1, b.b2, b.properties])
+                .collect();
+            assert_eq!(binds, tree.bindings, "{at}");
+            let want = shad::counter_properties(
+                shad::AMMUNITION_DIGITS
+                    .iter()
+                    .copied()
+                    .find(|d| *d == input)
+                    .unwrap(),
+            );
+            assert_eq!(p.property_refs.len(), want.len(), "{at}");
+            for r in &p.property_refs {
+                let (k, c) = (r.property as usize, r.component as usize);
+                assert_eq!(k, c, "{at}: property {k} drives component {c}");
+                let (got, w) = (&p.properties[k], &want[k]);
+                assert_eq!(
+                    sid(got.input),
+                    w.input.unwrap_or(""),
+                    "{at}: property {k}'s input"
+                );
+                let (g, f) = (
+                    Function::parse(&got.function).unwrap(),
+                    Function::parse(&w.function).unwrap(),
+                );
+                assert_eq!(g.kind, f.kind, "{at}: property {k}");
+                match g.kind {
+                    FunctionType::Identity => assert_eq!(g.range, f.range, "{at}: property {k}"),
+                    _ => assert_eq!(g.range[0], f.range[0], "{at}: property {k}"),
+                }
+            }
+            assert_eq!(
+                p.properties[0].function.len(),
+                0x14,
+                "{at}: an identity, no payload"
+            );
+            assert!(matches!(
+                Function::parse(&p.properties[0].function).map(|f| f.kind),
+                Ok(FunctionType::Identity)
+            ));
+            let digits = p.bitmaps[0].bitmap;
+            if let Ok(TagData::Bitmap(bm)) = DecodedTag::read(&mut map, digits).map(|d| d.data) {
+                assert_eq!(bm.images.len(), 10, "{at}: ten digits");
+            }
+            *inputs.entry(input).or_default() += 1;
+        }
+    }
+    eprintln!("retail ammunition counters by input: {inputs:?}");
+    for d in shad::AMMUNITION_DIGITS {
+        assert!(inputs.get(d).is_some_and(|n| *n > 0), "no retail {d}");
+    }
 }
 
 /// Halo 1's additive chicago multiply chains: every one drawn by a model

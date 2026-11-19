@@ -987,37 +987,6 @@ fn finite(v: f32) -> f32 {
     if v.is_finite() && v > 0.0 { v } else { 0.0 }
 }
 
-/// Whether the selected gun has run out of loaded rounds, with rounds
-/// still in reserve. Only the held instance is needed for this cue.
-pub(crate) fn held_empty_magazine(m: &dyn GuestMemory, unit: u32) -> R<bool> {
-    let slot = u32::from(m.u8(unit + UNIT_WEAPON_INDEX)?);
-    if slot >= UNIT_WEAPON_SLOTS {
-        return Ok(false);
-    }
-    let Some(h) = DatumHandle::from_raw(m.u32(unit + UNIT_WEAPONS + 4 * slot)?) else {
-        return Ok(false);
-    };
-    let Some((objects::WEAPON, body)) = objects::get(m, h)? else {
-        return Ok(false);
-    };
-    let mag = body.addr + WEAPON_MAGAZINES;
-    if m.u16(mag + MAGAZINE_LOADED)? != 0 || m.u16(mag + MAGAZINE_RESERVE)? as i16 <= 0 {
-        return Ok(false);
-    }
-    let Some(def) = body.definition(m)? else {
-        return Ok(false);
-    };
-    let Some(tag) = Tags.entry(m, def)? else {
-        return Ok(false);
-    };
-    let meta = tag.address(m)?;
-    if meta == 0 {
-        return Ok(false);
-    }
-    let layout = WeaponDef::read(m, meta)?;
-    Ok(layout.magazine.is_some() && !layout.ages)
-}
-
 /// What the unit whose body is at `unit` carries.
 pub fn read(m: &dyn GuestMemory, unit: u32) -> R<Arms> {
     let held_slot = m.u8(unit + UNIT_WEAPON_INDEX)? as i8;
@@ -1114,7 +1083,7 @@ pub(crate) fn ground(m: &dyn GuestMemory, near: Option<crate::brain::Vec3>) -> R
                     continue;
                 };
                 if body.parent(m)?.is_some() {
-                    if gun.role().power() && gun.rating() > 0 {
+                    if gun.role().power() {
                         out.held_power.push(h.raw());
                     }
                     continue;
@@ -1127,7 +1096,7 @@ pub(crate) fn ground(m: &dyn GuestMemory, near: Option<crate::brain::Vec3>) -> R
                 if out.supplies.is_none() || !gun.role().power() {
                     continue;
                 }
-                crate::guest::intel::supply(m, h, body, None)
+                crate::guest::intel::supply(m, h, body, None, gun.role())
             }
             crate::guest::intel::EQUIPMENT if out.supplies.is_some() => header
                 .body(m)

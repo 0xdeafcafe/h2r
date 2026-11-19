@@ -121,9 +121,8 @@ under an index nobody calls. Value types map by name; Halo 2 lacks
 - **Renamed** (`RENAMES`): `ai_magically_see_encounter` → `ai_magically_see`,
   `game_save_totally_unsafe` → `game_save_immediate`, `ai_exit_vehicle` →
   `ai_vehicle_exit`, `object_pvs_set_object` → `pvs_set_object`,
-  `object_pvs_clear` → `pvs_clear`, `ai_living_fraction` → `ai_strength`
-  (Halo 2's squad vitality, 0 when all are dead; a30's waits on a fraction
-  under 0.3 or at 0), `sound_impulse_time` → `sound_impulse_language_time`
+  `object_pvs_clear` → `pvs_clear`, `sound_impulse_time` →
+  `sound_impulse_language_time`
   (and `ai_attach` → `ai_attach_units`, which is also a cast, so it counts
   as an adapter). Both impulse times
   are the ticks a playing impulse sound has left, 0 once it ends: a10
@@ -207,7 +206,11 @@ Object, AI, device, trigger volume, cutscene, tag, enum and string ID values
 keep their Halo 1 token and become hooks (step 3); AI encounters map to
 squads in another lane.
 
-Coverage, share of builtin calls (`translation_coverage`):
+The later [encounter control pass](ai-control.md) binds the counted
+`ai_place` overload and Halo 2's `ai_living_fraction` evaluator. It also
+lowers scenario-specific controls into native orders and migrations.
+
+Historical coverage, share of builtin calls (`translation_coverage`):
 
 | Map | Calls | Direct | Renamed | Adapter | Missing | Missing builtins |
 |---|---|---|---|---|---|---|

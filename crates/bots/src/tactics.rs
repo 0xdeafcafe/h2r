@@ -321,6 +321,10 @@ impl Tactics {
     }
 
     /// Forgets everyone (the bot died).
+    pub(crate) fn forget(&mut self, id: u32) {
+        self.known.retain(|notice| notice.id != id);
+    }
+
     pub fn reset(&mut self) {
         self.known.clear();
         self.pull = None;

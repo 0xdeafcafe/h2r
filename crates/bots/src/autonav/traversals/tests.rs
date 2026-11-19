@@ -130,3 +130,106 @@ fn the_elevator_holds_the_platform_until_it_is_level_with_the_exit() {
     assert_eq!(f.steer([0.0, 0.0, 2.0], 2).dir, [0.0; 2]);
     assert_eq!(f.steer([0.0, 0.0, 3.7], 3).dir, [1.0, 0.0]);
 }
+
+#[test]
+fn converted_h1_one_way_and_reciprocal_channels_survive_link_building() {
+    let pad = |x, channel, sender| Teleporter {
+        position: [x, 0., 0.],
+        channel,
+        sender,
+    };
+    let placements = Placements {
+        teleporters: vec![
+            pad(0., 4, true),
+            pad(20., 4, false),
+            pad(20., 9, true),
+            pad(0., 9, false),
+            pad(10., 1, true),
+            pad(30., 1, false),
+        ],
+        ..Default::default()
+    };
+    let mut map = MapData {
+        nav: NavMesh::new([0., 10., 20., 30.].map(|x| floor(x, 0.)).to_vec(), vec![]),
+        ..Default::default()
+    };
+    placements.add_links(&mut map);
+    assert!(map.nav.corridor(0, 2).is_some() && map.nav.corridor(2, 0).is_some());
+    assert!(map.nav.corridor(1, 3).is_some() && map.nav.corridor(3, 1).is_none());
+}
+
+#[test]
+fn high_receiver_must_have_a_clear_fall_and_the_follower_waits_for_it() {
+    let pair = Placements {
+        teleporters: vec![
+            Teleporter {
+                position: [0.; 3],
+                channel: 0,
+                sender: true,
+            },
+            Teleporter {
+                position: [10., 0., 3.1],
+                channel: 0,
+                sender: false,
+            },
+        ],
+        ..Default::default()
+    };
+    let mut map = MapData {
+        nav: NavMesh::new(vec![floor(0., 0.), floor(10., 0.)], vec![]),
+        ..Default::default()
+    };
+    let mut blocked = map.clone();
+    blocked.walls = crate::los::Walls::new(vec![[[8., -2., 2.], [12., -2., 2.], [10., 2., 2.]]]);
+    pair.add_links(&mut blocked);
+    assert!(blocked.nav.edges.is_empty());
+    pair.add_links(&mut map);
+    let mut f = Follower::new(map.nav.path([0.; 3], [11., 0., 0.]).unwrap(), 0);
+    f.steer([0.; 3], 1);
+    let falling = f.steer([10., 0., 3.1], 2);
+    assert!(falling.traversing && !falling.replan);
+    assert!(!f.steer([10., 0., 0.], 12).traversing);
+}
+
+#[test]
+fn placed_lift_families_select_their_own_decks() {
+    for (path, dx, z, kind) in [
+        ("power_boost", -12., 4., Kind::Lift),
+        ("man_cannon", 12., 4., Kind::Lift),
+        ("elevator_cyclotron", 2., 5., Kind::Elevator),
+        ("elevator", 2., 2., Kind::Elevator),
+        ("grav_colossus", 2., 2., Kind::Lift),
+        ("steam_lift", 2., 6.5, Kind::Lift),
+        ("backwash_lift", 2., 2.4, Kind::Lift),
+    ] {
+        let mut map = MapData {
+            nav: NavMesh::new(vec![floor(0., 0.), floor(dx, z)], vec![]),
+            ..Default::default()
+        };
+        let placements = Placements {
+            lifts: vec![Lift {
+                position: [0.; 3],
+                yaw: 0.,
+                kind: lift_kind(path).unwrap(),
+            }],
+            ..Default::default()
+        };
+        placements.add_links(&mut map);
+        assert_eq!(
+            map.nav
+                .edges
+                .iter()
+                .map(|e| (e.from, e.to, e.kind))
+                .collect::<Vec<_>>(),
+            [(0, 1, kind)],
+            "{path}"
+        );
+    }
+    for effect in [
+        "high_lift_effect",
+        "grav_column_nogarbage_top",
+        "backwash_lift_movt",
+    ] {
+        assert!(lift_kind(effect).is_none(), "{effect}");
+    }
+}

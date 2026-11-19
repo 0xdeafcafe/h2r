@@ -215,7 +215,8 @@ manual reference frame `i16` `7c`, flight hints block `80`.
 
 Order (`7c`): name, style `i16` `20` (an index into the style palette at
 `150`, `-1` none), flags `u32` `24`, force combat status `u16` `28`, entry
-script `char[32]` `2c`, follow squad `i16` `4c`, follow radius `f32` `50`,
+script `char[32]` `2c`, entry script index `i16` `4c`, follow squad
+`i16` `4e`, follow radius `f32` `50`,
 primary area set `54` and secondary `5c` (`8` each: area type `u16` `00`,
 zone `i16` `04`, area `i16` `06`; V by range check), secondary set trigger
 `64`, special movement `6c`, order endings `74` (`2c`; counted only).
@@ -384,11 +385,13 @@ out in `0xfe618`.
   and area set types 0..2: values from the census, meanings unknown.
 - Whether `area +0x3c` really is cluster occupancy, and whether the engine
   reads the area's mean and deviation or recomputes them.
-- The three trailing `i16` fields that are `-1` on retail (squad `70`,
-  starting location `60`, order `4e`).
+- The two trailing `i16` fields that are `-1` on retail (squad `70`
+  and starting location `60`). The order fields were identified by
+  disassembly in [ai-control.md](ai-control.md).
 - Halo 1 squads' other six group masks (defending, guarding, pursuing):
-  Halo 2 expresses them as order endings and secondary area sets; only the
-  attacking mask is used.
+  Halo 2 expresses them as order endings and secondary area sets. The
+  scripted defend order uses the defending mask. The search, guard and
+  pursue masks remain unused.
 - Vehicle actor variants (`warthog gunner`, `banshee` pilots) become plain
   characters; Halo 2 puts them in vehicles through the starting location's
   vehicle and seat fields, which need the vehicle palette.

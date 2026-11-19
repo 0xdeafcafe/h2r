@@ -14,6 +14,7 @@ pub mod brain;
 pub mod cache;
 pub mod decisions;
 pub mod emote;
+pub mod experience;
 pub mod glitches;
 pub mod grenades;
 pub mod guest;
@@ -26,7 +27,9 @@ pub mod mind;
 pub mod moves;
 pub mod nav;
 pub mod objective;
+mod perceive;
 pub mod phantom;
+pub mod places;
 pub mod roam;
 mod sound;
 pub mod stuck;
@@ -86,6 +89,7 @@ struct Observation {
     sounds: Vec<sound::ShotSound>,
     grenades: Vec<incoming::Grenade>,
     inbox: Vec<radio::Call>,
+    supply_calls: Vec<radio::SupplyCall>,
 }
 
 /// Read-only state shared by local, phantom and simulated bot views.
@@ -126,6 +130,7 @@ impl Brain {
         let glitches = self.mind.glitches;
         let bounces = std::mem::take(&mut self.mind.bounces);
         self.mind = mind::Mind::new(self.mind.skill, self.seed);
+        self.mind.experience.enter(&self.map);
         self.mind.emote.taunt = taunt;
         self.mind.glitches = glitches;
         self.mind.bounces = bounces;
@@ -212,10 +217,14 @@ impl Brain {
                 }
             }
             observation.inbox = board.listen(p);
+            observation.supply_calls = board.supply_calls(p);
             board.epoch
         };
         if self.epoch != epoch {
+            let mut experience = std::mem::take(&mut self.mind.experience);
+            experience.new_life();
             self.reset_mind();
+            self.mind.experience = experience;
             self.epoch = epoch;
             observation.kills.clear();
         }
@@ -278,8 +287,12 @@ impl Brain {
             grenades,
             vehicles,
             inbox,
+            supply_calls,
         } = observation;
-        self.mind.hear_deaths(&perception, &kills);
+        self.mind.hear_deaths(&perception, &kills, map);
+        self.mind
+            .decisions
+            .hear_supplies(&supply_calls, perception.tick);
         if let Some((id, _)) = perception.observations.player {
             let weight = self.mind.decisions.behavior().taunt_weight();
             self.mind.emote.hear_with_style(&kills, Some(id), weight);
@@ -290,11 +303,17 @@ impl Brain {
             self.mind
                 .step_with_cues(&perception, map, &sounds, &grenades)
         });
-        if let Some(mut call) = self.mind.decisions.report {
+        let reports = self.mind.decisions.supply_reports(&perception);
+        if self.mind.decisions.report.is_some() || !reports.is_empty() {
             let mut board = radio::lock(channel);
             if board.epoch == self.epoch {
-                call.tick = tick;
-                board.publish(call);
+                if let Some(mut call) = self.mind.decisions.report {
+                    call.tick = tick;
+                    board.publish(call);
+                }
+                for call in reports {
+                    board.publish_supply(call, tick);
+                }
             }
         }
         pad
@@ -344,6 +363,7 @@ impl local::PadSource for Brain {
         let map = autonav::loaded();
         if map != self.map {
             self.mind.bounces = glitches::bounces(&map);
+            self.mind.experience.enter(&map);
             self.map = map;
         }
         let (kills, cursor) = emote::kills().since(self.kills_seen);
@@ -361,16 +381,19 @@ impl local::PadSource for Brain {
         } else {
             Default::default()
         };
+        let map = cache::current();
+        let (mut p, mut vehicles, mut kills) = (p, vehicles, kills);
+        perceive::observe(&mut p, &mut vehicles, &mut kills, map.as_deref());
         let pad = self.sample(
             Observation {
                 perception: p,
                 vehicles,
                 kills,
-                sounds,
-                grenades,
-                inbox: Vec::new(),
+                sounds: if map.is_some() { sounds } else { Vec::new() },
+                grenades: if map.is_some() { grenades } else { Vec::new() },
+                ..Observation::default()
             },
-            cache::current().as_deref(),
+            map.as_deref(),
             radio::host(),
         );
         if alive {

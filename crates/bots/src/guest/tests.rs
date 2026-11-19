@@ -1469,6 +1469,13 @@ mod objective_reads {
             ]
         );
         assert_eq!(intel::clocks(&g, 39).unwrap()[0], Clock::Due(60));
+        let observe = |g: &FakeGuest| perceive_for_brain(g, Who::Port(1)).unwrap().0;
+        let before = observe(&g);
+        g.put_u16(ENGINE + 0x7e0, 29);
+        assert_ne!(intel::clocks(&g, 40).unwrap()[0], Clock::Due(80));
+        crate::perceive::honesty::paired_worlds(
+            Some(&crate::cache::MapData::default()), [(before, observe(&g))],
+        );
     }
 
     #[test]
@@ -1513,6 +1520,7 @@ mod objective_reads {
             g.put_f32(site + 0x40 + 4 * k, 1.0);
         }
         let expected = crate::decisions::supplies::Take {
+            at: [1.; 3],
             site: 1,
             object,
             unit,
@@ -1608,9 +1616,10 @@ fn decisions_observe_player_slot_while_dead_and_only_live_contacts() {
     assert_eq!(
         p.observations.contacts,
         [crate::brain::Contact {
+            weapon: None,
             id: 0,
             aim: [0.0, 1.0, 0.0],
-            shield: Some(0.3),
+            shield: None,
             empty_magazine: false,
             crouching: true,
         }]
@@ -1623,4 +1632,42 @@ fn decisions_observe_player_slot_while_dead_and_only_live_contacts() {
     assert_eq!(p.observations.player, Some((1, 1)));
     assert!(!p.observations.pickups_scanned);
     assert_eq!(p.observations.supplies, None);
+}
+
+#[test]
+fn decisions_lead_reads_only_competing_scoreboard_rows_including_dead_players() {
+    let roster = [(0, 0), (1, 0), (2, 1)];
+    let mut g = game(&[(0, 0, 0, [0.; 3], X, false)], true, &[0]);
+    let engine = 0x006b0000;
+    g.put_u32(crate::objective::GAME_ENGINE, engine);
+    g.put_u32(engine + 0x304, 1);
+    g.put_u16(engine + 0x4c8, 3);
+    g.put_u16(engine + 0x4c8 + 0x12, 2);
+    assert!(intel::ahead(&g, 0, true, &roster).unwrap());
+    g.put_u16(engine + 0x4c8 + 0x12, 3);
+    assert!(!intel::ahead(&g, 0, true, &roster).unwrap());
+    g.put_u16(engine + 0x308, 5);
+    g.put_u16(engine + 0x308 + 0x1c, 6);
+    g.put_u16(engine + 0x308 + 2 * 0x1c, 2);
+    assert!(!intel::ahead(&g, 0, false, &roster).unwrap());
+}
+
+#[test]
+fn decisions_honesty_replays_hidden_changes_from_the_guest_object_table() {
+    let players = [
+        (0, 0, 0, [0.; 3], X, false),
+        (-1, -1, 1, [5., 0., 0.], X, false),
+    ];
+    let live = game(&players, false, &[0]);
+    let mut missing = live.clone();
+    missing.put_u16(BODIES + 0x400 + 0x10a, BODY_DEPLETED);
+    let (left, _) = perceive_for_brain(&live, Who::Port(0)).unwrap();
+    let (right, _) = perceive_for_brain(&missing, Who::Port(0)).unwrap();
+    assert_eq!(left.others.len(), 1);
+    assert!(right.others.is_empty());
+    let map = crate::cache::MapData {
+        walls: crate::los::Walls::new(vec![[[2., -5., -3.], [2., 5., -3.], [2., 0., 5.]]]),
+        ..Default::default()
+    };
+    crate::perceive::honesty::paired_worlds(Some(&map), [(left, right)]);
 }
