@@ -18,9 +18,9 @@ const METRICS: [&str; 15] = ["examined", "suppressed", "refused_ownership", "ref
 
 // Four Xbox player views and a bucket for non-player views.
 const VIEWS: usize = 5;
-const VIEW_METRICS: [&str; 7] = [
+const VIEW_METRICS: [&str; 9] = [
     "reference_ranges", "display_ranges", "invariants", "reference_recorded", "display_recorded",
-    "reference_invariants", "display_invariants",
+    "reference_invariants", "display_invariants", "reference_refused", "display_refused",
 ];
 const STRIDE: usize = METRICS.len() + VIEWS * VIEW_METRICS.len();
 pub(crate) const COLUMNS: usize = STAGES.len() * STRIDE;
@@ -55,6 +55,10 @@ impl Stage {
 
     pub fn attempted(self, view: u32, display: bool, ranges: usize) {
         phase::count_index(self.view_index(view) + 3 + usize::from(display), ranges as u64);
+    }
+
+    pub fn copy_refused(self, view: u32, display: bool) {
+        phase::count_index(self.view_index(view) + 7 + usize::from(display), 1);
     }
 
     pub fn invariant(self, view: u32, display: bool) {

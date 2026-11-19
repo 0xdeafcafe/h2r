@@ -10,13 +10,22 @@ read from the user's disc at run time.
 
 ## Ordered replacement handoff
 
-World, objects and held post packets use the device reservation below. Geometry
+World and objects use the device reservation below. Held post packets can pass their saved slots and viewport to the same transaction. Geometry
 hooks for particles, decals, HUD, gel producers and world layers can register
 `Device::add_draw_admission(Arc<dyn DrawAdmission>)`. The device calls admissions
 in registration order at the resolved draw, for immediate, inline, indexed and
 array geometry. Scope ownership to the current producer and match the complete
 state. Returning `None` leaves the draw available to the next admission. A
 failed preparation of a claimed draw falls through to the original D3D draw.
+
+For a helper that emits one quad, call
+`Device::begin_draw_scope(mem, Arc<dyn DrawAdmission>) -> Result<Option<DrawScope>, D3dError>`
+on entry. Keep the handle across the guest call. At return,
+`Device::end_draw_scope(mem, scope) -> Result<bool, D3dError>` drains that
+call's pending packets and reports whether the replacement committed. Earlier
+packets drain before entry. Refusal consumes the candidate, and dropping the
+handle disarms it. Nesting supersedes the outer candidate. A persistent
+admission is appropriate for an ordered stream of independently owned draws.
 
 ```rust
 trait DrawAdmission: Send + Sync {
@@ -36,7 +45,7 @@ if let Some(reservation) = reservation {
 It includes vertex declaration, streams, indices, shader inputs (microcode,
 constants, defaults, pixel definition and combiner state), raw and translated
 render and stage state, texture headers and formats, viewport and scissors.
-The snapshot adds bound colour/depth headers and palette headers and entries.
+The snapshot adds raw shader handles, bound texture headers, the sampled-stage mask, bound colour/depth headers and palette headers and entries.
 The device replaces only the draw packet. The guest's shader setup and
 stencil tail still run, including when adjacent draws have different owners.
 
@@ -54,7 +63,58 @@ cannot be resolved on one required copy refuses the entire replacement.
 
 Recording takes place during prepare. Partial recordings are discarded.
 Commit splices only previously sealed command buffers into the D3D submission
-order. Commit has no remaining stage callbacks or target lookups.
+order. Commit has no remaining stage callbacks or target lookups. With interpolated
+presentation active, confirmed replacements keep the guest draw for replay.
+
+At a drained boundary, the held-packet entry is
+`Device::prepare_external_bound_at(mem, plan, pass, slots, rect)`. It compares
+each saved `Option<B::Surface>` against its slot's current guest header. The
+rectangle is `(x, y, width, height)` in guest pixels. Each `ExternalColor`
+provides both `guest_size` and this copy's physical `size`. A scaled frame
+whose intermediate bloom slot exists only at 1× keeps the entire guest
+sequence. With the display copy asleep, the 1× reference can run alone.
+
+`Backend::prepare_external(surfaces, request, textures, &plan, copy, pass)`
+returns `Result<Option<Vec<ExternalRecording>>, String>`. Each copy first
+calls `ExternalPass::prepare_copy(&ExternalTarget) -> Result<(), &'static str>`.
+Only when every copy agrees does the backend call `record_ranges` on private
+encoders. Validation scopes include resource lookup, native preparation,
+recording and encoder finish. A failed recording discards every copy.
+`Backend::commit_external(recording)` takes one sealed copy. The device
+reservation also preserves deferred display copies and invalidates guest
+colour, depth and alias caches for the declared writes. Code that holds guest
+packets should use the device entry for those effects. A private gel producer
+or probe can use the default read-only `writes()` while using `colour_only()`
+to request a scratch depth attachment.
+
+Use `ExternalTarget::encoder_uploads()` for per-view constants, dynamic rows
+and indirect arguments. Its upload arena reserves a fresh source range for
+each write and records a copy immediately before the consuming draw. Target
+copies and multiple runs may share a submission. The queue completion callback
+returns the leased storage to its pool after the last submission using it.
+World placement transforms are initialized once at map load.
+
+**Frame counters.** `H2_FRAME_STATS`, its CSV, `profile.counters` and
+`profile.capture` use the same stage names. Prefix each suffix below with
+`native_<stage>_`, where stage is `world`, `objects`, `transparents`,
+`lights`, `post`, `particles`, `decals`, `hud` or `gels`.
+
+| Suffix | Measurement |
+| --- | --- |
+| `examined`, `suppressed` | Guest items considered and items committed. Multi-range passes override `ExternalPass::items(ranges)` to report their logical item count. |
+| `refused_ownership`, `refused_resources`, `refused_inputs` | Unowned items, unavailable surfaces or bindings, and rejected stage preflight. |
+| `refused_ranges`, `refused_masks`, `refused_validation`, `refused_replay` | Incomplete range count, failed reversible guest mask edit, wgpu validation error, and original draws retained for interpolation. |
+| `prepare_ns`, `encode_ns` | Host wall nanoseconds in backend preparation and private command recording, respectively. |
+| `buffers`, `bind_groups`, `upload_bytes`, `pipeline_misses` | Actual creations and bytes charged through the submission arena and counted `gfx::churn` operations during the stage. |
+| `v<V>_<C>_recorded`, `v<V>_<C>_ranges` | Ranges the stage recorded on this copy, including discarded attempts, and ranges committed. |
+| `v<V>_invariants`, `v<V>_<C>_invariants`, `v<V>_<C>_refused` | Range-count mismatches across copies, mismatches on this copy, and transactions refused by this copy. Each stage/view/copy mismatch logs once. |
+
+`V` is player view `0` through `3`, or `other`. `C` is `reference` or
+`display`. Confirmed passes account for both physical copies and count a
+suppressed guest item once. Stage ownership filters count items they reject
+before calling the device. New stage implementations use
+`gfx::churn::{create_buffer, create_buffer_init, create_bind_group, create_render_pipeline, upload_bytes}`
+for resource accounting. Legacy enqueues have no suppression promise.
 
 ## Why a new shape
 

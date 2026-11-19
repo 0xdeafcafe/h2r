@@ -734,7 +734,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
     fn external_attachments(
         &mut self, surfaces: d3d::ExternalSurfaces<Self::Surface>, textures: [Option<&Self::Texture>; 4],
         copy: d3d::TargetCopy,
-    ) -> Result<Option<Vec<d3d::backend::ExternalAttachments>>, String> {
+    ) -> Result<d3d::ExternalCopies, String> {
         self.inner.external_attachments(surfaces, textures.map(|t| t.map(|t| &t.inner)), copy)
     }
 
