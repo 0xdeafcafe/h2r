@@ -24,6 +24,7 @@ pub mod objective;
 pub mod phantom;
 pub mod roam;
 pub mod stuck;
+pub mod tactics;
 
 use input::host::HostPadState;
 

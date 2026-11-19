@@ -309,8 +309,13 @@ fn armed(held: Ammo, other: Option<Ammo>) -> Arms {
         held: Some(Gun {
             def: RIFLE,
             ammo: held,
+            ..Default::default()
         }),
-        other: other.map(|ammo| Gun { def: PISTOL, ammo }),
+        other: other.map(|ammo| Gun {
+            def: PISTOL,
+            ammo,
+            ..Default::default()
+        }),
         grenades: [2, 0],
     }
 }
@@ -428,6 +433,7 @@ fn with_both_dry_it_goes_for_a_gun_and_takes_it() {
         gun: Gun {
             def: 0xa003_0003,
             ammo: rounds(36, 36),
+            ..Default::default()
         },
     };
     let pad = with(&mut m, [0.0; 3], a, vec![], vec![smg], 0);
@@ -462,6 +468,7 @@ fn a_gun_of_the_same_kind_is_walked_over_not_held_on() {
         gun: Gun {
             def: RIFLE,
             ammo: rounds(36, 36),
+            ..Default::default()
         },
     };
     let pad = with(&mut m, [4.9, 0.0, 0.0], a, vec![], vec![rifle], 0);
@@ -872,6 +879,7 @@ fn without_the_flag_a_dry_bot_still_rearms_first() {
         gun: Gun {
             def: PISTOL,
             ammo: rounds(10, 10),
+            ..Default::default()
         },
     };
     let mut m = Mind::new(Skill::Normal, 3);
