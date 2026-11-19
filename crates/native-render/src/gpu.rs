@@ -1,9 +1,8 @@
-//! The world on the GPU: buffers, textures and bind groups made once at
-//! load; per frame one uniform write, the indirect slots' instance counts
-//! and one render pass with a `multi_draw_indexed_indirect` per batch,
-//! into the game's own colour target and depth.
+//! World geometry and materials live on the GPU for the BSP. Guest-selected
+//! parts draw their index ranges in list order. Whole-world rendering uses
+//! frustum-culled indirect slots.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use bytemuck::{Pod, Zeroable};
 
@@ -12,7 +11,7 @@ use crate::cull::{CullStats, Frustum, IndirectSlot, SLOT_SIZE, cull, indirect_sl
 use crate::fog_gpu::FogSet;
 use crate::light_gpu::{LightDraw, LightSet};
 use crate::light_look::LightStage;
-use crate::program::{ProgramSet, ViewInputs};
+use crate::program::{MaterialUse, ProgramSet, ViewInputs};
 use crate::world::{LightmapKey, Owner, World, WorldDraw, WorldVertex};
 
 /// An RGBA8 image (linear rows, no padding) with its smaller levels.
@@ -242,6 +241,35 @@ impl Owners {
     }
 }
 
+/// A single guest list in draw order. Only uniform destinations are deduplicated.
+#[derive(Default)]
+pub struct WorldSelection {
+    spans: Vec<(usize, usize, usize)>,
+    pub(crate) materials: HashMap<u16, MaterialUse>,
+    pub(crate) vertices: HashSet<(u16, Option<u32>)>,
+}
+
+impl WorldSelection {
+    fn push(&mut self, slot: usize, draw: &WorldDraw) {
+        let batch = draw.batch as usize;
+        if let Some((last, _, end)) = self.spans.last_mut() && *last == batch && *end == slot {
+            *end += 1;
+        } else {
+            self.spans.push((batch, slot, slot + 1));
+        }
+        let instance = match draw.owner {
+            Owner::Cluster(_) => None,
+            Owner::Instance(n) => Some(n),
+        };
+        let usage = self.materials.entry(draw.material).or_default();
+        match instance {
+            Some(_) => usage.rigid = true,
+            None => usage.cluster = true,
+        }
+        self.vertices.insert((draw.material, instance));
+    }
+}
+
 pub struct GpuWorld {
     part_slots: std::collections::HashMap<(Owner, u8), usize>,
     world: World,
@@ -377,6 +405,22 @@ impl GpuWorld {
         base_map: &mut dyn FnMut(u16) -> Option<Image>,
         lightmap: &mut dyn FnMut(LightmapKey) -> Option<Image>,
     ) -> Self {
+        Self::upload(device, queue, world, base_map, lightmap, None)
+    }
+
+    /// Program worlds never bind the fixed-function batch groups.
+    pub fn with_programs(device: &wgpu::Device, queue: &wgpu::Queue, world: World, programs: ProgramSet) -> Self {
+        Self::upload(device, queue, world, &mut |_| None, &mut |_| None, Some(programs))
+    }
+
+    fn upload(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        world: World,
+        base_map: &mut dyn FnMut(u16) -> Option<Image>,
+        lightmap: &mut dyn FnMut(LightmapKey) -> Option<Image>,
+        programs: Option<ProgramSet>,
+    ) -> Self {
         let init = |label, contents: &[u8], usage| {
             gfx::churn::create_buffer_init(device, &wgpu::util::BufferInitDescriptor {
                 label: Some(label),
@@ -385,21 +429,13 @@ impl GpuWorld {
             })
         };
         // An empty buffer cannot be bound: keep one element.
-        let mut verts = world.vertices.clone();
-        if verts.is_empty() {
-            verts.push(WorldVertex::default());
-        }
-        let mut idx = world.indices.clone();
-        if idx.is_empty() {
-            idx.push(0);
-        }
-        let mut slots = indirect_slots(&world);
-        let slot_bytes: Vec<IndirectSlot> = if slots.is_empty() {
-            vec![IndirectSlot::default()]
-        } else {
-            slots.clone()
-        };
-        let vertices = init("native world vertices", bytemuck::cast_slice(&verts), wgpu::BufferUsages::VERTEX);
+        let empty_vertex = [WorldVertex::default()];
+        let verts = if world.vertices.is_empty() { &empty_vertex[..] } else { &world.vertices[..] };
+        let idx = if world.indices.is_empty() { &[0][..] } else { &world.indices[..] };
+        let slots = indirect_slots(&world);
+        let empty_slot = [IndirectSlot::default()];
+        let slot_bytes = if slots.is_empty() { &empty_slot[..] } else { &slots[..] };
+        let vertices = init("native world vertices", bytemuck::cast_slice(verts), wgpu::BufferUsages::VERTEX);
         let program_vertices = if world.program_vertices.len() == world.vertices.len() && !world.program_vertices.is_empty() {
             init(
                 "native world program vertices",
@@ -409,10 +445,10 @@ impl GpuWorld {
         } else {
             vertices.clone()
         };
-        let indices = init("native world indices", bytemuck::cast_slice(&idx), wgpu::BufferUsages::INDEX);
+        let indices = init("native world indices", bytemuck::cast_slice(idx), wgpu::BufferUsages::INDEX);
         let indirect = init(
             "native world indirect",
-            bytemuck::cast_slice(&slot_bytes),
+            bytemuck::cast_slice(slot_bytes),
             wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
         );
         let frame = gfx::churn::create_buffer(device, &wgpu::BufferDescriptor {
@@ -479,8 +515,9 @@ impl GpuWorld {
         let white = texture(device, queue, &Image::solid([255; 4]), "native world white");
         let mut bases: HashMap<u16, wgpu::TextureView> = HashMap::new();
         let mut pages: HashMap<LightmapKey, wgpu::TextureView> = HashMap::new();
-        let mut batch_groups = Vec::with_capacity(world.batches.len());
-        for b in &world.batches {
+        let fixed_batches = if programs.is_none() { &world.batches[..] } else { &[] };
+        let mut batch_groups = Vec::with_capacity(fixed_batches.len());
+        for b in fixed_batches {
             let base = bases
                 .entry(b.material)
                 .or_insert_with(|| {
@@ -530,7 +567,6 @@ impl GpuWorld {
             label: Some("native world"),
             source: wgpu::ShaderSource::Wgsl(SHADER.into()),
         });
-        slots.shrink_to_fit();
         let part_slots = world.draws.iter().enumerate().map(|(i, d)| ((d.owner, d.part), i)).collect();
         Self {
             part_slots, world,
@@ -550,7 +586,7 @@ impl GpuWorld {
             batch_layout,
             shader,
             pipelines: HashMap::new(),
-            programs: None,
+            programs,
             fog: None,
             water: None,
             lights: None,
@@ -897,22 +933,53 @@ impl GpuWorld {
         &mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat,
         parts: &[(Owner, u8)], camera: &RenderCamera,
     ) -> bool {
+        self.select_parts(parts, camera).is_some_and(|selection| self.prepare_selection(device, color, depth, &selection))
+    }
+
+    /// Resolve this guest list against the current BSP and camera, once for all target copies.
+    pub fn select_parts(&self, parts: &[(Owner, u8)], camera: &RenderCamera) -> Option<WorldSelection> {
         let frustum = Self::draw_frustum(&camera.view_projection(), self.has_programs());
-        self.prepare_pipelines(device, color, depth);
-        parts.iter().all(|part| {
-            let Some(&i) = self.part_slots.get(part) else { return false };
-            let draw = &self.world.draws[i];
+        let mut selection = WorldSelection::default();
+        for part in parts {
+            let &slot = self.part_slots.get(part)?;
+            let draw = &self.world.draws[slot];
             if draw.index_count == 0 || !self.owners.keeps(draw.owner) || (self.culls && !frustum.may_see(&draw.bounds)) {
-                return false;
+                return None;
             }
-            let Some(p) = &self.programs else { return true };
-            let state = &self.stencil.state;
-            p.batch(draw.batch as usize, draw.material, color, depth, state).is_some()
-                && match draw.owner {
-                    Owner::Cluster(_) => true,
-                    Owner::Instance(n) => p.rigid(draw.material, n, color, depth, state).is_some(),
-                }
-        })
+            selection.push(slot, draw);
+        }
+        Some(selection)
+    }
+
+    /// Check bindings on this attachment pair before the guest parts can be suppressed.
+    pub fn prepare_selection(
+        &mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat, selection: &WorldSelection,
+    ) -> bool {
+        let Some(p) = &mut self.programs else {
+            self.pipeline(device, color, depth);
+            return true;
+        };
+        let state = &self.stencil.state;
+        p.selected_pipelines(device, color, depth, state, &selection.materials);
+        selection.spans.iter().all(|&(batch, _, _)| p.batch_textures(batch).is_some())
+            && selection.vertices.iter().all(|&(material, instance)| match instance {
+                Some(n) => p.rigid(material, n, color, depth, state).is_some(),
+                None => p.cluster(material, color, depth, state).is_some(),
+            })
+    }
+
+    /// Stage one target copy of a selection admitted by `prepare_selection` on this world.
+    pub fn write_selection(
+        &self, uploads: &mut gfx::ring::EncoderUploads<'_>, selection: &WorldSelection, view: Option<&ViewInputs>,
+        camera: &RenderCamera, depth: DepthRule,
+    ) -> bool {
+        if let Some(p) = &self.programs {
+            let Some(view) = view else { return false };
+            p.write_selected(uploads, view, selection);
+        } else {
+            self.write_frame(uploads, camera, depth);
+        }
+        true
     }
 
     fn prepare_pipelines(&mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat) {
@@ -930,8 +997,16 @@ impl GpuWorld {
 
     /// The frame's camera: culls on the CPU and writes the uniform and the slots' instance counts.
     pub fn prepare(&mut self, uploads: &mut gfx::ring::EncoderUploads<'_>, camera: &RenderCamera, depth: DepthRule) -> CullStats {
-        let view_proj = camera.view_projection();
-        let frustum = Self::draw_frustum(&view_proj, self.has_programs());
+        let stats = self.cull_stats(camera);
+        self.write_frame(uploads, camera, depth);
+        if !self.slots.is_empty() {
+            uploads.write(&self.indirect, 0, bytemuck::cast_slice(&self.slots));
+        }
+        stats
+    }
+
+    pub fn cull_stats(&mut self, camera: &RenderCamera) -> CullStats {
+        let frustum = Self::draw_frustum(&camera.view_projection(), self.has_programs());
         let stats = if self.culls {
             cull(&self.world, &frustum, &mut self.slots)
         } else {
@@ -940,7 +1015,7 @@ impl GpuWorld {
             }
             CullStats { visible: self.slots.len() as u32, total: self.world.draws.len() as u32 }
         };
-        let stats = if self.owners == Owners::All {
+        if self.owners == Owners::All {
             stats
         } else {
             let mut visible = 0;
@@ -951,16 +1026,15 @@ impl GpuWorld {
                 visible += slot.instance_count.min(1);
             }
             CullStats { visible, total: stats.total }
-        };
+        }
+    }
+
+    fn write_frame(&self, uploads: &mut gfx::ring::EncoderUploads<'_>, camera: &RenderCamera, depth: DepthRule) {
         let u = FrameUniform {
-            view_proj,
+            view_proj: camera.view_projection(),
             depth: [depth.full_scale, 1.0 / camera.far, f32::from(u8::from(depth.floor)), 0.0],
         };
         uploads.write(&self.frame, 0, bytemuck::bytes_of(&u));
-        if !self.slots.is_empty() {
-            uploads.write(&self.indirect, 0, bytemuck::cast_slice(&self.slots));
-        }
-        stats
     }
 
     /// Records the pass: loads and keeps the target and depth, draws every
@@ -1016,7 +1090,26 @@ impl GpuWorld {
             }));
         }
         self.prepare_pipelines(device, color_format, depth_format);
-        let pipeline = &self.pipelines[&(color_format, depth_format)];
+        self.record_spans(encoder, color, color_format, depth, depth_format, viewport, target_size, &spans, false)
+    }
+
+    /// All selected draws passed the owner and frustum checks before admission.
+    /// Their index ranges are immutable and can be issued directly.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_selection(
+        &mut self, encoder: &mut wgpu::CommandEncoder, color: &wgpu::TextureView, color_format: wgpu::TextureFormat,
+        depth: &wgpu::TextureView, depth_format: wgpu::TextureFormat, viewport: PassViewport, target_size: (u32, u32),
+        selection: &WorldSelection,
+    ) -> usize {
+        self.record_spans(encoder, color, color_format, depth, depth_format, viewport, target_size, &selection.spans, true)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn record_spans(
+        &mut self, encoder: &mut wgpu::CommandEncoder, color: &wgpu::TextureView, color_format: wgpu::TextureFormat,
+        depth: &wgpu::TextureView, depth_format: wgpu::TextureFormat, viewport: PassViewport, target_size: (u32, u32),
+        spans: &[(usize, usize, usize)], selected: bool,
+    ) -> usize {
         let has_stencil = depth_format.has_stencil_aspect();
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("native world"),
@@ -1054,12 +1147,22 @@ impl GpuWorld {
         let mut own: Option<bool> = None;
         let mut unbound = 0u64;
         let mut recorded = 0;
-        for (i, first, last) in spans {
+        let issue = |pass: &mut wgpu::RenderPass<'_>, first: usize, end: usize| {
+            if selected {
+                for d in &self.world.draws[first..end] {
+                    pass.draw_indexed(d.first_index..d.first_index + d.index_count, 0, 0..1);
+                }
+            } else {
+                pass.multi_draw_indexed_indirect(&self.indirect, first as u64 * SLOT_SIZE, (end - first) as u32);
+            }
+        };
+        for &(i, first, last) in spans {
             let b = &self.world.batches[i];
-            let group = &self.batch_groups[i];
-            let programs = self.programs.as_ref();
-            let program = programs.and_then(|p| p.batch(i, b.material, color_format, depth_format, &self.stencil.state));
-            if let (Some(p), Some((program, uniforms, textures))) = (programs, program) {
+            if let Some(p) = &self.programs {
+                let Some(textures) = p.batch_textures(i) else {
+                    unbound += 1;
+                    continue;
+                };
                 if own != Some(true) {
                     pass.set_viewport(0.0, 0.0, target_size.0 as f32, target_size.1 as f32, 0.0, 1.0);
                     pass.set_vertex_buffer(0, self.program_vertices.slice(..));
@@ -1086,6 +1189,11 @@ impl GpuWorld {
                     let end = k + draws[k..].iter().take_while(|d| same(d)).count();
                     match owner {
                         Owner::Cluster(_) => {
+                            let Some((program, uniforms)) = p.cluster(b.material, color_format, depth_format, &self.stencil.state) else {
+                                unbound += 1;
+                                k = end;
+                                continue;
+                            };
                             pass.set_pipeline(program);
                             pass.set_bind_group(0, uniforms, &[]);
                         }
@@ -1105,28 +1213,22 @@ impl GpuWorld {
                     if has_stencil {
                         pass.set_stencil_reference(reference);
                     }
-                    pass.multi_draw_indexed_indirect(&self.indirect, (first + k) as u64 * SLOT_SIZE, (end - k) as u32);
+                    issue(&mut pass, first + k, first + end);
                     recorded += end - k;
                     k = end;
                 }
-                continue;
-            } else if self.programs.is_some() {
-                // With material programs, stage 1's look is never drawn:
-                // the loader keeps only materials whose program uploads,
-                // so this is a batch it could not bind (counted, left out).
-                unbound += 1;
                 continue;
             } else {
                 if own != Some(false) {
                     pass.set_viewport(viewport.x, viewport.y, viewport.width, viewport.height, 0.0, 1.0);
                     pass.set_vertex_buffer(0, self.vertices.slice(..));
-                    pass.set_pipeline(pipeline);
+                    pass.set_pipeline(&self.pipelines[&(color_format, depth_format)]);
                     pass.set_bind_group(0, &self.frame_group, &[]);
                 }
                 own = Some(false);
-                pass.set_bind_group(1, group, &[]);
+                pass.set_bind_group(1, &self.batch_groups[i], &[]);
             }
-            pass.multi_draw_indexed_indirect(&self.indirect, first as u64 * SLOT_SIZE, (last - first) as u32);
+            issue(&mut pass, first, last);
             recorded += last - first;
         }
         drop(pass);
@@ -1138,6 +1240,25 @@ impl GpuWorld {
 #[cfg(test)]
 mod tests {
     use super::{Blocks, Image, PassStencil, block_bytes};
+
+    #[test]
+    fn selection_preserves_guest_order_and_repeats_but_updates_each_destination_once() {
+        use super::*;
+        let cluster = WorldDraw {
+            owner: Owner::Cluster(3), part: 1, material: 2, batch: 4, lightmap: None, inputs: 0,
+            first_index: 3, index_count: 3, bounds: crate::world::Aabb::EMPTY,
+        };
+        let placement = WorldDraw { owner: Owner::Instance(5), ..cluster };
+        let other = WorldDraw { batch: 1, material: 9, ..placement };
+        let mut selection = WorldSelection::default();
+        for (slot, draw) in [(7, &cluster), (8, &placement), (2, &other), (8, &placement), (8, &placement)] {
+            selection.push(slot, draw);
+        }
+        assert_eq!(selection.spans, [(4, 7, 9), (1, 2, 3), (4, 8, 9), (4, 8, 9)]);
+        assert_eq!(selection.materials[&2], MaterialUse { cluster: true, rigid: true });
+        assert_eq!(selection.materials[&9], MaterialUse { cluster: false, rigid: true });
+        assert_eq!(selection.vertices, [(2, None), (2, Some(5)), (9, Some(5))].into());
+    }
 
     #[test]
     fn the_pass_takes_the_devices_stencil_as_the_d3d_path_does() {
