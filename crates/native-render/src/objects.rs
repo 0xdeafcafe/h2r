@@ -180,6 +180,30 @@ pub struct ClearedObjects {
     /// The handle of `items[i]`'s object.
     pub owners: Vec<u32>,
     pub handles: Vec<u32>,
+    /// What the walk met, for the feature's diagnostics.
+    pub walk: WalkStats,
+}
+
+/// Counts from one [`clear_objects`] walk: where items fell out.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WalkStats {
+    /// Items walked (`first .. count` of the list).
+    pub walked: u32,
+    /// With the layer's bit set.
+    pub in_layer: u32,
+    /// Of those, built by `0x0004cbf0` (geometry).
+    pub geometry: u32,
+    /// Of those, whose render record holds a handle (not `-1`).
+    pub object_handles: u32,
+    /// Of those, whose handle names a live object with a definition.
+    pub live: u32,
+    /// Of those, that `native` accepted.
+    pub accepted: u32,
+    /// Accepted items whose mask could not be written (the walk stops).
+    pub write_failed: u32,
+    /// Build functions of in-layer items that are not geometry, up to four
+    /// distinct, with their counts.
+    pub other_builds: Vec<(u32, u32)>,
 }
 
 /// The object handle of a geometry item (build `0x0004cbf0`, render
@@ -225,11 +249,27 @@ pub fn clear_objects(
     let mut seen: Vec<(u32, Option<u32>)> = Vec::new();
     for i in first..count.min(first.saturating_add(MAX_ITEMS)) {
         let item = items + ITEM_SIZE * i;
+        out.walk.walked += 1;
         let Some(mask) = mem.read_u32(item + 0x10) else { break };
         if mask & bit == 0 {
             continue;
         }
+        out.walk.in_layer += 1;
+        match mem.read_u32(item) {
+            Some(GEOMETRY_BUILD) => out.walk.geometry += 1,
+            Some(build) => {
+                let builds = &mut out.walk.other_builds;
+                match builds.iter().position(|(b, _)| *b == build) {
+                    Some(i) => builds[i].1 += 1,
+                    None if builds.len() < 4 => builds.push((build, 1)),
+                    None => {}
+                }
+                continue;
+            }
+            None => continue,
+        }
         let Some(handle) = item_object(mem, item) else { continue };
+        out.walk.object_handles += 1;
         let def = match seen.iter().find(|(h, _)| *h == handle) {
             Some(&(_, d)) => d,
             None => {
@@ -239,10 +279,13 @@ pub fn clear_objects(
             }
         };
         let (Some(def), Some(shader)) = (def, mem.read_u32(item + 8)) else { continue };
+        out.walk.live += 1;
         if !native(handle, def, shader) {
             continue;
         }
+        out.walk.accepted += 1;
         if mem.write_u32(item + 0x10, mask & !bit).is_none() {
+            out.walk.write_failed += 1;
             break;
         }
         out.items.push(item);
@@ -271,6 +314,7 @@ pub fn keep_only(mem: &mut dyn GuestWrite, cleared: &mut ClearedObjects, keep: &
         to.owners.push(owner);
     }
     kept.handles = cleared.handles.iter().copied().filter(|&h| keep(h)).collect();
+    kept.walk = std::mem::take(&mut cleared.walk);
     restore(mem, &back);
     *cleared = kept;
 }
@@ -432,6 +476,13 @@ pub(crate) mod tests {
         let c = clear_objects(&mut m, 3, &|_, def, shader| def == 0xe000_0100 || (def == 0xe000_0200 && shader != 0x10)).unwrap();
         assert_eq!(c.items, vec![ITEMS + ITEM_SIZE, ITEMS + 2 * ITEM_SIZE]);
         assert_eq!(c.owners, vec![a, a]);
+        let w = &c.walk;
+        assert_eq!(
+            (w.walked, w.in_layer, w.geometry, w.object_handles, w.live, w.accepted, w.write_failed),
+            (5, 5, 5, 4, 3, 2, 0),
+            "BSP has no handle; the dead handle has no body; B's shader is refused"
+        );
+        assert!(w.other_builds.is_empty());
         assert_eq!(c.handles, vec![a], "one handle per object; B's material stays on D3D");
         assert_eq!(mask(&m, 0), 0b1010, "BSP untouched");
         assert_eq!(mask(&m, 1), 0b0010, "layer 1 kept");
@@ -453,6 +504,17 @@ pub(crate) mod tests {
         assert_eq!((mask(&m, 1), mask(&m, 2), mask(&m, 3)), (0b1010, 0b1000, 0), "A's back, B's still clear");
         restore(&mut m, &c);
         assert_eq!(mask(&m, 3), 0b1000);
+    }
+
+    #[test]
+    fn the_walk_counts_items_of_other_builds_by_build() {
+        let (mut m, ..) = scene();
+        m.w(ITEMS + ITEM_SIZE * 3, 0x0004_b5d0);
+        m.w(ITEMS + ITEM_SIZE * 4, 0x0004_b5d0);
+        m.w(ITEMS, 0x0005_0000);
+        let c = clear_objects(&mut m, 3, &|_, _, _| false).unwrap();
+        assert_eq!((c.walk.in_layer, c.walk.geometry, c.walk.accepted), (5, 2, 0));
+        assert_eq!(c.walk.other_builds, vec![(0x0005_0000, 1), (0x0004_b5d0, 2)]);
     }
 
     #[test]
