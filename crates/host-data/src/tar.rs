@@ -351,7 +351,7 @@ mod tests {
     fn a_short_source_is_an_error() {
         let mut w = TarWriter::new(Vec::new());
         let err = w.append("maps/x.map", 100, &mut Cursor::new(vec![0u8; 10])).unwrap_err();
-        assert!(err.to_string().contains("unexpected end of file"), "{err}");
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
     }
 
     #[test]
