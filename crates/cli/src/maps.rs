@@ -173,9 +173,8 @@ fn dump_tag(
     Ok(())
 }
 
-/// `h2 maps install`: puts every map package whose map name the disc lacks
-/// into 1.0's map list as a content package, and removes the ones whose
-/// package is gone (docs/game/maps.md §4). The boot does the same at start-up.
+/// `h2 maps install` writes content offers for installed map packages.
+/// The boot reconstructs the same offers and mounts their map paths.
 fn install(args: &[String]) -> Result<()> {
     let (mut data, mut disc) = (None, None);
     let mut it = args.iter();
@@ -222,11 +221,13 @@ fn install(args: &[String]) -> Result<()> {
         println!("skipped {s}");
     }
     println!(
-        "{} new map(s) in the map list, {} written, {} removed",
+        "{} package map(s) in the map list, {} removed",
         r.installed.len(),
-        r.materialised.len(),
         r.removed.len()
     );
+    if r.overflow != 0 {
+        println!("{} mods not shown, list full", r.overflow);
+    }
     Ok(())
 }
 

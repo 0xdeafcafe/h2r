@@ -515,6 +515,42 @@ impl Sessions {
     pub fn set_map_probe(&mut self, probe: Option<MapProbe>) {
         self.map_probe = probe;
     }
+    /// Publish a lobby selection even if the title's other advertisement
+    /// attributes have stayed the same.
+    pub fn lobby_map_changed(
+        &mut self,
+        guest: &Guest,
+        service: Option<&Service>,
+        connection: Option<&Session>,
+    ) {
+        let Some(probe) = &self.map_probe else { return };
+        let Some(id) = self.current_id() else { return };
+        let map_id = probe(guest);
+        let Some(record) = self.records.get_mut(&id) else {
+            return;
+        };
+        if record.session.map_id == map_id || record.session.campaign.is_some() {
+            return;
+        }
+        if let (Some(service), Some(connection)) = (service, connection) {
+            let request = MatchRequest::Update {
+                id: live_proto::sign::hex(&id),
+                update: live_proto::session::Update {
+                    map_id,
+                    clear_map_id: map_id.is_none(),
+                    ..Default::default()
+                },
+            };
+            let Ok(pending) = service.match_request(connection, request) else {
+                return;
+            };
+            self.background.retain(|p| p.take().is_none());
+            self.background.push(pending);
+        }
+        record.session.map_id = map_id;
+        record.session.revision = record.session.revision.saturating_add(1);
+    }
+
     pub fn set_skulls_probe(&mut self, probe: Option<SkullsProbe>) {
         self.skulls_probe = probe;
     }
@@ -667,11 +703,7 @@ impl Sessions {
                 }
                 let was_coop = session.campaign.clone();
                 session.campaign = self.coop.clone();
-                // A session keeps its map id once it has one (the wire has
-                // no way back to none).
-                if map_id.is_some() {
-                    session.map_id = map_id;
-                }
+                session.map_id = map_id;
                 for attr in attributes {
                     // Attribute identity excludes its datatype. A changed NULL
                     // clears the value; unchanged entries never dereference data.
@@ -722,6 +754,11 @@ impl Sessions {
                                         .get(&id)
                                         .is_none_or(|r| r.session.map_id != Some(*m))
                                 }),
+                                clear_map_id: session.map_id.is_none()
+                                    && self
+                                        .records
+                                        .get(&id)
+                                        .is_some_and(|r| r.session.map_id.is_some()),
                                 // Only a change, as for visibility; empty
                                 // says the host turned them all off.
                                 skulls: self

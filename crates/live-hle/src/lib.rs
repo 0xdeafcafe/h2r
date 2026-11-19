@@ -347,13 +347,20 @@ impl Hle {
             .unwrap_or_else(|e| e.into_inner())
             .set_visibility_probe(probe)
     }
-    /// Lets advertisements say exactly which map the host has loaded
+    /// Lets advertisements name the host's selected map
     /// (`NewSession.map_id`, docs/game/maps.md §5). Without it they name none.
     pub fn set_map_probe(&self, probe: Option<MapProbe>) {
         self.state
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .set_map_probe(probe)
+    }
+    /// The title has changed the map selected in its multiplayer lobby.
+    pub fn lobby_map_changed(&self, guest: &runtime::Guest) {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .lobby_map_changed(guest);
     }
     /// The host's multiplayer skulls (docs/game/skulls.md "In multiplayer"):
     /// advertisements carry them from now, and open ones are updated at

@@ -1,19 +1,5 @@
-//! Edited maps in place of the disc's.
-//!
-//! - Map packages in `<data>/maps/` (docs/game/maps.md, `vfs::PackageBackend`):
-//!   a base plus patches, served as `D:\maps\<name>.map`, or for a
-//!   Multiplayer Map Pack base as the installed `T:\$c\<offer>\<name>.map`
-//!   (`vfs::Config::map_packages`).
-//! - `H2_MAP_DIR` names a host directory whose `<name>.map` files the game
-//!   reads as `D:\maps\<name>.map` (`vfs::MapOverrideBackend`,
-//!   docs/runtime/storage.md "Map overrides", docs/editor/scenario-editor.md "How patched
-//!   maps reach the game"). It wins over a package for the same map.
-//!
-//! With neither (no packages directory, `H2_MAP_DIR` unset or empty), the
-//! DVD is mounted exactly as before. The boot always passes the packages
-//! directory, so its packages layer is there even while the folder is
-//! empty, ready for one installed while the game runs; with no package it
-//! serves the disc unchanged.
+//! Explicit editor overrides (`H2_MAP_DIR`) and map identity through
+//! the VFS. Installed mods use their own content paths.
 use std::{
     ffi::OsString,
     path::{Path, PathBuf},
@@ -32,31 +18,43 @@ pub fn dir() -> Option<PathBuf> {
     dir_from(std::env::var_os(ENV))
 }
 
-/// Which map exactly the game gets for `maps\<name>.map`: a package's
-/// `MapId`, or a whole-file override's (`H2_MAP_DIR`). For a map pack
-/// map (`content::map_pack`), the package served over its installed copy
-/// under `data_root`. `None` means the retail map. For sessions and
-/// telemetry: pass the loaded map's short name (the cache header's,
-/// `0x00547898`, docs/live/live-gamestate.md).
-pub fn map_id(vfs: &mut vfs::Vfs, data_root: &Path, name: &str) -> Option<content::MapId> {
-    if let Some(id) = vfs.map_id(&format!("{}\\maps\\{name}.map", vfs::CDROM_DEVICE)) {
-        return Some(id);
+/// The package the game loaded, or an explicit editor override.
+pub fn map_id(vfs: &mut vfs::Vfs, name: &str) -> Option<content::MapId> {
+    if let Some(path) = vfs.content_map_path(name) {
+        return vfs.map_id(&path);
     }
-    let path = map_pack_path(data_root, name)?;
-    vfs.map_id(&path)
+    vfs.map_id(&format!("{}\\maps\\{name}.map", vfs::CDROM_DEVICE))
 }
 
-/// Where the host bytes of the loaded map named `name` are (its cache
-/// header's name, `0x00547898`): `maps\<name>.map` when the disc has that
-/// file, else the map in `maps` whose header carries that name. A
-/// converted map is served under a disc map's file name with its own name
-/// in the header (Halo 1's Blood Gulch is `h1_bloodgulch` in
-/// `coagulation.map`, docs/halo1/multiplayer.md), so the file name
-/// alone does not find it. Each candidate is read through the VFS's own
-/// layers ([`vfs::Vfs::host_file`]), so an `H2_MAP_DIR` or package file is
-/// the one found, as the game reads it. Tag names, telemetry and the
-/// native world read the map through this.
+/// The content package selected in the multiplayer lobby, or the map
+/// currently loaded in a match. The selected list slot is authoritative
+/// in the main menu, where the cache header still says `mainmenu`.
+pub fn lobby_map_id(vfs: &mut vfs::Vfs, g: &runtime::Guest) -> Option<content::MapId> {
+    if let Some(session) = crate::coop_probe::read_session(g).filter(|s| s.live()) {
+        if !session.is_host() || session.is_campaign() {
+            return None;
+        }
+        return vfs.map_id(&crate::map_select::selected_path(session.map)?);
+    }
+    let loaded = crate::telemetry::loaded_map_name(g).ok();
+    if let Some(name) = loaded
+        .as_deref()
+        .filter(|n| !n.is_empty() && *n != "mainmenu")
+    {
+        return map_id(vfs, name);
+    }
+
+    use crate::layout_glue::Gm;
+    let id = Gm::u32(g, crate::h1_options_row::LOBBY_MAP)?;
+    vfs.map_id(&crate::map_select::selected_path(id)?)
+}
+
+/// The host file for a loaded map. A streamed overlay has no contiguous
+/// host file, even though the VFS can read its bytes.
 pub fn map_file(vfs: &mut vfs::Vfs, name: &str) -> Option<vfs::HostFile> {
+    if let Some(path) = vfs.content_map_path(name) {
+        return vfs.host_file(&path);
+    }
     let dir = format!("{}\\maps", vfs::CDROM_DEVICE);
     if let Some(file) = vfs.host_file(&format!("{dir}\\{name}.map")) {
         return Some(file);
@@ -92,84 +90,26 @@ pub fn header_name(file: &vfs::HostFile) -> Option<String> {
     (!name.is_empty()).then(|| name.to_owned())
 }
 
-/// Where the VFS serves map pack map `name` installed under `data_root`:
-/// `\Device\Harddisk0\Partition1\TDATA\<title>\$c\<offer>\<file>`.
-pub fn map_pack_path(data_root: &Path, name: &str) -> Option<String> {
-    let (offer, file, _) = crate::map_bases::map_pack_file(data_root, name)?;
-    Some(format!(
-        "{}\\TDATA\\{:08X}\\{}\\{offer}\\{file}",
-        vfs::DATA_DEVICE,
-        crate::new_maps::HALO2_TITLE,
-        vfs::CONTENT_DIR
-    ))
-}
-
 /// Where map packages live: `<data>/maps`.
 pub fn packages_dir(data_root: &Path) -> PathBuf {
     data_root.join("maps")
 }
 
-/// Storage plus the DVD at `disc`, with the font rewrite if any, the
-/// packages in `packages` (normally [`packages_dir`]), and the disc's maps
-/// overridden from `maps` if given. With neither this is exactly
-/// `Vfs::with_disc` / `Vfs::with_disc_rewrite`.
+/// Mount storage and the DVD, with any explicit editor override and
+/// campaign additions. The data partition serves registered mod paths.
 pub fn mount<R: vfs::Rewrite + 'static>(
     cfg: vfs::Config,
     disc: &Path,
     fonts: Option<R>,
     maps: Option<&Path>,
-    packages: Option<&Path>,
-) -> vfs::Result<vfs::Vfs> {
-    mount_with_hashes(
-        cfg,
-        disc,
-        fonts,
-        maps,
-        packages,
-        None,
-        content::DiscHashes::default(),
-        &[],
-    )
-}
-
-/// [`mount`], loading `sandbox`'s variant of each converted Halo 1 map
-/// (the `multiplayer.halo1_sandbox` setting, as `boot::new_maps` lists
-/// them; `None` is the default, Halo 1's), with the package resolver recording each disc base it hashes
-/// in `hashes` (shared with [`crate::map_bases::DiscBases`]), and
-/// `campaign_maps` (map name, host file) served as `maps\<map>.map` where
-/// the disc has no such map (docs/halo1/campaign-picker.md §3).
-///
-/// Given a packages directory, the packages layer is always mounted, even
-/// with no package there yet, over the disc and (`vfs::Config::map_packages`)
-/// over the map pack's installed maps on the data partition: a package installed while the game runs (a
-/// Live join, the editor) is served at the map's next open
-/// (`vfs::PackageBackend`, docs/game/maps.md §3). With an empty folder it serves
-/// the disc's bytes unchanged.
-#[allow(clippy::too_many_arguments)]
-pub fn mount_with_hashes<R: vfs::Rewrite + 'static>(
-    cfg: vfs::Config,
-    disc: &Path,
-    fonts: Option<R>,
-    maps: Option<&Path>,
-    packages: Option<&Path>,
-    sandbox: Option<&str>,
-    hashes: content::DiscHashes,
     campaign_maps: &[(String, PathBuf)],
 ) -> vfs::Result<vfs::Vfs> {
-    let mut cfg = cfg;
-    if let Some(p) = packages {
-        cfg.map_packages = Some(p.to_path_buf());
-    }
-    let library =
-        packages.map(|p| content::Library::open_with_sandbox(p, sandbox).with_disc_hashes(hashes));
-    if library.is_none() && maps.is_none() && campaign_maps.is_empty() {
+    if maps.is_none() && campaign_maps.is_empty() {
         return match fonts {
             Some(r) => vfs::Vfs::with_disc_rewrite(cfg, disc, r),
             None => vfs::Vfs::with_disc(cfg, disc),
         };
     }
-    // A level's Halo 2-assets map, when there is one, is served while the
-    // pregame screen chooses Halo 2's assets (docs/halo1/campaign.md §5).
     let disc = vfs::CampaignMapsBackend::new(vfs::open_disc(disc)?, campaign_maps.iter().cloned())
         .with_assets(
             crate::h1_variants::campaign_choice(),
@@ -181,28 +121,15 @@ pub fn mount_with_hashes<R: vfs::Rewrite + 'static>(
             campaign_maps.len()
         );
     }
-    if let Some(l) = &library {
-        eprintln!(
-            "map packages: {} package(s) in {}",
-            l.packages().len(),
-            l.root().display()
-        );
-    }
-    if let Some(maps) = maps {
-        eprintln!(
-            "map override: maps from {} replace the disc's",
-            maps.display()
-        );
-    }
-    match (library, maps) {
-        (Some(l), Some(m)) => finish(
-            cfg,
-            vfs::MapOverrideBackend::new(vfs::PackageBackend::new(disc, l), m),
-            fonts,
-        ),
-        (Some(l), None) => finish(cfg, vfs::PackageBackend::new(disc, l), fonts),
-        (None, Some(m)) => finish(cfg, vfs::MapOverrideBackend::new(disc, m), fonts),
-        (None, None) => finish(cfg, disc, fonts),
+    match maps {
+        Some(maps) => {
+            eprintln!(
+                "map override: maps from {} replace the disc's",
+                maps.display()
+            );
+            finish(cfg, vfs::MapOverrideBackend::new(disc, maps), fonts)
+        }
+        None => finish(cfg, disc, fonts),
     }
 }
 
@@ -311,10 +238,10 @@ pub(crate) mod tests {
         t: &Temp,
         fonts: bool,
         maps: Option<&Path>,
-        packages: Option<&Path>,
+        _packages: Option<&Path>,
     ) -> vfs::Vfs {
         let cfg = vfs::Config::new(t.0.join("data"), 0x4D530064);
-        let mut v = mount(cfg, &iso(t), fonts.then_some(Upper), maps, packages).unwrap();
+        let mut v = mount(cfg, &iso(t), fonts.then_some(Upper), maps, &[]).unwrap();
         v.namespace
             .create_symbolic_link("\\??\\D:", vfs::CDROM_DEVICE)
             .unwrap();
@@ -451,56 +378,28 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn packages_are_served_and_fonts_still_rewritten() {
+    fn legacy_packages_do_not_shadow_disc_or_fonts() {
         let t = Temp::new();
         let root = level_package(&t);
         for fonts in [true, false] {
             let mut v = mounted_with(&t, fonts, None, Some(&root));
-            assert_eq!(read(&mut v, "D:\\maps\\level.map"), b"DISC map");
+            assert_eq!(read(&mut v, "D:\\maps\\level.map"), b"disc map");
             let font: &[u8] = if fonts { b"GLYPHS" } else { b"glyphs" };
             assert_eq!(read(&mut v, "D:\\fonts\\font"), font);
         }
     }
 
     #[test]
-    fn map_ids_name_packages_and_overrides_and_retail_is_none() {
+    fn retail_has_no_package_id_even_with_legacy_packages() {
         let t = Temp::new();
-        // Retail: nothing to say.
-        let mut v = mounted(&t, false, None);
-        assert_eq!(map_id(&mut v, &t.0.join("data"), "level"), None);
-        // A package: its manifest's id, through the font rewrite too.
         let root = level_package(&t);
-        let mut ids = Vec::new();
-        for fonts in [true, false] {
-            let mut v = mounted_with(&t, fonts, None, Some(&root));
-            ids.push(map_id(&mut v, &t.0.join("data"), "LEVEL").expect("a package names its map"));
-            assert_eq!(map_id(&mut v, &t.0.join("data"), "other"), None);
-        }
-        assert_eq!(ids[0], ids[1]);
-        // An override wins and has an id of its own, stable per contents.
+        let mut v = mounted_with(&t, false, None, Some(&root));
+        assert_eq!(map_id(&mut v, "level"), None);
         let dir = t.0.join("maps");
         std::fs::write(dir.join("level.map"), b"edited!!!").unwrap();
         let mut v = mounted_with(&t, true, Some(&dir), Some(&root));
-        let o = map_id(&mut v, &t.0.join("data"), "level").unwrap();
-        assert_ne!(o, ids[0]);
-        assert_eq!(map_id(&mut v, &t.0.join("data"), "level"), Some(o));
+        let override_id = map_id(&mut v, "level").unwrap();
         std::fs::write(dir.join("level.map"), b"edited again").unwrap();
-        let mut v = mounted_with(&t, true, Some(&dir), Some(&root));
-        assert_ne!(map_id(&mut v, &t.0.join("data"), "level"), Some(o));
-    }
-
-    #[test]
-    fn the_map_dir_wins_over_a_package() {
-        let t = Temp::new();
-        let root = level_package(&t);
-        let dir = t.0.join("maps");
-        std::fs::write(dir.join("level.map"), b"edited!!!").unwrap();
-        let mut v = mounted_with(&t, true, Some(&dir), Some(&root));
-        assert_eq!(read(&mut v, "D:\\maps\\level.map"), b"edited!!!");
-        assert_eq!(read(&mut v, "D:\\fonts\\font"), b"GLYPHS");
-        // Without the override file, the package shows through.
-        std::fs::remove_file(dir.join("level.map")).unwrap();
-        let mut v = mounted_with(&t, true, Some(&dir), Some(&root));
-        assert_eq!(read(&mut v, "D:\\maps\\level.map"), b"DISC map");
+        assert_ne!(map_id(&mut v, "level"), Some(override_id));
     }
 }

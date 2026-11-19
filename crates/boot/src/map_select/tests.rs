@@ -8,7 +8,6 @@ fn map(id: u32, name: &str, sort: i32, path: &str) -> Map {
         name: name.into(),
         sort,
         path: path.into(),
-        replaces: None,
     }
 }
 
@@ -408,7 +407,7 @@ fn the_boot_s_features_plan_together_with_the_campaigns() {
         sel: Arc::new(Selection::new(sample())),
         flow: Arc::default(),
         slots: Arc::default(),
-        scratch: None,
+        live: None,
     })
     .unwrap();
     r.add(&crate::h1_options_row::SetupRow {
@@ -428,8 +427,8 @@ fn the_boot_s_features_plan_together_with_the_campaigns() {
     for line in [
         "0x00149f49 SCREEN_REQUEST: observe_before [map-select:change map arms the categories] -> before [campaigns:the campaign picker first] -> original",
         "0x0019c6a0 MP_LEVEL_ARRAY: before [map-select:a Select Map of ours lists ours] -> original",
-        "0x0019c190 MP_LEVEL_REFRESH: before [map-select:the mods' names and pictures onto their maps] -> original",
-        "0x002afd70 MP_LEVEL_NAME: before [map-select:category and package names] -> original",
+        "0x00137fe0 GAME_TICK: before [map-select:refresh installed map offers] -> original",
+        "0x002afd70 MP_LEVEL_NAME: before [map-select:category names] -> original",
         "0x002c9ac4 MAP_LIST_ROW_TEXT: observe_before [map-select:note the list drawing] -> original",
         "0x002c9b17 MAP_LIST_ROW_CHOSEN: before [map-select:categories open their maps] -> original",
         "0x002bb384 MAP_SCREEN_FREE: before [map-select:the categories close after a map] -> original",
@@ -498,113 +497,23 @@ fn a_written_list_reads_back_as_the_game_reads_the_retail_one() {
 }
 
 #[test]
-fn rows_show_the_category_or_the_replacing_package_and_nothing_else() {
-    let cat = Catalogue::with_mods(
-        [
-            map(0x0a, "Lockout", 10, "scenarios\\multi\\lockout\\lockout"),
-            map(
-                0x3e8,
-                "Containment",
-                130,
-                "t:\\$C\\4D53006400000101\\triplicate",
-            ),
-            map(
-                0x46,
-                "Containment",
-                70,
-                "scenarios\\multi\\containment\\containment",
-            ),
-        ],
-        &[("containment".into(), "Containment (Rockets)".into())],
-    );
-    let first = |c| cat.maps(c)[0].id;
+fn categories_report_overflow_even_when_no_mod_fits() {
+    let catalogue = Catalogue::new([
+        map(1, "Lockout", 1, "scenarios\\multi\\lockout\\lockout"),
+        map(2, "Ascension", 2, "scenarios\\multi\\ascension\\ascension"),
+    ])
+    .with_overflow(3);
+    assert_eq!(catalogue.categories(), [Category::Halo2, Category::Mods]);
     assert_eq!(
-        row_label(&cat, Mode::Categories, first(Category::Mods)),
-        Some((2, "Mods".into()))
+        list_for(&catalogue, Mode::Categories, &|_| 0),
+        [(1, 0), (2, 0)]
     );
     assert_eq!(
-        row_label(&cat, Mode::Categories, 0x0a),
-        Some((0, "Halo 2".into()))
+        row_label(&catalogue, Mode::Categories, 2),
+        Some((2, "Mods (3 mods not shown, list full)".into()))
     );
-    // A map's own name is the slot's: no label, unless a package replaces it.
-    assert_eq!(row_label(&cat, Mode::Maps(Category::Halo2), 0x0a), None);
-    let (n, text) = row_label(&cat, Mode::Maps(Category::Mods), 0x46).unwrap();
-    assert_eq!(text, "Containment (Rockets)");
-    assert!(n >= 4);
-    assert_eq!(utf16z("Mods"), b"M\0o\0d\0s\0\0\0");
-    assert_eq!(utf16z(&"x".repeat(40)).len(), 64, "31 units and the NUL");
-}
-
-#[test]
-fn a_disc_map_a_package_replaces_is_listed_under_mods_by_the_package_name() {
-    let cat = Catalogue::with_mods(
-        [
-            map(0x0a, "Lockout", 10, "scenarios\\multi\\lockout\\lockout"),
-            map(
-                0x46,
-                "Containment",
-                70,
-                "scenarios\\multi\\Containment\\Containment",
-            ),
-            // A Map Pack map of the same file name is not the disc's.
-            map(
-                0x3e8,
-                "Containment",
-                130,
-                "t:\\$C\\4D53006400000101\\containment",
-            ),
-        ],
-        &[("containment".into(), "Rocket Containment".into())],
-    );
-    assert_eq!(
-        cat.categories(),
-        [Category::Halo2, Category::MapPack, Category::Mods]
-    );
-    assert_eq!(
-        cat.maps(Category::Halo2).len(),
-        1,
-        "the disc's slot serves the package"
-    );
-    let m = &cat.maps(Category::Mods)[0];
-    assert_eq!((m.id, m.name.as_str()), (0x46, "Rocket Containment"));
-    assert_eq!(m.replaces.as_deref(), Some("Containment"));
-    assert_eq!(cat.maps(Category::MapPack)[0].name, "Containment");
-}
-
-/// A mod on a Map Pack base is hosted on that map's slot, listed under
-/// Mods by the package's name: the slot loads the installed map, which
-/// the vfs serves patched.
-#[test]
-fn a_map_pack_map_a_package_replaces_is_listed_under_mods_by_the_package_name() {
-    let cat = Catalogue::with_mods(
-        [
-            map(0x0a, "Lockout", 10, "scenarios\\multi\\lockout\\lockout"),
-            map(0x3e8, "Turf", 130, "t:\\$C\\4D53006400000101\\turf"),
-            map(0x3f2, "Relic", 140, "t:\\$C\\4D53006400000102\\dune"),
-        ],
-        &[("turf".into(), "Ownage Turf".into())],
-    );
-    assert_eq!(
-        cat.categories(),
-        [Category::Halo2, Category::MapPack, Category::Mods]
-    );
-    let m = &cat.maps(Category::Mods)[0];
-    assert_eq!((m.id, m.name.as_str()), (0x3e8, "Ownage Turf"));
-    assert_eq!(m.replaces.as_deref(), Some("Turf"));
-    assert_eq!(
-        m.path, "t:\\$C\\4D53006400000101\\turf",
-        "the slot loads the installed map"
-    );
-    let pack: Vec<&str> = cat
-        .maps(Category::MapPack)
-        .iter()
-        .map(|m| m.name.as_str())
-        .collect();
-    assert_eq!(pack, ["Relic"]);
-    assert_eq!(
-        row_label(&cat, Mode::Maps(Category::Mods), 0x3e8).map(|l| l.1),
-        Some("Ownage Turf".into())
-    );
+    assert!(list_for(&catalogue, Mode::Maps(Category::Mods), &|_| 0).is_empty());
+    assert_eq!(row_label(&catalogue, Mode::Maps(Category::Halo2), 1), None);
 }
 
 #[test]
@@ -695,43 +604,36 @@ fn a_package_installed_while_the_game_runs_is_listed_without_a_restart() {
         ])
     });
     // At boot nothing is installed: the retail list, the disc unread.
-    let (cat, fills) = sources.read().unwrap();
-    let sel = Selection::with_fills(cat, fills);
+    let sel = Selection::new(sources.read(0).unwrap());
     assert!(!sel.active());
     assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 0);
     let g0 = sel.generation();
 
-    // A download installs a package for Lockout: read again, the mod is
-    // under Mods by its own name, and its slot will take the name.
-    crate::mod_slots::tests::replacing_package(
-        &root,
-        "live-00aa",
-        "lockout",
-        "Lockout Snow",
-        false,
-    );
-    refresh(&sel, &sources, || {});
-    assert!(sel.generation() > g0);
-    assert!(sel.active());
-    let cat = sel.catalogue();
-    assert_eq!(cat.categories(), [Category::Halo2, Category::Mods]);
-    let m = &cat.maps(Category::Mods)[0];
-    assert_eq!((m.id, m.name.as_str()), (0x0a, "Lockout Snow"));
-    assert_eq!(m.replaces.as_deref(), Some("Lockout"));
-    assert_eq!(sel.fills()[0].names[0], "Lockout Snow");
-    assert!(!sel.take_content_changed(), "no content package came");
-    assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
-
-    // A new map (a content package) installed by the refresh: the game's
-    // content scan is asked for; the disc's slots aren't read again.
     let content_root = sources.content_root();
     refresh(&sel, &sources, || {
         let d = content_root.join("4D53006480020001");
         std::fs::create_dir_all(&d).unwrap();
-        std::fs::write(d.join("patch.lvl"), b"not a record").unwrap();
+        let entry = content::map_list::Entry {
+            scenario: "scenarios\\multi\\mod\\mod".into(),
+            map_id: 0x2_0001,
+            names: std::array::from_fn(|_| "Lockout Snow".into()),
+            descriptions: Default::default(),
+            sort: 1000,
+            flags: 0,
+            teams: [4; 16],
+            preview: vec![0; content::map_list::PREVIEW_LEN],
+        };
+        std::fs::write(d.join("patch.lvl"), entry.to_v2().unwrap()).unwrap();
+        0
     });
+    assert!(sel.generation() > g0);
+    let cat = sel.catalogue();
+    assert_eq!(cat.categories(), [Category::Halo2, Category::Mods]);
+    assert_eq!(cat.maps(Category::Halo2)[0].name, "Lockout");
+    let m = &cat.maps(Category::Mods)[0];
+    assert_eq!((m.id, m.name.as_str()), (0x2_0001, "Lockout Snow"));
     assert!(sel.take_content_changed());
-    assert!(!sel.take_content_changed(), "taken once");
+    assert!(!sel.take_content_changed());
     assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
     std::fs::remove_dir_all(&root).ok();
 }

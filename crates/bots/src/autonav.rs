@@ -368,11 +368,13 @@ pub struct Summary {
 }
 
 type Scan = Box<dyn FnMut() -> Vec<Box<dyn Source>> + Send>;
+type Lookup = Box<dyn FnMut(&str) -> Option<Box<dyn Source>> + Send>;
 
 /// Builds the stale maps a scan finds; see the module docs.
 pub struct Worker {
     dir: PathBuf,
     scan: Scan,
+    lookup: Option<Lookup>,
     first: Option<String>,
     force: bool,
     all_kinds: bool,
@@ -391,6 +393,7 @@ impl Worker {
             Worker {
                 dir,
                 scan,
+                lookup: None,
                 first: None,
                 force: false,
                 all_kinds: false,
@@ -401,6 +404,15 @@ impl Worker {
             },
             Handle(shared),
         )
+    }
+
+    /// Sources that should only be opened on request, outside the scan.
+    pub fn on_demand(
+        mut self,
+        lookup: impl FnMut(&str) -> Option<Box<dyn Source>> + Send + 'static,
+    ) -> Self {
+        self.lookup = Some(Box::new(lookup));
+        self
     }
 
     /// Look at `map` first.
@@ -472,6 +484,9 @@ impl Worker {
                     if s.key().eq_ignore_ascii_case(w) || seen.insert(key) {
                         q.push(s);
                     }
+                }
+                if let Some(src) = self.lookup.as_mut().and_then(|lookup| lookup(w)) {
+                    q.push(src);
                 }
                 q.prioritise(w);
             }
