@@ -642,26 +642,30 @@ impl feature::Feature for Bots {
         // console must start it as the distributed server, or phantoms
         // never join (docs/game/bots.md §5.1, "Hosting the game").
         let phantoms = self.phantoms.clone();
-        b.raw().before(
-            &points::SESSION_GAME_START,
-            "phantoms: this console hosts the game",
-            move |c| {
-                let planned = phantoms
-                    .list()
-                    .iter()
-                    .any(|p| !matches!(p.state, bots::phantom::State::Failed(_)));
-                if !planned {
-                    return Ok(Flow::Continue);
-                }
-                let session = c.cpu.edx;
-                let rt = Arc::clone(c.ctx.runtime());
-                let mut mem = rt.memory();
-                for line in bots::phantom::session::game_start(&mut *mem, session, planned) {
-                    eprintln!("{line}");
-                }
-                Ok(Flow::Continue)
-            },
-        );
+        b.raw()
+            .before(
+                &points::SESSION_GAME_START,
+                "phantoms: this console hosts the game",
+                move |c| {
+                    let planned = phantoms
+                        .list()
+                        .iter()
+                        .any(|p| !matches!(p.state, bots::phantom::State::Failed(_)));
+                    if !planned {
+                        return Ok(Flow::Continue);
+                    }
+                    let session = c.cpu.edx;
+                    let rt = Arc::clone(c.ctx.runtime());
+                    let mut mem = rt.memory();
+                    for line in bots::phantom::session::game_start(&mut *mem, session, planned) {
+                        eprintln!("{line}");
+                    }
+                    Ok(Flow::Continue)
+                },
+            )
+            // The co-op probe's peer-count fix (co-op campaigns only) goes
+            // first; the two never both act on one start.
+            .after_feature(crate::coop_probe::ID);
 
         // Each frame: the pads, then the bots' views out.
         let (local, phantoms, frame, render, map, dir, gates) = (
