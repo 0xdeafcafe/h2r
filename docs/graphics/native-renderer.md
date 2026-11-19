@@ -987,8 +987,12 @@ implementation samples engine texture 3.
     gives the pass that copy's view (`ExternalTarget::sampled`, the scaled
     copy's under the render scale). A view whose objects need it is left
     to D3D when levels are not sampled in place
-    (`Device::samples_levels_in_place`); a part is not drawn without the
-    level.
+    (`Device::samples_levels_in_place`), and an object whose parts need
+    it is left to D3D at the hook, before its items' skip is kept, when
+    the target is not bound (`object_nodes::texaccum_bound`, the check
+    `0x0001dcc0` makes; `NativeSet::texaccum`). If the device still finds
+    no level after the drain, those parts go undrawn for that view: logged
+    once and counted.
   - Per draw the stage's coordinate scale is one over the level's guest
     size (`texaccum_scale`), and the engine vertex constants that read
     the stage's size (`ResolvedImplementation::dimension_bindings`, which

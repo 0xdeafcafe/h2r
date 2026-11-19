@@ -89,6 +89,23 @@ pub const MAX_PALETTE: usize = (POSITION_DECOMPRESSION - MODEL_ROWS) / 3;
 /// One vertex constant register.
 pub type Row = [f32; 4];
 
+/// Render target 1's descriptor, the texture accumulation target an
+/// object's layer 3 samples as engine texture 3 (Code: descriptors `0x98`
+/// bytes from `0x004b4b58`, `0x0001dcc0`).
+pub const TEXACCUM_TARGET: u32 = 0x004b_4b58 + 0x98;
+/// Its texture, what `0x0001dcc0(1)` returns.
+pub const TEXACCUM_HEADER: u32 = TEXACCUM_TARGET + 4;
+
+/// Whether the texture accumulation target is there to bind, as
+/// `0x0001dcc0` checks: its surface word `+0x88` set and the byte at
+/// `+0x95` clear. Otherwise the game binds no texture at that stage, and
+/// the native pass has no level to sample.
+pub fn texaccum_bound(mem: &dyn GuestRead) -> bool {
+    let surface = mem.read_u32(TEXACCUM_TARGET + 0x88).unwrap_or(0);
+    let off = mem.read_u32(TEXACCUM_TARGET + 0x94).map_or(1, |w| (w >> 8) & 0xff);
+    surface != 0 && off == 0
+}
+
 fn word(mem: &dyn GuestRead, at: u32) -> Result<u32, String> {
     mem.read_u32(at).ok_or_else(|| format!("{at:#010x} does not read"))
 }

@@ -345,7 +345,8 @@ fn spawn_worker(
                         let see_through = cpu.model.transparents.len();
                         let lit = cpu.lit.parts.len();
                         let lit_implementations = cpu.lit_implementations;
-                        if cpu.lit.samples_texaccum() {
+                        let texaccum = cpu.lit.samples_texaccum();
+                        if texaccum {
                             models.texaccum.lock().unwrap_or_else(|e| e.into_inner()).insert(def as u16);
                         }
                         models.pending.lock().unwrap_or_else(|e| e.into_inner()).push(cpu);
@@ -365,6 +366,9 @@ fn spawn_worker(
                         set.shaders.extend(shaders.into_iter().map(|s| (def as u16, s)));
                         if lit > 0 {
                             set.lit.insert(def as u16, lit_implementations);
+                        }
+                        if texaccum {
+                            set.texaccum.insert(def as u16);
                         }
                         s.set = Arc::new(set);
                         // No lock held across the print.
@@ -828,6 +832,12 @@ impl d3d::ExternalPass for ObjectsPass {
         if objects.is_empty() {
             return;
         }
+        let texaccum = texaccum_level(t.sampled, t.guest_size, t.size);
+        if self.texaccum && texaccum.is_none() && TEXACCUM_MISSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0 {
+            eprintln!(
+                "native-objects: the texture accumulation target was bound at the hook but the device gave no level for it; parts sampling it go undrawn this view (logged once, counted)"
+            );
+        }
         let view = ViewInputs {
             constants,
             guest_size: t.guest_size,
@@ -846,10 +856,16 @@ impl d3d::ExternalPass for ObjectsPass {
             t.size,
             &view,
             &objects,
-            texaccum_level(t.sampled, t.guest_size, t.size),
+            texaccum,
         );
     }
 }
+
+/// Views whose texture accumulation level the device did not give though
+/// a drawn object's parts sample it (bound at the hook,
+/// `object_nodes::texaccum_bound`, yet no level over it after the drain):
+/// those parts go undrawn. Counted, and logged once.
+static TEXACCUM_MISSED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// The texture accumulation level the pass was given, with its size in
 /// guest texels (this copy's texels over the colour's scale).

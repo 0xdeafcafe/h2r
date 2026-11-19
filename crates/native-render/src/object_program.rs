@@ -200,8 +200,9 @@ pub const TEXACCUM_TEXTURE: u8 = 3;
 
 /// The texture header `0x0001dcc0(1)` returns for target 1: the target
 /// descriptors are `0x98` bytes from `0x004b4b58`, the texture at `+4`
-/// (valid while `+0x88` is set and the byte at `+0x95` clear).
-pub const TEXACCUM_HEADER: u32 = 0x004b_4b58 + 0x98 + 4;
+/// (valid while `+0x88` is set and the byte at `+0x95` clear,
+/// [`crate::object_nodes::texaccum_bound`]).
+pub const TEXACCUM_HEADER: u32 = crate::object_nodes::TEXACCUM_HEADER;
 
 /// The stages of an object pass the host binds an engine texture at
 /// (empty in the look).
