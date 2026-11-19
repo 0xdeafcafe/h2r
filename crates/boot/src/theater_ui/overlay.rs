@@ -18,7 +18,7 @@ const LONG_PRESS: Duration = Duration::from_millis(500);
 const TICKS_PER_SECOND: u64 = 30;
 const SPEEDS: [f64; 5] = [0.25, 0.5, 1.0, 2.0, 4.0];
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Key {
     Space,
     Left,

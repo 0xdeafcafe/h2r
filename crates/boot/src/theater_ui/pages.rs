@@ -84,7 +84,7 @@ impl Theater {
         Chosen::Push(DETAIL)
     }
 
-    fn step_detail(&self, row: i16) -> bool {
+    pub(crate) fn step_detail(&self, row: i16) -> bool {
         let mut state = self.state();
         let Some(entry) = state.selected.clone() else {
             return false;
