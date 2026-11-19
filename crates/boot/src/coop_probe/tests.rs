@@ -624,14 +624,14 @@ fn the_simulation_mode_and_latches_are_reported_on_change() {
     assert_eq!(read_sim(&m), None);
     let g = 0x0200_0000;
     m.set_u32(points::SIM_GLOBALS.base, g);
-    m.set_u32(g + 8, 3);
+    m.set_u32(g + 8, 2);
     m.set_u32(g + 0x28, 77);
     m.wr(g + 0x2c, &[0]);
     let s = read_sim(&m).unwrap();
     assert_eq!(
         s,
         Sim {
-            mode: 3,
+            mode: 2,
             update: 77,
             desync: 0,
             ended: 0
