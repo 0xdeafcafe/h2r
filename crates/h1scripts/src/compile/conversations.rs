@@ -339,8 +339,8 @@ impl<'c, 's> Program<'c, 's> {
     fn global(&mut self, purpose: &str, init: Expr) -> Result<Global> {
         let c = &mut self.compiler;
         let index = c.out.globals.len();
-        if index >= 0xc00 - 0x41d {
-            return Err(invalid("conversation globals exceed the Halo 2 pool"));
+        if index >= hs::MAX_DEFINITIONS {
+            return Err(invalid("too many scenario global definitions"));
         }
         let name = format!("{}{purpose}_{index:x}", self.prefix);
         let ty = init.ty();

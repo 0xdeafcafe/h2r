@@ -38,6 +38,9 @@ fn atom<'a>(s: &'a Scenario, d: Datum) -> (&'a str, u32) {
 }
 
 pub(super) fn mission(s: &Scenario, ai: &h1ai::h2::ScenarioAi, source: &h1map::H1Map) {
+    let (threads, cells) = engine::hs_pool::capacities(s.globals().len() as u32).unwrap();
+    assert!(cells > 3072, "a30 must include the generated families' state");
+    assert!(s.scripts().iter().filter(|sc| sc.kind() <= 2).count() < threads as usize);
     let script = s.script("mission_a30").unwrap();
     assert_eq!(script.kind(), 0);
     let main = calls(s, "mission_a30");

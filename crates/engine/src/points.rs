@@ -273,6 +273,9 @@ points! { ALL;
     AI_COMMAND_BEGIN @ 0x0025_8cf0: [fn(actor: stack 0, unit: stack 1, state: stack 2, command: stack 3) -> eax ret 16]; "docs/halo1/ai.md";
     AI_COMMAND_UPDATE @ 0x0025_9430: [fn(actor: stack 0, unit: stack 1, state: stack 2, command: stack 3) -> eax ret 16]; "docs/halo1/ai.md";
     AI_COMMAND_REMOVE @ 0x0025_8540: [fn(actor: ecx, command: stack 0) ret 4]; "docs/halo1/ai.md";
+    /// Clear HS threads and instantiate scenario globals and persistent scripts.
+    HS_NEW_MAP @ 0x0020_90a0: [fn() ret 0]; "docs/halo1/scripts.md";
+
     /// HS global write-back notification (EAX is the variable index).
     HS_GLOBAL_STORED @ 0x0020_a490: [fn(index: eax) ret 0]; "docs/halo1/ai.md";
     /// Restore an object's body to full (EAX the object datum), AL 1 when

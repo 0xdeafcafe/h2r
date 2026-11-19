@@ -182,8 +182,7 @@ impl Program {
             p.global_ids
                 .insert(name.clone(), ((t.globals.len() + i) as u16, *ty));
         }
-        // 0x209051 allocates 3072 HS cells, including the external globals.
-        if t.globals.len() + p.globals.len() + 0x41d > 3072 {
+        if t.globals.len() + p.globals.len() > hs::MAX_DEFINITIONS {
             return Err(invalid("command-list state exceeds the HS global array"));
         }
         Ok(p)

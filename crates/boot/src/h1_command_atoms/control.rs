@@ -106,7 +106,8 @@ fn generated(m: &dyn GuestMemory, sc: u32, id: u32) -> R<bool> {
 
 fn cells(m: &dyn GuestMemory, sc: u32, i: u32) -> R<Option<u32>> {
     let n = m.u32(sc + 0x1c0)?;
-    if i + CELLS > n || i + CELLS + 1053 > 3072 {
+    let pool = m.u32(GLOBALS)?;
+    if pool == 0 || i.saturating_add(CELLS) > n.min(m.u32(pool + engine::datum::layout::MAXIMUM_COUNT)?.saturating_sub(1053)) {
         return Ok(None);
     }
     let defs = m.u32(sc + 0x1c4)?;

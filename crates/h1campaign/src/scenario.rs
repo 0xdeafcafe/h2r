@@ -1910,6 +1910,12 @@ fn install_scripts(
     .map_err(|e| invalid(format!("scripts: {e}")))?;
     h1scripts::compile::add_startup_placements(&mut c, &s.target, INITIAL_SCRIPT, initial)
         .map_err(|e| invalid(format!("scripts: {e}")))?;
+    let (threads, _) = engine::hs_pool::capacities(c.globals.len() as u32)
+        .ok_or_else(|| invalid("scenario globals exceed HaloScript storage"))?;
+    let persistent = c.scripts.iter().filter(|s| u16::from_le_bytes([s[32], s[33]]) <= 2).count();
+    if persistent >= threads as usize {
+        return Err(invalid(format!("{persistent} persistent scripts leave no free thread in {threads}")));
+    }
     let (sounds, sounds_dropped) = install_named_sounds(h1, set, &c, max_sounds)?;
     // The looping sounds (`lsnd`: music and ambience) the scripts start,
     // found by the tag-name lookup below.

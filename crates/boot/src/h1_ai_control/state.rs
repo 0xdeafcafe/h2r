@@ -26,7 +26,8 @@ pub(super) fn registry(
     let Some(end) = base.checked_add(words) else {
         return Ok(None);
     };
-    if end > 0xc00 - hs::vm::EXTERNAL_GLOBALS as u32 {
+    let pool = m.u32(GLOBALS)?;
+    if pool == 0 || end > m.u32(pool + engine::datum::layout::MAXIMUM_COUNT)?.saturating_sub(VALUE_START) {
         return Ok(None);
     }
     let scenario = m.u32(super::points::SCENARIO.base)?;

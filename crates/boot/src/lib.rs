@@ -39,7 +39,7 @@ mod h1_recordings;
 mod h1_conversation;
 pub mod h1_options;
 pub mod h1_options_row;
-mod h1_squads;
+mod h1_pools;
 pub mod h1_variants;
 mod h1_ai_control;
 mod h1_command_atoms;

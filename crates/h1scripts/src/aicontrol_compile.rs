@@ -326,7 +326,7 @@ impl Compiler<'_> {
         let start = self.out.globals.len();
         let base = u16::try_from(start).map_err(|_| invalid("global count"))?;
         let end = start + usize::from(registry.words());
-        if hs::vm::EXTERNAL_GLOBALS + end > 0xc00 {
+        if end > hs::MAX_DEFINITIONS {
             return Err(invalid("converted AI state exceeds the Halo 2 global pool"));
         }
         for index in 0..registry.words() {
@@ -395,7 +395,7 @@ impl Compiler<'_> {
             // Native hooks can locate these registries in constant time.
             let name = hs::h1_ai_slots::HOOK_STATE;
             let index = self.out.globals.len();
-            if hs::vm::EXTERNAL_GLOBALS + index >= 0xc00
+            if index >= hs::MAX_DEFINITIONS
                 || self
                     .t
                     .globals

@@ -510,6 +510,22 @@ the calls participate in waits. The clock and danger gates come from the
 unit/miscellaneous builtin family, while the recording, vehicle and HUD
 operations use their respective families. Mission flow adds no builtin slots.
 
+**Checkpoint storage.** At `0x208ff0` retail allocates 320 script threads
+(stride `0x418`) and 3,072 global cells (stride 8) in game state. The
+first 1,053 cells belong to engine globals. The a30 AI registries alone
+require 1,896 cells, and its 59 conversations add worker state. The
+combined scenario exceeds the retail cell allocation.
+
+At `0x2090a0`, before the interpreter clears threads and initializes the
+new map, `engine::hs_pool` sizes both arrays. For an oversized table the
+global values occupy the tail of the thread allocation and their bitmap
+uses the original global allocation. Both headers stay at their original
+addresses. External values, salts and occupancy survive the transition.
+The remaining bytes hold the maximum number of whole thread records and
+their bitmap. The converter checks that the persistent scripts leave a
+free thread. A retail-sized scenario restores the original layout. All
+values and array pointers are in the game state saved by checkpoints.
+
 ## Open questions
 
 - The `unit_exit_vehicle` mode 1 default is not checked against Halo 2's

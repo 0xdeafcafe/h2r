@@ -18,7 +18,7 @@ const EVAL_RETURN: u32 = 0x0020_9ae0;
 
 const GLOBAL_VALUES: u32 = 0x004f_9380;
 const SCENARIO_GLOBAL_OFFSET: u32 = 0x41d;
-const GLOBAL_CAPACITY: u32 = 0xc00;
+const GLOBAL_CAPACITY: u32 = hs::MAX_DEFINITIONS as u32;
 
 const SOUND_INSTANCES: u32 = 0x004e_637c;
 const SPATIAL_START: u32 = 0x0018_91d0;
@@ -62,7 +62,7 @@ impl feature::Feature for Conversations {
 }
 
 fn global(m: &dyn GuestMemory, index: u32, ty: u16) -> Result<Option<u32>, MemFault> {
-    if index >= GLOBAL_CAPACITY - SCENARIO_GLOBAL_OFFSET {
+    if index >= GLOBAL_CAPACITY {
         return Ok(None);
     }
     let scenario = m.u32(points::SCENARIO.base)?;

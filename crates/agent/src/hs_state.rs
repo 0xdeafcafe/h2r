@@ -5,10 +5,9 @@ use serde_json::{Value, json};
 
 use crate::{Access, Agent};
 
-const THREADS: u32 = 0x004f_9384;
-const CELLS: u32 = 0x004f_9380;
+use engine::hs_pool::{EXTERNALS, GLOBALS as CELLS, THREADS};
 // hs_new_map at 0x20915f offsets scenario globals past the external cells.
-const EXTERNAL_CELLS: usize = 0x41d;
+const EXTERNAL_CELLS: usize = EXTERNALS as usize;
 const KINDS: [&str; 6] = ["startup", "dormant", "continuous", "static", "stub", "command"];
 
 pub fn install(agent: &Agent) {
@@ -73,8 +72,10 @@ fn threads(m: &dyn GuestMemory) -> Result<Value, RpcError> {
 
 fn globals(m: &dyn GuestMemory) -> Result<Value, RpcError> {
     let (count, defs) = definitions(m, 0x1c0)?;
-    if count > 0xc00 - EXTERNAL_CELLS { return Err(unavailable("invalid HS global count")); }
     let array = DatumArray::at(pointer(m, CELLS)?);
+    if array.header_field(m, layout::MAXIMUM_COUNT).map_err(fault)? < (count + EXTERNAL_CELLS) as i32 {
+        return Err(unavailable("invalid HS global count"));
+    }
     let mut out = Vec::with_capacity(count);
     for i in 0..count {
         let def = defs + i as u32 * 40;
@@ -109,6 +110,7 @@ mod tests {
         let index = EXTERNAL_CELLS as u32;
         m.put_u32(points::SCENARIO.base, 0x1000).put_u32(0x11c0, 1).put_u32(0x11c4, 0x2000)
             .put(0x2000, &[0;32]).put(0x2000, b"timer").put_u16(0x2020, 7)
+            .put_u32(0x3000 + layout::MAXIMUM_COUNT, 3072)
             .put_u32(CELLS, 0x3000).put_u32(0x3000 + layout::ELEMENT_SIZE, 8)
             .put_u32(0x3000 + layout::HIGH_WATER, index + 1).put_u32(0x3000 + layout::DATA, 0x4000)
             .put_u16(0x4000 + 8 * index, 1).put_u32(0x4004 + 8 * index, 0xfffe);
