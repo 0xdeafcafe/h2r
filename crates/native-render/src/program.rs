@@ -75,6 +75,10 @@ pub struct MaterialProgram {
     /// The vertex registers (bit `n` for `v<n>`) the program reads from
     /// the world vertex ([`INPUTS`]).
     pub inputs: u16,
+    /// The pixel shader definition and options it was translated with
+    /// (for comparing with the D3D path's: `d3d::uniform_compare`).
+    pub def: PixelShaderDef,
+    pub pixel_options: PixelOptions,
     /// A world pass's own pipeline state ([`compile_world`]); `None`
     /// draws with the opaque world's (depth test `LessEqual` and write, no
     /// blend, no cull).
@@ -144,6 +148,8 @@ pub fn compile_pass(
         vertex: t.vertex,
         pixel: t.pixel,
         inputs: t.inputs,
+        def: t.def,
+        pixel_options: t.pixel_options,
         state: None,
         rigid: None,
     })
@@ -377,6 +383,8 @@ pub(crate) struct Translated {
     pub pixel: PixelUniforms,
     /// `v<n>` read from the vertex stream (within `provided_inputs`).
     pub inputs: u16,
+    pub def: PixelShaderDef,
+    pub pixel_options: PixelOptions,
 }
 
 /// The vertex program and pixel shader through `shaders`, and the uniforms
@@ -449,7 +457,7 @@ pub(crate) fn translate_pass(p: &PassParts<'_>) -> Result<Translated, String> {
         pixel.alpha_ref = [f32::from(reference), 0.0, 0.0, 0.0];
     }
     let inputs = program.inputs_read() & p.provided_inputs;
-    Ok(Translated { wgsl, samplers, dims: ps.textures, signed, vertex, pixel, inputs })
+    Ok(Translated { wgsl, samplers, dims: ps.textures, signed, vertex, pixel, inputs, def, pixel_options: options })
 }
 
 /// Each stage's `D3DTSS_MIPMAPLODBIAS` (f32 bits), zero when not finite,
@@ -574,9 +582,8 @@ pub fn frame_pixel(base: &PixelUniforms, view: &ViewInputs) -> PixelUniforms {
 /// 3 clamp, 4 border, 5 clamp to edge; filter 1 point, else linear; mip
 /// filter 0 none, 1 point, 2 linear).
 pub fn sampler_descriptor(s: Option<&StageStates>) -> wgpu::SamplerDescriptor<'static> {
-    if let Some(t) = s.and_then(stage_state) {
-        let caps = gfx::translate::Capabilities::from_features(wgpu::Features::empty());
-        let mut d = gfx::translate::SamplerKey::from_stage(&t, caps).descriptor();
+    if let Some(k) = s.and_then(sampler_key) {
+        let mut d = k.descriptor();
         d.label = Some("native world program");
         return d;
     }
@@ -611,6 +618,14 @@ pub fn sampler_descriptor(s: Option<&StageStates>) -> wgpu::SamplerDescriptor<'s
         lod_max_clamp: if s.mip_filter == 0 { 0.0 } else { 32.0 },
         ..Default::default()
     }
+}
+
+/// The sampler a stage's states make, as the D3D path keys it
+/// (`gfx::translate::SamplerKey::from_stage`), `None` when one does not
+/// decode.
+pub fn sampler_key(s: &StageStates) -> Option<gfx::translate::SamplerKey> {
+    let caps = gfx::translate::Capabilities::from_features(wgpu::Features::empty());
+    stage_state(s).map(|t| gfx::translate::SamplerKey::from_stage(&t, caps))
 }
 
 /// A stage's sampler states as `gfx` holds them, `None` when one does not
@@ -1109,12 +1124,19 @@ impl ProgramSet {
             .iter()
             .filter_map(|(&material, r)| {
                 let (_, rows) = r.slots.iter().find(|s| s.0 == instance)?;
-                let pixel = self.materials.get(&material)?.program.pixel;
+                let program = &self.materials.get(&material)?.program;
                 Some(RigidUniforms {
                     material,
                     words: r.program.words.clone(),
                     vertex: rigid_vertex(&r.program.vertex, view, rows),
-                    pixel: frame_pixel(&pixel, view),
+                    pixel: frame_pixel(&program.pixel, view),
+                    samplers: std::array::from_fn(|n| {
+                        program.dims[n].and(program.samplers[n].as_ref()).and_then(sampler_key)
+                    }),
+                    // As `translate_pass` translates it.
+                    options: VertexOptions { provided_inputs: INPUT_MASK, ..Default::default() },
+                    def: program.def.clone(),
+                    pixel_options: program.pixel_options,
                 })
             })
             .collect();
@@ -1131,6 +1153,13 @@ pub struct RigidUniforms {
     pub words: Vec<u32>,
     pub vertex: VertexUniforms,
     pub pixel: PixelUniforms,
+    /// Each sampled stage's sampler ([`sampler_key`]).
+    pub samplers: [Option<gfx::translate::SamplerKey>; 4],
+    /// The vertex translation's options.
+    pub options: VertexOptions,
+    /// The pixel shader definition and options.
+    pub def: PixelShaderDef,
+    pub pixel_options: PixelOptions,
 }
 
 #[cfg(test)]

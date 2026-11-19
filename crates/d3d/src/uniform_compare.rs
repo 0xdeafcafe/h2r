@@ -5,13 +5,17 @@
 //! `c[50..52]` hold the same bits are compared and printed, each register
 //! the D3D draw's vertex program reads that differs, the inputs it reads
 //! that one streams and the other does not, or whose defaults differ, and
-//! the pixel uniforms. Inert until armed (one relaxed load per draw).
+//! the pixel uniforms, and each sampled stage's sampler and the D3D
+//! draw's texture there. Inert until armed (one relaxed load per draw).
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use shaders::psh::PixelUniforms;
-use shaders::vsh::{self, ProgramKind, SrcReg, VertexUniforms};
+use gfx::translate::SamplerKey;
+use shaders::psh::{PixelOptions, PixelShaderDef, PixelUniforms};
+
+use crate::backend::TextureInfo;
+use shaders::vsh::{self, ProgramKind, SrcReg, VertexOptions, VertexUniforms};
 
 /// The model rows the structure draw uploads for a placement
 /// (`0x0004d830`, hardware numbering): the draws compared are the ones
@@ -31,8 +35,15 @@ pub struct Expected {
     pub words: Vec<u32>,
     pub vertex: VertexUniforms,
     pub pixel: PixelUniforms,
-    /// The `v` registers it streams (bit `n`: `v<n>`).
-    pub streamed: u16,
+    /// How its program's inputs arrive and are interpolated (the
+    /// translation's options; `provided_inputs`: the `v` registers it
+    /// streams, bit `n` for `v<n>`).
+    pub options: VertexOptions,
+    /// The pixel shader definition and the options it is translated with.
+    pub def: PixelShaderDef,
+    pub pixel_options: PixelOptions,
+    /// Each stage it samples, with its sampler (`None`: not sampled).
+    pub samplers: [Option<SamplerKey>; 4],
     /// Draws with the same program to compare before it disarms.
     pub draws: u32,
 }
@@ -57,8 +68,17 @@ pub fn armed() -> bool {
 }
 
 /// A D3D draw with vertex program `words`, uniforms `vertex` and `pixel`,
-/// and the layout's streamed registers: printed when it matches.
-pub(crate) fn observe(words: &[u32], vertex: &VertexUniforms, pixel: &PixelUniforms, streamed: u16) {
+/// the layout's streamed registers, and its samplers and textures:
+/// printed when it matches.
+pub(crate) fn observe(
+    words: &[u32],
+    vertex: &VertexUniforms,
+    pixel: &PixelUniforms,
+    options: &VertexOptions,
+    pixel_shader: (&PixelShaderDef, &PixelOptions),
+    samplers: &[SamplerKey; 4],
+    textures: &[Option<TextureInfo>; 4],
+) {
     if !ARMED.load(Ordering::Relaxed) {
         return;
     }
@@ -80,7 +100,7 @@ pub(crate) fn observe(words: &[u32], vertex: &VertexUniforms, pixel: &PixelUnifo
         }
         return;
     }
-    for line in compare(e, words, vertex, pixel, streamed) {
+    for line in compare(e, words, vertex, pixel, options, pixel_shader, samplers, textures) {
         eprintln!("{line}");
     }
     armed.expected.draws = armed.expected.draws.saturating_sub(1);
@@ -104,7 +124,17 @@ pub fn same_program(words: &[u32], expected: &[u32]) -> bool {
 
 /// The lines comparing a D3D draw with `e`: a header, then only what
 /// differs (bits; `d3d` first, then the other renderer's).
-pub fn compare(e: &Expected, words: &[u32], vertex: &VertexUniforms, pixel: &PixelUniforms, streamed: u16) -> Vec<String> {
+pub fn compare(
+    e: &Expected,
+    words: &[u32],
+    vertex: &VertexUniforms,
+    pixel: &PixelUniforms,
+    options: &VertexOptions,
+    (def, pixel_options): (&PixelShaderDef, &PixelOptions),
+    samplers: &[SamplerKey; 4],
+    textures: &[Option<TextureInfo>; 4],
+) -> Vec<String> {
+    let streamed = options.provided_inputs;
     let program = vsh::Program::from_words(ProgramKind::Normal, words).ok();
     // Every constant counts as read when the program does not decode or
     // addresses them relative to a0.x.
@@ -127,7 +157,7 @@ pub fn compare(e: &Expected, words: &[u32], vertex: &VertexUniforms, pixel: &Pix
     let label = &e.label;
     let mut out = vec![format!(
         "uniform-compare {label}: a D3D draw with the rows and the program; streams {streamed:#06x} (other {:#06x}), reads v {inputs:#06x}",
-        e.streamed
+        e.options.provided_inputs
     )];
     let same = |a: &[f32; 4], b: &[f32; 4]| a.map(f32::to_bits) == b.map(f32::to_bits);
     let mut unread = 0;
@@ -142,11 +172,25 @@ pub fn compare(e: &Expected, words: &[u32], vertex: &VertexUniforms, pixel: &Pix
         }
     }
     out.push(format!("  {unread} constants the program does not read differ"));
+    // How the inputs it reads arrive (the D3D path may bind guest bytes
+    // and decode them in the shader) and the interpolation.
+    let fetch = |o: &VertexOptions| -> Vec<(usize, vsh::InputFetch)> {
+        (0..16usize).filter(|&n| inputs & 1 << n != 0).map(|n| (n, o.input_fetch[n])).collect()
+    };
+    if fetch(options) != fetch(&e.options) || options.flat_shading != e.options.flat_shading {
+        out.push(format!(
+            "  input fetch d3d {:?} flat {} other {:?} flat {}",
+            fetch(options),
+            options.flat_shading,
+            fetch(&e.options),
+            e.options.flat_shading
+        ));
+    }
     for n in 0..16 {
         if inputs & 1 << n == 0 {
             continue;
         }
-        let (d, o) = (streamed & 1 << n != 0, e.streamed & 1 << n != 0);
+        let (d, o) = (streamed & 1 << n != 0, e.options.provided_inputs & 1 << n != 0);
         let (dv, ov) = (&vertex.defaults[n], &e.vertex.defaults[n]);
         if d != o || (!d && !same(dv, ov)) {
             let says = |s: bool, v: &[f32; 4]| if s { "streamed".to_string() } else { format!("default {v:?}") };
@@ -184,6 +228,28 @@ pub fn compare(e: &Expected, words: &[u32], vertex: &VertexUniforms, pixel: &Pix
             out.push(format!("  {name} d3d {d} other {o}"));
         }
     }
+    // The combiners and what changes their code (whole, when they differ).
+    if *def != e.def {
+        out.push(format!("  pixel shader d3d {def:?} other {:?}", e.def));
+    }
+    if *pixel_options != e.pixel_options {
+        out.push(format!("  pixel options d3d {pixel_options:?} other {:?}", e.pixel_options));
+    }
+    // The stages the other renderer samples: the D3D draw's texture
+    // there, and the samplers when they differ.
+    for (n, other) in e.samplers.iter().enumerate() {
+        let Some(other) = other else { continue };
+        let t = textures[n].map_or_else(
+            || "none".to_string(),
+            |t| format!("{:?} {}x{} levels {}", t.format, t.width, t.height, t.levels),
+        );
+        let d = &samplers[n];
+        if d == other {
+            out.push(format!("  stage {n} d3d texture {t}, the same sampler"));
+        } else {
+            out.push(format!("  stage {n} d3d texture {t}, sampler d3d {d:?} other {other:?}"));
+        }
+    }
     out
 }
 
@@ -206,7 +272,25 @@ mod tests {
     fn expected() -> Expected {
         let mut vertex = VertexUniforms::default();
         vertex.constants[MODEL_ROWS] = [1.0, 0.0, 0.0, 5.0];
-        Expected { label: "placement 7".into(), words: words(), vertex, pixel: PixelUniforms::default(), streamed: 0x7f, draws: 1 }
+        let mut samplers = [None; 4];
+        samplers[1] = Some(sampler(wgpu::FilterMode::Linear));
+        Expected {
+            label: "placement 7".into(),
+            words: words(),
+            vertex,
+            pixel: PixelUniforms::default(),
+            options: VertexOptions { provided_inputs: 0x7f, ..Default::default() },
+            def: PixelShaderDef::default(),
+            pixel_options: PixelOptions::default(),
+            samplers,
+            draws: 1,
+        }
+    }
+
+    fn sampler(min: wgpu::FilterMode) -> SamplerKey {
+        let mut t = gfx::state::TextureStageState::default_for_stage(0);
+        t.min_filter = if min == wgpu::FilterMode::Linear { gfx::state::TextureFilter::Linear } else { gfx::state::TextureFilter::Point };
+        SamplerKey::from_stage(&t, gfx::translate::Capabilities::ALL)
     }
 
     #[test]
@@ -228,18 +312,32 @@ mod tests {
         let e = expected();
         let mut v = e.vertex.clone();
         let mut p = e.pixel;
-        assert_eq!(compare(&e, &e.words, &v, &p, 0x7f)[1..], ["  0 constants the program does not read differ"]);
+        let mut samplers = [sampler(wgpu::FilterMode::Linear); 4];
+        let textures = [None; 4];
+        let mut options = e.options;
+        let mut def = e.def.clone();
+        assert_eq!(
+            compare(&e, &e.words, &v, &p, &options, (&def, &e.pixel_options), &samplers, &textures)[1..],
+            ["  0 constants the program does not read differ", "  stage 1 d3d texture none, the same sampler"]
+        );
         v.constants[0] = [2.0; 4];
         v.constants[60] = [3.0; 4];
         v.defaults[5] = [0.5, 0.5, 0.5, 1.0];
         p.c0[1] = [0.25; 4];
         v.w_clip = Some([1.0, 2.0]);
-        let lines = compare(&e, &e.words, &v, &p, 0x1f);
+        samplers[1] = sampler(wgpu::FilterMode::Nearest);
+        options.provided_inputs = 0x1f;
+        def.compare_mode = 1;
+        let lines = compare(&e, &e.words, &v, &p, &options, (&def, &e.pixel_options), &samplers, &textures);
         assert_eq!(lines[1], "  c[0] d3d [2.0, 2.0, 2.0, 2.0] other [0.0, 0.0, 0.0, 0.0]");
         assert_eq!(lines[2], "  1 constants the program does not read differ", "c[60]");
         assert_eq!(lines[3], "  v5 d3d default [0.5, 0.5, 0.5, 1.0] other streamed");
         assert!(lines[4].starts_with("  w_clip d3d [1.0, 2.0] other [NaN, NaN]"), "{}", lines[4]);
         assert!(lines[5].starts_with("  c0 d3d"), "{}", lines[5]);
-        assert_eq!(lines.len(), 6);
+        assert!(lines[6].starts_with("  pixel shader d3d PixelShaderDef"), "{}", lines[6]);
+        assert!(lines[6].contains("compare_mode: 1") && lines[6].contains("compare_mode: 0"), "{}", lines[6]);
+        assert!(lines[7].starts_with("  stage 1 d3d texture none, sampler d3d SamplerKey"), "{}", lines[7]);
+        assert!(lines[7].contains("min: Nearest") && lines[7].contains("min: Linear"), "{}", lines[7]);
+        assert_eq!(lines.len(), 8);
     }
 }
