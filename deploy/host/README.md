@@ -1,0 +1,55 @@
+# Dedicated host image
+
+The Linux/amd64 image runs one match lease with a headless `h2` and the
+module compiled from your own disc. Use a private registry for this image.
+
+## Build on macOS
+
+Install [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild), Zig,
+the Rust `x86_64-unknown-linux-gnu` target and LLVM's `clang`, `ld.lld` and
+`llvm-ar`. Put the LLVM tools on `PATH` and use an amd64 Debian bookworm
+sysroot with glibc development files, Linux headers and GCC support files.
+The script checks these prerequisites and prints installation hints.
+[Linux module build](../../docs/runtime/linux.md)
+
+From the repository root, set `H2_DISC` to the owner's ISO or `default.xbe`
+and `H2_LINUX_SYSROOT` to the absolute sysroot path. Stage the host and module.
+
+```sh
+deploy/host/build.sh "$H2_DISC"
+```
+
+Pack the staged files into a local image.
+
+```sh
+docker buildx build --platform linux/amd64 --load -t h2host:local deploy/host
+```
+
+The script builds the Linux host against bookworm's glibc 2.36 and uses a
+Mac build of `h2` from the same checkout to emit `libh2game.so` and its
+stamp. Set `H2_BIN` to reuse a Mac binary from that revision. Docker takes
+the staged host, module and stamp. Supply the matching code-generation
+settings at runtime if you override defaults such as `H2_OPT`.
+
+## Run one lease
+
+Prepare the owner's private game-data bundle with `h2 host bundle`. The
+host needs the matching `default.xbe` at boot, supplied with the private
+runtime data. Export the lease ID, Live URL, lease token, signed bundle
+URL and bundle SHA-256 before starting the container.
+For a UDP lease through Docker, set `H2_PUBLIC_ADDR` to the Docker host's
+IPv4 address reachable by clients.
+
+```sh
+docker run --rm --name h2host-smoke --platform linux/amd64 \
+  -p 31000-31006:31000-31006/udp \
+  -e H2_LEASE -e H2_LIVE -e H2_TOKEN -e H2_DATA_URL -e H2_DATA_SHA \
+  -e H2_REGION -e H2_OPT -e H2_PUBLIC_ADDR \
+  h2host:local
+```
+
+The entrypoint passes those lease and data values to `h2 host run`.
+`H2_REGION` is optional. The bundle cache defaults to `/var/cache/h2`.
+For reuse across runs, mount a volume there writable by UID 1000. The
+image exposes TCP 31100 for the Cloudflare datagram tunnel.
+[Dedicated host design](../../docs/live/dedicated-host.md#container-image)

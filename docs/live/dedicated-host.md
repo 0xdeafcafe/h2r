@@ -137,6 +137,26 @@ the defaults give these estimates in USD.
 | 2 players, Small | 0.010 GB | $0.01500 compute + $0.00025 egress = **$0.01525** | $0.046 ÷ 6 = **$0.00767** |
 | 16 players, Large | 0.080 GB | $0.03000 compute + $0.00200 egress = **$0.03200** | $0.092 ÷ 6 = **$0.01533** |
 
+## Container image
+
+Both cloud providers use the same Linux/amd64 image. It runs as a non-root
+user on `debian:bookworm-slim` with `ca-certificates`. Ship the image only
+through a private registry because it contains a module compiled from the
+owner's disc.
+
+On macOS, `deploy/host/build.sh` cross-builds the headless `h2` with
+cargo-zigbuild targeting `x86_64-unknown-linux-gnu.2.36` and builds the
+module with `h2 build --arch x86_64-linux --tier clang`. Clang and lld
+use the Debian bookworm amd64 sysroot at `H2_LINUX_SYSROOT`. Docker copies
+`h2`, `libh2game.so` and its stamp from `deploy/host/stage/`. The matching
+`default.xbe` and maps come from private runtime provisioning. [Build and run instructions](../../deploy/host/README.md) · [Linux module build](../runtime/linux.md)
+
+The entrypoint passes `H2_LEASE`, `H2_LIVE`, `H2_TOKEN`, `H2_DATA_URL`,
+`H2_DATA_SHA` and optional `H2_REGION` to `h2 host run`. The host verifies
+the bundle hash and caches the data in `/var/cache/h2`. The image exposes
+UDP ports 31000–31006 for the game and TCP 31100 for the datagram tunnel. Each
+container serves one lease and exits when that lease ends.
+
 ## Light host
 
 Run `h2 serve --system-link --host-light` with the existing prebuilt image.
