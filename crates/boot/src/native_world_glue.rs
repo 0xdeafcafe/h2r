@@ -75,6 +75,7 @@ pub struct CpuWorld {
 }
 
 /// One loaded world: CPU data until the first pass uploads it.
+#[cfg_attr(test, derive(Default))]
 pub struct Ready {
     cpu: Mutex<Option<CpuWorld>>,
     gpu: Mutex<Option<GpuWorld>>,

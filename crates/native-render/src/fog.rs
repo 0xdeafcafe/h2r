@@ -62,14 +62,12 @@ pub fn layer_draws(mem: &dyn GuestRead) -> Option<bool> {
     Some(mem.read_u32(FOG_BYTES)? & 0x00ff_ff00 != 0)
 }
 
-/// Walks the current list's structure items of `layer` (the world's
-/// walk, [`crate::skip`]'s, keeping the accepted items in order) and
-/// clears the layer's bit on those `native` accepts: the fog pass draws
-/// in the game's item order, whatever it blends. Object items are never
-/// cleared (their fog is stage 2's). Returns the items accepted (in
-/// order) and what was cleared, for the restore at the next layer draw.
-/// `None` (nothing written) when it is another layer or the list does
-/// not read; an unreadable item stops the walk with what was cleared.
+/// Clears the layer bit on the structure items `native` accepts. Since
+/// the native pass draws before the guest layer, the accepted items must
+/// form a prefix of the layer's items. Objects and other builds belong to
+/// the guest remainder. A gap in the prefix or an unreadable list refuses
+/// the walk before any mask changes. Callers plan writes in a mask preview
+/// so that a failed reservation leaves the guest list intact.
 pub fn clear_fog(
     mem: &mut dyn GuestWrite,
     layer: u32,
@@ -82,43 +80,57 @@ pub fn clear_fog(
     if list == 0 {
         return None;
     }
-    let count = mem.read_u32(list + 4)?;
-    let first = mem.read_u32(list + 0xc)?;
-    let items = mem.read_u32(list + 0x14)?;
+    let count = mem.read_u32(list.checked_add(4)?)?;
+    let first = mem.read_u32(list.checked_add(0xc)?)?;
+    let items = mem.read_u32(list.checked_add(0x14)?)?;
+    if first > count || count - first > MAX_ITEMS {
+        return None;
+    }
+    items.checked_add(count.checked_mul(ITEM_SIZE)?)?;
     let bit = 1u32 << layer;
-    let mut cleared = Cleared { layer, items: Vec::new() };
-    let mut drawn = Vec::new();
-    for i in first..count.min(first.saturating_add(MAX_ITEMS)) {
+    let mut prefix = Vec::new();
+    let mut guest_remainder = false;
+    for i in first..count {
         let item = items + ITEM_SIZE * i;
-        let Some(mask) = mem.read_u32(item + 0x10) else { break };
+        let mask = mem.read_u32(item + 0x10)?;
         if mask & bit == 0 {
             continue;
         }
-        let Some(build) = mem.read_u32(item) else { break };
-        if build != GEOMETRY_BUILD {
+        if mem.read_u32(item)? != GEOMETRY_BUILD {
+            guest_remainder = true;
             continue;
         }
-        let Some(arg) = mem.read_u32(item + 0xc) else { break };
-        let Some(shader) = mem.read_u32(item + 8) else { break };
+        let arg = mem.read_u32(item + 0xc)?;
         let record = (arg >> 8) as u16 as i16;
         if record < 0 {
+            guest_remainder = true;
             continue;
         }
         let base = RENDER_RECORDS + RENDER_RECORD_SIZE * record as u32;
-        let Some(model) = mem.read_u32(base + 4) else { break };
-        if model != u32::MAX {
-            continue; // an object's item: its fog is stage 2's
+        if mem.read_u32(base + 4)? != u32::MAX {
+            guest_remainder = true;
+            continue;
         }
-        let Some(packed) = mem.read_u32(base + 0xc) else { break };
+        let packed = mem.read_u32(base + 0xc)?;
         let owner = if mem.read_u32(base)? & (1 << 12) == 0 {
             Owner::Cluster((packed >> 9) & 0x1ff)
         } else {
             Owner::Instance((packed >> 18) & 0x7ff)
         };
-        let fog_item = FogItem { owner, part: arg as u8, shader: shader as u16 };
+        let shader = mem.read_u32(item + 8)? as u16;
+        let fog_item = FogItem { owner, part: arg as u8, shader };
         if !native(fog_item) {
+            guest_remainder = true;
             continue;
         }
+        if guest_remainder {
+            return None;
+        }
+        prefix.push((item, mask, fog_item));
+    }
+    let mut cleared = Cleared { layer, items: Vec::with_capacity(prefix.len()) };
+    let mut drawn = Vec::with_capacity(prefix.len());
+    for (item, mask, fog_item) in prefix {
         if mem.write_u32(item + 0x10, mask & !bit).is_none() {
             break;
         }
@@ -196,8 +208,9 @@ mod tests {
     }
 
     #[test]
-    fn only_structure_items_lose_their_bit_in_order() {
+    fn a_native_prefix_ignores_items_outside_the_layer_and_keeps_the_guest_suffix() {
         let mut m = scene();
+        m.w(ITEMS + ITEM_SIZE + 0x10, 1 << 3);
         let (drawn, cleared) = clear_fog(&mut m, 16, &|_| true).unwrap();
         assert_eq!(
             drawn,
@@ -205,13 +218,42 @@ mod tests {
                 FogItem { owner: Owner::Cluster(37), part: 1, shader: 0x0010 },
                 FogItem { owner: Owner::Instance(140), part: 3, shader: 0x0012 },
             ],
-            "the object (1) and the other build (3) stay"
+            "the prefix includes both layer-16 structure items"
         );
         assert_eq!(cleared.items, vec![ITEMS, ITEMS + ITEM_SIZE * 2]);
         assert_eq!(mask(&m, 0), 1 << 3, "layer 3 kept, layer 16 gone");
-        assert_eq!(mask(&m, 1), 1 << 16 | 1 << 3, "the object kept");
+        assert_eq!(mask(&m, 1), 1 << 3, "the object is outside layer 16");
+        assert_eq!(mask(&m, 3), 1 << 16 | 1 << 3, "the other build stays in layer 16");
         restore(&mut m, &cleared);
         assert_eq!(mask(&m, 0), 1 << 16 | 1 << 3);
+    }
+
+    #[test]
+    fn a_native_item_after_any_guest_item_refuses_the_layer_without_mask_edits() {
+        for layer in [6, 16] {
+            for (build, model) in [
+                (GEOMETRY_BUILD, 0xe1a3_0004), // An object.
+                (0x0005_0000, u32::MAX),       // Another build.
+                (GEOMETRY_BUILD, u32::MAX),   // A declined structure item.
+            ] {
+                let mut m = scene();
+                m.w(CURRENT_LAYER, layer);
+                let expected = (1 << layer) | (1 << 3);
+                for i in 0..4 {
+                    m.w(ITEMS + ITEM_SIZE * i + 0x10, expected);
+                }
+                m.w(ITEMS + ITEM_SIZE, build);
+                let record = RENDER_RECORDS + RENDER_RECORD_SIZE * 5;
+                m.w(record, 0);
+                m.w(record + 4, model);
+                m.w(record + 0xc, 19 << 9);
+
+                assert!(clear_fog(&mut m, layer, &|item| item.part != 2).is_none());
+                for i in 0..4 {
+                    assert_eq!(mask(&m, i), expected, "layer {layer}, item {i}");
+                }
+            }
+        }
     }
 
     #[test]

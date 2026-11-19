@@ -2342,7 +2342,10 @@ loaded, drawn with each material's own translated layer-16 pass.
   reserves the replacement through the ordered handoff (recording on
   every copy before anything is surrendered), checks that the same
   map and BSP load is current, applies the mask edits and commits.
-  The hook remembers what was cleared for the restore
+  The shared fog and water mask walk requires the accepted items to
+  form a prefix of the layer's list so the guest remainder draws in
+  order after the native pass. A later accepted item leaves the
+  whole layer on D3D. The hook remembers what was cleared for the restore
   at the next layer draw. A placement's part draws with its pass's
   rigid classification (the `vrtx` tag's classification 1, the model
   rows `c[50..52]` at its slot's dynamic offset, as its layer 3 does);
@@ -2355,10 +2358,7 @@ loaded, drawn with each material's own translated layer-16 pass.
   layer-16 passes blended over the loaded depth with the pass's own
   `PassState` (the 03a fog passes are `ZFUNC` equal without depth
   writes — the depth the world's native pass already wrote bit for
-  bit). The list order between blended items does not matter under the
-  equal test: only the surface that wrote a pixel's depth passes, so
-  different parts' fog never overlaps but at shared edges (S: coplanar
-  ties, as the world's).
+  bit).
 - **The A/B and diagnostics.** `H2_NATIVE_FOG_COMPARE=<cluster>:<part>[:<material>]`
   leaves that part's items to the D3D path and arms `d3d::uniform_compare`
   with the native pass's program and uniforms for its layer-16 draws, as
@@ -2372,8 +2372,9 @@ loaded, drawn with each material's own translated layer-16 pass.
 `native_render::water_gpu` and `boot::native_water_glue`. Two parts:
 
 - **The water edge blend, drawn natively (layer 6).** The skip is the
-  fog's shape: one context-only observer before the layer draw, when
-  the current layer is 6 and the caller is the late passes' call
+  fog's shape: one context-only observer before the layer draw, ordered
+  after the world's and the fog's. It runs for layer 6 when the caller
+  is the late passes' call
   (`[esp] == 0x0002c120`), gated by the water branch's own gate (bit 4
   of `0x004b9fe0` clear). The wrappers are never skipped — `0x0003ba90`
   before the layer and `0x0003c3c0` with its alpha-only clear
@@ -2390,14 +2391,15 @@ loaded, drawn with each material's own translated layer-16 pass.
 - **The scene-copy and reflection inputs, explicit.** A layer-6 pass
   binds engine textures, and each is supplied per view
   (`water_gpu::Supply`): the view's own target (id 5) as a copy of the
-  bound colour made inside each Reference and Display recording
-  (`WaterSet::make_copy`, with scratch storage sized to that copy — an attachment cannot be sampled as it is
-  drawn into; a colour that cannot be copied refuses the view in
-  `prepare_copy`), and the render targets (the engine-texture table's
-  `Target`s) through the reservation's `sampled` levels: their guest
-  surface headers from Halo's target table (`0x004b4b58`, stride
-  `0x98`, surface at `+0x88`), read at the ask, resolved by the device
-  per copy and refused whole when one does not resolve. Any other
+  bound colour made inside each Reference and Display recording.
+  Each copy caches its own scratch texture by size and format. Render
+  targets use the reservation's `sampled` levels. The guest texture
+  header is embedded at `+4` in Halo's descriptor table (`0x004b4b58`,
+  stride `0x98`). The resolver at `0x0001dcc0` requires a nonzero
+  surface at `+0x88` and a clear byte at `+0x95`. The reservation
+  refuses if a required copy has an unresolved sample, a sample that
+  aliases an attachment, an unfilterable sample, or an unsuitable
+  source for the scene copy. Any other
   engine id — run-time chosen, the light's, a rasterizer bitmap, a
   cleared stage — refuses the material at the load
   (`FogRefusal::Unsupplied`). `H2_NATIVE_WATER_PROBE=1` logs the

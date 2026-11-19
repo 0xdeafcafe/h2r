@@ -11,7 +11,7 @@
 //! the view's own target (id 5) as a copy of the bound colour made in
 //! the recording ([`WaterSet::make_copy`]: an attachment cannot be
 //! sampled as it is drawn into), the render targets through the
-//! reservation's sampled levels (their guest surface headers from
+//! reservation's sampled levels (their embedded guest texture headers from
 //! Halo's target table `0x004b4b58`, boot's glue). The look keeps only
 //! those two kinds ([`crate::fog_gpu::supplied_layer_passes`]);
 //! anything else refuses the material, and the census names what a
@@ -41,8 +41,7 @@ pub enum Supply {
     /// the pass draws into it.
     View,
     /// A render target by index (the engine-texture table's `Target`):
-    /// the reservation's sampled level of its guest surface header
-    /// (`native_water_glue::target_header`).
+    /// the reservation's sampled level of the descriptor's texture header.
     Target(u32),
 }
 
@@ -74,9 +73,8 @@ pub struct WaterSet {
     pub samples_view: bool,
     /// The lightmap pages the parts use, as views.
     pages: HashMap<LightmapKey, Option<wgpu::TextureView>>,
-    /// The kept copy of the bound colour (extent, format, texture, view),
-    /// remade when the target changes.
-    copy: Option<(wgpu::Extent3d, wgpu::TextureFormat, wgpu::Texture, wgpu::TextureView)>,
+    /// Scratch views for the Reference and Display scene copies.
+    scene_copies: [Option<wgpu::TextureView>; 2],
 }
 
 struct WaterMaterial {
@@ -134,7 +132,7 @@ impl WaterSet {
                 pages.insert(k, lightmap_image(k).map(|i| texture(device, queue, &i, "native water lightmap")));
             }
         }
-        Self { materials, parts: parts.into_iter().collect(), targets, samples_view, pages, copy: None }
+        Self { materials, parts: parts.into_iter().collect(), targets, samples_view, pages, scene_copies: [None, None] }
     }
 
     /// How many materials draw natively.
@@ -206,17 +204,33 @@ impl WaterSet {
     }
 
     /// Copies the bound colour for the stages that sample the view's own
-    /// target, into the kept copy (remade when the target's extent or
-    /// format changes), and returns its view. The copy is made before
+    /// target into this target copy's scratch texture, remade when its
+    /// extent or format changes. The copy is recorded before
     /// the pass draws into the target, so the stages read the scene as
     /// the wrapper's own draws found it.
-    pub fn make_copy(&mut self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, color: &wgpu::TextureView) -> Option<wgpu::TextureView> {
+    pub fn make_copy(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        color: &wgpu::TextureView,
+        copy: d3d::TargetCopy,
+    ) -> wgpu::TextureView {
         let texture = color.texture();
-        let extent = wgpu::Extent3d { width: texture.width(), height: texture.height(), depth_or_array_layers: 1 };
+        let extent = texture.size();
         let format = texture.format();
-        if self.copy.as_ref().is_none_or(|(e, f, _, _)| *e != extent || *f != format) {
+        let scratch = match copy {
+            d3d::TargetCopy::Reference => &mut self.scene_copies[0],
+            d3d::TargetCopy::Display => &mut self.scene_copies[1],
+        };
+        if scratch.as_ref().is_some_and(|view| {
+            let texture = view.texture();
+            texture.size() != extent || texture.format() != format
+        }) {
+            *scratch = None;
+        }
+        let view = scratch.get_or_insert_with(|| {
             let usage = wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST;
-            let t = device.create_texture(&wgpu::TextureDescriptor {
+            device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("native water view copy"),
                 size: extent,
                 mip_level_count: 1,
@@ -225,13 +239,10 @@ impl WaterSet {
                 format,
                 usage,
                 view_formats: &[],
-            });
-            let v = t.create_view(&Default::default());
-            self.copy = Some((extent, format, t, v));
-        }
-        let (_, _, destination, view) = self.copy.as_ref()?;
-        encoder.copy_texture_to_texture(texture.as_image_copy(), destination.as_image_copy(), extent);
-        Some(view.clone())
+            }).create_view(&Default::default())
+        });
+        encoder.copy_texture_to_texture(texture.as_image_copy(), view.texture().as_image_copy(), extent);
+        view.clone()
     }
 
     /// Records the selected items in order into `pass` (the world's

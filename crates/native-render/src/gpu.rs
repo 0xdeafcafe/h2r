@@ -618,6 +618,7 @@ impl GpuWorld {
         depth: &wgpu::TextureView,
         depth_format: wgpu::TextureFormat,
         target_size: (u32, u32),
+        target_copy: d3d::TargetCopy,
         selected: &[(Owner, u8)],
         sampled: &[Option<wgpu::TextureView>],
     ) -> usize {
@@ -625,8 +626,7 @@ impl GpuWorld {
         set.pipelines(device, color_format, depth_format);
         let copy = set
             .samples_view
-            .then(|| set.make_copy(device, encoder, color))
-            .flatten();
+            .then(|| set.make_copy(device, encoder, color, target_copy));
         let set = &*set;
         let has_stencil = depth_format.has_stencil_aspect();
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -658,7 +658,7 @@ impl GpuWorld {
         // The programs carry the game's viewport in their constants: the
         // pass covers the whole target, as the world's programs do.
         pass.set_viewport(0.0, 0.0, target_size.0 as f32, target_size.1 as f32, 0.0, 1.0);
-        pass.set_vertex_buffer(0, self.vertices.slice(..));
+        pass.set_vertex_buffer(0, self.program_vertices.slice(..));
         pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
         set.draw(device, &mut pass, color_format, depth_format, copy.as_ref(), selected, sampled)
     }

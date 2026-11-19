@@ -45,7 +45,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use engine::memory::GuestMemory;
 use engine::points;
@@ -100,8 +100,11 @@ pub fn layers(env: Option<&str>) -> Option<Vec<u32>> {
 }
 
 /// The layers to census now ([`layers`], the default water only).
-pub fn census_layers() -> Vec<u32> {
-    layers(std::env::var("H2_NATIVE_WATER_CENSUS").ok().as_deref()).unwrap_or_else(|| vec![6])
+pub fn census_layers() -> &'static [u32] {
+    static LAYERS: OnceLock<Vec<u32>> = OnceLock::new();
+    LAYERS.get_or_init(|| {
+        layers(std::env::var("H2_NATIVE_WATER_CENSUS").ok().as_deref()).unwrap_or_else(|| vec![6])
+    })
 }
 
 /// Bit 4 of `0x004b9fe0`: set, `0x0003c3c0(0, 0)` runs instead of the
@@ -398,6 +401,7 @@ impl Feature for NativeWater {
                 before_layer(&mut *g, ret);
             })
             .after_feature(crate::render_timing::ID)
+            .after_feature(crate::native_world::ID)
             .after_feature(crate::native_fog::ID)
             .context_only();
         b.snapshot(crate::SnapshotPolicy::Stateless);

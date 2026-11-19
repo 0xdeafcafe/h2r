@@ -9,11 +9,11 @@
 //! scene-copy and reflection input census. Read-only: nothing is kept
 //! and nothing is skipped.
 //!
-//! The targets' guest surface headers (`0x004b4b58`, stride `0x98`, the
-//! surface at `+0x88`) are named in the same lines when a pass would
-//! sample them: what a native pass must supply per view, and how (the
-//! reservation's `sampled` levels, or a copy of the bound colour for the
-//! view's own target). `H2_NATIVE_WATER_PROBE=1` logs the first
+//! Sampled render targets use the texture header embedded at `+4` in the
+//! target descriptor (`0x004b4b58`, stride `0x98`). The resolver at
+//! `0x0001dcc0` requires a live surface at `+0x88` and a clear byte at
+//! `+0x95`. Engine texture 5 samples a copy of the bound colour for the
+//! view's own target. `H2_NATIVE_WATER_PROBE=1` logs the first
 //! committed recording for each target copy.
 
 use std::collections::{BTreeSet, HashMap};
@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use engine::memory::GuestMemory;
+use engine::screen_effect::{TARGET_STRIDE, TARGETS};
 use feature::native_water::Host;
 use map::{Map, TagId};
 use native_render::fog_gpu::{FogProgram, FogWords};
@@ -58,12 +59,6 @@ pub struct WaterData {
 
 /// The census layers ([`feature::native_water`]'s).
 pub const CENSUS_LAYERS: [usize; 4] = [6, 18, 19, 21];
-/// Halo's target table (`0x0001dd60`'s, docs/graphics/native-renderer.md
-/// "Stage 5"): `+0x98` per target, the surface header at `+0x88`.
-pub const TARGET_TABLE: u32 = 0x004b_4b58;
-pub const TARGET_STRIDE: u32 = 0x98;
-pub const TARGET_SURFACE: u32 = 0x88;
-
 /// One stage's source, named.
 fn source_of(s: TextureSource) -> String {
     match s {
@@ -75,7 +70,7 @@ fn source_of(s: TextureSource) -> String {
         TextureSource::Engine(id) => {
             let what = match engine_texture(id) {
                 EngineTexture::Rasterizer(off) => format!("a rasterizer bitmap (+{off:#x})"),
-                EngineTexture::Target(t) => format!("render target {t} (the scene's own at 0x98·{t}+0x88)", t = t),
+                EngineTexture::Target(t) => format!("render target {t} (texture header at 0x98 * {t} + 4 in the target table)"),
                 EngineTexture::View => "the view's bound target (a scene copy)".into(),
                 EngineTexture::Slot(word) => format!("the screen effects' slot at {word:#x}"),
                 EngineTexture::Cleared => "a cleared stage".into(),
@@ -154,10 +149,14 @@ fn layer_passes_of(mat: &Material, layer: usize) -> Option<Vec<(&tags::material:
     (!out.is_empty()).then_some(out)
 }
 
-/// The guest surface header of render target `t` (the scene-copy and
-/// reflection inputs' attachment), or 0 when it does not read.
-pub fn target_header(mem: &dyn engine::memory::GuestMemory, t: u32) -> u32 {
-    mem.u32(TARGET_TABLE + TARGET_STRIDE * t + TARGET_SURFACE).unwrap_or(0)
+/// The embedded texture header returned by `0x0001dcc0` for a live target.
+fn target_header(mem: &dyn GuestMemory, target: u32) -> Option<u32> {
+    let descriptor = TARGETS.checked_add(TARGET_STRIDE.checked_mul(target)?)?;
+    let disabled = descriptor.checked_add(0x95)?;
+    if mem.u32(descriptor + 0x88).ok()? == 0 || mem.u8(disabled).ok()? != 0 {
+        return None;
+    }
+    Some(descriptor + 4)
 }
 
 /// Loads the water edge blend's passes over the world's transparent
@@ -331,19 +330,16 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             return None;
         }
         // The render targets the passes sample (the reflection inputs):
-        // their guest surface headers, read now and resolved by the
-        // reservation. A header that does not read leaves the view to the
-        // D3D path.
+        // their embedded texture headers, resolved by the reservation.
         let mut headers = Vec::with_capacity(water.targets.len());
         for &t in &water.targets {
-            let h = target_header(mem, t);
-            if h == 0 {
+            let Some(header) = target_header(mem, t) else {
                 if !TARGET_UNREADABLE.swap(true, Ordering::Relaxed) {
-                    eprintln!("native-water: render target {t}'s surface header does not read; the D3D path draws the water");
+                    eprintln!("native-water: render target {t} is unavailable; the D3D path draws the water");
                 }
                 return None;
-            }
-            headers.push(h);
+            };
+            headers.push(header);
         }
         // The fog state, as the fog's (a water pass that reads the fog
         // register gets the device's).
@@ -385,6 +381,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             selected: selected.into_iter().map(|item| (item.owner, item.part)).collect(),
             fogs,
             headers,
+            samples_view: water.samples_view,
             view: None,
             w_clip: None,
             writes_depth,
@@ -424,9 +421,10 @@ struct WaterViewPass {
     selected: Vec<(Owner, u8)>,
     /// Each material's fog unit and colour, resolved at the ask.
     fogs: HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>,
-    /// The render targets' guest surface headers ([`WaterData::targets`]'
+    /// The render targets' guest texture headers ([`WaterData::targets`]'
     /// order), for the reservation's sampled levels.
     headers: Vec<u32>,
+    samples_view: bool,
     view: Option<[[f32; 4]; d3d::VIEW_CONSTANTS]>,
     w_clip: Option<([f32; 2], bool)>,
     writes_depth: bool,
@@ -441,7 +439,7 @@ impl d3d::ExternalPass for WaterViewPass {
         self.w_clip = (clip.w_buffered == Some(true)).then_some((clip.range, clip.clamp));
     }
 
-    /// The render targets' surface headers, read at the ask: the
+    /// The render targets' texture headers, resolved at the ask: the
     /// reflection inputs, resolved to the live levels (a header that
     /// cannot be resolved refuses the whole replacement).
     fn sampled(&self) -> Vec<u32> {
@@ -452,21 +450,35 @@ impl d3d::ExternalPass for WaterViewPass {
         if self.view.is_none() || self.w_clip.is_none() {
             return Err("water view constants or W-buffer clip unavailable");
         }
-        let mut guard = crate::native_world_glue::upload(&self.ready, t);
-        let gpu = guard.as_mut().ok_or("world geometry unavailable")?;
+        if t.sampled.len() != self.headers.len() {
+            return Err("a water target sample is unavailable on this copy");
+        }
+        let features = t.device.features();
+        for level in t.sampled {
+            let level = level.as_ref().ok_or("a water target sample is unavailable on this copy")?;
+            let texture = level.view.texture();
+            if texture == t.color.texture() || texture == t.depth.texture() {
+                return Err("a water sample aliases an attachment");
+            }
+            if !gfx::program::filterable(texture.format(), features) {
+                return Err("a water sample is not filterable");
+            }
+        }
+        if self.samples_view {
+            if !gfx::program::filterable(t.color_format, features) {
+                return Err("the bound colour is not filterable for the scene stages");
+            }
+            if t.color.texture().format() != t.color_format || !WaterSet::can_copy(t.color, t.size) {
+                return Err("the bound colour cannot be copied for the scene stages");
+            }
+        }
+        let guard = crate::native_world_glue::upload(&self.ready, t);
+        let gpu = guard.as_ref().ok_or("world geometry unavailable")?;
         let set = gpu.water().ok_or("water materials unavailable")?;
         for &(owner, part) in &self.selected {
             if !set.draws_part(owner, part) {
                 return Err("a selected water part did not bind");
             }
-        }
-        if t.sampled.len() != self.headers.len() || t.sampled.iter().any(Option::is_none) {
-            return Err("a water target sample is unavailable on this copy");
-        }
-        if set.samples_view
-            && (t.color.texture().format() != t.color_format || !WaterSet::can_copy(t.color, t.size))
-        {
-            return Err("the bound colour cannot be copied for the scene stages");
         }
         Ok(())
     }
@@ -493,7 +505,7 @@ impl d3d::ExternalPass for WaterViewPass {
         }
         let ranges = gpu.encode_water(
             t.device, t.encoder, t.color, t.color_format, t.depth, t.depth_format,
-            t.size, &self.selected, &sampled,
+            t.size, t.copy, &self.selected, &sampled,
         );
         if std::env::var_os("H2_NATIVE_WATER_PROBE").is_some_and(|v| v == "1")
             && let Some(on_submit) = t.on_submit
@@ -513,5 +525,98 @@ impl d3d::ExternalPass for WaterViewPass {
             }));
         }
         ranges
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use d3d::{ExternalPass, TargetCopy, backend::SampledLevel};
+    use engine::memory::FlatMemory;
+    use wgpu::{TextureFormat, TextureUsages};
+
+    #[test]
+    fn target_header_uses_the_embedded_texture_of_a_live_target() {
+        let mut mem = FlatMemory::new(TARGETS, (2 * TARGET_STRIDE) as usize);
+        let descriptor = TARGETS + TARGET_STRIDE;
+        assert_eq!(target_header(&mem, 1), None);
+
+        mem.set_u32(descriptor + 0x88, 0x1000).unwrap();
+        mem.set_u8(descriptor + 0x94, 1).unwrap();
+        assert_eq!(target_header(&mem, 1), Some(native_render::object_nodes::TEXACCUM_HEADER));
+
+        mem.set_u8(descriptor + 0x95, 1).unwrap();
+        assert_eq!(target_header(&mem, 1), None);
+        assert_eq!(target_header(&mem, 2), None);
+    }
+
+    #[test]
+    fn prepare_copy_refuses_attachment_aliases_and_unfilterable_formats() {
+        let Ok(ctx) = gfx::GfxContext::headless() else {
+            eprintln!("SKIPPED water preflight test: no headless adapter");
+            return;
+        };
+        let size = (4, 4);
+        let make_view = |format, usage| {
+            ctx.device.create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size: wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage,
+                view_formats: &[],
+            }).create_view(&Default::default())
+        };
+        let color_usage = TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC | TextureUsages::TEXTURE_BINDING;
+        let color = make_view(TextureFormat::Rgba8Unorm, color_usage);
+        let depth = make_view(TextureFormat::Depth32Float, TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING);
+        let integer = make_view(TextureFormat::Rgba8Uint, color_usage);
+        let valid = make_view(TextureFormat::Rgba8Unorm, TextureUsages::TEXTURE_BINDING);
+        let uploads = gfx::ring::UploadPool::default().begin();
+        for copy in [TargetCopy::Reference, TargetCopy::Display] {
+            let prepare = |color: &wgpu::TextureView, sampled: Option<&wgpu::TextureView>, samples_view| {
+                let mut encoder = ctx.device.create_command_encoder(&Default::default());
+                let sampled: Vec<_> = sampled
+                    .map(|v| Some(SampledLevel { view: v.texture().create_view(&Default::default()), size }))
+                    .into_iter()
+                    .collect();
+                let mut pass = WaterViewPass {
+                    ready: Arc::new(Ready::default()),
+                    selected: Vec::new(),
+                    fogs: HashMap::new(),
+                    headers: vec![native_render::object_nodes::TEXACCUM_HEADER; sampled.len()],
+                    samples_view,
+                    view: Some([[0.0; 4]; d3d::VIEW_CONSTANTS]),
+                    w_clip: Some(([0.0, 1.0], false)),
+                    writes_depth: false,
+                };
+                pass.prepare_copy(&d3d::ExternalTarget {
+                    device: &ctx.device,
+                    queue: &ctx.queue,
+                    encoder: &mut encoder,
+                    color,
+                    color_format: color.texture().format(),
+                    depth: &depth,
+                    depth_format: depth.texture().format(),
+                    viewport: [0.0, 0.0, 4.0, 4.0],
+                    z_scale: 1.0,
+                    guest_size: size,
+                    size,
+                    sampled: &sampled,
+                    slots: &[],
+                    uploads: &uploads,
+                    copy,
+                    stages: [None; 4],
+                    on_submit: None,
+                })
+            };
+            assert_eq!(prepare(&color, Some(&color), false), Err("a water sample aliases an attachment"));
+            assert_eq!(prepare(&color, Some(&depth), false), Err("a water sample aliases an attachment"));
+            assert_eq!(prepare(&color, Some(&integer), false), Err("a water sample is not filterable"));
+            assert_eq!(prepare(&integer, None, true), Err("the bound colour is not filterable for the scene stages"));
+            assert_eq!(prepare(&color, Some(&valid), true), Err("world geometry unavailable"));
+        }
     }
 }
