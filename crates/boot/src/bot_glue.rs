@@ -39,6 +39,10 @@
 //!   (`SOUND_LISTENERS_UPDATE`), which the per-frame update also calls
 //!   outside `SOUND_UPDATE`, gets the same window, and the bots' listeners
 //!   are marked inactive ([`bots::guest::quiet_listeners`]).
+//! - Around `SOUND_OWNER_USER`, which a starting sound asks whose own
+//!   sound it is, the bots' users are hidden too, so a bot's guns,
+//!   footsteps and voice start as positioned world sounds, not as plain
+//!   sounds in the human's ears.
 //! - Around the players screen's update (`PLAYERS_SCREEN_UPDATE`) the
 //!   bots' controller handles read as none ([`bots::guest::hide_pads`]),
 //!   so its panes show the humans only ("CONNECT CONTROLLER" on a bot's
@@ -89,6 +93,15 @@
 //! leaving bot whose slot holds no profile and no Live is unplugged
 //! ([`bots::local::leave_step`], [`bots::guest::slot_held`]). A game never
 //! sees a bot's pad go.
+//!
+//! **Never a saved profile.** A bot is signed in with no profile file
+//! (`-1`), only on an empty slot ([`bots::guest::sign_in_then`]), so it
+//! never holds, hides or saves one of the user's profiles. Should a slot
+//! of a bot's hold a saved profile anyway (a chooser opened for its
+//! controller and took a stray A), the glue signs it out once no game
+//! runs ([`bots::local::release_step`], [`bots::guest::saved_profile`]):
+//! the profile is offered again, nothing is saved, and the join gate signs
+//! the bot back in with its own block.
 //!
 //! With no bots every hook returns at once. The bots stay signed in until
 //! they are taken off; going back to the players screen finds them joined,
@@ -322,6 +335,15 @@ pub fn to_sign_in(
         .collect()
 }
 
+/// The log line for bots whose slot holds a saved profile
+/// ([`bots::local::release_step`]) as the glue signs them out.
+pub fn release_line(ports: &[u8]) -> String {
+    format!(
+        "bots: the bots on ports {ports:?} hold a saved profile (a chooser gave it to them): \
+         signing them out so it is offered again; nothing is saved"
+    )
+}
+
 /// The log line for one bot the glue signs in, and where: on the players
 /// screen (with its join mask) or in the pregame lobby (the session adds
 /// the player itself).
@@ -450,6 +472,8 @@ pub struct Bots {
     panes: Arc<Mutex<Option<guest::HiddenPads>>>,
     /// The bot users hidden around the listener update.
     listeners: Arc<Mutex<Option<Hidden>>>,
+    /// The bot users hidden around a sound's owner lookup.
+    owners: Arc<Mutex<Option<Hidden>>>,
     /// The last lobby facts line said.
     lobby_said: Arc<Mutex<String>>,
     /// When the Xbox Live and the sign-in tries were last made.
@@ -480,6 +504,7 @@ impl Bots {
             pressed: Arc::default(),
             panes: Arc::default(),
             listeners: Arc::default(),
+            owners: Arc::default(),
             lobby_said: Arc::default(),
             live_every: Arc::default(),
             sign_in_every: Arc::default(),
@@ -602,6 +627,35 @@ impl feature::Feature for Bots {
                 Ok(())
             },
         );
+
+        // A sound starting on an object: the game asks whose own sound it
+        // is (a mapped local user's unit, or what it holds), and that
+        // user's sounds play as plain sounds in the ears, with no position,
+        // distance or walls. The bots are local users, so their guns,
+        // footsteps, grenades and voices all played in the human's ears
+        // (docs/game/bots.md §4.3, "Whose sound"). With the bots' users
+        // hidden the walk finds only the humans, and a bot's sound starts
+        // positioned, as a remote player's does.
+        let (local, owners) = (self.local.clone(), Arc::clone(&self.owners));
+        b.raw()
+            .before(&points::SOUND_OWNER_USER, "hide bot owners", move |c| {
+                let bots = local.port_mask();
+                if bots == 0 {
+                    return Ok(Flow::Continue);
+                }
+                let rt = Arc::clone(c.ctx.runtime());
+                *lock(&owners) = guest::hide(&mut *rt.memory(), bots).ok().flatten();
+                Ok(Flow::Continue)
+            });
+        let owners = Arc::clone(&self.owners);
+        b.raw()
+            .after(&points::SOUND_OWNER_USER, "bot owners back", move |c| {
+                if let Some(h) = lock(&owners).take() {
+                    let rt = Arc::clone(c.ctx.runtime());
+                    guest::restore(&mut *rt.memory(), &h).map_err(|e| fault(e.addr))?;
+                }
+                Ok(())
+            });
 
         // A Start press in the lobby while bots are in: the start state is
         // logged before the next SOUND_UPDATE (once per press).
@@ -960,6 +1014,31 @@ impl feature::Feature for Bots {
                             Box::pin(async move {
                                 let r = guest::sign_in_then(cx, joins, bots, buffer, screen, then)
                                     .await;
+                                busy.store(false, Ordering::Relaxed);
+                                r
+                            })
+                        });
+                    }
+                }
+                if !busy.load(Ordering::Relaxed) {
+                    let release = {
+                        let mem = rt.memory();
+                        let in_game = guest::in_game(&*mem);
+                        local::release_step(in_game, local.joining_mask(), |p| {
+                            guest::saved_profile(&*mem, u32::from(p))
+                                .ok()
+                                .flatten()
+                                .is_some()
+                        })
+                    };
+                    if !release.is_empty() {
+                        eprintln!("{}", release_line(&release));
+                        busy.store(true, Ordering::Relaxed);
+                        let busy = Arc::clone(&busy);
+                        let then = points::SOUND_UPDATE.base;
+                        return c.answer_async(move |cx| -> engine::entry::EntryFuture {
+                            Box::pin(async move {
+                                let r = guest::sign_out_then(cx, release, then).await;
                                 busy.store(false, Ordering::Relaxed);
                                 r
                             })
@@ -1328,6 +1407,13 @@ mod tests {
             sign_in_skip(true, false, false),
             Some("no human profile to copy (no port without a bot has a profile)")
         );
+    }
+
+    #[test]
+    fn the_release_line_names_the_ports() {
+        let line = release_line(&[1, 3]);
+        assert!(line.starts_with("bots: the bots on ports [1, 3] hold a saved profile"));
+        assert!(line.ends_with("nothing is saved"));
     }
 
     #[test]

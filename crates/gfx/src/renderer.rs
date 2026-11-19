@@ -860,6 +860,9 @@ impl Renderer {
         }
         let mut key =
             PipelineKey::from_plan(d.shader, &plan, d.primitive, &d.state, formats, self.caps);
+        if d.state.depth_clamp && !self.caps.depth_clip_control {
+            crate::translate::depth_clamp_unsupported();
+        }
         // Only a counted draw that writes depth or stencil copies the
         // attachment (a read-only one replays in place).
         if d.count_samples

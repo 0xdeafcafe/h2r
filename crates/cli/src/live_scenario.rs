@@ -15,6 +15,7 @@ use tags::geometry::TagView;
 
 use crate::live_geometry::{MachineModel, MapReader, NothingDrawn, Placement, object_model};
 use crate::live_looks::Looks;
+use crate::live_scripted::{Scripted, ScriptedBy};
 
 /// A placement block of the scenario: the object type table's columns
 /// (docs/formats/objects.md): the kind (tag group) it places, its offset in `scnr`
@@ -25,6 +26,11 @@ pub struct Block {
     pub kind: &'static str,
     pub offset: usize,
     pub stride: usize,
+    /// The object type (type table index) scenario object names give for
+    /// this block's placements (`scenario_edit::layout`; controls and light
+    /// fixtures by the type table's order between machines and sound
+    /// scenery).
+    pub object_type: i16,
 }
 
 pub const BLOCKS: [Block; 8] = [
@@ -32,44 +38,52 @@ pub const BLOCKS: [Block; 8] = [
         kind: "scen",
         offset: 0x50,
         stride: 0x5c,
+        object_type: 6,
     },
     Block {
         kind: "vehi",
         offset: 0x70,
         stride: 0x54,
+        object_type: 1,
     },
     Block {
         kind: "eqip",
         offset: 0x80,
         stride: 0x38,
+        object_type: 3,
     },
     Block {
         kind: "weap",
         offset: 0x90,
         stride: 0x54,
+        object_type: 2,
     },
     Block {
         kind: "ctrl",
         offset: 0xb8,
         stride: 0x44,
+        object_type: 8,
     },
     Block {
         kind: "lifi",
         offset: 0xc8,
         stride: 0x54,
+        object_type: 9,
     },
     Block {
         kind: "ssce",
         offset: 0xd8,
         stride: 0x50,
+        object_type: 10,
     },
     Block {
         kind: "bloc",
         offset: 0x328,
         stride: 0x4c,
+        object_type: 11,
     },
 ];
-const PALETTE_STRIDE: usize = 0x28;
+pub(crate) const PALETTE_STRIDE: usize = 0x28;
 
 /// The netgame equipment block (`scnr+0x120`, 0x90-byte entries;
 /// docs/game/forge.md): what multiplayer spawns and respawns at run time.
@@ -117,6 +131,9 @@ pub struct PlacedObject {
     pub bsp: Option<usize>,
     /// Netgame equipment only: the drawn object's group (`weap`, `vehi`, ...).
     pub item: Option<String>,
+    /// The script that creates it, when one does (`crate::live_scripted`):
+    /// a placement the level does not make at the start is drawn only then.
+    pub script: Option<ScriptedBy>,
 }
 
 impl PlacedObject {
@@ -144,6 +161,9 @@ impl PlacedObject {
         }
         if let Some(i) = &self.item {
             e["item"] = serde_json::json!(i);
+        }
+        if let Some(s) = &self.script {
+            e["script"] = s.extras();
         }
         e
     }
@@ -226,7 +246,8 @@ fn resolve_item(ctx: &tags::object::Context, mut id: TagId) -> Result<TagId> {
 /// The scenario's objects: models (model space, each read once) and
 /// placements. A placement that cannot be drawn goes to `skipped` under
 /// `map/<stem>/object_<kind>_<index>`; one whose object has no model is not
-/// drawn.
+/// drawn. A placement the level does not make at the start is drawn when
+/// `scripted` says a script creates it, and carries that script.
 pub fn load_objects(
     map: &mut MapReader,
     files: &mut ResourceFiles,
@@ -234,6 +255,7 @@ pub fn load_objects(
     bsps: usize,
     skipped: &mut BTreeMap<String, String>,
     looks: &mut Looks,
+    scripted: &Scripted,
 ) -> Result<(Vec<MachineModel>, Vec<PlacedObject>)> {
     let scenario = map.scenario().context("no scenario")?.clone();
     let location = scenario.location.context("scenario has no payload")?;
@@ -292,7 +314,10 @@ pub fn load_objects(
             else {
                 continue;
             };
-            if id == TagId::NULL || !placed_at_start(rec) {
+            let Some(script) = drawn(rec, &block, i, scripted) else {
+                continue;
+            };
+            if id == TagId::NULL {
                 continue;
             }
             if !finite(&at) {
@@ -308,6 +333,7 @@ pub fn load_objects(
                     at,
                     bsp: origin_bsp(rec, bsps),
                     item: None,
+                    script,
                 }),
                 Err(why) => {
                     skipped.insert(key, why);
@@ -351,6 +377,7 @@ pub fn load_objects(
                 item: group
                     .ok()
                     .map(|g| String::from_utf8_lossy(&g.0).trim().to_string()),
+                script: None,
             }),
             Err(why) => {
                 skipped.insert(key, why);
@@ -358,6 +385,64 @@ pub fn load_objects(
         }
     }
     Ok((models, out))
+}
+
+/// Whether placement `index` of `block` is drawn, and the script that
+/// creates it: `None` when it is not drawn (not made at the start and no
+/// script creates it); `Some(None)` when the level places it with no
+/// script involved.
+pub fn drawn(
+    record: &[u8],
+    block: &Block,
+    index: usize,
+    scripted: &Scripted,
+) -> Option<Option<ScriptedBy>> {
+    let script = scripted
+        .placements
+        .get(&(block.object_type, index))
+        .cloned();
+    (placed_at_start(record) || script.is_some()).then_some(script)
+}
+
+/// What the scenario's scripts spawn (`crate::live_scripted`), resolved
+/// against its object names, cutscene flags and placements. `source` is
+/// the scripts decompiled.
+pub fn read_scripted(map: &mut MapReader, source: &str) -> Result<Scripted> {
+    use crate::live_scripted as ls;
+    let spawns = ls::spawns(source);
+    if spawns.is_empty() {
+        return Ok(Scripted::default());
+    }
+    let scenario = map.scenario().context("no scenario")?.clone();
+    let location = scenario.location.context("scenario has no payload")?;
+    let bytes = map.read_tag_bytes(scenario.id)?;
+    let view = TagView::new(&bytes, location.address);
+    let root = view.at(0, 0x330 + 8)?;
+    let names: Vec<ls::ObjectName> = view
+        .block(root, ls::OBJECT_NAMES, ls::OBJECT_NAME_STRIDE)?
+        .into_iter()
+        .filter_map(ls::ObjectName::parse)
+        .collect();
+    let flags: Vec<(String, [f32; 3])> = view
+        .block(root, ls::CUTSCENE_FLAGS, ls::CUTSCENE_FLAG_STRIDE)?
+        .into_iter()
+        .filter_map(ls::parse_flag)
+        .collect();
+    let mut positions: HashMap<(i16, usize), [f32; 3]> = HashMap::new();
+    for block in BLOCKS {
+        for (i, rec) in view
+            .block(root, block.offset, block.stride)?
+            .into_iter()
+            .enumerate()
+        {
+            if let Some(at) = Placement::parse(rec) {
+                positions.insert((block.object_type, i), at.position);
+            }
+        }
+    }
+    Ok(Scripted::resolve(&spawns, &names, &flags, |t, i| {
+        positions.get(&(t, i)).copied()
+    }))
 }
 
 /// Whether an object's tag name says it is not seen in the game: a word
@@ -475,6 +560,7 @@ mod tests {
             },
             bsp: Some(1),
             item: None,
+            script: None,
         };
         assert_eq!(o.name(), "weap_4");
         let e = o.extras("battle_rifle");
@@ -492,5 +578,51 @@ mod tests {
         let u: Vec<f64> = serde_json::from_value(e["up"].clone()).unwrap();
         assert!((u[2] - 1.0).abs() < 1e-6);
         assert!(e.get("item").is_none());
+        assert!(e.get("script").is_none());
+        let looping = PlacedObject {
+            script: Some(ScriptedBy {
+                script: "respawn".into(),
+                looping: true,
+                period: Some(2.5),
+            }),
+            ..o
+        };
+        assert_eq!(
+            looping.extras("x")["script"],
+            serde_json::json!({ "name": "respawn", "looping": true, "period": 2.5 })
+        );
+    }
+
+    #[test]
+    fn a_placement_a_script_creates_is_drawn_with_its_script() {
+        let vehi = BLOCKS.iter().find(|b| b.kind == "vehi").unwrap();
+        let scen = BLOCKS.iter().find(|b| b.kind == "scen").unwrap();
+        let mut later = vec![0u8; vehi.stride];
+        later[4..8].copy_from_slice(&NOT_AT_START.to_le_bytes());
+        let at_start = vec![0u8; vehi.stride];
+        let by = ScriptedBy {
+            script: "respawn".into(),
+            looping: true,
+            period: Some(10.0),
+        };
+        let mut scripted = Scripted::default();
+        scripted.placements.insert((1, 3), by.clone());
+        assert_eq!(drawn(&at_start, vehi, 0, &scripted), Some(None));
+        assert_eq!(
+            drawn(&later, vehi, 0, &scripted),
+            None,
+            "no script makes it"
+        );
+        assert_eq!(drawn(&later, vehi, 3, &scripted), Some(Some(by.clone())));
+        assert_eq!(
+            drawn(&at_start, vehi, 3, &scripted),
+            Some(Some(by)),
+            "respawned by a loop"
+        );
+        assert_eq!(
+            drawn(&later, scen, 3, &scripted),
+            None,
+            "the same index of another type is another object"
+        );
     }
 }

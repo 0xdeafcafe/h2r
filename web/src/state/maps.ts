@@ -5,7 +5,8 @@
 
 import { createSignal } from "solid-js";
 import { live } from "./live";
-import { isHalo1Map, mapTitle } from "./gameart";
+import { gameArt, isHalo1Map, mapTitle } from "./gameart";
+import { mapFilesFor } from "../map/views";
 import { PackageCache, geometryChoice, mapGroupLabel, packageImageUrl, packageTitle, type MapSummary, type PackageLookup } from "../lib/maps";
 
 const [version, setVersion] = createSignal(0);
@@ -63,5 +64,16 @@ export function packageImage(mapId: string | null | undefined): string | null {
 export function geometryChanged(g: GameMap): boolean {
   // A Halo 1 map's geometry is drawn from the converted map itself.
   if (isHalo1Map(g.map)) return false;
+  // So is a mod's the art extracted from the patched map.
+  if (hasModGeometry(g.map_id)) return false;
   return geometryChoice(packageLookup(g.map_id)) === "changed";
+}
+
+/** True when the server's art has an installed mod's own geometry for the
+ *  MapId (`h2 live assets extract` resolves the mods under the data root).
+ *  Reactive. */
+export function hasModGeometry(mapId: string | null | undefined): boolean {
+  if (!mapId) return false;
+  const hit = mapFilesFor(gameArt()?.manifest.maps, null, mapId);
+  return !!hit?.files.geometry;
 }

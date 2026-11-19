@@ -1241,6 +1241,26 @@ fn views_json_and_manifest_entries_follow_the_contract() {
     );
     let back: crate::live_art::Manifest = serde_json::from_value(j).unwrap();
     assert_eq!(back, manifest);
+    // A mod's entry: under its own stem, with its package's name, MapId,
+    // base and the hash of its patched map.
+    let info = crate::live_mods::ModInfo {
+        name: "Invented Mod".into(),
+        map_id: content::MapId([0xab; 32]),
+        base: "teacup".into(),
+        sha256: content::Sha256([0xcd; 32]),
+        image: None,
+    };
+    let entry = MapEntry {
+        geometry: Some("map/mod-abababababababab/map.glb".into()),
+        kind: Some(MapKind::Multiplayer),
+        ..Default::default()
+    }
+    .with_mod(&info);
+    let j = serde_json::to_value(&entry).unwrap();
+    assert_eq!(j["name"], "Invented Mod");
+    assert_eq!(j["map_id"], "ab".repeat(32));
+    assert_eq!(j["base"], "teacup");
+    assert_eq!(j["sha256"], "cd".repeat(32));
     // An older manifest without maps still reads, and so does an entry
     // without a kind.
     let old: crate::live_art::Manifest = serde_json::from_value(none).unwrap();
@@ -2528,6 +2548,7 @@ fn scenario_objects_are_shared_meshes_under_a_scenario_node() {
         },
         bsp: Some(0),
         item: (kind == "netgame").then(|| "weap".to_string()),
+        script: None,
     };
     level.object_models = vec![model];
     level.objects = vec![
@@ -2564,8 +2585,40 @@ fn scenario_objects_are_shared_meshes_under_a_scenario_node() {
         })
     );
     assert_eq!(doc["nodes"][4]["extras"]["item"], "weap");
+    assert!(doc["nodes"][3]["extras"].get("script").is_none());
+    assert!(doc["asset"]["extras"].get("spawners").is_none(), "absent when none");
     // Objects are not in the views' mesh: the pictures are unchanged.
     assert!(level.mesh.objects.is_empty());
+
+    // A mod's scripted spawns: a vehicle a looping script creates, and an
+    // effect it plays at a cutscene flag.
+    let mut hog = at("vehi", 2, 0.0);
+    hog.script = Some(crate::live_scripted::ScriptedBy {
+        script: "respawn_hog".into(),
+        looping: true,
+        period: Some(10.0),
+    });
+    level.objects.push(hog);
+    level.spawners = vec![crate::live_scripted::EffectSpawner {
+        script: "salvo".into(),
+        effect: "effects\\invented\\salvo".into(),
+        at: "flag_tower".into(),
+        pos: [1.0, 2.0, 3.0],
+        looping: true,
+        period: Some(2.5),
+    }];
+    let (doc, _) = parse_glb(&level.glb());
+    assert_eq!(
+        doc["nodes"][5]["extras"]["script"],
+        serde_json::json!({ "name": "respawn_hog", "looping": true, "period": 10.0 })
+    );
+    assert_eq!(
+        doc["asset"]["extras"]["spawners"],
+        serde_json::json!([{
+            "script": "salvo", "effect": "effects\\invented\\salvo", "at": "flag_tower",
+            "pos": [1.0, 2.0, 3.0], "looping": true, "period": 2.5
+        }])
+    );
 }
 
 /// Every level's BSP and placed-object shaders: the base map by names (the

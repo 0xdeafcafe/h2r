@@ -237,7 +237,8 @@ pub fn sky_blend(template: &str) -> &'static str {
 }
 
 /// The sky model as a glb: every region's base permutation at the highest
-/// detail under [`SKY_TRIANGLES`], textured, at rest; `asset.extras.sky`
+/// detail under [`SKY_TRIANGLES`], textured (its see-through layers keep
+/// their pictures, [`live_models::Surfaces::Sky`]), at rest; `asset.extras.sky`
 /// names the sky and `asset.extras.blend` says per material (in order) how
 /// it is drawn ([`sky_blend`]).
 pub fn sky_glb(
@@ -246,7 +247,8 @@ pub fn sky_glb(
     name: &str,
     mode: TagId,
 ) -> Result<Vec<u8>> {
-    let src = live_models::read_source(map, files, mode, SKY_TRIANGLES)?;
+    let src =
+        live_models::read_source_for(map, files, mode, SKY_TRIANGLES, live_models::Surfaces::Sky)?;
     let rest = live_models::rest_world(&src.bones);
     let mut model = Model {
         mesh_name: "sky".into(),

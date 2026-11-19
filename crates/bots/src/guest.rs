@@ -25,6 +25,19 @@ pub const SLOT_PROFILE: u32 = 0x10;
 /// The profile block: `0x1e0` bytes at slot `+0x18`.
 pub const SLOT_BLOCK: u32 = 0x18;
 pub const BLOCK_LEN: usize = 0x1e0;
+/// Slot `+0x1f8`: the handle of the saved profile file the slot's profile
+/// came from, or [`NO_FILE`] (`PROFILE_SIGN_IN` stores its `file` there).
+/// A handle here is what makes the profile "in use": every profile
+/// chooser leaves out a saved profile whose handle a signed-in slot holds
+/// (`0x18fc75`, from the list builder `0x24a190`), the sign-in keeps it in
+/// the open-profile list (`0x55c160` count, `0x55c164` entries of `0x44`
+/// bytes, room for four), and the save pass (`0x190e37`, `0x190e71`,
+/// slots with flag `0x40`) writes the slot's block to that file
+/// (`0x1a0660`). With [`NO_FILE`] none of that happens: `0x1a0660` returns
+/// at once.
+pub const SLOT_FILE: u32 = 0x1f8;
+/// No saved profile file (`-1`).
+pub const NO_FILE: u32 = u32::MAX;
 /// The name the game shows for the slot: UTF-16, 32 units, at slot `+0xc1c`
 /// (`0x1902c1`).
 pub const SLOT_NAME: u32 = 0xc1c;
@@ -99,6 +112,16 @@ pub fn slot(port: u32) -> u32 {
 /// Whether `port`'s slot has a profile signed in.
 pub fn signed_in(m: &dyn GuestMemory, port: u32) -> R<bool> {
     Ok(m.u32(slot(port))? & SLOT_PROFILE != 0)
+}
+
+/// The saved profile file `port`'s slot holds ([`SLOT_FILE`]), or `None`:
+/// no profile, or one with no file ([`NO_FILE`], as every bot's is).
+pub fn saved_profile(m: &dyn GuestMemory, port: u32) -> R<Option<u32>> {
+    if !signed_in(m, port)? {
+        return Ok(None);
+    }
+    let file = m.u32(slot(port) + SLOT_FILE)?;
+    Ok((file != NO_FILE).then_some(file))
 }
 
 /// The first port with a profile that is not a bot's (`bots` is a port
@@ -184,11 +207,14 @@ pub fn bot_join(m: &dyn GuestMemory, event: u32, bots: u32) -> R<Option<u32>> {
 }
 
 /// Signs the bot on `port` in with the game's own `PROFILE_SIGN_IN` (no
-/// file, so nothing is saved): its block made from the human's
-/// ([`bot_block`]), its slot named, and, given the players screen at
-/// `screen`, its port joined on that screen as the screen's own join does
-/// once a profile is picked. `buffer` is `BLOCK_LEN` bytes of guest memory of
-/// ours. False, with nothing done, when no human has a profile to copy.
+/// file, [`NO_FILE`], so nothing is saved and no saved profile is in use):
+/// its block made from the human's ([`bot_block`]), its slot named, and,
+/// given the players screen at `screen`, its port joined on that screen as
+/// the screen's own join does once a profile is picked. `buffer` is
+/// `BLOCK_LEN` bytes of guest memory of ours. False, with nothing done,
+/// when no human has a profile to copy, or when the bot's slot has a
+/// profile already: the game's sign-in over a slot replaces its profile,
+/// so it is only ever made on an empty slot.
 async fn sign_in_one(
     cx: Cx,
     port: u32,
@@ -198,6 +224,9 @@ async fn sign_in_one(
     screen: Option<u32>,
 ) -> Result<bool, EntryError> {
     let made = cx.write(|m| -> R<bool> {
+        if signed_in(m, port)? {
+            return Ok(false);
+        }
         let Some(human) = human_port(m, bots)? else {
             return Ok(false);
         };
@@ -209,7 +238,7 @@ async fn sign_in_one(
     if !made {
         return Ok(false);
     }
-    cx.call(GuestCall::new(points::PROFILE_SIGN_IN.base).args([port, buffer, u32::MAX]))
+    cx.call(GuestCall::new(points::PROFILE_SIGN_IN.base).args([port, buffer, NO_FILE]))
         .await?;
     cx.write(|m| -> R<()> {
         set_slot_name(m, port, name)?;
@@ -266,6 +295,10 @@ pub async fn sign_in_then(
 /// answering for, so its frame still runs) and returns its EAX. The
 /// leaving bots' slots are empty after ([`slot_held`] false); their pads
 /// go a frame later ([`crate::local::leave_step`]).
+///
+/// It saves nothing: a slot holding a saved profile file ([`SLOT_FILE`])
+/// gives it back to the open-profile list (`0x2172a0`), so the profile is
+/// offered in the choosers again, and the save pass is not run.
 ///
 /// Not `PROFILE_SIGN_OUT` alone: that clears the profile and nothing
 /// else, so the slot kept its local user with its Live identity, and the

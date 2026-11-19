@@ -283,6 +283,42 @@ mod tests {
     }
 
     #[test]
+    fn depth_clamp_is_part_of_key_where_the_device_can() {
+        let a = RenderState::default();
+        let b = RenderState {
+            depth_clamp: true,
+            ..a
+        };
+        assert_ne!(key(&a), key(&b));
+        assert!(key(&b).primitive.unclipped_depth);
+        assert!(!key(&a).primitive.unclipped_depth);
+        // Without DEPTH_CLIP_CONTROL both draws clip, and share a pipeline.
+        let layout = VertexLayout::from_fvf(fvf::XYZRHW | fvf::DIFFUSE).unwrap();
+        let t = TargetFormats {
+            color: wgpu::TextureFormat::Bgra8Unorm,
+            depth: None,
+            samples: 1,
+        };
+        let caps = Capabilities {
+            depth_clip_control: false,
+            ..Capabilities::ALL
+        };
+        let mk = |rs: &RenderState| {
+            PipelineKey::new(
+                ShaderId(0),
+                &layout,
+                &[],
+                PrimitiveType::TriangleList,
+                rs,
+                t,
+                caps,
+            )
+        };
+        assert_eq!(mk(&a), mk(&b));
+        assert!(!mk(&b).primitive.unclipped_depth);
+    }
+
+    #[test]
     fn cache_hits_and_misses() {
         let mut cache: PipelineCache<u32> = PipelineCache::new();
         let a = key(&RenderState::default());

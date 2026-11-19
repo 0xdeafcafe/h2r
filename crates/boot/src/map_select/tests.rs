@@ -462,6 +462,27 @@ fn category_mode_lists_each_category_s_first_map_and_maps_mode_its_maps() {
 }
 
 #[test]
+fn rows_the_dialog_will_not_name_are_those_the_game_lacks_or_locks() {
+    let cat = sample();
+    let items = list_for(&cat, Mode::Maps(Category::MapPack), &|id| {
+        u8::from(id == 0x3f2)
+    });
+    // Containment is in the catalogue, but the game's own scan didn't put
+    // it in a slot; Warlock is there, locked.
+    let slots = [0x0a, 0x14, 0x3f2, u32::MAX];
+    assert_eq!(
+        unshown(&cat, &items, &slots),
+        [
+            ("Containment (0x3e8)".to_string(), "not in the game's list"),
+            ("Warlock (0x3f2)".to_string(), "locked"),
+        ]
+    );
+    // Both in slots, neither locked: nothing to say.
+    let items = list_for(&cat, Mode::Maps(Category::MapPack), &|_| 0);
+    assert!(unshown(&cat, &items, &[0x3e8, 0x3f2]).is_empty());
+}
+
+#[test]
 fn a_written_list_reads_back_as_the_game_reads_the_retail_one() {
     let mut g = engine::testing::FakeGuest::new();
     g.map(0x5000_0000, 0x1000);

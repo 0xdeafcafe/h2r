@@ -20,11 +20,13 @@ export function defaultChrome(): string {
 export class Cdp {
   private id = 0;
   private waiting = new Map<number, { ok: (v: any) => void; fail: (e: Error) => void }>();
+  private listeners = new Set<(m: any) => void>();
   private constructor(private ws: WebSocket) {
     ws.onmessage = (e) => {
       const m = JSON.parse(String(e.data));
       // The page's console, for --verbose.
       if (m.method === "Runtime.consoleAPICalled" && process.argv.includes("--verbose")) console.error("page:", ...m.params.args.map((a: any) => a.value ?? a.description));
+      if (m.method) for (const l of this.listeners) l(m);
       const w = m.id !== undefined ? this.waiting.get(m.id) : undefined;
       if (!w) return;
       this.waiting.delete(m.id);
@@ -43,6 +45,9 @@ export class Cdp {
     this.ws.send(JSON.stringify({ id, method, params, sessionId }));
     return new Promise((ok, fail) => this.waiting.set(id, { ok, fail }));
   }
+  /** Every event (`method` set), with its `sessionId`, until unlisten. */
+  listen(l: (m: any) => void) { this.listeners.add(l); }
+  unlisten(l: (m: any) => void) { this.listeners.delete(l); }
   close() { this.ws.close(); }
 }
 

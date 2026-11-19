@@ -18,7 +18,7 @@
 //   timeouts or the validated table in the descriptor.
 
 import { engineOf, findMap, normaliseName, playlistText, type Catalog } from "./catalog";
-import { MAX_RECORDS, type EditHopper, type EditRecord, type HopperRecord } from "./validate";
+import { MAX_RECORDS, clipUtf8, type EditHopper, type EditRecord, type HopperRecord } from "./validate";
 
 export interface PresetGame {
   /** `slayer`, `ctf`, `oddball`, `king_of_the_hill`, `juggernaut`,
@@ -341,12 +341,4 @@ export function applyPreset(h: EditHopper, r: Resolution): EditHopper {
 }
 
 /** At most `max` UTF-8 bytes, cut on a character boundary. */
-export function clip(s: string, max: number): string {
-  const enc = new TextEncoder();
-  let out = "";
-  for (const ch of s) {
-    if (enc.encode(out + ch).length > max) break;
-    out += ch;
-  }
-  return out;
-}
+export const clip = clipUtf8;

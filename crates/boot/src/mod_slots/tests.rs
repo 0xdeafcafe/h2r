@@ -414,3 +414,20 @@ fn a_replacing_package_fills_with_its_name_description_and_image() {
     let px = l.preview.as_ref().expect("the package's image");
     assert_eq!(px.len(), PREVIEW_LEN);
 }
+
+#[test]
+fn each_maps_picture_is_its_slots_bitmap() {
+    let mut list = retail();
+    // A Map Pack map of a disc map's name: the disc's slot wins.
+    list.extend(slots(&[(
+        0x3e9,
+        "t:\\$C\\4D53006400000101\\lockout",
+        0x103,
+        "Lockout Again",
+    )]));
+    let p = pictures(&list);
+    assert_eq!(p.get("lockout"), Some(&0x100));
+    assert_eq!(p.get("ascension"), Some(&0x101));
+    assert_eq!(p.get("triplicate"), Some(&0x102), "a Map Pack map's own");
+    assert_eq!(p.len(), 3, "free slots show nothing");
+}

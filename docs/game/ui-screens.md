@@ -46,33 +46,40 @@ again, and so a screen can be seen and checked before anyone runs the game.
 
    Row kinds: `Row::action` (A runs it; it returns `Then::Stay(log)`,
    `Then::Open(screen)`, `Then::Close` or `Then::CloseThen(work)`),
-   `Row::value` (left and right step through the values and wrap; A steps
-   right; a toggle is two values), `Row::info` (read-only), and `Row::text`
+   `Row::value` (left and right step through the values and wrap; A opens
+   the value picker on them, retail's `low_level_settings`, see
+   docs/game/ui-builder.md "The value picker"; a toggle is two values), `Row::info` (read-only), and `Row::text`
    (A opens the game's keyboard; the typed text comes back once the keyboard
    closes). `.layout(ListLayout, ValueStyle::Inline)` moves the list onto a
    one-text skin and puts values in the label (`Mythic: < On >`), as the skulls
    page does. `.description(TextBlock)` adds the focused row's description.
    `.dialog(DialogBase::QuickOptions, opener)` makes the screen a dialog of its
-   rows over whatever opened it, on the lobby's Quick Options art (or
-   `DialogBase::Large`, the one the game maps have); see docs/game/ui-builder.md
-   "The Dialog kind". The prompts go in the footer (below). `.scrolls()` says more rows than the list shows is
-   meant.
+   rows over whatever opened it, Quick Options inside and out: its panel and
+   header, its own list (`setting_lists`, eleven rows from (-254, 87)), each
+   row's name left and its value alone in the value column
+   (`ValueStyle::Setting`: `Count  4`, no arrows), and the focused row's
+   description in its one-line help line (`dialog::QUICK_HELP_TEXT`, 52
+   units at most) unless `.description` names another block. A settings
+   page that should look like the game's own (Clankers, Halo 1 Options)
+   is this and nothing more: no `.layout`, no `.description`. Or
+   `DialogBase::Large`, the one the game maps have; see
+   docs/game/ui-builder.md "The Dialog kind". The prompts go in the footer
+   (below). `.scrolls()` says more rows than the list shows is meant.
    **Choice rows.** A row of many choices over a setting is a
    `ui_kit::choice::ChoiceRow`, the sibling of the Halo 1 options'
    two-choice `OptionRow`. It names a settings `Def`, a label and a
    description; its choices come from the setting (a `Kind::Choice`'s
    labels, a `Kind::Int`'s steps or else every number of its range, Off and
    On for a `Kind::Bool`). `ChoiceRow::row(store)` gives the value row:
-   left and right step and wrap, A steps right, and each step is saved in
-   the store at once, so its change callbacks see it. A bots page's Count
+   left and right step and wrap, A opens the value picker, and each change
+   is saved in the store at once, so its change callbacks see it. A bots page's Count
    and Difficulty are two of them:
 
    ```rust
    static COUNT: ChoiceRow = ChoiceRow::new(&BOTS_COUNT, "Count", "How many bots join.");
    static LEVEL: ChoiceRow = ChoiceRow::new(&BOTS_LEVEL, "Difficulty", "How well they play.");
-   let page = KitScreen::new("bots", "bots", ids::family("bots"), "Clankers")
-       .layout(skulls_menu::LIST_LAYOUT, ValueStyle::Inline)
-       .description(skulls_menu::DESCRIPTION_TEXT)
+   let page = KitScreen::new("bots", "bots", ids::family("bots"), "CLANKERS")
+       .dialog(DialogBase::QuickOptions, Opener::GAME_SETUP_CLANKERS)
        .row(COUNT.row(Arc::clone(&store)))
        .row(LEVEL.row(store))
        .prompts(&[
@@ -165,11 +172,27 @@ description updating with the focus, the legend's glyphs drawn as buttons, B
 going back to the screen underneath, and nothing left on screen after it
 closes.
 
-The mod repository's two screens (`boot::mods_screen`, docs/game/maps.md
-§5 "Mod downloads (in game)") are list-class screens whose rows come from
-the server, like the co-op friends list: their texts live in the
-`mod texts` id family, written when they change; a row's count is fixed
-when the screen opens.
+The mod repository's three screens (`boot::mods_screen`, docs/game/maps.md
+§5 "Mod downloads (in game)" and "A mod's page") are list-class screens
+whose rows come from the server, like the co-op friends list; the list
+and a map pack's list (a pack is one row of the list, opening its own:
+Download All, then its maps) are on the level select's layout as the
+campaign picker is (list, bracket, picture, description), and a row's
+state is a mark drawn into the fonts (star, tick, arrow), not a word; a map's page is on the pregame lobby's layout instead
+(docs/game/maps.md "A mod's page"): one action row, and the rest
+(body, a two-column table, a checklist) as panel texts of the class
+(`ListClass::panel`: retail backings and text blocks that belong to no
+row, their strings named by `Rows::panel_text`, set when the pane is
+built and again with the description). Their texts live in the `mod
+texts` id family (256-byte slots: a line and a description per row,
+the page's panel texts, then a line and a description per pack row), written when they change; a row's count
+is fixed when the screen opens. **Information is not a row**: a
+selectable list holds only what A does something with; facts, tables
+and checklists are panel texts (`ScreenSpec::texts`, drawn as `page.*`
+widgets, and `ScreenSpec::panel` for the art under them). Their descriptions are set
+again when a download moves on (`Rows::live_text`'s redraw), and X is
+their action (`ListClass::action_buttons(&[X_BUTTON])`; the list's reads
+the focused row with `list_class::focused_row`).
 
 The skulls page logs `skulls page: ...` lines (docs/game/skulls.md "What it
 logs"); the sign-in prompt logs `signin prompt: ...` lines (docs/live/live.md).

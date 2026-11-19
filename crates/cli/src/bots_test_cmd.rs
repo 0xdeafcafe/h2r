@@ -7,6 +7,13 @@
 //! agent API's phase and the server's session and game record
 //! ([`crate::bots_verdict`]).
 //!
+//! `h2 bots test --clankermatch [--playlist slayer|teams|doubles]` runs
+//! Clankermatch instead (docs/game/bots.md §8 and §13): Clankers off, the
+//! Live menu's Clankermatch row, a clanker playlist, the empty search, the
+//! lobby the local bots fill, the game, and out again
+//! ([`crate::bots_drive::clankermatch`],
+//! [`crate::bots_verdict::clankermatch`]).
+//!
 //! `h2 bots verdict <log>` prints the verdict of a log again.
 
 use std::fs;
@@ -18,6 +25,7 @@ use anyhow::{Context, Result, bail};
 
 use crate::bots_drive::Driver;
 use crate::bots_progress;
+use crate::bots_verdict::clankermatch::{self as cm_verdict, CmPlan};
 use crate::bots_verdict::{self, Plan};
 use crate::coop_test_cmd::{self, Game, Supervisor};
 use crate::coop_verdict::Roles;
@@ -28,6 +36,8 @@ const USAGE: &str = "usage:
                [--wait-clang] [--settings-from DIR] [--root DIR] [--out DIR]
                [--server-port N] [--no-drive] [--dry-run]
                [-- <more h2 play arguments>]
+  h2 bots test --clankermatch [--playlist slayer|teams|doubles] [the same,
+               but --count and --map]
   h2 bots verdict <bots.log>
 
 Clankers in a Live custom game on this Mac, with no one at the controller
@@ -83,7 +93,24 @@ Live directory and the server's store are under <root>/run-<time>/ and
 are deleted at the end unless --keep, which also leaves the game open
 (and this process with it, for the Live server) until its window closes.
 --root defaults to $TMPDIR/h2-bots-test. --dry-run prints the game's
-command line and starts nothing.";
+command line and starts nothing.
+
+--clankermatch (or --playlist NAME, which implies it): Clankermatch
+instead of a custom game. Clankers is Off (`--set clankers.enabled=false`);
+the server's built-in lineup has the clanker playlists (hoppers 8 Clanker
+Slayer, 9 Clanker Teams, 10 Clanker Doubles; --playlist, slayer by
+default), and the run stops at once if the server does not mark the one
+asked for. The drive goes Xbox Live, row 2 (Clankermatch), the
+playlist's row, A, then waits: the search, the lobby this console hosts,
+the local bots seated in it, the countdown, the game (to its end: 6 to 8
+minutes) and back out, B until no session is hosted. The checks: signed
+in; the clanker hoppers (server and game); the Clankermatch row's
+playlists; the clanker search; the search ending with this console
+hosting; the local bots planned; each seated and signed in, in the lobby;
+each on Xbox Live as a bot account; the lobby at the playlist's fewest
+players; the countdown and start; gameplay; the phantoms joining after
+the start; the game record (kind clankermatch, bot: true); the local
+bots leaving after the game. --timeout is 900 s (1200 with --no-drive).";
 
 pub const TAG: &str = "Tester";
 const DEFAULT_COUNT: usize = 5;
@@ -93,6 +120,47 @@ const DEFAULT_TIMEOUT_SECS: u64 = 360;
 const NO_DRIVE_TIMEOUT_SECS: u64 = 900;
 /// The Clankers page's count range (`clankers.count`).
 const MAX_COUNT: usize = 15;
+/// Clankermatch's defaults: the search, the fill, a whole game (6 to 8
+/// minutes) and 30 s after it.
+const CLANKERMATCH_TIMEOUT_SECS: u64 = 900;
+const CLANKERMATCH_NO_DRIVE_TIMEOUT_SECS: u64 = 1200;
+
+/// A clanker playlist of the built-in lineup (`--playlist`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CmPlaylist {
+    Slayer,
+    Teams,
+    Doubles,
+}
+
+impl CmPlaylist {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "slayer" => Some(Self::Slayer),
+            "teams" => Some(Self::Teams),
+            "doubles" => Some(Self::Doubles),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Slayer => "slayer",
+            Self::Teams => "teams",
+            Self::Doubles => "doubles",
+        }
+    }
+
+    /// Its playlist id in the built-in lineup
+    /// (`live_proto::hopper::defaults`).
+    pub fn playlist_id(self) -> u32 {
+        match self {
+            Self::Slayer => 9,
+            Self::Teams => 10,
+            Self::Doubles => 11,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Cmd {
@@ -118,6 +186,8 @@ pub struct Opts {
     /// The data root whose settings.toml's [graphics] the game takes.
     pub settings_from: PathBuf,
     pub play_args: Vec<String>,
+    /// `--clankermatch`: Clankermatch on this playlist, not a custom game.
+    pub clankermatch: Option<CmPlaylist>,
 }
 
 /// Parses `h2 bots test ...` / `h2 bots verdict ...` (the arguments after
@@ -140,8 +210,9 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
         None => bail!("{USAGE}"),
     }
     let mut disc = env("H2_DISC").map(PathBuf::from);
-    let mut count = DEFAULT_COUNT;
+    let mut count = None;
     let mut map = None;
+    let mut clankermatch = None;
     let mut keep = false;
     let mut timeout = None;
     let mut no_drive = false;
@@ -158,11 +229,12 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
             "--disc" => disc = Some(PathBuf::from(value("--disc")?)),
             "--count" => {
                 let v = value("--count")?;
-                count = v
-                    .parse()
-                    .ok()
-                    .filter(|n| (1..=MAX_COUNT).contains(n))
-                    .with_context(|| format!("--count {v}: 1 to {MAX_COUNT}"))?;
+                count = Some(
+                    v.parse()
+                        .ok()
+                        .filter(|n| (1..=MAX_COUNT).contains(n))
+                        .with_context(|| format!("--count {v}: 1 to {MAX_COUNT}"))?,
+                );
             }
             "--map" => {
                 let v = value("--map")?;
@@ -172,6 +244,16 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
                 map = Some(v);
             }
             "--keep" => keep = true,
+            "--clankermatch" => {
+                clankermatch.get_or_insert(CmPlaylist::Slayer);
+            }
+            "--playlist" => {
+                let v = value("--playlist")?;
+                clankermatch = Some(
+                    CmPlaylist::parse(&v)
+                        .with_context(|| format!("--playlist {v:?}: slayer, teams or doubles"))?,
+                );
+            }
             "--timeout" => {
                 let v = value("--timeout")?;
                 let secs: u64 = v
@@ -200,6 +282,13 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
             _ => bail!("unexpected {a:?}\n\n{USAGE}"),
         }
     }
+    if clankermatch.is_some() && (count.is_some() || map.is_some()) {
+        bail!(
+            "--count and --map are the custom game's: Clankermatch's playlist sets the bots and \
+             the map\n\n{USAGE}"
+        );
+    }
+    let count = count.unwrap_or(DEFAULT_COUNT);
     let disc = disc.with_context(|| format!("no disc: --disc ISO or H2_DISC\n\n{USAGE}"))?;
     let root = root.unwrap_or_else(|| {
         env("TMPDIR")
@@ -213,10 +302,11 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
         map,
         keep,
         timeout: timeout.unwrap_or_else(|| {
-            Duration::from_secs(if no_drive {
-                NO_DRIVE_TIMEOUT_SECS
-            } else {
-                DEFAULT_TIMEOUT_SECS
+            Duration::from_secs(match (clankermatch.is_some(), no_drive) {
+                (false, false) => DEFAULT_TIMEOUT_SECS,
+                (false, true) => NO_DRIVE_TIMEOUT_SECS,
+                (true, false) => CLANKERMATCH_TIMEOUT_SECS,
+                (true, true) => CLANKERMATCH_NO_DRIVE_TIMEOUT_SECS,
             })
         }),
         no_drive,
@@ -232,7 +322,84 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
                 .join("h2boot-data")
         }),
         play_args,
+        clankermatch,
     }))
+}
+
+/// A Clankermatch run's plan for `playlist`, from the built-in lineup (the
+/// lineup a fresh server serves, `live_server::default_hopper`): its
+/// hopper (descriptor index), its row on the Clankermatch list (the clanker
+/// hoppers in index order), its fewest and most players and teams, and the
+/// bots the fill seats, local first (`boot::clankers::max_local`).
+pub fn cm_plan(playlist: CmPlaylist, tag: &str) -> Result<CmPlan> {
+    use live_proto::hopper::clankers::size_of;
+    let lineup = live_proto::hopper::defaults::playlists();
+    let marked: Vec<(usize, &live_proto::hopper::defaults::Playlist)> = lineup
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.clankers.is_some())
+        .collect();
+    let (row, &(hopper, p)) = marked
+        .iter()
+        .enumerate()
+        .find(|(_, (_, p))| p.playlist_id == playlist.playlist_id())
+        .with_context(|| {
+            format!(
+                "the built-in lineup has no clanker playlist {} (id {})",
+                playlist.name(),
+                playlist.playlist_id()
+            )
+        })?;
+    let min = p
+        .descriptor()
+        .min_players()
+        .with_context(|| format!("{}: no fewest players", p.title))?;
+    let (max, teams) = size_of(&p.rules);
+    let bots = max.saturating_sub(1) as usize;
+    Ok(CmPlan {
+        playlist: playlist.name().into(),
+        title: p.title.into(),
+        hopper: hopper as u32,
+        row: row as u32,
+        min,
+        max,
+        teams,
+        bots,
+        local: boot::clankers::max_local(bots, max, teams),
+        tag: tag.into(),
+    })
+}
+
+/// Whether the server's marks (`GET /v1/hoppers/clankers`) agree with
+/// `plan`: its hopper marked, on the same row of the list, the same size.
+pub fn check_marks(
+    plan: &CmPlan,
+    marks: &live_proto::hopper::clankers::ClankerHoppers,
+) -> Result<()> {
+    let mut ids: Vec<u32> = marks.hoppers.iter().map(|h| h.hopper_id).collect();
+    ids.sort_unstable();
+    let Some(mark) = marks.get(plan.hopper) else {
+        bail!(
+            "the server marks clanker hoppers {ids:?}, not {} ({}): its hopper file is not the \
+             built-in lineup",
+            plan.hopper,
+            plan.title
+        );
+    };
+    let row = ids.iter().position(|h| *h == plan.hopper).unwrap_or(0) as u32;
+    if row != plan.row || mark.players != plan.max || mark.teams != plan.teams {
+        bail!(
+            "the server's hopper {} is on row {row} with {} players and {} teams; the plan \
+             (the built-in lineup) has row {}, {} and {}",
+            plan.hopper,
+            mark.players,
+            mark.teams,
+            plan.row,
+            plan.max,
+            plan.teams
+        );
+    }
+    Ok(())
 }
 
 /// The game: the account Tester on `server`, its data and Live directory
@@ -250,14 +417,25 @@ pub fn plan(opts: &Opts, server: &str, run: &Path, agent: &Path) -> Game {
         "--gamertag".into(),
         TAG.into(),
         "--title".into(),
-        "Halo 2 — bots test".into(),
+        if opts.clankermatch.is_some() {
+            "Halo 2 — clankermatch test".into()
+        } else {
+            "Halo 2 — bots test".into()
+        },
         "--no-mappack".into(),
         "--no-halo1".into(),
-        "--set".into(),
-        "clankers.enabled=true".into(),
-        "--set".into(),
-        format!("clankers.count={}", opts.count),
     ];
+    if opts.clankermatch.is_some() {
+        // The fill seats Clankermatch's bots; the page's own stay off.
+        args.extend(["--set".into(), "clankers.enabled=false".into()]);
+    } else {
+        args.extend([
+            "--set".into(),
+            "clankers.enabled=true".into(),
+            "--set".into(),
+            format!("clankers.count={}", opts.count),
+        ]);
+    }
     if let Some(out) = &opts.out {
         args.extend(["--out".into(), out.display().to_string()]);
     }
@@ -321,11 +499,13 @@ fn test(opts: Opts) -> Result<()> {
     let server = format!("http://127.0.0.1:{}", opts.server_port);
     let agent = std::env::temp_dir().join(format!("h2-bots-test-{}.sock", std::process::id()));
     let game = plan(&opts, &server, &run_dir, &agent);
+    let cm = opts.clankermatch.map(|p| cm_plan(p, TAG)).transpose()?;
     let plan = Plan {
         count: opts.count,
         tag: TAG.into(),
         map: opts.map.clone(),
     };
+    let plan_line = cm.as_ref().map_or_else(|| plan.line(), CmPlan::line);
     if opts.dry_run {
         println!(
             "server: {server} (data in {})",
@@ -336,7 +516,7 @@ fn test(opts: Opts) -> Result<()> {
             game.tag,
             coop_test_cmd::shell_line(&exe.display().to_string(), &game)
         );
-        println!("{}", plan.line());
+        println!("{plan_line}");
         return Ok(());
     }
     if !opts.disc.is_file() {
@@ -384,15 +564,44 @@ fn test(opts: Opts) -> Result<()> {
         std::slice::from_ref(&game),
         &run_dir.join("accounts.json"),
     )?;
+    // Clankermatch needs the server's clanker hoppers: a fresh store
+    // serves the built-in lineup, which has them.
+    let marks_line = match &cm {
+        Some(cm) => {
+            let marks: live_proto::hopper::clankers::ClankerHoppers = client
+                .get(live_proto::hopper::clankers::PATH, &[])
+                .context("reading the server's clanker hoppers (GET /v1/hoppers/clankers)")?;
+            check_marks(cm, &marks)?;
+            let ids: Vec<u32> = marks.hoppers.iter().map(|h| h.hopper_id).collect();
+            Some(format!("{}{ids:?}", cm_verdict::SERVER_MARKS))
+        }
+        None => None,
+    };
     let merged = logs.join("bots.log");
-    eprintln!(
-        "bots test: Live server {} ({} store); {} Clankers ({} local, {} phantoms)",
-        embedded.url,
-        embedded.store,
-        plan.count,
-        plan.local(),
-        plan.phantoms()
-    );
+    match &cm {
+        Some(cm) => eprintln!(
+            "bots test: Live server {} ({} store); Clankermatch {} (hopper {}, row {}): {} bots \
+             ({} local, {} phantoms), {} to {} players",
+            embedded.url,
+            embedded.store,
+            cm.title,
+            cm.hopper,
+            cm.row,
+            cm.bots,
+            cm.local,
+            cm.phantoms(),
+            cm.min,
+            cm.max
+        ),
+        None => eprintln!(
+            "bots test: Live server {} ({} store); {} Clankers ({} local, {} phantoms)",
+            embedded.url,
+            embedded.store,
+            plan.count,
+            plan.local(),
+            plan.phantoms()
+        ),
+    }
     eprintln!(
         "bots test: logs in {} (bots.log, {TAG}.log); agent `h2 agent --socket {} status`",
         logs.display(),
@@ -417,10 +626,17 @@ fn test(opts: Opts) -> Result<()> {
     let mut sup = Supervisor::new(&merged, &logs, &roles)?.with_filter(bots_verdict::wanted);
     sup.keep_lines();
     sup.spawn(&exe, &game)?;
-    sup.note(0, &plan.line())?;
+    sup.note(0, &plan_line)?;
+    if let Some(line) = &marks_line {
+        sup.note(0, line)?;
+    }
     eprintln!("bots test: the game opens (it builds into --out first if that has none)");
 
-    let mut watch = Watch::new(&plan, &client, &agent, !opts.no_drive);
+    let driver = match &cm {
+        Some(cm) => Driver::clankermatch(cm.local, cm.row),
+        None => Driver::new(plan.local()),
+    };
+    let mut watch = Watch::new(TAG, &client, &agent, !opts.no_drive, driver, cm.is_some());
     let mut progress = String::new();
     let spawned = Instant::now();
     // The timeout counts from the agent socket: a build before is not run
@@ -544,7 +760,7 @@ fn write_progress(logs: &Path, log: &str, finished: bool, last: &mut String) {
 /// What the harness watches besides the game's lines: the driver, the
 /// agent API's phase and map, and the Live server.
 struct Watch<'a> {
-    plan: &'a Plan,
+    tag: &'a str,
     client: &'a Client,
     agent: &'a Path,
     drive: Driver,
@@ -562,15 +778,25 @@ struct Watch<'a> {
     playing: bool,
     crashed: bool,
     start: Instant,
+    /// A Clankermatch run: the game line carries the record's kind and
+    /// playlist.
+    clankermatch: bool,
 }
 
 impl<'a> Watch<'a> {
-    fn new(plan: &'a Plan, client: &'a Client, agent: &'a Path, driving: bool) -> Self {
+    fn new(
+        tag: &'a str,
+        client: &'a Client,
+        agent: &'a Path,
+        driving: bool,
+        drive: Driver,
+        clankermatch: bool,
+    ) -> Self {
         Watch {
-            plan,
+            tag,
             client,
             agent,
-            drive: Driver::new(plan.local()),
+            drive,
             driving,
             agent_up: false,
             #[cfg(unix)]
@@ -584,6 +810,7 @@ impl<'a> Watch<'a> {
             playing: false,
             crashed: false,
             start: Instant::now(),
+            clankermatch,
         }
     }
 
@@ -701,7 +928,7 @@ impl<'a> Watch<'a> {
     fn session(&self) -> Option<String> {
         let page: serde_json::Value = self
             .client
-            .get("/sessions", &[("host", self.plan.tag.clone())])
+            .get("/sessions", &[("host", self.tag.to_string())])
             .ok()?;
         session_from(&page)
     }
@@ -709,7 +936,11 @@ impl<'a> Watch<'a> {
     /// The newest game record, as a `bots-test: game` line.
     fn game(&self) -> Option<String> {
         let page: serde_json::Value = self.client.get("/games", &[]).ok()?;
-        game_from(&page)
+        if self.clankermatch {
+            cm_game_from(&page)
+        } else {
+            game_from(&page)
+        }
     }
 }
 
@@ -752,6 +983,26 @@ pub fn game_from(page: &serde_json::Value) -> Option<String> {
         players.len(),
         bots.len(),
         accounts,
+    ))
+}
+
+/// The newest game of a `GET /v1/games` page as a Clankermatch run's
+/// `bots-test: game` line: [`game_from`]'s, with the record's kind and
+/// playlist.
+pub fn cm_game_from(page: &serde_json::Value) -> Option<String> {
+    let g = page["items"].as_array()?.first()?;
+    let players = g["players"].as_array()?;
+    let bots: Vec<&serde_json::Value> = players
+        .iter()
+        .filter(|p| p["bot"].as_bool() == Some(true))
+        .collect();
+    let accounts = bots.iter().filter(|p| p["xuid"].is_string()).count();
+    Some(cm_verdict::game_line(
+        g["game_id"].as_str().unwrap_or("?"),
+        g["map"].as_str().unwrap_or("?"),
+        (players.len(), bots.len(), accounts),
+        g["kind"].as_str().unwrap_or("?"),
+        g["playlist"].as_str().unwrap_or("-"),
     ))
 }
 

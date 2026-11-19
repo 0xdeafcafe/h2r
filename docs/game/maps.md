@@ -436,9 +436,22 @@ Every package records its base, because most mods change little. Art for a
    (read client-side from the patched map);
 3. the base map's art.
 
-The 3D viewer uses the base map's geometry with the mod's placements,
-unless `[result] geometry` differs from the base's, in which case the
-geometry is extracted from the patched map.
+The 3D viewer draws an installed mod from its own art when the server
+has it: `h2 live assets extract` (and `h2 play --live-local`) resolves
+every package under `<data>/maps/` to the patched map the game loads and
+extracts it like a disc map, keyed by its `MapId`, never by its base
+map's name ([live-art.md](../live/live-art.md#mods)). That covers
+everything the mod's scenario holds: moved or extra vehicles, weapons,
+scenery, machines and spawns, new tag references, objects its scripts
+create, effects its scripts play on a loop, and its own or changed
+bitmaps and shaders. A game on a mod the server has no art for uses the
+base map's geometry, unless `[result] geometry` differs from the base's.
+
+The native viewer (`crates/viewer`) opens an installed mod as
+`mod:<package dir>` (`viewer --list` lists them with their base and
+`MapId`), built in memory the same way: its layers over the disc's base
+(or the installed map pack map), the base checked against the package's
+SHA-256.
 
 ### As built (Live)
 
@@ -507,10 +520,14 @@ geometry is extracted from the patched map.
   account's key and publishes it; `h2 live maps list [--base MAP] [--author
   GAMERTAG] [--json]` prints the server's packages.
 - **Pictures and viewer** (web): the package's image (served at
-  `/v1/maps/{id}/image`), then the base map's art; the 3D viewer uses the
-  base map's geometry unless the package has `[result] geometry`, when it
-  says "geometry changed, no 3D view" (the art manifest has no base
-  geometry hash to compare with yet, so any `geometry` counts as changed).
+  `/v1/maps/{id}/image`), then the base map's art. The 3D viewer first
+  looks for the mod's own art by `map_id` (the server's art has it when
+  the mod is installed where the art was extracted: an entry
+  `mod-<first 16 hex of the MapId>` carrying `map_id`, `base` and the
+  patched map's `sha256`), and draws that. Otherwise it uses the base
+  map's geometry unless the package has `[result] geometry`, when it says
+  "geometry changed, no 3D view" (the art manifest has no base geometry
+  hash to compare with yet, so any `geometry` counts as changed).
 
 Deviations from the design above:
 
@@ -555,6 +572,59 @@ Deviations from the design above:
 Still open: a `--private` server's reads need a token, which the gate's
 fetches do not send yet.
 
+**Join-time download, reviewed 2026-11-19** (by reading and unit tests;
+no two-console run yet).
+
+Fixed, with tests in `live_hle::maps`:
+
+- A join's download used the Live worker's agent, whose 5 s timeout
+  covers the whole request, body included: any layer over a few MB failed
+  every time. Joins and the Mods screen now share `maps::download_agent`
+  (10 s to connect, 30 s per read, no whole-request limit)
+  (`a_download_outlasts_the_workers_whole_request_timeout`).
+- The preview image was a required download: an admin hiding a picture
+  (410) refused the whole map. It is now best-effort, and a package
+  written without it drops `[package] image` (outside the `MapId`)
+  (`a_taken_down_image_does_not_block_the_map`).
+- A package already here and already chosen in `active.toml` was
+  re-activated, rescanned and counted (a fresh token and a GET) on every
+  FindFromID, and the friend view asks repeatedly. Now only a change of
+  choice does that
+  (`preparing_a_package_already_served_writes_rescans_and_counts_nothing`).
+- Two writers of the same file (a join and a Mods screen install) shared
+  one temporary name per process, so one rename failed. Each write now
+  has its own name (`writes_from_two_threads_do_not_trip_over_each_other`).
+
+Open (each needs a live run or a design choice):
+
+- **The host advertises the loaded map, not the lobby's next one.** The
+  session's `map_id` comes from the boot's map probe
+  (`boot/src/lib.rs`, `map_override::map_id` of the map at `0x547898`),
+  which in a lobby is `mainmenu` (no id). A guest who joins in the lobby
+  sees no `map_id` and downloads nothing; the id only appears with a
+  `SessionUpdated` during a game. The id is also never cleared
+  (`live-hle/src/sessions.rs`), so a host back on retail keeps
+  advertising the last mod, and a guest already joined does not run the
+  gate when the id changes. Needs the lobby's selected map read from the
+  session attributes (confirm on a live run which field) and a guest-side
+  check on `SessionUpdated`.
+- **`active.toml` stays chosen.** A join or install leaves the package
+  served for its map; joining a retail game on that map later plays the
+  mod against a retail host. A join-time choice should be a per-session
+  override, not `active.toml`.
+- **The download runs on the Live worker's thread**, so heartbeats and
+  session updates wait for it (the Mods screen uses its own thread).
+- **Ranked pins are not applied**: sessions go out as `custom` with no
+  `hopper_id`, so `ranked_flags` is never true for a real session.
+- **New (derived) maps** are not advertised by the probe, and a guest's
+  `new_maps::install` runs only at boot.
+- **The Worker home buffers whole blobs** in the hub Durable Object
+  (R2 `bytes()`, then copies): a 95 MiB layer is several hundred MB in a
+  128 MB isolate. `BlobStore::get_stream` exists; `GET /v1/content` should
+  stream (needs a staging run with a large blob).
+- A local package with the right `MapId` but damaged layers is trusted
+  (`Need::Local`); the vfs then refuses it and serves the disc.
+
 ### The mod repository (Live)
 
 **Built** (lane "mod-repo-web": the server, web and publishing side).
@@ -570,13 +640,55 @@ fetches do not send yet.
   token (the console's join-time or menu download), once each, as
   server-signed `MapDownloaded` events (admins-only in the log).
 - **Display data** beyond the manifest: `MapPublished` data takes
-  `category` (gameplay, weapons, vehicles, visuals, maps, other) and
-  `source_url`; the manifest's `[package] author` is shown as the credit,
-  beside the account that published it. None of it is in the `MapId`.
+  `category` (gameplay, weapons, vehicles, visuals, maps, other),
+  `source_url` and `credit`. None of it is in the `MapId`.
+- **Credits.** Who made a mod is never the account that published it. A
+  package's credit (`live_proto::maps::Credit`: `authors`, the original
+  `release` name, `released` date, `source_url`, `notes`) comes from, in
+  order: an admin's correction (`PUT /v1/maps/{id}/credit`, a
+  server-signed `MapCredited` event), the publisher's signed `credit`, the
+  manifest's one-line `[package] author`. Lists and pages show it as
+  "by <authors>" ("unknown author" when there is none) and the publisher
+  as "uploaded by"; the game's Mods page says "By: <credit>" and, when
+  the credit names someone else, "Uploaded By: <gamertag>".
+  The publisher's signature and the `MapId` never change with it.
+  `docs/game/mod-credits.toml` is the credit of every package published on
+  live.forbes.red (all imported by "afr"), researched from the original
+  releases; `h2 live maps credit --file docs/game/mod-credits.toml`
+  applies it, skipping packages already credited so.
+- **Details.** An admin adds what a publisher's manifest lacks, again
+  outside the `MapId` (`live_proto::maps::Details`, `PUT
+  /v1/maps/{id}/details`, a server-signed `MapDetailed`): a longer
+  description (shown instead of the manifest's), screenshots (content
+  blobs, PNG or JPEG, each with a caption, who made it, its licence and
+  the page it came from; served at `/v1/maps/{id}/images/{n}`, the first
+  standing in as the preview when the package has none), a features list
+  that replaces the published one, a contents report and the map pack
+  the mod came out in. A pack's own info (name, description, authors,
+  date, source, images) is said once (`PUT /v1/mappacks/{id}`, a
+  server-signed `MapPackSet`; `GET /v1/mappacks`); a map list page
+  carries the packs its items name (`packs`) and a map's answer its
+  pack (`pack_info`), so the game can group a pack's maps. The
+  contents report (`live_proto::maps::Contents`) is read off the patched
+  map against its base (`cli::live_mod_contents`, `h2 live maps
+  analyze`): per tag class how many tags are new, changed or removed;
+  each reference of a tag both maps have that names another tag now,
+  classified by what it names (projectile, model, render model,
+  collision, physics, animation, shader, texture, damage, effect, sound,
+  weapon, vehicle, sky, palette); the weapon, projectile and damage stats
+  whose meaning is established; per placed tag how many the base and the
+  mod place, moved, and replaced in place; scripts. In words
+  (`lines`, e.g. "projectile swap: battle rifle fires fuel rod (was
+  battle rifle bullet)", "new vehicle placements: 4 banshees") and as
+  fields. `docs/game/mod-details.toml` is every published package's
+  details and packs; `h2 live maps details --file` applies it (dry run
+  first), uploading the screenshots kept outside git.
 - **Web.** The stats site's "Mods" tab (`/games/halo2/mods`): Newest and
   Most Downloaded, base map, category and text filters, and a page per mod
-  (picture or base map art, base map, size to download, layers, date,
-  downloads, source link, report button). The web never sends a token on
+  (picture or base map art, author(s), original release and date, base
+  map, size to download, layers, date, downloads, uploader, source link,
+  report button). The admin area's packages table has Made by and
+  Uploader columns. The web never sends a token on
   `GET /v1/maps/{id}`, so viewing a mod page is no download.
 
 ### Importing a mod
@@ -617,11 +729,41 @@ a package that shares only the difference:
    publish DIR` would (`--no-publish` stops before that).
 
 The sidecar, `mod.toml` beside the file (or `--info`), every key optional
-and unknown keys ignored: `name`, `author` (the credit), `description`,
+and unknown keys ignored: `name`, `authors` (the original author or
+authors, a list: the credit), `author` (one name, the older form, used
+when `authors` is absent), `release` (the original release's name),
+`released` (`YYYY`, `YYYY-MM` or `YYYY-MM-DD`), `notes`, `description`,
 `source_url`, `format` (`map`, `ppf`, `ips` or `bps`; else the file's
 signature decides), `base_map`, `category`, `image` (a PNG or JPEG beside
-it, at most 512 KiB). `h2 live maps publish DIR` reads `category` and
-`source_url` from `DIR/mod.toml`; `--category` and `--source-url` win.
+it, at most 512 KiB). The credit goes into the signed document's `credit`
+and, on one line, into the manifest's `[package] author`. `h2 live maps
+publish DIR` reads `category`, `source_url` and the credit from
+`DIR/mod.toml`; `--category` and `--source-url` win. Give the credit on
+every import: without it the package says "unknown author".
+
+`h2 live maps credit MAP_ID [--author NAME]... [--release NAME]
+[--released DATE] [--source-url URL] [--notes TEXT] [--clear]`, or `h2
+live maps credit --file CREDITS.toml [--dry-run]`, sets the credit of
+packages already published (an admin's account, `--as`, or the
+operator's key, `--data DIR`). The file is `[[mod]]` tables of `map_id`,
+`name` (checked against the server's), `authors`, `release`, `released`,
+`source_url`, `notes`; every entry is checked before anything is sent.
+
+**More mods.** `docs/game/mods-catalogue.toml` lists Halo 2 Xbox map mods
+found for import (2026-11-19, mostly from ibotmodz.net, se7ensins and
+archive.org): name, authors, base map, format, size and SHA-256 of the
+file checked, download and source URLs, and a `fit`. `good` ones import
+as they are (PPFs, and whole maps of a disc map); `whole-map` ones are
+total conversions whose map header names a retail map, which import over
+it as a large BPS; `unsupported-format` ones are SPPF or Serenity patches
+(no reader yet, §6 "formats"); `needs-shared` ones patch `mainmenu`. Import
+each with a `mod.toml` that gives its credit:
+
+```sh
+h2 live maps import FILE --base MAP --info mod.toml --out DIR
+# mod.toml: name, authors = [..], base_map, category, released,
+#           source_url, description
+```
 
 **In the game.** A package on a Map Pack base installs and plays like one
 on a disc map, for a player who has the map pack installed (`h2
@@ -701,14 +843,41 @@ game" below.
   (`h2-mods`) asks for it when the Live menu draws the row or the screen
   opens (at most every 30 s), every 5 minutes otherwise, and 15 s after a
   failure; the game thread never waits on it.
-- **The screens** (`boot::mods_screen`, our list class). **Mods**: one row
-  per map (at most 40, newest first), its name and "New", "Installed",
-  "Downloading N%" or its size. A press opens the map's page. With no
-  list the one row says why: "Loading...", "Sign in to Live first", "Live
-  is off", "Live is busy" or "Can't reach the server"; A asks again. The
-  **map's page** is titled with its name: Download (first, so A on
-  opening downloads), Author, Map (the disc map it is built on), Size, and
-  Downloads (or Published, when the server does not count them).
+- **The screens** (`boot::mods_screen`, our list class, laid out as the
+  level select is: list on the left with its bracket, picture top right,
+  description under it, as the campaign picker). **Mods**: one row per
+  map (at most 40, newest first), its name and its state as a mark after
+  it: a star (U+2605) when new, a tick (U+2713) when installed, a down
+  arrow (U+2193) and the percentage while downloading; nothing when it is
+  only on the server. Halo 2's fonts have none of the three, so they are
+  drawn into every font as the bot mark's gear is (`font::mod_marks`,
+  added by `bot_mark::GearRewrite` with the gear, the capitals' height;
+  drawn here from polygons, nothing copied). The focused map's picture is on the right and under
+  it four lines: "On Lockout, by Modder", its size and downloads, what it
+  changes ("Has vehicles, scripted events", or "What it changes isn't
+  listed"), and its state ("X downloads it, A opens its page",
+  "Downloading N%", "Installed: A for its page", or why a download
+  failed). **A** opens the map's page; **X** downloads the focused map
+  there and then (an installed one is left alone). The footer reads
+  `(A) DETAILS  (X) DOWNLOAD  (B) BACK`. Every row is something to
+  press: with no list the one row is "Loading...", "Try Again" (its
+  description says why: "Sign in to Live first", "Live is off", "Live is
+  busy" or "Can't reach the server") or "Refresh" (no mods yet); A asks
+  again. The **map's page** is below.
+- **Map packs.** Maps the server lists with the same pack (an entry's
+  `pack`, a name or `{name, description}`; else its credit's `release`)
+  are one row of Mods, at the place of its newest map: the pack's name,
+  and a star, a tick, the downloads' percentage together, or "N maps".
+  Its summary: "N maps, by <makers>", what it is (the pack's
+  description, else "On <base maps>"), "<size> in all, K installed",
+  "A opens it, X downloads all". A pack with one map listed is that
+  map's row. **A** opens the pack's own list (`mods.pack`, the same
+  layout, titled with the pack's name): first **Download All (N)** (N the
+  maps not here; "Downloading N%" while they run, "All Installed" after),
+  whose description is the pack's summary, then its maps, each as the
+  list shows it, A opening its page (B back to the pack). **X** on a map
+  downloads it; on Download All, or on the pack's row of Mods, every map
+  of it not here or under way. A snapshot keeps the open pack.
 - **Installing.** Download runs `MapGate::install` on a thread of its own
   (`h2-live-mod`): the join's own checks and path (the manifest from
   `/v1/maps/{id}`, the base checked against the disc, each layer from
@@ -734,8 +903,99 @@ game" below.
   "A mod's name and picture"). A mod that is a new map is installed as
   a content package then, and the game's own content scan runs again
   before the list is built.
-- **Not built.** The description on the Mods screen's page, paging past
-  40, and the ui_kit preview of these two screens.
+- **Previews.** The three screens are in the UI kit's inventory (`mods`,
+  `mods.pack`, `mods.detail`; `h2 ui preview mods.detail`), over invented
+  entries with an invented three-map pack (`mods_screen::spec`).
+- **Not built.** Paging past 40, the mod's own preview image for a map not downloaded yet (below), and
+  updates (a new version of a mod is another `MapId`; nothing links the
+  two yet).
+
+### A mod's page
+
+**Built** (lanes "mods-pages", then "mods-page-look"); not run in the game
+yet.
+
+**Why this layout.** The first page was a list of rows (Download, then
+Map, By, Size and the rest, then `[x] Vehicles`...), most of them not
+pressable: a selectable list whose rows do nothing, which no retail
+screen does. Every screen tag in `mainmenu.map` was read for a retail
+place that shows information that isn't pressed (2026-11-19): the
+postgame carnage report (16, 185: tables of players on list skins),
+the level select (11) and map select (17: list, picture, a description),
+the variant select (15), the Xbox Live menu (186) and the matchmaking
+playlists (219: list, picture, a white heading and a pale body), the
+message dialogs (211, 215, 218: actions in a short list beside a body),
+the matchmaking progress screen (210) and the **pregame lobby** (14).
+The lobby is the one that shows a chosen map's details: two buttons at
+the top (Start Game, Game Setup) are all that is selectable; under them
+a status text on its panel (`lobby_display`), the game's settings and
+the map's picture (`unknown_map`, 220 by 207), and on the right a
+two-column table (each row a white name, left, and a pale-blue value,
+right, 22 units apart from `[177 118 157 276]`). Matchmaking (pane 3)
+shows the same details block, so it is the game's own "game details"
+look. A mod's page is built on it
+(`crates/boot/src/mods_screen/page_layout.rs`; each rectangle, font,
+colour, animation and depth bias is the lobby tag's own unless noted):
+
+| Part | Lobby original | On a mod's page |
+|---|---|---|
+| Action | the buttons `[173 -274 153 -118]` on `name_field` (338 by 35 at (-279, 174)) | the page's only row, a skin-0 item at anchor (-262, 147) on `name_field`: `Download`, `Downloading N%`, `Remove`, `Remove? Press again`, a refusal or `Remove failed` |
+| Body | status text `[135 -258 61 45]`, font 1, pale blue, on `lobby_display` (512 by 128 at (-283, 149)) | the mod's description, one paragraph, 140 characters at most (4 lines; bottom 59) |
+| Status | the "open" line `[75 -260 55 70]` | the action's description, one line of 40 characters at most, `[55 -258 36 45]` in the Live menu's hint blue: `A or X downloads it: 3.4 MB.`, `25% of 3.4 MB. You can leave.`, `Needs the Map Pack's Relic. A retries.`, `Press A or X again to remove it.`, `Installed: pick it in Change Map.`, `Not removed: <why>` |
+| Picture | `unknown_map` at (-152, 32), animation 14 | the same widget at (-258, 30), so no text runs over it (the lobby's settings lines do); its bitmap is the base map's slot picture as on the list |
+| Table | the player rows, names white and left (bias 6), values pale blue and right (bias 5) | up to ten facts: `Map`, `By` (the credit, else the uploader), `Shared By` (the uploader, when the credit names someone else), `Size`, `Downloads`, `Published`, `Version` (the last three when the server has them), `For` (game types, or `any game type`), `From` (`Your disc` or `Map Pack`), `Joins` (`Get it too`); right edge 272, the title-safe area's; each row 20 characters at most, the value cut with `...` |
+| Checklist | (the lobby's settings lines) | row 11 of the table column, `What It Changes` in white, then four rows of two: `[x] Vehicles  [ ] Weapons` ... `[ ] Geometry  [ ] AI`; `Not listed` when the server lists none |
+
+Only the action is a row, so the focus never lands on information. The
+title is the mod's name, and the footer reads `(A)(X) DOWNLOAD  (B)
+BACK`, or `REMOVE` for an installed map. In game the texts are text
+widgets of the page's own (`ListClass::panel`, `list_class::PanelText`):
+made from their blocks when the pane is built, their strings set from
+the `mod texts` slots then and again whenever the description is set
+(a download's progress, an install, a removal).
+
+**A** on the action, or **X**, downloads the map; on a map that is here
+they remove it, on a second press (the first turns the row to `Remove?
+Press again`; opening the page again forgets it).
+Remove (`MapGate::remove`) deletes only a `live-<id>` directory of
+`<data>/maps` (one the Mods screen or a join wrote; a package put there by
+hand is refused) and its line in `active.toml`, then tells the boot as an
+install does: the VFS rescans and the map select and slots follow (the
+base map's slot gets its own name and picture back). A Remove of a
+derived map (a new map, not a mod of one) leaves the content package
+`boot::new_maps` made of it.
+
+**The picture** on both screens is the base map's slot picture in the
+multiplayer map list (`mod_slots::pictures`: the slot's bitmap datum,
+which the level select's picture widget draws, `Rows::picture`). Once a
+mod with an image is installed and chosen for its map, its slot shows the
+mod's own image (`mod_slots`, "A mod's name and picture"), and so do these
+screens; before that they show the base map's. The pictures are read from
+the loaded map's slots when the screen opens and after each install or
+removal. Showing a mod's own image before it is downloaded needs its
+preview in a bitmap of the loaded map: the traced way in is the record
+applier `mod_slots` already uses (`0x19be00`), run on a spare bitmap
+pointed at by the base map's slot for the call and given back after; not
+built.
+
+**What it changes** (`features`) is read off the map at import:
+`h2 live maps import` has the base and the modded map in hand and compares
+them (`cli::live_mod_features`): every tag of a counted group by name
+(new; a different size; different bytes at the same address: a tag that
+moved with the same size is not compared, since its pointers moved with
+it), each bitmap's own pixel data (its images' local LOD 0) wherever it
+moved, the scenario's placements by tag name and position (vehicles,
+weapons, and scenery, equipment, controls, light fixtures, sound scenery
+and crates as objects; netgame equipment by its item's group) and its
+scripts. Groups: `vehi`/`vehc` vehicles, `weap`/`itmc` weapons, the placed
+kinds objects, `bitm` textures, `shad`/`stem` shaders, `sbsp` geometry,
+`char` AI. AI squads are not compared. The sidecar's `features` are added
+(and refused when unknown); its `gametypes` and `version` are copied. All
+three go into the package's `mod.toml`, which `h2 live maps publish`
+sends as the document's `features`, `gametypes` and `version`
+([live-api.md](../live/live-api.md), "The mod repository"). A map the
+reader can't open keeps the sidecar's features alone (said on stderr).
+They are display data, outside the `MapId`.
 
 **To check in game** (Live on, signed in, a server with at least two
 published maps, one on a disc map you have and one you can make fail, for
@@ -758,8 +1018,10 @@ disc's):
    B goes back to the Live menu, whose row now reads "Mods"; leaving the
    Live menu and coming back keeps "Mods". `<data>/live-mods.toml` holds
    the newest position.
-3. A on a map: its page, titled with its name; Download "Press A",
-   Author, Map, Size, Downloads.
+3. A on a map: its page, titled with its name; "By:" is who made it
+   (the server's credit, else the uploading account), and when the credit
+   names someone else an "Uploaded By:" row follows with the publishing
+   account.
 4. A on Download: "Downloading N%", then "Installed"; stderr `mods: <id>
    installed`; `<data>/maps/live-<16 hex>/` exists and `active.toml`
    names it. B, B, then host a custom game: with no restart, Change Map
@@ -771,6 +1033,48 @@ disc's):
 6. Signed out (or the server stopped): Mods shows one row, "Sign in to
    Live first" or "Can't reach the server"; A on it logs `mods: reading
    the list again`.
+
+**To check in game: the pages** (a server with a mod published with
+features, e.g. imported again with `h2 live maps import`, after the
+server is updated):
+
+1. Mods: the list is on the left in the level select's bracket, up to 13
+   rows before it scrolls; the focused map's base-map picture is in the
+   box top right (check it is the map's preview at the box's size: the
+   multiplayer slots' bitmaps are drawn as the campaign picker's level
+   pictures are, at their own size), and the four summary lines are under
+   it, changing with the focus. Footer: `(A) DETAILS  (X) DOWNLOAD  (B)
+   BACK`, glyphs drawn as buttons.
+2. X on a map not here: stderr `mods: downloading <name> (<id>)`; the row
+   reads `<name>  ↓ N%` (an arrow, not a box or a gap) then `<name>  ✓`,
+   the summary's last line follows; new maps end in a star. X on an installed map logs `mods: <name> is installed; its
+   page removes it`. Start does nothing.
+3. A on a map: its page, titled with its name, laid out as the pregame
+   lobby (compare with the lobby itself): the one action row where the
+   lobby's Start Game / Game Setup buttons are, on their backing; the
+   description on the lobby's panel and the status line under it; the
+   map's picture under that, nothing over it; the facts table on the
+   right where the lobby's players are, names white and left, values
+   pale blue and right, then `What It Changes` and the ticks in two
+   columns. Up and down do nothing (one row). Note anything clipped, a
+   text missing (a panel widget not made logs `no panel text N`), or
+   the texts not sliding with the page.
+4. X (or A on the action) on a map not here downloads it; the status
+   line follows the progress; on an
+   installed one the first press reads `Remove? Press again`, the second
+   logs `mods: <name> (<id>) removed`, the row reads `Download`, the
+   footer `DOWNLOAD`; `<data>/maps/live-<16 hex>/` is gone and
+   `active.toml` no longer names it; Change Map no longer lists it.
+5. After installing a mod with an image and backing out to the list,
+   re-open Mods: its picture is the mod's own (the slot's refill).
+6. A pack (a server with two or more maps of one pack, e.g. a mappack
+   imported with its release): one row, its name and a star or "N maps";
+   its summary says how many maps and by whom. A opens it, titled with
+   its name: Download All (N) first, then the maps. A on a map opens its
+   page and B comes back to the pack. A on Download All logs `mods:
+   <pack>: downloading N maps`; the row shows the pack's percentage, then
+   All Installed, and the pack's row on Mods a tick. X on a pack's row on
+   Mods does the same as Download All.
 
 ## 6. Plan
 

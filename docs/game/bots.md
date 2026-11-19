@@ -771,9 +771,58 @@ signs a profile into a slot:
   `+0x14c`).
 
 Its callers are all "a profile was chosen" paths: the profile UI
-(`0x24b6ba` with `file = -1` for an unsaved profile, and `0x24b75b` after
-loading a file), the settings commit (`0x18fd0c`, `0x18fd59`) and
-`0x148b6b`. The sign-out is `0x18fc08`.
+(`0x24b6ba`, reached only when the chooser's file at `+4` is not -1, and
+`0x24b75b` after loading a file), the settings commit (`0x18fd0c`,
+`0x18fd59`) and `0x148b6b`. The sign-out is `0x18fc08`.
+
+**The file, and what "in use" means (traced 2026-11-19).** `file` is a
+saved-file handle from the saved-file manager (`[0x51ea14]`: the
+built-in content first, at most `0x65` records of `0x1e4` bytes, then per
+device a list of up to `0x1000` saved files of `0x40` bytes from `+0xbef8`,
+`0x40004` apart). A slot's handle at `+0x1f8` is everything that ties it to
+a saved profile:
+
+- **Chooser lists.** The list builder `0x24a190` takes the saved files of
+  a type (`0x215900`) and leaves out each one a signed-in slot's `+0x1f8`
+  holds (`0x18fc75`; a handle with bit 21 set, as -1 has, never matches).
+  So a slot holding a saved profile hides it from every chooser.
+- **The open-profile list** (`0x55c160` count, entries of `0x44` bytes at
+  `0x55c164`, room for four before `0x55c274`). The sign-in appends the new
+  handle when it is not -1 and differs from the slot's (`0x18fbd1`, no
+  bound check); `0x2172a0` removes one (the sign-in's old handle,
+  `PROFILE_SIGN_OUT`). The menus' memory mode keeps the saved-file manager
+  (`0x18ef00`'s table at `0x453c00`: `0x2157e0` builds it in mode 1,
+  `0x215810` frees it and freezes the list in the others); back in the
+  menus `0x18f5e3` re-finds each slot's handle (`0x2170e0`).
+- **Saving.** A profile commit (`0x18fcc4`: the block changed) signs the
+  block in again with the slot's own handle and sets slot flag `0x40`;
+  the save passes `0x190e37` and `0x190e71` write each such slot's block to
+  its file (`0x1a0660`, `0x2153dd`), and `0x1a0660` returns at once for -1.
+
+A bot's `file` is always -1 (`guest::NO_FILE`), so it never hides, holds
+or writes a saved profile. Nothing on the sign-in or sign-out path deletes
+a save: the game's `XDeleteSaveGame` callers are a failed create's clean-up
+(`0x215c00`), the profile UI's delete (`0x215e60`) and `0x2ad480`. A new
+profile is refused with error 1 (dialog `0x4a`, `0x148ca8`) when a
+device's list or its `XFindFirstSaveGame` count is `0x1000` or more
+(`0x215c55`, `0x215c65`, `0x217590`).
+
+**Never a saved profile (2026-11-19).** The user's report: the profile
+list showed only "Default" (a built-in) and a new profile was refused,
+and they thought the bots had taken their profiles. The data root's saves
+were untouched (one profile, unchanged since before the bots signed in;
+no save directory made or removed since). The guards that keep it so:
+
+- `guest::sign_in_then` and `guest::sign_in` never call the sign-in on a
+  slot that has a profile: over a saved one it would detach the user's
+  file and put the bot's block in its place;
+- a bot's slot that holds a saved profile anyway (a chooser opened for
+  its controller and took a stray A, as bots used to tap A before the
+  glue signed them in) is signed out once no game runs
+  (`local::release_step`, `guest::saved_profile`): `SLOT_SIGN_OUT` gives
+  the handle back to the open-profile list and saves nothing, so the
+  profile is offered again before a save pass can write the bot's block
+  over it, and the join gate signs the bot in again with its own block.
 
 **The players screen does not help.** In `0x1e`'s join path (`0x2528e5`):
 
@@ -1013,6 +1062,8 @@ These read the local-user map `[0x4e8c20]+0xc` or the count `+8`:
 | `render_game_views` `0x2234e0` (`0x223524`, `0x22359e`) | one view per user, layout from the count | **yes** |
 | HUD, per view (`0x1e6fe0`: user to player via the map, from the view's draw) | that view's HUD | covered by the render window |
 | sound frame service `0x125b40`, listener loop `0x125c93`..`0x125cd7` | one listener per mapped user (`0x221a70(user, listener)`) | **yes**, so only the human's ears count |
+| `SOUND_LISTENERS_UPDATE` `0x127400` (also from `0x18c060`, outside the sound frame) | one listener per mapped user, marked active | **yes**, and the bots' listeners are marked inactive |
+| `SOUND_OWNER_USER` `0x18d4f0` | a starting sound on a mapped user's unit plays unpositioned, in the ears | **yes**, so a bot's sounds are world sounds |
 | `0x1870a0` | actions | **no**: the bot must act |
 | `director_update` `0x1554b0` (`0x155939`, `0x155caf`) | one camera per user | no: harmless, small CPU |
 | about 70 others (game engine, UI, scoreboard; the full list is in the scratch trace) | | no |
@@ -1054,9 +1105,48 @@ and the user heard the bots' through the controller.
   user it skips, so a listener made before its user was hidden would
   stay active where the bot last stood. Called from inside
   `SOUND_UPDATE`, the window finds no bot user mapped and does nothing.
-- [guess] That a sound at an active listener plays as a plain (not 3D)
-  voice is read from the symptom, not traced: a 3D voice is never
-  routed to the controller. The game run says.
+- That a bot's own sound played as a plain (not 3D) voice is traced
+  now: see "Whose sound" below. The listener was not the whole story.
+
+**Whose sound (traced, 2026-11-19).** The user's run after the
+listeners went quiet: "i can hear sound from every ai player, also,
+sound doesn't get quieter in distance or round corners". A sound that
+starts on an object asks `0x18d4f0` (`SOUND_OWNER_USER`, stdcall,
+`ret 12`: object, a pointer to the sound's kind, a pointer for the user
+or null) whose own sound it is. When the kind is 1 (positioned) it walks
+the local-user map `[0x4e8c20] + 0xc`; for the first mapped user in
+first person (`0x155760` gives 0 or 1) whose player's unit (`+0x2c`) is
+the object or carries it (`0xbafb0`, both ways) it sets the kind to 0
+and the user. Kind 0 has no position: `0x127d00` gives it to the first
+mapped user, `0x127e20` gives it distance 0, and it plays in the ears
+with no distance, no panning and no obstruction, as a player's own
+gun, footsteps and breathing do. Its callers (`0x1890e5`, `0x18935f`,
+`0x189441`, `0x18cf76` from the per-frame update `0x18c060`, and
+`0x18d4dc`) run from the game tick and the per-frame update, not inside
+`SOUND_UPDATE`'s window, so the bots were mapped: every bot's gun, footsteps, grenades, melee and voice
+started as kind 0 and, given to the first mapped user, the human, played
+at full level in the human's ears wherever the bot was. That is both
+halves of the report: every bot is heard, and those sounds never fall
+off with distance or walls (the human's own world sounds always did;
+they are the game's own mix-bin volumes, docs/audio/dsound.md).
+`0x189441`'s caller even checks the user's listener (`+0x8e`) and
+falls back to the world path when it is inactive; the other four do
+not, so quieting the listeners could not fix it.
+
+- **Design:** `SOUND_OWNER_USER` gets the hide window (before: the bots'
+  users out of the map, `guest::hide`; after: `guest::restore`), as the
+  views and listeners have. The walk then finds only the humans: a
+  bot's sound keeps kind 1 and starts as a world sound at the bot,
+  heard (or culled) by the human's listener as a remote player's would
+  be, with the game's distance, panning, cluster audibility
+  (`0x221da0`) and obstruction (`0x221a70`). The human's own sounds are
+  unchanged.
+- The DirectSound listener is not the game's ears: `0x127400` ends by
+  setting it (`0x220790`, `IDirectSound_SetPosition` at `0x2207ba`,
+  `DS3D_DEFERRED`) to the origin facing +x (`[0x468788]`,
+  `[0x4687a8]`), and the game places each 3D mix-in relative to the
+  listener its sound belongs to. So nothing in the DirectSound layer
+  knows which local user a sound is for; the choice is made here.
 
 **The controller speaker, haptics and rumble (Repo).** Nothing there
 goes by port:
@@ -1604,9 +1694,32 @@ Two hooks keep Quickmatch on human hoppers
   server marked it; `clankermatch::quickmatch_hopper`).
 
 With no marks (an older server) both are retail.
-The playlist screen has a second opener (`0x002bbf06`, kind 3, from
-`0x002bba93`, screen not identified); it sees whatever the last Live menu
-press left in `active`.
+
+**Switch To: Clankermatch (built 2026-11-19, the user's ask).** The
+playlist screen's second opener (`0x002bbf06`, from `0x002bba93`) is the
+lobby's **"Switch To: Matchmaking"**: a Game Setup (squad settings)
+row whose press, `0x002bba8c` (EAX the press's player chain, the list
+handler on the stack, `ret 4`), opens the playlist screen for the
+chain's player and closes the dialog (`0x0022eeee`, `0x0022e957`). The
+list constructor (`0x002bb4d2`) gives it action 8 in lobby kinds 4 (2,
+3, 7, 8) and 5 (Change Map, Change Rules, Quick Options, Switch To:
+Co-Op Game, Switch To: Matchmaking), and action 9 in kind 6 (9, 6); the
+row-chosen jump table (`0x002bb884`) sends 8 and 9 to the same press.
+`clankermatch::SwitchRow` (feature `clankermatch-switch`) adds **"Switch
+To: Clankermatch"** (action 12, `clankermatch::SWITCH_ACTION`, past the
+Halo 1 Options row's 10 and the Clankers row's 11) right under it, while
+the server has clanker hoppers (`clankermatch::wants_switch_row`,
+`switch_placed`), drawn with `custom_games::SWITCH_CLANKERMATCH_TEXT`
+(string id `ID_BASE + 0x3b`, the Live menu rows' family). Its press sets
+`clankermatch::active` and calls `0x002bba8c` itself, so the party goes
+to the clanker playlists and on to the empty search and the fill (§8.4),
+as the Live menu's row does. Retail's Switch To: Matchmaking now clears
+`active` first (`clankermatch::switch_press`), so it always lists the
+human playlists, whatever the Live menu chose last. The log says
+`clankermatch: Game Setup list: Switch To: Clankermatch row added (N
+rows)` at each Game Setup, then `clankermatch: Switch To: Clankermatch:
+opening the clanker playlists` and `clankermatch: the playlists are the
+clanker hoppers` at the press.
 
 ### 8.4 Search and lobby (built: the empty search)
 
@@ -1627,15 +1740,24 @@ For a clanker hopper (`live_hle::clankermatch`):
    fills it (`clankers::Driver::tick_match`, twice a second): it asks
    Live for one roster of the whole lobby (`POST /v1/games/bots` with the
    playlist, no skill, so the server sets skill from the human's level,
-   §8.2.3; `teams: true` in a team playlist) and seats the bots as
-   phantoms one at a time on `clankermatch::schedule` (each 0.5 to 3 s
-   after the last, seeded by the session id), up to the playlist's most
-   players less one human. Phantoms only: a local bot would sign in as
-   the human's party. Nobody is seated before the roster comes (no
-   host-made bot for it to replace); if Live refuses it, host-made bots.
-   In a team playlist each bot without a roster team goes to the team
+   §8.2.3; `teams: true` in a team playlist) and seats the bots one at a
+   time on `clankermatch::schedule` (each 0.5 to 3 s after the last,
+   seeded by the session id), up to the playlist's most players less one
+   human. **Local bots first** (since 2026-11-19, phase 2): the first
+   `clankers::max_local` bots go on the free controller ports 1 to 3 and
+   sign in to the lobby as local players (the bot glue's lobby gate, as in
+   a Live custom game), with the roster's first bot accounts and its
+   skills; the rest are phantoms, which enter the session once the game
+   runs. `max_local` is up to three in free for all and, in a team
+   playlist, no more than fill the human's team (`players / teams - 1`:
+   three in Clanker Teams, one in Clanker Doubles), since a console's
+   players are one party on one team. Nobody is seated before the roster
+   comes (no host-made bot for it to replace, no local bot on Live as the
+   human's guest first); if Live refuses it, host-made bots.
+   In a team playlist each phantom without a roster team goes to the team
    with the fewest players, then the lowest total skill
-   (`clankermatch::balance`), around the human's team: the host's first
+   (`clankermatch::balance`), around the human and its local bots (all on
+   the human's team): the host's first
    local listed player's configuration team (player `+0xd4 + 0x7c`,
    `bots::phantom::session::host_team`), read twice a second by the bots'
    frame hook (`clankers::frame`) and followed until the first bot sits,
@@ -1643,16 +1765,135 @@ For a clanker hopper (`live_hle::clankermatch`):
    playlist's teams. The frame hook now runs this with no bot in (it used
    to return first, so a Clankermatch with the Clankers page off never
    started its fill).
-3. The match starts on the hopper's normal countdown. A handoff (the
-   lobby's session deleted and the game's advertised) keeps the bots and
-   carries the roster (§9.5); with no hosted session for 30 s, or another
-   kind of session hosted, the fill ends and the bots go.
+3. The match starts on the hopper's normal countdown, now that the local
+   bots make the lobby's player count (below, "Tracing the matchmaking
+   lobby"). A handoff (the lobby's session deleted and the game's
+   advertised) keeps the bots and carries the roster (§9.5); with no
+   hosted session for 30 s, or another kind of session hosted, the fill
+   ends and the bots go: the phantoms at once, the local bots signed out
+   by the bot glue's `SLOT_SIGN_OUT` once no game runs, as Clankers Off
+   does.
 4. The game record says `kind: "clankermatch"` with the playlist and
    session (`telemetry::Playlist::clankers`), and the server keeps it as
    its own kind (live-matchmaking.md §6.8).
 
 The lobby's "searching for players" state is the game's own: it stays until
 the session is full.
+
+**Why no bots show (the user's run, 2026-11-19: "no bots on Clanker
+Slayer").** Read from the code, not a log yet. The fill seats its bots on
+the phantom books (`bots::phantom::Phantoms::add`), and a phantom enters
+the session only once a multiplayer game runs: `bots::phantom::session::
+host_session` answers `NotNow::Wait` while there is no game tick, and
+§5.1's recipe runs only in a running game ("phantoms leave the session
+when the game ends, so they are not in the lobby yet"). In a custom game
+that is fine: the human presses Start and the phantoms join the game. A
+matchmaking lobby has no Start: the game starts it on the hopper's
+countdown once it has its players, and with one human and no phantom in
+the session it never does (Clanker Slayer's fewest players is 2). So the
+fill runs, its `(phantom, rostered) on` lines come, and the lobby still
+shows the human alone. **Fixed (phase 2):** the fill seats local bots
+first (item 2 above), which sign in to the lobby as session players, so
+the lobby reaches the playlist's fewest players and the game starts it;
+the phantoms join once it runs. The fill's first line says how many of
+each (`clankermatch: 3 local bots join the lobby on free controller
+ports; 4 phantoms join when the game starts`).
+
+Nothing else on the path is gated on what the user might have set:
+
+- `clankers.enabled` off does not stop it: `clankers::frame` runs
+  `tick_match` every 15 frames from the bots' `RENDER_FRAME` hook whatever
+  the page says, and the fill seats `Fill::bots` with `Want::OFF`.
+- The hopper ids are descriptor indices 0..15 everywhere (the marks, the
+  `HOPPER_LISTED` filter, the session's attribute 1, the search's hopper),
+  so the admin list's 1-based 9, 10, 11 are hoppers 8, 9, 10. A
+  published file that moved a clanker playlist loses its mark
+  (`ClankerHoppers::of_defaults`), which would empty the Clankermatch
+  list rather than misfile it; the user saw the list, so the marks hold.
+- A refused roster seats host-made bots; it never blocks the fill.
+- The Clankers Off fix (`SLOT_SIGN_OUT`) touches local bots only, which
+  a Clankermatch never seats; the Live menu's row move keeps
+  `custom_games::Row::Clankermatch` at row 2.
+
+**Tracing the matchmaking lobby (2026-11-19, from the disassembly; no
+run yet).**
+
+- **The lobby is a pregame lobby.** A playlist press (`0x002b2149` →
+  `0x002b21b9`) creates the squad session as the Live custom game row
+  does (`0x59890(2, 0, 0)`), then sets lobby mode 3 (`0x199a03(3)`) and
+  `0x63fb0`. The start state (`0x19a2ce`) tests "a pregame session"
+  (`0x19a279` gives 3 for life-cycle types 1 and 2) **before** its
+  matchmaking branch (`0x199971`: lobby kind 6, session `+0x49a4` 2), so
+  a matchmaking lobby passes it: `bots::lobby::pregame` holds there and
+  the bot glue's lobby gate signs local bots in, as in a custom game.
+- **What the start counts.** The matchmaking branch's state comes from
+  `0x66050(session, hopper)` (through `0x63e90`, hopper `+0x49c8` via
+  `0x641f0`), mapped to the status texts by `0x19a5fd`. It reads, per
+  session player (mask `S+0x111c`, records `S+0x1120`, `0x13c` each): an
+  offline id (`0xBAD00000` at record `+8`) gives state 13; in ranked types
+  (2, 4, 5) a guest flag (`+0x10dc & 3` from the record base) gives 12; a
+  level byte (`+0x129`) under the hopper's `+0x5e4` gives 15. Per peer it
+  wants the peer's hopper status `[peer + 0xac + hopper*4]` (peers at
+  `S+0x58`, `0x10c` each) to be 1: 0 gives 14, 3 gives 2, anything else
+  11. Then the party: the session's player count `S+0x1118` against the
+  hopper's party bounds (types 1 to 3: at least 1; 4 and up `+0x5fc` or
+  `+0x5f0`; at most `0x193250`), 6 when short. The match check
+  (`0x7e2df`, in the lobby summary `0x7e210`) compares the lobby's player
+  count with the hopper's fewest (`0x1932c0`) and most (`0x193300`), as
+  `0x7067a` and `0x724a6` do for the matchmaking states. So **session
+  players are what count**: local bots (on Live as bot accounts, never an
+  offline id) count, phantoms (absent until the game runs) do not.
+- **`S+0x4980` is the squad's matchmaking state**, set only through
+  `0x5a220(state)`: 1, 2, 4, 5 around the lobby and the game (`0x6e596`
+  and `0x727e1` set 4 as a game starts), 6 to `0x12` in matchmaking
+  (`0x705f0` reads 11 to 13 as the searching states). So the phantom
+  check's "4" holds in any running game, a matchmade one too: a
+  Clankermatch's phantoms join its game like a custom game's.
+- **`0x5f970` is no ready check**: it works on one peer's channel entry
+  (`S+0x72dc + peer*0x14`: `+1` valid, `+2` connected, `+4` the
+  channel) in states 5 to 8 and walks the other peers' entries; a
+  phantom's (valid, not connected, channel -1) is what the host's join
+  writes. `[S+0x78a8]` is set to the global `0x527fe8` at the session's
+  setup (`0x58f07`); what it refuses is not traced.
+- **Phantoms in the lobby: not done.** A phantom peer written into a
+  matchmaking lobby would read hopper status 0 (state 14) and hold the
+  start, and `S+0x4980` is a matchmaking state there, not 4. Writing the
+  peer's hopper status 1 might pass `0x66050`, but what else reads the
+  peer (the hopper data a real peer downloads, the veto object) is not
+  traced, so phantoms stay out of the lobby; local bots carry the start.
+- **To see in a run:** whether a local bot signing in while this console
+  hosts restarts the search (the party changed) or just fills the lobby;
+  whether the game balances a matchmade team game itself at the start
+  (then the phantoms' teams are its, not `clankermatch::balance`'s).
+
+**Grep the run's log** (`h2 play ... 2>&1 | tee run.log`), in order:
+
+1. `live: clankermatch: clanker hoppers [8, 9, 10]` at logon (or `the
+   server sent no clanker hoppers` / `no clanker hoppers from the
+   server`): the marks.
+2. `clankermatch: the playlists are the clanker hoppers`: the row's (or
+   the switch's) press.
+3. `live: clankermatch: searching clanker playlist 8: no one to find; the
+   console hosts in N s`: the held search. Missing: the search was not
+   the clanker hopper's (check `live: optimatch` lines).
+4. `live: session <id> advertised for ...` after it: the console hosted
+   a new session. (The game may update a session it already advertises
+   instead, which says nothing; step 5 decides.) Neither: the game never
+   hosted after the empty search (live-matchmaking.md §7.3 says
+   "likely").
+5. `clankers: clankermatch: hosting clanker playlist 8 (session <id>): 7
+   bots join over N s`: the fill started. Missing with 4 present: the
+   advertisement carries no hopper attribute (`Hle::clanker_hosted`).
+6. `clankers: asking Live for 7 bots for session <id>`, then `clankers:
+   Live rostered bots for session <id>` (or `no roster from Live (...):
+   host-made bots`).
+7. `clankers: Clanker N on (...)` and `clankers: Clanker N is <gamertag>
+   on Xbox Live (bot account ...)` for the local bots, then `bots:` gate
+   and sign-in lines for ports 1 to 3 in the `lobby`; `clankers:
+   <gamertag> (phantom, rostered) on (...)` for the rest: on the books.
+8. `bots: phantom <gamertag> joins (peer N)` once the game runs: in the
+   session. `bots: phantom ... waits: ...` names why a running game
+   refused one.
 
 **Run:** whether the game hosts after an empty search in every playlist
 type, or needs the server's matcher to say "you host" (`MatchProposed`
@@ -1663,9 +1904,11 @@ The empty search is what is built now.
 **Tests (no game):** `cargo test -p boot --lib custom_games` (the rows,
 panes, texts, cursor rows), `-p boot --lib coop_live` (the seven-row
 menu), `-p boot --lib clankermatch` (the filter, the schedule, the
-balance, Quickmatch's hopper), `-p boot --lib clankers::tests::a_clankermatch`
-(the fill: one roster, one bot at a time, balanced teams around the
-host's real team, the handoff, the end, a refused roster), `-p boot --lib
+balance, Quickmatch's hopper, the Switch To: Clankermatch row's place,
+press and plan order), `-p boot --lib clankers::tests::a_clankermatch`
+(the fill: one roster, local bots first then phantoms, one bot at a
+time, `max_local`, balanced teams around the host's party, the handoff,
+the end with the local bots off, a refused roster), `-p boot --lib
 bot_mark`, `-p font gear` (the glyph on a synthetic font),
 `-p bots phantom::session` (the marked name within 15 units, the host's
 team), `-p live-hle --lib clankermatch` (the delay and the run),
@@ -1677,7 +1920,8 @@ clankermatch`, `-p live-worker a_clankermatch_game`.
 ### 8.5 Game run (checklist)
 
 `h2 play --live-local` (or a Live server with the new default hoppers),
-signed in on port 0, Clankers page off.
+signed in on port 0, Clankers page off. Steps 4 to 9 run with no one at
+the controller as `h2 bots test --clankermatch` (§13.1).
 
 1. The Xbox Live menu shows seven rows (six without co-op): Quickmatch,
    OptiMatch, Clankermatch, Co-op Campaign, Custom Game, Custom Game
@@ -1695,13 +1939,17 @@ signed in on port 0, Clankers page off.
 5. Pick Clanker Slayer: the retail search screen runs for 4 to 20 s
    (`live: clankermatch: searching clanker playlist 8 ...`), then the
    game hosts its own lobby (does it? in every type: FFA and teams).
-6. The lobby fills one bot at a time, 0.5 to 3 s apart, to 8 players
-   (`clankers: clankermatch: hosting clanker playlist 8 ... 7 bots join`,
-   then `... (phantom, rostered) on` each). Each shows `⚙ ` and a
+6. The lobby fills one bot at a time, 0.5 to 3 s apart: three local bots
+   in the lobby (`clankers: clankermatch: hosting clanker playlist 8 ...
+   7 bots join`, `3 local bots join the lobby`, `Clanker N is ... on Xbox
+   Live`), then the countdown starts and the four phantoms join the game
+   (`bots: phantom ... joins`). Does the search restart when the local
+   bots sign in? Each shows `⚙ ` and a
    gamertag, the gear drawn (not a box) in the lobby, the scoreboard and
    the carnage report; say which place shows a box, if any.
-7. Clanker Teams: 4 v 4, the human's team with three bots, whichever
-   team the human is on (`... 2 teams, the host on team N`).
+7. Clanker Teams: 4 v 4, the human's team its three local bots, the
+   other four phantoms, whichever team the human is on (`... 2 teams, the
+   host on team N`). Clanker Doubles: one local bot, two phantoms.
 8. The match starts on its own countdown and plays; the carnage report
    lists the bots; the site shows the game as Clankermatch with its
    playlist, each bot with BOT.
@@ -1711,6 +1959,11 @@ signed in on port 0, Clankers page off.
    (`clankermatch: hopper 8 not saved for Quickmatch` at the pick).
 10. With a server that has no clanker marks: OptiMatch as retail,
     Clankermatch's list empty (say how the empty list looks).
+11. In a Live custom game lobby, open Game Setup: "Switch To:
+    Clankermatch" sits right under "Switch To: Matchmaking" (the log:
+    `clankermatch: Game Setup list: Switch To: Clankermatch row added`).
+    Press it: the clanker playlists open, as from the Live menu. Back,
+    then Switch To: Matchmaking: the human playlists.
 
 ## 9. The server interface (for sbmm-ranked)
 
@@ -2640,10 +2893,15 @@ list for the user to play (§11).
      Teams, Aggression, Aim style and Taunts are saved but not used yet:
      they wait for the lobby teams (stage 6), the utility layer and aim
      styles (stages 4 and 5), and the emotes (stage 4).
-   - **The page** is a kit screen, `clankers`: seven `ChoiceRow`s, laid
-     out as the Halo 1 Options page is (the level select's list, the
-     description pane, the legend in the footer). Its texts are the
-     `clankers` id family. In the preview it is `h2 ui preview clankers`.
+   - **The page** is a kit screen, `clankers`: seven `ChoiceRow`s on the
+     lobby's own settings dialog, Quick Options, inside and out
+     (`KitScreen::dialog(DialogBase::QuickOptions, ..)`, as the Halo 1
+     Options page is; docs/game/ui-builder.md "The Dialog kind"): Quick
+     Options' panel, header ("CLANKERS"), list (its `setting_lists` skin,
+     the name left and the value alone in the value column), the focused
+     row's description in its one-line help line, and the legend in its
+     footer. Its texts are the `clankers` id family. In the preview it is
+     `h2 ui preview clankers`.
    - **The row.** A custom game's Game Setup dialog (any list with Change
      Map) gets a "Clanker Options..." row with action 11, under Quick Options and
      the Halo 1 Options row's 10, above the "Switch To:" rows (retail
@@ -2652,10 +2910,10 @@ list for the user to play (§11).
      hook is ordered after the Halo 1 row's. A press opens the page on the dialog's own
      stack. The row's text has a slot of its own after the page's footer
      (`KitScreen::row_label`, "Clanker Options..."), so the page's title
-     stays "Clankers". The Halo 1 row does the same with its id 2
-     (`h1_options::ROW_LABEL_ID`, "Halo 1 Options..."), its screen's title
-     staying "Halo 1 Options"; both read like the dialog's other
-     "...Options..." rows.
+     stays "CLANKERS" (in capitals, as Quick Options' header is). The
+     Halo 1 row does the same with its id 2 (`h1_options::ROW_LABEL_ID`,
+     "Halo 1 Options..."), its screen's title staying "HALO 1 OPTIONS";
+     both read like the dialog's other "...Options..." rows.
    - **The bots.** While `enabled` is on, a driver keeps `min(count, free
      ports)` brains in the process-wide local bots, on ports 1 to 3 that no
      other bot asked for (an `H2_BOTS` or `sim` bot keeps its port). They
@@ -3011,6 +3269,26 @@ list for the user to play (§11).
      6. Split Screen with Clankers On: the players screen shows you
         alone, the lobby and the game have the bots. Say whether B on
         the players screen backs out or opens your profile menu.
+   **Built: a bot's sounds come from the bot** (2026-11-19, §4.3,
+   "Whose sound"). The user's run: "i can hear sound from every ai
+   player, also, sound doesn't get quieter in distance or round corners
+   etc".
+   - **Cause:** a sound starting on a local user's unit plays as that
+     user's own, unpositioned, in the ears (`0x18d4f0`), and the bots
+     are local users; the walk runs on the game tick, outside every
+     window. Each bot's gun, footsteps, grenades and voice played at
+     full level in the human's ears.
+   - **Fix:** the window around `SOUND_OWNER_USER` (`bot_glue`, "hide
+     bot owners" and "bot owners back").
+   - Tests: `-p bots --lib guest`
+     (`a_bots_own_sound_starts_as_a_world_sound_and_the_humans_stays_in_their_ears`),
+     `-p boot --lib render_thread` (the new point listed).
+   - **Game run (the user):** a match with three Clankers, no
+     controller speaker needed. Stand still away from the bots: their
+     shots and footsteps are quiet or silent far away, louder as they
+     come closer, panned to where they are, muffled behind walls. Your
+     own gun, footsteps and melee sound as before. Say whether any bot
+     sound still plays as if it were yours (and which).
    **Built: Off takes the bots out of the lobby** (2026-11-19). The
    user's run: "clankers still a bit buggy, i turned them off and they
    stay in the lobby."
@@ -3577,5 +3855,89 @@ non-zero on a failure).
   own, but a second `h2 bots test` needs another `--server-port` and
   `--root`.
 
+### 13.1 Clankermatch (`h2 bots test --clankermatch`)
+
+The same harness runs §8's Clankermatch end to end, so the §8.5 checklist's
+steps 4 to 9 have a verdict instead of a person at the controller.
+
+```sh
+H2_OPT=2 ~/.cargo/bin/h2 bots test --clankermatch [--playlist slayer|teams|doubles] \
+    --disc disc/halo2.iso --wait-clang [--keep] [--timeout 900] [--no-drive]
+```
+
+`--playlist` implies `--clankermatch` (slayer by default); `--count` and
+`--map` are refused, since the playlist sets both. Everything else
+(`--keep`, `--root`, `--out`, `--server-port`, `--settings-from`,
+`--dry-run`, `--no-drive`, `progress.json`, `h2 bots verdict`) is as
+above; the merged log's plan line is `bots-test: clankermatch plan: ...`,
+which is how `h2 bots verdict` knows which verdict to print.
+
+**Server state.** None to set up: the run's fresh store has no published
+hopper file, so the server serves the built-in lineup
+(`live_server::default_hopper`), whose hoppers 8, 9 and 10 are Clanker
+Slayer, Clanker Teams and Clanker Doubles, marked on
+`GET /v1/hoppers/clankers`. The harness reads the marks before it starts
+the game, checks the playlist asked for is marked and on the row the plan
+expects (the Clankermatch list shows only the clanker hoppers, in index
+order: rows 0, 1, 2), and stops at once if not. The game runs with
+`--set clankers.enabled=false`: the page's Clankers stay off and only the
+fill seats bots. The plan, from the lineup and `max_local`:
+
+| `--playlist` | Hopper | Row | Players | Bots | Local | Phantoms |
+|---|---|---|---|---|---|---|
+| slayer | 8 Clanker Slayer (FFA) | 0 | 2 to 8 | 7 | 3 | 4 |
+| teams | 9 Clanker Teams (2 teams) | 1 | 2 to 8 | 7 | 3 | 4 |
+| doubles | 10 Clanker Doubles (2 teams) | 2 | 2 to 4 | 3 | 1 | 2 |
+
+**The drive** (`crates/cli/src/bots_drive/clankermatch.rs`): boot, sign-in
+and the Xbox Live menu as above, then row 2 (Clankermatch), A. The playlist
+list is the first settled screen after that A; its row is read off its
+list value (or counted from the DOWNs sent, when the value reads as no
+row), and A goes on the playlist's row. Then nothing is pressed: the
+search (4 to 20 s), the lobby this console hosts, the fill and the
+countdown run by themselves. A human playlist's search, no search 15 s
+after A (A again, 4 tries), no hosted lobby 90 s into the search, or a
+lobby that has not started in 180 s stops the drive, saying which. Once
+the game has played and the phase is back in the menus, it leaves: B
+(A on a dialog, and DOWN, A on the next one; A after a B that changed
+nothing, as on the carnage report) until this console hosts no session,
+then waits for the fill to end (30 s, `FILL_GONE`). A game that starts
+again first is waited out. The game runs to its own end: Rumble Slayer's
+6 minutes, Team Slayer's 8, or the score, so the timeout is 900 s
+(1200 with `--no-drive`).
+
+**The checks:**
+
+| # | Check | Passes on |
+|---|---|---|
+| 1 | Signed in to Xbox Live | `live: playing as Tester` |
+| 2 | Clanker hoppers listed (server and game) | `bots-test: server clanker hoppers [8, 9, 10]` and `live: clankermatch: clanker hoppers [8, 9, 10]`, both with the plan's hopper |
+| 3 | The Clankermatch row opened the clanker playlists | `clankermatch: the playlists are the clanker hoppers`, and no `the server named no clanker hoppers: the list is empty` |
+| 4 | The clanker search started | `live: clankermatch: searching clanker playlist H` with the plan's H |
+| 5 | The search ended with this console hosting | `live: session S advertised` after the search, and `clankers: clankermatch: hosting clanker playlist H (session S)` |
+| 6 | Local bots planned for the lobby | `clankers: clankermatch: N local bots join the lobby` with the plan's N |
+| 7 | Local bots seated and signed in, in the lobby | per local port, after the hosting line: `clankers: Clanker P on`, `bots: join gate port P: ...: signs in`, `bots: signing ... on port P ...`; it says whether in the lobby |
+| 8 | Local bots on Xbox Live as bot accounts | per port, `Clanker P is G on Xbox Live (bot account 000b...)` and `G on port P is on Xbox Live as its own bot account` |
+| 9 | The lobby reached the playlist's fewest players | the most filled or joined players the server's session showed between the hosting line and the start |
+| 10 | The countdown ran and the game started | `session.status` phase `loading` or `gameplay` after the hosting line |
+| 11 | Gameplay on a map | phase `gameplay`, not campaign, after the start |
+| 12 | Phantoms joined after the start | `bots: phantom G joins (peer K)` for each phantom, all after the start, none before, and no phantom failure |
+| 13 | Game record: kind clankermatch | the newest `GET /v1/games` record (`bots-test: game ... kind K, playlist P`) has kind `clankermatch` and at least the local bots with `bot: true` |
+| 14 | After the game, the local bots leave | `clankers: clankermatch: the game is over: the bots go` (or `this console hosts another game`) after gameplay, then `clankers: Clanker P off` for each local port |
+
+A failed check says what the log shows instead and the likely cause: for
+2 which side lacks the hopper and the HLE's own line (`no clanker hoppers
+from the server`, `not asked for`); for 3 an empty list or a row never
+pressed; for 4 a human playlist's search or another clanker hopper; for 5
+whether a session was advertised at all (the game kept searching) or only
+the fill missed it (the HLE did not read the advertisement's hopper as a
+clanker one); for 7 the ports never seated (the roster) or seated but not
+signed in (their last join gate lines); for 9 and 10 whether the lobby was
+short of players or full and still not started (the game's matchmaking
+start); for 12 phantoms that joined before the start (a phantom cannot be
+a lobby player, §5.1); for 13 the kind recorded; for 14 that the console
+still hosts the session, or which bots did not sign off.
+
 **Tests:** `cargo test -p cli bots_` (the verdict from log lines, the
-driver's presses, the arguments).
+driver's presses, the arguments; Clankermatch's under `bots_drive::clankermatch`,
+`bots_verdict::clankermatch` and `bots_test_cmd`).

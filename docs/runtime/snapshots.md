@@ -666,7 +666,7 @@ round-trips its bytes and checks that damaged bytes change nothing.
 | `ui-kit-texts.*` (every kit screen) | section, forbid while live | live while a press waits for the action, our keyboard is open, or work waits for a screen's free. No bytes: a load marks every text slot dirty, so the next draw writes them over the saved run's page. Row values are the settings store's |
 | `mods-screens` | section, forbid while live | live while a mod download is under way (it writes to disk). Saves the open detail page's mod; a load rewrites every text. The list and installed set are the server's and the disk's |
 | `settings-rows`, `controls-rows` | stateless | model strings fixed at build, values the settings store's; async answers are continuations |
-| `h1-options-row`, `clankers-row` | forbid while live | while a Game Setup list's constructor is between its hooks (`h1_options_row::building_live`) |
+| `h1-options-row`, `clankers-row`, `clankermatch-switch` | forbid while live | while a Game Setup list's constructor is between its hooks (`h1_options_row::building_live`) |
 | `variant-more-options-row` | stateless | `ROW_ON` fixed at build; text and press are guest memory and continuations |
 | `hud` | section | the style in force, one byte; not re-picked from the map at a load, because the choice counts only from a game start |
 | `h1-hud` | section | Halo 2's own motion sensor table, which the guest's copy no longer shows after a Halo 1 map |

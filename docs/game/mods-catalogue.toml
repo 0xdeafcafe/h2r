@@ -1,0 +1,1734 @@
+# Halo 2 (Xbox) map mods found for h2 live, 2026-11-19: candidates to import.
+# Metadata only: no mod files are kept in git. Researched from ibotmodz.net,
+# halomaps, se7ensins and archive.org copies; formats checked on downloads.
+#
+# fit: good = the importer takes it (PPF/IPS/BPS or a whole .map of a disc or
+#   Map Pack map); whole-map = a whole .map whose map header names a retail map
+#   (imports over that base; a total conversion makes a large BPS delta);
+#   unknown-base = no base map known yet (download missing or header unread);
+#   unsupported-format = SPPF / Serenity / xdelta (no reader yet, maps.md §6);
+#   needs-shared = patches mainmenu/shared (not a playable map package).
+# authors: as the release credits them; [] = not found.
+
+[[mod]]
+slug = "air-zanzibar-squads"
+name = "Zanzibar Squads"
+authors = ["MilyardoX2"]
+base = "zanzibar"
+format = "map"
+size = 59198464
+sha256 = "091793903642fe77852e57595e403c3f067847e8e7ea3f301fff2d0cba201d1d"
+released = "2007-08-25"
+download_url = "https://archive.org/download/xbox-game-mods/xbox%20game%20mods%E2%81%84hack%2FHalo%202%2FHalo%202%20AI%20Revision%20%2B%20Xored.zip/Halo%202%20Remapped%20AI%20Revision%2Fmaps%2Fzanzibar_squads.map"
+source_url = "https://ibotmodz.net/topic/147-halo-2-ai-revision-mappack/"
+fit = "good"
+description = "AI mod \"Zanzibar Squads\" from the Halo 2 Remapped AI Revision pack; credited to MilyardoX2 on the ibotmodz pack post."
+notes = "From Halo 2 Remapped AI Revision (2007). AI only works when launched through the Xored/Yelo trainer (\"MUST launch this mappack with Yelo from the Xored Trainer Launcher\"). Pack ships a retail-CRC shared.map and a modified mainmenu.map. header name \"zanzibar\", scenario \"Scenarios\\multi\\zanzibar_squads\\zanzibar_squads\". Size 59198464 B (56.5 MiB)."
+
+[[mod]]
+slug = "biohazard-ii"
+name = "Biohazard II: The Breach"
+authors = ["ScottyGee (per Killtrocity list; uploaded by SmokiestGrunl)"]
+base = "zanzibar"
+format = "sppf/serenity"
+released = "2009-05-19"
+download_url = "http://ibotfiles.com/downloads/halo2/bio/BiohazardII_TheBreach.rar"
+source_url = "https://ibotmodz.net/files/file/36-biohazard-ii-the-breach/"
+fit = "unsupported-format"
+description = "Flood outbreak map on Zanzibar: dead bodies, Glock, M16, M4+M203, FloodFlame, Fuel Rod Rifle, Disruptor Beam."
+notes = "Download link is dead (MediaFire file removed, ibotfiles.com gone, FileFront gone, or ibotmodz gives no redirect), nothing downloaded. Format is not PPF/IPS/BPS: .sppf is a Super PPF \"sized\" patch (observed header bytes are raw little-endian u32 records, no PPF magic) and .serenity is a Serenity patch (observed to start 14 00 00 0f). The importer would need an sppf or serenity reader."
+
+[[mod]]
+slug = "cassiopeia"
+name = "Black-Ops: Cassiopeia"
+authors = ["Aequitas (per Killtrocity list; uploaded by SmokiestGrunl)", "Iron_Forge (Serenity), xbox7887, TheSwampFox and others credited"]
+base = "unknown"
+format = "sppf/serenity"
+released = "2009-05-19"
+download_url = "http://www.mediafire.com/file/yqg2g5mfjnm/Cassiopeia-v1-0-[Aequitas].rar"
+source_url = "https://ibotmodz.net/files/file/37-black-ops-cassiopeia/"
+fit = "unsupported-format"
+description = "Stealth night map: ODST Elites, flashlight BR, night-vision sniper, rain/fog, darkened lightmaps. Use the Serenity mainmenu feature then resign cassiopeia.map."
+notes = "Download link is dead (MediaFire file removed, ibotfiles.com gone, FileFront gone, or ibotmodz gives no redirect), nothing downloaded. Format is not PPF/IPS/BPS: .sppf is a Super PPF \"sized\" patch (observed header bytes are raw little-endian u32 records, no PPF magic) and .serenity is a Serenity patch (observed to start 14 00 00 0f). The importer would need an sppf or serenity reader."
+
+[[mod]]
+slug = "doorm4n-arena"
+name = "Arena"
+authors = ["DoorM4n"]
+base = "unknown"
+format = "map"
+size = 37022208
+sha256 = "343c7ebaeb11ead887c81268c37bbf4a640bc3b2508b842e0c4ccaf1ea59896d"
+released = "2011-2014 (pack v1.1 compiled 2019-06-02)"
+download_url = "https://www.mediafire.com/file_premium/q42jzcmoqg7y8bj/DoorM4ns_Legacy_Map-Pack_v1.1.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "unknown-base"
+description = "Arena custom map (name inferred from filename)."
+notes = "From \"DoorM4ns Legacy Map-Pack v1.1\" (583 MB MediaFire rar; pack also mirrored in archive.org item H2Mappacks, which now needs a login; maps supplied to CabooseSayzWTF by Redherring32 and Anubis). Pack ships a stock-size shared.map (183370752 B) and a custom mainmenu.map. No readme; title inferred from filename. header name \"arena\", scenario \"scenarios\\multi\\arena\\arena\". Base not stated by header; best guess: unknown. Size 37022208 B (35.3 MiB)."
+
+[[mod]]
+slug = "doorm4n-church"
+name = "The Churchyard"
+authors = ["DoorM4n"]
+base = "unknown"
+format = "map"
+size = 59599360
+sha256 = "2d36cc522fa5b1af08b2aaa872f5b0f5f8355d6c5e1a06ae4833d6e2141ae43a"
+released = "2011-2014 (pack v1.1 compiled 2019-06-02)"
+download_url = "https://www.mediafire.com/file_premium/q42jzcmoqg7y8bj/DoorM4ns_Legacy_Map-Pack_v1.1.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "unknown-base"
+description = "Churchyard, DoorM4n custom map (also in Phantom Mappack v2)."
+notes = "From \"DoorM4ns Legacy Map-Pack v1.1\" (583 MB MediaFire rar; pack also mirrored in archive.org item H2Mappacks, which now needs a login; maps supplied to CabooseSayzWTF by Redherring32 and Anubis). Pack ships a stock-size shared.map (183370752 B) and a custom mainmenu.map. No readme; title inferred from filename. header name \"3Q#6\", scenario \"scenarios\\multi\\church\\church\". Base not stated by header; best guess: unknown. Size 59599360 B (56.8 MiB)."
+
+[[mod]]
+slug = "doorm4n-coliseum"
+name = "Coliseum"
+authors = ["DoorM4n"]
+base = "unknown"
+format = "map"
+size = 83382272
+sha256 = "db1f6d2eaee832b2df85206bcadf91e69d69c93258ea9ac03299c131d872aa70"
+released = "2011-2014 (pack v1.1 compiled 2019-06-02)"
+download_url = "https://www.mediafire.com/file_premium/q42jzcmoqg7y8bj/DoorM4ns_Legacy_Map-Pack_v1.1.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "unknown-base"
+description = "Coliseum custom map."
+notes = "From \"DoorM4ns Legacy Map-Pack v1.1\" (583 MB MediaFire rar; pack also mirrored in archive.org item H2Mappacks, which now needs a login; maps supplied to CabooseSayzWTF by Redherring32 and Anubis). Pack ships a stock-size shared.map (183370752 B) and a custom mainmenu.map. No readme; title inferred from filename. header name \"1i4|5A\", scenario \"scenarios\\multi\\marathon\\coliseum\\coliseum\". Base not stated by header; best guess: unknown. Size 83382272 B (79.5 MiB)."
+
+[[mod]]
+slug = "doorm4n-duff"
+name = "Duff World"
+authors = ["DoorM4n"]
+base = "unknown"
+format = "map"
+size = 64878080
+sha256 = "e0984d0b79fba520dcbd2b5c9df9f3241f7984c80e725509a8016779a029d497"
+released = "2011-2014 (pack v1.1 compiled 2019-06-02)"
+download_url = "https://www.mediafire.com/file_premium/q42jzcmoqg7y8bj/DoorM4ns_Legacy_Map-Pack_v1.1.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "unknown-base"
+description = "Duff World (also in Phantom Mappack v1 as duffworld)."
+notes = "From \"DoorM4ns Legacy Map-Pack v1.1\" (583 MB MediaFire rar; pack also mirrored in archive.org item H2Mappacks, which now needs a login; maps supplied to CabooseSayzWTF by Redherring32 and Anubis). Pack ships a stock-size shared.map (183370752 B) and a custom mainmenu.map. No readme; title inferred from filename. header name \"duff\", scenario \"scenarios\\multi\\marathon\\duff\\duff\". Base not stated by header; best guess: unknown. Size 64878080 B (61.9 MiB)."
+
+[[mod]]
+slug = "doorm4n-exha"
+name = "Exha"
+authors = ["DoorM4n"]
+base = "unknown"
+format = "map"
+size = 71056384
+sha256 = "0aabf24ff7e5d91b32de5a6ab633cc255a8a40f934db0825bf51e86000b806bd"
+released = "2011-2014 (pack v1.1 compiled 2019-06-02)"
+download_url = "https://www.mediafire.com/file_premium/q42jzcmoqg7y8bj/DoorM4ns_Legacy_Map-Pack_v1.1.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "unknown-base"
+description = "Exha custom map (name inferred)."
+notes = "From \"DoorM4ns Legacy Map-Pack v1.1\" (583 MB MediaFire rar; pack also mirrored in archive.org item H2Mappacks, which now needs a login; maps supplied to CabooseSayzWTF by Redherring32 and Anubis). Pack ships a stock-size shared.map (183370752 B) and a custom mainmenu.map. No readme; title inferred from filename. header name \"exha\", scenario \"scenarios\\multi\\exha\\exha\". Base not stated by header; best guess: unknown. Size 71056384 B (67.8 MiB)."
+
+[[mod]]
+slug = "doorm4n-firesky2"
+name = "Fire Sky 2"
+authors = ["DoorM4n"]
+base = "unknown"
+format = "map"
+size = 78247936
+sha256 = "e841a3f977b21ce0a0e5f1bea14de1b88a542e4b9a96ded62ccf93edfe9b384b"
+released = "2011-2014 (pack v1.1 compiled 2019-06-02)"
+download_url = "https://www.mediafire.com/file_premium/q42jzcmoqg7y8bj/DoorM4ns_Legacy_Map-Pack_v1.1.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "unknown-base"
+description = "Fire Sky 2 custom map."
+notes = "From \"DoorM4ns Legacy Map-Pack v1.1\" (583 MB MediaFire rar; pack also mirrored in archive.org item H2Mappacks, which now needs a login; maps supplied to CabooseSayzWTF by Redherring32 and Anubis). Pack ships a stock-size shared.map (183370752 B) and a custom mainmenu.map. No readme; title inferred from filename. header name \"firesky2\", scenario \"scenarios\\multi\\halo\\firesky2\\firesky2\". Base not stated by header; best guess: unknown. Size 78247936 B (74.6 MiB)."
+
+[[mod]]
+slug = "doorm4n-jurrasic"
+name = "Jurassic Ravine"
+authors = ["DoorM4n"]
+base = "beavercreek"
+format = "map"
+size = 49737216
+sha256 = "3555dd61d4164cbd483927d49c938a2ee6c6cbbdcfe501cf98ebd92e9103e9f9"
+released = "2011-2014 (pack v1.1 compiled 2019-06-02)"
+download_url = "https://www.mediafire.com/file_premium/q42jzcmoqg7y8bj/DoorM4ns_Legacy_Map-Pack_v1.1.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "whole-map"
+description = "Whole-map version of Jurassic Ravine, a jungle ambience mod for Beaver Creek. The sppf release is catalogued separately as jurassic-ravine."
+notes = "From \"DoorM4ns Legacy Map-Pack v1.1\" (583 MB MediaFire rar; pack also mirrored in archive.org item H2Mappacks, which now needs a login; maps supplied to CabooseSayzWTF by Redherring32 and Anubis). Pack ships a stock-size shared.map (183370752 B) and a custom mainmenu.map. No readme; title inferred from filename. header name \"jurrasic\", scenario \"scenarios\\multi\\halo\\jurrasic\\jurrasic\". Base not stated by header; best guess: beavercreek. Size 49737216 B (47.4 MiB)."
+
+[[mod]]
+slug = "doorm4n-lego"
+name = "Lego"
+authors = ["DoorM4n"]
+base = "lockout"
+format = "map"
+size = 34523136
+sha256 = "f1b1f45845a7b3e959142b880d31c039ddc39d55579947d3ebb0ac1e556a216a"
+released = "2011-2014 (pack v1.1 compiled 2019-06-02)"
+download_url = "https://www.mediafire.com/file_premium/q42jzcmoqg7y8bj/DoorM4ns_Legacy_Map-Pack_v1.1.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "whole-map"
+description = "Lego custom map. File size equals retail lockout.map (34523136 B)."
+notes = "From \"DoorM4ns Legacy Map-Pack v1.1\" (583 MB MediaFire rar; pack also mirrored in archive.org item H2Mappacks, which now needs a login; maps supplied to CabooseSayzWTF by Redherring32 and Anubis). Pack ships a stock-size shared.map (183370752 B) and a custom mainmenu.map. No readme; title inferred from filename. header name \"lego\", scenario \"scenarios\\multi\\lego\\lego\". Base not stated by header; best guess: lockout. Size 34523136 B (32.9 MiB)."
+
+[[mod]]
+slug = "doorm4n-ski"
+name = "Ski Resort"
+authors = ["DoorM4n"]
+base = "unknown"
+format = "map"
+size = 70182912
+sha256 = "77e8ead3980bcb7f5a86c1c6933dd7165aa2e14216d7a3eb5f8bc81ed25cb3eb"
+released = "2011-2014 (pack v1.1 compiled 2019-06-02)"
+download_url = "https://www.mediafire.com/file_premium/q42jzcmoqg7y8bj/DoorM4ns_Legacy_Map-Pack_v1.1.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "unknown-base"
+description = "Ski Resort custom map (also in Phantom Mappack v2)."
+notes = "From \"DoorM4ns Legacy Map-Pack v1.1\" (583 MB MediaFire rar; pack also mirrored in archive.org item H2Mappacks, which now needs a login; maps supplied to CabooseSayzWTF by Redherring32 and Anubis). Pack ships a stock-size shared.map (183370752 B) and a custom mainmenu.map. No readme; title inferred from filename. header name \"scenarios\\multi\\ski\\ski\", scenario \"scenarios\\multi\\ski\\ski\". Base not stated by header; best guess: unknown. Size 70182912 B (66.9 MiB)."
+
+[[mod]]
+slug = "doorm4n-skyhigh"
+name = "Sky High"
+authors = ["DoorM4n"]
+base = "unknown"
+format = "map"
+size = 50593792
+sha256 = "6cd3badced7fb2eb928eda4c409ab10187f93695ae01d3a71473b523dd45804a"
+released = "2011-2014 (pack v1.1 compiled 2019-06-02)"
+download_url = "https://www.mediafire.com/file_premium/q42jzcmoqg7y8bj/DoorM4ns_Legacy_Map-Pack_v1.1.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "unknown-base"
+description = "Sky High custom map."
+notes = "From \"DoorM4ns Legacy Map-Pack v1.1\" (583 MB MediaFire rar; pack also mirrored in archive.org item H2Mappacks, which now needs a login; maps supplied to CabooseSayzWTF by Redherring32 and Anubis). Pack ships a stock-size shared.map (183370752 B) and a custom mainmenu.map. No readme; title inferred from filename. header name \"skyhigh\", scenario \"scenarios\\multi\\skyhigh\\skyhigh\". Base not stated by header; best guess: unknown. Size 50593792 B (48.2 MiB)."
+
+[[mod]]
+slug = "doorm4n-skyline"
+name = "Skyline"
+authors = ["DoorM4n"]
+base = "cyclotron"
+format = "map"
+size = 56202240
+sha256 = "86f9331dccf6f5636ba0406fbc84df0c279e0f451de248f551683466b7a59ad0"
+released = "2011-2014 (pack v1.1 compiled 2019-06-02)"
+download_url = "https://www.mediafire.com/file_premium/q42jzcmoqg7y8bj/DoorM4ns_Legacy_Map-Pack_v1.1.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "whole-map"
+description = "Skyline: custom rooftop map built in the Ivory Tower (cyclotron) BSP, with a Wasp ported from Halo CE. DoorM4n readme: \"Patch cyclotron.map (Ivory Tower)\"."
+notes = "From \"DoorM4ns Legacy Map-Pack v1.1\" (583 MB MediaFire rar; pack also mirrored in archive.org item H2Mappacks, which now needs a login; maps supplied to CabooseSayzWTF by Redherring32 and Anubis). Pack ships a stock-size shared.map (183370752 B) and a custom mainmenu.map. No readme; title inferred from filename. header name \"Skyline\", scenario \"scenarios\\multi\\Skyline\\Skyline\". Base not stated by header; best guess: cyclotron. Size 56202240 B (53.6 MiB)."
+
+[[mod]]
+slug = "doorm4n-skylinerts"
+name = "Skyline (Real Time Shadows)"
+authors = ["DoorM4n"]
+base = "cyclotron"
+format = "map"
+size = 56202240
+sha256 = "a25b59b491069f8962f75c99cc8c25489e765134920d7474746d011073ddc472"
+released = "2011-2014 (pack v1.1 compiled 2019-06-02)"
+download_url = "https://www.mediafire.com/file_premium/q42jzcmoqg7y8bj/DoorM4ns_Legacy_Map-Pack_v1.1.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "whole-map"
+description = "Skyline with real-time spotlight shadows (buggier, more lag)."
+notes = "From \"DoorM4ns Legacy Map-Pack v1.1\" (583 MB MediaFire rar; pack also mirrored in archive.org item H2Mappacks, which now needs a login; maps supplied to CabooseSayzWTF by Redherring32 and Anubis). Pack ships a stock-size shared.map (183370752 B) and a custom mainmenu.map. No readme; title inferred from filename. header name \"SkylineRTS\", scenario \"scenarios\\multi\\SkylineRTS\\SkylineRTS\". Base not stated by header; best guess: cyclotron. Size 56202240 B (53.6 MiB)."
+
+[[mod]]
+slug = "doorm4n-tortuga"
+name = "Tortuga"
+authors = ["DoorM4n"]
+base = "unknown"
+format = "map"
+size = 88812544
+sha256 = "b6166987b9b3d3e570f41f0ee86ac85ff58f3907a3cacf60e100f8d177cad2b6"
+released = "2011-2014 (pack v1.1 compiled 2019-06-02)"
+download_url = "https://www.mediafire.com/file_premium/q42jzcmoqg7y8bj/DoorM4ns_Legacy_Map-Pack_v1.1.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "unknown-base"
+description = "Tortuga: SP-to-MP converted pirate map with swimming, castle, ships, cannons, horse and 14 new weapons (released Aug 2011)."
+notes = "From \"DoorM4ns Legacy Map-Pack v1.1\" (583 MB MediaFire rar; pack also mirrored in archive.org item H2Mappacks, which now needs a login; maps supplied to CabooseSayzWTF by Redherring32 and Anubis). Pack ships a stock-size shared.map (183370752 B) and a custom mainmenu.map. No readme; title inferred from filename. header name \"1i4|5A\", scenario \"scenarios\\multi\\marathon\\tortuga\\tortuga\". Base not stated by header; best guess: unknown. Size 88812544 B (84.7 MiB)."
+
+[[mod]]
+slug = "doorm4n-unearth"
+name = "Unearth"
+authors = ["DoorM4n"]
+base = "unknown"
+format = "map"
+size = 63233024
+sha256 = "294a7ad73407aff11b3d90ff216c1c761c5c0bca724a90f40327dcc4a2c70543"
+released = "2011-2014 (pack v1.1 compiled 2019-06-02)"
+download_url = "https://www.mediafire.com/file_premium/q42jzcmoqg7y8bj/DoorM4ns_Legacy_Map-Pack_v1.1.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "unknown-base"
+description = "Unearth custom map."
+notes = "From \"DoorM4ns Legacy Map-Pack v1.1\" (583 MB MediaFire rar; pack also mirrored in archive.org item H2Mappacks, which now needs a login; maps supplied to CabooseSayzWTF by Redherring32 and Anubis). Pack ships a stock-size shared.map (183370752 B) and a custom mainmenu.map. No readme; title inferred from filename. header name \"unearth\", scenario \"scenarios\\multi\\unearth\\unearth\". Base not stated by header; best guess: unknown. Size 63233024 B (60.3 MiB)."
+
+[[mod]]
+slug = "doorm4n-warfare"
+name = "Dawn of Warfare"
+authors = ["DoorM4n", "Dec1234"]
+base = "unknown"
+format = "map"
+size = 53715456
+sha256 = "43d05da6d45c1c54d8285af740a1ef1558950afb799caaaaec01fde6b4fce660"
+released = "2011-2014 (pack v1.1 compiled 2019-06-02)"
+download_url = "https://www.mediafire.com/file_premium/q42jzcmoqg7y8bj/DoorM4ns_Legacy_Map-Pack_v1.1.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "unknown-base"
+description = "Warfare / Dawn of Warfare (DoorM4n and Dec1234 per the Killtrocity v1 list)."
+notes = "From \"DoorM4ns Legacy Map-Pack v1.1\" (583 MB MediaFire rar; pack also mirrored in archive.org item H2Mappacks, which now needs a login; maps supplied to CabooseSayzWTF by Redherring32 and Anubis). Pack ships a stock-size shared.map (183370752 B) and a custom mainmenu.map. No readme; title inferred from filename. header name \"warfare\", scenario \"scenarios\\multi\\warfare\\warfare\". Base not stated by header; best guess: unknown. Size 53715456 B (51.2 MiB)."
+
+[[mod]]
+slug = "echo-station"
+name = "Echo Station"
+authors = ["TunesRus90 (credited in the Mimesis list; uploaded to ibotmodz by SmokiestGrunl)", "xheadshotmastax (SLC fix, testing)"]
+base = "ascension"
+format = "sppf"
+size = 10946974
+sha256 = "583db8c4545a9142c110100502741ed04354d2c76cdae23dee19460dd75e75c8"
+released = "2009-05-19 (ibotmodz upload); mod ~2008"
+download_url = "http://www.mediafire.com/file/y1wuyymtjzv/EchoStation.rar"
+source_url = "https://ibotmodz.net/files/file/38-echo-station/"
+fit = "unsupported-format"
+description = "Echo Station: moving MAC gun that can shoot through a capital ship, base indicator lights, skinned machine, new obstacles/weapon spawns, fully system-link compatible, all gametypes fixed. \"Apply to Ascension.map\". v2 fixed collision at the blue base."
+notes = "Format is not PPF/IPS/BPS: .sppf is a Super PPF \"sized\" patch (observed header bytes are raw little-endian u32 records, no PPF magic) and .serenity is a Serenity patch (observed to start 14 00 00 0f). The importer would need an sppf or serenity reader. Local file is the downloaded EchoStation.rar (holds \"Echo Station v2_1 SPPF.rar\" and \"Echo Station v2_1 Serenity.rar\"); sppf 17.4 MB / serenity 4.6 MB were extracted under x2/ but bsdtar reported an unsupported RAR filter, so those extracted bytes are unverified."
+
+[[mod]]
+slug = "fast-furious-miami"
+name = "The Fast and The Furious: Miami"
+authors = ["SmokiestGrunl", "Team deltaHalo", "ZeroKillerMods (UVW)", "RaVNzCRoFT (models)"]
+base = "headlong"
+format = "sppf/serenity"
+released = "2009-05-05"
+source_url = "https://ibotmodz.net/files/file/42-the-fast-and-the-furious-miami/"
+fit = "unsupported-format"
+description = "Four skinned Warthogs with unique handling, neon lighting, AK47/UZI/P99 weapons."
+notes = "Download link is dead (MediaFire file removed, ibotfiles.com gone, FileFront gone, or ibotmodz gives no redirect), nothing downloaded. Format is not PPF/IPS/BPS: .sppf is a Super PPF \"sized\" patch (observed header bytes are raw little-endian u32 records, no PPF magic) and .serenity is a Serenity patch (observed to start 14 00 00 0f). The importer would need an sppf or serenity reader."
+
+[[mod]]
+slug = "forge-bm"
+name = "Forge (Burial Mounds)"
+authors = ["DarkShallFall", "creator handle shown on the post as \"AuDZZ\" (mangled by encoding)"]
+base = "burial_mounds"
+format = "serenity"
+size = 3343935
+sha256 = "11e4b933c653051b22d95020f2db92c40c09a329b89a566538e9761889bcf5af"
+released = "2011-01-14"
+download_url = "http://www.mediafire.com/file/og2e5e5gp589sy3/Forge%20BM%20%28DarkShallFall%29.serenity"
+source_url = "https://ibotmodz.net/files/file/45-forge/"
+fit = "unsupported-format"
+description = "Forge-style object spawner on Burial Mounds: Forge spawns at the rocket launcher location, right trigger spawns boxes, left trigger moves them."
+notes = "Format is not PPF/IPS/BPS: .sppf is a Super PPF \"sized\" patch (observed header bytes are raw little-endian u32 records, no PPF magic) and .serenity is a Serenity patch (observed to start 14 00 00 0f). The importer would need an sppf or serenity reader. Same mod is whole map pm1-forgebm."
+
+[[mod]]
+slug = "halo2-ce-maps"
+name = "Halo 2: Combat Evolved (CEF maps)"
+authors = ["unknown (Halo 2 CE team)"]
+base = "ascension/backwash/beavercreek/burial_mounds/coagulation/colossus/containment/cyclotron/deltatap/dune/elongation/foundation/gemini/headlong/lockout/midship/triplicate/turf/warlock/waterworks/zanzibar (+ catacomb, derelict, highplains, echostation, induction, sentinalbase)"
+format = "map"
+released = "2014-2019"
+download_url = "https://archive.org/download/xbox-game-mods/xbox%20game%20mods%E2%81%84hack%2FHalo%202%2FHalo%202%20CE.7z"
+source_url = "https://archive.org/download/xbox-game-mods/xbox%20game%20mods%E2%81%84hack%2FHalo%202%2F"
+fit = "needs-shared"
+description = "29 maps named <retail>CEF.map: vanilla maps with Halo 1 styled weapon/vehicle tweaks. Pack (642 MB 7z) not fetched; archive.org will not serve inner 7z members and no 7z tool was available."
+notes = "Pack ships its own mainmenu.map and shared.map (modified), so most maps probably need the pack shared.map. Treat as unverified."
+
+[[mod]]
+slug = "hockeyfans-ascension"
+name = "Hockey Fans (Old Maps): ascension"
+authors = ["unknown"]
+base = "ascension"
+format = "map"
+size = 29735936
+sha256 = "87bfe32dcfc82ecefbd70c09590a5cab6d76bb73cc9850ef7f35a7c483f86fee"
+released = "unknown (2019 repository compile)"
+download_url = "https://www.mediafire.com/file_premium/6o60sktpgw0lwnj/Hockey_Fans_%2528Old_Maps%2529_Map_Pack.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "good"
+description = "Modified retail map from the Hockey Fans (Old Maps) map pack; the pack has no readme."
+notes = "From \"Hockey Fans (Old Maps) Map Pack\" (378 MB). Retail-named whole map at retail byte size; author credit unknown. header name \"ascension\", scenario \"scenarios\\multi\\ascension\\ascension\". Size 29735936 B (28.4 MiB)."
+
+[[mod]]
+slug = "hockeyfans-beavercreek"
+name = "Hockey Fans (Old Maps): beavercreek"
+authors = ["unknown"]
+base = "beavercreek"
+format = "map"
+size = 28942336
+sha256 = "d77e4b6c26bdf0415655a62a2641012c28a0fbeaab705fd64c0fd7f7a746aca7"
+released = "unknown (2019 repository compile)"
+download_url = "https://www.mediafire.com/file_premium/6o60sktpgw0lwnj/Hockey_Fans_%2528Old_Maps%2529_Map_Pack.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "good"
+description = "Modified retail map from the Hockey Fans (Old Maps) map pack; the pack has no readme."
+notes = "From \"Hockey Fans (Old Maps) Map Pack\" (378 MB). Retail-named whole map at retail byte size; author credit unknown. header name \"beavercreek\", scenario \"scenarios\\multi\\halo\\beavercreek\\beavercreek\". Size 28942336 B (27.6 MiB)."
+
+[[mod]]
+slug = "hockeyfans-burial_mounds"
+name = "Hockey Fans (Old Maps): burial_mounds"
+authors = ["unknown"]
+base = "burial_mounds"
+format = "map"
+size = 32114688
+sha256 = "de2b9a67f05b175b64673c2d0aa4caaab7cb024115c2200dedfe8c7f79186478"
+released = "unknown (2019 repository compile)"
+download_url = "https://www.mediafire.com/file_premium/6o60sktpgw0lwnj/Hockey_Fans_%2528Old_Maps%2529_Map_Pack.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "good"
+description = "Modified retail map from the Hockey Fans (Old Maps) map pack; the pack has no readme."
+notes = "From \"Hockey Fans (Old Maps) Map Pack\" (378 MB). Retail-named whole map at retail byte size; author credit unknown. header name \"burial_mounds\", scenario \"scenarios\\multi\\burial_mounds\\burial_mounds\". Size 32114688 B (30.6 MiB)."
+
+[[mod]]
+slug = "hockeyfans-coagulation"
+name = "Hockey Fans (Old Maps): coagulation"
+authors = ["unknown"]
+base = "coagulation"
+format = "map"
+size = 41397248
+sha256 = "789e0ee30bf9d76d8488944047d9b07e5766c630b7064e6122f31df25486d74b"
+released = "unknown (2019 repository compile)"
+download_url = "https://www.mediafire.com/file_premium/6o60sktpgw0lwnj/Hockey_Fans_%2528Old_Maps%2529_Map_Pack.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "good"
+description = "Modified retail map from the Hockey Fans (Old Maps) map pack; the pack has no readme."
+notes = "From \"Hockey Fans (Old Maps) Map Pack\" (378 MB). Retail-named whole map at retail byte size; author credit unknown. header name \"coagulation\", scenario \"scenarios\\multi\\halo\\coagulation\\coagulation\". Size 41397248 B (39.5 MiB)."
+
+[[mod]]
+slug = "hockeyfans-colossus"
+name = "Hockey Fans (Old Maps): colossus"
+authors = ["unknown"]
+base = "colossus"
+format = "map"
+size = 31132160
+sha256 = "c5908506fe4e2c282db350799fb26522c764abf339f51c72da07d62c72a01641"
+released = "unknown (2019 repository compile)"
+download_url = "https://www.mediafire.com/file_premium/6o60sktpgw0lwnj/Hockey_Fans_%2528Old_Maps%2529_Map_Pack.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "good"
+description = "Modified retail map from the Hockey Fans (Old Maps) map pack; the pack has no readme."
+notes = "From \"Hockey Fans (Old Maps) Map Pack\" (378 MB). Retail-named whole map at retail byte size; author credit unknown. header name \"colossus\", scenario \"scenarios\\multi\\colossus\\colossus\". Size 31132160 B (29.7 MiB)."
+
+[[mod]]
+slug = "hockeyfans-cyclotron"
+name = "Hockey Fans (Old Maps): cyclotron"
+authors = ["unknown"]
+base = "cyclotron"
+format = "map"
+size = 46205952
+sha256 = "78f2e2f30d1dc0f38a2e4c8d8dcb73acda700d2606571c59dd1d95418d32898a"
+released = "unknown (2019 repository compile)"
+download_url = "https://www.mediafire.com/file_premium/6o60sktpgw0lwnj/Hockey_Fans_%2528Old_Maps%2529_Map_Pack.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "good"
+description = "Modified retail map from the Hockey Fans (Old Maps) map pack; the pack has no readme."
+notes = "From \"Hockey Fans (Old Maps) Map Pack\" (378 MB). Retail-named whole map at retail byte size; author credit unknown. header name \"cyclotron\", scenario \"scenarios\\multi\\cyclotron\\cyclotron\". Size 46205952 B (44.1 MiB)."
+
+[[mod]]
+slug = "hockeyfans-foundation"
+name = "Hockey Fans (Old Maps): foundation"
+authors = ["unknown"]
+base = "foundation"
+format = "map"
+size = 37599232
+sha256 = "43058bcaabaf3875e4935ac668971f57aea400b1b6bbe108d7b10654c7918a36"
+released = "unknown (2019 repository compile)"
+download_url = "https://www.mediafire.com/file_premium/6o60sktpgw0lwnj/Hockey_Fans_%2528Old_Maps%2529_Map_Pack.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "good"
+description = "Modified retail map from the Hockey Fans (Old Maps) map pack; the pack has no readme."
+notes = "From \"Hockey Fans (Old Maps) Map Pack\" (378 MB). Retail-named whole map at retail byte size; author credit unknown. header name \"foundation\", scenario \"scenarios\\multi\\marathon\\foundation\\foundation\". Size 37599232 B (35.9 MiB)."
+
+[[mod]]
+slug = "hockeyfans-headlong"
+name = "Hockey Fans (Old Maps): headlong"
+authors = ["unknown"]
+base = "headlong"
+format = "map"
+size = 56096256
+sha256 = "038d6c0edcff39bba2998adc043ac88b0f96eaeaf38eade6c6b5f025eea6a821"
+released = "unknown (2019 repository compile)"
+download_url = "https://www.mediafire.com/file_premium/6o60sktpgw0lwnj/Hockey_Fans_%2528Old_Maps%2529_Map_Pack.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "good"
+description = "Modified retail map from the Hockey Fans (Old Maps) map pack; the pack has no readme."
+notes = "From \"Hockey Fans (Old Maps) Map Pack\" (378 MB). Retail-named whole map at retail byte size; author credit unknown. header name \"headlong\", scenario \"scenarios\\multi\\headlong\\headlong\". Size 56096256 B (53.5 MiB)."
+
+[[mod]]
+slug = "hockeyfans-lockout"
+name = "Hockey Fans (Old Maps): lockout"
+authors = ["unknown"]
+base = "lockout"
+format = "map"
+size = 34523136
+sha256 = "5ed1c8cca87ad4d32be2c0ddee6fe893cb5b149586303a2e040e549b72ca6f48"
+released = "unknown (2019 repository compile)"
+download_url = "https://www.mediafire.com/file_premium/6o60sktpgw0lwnj/Hockey_Fans_%2528Old_Maps%2529_Map_Pack.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "good"
+description = "Modified retail map from the Hockey Fans (Old Maps) map pack; the pack has no readme."
+notes = "From \"Hockey Fans (Old Maps) Map Pack\" (378 MB). Retail-named whole map at retail byte size; author credit unknown. header name \"lockout\", scenario \"scenarios\\multi\\lockout\\lockout\". Size 34523136 B (32.9 MiB)."
+
+[[mod]]
+slug = "hockeyfans-midship"
+name = "Hockey Fans (Old Maps): midship"
+authors = ["unknown"]
+base = "midship"
+format = "map"
+size = 30519808
+sha256 = "82af67675f9d78fdcd1972c54930df615fc76d4e51f61dcb1b458defa83b2227"
+released = "unknown (2019 repository compile)"
+download_url = "https://www.mediafire.com/file_premium/6o60sktpgw0lwnj/Hockey_Fans_%2528Old_Maps%2529_Map_Pack.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "good"
+description = "Modified retail map from the Hockey Fans (Old Maps) map pack; the pack has no readme."
+notes = "From \"Hockey Fans (Old Maps) Map Pack\" (378 MB). Retail-named whole map at retail byte size; author credit unknown. header name \"midship\", scenario \"scenarios\\multi\\midship\\midship\". Size 30519808 B (29.1 MiB)."
+
+[[mod]]
+slug = "hockeyfans-waterworks"
+name = "Hockey Fans (Old Maps): waterworks"
+authors = ["unknown"]
+base = "waterworks"
+format = "map"
+size = 41352704
+sha256 = "92e3175e888e6cbf4d67bac8275ff425365466a90524c4fb9af99f580289fa41"
+released = "unknown (2019 repository compile)"
+download_url = "https://www.mediafire.com/file_premium/6o60sktpgw0lwnj/Hockey_Fans_%2528Old_Maps%2529_Map_Pack.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "good"
+description = "Modified retail map from the Hockey Fans (Old Maps) map pack; the pack has no readme."
+notes = "From \"Hockey Fans (Old Maps) Map Pack\" (378 MB). Retail-named whole map at retail byte size; author credit unknown. header name \"waterworks\", scenario \"scenarios\\multi\\waterworks\\waterworks\". Size 41352704 B (39.4 MiB)."
+
+[[mod]]
+slug = "hockeyfans-zanzibar"
+name = "Hockey Fans (Old Maps): zanzibar"
+authors = ["unknown"]
+base = "zanzibar"
+format = "map"
+size = 53547008
+sha256 = "637707e0110028a896e0bee59aa6ec6f591435ab4dbcb5c2497aa456a6012ce3"
+released = "unknown (2019 repository compile)"
+download_url = "https://www.mediafire.com/file_premium/6o60sktpgw0lwnj/Hockey_Fans_%2528Old_Maps%2529_Map_Pack.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "good"
+description = "Modified retail map from the Hockey Fans (Old Maps) map pack; the pack has no readme."
+notes = "From \"Hockey Fans (Old Maps) Map Pack\" (378 MB). Retail-named whole map at retail byte size; author credit unknown. header name \"zanzibar\", scenario \"scenarios\\multi\\zanzibar\\zanzibar\". Size 53547008 B (51.1 MiB)."
+
+[[mod]]
+slug = "jackal-minutemen-part1"
+name = "Campaign: Jackal Minutemen (Part 1, Old Mombasa)"
+authors = ["nullen"]
+base = "03a_oldmombasa"
+format = "serenity"
+size = 528689
+sha256 = "6795b6eb4b14045480be470cd7c55e3ceeeed41953599bf0d4fd02783e04023d"
+released = "2012-11-12"
+download_url = "https://ibotmodz.net/applications/core/interface/file/attachment.php?id=6631"
+source_url = "https://ibotmodz.net/topic/21914-campaign-jackal-minutemen/"
+fit = "unsupported-format"
+description = "Campaign mod: Marines become Jackals, Johnson replaced by a pair of Hunters, Jackals use marine dialogue, more allied AI. Patch 03a_oldmombasa.map. Known bugs: minor insolent static when jumping, scorpion turret gunners do not fire."
+notes = "Format is not PPF/IPS/BPS: .sppf is a Super PPF \"sized\" patch (observed header bytes are raw little-endian u32 records, no PPF magic) and .serenity is a Serenity patch (observed to start 14 00 00 0f). The importer would need an sppf or serenity reader. Campaign base map, not multiplayer."
+
+[[mod]]
+slug = "jackal-minutemen-part2"
+name = "Campaign: Jackal Minutemen (Part 2, New Mombasa)"
+authors = ["nullen"]
+base = "03b_newmombasa"
+format = "serenity"
+size = 1310579
+sha256 = "62cc74a728a3f117a99cf6b9df80e786b73a46a79062b655eec65dbc792a51cc"
+released = "2012-11-12"
+download_url = "https://ibotmodz.net/applications/core/interface/file/attachment.php?id=6632"
+source_url = "https://ibotmodz.net/topic/21914-campaign-jackal-minutemen/"
+fit = "unsupported-format"
+description = "Part 2: lightmap edits, Scorpion-turret Wraiths, Uberchassis car Warthogs, higher AI count, blue-green heretic Elite in the gauss hog, stronger shotgun/sniper force. Patch 03b_newmombasa.map."
+notes = "Format is not PPF/IPS/BPS: .sppf is a Super PPF \"sized\" patch (observed header bytes are raw little-endian u32 records, no PPF magic) and .serenity is a Serenity patch (observed to start 14 00 00 0f). The importer would need an sppf or serenity reader. Campaign base map, not multiplayer."
+
+[[mod]]
+slug = "jurassic-ravine"
+name = "Jurassic Ravine"
+authors = ["DoorM4n"]
+base = "beavercreek"
+format = "sppf"
+size = 29494112
+sha256 = "389373b833467617b750291c98b93dd9d905be232e357fbcc52927fde25b90d7"
+released = "2014-08-02"
+download_url = "http://www.mediafire.com/download/jxa135pputi1d0n/Jurassic_Ravine.rar"
+source_url = "https://ibotmodz.net/topic/22570-jurassic-ravine-by-doorm4n/"
+fit = "unsupported-format"
+description = "Jungle ambience mod for Beaver Creek: 50+ palm trees, 100+ shrubs, giant canopy, custom dinosaur jungle/temple sounds, custom sky and fog, original weapons. Readme: \"Jurassic Ravine by DoorM4n. Patch beavercreek.map\"; thanks remnantmods for the item-spawning tech. Minor bug: gameplay lag from all the spawned items."
+notes = "Format is not PPF/IPS/BPS: .sppf is a Super PPF \"sized\" patch (observed header bytes are raw little-endian u32 records, no PPF magic) and .serenity is a Serenity patch (observed to start 14 00 00 0f). The importer would need an sppf or serenity reader. The same mod exists as a whole map (doorm4n-jurrasic, 49.7 MB) from the Legacy pack, which is importable."
+
+[[mod]]
+slug = "justcallmesteves-ascension"
+name = "justcallmesteves: ascension"
+authors = ["unknown (justcallmesteves pack; supplied to CabooseSayzWTF by Terminator Zero)"]
+base = "ascension"
+format = "map"
+size = 29735936
+sha256 = "e2c6590ba6b7b5f6bf5295a5886f9270fabeed0086aa0e43a8d2eb0542dd4371"
+released = "unknown (2019 repository compile)"
+download_url = "https://www.mediafire.com/file_premium/j4t26xlwo8vtvwy/Justcallmesteves_Mappack.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "good"
+description = "Cheating-style modified retail map from the justcallmesteves mappack. Pack readme identical to Sparten Killers (\"Rename one of the xbe's to default.xbe... Feel free to modify as you wish. I got lazy.\") but map contents differ."
+notes = "From \"Justcallmesteves Mappack\" (379 MB; Se7ensins repository \"Cheating Mappacks\"). Retail-named whole map at retail byte size. Author credit unknown. header name \"ascension\", scenario \"scenarios\\multi\\ascension\\ascension\". Size 29735936 B (28.4 MiB)."
+
+[[mod]]
+slug = "justcallmesteves-beavercreek"
+name = "justcallmesteves: beavercreek"
+authors = ["unknown (justcallmesteves pack; supplied to CabooseSayzWTF by Terminator Zero)"]
+base = "beavercreek"
+format = "map"
+size = 28942336
+sha256 = "6f704b90abbee874f8fe65ad4eac4853bc313ccdb7e821f82cd055c23812240f"
+released = "unknown (2019 repository compile)"
+download_url = "https://www.mediafire.com/file_premium/j4t26xlwo8vtvwy/Justcallmesteves_Mappack.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "good"
+description = "Cheating-style modified retail map from the justcallmesteves mappack. Pack readme identical to Sparten Killers (\"Rename one of the xbe's to default.xbe... Feel free to modify as you wish. I got lazy.\") but map contents differ."
+notes = "From \"Justcallmesteves Mappack\" (379 MB; Se7ensins repository \"Cheating Mappacks\"). Retail-named whole map at retail byte size. Author credit unknown. header name \"beavercreek\", scenario \"scenarios\\multi\\halo\\beavercreek\\beavercreek\". Size 28942336 B (27.6 MiB)."
+
+[[mod]]
+slug = "justcallmesteves-burial_mounds"
+name = "justcallmesteves: burial_mounds"
+authors = ["unknown (justcallmesteves pack; supplied to CabooseSayzWTF by Terminator Zero)"]
+base = "burial_mounds"
+format = "map"
+size = 32114688
+sha256 = "97f6f2ea5a53a8778b627ecdf13a10b441bdd196809dd6c431ea08cb9d7b4c84"
+released = "unknown (2019 repository compile)"
+download_url = "https://www.mediafire.com/file_premium/j4t26xlwo8vtvwy/Justcallmesteves_Mappack.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "good"
+description = "Cheating-style modified retail map from the justcallmesteves mappack. Pack readme identical to Sparten Killers (\"Rename one of the xbe's to default.xbe... Feel free to modify as you wish. I got lazy.\") but map contents differ."
+notes = "From \"Justcallmesteves Mappack\" (379 MB; Se7ensins repository \"Cheating Mappacks\"). Retail-named whole map at retail byte size. Author credit unknown. header name \"burial_mounds\", scenario \"scenarios\\multi\\burial_mounds\\burial_mounds\". Size 32114688 B (30.6 MiB)."
+
+[[mod]]
+slug = "justcallmesteves-coagulation"
+name = "justcallmesteves: coagulation"
+authors = ["unknown (justcallmesteves pack; supplied to CabooseSayzWTF by Terminator Zero)"]
+base = "coagulation"
+format = "map"
+size = 41397248
+sha256 = "c1d45c3f982062062dceba72a60a3a97fb2ff306852b3b2edbfeb712967085ad"
+released = "unknown (2019 repository compile)"
+download_url = "https://www.mediafire.com/file_premium/j4t26xlwo8vtvwy/Justcallmesteves_Mappack.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "good"
+description = "Cheating-style modified retail map from the justcallmesteves mappack. Pack readme identical to Sparten Killers (\"Rename one of the xbe's to default.xbe... Feel free to modify as you wish. I got lazy.\") but map contents differ."
+notes = "From \"Justcallmesteves Mappack\" (379 MB; Se7ensins repository \"Cheating Mappacks\"). Retail-named whole map at retail byte size. Author credit unknown. header name \"coagulation\", scenario \"scenarios\\multi\\halo\\coagulation\\coagulation\". Size 41397248 B (39.5 MiB)."
+
+[[mod]]
+slug = "justcallmesteves-colossus"
+name = "justcallmesteves: colossus"
+authors = ["unknown (justcallmesteves pack; supplied to CabooseSayzWTF by Terminator Zero)"]
+base = "colossus"
+format = "map"
+size = 31132160
+sha256 = "3eaf1339042e5daf5019550f9b8afe6b6caea624f3e8d6b017a3472f92cec887"
+released = "unknown (2019 repository compile)"
+download_url = "https://www.mediafire.com/file_premium/j4t26xlwo8vtvwy/Justcallmesteves_Mappack.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "good"
+description = "Cheating-style modified retail map from the justcallmesteves mappack. Pack readme identical to Sparten Killers (\"Rename one of the xbe's to default.xbe... Feel free to modify as you wish. I got lazy.\") but map contents differ."
+notes = "From \"Justcallmesteves Mappack\" (379 MB; Se7ensins repository \"Cheating Mappacks\"). Retail-named whole map at retail byte size. Author credit unknown. header name \"colossus\", scenario \"scenarios\\multi\\colossus\\colossus\". Size 31132160 B (29.7 MiB)."
+
+[[mod]]
+slug = "justcallmesteves-cyclotron"
+name = "justcallmesteves: cyclotron"
+authors = ["unknown (justcallmesteves pack; supplied to CabooseSayzWTF by Terminator Zero)"]
+base = "cyclotron"
+format = "map"
+size = 46205952
+sha256 = "2822d32bf8490299a43657fa0ce20c9d853b2795064d5ecacf6a4f7bcc15f9ff"
+released = "unknown (2019 repository compile)"
+download_url = "https://www.mediafire.com/file_premium/j4t26xlwo8vtvwy/Justcallmesteves_Mappack.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "good"
+description = "Cheating-style modified retail map from the justcallmesteves mappack. Pack readme identical to Sparten Killers (\"Rename one of the xbe's to default.xbe... Feel free to modify as you wish. I got lazy.\") but map contents differ."
+notes = "From \"Justcallmesteves Mappack\" (379 MB; Se7ensins repository \"Cheating Mappacks\"). Retail-named whole map at retail byte size. Author credit unknown. header name \"cyclotron\", scenario \"scenarios\\multi\\cyclotron\\cyclotron\". Size 46205952 B (44.1 MiB)."
+
+[[mod]]
+slug = "justcallmesteves-foundation"
+name = "justcallmesteves: foundation"
+authors = ["unknown (justcallmesteves pack; supplied to CabooseSayzWTF by Terminator Zero)"]
+base = "foundation"
+format = "map"
+size = 37599232
+sha256 = "4fd7d0494b89b5750ebcb4e515b58691ce399a2c6d51714dd208ce69155de3e3"
+released = "unknown (2019 repository compile)"
+download_url = "https://www.mediafire.com/file_premium/j4t26xlwo8vtvwy/Justcallmesteves_Mappack.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "good"
+description = "Cheating-style modified retail map from the justcallmesteves mappack. Pack readme identical to Sparten Killers (\"Rename one of the xbe's to default.xbe... Feel free to modify as you wish. I got lazy.\") but map contents differ."
+notes = "From \"Justcallmesteves Mappack\" (379 MB; Se7ensins repository \"Cheating Mappacks\"). Retail-named whole map at retail byte size. Author credit unknown. header name \"foundation\", scenario \"scenarios\\multi\\marathon\\foundation\\foundation\". Size 37599232 B (35.9 MiB)."
+
+[[mod]]
+slug = "justcallmesteves-headlong"
+name = "justcallmesteves: headlong"
+authors = ["unknown (justcallmesteves pack; supplied to CabooseSayzWTF by Terminator Zero)"]
+base = "headlong"
+format = "map"
+size = 56096256
+sha256 = "ded5db1394c32471d18f71c10feaf9bb72b921d157bc44a084c14bd0705deb43"
+released = "unknown (2019 repository compile)"
+download_url = "https://www.mediafire.com/file_premium/j4t26xlwo8vtvwy/Justcallmesteves_Mappack.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "good"
+description = "Cheating-style modified retail map from the justcallmesteves mappack. Pack readme identical to Sparten Killers (\"Rename one of the xbe's to default.xbe... Feel free to modify as you wish. I got lazy.\") but map contents differ."
+notes = "From \"Justcallmesteves Mappack\" (379 MB; Se7ensins repository \"Cheating Mappacks\"). Retail-named whole map at retail byte size. Author credit unknown. header name \"headlong\", scenario \"scenarios\\multi\\headlong\\headlong\". Size 56096256 B (53.5 MiB)."
+
+[[mod]]
+slug = "justcallmesteves-lockout"
+name = "justcallmesteves: lockout"
+authors = ["unknown (justcallmesteves pack; supplied to CabooseSayzWTF by Terminator Zero)"]
+base = "lockout"
+format = "map"
+size = 34523136
+sha256 = "539fcd0d819f1200d9a863689fac3114ded1afcb1dcc2ad11499f843326d1221"
+released = "unknown (2019 repository compile)"
+download_url = "https://www.mediafire.com/file_premium/j4t26xlwo8vtvwy/Justcallmesteves_Mappack.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "good"
+description = "Cheating-style modified retail map from the justcallmesteves mappack. Pack readme identical to Sparten Killers (\"Rename one of the xbe's to default.xbe... Feel free to modify as you wish. I got lazy.\") but map contents differ."
+notes = "From \"Justcallmesteves Mappack\" (379 MB; Se7ensins repository \"Cheating Mappacks\"). Retail-named whole map at retail byte size. Author credit unknown. header name \"lockout\", scenario \"scenarios\\multi\\lockout\\lockout\". Size 34523136 B (32.9 MiB)."
+
+[[mod]]
+slug = "justcallmesteves-midship"
+name = "justcallmesteves: midship"
+authors = ["unknown (justcallmesteves pack; supplied to CabooseSayzWTF by Terminator Zero)"]
+base = "midship"
+format = "map"
+size = 30519808
+sha256 = "8f384176c029c0fe31cc5f20dbc09e1d180fcaa72b7766e54d38e86ecc29197f"
+released = "unknown (2019 repository compile)"
+download_url = "https://www.mediafire.com/file_premium/j4t26xlwo8vtvwy/Justcallmesteves_Mappack.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "good"
+description = "Cheating-style modified retail map from the justcallmesteves mappack. Pack readme identical to Sparten Killers (\"Rename one of the xbe's to default.xbe... Feel free to modify as you wish. I got lazy.\") but map contents differ."
+notes = "From \"Justcallmesteves Mappack\" (379 MB; Se7ensins repository \"Cheating Mappacks\"). Retail-named whole map at retail byte size. Author credit unknown. header name \"midship\", scenario \"scenarios\\multi\\midship\\midship\". Size 30519808 B (29.1 MiB)."
+
+[[mod]]
+slug = "justcallmesteves-waterworks"
+name = "justcallmesteves: waterworks"
+authors = ["unknown (justcallmesteves pack; supplied to CabooseSayzWTF by Terminator Zero)"]
+base = "waterworks"
+format = "map"
+size = 41352704
+sha256 = "d36e2dedcbad0c9dc7a93dbe064e90c3c3396dd9e1dfaabb050bab965caf23c4"
+released = "unknown (2019 repository compile)"
+download_url = "https://www.mediafire.com/file_premium/j4t26xlwo8vtvwy/Justcallmesteves_Mappack.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "good"
+description = "Cheating-style modified retail map from the justcallmesteves mappack. Pack readme identical to Sparten Killers (\"Rename one of the xbe's to default.xbe... Feel free to modify as you wish. I got lazy.\") but map contents differ."
+notes = "From \"Justcallmesteves Mappack\" (379 MB; Se7ensins repository \"Cheating Mappacks\"). Retail-named whole map at retail byte size. Author credit unknown. header name \"waterworks\", scenario \"scenarios\\multi\\waterworks\\waterworks\". Size 41352704 B (39.4 MiB)."
+
+[[mod]]
+slug = "justcallmesteves-zanzibar"
+name = "justcallmesteves: zanzibar"
+authors = ["unknown (justcallmesteves pack; supplied to CabooseSayzWTF by Terminator Zero)"]
+base = "zanzibar"
+format = "map"
+size = 53547008
+sha256 = "471ec4c73fca7261ac4371f3ec10251c944888ae7b96e4d00f559a9c0fe17949"
+released = "unknown (2019 repository compile)"
+download_url = "https://www.mediafire.com/file_premium/j4t26xlwo8vtvwy/Justcallmesteves_Mappack.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "good"
+description = "Cheating-style modified retail map from the justcallmesteves mappack. Pack readme identical to Sparten Killers (\"Rename one of the xbe's to default.xbe... Feel free to modify as you wish. I got lazy.\") but map contents differ."
+notes = "From \"Justcallmesteves Mappack\" (379 MB; Se7ensins repository \"Cheating Mappacks\"). Retail-named whole map at retail byte size. Author credit unknown. header name \"zanzibar\", scenario \"scenarios\\multi\\zanzibar\\zanzibar\". Size 53547008 B (51.1 MiB)."
+
+[[mod]]
+slug = "killtrocity-v1-pack"
+name = "Killtrocity Mappack 1 (pack)"
+authors = ["xheadshotmastax", "TheFlyingDutchman", "~48 contributors"]
+base = "various retail maps"
+format = "map"
+released = "2011-08-13 (ibotmodz repost)"
+download_url = "https://www.mediafire.com/file_premium/hs4l4ezf53ghwgm/Killtrocity_v1.rar/file"
+source_url = "https://ibotmodz.net/topic/20707-killtrocity-v1-mappack/"
+fit = "too-big"
+description = "48 modded maps with a modded mainmenu, 7 of them needing manual sppf patches."
+notes = "1.28 GB archive, not fetched."
+
+[[mod]]
+slug = "killtrocity-v2-pack"
+name = "Killtrocity Mappack 2 (pack)"
+authors = ["xheadshotmastax", "TheFlyingDutchman", "SecretDrummer (poster)", "many (44 maps)"]
+base = "various retail maps"
+format = "map"
+released = "2007-08-29"
+download_url = "https://www.mediafire.com/file_premium/p4rxrv49yis566v/Killtrocity_v2.rar/file"
+source_url = "https://ibotmodz.net/topic/235-killtrocity-2-mappack/"
+fit = "too-big"
+description = "~44 modded maps (Aerial 2, Biohazard I-III, Citadel, Conduit, Gate, Greenhouse, Paraiso, Soccer Mounds, Super Mario World and more) with a modded mainmenu."
+notes = "1.4 GB archive, not fetched. The ibotmodz original is Serenity patches; the MediaFire/archive.org versions are pre-patched whole maps with custom mainmenu/shared."
+
+[[mod]]
+slug = "kong-extreme"
+name = "Donkey Kong Extreme"
+authors = ["killershard"]
+base = "containment"
+format = "sppf"
+size = 15580953
+sha256 = "22034783876abcb6d102d122efa432303c5ab9741f3796f947b812f72c44cfed"
+released = "2009 (ibotmodz); mod ~2008"
+download_url = "http://www.mediafire.com/file/etq3mocon2z/kongextreme.rar"
+source_url = "https://ibotmodz.net/files/file/25-donkey-kong-extreme/"
+fit = "unsupported-format"
+description = "Donkey Kong Extreme, the containment mod. The whole-map DKong from Phantom Mappack 1 is already published; this sppf release may differ."
+notes = "Format is not PPF/IPS/BPS: .sppf is a Super PPF \"sized\" patch (observed header bytes are raw little-endian u32 records, no PPF magic) and .serenity is a Serenity patch (observed to start 14 00 00 0f). The importer would need an sppf or serenity reader. Possible duplicate of the published \"DKong\"."
+
+[[mod]]
+slug = "kraken"
+name = "Kraken"
+authors = ["CaptPoopface (per Phantom Mappack list; uploaded to ibotmodz by SmokiestGrunl)"]
+base = "burial_mounds"
+format = "serenity"
+size = 6213167
+sha256 = "107795ae12fcab66d0b4e2f5c5da4100e08efe0a6076c54c09e61df9f56d245f"
+released = "2009-05-19"
+download_url = "http://www.mediafire.com/file/tl4zncwtxjc/kraken.rar"
+source_url = "https://ibotmodz.net/files/file/29-kraken/"
+fit = "unsupported-format"
+description = "Kraken: fast, mobile mod for \"Tombstone\": Rain of Death air strike, BEEFY rocket launcher, grappling gun, Deucer (magnum firing plasma grenades), cloak sniper."
+notes = "Format is not PPF/IPS/BPS: .sppf is a Super PPF \"sized\" patch (observed header bytes are raw little-endian u32 records, no PPF magic) and .serenity is a Serenity patch (observed to start 14 00 00 0f). The importer would need an sppf or serenity reader. Post says base is Tombstone; compare header of whole-map pm1-kraken for the actual base."
+
+[[mod]]
+slug = "mandarra-race-way"
+name = "Mandarra Race Way"
+authors = ["SmokiestGrunl"]
+base = "gemini"
+format = "sppf"
+size = 6457810
+sha256 = "59ddc81c63793ee8fb8666b475afacfa208c566da3159d6e3ff8664531d9997d"
+released = "2012-01-16 (ibotmodz); mod earlier"
+download_url = "http://www.mediafire.com/?h2b77x059ur0egk"
+source_url = "https://ibotmodz.net/files/file/57-mandarra-race-way/"
+fit = "unsupported-format"
+description = "Mandarra Race Way: Gemini turned into a race course with 12 Warthogs."
+notes = "Format is not PPF/IPS/BPS: .sppf is a Super PPF \"sized\" patch (observed header bytes are raw little-endian u32 records, no PPF magic) and .serenity is a Serenity patch (observed to start 14 00 00 0f). The importer would need an sppf or serenity reader. Local file is Mandarra.rar holding Mandarra.sppf (16.4 MB, extracted under x/, but bsdtar reported an unsupported RAR filter so those bytes are unverified)."
+
+[[mod]]
+slug = "mimesis-revived"
+name = "Mimesis Revived (36 Serenity maps)"
+authors = ["iBotPeaches (compiler)", "Pyroman", "xheadshotmastax", "scottyGee", "Jubakuba", "MrMurder", "others (36 maps)"]
+base = "various"
+format = "serenity"
+released = "2020-04-11 (compile); mods 2006-2008"
+download_url = "http://www.mediafire.com/file/4ie7a8ryd5bc1m5/Mimesis_Revived.part1.rar"
+source_url = "https://ibotmodz.net/files/file/163-mimesis-revived/"
+fit = "unsupported-format"
+description = "36 Project Mimesis Halo 2 mods, all Serenity patches (Abysall, Aerial, Biohazard I and III, Cableroom, Cassiopeia, Catacomb, Citadel, Conduit, Dead in the Water I/II, Delphia, Duff World, Echo Station, Gate, Hypothermia, Induction, Sentinel Base/HQ, Sublimation, Undeadlong...)."
+notes = "Two parts, 200 MB + 189 MB (Part 2: http://www.mediafire.com/file/f81zaak2bh4aztc/Mimesis_Revived.part2.rar). Serenity format. Not fetched."
+
+[[mod]]
+slug = "pm2-perch"
+name = "Perch"
+authors = ["CaptPoopFace"]
+base = "foundation"
+format = "map"
+size = 48898560
+sha256 = "a789a67debac334cdde5255a17cf8532efdd7297fd601e5856d46da964d50777"
+released = "2010-01-08 (pack); mod 2006-2009"
+download_url = "https://archive.org/download/xbox-game-mods/xbox%20game%20mods%E2%81%84hack%2FMaps%2FPhantom%20Mappack%202.zip/Phantom%20Mappack%202%2Fmaps%2Fperch.map"
+source_url = "https://ibotmodz.net/topic/17266-phantom-mappack-v1-and-v2/"
+fit = "good"
+description = "Perch by CaptPoopFace, from Phantom Mappack v2."
+notes = "From Phantom Mappack v2 (assembled by iBotPeaches, 2010-01-08; 90 maps across v1+v2; the ibotmodz download is Serenity patches, the archive.org copy has pre-patched whole maps). Pack ships a shared.map and a custom mainmenu.map; author credit from the ibotmodz pack post. header name \"foundation\", scenario \"scenarios\\multi\\marathon\\foundation\\foundation\". Size 48898560 B (46.6 MiB)."
+
+[[mod]]
+slug = "pm2-wake"
+name = "Wake_Island"
+authors = ["Darkshallfall"]
+base = "waterworks"
+format = "map"
+size = 83741696
+sha256 = "99d9e23ecf928d58401cb5947413b9ba7a1498676ef7841d4c75c914fef9f528"
+released = "2010-01-08 (pack); mod 2006-2009"
+download_url = "https://archive.org/download/xbox-game-mods/xbox%20game%20mods%E2%81%84hack%2FMaps%2FPhantom%20Mappack%202.zip/Phantom%20Mappack%202%2Fmaps%2Fwake.map"
+source_url = "https://ibotmodz.net/topic/17266-phantom-mappack-v1-and-v2/"
+fit = "good"
+description = "Wake_Island by Darkshallfall, from Phantom Mappack v2."
+notes = "From Phantom Mappack v2 (assembled by iBotPeaches, 2010-01-08; 90 maps across v1+v2; the ibotmodz download is Serenity patches, the archive.org copy has pre-patched whole maps). Pack ships a shared.map and a custom mainmenu.map; author credit from the ibotmodz pack post. header name \"waterworks\", scenario \"scenarios\\multi\\waterworks\\waterworks\". Size 83741696 B (79.9 MiB)."
+
+[[mod]]
+slug = "ppfnoobs-fun-backwash-sppf"
+name = "PPF Noobs Fun Mods: backwash (sppf)"
+authors = ["l PPF l NeoN (The PPF Noobs)"]
+base = "backwash"
+format = "sppf"
+size = 940955
+sha256 = "67e2a9b8389c2b57ce3c55d584a19c181fa88589f8365a2d40ff9b0efb3a822d"
+released = "2007"
+download_url = "https://web.archive.org/web/2007id_/http://www.theppfnoobs.com:80/Mods/Fun_Mods.zip"
+source_url = "http://www.theppfnoobs.com/"
+fit = "unsupported-format"
+description = "backwash sppf (Multiplayer Map Pack map) from the PPF Noobs Fun Mods."
+notes = "Super PPF sized patch for a Multiplayer Map Pack map; no PPF magic in header. By l PPF l NeoN."
+
+[[mod]]
+slug = "ppfnoobs-fun-containment-sppf"
+name = "PPF Noobs Fun Mods: containment (sppf)"
+authors = ["l PPF l NeoN (The PPF Noobs)"]
+base = "containment"
+format = "sppf"
+size = 920015
+sha256 = "91097b0dc81188bfb3459eabda94f193d747f00290dff7a75e9e1c5277b63414"
+released = "2007"
+download_url = "https://web.archive.org/web/2007id_/http://www.theppfnoobs.com:80/Mods/Fun_Mods.zip"
+source_url = "http://www.theppfnoobs.com/"
+fit = "unsupported-format"
+description = "containment sppf (Multiplayer Map Pack map) from the PPF Noobs Fun Mods."
+notes = "Super PPF sized patch for a Multiplayer Map Pack map; no PPF magic in header. By l PPF l NeoN."
+
+[[mod]]
+slug = "ppfnoobs-fun-deltatap-sppf"
+name = "PPF Noobs Fun Mods: deltatap (sppf)"
+authors = ["l PPF l NeoN (The PPF Noobs)"]
+base = "deltatap"
+format = "sppf"
+size = 876256
+sha256 = "770b6bbe6020ae2bb0b1286e6765dcd072359203475200f391c4656f1d881ee1"
+released = "2007"
+download_url = "https://web.archive.org/web/2007id_/http://www.theppfnoobs.com:80/Mods/Fun_Mods.zip"
+source_url = "http://www.theppfnoobs.com/"
+fit = "unsupported-format"
+description = "deltatap sppf (Multiplayer Map Pack map) from the PPF Noobs Fun Mods."
+notes = "Super PPF sized patch for a Multiplayer Map Pack map; no PPF magic in header. By l PPF l NeoN."
+
+[[mod]]
+slug = "ppfnoobs-fun-dune-sppf"
+name = "PPF Noobs Fun Mods: dune (sppf)"
+authors = ["l PPF l NeoN (The PPF Noobs)"]
+base = "dune"
+format = "sppf"
+size = 801497
+sha256 = "a9e483357d797f8c2fb1d3382ab86493890f069db1bbae2b6c1588433770b27a"
+released = "2007"
+download_url = "https://web.archive.org/web/2007id_/http://www.theppfnoobs.com:80/Mods/Fun_Mods.zip"
+source_url = "http://www.theppfnoobs.com/"
+fit = "unsupported-format"
+description = "dune sppf (Multiplayer Map Pack map) from the PPF Noobs Fun Mods."
+notes = "Super PPF sized patch for a Multiplayer Map Pack map; no PPF magic in header. By l PPF l NeoN."
+
+[[mod]]
+slug = "ppfnoobs-fun-elongation-sppf"
+name = "PPF Noobs Fun Mods: elongation (sppf)"
+authors = ["l PPF l NeoN (The PPF Noobs)"]
+base = "elongation"
+format = "sppf"
+size = 1267830
+sha256 = "7e0786c0fad293ebe6710df1c5b31e681162a97f04b4f797a10d3c2da404bc86"
+released = "2007"
+download_url = "https://web.archive.org/web/2007id_/http://www.theppfnoobs.com:80/Mods/Fun_Mods.zip"
+source_url = "http://www.theppfnoobs.com/"
+fit = "unsupported-format"
+description = "elongation sppf (Multiplayer Map Pack map) from the PPF Noobs Fun Mods."
+notes = "Super PPF sized patch for a Multiplayer Map Pack map; no PPF magic in header. By l PPF l NeoN."
+
+[[mod]]
+slug = "ppfnoobs-fun-gemini-sppf"
+name = "PPF Noobs Fun Mods: gemini (sppf)"
+authors = ["l PPF l NeoN (The PPF Noobs)"]
+base = "gemini"
+format = "sppf"
+size = 383879
+sha256 = "ad0482c7cb7e9f6f0b2abd6f15e713453c6c05b81ebd43fd75173fe86128f57e"
+released = "2007"
+download_url = "https://web.archive.org/web/2007id_/http://www.theppfnoobs.com:80/Mods/Fun_Mods.zip"
+source_url = "http://www.theppfnoobs.com/"
+fit = "unsupported-format"
+description = "gemini sppf (Multiplayer Map Pack map) from the PPF Noobs Fun Mods."
+notes = "Super PPF sized patch for a Multiplayer Map Pack map; no PPF magic in header. By l PPF l NeoN."
+
+[[mod]]
+slug = "ppfnoobs-fun-triplicate-sppf"
+name = "PPF Noobs Fun Mods: triplicate (sppf)"
+authors = ["l PPF l NeoN (The PPF Noobs)"]
+base = "triplicate"
+format = "sppf"
+size = 859022
+sha256 = "b3463d3c1301e23d2e32236e40faf8a035cfa9545d559bf93ad7914143b29438"
+released = "2007"
+download_url = "https://web.archive.org/web/2007id_/http://www.theppfnoobs.com:80/Mods/Fun_Mods.zip"
+source_url = "http://www.theppfnoobs.com/"
+fit = "unsupported-format"
+description = "triplicate sppf (Multiplayer Map Pack map) from the PPF Noobs Fun Mods."
+notes = "Super PPF sized patch for a Multiplayer Map Pack map; no PPF magic in header. By l PPF l NeoN."
+
+[[mod]]
+slug = "ppfnoobs-fun-turf-sppf"
+name = "PPF Noobs Fun Mods: turf (sppf)"
+authors = ["l PPF l NeoN (The PPF Noobs)"]
+base = "turf"
+format = "sppf"
+size = 879551
+sha256 = "174b03ab9e33dad782c57918f79084d452a245e62b0e4022c2601bf726ace8fc"
+released = "2007"
+download_url = "https://web.archive.org/web/2007id_/http://www.theppfnoobs.com:80/Mods/Fun_Mods.zip"
+source_url = "http://www.theppfnoobs.com/"
+fit = "unsupported-format"
+description = "turf sppf (Multiplayer Map Pack map) from the PPF Noobs Fun Mods."
+notes = "Super PPF sized patch for a Multiplayer Map Pack map; no PPF magic in header. By l PPF l NeoN."
+
+[[mod]]
+slug = "ppfnoobs-fun-warlock-sppf"
+name = "PPF Noobs Fun Mods: warlock (sppf)"
+authors = ["l PPF l NeoN (The PPF Noobs)"]
+base = "warlock"
+format = "sppf"
+size = 823316
+sha256 = "28e85e13c5d4f4af064f481ef3836940bb860779062c8731f9c787a410382a39"
+released = "2007"
+download_url = "https://web.archive.org/web/2007id_/http://www.theppfnoobs.com:80/Mods/Fun_Mods.zip"
+source_url = "http://www.theppfnoobs.com/"
+fit = "unsupported-format"
+description = "warlock sppf (Multiplayer Map Pack map) from the PPF Noobs Fun Mods."
+notes = "Super PPF sized patch for a Multiplayer Map Pack map; no PPF magic in header. By l PPF l NeoN."
+
+[[mod]]
+slug = "ppfnoobs-oldv2-ascension"
+name = "PPF Noobs Old Map Package v2: ascension"
+authors = ["l PPF l NeoN (The PPF Noobs)"]
+base = "ascension"
+format = "ppf"
+size = 129466
+sha256 = "26551762c6c153b2a27cb3f8990629ad81da1204398aefdf4659f49a7b3c2191"
+released = "2007"
+download_url = "https://web.archive.org/web/2007id_/http://www.theppfnoobs.com:80/Mods/The%20PPF%20Noobs%20Old%20Map%20Package%20v2.rar"
+source_url = "http://www.theppfnoobs.com/"
+fit = "good"
+description = "ascension PPF3 from the PPF Noobs Old Map Package v2 (cheat/fun map)."
+notes = "Made by l PPF l NeoN. Package readme: \"These mods were made by l PPF l NeoN! Please donot claim these as your own!\" Contents: 360 auto aim, infinite ammo/rapid fire on all weapons, wall walking, invisible walls removed on most maps, teleportals, Banshee bombs, Carbine-only spawn, unique spawn points; \"for xbl, not skinned\". PPF header: \"Patch Generated by DotHalo for <map>.map\" (PPF 3.0). Different bytes from the PPF Noobs Map Package PPFs that are already published."
+
+[[mod]]
+slug = "ppfnoobs-oldv2-beavercreek"
+name = "PPF Noobs Old Map Package v2: beavercreek"
+authors = ["l PPF l NeoN (The PPF Noobs)"]
+base = "beavercreek"
+format = "ppf"
+size = 44698
+sha256 = "5706a994e75368eb6000f2719e67136213fad860d3e1655d4144d9a70ed89f23"
+released = "2007"
+download_url = "https://web.archive.org/web/2007id_/http://www.theppfnoobs.com:80/Mods/The%20PPF%20Noobs%20Old%20Map%20Package%20v2.rar"
+source_url = "http://www.theppfnoobs.com/"
+fit = "good"
+description = "beavercreek PPF3 from the PPF Noobs Old Map Package v2 (cheat/fun map)."
+notes = "Made by l PPF l NeoN. Package readme: \"These mods were made by l PPF l NeoN! Please donot claim these as your own!\" Contents: 360 auto aim, infinite ammo/rapid fire on all weapons, wall walking, invisible walls removed on most maps, teleportals, Banshee bombs, Carbine-only spawn, unique spawn points; \"for xbl, not skinned\". PPF header: \"Patch Generated by DotHalo for <map>.map\" (PPF 3.0). Different bytes from the PPF Noobs Map Package PPFs that are already published."
+
+[[mod]]
+slug = "ppfnoobs-oldv2-burial_mounds"
+name = "PPF Noobs Old Map Package v2: burial_mounds"
+authors = ["l PPF l NeoN (The PPF Noobs)"]
+base = "burial_mounds"
+format = "ppf"
+size = 98439
+sha256 = "44c8872c33ad7e84da69ce474787247008ac9cb088914defdaee0f84d4c0e60a"
+released = "2007"
+download_url = "https://web.archive.org/web/2007id_/http://www.theppfnoobs.com:80/Mods/The%20PPF%20Noobs%20Old%20Map%20Package%20v2.rar"
+source_url = "http://www.theppfnoobs.com/"
+fit = "good"
+description = "burial_mounds PPF3 from the PPF Noobs Old Map Package v2 (cheat/fun map)."
+notes = "Made by l PPF l NeoN. Package readme: \"These mods were made by l PPF l NeoN! Please donot claim these as your own!\" Contents: 360 auto aim, infinite ammo/rapid fire on all weapons, wall walking, invisible walls removed on most maps, teleportals, Banshee bombs, Carbine-only spawn, unique spawn points; \"for xbl, not skinned\". PPF header: \"Patch Generated by DotHalo for <map>.map\" (PPF 3.0). Different bytes from the PPF Noobs Map Package PPFs that are already published."
+
+[[mod]]
+slug = "ppfnoobs-oldv2-coagulation"
+name = "PPF Noobs Old Map Package v2: coagulation"
+authors = ["l PPF l NeoN (The PPF Noobs)"]
+base = "coagulation"
+format = "ppf"
+size = 106131
+sha256 = "988787bebada79ce46843c12140ecf309b284838e2079004b0c888f0cbd97839"
+released = "2007"
+download_url = "https://web.archive.org/web/2007id_/http://www.theppfnoobs.com:80/Mods/The%20PPF%20Noobs%20Old%20Map%20Package%20v2.rar"
+source_url = "http://www.theppfnoobs.com/"
+fit = "good"
+description = "coagulation PPF3 from the PPF Noobs Old Map Package v2 (cheat/fun map)."
+notes = "Made by l PPF l NeoN. Package readme: \"These mods were made by l PPF l NeoN! Please donot claim these as your own!\" Contents: 360 auto aim, infinite ammo/rapid fire on all weapons, wall walking, invisible walls removed on most maps, teleportals, Banshee bombs, Carbine-only spawn, unique spawn points; \"for xbl, not skinned\". PPF header: \"Patch Generated by DotHalo for <map>.map\" (PPF 3.0). Different bytes from the PPF Noobs Map Package PPFs that are already published."
+
+[[mod]]
+slug = "ppfnoobs-oldv2-colossus"
+name = "PPF Noobs Old Map Package v2: colossus"
+authors = ["l PPF l NeoN (The PPF Noobs)"]
+base = "colossus"
+format = "ppf"
+size = 70074
+sha256 = "26ce2d5ba6930d16d847f52de539e7336d0161957691ff79b2478cde249b2c2b"
+released = "2007"
+download_url = "https://web.archive.org/web/2007id_/http://www.theppfnoobs.com:80/Mods/The%20PPF%20Noobs%20Old%20Map%20Package%20v2.rar"
+source_url = "http://www.theppfnoobs.com/"
+fit = "good"
+description = "colossus PPF3 from the PPF Noobs Old Map Package v2 (cheat/fun map)."
+notes = "Made by l PPF l NeoN. Package readme: \"These mods were made by l PPF l NeoN! Please donot claim these as your own!\" Contents: 360 auto aim, infinite ammo/rapid fire on all weapons, wall walking, invisible walls removed on most maps, teleportals, Banshee bombs, Carbine-only spawn, unique spawn points; \"for xbl, not skinned\". PPF header: \"Patch Generated by DotHalo for <map>.map\" (PPF 3.0). Different bytes from the PPF Noobs Map Package PPFs that are already published."
+
+[[mod]]
+slug = "ppfnoobs-oldv2-cyclotron"
+name = "PPF Noobs Old Map Package v2: cyclotron"
+authors = ["l PPF l NeoN (The PPF Noobs)"]
+base = "cyclotron"
+format = "ppf"
+size = 104981
+sha256 = "8510bd3186b3ea327e78a260635cab00f1f8c705b02bbd4eb318d1c3467c7a62"
+released = "2007"
+download_url = "https://web.archive.org/web/2007id_/http://www.theppfnoobs.com:80/Mods/The%20PPF%20Noobs%20Old%20Map%20Package%20v2.rar"
+source_url = "http://www.theppfnoobs.com/"
+fit = "good"
+description = "cyclotron PPF3 from the PPF Noobs Old Map Package v2 (cheat/fun map)."
+notes = "Made by l PPF l NeoN. Package readme: \"These mods were made by l PPF l NeoN! Please donot claim these as your own!\" Contents: 360 auto aim, infinite ammo/rapid fire on all weapons, wall walking, invisible walls removed on most maps, teleportals, Banshee bombs, Carbine-only spawn, unique spawn points; \"for xbl, not skinned\". PPF header: \"Patch Generated by DotHalo for <map>.map\" (PPF 3.0). Different bytes from the PPF Noobs Map Package PPFs that are already published."
+
+[[mod]]
+slug = "ppfnoobs-oldv2-foundation"
+name = "PPF Noobs Old Map Package v2: foundation"
+authors = ["l PPF l NeoN (The PPF Noobs)"]
+base = "foundation"
+format = "ppf"
+size = 117199
+sha256 = "f3a4d05cded87857180b19555ceeef2fa6c7878cd7934785c489c3f5ce94f03f"
+released = "2007"
+download_url = "https://web.archive.org/web/2007id_/http://www.theppfnoobs.com:80/Mods/The%20PPF%20Noobs%20Old%20Map%20Package%20v2.rar"
+source_url = "http://www.theppfnoobs.com/"
+fit = "good"
+description = "foundation PPF3 from the PPF Noobs Old Map Package v2 (cheat/fun map)."
+notes = "Made by l PPF l NeoN. Package readme: \"These mods were made by l PPF l NeoN! Please donot claim these as your own!\" Contents: 360 auto aim, infinite ammo/rapid fire on all weapons, wall walking, invisible walls removed on most maps, teleportals, Banshee bombs, Carbine-only spawn, unique spawn points; \"for xbl, not skinned\". PPF header: \"Patch Generated by DotHalo for <map>.map\" (PPF 3.0). Different bytes from the PPF Noobs Map Package PPFs that are already published."
+
+[[mod]]
+slug = "ppfnoobs-oldv2-headlong"
+name = "PPF Noobs Old Map Package v2: headlong"
+authors = ["l PPF l NeoN (The PPF Noobs)"]
+base = "headlong"
+format = "ppf"
+size = 124455
+sha256 = "6265f19803cc290fbf6178962e9ff86bbe866250ce1283f136353c5c3b7d8abf"
+released = "2007"
+download_url = "https://web.archive.org/web/2007id_/http://www.theppfnoobs.com:80/Mods/The%20PPF%20Noobs%20Old%20Map%20Package%20v2.rar"
+source_url = "http://www.theppfnoobs.com/"
+fit = "good"
+description = "headlong PPF3 from the PPF Noobs Old Map Package v2 (cheat/fun map)."
+notes = "Made by l PPF l NeoN. Package readme: \"These mods were made by l PPF l NeoN! Please donot claim these as your own!\" Contents: 360 auto aim, infinite ammo/rapid fire on all weapons, wall walking, invisible walls removed on most maps, teleportals, Banshee bombs, Carbine-only spawn, unique spawn points; \"for xbl, not skinned\". PPF header: \"Patch Generated by DotHalo for <map>.map\" (PPF 3.0). Different bytes from the PPF Noobs Map Package PPFs that are already published."
+
+[[mod]]
+slug = "ppfnoobs-oldv2-lockout"
+name = "PPF Noobs Old Map Package v2: lockout"
+authors = ["l PPF l NeoN (The PPF Noobs)"]
+base = "lockout"
+format = "ppf"
+size = 38408
+sha256 = "e47ffb5a3f001b20181a5b2307050f7a16238d10232b4dc94d1e3b7c42932f4d"
+released = "2007"
+download_url = "https://web.archive.org/web/2007id_/http://www.theppfnoobs.com:80/Mods/The%20PPF%20Noobs%20Old%20Map%20Package%20v2.rar"
+source_url = "http://www.theppfnoobs.com/"
+fit = "good"
+description = "lockout PPF3 from the PPF Noobs Old Map Package v2 (cheat/fun map)."
+notes = "Made by l PPF l NeoN. Package readme: \"These mods were made by l PPF l NeoN! Please donot claim these as your own!\" Contents: 360 auto aim, infinite ammo/rapid fire on all weapons, wall walking, invisible walls removed on most maps, teleportals, Banshee bombs, Carbine-only spawn, unique spawn points; \"for xbl, not skinned\". PPF header: \"Patch Generated by DotHalo for <map>.map\" (PPF 3.0). Different bytes from the PPF Noobs Map Package PPFs that are already published."
+
+[[mod]]
+slug = "ppfnoobs-oldv2-mainmenu"
+name = "PPF Noobs Old Map Package v2: mainmenu"
+authors = ["l PPF l NeoN (The PPF Noobs)"]
+base = "mainmenu"
+format = "ppf"
+size = 59425
+sha256 = "ac1a1954f5d9534eea93b365929a9f82a0b47d6837d555a792b55ecc20b18ce0"
+released = "2007"
+download_url = "https://web.archive.org/web/2007id_/http://www.theppfnoobs.com:80/Mods/The%20PPF%20Noobs%20Old%20Map%20Package%20v2.rar"
+source_url = "http://www.theppfnoobs.com/"
+fit = "needs-shared"
+description = "mainmenu PPF3 from the PPF Noobs Old Map Package v2 (cheat/fun map)."
+notes = "Made by l PPF l NeoN. Package readme: \"These mods were made by l PPF l NeoN! Please donot claim these as your own!\" Contents: 360 auto aim, infinite ammo/rapid fire on all weapons, wall walking, invisible walls removed on most maps, teleportals, Banshee bombs, Carbine-only spawn, unique spawn points; \"for xbl, not skinned\". PPF header: \"Patch Generated by DotHalo for <map>.map\" (PPF 3.0). Patches mainmenu.map (PPF Noobs logo), not a multiplayer map; byte-identical to the PPF in the already-published Map Package."
+
+[[mod]]
+slug = "ppfnoobs-oldv2-midship"
+name = "PPF Noobs Old Map Package v2: midship"
+authors = ["l PPF l NeoN (The PPF Noobs)"]
+base = "midship"
+format = "ppf"
+size = 72986
+sha256 = "36bf08a29cf8344533fc63e491c1be9be0dc9019755bb7488de16bc186ee32b4"
+released = "2007"
+download_url = "https://web.archive.org/web/2007id_/http://www.theppfnoobs.com:80/Mods/The%20PPF%20Noobs%20Old%20Map%20Package%20v2.rar"
+source_url = "http://www.theppfnoobs.com/"
+fit = "good"
+description = "midship PPF3 from the PPF Noobs Old Map Package v2 (cheat/fun map)."
+notes = "Made by l PPF l NeoN. Package readme: \"These mods were made by l PPF l NeoN! Please donot claim these as your own!\" Contents: 360 auto aim, infinite ammo/rapid fire on all weapons, wall walking, invisible walls removed on most maps, teleportals, Banshee bombs, Carbine-only spawn, unique spawn points; \"for xbl, not skinned\". PPF header: \"Patch Generated by DotHalo for <map>.map\" (PPF 3.0). Different bytes from the PPF Noobs Map Package PPFs that are already published."
+
+[[mod]]
+slug = "ppfnoobs-oldv2-waterworks"
+name = "PPF Noobs Old Map Package v2: waterworks"
+authors = ["l PPF l NeoN (The PPF Noobs)"]
+base = "waterworks"
+format = "ppf"
+size = 134319
+sha256 = "2a60270d1a3bfdb3037ebbad10b51a3e3de76a42889dbc0346197f109abe178c"
+released = "2007"
+download_url = "https://web.archive.org/web/2007id_/http://www.theppfnoobs.com:80/Mods/The%20PPF%20Noobs%20Old%20Map%20Package%20v2.rar"
+source_url = "http://www.theppfnoobs.com/"
+fit = "good"
+description = "waterworks PPF3 from the PPF Noobs Old Map Package v2 (cheat/fun map)."
+notes = "Made by l PPF l NeoN. Package readme: \"These mods were made by l PPF l NeoN! Please donot claim these as your own!\" Contents: 360 auto aim, infinite ammo/rapid fire on all weapons, wall walking, invisible walls removed on most maps, teleportals, Banshee bombs, Carbine-only spawn, unique spawn points; \"for xbl, not skinned\". PPF header: \"Patch Generated by DotHalo for <map>.map\" (PPF 3.0). Different bytes from the PPF Noobs Map Package PPFs that are already published."
+
+[[mod]]
+slug = "ppfnoobs-oldv2-zanzibar"
+name = "PPF Noobs Old Map Package v2: zanzibar"
+authors = ["l PPF l NeoN (The PPF Noobs)"]
+base = "zanzibar"
+format = "ppf"
+size = 131666
+sha256 = "a26ad42d6d42d822b6c84275145de55f9c90929708ba9e4781c944501c10edf6"
+released = "2007"
+download_url = "https://web.archive.org/web/2007id_/http://www.theppfnoobs.com:80/Mods/The%20PPF%20Noobs%20Old%20Map%20Package%20v2.rar"
+source_url = "http://www.theppfnoobs.com/"
+fit = "good"
+description = "zanzibar PPF3 from the PPF Noobs Old Map Package v2 (cheat/fun map)."
+notes = "Made by l PPF l NeoN. Package readme: \"These mods were made by l PPF l NeoN! Please donot claim these as your own!\" Contents: 360 auto aim, infinite ammo/rapid fire on all weapons, wall walking, invisible walls removed on most maps, teleportals, Banshee bombs, Carbine-only spawn, unique spawn points; \"for xbl, not skinned\". PPF header: \"Patch Generated by DotHalo for <map>.map\" (PPF 3.0). Different bytes from the PPF Noobs Map Package PPFs that are already published."
+
+[[mod]]
+slug = "ppfnoobs-start-ascension"
+name = "PPF Noobs Starting Patches: ascension"
+authors = ["l PPF l NeoN (The PPF Noobs)"]
+base = "ascension"
+format = "ppf"
+size = 126391
+sha256 = "a6654900e4a87cd2c08b692750570f72f58ab4104dfa7c07dc35fe271b6ab684"
+released = "2007"
+download_url = "https://web.archive.org/web/2007id_/http://theppfnoobs.com:80/Mods/All_Starting_Patches.rar"
+source_url = "http://www.theppfnoobs.com/"
+fit = "good"
+description = "ascension PPF3 from the PPF Noobs Starting Patches (cheat/fun map)."
+notes = "Made by l PPF l NeoN. Package readme: \"These mods were made by l PPF l NeoN! Please donot claim these as your own!\" Contents: 360 auto aim, infinite ammo/rapid fire on all weapons, wall walking, invisible walls removed on most maps, teleportals, Banshee bombs, Carbine-only spawn, unique spawn points; \"for xbl, not skinned\". PPF header: \"Patch Generated by DotHalo for <map>.map\" (PPF 3.0). Different bytes from the PPF Noobs Map Package PPFs that are already published."
+
+[[mod]]
+slug = "ppfnoobs-start-backwash-sppf"
+name = "PPF Noobs Starting Patches: backwash (sppf)"
+authors = ["l PPF l NeoN (The PPF Noobs)"]
+base = "backwash"
+format = "sppf"
+size = 54421
+sha256 = "f2757e7099360766ed351cc202d003eac18549b67951454041b204d32cd90163"
+released = "2007"
+download_url = "https://web.archive.org/web/2007id_/http://theppfnoobs.com:80/Mods/All_Starting_Patches.rar"
+source_url = "http://www.theppfnoobs.com/"
+fit = "unsupported-format"
+description = "backwash sppf (Multiplayer Map Pack map) from the PPF Noobs Starting Patches."
+notes = "Super PPF sized patch for a Multiplayer Map Pack map; no PPF magic in header. By l PPF l NeoN."
+
+[[mod]]
+slug = "ppfnoobs-start-beavercreek"
+name = "PPF Noobs Starting Patches: beavercreek"
+authors = ["l PPF l NeoN (The PPF Noobs)"]
+base = "beavercreek"
+format = "ppf"
+size = 40842
+sha256 = "27ce7ae9e2355e5ca966904beea3b051e4eea3dde69096fb34b67184cebf51e2"
+released = "2007"
+download_url = "https://web.archive.org/web/2007id_/http://theppfnoobs.com:80/Mods/All_Starting_Patches.rar"
+source_url = "http://www.theppfnoobs.com/"
+fit = "good"
+description = "beavercreek PPF3 from the PPF Noobs Starting Patches (cheat/fun map)."
+notes = "Made by l PPF l NeoN. Package readme: \"These mods were made by l PPF l NeoN! Please donot claim these as your own!\" Contents: 360 auto aim, infinite ammo/rapid fire on all weapons, wall walking, invisible walls removed on most maps, teleportals, Banshee bombs, Carbine-only spawn, unique spawn points; \"for xbl, not skinned\". PPF header: \"Patch Generated by DotHalo for <map>.map\" (PPF 3.0). Different bytes from the PPF Noobs Map Package PPFs that are already published."
+
+[[mod]]
+slug = "ppfnoobs-start-burial_mounds"
+name = "PPF Noobs Starting Patches: burial_mounds"
+authors = ["l PPF l NeoN (The PPF Noobs)"]
+base = "burial_mounds"
+format = "ppf"
+size = 93196
+sha256 = "c06694db8ffdc53dfe2a798ed91942ed5b6349b6dd59fbe74805d08bea19b106"
+released = "2007"
+download_url = "https://web.archive.org/web/2007id_/http://theppfnoobs.com:80/Mods/All_Starting_Patches.rar"
+source_url = "http://www.theppfnoobs.com/"
+fit = "good"
+description = "burial_mounds PPF3 from the PPF Noobs Starting Patches (cheat/fun map)."
+notes = "Made by l PPF l NeoN. Package readme: \"These mods were made by l PPF l NeoN! Please donot claim these as your own!\" Contents: 360 auto aim, infinite ammo/rapid fire on all weapons, wall walking, invisible walls removed on most maps, teleportals, Banshee bombs, Carbine-only spawn, unique spawn points; \"for xbl, not skinned\". PPF header: \"Patch Generated by DotHalo for <map>.map\" (PPF 3.0). Different bytes from the PPF Noobs Map Package PPFs that are already published."
+
+[[mod]]
+slug = "ppfnoobs-start-coagulation"
+name = "PPF Noobs Starting Patches: coagulation"
+authors = ["l PPF l NeoN (The PPF Noobs)"]
+base = "coagulation"
+format = "ppf"
+size = 100097
+sha256 = "c4fbe6375730495e64ffa9c70cec4e2fcabc3c2cf4e70fbe6236bf9b37f4af37"
+released = "2007"
+download_url = "https://web.archive.org/web/2007id_/http://theppfnoobs.com:80/Mods/All_Starting_Patches.rar"
+source_url = "http://www.theppfnoobs.com/"
+fit = "good"
+description = "coagulation PPF3 from the PPF Noobs Starting Patches (cheat/fun map)."
+notes = "Made by l PPF l NeoN. Package readme: \"These mods were made by l PPF l NeoN! Please donot claim these as your own!\" Contents: 360 auto aim, infinite ammo/rapid fire on all weapons, wall walking, invisible walls removed on most maps, teleportals, Banshee bombs, Carbine-only spawn, unique spawn points; \"for xbl, not skinned\". PPF header: \"Patch Generated by DotHalo for <map>.map\" (PPF 3.0). Different bytes from the PPF Noobs Map Package PPFs that are already published."
+
+[[mod]]
+slug = "ppfnoobs-start-colossus"
+name = "PPF Noobs Starting Patches: colossus"
+authors = ["l PPF l NeoN (The PPF Noobs)"]
+base = "colossus"
+format = "ppf"
+size = 67059
+sha256 = "c1f619c2c5906e07a0812754fe0528f6601db22024f1a650c7d0c672e0e2ebc4"
+released = "2007"
+download_url = "https://web.archive.org/web/2007id_/http://theppfnoobs.com:80/Mods/All_Starting_Patches.rar"
+source_url = "http://www.theppfnoobs.com/"
+fit = "good"
+description = "colossus PPF3 from the PPF Noobs Starting Patches (cheat/fun map)."
+notes = "Made by l PPF l NeoN. Package readme: \"These mods were made by l PPF l NeoN! Please donot claim these as your own!\" Contents: 360 auto aim, infinite ammo/rapid fire on all weapons, wall walking, invisible walls removed on most maps, teleportals, Banshee bombs, Carbine-only spawn, unique spawn points; \"for xbl, not skinned\". PPF header: \"Patch Generated by DotHalo for <map>.map\" (PPF 3.0). Different bytes from the PPF Noobs Map Package PPFs that are already published."
+
+[[mod]]
+slug = "ppfnoobs-start-containment-sppf"
+name = "PPF Noobs Starting Patches: containment (sppf)"
+authors = ["l PPF l NeoN (The PPF Noobs)"]
+base = "containment"
+format = "sppf"
+size = 57012
+sha256 = "8fd40b8e28258e26fc9f04b6e5f7d357509764a71a8b65ca1f478d3881d1ee37"
+released = "2007"
+download_url = "https://web.archive.org/web/2007id_/http://theppfnoobs.com:80/Mods/All_Starting_Patches.rar"
+source_url = "http://www.theppfnoobs.com/"
+fit = "unsupported-format"
+description = "containment sppf (Multiplayer Map Pack map) from the PPF Noobs Starting Patches."
+notes = "Super PPF sized patch for a Multiplayer Map Pack map; no PPF magic in header. By l PPF l NeoN."
+
+[[mod]]
+slug = "ppfnoobs-start-cyclotron"
+name = "PPF Noobs Starting Patches: cyclotron"
+authors = ["l PPF l NeoN (The PPF Noobs)"]
+base = "cyclotron"
+format = "ppf"
+size = 101467
+sha256 = "bb8d015ea6b75467e1c5260f349b1cd2370056b6612a994306ae8bf597eb1025"
+released = "2007"
+download_url = "https://web.archive.org/web/2007id_/http://theppfnoobs.com:80/Mods/All_Starting_Patches.rar"
+source_url = "http://www.theppfnoobs.com/"
+fit = "good"
+description = "cyclotron PPF3 from the PPF Noobs Starting Patches (cheat/fun map)."
+notes = "Made by l PPF l NeoN. Package readme: \"These mods were made by l PPF l NeoN! Please donot claim these as your own!\" Contents: 360 auto aim, infinite ammo/rapid fire on all weapons, wall walking, invisible walls removed on most maps, teleportals, Banshee bombs, Carbine-only spawn, unique spawn points; \"for xbl, not skinned\". PPF header: \"Patch Generated by DotHalo for <map>.map\" (PPF 3.0). Different bytes from the PPF Noobs Map Package PPFs that are already published."
+
+[[mod]]
+slug = "ppfnoobs-start-deltatap-sppf"
+name = "PPF Noobs Starting Patches: deltatap (sppf)"
+authors = ["l PPF l NeoN (The PPF Noobs)"]
+base = "deltatap"
+format = "sppf"
+size = 62058
+sha256 = "eb8df7314b5e92d08d94a8aeebfc2bb20a316d51e7d0904ba5c331abdd789111"
+released = "2007"
+download_url = "https://web.archive.org/web/2007id_/http://theppfnoobs.com:80/Mods/All_Starting_Patches.rar"
+source_url = "http://www.theppfnoobs.com/"
+fit = "unsupported-format"
+description = "deltatap sppf (Multiplayer Map Pack map) from the PPF Noobs Starting Patches."
+notes = "Super PPF sized patch for a Multiplayer Map Pack map; no PPF magic in header. By l PPF l NeoN."
+
+[[mod]]
+slug = "ppfnoobs-start-dune-sppf"
+name = "PPF Noobs Starting Patches: dune (sppf)"
+authors = ["l PPF l NeoN (The PPF Noobs)"]
+base = "dune"
+format = "sppf"
+size = 21591
+sha256 = "71bf181108635d3955d4fb24089baf947310c5dc475546c86103d3056283938f"
+released = "2007"
+download_url = "https://web.archive.org/web/2007id_/http://theppfnoobs.com:80/Mods/All_Starting_Patches.rar"
+source_url = "http://www.theppfnoobs.com/"
+fit = "unsupported-format"
+description = "dune sppf (Multiplayer Map Pack map) from the PPF Noobs Starting Patches."
+notes = "Super PPF sized patch for a Multiplayer Map Pack map; no PPF magic in header. By l PPF l NeoN."
+
+[[mod]]
+slug = "ppfnoobs-start-elongation-sppf"
+name = "PPF Noobs Starting Patches: elongation (sppf)"
+authors = ["l PPF l NeoN (The PPF Noobs)"]
+base = "elongation"
+format = "sppf"
+size = 1816
+sha256 = "dd87ffc401ea0cf0dcb0d01f342c88d6cd3474a069b4dce13b31dea881654c1d"
+released = "2007"
+download_url = "https://web.archive.org/web/2007id_/http://theppfnoobs.com:80/Mods/All_Starting_Patches.rar"
+source_url = "http://www.theppfnoobs.com/"
+fit = "unsupported-format"
+description = "elongation sppf (Multiplayer Map Pack map) from the PPF Noobs Starting Patches."
+notes = "Super PPF sized patch for a Multiplayer Map Pack map; no PPF magic in header. By l PPF l NeoN."
+
+[[mod]]
+slug = "ppfnoobs-start-foundation"
+name = "PPF Noobs Starting Patches: foundation"
+authors = ["l PPF l NeoN (The PPF Noobs)"]
+base = "foundation"
+format = "ppf"
+size = 113839
+sha256 = "c69f79ae688645934c1752f71bd9e4d4aeeb436cb057ac6ada8ad25221257342"
+released = "2007"
+download_url = "https://web.archive.org/web/2007id_/http://theppfnoobs.com:80/Mods/All_Starting_Patches.rar"
+source_url = "http://www.theppfnoobs.com/"
+fit = "good"
+description = "foundation PPF3 from the PPF Noobs Starting Patches (cheat/fun map)."
+notes = "Made by l PPF l NeoN. Package readme: \"These mods were made by l PPF l NeoN! Please donot claim these as your own!\" Contents: 360 auto aim, infinite ammo/rapid fire on all weapons, wall walking, invisible walls removed on most maps, teleportals, Banshee bombs, Carbine-only spawn, unique spawn points; \"for xbl, not skinned\". PPF header: \"Patch Generated by DotHalo for <map>.map\" (PPF 3.0). Different bytes from the PPF Noobs Map Package PPFs that are already published."
+
+[[mod]]
+slug = "ppfnoobs-start-gemini-sppf"
+name = "PPF Noobs Starting Patches: gemini (sppf)"
+authors = ["l PPF l NeoN (The PPF Noobs)"]
+base = "gemini"
+format = "sppf"
+size = 1752
+sha256 = "131d7a72f668cf08103be50273af53f848f736bb4169fca78207d01920d5d506"
+released = "2007"
+download_url = "https://web.archive.org/web/2007id_/http://theppfnoobs.com:80/Mods/All_Starting_Patches.rar"
+source_url = "http://www.theppfnoobs.com/"
+fit = "unsupported-format"
+description = "gemini sppf (Multiplayer Map Pack map) from the PPF Noobs Starting Patches."
+notes = "Super PPF sized patch for a Multiplayer Map Pack map; no PPF magic in header. By l PPF l NeoN."
+
+[[mod]]
+slug = "ppfnoobs-start-headlong"
+name = "PPF Noobs Starting Patches: headlong"
+authors = ["l PPF l NeoN (The PPF Noobs)"]
+base = "headlong"
+format = "ppf"
+size = 118842
+sha256 = "6f0b850b594a7e468b6869bfaab4b1c9e2dfc062859e3cd9c1754de9046b285c"
+released = "2007"
+download_url = "https://web.archive.org/web/2007id_/http://theppfnoobs.com:80/Mods/All_Starting_Patches.rar"
+source_url = "http://www.theppfnoobs.com/"
+fit = "good"
+description = "headlong PPF3 from the PPF Noobs Starting Patches (cheat/fun map)."
+notes = "Made by l PPF l NeoN. Package readme: \"These mods were made by l PPF l NeoN! Please donot claim these as your own!\" Contents: 360 auto aim, infinite ammo/rapid fire on all weapons, wall walking, invisible walls removed on most maps, teleportals, Banshee bombs, Carbine-only spawn, unique spawn points; \"for xbl, not skinned\". PPF header: \"Patch Generated by DotHalo for <map>.map\" (PPF 3.0). Different bytes from the PPF Noobs Map Package PPFs that are already published."
+
+[[mod]]
+slug = "ppfnoobs-start-lockout"
+name = "PPF Noobs Starting Patches: lockout"
+authors = ["l PPF l NeoN (The PPF Noobs)"]
+base = "lockout"
+format = "ppf"
+size = 35559
+sha256 = "5f8f97d2019dae71beee4b2f4a5afe4509bf84db3124c4f239ed1696fbe12fed"
+released = "2007"
+download_url = "https://web.archive.org/web/2007id_/http://theppfnoobs.com:80/Mods/All_Starting_Patches.rar"
+source_url = "http://www.theppfnoobs.com/"
+fit = "good"
+description = "lockout PPF3 from the PPF Noobs Starting Patches (cheat/fun map)."
+notes = "Made by l PPF l NeoN. Package readme: \"These mods were made by l PPF l NeoN! Please donot claim these as your own!\" Contents: 360 auto aim, infinite ammo/rapid fire on all weapons, wall walking, invisible walls removed on most maps, teleportals, Banshee bombs, Carbine-only spawn, unique spawn points; \"for xbl, not skinned\". PPF header: \"Patch Generated by DotHalo for <map>.map\" (PPF 3.0). Different bytes from the PPF Noobs Map Package PPFs that are already published."
+
+[[mod]]
+slug = "ppfnoobs-start-midship"
+name = "PPF Noobs Starting Patches: midship"
+authors = ["l PPF l NeoN (The PPF Noobs)"]
+base = "midship"
+format = "ppf"
+size = 70494
+sha256 = "8a557222847a19d5a0dfc5dfbd8b120099dfcef290f49ed4d2414f4d560c46a0"
+released = "2007"
+download_url = "https://web.archive.org/web/2007id_/http://theppfnoobs.com:80/Mods/All_Starting_Patches.rar"
+source_url = "http://www.theppfnoobs.com/"
+fit = "good"
+description = "midship PPF3 from the PPF Noobs Starting Patches (cheat/fun map)."
+notes = "Made by l PPF l NeoN. Package readme: \"These mods were made by l PPF l NeoN! Please donot claim these as your own!\" Contents: 360 auto aim, infinite ammo/rapid fire on all weapons, wall walking, invisible walls removed on most maps, teleportals, Banshee bombs, Carbine-only spawn, unique spawn points; \"for xbl, not skinned\". PPF header: \"Patch Generated by DotHalo for <map>.map\" (PPF 3.0). Different bytes from the PPF Noobs Map Package PPFs that are already published."
+
+[[mod]]
+slug = "ppfnoobs-start-triplicate-sppf"
+name = "PPF Noobs Starting Patches: triplicate (sppf)"
+authors = ["l PPF l NeoN (The PPF Noobs)"]
+base = "triplicate"
+format = "sppf"
+size = 65544
+sha256 = "dc5c988bda4e01d4b06b326659cd13de38c586e59241cd518f57d458f47dce51"
+released = "2007"
+download_url = "https://web.archive.org/web/2007id_/http://theppfnoobs.com:80/Mods/All_Starting_Patches.rar"
+source_url = "http://www.theppfnoobs.com/"
+fit = "unsupported-format"
+description = "triplicate sppf (Multiplayer Map Pack map) from the PPF Noobs Starting Patches."
+notes = "Super PPF sized patch for a Multiplayer Map Pack map; no PPF magic in header. By l PPF l NeoN."
+
+[[mod]]
+slug = "ppfnoobs-start-turf-sppf"
+name = "PPF Noobs Starting Patches: turf (sppf)"
+authors = ["l PPF l NeoN (The PPF Noobs)"]
+base = "turf"
+format = "sppf"
+size = 52967
+sha256 = "5051cfc6c1e5e61b6071d7d8c97a00897a7bf827face59643516dc5d1e4f168a"
+released = "2007"
+download_url = "https://web.archive.org/web/2007id_/http://theppfnoobs.com:80/Mods/All_Starting_Patches.rar"
+source_url = "http://www.theppfnoobs.com/"
+fit = "unsupported-format"
+description = "turf sppf (Multiplayer Map Pack map) from the PPF Noobs Starting Patches."
+notes = "Super PPF sized patch for a Multiplayer Map Pack map; no PPF magic in header. By l PPF l NeoN."
+
+[[mod]]
+slug = "ppfnoobs-start-warlock-sppf"
+name = "PPF Noobs Starting Patches: warlock (sppf)"
+authors = ["l PPF l NeoN (The PPF Noobs)"]
+base = "warlock"
+format = "sppf"
+size = 20656
+sha256 = "6340b8d866fd8d50545327e102cae0dd3d068ce8ba887238cb89fe0e9f19e09a"
+released = "2007"
+download_url = "https://web.archive.org/web/2007id_/http://theppfnoobs.com:80/Mods/All_Starting_Patches.rar"
+source_url = "http://www.theppfnoobs.com/"
+fit = "unsupported-format"
+description = "warlock sppf (Multiplayer Map Pack map) from the PPF Noobs Starting Patches."
+notes = "Super PPF sized patch for a Multiplayer Map Pack map; no PPF magic in header. By l PPF l NeoN."
+
+[[mod]]
+slug = "ppfnoobs-start-waterworks"
+name = "PPF Noobs Starting Patches: waterworks"
+authors = ["l PPF l NeoN (The PPF Noobs)"]
+base = "waterworks"
+format = "ppf"
+size = 127920
+sha256 = "abe8f2aa54d25890f28b247965b5f3a8bb4de844714cdc7559d2eafef9aba7d6"
+released = "2007"
+download_url = "https://web.archive.org/web/2007id_/http://theppfnoobs.com:80/Mods/All_Starting_Patches.rar"
+source_url = "http://www.theppfnoobs.com/"
+fit = "good"
+description = "waterworks PPF3 from the PPF Noobs Starting Patches (cheat/fun map)."
+notes = "Made by l PPF l NeoN. Package readme: \"These mods were made by l PPF l NeoN! Please donot claim these as your own!\" Contents: 360 auto aim, infinite ammo/rapid fire on all weapons, wall walking, invisible walls removed on most maps, teleportals, Banshee bombs, Carbine-only spawn, unique spawn points; \"for xbl, not skinned\". PPF header: \"Patch Generated by DotHalo for <map>.map\" (PPF 3.0). Different bytes from the PPF Noobs Map Package PPFs that are already published."
+
+[[mod]]
+slug = "ppfnoobs-start-zanzibar"
+name = "PPF Noobs Starting Patches: zanzibar"
+authors = ["l PPF l NeoN (The PPF Noobs)"]
+base = "zanzibar"
+format = "ppf"
+size = 128558
+sha256 = "10006e6c2d8cd0c3bcd91aaa7107bb0c417f674425ac34a6ba440a2e90b95f3b"
+released = "2007"
+download_url = "https://web.archive.org/web/2007id_/http://theppfnoobs.com:80/Mods/All_Starting_Patches.rar"
+source_url = "http://www.theppfnoobs.com/"
+fit = "good"
+description = "zanzibar PPF3 from the PPF Noobs Starting Patches (cheat/fun map)."
+notes = "Made by l PPF l NeoN. Package readme: \"These mods were made by l PPF l NeoN! Please donot claim these as your own!\" Contents: 360 auto aim, infinite ammo/rapid fire on all weapons, wall walking, invisible walls removed on most maps, teleportals, Banshee bombs, Carbine-only spawn, unique spawn points; \"for xbl, not skinned\". PPF header: \"Patch Generated by DotHalo for <map>.map\" (PPF 3.0). Different bytes from the PPF Noobs Map Package PPFs that are already published."
+
+[[mod]]
+slug = "skyline-doorm4n-sppf"
+name = "Skyline (sppf patch, original)"
+authors = ["DoorM4n"]
+base = "cyclotron"
+format = "sppf"
+size = 16868856
+sha256 = "10f0e0216c9265672eaf8be9c9ba2d4a3f2cb95891285be2a4fa83ed54fe7838"
+released = "2014-07-30"
+download_url = "https://www.mediafire.com/?i1908a417x8r9j2"
+source_url = "https://ibotmodz.net/topic/22569-~skyline~-by-doorm4n/"
+fit = "unsupported-format"
+description = "Skyline: custom rooftop map in the Ivory Tower BSP with a ported Halo CE Wasp. Readme: \"Patch cyclotron.map (Ivory Tower)... Skyline (original) is best for SLC and multiplayer combat... CTF gametypes may not work.\""
+notes = "Format is not PPF/IPS/BPS: .sppf is a Super PPF \"sized\" patch (observed header bytes are raw little-endian u32 records, no PPF magic) and .serenity is a Serenity patch (observed to start 14 00 00 0f). The importer would need an sppf or serenity reader. The rar also has a serenity version and a Real Time Shadows variant. Whole-map versions (doorm4n-skyline, doorm4n-skylinerts) are importable."
+
+[[mod]]
+slug = "sparten-ascension"
+name = "Sparten Killers: ascension"
+authors = ["unknown (pack supplied to CabooseSayzWTF by Terminator Zero)"]
+base = "ascension"
+format = "map"
+size = 29735936
+sha256 = "54c19eebfda67076714662971c008cea6bc0d3fb5842588a4fe5b3fd675b136e"
+released = "unknown (2019 repository compile)"
+download_url = "https://www.mediafire.com/file_premium/cgov15zn9y1hgev/Sparten_Killers_Mappack.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "good"
+description = "Cheating-style modified retail map; the pack has all 12 original Xbox MP maps. Pack readme: \"Rename one of the xbe's to default.xbe... xbe's may have kiltrocity bitmap/image as game image. Feel free to modify as you wish. I got lazy.\""
+notes = "From \"Sparten Killers Mappack\" (380 MB; listed under \"Cheating Mappacks\" in the Se7ensins repository; a commenter says it reuses Killtrocity assets). Whole retail-named map at exactly the retail byte size; pack ships stock-size shared.map and mainmenu.map. No author credit in the pack. header name \"ascension\", scenario \"scenarios\\multi\\ascension\\ascension\". Size 29735936 B (28.4 MiB)."
+
+[[mod]]
+slug = "sparten-beavercreek"
+name = "Sparten Killers: beavercreek"
+authors = ["unknown (pack supplied to CabooseSayzWTF by Terminator Zero)"]
+base = "beavercreek"
+format = "map"
+size = 28942336
+sha256 = "49744dd70ba82243f78afcd8ced8346ee71b406011908024bff55569204752af"
+released = "unknown (2019 repository compile)"
+download_url = "https://www.mediafire.com/file_premium/cgov15zn9y1hgev/Sparten_Killers_Mappack.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "good"
+description = "Cheating-style modified retail map; the pack has all 12 original Xbox MP maps. Pack readme: \"Rename one of the xbe's to default.xbe... xbe's may have kiltrocity bitmap/image as game image. Feel free to modify as you wish. I got lazy.\""
+notes = "From \"Sparten Killers Mappack\" (380 MB; listed under \"Cheating Mappacks\" in the Se7ensins repository; a commenter says it reuses Killtrocity assets). Whole retail-named map at exactly the retail byte size; pack ships stock-size shared.map and mainmenu.map. No author credit in the pack. header name \"beavercreek\", scenario \"scenarios\\multi\\halo\\beavercreek\\beavercreek\". Size 28942336 B (27.6 MiB)."
+
+[[mod]]
+slug = "sparten-burial_mounds"
+name = "Sparten Killers: burial_mounds"
+authors = ["unknown (pack supplied to CabooseSayzWTF by Terminator Zero)"]
+base = "burial_mounds"
+format = "map"
+size = 32114688
+sha256 = "e38c776bf247d1d7840abc73436b307df01b12630a474b6c4e0de4fa1b949431"
+released = "unknown (2019 repository compile)"
+download_url = "https://www.mediafire.com/file_premium/cgov15zn9y1hgev/Sparten_Killers_Mappack.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "good"
+description = "Cheating-style modified retail map; the pack has all 12 original Xbox MP maps. Pack readme: \"Rename one of the xbe's to default.xbe... xbe's may have kiltrocity bitmap/image as game image. Feel free to modify as you wish. I got lazy.\""
+notes = "From \"Sparten Killers Mappack\" (380 MB; listed under \"Cheating Mappacks\" in the Se7ensins repository; a commenter says it reuses Killtrocity assets). Whole retail-named map at exactly the retail byte size; pack ships stock-size shared.map and mainmenu.map. No author credit in the pack. header name \"burial_mounds\", scenario \"scenarios\\multi\\burial_mounds\\burial_mounds\". Size 32114688 B (30.6 MiB)."
+
+[[mod]]
+slug = "sparten-coagulation"
+name = "Sparten Killers: coagulation"
+authors = ["unknown (pack supplied to CabooseSayzWTF by Terminator Zero)"]
+base = "coagulation"
+format = "map"
+size = 41397248
+sha256 = "32480909f0e1df17ffd1e984b1f9557c9d56f3e608dba41469ccc2312f37f1cb"
+released = "unknown (2019 repository compile)"
+download_url = "https://www.mediafire.com/file_premium/cgov15zn9y1hgev/Sparten_Killers_Mappack.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "good"
+description = "Cheating-style modified retail map; the pack has all 12 original Xbox MP maps. Pack readme: \"Rename one of the xbe's to default.xbe... xbe's may have kiltrocity bitmap/image as game image. Feel free to modify as you wish. I got lazy.\""
+notes = "From \"Sparten Killers Mappack\" (380 MB; listed under \"Cheating Mappacks\" in the Se7ensins repository; a commenter says it reuses Killtrocity assets). Whole retail-named map at exactly the retail byte size; pack ships stock-size shared.map and mainmenu.map. No author credit in the pack. header name \"coagulation\", scenario \"scenarios\\multi\\halo\\coagulation\\coagulation\". Size 41397248 B (39.5 MiB)."
+
+[[mod]]
+slug = "sparten-colossus"
+name = "Sparten Killers: colossus"
+authors = ["unknown (pack supplied to CabooseSayzWTF by Terminator Zero)"]
+base = "colossus"
+format = "map"
+size = 31132160
+sha256 = "f3f9d8072861e2867f50b258b73321764ca469ce6c88a933b6a89563a34c0070"
+released = "unknown (2019 repository compile)"
+download_url = "https://www.mediafire.com/file_premium/cgov15zn9y1hgev/Sparten_Killers_Mappack.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "good"
+description = "Cheating-style modified retail map; the pack has all 12 original Xbox MP maps. Pack readme: \"Rename one of the xbe's to default.xbe... xbe's may have kiltrocity bitmap/image as game image. Feel free to modify as you wish. I got lazy.\""
+notes = "From \"Sparten Killers Mappack\" (380 MB; listed under \"Cheating Mappacks\" in the Se7ensins repository; a commenter says it reuses Killtrocity assets). Whole retail-named map at exactly the retail byte size; pack ships stock-size shared.map and mainmenu.map. No author credit in the pack. header name \"colossus\", scenario \"scenarios\\multi\\colossus\\colossus\". Size 31132160 B (29.7 MiB)."
+
+[[mod]]
+slug = "sparten-cyclotron"
+name = "Sparten Killers: cyclotron"
+authors = ["unknown (pack supplied to CabooseSayzWTF by Terminator Zero)"]
+base = "cyclotron"
+format = "map"
+size = 46205952
+sha256 = "eccfb7a8e2c1c79ab4ac6941470c346bd33fe8e69132e91beaba5dc140c5cc7e"
+released = "unknown (2019 repository compile)"
+download_url = "https://www.mediafire.com/file_premium/cgov15zn9y1hgev/Sparten_Killers_Mappack.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "good"
+description = "Cheating-style modified retail map; the pack has all 12 original Xbox MP maps. Pack readme: \"Rename one of the xbe's to default.xbe... xbe's may have kiltrocity bitmap/image as game image. Feel free to modify as you wish. I got lazy.\""
+notes = "From \"Sparten Killers Mappack\" (380 MB; listed under \"Cheating Mappacks\" in the Se7ensins repository; a commenter says it reuses Killtrocity assets). Whole retail-named map at exactly the retail byte size; pack ships stock-size shared.map and mainmenu.map. No author credit in the pack. header name \"cyclotron\", scenario \"scenarios\\multi\\cyclotron\\cyclotron\". Size 46205952 B (44.1 MiB)."
+
+[[mod]]
+slug = "sparten-foundation"
+name = "Sparten Killers: foundation"
+authors = ["unknown (pack supplied to CabooseSayzWTF by Terminator Zero)"]
+base = "foundation"
+format = "map"
+size = 37599232
+sha256 = "bc56dbde75e55650c54d0027fae0ca1a9b6067a8022211527de7d9eadb3a4e5b"
+released = "unknown (2019 repository compile)"
+download_url = "https://www.mediafire.com/file_premium/cgov15zn9y1hgev/Sparten_Killers_Mappack.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "good"
+description = "Cheating-style modified retail map; the pack has all 12 original Xbox MP maps. Pack readme: \"Rename one of the xbe's to default.xbe... xbe's may have kiltrocity bitmap/image as game image. Feel free to modify as you wish. I got lazy.\""
+notes = "From \"Sparten Killers Mappack\" (380 MB; listed under \"Cheating Mappacks\" in the Se7ensins repository; a commenter says it reuses Killtrocity assets). Whole retail-named map at exactly the retail byte size; pack ships stock-size shared.map and mainmenu.map. No author credit in the pack. header name \"foundation\", scenario \"scenarios\\multi\\marathon\\foundation\\foundation\". Size 37599232 B (35.9 MiB)."
+
+[[mod]]
+slug = "sparten-headlong"
+name = "Sparten Killers: headlong"
+authors = ["unknown (pack supplied to CabooseSayzWTF by Terminator Zero)"]
+base = "headlong"
+format = "map"
+size = 56096256
+sha256 = "a2d8464d17d17ee30be296fcfd94ebc5957f39a1c00ac4562610c3b1ea574b7f"
+released = "unknown (2019 repository compile)"
+download_url = "https://www.mediafire.com/file_premium/cgov15zn9y1hgev/Sparten_Killers_Mappack.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "good"
+description = "Cheating-style modified retail map; the pack has all 12 original Xbox MP maps. Pack readme: \"Rename one of the xbe's to default.xbe... xbe's may have kiltrocity bitmap/image as game image. Feel free to modify as you wish. I got lazy.\""
+notes = "From \"Sparten Killers Mappack\" (380 MB; listed under \"Cheating Mappacks\" in the Se7ensins repository; a commenter says it reuses Killtrocity assets). Whole retail-named map at exactly the retail byte size; pack ships stock-size shared.map and mainmenu.map. No author credit in the pack. header name \"headlong\", scenario \"scenarios\\multi\\headlong\\headlong\". Size 56096256 B (53.5 MiB)."
+
+[[mod]]
+slug = "sparten-lockout"
+name = "Sparten Killers: lockout"
+authors = ["unknown (pack supplied to CabooseSayzWTF by Terminator Zero)"]
+base = "lockout"
+format = "map"
+size = 34523136
+sha256 = "b1f19e7600dda17b9775309fdc81ccc63b3b03b5b00a64f01627ccc6c6f1588c"
+released = "unknown (2019 repository compile)"
+download_url = "https://www.mediafire.com/file_premium/cgov15zn9y1hgev/Sparten_Killers_Mappack.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "good"
+description = "Cheating-style modified retail map; the pack has all 12 original Xbox MP maps. Pack readme: \"Rename one of the xbe's to default.xbe... xbe's may have kiltrocity bitmap/image as game image. Feel free to modify as you wish. I got lazy.\""
+notes = "From \"Sparten Killers Mappack\" (380 MB; listed under \"Cheating Mappacks\" in the Se7ensins repository; a commenter says it reuses Killtrocity assets). Whole retail-named map at exactly the retail byte size; pack ships stock-size shared.map and mainmenu.map. No author credit in the pack. header name \"lockout\", scenario \"scenarios\\multi\\lockout\\lockout\". Size 34523136 B (32.9 MiB)."
+
+[[mod]]
+slug = "sparten-midship"
+name = "Sparten Killers: midship"
+authors = ["unknown (pack supplied to CabooseSayzWTF by Terminator Zero)"]
+base = "midship"
+format = "map"
+size = 30519808
+sha256 = "14608b5f783378c9ea88702c4f090581da6c6a87a01d2f41047437587532b53b"
+released = "unknown (2019 repository compile)"
+download_url = "https://www.mediafire.com/file_premium/cgov15zn9y1hgev/Sparten_Killers_Mappack.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "good"
+description = "Cheating-style modified retail map; the pack has all 12 original Xbox MP maps. Pack readme: \"Rename one of the xbe's to default.xbe... xbe's may have kiltrocity bitmap/image as game image. Feel free to modify as you wish. I got lazy.\""
+notes = "From \"Sparten Killers Mappack\" (380 MB; listed under \"Cheating Mappacks\" in the Se7ensins repository; a commenter says it reuses Killtrocity assets). Whole retail-named map at exactly the retail byte size; pack ships stock-size shared.map and mainmenu.map. No author credit in the pack. header name \"midship\", scenario \"scenarios\\multi\\midship\\midship\". Size 30519808 B (29.1 MiB)."
+
+[[mod]]
+slug = "sparten-waterworks"
+name = "Sparten Killers: waterworks"
+authors = ["unknown (pack supplied to CabooseSayzWTF by Terminator Zero)"]
+base = "waterworks"
+format = "map"
+size = 41352704
+sha256 = "f6355316578e6e73215739e4ca8d429b77490eaa2d2cc743a8d1864ec73acbfa"
+released = "unknown (2019 repository compile)"
+download_url = "https://www.mediafire.com/file_premium/cgov15zn9y1hgev/Sparten_Killers_Mappack.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "good"
+description = "Cheating-style modified retail map; the pack has all 12 original Xbox MP maps. Pack readme: \"Rename one of the xbe's to default.xbe... xbe's may have kiltrocity bitmap/image as game image. Feel free to modify as you wish. I got lazy.\""
+notes = "From \"Sparten Killers Mappack\" (380 MB; listed under \"Cheating Mappacks\" in the Se7ensins repository; a commenter says it reuses Killtrocity assets). Whole retail-named map at exactly the retail byte size; pack ships stock-size shared.map and mainmenu.map. No author credit in the pack. header name \"waterworks\", scenario \"scenarios\\multi\\waterworks\\waterworks\". Size 41352704 B (39.4 MiB)."
+
+[[mod]]
+slug = "sparten-zanzibar"
+name = "Sparten Killers: zanzibar"
+authors = ["unknown (pack supplied to CabooseSayzWTF by Terminator Zero)"]
+base = "zanzibar"
+format = "map"
+size = 53547008
+sha256 = "18e432915f5ddb3fc2b824237dba7ea358a305cf929709c43efa03d1eba0d9af"
+released = "unknown (2019 repository compile)"
+download_url = "https://www.mediafire.com/file_premium/cgov15zn9y1hgev/Sparten_Killers_Mappack.rar/file"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+fit = "good"
+description = "Cheating-style modified retail map; the pack has all 12 original Xbox MP maps. Pack readme: \"Rename one of the xbe's to default.xbe... xbe's may have kiltrocity bitmap/image as game image. Feel free to modify as you wish. I got lazy.\""
+notes = "From \"Sparten Killers Mappack\" (380 MB; listed under \"Cheating Mappacks\" in the Se7ensins repository; a commenter says it reuses Killtrocity assets). Whole retail-named map at exactly the retail byte size; pack ships stock-size shared.map and mainmenu.map. No author credit in the pack. header name \"zanzibar\", scenario \"scenarios\\multi\\zanzibar\\zanzibar\". Size 53547008 B (51.1 MiB)."
+
+[[mod]]
+slug = "trampoline-i"
+name = "Trampoline I"
+authors = ["SmokiestGrunl"]
+base = "containment"
+format = "sppf"
+size = 26850953
+sha256 = "b27a440532697f6f5355ede9d1635a4bef088a23a09a0f52bf4c84a046580912"
+released = "2009-05-19"
+download_url = "http://www.mediafire.com/file/lzltjjyyix4/trampoline_patchContainmet.zip"
+source_url = "https://ibotmodz.net/files/file/53-trampoline-i/"
+fit = "unsupported-format"
+description = "Trampoline I: entire containment map made of gravity lifts, two modded weapons, Arbiter added, system linkable. File: trampoline_patchContainment.sppf."
+notes = "Format is not PPF/IPS/BPS: .sppf is a Super PPF \"sized\" patch (observed header bytes are raw little-endian u32 records, no PPF magic) and .serenity is a Serenity patch (observed to start 14 00 00 0f). The importer would need an sppf or serenity reader."
+
+[[mod]]
+slug = "underbrush"
+name = "Underbrush"
+authors = ["SmokiestGrunl (uploader; remodels and skins credited to \"me\")", "xHeadshotmastax (heretic biped)", "Doom and Conscar (spiker)"]
+base = "backwash"
+format = "serenity"
+size = 6268134
+sha256 = "2333134e74d9e72120c98a9f2d812dcd2d69e5ab4d9b2c3f4b4bcb35f3fafafc"
+released = "2009-05-19"
+download_url = "http://www.mediafire.com/file/nml0inznzho/underbrush.rar"
+source_url = "https://ibotmodz.net/files/file/40-underbrush/"
+fit = "unsupported-format"
+description = "Underbrush: Backwash conversion with Renegade Elite/Spec Ops bipeds, Brute Spiker, Nail Rifle, Crossbow, Flamer and many weapon/skin/lighting mods; system linkable. Post header: \"Type: Serenity Base: backwash.map\"."
+notes = "Format is not PPF/IPS/BPS: .sppf is a Super PPF \"sized\" patch (observed header bytes are raw little-endian u32 records, no PPF magic) and .serenity is a Serenity patch (observed to start 14 00 00 0f). The importer would need an sppf or serenity reader. A different mod of the same name by xlRainlx is in Phantom Mappack v2 (pm2-underbrush)."
+
+[[mod]]
+slug = "zombie-devastation"
+name = "Zombie Devastation"
+authors = ["XxXAntiJoshXxX (posted by StevenSVE on ibotmodz)"]
+base = "lockout"
+format = "sppf/serenity"
+released = "2008-08-03"
+download_url = "http://files.filefront.com/Zombie+Devstationsppf/;11249256;/fileinfo.html"
+source_url = "https://ibotmodz.net/topic/6942-zombie-devastation/"
+fit = "unsupported-format"
+description = "Elite-AI zombie map: skinned, new sky/fog, flamethrower sentinel beam, plasma SMG; needs \"AI in Multiplayer\" in Yelo. \"Apply to Lockout.map\" (sppf)."
+notes = "Download link is dead (MediaFire file removed, ibotfiles.com gone, FileFront gone, or ibotmodz gives no redirect), nothing downloaded. Format is not PPF/IPS/BPS: .sppf is a Super PPF \"sized\" patch (observed header bytes are raw little-endian u32 records, no PPF magic) and .serenity is a Serenity patch (observed to start 14 00 00 0f). The importer would need an sppf or serenity reader."

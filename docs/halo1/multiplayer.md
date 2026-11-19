@@ -821,8 +821,14 @@ choice means). Adding an option is a setting in `setting_defs` (choices
   (`h1_options_row::converted_map_name`). Only custom lobbies have Change
   Map (action 0), so only they get the row. Choosing it opens the
   options screen (`h1-options`, a list class of ours) on the dialog's own
-  window and slot, the way the skulls row opened its page. Left, right or
-  A changes a row; B backs out.
+  window and slot, the way the skulls row opened its page. The screen is
+  the lobby's Quick Options inside and out (`h1_options::DIALOG`,
+  docs/game/ui-builder.md "The Dialog kind"): its panel, its header
+  ("HALO 1 OPTIONS"), its `setting_lists` list with each row's name left
+  and its choice alone in the value column ("Sandbox  Halo 1"), the
+  row's one-line help (`OptionRow::help`) in Quick Options' help line,
+  and the legend in its footer. Left, right or A changes a row; B backs
+  out.
 - **Campaign:** a Halo 1 level's Game Options page (the skulls page after
   the difficulty, docs/game/skulls.md) lists Assets and HUD under Start
   Level, above the skulls, and opens even with no skull collected.

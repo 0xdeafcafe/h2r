@@ -22,8 +22,10 @@ pub const LOCAL_PORTS: usize = 3;
 
 /// Whether a game's stderr line goes into the merged log.
 pub fn wanted(line: &str) -> bool {
-    const KEEP: [&str; 15] = [
+    const KEEP: [&str; 17] = [
         "needs a code to sign in",
+        "clankermatch:",
+        "live: optimatch",
         "live: sign-in",
         "bots:",
         "clankers:",
@@ -112,6 +114,8 @@ pub struct Check {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Verdict {
     pub plan: Plan,
+    /// The verdict's first line: what the run tested.
+    pub title: String,
     pub checks: Vec<Check>,
     /// Lines that look like trouble anywhere in the run.
     pub trouble: Vec<String>,
@@ -358,9 +362,14 @@ const TROUBLE: [&str; 7] = [
     "bots-test: timed out",
 ];
 
-/// The verdict a merged log shows; `None` without a plan line.
+/// The verdict a merged log shows; `None` without a plan line. A
+/// Clankermatch run's log (its `bots-test: clankermatch plan:` line) gets
+/// [`clankermatch::verdict`].
 pub fn verdict(log: &str) -> Option<Verdict> {
     let l = Log::new(log);
+    if let Some(plan) = clankermatch::CmPlan::read(&l.texts) {
+        return Some(clankermatch::verdict(&l, plan));
+    }
     let plan = Plan::read(&l.texts)?;
     let local = plan.local() as u8;
     let mut checks = Vec::new();
@@ -756,6 +765,13 @@ pub fn verdict(log: &str) -> Option<Verdict> {
 
     let trouble = l.last(8, |t| TROUBLE.iter().any(|k| t.contains(*k)));
     Some(Verdict {
+        title: format!(
+            "bots test: {} Clankers ({} local, {} phantoms) with {} on a Live custom game",
+            plan.count,
+            plan.local(),
+            plan.phantoms(),
+            plan.tag
+        ),
         plan,
         checks,
         trouble,
@@ -778,15 +794,7 @@ impl Verdict {
 
     pub fn render(&self) -> String {
         let mut s = String::new();
-        let p = &self.plan;
-        let _ = writeln!(
-            s,
-            "bots test: {} Clankers ({} local, {} phantoms) with {} on a Live custom game",
-            p.count,
-            p.local(),
-            p.phantoms(),
-            p.tag
-        );
+        let _ = writeln!(s, "{}", self.title);
         for (i, c) in self.checks.iter().enumerate() {
             let mark = if c.pass { "pass" } else { "FAIL" };
             let _ = writeln!(s, "{:>2}. [{mark}] {}: {}", i + 1, c.name, c.detail);
@@ -811,6 +819,8 @@ impl Verdict {
         s
     }
 }
+
+pub mod clankermatch;
 
 #[cfg(test)]
 mod tests;

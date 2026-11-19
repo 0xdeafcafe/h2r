@@ -290,8 +290,22 @@ culling it (`ZCLAMP_EN` in xemu's `pgraph.c` and `glsl/psh.c`). Such a draw
 (`VertexUniforms::w_clamp`) outputs clip z = w / 2, so nothing is culled by
 the range, and the fragment clamp keeps the stored w inside it. Ascension's black
 sky is the likely case: sky geometry past the far clip, culled
-(`w_buffered_depth_clamp_keeps_what_lies_past_the_clip_range`). Clamp mode
-isn't applied to Z-buffered draws yet.
+(`w_buffered_depth_clamp_keeps_what_lies_past_the_clip_range`).
+
+Such a draw's pipeline also leaves depth unclipped
+(`PrimitiveState::unclipped_depth` from `RenderState::depth_clamp`, where
+the device has `DEPTH_CLIP_CONTROL`; Metal's depth clip mode `clamp`).
+This is emulation correctness: on the NV2A a clamped draw keeps what lies
+outside the depth range, so the host must not cull it at the near or far
+plane. The other planes still clip: the clip volume is bounded by
+`-w <= x, y <= w` (WebGPU spec, 23.2.4 "Primitive Clipping"). It does not
+remove a10's grey slab, which stays open (docs/halo1/sky.md, "Edge-on
+triangles"). A Z-buffered draw
+that clamps gets the NV2A's meaning from the same switch: its depth, z
+over `Zmax` as the guest computed it, is clamped to the viewport's depth
+range (the WebGPU spec clamps every fragment's depth to it) instead of
+culled. Without the feature, draws are clipped as before and the renderer
+says so once.
 
 A draw that neither tests nor writes depth gets no depth write. Writing
 the depth from the fragment stage turns off the GPU's early depth test for
