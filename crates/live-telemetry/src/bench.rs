@@ -828,6 +828,8 @@ fn wire(scene: &Scene) -> serde_json::Value {
     let minute = n as f64 / (TICKS as f64 / 30.0 / 60.0);
     serde_json::json!({
         "frames": n,
+        "encode_us_per_tick": ns.iter().sum::<u64>() as f64 / (1000.0 * f64::from(TICKS)),
+        "bytes_per_player_second": packed as f64 * 30.0 / f64::from(TICKS * scene.players),
         "encode": stats(ns),
         "packed_bytes_per_frame": packed as f64 / n as f64,
         "keyframe_bytes": key_bytes as f64 / keyframes.max(1) as f64,
@@ -882,5 +884,72 @@ fn bench_guest_tick() {
         std::fs::create_dir_all(&dir).unwrap();
         let text = serde_json::to_string_pretty(&serde_json::json!({ "scenes": results })).unwrap();
         std::fs::write(dir.join("guest.json"), text).unwrap();
+    }
+}
+
+/// Ten minutes of the seeded multiplayer fixture. Measure ingest separately
+/// from chunk compression, disk I/O and generation of the JSON control.
+#[test]
+#[ignore = "release benchmark for the viewer's full-match transfer and decode"]
+fn bench_match_wire() {
+    use live_proto::chunk::{Chunk, ChunkWriter};
+
+    const SECONDS: usize = 600;
+    let frames = live_proto::samples::multiplayer(15 * SECONDS);
+    let mut encoder = pack::Encoder::new(0, crate::server::FRAME_KEYFRAME_EVERY);
+    let mut record = Vec::new();
+    let mut encode_ns = 0;
+    let mut wire_bytes = 0;
+    let mut writer = ChunkWriter::default();
+    let dir = std::env::var_os("TELEMETRY_BENCH_OUT").map(std::path::PathBuf::from);
+    if let Some(dir) = &dir {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    let mut chunks = 0;
+    let mut binary_bytes = 0;
+    let mut json_bytes = 0;
+    let mut decoded_frames = 0;
+    let mut finish = |chunk: Chunk| {
+        let decoded = live_proto::chunk::frames(&chunk.bytes).unwrap();
+        decoded_frames += decoded.len();
+        let json = serde_json::to_vec(&decoded).unwrap();
+        binary_bytes += chunk.bytes.len();
+        json_bytes += json.len();
+        if let Some(dir) = &dir {
+            let name = format!("replay-{chunks:03}");
+            std::fs::write(dir.join(format!("{name}.bin")), &chunk.bytes).unwrap();
+            std::fs::write(dir.join(format!("{name}.json")), &json).unwrap();
+        }
+        chunks += 1;
+    };
+    for frame in &frames {
+        let ((bytes, _), ns) = time(|| encoder.encode(frame).unwrap());
+        encode_ns += ns;
+        record.clear();
+        pack::push_record(&mut record, &bytes);
+        wire_bytes += record.len();
+        if let Some(chunk) = writer.push(frame) {
+            finish(chunk);
+        }
+    }
+    finish(writer.finish().unwrap());
+    assert_eq!(decoded_frames, frames.len());
+    assert_eq!(chunks, SECONDS / 10);
+    let stats = serde_json::json!({
+        "seconds": SECONDS,
+        "players": 16,
+        "frames": frames.len(),
+        "chunks": chunks,
+        "wire_bytes": wire_bytes,
+        "bytes_per_frame": wire_bytes as f64 / frames.len() as f64,
+        "bytes_per_player_second": wire_bytes as f64 / (16 * SECONDS) as f64,
+        "encode_us_per_frame": encode_ns as f64 / (1000 * frames.len()) as f64,
+        "encode_us_per_tick": encode_ns as f64 / (1000 * 30 * SECONDS) as f64,
+        "replay_json_bytes": json_bytes,
+        "replay_binary_bytes": binary_bytes,
+    });
+    println!("{stats}");
+    if let Some(dir) = dir {
+        std::fs::write(dir.join("match.json"), stats.to_string()).unwrap();
     }
 }
