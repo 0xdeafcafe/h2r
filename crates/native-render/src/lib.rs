@@ -50,6 +50,9 @@ pub mod object_program;
 pub mod object_program_gpu;
 pub mod object_streams;
 pub mod objects;
+pub mod particles;
+#[cfg(feature = "gpu")]
+pub mod particle_gpu;
 pub mod post;
 #[cfg(feature = "gpu")]
 pub mod screen_gpu;

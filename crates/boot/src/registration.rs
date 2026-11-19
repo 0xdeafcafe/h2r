@@ -343,6 +343,9 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     features
         .add(&feature::native_transparents::NativeTransparents)
         .map_err(|e| anyhow::anyhow!("native transparents: {e}"))?;
+    features
+        .add(&feature::native_particles::NativeParticles)
+        .map_err(|e| anyhow::anyhow!("native particles: {e}"))?;
     // The dynamic lights on the native GPU renderer
     // (H2_FEATURES=impl.render.native_lights=on, off by default;
     // docs/graphics/native-renderer.md, stage 4): a context-only skip on
