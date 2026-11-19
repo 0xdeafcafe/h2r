@@ -1973,16 +1973,35 @@ its own thread, and render-timing does not matter (the call runs).
      the function through `0x0013bb90`, its output range unless a flag in
      `0xf0`; with one (itself without a parent, else 0) the parent's
      value times its own raw value, then its range), the evaluator being
-     `tags::effects::function` with the image's wave and shape tables
-     (`tables`, read from the image); `full_screen_single_view`
+     `engine::function_eval`; `full_screen_single_view`
      (`0x00022710`: the viewport `0x00485648` is 0, 0, 480, 640 and at
      most one view `[0x004ba04c]`); `gated`, `corners` and `drawn` (the
      loop: each entry's datum and four values). Tests: unit tests, and
      `engine/tests/screen_effects_differential.rs` (`0x00134fc0` over
      random functions of every type with parents, and the loop from
      `0x000139ba` with `0x0002d140` stubbed, against the lifted
-     original; types 9 and 10 within 1e-3, where the evaluator port
-     approximates).
+     original, bit for bit).
+   - **Built: the evaluator** (`engine::function_eval`, `0x0013b390`
+     instruction for instruction): SSE in the original's operand order,
+     so a NaN keeps the sign and payload the original's does (the blend
+     is `second * r + (1 - r) * first`, type 9's `(1 - r) * first +
+     second * r`); shape `0x0017ca10` and wave `0x0017c900` over the
+     image's tables with the CRT `fmod(v, 1.0)` (`0x00373b6a`: `fprem`
+     for finite non-zero, `fldz` for a zero, a quieted NaN, the
+     indefinite for an infinity) and an x87 `fistp`; type 9 and spline
+     2 through the CRT `pow` (`0x00372d48`) on the x87 model: `fyl2x`
+     and `0x00327f84`'s `frndint`/`f2xm1`/`fscale`, negative bases by
+     `0x00372f31`'s integer and odd test, zero bases, NaNs (`faddp`),
+     infinities (`_powhlp` `0x003738a8`), the range check `0x0032806d`
+     (scaled by 2^1536 or 2^-1536) and `_handle_exc` (`0x003246b5`):
+     overflow to the rounding mode's infinity or largest value,
+     underflow to a denormal by truncation or zero, the others kept.
+     Spline 2's exponent is `rsqrtss` of one segment's squared length
+     times the halving-trick root of the other's, as the original
+     computes it. Control words with an x87 exception unmasked are
+     refused. Tests: unit tests, and the differential above with
+     `_getptd` (`0x00326079`) stubbed so the CRT's error paths run
+     lifted.
    - **Built: what each draws** (`engine::screen_effect::plan`, one call
      of `0x0002d140` as an `Effect`): the shader and layer 15's
      implementation count (the template datum the shader's `+0x24`

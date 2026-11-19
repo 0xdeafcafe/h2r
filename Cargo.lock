@@ -1891,7 +1891,6 @@ dependencies = [
  "paste",
  "runtime",
  "simd",
- "tags",
  "x87",
  "xbe",
 ]

@@ -21,10 +21,11 @@
 //!   convolutions must be the plan's.
 //!
 //! The evaluator's wave and shape tables are the image's (read from it,
-//! never copied). Results are bit-equal, except where the evaluator port
-//! (`tags::effects::function`) documents an approximation: type 9 (an f64
-//! power for the x87's) and type 10 (an exact reciprocal square root for
-//! `rsqrtss`), which must agree within 1e-3. Needs the user's XBE
+//! never copied). Results are bit-equal for every type, NaNs included.
+//! The CRT's error paths (`fmod` and `pow` on NaNs, infinities, domain
+//! errors, overflow and underflow) run lifted too; only `_getptd`
+//! (`0x00326079`, which reads the thread block through FS) is stubbed,
+//! returning a scratch per-thread block for `errno`. Needs the user's XBE
 //! (`H2_XBE`, or `disc/default.xbe`), pinned by hash; skips without it.
 //! `H2_DIFF_SEEDS=1,2,3` picks seeds.
 //!
@@ -53,6 +54,9 @@ const STACK_TOP: u32 = 0x03ff_0000;
 const STEP_LIMIT: u64 = 2_000_000;
 
 const FUNCTION_VALUE: u32 = 0x0013_4fc0;
+/// `_getptd`, stubbed: EAX a scratch per-thread block.
+const GETPTD: u32 = 0x0032_6079;
+const PTD: u32 = 0x03d0_0000;
 const SCREEN_EFFECT: u32 = 0x0002_d140;
 const LOOP: (u32, [u32; 2]) = (0x0001_39ba, [0x0001_3b72, 0x0001_3b73]);
 
@@ -281,17 +285,6 @@ fn functions(r: &mut Rng, m: &mut FlatMemory, n: u32) -> Vec<(u8, u8)> {
         .collect()
 }
 
-/// Whether `a` and `b` agree: bit-equal, or within 1e-3 (both NaN
-/// counting) when either type is one the evaluator port approximates.
-fn agree(a: u32, b: u32, kinds: (u8, u8)) -> bool {
-    if a == b {
-        return true;
-    }
-    let approximate = [9, 10].contains(&kinds.0) || [9, 10].contains(&kinds.1);
-    let (x, y) = (f32::from_bits(a), f32::from_bits(b));
-    approximate && ((x.is_nan() && y.is_nan()) || (x - y).abs() <= 1e-3 * x.abs().max(y.abs()).max(1.0))
-}
-
 #[test]
 fn function_values_match_the_lifted_original() {
     if !with_image(function_cases) {
@@ -301,7 +294,7 @@ fn function_values_match_the_lifted_original() {
 
 fn function_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
     lifted.lift(FUNCTION_VALUE);
-    let tables = se::tables(&Eng(image)).expect("the image's tables");
+    let stubs: Stubs = [(GETPTD, 0)].into_iter().collect();
     let mut seen: BTreeMap<String, u32> = BTreeMap::new();
     let mut wrong: Vec<String> = Vec::new();
     for seed in seeds() {
@@ -311,19 +304,18 @@ fn function_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
             let count = 1 + r.below(6);
             let kinds = functions(&mut r, &mut m, count);
             for index in 0..count {
-                let want = se::function_value(&Eng(&m), index as i32, 0x1f80, &tables);
+                let want = se::function_value(&Eng(&m), index as i32, 0x1f80, 0x027f);
                 let mut a = m.clone();
                 let esp = STACK_TOP - 0x400;
                 put(&mut a, esp, HARNESS_EXIT);
                 let mut c = cpu(&mut r, esp, FUNCTION_VALUE);
                 c.gpr[1] = index;
-                let none = Stubs::new();
-                let ran = lifted.run(&mut c, &mut a, &[HARNESS_EXIT], &none, &mut |_, _, _| {});
+                let ran = lifted.run(&mut c, &mut a, &[HARNESS_EXIT], &stubs, &mut |_, c, _| c.gpr[0] = PTD);
                 let got = c.xmm[0] as u32;
                 let k = kinds[index as usize];
                 match (want, ran) {
                     (Ok(w), Ok(_)) => {
-                        if !agree(w, got, k) {
+                        if w != got {
                             wrong.push(format!(
                                 "seed {seed} case {n} function {index} types {k:?}: port {w:#x} ({}), original {got:#x} ({})",
                                 f32::from_bits(w),
@@ -364,19 +356,14 @@ fn the_entries_drawn_match_the_lifted_original() {
 fn drawn_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
     lifted.lift(0x0001_3870);
     lifted.lift(FUNCTION_VALUE);
-    let tables = se::tables(&Eng(image)).expect("the image's tables");
-    let stubs: Stubs = [(SCREEN_EFFECT, 0x10)].into_iter().collect();
+    let stubs: Stubs = [(SCREEN_EFFECT, 0x10), (GETPTD, 0)].into_iter().collect();
     let mut seen: BTreeMap<String, u32> = BTreeMap::new();
     for seed in seeds() {
         for n in 0..256u32 {
             let mut r = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ u64::from(n));
             let mut m = image.clone();
             let count = 1 + r.below(4);
-            let kinds = functions(&mut r, &mut m, count);
-            // Only bit-exact types: an entry's draw follows its values.
-            if kinds.iter().any(|k| [9, 10].contains(&k.0) || [9, 10].contains(&k.1)) {
-                continue;
-            }
+            functions(&mut r, &mut m, count);
             // The gates, mostly open.
             let gate = r.below(10);
             put(&mut m, se::VIEW_KIND, if gate == 0 { 5 + r.below(3) } else { r.below(5) });
@@ -400,7 +387,7 @@ fn drawn_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
                 put16(&mut m, e + 0x20, a);
                 put16(&mut m, e + 0x22, b);
             }
-            let want: Vec<(u32, [u32; 4])> = se::drawn(&Eng(&m), 0x1f80, &tables)
+            let want: Vec<(u32, [u32; 4])> = se::drawn(&Eng(&m), 0x1f80, 0x027f)
                 .unwrap_or_else(|e| panic!("seed {seed} case {n}: {e:?}"))
                 .into_iter()
                 .map(|Drawn { datum, values, .. }| (datum, values))
@@ -411,7 +398,9 @@ fn drawn_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
             let mut c = cpu(&mut r, esp, LOOP.0);
             let mut got = Vec::new();
             let mut record = |pc: u32, c: &mut Cpu, m: &mut FlatMemory| {
-                if pc == SCREEN_EFFECT {
+                if pc == GETPTD {
+                    c.gpr[0] = PTD;
+                } else if pc == SCREEN_EFFECT {
                     let values = word(m, c.gpr[4] + 4);
                     got.push((c.gpr[0], [0, 4, 8, 12].map(|o| word(m, values + o))));
                 }

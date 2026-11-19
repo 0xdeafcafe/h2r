@@ -18,8 +18,7 @@
 //! (SSE under the caller's MXCSR); checked against the lifted original by
 //! `engine/tests/screen_effects_differential.rs`.
 
-use ::tags::effects::function::{Function, FunctionType, Tables};
-
+use crate::function_eval;
 use crate::light_constants::{Error, Sse};
 use crate::memory::GuestMemory;
 
@@ -45,10 +44,6 @@ pub const OFF_WORD: u32 = 0x0048_50c8;
 pub const WINDOW: u32 = 0x004b_9dd0;
 /// 1.0 in the image.
 pub const ONE: u32 = 0x0045_dbc0;
-/// The wave and shape tables `0x0013b390` reads (12 waves, then 6
-/// shapes, 1024 bytes each): read from the user's image, never copied.
-pub const TABLES: u32 = 0x0046_8d48;
-pub const TABLES_LEN: usize = 18 * 1024;
 
 /// `0x00022710`: the viewport is the whole 640x480 screen (`0x00485648`
 /// top, left, bottom, right shorts) and at most one view
@@ -61,27 +56,10 @@ pub fn full_screen_single_view(mem: &dyn GuestMemory) -> Result<bool, Error> {
         && mem.u32(0x004b_a04c)? as i32 <= 1)
 }
 
-/// The tables from the image: the procedural ones and the image's slab.
-pub fn tables(mem: &dyn GuestMemory) -> Result<Tables, Error> {
-    let mut slab = vec![0u8; TABLES_LEN];
-    mem.read(TABLES, &mut slab)?;
-    Tables::procedural_owned().with_engine_slab(&slab).map_err(|_| Error::Data)
-}
-
 /// `0x0013b390` on the data reference at `r` (size, then address) at
-/// input `x`, range input 0: 0 for a missing or empty blob or a type it
-/// does not evaluate.
-fn evaluate(mem: &dyn GuestMemory, r: u32, x: u32, tables: &Tables) -> Result<u32, Error> {
-    let ptr = mem.u32(r.wrapping_add(4))?;
-    if ptr == 0 || mem.u32(r)? as i32 <= 0 {
-        return Ok(0);
-    }
-    let kind = FunctionType::from_byte(mem.u8(ptr)?);
-    let Some(len) = kind.blob_len() else { return Ok(0) };
-    let mut blob = vec![0u8; len];
-    mem.read(ptr, &mut blob)?;
-    let f = Function::parse(&blob).map_err(|_| Error::Data)?;
-    Ok(f.evaluate_with(f32::from_bits(x), 0.0, tables).to_bits())
+/// input `x`, range input 0 ([`function_eval::evaluate`]).
+fn evaluate(mem: &dyn GuestMemory, sse: &mut Sse, control: u16, r: u32, x: u32) -> Result<u32, Error> {
+    function_eval::evaluate(mem, sse, control, r, x, 0)
 }
 
 /// The output range of the blob at `ptr` over `v` unless its flags take it
@@ -99,19 +77,19 @@ fn ranged(mem: &dyn GuestMemory, sse: &mut Sse, ptr: u32, v: u32) -> Result<u32,
 }
 
 /// `0x0013bb90`: [`evaluate`] then the output range.
-fn property(mem: &dyn GuestMemory, sse: &mut Sse, r: u32, x: u32, tables: &Tables) -> Result<u32, Error> {
+fn property(mem: &dyn GuestMemory, sse: &mut Sse, control: u16, r: u32, x: u32) -> Result<u32, Error> {
     let ptr = mem.u32(r.wrapping_add(4))?;
     if ptr == 0 || mem.u32(r)? as i32 <= 0 {
         return Ok(0);
     }
-    let v = evaluate(mem, r, x, tables)?;
+    let v = evaluate(mem, sse, control, r, x)?;
     ranged(mem, sse, ptr, v)
 }
 
 /// `0x00134fe0(index, t)`: function `index` at `t` plus its state's
 /// `+0x1c`; with a parent (`+0x16`, itself without one), the product of
 /// the parent's value and its own raw value, through its output range.
-fn value_at(mem: &dyn GuestMemory, sse: &mut Sse, index: i32, t: u32, tables: &Tables) -> Result<u32, Error> {
+fn value_at(mem: &dyn GuestMemory, sse: &mut Sse, control: u16, index: i32, t: u32) -> Result<u32, Error> {
     let base = mem.u32(FUNCTION_STATE)?;
     let state = (index as u32).wrapping_shl(5).wrapping_add(base).wrapping_add(4);
     if state == 0 {
@@ -130,18 +108,18 @@ fn value_at(mem: &dyn GuestMemory, sse: &mut Sse, index: i32, t: u32, tables: &T
     };
     let data = entry.wrapping_add(0xc);
     if clamped != parent {
-        return property(mem, sse, data, f, tables);
+        return property(mem, sse, control, data, f);
     }
     let parents = functions.wrapping_add((parent as u32).wrapping_mul(FUNCTION_SIZE));
     if mem.u16(parents.wrapping_add(0x16))? != 0xffff {
         return Ok(0);
     }
-    let own = evaluate(mem, data, f, tables)?;
+    let own = evaluate(mem, sse, control, data, f)?;
     let parent_state = (parent as u32).wrapping_shl(5).wrapping_add(base).wrapping_add(4);
     let p = if parent_state == 0 {
         0
     } else {
-        value_at(mem, sse, parent, mem.u32(parent_state)?, tables)?
+        value_at(mem, sse, control, parent, mem.u32(parent_state)?)?
     };
     let ptr = mem.u32(data.wrapping_add(4))?;
     let v = sse.mul(p, own)?;
@@ -149,15 +127,15 @@ fn value_at(mem: &dyn GuestMemory, sse: &mut Sse, index: i32, t: u32, tables: &T
 }
 
 /// `0x00134fc0` (ECX `index`): scenario function `index` at its state's
-/// input, as f32 bits, under `mxcsr`.
-pub fn function_value(mem: &dyn GuestMemory, index: i32, mxcsr: u32, tables: &Tables) -> Result<u32, Error> {
+/// input, as f32 bits, under `mxcsr` and the x87 control word `control`.
+pub fn function_value(mem: &dyn GuestMemory, index: i32, mxcsr: u32, control: u16) -> Result<u32, Error> {
     let mut sse = Sse { mxcsr };
     let state = (index as u32).wrapping_shl(5).wrapping_add(mem.u32(FUNCTION_STATE)?).wrapping_add(4);
     if state == 0 {
         return Ok(0);
     }
     let t = mem.u32(state)?;
-    value_at(mem, &mut sse, index, t, tables)
+    value_at(mem, &mut sse, control, index, t)
 }
 
 /// The four corners `0x0002d140` gets (x, y, u, v each, f32 bits): the
@@ -199,9 +177,9 @@ pub fn gated(mem: &dyn GuestMemory) -> Result<bool, Error> {
 pub const MAX_ENTRIES: u32 = 256;
 
 /// The screen effects that draw this frame, in order (none when not
-/// [`gated`]), under the caller's `mxcsr`. More than [`MAX_ENTRIES`]
+/// [`gated`]), under the caller's `mxcsr` and x87 `control`. More than [`MAX_ENTRIES`]
 /// entries is refused ([`Error::Unbounded`]).
-pub fn drawn(mem: &dyn GuestMemory, mxcsr: u32, tables: &Tables) -> Result<Vec<Drawn>, Error> {
+pub fn drawn(mem: &dyn GuestMemory, mxcsr: u32, control: u16) -> Result<Vec<Drawn>, Error> {
     if !gated(mem)? {
         return Ok(Vec::new());
     }
@@ -223,7 +201,7 @@ pub fn drawn(mem: &dyn GuestMemory, mxcsr: u32, tables: &Tables) -> Result<Vec<D
         let (a, b) = (mem.u16(e.wrapping_add(0x20))?, mem.u16(e.wrapping_add(0x22))?);
         if datum != u32::MAX && !(a == 0xffff && b == 0xffff) {
             let value = |idx: u16| -> Result<u32, Error> {
-                if idx == 0xffff { Ok(0) } else { function_value(mem, i32::from(idx as i16), mxcsr, tables) }
+                if idx == 0xffff { Ok(0) } else { function_value(mem, i32::from(idx as i16), mxcsr, control) }
             };
             let (v0, v1) = (value(a)?, value(b)?);
             if !sse.equal(v0, 0)? || !sse.equal(v1, 0)? {
@@ -253,8 +231,7 @@ mod tests {
     /// A linear function `a x + b` (type 4, set 0 at payload words 4, 5)
     /// with output range `lo..hi`, raw when `raw`.
     fn linear(m: &mut FlatMemory, at: u32, a: f32, b: f32, lo: f32, hi: f32, raw: bool) {
-        let len = FunctionType::Linear.blob_len().unwrap() as u32;
-        m.write(at, &vec![0; len as usize]).unwrap();
+        m.write(at, &[0; 0x44]).unwrap();
         m.set_u8(at, 4).unwrap();
         m.set_u8(at + 1, if raw { 0x10 } else { 0 }).unwrap();
         m.set_f32(at + 4, lo).unwrap();
@@ -289,7 +266,7 @@ mod tests {
     }
 
     fn value(m: &FlatMemory, i: i32) -> f32 {
-        f32::from_bits(function_value(m, i, 0x1f80, Tables::procedural()).unwrap())
+        f32::from_bits(function_value(m, i, 0x1f80, 0x27f).unwrap())
     }
 
     #[test]
@@ -335,8 +312,7 @@ mod tests {
         entry(&mut m, 1, u32::MAX, 0, 0);
         entry(&mut m, 2, 0xe003_0004, 0xffff, 0xffff);
         entry(&mut m, 3, 0xe005_0006, 0xffff, 1);
-        let tables = Tables::procedural();
-        let d = drawn(&m, 0x1f80, tables).unwrap();
+        let d = drawn(&m, 0x1f80, 0x27f).unwrap();
         assert_eq!(
             d,
             vec![
@@ -346,13 +322,13 @@ mod tests {
         );
         // A zero value draws nothing.
         m.set_f32(STATE + 0x20 + 0x1c, -0.25).unwrap();
-        assert_eq!(drawn(&m, 0x1f80, tables).unwrap().len(), 1);
+        assert_eq!(drawn(&m, 0x1f80, 0x27f).unwrap().len(), 1);
         // Split screen, or a view kind 5..7: none.
         m.set_u32(0x004b_a04c, 2).unwrap();
-        assert!(drawn(&m, 0x1f80, tables).unwrap().is_empty());
+        assert!(drawn(&m, 0x1f80, 0x27f).unwrap().is_empty());
         m.set_u32(0x004b_a04c, 1).unwrap();
         m.set_u32(VIEW_KIND, 6).unwrap();
-        assert!(drawn(&m, 0x1f80, tables).unwrap().is_empty());
+        assert!(drawn(&m, 0x1f80, 0x27f).unwrap().is_empty());
     }
 
     #[test]
