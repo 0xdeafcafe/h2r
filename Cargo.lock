@@ -3840,6 +3840,7 @@ version = "0.1.0"
 dependencies = [
  "analyze",
  "bytemuck",
+ "d3d",
  "gfx",
  "ir",
  "lift",

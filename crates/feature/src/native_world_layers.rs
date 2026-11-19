@@ -14,6 +14,9 @@ use crate::{BuildError, Builder, Feature, Manifest};
 pub const ID: &str = "native-world-layers";
 pub const SWITCH: &str = "impl.render.native_world_layers";
 
+// The scene view index set by render_game_view (render-loop.md).
+const SCENE_VIEW: u32 = 0x004b_a050;
+
 pub fn on(switches: &crate::Switches) -> bool {
     switches.feature(SWITCH, false)
 }
@@ -39,6 +42,7 @@ pub fn compare_frames() -> &'static [u64] {
 #[derive(Clone, Copy, Debug)]
 pub struct Layer {
     pub number: u32,
+    pub view: u32,
     pub caller_return: u32,
     pub site: Site,
     pub list: u32,
@@ -62,7 +66,7 @@ impl Feature for NativeWorldLayers {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        if compare_frames().is_empty() {
+        if !on(b.switches()) && compare_frames().is_empty() {
             return Ok(());
         }
         b.raw()
@@ -74,6 +78,7 @@ impl Feature for NativeWorldLayers {
                     let caller_return = mem.read_u32(o.cpu.esp).unwrap_or(0);
                     Layer {
                         number,
+                        view: mem.read_u32(SCENE_VIEW).unwrap_or(u32::MAX),
                         caller_return,
                         site: layer_site(number, caller_return),
                         list: mem.read_u32(CURRENT_LIST).unwrap_or(0),

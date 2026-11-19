@@ -902,6 +902,31 @@ vector (`v1`) and view vector (`v0`), and the lightmap (stage 3). Its
 5. The A/B per template, and `native-world` keeps a material native only
    once its template's A/B is clean.
 
+### Native layer 1
+
+`impl.render.native_world_layers=on` allows the standard geometry
+handler's main-scene layer-1 indexed ranges to record natively. The layer
+hook identifies the scene call and the indexed submission identifies the
+individual cluster, placement or object record. The guest still builds
+and sorts the list and runs its shader and stencil setup and tail. At
+the draw, the native pass reuses the resolved live streams, indices,
+programs, render states, constants and texture views. This preserves
+interleaved D3D draws in their guest order, including subpart slices,
+depth equality, inherited cull and per-record stencil reference.
+
+Layer 1 replaces a draw only while target 1's attachment header is
+bound. Texture inputs must resolve to views the program can sample.
+The two-copy reservation records the entire indexed range on every
+live target copy before replacing the D3D submission. Color and
+depth/stencil writes use the original attachments and feed the usual
+RTT and depth tracking. Alternate views and special handlers remain
+with their own D3D setup.
+
+This slice replaces the backend draw. Its CPU cost includes the guest
+setup and D3D resource resolution. Geometry snapshots can reuse native
+GPU buffers, while native shader, pipeline and texture bindings are
+cached per device. Measure before treating this as a performance gain.
+
 ### Opaque-layer comparison
 
 `H2_NATIVE_WORLD_LAYERS_COMPARE=2000,3000` prints the indexed D3D
