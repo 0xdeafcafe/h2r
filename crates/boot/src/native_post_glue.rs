@@ -28,8 +28,10 @@
 //!
 //! The frame A/B, behind `H2_POST_AB=<dir>` ([`Ab`]): the view's colour
 //! where the glow lands (after the composite, before the screen effects,
-//! the fade and the HUD), from the call numbered `H2_POST_AB_AT` (default
-//! 600) for `H2_POST_AB_COUNT` calls (default 1), into
+//! the fade and the HUD), from each call `H2_POST_AB_AT` names (default
+//! 600; a list `601,1500,2700`, or a start and a stride `600+500` for
+//! [`MAX_WINDOWS`] windows spread over the run) for `H2_POST_AB_COUNT`
+//! calls each (default 1), into
 //! `<dir>/<native|d3d>-<call>-<w>x<h>.png` (`.raw` for a format other than
 //! 8-bit RGBA or BGRA), one per copy of the target under the render scale.
 //! With the switch off the hook is placed for it and the host observes
@@ -133,10 +135,34 @@ pub fn targets(plan: &Plan) -> Vec<u8> {
 pub const QUAD: (PrimitiveType, usize) = (PrimitiveType::TriangleFan, 4);
 
 /// `H2_POST_AB`: where and which calls the A/B captures.
+#[derive(Debug, PartialEq, Eq)]
 pub struct Ab {
     dir: PathBuf,
-    at: u64,
+    /// The first call of each window, ascending.
+    starts: Vec<u64>,
     count: u64,
+}
+
+/// Windows a stride (`H2_POST_AB_AT=<start>+<stride>`) makes.
+pub const MAX_WINDOWS: u64 = 10;
+
+/// `H2_POST_AB_AT`: one call, a list (`601,1500,2700`), or a start and a
+/// stride (`600+500`: [`MAX_WINDOWS`] starts). `None` when it does not
+/// parse.
+fn starts(at: &str) -> Option<Vec<u64>> {
+    let at = at.trim();
+    let mut v = if let Some((start, stride)) = at.split_once('+') {
+        let (start, stride) = (start.trim().parse::<u64>().ok()?, stride.trim().parse::<u64>().ok()?);
+        if stride == 0 {
+            return None;
+        }
+        (0..MAX_WINDOWS).map(|i| start + i * stride).collect()
+    } else {
+        at.split(',').map(|n| n.trim().parse::<u64>().ok()).collect::<Option<Vec<_>>>()?
+    };
+    v.sort_unstable();
+    v.dedup();
+    (!v.is_empty()).then_some(v)
 }
 
 /// Calls after the last capture the host still arms for, so the copies
@@ -148,9 +174,14 @@ impl Ab {
     fn from_env() -> Option<Ab> {
         let dir = PathBuf::from(std::env::var_os("H2_POST_AB")?);
         let num = |k: &str, d: u64| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+        let at = std::env::var("H2_POST_AB_AT").unwrap_or_else(|_| "600".into());
+        let starts = starts(&at).unwrap_or_else(|| {
+            eprintln!("native-post A/B: H2_POST_AB_AT={at:?} is not a call, a list or start+stride; using 600");
+            vec![600]
+        });
         Some(Ab {
             dir,
-            at: num("H2_POST_AB_AT", 600),
+            starts,
             count: num("H2_POST_AB_COUNT", 1).max(1),
         })
     }
@@ -160,12 +191,17 @@ impl Ab {
         AB.get_or_init(Ab::from_env).as_ref()
     }
 
+    /// Whether `call` is in a window `extra` calls longer than asked.
+    fn within(&self, call: u64, extra: u64) -> bool {
+        self.starts.iter().any(|&a| (a..a + self.count + extra).contains(&call))
+    }
+
     fn captures(&self, call: u64) -> bool {
-        (self.at..self.at + self.count).contains(&call)
+        self.within(call, 0)
     }
 
     fn pumps(&self, call: u64) -> bool {
-        (self.at..self.at + self.count + AB_TAIL).contains(&call)
+        self.within(call, AB_TAIL)
     }
 }
 
@@ -516,6 +552,25 @@ mod tests {
         };
         assert_eq!(targets(&plan), vec![1, 2, 1, 2, 1, 0]);
         assert_eq!(QUAD, (PrimitiveType::from_xbox(7).unwrap(), 4), "0x00034420's Begin(7)");
+    }
+
+    #[test]
+    fn the_ab_takes_a_call_a_list_or_a_stride() {
+        assert_eq!(starts("600"), Some(vec![600]));
+        assert_eq!(starts(" 2700, 601 ,1500,601"), Some(vec![601, 1500, 2700]), "sorted, once each");
+        assert_eq!(starts("600+500"), Some((0..MAX_WINDOWS).map(|i| 600 + 500 * i).collect()));
+        for bad in ["", "x", "600+0", "600+", "1,,2", "-5"] {
+            assert_eq!(starts(bad), None, "{bad:?}");
+        }
+        let ab = Ab {
+            dir: PathBuf::new(),
+            starts: vec![601, 1500],
+            count: 3,
+        };
+        let captured: Vec<u64> = (0..2000).filter(|&c| ab.captures(c)).collect();
+        assert_eq!(captured, vec![601, 602, 603, 1500, 1501, 1502]);
+        assert!(ab.pumps(603 + AB_TAIL) && !ab.pumps(604 + AB_TAIL), "each window's tail");
+        assert!(!ab.pumps(600) && !ab.pumps(1499));
     }
 
     #[test]

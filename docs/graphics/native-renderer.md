@@ -1894,8 +1894,10 @@ its own thread, and render-timing does not matter (the call runs).
    captured with the D3D path and the native one. `H2_POST_AB=<dir>`
    (`native_post_glue::Ab`) captures the view's colour where the glow
    lands (after the composite; before the screen effects, the fade and
-   the HUD) for the calls numbered `H2_POST_AB_AT` (default 600) and on,
-   `H2_POST_AB_COUNT` of them (default 1), into
+   the HUD) from each call `H2_POST_AB_AT` names (default 600; a list
+   `601,1500,2700`, or a start and a stride `600+500` for ten windows
+   spread over the run, intro and gameplay), `H2_POST_AB_COUNT` calls
+   each (default 1), into
    `<dir>/<native|d3d>-<call>-<w>x<h>.png`, one per copy of the target
    under the render scale. With the switch off the hook is placed for it
    and observes the same quads, dropping none, so the D3D side is
@@ -1912,7 +1914,58 @@ its own thread, and render-timing does not matter (the call runs).
      d3d records them: equal (the game's code left the same states);
    - the ms of `render_screen_effects`.
 4. **The screen effects** (`0x0002d140`; 03a's blur first), with their
-   function values (`0x00134fc0`) read at the call.
+   function values (`0x00134fc0`) read at the call. Traced (Code,
+   `h2 disasm`); nothing built yet.
+   - **The loop** (`0x00013a0d..0x00013b72`): the window `0x004b9dd0`
+     as four floats twice (the corners), then per entry of the scenario
+     block (`+0x3d0` count, `+0x3d4` address, `0x24` bytes): skipped when
+     its tag datum `+0x14` is -1 or both function indices `+0x20`/`+0x22`
+     are -1; otherwise each index not -1 is evaluated by `0x00134fc0`
+     (ECX the index; the scenario's function block `[0x004e6740]`,
+     `0x20` bytes each, through the tag function evaluator `0x0013b390`)
+     into two floats, and with either non-zero
+     `0x0002d140(values, 2, 2, corners)` runs with EAX the datum (`ret
+     0x10`).
+   - **`0x0002d140`** copies the four value words to `0x004c19b0..bc`
+     and returns at once for a datum of -1, an empty window, or a target
+     override `[0x004858b8]` set. The datum is an `egor` tag; its shader
+     reference (`+0x44`, a template through `0x00137bd0` when its group is
+     `MTRP` or `3trp`) gives the implementation count. Then per entry of
+     its pass block (`+0x88` count, `+0x8c` address, `0xac` bytes):
+     - the pass's implementation index (`+0x08`, -1 the loop index) and
+       one of four bytes `+0x0c..0x0f` chosen by which of the two values
+       are zero (-1: skipped);
+     - its target by `+0x60` (the jump table at `0x0002db68`: the view
+       at full size, or a half or quarter of the window, `0x0001ddd0`);
+     - `0x00016610(shader, 15, index, byte, ...)`, the shader's layer-15
+       pass (a template pass, as the world's and the transparents'), then
+       the quad pushed by hand: `0x417fc` (`SET_BEGIN_END`, 6) and per
+       vertex up to four `SET_VERTEX_DATA4F` texture coordinates (the
+       kinds at `+0x50`, jump table `0x0002db78`: from the corners, the
+       window over its size, or scaled by `[0x0045dbbc]`/`[0x0045dc20]`)
+       and the position (`0x101a00`, z and w `[0x0045dd40]`), S: a strip of
+       `2 x 2` vertices for the call's `(2, 2)`; `0x003fb480` ends it;
+     - then per entry of its convolution block (`+0xa4` count, `+0xa8`
+       address, `0x5c` bytes): a size from the target's (`0x0001dd60`)
+       times `+0x58`, at least 64 and its area capped at `0x12c00` by a
+       square root (`0x00322b0c` rounds), targets `0x19`/`0x1a` (first)
+       or `0x1b`, and with flag bit 2 `0x00021360` (not traced) else the
+       blur `0x000211a0` (ported: `engine::glow::blur`), its result in
+       `[0x00485a78 + 4 i]`.
+     - At the end the targets 1, `0x19`, `0x19` and `0x1b` are set back,
+       `[0x004670bc]` set, the draw state reset (`0x00016b10`) and
+       `0x00485a78`/`7c` cleared.
+   - **What the native side needs.** The draws can be swallowed as the
+     glow's are (the hand-pushed strip is an inline `Begin(6)` of four
+     vertices; the blurs are `0x00034a90` quads). Drawing them natively
+     needs, in order: (a) the plan: which entries draw (the function
+     values, `0x00134fc0` over `0x0013b390`, a port with its own
+     differential test), and per pass the implementation, target and
+     texture coordinates (pure, from the tag); (b) the layer-15 template
+     pass through `program::translate_pass` (the world's and lights'
+     path) with the engine inputs the screen-effect pass reads; (c)
+     `0x00021360` traced and ported beside `blur`; (d) targets `0x19` to
+     `0x1b` as stand-ins like 7 and 8. Each is a slice; (a) first.
 5. **`0x0002df00`, and `0x0002dd30`** before layer 17, which has the
    same shape and gets its own skip point.
 6. **Layer 17** (S: bloom), as stage 1b draws the world's other layers.
