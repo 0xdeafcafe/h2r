@@ -116,6 +116,13 @@ lightmap `0x004e0344`, [structure-bsp.md](../formats/structure-bsp.md)):
   triangles cover that guest pixel through the render camera, nearest
   first: owner (cluster or placement), part, material, view depth and the
   distance to the triangle's nearest edge (under a pixel: an edge tie).
+  Pass numbers are not frame numbers (views left to the D3D path, a
+  cinematic's several views), so each trace, probe and dump line names
+  its frame: the device's swap count at the layer-3 call plus one
+  (`Device::swap_count`), the number of the frame shot that shows it.
+  `H2_NATIVE_WORLD_PROBE=x,y@first-last` probes every pass of those
+  frames without the trace, and `H2_NATIVE_WORLD_DUMP=...#frame` arms
+  no earlier than that frame.
   `H2_NATIVE_WORLD_OWNERS=clusters` (or `placements`) draws only that
   kind natively and leaves the other's items to the D3D path. At 03000
   the probe put the 43 px girder line on placement 282's edge (0.23 px

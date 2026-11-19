@@ -236,8 +236,10 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             w_clip: None,
             clip: None,
             traced: false,
+            probed: false,
             stencil,
             cull,
+            frame: d.swap_count().wrapping_add(1),
         }));
         let owners = Diagnostics::get().owners;
         if owners == Owners::All {
@@ -328,6 +330,12 @@ struct WorldPass {
     /// Whether this pass was traced (it encodes once per copy of the
     /// targets).
     traced: bool,
+    /// Whether this pass was probed by frame ([`Probe::frames`]).
+    probed: bool,
+    /// The frame the pass is shown in: the device's swap count at the
+    /// layer-3 call plus one, the number of the frame shot
+    /// (`frame-NNNNN.png`) that shows it (`Device::swap_count`).
+    frame: u32,
     /// The stencil the pass draws with ([`pass_stencil`]).
     stencil: (gfx::state::StencilState, Vec<Owner>),
     /// The device's cull at the layer-3 call ([`inherited_cull`]; `None`:
@@ -389,7 +397,7 @@ impl d3d::ExternalPass for WorldPass {
             };
             gpu.prepare_programs(t.queue, &view);
             if let Some(dump) = Diagnostics::get().dump {
-                arm_dump(&self.ready, gpu, &view, dump);
+                arm_dump(&self.ready, gpu, &view, dump, self.frame);
             }
         }
         let diag = Diagnostics::get();
@@ -403,14 +411,20 @@ impl d3d::ExternalPass for WorldPass {
                 floor: true,
             },
         );
-        if diag.trace
+        let traced = diag.trace
             && !std::mem::replace(&mut self.traced, true)
-            && trace(&self.camera, self.view.as_ref(), self.clip, &t, culled)
-            && let Some(at) = diag.probe
-        {
-            let [_, _, width, height] = t.viewport;
-            let hits = probe(gpu.world(), &self.camera.view_projection(), (width, height), at);
-            eprintln!("native-world probe at {at:?}: {} parts: {hits:?}", hits.len());
+            && trace(&self.camera, self.view.as_ref(), self.clip, &t, culled, self.frame);
+        if let Some(Probe { at, frames }) = diag.probe {
+            // On each traced pass, or on every pass of the frames asked.
+            let asked = match frames {
+                None => traced,
+                Some((first, last)) => (first..=last).contains(&self.frame) && !std::mem::replace(&mut self.probed, true),
+            };
+            if asked {
+                let [_, _, width, height] = t.viewport;
+                let hits = probe(gpu.world(), &self.camera.view_projection(), (width, height), at);
+                eprintln!("native-world probe frame {} at {at:?}: {} parts: {hits:?}", self.frame, hits.len());
+            }
         }
         let (state, marked) = &self.stencil;
         let mut stencil = PassStencil::from_device(state, t.depth_format);
@@ -451,21 +465,23 @@ struct Diagnostics {
     /// Passes between traced ones after the first [`TRACE_FIRST`].
     trace_every: u64,
     no_cull: bool,
-    /// `H2_NATIVE_WORLD_PROBE=x,y` (guest pixels, with the trace on): the
-    /// parts whose triangles cover that pixel, on each traced pass
-    /// ([`probe`]).
-    probe: Option<(f32, f32)>,
+    /// `H2_NATIVE_WORLD_PROBE=x,y[@first[-last]]` (guest pixels): the
+    /// parts whose triangles cover that pixel ([`probe`]), on each traced
+    /// pass, or with frames on every pass shown in those frames (the frame
+    /// shots' numbers; no trace needed).
+    probe: Option<Probe>,
     /// `H2_NATIVE_WORLD_OWNERS=clusters|placements`: only those sections'
     /// parts drawn natively, the rest left to the D3D path (their items
     /// not skipped): which kind a difference belongs to.
     owners: Owners,
-    /// `H2_NATIVE_WORLD_DUMP=placement[:material][@passes]`: the uniforms
+    /// `H2_NATIVE_WORLD_DUMP=placement[:material][@passes][#frame]`: the uniforms
     /// the native pass draws that placement's rigid draws of the material
     /// (each of its materials without one) with, against the D3D path's draws of it
     /// ([`arm_dump`]; with `H2_NATIVE_WORLD_OWNERS=clusters`, so that the
     /// D3D path draws the placement), armed after that many of the world's
     /// passes (0 without one: the first, while the game may still be
-    /// streaming the bitmaps in at low detail).
+    /// streaming the bitmaps in at low detail), and with `#frame` not
+    /// before the first pass shown in that frame or later.
     dump: Option<Dump>,
     /// `H2_NATIVE_WORLD_INHERIT_CULL=none|placements|all` (all without
     /// it): whose draws of a pass that does not set `CULLMODE` take the
@@ -480,6 +496,17 @@ struct Dump {
     instance: u32,
     material: Option<u16>,
     after: u64,
+    /// The first frame it may arm in ([`WorldPass::frame`]).
+    frame: Option<u32>,
+}
+
+/// [`Diagnostics::probe`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Probe {
+    at: (f32, f32),
+    /// The frames (first, last, inclusive) to probe every pass of;
+    /// `None`: the traced passes.
+    frames: Option<(u32, u32)>,
 }
 
 impl Diagnostics {
@@ -496,7 +523,7 @@ impl Diagnostics {
                 dump: std::env::var("H2_NATIVE_WORLD_DUMP").ok().and_then(|v| parse_dump(&v)),
                 inherit_cull: parse_inherit_cull(std::env::var("H2_NATIVE_WORLD_INHERIT_CULL").ok().as_deref()),
             };
-            if d.trace || d.no_cull || d.owners != Owners::All || d.dump.is_some() || d.inherit_cull != (true, true) || d.trace_every != TRACE_EVERY {
+            if d.trace || d.no_cull || d.probe.is_some() || d.owners != Owners::All || d.dump.is_some() || d.inherit_cull != (true, true) || d.trace_every != TRACE_EVERY {
                 eprintln!("native-world: diagnostics {d:?}");
             }
             d
@@ -521,6 +548,7 @@ fn trace(
     clip: Option<d3d::DepthClip>,
     t: &d3d::ExternalTarget<'_>,
     culled: native_render::cull::CullStats,
+    frame: u32,
 ) -> bool {
     let n = TRACED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     if n >= TRACE_FIRST && n % Diagnostics::get().trace_every != 0 {
@@ -529,7 +557,7 @@ fn trace(
     let vp = camera.view_projection();
     let constants = view.map(|c| [c[0], c[1], c[2], c[3]]);
     eprintln!(
-        "native-world trace {n}: z_scale {} clip {:?} camera pos {:?} fwd {:?} fov {} near {} far {} vp {:?} c0..3 {:?} viewport {:?} guest {:?} size {:?} cull {}/{}",
+        "native-world trace {n} frame {frame}: z_scale {} clip {:?} camera pos {:?} fwd {:?} fov {} near {} far {} vp {:?} c0..3 {:?} viewport {:?} guest {:?} size {:?} cull {}/{}",
         t.z_scale,
         clip,
         camera.position,
@@ -548,9 +576,12 @@ fn trace(
     true
 }
 
-/// `"x,y"` as a probe pixel.
-/// `placement[:material][@passes]` ([`Diagnostics::dump`]).
+/// `placement[:material][@passes][#frame]` ([`Diagnostics::dump`]).
 fn parse_dump(v: &str) -> Option<Dump> {
+    let (v, frame) = match v.split_once('#') {
+        Some((v, f)) => (v, Some(f.trim().parse::<u32>().ok()?)),
+        None => (v, None),
+    };
     let (v, after) = match v.split_once('@') {
         Some((v, n)) => (v, n.trim().parse::<u64>().ok()?),
         None => (v, 0),
@@ -559,7 +590,7 @@ fn parse_dump(v: &str) -> Option<Dump> {
         Some((i, m)) => (i, Some(m.trim().parse::<u16>().ok()?)),
         None => (v, None),
     };
-    Some(Dump { instance: instance.trim().parse::<u32>().ok()?, material, after })
+    Some(Dump { instance: instance.trim().parse::<u32>().ok()?, material, after, frame })
 }
 
 /// The world [`arm_dump`] counts passes of (its `Ready`'s address), the
@@ -578,14 +609,14 @@ static DUMPED: Mutex<(usize, u64, bool)> = Mutex::new((0, 0, false));
 /// native pass may not draw. Draws of the placement natively are skipped
 /// on the D3D path, so this wants the placements left to it
 /// (`H2_NATIVE_WORLD_OWNERS=clusters`).
-fn arm_dump(ready: &Arc<Ready>, gpu: &GpuWorld, view: &ViewInputs, Dump { instance, material, after }: Dump) {
+fn arm_dump(ready: &Arc<Ready>, gpu: &GpuWorld, view: &ViewInputs, Dump { instance, material, after, frame }: Dump, now: u32) {
     let key = Arc::as_ptr(ready) as usize;
     let mut dumped = DUMPED.lock().unwrap_or_else(|e| e.into_inner());
     if dumped.0 != key {
         *dumped = (key, 0, false);
     }
     dumped.1 += 1;
-    if dumped.2 || dumped.1 <= after {
+    if dumped.2 || dumped.1 <= after || frame.is_some_and(|f| now < f) {
         return;
     }
     dumped.2 = true;
@@ -610,7 +641,7 @@ fn arm_dump(ready: &Arc<Ready>, gpu: &GpuWorld, view: &ViewInputs, Dump { instan
                 .map(|(n, c)| format!("c[{n}] {c:?}"))
                 .collect();
             eprintln!(
-                "native-world dump {label} (materials {materials:?}): {} program words; beyond the view's: {}; defaults {:?}; w_clip {:?} clamp {} shift {}; cull {:?} front {:?}",
+                "native-world dump frame {now} {label} (materials {materials:?}): {} program words; beyond the view's: {}; defaults {:?}; w_clip {:?} clamp {} shift {}; cull {:?} front {:?}",
                 d.words.len(),
                 read.join(", "),
                 d.vertex.defaults,
@@ -654,10 +685,23 @@ fn parse_trace_every(v: Option<&str>) -> u64 {
     v.and_then(|v| v.trim().parse::<u64>().ok()).filter(|&n| n > 0).unwrap_or(TRACE_EVERY)
 }
 
-fn parse_probe(v: &str) -> Option<(f32, f32)> {
+/// `"x,y[@first[-last]]"` as a probe pixel and the frames to probe
+/// ([`Diagnostics::probe`]).
+fn parse_probe(v: &str) -> Option<Probe> {
+    let (v, frames) = match v.split_once('@') {
+        Some((v, f)) => {
+            let (first, last) = f.split_once('-').unwrap_or((f, f));
+            let (first, last) = (first.trim().parse::<u32>().ok()?, last.trim().parse::<u32>().ok()?);
+            if first > last {
+                return None;
+            }
+            (v, Some((first, last)))
+        }
+        None => (v, None),
+    };
     let (x, y) = v.split_once(',')?;
     let (x, y) = (x.trim().parse::<f32>().ok()?, y.trim().parse::<f32>().ok()?);
-    (x.is_finite() && y.is_finite()).then_some((x, y))
+    (x.is_finite() && y.is_finite()).then_some(Probe { at: (x, y), frames })
 }
 
 /// One part under a probed pixel ([`probe`]).
@@ -1587,7 +1631,13 @@ mod tests {
 
     #[test]
     fn the_probe_finds_the_covering_triangle_its_depth_and_edge() {
-        let dump = |instance, material, after| Some(Dump { instance, material, after });
+        let dump = |instance, material, after| Some(Dump { instance, material, after, frame: None });
+        assert_eq!(parse_dump("500#2000"), Some(Dump { instance: 500, material: None, after: 0, frame: Some(2000) }));
+        assert_eq!(
+            parse_dump("500:173@3#2000"),
+            Some(Dump { instance: 500, material: Some(173), after: 3, frame: Some(2000) })
+        );
+        assert_eq!(parse_dump("500#"), None);
         assert_eq!(parse_dump("282"), dump(282, None, 0));
         assert_eq!(parse_dump(" 282 : 107 "), dump(282, Some(107), 0));
         assert_eq!(parse_dump("282:107@600"), dump(282, Some(107), 600));
@@ -1609,7 +1659,12 @@ mod tests {
         assert_eq!(inherited_cull((CullMode::Cw, FrontFace::Cw)), (Some(wgpu::Face::Front), wgpu::FrontFace::Cw));
         assert_eq!(inherited_cull((CullMode::Ccw, FrontFace::Cw)), (Some(wgpu::Face::Back), wgpu::FrontFace::Cw));
         assert_eq!(inherited_cull((CullMode::None, FrontFace::Ccw)), (None, wgpu::FrontFace::Ccw));
-        assert_eq!(parse_probe("520, 80"), Some((520.0, 80.0)));
+        let probe_at = |at, frames| Some(Probe { at, frames });
+        assert_eq!(parse_probe("520, 80"), probe_at((520.0, 80.0), None));
+        assert_eq!(parse_probe("350,380@2000"), probe_at((350.0, 380.0), Some((2000, 2000))));
+        assert_eq!(parse_probe("350,380@1990-2010"), probe_at((350.0, 380.0), Some((1990, 2010))));
+        assert_eq!(parse_probe("350,380@2010-1990"), None, "an empty range");
+        assert_eq!(parse_probe("350,380@x"), None);
         assert_eq!(parse_probe("520"), None);
         assert_eq!(parse_probe("x,1"), None);
         // A screen triangle (0,0) (10,0) (0,10), view depths 2, 4, 4; both
