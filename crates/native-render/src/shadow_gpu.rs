@@ -19,6 +19,7 @@ pub enum MapKind {
 /// A sampled output owned by this generation. Layer 11 binds the depth
 /// bits through the normal NV2A pixel translation, or samples the colour
 /// mask directly. The gel and all the receiver state stay per draw.
+#[derive(Clone)]
 pub struct SampledMap {
     pub kind: MapKind,
     pub view: wgpu::TextureView,
@@ -26,6 +27,65 @@ pub struct SampledMap {
 }
 
 impl SampledMap {
+    /// Freeze the result of an ordered mixed native/D3D caster layer.
+    /// The owning light can keep this term while the guest reuses its target.
+    pub fn snapshot(
+        ctx: &GfxContext,
+        encoder: &mut wgpu::CommandEncoder,
+        bits: &gfx::depth_bits::DepthBits,
+        kind: MapKind,
+        source: &wgpu::Texture,
+    ) -> Option<Self> {
+        let size = (source.width(), source.height());
+        if source.sample_count() != 1
+            || source.dimension() != wgpu::TextureDimension::D2
+            || source.depth_or_array_layers() != 1
+        {
+            return None;
+        }
+        let tex = match kind {
+            MapKind::Depth
+                if source.format() == wgpu::TextureFormat::Depth32FloatStencil8
+                    && source
+                        .usage()
+                        .contains(wgpu::TextureUsages::TEXTURE_BINDING) =>
+            {
+                bits.convert(ctx, encoder, source, size)
+            }
+            MapKind::ColourMask
+                if matches!(
+                    source.format(),
+                    wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Rgba8Unorm
+                ) && source.usage().contains(wgpu::TextureUsages::COPY_SRC) =>
+            {
+                let out = ctx.device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("frozen object shadow"),
+                    size: source.size(),
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: source.format(),
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING
+                        | wgpu::TextureUsages::COPY_DST
+                        | wgpu::TextureUsages::COPY_SRC,
+                    view_formats: &[],
+                });
+                encoder.copy_texture_to_texture(
+                    source.as_image_copy(),
+                    out.as_image_copy(),
+                    source.size(),
+                );
+                out
+            }
+            _ => return None,
+        };
+        Some(Self {
+            kind,
+            view: tex.create_view(&Default::default()),
+            size,
+        })
+    }
+
     pub fn shadow_stage(&self, linear: bool, address: [ShadowAddress; 2]) -> Option<Shadow> {
         (self.kind == MapKind::Depth).then_some(Shadow {
             format: DepthFormat::D24,

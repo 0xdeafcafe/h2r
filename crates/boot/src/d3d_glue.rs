@@ -306,11 +306,14 @@ pub fn install_headless(
                     install_with_report(rt, b, Some(report))
                 };
             }
-            let backend = configure_gfx(
+            let mut backend = configure_gfx(
                 d3d::GfxBackend::new(ctx)
                     .on_present(shots("", shadow_shots, Some(Arc::clone(&between))))
                     .on_present_replay(between.hook(dir.clone(), "")),
             );
+            if interp.is_none() {
+                crate::native_shadows_glue::configure_single(&mut backend);
+            }
             // Backend work (shader preparation, encoding, uploads,
             // submission, present) on a render thread of its own
             // (docs/graphics/render-thread.md), unless H2_RENDER_THREAD=0;
@@ -508,7 +511,7 @@ fn configure_gfx(mut backend: d3d::GfxBackend) -> d3d::GfxBackend {
 }
 
 /// Another handle to `ctx`'s device and queue, for a second backend on it.
-fn share_context(ctx: &gfx::GfxContext) -> gfx::GfxContext {
+pub(crate) fn share_context(ctx: &gfx::GfxContext) -> gfx::GfxContext {
     gfx::GfxContext {
         instance: ctx.instance.clone(),
         adapter: ctx.adapter.clone(),

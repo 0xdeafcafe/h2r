@@ -144,10 +144,27 @@ pub fn application(
     }
 }
 
+/// The loop at 0x335e0 passes words +8 and +12 of a 20-byte candidate.
+pub fn object_candidate(base: u32, cursor: u32, remaining: u32) -> Option<u32> {
+    let offset = cursor.checked_sub(base.checked_add(8)?)?;
+    let index = offset / 20;
+    (remaining > 0 && offset.is_multiple_of(20) && index.checked_add(remaining)? <= 32)
+        .then_some(index)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::camera::tests::Mem;
+
+    #[test]
+    fn object_chain_accepts_only_whole_records_in_the_gather_buffer() {
+        assert_eq!(object_candidate(100, 108, 32), Some(0));
+        assert_eq!(object_candidate(100, 728, 1), Some(31));
+        for (cursor, left) in [(100, 1), (109, 1), (728, 2), (108, 0), (108, u32::MAX)] {
+            assert_eq!(object_candidate(100, cursor, left), None);
+        }
+    }
 
     #[test]
     fn geometry_selectors_distinguish_colour_masks_and_depth_maps() {

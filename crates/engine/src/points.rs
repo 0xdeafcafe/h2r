@@ -323,6 +323,8 @@ points! { ALL;
     /// is followed by one; it ends the layer's state and sets the current
     /// layer (`[0x00467130]`) to 0.
     LAYER_END @ 0x0004_45d0: [opaque]; "docs/graphics/native-renderer.md";
+    /// Ordered geometry dispatch from LAYER_ENTRIES (seven stack arguments).
+    LIGHT_GEOMETRY_DRAW @ 0x0004_d0b0: [fn(shader: stack 0, arg: stack 1, variant: stack 2, layer: stack 3, selector: stack 4, part: stack 5, entry: stack 6) ret 28], Hot; "docs/graphics/layer-draw.md";
     /// The layer draw's setup call (ESI = `0x00485b48`).
     LAYER_SETUP @ 0x0001_6b10: [opaque]; "docs/graphics/layer-draw.md";
     /// Draws a list's entries for a layer: builds them, then calls each
