@@ -28,7 +28,7 @@ pub fn starts_segment(
     };
     next.game_id != first.game_id
         || next.cut.is_some()
-        || next.tick < last.tick
+        || next.tick <= last.tick
         || next.tick.saturating_sub(first.tick) >= SPAN_TICKS
         || open.len() >= MAX_FRAMES
         || source_bytes.saturating_add(next_bytes) > MAX_SOURCE_BYTES

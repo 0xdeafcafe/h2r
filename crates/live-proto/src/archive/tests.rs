@@ -159,6 +159,7 @@ fn segment_boundaries_follow_source_order_and_memory_budget() {
     ));
     assert!(starts_segment(&open, MAX_SOURCE_BYTES - 80, &frame(69), 81));
     assert!(starts_segment(&open, 0, &frame(40 + SPAN_TICKS), 1));
+    assert!(starts_segment(&open, 0, &frame(68), 1));
     assert!(starts_segment(&open, 0, &frame(65), 1));
     let cut = Frame {
         cut: Some(17),
