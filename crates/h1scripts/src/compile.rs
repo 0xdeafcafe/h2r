@@ -146,6 +146,16 @@ pub const STATUS_LADDER: &[(&str, i32)] = &[
 /// (`h1models::jmad::animation_names`).
 pub const ANIMATION_NAME: &str = "animation_name";
 
+/// The `h1_type` of a hook on a seat name: the string argument of
+/// `unit_enter_vehicle` or `unit_set_seat`, whose Halo 2 counterpart takes
+/// the seat's label as a string ID the engine matches exactly (E
+/// `0x0011ade0`, the enter-seat search: `cmpl` the seat's label string ID at
+/// `vehi+0x1cc` element `+4`). A rebuilt vehicle labels each seat with the
+/// rider's mode (`h1objects::rebuild::seat_names`), so the converter writes
+/// the string ID of the label Halo 1's text names
+/// (`h1models::names::mode_for`).
+pub const SEAT_NAME: &str = "seat_name";
+
 /// Halo 2 value types whose value indexes a scenario block the engine
 /// reads without a check: `none` there reads before the block (b40:
 /// `object_teleport` read cutscene flag -1 at `0x002a003f`). A call with a
@@ -625,6 +635,35 @@ impl Compiler<'_> {
         Ok(())
     }
 
+    /// The string-literal argument in the seat-name position of
+    /// `unit_enter_vehicle` or `unit_set_seat` becomes a [`SEAT_NAME`] hook,
+    /// so the converter writes the label of the seat Halo 1's text names
+    /// instead of interning the text as it stands. `parameters` are Halo 2's
+    /// for the call, `compiled[k]` is `args[k]` compiled.
+    fn mark_seat_names(&mut self, parameters: &[u16], args: &[Datum], compiled: &[Datum]) {
+        for (k, &p) in parameters.iter().enumerate() {
+            if self.h2.types.get(p as usize).map(String::as_str) != Some("string_id") {
+                continue;
+            }
+            let Some(a) = args.get(k).and_then(|&d| self.t.node(d).ok().copied()) else {
+                continue;
+            };
+            if !a.atom() || a.global() || self.h1.type_name(a.opcode()).ok() != Some("string") {
+                continue;
+            }
+            let Ok(token) = self.t.string(a.string_offset()) else {
+                continue;
+            };
+            let slot = compiled.get(k).map(|d| d.slot() as u16);
+            if let Some(slot) = slot
+                && let Some(h) = self.out.hooks.iter_mut().find(|h| h.slot == slot)
+            {
+                h.h1_type = SEAT_NAME.to_owned();
+                h.token = token.to_owned();
+            }
+        }
+    }
+
     /// The first of `args` that is an atom of an [`INDEXED`] type (or, for
     /// a [`NONE_UNSAFE`] builtin, an object name) which will not resolve:
     /// its Halo 2 type name and token.
@@ -943,7 +982,20 @@ impl Compiler<'_> {
             self.hook(d, h2t::SHORT, types::SHORT, &format!("{h2_name}:{v}"));
             out.push(d);
         }
+        if let Some(Adapter::AppendBool(v)) = tr.adapter {
+            let ty = *b
+                .parameters
+                .get(out.len())
+                .ok_or_else(|| invalid("adapter arity"))?;
+            let t: &[u8] = if v { b"true" } else { b"false" };
+            let d = self.literal(ty, h2t::BOOLEAN, u32::from(v), t);
+            self.hook(d, h2t::BOOLEAN, types::BOOLEAN, &format!("{h2_name}:{v}"));
+            out.push(d);
+        }
         self.mark_animation_names(&args, &out[offset..])?;
+        if matches!(h2_name.as_str(), "unit_enter_vehicle" | "unit_set_seat") {
+            self.mark_seat_names(&b.parameters, &args, &out[offset..]);
+        }
         let optional = usize::from(tr.adapter == Some(Adapter::OmitOptional));
         if !b.special && out.len() + optional != b.parameters.len() {
             return Err(invalid(format!(

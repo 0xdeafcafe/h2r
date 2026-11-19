@@ -470,6 +470,113 @@ fn sound_impulse_time_waits_on_the_playing_sound() {
     assert_eq!(types, ["sound"]);
 }
 
+/// The unit, object and miscellaneous builtins of the units lane carry
+/// over: each identification claims its Halo 2 slot (its evaluator address
+/// pinned here, so a different table revision fails loudly), each rename
+/// reaches a Halo 2 builtin of the same signature, and the one adapter
+/// appends its boolean. Halo 1's own XBE documentation strings name what
+/// the old builtins do (`object_pvs_activate`: "just another (old) name
+/// for object_pvs_set_object").
+#[test]
+#[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
+fn units_and_misc_builtins_translate() {
+    use h1scripts::translate::{Kind, Table};
+    // (Halo 1 name, claimed Halo 2 index, evaluator address.)
+    const IDENTIFIED: &[(&str, u16, u32)] = &[
+        ("inspect", 23, 0x0020_8e10),
+        ("object_destroy_all", 54, 0x002a_1570),
+        ("object_set_ranged_attack_inhibited", 66, 0x002a_1920),
+        ("object_set_melee_attack_inhibited", 67, 0x002a_19a0),
+        ("object_set_collideable", 72, 0x002a_1b50),
+        ("object_beautify", 93, 0x002a_2190),
+        ("breakable_surfaces_enable", 136, 0x002a_2c70),
+        ("breakable_surfaces_reset", 137, 0x002a_2cb0),
+        ("unit_set_emotion", 218, 0x002a_3b70),
+        ("unit_set_seat", 234, 0x002a_41a0),
+        ("vehicle_riders", 236, 0x002a_4230),
+        ("vehicle_gunner", 238, 0x002a_42c0),
+        ("unit_get_total_grenade_count", 241, 0x002a_4310),
+        ("player_action_test_jump", 480, 0x002a_9040),
+        ("player_action_test_action", 488, 0x002a_91c0),
+        ("player_effect_set_max_translation", 651, 0x002a_ac10),
+        ("cinematic_set_near_clip_distance", 710, 0x002a_b3b0),
+    ];
+    const RENAMED: &[(&str, &str)] = &[
+        ("object_pvs_activate", "pvs_set_object"),
+        ("game_lost", "game_revert"),
+        ("player0_look_invert_pitch", "controller_set_look_invert"),
+        ("player0_look_pitch_is_inverted", "controller_get_look_invert"),
+        (
+            "unit_solo_player_integrated_night_vision_is_active",
+            "player_flashlight_on",
+        ),
+        ("player_action_test_look_relative_up", "player0_looking_up"),
+        (
+            "player_action_test_look_relative_down",
+            "player0_looking_down",
+        ),
+        ("player_action_test_back", "player_action_test_cancel"),
+    ];
+    let (catalog, _) = h1();
+    let target = h2();
+    let table = Table::build(&catalog, &target);
+    let c = h2_catalog();
+    for (name, index, evaluate) in IDENTIFIED {
+        let i = catalog.index_of(name).unwrap();
+        let tr = table.builtin(i).unwrap();
+        assert_ne!(tr.kind, Kind::Missing, "{name}: {:?}", tr.reason);
+        let (h2_name, b) = tr.target.as_ref().unwrap();
+        assert_eq!(h2_name.as_str(), *name);
+        assert_eq!(b.index, *index, "{name}");
+        let f = c.function(*index).unwrap();
+        assert_eq!(f.evaluate(), *evaluate, "{name}");
+        let f1 = catalog.function(i).unwrap();
+        let sig: Vec<_> = f1
+            .parameters
+            .iter()
+            .map(|&p| catalog.type_name(p).unwrap())
+            .collect();
+        println!(
+            "{name} ({}) -> slot {index}, evaluator {evaluate:#x}",
+            sig.join(" ")
+        );
+    }
+    for (from, to) in RENAMED {
+        let i = catalog.index_of(from).unwrap();
+        let tr = table.builtin(i).unwrap();
+        assert_ne!(tr.kind, Kind::Missing, "{from}: {:?}", tr.reason);
+        assert_eq!(tr.target.as_ref().unwrap().0, *to);
+        let f1 = catalog.function(i).unwrap();
+        let b = tr.target.as_ref().unwrap().1.clone();
+        let h2 = c.function(b.index).unwrap();
+        let p1: Vec<_> = f1
+            .parameters
+            .iter()
+            .map(|&p| catalog.type_name(p).unwrap())
+            .collect();
+        let p2: Vec<_> = h2
+            .parameters()
+            .iter()
+            .map(|&p| c.type_name(p).unwrap())
+            .collect();
+        assert_eq!(p1, p2, "{from} -> {to}");
+        assert_eq!(
+            catalog.type_name(f1.return_type).unwrap(),
+            c.type_name(h2.return_type()).unwrap(),
+            "{from} -> {to}"
+        );
+        println!("{from} -> {to} (slot {}, evaluator {:#x})", b.index, h2.evaluate());
+    }
+    // The adapter: player_add_equipment appends Halo 2's give flag.
+    let i = catalog.index_of("player_add_equipment").unwrap();
+    let tr = table.builtin(i).unwrap();
+    assert_eq!(tr.kind, Kind::Adapter, "{:?}", tr.reason);
+    let (name, b) = tr.target.as_ref().unwrap();
+    assert_eq!(name.as_str(), "unit_add_equipment");
+    assert_eq!(b.parameters.len(), 4);
+    assert_eq!(tr.adapter, Some(h1scripts::translate::Adapter::AppendBool(true)));
+}
+
 /// Halo 1's `(sleep -1 [script])` sleeps until woken; Halo 2's `sleep`
 /// ignores a negative duration (E `0x002087e0`), so every one is compiled
 /// as Halo 2's `sleep_forever` (`0x00208750`). On every level: as many

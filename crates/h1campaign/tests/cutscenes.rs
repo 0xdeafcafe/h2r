@@ -765,3 +765,63 @@ fn cutscenes_convert_and_read_back() {
     }
     assert!(failed.is_empty(), "{failed:#?}");
 }
+
+/// Every seat name the ten levels' scripts pass to `unit_enter_vehicle`
+/// and `unit_set_seat` resolves, through the label mapping
+/// (`h1models::names::mode_for`), to a seat label some Halo 1 vehicle in
+/// that level carries — which is what the rebuilt vehicle labels the seat
+/// (`h1objects::rebuild::seat_names`), and what Halo 2's engine matches
+/// exactly when seating a unit.
+#[test]
+#[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
+fn seat_names_name_seats_the_vehicles_carry() {
+    use h1objects::h1;
+    let s = scripting();
+    for level in levels() {
+        let h1 = h1_level(&level);
+        let t = h1scripts::Tables::read(&h1).unwrap();
+        let c = h1scripts::compile::compile(
+            &t,
+            &s.catalog,
+            &s.table,
+            &s.target,
+            h1scripts::compile::Missing::Stub,
+            &[],
+        )
+        .unwrap();
+        let mut seats = 0;
+        for h in c
+            .hooks
+            .iter()
+            .filter(|h| h.h1_type == h1scripts::compile::SEAT_NAME)
+        {
+            let label = h1models::names::mode_for(&h.token);
+            // `unit_enter_vehicle` seats a unit in a vehicle;
+            // `unit_set_seat` poses a biped, whose Halo 1 tags carry the
+            // pose seats.
+            let names = h1
+                .tags()
+                .iter()
+                .filter(|t| {
+                    let g = &t.group.0.to_be_bytes();
+                    g == b"vehi" || g == b"bipd"
+                })
+                .filter(|t| {
+                    h1::Unit::read(&h1, t).is_ok_and(|u| {
+                        u.seats
+                            .iter()
+                            .any(|s| h1models::names::map_name(&s.label).mode == label)
+                    })
+                })
+                .map(|t| t.name.clone())
+                .collect::<Vec<_>>();
+            assert!(
+                !names.is_empty(),
+                "{level}: seat {:#?} -> {label:#?} names no vehicle seat",
+                h.token
+            );
+            seats += 1;
+        }
+        println!("{level}: {seats} seat names resolve");
+    }
+}

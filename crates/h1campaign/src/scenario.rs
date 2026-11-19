@@ -1866,9 +1866,16 @@ fn install_scripts(
     let mut interned: HashMap<String, u32> = HashMap::new();
     for h in &c.hooks {
         if h.type_name == "string_id" && !interned.contains_key(&h.token) {
-            let text = match h.h1_type == h1scripts::compile::ANIMATION_NAME {
-                true => crate::cutscenes::animation_name(&graphs, h),
-                false => h.token.clone(),
+            let text = match h.h1_type.as_str() {
+                h1scripts::compile::ANIMATION_NAME => {
+                    crate::cutscenes::animation_name(&graphs, h)
+                }
+                // A seat name: Halo 2 matches the seat's label string ID
+                // exactly, and a rebuilt vehicle labels each seat with the
+                // rider's mode, so the script's Halo 1 spelling (`ct-driver`)
+                // becomes the label (`c_turret_ap_d`).
+                h1scripts::compile::SEAT_NAME => h1models::names::mode_for(&h.token),
+                _ => h.token.clone(),
             };
             interned.insert(h.token.clone(), set.intern(&text)?);
         }
