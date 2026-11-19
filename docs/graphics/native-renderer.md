@@ -2050,6 +2050,27 @@ its own thread, and render-timing does not matter (the call runs).
      `glow_differential::wide_matches_the_lifted_original` (stubbed as
      the blur's: draws, offsets, the quad's stack words, combiner, copy
      and result); the plan now follows a convolution after a wide one.
+   - **Built: `0x00034d90`'s grid** (`engine::screen_grid`): the grid
+     each step of `0x00021360` draws, 30 strips of 21 x 2 vertices
+     (`0x00034770` with the attribute function `0x00034100`). Each tap is
+     the rectangle at (u, v) pulled toward its centre by its EDI float,
+     weighted, when the radii (words 5 and 6) differ, by where the
+     vertex's distance from the centre (x87 `fsqrt`) falls between them,
+     times the stage's bound-over-target ratio; the position through
+     `0x000350e0`. A radial (zoom) blur. `strips()` and `pushed()` give
+     the exact words. Tests: unit tests and
+     `screen_grid_differential::the_grid_matches_the_lifted_original`.
+   - **Wired: the screen-effect hook** (`feature::native_post`, switch on
+     only): a context-only `before` on `0x0002d140`
+     (`points::SCREEN_EFFECT`) hands boot's host EAX and the four stack
+     words; `native_post_glue::plan_effect` plans the call and
+     `missing` lists what does not draw natively yet (the layer-15
+     template pass, passes into target 1, blur and wide convolutions,
+     the stand-ins for targets `0x19` to `0x1b`). Every effect is
+     refused, counted and logged once per reason, and nothing is armed:
+     the D3D path draws them all. Each piece then gets a slice and is
+     struck from `missing`; only an effect with nothing missing will be
+     armed, behind the same swallow and probe as the glow.
 5. **`0x0002df00`, and `0x0002dd30`** before layer 17, which has the
    same shape and gets its own skip point.
 6. **Layer 17** (S: bloom), as stage 1b draws the world's other layers.
