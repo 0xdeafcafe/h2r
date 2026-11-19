@@ -10,47 +10,9 @@
 //! position (x and y in the target's pixels, z and w `[0x0045dd40]`) and
 //! attributes 1..4 the four texture coordinates ([`StripVertex`]).
 //!
-//! Where a pass draws ([`Dest`]): `kind` 0 into the bound target, 1..3
-//! into target 1 at the window's size, a half or a quarter (`0x00016610`
-//! binds it through `0x00014bc0(1)` after `0x0001ddd0` sized it). Target 1
-//! is a stand-in here, its guest size the pass's and its texels that times
-//! the copy's render scale, cleared when a pass draws into it (S: the
-//! strips cover the target); what a later pass of the same call samples
-//! of it (engine textures 2 and 3) is what the earlier drew. Target 1
-//! sampled before any pass of the call drew it is refused: its contents
-//! would be the D3D path's.
-//!
-//! The program is the game's: the vertex program translated with the
-//! destination's guest size as its surface and the device's depth scale
-//! as its `z_max` ([`screen_vertex`]); the pixel side with each
-//! render-target stage's coordinates scaled by that target's guest size,
-//! as a linear texture is fetched in texels ([`screen_pixel`]). What a
-//! stage binds ([`bound`]): the shader's own bitmaps; of the engine
-//! textures the view's (`5`), a copy of the bound colour taken before the
-//! draw, since a pass reads the target it draws into (S: that id 5
-//! resolves to the target `kind` 0 draws into, both target 0 through
-//! `0x00014f60` while `[0x004858b8]` is clear, which every drawn call
-//! needs), target 1's stand-in, and the convolutions' results (24, 25:
-//! the target `[0x00485a78 + 4 n]` names). The rest are refused until
-//! their targets have stand-ins.
-//!
-//! After a pass's strips, its convolutions ([`ScreenConvolution`]): the
-//! blur `0x000211a0` binds its source to stages 0..3 and draws a quad
-//! through `0x00034a90` (its tenth word 0: the window's rectangle, four
-//! taps) into a stand-in for `0x19`, `0x1a` or `0x1b`, at the guest size
-//! the plan gives them and in [`STAND_IN_FORMAT`], with the combiner
-//! `0x00020f30` set (strength and `y` 0) and the glow's sampler; the
-//! quads are `glow::QuadDrawer`'s. Each stand-in is cleared when the call
-//! first draws into it. What a call reads, of target 1, the stand-ins and
-//! the results, it must have drawn first ([`Drawn`], [`check_order`]):
-//! the results are -1 on entry (`0x0002d140` clears them on its way
-//! out).
-//!
-//! Colour only, culling nothing (S: the D3D path's cull mode is whatever
-//! the draws before left; the A/B checks the strips' facing), the pass's
-//! own blend and colour writes; a convolution's quads draw under the
-//! pass's states, so a pass that blends or masks colour does not convolve
-//! natively.
+//! Each pass draws into its live D3D surface (target 0, target 1, or
+//! a convolution level), loading existing pixels in the attachment's
+//! format. A stage sampling target 0 reads an ordered feedback copy.
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -330,8 +292,8 @@ pub enum ScreenRefused {
     Bitmap(usize),
     /// The view's colour is sampled but cannot be copied.
     ColourNotCopyable,
-    /// A convolution reads the bound colour, which cannot be sampled.
-    ColourNotSampled,
+    Attachment(u32),
+    Source(u32),
     /// No program for this pass (the load refused it).
     NoProgram,
     /// The strip has fewer than three vertices or the call no strips.
@@ -402,47 +364,19 @@ pub fn check_order<'a>(
     Ok(())
 }
 
-/// Whether the convolutions after passes `passes` would draw into
-/// stand-ins next to `color` (recording nothing): the quads' frame read,
-/// the blur's combiner compiling (for a quad and for a grid), each grid a
-/// triangle at least per strip, each convolving pass leaving blending
-/// off and every colour written, the colour sampled when a draw reads it.
-pub fn check_convolutions<'a>(
-    color: &wgpu::TextureView,
-    frame: Option<&QuadFrame>,
-    passes: impl IntoIterator<Item = (&'a ScreenProgram, &'a [ScreenConvolution])>,
-) -> Result<(), ScreenRefused> {
-    convolution_states(color, frame, passes, true)
-}
-
-/// [`check_convolutions`], the combiner compiled only when `compile`
-/// (the draw compiles it through its cache).
 fn convolution_states<'a>(
-    color: &wgpu::TextureView,
     frame: Option<&QuadFrame>,
     passes: impl IntoIterator<Item = (&'a ScreenProgram, &'a [ScreenConvolution])>,
-    compile: bool,
 ) -> Result<(), ScreenRefused> {
     for (program, convolutions) in passes {
         let quads = convolutions.iter().flat_map(|c| &c.draws);
         if quads.clone().next().is_none() {
             continue;
         }
-        let frame = frame.ok_or(ScreenRefused::NoFrame)?;
-        let grids = quads.clone().filter_map(|q| q.grid.as_ref());
-        grids.clone().try_for_each(ConvolutionGrid::check)?;
-        if compile {
-            glow::program(&frame.combiner, [Some((1, 1)); 4]).map_err(ScreenRefused::Convolution)?;
-            if grids.clone().next().is_some() {
-                glow::grid_program(&frame.combiner, [Some((1, 1)); 4]).map_err(ScreenRefused::Convolution)?;
-            }
-        }
+        frame.ok_or(ScreenRefused::NoFrame)?;
+        quads.filter_map(|q| q.grid.as_ref()).try_for_each(ConvolutionGrid::check)?;
         if program.state.blend.is_some() || program.state.color_writes != wgpu::ColorWrites::ALL {
             return Err(ScreenRefused::ConvolutionStates);
-        }
-        let samples_colour = quads.clone().any(|q| q.source == 0);
-        if samples_colour && !color.texture().usage().contains(wgpu::TextureUsages::TEXTURE_BINDING) {
-            return Err(ScreenRefused::ColourNotSampled);
         }
     }
     Ok(())
@@ -518,7 +452,8 @@ pub struct ScreenTarget<'a> {
     pub queue: &'a wgpu::Queue,
     pub encoder: &'a mut wgpu::CommandEncoder,
     pub color: &'a wgpu::TextureView,
-    pub color_format: wgpu::TextureFormat,
+    pub target1: Option<&'a wgpu::TextureView>,
+    pub convolutions: [Option<&'a wgpu::TextureView>; 3],
     /// The colour's size in guest pixels and in this copy's texels.
     pub guest_size: (u32, u32),
     pub size: (u32, u32),
@@ -667,7 +602,7 @@ impl ScreenGpu {
     }
 
     /// The texture group: `engine[n]` what engine stage `n` reads (the
-    /// copy of the bound colour, target 1's stand-in, a convolution's).
+    /// copy of the bound colour, target 1, a convolution's).
     fn textures(&self, device: &wgpu::Device, engine: &[Option<wgpu::TextureView>; 4]) -> Result<wgpu::BindGroup, ScreenRefused> {
         let mut views = Vec::new();
         for (n, d) in self.program.dims.iter().enumerate() {
@@ -746,58 +681,17 @@ fn keep<'s>(
     slot.as_ref().expect("just made")
 }
 
-/// The format of the convolutions' stand-ins (S: an 8-bit-per-channel
-/// linear target, as the glow's 7 and 8).
-pub const STAND_IN_FORMAT: wgpu::TextureFormat = glow::SMALL_FORMAT;
-
-/// What target `t` is drawn in: 0 `bound` (the copy of the bound colour,
-/// or the colour itself), 1 target 1's stand-in, a convolution's.
-fn kept_view(
-    t: u32,
-    bound: Option<&wgpu::TextureView>,
-    target1: &Option<Kept>,
-    stand_ins: &[Option<Kept>; 3],
-) -> Option<wgpu::TextureView> {
-    match t {
-        0 => bound.cloned(),
-        1 => target1.as_ref().map(|k| k.3.clone()),
-        _ => stand_in(t).and_then(|i| stand_ins[i].as_ref()).map(|k| k.3.clone()),
-    }
-}
-
-/// An empty render pass clearing `view`.
-fn clear(encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView) {
-    encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some("native screen stand-in clear"),
-        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-            view,
-            depth_slice: None,
-            resolve_target: None,
-            ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
-        })],
-        depth_stencil_attachment: None,
-        timestamp_writes: None,
-        occlusion_query_set: None,
-        multiview_mask: None,
-    });
-}
-
 /// How a convolution's draw goes down: a quad's uniforms, or a grid's.
 enum Shape {
     Quad(glow::Quad),
     Grid(glow::GridFrame),
 }
 
-/// The screen passes on the GPU, made as calls first need them, the copy
-/// of the view's colour the passes that sample it read, target 1's
-/// stand-in, the convolutions' stand-ins for `0x19`..`0x1b` and their
-/// quads.
+/// Compiled screen passes and the per-pass feedback copy.
 #[derive(Default)]
 pub struct ScreenSet {
     passes: HashMap<ScreenKey, Result<ScreenGpu, ScreenRefused>>,
     copy: Option<Kept>,
-    target1: Option<Kept>,
-    stand_ins: [Option<Kept>; 3],
     quads: glow::QuadDrawer,
 }
 
@@ -811,12 +705,7 @@ impl ScreenSet {
         self.passes.clear();
     }
 
-    /// Records `draws` in order, each in its own render pass: into
-    /// `t.color` or target 1's stand-in, after a copy of the colour when
-    /// it samples it (so a later pass reads what the earlier drew, as on
-    /// the D3D path), then its convolutions' quads into their stand-ins
-    /// (`frame` theirs), each cleared when the call first draws into it.
-    /// Nothing is recorded when any of them is refused.
+    /// Records the call against its live destination and source views.
     pub fn encode(
         &mut self,
         t: ScreenTarget<'_>,
@@ -824,13 +713,45 @@ impl ScreenSet {
         frame: Option<&QuadFrame>,
         stage_image: &mut dyn FnMut(ScreenStage) -> Option<Image>,
     ) -> Result<usize, ScreenRefused> {
-        let ScreenTarget { device, queue, encoder, color, color_format, guest_size, size, z_scale } = t;
+        let ScreenTarget { device, queue, encoder, color, target1, convolutions, guest_size, size, z_scale } = t;
         check_order(draws.iter().map(|d| (d.program, d.dest, d.convolutions)))?;
-        convolution_states(color, frame, draws.iter().map(|d| (d.program, d.convolutions)), false)?;
+        convolution_states(frame, draws.iter().map(|d| (d.program, d.convolutions)))?;
+        let view_of = |index| match index {
+            0 => Some(color),
+            1 => target1,
+            _ => stand_in(index).and_then(|i| convolutions[i]),
+        };
+        let attachment = |index, guest| {
+            let view = view_of(index).ok_or(ScreenRefused::Attachment(index))?;
+            if !glow::live_colour(view, host_size(guest, guest_size, size)) {
+                return Err(ScreenRefused::Attachment(index));
+            }
+            Ok(view)
+        };
+        let sample = |index| {
+            let view = view_of(index).ok_or(ScreenRefused::Source(index))?;
+            if !glow::sampleable(device, view) {
+                return Err(ScreenRefused::Source(index));
+            }
+            Ok(view)
+        };
+        let dest_of = |dest| match dest {
+            Dest::Bound => (0, guest_size),
+            Dest::Target1 { guest } => (1, guest),
+        };
+        let mut drawn = Drawn::default();
         for d in draws {
             check(color, d.program)?;
             if d.strips.is_empty() || d.strips.iter().any(|s| s.len() < 3) {
                 return Err(ScreenRefused::NoStrips);
+            }
+            let (index, guest) = dest_of(d.dest);
+            let dest = attachment(index, guest)?;
+            for source in drawn.reads(d.program, d.dest)?.into_iter().flatten() {
+                let source_view = sample(source)?;
+                if source != 0 && dest.texture() == source_view.texture() {
+                    return Err(ScreenRefused::Source(source));
+                }
             }
             let stale = matches!(self.passes.get(&d.key), Some(Ok(g)) if g.program.wgsl != d.program.wgsl);
             if stale || !self.passes.contains_key(&d.key) {
@@ -839,11 +760,12 @@ impl ScreenSet {
             }
             match self.passes.get_mut(&d.key) {
                 Some(Ok(g)) => {
-                    g.pipeline(device, color_format);
+                    g.pipeline(device, dest.texture().format());
                 }
                 Some(Err(r)) => return Err(r.clone()),
                 None => return Err(ScreenRefused::NoProgram),
             }
+            drawn.pass(d.program, d.dest, d.convolutions)?;
         }
         // Each draw's program and vertex uniform: a quad's stages its
         // source's size as the call leaves the targets, a grid's the size
@@ -856,6 +778,10 @@ impl ScreenSet {
             for (n, c) in d.convolutions.iter().enumerate() {
                 for q in &c.draws {
                     let frame = frame.ok_or(ScreenRefused::NoFrame)?;
+                    let dest = attachment(q.dest, c.size)?;
+                    if sample(q.source)?.texture() == dest.texture() {
+                        return Err(ScreenRefused::Source(q.source));
+                    }
                     let source = drawn.size(q.source, guest_size).ok_or(ScreenRefused::Unwritten(q.source))?;
                     quads.push(match &q.grid {
                         None => {
@@ -879,12 +805,7 @@ impl ScreenSet {
         let full = wgpu::Extent3d { width: texture.width(), height: texture.height(), depth_or_array_layers: 1 };
         let mut drawn_count = 0;
         let mut quads = quads.into_iter();
-        let mut cleared = [false; 3];
         let mut drawn = Drawn::default();
-        let texels = |guest: (u32, u32)| {
-            let s = host_size(guest, guest_size, size);
-            wgpu::Extent3d { width: s.0, height: s.1, depth_or_array_layers: 1 }
-        };
         for d in draws {
             let Some(Ok(g)) = self.passes.get(&d.key) else { return Err(ScreenRefused::NoProgram) };
             let reads = drawn.reads(d.program, d.dest)?;
@@ -896,17 +817,17 @@ impl ScreenSet {
             } else {
                 None
             };
-            let (dest_view, dest_guest, dest_size, load) = match d.dest {
-                Dest::Bound => (color.clone(), guest_size, size, wgpu::LoadOp::Load),
-                Dest::Target1 { guest } => {
-                    let extent = texels(guest);
-                    let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
-                    let (_, _, _, v) = keep(&mut self.target1, device, extent, color_format, usage, "native screen target 1");
-                    (v.clone(), guest, (extent.width, extent.height), wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT))
-                }
-            };
+            let (index, dest_guest) = dest_of(d.dest);
+            let dest_view = attachment(index, dest_guest)?;
+            let dest_texture = dest_view.texture();
+            let dest_size = (dest_texture.width(), dest_texture.height());
+            let color_format = dest_texture.format();
             drawn.drew(d.dest)?;
-            let engine = reads.map(|r| r.and_then(|t| kept_view(t, copy.as_ref(), &self.target1, &self.stand_ins)));
+            let engine = reads.map(|r| match r {
+                Some(0) => copy.clone(),
+                Some(t) => view_of(t).cloned(),
+                None => None,
+            });
             let textures = g.textures(device, &engine)?;
             let (vertex, pixel) = screen_uniforms(d.program, d.values, (guest_size, &drawn), (dest_guest, dest_size), z_scale);
             let (vertex, pixel) = (vertex.to_bytes(), pixel.to_bytes());
@@ -931,10 +852,10 @@ impl ScreenSet {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("native screen effect"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &dest_view,
+                        view: dest_view,
                         depth_slice: None,
                         resolve_target: None,
-                        ops: wgpu::Operations { load, store: wgpu::StoreOp::Store },
+                        ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
                     })],
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
@@ -952,30 +873,23 @@ impl ScreenSet {
                     drawn_count += 1;
                 }
             }
-            // The convolutions: each quad its source at stages 0..3 into
-            // its stand-in.
+            // A convolution samples the preceding pass's real pixels.
             for (n, c) in d.convolutions.iter().enumerate() {
                 for q in &c.draws {
                     let Some((program, shape)) = quads.next() else { return Err(ScreenRefused::NoFrame) };
-                    let source = kept_view(q.source, Some(color), &self.target1, &self.stand_ins)
-                        .ok_or(ScreenRefused::Unwritten(q.source))?;
-                    let i = stand_in(q.dest).ok_or(ScreenRefused::ConvolutionTarget(q.dest))?;
-                    let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
-                    let (_, _, _, dest) = keep(&mut self.stand_ins[i], device, texels(c.size), STAND_IN_FORMAT, usage, "native screen stand-in");
-                    let dest = dest.clone();
-                    if !std::mem::replace(&mut cleared[i], true) {
-                        clear(encoder, &dest);
-                    }
-                    let stages = [Some(&source); 4];
+                    let source = sample(q.source)?;
+                    let dest = attachment(q.dest, c.size)?;
+                    let format = dest.texture().format();
+                    let stages = [Some(source); 4];
                     match (&shape, &q.grid) {
                         (Shape::Grid(f), Some(g)) => {
-                            self.quads.draw_grid(device, encoder, &program, f, &g.strips, &dest, STAND_IN_FORMAT, None, stages)
+                            self.quads.draw_grid(device, encoder, &program, f, &g.strips, dest, format, None, stages)
                         }
-                        (Shape::Quad(quad), _) => self.quads.draw(device, encoder, &program, quad, &dest, STAND_IN_FORMAT, None, stages),
+                        (Shape::Quad(quad), _) => self.quads.draw(device, encoder, &program, quad, dest, format, None, stages),
                         (Shape::Grid(_), None) => return Err(ScreenRefused::NoStrips),
                     }
                     drawn.convolved(q, c.size)?;
-                    drawn_count += 1;
+                    drawn_count += q.grid.as_ref().map_or(1, |grid| grid.strips.len());
                 }
                 drawn.result(n, c);
             }
@@ -1122,6 +1036,80 @@ mod tests {
         assert_eq!(host_size((160, 120), (640, 480), (640, 480)), (160, 120));
         assert_eq!(host_size((161, 1), (640, 480), (1000, 750)), (252, 2), "rounded up");
         assert_eq!(host_size((0, 0), (640, 480), (640, 480)), (1, 1));
+    }
+
+    #[test]
+    fn target_one_keeps_its_live_format_and_pixels_across_partial_passes() {
+        let Ok(ctx) = gfx::GfxContext::headless() else { return };
+        let size = (8, 8);
+        let extent = wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 };
+        let make = |format| {
+            ctx.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("screen target format and load regression"),
+                size: extent,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            })
+        };
+        let main = make(wgpu::TextureFormat::Rgba8Unorm);
+        let level = make(wgpu::TextureFormat::Bgra8Unorm);
+        let original = [51, 102, 153, 204];
+        ctx.queue.write_texture(
+            level.as_image_copy(),
+            &original.repeat(64),
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(32), rows_per_image: Some(8) },
+            extent,
+        );
+        let mut red = program([E; 4]);
+        red.wgsl = "
+            @vertex fn vs_main(@location(0) position: vec4f) -> @builtin(position) vec4f {
+                return position;
+            }
+            @fragment fn fs_main() -> @location(0) vec4f {
+                return vec4f(1.0);
+            }
+        ".into();
+        red.state.color_writes = wgpu::ColorWrites::RED;
+        let mut blue = red.clone();
+        blue.state.color_writes = wgpu::ColorWrites::BLUE;
+        let strip = |left, right| {
+            vec![(left, 1.0), (left, -1.0), (right, 1.0), (right, -1.0)]
+                .into_iter()
+                .map(|(x, y)| StripVertex { position: [x, y, 0.0, 1.0], texcoords: [[0.0; 4]; 4] })
+                .collect()
+        };
+        let left = [strip(-1.0, -0.25)];
+        let right = [strip(0.25, 1.0)];
+        let draw = |key, program, strips| ScreenDraw {
+            key, program, strips, dest: Dest::Target1 { guest: size }, values: [0; 4], convolutions: &[],
+        };
+        let mut encoder = ctx.device.create_command_encoder(&Default::default());
+        let color = main.create_view(&Default::default());
+        let target1 = level.create_view(&Default::default());
+        let target = ScreenTarget {
+            device: &ctx.device,
+            queue: &ctx.queue,
+            encoder: &mut encoder,
+            color: &color,
+            target1: Some(&target1),
+            convolutions: [None; 3],
+            guest_size: size,
+            size,
+            z_scale: 1.0,
+        };
+        let draws = [draw((0, 0, 0), &red, &left[..]), draw((0, 1, 0), &blue, &right[..])];
+        assert_eq!(ScreenSet::new().encode(target, &draws, None, &mut |_| None), Ok(2));
+        ctx.queue.submit([encoder.finish()]);
+        let px = gfx::readback::read_texture(&ctx, &level, wgpu::TextureAspect::All, 4, size);
+        assert_eq!(&px[..4], [51, 102, 255, 204], "the second pass kept the first pass and its other channels");
+        assert_eq!(&px[16..20], original, "the gap kept its existing pixels");
+        assert_eq!(&px[28..32], [255, 102, 153, 204], "the blue write used the actual BGRA target");
     }
 
     #[test]
