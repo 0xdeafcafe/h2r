@@ -11,8 +11,11 @@
 //! dialog, Quick Options (`DialogBase::QuickOptions`), as the Halo 1
 //! Options page is: Quick Options' panel, header and list (its
 //! `setting_lists` skin, label left and the value alone in the value
-//! column), the focused row's description in its one-line help line, and
-//! the legend in its footer (docs/game/ui-builder.md "The Dialog kind").
+//! column), Quick Options' header (a Spartan icon in its game type
+//! picture and the page's line, [`HEADER_HELP`], in its help line; each
+//! row's own description shows in the value picker A opens), and the
+//! legend in its footer (docs/game/ui-builder.md "The Dialog kind", "A
+//! page's header").
 //!
 //! **The row.** A custom game's Game Setup dialog gets a "Clanker Options..." row,
 //! the way it gets the Halo 1 Options row (`crate::h1_options_row`, whose
@@ -233,6 +236,11 @@ pub const ROW_LABEL: &str = "Clanker Options...";
 /// the focus, as retail's rows have theirs (`crate::game_setup_help`).
 pub const ROW_HELP: &str =
     "Add bots to this game: how many, how well they play, and which team they join.";
+/// The page's own line at its top, in Quick Options' help line beside the
+/// page's icon ([`KitScreen::header`]): [`ROW_HELP`] cut to the one line
+/// the help line holds (409 of its 494 units in the disc's font 1; the
+/// whole of [`ROW_HELP`] is 492 and wraps on the kit's own measure).
+pub const HEADER_HELP: &str = "Add bots: how many, how well they play and which team they join.";
 /// The page's title, in capitals as Quick Options' header ("QUICK
 /// OPTIONS") is.
 pub const TITLE: &str = "CLANKERS";
@@ -243,7 +251,8 @@ pub fn page(store: Arc<Store>) -> KitScreen {
     let mut s = KitScreen::new(FEATURE, SCREEN, IDS, TITLE)
         .row_label(ROW_LABEL)
         .row_help(ROW_HELP)
-        .dialog(DialogBase::QuickOptions, Opener::GAME_SETUP_CLANKERS);
+        .dialog(DialogBase::QuickOptions, Opener::GAME_SETUP_CLANKERS)
+        .header(HEADER_HELP, crate::ui_kit::dialog::icon::SPARTAN);
     for r in &ROWS {
         s = s.row(r.row(Arc::clone(&store)));
     }

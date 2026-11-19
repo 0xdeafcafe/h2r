@@ -991,3 +991,36 @@ fn a_opens_the_value_picker_and_the_row_has_a_description() {
     assert!(p.slots() <= IDS.len);
     assert!(ROW_HELP.len() < 120, "a few lines under Game Setup's list");
 }
+
+/// The page has Quick Options' header: its line in the help line whatever
+/// the focus (not the focused row's description, which the value picker
+/// shows), a Spartan in the game type picture, both in the spec the
+/// preview draws.
+#[test]
+fn the_page_has_quick_options_header() {
+    use crate::list_class::Rows;
+    use crate::ui_kit::dialog::{QUICK_HELP, QUICK_PICTURE, icon, quick_icon};
+    use crate::ui_kit::spec::Describe;
+    let p = page(store());
+    let header = Rows::description(&p, 0).expect("the help line");
+    assert_eq!(
+        Rows::description(&p, 5),
+        Some(header),
+        "the same whatever the focus"
+    );
+    assert!(IDS.owns(header));
+    assert_ne!(Some(header), p.row_help_id());
+    assert_eq!(Rows::description(&p, 99), None, "no such row");
+    assert_eq!(Rows::picture_image(&p), Some(icon::SPARTAN));
+    assert!(p.slots() <= IDS.len);
+    let s = p.spec();
+    assert_eq!(s.help.as_deref(), Some(HEADER_HELP));
+    assert_eq!(s.description_text().as_deref(), Some(HEADER_HELP));
+    assert_eq!(s.art, [quick_icon(icon::SPARTAN)]);
+    assert_eq!(s.art[0].at, QUICK_PICTURE.at);
+    // The rows keep their own descriptions, for the picker.
+    assert!(s.rows.iter().all(|r| r.description.is_some()));
+    // One line on the kit's own measure in Quick Options' help line.
+    let room = i32::from(QUICK_HELP.right) - i32::from(QUICK_HELP.left);
+    assert!(crate::ui_kit::spec::fallback::width(HEADER_HELP) <= room);
+}
