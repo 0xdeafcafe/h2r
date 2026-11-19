@@ -11,11 +11,31 @@ original design and investigation; the HLE sections say what the game does
 now. Not built: the in-game Create/Recover account menu
 ([In-game account setup](#in-game-account-setup)) and federation.
 
-The goal is to make Halo 2 believe it is on Xbox Live: sign in with a
-gamertag, show the message of the day and playlists, keep a friends list
-with presence, and later matchmake and play. Accounts are made from the CLI
-or the web app. The service behind it is ours, event sourced on SQLite
-(Postgres if you prefer).
+Players sign in with a gamertag, see the message of the day, join
+friends, and play Custom Games, campaign co-op, OptiMatch and
+Clankermatch. Accounts are created in the CLI or web app. The native
+service uses SQLite or Postgres, and the Cloudflare deployment shares
+its router with a Durable Object event log and R2 blobs.
+[Worker architecture](live-worker.md)
+
+- **Matchmaking and Ranked.** Served hoppers supply the playlist menu
+  and rules. The web Ranked page shows standings, levels, XP and bot
+  marks. Game results use the server's arbitration rules.
+  [Matchmaking](live-matchmaking.md#8-ranks-what-the-game-does-and-what-the-server-does)
+- **Mods.** Installed mods get their own map slots. The lobby advertises
+  the exact package ID and joining consoles fetch missing layers.
+  [Maps](../game/maps.md#5-sharing-live)
+- **Spectating and replays.** Live ingest negotiates v8 in discovery.
+  V7 readers and recordings remain supported. The viewer opens the
+  pre-rendered game header, watches live frames or seeks into a verified
+  archive for a finished match. [Telemetry](live-telemetry.md) ·
+  [Replay fidelity](replay-fidelity.md)
+- **Clankers.** Bot looks follow the gamertag, and the Live player options
+  card shows a Clanker's emblem, skill and style when available. Sim runs
+  can upload to Uplink's Clanker Training. [Bots](../game/bots.md#clanker-appearance-and-live-player-options) ·
+  [Training](../runtime/sim.md#watching-in-uplink)
+- **Game hosting.** The dedicated-host and light-host work is in progress.
+  [Dedicated host](dedicated-host.md)
 
 ## 1. What the title links
 
@@ -174,8 +194,8 @@ that, with a notice saying how to copy it; [live-hosting.md](live-hosting.md#fre
 `--listen` `127.0.0.1:8074`, `--server` `$H2_LIVE_SERVER` or
 `http://127.0.0.1:8074`, `--data` the server directory below.
 
-The same server can also run as a Cloudflare Worker, with no machine of
-yours in the path: [live-worker.md](live-worker.md) (in progress).
+The same service runs on Cloudflare Workers. The architecture and the
+deployment steps are in [live-worker.md](live-worker.md).
 
 Host data lives in `~/Library/Application Support/h2recomp/live`, beside
 the movies directory and the VFS data root ([storage.md](../runtime/storage.md)):
@@ -470,18 +490,21 @@ and nothing of a refused batch is written; a replayed batch is 409, a
 write to an ended game 409. `GET /v1/games` (newest first, `state=live|
 ended`, cursor = the start position) and `GET /v1/games/{id}` (scoreboard,
 team scores, the last 50 kills with `pos` and log position, winner, end
-reason) come from the read model; `GET /v1/games/{id}/frames` pages the
-recorded frames (`from_tick`, `to_tick`, 600 a page). Accounts list their
-10 latest games as `recent_games`.
+reason) come from the read model. The chunk index serves newer
+recordings and their verified archives. The `/frames` endpoint serves
+recordings made before chunks. Accounts list their 10 latest games as
+`recent_games`. [Game reads](live-api.md#frame-chunks)
 
 **Ingest.** `/v1/ingest` is the game's WebSocket: the first message is
 `{kind: "auth", token}` (`games.write`), then `frame`, `events` (`{game_id,
 jws}`: one batch JWS, answered `{kind: "appended", game_id, position}` or
 `{kind: "error", error, message}`) and `ping`. Frames go out to stream
-readers at most 15 a second per game; one a second per game is also
-written as a server-signed `GameFrame` whose `data.source` is the sender.
-The socket closes (4401) when its token expires unless a fresh `auth` by
-the same author arrives.
+readers at most 15 a second per game. The recorder stores admitted
+frames in H2CK chunks. Finished recordings are queued for H2AR
+publication. The socket closes (4401) when its token expires unless the
+same author sends a fresh `auth` message.
+[Stream and ingest API](live-api.md#streams-websocket) ·
+[Archives](live-api.md#finished-replay-archives)
 
 **Map outlines.** `PUT /v1/maps/{map}/outline` (`games.write`, 2 MiB) stores
 the outline as a blob and a server-signed `MapOutlineStored` (`{map,

@@ -2455,17 +2455,18 @@ a BSP switch, fade, music, a checkpoint) would need replicating. That is
 a new replication layer for most of campaign: months, with the
 synchronous path's exactness given up.
 
-**Prediction on the synchronous path.** Two levels:
+**Prediction on the synchronous path.** Look prediction is in progress.
+The synchronous simulation and its input schedule still provide the
+authoritative aim.
 
 1. **Look prediction (camera only).** On a guest, rotate the drawn
    camera by the look input not yet in a received update, with the
    game's own look-rate rule (`0x001870a0`, high-framerate.md "Input
    latency and aim"); when the update arrives, its real aim replaces
-   the prediction. The simulation never sees it, so it cannot desync;
-   a mismatch shows as a small correction. Aim is what players feel.
-   Cost: the look-rate rule, the camera hook on the render path, and
-   the guest's own pending inputs (it sent them, so it has them). About
-   a week or two; low risk. This is the recommendation.
+   the prediction. A mismatch shows as a camera correction. The
+   implementation lane is wiring the look-rate rule, the render-camera
+   hook and the guest's pending inputs. The prediction runs outside the
+   simulation.
 2. **Full prediction (rollback).** Run the guest's game ahead on its own
    input and roll back to each received update, replaying. It would
    remove the round trip from movement too. Cost: a game-state snapshot
@@ -2475,6 +2476,16 @@ synchronous path's exactness given up.
    base. Months, high risk; not before 1 is measured.
 
 ### 15.5 What needs a game run
+
+Measure before changing the input schedule. Take a prediction-off
+baseline with both consoles on the same map and repeat with controlled
+delay and jitter. Record RTT, guest input-to-update, host wait and
+update spacing. Compare prediction on and off on the same routes and
+look inputs. Measure the time to the first displayed turn and the size
+and frequency of corrections when the authoritative aim catches up.
+Check that a cut or reconnect clears stale prediction and that the
+simulation sees the same inputs. Ping-aware host selection is being
+added to SBMM for distributed matches. [Matchmaking](live-matchmaking.md#ping-aware-host-selection-in-progress)
 
 `h2 coop test --players 2 --auto`. In a level, read the two `coop-live: latency`
 lines once a second and the `coop-live: ping` line:

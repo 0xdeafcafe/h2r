@@ -1,15 +1,16 @@
 # The Live server on Cloudflare Workers
 
-Today the Live server (`live.forbes.red`) runs on a Mac at home. Every
-request crosses the home network through a Cloudflare Tunnel, which costs
-250–700 ms per request. This plan moves the whole server to Cloudflare:
+The Live service has a native deployment and a Cloudflare deployment.
+The original Mac setup sent requests through a Cloudflare Tunnel and
+measured 250–700 ms per request. The Cloudflare deployment serves the
+same Live API from the edge:
 
 - the routes run in a Worker;
 - the event log lives in the hub Durable Object's own SQLite storage;
 - blobs live in R2;
 - whatever needs a single owner runs in a Durable Object.
 
-No request reaches the Mac afterwards.
+The Worker deployment serves requests independently of the Mac.
 
 The code stays shared. The Worker runs live-server's own axum router, built
 without the crate's `native` feature, so the routes are not forked.
@@ -273,6 +274,11 @@ sender's pacing, under `relay_rate` (240 a second a socket).
 
 ## The stream on the hub
 
+The hub and native server advertise the same v8 ingest support in
+discovery. Packed subscribers opt in separately. The hibernation
+attachment retains each subscriber's version preference.
+[Packed frames](live-telemetry.md#version-8-live-wire)
+
 `live_server::stream` holds `/v1/stream` with no socket underneath it:
 - `StreamFilter` is the query string.
 - `StreamSession` turns what happens into messages for the reader (`Out`:
@@ -532,8 +538,11 @@ What the Mac's server serves, and where it comes from on the Worker:
 A game page's header model travels with the hub's existing
 `GET /v1/page-meta` reply. If the hub supplies a game preview without a
 header, the Worker reads `GET /v1/games/{id}` anonymously and builds the
-model from the game detail. Both homes use the same renderer to put the
-header and its emblem URLs above the app's root in the initial HTML.
+model from the matching game detail. The hub's generic metadata response
+skips the fallback, and the detail read enforces the same anonymous
+visibility rules. Both homes use the same renderer to put the header
+and its emblem URLs above the app's root in the initial HTML.
+[Worker page rendering](../../crates/live-worker/src/site.rs)
 
 The Worker routes `/art/emblem/*` ahead of static assets. The stable
 appearance URL redirects to a revision derived from the published art

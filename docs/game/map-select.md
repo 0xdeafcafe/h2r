@@ -29,11 +29,11 @@ Halo 1 maps and any other content. When the list fills, the category
 shows `Mods (N mods not shown, list full)`. Overflow packages remain
 installed and can appear when a slot becomes available.
 
-At boot the installer reads the disc's list, reserves the used IDs and
-slots for existing content, then generates a version 2 `patch.lvl` for
-each package that fits. Existing `active.toml` choices are ignored by
-the game. The next boot restores retail maps to their original
-categories and lists the installed mods in their own slots.
+On the first boot after upgrading from the old override setup, disc and
+Map Pack maps return to their original categories. Installed mods appear
+in their own slots when space allows. Legacy `active.toml` selections are
+ignored. See [generated offers](maps.md#package-offers) for slot
+allocation, IDs and load paths.
 
 ## Names, descriptions and pictures
 

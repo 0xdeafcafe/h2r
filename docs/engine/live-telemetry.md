@@ -1,5 +1,14 @@
 # Telemetry precision and replay measurements
 
+## Live v8
+
+The negotiated v8 stream uses about 81 bytes/player/s on the seeded
+ten-minute, 16-player match. The v7 baseline below uses about 145.
+These totals include each record's length prefix and a complete key
+every 150 samples. The comparison covers transfer size with the same
+sampling rate and field precision. [Live codec](../live/live-telemetry.md#version-8-live-wire) ·
+[Benchmark](../../crates/live-proto/tests/packed_v8.rs)
+
 ## Match and measurement
 
 The seeded multiplayer benchmark runs a ten-minute match with 16 players,
@@ -135,6 +144,10 @@ floats can use their binary64 bits. Each segment gets its own Brotli stream,
 so an HTTP reader can start at any segment. The server reads each immutable
 blob back, checks its SHA-256, verifies the decoded frames, and backs up
 original objects and signed index rows before publishing the final pointer.
+For seek playback, the index can seed each segment with the preceding
+known machine travel. The seed is index metadata and the decoded source
+frames stay exact. [Archive API](../live/live-api.md#finished-replay-archives)
+
 The migration receipt reports compressed payload and immutable index-node
 bytes separately. Both count toward the archive's storage cost.
 

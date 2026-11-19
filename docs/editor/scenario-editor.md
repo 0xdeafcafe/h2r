@@ -240,8 +240,11 @@ into `<data>/maps/<dir>/`, where `<data>` is the runtime's data root
 (`h2-editor --data`, default `$TMPDIR/h2boot-data`, as `h2 play`). The
 form asks for a name (required), author, description, an optional image
 (PNG or JPEG, at most 512 KB, checked before anything is written), the
-directory (default `<map>-edit`) and whether to make it the active package
-for the map (`active.toml`). The package is:
+directory (default `<map>-edit`). The editor can still write its legacy
+`active.toml` selection. The current runtime allocates slots independently
+of that selection.
+
+The package contains
 
 - `manifest.toml`: `[base]` the disc map's name and SHA-256; one
   `[[patch]]`; `[result] geometry` (maps.md, "The geometry hash");
@@ -249,10 +252,11 @@ for the map (`active.toml`). The package is:
   when a block grew (§6);
 - `preview.png` or `preview.jpg`, if given.
 
-The status line and toolbar show the package's `MapId`. The disc and the
-source map are only read; the package directory appears whole or not at
-all. The runtime serves it as `D:\maps\<map>.map` at the next boot
-(maps.md §7): the active one, else the one whose directory sorts last.
+The status line and toolbar show the package's `MapId`. The disc and
+the source map are read-only. At the next boot, the package gets its
+own content path and appears under **Change Map > Mods** if there is
+room in the list. The game applies the patch when it opens that path.
+[Map selection](../game/map-select.md#separate-slots-for-mods)
 
 **Open package...** lists the packages for the open map in `<data>/maps`
 (name, directory, `MapId`). Opening one resolves it over the disc's map

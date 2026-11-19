@@ -139,9 +139,10 @@ JWT themselves, the way AT Protocol service auth works.
   check `aud`, `exp`, `lxm`, and reject a `jti` seen in the last 2 minutes
   (an in-memory set that expires itself). No database call.
 - **WebSockets** for stream and ingest send the token as the first
-  message. The co-op relay needs a bearer token on the upgrade request.
-  The server closes an authenticated socket when its token expires unless
-  the client sends a fresh one.
+  message when authentication is required. For co-op relay, both homes
+  check the bearer token and session membership before upgrading. The
+  relay rechecks membership and accepts refreshes from the same account.
+  [Relay protocol](live-api.md#co-op-relay)
 - **Reads are public by default**: viewing games, accounts and the event
   log needs no token, which is what the web app does. A server can switch
   that off (`--private`), and then readers need a token too.
@@ -251,6 +252,12 @@ Not built yet; the formats above are chosen so it can be.
   Cloudflare tunnel configured. The Worker uses Cloudflare's client IP.
   IPv6 addresses share limits within their /64 for reads and recovery.
   Requests with no trusted IP share a fallback bucket.
+- **Map outline writes** require an admin or the operator with a
+  `games.write` token. That role is required for both the first outline
+  and any replacement. [Outline API](live-api.md#map-outline)
+- **Content downloads** check read authorization and the blob's moderation
+  status before streaming it from storage. The server can stream large
+  packages without buffering the full download. [Content API](live-api.md#custom-maps)
 - CORS: public reads allow any origin, so a web app served elsewhere can
   read any server; writes allow none.
 - Postgres credentials come only from the environment or the `--db` URL;

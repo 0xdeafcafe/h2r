@@ -153,74 +153,28 @@ exactly as before. The font rewrite wraps it, so both apply.
 
 ### Map packages
 
-`PackageBackend::new(inner, library)` serves `maps\<name>.map` from the
-map packages in a `content::Library` (`<data>/maps/`, docs/game/maps.md §7)
-for maps the disc has. An offset-patched map (PPF, IPS) streams from the
-disc's map with the patched runs laid over each read, never copied; a
-materialised map (BPS) is read from `<data>/maps/cache/<MapId>.map`. The
-header checksum at +0x2d0 is repaired in both. Its size shows in `stat`
-and in listings of `maps`; `host_file` gives the cache file for a
-materialised map and none for an overlay. Each map is resolved on first
-use and logged once; a package that cannot be used (base hash mismatch,
-damaged patch) is a warning and the disc's map is served. Read-only, like
-the disc.
+At boot, `boot::new_maps` scans `<data>/maps/` and registers a VFS
+content path for each generated offer that fits in the multiplayer list.
+The paths live under `T:\$c\<offer>\<name>.map`, with a placeholder
+file on the data partition. A retail-based mod's generated name keeps
+its path separate from the disc and Map Pack base paths.
+[Generated offers](../game/maps.md#package-offers)
 
-**Over the Map Pack's installed maps.** `PackageBackend::over_map_pack(inner,
-library, title)` (scope `PackageScope::MapPack`) does the same on the data
-partition for the Multiplayer Map Pack's maps as `h2 import-mappack`
-installs them: `TDATA\<title>\$c\<offer>\<name>.map` (any case) where the
-offer's high half is the title and its low half is in
-`content::map_pack::OFFERS` (`…0101` to `…03ff`). The base is the
-installed file at that path; PPF and IPS layers stream over it, BPS is
-materialised into the same cache, and a longer result shows its size in
-`stat` and in listings of the offer directory and reads to its end. Only
-those paths are served: every other file on the partition (saves, other
-content, the same name under another offer, the map pack package's
-`patch.lvl` and `ContentMeta.xbx`) is the host backend's, and every write
-to them passes through. A served map refuses writes, truncation and
-overwrite with `AccessDenied`; the installed file is never changed.
-`with_storage` mounts it under `VariantFiles` on Partition1 when
-`Config::map_packages` names the packages directory (the boot sets it to
-`<data>/maps` in `map_override::mount_with_hashes`); without it the
-partition is mounted as before. Tests: `crates/vfs/tests/map_pack_packages.rs`.
+The VFS resolves the manifest at the mod path against its base from the
+disc, installed Map Pack or a local whole-map layer. PPF and IPS reads
+stream byte runs over the base. BPS reads use the materialised
+`<data>/maps/cache/<MapId>.map` file. The resolved size is available
+through `stat`, and a streamed overlay can be read through the VFS even
+though it has no contiguous host file. A damaged layer or mismatched
+base fails the mod read. [VFS content maps](../../crates/vfs/src/content_maps.rs) ·
+[Patch resolution](../game/maps.md#7-what-is-built)
 
-Packages can change while the game runs (docs/game/maps.md §3, "Now"):
-
-- **When the folder is looked at.** Before a map path is looked up, and
-  before a listing of `maps`, the backend compares a stamp of the folder:
-  modification times and sizes of `<data>/maps`, `active.toml`, and each
-  package directory and its `manifest.toml`. If the stamp changed, or on
-  `Vfs::rescan_maps()` (`Backend::rescan`, forwarded by the rewrite and
-  override layers), the library is scanned again.
-- **What is resolved again.** Only maps whose chosen package (directory
-  and `MapId`) changed.
-- **Open files.** The VFS tells backends when a file object opens and
-  when its last handle closes (`Backend::opened` and `closed`). A map
-  path with an open file object keeps its old resolution until the last
-  close, so a change takes effect at the next open of that path, never
-  under an open handle.
-- **`Vfs::map_changed(name)`** says whether a map would now come from
-  another package than at its last open. It is false for a map never
-  opened, one open now, or an `H2_MAP_DIR` file. The boot uses it to
-  drop stale cache slots (docs/runtime/cache-slots.md).
-
-The boot stacks the layers as font rewrite, then `MapOverrideBackend`
-(`H2_MAP_DIR`), then `PackageBackend`, then `CampaignMapsBackend` over the
-disc. `CampaignMapsBackend` serves a second campaign's converted maps
-(`<data>/campaigns/<key>/<map>.map`) as `maps\<map>.map` where the disc has
-no such file; a name the disc has is never shadowed
-([campaign-picker.md](../halo1/campaign-picker.md) §3). The packages layer
-is always there in a boot, even with an empty maps folder, so a package
-installed later is served; without a packages directory and without
-`H2_MAP_DIR`, `map_override::mount` is exactly `with_disc` /
-`with_disc_rewrite`. Tests:
-`crates/content` (formats, resolver, cache), `crates/vfs/tests/packages.rs`
-(streaming at arbitrary offsets through `D:`, listings, BPS from the cache,
-a refused base, `H2_MAP_DIR` over a package, an unchanged disc without
-packages, packages installed or changed while mounted, open handles kept,
-unchanged maps not resolved again, `map_changed`),
-`crates/boot/src/map_override.rs`, `crates/boot/src/map_bases.rs` and
-`crates/boot/src/map_slots.rs`.
+Live installs and removals publish a new registry and trigger a content
+scan on the next main-menu tick. An open file keeps its resolved bytes
+until the last handle closes. The normal boot mounts the disc, campaign
+additions, any explicit `H2_MAP_DIR` override and the font rewrite
+independently of the generated offers. [Live refresh](../game/map-select.md#changes-during-a-session) ·
+[Boot mounts](../../crates/boot/src/map_override.rs)
 
 `Vfs::with_disc_backend(config, backend)` is `with_disc` for a disc
 backend built by the caller. Tests: `crates/vfs/src/map_override.rs` and

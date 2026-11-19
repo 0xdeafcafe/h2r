@@ -436,7 +436,12 @@ in the list with replay available after the match. They buffer packed
 telemetry locally and take turns uploading after they finish. The batch prints
 its Live batch ID and writes it to `batch.json`. Fork seed runs stay local.
 
-The same game stream becomes the replay at the end. The CLI still saves the
+The same game stream becomes the replay at the end. Uploads use the
+game's telemetry frames, which include machine travel when sampled.
+The finished-game viewer switches to the archive when it is published.
+[Replay playback](../live/replay-fidelity.md#current-recording-and-playback)
+
+The CLI still saves the
 local report, including when an upload fails. Training games are private
 and excluded from public stats and ranks. The
 [Live API](../live/live-api.md#clanker-training) describes the storage limits.

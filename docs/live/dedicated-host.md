@@ -1,6 +1,6 @@
 # Running Halo 2 as a dedicated host
 
-**Partially feasible.** A Mac can run the native title without a window. The question is whether Halo 2 will keep that machine in charge when every player is remote. Its simulation chooses the host by machine identity, but its normal lobby starts through a local player. This branch adds `h2 serve --system-link` so the coordinator can test the first real client join. The join and zero-local-player lifecycle still need a game run.
+**Partially feasible.** A Mac can run the native title without a window. The question is whether Halo 2 will keep that machine in charge when every player is remote. Its simulation chooses the host by machine identity, but its normal lobby starts through a local player. The dedicated-host spike provides `h2 serve --system-link` for the first real client join. The join and zero-local-player lifecycle still need a game run.
 
 Live would choose and reserve the machine. The native game would run the match. With that arrangement every player has a network path to the authority, including the player who used to host. Fairness improves by removing that player's zero-network-delay advantage. Latency improves for a given player only if the new route and server perform better.
 
@@ -26,17 +26,39 @@ At 40 ms symmetric RTT, a shot takes about 20 ms to reach the host and confirmat
 
 An operator-controlled host keeps a player from choosing the authoritative clock, changing the match result on that machine or ending everyone’s game by quitting. Its telemetry can corroborate damage and kills. Input automation, information available to modified clients, packet loss and differing routes remain. A donor controls their machine and can falsify the authoritative record. Start donated servers as unranked. Central hosting also trades the former host’s immediate authority and availability of local play for dependence on capacity, routing and operator uptime. Preserve ordinary custom games and abort an interrupted ranked round without awarding a partial result. [Live trust boundary](live-security.md) · [Gameplay telemetry](live-telemetry.md)
 
+**Light host (in progress).** Keep the network lobby and authoritative
+simulation running at real-time pace while skipping steady-state world
+drawing and using a silent audio clock. Make bot support optional. The
+goal is to reduce tick cost and memory enough to host matches on a small
+machine. The zero-local trial and the load measurements below are still
+needed. [Headless simulation](../runtime/sim.md)
+
 ## Where the game could run
+
+The game host needs a native process. The current native game module is
+about **276 MB**. The former Workers Paid script limit was about 10 MB.
+The current Worker bundle limit is **64 MiB**, with **128 MB** of memory
+per isolate. Workers also lack inbound UDP for the game's sockets.
+[Worker limits](https://developers.cloudflare.com/workers/platform/limits/) ·
+[Worker size change](https://developers.cloudflare.com/changelog/post/2026-09-04-increased-worker-size-limit/)
+
+Choose between **Cloudflare Containers** and a **small VPS** after the
+zero-local trial. The Container path needs a Linux x86-64 game build,
+a Durable Object to allocate and route to it, and a WebSocket/TCP tunnel
+for the game's datagrams through our XNet HLE. The VPS path can expose
+the game's UDP ports directly. Compare real route and tick timings before
+choosing. [Container architecture](https://developers.cloudflare.com/containers/concepts/architecture/) ·
+[WebSocket ingress](https://developers.cloudflare.com/containers/examples/websocket/)
 
 **Asset rights decide whether to build a fleet.** The repo expects each user’s own legally obtained disc. The runtime loads a native module derived from its XBE and needs maps and shared disc data. Microsoft’s fan-content rules do not establish permission here to copy those assets into a hosted registry, backups or regional replicas, or operate them concurrently for other people. A private bucket or a disc upload does not settle those questions. Obtain a rights determination covering the actual copies, operators and service model before a managed pilot. Owner-provisioned hardware keeps the disc on its owner’s machine. Separately review public donated hosting. [Project requirements](../../README.md) · [Boot inputs](../runtime/BOOT.md) · [Microsoft Game Content Usage Rules](https://www.xbox.com/en-US/developers/rules)
 
-The native emitter targets arm64 and x86-64 macOS, arm64 iOS/tvOS and x86-64 Windows MSVC. The Windows desktop target has cross-build evidence. A dedicated desktop run still needs qualification. The native game emitter lists no Linux target. A Linux Live service or a Worker build does not produce a Linux game module. Both cloud choices below need an x86-64 Linux ELF module, validated loading/ABI, headless runtime dependencies and an end-to-end join. [Target triples](../../crates/emit/src/compile.rs) · [Windows status](../runtime/windows.md) · [Worker implementation](live-worker.md)
+The native emitter targets arm64 and x86-64 macOS, arm64 iOS/tvOS and x86-64 Windows MSVC. The Windows desktop target has cross-build evidence. A dedicated desktop run still needs qualification. The native game emitter lists no Linux target. A Linux Live service or a Worker build does not produce a Linux game module. Both cloud candidates need an x86-64 Linux ELF module, validated loading/ABI, headless runtime dependencies and an end-to-end join. [Target triples](../../crates/emit/src/compile.rs) · [Windows status](../runtime/windows.md) · [Worker implementation](live-worker.md)
 
 | Host | Path to players and readiness | Illustrative USD per occupied match-hour |
 |---|---|---|
 | Home Mac or PC | Mac is the first test platform. Expose direct UDP on a reachable address for WAN. Availability depends on power, upload and NAT. | Assuming 30 W incremental load and $0.30/kWh, **$0.009/h** electricity, plus hardware, broadband and idle time. |
 | Donated host | Owner installs their own disc data. Admit by build, available slots and measured route. CGNAT needs a relay or a different host. | Same power calculation paid by the donor. Service still pays for coordination, optional relay and support. |
-| Fly Machines | Pick a region. UDP needs dedicated IPv4, binding to `fly-global-services` and matching external/internal ports. Give each match a stable endpoint or route all its clients to one machine. | In iad/ewr, performance-1x/2 GB is $33 per 720 h, **$0.046/h**. Performance-2x/4 GB is **$0.092/h**. Add $2/month per dedicated IPv4, storage and NA/EU egress at $0.02/GB. [Pricing](https://docs.fly.io/about/pricing) · [UDP](https://docs.fly.io/networking/udp-and-tcp) |
+| Fly Machines (direct UDP cost example) | Pick a region. UDP needs dedicated IPv4, binding to `fly-global-services` and matching external/internal ports. Give each match a stable endpoint or route all its clients to one machine. | In iad/ewr, performance-1x/2 GB is $33 per 720 h, **$0.046/h**. Performance-2x/4 GB is **$0.092/h**. Add $2/month per dedicated IPv4, storage and NA/EU egress at $0.02/GB. [Pricing](https://docs.fly.io/about/pricing) · [UDP](https://docs.fly.io/networking/udp-and-tcp) |
 | Cloudflare Containers | A Worker can allocate a Linux/amd64 Container through a Durable Object. End users cannot send raw UDP directly. An adapter through a Worker and Durable Object adds a routing leg. A WebSocket can also delay later updates behind a lost packet. Measure that path to the actual container region. A Worker isolate cannot execute this native game. | Standard-2, 1 vCPU/6 GiB/12 GB. After plan allowances, 6 × $0.009 memory + 12 × $0.000252 disk + 0.5–1 active CPU × $0.072 = **$0.093–0.129/h**. Add Workers Paid, Durable Objects, transfer and idle allocation as applicable. [Pricing](https://developers.cloudflare.com/containers/platform/pricing/) · [Ingress and lifecycle](https://developers.cloudflare.com/containers/concepts/architecture/) |
 
 Rates checked November 19, 2026. The figures assume one running instance per occupied match and exclude taxes. Divide running compute cost by occupancy to account for a warm pool. For example, 50% occupancy doubles compute per occupied hour. At an *assumed* aggregate game egress of 1 Mbit/s, 0.45 GB leaves per hour, another $0.009 on Fly in NA/EU. Telemetry ingest is a different stream. Fly describes low double-digit seconds to create a VM and typically under a second to start a prepared Machine. Cloudflare reports cold starts often around 1–3 s. Both exclude title boot, disc reads, lobby readiness and start-to-spawn. In the Mac co-op harness with seeded data it took about 19 s from opening the agent socket to the main menu. A joinable distributed lobby and playable spawn come later. Cache a matching module ahead of allocation. Measure cold and warm allocation-to-joinable and join-to-first-playable p50/p95 separately before choosing a warm pool. [Co-op startup observations, §12.6](live-coop.md) · [Fly lifecycle](https://docs.fly.io/machines/overview) · [Container lifecycle](https://developers.cloudflare.com/containers/concepts/architecture/)
@@ -108,16 +130,41 @@ Compare with `h2 lockstep` as in the [sim checks](../runtime/sim.md#first-runs).
 
 **Game traffic.** System Link discovers pregame hosts by UDP broadcast. Live discovers through a session ID, XNADDR/key and QoS description. Both reach the game over XNet’s UDP mapping. Keep base through base+6 reachable (game channels +0/+1/+5/+6, QoS +2). On a home router this generally requires port forwarding. The HLE provides no general NAT traversal or transport encryption. Existing public/friends listings use the observed HTTP source address. A successful XNetConnect only records an address mapping. Cloud egress and public UDP ingress can differ. Verify the advertised endpoint externally and allow an authenticated managed ingress separate from the local bind address. The existing WebSocket relay admits an open **co-op** host and one guest for messages up to 1,200 bytes. It cannot carry a retail multiplayer match today. A multiplayer fallback needs authenticated multi-peer channel mapping, datagram boundaries, expiry, limits and real route measurements. [XNet transport](live.md#client-hle-sockets-and-system-link) · [Join and address restrictions](live-custom-games.md) · [Relay](../../crates/live-server/src/relay.rs) · [Worker counterpart](../../crates/live-worker/src/relayroom.rs)
 
-**Proposed assignment.** Current OptiMatch searches compatible sessions and lets a party form one on an empty search. Add a per-match lease on Live, shared by native and Worker backends. For compatible hopper, build, maps, skill and party size, probe each candidate region’s actual UDP endpoint from each client. Choose the lowest worst-player RTT within jitter/loss limits, breaking ties by median. The successful title QoS lookup reports a fixed 5 ms. The separate UDP echo measures elapsed time. Include relay paths in probes. Reserve seats atomically, start the host, wait until discoverable, then return its join information. Prevent parallel peer-host creation while the lease is pending. Expire stale leases, drain hosts and requeue on startup failure. [Current matchmaking](live-matchmaking.md) · [QoS implementation](../../crates/live-hle/src/qos.rs)
+**Proposed assignment.** Current OptiMatch searches compatible sessions
+and lets a party form one on an empty search. The hosted path would add
+a per-match lease in both Live deployments. Probe each candidate's
+actual game route. The title's successful QoS result reports a fixed
+5 ms, while the separate UDP echo measures elapsed time. Include relay
+routes in the comparison. Reserve seats, start the host and return join
+information once it is ready. Expire stale leases and requeue the party
+on startup failure. [Ping-aware host selection](live-matchmaking.md#ping-aware-host-selection-in-progress) ·
+[QoS implementation](../../crates/live-hle/src/qos.rs)
 
-**Ranked admission.** Use a service identity to own and sign for the session, separate from human entrants. Bind a human’s authenticated reservation to the joined peer/player. The telemetry path assigns identities to local and rostered bot slots. An ordinary remote player can lack a verified XUID. Today rank processing requires a finished matchmade game from the recorded host, a host-registered arbitration round before start, and eligible registered participants on the host record. Preserve registration and single-use results, exclude the service account from all rank and score calculations and reconcile disconnects against the frozen roster. A signature authenticates the reporter. The host remains trusted for the result. [Ranking predicates](../../crates/live-server/src/ranks.rs) · [Arbitration](../../crates/live-server/src/arbitration.rs) · [Identity projection](../../crates/live-telemetry/src/session.rs)
+**Ranked admission.** Today rank processing requires a finished
+matchmade game from the recorded host, a host-registered arbitration
+round before start and eligible registered participants on the host
+record. Ordinary remote players can lack a verified XUID.
+[Ranking predicates](../../crates/live-server/src/ranks.rs) ·
+[Arbitration](../../crates/live-server/src/arbitration.rs) ·
+[Identity projection](../../crates/live-telemetry/src/session.rs)
+
+The planned trusted source is the dedicated host. It signs telemetry
+with a service identity separate from the players. Live verifies that
+the assigned host signed the completed game and ties the record to the
+reservation and eligible joined players before it counts for Ranked.
+Preserve single-use results, reconcile disconnects against the
+reserved roster and keep the service account out of ranks and scores.
 
 ## Order of experiments
 
 1. Run the Mac control below. Advance only after a real remote client joins and its actions reach the authoritative world.
 2. Decouple machine ownership/ready/start from local player reconciliation in an isolated host mode. Exercise join, load, combat, results, a second round and last-client departure. If retail requires an owner profile, identify the first failing transition. A retained spectator needs explicit evidence for every slot and gameplay consequence.
-3. Reuse the sim’s gameplay render skip with network pacing. Compare normal and skipped runs on the same maps at 1, 4, 8 and 15 remote machines, including a 16-human split-screen case. Record p50/p95/p99 tick work, missed 33.3 ms deadlines, host CPU, RSS, packets/bytes and both startup intervals. Use agent `hostmetrics`, `capture`, `loads` and host OS resource counters (macOS `/usr/bin/time -l` for whole-process peak RSS and CPU).
-4. Once rights and Linux support are established, pilot Fly in one region with unranked games. Its public UDP path tests the title’s existing transport without first building a multiplayer relay. Compare actual routes and hit outcomes against peer hosts. Introduce fleet assignment, then ranked arbitration after remote identity and crash/no-contest checks pass.
+3. Reuse the sim’s gameplay render skip with network pacing. Compare normal and skipped runs on the same maps at 1, 4, 8 and 15 remote machines, including a 16-human split-screen case. Record p50/p95/p99 tick work, missed 33.3 ms deadlines, host CPU, RSS, packets/bytes and both startup intervals. Use agent `hostperf`, `capture`, `loads` and host OS resource counters (macOS `/usr/bin/time -l` for whole-process peak RSS and CPU).
+4. After the zero-local trial, choose the Container or VPS path. Once
+   rights and Linux support are established, pilot unranked games in one
+   region. Compare routes and hit outcomes against peer hosts. Introduce
+   fleet assignment, then require verified host telemetry for Ranked
+   after the remote identity and crash/no-contest checks pass.
 
 ## Mac System Link spike
 

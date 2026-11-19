@@ -212,8 +212,9 @@ additional `position` (0..1) on each entry.
 `machine_positions` gives the changed device travel values independently
 of the world poses. `i` is the scenario machine index (0..32767) and `p`
 is its position byte (0 closed or at the start, 255 fully open or at the
-end). Entries are sorted by index, at most 255, one per index. A packed v7
-keyframe is a complete baseline, including at a recorded chunk start.
+end). Entries are sorted by index, at most 255, one per index. A
+machine-aware packed keyframe is a complete baseline, including at a
+chunk start. V8 keys carry that baseline in their embedded v7 key.
 An omitted index on a keyframe has unknown travel. An omitted index on a
 delta holds the last value. A `cut` clears the preceding run's state.
 
@@ -370,7 +371,7 @@ the index once and fetches the one chunk whose window holds the tick.
 | method and path | returns |
 |---|---|
 | `GET /healthz` | `{ "ok": true, "position": <head> }` |
-| `GET /.well-known/h2live.json` | server id, API base, server keys (security §4), `url`: the public base URL when known ([live-hosting.md](live-hosting.md)) |
+| `GET /.well-known/h2live.json` | server id, API base, server keys (security §4), `url`: the public base URL when known ([live-hosting.md](live-hosting.md)), and `ingest_frame_versions` for supported live codecs |
 | `GET /v1/accounts/{gamertag}/keys` | account public keys with validity ranges |
 | `GET /v1/accounts` | accounts: `{xuid, gamertag, created_at, online}` |
 | `GET /v1/accounts/{gamertag}` | one account plus `recent_games` (without the co-op games the reader may not see: [Co-op games](#co-op-games)) |
@@ -1735,18 +1736,21 @@ An id that is not 16 lowercase hex digits, or another call name, is a
 index until a verified archive is published. Its published response includes
 `archive_sha256` and an ordered `items` array. Each entry identifies the
 segment’s first and last source ticks, frame count, compressed byte count,
-SHA-256 and zero-based offsets of original v7 keyframes. Ticks beyond the
-JSON safe-integer range use decimal strings. Array order is recording order,
-including repeated or rewound source ticks.
+SHA-256, zero-based offsets of source keys with a complete machine travel
+baseline, and an optional `machine_entry` seed of known device travel at
+the segment start. A seek applies the seed before the segment's first
+frame. Ticks beyond the JSON safe-integer range use decimal strings.
+Items keep recording order, including repeated or rewound source ticks.
 
 `GET /v1/games/{id}/archive/{archive_sha256}/{ordinal}` serves the stored
 segment with `Content-Type: application/x-h2-replay` and
 `Content-Encoding: br`. The browser receives an independently decodable
 H2AR body. Fetch the segment containing the playhead first. Both routes
 apply the game’s normal visibility check. Anonymous segment reads of public
-games are immutable. Authenticated responses are private. New live viewers
-continue to consume the v7 stream. The game stream’s `ReplayArchivePublished`
-event signals that the finished recording can switch to the archive.
+games are immutable. Authenticated responses are private. The game
+stream’s `ReplayArchivePublished` event signals that playback
+can switch to the archive. Live viewing uses the packed stream described
+above.
 
 The original chunk index remains available without the format parameter.
 Historical game inventory, dry run, verification, backup and rollback use
