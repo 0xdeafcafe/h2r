@@ -64,11 +64,17 @@ pub fn counts() -> ((u64, u64, u64), BTreeMap<&'static str, u64>) {
 }
 
 fn refuse(why: &'static str) {
-    *REFUSALS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .entry(why)
-        .or_default() += 1;
+    let total = {
+        let mut refusals = REFUSALS.lock().unwrap_or_else(|e| e.into_inner());
+        *refusals.entry(why).or_default() += 1;
+        refusals.values().sum::<u64>()
+    };
+    if total % 1800 == 1 {
+        let ((callbacks, admitted, compared), refusals) = counts();
+        eprintln!(
+            "native-decals: {admitted} of {callbacks} callbacks native, {compared} compared; refusals {refusals:?}"
+        );
+    }
 }
 
 /// Adds an asynchronous admission/encode failure to the same tally. The

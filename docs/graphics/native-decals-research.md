@@ -134,13 +134,53 @@ the coordinator's handoff can rebind it to synchronous encode confirmation;
 until then the existing `external_passes_dropped` counter is also required in
 an A/B.
 
+## As built
+
+`impl.render.native_decals` (default off) places the context-only callback hook.
+The implementation is split into `native-render/src/decal.rs` (the pure ordered
+snapshot), `native-render/src/decal_gpu.rs` (translation and encoding),
+`feature/src/native_decals.rs` (admission, compare and tallies), and
+`boot/src/native_decals_glue.rs` (live state and resources).
+
+All seven mode positions and their depth, bias and blend configurations are
+implemented. The actual vertex program and live 60-word combiner (including
+`PSTEXTUREMODES` and the final-combiner latch) are translated with the shared
+NV2A compiler. The callback's records and quad lists retain their order. Each
+draw gets its own immutable uniforms; scaled target copies do not share
+per-draw uniform storage.
+
+Admission is deliberately narrower than the whole decal family. It currently
+requires:
+
+- resolved disabled stencil, the mode's exact depth/bias/blend/colour state,
+  and an explicit final combiner that does not consume fog, the eye or a bump
+  environment; no border sampler, two-sided lighting or polygon stipple;
+- a vertex program reading only `c[0..18]` (the live external-pass constants)
+  and inputs only from `v0`, `v3`, `v10` and `v11`;
+- a selected 2D bitmap image whose live texture header is resident, stable
+  across the callback, and has a supported unsigned non-BC colour format.
+  The native texture is decoded from that exact resource's bytes, with its
+  complete mip chain, not from a map cache. BGRA texels are losslessly
+  reordered for the native RGBA upload, as are D3DCOLOR vertex inputs.
+
+Anything else refuses the complete callback before any marker write. Late
+encode failures increment the same refusal tally. The small admission-seam
+assumption remains: `request_external_pass` is currently the commit point, and
+the coordinator's immediate-draw handoff should replace it with synchronous
+backend confirmation. Until that rebind, an accepted callback can still hit a
+late backend drop, so `external_passes_dropped` is mandatory evidence, not an
+optional performance counter.
+
 ## Comparison and remaining runtime evidence
 
-`H2_NATIVE_DECALS_COMPARE` follows the other native stages' compare style:
-leave the selected callback on D3D while recording its candidate native plan,
-and log paired/missing/duplicate draw identities by view, mode, outer-list
-entry and record link. A separate tally reports admissions and refusals by
-reason, with `external_passes_dropped` checked for accepted callbacks. Runtime
-A/B still needs to prove actual replacement, exact depth/bias and blend,
-resident texture identity, and mixed native/D3D order. No runtime evidence is
-claimed by this static classification.
+`H2_NATIVE_DECALS_COMPARE=1` prepares every candidate; `=mode` selects one
+mode, and `=mode:list` one outer-list entry. Compare mode resolves state,
+geometry, shader and live textures but does not queue a native pass or skip
+D3D. Its line identifies the mode, list, record sequence, draw count and quad
+count, and whether preparation succeeded. The running tally is available as
+`(callbacks, admitted, compared)` plus counts by stable refusal reason.
+
+Runtime A/B still needs to prove actual replacement, exact depth/bias and
+blend, live texture identity, mixed native/D3D order, and zero late drops. No
+cargo, game run or runtime comparison was performed by the implementation
+lane. The agent API was not needed for this static work and was not expanded.

@@ -189,6 +189,9 @@ fn prepare(mem: &dyn GuestMemory, mut snapshot: Snapshot) -> Result<Prepared, &'
     if words.render[83] != 0 || words.render[141] != 0 {
         return Err("lighting/stipple");
     }
+    if words.render[d3d::state::slot::ZBIAS as usize] != 0 {
+        return Err("ZBIAS");
+    }
     let psdef =
         d3d::guest::read_array::<60>(&ReadMemory(mem), 0x0048_4f68).map_err(|_| "combiner")?;
     let final_latch = mem
