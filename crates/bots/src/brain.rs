@@ -11,6 +11,8 @@
 
 use input::host::HostPadState;
 
+use crate::arms::{Arms, Pickup};
+
 pub type Vec3 = [f32; 3];
 
 /// One player as the bot sees it.
@@ -31,6 +33,26 @@ pub struct Me {
     /// Where the bot aims: a unit vector.
     pub aim: Vec3,
     pub team: i16,
+    /// Shield and body vitality, 0 to 1 (object `+0xf0`, `+0xec`). The
+    /// shield can go over 1 with an overshield.
+    pub shield: f32,
+    pub health: f32,
+    /// What it carries (docs/game/bots.md section 3.6); `None` when not
+    /// read, and then the brain never acts on ammunition.
+    pub arms: Option<Arms>,
+}
+
+impl Default for Me {
+    fn default() -> Self {
+        Me {
+            position: [0.0; 3],
+            aim: [1.0, 0.0, 0.0],
+            team: 0,
+            shield: 1.0,
+            health: 1.0,
+            arms: None,
+        }
+    }
 }
 
 /// What the bot knows this tick.
@@ -45,6 +67,8 @@ pub struct Perception {
     pub teams: bool,
     /// The game's tick count (30 a second).
     pub tick: u32,
+    /// The weapons lying in the world.
+    pub pickups: Vec<Pickup>,
 }
 
 /// The trivial brain's tuning.
@@ -163,6 +187,7 @@ mod tests {
             position: [0.0, 0.0, 0.0],
             aim,
             team: 0,
+            ..Me::default()
         }
     }
     fn seen(x: f32, y: f32, team: i16) -> Seen {
@@ -179,6 +204,7 @@ mod tests {
                 others,
                 teams,
                 tick: 0,
+                pickups: vec![],
             },
             &Params::default(),
         )
@@ -238,6 +264,7 @@ mod tests {
                 }],
                 teams: false,
                 tick: 0,
+                pickups: vec![],
             },
             &Params::default(),
         );
@@ -259,6 +286,7 @@ mod tests {
             others: vec![seen(9.0, 0.0, 1), seen(0.0, 2.0, 0), seen(4.0, 0.0, 1)],
             teams: true,
             tick: 0,
+            pickups: vec![],
         };
         assert_eq!(target(&p), Some(2));
     }

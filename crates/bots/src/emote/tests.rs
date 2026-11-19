@@ -243,10 +243,12 @@ fn the_mind_crouches_over_a_body_and_stands_still() {
             position: HERE,
             aim: [1.0, 0.0, 0.0],
             team: 0,
+            ..Me::default()
         }),
         others: vec![],
         teams: false,
         tick: 1,
+        pickups: vec![],
     };
     let pad = m.step(&p, None);
     assert!(pad.buttons.contains(crate::mind::CROUCH));
