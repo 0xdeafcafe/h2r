@@ -434,9 +434,10 @@ physics"). Retail writes the slots exactly for the `coll`s of scenery
 with no `phmo` (V, every map on the disc: a Delta Halo statue, trees;
 not weapons, equipment, devices, bipeds or crates). So:
 
-- a scenery object with no `phmo` (through version 84 every converted
-  one; since 85 only those whose Halo 1 collision has no solid cell or
-  whose base has no scenery `phmo`) gets its `coll` with one slot per BSP: the box of the BSP's vertices at
+- a scenery object with no `phmo` (every converted one: through version
+  84, and again since 92; from 85 to 91 only those whose Halo 1 collision
+  had no solid cell or whose base had no scenery `phmo`) gets its `coll`
+  with one slot per BSP: the box of the BSP's vertices at
   `+0x10`/`+0x20`, the `coll`'s own datum at `+0x30`, and MOPP code from
   `crates/mopp` over the BSP's surfaces, keyed `0..n` (`coll::bsp_mopp`),
   at `+0x64`;
@@ -495,6 +496,23 @@ rigid bodies: only bipeds, vehicles, machines, crates and creatures get
 bodies). Retail Blood Gulch's base keeps its rocks in the structure and
 its one solid prop as a crate with a fixed body, so the fix is one of
 those two, not more scenery physics.
+
+**Since version 92 placed scenery is structure.** The built scenery
+`phmo` (versions 85 to 91, `rebuild::scenery_body`, the base's scenery
+body words and size classes) is gone: scenery has no `phmo` again and
+its `coll` keeps its BSP physics slots, as retail scenery with no `phmo`.
+Instead every scenery placement there from the start whose object has a
+collision model has that collision moved to its place and merged into
+the level's collision BSP (`h1convert::scenery_collision`,
+[multiplayer.md](multiplayer.md), "Collision"), the way retail builds its
+rocks into the structure; the object still draws as scenery. So Havok
+meets the rocks and trees through the structure's MOPP code, and the
+engine's own BSP tests (bullets, projectiles, a biped's ground checks)
+through the structure's 3D tree. Which objects is decided by the `coll`,
+not the name. Proof: `h1objects/tests/scenery_collision_disc.rs` (inside
+`boulder_doublewide` is solid in converted Blood Gulch, a ray from above
+stops on its top). Whether the player now stops at the boulders is the
+game run's to show.
 
 **`hlmt` region bytes.** Each `hlmt` region (`0x10`) says which `coll`
 region it uses (`i8` at `+4`) and which physics region (`+5`); each
@@ -885,9 +903,12 @@ attachments name a contrail (236 attachments) names the converted one.
   alone do not put converted scenery in the Havok world. Retail
   Coagulation, Blood Gulch's base, gives every scenery with collision a
   `phmo` (6 of 6, V: `h2 object coagulation ...`; the trees' rigid bodies
-  on node 0 or -1). Since converter version 85 scenery with solid Halo 1
-  collision gets one, built as devices' are, with the base's scenery
-  body words (tag-definitions.md, "Scenery from definitions", Physics).
+  on node 0 or -1). From converter version 85 to 91 scenery with solid
+  Halo 1 collision got one, built as devices' are, with the base's
+  scenery body words (tag-definitions.md, "Scenery from definitions",
+  Physics); the engine never builds scenery a body from it, so since 92
+  a placement's collision joins the level's instead ("Collision for
+  Havok").
   Which object code adds a slots-only scenery's shapes to the world is
   not found (the slot shapes are built by `0x00246c60` from the `coll`
   post-process `0x002122b0`; no reader of slot `+0x40` or `+0x50` was

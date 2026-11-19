@@ -343,42 +343,24 @@ words as the turret role's `0x6c..0x74`) and the `hlmt`'s `0x34..0x44`
 (five decreasing floats); coagulation (12) and beavercreek (17) give the
 same object words (beavercreek also `0x1c`) and no `hlmt` majority.
 
-**Physics** (since converter version 85). Scenery whose Halo 1 collision
-holds solid space gets a `phmo` built from it as a device's is (one rigid
-body per collision node, on its model node, of the node's solid cells;
-"Physics models from Halo 1"), whose bodies take the flags `+0x18` and
-motion `+0x1a` the base's scenery bodies hold (`rebuild::scenery_body`,
-the most common over every body of every scenery `phmo` of the base;
-V coagulation: all six bodies flags 0, motion 2) and each its own size
-class `+0x1e` (since version 87, `rebuild::size_class`: the class of the
-base body, any `phmo`, nearest in bounding radius). V, every rigid body
-of every `phmo` on coagulation, beavercreek and 05a: `+0x1e` rises with
-the bounding radius `+0x14`, 3 from 0.30 to 0.70, 4 from 0.73 to 1.23,
-5 from 1.39 to 1.96, 6 from 2.13 to 9.73 (1 and 2 overlap below 0.48);
-coagulation's trees hold 5 at 1.72 to 1.82 and 6 at 2.53 and 7.33, so
-no one value is the scenery's. E: `0x001d5ec0` takes the largest over an
-object's bodies (`0x001d63fd`) and `0x001d69d0` picks a creature's
-collision layer by it (`0x001d6a32`: up to 1 layer 4, 5 and over 5,
-else 3); what reads it for scenery was not found. Its `coll` then has no BSP physics slots
-(retail: nothing with a `phmo` has them). Other scenery with collision
-(no solid cell, or a base whose scenery has no `phmo`) keeps the slots.
-Through version 84 no scenery had a `phmo`, and in a game run on
-converted Blood Gulch (2026-11-19) the player walked through a boulder
-with its slots in place, and no Havok body belonged to any of the map's
-50 scenery placements (docs/halo1/objects.md, open items). Retail holds
-both forms (V: 05a 11 scenery with collision and no `phmo`, 5 with one;
-beavercreek 6 and 3; coagulation 0 and 6), so the slots are a retail
-form, but which engine path puts a slots-only object in the Havok world
-was not found. E, the motion word: the body builder `0x001d5940` maps
-`+0x1a` 0..5 to Havok motions 2..7 (jump table `0x001d5bd4`) and makes
-the motion 7 whatever the word when its caller asks (`0x001d5a29`).
-Proof: `tests/rebuild_disc.rs`, `every_scenery_rebuilds_from_its_definition`
-(a `phmo` exactly where the collision is solid and the base has scenery
-bodies, every body with their words, no slots beside it) and
-`scenery_bodies_take_the_bases_scenery_words` (Coagulation's scenery
-bodies hold one flags and motion pattern, the one taken, and each its
-size class by its radius among the base's other bodies). Whether the player now stops
-at the boulders is the game run's to show.
+**Physics** (converter versions 85 to 91; removed in 92). Scenery whose
+Halo 1 collision held solid space got a `phmo` built from it as a
+device's is, its bodies taking the base's scenery body flags and motion
+(`+0x18`, `+0x1a`; V coagulation: all six bodies flags 0, motion 2) and
+each a size class `+0x1e` by its bounding radius (V, every rigid body of
+every `phmo` on coagulation, beavercreek and 05a: `+0x1e` rises with the
+bounding radius `+0x14`, 3 from 0.30 to 0.70, 4 from 0.73 to 1.23, 5 from
+1.39 to 1.96, 6 from 2.13 to 9.73; E: `0x001d5ec0` takes the largest over
+an object's bodies and `0x001d69d0` picks a creature's collision layer by
+it). Retail holds both forms (V: 05a 11 scenery with collision and no
+`phmo`, 5 with one; beavercreek 6 and 3; coagulation 0 and 6). The built
+`phmo` was inert (below), so since version 92 converted scenery has no
+`phmo` and its `coll` keeps one BSP physics slot per BSP, as retail
+scenery with no `phmo`; each placement's collision is merged into the
+level's instead (`h1convert::scenery_collision`,
+docs/halo1/multiplayer.md, "Collision"). Proof:
+`tests/rebuild_disc.rs`, `every_scenery_rebuilds_from_its_definition`
+(no `phmo`, a slot per BSP).
 
 **It does not: the engine never gives scenery a Havok body** (2026-11-19).
 E: the only place an object gets a physics component and rigid bodies

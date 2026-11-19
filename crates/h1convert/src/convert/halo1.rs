@@ -55,6 +55,22 @@ pub trait Halo1Objects {
     /// time: its index among the tags [`ObjectTags::install`] adds.
     fn first_person_arms(&mut self, id: h1map::TagId) -> std::result::Result<usize, String>;
 
+    /// The collision of the Halo 1 object tag `name` of `group`, in object
+    /// space, as Halo 2 BSPs: for each collision node with any, its BSP of
+    /// the first permutation of its region (the one a converted
+    /// placement, which names no variant, draws), placed by the render
+    /// model's default pose. Empty when it has no collision; the default
+    /// reads none. [`merge_scenery_collision`] puts each placed scenery
+    /// object's into the level's.
+    fn collision(
+        &mut self,
+        group: [u8; 4],
+        name: &str,
+    ) -> std::result::Result<Vec<tags::collision::Bsp>, String> {
+        let _ = (group, name);
+        Ok(Vec::new())
+    }
+
     /// Everything converted so far, ready to add to a map.
     fn take(&mut self) -> ObjectTags;
 }
@@ -371,7 +387,8 @@ pub fn prepare_halo1<R: Read + Seek>(
             None
         }
     };
-    let scenery = plan_scenery(h1, objects, first, &mut applied.unresolved)?;
+    let mut scenery = plan_scenery(h1, objects, first, &mut applied.unresolved)?;
+    merge_scenery_collision(objects, &mut p, &mut scenery, &mut applied.unresolved)?;
     // The player's first-person arms: Halo 1's, which Halo 1's
     // first-person graphs name node for node (the engine binds them by
     // name; Halo 2's arms match no node of them).
@@ -751,6 +768,24 @@ pub struct Scenery {
     pub placements: Vec<Vec<u8>>,
     /// Halo 1 placements left out (their palette entry didn't convert).
     pub dropped: usize,
+    /// Each placement written, as Halo 1 has it, in order.
+    pub placed: Vec<PlacedScenery>,
+    /// Placements whose collision joined the level's
+    /// ([`merge_scenery_collision`]).
+    pub solid: usize,
+}
+
+/// A placed Halo 1 scenery object: its tag, where it stands, and whether
+/// it is there from the start (Halo 1's "not placed automatically" bit,
+/// `+4` bit 0, clear).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlacedScenery {
+    pub name: String,
+    /// Position (`+8`).
+    pub position: [f32; 3],
+    /// Yaw, pitch and roll in radians (`+0x14`).
+    pub rotation: [f32; 3],
+    pub at_start: bool,
 }
 
 impl Scenery {
@@ -803,7 +838,7 @@ pub fn plan_scenery(
     let space = h1.tag_space();
     let palette = space.block_at(scnr, layout::SCENERY_PALETTE.0, layout::SCENERY_PALETTE.1)?;
     let mut out = Scenery::default();
-    // Halo 1 palette index -> Halo 2's.
+    // Halo 1 palette index -> Halo 2's, and the tag's name.
     let mut index = Vec::new();
     for e in &palette {
         let name = h1map::TagRef::read(e, 0)
@@ -815,7 +850,7 @@ pub fn plan_scenery(
         };
         match objects.object(*b"scen", &name) {
             Ok(k) => {
-                index.push(Some(out.palette.len() as u16));
+                index.push(Some((out.palette.len() as u16, name)));
                 out.palette.push(added_datum(first + k));
             }
             Err(w) => {
@@ -826,15 +861,76 @@ pub fn plan_scenery(
     }
     for e in space.block_at(scnr, layout::SCENERY.0, layout::SCENERY.1)? {
         let p = i16::from_le_bytes([e[0], e[1]]);
-        match usize::try_from(p).ok().and_then(|p| index.get(p).copied().flatten()) {
-            Some(k) => {
+        match usize::try_from(p)
+            .ok()
+            .and_then(|p| index.get(p).cloned().flatten())
+        {
+            Some((k, name)) => {
                 let unique = out.placements.len() as u32;
                 out.placements.push(scenery_placement(e, k, unique));
+                let f = |at: usize| f32::from_le_bytes(e[at..at + 4].try_into().expect("4"));
+                out.placed.push(PlacedScenery {
+                    name,
+                    position: [f(8), f(0xc), f(0x10)],
+                    rotation: [f(0x14), f(0x18), f(0x1c)],
+                    at_start: u16::from_le_bytes([e[4], e[5]]) & 1 == 0,
+                });
             }
             None => out.dropped += 1,
         }
     }
     Ok(out)
+}
+
+/// Puts the collision of every placed scenery object that has one into
+/// the level's ([`crate::scenery_collision`]): the engine gives scenery no
+/// Havok body, so Halo 1's rocks and trees are solid only as structure,
+/// the way retail Halo 2 builds its rocks. Each placement there from the
+/// start has its object's collision ([`Halo1Objects::collision`]) moved
+/// to its place and merged into `p.collision`, its new leaves in the
+/// cluster of the level leaf each stands in (`p.sound_leaves`); its
+/// surfaces take collision material 0 (every converted collision material
+/// is the base's one template, `structure::Templates`). The object still
+/// draws as scenery. A placement whose collision can't be read or doesn't
+/// fit Halo 2's packed fields is listed in `unresolved` and stays
+/// walk-through. Counts the placements merged in `scenery.solid`.
+pub fn merge_scenery_collision(
+    objects: &mut dyn Halo1Objects,
+    p: &mut Prepared,
+    scenery: &mut Scenery,
+    unresolved: &mut Vec<String>,
+) -> Result<()> {
+    use crate::scenery_collision::{Pose, merge, transformed};
+    let mut collisions: std::collections::HashMap<String, Vec<tags::collision::Bsp>> =
+        std::collections::HashMap::new();
+    for placed in scenery.placed.iter().filter(|s| s.at_start) {
+        let name = &placed.name;
+        let bsps = collisions.entry(name.clone()).or_insert_with(|| {
+            objects.collision(*b"scen", name).unwrap_or_else(|w| {
+                unresolved.push(format!("scenery {name}: collision not read: {w}"));
+                Vec::new()
+            })
+        });
+        let pose = Pose::placement(placed.position, placed.rotation);
+        let mut joined = false;
+        for bsp in bsps.iter() {
+            match transformed(bsp, &pose).and_then(|world| merge(&mut p.collision, &world, 0)) {
+                Ok(m) => {
+                    for l in m.stand_ins {
+                        let c = p.sound_leaves.get(l).copied().unwrap_or(0);
+                        p.sound_leaves.push(c);
+                    }
+                    joined |= m.slots > 0;
+                }
+                Err(e) => unresolved.push(format!(
+                    "scenery {name} at {:?}: collision not merged into the level's: {e}",
+                    placed.position
+                )),
+            }
+        }
+        scenery.solid += usize::from(joined);
+    }
+    Ok(())
 }
 
 /// [`prepare`] for the Halo 2 sandbox with Halo 1's scenery: its `scen`
@@ -848,7 +944,10 @@ pub fn prepare_halo2<R: Read + Seek>(
 ) -> Result<Prepared> {
     let mut p = prepare(h1, source_sha256, base, Sandbox::Halo2)?;
     let first = base.index_slots() as usize + p.applied.collections.len();
-    let scenery = plan_scenery(h1, objects, first, &mut p.applied.unresolved)?;
+    let mut scenery = plan_scenery(h1, objects, first, &mut p.applied.unresolved)?;
+    let mut unresolved = std::mem::take(&mut p.applied.unresolved);
+    merge_scenery_collision(objects, &mut p, &mut scenery, &mut unresolved)?;
+    p.applied.unresolved = unresolved;
     p.objects = Some(objects.take());
     p.objects_first = first;
     p.scenery = Some(scenery);
@@ -961,7 +1060,7 @@ mod tests {
         let sc = Scenery {
             palette: vec![added_datum(5), added_datum(6)],
             placements: vec![b.clone(), b],
-            dropped: 0,
+            ..Scenery::default()
         };
         assert_eq!(sc.palette_block().bytes.len(), 2 * SCENERY_PALETTE_ENTRY);
         assert_eq!(sc.palette_block().fixups.len(), 2);

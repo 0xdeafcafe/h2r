@@ -1930,7 +1930,7 @@ pub struct BodyWords {
     /// `+0x1a`, the motion: 0 to 5 are Havok motions 2 to 7 (E: the table
     /// at `0x001d5bd4`); 2 is box inertia.
     pub motion: u16,
-    /// `+0x1e`, the body's size class ([`size_class`]): V, every rigid
+    /// `+0x1e`, the body's size class: V, every rigid
     /// body of every `phmo` on coagulation, beavercreek and
     /// 05a_deltaapproach, it rises with the body's bounding sphere radius
     /// (`+0x14`): 3 from 0.30 to 0.70, 4 from 0.73 to 1.23, 5 from 1.39 to
@@ -1960,103 +1960,6 @@ pub const BIPED_BODY: BodyWords = BodyWords {
     motion: 2,
     word_1e: 1,
 };
-
-/// `phmo +0x38`: the rigid bodies, `0x90` each; a body's flags at `+0x18`,
-/// motion at `+0x1a` and [`BodyWords::word_1e`] at `+0x1e` (`u16` each).
-pub const PHMO_RIGID_BODIES: usize = 0x38;
-pub const RIGID_BODY_SIZE: usize = 0x90;
-
-/// The rigid body words of the base map's scenery physics models: over
-/// every rigid body of every `phmo` a `scen` of the base names (through
-/// its `hlmt`, [`crate::convert::h2::HLMT_PHYSICS_MODEL`]), the flags and
-/// motion most of them hold, with how many bodies there were; `None` when
-/// no scenery of the base has a physics model. The `+0x1e` returned is
-/// the most common among those bodies; a built body takes its own by its
-/// size instead ([`size_class`]; V, coagulation: 5 on the trees whose
-/// bodies reach 1.72 to 1.82, 6 on the two of 2.53 and 7.33).
-///
-/// Converted scenery is built a physics model from its Halo 1 collision
-/// with these words. Through converter version 84 it had none, only its
-/// `coll`'s BSP physics slots, and the player walked through Blood
-/// Gulch's boulders (game run, 2026-11-19): no Havok body belonged to any
-/// scenery placement. Retail Coagulation, Blood Gulch's base, gives
-/// every scenery with collision a `phmo` (6 of 6).
-///
-/// E, how the engine reads the motion: the body builder `0x001d5940`
-/// maps `+0x1a` 0..5 to Havok motions 2..7 (the jump table at
-/// `0x001d5bd4`, cases `0x001d5a01`..`0x001d5a24`), then makes it 7
-/// whatever the word when its caller asks for a fixed body (`0x001d5a29`).
-pub fn scenery_body(base: &crate::base::Base) -> Result<Option<(BodyWords, usize)>> {
-    let model = crate::convert::h2::MODEL;
-    let physics = crate::convert::h2::HLMT_PHYSICS_MODEL;
-    let mut votes = std::collections::BTreeMap::<(u16, u16), usize>::new();
-    let mut sizes = std::collections::BTreeMap::<u16, usize>::new();
-    let mut seen = std::collections::HashSet::new();
-    for t in base.tags.iter().filter(|t| t.1 == FourCC(*b"scen")) {
-        let bytes = base.root(t.0)?;
-        let Some(h) = base.reference(&bytes, model) else {
-            continue;
-        };
-        let Some(p) = base.reference(&base.root(h)?, physics) else {
-            continue;
-        };
-        if !seen.insert(p) {
-            continue;
-        }
-        let phmo = base.root(p)?;
-        let mut i = 0;
-        while let Some(rb) = base.element(&phmo, PHMO_RIGID_BODIES, RIGID_BODY_SIZE, i)? {
-            let h = |o: usize| u16::from_le_bytes([rb[o], rb[o + 1]]);
-            *votes.entry((h(0x18), h(0x1a))).or_default() += 1;
-            *sizes.entry(h(0x1e)).or_default() += 1;
-            i += 1;
-        }
-    }
-    let total: usize = votes.values().sum();
-    let word_1e = sizes
-        .into_iter()
-        .max_by_key(|(w, c)| (*c, std::cmp::Reverse(*w)))
-        .map_or(0, |(w, _)| w);
-    Ok(votes
-        .into_iter()
-        .max_by_key(|(w, c)| (*c, std::cmp::Reverse(*w)))
-        .map(|((flags, motion), _)| {
-            (
-                BodyWords {
-                    flags,
-                    motion,
-                    word_1e,
-                },
-                total,
-            )
-        }))
-}
-
-/// Every rigid body of every physics model of the base: (bounding sphere
-/// radius `+0x14`, size class `+0x1e`), for [`size_class`].
-pub fn size_classes(base: &crate::base::Base) -> Result<Vec<(f32, u16)>> {
-    let mut out = Vec::new();
-    for t in base.tags.iter().filter(|t| t.1 == FourCC(*b"phmo")) {
-        let phmo = base.root(t.0)?;
-        let mut i = 0;
-        while let Some(rb) = base.element(&phmo, PHMO_RIGID_BODIES, RIGID_BODY_SIZE, i)? {
-            let radius = f32::from_le_bytes(rb[0x14..0x18].try_into().expect("4"));
-            out.push((radius, u16::from_le_bytes([rb[0x1e], rb[0x1f]])));
-            i += 1;
-        }
-    }
-    Ok(out)
-}
-
-/// A body's size class ([`BodyWords::word_1e`]) by its bounding sphere
-/// radius: the class of the base body whose radius is nearest
-/// ([`size_classes`]); `None` with no base bodies.
-pub fn size_class(classes: &[(f32, u16)], radius: f32) -> Option<u16> {
-    classes
-        .iter()
-        .min_by(|a, b| (a.0 - radius).abs().total_cmp(&(b.0 - radius).abs()))
-        .map(|c| c.1)
-}
 
 /// The global material every built piece names, with the index retail
 /// shapes of that material hold at header `+6` (V: the disc's
@@ -2097,19 +2000,6 @@ pub fn physics_model(
     nodes: &[PhysNode],
     words: BodyWords,
     joints: &[crate::ragdoll::Constraint],
-) -> Result<Block> {
-    physics_model_sized(bodies, nodes, words, joints, &[])
-}
-
-/// [`physics_model`], each body's `+0x1e` its own size class by its
-/// bounding sphere radius ([`size_class`] over `classes`) where `classes`
-/// has any, else `words`'.
-pub fn physics_model_sized(
-    bodies: &[Body],
-    nodes: &[PhysNode],
-    words: BodyWords,
-    joints: &[crate::ragdoll::Constraint],
-    classes: &[(f32, u16)],
 ) -> Result<Block> {
     let d = def(b"phmo")?;
     let mut r = defs::default_record(d);
@@ -2270,11 +2160,7 @@ pub fn physics_model_sized(
         set(&mut rb, "bounding_sphere_offset", Val::floats(&centre))?;
         set(&mut rb, "bounding_sphere_radius", Val::Float(radius))?;
         set(&mut rb, "unknown_18", u16_pair(words.flags, words.motion))?;
-        set(
-            &mut rb,
-            "unknown_1c",
-            u16_hi(size_class(classes, radius).unwrap_or(words.word_1e)),
-        )?;
+        set(&mut rb, "unknown_1c", u16_hi(words.word_1e))?;
         set(&mut rb, "unknown_20", f(1.0))?;
         set(&mut rb, "unknown_28", f(0.05))?;
         set(&mut rb, "shape_type", Val::Int(shape_type))?;
