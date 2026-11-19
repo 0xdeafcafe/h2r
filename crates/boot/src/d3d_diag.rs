@@ -702,6 +702,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
             self.origin(id, || {
                 format!("render-to-texture surface {surface:?} in place")
             });
+            crate::native_world_layers_glue::sample_surface(surface, id);
             Tracked { id, inner }
         }))
     }
@@ -913,6 +914,16 @@ impl<B: Backend> Backend for DiagBackend<B> {
         let inner: [Option<&B::Texture>; 4] =
             std::array::from_fn(|i| textures[i].map(|t| &t.inner));
         let r = self.inner.draw(color, depth, draw, inner);
+        if crate::native_world_layers_glue::comparing() {
+            crate::native_world_layers_glue::compare_draw(
+                self.in_frame,
+                draw,
+                color,
+                depth,
+                std::array::from_fn(|n| textures[n].map(|t| t.id)),
+                &r,
+            );
+        }
         if probing {
             self.probe.draw(probe_draw(color, depth, draw, &r));
         }
@@ -1028,6 +1039,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
             || self.logging()
             || self.sweep.is_some()
             || self.probe.armed()
+            || crate::native_world_layers_glue::comparing()
         {
             let r = self.draw(color, depth, &draw, textures);
             return (r, draw.streams);

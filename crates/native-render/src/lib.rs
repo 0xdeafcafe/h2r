@@ -60,3 +60,4 @@ pub mod transparent;
 #[cfg(feature = "gpu")]
 pub mod transparent_gpu;
 pub mod world;
+pub mod world_layers;

@@ -854,6 +854,32 @@ vector (`v1`) and view vector (`v0`), and the lightmap (stage 3). Its
 5. The A/B per template, and `native-world` keeps a material native only
    once its template's A/B is clean.
 
+### Opaque-layer comparison
+
+`H2_NATIVE_WORLD_LAYERS_COMPARE=2000,3000` prints the indexed D3D
+draws of layers 1, 2, 3, 5, 7 and 8 at those present numbers. It works
+with or without the native stage switches. Take a reference with both
+`impl.render.native_world=off` and `impl.render.native_objects=off`
+to see the guest's complete layer 3. Use the same replay and render
+scale for both comparisons. Each line names the layer's call site and
+its list, the standard geometry handler's owner, render record, part,
+shader, variant and implementation where they resolve, plus the
+indexed call's return site, attachments, clip, W/Z and stencil state.
+Other indexed handlers lack a geometry identity.
+
+Target 1 has two guest headers. The scene's main layer-1 site
+(`0x0002be45`) asks `0x00014bc0` for it before the layer, and
+`0x0001dcf0(1)` gives the attachment header at descriptor `+0x18`
+when the descriptor is enabled and `+0x78` is positive.
+`0x0001dcc0(1)` returns the texture header at `+4`. The line reports
+both headers and the texture's guest size, whether the draw wrote to
+that attachment and which stages bound the texture header. An
+`in_place_sample` line names the actual backend surface and texture ID,
+which can be paired with the indexed draw's `texture_ids`. Equal guest
+dimensions alone do not establish the same target. The diagnostic keeps
+every guest draw. Frame and pass color checks use the agent API
+(`render.frame` and `render.stats`).
+
 ## Stage 2: objects and skinning (design)
 
 Bipeds, vehicles, weapons, equipment, scenery, machines and crates: every
