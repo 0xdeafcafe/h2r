@@ -26,6 +26,8 @@ pub(crate) struct Segment {
     pub bytes: u64,
     pub sha256: String,
     pub keyframes: Vec<u16>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub machine_entry: Vec<game::MachinePosition>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -42,6 +44,10 @@ pub(crate) struct Totals {
 pub(crate) struct Progress {
     pub(super) source_position: u64,
     after: source::Cursor,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    machines: Vec<game::MachinePosition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_tick: Option<u64>,
     pub archive_sha256: Option<String>,
     pub backup_sha256: Option<String>,
     pub totals: Totals,
@@ -236,6 +242,32 @@ fn snapshot(live: &Live, id: &str, expected: Option<u64>) -> Result<Recording, A
     Ok(g.recording.clone())
 }
 
+/// Sparse source frames stay intact. A seeker needs the known positions
+/// immediately before the first frame, then the original resets and changes.
+fn machine_states(
+    previous: &Progress,
+    batch: &source::Batch,
+) -> (Vec<game::MachinePosition>, Vec<game::MachinePosition>) {
+    use std::collections::BTreeMap;
+    let first = &batch.frames[0];
+    let reset = previous.last_tick.is_some_and(|t| t >= first.tick)
+        || first.cut.is_some()
+        || batch.keyframes.first() == Some(&0);
+    let entry = if reset {
+        Vec::new()
+    } else {
+        previous.machines.clone()
+    };
+    let mut known: BTreeMap<_, _> = entry.iter().map(|m| (m.i, *m)).collect();
+    for (i, frame) in batch.frames.iter().enumerate() {
+        if frame.cut.is_some() || batch.keyframes.binary_search(&(i as u16)).is_ok() {
+            known.clear();
+        }
+        known.extend(frame.machine_positions.iter().map(|m| (m.i, *m)));
+    }
+    (entry, known.into_values().collect())
+}
+
 /// Native ingest and HTTP run on Tokio. Column prediction, Brotli and exact
 /// comparison belong on the blocking pool. Workerd has one thread and the
 /// alarm or admin request processes just this bounded segment.
@@ -272,7 +304,7 @@ pub(crate) async fn step<'a>(
         return Err(conflict("archive has not been published"));
     }
     let p = if let Some(t) = req.cursor {
-        if t.len() > 16384 {
+        if t.len() > (2 << 20) {
             return Err(invalid("invalid archive cursor"));
         }
         let b = live_proto::pack::from_base64(&t).map_err(|_| invalid("invalid archive cursor"))?;
@@ -342,6 +374,7 @@ pub(crate) async fn step<'a>(
     let from_tick = batch.frames[0].tick;
     let to_tick = batch.frames.last().unwrap().tick;
     let frames = batch.frames.len();
+    let (machine_entry, machines) = machine_states(&p, &batch);
     let stored = checked_payload(batch.frames, existing).await?;
     let bytes_count = stored.len() as u64;
     let sha256 = match published {
@@ -356,6 +389,7 @@ pub(crate) async fn step<'a>(
         bytes: bytes_count,
         sha256,
         keyframes: batch.keyframes,
+        machine_entry,
     };
     let mut rows = Vec::with_capacity(batch.originals.len());
     for original in batch.originals {
@@ -377,19 +411,24 @@ pub(crate) async fn step<'a>(
     ))?;
     // The immutable node has a fixed versioned field order. Repeating
     // public JSON property names in every stored node cost 75 bytes each.
-    let fields = (
-        seg.from_tick,
-        seg.to_tick,
-        seg.frames,
-        seg.bytes,
-        &seg.sha256,
-        &seg.keyframes,
-    );
+    let mut fields = vec![
+        data(&seg.from_tick)?,
+        data(&seg.to_tick)?,
+        data(&seg.frames)?,
+        data(&seg.bytes)?,
+        data(&seg.sha256)?,
+        data(&seg.keyframes)?,
+    ];
+    if !seg.machine_entry.is_empty() {
+        fields.push(data(&seg.machine_entry)?);
+    }
     let index = bytes(&("H2AR1", id, r.position, &p.archive_sha256, fields))?;
     let index_bytes = index.len() as u64;
     let progress = Progress {
         source_position: r.position,
         after: batch.next.unwrap_or_default(),
+        last_tick: (!machines.is_empty()).then_some(to_tick),
+        machines,
         archive_sha256: Some(blob(live, ARCHIVE, index.into(), mode).await?),
         backup_sha256: Some(blob(live, BACKUP, backup.into(), mode).await?),
         totals: Totals {
@@ -475,4 +514,68 @@ pub(super) async fn rollback(live: &Live, id: &str, input: Rollback) -> Result<(
     }
     read_blob(live, BACKUP, &input.backup_sha256).await?;
     append(live, id, r.next_version, vec![(ROLLED_BACK, data(&p)?)]).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn machine_entry_state_respects_rewinds_cuts_and_empty_cinematic_keys() {
+        let stopped = game::MachinePosition { i: 8, p: 0 };
+        let moving = game::MachinePosition { i: 12, p: 64 };
+        let previous = Progress {
+            last_tick: Some(12),
+            machines: vec![stopped],
+            ..Default::default()
+        };
+        // An ordinary gap holds the known zero. A rewind, equal tick,
+        // explicit cut, or key starts with only the incoming positions.
+        for (tick, cut, key, holds) in [
+            (42, None, false, true),
+            (11, None, false, false),
+            (12, None, false, false),
+            (13, Some(8), false, false),
+            (13, None, true, false),
+        ] {
+            let batch = source::Batch {
+                frames: vec![game::Frame {
+                    tick,
+                    cut,
+                    machine_positions: vec![moving],
+                    ..Default::default()
+                }],
+                keyframes: if key { vec![0] } else { Vec::new() },
+                ..Default::default()
+            };
+            let (entry, end) = machine_states(&previous, &batch);
+            if holds {
+                assert_eq!(entry, [stopped]);
+                assert_eq!(end, [stopped, moving]);
+            } else {
+                assert!(entry.is_empty());
+                assert_eq!(end, [moving]);
+            }
+        }
+
+        let batch = source::Batch {
+            frames: vec![
+                game::Frame {
+                    tick: 14,
+                    ..Default::default()
+                },
+                game::Frame {
+                    tick: 16,
+                    cinematic: true,
+                    ..Default::default()
+                },
+            ],
+            keyframes: vec![1],
+            ..Default::default()
+        };
+        let (entry, end) = machine_states(&previous, &batch);
+        assert_eq!(entry, [stopped]);
+        assert!(end.is_empty());
+        assert!(batch.frames.iter().all(|f| f.machine_positions.is_empty()));
+    }
 }

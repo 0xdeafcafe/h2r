@@ -116,7 +116,7 @@ impl Batch {
         for record in pack::records(&raw) {
             let record = record.map_err(|e| invalid(e.to_string()))?;
             let decoded = decoder.decode(record).map_err(|e| invalid(e.to_string()))?;
-            let baseline = decoded.keyframe && (record[0] & 15) == 7;
+            let baseline = decoded.machine_baseline;
             let frame = decoded.frame;
             if count == 0 && frame.tick != meta.from_tick
                 || count + 1 == meta.frames as usize && frame.tick != meta.to_tick
