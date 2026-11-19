@@ -16,6 +16,7 @@ use feature::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy};
 use h1scripts::unit_builtins::{RUNTIME_SLOTS, RuntimeBuiltin, RuntimeSlot};
 
 mod countdown;
+mod flashlight;
 
 use countdown::Countdown;
 
@@ -141,6 +142,16 @@ async fn evaluate(cx: Cx, slot: &'static RuntimeSlot, state: Arc<State>) -> Entr
                 let timer = state.countdown.lock().unwrap_or_else(|e| e.into_inner());
                 i32::from(timer.digit(value as i16)) as u32
             }
+            RuntimeBuiltin::FlashlightSet | RuntimeBuiltin::FlashlightSetList => {
+                let on = cx.read(|m| m.u8(args + 4))? != 0;
+                if slot.builtin == RuntimeBuiltin::FlashlightSet {
+                    cx.write(|m| flashlight::set(m, value, on))?;
+                } else {
+                    cx.write(|m| flashlight::set_list(m, value, on))?;
+                }
+                0
+            }
+            RuntimeBuiltin::FlashlightGet => u32::from(cx.read(|m| flashlight::is_on(m, value))?),
             _ => unreachable!("query slots have no arguments"),
         }
     };
@@ -180,8 +191,12 @@ impl Feature for ScriptBuiltins {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
+        flashlight::install(b);
         for point in [
             &points::HS_UNUSED_EVALUATOR,
+            &points::HS_UNIT_FLAG_SET,
+            &points::HS_UNIT_FLAG_GET,
+            &points::HS_AI_LIST_FLAG_SET,
             &points::HS_SHORT_TO_LONG_EVALUATOR,
             &points::HS_LOOK_ANY_DIRECTION,
             &points::HS_MOVE_ANY_DIRECTION,

@@ -145,6 +145,9 @@ pub enum RuntimeBuiltin {
     CountdownGet,
     CountdownStop,
     CountdownRestart,
+    FlashlightSet,
+    FlashlightSetList,
+    FlashlightGet,
 }
 
 /// The exact retail descriptor reused for a converted-map builtin.
@@ -160,9 +163,9 @@ pub struct RuntimeSlot {
 /// Shared by the converter and the boot feature. None of these slots are
 /// named by the retail Halo 2 maps. Slots 495 and 496 keep their argument
 /// and result types, but Halo 1 requires all the bits the retail body tests
-/// for any. Slots 729 and 843 supply the short query argument and the
-/// long/boolean pair for the countdown. Other slots are discarded or
-/// constant-returning evaluators.
+/// for any. Slots 192, 214 and 312 supply the types for the flashlight
+/// calls, and 729 and 843 for the countdown. The remaining slots have
+/// discarded or constant-returning evaluators.
 pub const RUNTIME_SLOTS: &[RuntimeSlot] = &[
     RuntimeSlot {
         builtin: RuntimeBuiltin::CountdownStop,
@@ -187,6 +190,30 @@ pub const RUNTIME_SLOTS: &[RuntimeSlot] = &[
         evaluate: 0x002a_b130,
         returns: "void",
         parameters: &["real"],
+    },
+    RuntimeSlot {
+        builtin: RuntimeBuiltin::FlashlightSet,
+        name: "unit_set_desired_flashlight_state",
+        index: 192,
+        evaluate: 0x002a_3200,
+        returns: "void",
+        parameters: &["unit", "boolean"],
+    },
+    RuntimeSlot {
+        builtin: RuntimeBuiltin::FlashlightGet,
+        name: "unit_get_current_flashlight_state",
+        index: 214,
+        evaluate: 0x002a_3a10,
+        returns: "boolean",
+        parameters: &["unit"],
+    },
+    RuntimeSlot {
+        builtin: RuntimeBuiltin::FlashlightSetList,
+        name: "units_set_desired_flashlight_state",
+        index: 312,
+        evaluate: 0x002a_55f0,
+        returns: "void",
+        parameters: &["object_list", "boolean"],
     },
     RuntimeSlot {
         builtin: RuntimeBuiltin::LookAllDirections,

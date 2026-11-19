@@ -45,6 +45,7 @@ called index and the loaded campaign map.
 |---|---|---:|---|
 | Built | `numeric_countdown_timer_stop`, `_restart` | 68, 169 | Toggle the running flag without changing the stored duration, as at Halo 1 `0xecbc0` and `0xecba0`. |
 | Built | `game_speed` | 170 | Sets the simulation rate read by the native tick-budget routine at `0x1467b3`. Halo 1 uses the same clock multiplier. |
+| Built | `unit_set_desired_flashlight_state`, `unit_get_current_flashlight_state`, `units_set_desired_flashlight_state` | 192, 214, 312 | Switch or query Halo 2's unit integrated-light flag, with the list form visiting each live unit datum. Halo 1's list evaluator is `0x3c740`. The AI update uses the power ramp at Halo 1 `0x45bc0` and `0x45c1f`; player lights use the native Halo 2 update. |
 | Built | `player_action_test_look_relative_all_directions` | 495 | Tests all four signed look latches, matching Halo 1. The retail evaluator at `0x2a9340` tests for any of these bits. |
 | Built | `player_action_test_move_relative_all_directions` | 496 | Tests all four movement latches. The retail evaluator at `0x2a9370` tests for any. No stock Halo 1 campaign calls this form. |
 | Built | `player0_joystick_set_is_normal` | 722 | Reads the local thumbstick layout and checks the two layouts with the look stick in its normal position. Halo 2's input routing at `0x217f26` sends layout values 2 and 3 through the Legacy path. Halo 1's query is at `0xec5f0`. |
@@ -62,6 +63,13 @@ The runtime uses the loaded map's StringIDs to supply their input values
 at Halo 2's object-function lookup, `0xbab40`. The HUD escape timer has
 its own state.
 
+In a50, the marine rifle's flashlight attachment uses output C, scaled
+by weapon source 14. Halo 1 copies the holder's integrated-light power
+to the active weapon at `0x45741`. The rebuilt weapon's attachment
+reads that value at Halo 2's object-function import boundary
+(`0x108d90`). The AI flag and current power are stored in guest unit
+state and travel with the simulation snapshot.
+
 ## Remaining retail campaign calls
 
 | Builtin | Evidence and remaining implementation |
@@ -69,10 +77,8 @@ its own state.
 | `cinematic_screen_effect_set_convolution`, `_set_filter`, `_set_filter_desaturation_tint`, `_set_video` | Halo 1's evaluators at `0xee100`–`0xee210` populate different fields of its cinematic rasterizer state. Halo 2's start/stop and depth-of-field/crossfade setters control its own effects. The Halo 1 convolution, filtering, desaturation and video need matching rendering passes. |
 | `rasterizer_model_ambient_reflection_tint` | Halo 1 writes separate model environment-reflection state at `0xee330`. The corresponding Halo 2 rasterizer script region discards arguments at `0x2ab130`; the tint needs to reach the model reflection pass. |
 | `rasterizer_lights_reset_for_new_map` | Halo 1 clears its light caches at `0xec680`. Halo 2's map reset at `0xc0040` also resets its light datum arrays and global settings. The running cinematic needs a cache reset compatible with its live light registrations. |
-| `units_set_desired_flashlight_state` | Four uses in a50. Halo 1 sets desired state on each unit at `0x3c740`. The assault rifle's marine flashlight attachment uses output C, which scales from input A, weapon source 14. Halo 1 reads that integrated-light source from the weapon at `0xbeee0`. Halo 2's update at `0xc50a0` requires a controlling player. The converted attachment and the AI unit's desired state need to be connected. |
 
-`magic_seat_name`, `magic_melee_attack`, `unit_set_desired_flashlight_state`,
-`unit_get_current_flashlight_state` and `object_set_emotion_animation`
+`magic_seat_name`, `magic_melee_attack` and `object_set_emotion_animation`
 have no stock calls across the ten campaign maps.
 
 The disc tests check the descriptor signatures, campaign callsites, seat labels

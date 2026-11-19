@@ -633,7 +633,10 @@ fn units_and_misc_builtins_translate() {
     }
     for slot in RUNTIME_SLOTS.iter().filter(|s| {
         use h1scripts::unit_builtins::RuntimeBuiltin::*;
-        !matches!(s.builtin, MoveAllDirections | CountdownGet | CountdownRestart)
+        !matches!(
+            s.builtin,
+            MoveAllDirections | CountdownGet | CountdownRestart | FlashlightSet | FlashlightGet
+        )
     }) {
         assert!(used.contains(slot.name), "no calls emitted for {}", slot.name);
     }

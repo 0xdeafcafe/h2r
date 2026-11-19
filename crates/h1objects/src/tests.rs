@@ -2018,6 +2018,7 @@ fn halo1_functions_become_halo2_functions_by_their_inputs() {
         object: [0; 4],
         unit: [1, 0, 0, 0],
         vehicle: [0, 12, 35, 0],
+        ..Default::default()
     };
     let mut engine = h1_function(3, 0, [0.0, 1.0]);
     engine.flags = 4;

@@ -126,18 +126,29 @@ pub fn vehicle_import(source: u16) -> Option<&'static str> {
         .filter(|n| !n.is_empty())
 }
 
+/// Weapon source 14 reads the power of a unit's integrated light. Halo 1
+/// forwards that power to the held weapon at `0x45741`. The boot feature
+/// makes Halo 2's regular integrated-light input available on weapons.
+fn weapon_import(source: u16) -> Option<&'static str> {
+    (source == 14).then_some("integrated_light_power")
+}
+
 /// The Halo 2 import name of input `slot` (0 to 3, A to D): the
 /// vehicle's source where it names one, else the unit's, else the
 /// object's ([`h1::FunctionInputs`]). `None` when none is set or the one
 /// set has no Halo 2 name.
 pub fn input_import(inputs: &h1::FunctionInputs, slot: usize) -> Option<&'static str> {
-    let (v, u, o) = (inputs.vehicle[slot], inputs.unit[slot], inputs.object[slot]);
+    let v = inputs.vehicle[slot];
+    let u = inputs.unit[slot];
+    let w = inputs.weapon[slot];
     if v != 0 {
         vehicle_import(v)
     } else if u != 0 {
         unit_import(u)
+    } else if w != 0 {
+        weapon_import(w)
     } else {
-        object_import(o)
+        object_import(inputs.object[slot])
     }
 }
 
